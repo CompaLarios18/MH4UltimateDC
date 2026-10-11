@@ -6,6 +6,8 @@ Hard rules:
 - Never add game data (ROM, code.bin, exheader, RomFS files, keys) to the repo, and never help obtain unowned copies. Work only from the maintainer's own dump in `baserom/` (git-ignored).
 - Tools are Python 3.10+, standard library first; every tool change needs a test in `tests/` using synthetic data.
 - Run `python3 -m pytest` before committing.
+- Multi-agent work follows `docs/AGENT_WORKFLOW.md`: only the orchestrator edits shared files (`config/*`, `include/*`); workers write their own new files and return results. A function counts as decompiled only when `difftest` passes; report `blocked` rather than weakening a test.
+- Ghidra exports (`build/export/`) are derived from game code: read them, never commit them.
 
 Key facts:
 - `code.bin` from ExeFS is usually BLZ (backward LZ77) compressed; exheader flag bit 0 at offset 0x0D says so. `tools/blz.py` handles it.

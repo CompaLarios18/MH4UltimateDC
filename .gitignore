@@ -19,6 +19,7 @@ exefs.bin
 
 # ── Build output ───────────────────────────────────────
 build/
+export/
 out/
 *.elf
 *.o

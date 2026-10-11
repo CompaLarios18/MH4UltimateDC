@@ -21,6 +21,11 @@ A hybrid is common: recompile everything first (B) to get a running port, then r
 - [ ] Decide which version to target first (suggested: USA, latest update applied?)
 
 ## Phase 1 — Mapping the binary
+*How work is split across parallel agents: [`AGENT_WORKFLOW.md`](AGENT_WORKFLOW.md).*
+- [ ] Ghidra export script (`tools/ghidra/`): function list, call graph, strings, per-function pseudo-C → `build/export/` (git-ignored)
+- [ ] `tools/difftest.py`: compile candidate C for armv6k, link against original addresses, compare with original in Unicorn (proof of concept done)
+- [ ] Status table `config/functions.tsv` + worker prompt template `docs/prompts/worker.md`
+- [ ] Pilot batch of ~10 leaf functions; measure pass rate and cost
 - [ ] Ghidra project setup guide; shared function/symbol list in text form (`config/symbols.txt`)
 - [ ] Identify 3DS SDK/system library code (svc wrappers, `nn::` services, libc, math) — these get replaced, not decompiled
 - [ ] Identify engine layers (Capcom's MT Framework Mobile): memory, file/archive loading, rendering, sound, task/scheduling
