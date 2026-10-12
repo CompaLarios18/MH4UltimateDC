@@ -11,6 +11,9 @@
 #include "common/file_util.h"
 #include "common/logging/log.h"
 #include "common/settings.h"
+#include "core/core.h"
+#include "video_core/gpu.h"
+#include "video_core/pica/pica_core.h"
 
 // Hooks read and write guest memory through Azahar's page table, like recompiled code.
 #define RC_PAGED
@@ -38,6 +41,10 @@ constexpr u32 SCAMERA_VIEWPORTS = 0x18;         // 8 viewports of 0x1a8 bytes
 constexpr u32 VIEWPORT_SIZE = 0x1a8;
 constexpr u32 VIEWPORT_CAMERA = 0x04;           // uCamera*
 constexpr u32 VIEWPORT_DISPLAY = 0x16;          // u8: 0 top screen, 1 bottom screen
+constexpr u32 VIEWPORT_SCENE_TEXTURE = 0x0c;    // sub-scene texture: region from its size
+constexpr u32 VIEWPORT_Y0 = 0x28, VIEWPORT_Y1 = 0x30;  // region rows (the screen's width)
+constexpr u32 SLTRENDER_SCENE = 0x6c28;         // nDraw::Scene*: the main render target
+constexpr u32 TOP_ROWS = 400, LCD_COLUMNS = 240;   // top screen in framebuffer orientation
 constexpr float NATIVE_ASPECT = 400.0f / 240.0f;
 
 float ReadF32(RCtx* ctx, u32 addr) {
@@ -57,6 +64,7 @@ void WriteF32(RCtx* ctx, u32 addr, float f) {
 struct Options {
     float fps_cap = 0;      // fps / MH4U_FPS: frame-rate cap, 0 = the game's own
     float widescreen = 0;   // widescreen / MH4U_WIDESCREEN: top-screen aspect ratio, 0 = native
+    bool wide_render = false;  // wide_render / MH4U_WIDE_RENDER: render the wider image itself
     u32 trace_every = 0;    // trace_frames / MH4U_TRACE_FRAMES: log frame timing every n frames
 };
 Options options;
@@ -78,6 +86,8 @@ void Set(Options& o, const std::string& key, const std::string& value) {
         o.fps_cap = std::max(0.0f, std::strtof(value.c_str(), nullptr));
     } else if (key == "widescreen") {
         o.widescreen = ParseAspect(value);
+    } else if (key == "wide_render") {
+        o.wide_render = value == "1" || value == "true" || value == "on" || value == "yes";
     } else if (key == "trace_frames") {
         o.trace_every = static_cast<u32>(std::max(0L, std::strtol(value.c_str(), nullptr, 10)));
     }
@@ -105,7 +115,10 @@ Options LoadOptions(std::vector<std::string>& log) {
         log.push_back("options from " + path);
     }
     const std::pair<const char*, const char*> env[] = {
-        {"MH4U_FPS", "fps"}, {"MH4U_WIDESCREEN", "widescreen"}, {"MH4U_TRACE_FRAMES", "trace_frames"}};
+        {"MH4U_FPS", "fps"},
+        {"MH4U_WIDESCREEN", "widescreen"},
+        {"MH4U_WIDE_RENDER", "wide_render"},
+        {"MH4U_TRACE_FRAMES", "trace_frames"}};
     for (const auto& [var, key] : env) {
         if (const char* value = std::getenv(var)) {
             Set(o, key, value);
@@ -168,8 +181,64 @@ void GetProjMatrix(RCtx* ctx, RFunc original) {
     const u32 out = ctx->r[0];
     const u32 camera = ctx->r[1];
     original(ctx);
-    if (options.widescreen > 0 && !OnBottomScreen(ctx, camera)) {
+    if (options.widescreen > 0 && !options.wide_render && !OnBottomScreen(ctx, camera)) {
         WriteF32(ctx, out, ReadF32(ctx, out) * NATIVE_ASPECT / options.widescreen);
+    }
+}
+
+// ── True widescreen (wide_render, experimental): the top screen is rendered W pixels wide
+// instead of 400 (docs/research/widescreen.md, "What has to grow"). The aspect ratio,
+// projection, culling, GPU viewport and display transfer all follow from the sizes below.
+
+/// W: the widescreen width rounded to whole 8-pixel tiles, or 0 when off.
+u32 WideRows() {
+    if (!options.wide_render || options.widescreen <= NATIVE_ASPECT) {
+        return 0;
+    }
+    return static_cast<u32>(std::lround(LCD_COLUMNS * options.widescreen / 8.0f)) * 8;
+}
+
+/// nDraw::Scene::Scene(this, params): params {columns, rows, ...}; the main scene target.
+void SceneCtor(RCtx* ctx, RFunc original) {
+    const u32 rows = WideRows();
+    const u32 params = ctx->r[1];
+    if (rows && rd32(ctx, params) == LCD_COLUMNS && rd32(ctx, params + 4) == TOP_ROWS) {
+        wr32(ctx, params + 4, rows);
+        LOG_INFO(Frontend, "wide render: scene target {}x{}", rows, LCD_COLUMNS);
+    }
+    original(ctx);
+}
+
+/// nDraw::DisplayBuffer::init(this, columns, rows, format, ...): the top screen's buffers;
+/// Azahar's LCD then has to show that many rows.
+void DisplayBufferInit(RCtx* ctx, RFunc original) {
+    const u32 rows = WideRows();
+    if (rows && ctx->r[1] == LCD_COLUMNS && ctx->r[2] == TOP_ROWS) {
+        ctx->r[2] = rows;
+        Core::System::GetInstance().GPU().PicaCore().regs.framebuffer_config[0].height.Assign(rows);
+    }
+    original(ctx);
+}
+
+/// sCamera::Viewport::updateRegion(this): top-screen viewports drawn into the scene target
+/// get their rows scaled to the wider target.
+void UpdateRegion(RCtx* ctx, RFunc original) {
+    const u32 viewport = ctx->r[0];
+    original(ctx);
+    const u32 rows = WideRows();
+    if (!rows || rd8(ctx, viewport + VIEWPORT_DISPLAY) != 0 ||
+        rd32(ctx, viewport + VIEWPORT_SCENE_TEXTURE) != 0) {
+        return;
+    }
+    const u32 render = rd32(ctx, SLTRENDER_INSTANCE);
+    if (render == 0 || rd32(ctx, render + SLTRENDER_SCENE) == 0) {
+        return;
+    }
+    for (const u32 field : {VIEWPORT_Y0, VIEWPORT_Y1}) {
+        const u32 y = rd32(ctx, viewport + field);
+        if (y <= TOP_ROWS) {
+            wr32(ctx, viewport + field, y * rows / TOP_ROWS);
+        }
     }
 }
 
@@ -203,6 +272,9 @@ constexpr Hook HOOKS[] = {
     {0x00c46380, "uMhCamera::getProjMatrix", GetProjMatrix},
     {0x002535f8, "uFreeCamera::getProjMatrix", GetProjMatrix},
     {0x0032e338, "uMotionCamera::getProjMatrix", GetProjMatrix},
+    {0x00633188, "nDraw::Scene::Scene", SceneCtor},
+    {0x0062e184, "nDraw::DisplayBuffer::init", DisplayBufferInit},
+    {0x00aefd44, "sCamera::Viewport::updateRegion", UpdateRegion},
 };
 
 } // namespace
@@ -217,8 +289,10 @@ std::vector<std::string> Install(const RCodeInfo& info) {
         log.push_back(fmt::format("frame-rate cap {}", options.fps_cap));
     }
     if (options.widescreen > 0) {
-        log.push_back(fmt::format("widescreen: 3D view widened to aspect ratio {:.4f}",
-                                  options.widescreen));
+        log.push_back(WideRows() ? fmt::format("widescreen: top screen rendered {}x{} (experimental)",
+                                               WideRows(), LCD_COLUMNS)
+                                 : fmt::format("widescreen: 3D view widened to aspect ratio {:.4f}",
+                                               options.widescreen));
         SetScreenAspect(options.widescreen, log);
     }
     if (options.trace_every) {

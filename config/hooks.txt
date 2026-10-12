@@ -7,3 +7,6 @@
 0x00c46380 uMhCamera::getProjMatrix   # widescreen: widen the 3D view (MH4U_WIDESCREEN)
 0x002535f8 uFreeCamera::getProjMatrix # widescreen
 0x0032e338 uMotionCamera::getProjMatrix  # widescreen (cutscene cameras)
+0x00633188 nDraw::Scene::Scene        # wide render: main scene target size
+0x0062e184 nDraw::DisplayBuffer::init # wide render: top display buffers
+0x00aefd44 sCamera::Viewport::updateRegion  # wide render: top viewport regions
