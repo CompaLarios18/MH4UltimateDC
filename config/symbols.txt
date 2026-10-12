@@ -10,3 +10,68 @@
 0x00e4fc94 data_00e4fc94            # const {s32 key; s32 value;}[6], keys 3..8 -> 9..14 (pilot-1)
 0x00ed2440 data_00ed2440            # const {u8 id; u8 unk; u8 value;}[18] (pilot-1)
 0x010b4af8 g_010b4af8               # .bss, 10 records x 0x50, first two bytes are lookup keys (pilot-1)
+
+# System calls and services (tools/find_services.py, docs/research/system-services.md)
+0x0010919c svcCreateEvent
+0x001091b4 svcCreateThread
+0x001091f4 svcGetThreadId
+0x0010b8c0 svcConnectToPort
+0x0010b8d8 svcWaitSynchronizationN
+0x0010d934 svcSleepThread                 # nop + svc 0x0A
+0x0010fc54 svcArbitrateAddress
+0x00111864 svcCreateMemoryBlock
+0x00111880 svcCreateMutex
+0x00111898 svcCreateTimer
+0x001118b0 svcDuplicateHandle
+0x001118e4 svcGetSystemTick               # nop + svc 0x28 (Ghidra splits at 0x001118e8)
+0x00111908 svcSetTimer
+0x00300f04 strlen                         # RVCT word-at-a-time strlen
+0x0010a110 srv_Initialize                 # ConnectToPort("srv:") + RegisterClient
+0x0010cc1c srv_GetServiceHandle           # IPC 0x00050100
+0x0010a234 srv_GetServiceHandleChecked    # srv ready + name length <= 8, tail-calls 0x0010cc1c
+0x01057de4 g_srvHandle
+0x01057648 g_fsUserHandle
+0x01057d98 g_fsUserSession                # copy of g_fsUserHandle, set by 0x00107800
+0x01057dc0 g_gspGpuHandle                 # copy of 0x01057dbc
+0x01064b50 g_hidUserHandle
+0x01065338 g_nwmUdsHandle
+0x01057d70 g_dspHandle
+0x0056ca84 gsp_Initialize
+0x0056d24c gsp_SetupInterrupts            # CreateEvent + RegisterInterruptRelayQueue + map shm + thread
+0x0056d43c gsp_InterruptThread
+0x0056d7f4 gsp_SetInterruptCallback       # (callback, id < 7) -> old
+0x0056dafc gspGpu_RegisterInterruptRelayQueue
+0x00ec6c40 g_gspState
+0x00d81674 gx_Initialize                  # nngxInitialize-like
+0x00d82d00 gx_WaitVSync                   # 0x400 top, 0x401 bottom, 0x402 both
+0x00d824ac gx_SetVSyncCallback
+0x0110d004 g_gxVBlankCountTop
+0x0110d008 g_gxVBlankCountBottom
+0x00107c6c hid_Initialize
+0x0010a010 hidUser_GetIPCHandles
+0x0110e488 g_hidReaders
+0x0010665c fs_Initialize
+0x00107800 fs_SetSession                  # + InitializeWithSdkVersion(0x090B00C8)
+0x0010db0c fsUser_OpenArchive
+0x0010db9c fsUser_OpenFileDirectly
+0x00564998 uds_Initialize
+
+# Engine main loop, frame timing and rendering (docs/research/system-services.md)
+0x001046d0 mtMain                         # creates sMhMain from its DTI and runs the loop
+0x00105acc mtMainLoop                     # vtable+0x1c until byte +0x54 is set
+0x00644968 sMain::sMain
+0x006442f8 sMain::updateFrameTiming       # frame limiter / delta time: +0x2c rate, +0x30 cap, +0x5c delta (1/60 s frames)
+0x00af55a4 sMhMain::sMhMain
+0x00af5250 sMhMain::frame                 # vtable 0x00e6b814 + 0x1c
+0x01057194 g_sMainInstance
+0x00bfbabc sLtRender::sLtRender
+0x00bfa42c sLtRender::initGraphics
+0x00bf5f9c sLtRender::flip
+0x00bf894c sLtRender::present
+0x00bf672c sLtRender::submit
+0x00bfa6f0 sLtRender::updateDisplaySkip   # per-screen present every mDisplaySkip+1 frames
+0x00bf66f0 sLtRender::onVSync
+0x00bf685c sLtRender::createProperty      # registers mDisplaySkip, mVSyncEdit, ...
+0x010572cc g_sLtRenderInstance
+0x005b87b0 sPad::sPad
+0x005b825c sPad::update
