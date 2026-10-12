@@ -1,0 +1,85 @@
+name: Windows build
+
+# Azahar at the commit in port/azahar/COMMIT, with port/azahar/azahar.patch and the port's
+# CPU backend, cross-compiled for Windows with MXE the way Azahar's own CI does it. It
+# contains no game code: the game's code library is made on the player's machine from
+# their own dump (tools/build_game.py) and loaded at run time.
+#
+# The build is uploaded as an artifact only once the repository has a LICENSE: Azahar is
+# GPL-3.0-or-later, so binaries can only be shared under that licence.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "port/**"
+      - "tools/recomp/runtime/**"
+      - ".github/workflows/windows.yml"
+
+jobs:
+  mxe:
+    runs-on: ubuntu-latest
+    container:
+      image: opensauce04/azahar-build-environment:latest
+      options: -u 1001
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_COMPILERCHECK: content
+      CCACHE_SLOPPINESS: time_macros
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: mh4u
+      - name: Azahar at the pinned commit, with the port's patch
+        run: |
+          git clone https://github.com/azahar-emu/azahar.git azahar
+          cd azahar
+          git checkout "$(cat ../mh4u/port/azahar/COMMIT)"
+          git submodule update --init --recursive --depth 1
+          git apply ../mh4u/port/azahar/azahar.patch
+      - name: Compiler cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: mxe-${{ hashFiles('mh4u/port/azahar/COMMIT') }}-${{ github.sha }}
+          restore-keys: mxe-${{ hashFiles('mh4u/port/azahar/COMMIT') }}-
+      - name: Build
+        run: |
+          export PATH="/opt/mxe/usr/bin:${PATH}"
+          mkdir -p azahar/build && cd azahar/build
+          x86_64-w64-mingw32.shared-cmake .. \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER=clang++ \
+            -DCMAKE_C_COMPILER=clang \
+            -DCMAKE_CXX_COMPILER_AR=x86_64-w64-mingw32.shared-ar \
+            -DCMAKE_CXX_COMPILER_RANLIB=x86_64-w64-mingw32.shared-ranlib \
+            -DENABLE_TESTS=OFF \
+            -DMH4U_PORT_DIR="${GITHUB_WORKSPACE}/mh4u/port"
+          x86_64-w64-mingw32.shared-cmake --build . -- -j"$(nproc)"
+          x86_64-w64-mingw32.shared-strip -s bin/Release/*.exe
+          make bundle
+          cp bin/Release/mh4u_runner.exe bundle/
+          ccache -s
+      - name: Package
+        if: ${{ hashFiles('mh4u/LICENSE') != '' }}
+        run: |
+          mkdir -p artifacts/mh4u-port-windows
+          cp -r azahar/build/bundle/* artifacts/mh4u-port-windows/
+          cp mh4u/LICENSE artifacts/mh4u-port-windows/LICENSE-mh4u-port.txt
+          cat > artifacts/mh4u-port-windows/README-mh4u.txt <<EOF
+          Azahar ($(cat mh4u/port/azahar/COMMIT)) with the MH4U port's recompiled-code CPU backend.
+          Source: https://github.com/${GITHUB_REPOSITORY} (commit ${GITHUB_SHA}),
+          https://github.com/azahar-emu/azahar plus mh4u/port/azahar/azahar.patch.
+          No game code is included: build the game's code library from your own dump with
+          tools/build_game.py --dump <your dump> --install "%APPDATA%/Azahar".
+          EOF
+      - name: Upload
+        if: ${{ hashFiles('mh4u/LICENSE') != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: mh4u-port-windows
+          path: artifacts/
+          retention-days: 14
