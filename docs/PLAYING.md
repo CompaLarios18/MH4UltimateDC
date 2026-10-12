@@ -51,9 +51,11 @@ widescreen = 16:9
 wide_render = 0
 # write the engine's frame timing to the log every n frames
 trace_frames = 0
+# write touch-panel activity to the log (to map panels to buttons)
+trace_panels = 0
 ```
 
-Environment variables override the file: `MH4U_FPS`, `MH4U_WIDESCREEN`, `MH4U_WIDE_RENDER`, `MH4U_TRACE_FRAMES`.
+Environment variables override the file: `MH4U_FPS`, `MH4U_WIDESCREEN`, `MH4U_WIDE_RENDER`, `MH4U_TRACE_FRAMES`, `MH4U_TRACE_PANELS`.
 
 - **60 fps** *(experimental)*: the engine's frame limiter is raised to the cap. A frame must also fit in one screen refresh of emulated time: if the game stays below 60, raise *CPU Clock Speed* (*Emulation → Configure → Debug*). All players in a multiplayer session should use the same value.
 - **Widescreen** *(experimental)*: the 3D view is widened to the given aspect ratio, and *View → Screen Layout → Single Screen* then shows the top screen at that shape (16:9, 16:10, 21:9 and 4:3 exactly; other values stretch it to the window). In *Custom Layout* you can size the top screen yourself and lay the bottom screen over it with *Bottom Screen Opacity*. This stretches a 400x240 image, HUD included. With `wide_render = 1` the game draws a wider image instead (424x240 for 16:9: the scene target, display buffers and viewports are made wider), which keeps the HUD's proportions; it is untested on the full game, and HUD elements stay where they are on a 400-pixel screen until they get anchored to the edges ([research/widescreen.md](research/widescreen.md)).

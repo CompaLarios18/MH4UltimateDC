@@ -66,7 +66,12 @@ struct Options {
     float widescreen = 0;   // widescreen / MH4U_WIDESCREEN: top-screen aspect ratio, 0 = native
     bool wide_render = false;  // wide_render / MH4U_WIDE_RENDER: render the wider image itself
     u32 trace_every = 0;    // trace_frames / MH4U_TRACE_FRAMES: log frame timing every n frames
+    bool trace_panels = false;  // trace_panels / MH4U_TRACE_PANELS: log touch-panel activity
 };
+
+bool IsOn(const std::string& value) {
+    return value == "1" || value == "true" || value == "on" || value == "yes";
+}
 Options options;
 u64 frames = 0;
 
@@ -87,7 +92,9 @@ void Set(Options& o, const std::string& key, const std::string& value) {
     } else if (key == "widescreen") {
         o.widescreen = ParseAspect(value);
     } else if (key == "wide_render") {
-        o.wide_render = value == "1" || value == "true" || value == "on" || value == "yes";
+        o.wide_render = IsOn(value);
+    } else if (key == "trace_panels") {
+        o.trace_panels = IsOn(value);
     } else if (key == "trace_frames") {
         o.trace_every = static_cast<u32>(std::max(0L, std::strtol(value.c_str(), nullptr, 10)));
     }
@@ -118,7 +125,8 @@ Options LoadOptions(std::vector<std::string>& log) {
         {"MH4U_FPS", "fps"},
         {"MH4U_WIDESCREEN", "widescreen"},
         {"MH4U_WIDE_RENDER", "wide_render"},
-        {"MH4U_TRACE_FRAMES", "trace_frames"}};
+        {"MH4U_TRACE_FRAMES", "trace_frames"},
+        {"MH4U_TRACE_PANELS", "trace_panels"}};
     for (const auto& [var, key] : env) {
         if (const char* value = std::getenv(var)) {
             Set(o, key, value);
@@ -261,6 +269,51 @@ void SetScreenAspect(float aspect, std::vector<std::string>& log) {
                       : "single-screen layout shows the top screen at that aspect ratio");
 }
 
+// ── Touch panels (docs/research/second-screen.md): tracing, to map panel ids to actions
+// before binding them to buttons.
+constexpr u32 PANEL_MANAGER = 0x0109a350;
+constexpr u32 PANEL_FLAGS = 0xcc;     // u16: event flags of the last touch (0x0200 tapped)
+constexpr u32 PANEL_ID = 0xce;        // u16: id of the panel touched
+constexpr u32 SMHPAD_INJECTED = 0x3f0;   // u32: gameplay action bits set by panels
+constexpr u32 SMHPAD_INJECTED_MENU = 0x3f4;
+u32 last_panel_touch = 0xFFFFFFFF;
+
+/// PanelManager::processTouch(): runs the touch groups, leaves the touched panel's id.
+void PanelProcessTouch(RCtx* ctx, RFunc original) {
+    original(ctx);
+    if (!options.trace_panels) {
+        return;
+    }
+    const u32 touch = rd16(ctx, PANEL_MANAGER + PANEL_ID) | rd16(ctx, PANEL_MANAGER + PANEL_FLAGS) << 16;
+    if (touch != last_panel_touch && !(touch >> 16 & 0x8000)) {
+        LOG_INFO(Frontend, "panels: touch on panel {} flags {:04X}", touch & 0xFFFF, touch >> 16);
+    }
+    last_panel_touch = touch;
+}
+
+/// PanelManager::isTapped(id): polled by the code that reacts to each panel.
+void PanelIsTapped(RCtx* ctx, RFunc original) {
+    const u32 id = ctx->r[0];
+    const u32 caller = ctx->r[14];
+    original(ctx);
+    if (options.trace_panels && ctx->r[0] != 0) {
+        LOG_INFO(Frontend, "panels: panel {} tapped, handled at {:08X}", id, caller);
+    }
+}
+
+/// sMhPad::update(this): turns pad state and the panels' injected bits into actions.
+void MhPadUpdate(RCtx* ctx, RFunc original) {
+    if (options.trace_panels) {
+        const u32 pad = ctx->r[0];
+        const u32 gameplay = rd32(ctx, pad + SMHPAD_INJECTED);
+        const u32 menu = rd32(ctx, pad + SMHPAD_INJECTED_MENU);
+        if (gameplay || menu) {
+            LOG_INFO(Frontend, "panels: injected actions {:04X}, menu actions {:04X}", gameplay, menu);
+        }
+    }
+    original(ctx);
+}
+
 struct Hook {
     u32 addr;
     const char* name;
@@ -275,6 +328,9 @@ constexpr Hook HOOKS[] = {
     {0x00633188, "nDraw::Scene::Scene", SceneCtor},
     {0x0062e184, "nDraw::DisplayBuffer::init", DisplayBufferInit},
     {0x00aefd44, "sCamera::Viewport::updateRegion", UpdateRegion},
+    {0x002951fc, "PanelManager::processTouch", PanelProcessTouch},
+    {0x00288f4c, "PanelManager::isTapped", PanelIsTapped},
+    {0x00694c98, "sMhPad::update", MhPadUpdate},
 };
 
 } // namespace
@@ -297,6 +353,9 @@ std::vector<std::string> Install(const RCodeInfo& info) {
     }
     if (options.trace_every) {
         log.push_back(fmt::format("tracing frame timing every {} frames", options.trace_every));
+    }
+    if (options.trace_panels) {
+        log.push_back("tracing touch panels");
     }
     for (const Hook& hook : HOOKS) {
         if (!info.set_hook(hook.addr, hook.fn)) {
