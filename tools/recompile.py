@@ -238,7 +238,8 @@ def main(argv=None) -> int:
     ap.add_argument("--exheader", default=os.path.join(ROOT, "baserom", "update_v130", "exheader.bin"))
     ap.add_argument("--code", default=os.path.join(ROOT, "baserom", "update_v130", "code.bin"))
     ap.add_argument("--functions", default=os.path.join(ROOT, "config", "functions.tsv"))
-    ap.add_argument("--extra", action="append", default=[])
+    ap.add_argument("--extra", action="append", default=[os.path.join(ROOT, "config", "extra_entries.txt")],
+                    help="more entry point lists (address [arm|thumb] per line)")
     ap.add_argument("--no-data-pointers", action="store_true", help="don't scan .rodata/.data for code pointers")
     ap.add_argument("-o", "--out", default=os.path.join(ROOT, "build", "recomp"))
     args = ap.parse_args(argv)

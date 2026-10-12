@@ -37,7 +37,11 @@ MH4U_RUNNER=../azahar/build/bin/Release/mh4u_runner python3 -m pytest tests/test
 ## Running the game's code
 
 ```bash
-# 1. Recompile your dump and build the code library (-O1 takes a while; -O0 is quick)
+# 1. Your dump to a code library in one step (extract, check version, recompile, compile);
+#    --install puts it where the port's Azahar build looks for it
+python3 tools/build_game.py --dump "MH4U v1.3.0 update.cia" --install ~/.local/share/azahar-emu
+
+#    or step by step (-O1 takes a while; -O0 is quick)
 python3 tools/recompile.py --exheader baserom/update_v130/exheader.bin --code baserom/update_v130/code.bin -o build/recomp
 (cd tools && python3 -m recomp.build ../build/recomp --code-library --opt O1)    # build/recomp/mh4u_code.so
 
