@@ -2,7 +2,7 @@
 // the recompiled code or one of Azahar's own CPU backends, until the program exits or an
 // emulated-time limit is reached. Debug output (svcOutputDebugString) goes to stdout.
 //
-// usage: mh4u_headless <file> [--cpu recomp|jit|interp] [--ms N] [--log FILTER]
+// usage: mh4u_runner <file> [--code LIB] [--cpu recomp|jit|interp] [--ms N] [--log FILTER]
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -31,7 +31,7 @@ public:
 };
 
 int Usage() {
-    std::fprintf(stderr, "usage: mh4u_headless <file> [--cpu recomp|jit|interp] [--ms N] [--log FILTER]\n");
+    std::fprintf(stderr, "usage: mh4u_runner <file> [--code LIB] [--cpu recomp|jit|interp] [--ms N] [--log FILTER]\n");
     return 1;
 }
 
@@ -39,12 +39,15 @@ int Usage() {
 
 int main(int argc, char** argv) {
     std::string path;
+    std::string code_library;
     std::string cpu = "recomp";
     std::string log_filter = "*:Warning Debug.Emulated:Debug Kernel:Info";
     double emulated_ms = 10000.0;
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
-        if (arg == "--cpu" && i + 1 < argc) {
+        if (arg == "--code" && i + 1 < argc) {
+            code_library = argv[++i];
+        } else if (arg == "--cpu" && i + 1 < argc) {
             cpu = argv[++i];
         } else if (arg == "--ms" && i + 1 < argc) {
             emulated_ms = std::atof(argv[++i]);
@@ -80,8 +83,9 @@ int main(int argc, char** argv) {
     system.RegisterImageInterface(std::make_shared<Frontend::ImageInterface>());
     std::vector<Port::ARM_Recomp*> recomp_cores;
     if (cpu == "recomp") {
-        if (Port::ARM_Recomp::FunctionCount() == 0) {
-            std::fprintf(stderr, "no recompiled code linked in\n");
+        std::string error;
+        if (code_library.empty() || !Port::ARM_Recomp::LoadCode(code_library, error)) {
+            std::fprintf(stderr, "%s\n", code_library.empty() ? "--cpu recomp needs --code LIB" : error.c_str());
             return 1;
         }
         system.SetCPUFactory([&recomp_cores](Core::System& sys, Memory::MemorySystem& memory,

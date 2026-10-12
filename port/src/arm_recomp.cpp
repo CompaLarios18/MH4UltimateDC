@@ -12,13 +12,13 @@
 #include "core/memory.h"
 #include "fiber.h"
 
+#include "common/dynamic_library.h"
+
 // The C runtime contract; included last because it defines short macros (R, C_EQ, ...).
 extern "C" {
 #include "recomp.h"
-// Emitted by tools/recompile.py into table.c, sorted by address.
-extern const RFuncEntry rc_func_table[];
-extern const u32 rc_func_count;
-extern const u32 rc_text_base, rc_text_size, rc_text_crc32;
+void rc_slow_write(RCtx* ctx, u32 a, u32 v, u32 size);
+u32 rc_slow_read(RCtx* ctx, u32 a, u32 size);
 }
 
 namespace Port {
@@ -31,17 +31,15 @@ constexpr u32 CPSR_T = 1u << 5;
 // Bits that recomp.h keeps outside of the separate flag words (mode, masks, E, ...).
 constexpr u32 CPSR_MISC_MASK = 0x07F0FFFFu & ~CPSR_T;
 
+/// The recompiled program: its function table and the code it was made from.
+RCodeInfo g_code{};
 /// Recompiled functions by entry address; Thumb entries have bit 0 set.
+std::unordered_map<u32, RFunc> g_functions;
+/// Keeps a loaded code library mapped.
+std::unique_ptr<Common::DynamicLibrary> g_library;
+
 const std::unordered_map<u32, RFunc>& Functions() {
-    static const std::unordered_map<u32, RFunc> table = [] {
-        std::unordered_map<u32, RFunc> t;
-        t.reserve(rc_func_count);
-        for (u32 i = 0; i < rc_func_count; ++i) {
-            t.emplace(rc_func_table[i].addr | rc_func_table[i].mode, rc_func_table[i].fn);
-        }
-        return t;
-    }();
-    return table;
+    return g_functions;
 }
 
 ARM_Recomp& Self(RCtx* ctx) {
@@ -87,7 +85,39 @@ ARM_Recomp::ARM_Recomp(Core::System& system_, Memory::MemorySystem& memory_, u32
 ARM_Recomp::~ARM_Recomp() = default;
 
 std::size_t ARM_Recomp::FunctionCount() {
-    return rc_func_count;
+    return g_code.count;
+}
+
+void ARM_Recomp::SetCode(const RCodeInfo& info) {
+    g_code = info;
+    g_functions.clear();
+    g_functions.reserve(info.count);
+    for (u32 i = 0; i < info.count; ++i) {
+        g_functions.emplace(info.table[i].addr | info.table[i].mode, info.table[i].fn);
+    }
+}
+
+bool ARM_Recomp::LoadCode(const std::string& path, std::string& error) {
+    auto library = std::make_unique<Common::DynamicLibrary>();
+    if (!library->Load(path)) {
+        error = fmt::format("can't load {}: {}", path, library->GetLoadError());
+        return false;
+    }
+    const auto init = library->GetSymbol<RCodeInit>(RC_CODE_INIT_SYMBOL);
+    if (!init) {
+        error = fmt::format("{} is not a recompiled code library", path);
+        return false;
+    }
+    static const RHost host{RC_HOST_VERSION, sizeof(RCtx), rc_call, rc_svc, rc_trap,
+                            rc_bad_return, rc_budget, rc_slow_read, rc_slow_write};
+    RCodeInfo info{};
+    if (!init(&host, &info)) {
+        error = fmt::format("{} was built against a different runtime (recomp.h)", path);
+        return false;
+    }
+    g_library = std::move(library);
+    SetCode(info);
+    return true;
 }
 
 // ── execution ───────────────────────────────────────────────────────────────────────
@@ -107,13 +137,13 @@ void ARM_Recomp::Execute(s64 budget) {
     if (!host) {
         host = Fiber::FromCurrentThread(); // the emulation thread, created lazily
         // The recompiled code is only valid for exactly the code it came from.
-        std::vector<u8> text(rc_text_size);
-        memory.ReadBlock(rc_text_base, text.data(), text.size());
+        std::vector<u8> text(g_code.text_size);
+        memory.ReadBlock(g_code.text_base, text.data(), text.size());
         const u32 crc = Crc32(text.data(), text.size());
-        if (crc != rc_text_crc32) {
+        if (crc != g_code.text_crc32) {
             failure = fmt::format("the running program's code ({:08X}+{:X}, crc32 {:08X}) is not the "
                                   "code that was recompiled (crc32 {:08X})",
-                                  rc_text_base, rc_text_size, crc, rc_text_crc32);
+                                  g_code.text_base, g_code.text_size, crc, g_code.text_crc32);
             LOG_CRITICAL(Core_ARM11, "{}", failure);
             return;
         }

@@ -15,6 +15,7 @@
 #include "core/hle/kernel/svc.h"
 
 struct RCtx;
+struct RCodeInfo;
 
 namespace Core {
 class System;
@@ -68,7 +69,11 @@ public:
         return failure;
     }
 
-    /// Number of recompiled functions linked into this executable.
+    /// The recompiled program to run: a code library built by port/CMakeLists.txt or by
+    /// tools/recomp/build.py --shared.
+    static bool LoadCode(const std::string& path, std::string& error);
+    static void SetCode(const RCodeInfo& info);
+    /// Number of recompiled functions available.
     static std::size_t FunctionCount();
 
     // Called by the runtime callbacks of recomp.h, on a guest fiber.

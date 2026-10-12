@@ -4,11 +4,13 @@ The PC port: [Azahar](https://github.com/azahar-emu/azahar)'s 3DS core (kernel, 
 
 | Path | What |
 |---|---|
-| `src/arm_recomp.*` | CPU backend (`Core::ARM_Interface`) that runs recompiled code: one host fiber per guest thread, system calls into Azahar's kernel, Azahar's page table as guest memory, cycle accounting through Azahar's timers |
+| `src/arm_recomp.*` | CPU backend (`Core::ARM_Interface`) that runs recompiled code: one host fiber per guest thread, system calls into Azahar's kernel, Azahar's page table as guest memory, cycle accounting through Azahar's timers, and a check that the loaded program is the one that was recompiled |
 | `src/fiber.*` | Host fibers (ucontext on Linux/macOS, Win32 fibers on Windows) |
-| `src/headless.cpp` | Boots a 3DS executable with no window; for tests and comparing backends |
+| `src/runner.cpp` | `mh4u_runner`: boots a 3DS executable with no window, with the recompiled code (`--cpu recomp --code LIB`) or Azahar's own JIT/interpreter; for tests and for comparing backends |
 | `tests/svc_test.c` | Freestanding 3DS test program (threads, events, mutexes, atomics, VFP short vectors, Thumb) |
 | `azahar/` | The Azahar commit this builds against, and a small patch: a hook to replace the CPU backend, and a hook to build this directory inside Azahar's tree |
+
+The runner contains no game code. The game's recompiled code is a separate shared library, generated and compiled on the user's machine from their own dump and loaded at run time.
 
 ## Building (Linux; Windows and macOS later)
 
@@ -19,34 +21,33 @@ git checkout $(cat ../MH4UltimateDC/port/azahar/COMMIT)
 git submodule update --init --recursive --depth 1
 git apply ../MH4UltimateDC/port/azahar/azahar.patch
 
-# Test program (no game data needed)
-python3 ../MH4UltimateDC/port/tests/build_svc_test.py -o ../MH4UltimateDC/build/port-test
-
-# Configure and build (no Qt; software renderer)
+# Configure and build the runner (no Qt; software renderer)
 cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
   -DENABLE_QT=OFF -DENABLE_TESTS=OFF -DENABLE_ROOM=OFF -DENABLE_WEB_SERVICE=OFF -DENABLE_SCRIPTING=OFF \
   -DENABLE_CUBEB=OFF -DENABLE_OPENAL=OFF -DENABLE_LIBUSB=OFF -DENABLE_VULKAN=OFF -DENABLE_OPENGL=OFF \
-  -DENABLE_SDL2=OFF -DCITRA_WARNINGS_AS_ERRORS=OFF \
-  -DMH4U_PORT_DIR=$PWD/../MH4UltimateDC/port \
-  -DMH4U_TEST_RECOMP_DIR=$PWD/../MH4UltimateDC/build/port-test \
-  -DMH4U_RECOMP_DIR=$PWD/../MH4UltimateDC/build/recomp      # your own dump's recompiled code
-cmake --build build --target mh4u_test_headless
+  -DENABLE_SDL2=OFF -DCITRA_WARNINGS_AS_ERRORS=OFF -DMH4U_PORT_DIR=$PWD/../MH4UltimateDC/port
+cmake --build build --target mh4u_runner
+cd ../MH4UltimateDC
 
-# Same program, recompiled vs Azahar's JIT: the debug output must match
-build/bin/Release/mh4u_test_headless ../MH4UltimateDC/build/port-test/svc_test.elf --cpu recomp
-build/bin/Release/mh4u_test_headless ../MH4UltimateDC/build/port-test/svc_test.elf --cpu jit
+# Check the backend against Azahar's JIT with the test program (no game data needed)
+MH4U_RUNNER=../azahar/build/bin/Release/mh4u_runner python3 -m pytest tests/test_port.py
 ```
 
-## Booting the game's code
-
-With only the update's ExeFS (no RomFS), the game starts up and stops when it first opens its files, which is enough to compare backends:
+## Running the game's code
 
 ```bash
+# 1. Recompile your dump and build the code library (-O1 takes a while; -O0 is quick)
+python3 tools/recompile.py --exheader baserom/update_v130/exheader.bin --code baserom/update_v130/code.bin -o build/recomp
+(cd tools && python3 -m recomp.build ../build/recomp --code-library --opt O1)    # build/recomp/mh4u_code.so
+
+# 2. Without the RomFS the game starts up and stops when it first opens its files, which
+#    is enough to compare backends:
 python3 tools/make_cxi.py --exheader baserom/update_v130/exheader.bin --exefs baserom/update_v130/exefs.bin -o build/mh4u_norom.cxi
-build/bin/Release/mh4u_headless build/mh4u_norom.cxi --cpu recomp --log "*:Info"   # vs --cpu jit
+../azahar/build/bin/Release/mh4u_runner build/mh4u_norom.cxi --code build/recomp/mh4u_code.so --cpu recomp --log "*:Info"
+../azahar/build/bin/Release/mh4u_runner build/mh4u_norom.cxi --cpu jit --log "*:Info"
 ```
 
-`mh4u_norom.cxi` contains game code: it stays in `build/`, never in the repository.
+Everything under `build/` contains game code: it never goes into the repository.
 
 ## Licence
 

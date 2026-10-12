@@ -1,9 +1,9 @@
 """PC port tests (no game data).
 
-The test program port/tests/svc_test.c must recompile cleanly. If a port build is
-available (MH4U_TEST_HEADLESS=path/to/mh4u_test_headless, see port/README.md), the
-program also runs under Azahar's kernel with the recompiled code and with Azahar's JIT,
-and both must print the same thing.
+The test program port/tests/svc_test.c must recompile cleanly, and its code must build
+into a code library with tools/recomp/build.py. If a port build is available
+(MH4U_RUNNER=path/to/mh4u_runner; see port/README.md), the program also runs under Azahar's kernel with the recompiled code and
+with Azahar's JIT, and both must print the same thing.
 """
 import os
 import re
@@ -34,8 +34,20 @@ def test_svc_test_program_recompiles(tmp_path):
     assert "ctx->f.sw[11] = vadd32" in code
 
 
-def emulated_output(binary: str, elf: str, cpu: str) -> list[str]:
-    r = subprocess.run([binary, elf, "--cpu", cpu, "--ms", "5000"], capture_output=True, text=True, timeout=600)
+def test_code_library_builds(tmp_path):
+    import build_svc_test
+    from recomp import build as rbuild
+    build_svc_test.build(str(tmp_path))
+    lib = rbuild.build(str(tmp_path), 2, "O1", ["RC_PAGED"], "code.so", [rbuild.DLL_GLUE],
+                       extra_flags=["-fvisibility=hidden"])
+    syms = subprocess.run(["llvm-nm", "-D", "--defined-only", lib], capture_output=True, text=True, check=True).stdout
+    exported = {line.split()[-1] for line in syms.splitlines()}
+    assert "rc_code_init" in exported and "rc_call" not in exported
+
+
+def emulated_output(binary: str, code: str, elf: str, cpu: str) -> list[str]:
+    r = subprocess.run([binary, elf, "--code", code, "--cpu", cpu, "--ms", "5000"], capture_output=True,
+                       text=True, timeout=600)
     assert r.returncode == 0, (cpu, r.returncode, r.stdout[-2000:], r.stderr[-2000:])
     lines = []
     for line in (r.stdout + r.stderr).splitlines():
@@ -45,11 +57,19 @@ def emulated_output(binary: str, elf: str, cpu: str) -> list[str]:
     return lines
 
 
-@pytest.mark.skipif(not os.environ.get("MH4U_TEST_HEADLESS"), reason="port not built (set MH4U_TEST_HEADLESS)")
-def test_recompiled_backend_matches_jit():
-    binary = os.environ["MH4U_TEST_HEADLESS"]
-    elf = os.environ.get("MH4U_TEST_ELF", os.path.join(ROOT, "build", "port-test", "svc_test.elf"))
-    jit = emulated_output(binary, elf, "jit")
-    recomp = emulated_output(binary, elf, "recomp")
+@pytest.mark.skipif(not os.environ.get("MH4U_RUNNER"), reason="port not built (set MH4U_RUNNER)")
+def test_recompiled_backend_matches_jit(tmp_path):
+    binary = os.environ["MH4U_RUNNER"]
+    code = os.environ.get("MH4U_TEST_CODE")
+    if code:
+        elf = os.environ.get("MH4U_TEST_ELF", os.path.join(ROOT, "build", "port-test", "svc_test.elf"))
+    else:   # build program and code library here (tools/recomp/build.py --code-library)
+        import build_svc_test
+        from recomp import build as rbuild
+        elf = build_svc_test.build(str(tmp_path))
+        code = rbuild.build(str(tmp_path), 2, "O1", ["RC_PAGED"], "code.so", [rbuild.DLL_GLUE],
+                            extra_flags=["-fvisibility=hidden"])
+    jit = emulated_output(binary, code, elf, "jit")
+    recomp = emulated_output(binary, code, elf, "recomp")
     assert jit and jit[0] == "svc_test: start" and jit[-1] == "svc_test: done", jit
     assert recomp == jit

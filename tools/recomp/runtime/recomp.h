@@ -74,6 +74,31 @@ void rc_budget(RCtx *ctx);
 
 enum { RC_TRAP_UNDEF = 1, RC_TRAP_UNSUPPORTED = 2, RC_TRAP_BKPT = 3, RC_TRAP_BAD_JUMP = 4 };
 
+/* Recompiled code can also be built as a shared library (runtime/rc_dll.c) and loaded by
+ * the host at run time; it then gets the callbacks above from this table. */
+#define RC_HOST_VERSION 1
+typedef struct RHost {
+    u32 version;            /* RC_HOST_VERSION */
+    u32 ctx_size;           /* sizeof(RCtx) as the host sees it */
+    void (*call)(RCtx *ctx, u32 target);
+    void (*svc)(RCtx *ctx, u32 imm, u32 next_pc);
+    void (*trap)(RCtx *ctx, u32 pc, u32 kind);
+    void (*bad_return)(RCtx *ctx, u32 got, u32 expected);
+    void (*budget)(RCtx *ctx);
+    u32 (*slow_read)(RCtx *ctx, u32 a, u32 size);
+    void (*slow_write)(RCtx *ctx, u32 a, u32 v, u32 size);
+} RHost;
+
+typedef struct RCodeInfo {
+    const RFuncEntry *table;   /* sorted by address */
+    u32 count;
+    u32 text_base, text_size, text_crc32;   /* the code this was recompiled from */
+} RCodeInfo;
+
+/* exported by a code library under this name; returns 0 if the host doesn't match */
+typedef int (*RCodeInit)(const RHost *host, RCodeInfo *info);
+#define RC_CODE_INIT_SYMBOL "rc_code_init"
+
 #if defined(_MSC_VER)
 #define RC_INLINE static __forceinline
 #else
