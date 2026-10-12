@@ -8,3 +8,5 @@ One Markdown file per topic (file formats, structs, subsystems). Cite addresses 
 | [mt-classes.md](mt-classes.md) | MT Framework class registry (992 classes), resource types |
 | [system-services.md](system-services.md) | System calls and 3DS services the game uses; frame pacing (GSP, VBlank, present, frame limiter), input, local play, files |
 | [community-enhancements.md](community-enhancements.md) | What the community already has: 60 fps cheats, widescreen, HUD, multiplayer through Azahar rooms, texture packs, format docs |
+| [widescreen.md](widescreen.md) | Aspect ratio, projection, render targets, culling and HUD anchoring for a wider top screen; hook plan |
+| [second-screen.md](second-screen.md) | What draws the bottom screen, touch → panel actions, layout views; staged plan for a PC second-screen adaptation |

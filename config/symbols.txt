@@ -75,3 +75,89 @@
 0x010572cc g_sLtRenderInstance
 0x005b87b0 sPad::sPad
 0x005b825c sPad::update
+
+# Camera, projection, render targets and 2D layout (docs/research/widescreen.md)
+0x0105729c g_sCameraInstance              # sMhCamera*: 8 viewports at +0x18 (0x1a8 each), +0x16 mDisplay 0 top / 1 bottom
+0x010572a4 g_sEffectInstance
+0x010572ac g_sGUIInstance
+0x010572f0 g_sSceneInstance
+0x010572d0 g_sLtShaderInstance
+0x01057534 g_sLayoutInstance              # the sMhLayout
+0x01057c34 g_sVibrationInstance           # per-viewport view override (camera shake?)
+0x0104dea0 g_sAppletInstance              # +0x30 state; 4-6 force the bottom pass
+0x00af1f04 sCamera::sCamera               # 8 Viewports x 0x1a8 at +0x18; mVirtualRect +0xd68 = {0,0,400,572}
+0x00aee170 sCamera::createProperty
+0x00aeee2c sCamera::update                # vtable +0x1c: aspect -> uCamera+0x38, view/proj, frustum planes
+0x00aee5d4 sCamera::draw                  # vtable +0x28 (this, ctx, target, display): viewports with mDisplay == display
+0x00af0038 sCamera::Viewport::createProperty  # mRegion +0x24, mpCamera +4, mMode +0x15, mDisplay +0x16
+0x00aefd44 sCamera::Viewport::updateRegion    # region from scene target (240x400 hard-coded) and mMode
+0x00af084c sCamera::Viewport::setupDraw   # stereo/rotation, calls cDraw::setScene
+0x00c07070 sMhCamera::sMhCamera
+0x00c05ce4 sMhCamera::update              # vtable +0x1c, calls sCamera::update
+0x00bfd9b0 sMhCamera::setupViewports      # vp0 <- camera +0xe0c (top), vp7 <- camera +0xe10, mDisplay 1 (bottom)
+0x00afa244 uCamera::uCamera               # far 4e6, near 16, aspect 1, fov 40
+0x00af9c2c uCamera::createProperty        # +0x30 far, +0x34 near, +0x38 aspect, +0x3c fov
+0x00c463dc uMhCamera::createProperty      # mRoll +0xd0, mFovType +0xd4
+0x00c46380 uMhCamera::getProjMatrix       # vtable +0x4c
+0x00b70fe0 uMhCamera::getViewMatrix       # vtable +0x48, falls into MtMatrix::lookAt
+0x002535f8 uFreeCamera::getProjMatrix     # vtable +0x4c
+0x0032ebc0 uMotionCamera::createProperty  # mZoom +0x100, mFovType +0x114
+0x0032e338 uMotionCamera::getProjMatrix   # vtable +0x4c
+0x00b7171c MtMatrix::perspective          # (out, s0 near, s1 far, s2 fovy rad, s3 aspect)
+0x00b70ff0 MtMatrix::lookAt               # (out, eye, target, up)
+0x00d14760 tanf
+0x00633188 nDraw::Scene::Scene            # params {w,h,flag,AA,flags,float}
+0x0062e184 nDraw::DisplayBuffer::init     # (this, w, h, format, ...): +0x24 w, +0x28 h, +0x18 addr
+0x00bf83b0 sLtRender::bindRenderTarget    # PICA FB, viewport 0x41-0x44/0x68, scissor 0x66/0x67
+0x00bfa7ec sLtRender::execute             # render-thread packet executor (14 types)
+0x00bf5a4c sLtRender::buildFrame          # top pass if +0x8ab1, bottom pass if +0x8ab2 or applet state 4-6
+0x00d809bc gx_AddB2LTransferCommand
+0x00d89448 gx_CmdlistAddB2LTransfer       # GX request 3 (display transfer)
+0x005e294c cDraw::setViewport             # int rect -> +0x12c..+0x138
+0x005e040c cDraw::setScene                # matrices + frustum planes at [+0x428]
+0x005e3708 cDraw::cullAABB
+0x005e4558 cDraw::cullSphere
+0x00af38e4 sEffect::sEffect               # mDefaultScreenSize +0x30/+0x34 = 400x240
+0x00af41b8 sLayout::sLayout
+0x00af3cfc sLayout::screenToLayout        # (out, sLayout*, x, y, screen): (cx - x, 120 - y), cx 160 bottom / 200 top
+0x00af3d60 sLayout::beginViewport         # 2D ortho projection sized by the current viewport rect
+0x005b6454 sGUI::sGUI                     # +0x7c 90-degree rotation matrix
+0x005b5888 sGUI::createProperty           # UpperView +0x70, LowerView +0x71, LowerViewOffset +0x80
+0x002860c0 cGUIInstance::createProperty   # DrawUpper / DrawLower
+0x005bb940 uGUI::createProperty
+0x005bc350 uGUI::draw                     # vtable +0x30
+0x00b04774 uLayout::draw                  # vtable +0x30: objects whose view (+0x44 bits 14-17) == viewport index
+0x001a45e4 sVibration::sVibration
+
+# Bottom screen, layouts and touch panels (docs/research/second-screen.md)
+0x010572f8 g_sUnitInstance
+0x00c11930 sMhLayout::sMhLayout           # +0x245 upper view 0, +0x246 lower view 7, +0x100 uLayout*
+0x00c0f424 sMhLayout::registerLayout      # (this, screen, firstIndex, rLayout*) -> count; sets view bits of +0x44
+0x00c0f598 sMhLayout::findObject          # (this, key*) -> layout object
+0x00c1012c sMhLayout::loadQuestLayouts    # quest HUD (top) + ui601-604/610/250 and area map (bottom)
+0x00c105a4 sMhLayout::loadQuestSubLayout  # lyt\quest\ui230-ui243 by index, bottom screen
+0x005ed628 makeNameKey                    # {crc32_string(name, ~0), name}
+0x00b04558 uLayout::findIndex             # object whose +0 hash == key, or -1
+0x00b048a0 uLayout::getObject             # (this, index): array +0x154, count +0x160
+0x00ae538c LayoutObject::setVisible       # bit 0x400 of +0x44; re-sorts the draw list
+0x00d03938 LayoutHit::contains            # (entry {obj, part}, point)
+0x005b70b0 sPad::readDevices
+0x005b8438 sPad::processInput             # pad words, touch x/y Pad+0x8a/+0x8c, touch bit 0x01000000
+0x00cf9340 sPad::TouchStatus::getSample   # (this, framesBack) -> {u16 x, u16 y, u8 down}
+0x0069522c sMhPad::sMhPad
+0x00694c98 sMhPad::update                 # actions +0x30c, injected +0x3f0/+0x3f4, touch block +0x3e0
+0x006949a0 sMhPad::updateMenuInput        # menu block +0x340
+0x00fb8260 g_padActionMap                 # u32 pad masks[16], u16 action bits[16] at +0x40
+0x00fb6b7c g_sGameControlInstance         # game_mode at +0x2b
+0x002b6048 sGameControl::sGameControl
+0x002b0658 sGameControl::createProperty
+0x00af46c8 sMhMain::createProperty        # subsystem pointers +0x288..+0x330 (mpPad +0x2b0, mpLayout +0x2e0, mpCamera +0x294)
+0x00fb83e8 g_sPlayerInstance
+0x00af9b48 sPlayer::sPlayer
+0x00aede74 sApplet::sApplet
+0x0109a350 g_panelManager                 # +0xce touched panel id, +0xcc event flags
+0x00288f4c PanelManager::isTapped         # (id): +0xce == id && +0xcc & 0x200 && id not masked
+0x002951fc PanelManager::processTouch
+0x002a4468 PanelManager::update
+0x0108260c g_questHud
+0x0013f230 getQuestHud
