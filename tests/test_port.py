@@ -139,3 +139,37 @@ def test_runner_scripted_input_and_screenshots(tmp_path):
         i = (y * width + x) * 3
         return tuple(pixels[i:i + 3])
     assert pixel(100, 5) == (0, 255, 0) and pixel(100, 120) == (255, 0, 0) and pixel(300, 120) == (0, 0, 255)
+
+
+def _normalized_log(text: str, user_dir: str) -> list[str]:
+    """Azahar's log lines (written by its own thread, so the runner's prints can land
+    anywhere between them), without timestamps, user paths and the backend's own lines."""
+    out = []
+    for line in text.splitlines():
+        line = re.sub(r"\x1b\[[0-9;]*m", "", line)
+        line = re.sub(r"^\[\s*[0-9.]+\]\s*", "", line).replace(user_dir, "<user>")
+        line = re.sub(r"Datetime: [0-9/]+ [0-9:]+", "Datetime: <now>", line)
+        if not re.match(r"\S+ <\w+> ", line) or line.startswith("Core.ARM11") or "as the user directory" in line:
+            continue
+        out.append(line)
+    return out
+
+
+@pytest.mark.skipif(not (os.environ.get("MH4U_RUNNER") and os.environ.get("MH4U_GAME")
+                         and os.environ.get("MH4U_GAME_CODE")),
+                    reason="needs MH4U_RUNNER, MH4U_GAME (your dump as .cxi) and MH4U_GAME_CODE")
+def test_game_boot_matches_jit(tmp_path):
+    """The game's own code (your dump, never in the repo) logs exactly the same things on
+    the recompiled backend as on Azahar's JIT over the first MH4U_GAME_MS of emulated time
+    (default 3000): same service calls, same files, same errors."""
+    binary, game, code = os.environ["MH4U_RUNNER"], os.environ["MH4U_GAME"], os.environ["MH4U_GAME_CODE"]
+    ms = os.environ.get("MH4U_GAME_MS", "3000")
+    logs = {}
+    for cpu in ("recomp", "jit"):
+        user = str(tmp_path / cpu)
+        cmd = [binary, game, "--cpu", cpu, "--ms", ms, "--user", user, "--log", "*:Info"]
+        if cpu == "recomp":
+            cmd += ["--code", code]
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
+        logs[cpu] = _normalized_log(r.stdout + r.stderr, user)
+    assert logs["recomp"] == logs["jit"]
