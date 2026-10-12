@@ -55,6 +55,10 @@ wide_render = 0
 trace_frames = 0
 # write touch-panel activity to the log (to map panels to buttons)
 trace_panels = 0
+# experimental: bits of the game's render settings word to clear/set every frame, e.g.
+# 0x300000 = no dithering, 0x400 = the game's own 2D anti-aliasing (docs/research/system-services.md)
+render_flags_clear = 0
+render_flags_set = 0
 ```
 
 Environment variables override the file: `MH4U_FPS`, `MH4U_REFRESH_RATE`, `MH4U_WIDESCREEN`, `MH4U_WIDE_RENDER`, `MH4U_TRACE_FRAMES`, `MH4U_TRACE_PANELS`.

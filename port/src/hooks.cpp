@@ -36,6 +36,11 @@ constexpr u32 VBLANK_BOTTOM = 0x0110d008;
 constexpr u32 FRAMES_SUBMITTED = 0x010571d4;
 constexpr u32 SLTRENDER_INSTANCE = 0x010572cc;
 constexpr u32 SLTRENDER_DISPLAY_SKIP = 0x8aa8;  // u32[2] mDisplaySkip: top, bottom
+// Render settings word: bits set by sLtRender's property setters (0x00bf685c registers them):
+// 0x1 mVSyncEdit, 0x4 mTripleBufferRenderWaitEdit, 0x8 mUpsideToTopEdit, 0x10 mYFlipEdit,
+// 0x40 mULCDEnableEdit, 0x100 mParallelRenderingEdit, 0x400 mFSAA_2D,
+// 0x100000 mDitherDisplay0, 0x200000 mDitherDisplay1, 0x400000 mProfileRFPS
+constexpr u32 SLTRENDER_RENDER_FLAGS = 0x6ba8;
 constexpr u32 SCAMERA_INSTANCE = 0x0105729c;    // sMhCamera*
 constexpr u32 SCAMERA_VIEWPORTS = 0x18;         // 8 viewports of 0x1a8 bytes
 constexpr u32 VIEWPORT_SIZE = 0x1a8;
@@ -68,6 +73,7 @@ struct Options {
     bool wide_render = false;  // wide_render / MH4U_WIDE_RENDER: render the wider image itself
     u32 trace_every = 0;    // trace_frames / MH4U_TRACE_FRAMES: log frame timing every n frames
     bool trace_panels = false;  // trace_panels / MH4U_TRACE_PANELS: log touch-panel activity
+    u32 render_set = 0, render_clear = 0;  // render_flags_set/_clear: bits of the render word
 };
 
 bool IsOn(const std::string& value) {
@@ -96,6 +102,10 @@ void Set(Options& o, const std::string& key, const std::string& value) {
         o.widescreen = ParseAspect(value);
     } else if (key == "wide_render") {
         o.wide_render = IsOn(value);
+    } else if (key == "render_flags_set") {
+        o.render_set = static_cast<u32>(std::strtoul(value.c_str(), nullptr, 0));
+    } else if (key == "render_flags_clear") {
+        o.render_clear = static_cast<u32>(std::strtoul(value.c_str(), nullptr, 0));
     } else if (key == "trace_panels") {
         o.trace_panels = IsOn(value);
     } else if (key == "trace_frames") {
@@ -154,6 +164,14 @@ void Frame(RCtx* ctx, RFunc original) {
         // the game presents at most once per VBlank: more VBlanks allow more than 60 fps
         Core::System::GetInstance().GPU().SetRefreshRate(options.refresh_rate);
     }
+    if (options.render_set || options.render_clear) {
+        // experimental: the game reads these bits every frame (the community's quality
+        // cheats write the same word)
+        if (const u32 r = rd32(ctx, SLTRENDER_INSTANCE)) {
+            const u32 flags = rd32(ctx, r + SLTRENDER_RENDER_FLAGS);
+            wr32(ctx, r + SLTRENDER_RENDER_FLAGS, (flags & ~options.render_clear) | options.render_set);
+        }
+    }
     original(ctx);
     ++frames;
     if (options.trace_every == 0 || frames % options.trace_every != 0) {
@@ -166,12 +184,13 @@ void Frame(RCtx* ctx, RFunc original) {
     }
     LOG_INFO(Frontend,
              "frame {}: delta {:.3f} fps {:.2f} rate {:.1f} cap {:.1f} vblanks {}/{} "
-             "submitted {} display skip {}/{}",
+             "submitted {} display skip {}/{} render flags {:08X}",
              frames, ReadF32(ctx, main + SMAIN_DELTA), ReadF32(ctx, main + SMAIN_FPS),
              ReadF32(ctx, main + SMAIN_RATE), ReadF32(ctx, main + SMAIN_CAP), rd32(ctx, VBLANK_TOP),
              rd32(ctx, VBLANK_BOTTOM), rd32(ctx, FRAMES_SUBMITTED),
              rd32(ctx, render + SLTRENDER_DISPLAY_SKIP),
-             rd32(ctx, render + SLTRENDER_DISPLAY_SKIP + 4));
+             rd32(ctx, render + SLTRENDER_DISPLAY_SKIP + 4),
+             rd32(ctx, render + SLTRENDER_RENDER_FLAGS));
 }
 
 /// Whether `camera` is shown on the bottom screen (only top-screen views get widened).
@@ -367,6 +386,10 @@ std::vector<std::string> Install(const RCodeInfo& info) {
     }
     if (options.trace_panels) {
         log.push_back("tracing touch panels");
+    }
+    if (options.render_set || options.render_clear) {
+        log.push_back(fmt::format("render flags: set {:08X}, clear {:08X} (experimental)",
+                                  options.render_set, options.render_clear));
     }
     for (const Hook& hook : HOOKS) {
         if (!info.set_hook(hook.addr, hook.fn)) {
