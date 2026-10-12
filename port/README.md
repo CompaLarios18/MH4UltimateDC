@@ -37,6 +37,17 @@ build/bin/Release/mh4u_test_headless ../MH4UltimateDC/build/port-test/svc_test.e
 build/bin/Release/mh4u_test_headless ../MH4UltimateDC/build/port-test/svc_test.elf --cpu jit
 ```
 
+## Booting the game's code
+
+With only the update's ExeFS (no RomFS), the game starts up and stops when it first opens its files, which is enough to compare backends:
+
+```bash
+python3 tools/make_cxi.py --exheader baserom/update_v130/exheader.bin --exefs baserom/update_v130/exefs.bin -o build/mh4u_norom.cxi
+build/bin/Release/mh4u_headless build/mh4u_norom.cxi --cpu recomp --log "*:Info"   # vs --cpu jit
+```
+
+`mh4u_norom.cxi` contains game code: it stays in `build/`, never in the repository.
+
 ## Licence
 
 Azahar is GPL-3.0-or-later, so executables built from this directory are too.

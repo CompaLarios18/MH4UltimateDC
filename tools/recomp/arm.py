@@ -432,6 +432,8 @@ class ArmTranslator:
             addr = (pc + (w & 0xFFF) if u else pc - (w & 0xFFF)) & 0xFFFFFFFF
             if load:
                 lit = self._literal(addr, 1 if byte else 4)
+                if not byte and addr % 4 == 0:
+                    ins.literal = self.read32(addr)
                 if rt == 15:
                     if byte:
                         raise Unpredictable("LDRB PC")

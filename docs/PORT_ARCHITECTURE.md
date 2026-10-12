@@ -52,7 +52,7 @@ Hooks replace a recompiled function with hand-written C. They're the only place 
 
 ## Milestones
 1. **Recompiler verified on the whole game** (done for what random states can reach; the rest is checked by running the game).
-2. **Boot to title on PC:** Azahar core + recompiled CPU backend + minimal SDL frontend; user's dump for code and assets. *The backend is done (`port/`): it runs a multi-threaded 3DS test program under Azahar's kernel with the same output as Azahar's JIT.*
+2. **Boot to title on PC:** Azahar core + recompiled CPU backend + minimal SDL frontend; user's dump for code and assets. *The backend is done (`port/`): it runs a multi-threaded 3DS test program under Azahar's kernel with the same output as Azahar's JIT, and it boots the game's own code (SDK start-up, service connections, all 954 static constructors) exactly like the JIT does, up to the point where the game opens its RomFS. Going further needs the user's full dump.*
 3. **Playable**, with dynarmic as a reference to diff against.
 4. **Multiplayer and graphics** (mostly inherited from the core).
 5. **Widescreen, 60 fps, second-screen HUD:** targeted decompilation with the agent workflow ([AGENT_WORKFLOW.md](AGENT_WORKFLOW.md)), plus hooks.

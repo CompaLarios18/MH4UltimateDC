@@ -231,3 +231,20 @@ def test_vector_mode_and_multi_return_helpers(tmp_path):
     for a in (vk, mc):
         assert verdicts[a][0] == "pass", (hex(a), verdicts[a])
     assert verdicts[mc][2] == 48
+
+
+def test_init_array_entries():
+    """Static constructors from RVCT's relative init table (synthetic image)."""
+    import struct
+    import recompile
+    from recomp.analysis import Image
+    base = 0x00100000
+    code = bytearray(0x1000)
+    hws = [0x4C08, 0x447C, 0x4D08, 0x447D,              # ldr r4,[pc,#0x20]; add r4,pc; ldr r5,...; add r5,pc
+           0x6820, 0x1900, 0x4780, 0x1D24, 0x42AC, 0xD1F9]
+    struct.pack_into(f"<{len(hws)}H", code, 0, *hws)
+    struct.pack_into("<I", code, 0x24, 0x100100 - 0x100006)  # table start, relative to add r4,pc
+    struct.pack_into("<I", code, 0x28, 0x100108 - 0x10000A)  # table end
+    struct.pack_into("<ii", code, 0x100, 0x100200 - 0x100100, 0x100301 - 0x100104)
+    found = recompile.init_array_entries(Image(bytes(code), base, len(code)))
+    assert found == {0x100200: "arm", 0x100300: "thumb"}

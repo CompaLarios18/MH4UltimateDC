@@ -107,11 +107,15 @@ class FunctionEmitter:
                 out = wrap(ins, ins.body + [f"rc_call(ctx, {ins.pcexpr});"] + tail)
             elif ins.addr in f.ijump_targets:
                 cases = " ".join(f"case {hexc(t)}: goto {label(t)};" for t in f.ijump_targets[ins.addr])
-                out = wrap(ins, ins.body + [f"switch ({ins.pcexpr}) {{ {cases} default: rc_call(ctx, {ins.pcexpr}); return; }}"])
+                out = wrap(ins, ins.body + [f"u32 t_ = {ins.pcexpr};",
+                                            f"switch (t_) {{ {cases} default: if (RC_IS_RETURN(t_)) RC_RET(t_); "
+                                            f"rc_call(ctx, t_); return; }}"])
             elif f.mret:
                 out = wrap(ins, ins.body + [f"RC_RET_TO({ins.pcexpr});"])
             else:
-                out = wrap(ins, ins.body + [f"rc_call(ctx, {ins.pcexpr});", "return;"])
+                # a jump to our own return address is a return (Thumb `pop {r3}; bx r3`)
+                out = wrap(ins, ins.body + [f"u32 t_ = {ins.pcexpr};", "if (RC_IS_RETURN(t_)) RC_RET(t_);",
+                                            "rc_call(ctx, t_);", "return;"])
         elif k == JTAB:
             cases = " ".join(f"case {i}u: goto {label(t)};" for i, t in enumerate(f.jtabs[ins.addr]))
             out = wrap(ins, [f"switch (R({ins.jt_index})) {{ {cases} default: "
@@ -119,8 +123,9 @@ class FunctionEmitter:
         else:
             raise ValueError(k)
         if ins.addr in f.fall_tail:
+            # running into the next function's code: it returns where we would return
             t = f.fall_tail[ins.addr]
-            out = out + [self.call(t, f.mode), "return;"]
+            out = out + ["RC_FALL_EXPECT();", self.call(t, f.mode), "return;"]
         return out
 
     def function(self, f) -> list[str]:

@@ -11,6 +11,7 @@ import argparse
 import bisect
 import collections
 import os
+import struct
 import sys
 import time
 import zlib
@@ -74,7 +75,7 @@ def looks_like_arm(img: Image, a: int) -> bool:
 
 def data_pointer_entries(img: Image, an: Analyzer, segments: list[tuple[int, int]],
                          known: dict[int, str], cover: dict[str, set[int]],
-                         fall_into: dict[str, set[int]]) -> dict[int, str]:
+                         fall_into: dict[str, set[int]], literals: set[int] = frozenset()) -> dict[int, str]:
     """Code addresses stored in data (vtables, callback tables): words in .rodata/.data
     that point into .text at an instruction that starts clean, trap-free code. Words that
     are really numbers are weeded out: the target must not be reached by falling through
@@ -82,26 +83,68 @@ def data_pointer_entries(img: Image, an: Analyzer, segments: list[tuple[int, int
     instruction set."""
     found: dict[int, str] = {}
     thumb_entries = sorted(a for a, m in known.items() if m == "thumb")
-    for start, size in segments:
-        for a in range(start, start + size - 3, 4):
-            v = img.read32(a)
-            if v is None or not img.in_text(v & ~1):
-                continue
-            t, m = (v & ~1, "thumb") if v & 1 else (v, "arm")
-            if (m == "arm" and t & 3) or t in known or t in found or t in fall_into[m]:
-                continue
-            if m == "thumb" and (looks_like_arm(img, t) or not near(thumb_entries, t, 0x4000)):
-                continue    # odd pointers into data; real Thumb code sits next to other Thumb code
-            ins = an.decode(t, m)
-            if ins.kind == "trap" or (m == "arm" and ins.word >> 28 != 0xE):
-                continue
-            f = an.analyze(t, m, known)
-            if f.problems or any(i.kind == "trap" for i in f.insns.values()):
-                continue
-            other = cover["thumb" if m == "arm" else "arm"]
-            if any(h in other for x, i in f.insns.items() for h in range(x, x + i.size, 2)):
-                continue
-            found[t] = m
+    def values():
+        for start, size in segments:
+            for a in range(start, start + size - 3, 4):
+                yield img.read32(a)
+        yield from sorted(literals)     # constants loaded by code (function pointer arguments)
+
+    for v in values():
+        if v is None or not img.in_text(v & ~1):
+            continue
+        t, m = (v & ~1, "thumb") if v & 1 else (v, "arm")
+        if (m == "arm" and t & 3) or t in known or t in found or t in fall_into[m]:
+            continue
+        if m == "thumb" and (looks_like_arm(img, t) or not near(thumb_entries, t, 0x4000)):
+            continue    # odd pointers into data; real Thumb code sits next to other Thumb code
+        ins = an.decode(t, m)
+        if ins.kind == "trap" or (m == "arm" and ins.word >> 28 != 0xE):
+            continue
+        f = an.analyze(t, m, known)
+        if f.problems or any(i.kind == "trap" for i in f.insns.values()):
+            continue
+        other = cover["thumb" if m == "arm" else "arm"]
+        if any(h in other for x, i in f.insns.items() for h in range(x, x + i.size, 2)):
+            continue
+        found[t] = m
+    return found
+
+
+INIT_LOOP = struct.pack("<5H", 0x6820, 0x1900, 0x4780, 0x1D24, 0x42AC)  # ldr r0,[r4]; adds r0,r4; blx r0; adds r4,#4; cmp r4,r5
+
+
+def init_array_entries(img: Image) -> dict[int, str]:
+    """Static constructors. RVCT's start-up code (`__cpp_initialize__aeabi_`, Thumb) walks a
+    table of offsets relative to each entry, between two PC-relative bounds:
+        ldr r4, =table-.; add r4, pc; ldr r5, =end-.; add r5, pc; b test
+        loop: ldr r0, [r4]; adds r0, r0, r4; blx r0; adds r4, #4; test: cmp r4, r5; bne loop
+    The data-pointer scan can't see these targets, so read the table here."""
+    found: dict[int, str] = {}
+    text = img.code[: img.text_size]
+    pos = text.find(INIT_LOOP)
+    while pos != -1:
+        loop = img.base + pos
+        bounds = {}
+        for k in range(1, 8):                       # ldr rN, [pc, #i] / add rN, pc before the loop
+            a = loop - 2 * k
+            hw, nxt = img.read16(a), img.read16(a + 2)
+            if hw is None or nxt is None:
+                break
+            if hw >> 11 == 0b01001 and (nxt & 0xFF78) == 0x4478 and (hw >> 8) & 7 == (nxt & 7) | ((nxt >> 4) & 8):
+                reg = (hw >> 8) & 7
+                lit = ((a + 4) & ~3) + (hw & 0xFF) * 4
+                val = img.read32(lit)
+                if val is not None and reg not in bounds:
+                    bounds[reg] = (val + a + 2 + 4) & 0xFFFFFFFF   # add rN, pc: pc = add's address + 4
+        if 4 in bounds and 5 in bounds and 0 < bounds[5] - bounds[4] < 0x100000:
+            for e in range(bounds[4], bounds[5], 4):
+                off = img.read32(e)
+                if off is None:
+                    break
+                t = (e + off) & 0xFFFFFFFF
+                if img.in_text(t & ~1):
+                    found[t & ~1] = "thumb" if t & 1 else "arm"
+        pos = text.find(INIT_LOOP, pos + 2)
     return found
 
 
@@ -109,6 +152,10 @@ def recompile(img: Image, entries: dict[int, str], out: str, log=print,
               data_segments: list[tuple[int, int]] | None = None) -> dict:
     t0 = time.time()
     an = Analyzer(img)
+    inits = {a: m for a, m in init_array_entries(img).items() if a not in entries}
+    if inits:
+        entries = {**entries, **inits}
+        log(f"  {len(inits)} static constructors from the init table")
     outside = [a for a in entries if not img.in_text(a)]
     if outside:
         entries = {a: m for a, m in entries.items() if img.in_text(a)}
@@ -118,7 +165,8 @@ def recompile(img: Image, entries: dict[int, str], out: str, log=print,
         first = an.analyze_all(entries)
         cover, fall_into = code_cover(first)
         known = {a: f.mode for a, f in first.items()}
-        extra = data_pointer_entries(img, an, data_segments, known, cover, fall_into)
+        literals = {i.literal for f in first.values() for i in f.insns.values() if i.literal is not None}
+        extra = data_pointer_entries(img, an, data_segments, known, cover, fall_into, literals)
         entries = {**entries, **extra}
         log(f"  {len(extra)} entry points found through data pointers")
     funcs = an.analyze_all(entries, progress=lambda n, m: log(f"  analysed {n}/{m}"))

@@ -178,7 +178,8 @@ class CRCtx(ctypes.Structure):
                 ("tpidrurw", ctypes.c_uint32), ("tpidruro", ctypes.c_uint32),
                 ("excl_addr", ctypes.c_uint32), ("excl_valid", ctypes.c_uint32),
                 ("budget", ctypes.c_int64),
-                ("mem", ctypes.c_void_p), ("pages", ctypes.c_void_p), ("user", ctypes.c_void_p)]
+                ("mem", ctypes.c_void_p), ("pages", ctypes.c_void_p), ("user", ctypes.c_void_p),
+                ("expect_next", ctypes.c_uint32)]
 
 
 class NativeMachine:

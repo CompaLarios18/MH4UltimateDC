@@ -68,6 +68,7 @@ class ThumbTranslator:
             rd = (hw >> 8) & 7
             addr = (pc & ~3) + (hw & 0xFF) * 4
             lit = self._literal(addr)
+            ins.literal = self.read32(addr)
             ins.body = [f"R({rd}) = {lit};" if lit else f"R({rd}) = rd32(ctx, {hexc(addr)});"]
             return
         if hw >> 12 == 0b0101:

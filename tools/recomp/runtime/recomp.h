@@ -53,6 +53,8 @@ typedef struct RCtx {
     u8 *mem;                 /* flat mode: host address of guest address 0          */
     u8 **pages;              /* paged mode: host pointer per 4 KiB guest page or NULL */
     void *user;
+    u32 expect_next;         /* return address for the next function entered by falling
+                                into it (see RC_FALL_EXPECT); 0 = use LR */
 } RCtx;
 
 typedef void (*RFunc)(RCtx *ctx);
@@ -467,14 +469,19 @@ RC_INLINE double rc_d2d(u32 fpscr, u64 a) { return u2d(rc_ftz64(fpscr, a)); }
  * call site dispatches on it (RVCT fplib special-case handlers; see recomp/analysis.py). */
 #define RC_RET_TO(v) do { R(15) = (v); return; } while (0)
 
-/* Returns leave the target in r15, so whoever made the outermost call can check where the
- * guest really wanted to go (tail calls return through their callee). */
+/* Every function knows the address it should return to: LR at entry, or, for code that the
+ * previous function runs into without a call, that function's own return address. Returns
+ * leave their target in r15, so whoever made the outermost call can check where the guest
+ * really went (tail calls return through their callee). */
+#define RC_ENTRY() u32 rc_entry_lr = R(14); \
+    if (ctx->expect_next) { rc_entry_lr = ctx->expect_next; ctx->expect_next = 0; }
+#define RC_FALL_EXPECT() (ctx->expect_next = rc_entry_lr)
+/* A computed jump to our own return address is a return (Thumb `pop {r3}; bx r3`). */
+#define RC_IS_RETURN(t) ((t) == rc_entry_lr)
 #ifdef RC_CHECK_RETURNS
-#define RC_RET(v) do { u32 _rv = (v); R(15) = _rv; if (_rv != rc_ret_expect) rc_bad_return(ctx, _rv, rc_ret_expect); return; } while (0)
-#define RC_ENTRY() const u32 rc_ret_expect = R(14)
+#define RC_RET(v) do { u32 _rv = (v); R(15) = _rv; if (_rv != rc_entry_lr) rc_bad_return(ctx, _rv, rc_entry_lr); return; } while (0)
 #else
 #define RC_RET(v) do { R(15) = (v); return; } while (0)
-#define RC_ENTRY() ((void)0)
 #endif
 
 #ifdef RC_NO_BUDGET

@@ -43,6 +43,7 @@ class Insn:
     jt_index: int | None = None
     jt_base: int | None = None
     trap_reason: str = ""
+    literal: int | None = None    # word loaded from a PC-relative literal pool
     text: str = ""
 
     @property

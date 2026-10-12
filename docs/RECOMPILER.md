@@ -10,7 +10,7 @@ python3 -m recomp.gametest --sample 2000 --cases 3 --report ../build/recomp/samp
 
 ## Pipeline
 
-1. **Entry points.** `config/functions.tsv` (Ghidra plus the second discovery pass), extra lists (`--extra`), and words in `.rodata`/`.data` that point at code (vtables, callback tables). Numbers that merely look like code addresses are weeded out: the target must decode into clean code, must not be reached by falling through from the instruction before it, must not overlap code of the other instruction set, and Thumb targets must sit near known Thumb code. Entries outside `.text` are dropped.
+1. **Entry points.** `config/functions.tsv` (Ghidra plus the second discovery pass), extra lists (`--extra`), the static constructors in RVCT's relative init table, and code addresses found in `.rodata`/`.data` (vtables, callback tables) or loaded from literal pools (function pointers passed as arguments). Numbers that merely look like code addresses are weeded out: the target must decode into clean code, must not be reached by falling through from the instruction before it, must not overlap code of the other instruction set, and Thumb targets must sit near known Thumb code. Entries outside `.text` are dropped.
 2. **Decoding** (`recomp/arm.py`, `recomp/thumb.py`). Each instruction becomes an `Insn`: a kind (plain op, branch, call, return, indirect jump, jump table, SVC, trap) and a list of C statements over the register file. Covered: ARMv6K (data processing, multiplies, saturating and parallel arithmetic, media instructions, LDREX/STREX family, CP15 TLS registers), VFPv2, Thumb-1. UNPREDICTABLE encodings become traps.
 3. **Function analysis** (`recomp/analysis.py`). Follows the control flow from each entry:
    - branches to another entry are tail calls, others are local labels;
@@ -19,7 +19,8 @@ python3 -m recomp.gametest --sample 2000 --cases 3 --report ../build/recomp/samp
    - offset tables (`ldr rX, [rB, rI, lsl #2]` + `add pc, rX, rB`);
    - FPSCR vector length and stride are tracked through `vmsr`, so VFP short-vector code (LEN=3 in two audio mixers) is expanded per element;
    - RVCT floating-point helpers that read a descriptor word after their call site and continue at one of several places in the caller are handled as multi-return calls;
-   - code that falls into a function of the other instruction set stops there (the call before it doesn't return).
+   - code that falls into a function of the other instruction set stops there (the call before it doesn't return);
+   - every function knows its return address (LR at entry, or the caller's own when code runs into the next function without a call), so a computed jump to it is a return (Thumb's `pop {r3}; bx r3`).
    New call targets are analysed too, until the set is closed.
 4. **Emission** (`recomp/emit.py`). One C function per guest function, `goto` for local control flow, `switch` for jump tables, a cycle charge per basic block (`RC_TICK`). Direct calls become direct C calls; anything else goes through `rc_call`.
 5. **Build** (`recomp/build.py`). Parallel, incremental clang build into a shared library (or object files for the port).
