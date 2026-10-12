@@ -18,7 +18,7 @@ A typical 3DS crt0: a chain of `bl` calls (init, a `.bss` clearing loop at `0x00
 
 ## Engine: MT Framework naming is all over the binary
 - ~525 `c`-prefixed and ~363 `u`-prefixed class-name strings, e.g. `cResource`, `cSystem`, `cQuestBoard`, `cWeaponControl`, `uPlChar`, `uEffect2D`, and monster units `uEm001`, `uEm007`, `uEm009`, …
-- In MT Framework, classes register themselves with a runtime type-info object (name, parent class, instance size). **Next step:** find the code that references these strings and recover the type-info table. That would give the class hierarchy, object sizes and vtables before any function is decompiled, which is a big boost for the Triage/Namer agents.
+- In MT Framework, classes register themselves with a runtime type-info object (name, parent class, instance size). **Done:** 992 classes recovered with hierarchy, sizes and ids; see [mt-classes.md](mt-classes.md).
 
 ## Nintendo SDK
 - `nn::` strings found so far mention `nn::fs`, `nn::camera`, `nn::y2r` (error/log messages like `[ROM] nn::fs::FileStream::TryInitialize`). No SDK source paths in the strings.

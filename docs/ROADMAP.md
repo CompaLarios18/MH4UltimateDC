@@ -29,6 +29,7 @@ A hybrid is common: recompile everything first (B) to get a running port, then r
 - [ ] Pilot batch of ~10 leaf functions; measure pass rate and cost
 - [ ] Ghidra project setup guide; shared function/symbol list in text form (`config/symbols.txt`)
 - [ ] Identify 3DS SDK/system library code (svc wrappers, `nn::` services, libc, math) — these get replaced, not decompiled
+- [x] Recover the MT Framework class registry: 992 classes with hierarchy, sizes, ids (`tools/mt_dti.py`, `config/mt_classes.tsv`)
 - [ ] Identify engine layers (Capcom's MT Framework Mobile): memory, file/archive loading, rendering, sound, task/scheduling
 - [ ] Document RomFS formats used by the game (`.arc` archives and their contents) — lots of public community knowledge exists from modding
 - [ ] **Decision point:** route A, B or hybrid
