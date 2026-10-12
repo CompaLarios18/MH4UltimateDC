@@ -72,6 +72,7 @@ def main(argv=None) -> int:
     ap.add_argument("--any-version", action="store_true", help="don't insist on a known code.bin")
     ap.add_argument("--functions", default=os.path.join(ROOT, "config", "functions.tsv"), help=argparse.SUPPRESS)
     ap.add_argument("--extra", default=os.path.join(ROOT, "config", "extra_entries.txt"), help=argparse.SUPPRESS)
+    ap.add_argument("--hooks", default=os.path.join(ROOT, "config", "hooks.txt"), help=argparse.SUPPRESS)
     args = ap.parse_args(argv)
 
     dump_dir = os.path.join(args.out, "dump")
@@ -96,7 +97,7 @@ def main(argv=None) -> int:
     entries = recompile.load_entries(args.functions, [args.extra] if args.extra else [])
     segs = [(header.ro.address, header.ro.size), (header.data.address, header.data.size)]
     res = recompile.recompile(img, entries, out, data_segments=segs, title_id=program_id,
-                              log=lambda m: print(m, flush=True))
+                              hooks=recompile.load_hooks(args.hooks), log=lambda m: print(m, flush=True))
     print(f"{res['report']['functions']} functions, {res['report']['problems']} problems")
 
     cc = find_compiler(args.cc)

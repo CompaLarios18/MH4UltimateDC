@@ -1,0 +1,6 @@
+# Hook points: recompiled game functions that the port's native code can wrap or replace
+# (port/src/hooks.cpp; see RHookFn in tools/recomp/runtime/recomp.h).
+# Format: <address> <name>  # purpose. USA v1.3.0 addresses. Adding or removing one
+# changes the generated code, so the code library has to be rebuilt (tools/build_game.py).
+0x006442f8 sMain::updateFrameTiming   # frame-rate cap (MH4U_FPS)
+0x00af5250 sMhMain::frame             # per-frame timing trace (MH4U_TRACE_FRAMES)

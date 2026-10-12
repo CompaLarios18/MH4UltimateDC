@@ -45,6 +45,20 @@ def load_entries(functions_tsv: str, extra: list[str]) -> dict[int, str]:
     return entries
 
 
+def load_hooks(path: str | None) -> dict[int, str]:
+    """Hook points (config/hooks.txt): `<address> <name>  # why` per line."""
+    hooks: dict[int, str] = {}
+    if not path or not os.path.exists(path):
+        return hooks
+    with open(path) as f:
+        for line in f:
+            line = line.split("#", 1)[0].strip()
+            if line:
+                parts = line.split()
+                hooks[int(parts[0], 16)] = parts[1] if len(parts) > 1 else ""
+    return hooks
+
+
 def code_cover(funcs: dict) -> tuple[dict[str, set[int]], dict[str, set[int]]]:
     """Halfword addresses covered by decoded instructions, and addresses that some
     instruction falls through into, per instruction set."""
@@ -149,8 +163,12 @@ def init_array_entries(img: Image) -> dict[int, str]:
 
 
 def recompile(img: Image, entries: dict[int, str], out: str, log=print,
-              data_segments: list[tuple[int, int]] | None = None, title_id: int = 0) -> dict:
+              data_segments: list[tuple[int, int]] | None = None, title_id: int = 0,
+              hooks: dict[int, str] | None = None) -> dict:
+    """`hooks`: function entries native code may wrap or replace (see RHookFn in recomp.h);
+    each must also be an entry point."""
     t0 = time.time()
+    hooks = hooks or {}
     an = Analyzer(img)
     inits = {a: m for a, m in init_array_entries(img).items() if a not in entries}
     if inits:
@@ -172,7 +190,8 @@ def recompile(img: Image, entries: dict[int, str], out: str, log=print,
     funcs = an.analyze_all(entries, progress=lambda n, m: log(f"  analysed {n}/{m}"))
     t1 = time.time()
     known = {a: f.mode for a, f in funcs.items()}
-    em = FunctionEmitter(known)
+    hook_addrs = sorted(a for a in hooks if a in funcs)
+    em = FunctionEmitter(known, {a: i for i, a in enumerate(hook_addrs)})
     src = os.path.join(out, "src")
     os.makedirs(src, exist_ok=True)
 
@@ -206,6 +225,7 @@ def recompile(img: Image, entries: dict[int, str], out: str, log=print,
         path = os.path.join(src, f"f{bucket << FILE_SHIFT:08x}.c")
         write_if_changed(path, "\n".join(parts) + "\n")
         files.append(path)
+    problems += [f"hook 0x{a:08x} ({hooks[a]}): not a function" for a in sorted(set(hooks) - set(hook_addrs))]
     keep = {os.path.basename(p) for p in files} | {"funcs.h", "table.c"}
     for old in os.listdir(src):
         if old not in keep:
@@ -217,13 +237,17 @@ def recompile(img: Image, entries: dict[int, str], out: str, log=print,
               f"const u32 rc_text_base = 0x{img.base:08x}u;",
               f"const u32 rc_text_size = 0x{img.text_size:08x}u;",
               f"const u32 rc_text_crc32 = 0x{zlib.crc32(img.code[:img.text_size]):08x}u;",
-              f"const u64 rc_title_id = 0x{title_id:016x}ull;", ""]
+              f"const u64 rc_title_id = 0x{title_id:016x}ull;",
+              "/* hook points (config/hooks.txt): set by the host through RCodeInfo.set_hook */",
+              "const u32 rc_hook_addrs[] = {" + ", ".join(f"0x{a:08x}u" for a in hook_addrs or [0]) + "};",
+              f"const u32 rc_hook_count = {len(hook_addrs)};",
+              f"RHookFn rc_hooks[{max(1, len(hook_addrs))}];", ""]
     write_if_changed(os.path.join(src, "table.c"), "\n".join(table))
     t2 = time.time()
     report = {
         "functions": len(funcs), "discovered": an.discovered, "from_data_pointers": len(extra), "instructions": stats["insns"],
         "trap_instructions": stats["traps"], "jump_tables": stats["jump_tables"],
-        "problems": len(problems), "c_files": len(files) + 1,
+        "problems": len(problems), "c_files": len(files) + 1, "hook_points": len(hook_addrs),
         "analysis_s": round(t1 - t0, 1), "emit_s": round(t2 - t1, 1),
     }
     with open(os.path.join(out, "report.txt"), "w") as fh:
@@ -240,6 +264,8 @@ def main(argv=None) -> int:
     ap.add_argument("--functions", default=os.path.join(ROOT, "config", "functions.tsv"))
     ap.add_argument("--extra", action="append", default=[os.path.join(ROOT, "config", "extra_entries.txt")],
                     help="more entry point lists (address [arm|thumb] per line)")
+    ap.add_argument("--hooks", default=os.path.join(ROOT, "config", "hooks.txt"),
+                    help="hook points: functions native code may wrap or replace")
     ap.add_argument("--no-data-pointers", action="store_true", help="don't scan .rodata/.data for code pointers")
     ap.add_argument("-o", "--out", default=os.path.join(ROOT, "build", "recomp"))
     args = ap.parse_args(argv)
@@ -250,7 +276,8 @@ def main(argv=None) -> int:
     img = Image(code, header.text.address, header.text.size)
     segs = None if args.no_data_pointers else [(header.ro.address, header.ro.size), (header.data.address, header.data.size)]
     title_id = struct.unpack_from("<Q", open(args.exheader, "rb").read(), 0x200)[0]   # ARM11 local caps: program id
-    res = recompile(img, load_entries(args.functions, args.extra), args.out, data_segments=segs, title_id=title_id)
+    res = recompile(img, load_entries(args.functions, args.extra), args.out, data_segments=segs, title_id=title_id,
+                    hooks=load_hooks(args.hooks))
     for k, v in res["report"].items():
         print(f"{k}: {v}")
     return 0

@@ -80,7 +80,7 @@ enum { RC_TRAP_UNDEF = 1, RC_TRAP_UNSUPPORTED = 2, RC_TRAP_BKPT = 3, RC_TRAP_BAD
 
 /* Recompiled code can also be built as a shared library (runtime/rc_dll.c) and loaded by
  * the host at run time; it then gets the callbacks above from this table. */
-#define RC_HOST_VERSION 2
+#define RC_HOST_VERSION 3
 typedef struct RHost {
     u32 version;            /* RC_HOST_VERSION */
     u32 ctx_size;           /* sizeof(RCtx) as the host sees it */
@@ -93,11 +93,21 @@ typedef struct RHost {
     void (*slow_write)(RCtx *ctx, u32 a, u32 v, u32 size);
 } RHost;
 
+/* Hooks: native code that wraps or replaces a recompiled function. A hook gets the guest
+ * context and the original function; it can run the original (with the guest's registers
+ * as they are, or changed), skip it (results in r0-r3, then rc_hook_return), or both. Only
+ * functions listed when recompiling are hook points (config/hooks.txt): they enter
+ * through a check of rc_hooks[], every other function is untouched. */
+typedef void (*RHookFn)(RCtx *ctx, RFunc original);
+
 typedef struct RCodeInfo {
     const RFuncEntry *table;   /* sorted by address */
     u32 count;
     u32 text_base, text_size, text_crc32;   /* the code this was recompiled from */
     u64 title_id;              /* its program id (0 if unknown) */
+    const u32 *hook_addrs;     /* hook points, sorted */
+    u32 hook_count;
+    int (*set_hook)(u32 addr, RHookFn hook);   /* 0 if addr isn't a hook point; NULL removes */
 } RCodeInfo;
 
 /* exported by a code library under this name; returns 0 if the host doesn't match */
@@ -111,6 +121,16 @@ typedef int (*RCodeInit)(const RHost *host, RCodeInfo *info);
 #endif
 
 #define R(n) (ctx->r[n])
+
+/* hook points (see RHookFn): the generated wrapper of hook point i, around its body */
+extern RHookFn rc_hooks[];
+#define RC_HOOK_POINT(i, body) do { RHookFn h_ = rc_hooks[i]; if (h_) h_(ctx, body); else body(ctx); } while (0)
+/* for a hook that skips the original: return to the guest caller */
+RC_INLINE void rc_hook_return(RCtx *ctx) {
+    u32 ret = ctx->expect_next ? ctx->expect_next : ctx->r[14];
+    ctx->expect_next = 0;
+    ctx->r[15] = ret;
+}
 
 /* ── memory ────────────────────────────────────────────────────────────── */
 #ifdef RC_PAGED

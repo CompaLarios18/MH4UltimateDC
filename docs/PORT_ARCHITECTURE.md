@@ -43,16 +43,16 @@ Writing a 3DS operating system, GPU and audio implementation from scratch would 
 | Runs on any PC | Native code + Azahar renderer (OpenGL/Vulkan). Windows, Linux, macOS builds via CI | — |
 | Online multiplayer | MH4U's local multiplayer uses `nwm::UDS`; Azahar tunnels it over its room servers, so 4-player hunts work over the internet. Later: our own lobby UI | — |
 | Enhanced graphics | Internal resolution scaling, texture filtering, **custom texture packs in Citra's format**, so existing community packs work | — |
-| Unlocked frame rate | Game logic stays at 30 Hz; extra frames are interpolated (cameras, model matrices), as Zelda64Recomp does | Camera and model-transform update code (`uCamera`, `sCamera`, `uModel`) |
+| Unlocked frame rate | The engine is delta-time based: its frame limiter (`sMain`) measures frames in 1/60 s and gameplay scales with that ([system-services.md](research/system-services.md#frame-pacing)), so 60 fps is a higher frame cap (hook on the limiter, `MH4U_FPS`) plus enough emulated CPU clock for a frame to fit in one VBlank. Above 60 Hz the present path waits for VBlanks, so the VBlank rate or those waits have to change; interpolation only if some logic turns out to be frame-counted | Present/VBlank path (`sLtRender`), anything that counts frames |
 | Any aspect ratio | Widen the projection and culling in the camera code; re-anchor HUD elements | Camera projection setup; GUI layout (`uLayout`, `nGUI`) |
 | Second screen | First: configurable layouts (side by side, separate window, overlay) plus mouse as touch. Then: move the map and item bar into the main HUD | Bottom-screen GUI (`cQuestBoard`, layout resources) |
 | Controls | Gamepad + keyboard/mouse; the Circle Pad Pro's right stick for camera (`ir:USER`) | — |
 
-Hooks replace a recompiled function with hand-written C. They're the only place game behaviour changes, so they get the same difftest discipline: first decompile the function, verify it, then modify the verified version.
+Hooks wrap or replace a recompiled function with native code ([hook points](RECOMPILER.md#hook-points), `config/hooks.txt`, `port/src/hooks.cpp`). They're the only place game behaviour changes, so a hook that replaces a function gets the same difftest discipline: first decompile the function, verify it, then modify the verified version.
 
 ## Milestones
 1. **Recompiler verified on the whole game** (done for what random states can reach; the rest is checked by running the game).
-2. **Boot to title on PC:** Azahar core + recompiled CPU backend + minimal SDL frontend; user's dump for code and assets. *The backend is done (`port/`): it runs a multi-threaded 3DS test program under Azahar's kernel with the same output as Azahar's JIT, and it boots the game's own code (SDK start-up, service connections, all 954 static constructors) exactly like the JIT does, up to the point where the game opens its RomFS. Going further needs the user's full dump.*
+2. **Boot to title on PC:** Azahar core + recompiled CPU backend, inside Azahar's own Qt frontend (it loads the code library for the game it opens); user's dump for code and assets. *The backend is done (`port/`): it runs a multi-threaded 3DS test program under Azahar's kernel with the same output as Azahar's JIT, and it boots the game's own code (SDK start-up, service connections, all 954 static constructors) exactly like the JIT does, up to the point where the game opens its RomFS. Going further needs the user's full dump.*
 3. **Playable**, with dynarmic as a reference to diff against.
 4. **Multiplayer and graphics** (mostly inherited from the core).
 5. **Widescreen, 60 fps, second-screen HUD:** targeted decompilation with the agent workflow ([AGENT_WORKFLOW.md](AGENT_WORKFLOW.md)), plus hooks.

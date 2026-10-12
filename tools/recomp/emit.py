@@ -77,8 +77,9 @@ class FunctionEmitter:
     """Turns analysed functions into C. `known` maps entry address -> mode for every
     function that will be emitted, so direct calls can be resolved statically."""
 
-    def __init__(self, known: dict[int, str]):
+    def __init__(self, known: dict[int, str], hooks: dict[int, int] | None = None):
         self.known = known
+        self.hooks = hooks or {}        # entry address -> hook point index (rc_hooks[])
 
     def call(self, target: int, mode: str) -> str:
         if self.known.get(target) == mode:
@@ -212,12 +213,13 @@ class FunctionEmitter:
         # labels for targets that aren't instructions of this function (shouldn't happen)
         for t in sorted(labels - set(addrs)):
             out.append(f"{label(t)}: {FLUSH} rc_trap(ctx, {hexc(t)}, RC_TRAP_BAD_JUMP); return;")
-        return self._with_locals(f, out)
+        return self._with_locals(f, out, self.hooks.get(f.entry))
 
     @staticmethod
-    def _with_locals(f, body: list[str]) -> list[str]:
+    def _with_locals(f, body: list[str], hook: int | None = None) -> list[str]:
         """Wrap the body: registers and flags it touches become locals (see LOCALS_PREAMBLE),
-        with this function's RC_FLUSH (write back what it may change) and RC_RELOAD."""
+        with this function's RC_FLUSH (write back what it may change) and RC_RELOAD. A hook
+        point's body becomes static fb_<addr>, entered through a check of rc_hooks[hook]."""
         text = "\n".join(body)
         used = sorted({int(n) for n in re.findall(r"\bR\((\d+)\)", text)})
         written = sorted({int(n) for n in re.findall(r"\bR\((\d+)\) = ", text)})
@@ -232,11 +234,14 @@ class FunctionEmitter:
         reload = [f"rc_r{n} = ctx->r[{n}]" for n in used] + [f"rc_{x} = ctx->{x}" for x in flags]
         out = [f"#define RC_FLUSH() ({', '.join(flush) if flush else '(void)0'})",
                f"#define RC_RELOAD() ({', '.join(reload) if reload else '(void)0'})",
-               f"void {fname(f.entry)}(RCtx *ctx) {{", "    RC_ENTRY();"]
+               (f"static void fb_{f.entry:08x}(RCtx *ctx) {{" if hook is not None
+                else f"void {fname(f.entry)}(RCtx *ctx) {{"), "    RC_ENTRY();"]
         if used:
             out.append("    u32 " + ", ".join(f"rc_r{n} = ctx->r[{n}]" for n in used) + ";")
         if flags:
             out.append("    u32 " + ", ".join(f"rc_{x} = ctx->{x}" for x in flags) + ";")
         out += body
         out += ["}", "#undef RC_FLUSH", "#undef RC_RELOAD"]
+        if hook is not None:
+            out.append(f"void {fname(f.entry)}(RCtx *ctx) {{ RC_HOOK_POINT({hook}, fb_{f.entry:08x}); }}")
         return out

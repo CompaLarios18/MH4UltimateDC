@@ -135,6 +135,7 @@ def build_library(insns, workdir: str) -> str:
         lines.append(f"  {{0x{ins.addr:08x}u, {1 if ins.mode == 'thumb' else 0}, fz_{i}}},")
     lines.append("};")
     lines.append(f"const u32 rc_func_count = {len(insns)};")
+    lines += ["const u32 rc_hook_addrs[] = {0};", "const u32 rc_hook_count = 0;", "RHookFn rc_hooks[1];"]
     src = os.path.join(workdir, "fuzz.c")
     with open(src, "w") as f:
         f.write("\n".join(lines) + "\n")

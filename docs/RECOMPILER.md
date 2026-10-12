@@ -39,6 +39,10 @@ The host provides:
 | `rc_bad_return(ctx, got, expected)` | with `RC_CHECK_RETURNS`: a function returned somewhere other than its caller |
 | `rc_budget(ctx)` | the cycle budget ran out (yield point for the scheduler) |
 
+### Hook points
+
+Functions listed in `config/hooks.txt` are hook points: the generated `f_<addr>` checks `rc_hooks[i]` and, if a hook is installed, calls it with the guest context and the original body (`fb_<addr>`). A hook can run the original, change registers or memory before or after it, or skip it (results in `r0`-`r3`, then `rc_hook_return`). Direct calls, indirect calls and the function table all go through the check, so a hook sees every call. The host installs hooks through `RCodeInfo.set_hook` when it loads a code library (`port/src/hooks.cpp`); the test harness has `rh_set_hook`. Other functions are generated exactly as before, so hook points cost nothing elsewhere.
+
 ## Performance
 
 Generated functions keep guest registers and flags in local variables (so the C compiler can put them in host registers) and write them back to the `RCtx` only around calls, system calls, returns and yields. VFP arithmetic runs on the host FPU set up like FPSCR (rounding mode, flush-to-zero) and only NaN results take a slow path to get ARM's NaN. Indirect calls use a per-site inline cache. Each basic block charges its instruction count to the cycle budget (Azahar's JIT uses a per-instruction cycle table; the totals come out close).

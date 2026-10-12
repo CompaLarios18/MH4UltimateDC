@@ -13,6 +13,7 @@
 #include "core/core_timing.h"
 #include "core/memory.h"
 #include "fiber.h"
+#include "hooks.h"
 
 #include "common/dynamic_library.h"
 
@@ -123,6 +124,9 @@ bool ARM_Recomp::LoadCode(const std::string& path, std::string& error) {
     }
     g_library = std::move(library);
     SetCode(info);
+    for (const auto& line : Hooks::Install(info)) {
+        LOG_INFO(Core_ARM11, "hooks: {}", line);
+    }
     return true;
 }
 

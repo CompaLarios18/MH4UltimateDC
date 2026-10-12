@@ -14,6 +14,7 @@
 extern const RFuncEntry rc_func_table[];
 extern const u32 rc_func_count, rc_text_base, rc_text_size, rc_text_crc32;
 extern const u64 rc_title_id;
+extern const u32 rc_hook_addrs[], rc_hook_count;
 
 static RHost host;
 
@@ -67,6 +68,16 @@ void rc_budget(RCtx *ctx) { host.budget(ctx); }
 u32 rc_slow_read(RCtx *ctx, u32 a, u32 size) { return host.slow_read(ctx, a, size); }
 void rc_slow_write(RCtx *ctx, u32 a, u32 v, u32 size) { host.slow_write(ctx, a, v, size); }
 
+static int set_hook(u32 addr, RHookFn hook) {
+    for (u32 i = 0; i < rc_hook_count; i++) {
+        if (rc_hook_addrs[i] == addr) {
+            rc_hooks[i] = hook;
+            return 1;
+        }
+    }
+    return 0;
+}
+
 RC_EXPORT int rc_code_init(const RHost *h, RCodeInfo *info) {
     if (!h || h->version != RC_HOST_VERSION || h->ctx_size != sizeof(RCtx)) {
         return 0;
@@ -80,5 +91,8 @@ RC_EXPORT int rc_code_init(const RHost *h, RCodeInfo *info) {
     info->text_size = rc_text_size;
     info->text_crc32 = rc_text_crc32;
     info->title_id = rc_title_id;
+    info->hook_addrs = rc_hook_addrs;
+    info->hook_count = rc_hook_count;
+    info->set_hook = set_hook;
     return 1;
 }

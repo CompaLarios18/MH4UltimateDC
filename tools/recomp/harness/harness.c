@@ -19,6 +19,7 @@
 
 extern const RFuncEntry rc_func_table[];
 extern const u32 rc_func_count;
+extern const u32 rc_hook_addrs[], rc_hook_count;
 
 enum { ST_RETURN = 0, ST_SVC = 1, ST_FAULT = 2, ST_BUDGET = 3, ST_TRAP = 4, ST_BADRET = 5, ST_NOFUNC = 6 };
 
@@ -52,6 +53,16 @@ u32 rh_info1(void) { return g_info1; }
 u32 rh_fault_addr(void) { return (u32)(g_fault - (uintptr_t)g_mem); }
 u32 rh_func_count(void) { return rc_func_count; }
 void rh_func_at(u32 i, u32 *addr, u32 *mode) { *addr = rc_func_table[i].addr; *mode = rc_func_table[i].mode; }
+/* install (or with NULL remove) a hook on a hook point; 0 if addr isn't one */
+int rh_set_hook(u32 addr, RHookFn hook) {
+    for (u32 i = 0; i < rc_hook_count; i++) {
+        if (rc_hook_addrs[i] == addr) {
+            rc_hooks[i] = hook;
+            return 1;
+        }
+    }
+    return 0;
+}
 
 static const RFuncEntry *find(u32 addr) {
     u32 lo = 0, hi = rc_func_count;
