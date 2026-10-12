@@ -90,6 +90,10 @@ std::size_t ARM_Recomp::FunctionCount() {
     return g_code.count;
 }
 
+u64 ARM_Recomp::CodeTitleId() {
+    return g_code.title_id;
+}
+
 void ARM_Recomp::SetCode(const RCodeInfo& info) {
     g_code = info;
     g_functions.clear();
@@ -143,11 +147,13 @@ void ARM_Recomp::Execute(s64 budget) {
         memory.ReadBlock(g_code.text_base, text.data(), text.size());
         const u32 crc = Crc32(text.data(), text.size());
         if (crc != g_code.text_crc32) {
-            failure = fmt::format("the running program's code ({:08X}+{:X}, crc32 {:08X}) is not the "
-                                  "code that was recompiled (crc32 {:08X})",
-                                  g_code.text_base, g_code.text_size, crc, g_code.text_crc32);
-            LOG_CRITICAL(Core_ARM11, "{}", failure);
-            return;
+            // Wrong version (e.g. the update isn't installed): keep going, slowly, with
+            // everything in the interpreter.
+            LOG_CRITICAL(Core_ARM11,
+                         "the running program's code ({:08X}+{:X}, crc32 {:08X}) is not the code "
+                         "that was recompiled (crc32 {:08X}): interpreting everything",
+                         g_code.text_base, g_code.text_size, crc, g_code.text_crc32);
+            g_functions.clear();
         }
     }
     auto& slot = threads[loaded];

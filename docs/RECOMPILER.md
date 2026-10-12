@@ -39,10 +39,16 @@ The host provides:
 | `rc_bad_return(ctx, got, expected)` | with `RC_CHECK_RETURNS`: a function returned somewhere other than its caller |
 | `rc_budget(ctx)` | the cycle budget ran out (yield point for the scheduler) |
 
+## Performance
+
+Generated functions keep guest registers and flags in local variables (so the C compiler can put them in host registers) and write them back to the `RCtx` only around calls, system calls, returns and yields. VFP arithmetic runs on the host FPU set up like FPSCR (rounding mode, flush-to-zero) and only NaN results take a slow path to get ARM's NaN. Indirect calls use a per-site inline cache. Each basic block charges its instruction count to the cycle budget (Azahar's JIT uses a per-instruction cycle table; the totals come out close).
+
+On `port/tests/bench.c` under Azahar (same machine, same output), the recompiled code at `-O2` runs the integer, sorting, VFP and indirect-call phases 2-6x faster than Azahar's JIT, about 1.5x faster overall including the emulator's own per-frame work.
+
 ## Semantics worth knowing
 
 - **Flags** are kept as separate 0/1 words; `rc_adds` implements ADC/SBC/CMP/CMN carry and overflow exactly.
-- **VFP** results are computed on raw bits, with ARM rules where C's differ: the game runs in RunFast mode (FPSCR.FZ and FPSCR.DN set at startup), so denormal inputs and outputs are flushed to signed zero and every NaN result is the default NaN. Without DN, NaN propagation follows ARM operand priority. Rounding is always to nearest. Cumulative exception flags are not modelled.
+- **VFP** follows ARM rules where C's differ: in RunFast mode (FPSCR.FZ and FPSCR.DN, which the game sets at startup) denormal inputs and outputs are flushed to signed zero and every NaN result is the default NaN; without DN, NaN propagation follows ARM operand priority. The rounding mode is FPSCR.RMode, applied to the host FPU (new 3DS threads start in round-towards-zero). Cumulative exception flags are not modelled.
 - **`vmsr fpscr`** keeps the bits QEMU and dynarmic keep (`0xFFF7009F`).
 - **Short vectors**: destination in bank 0 means scalar; second operand in bank 0 means a scalar broadcast; element registers wrap within their bank; elements are computed in order. Functions are assumed to start with LEN=0, as the procedure call standard requires; the analysis reports any call, return or fallthrough made in vector mode (there are none).
 

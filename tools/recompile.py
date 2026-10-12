@@ -149,7 +149,7 @@ def init_array_entries(img: Image) -> dict[int, str]:
 
 
 def recompile(img: Image, entries: dict[int, str], out: str, log=print,
-              data_segments: list[tuple[int, int]] | None = None) -> dict:
+              data_segments: list[tuple[int, int]] | None = None, title_id: int = 0) -> dict:
     t0 = time.time()
     an = Analyzer(img)
     inits = {a: m for a, m in init_array_entries(img).items() if a not in entries}
@@ -216,7 +216,8 @@ def recompile(img: Image, entries: dict[int, str], out: str, log=print,
               "/* the code this was recompiled from; runtimes check it before running */",
               f"const u32 rc_text_base = 0x{img.base:08x}u;",
               f"const u32 rc_text_size = 0x{img.text_size:08x}u;",
-              f"const u32 rc_text_crc32 = 0x{zlib.crc32(img.code[:img.text_size]):08x}u;", ""]
+              f"const u32 rc_text_crc32 = 0x{zlib.crc32(img.code[:img.text_size]):08x}u;",
+              f"const u64 rc_title_id = 0x{title_id:016x}ull;", ""]
     write_if_changed(os.path.join(src, "table.c"), "\n".join(table))
     t2 = time.time()
     report = {
@@ -247,7 +248,8 @@ def main(argv=None) -> int:
         code = codebin2elf.load_code(header, f.read())
     img = Image(code, header.text.address, header.text.size)
     segs = None if args.no_data_pointers else [(header.ro.address, header.ro.size), (header.data.address, header.data.size)]
-    res = recompile(img, load_entries(args.functions, args.extra), args.out, data_segments=segs)
+    title_id = struct.unpack_from("<Q", open(args.exheader, "rb").read(), 0x200)[0]   # ARM11 local caps: program id
+    res = recompile(img, load_entries(args.functions, args.extra), args.out, data_segments=segs, title_id=title_id)
     for k, v in res["report"].items():
         print(f"{k}: {v}")
     return 0

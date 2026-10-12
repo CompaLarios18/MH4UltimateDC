@@ -13,6 +13,7 @@
 
 extern const RFuncEntry rc_func_table[];
 extern const u32 rc_func_count, rc_text_base, rc_text_size, rc_text_crc32;
+extern const u64 rc_title_id;
 
 static RHost host;
 
@@ -78,5 +79,6 @@ RC_EXPORT int rc_code_init(const RHost *h, RCodeInfo *info) {
     info->text_base = rc_text_base;
     info->text_size = rc_text_size;
     info->text_crc32 = rc_text_crc32;
+    info->title_id = rc_title_id;
     return 1;
 }

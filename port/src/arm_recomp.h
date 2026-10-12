@@ -74,8 +74,9 @@ public:
     /// tools/recomp/build.py --shared.
     static bool LoadCode(const std::string& path, std::string& error);
     static void SetCode(const RCodeInfo& info);
-    /// Number of recompiled functions available.
+    /// Number of recompiled functions available, and the program id they're for (0: any).
     static std::size_t FunctionCount();
+    static u64 CodeTitleId();
 
     // Called by the runtime callbacks of recomp.h, on a guest fiber.
     void Call(u32 target);

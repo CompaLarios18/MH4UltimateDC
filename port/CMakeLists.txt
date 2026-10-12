@@ -14,15 +14,22 @@ set(MH4U_RECOMP_OPT "-O1" CACHE STRING "Optimisation level for recompiled code")
 get_filename_component(MH4U_TOOLS_DIR "${CMAKE_CURRENT_LIST_DIR}/../tools" ABSOLUTE)
 set(MH4U_RUNTIME_DIR "${MH4U_TOOLS_DIR}/recomp/runtime")
 
-add_executable(mh4u_runner
+# The CPU backend, and the hook frontends call before loading a game (src/frontend.h).
+# Azahar's Qt frontend links it when this directory is part of the build (see azahar/).
+add_library(mh4u_backend STATIC
     src/arm_recomp.cpp
     src/arm_recomp.h
     src/fiber.cpp
     src/fiber.h
-    src/runner.cpp
+    src/frontend.cpp
+    src/frontend.h
 )
-target_include_directories(mh4u_runner PRIVATE src "${MH4U_RUNTIME_DIR}")
-target_link_libraries(mh4u_runner PRIVATE citra_core citra_common)
+target_include_directories(mh4u_backend PUBLIC src PRIVATE "${MH4U_RUNTIME_DIR}")
+target_link_libraries(mh4u_backend PUBLIC citra_core citra_common)
+
+add_executable(mh4u_runner src/runner.cpp)
+target_include_directories(mh4u_runner PRIVATE "${MH4U_RUNTIME_DIR}")
+target_link_libraries(mh4u_runner PRIVATE mh4u_backend)
 
 # Recompiled code from `dir` as a shared library for --code.
 function(mh4u_add_code_library name dir)

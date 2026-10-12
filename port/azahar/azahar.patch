@@ -15,6 +15,46 @@ index 70f8173..2b04b4c 100644
  if (ENABLE_QT)
      add_subdirectory(citra_qt)
  endif()
+diff --git a/src/citra_qt/CMakeLists.txt b/src/citra_qt/CMakeLists.txt
+index 8723f05..88dceae 100644
+--- a/src/citra_qt/CMakeLists.txt
++++ b/src/citra_qt/CMakeLists.txt
+@@ -302,6 +302,11 @@ endif()
+ create_target_directory_groups(citra_qt)
+ 
+ target_link_libraries(citra_qt PRIVATE audio_core citra_common citra_core input_common network video_core)
++if (TARGET mh4u_backend)
++    # MH4U PC port: run recompiled game code when it's available (port/src/frontend.h)
++    target_link_libraries(citra_qt PRIVATE mh4u_backend)
++    target_compile_definitions(citra_qt PRIVATE MH4U_BACKEND)
++endif()
+ target_link_libraries(citra_qt PUBLIC Boost::boost Qt6::Widgets)
+ target_link_libraries(citra_qt PRIVATE nihstro-headers Qt6::Multimedia Qt6::Concurrent)
+ target_link_libraries(citra_qt PRIVATE ${PLATFORM_LIBRARIES} Threads::Threads)
+diff --git a/src/citra_qt/citra_qt.cpp b/src/citra_qt/citra_qt.cpp
+index 758038b..518a8ad 100644
+--- a/src/citra_qt/citra_qt.cpp
++++ b/src/citra_qt/citra_qt.cpp
+@@ -46,6 +46,9 @@
+ #include "citra_qt/camera/qt_multimedia_camera.h"
+ #include "citra_qt/camera/still_image_camera.h"
+ #include "citra_qt/citra_qt.h"
++#ifdef MH4U_BACKEND
++#include "frontend.h"
++#endif
+ #include "citra_qt/compatibility_list.h"
+ #include "citra_qt/configuration/config.h"
+ #include "citra_qt/configuration/configure_dialog.h"
+@@ -1380,6 +1383,9 @@ bool GMainWindow::LoadROM(const QString& filename) {
+         system.InsertCartridge(UISettings::values.inserted_cartridge.GetValue());
+     }
+ 
++#ifdef MH4U_BACKEND
++    LOG_INFO(Frontend, "{}", Port::PrepareBackendFor(system, filename.toStdString()));
++#endif
+     const Core::System::ResultStatus result{
+         system.Load(*render_window, filename.toStdString(), secondary_window)};
+ 
 diff --git a/src/core/core.cpp b/src/core/core.cpp
 index dc1eb15..2ab5287 100644
 --- a/src/core/core.cpp
