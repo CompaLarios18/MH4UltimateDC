@@ -107,6 +107,34 @@ index 5920595..f47c4ab 100644
      std::vector<std::shared_ptr<ARM_Interface>> cpu_cores;
      ARM_Interface* running_core = nullptr;
  
+diff --git a/src/core/savestate.cpp b/src/core/savestate.cpp
+index e065efd..66a3a28 100644
+--- a/src/core/savestate.cpp
++++ b/src/core/savestate.cpp
+@@ -146,6 +146,12 @@ SaveStateInfo GetSaveStateInfo(u64 program_id, u64 movie_id, u32 slot) {
+ }
+ 
+ void System::SaveState(u32 slot) const {
++    if (cpu_factory) {
++        // A recompiled-code CPU keeps each guest thread's call chain on host stacks, which a
++        // save state can't capture or restore.
++        throw std::runtime_error("Save states aren't available with the recompiled-code CPU; "
++                                 "use the game's own saves");
++    }
+     if (app_loader) {
+         if (!app_loader->SupportsSaveStates()) {
+             throw std::runtime_error("The current app loader doesn't support save states");
+@@ -194,6 +200,10 @@ void System::SaveState(u32 slot) const {
+ }
+ 
+ void System::LoadState(u32 slot) {
++    if (cpu_factory) {
++        throw std::runtime_error("Save states aren't available with the recompiled-code CPU; "
++                                 "use the game's own saves");
++    }
+     if (app_loader) {
+         if (!app_loader->SupportsSaveStates()) {
+             throw std::runtime_error("The current app loader doesn't support save states");
 diff --git a/src/input_common/main.cpp b/src/input_common/main.cpp
 index c17f61b..a53d79b 100644
 --- a/src/input_common/main.cpp

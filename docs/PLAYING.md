@@ -36,7 +36,7 @@ It checks that the update is v1.3.0, recompiles its code (a couple of minutes), 
 
 The log (*File → Open Folder → log folder*) says `running recompiled code from …` when the code library was found. If it says the running code `is not the code that was recompiled`, the update isn't installed (or is another version): the game still runs, but entirely in Azahar's interpreter, slowly.
 
-Everything else is Azahar's own: controls, graphics settings, screen layouts, save data, cheats, texture packs.
+Everything else is Azahar's own: controls, graphics settings, screen layouts, save data, cheats, texture packs. Two exceptions: **save states** aren't available while the game runs on recompiled code (the game's call stacks live on the PC's own stacks, which a save state can't capture), so save in the game; and cheats that rewrite code don't apply to recompiled functions (cheats that change data do).
 
 ## 3. Options
 
