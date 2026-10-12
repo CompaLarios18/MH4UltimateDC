@@ -38,7 +38,7 @@ A hybrid is common: recompile everything first (B) to get a running port, then r
 - [x] Static recompiler for the whole game (`tools/recompile.py`, [RECOMPILER.md](RECOMPILER.md)): 39,697 functions, 3.2 M instructions, every jump table resolved; verified per instruction (fuzzing) and per function (random-state differential tests) against an ARM11 model
 
 ## Phase 2 — Running *something* on PC *(current)*
-- [ ] Licence decision: reusing Azahar's core means GPL-3.0-or-later for the port
+- [x] Licence: GPL-3.0-or-later for the whole repository (the port reuses Azahar's GPL-3.0 core)
 - [x] Recompiled-code CPU backend for Azahar's core (`port/`, `Core::ARM_Interface`): paged memory, SVCs into Azahar's kernel, cycle accounting, one host fiber per guest thread. A multi-threaded test program prints the same results as with Azahar's JIT
 - [x] The game's own code boots like it does on Azahar's JIT (SDK start-up, services, static constructors) until it opens its RomFS
 - [x] Frontend: Azahar's own Qt interface loads the code library for the game it opens (no separate SDL frontend needed); Windows build in CI

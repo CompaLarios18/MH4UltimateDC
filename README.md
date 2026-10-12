@@ -56,6 +56,10 @@ python3 tools/build_game.py --dump "MH4U v1.3.0 update.cia" --install
 | `docs/` | Roadmap, setup, legal, research notes |
 | `baserom/`, `build/` | **Git-ignored.** Your dump and build output |
 
+## Licence
+
+[GPL-3.0-or-later](LICENSE), for everything in this repository: the tools, the port and the docs. The port builds on [Azahar](https://github.com/azahar-emu/azahar), which is GPL-3.0, and the same licence lets code move freely between the two. It covers only what this project writes: the game itself stays Capcom's and is never part of the repository or of any build we distribute.
+
 ## Contributing
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md). Research notes (file formats, struct layouts, function names) are as valuable as code at this stage.

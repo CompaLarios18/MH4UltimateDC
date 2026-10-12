@@ -12,7 +12,7 @@ How to run Monster Hunter 4 Ultimate on a PC with this project: the game's own c
 - A PC: Windows 10/11 x64 or Linux x64 (macOS later).
 - [Python](https://www.python.org/downloads/) 3.10 or newer (nothing else to install with it).
 - This repository (`git clone`, or *Code → Download ZIP* on GitHub).
-- The port's build of Azahar (see [port/README.md](../port/README.md); Windows builds come from this repository's *Windows build* workflow once the project's licence is in place).
+- The port's build of Azahar: on Windows, the `mh4u-port-windows` download of the latest successful run of this repository's [*Windows build* workflow](../../../actions/workflows/windows.yml) (GitHub account needed); on Linux, build it ([port/README.md](../port/README.md)).
 
 ## 1. Make the game's code library
 

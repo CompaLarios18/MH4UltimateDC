@@ -75,4 +75,4 @@ Built with `-DENABLE_QT=ON` (and the same `-DMH4U_PORT_DIR`), Azahar's Qt fronte
 
 ## Licence
 
-Azahar is GPL-3.0-or-later, so executables built from this directory are too.
+GPL-3.0-or-later, like the rest of the repository ([LICENSE](../LICENSE)) and like Azahar, whose core the executables contain. The Windows workflow publishes builds only with that licence and the matching source (this repository at the built commit, Azahar at `azahar/COMMIT` plus `azahar/azahar.patch`).
