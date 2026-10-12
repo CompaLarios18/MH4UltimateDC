@@ -66,7 +66,11 @@ def build(outdir: str, jobs: int, opt: str, defines: list[str], lib_name: str, e
             print(f"error in {src}:\n{err[-2000:]}", file=sys.stderr)
         raise SystemExit(1)
     lib = os.path.join(outdir, lib_name)
-    r = subprocess.run([cc, "-shared", *objs, "-o", lib, *(["-lm"] if "mingw" not in cc else [])],
+    # the object list goes in a response file: Windows limits a command line to 32 KiB
+    rsp = os.path.join(outdir, "objects.rsp")
+    with open(rsp, "w") as f:
+        f.write("\n".join('"' + o.replace("\\", "/") + '"' for o in objs) + "\n")
+    r = subprocess.run([cc, "-shared", f"@{rsp}", "-o", lib, *(["-lm"] if "mingw" not in cc else [])],
                        capture_output=True, text=True)
     if r.returncode:
         raise SystemExit(r.stderr[-4000:])
