@@ -37,7 +37,7 @@ python3 tools/codebin2elf.py --exheader baserom/exheader.bin --code baserom/code
 python3 -m pytest
 
 # 5. Recompile the game into C (build/recomp/, never committed) and build it
-python3 tools/recompile.py -o build/recomp
+python3 tools/recompile.py --exheader baserom/exheader.bin --code baserom/code.bin -o build/recomp
 (cd tools && python3 -m recomp.build ../build/recomp --harness --opt O0 -D RC_CHECK_RETURNS)
 ```
 
@@ -47,7 +47,7 @@ python3 tools/recompile.py -o build/recomp
 |---|---|
 | `tools/` | Python tooling (BLZ decompression, exheader parsing, code.bin → ELF, difftest, static recompiler in `tools/recomp/`) |
 | `config/` | Per-region version info (hashes, title IDs) — filled in as dumps are verified |
-| `src/`, `include/` | Decompiled C/C++ source (empty for now) |
+| `src/`, `include/` | Hand-decompiled C, each function verified with `tools/difftest.py` |
 | `port/` | Future PC platform layer: 3DS OS services, PICA200 → modern GPU, input, audio |
 | `docs/` | Roadmap, setup, legal, research notes |
 | `baserom/`, `build/` | **Git-ignored.** Your dump and build output |
