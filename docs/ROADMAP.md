@@ -23,9 +23,11 @@ A hybrid is common: recompile everything first (B) to get a running port, then r
 
 ## Phase 1 — Mapping the binary *(current)*
 *How work is split across parallel agents: [`AGENT_WORKFLOW.md`](AGENT_WORKFLOW.md).*
-- [ ] Ghidra export script (`tools/ghidra/`): function list, call graph, strings, per-function pseudo-C → `build/export/` (git-ignored)
-- [ ] `tools/difftest.py`: compile candidate C for armv6k, link against original addresses, compare with original in Unicorn (proof of concept done)
-- [ ] Status table `config/functions.tsv` + worker prompt template `docs/prompts/worker.md`
+- [x] Ghidra export script (`tools/ghidra/`): function list, call graph, strings, per-function pseudo-C → `build/export/` (git-ignored)
+- [x] Second discovery pass for vtable-only code (`tools/find_missing_functions.py`): 25,872 → 31,409 functions, 80% → 89.7% of .text
+- [x] `tools/difftest.py`: compile candidate C for armv6k, link against original addresses, compare with original in Unicorn; first verified function: `crc32_string`
+- [x] Status table `config/functions.tsv` (`tools/build_function_table.py`, `tools/fnstatus.py`)
+- [ ] Worker prompt template `docs/prompts/worker.md`
 - [ ] Pilot batch of ~10 leaf functions; measure pass rate and cost
 - [ ] Ghidra project setup guide; shared function/symbol list in text form (`config/symbols.txt`)
 - [ ] Identify 3DS SDK/system library code (svc wrappers, `nn::` services, libc, math) — these get replaced, not decompiled

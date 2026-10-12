@@ -4,3 +4,4 @@
 0x00100000 entry                    # crt0 entry point
 0x005bf888 crc32_string             # u32 (const char *s, u32 crc): table CRC-32 over a NUL-terminated string, no final inversion
 0x005bfa94 MtDTI::MtDTI             # (this, name, parent, size, arg4, flags, id); see docs/research/mt-classes.md
+0x00e30340 crc32_table              # const u32[256], standard reflected CRC-32 (poly 0xEDB88320)

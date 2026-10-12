@@ -13299,7 +13299,7 @@ address	size	mode	category	name	status	batch	notes
 0x005bf4f8	0x1e0	arm	unknown		todo		
 0x005bf70c	0x70	arm	unknown		todo		
 0x005bf788	0xf8	arm	unknown		todo		
-0x005bf888	0x4c	arm	unknown	crc32_string	todo		
+0x005bf888	0x4c	arm	unknown	crc32_string	done	pilot-0	src/util/crc32.c; difftest 1000/1000
 0x005bf8d8	0x38	arm	unknown		todo		
 0x005bf914	0xbc	arm	unknown		todo		
 0x005bf9d4	0xc0	arm	unknown		todo		

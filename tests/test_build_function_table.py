@@ -60,3 +60,16 @@ def test_load_symbols(tmp_path):
     p = tmp_path / "symbols.txt"
     p.write_text("# comment\n0x00100000 entry   # note\n\n0x005bfa94 MtDTI::MtDTI\n")
     assert bft.load_symbols(str(p)) == {0x00100000: "entry", 0x005BFA94: "MtDTI::MtDTI"}
+
+
+def test_fnstatus_set_and_show(tmp_path, capsys):
+    import fnstatus
+    code, header, funcs = setup()
+    table = tmp_path / "functions.tsv"
+    bft.write_tsv(bft.build(code, header, funcs, {}, CTOR, {}), str(table))
+    fnstatus.main(["--table", str(table), "set", hex(BASE + 0x40), "--status", "done",
+                   "--batch", "pilot-0", "--name", "add_two"])
+    row = next(r for r in bft.read_tsv(str(table)) if int(r["address"], 16) == BASE + 0x40)
+    assert (row["status"], row["batch"], row["name"]) == ("done", "pilot-0", "add_two")
+    fnstatus.main(["--table", str(table), "summary"])
+    assert "decompiled bytes: 0x8" in capsys.readouterr().out
