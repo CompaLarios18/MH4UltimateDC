@@ -13,14 +13,15 @@ A hybrid is common: recompile everything first (B) to get a running port, then r
 
 ---
 
-## Phase 0 — Bootstrapping *(current)*
+## Phase 0 — Bootstrapping ✅
 - [x] Repository, legal guidelines, `.gitignore` for dumps
 - [x] BLZ (backward LZ77) decompressor for `code.bin`
 - [x] Exheader parser and `code.bin → ELF` converter for disassemblers
-- [ ] Verify against a real dump; record title ID + hashes per region in `config/versions.json`
-- [ ] Decide which version to target first (suggested: USA, latest update applied?)
+- [x] Extractor for decrypted .3ds / .cia / .cxi (`tools/extract_ncch.py`)
+- [x] Verify against a real dump (USA v1.3.0 update); record title ID + hashes in `config/versions.json`
+- [x] Target version: **USA v1.3.0** (code from the update title)
 
-## Phase 1 — Mapping the binary
+## Phase 1 — Mapping the binary *(current)*
 *How work is split across parallel agents: [`AGENT_WORKFLOW.md`](AGENT_WORKFLOW.md).*
 - [ ] Ghidra export script (`tools/ghidra/`): function list, call graph, strings, per-function pseudo-C → `build/export/` (git-ignored)
 - [ ] `tools/difftest.py`: compile candidate C for armv6k, link against original addresses, compare with original in Unicorn (proof of concept done)

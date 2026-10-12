@@ -135,6 +135,7 @@ def main(argv: list[str] | None = None) -> int:
         code = load_code(header, f.read())
 
     if args.dump_decompressed:
+        os.makedirs(os.path.dirname(os.path.abspath(args.dump_decompressed)), exist_ok=True)
         with open(args.dump_decompressed, "wb") as f:
             f.write(code)
 

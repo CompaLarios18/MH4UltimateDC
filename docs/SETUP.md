@@ -15,20 +15,19 @@ Only dump games you own.
 
 ## 2. Extract the exheader and ExeFS
 
-Use an open-source NCCH tool such as **3dstool** or **ctrtool** to split the decrypted image. Conceptually:
+Use the bundled extractor. It reads decrypted `.3ds`/`.cci`, `.cia` and `.cxi` files, and refuses encrypted ones (it never handles keys):
 
-1. From the `.3ds`/`.cci`, extract **partition 0** (the main executable content, a `.cxi`).
-2. From the `.cxi`, extract the **extended header** and the **ExeFS** (and the RomFS, which you'll want later for assets).
-3. From the ExeFS, extract **`.code`** (usually written out as `code.bin`).
+```bash
+# The update CIA carries the complete code of the final version: this is what we decompile.
+python3 tools/extract_ncch.py "<update>.cia" -o baserom/update_v130
 
-Check each tool's `--help` / README for the exact flags of the version you install. *(Contributors: once someone has a verified command line, please PR it here.)*
-
-Copy into the repository:
-
+# The base cartridge is only needed for assets (RomFS), later.
+python3 tools/extract_ncch.py "<game>.trim.3ds" -o baserom/base --romfs
 ```
-baserom/exheader.bin
-baserom/code.bin        # exefs/code.bin (compressed is fine)
-```
+
+Each output folder gets `exheader.bin`, `code.bin` (still compressed, which is fine), `exefs.bin` and `info.txt`.
+
+> **Which code to use:** a 3DS update replaces the whole ExeFS, so the update title's `code.bin` is the full executable of the patched game. The project targets **USA v1.3.0** (see `config/versions.json`). Update RomFS files are applied on top of the base RomFS.
 
 `baserom/` is git-ignored. **Never commit it.**
 
@@ -37,7 +36,7 @@ baserom/code.bin        # exefs/code.bin (compressed is fine)
 Run:
 
 ```bash
-python3 tools/verify_dump.py baserom/exheader.bin baserom/code.bin
+python3 tools/verify_dump.py baserom/update_v130/exheader.bin baserom/update_v130/code.bin
 ```
 
 It prints the title ID, region-relevant fields and SHA-1 hashes. If your version isn't listed in `config/versions.json`, open an issue with that output (hashes only — **never upload the files**).
@@ -45,7 +44,7 @@ It prints the title ID, region-relevant fields and SHA-1 hashes. If your version
 ## 4. Load into a disassembler
 
 ```bash
-python3 tools/codebin2elf.py --exheader baserom/exheader.bin --code baserom/code.bin -o build/mh4u.elf
+python3 tools/codebin2elf.py --exheader baserom/update_v130/exheader.bin --code baserom/update_v130/code.bin -o build/mh4u_v130.elf
 ```
 
-Open `build/mh4u.elf` in **Ghidra** (processor: `ARM:LE:32:v6`, the 3DS's ARM11 cores are ARMv6K). Segments `.text`, `.rodata`, `.data` and `.bss` will be mapped at their real runtime addresses.
+Open `build/mh4u_v130.elf` in **Ghidra** (processor: `ARM:LE:32:v6`, the 3DS's ARM11 cores are ARMv6K). Segments `.text`, `.rodata`, `.data` and `.bss` will be mapped at their real runtime addresses.

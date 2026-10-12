@@ -6,7 +6,7 @@ A work-in-progress decompilation of **Monster Hunter 4 Ultimate** (Nintendo 3DS)
 
 ## Status
 
-🟥 **Phase 0 — Bootstrapping.** Nothing is decompiled yet. The repository currently contains tooling to turn *your own* legally dumped `code.bin` into an ELF that Ghidra / IDA / Binary Ninja can load with correct segment addresses.
+🟧 **Phase 1 — Mapping the binary.** Nothing is decompiled yet. Target version is **USA v1.3.0**. The tooling turns *your own* decrypted dump into an ELF that Ghidra / IDA / Binary Ninja can load at the real addresses; see [`docs/research/first-look-v130.md`](docs/research/first-look-v130.md) for first findings.
 
 See [`docs/ROADMAP.md`](docs/ROADMAP.md) for the plan.
 
