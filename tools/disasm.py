@@ -51,9 +51,26 @@ def disassemble(code: bytes, base: int, addr: int, size: int, thumb: bool,
                 names: dict[int, str]) -> list[str]:
     md = Cs(CS_ARCH_ARM, CS_MODE_THUMB if thumb else CS_MODE_ARM)
     out = []
-    data = code[addr - base: addr - base + size]
     covered = addr
-    for i in md.disasm(data, addr):
+    end = addr + size
+    while covered < end:
+        decoded = list(md.disasm(code[covered - base: end - base], covered))
+        if not decoded:
+            # Undecodable word (literal pool / jump-table entry): show it and resume after it.
+            step = 2 if thumb else 4
+            if covered + 4 <= end:
+                w = struct.unpack_from("<I", code, covered - base)[0]
+                out.append(f"{covered:08x}: {w:08x}  .word    0x{w:08x}"
+                           + describe(w, code, base, names)[len(f'  ; = 0x{w:08x}'):])
+            covered += step
+            continue
+        covered = _emit(decoded, out, code, base, thumb, names)
+    return out
+
+
+def _emit(decoded, out, code, base, thumb, names) -> int:
+    covered = decoded[0].address
+    for i in decoded:
         note = ""
         m = re.fullmatch(r"(r\d+|sb|sl|fp|ip|lr), \[pc, #(-?0x[0-9a-f]+|-?\d+)\]", i.op_str)
         if i.mnemonic.startswith("ldr") and m:
@@ -72,12 +89,7 @@ def disassemble(code: bytes, base: int, addr: int, size: int, thumb: bool,
                 note = f"  ; {names[t]}"
         out.append(f"{i.address:08x}: {i.bytes.hex():<8}  {i.mnemonic:<8} {i.op_str}{note}")
         covered = i.address + i.size
-    if covered < addr + size:
-        tail = code[covered - base: addr + size - base]
-        for k in range(0, len(tail) - 3, 4):
-            w = struct.unpack_from("<I", tail, k)[0]
-            out.append(f"{covered + k:08x}: {w:08x}  .word    0x{w:08x}" + describe(w, code, base, names)[len(f'  ; = 0x{w:08x}'):])
-    return out
+    return covered
 
 
 def main(argv: list[str] | None = None) -> int:

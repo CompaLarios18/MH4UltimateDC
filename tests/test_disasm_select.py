@@ -44,3 +44,10 @@ def test_is_simple_filters():
     assert not select_batch.is_simple(vfp, BASE, BASE, 8, False)
     assert select_batch.is_simple(vfp, BASE, BASE, 8, True)
     assert select_batch.is_simple(pop_pc, BASE, BASE, 4, False)
+
+
+def test_disasm_resumes_after_data_words():
+    # bx lr; an undecodable word (jump-table style data); then real code again.
+    code = image({BASE: 0xE12FFF1E, BASE + 4: 0xFFFFFFFF, BASE + 8: 0xE3A0000E, BASE + 12: 0xE12FFF1E})
+    lines = disasm.disassemble(code, BASE, BASE, 16, False, {})
+    assert [l.split()[2] for l in lines] == ["bx", ".word", "mov", "bx"]

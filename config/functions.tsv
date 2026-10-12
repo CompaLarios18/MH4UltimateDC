@@ -479,7 +479,7 @@ address	size	mode	category	name	status	batch	notes
 0x0010e810	0xa0	arm	unknown		todo		
 0x0010e8b0	0xc8	arm	unknown		todo		
 0x0010e97c	0x2b0	arm	unknown		todo		
-0x0010ec6c	0x28	arm	unknown		assigned	pilot-1	
+0x0010ec6c	0x28	arm	runtime	__aeabi_lasr	done	pilot-1	src/unsorted/func_0010ec6c.c; difftest 1000/1000; runtime helper __aeabi_lasr
 0x0010ec94	0xd4	arm	unknown		todo		
 0x0010ed68	0x74	arm	unknown		todo		
 0x0010eddc	0xf4	arm	unknown		todo		
@@ -5096,7 +5096,7 @@ address	size	mode	category	name	status	batch	notes
 0x002f8668	0x10	arm	unknown		todo		
 0x002f867c	0x124	arm	unknown		todo		
 0x002f87ac	0x140	arm	unknown		todo		
-0x002f8910	0x50	arm	unknown		assigned	pilot-1	
+0x002f8910	0x50	arm	unknown		done	pilot-1	src/unsorted/func_002f8910.c; difftest 1000/1000; checks entry id in a fixed set
 0x002f8960	0x2c	arm	unknown		todo		
 0x002f898c	0x24	arm	unknown		todo		
 0x002f89b4	0x5c	arm	unknown		todo		
@@ -6465,7 +6465,7 @@ address	size	mode	category	name	status	batch	notes
 0x003987bc	0x52c	arm	unknown		todo		
 0x00398d78	0x148	arm	unknown		todo		
 0x00398edc	0x60	arm	unknown		todo		
-0x00398f48	0x4c	arm	unknown		assigned	pilot-1	
+0x00398f48	0x4c	arm	unknown		done	pilot-1	src/unsorted/func_00398f48.c; difftest 800/800 (200 skipped); slot remap lookup; use --ptr-args 0
 0x00398f94	0x280	arm	unknown		todo		
 0x00399228	0x28	arm	unknown		todo		
 0x00399254	0x114	arm	unknown		todo		
@@ -11363,7 +11363,7 @@ address	size	mode	category	name	status	batch	notes
 0x00556488	0x14	arm	unknown		todo		
 0x0055649c	0x84	arm	unknown		todo		
 0x0055656c	0x2c	arm	unknown		todo		
-0x00556598	0x70	arm	unknown		assigned	pilot-1	
+0x00556598	0x70	arm	unknown	PacketAnalysisData::CreateIndex	done	pilot-1	src/unsorted/func_00556598.c; difftest 1000/1000
 0x00556650	0x40	arm	unknown		todo		
 0x00556690	0x70	arm	unknown		todo		
 0x00556718	0x1ac	arm	unknown		todo		
@@ -12798,7 +12798,7 @@ address	size	mode	category	name	status	batch	notes
 0x005a2ed0	0xe4	arm	unknown		todo		
 0x005a2fc4	0xc8	arm	unknown		todo		
 0x005a30a4	0x90	arm	unknown		todo		
-0x005a3198	0x40	arm	unknown		assigned	pilot-1	
+0x005a3198	0x40	arm	unknown		done	pilot-1	src/unsorted/func_005a3198.c; difftest 1000/1000; jump table: real size 0xa4 (Ghidra says 0x40)
 0x005a323c	0x90	arm	unknown		todo		
 0x005a32e0	0xbc	arm	unknown		todo		
 0x005a33b0	0x2e8	arm	unknown		todo		
@@ -15139,7 +15139,7 @@ address	size	mode	category	name	status	batch	notes
 0x0066ce54	0x28	arm	unknown		todo		
 0x0066ce80	0x14	arm	unknown		todo		
 0x0066ce94	0xb0	arm	unknown		todo		
-0x0066cf48	0x50	arm	unknown		assigned	pilot-1	
+0x0066cf48	0x50	arm	unknown		done	pilot-1	src/unsorted/func_0066cf48.c; difftest 1000/1000; --sym data_00e4fc94
 0x0066cfa0	0x968	arm	unknown		todo		
 0x0066e10c	0x18c	arm	unknown		todo		
 0x0066e2c4	0x148	arm	unknown		todo		
@@ -15437,7 +15437,7 @@ address	size	mode	category	name	status	batch	notes
 0x006833c0	0x78	arm	unknown		todo		
 0x00683438	0x54	arm	unknown		todo		
 0x0068348c	0xdc	arm	unknown		todo		
-0x00683568	0x54	arm	unknown		assigned	pilot-1	
+0x00683568	0x54	arm	unknown		done	pilot-1	src/unsorted/func_00683568.c; difftest 1000/1000 with --random-region 0x010b4af8:0x320
 0x006835c0	0x20	arm	unknown		todo		
 0x006835e8	0x41c	arm	unknown		todo		
 0x006839d8	0x5c	arm	unknown		todo		
@@ -23036,7 +23036,7 @@ address	size	mode	category	name	status	batch	notes
 0x00adb2ec	0xd8	arm	unknown		todo		
 0x00adb3d0	0x15c	arm	unknown		todo		
 0x00adb534	0x154	arm	unknown		todo		
-0x00adb688	0x34	arm	unknown		assigned	pilot-1	
+0x00adb688	0x34	arm	unknown		done	pilot-1	src/unsorted/func_00adb688.c; difftest 1000/1000; jump table: real size 0x48 (Ghidra says 0x34)
 0x00adb6d0	0xc0	arm	unknown		todo		
 0x00adb790	0x3c	arm	unknown		todo		
 0x00adb7d0	0x204	arm	unknown		todo		
@@ -24580,7 +24580,7 @@ address	size	mode	category	name	status	batch	notes
 0x00b98990	0x3e0	arm	unknown		todo		
 0x00b98d8c	0x438	arm	unknown		todo		
 0x00b991d4	0xc	arm	unknown		todo		
-0x00b991e4	0x5c	arm	unknown		assigned	pilot-1	
+0x00b991e4	0x5c	arm	unknown		done	pilot-1	src/unsorted/func_00b991e4.c; difftest 1000/1000; --sym data_00ed2440
 0x00b99244	0x4c	arm	unknown		todo		
 0x00b99294	0x44	arm	unknown		todo		
 0x00b992dc	0xec	arm	unknown		todo		
@@ -30535,7 +30535,7 @@ address	size	mode	category	name	status	batch	notes
 0x00d74c04	0x1b8	arm	unknown		todo		
 0x00d74dc8	0x34	arm	unknown		todo		
 0x00d74dfc	0x4c	arm	unknown		todo		
-0x00d74e48	0x64	arm	unknown		assigned	pilot-1	
+0x00d74e48	0x64	arm	unknown		done	pilot-1	src/unsorted/func_00d74e48.c; difftest 1000/1000; state reset, returns 1
 0x00d74eac	0x78	arm	unknown		todo		
 0x00d74f24	0xba4	arm	unknown		todo		
 0x00d75af0	0x6cc	arm	unknown		todo		

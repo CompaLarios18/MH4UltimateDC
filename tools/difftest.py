@@ -190,11 +190,13 @@ class Machine:
         return 0
 
     def run(self, entry: int, thumb: bool, args: list[int], fargs: list[float],
-            buffers: bytes) -> RunResult:
+            buffers: bytes, regions: list[tuple[int, bytes]] | None = None) -> RunResult:
         mu = self.mu
         mu.reg_write(UC_ARM_REG_C1_C0_2, mu.reg_read(UC_ARM_REG_C1_C0_2) | (0xF << 20))
         mu.reg_write(UC_ARM_REG_FPEXC, 0x40000000)
         mu.mem_write(BUF_BASE, buffers)
+        for addr, blob in regions or []:
+            mu.mem_write(addr, blob)
         for reg, v in zip(ARG_REGS, args + [0] * (4 - len(args))):
             mu.reg_write(reg, v & 0xFFFFFFFF)
         for i, fv in enumerate(fargs):
@@ -223,6 +225,8 @@ class Machine:
         for a in touched:                    # restore image/candidate memory for the next run
             if not BUF_BASE <= a < BUF_BASE + BUF_SLOT * BUF_COUNT:
                 mu.mem_write(a, bytes([self._pristine(a)]))
+        for addr, blob in regions or []:
+            mu.mem_write(addr, bytes(self._pristine(addr + i) for i in range(len(blob))))
         return RunResult(fault, regs, writes)
 
 
@@ -242,6 +246,24 @@ def rand_scalar(rng: random.Random) -> int:
     return rng.getrandbits(32)
 
 
+def rand_words(rng: random.Random, size: int) -> bytes:
+    out = bytearray()
+    for _ in range(size // 4):
+        k = rng.random()
+        if k < 0.35:
+            w = rng.randint(0, 64)
+        elif k < 0.55:
+            w = rng.getrandbits(32)
+        elif k < 0.7:
+            w = struct.unpack("<I", struct.pack("<f", rng.uniform(-1000, 1000)))[0]
+        elif k < 0.9:
+            w = BUF_BASE + rng.randrange(BUF_COUNT) * BUF_SLOT + rng.randrange(0, BUF_SLOT // 2, 4)
+        else:
+            w = 0
+        out += struct.pack("<I", w)
+    return bytes(out) + bytes(rng.getrandbits(8) for _ in range(size % 4))
+
+
 def rand_buffers(rng: random.Random) -> bytes:
     """Buffer slots filled with a mix of small ints, random words, floats, pointers into
     the buffers (for nested structures) and NUL-terminated ASCII text."""
@@ -252,19 +274,7 @@ def rand_buffers(rng: random.Random) -> bytes:
             s = bytes(rng.randint(0x20, 0x7E) for _ in range(n)) + b"\0"
             out += s.ljust(BUF_SLOT, b"\0")
             continue
-        for _ in range(BUF_SLOT // 4):
-            k = rng.random()
-            if k < 0.35:
-                w = rng.randint(0, 64)
-            elif k < 0.55:
-                w = rng.getrandbits(32)
-            elif k < 0.7:
-                w = struct.unpack("<I", struct.pack("<f", rng.uniform(-1000, 1000)))[0]
-            elif k < 0.9:
-                w = BUF_BASE + rng.randrange(BUF_COUNT) * BUF_SLOT + rng.randrange(0, BUF_SLOT // 2, 4)
-            else:
-                w = 0
-            out += struct.pack("<I", w)
+        out += rand_words(rng, BUF_SLOT)
     return bytes(out)
 
 
@@ -315,7 +325,7 @@ class Report:
 
 def compare(code: bytes, header_base: int, mem_end: int, orig: int, thumb: bool, cand: Candidate,
             nargs: int, nfargs: int, ret: str, cases: int, seed: int,
-            ptr_args: str = "auto") -> Report:
+            ptr_args: str = "auto", random_regions: list[tuple[int, int]] | None = None) -> Report:
     m = Machine(code, header_base, mem_end, cand)
     if ptr_args == "auto":
         slots, _ = profile_pointer_args(m, orig, thumb, nargs, nfargs, seed)
@@ -327,11 +337,12 @@ def compare(code: bytes, header_base: int, mem_end: int, orig: int, thumb: bool,
     rng = random.Random(seed + 1)
     for _ in range(cases):
         args, fargs, bufs = make_case(rng, nargs, slots, nfargs)
-        a = m.run(orig, thumb, args, fargs, bufs)
+        regions = [(addr, rand_words(rng, size)) for addr, size in random_regions or []]
+        a = m.run(orig, thumb, args, fargs, bufs, regions)
         if a.fault:
             rep.skipped += 1
             continue
-        b = m.run(cand.entry, False, args, fargs, bufs)
+        b = m.run(cand.entry, False, args, fargs, bufs, regions)
         rep.compared += 1
         problems = []
         if b.fault:
@@ -371,6 +382,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("-I", dest="includes", action="append", default=[os.path.join(ROOT, "include")])
     ap.add_argument("--sym", action="append", default=[], metavar="NAME=0xADDR",
                     help="extra symbol for linking (e.g. a global not yet in symbols.txt)")
+    ap.add_argument("--random-region", action="append", default=[], metavar="ADDR:SIZE",
+                    help="fill this memory (e.g. a runtime-filled .bss table) with random data per case")
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args(argv)
 
@@ -395,7 +408,7 @@ def main(argv: list[str] | None = None) -> int:
         cand = build_candidate(args.source, func, symbols, args.includes)
         rep = compare(code, header.text.address, header.bss_address + header.bss_size, args.address,
                       args.thumb, cand, args.args, args.fargs, args.ret, args.cases, args.seed,
-                      args.ptr_args)
+                      args.ptr_args, [tuple(int(x, 0) for x in r.split(":")) for r in args.random_region])
     except DifftestError as e:
         print(f"error: {e}", file=sys.stderr)
         return 2

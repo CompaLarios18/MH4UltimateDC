@@ -21,6 +21,12 @@ For each function:
    Iterate until it prints `PASS` with at least 300 compared cases. Maximum **8 attempts** per function.
 5. If you can't get a PASS: stop and report `blocked` with the reason (indirect call, input generator can't drive it, needs a callee name, …). **Never** weaken the test, special-case inputs, or embed the original's machine code.
 
+Tips (from pilot-1):
+- The pointer-arg hint can be wrong. If an argument is clearly a scalar, pass `--ptr-args` yourself (e.g. `--ptr-args 0`).
+- Tables in `.bss` (0x01081b84–0x0111d128) are filled at runtime and are all zero under difftest. Add `--random-region <addr>:<size>` so the interesting paths really get tested.
+- Function sizes from Ghidra are too short for functions ending in a jump table (`ldr pc, [pc, rN, lsl #2]`). If the disassembly stops mid-table, rerun `disasm.py` with a larger `--size` and report the real size.
+- Integer compares against bytes/halfwords loaded from memory are often against the full 32-bit argument; type such args as `u32`/`s32` so values above 255 behave like the original.
+
 Rules:
 - Only create your own new files. Don't edit `config/`, `include/`, docs, tools or other workers' files; don't commit or push.
 - Don't paste large disassembly or binary data into files.

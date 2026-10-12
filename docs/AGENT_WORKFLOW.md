@@ -93,6 +93,28 @@ Each decompiler worker gets the same prompt template (to be kept in `docs/prompt
 | 3 | Pilot batch (~10 leaf functions) → measure → tune | Workers + reviewer | Yes |
 | 4 | Scale batches; decide route A / B / hybrid ([ROADMAP](ROADMAP.md)) using pilot data | Everyone | Yes |
 
+## Pilot results
+
+**pilot-1** (Oct 2026): 10 leaf functions (0x28–0x70 bytes) chosen by `tools/select_batch.py` from 1,841 candidates. 5 workers ran in parallel, 2 functions each.
+
+| Metric | Result |
+|---|---|
+| Passed difftest | **10 / 10** (re-verified by the orchestrator with a new seed, 1,000 cases each) |
+| Attempts | 9 functions passed on the first run, 1 needed 3 runs (only extra checks) |
+| Wall time | 75–183 s per worker; the whole batch took about 3 minutes |
+| Cost | ~450k subagent tokens in total, **~45k tokens per function** |
+| Code quality | Readable C with structs and named fields. No embedded machine code, no special-cased inputs |
+
+Findings that changed the tools:
+- `disasm.py` stopped decoding after jump-table data. Fixed: it now resumes after undecodable words.
+- Tables in `.bss` are all zero under difftest, so match paths were barely exercised. Added `difftest --random-region`, with a test proving it catches bugs the zeroed version misses.
+- Ghidra underestimates the size of functions that end in jump tables. Noted per function; the worker prompt explains how to spot it.
+- Workers recognised a compiler runtime helper (`__aeabi_lasr`) and recovered a real method name from an error string (`PacketAnalysisData::CreateIndex`).
+
+What this means for the route decision:
+- For small leaf functions the pipeline works and is fast. Bigger functions with calls, C++ classes and floating point will cost more per function.
+- At ~45k tokens per function, hand-decompiling all ~31k functions is not realistic as a first goal. This argues for the **hybrid route**: static recompilation for the bulk, and agent decompilation focused on what the port needs to understand or change (file loading, rendering, input, save data), plus whatever blocks the recompiler.
+
 ## Known risks
 
 - **Weak test inputs.** Random integers don't exercise pointer-heavy code well. Mitigation: per-type input generators, and later real inputs recorded from an emulator (Azahar) trace.

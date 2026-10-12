@@ -5,3 +5,8 @@
 0x005bf888 crc32_string             # u32 (const char *s, u32 crc): table CRC-32 over a NUL-terminated string, no final inversion
 0x005bfa94 MtDTI::MtDTI             # (this, name, parent, size, arg4, flags, id); see docs/research/mt-classes.md
 0x00e30340 crc32_table              # const u32[256], standard reflected CRC-32 (poly 0xEDB88320)
+0x0010ec6c __aeabi_lasr             # RVCT runtime: s64 >> n (pilot-1)
+0x00556598 PacketAnalysisData::CreateIndex  # from its own error string (pilot-1)
+0x00e4fc94 data_00e4fc94            # const {s32 key; s32 value;}[6], keys 3..8 -> 9..14 (pilot-1)
+0x00ed2440 data_00ed2440            # const {u8 id; u8 unk; u8 value;}[18] (pilot-1)
+0x010b4af8 g_010b4af8               # .bss, 10 records x 0x50, first two bytes are lookup keys (pilot-1)

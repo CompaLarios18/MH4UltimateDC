@@ -35,6 +35,9 @@ int apply_damage(Monster *m, int raw) {
 }
 
 unsigned weigh(unsigned x) { return weights[x & 3] * x; }
+
+int table[8];
+int find(int k) { for (int i = 0; i < 8; i++) if (table[i] == k) return i; return -1; }
 """
 
 GOOD = r"""
@@ -151,3 +154,22 @@ int f(int a, int b) {
             expected = q32 ^ (a - q32 * b) ^ (q64 & 0xFFFFFFFF) ^ ((x - q64 * y) & 0xFFFFFFFF) \
                 ^ ((a & 0xFFFFFFFF) // (b & 0xFFFFFFFF))
         assert r.regs["r0"] == expected & 0xFFFFFFFF, (a, b)
+
+
+FIND_BUG_ONLY_FOR_NONZERO = r"""
+extern int table[8];
+int find(int k) { for (int i = 0; i < 8; i++) if (table[i] == k) return k ? i + 1 : i; return -1; }
+"""
+
+
+def test_random_region_exposes_bugs_hidden_by_zeroed_bss(game):
+    code, syms, tmp = game
+    path = tmp / "find_bug.c"
+    path.write_text(FIND_BUG_ONLY_FOR_NONZERO)
+    cand = dt.build_candidate(str(path), "find", {"table": syms["table"]}, [])
+    end = BASE + len(code) + 0x1000
+    zeroed = dt.compare(code, BASE, end, syms["find"], False, cand, 1, 0, "int", 300, seed=5)
+    assert zeroed.ok                       # all-zero table: the bug is invisible
+    randomized = dt.compare(code, BASE, end, syms["find"], False, cand, 1, 0, "int", 300, seed=5,
+                            random_regions=[(syms["table"], 32)])
+    assert not randomized.ok
