@@ -213,7 +213,13 @@ class Machine:
                 "s0": mu.reg_read(UC_ARM_REG_S0), "d0": mu.reg_read(UC_ARM_REG_D0)}
         stack_lo = STACK_TOP - STACK_SIZE
         touched = {a + i for a, s in self._writes for i in range(s) if not stack_lo <= a + i < STACK_TOP}
-        writes = {a: mu.mem_read(a, 1)[0] for a in sorted(touched)}
+        writes = {}
+        for a in sorted(touched):
+            try:
+                writes[a] = mu.mem_read(a, 1)[0]
+            except UcError:                  # attempted write to unmapped memory (the fault)
+                pass
+        touched = set(writes)
         for a in touched:                    # restore image/candidate memory for the next run
             if not BUF_BASE <= a < BUF_BASE + BUF_SLOT * BUF_COUNT:
                 mu.mem_write(a, bytes([self._pristine(a)]))
@@ -363,6 +369,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--code", default=os.path.join(ROOT, "baserom", "update_v130", "code.bin"))
     ap.add_argument("--symbols", default=os.path.join(ROOT, "config", "symbols.txt"))
     ap.add_argument("-I", dest="includes", action="append", default=[os.path.join(ROOT, "include")])
+    ap.add_argument("--sym", action="append", default=[], metavar="NAME=0xADDR",
+                    help="extra symbol for linking (e.g. a global not yet in symbols.txt)")
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args(argv)
 
@@ -371,6 +379,12 @@ def main(argv: list[str] | None = None) -> int:
     with open(args.code, "rb") as f:
         code = codebin2elf.load_code(header, f.read())
     symbols = load_symbols(args.symbols)
+    for s in args.sym:
+        name, _, addr = s.partition("=")
+        if not C_IDENT.match(name) or not addr:
+            print(f"error: bad --sym {s!r} (expected NAME=0xADDR)", file=sys.stderr)
+            return 2
+        symbols[name] = int(addr, 0)
     func = args.func or next((n for n, a in symbols.items() if a == args.address), None)
     if not func:
         print("error: pass --func (no name for this address in symbols.txt)", file=sys.stderr)
