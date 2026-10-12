@@ -57,6 +57,10 @@ Environment variables override the file: `MH4U_FPS`, `MH4U_WIDESCREEN`, `MH4U_TR
 - **Widescreen** *(experimental)*: the 3D view is widened to the given aspect ratio, and *View → Screen Layout → Single Screen* then shows the top screen at that shape (16:9, 16:10, 21:9 and 4:3 exactly; other values stretch it to the window). In *Custom Layout* you can size the top screen yourself and lay the bottom screen over it with *Bottom Screen Opacity*. This first step stretches the 2D HUD; a true wide image with an unstretched HUD is planned ([research/widescreen.md](research/widescreen.md)).
 - **The bottom screen**: use Azahar's screen layouts (side by side, large top screen with a small bottom one, separate windows, or a translucent overlay in *Custom Layout*) and the mouse as the stylus. Button bindings and a single-screen HUD for the touch panels are planned ([research/second-screen.md](research/second-screen.md)).
 
+## Your 3DS save
+
+To continue your 3DS progress: back the save up on the console with [Checkpoint](https://github.com/BernardoGiordano/Checkpoint) (it saves the files inside the save, not a raw image), then right-click the game in Azahar's list → *Open → Save Data Location* and copy those files there while the game isn't running. Keep a copy of the backup.
+
 ## 4. Multiplayer
 
 MH4U's local multiplayer (Gathering Hall) works over the internet through Azahar's network rooms: *Multiplayer → Browse Public Rooms / Create Room / Direct Connect to Room*. Everyone needs the **same build** of the port. Nintendo Network online play is gone; DLC quests can come from your own console's extra data.
