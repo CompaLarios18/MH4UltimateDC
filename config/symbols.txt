@@ -1,0 +1,6 @@
+# Accepted names for USA v1.3.0. Format: <address> <name> [# note]
+# Names are ours unless a note says otherwise; the original source names are unknown.
+# Single writer: the orchestrator (see docs/AGENT_WORKFLOW.md).
+0x00100000 entry                    # crt0 entry point
+0x005bf888 crc32_string             # u32 (const char *s, u32 crc): table CRC-32 over a NUL-terminated string, no final inversion
+0x005bfa94 MtDTI::MtDTI             # (this, name, parent, size, arg4, flags, id); see docs/research/mt-classes.md
