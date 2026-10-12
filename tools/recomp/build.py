@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures as cf
+import hashlib
 import os
 import subprocess
 import sys
@@ -41,10 +42,12 @@ def build(outdir: str, jobs: int, opt: str, defines: list[str], lib_name: str, e
     hdr_time = os.path.getmtime(os.path.join(RUNTIME, "recomp.h"))
     flags = [f"-{opt}", *BASE_FLAGS, f"-I{src_dir}", *[f"-D{d}" for d in defines], *(extra_flags or [])]
     sources = sorted(os.path.join(src_dir, f) for f in os.listdir(src_dir) if f.endswith(".c")) + extra_sources
+    # objects are named after everything that changes the code, so builds with other
+    # settings (harness, code library, another compiler) never reuse each other's objects
+    variant = hashlib.sha1(" ".join([os.path.basename(cc), opt, *defines, *(extra_flags or [])]).encode()).hexdigest()[:8]
     todo, objs = [], []
     for s in sources:
-        tag = "-".join([d.split("=")[0] for d in defines] + ([os.path.basename(cc)] if cc != "clang" else []))
-        o = os.path.join(obj_dir, f"{os.path.basename(s)[:-2]}{'-' + tag if tag else ''}-{opt}.o")
+        o = os.path.join(obj_dir, f"{os.path.basename(s)[:-2]}-{opt}-{variant}.o")
         objs.append(o)
         if not os.path.exists(o) or os.path.getmtime(o) < max(os.path.getmtime(s), hdr_time):
             todo.append((s, o))
