@@ -4,3 +4,6 @@
 # changes the generated code, so the code library has to be rebuilt (tools/build_game.py).
 0x006442f8 sMain::updateFrameTiming   # frame-rate cap (MH4U_FPS)
 0x00af5250 sMhMain::frame             # per-frame timing trace (MH4U_TRACE_FRAMES)
+0x00c46380 uMhCamera::getProjMatrix   # widescreen: widen the 3D view (MH4U_WIDESCREEN)
+0x002535f8 uFreeCamera::getProjMatrix # widescreen
+0x0032e338 uMotionCamera::getProjMatrix  # widescreen (cutscene cameras)
