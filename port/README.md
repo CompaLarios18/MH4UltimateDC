@@ -64,7 +64,7 @@ from its virtual SD card), the runner can also drive it without a window:
 
 `--trace-svc FILE` writes every system call with its thread, caller and arguments; the
 same run on `--cpu jit` gives the reference, and the first difference per thread points at
-the recompiled function that went wrong. `--input` presses buttons, touches the bottom screen (pixels) or moves the circle pad
+the recompiled function that went wrong (`tools/compare_svc_traces.py jit.txt recomp.txt`). `--input` presses buttons, touches the bottom screen (pixels) or moves the circle pad
 (-1..1) at emulated times; `--shots` saves both screens as PPM images. The port's hooks
 take options from the environment: `MH4U_FPS=60` raises the engine's frame-rate cap,
 `MH4U_TRACE_FRAMES=60` logs the engine's frame timing every 60 frames.
