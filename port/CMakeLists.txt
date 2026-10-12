@@ -37,7 +37,7 @@ function(mh4u_add_code_library name dir)
     if (MSVC)
         target_compile_options(${name} PRIVATE /fp:strict /w)
     else()
-        target_compile_options(${name} PRIVATE ${MH4U_RECOMP_OPT} -ffp-contract=off
+        target_compile_options(${name} PRIVATE ${MH4U_RECOMP_OPT} -ffp-contract=off -frounding-math
                                -fno-strict-aliasing -fwrapv -w)
     endif()
 endfunction()

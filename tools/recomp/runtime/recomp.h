@@ -22,6 +22,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <math.h>
+#include <fenv.h>
 
 typedef uint8_t u8;
 typedef uint16_t u16;
@@ -67,6 +68,9 @@ typedef struct {
 } RFuncEntry;
 
 void rc_call(RCtx *ctx, u32 target);
+/* rc_call for a call site with an inline cache: on success also stores the target and its
+ * function in *ic_target / *ic_fn so the site can call it directly next time. */
+void rc_call_ic(RCtx *ctx, u32 target, u32 *ic_target, void (**ic_fn)(RCtx *));
 void rc_svc(RCtx *ctx, u32 imm, u32 next_pc);
 void rc_trap(RCtx *ctx, u32 pc, u32 kind);
 void rc_bad_return(RCtx *ctx, u32 got, u32 expected);
@@ -154,33 +158,47 @@ RC_INLINE u32 rds16(RCtx *ctx, u32 a) { return (u32)(s32)(s16)(u16)rd16(ctx, a);
 RC_INLINE u32 rds8(RCtx *ctx, u32 a) { return (u32)(s32)(s8)(u8)rd8(ctx, a); }
 
 /* ── conditions ────────────────────────────────────────────────────────── */
-#define C_EQ (ctx->fz)
-#define C_NE (!ctx->fz)
-#define C_CS (ctx->fc)
-#define C_CC (!ctx->fc)
-#define C_MI (ctx->fn)
-#define C_PL (!ctx->fn)
-#define C_VS (ctx->fv)
-#define C_VC (!ctx->fv)
-#define C_HI (ctx->fc && !ctx->fz)
-#define C_LS (!ctx->fc || ctx->fz)
-#define C_GE (ctx->fn == ctx->fv)
-#define C_LT (ctx->fn != ctx->fv)
-#define C_GT (!ctx->fz && ctx->fn == ctx->fv)
-#define C_LE (ctx->fz || ctx->fn != ctx->fv)
+/* Where flags live. Generated functions may keep registers and flags in local variables
+ * (emit.py redefines these and R() per file); by default they are the RCtx fields. Around
+ * anything that looks at the RCtx (calls, system calls, returns, yields) the function
+ * writes its locals back (RC_FLUSH) and reloads them afterwards (RC_RELOAD). */
+#define RC_FN (ctx->fn)
+#define RC_FZ (ctx->fz)
+#define RC_FC (ctx->fc)
+#define RC_FV (ctx->fv)
+#define RC_FQ (ctx->fq)
+#define RC_GE (ctx->ge)
+#define RC_FLUSH() ((void)0)
+#define RC_RELOAD() ((void)0)
+
+#define C_EQ (RC_FZ)
+#define C_NE (!RC_FZ)
+#define C_CS (RC_FC)
+#define C_CC (!RC_FC)
+#define C_MI (RC_FN)
+#define C_PL (!RC_FN)
+#define C_VS (RC_FV)
+#define C_VC (!RC_FV)
+#define C_HI (RC_FC && !RC_FZ)
+#define C_LS (!RC_FC || RC_FZ)
+#define C_GE (RC_FN == RC_FV)
+#define C_LT (RC_FN != RC_FV)
+#define C_GT (!RC_FZ && RC_FN == RC_FV)
+#define C_LE (RC_FZ || RC_FN != RC_FV)
 
 /* ── flags and shifter ─────────────────────────────────────────────────── */
-#define RC_NZ(v) do { u32 _nz = (u32)(v); ctx->fn = _nz >> 31; ctx->fz = (_nz == 0); } while (0)
+#define RC_NZ(v) do { u32 _nz = (u32)(v); RC_FN = _nz >> 31; RC_FZ = (_nz == 0); } while (0)
 
-RC_INLINE u32 rc_adds(RCtx *ctx, u32 a, u32 b, u32 cin) {
+RC_INLINE u32 rc_adds_(u32 a, u32 b, u32 cin, u32 *n, u32 *z, u32 *c, u32 *v) {
     u64 t = (u64)a + (u64)b + (u64)cin;
     u32 r = (u32)t;
-    ctx->fn = r >> 31;
-    ctx->fz = (r == 0);
-    ctx->fc = (u32)(t >> 32);
-    ctx->fv = ((a ^ r) & (b ^ r)) >> 31;
+    *n = r >> 31;
+    *z = (r == 0);
+    *c = (u32)(t >> 32);
+    *v = ((a ^ r) & (b ^ r)) >> 31;
     return r;
 }
+#define rc_adds(ctx, a, b, cin) rc_adds_((a), (b), (cin), &RC_FN, &RC_FZ, &RC_FC, &RC_FV)
 /* a - b - (1 - cin) == a + ~b + cin */
 #define rc_subs(ctx, a, b, cin) rc_adds((ctx), (a), ~(u32)(b), (cin))
 
@@ -234,25 +252,25 @@ RC_INLINE u32 rc_rev(u32 x) {
 }
 
 /* ── saturation ────────────────────────────────────────────────────────── */
-RC_INLINE u32 rc_sat_s32(RCtx *ctx, s64 v) {
-    if (v > 0x7FFFFFFFLL) { ctx->fq = 1; return 0x7FFFFFFF; }
-    if (v < -0x80000000LL) { ctx->fq = 1; return 0x80000000u; }
+RC_INLINE u32 rc_sat_s32_(s64 v, u32 *q) {
+    if (v > 0x7FFFFFFFLL) { *q = 1; return 0x7FFFFFFF; }
+    if (v < -0x80000000LL) { *q = 1; return 0x80000000u; }
     return (u32)(s32)v;
 }
-RC_INLINE u32 rc_qadd(RCtx *ctx, u32 a, u32 b) { return rc_sat_s32(ctx, (s64)(s32)a + (s64)(s32)b); }
-RC_INLINE u32 rc_qsub(RCtx *ctx, u32 a, u32 b) { return rc_sat_s32(ctx, (s64)(s32)a - (s64)(s32)b); }
+#define rc_qadd(ctx, a, b) rc_sat_s32_((s64)(s32)(a) + (s64)(s32)(b), &RC_FQ)
+#define rc_qsub(ctx, a, b) rc_sat_s32_((s64)(s32)(a) - (s64)(s32)(b), &RC_FQ)
 /* signed saturate to `bits` (1..32), sets Q */
-RC_INLINE u32 rc_ssat(RCtx *ctx, s64 v, u32 bits) {
+RC_INLINE u32 rc_ssat_(s64 v, u32 bits, u32 *q) {
     s64 hi = (1LL << (bits - 1)) - 1, lo = -(1LL << (bits - 1));
-    if (v > hi) { ctx->fq = 1; return (u32)hi; }
-    if (v < lo) { ctx->fq = 1; return (u32)lo; }
+    if (v > hi) { *q = 1; return (u32)hi; }
+    if (v < lo) { *q = 1; return (u32)lo; }
     return (u32)v;
 }
 /* unsigned saturate to `bits` (0..31), sets Q */
-RC_INLINE u32 rc_usat(RCtx *ctx, s64 v, u32 bits) {
+RC_INLINE u32 rc_usat_(s64 v, u32 bits, u32 *q) {
     s64 hi = (1LL << bits) - 1;
-    if (v > hi) { ctx->fq = 1; return (u32)hi; }
-    if (v < 0) { ctx->fq = 1; return 0; }
+    if (v > hi) { *q = 1; return (u32)hi; }
+    if (v < 0) { *q = 1; return 0; }
     return (u32)v;
 }
 /* saturation without touching Q (parallel saturating ops) */
@@ -260,7 +278,11 @@ RC_INLINE s32 rc_clamp(s32 v, s32 lo, s32 hi) { return v < lo ? lo : v > hi ? hi
 
 /* ── ARMv6 parallel add/subtract ──────────────────────────────────────── */
 /* kind: 1=S 2=Q 3=SH 5=U 6=UQ 7=UH ; op: 0=ADD16 1=ASX 2=SAX 3=SUB16 4=ADD8 7=SUB8 */
-RC_INLINE u32 rc_parallel(RCtx *ctx, u32 kind, u32 op, u32 a, u32 b) {
+#define rc_sat_s32(ctx, v) rc_sat_s32_((v), &RC_FQ)
+#define rc_ssat(ctx, v, bits) rc_ssat_((v), (bits), &RC_FQ)
+#define rc_usat(ctx, v, bits) rc_usat_((v), (bits), &RC_FQ)
+
+RC_INLINE u32 rc_parallel_(u32 kind, u32 op, u32 a, u32 b, u32 *gep) {
     int sgn = kind < 4;
     u32 res = 0, ge = 0;
     if (op <= 3) {
@@ -308,15 +330,17 @@ RC_INLINE u32 rc_parallel(RCtx *ctx, u32 kind, u32 op, u32 a, u32 b) {
             res |= lane << (8 * i);
         }
     }
-    if (kind == 1 || kind == 5) ctx->ge = ge;
+    if (kind == 1 || kind == 5) *gep = ge;
     return res;
 }
 
-RC_INLINE u32 rc_sel(RCtx *ctx, u32 a, u32 b) {
+RC_INLINE u32 rc_sel_(u32 gev, u32 a, u32 b) {
     u32 r = 0;
-    for (int i = 0; i < 4; i++) r |= (((ctx->ge >> i) & 1) ? a : b) & (0xFFu << (8 * i));
+    for (int i = 0; i < 4; i++) r |= (((gev >> i) & 1) ? a : b) & (0xFFu << (8 * i));
     return r;
 }
+#define rc_parallel(ctx, kind, op, a, b) rc_parallel_((kind), (op), (a), (b), &RC_GE)
+#define rc_sel(ctx, a, b) rc_sel_(RC_GE, (a), (b))
 
 RC_INLINE u32 rc_usad8(u32 a, u32 b) {
     u32 s = 0;
@@ -340,15 +364,53 @@ RC_INLINE void rc_set_cpsr(RCtx *ctx, u32 v, u32 mask) {
     if (mask & 4) ctx->ge = (v >> 16) & 0xF;   /* s: GE */
 }
 
+/* the same, for generated code (flags wherever RC_F* says) */
+#define RC_CPSR() ((RC_FN << 31) | (RC_FZ << 30) | (RC_FC << 29) | (RC_FV << 28) | (RC_FQ << 27) | \
+                   ((RC_GE & 0xF) << 16) | ctx->cpsr_misc)
+#define RC_SET_CPSR(v, mask) do { u32 _cv = (v); \
+        if ((mask) & 8) { RC_FN = (_cv >> 31) & 1; RC_FZ = (_cv >> 30) & 1; RC_FC = (_cv >> 29) & 1; \
+                          RC_FV = (_cv >> 28) & 1; RC_FQ = (_cv >> 27) & 1; } \
+        if ((mask) & 4) RC_GE = (_cv >> 16) & 0xF; } while (0)
+
 /* ── VFP ───────────────────────────────────────────────────────────────── */
 /* All helpers take the current FPSCR to honour flush-to-zero (FZ, bit 24) and default-NaN
- * (DN, bit 25) mode; the 3DS runs with both set ("RunFast"). Rounding is always to
- * nearest (the game never changes RMode). */
+ * (DN, bit 25) mode; the 3DS runs with both set ("RunFast"). The rounding mode (RMode,
+ * bits 23:22) is the host's: the runtime keeps the host FPU's rounding mode equal to
+ * FPSCR.RMode while guest code runs (rc_apply_rounding; new 3DS threads start with round
+ * towards zero). Compile generated code with -frounding-math. */
 #define RC_DEFAULT_NAN32 0x7FC00000u
 #define RC_DEFAULT_NAN64 0x7FF8000000000000ull
-#define RC_FZ 0x01000000u
-#define RC_DN 0x02000000u
+#define RC_FPSCR_FZ 0x01000000u
+#define RC_FPSCR_DN 0x02000000u
 #define RC_FPSCR_WRITABLE 0xFFF7009Fu   /* bits kept on VMSR (same as QEMU and dynarmic) */
+#define RC_RMODE 0x00C00000u
+
+/* The host FPU follows FPSCR while guest code runs: rounding mode, and flush-to-zero
+ * (x86 FTZ+DAZ, AArch64 FPCR.FZ). Where the host can't flush, the helpers do it. */
+#if defined(__SSE2__) || defined(_M_X64) || defined(_M_AMD64)
+#include <xmmintrin.h>
+#define RC_HW_FTZ 1
+#elif defined(__aarch64__)
+#define RC_HW_FTZ 1
+#endif
+RC_INLINE void rc_apply_fpscr(u32 fpscr) {
+    static const int modes[4] = {FE_TONEAREST, FE_UPWARD, FE_DOWNWARD, FE_TOWARDZERO};
+    fesetround(modes[(fpscr >> 22) & 3]);
+#if defined(__SSE2__) || defined(_M_X64) || defined(_M_AMD64)
+    _mm_setcsr((_mm_getcsr() & ~0x8040u) | ((fpscr & 0x01000000u) ? 0x8040u : 0));
+#elif defined(__aarch64__)
+    unsigned long fpcr;
+    __asm__ volatile("mrs %0, fpcr" : "=r"(fpcr));
+    fpcr = (fpcr & ~(1ul << 24)) | ((fpscr & 0x01000000u) ? (1ul << 24) : 0);
+    __asm__ volatile("msr fpcr, %0" : : "r"(fpcr));
+#endif
+}
+#define rc_apply_rounding rc_apply_fpscr
+RC_INLINE void rc_write_fpscr(RCtx *ctx, u32 v) {
+    const u32 old = ctx->fpscr;
+    ctx->fpscr = v & RC_FPSCR_WRITABLE;
+    if ((old ^ ctx->fpscr) & (RC_RMODE | 0x01000000u)) rc_apply_fpscr(ctx->fpscr);
+}
 
 RC_INLINE u32 f2u(float f) { u32 u; memcpy(&u, &f, 4); return u; }
 RC_INLINE float u2f(u32 u) { float f; memcpy(&f, &u, 4); return f; }
@@ -362,11 +424,19 @@ RC_INLINE int rc_issnan64(u64 x) { return rc_isnan64(x) && !(x & 0x0008000000000
 
 /* flush a denormal to a signed zero when FZ is set */
 RC_INLINE u32 rc_ftz32(u32 fpscr, u32 x) {
-    return ((fpscr & RC_FZ) && !(x & 0x7F800000u) && (x & 0x007FFFFFu)) ? (x & 0x80000000u) : x;
+    return ((fpscr & RC_FPSCR_FZ) && !(x & 0x7F800000u) && (x & 0x007FFFFFu)) ? (x & 0x80000000u) : x;
 }
 RC_INLINE u64 rc_ftz64(u32 fpscr, u64 x) {
-    return ((fpscr & RC_FZ) && !(x & 0x7FF0000000000000ull) && (x & 0x000FFFFFFFFFFFFFull)) ? (x & 0x8000000000000000ull) : x;
+    return ((fpscr & RC_FPSCR_FZ) && !(x & 0x7FF0000000000000ull) && (x & 0x000FFFFFFFFFFFFFull)) ? (x & 0x8000000000000000ull) : x;
 }
+
+#ifdef RC_HW_FTZ
+#define RC_IN32(fpscr, x) (x)
+#define RC_IN64(fpscr, x) (x)
+#else
+#define RC_IN32(fpscr, x) rc_ftz32(fpscr, x)
+#define RC_IN64(fpscr, x) rc_ftz64(fpscr, x)
+#endif
 
 /* NaN operands decide the result (ARM priority: SNaN a, SNaN b, QNaN a, QNaN b). */
 RC_INLINE int rc_nan2_32(u32 fpscr, u32 a, u32 b, u32 *out) {
@@ -376,7 +446,7 @@ RC_INLINE int rc_nan2_32(u32 fpscr, u32 a, u32 b, u32 *out) {
     else if (rc_isnan32(a)) n = a;
     else if (rc_isnan32(b)) n = b;
     else return 0;
-    *out = (fpscr & RC_DN) ? RC_DEFAULT_NAN32 : n;
+    *out = (fpscr & RC_FPSCR_DN) ? RC_DEFAULT_NAN32 : n;
     return 1;
 }
 RC_INLINE int rc_nan2_64(u32 fpscr, u64 a, u64 b, u64 *out) {
@@ -386,25 +456,34 @@ RC_INLINE int rc_nan2_64(u32 fpscr, u64 a, u64 b, u64 *out) {
     else if (rc_isnan64(a)) n = a;
     else if (rc_isnan64(b)) n = b;
     else return 0;
-    *out = (fpscr & RC_DN) ? RC_DEFAULT_NAN64 : n;
+    *out = (fpscr & RC_FPSCR_DN) ? RC_DEFAULT_NAN64 : n;
     return 1;
+}
+
+/* NaN result: ARM's choice (NaN operand by priority, default NaN for invalid operations
+ * or in DN mode) instead of the host's. */
+RC_INLINE u32 rc_nan_result32(u32 fpscr, u32 a, u32 b) {
+    u32 n;
+    return rc_nan2_32(fpscr, a, b, &n) ? n : RC_DEFAULT_NAN32;
+}
+RC_INLINE u64 rc_nan_result64(u32 fpscr, u64 a, u64 b) {
+    u64 n;
+    return rc_nan2_64(fpscr, a, b, &n) ? n : RC_DEFAULT_NAN64;
 }
 
 #define RC_VFP_BIN32(name, expr)                                                       \
     RC_INLINE u32 name(u32 fpscr, u32 a, u32 b) {                                      \
-        u32 n;                                                                         \
-        a = rc_ftz32(fpscr, a); b = rc_ftz32(fpscr, b);                                \
-        if (rc_nan2_32(fpscr, a, b, &n)) return n;                                     \
-        float x = u2f(a), y = u2f(b); float r = (expr); u32 ru = f2u(r);               \
-        return rc_isnan32(ru) ? RC_DEFAULT_NAN32 : rc_ftz32(fpscr, ru);                \
+        float x = u2f(RC_IN32(fpscr, a)), y = u2f(RC_IN32(fpscr, b));                  \
+        float r = (expr); u32 ru = f2u(r);                                             \
+        if (__builtin_expect(rc_isnan32(ru), 0)) return rc_nan_result32(fpscr, a, b);  \
+        return RC_IN32(fpscr, ru);                                                     \
     }
 #define RC_VFP_BIN64(name, expr)                                                       \
     RC_INLINE u64 name(u32 fpscr, u64 a, u64 b) {                                      \
-        u64 n;                                                                         \
-        a = rc_ftz64(fpscr, a); b = rc_ftz64(fpscr, b);                                \
-        if (rc_nan2_64(fpscr, a, b, &n)) return n;                                     \
-        double x = u2d(a), y = u2d(b); double r = (expr); u64 ru = d2u(r);             \
-        return rc_isnan64(ru) ? RC_DEFAULT_NAN64 : rc_ftz64(fpscr, ru);                \
+        double x = u2d(RC_IN64(fpscr, a)), y = u2d(RC_IN64(fpscr, b));                 \
+        double r = (expr); u64 ru = d2u(r);                                            \
+        if (__builtin_expect(rc_isnan64(ru), 0)) return rc_nan_result64(fpscr, a, b);  \
+        return RC_IN64(fpscr, ru);                                                     \
     }
 RC_VFP_BIN32(vadd32, x + y)
 RC_VFP_BIN32(vsub32, x - y)
@@ -421,21 +500,21 @@ RC_INLINE u32 vabs32(u32 a) { return a & 0x7FFFFFFFu; }
 RC_INLINE u64 vabs64(u64 a) { return a & 0x7FFFFFFFFFFFFFFFull; }
 
 RC_INLINE u32 vsqrt32(u32 fpscr, u32 a) {
-    a = rc_ftz32(fpscr, a);
-    if (rc_isnan32(a)) return (fpscr & RC_DN) ? RC_DEFAULT_NAN32 : (rc_issnan32(a) ? a | 0x00400000u : a);
+    a = rc_ftz32(fpscr, a);   /* the sign test below needs the flushed value */
+    if (rc_isnan32(a)) return (fpscr & RC_FPSCR_DN) ? RC_DEFAULT_NAN32 : (rc_issnan32(a) ? a | 0x00400000u : a);
     if ((a >> 31) && (a & 0x7FFFFFFFu)) return RC_DEFAULT_NAN32;
-    return rc_ftz32(fpscr, f2u(sqrtf(u2f(a))));
+    return RC_IN32(fpscr, f2u(sqrtf(u2f(a))));
 }
 RC_INLINE u64 vsqrt64(u32 fpscr, u64 a) {
     a = rc_ftz64(fpscr, a);
-    if (rc_isnan64(a)) return (fpscr & RC_DN) ? RC_DEFAULT_NAN64 : (rc_issnan64(a) ? a | 0x0008000000000000ull : a);
+    if (rc_isnan64(a)) return (fpscr & RC_FPSCR_DN) ? RC_DEFAULT_NAN64 : (rc_issnan64(a) ? a | 0x0008000000000000ull : a);
     if ((a >> 63) && (a & 0x7FFFFFFFFFFFFFFFull)) return RC_DEFAULT_NAN64;
-    return rc_ftz64(fpscr, d2u(sqrt(u2d(a))));
+    return RC_IN64(fpscr, d2u(sqrt(u2d(a))));
 }
 
 /* compare: returns NZCV nibble (FPSCR[31:28]) */
 RC_INLINE u32 vcmp32(u32 fpscr, u32 a, u32 b) {
-    a = rc_ftz32(fpscr, a); b = rc_ftz32(fpscr, b);
+    a = rc_ftz32(fpscr, a); b = rc_ftz32(fpscr, b);   /* compares see the flushed values either way */
     if (rc_isnan32(a) || rc_isnan32(b)) return 0x3;
     float x = u2f(a), y = u2f(b);
     if (x == y) return 0x6;
@@ -452,9 +531,9 @@ RC_INLINE u32 vcmp64(u32 fpscr, u64 a, u64 b) {
 
 /* conversions */
 RC_INLINE u64 vcvt_f64_f32(u32 fpscr, u32 a) {
-    a = rc_ftz32(fpscr, a);
+    a = RC_IN32(fpscr, a);
     if (rc_isnan32(a)) {
-        if (fpscr & RC_DN) return RC_DEFAULT_NAN64;
+        if (fpscr & RC_FPSCR_DN) return RC_DEFAULT_NAN64;
         u64 sign = (u64)(a >> 31) << 63;
         u64 mant = (u64)(a & 0x007FFFFFu) << 29;
         return sign | 0x7FF0000000000000ull | mant | 0x0008000000000000ull;
@@ -462,14 +541,14 @@ RC_INLINE u64 vcvt_f64_f32(u32 fpscr, u32 a) {
     return d2u((double)u2f(a));
 }
 RC_INLINE u32 vcvt_f32_f64(u32 fpscr, u64 a) {
-    a = rc_ftz64(fpscr, a);
+    a = RC_IN64(fpscr, a);
     if (rc_isnan64(a)) {
-        if (fpscr & RC_DN) return RC_DEFAULT_NAN32;
+        if (fpscr & RC_FPSCR_DN) return RC_DEFAULT_NAN32;
         u32 sign = (u32)(a >> 63) << 31;
         u32 mant = (u32)((a & 0x000FFFFFFFFFFFFFull) >> 29);
         return sign | 0x7F800000u | mant | 0x00400000u;
     }
-    return rc_ftz32(fpscr, f2u((float)u2d(a)));
+    return RC_IN32(fpscr, f2u((float)u2d(a)));
 }
 /* float -> int, saturating; rz=1 round toward zero, else round to nearest even */
 RC_INLINE u32 rc_f2s(double x, int rz) {
@@ -486,33 +565,38 @@ RC_INLINE u32 rc_f2u(double x, int rz) {
     if (r < 0.0) return 0;
     return (u32)r;
 }
-RC_INLINE double rc_s2d(u32 fpscr, u32 a) { return (double)u2f(rc_ftz32(fpscr, a)); }
-RC_INLINE double rc_d2d(u32 fpscr, u64 a) { return u2d(rc_ftz64(fpscr, a)); }
+RC_INLINE double rc_s2d(u32 fpscr, u32 a) { return (double)u2f(RC_IN32(fpscr, a)); }
+RC_INLINE double rc_d2d(u32 fpscr, u64 a) { return u2d(RC_IN64(fpscr, a)); }
 
 /* ── control ───────────────────────────────────────────────────────────── */
 /* Return to an address other than our own return address: the target goes in r15 and the
  * call site dispatches on it (RVCT fplib special-case handlers; see recomp/analysis.py). */
-#define RC_RET_TO(v) do { R(15) = (v); return; } while (0)
+#define RC_RET_TO(v) do { u32 _rv = (v); RC_FLUSH(); ctx->r[15] = _rv; return; } while (0)
+
+/* Indirect call through a per-site inline cache (one target remembered per call site). */
+#define RC_ICALL(t) do { static u32 ic_t_ = 1; static RFunc ic_f_; const u32 _t = (t); \
+        if (_t == ic_t_) ic_f_(ctx); else rc_call_ic(ctx, _t, &ic_t_, &ic_f_); } while (0)
 
 /* Every function knows the address it should return to: LR at entry, or, for code that the
  * previous function runs into without a call, that function's own return address. Returns
  * leave their target in r15, so whoever made the outermost call can check where the guest
  * really went (tail calls return through their callee). */
-#define RC_ENTRY() u32 rc_entry_lr = R(14); \
+#define RC_ENTRY() u32 rc_entry_lr = ctx->r[14]; \
     if (ctx->expect_next) { rc_entry_lr = ctx->expect_next; ctx->expect_next = 0; }
 #define RC_FALL_EXPECT() (ctx->expect_next = rc_entry_lr)
 /* A computed jump to our own return address is a return (Thumb `pop {r3}; bx r3`). */
 #define RC_IS_RETURN(t) ((t) == rc_entry_lr)
 #ifdef RC_CHECK_RETURNS
-#define RC_RET(v) do { u32 _rv = (v); R(15) = _rv; if (_rv != rc_entry_lr) rc_bad_return(ctx, _rv, rc_entry_lr); return; } while (0)
+#define RC_RET(v) do { u32 _rv = (v); RC_FLUSH(); ctx->r[15] = _rv; \
+        if (_rv != rc_entry_lr) rc_bad_return(ctx, _rv, rc_entry_lr); return; } while (0)
 #else
-#define RC_RET(v) do { R(15) = (v); return; } while (0)
+#define RC_RET(v) do { u32 _rv = (v); RC_FLUSH(); ctx->r[15] = _rv; return; } while (0)
 #endif
 
 #ifdef RC_NO_BUDGET
 #define RC_TICK(n) ((void)0)
 #else
-#define RC_TICK(n) do { if ((ctx->budget -= (n)) < 0) rc_budget(ctx); } while (0)
+#define RC_TICK(n) do { if ((ctx->budget -= (n)) < 0) { RC_FLUSH(); rc_budget(ctx); RC_RELOAD(); } } while (0)
 #endif
 
 #endif /* RECOMP_H */

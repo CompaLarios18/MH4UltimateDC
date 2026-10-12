@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Build port/tests/svc_test.c into a 3DS ELF that Azahar can boot, and recompile it.
+"""Build a port test program (port/tests/svc_test.c, bench.c) into a 3DS ELF that Azahar
+can boot, and recompile it.
 
-usage: python3 port/tests/build_svc_test.py [-o build/port-test]
-Writes <out>/svc_test.elf and <out>/src/*.c (configure the port with
--DMH4U_TEST_RECOMP_DIR=<out> to get mh4u_test_headless).
+usage: python3 port/tests/build_svc_test.py [-o build/port-test] [--program bench]
+Writes <out>/<program>.elf and its recompiled code in <out>/src/; build the code library
+with `python3 -m recomp.build <out> --code-library` and run it with mh4u_runner --code.
 """
 from __future__ import annotations
 
@@ -39,19 +40,19 @@ SECTIONS {{
 """
 
 
-def build(out: str) -> str:
+def build(out: str, program: str = "svc_test") -> str:
     os.makedirs(out, exist_ok=True)
     objs = []
-    for src in (os.path.join(HERE, "svc_test.c"), dt.RT_SOURCE):
+    for src in (os.path.join(HERE, f"{program}.c"), dt.RT_SOURCE):
         obj = os.path.join(out, os.path.basename(src) + ".o")
-        subprocess.run(["clang", *dt.CFLAGS, "-c", src, "-o", obj], check=True)
+        subprocess.run(["clang", *dt.CFLAGS, f"-I{HERE}", "-c", src, "-o", obj], check=True)
         objs.append(obj)
-    script = os.path.join(out, "svc_test.ld")
+    script = os.path.join(out, f"{program}.ld")
     with open(script, "w") as f:
         f.write(LINKER_SCRIPT)
-    elf = os.path.join(out, "svc_test.elf")
+    elf = os.path.join(out, f"{program}.elf")
     subprocess.run(["ld.lld", "-T", script, *objs, "-o", elf], check=True)
-    image = os.path.join(out, "svc_test.bin")
+    image = os.path.join(out, f"{program}.bin")
     subprocess.run(["llvm-objcopy", "-O", "binary", elf, image], check=True)
 
     entries, text_end = {}, BASE
@@ -75,8 +76,9 @@ def build(out: str) -> str:
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("-o", "--out", default=os.path.join(ROOT, "build", "port-test"))
+    ap.add_argument("--program", default="svc_test", help="svc_test or bench")
     args = ap.parse_args(argv)
-    print(build(args.out))
+    print(build(args.out, args.program))
     return 0
 
 

@@ -139,6 +139,8 @@ int main(int argc, char** argv) {
             break;
         }
     }
+    std::printf("emulated time: %.1f ms\n",
+                (system.CoreTiming().GetGlobalTicks() - start_ticks) / 268111.856);
     std::fflush(stdout);
     system.Shutdown();
     Common::Log::Stop();

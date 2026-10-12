@@ -76,6 +76,13 @@ void rc_call(RCtx *ctx, u32 target) {
     if (!e || e->mode != (target & 1)) leave(ST_NOFUNC, target, 0);
     e->fn(ctx);
 }
+void rc_call_ic(RCtx *ctx, u32 target, u32 *ic_target, void (**ic_fn)(RCtx *)) {
+    const RFuncEntry *e = find(target & ~1u);
+    if (!e || e->mode != (target & 1)) leave(ST_NOFUNC, target, 0);
+    *ic_target = target;
+    *ic_fn = e->fn;
+    e->fn(ctx);
+}
 void rc_svc(RCtx *ctx, u32 imm, u32 next_pc) { (void)ctx; leave(ST_SVC, imm, next_pc & ~1u); }
 void rc_trap(RCtx *ctx, u32 pc, u32 kind) { (void)ctx; leave(ST_TRAP, pc, kind); }
 void rc_bad_return(RCtx *ctx, u32 got, u32 expected) { (void)ctx; leave(ST_BADRET, got, expected); }
@@ -123,6 +130,7 @@ int rh_call(u32 addr, RCtx *ctx) {
     g_status = ST_RETURN;
     g_info0 = g_info1 = 0;
     const u32 expect = ctx->r[14];
+    rc_apply_rounding(ctx->fpscr);          /* the host follows FPSCR.RMode in guest code */
     if (sigsetjmp(g_jmp, 1) == 0) {
         g_in_call = 1;
         e->fn(ctx);
@@ -134,5 +142,6 @@ int rh_call(u32 addr, RCtx *ctx) {
         }
     }
     g_in_call = 0;
+    rc_apply_rounding(0);
     return (int)g_status;
 }

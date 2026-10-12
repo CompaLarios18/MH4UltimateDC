@@ -22,7 +22,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 RUNTIME = os.path.join(HERE, "runtime")
 HARNESS = os.path.join(HERE, "harness", "harness.c")
 DLL_GLUE = os.path.join(RUNTIME, "rc_dll.c")
-BASE_FLAGS = ["-c", "-fPIC", "-ffp-contract=off", "-fno-strict-aliasing", "-fwrapv", "-w", f"-I{RUNTIME}"]
+BASE_FLAGS = ["-c", "-fPIC", "-ffp-contract=off", "-frounding-math", "-fno-strict-aliasing", "-fwrapv", "-w",
+              f"-I{RUNTIME}"]
 
 
 def compile_one(cc: str, src: str, obj: str, flags: list[str]) -> tuple[str, float, str]:

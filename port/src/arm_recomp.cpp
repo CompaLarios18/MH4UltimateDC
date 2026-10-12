@@ -177,6 +177,9 @@ void ARM_Recomp::Execute(s64 budget) {
 
 void ARM_Recomp::GuestMain() {
     const u32 entry = ctx->r[15] | (thumb ? 1u : 0u);
+    // Guest code runs with the host FPU rounding like FPSCR.RMode says (each fiber keeps
+    // its own FPU control state across switches).
+    rc_apply_rounding(ctx->fpscr);
     Call(entry);
     Fail(fmt::format("thread entry {:08X} returned to {:08X}", entry, ctx->r[15]));
 }
@@ -255,6 +258,7 @@ void ARM_Recomp::Interpret(u32 target) {
     }
     FromInterpreter();
     slice_start = ctx->budget = GetTimer().GetDowncount();
+    rc_apply_rounding(ctx->fpscr);
 }
 
 bool ARM_Recomp::ExitsThread() const {
@@ -268,6 +272,7 @@ bool ARM_Recomp::ExitsThread() const {
 }
 
 void ARM_Recomp::ToInterpreter() {
+    rc_apply_rounding(0); // the interpreter's VFP is software and honours FPSCR itself
     ThreadContext tc;
     SaveContext(tc);
     interp->LoadContext(tc);
@@ -290,6 +295,7 @@ void ARM_Recomp::Svc(u32 imm, u32 next_pc) {
     SyncTicks();
     ctx->r[15] = next_pc & ~1u;
     thumb = (next_pc & 1) != 0;
+    rc_apply_rounding(0); // Azahar's own code runs with the default rounding
     svc_context.CallSVC(imm);
     if (imm == SVC_EXIT_THREAD || imm == SVC_EXIT_PROCESS) {
         running->finished = true;
@@ -302,6 +308,7 @@ void ARM_Recomp::Svc(u32 imm, u32 next_pc) {
         YieldToHost();
     }
     slice_start = ctx->budget = GetTimer().GetDowncount();
+    rc_apply_rounding(ctx->fpscr);
 }
 
 void ARM_Recomp::Budget() {

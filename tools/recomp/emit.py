@@ -1,7 +1,34 @@
 """C generation for analysed functions (and for single-instruction fuzz functions)."""
 from __future__ import annotations
 
+import re
+
 from .insn import (AL, B, BL, COND_NAMES, ICALL, IJUMP, JTAB, OP, RET, SVC, TRAP, Insn, hexc)
+
+# Put at the top of files of whole functions (after recomp.h): registers and flags live in
+# local variables of each function, written back to the RCtx around calls, system calls,
+# returns and yields (RC_FLUSH/RC_RELOAD, defined per function).
+LOCALS_PREAMBLE = """#undef R
+#define R(n) rc_r##n
+#undef RC_FN
+#define RC_FN rc_fn
+#undef RC_FZ
+#define RC_FZ rc_fz
+#undef RC_FC
+#define RC_FC rc_fc
+#undef RC_FV
+#define RC_FV rc_fv
+#undef RC_FQ
+#define RC_FQ rc_fq
+#undef RC_GE
+#define RC_GE rc_ge
+#undef RC_FLUSH
+#undef RC_RELOAD
+"""
+FLUSH, RELOAD = "RC_FLUSH();", "RC_RELOAD();"
+_USES_FLAGS = re.compile(r"\bRC_F[NZCV]\b|\bC_[A-Z]{2}\b|\brc_adds\b|\brc_subs\b|\bRC_NZ\b|\bRC_CPSR\b|\bRC_SET_CPSR\b")
+_USES_Q = re.compile(r"\bRC_FQ\b|\brc_q(add|sub)\b|\brc_[su]sat\b|\brc_sat_s32\b|\bRC_CPSR\b|\bRC_SET_CPSR\b")
+_USES_GE = re.compile(r"\bRC_GE\b|\brc_parallel\b|\brc_sel\b|\bRC_CPSR\b|\bRC_SET_CPSR\b")
 
 
 def fname(addr: int) -> str:
@@ -28,9 +55,10 @@ def straight_line(ins: Insn) -> list[str]:
         return wrap(ins, ins.body)
     if ins.kind == SVC:
         # next_pc carries the Thumb bit, so the runtime knows the state to resume in
-        return wrap(ins, [f"rc_svc(ctx, {hexc(ins.imm)}, {hexc(ins.next | (1 if ins.mode == 'thumb' else 0))});"])
+        return wrap(ins, [FLUSH, f"rc_svc(ctx, {hexc(ins.imm)}, {hexc(ins.next | (1 if ins.mode == 'thumb' else 0))});",
+                          RELOAD])
     if ins.kind == TRAP:
-        return wrap(ins, [f"rc_trap(ctx, {hexc(ins.addr)}, {ins.imm}); return;"])
+        return wrap(ins, [FLUSH, f"rc_trap(ctx, {hexc(ins.addr)}, {ins.imm}); return;"])
     raise ValueError(f"not a straight-line instruction: {ins.kind}")
 
 
@@ -54,8 +82,8 @@ class FunctionEmitter:
 
     def call(self, target: int, mode: str) -> str:
         if self.known.get(target) == mode:
-            return f"{fname(target)}(ctx);"
-        return f"rc_call(ctx, {hexc(target | (1 if mode == 'thumb' else 0))});"
+            return f"{FLUSH} {fname(target)}(ctx); {RELOAD}"
+        return f"{FLUSH} rc_call(ctx, {hexc(target | (1 if mode == 'thumb' else 0))}); {RELOAD}"
 
     def falls_through(self, f, ins: Insn) -> bool:
         if ins.addr in f.fall_tail:
@@ -97,29 +125,30 @@ class FunctionEmitter:
         elif k == BL:
             out = wrap(ins, [f"R(14) = {hexc(_lr_value(ins))};", self.call(ins.target, ins.target_mode)])
         elif k == ICALL:
-            out = wrap(ins, ins.body + [f"R(14) = {hexc(_lr_value(ins))};", f"rc_call(ctx, {ins.pcexpr});"])
+            out = wrap(ins, ins.body + [f"u32 t_ = {ins.pcexpr};", f"R(14) = {hexc(_lr_value(ins))};", FLUSH,
+                                        "RC_ICALL(t_);", RELOAD])
         elif k == RET:
             out = wrap(ins, ins.body + [f"{'RC_RET_TO' if f.mret else 'RC_RET'}({ins.pcexpr});"])
         elif k == IJUMP:
             if ins.addr in f.link_calls:
                 ret = f.link_calls[ins.addr]
                 tail = [] if ret == ins.next else [f"goto {label(ret)};"]
-                out = wrap(ins, ins.body + [f"rc_call(ctx, {ins.pcexpr});"] + tail)
+                out = wrap(ins, ins.body + [f"u32 t_ = {ins.pcexpr};", FLUSH, "rc_call(ctx, t_);", RELOAD] + tail)
             elif ins.addr in f.ijump_targets:
                 cases = " ".join(f"case {hexc(t)}: goto {label(t)};" for t in f.ijump_targets[ins.addr])
                 out = wrap(ins, ins.body + [f"u32 t_ = {ins.pcexpr};",
                                             f"switch (t_) {{ {cases} default: if (RC_IS_RETURN(t_)) RC_RET(t_); "
-                                            f"rc_call(ctx, t_); return; }}"])
+                                            f"{FLUSH} rc_call(ctx, t_); return; }}"])
             elif f.mret:
                 out = wrap(ins, ins.body + [f"RC_RET_TO({ins.pcexpr});"])
             else:
                 # a jump to our own return address is a return (Thumb `pop {r3}; bx r3`)
                 out = wrap(ins, ins.body + [f"u32 t_ = {ins.pcexpr};", "if (RC_IS_RETURN(t_)) RC_RET(t_);",
-                                            "rc_call(ctx, t_);", "return;"])
+                                            FLUSH, "rc_call(ctx, t_);", "return;"])
         elif k == JTAB:
             cases = " ".join(f"case {i}u: goto {label(t)};" for i, t in enumerate(f.jtabs[ins.addr]))
             out = wrap(ins, [f"switch (R({ins.jt_index})) {{ {cases} default: "
-                             f"rc_trap(ctx, {hexc(ins.addr)}, RC_TRAP_BAD_JUMP); return; }}"])
+                             f"{FLUSH} rc_trap(ctx, {hexc(ins.addr)}, RC_TRAP_BAD_JUMP); return; }}"])
         else:
             raise ValueError(k)
         if ins.addr in f.fall_tail:
@@ -153,12 +182,15 @@ class FunctionEmitter:
                     ticks[cur] = n
                 cur, n = a, 0
             n += 1
-            if not self.falls_through(f, f.insns[a]) or a in gotos:
+            ins = f.insns[a]
+            # a block ends at any branch: a taken conditional branch skips the rest
+            branch = ins.kind in (B, RET, IJUMP, JTAB) and ins.conditional and a not in f.link_calls
+            if not self.falls_through(f, ins) or a in gotos or branch:
                 ticks[cur] = n
                 cur, n = None, 0
         if cur is not None:
             ticks[cur] = n
-        out = [f"void {fname(f.entry)}(RCtx *ctx) {{", "    RC_ENTRY();"]
+        out = []
         if entry_jump:
             out.append(f"    goto {label(f.entry)};")
         for a in addrs:
@@ -176,9 +208,35 @@ class FunctionEmitter:
                 if gotos[a] in f.insns:
                     out.append(f"    goto {label(gotos[a])};")
                 else:
-                    out.append(f"    rc_trap(ctx, {hexc(gotos[a])}, RC_TRAP_BAD_JUMP); return;")
+                    out.append(f"    {FLUSH} rc_trap(ctx, {hexc(gotos[a])}, RC_TRAP_BAD_JUMP); return;")
         # labels for targets that aren't instructions of this function (shouldn't happen)
         for t in sorted(labels - set(addrs)):
-            out.append(f"{label(t)}: rc_trap(ctx, {hexc(t)}, RC_TRAP_BAD_JUMP); return;")
-        out.append("}")
+            out.append(f"{label(t)}: {FLUSH} rc_trap(ctx, {hexc(t)}, RC_TRAP_BAD_JUMP); return;")
+        return self._with_locals(f, out)
+
+    @staticmethod
+    def _with_locals(f, body: list[str]) -> list[str]:
+        """Wrap the body: registers and flags it touches become locals (see LOCALS_PREAMBLE),
+        with this function's RC_FLUSH (write back what it may change) and RC_RELOAD."""
+        text = "\n".join(body)
+        used = sorted({int(n) for n in re.findall(r"\bR\((\d+)\)", text)})
+        written = sorted({int(n) for n in re.findall(r"\bR\((\d+)\) = ", text)})
+        flags = []
+        if _USES_FLAGS.search(text):
+            flags += ["fn", "fz", "fc", "fv"]
+        if _USES_Q.search(text):
+            flags.append("fq")
+        if _USES_GE.search(text):
+            flags.append("ge")
+        flush = [f"ctx->r[{n}] = rc_r{n}" for n in written] + [f"ctx->{x} = rc_{x}" for x in flags]
+        reload = [f"rc_r{n} = ctx->r[{n}]" for n in used] + [f"rc_{x} = ctx->{x}" for x in flags]
+        out = [f"#define RC_FLUSH() ({', '.join(flush) if flush else '(void)0'})",
+               f"#define RC_RELOAD() ({', '.join(reload) if reload else '(void)0'})",
+               f"void {fname(f.entry)}(RCtx *ctx) {{", "    RC_ENTRY();"]
+        if used:
+            out.append("    u32 " + ", ".join(f"rc_r{n} = ctx->r[{n}]" for n in used) + ";")
+        if flags:
+            out.append("    u32 " + ", ".join(f"rc_{x} = ctx->{x}" for x in flags) + ";")
+        out += body
+        out += ["}", "#undef RC_FLUSH", "#undef RC_RELOAD"]
         return out

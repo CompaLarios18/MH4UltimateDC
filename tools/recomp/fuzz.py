@@ -35,7 +35,7 @@ BUF_BASE, BUF_SIZE = 0x30000000, 0x10000
 TLS = 0x1FF80000
 RUNTIME = os.path.join(HERE, "runtime")
 HARNESS = os.path.join(HERE, "harness", "harness.c")
-CFLAGS = ["-O1", "-fPIC", "-shared", "-ffp-contract=off", "-fno-strict-aliasing", "-fwrapv",
+CFLAGS = ["-O1", "-fPIC", "-shared", "-ffp-contract=off", "-frounding-math", "-fno-strict-aliasing", "-fwrapv",
           "-Wno-unused-variable", "-Wno-unused-label", "-DRC_NO_BUDGET", f"-I{RUNTIME}"]
 
 
@@ -120,7 +120,8 @@ def random_state(rng: random.Random) -> State:
                                  (0x1FF00000, rng.getrandbits(32)), (0x9FE00000, rng.getrandbits(32)),
                                  (0x36A00000, 0), (0x38100000, 0)])
             st.s[2 * i], st.s[2 * i + 1] = lo, hi
-    st.fpscr = (rng.getrandbits(4) << 28) | (rng.choice([0, 0, 0x03000000, 0x01000000, 0x02000000]))
+    st.fpscr = ((rng.getrandbits(4) << 28) | rng.choice([0, 0, 0x03000000, 0x01000000, 0x02000000])
+                | (rng.choice([0, 0, 1, 2, 3]) << 22))     # rounding mode: nearest, +inf, -inf, zero
     st.tls = TLS
     return st
 

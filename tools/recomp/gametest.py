@@ -91,7 +91,7 @@ def random_state(rng: random.Random) -> State:
     for i in range(32):
         st.s[i] = (struct.unpack("<I", struct.pack("<f", rng.uniform(-100, 100)))[0]
                    if rng.random() < 0.8 else rng.getrandbits(32))
-    st.fpscr = rng.getrandbits(4) << 28
+    st.fpscr = (rng.getrandbits(4) << 28) | rng.choice([0x03000000, 0x03C00000, 0])   # RunFast, kernel default, IEEE
     st.tls = TLS
     return st
 

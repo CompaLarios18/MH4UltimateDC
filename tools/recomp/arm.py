@@ -126,7 +126,7 @@ class ArmTranslator:
                 raise Unpredictable("PC in register-shifted operand")
             name = SHIFT_NAMES[typ]
             return (f"rc_{name}_r(R({rm}), R({rs}))",
-                    f"rc_{name}_rc(R({rm}), R({rs}), ctx->fc)")
+                    f"rc_{name}_rc(R({rm}), R({rs}), RC_FC)")
         imm = (w >> 7) & 0x1F
         return self._imm_shift(self.rr(rm, pc), typ, imm)
 
@@ -145,16 +145,16 @@ class ArmTranslator:
                 return f"(u32)((s32){x} >> 31)", f"({x} >> 31)"
             return f"(u32)((s32){x} >> {imm})", f"(({x} >> {imm - 1}) & 1)"
         if imm == 0:
-            return f"((ctx->fc << 31) | ({x} >> 1))", f"({x} & 1)"
+            return f"((RC_FC << 31) | ({x} >> 1))", f"({x} & 1)"
         return f"rc_ror({x}, {imm})", f"(({x} >> {imm - 1}) & 1)"
 
     # ── data processing ──────────────────────────────────────────────────
     LOGICAL = {0: "a & b", 1: "a ^ b", 8: "a & b", 9: "a ^ b", 12: "a | b", 13: "b", 14: "a & ~b", 15: "~b"}
     ARITH_S = {2: "rc_subs(ctx, a, b, 1)", 3: "rc_subs(ctx, b, a, 1)", 4: "rc_adds(ctx, a, b, 0)",
-               5: "rc_adds(ctx, a, b, ctx->fc)", 6: "rc_subs(ctx, a, b, ctx->fc)",
-               7: "rc_subs(ctx, b, a, ctx->fc)", 10: "rc_subs(ctx, a, b, 1)", 11: "rc_adds(ctx, a, b, 0)"}
-    ARITH = {2: "a - b", 3: "b - a", 4: "a + b", 5: "a + b + ctx->fc", 6: "a + ~b + ctx->fc",
-             7: "b + ~a + ctx->fc"}
+               5: "rc_adds(ctx, a, b, RC_FC)", 6: "rc_subs(ctx, a, b, RC_FC)",
+               7: "rc_subs(ctx, b, a, RC_FC)", 10: "rc_subs(ctx, a, b, 1)", 11: "rc_adds(ctx, a, b, 0)"}
+    ARITH = {2: "a - b", 3: "b - a", 4: "a + b", 5: "a + b + RC_FC", 6: "a + ~b + RC_FC",
+             7: "b + ~a + RC_FC"}
 
     def _dataproc(self, ins: Insn) -> None:
         w = ins.word
@@ -195,7 +195,7 @@ class ArmTranslator:
             if s:
                 body.append("RC_NZ(r);")
                 if need_c:
-                    body.append("ctx->fc = sc;")
+                    body.append("RC_FC = sc;")
         else:
             expr = self.ARITH_S[opc] if s else self.ARITH[opc]
             body.append(f"u32 r = {expr};")
@@ -244,7 +244,7 @@ class ArmTranslator:
             if acc:
                 body.append(f"p += ((u64)R({hi}) << 32) | (u64)R({lo});")
             if s:
-                body.append("ctx->fn = (u32)(p >> 63); ctx->fz = (p == 0);")
+                body.append("RC_FN = (u32)(p >> 63); RC_FZ = (p == 0);")
             body += [f"R({lo}) = (u32)p;", f"R({hi}) = (u32)(p >> 32);"]
             ins.body = body
             return
@@ -303,7 +303,7 @@ class ArmTranslator:
                     raise Unpredictable("MRS PC")
                 if (w >> 16) & 0xF != 0xF or w & 0xFFF:
                     raise Unpredictable("MRS SBO/SBZ")
-                ins.body = [f"R({rd}) = rc_get_cpsr(ctx);"]
+                ins.body = [f"R({rd}) = RC_CPSR();"]
                 return
             mask, rm = (w >> 16) & 0xF, w & 0xF
             if rm == 15:
@@ -312,7 +312,7 @@ class ArmTranslator:
                 raise Unpredictable("MSR SBO/SBZ")
             if mask & 3:
                 raise Unsupported("MSR control/extension fields")
-            ins.body = [f"rc_set_cpsr(ctx, R({rm}), {mask});"]
+            ins.body = [f"RC_SET_CPSR(R({rm}), {mask});"]
             return
         if op2 in (1, 2, 3) and op == 1 and (w >> 8) & 0xFFF != 0xFFF:
             raise Unpredictable("BX/BLX SBO")
@@ -370,11 +370,11 @@ class ArmTranslator:
             hs = f"(s32)(s16)(R({rs}) >> 16)" if y else f"(s32)(s16)R({rs})"
             if op == 0:
                 ins.body = [f"s64 t = (s64)({hm} * {hs}) + (s64)(s32)R({rn});",
-                            f"R({rd}) = (u32)t;", "if (t != (s64)(s32)(u32)t) ctx->fq = 1;"]
+                            f"R({rd}) = (u32)t;", "if (t != (s64)(s32)(u32)t) RC_FQ = 1;"]
             elif op == 1:
                 if x == 0:
                     ins.body = [f"s64 t = (((s64)(s32)R({rm}) * (s64){hs}) >> 16) + (s64)(s32)R({rn});",
-                                f"R({rd}) = (u32)t;", "if (t != (s64)(s32)(u32)t) ctx->fq = 1;"]
+                                f"R({rd}) = (u32)t;", "if (t != (s64)(s32)(u32)t) RC_FQ = 1;"]
                 else:
                     ins.body = [f"R({rd}) = (u32)(((s64)(s32)R({rm}) * (s64){hs}) >> 16);"]
             elif op == 2:
@@ -405,7 +405,7 @@ class ArmTranslator:
         if mask & 3:
             raise Unsupported("MSR control/extension fields")
         imm = ror32(w & 0xFF, ((w >> 8) & 0xF) * 2)
-        ins.body = [f"rc_set_cpsr(ctx, {hexc(imm)}, {mask});"]
+        ins.body = [f"RC_SET_CPSR({hexc(imm)}, {mask});"]
 
     # ── loads and stores ─────────────────────────────────────────────────
     def _ldst(self, ins: Insn) -> None:
@@ -732,10 +732,10 @@ class ArmTranslator:
                     ins.body = prods + [f"R({rd}) = (u32)({comb});"]
                 else:
                     ins.body = prods + [f"s64 t = {comb};", f"R({rd}) = (u32)t;",
-                                        "if (t != (s64)(s32)(u32)t) ctx->fq = 1;"]
+                                        "if (t != (s64)(s32)(u32)t) RC_FQ = 1;"]
             else:
                 ins.body = prods + [f"s64 t = {comb} + (s64)(s32)R({ra});", f"R({rd}) = (u32)t;",
-                                    "if (t != (s64)(s32)(u32)t) ctx->fq = 1;"]
+                                    "if (t != (s64)(s32)(u32)t) RC_FQ = 1;"]
             return
         if op1 == 0b10100 and op2 in (0, 1, 2, 3):
             hi, lo = rd, ra
@@ -922,13 +922,13 @@ class ArmTranslator:
             if load:
                 if rt == 15:
                     ins.body = ["u32 f = ctx->fpscr;",
-                                "ctx->fn = f >> 31; ctx->fz = (f >> 30) & 1; ctx->fc = (f >> 29) & 1; ctx->fv = (f >> 28) & 1;"]
+                                "RC_FN = f >> 31; RC_FZ = (f >> 30) & 1; RC_FC = (f >> 29) & 1; RC_FV = (f >> 28) & 1;"]
                 else:
                     ins.body = [f"R({rt}) = ctx->fpscr;"]
             else:
                 if rt == 15:
                     raise Unpredictable("VMSR from PC")
-                ins.body = [f"ctx->fpscr = R({rt}) & RC_FPSCR_WRITABLE;"]
+                ins.body = [f"rc_write_fpscr(ctx, R({rt}));"]
             return
         if cp == 11 and (opc1 & 6) == 0:
             if rt == 15:

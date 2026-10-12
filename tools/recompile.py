@@ -24,7 +24,7 @@ import build_function_table as bft  # noqa: E402
 import codebin2elf  # noqa: E402
 import exheader as exh  # noqa: E402
 from recomp.analysis import Analyzer, Image  # noqa: E402
-from recomp.emit import FunctionEmitter, fname  # noqa: E402
+from recomp.emit import LOCALS_PREAMBLE, FunctionEmitter, fname  # noqa: E402
 
 FILE_SHIFT = 16
 
@@ -195,7 +195,7 @@ def recompile(img: Image, entries: dict[int, str], out: str, log=print,
     for a in order:
         buckets[a >> FILE_SHIFT].append(a)
     for bucket, addrs in sorted(buckets.items()):
-        parts = ['#include "funcs.h"\n']
+        parts = ['#include "funcs.h"\n' + LOCALS_PREAMBLE]
         for a in addrs:
             f = funcs[a]
             parts.append("\n".join(em.function(f)))

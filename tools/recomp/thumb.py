@@ -152,7 +152,7 @@ class ThumbTranslator:
         else:
             v, c = ((f"(u32)((s32){x} >> 31)", f"({x} >> 31)") if imm == 0
                     else (f"(u32)((s32){x} >> {imm})", f"(({x} >> {imm - 1}) & 1)"))
-        ins.body = [f"u32 sc = {c};", f"u32 r = {v};", "RC_NZ(r);", "ctx->fc = sc;", f"R({rd}) = r;"]
+        ins.body = [f"u32 sc = {c};", f"u32 r = {v};", "RC_NZ(r);", "RC_FC = sc;", f"R({rd}) = r;"]
 
     def _alu(self, ins: Insn, hw: int) -> None:
         op, rm, rd = (hw >> 6) & 0xF, (hw >> 3) & 7, hw & 7
@@ -164,13 +164,13 @@ class ThumbTranslator:
             return
         if op in (2, 3, 4, 7):
             name = {2: "lsl", 3: "lsr", 4: "asr", 7: "ror"}[op]
-            ins.body = [f"u32 x = {a}, s = {b};", f"u32 sc = rc_{name}_rc(x, s, ctx->fc);",
-                        f"u32 r = rc_{name}_r(x, s);", "RC_NZ(r);", "ctx->fc = sc;", f"R({rd}) = r;"]
+            ins.body = [f"u32 x = {a}, s = {b};", f"u32 sc = rc_{name}_rc(x, s, RC_FC);",
+                        f"u32 r = rc_{name}_r(x, s);", "RC_NZ(r);", "RC_FC = sc;", f"R({rd}) = r;"]
             return
         if op == 5:
-            ins.body = [f"R({rd}) = rc_adds(ctx, {a}, {b}, ctx->fc);"]
+            ins.body = [f"R({rd}) = rc_adds(ctx, {a}, {b}, RC_FC);"]
         elif op == 6:
-            ins.body = [f"R({rd}) = rc_subs(ctx, {a}, {b}, ctx->fc);"]
+            ins.body = [f"R({rd}) = rc_subs(ctx, {a}, {b}, RC_FC);"]
         elif op == 8:
             ins.body = [f"u32 r = {a} & {b};", "RC_NZ(r);"]
         elif op == 9:

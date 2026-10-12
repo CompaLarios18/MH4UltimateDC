@@ -16,7 +16,49 @@ extern const u32 rc_func_count, rc_text_base, rc_text_size, rc_text_crc32;
 
 static RHost host;
 
-void rc_call(RCtx *ctx, u32 target) { host.call(ctx, target); }
+/* Function lookup inside the library (open addressing, keys are addr | thumb bit); only
+ * targets that aren't recompiled go to the host (which interprets them). */
+typedef struct { u32 key; RFunc fn; } Slot;
+static Slot *slots;
+static u32 slot_mask;
+static Slot slot_storage[1u << 17];   /* 131072 slots: plenty for ~40,000 functions */
+
+static u32 slot_of(u32 key) { return (key * 0x9E3779B1u) >> 15 & slot_mask; }
+
+static void build_slots(void) {
+    slots = slot_storage;
+    slot_mask = (1u << 17) - 1;
+    for (u32 i = 0; i < rc_func_count; i++) {
+        u32 key = rc_func_table[i].addr | rc_func_table[i].mode, h = slot_of(key);
+        while (slots[h].fn) h = (h + 1) & slot_mask;
+        slots[h].key = key;
+        slots[h].fn = rc_func_table[i].fn;
+    }
+}
+
+static RFunc lookup(u32 key) {
+    for (u32 h = slot_of(key);; h = (h + 1) & slot_mask) {
+        if (!slots[h].fn) return 0;
+        if (slots[h].key == key) return slots[h].fn;
+    }
+}
+
+void rc_call(RCtx *ctx, u32 target) {
+    RFunc fn = lookup(target);
+    if (fn) fn(ctx);
+    else host.call(ctx, target);
+}
+
+void rc_call_ic(RCtx *ctx, u32 target, u32 *ic_target, RFunc *ic_fn) {
+    RFunc fn = lookup(target);
+    if (!fn) {
+        host.call(ctx, target);
+        return;
+    }
+    *ic_target = target;
+    *ic_fn = fn;
+    fn(ctx);
+}
 void rc_svc(RCtx *ctx, u32 imm, u32 next_pc) { host.svc(ctx, imm, next_pc); }
 void rc_trap(RCtx *ctx, u32 pc, u32 kind) { host.trap(ctx, pc, kind); }
 void rc_bad_return(RCtx *ctx, u32 got, u32 expected) { host.bad_return(ctx, got, expected); }
@@ -29,6 +71,8 @@ RC_EXPORT int rc_code_init(const RHost *h, RCodeInfo *info) {
         return 0;
     }
     host = *h;
+    if (rc_func_count > (1u << 16)) return 0;   /* hash table too small */
+    build_slots();
     info->table = rc_func_table;
     info->count = rc_func_count;
     info->text_base = rc_text_base;
