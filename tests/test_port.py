@@ -173,3 +173,32 @@ def test_game_boot_matches_jit(tmp_path):
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
         logs[cpu] = _normalized_log(r.stdout + r.stderr, user)
     assert logs["recomp"] == logs["jit"]
+
+
+def _svc_trace_by_thread(path) -> dict:
+    threads = {}
+    for line in open(path):
+        tid, rest = line.split(" ", 1)
+        threads.setdefault(tid, []).append(rest.split(" t=")[0])
+    return threads
+
+
+@pytest.mark.skipif(not os.environ.get("MH4U_RUNNER"), reason="port not built (set MH4U_RUNNER)")
+def test_svc_traces_match_jit_per_thread(tmp_path):
+    """--trace-svc: every guest thread makes the same system calls, from the same places
+    and with the same arguments, on the recompiled code as on Azahar's JIT."""
+    import build_svc_test
+    from recomp import build as rbuild
+    binary = os.environ["MH4U_RUNNER"]
+    elf = build_svc_test.build(str(tmp_path))
+    code = rbuild.build(str(tmp_path), 2, "O1", ["RC_PAGED"], "code.so", [rbuild.DLL_GLUE],
+                        extra_flags=["-fvisibility=hidden"])
+    traces = {}
+    for cpu in ("recomp", "jit"):
+        trace = tmp_path / f"{cpu}.txt"
+        r = subprocess.run([binary, elf, "--code", code, "--cpu", cpu, "--ms", "5000", "--trace-svc", str(trace)],
+                           capture_output=True, text=True, timeout=600)
+        assert r.returncode == 0, (cpu, r.stderr[-2000:])
+        traces[cpu] = _svc_trace_by_thread(trace)
+    assert len(traces["jit"]) >= 4                        # main thread + 3 workers
+    assert traces["recomp"] == traces["jit"]

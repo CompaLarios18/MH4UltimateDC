@@ -27,6 +27,8 @@
 #include "core/frontend/input.h"
 #include "core/hle/kernel/kernel.h"
 #include "core/hle/kernel/process.h"
+#include "core/hle/kernel/svc.h"
+#include "core/hle/kernel/thread.h"
 #include "core/hle/service/am/am.h"
 #include "core/hle/service/service.h"
 #include "video_core/gpu.h"
@@ -46,6 +48,8 @@ const char* const USAGE = R"(usage: mh4u_runner <file> [options]
   --shots DIR       save the top and bottom screens as PPM images in DIR
   --shot-every MS   how often, in emulated time (default 1000)
   --speed PERCENT   emulation speed limit (default 0 = as fast as possible; 100 = real time)
+  --trace-svc FILE  write every system call (thread, number, pc, lr, r0-r3, ticks) to FILE,
+                    to compare CPU backends thread by thread
   --input SCRIPT    comma-separated presses at emulated times, e.g.
                     "3000:A,3500:START:200,5000:TOUCH:160:120,6000:CIRCLE:0:1:500"
                     (ms:BUTTON[:hold ms], ms:TOUCH:x:y[:hold], ms:CIRCLE:x:y[:hold];
@@ -201,6 +205,19 @@ void UseScriptedInput() {
     profile.use_touch_from_button = false;
 }
 
+// ── system call trace ───────────────────────────────────────────────────────────────
+
+FILE* g_svc_trace = nullptr;
+
+void TraceSvc(Core::System& system, u32 imm) {
+    auto& cpu = system.GetRunningCore();
+    const auto* thread = system.Kernel().GetCurrentThreadManager().GetCurrentThread();
+    std::fprintf(g_svc_trace, "%u %02X pc=%08X lr=%08X %08X %08X %08X %08X t=%lld\n",
+                 thread ? thread->GetThreadId() : 0u, imm, cpu.GetReg(15), cpu.GetReg(14),
+                 cpu.GetReg(0), cpu.GetReg(1), cpu.GetReg(2), cpu.GetReg(3),
+                 static_cast<long long>(system.CoreTiming().GetGlobalTicks() - g_start_ticks));
+}
+
 // ── screenshots ─────────────────────────────────────────────────────────────────────
 
 /// Writes one screen of the software renderer as a binary PPM (landscape, as displayed).
@@ -237,7 +254,7 @@ int main(int argc, char** argv) {
     std::string cpu = "recomp";
     std::string log_filter = "*:Warning Debug.Emulated:Debug Kernel:Info";
     double emulated_ms = 10000.0;
-    std::string user_dir, shots_dir, input_script;
+    std::string user_dir, shots_dir, input_script, svc_trace;
     std::vector<std::string> install;
     double shot_every = 1000.0;
     double speed = 0.0;
@@ -257,6 +274,8 @@ int main(int argc, char** argv) {
             install.push_back(argv[++i]);
         } else if (arg == "--shots" && i + 1 < argc) {
             shots_dir = argv[++i];
+        } else if (arg == "--trace-svc" && i + 1 < argc) {
+            svc_trace = argv[++i];
         } else if (arg == "--speed" && i + 1 < argc) {
             speed = std::max(0.0, std::atof(argv[++i]));
         } else if (arg == "--shot-every" && i + 1 < argc) {
@@ -336,6 +355,12 @@ int main(int argc, char** argv) {
     const s64 tick_limit = static_cast<s64>(emulated_ms * 268111.856);
     const s64 start_ticks = system.CoreTiming().GetGlobalTicks();
     g_start_ticks = start_ticks;
+    if (!svc_trace.empty()) {
+        g_svc_trace = std::fopen(svc_trace.c_str(), "w");
+        if (g_svc_trace) {
+            Kernel::SetSVCObserver(TraceSvc);
+        }
+    }
 
     if (!shots_dir.empty()) {
         FileUtil::CreateFullPath(shots_dir.back() == '/' ? shots_dir : shots_dir + '/');
@@ -382,6 +407,10 @@ int main(int argc, char** argv) {
     std::printf("emulated time: %.1f ms\n",
                 (system.CoreTiming().GetGlobalTicks() - start_ticks) / 268111.856);
     std::fflush(stdout);
+    if (g_svc_trace) {
+        Kernel::SetSVCObserver(nullptr);
+        std::fclose(g_svc_trace);
+    }
     system.Shutdown();
     Common::Log::Stop();
     return rc;
