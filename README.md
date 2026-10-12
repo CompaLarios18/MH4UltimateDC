@@ -9,10 +9,11 @@ A work-in-progress decompilation of **Monster Hunter 4 Ultimate** (Nintendo 3DS)
 🟧 **Phase 2 — Running something on PC.** Target version is **USA v1.3.0**.
 
 - A **static recompiler** translates the whole game (~40,000 functions, 3.2 M ARM/Thumb instructions) into C, generated on your machine from your own dump and verified against an ARM11 model ([`docs/RECOMPILER.md`](docs/RECOMPILER.md)).
-- Next: run that code on top of Azahar's 3DS core (kernel, services, GPU, audio) to boot the game natively ([`docs/PORT_ARCHITECTURE.md`](docs/PORT_ARCHITECTURE.md)).
-- In parallel, functions get hand-decompiled into readable C where the port needs to change behaviour (widescreen, 60 fps, HUD), each one verified with `tools/difftest.py`.
+- That code runs as the CPU of **Azahar's 3DS core** (kernel, services, GPU, audio, network rooms), inside Azahar's normal interface, on Linux and Windows ([`docs/PORT_ARCHITECTURE.md`](docs/PORT_ARCHITECTURE.md), [`port/`](port/)). It boots the game exactly like Azahar's own CPU emulation, faster; running the full game with the user's assets is the current milestone.
+- **Hooks** wrap game functions with native code: a frame-rate cap for 60 fps and a first widescreen mode are in, based on research into the engine's frame pacing, cameras and second screen ([`docs/research/`](docs/research/README.md)).
+- Where the port needs to change behaviour, functions also get hand-decompiled into readable C, each one verified with `tools/difftest.py`.
 
-See [`docs/ROADMAP.md`](docs/ROADMAP.md) for the plan and [`docs/research/first-look-v130.md`](docs/research/first-look-v130.md) for first findings.
+How to play it: [`docs/PLAYING.md`](docs/PLAYING.md). The plan: [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ## ⚠️ This repository contains no game data
 
@@ -39,6 +40,9 @@ python3 -m pytest
 # 5. Recompile the game into C (build/recomp/, never committed) and build it
 python3 tools/recompile.py --exheader baserom/exheader.bin --code baserom/code.bin -o build/recomp
 (cd tools && python3 -m recomp.build ../build/recomp --harness --opt O0 -D RC_CHECK_RETURNS)
+
+# Or, to play: the update .cia straight to an installed code library (see docs/PLAYING.md)
+python3 tools/build_game.py --dump "MH4U v1.3.0 update.cia" --install
 ```
 
 ## Layout
@@ -48,7 +52,7 @@ python3 tools/recompile.py --exheader baserom/exheader.bin --code baserom/code.b
 | `tools/` | Python tooling (BLZ decompression, exheader parsing, code.bin → ELF, difftest, static recompiler in `tools/recomp/`) |
 | `config/` | Per-region version info (hashes, title IDs) — filled in as dumps are verified |
 | `src/`, `include/` | Hand-decompiled C, each function verified with `tools/difftest.py` |
-| `port/` | Future PC platform layer: 3DS OS services, PICA200 → modern GPU, input, audio |
+| `port/` | The PC port: a recompiled-code CPU backend for Azahar's 3DS core, the hooks on game functions, a headless runner for tests |
 | `docs/` | Roadmap, setup, legal, research notes |
 | `baserom/`, `build/` | **Git-ignored.** Your dump and build output |
 

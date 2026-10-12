@@ -10,6 +10,7 @@
 #include "common/common_types.h"
 #include "common/file_util.h"
 #include "common/logging/log.h"
+#include "common/settings.h"
 
 // Hooks read and write guest memory through Azahar's page table, like recompiled code.
 #define RC_PAGED
@@ -172,6 +173,25 @@ void GetProjMatrix(RCtx* ctx, RFunc original) {
     }
 }
 
+/// Shows the top screen at the widescreen aspect ratio in Azahar's single-screen layout.
+void SetScreenAspect(float aspect, std::vector<std::string>& log) {
+    using Settings::AspectRatio;
+    const std::pair<float, AspectRatio> known[] = {{16.0f / 9.0f, AspectRatio::R16_9},
+                                                   {16.0f / 10.0f, AspectRatio::R16_10},
+                                                   {21.0f / 9.0f, AspectRatio::R21_9},
+                                                   {4.0f / 3.0f, AspectRatio::R4_3}};
+    AspectRatio choice = AspectRatio::Stretch;
+    for (const auto& [value, ratio] : known) {
+        if (std::fabs(aspect - value) < 0.01f) {
+            choice = ratio;
+        }
+    }
+    Settings::values.aspect_ratio.SetValue(choice);
+    log.push_back(choice == AspectRatio::Stretch
+                      ? "single-screen layout stretches the top screen to the window"
+                      : "single-screen layout shows the top screen at that aspect ratio");
+}
+
 struct Hook {
     u32 addr;
     const char* name;
@@ -197,9 +217,9 @@ std::vector<std::string> Install(const RCodeInfo& info) {
         log.push_back(fmt::format("frame-rate cap {}", options.fps_cap));
     }
     if (options.widescreen > 0) {
-        log.push_back(fmt::format("widescreen: 3D view widened to aspect ratio {:.4f} (set the "
-                                  "top screen's aspect ratio to match)",
+        log.push_back(fmt::format("widescreen: 3D view widened to aspect ratio {:.4f}",
                                   options.widescreen));
+        SetScreenAspect(options.widescreen, log);
     }
     if (options.trace_every) {
         log.push_back(fmt::format("tracing frame timing every {} frames", options.trace_every));

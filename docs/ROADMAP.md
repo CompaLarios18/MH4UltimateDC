@@ -40,9 +40,12 @@ A hybrid is common: recompile everything first (B) to get a running port, then r
 ## Phase 2 — Running *something* on PC *(current)*
 - [ ] Licence decision: reusing Azahar's core means GPL-3.0-or-later for the port
 - [x] Recompiled-code CPU backend for Azahar's core (`port/`, `Core::ARM_Interface`): paged memory, SVCs into Azahar's kernel, cycle accounting, one host fiber per guest thread. A multi-threaded test program prints the same results as with Azahar's JIT
-- [ ] Run the game with dynarmic and with the recompiled code side by side and diff them
+- [x] The game's own code boots like it does on Azahar's JIT (SDK start-up, services, static constructors) until it opens its RomFS
+- [x] Frontend: Azahar's own Qt interface loads the code library for the game it opens (no separate SDL frontend needed); Windows build in CI
+- [x] `tools/build_game.py`: the user's dump to an installed code library in one command (fetches the compiler on Windows)
+- [x] Hook points: native code around chosen game functions (`config/hooks.txt`, `port/src/hooks.cpp`); headless runner with input scripts and screenshots for automated runs of the real game
+- [ ] Run the game with dynarmic and with the recompiled code side by side and diff them (needs the user's full dump)
 - [ ] Boot to title screen
-- [ ] Minimal SDL frontend for the port (window, input, the user's dump as input)
 
 ## Phase 3 — Playable
 - [ ] Two-screen layout handling (side by side, swappable, touch screen via mouse)
@@ -51,9 +54,12 @@ A hybrid is common: recompile everything first (B) to get a running port, then r
 - [ ] Gameplay loop: village → quest → hunt
 
 ## Phase 4 — PC niceties
-- [ ] Resolution scaling, widescreen, higher framerate (needs care: game logic is likely frame-locked)
-- [ ] Rebindable controls, controller support
-- [ ] Multiplayer: local/online replacement (original relied on 3DS wireless / Nintendo Network)
+- [x] Research: frame pacing (the engine is delta-time based; frame limiter in `sMain`), widescreen (projection, render targets, culling, HUD anchoring), second screen (viewport 7, layout views, touch panels) — [`research/`](research/README.md)
+- [ ] 60 fps: frame-rate cap hook (in), verify on the real game; find what holds it at 30 on hardware
+- [ ] Widescreen: anamorphic step (projection hook + Azahar single-screen aspect, in), then true wide render targets and HUD anchoring
+- [ ] Second screen: Azahar layouts (available), then panel actions on buttons, then a single-screen HUD
+- [x] Resolution scaling, texture packs, rebindable controls and controllers: Azahar's
+- [ ] Multiplayer: Azahar's network rooms carry MH4U's local play; test 4 players on the port
 
 ## Prior art to study
 - N64Recomp + Zelda64Recomp, XenonRecomp + UnleashedRecomp — static recompilation to PC
