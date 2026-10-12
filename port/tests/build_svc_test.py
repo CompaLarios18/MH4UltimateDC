@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Build a port test program (port/tests/svc_test.c, bench.c) into a 3DS ELF that Azahar
-can boot, and recompile it.
+"""Build a port test program (port/tests/svc_test.c, bench.c, io_test.c) into a 3DS ELF
+that Azahar can boot, and recompile it.
 
-usage: python3 port/tests/build_svc_test.py [-o build/port-test] [--program bench]
+usage: python3 port/tests/build_svc_test.py [-o build/port-test] [--program bench|io_test]
 Writes <out>/<program>.elf and its recompiled code in <out>/src/; build the code library
 with `python3 -m recomp.build <out> --code-library` and run it with mh4u_runner --code.
 """
@@ -76,7 +76,7 @@ def build(out: str, program: str = "svc_test") -> str:
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("-o", "--out", default=os.path.join(ROOT, "build", "port-test"))
-    ap.add_argument("--program", default="svc_test", help="svc_test or bench")
+    ap.add_argument("--program", default="svc_test", help="svc_test, bench or io_test")
     args = ap.parse_args(argv)
     print(build(args.out, args.program))
     return 0

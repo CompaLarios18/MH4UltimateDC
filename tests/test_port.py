@@ -101,3 +101,41 @@ def test_interpreter_fallback_matches_jit(tmp_path):
     interpreted = set(re.findall(r"interpreting ([0-9A-F]{8})", r.stdout + r.stderr))
     assert interpreted == {f"{a:08X}" for a in drop}
     assert emulated_output(binary, code, elf, "recomp") == emulated_output(binary, code, elf, "jit")
+
+
+@pytest.mark.skipif(not os.environ.get("MH4U_RUNNER"), reason="port not built (set MH4U_RUNNER)")
+def test_runner_scripted_input_and_screenshots(tmp_path):
+    """port/tests/io_test.c reads HID shared memory and draws into the top framebuffer:
+    the runner's --input script must reach it and --shots must save what it drew."""
+    import build_svc_test
+    from recomp import build as rbuild
+    binary = os.environ["MH4U_RUNNER"]
+    elf = build_svc_test.build(str(tmp_path), "io_test")
+    code = rbuild.build(str(tmp_path), 2, "O1", ["RC_PAGED"], "code.so", [rbuild.DLL_GLUE],
+                        extra_flags=["-fvisibility=hidden"])
+    shots = tmp_path / "shots"
+    r = subprocess.run([binary, elf, "--code", code, "--ms", "3000", "--user", str(tmp_path / "user"),
+                        "--shots", str(shots), "--input",
+                        "300:A,600:TOUCH:10:20:100,900:CIRCLE:1:-0.5:200,1200:START"],
+                       capture_output=True, text=True, timeout=600)
+    assert r.returncode == 0, (r.stdout[-2000:], r.stderr[-2000:])
+    out = [m.group(1) for m in re.finditer(r"OutputDebugString:\d+: (.*)", r.stdout + r.stderr)]
+    events = {}
+    for line in out:
+        m = re.fullmatch(r"(.*) ([0-9a-f]{8})", line)
+        if m:
+            events[m.group(1)] = int(m.group(2), 16)
+    assert 15 <= events["A pressed, frame"] <= 21          # 300 ms at ~60 polls per second
+    assert 69 <= events["START pressed, frame"] <= 75      # 1200 ms
+    assert events["touch x"] == 10 and events["touch y"] == 20
+    assert "circle right" in events and "circle down" in events
+    assert (tmp_path / "user" / "nand").is_dir()
+    data = (shots / "0001000_top.ppm").read_bytes()
+    magic, size, _, pixels = data.split(b"\n", 3)
+    width, height = map(int, size.split())
+    assert (magic, width, height) == (b"P6", 400, 240)
+
+    def pixel(x, y):
+        i = (y * width + x) * 3
+        return tuple(pixels[i:i + 3])
+    assert pixel(100, 5) == (0, 255, 0) and pixel(100, 120) == (255, 0, 0) and pixel(300, 120) == (0, 0, 255)

@@ -7,7 +7,8 @@ The PC port: [Azahar](https://github.com/azahar-emu/azahar)'s 3DS core (kernel, 
 | `src/arm_recomp.*` | CPU backend (`Core::ARM_Interface`) that runs recompiled code: one host fiber per guest thread, system calls into Azahar's kernel, Azahar's page table as guest memory, cycle accounting through Azahar's timers, and a check that the loaded program is the one that was recompiled. Code that wasn't recompiled (a missed entry point, code made at run time) runs in Azahar's interpreter until it returns, and its address is logged for the next recompilation |
 | `src/fiber.*` | Host fibers (ucontext on Linux/macOS, Win32 fibers on Windows) |
 | `src/frontend.*` | `Port::PrepareBackendFor()`: called by a frontend before loading a game; installs the recompiled backend when there is a code library for that game. Azahar's Qt frontend calls it when built with this directory (see `azahar/azahar.patch`) |
-| `src/runner.cpp` | `mh4u_runner`: boots a 3DS executable with no window, with the recompiled code (`--cpu recomp --code LIB`) or Azahar's own JIT/interpreter; for tests and for comparing backends |
+| `src/runner.cpp` | `mh4u_runner`: boots a 3DS executable with no window, with the recompiled code (`--cpu recomp --code LIB`) or Azahar's own JIT/interpreter; can install a CIA first, play an input script and save screenshots; for tests and for comparing backends |
+| `src/hooks.cpp` | The port's hooks on game functions (hook points from `config/hooks.txt`): frame-rate cap, frame timing trace |
 | `tests/svc_test.c` | Freestanding 3DS test program (threads, events, mutexes, atomics, VFP short vectors, Thumb) |
 | `azahar/` | The Azahar commit this builds against, and a small patch: a hook to replace the CPU backend, and a hook to build this directory inside Azahar's tree |
 
@@ -51,6 +52,20 @@ python3 tools/make_cxi.py --exheader baserom/update_v130/exheader.bin --exefs ba
 ../azahar/build/bin/Release/mh4u_runner build/mh4u_norom.cxi --code build/recomp/mh4u_code.so --cpu recomp --log "*:Info"
 ../azahar/build/bin/Release/mh4u_runner build/mh4u_norom.cxi --cpu jit --log "*:Info"
 ```
+
+With the whole game (your decrypted cartridge dump, plus the update, which Azahar takes
+from its virtual SD card), the runner can also drive it without a window:
+
+```bash
+../azahar/build/bin/Release/mh4u_runner game.cxi --code build/recomp/mh4u_code.so \
+    --user build/run/user --install "MH4U v1.3.0 update.cia" --ms 60000 \
+    --shots build/run/shots --shot-every 1000 --input "20000:A,25000:START:200,30000:TOUCH:160:120"
+```
+
+`--input` presses buttons, touches the bottom screen (pixels) or moves the circle pad
+(-1..1) at emulated times; `--shots` saves both screens as PPM images. The port's hooks
+take options from the environment: `MH4U_FPS=60` raises the engine's frame-rate cap,
+`MH4U_TRACE_FRAMES=60` logs the engine's frame timing every 60 frames.
 
 Everything under `build/` contains game code: it never goes into the repository.
 
