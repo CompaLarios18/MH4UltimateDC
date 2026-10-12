@@ -63,6 +63,7 @@ void WriteF32(RCtx* ctx, u32 addr, float f) {
 /// Options from <Azahar user dir>/mh4u.ini, overridden by environment variables.
 struct Options {
     float fps_cap = 0;      // fps / MH4U_FPS: frame-rate cap, 0 = the game's own
+    float refresh_rate = 0; // refresh_rate / MH4U_REFRESH_RATE: emulated LCD Hz, 0 = 3DS's
     float widescreen = 0;   // widescreen / MH4U_WIDESCREEN: top-screen aspect ratio, 0 = native
     bool wide_render = false;  // wide_render / MH4U_WIDE_RENDER: render the wider image itself
     u32 trace_every = 0;    // trace_frames / MH4U_TRACE_FRAMES: log frame timing every n frames
@@ -89,6 +90,8 @@ float ParseAspect(const std::string& v) {
 void Set(Options& o, const std::string& key, const std::string& value) {
     if (key == "fps") {
         o.fps_cap = std::max(0.0f, std::strtof(value.c_str(), nullptr));
+    } else if (key == "refresh_rate") {
+        o.refresh_rate = std::max(0.0f, std::strtof(value.c_str(), nullptr));
     } else if (key == "widescreen") {
         o.widescreen = ParseAspect(value);
     } else if (key == "wide_render") {
@@ -123,6 +126,7 @@ Options LoadOptions(std::vector<std::string>& log) {
     }
     const std::pair<const char*, const char*> env[] = {
         {"MH4U_FPS", "fps"},
+        {"MH4U_REFRESH_RATE", "refresh_rate"},
         {"MH4U_WIDESCREEN", "widescreen"},
         {"MH4U_WIDE_RENDER", "wide_render"},
         {"MH4U_TRACE_FRAMES", "trace_frames"},
@@ -146,6 +150,10 @@ void UpdateFrameTiming(RCtx* ctx, RFunc original) {
 
 /// sMhMain::frame(this): one iteration of the main loop.
 void Frame(RCtx* ctx, RFunc original) {
+    if (frames == 0 && options.refresh_rate > 0) {
+        // the game presents at most once per VBlank: more VBlanks allow more than 60 fps
+        Core::System::GetInstance().GPU().SetRefreshRate(options.refresh_rate);
+    }
     original(ctx);
     ++frames;
     if (options.trace_every == 0 || frames % options.trace_every != 0) {
@@ -343,6 +351,9 @@ std::vector<std::string> Install(const RCodeInfo& info) {
     options = LoadOptions(log);
     if (options.fps_cap > 0) {
         log.push_back(fmt::format("frame-rate cap {}", options.fps_cap));
+    }
+    if (options.refresh_rate > 0) {
+        log.push_back(fmt::format("emulated screen refresh rate {} Hz (experimental)", options.refresh_rate));
     }
     if (options.widescreen > 0) {
         log.push_back(WideRows() ? fmt::format("widescreen: top screen rendered {}x{} (experimental)",

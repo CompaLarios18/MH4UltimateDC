@@ -165,3 +165,47 @@ index c17f61b..a53d79b 100644
  #ifdef ENABLE_GCADAPTER
      if (engine == "gcpad") {
          return gcanalog->GetGcTo3DSMappedAnalog(params.Get("port", 0), native_analog);
+diff --git a/src/video_core/gpu.cpp b/src/video_core/gpu.cpp
+index 87b7707..2d2f6a2 100644
+--- a/src/video_core/gpu.cpp
++++ b/src/video_core/gpu.cpp
+@@ -494,7 +494,11 @@ void GPU::VBlankCallback(std::uintptr_t user_data, s64 cycles_late) {
+     impl->renderer->SwapBuffers();
+ 
+     // Reschedule recurrent event
+-    impl->timing.ScheduleEvent(FRAME_TICKS - cycles_late, impl->vblank_event);
++    impl->timing.ScheduleEvent(impl->frame_ticks - cycles_late, impl->vblank_event);
++}
++
++void GPU::SetRefreshRate(double hz) {
++    impl->frame_ticks = hz > 0 ? static_cast<u64>(BASE_CLOCK_RATE_ARM11 / hz) : FRAME_TICKS;
+ }
+ 
+ void GPU::RecreateRenderer(Frontend::EmuWindow& emu_window, Frontend::EmuWindow* secondary_window) {
+diff --git a/src/video_core/gpu.h b/src/video_core/gpu.h
+index ac19b4c..0da3e31 100644
+--- a/src/video_core/gpu.h
++++ b/src/video_core/gpu.h
+@@ -69,6 +69,10 @@ public:
+     /// Sets the LCD color fill configuration for the top and bottom screens.
+     void SetColorFill(const Pica::ColorFill& fill);
+ 
++    /// Emulated LCD refresh rate (VBlanks per second; 0 = the 3DS's ~59.83 Hz). Games that
++    /// pace their frames by VBlank can then present more frames per second.
++    void SetRefreshRate(double hz);
++
+     /// Reads a word from the GPU virtual address.
+     u32 ReadReg(VAddr addr);
+ 
+diff --git a/src/video_core/gpu_impl.h b/src/video_core/gpu_impl.h
+index 14ac286..8d345e0 100644
+--- a/src/video_core/gpu_impl.h
++++ b/src/video_core/gpu_impl.h
+@@ -34,6 +34,7 @@ struct GPU::Impl {
+     RasterizerInterface* rasterizer;
+     std::unique_ptr<SwRenderer::SwBlitter> sw_blitter;
+     Core::TimingEventType* vblank_event;
++    u64 frame_ticks = FRAME_TICKS; ///< VBlank interval (SetRefreshRate)
+     Service::GSP::InterruptHandler signal_interrupt;
+ 
+     explicit Impl(Core::System& system, Frontend::EmuWindow& emu_window,

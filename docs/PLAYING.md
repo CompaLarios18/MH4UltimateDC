@@ -45,6 +45,8 @@ Write them in `mh4u.ini` in Azahar's user folder (next to the `recomp` folder), 
 ```ini
 # frame-rate cap: the game runs at 30 on a 3DS; its engine measures time, so gameplay speed stays right
 fps = 60
+# above 60 fps: emulated screen refresh rate in Hz (experimental; set fps to the same value)
+refresh_rate = 0
 # widen the 3D view to this aspect ratio (experimental, see below)
 widescreen = 16:9
 # render the wider image itself instead of stretching a 400x240 one (experimental)
@@ -55,9 +57,9 @@ trace_frames = 0
 trace_panels = 0
 ```
 
-Environment variables override the file: `MH4U_FPS`, `MH4U_WIDESCREEN`, `MH4U_WIDE_RENDER`, `MH4U_TRACE_FRAMES`, `MH4U_TRACE_PANELS`.
+Environment variables override the file: `MH4U_FPS`, `MH4U_REFRESH_RATE`, `MH4U_WIDESCREEN`, `MH4U_WIDE_RENDER`, `MH4U_TRACE_FRAMES`, `MH4U_TRACE_PANELS`.
 
-- **60 fps** *(experimental)*: the engine's frame limiter is raised to the cap. A frame must also fit in one screen refresh of emulated time: if the game stays below 60, raise *CPU Clock Speed* (*Emulation → Configure → Debug*). All players in a multiplayer session should use the same value.
+- **60 fps** *(experimental)*: the engine's frame limiter is raised to the cap. A frame must also fit in one screen refresh of emulated time: if the game stays below 60, raise *CPU Clock Speed* (*Emulation → Configure → Debug*). All players in a multiplayer session should use the same value. **Above 60** *(experimental)*: the game presents at most one frame per screen refresh, so also set `refresh_rate` to the same value (e.g. 120 or 144) and give the emulated CPU more clock; video cutscenes that count screen refreshes might then play too fast.
 - **Widescreen** *(experimental)*: the 3D view is widened to the given aspect ratio, and *View → Screen Layout → Single Screen* then shows the top screen at that shape (16:9, 16:10, 21:9 and 4:3 exactly; other values stretch it to the window). In *Custom Layout* you can size the top screen yourself and lay the bottom screen over it with *Bottom Screen Opacity*. This stretches a 400x240 image, HUD included. With `wide_render = 1` the game draws a wider image instead (424x240 for 16:9: the scene target, display buffers and viewports are made wider), which keeps the HUD's proportions; it is untested on the full game, and HUD elements stay where they are on a 400-pixel screen until they get anchored to the edges ([research/widescreen.md](research/widescreen.md)).
 - **The bottom screen**: use Azahar's screen layouts (side by side, large top screen with a small bottom one, separate windows, or a translucent overlay in *Custom Layout*) and the mouse as the stylus. Button bindings and a single-screen HUD for the touch panels are planned ([research/second-screen.md](research/second-screen.md)).
 
