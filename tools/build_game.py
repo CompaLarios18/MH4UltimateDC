@@ -8,19 +8,25 @@
 3. recompiles it to C (build/game/recomp/src, never shared),
 4. compiles the code library (clang; on Windows llvm-mingw's x86_64-w64-mingw32-clang),
 5. optionally copies it to <Azahar user dir>/recomp/<program id>.<so|dll|dylib>, where the
-   port's Azahar build picks it up.
+   port's Azahar build picks it up (--install alone: Azahar's usual user directory).
+
+On Windows it needs llvm-mingw's clang; --fetch-compiler downloads it (from the
+llvm-mingw project on GitHub) into the output directory.
 
 Everything this writes contains game code and stays on your machine.
 """
 from __future__ import annotations
 
 import argparse
+import glob
 import hashlib
 import json
 import os
 import shutil
 import struct
 import sys
+import urllib.request
+import zipfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -39,15 +45,75 @@ def library_name(program_id: int) -> str:
     return f"{program_id:016X}.{ext}"
 
 
-def find_compiler(requested: str | None) -> str:
+LLVM_MINGW = "llvm-mingw-20241217-ucrt-x86_64"
+LLVM_MINGW_URL = f"https://github.com/mstorsjo/llvm-mingw/releases/download/20241217/{LLVM_MINGW}.zip"
+MINGW_CLANG = "x86_64-w64-mingw32-clang"
+
+
+def default_user_dir() -> str:
+    """Azahar's user directory on this platform (where it looks for recomp/)."""
+    if sys.platform.startswith("win"):
+        return os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")), "Azahar")
+    if sys.platform == "darwin":
+        return os.path.expanduser("~/Library/Application Support/Azahar")
+    data = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
+    return os.path.join(data, "azahar-emu")
+
+
+def fetched_compilers(toolchain_dir: str) -> list[str]:
+    exe = ".exe" if sys.platform.startswith("win") else ""
+    return sorted(glob.glob(os.path.join(toolchain_dir, "*", "bin", MINGW_CLANG + exe)))
+
+
+def fetch_compiler(toolchain_dir: str, source: str = LLVM_MINGW_URL) -> str:
+    """Download and unpack llvm-mingw (a zip URL, or a local zip for tests) into
+    toolchain_dir; returns its x86_64-w64-mingw32-clang."""
+    found = fetched_compilers(toolchain_dir)
+    if found:
+        return found[0]
+    os.makedirs(toolchain_dir, exist_ok=True)
+    archive = source
+    if "://" in source:
+        archive = os.path.join(toolchain_dir, os.path.basename(source))
+        print(f"downloading {source}")
+        with urllib.request.urlopen(source) as r, open(archive + ".part", "wb") as f:
+            total, done = int(r.headers.get("Content-Length") or 0), 0
+            while chunk := r.read(1 << 20):
+                f.write(chunk)
+                done += len(chunk)
+                if total:
+                    print(f"\r  {done >> 20}/{total >> 20} MB", end="", flush=True)
+        print()
+        os.replace(archive + ".part", archive)
+    print(f"unpacking {os.path.basename(archive)}")
+    with zipfile.ZipFile(archive) as z:
+        z.extractall(toolchain_dir)
+    if archive != source:
+        os.remove(archive)
+    found = fetched_compilers(toolchain_dir)
+    if not found:
+        raise SystemExit(f"{archive} doesn't contain bin/{MINGW_CLANG}")
+    for path in glob.glob(os.path.join(os.path.dirname(found[0]), "*")):
+        os.chmod(path, os.stat(path).st_mode | 0o111)   # zip files don't keep the x bit
+    return found[0]
+
+
+def find_compiler(requested: str | None, toolchain_dir: str, fetch: bool) -> str:
     if requested:
         return requested
-    candidates = ["x86_64-w64-mingw32-clang", "clang"] if sys.platform.startswith("win") else ["clang", "cc"]
+    windows = sys.platform.startswith("win")
+    # on Windows only llvm-mingw's clang links a DLL without Visual Studio
+    candidates = [MINGW_CLANG] if windows else ["clang", "cc"]
     for c in candidates:
         if shutil.which(c):
             return c
-    raise SystemExit("no C compiler found: install LLVM (Linux/macOS: clang; Windows: llvm-mingw from "
-                     "https://github.com/mstorsjo/llvm-mingw/releases, then put its bin/ on PATH)")
+    if fetched_compilers(toolchain_dir) or fetch:
+        return fetch_compiler(toolchain_dir)
+    if windows:
+        raise SystemExit("no C compiler found: run again with --fetch-compiler to download llvm-mingw "
+                         "(or install it from https://github.com/mstorsjo/llvm-mingw/releases and put its "
+                         "bin folder on PATH)")
+    raise SystemExit("no C compiler found: install clang (LLVM)")
 
 
 def check_version(header: exh.ExHeader, code: bytes) -> dict | None:
@@ -67,8 +133,12 @@ def main(argv=None) -> int:
     ap.add_argument("--opt", default="O1", help="O0 builds fast, O1/O2 run faster")
     ap.add_argument("--cc", help="C compiler (default: clang, or x86_64-w64-mingw32-clang on Windows)")
     ap.add_argument("-j", "--jobs", type=int, default=os.cpu_count() or 2)
-    ap.add_argument("--install", metavar="AZAHAR_USER_DIR",
-                    help="copy the library to AZAHAR_USER_DIR/recomp/ (Azahar's user directory)")
+    ap.add_argument("--install", metavar="AZAHAR_USER_DIR", nargs="?", const=default_user_dir(),
+                    help="copy the library to AZAHAR_USER_DIR/recomp/; without a value, to Azahar's "
+                         f"usual user directory ({default_user_dir()})")
+    ap.add_argument("--fetch-compiler", action="store_true",
+                    help="no compiler installed: download llvm-mingw (Windows) into the output directory")
+    ap.add_argument("--compiler-zip", default=LLVM_MINGW_URL, help=argparse.SUPPRESS)
     ap.add_argument("--any-version", action="store_true", help="don't insist on a known code.bin")
     ap.add_argument("--functions", default=os.path.join(ROOT, "config", "functions.tsv"), help=argparse.SUPPRESS)
     ap.add_argument("--extra", default=os.path.join(ROOT, "config", "extra_entries.txt"), help=argparse.SUPPRESS)
@@ -98,9 +168,15 @@ def main(argv=None) -> int:
     segs = [(header.ro.address, header.ro.size), (header.data.address, header.data.size)]
     res = recompile.recompile(img, entries, out, data_segments=segs, title_id=program_id,
                               hooks=recompile.load_hooks(args.hooks), log=lambda m: print(m, flush=True))
-    print(f"{res['report']['functions']} functions, {res['report']['problems']} problems")
+    print(f"{res['report']['functions']} functions, {res['report']['hook_points']} hook points")
+    for p in res["problems"]:
+        print(f"  warning: {p}")
 
-    cc = find_compiler(args.cc)
+    toolchain_dir = os.path.join(args.out, "toolchain")
+    if args.fetch_compiler and not args.cc:
+        cc = fetch_compiler(toolchain_dir, args.compiler_zip)
+    else:
+        cc = find_compiler(args.cc, toolchain_dir, False)
     name = library_name(program_id)
     print(f"compiling with {cc} -{args.opt} ({args.jobs} jobs; -O1 takes a while)")
     lib = rbuild.build(out, args.jobs, args.opt, ["RC_PAGED"], name, [rbuild.DLL_GLUE], cc=cc,

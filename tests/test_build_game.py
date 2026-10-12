@@ -39,7 +39,8 @@ def test_build_game_synthetic(tmp_path):
                          "0x00100000\t0x8\tarm\tunknown\t\ttodo\t\t\n0x00100008\t0x8\tarm\tunknown\t\ttodo\t\t\n")
     install = tmp_path / "azahar-user"
     rc = build_game.main(["--dump", str(cxi), "--out", str(tmp_path / "out"), "--opt", "O0", "--any-version",
-                          "--functions", str(functions), "--extra", "", "--install", str(install), "-j", "2"])
+                          "--functions", str(functions), "--extra", "", "--hooks", "", "--install", str(install),
+                          "-j", "2"])
     assert rc == 0
     name = build_game.library_name(0x0004000000ABCD00)
     lib = install / "recomp" / name
@@ -49,3 +50,35 @@ def test_build_game_synthetic(tmp_path):
         assert "rc_code_init" in syms
     table = (tmp_path / "out" / "recomp" / "src" / "table.c").read_text()
     assert "rc_title_id = 0x0004000000abcd00ull" in table and "f_00100008" in table
+
+
+def test_fetch_compiler_from_zip(tmp_path):
+    """--fetch-compiler unpacks an llvm-mingw-style zip and finds its clang (here a stand-in
+    script that runs the host clang), and reuses it next time without the zip."""
+    import zipfile
+    import build_game
+    exe = ".exe" if sys.platform.startswith("win") else ""
+    archive = tmp_path / "llvm-mingw-test.zip"
+    with zipfile.ZipFile(archive, "w") as z:
+        z.writestr(f"llvm-mingw-test/bin/{build_game.MINGW_CLANG}{exe}", '#!/bin/sh\nexec clang "$@"\n')
+        z.writestr("llvm-mingw-test/include/readme.txt", "headers")
+    toolchain = tmp_path / "toolchain"
+    cc = build_game.fetch_compiler(str(toolchain), str(archive))
+    assert cc == str(toolchain / "llvm-mingw-test" / "bin" / (build_game.MINGW_CLANG + exe))
+    assert os.access(cc, os.X_OK)
+    archive.unlink()
+    assert build_game.find_compiler(None, str(toolchain), False) in (cc, "clang", "cc")
+    assert build_game.fetch_compiler(str(toolchain), str(archive)) == cc
+    if not sys.platform.startswith("win"):
+        out = subprocess.run([cc, "--version"], capture_output=True, text=True)
+        assert out.returncode == 0 and "clang" in out.stdout
+
+
+def test_default_user_dir(monkeypatch):
+    import build_game
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setenv("XDG_DATA_HOME", "/data")
+    assert build_game.default_user_dir() == os.path.join("/data", "azahar-emu")
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setenv("APPDATA", "C:/Users/x/AppData/Roaming")
+    assert build_game.default_user_dir() == os.path.join("C:/Users/x/AppData/Roaming", "Azahar")
