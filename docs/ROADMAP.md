@@ -21,26 +21,28 @@ A hybrid is common: recompile everything first (B) to get a running port, then r
 - [x] Verify against a real dump (USA v1.3.0 update); record title ID + hashes in `config/versions.json`
 - [x] Target version: **USA v1.3.0** (code from the update title)
 
-## Phase 1 — Mapping the binary *(current)*
+## Phase 1 — Mapping the binary
 *How work is split across parallel agents: [`AGENT_WORKFLOW.md`](AGENT_WORKFLOW.md).*
 - [x] Ghidra export script (`tools/ghidra/`): function list, call graph, strings, per-function pseudo-C → `build/export/` (git-ignored)
 - [x] Second discovery pass for vtable-only code (`tools/find_missing_functions.py`): 25,872 → 31,409 functions, 80% → 89.7% of .text
 - [x] `tools/difftest.py`: compile candidate C for armv6k, link against original addresses, compare with original in Unicorn; first verified function: `crc32_string`
 - [x] Status table `config/functions.tsv` (`tools/build_function_table.py`, `tools/fnstatus.py`)
-- [ ] Worker prompt template `docs/prompts/worker.md`
-- [ ] Pilot batch of ~10 leaf functions; measure pass rate and cost
-- [ ] Ghidra project setup guide; shared function/symbol list in text form (`config/symbols.txt`)
+- [x] Worker prompt template `docs/prompts/worker.md`
+- [x] Pilot batch of ~10 leaf functions; measure pass rate and cost
+- [x] Ghidra project setup guide; shared function/symbol list in text form (`config/symbols.txt`)
 - [ ] Identify 3DS SDK/system library code (svc wrappers, `nn::` services, libc, math) — these get replaced, not decompiled
 - [x] Recover the MT Framework class registry: 992 classes with hierarchy, sizes, ids (`tools/mt_dti.py`, `config/mt_classes.tsv`)
 - [ ] Identify engine layers (Capcom's MT Framework Mobile): memory, file/archive loading, rendering, sound, task/scheduling
 - [ ] Document RomFS formats used by the game (`.arc` archives and their contents) — lots of public community knowledge exists from modding
-- [ ] **Decision point:** route A, B or hybrid
+- [x] **Decision point:** hybrid. Static recompilation first (route B) to get a running port, hand-decompiled functions (route A) where we need to change behaviour (widescreen, 60 fps, HUD). See [PORT_ARCHITECTURE.md](PORT_ARCHITECTURE.md).
+- [x] Static recompiler for the whole game (`tools/recompile.py`, [RECOMPILER.md](RECOMPILER.md)): 43,065 functions, 3.4 M instructions, every jump table resolved, verified at instruction level and per function against an ARM11 model
 
-## Phase 2 — Running *something* on PC
-- [ ] Platform layer in `port/`: file system over the user's RomFS, HID → keyboard/gamepad, timing, threads
-- [ ] HLE of the 3DS OS services the game actually calls (fs, hid, apt, gsp, dsp, …)
-- [ ] PICA200 GPU command translation → modern API (likely via SDL3 GPU / Vulkan / OpenGL)
+## Phase 2 — Running *something* on PC *(current)*
+- [ ] Licence decision: reusing Azahar's core means GPL-3.0-or-later for the port
+- [ ] Recompiled-code CPU backend for Azahar's core (`Core::ARM_Interface`): paged memory, SVCs into Azahar's kernel, cycle accounting, one host fiber per guest thread
+- [ ] Run the game with dynarmic and with the recompiled code side by side and diff them
 - [ ] Boot to title screen
+- [ ] Minimal SDL frontend for the port (window, input, the user's dump as input)
 
 ## Phase 3 — Playable
 - [ ] Two-screen layout handling (side by side, swappable, touch screen via mouse)

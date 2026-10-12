@@ -6,9 +6,13 @@ A work-in-progress decompilation of **Monster Hunter 4 Ultimate** (Nintendo 3DS)
 
 ## Status
 
-🟧 **Phase 1 — Mapping the binary.** Nothing is decompiled yet. Target version is **USA v1.3.0**. The tooling turns *your own* decrypted dump into an ELF that Ghidra / IDA / Binary Ninja can load at the real addresses; see [`docs/research/first-look-v130.md`](docs/research/first-look-v130.md) for first findings.
+🟧 **Phase 2 — Running something on PC.** Target version is **USA v1.3.0**.
 
-See [`docs/ROADMAP.md`](docs/ROADMAP.md) for the plan.
+- A **static recompiler** translates the whole game (43,000+ functions, 3.4 M ARM/Thumb instructions) into C, generated on your machine from your own dump and verified against an ARM11 model ([`docs/RECOMPILER.md`](docs/RECOMPILER.md)).
+- Next: run that code on top of Azahar's 3DS core (kernel, services, GPU, audio) to boot the game natively ([`docs/PORT_ARCHITECTURE.md`](docs/PORT_ARCHITECTURE.md)).
+- In parallel, functions get hand-decompiled into readable C where the port needs to change behaviour (widescreen, 60 fps, HUD), each one verified with `tools/difftest.py`.
+
+See [`docs/ROADMAP.md`](docs/ROADMAP.md) for the plan and [`docs/research/first-look-v130.md`](docs/research/first-look-v130.md) for first findings.
 
 ## ⚠️ This repository contains no game data
 
@@ -31,13 +35,17 @@ python3 tools/codebin2elf.py --exheader baserom/exheader.bin --code baserom/code
 
 # 4. Run the tool tests
 python3 -m pytest
+
+# 5. Recompile the game into C (build/recomp/, never committed) and build it
+python3 tools/recompile.py -o build/recomp
+(cd tools && python3 -m recomp.build ../build/recomp --harness --opt O0 -D RC_CHECK_RETURNS)
 ```
 
 ## Layout
 
 | Path | Purpose |
 |---|---|
-| `tools/` | Python tooling (BLZ decompression, exheader parsing, code.bin → ELF) |
+| `tools/` | Python tooling (BLZ decompression, exheader parsing, code.bin → ELF, difftest, static recompiler in `tools/recomp/`) |
 | `config/` | Per-region version info (hashes, title IDs) — filled in as dumps are verified |
 | `src/`, `include/` | Decompiled C/C++ source (empty for now) |
 | `port/` | Future PC platform layer: 3DS OS services, PICA200 → modern GPU, input, audio |
