@@ -35,11 +35,11 @@ A hybrid is common: recompile everything first (B) to get a running port, then r
 - [ ] Identify engine layers (Capcom's MT Framework Mobile): memory, file/archive loading, rendering, sound, task/scheduling
 - [ ] Document RomFS formats used by the game (`.arc` archives and their contents) — lots of public community knowledge exists from modding
 - [x] **Decision point:** hybrid. Static recompilation first (route B) to get a running port, hand-decompiled functions (route A) where we need to change behaviour (widescreen, 60 fps, HUD). See [PORT_ARCHITECTURE.md](PORT_ARCHITECTURE.md).
-- [x] Static recompiler for the whole game (`tools/recompile.py`, [RECOMPILER.md](RECOMPILER.md)): 43,065 functions, 3.4 M instructions, every jump table resolved, verified at instruction level and per function against an ARM11 model
+- [x] Static recompiler for the whole game (`tools/recompile.py`, [RECOMPILER.md](RECOMPILER.md)): 39,697 functions, 3.2 M instructions, every jump table resolved; verified per instruction (fuzzing) and per function (random-state differential tests) against an ARM11 model
 
 ## Phase 2 — Running *something* on PC *(current)*
 - [ ] Licence decision: reusing Azahar's core means GPL-3.0-or-later for the port
-- [ ] Recompiled-code CPU backend for Azahar's core (`Core::ARM_Interface`): paged memory, SVCs into Azahar's kernel, cycle accounting, one host fiber per guest thread
+- [x] Recompiled-code CPU backend for Azahar's core (`port/`, `Core::ARM_Interface`): paged memory, SVCs into Azahar's kernel, cycle accounting, one host fiber per guest thread. A multi-threaded test program prints the same results as with Azahar's JIT
 - [ ] Run the game with dynarmic and with the recompiled code side by side and diff them
 - [ ] Boot to title screen
 - [ ] Minimal SDL frontend for the port (window, input, the user's dump as input)

@@ -76,7 +76,7 @@ void rc_call(RCtx *ctx, u32 target) {
     if (!e || e->mode != (target & 1)) leave(ST_NOFUNC, target, 0);
     e->fn(ctx);
 }
-void rc_svc(RCtx *ctx, u32 imm, u32 next_pc) { (void)ctx; leave(ST_SVC, imm, next_pc); }
+void rc_svc(RCtx *ctx, u32 imm, u32 next_pc) { (void)ctx; leave(ST_SVC, imm, next_pc & ~1u); }
 void rc_trap(RCtx *ctx, u32 pc, u32 kind) { (void)ctx; leave(ST_TRAP, pc, kind); }
 void rc_bad_return(RCtx *ctx, u32 got, u32 expected) { (void)ctx; leave(ST_BADRET, got, expected); }
 void rc_budget(RCtx *ctx) { (void)ctx; leave(ST_BUDGET, 0, 0); }
@@ -112,6 +112,9 @@ static void install(void) {
 }
 
 /* Call the function at guest address `addr` (bit 0 = Thumb). Returns a status code. */
+static int g_check_return = 1;
+void rh_set_check_return(int on) { g_check_return = on; }
+
 int rh_call(u32 addr, RCtx *ctx) {
     const RFuncEntry *e = find(addr & ~1u);
     if (!e) return ST_NOFUNC;
@@ -119,9 +122,16 @@ int rh_call(u32 addr, RCtx *ctx) {
     ctx->mem = g_mem;
     g_status = ST_RETURN;
     g_info0 = g_info1 = 0;
+    const u32 expect = ctx->r[14];
     if (sigsetjmp(g_jmp, 1) == 0) {
         g_in_call = 1;
         e->fn(ctx);
+        /* a tail-called function returns through its callee: check the final target */
+        if (g_check_return && (ctx->r[15] & ~1u) != (expect & ~1u)) {
+            g_status = ST_BADRET;
+            g_info0 = ctx->r[15];
+            g_info1 = expect;
+        }
     }
     g_in_call = 0;
     return (int)g_status;

@@ -154,6 +154,8 @@ class Tester:
             self.missing.add(b.info0)
             return "native-nofunc", f"indirect target {b.info0:#x} (unicorn: {STATUS_NAMES.get(a.status)} {a.info0:#x})"
         if b.status == ST_BADRET:
+            if a.status == ST_FAULT and (a.info0 & ~1) == (b.info0 & ~1):
+                return "agree-fault", "both returned to a wild address"
             return "native-badret", f"returned to {b.info0:#x}, expected {b.info1:#x}"
         if a.status == ST_OTHER:
             return "inconclusive", f"unicorn other {a.info0}"

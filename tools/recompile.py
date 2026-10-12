@@ -8,10 +8,12 @@ Writes <out>/src/funcs.h, <out>/src/fNNN.c, <out>/src/table.c and <out>/report.t
 from __future__ import annotations
 
 import argparse
+import bisect
 import collections
 import os
 import sys
 import time
+import zlib
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -42,24 +44,62 @@ def load_entries(functions_tsv: str, extra: list[str]) -> dict[int, str]:
     return entries
 
 
+def code_cover(funcs: dict) -> tuple[dict[str, set[int]], dict[str, set[int]]]:
+    """Halfword addresses covered by decoded instructions, and addresses that some
+    instruction falls through into, per instruction set."""
+    em = FunctionEmitter({})
+    cover = {"arm": set(), "thumb": set()}
+    fall_into = {"arm": set(), "thumb": set()}
+    for f in funcs.values():
+        cv, fi = cover[f.mode], fall_into[f.mode]
+        for a, ins in f.insns.items():
+            cv.update(range(a, a + ins.size, 2))
+            # calls may not return (assert handlers), so code after a call can be a function
+            if em.falls_through(f, ins) and ins.kind not in ("bl", "icall") and a not in f.link_calls:
+                fi.add(ins.next)
+    return cover, fall_into
+
+
+def near(sorted_addrs: list[int], a: int, distance: int) -> bool:
+    i = bisect.bisect_left(sorted_addrs, a)
+    return any(0 <= j < len(sorted_addrs) and abs(sorted_addrs[j] - a) <= distance for j in (i - 1, i))
+
+
+def looks_like_arm(img: Image, a: int) -> bool:
+    """Most ARM instructions are unconditional (condition field 0xE); in Thumb code a
+    word with that top nibble is the exception."""
+    words = [img.read32((a & ~3) + 4 * k) for k in range(-8, 8)]
+    return sum(1 for w in words if w is not None and w >> 28 == 0xE) >= 10
+
+
 def data_pointer_entries(img: Image, an: Analyzer, segments: list[tuple[int, int]],
-                         entries: dict[int, str]) -> dict[int, str]:
+                         known: dict[int, str], cover: dict[str, set[int]],
+                         fall_into: dict[str, set[int]]) -> dict[int, str]:
     """Code addresses stored in data (vtables, callback tables): words in .rodata/.data
-    that point into .text at an instruction that starts clean, trap-free code."""
+    that point into .text at an instruction that starts clean, trap-free code. Words that
+    are really numbers are weeded out: the target must not be reached by falling through
+    from the instruction before it, and the code must not overlap code of the other
+    instruction set."""
     found: dict[int, str] = {}
+    thumb_entries = sorted(a for a, m in known.items() if m == "thumb")
     for start, size in segments:
         for a in range(start, start + size - 3, 4):
             v = img.read32(a)
             if v is None or not img.in_text(v & ~1):
                 continue
             t, m = (v & ~1, "thumb") if v & 1 else (v, "arm")
-            if (m == "arm" and t & 3) or t in entries or t in found:
+            if (m == "arm" and t & 3) or t in known or t in found or t in fall_into[m]:
                 continue
+            if m == "thumb" and (looks_like_arm(img, t) or not near(thumb_entries, t, 0x4000)):
+                continue    # odd pointers into data; real Thumb code sits next to other Thumb code
             ins = an.decode(t, m)
             if ins.kind == "trap" or (m == "arm" and ins.word >> 28 != 0xE):
                 continue
-            f = an.analyze(t, m, entries)
+            f = an.analyze(t, m, known)
             if f.problems or any(i.kind == "trap" for i in f.insns.values()):
+                continue
+            other = cover["thumb" if m == "arm" else "arm"]
+            if any(h in other for x, i in f.insns.items() for h in range(x, x + i.size, 2)):
                 continue
             found[t] = m
     return found
@@ -75,7 +115,10 @@ def recompile(img: Image, entries: dict[int, str], out: str, log=print,
         log(f"  ignoring {len(outside)} entry points outside .text")
     extra = {}
     if data_segments:
-        extra = data_pointer_entries(img, an, data_segments, entries)
+        first = an.analyze_all(entries)
+        cover, fall_into = code_cover(first)
+        known = {a: f.mode for a, f in first.items()}
+        extra = data_pointer_entries(img, an, data_segments, known, cover, fall_into)
         entries = {**entries, **extra}
         log(f"  {len(extra)} entry points found through data pointers")
     funcs = an.analyze_all(entries, progress=lambda n, m: log(f"  analysed {n}/{m}"))
@@ -121,7 +164,11 @@ def recompile(img: Image, entries: dict[int, str], out: str, log=print,
             os.remove(os.path.join(src, old))
     table = ['#include "funcs.h"', "", "const RFuncEntry rc_func_table[] = {"]
     table += [f"    {{0x{a:08x}u, {1 if funcs[a].mode == 'thumb' else 0}, {fname(a)}}}," for a in order]
-    table += ["};", f"const u32 rc_func_count = {len(funcs)};", ""]
+    table += ["};", f"const u32 rc_func_count = {len(funcs)};",
+              "/* the code this was recompiled from; runtimes check it before running */",
+              f"const u32 rc_text_base = 0x{img.base:08x}u;",
+              f"const u32 rc_text_size = 0x{img.text_size:08x}u;",
+              f"const u32 rc_text_crc32 = 0x{zlib.crc32(img.code[:img.text_size]):08x}u;", ""]
     write_if_changed(os.path.join(src, "table.c"), "\n".join(table))
     t2 = time.time()
     report = {

@@ -202,6 +202,7 @@ def fuzz(mode: str, count: int, cases: int, seed: int, only: str | None, verbose
         lib = build_library(insns, tmp)
         ref = RefMachine(regions)
         nat = NativeMachine(lib, regions, ref.cpsr_misc)
+        nat.lib.rh_set_check_return(0)      # single instructions, not functions
         stats = collections.Counter()
         failures = collections.defaultdict(list)
         for ins in insns:

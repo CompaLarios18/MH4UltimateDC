@@ -1,0 +1,69 @@
+diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
+index 70f8173..2b04b4c 100644
+--- a/src/CMakeLists.txt
++++ b/src/CMakeLists.txt
+@@ -201,6 +201,12 @@ if (ENABLE_TESTS)
+     add_subdirectory(tests)
+ endif()
+ 
++# MH4U PC port (github.com/CompaLarios18/MH4UltimateDC, port/)
++set(MH4U_PORT_DIR "" CACHE PATH "MH4UltimateDC's port/ directory")
++if (MH4U_PORT_DIR)
++    add_subdirectory(${MH4U_PORT_DIR} mh4u_port)
++endif()
++
+ if (ENABLE_QT)
+     add_subdirectory(citra_qt)
+ endif()
+diff --git a/src/core/core.cpp b/src/core/core.cpp
+index dc1eb15..2ab5287 100644
+--- a/src/core/core.cpp
++++ b/src/core/core.cpp
+@@ -597,7 +597,11 @@ System::ResultStatus System::Init(Frontend::EmuWindow& emu_window,
+ 
+     exclusive_monitor = MakeExclusiveMonitor(*memory, num_cores);
+     cpu_cores.reserve(num_cores);
+-    if (Settings::values.use_cpu_jit) {
++    if (cpu_factory) {
++        for (u32 i = 0; i < num_cores; ++i) {
++            cpu_cores.push_back(cpu_factory(*this, *memory, i, timing->GetTimer(i)));
++        }
++    } else if (Settings::values.use_cpu_jit) {
+ #if CITRA_ARCH(x86_64) || CITRA_ARCH(arm64)
+         for (u32 i = 0; i < num_cores; ++i) {
+             cpu_cores.push_back(std::make_shared<ARM_Dynarmic>(
+diff --git a/src/core/core.h b/src/core/core.h
+index 5920595..f47c4ab 100644
+--- a/src/core/core.h
++++ b/src/core/core.h
+@@ -6,6 +6,7 @@
+ 
+ #include <atomic>
+ #include <chrono>
++#include <functional>
+ #include <memory>
+ #include <mutex>
+ #include <string>
+@@ -363,6 +364,14 @@ public:
+         return registered_image_interface;
+     }
+ 
++    /// Replaces the CPU backend chosen by the settings. Must be set before Load().
++    using CPUFactory = std::function<std::shared_ptr<ARM_Interface>(
++        System& system, Memory::MemorySystem& memory, u32 core_id,
++        std::shared_ptr<Core::Timing::Timer> timer)>;
++    void SetCPUFactory(CPUFactory factory) {
++        cpu_factory = std::move(factory);
++    }
++
+     /// Function for checking OS microphone permissions.
+     void RegisterMicPermissionCheck(const std::function<bool()>& permission_func) {
+         mic_permission_func = permission_func;
+@@ -484,6 +493,7 @@ private:
+     std::string inserted_cartridge;
+ 
+     /// ARM11 CPU core
++    CPUFactory cpu_factory;
+     std::vector<std::shared_ptr<ARM_Interface>> cpu_cores;
+     ARM_Interface* running_core = nullptr;
+ 

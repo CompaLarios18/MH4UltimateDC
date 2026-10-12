@@ -1,0 +1,84 @@
+#!/usr/bin/env python3
+"""Build port/tests/svc_test.c into a 3DS ELF that Azahar can boot, and recompile it.
+
+usage: python3 port/tests/build_svc_test.py [-o build/port-test]
+Writes <out>/svc_test.elf and <out>/src/*.c (configure the port with
+-DMH4U_TEST_RECOMP_DIR=<out> to get mh4u_test_headless).
+"""
+from __future__ import annotations
+
+import argparse
+import os
+import subprocess
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(os.path.dirname(HERE))
+TOOLS = os.path.join(ROOT, "tools")
+sys.path.insert(0, TOOLS)
+
+import difftest as dt  # noqa: E402
+import recompile  # noqa: E402
+from recomp.analysis import Image  # noqa: E402
+
+BASE = 0x00100000
+# Azahar's ELF loader wants one PT_LOAD each for code (RX), rodata (R) and data (RW).
+LINKER_SCRIPT = f"""
+ENTRY(_start)
+PHDRS {{ text PT_LOAD FLAGS(5); rodata PT_LOAD FLAGS(4); data PT_LOAD FLAGS(6); }}
+SECTIONS {{
+  . = 0x{BASE:08x};
+  .text : {{ *(.text.start) *(.text .text.*) }} :text
+  . = ALIGN(0x1000);
+  .rodata : {{ *(.rodata .rodata.*) }} :rodata
+  . = ALIGN(0x1000);
+  .data : {{ *(.data .data.*) }} :data
+  .bss : {{ *(.bss .bss.* COMMON) }} :data
+  /DISCARD/ : {{ *(.ARM.exidx*) *(.ARM.attributes) *(.comment) }}
+}}
+"""
+
+
+def build(out: str) -> str:
+    os.makedirs(out, exist_ok=True)
+    objs = []
+    for src in (os.path.join(HERE, "svc_test.c"), dt.RT_SOURCE):
+        obj = os.path.join(out, os.path.basename(src) + ".o")
+        subprocess.run(["clang", *dt.CFLAGS, "-c", src, "-o", obj], check=True)
+        objs.append(obj)
+    script = os.path.join(out, "svc_test.ld")
+    with open(script, "w") as f:
+        f.write(LINKER_SCRIPT)
+    elf = os.path.join(out, "svc_test.elf")
+    subprocess.run(["ld.lld", "-T", script, *objs, "-o", elf], check=True)
+    image = os.path.join(out, "svc_test.bin")
+    subprocess.run(["llvm-objcopy", "-O", "binary", elf, image], check=True)
+
+    entries, text_end = {}, BASE
+    for line in subprocess.run(["llvm-readelf", "-sS", elf], capture_output=True, text=True,
+                               check=True).stdout.splitlines():
+        parts = line.split()
+        if len(parts) >= 8 and parts[3] == "FUNC":
+            a = int(parts[1], 16)
+            entries[a & ~1] = "thumb" if a & 1 else "arm"
+        if "] .text" in line:
+            i = parts.index(".text")
+            text_end = int(parts[i + 2], 16) + int(parts[i + 4], 16)
+    with open(image, "rb") as f:
+        code = f.read()
+    res = recompile.recompile(Image(code, BASE, text_end - BASE), entries, out, log=lambda *a: None)
+    if res["problems"] or res["report"]["trap_instructions"]:
+        raise SystemExit(f"recompilation problems: {res['problems']}")
+    return elf
+
+
+def main(argv=None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("-o", "--out", default=os.path.join(ROOT, "build", "port-test"))
+    args = ap.parse_args(argv)
+    print(build(args.out))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

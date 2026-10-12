@@ -10,7 +10,7 @@ python3 -m recomp.gametest --sample 2000 --cases 3 --report ../build/recomp/samp
 
 ## Pipeline
 
-1. **Entry points.** `config/functions.tsv` (Ghidra plus the second discovery pass), extra lists (`--extra`), and every word in `.rodata`/`.data` that points at code which decodes cleanly (vtables, callback tables). Entries outside `.text` are dropped.
+1. **Entry points.** `config/functions.tsv` (Ghidra plus the second discovery pass), extra lists (`--extra`), and words in `.rodata`/`.data` that point at code (vtables, callback tables). Numbers that merely look like code addresses are weeded out: the target must decode into clean code, must not be reached by falling through from the instruction before it, must not overlap code of the other instruction set, and Thumb targets must sit near known Thumb code. Entries outside `.text` are dropped.
 2. **Decoding** (`recomp/arm.py`, `recomp/thumb.py`). Each instruction becomes an `Insn`: a kind (plain op, branch, call, return, indirect jump, jump table, SVC, trap) and a list of C statements over the register file. Covered: ARMv6K (data processing, multiplies, saturating and parallel arithmetic, media instructions, LDREX/STREX family, CP15 TLS registers), VFPv2, Thumb-1. UNPREDICTABLE encodings become traps.
 3. **Function analysis** (`recomp/analysis.py`). Follows the control flow from each entry:
    - branches to another entry are tail calls, others are local labels;
@@ -59,9 +59,9 @@ Random states can't reach everything (most game functions fault early on random 
 
 | | |
 |---|---|
-| Functions | 43,065 (11,214 found through data pointers) |
-| Instructions | 3,396,053 |
-| Jump tables | 3,621, all resolved |
-| Traps | 2 (data after calls that never return) |
+| Functions | 39,697 (7,820 found through data pointers) |
+| Instructions | 3,230,400 |
+| Jump tables | 3,475, all resolved |
+| Traps | 1 (data after a call that never returns) |
 | Analysis problems | 0 |
-| Generate / build | ~80 s / ~11 min at `-O0` on 2 cores |
+| Generate / build | ~100 s / ~10 min at `-O0` on 2 cores (rebuilds only touch changed 64 KiB buckets) |

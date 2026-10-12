@@ -8,7 +8,7 @@ A work-in-progress decompilation of **Monster Hunter 4 Ultimate** (Nintendo 3DS)
 
 🟧 **Phase 2 — Running something on PC.** Target version is **USA v1.3.0**.
 
-- A **static recompiler** translates the whole game (43,000+ functions, 3.4 M ARM/Thumb instructions) into C, generated on your machine from your own dump and verified against an ARM11 model ([`docs/RECOMPILER.md`](docs/RECOMPILER.md)).
+- A **static recompiler** translates the whole game (~40,000 functions, 3.2 M ARM/Thumb instructions) into C, generated on your machine from your own dump and verified against an ARM11 model ([`docs/RECOMPILER.md`](docs/RECOMPILER.md)).
 - Next: run that code on top of Azahar's 3DS core (kernel, services, GPU, audio) to boot the game natively ([`docs/PORT_ARCHITECTURE.md`](docs/PORT_ARCHITECTURE.md)).
 - In parallel, functions get hand-decompiled into readable C where the port needs to change behaviour (widescreen, 60 fps, HUD), each one verified with `tools/difftest.py`.
 

@@ -467,11 +467,13 @@ RC_INLINE double rc_d2d(u32 fpscr, u64 a) { return u2d(rc_ftz64(fpscr, a)); }
  * call site dispatches on it (RVCT fplib special-case handlers; see recomp/analysis.py). */
 #define RC_RET_TO(v) do { R(15) = (v); return; } while (0)
 
+/* Returns leave the target in r15, so whoever made the outermost call can check where the
+ * guest really wanted to go (tail calls return through their callee). */
 #ifdef RC_CHECK_RETURNS
-#define RC_RET(v) do { u32 _rv = (v); if (_rv != rc_ret_expect) rc_bad_return(ctx, _rv, rc_ret_expect); return; } while (0)
+#define RC_RET(v) do { u32 _rv = (v); R(15) = _rv; if (_rv != rc_ret_expect) rc_bad_return(ctx, _rv, rc_ret_expect); return; } while (0)
 #define RC_ENTRY() const u32 rc_ret_expect = R(14)
 #else
-#define RC_RET(v) do { (void)(v); return; } while (0)
+#define RC_RET(v) do { R(15) = (v); return; } while (0)
 #define RC_ENTRY() ((void)0)
 #endif
 

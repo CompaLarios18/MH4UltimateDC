@@ -51,8 +51,8 @@ Writing a 3DS operating system, GPU and audio implementation from scratch would 
 Hooks replace a recompiled function with hand-written C. They're the only place game behaviour changes, so they get the same difftest discipline: first decompile the function, verify it, then modify the verified version.
 
 ## Milestones
-1. **Recompiler verified on the whole game** (in progress).
-2. **Boot to title on PC:** Azahar core + recompiled CPU backend + minimal SDL frontend; user's dump for code and assets.
+1. **Recompiler verified on the whole game** (done for what random states can reach; the rest is checked by running the game).
+2. **Boot to title on PC:** Azahar core + recompiled CPU backend + minimal SDL frontend; user's dump for code and assets. *The backend is done (`port/`): it runs a multi-threaded 3DS test program under Azahar's kernel with the same output as Azahar's JIT.*
 3. **Playable**, with dynarmic as a reference to diff against.
 4. **Multiplayer and graphics** (mostly inherited from the core).
 5. **Widescreen, 60 fps, second-screen HUD:** targeted decompilation with the agent workflow ([AGENT_WORKFLOW.md](AGENT_WORKFLOW.md)), plus hooks.

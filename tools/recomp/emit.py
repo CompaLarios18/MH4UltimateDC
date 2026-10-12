@@ -27,7 +27,8 @@ def straight_line(ins: Insn) -> list[str]:
     if ins.kind == OP:
         return wrap(ins, ins.body)
     if ins.kind == SVC:
-        return wrap(ins, [f"rc_svc(ctx, {hexc(ins.imm)}, {hexc(ins.next)});"])
+        # next_pc carries the Thumb bit, so the runtime knows the state to resume in
+        return wrap(ins, [f"rc_svc(ctx, {hexc(ins.imm)}, {hexc(ins.next | (1 if ins.mode == 'thumb' else 0))});"])
     if ins.kind == TRAP:
         return wrap(ins, [f"rc_trap(ctx, {hexc(ins.addr)}, {ins.imm}); return;"])
     raise ValueError(f"not a straight-line instruction: {ins.kind}")
