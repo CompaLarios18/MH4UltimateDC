@@ -45,6 +45,7 @@ const char* const USAGE = R"(usage: mh4u_runner <file> [options]
   --install CIA     install a CIA, e.g. the game's update, before booting (repeatable)
   --shots DIR       save the top and bottom screens as PPM images in DIR
   --shot-every MS   how often, in emulated time (default 1000)
+  --speed PERCENT   emulation speed limit (default 0 = as fast as possible; 100 = real time)
   --input SCRIPT    comma-separated presses at emulated times, e.g.
                     "3000:A,3500:START:200,5000:TOUCH:160:120,6000:CIRCLE:0:1:500"
                     (ms:BUTTON[:hold ms], ms:TOUCH:x:y[:hold], ms:CIRCLE:x:y[:hold];
@@ -239,6 +240,7 @@ int main(int argc, char** argv) {
     std::string user_dir, shots_dir, input_script;
     std::vector<std::string> install;
     double shot_every = 1000.0;
+    double speed = 0.0;
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
         if (arg == "--code" && i + 1 < argc) {
@@ -255,6 +257,8 @@ int main(int argc, char** argv) {
             install.push_back(argv[++i]);
         } else if (arg == "--shots" && i + 1 < argc) {
             shots_dir = argv[++i];
+        } else if (arg == "--speed" && i + 1 < argc) {
+            speed = std::max(0.0, std::atof(argv[++i]));
         } else if (arg == "--shot-every" && i + 1 < argc) {
             shot_every = std::max(1.0, std::atof(argv[++i]));
         } else if (arg == "--input" && i + 1 < argc) {
@@ -295,6 +299,7 @@ int main(int argc, char** argv) {
     }
     UseScriptedInput();
     Settings::values.graphics_api.SetValue(Settings::GraphicsAPI::Software);
+    Settings::values.frame_limit.SetValue(speed); // 0: don't wait for real time
     Settings::values.use_cpu_jit = cpu == "jit";
     Settings::values.use_fastinterp = false;
 
