@@ -10,6 +10,7 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 
 #include "core/arm/arm_interface.h"
 #include "core/hle/kernel/svc.h"
@@ -91,6 +92,10 @@ private:
     struct GuestThread;
 
     void Execute(s64 budget);
+    void Interpret(u32 target);
+    bool ExitsThread() const;
+    void ToInterpreter();
+    void FromInterpreter();
     void GuestMain();
     void YieldToHost();
     void SyncTicks();
@@ -110,6 +115,10 @@ private:
     s64 slice_start = 0;
     bool reschedule = false;
     std::string failure;
+    // fallback for code that wasn't recompiled
+    std::unique_ptr<Core::ARM_Interface> interp;
+    bool interpreting = false;
+    std::unordered_set<u32> missing_logged;
 };
 
 } // namespace Port

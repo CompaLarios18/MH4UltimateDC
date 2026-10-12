@@ -73,3 +73,31 @@ def test_recompiled_backend_matches_jit(tmp_path):
     recomp = emulated_output(binary, code, elf, "recomp")
     assert jit and jit[0] == "svc_test: start" and jit[-1] == "svc_test: done", jit
     assert recomp == jit
+
+
+@pytest.mark.skipif(not os.environ.get("MH4U_RUNNER"), reason="port not built (set MH4U_RUNNER)")
+def test_interpreter_fallback_matches_jit(tmp_path):
+    """Functions missing from the code library (here: whole worker threads and functions
+    called through pointers) run in Azahar's interpreter; the output must not change."""
+    import build_svc_test
+    from recomp import build as rbuild
+    binary = os.environ["MH4U_RUNNER"]
+    elf = build_svc_test.build(str(tmp_path))
+    syms = {}
+    for line in subprocess.run(["llvm-readelf", "-s", elf], capture_output=True, text=True, check=True).stdout.splitlines():
+        p = line.split()
+        if len(p) >= 8 and p[3] == "FUNC":
+            syms[p[7]] = int(p[1], 16) & ~1
+    drop = {syms[n] for n in ("worker", "op_add", "op_xor", "op_mul")}
+    table = tmp_path / "src" / "table.c"
+    lines = [ln for ln in table.read_text().splitlines() if not any(f"{{0x{a:08x}u," in ln for a in drop)]
+    count = sum(1 for ln in lines if ln.strip().startswith("{0x"))
+    table.write_text("\n".join(re.sub(r"rc_func_count = \d+;", f"rc_func_count = {count};", ln) for ln in lines) + "\n")
+    code = rbuild.build(str(tmp_path), 2, "O1", ["RC_PAGED"], "code.so", [rbuild.DLL_GLUE],
+                        extra_flags=["-fvisibility=hidden"])
+    r = subprocess.run([binary, elf, "--code", code, "--cpu", "recomp", "--ms", "5000"], capture_output=True,
+                       text=True, timeout=600)
+    assert r.returncode == 0, (r.stdout[-2000:], r.stderr[-2000:])
+    interpreted = set(re.findall(r"interpreting ([0-9A-F]{8})", r.stdout + r.stderr))
+    assert interpreted == {f"{a:08X}" for a in drop}
+    assert emulated_output(binary, code, elf, "recomp") == emulated_output(binary, code, elf, "jit")

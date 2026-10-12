@@ -7,6 +7,8 @@
 
 #include "common/assert.h"
 #include "common/logging/log.h"
+#include "core/arm/dyncom/arm_dyncom.h"
+#include "core/arm/skyeye_common/armstate.h"
 #include "core/core.h"
 #include "core/core_timing.h"
 #include "core/memory.h"
@@ -195,10 +197,93 @@ void ARM_Recomp::Call(u32 target) {
     const auto& functions = Functions();
     const auto it = functions.find(target);
     if (it == functions.end()) {
-        Fail(fmt::format("jump to {:08X}, which is not recompiled code (lr {:08X})", target,
-                         ctx->r[14]));
+        Interpret(target);
+        return;
     }
     it->second(ctx.get());
+}
+
+// Code that wasn't recompiled (an entry point the analysis missed, or code created at run
+// time) runs in Azahar's interpreter until it returns to where the recompiled code called
+// it from, with the stack pointer back where it was. Slow, but the game keeps going; the
+// address is logged so it can be added to the next recompilation (--extra).
+void ARM_Recomp::Interpret(u32 target) {
+    if (missing_logged.insert(target).second) {
+        LOG_WARNING(Core_ARM11, "interpreting {:08X}, which is not recompiled code (lr {:08X})",
+                    target, ctx->r[14]);
+    }
+    if (!interp) {
+        interp = std::make_unique<Core::ARM_DynCom>(system, memory, USER32MODE, GetID(), timer);
+    }
+    const u32 return_to = ctx->r[14];
+    const u32 return_sp = ctx->r[13];
+    SyncTicks();
+    ctx->r[15] = target & ~1u;
+    thumb = (target & 1) != 0;
+    ToInterpreter();
+    while (true) {
+        const bool exits = ExitsThread();
+        interp->Step();
+        if (exits) {
+            interpreting = false;
+            running->finished = true;
+            YieldToHost();
+            UNREACHABLE_MSG("exited guest thread resumed");
+        }
+        if (loaded != running_context) {
+            // The kernel switched threads inside a system call (it saved our state from the
+            // interpreter); `ctx` belongs to the other thread now.
+            interpreting = false;
+            YieldToHost();
+            ToInterpreter();
+            continue;
+        }
+        const u32 pc = interp->GetPC() | ((interp->GetCPSR() & CPSR_T) ? 1u : 0u);
+        if (pc == return_to && interp->GetReg(13) == return_sp) {
+            break;
+        }
+        if (HasFailed()) {
+            YieldToHost(); // the interpreter hit something it couldn't handle
+        }
+        if (reschedule || GetTimer().GetDowncount() <= 0) {
+            // A system call blocked or the time slice is over: park the thread with its
+            // state in ctx (where SaveContext looks), then pick it up again.
+            FromInterpreter();
+            YieldToHost();
+            ToInterpreter();
+        }
+    }
+    FromInterpreter();
+    slice_start = ctx->budget = GetTimer().GetDowncount();
+}
+
+bool ARM_Recomp::ExitsThread() const {
+    const u32 pc = interp->GetPC();
+    if (interp->GetCPSR() & CPSR_T) {
+        const u16 hw = memory.Read16(pc);
+        return hw == 0xDF00 + SVC_EXIT_THREAD || hw == 0xDF00 + SVC_EXIT_PROCESS;
+    }
+    const u32 w = memory.Read32(pc);
+    return (w & 0x0FFFFFFF) == 0x0F000000 + SVC_EXIT_THREAD || (w & 0x0FFFFFFF) == 0x0F000000 + SVC_EXIT_PROCESS;
+}
+
+void ARM_Recomp::ToInterpreter() {
+    ThreadContext tc;
+    SaveContext(tc);
+    interp->LoadContext(tc);
+    interp->SetCP15Register(CP15_THREAD_UPRW, ctx->tpidrurw);
+    interp->SetCP15Register(CP15_THREAD_URO, ctx->tpidruro);
+    interpreting = true;
+}
+
+void ARM_Recomp::FromInterpreter() {
+    interpreting = false;
+    ThreadContext tc;
+    interp->SaveContext(tc);
+    const auto* keep = loaded;
+    LoadContext(tc);
+    loaded = keep;
+    ctx->tpidrurw = interp->GetCP15Register(CP15_THREAD_UPRW);
 }
 
 void ARM_Recomp::Svc(u32 imm, u32 next_pc) {
@@ -295,22 +380,39 @@ void ARM_Recomp::SetPC(u32 addr) {
 }
 
 u32 ARM_Recomp::GetPC() const {
+    if (interpreting) {
+        return interp->GetPC();
+    }
     return ctx->r[15]; // exact at system calls, which is when the kernel asks
 }
 
 u32 ARM_Recomp::GetReg(int index) const {
+    if (interpreting) {
+        return interp->GetReg(index);
+    }
     return ctx->r[index];
 }
 
 void ARM_Recomp::SetReg(int index, u32 value) {
+    if (interpreting) {
+        interp->SetReg(index, value);
+        return;
+    }
     ctx->r[index] = value;
 }
 
 u32 ARM_Recomp::GetVFPReg(int index) const {
+    if (interpreting) {
+        return interp->GetVFPReg(index);
+    }
     return index < 32 ? ctx->f.sw[index] : 0;
 }
 
 void ARM_Recomp::SetVFPReg(int index, u32 value) {
+    if (interpreting) {
+        interp->SetVFPReg(index, value);
+        return;
+    }
     if (index < 32) {
         ctx->f.sw[index] = value;
     }
@@ -341,6 +443,9 @@ void ARM_Recomp::SetVFPSystemReg(VFPSystemRegister reg, u32 value) {
 }
 
 u32 ARM_Recomp::GetCPSR() const {
+    if (interpreting) {
+        return interp->GetCPSR();
+    }
     return rc_get_cpsr(ctx.get()) | (thumb ? CPSR_T : 0);
 }
 
@@ -375,6 +480,10 @@ void ARM_Recomp::SetCP15Register(CP15Register reg, u32 value) {
 }
 
 void ARM_Recomp::SaveContext(ThreadContext& tc) {
+    if (interpreting) {
+        interp->SaveContext(tc);
+        return;
+    }
     for (int i = 0; i < 16; ++i) {
         tc.cpu_registers[i] = ctx->r[i];
     }
