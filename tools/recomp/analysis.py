@@ -272,8 +272,10 @@ class Analyzer:
 
     def _link_return(self, f: Function, ins: Insn) -> int | None:
         """If LR was just set to a constant (`mov lr, pc`, `add/sub lr, pc, #imm`) in the
-        same straight-line code, this jump is a call that returns to that constant."""
-        if ins.mode != "arm" or ins.conditional:
+        same straight-line code, this jump is a call that returns to that constant. A
+        conditional jump is then a conditional call (hand-written code sets LR once and
+        picks the routine with `beq a` / `bne b`, or a branch then a table jump)."""
+        if ins.mode != "arm":
             return None
         for k in range(1, 9):
             a = ins.addr - 4 * k
@@ -296,38 +298,84 @@ class Analyzer:
                 return None
         return None
 
-    def _offset_table(self, ins: Insn) -> tuple[int, list[int]] | None:
-        """`ldr rX, [rB, rI, lsl #2]` + `add pc, rX, rB` with rB = adr table: return
-        (base, targets) for the entries that look like code."""
+    def _const_target(self, ins: Insn) -> int | None:
+        """`add rX, pc, #a` (`sub`), optionally `add rX, rX, #b` (`sub`), then `mov pc, rX`
+        or `bx rX`: the jump goes to a constant address (hand-written code reaching a
+        routine too far away for one immediate). Only when nothing in between writes rX."""
         w = ins.word
-        if ins.mode != "arm" or (w & 0x0FE00FF0) != 0x0080F000:   # ADD pc, Rn, Rm (no shift)
+        if ins.mode != "arm":
             return None
-        rn, rm = (w >> 16) & 0xF, w & 0xF
-        base_reg = loaded = None
+        if (w & 0x0FFFFFF0) == 0x01A0F000 or (w & 0x0FFFFFF0) == 0x012FFF10:   # mov pc, rX / bx rX
+            reg = w & 0xF
+        else:
+            return None
+        add = 0
         for k in range(1, 7):
             a = ins.addr - 4 * k
             v = self.img.read32(a)
-            if v is None or v >> 28 != 0xE:
+            if v is None:
                 return None
-            if loaded is None and (v & 0x0FF00FF0) == 0x07900100 and (v >> 12) & 0xF in (rn, rm):
+            if v >> 28 == 0xE and (v >> 12) & 0xF == reg and (v & 0x0FE00000) in (0x02800000, 0x02400000):
+                imm = ror32(v & 0xFF, ((v >> 8) & 0xF) * 2)
+                sign = 1 if (v & 0x00E00000) == 0x00800000 else -1
+                rn = (v >> 16) & 0xF
+                if rn == 15:
+                    return (a + 8 + sign * imm + add) & 0xFFFFFFFF
+                if rn == reg:
+                    add += sign * imm
+                    continue
+                return None
+            d = self.decode(a, "arm")
+            if d.kind != OP or any(re.search(rf"\bR\({reg}\) =", line) for line in d.body):
+                return None
+        return None
+
+    def _offset_table(self, ins: Insn) -> tuple[int, list[int]] | None:
+        """`ldr rX, [rB, rI, lsl #2]` (or `[rB, rI]`, the index already scaled) + `add pc,
+        rX, rB` with rB = adr table: return (base, targets) for the entries that look like
+        code. Offsets are signed: hand-written code (the game's video decoder) also puts a
+        table right after the routines it jumps back to. Instructions in between may be
+        conditional (they pick the index) but must not touch the table registers."""
+        w = ins.word
+        if ins.mode != "arm" or (w & 0x0FE0FFF0) != 0x0080F000:   # ADD pc, Rn, Rm (no shift)
+            return None
+        rn, rm = (w >> 16) & 0xF, w & 0xF
+        base_reg = loaded = None
+        for k in range(1, 13):
+            a = ins.addr - 4 * k
+            v = self.img.read32(a)
+            if v is None:
+                return None
+            if loaded is None and v >> 28 == 0xE and (v & 0x0FF00FF0) in (0x07900100, 0x07900000) \
+                    and (v >> 12) & 0xF in (rn, rm):
                 loaded = (v >> 12) & 0xF
                 base_reg = (v >> 16) & 0xF
                 if {loaded, base_reg} != {rn, rm}:
                     return None
                 continue
-            if base_reg is not None and (v >> 12) & 0xF == base_reg and (v & 0x0FEF0000) in (0x028F0000, 0x024F0000):
+            if base_reg is not None and v >> 28 == 0xE and (v >> 12) & 0xF == base_reg \
+                    and (v & 0x0FEF0000) in (0x028F0000, 0x024F0000):
                 imm = ror32(v & 0xFF, ((v >> 8) & 0xF) * 2)
                 base = (a + 8 + imm if (v & 0x00F00000) == 0x00800000 else a + 8 - imm) & 0xFFFFFFFF
                 targets = []
                 for i in range(256):
                     off = self.img.read32(base + 4 * i)
-                    if off is None or off >= 0x100000:
+                    if off is None:
                         break
+                    off -= (off & 0x80000000) << 1
+                    if not -0x100000 < off < 0x100000:
+                        break
+                    if 0 <= off <= 4 * i:
+                        continue        # an unused slot (0) pointing at the table itself
                     t = (base + off) & 0xFFFFFFFF
                     if not self.plausible_entry(t, "arm"):
                         break
                     targets.append(t)
                 return (base, targets) if targets else None
+            d = self.decode(a, "arm")
+            guarded = (rn, rm) if loaded is None else (base_reg,)
+            if d.kind != OP or any(re.search(rf"\bR\({r}\) =", line) for r in guarded for line in d.body):
+                return None
         return None
 
     def _classify(self, f: Function, target: int, tmode: str, entries: dict[int, str]) -> str:
@@ -367,7 +415,7 @@ class Analyzer:
                 if ret != ins.next:
                     f.labels.add(ret)
                     work.append(ret)
-                    return False
+                    return ins.conditional
                 return True
             cls = self._classify(f, ins.target, ins.target_mode, entries)
             if cls == "goto":
@@ -394,7 +442,7 @@ class Analyzer:
                 if ret != ins.next:
                     f.labels.add(ret)
                     work.append(ret)
-                    return False
+                    return ins.conditional
                 return True
             if table and not ins.conditional:
                 f.ijump_targets[ins.addr] = table[1]
@@ -407,6 +455,9 @@ class Analyzer:
                 if base is not None:
                     ins.kind, ins.jt_kind, ins.jt_base, ins.body, ins.pcexpr = JTAB, "ldrpc", base, [], None
                     return self._step(f, ins, entries, work)
+            t = self._const_target(ins)
+            if t is not None and self.plausible_entry(t, "arm"):
+                f.calls.add((t, "arm"))     # still dispatched at run time; now recompiled too
             return ins.conditional
         if k == JTAB:
             targets = self.jump_table(ins, f)

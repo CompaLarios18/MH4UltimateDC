@@ -145,6 +145,62 @@ index d26f80e..f7806e7 100644
  } // namespace Kernel
  
  BOOST_CLASS_EXPORT_KEY(Kernel::SVC_SyncCallback)
+diff --git a/src/core/memory.cpp b/src/core/memory.cpp
+index c1dbbd0..49745de 100644
+--- a/src/core/memory.cpp
++++ b/src/core/memory.cpp
+@@ -892,11 +892,11 @@ std::string MemorySystem::ReadCString(VAddr vaddr, std::size_t max_length) {
+ }
+ 
+ MemorySystem::PhysMemRegionInfo MemorySystem::GetPhysMemRegionInfo(PAddr address) {
+-    if (address >= phys_mem_region_info_cache.region_start &&
+-        address < phys_mem_region_info_cache.region_end) {
+-        return phys_mem_region_info_cache;
+-    }
+-
++    // No last-region cache here: the software renderer's worker threads look up physical
++    // memory concurrently with the emulation thread, and a shared cache gets torn (a VRAM
++    // address paired with FCRAM's backing memory, say), which sends texture reads gigabytes
++    // past the end of the memory.
++    PhysMemRegionInfo info{};
+     constexpr std::array memory_areas = {
+         std::make_pair(VRAM_PADDR, VRAM_SIZE),
+         std::make_pair(DSP_RAM_PADDR, DSP_RAM_SIZE),
+@@ -913,28 +913,27 @@ MemorySystem::PhysMemRegionInfo MemorySystem::GetPhysMemRegionInfo(PAddr address
+     if (area == memory_areas.end()) [[unlikely]] {
+         LOG_ERROR(HW_Memory, "Unknown GetPhysMemRegionInfo @ {:#08X} at PC {:#08X}", address,
+                   impl->GetPC());
+-        phys_mem_region_info_cache = PhysMemRegionInfo();
+-        return phys_mem_region_info_cache;
++        return info;
+     }
+ 
+     switch (area->first) {
+     case VRAM_PADDR:
+-        phys_mem_region_info_cache = {&impl->vram_mem, area->first, area->second};
++        info = {&impl->vram_mem, area->first, area->second};
+         break;
+     case DSP_RAM_PADDR:
+-        phys_mem_region_info_cache = {&impl->dsp_mem, area->first, area->second};
++        info = {&impl->dsp_mem, area->first, area->second};
+         break;
+     case FCRAM_PADDR:
+-        phys_mem_region_info_cache = {&impl->fcram_mem, area->first, area->second};
++        info = {&impl->fcram_mem, area->first, area->second};
+         break;
+     case N3DS_EXTRA_RAM_PADDR:
+-        phys_mem_region_info_cache = {&impl->n3ds_extra_ram_mem, area->first, area->second};
++        info = {&impl->n3ds_extra_ram_mem, area->first, area->second};
+         break;
+     default:
+         UNREACHABLE();
+     }
+ 
+-    return phys_mem_region_info_cache;
++    return info;
+ }
+ 
+ u8* MemorySystem::GetPhysicalPointer(PAddr address) {
 diff --git a/src/core/savestate.cpp b/src/core/savestate.cpp
 index e065efd..66a3a28 100644
 --- a/src/core/savestate.cpp
@@ -247,3 +303,64 @@ index 14ac286..8d345e0 100644
      Service::GSP::InterruptHandler signal_interrupt;
  
      explicit Impl(Core::System& system, Frontend::EmuWindow& emu_window,
+diff --git a/src/video_core/renderer_software/sw_rasterizer.cpp b/src/video_core/renderer_software/sw_rasterizer.cpp
+index 1e82f87..052c20f 100644
+--- a/src/video_core/renderer_software/sw_rasterizer.cpp
++++ b/src/video_core/renderer_software/sw_rasterizer.cpp
+@@ -2,6 +2,7 @@
+ // Licensed under GPLv2 or any later version
+ // Refer to the misc/licenses/gplv2.txt file included.
+ 
++#include <atomic>
+ #include <boost/container/static_vector.hpp>
+ #include "common/logging/log.h"
+ #include "common/microprofile.h"
+@@ -105,8 +106,19 @@ RasterizerSoftware::RasterizerSoftware(Memory::MemorySystem& memory_, Pica::Pica
+       num_sw_threads{std::max(std::thread::hardware_concurrency(), 2U)},
+       sw_workers{num_sw_threads, "SwRenderer workers"}, fb{memory, regs.framebuffer} {}
+ 
++namespace {
++std::atomic<bool> drawing_enabled{true};
++} // Anonymous namespace
++
++void SetDrawingEnabled(bool enabled) {
++    drawing_enabled.store(enabled, std::memory_order_relaxed);
++}
++
+ void RasterizerSoftware::AddTriangle(const Pica::OutputVertex& v0, const Pica::OutputVertex& v1,
+                                      const Pica::OutputVertex& v2) {
++    if (!drawing_enabled.load(std::memory_order_relaxed)) [[unlikely]] {
++        return;
++    }
+     /**
+      * Clipping a planar n-gon against a plane will remove at least 1 vertex and introduces 2 at
+      * the new edge (or less in degenerate cases). As such, we can say that each clipping plane
+@@ -562,7 +574,12 @@ std::array<Common::Vec4<u8>, 4> RasterizerSoftware::TextureColor(
+             const auto info = TextureInfo::FromPicaRegister(texture.config, texture.format);
+ 
+             // TODO: Apply the min and mag filters to the texture
+-            texture_color[i] = LookupTexture(texture_data, s, t, info);
++            if (!texture_data) [[unlikely]] {
++                // A texture outside of memory (the hardware renderers skip these too).
++                texture_color[i] = {0, 0, 0, 255};
++            } else {
++                texture_color[i] = LookupTexture(texture_data, s, t, info);
++            }
+         }
+ 
+         if (i == 0 && (texture.config.type == TexturingRegs::TextureConfig::Shadow2D ||
+diff --git a/src/video_core/renderer_software/sw_rasterizer.h b/src/video_core/renderer_software/sw_rasterizer.h
+index 318a62e..ebc44aa 100644
+--- a/src/video_core/renderer_software/sw_rasterizer.h
++++ b/src/video_core/renderer_software/sw_rasterizer.h
+@@ -20,6 +20,10 @@ namespace SwRenderer {
+ 
+ struct Vertex;
+ 
++/// Whether triangles are drawn at all. A headless runner can skip drawing the frames nobody
++/// looks at: emulation is unaffected, only the screens' contents are.
++void SetDrawingEnabled(bool enabled);
++
+ class RasterizerSoftware : public VideoCore::RasterizerInterface {
+ public:
+     explicit RasterizerSoftware(Memory::MemorySystem& memory, Pica::PicaCore& pica);

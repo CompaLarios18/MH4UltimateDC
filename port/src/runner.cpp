@@ -47,6 +47,9 @@ const char* const USAGE = R"(usage: mh4u_runner <file> [options]
   --install CIA     install a CIA, e.g. the game's update, before booting (repeatable)
   --shots DIR       save the top and bottom screens as PPM images in DIR
   --shot-every MS   how often, in emulated time (default 1000)
+  --draw-window MS  draw only during the MS of emulated time before each screenshot (and
+                    nothing without --shots): much faster with the software renderer, but
+                    a screen built up over several frames can come out incomplete
   --speed PERCENT   emulation speed limit (default 0 = as fast as possible; 100 = real time)
   --trace-svc FILE  write every system call (thread, number, pc, lr, r0-r3, ticks) to FILE,
                     to compare CPU backends thread by thread
@@ -258,6 +261,7 @@ int main(int argc, char** argv) {
     std::vector<std::string> install;
     double shot_every = 1000.0;
     double speed = 0.0;
+    double draw_window = -1.0; // < 0: draw every frame
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
         if (arg == "--code" && i + 1 < argc) {
@@ -280,6 +284,8 @@ int main(int argc, char** argv) {
             speed = std::max(0.0, std::atof(argv[++i]));
         } else if (arg == "--shot-every" && i + 1 < argc) {
             shot_every = std::max(1.0, std::atof(argv[++i]));
+        } else if (arg == "--draw-window" && i + 1 < argc) {
+            draw_window = std::max(0.0, std::atof(argv[++i]));
         } else if (arg == "--input" && i + 1 < argc) {
             input_script = argv[++i];
             if (!ParseScript(input_script)) {
@@ -368,6 +374,10 @@ int main(int argc, char** argv) {
     double next_shot = shot_every;
     int rc = 0;
     while (true) {
+        if (draw_window >= 0.0) {
+            SwRenderer::SetDrawingEnabled(!shots_dir.empty() &&
+                                          EmulatedMs() >= next_shot - draw_window);
+        }
         const auto result = system.RunLoop();
         if (!shots_dir.empty() && EmulatedMs() >= next_shot) {
             const auto stem = fmt::format("{}/{:07.0f}", shots_dir, next_shot);

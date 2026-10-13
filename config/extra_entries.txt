@@ -213,6 +213,8 @@
 0x00120174	arm	second-pass
 0x00120188	arm	second-pass
 0x001204c8	arm	indirect-target
+0x00121548	arm	indirect-target
+0x00122fe0	arm	indirect-target
 0x0012353c	arm	indirect-target
 0x00123758	arm	indirect-target
 0x00123898	arm	indirect-target
@@ -253,6 +255,7 @@
 0x00263af4	arm	second-pass
 0x00263b0c	arm	second-pass
 0x00265820	arm	indirect-target
+0x0026b308	arm	indirect-target
 0x00292b68	arm	second-pass
 0x00292c84	arm	second-pass
 0x00293334	arm	second-pass
@@ -316,6 +319,8 @@
 0x005680d4	arm	second-pass
 0x00599904	arm	second-pass
 0x005a6b68	arm	second-pass
+0x005afa8c	arm	indirect-target
+0x005afc9c	arm	indirect-target
 0x005ba4b8	arm	second-pass
 0x005bce94	arm	second-pass
 0x005d1e08	arm	second-pass
@@ -530,6 +535,7 @@
 0x00a41934	arm	second-pass
 0x00ad4ee8	arm	second-pass
 0x00aeb218	arm	indirect-target
+0x00b0488c	arm	indirect-target
 0x00b15940	arm	second-pass
 0x00b15f0c	arm	second-pass
 0x00b1606c	arm	second-pass

@@ -15,12 +15,13 @@ python3 -m recomp.gametest --sample 2000 --cases 3 --report ../build/recomp/samp
 3. **Function analysis** (`recomp/analysis.py`). Follows the control flow from each entry:
    - branches to another entry are tail calls, others are local labels;
    - jump tables: `add pc, pc, rI, lsl #2`, `ldr pc, [pc, rI, lsl #2]`, `adr` + `ldr pc, [rB, rI, lsl #2]`, with the bound found from the guarding `cmp` (or `and` + `subs` + `bhs`);
-   - `mov lr, pc` / `add lr, pc, #n` followed by a jump are calls that return to that constant;
-   - offset tables (`ldr rX, [rB, rI, lsl #2]` + `add pc, rX, rB`);
+   - `mov lr, pc` / `add lr, pc, #n` followed by a jump are calls that return to that constant, and a conditional jump after it is a conditional call (the game's video decoder sets LR once, then picks a routine with `beq`/`bne` or a table jump);
+   - offset tables (`ldr rX, [rB, rI, lsl #2]`, or `[rB, rI]` with the index already scaled, + `add pc, rX, rB`), with signed offsets (tables placed after the routines they reach) and unused zero slots;
+   - `add rX, pc, #a` (+ `add rX, rX, #b`) then `mov pc, rX`/`bx rX`: the constant target becomes a function too (the jump itself is still dispatched at run time);
    - FPSCR vector length and stride are tracked through `vmsr`, so VFP short-vector code (LEN=3 in two audio mixers) is expanded per element;
    - RVCT floating-point helpers that read a descriptor word after their call site and continue at one of several places in the caller are handled as multi-return calls;
    - code that falls into a function of the other instruction set stops there (the call before it doesn't return);
-   - every function knows its return address (LR at entry, or the caller's own when code runs into the next function without a call), so a computed jump to it is a return (Thumb's `pop {r3}; bx r3`).
+   - every function knows its return address (LR at entry, or the caller's own when code runs into the next function without a call or tail-calls it), so a computed jump to it is a return (Thumb's `pop {r3}; bx r3`). Tail calls pass it on (`expect_next`), as LR can hold something else by then: the decoder's block routines are entered right after a `bl` and return by popping their caller's frame.
    New call targets are analysed too, until the set is closed.
 4. **Emission** (`recomp/emit.py`). One C function per guest function, `goto` for local control flow, `switch` for jump tables, a cycle charge per basic block (`RC_TICK`). Direct calls become direct C calls; anything else goes through `rc_call`.
 5. **Build** (`recomp/build.py`). Parallel, incremental clang build into a shared library (or object files for the port).
@@ -61,7 +62,7 @@ On `port/tests/bench.c` under Azahar (same machine, same output), the recompiled
 There are three levels, all against Unicorn's ARM11 MPCore model:
 
 1. **Instruction fuzzing** (`python3 -m recomp.fuzz --only {vfp,vfpvec,media,mul} | --mode thumb`): random encodings the translator accepts, each run from random states (special float values, denormals, all FZ/DN combinations, random vector lengths), comparing all registers, flags, VFP state and memory. Zero mismatches. Known reference bug: Unicorn gets double-precision VMOV/VABS/VNEG/VSQRT short vectors wrong, so those are fuzzed as scalars only.
-2. **Synthetic programs** (`tests/test_recomp.py`): a C program built with clang (recursion, switch tables, function pointers, VFP, 64-bit division, ARM↔Thumb), plus hand-written assembly for short-vector code and a multi-return helper, recompiled whole and compared function by function.
+2. **Synthetic programs** (`tests/test_recomp.py`): a C program built with clang (recursion, switch tables, function pointers, VFP, 64-bit division, ARM↔Thumb), plus hand-written assembly for short-vector code, a multi-return helper and the video decoder's computed calls and frame-ending tail jumps, recompiled whole and compared function by function.
 3. **Whole-game differential test** (`python3 -m recomp.gametest`): every recompiled function, with everything it calls, from random states (registers, VFP, flags, pointer-rich scratch memory) on both sides. A case passes when both exit the same way (return, same system call, or fault at the same address) with identical registers, flags, VFP state and identical writable memory (`.data`, `.bss`, stack, buffers, TLS). Indirect targets that the native side couldn't find are written to `missing_targets.txt` and can be fed back with `--extra`.
 
 Random states can't reach everything (most game functions fault early on random pointers), so the final check is running the game itself with the dynarmic JIT as reference (see [PORT_ARCHITECTURE.md](PORT_ARCHITECTURE.md)).
@@ -70,8 +71,8 @@ Random states can't reach everything (most game functions fault early on random 
 
 | | |
 |---|---|
-| Functions | 39,697 (7,820 found through data pointers) |
-| Instructions | 3,230,400 |
+| Functions | 40,559 (8,127 found through data pointers) |
+| Instructions | 3,261,100 |
 | Jump tables | 3,475, all resolved |
 | Traps | 1 (data after a call that never returns) |
 | Analysis problems | 0 |

@@ -217,9 +217,10 @@ void ARM_Recomp::Call(u32 target) {
 }
 
 // Code that wasn't recompiled (an entry point the analysis missed, or code created at run
-// time) runs in Azahar's interpreter until it returns to where the recompiled code called
-// it from, with the stack pointer back where it was. Slow, but the game keeps going; the
-// address is logged so it can be added to the next recompilation (--extra).
+// time) runs in Azahar's interpreter until it returns to where the recompiled code expects
+// it to (LR, or the caller's return address for a tail call), with the stack pointer back
+// where it was or above. Slow, but the game keeps going; the address is logged so it can be
+// added to the next recompilation (--extra).
 void ARM_Recomp::Interpret(u32 target) {
     if (missing_logged.insert(target).second) {
         LOG_WARNING(Core_ARM11, "interpreting {:08X}, which is not recompiled code (lr {:08X})",
@@ -228,7 +229,11 @@ void ARM_Recomp::Interpret(u32 target) {
     if (!interp) {
         interp = std::make_unique<Core::ARM_DynCom>(system, memory, USER32MODE, GetID(), timer);
     }
-    const u32 return_to = ctx->r[14];
+    // A tail call says where the code should come back to (the caller's own return
+    // address, which LR may no longer hold); a callee that also pops its caller's frame
+    // comes back with the stack pointer above where it was.
+    const u32 return_to = ctx->expect_next ? ctx->expect_next : ctx->r[14];
+    ctx->expect_next = 0;
     const u32 return_sp = ctx->r[13];
     SyncTicks();
     ctx->r[15] = target & ~1u;
@@ -252,7 +257,7 @@ void ARM_Recomp::Interpret(u32 target) {
             continue;
         }
         const u32 pc = interp->GetPC() | ((interp->GetCPSR() & CPSR_T) ? 1u : 0u);
-        if (pc == return_to && interp->GetReg(13) == return_sp) {
+        if (pc == return_to && interp->GetReg(13) >= return_sp) {
             break;
         }
         if (HasFailed()) {

@@ -233,6 +233,130 @@ def test_vector_mode_and_multi_return_helpers(tmp_path):
     assert verdicts[mc][2] == 48
 
 
+# Hand-written code in the style of the game's video decoder: LR set once by `add lr, pc`,
+# then a conditional branch or a jump through a table of offsets is the call; a routine
+# picks its tail through a table of negative offsets placed after the code it jumps to,
+# with the index already scaled.
+COMPUTED_CALLS = r"""
+    .syntax unified
+    .arm
+    .text
+fill0:
+    mov     r6, #1
+    str     r6, [r11]
+    mov     pc, lr
+fill1:
+    mov     r6, #2
+    str     r6, [r11]
+    mov     pc, lr
+fill2:
+    mov     r6, #3
+    str     r6, [r11, #4]
+    mov     pc, lr
+fill3:                              @ unused
+    mov     r6, #4
+    str     r6, [r11, #8]
+    mov     pc, lr
+fill_table:
+    .word   fill0 - fill_table
+    .word   fill1 - fill_table
+    .word   fill2 - fill_table
+    .word   fill1 - fill_table          @ the same routine twice
+    .global fill_dispatch
+    .type fill_dispatch, %function
+fill_dispatch:                      @ r6: selector, r11: destination
+    adr     r5, fill_table
+    mov     r8, #0
+    lsls    r7, r6, #31
+    addne   r8, r8, #8
+    tst     r6, #2
+    addne   r8, r8, #4
+    ldr     r6, [r5, r8]
+    add     pc, r5, r6
+
+    .global block_decode
+    .type block_decode, %function
+block_decode:                       @ r12: routine, r4: flags, r11: destination
+    push    {r4, r5, r6, r7, r8, lr}
+    and     r12, r12, #3
+    tst     r4, #1
+    add     lr, pc, #12             @ both calls below return to 1:
+    bne     special
+    adr     r5, call_table
+    ldr     r6, [r5, r12, lsl #2]
+    add     pc, r6, r5
+1:  add     r0, r6, #1
+    pop     {r4, r5, r6, r7, r8, pc}
+call_table:
+    .word   r_a - call_table
+    .word   r_b - call_table
+    .word   fill_dispatch - call_table
+    .word   r_c - call_table
+r_a:
+    mov     r6, #10
+    mov     pc, lr
+r_b:
+    mov     r6, #20
+    str     r6, [r11, #12]
+    mov     pc, lr
+r_c:
+    mov     r6, #30
+    mov     pc, lr
+special:
+    mov     r6, #40
+    mov     pc, lr
+
+    .global frame_owner
+    .type frame_owner, %function
+frame_owner:                        @ r12: size class; the routines it jumps to end its frame
+    push    {r10, r11, r12, lr}
+    bl      frame_helper            @ LR now points here, not at our caller
+    adr     r4, tail_a - 8          @ a target too far for one immediate: two adds
+    add     r4, r4, #8
+    cmp     r12, #4
+    movle   pc, r4
+    adr     r4, tail_b
+    cmp     r12, #8
+    movle   pc, r4
+    b       tail_c
+frame_helper:
+    mov     r10, #7
+    bx      lr
+tail_a:
+    push    {r0, r1, r2, r3}
+    add     r0, r0, r10
+    str     r0, [sp]
+    pop     {r0, r1, r2, r3, r10, r11, r12, pc}
+tail_b:
+    push    {r0, r1, r2, r3}
+    sub     r0, r0, r10
+    str     r0, [sp]
+    pop     {r0, r1, r2, r3, r10, r11, r12, pc}
+tail_c:
+    push    {r0, r1, r2, r3}
+    eor     r0, r0, r10
+    str     r0, [sp]
+    pop     {r0, r1, r2, r3, r10, r11, r12, pc}
+"""
+
+
+def test_computed_calls_and_negative_offset_tables(tmp_path):
+    res, entries, verdicts = _recompile_and_compare(tmp_path, {"c.S": COMPUTED_CALLS}, cases=48)
+    by_name = {}
+    for line in subprocess.run(["llvm-readelf", "-s", str(tmp_path / "p.elf")], capture_output=True,
+                               text=True, check=True).stdout.splitlines():
+        parts = line.split()
+        if len(parts) >= 8 and parts[3] in ("FUNC", "NOTYPE"):
+            by_name[parts[7]] = int(parts[1], 16)
+    funcs = res["funcs"]
+    fd, bd, fo = by_name["fill_dispatch"], by_name["block_decode"], by_name["frame_owner"]
+    assert [len(t) for t in funcs[fd].ijump_targets.values()] == [4]
+    assert len(funcs[bd].link_calls) == 2 and set(funcs[bd].link_calls.values()) == {bd + 32}
+    assert by_name["tail_a"] in funcs and by_name["tail_b"] in funcs     # constant computed jumps
+    for a in (fd, bd, fo):
+        assert verdicts[a][0] == "pass", (hex(a), verdicts[a])
+
+
 def test_init_array_entries():
     """Static constructors from RVCT's relative init table (synthetic image)."""
     import struct

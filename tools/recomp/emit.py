@@ -112,7 +112,7 @@ class FunctionEmitter:
                 out = wrap(ins, [self.call(ins.target, ins.target_mode)] +
                            ([] if ret == ins.next else [f"goto {label(ret)};"]))
             elif ins.addr in f.tails:
-                out = wrap(ins, [self.call(ins.target, ins.target_mode), "return;"])
+                out = wrap(ins, ["RC_FALL_EXPECT();", self.call(ins.target, ins.target_mode), "return;"])
             elif ins.cond == AL:
                 out = [f"goto {label(ins.target)};"]
             else:
@@ -136,16 +136,18 @@ class FunctionEmitter:
                 tail = [] if ret == ins.next else [f"goto {label(ret)};"]
                 out = wrap(ins, ins.body + [f"u32 t_ = {ins.pcexpr};", FLUSH, "rc_call(ctx, t_);", RELOAD] + tail)
             elif ins.addr in f.ijump_targets:
-                cases = " ".join(f"case {hexc(t)}: goto {label(t)};" for t in f.ijump_targets[ins.addr])
+                cases = " ".join(f"case {hexc(t)}: goto {label(t)};" for t in dict.fromkeys(f.ijump_targets[ins.addr]))
                 out = wrap(ins, ins.body + [f"u32 t_ = {ins.pcexpr};",
                                             f"switch (t_) {{ {cases} default: if (RC_IS_RETURN(t_)) RC_RET(t_); "
-                                            f"{FLUSH} rc_call(ctx, t_); return; }}"])
+                                            f"RC_FALL_EXPECT(); {FLUSH} rc_call(ctx, t_); return; }}"])
             elif f.mret:
                 out = wrap(ins, ins.body + [f"RC_RET_TO({ins.pcexpr});"])
             else:
-                # a jump to our own return address is a return (Thumb `pop {r3}; bx r3`)
+                # a jump to our own return address is a return (Thumb `pop {r3}; bx r3`); any
+                # other is a tail call: the callee returns where we would (it learns where
+                # through expect_next, as LR may hold something else by now)
                 out = wrap(ins, ins.body + [f"u32 t_ = {ins.pcexpr};", "if (RC_IS_RETURN(t_)) RC_RET(t_);",
-                                            FLUSH, "rc_call(ctx, t_);", "return;"])
+                                            "RC_FALL_EXPECT();", FLUSH, "rc_call(ctx, t_);", "return;"])
         elif k == JTAB:
             cases = " ".join(f"case {i}u: goto {label(t)};" for i, t in enumerate(f.jtabs[ins.addr]))
             out = wrap(ins, [f"switch (R({ins.jt_index})) {{ {cases} default: "
