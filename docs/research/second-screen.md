@@ -166,7 +166,7 @@ The quest HUD controller is a static object at **`0x0108260c`** (getter `0x0013f
 | **Panel 7** | `isTapped(7)` in the HUD state machine `0x00b9dfe0` | sets bit `0x0001` in `sMhPad+0x3f0` (the action bit with no button): **the kick**. Writing it there from a hook makes the hunter kick (run-time, October 2026; see below) | high |
 | **Panel 9** | `isTapped(9)` in `0x00b9dfe0` | sets bit `0x0400` in `sMhPad+0x3f4` (a menu action) | high / low |
 | **Item bar swipe** | `0x00ba6b38` | horizontal drag calls **`0x00b31fa4(player, index, forward)`** (next/previous pouch slot) and stores the result at `[[player+0xa29c]+0x584]`; the player comes from `sPlayer::getLocalPlayer` `0x00af7954` on `[0x00fb83e8]` | medium |
-| Target camera | top-screen icon `ui211_target` handled by `0x00b85b00`, `0x00b97cb0`, `0x00b8cdb8`, `0x00b9d2e4` | the action function was not identified | low |
+| **Target camera** (panel type 13) | driver **`0x00b94804`** (each frame from the HUD update `0x00b8266c`) → taps in **`0x00b8d024`** (touch group at HUD `+0x460`, hash `0xd77e6342`; two-monster layout `+0x478`) | toggles HUD `+0x274`/`+0x275` (one per large monster) and sets **`sCamera+0xed5`** (`0` off, `n` = monster *n*); HUD byte **`+0x27e`** is a request that counts as a tap (one monster: on/off; two: first, second, off) and is cleared at the end of the same HUD update (`0x00b9dfe0`); a monster whose flags at HUD `+0x26e`/`+0x26f` have `0xe0` set (not seen yet) gets the "no" sound (id 3) and no change. The game sets `+0x27e` itself from menu action `0x8000` (`sMhPad+0x348`) only when `sGameControl+0x2b` is 1. The panel's drawing is `0x00b93738` (monster icon state from `0x00c03b2c(sCamera, i)`) | high (code), run time: a tap and the request both reach the "no" branch with the monster unseen |
 
 The remaining panels (kick vs. special vs. skip, target camera selection, map zoom, shortcuts, hunter search, chat) are reachable through the same three channels; mapping each id is the first run-time task (§5, stage 0).
 
@@ -228,6 +228,8 @@ So the touch → panel path of §2 is not confirmed at run time, and the panel i
 
 **The kick, confirmed.** On the sand ship's deck, OR-ing action bit `0x0001` into `sMhPad+0x3f0` for a few frames (from the `sMhPad::update` hook) makes the hunter kick; the same run without it shows him standing still. The port's `kick` option does that while a chosen button is held. It reads the button from the word `sPad::processInput` builds (`this+0x2c+0x60`, `this` being sMhPad, the sPad singleton). The encoding was checked at run time: A `0x2000`, X `0x1000`, L `0x100`, R `0x200`, ZL `0x400`, ZR `0x800`, circle pad up `0x10010000`. The injected bit is consumed by the next update, a frame later. On the deck ZL and ZR showed no effect of their own. One caveat: a hook that reads `this` must take `r0` before calling the original, which returns with `r0` changed.
 
+**Panel types and the target camera (October 2026, from the maintainer's save on an expedition).** The quest HUD keeps one panel type per slot as u16 at `0x01082cec+0x7a` (`0x01082cec` from `0x001287a4`); the Type A layout on an expedition gave `6, 6, 13, 1, 1, 16` with slots 1 and 4 masked (`+0xb1` = `0x12`). The per-frame HUD function `0x00b92e24` switches on the type: 13 is the target camera (`0x00b93738`), 14 the kick (`sMhPad+0x3f0 |= 1`, as found before), 3–5 and 11–12 open a big panel (HUD `+0x2a9..+0x2ab`). The way in was a diagnostic code library that counts calls (`-D RC_CALL_COUNTS`, `mh4u_runner --call-counts`): in one run, four 4-second windows, a tap on the target panel in the second and fourth; five functions ran once per tap and never in the quiet windows (the "no" sound `0x00312928`, the press animation `0x00ae1b7c`/`0x00ae275c`, and two sound/effect helpers), which led to `0x00b8d024` through the panel's touch-group hash. The port's `target` option writes the request byte `+0x27e` when the chosen button is pressed.
+
 ## Screens that use the touch screen (player's catalogue, October 2026)
 
 The maintainer played the port from a new save to the first village quests and recorded every bottom screen he reached. Screenshots aren't kept in the repository (game artwork). Not covered yet: minigames and the full-size map.
@@ -246,7 +248,7 @@ The maintainer played the port from a new save to the first village quests and r
 | Gallery, save select, character creation | Title menus | Lists and grids | Menus |
 | Expeditions | World map (Solo/Multiplayer) once unlocked | The map with the expedition destinations and a message box with Confirm; then the expedition card (rank, monsters seen there, environment, treasure area, online status) with Depart | Menus: Confirm and Depart take A |
 
-So stage 2 starts with two bindings, target camera and kick. The kick is done (option `kick`, checked on the sand ship's deck); the target camera needs a quest with a monster, from the maintainer's save.
+So stage 2 starts with two bindings, target camera and kick. The kick is done (option `kick`, checked on the sand ship's deck); the target camera is the option `target` (see above; checked up to the "not seen yet" branch, which needs a monster in sight to go further).
 
 ## Open questions
 

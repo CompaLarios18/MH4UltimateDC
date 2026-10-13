@@ -82,6 +82,7 @@ struct Options {
     bool trace_panels = false;  // trace_panels / MH4U_TRACE_PANELS: log touch-panel activity
     u32 render_set = 0, render_clear = 0;  // render_flags_set/_clear: bits of the render word
     u32 kick_button = 0;    // kick / MH4U_KICK: 3DS button that kicks (the game's pad bits)
+    u32 target_button = 0;  // target / MH4U_TARGET: 3DS button for the target camera panel
     Layout::ScreenOverlay touch_overlay;  // touch_overlay / MH4U_TOUCH_OVERLAY (custom layout)
 };
 
@@ -134,6 +135,8 @@ void Set(Options& o, const std::string& key, const std::string& value) {
         o.trace_panels = IsOn(value);
     } else if (key == "kick") {
         o.kick_button = PadBit(value);
+    } else if (key == "target") {
+        o.target_button = PadBit(value);
     } else if (key == "touch_overlay") {
         o.touch_overlay = ParseOverlay(value);
     } else if (key == "trace_frames") {
@@ -170,6 +173,7 @@ Options LoadOptions(std::vector<std::string>& log) {
         {"MH4U_TRACE_FRAMES", "trace_frames"},
         {"MH4U_TRACE_PANELS", "trace_panels"},
         {"MH4U_KICK", "kick"},
+        {"MH4U_TARGET", "target"},
         {"MH4U_TOUCH_OVERLAY", "touch_overlay"}};
     for (const auto& [var, key] : env) {
         if (const char* value = std::getenv(var)) {
@@ -382,6 +386,15 @@ constexpr u32 SMHPAD_INJECTED_MENU = 0x3f4;
 constexpr u32 SPAD_HELD = 0x2c + 0x60;   // u32: buttons held, as sPad::processInput encodes them
 constexpr u32 ACTION_KICK = 0x0001;      // the action no button produces: panel 7, the kick
 u32 last_panel_touch = 0xFFFFFFFF;
+// The target camera panel (panel type 13). Each frame the quest HUD's target driver
+// (0x00b94804) runs the panel's taps through 0x00b8d024, which also takes a request byte
+// as a tap: with one monster it toggles the target camera on it, with two it cycles
+// first, second, off (a monster not yet seen gets the "no" sound). The HUD clears the byte
+// at the end of the same update (0x00b9dfe0), and the game sets it itself from a menu
+// action in one control mode only. sCamera+0xed5 is the result: 0 off, n monster n.
+constexpr u32 QUEST_HUD = 0x0108260c;     // static (getQuestHud 0x0013f230)
+constexpr u32 HUD_TARGET_REQUEST = 0x27e;  // u8: toggle the target camera as a tap would
+u32 target_held = 0;
 
 /// PanelManager::processTouch(): runs the touch groups, leaves the touched panel's id.
 void PanelProcessTouch(RCtx* ctx, RFunc original) {
@@ -419,10 +432,17 @@ void MhPadUpdate(RCtx* ctx, RFunc original) {
         }
     }
     original(ctx);
-    if (options.kick_button) {
-        if (rd32(ctx, pad + SPAD_HELD) & options.kick_button) {
-            wr32(ctx, pad + SMHPAD_INJECTED, rd32(ctx, pad + SMHPAD_INJECTED) | ACTION_KICK);
+    const u32 held = rd32(ctx, pad + SPAD_HELD);
+    if (options.kick_button && (held & options.kick_button)) {
+        wr32(ctx, pad + SMHPAD_INJECTED, rd32(ctx, pad + SMHPAD_INJECTED) | ACTION_KICK);
+    }
+    if (options.target_button) {
+        // a press, not a hold: one request per press, as one tap
+        const u32 now = held & options.target_button;
+        if (now && !target_held) {
+            wr8(ctx, QUEST_HUD + HUD_TARGET_REQUEST, 1);
         }
+        target_held = now;
     }
 }
 
@@ -592,6 +612,9 @@ std::vector<std::string> Install(const RCodeInfo& info) {
     }
     if (options.kick_button) {
         log.push_back(fmt::format("kick on pad button {:04X}", options.kick_button));
+    }
+    if (options.target_button) {
+        log.push_back(fmt::format("target camera on pad button {:04X}", options.target_button));
     }
     Layout::SetScreenOverlay(options.touch_overlay);
     if (const auto& overlay = options.touch_overlay; overlay.height > 0) {
