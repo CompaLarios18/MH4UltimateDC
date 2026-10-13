@@ -230,7 +230,7 @@ So the touch → panel path of §2 is not confirmed at run time, and the panel i
 
 ## Screens that use the touch screen (player's catalogue, October 2026)
 
-The maintainer played the port from a new save to the first village quests and recorded every bottom screen he reached. Screenshots aren't kept in the repository (game artwork). Not covered yet: minigames, expeditions and the full-size map.
+The maintainer played the port from a new save to the first village quests and recorded every bottom screen he reached. Screenshots aren't kept in the repository (game artwork). Not covered yet: minigames and the full-size map.
 
 | Screen | Where | What the touch screen holds | For the port |
 |---|---|---|---|
@@ -244,6 +244,7 @@ The maintainer played the port from a new save to the first village quests and r
 | Quest board | Guild/village counters | Rank tabs, Guild Quests, Event Quests, Arena (Arena Quests, Challenge Quests, Leaderboards), quest lists with Confirm/Back | Menus |
 | Quest panels | During a quest | Map, camera pad, target camera ("Unseen" monster icon), item shortcuts (e.g. First-aid Med, Ration) | **Target camera and kick are the only actions with no button.** MH3U on Wii U puts them on ZR when playing with a Pro Controller; the port should do the same (stage 2) |
 | Gallery, save select, character creation | Title menus | Lists and grids | Menus |
+| Expeditions | World map (Solo/Multiplayer) once unlocked | The map with the expedition destinations and a message box with Confirm; then the expedition card (rank, monsters seen there, environment, treasure area, online status) with Depart | Menus: Confirm and Depart take A |
 
 So stage 2 starts with two bindings, target camera and kick. The kick is done (option `kick`, checked on the sand ship's deck); the target camera needs a quest with a monster, from the maintainer's save.
 
