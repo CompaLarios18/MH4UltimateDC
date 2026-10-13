@@ -392,6 +392,117 @@ void MhPadUpdate(RCtx* ctx, RFunc original) {
     original(ctx);
 }
 
+// ── Quest start (docs/research/system-services.md, "A loading race at the start of a
+// quest"). Right before a quest starts, 0x0069b21c builds a list of quest-file resources by
+// asking the resource manager for each id of a table (0x0069af14); 0x00b7c010 then has
+// 0x0069b4d0 copy the quest's data out of that list and releases it (0x006bc838). A file
+// that is still being set up at that moment is left out of the list. At 60 fps that is a
+// quest nobody starts; at higher frame rates it is often the one being started, which
+// then runs on an empty stage: the hunter falls into a void and the quest fails. Until its
+// quest is in the list, startQuest is put off a frame and the list released, so that the
+// game builds it again.
+constexpr u32 QUEST_HOLDER = 0x00fbeffc;      // the object that holds the current quest
+constexpr u32 QUEST_TABLE = 0xe604;           // holder: u16 quest ids, 0-terminated
+constexpr u32 QUEST_LIST = 0xe608;            // holder: the resources found for them
+constexpr u32 QUEST_LIST_COUNT = 0xe610;
+constexpr u32 RESOURCE_BUFFER = 0x64;         // resource: its file contents
+constexpr u32 QUEST_FLOW_PARAMS = 0x00edbe90; // [this]+0x9788: what 0x00b7c010 starts
+constexpr u32 QUEST_LIST_RELEASE = 0x006bc838;
+constexpr u32 QUEST_START = 0x00b7c010;
+constexpr u32 QUEST_HOLD_MAX_FRAMES = 600;
+
+/// The quest id 0x00b7c010 is about to set up (its three branches), or 0.
+u32 NextQuestId(RCtx* ctx) {
+    const u32 base = rd32(ctx, QUEST_FLOW_PARAMS);
+    if (!base) {
+        return 0;
+    }
+    const u32 p = base + 0x9788;
+    if (rd8(ctx, p + 0x18)) {
+        const u32 id = rd16(ctx, p + 0x1a);
+        if (id != 0xffff) {
+            return id;
+        }
+        const u32 which = rd8(ctx, p + 0x19);
+        return which < 3 ? 0xafc8 + which : 0;
+    }
+    return rd8(ctx, p + 0x89) ? rd16(ctx, p + 0x8c) : rd16(ctx, p + 0x3c);
+}
+
+/// Whether the list was built from a table with quest `id` but doesn't have it: the quest's
+/// file was not ready when 0x0069af14 asked for it (0x006ae870 reads an entry's quest id at
+/// buffer + [buffer] + 0x20).
+bool QuestLeftOut(RCtx* ctx, u32 holder, u32 id) {
+    const u32 list = rd32(ctx, holder + QUEST_LIST);
+    const u32 table = rd32(ctx, holder + QUEST_TABLE);
+    const u32 count = list ? rd32(ctx, holder + QUEST_LIST_COUNT) : 0;
+    if (!list || !table || count > 4096) {
+        return false;
+    }
+    bool in_table = false;
+    for (u32 i = 0; i < 4096; ++i) {
+        const u32 t = rd16(ctx, table + 2 * i);
+        if (t == 0) {
+            break;
+        }
+        in_table = in_table || t == id;
+    }
+    if (!in_table) {
+        return false;
+    }
+    for (u32 i = 0; i < count; ++i) {
+        const u32 res = rd32(ctx, list + 4 * i);
+        const u32 data = res ? rd32(ctx, res + RESOURCE_BUFFER) : 0;
+        const u32 header = data ? rd32(ctx, data) : 0;
+        if (header != 0 && header < 0x10000 && rd16(ctx, data + header + 0x20) == id) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/// Calls a recompiled game function with one argument, leaving the caller's registers as
+/// they were.
+void CallGame(RCtx* ctx, u32 function, u32 arg) {
+    u32 regs[16];
+    std::copy(std::begin(ctx->r), std::end(ctx->r), regs);
+    const u32 flags[4] = {ctx->fn, ctx->fz, ctx->fc, ctx->fv};
+    const u32 expect_next = ctx->expect_next;
+    ctx->expect_next = 0;
+    ctx->r[0] = arg;
+    ctx->r[14] = QUEST_START;
+    rc_call(ctx, function);
+    std::copy(std::begin(regs), std::end(regs), ctx->r);
+    ctx->fn = flags[0];
+    ctx->fz = flags[1];
+    ctx->fc = flags[2];
+    ctx->fv = flags[3];
+    ctx->expect_next = expect_next;
+}
+
+u32 quest_start_held = 0;
+
+/// QuestFlow::startQuest(this).
+void StartQuest(RCtx* ctx, RFunc original) {
+    const u32 holder = rd32(ctx, QUEST_HOLDER);
+    const u32 id = NextQuestId(ctx);
+    if (holder && id && quest_start_held < QUEST_HOLD_MAX_FRAMES && QuestLeftOut(ctx, holder, id)) {
+        if (quest_start_held++ == 0) {
+            LOG_INFO(Frontend, "quest {}: its file wasn't ready for the quest list; building the list again",
+                     id);
+        }
+        CallGame(ctx, QUEST_LIST_RELEASE, holder);
+        rc_hook_return(ctx);
+        return;
+    }
+    if (quest_start_held) {
+        LOG_INFO(Frontend, "quest {}: started after {} more frames{}", id, quest_start_held,
+                 quest_start_held >= QUEST_HOLD_MAX_FRAMES ? " (gave up)" : "");
+        quest_start_held = 0;
+    }
+    original(ctx);
+}
+
 struct Hook {
     u32 addr;
     const char* name;
@@ -409,6 +520,7 @@ constexpr Hook HOOKS[] = {
     {0x002951fc, "PanelManager::processTouch", PanelProcessTouch},
     {0x00288f4c, "PanelManager::isTapped", PanelIsTapped},
     {0x00694c98, "sMhPad::update", MhPadUpdate},
+    {0x00b7c010, "QuestFlow::startQuest", StartQuest},
 };
 
 } // namespace

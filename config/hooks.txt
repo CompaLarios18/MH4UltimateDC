@@ -13,3 +13,4 @@
 0x002951fc PanelManager::processTouch # second screen: trace panel touches (MH4U_TRACE_PANELS)
 0x00288f4c PanelManager::isTapped     # second screen: trace / later bind panels to keys
 0x00694c98 sMhPad::update             # second screen: trace / inject panel actions
+0x00b7c010 QuestFlow::startQuest      # quest start: rebuild the quest list until it has the quest (above 60 fps)
