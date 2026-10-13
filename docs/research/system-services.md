@@ -168,6 +168,10 @@ Everything else is in the tool's output: 36 `cam:u` + 22 `y2r:u` (camera capture
 
 To settle it, log per frame in Azahar (with the recompiled backend or a GDB stub): `[0x0110d004]` (top VBlanks), `[[0x01057194]+0x5c]` (delta), `[[0x01057194]+0x34]` (measured fps), `[0x010571d4]` (frames submitted), and `[[0x010572cc]+0x8aa8]`/`+0x8aac` (mDisplaySkip). If delta sits near 2.0 with no lock, the 60 fps work is about making each frame cheap enough and checking any logic that counts frames.
 
+### Above 60 fps: what the game does at 120 Hz (runtime, October 2026)
+
+With the cap at 120 and Azahar's LCD at 120 Hz (`fps = 120`, `refresh_rate = 120`), menus and the title run at 120 fps (delta 0.5), but the opening on the sand ship drops to 30. A system-call trace of the main thread shows why: each frame, about 2.4 ms in, `0x00966aa4` (a pacing object with a state machine at `+0x1ac` and mutex-guarded queues, called through a pointer) gets a target frame time from `0x009692ac`, subtracts the elapsed time and arms a kernel timer (`svcSetTimer` on its handle at `+0x1c0`, 31 ms here); the frame then ends waiting on that timer (`0x00969da0`, called at `0x00af5584` in `sMhMain::frame`). The target is 33.3 ms, so the scene runs at 30. At 60 Hz the same scene never arms the timer and runs at 60 with no wait. A faster emulated CPU (200%) changes nothing. What turns the pacer on at 120 Hz, and what its target is derived from, is the next thing to read; until then `refresh_rate` stays at 60.
+
 ### What the port should replace
 
 - **GSP:** replace RegisterInterruptRelayQueue, the interrupt thread `0x0056d43c` and `0x00d82d00` with a host present plus a host VBlank signal. Keep the callback table semantics: `0x00bf66f0` must still see "displayed = submitted".
