@@ -18,6 +18,7 @@
 #include <fmt/format.h>
 
 #include "arm_recomp.h"
+#include "hooks.h"
 #include "common/file_util.h"
 #include "common/logging/backend.h"
 #include "common/logging/filter.h"
@@ -27,6 +28,7 @@
 #include "core/core_timing.h"
 #include "core/frontend/applets/default_applets.h"
 #include "core/frontend/emu_window.h"
+#include "core/frontend/framebuffer_layout.h"
 #include "core/frontend/image_interface.h"
 #include "core/frontend/input.h"
 #include "core/hle/kernel/kernel.h"
@@ -83,6 +85,9 @@ const char* const USAGE = R"(usage: mh4u_runner <file> [options]
                     (default "runner")
   --new-console-id  give the console a new random ID before the game starts (a room turns
                     away a second member with the same ID, e.g. two copies of a user folder)
+or:    mh4u_runner --overlay-layout SPEC WIDTHxHEIGHT[:TOP_WIDTH]
+                    print the custom screen layout the port's touch_overlay option SPEC
+                    gives a window that size (top screen TOP_WIDTH x 240, default 400)
 )";
 
 class HeadlessWindow final : public Frontend::EmuWindow {
@@ -399,7 +404,28 @@ void PrintRoomMembers() {
 
 } // namespace
 
+/// --overlay-layout: the screens' rectangles for a touch_overlay option and window size.
+int PrintOverlayLayout(const std::string& spec, const std::string& size) {
+    unsigned width = 0, height = 0, top_width = Core::kScreenTopWidth;
+    if (std::sscanf(size.c_str(), "%ux%u:%u", &width, &height, &top_width) < 2 || !width ||
+        !height || !top_width) {
+        return Usage();
+    }
+    Layout::SetTopScreenWidth(top_width);
+    Layout::SetScreenOverlay(Port::Hooks::ParseOverlay(spec));
+    const auto layout = Layout::CustomFrameLayout(width, height, false, false);
+    const auto& t = layout.top_screen;
+    const auto& b = layout.bottom_screen;
+    std::printf("top %u,%u %u,%u opacity %.2f\nbottom %u,%u %u,%u opacity %.2f\n", t.left, t.top,
+                t.right, t.bottom, layout.top_opacity, b.left, b.top, b.right, b.bottom,
+                layout.bottom_opacity);
+    return 0;
+}
+
 int main(int argc, char** argv) {
+    if (argc == 4 && std::string(argv[1]) == "--overlay-layout") {
+        return PrintOverlayLayout(argv[2], argv[3]);
+    }
     std::string path;
     std::string code_library;
     std::string cpu = "recomp";

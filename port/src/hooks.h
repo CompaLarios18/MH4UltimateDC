@@ -5,6 +5,8 @@
 #include <string>
 #include <vector>
 
+#include "core/frontend/top_screen.h"
+
 struct RCodeInfo;
 
 namespace Port::Hooks {
@@ -15,5 +17,9 @@ namespace Port::Hooks {
 /// MH4U_TRACE_FRAMES). Returns lines for the log: options in effect and hooks the library
 /// has no hook point for (it was built with an older hooks.txt).
 std::vector<std::string> Install(const RCodeInfo& info);
+
+/// The touch_overlay option: "top-right 30 85" (corner, height in % of the window's, opacity
+/// in %), "on" (top right, 30%, 85%) or "off".
+Layout::ScreenOverlay ParseOverlay(std::string value);
 
 } // namespace Port::Hooks

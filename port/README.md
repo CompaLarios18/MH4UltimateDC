@@ -10,7 +10,7 @@ The PC port: [Azahar](https://github.com/azahar-emu/azahar)'s 3DS core (kernel, 
 | `src/runner.cpp` | `mh4u_runner`: boots a 3DS executable with no window, with the recompiled code (`--cpu recomp --code LIB`) or Azahar's own JIT/interpreter; can install a CIA first, play an input script and save screenshots; for tests and for comparing backends |
 | `src/hooks.cpp` | The port's hooks on game functions (hook points from `config/hooks.txt`): frame-rate cap, frame timing trace |
 | `tests/svc_test.c` | Freestanding 3DS test program (threads, events, mutexes, atomics, VFP short vectors, Thumb) |
-| `azahar/` | The Azahar commit this builds against, and a small patch: a hook to replace the CPU backend, a hook to build this directory inside Azahar's tree, hooks for the port's options (refresh rate, system-call observer, the top screen's width in every screen layout), and two fixes to Azahar's software renderer that the game needs: a data race on physical-memory lookups between the renderer's worker threads and the emulation thread (it sent texture reads gigabytes off and crashed both CPU backends on the game's first textured frame), and textures outside of memory read as black instead of crashing |
+| `azahar/` | The Azahar commit this builds against, and a small patch: a hook to replace the CPU backend, a hook to build this directory inside Azahar's tree, hooks for the port's options (refresh rate, system-call observer, the top screen's width in every screen layout, the custom layout as a touch-screen overlay that follows the window's size), and two fixes to Azahar's software renderer that the game needs: a data race on physical-memory lookups between the renderer's worker threads and the emulation thread (it sent texture reads gigabytes off and crashed both CPU backends on the game's first textured frame), and textures outside of memory read as black instead of crashing |
 
 The runner contains no game code. The game's recompiled code is a separate shared library, generated and compiled on the user's machine from their own dump and loaded at run time.
 
@@ -79,7 +79,8 @@ screens. It also sends sound nowhere, so it needs no sound card. `--room-host PO
 a network room inside the runner (Azahar's multiplayer) and joins it, `--room-join HOST:PORT`
 joins one, so two runners play the game's local wireless modes together (give both
 `--speed 100` so that they keep time with each other, and a copy of a user folder
-`--new-console-id`: a room turns away a console it already has). The port's hooks
+`--new-console-id`: a room turns away a console it already has). `--overlay-layout SPEC
+WxH[:TOP]` prints the screens' rectangles the `touch_overlay` option gives a window. The port's hooks
 take options from the environment: `MH4U_FPS=60` raises the engine's frame-rate cap,
 `MH4U_TRACE_FRAMES=60` logs the engine's frame timing every 60 frames.
 

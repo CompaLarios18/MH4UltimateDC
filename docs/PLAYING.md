@@ -56,6 +56,9 @@ trace_frames = 0
 # a button for the kick, which on a 3DS only the touch screen's kick panel does
 # (A B X Y L R ZL ZR START UP DOWN LEFT RIGHT; ZR is the right trigger on a controller)
 kick = ZR
+# View > Screen Layout > Custom Layout draws the touch screen over the top screen, which
+# fills the window: corner, height in % of the window's, opacity in % (off = Azahar's own)
+touch_overlay = top-right 30 85
 # write touch-panel activity to the log (to map panels to buttons; doesn't see the taps yet)
 trace_panels = 0
 # experimental: bits of the game's render settings word to clear/set every frame, e.g.
@@ -64,11 +67,11 @@ render_flags_clear = 0
 render_flags_set = 0
 ```
 
-Environment variables override the file: `MH4U_FPS`, `MH4U_REFRESH_RATE`, `MH4U_WIDESCREEN`, `MH4U_WIDE_RENDER`, `MH4U_KICK`, `MH4U_TRACE_FRAMES`, `MH4U_TRACE_PANELS`.
+Environment variables override the file: `MH4U_FPS`, `MH4U_REFRESH_RATE`, `MH4U_WIDESCREEN`, `MH4U_WIDE_RENDER`, `MH4U_KICK`, `MH4U_TOUCH_OVERLAY`, `MH4U_TRACE_FRAMES`, `MH4U_TRACE_PANELS`.
 
 - **60 fps**: the engine's frame limiter is raised to the cap; in the opening scenes the game holds 60 with each frame advancing 1/60 s, so it runs at normal speed. A frame must also fit in one screen refresh of emulated time: if a busy scene stays below 60, raise *CPU Clock Speed* (*Emulation → Configure → Debug*). All players in a multiplayer session should use the same value. **Above 60** *(experimental)*: set `fps` and `refresh_rate` to your monitor's rate, e.g. 120 and 120. Tried at 120: menus, loading, the real-time cutscene and walking on the sand ship run at 120 fps at normal speed (a loading race that more frames per second bring out at the start of quests is worked around). Movies (the opening film) still play at their own 30 fps. Each frame then has 1/120 s of emulated time, so busy scenes need a higher *CPU Clock Speed*. Not tried in a hunt yet.
 - **Widescreen** *(experimental)*: the 3D view is widened to the given aspect ratio and every screen layout (*View → Screen Layout*) shows the top screen at that shape: stacked above the bottom screen, side by side, *Large Screen* with the touch screen small in a corner, or *Single Screen* for the top screen alone (16:9, 16:10, 21:9 and 4:3 exactly; other values stretch it to the window). In *Custom Layout* you can size the top screen yourself and lay the bottom screen over it with *Bottom Screen Opacity*. With `wide_render = 0` this stretches a 400x240 image, HUD included. With `wide_render = 1` the game draws a wider image instead (424x240 for 16:9: render targets, viewports and the copy to the screen are made wider): the 3D view fills the width and the HUD keeps its proportions, centred in the middle 400 pixels until its edge elements get anchored to the screen edges ([research/widescreen.md](research/widescreen.md)). It goes up to 512x240 (about 2.1:1); beyond that, as for 21:9, the rest is stretched.
-- **The bottom screen**: use Azahar's screen layouts (side by side, large top screen with a small bottom one, separate windows, or a translucent overlay in *Custom Layout*) and the mouse as the stylus. **`kick`** puts the kick on a button: the game gets the same action as from the kick panel (tried on the sand ship's deck). The button keeps its own action too; ZR's isn't known to do anything in MH4U without a Circle Pad Pro. The target camera is next, then a single-screen HUD ([research/second-screen.md](research/second-screen.md)).
+- **The bottom screen**: use Azahar's screen layouts (side by side, large top screen with a small bottom one, separate windows) and the mouse as the stylus. **`touch_overlay`** makes *Custom Layout* a single-screen layout that follows the window's size: the top screen as large as the window allows (full screen on a 16:9 monitor with `widescreen = 16:9`), the touch screen drawn over it in a corner, translucent if you like, and clickable there. Choose the corner that hides the least: the item bar is at the bottom right of the top screen. With `touch_overlay = off` *Custom Layout* is Azahar's own (fixed positions from *Configure → Layout*). **`kick`** puts the kick on a button: the game gets the same action as from the kick panel (tried on the sand ship's deck). The button keeps its own action too; ZR's isn't known to do anything in MH4U without a Circle Pad Pro. The target camera is next, then a single-screen HUD ([research/second-screen.md](research/second-screen.md)).
 
 ## Your 3DS save
 

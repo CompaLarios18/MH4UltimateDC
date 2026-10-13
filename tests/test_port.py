@@ -199,6 +199,26 @@ def test_runners_meet_in_a_room(tmp_path):
     assert "A pressed, frame" in guest.stdout + guest.stderr      # and the program ran as usual
 
 
+@pytest.mark.skipif(not os.environ.get("MH4U_RUNNER"), reason="port not built (set MH4U_RUNNER)")
+@pytest.mark.parametrize("spec, size, expected", [
+    # 16:9 top screen (424 wide) filling a 1080p window, the touch screen 30% tall in a corner
+    ("top-right 30 85", "1920x1080:424", "top 6,0 1914,1080 opacity 1.00\nbottom 1488,0 1920,324 opacity 0.85\n"),
+    ("Bottom_Left 25", "1920x1080:424", "top 6,0 1914,1080 opacity 1.00\nbottom 0,810 360,1080 opacity 0.85\n"),
+    ("on", "1920x1080:424", "top 6,0 1914,1080 opacity 1.00\nbottom 1488,0 1920,324 opacity 0.85\n"),
+    # a 21:9 window: the game centred, the touch screen in the window's corner (over the bar)
+    ("top-left 30 100", "2560x1080:424", "top 326,0 2234,1080 opacity 1.00\nbottom 0,0 432,324 opacity 1.00\n"),
+    # off: Azahar's own custom layout (its default positions)
+    ("off", "1920x1080", "top 0,0 800,480 opacity 1.00\nbottom 80,500 720,980 opacity 1.00\n"),
+])
+def test_touch_overlay_layout(spec, size, expected):
+    """The port's touch_overlay option turns Azahar's custom screen layout into the top
+    screen filling the window and the touch screen drawn over it in a corner."""
+    r = subprocess.run([os.environ["MH4U_RUNNER"], "--overlay-layout", spec, size], capture_output=True,
+                       text=True, timeout=60)
+    assert r.returncode == 0, r.stderr
+    assert r.stdout == expected
+
+
 def _normalized_log(text: str, user_dir: str) -> list[str]:
     """Azahar's log lines (written by its own thread, so the runner's prints can land
     anywhere between them), without timestamps, user paths and the backend's own lines."""

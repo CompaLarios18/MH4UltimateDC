@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <sstream>
 #include <string_view>
 #include <fmt/format.h>
 
@@ -81,6 +82,7 @@ struct Options {
     bool trace_panels = false;  // trace_panels / MH4U_TRACE_PANELS: log touch-panel activity
     u32 render_set = 0, render_clear = 0;  // render_flags_set/_clear: bits of the render word
     u32 kick_button = 0;    // kick / MH4U_KICK: 3DS button that kicks (the game's pad bits)
+    Layout::ScreenOverlay touch_overlay;  // touch_overlay / MH4U_TOUCH_OVERLAY (custom layout)
 };
 
 /// A 3DS button name -> the bit sPad::processInput gives it in the held word.
@@ -132,6 +134,8 @@ void Set(Options& o, const std::string& key, const std::string& value) {
         o.trace_panels = IsOn(value);
     } else if (key == "kick") {
         o.kick_button = PadBit(value);
+    } else if (key == "touch_overlay") {
+        o.touch_overlay = ParseOverlay(value);
     } else if (key == "trace_frames") {
         o.trace_every = static_cast<u32>(std::max(0L, std::strtol(value.c_str(), nullptr, 10)));
     }
@@ -165,7 +169,8 @@ Options LoadOptions(std::vector<std::string>& log) {
         {"MH4U_WIDE_RENDER", "wide_render"},
         {"MH4U_TRACE_FRAMES", "trace_frames"},
         {"MH4U_TRACE_PANELS", "trace_panels"},
-        {"MH4U_KICK", "kick"}};
+        {"MH4U_KICK", "kick"},
+        {"MH4U_TOUCH_OVERLAY", "touch_overlay"}};
     for (const auto& [var, key] : env) {
         if (const char* value = std::getenv(var)) {
             Set(o, key, value);
@@ -588,6 +593,14 @@ std::vector<std::string> Install(const RCodeInfo& info) {
     if (options.kick_button) {
         log.push_back(fmt::format("kick on pad button {:04X}", options.kick_button));
     }
+    Layout::SetScreenOverlay(options.touch_overlay);
+    if (const auto& overlay = options.touch_overlay; overlay.height > 0) {
+        constexpr const char* corners[] = {"top left", "top right", "bottom left", "bottom right"};
+        log.push_back(fmt::format("custom screen layout: the touch screen over the top screen, {}, "
+                                  "{:.0f}% of the window's height, {:.0f}% opaque",
+                                  corners[static_cast<int>(overlay.corner)], overlay.height * 100,
+                                  overlay.opacity * 100));
+    }
     if (options.render_set || options.render_clear) {
         log.push_back(fmt::format("render flags: set {:08X}, clear {:08X} (experimental)",
                                   options.render_set, options.render_clear));
@@ -599,6 +612,34 @@ std::vector<std::string> Install(const RCodeInfo& info) {
         }
     }
     return log;
+}
+
+Layout::ScreenOverlay ParseOverlay(std::string v) {
+    std::transform(v.begin(), v.end(), v.begin(), [](unsigned char c) { return std::tolower(c); });
+    using Corner = Layout::ScreenOverlay::Corner;
+    Layout::ScreenOverlay overlay{0.30f, 0.85f, Corner::TopRight};
+    std::istringstream words(v);
+    std::string corner;
+    words >> corner;
+    std::replace(corner.begin(), corner.end(), '_', '-');
+    const std::pair<const char*, Corner> corners[] = {{"top-left", Corner::TopLeft},
+                                                      {"top-right", Corner::TopRight},
+                                                      {"bottom-left", Corner::BottomLeft},
+                                                      {"bottom-right", Corner::BottomRight}};
+    const auto it = std::find_if(std::begin(corners), std::end(corners),
+                                 [&](const auto& c) { return corner == c.first; });
+    if (it == std::end(corners)) {
+        return IsOn(corner) ? overlay : Layout::ScreenOverlay{};
+    }
+    overlay.corner = it->second;
+    std::string height, opacity;
+    if (words >> height) {
+        overlay.height = std::clamp(std::strtof(height.c_str(), nullptr) / 100.0f, 0.05f, 1.0f);
+    }
+    if (words >> opacity) {
+        overlay.opacity = std::clamp(std::strtof(opacity.c_str(), nullptr) / 100.0f, 0.1f, 1.0f);
+    }
+    return overlay;
 }
 
 } // namespace Port::Hooks
