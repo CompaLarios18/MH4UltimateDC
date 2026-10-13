@@ -446,6 +446,62 @@ index d26f80e..f7806e7 100644
  } // namespace Kernel
  
  BOOST_CLASS_EXPORT_KEY(Kernel::SVC_SyncCallback)
+diff --git a/src/core/hle/service/fs/file.cpp b/src/core/hle/service/fs/file.cpp
+index c1c947b..4bb8624 100644
+--- a/src/core/hle/service/fs/file.cpp
++++ b/src/core/hle/service/fs/file.cpp
+@@ -5,6 +5,7 @@
+ #include <algorithm>
+ #include <boost/serialization/unique_ptr.hpp>
+ #include "common/archives.h"
++#include "common/settings.h"
+ #include "common/logging/log.h"
+ #include "core/core.h"
+ #include "core/file_sys/errors.h"
+@@ -144,7 +145,8 @@ void File::Read(Kernel::HLERequestContext& ctx) {
+             }
+ 
+             const auto read_delay = static_cast<s64>(backend->GetReadDelayNs(async_data->length));
+-            if (!async_data->cache_ready) {
++            // with deterministic async operations, the emulated delay can't depend on the host
++            if (!async_data->cache_ready && !Settings::values.deterministic_async_operations) {
+                 const auto time_took = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                            std::chrono::steady_clock::now() - async_data->pre_timer)
+                                            .count();
+diff --git a/src/core/hle/service/fs/fs_user.cpp b/src/core/hle/service/fs/fs_user.cpp
+index e9fb0c2..9643823 100644
+--- a/src/core/hle/service/fs/fs_user.cpp
++++ b/src/core/hle/service/fs/fs_user.cpp
+@@ -106,8 +106,12 @@ void FS_USER::OpenFile(Kernel::HLERequestContext& ctx) {
+             async_data->file =
+                 archives.OpenFileFromArchive(async_data->archive_handle, async_data->file_path,
+                                              async_data->mode, async_data->attributes);
+-            const auto time_took = std::chrono::duration_cast<std::chrono::nanoseconds>(
+-                std::chrono::steady_clock::now() - async_data->pre_timer);
++            // with deterministic async operations, the emulated delay can't depend on the host
++            const auto time_took =
++                Settings::values.deterministic_async_operations
++                    ? std::chrono::nanoseconds()
++                    : std::chrono::duration_cast<std::chrono::nanoseconds>(
++                          std::chrono::steady_clock::now() - async_data->pre_timer);
+             return static_cast<s64>(((async_data->file.second > time_took)
+                                          ? (async_data->file.second - time_took)
+                                          : std::chrono::nanoseconds())
+@@ -219,8 +223,12 @@ void FS_USER::OpenFileDirectly(Kernel::HLERequestContext& ctx) {
+                 archives.OpenFileFromArchive(*async_data->archive_handle, async_data->file_path,
+                                              async_data->mode, async_data->attributes);
+             archives.CloseArchive(*async_data->archive_handle);
+-            const auto time_took = std::chrono::duration_cast<std::chrono::nanoseconds>(
+-                std::chrono::steady_clock::now() - async_data->pre_timer);
++            // with deterministic async operations, the emulated delay can't depend on the host
++            const auto time_took =
++                Settings::values.deterministic_async_operations
++                    ? std::chrono::nanoseconds()
++                    : std::chrono::duration_cast<std::chrono::nanoseconds>(
++                          std::chrono::steady_clock::now() - async_data->pre_timer);
+             return static_cast<s64>(((async_data->file.second > time_took)
+                                          ? (async_data->file.second - time_took)
+                                          : std::chrono::nanoseconds())
 diff --git a/src/core/memory.cpp b/src/core/memory.cpp
 index c1dbbd0..49745de 100644
 --- a/src/core/memory.cpp

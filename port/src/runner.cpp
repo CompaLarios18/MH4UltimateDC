@@ -568,6 +568,7 @@ int main(int argc, char** argv) {
     Settings::values.graphics_api.SetValue(Settings::GraphicsAPI::Software);
     Settings::values.frame_limit.SetValue(speed); // 0: don't wait for real time
     Settings::values.cpu_clock_percentage.SetValue(cpu_clock);
+    // (the port's Azahar patch also keeps host time out of file delays in this mode)
     Settings::values.deterministic_async_operations.SetValue(!async_io);
     if (!async_io) {
         // the game seeds its random numbers from the clock: a fixed start date makes two runs
