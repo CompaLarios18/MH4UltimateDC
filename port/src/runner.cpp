@@ -53,10 +53,12 @@ const char* const USAGE = R"(usage: mh4u_runner <file> [options]
                     a screen built up over several frames can come out incomplete
   --speed PERCENT   emulation speed limit (default 0 = as fast as possible; 100 = real time)
   --cpu-clock PERCENT  emulated CPU clock (default 100; Azahar's CPU Clock Speed setting)
-  --async-io        let file reads finish on host threads, as Azahar does by default; the
-                    runner otherwise does them in place so that a run repeats exactly (an
+  --async-io        let file reads finish on host threads and start the clock at the
+                    host's time, as Azahar does by default; the runner otherwise does reads in
+                    place and starts at a fixed date, so that a run repeats exactly (an
                     asynchronous read wakes the game at an emulated time that depends on how
-                    fast the host was, which moves loading screens by seconds)
+                    fast the host was, which moves loading screens by seconds, and the game
+                    seeds its random numbers from the clock)
   --dump MS:ADDR:SIZE  at emulated time MS, write SIZE bytes of guest memory from ADDR to
                     mem_<ms>_<addr>.bin in the --shots directory (or the current one);
                     repeatable, e.g. to diff the game's state with and without an input
@@ -394,6 +396,12 @@ int main(int argc, char** argv) {
     Settings::values.frame_limit.SetValue(speed); // 0: don't wait for real time
     Settings::values.cpu_clock_percentage.SetValue(cpu_clock);
     Settings::values.deterministic_async_operations.SetValue(!async_io);
+    if (!async_io) {
+        // the game seeds its random numbers from the clock: a fixed start date makes two runs
+        // the same down to the monster's moves (2026-01-01 12:00 UTC)
+        Settings::values.init_clock.SetValue(Settings::InitClock::FixedTime);
+        Settings::values.init_time.SetValue(1767268800ULL);
+    }
     // no sound card needed (and on Windows, cubeb's WASAPI backend asserts on a thread
     // without COM, which a runner without Qt never initialises)
     Settings::values.output_type.SetValue(AudioCore::SinkType::Null);
