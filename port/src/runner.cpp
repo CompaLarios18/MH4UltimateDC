@@ -57,6 +57,9 @@ const char* const USAGE = R"(usage: mh4u_runner <file> [options]
                     runner otherwise does them in place so that a run repeats exactly (an
                     asynchronous read wakes the game at an emulated time that depends on how
                     fast the host was, which moves loading screens by seconds)
+  --dump MS:ADDR:SIZE  at emulated time MS, write SIZE bytes of guest memory from ADDR to
+                    mem_<ms>_<addr>.bin in the --shots directory (or the current one);
+                    repeatable, e.g. to diff the game's state with and without an input
   --trace-svc FILE  write every system call (thread, number, pc, lr, r0-r3, ticks) to FILE,
                     to compare CPU backends thread by thread
   --input SCRIPT    comma-separated presses at emulated times, e.g.
@@ -93,6 +96,50 @@ struct Press {
 };
 constexpr int TOUCH = -1, CIRCLE = -2;
 std::vector<Press> g_presses;
+
+struct Dump {
+    double ms;
+    u32 addr, size;
+    bool done = false;
+};
+std::vector<Dump> g_dumps;
+
+bool ParseDump(const std::string& arg) {
+    Dump d{};
+    char extra = 0;
+    if (std::sscanf(arg.c_str(), "%lf:%x:%x%c", &d.ms, &d.addr, &d.size, &extra) != 3 || d.size == 0) {
+        return false;
+    }
+    g_dumps.push_back(d);
+    return true;
+}
+
+/// Writes the dumps that are due; unmapped bytes come out as zero.
+void WriteDumps(Core::System& system, const std::string& dir) {
+    const double now = EmulatedMs();
+    for (Dump& d : g_dumps) {
+        if (d.done || now < d.ms) {
+            continue;
+        }
+        d.done = true;
+        std::vector<u8> bytes(d.size);
+        auto& memory = system.Memory();
+        auto process = system.Kernel().GetCurrentProcess();
+        for (u32 off = 0; off < d.size;) {
+            const VAddr a = d.addr + off;
+            const u32 chunk = std::min<u32>(d.size - off, 0x1000 - (a & 0xfff)); // page by page
+            if (process && memory.IsValidVirtualAddress(*process, a)) {
+                memory.ReadBlock(*process, a, bytes.data() + off, chunk);
+            }
+            off += chunk;
+        }
+        const std::string path = fmt::format("{}/mem_{:07.0f}_{:08x}.bin", dir.empty() ? "." : dir, d.ms, d.addr);
+        if (std::FILE* f = std::fopen(path.c_str(), "wb")) {
+            std::fwrite(bytes.data(), 1, bytes.size(), f);
+            std::fclose(f);
+        }
+    }
+}
 
 const Press* Active(int button) {
     const double now = EmulatedMs();
@@ -287,6 +334,11 @@ int main(int argc, char** argv) {
             install.push_back(argv[++i]);
         } else if (arg == "--shots" && i + 1 < argc) {
             shots_dir = argv[++i];
+        } else if (arg == "--dump" && i + 1 < argc) {
+            if (!ParseDump(argv[++i])) {
+                std::fprintf(stderr, "bad --dump: %s (want MS:ADDR:SIZE, hex address and size)\n", argv[i]);
+                return 1;
+            }
         } else if (arg == "--trace-svc" && i + 1 < argc) {
             svc_trace = argv[++i];
         } else if (arg == "--speed" && i + 1 < argc) {
@@ -400,6 +452,7 @@ int main(int argc, char** argv) {
                                           EmulatedMs() >= next_shot - draw_window);
         }
         const auto result = system.RunLoop();
+        WriteDumps(system, shots_dir);
         if (!shots_dir.empty() && EmulatedMs() >= next_shot) {
             const auto stem = fmt::format("{}/{:07.0f}", shots_dir, next_shot);
             SaveScreen(system, VideoCore::ScreenId::TopLeft, stem + "_top.ppm");

@@ -105,13 +105,15 @@ def test_interpreter_fallback_matches_jit(tmp_path):
 
 @pytest.mark.skipif(not os.environ.get("MH4U_RUNNER"), reason="port not built (set MH4U_RUNNER)")
 @pytest.mark.parametrize("extra", [[], ["--draw-window", "50"], ["--async-io"],
-                                   ["--shots-from", "500", "--shot-every", "500"]])
+                                   ["--shots-from", "500", "--shot-every", "500"],
+                                   ["--dump", "500:100000:40"]])
 def test_runner_scripted_input_and_screenshots(tmp_path, extra):
     """port/tests/io_test.c reads HID shared memory and draws into the top framebuffer:
     the runner's --input script must reach it and --shots must save what it drew. With
     --draw-window the GPU skips triangles between screenshots; the program writes its
     framebuffer with the CPU, so nothing it does may change. --async-io only changes how
-    file reads finish, and the program reads no files. --shots-from moves the first shot."""
+    file reads finish, and the program reads no files. --shots-from moves the first shot;
+    --dump writes guest memory (here the program's first instructions) next to the shots."""
     import build_svc_test
     from recomp import build as rbuild
     binary = os.environ["MH4U_RUNNER"]
@@ -136,6 +138,9 @@ def test_runner_scripted_input_and_screenshots(tmp_path, extra):
     assert "circle right" in events and "circle down" in events
     assert (tmp_path / "user" / "nand").is_dir()
     assert (shots / "0000500_top.ppm").exists() == ("--shots-from" in extra)
+    if "--dump" in extra:
+        dump = (shots / "mem_0000500_00100000.bin").read_bytes()
+        assert len(dump) == 0x40 and any(dump)
     data = (shots / "0001000_top.ppm").read_bytes()
     magic, size, _, pixels = data.split(b"\n", 3)
     width, height = map(int, size.split())
