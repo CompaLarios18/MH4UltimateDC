@@ -2,7 +2,7 @@
 
 How to run Monster Hunter 4 Ultimate on a PC with this project: the game's own code, recompiled to native code on your machine, running on [Azahar](https://github.com/azahar-emu/azahar)'s 3DS core (system services, graphics, audio, multiplayer). Nothing here contains game data: everything game-related comes from **your own console's dump** and stays on your machine.
 
-> **Status (October 2026):** the recompiled code boots the game exactly like Azahar's own CPU emulation up to the point where it opens its files; running the full game is the current milestone. The options marked *experimental* below haven't been tried on the full game yet.
+> **Status (October 2026):** the game runs on recompiled code from first boot (save creation, intro movie, title, character creation) into gameplay on the sand ship, at 60 fps, matching Azahar's own CPU emulation screen by screen. Tested in the cloud with Azahar's software renderer; the options marked *experimental* below haven't been tried in gameplay yet.
 
 ## What you need
 

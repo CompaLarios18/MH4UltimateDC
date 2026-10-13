@@ -271,12 +271,14 @@ class Analyzer:
         return w is not None and (w & 0xFFFF0FFF) == 0xE49E0004
 
     def _link_return(self, f: Function, ins: Insn) -> int | None:
-        """If LR was just set to a constant (`mov lr, pc`, `add/sub lr, pc, #imm`) in the
-        same straight-line code, this jump is a call that returns to that constant. A
+        """If LR was just set to a constant (`mov lr, pc`, `add/sub lr, pc, #imm`, possibly
+        adjusted by `add/sub lr, lr, #imm` for a return point beyond one immediate's reach)
+        in the same straight-line code, this jump is a call that returns to that constant. A
         conditional jump is then a conditional call (hand-written code sets LR once and
         picks the routine with `beq a` / `bne b`, or a branch then a table jump)."""
         if ins.mode != "arm":
             return None
+        adjust = 0
         for k in range(1, 9):
             a = ins.addr - 4 * k
             if a + 4 in f.labels and k > 1:
@@ -288,12 +290,16 @@ class Analyzer:
             if d.kind in (BL, ICALL, RET, JTAB, TRAP, SVC) or (d.kind in (B, IJUMP) and not d.conditional):
                 return None
             if w == MOV_LR_PC:
-                return a + 8
-            if (w & 0x0FFFF000) in (0x028FE000, 0x024FE000):
+                return (a + 8 + adjust) & 0xFFFFFFFF
+            if (w & 0x0FEFF000) in (0x028FE000, 0x024FE000, 0x028EE000, 0x024EE000):  # add/sub lr, pc|lr, #imm
                 if w >> 28 != 0xE:
                     return None
                 imm = ror32(w & 0xFF, ((w >> 8) & 0xF) * 2)
-                return (a + 8 + imm if (w & 0x00F00000) == 0x00800000 else a + 8 - imm) & 0xFFFFFFFF
+                imm = imm if (w & 0x00E00000) == 0x00800000 else -imm
+                if (w >> 16) & 0xF == 14:
+                    adjust += imm
+                    continue
+                return (a + 8 + imm + adjust) & 0xFFFFFFFF
             if any(re.search(r"\bR\(14\) =", line) for line in d.body):
                 return None
         return None

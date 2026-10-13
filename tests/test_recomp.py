@@ -306,6 +306,19 @@ special:
     mov     r6, #40
     mov     pc, lr
 
+    .global far_return
+    .type far_return, %function
+far_return:                         @ LR in two steps, as for a return point out of reach
+    push    {r4, r5, r6, r7, lr}
+    and     r12, r12, #3
+    add     lr, pc, #8
+    add     lr, lr, #4
+    adr     r5, call_table
+    ldr     r6, [r5, r12, lsl #2]
+    add     pc, r6, r5
+    add     r0, r6, #2
+    pop     {r4, r5, r6, r7, pc}
+
     .global frame_owner
     .type frame_owner, %function
 frame_owner:                        @ r12: size class; the routines it jumps to end its frame
@@ -349,11 +362,12 @@ def test_computed_calls_and_negative_offset_tables(tmp_path):
         if len(parts) >= 8 and parts[3] in ("FUNC", "NOTYPE"):
             by_name[parts[7]] = int(parts[1], 16)
     funcs = res["funcs"]
-    fd, bd, fo = by_name["fill_dispatch"], by_name["block_decode"], by_name["frame_owner"]
+    fd, bd, fo, fr = (by_name[n] for n in ("fill_dispatch", "block_decode", "frame_owner", "far_return"))
     assert [len(t) for t in funcs[fd].ijump_targets.values()] == [4]
     assert len(funcs[bd].link_calls) == 2 and set(funcs[bd].link_calls.values()) == {bd + 32}
+    assert list(funcs[fr].link_calls.values()) == [fr + 28] and not funcs[fr].ijump_targets
     assert by_name["tail_a"] in funcs and by_name["tail_b"] in funcs     # constant computed jumps
-    for a in (fd, bd, fo):
+    for a in (fd, bd, fo, fr):
         assert verdicts[a][0] == "pass", (hex(a), verdicts[a])
 
 
