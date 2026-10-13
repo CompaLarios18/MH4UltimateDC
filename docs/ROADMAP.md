@@ -44,8 +44,8 @@ A hybrid is common: recompile everything first (B) to get a running port, then r
 - [x] Frontend: Azahar's own Qt interface loads the code library for the game it opens (no separate SDL frontend needed); Windows build in CI
 - [x] `tools/build_game.py`: the user's dump to an installed code library in one command (fetches the compiler on Windows)
 - [x] Hook points: native code around chosen game functions (`config/hooks.txt`, `port/src/hooks.cpp`); headless runner with input scripts and screenshots for automated runs of the real game
-- [ ] Run the game with dynarmic and with the recompiled code side by side and diff them (needs the user's full dump)
-- [ ] Boot to title screen
+- [x] Run the game with dynarmic and with the recompiled code side by side and diff them: same screens through first boot, intro movie (the hand-written video decoder needed new analysis patterns), title, character creation and the opening on the sand ship
+- [x] Boot to title screen, and into gameplay, at 60 fps; in-game save and load work
 
 ## Phase 3 — Playable
 - [ ] Two-screen layout handling (side by side, swappable, touch screen via mouse)
@@ -55,8 +55,8 @@ A hybrid is common: recompile everything first (B) to get a running port, then r
 
 ## Phase 4 — PC niceties
 - [x] Research: frame pacing (the engine is delta-time based; frame limiter in `sMain`), widescreen (projection, render targets, culling, HUD anchoring), second screen (viewport 7, layout views, touch panels) — [`research/`](research/README.md)
-- [ ] 60 fps: frame-rate cap hook (in), verify on the real game; find what holds it at 30 on hardware
-- [ ] Widescreen: anamorphic step (projection hook + Azahar single-screen aspect, in), then true wide render targets and HUD anchoring
+- [x] 60 fps: frame-rate cap hook, verified on the real game (frame delta 1/60 s, game speed unchanged); find what holds it at 30 on hardware
+- [ ] Widescreen: anamorphic (projection hook + Azahar single-screen aspect) and true wide rendering (render targets, transfer, tunable 400s; up to 512x240) work in gameplay with the HUD centred; next, anchor HUD edge elements
 - [ ] Second screen: Azahar layouts (available), then panel actions on buttons, then a single-screen HUD
 - [x] Resolution scaling, texture packs, rebindable controls and controllers: Azahar's
 - [ ] Multiplayer: Azahar's network rooms carry MH4U's local play; test 4 players on the port

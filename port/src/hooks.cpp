@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <string_view>
 #include <fmt/format.h>
 
 #include "common/common_types.h"
@@ -49,6 +50,9 @@ constexpr u32 VIEWPORT_DISPLAY = 0x16;          // u8: 0 top screen, 1 bottom sc
 constexpr u32 VIEWPORT_SCENE_TEXTURE = 0x0c;    // sub-scene texture: region from its size
 constexpr u32 VIEWPORT_Y0 = 0x28, VIEWPORT_Y1 = 0x30;  // region rows (the screen's width)
 constexpr u32 SLTRENDER_SCENE = 0x6c28;         // nDraw::Scene*: the main render target
+constexpr u32 SLTRENDER_TOP_TRANSFER_Y = 0x6e1c;   // u32: first row of the top screen's image in
+                                                   // the composited target (512 - 400 = 112)
+constexpr u32 SCENE_TARGET = 0x50, TARGET_TEXTURES = 0x34, TEXTURE_SIZE = 0x18;
 constexpr u32 TOP_ROWS = 400, LCD_COLUMNS = 240;   // top screen in framebuffer orientation
 constexpr float NATIVE_ASPECT = 400.0f / 240.0f;
 
@@ -159,6 +163,8 @@ void UpdateFrameTiming(RCtx* ctx, RFunc original) {
 }
 
 /// sMhMain::frame(this): one iteration of the main loop.
+void WideTransfer(RCtx* ctx);
+
 void Frame(RCtx* ctx, RFunc original) {
     if (frames == 0 && options.refresh_rate > 0) {
         // the game presents at most once per VBlank: more VBlanks allow more than 60 fps
@@ -172,6 +178,7 @@ void Frame(RCtx* ctx, RFunc original) {
             wr32(ctx, r + SLTRENDER_RENDER_FLAGS, (flags & ~options.render_clear) | options.render_set);
         }
     }
+    WideTransfer(ctx);
     original(ctx);
     ++frames;
     if (options.trace_every == 0 || frames % options.trace_every != 0) {
@@ -212,12 +219,17 @@ bool OnBottomScreen(RCtx* ctx, u32 camera) {
 /// the camera in r1). Widescreen: divide m00 so the view gets wider by target/native
 /// (Hor+); culling and stereo are derived from this matrix, so they follow. The frontend
 /// shows the top screen stretched to the same aspect ratio (Azahar's aspect setting).
+u32 WideRows();
+
 void GetProjMatrix(RCtx* ctx, RFunc original) {
     const u32 out = ctx->r[0];
     const u32 camera = ctx->r[1];
     original(ctx);
-    if (options.widescreen > 0 && !options.wide_render && !OnBottomScreen(ctx, camera)) {
-        WriteF32(ctx, out, ReadF32(ctx, out) * NATIVE_ASPECT / options.widescreen);
+    // with wide_render the game's own aspect is already W/240; what is left (a target wider
+    // than the widest render target) is widened here and stretched by the frontend
+    const float rendered = WideRows() ? WideRows() / static_cast<float>(LCD_COLUMNS) : NATIVE_ASPECT;
+    if (options.widescreen > rendered + 0.001f && !OnBottomScreen(ctx, camera)) {
+        WriteF32(ctx, out, ReadF32(ctx, out) * rendered / options.widescreen);
     }
 }
 
@@ -225,12 +237,16 @@ void GetProjMatrix(RCtx* ctx, RFunc original) {
 // instead of 400 (docs/research/widescreen.md, "What has to grow"). The aspect ratio,
 // projection, culling, GPU viewport and display transfer all follow from the sizes below.
 
-/// W: the widescreen width rounded to whole 8-pixel tiles, or 0 when off.
+/// W: the widescreen width rounded to whole 8-pixel tiles, or 0 when off. At most 512: the
+/// scene target is a 256x512 texture (a wider one would need twice the VRAM); a wider
+/// aspect ratio gets the rest from the projection (anamorphic).
+constexpr u32 MAX_WIDE_ROWS = 512;
 u32 WideRows() {
     if (!options.wide_render || options.widescreen <= NATIVE_ASPECT) {
         return 0;
     }
-    return static_cast<u32>(std::lround(LCD_COLUMNS * options.widescreen / 8.0f)) * 8;
+    const u32 rows = static_cast<u32>(std::lround(LCD_COLUMNS * options.widescreen / 8.0f)) * 8;
+    return std::min(rows, MAX_WIDE_ROWS);
 }
 
 /// nDraw::Scene::Scene(this, params): params {columns, rows, ...}; the main scene target.
@@ -275,6 +291,38 @@ void UpdateRegion(RCtx* ctx, RFunc original) {
             wr32(ctx, viewport + field, y * rows / TOP_ROWS);
         }
     }
+}
+
+/// The display transfer copies the top screen from row `512 - 400` of the composited target
+/// (the GPU draws from the bottom up, so the image ends at the last row). With W rows, the
+/// image starts at `height - W`; the sLtRender constructor writes 112, so set it every frame.
+void WideTransfer(RCtx* ctx) {
+    const u32 rows = WideRows();
+    const u32 render = rows ? rd32(ctx, SLTRENDER_INSTANCE) : 0;
+    const u32 scene = render ? rd32(ctx, render + SLTRENDER_SCENE) : 0;
+    const u32 target = scene ? rd32(ctx, scene + SCENE_TARGET) : 0;
+    const u32 textures = target ? rd32(ctx, target + TARGET_TEXTURES) : 0;
+    const u32 texture = textures ? rd32(ctx, textures) : 0;
+    if (texture == 0) {
+        return;
+    }
+    const u32 height = (rd32(ctx, texture + TEXTURE_SIZE) >> 16) & 0x7FFF;
+    if (height >= rows && rd32(ctx, render + SLTRENDER_TOP_TRANSFER_Y) != height - rows) {
+        wr32(ctx, render + SLTRENDER_TOP_TRANSFER_Y, height - rows);
+        LOG_INFO(Frontend, "wide render: top screen transferred from row {} of {}", height - rows, height);
+    }
+}
+
+/// Sets every tunable with this name (config/tunables.txt); returns how many there were.
+u32 SetTunables(const RCodeInfo& info, std::string_view name, u32 value) {
+    u32 set = 0;
+    for (u32 i = 0; i < info.tunable_count; ++i) {
+        if (info.tunable_names[i] && name == info.tunable_names[i]) {
+            info.tunables[i] = value;
+            ++set;
+        }
+    }
+    return set;
 }
 
 /// Shows the top screen at the widescreen aspect ratio in Azahar's single-screen layout.
@@ -380,6 +428,12 @@ std::vector<std::string> Install(const RCodeInfo& info) {
                                  : fmt::format("widescreen: 3D view widened to aspect ratio {:.4f}",
                                                options.widescreen));
         SetScreenAspect(options.widescreen, log);
+        if (WideRows()) {
+            // the code's own 400s for the top screen (config/tunables.txt)
+            const u32 set = SetTunables(info, "top_rows", WideRows());
+            log.push_back(fmt::format("widescreen: {} of the code's top-screen sizes set to {}", set,
+                                      WideRows()));
+        }
     }
     if (options.trace_every) {
         log.push_back(fmt::format("tracing frame timing every {} frames", options.trace_every));

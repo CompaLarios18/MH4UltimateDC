@@ -80,7 +80,7 @@ enum { RC_TRAP_UNDEF = 1, RC_TRAP_UNSUPPORTED = 2, RC_TRAP_BKPT = 3, RC_TRAP_BAD
 
 /* Recompiled code can also be built as a shared library (runtime/rc_dll.c) and loaded by
  * the host at run time; it then gets the callbacks above from this table. */
-#define RC_HOST_VERSION 3
+#define RC_HOST_VERSION 4
 typedef struct RHost {
     u32 version;            /* RC_HOST_VERSION */
     u32 ctx_size;           /* sizeof(RCtx) as the host sees it */
@@ -108,6 +108,10 @@ typedef struct RCodeInfo {
     const u32 *hook_addrs;     /* hook points, sorted */
     u32 hook_count;
     int (*set_hook)(u32 addr, RHookFn hook);   /* 0 if addr isn't a hook point; NULL removes */
+    u32 *tunables;             /* tunables (rc_tunables): current values, the host may write */
+    const u32 *tunable_addrs;  /* the instruction whose immediate each one replaces, sorted */
+    const char *const *tunable_names;
+    u32 tunable_count;
 } RCodeInfo;
 
 /* exported by a code library under this name; returns 0 if the host doesn't match */
@@ -121,6 +125,11 @@ typedef int (*RCodeInit)(const RHost *host, RCodeInfo *info);
 #endif
 
 #define R(n) (ctx->r[n])
+
+/* Tunables: chosen instructions (config/tunables.txt) read their immediate operand from
+ * this array instead of the code, so the host can change it at run time (a screen size for
+ * widescreen, say). Initialised with the original values. */
+extern u32 rc_tunables[];
 
 /* hook points (see RHookFn): the generated wrapper of hook point i, around its body */
 extern RHookFn rc_hooks[];

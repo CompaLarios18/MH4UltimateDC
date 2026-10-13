@@ -4,6 +4,17 @@ What has to change to render the top screen at an arbitrary aspect ratio: where 
 
 Found by reading the code with `tools/disasm.py`, the Ghidra export and `tools/find_constants.py` (new, see [the end](#tool)), starting from `config/mt_classes.tsv`. Nothing here was run on a game image yet; the [checks](#open-questions-and-runtime-checks) list what to verify in the port.
 
+## Results in the port (October 2026)
+
+Run on the full game with the recompiled code (the cloud runner's software renderer, screenshots compared with the native picture):
+
+- **Anamorphic** (`widescreen = 16:9`): the projection hook widens the view in gameplay; the top screen is meant to be stretched to 16:9 by the frontend.
+- **True widescreen** (`wide_render = 1`): at 16:9 the top screen is rendered 424x240, the 3D view fills the whole width with the right proportions, and the bottom screen is unchanged. Besides the five places below, two more sizes had to change:
+  1. **The display transfer's first row.** The top screen is copied from row 112 (`512 - 400`) of the 256x512 composited target: the GPU draws from the bottom up, so the picture ends at the last row. The sLtRender constructor writes 112 at `sLtRender+0x6e1c` (`0x00bfbd24`; the bottom screen's 112 is at `+0x6e24`). With W rows it must be `512 - W`, or the transfer reads past the end of the target. The port sets it every frame.
+  2. **A bordered full-screen pass** (`0x005dde98`) grows its rectangle by 8 pixels on each side and clamps the far edge to 400 (`cmp`/`movgt` at `0x005de49c`/`0x005de4a0`); left alone it leaves a 24-pixel strip of the previous frame in gameplay. Those two instructions, and the mode-`0xa` override below (`0x00af0c84`), are **tunables**: the recompiled code reads their immediate from a table the port fills with W ([RECOMPILER.md](../RECOMPILER.md#tunables)).
+- **The HUD** (rLayout, ±200 x ±120) stays 400 pixels wide and is drawn centred in the wider picture, at its own proportions. Anchoring edge elements (health bars, map) to the screen edges is the next step.
+- **W is at most 512**: the scene target is a 256x512 texture. A wider aspect ratio (21:9) renders 512 rows and gets the rest from the projection (anamorphic).
+
 ## Summary
 
 - **The aspect ratio is not a constant.** Every frame, `sCamera::update` (`0x00aeee2c`) recomputes each viewport's region and writes `region height / region width` into the camera's `mAspect` (`uCamera+0x38`). The camera's virtual `getProjMatrix` then calls **`MtMatrix::perspective` (`0x00b7171c`)** with `mNearPlane`, `mFarPlane`, `mFov` (degrees, converted to radians) and `mAspect`. The default `mFov` is vertical, so a wider aspect widens the view horizontally (Hor+).

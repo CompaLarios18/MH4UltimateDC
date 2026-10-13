@@ -21,10 +21,12 @@ __attribute__((noinline)) int twice_add1(int x) { return add1(x) * 2; }
 __attribute__((noinline)) int call_through(int (*f)(int), int x) { return f(x) + 3; }
 __attribute__((noinline, target("thumb"))) int thumb_sub(int a, int b) { return a - b; }
 __attribute__((noinline)) int use_thumb(int a) { return thumb_sub(a, 4) * 3; }
+__attribute__((noinline)) int screen_rows(void) { return 400; }
+__attribute__((noinline)) int clamp_rows(int y) { return y > 400 ? 400 : y; }
 """
 
 
-def _build(tmp_path, hooks_by_name):
+def _build(tmp_path, hooks_by_name, tunables=None):
     import difftest as dt
     import recompile
     from recomp import build as rbuild
@@ -54,7 +56,8 @@ def _build(tmp_path, hooks_by_name):
     hooks = {names[n] & ~1: n for n in hooks_by_name}
     hooks[0x00ABC000] = "not_a_function"
     out = tmp_path / "recomp"
-    res = recompile.recompile(img, entries, str(out), log=lambda *a: None, hooks=hooks)
+    res = recompile.recompile(img, entries, str(out), log=lambda *a: None, hooks=hooks,
+                              tunables=tunables(code, base) if tunables else None)
     lib = rbuild.build(str(out), 2, "O1", ["RC_CHECK_RETURNS"], "prog.so", [rbuild.HARNESS])
     return res, lib, code, names, out
 
@@ -115,3 +118,44 @@ def test_hook_points(tmp_path):
     assert call("twice_add1", 5) == 12
     assert m.lib.rh_set_hook(thumb_sub, ctypes.cast(wrap, ctypes.c_void_p)) == 1
     assert call("use_thumb", 10) == (6 + 100) * 3
+
+
+def test_tunables(tmp_path):
+    """Instructions listed as tunables read their immediate from rc_tunables[], which the
+    host can change: `mov r0, #400` and the `cmp r0, #400; movgt r0, #400` clamp (the
+    game's top-screen size) follow a new value."""
+    import struct
+    from recomp.gametest import STACK_SIZE, STACK_TOP
+    from recomp.harness.machines import RET_TRAP, ST_RETURN, NativeMachine, Region, State
+
+    def find(code, base):
+        words = {struct.unpack_from("<I", code, i)[0]: base + i for i in range(0, len(code) - 3, 4)}
+        found = {words[w]: (400, "rows") for w in (0xE3A00E19, 0xE3500E19, 0xA3A00E19, 0xC3A00E19) if w in words}
+        assert len(found) == 3, found           # mov r0, #400 / cmp r0, #400 / movge (or gt) r0, #400
+        return {**found, 0x00ABC100: (5, "missing")}
+
+    res, lib, code, names, out = _build(tmp_path, [], tunables=find)
+    assert res["report"]["tunables"] == 3
+    assert any("tunable 0x00abc100 (missing)" in p for p in res["problems"])
+    table = (out / "src" / "table.c").read_text()
+    assert "rc_tunable_count = 3;" in table and '"rows", "rows", "rows"' in table
+
+    size = (len(code) + 0x10000 + 0xFFF) & ~0xFFF
+    m = NativeMachine(lib, [Region(0x00100000, size, True, code.ljust(size, b"\0")),
+                            Region(STACK_TOP - STACK_SIZE, STACK_SIZE, True, bytes(STACK_SIZE))])
+
+    def call(fn, *args):
+        st = State()
+        for i, a in enumerate(args):
+            st.r[i] = a & 0xFFFFFFFF
+        st.r[13], st.r[14] = STACK_TOP - 0x100, RET_TRAP
+        r = m.run(names[fn] & ~1, bool(names[fn] & 1), st)
+        assert r.status == ST_RETURN, r
+        return r.state.r[0]
+
+    assert call("screen_rows") == 400 and call("clamp_rows", 500) == 400 and call("clamp_rows", 410) == 400
+    values = (ctypes.c_uint32 * 3).in_dll(m.lib, "rc_tunables")
+    assert list(values) == [400, 400, 400]
+    for i in range(3):
+        values[i] = 424
+    assert call("screen_rows") == 424 and call("clamp_rows", 500) == 424 and call("clamp_rows", 410) == 410

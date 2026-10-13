@@ -9,7 +9,7 @@ A work-in-progress decompilation of **Monster Hunter 4 Ultimate** (Nintendo 3DS)
 🟧 **Phase 2 — Running something on PC.** Target version is **USA v1.3.0**.
 
 - A **static recompiler** translates the whole game (~40,000 functions, 3.2 M ARM/Thumb instructions) into C, generated on your machine from your own dump and verified against an ARM11 model ([`docs/RECOMPILER.md`](docs/RECOMPILER.md)).
-- That code runs as the CPU of **Azahar's 3DS core** (kernel, services, GPU, audio, network rooms), inside Azahar's normal interface, on Linux and Windows ([`docs/PORT_ARCHITECTURE.md`](docs/PORT_ARCHITECTURE.md), [`port/`](port/)). It boots the game exactly like Azahar's own CPU emulation, faster; running the full game with the user's assets is the current milestone.
+- That code runs as the CPU of **Azahar's 3DS core** (kernel, services, GPU, audio, network rooms), inside Azahar's normal interface, on Linux and Windows ([`docs/PORT_ARCHITECTURE.md`](docs/PORT_ARCHITECTURE.md), [`port/`](port/)). It runs the game from first boot into gameplay, screen for screen like Azahar's own CPU emulation, at 60 fps.
 - **Hooks** wrap game functions with native code: a frame-rate cap for 60 fps and a first widescreen mode are in, based on research into the engine's frame pacing, cameras and second screen ([`docs/research/`](docs/research/README.md)).
 - Where the port needs to change behaviour, functions also get hand-decompiled into readable C, each one verified with `tools/difftest.py`.
 

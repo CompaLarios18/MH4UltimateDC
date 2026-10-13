@@ -59,6 +59,46 @@ def load_hooks(path: str | None) -> dict[int, str]:
     return hooks
 
 
+def load_tunables(path: str | None) -> dict[int, tuple[int, str]]:
+    """Tunables (config/tunables.txt): `<address> <original immediate> <name>  # why` per
+    line: instructions whose immediate operand the host can change at run time."""
+    tunables: dict[int, tuple[int, str]] = {}
+    if not path or not os.path.exists(path):
+        return tunables
+    with open(path) as f:
+        for line in f:
+            line = line.split("#", 1)[0].strip()
+            if line:
+                parts = line.split()
+                tunables[int(parts[0], 16)] = (int(parts[1], 0), parts[2] if len(parts) > 2 else "")
+    return tunables
+
+
+def apply_tunables(funcs: dict, tunables: dict[int, tuple[int, str]]) -> tuple[list[int], list[str]]:
+    """Make each tunable instruction read its immediate from rc_tunables[i] (i in address
+    order of the tunables that apply). Returns those addresses and the problems."""
+    from recomp.insn import hexc
+    found = sorted(a for a in tunables if any(a in f.insns for f in funcs.values()))
+    index = {a: i for i, a in enumerate(found)}
+    problems, applied = [], set()
+    for f in funcs.values():
+        for a, ins in f.insns.items():
+            if a not in index:
+                continue
+            literal, var = hexc(tunables[a][0]), f"rc_tunables[{index[a]}]"
+            if any(var in line for line in ins.body):
+                applied.add(a)              # an instruction object shared by two functions
+                continue
+            if sum(line.count(literal) for line in ins.body) != 1:
+                continue
+            ins.body = [line.replace(literal, var) for line in ins.body]
+            applied.add(a)
+    for a in sorted(tunables):
+        if a not in applied:
+            problems.append(f"tunable 0x{a:08x} ({tunables[a][1]}): no instruction with immediate {tunables[a][0]}")
+    return [a for a in found if a in applied], problems
+
+
 def code_cover(funcs: dict) -> tuple[dict[str, set[int]], dict[str, set[int]]]:
     """Halfword addresses covered by decoded instructions, and addresses that some
     instruction falls through into, per instruction set."""
@@ -164,9 +204,11 @@ def init_array_entries(img: Image) -> dict[int, str]:
 
 def recompile(img: Image, entries: dict[int, str], out: str, log=print,
               data_segments: list[tuple[int, int]] | None = None, title_id: int = 0,
-              hooks: dict[int, str] | None = None) -> dict:
+              hooks: dict[int, str] | None = None,
+              tunables: dict[int, tuple[int, str]] | None = None) -> dict:
     """`hooks`: function entries native code may wrap or replace (see RHookFn in recomp.h);
-    each must also be an entry point."""
+    each must also be an entry point. `tunables`: instructions whose immediate (the given
+    original value) the host can change at run time (rc_tunables in recomp.h)."""
     t0 = time.time()
     hooks = hooks or {}
     an = Analyzer(img)
@@ -190,6 +232,7 @@ def recompile(img: Image, entries: dict[int, str], out: str, log=print,
     funcs = an.analyze_all(entries, progress=lambda n, m: log(f"  analysed {n}/{m}"))
     t1 = time.time()
     known = {a: f.mode for a, f in funcs.items()}
+    tunable_addrs, tunable_problems = apply_tunables(funcs, tunables or {})
     hook_addrs = sorted(a for a in hooks if a in funcs)
     em = FunctionEmitter(known, {a: i for i, a in enumerate(hook_addrs)})
     src = os.path.join(out, "src")
@@ -226,6 +269,7 @@ def recompile(img: Image, entries: dict[int, str], out: str, log=print,
         write_if_changed(path, "\n".join(parts) + "\n")
         files.append(path)
     problems += [f"hook 0x{a:08x} ({hooks[a]}): not a function" for a in sorted(set(hooks) - set(hook_addrs))]
+    problems += tunable_problems
     keep = {os.path.basename(p) for p in files} | {"funcs.h", "table.c"}
     for old in os.listdir(src):
         if old not in keep:
@@ -241,13 +285,19 @@ def recompile(img: Image, entries: dict[int, str], out: str, log=print,
               "/* hook points (config/hooks.txt): set by the host through RCodeInfo.set_hook */",
               "const u32 rc_hook_addrs[] = {" + ", ".join(f"0x{a:08x}u" for a in hook_addrs or [0]) + "};",
               f"const u32 rc_hook_count = {len(hook_addrs)};",
-              f"RHookFn rc_hooks[{max(1, len(hook_addrs))}];", ""]
+              f"RHookFn rc_hooks[{max(1, len(hook_addrs))}];",
+              "/* tunables (config/tunables.txt): immediates the host may change, RCodeInfo.tunables */",
+              "u32 rc_tunables[] = {" + (", ".join(f"0x{tunables[a][0] & 0xFFFFFFFF:08x}u" for a in tunable_addrs) or "0") + "};",
+              "const u32 rc_tunable_addrs[] = {" + (", ".join(f"0x{a:08x}u" for a in tunable_addrs) or "0") + "};",
+              "const char *const rc_tunable_names[] = {" + (", ".join(f'"{tunables[a][1]}"' for a in tunable_addrs) or "0") + "};",
+              f"const u32 rc_tunable_count = {len(tunable_addrs)};", ""]
     write_if_changed(os.path.join(src, "table.c"), "\n".join(table))
     t2 = time.time()
     report = {
         "functions": len(funcs), "discovered": an.discovered, "from_data_pointers": len(extra), "instructions": stats["insns"],
         "trap_instructions": stats["traps"], "jump_tables": stats["jump_tables"],
         "problems": len(problems), "c_files": len(files) + 1, "hook_points": len(hook_addrs),
+        "tunables": len(tunable_addrs),
         "analysis_s": round(t1 - t0, 1), "emit_s": round(t2 - t1, 1),
     }
     with open(os.path.join(out, "report.txt"), "w") as fh:
@@ -266,6 +316,8 @@ def main(argv=None) -> int:
                     help="more entry point lists (address [arm|thumb] per line)")
     ap.add_argument("--hooks", default=os.path.join(ROOT, "config", "hooks.txt"),
                     help="hook points: functions native code may wrap or replace")
+    ap.add_argument("--tunables", default=os.path.join(ROOT, "config", "tunables.txt"),
+                    help="instructions whose immediate the host can change at run time")
     ap.add_argument("--no-data-pointers", action="store_true", help="don't scan .rodata/.data for code pointers")
     ap.add_argument("-o", "--out", default=os.path.join(ROOT, "build", "recomp"))
     args = ap.parse_args(argv)
@@ -277,7 +329,7 @@ def main(argv=None) -> int:
     segs = None if args.no_data_pointers else [(header.ro.address, header.ro.size), (header.data.address, header.data.size)]
     title_id = struct.unpack_from("<Q", open(args.exheader, "rb").read(), 0x200)[0]   # ARM11 local caps: program id
     res = recompile(img, load_entries(args.functions, args.extra), args.out, data_segments=segs, title_id=title_id,
-                    hooks=load_hooks(args.hooks))
+                    hooks=load_hooks(args.hooks), tunables=load_tunables(args.tunables))
     for k, v in res["report"].items():
         print(f"{k}: {v}")
     return 0
