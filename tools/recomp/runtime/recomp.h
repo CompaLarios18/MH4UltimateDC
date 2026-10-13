@@ -614,6 +614,18 @@ RC_INLINE double rc_d2d(u32 fpscr, u64 a) { return u2d(RC_IN64(fpscr, a)); }
 #define RC_ENTRY() u32 rc_entry_lr = ctx->r[14]; \
     if (ctx->expect_next) { rc_entry_lr = ctx->expect_next; ctx->expect_next = 0; }
 #define RC_FALL_EXPECT() (ctx->expect_next = rc_entry_lr)
+
+/* Call counts, for a diagnostic build only (-DRC_CALL_COUNTS): each function counts its
+ * calls in a counter of its own, which joins a list the first time it runs; the host reads
+ * the list through rc_call_counts() (rc_dll.c), e.g. to see which functions a tap runs. */
+#ifdef RC_CALL_COUNTS
+typedef struct RCallCount { struct RCallCount *next; u32 addr, count; } RCallCount;
+void rc_count_first(RCallCount *c);
+#define RC_COUNT(a) do { static RCallCount rc_cc_ = {0, (a), 0}; \
+        if (!rc_cc_.count++) rc_count_first(&rc_cc_); } while (0)
+#else
+#define RC_COUNT(a) ((void)0)
+#endif
 /* A computed jump to our own return address is a return (Thumb `pop {r3}; bx r3`). */
 #define RC_IS_RETURN(t) ((t) == rc_entry_lr)
 #ifdef RC_CHECK_RETURNS

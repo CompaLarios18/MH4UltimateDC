@@ -70,7 +70,10 @@ the recompiled function that went wrong (`tools/compare_svc_traces.py jit.txt re
 many times faster (the software renderer takes nearly all the time), and `--shots-from MS`
 starts the screenshots late, so a close look at one moment doesn't image the whole run;
 `--dump MS:ADDR:SIZE` writes guest memory at an emulated time, to diff the game's state
-between two runs that differ in one input; `--cpu-clock 200` is
+between two runs that differ in one input; with a code library built with
+`-D RC_CALL_COUNTS` (`python3 -m recomp.build build/recomp --code-library -D RC_CALL_COUNTS
+-o mh4u_code_counts.so`), `--call-counts MS` writes how often each function has run, so
+the difference between two snapshots, or two runs, shows the code an input ran; `--cpu-clock 200` is
 Azahar's CPU Clock Speed setting. The runner reads files in place, so a run repeats
 exactly: with Azahar's default (`--async-io`) a read finishes on a host thread and wakes
 the game at an emulated time that depends on how fast the host was, which moved loading

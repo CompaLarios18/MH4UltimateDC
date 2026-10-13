@@ -237,7 +237,7 @@ class FunctionEmitter:
         out = [f"#define RC_FLUSH() ({', '.join(flush) if flush else '(void)0'})",
                f"#define RC_RELOAD() ({', '.join(reload) if reload else '(void)0'})",
                (f"static void fb_{f.entry:08x}(RCtx *ctx) {{" if hook is not None
-                else f"void {fname(f.entry)}(RCtx *ctx) {{"), "    RC_ENTRY();"]
+                else f"void {fname(f.entry)}(RCtx *ctx) {{"), f"    RC_ENTRY(); RC_COUNT({hexc(f.entry)});"]
         if used:
             out.append("    u32 " + ", ".join(f"rc_r{n} = ctx->r[{n}]" for n in used) + ";")
         if flags:

@@ -80,6 +80,24 @@ static int set_hook(u32 addr, RHookFn hook) {
     return 0;
 }
 
+#ifdef RC_CALL_COUNTS
+static RCallCount *count_list;
+void rc_count_first(RCallCount *c) { c->next = count_list; count_list = c; }
+
+/* Diagnostic builds only: the functions that have run so far, as (address, calls) pairs in
+ * out[0..2*max); returns how many there are (call with max 0 to size the buffer). */
+RC_EXPORT u32 rc_call_counts(u32 *out, u32 max) {
+    u32 n = 0;
+    for (const RCallCount *c = count_list; c; c = c->next, n++) {
+        if (n < max) {
+            out[2 * n] = c->addr;
+            out[2 * n + 1] = c->count;
+        }
+    }
+    return n;
+}
+#endif
+
 RC_EXPORT int rc_code_init(const RHost *h, RCodeInfo *info) {
     if (!h || h->version != RC_HOST_VERSION || h->ctx_size != sizeof(RCtx)) {
         return 0;

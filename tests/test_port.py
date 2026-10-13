@@ -104,6 +104,40 @@ def test_interpreter_fallback_matches_jit(tmp_path):
 
 
 @pytest.mark.skipif(not os.environ.get("MH4U_RUNNER"), reason="port not built (set MH4U_RUNNER)")
+def test_call_counts(tmp_path):
+    """A code library built with -D RC_CALL_COUNTS counts every function's calls, and
+    --call-counts writes them at an emulated time: the entry point once, each worker thread's entry
+    once per thread, the operations as often as the program calls them."""
+    import build_svc_test
+    from recomp import build as rbuild
+    binary = os.environ["MH4U_RUNNER"]
+    elf = build_svc_test.build(str(tmp_path))
+    code = rbuild.build(str(tmp_path), 2, "O1", ["RC_PAGED", "RC_CALL_COUNTS"], "code.so", [rbuild.DLL_GLUE],
+                        extra_flags=["-fvisibility=hidden"])
+    syms = {}
+    for line in subprocess.run(["llvm-readelf", "-s", elf], capture_output=True, text=True, check=True).stdout.splitlines():
+        p = line.split()
+        if len(p) >= 8 and p[3] == "FUNC":
+            syms[p[7]] = int(p[1], 16) & ~1
+    shots = tmp_path / "shots"
+    # the program is done after a few emulated milliseconds: the snapshot comes at its end
+    r = subprocess.run([binary, elf, "--code", code, "--ms", "5000", "--shots", str(shots),
+                        "--call-counts", "4000"], capture_output=True, text=True, timeout=600)
+    assert r.returncode == 0, (r.stdout[-2000:], r.stderr[-2000:])
+    counts = {int(a, 16): int(n) for a, n in (line.split() for line in (shots / "calls_0004000.txt").read_text().splitlines())}
+    assert counts[syms["_start"]] == 1
+    assert counts[syms["worker"]] == 3                 # three worker threads
+    assert counts[syms["op_add"]] >= 1 and counts[syms["op_mul"]] >= 1
+    assert all(n > 0 for n in counts.values())
+    # a library without the counters can't give them
+    plain = rbuild.build(str(tmp_path), 2, "O1", ["RC_PAGED"], "plain.so", [rbuild.DLL_GLUE],
+                         extra_flags=["-fvisibility=hidden"])
+    r = subprocess.run([binary, elf, "--code", plain, "--ms", "100", "--call-counts", "50"],
+                       capture_output=True, text=True, timeout=600)
+    assert r.returncode == 1 and "RC_CALL_COUNTS" in r.stderr
+
+
+@pytest.mark.skipif(not os.environ.get("MH4U_RUNNER"), reason="port not built (set MH4U_RUNNER)")
 @pytest.mark.parametrize("extra", [[], ["--draw-window", "50"], ["--async-io"],
                                    ["--shots-from", "500", "--shot-every", "500"],
                                    ["--dump", "500:100000:40"]])

@@ -1,5 +1,6 @@
 #include "arm_recomp.h"
 
+#include <algorithm>
 #include <array>
 #include <cstdlib>
 #include <vector>
@@ -40,6 +41,9 @@ RCodeInfo g_code{};
 std::unordered_map<u32, RFunc> g_functions;
 /// Keeps a loaded code library mapped.
 std::unique_ptr<Common::DynamicLibrary> g_library;
+/// rc_call_counts() of a diagnostic code library (-DRC_CALL_COUNTS), or null.
+using RCallCounts = u32 (*)(u32* out, u32 max);
+RCallCounts g_call_counts = nullptr;
 
 const std::unordered_map<u32, RFunc>& Functions() {
     return g_functions;
@@ -104,6 +108,29 @@ void ARM_Recomp::SetCode(const RCodeInfo& info) {
     }
 }
 
+bool ARM_Recomp::HasCallCounts() {
+    return g_call_counts != nullptr;
+}
+
+std::vector<std::pair<u32, u32>> ARM_Recomp::CallCounts() {
+    std::vector<std::pair<u32, u32>> counts;
+    if (!g_call_counts) {
+        return counts;
+    }
+    std::vector<u32> pairs;
+    u32 n = g_call_counts(nullptr, 0);
+    do { // functions may run for the first time between the two calls: size again
+        pairs.resize(2 * std::size_t{n} + 64);
+        n = g_call_counts(pairs.data(), static_cast<u32>(pairs.size() / 2));
+    } while (2 * std::size_t{n} > pairs.size());
+    counts.reserve(n);
+    for (u32 i = 0; i < n; ++i) {
+        counts.emplace_back(pairs[2 * i], pairs[2 * i + 1]);
+    }
+    std::sort(counts.begin(), counts.end());
+    return counts;
+}
+
 bool ARM_Recomp::LoadCode(const std::string& path, std::string& error) {
     auto library = std::make_unique<Common::DynamicLibrary>();
     if (!library->Load(path)) {
@@ -122,6 +149,7 @@ bool ARM_Recomp::LoadCode(const std::string& path, std::string& error) {
         error = fmt::format("{} was built against a different runtime (recomp.h)", path);
         return false;
     }
+    g_call_counts = library->GetSymbol<RCallCounts>("rc_call_counts");
     g_library = std::move(library);
     SetCode(info);
     for (const auto& line : Hooks::Install(info)) {

@@ -71,6 +71,10 @@ const char* const USAGE = R"(usage: mh4u_runner <file> [options]
   --dump MS:ADDR:SIZE  at emulated time MS, write SIZE bytes of guest memory from ADDR to
                     mem_<ms>_<addr>.bin in the --shots directory (or the current one);
                     repeatable, e.g. to diff the game's state with and without an input
+  --call-counts MS  at emulated time MS (or at the end, if the run ends first), write how
+                    often each recompiled function has run so far to calls_<ms>.txt in the
+                    --shots directory (repeatable; needs a code library built with
+                    -D RC_CALL_COUNTS): diff two to see what ran in between
   --trace-svc FILE  write every system call (thread, number, pc, lr, r0-r3, ticks) to FILE,
                     to compare CPU backends thread by thread
   --input SCRIPT    comma-separated presses at emulated times, e.g.
@@ -136,6 +140,26 @@ bool ParseDump(const std::string& arg) {
 }
 
 /// Writes the dumps that are due; unmapped bytes come out as zero.
+std::vector<std::pair<double, bool>> g_call_snapshots; // emulated ms, written
+
+/// --call-counts: each function's calls so far, sorted by address (at the end of the run,
+/// `all` writes the snapshots whose time hasn't come).
+void WriteCallCounts(const std::string& dir, bool all = false) {
+    for (auto& [ms, done] : g_call_snapshots) {
+        if (done || (EmulatedMs() < ms && !all)) {
+            continue;
+        }
+        done = true;
+        const auto path = fmt::format("{}/calls_{:07.0f}.txt", dir.empty() ? "." : dir, ms);
+        if (FILE* f = std::fopen(path.c_str(), "w")) {
+            for (const auto& [addr, calls] : Port::ARM_Recomp::CallCounts()) {
+                std::fprintf(f, "%08x %u\n", addr, calls);
+            }
+            std::fclose(f);
+        }
+    }
+}
+
 void WriteDumps(Core::System& system, const std::string& dir) {
     const double now = EmulatedMs();
     for (Dump& d : g_dumps) {
@@ -464,6 +488,8 @@ int main(int argc, char** argv) {
                 std::fprintf(stderr, "bad --dump: %s (want MS:ADDR:SIZE, hex address and size)\n", argv[i]);
                 return 1;
             }
+        } else if (arg == "--call-counts" && i + 1 < argc) {
+            g_call_snapshots.emplace_back(std::atof(argv[++i]), false);
         } else if (arg == "--trace-svc" && i + 1 < argc) {
             svc_trace = argv[++i];
         } else if (arg == "--speed" && i + 1 < argc) {
@@ -570,6 +596,10 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "%s\n", code_library.empty() ? "--cpu recomp needs --code LIB" : error.c_str());
             return 1;
         }
+        if (!g_call_snapshots.empty() && !Port::ARM_Recomp::HasCallCounts()) {
+            std::fprintf(stderr, "--call-counts needs a code library built with -D RC_CALL_COUNTS\n");
+            return 1;
+        }
         system.SetCPUFactory([&recomp_cores](Core::System& sys, Memory::MemorySystem& memory,
                                              u32 core_id, std::shared_ptr<Core::Timing::Timer> timer) {
             auto core = std::make_shared<Port::ARM_Recomp>(sys, memory, core_id, std::move(timer));
@@ -621,6 +651,7 @@ int main(int argc, char** argv) {
         }
         const auto result = system.RunLoop();
         WriteDumps(system, shots_dir);
+        WriteCallCounts(shots_dir);
         if (!shots_dir.empty() && EmulatedMs() >= next_shot) {
             const auto stem = fmt::format("{}/{:07.0f}", shots_dir, next_shot);
             SaveScreen(system, VideoCore::ScreenId::TopLeft, stem + "_top.ppm");
@@ -656,6 +687,7 @@ int main(int argc, char** argv) {
             break;
         }
     }
+    WriteCallCounts(shots_dir, true);
     std::printf("emulated time: %.1f ms\n",
                 (system.CoreTiming().GetGlobalTicks() - start_ticks) / 268111.856);
     PrintRoomMembers();

@@ -8,6 +8,8 @@
 #pragma once
 
 #include <memory>
+#include <utility>
+#include <vector>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -77,6 +79,10 @@ public:
     /// Number of recompiled functions available, and the program id they're for (0: any).
     static std::size_t FunctionCount();
     static u64 CodeTitleId();
+    /// A code library built with -DRC_CALL_COUNTS counts every function's calls: whether
+    /// the loaded one does, and (address, calls) for each function that has run so far.
+    static bool HasCallCounts();
+    static std::vector<std::pair<u32, u32>> CallCounts();
 
     // Called by the runtime callbacks of recomp.h, on a guest fiber.
     void Call(u32 target);
