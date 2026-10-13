@@ -67,7 +67,8 @@ same run on `--cpu jit` gives the reference, and the first difference per thread
 the recompiled function that went wrong (`tools/compare_svc_traces.py jit.txt recomp.txt`). `--input` presses buttons, touches the bottom screen (pixels) or moves the circle pad
 (-1..1) at emulated times; `--shots` saves both screens as PPM images, and
 `--draw-window 100` draws only the 100 ms before each screenshot, which makes long runs
-many times faster (the software renderer takes nearly all the time); `--cpu-clock 200` is
+many times faster (the software renderer takes nearly all the time), and `--shots-from MS`
+starts the screenshots late, so a close look at one moment doesn't image the whole run; `--cpu-clock 200` is
 Azahar's CPU Clock Speed setting. The runner reads files in place, so a run repeats
 exactly: with Azahar's default (`--async-io`) a read finishes on a host thread and wakes
 the game at an emulated time that depends on how fast the host was, which moved loading

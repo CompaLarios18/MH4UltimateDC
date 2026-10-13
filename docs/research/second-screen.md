@@ -163,7 +163,7 @@ The quest HUD controller is a static object at **`0x0108260c`** (getter `0x0013f
 | **Map (mode 1)** | `0x0029b658` | dragging scrolls the map (`+0x5b0`/`+0x5b2`); D-pad bits also scroll; redraw via `0x00ba0bf0` | medium |
 | mode 2 | `0x0029b754` | dragging changes two floats (`+0x5b4`/`+0x5b8`) | low |
 | **Virtual camera pad (mode 3)** | `0x00b862ac` → `0x00b9b05c` (touch → {code, bits}) → **`0x00b88efc`** | bits `0x2000`/`0x1000`/`0x0800`/`0x0400` = camera up/down/left/right. In `game_mode` 2 (`sGameControl+0x2b`) they are OR-ed into the action block (`+0x30c` held, `+0x310` pressed); otherwise the player functions `0x00b1c5ec`, `0x00b46b38` and, for some weapon types, `0x00b3a634` are called directly | medium |
-| **Panel 7** | `isTapped(7)` in the HUD state machine `0x00b9dfe0` | sets bit `0x0001` in `sMhPad+0x3f0` (the action bit with no button; likely kick/skip) | high (mechanism), medium (meaning) |
+| **Panel 7** | `isTapped(7)` in the HUD state machine `0x00b9dfe0` | sets bit `0x0001` in `sMhPad+0x3f0` (the action bit with no button): **the kick**. Writing it there from a hook makes the hunter kick (run-time, October 2026; see below) | high |
 | **Panel 9** | `isTapped(9)` in `0x00b9dfe0` | sets bit `0x0400` in `sMhPad+0x3f4` (a menu action) | high / low |
 | **Item bar swipe** | `0x00ba6b38` | horizontal drag calls **`0x00b31fa4(player, index, forward)`** (next/previous pouch slot) and stores the result at `[[player+0xa29c]+0x584]`; the player comes from `sPlayer::getLocalPlayer` `0x00af7954` on `[0x00fb83e8]` | medium |
 | Target camera | top-screen icon `ui211_target` handled by `0x00b85b00`, `0x00b97cb0`, `0x00b8cdb8`, `0x00b9d2e4` | the action function was not identified | low |
@@ -203,7 +203,7 @@ Stages go from cheap to best; each lists the hook points (function entries, for 
 **Stage 1 – no game hooks.** Use Azahar's screen layouts (large screen, side by side, separate windows, custom) with the mouse as the stylus, plus a hotkey to swap or hide the bottom screen. Works for every menu. The bottom screen already updates every frame.
 
 **Stage 2 – key bindings.**
-- `0x00694c98 sMhPad::update` (before the original): OR bound gameplay bits into `sMhPad+0x3f0` (camera pad `0x2000`/`0x1000`/`0x0800`/`0x0400`; touch-only bit `0x0001` once its meaning is confirmed) and menu bits into `+0x3f4`.
+- `0x00694c98 sMhPad::update`: OR bound gameplay bits into `sMhPad+0x3f0` (camera pad `0x2000`/`0x1000`/`0x0800`/`0x0400`; the kick `0x0001`, done: option `kick`) and menu bits into `+0x3f4`.
 - `0x00288f4c PanelManager::isTapped` (replace when a bound key is down): return 1 for that id, so every poller of the id reacts as if the panel was tapped.
 - Fallback for panels that only use touch groups: synthesise a tap at the button's centre (object position + part rectangle from stage 0, screen position = (160 − lx, 120 − ly)) through Azahar's touch input for two frames (down, then up).
 - Direct calls, if wanted: item scroll `0x00b31fa4` on the player from `0x00af7954`; only from inside a hooked frame, never from another thread.
@@ -226,6 +226,8 @@ First look on the full game (the opening on the sand ship, recompiled code, scri
 
 So the touch → panel path of §2 is not confirmed at run time, and the panel ids are still unmapped. Next: watch which fields of `sMhPad` and of the panel objects change while a panel is held (a memory diff per frame), starting from the camera pad, whose effect is visible.
 
+**The kick, confirmed.** On the sand ship's deck, OR-ing action bit `0x0001` into `sMhPad+0x3f0` for a few frames (from the `sMhPad::update` hook) makes the hunter kick; the same run without it shows him standing still. The port's `kick` option does that while a chosen button is held. It reads the button from the word `sPad::processInput` builds (`this+0x2c+0x60`, `this` being sMhPad, the sPad singleton). The encoding was checked at run time: A `0x2000`, X `0x1000`, L `0x100`, R `0x200`, ZL `0x400`, ZR `0x800`, circle pad up `0x10010000`. The injected bit is consumed by the next update, a frame later. On the deck ZL and ZR showed no effect of their own. One caveat: a hook that reads `this` must take `r0` before calling the original, which returns with `r0` changed.
+
 ## Screens that use the touch screen (player's catalogue, October 2026)
 
 The maintainer played the port from a new save to the first village quests and recorded every bottom screen he reached. Screenshots aren't kept in the repository (game artwork). Not covered yet: minigames, expeditions and the full-size map.
@@ -243,7 +245,7 @@ The maintainer played the port from a new save to the first village quests and r
 | Quest panels | During a quest | Map, camera pad, target camera ("Unseen" monster icon), item shortcuts (e.g. First-aid Med, Ration) | **Target camera and kick are the only actions with no button.** MH3U on Wii U puts them on ZR when playing with a Pro Controller; the port should do the same (stage 2) |
 | Gallery, save select, character creation | Title menus | Lists and grids | Menus |
 
-So stage 2 starts with two bindings, target camera and kick, both tested in a real quest from the maintainer's save.
+So stage 2 starts with two bindings, target camera and kick. The kick is done (option `kick`, checked on the sand ship's deck); the target camera needs a quest with a monster, from the maintainer's save.
 
 ## Open questions
 

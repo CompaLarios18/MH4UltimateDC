@@ -47,6 +47,7 @@ const char* const USAGE = R"(usage: mh4u_runner <file> [options]
   --install CIA     install a CIA, e.g. the game's update, before booting (repeatable)
   --shots DIR       save the top and bottom screens as PPM images in DIR
   --shot-every MS   how often, in emulated time (default 1000)
+  --shots-from MS   first screenshot at this emulated time (default: one interval in)
   --draw-window MS  draw only during the MS of emulated time before each screenshot (and
                     nothing without --shots): much faster with the software renderer, but
                     a screen built up over several frames can come out incomplete
@@ -265,6 +266,7 @@ int main(int argc, char** argv) {
     std::string user_dir, shots_dir, input_script, svc_trace;
     std::vector<std::string> install;
     double shot_every = 1000.0;
+    double shots_from = -1.0;
     double speed = 0.0;
     double draw_window = -1.0; // < 0: draw every frame
     int cpu_clock = 100;
@@ -289,6 +291,8 @@ int main(int argc, char** argv) {
             svc_trace = argv[++i];
         } else if (arg == "--speed" && i + 1 < argc) {
             speed = std::max(0.0, std::atof(argv[++i]));
+        } else if (arg == "--shots-from" && i + 1 < argc) {
+            shots_from = std::max(0.0, std::atof(argv[++i]));
         } else if (arg == "--shot-every" && i + 1 < argc) {
             shot_every = std::max(1.0, std::atof(argv[++i]));
         } else if (arg == "--cpu-clock" && i + 1 < argc) {
@@ -388,7 +392,7 @@ int main(int argc, char** argv) {
     if (!shots_dir.empty()) {
         FileUtil::CreateFullPath(shots_dir.back() == '/' ? shots_dir : shots_dir + '/');
     }
-    double next_shot = shot_every;
+    double next_shot = shots_from >= 0.0 ? shots_from : shot_every;
     int rc = 0;
     while (true) {
         if (draw_window >= 0.0) {

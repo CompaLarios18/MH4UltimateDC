@@ -1,6 +1,7 @@
 #include "hooks.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
@@ -79,7 +80,23 @@ struct Options {
     u32 trace_every = 0;    // trace_frames / MH4U_TRACE_FRAMES: log frame timing every n frames
     bool trace_panels = false;  // trace_panels / MH4U_TRACE_PANELS: log touch-panel activity
     u32 render_set = 0, render_clear = 0;  // render_flags_set/_clear: bits of the render word
+    u32 kick_button = 0;    // kick / MH4U_KICK: 3DS button that kicks (the game's pad bits)
 };
+
+/// A 3DS button name -> the bit sPad::processInput gives it in the held word.
+u32 PadBit(std::string name) {
+    std::transform(name.begin(), name.end(), name.begin(), [](unsigned char c) { return std::toupper(c); });
+    const std::pair<const char*, u32> bits[] = {
+        {"A", 0x2000}, {"B", 0x4000},  {"X", 0x1000},  {"Y", 0x8000},  {"L", 0x100},
+        {"R", 0x200},  {"ZL", 0x400},  {"ZR", 0x800},  {"START", 0x8}, {"UP", 0x10},
+        {"DOWN", 0x40}, {"LEFT", 0x80}, {"RIGHT", 0x20}};
+    for (const auto& [n, bit] : bits) {
+        if (name == n) {
+            return bit;
+        }
+    }
+    return 0;
+}
 
 bool IsOn(const std::string& value) {
     return value == "1" || value == "true" || value == "on" || value == "yes";
@@ -113,6 +130,8 @@ void Set(Options& o, const std::string& key, const std::string& value) {
         o.render_clear = static_cast<u32>(std::strtoul(value.c_str(), nullptr, 0));
     } else if (key == "trace_panels") {
         o.trace_panels = IsOn(value);
+    } else if (key == "kick") {
+        o.kick_button = PadBit(value);
     } else if (key == "trace_frames") {
         o.trace_every = static_cast<u32>(std::max(0L, std::strtol(value.c_str(), nullptr, 10)));
     }
@@ -145,7 +164,8 @@ Options LoadOptions(std::vector<std::string>& log) {
         {"MH4U_WIDESCREEN", "widescreen"},
         {"MH4U_WIDE_RENDER", "wide_render"},
         {"MH4U_TRACE_FRAMES", "trace_frames"},
-        {"MH4U_TRACE_PANELS", "trace_panels"}};
+        {"MH4U_TRACE_PANELS", "trace_panels"},
+        {"MH4U_KICK", "kick"}};
     for (const auto& [var, key] : env) {
         if (const char* value = std::getenv(var)) {
             Set(o, key, value);
@@ -354,6 +374,8 @@ constexpr u32 PANEL_FLAGS = 0xcc;     // u16: event flags of the last touch (0x0
 constexpr u32 PANEL_ID = 0xce;        // u16: id of the panel touched
 constexpr u32 SMHPAD_INJECTED = 0x3f0;   // u32: gameplay action bits set by panels
 constexpr u32 SMHPAD_INJECTED_MENU = 0x3f4;
+constexpr u32 SPAD_HELD = 0x2c + 0x60;   // u32: buttons held, as sPad::processInput encodes them
+constexpr u32 ACTION_KICK = 0x0001;      // the action no button produces: panel 7, the kick
 u32 last_panel_touch = 0xFFFFFFFF;
 
 /// PanelManager::processTouch(): runs the touch groups, leaves the touched panel's id.
@@ -380,9 +402,11 @@ void PanelIsTapped(RCtx* ctx, RFunc original) {
 }
 
 /// sMhPad::update(this): turns pad state and the panels' injected bits into actions.
+/// The kick button injects the kick for the next update, like the touch panel does (the
+/// button keeps its own action too, so pick one the game doesn't use).
 void MhPadUpdate(RCtx* ctx, RFunc original) {
+    const u32 pad = ctx->r[0];
     if (options.trace_panels) {
-        const u32 pad = ctx->r[0];
         const u32 gameplay = rd32(ctx, pad + SMHPAD_INJECTED);
         const u32 menu = rd32(ctx, pad + SMHPAD_INJECTED_MENU);
         if (gameplay || menu) {
@@ -390,6 +414,11 @@ void MhPadUpdate(RCtx* ctx, RFunc original) {
         }
     }
     original(ctx);
+    if (options.kick_button) {
+        if (rd32(ctx, pad + SPAD_HELD) & options.kick_button) {
+            wr32(ctx, pad + SMHPAD_INJECTED, rd32(ctx, pad + SMHPAD_INJECTED) | ACTION_KICK);
+        }
+    }
 }
 
 // ── Quest start (docs/research/system-services.md, "A loading race at the start of a
@@ -555,6 +584,9 @@ std::vector<std::string> Install(const RCodeInfo& info) {
     }
     if (options.trace_panels) {
         log.push_back("tracing touch panels");
+    }
+    if (options.kick_button) {
+        log.push_back(fmt::format("kick on pad button {:04X}", options.kick_button));
     }
     if (options.render_set || options.render_clear) {
         log.push_back(fmt::format("render flags: set {:08X}, clear {:08X} (experimental)",
