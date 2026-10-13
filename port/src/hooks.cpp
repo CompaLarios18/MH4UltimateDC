@@ -11,6 +11,7 @@
 #include "common/common_types.h"
 #include "common/file_util.h"
 #include "common/logging/log.h"
+#include "core/frontend/top_screen.h"
 #include "common/settings.h"
 #include "core/core.h"
 #include "video_core/gpu.h"
@@ -325,8 +326,10 @@ u32 SetTunables(const RCodeInfo& info, std::string_view name, u32 value) {
     return set;
 }
 
-/// Shows the top screen at the widescreen aspect ratio in Azahar's single-screen layout.
+/// Shows the top screen at the widescreen aspect ratio: every screen layout gets a top
+/// screen that wide, and the single-screen layout uses the matching aspect setting.
 void SetScreenAspect(float aspect, std::vector<std::string>& log) {
+    Layout::SetTopScreenWidth(static_cast<u32>(std::lround(LCD_COLUMNS * aspect)));
     using Settings::AspectRatio;
     const std::pair<float, AspectRatio> known[] = {{16.0f / 9.0f, AspectRatio::R16_9},
                                                    {16.0f / 10.0f, AspectRatio::R16_10},
@@ -340,8 +343,8 @@ void SetScreenAspect(float aspect, std::vector<std::string>& log) {
     }
     Settings::values.aspect_ratio.SetValue(choice);
     log.push_back(choice == AspectRatio::Stretch
-                      ? "single-screen layout stretches the top screen to the window"
-                      : "single-screen layout shows the top screen at that aspect ratio");
+                      ? "screen layouts show the top screen wider; single screen stretches it to the window"
+                      : "screen layouts show the top screen at that aspect ratio");
 }
 
 // ── Touch panels (docs/research/second-screen.md): tracing, to map panel ids to actions

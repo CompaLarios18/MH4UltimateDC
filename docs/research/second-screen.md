@@ -217,9 +217,18 @@ Stages go from cheap to best; each lists the hook points (function entries, for 
 
 **Second window.** Azahar's "separate windows" layout already shows the bottom framebuffer in its own window with mouse input; the port only has to keep that layout available.
 
+## Runtime check (October 2026)
+
+First look on the full game (the opening on the sand ship, recompiled code, scripted taps on each panel of the Type A layout). Touch works: the virtual camera pad turns the camera. But the stage-0 logging (`trace_panels`) saw nothing:
+
+- `0x002951fc` ("processTouch") is entered with `r0` = `0x0109a88c` once, then with `r0` = `0x8000` on every later call, so it is not a method of the object at `0x0109a350`; `+0xcc`/`+0xce` of that object stayed `0x8000`/`0` through every tap.
+- `sMhPad::update` (`0x00694c98`, on a heap object) never had `+0x3f0`/`+0x3f4` set at entry, including during the camera-pad taps.
+
+So the touch → panel path of §2 is not confirmed at run time, and the panel ids are still unmapped. Next: watch which fields of `sMhPad` and of the panel objects change while a panel is held (a memory diff per frame), starting from the camera pad, whose effect is visible.
+
 ## Open questions
 
-1. Which panel ids are which (7, 8, 9, 0xb, 6 and the rest), and what action bit `0x0001` does: stage 0 logging, one tap per panel.
+1. Which panel ids are which (7, 8, 9, 0xb, 6 and the rest), and what action bit `0x0001` does: stage 0 logging, one tap per panel (the first attempt found the logging points don't see the taps; see the runtime check above).
 2. The pane names behind the hash ids: `rLayout` parsing of the maintainer's RomFS.
 3. Where the panel arrangement is saved and how it is applied at quest start (§3).
 4. Whether the software keyboard, the cutscene subtitles or any other screen uses `rGUI` (`DrawLower`).

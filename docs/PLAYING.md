@@ -53,7 +53,7 @@ widescreen = 16:9
 wide_render = 1
 # write the engine's frame timing to the log every n frames
 trace_frames = 0
-# write touch-panel activity to the log (to map panels to buttons)
+# write touch-panel activity to the log (to map panels to buttons; doesn't see the taps yet)
 trace_panels = 0
 # experimental: bits of the game's render settings word to clear/set every frame, e.g.
 # 0x300000 = no dithering, 0x400 = the game's own 2D anti-aliasing (docs/research/system-services.md)
@@ -64,7 +64,7 @@ render_flags_set = 0
 Environment variables override the file: `MH4U_FPS`, `MH4U_REFRESH_RATE`, `MH4U_WIDESCREEN`, `MH4U_WIDE_RENDER`, `MH4U_TRACE_FRAMES`, `MH4U_TRACE_PANELS`.
 
 - **60 fps**: the engine's frame limiter is raised to the cap; in the opening scenes the game holds 60 with each frame advancing 1/60 s, so it runs at normal speed. A frame must also fit in one screen refresh of emulated time: if a busy scene stays below 60, raise *CPU Clock Speed* (*Emulation → Configure → Debug*). All players in a multiplayer session should use the same value. **Above 60** doesn't work yet: with `fps = 120` and `refresh_rate = 120` the game waits four screen refreshes per frame and drops to 30 (also with a faster CPU), so leave `refresh_rate` at 0 for now.
-- **Widescreen** *(experimental)*: the 3D view is widened to the given aspect ratio, and *View → Screen Layout → Single Screen* then shows the top screen at that shape (16:9, 16:10, 21:9 and 4:3 exactly; other values stretch it to the window). In *Custom Layout* you can size the top screen yourself and lay the bottom screen over it with *Bottom Screen Opacity*. With `wide_render = 0` this stretches a 400x240 image, HUD included. With `wide_render = 1` the game draws a wider image instead (424x240 for 16:9: render targets, viewports and the copy to the screen are made wider): the 3D view fills the width and the HUD keeps its proportions, centred in the middle 400 pixels until its edge elements get anchored to the screen edges ([research/widescreen.md](research/widescreen.md)). It goes up to 512x240 (about 2.1:1); beyond that, as for 21:9, the rest is stretched.
+- **Widescreen** *(experimental)*: the 3D view is widened to the given aspect ratio and every screen layout (*View → Screen Layout*) shows the top screen at that shape: stacked above the bottom screen, side by side, *Large Screen* with the touch screen small in a corner, or *Single Screen* for the top screen alone (16:9, 16:10, 21:9 and 4:3 exactly; other values stretch it to the window). In *Custom Layout* you can size the top screen yourself and lay the bottom screen over it with *Bottom Screen Opacity*. With `wide_render = 0` this stretches a 400x240 image, HUD included. With `wide_render = 1` the game draws a wider image instead (424x240 for 16:9: render targets, viewports and the copy to the screen are made wider): the 3D view fills the width and the HUD keeps its proportions, centred in the middle 400 pixels until its edge elements get anchored to the screen edges ([research/widescreen.md](research/widescreen.md)). It goes up to 512x240 (about 2.1:1); beyond that, as for 21:9, the rest is stretched.
 - **The bottom screen**: use Azahar's screen layouts (side by side, large top screen with a small bottom one, separate windows, or a translucent overlay in *Custom Layout*) and the mouse as the stylus. Button bindings and a single-screen HUD for the touch panels are planned ([research/second-screen.md](research/second-screen.md)).
 
 ## Your 3DS save
