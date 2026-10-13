@@ -226,6 +226,25 @@ First look on the full game (the opening on the sand ship, recompiled code, scri
 
 So the touch → panel path of §2 is not confirmed at run time, and the panel ids are still unmapped. Next: watch which fields of `sMhPad` and of the panel objects change while a panel is held (a memory diff per frame), starting from the camera pad, whose effect is visible.
 
+## Screens that use the touch screen (player's catalogue, October 2026)
+
+The maintainer played the port from a new save to the first village quests and recorded every bottom screen he reached. Screenshots aren't kept in the repository (game artwork). Not covered yet: minigames, expeditions and the full-size map.
+
+| Screen | Where | What the touch screen holds | For the port |
+|---|---|---|---|
+| Town main screen | Val Habar, Dundorma | Town map with the facilities; buttons Guild Cards, Gestures, Friends; Hunters for Hire, World Map; Hunter Search bar; Menu | Mouse for now; a single-screen version needs the map and the three buttons |
+| Panel menu | Menu on the main screen | Customize Panels, Panel Schemes, Hunter Search Position | Only arranges panels: not needed if the port replaces them |
+| Guild Cards | Main screen | Check (7 pages, L/R: stats, weapon usage, journal, Palico, awards, monster log, arena log), Edit, Send, Card List | Menus, mostly readable with buttons; awards need a tap per category |
+| Gestures, Friends, Hunter Search, Hunters for Hire | Main screen | Button grids and lists | Menus |
+| World map | Solo/Multiplayer | Val Habar, Dundorma (Commons, Your House, Assembly), Gathering Hall (Gathering Hall, Change Online Status) | Menus |
+| Shop and smithy lists | Any shop | The top screen shows the list; the bottom shows controls help, a camera pad and Confirm/Back | Buttons already work |
+| Help | Help button | Topic grid | Menu |
+| Quest board | Guild/village counters | Rank tabs, Guild Quests, Event Quests, Arena (Arena Quests, Challenge Quests, Leaderboards), quest lists with Confirm/Back | Menus |
+| Quest panels | During a quest | Map, camera pad, target camera ("Unseen" monster icon), item shortcuts (e.g. First-aid Med, Ration) | **Target camera and kick are the only actions with no button.** MH3U on Wii U puts them on ZR when playing with a Pro Controller; the port should do the same (stage 2) |
+| Gallery, save select, character creation | Title menus | Lists and grids | Menus |
+
+So stage 2 starts with two bindings, target camera and kick, both tested in a real quest from the maintainer's save.
+
 ## Open questions
 
 1. Which panel ids are which (7, 8, 9, 0xb, 6 and the rest), and what action bit `0x0001` does: stage 0 logging, one tap per panel (the first attempt found the logging points don't see the taps; see the runtime check above).
