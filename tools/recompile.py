@@ -127,14 +127,29 @@ def looks_like_arm(img: Image, a: int) -> bool:
     return sum(1 for w in words if w is not None and w >> 28 == 0xE) >= 10
 
 
+NOPS = (0xE1A00000, 0xE320F000)     # mov r0, r0; nop
+
+
+def tail_falls_into(img: Image, t: int) -> bool:
+    """RVCT ends a function whose last act is to call the function right after it with
+    `pop {..., lr}` (or `ldr lr, [sp], #4`) and an alignment `mov r0, r0`, and falls into it.
+    That next function is still a function of its own, which vtables point to."""
+    prev, before = img.read32(t - 4), img.read32(t - 8)
+    if prev not in NOPS or before is None:
+        return False
+    pops_lr = (before & 0x0FFF0000) == 0x08BD0000 and before & 0x4000 and not before & 0x8000
+    return bool(pops_lr) or (before & 0x0FFFFFFF) == 0x049DE004
+
+
 def data_pointer_entries(img: Image, an: Analyzer, segments: list[tuple[int, int]],
                          known: dict[int, str], cover: dict[str, set[int]],
                          fall_into: dict[str, set[int]], literals: set[int] = frozenset()) -> dict[int, str]:
     """Code addresses stored in data (vtables, callback tables): words in .rodata/.data
     that point into .text at an instruction that starts clean, trap-free code. Words that
     are really numbers are weeded out: the target must not be reached by falling through
-    from the instruction before it, and the code must not overlap code of the other
-    instruction set."""
+    from the instruction before it (unless that is the end of a function handing over to
+    it, see tail_falls_into), and the code must not overlap code of the other instruction
+    set."""
     found: dict[int, str] = {}
     thumb_entries = sorted(a for a, m in known.items() if m == "thumb")
     def values():
@@ -147,7 +162,9 @@ def data_pointer_entries(img: Image, an: Analyzer, segments: list[tuple[int, int
         if v is None or not img.in_text(v & ~1):
             continue
         t, m = (v & ~1, "thumb") if v & 1 else (v, "arm")
-        if (m == "arm" and t & 3) or t in known or t in found or t in fall_into[m]:
+        if (m == "arm" and t & 3) or t in known or t in found:
+            continue
+        if t in fall_into[m] and not (m == "arm" and tail_falls_into(img, t)):
             continue
         if m == "thumb" and (looks_like_arm(img, t) or not near(thumb_entries, t, 0x4000)):
             continue    # odd pointers into data; real Thumb code sits next to other Thumb code

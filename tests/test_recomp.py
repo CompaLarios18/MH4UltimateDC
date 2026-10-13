@@ -399,3 +399,29 @@ def test_init_array_entries():
     struct.pack_into("<ii", code, 0x100, 0x100200 - 0x100100, 0x100301 - 0x100104)
     found = recompile.init_array_entries(Image(bytes(code), base, len(code)))
     assert found == {0x100200: "arm", 0x100300: "thumb"}
+
+
+def test_data_pointer_to_a_function_another_one_falls_into():
+    """RVCT ends a function that hands over to the next one with `pop {r4, lr}; mov r0, r0`
+    and falls into it; a vtable can still point at that next function (0x00b159e0 in the
+    game, found when the interpreter had to run it). A number that happens to point after
+    an ordinary instruction stays out."""
+    import struct
+    import recompile
+    from recomp.analysis import Analyzer, Image
+    base = 0x00100000
+    words = [0xE92D4010, 0xE1A04000, 0xE2844001, 0xE8BD4010, 0xE1A00000,   # a: push; ...; pop {r4, lr}; nop
+             0xE2800001, 0xE12FFF1E,                                         # b: add r0, r0, #1; bx lr
+             0xE92D4010, 0xE1A04000, 0xE2844001, 0xE8BD8010]                 # c: push; mov; add; pop {r4, pc}
+    code = bytearray(0x200)
+    struct.pack_into(f"<{len(words)}I", code, 0, *words)
+    a, b, c = base, base + 0x14, base + 0x1c
+    struct.pack_into("<3I", code, 0x100, a, b, c + 8)       # a vtable, and a number into c
+    img = Image(bytes(code), base, 0x100)
+    an = Analyzer(img)
+    entries = {a: "arm", c: "arm"}
+    first = an.analyze_all(entries)
+    cover, fall_into = recompile.code_cover(first)
+    assert b in fall_into["arm"] and c + 8 in fall_into["arm"]
+    found = recompile.data_pointer_entries(img, an, [(base + 0x100, 12)], dict(entries), cover, fall_into)
+    assert found == {b: "arm"}
