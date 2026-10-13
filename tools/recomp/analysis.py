@@ -292,7 +292,9 @@ class Analyzer:
             if w == MOV_LR_PC:
                 return (a + 8 + adjust) & 0xFFFFFFFF
             if (w & 0x0FEFF000) in (0x028FE000, 0x024FE000, 0x028EE000, 0x024EE000):  # add/sub lr, pc|lr, #imm
-                if w >> 28 != 0xE:
+                # conditional only right before a jump on the same condition (`addeq lr, pc, #n;
+                # beq routine`): LR is set exactly when the call happens
+                if w >> 28 != 0xE and not (k == 1 and adjust == 0 and ins.conditional and w >> 28 == ins.cond):
                     return None
                 imm = ror32(w & 0xFF, ((w >> 8) & 0xF) * 2)
                 imm = imm if (w & 0x00E00000) == 0x00800000 else -imm

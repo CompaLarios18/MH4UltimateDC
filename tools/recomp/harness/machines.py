@@ -233,6 +233,7 @@ class NativeMachine:
             c.f[i] = st.s[i]
         c.tpidruro = st.tls
         c.excl_valid = 0
+        c.expect_next = 0       # a run that stopped inside a tail call leaves it set
         c.budget = budget
         status = self.lib.rh_call(entry | (1 if thumb else 0), ctypes.byref(c))
         out = State(list(c.r), c.fn, c.fz, c.fc, c.fv, c.fq, c.ge, list(c.f), c.fpscr, c.tpidruro)

@@ -3,6 +3,7 @@
 # function pointer in recomp.gametest runs. Addresses only, no game data.
 0x00100170	thumb	indirect-target
 0x001001dc	thumb	indirect-target
+0x001002dc	thumb	indirect-target
 0x0010036a	thumb	indirect-target
 0x00101970	thumb	indirect-target
 0x00101d52	thumb	indirect-target
@@ -144,6 +145,7 @@
 0x00119b60	arm	second-pass
 0x00119b74	arm	second-pass
 0x00119b88	arm	second-pass
+0x00119ec8	arm	indirect-target
 0x0011a9b8	arm	indirect-target
 0x0011cf20	arm	indirect-target
 0x0011cfcc	arm	indirect-target
@@ -296,6 +298,7 @@
 0x00376074	arm	second-pass
 0x0037eec4	arm	indirect-target
 0x003a5654	arm	second-pass
+0x003a9c54	arm	indirect-target
 0x003ab984	arm	second-pass
 0x003c553c	arm	second-pass
 0x003c5648	arm	second-pass
@@ -320,6 +323,7 @@
 0x00568038	arm	second-pass
 0x005680d4	arm	second-pass
 0x00599904	arm	second-pass
+0x005a3710	arm	indirect-target
 0x005a6b68	arm	second-pass
 0x005afa8c	arm	indirect-target
 0x005afc9c	arm	indirect-target

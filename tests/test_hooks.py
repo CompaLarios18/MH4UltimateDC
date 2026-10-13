@@ -21,6 +21,9 @@ __attribute__((noinline)) int twice_add1(int x) { return add1(x) * 2; }
 __attribute__((noinline)) int call_through(int (*f)(int), int x) { return f(x) + 3; }
 __attribute__((noinline, target("thumb"))) int thumb_sub(int a, int b) { return a - b; }
 __attribute__((noinline)) int use_thumb(int a) { return thumb_sub(a, 4) * 3; }
+typedef int (*fp)(int);
+__attribute__((noinline)) int jump_to(fp f, int x) { return f(x); }
+__attribute__((noinline)) int call_jump(fp f, int x) { return jump_to(f, x) + 1; }
 __attribute__((noinline)) int screen_rows(void) { return 400; }
 __attribute__((noinline)) int clamp_rows(int y) { return y > 400 ? 400 : y; }
 """
@@ -159,3 +162,27 @@ def test_tunables(tmp_path):
     for i in range(3):
         values[i] = 424
     assert call("screen_rows") == 424 and call("clamp_rows", 500) == 424 and call("clamp_rows", 410) == 410
+
+
+def test_stopped_tail_call_leaves_no_state(tmp_path):
+    """A run that stops in a tail call (to an address that isn't code) must not leave its
+    return address for the next run: the harness starts each run clean."""
+    from recomp.gametest import STACK_SIZE, STACK_TOP
+    from recomp.harness.machines import RET_TRAP, ST_NOFUNC, ST_RETURN, NativeMachine, Region, State
+
+    res, lib, code, names, out = _build(tmp_path, [])
+    size = (len(code) + 0x10000 + 0xFFF) & ~0xFFF
+    m = NativeMachine(lib, [Region(0x00100000, size, True, code.ljust(size, b"\0")),
+                            Region(STACK_TOP - STACK_SIZE, STACK_SIZE, True, bytes(STACK_SIZE))])
+
+    def run(fn, *args):
+        st = State()
+        for i, a in enumerate(args):
+            st.r[i] = a & 0xFFFFFFFF
+        st.r[13], st.r[14] = STACK_TOP - 0x100, RET_TRAP
+        return m.run(names[fn] & ~1, bool(names[fn] & 1), st)
+
+    assert run("call_jump", names["add1"], 4).state.r[0] == 6
+    assert run("call_jump", 0x00ABC000, 4).status == ST_NOFUNC     # stops inside jump_to's tail call
+    r = run("add1", 5)
+    assert r.status == ST_RETURN and r.state.r[0] == 6, r

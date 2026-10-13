@@ -67,7 +67,8 @@ same run on `--cpu jit` gives the reference, and the first difference per thread
 the recompiled function that went wrong (`tools/compare_svc_traces.py jit.txt recomp.txt`). `--input` presses buttons, touches the bottom screen (pixels) or moves the circle pad
 (-1..1) at emulated times; `--shots` saves both screens as PPM images, and
 `--draw-window 100` draws only the 100 ms before each screenshot, which makes long runs
-many times faster (the software renderer takes nearly all the time). The port's hooks
+many times faster (the software renderer takes nearly all the time); `--cpu-clock 200` is
+Azahar's CPU Clock Speed setting. The port's hooks
 take options from the environment: `MH4U_FPS=60` raises the engine's frame-rate cap,
 `MH4U_TRACE_FRAMES=60` logs the engine's frame timing every 60 frames.
 

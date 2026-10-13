@@ -306,6 +306,17 @@ special:
     mov     r6, #40
     mov     pc, lr
 
+    .global cond_call
+    .type cond_call, %function
+cond_call:                          @ LR set only when the call happens
+    push    {r4, r6, lr}
+    cmp     r4, #0
+    addeq   lr, pc, #4
+    beq     r_a
+    add     r6, r6, #5
+    add     r0, r6, #3
+    pop     {r4, r6, pc}
+
     .global far_return
     .type far_return, %function
 far_return:                         @ LR in two steps, as for a return point out of reach
@@ -362,12 +373,14 @@ def test_computed_calls_and_negative_offset_tables(tmp_path):
         if len(parts) >= 8 and parts[3] in ("FUNC", "NOTYPE"):
             by_name[parts[7]] = int(parts[1], 16)
     funcs = res["funcs"]
-    fd, bd, fo, fr = (by_name[n] for n in ("fill_dispatch", "block_decode", "frame_owner", "far_return"))
+    fd, bd, fo, fr, cc = (by_name[n] for n in ("fill_dispatch", "block_decode", "frame_owner", "far_return",
+                                               "cond_call"))
     assert [len(t) for t in funcs[fd].ijump_targets.values()] == [4]
     assert len(funcs[bd].link_calls) == 2 and set(funcs[bd].link_calls.values()) == {bd + 32}
     assert list(funcs[fr].link_calls.values()) == [fr + 28] and not funcs[fr].ijump_targets
+    assert funcs[cc].link_calls == {cc + 12: cc + 20}
     assert by_name["tail_a"] in funcs and by_name["tail_b"] in funcs     # constant computed jumps
-    for a in (fd, bd, fo, fr):
+    for a in (fd, bd, fo, fr, cc):
         assert verdicts[a][0] == "pass", (hex(a), verdicts[a])
 
 

@@ -69,14 +69,16 @@ There are three levels, all against Unicorn's ARM11 MPCore model:
 2. **Synthetic programs** (`tests/test_recomp.py`): a C program built with clang (recursion, switch tables, function pointers, VFP, 64-bit division, ARM↔Thumb), plus hand-written assembly for short-vector code, a multi-return helper and the video decoder's computed calls and frame-ending tail jumps, recompiled whole and compared function by function.
 3. **Whole-game differential test** (`python3 -m recomp.gametest`): every recompiled function, with everything it calls, from random states (registers, VFP, flags, pointer-rich scratch memory) on both sides. A case passes when both exit the same way (return, same system call, or fault at the same address) with identical registers, flags, VFP state and identical writable memory (`.data`, `.bss`, stack, buffers, TLS). Indirect targets that the native side couldn't find are written to `missing_targets.txt` and can be fed back with `--extra`.
 
-Random states can't reach everything (most game functions fault early on random pointers), so the final check is running the game itself with the dynarmic JIT as reference (see [PORT_ARCHITECTURE.md](PORT_ARCHITECTURE.md)).
+Latest full run (October 2026, every function, 2 random states each): 13,401 pass, 26,361 fault at the same address on both sides, 798 inconclusive (instruction budget), 2 multi-return helpers tested through their callers, and 4 that fault at different addresses only after other tests have run (a different 4 each run; alone they agree, so harness state, not code). No function returns a different state.
+
+Random states can't reach everything (most game functions fault early on random pointers), so the final check is running the game itself with the dynarmic JIT as reference (see [PORT_ARCHITECTURE.md](PORT_ARCHITECTURE.md)): from first boot to gameplay on the sand ship, screen for screen.
 
 ## Current numbers (USA v1.3.0)
 
 | | |
 |---|---|
-| Functions | 40,559 (8,127 found through data pointers) |
-| Instructions | 3,261,100 |
+| Functions | 40,566 (8,124 found through data pointers) |
+| Instructions | 3,256,600 |
 | Jump tables | 3,475, all resolved |
 | Traps | 1 (data after a call that never returns) |
 | Analysis problems | 0 |
