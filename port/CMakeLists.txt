@@ -31,7 +31,7 @@ target_link_libraries(mh4u_backend PUBLIC citra_core citra_common)
 
 add_executable(mh4u_runner src/runner.cpp)
 target_include_directories(mh4u_runner PRIVATE "${MH4U_RUNTIME_DIR}")
-target_link_libraries(mh4u_runner PRIVATE mh4u_backend)
+target_link_libraries(mh4u_runner PRIVATE mh4u_backend network)
 
 # Recompiled code from `dir` as a shared library for --code.
 function(mh4u_add_code_library name dir)

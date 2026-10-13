@@ -75,7 +75,11 @@ Azahar's CPU Clock Speed setting. The runner reads files in place, so a run repe
 exactly: with Azahar's default (`--async-io`) a read finishes on a host thread and wakes
 the game at an emulated time that depends on how fast the host was, which moved loading
 screens by seconds between identical runs and let time-based input scripts land on other
-screens. It also sends sound nowhere, so it needs no sound card. The port's hooks
+screens. It also sends sound nowhere, so it needs no sound card. `--room-host PORT` makes
+a network room inside the runner (Azahar's multiplayer) and joins it, `--room-join HOST:PORT`
+joins one, so two runners play the game's local wireless modes together (give both
+`--speed 100` so that they keep time with each other, and a copy of a user folder
+`--new-console-id`: a room turns away a console it already has). The port's hooks
 take options from the environment: `MH4U_FPS=60` raises the engine's frame-rate cap,
 `MH4U_TRACE_FRAMES=60` logs the engine's frame timing every 60 frames.
 

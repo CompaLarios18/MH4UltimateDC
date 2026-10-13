@@ -2,14 +2,18 @@
 // the recompiled code or one of Azahar's own CPU backends, until the program exits or an
 // emulated-time limit is reached. Debug output (svcOutputDebugString) goes to stdout.
 // For testing the real game it can also install a CIA (the update) first, press buttons
-// and touch the screen on an emulated-time script, and save both screens as images.
+// and touch the screen on an emulated-time script, save both screens as images, and join
+// a network room (Azahar's multiplayer) so that two runners can play locally together.
 #include <algorithm>
+#include <cctype>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <memory>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <vector>
 #include <fmt/format.h>
 
@@ -30,7 +34,10 @@
 #include "core/hle/kernel/svc.h"
 #include "core/hle/kernel/thread.h"
 #include "core/hle/service/am/am.h"
+#include "core/hle/service/cfg/cfg.h"
 #include "core/hle/service/service.h"
+#include "network/network.h"
+#include "network/verify_user.h"
 #include "video_core/gpu.h"
 #include "video_core/renderer_software/renderer_software.h"
 
@@ -69,6 +76,13 @@ const char* const USAGE = R"(usage: mh4u_runner <file> [options]
                     (ms:BUTTON[:hold ms], ms:TOUCH:x:y[:hold], ms:CIRCLE:x:y[:hold];
                     hold defaults to 100 ms; buttons A B X Y UP DOWN LEFT RIGHT L R
                     START SELECT ZL ZR HOME)
+  --room-host PORT  host a network room (Azahar's multiplayer) on this UDP port and join it
+  --room-join HOST:PORT  join a network room; the game's local wireless play then reaches
+                    the other members (use --speed 100 on every runner so they keep time)
+  --nick NAME       nickname in the room, 4 to 20 letters, digits, spaces, '.', '_' or '-'
+                    (default "runner")
+  --new-console-id  give the console a new random ID before the game starts (a room turns
+                    away a second member with the same ID, e.g. two copies of a user folder)
 )";
 
 class HeadlessWindow final : public Frontend::EmuWindow {
@@ -304,6 +318,85 @@ bool SaveScreen(Core::System& system, VideoCore::ScreenId id, const std::string&
     return true;
 }
 
+// ── network room ────────────────────────────────────────────────────────────────────
+
+/// A new random console ID, saved in the user folder's system settings.
+void NewConsoleId(Core::System& system) {
+    const auto cfg = Service::CFG::GetModule(system);
+    const auto [random_number, console_id] = cfg->GenerateConsoleUniqueId();
+    cfg->SetConsoleUniqueId(random_number, console_id);
+    cfg->UpdateConfigNANDSavegame();
+    std::printf("console id %016llx\n", static_cast<unsigned long long>(console_id));
+}
+
+/// Hosts a room on `host_port` (when it isn't 0) and joins it, or joins the room at `join`
+/// (HOST:PORT), the way Azahar's Multiplayer menu does. Waits until the room has accepted
+/// or refused this member.
+bool JoinRoom(Core::System& system, u16 host_port, const std::string& join,
+              const std::string& nickname) {
+    if (!Network::Init()) {
+        std::fprintf(stderr, "room: the network library didn't start\n");
+        return false;
+    }
+    std::string host = "127.0.0.1";
+    u16 port = host_port;
+    if (host_port) {
+        const auto room = Network::GetRoom().lock();
+        if (!room || !room->Create("mh4u_runner", "", "", host_port, "", 16, "", "", 0,
+                                   std::make_unique<Network::VerifyUser::NullBackend>())) {
+            std::fprintf(stderr, "room: could not host on port %u\n", host_port);
+            return false;
+        }
+        std::printf("room: hosting on port %u\n", host_port);
+        std::fflush(stdout);
+    } else {
+        const auto colon = join.rfind(':');
+        host = join.substr(0, colon);
+        port = static_cast<u16>(std::atoi(join.c_str() + colon + 1));
+    }
+    const auto member = Network::GetRoomMember().lock();
+    if (!member) {
+        return false;
+    }
+    member->BindOnError([](const Network::RoomMember::Error& error) {
+        std::printf("room: %s\n", Network::GetErrorStr(error));
+        std::fflush(stdout);
+    });
+    member->Join(nickname, Service::CFG::GetConsoleIdHash(system), host.c_str(), port);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (member->GetState() == Network::RoomMember::State::Joining &&
+           std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    if (!member->IsConnected()) {
+        std::fprintf(stderr, "room: could not join %s:%u (%s)\n", host.c_str(), port,
+                     Network::GetStateStr(member->GetState()));
+        return false;
+    }
+    std::printf("room: joined %s:%u as %s, MAC %s\n", host.c_str(), port, nickname.c_str(),
+                Service::CFG::MacToString(member->GetMacAddress()).c_str());
+    std::fflush(stdout);
+    return true;
+}
+
+/// The room's members as this runner last heard of them, sorted, for the log.
+void PrintRoomMembers() {
+    const auto member = Network::GetRoomMember().lock();
+    if (!member || !member->IsConnected()) {
+        return;
+    }
+    std::vector<std::string> names;
+    for (const auto& info : member->GetMemberInformation()) {
+        names.push_back(info.nickname);
+    }
+    std::sort(names.begin(), names.end());
+    std::string list;
+    for (const auto& name : names) {
+        list += (list.empty() ? "" : ", ") + name;
+    }
+    std::printf("room: members: %s\n", list.c_str());
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -320,6 +413,10 @@ int main(int argc, char** argv) {
     double draw_window = -1.0; // < 0: draw every frame
     int cpu_clock = 100;
     bool async_io = false;
+    int room_host = 0;
+    std::string room_join;
+    std::string nickname = "runner";
+    bool new_console_id = false;
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
         if (arg == "--code" && i + 1 < argc) {
@@ -355,6 +452,29 @@ int main(int argc, char** argv) {
             async_io = true;
         } else if (arg == "--draw-window" && i + 1 < argc) {
             draw_window = std::max(0.0, std::atof(argv[++i]));
+        } else if (arg == "--room-host" && i + 1 < argc) {
+            room_host = std::atoi(argv[++i]);
+            if (room_host <= 0 || room_host > 65535) {
+                return Usage();
+            }
+        } else if (arg == "--room-join" && i + 1 < argc) {
+            room_join = argv[++i];
+            const auto colon = room_join.rfind(':');
+            if (colon == std::string::npos || colon == 0 || std::atoi(room_join.c_str() + colon + 1) <= 0) {
+                return Usage();
+            }
+        } else if (arg == "--nick" && i + 1 < argc) {
+            nickname = argv[++i];
+            // what rooms accept; anything else comes back as a name collision
+            if (nickname.size() < 4 || nickname.size() > 20 ||
+                !std::all_of(nickname.begin(), nickname.end(), [](char c) {
+                    return std::isalnum(static_cast<unsigned char>(c)) || std::strchr(" ._-", c);
+                })) {
+                std::fprintf(stderr, "bad --nick: %s\n", nickname.c_str());
+                return 1;
+            }
+        } else if (arg == "--new-console-id") {
+            new_console_id = true;
         } else if (arg == "--input" && i + 1 < argc) {
             input_script = argv[++i];
             if (!ParseScript(input_script)) {
@@ -367,7 +487,8 @@ int main(int argc, char** argv) {
             return Usage();
         }
     }
-    if (path.empty() || (cpu != "recomp" && cpu != "jit" && cpu != "interp")) {
+    if (path.empty() || (cpu != "recomp" && cpu != "jit" && cpu != "interp") ||
+        (room_host && !room_join.empty())) {
         return Usage();
     }
 
@@ -429,6 +550,19 @@ int main(int argc, char** argv) {
             recomp_cores.push_back(core.get());
             return std::shared_ptr<Core::ARM_Interface>(core);
         });
+    }
+
+    // Before loading, as Azahar's Multiplayer menu does: the system settings are read when the
+    // services start, and the local wireless service only talks to a room that exists when
+    // it starts (it also takes the room's MAC address for the console's).
+    if (new_console_id) {
+        NewConsoleId(system);
+    }
+    const bool in_room = room_host || !room_join.empty();
+    if (in_room && !JoinRoom(system, static_cast<u16>(room_host), room_join, nickname)) {
+        Network::Shutdown();
+        Common::Log::Stop();
+        return 5;
     }
 
     HeadlessWindow window;
@@ -498,12 +632,16 @@ int main(int argc, char** argv) {
     }
     std::printf("emulated time: %.1f ms\n",
                 (system.CoreTiming().GetGlobalTicks() - start_ticks) / 268111.856);
+    PrintRoomMembers();
     std::fflush(stdout);
     if (g_svc_trace) {
         Kernel::SetSVCObserver(nullptr);
         std::fclose(g_svc_trace);
     }
     system.Shutdown();
+    if (in_room) {
+        Network::Shutdown();
+    }
     Common::Log::Stop();
     return rc;
 }

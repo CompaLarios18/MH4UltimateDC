@@ -152,6 +152,53 @@ def test_runner_scripted_input_and_screenshots(tmp_path, extra):
     assert pixel(100, 5) == (0, 255, 0) and pixel(100, 120) == (255, 0, 0) and pixel(300, 120) == (0, 0, 255)
 
 
+@pytest.mark.skipif(not os.environ.get("MH4U_RUNNER"), reason="port not built (set MH4U_RUNNER)")
+def test_runners_meet_in_a_room(tmp_path):
+    """--room-host makes a network room (Azahar's multiplayer) inside the runner and joins
+    it; other runners join with --room-join, which is how two runners play the game's local
+    wireless modes together. A room turns away a console it already has, as with two copies
+    of one user folder, until one of them takes --new-console-id."""
+    import socket
+    import build_svc_test
+    from recomp import build as rbuild
+    binary = os.environ["MH4U_RUNNER"]
+    elf = build_svc_test.build(str(tmp_path), "io_test")
+    code = rbuild.build(str(tmp_path), 2, "O1", ["RC_PAGED"], "code.so", [rbuild.DLL_GLUE],
+                        extra_flags=["-fvisibility=hidden"])
+    run = [binary, elf, "--code", code, "--speed", "100"]
+    first = subprocess.run(run + ["--ms", "100", "--user", str(tmp_path / "a")], capture_output=True, timeout=600)
+    assert first.returncode == 0
+    shutil.copytree(tmp_path / "a", tmp_path / "b")
+    shutil.copytree(tmp_path / "a", tmp_path / "c")
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+
+    # the program runs for 150 frames, ~2.5 s at real-time speed: the room lives that long
+    host = subprocess.Popen(run + ["--ms", "5000", "--user", str(tmp_path / "a"), "--room-host", str(port),
+                                   "--nick", "alice"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    host_out = []
+    for line in host.stdout:
+        host_out.append(line)
+        if "room: joined" in line or "room: could not" in line:
+            break
+    assert any(f"room: joined 127.0.0.1:{port} as alice" in line for line in host_out), host_out
+    join = ["--room-join", f"127.0.0.1:{port}"]
+    copy = subprocess.run(run + ["--ms", "300", "--user", str(tmp_path / "c"), "--nick", "carol"] + join,
+                          capture_output=True, text=True, timeout=120)
+    guest = subprocess.run(run + ["--ms", "500", "--user", str(tmp_path / "b"), "--nick", "bobby",
+                                  "--new-console-id", "--input", "200:A"] + join,
+                           capture_output=True, text=True, timeout=120)
+    rest, _ = host.communicate(timeout=120)
+    assert host.returncode == 0, "".join(host_out) + rest
+    assert copy.returncode == 5 and "room: ConsoleIdCollision" in copy.stdout, copy.stdout
+    assert guest.returncode == 0, guest.stdout[-2000:] + guest.stderr[-2000:]
+    assert re.search(rf"room: joined 127\.0\.0\.1:{port} as bobby, MAC 00:1F:32(:[0-9A-F]{{2}}){{3}}\n", guest.stdout)
+    assert "room: members: alice, bobby\n" in guest.stdout
+    assert re.search(r"console id [0-9a-f]{16}\n", guest.stdout)
+    assert "A pressed, frame" in guest.stdout + guest.stderr      # and the program ran as usual
+
+
 def _normalized_log(text: str, user_dir: str) -> list[str]:
     """Azahar's log lines (written by its own thread, so the runner's prints can land
     anywhere between them), without timestamps, user paths and the backend's own lines."""
