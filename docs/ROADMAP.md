@@ -41,7 +41,7 @@ A hybrid is common: recompile everything first (B) to get a running port, then r
 - [x] Licence: GPL-3.0-or-later for the whole repository (the port reuses Azahar's GPL-3.0 core)
 - [x] Recompiled-code CPU backend for Azahar's core (`port/`, `Core::ARM_Interface`): paged memory, SVCs into Azahar's kernel, cycle accounting, one host fiber per guest thread. A multi-threaded test program prints the same results as with Azahar's JIT
 - [x] The game's own code boots like it does on Azahar's JIT (SDK start-up, services, static constructors) until it opens its RomFS
-- [x] Frontend: Azahar's own Qt interface loads the code library for the game it opens (no separate SDL frontend needed); Windows build in CI
+- [x] Frontend: Azahar's own Qt interface loads the code library for the game it opens (no separate SDL frontend needed); Windows build in CI, run under Wine with a code library built by llvm-mingw (into gameplay, OpenGL, widescreen)
 - [x] `tools/build_game.py`: the user's dump to an installed code library in one command (fetches the compiler on Windows)
 - [x] Hook points: native code around chosen game functions (`config/hooks.txt`, `port/src/hooks.cpp`); headless runner with input scripts and screenshots for automated runs of the real game
 - [x] Run the game with dynarmic and with the recompiled code side by side and diff them: same screens through first boot, intro movie (the hand-written video decoder needed new analysis patterns), title, character creation and the opening on the sand ship
@@ -56,6 +56,7 @@ A hybrid is common: recompile everything first (B) to get a running port, then r
 ## Phase 4 — PC niceties
 - [x] Research: frame pacing (the engine is delta-time based; frame limiter in `sMain`), widescreen (projection, render targets, culling, HUD anchoring), second screen (viewport 7, layout views, touch panels) — [`research/`](research/README.md)
 - [x] 60 fps: frame-rate cap hook, verified on the real game (frame delta 1/60 s, game speed unchanged); find what holds it at 30 on hardware
+- [ ] Above 60: 120 fps works in the opening scenes (delta 1/120 s, movies stay at their own 30); try a hunt, and fix the quest-start loading race that unusual read timing exposes
 - [ ] Widescreen: anamorphic (projection hook + Azahar single-screen aspect) and true wide rendering (render targets, transfer, tunable 400s; up to 512x240) work in gameplay with the HUD centred; next, anchor HUD edge elements
 - [ ] Second screen: Azahar layouts (available), then panel actions on buttons, then a single-screen HUD
 - [x] Resolution scaling, texture packs, rebindable controls and controllers: Azahar's

@@ -68,7 +68,11 @@ the recompiled function that went wrong (`tools/compare_svc_traces.py jit.txt re
 (-1..1) at emulated times; `--shots` saves both screens as PPM images, and
 `--draw-window 100` draws only the 100 ms before each screenshot, which makes long runs
 many times faster (the software renderer takes nearly all the time); `--cpu-clock 200` is
-Azahar's CPU Clock Speed setting. The port's hooks
+Azahar's CPU Clock Speed setting. The runner reads files in place, so a run repeats
+exactly: with Azahar's default (`--async-io`) a read finishes on a host thread and wakes
+the game at an emulated time that depends on how fast the host was, which moved loading
+screens by seconds between identical runs and let time-based input scripts land on other
+screens. It also sends sound nowhere, so it needs no sound card. The port's hooks
 take options from the environment: `MH4U_FPS=60` raises the engine's frame-rate cap,
 `MH4U_TRACE_FRAMES=60` logs the engine's frame timing every 60 frames.
 

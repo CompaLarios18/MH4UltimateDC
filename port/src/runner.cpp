@@ -52,6 +52,10 @@ const char* const USAGE = R"(usage: mh4u_runner <file> [options]
                     a screen built up over several frames can come out incomplete
   --speed PERCENT   emulation speed limit (default 0 = as fast as possible; 100 = real time)
   --cpu-clock PERCENT  emulated CPU clock (default 100; Azahar's CPU Clock Speed setting)
+  --async-io        let file reads finish on host threads, as Azahar does by default; the
+                    runner otherwise does them in place so that a run repeats exactly (an
+                    asynchronous read wakes the game at an emulated time that depends on how
+                    fast the host was, which moves loading screens by seconds)
   --trace-svc FILE  write every system call (thread, number, pc, lr, r0-r3, ticks) to FILE,
                     to compare CPU backends thread by thread
   --input SCRIPT    comma-separated presses at emulated times, e.g.
@@ -264,6 +268,7 @@ int main(int argc, char** argv) {
     double speed = 0.0;
     double draw_window = -1.0; // < 0: draw every frame
     int cpu_clock = 100;
+    bool async_io = false;
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
         if (arg == "--code" && i + 1 < argc) {
@@ -288,6 +293,8 @@ int main(int argc, char** argv) {
             shot_every = std::max(1.0, std::atof(argv[++i]));
         } else if (arg == "--cpu-clock" && i + 1 < argc) {
             cpu_clock = std::clamp(std::atoi(argv[++i]), 5, 400);
+        } else if (arg == "--async-io") {
+            async_io = true;
         } else if (arg == "--draw-window" && i + 1 < argc) {
             draw_window = std::max(0.0, std::atof(argv[++i]));
         } else if (arg == "--input" && i + 1 < argc) {
@@ -330,6 +337,11 @@ int main(int argc, char** argv) {
     Settings::values.graphics_api.SetValue(Settings::GraphicsAPI::Software);
     Settings::values.frame_limit.SetValue(speed); // 0: don't wait for real time
     Settings::values.cpu_clock_percentage.SetValue(cpu_clock);
+    Settings::values.deterministic_async_operations.SetValue(!async_io);
+    // no sound card needed (and on Windows, cubeb's WASAPI backend asserts on a thread
+    // without COM, which a runner without Qt never initialises)
+    Settings::values.output_type.SetValue(AudioCore::SinkType::Null);
+    Settings::values.input_type.SetValue(AudioCore::InputType::Null);
     Settings::values.use_cpu_jit = cpu == "jit";
     Settings::values.use_fastinterp = false;
 

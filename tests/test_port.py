@@ -104,12 +104,13 @@ def test_interpreter_fallback_matches_jit(tmp_path):
 
 
 @pytest.mark.skipif(not os.environ.get("MH4U_RUNNER"), reason="port not built (set MH4U_RUNNER)")
-@pytest.mark.parametrize("draw_window", [None, "50"])
-def test_runner_scripted_input_and_screenshots(tmp_path, draw_window):
+@pytest.mark.parametrize("extra", [[], ["--draw-window", "50"], ["--async-io"]])
+def test_runner_scripted_input_and_screenshots(tmp_path, extra):
     """port/tests/io_test.c reads HID shared memory and draws into the top framebuffer:
     the runner's --input script must reach it and --shots must save what it drew. With
     --draw-window the GPU skips triangles between screenshots; the program writes its
-    framebuffer with the CPU, so nothing it does may change."""
+    framebuffer with the CPU, so nothing it does may change. --async-io only changes how
+    file reads finish, and the program reads no files."""
     import build_svc_test
     from recomp import build as rbuild
     binary = os.environ["MH4U_RUNNER"]
@@ -119,8 +120,7 @@ def test_runner_scripted_input_and_screenshots(tmp_path, draw_window):
     shots = tmp_path / "shots"
     r = subprocess.run([binary, elf, "--code", code, "--ms", "3000", "--user", str(tmp_path / "user"),
                         "--shots", str(shots), "--input",
-                        "300:A,600:TOUCH:10:20:100,900:CIRCLE:1:-0.5:200,1200:START"]
-                       + (["--draw-window", draw_window] if draw_window else []),
+                        "300:A,600:TOUCH:10:20:100,900:CIRCLE:1:-0.5:200,1200:START"] + extra,
                        capture_output=True, text=True, timeout=600)
     assert r.returncode == 0, (r.stdout[-2000:], r.stderr[-2000:])
     out = [m.group(1) for m in re.finditer(r"OutputDebugString:\d+: (.*)", r.stdout + r.stderr)]
