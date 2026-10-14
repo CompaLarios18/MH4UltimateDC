@@ -869,6 +869,21 @@ std::vector<std::string> Install(const RCodeInfo& info) {
     return log;
 }
 
+bool SetOption(const std::string& key, const std::string& value) {
+    // the options the hooks read each time they run; the others are applied once at start-up
+    static constexpr std::string_view live[] = {
+        "fps", "refresh_rate", "dither", "render_flags_set", "render_flags_clear", "kick",
+        "target", "quest_overlay", "hud_edges", "trace_frames", "trace_layout", "trace_panels"};
+    if (std::find(std::begin(live), std::end(live), key) == std::end(live)) {
+        return false;
+    }
+    Set(options, key, value);
+    if (key == "refresh_rate" && frames > 0) {
+        Core::System::GetInstance().GPU().SetRefreshRate(options.refresh_rate);  // 0: the 3DS's
+    }
+    return true;
+}
+
 Layout::ScreenOverlay ParseOverlay(std::string v) {
     std::transform(v.begin(), v.end(), v.begin(), [](unsigned char c) { return std::tolower(c); });
     using Corner = Layout::ScreenOverlay::Corner;

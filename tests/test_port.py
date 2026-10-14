@@ -207,6 +207,30 @@ def test_runner_replaces_memory(tmp_path):
 
 
 @pytest.mark.skipif(not os.environ.get("MH4U_RUNNER"), reason="port not built (set MH4U_RUNNER)")
+def test_runner_sets_options_while_running(tmp_path):
+    """--set MS:KEY=VALUE changes one of the port's options at an emulated time (one player at
+    120 fps once a session is together, say); options that only apply at start-up are refused."""
+    import build_svc_test
+    from recomp import build as rbuild
+    binary = os.environ["MH4U_RUNNER"]
+    elf = build_svc_test.build(str(tmp_path), "io_test")
+    code = rbuild.build(str(tmp_path), 2, "O1", ["RC_PAGED"], "code.so", [rbuild.DLL_GLUE],
+                        extra_flags=["-fvisibility=hidden"])
+    run = [binary, elf, "--code", code, "--ms", "1200", "--user", str(tmp_path / "user")]
+    r = subprocess.run(run + ["--set", "800:refresh_rate=120", "--set", "500:quest_overlay=map 40"],
+                       capture_output=True, text=True, timeout=600)
+    assert r.returncode == 0, (r.stdout[-2000:], r.stderr[-2000:])
+    first = re.search(r"set quest_overlay = map 40 at 5\d\d ms", r.stdout)
+    second = re.search(r"set refresh_rate = 120 at 8\d\d ms", r.stdout)
+    assert first and second and first.start() < second.start(), r.stdout[-2000:]
+    r = subprocess.run(run + ["--set", "500:widescreen=16:9"], capture_output=True, text=True, timeout=600)
+    assert r.returncode == 1 and "widescreen is not an option that can change" in r.stderr
+    for bad in ["fps=120", "500:=120", "x:fps=120"]:
+        r = subprocess.run([binary, elf, "--set", bad], capture_output=True, text=True, timeout=60)
+        assert r.returncode == 1 and "bad --set" in r.stderr, bad
+
+
+@pytest.mark.skipif(not os.environ.get("MH4U_RUNNER"), reason="port not built (set MH4U_RUNNER)")
 def test_runners_in_lockstep(tmp_path):
     """--lockstep keeps the emulated clocks of runners on one machine together: a runner that
     could go as fast as it likes waits for one that keeps real time, and both finish. --stalls

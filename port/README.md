@@ -95,7 +95,10 @@ MH4U's local play gives up on a silent player within about a second (`--stalls M
 steps that took longer than MS of host time). In lockstep the other runners wait for it, and
 two runners stay together in a Gathering Hall. Between machines the port's net sync does the same
 over the room (`src/netsync.cpp`, on by default): `--freeze MS:HOST_MS` stops a runner for a while, as a
-PC that stalls would, to try it. `--overlay-layout SPEC
+PC that stalls would, to try it. `--set MS:KEY=VALUE` changes one of the port's options at an
+emulated time (those the hooks read as the game runs: `fps`, `refresh_rate`, `dither`, `kick`,
+`target`, `quest_overlay`, `hud_edges`, ...), e.g. one player at 120 fps once a session's input
+scripts, written for 30 fps menus, have brought everyone into a quest. `--overlay-layout SPEC
 WxH[:TOP]` prints the screens' rectangles the `touch_overlay` option gives a window; with a
 `quest_overlay` value and the map's panel slot after them, also the part of the touch screen a
 quest shows and where a click on it touches (through Azahar's own touch code). The port's hooks

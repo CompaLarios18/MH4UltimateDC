@@ -18,6 +18,13 @@ namespace Port::Hooks {
 /// has no hook point for (it was built with an older hooks.txt).
 std::vector<std::string> Install(const RCodeInfo& info);
 
+/// Changes one of the options above while the game runs (the runner's --set, for tests: one
+/// player of a session at another frame rate once everyone is in, say). Only options that
+/// the hooks read as the game runs can change: fps, refresh_rate, dither, render_flags_set,
+/// render_flags_clear, kick, target, quest_overlay, hud_edges and the trace_* options.
+/// Returns false for any other key.
+bool SetOption(const std::string& key, const std::string& value);
+
 /// The touch_overlay option: "top-right 30 85" (corner, height in % of the window's, opacity
 /// in %), "on" (top right, 30%, 85%) or "off".
 Layout::ScreenOverlay ParseOverlay(std::string value);

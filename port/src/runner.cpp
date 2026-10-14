@@ -104,6 +104,10 @@ const char* const USAGE = R"(usage: mh4u_runner <file> [options]
   --freeze MS:HOST_MS  at emulated time MS, stop emulating for HOST_MS of host time, as a PC
                     that stalls would (shader compilation): the port's net sync makes the other
                     consoles in a network room wait instead of dropping this one
+  --set MS:KEY=VALUE  at emulated time MS, change one of the port's options (mh4u.ini keys
+                    the hooks read as the game runs: fps, refresh_rate, dither, kick, target,
+                    quest_overlay, hud_edges, ...), e.g. one player of a session at 120 fps
+                    once everyone is in (repeatable)
 or:    mh4u_runner --overlay-layout SPEC WIDTHxHEIGHT[:TOP_WIDTH] [QUEST SLOT]
                     print the custom screen layout the port's touch_overlay option SPEC
                     gives a window that size (top screen TOP_WIDTH x 240, default 400);
@@ -334,6 +338,47 @@ bool ParseDump(const std::string& arg) {
         return false;
     }
     g_dumps.push_back(d);
+    return true;
+}
+
+/// --set MS:KEY=VALUE: one of the port's options changed at an emulated time.
+struct OptionChange {
+    double ms;
+    std::string key, value;
+    bool done = false;
+};
+std::vector<OptionChange> g_option_changes;
+
+bool ParseOptionChange(const std::string& arg) {
+    const auto colon = arg.find(':');
+    const auto eq = arg.find('=', colon == std::string::npos ? 0 : colon);
+    if (colon == std::string::npos || eq == std::string::npos || eq == colon + 1) {
+        return false;
+    }
+    char* end = nullptr;
+    const double ms = std::strtod(arg.c_str(), &end);
+    if (end != arg.c_str() + colon || ms < 0.0) {
+        return false;
+    }
+    g_option_changes.push_back({ms, arg.substr(colon + 1, eq - colon - 1), arg.substr(eq + 1)});
+    return true;
+}
+
+/// Applies the option changes that are due; false if one names an option that can't change.
+bool ApplyOptionChanges() {
+    for (auto& c : g_option_changes) {
+        if (c.done || EmulatedMs() < c.ms) {
+            continue;
+        }
+        c.done = true;
+        if (!Port::Hooks::SetOption(c.key, c.value)) {
+            std::fprintf(stderr, "--set: %s is not an option that can change while the game runs\n",
+                         c.key.c_str());
+            return false;
+        }
+        std::printf("set %s = %s at %.0f ms\n", c.key.c_str(), c.value.c_str(), EmulatedMs());
+        std::fflush(stdout);
+    }
     return true;
 }
 
@@ -724,6 +769,11 @@ int main(int argc, char** argv) {
                 std::fprintf(stderr, "bad --freeze %s (MS:HOST_MS)\n", argv[i]);
                 return 1;
             }
+        } else if (arg == "--set" && i + 1 < argc) {
+            if (!ParseOptionChange(argv[++i])) {
+                std::fprintf(stderr, "bad --set %s (MS:KEY=VALUE)\n", argv[i]);
+                return 1;
+            }
         } else if (arg == "--replace" && i + 1 < argc) {
             if (!ParseReplace(argv[++i])) {
                 std::fprintf(stderr, "bad --replace: %s (want MS:FROM:TO, hex bytes of equal length)\n", argv[i]);
@@ -897,6 +947,10 @@ int main(int argc, char** argv) {
                                           EmulatedMs() >= next_shot - draw_window);
         }
         LockstepWait(EmulatedMs());
+        if (!ApplyOptionChanges()) {
+            rc = 1;
+            break;
+        }
         if (freeze_at >= 0.0 && EmulatedMs() >= freeze_at) {
             std::printf("freeze at %.0f ms for %.0f ms of host time\n", EmulatedMs(), freeze_ms);
             std::fflush(stdout);
