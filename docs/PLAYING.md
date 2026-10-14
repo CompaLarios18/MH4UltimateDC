@@ -16,7 +16,7 @@ How to run Monster Hunter 4 Ultimate on a PC with this project: the game's own c
 
 ## 1. Make the game's code library
 
-On Windows the port's package has it ready: install [Python](https://www.python.org/downloads/) 3.10 or newer (tick *Add python.exe to PATH*), double-click `Build code library.bat` in the package and choose your v1.3.0 update `.cia`. It runs the same command as below with the tools in the package's `mh4u-tools` folder, and the first time it also writes a `mh4u.ini` with 60 fps, 16:9 and the touch screen in a corner, and picks Azahar's *Custom Layout*.
+On Windows the port's package has it ready: install [Python](https://www.python.org/downloads/) 3.10 or newer (tick *Add python.exe to PATH*), close Azahar, double-click `Build code library.bat` in the package and choose your v1.3.0 update `.cia`. It runs the same command as below with the tools in the package's `mh4u-tools` folder, then installs the update in Azahar (step 2 below is then done), and the first time it also writes a `mh4u.ini` with 60 fps, 16:9 and the touch screen in a corner, and picks Azahar's *Custom Layout*.
 
 Otherwise, from the repository folder:
 
@@ -42,7 +42,7 @@ It checks that the update is v1.3.0, recompiles its code (a couple of minutes), 
 2. *File → Install CIA…* → your v1.3.0 update `.cia` (the game runs the update's code, which is what was recompiled).
 3. Add the folder with your game dump to the game list and start the game.
 
-The log (*File → Open Folder → log folder*) says `running recompiled code from …` when the code library was found. If it says the running code `is not the code that was recompiled`, the update isn't installed (or is another version): the game still runs, but entirely in Azahar's interpreter, slowly.
+The log (*File → Open Folder → log folder*) says `running recompiled code from …` when the code library was found. When the game starts without it, the port's Azahar says why in a message (no library, an old one, or the game's code isn't the one it was built from: the update isn't installed, or a code mod changed) and runs the game on Azahar's own CPU emulation, without the port's options.
 
 Everything else is Azahar's own: controls, graphics settings, screen layouts, save data, cheats, texture packs. Two exceptions: **save states** aren't available while the game runs on recompiled code (the game's call stacks live on the PC's own stacks, which a save state can't capture), so save in the game; and cheats that rewrite code don't apply to recompiled functions (cheats that change data do).
 

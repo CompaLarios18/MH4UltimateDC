@@ -85,12 +85,13 @@ jobs:
           (USA) and its v1.3.0 update (.cia):
           1. Install Python 3.10 or newer (https://www.python.org/downloads/, tick "Add python.exe
              to PATH").
-          2. Double-click "Build code library.bat" and choose your v1.3.0 update .cia: it builds
-             the game's code library on this PC (the first time it downloads the C compiler,
-             about 180 MB) and installs it in %APPDATA%\Azahar\recomp.
-          3. Start azahar.exe: File > Install CIA... (the update), then File > Load File... (the game).
-          Options (frame rate, widescreen, the touch screen, multiplayer): docs/PLAYING.md in the
-          repository; they go in %APPDATA%\Azahar\mh4u.ini.
+          2. Close Azahar, double-click "Build code library.bat" and choose your v1.3.0 update
+             .cia: it builds the game's code library on this PC (the first time it downloads the
+             C compiler, about 180 MB), installs it in %APPDATA%\Azahar\recomp and installs the
+             update in Azahar.
+          3. Start azahar.exe: File > Load File... (the game).
+          Options (frame rate, widescreen, the touch screen, multiplayer): Tools > MH4U Port
+          Options... in azahar.exe, and docs/PLAYING.md in the repository.
 
           Multiplayer (Gathering Hall > Local Play, over the internet):
           - Everyone: a name of your own in Emulation > Configure > System > Username.

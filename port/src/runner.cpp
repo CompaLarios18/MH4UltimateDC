@@ -114,6 +114,9 @@ or:    mh4u_runner --overlay-layout SPEC WIDTHxHEIGHT[:TOP_WIDTH] [QUEST SLOT]
                     with the quest_overlay option QUEST and the map's touch-panel slot,
                     the layout while a quest's panels are up, the part of the touch screen
                     shown, and where on the touch screen a click in the overlay's middle lands
+or:    mh4u_runner --install CIA [--install CIA...] [--user DIR]
+                    install CIAs (the game's update, say) into an Azahar user folder and
+                    exit, as Azahar's File > Install CIA... does
 )";
 
 class HeadlessWindow final : public Frontend::EmuWindow {
@@ -835,7 +838,8 @@ int main(int argc, char** argv) {
             return Usage();
         }
     }
-    if (path.empty() || (cpu != "recomp" && cpu != "jit" && cpu != "interp") ||
+    const bool install_only = path.empty() && !install.empty();
+    if ((path.empty() && !install_only) || (cpu != "recomp" && cpu != "jit" && cpu != "interp") ||
         (room_host && !room_join.empty())) {
         return Usage();
     }
@@ -844,7 +848,7 @@ int main(int argc, char** argv) {
         // before anything asks for a path: the other directories are derived from it once
         FileUtil::SetUserPath(user_dir.back() == '/' ? user_dir : user_dir + '/');
     }
-    Common::Log::Initialize();
+    Common::Log::Initialize("mh4u_runner_log.txt"); // not over Azahar's own log in a shared folder
     Common::Log::SetColorConsoleBackendEnabled(true);
     Common::Log::Start();
     Common::Log::Filter filter;
@@ -859,6 +863,10 @@ int main(int argc, char** argv) {
             return 1;
         }
         std::printf("installed %s\n", cia.c_str());
+    }
+    if (install_only) {
+        Common::Log::Stop();
+        return 0;
     }
     UseScriptedInput();
     Settings::values.graphics_api.SetValue(Settings::GraphicsAPI::Software);

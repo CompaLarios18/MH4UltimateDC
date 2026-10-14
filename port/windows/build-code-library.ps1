@@ -1,7 +1,8 @@
 # Builds the game's code library from YOUR Monster Hunter 4 Ultimate USA v1.3.0 update (.cia)
-# and installs it where this Azahar looks for it (%APPDATA%\Azahar\recomp). The first time it
-# downloads the C compiler (llvm-mingw, about 180 MB). Everything it makes from the game stays
-# on this PC. Part of the MH4U PC port's Windows package (see README-mh4u.txt).
+# and installs it where this Azahar looks for it (%APPDATA%\Azahar\recomp), then installs the
+# update in Azahar as well. The first time it downloads the C compiler (llvm-mingw, about
+# 180 MB). Everything it makes from the game stays on this PC. Close Azahar before running it.
+# Part of the MH4U PC port's Windows package (see README-mh4u.txt).
 #
 # Double-click "Build code library.bat", or:
 #   powershell -ExecutionPolicy Bypass -File build-code-library.ps1 [-Cia "path\to\update.cia"]
@@ -53,8 +54,20 @@ if ($LASTEXITCODE -ne 0) {
     Finish 1
 }
 
-# The port's options, if there is no mh4u.ini yet (docs/PLAYING.md in the repository has them all)
 $userDir = Join-Path $env:APPDATA "Azahar"
+
+# The update into Azahar too (what File > Install CIA... does), with the port's runner next to
+# this script; without it, or if that fails, the player installs it in Azahar
+$updateInstalled = $false
+$runner = Join-Path $PSScriptRoot "mh4u_runner.exe"
+if (Test-Path $runner) {
+    Write-Host "Installing the update in Azahar ($userDir)"
+    & $runner --user $userDir --install $Cia
+    $updateInstalled = ($LASTEXITCODE -eq 0)
+    if (-not $updateInstalled) { Write-Host "That didn't work (code $LASTEXITCODE): install it in Azahar instead (below)." }
+}
+
+# The port's options, if there is no mh4u.ini yet (docs/PLAYING.md in the repository has them all)
 $ini = Join-Path $userDir "mh4u.ini"
 if (-not (Test-Path $ini)) {
     New-Item -ItemType Directory -Force -Path $userDir | Out-Null
@@ -83,7 +96,8 @@ if (-not (Test-Path $qtini)) {
 
 Write-Host ""
 Write-Host "Done. In azahar.exe (next to this script):"
-Write-Host "  1. File > Install CIA... > your v1.3.0 update (.cia)"
-Write-Host "  2. File > Load File... > your decrypted game (.3ds / .cci / .cxi)"
-Write-Host "  The log says 'running recompiled code' when the library was found."
+if (-not $updateInstalled) { Write-Host "  - File > Install CIA... > your v1.3.0 update (.cia)" }
+Write-Host "  - File > Load File... > your decrypted game (.3ds / .cci / .cxi)"
+Write-Host "  - Tools > MH4U Port Options... for the frame rate, widescreen and the rest"
+Write-Host "  Azahar says so at the start if the game runs without the port's code library."
 Finish 0

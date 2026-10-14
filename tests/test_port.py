@@ -231,6 +231,22 @@ def test_runner_sets_options_while_running(tmp_path):
 
 
 @pytest.mark.skipif(not os.environ.get("MH4U_RUNNER"), reason="port not built (set MH4U_RUNNER)")
+def test_runner_installs_without_a_game(tmp_path):
+    """--install CIA with no game file installs into the --user folder and exits (the Windows
+    package's script installs the update this way), logging to its own file so that it doesn't
+    replace Azahar's log in a shared user folder. A missing CIA fails with a message."""
+    binary = os.environ["MH4U_RUNNER"]
+    user = tmp_path / "user"
+    r = subprocess.run([binary, "--install", str(tmp_path / "missing.cia"), "--user", str(user)],
+                       capture_output=True, text=True, timeout=60)
+    assert r.returncode == 1 and re.search(r"installing .*missing\.cia failed", r.stderr), r.stderr
+    assert (user / "log" / "mh4u_runner_log.txt").exists()
+    assert not (user / "log" / "azahar_log.txt").exists()
+    r = subprocess.run([binary, "--user", str(user)], capture_output=True, text=True, timeout=60)
+    assert r.returncode != 0 and "usage" in r.stdout + r.stderr
+
+
+@pytest.mark.skipif(not os.environ.get("MH4U_RUNNER"), reason="port not built (set MH4U_RUNNER)")
 def test_runners_in_lockstep(tmp_path):
     """--lockstep keeps the emulated clocks of runners on one machine together: a runner that
     could go as fast as it likes waits for one that keeps real time, and both finish. --stalls
