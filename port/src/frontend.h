@@ -23,4 +23,10 @@ std::string PrepareBackendFor(Core::System& system, const std::string& rom_path)
 /// every other game.
 std::string BackendNotice();
 
+/// The port's options file: "mh4u.ini" in Azahar's user directory.
+std::string OptionsPath();
+
+/// What a new options file says: the recommended settings, each with what it does.
+std::string OptionsTemplate();
+
 } // namespace Port

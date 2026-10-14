@@ -48,7 +48,7 @@ Everything else is Azahar's own: controls, graphics settings, screen layouts, sa
 
 ## 3. Options
 
-Write them in `mh4u.ini` in Azahar's user folder (next to the `recomp` folder), one `key = value` per line:
+Write them in `mh4u.ini` in Azahar's user folder (next to the `recomp` folder), one `key = value` per line. *Tools → MH4U Port Options...* in the port's Azahar opens that file in a text editor, and first makes it with the recommended settings when there is none. Changes apply the next time the game starts. All the options:
 
 ```ini
 # frame-rate cap: the game runs at 30 on a 3DS; its engine measures time, so gameplay speed stays right

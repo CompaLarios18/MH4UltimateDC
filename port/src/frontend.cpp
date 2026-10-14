@@ -52,6 +52,49 @@ std::string BackendNotice() {
     return notice;
 }
 
+std::string OptionsPath() {
+    return FileUtil::GetUserPath(FileUtil::UserPath::UserDir) + "mh4u.ini";
+}
+
+std::string OptionsTemplate() {
+    return R"(# MH4U PC port options. Changes apply the next time the game starts.
+# One "key = value" per line; a line starting with # is ignored. All of them, and what was
+# tried: docs/PLAYING.md in the port's repository.
+
+# frame-rate cap (the game runs at 30 on a 3DS; its speed stays right at any rate). Above 60,
+# set refresh_rate to the same number too, e.g. fps = 120 and refresh_rate = 120
+fps = 60
+refresh_rate = 0
+
+# the top screen's shape: 16:9, 16:10, 21:9, 32:9, 4:3 or off. wide_render = 1 draws the
+# wider picture itself (0 stretches a 400x240 one); hud_edges = 1 moves the hunting HUD's
+# sides (health, stamina, party list; the item selection) out to the screen's edges
+widescreen = 16:9
+wide_render = 1
+hud_edges = 1
+
+# View > Screen Layout > Custom Layout: the game fills the window and the touch screen sits
+# in a corner (top-left, top-right, bottom-left, bottom-right), its height in % of the
+# window's, its opacity in %. off = Azahar's own custom layout
+touch_overlay = top-right 30 85
+# in quests that corner shows only the map (map 40 = 40% of the window's height; off = the
+# whole touch screen)
+quest_overlay = map
+
+# buttons for the kick and the target camera, touch-screen panels on a 3DS
+# (A B X Y L R ZL ZR START UP DOWN LEFT RIGHT; ZL and ZR are a controller's triggers)
+kick = ZR
+target = ZL
+
+# the game's dither pattern: off for a clean picture at an Internal Resolution above 1x
+dither = off
+
+# multiplayer: wait a moment for a player with the port whose PC stalls, instead of the game
+# dropping them (on, off; all = with every port player in the room)
+net_sync = on
+)";
+}
+
 std::string PrepareBackendFor(Core::System& system, const std::string& rom_path) {
     system.SetCPUFactory(nullptr);
     notice.clear();
