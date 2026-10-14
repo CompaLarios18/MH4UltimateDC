@@ -12,7 +12,7 @@ How to run Monster Hunter 4 Ultimate on a PC with this project: the game's own c
 - A PC: Windows 10/11 x64 or Linux x64 (macOS later). On Windows 11, **Smart App Control** must be off: it blocks the unsigned programs and libraries involved (Azahar's DLLs, the compiler, the code library) with "Bad Image ... 0xc0e90002". *Windows Security → App & browser control → Smart App Control settings → Off*; since the April 2026 update (KB5083769) it can be turned back on later without reinstalling Windows.
 - [Python](https://www.python.org/downloads/) 3.10 or newer (nothing else to install with it).
 - This repository (`git clone`, or *Code → Download ZIP* on GitHub).
-- The port's build of Azahar: on Windows, the `mh4u-port-windows` download of the latest successful run of this repository's [*Windows build* workflow](../../../actions/workflows/windows.yml); on Linux, the `mh4u-port-linux` download (an AppImage) of the [*Linux build* workflow](../../../actions/workflows/linux.yml), or build it yourself ([port/README.md](../port/README.md)). Downloads from workflow runs need a GitHub account.
+- The port's build of Azahar: on Windows, the `mh4u-port-windows` download of the latest successful run of this repository's [*Windows build* workflow](../../../actions/workflows/windows.yml); on Linux, the `mh4u-port-linux` download (an AppImage; tried on Ubuntu 24.04: it runs the game on recompiled code) of the [*Linux build* workflow](../../../actions/workflows/linux.yml), or build it yourself ([port/README.md](../port/README.md)). Downloads from workflow runs need a GitHub account.
 
 ## 1. Make the game's code library
 
