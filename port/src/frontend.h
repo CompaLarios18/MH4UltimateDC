@@ -23,6 +23,10 @@ std::string PrepareBackendFor(Core::System& system, const std::string& rom_path)
 /// every other game.
 std::string BackendNotice();
 
+/// In quests, switches the touch overlay between the map alone and the whole touch screen
+/// (a hotkey in Azahar's Qt frontend).
+void ToggleQuestMap();
+
 /// The port's options file: "mh4u.ini" in Azahar's user directory.
 std::string OptionsPath();
 

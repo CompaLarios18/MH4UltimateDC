@@ -25,6 +25,11 @@ std::vector<std::string> Install(const RCodeInfo& info);
 /// Returns false for any other key.
 bool SetOption(const std::string& key, const std::string& value);
 
+/// In quests, switches the touch overlay between the map alone (quest_overlay) and the whole
+/// touch screen (for the chat or the item shortcuts), until switched back. Safe to call from
+/// any thread; it takes effect a few frames later.
+void ToggleQuestMap();
+
 /// How many of the port's hook points the code library loaded last didn't have (it was built
 /// with an older config/hooks.txt, so the options behind them don't work until it is rebuilt).
 int MissingHookPoints();

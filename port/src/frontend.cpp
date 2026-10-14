@@ -52,6 +52,10 @@ std::string BackendNotice() {
     return notice;
 }
 
+void ToggleQuestMap() {
+    Hooks::ToggleQuestMap();
+}
+
 std::string OptionsPath() {
     return FileUtil::GetUserPath(FileUtil::UserPath::UserDir) + "mh4u.ini";
 }
@@ -78,7 +82,7 @@ hud_edges = 1
 # window's, its opacity in %. off = Azahar's own custom layout
 touch_overlay = top-right 30 85
 # in quests that corner shows only the map (map 40 = 40% of the window's height; off = the
-# whole touch screen)
+# whole touch screen); F12 switches between the two while you play
 quest_overlay = map
 
 # buttons for the kick and the target camera, touch-screen panels on a 3DS

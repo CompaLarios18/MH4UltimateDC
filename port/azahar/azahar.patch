@@ -32,7 +32,7 @@ index 8723f05..88dceae 100644
  target_link_libraries(citra_qt PRIVATE nihstro-headers Qt6::Multimedia Qt6::Concurrent)
  target_link_libraries(citra_qt PRIVATE ${PLATFORM_LIBRARIES} Threads::Threads)
 diff --git a/src/citra_qt/citra_qt.cpp b/src/citra_qt/citra_qt.cpp
-index 758038b..2f94016 100644
+index 758038b..9da1e04 100644
 --- a/src/citra_qt/citra_qt.cpp
 +++ b/src/citra_qt/citra_qt.cpp
 @@ -46,6 +46,9 @@
@@ -45,7 +45,17 @@ index 758038b..2f94016 100644
  #include "citra_qt/compatibility_list.h"
  #include "citra_qt/configuration/config.h"
  #include "citra_qt/configuration/configure_dialog.h"
-@@ -1207,6 +1210,18 @@ void GMainWindow::ConnectMenuEvents() {
+@@ -925,6 +928,9 @@ void GMainWindow::InitializeHotkeys() {
+     };
+ 
+     connect_shortcut(QStringLiteral("Toggle Screen Layout"), &GMainWindow::ToggleScreenLayout);
++#ifdef MH4U_BACKEND
++    connect_shortcut(QStringLiteral("MH4U Quest Map On/Off"), [] { Port::ToggleQuestMap(); });
++#endif
+     connect_shortcut(QStringLiteral("Exit Fullscreen"), [&] {
+         if (emulation_running) {
+             if (secondary_window->isActiveWindow()) {
+@@ -1207,6 +1213,18 @@ void GMainWindow::ConnectMenuEvents() {
  #ifdef ENABLE_FFMPEG
      connect_menu(ui->action_Dump_Video, &GMainWindow::OnDumpVideo);
  #endif
@@ -64,7 +74,7 @@ index 758038b..2f94016 100644
  
      // Tools debug
      connect_menu(ui->action_Debug_Pause, [this] {
-@@ -1380,6 +1395,13 @@ bool GMainWindow::LoadROM(const QString& filename) {
+@@ -1380,6 +1398,13 @@ bool GMainWindow::LoadROM(const QString& filename) {
          system.InsertCartridge(UISettings::values.inserted_cartridge.GetValue());
      }
  
@@ -78,6 +88,21 @@ index 758038b..2f94016 100644
      const Core::System::ResultStatus result{
          system.Load(*render_window, filename.toStdString(), secondary_window)};
  
+diff --git a/src/citra_qt/configuration/config.cpp b/src/citra_qt/configuration/config.cpp
+index 50edd63..f60e11a 100644
+--- a/src/citra_qt/configuration/config.cpp
++++ b/src/citra_qt/configuration/config.cpp
+@@ -96,6 +96,10 @@ const std::vector<UISettings::Shortcut> QtConfig::default_hotkeys{ {
+      {QStringLiteral("Toggle Filter Bar"),        QStringLiteral("Main Window"), {QStringLiteral("Ctrl+F"), QStringLiteral(""), Qt::ApplicationShortcut}},
+      {QStringLiteral("Toggle Per-Application Speed"),  QStringLiteral("Main Window"), {QStringLiteral("Ctrl+Z"), QStringLiteral(""), Qt::ApplicationShortcut}},
+      {QStringLiteral("Toggle Screen Layout"),     QStringLiteral("Main Window"), {QStringLiteral("F10"),    QStringLiteral(""), Qt::ApplicationShortcut}},
++#ifdef MH4U_BACKEND
++     // MH4U PC port: in quests, the touch overlay's map or the whole touch screen
++     {QStringLiteral("MH4U Quest Map On/Off"),    QStringLiteral("Main Window"), {QStringLiteral("F12"),    QStringLiteral(""), Qt::ApplicationShortcut}},
++#endif
+      {QStringLiteral("Toggle Status Bar"),        QStringLiteral("Main Window"), {QStringLiteral("Ctrl+S"), QStringLiteral(""), Qt::ApplicationShortcut}},
+      {QStringLiteral("Toggle Texture Dumping"),   QStringLiteral("Main Window"), {QStringLiteral(""),       QStringLiteral(""), Qt::ApplicationShortcut}},
+      {QStringLiteral("Toggle Turbo Mode"),        QStringLiteral("Main Window"), {QStringLiteral(""),      QStringLiteral(""), Qt::ApplicationShortcut}},
 diff --git a/src/citra_qt/multiplayer/host_room.cpp b/src/citra_qt/multiplayer/host_room.cpp
 index bd98a3d..187713b 100644
 --- a/src/citra_qt/multiplayer/host_room.cpp

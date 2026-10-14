@@ -2,6 +2,7 @@
 #include "netsync.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <cmath>
 #include <cstdlib>
@@ -126,6 +127,7 @@ bool IsOn(const std::string& value) {
 Options options;
 u64 frames = 0;
 int missing_hook_points = 0;  // in the code library Install saw last
+std::atomic<bool> quest_map_off{false};  // ToggleQuestMap: the whole touch screen in quests too
 
 /// "16:9", "1.7778", "off"/"0" -> aspect ratio (0 = native).
 float ParseAspect(const std::string& v) {
@@ -771,7 +773,8 @@ void UpdateQuestOverlay() {
     if (options.quest_overlay < 0 || options.touch_overlay.height <= 0) {
         return;
     }
-    const int want = options.quest_overlay_test >= 0 ? options.quest_overlay_test
+    const int want = quest_map_off                     ? -1
+                     : options.quest_overlay_test >= 0 ? options.quest_overlay_test
                      : quest_panels_ran                ? quest_map_slot
                                                        : -1;
     quest_panels_ran = false;
@@ -901,6 +904,12 @@ std::vector<std::string> Install(const RCodeInfo& info) {
 
 int MissingHookPoints() {
     return missing_hook_points;
+}
+
+void ToggleQuestMap() {
+    const bool off = !quest_map_off.load();
+    quest_map_off = off;
+    LOG_INFO(Frontend, "touch overlay: {} in quests", off ? "the whole touch screen" : "the map");
 }
 
 bool SetOption(const std::string& key, const std::string& value) {
