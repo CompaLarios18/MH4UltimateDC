@@ -8,6 +8,7 @@
 #include <fstream>
 #include <sstream>
 #include <string_view>
+#include <vector>
 #include <fmt/format.h>
 
 #include "common/common_types.h"
@@ -52,6 +53,9 @@ constexpr u32 VIEWPORT_CAMERA = 0x04;           // uCamera*
 constexpr u32 VIEWPORT_DISPLAY = 0x16;          // u8: 0 top screen, 1 bottom screen
 constexpr u32 VIEWPORT_SCENE_TEXTURE = 0x0c;    // sub-scene texture: region from its size
 constexpr u32 VIEWPORT_Y0 = 0x28, VIEWPORT_Y1 = 0x30;  // region rows (the screen's width)
+constexpr u32 VIEWPORT_MODE = 0x15;             // u8 mMode: 0 the whole 400 rows, 2..9 halves or
+                                                // quarters of them, 1 and >= 10 a region its
+                                                // owner sets (0xa: the virtual-rect mode)
 constexpr u32 SLTRENDER_SCENE = 0x6c28;         // nDraw::Scene*: the main render target
 constexpr u32 SLTRENDER_TOP_TRANSFER_Y = 0x6e1c;   // u32: first row of the top screen's image in
                                                    // the composited target (512 - 400 = 112)
@@ -309,8 +313,19 @@ void DisplayBufferInit(RCtx* ctx, RFunc original) {
     original(ctx);
 }
 
-/// sCamera::Viewport::updateRegion(this): top-screen viewports drawn into the scene target
-/// get their rows scaled to the wider target.
+/// The rows each viewport with a region of its owner's was last given here, so that the region
+/// is moved once and not again on every call.
+struct OwnerRegion {
+    u32 viewport, y0, y1;
+};
+std::vector<OwnerRegion> owner_regions;
+
+/// sCamera::Viewport::updateRegion(this): top-screen viewports drawn into the scene target.
+/// The regions updateRegion computes from the 400 rows (modes 0 and 2..9, every call) are
+/// scaled to the wider target. A region its owner set (mode 1, >= 10), such as the weapon
+/// preview at the smithy, stays as it is between calls; it frames a 3D view inside a HUD box,
+/// and the HUD is centred in the wider picture, so it moves by half the extra rows, once (a
+/// region over the whole 400 rows is widened instead).
 void UpdateRegion(RCtx* ctx, RFunc original) {
     const u32 viewport = ctx->r[0];
     original(ctx);
@@ -323,11 +338,40 @@ void UpdateRegion(RCtx* ctx, RFunc original) {
     if (render == 0 || rd32(ctx, render + SLTRENDER_SCENE) == 0) {
         return;
     }
-    for (const u32 field : {VIEWPORT_Y0, VIEWPORT_Y1}) {
-        const u32 y = rd32(ctx, viewport + field);
-        if (y <= TOP_ROWS) {
-            wr32(ctx, viewport + field, y * rows / TOP_ROWS);
+    const u8 mode = rd8(ctx, viewport + VIEWPORT_MODE);
+    if (mode == 0 || (mode >= 2 && mode <= 9)) {
+        for (const u32 field : {VIEWPORT_Y0, VIEWPORT_Y1}) {
+            const u32 y = rd32(ctx, viewport + field);
+            if (y <= TOP_ROWS) {
+                wr32(ctx, viewport + field, y * rows / TOP_ROWS);
+            }
         }
+        return;
+    }
+    if (mode == 0xa) {
+        return; // setupDraw puts its own rectangle in (a tunable makes it W rows)
+    }
+    const u32 y0 = rd32(ctx, viewport + VIEWPORT_Y0);
+    const u32 y1 = rd32(ctx, viewport + VIEWPORT_Y1);
+    auto it = std::find_if(owner_regions.begin(), owner_regions.end(),
+                           [viewport](const OwnerRegion& r) { return r.viewport == viewport; });
+    if (it != owner_regions.end() && it->y0 == y0 && it->y1 == y1) {
+        return; // moved already
+    }
+    if (y0 > y1 || y1 > TOP_ROWS) {
+        return; // not a region of the native 400 rows
+    }
+    const bool whole = y0 == 0 && y1 == TOP_ROWS;
+    const u32 shift = (rows - TOP_ROWS) / 2;
+    const u32 new_y0 = whole ? 0 : y0 + shift;
+    const u32 new_y1 = whole ? rows : y1 + shift;
+    wr32(ctx, viewport + VIEWPORT_Y0, new_y0);
+    wr32(ctx, viewport + VIEWPORT_Y1, new_y1);
+    if (it == owner_regions.end()) {
+        owner_regions.push_back({viewport, new_y0, new_y1});
+    } else {
+        it->y0 = new_y0;
+        it->y1 = new_y1;
     }
 }
 
