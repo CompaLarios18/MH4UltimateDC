@@ -9,13 +9,13 @@ A work-in-progress decompilation of **Monster Hunter 4 Ultimate** (Nintendo 3DS)
 🟩 **Playable; Phase 4 — PC niceties.** Target version is **USA v1.3.0**.
 
 - A **static recompiler** translates the whole game (~40,000 functions, 3.2 M ARM/Thumb instructions) into C, generated on your machine from your own dump and verified against an ARM11 model ([`docs/RECOMPILER.md`](docs/RECOMPILER.md)).
-- That code runs as the CPU of **Azahar's 3DS core** (kernel, services, GPU, audio, network rooms), inside Azahar's normal interface, on Windows and Linux ([`docs/PORT_ARCHITECTURE.md`](docs/PORT_ARCHITECTURE.md), [`port/`](port/)). The village, quests and hunts are played on Windows at 60 and 120 fps, with sound.
+- That code runs as the CPU of **Azahar's 3DS core** (kernel, services, GPU, audio, network rooms), inside Azahar's normal interface, on Windows, Linux and macOS ([`docs/PORT_ARCHITECTURE.md`](docs/PORT_ARCHITECTURE.md), [`port/`](port/)). The village, quests and hunts are played on Windows at 60 and 120 fps, with sound.
 - **Hooks** wrap game functions with native code, based on research into the engine's frame pacing, cameras and second screen ([`docs/research/`](docs/research/README.md)):
   - 60 and 120 fps, and a fix for a loading race that higher frame rates bring out;
-  - true widescreen (16:9 and wider) with the hunting HUD at the screen's edges;
+  - true widescreen (16:9, 21:9, 32:9) with the hunting HUD at the screen's edges, and 16:10 or 4:3 without distortion;
   - no dither grid when upscaling;
   - the kick and the target camera on buttons, and the touch screen as an overlay in a corner of a full-window game (in quests, just the map).
-- **Local multiplayer** goes over Azahar's network rooms: two instances meet in a Gathering Hall and go on a quest together.
+- **Local multiplayer** goes over Azahar's network rooms, also with players on official Azahar: two to four players meet in a Gathering Hall and go on quests together, at different frame rates if they like, and the port keeps them together when a PC stalls.
 - **Community mods**: code mods (`code.ips`, `code.bps`) are applied before recompiling; data and RomFS mods work as on Azahar.
 - Where the port needs to change behaviour, functions also get hand-decompiled into readable C, each one verified with `tools/difftest.py`.
 
