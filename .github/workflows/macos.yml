@@ -163,7 +163,9 @@ jobs:
           # ...and it starts: --help needs no window; dyld lists what it loaded
           DYLD_PRINT_LIBRARIES=1 $exe --help > help.txt 2> dyld.txt
           cat help.txt
-          grep -v -E '^dyld\[[0-9]+\]: /(System/Library|usr/lib)/' dyld.txt || true
+          # (dyld's lines: "dyld[PID]: <UUID> PATH"; the ones from outside macOS)
+          grep -E '^dyld\[[0-9]+\]: (<[^>]*> )?/' dyld.txt |
+            grep -v -E '^dyld\[[0-9]+\]: (<[^>]*> )?/(System/Library|usr/lib)/' || true
           if ! head -n 1 help.txt | grep -q '^usage: mh4u'; then
             echo "::error::mh4u --help didn't print the app's usage"; exit 1
           fi
