@@ -61,10 +61,10 @@ std::string OptionsTemplate() {
 # One "key = value" per line; a line starting with # is ignored. All of them, and what was
 # tried: docs/PLAYING.md in the port's repository.
 
-# frame-rate cap (the game runs at 30 on a 3DS; its speed stays right at any rate). Above 60,
-# set refresh_rate to the same number too, e.g. fps = 120 and refresh_rate = 120
+# frame-rate cap (the game runs at 30 on a 3DS; its speed stays right at any rate), e.g. your
+# monitor's refresh rate; above 60 a busy scene may need Emulation > Configure > Debug > CPU
+# Clock Speed raised
 fps = 60
-refresh_rate = 0
 
 # the top screen's shape: 16:9, 16:10, 21:9, 32:9, 4:3 or off. wide_render = 1 draws the
 # wider picture itself (0 stretches a 400x240 one); hud_edges = 1 moves the hunting HUD's

@@ -84,7 +84,8 @@ void WriteF32(RCtx* ctx, u32 addr, float f) {
 /// Options from <Azahar user dir>/mh4u.ini, overridden by environment variables.
 struct Options {
     float fps_cap = 0;      // fps / MH4U_FPS: frame-rate cap, 0 = the game's own
-    float refresh_rate = 0; // refresh_rate / MH4U_REFRESH_RATE: emulated LCD Hz, 0 = 3DS's
+    float refresh_rate = 0; // refresh_rate / MH4U_REFRESH_RATE: emulated LCD Hz, 0 = the 3DS's
+                            // (or, with an fps above 60, that fps: see RefreshRate)
     float widescreen = 0;   // widescreen / MH4U_WIDESCREEN: top-screen aspect ratio, 0 = native
     bool wide_render = false;  // wide_render / MH4U_WIDE_RENDER: render the wider image itself
     u32 trace_every = 0;    // trace_frames / MH4U_TRACE_FRAMES: log frame timing every n frames
@@ -227,6 +228,16 @@ Options LoadOptions(std::vector<std::string>& log) {
     return o;
 }
 
+/// The emulated screen refresh rate to use: refresh_rate when set; otherwise an fps above 60
+/// (the game presents at most once per VBlank, so more frames need more VBlanks), else 0 (the
+/// 3DS's 59.83 Hz).
+float RefreshRate() {
+    if (options.refresh_rate > 0) {
+        return options.refresh_rate;
+    }
+    return options.fps_cap > 60.0f ? options.fps_cap : 0.0f;
+}
+
 /// sMain::updateFrameTiming(this): the frame limiter. Delta time is counted in 1/60 s
 /// whatever the cap, and gameplay scales with it, so the cap is what limits the frame rate.
 void UpdateFrameTiming(RCtx* ctx, RFunc original) {
@@ -241,9 +252,9 @@ void WideTransfer(RCtx* ctx);
 void UpdateQuestOverlay();
 
 void Frame(RCtx* ctx, RFunc original) {
-    if (frames == 0 && options.refresh_rate > 0) {
+    if (frames == 0 && RefreshRate() > 0) {
         // the game presents at most once per VBlank: more VBlanks allow more than 60 fps
-        Core::System::GetInstance().GPU().SetRefreshRate(options.refresh_rate);
+        Core::System::GetInstance().GPU().SetRefreshRate(RefreshRate());
     }
     const u32 clear = options.render_clear | (options.dither ? 0 : RENDER_DITHER);
     if (options.render_set || clear) {
@@ -818,8 +829,9 @@ std::vector<std::string> Install(const RCodeInfo& info) {
     if (options.fps_cap > 0) {
         log.push_back(fmt::format("frame-rate cap {}", options.fps_cap));
     }
-    if (options.refresh_rate > 0) {
-        log.push_back(fmt::format("emulated screen refresh rate {} Hz (experimental)", options.refresh_rate));
+    if (RefreshRate() > 0) {
+        log.push_back(fmt::format("emulated screen refresh rate {} Hz{} (experimental)", RefreshRate(),
+                                  options.refresh_rate > 0 ? "" : ", as fps"));
     }
     if (options.widescreen > 0) {
         log.push_back(WideRows() ? fmt::format("widescreen: top screen rendered {}x{} (experimental)",
@@ -900,8 +912,8 @@ bool SetOption(const std::string& key, const std::string& value) {
         return false;
     }
     Set(options, key, value);
-    if (key == "refresh_rate" && frames > 0) {
-        Core::System::GetInstance().GPU().SetRefreshRate(options.refresh_rate);  // 0: the 3DS's
+    if ((key == "refresh_rate" || key == "fps") && frames > 0) {
+        Core::System::GetInstance().GPU().SetRefreshRate(RefreshRate()); // 0: the 3DS's
     }
     return true;
 }
