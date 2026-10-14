@@ -63,6 +63,9 @@ static void draw_top(void) {
     }
 }
 
+/* The runner's --replace test changes this in memory while the program runs. */
+static volatile u32 marker = 0x4d483455u;
+
 void _start(void) __attribute__((section(".text.start")));
 void _start(void) {
     print("io_test: start");
@@ -80,7 +83,7 @@ void _start(void) {
     print("io_test: drawn");
 
     volatile u8 *mem = (volatile u8 *)HID_SHM;
-    u32 last_buttons = 0, touched = 0, moved = 0;
+    u32 last_buttons = 0, touched = 0, moved = 0, replaced = 0;
     for (u32 frame = 0; frame < 150; frame++) {
         u32 pad_index = *(volatile u32 *)(mem + 0x10) & 7;
         volatile u8 *pad = mem + 0x28 + pad_index * 16;
@@ -100,6 +103,10 @@ void _start(void) {
             touched = 1;
             print_hex("touch x", *(volatile unsigned short *)touch);
             print_hex("touch y", *(volatile unsigned short *)(touch + 2));
+        }
+        if (!replaced && marker != 0x4d483455u) {
+            replaced = 1;
+            print_hex("marker", marker);
         }
         svcSleepThread(16666667);
     }

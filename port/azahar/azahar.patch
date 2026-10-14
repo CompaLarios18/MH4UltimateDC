@@ -660,8 +660,44 @@ index 14ac286..8d345e0 100644
      Service::GSP::InterruptHandler signal_interrupt;
  
      explicit Impl(Core::System& system, Frontend::EmuWindow& emu_window,
+diff --git a/src/video_core/pica/pica_core.cpp b/src/video_core/pica/pica_core.cpp
+index 97a3a64..c394f6b 100644
+--- a/src/video_core/pica/pica_core.cpp
++++ b/src/video_core/pica/pica_core.cpp
+@@ -13,6 +13,7 @@
+ #include "video_core/pica/pica_core.h"
+ #include "video_core/pica/vertex_loader.h"
+ #include "video_core/rasterizer_interface.h"
++#include "video_core/renderer_software/sw_rasterizer.h"
+ #include "video_core/shader/shader.h"
+ 
+ namespace Pica {
+@@ -1007,6 +1008,11 @@ void PicaCore::SubmitImmediate(u32 value) {
+ }
+ 
+ void PicaCore::DrawImmediate() {
++    if (!SwRenderer::IsDrawingEnabled()) [[unlikely]] {
++        immediate.current_attribute = 0;
++        return;
++    }
++
+     // Compile the vertex shader.
+     shader_engine->SetupBatch(vs_setup, regs.internal.vs.main_offset);
+ 
+@@ -1078,6 +1084,11 @@ void PicaCore::DrawArrays(bool is_indexed) {
+     delay_generator.AddVertices(regs.internal.pipeline.num_vertices,
+                                 regs.internal.pipeline.triangle_topology);
+ 
++    // Nothing is drawn: skip the vertex shaders too.
++    if (!SwRenderer::IsDrawingEnabled()) [[unlikely]] {
++        return;
++    }
++
+     // Attempt to use hardware vertex shaders if possible.
+     if (accelerate_draw && rasterizer->AccelerateDrawBatch(is_indexed)) {
+         return;
 diff --git a/src/video_core/renderer_software/sw_rasterizer.cpp b/src/video_core/renderer_software/sw_rasterizer.cpp
-index 1e82f87..052c20f 100644
+index 1e82f87..02ca34a 100644
 --- a/src/video_core/renderer_software/sw_rasterizer.cpp
 +++ b/src/video_core/renderer_software/sw_rasterizer.cpp
 @@ -2,6 +2,7 @@
@@ -672,7 +708,7 @@ index 1e82f87..052c20f 100644
  #include <boost/container/static_vector.hpp>
  #include "common/logging/log.h"
  #include "common/microprofile.h"
-@@ -105,8 +106,19 @@ RasterizerSoftware::RasterizerSoftware(Memory::MemorySystem& memory_, Pica::Pica
+@@ -105,8 +106,23 @@ RasterizerSoftware::RasterizerSoftware(Memory::MemorySystem& memory_, Pica::Pica
        num_sw_threads{std::max(std::thread::hardware_concurrency(), 2U)},
        sw_workers{num_sw_threads, "SwRenderer workers"}, fb{memory, regs.framebuffer} {}
  
@@ -684,6 +720,10 @@ index 1e82f87..052c20f 100644
 +    drawing_enabled.store(enabled, std::memory_order_relaxed);
 +}
 +
++bool IsDrawingEnabled() {
++    return drawing_enabled.load(std::memory_order_relaxed);
++}
++
  void RasterizerSoftware::AddTriangle(const Pica::OutputVertex& v0, const Pica::OutputVertex& v1,
                                       const Pica::OutputVertex& v2) {
 +    if (!drawing_enabled.load(std::memory_order_relaxed)) [[unlikely]] {
@@ -692,7 +732,7 @@ index 1e82f87..052c20f 100644
      /**
       * Clipping a planar n-gon against a plane will remove at least 1 vertex and introduces 2 at
       * the new edge (or less in degenerate cases). As such, we can say that each clipping plane
-@@ -562,7 +574,12 @@ std::array<Common::Vec4<u8>, 4> RasterizerSoftware::TextureColor(
+@@ -562,7 +578,12 @@ std::array<Common::Vec4<u8>, 4> RasterizerSoftware::TextureColor(
              const auto info = TextureInfo::FromPicaRegister(texture.config, texture.format);
  
              // TODO: Apply the min and mag filters to the texture
@@ -707,16 +747,19 @@ index 1e82f87..052c20f 100644
  
          if (i == 0 && (texture.config.type == TexturingRegs::TextureConfig::Shadow2D ||
 diff --git a/src/video_core/renderer_software/sw_rasterizer.h b/src/video_core/renderer_software/sw_rasterizer.h
-index 318a62e..ebc44aa 100644
+index 318a62e..cd75b88 100644
 --- a/src/video_core/renderer_software/sw_rasterizer.h
 +++ b/src/video_core/renderer_software/sw_rasterizer.h
-@@ -20,6 +20,10 @@ namespace SwRenderer {
+@@ -20,6 +20,13 @@ namespace SwRenderer {
  
  struct Vertex;
  
 +/// Whether triangles are drawn at all. A headless runner can skip drawing the frames nobody
-+/// looks at: emulation is unaffected, only the screens' contents are.
++/// looks at: emulation is unaffected, only the screens' contents are. While drawing is off,
++/// the PICA also skips the vertex shaders of draw calls, which the GPU runs on the CPU's
++/// time without advancing the emulated clock.
 +void SetDrawingEnabled(bool enabled);
++bool IsDrawingEnabled();
 +
  class RasterizerSoftware : public VideoCore::RasterizerInterface {
  public:

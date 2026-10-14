@@ -58,9 +58,9 @@ A hybrid is common: recompile everything first (B) to get a running port, then r
 - [x] 60 fps: frame-rate cap hook, verified on the real game (frame delta 1/60 s, game speed unchanged); find what holds it at 30 on hardware
 - [ ] Above 60: 120 fps works in the opening scenes (delta 1/120 s, movies stay at their own 30) and the quest-start loading race it exposes is worked around; try a hunt
 - [ ] Widescreen: anamorphic (projection hook + Azahar single-screen aspect) and true wide rendering (render targets, transfer, tunable 400s; up to 512x240) work in gameplay with the HUD centred; next, anchor HUD edge elements
-- [ ] Second screen: Azahar layouts (available), the custom layout as a touch-screen overlay in a corner of a full-window game (`touch_overlay`), kick on a button (done); next the target camera on a button, then a single-screen HUD
+- [ ] Second screen: Azahar layouts (available), the custom layout as a touch-screen overlay in a corner of a full-window game (`touch_overlay`), kick and target camera on buttons (done); next a single-screen HUD
 - [x] Resolution scaling, texture packs, rebindable controls and controllers: Azahar's
-- [ ] Multiplayer: Azahar's network rooms carry MH4U's local play; the runner can host and join rooms (`--room-host`, `--room-join`) for two-instance tests; test 4 players on the port
+- [ ] Multiplayer: Azahar's network rooms carry MH4U's local play; two runners (`--room-host`, `--room-join`, `--lockstep`) meet in a Gathering Hall and stay there; next a hunt together, then 4 players
 
 ## Prior art to study
 - N64Recomp + Zelda64Recomp, XenonRecomp + UnleashedRecomp — static recompilation to PC

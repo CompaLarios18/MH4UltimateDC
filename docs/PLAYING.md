@@ -83,7 +83,9 @@ To continue your 3DS progress: back the save up on the console with [Checkpoint]
 
 ## 4. Multiplayer
 
-MH4U's local multiplayer (Gathering Hall) works over the internet through Azahar's network rooms: *Multiplayer → Browse Public Rooms / Create Room / Direct Connect to Room*. Everyone needs the **same build** of the port. Nintendo Network online play is gone; DLC quests can come from your own console's extra data.
+MH4U's local multiplayer (Gathering Hall) works over the internet through Azahar's network rooms: *Multiplayer → Browse Public Rooms / Create Room / Direct Connect to Room*, then *Local Play* at the Gathering Hall. Everyone needs the **same build** of the port. Nintendo Network online play is gone; DLC quests can come from your own console's extra data.
+
+The game drops a player whose game stops for about a second, so avoid stutters: keep *Use disk shader cache* on, and with Vulkan turn on *Enable async shader compilation* (*Emulation → Configure → Graphics*). A player whose PC can't hold full speed falls behind the others in the same way.
 
 ## 5. Graphics
 

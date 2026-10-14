@@ -10,6 +10,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <memory>
 #include <sstream>
 #include <string>
@@ -58,8 +59,9 @@ const char* const USAGE = R"(usage: mh4u_runner <file> [options]
   --shot-every MS   how often, in emulated time (default 1000)
   --shots-from MS   first screenshot at this emulated time (default: one interval in)
   --draw-window MS  draw only during the MS of emulated time before each screenshot (and
-                    nothing without --shots): much faster with the software renderer, but
-                    a screen built up over several frames can come out incomplete
+                    nothing without --shots; the GPU's vertex shaders are skipped too): much
+                    faster with the software renderer, but a screen built up over several
+                    frames can come out incomplete
   --speed PERCENT   emulation speed limit (default 0 = as fast as possible; 100 = real time)
   --cpu-clock PERCENT  emulated CPU clock (default 100; Azahar's CPU Clock Speed setting)
   --async-io        let file reads finish on host threads and start the clock at the
@@ -71,6 +73,10 @@ const char* const USAGE = R"(usage: mh4u_runner <file> [options]
   --dump MS:ADDR:SIZE  at emulated time MS, write SIZE bytes of guest memory from ADDR to
                     mem_<ms>_<addr>.bin in the --shots directory (or the current one);
                     repeatable, e.g. to diff the game's state with and without an input
+  --replace MS:FROM:TO  at emulated time MS, replace every FROM in the game's writable
+                    memory with TO (hex bytes, same length) and print how many it found;
+                    repeatable, e.g. to give the second of two runners from copies of one
+                    user folder another hunter
   --call-counts MS  at emulated time MS (or at the end, if the run ends first), write how
                     often each recompiled function has run so far to calls_<ms>.txt in the
                     --shots directory (repeatable; needs a code library built with
@@ -89,6 +95,12 @@ const char* const USAGE = R"(usage: mh4u_runner <file> [options]
                     (default "runner")
   --new-console-id  give the console a new random ID before the game starts (a room turns
                     away a second member with the same ID, e.g. two copies of a user folder)
+  --lockstep FILE:COUNT:INDEX  keep the emulated clocks of COUNT runners on this machine
+                    together (this one is INDEX, 0..COUNT-1; they share FILE): a runner waits
+                    while it is more than a few ms ahead of the slowest. Without it, a runner
+                    that stops to draw a screenshot (the clock stands still while the GPU
+                    works) falls silent for the others, and the game's local play drops it
+  --stalls MS       print each step of the emulation that took longer than MS of host time
 or:    mh4u_runner --overlay-layout SPEC WIDTHxHEIGHT[:TOP_WIDTH]
                     print the custom screen layout the port's touch_overlay option SPEC
                     gives a window that size (top screen TOP_WIDTH x 240, default 400)
@@ -128,6 +140,186 @@ struct Dump {
     bool done = false;
 };
 std::vector<Dump> g_dumps;
+
+struct Replace {
+    double ms;
+    std::vector<u8> from, to;
+    bool done = false;
+};
+std::vector<Replace> g_replaces;
+
+bool ParseHexBytes(const std::string& hex, std::vector<u8>& out) {
+    if (hex.empty() || hex.size() % 2) {
+        return false;
+    }
+    out.clear();
+    for (std::size_t i = 0; i < hex.size(); i += 2) {
+        if (!std::isxdigit(static_cast<unsigned char>(hex[i])) ||
+            !std::isxdigit(static_cast<unsigned char>(hex[i + 1]))) {
+            return false;
+        }
+        out.push_back(static_cast<u8>(std::stoul(hex.substr(i, 2), nullptr, 16)));
+    }
+    return true;
+}
+
+bool ParseReplace(const std::string& arg) {
+    const auto first = arg.find(':');
+    const auto second = first == std::string::npos ? first : arg.find(':', first + 1);
+    if (second == std::string::npos) {
+        return false;
+    }
+    Replace r{};
+    char* end = nullptr;
+    r.ms = std::strtod(arg.c_str(), &end);
+    if (end != arg.c_str() + first || !ParseHexBytes(arg.substr(first + 1, second - first - 1), r.from) ||
+        !ParseHexBytes(arg.substr(second + 1), r.to) || r.from.size() != r.to.size()) {
+        return false;
+    }
+    g_replaces.push_back(std::move(r));
+    return true;
+}
+
+/// Replaces byte strings in every writable region of the game's address space whose time has come.
+void DoReplaces(Core::System& system) {
+    const double now = EmulatedMs();
+    for (Replace& r : g_replaces) {
+        if (r.done || now < r.ms) {
+            continue;
+        }
+        r.done = true;
+        const auto process = system.Kernel().GetCurrentProcess();
+        if (!process) {
+            continue;
+        }
+        auto& memory = system.Memory();
+        unsigned found = 0;
+        std::vector<u8> bytes;
+        for (const auto& [base, vma] : process->vm_manager.vma_map) {
+            if (vma.type != Kernel::VMAType::BackingMemory ||
+                (static_cast<u32>(vma.permissions) & static_cast<u32>(Kernel::VMAPermission::Write)) == 0) {
+                continue;
+            }
+            bytes.resize(vma.size);
+            memory.ReadBlock(*process, vma.base, bytes.data(), vma.size);
+            auto at = bytes.begin();
+            while ((at = std::search(at, bytes.end(), r.from.begin(), r.from.end())) != bytes.end()) {
+                memory.WriteBlock(*process, vma.base + static_cast<u32>(at - bytes.begin()), r.to.data(),
+                                  r.to.size());
+                ++found;
+                at += static_cast<std::ptrdiff_t>(r.from.size());
+            }
+        }
+        std::printf("replace at %.0f ms: %u found\n", now, found);
+        std::fflush(stdout);
+    }
+}
+
+// ── lockstep ────────────────────────────────────────────────────────────────────────
+
+/// Runners in lockstep share a file with one slot per runner: its emulated time in ms (a
+/// double; +infinity once it has finished). Each runner writes its own slot and waits while
+/// it is ahead of the slowest of the others by more than kLockstepSlackMs.
+struct Lockstep {
+    std::FILE* file = nullptr;
+    int count = 0, index = 0;
+    double written = -1.0;  // last time written to our slot
+    double others = 0.0;    // the slowest other runner, as last read
+};
+Lockstep g_lockstep;
+constexpr double kLockstepSlackMs = 4.0;
+constexpr double kLockstepGiveUpS = 120.0; // a runner that hasn't moved for this long has died
+
+bool ParseLockstep(const std::string& arg) {
+    const auto second = arg.rfind(':');
+    const auto first = second == std::string::npos || second == 0 ? std::string::npos : arg.rfind(':', second - 1);
+    if (first == std::string::npos || first == 0) {
+        return false;
+    }
+    const int count = std::atoi(arg.c_str() + first + 1);
+    const int index = std::atoi(arg.c_str() + second + 1);
+    if (count < 2 || count > 16 || index < 0 || index >= count) {
+        return false;
+    }
+    const std::string path = arg.substr(0, first);
+    std::FILE* f = std::fopen(path.c_str(), "r+b");
+    if (!f) {
+        f = std::fopen(path.c_str(), "w+b");
+    }
+    if (!f) {
+        return false;
+    }
+    std::setvbuf(f, nullptr, _IONBF, 0); // every read and write goes to the shared file
+    std::fseek(f, 0, SEEK_END);
+    for (long size = std::ftell(f); size < count * static_cast<long>(sizeof(double)); size += sizeof(double)) {
+        const double zero = 0.0;
+        std::fwrite(&zero, sizeof zero, 1, f);
+    }
+    g_lockstep = {f, count, index};
+    return true;
+}
+
+void LockstepWrite(double ms) {
+    std::fseek(g_lockstep.file, g_lockstep.index * static_cast<long>(sizeof(double)), SEEK_SET);
+    std::fwrite(&ms, sizeof ms, 1, g_lockstep.file);
+    g_lockstep.written = ms;
+}
+
+double LockstepReadOthers() {
+    std::vector<double> slots(g_lockstep.count, 0.0);
+    std::fseek(g_lockstep.file, 0, SEEK_SET);
+    if (std::fread(slots.data(), sizeof(double), slots.size(), g_lockstep.file) != slots.size()) {
+        return g_lockstep.others;
+    }
+    double slowest = std::numeric_limits<double>::infinity();
+    for (int i = 0; i < g_lockstep.count; i++) {
+        if (i != g_lockstep.index) {
+            slowest = std::min(slowest, slots[i]);
+        }
+    }
+    return slowest;
+}
+
+/// Publishes this runner's emulated time and waits until it is no more than a few ms ahead of
+/// every other runner (or one of them has stopped moving for a long time).
+void LockstepWait(double now) {
+    if (!g_lockstep.file) {
+        return;
+    }
+    if (now - g_lockstep.written >= 1.0) {
+        LockstepWrite(now);
+    }
+    if (now <= g_lockstep.others + kLockstepSlackMs) {
+        return;
+    }
+    auto moved = std::chrono::steady_clock::now();
+    double last = g_lockstep.others;
+    while ((g_lockstep.others = LockstepReadOthers()) + kLockstepSlackMs < now) {
+        const auto host = std::chrono::steady_clock::now();
+        if (g_lockstep.others != last) {
+            last = g_lockstep.others;
+            moved = host;
+        } else if (std::chrono::duration<double>(host - moved).count() > kLockstepGiveUpS) {
+            std::printf("lockstep: the other runners stopped at %.0f ms; going on alone\n", last);
+            std::fflush(stdout);
+            std::fclose(g_lockstep.file);
+            g_lockstep.file = nullptr;
+            return;
+        }
+        if (now - g_lockstep.written > 0.0) {
+            LockstepWrite(now);
+        }
+        std::this_thread::sleep_for(std::chrono::microseconds(200));
+    }
+}
+
+void LockstepFinish() {
+    if (g_lockstep.file) {
+        LockstepWrite(std::numeric_limits<double>::infinity());
+        std::fclose(g_lockstep.file);
+        g_lockstep.file = nullptr;
+    }
+}
 
 bool ParseDump(const std::string& arg) {
     Dump d{};
@@ -461,6 +653,7 @@ int main(int argc, char** argv) {
     double shots_from = -1.0;
     double speed = 0.0;
     double draw_window = -1.0; // < 0: draw every frame
+    double stall_ms = 0.0;     // > 0: report emulation steps that take longer
     int cpu_clock = 100;
     bool async_io = false;
     int room_host = 0;
@@ -483,6 +676,18 @@ int main(int argc, char** argv) {
             install.push_back(argv[++i]);
         } else if (arg == "--shots" && i + 1 < argc) {
             shots_dir = argv[++i];
+        } else if (arg == "--lockstep" && i + 1 < argc) {
+            if (!ParseLockstep(argv[++i])) {
+                std::fprintf(stderr, "bad --lockstep: %s (want FILE:COUNT:INDEX, 2 <= COUNT <= 16)\n", argv[i]);
+                return 1;
+            }
+        } else if (arg == "--stalls" && i + 1 < argc) {
+            stall_ms = std::max(0.0, std::atof(argv[++i]));
+        } else if (arg == "--replace" && i + 1 < argc) {
+            if (!ParseReplace(argv[++i])) {
+                std::fprintf(stderr, "bad --replace: %s (want MS:FROM:TO, hex bytes of equal length)\n", argv[i]);
+                return 1;
+            }
         } else if (arg == "--dump" && i + 1 < argc) {
             if (!ParseDump(argv[++i])) {
                 std::fprintf(stderr, "bad --dump: %s (want MS:ADDR:SIZE, hex address and size)\n", argv[i]);
@@ -650,8 +855,21 @@ int main(int argc, char** argv) {
             SwRenderer::SetDrawingEnabled(!shots_dir.empty() &&
                                           EmulatedMs() >= next_shot - draw_window);
         }
+        LockstepWait(EmulatedMs());
+        const auto step_start = std::chrono::steady_clock::now();
+        const double step_emulated = EmulatedMs();
         const auto result = system.RunLoop();
+        if (stall_ms > 0.0) {
+            const double host =
+                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - step_start).count();
+            if (host > stall_ms) {
+                std::printf("stall: %.0f ms of host time at %.1f ms, the emulated clock moved %.1f ms\n", host,
+                            step_emulated, EmulatedMs() - step_emulated);
+                std::fflush(stdout);
+            }
+        }
         WriteDumps(system, shots_dir);
+        DoReplaces(system);
         WriteCallCounts(shots_dir);
         if (!shots_dir.empty() && EmulatedMs() >= next_shot) {
             const auto stem = fmt::format("{}/{:07.0f}", shots_dir, next_shot);
@@ -688,6 +906,7 @@ int main(int argc, char** argv) {
             break;
         }
     }
+    LockstepFinish();
     WriteCallCounts(shots_dir, true);
     std::printf("emulated time: %.1f ms\n",
                 (system.CoreTiming().GetGlobalTicks() - start_ticks) / 268111.856);

@@ -10,7 +10,7 @@ The PC port: [Azahar](https://github.com/azahar-emu/azahar)'s 3DS core (kernel, 
 | `src/runner.cpp` | `mh4u_runner`: boots a 3DS executable with no window, with the recompiled code (`--cpu recomp --code LIB`) or Azahar's own JIT/interpreter; can install a CIA first, play an input script and save screenshots; for tests and for comparing backends |
 | `src/hooks.cpp` | The port's hooks on game functions (hook points from `config/hooks.txt`): frame-rate cap, frame timing trace |
 | `tests/svc_test.c` | Freestanding 3DS test program (threads, events, mutexes, atomics, VFP short vectors, Thumb) |
-| `azahar/` | The Azahar commit this builds against, and a small patch: a hook to replace the CPU backend, a hook to build this directory inside Azahar's tree, hooks for the port's options (refresh rate, system-call observer, the top screen's width in every screen layout, the custom layout as a touch-screen overlay that follows the window's size), and two fixes to Azahar's software renderer that the game needs: a data race on physical-memory lookups between the renderer's worker threads and the emulation thread (it sent texture reads gigabytes off and crashed both CPU backends on the game's first textured frame), and textures outside of memory read as black instead of crashing |
+| `azahar/` | The Azahar commit this builds against, and a small patch: a hook to replace the CPU backend, a hook to build this directory inside Azahar's tree, hooks for the port's options (refresh rate, system-call observer, the top screen's width in every screen layout, the custom layout as a touch-screen overlay that follows the window's size), a switch for the headless runner to skip drawing (vertex shaders included), and two fixes to Azahar's software renderer that the game needs: a data race on physical-memory lookups between the renderer's worker threads and the emulation thread (it sent texture reads gigabytes off and crashed both CPU backends on the game's first textured frame), and textures outside of memory read as black instead of crashing |
 
 The runner contains no game code. The game's recompiled code is a separate shared library, generated and compiled on the user's machine from their own dump and loaded at run time.
 
@@ -67,10 +67,12 @@ same run on `--cpu jit` gives the reference, and the first difference per thread
 the recompiled function that went wrong (`tools/compare_svc_traces.py jit.txt recomp.txt`). `--input` presses buttons, touches the bottom screen (pixels) or moves the circle pad
 (-1..1) at emulated times; `--shots` saves both screens as PPM images, and
 `--draw-window 100` draws only the 100 ms before each screenshot, which makes long runs
-many times faster (the software renderer takes nearly all the time), and `--shots-from MS`
+many times faster (the software renderer, and the vertex shaders the GPU runs on the CPU, take
+nearly all the time), and `--shots-from MS`
 starts the screenshots late, so a close look at one moment doesn't image the whole run;
 `--dump MS:ADDR:SIZE` writes guest memory at an emulated time, to diff the game's state
-between two runs that differ in one input; with a code library built with
+between two runs that differ in one input, and `--replace MS:FROM:TO` changes every copy of a
+byte string in the game's writable memory at an emulated time; with a code library built with
 `-D RC_CALL_COUNTS` (`python3 -m recomp.build build/recomp --code-library -D RC_CALL_COUNTS
 -o mh4u_code_counts.so`), `--call-counts MS` writes how often each function has run, so
 the difference between two snapshots, or two runs, shows the code an input ran; `--cpu-clock 200` is
@@ -80,9 +82,14 @@ the game at an emulated time that depends on how fast the host was, which moved 
 screens by seconds between identical runs and let time-based input scripts land on other
 screens. It also sends sound nowhere, so it needs no sound card. `--room-host PORT` makes
 a network room inside the runner (Azahar's multiplayer) and joins it, `--room-join HOST:PORT`
-joins one, so two runners play the game's local wireless modes together (give both
-`--speed 100` so that they keep time with each other, and a copy of a user folder
-`--new-console-id`: a room turns away a console it already has). `--overlay-layout SPEC
+joins one, so two runners play the game's local wireless modes together (a copy of a user
+folder needs `--new-console-id`: a room turns away a console it already has). Give runners on
+one machine `--lockstep FILE:COUNT:INDEX` as well: it holds each runner's emulated clock within
+a few milliseconds of the others'. The emulated clock stands still while the GPU works, so a
+runner drawing a screenshot falls silent for the others for the second or so that takes, and
+MH4U's local play gives up on a silent player within about a second (`--stalls MS` prints the
+steps that took longer than MS of host time). In lockstep the other runners wait for it, and
+two runners stay together in a Gathering Hall. `--overlay-layout SPEC
 WxH[:TOP]` prints the screens' rectangles the `touch_overlay` option gives a window. The port's hooks
 take options from the environment: `MH4U_FPS=60` raises the engine's frame-rate cap,
 `MH4U_TRACE_FRAMES=60` logs the engine's frame timing every 60 frames.

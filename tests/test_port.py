@@ -187,6 +187,63 @@ def test_runner_scripted_input_and_screenshots(tmp_path, extra):
 
 
 @pytest.mark.skipif(not os.environ.get("MH4U_RUNNER"), reason="port not built (set MH4U_RUNNER)")
+def test_runner_replaces_memory(tmp_path):
+    """--replace MS:FROM:TO changes every FROM in the program's writable memory at an emulated
+    time: io_test prints its marker variable once it changes. Read-only memory (the code and its
+    constants) is left alone, so the program still runs."""
+    import build_svc_test
+    from recomp import build as rbuild
+    binary = os.environ["MH4U_RUNNER"]
+    elf = build_svc_test.build(str(tmp_path), "io_test")
+    code = rbuild.build(str(tmp_path), 2, "O1", ["RC_PAGED"], "code.so", [rbuild.DLL_GLUE],
+                        extra_flags=["-fvisibility=hidden"])
+    run = [binary, elf, "--code", code, "--ms", "1500", "--user", str(tmp_path / "user")]
+    r = subprocess.run(run + ["--replace", "500:5534484d:04030201"], capture_output=True, text=True, timeout=600)
+    assert r.returncode == 0, (r.stdout[-2000:], r.stderr[-2000:])
+    assert re.search(r"replace at 5\d\d ms: 1 found", r.stdout)
+    assert "marker 01020304" in r.stdout + r.stderr
+    r = subprocess.run(run + ["--replace", "500:55:0102"], capture_output=True, text=True, timeout=600)
+    assert r.returncode == 1 and "bad --replace" in r.stderr
+
+
+@pytest.mark.skipif(not os.environ.get("MH4U_RUNNER"), reason="port not built (set MH4U_RUNNER)")
+def test_runners_in_lockstep(tmp_path):
+    """--lockstep keeps the emulated clocks of runners on one machine together: a runner that
+    could go as fast as it likes waits for one that keeps real time, and both finish. --stalls
+    reports the steps of emulation that took longer than a given host time."""
+    import time
+    import build_svc_test
+    from recomp import build as rbuild
+    binary = os.environ["MH4U_RUNNER"]
+    elf = build_svc_test.build(str(tmp_path), "io_test")
+    code = rbuild.build(str(tmp_path), 2, "O1", ["RC_PAGED"], "code.so", [rbuild.DLL_GLUE],
+                        extra_flags=["-fvisibility=hidden"])
+    shared = tmp_path / "clocks"
+
+    def run(speed, index, *extra):
+        return subprocess.Popen([binary, elf, "--code", code, "--ms", "1500", "--speed", speed,
+                                 "--user", str(tmp_path / f"user{index}"),
+                                 "--lockstep", f"{shared}:2:{index}", *extra],
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    start = time.monotonic()
+    slow = run("100", 0)
+    fast = run("0", 1, "--stalls", "0.001")
+    out, err = fast.communicate(timeout=600)
+    fast_s = time.monotonic() - start
+    slow.communicate(timeout=600)
+    assert slow.returncode == 0 and fast.returncode == 0, err[-2000:]
+    assert fast_s > 1.2                     # held back to the real-time runner's pace
+    assert "stall: " in out and "lockstep" not in out
+    # alone, the same runner is done long before that
+    start = time.monotonic()
+    r = subprocess.run([binary, elf, "--code", code, "--ms", "1500", "--user", str(tmp_path / "user9")],
+                       capture_output=True, text=True, timeout=600)
+    assert r.returncode == 0 and time.monotonic() - start < fast_s
+    r = subprocess.run([binary, elf, "--lockstep", f"{shared}:1:0"], capture_output=True, text=True, timeout=600)
+    assert r.returncode == 1 and "bad --lockstep" in r.stderr
+
+
+@pytest.mark.skipif(not os.environ.get("MH4U_RUNNER"), reason="port not built (set MH4U_RUNNER)")
 def test_runners_meet_in_a_room(tmp_path):
     """--room-host makes a network room (Azahar's multiplayer) inside the runner and joins
     it; other runners join with --room-join, which is how two runners play the game's local
