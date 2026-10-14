@@ -5,7 +5,8 @@ name: Linux build
 # contains no game code: the game's code library is made on the player's machine from their
 # own dump (tools/build_game.py) and loaded at run time. Published under the repository's
 # licence (GPL-3.0-or-later, like Azahar) with the matching source (this repository at the
-# built commit, Azahar at port/azahar/COMMIT plus port/azahar/azahar.patch).
+# built commit, Azahar at port/azahar/COMMIT plus port/azahar/azahar.patch). The headless
+# mh4u_runner isn't included: outside the AppImage it needs the libraries the AppImage bundles.
 
 on:
   workflow_dispatch:
@@ -69,7 +70,6 @@ jobs:
         run: |
           mkdir -p artifacts/mh4u-port-linux
           cp azahar/build/bundle/*.AppImage artifacts/mh4u-port-linux/azahar-mh4u.AppImage
-          cp azahar/build/bin/Release/mh4u_runner artifacts/mh4u-port-linux/
           cp mh4u/LICENSE artifacts/mh4u-port-linux/LICENSE-mh4u-port.txt
           cat > artifacts/mh4u-port-linux/README-mh4u.txt <<EOF
           Azahar ($(cat mh4u/port/azahar/COMMIT)) with the MH4U port's recompiled-code CPU backend,
