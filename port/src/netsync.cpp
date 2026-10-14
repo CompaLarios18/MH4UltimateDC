@@ -45,7 +45,8 @@ constexpr double kSendEveryS = 0.05;   // how often a console tells its clock
 constexpr double kSessionMs = 3000.0;  // game data from a peer within this much of our emulated
                                        // time: we play together (emulated, not host time, so
                                        // that it doesn't run out while everyone waits)
-constexpr double kPeerTimeoutS = 10.0; // a peer silent this long is left to the game
+constexpr double kPeerTimeoutS = 6.0;  // a peer silent this long is left to the game (one
+                                       // paused in Azahar, say, or gone)
 constexpr double kMaxWaitS = 8.0;      // then the leads are counted again from zero
 constexpr double kTicksPerMs = 268111.856;
 
@@ -68,6 +69,7 @@ struct State {
     std::map<MacAddress, Peer> peers;
     Network::RoomMember::CallbackHandle<WifiPacket> callback;
     std::weak_ptr<Network::RoomMember> bound;
+    MacAddress self{};  // this console's address in the room
     Clock::time_point last_send{};
 };
 
@@ -82,7 +84,8 @@ std::string MacText(const MacAddress& mac) {
 }
 
 /// On the room's network thread: clocks from other port consoles, and which consoles send
-/// us game data.
+/// game data to this one (to it alone: broadcasts reach every console in the room, also
+/// those of other groups playing in it).
 void OnWifiPacket(const WifiPacket& packet) {
     auto& state = GetState();
     const auto now = Clock::now();
@@ -108,7 +111,9 @@ void OnWifiPacket(const WifiPacket& packet) {
         peer.reported = true;
     } else if (packet.type == WifiPacket::PacketType::Data) {
         std::scoped_lock lock{state.mutex};
-        ++state.peers[packet.transmitter_address].data_packets;
+        if (packet.destination_address == state.self) {
+            ++state.peers[packet.transmitter_address].data_packets;
+        }
     }
 }
 
@@ -186,7 +191,11 @@ void BeforeRunLoop(Core::System& system) {
     const auto own_ms = [&system] {
         return static_cast<double>(system.CoreTiming().GetGlobalTicks()) / kTicksPerMs;
     };
-    const MacAddress self = member->GetMacAddress();
+    const MacAddress self = member->GetMacAddress();  // (a console that joins again may get another)
+    {
+        std::scoped_lock lock{state.mutex};
+        state.self = self;
+    }
     const auto send = [&](Clock::time_point now, const MacAddress& waiting_for) {
         if (now - state.last_send >= std::chrono::duration<double>(kSendEveryS)) {
             SendClock(*member, own_ms(), waiting_for);
