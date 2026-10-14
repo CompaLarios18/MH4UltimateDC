@@ -37,7 +37,7 @@ A hybrid is common: recompile everything first (B) to get a running port, then r
 - [x] **Decision point:** hybrid. Static recompilation first (route B) to get a running port, hand-decompiled functions (route A) where we need to change behaviour (widescreen, 60 fps, HUD). See [PORT_ARCHITECTURE.md](PORT_ARCHITECTURE.md).
 - [x] Static recompiler for the whole game (`tools/recompile.py`, [RECOMPILER.md](RECOMPILER.md)): 39,697 functions, 3.2 M instructions, every jump table resolved; verified per instruction (fuzzing) and per function (random-state differential tests) against an ARM11 model
 
-## Phase 2 — Running *something* on PC *(current)*
+## Phase 2 — Running *something* on PC
 - [x] Licence: GPL-3.0-or-later for the whole repository (the port reuses Azahar's GPL-3.0 core)
 - [x] Recompiled-code CPU backend for Azahar's core (`port/`, `Core::ARM_Interface`): paged memory, SVCs into Azahar's kernel, cycle accounting, one host fiber per guest thread. A multi-threaded test program prints the same results as with Azahar's JIT
 - [x] The game's own code boots like it does on Azahar's JIT (SDK start-up, services, static constructors) until it opens its RomFS
@@ -48,15 +48,15 @@ A hybrid is common: recompile everything first (B) to get a running port, then r
 - [x] Boot to title screen, and into gameplay, at 60 fps; in-game save and load work
 
 ## Phase 3 — Playable
-- [ ] Two-screen layout handling (side by side, swappable, touch screen via mouse)
-- [ ] Audio (DSP)
+- [x] Two-screen layout handling (side by side, swappable, touch screen via mouse): Azahar's layouts, plus the port's touch-screen overlay
+- [x] Audio (DSP): Azahar's HLE DSP; sounds right in play on Windows
 - [ ] Save data compatibility with real 3DS saves
-- [ ] Gameplay loop: village → quest → hunt
+- [x] Gameplay loop: village → quest → hunt (played on Windows)
 
-## Phase 4 — PC niceties
+## Phase 4 — PC niceties *(current)*
 - [x] Research: frame pacing (the engine is delta-time based; frame limiter in `sMain`), widescreen (projection, render targets, culling, HUD anchoring), second screen (viewport 7, layout views, touch panels) — [`research/`](research/README.md)
 - [x] 60 fps: frame-rate cap hook, verified on the real game (frame delta 1/60 s, game speed unchanged); find what holds it at 30 on hardware
-- [ ] Above 60: 120 fps works in the opening scenes (delta 1/120 s, movies stay at their own 30) and the quest-start loading race it exposes is worked around; try a hunt
+- [x] Above 60: 120 fps (delta 1/120 s, movies stay at their own 30; the quest-start loading race it exposes is worked around), played on Windows in hunts
 - [ ] Widescreen: anamorphic (projection hook + Azahar single-screen aspect) and true wide rendering (render targets, transfer, tunable 400s; up to 512x240) work in gameplay; the hunting HUD's sides go to the screen's edges (`hud_edges`, by layout object); next, the quest HUD
 - [ ] Second screen: Azahar layouts (available), the custom layout as a touch-screen overlay in a corner of a full-window game (`touch_overlay`), kick and target camera on buttons (done); next a single-screen HUD
 - [x] Resolution scaling, texture packs, rebindable controls and controllers: Azahar's
