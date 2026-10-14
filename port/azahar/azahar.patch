@@ -55,6 +55,29 @@ index 758038b..518a8ad 100644
      const Core::System::ResultStatus result{
          system.Load(*render_window, filename.toStdString(), secondary_window)};
  
+diff --git a/src/citra_qt/multiplayer/host_room.cpp b/src/citra_qt/multiplayer/host_room.cpp
+index bd98a3d..187713b 100644
+--- a/src/citra_qt/multiplayer/host_room.cpp
++++ b/src/citra_qt/multiplayer/host_room.cpp
+@@ -60,6 +60,18 @@ HostRoomWindow::HostRoomWindow(Core::System& system_, QWidget* parent, QStandard
+     if (index < ui->host_type->count()) {
+         ui->host_type->setCurrentIndex(index);
+     }
++    // MH4U port: without a lobby server (Azahar has none of its own) a public room can't be
++    // announced and Host fails, so offer the unlisted room that others reach by Direct Connect
++    if (Settings::values.web_api_url.GetValue().empty()) {
++        if (auto* types = qobject_cast<QStandardItemModel*>(ui->host_type->model())) {
++            if (auto* item = types->item(0)) {
++                item->setEnabled(false);
++                item->setToolTip(tr("Needs a lobby server (Web API URL); others join an unlisted "
++                                    "room with Direct Connect"));
++            }
++        }
++        ui->host_type->setCurrentIndex(1);
++    }
+     index = ui->game_list->findData(UISettings::values.game_id, GameListItemPath::ProgramIdRole);
+     if (index != -1) {
+         ui->game_list->setCurrentIndex(index);
 diff --git a/src/core/core.cpp b/src/core/core.cpp
 index dc1eb15..42f4890 100644
 --- a/src/core/core.cpp

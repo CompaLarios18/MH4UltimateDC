@@ -91,6 +91,13 @@ jobs:
           3. Start azahar.exe: File > Install CIA... (the update), then File > Load File... (the game).
           Options (frame rate, widescreen, the touch screen, multiplayer): docs/PLAYING.md in the
           repository; they go in %APPDATA%\Azahar\mh4u.ini.
+
+          Multiplayer (Gathering Hall > Local Play, over the internet):
+          - Everyone: a name of your own in Emulation > Configure > System > Username.
+          - One player hosts: Multiplayer > Create Room (Unlisted, port 24872). The others must
+            reach UDP port 24872 on the host's PC: forward it on the host's router, or put all
+            PCs in one virtual network (Tailscale, ZeroTier, Radmin VPN).
+          - The others: Multiplayer > Direct Connect to Room, with the host's address and port.
           EOF
       - name: Upload
         if: ${{ hashFiles('mh4u/LICENSE') != '' }}
