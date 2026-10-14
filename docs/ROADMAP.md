@@ -60,7 +60,7 @@ A hybrid is common: recompile everything first (B) to get a running port, then r
 - [ ] Widescreen: anamorphic (projection hook + Azahar single-screen aspect) and true wide rendering (render targets, transfer, tunable 400s; up to 512x240) work in gameplay; the hunting HUD's sides go to the screen's edges (`hud_edges`, by layout object); next, the quest HUD
 - [ ] Second screen: Azahar layouts (available), the custom layout as a touch-screen overlay in a corner of a full-window game (`touch_overlay`), kick and target camera on buttons (done); next a single-screen HUD
 - [x] Resolution scaling, texture packs, rebindable controls and controllers: Azahar's
-- [ ] Multiplayer: Azahar's network rooms carry MH4U's local play; two runners (`--room-host`, `--room-join`, `--lockstep`) meet in a Gathering Hall and stay there; next a hunt together, then 4 players
+- [ ] Multiplayer: Azahar's network rooms carry MH4U's local play; two runners (`--room-host`, `--room-join`, `--lockstep`) meet in a Gathering Hall, and one joins the quest the other posts and both go on it together; next a hunt with a monster, then 4 players
 
 ## Prior art to study
 - N64Recomp + Zelda64Recomp, XenonRecomp + UnleashedRecomp — static recompilation to PC
