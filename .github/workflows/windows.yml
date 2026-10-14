@@ -72,7 +72,7 @@ jobs:
           cp bin/Release/mh4u_runner.exe bin/Release/mh4u.exe bundle/
           # the bundle has the DLLs Azahar's build found for azahar.exe (with dllwalker); the
           # app's are found the same way, in case it needs one that azahar.exe doesn't
-          ../externals/dllwalker/dllwalker.rb bin/Release/mh4u.exe $MXE_DLL_DIRS > mh4u_dlls.txt
+          ../externals/dllwalker/dllwalker.rb bin/Release/mh4u.exe $MXE_DLL_DIRS bin/Release/ > mh4u_dlls.txt
           while IFS= read -r dll; do
             if [ ! -e "bundle/$(basename "$dll")" ]; then
               echo "mh4u.exe also needs $(basename "$dll")"
@@ -152,18 +152,19 @@ jobs:
           folder) on UDP port 24872; "Run lobby.bat" runs the lobby (Python 3.10 or newer).
           EOF
           fi
-          # every DLL the programs need from MXE is in the package (the others are Windows' own)
+          # every DLL the programs need from MXE or the build (OpenAL32.dll) is in the package;
+          # the others are Windows' own
           export PATH="/opt/mxe/usr/bin:${PATH}"
           for exe in azahar.exe mh4u.exe mh4u_runner.exe; do
             test -f "$pkg/$exe" || { echo "::error::$exe isn't in the package"; exit 1; }
-            dlls=$(azahar/externals/dllwalker/dllwalker.rb "$pkg/$exe" $MXE_DLL_DIRS)
+            dlls=$(azahar/externals/dllwalker/dllwalker.rb "$pkg/$exe" $MXE_DLL_DIRS azahar/build/bin/Release/)
             for dll in $dlls; do
               if [ ! -f "$pkg/$(basename "$dll")" ]; then
                 echo "::error::$exe needs $(basename "$dll"), which isn't in the package"
                 exit 1
               fi
             done
-            echo "$exe: $(echo $dlls | wc -w) DLLs from MXE, all in the package"
+            echo "$exe: $(echo $dlls | wc -w) DLLs from MXE and the build, all in the package"
           done
       - name: Upload
         if: ${{ hashFiles('mh4u/LICENSE') != '' }}
