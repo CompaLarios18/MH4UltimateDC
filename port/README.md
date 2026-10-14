@@ -8,15 +8,17 @@ The PC port: [Azahar](https://github.com/azahar-emu/azahar)'s 3DS core (kernel, 
 | `src/fiber.*` | Host fibers (ucontext on Linux/macOS, Win32 fibers on Windows) |
 | `src/frontend.*` | `Port::PrepareBackendFor()`: called by a frontend before loading a game; installs the recompiled backend when there is a code library for that game. Azahar's Qt frontend calls it when built with this directory (see `azahar/azahar.patch`) |
 | `src/runner.cpp` | `mh4u_runner`: boots a 3DS executable with no window, with the recompiled code (`--cpu recomp --code LIB`) or Azahar's own JIT/interpreter; can install a CIA first, play an input script and save screenshots; for tests and for comparing backends |
-| `src/hooks.cpp` | The port's hooks on game functions (hook points from `config/hooks.txt`): frame-rate cap, frame timing trace |
+| `src/hooks.cpp` | The port's hooks on game functions (hook points from `config/hooks.txt`) and its options (`mh4u.ini`): frame rate, widescreen, HUD, touch screen, fixes, traces |
+| `src/netsync.*` | Net sync: the port's consoles in a network room keep their emulated clocks together, so that one whose PC stalls isn't dropped |
+| `windows/` | For the Windows package: `Build code library.bat` and `build-code-library.ps1`, which build the game's code library from the player's update with the tools the package carries in `mh4u-tools` |
 | `tests/svc_test.c` | Freestanding 3DS test program (threads, events, mutexes, atomics, VFP short vectors, Thumb) |
 | `azahar/` | The Azahar commit this builds against, and a small patch: a hook to replace the CPU backend, a hook to build this directory inside Azahar's tree, hooks for the port's options (refresh rate, system-call observer, the top screen's width in every screen layout, the custom layout as a touch-screen overlay that follows the window's size and can show just a part of the touch screen), a switch for the headless runner to skip drawing (vertex shaders included), a fix to Azahar's local-wireless emulation (two consoles joining a network at the same moment got the same node id, and the game dropped one), a hook at the start of each run of the emulation loop (for net sync), and two fixes to Azahar's software renderer that the game needs: a data race on physical-memory lookups between the renderer's worker threads and the emulation thread (it sent texture reads gigabytes off and crashed both CPU backends on the game's first textured frame), and textures outside of memory read as black instead of crashing |
 
 The runner contains no game code. The game's recompiled code is a separate shared library, generated and compiled on the user's machine from their own dump and loaded at run time.
 
-## Building (Linux; Windows in CI, macOS later)
+## Building (Linux; Windows, Linux and macOS in CI)
 
-The repository's workflows build the port's Azahar for Windows (MXE, `.github/workflows/windows.yml`) and Linux (an AppImage, `.github/workflows/linux.yml`) on every change to `port/`. To build it yourself on Linux:
+The repository's workflows build the port's Azahar for Windows (MXE, `.github/workflows/windows.yml`), Linux (an AppImage, `.github/workflows/linux.yml`) and macOS (an app for Apple silicon, `.github/workflows/macos.yml`) on every change to `port/`. To build it yourself on Linux:
 
 ```bash
 # Azahar at the pinned commit, with the patch

@@ -16,7 +16,9 @@ How to run Monster Hunter 4 Ultimate on a PC with this project: the game's own c
 
 ## 1. Make the game's code library
 
-From the repository folder:
+On Windows the port's package has it ready: install [Python](https://www.python.org/downloads/) 3.10 or newer (tick *Add python.exe to PATH*), double-click `Build code library.bat` in the package and choose your v1.3.0 update `.cia`. It runs the same command as below with the tools in the package's `mh4u-tools` folder, and the first time it also writes a `mh4u.ini` with 60 fps, 16:9 and the touch screen in a corner, and picks Azahar's *Custom Layout*.
+
+Otherwise, from the repository folder:
 
 ```bash
 # Windows (PowerShell or cmd); --fetch-compiler downloads the C compiler (llvm-mingw) the first time

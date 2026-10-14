@@ -14,7 +14,8 @@ on:
     branches: [main]
     paths:
       - "port/**"
-      - "tools/recomp/runtime/**"
+      - "tools/**"
+      - "config/**"
       - ".github/workflows/windows.yml"
 
 jobs:
@@ -66,15 +67,30 @@ jobs:
       - name: Package
         if: ${{ hashFiles('mh4u/LICENSE') != '' }}
         run: |
-          mkdir -p artifacts/mh4u-port-windows
+          mkdir -p artifacts/mh4u-port-windows/mh4u-tools
           cp -r azahar/build/bundle/* artifacts/mh4u-port-windows/
           cp mh4u/LICENSE artifacts/mh4u-port-windows/LICENSE-mh4u-port.txt
+          # the tools that make the game's code library on the player's PC, and a script for them
+          cp -r mh4u/tools mh4u/config artifacts/mh4u-port-windows/mh4u-tools/
+          find artifacts/mh4u-port-windows/mh4u-tools -name __pycache__ -prune -exec rm -rf {} +
+          cp mh4u/LICENSE artifacts/mh4u-port-windows/mh4u-tools/
+          cp mh4u/port/windows/build-code-library.ps1 "mh4u/port/windows/Build code library.bat" \
+            artifacts/mh4u-port-windows/
           cat > artifacts/mh4u-port-windows/README-mh4u.txt <<EOF
           Azahar ($(cat mh4u/port/azahar/COMMIT)) with the MH4U port's recompiled-code CPU backend.
           Source: https://github.com/${GITHUB_REPOSITORY} (commit ${GITHUB_SHA}),
           https://github.com/azahar-emu/azahar plus mh4u/port/azahar/azahar.patch.
-          No game code is included: build the game's code library from your own dump with
-          tools/build_game.py --dump <your dump> --install "%APPDATA%/Azahar".
+
+          No game code is included. To play, with your own decrypted Monster Hunter 4 Ultimate
+          (USA) and its v1.3.0 update (.cia):
+          1. Install Python 3.10 or newer (https://www.python.org/downloads/, tick "Add python.exe
+             to PATH").
+          2. Double-click "Build code library.bat" and choose your v1.3.0 update .cia: it builds
+             the game's code library on this PC (the first time it downloads the C compiler,
+             about 180 MB) and installs it in %APPDATA%\Azahar\recomp.
+          3. Start azahar.exe: File > Install CIA... (the update), then File > Load File... (the game).
+          Options (frame rate, widescreen, the touch screen, multiplayer): docs/PLAYING.md in the
+          repository; they go in %APPDATA%\Azahar\mh4u.ini.
           EOF
       - name: Upload
         if: ${{ hashFiles('mh4u/LICENSE') != '' }}
