@@ -137,9 +137,10 @@ Mods go where Azahar looks for them (right-click the game → *Open Mods Locatio
 
 | Symptom | Cause |
 |---|---|
-| `no recompiled code for 0004000000126300` in the log | the library isn't in `<Azahar user folder>/recomp/`, or has another name |
-| `... was built against a different runtime` | the library was made with an older version of this repository: run `build_game.py` again |
-| `no hook point for ...` in the log | same: rebuild the library so the port's options work |
+| At start: *The MH4U PC port's code library isn't installed* (in the log: `no recompiled code for 0004000000126300`) | the library isn't in `<Azahar user folder>/recomp/`, or has another name: step 1. Until then the game runs on Azahar's own CPU emulation, without the port's options |
+| At start: *... couldn't be used* (in the log: `... was built against a different runtime`) | the library was made with an older version of this repository: build it again |
+| At start: *The game's code isn't the code the MH4U PC port's library was built from* | the v1.3.0 update isn't installed in Azahar (*File → Install CIA...*), or a code mod was added, changed or removed since the library was built (build it again). The game runs on Azahar's own CPU emulation meanwhile |
+| At start: *... is older than this Azahar: N of the port's hook points are missing* (in the log: `no hook point for ...`) | the library was built before this Azahar's version: build it again so all of the port's options work |
 | `this code.bin isn't a version the project knows` | the dump isn't the USA v1.3.0 update |
 | Windows: `azahar.exe - Bad Image ... Error status 0xc0e90002` | Smart App Control blocks unsigned files: turn it off (see *What you need*) |
 | After a loading screen the hunter falls through a dark void, then *Quest Failed* | a loading race in the game, which more than 60 fps brings out: the quest's file is left out of the list it is copied from ([research](research/system-services.md#above-60-fps-what-the-game-does-at-120-hz-runtime-october-2026)). The port works around it since October 2026 (a code library and Azahar build from before that don't). If it still happens, turn on *Emulation → Configure → Debug → Force deterministic async operations* and report it |

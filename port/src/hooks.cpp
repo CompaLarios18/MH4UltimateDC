@@ -124,6 +124,7 @@ bool IsOn(const std::string& value) {
 }
 Options options;
 u64 frames = 0;
+int missing_hook_points = 0;  // in the code library Install saw last
 
 /// "16:9", "1.7778", "off"/"0" -> aspect ratio (0 = native).
 float ParseAspect(const std::string& v) {
@@ -875,13 +876,19 @@ std::vector<std::string> Install(const RCodeInfo& info) {
         log.push_back(fmt::format("render flags: set {:08X}, clear {:08X} (experimental)",
                                   options.render_set, options.render_clear));
     }
+    missing_hook_points = 0;
     for (const Hook& hook : HOOKS) {
         if (!info.set_hook(hook.addr, hook.fn)) {
             log.push_back(fmt::format("no hook point for {} at {:08X} (rebuild the code library)",
                                       hook.name, hook.addr));
+            ++missing_hook_points;
         }
     }
     return log;
+}
+
+int MissingHookPoints() {
+    return missing_hook_points;
 }
 
 bool SetOption(const std::string& key, const std::string& value) {

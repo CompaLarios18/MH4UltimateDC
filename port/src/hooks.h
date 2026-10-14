@@ -25,6 +25,10 @@ std::vector<std::string> Install(const RCodeInfo& info);
 /// Returns false for any other key.
 bool SetOption(const std::string& key, const std::string& value);
 
+/// How many of the port's hook points the code library loaded last didn't have (it was built
+/// with an older config/hooks.txt, so the options behind them don't work until it is rebuilt).
+int MissingHookPoints();
+
 /// The touch_overlay option: "top-right 30 85" (corner, height in % of the window's, opacity
 /// in %), "on" (top right, 30%, 85%) or "off".
 Layout::ScreenOverlay ParseOverlay(std::string value);

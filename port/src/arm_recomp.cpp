@@ -99,6 +99,10 @@ u64 ARM_Recomp::CodeTitleId() {
     return g_code.title_id;
 }
 
+bool ARM_Recomp::IsRecompiledCode(const std::vector<u8>& code) {
+    return code.size() >= g_code.text_size && Crc32(code.data(), g_code.text_size) == g_code.text_crc32;
+}
+
 void ARM_Recomp::SetCode(const RCodeInfo& info) {
     g_code = info;
     g_functions.clear();

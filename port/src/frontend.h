@@ -17,4 +17,10 @@ namespace Port {
 /// Returns a line for the log describing what was chosen.
 std::string PrepareBackendFor(Core::System& system, const std::string& rom_path);
 
+/// After PrepareBackendFor: a note for the player when the game the port is made for (MH4U,
+/// USA) runs without the port's code library, or with one that is missing some of the port's
+/// hook points: what happened and how to build the library. Empty when all is well, and for
+/// every other game.
+std::string BackendNotice();
+
 } // namespace Port

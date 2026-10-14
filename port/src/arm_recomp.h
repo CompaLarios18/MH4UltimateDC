@@ -79,6 +79,9 @@ public:
     /// Number of recompiled functions available, and the program id they're for (0: any).
     static std::size_t FunctionCount();
     static u64 CodeTitleId();
+    /// Whether `code` (a program's code segment onwards, as the loader puts it in memory) is
+    /// the code the loaded library was recompiled from.
+    static bool IsRecompiledCode(const std::vector<u8>& code);
     /// A code library built with -DRC_CALL_COUNTS counts every function's calls: whether
     /// the loaded one does, and (address, calls) for each function that has run so far.
     static bool HasCallCounts();
