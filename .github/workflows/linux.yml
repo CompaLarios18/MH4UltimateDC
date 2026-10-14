@@ -14,7 +14,8 @@ on:
     branches: [main]
     paths:
       - "port/**"
-      - "tools/recomp/runtime/**"
+      - "tools/**"
+      - "config/**"
       - ".github/workflows/linux.yml"
 
 jobs:
@@ -68,17 +69,32 @@ jobs:
       - name: Package
         if: ${{ hashFiles('mh4u/LICENSE') != '' }}
         run: |
-          mkdir -p artifacts/mh4u-port-linux
+          mkdir -p artifacts/mh4u-port-linux/mh4u-tools
           cp azahar/build/bundle/*.AppImage artifacts/mh4u-port-linux/azahar-mh4u.AppImage
           cp mh4u/LICENSE artifacts/mh4u-port-linux/LICENSE-mh4u-port.txt
+          # the tools that build the game's code library from the player's own update
+          cp -r mh4u/tools mh4u/config artifacts/mh4u-port-linux/mh4u-tools/
+          find artifacts/mh4u-port-linux/mh4u-tools -name __pycache__ -prune -exec rm -rf {} +
+          cp mh4u/LICENSE artifacts/mh4u-port-linux/mh4u-tools/
+          cp mh4u/port/unix/build-code-library.sh artifacts/mh4u-port-linux/
+          chmod +x artifacts/mh4u-port-linux/build-code-library.sh artifacts/mh4u-port-linux/azahar-mh4u.AppImage
           cat > artifacts/mh4u-port-linux/README-mh4u.txt <<EOF
           Azahar ($(cat mh4u/port/azahar/COMMIT)) with the MH4U port's recompiled-code CPU backend,
           as an AppImage. Source: https://github.com/${GITHUB_REPOSITORY} (commit ${GITHUB_SHA}),
           https://github.com/azahar-emu/azahar plus mh4u/port/azahar/azahar.patch.
-          No game code is included: build the game's code library from your own dump with
-          python3 tools/build_game.py --dump <your dump> --install --fetch-compiler
-          (it uses clang if installed, otherwise downloads Zig's C compiler; the library goes to
-          ~/.local/share/azahar-emu/recomp/).
+
+          No game code is included. To play, with your own decrypted Monster Hunter 4 Ultimate
+          (USA) and its v1.3.0 update (.cia):
+          1. Python 3.10 or newer (most distributions have it; on a Steam Deck too).
+          2. Run ./build-code-library.sh (or double-click it) and choose your v1.3.0 update .cia:
+             it builds the game's code library on this computer (with clang if installed,
+             otherwise it downloads Zig's C compiler, about 80 MB) and installs it in
+             ~/.local/share/azahar-emu/recomp.
+          3. Start azahar-mh4u.AppImage: File > Install CIA... (the update), then File > Load
+             File... (the game).
+          Options: Tools > MH4U Port Options... in Azahar, and docs/PLAYING.md in the repository.
+          The artifact zip doesn't keep file permissions: if the two files don't start, run
+          chmod +x azahar-mh4u.AppImage build-code-library.sh first.
           EOF
       - name: Upload
         if: ${{ hashFiles('mh4u/LICENSE') != '' }}

@@ -16,7 +16,7 @@ How to run Monster Hunter 4 Ultimate on a PC with this project: the game's own c
 
 ## 1. Make the game's code library
 
-On Windows the port's package has it ready: install [Python](https://www.python.org/downloads/) 3.10 or newer (tick *Add python.exe to PATH*), close Azahar, double-click `Build code library.bat` in the package and choose your v1.3.0 update `.cia`. It runs the same command as below with the tools in the package's `mh4u-tools` folder, then installs the update in Azahar (step 2 below is then done), and the first time it also writes a `mh4u.ini` with 60 fps, 16:9 and the touch screen in a corner, and picks Azahar's *Custom Layout*.
+On Windows the port's package has it ready: install [Python](https://www.python.org/downloads/) 3.10 or newer (tick *Add python.exe to PATH*), close Azahar, double-click `Build code library.bat` in the package and choose your v1.3.0 update `.cia`. It runs the same command as below with the tools in the package's `mh4u-tools` folder, then installs the update in Azahar (step 2 below is then done), and the first time it also writes a `mh4u.ini` with 60 fps, 16:9 and the touch screen in a corner, and picks Azahar's *Custom Layout*. The Linux and macOS packages carry the same tools with `build-code-library.sh` (`Build code library.command` on a Mac; it asks for the `.cia` in a file dialog, or takes its path): it builds and installs the library and writes the first `mh4u.ini`, and you install the update yourself (step 2).
 
 Otherwise, from the repository folder:
 

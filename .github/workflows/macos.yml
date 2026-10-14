@@ -14,7 +14,8 @@ on:
     branches: [main]
     paths:
       - "port/**"
-      - "tools/recomp/runtime/**"
+      - "tools/**"
+      - "config/**"
       - ".github/workflows/macos.yml"
 
 jobs:
@@ -61,18 +62,31 @@ jobs:
       - name: Package
         if: ${{ hashFiles('mh4u/LICENSE') != '' }}
         run: |
-          mkdir -p artifacts/mh4u-port-macos
+          mkdir -p artifacts/mh4u-port-macos/mh4u-tools
           cp -R azahar/build/bundle/azahar.app artifacts/mh4u-port-macos/Azahar-mh4u.app
           cp mh4u/LICENSE artifacts/mh4u-port-macos/LICENSE-mh4u-port.txt
+          # the tools that build the game's code library from the player's own update
+          cp -R mh4u/tools mh4u/config artifacts/mh4u-port-macos/mh4u-tools/
+          find artifacts/mh4u-port-macos/mh4u-tools -name __pycache__ -prune -exec rm -rf {} +
+          cp mh4u/LICENSE artifacts/mh4u-port-macos/mh4u-tools/
+          cp mh4u/port/unix/build-code-library.sh "artifacts/mh4u-port-macos/Build code library.command"
+          chmod +x "artifacts/mh4u-port-macos/Build code library.command"
           cat > artifacts/mh4u-port-macos/README-mh4u.txt <<EOF
           Azahar ($(cat mh4u/port/azahar/COMMIT)) with the MH4U port's recompiled-code CPU backend,
           as an app for Apple silicon Macs. Source: https://github.com/${GITHUB_REPOSITORY}
           (commit ${GITHUB_SHA}), https://github.com/azahar-emu/azahar plus mh4u/port/azahar/azahar.patch.
-          The app is not notarized: the first time, right-click it and choose Open.
-          No game code is included: build the game's code library from your own dump with
-          python3 tools/build_game.py --dump <your dump> --install
-          (it needs the Xcode command-line tools, from xcode-select --install, and Python 3.10 or
-          later; the library goes to ~/Library/Application Support/Azahar/recomp/).
+          The app and the script are not notarized: the first time, right-click them and choose Open.
+
+          No game code is included. To play, with your own decrypted Monster Hunter 4 Ultimate
+          (USA) and its v1.3.0 update (.cia):
+          1. The Xcode command-line tools (xcode-select --install in Terminal) and Python 3.10 or
+             newer (python.org or Homebrew).
+          2. Open "Build code library.command" and choose your v1.3.0 update .cia: it builds the
+             game's code library on this Mac and installs it in
+             ~/Library/Application Support/Azahar/recomp.
+          3. Open Azahar-mh4u: File > Install CIA... (the update), then File > Load File... (the
+             game).
+          Options: Tools > MH4U Port Options... in Azahar, and docs/PLAYING.md in the repository.
           EOF
           # a zip keeps the app's symbolic links and permissions, which an artifact upload doesn't
           (cd artifacts && ditto -c -k --keepParent mh4u-port-macos mh4u-port-macos.zip && rm -rf mh4u-port-macos)
