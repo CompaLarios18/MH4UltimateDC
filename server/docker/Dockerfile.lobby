@@ -20,6 +20,7 @@ USER lobby
 ENV MH4U_LOBBY_DATA=/data PYTHONUNBUFFERED=1
 VOLUME /data
 EXPOSE 24872/tcp
+# (/health answers "ok" and, asked from the container itself, stays out of the log)
 HEALTHCHECK --interval=5s --timeout=3s --start-period=60s --retries=3 \
-    CMD ["python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:24872/lobby', timeout=2)"]
+    CMD ["python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:24872/health', timeout=2)"]
 ENTRYPOINT ["mh4u-lobby"]

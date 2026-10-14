@@ -1,13 +1,16 @@
 """The multiplayer server scripts in server/: host-room.sh (Azahar's dedicated room with MH4U's
-settings), run-lobby.sh (the lobby), the room container's entrypoint (docker stop passed on to
-the room as q + Enter) and e2e_room.py's command line; run with a stand-in azahar-room that
-records its arguments. The Windows scripts need PowerShell, so only their settings are checked."""
+settings, kept private), run-lobby.sh (the lobby), the room container's entrypoint (docker stop
+passed on to the room as q + Enter) and e2e_room.py's command line; run with a stand-in
+azahar-room that records its arguments. The Windows scripts need PowerShell and the Docker files
+Docker, so for those only their settings are checked."""
 import os
 import platform
 import shutil
 import signal
+import stat
 import subprocess
 import sys
+import threading
 import time
 
 import pytest
@@ -159,28 +162,45 @@ def test_run_lobby_commands(tmp_path):
     assert token not in (tmp_path / "server" / "lobby" / "users.json").read_text()
 
 
+@posix
+def test_host_room_settings_are_private(tmp_path):
+    stub_room(tmp_path / "bin")
+    server = tmp_path / "server"
+    assert host_room(tmp_path).returncode == 0
+    for path, mode in [(server, 0o700), (server / "host-room.ini", 0o600),
+                       (server / "room-ban-list.txt", 0o600)]:
+        assert stat.S_IMODE(path.stat().st_mode) == mode, path
+    # one made by an older version, readable by all, is made private
+    (server / "host-room.ini").chmod(0o644)
+    assert host_room(tmp_path).returncode == 0
+    assert stat.S_IMODE((server / "host-room.ini").stat().st_mode) == 0o600
+
+
 def run_entrypoint(tmp_path, **env):
-    """The entrypoint in the background, as the container's first process; returns it once the
-    stand-in room is up."""
+    """The entrypoint in the background, as the container's first process: returned with the
+    lines it prints, once it says the room has started (its trap is in by then)."""
     stub = stub_room(tmp_path / "bin")
     data = tmp_path / "data"
     data.mkdir()
     proc = subprocess.Popen(["sh", ENTRYPOINT], cwd=data, stdout=subprocess.PIPE,
                             stderr=subprocess.STDOUT, text=True,
                             env=environment(tmp_path, STUB_WAIT="1", STUB_CODE="3", **env))
-    deadline = time.monotonic() + 10
-    while not (stub.parent / "azahar-room.args").exists() and time.monotonic() < deadline:
-        time.sleep(0.05)
-    time.sleep(0.3)  # the trap goes in right after the room starts
-    return proc, stub, data
+    lines = []
+    reader = threading.Thread(target=lambda: lines.extend(proc.stdout), daemon=True)
+    reader.start()
+    deadline = time.monotonic() + 20
+    while not any(line.startswith("Room started") for line in lines):
+        assert time.monotonic() < deadline and proc.poll() is None, lines
+        time.sleep(0.02)
+    return proc, stub, data, lines
 
 
 @posix
 def test_room_entrypoint_stops_the_room_with_q(tmp_path):
-    proc, stub, data = run_entrypoint(tmp_path, ROOM_NAME="Night Hunts", ROOM_PORT="24900",
-                                      ROOM_PASSWORD="pw", ROOM_MAX_MEMBERS="4",
-                                      LOBBY_URL="http://lobby:24872", LOBBY_USERNAME="MH4U Room",
-                                      LOBBY_TOKEN="secret")
+    proc, stub, data, lines = run_entrypoint(
+        tmp_path, ROOM_NAME="Night Hunts", ROOM_PORT="24900", ROOM_PASSWORD="pw",
+        ROOM_MAX_MEMBERS="4", LOBBY_URL="http://lobby:24872", LOBBY_USERNAME="Room Host",
+        LOBBY_TOKEN="secret")
     proc.send_signal(signal.SIGTERM)  # docker stop
     assert proc.wait(10) == 3  # the room's own exit code
     assert (stub.parent / "azahar-room.input").read_text() == "q\n"
@@ -188,19 +208,54 @@ def test_room_entrypoint_stops_the_room_with_q(tmp_path):
         "--room-name": "Night Hunts", "--port": "24900", "--max_members": "4",
         "--preferred-app": "Monster Hunter 4 Ultimate", "--preferred-app-id": "0004000000126300",
         "--ban-list-file": str(data / "ban-list.txt"), "--password": "pw",
-        "--web-api-url": "http://lobby:24872", "--username": "MH4U Room", "--token": "secret"}
+        "--web-api-url": "http://lobby:24872", "--username": "Room Host", "--token": "secret"}
     assert (data / "ban-list.txt").read_text() == "CitraRoom-BanList-1\n"
-    assert "Announcing the room to http://lobby:24872" in proc.stdout.read()
+    assert stat.S_IMODE((data / "ban-list.txt").stat().st_mode) == 0o600
+    assert any("Announcing the room to http://lobby:24872" in line for line in lines)
 
 
 @posix
 def test_room_entrypoint_unlisted(tmp_path):
-    proc, stub, data = run_entrypoint(tmp_path, LOBBY_URL="http://lobby:24872")
+    proc, stub, data, lines = run_entrypoint(tmp_path, LOBBY_URL="http://lobby:24872")
     proc.send_signal(signal.SIGTERM)
     assert proc.wait(10) == 3
     got = options(recorded(stub))
     assert got["--room-name"] == "MH4U Gathering Hall" and got["--port"] == "24872"
-    assert "--web-api-url" not in got and "unlisted" in proc.stdout.read()
+    assert "--web-api-url" not in got and any("unlisted" in line for line in lines)
+
+
+def read(*path):
+    with open(os.path.join(ROOT, *path), encoding="utf-8") as f:
+        return f.read()
+
+
+def test_docker_files():
+    room = read("server", "docker", "Dockerfile.room")
+    # the port's patch (its fixes to Azahar's rooms) goes into the room, on a pinned image
+    assert "git -C /src apply /tmp/azahar.patch" in room
+    assert "!port/azahar/azahar.patch" in read("server", "docker", "Dockerfile.room.dockerignore")
+    assert "opensauce04/azahar-build-environment:latest@sha256:" in room
+    # the lobby's health checks go to /health, which doesn't log them; logs are rotated
+    assert "127.0.0.1:24872/health" in read("server", "docker", "Dockerfile.lobby")
+    compose = read("server", "docker", "compose.yaml")
+    assert compose.count("logging: *logging") == 2 and 'max-size: "10m"' in compose
+    # no default name for the room in the lobby (docs/SERVER.md, Moderators)
+    assert "\nLOBBY_USERNAME=\n" in read("server", "docker", "example.env")
+
+
+def test_windows_scripts_use_the_same_settings():
+    ps1 = read("server", "windows", "host-room.ps1")
+    for text in ['"--max_members"', '"--preferred-app", "Monster Hunter 4 Ultimate"',
+                 '"--preferred-app-id", "0004000000126300"', '"--ban-list-file"',
+                 '"--web-api-url"', "port = 24872", "max_members = 16", "CitraRoom-BanList-1",
+                 "azahar-room.exe", "MH4U Server",
+                 # arguments quoted by the C runtime's rules, not by Windows PowerShell 5.1
+                 "ConvertTo-Argument $_", "System.Diagnostics.ProcessStartInfo"]:
+        assert text in ps1, text
+    assert "& $room @roomArgs" not in ps1
+    assert "host-room.ps1" in read("server", "windows", "Host room.bat")
+    bat = read("server", "windows", "Run lobby.bat")
+    assert r"..\lobby\mh4u_lobby.py" in bat and r"MH4U Server\lobby" in bat
 
 
 def test_windows_scripts_use_the_same_settings():

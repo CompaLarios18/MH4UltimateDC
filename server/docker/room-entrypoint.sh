@@ -14,6 +14,9 @@
 #   LOBBY_TOKEN       its token there; without all three the room is unlisted (Direct Connect)
 # Arguments go to azahar-room after these.
 set -u
+umask 077  # the ban list names players and their addresses
+stop=""
+trap 'stop=1' TERM INT  # a stop before the room has its console: passed on below
 ban_list="$PWD/ban-list.txt"
 [ -f "$ban_list" ] || printf 'CitraRoom-BanList-1\n' >"$ban_list"  # an empty one
 
@@ -42,6 +45,8 @@ room=$!
 exec 3>"$console"
 rm -f "$console"
 trap 'echo q >&3' TERM INT
+[ -z "$stop" ] || echo q >&3
+echo "Room started (pid $room): docker stop closes it"
 wait "$room"
 status=$?
 while [ "$status" -gt 128 ] && kill -0 "$room" 2>/dev/null; do

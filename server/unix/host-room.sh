@@ -14,6 +14,7 @@
 #   ./host-room.sh name="Luis's hall" password=secret
 # Close the room with q and Enter: it then leaves the lobby and saves its ban list.
 set -u
+umask 077  # the settings hold the room's token and password, the ban list players' addresses
 here=$(cd "$(dirname "$0")" && pwd)
 
 fail() {
@@ -66,6 +67,7 @@ ban_list = room-ban-list.txt
 INI
     echo "Made $ini with the defaults: edit it to change the room."
 fi
+chmod 600 "$ini"  # (one made by an older version of this script was readable by all)
 
 name="MH4U Gathering Hall" description="" port=24872 max_members=16 password=""
 lobby_url="" username="" token="" ban_list="room-ban-list.txt"

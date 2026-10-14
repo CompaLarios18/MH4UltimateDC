@@ -19,6 +19,16 @@ function Finish($code) {
     exit $code
 }
 
+# One argument for a program's command line, by the C runtime's rules (CommandLineToArgvW):
+# Windows PowerShell 5.1 doesn't escape a " inside an argument it passes, so a name or password
+# with one would come apart
+function ConvertTo-Argument([string]$text) {
+    if ($text -and $text -notmatch '[\s"]') { return $text }
+    $text = [regex]::Replace($text, '(\\*)"', { param($m) $m.Groups[1].Value * 2 + '\"' })
+    $text = [regex]::Replace($text, '(\\+)$', { param($m) $m.Groups[1].Value * 2 })
+    return '"' + $text + '"'
+}
+
 # azahar-room.exe: next to this script, or in the folder above it
 $room = $null
 foreach ($dir in @($PSScriptRoot, (Split-Path $PSScriptRoot -Parent))) {
@@ -120,8 +130,14 @@ try {
 Write-Host "If Windows asks, allow azahar-room.exe through the firewall. Settings: $ini"
 Write-Host ""
 
-& $room @roomArgs
-$code = $LASTEXITCODE
+# in this window, so that q and Enter here close it
+$start = New-Object System.Diagnostics.ProcessStartInfo
+$start.FileName = $room
+$start.Arguments = ($roomArgs | ForEach-Object { ConvertTo-Argument $_ }) -join " "
+$start.UseShellExecute = $false
+$process = [System.Diagnostics.Process]::Start($start)
+$process.WaitForExit()
+$code = $process.ExitCode
 Write-Host ""
 Write-Host "The room has closed (code $code)."
 Finish $code

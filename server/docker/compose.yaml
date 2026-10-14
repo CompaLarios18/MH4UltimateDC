@@ -20,10 +20,19 @@
 #   ROOM_NAME=MH4U Gathering Hall, ROOM_DESCRIPTION, ROOM_PASSWORD, ROOM_MAX_MEMBERS=16
 #   ROOM_PORT=24872    the room's UDP port, the same inside and outside its container
 #   LOBBY_USERNAME, LOBBY_TOKEN   the room's own name and token in the lobby; without them the
-#                      room is unlisted (players use Direct Connect)
+#                      room is unlisted (players use Direct Connect). No default name: see
+#                      "Moderators" in docs/SERVER.md before you choose one
 #   LOBBY_URL=http://lobby:24872  the lobby the room announces itself to (this file's)
+# Logs are rotated (three files of 10 MB at most for each service), and the lobby's health
+# checks stay out of them.
 
 name: mh4u-server
+
+x-logging: &logging
+  driver: local
+  options:
+    max-size: "10m"
+    max-file: "3"
 
 services:
   lobby:
@@ -37,6 +46,7 @@ services:
       - "${LOBBY_PORT:-24872}:24872/tcp"
     volumes:
       - lobby-data:/data
+    logging: *logging
 
   room:
     build:
@@ -44,6 +54,7 @@ services:
       dockerfile: server/docker/Dockerfile.room
     image: mh4u-room
     restart: unless-stopped
+    logging: *logging
     depends_on:
       lobby:
         condition: service_healthy  # it announces itself once, at the start
