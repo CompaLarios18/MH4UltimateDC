@@ -14,3 +14,4 @@
 0x00288f4c PanelManager::isTapped     # second screen: trace / later bind panels to keys
 0x00694c98 sMhPad::update             # second screen: trace / inject panel actions
 0x00b7c010 QuestFlow::startQuest      # quest start: rebuild the quest list until it has the quest (above 60 fps)
+0x00ae65a4 nLayout::objectConstants    # wide render: move the HUD's side objects out to the screen's edges

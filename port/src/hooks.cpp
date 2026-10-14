@@ -84,6 +84,8 @@ struct Options {
     u32 kick_button = 0;    // kick / MH4U_KICK: 3DS button that kicks (the game's pad bits)
     u32 target_button = 0;  // target / MH4U_TARGET: 3DS button for the target camera panel
     Layout::ScreenOverlay touch_overlay;  // touch_overlay / MH4U_TOUCH_OVERLAY (custom layout)
+    bool hud_edges = true;  // hud_edges / MH4U_HUD_EDGES: with wide_render, HUD to the edges
+    u32 trace_layout = 0;   // trace_layout / MH4U_TRACE_LAYOUT: log HUD objects every n frames
 };
 
 /// A 3DS button name -> the bit sPad::processInput gives it in the held word.
@@ -139,6 +141,10 @@ void Set(Options& o, const std::string& key, const std::string& value) {
         o.target_button = PadBit(value);
     } else if (key == "touch_overlay") {
         o.touch_overlay = ParseOverlay(value);
+    } else if (key == "hud_edges") {
+        o.hud_edges = IsOn(value);
+    } else if (key == "trace_layout") {
+        o.trace_layout = static_cast<u32>(std::max(0L, std::strtol(value.c_str(), nullptr, 10)));
     } else if (key == "trace_frames") {
         o.trace_every = static_cast<u32>(std::max(0L, std::strtol(value.c_str(), nullptr, 10)));
     }
@@ -174,7 +180,9 @@ Options LoadOptions(std::vector<std::string>& log) {
         {"MH4U_TRACE_PANELS", "trace_panels"},
         {"MH4U_KICK", "kick"},
         {"MH4U_TARGET", "target"},
-        {"MH4U_TOUCH_OVERLAY", "touch_overlay"}};
+        {"MH4U_TOUCH_OVERLAY", "touch_overlay"},
+        {"MH4U_HUD_EDGES", "hud_edges"},
+        {"MH4U_TRACE_LAYOUT", "trace_layout"}};
     for (const auto& [var, key] : env) {
         if (const char* value = std::getenv(var)) {
             Set(o, key, value);
@@ -340,6 +348,59 @@ void WideTransfer(RCtx* ctx) {
     if (height >= rows && rd32(ctx, render + SLTRENDER_TOP_TRANSFER_Y) != height - rows) {
         wr32(ctx, render + SLTRENDER_TOP_TRANSFER_Y, height - rows);
         LOG_INFO(Frontend, "wide render: top screen transferred from row {} of {}", height - rows, height);
+    }
+}
+
+// ── The HUD in wide render (docs/research/widescreen.md, "2D HUD"). The rLayout HUD keeps
+// its 400-pixel layout space, centred in the wider picture. Each layout object's translation
+// goes to the GPU as a shader constant written by 0x00ae65a4; the objects that make up the
+// sides of the hunting HUD get theirs moved by half the extra width, out to the edges. They
+// are told apart by the hash at the start of each object (its name's, it seems: the same
+// objects have the same hashes in every run). Layout x grows to the left: pixel = 200 - x.
+constexpr u32 CDRAW_OBJECT_CONSTANTS = 0x83c;  // cDraw: where 0x00ae65a4 put (x, y, z, 1), or 0
+constexpr u32 CDRAW_SCREEN = 0x1bc;             // cDraw: bits 1-5, the screen being drawn (0 top)
+constexpr u32 HUD_LEFT[] = {
+    0x2E7FA61D,  // clock
+    0x8293D551,  // health
+    0xD07F4AA2,  // stamina
+    0xBD56507D,  // weapon sharpness
+    0xB2DA1296,  // next to the sharpness
+    0x8AC1CCC4,  // party list: the hunter
+    0xFDC6FC52,  // party list: the Palico
+};
+constexpr u32 HUD_RIGHT[] = {
+    0x1833E2C8,  // item selection
+    0x3C598C15,  // item name
+};
+
+/// 0x00ae65a4(object, cDraw): uploads a layout object's translation and colour.
+void LayoutObjectConstants(RCtx* ctx, RFunc original) {
+    const u32 object = ctx->r[0];
+    const u32 draw = ctx->r[1];
+    original(ctx);
+    const u32 rows = options.hud_edges ? WideRows() : 0;
+    const bool trace = options.trace_layout && frames % options.trace_layout == 0;
+    if (!rows && !trace) {
+        return;
+    }
+    const u32 constants = rd32(ctx, draw + CDRAW_OBJECT_CONSTANTS);
+    if (constants == 0) {
+        return;
+    }
+    const u32 screen = rd32(ctx, draw + CDRAW_SCREEN) >> 1 & 0x1f;
+    const u32 hash = rd32(ctx, object);
+    if (trace) {
+        LOG_INFO(Frontend, "layout: frame {} object {:08X} hash {:08X} screen {} at {:.1f}, {:.1f}", frames, object,
+                 hash, screen, ReadF32(ctx, constants), ReadF32(ctx, constants + 4));
+    }
+    if (rows == 0 || screen != 0) {
+        return;
+    }
+    const float shift = (static_cast<float>(rows) - TOP_ROWS) / 2.0f;
+    if (std::find(std::begin(HUD_LEFT), std::end(HUD_LEFT), hash) != std::end(HUD_LEFT)) {
+        WriteF32(ctx, constants, ReadF32(ctx, constants) + shift);
+    } else if (std::find(std::begin(HUD_RIGHT), std::end(HUD_RIGHT), hash) != std::end(HUD_RIGHT)) {
+        WriteF32(ctx, constants, ReadF32(ctx, constants) - shift);
     }
 }
 
@@ -575,6 +636,7 @@ constexpr Hook HOOKS[] = {
     {0x00288f4c, "PanelManager::isTapped", PanelIsTapped},
     {0x00694c98, "sMhPad::update", MhPadUpdate},
     {0x00b7c010, "QuestFlow::startQuest", StartQuest},
+    {0x00ae65a4, "nLayout::objectConstants", LayoutObjectConstants},
 };
 
 } // namespace
@@ -602,6 +664,10 @@ std::vector<std::string> Install(const RCodeInfo& info) {
             const u32 set = SetTunables(info, "top_rows", WideRows());
             log.push_back(fmt::format("widescreen: {} of the code's top-screen sizes set to {}", set,
                                       WideRows()));
+            if (options.hud_edges) {
+                log.push_back(fmt::format("widescreen: the hunting HUD's sides moved {} pixels out to the edges",
+                                          (WideRows() - TOP_ROWS) / 2));
+            }
         }
     }
     if (options.trace_every) {
@@ -623,6 +689,9 @@ std::vector<std::string> Install(const RCodeInfo& info) {
                                   "{:.0f}% of the window's height, {:.0f}% opaque",
                                   corners[static_cast<int>(overlay.corner)], overlay.height * 100,
                                   overlay.opacity * 100));
+    }
+    if (options.trace_layout) {
+        log.push_back(fmt::format("tracing HUD layout objects every {} frames", options.trace_layout));
     }
     if (options.render_set || options.render_clear) {
         log.push_back(fmt::format("render flags: set {:08X}, clear {:08X} (experimental)",
