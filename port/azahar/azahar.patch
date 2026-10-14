@@ -579,6 +579,42 @@ index e9fb0c2..9643823 100644
              return static_cast<s64>(((async_data->file.second > time_took)
                                           ? (async_data->file.second - time_took)
                                           : std::chrono::nanoseconds())
+diff --git a/src/core/hle/service/nwm/nwm_uds.cpp b/src/core/hle/service/nwm/nwm_uds.cpp
+index f6fafdd..837081a 100644
+--- a/src/core/hle/service/nwm/nwm_uds.cpp
++++ b/src/core/hle/service/nwm/nwm_uds.cpp
+@@ -277,6 +277,18 @@ void NWM_UDS::HandleEAPoLPacket(const Network::WifiPacket& packet) {
+     } else if (connection_status.status == NetworkStatus::Connecting) {
+         auto logoff = ParseEAPoLLogoffFrame(packet.data);
+ 
++        // The host broadcasts the logoff that gives a joining console its node id, so a
++        // console that joins at the same time as another sees both: take only the one for
++        // this console, or two consoles end up with the same node id and the game drops one.
++        // (A host that doesn't fill in the address sends zeros: take those as before.)
++        if (logoff.client_mac_address != MacAddress{}) {
++            const auto room_member = Network::GetRoomMember().lock();
++            if (room_member && logoff.client_mac_address != room_member->GetMacAddress()) {
++                LOG_DEBUG(Service_NWM, "Ignored an EAPoL-Logoff for another console");
++                return;
++            }
++        }
++
+         network_info.host_mac_address = packet.transmitter_address;
+         network_info.total_nodes = logoff.connected_nodes;
+         network_info.max_nodes = logoff.max_nodes;
+diff --git a/src/core/hle/service/nwm/uds_data.cpp b/src/core/hle/service/nwm/uds_data.cpp
+index 1d66da3..0a0f608 100644
+--- a/src/core/hle/service/nwm/uds_data.cpp
++++ b/src/core/hle/service/nwm/uds_data.cpp
+@@ -346,6 +346,8 @@ std::vector<u8> GenerateEAPoLLogoffFrame(const MacAddress& mac_address, u16 netw
+                                          const NodeList& nodes, u8 max_nodes, u8 total_nodes) {
+     EAPoLLogoffPacket eapol_logoff{};
+     eapol_logoff.assigned_node_id = network_node_id;
++    // the console the node id is for: the packet goes to every member (see HandleEAPoLPacket)
++    eapol_logoff.client_mac_address = mac_address;
+     eapol_logoff.connected_nodes = total_nodes;
+     eapol_logoff.max_nodes = max_nodes;
+ 
 diff --git a/src/core/memory.cpp b/src/core/memory.cpp
 index c1dbbd0..49745de 100644
 --- a/src/core/memory.cpp
