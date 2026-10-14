@@ -102,7 +102,10 @@ emulated time (those the hooks read as the game runs: `fps`, `refresh_rate`, `di
 scripts, written for 30 fps menus, have brought everyone into a quest. `--overlay-layout SPEC
 WxH[:TOP]` prints the screens' rectangles the `touch_overlay` option gives a window; with a
 `quest_overlay` value and the map's panel slot after them, also the part of the touch screen a
-quest shows and where a click on it touches (through Azahar's own touch code). The port's hooks
+quest shows and where a click on it touches (through Azahar's own touch code).
+`--quest-overlay-frames FPS KIND:SECONDS,...` runs a made-up quest's frames (panels up with the
+map in a slot, panels gone for a change of area, the quest menu, ...) through the choice of what
+that corner shows and prints each change, at any frame rate. The port's hooks
 take options from the environment: `MH4U_FPS=60` raises the engine's frame-rate cap,
 `MH4U_TRACE_FRAMES=60` logs the engine's frame timing every 60 frames, and
 `MH4U_QUEST_OVERLAY_TEST=0` makes the touch overlay show the map's part of the touch screen (slot

@@ -251,7 +251,7 @@ void UpdateFrameTiming(RCtx* ctx, RFunc original) {
 
 /// sMhMain::frame(this): one iteration of the main loop.
 void WideTransfer(RCtx* ctx);
-void UpdateQuestOverlay();
+void UpdateQuestOverlay(RCtx* ctx);
 
 void Frame(RCtx* ctx, RFunc original) {
     if (frames == 0 && RefreshRate() > 0) {
@@ -271,7 +271,7 @@ void Frame(RCtx* ctx, RFunc original) {
     WideTransfer(ctx);
     original(ctx);
     ++frames;
-    UpdateQuestOverlay();
+    UpdateQuestOverlay(ctx);
     if (options.trace_every == 0 || frames % options.trace_every != 0) {
         return;
     }
@@ -465,6 +465,7 @@ void WideTransfer(RCtx* ctx) {
 // objects have the same hashes in every run). Layout x grows to the left: pixel = 200 - x.
 constexpr u32 CDRAW_OBJECT_CONSTANTS = 0x83c;  // cDraw: where 0x00ae65a4 put (x, y, z, 1), or 0
 constexpr u32 CDRAW_SCREEN = 0x1bc;             // cDraw: bits 1-5, the screen being drawn (0 top)
+constexpr u32 LAYOUT_TOUCH_SCREEN = 7;          //   (7 the touch screen's: viewport 7)
 constexpr u32 HUD_LEFT[] = {
     0x2E7FA61D,  // clock
     0x8293D551,  // health
@@ -485,6 +486,9 @@ constexpr u32 HUD_RIGHT[] = {
     0x3C598C15,  // item name
 };
 
+bool WatchingQuestMap();                       // the quest's touch panels (below)
+void NoteTouchScreenObject(float x, float y);
+
 /// 0x00ae65a4(object, cDraw): uploads a layout object's translation and colour.
 void LayoutObjectConstants(RCtx* ctx, RFunc original) {
     const u32 object = ctx->r[0];
@@ -492,7 +496,7 @@ void LayoutObjectConstants(RCtx* ctx, RFunc original) {
     original(ctx);
     const u32 rows = options.hud_edges ? WideRows() : 0;
     const bool trace = options.trace_layout && frames % options.trace_layout == 0;
-    if (!rows && !trace) {
+    if (!rows && !trace && !WatchingQuestMap()) {
         return;
     }
     const u32 constants = rd32(ctx, draw + CDRAW_OBJECT_CONSTANTS);
@@ -504,6 +508,10 @@ void LayoutObjectConstants(RCtx* ctx, RFunc original) {
     if (trace) {
         LOG_INFO(Frontend, "layout: frame {} object {:08X} hash {:08X} screen {} at {:.1f}, {:.1f}", frames, object,
                  hash, screen, ReadF32(ctx, constants), ReadF32(ctx, constants + 4));
+    }
+    if (screen == LAYOUT_TOUCH_SCREEN) {
+        NoteTouchScreenObject(ReadF32(ctx, constants), ReadF32(ctx, constants + 4));
+        return;
     }
     if (rows == 0 || screen != 0) {
         return;
@@ -567,6 +575,17 @@ u32 last_panel_touch = 0xFFFFFFFF;
 // action in one control mode only. sCamera+0xed5 is the result: 0 off, n monster n.
 constexpr u32 QUEST_HUD = 0x0108260c;     // static (getQuestHud 0x0013f230)
 constexpr u32 HUD_TARGET_REQUEST = 0x27e;  // u8: toggle the target camera as a tap would
+// The quest HUD's update (0x00b9dfe0) switches on its state: in state 2 (hunting) it runs the
+// panels' state machine (0x00b9ba38) unless the panel manager is busy (0x002a4da0, as it is
+// while the area changes), and that runs the small panels in its states 0 and 1, a big panel
+// in 2 and the way back in 3. START takes the HUD to states 3 and 4 while the quest menu is
+// open (its touch screen has Customize Panels, Panel Schemes and the like); 0 and 1 set the
+// HUD up again afterwards. While someone talks the HUD isn't updated at all.
+constexpr u32 HUD_STATE = 0x2a8;        // u8
+constexpr u8 HUD_HUNTING = 2, HUD_MENU_OPENING = 3, HUD_MENU = 4;
+constexpr u32 HUD_PANEL_STATE = 0x2a9;  // u8
+constexpr u8 PANELS_BIG = 2;
+constexpr u32 PANEL_BUSY = 0xac;        // u8 (panel manager)
 u32 target_held = 0;
 
 /// PanelManager::processTouch(): runs the touch groups, leaves the touched panel's id.
@@ -744,12 +763,31 @@ constexpr u32 PANEL_HIDDEN = 0xb1;        // u8: a bit per slot covered by the p
 constexpr u32 PANEL_SLOTS = 6;
 constexpr u32 PANEL_TYPE_MAP = 6;
 constexpr int SLOT_WIDTH = 160, SLOT_HEIGHT = 68, SLOTS_TOP = 36;  // touch-screen pixels
-constexpr u32 QUEST_OVERLAY_SETTLE_FRAMES = 3;  // frames a change must last to be shown
 bool quest_panels_ran = false;  // this frame
 int quest_map_slot = -1;        // the map's slot the last time the panels ran, -1 none
-int quest_overlay_shown = -1;   // the slot the overlay shows now, -1 the whole touch screen
-int quest_overlay_next = -1;    // what the last frames asked for, and for how many frames
-u32 quest_overlay_frames = 0;
+bool quest_map_drawn = false;   // this frame: the map panel drawn on the touch screen
+QuestOverlayChoice quest_choice;
+u32 last_panel_states = 0xFFFFFFFF;  // trace_panels: the HUD's states last frame
+
+/// Whether the touch screen's layout objects are looked at for the map panel's. While someone
+/// talks the HUD isn't updated, so the panels don't run, but the touch screen still shows them.
+bool WatchingQuestMap() {
+    return quest_map_slot >= 0 && !quest_map_drawn && options.quest_overlay >= 0 &&
+           options.touch_overlay.height > 0;
+}
+
+/// A layout object drawn on the touch screen at (x, y) (layout units, which grow to the left
+/// and up): every object of a panel sits at its slot's corner.
+void NoteTouchScreenObject(float x, float y) {
+    if (!WatchingQuestMap()) {
+        return;
+    }
+    const int column = quest_map_slot / 3, row = quest_map_slot % 3;
+    if (std::fabs(x + static_cast<float>(SLOT_WIDTH * column)) < 0.5f &&
+        std::fabs(y + static_cast<float>(SLOTS_TOP + SLOT_HEIGHT * row)) < 0.5f) {
+        quest_map_drawn = true;
+    }
+}
 
 /// QuestHud::updatePanels(): the quest's small touch panels, once a frame while they are up.
 void QuestPanels(RCtx* ctx, RFunc original) {
@@ -766,34 +804,53 @@ void QuestPanels(RCtx* ctx, RFunc original) {
     }
 }
 
-/// Once a frame: the touch overlay shows the map alone while the quest's panels are up (and
-/// have a map), and the whole touch screen otherwise. A change shows once it has lasted a
-/// few frames, so that a frame without the panels doesn't make the overlay flicker.
-void UpdateQuestOverlay() {
+/// Emulated time in seconds.
+double EmulatedSeconds() {
+    return static_cast<double>(Core::System::GetInstance().CoreTiming().GetGlobalTicks()) /
+           static_cast<double>(BASE_CLOCK_RATE_ARM11);
+}
+
+/// Once a frame: the part of the touch screen the touch overlay shows in quests (see
+/// QuestOverlayChoice).
+void UpdateQuestOverlay(RCtx* ctx) {
+    const bool panels = quest_panels_ran;
+    const u8 hud = rd8(ctx, QUEST_HUD + HUD_STATE);
+    const bool map_drawn = quest_map_drawn && hud == HUD_HUNTING;
+    quest_panels_ran = false;
+    quest_map_drawn = false;
+    const u8 panel_state = rd8(ctx, QUEST_HUD + HUD_PANEL_STATE);
+    if (options.trace_panels) {
+        const u32 states = hud | panel_state << 8 | rd8(ctx, PANEL_MANAGER + PANEL_BUSY) << 16 |
+                           (panels ? 1u : 0u) << 24 | (map_drawn ? 1u : 0u) << 25;
+        if (states != last_panel_states) {
+            LOG_INFO(Frontend,
+                     "panels: at {:.2f} s HUD state {}, panel state {}, panel manager {}, small panels {}, "
+                     "map {}",
+                     EmulatedSeconds(), hud, panel_state, states >> 16 & 0xFF ? "busy" : "free",
+                     panels ? "ran" : "not run", map_drawn ? "drawn" : "not drawn");
+            last_panel_states = states;
+        }
+    }
     if (options.quest_overlay < 0 || options.touch_overlay.height <= 0) {
         return;
     }
-    const int want = quest_map_off                     ? -1
-                     : options.quest_overlay_test >= 0 ? options.quest_overlay_test
-                     : quest_panels_ran                ? quest_map_slot
-                                                       : -1;
-    quest_panels_ran = false;
-    if (want != quest_overlay_next) {
-        quest_overlay_next = want;
-        quest_overlay_frames = 0;
-    }
-    if (want == quest_overlay_shown || ++quest_overlay_frames < QUEST_OVERLAY_SETTLE_FRAMES) {
+    const bool touch_ui = hud == HUD_MENU_OPENING || hud == HUD_MENU ||
+                          (hud == HUD_HUNTING && panel_state == PANELS_BIG);
+    const int forced = quest_map_off                     ? -1
+                       : options.quest_overlay_test >= 0 ? options.quest_overlay_test
+                                                         : QuestOverlayChoice::FREE;
+    if (!quest_choice.Update(EmulatedSeconds(), panels, quest_map_slot, map_drawn, touch_ui, forced)) {
         return;
     }
-    quest_overlay_shown = want;
-    Layout::SetScreenOverlay(want < 0 ? options.touch_overlay
-                                      : MapOverlay(options.touch_overlay, want, options.quest_overlay));
+    const int slot = quest_choice.Shown();
+    Layout::SetScreenOverlay(slot < 0 ? options.touch_overlay
+                                      : MapOverlay(options.touch_overlay, slot, options.quest_overlay));
     // the screen layout is worked out when it changes, so work it out again
     Core::System::GetInstance().GPU().Renderer().UpdateCurrentFramebufferLayout();
-    if (want < 0) {
+    if (slot < 0) {
         LOG_INFO(Frontend, "touch overlay: the whole touch screen");
     } else {
-        LOG_INFO(Frontend, "touch overlay: the quest's map (panel slot {})", want);
+        LOG_INFO(Frontend, "touch overlay: the quest's map (panel slot {})", slot);
     }
 }
 
@@ -824,6 +881,18 @@ constexpr Hook HOOKS[] = {
 std::vector<std::string> Install(const RCodeInfo& info) {
     std::vector<std::string> log;
     options = LoadOptions(log);
+    // a new boot (Azahar can start the game again in the same process): nothing carries over
+    // from the last one, whose emulated clock and game objects are gone
+    frames = 0;
+    owner_regions.clear();
+    quest_start_held = 0;
+    target_held = 0;
+    last_panel_touch = 0xFFFFFFFF;
+    quest_panels_ran = false;
+    quest_map_slot = -1;
+    quest_map_drawn = false;
+    quest_choice = {};
+    last_panel_states = 0xFFFFFFFF;
     // local wireless play over network rooms, for any program on recompiled code
     NetSync::Install(Core::System::GetInstance(), options.net_sync, options.net_sync_slack, log);
     if (!info.set_hook || info.hook_count == 0) {
@@ -983,6 +1052,28 @@ Layout::ScreenOverlay MapOverlay(const Layout::ScreenOverlay& overlay, int slot,
     // at the touch overlay's own scale unless a height is given
     map.height = height > 0 ? height : overlay.height * (map.crop_bottom - map.crop_top);
     return map;
+}
+
+bool QuestOverlayChoice::Update(double time, bool panels, int map_slot, bool map_drawn, bool touch_ui,
+                                int forced) {
+    if (panels || map_drawn) {
+        panels_seen = true;
+        panels_last = time;
+    }
+    const bool gone = !panels_seen || time - panels_last >= HOLD;
+    const int want = forced != FREE     ? forced
+                     : panels           ? map_slot
+                     : touch_ui || gone ? -1
+                                        : shown; // a short break: keep what is shown
+    if (want != next) {
+        next = want;
+        next_since = time;
+    }
+    if (want == shown || time - next_since < SETTLE) {
+        return false;
+    }
+    shown = want;
+    return true;
 }
 
 } // namespace Port::Hooks

@@ -420,6 +420,43 @@ def test_quest_map_overlay(quest, slot, expected):
     assert r.stdout == expected
 
 
+QUEST_FLICKER = ",".join(["map0:2"] + ["none:0.3,map0:0.3"] * 6 + ["map0:1"])
+
+
+@pytest.mark.skipif(not os.environ.get("MH4U_RUNNER"), reason="port not built (set MH4U_RUNNER)")
+@pytest.mark.parametrize("fps", [30, 60, 120, 180])
+@pytest.mark.parametrize("spans, expected", [
+    # each change of area stops the small panels for a second or two: the map stays
+    ("map0:3,none:1.5,map0:3,none:1.8,map0:2", [(0.1, "map in slot 0")]),
+    # panels that come and go many times in a few seconds: the map stays
+    (QUEST_FLICKER, [(0.1, "map in slot 0")]),
+    # the quest menu (or a big panel) has buttons on the touch screen: all of it, at once
+    ("map0:3,menu:2,map0:2", [(0.1, "map in slot 0"), (3.1, "whole touch screen"), (5.1, "map in slot 0")]),
+    # someone talks: the panels don't run, but the touch screen still shows them
+    ("map0:1,drawn:20,map0:1", [(0.1, "map in slot 0")]),
+    # a long break with no panels on the touch screen (the quest is over): the whole touch
+    # screen after 5 s
+    ("map3:2,none:7,map3:2", [(0.1, "map in slot 3"), (7.1, "whole touch screen"), (9.1, "map in slot 3")]),
+    ("map0:3,none:8", [(0.1, "map in slot 0"), (8.1, "whole touch screen")]),
+    # F12, and a panel layout without the map
+    ("map4:2,off:2,map4:2,nomap:1", [(0.1, "map in slot 4"), (2.1, "whole touch screen"),
+                                     (4.1, "map in slot 4"), (6.1, "whole touch screen")]),
+])
+def test_quest_overlay_choice(fps, spans, expected):
+    """What the touch overlay shows in a quest, frame by frame: the map while the small panels
+    are up, kept through short breaks (a change of area, a cutscene) so that the corner doesn't
+    flicker between the map and the whole touch screen; the whole touch screen for the quest
+    menu and big panels, and once the panels have been gone for a while. The same at any frame
+    rate: the times are emulated seconds."""
+    r = subprocess.run([os.environ["MH4U_RUNNER"], "--quest-overlay-frames", str(fps), spans],
+                       capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0, r.stderr
+    changes = [(float(t), what) for t, what in re.findall(r"^([0-9.]+) s: the (.+)$", r.stdout, re.M)]
+    assert [what for _, what in changes] == [what for _, what in expected], r.stdout
+    for (t, _), (want, _) in zip(changes, expected):
+        assert abs(t - want) <= 1.5 / fps + 1e-6, r.stdout
+
+
 def _normalized_log(text: str, user_dir: str) -> list[str]:
     """Azahar's log lines (written by its own thread, so the runner's prints can land
     anywhere between them), without timestamps, user paths and the backend's own lines."""

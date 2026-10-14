@@ -27,7 +27,7 @@ bool SetOption(const std::string& key, const std::string& value);
 
 /// In quests, switches the touch overlay between the map alone (quest_overlay) and the whole
 /// touch screen (for the chat or the item shortcuts), until switched back. Safe to call from
-/// any thread; it takes effect a few frames later.
+/// any thread; it takes effect a moment later.
 void ToggleQuestMap();
 
 /// How many of the port's hook points the code library loaded last didn't have (it was built
@@ -47,5 +47,38 @@ float ParseQuestOverlay(std::string value);
 /// the left column from the top, 3-5 the right one), `height` times the window's height
 /// (0: at the overlay's own scale).
 Layout::ScreenOverlay MapOverlay(const Layout::ScreenOverlay& overlay, int slot, float height);
+
+/// What the touch overlay shows in a quest (quest_overlay), worked out once a frame. The map
+/// alone while the quest's small touch panels are up; the whole touch screen while the quest
+/// menu or a big panel is on it (both take taps), when the panels have no map, and once the
+/// panels have been gone from the touch screen for a while (the quest is over). Through
+/// shorter breaks, a change of area or a cutscene, and while someone talks (the panels stay
+/// on the touch screen but don't run), it keeps what it shows, so that the corner doesn't jump
+/// between the two. A change shows once it has lasted a moment. Times are emulated seconds,
+/// so the frame rate makes no difference.
+class QuestOverlayChoice {
+public:
+    static constexpr double SETTLE = 0.1;  // a change shows once it has lasted this long
+    static constexpr double HOLD = 5.0;    // without the panels this long: out of the quest
+    static constexpr int FREE = -2;        // `forced`: no slot forced
+
+    /// One frame at `time`: `panels` whether the small panels ran, with the map in `map_slot`
+    /// (-1 none); `map_drawn` whether the map panel was drawn on the touch screen all the same;
+    /// `touch_ui` whether the quest menu or a big panel was up. `forced` overrides the choice
+    /// (-1: the whole touch screen). Returns true when Shown() changes.
+    bool Update(double time, bool panels, int map_slot, bool map_drawn, bool touch_ui, int forced = FREE);
+
+    /// The map's slot the overlay shows, or -1 for the whole touch screen.
+    int Shown() const {
+        return shown;
+    }
+
+private:
+    int shown = -1;
+    int next = -1;           // what the frames since `next_since` asked for
+    double next_since = 0;
+    bool panels_seen = false;
+    double panels_last = 0;  // when the small panels last ran or were drawn
+};
 
 } // namespace Port::Hooks

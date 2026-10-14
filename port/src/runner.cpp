@@ -114,6 +114,12 @@ or:    mh4u_runner --overlay-layout SPEC WIDTHxHEIGHT[:TOP_WIDTH] [QUEST SLOT]
                     with the quest_overlay option QUEST and the map's touch-panel slot,
                     the layout while a quest's panels are up, the part of the touch screen
                     shown, and where on the touch screen a click in the overlay's middle lands
+or:    mh4u_runner --quest-overlay-frames FPS KIND:SECONDS[,KIND:SECONDS...]
+                    run a made-up quest's frames through the choice of what the touch overlay
+                    shows and print each change; KIND: map0..map5 (the small panels up, the map
+                    in that slot), nomap, drawn (on the touch screen but not running: someone
+                    talking), none (no panels: a change of area), menu (the quest menu or a big
+                    panel), off (F12)
 or:    mh4u_runner --install CIA [--install CIA...] [--user DIR]
                     install CIAs (the game's update, say) into an Azahar user folder and
                     exit, as Azahar's File > Install CIA... does
@@ -721,9 +727,68 @@ int PrintOverlayLayout(const std::string& spec, const std::string& size, const s
     return 0;
 }
 
+/// --quest-overlay-frames: runs the frames of a made-up quest at FPS frames a second through
+/// the choice of what the touch overlay shows (Port::Hooks::QuestOverlayChoice) and prints each
+/// change. SPANS: KIND:SECONDS,... with KIND map0..map5 (the small panels up, the map in that
+/// slot), nomap (up, with no map), drawn (not running but on the touch screen: someone
+/// talking), none (not there: a change of area), menu (the quest menu or a big panel) or off
+/// (F12: the whole touch screen, the panels up).
+int PrintQuestOverlayFrames(const std::string& fps_text, const std::string& spans) {
+    using Choice = Port::Hooks::QuestOverlayChoice;
+    const double fps = std::atof(fps_text.c_str());
+    if (fps <= 0) {
+        return Usage();
+    }
+    Choice choice;
+    long long frame = 0;
+    double span_end = 0;
+    std::stringstream list(spans);
+    std::string span;
+    while (std::getline(list, span, ',')) {
+        const auto colon = span.find(':');
+        if (colon == std::string::npos) {
+            return Usage();
+        }
+        const std::string kind = span.substr(0, colon);
+        bool panels = false, map_drawn = false, touch_ui = false;
+        int slot = -1, forced = Choice::FREE;
+        if (kind.size() == 4 && kind.compare(0, 3, "map") == 0 && kind[3] >= '0' && kind[3] <= '5') {
+            panels = true;
+            slot = kind[3] - '0';
+        } else if (kind == "nomap") {
+            panels = true;
+        } else if (kind == "drawn") {
+            map_drawn = true;
+        } else if (kind == "menu") {
+            touch_ui = true;
+        } else if (kind == "off") {
+            panels = true;
+            slot = 0;
+            forced = -1;
+        } else if (kind != "none") {
+            return Usage();
+        }
+        span_end += std::atof(span.c_str() + colon + 1);
+        for (; static_cast<double>(frame) / fps < span_end - 1e-9; ++frame) {
+            const double time = static_cast<double>(frame) / fps;
+            if (choice.Update(time, panels, slot, map_drawn, touch_ui, forced)) {
+                if (choice.Shown() < 0) {
+                    std::printf("%.3f s: the whole touch screen\n", time);
+                } else {
+                    std::printf("%.3f s: the map in slot %d\n", time, choice.Shown());
+                }
+            }
+        }
+    }
+    return 0;
+}
+
 int main(int argc, char** argv) {
     if ((argc == 4 || argc == 6) && std::string(argv[1]) == "--overlay-layout") {
         return PrintOverlayLayout(argv[2], argv[3], argc == 6 ? argv[4] : "", argc == 6 ? argv[5] : "");
+    }
+    if (argc == 4 && std::string(argv[1]) == "--quest-overlay-frames") {
+        return PrintQuestOverlayFrames(argv[2], argv[3]);
     }
     std::string path;
     std::string code_library;
