@@ -35,6 +35,12 @@ add_executable(mh4u_runner src/runner.cpp)
 target_include_directories(mh4u_runner PRIVATE "${MH4U_RUNTIME_DIR}")
 target_link_libraries(mh4u_runner PRIVATE mh4u_backend network)
 
+# The port's own app (app/): a window of its own (SDL2) instead of Azahar's Qt interface.
+option(MH4U_APP "Build the port's own app (needs SDL2)" ON)
+if (MH4U_APP AND ENABLE_SDL2)
+    add_subdirectory(app)
+endif()
+
 # Recompiled code from `dir` as a shared library for --code.
 function(mh4u_add_code_library name dir)
     file(GLOB code CONFIGURE_DEPENDS "${dir}/src/*.c")

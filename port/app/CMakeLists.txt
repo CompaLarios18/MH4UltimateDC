@@ -1,0 +1,43 @@
+# mh4u: the port's own app (main.cpp). A window of its own (SDL2) around Azahar's core with the
+# game's recompiled code as the CPU. Built with port/ when Azahar is configured with SDL2.
+
+add_executable(mh4u
+    config.cpp
+    config.h
+    dialog.cpp
+    dialog.h
+    input.cpp
+    input.h
+    main.cpp
+    window.cpp
+    window.h
+)
+if (ENABLE_OPENGL)
+    target_sources(mh4u PRIVATE window_gl.cpp)
+    target_link_libraries(mh4u PRIVATE glad)
+endif()
+if (ENABLE_VULKAN)
+    target_sources(mh4u PRIVATE window_vk.cpp)
+endif()
+if (ENABLE_SOFTWARE_RENDERER)
+    target_sources(mh4u PRIVATE window_sw.cpp)
+endif()
+
+target_compile_definitions(mh4u PRIVATE SDL_MAIN_HANDLED)
+target_link_libraries(mh4u PRIVATE mh4u_backend audio_core citra_common citra_core input_common
+                      network video_core inih SDL2::SDL2 ${PLATFORM_LIBRARIES} Threads::Threads)
+if (ENABLE_WEB_SERVICE)
+    target_link_libraries(mh4u PRIVATE web_service)
+endif()
+
+if (WIN32)
+    # a game's window, no console window behind it (main.cpp has a WinMain)
+    set_target_properties(mh4u PROPERTIES WIN32_EXECUTABLE TRUE)
+    target_link_libraries(mh4u PRIVATE comdlg32 shell32)
+endif()
+if (APPLE)
+    # Vulkan runs on MoltenVK, which Azahar's build fetches (MOLTENVK_LIBRARY); the package puts
+    # it next to the executable
+    set_target_properties(mh4u PROPERTIES BUILD_RPATH "@executable_path"
+                          INSTALL_RPATH "@executable_path;@executable_path/../Frameworks")
+endif()
