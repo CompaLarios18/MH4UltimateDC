@@ -42,7 +42,7 @@ A hybrid is common: recompile everything first (B) to get a running port, then r
 - [x] Recompiled-code CPU backend for Azahar's core (`port/`, `Core::ARM_Interface`): paged memory, SVCs into Azahar's kernel, cycle accounting, one host fiber per guest thread. A multi-threaded test program prints the same results as with Azahar's JIT
 - [x] The game's own code boots like it does on Azahar's JIT (SDK start-up, services, static constructors) until it opens its RomFS
 - [x] Frontend: Azahar's own Qt interface loads the code library for the game it opens (no separate SDL frontend needed); Windows build in CI, run under Wine with a code library built by llvm-mingw (into gameplay, OpenGL, widescreen)
-- [x] `tools/build_game.py`: the user's dump to an installed code library in one command (fetches the compiler on Windows)
+- [x] `tools/build_game.py`: the user's dump to an installed code library in one command (fetches the compiler: llvm-mingw on Windows, Zig's C compiler on Linux and macOS when clang isn't installed)
 - [x] Hook points: native code around chosen game functions (`config/hooks.txt`, `port/src/hooks.cpp`); headless runner with input scripts and screenshots for automated runs of the real game
 - [x] Run the game with dynarmic and with the recompiled code side by side and diff them: same screens through first boot, intro movie (the hand-written video decoder needed new analysis patterns), title, character creation and the opening on the sand ship
 - [x] Boot to title screen, and into gameplay, at 60 fps; in-game save and load work

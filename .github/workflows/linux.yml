@@ -76,8 +76,9 @@ jobs:
           as an AppImage. Source: https://github.com/${GITHUB_REPOSITORY} (commit ${GITHUB_SHA}),
           https://github.com/azahar-emu/azahar plus mh4u/port/azahar/azahar.patch.
           No game code is included: build the game's code library from your own dump with
-          python3 tools/build_game.py --dump <your dump> --install
-          (it needs clang; the library goes to ~/.local/share/azahar-emu/recomp/).
+          python3 tools/build_game.py --dump <your dump> --install --fetch-compiler
+          (it uses clang if installed, otherwise downloads Zig's C compiler; the library goes to
+          ~/.local/share/azahar-emu/recomp/).
           EOF
       - name: Upload
         if: ${{ hashFiles('mh4u/LICENSE') != '' }}

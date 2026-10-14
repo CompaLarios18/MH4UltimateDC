@@ -22,8 +22,10 @@ From the repository folder:
 # Windows (PowerShell or cmd); --fetch-compiler downloads the C compiler (llvm-mingw) the first time
 py tools\build_game.py --dump "path\to\MH4U v1.3.0 update.cia" --install --fetch-compiler
 
-# Linux (needs clang)
-python3 tools/build_game.py --dump "path/to/MH4U v1.3.0 update.cia" --install
+# Linux: uses clang if it's installed; otherwise --fetch-compiler downloads Zig's C compiler
+# (about 80 MB, from PyPI), e.g. on a Steam Deck; it builds the same library about a third
+# slower than clang (tried on the full game: it runs into gameplay like the clang build)
+python3 tools/build_game.py --dump "path/to/MH4U v1.3.0 update.cia" --install --fetch-compiler
 ```
 
 It checks that the update is v1.3.0, recompiles its code (a couple of minutes), compiles it (several minutes; `-j N` sets the number of parallel jobs) and installs `recomp/0004000000126300.dll` (`.so` on Linux) into Azahar's user folder (`%APPDATA%\Azahar` on Windows, `~/.local/share/azahar-emu` on Linux; give another folder after `--install` for a portable setup). Everything it writes under `build/` contains game code: keep it to yourself.

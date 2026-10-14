@@ -14,7 +14,9 @@
    port's Azahar build picks it up (--install alone: Azahar's usual user directory).
 
 On Windows it needs llvm-mingw's clang; --fetch-compiler downloads it (from the
-llvm-mingw project on GitHub) into the output directory.
+llvm-mingw project on GitHub) into the output directory. On Linux and macOS it uses clang
+when it's installed; otherwise --fetch-compiler downloads Zig's C compiler (the `ziglang`
+package on PyPI, a self-contained clang with C library headers), e.g. on a Steam Deck.
 
 Everything this writes contains game code and stays on your machine.
 """
@@ -64,6 +66,83 @@ def default_user_dir() -> str:
     return os.path.join(data, "azahar-emu")
 
 
+ZIG_VERSION = "0.13.0"
+ZIG_INDEX = f"https://pypi.org/pypi/ziglang/{ZIG_VERSION}/json"
+ZIG_WRAPPER = "zigcc"
+
+
+def zig_wheel(index: dict, system: str, machine: str) -> dict:
+    """The entry of PyPI's file list for the ziglang wheel that runs here."""
+    machine = {"amd64": "x86_64", "arm64": "aarch64"}.get(machine.lower(), machine.lower())
+    if system == "darwin":
+        want = ("macosx", "x86_64" if machine == "x86_64" else "arm64")
+    elif system == "linux":
+        want = ("manylinux", machine)
+    else:
+        raise SystemExit(f"no Zig download for {system}")
+    for f in index.get("urls", []):
+        name = f.get("filename", "")
+        if name.endswith(".whl") and all(w in name for w in want):
+            return f
+    raise SystemExit(f"no ziglang {ZIG_VERSION} wheel for {system} {machine}")
+
+
+def zig_wrapper(toolchain_dir: str) -> str | None:
+    """The `zig cc` wrapper of an unpacked Zig, if there is one."""
+    path = os.path.join(toolchain_dir, ZIG_WRAPPER)
+    return path if os.path.isfile(path) else None
+
+
+def fetch_zig(toolchain_dir: str, index_url: str = ZIG_INDEX, system: str | None = None,
+              machine: str | None = None) -> str:
+    """Download the ziglang wheel from PyPI (checking its SHA-256), unpack it into
+    toolchain_dir and write a `zigcc` script that runs `zig cc`; returns that script."""
+    import hashlib
+    import platform
+    found = zig_wrapper(toolchain_dir)
+    if found:
+        return found
+    os.makedirs(toolchain_dir, exist_ok=True)
+    with urllib.request.urlopen(index_url) as r:
+        index = json.load(r)
+    entry = zig_wheel(index, system or sys.platform, machine or platform.machine())
+    wheel = os.path.join(toolchain_dir, entry["filename"])
+    print(f"downloading {entry['url']}")
+    digest = hashlib.sha256()
+    with urllib.request.urlopen(entry["url"]) as r, open(wheel + ".part", "wb") as f:
+        total, done = int(r.headers.get("Content-Length") or 0), 0
+        while chunk := r.read(1 << 20):
+            f.write(chunk)
+            digest.update(chunk)
+            done += len(chunk)
+            if total:
+                print(f"\r  {done >> 20}/{total >> 20} MB", end="", flush=True)
+    print()
+    expected = entry.get("digests", {}).get("sha256")
+    if expected and digest.hexdigest() != expected:
+        os.remove(wheel + ".part")
+        raise SystemExit(f"{entry['filename']}: SHA-256 doesn't match PyPI's")
+    os.replace(wheel + ".part", wheel)
+    print(f"unpacking {entry['filename']}")
+    zig_dir = os.path.join(toolchain_dir, f"zig-{ZIG_VERSION}")
+    with zipfile.ZipFile(wheel) as z:
+        z.extractall(zig_dir)
+    os.remove(wheel)
+    zig = os.path.join(zig_dir, "ziglang", "zig")
+    if not os.path.isfile(zig):
+        raise SystemExit(f"{entry['filename']} doesn't contain ziglang/zig")
+    os.chmod(zig, os.stat(zig).st_mode | 0o111)   # zip files don't keep the x bit
+    wrapper = os.path.join(toolchain_dir, ZIG_WRAPPER)
+    with open(wrapper, "w") as f:
+        # zig cc turns on trapping undefined-behaviour checks at -O0 (the generated code is
+        # plain C that relies on -fwrapv and friends, not on those checks), and it writes
+        # debug info unless told not to: for the game's code, a build twice as long and a
+        # library five times the size
+        f.write(f'#!/bin/sh\nexec "{zig}" cc -fno-sanitize=undefined -g0 "$@"\n')
+    os.chmod(wrapper, 0o755)
+    return wrapper
+
+
 def fetched_compilers(toolchain_dir: str) -> list[str]:
     exe = ".exe" if sys.platform.startswith("win") else ""
     return sorted(glob.glob(os.path.join(toolchain_dir, "*", "bin", MINGW_CLANG + exe)))
@@ -111,13 +190,16 @@ def find_compiler(requested: str | None, toolchain_dir: str, fetch: bool) -> str
     for c in candidates:
         if shutil.which(c):
             return c
-    if fetched_compilers(toolchain_dir) or fetch:
-        return fetch_compiler(toolchain_dir)
     if windows:
+        if fetched_compilers(toolchain_dir) or fetch:
+            return fetch_compiler(toolchain_dir)
         raise SystemExit("no C compiler found: run again with --fetch-compiler to download llvm-mingw "
                          "(or install it from https://github.com/mstorsjo/llvm-mingw/releases and put its "
                          "bin folder on PATH)")
-    raise SystemExit("no C compiler found: install clang (LLVM)")
+    if zig_wrapper(toolchain_dir) or fetch:
+        return fetch_zig(toolchain_dir)
+    raise SystemExit("no C compiler found: install clang (LLVM), or run again with --fetch-compiler to "
+                     "download Zig's C compiler")
 
 
 def check_version(header: exh.ExHeader, code: bytes) -> dict | None:
@@ -141,7 +223,8 @@ def main(argv=None) -> int:
                     help="copy the library to AZAHAR_USER_DIR/recomp/; without a value, to Azahar's "
                          f"usual user directory ({default_user_dir()})")
     ap.add_argument("--fetch-compiler", action="store_true",
-                    help="no compiler installed: download llvm-mingw (Windows) into the output directory")
+                    help="no compiler installed: download llvm-mingw (Windows), or Zig's C compiler "
+                         "(Linux, macOS; used only without clang), into the output directory")
     ap.add_argument("--compiler-zip", default=LLVM_MINGW_URL, help=argparse.SUPPRESS)
     ap.add_argument("--any-version", action="store_true", help="don't insist on a known code.bin")
     ap.add_argument("--mods", metavar="AZAHAR_USER_DIR",
@@ -198,10 +281,10 @@ def main(argv=None) -> int:
         print(f"  warning: {p}")
 
     toolchain_dir = os.path.join(args.out, "toolchain")
-    if args.fetch_compiler and not args.cc:
+    if args.fetch_compiler and not args.cc and sys.platform.startswith("win"):
         cc = fetch_compiler(toolchain_dir, args.compiler_zip)
     else:
-        cc = find_compiler(args.cc, toolchain_dir, False)
+        cc = find_compiler(args.cc, toolchain_dir, args.fetch_compiler)
     name = library_name(program_id)
     print(f"compiling with {cc} -{args.opt} ({args.jobs} jobs; -O1 takes a while)")
     lib = rbuild.build(out, args.jobs, args.opt, ["RC_PAGED"], name, [rbuild.DLL_GLUE], cc=cc,

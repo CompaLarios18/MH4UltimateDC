@@ -110,6 +110,55 @@ def test_fetch_compiler_from_zip(tmp_path):
         assert out.returncode == 0 and "clang" in out.stdout
 
 
+def test_zig_wheel_choice():
+    """The ziglang wheel for this machine is picked from PyPI's file list."""
+    import build_game
+    index = {"urls": [{"filename": f"ziglang-0.13.0-py3-none-{tag}.whl", "url": tag} for tag in (
+        "macosx_10_9_x86_64", "macosx_11_0_arm64", "manylinux_2_12_x86_64.manylinux2010_x86_64",
+        "manylinux_2_17_aarch64.manylinux2014_aarch64", "win_amd64")] + [{"filename": "ziglang-0.13.0.tar.gz"}]}
+    assert build_game.zig_wheel(index, "linux", "x86_64")["url"].startswith("manylinux_2_12_x86_64")
+    assert build_game.zig_wheel(index, "linux", "aarch64")["url"].startswith("manylinux_2_17_aarch64")
+    assert build_game.zig_wheel(index, "linux", "AMD64")["url"].startswith("manylinux_2_12_x86_64")
+    assert build_game.zig_wheel(index, "darwin", "arm64")["url"] == "macosx_11_0_arm64"
+    assert build_game.zig_wheel(index, "darwin", "x86_64")["url"] == "macosx_10_9_x86_64"
+    with pytest.raises(SystemExit):
+        build_game.zig_wheel(index, "linux", "riscv64")
+
+
+@pytest.mark.skipif(sys.platform.startswith("win"), reason="POSIX shell scripts")
+def test_fetch_zig_from_local_index(tmp_path, monkeypatch):
+    """--fetch-compiler without clang on Linux: the wheel named by a (here local) PyPI index is
+    checked against its SHA-256, unpacked, and wrapped in a `zigcc` script that runs `zig cc`
+    (here a stand-in zig that runs the host clang); a later run finds it without downloading."""
+    import hashlib
+    import json
+    import zipfile
+    import build_game
+    wheel = tmp_path / "ziglang-0.13.0-py3-none-manylinux_2_12_x86_64.whl"
+    with zipfile.ZipFile(wheel, "w") as z:
+        z.writestr("ziglang/zig", '#!/bin/sh\n[ "$1" = cc ] || exit 9\nshift\nexec clang "$@"\n')
+        # (the wrapper also passes -fno-sanitize=undefined -g0, which clang accepts)
+        z.writestr("ziglang/lib/readme.txt", "headers")
+    sha = hashlib.sha256(wheel.read_bytes()).hexdigest()
+    index = tmp_path / "index.json"
+    entry = {"filename": wheel.name, "url": wheel.as_uri(), "digests": {"sha256": sha}}
+    index.write_text(json.dumps({"urls": [entry]}))
+    bad = tmp_path / "bad.json"
+    bad.write_text(json.dumps({"urls": [dict(entry, digests={"sha256": "0" * 64})]}))
+    with pytest.raises(SystemExit):
+        build_game.fetch_zig(str(tmp_path / "bad-toolchain"), bad.as_uri(), "linux", "x86_64")
+    toolchain = tmp_path / "toolchain"
+    cc = build_game.fetch_zig(str(toolchain), index.as_uri(), "linux", "x86_64")
+    assert cc == str(toolchain / "zigcc") and os.access(cc, os.X_OK)
+    out = subprocess.run([cc, "--version"], capture_output=True, text=True)
+    assert out.returncode == 0 and "clang" in out.stdout
+    wheel.unlink()                                   # found again without the download
+    monkeypatch.setattr(build_game.shutil, "which", lambda name: None)
+    assert build_game.find_compiler(None, str(toolchain), False) == cc
+    with pytest.raises(SystemExit, match="fetch-compiler"):
+        build_game.find_compiler(None, str(tmp_path / "empty"), False)
+
+
 def test_default_user_dir(monkeypatch):
     import build_game
     monkeypatch.setattr(sys, "platform", "linux")

@@ -42,7 +42,7 @@ python3 tools/recompile.py --exheader baserom/exheader.bin --code baserom/code.b
 (cd tools && python3 -m recomp.build ../build/recomp --harness --opt O0 -D RC_CHECK_RETURNS)
 
 # Or, to play: the update .cia straight to an installed code library (see docs/PLAYING.md)
-python3 tools/build_game.py --dump "MH4U v1.3.0 update.cia" --install
+python3 tools/build_game.py --dump "MH4U v1.3.0 update.cia" --install --fetch-compiler
 ```
 
 ## Layout
