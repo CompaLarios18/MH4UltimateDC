@@ -12,7 +12,7 @@ How to run Monster Hunter 4 Ultimate on a PC with this project: the game's own c
 - A PC: Windows 10/11 x64 or Linux x64 (macOS later). On Windows 11, **Smart App Control** must be off: it blocks the unsigned programs and libraries involved (Azahar's DLLs, the compiler, the code library) with "Bad Image ... 0xc0e90002". *Windows Security → App & browser control → Smart App Control settings → Off*; since the April 2026 update (KB5083769) it can be turned back on later without reinstalling Windows.
 - [Python](https://www.python.org/downloads/) 3.10 or newer (nothing else to install with it).
 - This repository (`git clone`, or *Code → Download ZIP* on GitHub).
-- The port's build of Azahar: on Windows, the `mh4u-port-windows` download of the latest successful run of this repository's [*Windows build* workflow](../../../actions/workflows/windows.yml); on Linux, the `mh4u-port-linux` download (an AppImage; tried on Ubuntu 24.04: it runs the game on recompiled code) of the [*Linux build* workflow](../../../actions/workflows/linux.yml), or build it yourself ([port/README.md](../port/README.md)). Downloads from workflow runs need a GitHub account.
+- The port's build of Azahar: on Windows, the `mh4u-port-windows` download of the latest successful run of this repository's [*Windows build* workflow](../../../actions/workflows/windows.yml); on Linux, the `mh4u-port-linux` download (an AppImage; tried on Ubuntu 24.04: it runs the game on recompiled code) of the [*Linux build* workflow](../../../actions/workflows/linux.yml), on a Mac with Apple silicon, the `mh4u-port-macos` download of the [*macOS build* workflow](../../../actions/workflows/macos.yml) (an app, not tried on a Mac yet; right-click it and choose *Open* the first time); or build it yourself ([port/README.md](../port/README.md)). Downloads from workflow runs need a GitHub account.
 
 ## 1. Make the game's code library
 
@@ -26,9 +26,13 @@ py tools\build_game.py --dump "path\to\MH4U v1.3.0 update.cia" --install --fetch
 # (about 80 MB, from PyPI), e.g. on a Steam Deck; it builds the same library about a third
 # slower than clang (tried on the full game: it runs into gameplay like the clang build)
 python3 tools/build_game.py --dump "path/to/MH4U v1.3.0 update.cia" --install --fetch-compiler
+
+# macOS: the Xcode command-line tools' clang (xcode-select --install) and Python 3.10 or
+# later (python.org or Homebrew; the command-line tools' own Python is older)
+python3 tools/build_game.py --dump "path/to/MH4U v1.3.0 update.cia" --install
 ```
 
-It checks that the update is v1.3.0, recompiles its code (a couple of minutes), compiles it (several minutes; `-j N` sets the number of parallel jobs) and installs `recomp/0004000000126300.dll` (`.so` on Linux) into Azahar's user folder (`%APPDATA%\Azahar` on Windows, `~/.local/share/azahar-emu` on Linux; give another folder after `--install` for a portable setup). Everything it writes under `build/` contains game code: keep it to yourself.
+It checks that the update is v1.3.0, recompiles its code (a couple of minutes), compiles it (several minutes; `-j N` sets the number of parallel jobs) and installs `recomp/0004000000126300.dll` (`.so` on Linux, `.dylib` on macOS) into Azahar's user folder (`%APPDATA%\Azahar` on Windows, `~/.local/share/azahar-emu` on Linux, `~/Library/Application Support/Azahar` on macOS; give another folder after `--install` for a portable setup). Everything it writes under `build/` contains game code: keep it to yourself.
 
 ## 2. Set up Azahar
 

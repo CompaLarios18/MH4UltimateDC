@@ -1,0 +1,85 @@
+name: macOS build
+
+# Azahar at the commit in port/azahar/COMMIT, with port/azahar/azahar.patch and the port's
+# CPU backend, built as an app for Apple silicon the way Azahar's own CI builds its macOS
+# release (without FFmpeg, which only video dumping uses). It contains no game code: the
+# game's code library is made on the player's Mac from their own dump (tools/build_game.py)
+# and loaded at run time. Published under the repository's licence (GPL-3.0-or-later, like
+# Azahar) with the matching source (this repository at the built commit, Azahar at
+# port/azahar/COMMIT plus port/azahar/azahar.patch). Not tried on a Mac yet.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "port/**"
+      - "tools/recomp/runtime/**"
+      - ".github/workflows/macos.yml"
+
+jobs:
+  app:
+    runs-on: macos-26
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_COMPILERCHECK: content
+      CCACHE_SLOPPINESS: time_macros
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: mh4u
+      - name: Azahar at the pinned commit, with the port's patch
+        run: |
+          git clone https://github.com/azahar-emu/azahar.git azahar
+          cd azahar
+          git checkout "$(cat ../mh4u/port/azahar/COMMIT)"
+          git submodule update --init --recursive --depth 1
+          git apply ../mh4u/port/azahar/azahar.patch
+      - name: Tools
+        run: brew install ccache ninja spirv-tools
+      - name: Compiler cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: macos-${{ hashFiles('mh4u/port/azahar/COMMIT') }}-${{ github.sha }}
+          restore-keys: macos-${{ hashFiles('mh4u/port/azahar/COMMIT') }}-
+      - name: Build
+        run: |
+          mkdir -p azahar/build && cd azahar/build
+          cmake .. -GNinja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DENABLE_ROOM_STANDALONE=OFF \
+            -DENABLE_FFMPEG=OFF \
+            -DENABLE_TESTS=OFF \
+            -DMH4U_PORT_DIR="${GITHUB_WORKSPACE}/mh4u/port"
+          ninja
+          ninja bundle
+          ccache -s
+      - name: Package
+        if: ${{ hashFiles('mh4u/LICENSE') != '' }}
+        run: |
+          mkdir -p artifacts/mh4u-port-macos
+          cp -R azahar/build/bundle/azahar.app artifacts/mh4u-port-macos/Azahar-mh4u.app
+          cp mh4u/LICENSE artifacts/mh4u-port-macos/LICENSE-mh4u-port.txt
+          cat > artifacts/mh4u-port-macos/README-mh4u.txt <<EOF
+          Azahar ($(cat mh4u/port/azahar/COMMIT)) with the MH4U port's recompiled-code CPU backend,
+          as an app for Apple silicon Macs. Source: https://github.com/${GITHUB_REPOSITORY}
+          (commit ${GITHUB_SHA}), https://github.com/azahar-emu/azahar plus mh4u/port/azahar/azahar.patch.
+          The app is not notarized: the first time, right-click it and choose Open.
+          No game code is included: build the game's code library from your own dump with
+          python3 tools/build_game.py --dump <your dump> --install
+          (it needs the Xcode command-line tools, from xcode-select --install, and Python 3.10 or
+          later; the library goes to ~/Library/Application Support/Azahar/recomp/).
+          EOF
+          # a zip keeps the app's symbolic links and permissions, which an artifact upload doesn't
+          (cd artifacts && ditto -c -k --keepParent mh4u-port-macos mh4u-port-macos.zip && rm -rf mh4u-port-macos)
+      - name: Upload
+        if: ${{ hashFiles('mh4u/LICENSE') != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: mh4u-port-macos
+          path: artifacts/
+          retention-days: 14

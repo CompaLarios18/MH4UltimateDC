@@ -1,3 +1,9 @@
+#if defined(__APPLE__) && !defined(_XOPEN_SOURCE)
+// macOS keeps its ucontext routines (deprecated, still there) behind _XOPEN_SOURCE, which
+// in turn hides BSD names such as MAP_ANONYMOUS unless _DARWIN_C_SOURCE is defined too
+#define _XOPEN_SOURCE 600
+#define _DARWIN_C_SOURCE
+#endif
 #include "fiber.h"
 
 #include <cstdint>
