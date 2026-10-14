@@ -70,6 +70,7 @@ jobs:
           mkdir -p artifacts/mh4u-port-windows/mh4u-tools
           cp -r azahar/build/bundle/* artifacts/mh4u-port-windows/
           cp mh4u/LICENSE artifacts/mh4u-port-windows/LICENSE-mh4u-port.txt
+          cp azahar/LICENSE.txt artifacts/mh4u-port-windows/LICENSE-azahar.txt
           # the tools that make the game's code library on the player's PC, and a script for them
           cp -r mh4u/tools mh4u/config artifacts/mh4u-port-windows/mh4u-tools/
           find artifacts/mh4u-port-windows/mh4u-tools -name __pycache__ -prune -exec rm -rf {} +

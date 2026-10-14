@@ -65,6 +65,7 @@ jobs:
           mkdir -p artifacts/mh4u-port-macos/mh4u-tools
           cp -R azahar/build/bundle/azahar.app artifacts/mh4u-port-macos/Azahar-mh4u.app
           cp mh4u/LICENSE artifacts/mh4u-port-macos/LICENSE-mh4u-port.txt
+          cp azahar/LICENSE.txt artifacts/mh4u-port-macos/LICENSE-azahar.txt
           # the tools that build the game's code library from the player's own update
           cp -R mh4u/tools mh4u/config artifacts/mh4u-port-macos/mh4u-tools/
           find artifacts/mh4u-port-macos/mh4u-tools -name __pycache__ -prune -exec rm -rf {} +
