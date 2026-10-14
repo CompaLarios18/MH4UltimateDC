@@ -420,6 +420,12 @@ constexpr u32 HUD_LEFT[] = {
     0xB2DA1296,  // next to the sharpness
     0x8AC1CCC4,  // party list: the hunter
     0xFDC6FC52,  // party list: the Palico
+    0x64CFADE8,  // party list: a second hunter (local play)
+    0x13C89D7E,  // party list: the second hunter's Palico
+    0x4639C2C3,  // party list rows that were empty when traced (after the rows above, before the
+    0x60497133,  //   item bar's objects): the other players' rows in a larger party
+    0x174E41A5,
+    0x892AD406,
 };
 constexpr u32 HUD_RIGHT[] = {
     0x1833E2C8,  // item selection
