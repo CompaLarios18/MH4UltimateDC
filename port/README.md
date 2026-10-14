@@ -19,7 +19,7 @@ The runner contains no game code. The game's recompiled code is a separate share
 
 ## Building (Linux; Windows, Linux and macOS in CI)
 
-The repository's workflows build the port's Azahar for Windows (MXE, `.github/workflows/windows.yml`), Linux (an AppImage, `.github/workflows/linux.yml`) and macOS (an app for Apple silicon, `.github/workflows/macos.yml`) on every change to `port/`. To build it yourself on Linux:
+The repository's workflows build the port's Azahar for Windows (MXE, `.github/workflows/windows.yml`), Linux (an AppImage, `.github/workflows/linux.yml`) and macOS (an app for Apple silicon, `.github/workflows/macos.yml`) on every change to `port/`, and package the port's own app (`app/`, built with Azahar when SDL2 is on) with it: `mh4u.exe` next to `azahar.exe`, a second AppImage `mh4u.AppImage`, and `MH4U.app` (with MoltenVK in its `Contents/Frameworks`). To build it yourself on Linux:
 
 ```bash
 # Azahar at the pinned commit, with the patch

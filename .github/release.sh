@@ -52,10 +52,20 @@ for system in windows linux macos; do
     gh run download "$id" -R "$repo" -n "mh4u-port-$system" -D "$out/dl/$system"
 done
 
-# Windows: the folder as a zip; Linux: a tarball, which keeps the AppImage and the script
-# executable; macOS: the workflow's own zip (made with ditto, which keeps the app intact)
+# every package has the port's app, which the release notes start the game with
+linux="$out/dl/linux/mh4u-port-linux"
+for app in "$out/dl/windows/mh4u-port-windows/mh4u.exe" "$linux/mh4u.AppImage"; do
+    [ -f "$app" ] || { echo "the packages of $commit have no ${app##*/}: release a newer commit" >&2; exit 1; }
+done
+# (grep reads the whole list: with -q, unzip could die of a closed pipe and fail the check)
+unzip -Z1 "$out/dl/macos/mh4u-port-macos.zip" | grep -x "mh4u-port-macos/MH4U.app/Contents/MacOS/mh4u" >/dev/null ||
+    { echo "the packages of $commit have no MH4U.app: release a newer commit" >&2; exit 1; }
+
+# Windows: the folder as a zip; Linux: a tarball, which keeps the AppImages and the scripts
+# executable; macOS: the workflow's own zip (made with ditto, which keeps the apps intact)
 (cd "$out/dl/windows" && zip -q -r -9 ../../mh4u-port-windows.zip mh4u-port-windows)
-chmod +x "$out/dl/linux/mh4u-port-linux/azahar-mh4u.AppImage" "$out/dl/linux/mh4u-port-linux/build-code-library.sh"
+chmod +x "$linux"/*.AppImage
+find "$linux" -name '*.sh' -exec chmod +x {} +
 tar czf "$out/mh4u-port-linux.tar.gz" -C "$out/dl/linux" mh4u-port-linux
 cp "$out/dl/macos/mh4u-port-macos.zip" "$out/"
 

@@ -10,20 +10,23 @@ These packages contain **no game code or data**. You need your own decrypted cop
 
 | System | File | Status |
 |---|---|---|
-| Windows 10/11 (x64) | `mh4u-port-windows.zip` | played for hours, hunts included, at 120 fps |
-| Linux (x86-64, Steam Deck too) | `mh4u-port-linux.tar.gz` | an AppImage; tried on Ubuntu 24.04 |
-| macOS (Apple silicon) | `mh4u-port-macos.zip` | builds; not tried on a Mac yet |
+| Windows 10/11 (x64) | `mh4u-port-windows.zip` | played for hours, hunts included, at 120 fps (in Azahar) |
+| Linux (x86-64, Steam Deck too) | `mh4u-port-linux.tar.gz` | two AppImages, the app and Azahar; Azahar tried on Ubuntu 24.04 |
+| macOS (Apple silicon) | `mh4u-port-macos.zip` | two apps, MH4U and Azahar; builds, not tried on a Mac yet |
+
+Each package has the port's own app (`mh4u.exe`, `mh4u.AppImage`, `MH4U.app`), which opens the game directly, and Azahar with the port (`azahar.exe`, `azahar-mh4u.AppImage`, `Azahar-mh4u.app`) for everything the app doesn't do yet.
 
 ## How to play (Windows)
 
 1. Install [Python](https://www.python.org/downloads/) 3.10 or newer (tick *Add python.exe to PATH*).
 2. Unzip, double-click `Build code library.bat` and choose your v1.3.0 update `.cia`. It builds the game's code library (the first time it downloads the C compiler, about 180 MB) and installs the update in Azahar.
-3. Start `azahar.exe`: *File → Load File…* → your game.
+3. Double-click `mh4u.exe`. The first time it asks for your game, then it opens it full screen (F11: a window).
 
-Options (frame rate, widescreen, the touch screen…): *Tools → MH4U Port Options…*. If Windows 11's Smart App Control blocks `azahar.exe` (unsigned), it has to be turned off. Linux and macOS: the steps are in `README-mh4u.txt` in each package.
+The app's settings (renderer, screens, keys, controller, a multiplayer room) are in `%APPDATA%\Azahar\mh4u-app.ini`, the game's options (frame rate, widescreen, the touch screen…) in `mh4u.ini` next to it. `azahar.exe` plays the game too (*File → Load File…*), installs other CIAs and has Azahar's settings and *Tools → MH4U Port Options…*. If Windows 11's Smart App Control blocks `mh4u.exe` or `azahar.exe` (unsigned), it has to be turned off. Linux and macOS: the steps are in `README-mh4u.txt` in each package.
 
 ## What's in it
 
+- **The port's own app**: the game opens directly in a window of its own, full screen, with the keyboard, a controller mapped on its own (like MH3U on a Wii U) and the mouse as the stylus; Vulkan, OpenGL or software rendering; multiplayer rooms from its settings.
 - **Frame rate**: 60, 120 or your monitor's rate (`fps = 120`); the game keeps its normal speed.
 - **Widescreen drawn at full width**: 16:9, 21:9 and 32:9, with the hunting HUD at the screen's edges; 16:10 and 4:3 without distortion.
 - **The touch screen** as an overlay in a corner of a full-window game (*View → Screen Layout → Custom Layout*); in quests just the map; the kick and the target camera on buttons.
@@ -33,10 +36,11 @@ Options (frame rate, widescreen, the touch screen…): *Tools → MH4U Port Opti
 
 ## Multiplayer in short
 
-Azahar has no public room list, so one player hosts: *Multiplayer → Create Room*, type *Unlisted*, with UDP port 24872 forwarded on the router (or everyone in one virtual network: Tailscale, ZeroTier, Radmin VPN). The others use *Multiplayer → Direct Connect to Room*. Everyone needs their own name in *Emulation → Configure → System → Username*.
+Azahar has no public room list, so one player hosts: *Multiplayer → Create Room*, type *Unlisted*, with UDP port 24872 forwarded on the router (or everyone in one virtual network: Tailscale, ZeroTier, Radmin VPN). The others use *Multiplayer → Direct Connect to Room*. Everyone needs their own name in *Emulation → Configure → System → Username*. In the app, the same is `host = 24872` or `join = <the host's address>`, and `nickname`, in `mh4u-app.ini`.
 
 ## Known limits
 
+- The app is new: it can't install CIAs or change Azahar's settings yet (Azahar, in the same package, does), and only Azahar has been played for hours.
 - Save states don't work with the recompiled code: save in the game.
 - Cheats that rewrite code don't apply (ones that change data do).
 - The macOS build hasn't been tried on a Mac yet.
