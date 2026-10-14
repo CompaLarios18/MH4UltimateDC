@@ -107,11 +107,27 @@ index 5920595..f47c4ab 100644
      std::vector<std::shared_ptr<ARM_Interface>> cpu_cores;
      ARM_Interface* running_core = nullptr;
  
+diff --git a/src/core/frontend/emu_window.cpp b/src/core/frontend/emu_window.cpp
+index 9a2d032..803a647 100644
+--- a/src/core/frontend/emu_window.cpp
++++ b/src/core/frontend/emu_window.cpp
+@@ -148,6 +148,11 @@ bool EmuWindow::TouchPressed(unsigned framebuffer_x, unsigned framebuffer_y) {
+         touch_state->touch_x = 1.f - touch_state->touch_x;
+     }
+ 
++    // a bottom screen showing only part of itself (the port's touch-screen overlay)
++    const auto& crop = framebuffer_layout.bottom_crop;
++    touch_state->touch_x = crop.left + touch_state->touch_x * (crop.right - crop.left);
++    touch_state->touch_y = crop.top + touch_state->touch_y * (crop.bottom - crop.top);
++
+     touch_state->touch_pressed = true;
+     return true;
+ }
 diff --git a/src/core/frontend/framebuffer_layout.cpp b/src/core/frontend/framebuffer_layout.cpp
-index 1ed74f1..9a321c1 100644
+index 1ed74f1..9ccbf32 100644
 --- a/src/core/frontend/framebuffer_layout.cpp
 +++ b/src/core/frontend/framebuffer_layout.cpp
-@@ -2,23 +2,54 @@
+@@ -2,23 +2,59 @@
  // Licensed under GPLv2 or any later version
  // Refer to the misc/licenses/gplv2.txt file included.
  
@@ -146,6 +162,11 @@ index 1ed74f1..9a321c1 100644
 +    screen_overlay = overlay;
 +    screen_overlay.height = std::clamp(overlay.height, 0.0f, 1.0f);
 +    screen_overlay.opacity = std::clamp(overlay.opacity, 0.0f, 1.0f);
++    // a crop of at least 1% each way, inside the screen
++    screen_overlay.crop_left = std::clamp(overlay.crop_left, 0.0f, 0.99f);
++    screen_overlay.crop_top = std::clamp(overlay.crop_top, 0.0f, 0.99f);
++    screen_overlay.crop_right = std::clamp(overlay.crop_right, screen_overlay.crop_left + 0.01f, 1.0f);
++    screen_overlay.crop_bottom = std::clamp(overlay.crop_bottom, screen_overlay.crop_top + 0.01f, 1.0f);
 +}
 +
 +u32 TopScreenWidth() {
@@ -169,7 +190,7 @@ index 1ed74f1..9a321c1 100644
      } else {
          return static_cast<u32>(((top_screen.GetWidth() - 1) / Core::kScreenTopHeight) + 1);
      }
-@@ -132,7 +163,7 @@ FramebufferLayout SingleFrameLayout(u32 width, u32 height, bool swapped, bool up
+@@ -132,7 +168,7 @@ FramebufferLayout SingleFrameLayout(u32 width, u32 height, bool swapped, bool up
      FramebufferLayout res{width, height, !swapped, swapped, {}, {}, !upright};
  
      Common::Rectangle<u32> screen_window_area{0, 0, width, height};
@@ -178,7 +199,7 @@ index 1ed74f1..9a321c1 100644
      Common::Rectangle<u32> bot_screen{0, 0, Core::kScreenBottomWidth, Core::kScreenBottomHeight};
  
      const float window_aspect_ratio = static_cast<float>(height) / static_cast<float>(width);
-@@ -202,8 +233,8 @@ FramebufferLayout LargeFrameLayout(u32 width, u32 height, bool swapped, bool upr
+@@ -202,8 +238,8 @@ FramebufferLayout LargeFrameLayout(u32 width, u32 height, bool swapped, bool upr
      u32 large_height = swapped ? Core::kScreenBottomHeight : Core::kScreenTopHeight;
      u32 small_height = static_cast<u32>(swapped ? Core::kScreenTopHeight / scale_factor
                                                  : Core::kScreenBottomHeight / scale_factor);
@@ -189,7 +210,7 @@ index 1ed74f1..9a321c1 100644
                                                 : Core::kScreenBottomWidth / scale_factor);
  
      u32 emulation_width;
-@@ -371,9 +402,46 @@ FramebufferLayout AndroidSecondaryLayout(u32 width, u32 height) {
+@@ -371,9 +407,70 @@ FramebufferLayout AndroidSecondaryLayout(u32 width, u32 height) {
      }
  }
  
@@ -205,8 +226,18 @@ index 1ed74f1..9a321c1 100644
 +    const Common::Rectangle<u32> top{0, 0, TopScreenWidth(), Core::kScreenTopHeight};
 +    const Common::Rectangle<u32> bottom{0, 0, Core::kScreenBottomWidth,
 +                                        Core::kScreenBottomHeight};
++    // the crop applies to the bottom screen in the corner, in landscape orientation
++    const bool cropped = !is_swapped && !upright;
++    const Common::Rectangle<float> crop =
++        cropped ? Common::Rectangle<float>{overlay.crop_left, overlay.crop_top, overlay.crop_right,
++                                           overlay.crop_bottom}
++                : Common::Rectangle<float>{0.0f, 0.0f, 1.0f, 1.0f};
++    const Common::Rectangle<u32> bottom_part{
++        0, 0,
++        std::max(1u, static_cast<u32>(std::lround(Core::kScreenBottomWidth * (crop.right - crop.left)))),
++        std::max(1u, static_cast<u32>(std::lround(Core::kScreenBottomHeight * (crop.bottom - crop.top))))};
 +    const auto& main = is_swapped ? bottom : top;
-+    const auto& small = is_swapped ? top : bottom;
++    const auto& small = is_swapped ? top : bottom_part;
 +
 +    Common::Rectangle<u32> big = MaxRectangle(Common::Rectangle<u32>{0, 0, width, height}, main);
 +    big = big.TranslateX((width - big.GetWidth()) / 2).TranslateY((height - big.GetHeight()) / 2);
@@ -223,8 +254,22 @@ index 1ed74f1..9a321c1 100644
 +
 +    res.top_screen = is_swapped ? corner : big;
 +    res.bottom_screen = is_swapped ? big : corner;
++    res.bottom_crop = crop;
 +    (is_swapped ? res.top_opacity : res.bottom_opacity) = overlay.opacity;
 +    return upright ? reverseLayout(res) : res;
++}
++
++Common::Rectangle<float> CropLandscapeTexcoords(const Common::Rectangle<float>& texcoords,
++                                                const Common::Rectangle<float>& crop) {
++    // landscape drawing: the screen's x runs left -> right, its y runs bottom -> top
++    const float u = texcoords.right - texcoords.left;
++    const float v = texcoords.top - texcoords.bottom;
++    Common::Rectangle<float> res;
++    res.left = texcoords.left + u * crop.left;
++    res.right = texcoords.left + u * crop.right;
++    res.bottom = texcoords.bottom + v * crop.top;
++    res.top = texcoords.bottom + v * crop.bottom;
++    return res;
 +}
 +
  FramebufferLayout CustomFrameLayout(u32 width, u32 height, bool is_swapped, bool is_portrait_mode) {
@@ -236,7 +281,7 @@ index 1ed74f1..9a321c1 100644
      const bool upright = Settings::values.upright_screen.GetValue();
      if (upright) {
          std::swap(width, height);
-@@ -447,7 +515,7 @@ FramebufferLayout FrameLayoutFromResolutionScale(u32 res_scale, bool is_secondar
+@@ -447,7 +544,7 @@ FramebufferLayout FrameLayoutFromResolutionScale(u32 res_scale, bool is_secondar
  
              break;
          case Settings::PortraitLayoutOption::PortraitTopFullWidth:
@@ -245,7 +290,7 @@ index 1ed74f1..9a321c1 100644
              // clang-format off
              height = (static_cast<int>(Core::kScreenTopHeight + Core::kScreenBottomHeight * 1.25) *
                       res_scale) + gap;
-@@ -457,7 +525,7 @@ FramebufferLayout FrameLayoutFromResolutionScale(u32 res_scale, bool is_secondar
+@@ -457,7 +554,7 @@ FramebufferLayout FrameLayoutFromResolutionScale(u32 res_scale, bool is_secondar
                                             Settings::values.upright_screen.GetValue());
              break;
          case Settings::PortraitLayoutOption::PortraitOriginal:
@@ -254,7 +299,7 @@ index 1ed74f1..9a321c1 100644
              height = (Core::kScreenTopHeight + Core::kScreenBottomHeight) * res_scale;
              layout = PortraitOriginalLayout(width, height, Settings::values.swap_screen.GetValue());
              break;
-@@ -466,6 +534,16 @@ FramebufferLayout FrameLayoutFromResolutionScale(u32 res_scale, bool is_secondar
+@@ -466,6 +563,16 @@ FramebufferLayout FrameLayoutFromResolutionScale(u32 res_scale, bool is_secondar
          auto layout_option = Settings::values.layout_option.GetValue();
          switch (layout_option) {
          case Settings::LayoutOption::CustomLayout:
@@ -271,7 +316,7 @@ index 1ed74f1..9a321c1 100644
              layout =
                  CustomFrameLayout(std::max(Settings::values.custom_top_x.GetValue() +
                                                 Settings::values.custom_top_width.GetValue(),
-@@ -483,7 +561,7 @@ FramebufferLayout FrameLayoutFromResolutionScale(u32 res_scale, bool is_secondar
+@@ -483,7 +590,7 @@ FramebufferLayout FrameLayoutFromResolutionScale(u32 res_scale, bool is_secondar
                  width = Core::kScreenBottomWidth * res_scale;
                  height = Core::kScreenBottomHeight * res_scale;
              } else {
@@ -280,7 +325,7 @@ index 1ed74f1..9a321c1 100644
                  height = Core::kScreenTopHeight * res_scale;
              }
              if (Settings::values.upright_screen.GetValue()) {
-@@ -497,10 +575,10 @@ FramebufferLayout FrameLayoutFromResolutionScale(u32 res_scale, bool is_secondar
+@@ -497,10 +604,10 @@ FramebufferLayout FrameLayoutFromResolutionScale(u32 res_scale, bool is_secondar
  
          case Settings::LayoutOption::LargeScreen: {
              const bool swapped = Settings::values.swap_screen.GetValue();
@@ -293,7 +338,7 @@ index 1ed74f1..9a321c1 100644
                                   Settings::values.large_screen_proportion.GetValue());
              const int smallHeight =
                  static_cast<int>((swapped ? Core::kScreenTopHeight : Core::kScreenBottomHeight) /
-@@ -528,7 +606,7 @@ FramebufferLayout FrameLayoutFromResolutionScale(u32 res_scale, bool is_secondar
+@@ -528,7 +635,7 @@ FramebufferLayout FrameLayoutFromResolutionScale(u32 res_scale, bool is_secondar
              break;
          }
          case Settings::LayoutOption::SideScreen:
@@ -302,7 +347,7 @@ index 1ed74f1..9a321c1 100644
              height = Core::kScreenTopHeight * res_scale;
  
              if (Settings::values.upright_screen.GetValue()) {
-@@ -544,10 +622,10 @@ FramebufferLayout FrameLayoutFromResolutionScale(u32 res_scale, bool is_secondar
+@@ -544,10 +651,10 @@ FramebufferLayout FrameLayoutFromResolutionScale(u32 res_scale, bool is_secondar
              if (Settings::values.swap_screen.GetValue()) {
                  width = Core::kScreenBottomWidth;
              } else {
@@ -315,7 +360,7 @@ index 1ed74f1..9a321c1 100644
  
              if (Settings::values.upright_screen.GetValue()) {
                  std::swap(width, height);
-@@ -558,7 +636,7 @@ FramebufferLayout FrameLayoutFromResolutionScale(u32 res_scale, bool is_secondar
+@@ -558,7 +665,7 @@ FramebufferLayout FrameLayoutFromResolutionScale(u32 res_scale, bool is_secondar
              break;
          case Settings::LayoutOption::Default:
          default:
@@ -324,7 +369,7 @@ index 1ed74f1..9a321c1 100644
              height = (Core::kScreenTopHeight + Core::kScreenBottomHeight) * res_scale + gap;
  
              if (Settings::values.upright_screen.GetValue()) {
-@@ -695,7 +773,7 @@ FramebufferLayout reverseLayout(FramebufferLayout layout) {
+@@ -695,7 +802,7 @@ FramebufferLayout reverseLayout(FramebufferLayout layout) {
  }
  
  std::pair<unsigned, unsigned> GetMinimumSizeFromPortraitLayout() {
@@ -333,7 +378,7 @@ index 1ed74f1..9a321c1 100644
      const u32 min_height = Core::kScreenTopHeight + Core::kScreenBottomHeight;
      return std::make_pair(min_width, min_height);
  }
-@@ -704,19 +782,22 @@ std::pair<unsigned, unsigned> GetMinimumSizeFromLayout(Settings::LayoutOption la
+@@ -704,19 +811,22 @@ std::pair<unsigned, unsigned> GetMinimumSizeFromLayout(Settings::LayoutOption la
                                                         bool upright_screen) {
      u32 min_width, min_height;
  
@@ -359,7 +404,7 @@ index 1ed74f1..9a321c1 100644
          int smallHeight = swapped ? Core::kScreenTopHeight : Core::kScreenBottomHeight;
          smallWidth =
              static_cast<int>(smallWidth / Settings::values.large_screen_proportion.GetValue());
-@@ -737,12 +818,12 @@ std::pair<unsigned, unsigned> GetMinimumSizeFromLayout(Settings::LayoutOption la
+@@ -737,12 +847,12 @@ std::pair<unsigned, unsigned> GetMinimumSizeFromLayout(Settings::LayoutOption la
          break;
      }
      case Settings::LayoutOption::SideScreen:
@@ -374,12 +419,41 @@ index 1ed74f1..9a321c1 100644
          min_height = Core::kScreenTopHeight + Core::kScreenBottomHeight;
          break;
      }
+diff --git a/src/core/frontend/framebuffer_layout.h b/src/core/frontend/framebuffer_layout.h
+index 1ecc56f..335e1f9 100644
+--- a/src/core/frontend/framebuffer_layout.h
++++ b/src/core/frontend/framebuffer_layout.h
+@@ -41,6 +41,9 @@ struct FramebufferLayout {
+     bool additional_screen_is_bottom = false;
+     Common::Rectangle<u32> additional_screen;
+     CardboardSettings cardboard;
++    /// The part of the bottom screen shown in bottom_screen, in fractions of its width and
++    /// height (the port's touch-screen overlay can show just a part)
++    Common::Rectangle<float> bottom_crop{0.0f, 0.0f, 1.0f, 1.0f};
+ 
+     /**
+      * Returns the ratio of pixel size of the top screen, compared to the native size of the 3DS
+@@ -62,6 +65,14 @@ struct FramebufferLayout {
+     Settings::StereoRenderOption render_3d_mode = Settings::values.render_3d.GetValue();
+ };
+ 
++/**
++ * Texture coordinates of a screen as the renderers draw it in landscape orientation (x across
++ * left..right, y down bottom..top), cut down to `crop` (fractions of the screen, as in
++ * FramebufferLayout::bottom_crop)
++ */
++Common::Rectangle<float> CropLandscapeTexcoords(const Common::Rectangle<float>& texcoords,
++                                                const Common::Rectangle<float>& crop);
++
+ /**
+  * Method to create a rotated copy of a framebuffer layout, used to rotate to upright mode
+  */
 diff --git a/src/core/frontend/top_screen.h b/src/core/frontend/top_screen.h
 new file mode 100644
-index 0000000..545afe9
+index 0000000..2a2b71b
 --- /dev/null
 +++ b/src/core/frontend/top_screen.h
-@@ -0,0 +1,28 @@
+@@ -0,0 +1,31 @@
 +// Copyright 2026 Azahar Emulator Project
 +// Licensed under GPLv2 or any later version
 +// Refer to the misc/licenses/gplv2.txt file included.
@@ -398,11 +472,14 @@ index 0000000..545afe9
 +/// The custom layout as a port can set it up instead of fixed positions: the main screen
 +/// fills the window at its aspect ratio and the other one is drawn over it in a corner,
 +/// `height` times the window's height (0: off, the custom layout's own positions apply).
++/// When the bottom screen is the one in the corner, it can show just a part of it: the crop
++/// rectangle, in fractions of the bottom screen's width and height (touches map to that part).
 +struct ScreenOverlay {
 +    enum class Corner : u8 { TopLeft, TopRight, BottomLeft, BottomRight };
 +    float height = 0.0f;
 +    float opacity = 1.0f;
 +    Corner corner = Corner::BottomRight;
++    float crop_left = 0.0f, crop_top = 0.0f, crop_right = 1.0f, crop_bottom = 1.0f;
 +};
 +ScreenOverlay GetScreenOverlay();
 +void SetScreenOverlay(const ScreenOverlay& overlay);
@@ -696,6 +773,33 @@ index 97a3a64..c394f6b 100644
      // Attempt to use hardware vertex shaders if possible.
      if (accelerate_draw && rasterizer->AccelerateDrawBatch(is_indexed)) {
          return;
+diff --git a/src/video_core/renderer_opengl/renderer_opengl.cpp b/src/video_core/renderer_opengl/renderer_opengl.cpp
+index e78e2c0..b5d2a75 100644
+--- a/src/video_core/renderer_opengl/renderer_opengl.cpp
++++ b/src/video_core/renderer_opengl/renderer_opengl.cpp
+@@ -4,6 +4,7 @@
+ 
+ #include "common/logging/log.h"
+ #include "common/microprofile.h"
++#include "common/scope_exit.h"
+ #include "common/settings.h"
+ #include "core/core.h"
+ #include "core/frontend/emu_window.h"
+@@ -821,6 +822,14 @@ void RendererOpenGL::DrawBottomScreen(const Layout::FramebufferLayout& layout,
+         return;
+     }
+ 
++    // the port's touch-screen overlay can show just a part of the bottom screen
++    const auto full_texcoords = screen_infos[2].display_texcoords;
++    if (layout.is_rotated) {
++        screen_infos[2].display_texcoords =
++            Layout::CropLandscapeTexcoords(full_texcoords, layout.bottom_crop);
++    }
++    SCOPE_EXIT({ screen_infos[2].display_texcoords = full_texcoords; });
++
+     const float bottom_screen_left = static_cast<float>(bottom_screen.left);
+     const float bottom_screen_top = static_cast<float>(bottom_screen.top);
+     const float bottom_screen_width = static_cast<float>(bottom_screen.GetWidth());
 diff --git a/src/video_core/renderer_software/sw_rasterizer.cpp b/src/video_core/renderer_software/sw_rasterizer.cpp
 index 1e82f87..02ca34a 100644
 --- a/src/video_core/renderer_software/sw_rasterizer.cpp
@@ -764,3 +868,29 @@ index 318a62e..cd75b88 100644
  class RasterizerSoftware : public VideoCore::RasterizerInterface {
  public:
      explicit RasterizerSoftware(Memory::MemorySystem& memory, Pica::PicaCore& pica);
+diff --git a/src/video_core/renderer_vulkan/renderer_vulkan.cpp b/src/video_core/renderer_vulkan/renderer_vulkan.cpp
+index 611e092..55107f7 100644
+--- a/src/video_core/renderer_vulkan/renderer_vulkan.cpp
++++ b/src/video_core/renderer_vulkan/renderer_vulkan.cpp
+@@ -6,6 +6,7 @@
+ #include "common/logging/log.h"
+ #include "common/memory_detect.h"
+ #include "common/microprofile.h"
++#include "common/scope_exit.h"
+ #include "common/settings.h"
+ #include "core/core.h"
+ #include "core/frontend/emu_window.h"
+@@ -959,6 +960,13 @@ void RendererVulkan::DrawBottomScreen(const Layout::FramebufferLayout& layout,
+         return;
+     }
+ 
++    // the port's touch-screen overlay can show just a part of the bottom screen
++    const auto full_texcoords = screen_infos[2].texcoords;
++    if (layout.is_rotated) {
++        screen_infos[2].texcoords = Layout::CropLandscapeTexcoords(full_texcoords, layout.bottom_crop);
++    }
++    SCOPE_EXIT({ screen_infos[2].texcoords = full_texcoords; });
++
+     const float bottom_screen_left = static_cast<float>(bottom_screen.left);
+     const float bottom_screen_top = static_cast<float>(bottom_screen.top);
+     const float bottom_screen_width = static_cast<float>(bottom_screen.GetWidth());

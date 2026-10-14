@@ -22,4 +22,14 @@ std::vector<std::string> Install(const RCodeInfo& info);
 /// in %), "on" (top right, 30%, 85%) or "off".
 Layout::ScreenOverlay ParseOverlay(std::string value);
 
+/// The quest_overlay option: "map" (while a quest's touch panels are up, the touch overlay
+/// shows the map panel alone, at its own scale), "map 40" (the map 40% of the window's
+/// height) or "off". Returns that height as a fraction, 0 for the overlay's scale, < 0 off.
+float ParseQuestOverlay(std::string value);
+
+/// The touch overlay `overlay` cut down to the quest's map in touch-panel slot `slot` (0-2
+/// the left column from the top, 3-5 the right one), `height` times the window's height
+/// (0: at the overlay's own scale).
+Layout::ScreenOverlay MapOverlay(const Layout::ScreenOverlay& overlay, int slot, float height);
+
 } // namespace Port::Hooks

@@ -16,9 +16,11 @@
 #include "common/logging/log.h"
 #include "core/frontend/top_screen.h"
 #include "common/settings.h"
+#include "core/3ds.h"
 #include "core/core.h"
 #include "video_core/gpu.h"
 #include "video_core/pica/pica_core.h"
+#include "video_core/renderer_base.h"
 
 // Hooks read and write guest memory through Azahar's page table, like recompiled code.
 #define RC_PAGED
@@ -90,6 +92,10 @@ struct Options {
     u32 kick_button = 0;    // kick / MH4U_KICK: 3DS button that kicks (the game's pad bits)
     u32 target_button = 0;  // target / MH4U_TARGET: 3DS button for the target camera panel
     Layout::ScreenOverlay touch_overlay;  // touch_overlay / MH4U_TOUCH_OVERLAY (custom layout)
+    float quest_overlay = 0;  // quest_overlay / MH4U_QUEST_OVERLAY: in quests, the map alone at
+                              // this height (0: the touch overlay's scale; < 0: off)
+    int quest_overlay_test = -1;  // quest_overlay_test / MH4U_QUEST_OVERLAY_TEST: show the map's
+                                  // part of slot n all the time (to check the drawing)
     bool hud_edges = true;  // hud_edges / MH4U_HUD_EDGES: with wide_render, HUD to the edges
     u32 trace_layout = 0;   // trace_layout / MH4U_TRACE_LAYOUT: log HUD objects every n frames
 };
@@ -149,6 +155,12 @@ void Set(Options& o, const std::string& key, const std::string& value) {
         o.target_button = PadBit(value);
     } else if (key == "touch_overlay") {
         o.touch_overlay = ParseOverlay(value);
+    } else if (key == "quest_overlay") {
+        o.quest_overlay = ParseQuestOverlay(value);
+    } else if (key == "quest_overlay_test") {
+        // a slot the map can start in: 0, 1, 3 or 4
+        const long slot = std::strtol(value.c_str(), nullptr, 10);
+        o.quest_overlay_test = slot >= 0 && slot <= 4 && slot != 2 ? static_cast<int>(slot) : -1;
     } else if (key == "hud_edges") {
         o.hud_edges = IsOn(value);
     } else if (key == "trace_layout") {
@@ -189,6 +201,8 @@ Options LoadOptions(std::vector<std::string>& log) {
         {"MH4U_KICK", "kick"},
         {"MH4U_TARGET", "target"},
         {"MH4U_TOUCH_OVERLAY", "touch_overlay"},
+        {"MH4U_QUEST_OVERLAY", "quest_overlay"},
+        {"MH4U_QUEST_OVERLAY_TEST", "quest_overlay_test"},
         {"MH4U_HUD_EDGES", "hud_edges"},
         {"MH4U_DITHER", "dither"},
         {"MH4U_RENDER_FLAGS_SET", "render_flags_set"},
@@ -213,6 +227,7 @@ void UpdateFrameTiming(RCtx* ctx, RFunc original) {
 
 /// sMhMain::frame(this): one iteration of the main loop.
 void WideTransfer(RCtx* ctx);
+void UpdateQuestOverlay();
 
 void Frame(RCtx* ctx, RFunc original) {
     if (frames == 0 && options.refresh_rate > 0) {
@@ -232,6 +247,7 @@ void Frame(RCtx* ctx, RFunc original) {
     WideTransfer(ctx);
     original(ctx);
     ++frames;
+    UpdateQuestOverlay();
     if (options.trace_every == 0 || frames % options.trace_every != 0) {
         return;
     }
@@ -677,6 +693,72 @@ void StartQuest(RCtx* ctx, RFunc original) {
     original(ctx);
 }
 
+// ── The touch screen during a quest (docs/research/second-screen.md, "The quest's touch
+// panels"). While the quest's small touch panels are up, the HUD's panel state machine
+// (0x00b9ba38) runs them once a frame through 0x00b92e24; it doesn't while a big panel
+// (the full map and the like) covers the touch screen. The panels sit in six slots, two
+// columns of three under the touch screen's top bar; a panel takes one slot, or two one
+// above the other (the slot below is then marked hidden), or two side by side. The map is
+// one shape only, two slots tall. With quest_overlay, the touch screen in the corner of
+// the custom layout shows the map alone while the panels are up.
+constexpr u32 QUEST_PANELS = 0x01082cec;  // (getter 0x001287a4)
+constexpr u32 PANEL_TYPES = 0x7a;         // u16 per slot
+constexpr u32 PANEL_HIDDEN = 0xb1;        // u8: a bit per slot covered by the panel before it
+constexpr u32 PANEL_SLOTS = 6;
+constexpr u32 PANEL_TYPE_MAP = 6;
+constexpr int SLOT_WIDTH = 160, SLOT_HEIGHT = 68, SLOTS_TOP = 36;  // touch-screen pixels
+constexpr u32 QUEST_OVERLAY_SETTLE_FRAMES = 3;  // frames a change must last to be shown
+bool quest_panels_ran = false;  // this frame
+int quest_map_slot = -1;        // the map's slot the last time the panels ran, -1 none
+int quest_overlay_shown = -1;   // the slot the overlay shows now, -1 the whole touch screen
+int quest_overlay_next = -1;    // what the last frames asked for, and for how many frames
+u32 quest_overlay_frames = 0;
+
+/// QuestHud::updatePanels(): the quest's small touch panels, once a frame while they are up.
+void QuestPanels(RCtx* ctx, RFunc original) {
+    original(ctx);
+    quest_panels_ran = true;
+    quest_map_slot = -1;
+    const u32 hidden = rd8(ctx, QUEST_PANELS + PANEL_HIDDEN);
+    for (u32 slot = 0; slot < PANEL_SLOTS; ++slot) {
+        if (rd16(ctx, QUEST_PANELS + PANEL_TYPES + 2 * slot) == PANEL_TYPE_MAP && !(hidden >> slot & 1) &&
+            slot % 3 < 2) {
+            quest_map_slot = static_cast<int>(slot);
+            break;
+        }
+    }
+}
+
+/// Once a frame: the touch overlay shows the map alone while the quest's panels are up (and
+/// have a map), and the whole touch screen otherwise. A change shows once it has lasted a
+/// few frames, so that a frame without the panels doesn't make the overlay flicker.
+void UpdateQuestOverlay() {
+    if (options.quest_overlay < 0 || options.touch_overlay.height <= 0) {
+        return;
+    }
+    const int want = options.quest_overlay_test >= 0 ? options.quest_overlay_test
+                     : quest_panels_ran                ? quest_map_slot
+                                                       : -1;
+    quest_panels_ran = false;
+    if (want != quest_overlay_next) {
+        quest_overlay_next = want;
+        quest_overlay_frames = 0;
+    }
+    if (want == quest_overlay_shown || ++quest_overlay_frames < QUEST_OVERLAY_SETTLE_FRAMES) {
+        return;
+    }
+    quest_overlay_shown = want;
+    Layout::SetScreenOverlay(want < 0 ? options.touch_overlay
+                                      : MapOverlay(options.touch_overlay, want, options.quest_overlay));
+    // the screen layout is worked out when it changes, so work it out again
+    Core::System::GetInstance().GPU().Renderer().UpdateCurrentFramebufferLayout();
+    if (want < 0) {
+        LOG_INFO(Frontend, "touch overlay: the whole touch screen");
+    } else {
+        LOG_INFO(Frontend, "touch overlay: the quest's map (panel slot {})", want);
+    }
+}
+
 struct Hook {
     u32 addr;
     const char* name;
@@ -696,6 +778,7 @@ constexpr Hook HOOKS[] = {
     {0x00694c98, "sMhPad::update", MhPadUpdate},
     {0x00b7c010, "QuestFlow::startQuest", StartQuest},
     {0x00ae65a4, "nLayout::objectConstants", LayoutObjectConstants},
+    {0x00b92e24, "QuestHud::updatePanels", QuestPanels},
 };
 
 } // namespace
@@ -748,6 +831,13 @@ std::vector<std::string> Install(const RCodeInfo& info) {
                                   "{:.0f}% of the window's height, {:.0f}% opaque",
                                   corners[static_cast<int>(overlay.corner)], overlay.height * 100,
                                   overlay.opacity * 100));
+        if (options.quest_overlay >= 0) {
+            log.push_back(options.quest_overlay > 0
+                              ? fmt::format("in quests the touch overlay shows the map alone, {:.0f}% of the "
+                                            "window's height",
+                                            options.quest_overlay * 100)
+                              : std::string("in quests the touch overlay shows the map alone"));
+        }
     }
     if (options.trace_layout) {
         log.push_back(fmt::format("tracing HUD layout objects every {} frames", options.trace_layout));
@@ -794,6 +884,36 @@ Layout::ScreenOverlay ParseOverlay(std::string v) {
         overlay.opacity = std::clamp(std::strtof(opacity.c_str(), nullptr) / 100.0f, 0.1f, 1.0f);
     }
     return overlay;
+}
+
+float ParseQuestOverlay(std::string v) {
+    std::transform(v.begin(), v.end(), v.begin(), [](unsigned char c) { return std::tolower(c); });
+    std::istringstream words(v);
+    std::string what, height;
+    words >> what;
+    if (what != "map" && !IsOn(what)) {
+        return -1.0f;
+    }
+    if (words >> height) {
+        return std::clamp(std::strtof(height.c_str(), nullptr) / 100.0f, 0.05f, 1.0f);
+    }
+    return 0.0f;
+}
+
+Layout::ScreenOverlay MapOverlay(const Layout::ScreenOverlay& overlay, int slot, float height) {
+    // the map takes two slots, one above the other: 0-2 are the left column from the top, 3-5
+    // the right one
+    const int column = slot / 3, row = slot % 3;
+    const float x0 = static_cast<float>(column * SLOT_WIDTH);
+    const float y0 = static_cast<float>(SLOTS_TOP + row * SLOT_HEIGHT);
+    Layout::ScreenOverlay map = overlay;
+    map.crop_left = x0 / Core::kScreenBottomWidth;
+    map.crop_right = (x0 + SLOT_WIDTH) / Core::kScreenBottomWidth;
+    map.crop_top = y0 / Core::kScreenBottomHeight;
+    map.crop_bottom = (y0 + 2 * SLOT_HEIGHT) / Core::kScreenBottomHeight;
+    // at the touch overlay's own scale unless a height is given
+    map.height = height > 0 ? height : overlay.height * (map.crop_bottom - map.crop_top);
+    return map;
 }
 
 } // namespace Port::Hooks

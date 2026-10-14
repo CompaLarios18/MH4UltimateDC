@@ -58,7 +58,7 @@ A hybrid is common: recompile everything first (B) to get a running port, then r
 - [x] 60 fps: frame-rate cap hook, verified on the real game (frame delta 1/60 s, game speed unchanged); find what holds it at 30 on hardware
 - [x] Above 60: 120 fps (delta 1/120 s, movies stay at their own 30; the quest-start loading race it exposes is worked around), played on Windows in hunts
 - [ ] Widescreen: anamorphic (projection hook + Azahar single-screen aspect) and true wide rendering (render targets, transfer, tunable 400s; up to 512x240) work in gameplay; the hunting HUD's sides go to the screen's edges (`hud_edges`, by layout object); next, the quest HUD
-- [ ] Second screen: Azahar layouts (available), the custom layout as a touch-screen overlay in a corner of a full-window game (`touch_overlay`), kick and target camera on buttons (done); next a single-screen HUD
+- [ ] Second screen: Azahar layouts (available), the custom layout as a touch-screen overlay in a corner of a full-window game (`touch_overlay`), kick and target camera on buttons, and in quests the map alone in that corner (`quest_overlay`, by the player's panel layout) (done); next, the item shortcuts and the other panels on buttons
 - [x] Resolution scaling, texture packs, rebindable controls and controllers: Azahar's
 - [ ] Multiplayer: Azahar's network rooms carry MH4U's local play; two runners (`--room-host`, `--room-join`, `--lockstep`) meet in a Gathering Hall, and one joins the quest the other posts and both go on it together; next a hunt with a monster, then 4 players
 

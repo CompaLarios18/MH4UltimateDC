@@ -310,6 +310,28 @@ def test_touch_overlay_layout(spec, size, expected):
     assert r.stdout == expected
 
 
+@pytest.mark.skipif(not os.environ.get("MH4U_RUNNER"), reason="port not built (set MH4U_RUNNER)")
+@pytest.mark.parametrize("quest, slot, expected", [
+    # the map in the left column's top two slots, at the touch overlay's own scale
+    ("map", "0", "top 6,0 1914,1080 opacity 1.00\nbottom 1704,0 1920,184 opacity 0.85\n"
+                 "shows 0,36 160,172 of the touch screen\na click at 1812,92 touches 80,104\n"),
+    # in the right column's bottom two slots, 40% of the window's height
+    ("map 40", "4", "top 6,0 1914,1080 opacity 1.00\nbottom 1412,0 1920,432 opacity 0.85\n"
+                    "shows 160,104 320,240 of the touch screen\na click at 1666,216 touches 240,172\n"),
+    # off: the whole touch screen
+    ("off", "0", "top 6,0 1914,1080 opacity 1.00\nbottom 1488,0 1920,324 opacity 0.85\n"
+                 "shows 0,0 320,240 of the touch screen\na click at 1704,162 touches 160,120\n"),
+])
+def test_quest_map_overlay(quest, slot, expected):
+    """With quest_overlay, the touch overlay shows the quest's map panel alone (the touch
+    screen's slot grid: two columns of 160 pixels, rows of 68 under a 36-pixel bar), and a
+    click on it touches the map where it is on the touch screen."""
+    r = subprocess.run([os.environ["MH4U_RUNNER"], "--overlay-layout", "top-right 30 85", "1920x1080:424",
+                        quest, slot], capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0, r.stderr
+    assert r.stdout == expected
+
+
 def _normalized_log(text: str, user_dir: str) -> list[str]:
     """Azahar's log lines (written by its own thread, so the runner's prints can land
     anywhere between them), without timestamps, user paths and the backend's own lines."""

@@ -10,7 +10,7 @@ The PC port: [Azahar](https://github.com/azahar-emu/azahar)'s 3DS core (kernel, 
 | `src/runner.cpp` | `mh4u_runner`: boots a 3DS executable with no window, with the recompiled code (`--cpu recomp --code LIB`) or Azahar's own JIT/interpreter; can install a CIA first, play an input script and save screenshots; for tests and for comparing backends |
 | `src/hooks.cpp` | The port's hooks on game functions (hook points from `config/hooks.txt`): frame-rate cap, frame timing trace |
 | `tests/svc_test.c` | Freestanding 3DS test program (threads, events, mutexes, atomics, VFP short vectors, Thumb) |
-| `azahar/` | The Azahar commit this builds against, and a small patch: a hook to replace the CPU backend, a hook to build this directory inside Azahar's tree, hooks for the port's options (refresh rate, system-call observer, the top screen's width in every screen layout, the custom layout as a touch-screen overlay that follows the window's size), a switch for the headless runner to skip drawing (vertex shaders included), and two fixes to Azahar's software renderer that the game needs: a data race on physical-memory lookups between the renderer's worker threads and the emulation thread (it sent texture reads gigabytes off and crashed both CPU backends on the game's first textured frame), and textures outside of memory read as black instead of crashing |
+| `azahar/` | The Azahar commit this builds against, and a small patch: a hook to replace the CPU backend, a hook to build this directory inside Azahar's tree, hooks for the port's options (refresh rate, system-call observer, the top screen's width in every screen layout, the custom layout as a touch-screen overlay that follows the window's size and can show just a part of the touch screen), a switch for the headless runner to skip drawing (vertex shaders included), and two fixes to Azahar's software renderer that the game needs: a data race on physical-memory lookups between the renderer's worker threads and the emulation thread (it sent texture reads gigabytes off and crashed both CPU backends on the game's first textured frame), and textures outside of memory read as black instead of crashing |
 
 The runner contains no game code. The game's recompiled code is a separate shared library, generated and compiled on the user's machine from their own dump and loaded at run time.
 
@@ -92,9 +92,14 @@ runner drawing a screenshot falls silent for the others for the second or so tha
 MH4U's local play gives up on a silent player within about a second (`--stalls MS` prints the
 steps that took longer than MS of host time). In lockstep the other runners wait for it, and
 two runners stay together in a Gathering Hall. `--overlay-layout SPEC
-WxH[:TOP]` prints the screens' rectangles the `touch_overlay` option gives a window. The port's hooks
+WxH[:TOP]` prints the screens' rectangles the `touch_overlay` option gives a window; with a
+`quest_overlay` value and the map's panel slot after them, also the part of the touch screen a
+quest shows and where a click on it touches (through Azahar's own touch code). The port's hooks
 take options from the environment: `MH4U_FPS=60` raises the engine's frame-rate cap,
-`MH4U_TRACE_FRAMES=60` logs the engine's frame timing every 60 frames.
+`MH4U_TRACE_FRAMES=60` logs the engine's frame timing every 60 frames, and
+`MH4U_QUEST_OVERLAY_TEST=0` makes the touch overlay show the map's part of the touch screen (slot
+0) all the time, to look at the drawing outside a quest (checked with the Qt frontend and OpenGL
+under Xvfb).
 
 Everything under `build/` contains game code: it never goes into the repository.
 

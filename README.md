@@ -6,11 +6,17 @@ A work-in-progress decompilation of **Monster Hunter 4 Ultimate** (Nintendo 3DS)
 
 ## Status
 
-🟧 **Phase 2 — Running something on PC.** Target version is **USA v1.3.0**.
+🟩 **Playable; Phase 4 — PC niceties.** Target version is **USA v1.3.0**.
 
 - A **static recompiler** translates the whole game (~40,000 functions, 3.2 M ARM/Thumb instructions) into C, generated on your machine from your own dump and verified against an ARM11 model ([`docs/RECOMPILER.md`](docs/RECOMPILER.md)).
-- That code runs as the CPU of **Azahar's 3DS core** (kernel, services, GPU, audio, network rooms), inside Azahar's normal interface, on Linux and Windows ([`docs/PORT_ARCHITECTURE.md`](docs/PORT_ARCHITECTURE.md), [`port/`](port/)). It runs the game from first boot into gameplay, screen for screen like Azahar's own CPU emulation, at 60 fps; the first player has played it on Windows (village and quest menus).
-- **Hooks** wrap game functions with native code: 60 fps (120 experimental), true widescreen, the kick on a button, and a fix for a loading race that higher frame rates bring out, based on research into the engine's frame pacing, cameras and second screen ([`docs/research/`](docs/research/README.md)).
+- That code runs as the CPU of **Azahar's 3DS core** (kernel, services, GPU, audio, network rooms), inside Azahar's normal interface, on Windows and Linux ([`docs/PORT_ARCHITECTURE.md`](docs/PORT_ARCHITECTURE.md), [`port/`](port/)). The village, quests and hunts are played on Windows at 60 and 120 fps, with sound.
+- **Hooks** wrap game functions with native code, based on research into the engine's frame pacing, cameras and second screen ([`docs/research/`](docs/research/README.md)):
+  - 60 and 120 fps, and a fix for a loading race that higher frame rates bring out;
+  - true widescreen (16:9 and wider) with the hunting HUD at the screen's edges;
+  - no dither grid when upscaling;
+  - the kick and the target camera on buttons, and the touch screen as an overlay in a corner of a full-window game (in quests, just the map).
+- **Local multiplayer** goes over Azahar's network rooms: two instances meet in a Gathering Hall and go on a quest together.
+- **Community mods**: code mods (`code.ips`, `code.bps`) are applied before recompiling; data and RomFS mods work as on Azahar.
 - Where the port needs to change behaviour, functions also get hand-decompiled into readable C, each one verified with `tools/difftest.py`.
 
 How to play it: [`docs/PLAYING.md`](docs/PLAYING.md). The plan: [`docs/ROADMAP.md`](docs/ROADMAP.md).

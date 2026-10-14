@@ -161,3 +161,9 @@
 0x002a4468 PanelManager::update
 0x0108260c g_questHud
 0x0013f230 getQuestHud
+0x01082cec g_questPanels                  # touch panels: u16 type per slot at +0x7a (6 slots, two columns of three), u8 hidden-slot bits at +0xb1
+0x001287a4 getQuestPanels
+0x00b9ba38 QuestHud::updatePanelState     # HUD +0x2a9: 0/1 the small panels, 2 a big panel open (+0x2ab its type), 3 closing
+0x00b92e24 QuestHud::updatePanels         # runs each panel by type while the small panels are up (type 6 the map, 13 target camera, 14 kick)
+0x00b9f4c8 panelSizeClass                 # (type): from the table at 0x00ed2440 (type, size class, group); 0 one slot, 1 two slots tall, 3 two wide
+0x00b94a80 QuestHud::panelTapped          # (type, slot, mode): per-slot touch records at 0x00def804+0x14c (slot*3 + shape)

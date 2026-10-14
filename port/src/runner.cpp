@@ -101,9 +101,12 @@ const char* const USAGE = R"(usage: mh4u_runner <file> [options]
                     that stops to draw a screenshot (the clock stands still while the GPU
                     works) falls silent for the others, and the game's local play drops it
   --stalls MS       print each step of the emulation that took longer than MS of host time
-or:    mh4u_runner --overlay-layout SPEC WIDTHxHEIGHT[:TOP_WIDTH]
+or:    mh4u_runner --overlay-layout SPEC WIDTHxHEIGHT[:TOP_WIDTH] [QUEST SLOT]
                     print the custom screen layout the port's touch_overlay option SPEC
-                    gives a window that size (top screen TOP_WIDTH x 240, default 400)
+                    gives a window that size (top screen TOP_WIDTH x 240, default 400);
+                    with the quest_overlay option QUEST and the map's touch-panel slot,
+                    the layout while a quest's panels are up, the part of the touch screen
+                    shown, and where on the touch screen a click in the overlay's middle lands
 )";
 
 class HeadlessWindow final : public Frontend::EmuWindow {
@@ -620,27 +623,56 @@ void PrintRoomMembers() {
 
 } // namespace
 
-/// --overlay-layout: the screens' rectangles for a touch_overlay option and window size.
-int PrintOverlayLayout(const std::string& spec, const std::string& size) {
+/// --overlay-layout: the screens' rectangles for a touch_overlay option and window size, and
+/// with a quest_overlay option and the map's panel slot, what a quest shows: the part of the
+/// touch screen in the corner and where a click in its middle touches.
+int PrintOverlayLayout(const std::string& spec, const std::string& size, const std::string& quest,
+                       const std::string& slot) {
     unsigned width = 0, height = 0, top_width = Core::kScreenTopWidth;
     if (std::sscanf(size.c_str(), "%ux%u:%u", &width, &height, &top_width) < 2 || !width ||
         !height || !top_width) {
         return Usage();
     }
     Layout::SetTopScreenWidth(top_width);
-    Layout::SetScreenOverlay(Port::Hooks::ParseOverlay(spec));
+    auto overlay = Port::Hooks::ParseOverlay(spec);
+    if (!quest.empty()) {
+        const float map_height = Port::Hooks::ParseQuestOverlay(quest);
+        if (map_height >= 0) {
+            overlay = Port::Hooks::MapOverlay(overlay, std::atoi(slot.c_str()), map_height);
+        }
+    }
+    Layout::SetScreenOverlay(overlay);
     const auto layout = Layout::CustomFrameLayout(width, height, false, false);
     const auto& t = layout.top_screen;
     const auto& b = layout.bottom_screen;
     std::printf("top %u,%u %u,%u opacity %.2f\nbottom %u,%u %u,%u opacity %.2f\n", t.left, t.top,
                 t.right, t.bottom, layout.top_opacity, b.left, b.top, b.right, b.bottom,
                 layout.bottom_opacity);
+    if (quest.empty()) {
+        return 0;
+    }
+    const auto& crop = layout.bottom_crop;
+    std::printf("shows %.0f,%.0f %.0f,%.0f of the touch screen\n", crop.left * Core::kScreenBottomWidth,
+                crop.top * Core::kScreenBottomHeight, crop.right * Core::kScreenBottomWidth,
+                crop.bottom * Core::kScreenBottomHeight);
+    // a click through Azahar's own touch handling, in a window with the custom layout
+    Settings::values.layout_option.SetValue(Settings::LayoutOption::CustomLayout);
+    HeadlessWindow window;
+    window.UpdateCurrentFramebufferLayout(width, height);
+    const auto& shown = window.GetFramebufferLayout().bottom_screen;
+    const unsigned x = (shown.left + shown.right) / 2, y = (shown.top + shown.bottom) / 2;
+    window.TouchPressed(x, y);
+    const auto touch = Input::CreateDevice<Input::TouchDevice>(
+        Common::ParamPackage{{"engine", "emu_window"}}.Serialize());
+    const auto [touch_x, touch_y, pressed] = touch->GetStatus();
+    std::printf("a click at %u,%u touches %.0f,%.0f%s\n", x, y, touch_x * Core::kScreenBottomWidth,
+                touch_y * Core::kScreenBottomHeight, pressed ? "" : " (not pressed)");
     return 0;
 }
 
 int main(int argc, char** argv) {
-    if (argc == 4 && std::string(argv[1]) == "--overlay-layout") {
-        return PrintOverlayLayout(argv[2], argv[3]);
+    if ((argc == 4 || argc == 6) && std::string(argv[1]) == "--overlay-layout") {
+        return PrintOverlayLayout(argv[2], argv[3], argc == 6 ? argv[4] : "", argc == 6 ? argv[5] : "");
     }
     std::string path;
     std::string code_library;
