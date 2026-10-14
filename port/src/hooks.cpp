@@ -63,6 +63,7 @@ constexpr u32 VIEWPORT_MODE = 0x15;             // u8 mMode: 0 the whole 400 row
 constexpr u32 SLTRENDER_SCENE = 0x6c28;         // nDraw::Scene*: the main render target
 constexpr u32 SLTRENDER_TOP_TRANSFER_Y = 0x6e1c;   // u32: first row of the top screen's image in
                                                    // the composited target (512 - 400 = 112)
+constexpr u32 SLTRENDER_BOTTOM_TRANSFER_Y = 0x6e24;  // u32: the same for the bottom screen's (112)
 constexpr u32 SCENE_TARGET = 0x50, TARGET_TEXTURES = 0x34, TEXTURE_SIZE = 0x18;
 constexpr u32 TOP_ROWS = 400, LCD_COLUMNS = 240;   // top screen in framebuffer orientation
 constexpr float NATIVE_ASPECT = 400.0f / 240.0f;
@@ -294,7 +295,9 @@ bool OnBottomScreen(RCtx* ctx, u32 camera) {
 /// The cameras' getProjMatrix(): returns the projection by value (result pointer in r0,
 /// the camera in r1). Widescreen: divide m00 so the view gets wider by target/native
 /// (Hor+); culling and stereo are derived from this matrix, so they follow. The frontend
-/// shows the top screen stretched to the same aspect ratio (Azahar's aspect setting).
+/// shows the top screen stretched to the same aspect ratio (Azahar's aspect setting). An
+/// aspect ratio narrower than the 3DS's (16:10, 4:3) narrows the view the same way, so that
+/// the picture squeezed to that shape keeps its proportions.
 u32 WideRows();
 
 void GetProjMatrix(RCtx* ctx, RFunc original) {
@@ -302,9 +305,11 @@ void GetProjMatrix(RCtx* ctx, RFunc original) {
     const u32 camera = ctx->r[1];
     original(ctx);
     // with wide_render the game's own aspect is already W/240; what is left (a target wider
-    // than the widest render target) is widened here and stretched by the frontend
+    // than the widest render target, or narrower than the 3DS's) is done here and the frontend
+    // stretches or squeezes the picture to it
     const float rendered = WideRows() ? WideRows() / static_cast<float>(LCD_COLUMNS) : NATIVE_ASPECT;
-    if (options.widescreen > rendered + 0.001f && !OnBottomScreen(ctx, camera)) {
+    if (options.widescreen > 0.0f && std::fabs(options.widescreen - rendered) > 0.001f &&
+        !OnBottomScreen(ctx, camera)) {
         WriteF32(ctx, out, ReadF32(ctx, out) * rendered / options.widescreen);
     }
 }
@@ -313,10 +318,11 @@ void GetProjMatrix(RCtx* ctx, RFunc original) {
 // instead of 400 (docs/research/widescreen.md, "What has to grow"). The aspect ratio,
 // projection, culling, GPU viewport and display transfer all follow from the sizes below.
 
-/// W: the widescreen width rounded to whole 8-pixel tiles, or 0 when off. At most 512: the
-/// scene target is a 256x512 texture (a wider one would need twice the VRAM); a wider
-/// aspect ratio gets the rest from the projection (anamorphic).
-constexpr u32 MAX_WIDE_ROWS = 512;
+/// W: the widescreen width rounded to whole 8-pixel tiles, or 0 when off. The scene target is
+/// a texture with a power-of-two number of rows: 512 up to W = 512, then 1024 (twice the VRAM,
+/// which the game has room for). PICA framebuffers have at most 1024 rows, so that is the limit;
+/// a wider aspect ratio would get the rest from the projection (anamorphic).
+constexpr u32 MAX_WIDE_ROWS = 1024;
 u32 WideRows() {
     if (!options.wide_render || options.widescreen <= NATIVE_ASPECT) {
         return 0;
@@ -412,6 +418,9 @@ void UpdateRegion(RCtx* ctx, RFunc original) {
 /// The display transfer copies the top screen from row `512 - 400` of the composited target
 /// (the GPU draws from the bottom up, so the image ends at the last row). With W rows, the
 /// image starts at `height - W`; the sLtRender constructor writes 112, so set it every frame.
+/// The bottom screen is drawn into the same target afterwards, in the region (0, 80)-(240, 400)
+/// (viewport 7), and copied from row `height - 400`: still 112 while the target has 512 rows,
+/// but 624 once a W over 512 makes it 1024 rows tall.
 void WideTransfer(RCtx* ctx) {
     const u32 rows = WideRows();
     const u32 render = rows ? rd32(ctx, SLTRENDER_INSTANCE) : 0;
@@ -426,6 +435,11 @@ void WideTransfer(RCtx* ctx) {
     if (height >= rows && rd32(ctx, render + SLTRENDER_TOP_TRANSFER_Y) != height - rows) {
         wr32(ctx, render + SLTRENDER_TOP_TRANSFER_Y, height - rows);
         LOG_INFO(Frontend, "wide render: top screen transferred from row {} of {}", height - rows, height);
+    }
+    if (height >= TOP_ROWS && rd32(ctx, render + SLTRENDER_BOTTOM_TRANSFER_Y) != height - TOP_ROWS) {
+        wr32(ctx, render + SLTRENDER_BOTTOM_TRANSFER_Y, height - TOP_ROWS);
+        LOG_INFO(Frontend, "wide render: bottom screen transferred from row {} of {}", height - TOP_ROWS,
+                 height);
     }
 }
 
@@ -809,7 +823,8 @@ std::vector<std::string> Install(const RCodeInfo& info) {
     if (options.widescreen > 0) {
         log.push_back(WideRows() ? fmt::format("widescreen: top screen rendered {}x{} (experimental)",
                                                WideRows(), LCD_COLUMNS)
-                                 : fmt::format("widescreen: 3D view widened to aspect ratio {:.4f}",
+                                 : fmt::format("widescreen: 3D view {} to aspect ratio {:.4f}",
+                                               options.widescreen > NATIVE_ASPECT ? "widened" : "narrowed",
                                                options.widescreen));
         SetScreenAspect(options.widescreen, log);
         if (WideRows()) {
