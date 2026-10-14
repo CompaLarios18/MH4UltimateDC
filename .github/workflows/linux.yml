@@ -1,0 +1,88 @@
+name: Linux build
+
+# Azahar at the commit in port/azahar/COMMIT, with port/azahar/azahar.patch and the port's
+# CPU backend, built as an AppImage the way Azahar's own CI builds its Linux release. It
+# contains no game code: the game's code library is made on the player's machine from their
+# own dump (tools/build_game.py) and loaded at run time. Published under the repository's
+# licence (GPL-3.0-or-later, like Azahar) with the matching source (this repository at the
+# built commit, Azahar at port/azahar/COMMIT plus port/azahar/azahar.patch).
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "port/**"
+      - "tools/recomp/runtime/**"
+      - ".github/workflows/linux.yml"
+
+jobs:
+  appimage:
+    runs-on: ubuntu-latest
+    container:
+      image: opensauce04/azahar-build-environment:latest
+      options: -u 1001
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_COMPILERCHECK: content
+      CCACHE_SLOPPINESS: time_macros
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: mh4u
+      - name: Azahar at the pinned commit, with the port's patch
+        run: |
+          git clone https://github.com/azahar-emu/azahar.git azahar
+          cd azahar
+          git checkout "$(cat ../mh4u/port/azahar/COMMIT)"
+          git submodule update --init --recursive --depth 1
+          git apply ../mh4u/port/azahar/azahar.patch
+      - name: Compiler cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: linux-${{ hashFiles('mh4u/port/azahar/COMMIT') }}-${{ github.sha }}
+          restore-keys: linux-${{ hashFiles('mh4u/port/azahar/COMMIT') }}-
+      - name: Build
+        env:
+          # the Qt Wayland plugins Azahar bundles in its own AppImage
+          EXTRA_QT_PLUGINS: waylandcompositor
+          EXTRA_PLATFORM_PLUGINS: libqwayland-egl.so;libqwayland-generic.so
+        run: |
+          mkdir -p azahar/build && cd azahar/build
+          cmake .. -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER=clang++ \
+            -DCMAKE_C_COMPILER=clang \
+            -DCMAKE_LINKER=/etc/bin/ld.lld \
+            -DENABLE_ROOM_STANDALONE=OFF \
+            -DENABLE_TESTS=OFF \
+            -DMH4U_PORT_DIR="${GITHUB_WORKSPACE}/mh4u/port"
+          ninja
+          strip -s bin/Release/*
+          ninja bundle
+          ccache -s
+      - name: Package
+        if: ${{ hashFiles('mh4u/LICENSE') != '' }}
+        run: |
+          mkdir -p artifacts/mh4u-port-linux
+          cp azahar/build/bundle/*.AppImage artifacts/mh4u-port-linux/azahar-mh4u.AppImage
+          cp azahar/build/bin/Release/mh4u_runner artifacts/mh4u-port-linux/
+          cp mh4u/LICENSE artifacts/mh4u-port-linux/LICENSE-mh4u-port.txt
+          cat > artifacts/mh4u-port-linux/README-mh4u.txt <<EOF
+          Azahar ($(cat mh4u/port/azahar/COMMIT)) with the MH4U port's recompiled-code CPU backend,
+          as an AppImage. Source: https://github.com/${GITHUB_REPOSITORY} (commit ${GITHUB_SHA}),
+          https://github.com/azahar-emu/azahar plus mh4u/port/azahar/azahar.patch.
+          No game code is included: build the game's code library from your own dump with
+          python3 tools/build_game.py --dump <your dump> --install
+          (it needs clang; the library goes to ~/.local/share/azahar-emu/recomp/).
+          EOF
+      - name: Upload
+        if: ${{ hashFiles('mh4u/LICENSE') != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: mh4u-port-linux
+          path: artifacts/
+          retention-days: 14

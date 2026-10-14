@@ -14,7 +14,9 @@ The PC port: [Azahar](https://github.com/azahar-emu/azahar)'s 3DS core (kernel, 
 
 The runner contains no game code. The game's recompiled code is a separate shared library, generated and compiled on the user's machine from their own dump and loaded at run time.
 
-## Building (Linux; Windows and macOS later)
+## Building (Linux; Windows in CI, macOS later)
+
+The repository's workflows build the port's Azahar for Windows (MXE, `.github/workflows/windows.yml`) and Linux (an AppImage, `.github/workflows/linux.yml`) on every change to `port/`. To build it yourself on Linux:
 
 ```bash
 # Azahar at the pinned commit, with the patch
