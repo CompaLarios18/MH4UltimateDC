@@ -5,9 +5,12 @@
 
 1. extracts exheader + ExeFS code from your decrypted dump (.cia update, .3ds/.cci, .cxi),
 2. checks it is the version this project targets (config/versions.json),
-3. recompiles it to C (build/game/recomp/src, never shared),
-4. compiles the code library (clang; on Windows llvm-mingw's x86_64-w64-mingw32-clang),
-5. optionally copies it to <Azahar user dir>/recomp/<program id>.<so|dll|dylib>, where the
+3. applies the code mods Azahar would apply from its user folder (load/mods/<program id>/:
+   a code.bin, code.ips or code.bps; tools/code_mods.py), so that the library is the code
+   that will run,
+4. recompiles it to C (build/game/recomp/src, never shared),
+5. compiles the code library (clang; on Windows llvm-mingw's x86_64-w64-mingw32-clang),
+6. optionally copies it to <Azahar user dir>/recomp/<program id>.<so|dll|dylib>, where the
    port's Azahar build picks it up (--install alone: Azahar's usual user directory).
 
 On Windows it needs llvm-mingw's clang; --fetch-compiler downloads it (from the
@@ -32,6 +35,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 
+import code_mods  # noqa: E402
 import codebin2elf  # noqa: E402
 import exheader as exh  # noqa: E402
 import extract_ncch  # noqa: E402
@@ -140,6 +144,10 @@ def main(argv=None) -> int:
                     help="no compiler installed: download llvm-mingw (Windows) into the output directory")
     ap.add_argument("--compiler-zip", default=LLVM_MINGW_URL, help=argparse.SUPPRESS)
     ap.add_argument("--any-version", action="store_true", help="don't insist on a known code.bin")
+    ap.add_argument("--mods", metavar="AZAHAR_USER_DIR",
+                    help="apply the code mods in AZAHAR_USER_DIR/load/mods/<program id>/ (default: the "
+                         "--install directory, if any)")
+    ap.add_argument("--no-mods", action="store_true", help="build from the unmodified code")
     ap.add_argument("--functions", default=os.path.join(ROOT, "config", "functions.tsv"), help=argparse.SUPPRESS)
     ap.add_argument("--extra", default=os.path.join(ROOT, "config", "extra_entries.txt"), help=argparse.SUPPRESS)
     ap.add_argument("--hooks", default=os.path.join(ROOT, "config", "hooks.txt"), help=argparse.SUPPRESS)
@@ -161,6 +169,21 @@ def main(argv=None) -> int:
         raise SystemExit("this code.bin isn't a version the project knows (config/versions.json); "
                          "the function lists are for USA v1.3.0 (use the v1.3.0 update .cia)")
     program_id = struct.unpack_from("<Q", exheader_bytes, 0x200)[0]
+
+    mods_dir = None if args.no_mods else (args.mods or args.install)
+    if mods_dir:
+        modded, used = code_mods.apply_mods(code, mods_dir, program_id)
+        if used:
+            segments = [("code", 0, header.text.size),
+                        ("read-only data", header.ro.address - header.text.address, header.ro.size),
+                        ("data", header.data.address - header.text.address, header.data.size)]
+            print("code mods: " + ", ".join(used))
+            for line in code_mods.describe(code, modded, segments):
+                print(f"  {line}")
+            if code_mods.changed_bytes(code, modded, 0, header.text.size):
+                print("  the mod changes the game's code: this library runs only with the same mod in "
+                      "Azahar's mods folder (build again after adding, changing or removing it)")
+            code = modded
 
     out = os.path.join(args.out, "recomp")
     print("recompiling (a couple of minutes)")

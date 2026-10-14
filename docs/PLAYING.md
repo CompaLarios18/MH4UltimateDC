@@ -96,6 +96,14 @@ The game drops a player whose game stops for about a second, so avoid stutters: 
 
 Azahar's renderer settings apply unchanged (*Emulation → Configure → Graphics*): internal resolution (up to many times the 3DS's), texture filtering, post-processing shaders and custom texture packs (PNG replacements in `load/textures/0004000000126300/` of Azahar's user folder).
 
+## 6. Mods
+
+Mods go where Azahar looks for them (right-click the game → *Open Mods Location*, i.e. `load/mods/0004000000126300/` in Azahar's user folder):
+
+- **Files** (textures, models, text, quests): in `romfs/`, as for Azahar. The port doesn't change how the game reads its files.
+- **Code mods** (`exefs/code.ips`, `exefs/code.bps` or a whole `exefs/code.bin`, made for the USA v1.3.0 update): Azahar patches the game's code with them when it starts. One that only changes the game's data works as it is. For example, the crafting patch of [anco's MH4U quality-of-life project](https://codeberg.org/anco/mh4u_qol) (every combination succeeds) changes 136 bytes of data in v1.3.0; tried in the cloud. One that changes the game's code needs the code library built again with the mod in place (step 1 again: `build_game.py --install` and `generar_codigo.ps1` apply the mods they find in that folder and say whether a mod changes code). Otherwise the port sees code it didn't recompile and runs everything in Azahar's interpreter, which is far too slow to play. Build again whenever you add, change or remove such a mod.
+- **Cheats** that write data work (*Cheats* in the game's right-click menu). Ones that rewrite code don't take effect in recompiled functions.
+
 ## Troubleshooting
 
 | Symptom | Cause |
