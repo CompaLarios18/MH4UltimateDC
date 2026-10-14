@@ -106,8 +106,8 @@ const char* const USAGE = R"(usage: mh4u_runner <file> [options]
                     consoles in a network room wait instead of dropping this one
   --set MS:KEY=VALUE  at emulated time MS, change one of the port's options (mh4u.ini keys
                     the hooks read as the game runs: fps, refresh_rate, dither, kick, target,
-                    quest_overlay, hud_edges, ...), e.g. one player of a session at 120 fps
-                    once everyone is in (repeatable)
+                    quest_overlay, hud_edges, bloom, depth_of_field, ...), e.g. one player of a
+                    session at 120 fps once everyone is in (repeatable)
 or:    mh4u_runner --overlay-layout SPEC WIDTHxHEIGHT[:TOP_WIDTH] [QUEST SLOT]
                     print the custom screen layout the port's touch_overlay option SPEC
                     gives a window that size (top screen TOP_WIDTH x 240, default 400);

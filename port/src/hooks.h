@@ -21,8 +21,9 @@ std::vector<std::string> Install(const RCodeInfo& info);
 /// Changes one of the options above while the game runs (the runner's --set, for tests: one
 /// player of a session at another frame rate once everyone is in, say). Only options that
 /// the hooks read as the game runs can change: fps, refresh_rate, dither, render_flags_set,
-/// render_flags_clear, kick, target, quest_overlay, hud_edges and the trace_* options.
-/// Returns false for any other key.
+/// render_flags_clear, kick, target, quest_overlay, hud_edges, the screen filters (bloom,
+/// motion_blur, depth_of_field, radial_blur, haze) and the trace_* options. Returns false
+/// for any other key.
 bool SetOption(const std::string& key, const std::string& value);
 
 /// In quests, switches the touch overlay between the map alone (quest_overlay) and the whole

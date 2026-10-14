@@ -93,6 +93,15 @@ target = ZL
 # the game's dither pattern: off for a clean picture at an Internal Resolution above 1x
 dither = off
 
+# the game's screen filters (on = as on a 3DS, off = skipped): the glow over bright parts, which
+# softens the picture; the focus blur of cutscenes, which emulation gets wrong (it can blur the
+# whole picture); the blur some effects blend in; the zoom blur of roars; heat shimmer
+bloom = off
+depth_of_field = off
+motion_blur = on
+radial_blur = on
+haze = on
+
 # multiplayer: wait a moment for a player with the port whose PC stalls, instead of the game
 # dropping them (on, off; all = with every port player in the room)
 net_sync = on

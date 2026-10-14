@@ -217,12 +217,16 @@ def test_runner_sets_options_while_running(tmp_path):
     code = rbuild.build(str(tmp_path), 2, "O1", ["RC_PAGED"], "code.so", [rbuild.DLL_GLUE],
                         extra_flags=["-fvisibility=hidden"])
     run = [binary, elf, "--code", code, "--ms", "1200", "--user", str(tmp_path / "user")]
-    r = subprocess.run(run + ["--set", "800:refresh_rate=120", "--set", "500:quest_overlay=map 40"],
+    r = subprocess.run(run + ["--set", "800:refresh_rate=120", "--set", "500:quest_overlay=map 40",
+                              "--set", "600:bloom=off", "--set", "700:depth_of_field=off"],
                        capture_output=True, text=True, timeout=600)
     assert r.returncode == 0, (r.stdout[-2000:], r.stderr[-2000:])
     first = re.search(r"set quest_overlay = map 40 at 5\d\d ms", r.stdout)
     second = re.search(r"set refresh_rate = 120 at 8\d\d ms", r.stdout)
     assert first and second and first.start() < second.start(), r.stdout[-2000:]
+    # the screen filters are skipped or drawn as the game runs
+    assert re.search(r"set bloom = off at 6\d\d ms", r.stdout), r.stdout[-2000:]
+    assert re.search(r"set depth_of_field = off at 7\d\d ms", r.stdout), r.stdout[-2000:]
     r = subprocess.run(run + ["--set", "500:widescreen=16:9"], capture_output=True, text=True, timeout=600)
     assert r.returncode == 1 and "widescreen is not an option that can change" in r.stderr
     for bad in ["fps=120", "500:=120", "x:fps=120"]:

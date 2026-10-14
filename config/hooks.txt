@@ -16,3 +16,20 @@
 0x00b7c010 QuestFlow::startQuest      # quest start: rebuild the quest list until it has the quest (above 60 fps)
 0x00ae65a4 nLayout::objectConstants    # wide render: move the HUD's side objects out to the screen's edges
 0x00b92e24 QuestHud::updatePanels      # touch overlay: show only the map while the quest's touch panels are up
+# Screen filters: the engine's post-processing passes, render(this, cDraw*) of each uFilter class
+# (docs/research/screen-filters.md); the port can skip a pass (mh4u.ini bloom, motion_blur, ...)
+# or log which ones draw (trace_filters)
+0x002bc238 uBloomFilter::render        # bloom
+0x003b0804 uMotionBlurFilter::render   # motion blur
+0x001b0890 uDOFFilter::render          # depth of field
+0x002bd53c uBokehFilter::render        # bokeh
+0x003b2938 uRadialBlurFilter::render   # radial blur (uMhRadialBlurFilter too)
+0x002d3168 uMultiBlurFilter::render    # multi blur
+0x0025655c uHazeFilter::render         # heat haze (uMhHazeFilter too)
+0x003dd740 uColorCorrectFilter::render # colour correction (trace only)
+0x002bffc0 uColorFilter::render        # colour, fades (uFadeFilter too; trace only)
+0x003a1a6c uCrossFadeFilter::render    # cross-fade (trace only)
+0x003aeccc uImagePlaneFilter::render   # image plane (trace only)
+0x0040a218 uImagePlaneFilterRange::render  # image plane range (trace only)
+0x003808ac uOutlineFilter::render      # outline (trace only)
+0x00385c34 uTVNoiseFilter::render      # TV noise (trace only)

@@ -79,7 +79,10 @@ if (-not (Test-Path $ini)) {
         "# the touch screen in a corner of View > Screen Layout > Custom Layout (corner, height %, opacity %)",
         "touch_overlay = top-right 30 85",
         "# no dither grid over an upscaled picture",
-        "dither = off")
+        "dither = off",
+        "# no glow over bright parts, and sharp cutscenes (emulation gets their focus blur wrong)",
+        "bloom = off",
+        "depth_of_field = off")
     Write-Host "Made $ini (60 fps, 16:9, the touch screen in a corner)"
 }
 # Azahar's own settings, only if it has none yet: the custom layout, which the port draws with

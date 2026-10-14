@@ -10,3 +10,4 @@ One Markdown file per topic (file formats, structs, subsystems). Cite addresses 
 | [community-enhancements.md](community-enhancements.md) | What the community already has: 60 fps cheats, widescreen, HUD, multiplayer through Azahar rooms, texture packs, format docs |
 | [widescreen.md](widescreen.md) | Aspect ratio, projection, render targets, culling and HUD anchoring for a wider top screen; hook plan |
 | [second-screen.md](second-screen.md) | What draws the bottom screen, touch → panel actions, layout views; staged plan for a PC second-screen adaptation |
+| [screen-filters.md](screen-filters.md) | The engine's post-processing passes (bloom, depth of field, motion and radial blur, haze, colour correction): classes, where MH4U uses them, how the port turns them off |

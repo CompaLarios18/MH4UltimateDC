@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <iterator>
 #include <sstream>
 #include <string_view>
 #include <vector>
@@ -104,7 +105,19 @@ struct Options {
     u32 trace_layout = 0;   // trace_layout / MH4U_TRACE_LAYOUT: log HUD objects every n frames
     NetSync::Mode net_sync = NetSync::Mode::Session;  // net_sync / MH4U_NET_SYNC
     float net_sync_slack = 0;  // net_sync_slack / MH4U_NET_SYNC_SLACK: ms, 0 = the default
+    u32 filters_off = 0;    // bloom, motion_blur, depth_of_field, radial_blur, haze = off: the
+                            // screen filters (FILTER_* bits) the port skips
+    bool trace_filters = false;  // trace_filters / MH4U_TRACE_FILTERS: log the filters drawn
 };
+
+// The screen filters an option can turn off (see SCREEN_FILTERS below), by option name.
+constexpr u32 FILTER_BLOOM = 1u << 0, FILTER_MOTION_BLUR = 1u << 1, FILTER_DEPTH_OF_FIELD = 1u << 2,
+              FILTER_RADIAL_BLUR = 1u << 3, FILTER_HAZE = 1u << 4;
+constexpr std::pair<const char*, u32> FILTER_OPTIONS[] = {{"bloom", FILTER_BLOOM},
+                                                          {"motion_blur", FILTER_MOTION_BLUR},
+                                                          {"depth_of_field", FILTER_DEPTH_OF_FIELD},
+                                                          {"radial_blur", FILTER_RADIAL_BLUR},
+                                                          {"haze", FILTER_HAZE}};
 
 /// A 3DS button name -> the bit sPad::processInput gives it in the held word.
 u32 PadBit(std::string name) {
@@ -123,6 +136,10 @@ u32 PadBit(std::string name) {
 
 bool IsOn(const std::string& value) {
     return value == "1" || value == "true" || value == "on" || value == "yes";
+}
+
+bool IsOff(const std::string& value) {
+    return value == "0" || value == "false" || value == "off" || value == "no";
 }
 Options options;
 u64 frames = 0;
@@ -179,6 +196,15 @@ void Set(Options& o, const std::string& key, const std::string& value) {
         o.trace_layout = static_cast<u32>(std::max(0L, std::strtol(value.c_str(), nullptr, 10)));
     } else if (key == "trace_frames") {
         o.trace_every = static_cast<u32>(std::max(0L, std::strtol(value.c_str(), nullptr, 10)));
+    } else if (key == "trace_filters") {
+        o.trace_filters = IsOn(value);
+    } else {
+        for (const auto& [name, bit] : FILTER_OPTIONS) {
+            if (key == name) {
+                // on (the game's own, as on a 3DS) unless turned off
+                o.filters_off = IsOff(value) ? o.filters_off | bit : o.filters_off & ~bit;
+            }
+        }
     }
 }
 
@@ -221,7 +247,13 @@ Options LoadOptions(std::vector<std::string>& log) {
         {"MH4U_RENDER_FLAGS_CLEAR", "render_flags_clear"},
         {"MH4U_TRACE_LAYOUT", "trace_layout"},
         {"MH4U_NET_SYNC", "net_sync"},
-        {"MH4U_NET_SYNC_SLACK", "net_sync_slack"}};
+        {"MH4U_NET_SYNC_SLACK", "net_sync_slack"},
+        {"MH4U_BLOOM", "bloom"},
+        {"MH4U_MOTION_BLUR", "motion_blur"},
+        {"MH4U_DEPTH_OF_FIELD", "depth_of_field"},
+        {"MH4U_RADIAL_BLUR", "radial_blur"},
+        {"MH4U_HAZE", "haze"},
+        {"MH4U_TRACE_FILTERS", "trace_filters"}};
     for (const auto& [var, key] : env) {
         if (const char* value = std::getenv(var)) {
             Set(o, key, value);
@@ -252,6 +284,7 @@ void UpdateFrameTiming(RCtx* ctx, RFunc original) {
 /// sMhMain::frame(this): one iteration of the main loop.
 void WideTransfer(RCtx* ctx);
 void UpdateQuestOverlay(RCtx* ctx);
+void TraceFilters();
 
 void Frame(RCtx* ctx, RFunc original) {
     if (frames == 0 && RefreshRate() > 0) {
@@ -272,6 +305,9 @@ void Frame(RCtx* ctx, RFunc original) {
     original(ctx);
     ++frames;
     UpdateQuestOverlay(ctx);
+    if (options.trace_filters) {
+        TraceFilters();
+    }
     if (options.trace_every == 0 || frames % options.trace_every != 0) {
         return;
     }
@@ -854,6 +890,88 @@ void UpdateQuestOverlay(RCtx* ctx) {
     }
 }
 
+// ── Screen filters (docs/research/screen-filters.md). The engine's post-processing passes are
+// units of uFilter's subclasses that register with sScene; each frame the scene calls their
+// render(this, cDraw*) (virtual slot 12), which draws the pass into the scene's target: bloom
+// adds a glow made from the bright parts of the picture at a quarter of its resolution, depth
+// of field mixes in a blurred quarter-resolution copy by distance, motion blur blends in the
+// frames before. A pass turned off returns at once, as if its filter weren't there (the
+// community's "bloom off" cheat for MH4G writes a `bx lr` over the start of bloom's render).
+// Classes are told apart by their vtable, since some share a render function.
+struct ScreenFilter {
+    u32 vtable;        // USA v1.3.0
+    const char* name;  // in the log
+    u32 option;        // the FILTER_* bit that turns it off, 0 none
+};
+constexpr ScreenFilter SCREEN_FILTERS[] = {
+    {0x00e5e7f4, "bloom", FILTER_BLOOM},
+    {0x00e624d0, "motion blur", FILTER_MOTION_BLUR},
+    {0x00e5bafc, "depth of field", FILTER_DEPTH_OF_FIELD},
+    {0x00e5e844, "bokeh", FILTER_DEPTH_OF_FIELD},
+    {0x00e62520, "radial blur", FILTER_RADIAL_BLUR},
+    {0x00e6313c, "radial blur (MH)", FILTER_RADIAL_BLUR},
+    {0x00e61e08, "multi blur", FILTER_MOTION_BLUR},
+    {0x00e5d56c, "haze", FILTER_HAZE},
+    {0x00e5ff74, "haze (MH)", FILTER_HAZE},
+    {0x00e62f28, "colour correction", 0},
+    {0x00e5e970, "colour", 0},
+    {0x00e5d474, "fade", 0},
+    {0x00e61cbc, "cross-fade", 0},
+    {0x00e62480, "image plane", 0},
+    {0x00e63ac4, "image plane range", 0},
+    {0x00e60ff8, "outline", 0},
+    {0x00e611a4, "TV noise", 0},
+};
+static_assert(std::size(SCREEN_FILTERS) <= 32);
+u32 filters_drawn = 0, filters_skipped = 0;  // bits: SCREEN_FILTERS index, since the last log line
+u32 filters_logged = 0xFFFFFFFF, skipped_logged = 0xFFFFFFFF;
+double filters_since = 0;
+
+/// render(this, cDraw*) of a screen filter class.
+void FilterRender(RCtx* ctx, RFunc original) {
+    const u32 vtable = rd32(ctx, ctx->r[0]);
+    for (u32 i = 0; i < std::size(SCREEN_FILTERS); ++i) {
+        if (SCREEN_FILTERS[i].vtable != vtable) {
+            continue;
+        }
+        if (SCREEN_FILTERS[i].option & options.filters_off) {
+            filters_skipped |= 1u << i;
+            rc_hook_return(ctx);
+            return;
+        }
+        filters_drawn |= 1u << i;
+        break;
+    }
+    original(ctx);
+}
+
+std::string FilterNames(u32 bits) {
+    std::string names;
+    for (u32 i = 0; i < std::size(SCREEN_FILTERS); ++i) {
+        if (bits >> i & 1) {
+            names += (names.empty() ? "" : ", ") + std::string(SCREEN_FILTERS[i].name);
+        }
+    }
+    return names.empty() ? "none" : names;
+}
+
+/// Once a frame with trace_filters: the filters drawn and skipped over the last second, logged
+/// when they change (a filter can draw every other frame, so a frame alone says too little).
+void TraceFilters() {
+    const double now = EmulatedSeconds();
+    if (now - filters_since < 1.0) {
+        return;
+    }
+    if (filters_drawn != filters_logged || filters_skipped != skipped_logged) {
+        LOG_INFO(Frontend, "screen filters at {:.1f} s: {}{}", now, FilterNames(filters_drawn),
+                 filters_skipped ? " (skipped: " + FilterNames(filters_skipped) + ")" : "");
+        filters_logged = filters_drawn;
+        skipped_logged = filters_skipped;
+    }
+    filters_drawn = filters_skipped = 0;
+    filters_since = now;
+}
+
 struct Hook {
     u32 addr;
     const char* name;
@@ -874,6 +992,20 @@ constexpr Hook HOOKS[] = {
     {0x00b7c010, "QuestFlow::startQuest", StartQuest},
     {0x00ae65a4, "nLayout::objectConstants", LayoutObjectConstants},
     {0x00b92e24, "QuestHud::updatePanels", QuestPanels},
+    {0x002bc238, "uBloomFilter::render", FilterRender},
+    {0x003b0804, "uMotionBlurFilter::render", FilterRender},
+    {0x001b0890, "uDOFFilter::render", FilterRender},
+    {0x002bd53c, "uBokehFilter::render", FilterRender},
+    {0x003b2938, "uRadialBlurFilter::render", FilterRender},
+    {0x002d3168, "uMultiBlurFilter::render", FilterRender},
+    {0x0025655c, "uHazeFilter::render", FilterRender},
+    {0x003dd740, "uColorCorrectFilter::render", FilterRender},
+    {0x002bffc0, "uColorFilter::render", FilterRender},
+    {0x003a1a6c, "uCrossFadeFilter::render", FilterRender},
+    {0x003aeccc, "uImagePlaneFilter::render", FilterRender},
+    {0x0040a218, "uImagePlaneFilterRange::render", FilterRender},
+    {0x003808ac, "uOutlineFilter::render", FilterRender},
+    {0x00385c34, "uTVNoiseFilter::render", FilterRender},
 };
 
 } // namespace
@@ -893,6 +1025,9 @@ std::vector<std::string> Install(const RCodeInfo& info) {
     quest_map_drawn = false;
     quest_choice = {};
     last_panel_states = 0xFFFFFFFF;
+    filters_drawn = filters_skipped = 0;
+    filters_logged = skipped_logged = 0xFFFFFFFF;
+    filters_since = 0;
     // local wireless play over network rooms, for any program on recompiled code
     NetSync::Install(Core::System::GetInstance(), options.net_sync, options.net_sync_slack, log);
     if (!info.set_hook || info.hook_count == 0) {
@@ -956,6 +1091,18 @@ std::vector<std::string> Install(const RCodeInfo& info) {
     if (!options.dither) {
         log.push_back("dithering off");
     }
+    if (options.filters_off) {
+        std::string off;
+        for (const auto& [name, bit] : FILTER_OPTIONS) {
+            if (options.filters_off & bit) {
+                off += (off.empty() ? "" : ", ") + std::string(name);
+            }
+        }
+        log.push_back("screen filters off: " + off);
+    }
+    if (options.trace_filters) {
+        log.push_back("tracing screen filters");
+    }
     if (options.render_set || options.render_clear) {
         log.push_back(fmt::format("render flags: set {:08X}, clear {:08X} (experimental)",
                                   options.render_set, options.render_clear));
@@ -985,7 +1132,8 @@ bool SetOption(const std::string& key, const std::string& value) {
     // the options the hooks read each time they run; the others are applied once at start-up
     static constexpr std::string_view live[] = {
         "fps", "refresh_rate", "dither", "render_flags_set", "render_flags_clear", "kick",
-        "target", "quest_overlay", "hud_edges", "trace_frames", "trace_layout", "trace_panels"};
+        "target", "quest_overlay", "hud_edges", "trace_frames", "trace_layout", "trace_panels",
+        "bloom", "motion_blur", "depth_of_field", "radial_blur", "haze", "trace_filters"};
     if (std::find(std::begin(live), std::end(live), key) == std::end(live)) {
         return false;
     }

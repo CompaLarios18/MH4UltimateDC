@@ -86,6 +86,16 @@ trace_panels = 0
 # the game's dither pattern (on by default, as on a 3DS): an upscaled picture shows it as a fine
 # grid over everything, so turn it off when Internal Resolution is above 1x
 dither = off
+# the game's screen filters, each on by default as on a 3DS (off skips it, see 5. Graphics):
+# the glow over bright parts, the focus blur of cutscenes (emulation gets it wrong: it can blur
+# the whole picture), the blur that some effects blend in, the zoom blur of roars, heat shimmer
+bloom = off
+depth_of_field = off
+motion_blur = off
+radial_blur = on
+haze = on
+# write the screen filters drawn to the log when they change
+trace_filters = 0
 # multiplayer: keep the port's consoles in a network room together, so that one whose PC stalls
 # for a moment isn't dropped by the others (on by default; off, or all = with every port
 # console in the room, not only the ones you play with); net_sync_slack: ms of lead before a
@@ -97,7 +107,7 @@ render_flags_clear = 0
 render_flags_set = 0
 ```
 
-Environment variables override the file: `MH4U_FPS`, `MH4U_REFRESH_RATE`, `MH4U_WIDESCREEN`, `MH4U_WIDE_RENDER`, `MH4U_KICK`, `MH4U_TARGET`, `MH4U_TOUCH_OVERLAY`, `MH4U_QUEST_OVERLAY`, `MH4U_HUD_EDGES`, `MH4U_DITHER`, `MH4U_RENDER_FLAGS_SET`, `MH4U_RENDER_FLAGS_CLEAR`, `MH4U_NET_SYNC`, `MH4U_NET_SYNC_SLACK`, `MH4U_TRACE_FRAMES`, `MH4U_TRACE_PANELS`, `MH4U_TRACE_LAYOUT`.
+Environment variables override the file: `MH4U_FPS`, `MH4U_REFRESH_RATE`, `MH4U_WIDESCREEN`, `MH4U_WIDE_RENDER`, `MH4U_KICK`, `MH4U_TARGET`, `MH4U_TOUCH_OVERLAY`, `MH4U_QUEST_OVERLAY`, `MH4U_HUD_EDGES`, `MH4U_DITHER`, `MH4U_RENDER_FLAGS_SET`, `MH4U_RENDER_FLAGS_CLEAR`, `MH4U_NET_SYNC`, `MH4U_NET_SYNC_SLACK`, `MH4U_BLOOM`, `MH4U_DEPTH_OF_FIELD`, `MH4U_MOTION_BLUR`, `MH4U_RADIAL_BLUR`, `MH4U_HAZE`, `MH4U_TRACE_FRAMES`, `MH4U_TRACE_PANELS`, `MH4U_TRACE_LAYOUT`, `MH4U_TRACE_FILTERS`.
 
 - **60 fps**: the engine's frame limiter is raised to the cap; in the opening scenes the game holds 60 with each frame advancing 1/60 s, so it runs at normal speed. A frame must also fit in one screen refresh of emulated time: if a busy scene stays below 60, raise *CPU Clock Speed* (*Emulation → Configure → Debug*). All players in a multiplayer session should use the same value. **Above 60** *(experimental)*: set `fps` to your monitor's rate, e.g. 120 (the emulated screen's `refresh_rate` follows it unless you set it). Tried at 120: menus, loading, the real-time cutscene and walking on the sand ship run at 120 fps at normal speed (a loading race that more frames per second bring out at the start of quests is worked around). Movies (the opening film) still play at their own 30 fps. Each frame then has 1/120 s of emulated time, so busy scenes need a higher *CPU Clock Speed*. Played on Windows at 120 fps (Ryzen 5 5600X, Vulkan, 180 Hz monitor), hunts included: no problems reported.
 - **Widescreen** *(experimental)*: the 3D view is widened to the given aspect ratio and every screen layout (*View → Screen Layout*) shows the top screen at that shape: stacked above the bottom screen, side by side, *Large Screen* with the touch screen small in a corner, or *Single Screen* for the top screen alone (16:9, 16:10, 21:9 and 4:3 exactly; other values stretch it to the window). In *Custom Layout* you can size the top screen yourself and lay the bottom screen over it with *Bottom Screen Opacity*. With `wide_render = 0` this stretches a 400x240 image, HUD included. With `wide_render = 1` the game draws a wider image instead (424x240 for 16:9: render targets, viewports and the copy to the screen are made wider): the 3D view fills the width and the HUD keeps its proportions. The hunting HUD's sides go to the screen's edges (`hud_edges`): health, stamina, sharpness and the party list on the left, the item selection on the right (tried on an expedition and in a two-player quest); the rest stays in the middle 400 pixels ([research/widescreen.md](research/widescreen.md)). Ultrawide screens get it too: 21:9 is drawn 560x240 and 32:9 856x240 (past 512 pixels the game's main render target goes from 512 to 1024 rows, the most the 3DS's GPU draws; tried in Val Habar and on an expedition: the 3D view fills the width, the HUD stays centred with its sides at the edges, and the touch screen is unchanged). A shape narrower than the 3DS's own 5:3 (16:10 on a Steam Deck, 4:3) narrows the 3D view instead, so that the picture squeezed to that shape keeps its proportions (the HUD is squeezed with it); leave `widescreen` off to keep the game's own shape with thin bars.
@@ -125,6 +135,15 @@ The game drops a player whose game stops for about a second, and on a PC a stutt
 Azahar's renderer settings apply unchanged (*Emulation → Configure → Graphics*): internal resolution (up to many times the 3DS's), texture filtering, post-processing shaders and custom texture packs (PNG replacements in `load/textures/0004000000126300/` of Azahar's user folder).
 
 With a higher internal resolution, set `dither = off`. The game draws a dither pattern over both screens, which hides banding on the 3DS's screens. Azahar scales that pattern up with the rest of the picture, so it shows as a fine grid over everything. Without it, the picture is clean (compared in the cloud; the community's "Trinity Disabler" cheat turns the same bits off).
+
+**Screen filters.** The game draws full-screen passes over its 3D view, and each can be turned off on its own (they change only the picture, never the game, so players in a session can choose differently; [research/screen-filters.md](research/screen-filters.md)):
+
+- `bloom = off`: no glow. Nearly every area and cutscene has one: the bright parts of the picture are blurred in targets of a quarter of the resolution and less and added back, which lays a soft haze over the picture. Without it the picture is sharper and has more contrast, the colours otherwise the same (the community's "Turn off bloom" cheat for the Japanese version does the same). Compared in the cloud: strongest outdoors in Val Habar, where the sun's glow covers a third of the view; subtle in the shade of an expedition's forest.
+- `depth_of_field = off`: sharp cutscenes. Cutscenes blur what is out of focus, and in emulation that blur goes wrong, most likely because Azahar doesn't emulate the 3DS GPU's "gas" mode (Azahar's issue #765): with Azahar's software renderer it covers the whole picture, the characters in front included. Compared in the cloud: the same frame of a village cutscene goes from blocky and blurred to sharp. Not tried with OpenGL or Vulkan.
+- `motion_blur = off`: no blending of earlier frames, which some effects add.
+- `radial_blur = off`: no zoom blur around a roaring monster, nor in the cutscenes that use it.
+- `haze = off`: no heat shimmer.
+- `trace_filters = 1` writes to the log which filters are drawn whenever that changes.
 
 ## 6. Mods
 
