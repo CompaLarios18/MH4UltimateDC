@@ -70,13 +70,16 @@ target = ZL
 touch_overlay = top-right 30 85
 # write touch-panel activity to the log (to map panels to buttons; doesn't see the taps yet)
 trace_panels = 0
+# the game's dither pattern (on by default, as on a 3DS): an upscaled picture shows it as a fine
+# grid over everything, so turn it off when Internal Resolution is above 1x
+dither = off
 # experimental: bits of the game's render settings word to clear/set every frame, e.g.
-# 0x300000 = no dithering, 0x400 = the game's own 2D anti-aliasing (docs/research/system-services.md)
+# 0x400 = the game's own 2D anti-aliasing (docs/research/system-services.md)
 render_flags_clear = 0
 render_flags_set = 0
 ```
 
-Environment variables override the file: `MH4U_FPS`, `MH4U_REFRESH_RATE`, `MH4U_WIDESCREEN`, `MH4U_WIDE_RENDER`, `MH4U_KICK`, `MH4U_TARGET`, `MH4U_TOUCH_OVERLAY`, `MH4U_HUD_EDGES`, `MH4U_TRACE_FRAMES`, `MH4U_TRACE_PANELS`, `MH4U_TRACE_LAYOUT`.
+Environment variables override the file: `MH4U_FPS`, `MH4U_REFRESH_RATE`, `MH4U_WIDESCREEN`, `MH4U_WIDE_RENDER`, `MH4U_KICK`, `MH4U_TARGET`, `MH4U_TOUCH_OVERLAY`, `MH4U_HUD_EDGES`, `MH4U_DITHER`, `MH4U_RENDER_FLAGS_SET`, `MH4U_RENDER_FLAGS_CLEAR`, `MH4U_TRACE_FRAMES`, `MH4U_TRACE_PANELS`, `MH4U_TRACE_LAYOUT`.
 
 - **60 fps**: the engine's frame limiter is raised to the cap; in the opening scenes the game holds 60 with each frame advancing 1/60 s, so it runs at normal speed. A frame must also fit in one screen refresh of emulated time: if a busy scene stays below 60, raise *CPU Clock Speed* (*Emulation → Configure → Debug*). All players in a multiplayer session should use the same value. **Above 60** *(experimental)*: set `fps` and `refresh_rate` to your monitor's rate, e.g. 120 and 120. Tried at 120: menus, loading, the real-time cutscene and walking on the sand ship run at 120 fps at normal speed (a loading race that more frames per second bring out at the start of quests is worked around). Movies (the opening film) still play at their own 30 fps. Each frame then has 1/120 s of emulated time, so busy scenes need a higher *CPU Clock Speed*. Played on Windows at 120 fps (Ryzen 5 5600X, Vulkan, 180 Hz monitor), hunts included: no problems reported.
 - **Widescreen** *(experimental)*: the 3D view is widened to the given aspect ratio and every screen layout (*View → Screen Layout*) shows the top screen at that shape: stacked above the bottom screen, side by side, *Large Screen* with the touch screen small in a corner, or *Single Screen* for the top screen alone (16:9, 16:10, 21:9 and 4:3 exactly; other values stretch it to the window). In *Custom Layout* you can size the top screen yourself and lay the bottom screen over it with *Bottom Screen Opacity*. With `wide_render = 0` this stretches a 400x240 image, HUD included. With `wide_render = 1` the game draws a wider image instead (424x240 for 16:9: render targets, viewports and the copy to the screen are made wider): the 3D view fills the width and the HUD keeps its proportions. The hunting HUD's sides go to the screen's edges (`hud_edges`): health, stamina, sharpness and the party list on the left, the item selection on the right (tried on an expedition); the rest stays in the middle 400 pixels ([research/widescreen.md](research/widescreen.md)). It goes up to 512x240 (about 2.1:1); beyond that, as for 21:9, the rest is stretched.
@@ -95,6 +98,8 @@ The game drops a player whose game stops for about a second, so avoid stutters: 
 ## 5. Graphics
 
 Azahar's renderer settings apply unchanged (*Emulation → Configure → Graphics*): internal resolution (up to many times the 3DS's), texture filtering, post-processing shaders and custom texture packs (PNG replacements in `load/textures/0004000000126300/` of Azahar's user folder).
+
+With a higher internal resolution, set `dither = off`. The game draws a dither pattern over both screens, which hides banding on the 3DS's screens. Azahar scales that pattern up with the rest of the picture, so it shows as a fine grid over everything. Without it, the picture is clean (compared in the cloud; the community's "Trinity Disabler" cheat turns the same bits off).
 
 ## 6. Mods
 

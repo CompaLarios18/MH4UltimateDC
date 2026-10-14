@@ -46,6 +46,7 @@ constexpr u32 SLTRENDER_DISPLAY_SKIP = 0x8aa8;  // u32[2] mDisplaySkip: top, bot
 // 0x40 mULCDEnableEdit, 0x100 mParallelRenderingEdit, 0x400 mFSAA_2D,
 // 0x100000 mDitherDisplay0, 0x200000 mDitherDisplay1, 0x400000 mProfileRFPS
 constexpr u32 SLTRENDER_RENDER_FLAGS = 0x6ba8;
+constexpr u32 RENDER_DITHER = 0x300000;         // mDitherDisplay0 | mDitherDisplay1
 constexpr u32 SCAMERA_INSTANCE = 0x0105729c;    // sMhCamera*
 constexpr u32 SCAMERA_VIEWPORTS = 0x18;         // 8 viewports of 0x1a8 bytes
 constexpr u32 VIEWPORT_SIZE = 0x1a8;
@@ -85,6 +86,7 @@ struct Options {
     u32 trace_every = 0;    // trace_frames / MH4U_TRACE_FRAMES: log frame timing every n frames
     bool trace_panels = false;  // trace_panels / MH4U_TRACE_PANELS: log touch-panel activity
     u32 render_set = 0, render_clear = 0;  // render_flags_set/_clear: bits of the render word
+    bool dither = true;     // dither / MH4U_DITHER: the game's dither pattern on both screens
     u32 kick_button = 0;    // kick / MH4U_KICK: 3DS button that kicks (the game's pad bits)
     u32 target_button = 0;  // target / MH4U_TARGET: 3DS button for the target camera panel
     Layout::ScreenOverlay touch_overlay;  // touch_overlay / MH4U_TOUCH_OVERLAY (custom layout)
@@ -133,6 +135,8 @@ void Set(Options& o, const std::string& key, const std::string& value) {
         o.widescreen = ParseAspect(value);
     } else if (key == "wide_render") {
         o.wide_render = IsOn(value);
+    } else if (key == "dither") {
+        o.dither = IsOn(value);
     } else if (key == "render_flags_set") {
         o.render_set = static_cast<u32>(std::strtoul(value.c_str(), nullptr, 0));
     } else if (key == "render_flags_clear") {
@@ -186,6 +190,9 @@ Options LoadOptions(std::vector<std::string>& log) {
         {"MH4U_TARGET", "target"},
         {"MH4U_TOUCH_OVERLAY", "touch_overlay"},
         {"MH4U_HUD_EDGES", "hud_edges"},
+        {"MH4U_DITHER", "dither"},
+        {"MH4U_RENDER_FLAGS_SET", "render_flags_set"},
+        {"MH4U_RENDER_FLAGS_CLEAR", "render_flags_clear"},
         {"MH4U_TRACE_LAYOUT", "trace_layout"}};
     for (const auto& [var, key] : env) {
         if (const char* value = std::getenv(var)) {
@@ -212,12 +219,14 @@ void Frame(RCtx* ctx, RFunc original) {
         // the game presents at most once per VBlank: more VBlanks allow more than 60 fps
         Core::System::GetInstance().GPU().SetRefreshRate(options.refresh_rate);
     }
-    if (options.render_set || options.render_clear) {
-        // experimental: the game reads these bits every frame (the community's quality
-        // cheats write the same word)
+    const u32 clear = options.render_clear | (options.dither ? 0 : RENDER_DITHER);
+    if (options.render_set || clear) {
+        // the game reads these bits every frame (the community's quality cheats write the same
+        // word); without the dither bits it draws no dither pattern, which an upscaled picture
+        // shows as a screen-door grid
         if (const u32 r = rd32(ctx, SLTRENDER_INSTANCE)) {
             const u32 flags = rd32(ctx, r + SLTRENDER_RENDER_FLAGS);
-            wr32(ctx, r + SLTRENDER_RENDER_FLAGS, (flags & ~options.render_clear) | options.render_set);
+            wr32(ctx, r + SLTRENDER_RENDER_FLAGS, (flags & ~clear) | options.render_set);
         }
     }
     WideTransfer(ctx);
@@ -736,6 +745,9 @@ std::vector<std::string> Install(const RCodeInfo& info) {
     }
     if (options.trace_layout) {
         log.push_back(fmt::format("tracing HUD layout objects every {} frames", options.trace_layout));
+    }
+    if (!options.dither) {
+        log.push_back("dithering off");
     }
     if (options.render_set || options.render_clear) {
         log.push_back(fmt::format("render flags: set {:08X}, clear {:08X} (experimental)",
