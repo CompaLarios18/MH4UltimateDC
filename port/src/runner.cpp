@@ -101,6 +101,9 @@ const char* const USAGE = R"(usage: mh4u_runner <file> [options]
                     that stops to draw a screenshot (the clock stands still while the GPU
                     works) falls silent for the others, and the game's local play drops it
   --stalls MS       print each step of the emulation that took longer than MS of host time
+  --freeze MS:HOST_MS  at emulated time MS, stop emulating for HOST_MS of host time, as a PC
+                    that stalls would (shader compilation): the port's net sync makes the other
+                    consoles in a network room wait instead of dropping this one
 or:    mh4u_runner --overlay-layout SPEC WIDTHxHEIGHT[:TOP_WIDTH] [QUEST SLOT]
                     print the custom screen layout the port's touch_overlay option SPEC
                     gives a window that size (top screen TOP_WIDTH x 240, default 400);
@@ -686,6 +689,7 @@ int main(int argc, char** argv) {
     double speed = 0.0;
     double draw_window = -1.0; // < 0: draw every frame
     double stall_ms = 0.0;     // > 0: report emulation steps that take longer
+    double freeze_at = -1.0, freeze_ms = 0.0;  // --freeze: stop emulating once, for a while
     int cpu_clock = 100;
     bool async_io = false;
     int room_host = 0;
@@ -715,6 +719,11 @@ int main(int argc, char** argv) {
             }
         } else if (arg == "--stalls" && i + 1 < argc) {
             stall_ms = std::max(0.0, std::atof(argv[++i]));
+        } else if (arg == "--freeze" && i + 1 < argc) {
+            if (std::sscanf(argv[++i], "%lf:%lf", &freeze_at, &freeze_ms) != 2 || freeze_ms <= 0.0) {
+                std::fprintf(stderr, "bad --freeze %s (MS:HOST_MS)\n", argv[i]);
+                return 1;
+            }
         } else if (arg == "--replace" && i + 1 < argc) {
             if (!ParseReplace(argv[++i])) {
                 std::fprintf(stderr, "bad --replace: %s (want MS:FROM:TO, hex bytes of equal length)\n", argv[i]);
@@ -888,6 +897,12 @@ int main(int argc, char** argv) {
                                           EmulatedMs() >= next_shot - draw_window);
         }
         LockstepWait(EmulatedMs());
+        if (freeze_at >= 0.0 && EmulatedMs() >= freeze_at) {
+            std::printf("freeze at %.0f ms for %.0f ms of host time\n", EmulatedMs(), freeze_ms);
+            std::fflush(stdout);
+            std::this_thread::sleep_for(std::chrono::duration<double, std::milli>(freeze_ms));
+            freeze_at = -1.0;
+        }
         const auto step_start = std::chrono::steady_clock::now();
         const double step_emulated = EmulatedMs();
         const auto result = system.RunLoop();

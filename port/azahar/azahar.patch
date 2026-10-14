@@ -56,10 +56,21 @@ index 758038b..518a8ad 100644
          system.Load(*render_window, filename.toStdString(), secondary_window)};
  
 diff --git a/src/core/core.cpp b/src/core/core.cpp
-index dc1eb15..2ab5287 100644
+index dc1eb15..42f4890 100644
 --- a/src/core/core.cpp
 +++ b/src/core/core.cpp
-@@ -597,7 +597,11 @@ System::ResultStatus System::Init(Frontend::EmuWindow& emu_window,
+@@ -117,6 +117,10 @@ System::ResultStatus System::RunLoop(bool tight_loop) {
+         return ResultStatus::ErrorNotInitialized;
+     }
+ 
++    if (run_loop_hook) {
++        run_loop_hook();
++    }
++
+ #ifdef ENABLE_GDBSTUB
+     if (GDBStub::IsServerEnabled()) {
+         // The break flag is only set if GDB is connected,
+@@ -597,7 +601,11 @@ System::ResultStatus System::Init(Frontend::EmuWindow& emu_window,
  
      exclusive_monitor = MakeExclusiveMonitor(*memory, num_cores);
      cpu_cores.reserve(num_cores);
@@ -73,7 +84,7 @@ index dc1eb15..2ab5287 100644
          for (u32 i = 0; i < num_cores; ++i) {
              cpu_cores.push_back(std::make_shared<ARM_Dynarmic>(
 diff --git a/src/core/core.h b/src/core/core.h
-index 5920595..f47c4ab 100644
+index 5920595..bc107db 100644
 --- a/src/core/core.h
 +++ b/src/core/core.h
 @@ -6,6 +6,7 @@
@@ -84,7 +95,7 @@ index 5920595..f47c4ab 100644
  #include <memory>
  #include <mutex>
  #include <string>
-@@ -363,6 +364,14 @@ public:
+@@ -363,6 +364,20 @@ public:
          return registered_image_interface;
      }
  
@@ -96,14 +107,21 @@ index 5920595..f47c4ab 100644
 +        cpu_factory = std::move(factory);
 +    }
 +
++    /// Called at the start of each RunLoop on the emulation thread (the port keeps the clocks
++    /// of the consoles in a network room together there).
++    void SetRunLoopHook(std::function<void()> hook) {
++        run_loop_hook = std::move(hook);
++    }
++
      /// Function for checking OS microphone permissions.
      void RegisterMicPermissionCheck(const std::function<bool()>& permission_func) {
          mic_permission_func = permission_func;
-@@ -484,6 +493,7 @@ private:
+@@ -484,6 +499,8 @@ private:
      std::string inserted_cartridge;
  
      /// ARM11 CPU core
 +    CPUFactory cpu_factory;
++    std::function<void()> run_loop_hook;
      std::vector<std::shared_ptr<ARM_Interface>> cpu_cores;
      ARM_Interface* running_core = nullptr;
  

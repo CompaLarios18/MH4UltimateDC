@@ -1,4 +1,5 @@
 #include "hooks.h"
+#include "netsync.h"
 
 #include <algorithm>
 #include <cctype>
@@ -98,6 +99,8 @@ struct Options {
                                   // part of slot n all the time (to check the drawing)
     bool hud_edges = true;  // hud_edges / MH4U_HUD_EDGES: with wide_render, HUD to the edges
     u32 trace_layout = 0;   // trace_layout / MH4U_TRACE_LAYOUT: log HUD objects every n frames
+    NetSync::Mode net_sync = NetSync::Mode::Session;  // net_sync / MH4U_NET_SYNC
+    float net_sync_slack = 0;  // net_sync_slack / MH4U_NET_SYNC_SLACK: ms, 0 = the default
 };
 
 /// A 3DS button name -> the bit sPad::processInput gives it in the held word.
@@ -161,6 +164,10 @@ void Set(Options& o, const std::string& key, const std::string& value) {
         // a slot the map can start in: 0, 1, 3 or 4
         const long slot = std::strtol(value.c_str(), nullptr, 10);
         o.quest_overlay_test = slot >= 0 && slot <= 4 && slot != 2 ? static_cast<int>(slot) : -1;
+    } else if (key == "net_sync") {
+        o.net_sync = NetSync::ParseMode(value);
+    } else if (key == "net_sync_slack") {
+        o.net_sync_slack = std::max(0.0f, std::strtof(value.c_str(), nullptr));
     } else if (key == "hud_edges") {
         o.hud_edges = IsOn(value);
     } else if (key == "trace_layout") {
@@ -207,7 +214,9 @@ Options LoadOptions(std::vector<std::string>& log) {
         {"MH4U_DITHER", "dither"},
         {"MH4U_RENDER_FLAGS_SET", "render_flags_set"},
         {"MH4U_RENDER_FLAGS_CLEAR", "render_flags_clear"},
-        {"MH4U_TRACE_LAYOUT", "trace_layout"}};
+        {"MH4U_TRACE_LAYOUT", "trace_layout"},
+        {"MH4U_NET_SYNC", "net_sync"},
+        {"MH4U_NET_SYNC_SLACK", "net_sync_slack"}};
     for (const auto& [var, key] : env) {
         if (const char* value = std::getenv(var)) {
             Set(o, key, value);
@@ -785,10 +794,12 @@ constexpr Hook HOOKS[] = {
 
 std::vector<std::string> Install(const RCodeInfo& info) {
     std::vector<std::string> log;
+    options = LoadOptions(log);
+    // local wireless play over network rooms, for any program on recompiled code
+    NetSync::Install(Core::System::GetInstance(), options.net_sync, options.net_sync_slack, log);
     if (!info.set_hook || info.hook_count == 0) {
         return log; // a test program, or a library from before hook points
     }
-    options = LoadOptions(log);
     if (options.fps_cap > 0) {
         log.push_back(fmt::format("frame-rate cap {}", options.fps_cap));
     }

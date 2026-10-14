@@ -291,6 +291,54 @@ def test_runners_meet_in_a_room(tmp_path):
 
 
 @pytest.mark.skipif(not os.environ.get("MH4U_RUNNER"), reason="port not built (set MH4U_RUNNER)")
+@pytest.mark.parametrize("mode, waits", [("all", True), ("on", False)])
+def test_net_sync_waits_for_a_frozen_console(tmp_path, mode, waits):
+    """Net sync: the port's consoles in a network room tell each other their emulated clocks,
+    and one that has run ahead of a peer it plays with waits for it. A runner frozen for 2 s
+    (--freeze, as a PC stalling on shader compilation would) is waited for, about 2 s less the
+    200 ms of slack, instead of being left behind. `on` (the default) only syncs with consoles
+    that send game data over local wireless, which these test programs don't."""
+    import socket
+    import build_svc_test
+    from recomp import build as rbuild
+    binary = os.environ["MH4U_RUNNER"]
+    elf = build_svc_test.build(str(tmp_path), "io_test")
+    code = rbuild.build(str(tmp_path), 2, "O1", ["RC_PAGED"], "code.so", [rbuild.DLL_GLUE],
+                        extra_flags=["-fvisibility=hidden"])
+    run = [binary, elf, "--code", code, "--speed", "100", "--log", "*:Warning Frontend:Info Core.ARM11:Info"]
+    first = subprocess.run(run + ["--ms", "100", "--user", str(tmp_path / "a")], capture_output=True, timeout=600)
+    assert first.returncode == 0
+    shutil.copytree(tmp_path / "a", tmp_path / "b")
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    env = dict(os.environ, MH4U_NET_SYNC=mode)
+    host = subprocess.Popen(run + ["--ms", "4000", "--user", str(tmp_path / "a"), "--room-host", str(port),
+                                   "--nick", "alice", "--freeze", "1500:2000"],
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env)
+    host_out = []
+    for line in host.stdout:
+        host_out.append(line)
+        if "room: joined" in line or "room: could not" in line:
+            break
+    guest = subprocess.run(run + ["--ms", "4000", "--user", str(tmp_path / "b"), "--nick", "bobby",
+                                  "--new-console-id", "--room-join", f"127.0.0.1:{port}"],
+                           capture_output=True, text=True, timeout=600, env=env)
+    rest, _ = host.communicate(timeout=600)
+    out = "".join(host_out) + rest
+    assert host.returncode == 0 and guest.returncode == 0, out[-2000:] + guest.stdout[-2000:]
+    assert re.search(r"freeze at 1[56]\d\d ms for 2000 ms of host time", out)
+    guest_out = guest.stdout + guest.stderr
+    waited = re.search(r"net sync: waited (\d+) ms at \d+ ms for 00:1F:32", guest_out)
+    if waits:
+        assert waited and 1200 <= int(waited.group(1)) <= 2500, guest_out[-3000:]
+    else:
+        assert not waited, guest_out[-3000:]
+    r = subprocess.run([binary, elf, "--freeze", "1500"], capture_output=True, text=True, timeout=60)
+    assert r.returncode == 1 and "bad --freeze" in r.stderr
+
+
+@pytest.mark.skipif(not os.environ.get("MH4U_RUNNER"), reason="port not built (set MH4U_RUNNER)")
 @pytest.mark.parametrize("spec, size, expected", [
     # 16:9 top screen (424 wide) filling a 1080p window, the touch screen 30% tall in a corner
     ("top-right 30 85", "1920x1080:424", "top 6,0 1914,1080 opacity 1.00\nbottom 1488,0 1920,324 opacity 0.85\n"),

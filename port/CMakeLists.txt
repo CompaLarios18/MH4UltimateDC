@@ -25,9 +25,11 @@ add_library(mh4u_backend STATIC
     src/frontend.h
     src/hooks.cpp
     src/hooks.h
+    src/netsync.cpp
+    src/netsync.h
 )
 target_include_directories(mh4u_backend PUBLIC src PRIVATE "${MH4U_RUNTIME_DIR}")
-target_link_libraries(mh4u_backend PUBLIC citra_core citra_common)
+target_link_libraries(mh4u_backend PUBLIC citra_core citra_common network)
 
 add_executable(mh4u_runner src/runner.cpp)
 target_include_directories(mh4u_runner PRIVATE "${MH4U_RUNTIME_DIR}")
