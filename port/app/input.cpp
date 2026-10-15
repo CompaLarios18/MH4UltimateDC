@@ -1,5 +1,6 @@
 #include "input.h"
 
+#include <atomic>
 #include <cmath>
 #include <memory>
 #include <tuple>
@@ -23,20 +24,35 @@ namespace NativeButton = Settings::NativeButton;
 
 constexpr const char* ANY = "mh4u_any";
 
-/// Pressed while either of two buttons is.
+/// SetMuted: the in-game menu is up, and the game gets nothing.
+std::atomic<bool> muted{false};
+
+/// Pressed while either of two buttons is. Muted, it reads released, and a button held when the
+/// mute ends stays released until it is let go (the B that closed the menu doesn't also roll).
 class AnyButton final : public ::Input::ButtonDevice {
 public:
     AnyButton(std::unique_ptr<::Input::ButtonDevice> a_, std::unique_ptr<::Input::ButtonDevice> b_)
         : a(std::move(a_)), b(std::move(b_)) {}
     bool GetStatus() const override {
-        return (a && a->GetStatus()) || (b && b->GetStatus());
+        const bool pressed = (a && a->GetStatus()) || (b && b->GetStatus());
+        if (muted.load(std::memory_order_relaxed)) {
+            held_over = true;
+            return false;
+        }
+        if (held_over) {
+            held_over = pressed;
+            return false;
+        }
+        return pressed;
     }
 
 private:
     std::unique_ptr<::Input::ButtonDevice> a, b;
+    mutable bool held_over = false;  // the emulation thread is the only reader
 };
 
-/// Whichever of two sticks is pushed further.
+/// Whichever of two sticks is pushed further. Muted, it reads centred, and a stick pushed when
+/// the mute ends reads centred until it has come back.
 class AnyAnalog final : public ::Input::AnalogDevice {
 public:
     AnyAnalog(std::unique_ptr<::Input::AnalogDevice> a_, std::unique_ptr<::Input::AnalogDevice> b_)
@@ -47,11 +63,21 @@ public:
         const auto length = [](const std::tuple<float, float>& s) {
             return std::hypot(std::get<0>(s), std::get<1>(s));
         };
-        return length(sa) >= length(sb) ? sa : sb;
+        const auto status = length(sa) >= length(sb) ? sa : sb;
+        if (muted.load(std::memory_order_relaxed)) {
+            held_over = true;
+            return {};
+        }
+        if (held_over) {
+            held_over = length(status) > 0.25f;
+            return {};
+        }
+        return status;
     }
 
 private:
     std::unique_ptr<::Input::AnalogDevice> a, b;
+    mutable bool held_over = false;
 };
 
 /// "engine:mh4u_any,a:<params>,b:<params>": the inner parameters are serialized again, which
@@ -68,13 +94,18 @@ public:
     }
 };
 
+/// Every binding goes through "mh4u_any", even a single one, so that SetMuted reaches it.
 std::string Join(const std::string& a, const std::string& b) {
-    if (a.empty() || b.empty()) {
-        return a.empty() ? b : a;
+    if (a.empty() && b.empty()) {
+        return "";
     }
     Common::ParamPackage p{{"engine", ANY}};
-    p.Set("a", a);
-    p.Set("b", b);
+    if (!a.empty()) {
+        p.Set("a", a);
+    }
+    if (!b.empty()) {
+        p.Set("b", b);
+    }
     return p.Serialize();
 }
 
@@ -165,11 +196,12 @@ void BuildProfile(const Config& config) {
     }
     for (int i = 0; i < NativeButton::NumButtons; ++i) {
         if (!config.button_params[i].empty()) {
-            profile.buttons[i] = config.button_params[i];
+            profile.buttons[i] = Join(config.button_params[i], "");
             continue;
         }
         std::string from_pad;
-        if (have_pad) {
+        // the Guide button opens the app's menu (ui/): it isn't the 3DS's HOME button here
+        if (have_pad && i != NativeButton::Home) {
             const auto bind = InputCommon::GetControllerButtonBinds(pad_base, i);
             if (bind.Has("engine")) {
                 from_pad = bind.Serialize();
@@ -179,7 +211,7 @@ void BuildProfile(const Config& config) {
     }
     for (int i = 0; i < NativeAnalog::NumAnalogs; ++i) {
         if (!config.stick_params[i].empty()) {
-            profile.analogs[i] = config.stick_params[i];
+            profile.analogs[i] = Join(config.stick_params[i], "");
             continue;
         }
         std::string from_pad;
@@ -198,6 +230,10 @@ void BuildProfile(const Config& config) {
 
 std::string ControllerDescription() {
     return controller_description;
+}
+
+void SetMuted(bool on) {
+    muted.store(on, std::memory_order_relaxed);
 }
 
 } // namespace App::Input

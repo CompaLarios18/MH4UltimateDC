@@ -60,6 +60,15 @@ public:
     bool TakeControllersChanged() {
         return controllers_changed.exchange(false);
     }
+    /// The input profile built again as if a controller had come (the in-game menu changed the
+    /// controls).
+    void RequestInputReload() {
+        controllers_changed = true;
+    }
+
+    SDL_Window* GetSDLWindow() const {
+        return render_window;
+    }
 
 protected:
     Window(Core::System& system, const Config& config, bool is_secondary);

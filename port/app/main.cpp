@@ -47,6 +47,7 @@
 #include "network/room.h"
 #include "network/room_member.h"
 #include "network/verify_user.h"
+#include "ui/ui.h"
 #include "video_core/gpu.h"
 #include "video_core/rasterizer_interface.h"
 #include "video_core/renderer_base.h"
@@ -412,6 +413,10 @@ int Run(const std::vector<std::string>& argv) {
     }
     LOG_INFO(Frontend, "renderer: {}", NameOf(api));
 
+    // the in-game menu (Esc, a controller's Guide or Back+Start), and the 3DS software keyboard
+    // drawn in it instead of Azahar's default one (ui/)
+    App::Ui::Start(system, *window, config);
+
     const auto scope = window->Acquire();
     Settings::LogSettings();
     const auto status = system.Load(*window, game, secondary.get());
@@ -470,6 +475,7 @@ int Run(const std::vector<std::string>& argv) {
     }
 #endif
     system.Shutdown();
+    App::Ui::Stop(); // after the renderer, before SDL and the room go
     if (const auto member = Network::GetRoomMember().lock(); member && member->IsConnected()) {
         member->Leave();
     }

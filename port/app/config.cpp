@@ -12,9 +12,9 @@
 namespace App {
 
 namespace {
-
 namespace NativeAnalog = Settings::NativeAnalog;
 namespace NativeButton = Settings::NativeButton;
+} // namespace
 
 /// The keyboard as it comes: the left hand on the circle pad and the hunter's actions (R, the
 /// dash, on Shift), the arrows on the C-stick (the camera).
@@ -38,6 +38,8 @@ Config Defaults() {
     c.stick_keys[NativeAnalog::CStick] = "Up,Down,Left,Right";
     return c;
 }
+
+namespace {
 
 bool IsOn(const std::string& v) {
     return v == "1" || v == "on" || v == "yes" || v == "true";

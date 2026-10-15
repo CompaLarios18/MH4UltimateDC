@@ -25,5 +25,10 @@ int KeyCode(const std::string& name);
 /// A line for the log: the controller the profile uses, or that there is none.
 std::string ControllerDescription();
 
+/// While on (the in-game menu is up), every 3DS button and stick of the profile reads released
+/// and centred; once off, a button still held from before reads released until it is let go,
+/// and a stick still pushed reads centred until it comes back.
+void SetMuted(bool on);
+
 } // namespace Input
 } // namespace App

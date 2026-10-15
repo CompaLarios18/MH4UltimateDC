@@ -10,6 +10,7 @@
 #include "common/settings.h"
 #include "config.h"
 #include "core/core.h"
+#include "ui/ui.h"
 #include "video_core/gpu.h"
 #include "video_core/renderer_software/renderer_software.h"
 #include "window.h"
@@ -48,6 +49,9 @@ public:
             const auto start = std::chrono::steady_clock::now();
             DrawOnce();
             std::this_thread::sleep_until(start + 16ms);
+        }
+        if (!is_secondary) {
+            Ui::ShutdownSoftware();
         }
     }
 
@@ -121,6 +125,9 @@ private:
         } else {
             top();
             bottom();
+        }
+        if (!is_secondary) {
+            Ui::DrawSoftware(surface); // the in-game menu over them
         }
         SDL_UpdateWindowSurface(render_window);
     }

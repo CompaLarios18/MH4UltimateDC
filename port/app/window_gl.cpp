@@ -8,6 +8,7 @@
 #include "common/settings.h"
 #include "config.h"
 #include "core/core.h"
+#include "ui/ui.h"
 #include "video_core/gpu.h"
 #include "video_core/renderer_base.h"
 #include "window.h"
@@ -50,7 +51,7 @@ private:
 class OpenGLWindow final : public Window {
 public:
     OpenGLWindow(Core::System& system, const Config& config, bool is_secondary)
-        : Window(system, config, is_secondary), vsync(config.vsync) {}
+        : Window(system, config, is_secondary) {}
 
     bool Init(bool start_fullscreen) {
         SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
@@ -132,19 +133,33 @@ public:
 
     void Present() override {
         SDL_GL_MakeCurrent(render_window, window_context);
-        // adaptive vsync where the driver has it, so a late frame doesn't wait a whole refresh
-        if (!vsync || SDL_GL_SetSwapInterval(-1) != 0) {
-            SDL_GL_SetSwapInterval(vsync ? 1 : 0);
+        if (!is_secondary) {
+            Ui::InitOpenGL(); // the in-game menu, drawn in this context
         }
+        bool vsync = !Settings::values.use_vsync.GetValue();
         while (IsOpen()) {
+            // vsync as the settings say, also after the in-game menu changed it
+            if (vsync != Settings::values.use_vsync.GetValue()) {
+                vsync = Settings::values.use_vsync.GetValue();
+                // adaptive vsync where the driver has it, so a late frame doesn't wait a whole refresh
+                if (!vsync || SDL_GL_SetSwapInterval(-1) != 0) {
+                    SDL_GL_SetSwapInterval(vsync ? 1 : 0);
+                }
+            }
             system.GPU().Renderer().TryPresent(100, is_secondary);
+            if (!is_secondary) {
+                const auto& layout = GetFramebufferLayout();
+                Ui::DrawOpenGL(layout.width, layout.height);
+            }
             SDL_GL_SwapWindow(render_window);
+        }
+        if (!is_secondary) {
+            Ui::ShutdownOpenGL();
         }
         SDL_GL_MakeCurrent(render_window, nullptr);
     }
 
 private:
-    bool vsync;
     SDL_GLContext window_context = nullptr;
     SDL_GLContext last_saved_context = nullptr;
     std::unique_ptr<Frontend::GraphicsContext> core_context;
