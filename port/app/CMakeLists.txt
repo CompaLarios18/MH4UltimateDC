@@ -20,6 +20,8 @@ add_executable(mh4u
     config.h
     dialog.cpp
     dialog.h
+    icon.cpp
+    icon.h
     input.cpp
     input.h
     invite.cpp
@@ -114,6 +116,9 @@ if (WIN32)
     # a game's window, no console window behind it
     set_target_properties(mh4u PROPERTIES WIN32_EXECUTABLE TRUE)
     target_link_libraries(mh4u PRIVATE comdlg32 shell32)
+    # the executable's icon and version information (icon/mh4u.rc, compiled by windres)
+    enable_language(RC)
+    target_sources(mh4u PRIVATE icon/mh4u.rc)
 endif()
 if (APPLE)
     # Vulkan runs on MoltenVK, which Azahar's build fetches (MOLTENVK_LIBRARY); the package puts

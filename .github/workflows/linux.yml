@@ -73,7 +73,7 @@ jobs:
         run: |
           # An AppImage of its own (an AppImage starts one program, and double-clicked this one
           # is the game), made the way the bundle target made Azahar's: with the linuxdeploy it
-          # fetched and the same checkrt plugin, without Qt. Azahar's icon.
+          # fetched and the same checkrt plugin, without Qt. The port's own icon.
           cat > mh4u.desktop <<EOF
           [Desktop Entry]
           Version=1.0
@@ -86,7 +86,7 @@ jobs:
           Categories=Game;
           StartupWMClass=mh4u
           EOF
-          cp ../dist/azahar.svg mh4u.svg
+          cp ../../mh4u/port/app/icon/mh4u.svg mh4u.svg
           linuxdeploy=externals/linuxdeploy/squashfs-root/AppRun
           "$linuxdeploy" --plugin checkrt --executable bin/Release/mh4u \
             --desktop-file mh4u.desktop --icon-file mh4u.svg --appdir AppDir-mh4u

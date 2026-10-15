@@ -1,4 +1,5 @@
 #include "launcher/launcher.h"
+#include "icon.h"
 
 #include <algorithm>
 #include <chrono>
@@ -1074,6 +1075,7 @@ Result Run(App::Config& config, bool show) {
         LOG_ERROR(Frontend, "launcher: no window: {}", SDL_GetError());
         return Result::Unavailable;
     }
+    App::Icon::Apply(window);
     const std::string old_quality = SDL_GetHint(SDL_HINT_RENDER_SCALE_QUALITY) ? SDL_GetHint(SDL_HINT_RENDER_SCALE_QUALITY) : "";
     SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "linear");
     SDL_Renderer* renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);

@@ -10,6 +10,7 @@
 #include "core/core.h"
 #include "core/perf_stats.h"
 #include "frontend.h"
+#include "icon.h"
 #include "input.h"
 #include "input_common/keyboard.h"
 #include "input_common/main.h"
@@ -90,6 +91,7 @@ u32 Window::BaseFlags() {
 
 void Window::FinishSetup(bool start_fullscreen) {
     window_id = SDL_GetWindowID(render_window);
+    Icon::Apply(render_window);
     // a window the size of a 1280x720 picture, or the screen's if that's smaller
     SDL_Rect usable{};
     if (SDL_GetDisplayUsableBounds(SDL_GetWindowDisplayIndex(render_window), &usable) == 0) {

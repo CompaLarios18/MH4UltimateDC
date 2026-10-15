@@ -76,7 +76,8 @@ The game's code is native already; what remains of the 3DS is Azahar's core (sys
 - [x] Mod catalog in the launcher (`tools/mods_catalog.json`): the HD texture pack and four more, installed with one click (downloads resumed and checked, `.zip`/`.7z`/`.tar`); code mods with a code cave recompiled into the library
 - [x] A frame-rate counter (F3, off by default); the touch screen's *Skip* after a quest on a button with a hint on screen (`skip`; tried by the maintainer)
 - [x] The game's second-eye pass off (`stereo_3d = off`), which doubled and softened the picture (v0.1.1); `skip_end`: ZL+ZR held ends the wait after a quest through `aQuest::playing`, online once every port player has held it, with the players still to ask on the screen
-- [ ] The touch screen's *Skip* (the scene of the monster's end) with the weapon drawn: the tap is the kick's action, which the game ignores then; what the action does during the scene is still to be found (research/second-screen.md)
+- [x] The touch screen's *Skip* (the scene of the monster's end) with the weapon drawn: the scene polls the panel manager's fixed button 0xb, which the port's skip button now taps first (research/second-screen.md); the maintainer's mouse tap on *Skip* with the weapon out skips the scene
+- [x] The app's own icon (`port/app/icon/mh4u.svg`, an original emblem: a hexagonal badge with three claw marks; `tools/icon.py` renders the .ico, .icns, .png and the window icon's pixels): the Windows executable's resources, the macOS bundle, the AppImage and the SDL windows
 - [ ] The second screen gone: the touch screen only when the game needs it (`touch_screen = map/hidden`), the bottom pass skipped while hidden, item shortcuts on buttons, a controller cursor for touch menus
 - [ ] Measure on Apple silicon (checklist in research/metal.md); native Metal only if MoltenVK can't hold the frame rate
 
