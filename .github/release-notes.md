@@ -33,7 +33,7 @@ The launcher also has *Mods* (several at once, in an order, conflicts shown), *O
 - **Frame rate**: 60, 120 or your monitor's rate (`fps = 120`); the game keeps its normal speed.
 - **Widescreen drawn at full width**: 16:9, 21:9 and 32:9, with the hunting HUD at the screen's edges; 16:10 and 4:3 without distortion.
 - **The touch screen** as an overlay in a corner of a full-window game (*View → Screen Layout → Custom Layout*); in quests just the map, which you can move and resize (the app's *Edit HUD layout*), with the target camera panel in a view of its own so you can see whom you target; the kick, the target camera and the *Skip* after a quest on buttons, with a hint when you can skip.
-- **No dither grid** at high internal resolutions (`dither = off`).
+- **No dither grid** at high internal resolutions (`dither = off`), and **no second-eye pass**: the game draws the top screen twice (stereoscopic 3D) even with the 3D slider at 0, which doubled and softened the picture; `stereo_3d = off` (the default) draws it once.
 - **Multiplayer** (Gathering Hall) over Azahar's network rooms: two to four players, also with friends on official Azahar (2125 or later), at different frame rates if they like; the port keeps its players together when a PC stalls, and fixes a drop when two consoles join at the same moment.
 - Everything Azahar has: internal resolution, texture packs, controllers, mods (code mods are built into the library).
 

@@ -167,3 +167,7 @@
 0x00b92e24 QuestHud::updatePanels         # runs each panel by type while the small panels are up (type 6 the map, 13 target camera, 14 kick)
 0x00b9f4c8 panelSizeClass                 # (type): from the table at 0x00ed2440 (type, size class, group); 0 one slot, 1 two slots tall, 3 two wide
 0x00b94a80 QuestHud::panelTapped          # (type, slot, mode): per-slot touch records at 0x00def804+0x14c (slot*3 + shape)
+0x0065c18c aQuest::playing             # (this, state): the quest area's playing state, once a frame; +0x3c units of the wait left after the quest is complete, +0x48 end stage; state +0x24 phase (0 playing, 1 waiting)
+0x0065a378 aQuest::endSequence         # (this, state): after the wait, the questclear/questfailed animations and the stamp; sets the holder's status to 4
+0x006a62c8 QuestHolder::outcome        # (this, 1): -1 failed/abandoned, 0 running, 1 complete (statuses 3, 4, 7)
+0x006a025c QuestHolder::waitUnits      # (this): the units of the wait before the return (+0xad60), 0 for the default

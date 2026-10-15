@@ -14,6 +14,7 @@
 0x00288f4c PanelManager::isTapped     # second screen: trace / later bind panels to keys
 0x00694c98 sMhPad::update             # second screen: trace / inject panel actions
 0x00b7c010 QuestFlow::startQuest      # quest start: rebuild the quest list until it has the quest (above 60 fps)
+0x0065c18c aQuest::playing            # skip: cut the wait after a quest short when the tap did nothing (weapon drawn)
 0x00ae65a4 nLayout::objectConstants    # wide render: move the HUD's side objects out to the screen's edges
 0x00b92e24 QuestHud::updatePanels      # touch overlay: show only the map while the quest's touch panels are up
 # Screen filters: the engine's post-processing passes, render(this, cDraw*) of each uFilter class

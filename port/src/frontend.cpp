@@ -104,6 +104,10 @@ skip_hint = on
 
 # the game's dither pattern: off for a clean picture at an Internal Resolution above 1x
 dither = off
+# the game's stereoscopic 3D: it draws the top screen twice (one pass per eye) even with the 3D
+# slider at 0, which costs a full scene pass and can show as a doubled, soft picture; off draws
+# it once, as the community's "3D off" cheat does. on = as on a 3DS
+stereo_3d = off
 
 # the game's screen filters (on = as on a 3DS, off = skipped): the glow over bright parts, which
 # softens the picture; the focus blur of cutscenes, which emulation gets wrong (it can blur the

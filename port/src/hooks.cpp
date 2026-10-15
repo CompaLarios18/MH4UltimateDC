@@ -52,6 +52,7 @@ constexpr u32 SLTRENDER_DISPLAY_SKIP = 0x8aa8;  // u32[2] mDisplaySkip: top, bot
 // 0x100000 mDitherDisplay0, 0x200000 mDitherDisplay1, 0x400000 mProfileRFPS
 constexpr u32 SLTRENDER_RENDER_FLAGS = 0x6ba8;
 constexpr u32 RENDER_DITHER = 0x300000;         // mDitherDisplay0 | mDitherDisplay1
+constexpr u32 RENDER_STEREO = 0x40;             // mULCDEnableEdit: the top screen drawn once per eye
 constexpr u32 SCAMERA_INSTANCE = 0x0105729c;    // sMhCamera*
 constexpr u32 SCAMERA_VIEWPORTS = 0x18;         // 8 viewports of 0x1a8 bytes
 constexpr u32 VIEWPORT_SIZE = 0x1a8;
@@ -94,6 +95,8 @@ struct Options {
     bool trace_panels = false;  // trace_panels / MH4U_TRACE_PANELS: log touch-panel activity
     u32 render_set = 0, render_clear = 0;  // render_flags_set/_clear: bits of the render word
     bool dither = true;     // dither / MH4U_DITHER: the game's dither pattern on both screens
+    bool stereo_3d = false; // stereo_3d / MH4U_STEREO_3D: the game's stereoscopic 3D (a second pass
+                            // of the top screen for the right eye, even with the 3D slider at 0)
     u32 kick_button = 0;    // kick / MH4U_KICK: 3DS button that kicks (the game's pad bits)
     u32 target_button = 0;  // target / MH4U_TARGET: 3DS button for the target camera panel
     u32 skip_button = 0x800;  // skip / MH4U_SKIP: 3DS button that skips the wait after a quest
@@ -186,6 +189,8 @@ void Set(Options& o, const std::string& key, const std::string& value) {
         o.wide_render = IsOn(value);
     } else if (key == "dither") {
         o.dither = IsOn(value);
+    } else if (key == "stereo_3d") {
+        o.stereo_3d = IsOn(value);
     } else if (key == "render_flags_set") {
         o.render_set = static_cast<u32>(std::strtoul(value.c_str(), nullptr, 0));
     } else if (key == "render_flags_clear") {
@@ -272,6 +277,7 @@ Options LoadOptions(std::vector<std::string>& log) {
         {"MH4U_QUEST_OVERLAY_TEST", "quest_overlay_test"},
         {"MH4U_HUD_EDGES", "hud_edges"},
         {"MH4U_DITHER", "dither"},
+        {"MH4U_STEREO_3D", "stereo_3d"},
         {"MH4U_RENDER_FLAGS_SET", "render_flags_set"},
         {"MH4U_RENDER_FLAGS_CLEAR", "render_flags_clear"},
         {"MH4U_TRACE_LAYOUT", "trace_layout"},
@@ -320,11 +326,13 @@ void Frame(RCtx* ctx, RFunc original) {
         // the game presents at most once per VBlank: more VBlanks allow more than 60 fps
         Core::System::GetInstance().GPU().SetRefreshRate(RefreshRate());
     }
-    const u32 clear = options.render_clear | (options.dither ? 0 : RENDER_DITHER);
+    const u32 clear = options.render_clear | (options.dither ? 0 : RENDER_DITHER) |
+                      (options.stereo_3d ? 0 : RENDER_STEREO);
     if (options.render_set || clear) {
         // the game reads these bits every frame (the community's quality cheats write the same
         // word); without the dither bits it draws no dither pattern, which an upscaled picture
-        // shows as a screen-door grid
+        // shows as a screen-door grid; without the stereo bit it draws the top screen once (one
+        // eye) instead of twice, as the community's "3D off" cheat does
         if (const u32 r = rd32(ctx, SLTRENDER_INSTANCE)) {
             const u32 flags = rd32(ctx, r + SLTRENDER_RENDER_FLAGS);
             wr32(ctx, r + SLTRENDER_RENDER_FLAGS, (flags & ~clear) | options.render_set);
@@ -660,12 +668,21 @@ u32 target_held = 0;
 // as they would a tap. UpdateSkip (below, once a frame) works out when the skip is offered.
 constexpr u16 PANEL_TAP_FLAGS = 0x0a00;  // released on the button pressed (0x0800), activated
                                          // (0x0200)
+// The wait itself (aQuest::playing 0x0065c18c, hooked as QuestPlaying below)
+constexpr u32 AQUEST_WAIT_LEFT = 0x3c;    // s32: units of the wait left (loaded from the holder's
+                                          // +0xad60: 20 s × sMain+0x2c)
+constexpr u32 AQUEST_END_STAGE = 0x48;    // u32: the end sequence's stage, 0 while waiting
+constexpr u32 QUEST_STATE_PHASE = 0x24;   // u8 in the state block: 0 playing, 1 waiting, then over
+constexpr u8 QUEST_PHASE_WAITING = 1;
+constexpr double SKIP_CUT_AFTER_SECONDS = 0.3;  // time for the tap to take (a frame or two)
 std::atomic<bool> skip_offered{false};   // SkipOffered()
 bool skip_held = false;                  // the skip button, last frame
 bool skip_tap = false;                   // a tap to make after the next processTouch
 bool skip_tap_seen = false;              // isTapped has reported that tap
 u32 skip_polls = 0;                      // isTapped asked about the button while offered
+double skip_cut_at = 0;                  // when to cut the wait short if the tap did nothing
 void UpdateSkip(RCtx* ctx);
+double EmulatedSeconds();
 
 /// PanelManager::processTouch(): runs the touch groups, leaves the touched panel's id.
 void PanelProcessTouch(RCtx* ctx, RFunc original) {
@@ -740,9 +757,36 @@ void MhPadUpdate(RCtx* ctx, RFunc original) {
     const bool skip_now = options.skip_button && (held & options.skip_button);
     if (skip_now && !skip_held && skip_offered.load(std::memory_order_relaxed)) {
         skip_tap = true;
+        // the tap is the kick's action, which the hunter can't take with the weapon drawn: if
+        // the wait is still running shortly after, QuestPlaying cuts it short itself
+        skip_cut_at = EmulatedSeconds() + SKIP_CUT_AFTER_SECONDS;
         LOG_INFO(Frontend, "skip: {} pressed", PadName(options.skip_button));
     }
     skip_held = skip_now;
+}
+
+/// aQuest's playing state (this, state block), once a frame during a quest. Once the quest is
+/// complete, state +0x24 is 1 while the wait before the return runs: +0x40 of the quest area
+/// accumulates the frame's delta (sMain+0x5c) and takes one off the counter at +0x3c per whole
+/// unit; when the counter is 0 or less the game sets sGameControl+0x2f89 and its end sequence
+/// (0x0065a378, stage at +0x48, 0 while waiting) goes on to the "Quest Complete" stamp. The skip
+/// button's tap takes that same road through the hunter's kick; when it didn't (the weapon out:
+/// no kick), the counter is set to 0 here, which is what running out of time does.
+void QuestPlaying(RCtx* ctx, RFunc original) {
+    const u32 quest = ctx->r[0];
+    const u32 state = ctx->r[1];
+    if (skip_cut_at > 0 && EmulatedSeconds() >= skip_cut_at) {
+        skip_cut_at = 0;
+        const s32 left = static_cast<s32>(rd32(ctx, quest + AQUEST_WAIT_LEFT));
+        if (rd8(ctx, state + QUEST_STATE_PHASE) == QUEST_PHASE_WAITING &&
+            rd32(ctx, quest + AQUEST_END_STAGE) == 0 && left > 0 &&
+            skip_offered.load(std::memory_order_relaxed)) {
+            wr32(ctx, quest + AQUEST_WAIT_LEFT, 0);
+            LOG_INFO(Frontend, "skip: the tap did nothing (the weapon out?); the wait cut short with {} units left",
+                     left);
+        }
+    }
+    original(ctx);
 }
 
 // ── Quest start (docs/research/system-services.md, "A loading race at the start of a
@@ -872,7 +916,6 @@ constexpr double SKIP_MOST_SECONDS = 25.0;
 bool skip_complete = false;     // last frame: the quest complete
 double skip_since = 0;          // when it was
 u32 skip_due_at_start = 0;      // GAME_CONTROL_RETURN_DUE then
-double EmulatedSeconds();
 
 /// Once a frame (sMhPad::update): whether the game offers the skip now.
 void UpdateSkip(RCtx* ctx) {
@@ -903,6 +946,7 @@ void UpdateSkip(RCtx* ctx) {
                      now - skip_since, status, due ? "due" : "not due", options.skip_panel, skip_polls);
         }
         skip_tap = false;
+        skip_cut_at = 0;
     }
 }
 
@@ -1173,6 +1217,7 @@ constexpr Hook HOOKS[] = {
     {0x00288f4c, "PanelManager::isTapped", PanelIsTapped},
     {0x00694c98, "sMhPad::update", MhPadUpdate},
     {0x00b7c010, "QuestFlow::startQuest", StartQuest},
+    {0x0065c18c, "aQuest::playing", QuestPlaying},
     {0x00ae65a4, "nLayout::objectConstants", LayoutObjectConstants},
     {0x00b92e24, "QuestHud::updatePanels", QuestPanels},
     {0x002bc238, "uBloomFilter::render", FilterRender},
@@ -1205,6 +1250,7 @@ std::vector<std::string> Install(const RCodeInfo& info) {
     skip_offered = false;
     skip_held = skip_tap = skip_tap_seen = skip_complete = false;
     skip_polls = 0;
+    skip_cut_at = 0;
     last_panel_touch = 0xFFFFFFFF;
     quest_panels_ran = false;
     quest_map_slot = -1;
@@ -1287,6 +1333,9 @@ std::vector<std::string> Install(const RCodeInfo& info) {
     if (!options.dither) {
         log.push_back("dithering off");
     }
+    if (!options.stereo_3d) {
+        log.push_back("stereoscopic 3D off: the top screen drawn once");
+    }
     if (options.filters_off) {
         std::string off;
         for (const auto& [name, bit] : FILTER_OPTIONS) {
@@ -1339,7 +1388,7 @@ int SkipHint() {
 bool SetOption(const std::string& key, const std::string& value) {
     // the options the hooks read each time they run; the others are applied once at start-up
     static constexpr std::string_view live[] = {
-        "fps", "refresh_rate", "dither", "render_flags_set", "render_flags_clear", "kick",
+        "fps", "refresh_rate", "dither", "stereo_3d", "render_flags_set", "render_flags_clear", "kick",
         "target", "skip", "skip_panel", "skip_hint", "touch_overlay", "quest_overlay", "target_overlay",
         "hud_edges", "trace_frames", "trace_layout", "trace_panels", "bloom", "motion_blur",
         "depth_of_field", "radial_blur", "haze", "trace_filters"};
