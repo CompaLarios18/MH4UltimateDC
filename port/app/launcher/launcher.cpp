@@ -29,8 +29,10 @@ namespace Launcher {
 
 namespace {
 
-constexpr Uint32 IDLE_AFTER_MS = 2000;  // without input or work: draw only every so often
-constexpr int IDLE_WAIT_MS = 50;
+constexpr Uint32 IDLE_AFTER_MS = 2000;  // without input: draw only every so often
+constexpr int WORKING_WAIT_MS = 66;     // a job, a check or a list going on: ~15 frames a second
+constexpr int IDLE_WAIT_MS = 100;       // nothing going on: ~10 (the Play button's glow)
+constexpr int HIDDEN_WAIT_MS = 200;     // minimised: no frames, the jobs still followed
 
 SDL_Window* g_window = nullptr;
 bool g_fullscreen = false;
@@ -269,6 +271,8 @@ void DrawJob(State& s) {
             Ui::Spinner();
             ImGui::SameLine();
             ImGui::TextUnformatted(progress.stage.c_str());
+        } else if (job.process && job.process->WasStopped()) {
+            Ui::StatusLine(Ui::Status::Warn, "Stopped", "Start it again whenever you like.");
         } else {
             Ui::StatusLine(job.ok ? Ui::Status::Ok : Ui::Status::Error,
                            job.ok ? "Done" : "It didn't work", job.summary);
@@ -321,9 +325,11 @@ void DrawJob(State& s) {
     }
     ImGui::Spacing();
     if (!job.finished) {
-        if (job.quit_asked) {
+        if (job.quit_asked || job.cancel_asked) {
+            // (asked first: an Enter or an A pressed twice on the Build button would stop it)
             ImGui::AlignTextToFramePadding();
-            ImGui::TextUnformatted("Stop the build and quit? You can start it again later.");
+            ImGui::TextUnformatted(job.quit_asked ? "Stop the build and quit? You can start it again later."
+                                                  : "Stop the build? You can start it again later.");
             ImGui::SameLine();
             if (!job.focus_set) {
                 ImGui::SetKeyboardFocusHere();
@@ -331,16 +337,23 @@ void DrawJob(State& s) {
             }
             if (ImGui::Button("Keep building")) {
                 job.quit_asked = false;
+                job.cancel_asked = false;
                 job.focus_set = false;
             }
             ImGui::SameLine();
-            if (Ui::AccentButton("Stop and quit")) {
-                job.quit_after = true;
+            if (Ui::AccentButton(job.quit_asked ? "Stop and quit" : "Stop it")) {
+                job.quit_after = job.quit_asked;
                 job.process->Stop();
             }
         } else if (job.cancellable) {
+            if (!job.focus_set) {
+                // (again after "Keep building", whose button is gone)
+                ImGui::SetKeyboardFocusHere();
+                job.focus_set = true;
+            }
             if (ImGui::Button("Cancel")) {
-                job.process->Stop();
+                job.cancel_asked = true;
+                job.focus_set = false;
             }
         } else {
             ImGui::Dummy(ImVec2(0, ImGui::GetFrameHeight()));
@@ -589,8 +602,9 @@ void Frame(State& s) {
 /// finishes first.
 void RequestQuit(State& s) {
     if (s.job.Active() && !s.job.finished) {
-        if (s.job.cancellable) {
+        if (s.job.cancellable && !s.job.quit_asked) {
             s.job.quit_asked = true;
+            s.job.focus_set = false;
         }
         return;
     }
@@ -1017,11 +1031,22 @@ Result Run(App::Config& config, bool show) {
     bool first_frame = true;
     while (!s.done) {
         const Uint32 frame_start = SDL_GetTicks();
-        const bool busy = s.job.Active() || s.runner.Busy() || s.probing || s.rooms_loading;
+        // Frames at the full rate only for a while after the player's input: a build's progress,
+        // the spinners and the Play button's glow need few, and the launcher shouldn't take the
+        // processor from the build (or draw at all while minimised).
+        const bool working = (s.job.Active() && !s.job.finished) || s.runner.Busy() || s.probing ||
+                             s.rooms_loading || s.play_waiting > 0;
+        const bool hidden = (SDL_GetWindowFlags(window) & (SDL_WINDOW_MINIMIZED | SDL_WINDOW_HIDDEN)) != 0;
+        int wait_ms = 0;
+        if (hidden) {
+            wait_ms = HIDDEN_WAIT_MS;
+        } else if (frame_start - last_input > IDLE_AFTER_MS) {
+            wait_ms = working ? WORKING_WAIT_MS : IDLE_WAIT_MS;
+        }
         SDL_Event event;
         bool have_event = false;
-        if (!busy && frame_start - last_input > IDLE_AFTER_MS) {
-            have_event = SDL_WaitEventTimeout(&event, IDLE_WAIT_MS) != 0;
+        if (wait_ms > 0) {
+            have_event = SDL_WaitEventTimeout(&event, wait_ms) != 0;
         } else {
             have_event = SDL_PollEvent(&event) != 0;
         }
@@ -1040,9 +1065,6 @@ Result Run(App::Config& config, bool show) {
             }
             have_event = SDL_PollEvent(&event) != 0;
         }
-        if (SDL_GetWindowFlags(window) & SDL_WINDOW_MINIMIZED) {
-            SDL_Delay(50);
-        }
 
         s.runner.Pump();
         PumpJob(s);
@@ -1053,6 +1075,9 @@ Result Run(App::Config& config, bool show) {
             const int stage = s.play_waiting;
             s.play_waiting = 0;
             s.Play(stage);
+        }
+        if (hidden) {
+            continue;
         }
 
         int w = 0, h = 0;
