@@ -26,6 +26,8 @@ add_executable(mh4u
     window.cpp
     window.h
     # the in-game menu (Dear ImGui over the game) and the 3DS software keyboard
+    ui/hint.cpp
+    ui/hint.h
     ui/keyboard.cpp
     ui/keyboard.h
     ui/layer.h

@@ -1,7 +1,8 @@
 // The app's in-game menu, drawn with Dear ImGui over the game: Esc, a controller's Guide button
 // or Back+Start opens and closes it. Its tabs change the game's options (mh4u.ini) and the app's
 // (mh4u-app.ini) while the game runs, rebind the keys, show the network room and quit; the 3DS
-// software keyboard the game asks for (a hunter's name, chat) is drawn in it too.
+// software keyboard the game asks for (a hunter's name, chat) is drawn in it too, and while it is
+// closed a hint over the game when there is one (ui/hint.h: the skip after a quest).
 //
 // Threads: the menu is built on the emulation thread, in the main window's PollEvents (where SDL's
 // events are pumped), and a copy of each frame's draw data goes to the thread that draws: the
