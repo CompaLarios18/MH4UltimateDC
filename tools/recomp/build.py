@@ -7,7 +7,9 @@ usage: python3 -m recomp.build build/recomp [--harness] [-j N] [--opt O1] [-o ga
 --harness links the differential-test harness (gametest). --code-library builds the
 library the PC port loads with `mh4u_runner --code` (paged memory, callbacks from the
 host); --cc picks another compiler, e.g. llvm-mingw's x86_64-w64-mingw32-clang for a
-Windows .dll. Incremental: objects newer than their source and recomp.h are reused.
+Windows .dll. Incremental: an object is reused while its source is older than it and
+recomp.h has the contents it was compiled with (obj/recomp.h.sha1 remembers them, so a
+copy of the tools with new dates, as unpacking a new package makes, recompiles nothing).
 """
 from __future__ import annotations
 
@@ -34,12 +36,18 @@ def compile_one(cc: str, src: str, obj: str, flags: list[str]) -> tuple[str, flo
 
 
 def build(outdir: str, jobs: int, opt: str, defines: list[str], lib_name: str, extra_sources: list[str],
-          cc: str = "clang", extra_flags: list[str] | None = None) -> str:
+          cc: str = "clang", extra_flags: list[str] | None = None, runtime_header: str | None = None) -> str:
     src_dir = os.path.join(outdir, "src")
     obj_dir = os.path.join(outdir, "obj")
     os.makedirs(obj_dir, exist_ok=True)
-    # funcs.h only gains or loses declarations; a file whose calls change is rewritten itself
-    hdr_time = os.path.getmtime(os.path.join(RUNTIME, "recomp.h"))
+    # funcs.h only gains or loses declarations; a file whose calls change is rewritten itself.
+    # recomp.h is in every object: when its contents differ from those the objects were
+    # compiled with (obj/recomp.h.sha1), everything is recompiled; its date is not looked at,
+    # since a copy of the tools (a new package unpacked) renews it without changing a thing
+    with open(runtime_header or os.path.join(RUNTIME, "recomp.h"), "rb") as fh:
+        header_hash = hashlib.sha1(fh.read()).hexdigest()
+    stamp = os.path.join(obj_dir, "recomp.h.sha1")
+    header_changed = not os.path.exists(stamp) or open(stamp).read().strip() != header_hash
     flags = [f"-{opt}", *BASE_FLAGS, f"-I{src_dir}", *[f"-D{d}" for d in defines], *(extra_flags or [])]
     sources = sorted(os.path.join(src_dir, f) for f in os.listdir(src_dir) if f.endswith(".c")) + extra_sources
     # objects are named after everything that changes the code, so builds with other
@@ -49,8 +57,13 @@ def build(outdir: str, jobs: int, opt: str, defines: list[str], lib_name: str, e
     for s in sources:
         o = os.path.join(obj_dir, f"{os.path.basename(s)[:-2]}-{opt}-{variant}.o")
         objs.append(o)
-        if not os.path.exists(o) or os.path.getmtime(o) < max(os.path.getmtime(s), hdr_time):
+        if header_changed or not os.path.exists(o) or os.path.getmtime(o) < os.path.getmtime(s):
             todo.append((s, o))
+    if header_changed:
+        # the other variants' objects were compiled against the old header too
+        for name in os.listdir(obj_dir):
+            if name.endswith(".o") and os.path.join(obj_dir, name) not in objs:
+                os.remove(os.path.join(obj_dir, name))
     t0 = time.time()
     errors = []
     with cf.ThreadPoolExecutor(max_workers=jobs) as ex:
@@ -65,6 +78,8 @@ def build(outdir: str, jobs: int, opt: str, defines: list[str], lib_name: str, e
         for src, err in errors[:5]:
             print(f"error in {src}:\n{err[-2000:]}", file=sys.stderr)
         raise SystemExit(1)
+    with open(stamp, "w") as fh:
+        fh.write(header_hash + "\n")
     lib = os.path.join(outdir, lib_name)
     # the object list goes in a response file: Windows limits a command line to 32 KiB
     rsp = os.path.join(outdir, "objects.rsp")
