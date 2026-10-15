@@ -2,6 +2,12 @@
 
 🇲🇽 *Port de MH4U para PC: 60/120 fps, pantalla ancha, la pantalla táctil encima del juego y multijugador por internet. Necesitas tu propia copia del juego y su actualización v1.3.0.*
 
+## What's new in 0.1.1
+
+- **Skip with the weapon drawn.** The *Skip* button after a quest (ZR / C) did nothing while the weapon was out, because its tap is the kick's action; the port now ends the wait itself when the tap didn't take. Rebuild the code library once (the launcher asks).
+- **Sharper picture.** The game drew the top screen twice (one pass per eye) even with Azahar's 3D at 0, which showed as a doubled, soft image; `stereo_3d = off` (the default, also in Esc → Game → Picture) draws it once and saves a scene pass.
+- **Faster rebuilds.** Unpacking a new package no longer recompiles the whole code library: only the files that changed.
+
 ## No game data
 
 These packages contain **no game code or data**. You need your own decrypted copy of Monster Hunter 4 Ultimate (USA) and its **v1.3.0 update** (`.cia`). The game's code library is built on your computer from your update, in one step.
