@@ -722,7 +722,8 @@ constexpr u16 PANEL_TAP_FLAGS = 0x0a00;  // released on the button pressed (0x08
                                          // (0x0200)
 constexpr u16 PANEL_PRESS_FLAGS = 0x4000;  // pressed on the button
 constexpr u32 PANEL_MODE = 0xb1;         // u8: which buttons the touch screen has (the id table)
-constexpr u32 PANEL_ID_TABLES = 0x00df5410;  // u32[4] per mode: the id of each hit index
+constexpr u32 PANEL_ID_TABLES = 0x00df5410;  // u32[4] per mode: the slot of each hit index
+constexpr u32 PANEL_SLOT_IDS = 0xb4;     // u8[]: the id of the panel in each slot (processTouch 0x00295800)
 constexpr u32 PANEL_TOUCH_ALLOWED = 0x0028f2f0;  // the call processTouch makes with the hit in r5
 constexpr u32 PANEL_TOUCH_ALLOWED_RETURN = 0x002957a4;  // its return address in processTouch
 // The wait itself (aQuest::playing 0x0065c18c, hooked as QuestPlaying below)
@@ -747,11 +748,15 @@ bool end_cut = false;                    // the wait was cut this quest
 void UpdateSkip(RCtx* ctx);
 double EmulatedSeconds();
 
-/// The hit index whose id is `panel` in the touch screen's current mode, or -1.
+/// The hit index that is the button `panel` on the touch screen now, or -1. processTouch
+/// turns a hit index into a slot through the mode's table (0x00df5410) and the slot into
+/// the panel's id through the manager's slot bytes (+0xb4 + slot); the maintainer's log
+/// showed a hit on index 2 (slot 7 in mode 0) becoming panel 0, so both steps are taken here.
 int PanelIndex(RCtx* ctx, u32 panel) {
     const u32 mode = rd8(ctx, PANEL_MANAGER + PANEL_MODE);
     for (u32 index = 0; index < 4; ++index) {
-        if ((rd32(ctx, PANEL_ID_TABLES + mode * 16 + index * 4) & 0xFF) == panel) {
+        const u32 slot = rd32(ctx, PANEL_ID_TABLES + mode * 16 + index * 4) & 0xFF;
+        if (slot != 0 && rd8(ctx, PANEL_MANAGER + PANEL_SLOT_IDS + slot) == panel) {
             return static_cast<int>(index);
         }
     }
@@ -771,6 +776,17 @@ void PanelTouchAllowed(RCtx* ctx, RFunc original) {
     const int index = PanelIndex(ctx, options.skip_panel);
     if (index < 0) {
         // no such button on this touch screen: the direct write after processTouch instead
+        const u32 mode = rd8(ctx, PANEL_MANAGER + PANEL_MODE);
+        LOG_INFO(Frontend,
+                 "skip: no hit index is button {} (mode {}: slots {} {} {} {}, their panels {} {} {} {}); the tap "
+                 "is written after processTouch instead",
+                 options.skip_panel, mode, rd32(ctx, PANEL_ID_TABLES + mode * 16) & 0xFF,
+                 rd32(ctx, PANEL_ID_TABLES + mode * 16 + 4) & 0xFF, rd32(ctx, PANEL_ID_TABLES + mode * 16 + 8) & 0xFF,
+                 rd32(ctx, PANEL_ID_TABLES + mode * 16 + 12) & 0xFF,
+                 rd8(ctx, PANEL_MANAGER + PANEL_SLOT_IDS + (rd32(ctx, PANEL_ID_TABLES + mode * 16) & 0xFF)),
+                 rd8(ctx, PANEL_MANAGER + PANEL_SLOT_IDS + (rd32(ctx, PANEL_ID_TABLES + mode * 16 + 4) & 0xFF)),
+                 rd8(ctx, PANEL_MANAGER + PANEL_SLOT_IDS + (rd32(ctx, PANEL_ID_TABLES + mode * 16 + 8) & 0xFF)),
+                 rd8(ctx, PANEL_MANAGER + PANEL_SLOT_IDS + (rd32(ctx, PANEL_ID_TABLES + mode * 16 + 12) & 0xFF)));
         skip_tap_direct = true;
         return;
     }
