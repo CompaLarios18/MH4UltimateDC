@@ -49,6 +49,13 @@ struct Progress {
 /// build_game.py's progress from its output so far (its lines as Process::Lines() gives them).
 Progress BuildProgress(const std::vector<std::string>& lines);
 
+/// A download's or an install's progress from mods.py's progress lines ("@{...}", --json): the
+/// current stage's message and how far it is (fraction < 0: not known).
+Progress ModsProgress(const std::vector<std::string>& lines);
+
+/// mods.py --json's output without its progress lines: the one JSON object.
+std::string WithoutProgress(const std::string& output);
+
 /// The line that says what went wrong, from a failed tool's output (its last one).
 std::string ErrorSummary(const std::vector<std::string>& lines);
 

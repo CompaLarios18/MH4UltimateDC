@@ -360,6 +360,26 @@ void DrawJob(State& s) {
         }
         ImGui::EndChild();
         ImGui::PopStyleColor();
+    } else if (job.kind == Job::Kind::Download) {
+        // mods.py's progress lines: a bar for the stage it is in (a download, unpacking)
+        const auto progress = Tools::ModsProgress(job.lines);
+        const float fraction = job.finished && job.ok ? 1.0f : progress.fraction;
+        if (fraction >= 0.0f) {
+            ImGui::ProgressBar(fraction, ImVec2(-FLT_MIN, ImGui::GetFrameHeight() * 0.8f), "");
+        } else {
+            ImGui::ProgressBar(-0.3f * static_cast<float>(ImGui::GetTime()),
+                               ImVec2(-FLT_MIN, ImGui::GetFrameHeight() * 0.8f), "");
+        }
+        if (!job.finished) {
+            Ui::Spinner();
+            ImGui::SameLine();
+            ImGui::TextUnformatted(progress.stage.c_str());
+        } else if (job.process && job.process->WasStopped()) {
+            Ui::StatusLine(Ui::Status::Warn, "Stopped", "It goes on from where it stopped next time.");
+        } else {
+            Ui::StatusLine(job.ok ? Ui::Status::Ok : Ui::Status::Error, job.ok ? "Done" : "It didn't work",
+                           job.summary);
+        }
     } else if (job.kind == Job::Kind::Install) {
         const float progress = job.install ? job.install->Progress() : 1.0f;
         ImGui::ProgressBar(progress, ImVec2(-FLT_MIN, ImGui::GetFrameHeight() * 0.8f), "");
@@ -384,20 +404,27 @@ void DrawJob(State& s) {
         if (job.quit_asked || job.cancel_asked) {
             // (asked first: an Enter or an A pressed twice on the Build button would stop it)
             ImGui::AlignTextToFramePadding();
-            ImGui::TextUnformatted(job.quit_asked ? "Stop the build and quit? You can start it again later."
-                                                  : "Stop the build? You can start it again later.");
+            const std::string question =
+                job.stop_question.empty() ? std::string("Stop the build? You can start it again later.")
+                                          : job.stop_question;
+            ImGui::TextUnformatted(job.quit_asked ? (question.substr(0, question.find('?')) + " and quit?" +
+                                                     question.substr(question.find('?') + 1))
+                                                        .c_str()
+                                                  : question.c_str());
             ImGui::SameLine();
             if (!job.focus_set) {
                 ImGui::SetKeyboardFocusHere();
                 job.focus_set = true;
             }
-            if (ImGui::Button("Keep building")) {
+            if (ImGui::Button(job.keep_label.empty() ? "Keep building" : job.keep_label.c_str())) {
                 job.quit_asked = false;
                 job.cancel_asked = false;
                 job.focus_set = false;
             }
             ImGui::SameLine();
-            if (Ui::AccentButton(job.quit_asked ? "Stop and quit" : "Stop it")) {
+            if (Ui::AccentButton(job.quit_asked ? "Stop and quit"
+                                 : job.stop_label.empty() ? "Stop it"
+                                                          : job.stop_label.c_str())) {
                 job.quit_after = job.quit_asked;
                 job.process->Stop();
             }

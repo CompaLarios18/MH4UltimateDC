@@ -122,6 +122,69 @@ def test_mods_json_the_launcher_reads(tmp_path):
     assert [m["id"] for m in out["mods"]] == ["Menus", "Sharper Swords", "Faster Gathering"]
 
 
+def test_catalog_json_and_progress_lines_the_launcher_reads(tmp_path):
+    """The Mods screen's catalog (screen_mods.cpp, ApplyCatalog) and an install's progress lines
+    (tools.cpp, ModsProgress; WithoutProgress leaves them out of the result)."""
+    user = tmp_path / "azahar"
+    user.mkdir()
+    out = mods(user, "catalog", "--catalog-url", "")
+    for key, kind in (("catalog", dict), ("entries", list), ("textures", list), ("textures_folder", str),
+                      ("downloads_folder", str), ("warnings", list)):
+        assert isinstance(out[key], kind), key
+    assert isinstance(out["catalog"]["source"], str) and isinstance(out["catalog"]["updated"], str)
+    for e in out["entries"]:
+        for key, kind in (("id", str), ("kind", str), ("name", str), ("author", str), ("version", str),
+                          ("description", str), ("details", str), ("category", str), ("region", str),
+                          ("region_note", str), ("license", str), ("page_url", str), ("note", str),
+                          ("recommended", bool), ("direct", bool), ("update", bool), ("needs", list),
+                          ("conflicts", list), ("downloaded", int)):
+            assert isinstance(e[key], kind), (e["id"], key)
+        assert e["installed"] is None and e["size"] is None or isinstance(e["size"], int)
+    assert any(e["recommended"] and e["kind"] == "textures" for e in out["entries"])
+
+    # an install from a catalog of the test's own: progress lines, then the result
+    pack = tmp_path / "pack.zip"
+    import zipfile
+    with zipfile.ZipFile(pack, "w") as z:
+        z.writestr("pack.json", "{}")
+        z.writestr("UI/tex1_8x8_ABCD_13.png", b"png" * 100)
+    cat = tmp_path / "catalog.json"
+    cat.write_text(json.dumps({"updated": "2026-01-01", "mods": [{
+        "id": "pack", "kind": "textures", "name": "Pack", "page_url": "https://example.org/pack",
+        "needs": ["custom_textures"], "downloads": [{"url": pack.as_uri(), "size": pack.stat().st_size}]}]}))
+    r = subprocess.run([sys.executable, "-u", os.path.join(TOOLS, "mods.py"), "--json", "--user-dir", str(user),
+                        "install-from-catalog", "pack", "--catalog", str(cat)], capture_output=True, text=True,
+                       timeout=120)
+    assert r.returncode == 0, (r.stdout, r.stderr)
+    lines = r.stdout.splitlines()
+    events = [json.loads(line[1:]) for line in lines if line.startswith("@")]
+    assert events and all(isinstance(e["event"], str) for e in events)
+    for e in events:
+        if "done" in e:                 # an update: how far, of what
+            assert isinstance(e["done"], int) and isinstance(e["what"], str)
+            assert e["total"] is None or isinstance(e["total"], int)
+        else:                           # a stage starts: what it is
+            assert isinstance(e["message"], str)
+    result = json.loads("\n".join(line for line in lines if not line.startswith("@")))
+    assert result["ok"] is True and isinstance(result["messages"], list)
+    assert result["needs"] == ["custom_textures"]
+    out = mods(user, "catalog", "--catalog", str(cat))
+    installed = out["entries"][0]["installed"]
+    assert installed["as"] == "textures" and isinstance(installed["id"], str)
+    check_overview(mods(user, "remove", installed["id"]))
+    # a failed install: still one JSON object after the progress lines, with an error code
+    bad = tmp_path / "bad.json"
+    bad.write_text(json.dumps({"updated": "x", "mods": [{
+        "id": "rar", "kind": "textures", "name": "Rar", "page_url": "https://example.org/rar",
+        "downloads": [{"url": write(tmp_path / "x.rar", b"Rar!\x1a\x07\x00rest").as_uri()}]}]}))
+    r = subprocess.run([sys.executable, "-u", os.path.join(TOOLS, "mods.py"), "--json", "--user-dir", str(user),
+                        "install-from-catalog", "rar", "--catalog", str(bad)], capture_output=True, text=True,
+                       timeout=120)
+    assert r.returncode == 1
+    err = json.loads("\n".join(line for line in r.stdout.splitlines() if not line.startswith("@")))["error"]
+    assert err["code"] == "manual_extract" and err["download"] and err["target"] and err["page_url"]
+
+
 def fake_exefs(code: bytes) -> bytes:
     header = bytearray(0x200)
     struct.pack_into("<8sII", header, 0, b".code", 0, len(code))

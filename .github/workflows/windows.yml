@@ -116,7 +116,7 @@ jobs:
           like MH3U on a Wii U) and the mouse as the stylus. F11 or Alt+Enter: full screen or a
           window. F12, or the right stick's click: in quests, the touch screen's map or the whole
           touch screen.
-          The launcher's other screens: Mods (several mods, in an order, conflicts shown), Online
+          The launcher's other screens: Mods (several mods, in an order, conflicts shown; a catalog of recommended mods and texture packs, the HD pack among them, installed with one click), Online
           (a lobby's rooms, joining by address, hosting) and Settings. Its settings are in
           %APPDATA%\Azahar\mh4u-app.ini, written with explanations the first time it runs: the game file, the renderer (vulkan, opengl or software), full screen, the
           screens, sound, the keys and the controller, and a multiplayer room to join or host

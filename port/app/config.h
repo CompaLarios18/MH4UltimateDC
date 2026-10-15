@@ -62,6 +62,13 @@ struct Config {
     /// the last room joined (its invite code, mh4u://HOST:PORT?password=...) or "host" (hosted
     /// on room_port with the settings above), for the menu's Rejoin
     std::string last_room;
+
+    // [Mods]
+    static constexpr const char* DEFAULT_CATALOG_URL =
+        "https://raw.githubusercontent.com/CompaLarios18/MH4UltimateDC/main/tools/mods_catalog.json";
+    /// Where the launcher fetches a newer mod catalog from (tools/mods.py catalog --refresh);
+    /// empty: only the catalog that comes with the tools
+    std::string catalog_url = DEFAULT_CATALOG_URL;
 };
 
 /// The settings file's path.

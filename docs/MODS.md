@@ -4,7 +4,7 @@ Azahar loads a game's mods from one folder, `load/mods/0004000000126300/` in its
 
 `tools/mods.py` does that merging. It keeps a **mod library**, one folder per mod, in an order in which later mods win, shows which files two mods both change, and puts the enabled mods' files into Azahar's folder for you. It never touches files it didn't put there unless you tell it to. It uses only Python's standard library, like the other tools, and works the same on Windows, Linux and macOS.
 
-The port's launcher will drive it later (each command has a `--json` output for that); for now it is a command:
+The port's launcher drives it from its Mods screen (each command has a `--json` output for that), which also has a [catalog](#the-catalog-recommended-mods-and-texture-packs) of recommended mods and texture packs; it is a command too:
 
 ```bash
 # Linux, macOS (from the repository, or the package's mh4u-tools folder)
@@ -33,7 +33,60 @@ Then start the game. Nothing changes in Azahar's folder until `deploy`; `list` a
 - `deploy` puts the enabled mods into Azahar's mods folder, `undeploy` takes them out again (for a game without mods; turning nothing off).
 - A folder you put into the library yourself also counts: it shows in `list` as new and off, and `enable` turns it on.
 
-Only `.zip` archives are unpacked; unpack a `.7z` or `.rar` yourself and add the folder. A zip is refused when one of its paths would land outside the mod's folder (`..`, an absolute path, a drive letter), when a name isn't allowed on Windows (`aux.arc`, `a:b`), when two names differ only in capitals, or when it unpacks to more than 8 GB (4 GB per file). Symbolic links in it are skipped. Password-protected zips aren't supported.
+`.zip`, `.7z` and `.tar` (`.tar.gz`, ...) archives are unpacked (`.7z` with the tools' own reader, [`tools/sevenzip.py`](../tools/sevenzip.py): LZMA2, LZMA, BCJ/ARM filters, Deflate, BZip2; not encrypted ones, BCJ2 or PPMd); unpack a `.rar` yourself and add the folder. A zip is refused when one of its paths would land outside the mod's folder (`..`, an absolute path, a drive letter), when a name isn't allowed on Windows (`aux.arc`, `a:b`), when two names differ only in capitals, or when it unpacks to more than 8 GB (4 GB per file). Symbolic links in it are skipped. Password-protected zips aren't supported.
+
+## The catalog: recommended mods and texture packs
+
+The launcher's Mods screen has a **Catalog**: mods and texture packs picked for the port, each installed with one click from its author's own download. It is [`tools/mods_catalog.json`](../tools/mods_catalog.json), which comes with the tools; the launcher also fetches the newest one from this repository when it starts (mh4u-app.ini's `[Mods] catalog_url`; empty: never) and uses whichever is newer. The catalog holds only descriptions and links: nothing in it is the game or comes from it.
+
+| | Author | What | Install |
+|---|---|---|---|
+| **Monster Hunter 4 Ultimate HD** (recommended) | mhondeck and the MH classic HD Project | The whole game in HD: environments, armor, weapons, monsters, interface. v3.0 and its latest roll-up (3.03), USA build. About 12 GB. | direct (two `.7z` from the author's Dropbox) |
+| MH4HDUI | xl3lackout | The interface redrawn at 4x (HUD, icons, fonts); CC0. The HD pack already has an updated version: one or the other. | direct (GitHub) |
+| 100% crafting success | anco | Every item combination succeeds. A code patch that changes only data. LGPL-3.0. | direct (Codeberg) |
+| Charge Blade: Fast Morph Guard Point | JackUnderTheHood | A Guard Point on the Fast Morph Slash. | direct (GameBanana) |
+| Weapon Honing: Life rework | JackUnderTheHood | Life heals like MHW's Health Regen augment; includes both Charge Blade Guard Point mods. | direct (GameBanana) |
+
+Texture packs need **custom textures** on (Settings, or `custom_textures = on` in mh4u-app.ini); the launcher offers to turn them on. The HD pack's author notes that the monsters' HD textures show only with Azahar's New 3DS mode off. The two Guard Point mods add new code after the game's own code (a "code cave"), which the port's recompiled code library can't run yet: `status` says `unsupported`, and with one of them on the game runs on Azahar's own CPU emulation (the launcher says so before it starts).
+
+```bash
+python3 tools/mods.py catalog                        # the catalog, and what of it is installed
+python3 tools/mods.py catalog --refresh              # with the newest one from the web
+python3 tools/mods.py install-from-catalog mh4u-hd   # download, check, unpack, install
+python3 tools/mods.py remove mh4u-hd                 # and take it out again
+```
+
+`install-from-catalog ID` downloads into the library's `.downloads/` folder (a download that stopped goes on from there the next time), checks the size and SHA-256 when the catalog gives them, unpacks it with the same checks as a mod's zip (nothing outside its folder, names Windows can't have left out, the free space checked first), and then:
+
+- a **texture pack** goes into Azahar's texture folder for the game, `load/textures/0004000000126300/` in its user folder, with its `pack.json` at the top as Azahar wants it. The library's `textures.json` remembers its files, so `remove` takes out exactly those. Files of another texture pack, or files you put there yourself, are not replaced unless you say so (`--force`); two packs the catalog says don't go together are refused.
+- a **mod** joins the mod library like `add` (on, last in the order, or in place of the version installed before); its `mod.json` is the catalog's description, with the catalog's id.
+
+The downloaded archives are deleted once installed (`--keep-download` keeps them). A `.rar`, or a `.7z` this can't read, is kept, and the command says where it is and where its files go (error `manual_extract`; the launcher opens both folders).
+
+`install URL|ARCHIVE|FOLDER` does the same for anything else: a mod (`--name`, `--replace`, `--disabled` as for `add`), or a texture pack with `--textures`. `add` takes `.7z` and `.tar` archives too.
+
+### Suggesting a mod for the catalog
+
+Open an issue or a pull request that adds an entry to `tools/mods_catalog.json` (and raise its `updated` date). A mod belongs in it when it works with the port (USA, the v1.1 update, title 0004000000126300; texture packs through Azahar's custom textures), when its author shares it publicly with a direct download (GitHub releases, GameBanana, Codeberg, a Dropbox or Drive link of the author's own), and when it neither contains the game nor needs anything that isn't yours. A download behind a sign-in or a click-through (Nexus Mods, Patreon) can still be listed, with no `downloads`: the launcher then shows only *Open its page*. `python3 -m pytest tests/test_mods_catalog.py` checks the file.
+
+An entry's fields (`id`, `kind`, `name` and `page_url` are needed; the rest is optional):
+
+| Field | Meaning |
+|---|---|
+| `id` | lower case letters, digits, `.`, `_`, `-`; never changes (installs are remembered by it) |
+| `kind` | `textures` (into the texture folder) or `mod` (into the mod library) |
+| `name`, `author`, `version`, `category` | as shown; a newer `version` than the installed one shows *Update* |
+| `description`, `details`, `note` | a sentence or two; more; a warning worth reading first |
+| `region`, `region_note` | `USA`, and which version or update it is made for |
+| `license` | its licence, or what its author allows |
+| `page_url` | its own page (https) |
+| `recommended` | `true` shows the *Recommended* badge (the HD texture pack) |
+| `needs` | `custom_textures` (the launcher offers to turn them on), `cpu_emulation` (runs only on Azahar's own CPU emulation) |
+| `conflicts` | ids of entries it doesn't go with: installing it while one of them is installed is refused |
+| `size`, `installed_size` | bytes to download, and once installed (shown, and checked against the free space) |
+| `downloads` | the files, in order: `url` (https), `file` (its name in `.downloads/`), `size` and `sha256` (checked when given; leave them out for a file its author replaces in place), `archive` (`auto`, `zip`, `7z`, `tar`, or `file` for a single file), `root` (the folder in the archive to install, also found inside one wrapping folder), `into` (a folder to put it in), `as` (for a single file: where it goes in the mod, e.g. `exefs/code.ips`), `delete_first` (paths to remove from what the earlier downloads unpacked, e.g. a roll-up's `UI`) |
+
+Without `root`, a texture pack is looked through a `load/textures/<title id>/` or `<title id>/` folder, or a folder that wraps its `pack.json`; one for another title (the EU `0004000000126100`) is refused. A mod is found as `add` finds it.
 
 ## What a mod can look like
 
@@ -90,6 +143,7 @@ The port runs the game's code recompiled for your PC (the code library, [PLAYING
 | `rebuild` | the code mods changed since it was built: build it again |
 | `unknown` | it was built without a record of its code mods (by an older `build_game.py`, or the record is from another build) |
 | `missing` | no code library: [PLAYING.md](PLAYING.md) step 1 |
+| `unsupported` | the code mod adds new code after the game's own (in the padding before the read-only data), which the code library, recompiled from the code segment alone, can't run: the game runs on Azahar's own CPU emulation with it |
 
 The record is `recomp/0004000000126300.build.json` next to the library, written by `build_game.py --install`. `status` also notices Luma's code patch (`sdmc/luma/titles/0004000E00126300/code.ips`), which Azahar applies when the mods folder has none but `build_game.py` doesn't: move it into a mod instead.
 
@@ -125,4 +179,4 @@ Make code patches for the USA v1.3.0 update's `code.bin` (the port's code), and 
 
 ## For the launcher (`--json`)
 
-With `--json` (before or after the command) each command prints one JSON object: `"ok": true` and `"command"` with the result, or `"ok": false` and `"error": {"code", "message", ...}` (exit status 1; 2 for a usage error). `list`, `add`, `remove`, `enable`, `disable` and `order` return the library: `mods` (in order; each with `id`, `name`, `version`, `author`, `description`, `url`, `position`, `enabled`, `new`, `layout`, `contains`, `files`, `code`, `wins`, `loses`, `path`, `warnings`, `errors`), `conflict_count`, `deploy_state` (`up_to_date`, `out_of_date` or `blocked`), `problems`, `warnings` and, for the commands that change it, `messages`. `conflicts` returns `conflicts` (`path`, `mods`, `winner`, `files`); `deploy`, `undeploy` and `status` return `deploy` (`state`, `add`, `update`, `remove`, `in_the_way`, `changed`, `foreign`, `problems`) and `code_library` (`state`, `reason`, `code_files`, `changes_code`). Error codes include `not_found`, `exists`, `layout`, `zip`, `code_mod_conflict`, `foreign_files` and `io`.
+With `--json` (before or after the command) each command prints one JSON object: `"ok": true` and `"command"` with the result, or `"ok": false` and `"error": {"code", "message", ...}` (exit status 1; 2 for a usage error). `list`, `add`, `remove`, `enable`, `disable` and `order` return the library: `mods` (in order; each with `id`, `name`, `version`, `author`, `description`, `url`, `position`, `enabled`, `new`, `layout`, `contains`, `files`, `code`, `wins`, `loses`, `path`, `warnings`, `errors`), `conflict_count`, `deploy_state` (`up_to_date`, `out_of_date` or `blocked`), `problems`, `warnings` and, for the commands that change it, `messages`. `conflicts` returns `conflicts` (`path`, `mods`, `winner`, `files`); `deploy`, `undeploy` and `status` return `deploy` (`state`, `add`, `update`, `remove`, `in_the_way`, `changed`, `foreign`, `problems`) and `code_library` (`state`, `reason`, `code_files`, `changes_code`, `adds_code`). `catalog` returns `catalog` (`source`: `bundled`, `cache`, `remote` or `file`; `updated`), `entries` (the fields above, plus `direct`, `installed` (`as`, `id`, `version`, `enabled`, `files`, or null), `update` and `downloaded`), `textures` (the texture packs installed), `textures_folder` and `downloads_folder`. `install-from-catalog` and `install` return a texture pack's `pack`, `files`, `replaced`, or a mod's library as `add` does, with `messages` and the entry's `needs`. Before their result, these two (and `add`) print **progress lines**, each `@` and one JSON object: `{"event": "step"|"download"|"unpack"|"install", "message": ...}` when a stage starts, then `{"event", "done", "total", "what"}` a few times a second (`total` null when not known); the launcher reads the last one for its progress bar and leaves them out of the result. Error codes include `not_found`, `exists`, `layout`, `zip`, `archive`, `code_mod_conflict`, `foreign_files`, `conflict`, `download`, `checksum`, `space`, `manual_extract` (with `download`, `target`, `page_url`), `page_only`, `other_title` and `io`.

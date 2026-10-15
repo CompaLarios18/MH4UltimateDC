@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <fmt/format.h>
+#include <json.hpp>
 
 #include "common/file_util.h"
 #include "launcher/process.h"
@@ -252,6 +253,73 @@ Progress BuildProgress(const std::vector<std::string>& lines) {
         }
     }
     return p;
+}
+
+namespace {
+
+std::string Size(long long n) {
+    if (n >= (1LL << 30)) {
+        return fmt::format("{:.2f} GB", static_cast<double>(n) / (1LL << 30));
+    }
+    if (n >= (1LL << 20)) {
+        return fmt::format("{:.1f} MB", static_cast<double>(n) / (1LL << 20));
+    }
+    return fmt::format("{} KB", std::max(1LL, (n + 512) / 1024));
+}
+
+} // namespace
+
+Progress ModsProgress(const std::vector<std::string>& lines) {
+    // (only the last progress line counts: a long download prints thousands)
+    Progress p{-1.0f, "Starting"};
+    for (auto it = lines.rbegin(); it != lines.rend(); ++it) {
+        if (it->empty() || (*it)[0] != '@') {
+            continue;
+        }
+        const auto j = nlohmann::json::parse(it->substr(1), nullptr, false);
+        if (j.is_discarded() || !j.is_object()) {
+            continue;
+        }
+        const auto text = [&j](const char* key) {
+            return j.contains(key) && j[key].is_string() ? j[key].get<std::string>() : std::string();
+        };
+        const auto number = [&j](const char* key) {
+            return j.contains(key) && j[key].is_number() ? j[key].get<long long>() : -1LL;
+        };
+        const long long done = number("done"), total = number("total");
+        if (done < 0) {  // a stage starts
+            p.stage = text("message");
+            p.fraction = total > 0 ? static_cast<float>(std::max(0LL, number("resumed"))) / static_cast<float>(total)
+                                   : -1.0f;
+        } else {
+            const std::string what = text("what");
+            if (text("event") == "install") {
+                p.stage = fmt::format("{}: {} of {} files", what, done, total);
+            } else {
+                p.stage = total > 0 ? fmt::format("{}: {} of {}", what, Size(done), Size(total))
+                                    : fmt::format("{}: {}", what, Size(done));
+            }
+            p.fraction = total > 0 ? std::min(1.0f, static_cast<float>(done) / static_cast<float>(total)) : -1.0f;
+        }
+        if (p.stage.empty()) {
+            p.stage = "Working";
+        }
+        break;
+    }
+    return p;
+}
+
+std::string WithoutProgress(const std::string& output) {
+    std::string out;
+    std::size_t start = 0;
+    while (start < output.size()) {
+        const auto end = std::min(output.find('\n', start), output.size());
+        if (output[start] != '@') {
+            out.append(output, start, end - start + 1);
+        }
+        start = end + 1;
+    }
+    return out;
 }
 
 std::string ErrorSummary(const std::vector<std::string>& lines) {

@@ -215,7 +215,7 @@ jobs:
           MH3U on a Wii U) and the mouse or trackpad as the stylus. Option+Return: full screen or
           a window (F11 as well, where macOS doesn't take it for Show Desktop). fn+F12, or the
           right stick's click: in quests, the touch screen's map or the whole touch screen.
-          The launcher's other screens: Mods (several mods, in an order, conflicts shown), Online
+          The launcher's other screens: Mods (several mods, in an order, conflicts shown; a catalog of recommended mods and texture packs, the HD pack among them, installed with one click), Online
           (a lobby's rooms, joining by address, hosting) and Settings. Its settings are in
           ~/Library/Application Support/Azahar/mh4u-app.ini, written with explanations the first
           time it runs: the game file, the renderer (vulkan, on Metal, or

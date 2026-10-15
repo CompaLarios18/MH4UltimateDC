@@ -1,5 +1,5 @@
-// Settings: the app's main settings (renderer, full screen, resolution, the screens, vsync,
-// volume, the launcher itself), saved in mh4u-app.ini as they change (App::Save).
+// Settings: the app's main settings (renderer, full screen, resolution, the screens, custom
+// textures, vsync, volume, the launcher itself), saved in mh4u-app.ini as they change (App::Save).
 #include <fmt/format.h>
 #include <imgui.h>
 
@@ -135,6 +135,13 @@ void DrawSettings(State& s) {
             Ui::PopFont();
             ImGui::Unindent(ImGui::GetFrameHeight() + ImGui::GetStyle().ItemInnerSpacing.x);
         }
+    }
+
+    Label("Custom textures", "Texture packs in load/textures/0004000000126300/ (the Mods screen's catalog "
+                             "installs them there).");
+    bool textures = c.custom_textures;
+    if (Ui::Toggle(textures ? "On##custom_textures" : "Off##custom_textures", &textures)) {
+        s.Change([&](App::Config& cfg) { cfg.custom_textures = textures; });
     }
 
     Label("Vsync", "Frames in step with the monitor: no tearing.");
