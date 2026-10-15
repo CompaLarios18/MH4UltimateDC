@@ -44,22 +44,10 @@ void SetFullscreen(bool on) {
     }
 }
 
-/// A system file or folder picker (out of full screen while it's up: a desktop's dialog can
-/// open behind a full-screen window), or a line to type the path into where there is none.
-void PickPath(State& s, bool folder, const std::string& title, const std::string& kind,
-              const std::vector<std::string>& extensions, std::function<void(const std::string&)> then) {
-#ifndef _WIN32
-    const bool was_fullscreen = g_fullscreen;
-    if (was_fullscreen) {
-        SetFullscreen(false);
-    }
-#endif
-    const Pick::Result picked = folder ? Pick::Folder(title) : Pick::File(title, kind, extensions);
-#ifndef _WIN32
-    if (was_fullscreen) {
-        SetFullscreen(true);
-    }
-#endif
+/// What the picker gave: the path to `then`, or a line to type the path into where the system
+/// has no picker.
+void Picked(State& s, bool folder, const std::string& title, const Pick::Result& picked,
+            std::function<void(const std::string&)> then) {
     // keys held when the dialog opened never saw their release
     ImGui::GetIO().ClearInputKeys();
     if (!picked.available) {
@@ -76,6 +64,74 @@ void PickPath(State& s, bool folder, const std::string& title, const std::string
     if (!picked.path.empty()) {
         then(picked.path);
     }
+}
+
+/// A system file or folder picker. Windows' is a modal dialog that keeps the launcher's window
+/// answering; elsewhere it is another program (zenity, kdialog, osascript), waited for on a
+/// thread while the launcher draws a window saying so, out of full screen (a desktop's dialog
+/// can open behind a full-screen window).
+void PickPath(State& s, bool folder, const std::string& title, const std::string& kind,
+              const std::vector<std::string>& extensions, std::function<void(const std::string&)> then) {
+#ifdef _WIN32
+    const Pick::Result picked = folder ? Pick::Folder(title) : Pick::File(title, kind, extensions);
+    Picked(s, folder, title, picked, std::move(then));
+#else
+    if (s.picking) {
+        return;
+    }
+    State::Picking p;
+    p.folder = folder;
+    p.title = title;
+    p.then = std::move(then);
+    p.was_fullscreen = g_fullscreen;
+    if (p.was_fullscreen) {
+        SetFullscreen(false);
+    }
+    p.result = std::async(std::launch::async, [folder, title, kind, extensions] {
+        return folder ? Pick::Folder(title) : Pick::File(title, kind, extensions);
+    });
+    s.picking = std::move(p);
+#endif
+}
+
+void PumpPick(State& s) {
+    if (!s.picking || s.picking->result.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
+        return;
+    }
+    State::Picking p = std::move(*s.picking);
+    s.picking.reset();
+    if (p.was_fullscreen) {
+        SetFullscreen(true);
+    }
+    Picked(s, p.folder, p.title, p.result.get(), std::move(p.then));
+}
+
+/// While the picker is up: a window saying so, which keeps the launcher's own items out of
+/// reach; the frame after, it closes.
+void DrawPicking(State& s) {
+    const bool up = s.picking.has_value();
+    if (up && !ImGui::IsPopupOpen("##picking")) {
+        ImGui::OpenPopup("##picking");
+    }
+    const ImVec2 display = ImGui::GetIO().DisplaySize;
+    ImGui::SetNextWindowPos(ImVec2(display.x * 0.5f, display.y * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(std::min(display.x * 0.9f, 720.0f * Ui::Scale()), 0.0f), ImGuiCond_Always);
+    if (!ImGui::BeginPopupModal("##picking", nullptr,
+                                ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
+                                    ImGuiWindowFlags_NoSavedSettings)) {
+        return;
+    }
+    if (up) {
+        Ui::Heading(s.picking->title);
+        ImGui::Spacing();
+        Ui::Spinner();
+        ImGui::SameLine();
+        Ui::TextDim(s.picking->folder ? "Choose the folder in the system's window (it may be behind this one)."
+                                      : "Choose the file in the system's window (it may be behind this one).");
+    } else {
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
 }
 
 void PumpJob(State& s) {
@@ -588,7 +644,9 @@ void Frame(State& s) {
     }
     ImGui::EndChild();
     Footer(s);
-    if (s.job.Active()) {
+    if (s.picking || ImGui::IsPopupOpen("##picking")) {
+        DrawPicking(s);
+    } else if (s.job.Active()) {
         DrawJob(s);
     } else if (s.dialog) {
         DrawDialog(s);
@@ -601,6 +659,9 @@ void Frame(State& s) {
 /// The player closes the launcher: during a build the job's window asks first, an install
 /// finishes first.
 void RequestQuit(State& s) {
+    if (s.picking) {
+        return;  // the system's picker first
+    }
     if (s.job.Active() && !s.job.finished) {
         if (s.job.cancellable && !s.job.quit_asked) {
             s.job.quit_asked = true;
@@ -1035,7 +1096,7 @@ Result Run(App::Config& config, bool show) {
         // the spinners and the Play button's glow need few, and the launcher shouldn't take the
         // processor from the build (or draw at all while minimised).
         const bool working = (s.job.Active() && !s.job.finished) || s.runner.Busy() || s.probing ||
-                             s.rooms_loading || s.play_waiting > 0;
+                             s.rooms_loading || s.play_waiting > 0 || s.picking.has_value();
         const bool hidden = (SDL_GetWindowFlags(window) & (SDL_WINDOW_MINIMIZED | SDL_WINDOW_HIDDEN)) != 0;
         int wait_ms = 0;
         if (hidden) {
@@ -1070,6 +1131,7 @@ Result Run(App::Config& config, bool show) {
         PumpJob(s);
         PumpProbe(s);
         PumpRooms(s);
+        PumpPick(s);
         if (s.play_waiting > 0) {
             // Play goes on once what it waits for is there (it waits again, or stops at a dialog)
             const int stage = s.play_waiting;
