@@ -13,6 +13,7 @@
 #include "input.h"
 #include "input_common/keyboard.h"
 #include "input_common/main.h"
+#include "ui/ui.h"
 
 namespace App {
 
@@ -163,6 +164,10 @@ void Window::OnKey(int scancode, bool down, u16 modifiers) {
 void Window::PollEvents() {
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
+        // the in-game menu's (ui/): its toggle, and while it is up the keys, mouse and controller
+        if (Ui::OnEvent(event)) {
+            continue;
+        }
         switch (event.type) {
         case SDL_WINDOWEVENT:
             if (event.window.windowID != window_id) {
@@ -247,7 +252,7 @@ void Window::PollEvents() {
             break;
         }
     }
-    if (cursor_hide_at && SDL_GetTicks() >= cursor_hide_at) {
+    if (cursor_hide_at && SDL_GetTicks() >= cursor_hide_at && !Ui::Visible()) {
         SDL_ShowCursor(SDL_DISABLE);
         cursor_hide_at = 0;
     }
@@ -259,6 +264,7 @@ void Window::PollEvents() {
             SDL_SetWindowTitle(render_window,
                                fmt::format("MH4U PC port | {:.0f} fps", stats.game_fps).c_str());
         }
+        Ui::Frame(); // the in-game menu's frame, when it is up
     }
 }
 

@@ -69,9 +69,9 @@ The game's code is native already; what remains of the 3DS is Azahar's core (sys
 - [x] Servers of our own ([SERVER.md](SERVER.md)): a lobby (`server/lobby/mh4u_lobby.py`) compatible with Azahar's lobby client, so *Browse Public Game Lobby* and public rooms work again, checked end to end against Azahar's dedicated room; host scripts and Docker for dedicated rooms; a room's host rights only for the host's checked name
 - [x] Mods ([MODS.md](MODS.md)): a mod library with order, conflicts and deployment into Azahar's mods folder (`tools/mods.py`, JSON for the app), code mods tied to the code library; the port's Azahar reads `romfs_ext/` sub-folders, where MH4U's archives are
 - [x] Metal: MoltenVK now, a native backend only on a measured trigger ([research/metal.md](research/metal.md))
-- [ ] In-game menu (Dear ImGui over the game): the options of `mh4u.ini` and `mh4u-app.ini` live, controls, the room and its players, quitting
+- [x] In-game menu (Dear ImGui over the game, on Vulkan, OpenGL and software): the options of `mh4u.ini` and `mh4u-app.ini` (live where the hooks and Azahar allow), controls with rebinding, the room and its players, quitting; the 3DS software keyboard (names, chat) in the app
 - [ ] Launcher screens: first-run setup (game file, update, code library with progress), mods, servers (a lobby's room list, join/host)
-- [ ] The second screen gone: the touch screen only when the game needs it (`touch_screen = map/hidden`), the bottom pass skipped while hidden, item shortcuts on buttons, a controller cursor for touch menus, the software keyboard (names, chat) in the app
+- [ ] The second screen gone: the touch screen only when the game needs it (`touch_screen = map/hidden`), the bottom pass skipped while hidden, item shortcuts on buttons, a controller cursor for touch menus
 - [ ] Measure on Apple silicon (checklist in research/metal.md); native Metal only if MoltenVK can't hold the frame rate
 
 ## Prior art to study

@@ -25,21 +25,35 @@ add_executable(mh4u
     main.cpp
     window.cpp
     window.h
+    # the in-game menu (Dear ImGui over the game) and the 3DS software keyboard
+    ui/keyboard.cpp
+    ui/keyboard.h
+    ui/layer.h
+    ui/menu.cpp
+    ui/menu.h
+    ui/options.cpp
+    ui/options.h
+    ui/ui.cpp
+    ui/ui.h
 )
+target_include_directories(mh4u PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+# each renderer's window, with Dear ImGui's backend for it (compiled in ui/render_*.cpp)
 if (ENABLE_OPENGL)
-    target_sources(mh4u PRIVATE window_gl.cpp)
+    target_sources(mh4u PRIVATE window_gl.cpp ui/render_gl.cpp)
     target_link_libraries(mh4u PRIVATE glad)
 endif()
 if (ENABLE_VULKAN)
-    target_sources(mh4u PRIVATE window_vk.cpp)
+    target_sources(mh4u PRIVATE window_vk.cpp ui/render_vk.cpp)
+    target_link_libraries(mh4u PRIVATE vulkan-headers)
 endif()
 if (ENABLE_SOFTWARE_RENDERER)
-    target_sources(mh4u PRIVATE window_sw.cpp)
+    target_sources(mh4u PRIVATE window_sw.cpp ui/render_sw.cpp)
 endif()
 
 target_compile_definitions(mh4u PRIVATE SDL_MAIN_HANDLED)
-target_link_libraries(mh4u PRIVATE mh4u_backend audio_core citra_common citra_core input_common
-                      network video_core inih SDL2::SDL2 ${PLATFORM_LIBRARIES} Threads::Threads)
+target_link_libraries(mh4u PRIVATE mh4u_backend mh4u_imgui audio_core citra_common citra_core
+                      input_common network video_core inih SDL2::SDL2 ${PLATFORM_LIBRARIES}
+                      Threads::Threads)
 if (ENABLE_WEB_SERVICE)
     target_link_libraries(mh4u PRIVATE web_service)
 endif()

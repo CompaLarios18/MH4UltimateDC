@@ -1030,7 +1030,7 @@ index 318a62e..cd75b88 100644
  public:
      explicit RasterizerSoftware(Memory::MemorySystem& memory, Pica::PicaCore& pica);
 diff --git a/src/video_core/renderer_vulkan/renderer_vulkan.cpp b/src/video_core/renderer_vulkan/renderer_vulkan.cpp
-index 611e092..55107f7 100644
+index 611e092..d1a655a 100644
 --- a/src/video_core/renderer_vulkan/renderer_vulkan.cpp
 +++ b/src/video_core/renderer_vulkan/renderer_vulkan.cpp
 @@ -6,6 +6,7 @@
@@ -1041,7 +1041,39 @@ index 611e092..55107f7 100644
  #include "common/settings.h"
  #include "core/core.h"
  #include "core/frontend/emu_window.h"
-@@ -959,6 +960,13 @@ void RendererVulkan::DrawBottomScreen(const Layout::FramebufferLayout& layout,
+@@ -13,6 +14,7 @@
+ #include "video_core/pica/pica_core.h"
+ #include "video_core/renderer_vulkan/renderer_vulkan.h"
+ #include "video_core/renderer_vulkan/vk_memory_util.h"
++#include "video_core/renderer_vulkan/vk_overlay.h"
+ #include "video_core/renderer_vulkan/vk_shader_util.h"
+ 
+ #include "video_core/host_shaders/vulkan_present_anaglyph_frag.h"
+@@ -60,6 +62,13 @@ constexpr static std::array<vk::DescriptorSetLayoutBinding, 1> PRESENT_BINDINGS
+     {0, vk::DescriptorType::eCombinedImageSampler, 3, vk::ShaderStageFlagBits::eFragment},
+ }};
+ 
++// MH4U port: the frontend's drawing over the screens (vk_overlay.h), none by default
++static PresentOverlay present_overlay;
++
++void SetPresentOverlay(PresentOverlay overlay) {
++    present_overlay = std::move(overlay);
++}
++
+ namespace {
+ static bool IsLowRefreshRate() {
+ #if (defined(__APPLE__) || defined(ENABLE_SDL2)) && !defined(HAVE_LIBRETRO)
+@@ -140,6 +149,9 @@ RendererVulkan::~RendererVulkan() {
+     scheduler.Finish();
+     main_present_window.WaitPresent();
+     device.waitIdle();
++    if (present_overlay.release) {
++        present_overlay.release(); // MH4U port: the overlay's objects go first
++    }
+ 
+     device.destroyShaderModule(present_vertex_shader);
+     for (u32 i = 0; i < PRESENT_PIPELINES; i++) {
+@@ -959,6 +971,13 @@ void RendererVulkan::DrawBottomScreen(const Layout::FramebufferLayout& layout,
          return;
      }
  
@@ -1055,3 +1087,84 @@ index 611e092..55107f7 100644
      const float bottom_screen_left = static_cast<float>(bottom_screen.left);
      const float bottom_screen_top = static_cast<float>(bottom_screen.top);
      const float bottom_screen_width = static_cast<float>(bottom_screen.GetWidth());
+@@ -1060,6 +1079,27 @@ void RendererVulkan::DrawScreens(Frame* frame, const Layout::FramebufferLayout&
+ 
+     DrawCursor(layout);
+ 
++    // MH4U port: the frontend's overlay over the main window's screens
++    if (present_overlay.draw && !isSecondaryWindow) {
++        const PresentOverlay::Context context{
++            VULKAN_HPP_DEFAULT_DISPATCHER.vkGetInstanceProcAddr,
++            static_cast<VkInstance>(instance.GetInstance()),
++            static_cast<VkPhysicalDevice>(instance.GetPhysicalDevice()),
++            static_cast<VkDevice>(instance.GetDevice()),
++            instance.ApiVersion(),
++            instance.GetGraphicsQueueFamilyIndex(),
++            static_cast<VkQueue>(instance.GetGraphicsQueue()),
++            &scheduler.submit_mutex,
++            static_cast<VkRenderPass>(main_present_window.Renderpass()),
++            main_present_window.ImageCount(),
++        };
++        if (auto commands = present_overlay.draw(context, layout.width, layout.height)) {
++            scheduler.Record([commands = std::move(commands)](vk::CommandBuffer cmdbuf) {
++                commands(static_cast<VkCommandBuffer>(cmdbuf));
++            });
++        }
++    }
++
+     scheduler.Record([](vk::CommandBuffer cmdbuf) { cmdbuf.endRenderPass(); });
+ }
+ 
+diff --git a/src/video_core/renderer_vulkan/vk_overlay.h b/src/video_core/renderer_vulkan/vk_overlay.h
+new file mode 100644
+index 0000000..cf5c933
+--- /dev/null
++++ b/src/video_core/renderer_vulkan/vk_overlay.h
+@@ -0,0 +1,47 @@
++// Copyright 2026 Azahar Emulator Project
++// Licensed under GPLv2 or any later version
++// Refer to the misc/licenses/gplv2.txt file included.
++
++// MH4U port: a frontend's own drawing over the screens, e.g. the port's app's in-game menu
++// (Dear ImGui). Nothing is drawn unless a frontend registers an overlay.
++
++#pragma once
++
++#include <cstdint>
++#include <functional>
++#include <mutex>
++#ifndef VK_NO_PROTOTYPES
++#define VK_NO_PROTOTYPES
++#endif
++#include <vulkan/vulkan_core.h>
++
++namespace Vulkan {
++
++struct PresentOverlay {
++    /// What a drawing library needs of the renderer.
++    struct Context {
++        PFN_vkGetInstanceProcAddr get_instance_proc_addr;
++        VkInstance instance;
++        VkPhysicalDevice physical_device;
++        VkDevice device;
++        std::uint32_t api_version;
++        std::uint32_t queue_family;
++        VkQueue queue;
++        std::mutex* queue_mutex;   ///< held by whoever submits to `queue`
++        VkRenderPass render_pass;  ///< the main window's present render pass (subpass 0)
++        std::uint32_t image_count; ///< frames in flight
++    };
++    using Commands = std::function<void(VkCommandBuffer)>;
++
++    /// Called once a frame on the emulation thread while the main window's present render pass
++    /// is being recorded, `width` x `height` pixels: the commands it returns are recorded in
++    /// that render pass after the screens, on the scheduler's thread. Empty: nothing this frame.
++    std::function<Commands(const Context&, std::uint32_t width, std::uint32_t height)> draw;
++    /// The renderer is going away and its device is idle: release what `draw` made.
++    std::function<void()> release;
++};
++
++/// Registers the overlay (an empty one removes it).
++void SetPresentOverlay(PresentOverlay overlay);
++
++} // namespace Vulkan

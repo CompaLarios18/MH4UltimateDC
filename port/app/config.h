@@ -61,6 +61,9 @@ struct Config {
 /// The settings file's path.
 std::string ConfigPath();
 
+/// The settings as they come (the keys of a new settings file).
+Config Defaults();
+
 /// Reads the settings file; one that doesn't exist yet is written with the defaults, explained.
 Config Load();
 
