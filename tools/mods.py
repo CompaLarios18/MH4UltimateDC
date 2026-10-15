@@ -22,6 +22,13 @@ removes its own files, and it won't replace files it didn't put there unless tol
     python3 tools/mods.py deploy [--force]        # the enabled mods into Azahar's mods folder
     python3 tools/mods.py undeploy                # and out again
     python3 tools/mods.py status                  # what deploy would change; rebuild needed?
+    python3 tools/mods.py catalog [--refresh]     # mods and texture packs recommended for the port
+    python3 tools/mods.py install-from-catalog ID # downloaded, checked and installed
+    python3 tools/mods.py install URL|ARCHIVE [--textures]   # a mod or texture pack from elsewhere
+
+Texture packs go into Azahar's custom texture folder for the game (load/textures/<program
+id>/), and the files each one put there are remembered, so remove takes them out again.
+Archives: .zip, .7z (tools/sevenzip.py) and .tar.
 
 --json on any command prints one JSON object instead, for the port's launcher. Code mods
 (code.bin, code.ips, code.bps) change the code the port recompiled: only one can be on at a
@@ -39,6 +46,11 @@ import re
 import shutil
 import stat
 import sys
+import tarfile
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
 import uuid
 import zipfile
 import zlib
@@ -49,6 +61,7 @@ ROOT = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 
 import code_mods  # noqa: E402
+import sevenzip  # noqa: E402
 
 PROGRAM_ID = 0x0004000000126300      # MH4U USA (config/versions.json): names Azahar's mods folder
 UPDATE_ID = 0x0004000E00126300       # its v1.3.0 update, whose code the port runs
@@ -86,7 +99,7 @@ ZIP_MAX_FILE = 4 << 30
 ZIP_MAX_TOTAL = 8 << 30
 
 KINDS = ("romfs", "romfs_ext", "code", "exefs", "exheader")  # what a mod can contain
-TEXT_FIELDS = ("name", "version", "author", "description", "url")
+TEXT_FIELDS = ("name", "version", "author", "description", "url", "catalog")
 
 _TITLE = re.compile(r"[0-9A-Fa-f]{16}")
 _WINDOWS_RESERVED = {"con", "prn", "aux", "nul"} | {f"{p}{i}" for p in ("com", "lpt") for i in range(1, 10)}
@@ -579,6 +592,41 @@ def changes_code(paths: list[str], text_size: int | None) -> bool | None:
     return result
 
 
+def adds_code(paths: list[str], text_size: int | None) -> bool:
+    """Whether a code patch writes past the end of the code segment but within its last page:
+    new code put in the padding before the read-only data (a "code cave"), which hooks in the
+    code branch to. The port's code library is recompiled from the code segment alone, so it
+    can't run such code; the game then has to run on Azahar's own CPU emulation."""
+    end = code_segment_end(text_size)
+    if end is None:
+        return False
+    for path in paths:
+        if _code_kind(path) == "code.bin":
+            continue
+        try:
+            with open(path, "rb") as f:
+                ranges = patch_writes(f.read())
+        except OSError:
+            continue
+        if any(length and offset < end and offset + length > text_size for offset, length in ranges or []):
+            return True
+    return False
+
+
+def code_segment_end(text: int | None) -> int | None:
+    """Where the read-only data starts, from the code's start (the code segment's last page
+    ends there), for the version the port targets; None for code of another size."""
+    try:
+        with open(os.path.join(ROOT, "config", "versions.json")) as f:
+            versions = json.load(f)["versions"]
+        seg = next(v for v in versions if v.get("target"))["segments"]
+        if int(seg["text"][1], 16) != text:
+            return None
+        return int(seg["rodata"][0], 16) - int(seg["text"][0], 16)
+    except (OSError, ValueError, KeyError, StopIteration, TypeError, IndexError):
+        return None
+
+
 def text_size() -> int | None:
     """The size of the code segment of the version the port targets (config/versions.json)."""
     try:
@@ -654,6 +702,11 @@ def code_library_state(user_dir: str, library: str | None = None) -> dict:
 
     if not os.path.isfile(library):
         return result("missing", "no code library: build it (docs/PLAYING.md, step 1)")
+    if adds_code(inputs, size):
+        state["adds_code"] = True
+        return result("unsupported", "the code mod in Azahar's mods folder adds new code after the game's own, which "
+                                     "the port's code library can't run yet: with it, the game runs on Azahar's own "
+                                     "CPU emulation (without the port's options)")
     if record is None:
         return result("unknown", "the code library has no record of the code mods it was built with (built by an "
                                  "older tools/build_game.py)" + (": the code mods in Azahar's folder change the "
@@ -1093,16 +1146,19 @@ class Context:
     library: Library
     folder: str
     code_library: str | None = None
+    progress: "Progress | None" = None
 
 
 def mod_info(mod: Mod, position: int, conflicts: list[dict], size: int | None) -> dict:
     code = None
     if mod.code_files:
-        code = {"files": [f.dest for f in mod.code_files],
-                "changes_code": changes_code([f.src for f in mod.code_files], size)}
+        srcs = [f.src for f in mod.code_files]
+        code = {"files": [f.dest for f in mod.code_files], "changes_code": changes_code(srcs, size),
+                "adds_code": adds_code(srcs, size)}
     return {"id": mod.id, "name": mod.name, "version": mod.manifest.get("version", ""),
             "author": mod.manifest.get("author", ""), "description": mod.manifest.get("description", ""),
-            "url": mod.manifest.get("url", ""), "position": position, "enabled": mod.enabled, "new": mod.new,
+            "url": mod.manifest.get("url", ""), "catalog": mod.manifest.get("catalog", ""), "position": position,
+            "enabled": mod.enabled, "new": mod.new,
             "layout": mod.layout, "contains": mod.contains, "files": len(mod.files), "code": code,
             "wins": sum(1 for c in conflicts if c["winner"] == mod.id),
             "loses": sum(1 for c in conflicts if mod.id in c["mods"] and c["winner"] != mod.id),
@@ -1238,20 +1294,41 @@ def cmd_add(ctx: Context, args) -> dict:
     if _same_path(ctx.folder, source) and os.path.isfile(os.path.join(source, DEPLOYED)):
         raise Error("bad_path", "Azahar's mods folder holds files the mod manager put there: undeploy first, then add "
                                 "the folder to keep what is left in it as a mod")
-    is_zip = os.path.isfile(source) and (source.lower().endswith(".zip") or zipfile.is_zipfile(source))
-    if not os.path.isdir(source) and not is_zip:
-        raise Error("unsupported", f"{args.path}: only folders and .zip files can be added (unpack a .7z or .rar "
-                                   "yourself and add the folder)")
+    kind = "folder" if os.path.isdir(source) else archive_kind(source)
+    if kind == "unknown" and source.lower().endswith(".zip"):
+        kind = "zip"                    # (a damaged one: says so)
+    if kind not in ("folder", "zip", "7z", "tar"):
+        raise Error("unsupported", f"{args.path}: " + (_MANUAL.get(kind) or "only folders and .zip, .7z and .tar "
+                                                       "archives can be added (unpack it yourself and add the folder)"))
     os.makedirs(lib.path, exist_ok=True)
     tmp = os.path.join(lib.path, f".adding-{uuid.uuid4().hex[:8]}")
     try:
-        notes = _unpack_zip(source, tmp) if is_zip else _copy_folder(source, tmp)
+        if kind == "zip":
+            notes = _unpack_zip(source, tmp)
+        elif kind == "folder":
+            notes = _copy_folder(source, tmp)
+        else:
+            notes = extract_archive(source, tmp, kind=kind, progress=ctx.progress)
         os.makedirs(tmp, exist_ok=True)
+        stem = os.path.basename(source.rstrip("/\\"))
+        return _add_unpacked(ctx, mods, warnings, tmp, stem if kind == "folder" else _stem(stem),
+                             os.path.basename(source), args, notes)
+    finally:
+        if os.path.isdir(tmp):
+            _rmtree(tmp)
+
+
+def _add_unpacked(ctx: Context, mods: list[Mod], warnings: list[str], tmp: str, stem: str, label: str, args,
+                  notes: list[str]) -> dict:
+    """Put a mod unpacked into tmp (a new folder in the library) in the library: under its name,
+    or in place of the mod of that name with args.replace. tmp is gone afterwards."""
+    lib = ctx.library
+    messages: list[str] = []
+    try:
         probe = scan(tmp, "new")
         if probe.errors:
-            raise Error("layout", f"{os.path.basename(source)}: {'; '.join(probe.errors)}", errors=probe.errors)
-        stem = os.path.basename(source.rstrip("/\\"))
-        mid = mod_id(args.name or probe.manifest.get("name") or (os.path.splitext(stem)[0] if is_zip else stem))
+            raise Error("layout", f"{label}: {'; '.join(probe.errors)}", errors=probe.errors)
+        mid = mod_id(args.name or probe.manifest.get("name") or stem)
         existing = next((m for m in mods if m.id.casefold() == mid.casefold()), None)
         if existing and not args.replace:
             raise Error("exists", f"a mod {existing.id!r} is already in the library: add with --replace to update it, "
@@ -1287,8 +1364,22 @@ def cmd_add(ctx: Context, args) -> dict:
 
 
 def cmd_remove(ctx: Context, args) -> dict:
+    """A mod from the library, or an installed texture pack; by its name, folder or catalog id."""
     mods, warnings = ctx.library.mods()
-    mod = find(mods, args.name)
+    try:
+        mod = find(mods, args.name)
+    except Error as e:
+        if e.code != "not_found":
+            raise
+        mod = next((m for m in mods if m.manifest.get("catalog", "").casefold() == args.name.casefold()), None)
+        if mod is None:
+            pid = find_pack(read_textures(ctx), args.name) if os.path.isfile(
+                os.path.join(ctx.library.path, TEXTURES_RECORD)) else None
+            if pid is None:
+                raise Error("not_found", f"no mod or texture pack {args.name!r} installed", name=args.name)
+            done = remove_textures(ctx, pid)
+            return dict(overview(ctx, mods, warnings), textures=textures_info(ctx), removed_pack=pid,
+                        messages=[f"{done['name']} removed from the texture folder ({done['removed']} files)"])
     _delete(mod.path)
     mods.remove(mod)
     ctx.library.save(mods)
@@ -1370,6 +1461,998 @@ def cmd_status(ctx: Context, args) -> dict:
             "warnings": warnings + an.warnings}
 
 
+# ── progress, for the launcher ──────────────────────────────────────────────
+
+class Progress:
+    """Progress of a long command (a download, unpacking). With --json each update is one line
+    "@{...}" before the result (the launcher shows them and leaves them out of the result);
+    otherwise a line on standard error that a carriage return starts over."""
+
+    def __init__(self, as_json: bool, stream=None, interval: float = 0.25):
+        self.as_json, self.interval = as_json, interval
+        self.stream = stream
+        self.last, self.open_line = 0.0, False
+
+    def _out(self):
+        return self.stream or (sys.stdout if self.as_json else sys.stderr)
+
+    def event(self, event: str, **data) -> None:
+        """A stage starts or ends: always shown."""
+        self._emit(dict(data, event=event), force=True)
+
+    def update(self, event: str, done: int, total: int | None, **data) -> None:
+        """How far a stage is: shown a few times a second."""
+        now = time.monotonic()
+        if now - self.last < self.interval and (total is None or done < total):
+            return
+        self.last = now
+        self._emit(dict(data, event=event, done=done, total=total), force=False)
+
+    def _emit(self, data: dict, force: bool) -> None:
+        out = self._out()
+        if self.as_json:
+            out.write("@" + json.dumps(data, ensure_ascii=False) + "\n")
+            out.flush()
+            return
+        text = data.get("message") or data.get("event", "")
+        if "done" in data:
+            done, total = data["done"], data.get("total")
+            text = f"{data.get('what', data['event'])}: {_mb(done)}" + (f" of {_mb(total)}" if total else "")
+        if force:
+            if self.open_line:
+                out.write("\n")
+            out.write(text + "\n")
+            self.open_line = False
+        else:
+            out.write("\r" + text)
+            self.open_line = True
+        out.flush()
+
+    def end_line(self) -> None:
+        if self.open_line and not self.as_json:
+            self._out().write("\n")
+            self.open_line = False
+
+
+def _mb(n: int | None) -> str:
+    if n is None:
+        return "?"
+    if n < 1 << 20:
+        return f"{max(1, round(n / 1024))} KB" if n else "0 KB"
+    return f"{n / (1 << 30):.2f} GB" if n >= 1 << 30 else f"{n / (1 << 20):.1f} MB"
+
+
+# ── archives: .zip, .7z, .tar, as the catalog's downloads come ───────────────
+
+ARCHIVE_MAX_FILE = 4 << 30
+ARCHIVE_MAX_TOTAL = 64 << 30       # a whole HD texture pack is about 12 GB
+_MANUAL = {
+    "rar": "a .rar archive, which Python can't unpack: unpack it yourself (7-Zip, WinRAR, The Unarchiver) and add "
+           "the folder",
+    "unknown": "not an archive this can read (.zip, .7z or .tar): unpack it yourself and add the folder",
+}
+
+
+def archive_kind(path: str) -> str:
+    """"zip", "7z", "tar", "rar" or "unknown", from the file's first bytes."""
+    try:
+        with open(path, "rb") as f:
+            head = f.read(8)
+    except OSError as e:
+        raise Error("io", f"{path}: {e}")
+    if head.startswith(b"PK\x03\x04") or head.startswith(b"PK\x05\x06"):
+        return "zip"
+    if head.startswith(sevenzip.SIGNATURE):
+        return "7z"
+    if head.startswith(b"Rar!\x1a\x07"):
+        return "rar"
+    try:
+        if tarfile.is_tarfile(path):
+            return "tar"
+    except OSError:
+        pass
+    return "unknown"
+
+
+def _stem(name: str) -> str:
+    """A download's name without its archive extension(s)."""
+    low = name.lower()
+    for ext in (".tar.gz", ".tar.bz2", ".tar.xz", ".tgz", ".zip", ".7z", ".tar", ".rar"):
+        if low.endswith(ext) and len(name) > len(ext):
+            return name[:-len(ext)]
+    return os.path.splitext(name)[0] or name
+
+
+@dataclass
+class Member:
+    """A file in an archive."""
+    parts: list[str]
+    size: int
+    ref: object             # what the archive's reader needs to read it
+
+
+def _members(path: str, kind: str, warnings: list[str]):
+    """(an opened archive, its files as Members). Folders, links, devices, the "anti" items of a
+    .7z and names Windows can't have are left out (with a warning); a path that would leave the
+    folder it is unpacked into refuses the whole archive."""
+    name = os.path.basename(path)
+    out: list[Member] = []
+
+    def keep(raw: str, size: int, ref) -> None:
+        try:
+            parts = relative_parts(raw)
+        except Error as e:
+            if e.code == "bad_name":
+                warnings.append(f"{raw}: a name Windows can't have, not unpacked")
+                return
+            raise Error("archive", f"{name}: {e.message}")
+        if parts and not any(ignored(p) for p in parts):
+            out.append(Member(parts, size, ref))
+
+    if kind == "zip":
+        try:
+            arc = zipfile.ZipFile(path)
+        except (OSError, zipfile.BadZipFile) as e:
+            raise Error("zip", f"{name} can't be opened as a zip ({e})")
+        for info in arc.infolist():
+            if (info.external_attr >> 16) & 0o170000 == 0o120000:
+                warnings.append(f"{info.filename}: a symbolic link, not unpacked")
+            elif not info.is_dir():
+                if info.flag_bits & 1:
+                    arc.close()
+                    raise Error("zip", f"{name} is password-protected: unpack it yourself and add the folder")
+                keep(info.filename, info.file_size, info)
+    elif kind == "7z":
+        try:
+            f = open(path, "rb")
+            arc = sevenzip.Archive(f)
+            arc.check_supported()
+        except sevenzip.Error as e:
+            f.close()
+            raise Error("manual_extract" if e.code == "unsupported" else "archive", f"{name}: {e.message}" + (
+                ": unpack it with 7-Zip yourself" if e.code == "unsupported" else ""))
+        arc.close = f.close
+        for e in arc.entries:
+            if e.is_link:
+                warnings.append(f"{e.name}: a symbolic link, not unpacked")
+            elif not e.is_dir and not e.is_anti:
+                keep(e.name, e.size, e)
+    elif kind == "tar":
+        try:
+            arc = tarfile.open(path)
+        except (OSError, tarfile.TarError) as e:
+            raise Error("archive", f"{name} can't be opened as a tar archive ({e})")
+        for info in arc:
+            if info.isfile():
+                keep(info.name, info.size, info)
+            elif not info.isdir():
+                warnings.append(f"{info.name}: not a plain file, not unpacked")
+    else:
+        raise Error("manual_extract" if kind == "rar" else "unsupported", f"{name}: {_MANUAL[kind]}")
+    if len(out) > ZIP_MAX_ENTRIES:
+        arc.close()
+        raise Error("archive", f"{name} has {len(out)} files, more than {ZIP_MAX_ENTRIES}")
+    return arc, out
+
+
+def _match_prefix(members: list[Member], want: list[str]) -> list[str] | None:
+    """The members' own spelling of the folder `want` (capitals don't count), if they have it."""
+    n = len(want)
+    target = [w.casefold() for w in want]
+    for m in members:
+        if len(m.parts) > n and [p.casefold() for p in m.parts[:n]] == target:
+            return m.parts[:n]
+    return None
+
+
+def _select(members: list[Member], root: str | None, name: str) -> tuple[list[Member], list[str]]:
+    """The members under `root` (a folder in the archive, perhaps inside the one folder that
+    wraps everything), with paths from there on."""
+    if not root:
+        return members, []
+    want = relative_parts(root, f"{name}: root")
+    prefix = _match_prefix(members, want)
+    if prefix is None:
+        tops = {m.parts[0] for m in members if len(m.parts) > 1}
+        if len(tops) == 1:
+            prefix = _match_prefix(members, [next(iter(tops))] + want)
+    if prefix is None:
+        raise Error("layout", f"{name}: no folder {root!r} in it (the download changed? see the mod's page)")
+    n = len(prefix)
+    keep = [Member(m.parts[n:], m.size, m.ref) for m in members
+            if len(m.parts) > n and [p.casefold() for p in m.parts[:n]] == [p.casefold() for p in prefix]]
+    return keep, prefix
+
+
+def extract_archive(path: str, dest: str, kind: str | None = None, root: str | None = None, into: str | None = None,
+                    overwrite: bool = False, progress: Progress | None = None,
+                    max_total: int = ARCHIVE_MAX_TOTAL, duplicates: str = "refuse") -> list[str]:
+    """Unpack an archive (.zip, .7z, .tar) into dest: only what is under `root` if given, into
+    the folder `into` of dest. Paths are checked as for a mod's zip (nothing outside dest), sizes
+    are limited, and the free space is checked first. Two names that are one file on Windows
+    and macOS refuse it, or with duplicates="last" the later one is used (a texture pack's
+    thousands of files shouldn't fail for one). overwrite: files already in dest are replaced
+    (else that refuses). Returns warnings."""
+    kind = kind or archive_kind(path)
+    name = os.path.basename(path)
+    warnings: list[str] = []
+    arc, members = _members(path, kind, warnings)
+    try:
+        members, _ = _select(members, root, name)
+        base = os.path.join(dest, *relative_parts(into, f"{name}: into")) if into else dest
+        seen: dict[str, str] = {}
+        chosen: dict[str, Member] = {}
+        for m in members:
+            key = "/".join(m.parts).casefold()
+            if key in seen and seen[key] != "/".join(m.parts):
+                if duplicates != "last":
+                    raise Error("archive", f"{name}: {seen[key]} and {'/'.join(m.parts)} are the same file on "
+                                           "Windows and macOS")
+                warnings.append(f"{seen[key]} and {'/'.join(m.parts)} are one file on Windows and macOS: "
+                                f"{'/'.join(m.parts)} used")
+            seen[key] = "/".join(m.parts)
+            chosen.pop(key, None)       # (a tar may hold a file twice: the later one counts)
+            chosen[key] = m
+        members = list(chosen.values())
+        total = 0
+        for m in members:
+            if m.size > ARCHIVE_MAX_FILE:
+                raise Error("archive", f"{name}: {'/'.join(m.parts)} is {_mb(m.size)}, more than "
+                                       f"{_mb(ARCHIVE_MAX_FILE)}")
+            total += m.size
+        if total > max_total:
+            raise Error("archive", f"{name} unpacks to {_mb(total)}, more than {_mb(max_total)}")
+        for key in seen:
+            parts = key.split("/")
+            for i in range(1, len(parts)):
+                if "/".join(parts[:i]) in seen:
+                    raise Error("archive", f"{name}: {seen['/'.join(parts[:i])]} is both a file and a folder")
+        check_space(dest, total, f"to unpack {name}")
+        os.makedirs(base, exist_ok=True)
+        state = {"written": 0}
+        what = f"Unpacking {name}"
+        if progress:
+            progress.event("unpack", file=name, total=total, message=what)
+
+        def target_of_member(m: Member) -> str:
+            t = os.path.join(base, *m.parts)
+            if os.path.lexists(t):
+                if not overwrite or os.path.isdir(t) or os.path.islink(t):
+                    raise Error("archive", f"{name}: {'/'.join(m.parts)} is there already")
+                _remove_file(t)
+            os.makedirs(os.path.dirname(t), exist_ok=True)
+            return t
+
+        def copy_stream(src, m: Member) -> None:
+            count = 0
+            with open(target_of_member(m), "xb") as out:
+                while chunk := src.read(1 << 20):
+                    count += len(chunk)
+                    if count > m.size:
+                        raise Error("archive", f"{name}: {'/'.join(m.parts)} unpacks to more than its size in the "
+                                               "archive says: not unpacked")
+                    out.write(chunk)
+                    state["written"] += len(chunk)
+                    if progress:
+                        progress.update("unpack", state["written"], total, what=what)
+
+        if kind == "zip":
+            for m in members:
+                try:
+                    with arc.open(m.ref) as src:
+                        copy_stream(src, m)
+                except (zipfile.BadZipFile, zipfile.LargeZipFile, NotImplementedError, RuntimeError, EOFError,
+                        zlib.error) as e:
+                    raise Error("zip", f"{'/'.join(m.parts)} can't be unpacked ({e}); unpack {name} yourself")
+        elif kind == "tar":
+            for m in members:
+                try:
+                    src = arc.extractfile(m.ref)
+                    if src is None:
+                        continue
+                    with src:
+                        copy_stream(src, m)
+                except (tarfile.TarError, EOFError, zlib.error, OSError) as e:
+                    raise Error("archive", f"{'/'.join(m.parts)} can't be unpacked ({e}); unpack {name} yourself")
+        else:   # 7z: folder by folder, each file's pieces in order
+            by_entry = {id(m.ref): m for m in members}
+            open_files: dict[int, object] = {}
+
+            def sink(entry, chunk: bytes) -> None:
+                m = by_entry[id(entry)]
+                out = open_files.get(id(entry))
+                if out is None:
+                    out = open_files[id(entry)] = open(target_of_member(m), "xb")
+                if chunk:
+                    out.write(chunk)
+                    state["written"] += len(chunk)
+                    if progress:
+                        progress.update("unpack", state["written"], total, what=what)
+                else:
+                    out.close()
+                    del open_files[id(entry)]
+
+            try:
+                arc.extract(sink, [m.ref for m in members if m.ref.folder is not None])
+            except sevenzip.Error as e:
+                raise Error("archive", f"{name}: {e.message}")
+            finally:
+                for out in open_files.values():
+                    out.close()
+            for m in members:               # empty files have no data to unpack
+                if m.ref.folder is None:
+                    open(target_of_member(m), "xb").close()
+        if progress:
+            progress.end_line()
+    finally:
+        arc.close()
+    return warnings
+
+
+def check_space(path: str, need: int, what: str) -> None:
+    """Refuse when the drive of `path` (or the nearest folder above it) hasn't `need` bytes free."""
+    probe = os.path.abspath(path)
+    while not os.path.exists(probe) and os.path.dirname(probe) != probe:
+        probe = os.path.dirname(probe)
+    try:
+        free = shutil.disk_usage(probe).free
+    except OSError:
+        return
+    if need + (64 << 20) > free:
+        raise Error("space", f"not enough free space {what}: it needs about {_mb(need)}, and {_mb(free)} are free "
+                             f"on that drive", need=need, free=free)
+
+
+# ── downloads ────────────────────────────────────────────────────────────────
+
+USER_AGENT = "mh4u-port-mods/1 (https://github.com/CompaLarios18/MH4UltimateDC)"
+DOWNLOADS = ".downloads"            # in the library (a hidden folder: not a mod)
+DOWNLOAD_TIMEOUT = 60
+
+
+def downloads_folder(ctx: Context) -> str:
+    return os.path.join(ctx.library.path, DOWNLOADS)
+
+
+def _is_url(text: str) -> bool:
+    return re.match(r"(?i)(https?|file)://", text) is not None
+
+
+def _url_name(url: str) -> str:
+    path = urllib.parse.urlparse(url).path
+    base = urllib.parse.unquote(path.rstrip("/").rsplit("/", 1)[-1]) or "download"
+    return mod_id(base)
+
+
+def download(url: str, folder: str, name: str, size: int | None = None, sha256: str | None = None,
+             progress: Progress | None = None, label: str = "") -> str:
+    """Download url into folder/name (http, https, file). A download that stopped goes on from
+    where it stopped when the server allows (a .part file next to it); one already there is used
+    again when it is complete (its size or SHA-256 as the catalog says). Returns its path."""
+    os.makedirs(folder, exist_ok=True)
+    final = os.path.join(folder, name)
+    part = final + ".part"
+    if os.path.isfile(final):
+        if sha256 and _sha256(final) == sha256.lower():
+            return final
+        if not sha256 and (size is None or os.path.getsize(final) == size):
+            return final
+        _remove_file(final)
+    start = os.path.getsize(part) if os.path.isfile(part) else 0
+    if size is not None and start > size:
+        _remove_file(part)
+        start = 0
+    what = label or f"Downloading {name}"
+    if size is not None:
+        check_space(folder, size - start, f"to download {name}")
+    headers = {"User-Agent": USER_AGENT}
+    if start:
+        headers["Range"] = f"bytes={start}-"
+    try:
+        response = urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=DOWNLOAD_TIMEOUT)
+    except urllib.error.HTTPError as e:
+        if e.code == 416 and start and size is not None and start == size:   # it was complete
+            response = None
+        else:
+            raise Error("download", f"{url}: the server answered {e.code} {e.reason}", url=url, status=e.code)
+    except (urllib.error.URLError, OSError, ValueError) as e:
+        reason = getattr(e, "reason", e)
+        raise Error("download", f"{url} can't be downloaded ({reason})", url=url)
+    if response is not None:
+        with response:
+            status = getattr(response, "status", None) or response.getcode()
+            if start and status != 206:
+                start = 0                   # the server sends it all again
+            length = response.headers.get("Content-Length")
+            sent = start + int(length) if length and length.isdigit() else None
+            total = sent if sent is not None else size
+            if progress:
+                progress.event("download", file=name, url=url, total=total, resumed=start, message=what)
+            done = start
+            try:
+                with open(part, "ab" if start else "wb") as out:
+                    while True:
+                        chunk = response.read(1 << 20)
+                        if not chunk:
+                            break
+                        out.write(chunk)
+                        done += len(chunk)
+                        if size is not None and done > size * 2 + (1 << 20):
+                            raise Error("download", f"{url}: much bigger than the catalog says ({_mb(size)})")
+                        if progress:
+                            progress.update("download", done, total, what=what)
+            except (OSError, ValueError) as e:
+                if isinstance(e, Error):
+                    raise
+                raise Error("download", f"{url}: the download stopped ({e}); try again to go on from there", url=url)
+            if progress:
+                progress.end_line()
+            if sent is not None and done < sent:
+                raise Error("download", f"{url}: the download stopped at {_mb(done)} of {_mb(sent)}; try again to "
+                                        "go on from there", url=url)
+    got = os.path.getsize(part)
+    if sha256:
+        digest = _sha256(part)
+        if digest != sha256.lower():
+            _remove_file(part)
+            raise Error("checksum", f"{name}: its SHA-256 is {digest}, not {sha256.lower()} as the catalog says (a "
+                                    "damaged download, or the file changed on its site): not used", url=url)
+    elif size is not None and got != size:
+        raise Error("download", f"{name}: {got} bytes, not {size} as the catalog says (a damaged download, or the file "
+                                "changed on its site; delete it from the downloads folder to start over)", url=url,
+                    file=part)
+    os.replace(part, final)
+    return final
+
+
+# ── texture packs: load/textures/<program id>/ ───────────────────────────────
+
+TEXTURES_RECORD = "textures.json"   # in the library: the texture packs installed, and their files
+
+
+def textures_folder(user_dir: str) -> str:
+    """Where Azahar loads custom textures for the game from (its whole tree, pack.json at its top)."""
+    return os.path.join(user_dir, "load", "textures", f"{PROGRAM_ID:016X}")
+
+
+def read_textures(ctx: Context) -> dict:
+    path = os.path.join(ctx.library.path, TEXTURES_RECORD)
+    if not os.path.isfile(path):
+        return {"format": FORMAT, "packs": {}}
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        packs = data["packs"]
+        if not isinstance(packs, dict):
+            raise ValueError("no packs")
+    except (OSError, ValueError, KeyError, TypeError) as e:
+        raise Error("state", f"{path} can't be read ({e}): mend or delete it (deleting it forgets which texture "
+                             "files the mod manager installed)")
+    return {"format": FORMAT, "packs": {k: v for k, v in packs.items() if isinstance(v, dict)
+                                        and isinstance(v.get("files"), list)}}
+
+
+def write_textures(ctx: Context, record: dict) -> None:
+    os.makedirs(ctx.library.path, exist_ok=True)
+    _write_json(os.path.join(ctx.library.path, TEXTURES_RECORD), record)
+
+
+def _texture_root(staging: str) -> str:
+    """The folder of an unpacked texture pack whose contents go into the game's texture folder:
+    through a title id folder (load/textures/<id>/, or just <id>/), or one folder that wraps a
+    pack.json; anything else stays as it is (Azahar reads the texture folder's whole tree)."""
+    level = staging
+    for _ in range(8):
+        dirs, files = _listing(level)
+        low = {d.lower(): d for d in dirs}
+        if any(f.lower() == "pack.json" for f in files):
+            return level
+        titles = [d for d in dirs if _TITLE.fullmatch(d)]
+        if titles and not [f for f in files if not doc_file(f)]:
+            mine = [d for d in titles if int(d, 16) in (PROGRAM_ID, UPDATE_ID)]
+            if not mine:
+                raise Error("other_title", f"a texture pack for another game or region (title {', '.join(titles)}); "
+                                           f"the port plays MH4U USA ({PROGRAM_ID:016X})")
+            level = os.path.join(level, mine[0])
+            continue
+        if len(dirs) == 1 and all(doc_file(f) for f in files):
+            inner_dirs, inner_files = _listing(os.path.join(level, dirs[0]))
+            if dirs[0].lower() in ("load", "textures") or any(f.lower() == "pack.json" for f in inner_files) or \
+                    any(_TITLE.fullmatch(d) for d in inner_dirs):
+                level = os.path.join(level, dirs[0])
+                continue
+        if "load" in low or "textures" in low:
+            sub = os.path.join(level, low.get("load") or low["textures"])
+            if any(_TITLE.fullmatch(d) or d.lower() == "textures" for d in _listing(sub)[0]):
+                level = sub
+                continue
+        return level
+    return level
+
+
+def find_pack(record: dict, name: str) -> str | None:
+    for test in (lambda pid, p: pid == name, lambda pid, p: pid.casefold() == name.casefold(),
+                 lambda pid, p: str(p.get("name", "")).casefold() == name.casefold(),
+                 lambda pid, p: str(p.get("catalog", "")).casefold() == name.casefold()):
+        hits = [pid for pid, p in record["packs"].items() if test(pid, p)]
+        if hits:
+            return hits[0]
+    return None
+
+
+def install_textures(ctx: Context, pack_id: str, root: str, meta: dict, force: bool = False) -> dict:
+    """Move an unpacked texture pack's files (under root) into the game's texture folder and
+    remember them, so remove can take them out again. Files of another pack the mod manager
+    installed, or files put there by hand, are not replaced unless forced."""
+    folder = textures_folder(ctx.user_dir)
+    record = read_textures(ctx)
+    old = record["packs"].get(pack_id, {})
+    old_files = {f.casefold() for f in old.get("files", [])}
+    files = [rel for rel, _ in _files_under(root, "", [])]
+    owners: dict[str, str] = {}
+    for pid, pack in record["packs"].items():
+        if pid != pack_id:
+            for f in pack.get("files", []):
+                owners[f.casefold()] = pid
+    clash = sorted({owners[f.casefold()] for f in files if f.casefold() in owners})
+    if clash and not force:
+        names = ", ".join(str(record["packs"][p].get("name", p)) for p in clash)
+        raise Error("conflict", f"it has texture files that {names} installed too: remove "
+                                f"{'it' if len(clash) == 1 else 'them'} first", packs=clash)
+    foreign = [f for f in files if f.casefold() not in old_files and f.casefold() not in owners
+               and os.path.lexists(_abs(folder, f))]
+    if foreign and not force:
+        shown = ", ".join(foreign[:3]) + (", ..." if len(foreign) > 3 else "")
+        raise Error("foreign_files", f"{len(foreign)} of its files are in the texture folder already, put there by "
+                                     f"hand or by another program ({shown}): install with --force to replace them",
+                    files=foreign[:50], folder=folder)
+    progress = ctx.progress
+    if progress:
+        progress.event("install", total=len(files), message=f"Putting {meta.get('name', pack_id)} in place")
+    moved: list[str] = []
+    kept: list[str] = []
+    try:
+        for rel in files:
+            dest = _abs(folder, rel)
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            if os.path.isdir(dest) and not os.path.islink(dest):
+                raise Error("conflict", f"{rel} is a folder in the texture folder")
+            os.replace(_abs(root, rel), dest)
+            moved.append(rel)
+            if progress:
+                progress.update("install", len(moved), len(files), what="Putting the files in place")
+        new = {f.casefold() for f in files}
+        for f in old.get("files", []):      # the old version's files that the new one hasn't
+            if f.casefold() not in new and os.path.isfile(_abs(folder, f)):
+                _remove_file(_abs(folder, f))
+                _prune(folder, f)
+    except OSError as e:
+        raise Error("io", f"{e}")
+    finally:
+        # (also when it failed half-way: what is in place now, so that remove takes it out)
+        moved_cf = {f.casefold() for f in moved}
+        if len(moved) < len(files):
+            kept = [f for f in old.get("files", []) if f.casefold() not in moved_cf]
+        for pid in clash:                   # forced: those files are this pack's now
+            pack = record["packs"][pid]
+            pack["files"] = [f for f in pack["files"] if f.casefold() not in moved_cf]
+        listed = sorted(set(moved) | set(kept))
+        record["packs"][pack_id] = dict({k: v for k, v in meta.items() if v not in (None, "")},
+                                        files=listed, size=sum(os.path.getsize(_abs(folder, f)) for f in listed
+                                                               if os.path.isfile(_abs(folder, f))),
+                                        installed=_now())
+        write_textures(ctx, record)
+        if progress:
+            progress.end_line()
+    return {"pack": pack_id, "textures_folder": folder, "files": len(files), "replaced": len(foreign)}
+
+
+def remove_textures(ctx: Context, pack_id: str) -> dict:
+    folder = textures_folder(ctx.user_dir)
+    record = read_textures(ctx)
+    pack = record["packs"].pop(pack_id)
+    removed = 0
+    for rel in pack.get("files", []):
+        try:
+            parts = relative_parts(rel)
+        except Error:
+            continue
+        path = _abs(folder, "/".join(parts))
+        if os.path.isfile(path) and not os.path.islink(path):
+            _remove_file(path)
+            _prune(folder, "/".join(parts))
+            removed += 1
+    write_textures(ctx, record)
+    return {"pack": pack_id, "name": pack.get("name", pack_id), "removed": removed}
+
+
+def textures_info(ctx: Context) -> list[dict]:
+    record = read_textures(ctx)
+    return [{"id": pid, "name": p.get("name", pid), "version": p.get("version", ""), "catalog": p.get("catalog", ""),
+             "files": len(p.get("files", [])), "size": p.get("size"), "installed": p.get("installed", "")}
+            for pid, p in sorted(record["packs"].items())]
+
+
+# ── the catalog: mods recommended for the port, installed with one command ────
+
+CATALOG = os.path.join(HERE, "mods_catalog.json")       # comes with the tools
+CATALOG_URL = ("https://raw.githubusercontent.com/CompaLarios18/MH4UltimateDC/native-app/tools/"
+               "mods_catalog.json")                      # a newer one, when there is
+CATALOG_CACHE = "catalog-cache.json"                    # in the library: the last one fetched
+CATALOG_MAX = 1 << 20
+_CATALOG_ID = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
+_SHA256 = re.compile(r"[0-9a-fA-F]{64}")
+ENTRY_KINDS = ("textures", "mod")
+ARCHIVES = ("auto", "zip", "7z", "tar", "file")
+
+
+def _text(e: dict, key: str, limit: int = 2000) -> str:
+    v = e.get(key)
+    return v.strip()[:limit] if isinstance(v, str) else ""
+
+
+def _url_ok(url: str, remote: bool) -> bool:
+    if not isinstance(url, str) or len(url) > 2000:
+        return False
+    scheme = urllib.parse.urlparse(url).scheme.lower()
+    return scheme == "https" if remote else scheme in ("https", "http", "file")
+
+
+def validate_catalog(data, remote: bool) -> tuple[dict, list[str]]:
+    """The catalog's entries as the commands use them; entries that aren't right are left out
+    with a warning (a catalog fetched from the web is data, checked like a zip's paths)."""
+    if not isinstance(data, dict) or not isinstance(data.get("mods"), list):
+        raise Error("catalog", "the catalog has no list of mods")
+    warnings, entries, ids = [], [], set()
+    for i, e in enumerate(data["mods"]):
+        where = f"catalog entry {i + 1}"
+        try:
+            if not isinstance(e, dict):
+                raise Error("catalog", f"{where} isn't an object")
+            cid = e.get("id")
+            if not isinstance(cid, str) or not _CATALOG_ID.fullmatch(cid) or cid in ids:
+                raise Error("catalog", f"{where}: a missing, repeated or malformed id")
+            where = f"catalog entry {cid}"
+            kind = e.get("kind")
+            if kind not in ENTRY_KINDS:
+                raise Error("catalog", f"{where}: kind should be one of {', '.join(ENTRY_KINDS)}")
+            name = _text(e, "name", 120)
+            page = e.get("page_url", "")
+            if not name or not _url_ok(page, True):
+                raise Error("catalog", f"{where}: a name and an https page_url are needed")
+            steps = []
+            for d in e.get("downloads") or []:
+                if not isinstance(d, dict) or not _url_ok(d.get("url"), remote):
+                    raise Error("catalog", f"{where}: a download without a usable url")
+                archive = d.get("archive", "auto")
+                if archive not in ARCHIVES:
+                    raise Error("catalog", f"{where}: archive should be one of {', '.join(ARCHIVES)}")
+                step = {"url": d["url"], "archive": archive,
+                        "file": mod_id(d["file"]) if isinstance(d.get("file"), str) else _url_name(d["url"])}
+                for key in ("size",):
+                    if d.get(key) is not None:
+                        if not isinstance(d[key], int) or isinstance(d[key], bool) or d[key] < 0:
+                            raise Error("catalog", f"{where}: {key} should be a number of bytes")
+                        step[key] = d[key]
+                if d.get("sha256"):
+                    if not isinstance(d["sha256"], str) or not _SHA256.fullmatch(d["sha256"]):
+                        raise Error("catalog", f"{where}: sha256 should be 64 hexadecimal digits")
+                    step["sha256"] = d["sha256"].lower()
+                for key in ("root", "into", "as"):
+                    if d.get(key):
+                        if not isinstance(d[key], str):
+                            raise Error("catalog", f"{where}: {key} should be a path")
+                        relative_parts(d[key], f"{where}: {key}")
+                        step[key] = d[key]
+                if archive == "file" and not step.get("as"):
+                    raise Error("catalog", f"{where}: a single file needs 'as' (where it goes in the mod)")
+                delete_first = d.get("delete_first") or []
+                if not isinstance(delete_first, list) or not all(isinstance(p, str) for p in delete_first):
+                    raise Error("catalog", f"{where}: delete_first should list paths")
+                for p in delete_first:
+                    relative_parts(p, f"{where}: delete_first")
+                step["delete_first"] = delete_first
+                steps.append(step)
+            def strings(key):
+                v = e.get(key) or []
+                return [x for x in v if isinstance(x, str)][:20] if isinstance(v, list) else []
+            entry = {"id": cid, "kind": kind, "name": name, "author": _text(e, "author", 200),
+                     "version": _text(e, "version", 40), "description": _text(e, "description"),
+                     "details": _text(e, "details", 4000), "category": _text(e, "category", 60),
+                     "region": _text(e, "region", 40), "region_note": _text(e, "region_note", 400),
+                     "license": _text(e, "license", 400), "page_url": page, "recommended": e.get("recommended") is True,
+                     "needs": strings("needs"), "conflicts": strings("conflicts"), "downloads": steps,
+                     "note": _text(e, "note", 1000)}
+            for key in ("size", "installed_size"):
+                v = e.get(key)
+                entry[key] = v if isinstance(v, int) and not isinstance(v, bool) and v >= 0 else None
+            if entry["size"] is None and steps and all("size" in s for s in steps):
+                entry["size"] = sum(s["size"] for s in steps)
+            ids.add(cid)
+            entries.append(entry)
+        except Error as err:
+            warnings.append(err.message)
+    updated = data.get("updated") if isinstance(data.get("updated"), str) else ""
+    return {"format": data.get("format"), "updated": updated, "mods": entries}, warnings
+
+
+def _read_catalog_file(path: str, remote: bool) -> tuple[dict, list[str]]:
+    try:
+        with open(path, encoding="utf-8") as f:
+            return validate_catalog(json.load(f), remote)
+    except (OSError, ValueError) as e:
+        raise Error("catalog", f"{path} can't be read ({e})")
+
+
+def fetch_catalog(url: str) -> dict:
+    """The catalog from the web (a small JSON file), not yet checked."""
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+        with urllib.request.urlopen(req, timeout=15) as r:
+            raw = r.read(CATALOG_MAX + 1)
+    except (urllib.error.URLError, OSError, ValueError) as e:
+        raise Error("download", f"{url} can't be fetched ({getattr(e, 'reason', e)})")
+    if len(raw) > CATALOG_MAX:
+        raise Error("catalog", f"{url}: bigger than a catalog can be")
+    try:
+        return json.loads(raw.decode("utf-8-sig"))
+    except ValueError as e:
+        raise Error("catalog", f"{url} isn't a catalog ({e})")
+
+
+def load_catalog(ctx: Context, path: str | None = None, url: str | None = None,
+                 refresh: bool = False) -> tuple[dict, dict]:
+    """(the catalog, where it came from). An explicit file is used as it is. Otherwise the newest
+    (by its "updated" date) of the one that comes with the tools, the one fetched last time
+    and, with refresh, the one at url (fetched now, kept for next time)."""
+    if path:
+        cat, warnings = _read_catalog_file(path, remote=False)
+        return cat, {"source": "file", "path": os.path.abspath(path), "updated": cat["updated"], "warnings": warnings}
+    cat, warnings = _read_catalog_file(CATALOG, remote=False)
+    info = {"source": "bundled", "path": CATALOG, "updated": cat["updated"], "warnings": warnings}
+    cache = os.path.join(ctx.library.path, CATALOG_CACHE)
+    notes: list[str] = []
+    other = None
+    if refresh and url:
+        try:
+            raw = fetch_catalog(url)
+            fetched, more = validate_catalog(raw, remote=True)
+            os.makedirs(ctx.library.path, exist_ok=True)
+            _write_json(cache, raw)
+            other = (fetched, {"source": "remote", "url": url, "updated": fetched["updated"], "warnings": more})
+        except Error as e:
+            notes.append(f"the catalog on the web can't be had ({e.message}); using the copy here")
+    if other is None and os.path.isfile(cache):
+        try:
+            cached, more = _read_catalog_file(cache, remote=True)
+            other = (cached, {"source": "cache", "path": cache, "updated": cached["updated"], "warnings": more})
+        except Error as e:
+            notes.append(f"the catalog fetched last time can't be read ({e.message})")
+    # the newer one (the tools' own after an update of the app; else the one from the web)
+    if other is not None and other[0]["mods"] and other[0]["updated"] >= cat["updated"]:
+        cat, info = other
+    info["warnings"] = notes + info["warnings"]
+    return cat, info
+
+
+def catalog_entry(cat: dict, cid: str) -> dict:
+    for e in cat["mods"]:
+        if e["id"] == cid or e["id"] == cid.casefold():
+            return e
+    raise Error("not_found", f"no mod {cid!r} in the catalog", name=cid)
+
+
+def _installed(ctx: Context, mods: list[Mod], record: dict, entry: dict) -> dict | None:
+    """How a catalog entry is installed: a texture pack, or a mod in the library (by the catalog
+    id its mod.json keeps)."""
+    if entry["kind"] == "textures":
+        pid = next((p for p, v in record["packs"].items() if v.get("catalog") == entry["id"]), None)
+        if pid is None:
+            return None
+        pack = record["packs"][pid]
+        return {"as": "textures", "id": pid, "version": pack.get("version", ""), "files": len(pack.get("files", []))}
+    mod = next((m for m in mods if m.manifest.get("catalog") == entry["id"]), None)
+    if mod is None:
+        return None
+    return {"as": "mod", "id": mod.id, "version": mod.manifest.get("version", ""), "enabled": mod.enabled,
+            "files": len(mod.files)}
+
+
+def cmd_catalog(ctx: Context, args) -> dict:
+    cat, info = load_catalog(ctx, args.catalog, args.catalog_url, args.refresh)
+    mods, _ = ctx.library.mods()
+    record = read_textures(ctx)
+    downloads = downloads_folder(ctx)
+    entries = []
+    for e in cat["mods"]:
+        partial = 0
+        for step in e["downloads"]:
+            for p in (os.path.join(downloads, step["file"]), os.path.join(downloads, step["file"] + ".part")):
+                if os.path.isfile(p):
+                    partial += os.path.getsize(p)
+        installed = _installed(ctx, mods, record, e)
+        out = {k: v for k, v in e.items() if k != "downloads"}
+        out.update(direct=bool(e["downloads"]), archives=sorted({s["archive"] for s in e["downloads"]}),
+                   downloads=[{"url": s["url"], "file": s["file"], "size": s.get("size")} for s in e["downloads"]],
+                   installed=installed, downloaded=partial,
+                   update=bool(installed and e["version"] and installed["version"] and
+                               installed["version"] != e["version"]))
+        entries.append(out)
+    return {"catalog": info, "entries": entries, "textures_folder": textures_folder(ctx.user_dir),
+            "mods_folder": ctx.folder, "downloads_folder": downloads, "textures": textures_info(ctx),
+            "warnings": info["warnings"]}
+
+
+def _clear(staging: str, rel: str) -> None:
+    """delete_first: a folder or file in what was unpacked so far (capitals don't count)."""
+    level = staging
+    for part in relative_parts(rel):
+        dirs, files = _listing(level)
+        match = next((n for n in dirs + files if n.casefold() == part.casefold()), None)
+        if match is None:
+            return
+        level = os.path.join(level, match)
+    if os.path.isdir(level) and not os.path.islink(level):
+        _rmtree(level)
+    elif os.path.lexists(level):
+        _remove_file(level)
+
+
+def _unpack_step(path: str, kind: str, staging: str, step: dict, overwrite: bool, progress: Progress | None,
+                 max_total: int, duplicates: str) -> list[str]:
+    for rel in step.get("delete_first", []):
+        _clear(staging, rel)
+    if kind == "file":
+        dest = os.path.join(staging, *relative_parts(step["as"]))
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        if os.path.lexists(dest):
+            _remove_file(dest)
+        shutil.copyfile(path, dest)
+        return []
+    return extract_archive(path, staging, kind=kind, root=step.get("root"), into=step.get("into"),
+                           overwrite=overwrite, progress=progress, max_total=max_total, duplicates=duplicates)
+
+
+def _staging(ctx: Context, textures: bool) -> str:
+    """A new folder to unpack into, on the drive where the files end up (moving them is then quick)."""
+    base = os.path.dirname(textures_folder(ctx.user_dir)) if textures else ctx.library.path
+    os.makedirs(base, exist_ok=True)
+    path = os.path.join(base, f".mh4u-staging-{uuid.uuid4().hex[:8]}" if textures else
+                        f".adding-{uuid.uuid4().hex[:8]}")
+    os.makedirs(path)
+    return path
+
+
+def _mod_json(path: str, meta: dict) -> None:
+    """The catalog's description of a mod as its mod.json (which the library shows)."""
+    _write_json(os.path.join(path, MANIFEST), {k: v for k, v in meta.items() if v})
+
+
+def cmd_install_catalog(ctx: Context, args) -> dict:
+    cat, info = load_catalog(ctx, args.catalog, args.catalog_url, False)
+    entry = catalog_entry(cat, args.id)
+    progress = ctx.progress
+    if not entry["downloads"]:
+        raise Error("page_only", f"{entry['name']} is installed from its page: {entry['page_url']}",
+                    page_url=entry["page_url"])
+    mods, warnings = ctx.library.mods()
+    record = read_textures(ctx)
+    others = [c for c in cat["mods"] if c["id"] in entry["conflicts"] and _installed(ctx, mods, record, c)]
+    if others and not args.force:
+        names = ", ".join(c["name"] for c in others)
+        raise Error("conflict", f"{entry['name']} doesn't go with {names}, which is installed: remove it first",
+                    entries=[c["id"] for c in others])
+    textures = entry["kind"] == "textures"
+    downloads = downloads_folder(ctx)
+    need = sum(s.get("size") or 0 for s in entry["downloads"]) + (entry.get("installed_size") or 0)
+    if need:
+        check_space(ctx.user_dir, need, f"to download and install {entry['name']}")
+    paths = []
+    steps = len(entry["downloads"])
+    for i, step in enumerate(entry["downloads"], 1):
+        label = f"Downloading {entry['name']}" + (f" ({i} of {steps})" if steps > 1 else "")
+        if progress:
+            progress.event("step", step=i, steps=steps, message=label)
+        paths.append(download(step["url"], downloads, step["file"], step.get("size"), step.get("sha256"), progress,
+                              label))
+    staging = _staging(ctx, textures)
+    notes: list[str] = []
+    try:
+        for i, (step, path) in enumerate(zip(entry["downloads"], paths), 1):
+            kind = "file" if step["archive"] == "file" else archive_kind(path)
+            if step["archive"] not in ("auto", "file") and kind != step["archive"]:
+                raise Error("archive", f"{os.path.basename(path)} isn't a {step['archive']} archive as the catalog "
+                                       "says (the file changed on its site?)")
+            if kind in ("rar", "unknown"):
+                raise Error("manual_extract", f"{os.path.basename(path)}: {_MANUAL[kind]}", download=path,
+                            target=textures_folder(ctx.user_dir) if textures else ctx.library.path,
+                            page_url=entry["page_url"])
+            if progress:
+                progress.event("step", step=i, steps=steps, message=f"Unpacking {entry['name']}" +
+                               (f" ({i} of {steps})" if steps > 1 else ""))
+            try:
+                notes += _unpack_step(path, kind, staging, step, i > 1, progress,
+                                      ARCHIVE_MAX_TOTAL if textures else ZIP_MAX_TOTAL,
+                                      "last" if textures else "refuse")
+            except Error as e:
+                if e.code == "manual_extract":
+                    e.details.update(download=path, page_url=entry["page_url"],
+                                     target=textures_folder(ctx.user_dir) if textures else ctx.library.path)
+                raise
+        meta = {"name": entry["name"], "version": entry["version"], "author": entry["author"],
+                "description": entry["description"], "url": entry["page_url"], "catalog": entry["id"]}
+        if textures:
+            pid = next((p for p, v in record["packs"].items() if v.get("catalog") == entry["id"]), None) or \
+                mod_id(entry["id"])
+            done = install_textures(ctx, pid, _texture_root(staging), meta, force=args.force)
+            result = dict(done, messages=[f"{entry['name']} installed in {done['textures_folder']}"
+                                          + ("; turn on custom textures (the launcher's Settings, or custom_textures = "
+                                             "on in mh4u-app.ini) to see it" if "custom_textures" in entry["needs"]
+                                             else "")])
+        else:
+            _mod_json(staging, meta)
+            existing = next((m for m in mods if m.manifest.get("catalog") == entry["id"]), None)
+            ns = argparse.Namespace(name=existing.id if existing else entry["name"], replace=existing is not None,
+                                    disabled=False)
+            result = _add_unpacked(ctx, mods, warnings, staging, entry["id"], entry["name"], ns, notes)
+    finally:
+        if os.path.isdir(staging):
+            _rmtree(staging)
+    if not args.keep_download:
+        for path in paths:
+            if os.path.isfile(path):
+                _remove_file(path)
+    return dict(result, id=entry["id"], kind=entry["kind"], needs=entry["needs"], catalog=info,
+                warnings=list(result.get("warnings", [])) + notes)
+
+
+def cmd_install(ctx: Context, args) -> dict:
+    """A mod or texture pack from a URL, an archive or a folder."""
+    source = args.source
+    if _is_url(source):
+        name = mod_id(args.file) if args.file else _url_name(source)
+        path = download(source, downloads_folder(ctx), name, None, args.sha256, ctx.progress)
+    else:
+        path = os.path.abspath(source)
+        if not os.path.exists(path):
+            raise Error("not_found", f"{source} doesn't exist")
+        if args.sha256 and os.path.isfile(path) and _sha256(path) != args.sha256.lower():
+            raise Error("checksum", f"{source}: its SHA-256 isn't {args.sha256}")
+    if not args.textures:
+        ns = argparse.Namespace(path=path, name=args.name, replace=args.replace, disabled=args.disabled)
+        result = cmd_add(ctx, ns)
+    else:
+        name = args.name or _stem(os.path.basename(path.rstrip("/\\")))
+        pid = mod_id(name)
+        staging = _staging(ctx, True)
+        try:
+            if os.path.isdir(path):
+                notes = []
+                for rel, src in _files_under(path, "", notes):
+                    dest = _abs(staging, rel)
+                    os.makedirs(os.path.dirname(dest), exist_ok=True)
+                    shutil.copy2(src, dest)
+            else:
+                kind = archive_kind(path)
+                if kind in ("rar", "unknown"):
+                    raise Error("manual_extract", f"{os.path.basename(path)}: {_MANUAL[kind]}", download=path,
+                                target=textures_folder(ctx.user_dir))
+                notes = extract_archive(path, staging, kind=kind, progress=ctx.progress, duplicates="last")
+            record = read_textures(ctx)
+            if pid in record["packs"] and not args.replace:
+                raise Error("exists", f"a texture pack {pid!r} is installed already: install with --replace to update "
+                                      "it, or with --name to keep both", pack=pid)
+            result = install_textures(ctx, pid, _texture_root(staging), {"name": name}, force=args.force)
+            result["warnings"] = notes
+            result["messages"] = [f"{name} installed in {result['textures_folder']}; turn on custom textures to see it"]
+        finally:
+            if os.path.isdir(staging):
+                _rmtree(staging)
+    if _is_url(source) and not args.keep_download and os.path.isfile(path):
+        _remove_file(path)
+    return result
+
+
 # ── text output ─────────────────────────────────────────────────────────────
 
 def _plural(n: int, word: str) -> str:
@@ -1383,7 +2466,8 @@ def _describe(m: dict) -> str:
         if kind in m["contains"]:
             what.append(label)
     if m["code"]:
-        what.append({True: "code patch (changes the code)", False: "code patch (changes data only)",
+        what.append("code patch (adds code: runs on Azahar's CPU emulation)" if m["code"].get("adds_code") else
+                    {True: "code patch (changes the code)", False: "code patch (changes data only)",
                      None: "code"}[m["code"]["changes_code"]])
     text = (", ".join(what) or "nothing") + f", {_plural(m['files'], 'file')}"
     if m["wins"] or m["loses"]:
@@ -1398,7 +2482,22 @@ def _describe(m: dict) -> str:
 def print_text(command: str, r: dict) -> None:
     for line in r.get("messages", []):
         print(line)
-    if "mods" in r:
+    if command == "catalog":
+        c = r["catalog"]
+        print(f"catalog: {c.get('url') or c.get('path')} ({c['source']}, {c['updated'] or 'undated'})")
+        for e in r["entries"]:
+            state = "installed" if e["installed"] else "not installed"
+            if e["update"]:
+                state = f"installed ({e['installed']['version']}; {e['version']} in the catalog)"
+            badge = " [recommended]" if e["recommended"] else ""
+            print(f"  {e['id']}: {e['name']}{' ' + e['version'] if e['version'] else ''}{badge}, by "
+                  f"{e['author'] or '?'}; {e['category'] or e['kind']}, {_mb(e['size']) if e['size'] else 'size ?'}"
+                  f"; {state}")
+            if e["region_note"]:
+                print(f"      {e['region_note']}")
+            print(f"      {e['page_url']}" + ("" if e["direct"] else " (installed from its page)"))
+        print(f"install one with  mods.py install-from-catalog ID; texture packs go in {r['textures_folder']}")
+    if "mods" in r and command not in ("install", "install-from-catalog") or command in ("list", "add", "remove"):
         print(f"mod library: {r['library']}")
         print(f"Azahar's mods folder: {r['mods_folder']} ({r['deploy_state'].replace('_', ' ')}"
               + ("; run deploy)" if r["deploy_state"] == "out_of_date" else ")"))
@@ -1464,7 +2563,9 @@ def print_text(command: str, r: dict) -> None:
 
 COMMANDS = {"list": cmd_list, "add": cmd_add, "remove": cmd_remove, "enable": cmd_enable, "disable": cmd_disable,
             "order": cmd_order, "conflicts": cmd_conflicts, "deploy": cmd_deploy, "undeploy": cmd_deploy,
-            "status": cmd_status}
+            "status": cmd_status, "catalog": cmd_catalog, "install-from-catalog": cmd_install_catalog,
+            "install": cmd_install}
+LONG = ("install", "install-from-catalog", "add")   # with progress lines
 
 
 def build_parser(json_errors: bool) -> argparse.ArgumentParser:
@@ -1516,6 +2617,38 @@ def build_parser(json_errors: bool) -> argparse.ArgumentParser:
     common(p, s)
     p = sub.add_parser("status", help="whether Azahar's mods folder and the code library are up to date")
     common(p, s)
+
+    def catalog_args(p: argparse.ArgumentParser) -> None:
+        p.add_argument("--catalog", metavar="FILE", default=None, help="this catalog file instead of the tools' own "
+                                                                       "and the one from the web")
+        p.add_argument("--catalog-url", metavar="URL", default=CATALOG_URL,
+                       help=f"where a newer catalog is fetched from with --refresh ('' for nowhere; default: "
+                            f"{CATALOG_URL})")
+
+    p = sub.add_parser("catalog", help="the mods and texture packs recommended for the port, and which are installed")
+    p.add_argument("--refresh", action="store_true", help="fetch the newest catalog from the web first")
+    catalog_args(p)
+    common(p, s)
+    p = sub.add_parser("install-from-catalog", help="download and install a mod or texture pack of the catalog")
+    p.add_argument("id", help="its id in the catalog (mods.py catalog lists them)")
+    p.add_argument("--force", action="store_true", help="also when it conflicts with something installed, or files "
+                                                        "of its are there already: replace them")
+    p.add_argument("--keep-download", action="store_true", help="keep the downloaded archive (in the library's "
+                                                                ".downloads folder)")
+    catalog_args(p)
+    common(p, s)
+    p = sub.add_parser("install", help="a mod or texture pack from a URL, an archive (.zip, .7z, .tar) or a folder")
+    p.add_argument("source", help="an http(s) URL, an archive or a folder")
+    p.add_argument("--textures", action="store_true", help="a texture pack: into Azahar's custom texture folder for "
+                                                           "the game (load/textures/0004000000126300/)")
+    p.add_argument("--name", help="its name (default: mod.json's name, or the archive's or folder's)")
+    p.add_argument("--file", help="the downloaded file's name (default: from the URL)")
+    p.add_argument("--sha256", help="refuse it unless its SHA-256 is this")
+    p.add_argument("--replace", action="store_true", help="update the mod or texture pack of that name")
+    p.add_argument("--disabled", action="store_true", help="add a mod turned off")
+    p.add_argument("--force", action="store_true", help="a texture pack: replace files there that it didn't put there")
+    p.add_argument("--keep-download", action="store_true", help="keep the downloaded file")
+    common(p, s)
     return ap
 
 
@@ -1536,13 +2669,17 @@ def main(argv=None) -> int:
         user_dir = os.path.abspath(ns.user_dir or default_user_dir())
         library = Library(os.path.abspath(ns.library or os.path.join(user_dir, LIBRARY)))
         ctx = Context(user_dir, library, mods_folder(user_dir),
-                      os.path.abspath(ns.code_library) if ns.code_library else None)
+                      os.path.abspath(ns.code_library) if ns.code_library else None,
+                      Progress(as_json) if command in LONG else None)
         if _within(ctx.folder, library.path) or _within(library.path, ctx.folder):
             raise Error("bad_path", "the mod library and Azahar's mods folder must be separate folders")
         try:
             result = COMMANDS[command](ctx, ns)
         except OSError as e:
             raise Error("io", str(e)) from e
+        finally:
+            if ctx.progress:
+                ctx.progress.end_line()
     except Error as e:
         if as_json:
             print(json.dumps({"ok": False, "command": command, "error": dict(e.details, code=e.code,
