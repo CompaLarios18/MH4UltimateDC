@@ -6,7 +6,9 @@
 #include <cctype>
 #include <fmt/format.h>
 #include <imgui.h>
+#include <SDL.h>
 
+#include "invite.h"
 #include "launcher/state.h"
 #include "launcher/ui.h"
 
@@ -31,7 +33,7 @@ void LoadForm(State& s) {
     f.loaded = true;
     f.address = c.join;
     f.address_password = c.join.empty() ? "" : c.password;
-    f.port = c.host > 0 ? c.host : DEFAULT_PORT;
+    f.port = c.host > 0 ? c.host : c.room_port > 0 ? c.room_port : DEFAULT_PORT;
     f.name = c.room_name;
     f.password = c.host > 0 ? c.password : "";
     f.members = c.room_members;
@@ -183,19 +185,44 @@ void DrawJoin(State& s) {
     Ui::PopFont();
     const float field = std::min(ImGui::GetContentRegionAvail().x * 0.4f, 380.0f * scale);
     ImGui::SetNextItemWidth(field);
-    Ui::InputText("##address", &f.address, 0, "host:port (port 24872 if left out)");
+    Ui::InputText("##address", &f.address, 0, "an invite (mh4u://...) or host:port");
+    const auto room = App::Invite::Parse(f.address);
+    if (!room.code) {
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(field * 0.6f);
+        Ui::InputText("##address_password", &f.address_password, ImGuiInputTextFlags_Password, "password, if any");
+    }
     ImGui::SameLine();
-    ImGui::SetNextItemWidth(field * 0.6f);
-    Ui::InputText("##address_password", &f.address_password, ImGuiInputTextFlags_Password, "password, if any");
+    if (ImGui::Button("Paste invite")) {
+        f.paste_note.clear();
+        if (char* text = SDL_GetClipboardText()) {
+            const auto pasted = App::Invite::Parse(text);
+            if (pasted.ok) {
+                f.address = pasted.code ? App::Invite::Format(pasted.host, pasted.port, pasted.password)
+                                        : App::Invite::Address(pasted.host, pasted.port);
+            } else {
+                f.paste_note = "The clipboard has no invite: " + pasted.error;
+            }
+            SDL_free(text);
+        }
+    }
     ImGui::SameLine();
-    ImGui::BeginDisabled(f.address.find_first_not_of(" ") == std::string::npos);
+    ImGui::BeginDisabled(!room.ok);
     if (ImGui::Button("Join this room")) {
-        std::string address = f.address;
-        address.erase(0, address.find_first_not_of(" \t"));
-        address.erase(address.find_last_not_of(" \t") + 1);
-        JoinRoom(s, address, f.address_password, "");
+        // an invite brings its password; mh4u-app.ini keeps the address and the password
+        JoinRoom(s, App::Invite::Address(room.host, room.port), room.code ? room.password : f.address_password, "");
+        f.address = room.code ? App::Invite::Format(room.host, room.port, room.password)
+                              : App::Invite::Address(room.host, room.port);
     }
     ImGui::EndDisabled();
+    if (!f.paste_note.empty()) {
+        Ui::StatusLine(Ui::Status::Error, "No invite", f.paste_note);
+    } else if (f.address.find_first_not_of(" ") != std::string::npos && !room.ok) {
+        Ui::TextColored(Ui::Color::Warn, room.error);
+    } else {
+        Ui::TextDim("A host's invite (their menu's Multiplayer tab has one to copy) carries the address and "
+                    "the password.");
+    }
 }
 
 void DrawHost(State& s) {
@@ -261,6 +288,7 @@ void DrawHost(State& s) {
         const auto form = f;
         s.Change([&](App::Config& c) {
             c.host = form.port;
+            c.room_port = form.port;
             c.room_name = form.name.empty() ? "MH4U" : form.name;
             c.password = form.password;
             c.room_members = form.members;
@@ -322,8 +350,9 @@ void DrawOnline(State& s) {
     }
     ImGui::BeginChild("##online", ImVec2(0, 0), ImGuiChildFlags_NavFlattened);
     Ui::Heading("Online");
-    Ui::TextDim("MH4U's local play, the Gathering Hall, over the internet through a room. The room is "
-                "entered before the game starts; then go to the Gathering Hall's Local Play.");
+    Ui::TextDim("MH4U's local play, the Gathering Hall, over the internet through a room. The room chosen "
+                "here is entered as the game starts; then go to the Gathering Hall's Local Play. In the game, "
+                "Esc > Multiplayer joins, hosts and leaves rooms too, and has the invite to send friends.");
     ImGui::Spacing();
     Ui::BeginCard("##now", ImVec2(0, 0), s.config.host > 0 || !s.config.join.empty());
     ImGui::AlignTextToFramePadding();

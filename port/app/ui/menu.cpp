@@ -22,10 +22,8 @@
 #include "frontend.h"
 #include "hooks.h"
 #include "input.h"
-#include "network/network.h"
-#include "network/room.h"
-#include "network/room_member.h"
 #include "ui/layer.h"
+#include "ui/multiplayer_tab.h"
 #include "ui/options.h"
 #include "video_core/gpu.h"
 #include "video_core/renderer_base.h"
@@ -349,52 +347,9 @@ std::string ControllerInputName(const std::string& params) {
     return ControllerName(params);
 }
 
-// ── The network room, as its callbacks (on the network's thread) last told it ──
+Menu::Menu(Layer& layer_) : layer{layer_} {}
 
-struct Menu::Room {
-    std::mutex mutex;
-    Network::RoomInformation info{};
-    Network::RoomMember::MemberList members;
-    Network::RoomMember::State state = Network::RoomMember::State::Idle;
-    Network::RoomMember::CallbackHandle<Network::RoomInformation> on_information;
-    Network::RoomMember::CallbackHandle<Network::RoomMember::State> on_state;
-};
-
-Menu::Menu(Layer& layer_) : layer{layer_}, room{std::make_shared<Room>()} {
-    if (const auto member = Network::GetRoomMember().lock()) {
-        {
-            std::scoped_lock lock{room->mutex};
-            room->info = member->GetRoomInformation();
-            room->members = member->GetMemberInformation();
-            room->state = member->GetState();
-        }
-        // the list is copied on the network's thread, right after it changed it
-        room->on_information = member->BindOnRoomInformationChanged(
-            [room = room](const Network::RoomInformation& info) {
-                const auto member = Network::GetRoomMember().lock();
-                std::scoped_lock lock{room->mutex};
-                room->info = info;
-                if (member) {
-                    room->members = member->GetMemberInformation();
-                }
-            });
-        room->on_state = member->BindOnStateChanged([room = room](const Network::RoomMember::State& state) {
-            std::scoped_lock lock{room->mutex};
-            room->state = state;
-        });
-    }
-}
-
-Menu::~Menu() {
-    if (const auto member = Network::GetRoomMember().lock()) {
-        if (room->on_information) {
-            member->Unbind(room->on_information);
-        }
-        if (room->on_state) {
-            member->Unbind(room->on_state);
-        }
-    }
-}
+Menu::~Menu() = default;
 
 void Menu::Opened() {
     just_opened = true;
@@ -1324,109 +1279,7 @@ void Menu::DrawControls() {
 // ── Multiplayer ──
 
 void Menu::DrawMultiplayer() {
-    Network::RoomInformation info;
-    Network::RoomMember::MemberList members;
-    Network::RoomMember::State state;
-    {
-        std::scoped_lock lock{room->mutex};
-        info = room->info;
-        members = room->members;
-        state = room->state;
-    }
-    const auto member = Network::GetRoomMember().lock();
-    const auto hosted = Network::GetRoom().lock();
-    const bool hosting = hosted && hosted->GetState() == Network::Room::State::Open;
-    const bool connected = state == Network::RoomMember::State::Joined ||
-                           state == Network::RoomMember::State::Moderator;
-    const Config& config = layer.config;
-
-    if (!connected) {
-        ImGui::TextWrapped("Not in a room%s.", state == Network::RoomMember::State::Idle ? ""
-                                                : fmt::format(" ({})", Network::GetStateStr(state)).c_str());
-        ImGui::Spacing();
-        ImGui::TextWrapped("A room is joined when the game starts: join = HOST:PORT (or host = PORT to host "
-                           "one) in mh4u-app.ini, or --join / --host on the command line. In the game: "
-                           "Local Play at the Gathering Hall.");
-        if (!config.join.empty() || config.host > 0) {
-            ImGui::Spacing();
-            ImGui::TextDisabled("Set now: %s", config.host > 0 ? fmt::format("host on port {}", config.host).c_str()
-                                                               : ("join " + config.join).c_str());
-        }
-        return;
-    }
-
-    if (BeginSettings("##room")) {
-        Row("Room");
-        ImGui::TextUnformatted(info.name.c_str());
-        Row("Address");
-        const std::string address =
-            hosting ? fmt::format("this PC, port {} (the others join its address)", info.port) : config.join;
-        ImGui::TextWrapped("%s", address.c_str());
-        Row("Your name");
-        ImGui::TextUnformatted(member ? member->GetNickname().c_str() : "");
-        Row("Players");
-        ImGui::Text("%zu of %u", members.size(), info.member_slots);
-        ImGui::EndTable();
-    }
-    if (ImGui::BeginTable("##members", 2, ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_RowBg)) {
-        ImGui::TableSetupColumn("Player", ImGuiTableColumnFlags_WidthStretch, 0.46f);
-        ImGui::TableSetupColumn("Playing", ImGuiTableColumnFlags_WidthStretch, 0.54f);
-        HeaderRow();
-        for (const auto& m : members) {
-            ImGui::TableNextRow();
-            ImGui::TableSetColumnIndex(0);
-            ImGui::TextUnformatted(m.nickname.c_str());
-            ImGui::TableSetColumnIndex(1);
-            ImGui::TextDisabled("%s", m.game_info.name.empty() ? "-" : m.game_info.name.c_str());
-        }
-        ImGui::EndTable();
-    }
-    ImGui::Spacing();
-    if (ImGui::Button("Leave the room")) {
-        ImGui::OpenPopup("Leave the room?");
-    }
-    layer.Help("The game's local play loses the others; to play together again, start the game again "
-               "with the room.");
-    if (hosting) {
-        ImGui::SameLine();
-        if (ImGui::Button("Close the room")) {
-            ImGui::OpenPopup("Close the room?");
-        }
-        layer.Help("Everyone in it leaves.");
-    }
-    const auto confirm = [this](const char* title, const char* text, const char* yes, std::function<void()> action) {
-        ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-        if (ImGui::BeginPopupModal(title, nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings)) {
-            ImGui::TextUnformatted(text);
-            ImGui::Spacing();
-            if (ImGui::Button(yes)) {
-                layer.Post(std::move(action));
-                ImGui::CloseCurrentPopup();
-            }
-            ImGui::SameLine();
-            if (ImGui::Button("Cancel") || CancelPressed()) {
-                ImGui::CloseCurrentPopup();
-            }
-            ImGui::SetItemDefaultFocus();
-            ImGui::EndPopup();
-        }
-    };
-    confirm("Leave the room?", "The others in the Gathering Hall lose you until the game starts again.", "Leave",
-            [] {
-                if (const auto m = Network::GetRoomMember().lock(); m && m->IsConnected()) {
-                    m->Leave();
-                    LOG_INFO(Network, "left the room (menu)");
-                }
-            });
-    confirm("Close the room?", "Everyone in it leaves, you too.", "Close", [] {
-        if (const auto m = Network::GetRoomMember().lock(); m && m->IsConnected()) {
-            m->Leave();
-        }
-        if (const auto r = Network::GetRoom().lock(); r && r->GetState() == Network::Room::State::Open) {
-            r->Destroy();
-            LOG_INFO(Network, "closed the room (menu)");
-        }
-    });
+    DrawMultiplayerTab(layer); // ui/multiplayer_tab.cpp
 }
 
 // ── Quit ──

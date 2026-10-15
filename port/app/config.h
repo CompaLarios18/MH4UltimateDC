@@ -53,11 +53,15 @@ struct Config {
     std::string join;                 ///< HOST[:PORT]: join that room before the game starts
     std::string password;
     int host = 0;                     ///< a port: host a room there (and join it)
+    int room_port = 24872;            ///< the port the menu and the launcher host on
     std::string room_name = "MH4U";
     int room_members = 16;
     std::string lobby;                ///< a lobby server (server/lobby): the hosted room is listed
     std::string token;                ///< the token for that lobby
     bool room_public = true;          ///< list the hosted room in the lobby (with lobby and token)
+    /// the last room joined (its invite code, mh4u://HOST:PORT?password=...) or "host" (hosted
+    /// on room_port with the settings above), for the menu's Rejoin
+    std::string last_room;
 };
 
 /// The settings file's path.

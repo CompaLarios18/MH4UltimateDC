@@ -22,7 +22,12 @@ add_executable(mh4u
     dialog.h
     input.cpp
     input.h
+    invite.cpp
+    invite.h
     main.cpp
+    # the network room: join, host, leave, before the game and while it runs
+    multiplayer.cpp
+    multiplayer.h
     window.cpp
     window.h
     # the in-game menu (Dear ImGui over the game) and the 3DS software keyboard
@@ -33,6 +38,8 @@ add_executable(mh4u
     ui/layer.h
     ui/menu.cpp
     ui/menu.h
+    ui/multiplayer_tab.cpp
+    ui/multiplayer_tab.h
     ui/options.cpp
     ui/options.h
     ui/ui.cpp
@@ -89,8 +96,8 @@ set_source_files_properties(launcher/launcher.cpp PROPERTIES
 set_source_files_properties(launcher/tools.cpp PROPERTIES
                             COMPILE_DEFINITIONS "MH4U_SOURCE_TOOLS_DIR=\"${MH4U_TOOLS_DIR}\"")
 if (WIN32)
-    # httplib's TLS (the system's certificates), the folder picker (COM)
-    target_link_libraries(mh4u PRIVATE crypt32 ole32 uuid)
+    # httplib's TLS (the system's certificates), the folder picker (COM), the PC's addresses
+    target_link_libraries(mh4u PRIVATE crypt32 ole32 uuid ws2_32)
 endif()
 
 target_compile_definitions(mh4u PRIVATE SDL_MAIN_HANDLED)

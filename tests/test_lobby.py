@@ -720,6 +720,32 @@ def test_addresses_behind_a_proxy_and_on_the_lobbys_network(tmp_path):
         s.stop()
 
 
+def test_your_address(tmp_path):
+    """GET /ip: the address a host's friends would use (the port's app shows it when hosting)."""
+    def ip(server, headers=None):
+        status, kind, body = server.request("GET", "/ip", headers=headers)
+        assert (status, "application/json" in kind) == (200, True)
+        return json.loads(body)
+
+    s = Server(tmp_path / "data", trust_proxy=True)
+    try:
+        # on the lobby's own machine: the lobby can't tell the public address
+        assert ip(s) == {"ip": "127.0.0.1", "public": ""}
+        # through a reverse proxy: the client's own (global) address
+        assert ip(s, {"X-Forwarded-For": "5.6.7.8, 1.2.3.4"}) == {"ip": "1.2.3.4", "public": "1.2.3.4"}
+        # no sign-in needed; logged like any request
+        assert any("/ip" in line for line in s.log)
+    finally:
+        s.stop()
+    # a lobby with rooms next to it: those are listed at its public address, so is the answer
+    s = Server(tmp_path / "data", public_address="lobby.example.org")
+    try:
+        assert ip(s) == {"ip": "127.0.0.1", "public": "lobby.example.org"}
+        assert s.request("POST", "/ip")[0] == 405
+    finally:
+        s.stop()
+
+
 def test_proxy_headers_and_odd_addresses(tmp_path):
     s = Server(tmp_path / "data", trust_proxy=True)
     try:

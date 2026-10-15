@@ -202,7 +202,8 @@ struct State {
     struct OnlineForm {
         bool loaded = false;
         int tab = 0;  ///< join, host, your name and lobby
-        std::string address, address_password;
+        std::string address, address_password;  ///< address: an invite (mh4u://...) or HOST:PORT
+        std::string paste_note;                  ///< why the clipboard had no invite
         int port = 24872;
         std::string name, password;
         int members = 8;

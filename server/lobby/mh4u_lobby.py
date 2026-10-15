@@ -18,6 +18,9 @@ multiplayer code calls (Azahar's src/web_service and src/network/announce_multip
     GET    /jwt/external/key.pem     the public key the rooms check those statements with
     GET    /profile                  the name you are signed in as
     GET    /health                   "ok", for a container's health check (not logged)
+    GET    /ip                       the caller's address as the lobby sees it, and where a room
+                                     announced from there would be listed (the port's app shows
+                                     a host the address to give friends)
 
 A player's name here is their Azahar username (Emulation > Configure > System), so names follow
 Azahar's rule for nicknames: 4 to 20 letters, digits, spaces, '.', '_' or '-'. In open mode the
@@ -721,6 +724,7 @@ class Lobby:
         ("POST", r"/jwt/external/([A-Za-z0-9_-]{1,64})", "room_token"),
         ("GET", r"/profile", "profile"),
         ("GET", r"/health", "health"),
+        ("GET", r"/ip", "your_address"),
         ("GET", r"/", "front_page"),
     ]
 
@@ -818,6 +822,17 @@ class Lobby:
     def health(self, req: Request, now: float):
         req.quiet = ipaddress.ip_address(req.peer).is_loopback  # the container's own check
         return 200, PLAIN, b"ok\n"
+
+    def your_address(self, req: Request, now: float):
+        """{"ip": the caller's address, "public": where players would reach a room announced
+        from it (the address itself when it's a global one, --public-address for one on the
+        lobby's machine or network, else "": the lobby can't tell)}."""
+        listed = self.listed_address(req.address)
+        try:
+            public = listed if listed != req.address or ipaddress.ip_address(listed).is_global else ""
+        except ValueError:
+            public = ""
+        return json_reply({"ip": req.address, "public": public})
 
     def list_rooms(self, req: Request, now: float):
         with self.mutex:
