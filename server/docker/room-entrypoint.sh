@@ -49,8 +49,13 @@ trap 'echo q >&3' TERM INT
 echo "Room started (pid $room): docker stop closes it"
 wait "$room"
 status=$?
-while [ "$status" -gt 128 ] && kill -0 "$room" 2>/dev/null; do
-    wait "$room"  # a signal ended the wait early: now wait for the room itself
-    status=$?
+# A trapped signal ends the wait early (128 + the signal) while the room is still closing, or
+# just after it exited and the shell collected it (so kill -0 can't tell): wait again for the
+# room's own status. 127 means the shell has no such child any more: keep what it said.
+while [ "$status" -gt 128 ]; do
+    wait "$room"
+    again=$?
+    [ "$again" -eq 127 ] && break
+    status=$again
 done
 exit "$status"
