@@ -1,3 +1,17 @@
+diff --git a/externals/sdl2/CMakeLists.txt b/externals/sdl2/CMakeLists.txt
+index f6e3326..2dca6cd 100644
+--- a/externals/sdl2/CMakeLists.txt
++++ b/externals/sdl2/CMakeLists.txt
+@@ -6,7 +6,8 @@ set(SDL_STATIC ON CACHE BOOL "")
+ set(SDL_ATOMIC ON CACHE BOOL "")
+ set(SDL_AUDIO ON CACHE BOOL "")
+ set(SDL_VIDEO ON CACHE BOOL "")
+-set(SDL_RENDER OFF CACHE BOOL "")
++# MH4U PC port: its app (port/app, mh4u) draws its launcher with SDL_Renderer
++set(SDL_RENDER ON CACHE BOOL "")
+ set(SDL_EVENTS ON CACHE BOOL "")
+ set(SDL_JOYSTICK ON CACHE BOOL "")
+ set(SDL_HAPTIC OFF CACHE BOOL "")
 diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
 index 70f8173..2b04b4c 100644
 --- a/src/CMakeLists.txt
