@@ -235,6 +235,7 @@ def test_texture_pack_in_steps(user, tmp_path):
         {"url": url(base), "size": base.stat().st_size, "archive": "7z"},
         {"url": url(rollup), "archive": "7z", "delete_first": ["ui"]}],
         needs=["custom_textures"], recommended=True)])
+    write(user / "load" / "textures" / ".mh4u-staging-0ld" / "big.png")     # an install stopped half-way
     out, events = call(user, "install-from-catalog", "hd", "--catalog", cat)
     assert out["files"] == 4 and out["pack"] == "hd"
     assert "custom textures" in out["messages"][0]

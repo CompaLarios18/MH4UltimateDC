@@ -2317,6 +2317,11 @@ def _staging(ctx: Context, textures: bool) -> str:
     """A new folder to unpack into, on the drive where the files end up (moving them is then quick)."""
     base = os.path.dirname(textures_folder(ctx.user_dir)) if textures else ctx.library.path
     os.makedirs(base, exist_ok=True)
+    if textures:            # what an install that was stopped half-way left (gigabytes, perhaps)
+        for name in os.listdir(base):
+            old = os.path.join(base, name)
+            if name.startswith(".mh4u-staging-") and os.path.isdir(old) and not os.path.islink(old):
+                _rmtree(old)
     path = os.path.join(base, f".mh4u-staging-{uuid.uuid4().hex[:8]}" if textures else
                         f".adding-{uuid.uuid4().hex[:8]}")
     os.makedirs(path)
