@@ -425,3 +425,60 @@ def test_data_pointer_to_a_function_another_one_falls_into():
     assert b in fall_into["arm"] and c + 8 in fall_into["arm"]
     found = recompile.data_pointer_entries(img, an, [(base + 0x100, 12)], dict(entries), cover, fall_into)
     assert found == {b: "arm"}
+
+
+def test_code_cave_runs_like_the_patched_code(tmp_path):
+    """A community code mod's "code cave": two instructions of the code patched to branch
+    into new code in the padding after it (the rest of the code's last page), one with a BL
+    (a call that returns) and one with a B (a hook that branches back into the code). With
+    the range taken to the end of the page (recompile.code_size) the cave is recompiled
+    with the rest, without traps, and each function gives what Unicorn gives."""
+    import random
+    import struct
+    import recompile
+    from recomp import build as rbuild
+    from recomp.analysis import Image
+    from recomp.gametest import BUF_BASE, BUF_SIZE, STACK_SIZE, STACK_TOP, TLS, Tester
+    from recomp.harness.machines import Region
+
+    base = 0x00100000
+
+    def branch(op, at, target):
+        return op << 24 | ((target - at - 8) >> 2) & 0xFFFFFF
+    words = [0xE52DE004, 0xE3A00001, branch(0xEB, base + 0x08, base + 0x800), 0xE49DF004,  # f: bl cave_a
+             0xE3A01005, branch(0xEA, base + 0x14, base + 0x808), 0xE0800001, 0xE12FFF1E]   # g: b cave_b
+    page = bytearray(struct.pack(f"<{len(words)}I", *words).ljust(0x1000, b"\0"))
+    struct.pack_into("<4I", page, 0x800, 0xE2800029, 0xE12FFF1E,                 # cave_a: add r0, #41; bx lr
+                     0xE0811001, branch(0xEA, base + 0x80C, base + 0x18))       # cave_b: add r1, r1; b back
+
+    class Seg:
+        def __init__(self, address, size):
+            self.address, self.size, self.padded_size = address, size, (size + 0xFFF) & ~0xFFF
+
+    class Header:
+        text, ro = Seg(base, 4 * len(words)), Seg(base + 0x1000, 0x1000)
+    assert recompile.code_size(Header, bytes(page)) == 0x1000
+    assert recompile.code_size(Header, bytes(page[:0x20]).ljust(0x2000, b"\0")) == 0x20   # zeros: as before
+
+    out = tmp_path / "recomp"
+    res = recompile.recompile(Image(bytes(page), base, 0x1000), {base: "arm", base + 0x10: "arm"}, str(out),
+                              log=lambda *a: None)
+    assert res["report"]["trap_instructions"] == 0 and not res["problems"], res["problems"]
+    assert base + 0x800 in res["funcs"]                     # the BL's target
+    assert base + 0x808 in res["funcs"][base + 0x10].labels  # the B's: part of the function it hooks
+    lib = rbuild.build(str(out), 2, "O1", ["RC_CHECK_RETURNS"], "cave.so", [rbuild.HARNESS])
+    size = 0x10000
+    rw = [Region(base, size, True, bytes(page).ljust(size, b"\0")),
+          Region(STACK_TOP - STACK_SIZE, STACK_SIZE, True, bytes(STACK_SIZE)),
+          Region(BUF_BASE, BUF_SIZE, True, bytes(BUF_SIZE)),
+          Region(TLS, 0x1000, True, bytes(0x1000))]
+    tester = Tester(lib, [], rw, seed=5)
+    rng = random.Random(7)
+    assert sorted(a for a, _ in tester.funcs) == [base, base + 0x10, base + 0x800]
+    for addr, mode in tester.funcs:
+        outcomes = [tester.run_case(addr, bool(mode), rng)[0] for _ in range(8)]
+        assert all(o.startswith("pass") for o in outcomes), (hex(addr), outcomes)
+    # without the cave in the range the hook is a branch to nowhere, as before
+    res = recompile.recompile(Image(bytes(page), base, 0x20), {base: "arm", base + 0x10: "arm"},
+                              str(tmp_path / "plain"), log=lambda *a: None)
+    assert base + 0x800 not in res["funcs"] and res["report"]["trap_instructions"] == 1

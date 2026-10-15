@@ -110,7 +110,7 @@ struct ModInfo {
     int loses = 0;
     bool code = false;
     int changes_code = -1;  ///< a code mod: 1 changes the game's code, 0 only data, -1 unknown
-    bool adds_code = false; ///< a code mod that adds code after the game's own (CPU emulation only)
+    bool adds_code = false; ///< a code mod that adds code after the game's own (a "code cave")
     std::vector<std::string> warnings, errors;
 };
 

@@ -577,10 +577,12 @@ def _code_kind(path: str) -> str:
 
 def changes_code(paths: list[str], text_size: int | None) -> bool | None:
     """Whether these code files (a code.bin, a patch) change the game's code segment, the part
-    the port recompiles and checks (it compares the CRC32 of the first text_size bytes); a
+    the port recompiles and checks (it compares the CRC32 of the first text_size bytes, and of
+    the rest of the segment's last page when something was put there, see adds_code); a
     patch within the data changes nothing there. None when that can't be told: a whole
     code.bin, an unreadable patch, an unknown code size."""
     result = False
+    end = code_segment_end(text_size) or text_size
     for path in paths:
         if _code_kind(path) == "code.bin" or text_size is None:
             return None
@@ -588,15 +590,15 @@ def changes_code(paths: list[str], text_size: int | None) -> bool | None:
             ranges = patch_writes(f.read())
         if ranges is None:
             return None
-        result = result or any(length and offset < text_size for offset, length in ranges)
+        result = result or any(length and offset < end for offset, length in ranges)
     return result
 
 
 def adds_code(paths: list[str], text_size: int | None) -> bool:
     """Whether a code patch writes past the end of the code segment but within its last page:
     new code put in the padding before the read-only data (a "code cave"), which hooks in the
-    code branch to. The port's code library is recompiled from the code segment alone, so it
-    can't run such code; the game then has to run on Azahar's own CPU emulation."""
+    code branch to. tools/build_game.py then recompiles that page to its end too (the build
+    record's code_size); a code library built before it did can't run such code."""
     end = code_segment_end(text_size)
     if end is None:
         return False
@@ -658,12 +660,15 @@ def code_fingerprint(paths: list[str]) -> str:
 
 
 def write_build_record(library: str, used: list[str], text: int, changed: bool,
-                       program_id: int = PROGRAM_ID) -> str:
+                       program_id: int = PROGRAM_ID, code_size: int | None = None) -> str:
     """Next to an installed code library, what it was built from (for status): called by
-    tools/build_game.py with the code mods it applied and whether they change the code."""
+    tools/build_game.py with the code mods it applied, whether they change the code, and how
+    much of the code segment it recompiled (code_size: text, or up to the end of its last
+    page when a code mod put new code there)."""
     st = os.stat(library)
     record = {"format": FORMAT, "program_id": f"{program_id:016X}", "library": os.path.basename(library),
               "library_size": st.st_size, "library_mtime_ns": st.st_mtime_ns, "text_size": text,
+              "code_size": text if code_size is None else code_size,
               "code_mods": [{"kind": _code_kind(p), "sha256": _sha256(p)} for p in used],
               "fingerprint": code_fingerprint(used), "changes_code": bool(changed), "built": _now()}
     path = build_record_path(library, program_id)
@@ -702,11 +707,9 @@ def code_library_state(user_dir: str, library: str | None = None) -> dict:
 
     if not os.path.isfile(library):
         return result("missing", "no code library: build it (docs/PLAYING.md, step 1)")
-    if adds_code(inputs, size):
+    cave = adds_code(inputs, size)
+    if cave:
         state["adds_code"] = True
-        return result("unsupported", "the code mod in Azahar's mods folder adds new code after the game's own, which "
-                                     "the port's code library can't run yet: with it, the game runs on Azahar's own "
-                                     "CPU emulation (without the port's options)")
     if record is None:
         return result("unknown", "the code library has no record of the code mods it was built with (built by an "
                                  "older tools/build_game.py)" + (": the code mods in Azahar's folder change the "
@@ -715,6 +718,11 @@ def code_library_state(user_dir: str, library: str | None = None) -> dict:
     if (st.st_size, st.st_mtime_ns) != (record.get("library_size"), record.get("library_mtime_ns")):
         return result("unknown", "the record next to the code library is from another build of it")
     if code_fingerprint(inputs) == record.get("fingerprint"):
+        built = record.get("code_size")
+        if cave and not (isinstance(built, int) and isinstance(size, int) and built > size):
+            return result("rebuild", "the code mod adds new code after the game's own, and the code library was "
+                                     "built with it by an older tools/build_game.py, which left that code out: "
+                                     "build it again (tools/build_game.py --install, docs/PLAYING.md step 1)")
         return result("ok", "built with the code mods now in Azahar's folder")
     if now is False and record.get("changes_code") is False:
         return result("ok", "the code mods aren't the ones it was built with, but neither change the game's code, "
@@ -2471,7 +2479,7 @@ def _describe(m: dict) -> str:
         if kind in m["contains"]:
             what.append(label)
     if m["code"]:
-        what.append("code patch (adds code: runs on Azahar's CPU emulation)" if m["code"].get("adds_code") else
+        what.append("code patch (adds code after the game's own)" if m["code"].get("adds_code") else
                     {True: "code patch (changes the code)", False: "code patch (changes data only)",
                      None: "code"}[m["code"]["changes_code"]])
     text = (", ".join(what) or "nothing") + f", {_plural(m['files'], 'file')}"

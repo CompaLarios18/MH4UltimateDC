@@ -203,3 +203,88 @@ def test_build_game_records_code_mods(tmp_path):
     assert build_game.main(args + ["--no-mods"]) == 0
     record = json.loads((install / "recomp" / "0004000000126300.build.json").read_text())
     assert record["code_mods"] == [] and record["changes_code"] is False
+
+
+def arm_branch(op: int, at: int, target: int) -> int:
+    """B (op 0xEA) or BL (op 0xEB) from `at` to `target`."""
+    return op << 24 | ((target - at - 8) >> 2) & 0xFFFFFF
+
+
+def cave_program(base: int = 0x00100000) -> tuple[bytes, bytes, int]:
+    """A tiny program whose code (.text) is 0x20 bytes of its 0x1000-byte page, and an IPS
+    code mod in the style of the community's "code cave" mods: it patches two instructions
+    to branch into new code it puts in the padding after the code (0x800 into the page),
+    one with a BL (a call that returns) and one with a B (a hook that branches back).
+    Returns (the page, the IPS patch, the size of .text)."""
+    nop = 0xE1A00000
+    text = [0xE52DE004, 0xE3A00001, nop, 0xE49DF004,       # f: push {lr}; mov r0, #1; <bl cave_a>; pop {pc}
+            0xE3A01005, nop, 0xE0800001, 0xE12FFF1E]       # g: mov r1, #5; <b cave_b>; back: add r0, r0, r1; bx lr
+    page = struct.pack(f"<{len(text)}I", *text).ljust(0x1000, b"\0")
+    cave = struct.pack("<4I", 0xE2800029, 0xE12FFF1E,       # cave_a: add r0, r0, #41; bx lr
+                       0xE0811001, arm_branch(0xEA, base + 0x80C, base + 0x18))  # cave_b: add r1, r1, r1; b back
+
+    def record(offset: int, data: bytes) -> bytes:
+        return offset.to_bytes(3, "big") + len(data).to_bytes(2, "big") + data
+    ips = (b"PATCH" + record(0x08, struct.pack("<I", arm_branch(0xEB, base + 0x08, base + 0x800)))
+           + record(0x14, struct.pack("<I", arm_branch(0xEA, base + 0x14, base + 0x808)))
+           + record(0x800, cave) + b"EOF")
+    return page, ips, 4 * len(text)
+
+
+def test_build_game_recompiles_a_code_cave(tmp_path, capsys):
+    """A code mod that puts new code after the game's code, in the rest of the code's last
+    page, gets that code recompiled with the rest: the library covers the page to its end
+    (rc_text_size, its CRC32, the build record's code_size). Without the mod, the range is
+    the code alone and the generated code is byte for byte what it was."""
+    import json
+    import zlib
+    import build_game
+    import code_mods
+    import make_cxi
+    import mods
+    page, ips, text_size = cave_program()
+    exheader = bytearray(0x800)
+    exheader[0:8] = b"SYNTH\0\0\0"
+    struct.pack_into("<III", exheader, 0x10, 0x00100000, 1, text_size)
+    struct.pack_into("<III", exheader, 0x20, 0x00101000, 1, 0x1000)
+    struct.pack_into("<III", exheader, 0x30, 0x00102000, 1, 0x1000)
+    struct.pack_into("<Q", exheader, 0x200, mods.PROGRAM_ID)
+    cxi = tmp_path / "synthetic.cxi"
+    cxi.write_bytes(make_cxi.make_cxi(bytes(exheader), fake_exefs(page + bytes(0x2000))))
+    functions = tmp_path / "functions.tsv"
+    functions.write_text("address\tsize\tmode\tkind\tname\tstatus\towner\tnotes\n"
+                         "0x00100000\t0x10\tarm\tunknown\t\ttodo\t\t\n0x00100010\t0x10\tarm\tunknown\t\ttodo\t\t\n")
+    install = tmp_path / "azahar-user"
+    args = ["--dump", str(cxi), "--opt", "O0", "--any-version", "--functions", str(functions), "--extra", "",
+            "--hooks", "", "--tunables", "", "--install", str(install), "-j", "2", "--out", str(tmp_path / "out")]
+    src = tmp_path / "out" / "recomp" / "src"
+
+    assert build_game.main(args) == 0                     # no mods yet
+    capsys.readouterr()
+    plain = {p.name: p.read_text() for p in src.iterdir()}
+    assert f"rc_text_size = 0x{text_size:08x}u" in plain["table.c"]
+    assert f"rc_text_crc32 = 0x{zlib.crc32(page[:text_size]):08x}u" in plain["table.c"]
+    assert "f_00100800" not in plain["table.c"]
+
+    exefs = install / "load" / "mods" / f"{mods.PROGRAM_ID:016X}" / "exefs"
+    exefs.mkdir(parents=True)
+    (exefs / "code.ips").write_bytes(ips)
+    assert build_game.main(args) == 0
+    out = capsys.readouterr().out
+    assert "after the code, in its last page: 15 bytes changed" in out and "recompiling 0x1000 bytes" in out
+    modded = code_mods.apply_ips(page, ips)
+    table = (src / "table.c").read_text()
+    assert "rc_text_size = 0x00001000u" in table and f"rc_text_crc32 = 0x{zlib.crc32(modded):08x}u" in table
+    assert "{0x00100800u, 0, f_00100800}" in table        # the BL's target: a function of its own
+    code = (src / "f00100000.c").read_text()
+    assert "L_00100808" in code                           # the B's target: part of the function it hooks
+    report = (tmp_path / "out" / "recomp" / "report.txt").read_text()
+    assert "trap_instructions: 0" in report and "problems: 0" in report
+    record = json.loads((install / "recomp" / f"{mods.PROGRAM_ID:016X}.build.json").read_text())
+    assert record["code_size"] == 0x1000 and record["text_size"] == text_size and record["changes_code"] is True
+
+    shutil.rmtree(install / "load")                       # and without the mod again: as before
+    assert build_game.main(args) == 0
+    assert {p.name: p.read_text() for p in src.iterdir()} == plain
+    record = json.loads((install / "recomp" / f"{mods.PROGRAM_ID:016X}.build.json").read_text())
+    assert record["code_size"] == text_size

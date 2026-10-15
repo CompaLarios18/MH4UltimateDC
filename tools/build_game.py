@@ -265,7 +265,10 @@ def main(argv=None) -> int:
             print("code mods: " + ", ".join(used))
             for line in code_mods.describe(code, modded, segments):
                 print(f"  {line}")
-            changes_code = code_mods.changed_bytes(code, modded, 0, header.text.size) > 0
+            cave = code_mods.changed_bytes(code, modded, header.text.size, header.text.padded_size - header.text.size)
+            if cave:
+                print(f"  after the code, in its last page: {cave} bytes changed (new code)")
+            changes_code = code_mods.changed_bytes(code, modded, 0, header.text.padded_size) > 0
             if changes_code:
                 print("  the mod changes the game's code: this library runs only with the same mod in "
                       "Azahar's mods folder (build again after adding, changing or removing it)")
@@ -273,7 +276,11 @@ def main(argv=None) -> int:
 
     out = os.path.join(args.out, "recomp")
     print("recompiling (a couple of minutes)")
-    img = Image(code, header.text.address, header.text.size)
+    size = recompile.code_size(header, code)
+    if size != header.text.size:
+        print(f"  the code mod puts new code after the game's own: recompiling 0x{size:X} bytes "
+              f"(to the end of the code's last page) instead of 0x{header.text.size:X}")
+    img = Image(code, header.text.address, size)
     entries = recompile.load_entries(args.functions, [args.extra] if args.extra else [])
     segs = [(header.ro.address, header.ro.size), (header.data.address, header.data.size)]
     res = recompile.recompile(img, entries, out, data_segments=segs, title_id=program_id,
@@ -298,7 +305,8 @@ def main(argv=None) -> int:
         os.makedirs(dest_dir, exist_ok=True)
         shutil.copy2(lib, os.path.join(dest_dir, name))
         # what it was built from, for tools/mods.py status (docs/MODS.md)
-        mods.write_build_record(os.path.join(dest_dir, name), used, header.text.size, changes_code, program_id)
+        mods.write_build_record(os.path.join(dest_dir, name), used, header.text.size, changes_code, program_id,
+                                code_size=size)
         print(f"installed to {os.path.join(dest_dir, name)}")
     return 0
 

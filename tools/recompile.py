@@ -219,6 +219,20 @@ def init_array_entries(img: Image) -> dict[int, str]:
     return found
 
 
+def code_size(header: exh.ExHeader, code: bytes) -> int:
+    """How much of the code segment to recompile, from its start: the code (.text), or, when
+    something was put in the padding after it, up to the end of its last page (where the
+    read-only data starts). Code mods put new code there (a "code cave") and branch to it
+    from the code they patch, so it has to be recompiled with the rest. The game's own
+    padding is zeros: for the game without such a mod the range, and so the generated code,
+    stays exactly the same."""
+    size = header.text.size
+    end = min(header.text.padded_size, len(code))
+    if header.ro.address > header.text.address:
+        end = min(end, header.ro.address - header.text.address)
+    return end if end > size and any(code[size:end]) else size
+
+
 def recompile(img: Image, entries: dict[int, str], out: str, log=print,
               data_segments: list[tuple[int, int]] | None = None, title_id: int = 0,
               hooks: dict[int, str] | None = None,
@@ -342,7 +356,7 @@ def main(argv=None) -> int:
         header = exh.parse(f.read())
     with open(args.code, "rb") as f:
         code = codebin2elf.load_code(header, f.read())
-    img = Image(code, header.text.address, header.text.size)
+    img = Image(code, header.text.address, code_size(header, code))
     segs = None if args.no_data_pointers else [(header.ro.address, header.ro.size), (header.data.address, header.data.size)]
     title_id = struct.unpack_from("<Q", open(args.exheader, "rb").read(), 0x200)[0]   # ARM11 local caps: program id
     res = recompile(img, load_entries(args.functions, args.extra), args.out, data_segments=segs, title_id=title_id,

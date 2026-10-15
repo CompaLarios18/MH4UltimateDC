@@ -425,16 +425,31 @@ def test_install_from_url_and_archives(user, tmp_path, server):
     assert (user / "mh4u-mods" / "Tarred" / "romfs" / "data" / "b.arc").read_bytes() == b"b"
 
 
-def test_code_mod_with_new_code_runs_on_emulation(user, tmp_path, monkeypatch):
-    text = mods.text_size()
-    if text is None:
+def test_code_mod_with_new_code_needs_a_library_built_with_it(user, tmp_path, monkeypatch):
+    """A code mod that adds code after the game's own (a "code cave") runs on the port once the
+    code library is built with it, which then recompiles the code's last page to its end
+    (the build record's code_size); a library built without it, or by an older build_game.py
+    that left the cave out, has to be built again."""
+    text, end = mods.text_size(), mods.code_segment_end(mods.text_size())
+    if text is None or end is None:
         pytest.skip("no config/versions.json")
-    cave = make_zip(tmp_path / "cave.zip", {"exefs/code.ips": ips_patch(text + 0x10, b"\x01\x02\x03\x04")})
+    patch = ips_patch(text + 0x10, b"\x01\x02\x03\x04")
+    cave = make_zip(tmp_path / "cave.zip", {"exefs/code.ips": patch})
     out = run(user, "add", str(cave), "--name", "Cave")
     assert out["mods"][0]["code"]["adds_code"] is True
+    assert out["mods"][0]["code"]["changes_code"] is True          # the cave is part of the checked code
     run(user, "deploy")
     lib = write(user / "recomp" / (TID + (".dll" if sys.platform.startswith("win") else
                                          ".dylib" if sys.platform == "darwin" else ".so")), b"lib")
     status = run(user, "status")["code_library"]
-    assert status["state"] == "unsupported" and status["adds_code"] is True
+    assert status["state"] == "unknown" and status["adds_code"] is True     # no record
+    mods.write_build_record(str(lib), [], text, False)                      # built without the mod
+    assert run(user, "status")["code_library"]["state"] == "rebuild"
+    deployed = user / "load" / "mods" / TID / "exefs" / "code.ips"
+    mods.write_build_record(str(lib), [str(deployed)], text, True)          # an older build_game.py
+    status = run(user, "status")["code_library"]
+    assert status["state"] == "rebuild" and "older" in status["reason"]
+    mods.write_build_record(str(lib), [str(deployed)], text, True, code_size=end)
+    status = run(user, "status")["code_library"]
+    assert status["state"] == "ok" and status["adds_code"] is True
     assert lib.exists()

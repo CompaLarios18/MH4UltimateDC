@@ -98,14 +98,13 @@
    "author": "JackUnderTheHood",
    "category": "Gameplay",
    "description": "A Guard Point on the Charge Blade's Fast Morph Slash, also the directional one, keeping its animation, movement and follow-ups; red-shield phial bursts work.",
-   "details": "Tested by its author on Azahar (USA v1.1 runtime validation). A code patch that changes the game's code.",
+   "details": "Tested by its author on Azahar (USA v1.1 runtime validation). A code patch that changes the game's code and adds new code after it (a \"code cave\").",
    "region": "USA",
    "region_note": "Its USA v1.1 build (0004000000126300), the update the port runs.",
    "license": "CC BY-NC-SA 4.0. Downloading and installing it is allowed; ask the author before sharing it elsewhere.",
    "page_url": "https://gamebanana.com/mods/703777",
-   "needs": ["cpu_emulation"],
    "conflicts": [],
-   "note": "It adds new code after the game's own code, which the port's code library can't run yet: with it on, the game runs on Azahar's own CPU emulation (the launcher says so). Only one code mod can be on at a time.",
+   "note": "It changes the game's code and adds new code after it: build the code library again with it on (the launcher offers to); until then the game runs on Azahar's own CPU emulation. Only one code mod can be on at a time.",
    "downloads": [
     {
      "url": "https://gamebanana.com/dl/1787129",
@@ -129,9 +128,8 @@
    "region_note": "Its USA v1.1 build (0004000000126300), the update the port runs.",
    "license": "CC BY-NC-SA 4.0. Downloading and installing it is allowed; ask the author before sharing it elsewhere.",
    "page_url": "https://gamebanana.com/mods/711049",
-   "needs": ["cpu_emulation"],
    "conflicts": [],
-   "note": "It already has both Guard Point mods: don't turn the Fast Morph one on with it (only one code mod can be on anyway). It adds new code after the game's own code, which the port's code library can't run yet: with it on, the game runs on Azahar's own CPU emulation (the launcher says so).",
+   "note": "It already has both Guard Point mods: don't turn the Fast Morph one on with it (only one code mod can be on anyway). It changes the game's code and adds new code after it: build the code library again with it on (the launcher offers to); until then the game runs on Azahar's own CPU emulation.",
    "downloads": [
     {
      "url": "https://gamebanana.com/dl/1800718",
