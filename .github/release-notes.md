@@ -26,18 +26,20 @@ The launcher also has *Mods* (several at once, in an order, conflicts shown), *O
 
 ## What's in it
 
-- **The port's own app**: a launcher (setup, mods, online rooms, settings), then the game in a window of its own, full screen, with the keyboard, a controller mapped on its own (like MH3U on a Wii U) and the mouse as the stylus; Vulkan, OpenGL or software rendering; a menu over the game (Esc) for options and controls; the 3DS keyboard (names, chat) drawn by the app.
+- **The port's own app**: a launcher (setup, mods, online rooms, settings), then the game in a window of its own, full screen, with the keyboard, a controller mapped on its own (like MH3U on a Wii U) and the mouse as the stylus; Vulkan, OpenGL or software rendering; a menu over the game (Esc) for options and controls; the 3DS keyboard (names, chat) drawn by the app; a frame-rate counter (F3, off by default).
+- **Rooms while you play**: join, host or leave a room from the menu's *Multiplayer* tab without restarting the game; the host copies an invite (`mh4u://…`), friends paste it and join; a lobby's rooms are listed there too.
+- **Mod catalog**: the launcher's *Mods → Catalog* installs the HD texture pack and four other community mods with one click (from their authors' own downloads).
 - **Servers of our own**: a lobby server that brings back public room lists (in the app's *Online* screen and Azahar's *Browse Public Game Lobby*), and scripts or Docker for dedicated rooms (`mh4u-server`, `SERVER.md`).
 - **Frame rate**: 60, 120 or your monitor's rate (`fps = 120`); the game keeps its normal speed.
 - **Widescreen drawn at full width**: 16:9, 21:9 and 32:9, with the hunting HUD at the screen's edges; 16:10 and 4:3 without distortion.
-- **The touch screen** as an overlay in a corner of a full-window game (*View → Screen Layout → Custom Layout*); in quests just the map; the kick and the target camera on buttons.
+- **The touch screen** as an overlay in a corner of a full-window game (*View → Screen Layout → Custom Layout*); in quests just the map, which you can move and resize (the app's *Edit HUD layout*), with the target camera panel in a view of its own so you can see whom you target; the kick, the target camera and the *Skip* after a quest on buttons, with a hint when you can skip.
 - **No dither grid** at high internal resolutions (`dither = off`).
 - **Multiplayer** (Gathering Hall) over Azahar's network rooms: two to four players, also with friends on official Azahar (2125 or later), at different frame rates if they like; the port keeps its players together when a PC stalls, and fixes a drop when two consoles join at the same moment.
 - Everything Azahar has: internal resolution, texture packs, controllers, mods (code mods are built into the library).
 
 ## Multiplayer in short
 
-With a lobby server (yours or a friend's, `SERVER.md`), the app's *Online* screen lists its rooms. Without one, one player hosts: *Multiplayer → Create Room*, type *Unlisted*, with UDP port 24872 forwarded on the router (or everyone in one virtual network: Tailscale, ZeroTier, Radmin VPN). The others use *Multiplayer → Direct Connect to Room*. Everyone needs their own name in *Emulation → Configure → System → Username*. In the app, the same is `host = 24872` or `join = <the host's address>`, and `nickname`, in `mh4u-app.ini`.
+In the app: Esc → *Multiplayer* → *Host a room*, *Copy* the invite and send it; your friends *Paste invite* → *Join*, also with the game already running, then go to the Gathering Hall's local play. With a lobby server (yours or a friend's, `SERVER.md`), the app's *Online* screen and the menu list its rooms. Without one, one player hosts: *Multiplayer → Create Room*, type *Unlisted*, with UDP port 24872 forwarded on the router (or everyone in one virtual network: Tailscale, ZeroTier, Radmin VPN). The others use *Multiplayer → Direct Connect to Room*. Everyone needs their own name in *Emulation → Configure → System → Username*. In the app, the same is `host = 24872` or `join = <the host's address>`, and `nickname`, in `mh4u-app.ini`.
 
 ## Known limits
 
