@@ -119,6 +119,9 @@ dither = off
 # the game's stereoscopic 3D (on by default, as on a 3DS): the top screen is drawn twice, once
 # per eye, even with the 3D slider at 0; off draws it once (the port's default)
 stereo_3d = off
+# the game's own anti-aliasing (on by default, as on a 3DS): off saves its pass, which at a
+# high Internal Resolution costs frames for little; the edges get a little jagged
+antialiasing = on
 # the game's screen filters, each on by default as on a 3DS (off skips it, see 5. Graphics):
 # the glow over bright parts, the focus blur of cutscenes (emulation gets it wrong: it can blur
 # the whole picture), the blur that some effects blend in, the zoom blur of roars, heat shimmer
@@ -184,6 +187,8 @@ Azahar's renderer settings apply unchanged (*Emulation → Configure → Graphic
 With a higher internal resolution, set `dither = off`. The game draws a dither pattern over both screens, which hides banding on the 3DS's screens. Azahar scales that pattern up with the rest of the picture, so it shows as a fine grid over everything. Without it, the picture is clean (compared in the cloud; the community's "Trinity Disabler" cheat turns the same bits off).
 
 **Stereoscopic 3D** is off in the port (`stereo_3d = off`, the menu's *Game → Picture*). The game decides on its own whether to draw the top screen once or twice (one pass per eye, `mULCDEnableEdit` in its render settings): with the bit on it does both passes even when Azahar's 3D slider is at 0, which is a full extra scene pass per frame and, with a layout or renderer that shows both, a doubled or soft picture. Azahar's *Stereoscopic 3D Mode* only chooses what to show of what the game drew. Off clears the bit every frame, the way the community's "3D off" cheat does (the maintainer's picture went from doubled and soft to sharp, with the edges as before); `stereo_3d = on` keeps the game's behaviour, for Azahar's 3D modes.
+
+**Anti-aliasing** is the game's own (`antialiasing`, on by default, in the menu's *Game → Picture* too): `off` clears the render bits `0x400` (mFSAA_2D) and `0x4000`, as the community's Trinity Disabler does, and saves that pass; at a high internal resolution the edges stay fine enough, and a PC that can't hold a high frame rate gains some. **CPU clock speed** (`cpu_clock` in `mh4u-app.ini`, the menu's *Game* tab, 50–400 %) is Azahar's *CPU Clock Speed*: above 100 % a busy scene keeps a high frame rate (`fps`) at the cost of more work for the PC; it applies at once.
 
 **Screen filters.** The game draws full-screen passes over its 3D view, and each can be turned off on its own (they change only the picture, never the game, so players in a session can choose differently; [research/screen-filters.md](research/screen-filters.md)):
 

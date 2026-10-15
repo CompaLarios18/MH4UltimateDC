@@ -19,6 +19,7 @@
 #include "common/string_util.h"
 #include "config.h"
 #include "core/core.h"
+#include "core/core_timing.h"
 #include "frontend.h"
 #include "hooks.h"
 #include "input.h"
@@ -45,7 +46,7 @@ constexpr int TAB_COUNT = static_cast<int>(std::size(TABS));
 const std::map<std::string, std::string> GAME_DEFAULTS = {
     {"fps", "0"},           {"refresh_rate", "0"}, {"widescreen", "off"}, {"wide_render", "0"},
     {"hud_edges", "1"},     {"touch_overlay", "off"}, {"quest_overlay", "map"}, {"kick", "off"},
-    {"target", "off"},      {"dither", "on"},      {"stereo_3d", "off"},  {"bloom", "on"},
+    {"target", "off"},      {"dither", "on"},      {"stereo_3d", "off"},  {"antialiasing", "on"}, {"bloom", "on"},
     {"depth_of_field", "on"},
     {"motion_blur", "on"},  {"radial_blur", "on"}, {"haze", "on"},        {"net_sync", "on"},
     {"target_overlay", "on"}, {"skip", "ZR"}, {"skip_hint", "on"}, {"skip_end", "ZL+ZR"},
@@ -54,7 +55,7 @@ const std::set<std::string> GAME_LIVE = {"fps",           "refresh_rate", "hud_e
                                          "quest_overlay", "target_overlay", "kick",    "target",
                                          "skip",          "skip_hint",    "skip_end", "skip_end_hold",
                                          "dither",
-                                         "stereo_3d",     "bloom",         "depth_of_field", "motion_blur",
+                                         "stereo_3d",     "antialiasing", "bloom",         "depth_of_field", "motion_blur",
                                          "radial_blur",   "haze"};
 constexpr const char* PANEL_VIEW_KEYS[] = {"quest_overlay", "target_overlay"};
 
@@ -406,6 +407,9 @@ void Menu::Closed() {
             case AppSetting::Vsync:
                 file.vsync = now.vsync;
                 break;
+            case AppSetting::CpuClock:
+                file.cpu_clock = now.cpu_clock;
+                break;
             case AppSetting::Renderer:
                 file.renderer = now.renderer;
                 break;
@@ -618,12 +622,24 @@ void Menu::DrawGame() {
         if (std::atoi(fps.c_str()) <= 0) {
             fps = "30";
         }
-        if (ChooseValue("##fps", fps, {"30", "60", "90", "120", "144", "165", "240"},
-                        {"30 (as on a 3DS)", "60", "90", "120", "144", "165", "240"})) {
+        if (ChooseValue("##fps", fps, {"30", "60", "90", "120", "144", "165", "180", "240"},
+                        {"30 (as on a 3DS)", "60", "90", "120", "144", "165", "180", "240"})) {
             SetGame("fps", fps);
         }
         layer.Help("The most frames per second the game draws. Its speed stays right at any rate; above 60 a "
-                   "busy scene may need a higher CPU clock in Azahar's settings.");
+                   "busy scene may need a higher CPU clock speed.");
+        Row("CPU clock speed");
+        int clock = std::clamp(config.cpu_clock, 5, 400);
+        if (ImGui::SliderInt("##cpu_clock", &clock, 50, 400, "%d%%")) {
+            config.cpu_clock = clock;
+            Changed(AppSetting::CpuClock);
+            layer.Post([&system = layer.system, clock] {
+                Settings::values.cpu_clock_percentage = static_cast<u32>(clock);
+                system.CoreTiming().UpdateClockSpeed(static_cast<u32>(clock));
+            });
+        }
+        layer.Help("The emulated CPU's speed, in % of a 3DS's (Azahar's CPU Clock Speed). More keeps a high "
+                   "frame rate in busy scenes, if your PC can take it; too much makes some games misbehave.");
         Row("Screen refresh rate");
         std::string hz = Game("refresh_rate");
         if (std::atof(hz.c_str()) <= 0.0) {
@@ -816,6 +832,13 @@ void Menu::DrawGame() {
         }
         layer.Help("The game draws the top screen twice, once per eye, even with the 3D slider at 0: "
                    "a full scene pass more, and a doubled, soft picture. Off draws it once.");
+        Row("Anti-aliasing");
+        bool aa = !IsOff(Lower(Game("antialiasing")));
+        if (ImGui::Checkbox("##antialiasing", &aa)) {
+            SetGame("antialiasing", aa ? "on" : "off");
+        }
+        layer.Help("The game's own anti-aliasing, as on a 3DS. Off saves its pass: at a high internal "
+                   "resolution the edges stay fine enough, and the frame rate gains.");
         for (const auto& [key, name, help] : {
                  std::tuple{"bloom", "Glow over bright parts", "Bloom: softens the picture with a haze."},
                  std::tuple{"depth_of_field", "Focus blur of cutscenes",

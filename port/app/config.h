@@ -17,6 +17,9 @@ struct Config {
     /// Azahar's New 3DS mode: on, off, or auto (off while custom textures are on: the HD texture
     /// pack's monsters show only then, its author says; on otherwise, as Azahar has it)
     std::string new_3ds = "auto";
+    /// Azahar's CPU clock speed, in % of the 3DS's (100): more lets a busy scene keep a high
+    /// frame rate, as Emulation > Configure > Debug > CPU Clock Speed does
+    int cpu_clock = 100;
 
     // [Display]
     std::string renderer = "vulkan";  ///< vulkan, opengl or software

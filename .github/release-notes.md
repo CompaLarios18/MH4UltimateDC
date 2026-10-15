@@ -7,6 +7,7 @@
 - **End the quest together.** Hold **ZL+ZR** (Q+C) for a second once a quest is complete to end the wait before the return, as if the carving time had run out. Online, the quest ends once every player with the port has held it, and the screen names who hasn't. `skip_end` / `skip_end_hold` in `mh4u.ini` and the menu.
 - **The scene skip is just that again, weapon drawn or not.** ZR / C taps the touch screen's own *Skip* (the scene of the monster's end) and leaves the carving time alone. 0.1.1 ended the quest instead when the tap didn't take.
 - **An icon of its own** for `mh4u.exe`, the Mac app, the AppImage and the windows.
+- **CPU clock speed** in the menu's Game tab (`cpu_clock` in `mh4u-app.ini`), Azahar's, for high frame rates in busy scenes; and the game's **anti-aliasing** switchable (`antialiasing`), to save its pass at a high internal resolution.
 
 ## What's new in 0.1.1
 

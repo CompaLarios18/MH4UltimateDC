@@ -53,6 +53,9 @@ constexpr u32 SLTRENDER_DISPLAY_SKIP = 0x8aa8;  // u32[2] mDisplaySkip: top, bot
 constexpr u32 SLTRENDER_RENDER_FLAGS = 0x6ba8;
 constexpr u32 RENDER_DITHER = 0x300000;         // mDitherDisplay0 | mDitherDisplay1
 constexpr u32 RENDER_STEREO = 0x40;             // mULCDEnableEdit: the top screen drawn once per eye
+constexpr u32 RENDER_ANTIALIASING = 0x4400;     // mFSAA_2D (0x400) and 0x4000: the game's anti-aliasing
+                                                // (the community's Trinity Disabler clears both; without
+                                                // them the edges are jagged)
 constexpr u32 SCAMERA_INSTANCE = 0x0105729c;    // sMhCamera*
 constexpr u32 SCAMERA_VIEWPORTS = 0x18;         // 8 viewports of 0x1a8 bytes
 constexpr u32 VIEWPORT_SIZE = 0x1a8;
@@ -97,6 +100,8 @@ struct Options {
     bool dither = true;     // dither / MH4U_DITHER: the game's dither pattern on both screens
     bool stereo_3d = false; // stereo_3d / MH4U_STEREO_3D: the game's stereoscopic 3D (a second pass
                             // of the top screen for the right eye, even with the 3D slider at 0)
+    bool antialiasing = true;  // antialiasing / MH4U_ANTIALIASING: the game's own anti-aliasing (off
+                               // saves its pass at a high internal resolution, where it matters less)
     u32 kick_button = 0;    // kick / MH4U_KICK: 3DS button that kicks (the game's pad bits)
     u32 target_button = 0;  // target / MH4U_TARGET: 3DS button for the target camera panel
     u32 skip_button = 0x800;  // skip / MH4U_SKIP: 3DS button that taps the touch screen's Skip
@@ -223,6 +228,8 @@ void Set(Options& o, const std::string& key, const std::string& value) {
         o.dither = IsOn(value);
     } else if (key == "stereo_3d") {
         o.stereo_3d = IsOn(value);
+    } else if (key == "antialiasing") {
+        o.antialiasing = IsOn(value);
     } else if (key == "render_flags_set") {
         o.render_set = static_cast<u32>(std::strtoul(value.c_str(), nullptr, 0));
     } else if (key == "render_flags_clear") {
@@ -316,6 +323,7 @@ Options LoadOptions(std::vector<std::string>& log) {
         {"MH4U_HUD_EDGES", "hud_edges"},
         {"MH4U_DITHER", "dither"},
         {"MH4U_STEREO_3D", "stereo_3d"},
+        {"MH4U_ANTIALIASING", "antialiasing"},
         {"MH4U_RENDER_FLAGS_SET", "render_flags_set"},
         {"MH4U_RENDER_FLAGS_CLEAR", "render_flags_clear"},
         {"MH4U_TRACE_LAYOUT", "trace_layout"},
@@ -365,7 +373,7 @@ void Frame(RCtx* ctx, RFunc original) {
         Core::System::GetInstance().GPU().SetRefreshRate(RefreshRate());
     }
     const u32 clear = options.render_clear | (options.dither ? 0 : RENDER_DITHER) |
-                      (options.stereo_3d ? 0 : RENDER_STEREO);
+                      (options.stereo_3d ? 0 : RENDER_STEREO) | (options.antialiasing ? 0 : RENDER_ANTIALIASING);
     if (options.render_set || clear) {
         // the game reads these bits every frame (the community's quality cheats write the same
         // word); without the dither bits it draws no dither pattern, which an upscaled picture
@@ -1466,6 +1474,9 @@ std::vector<std::string> Install(const RCodeInfo& info) {
     if (!options.stereo_3d) {
         log.push_back("stereoscopic 3D off: the top screen drawn once");
     }
+    if (!options.antialiasing) {
+        log.push_back("the game's anti-aliasing off");
+    }
     if (options.filters_off) {
         std::string off;
         for (const auto& [name, bit] : FILTER_OPTIONS) {
@@ -1530,7 +1541,8 @@ int SkipHint() {
 bool SetOption(const std::string& key, const std::string& value) {
     // the options the hooks read each time they run; the others are applied once at start-up
     static constexpr std::string_view live[] = {
-        "fps", "refresh_rate", "dither", "stereo_3d", "render_flags_set", "render_flags_clear", "kick",
+        "fps", "refresh_rate", "dither", "stereo_3d", "antialiasing", "render_flags_set", "render_flags_clear",
+        "kick",
         "target", "skip", "skip_panel", "skip_hint", "skip_end", "skip_end_hold", "touch_overlay",
         "quest_overlay", "target_overlay",
         "hud_edges", "trace_frames", "trace_layout", "trace_panels", "bloom", "motion_blur",

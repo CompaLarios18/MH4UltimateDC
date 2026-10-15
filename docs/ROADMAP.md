@@ -79,6 +79,7 @@ The game's code is native already; what remains of the 3DS is Azahar's core (sys
 - [x] The touch screen's *Skip* (the scene of the monster's end) with the weapon drawn: the scene polls the panel manager's fixed button 0xb, which the port's skip button now taps first (research/second-screen.md); the maintainer's mouse tap on *Skip* with the weapon out skips the scene
 - [x] The app's own icon (`port/app/icon/mh4u.svg`, an original emblem: a hexagonal badge with three claw marks; `tools/icon.py` renders the .ico, .icns, .png and the window icon's pixels): the Windows executable's resources, the macOS bundle, the AppImage and the SDL windows
 - [ ] The second screen gone: the touch screen only when the game needs it (`touch_screen = map/hidden`), the bottom pass skipped while hidden, item shortcuts on buttons, a controller cursor for touch menus
+- [x] CPU clock speed (Azahar's) in the app's settings, live; the game's anti-aliasing switchable (`antialiasing`), for frame rate at high resolutions
 - [ ] Measure on Apple silicon (checklist in research/metal.md); native Metal only if MoltenVK can't hold the frame rate
 
 ## Prior art to study

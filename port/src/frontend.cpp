@@ -113,6 +113,9 @@ dither = off
 # slider at 0, which costs a full scene pass and can show as a doubled, soft picture; off draws
 # it once, as the community's "3D off" cheat does. on = as on a 3DS
 stereo_3d = off
+# the game's own anti-aliasing (on, as on a 3DS): off saves its pass, which at a high Internal
+# Resolution costs frames for little; the edges get a little jagged
+antialiasing = on
 
 # the game's screen filters (on = as on a 3DS, off = skipped): the glow over bright parts, which
 # softens the picture; the focus blur of cutscenes, which emulation gets wrong (it can blur the
