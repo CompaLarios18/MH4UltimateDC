@@ -608,6 +608,7 @@ void Menu::Draw() {
 // ── Game: mh4u.ini ──
 
 void Menu::DrawGame() {
+    Config& config = layer.config;
     if (const std::string notice = Port::BackendNotice(); !notice.empty()) {
         ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.75f, 0.45f, 1.0f));
         ImGui::TextWrapped("%s", notice.c_str());
