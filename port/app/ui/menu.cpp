@@ -48,10 +48,12 @@ const std::map<std::string, std::string> GAME_DEFAULTS = {
     {"target", "off"},      {"dither", "on"},      {"stereo_3d", "off"},  {"bloom", "on"},
     {"depth_of_field", "on"},
     {"motion_blur", "on"},  {"radial_blur", "on"}, {"haze", "on"},        {"net_sync", "on"},
-    {"target_overlay", "on"}, {"skip", "ZR"}, {"skip_hint", "on"}};
+    {"target_overlay", "on"}, {"skip", "ZR"}, {"skip_hint", "on"}, {"skip_end", "ZL+ZR"},
+    {"skip_end_hold", "1.0"}};
 const std::set<std::string> GAME_LIVE = {"fps",           "refresh_rate", "hud_edges", "touch_overlay",
                                          "quest_overlay", "target_overlay", "kick",    "target",
-                                         "skip",          "skip_hint",    "dither",
+                                         "skip",          "skip_hint",    "skip_end", "skip_end_hold",
+                                         "dither",
                                          "stereo_3d",     "bloom",         "depth_of_field", "motion_blur",
                                          "radial_blur",   "haze"};
 constexpr const char* PANEL_VIEW_KEYS[] = {"quest_overlay", "target_overlay"};
@@ -754,10 +756,10 @@ void Menu::DrawGame() {
               std::tuple{"target", "Target camera",
                          "What a tap on the target camera panel does: the camera's target on the large "
                          "monster (two: the first, the second, off)."},
-              std::tuple{"skip", "Skip after a quest",
-                         "Once a quest is complete, the touch screen's kick button reads Skip for the 20 "
-                         "seconds before the return: this button taps it. It can be the kick's: the kick "
-                         "does nothing then."}}) {
+              std::tuple{"skip", "Skip the scene",
+                         "Once a quest is complete, the touch screen's kick button reads Skip: this button "
+                         "taps it, which skips the scene of the monster's end. It can be the kick's: the "
+                         "kick does nothing then."}}) {
             Row(name);
             std::string value = Upper(Game(key));
             if (value.empty() || IsOff(Lower(value)) || value == "NONE") {
@@ -768,14 +770,33 @@ void Menu::DrawGame() {
             }
             layer.Help(help);
         }
+        Row("End the quest");
+        std::string combo = Upper(Game("skip_end"));
+        if (combo.empty() || IsOff(Lower(combo)) || combo == "NONE") {
+            combo = "OFF";
+        }
+        if (ChooseValue("##skip_end", combo, {"OFF", "ZL+ZR", "L+R", "ZL+R", "L+ZR", "ZL+ZR+START"},
+                        {"None", "ZL + ZR", "L + R", "ZL + R", "L + ZR", "ZL + ZR + START"})) {
+            SetGame("skip_end", combo == "OFF" ? "off" : combo);
+        }
+        layer.Help("Held together once a quest is complete, these end the wait before the return (the "
+                   "carving time) as if it had run out. Online, the wait ends once every player with the "
+                   "port has held them; the screen says who hasn't.");
+        Row("Hold for");
+        float hold = std::strtof(Game("skip_end_hold").c_str(), nullptr);
+        hold = hold > 0.0f ? hold : 1.0f;
+        if (ImGui::SliderFloat("##skip_end_hold", &hold, 0.2f, 5.0f, "%.1f s")) {
+            SetGame("skip_end_hold", fmt::format("{:.1f}", hold));
+        }
+        layer.Help("How long the buttons are held before the quest ends, so that it doesn't happen by accident.");
         Row("Skip hint");
         std::string hint = Lower(Game("skip_hint"));
         hint = IsOff(hint) ? "off" : hint == "flash" ? "flash" : "on";
         if (ChooseValue("##skip_hint", hint, {"on", "flash", "off"}, {"On", "Flashing", "Off"})) {
             SetGame("skip_hint", hint);
         }
-        layer.Help("While the skip is offered, a line at the bottom of the screen says which key or "
-                   "controller button skips.");
+        layer.Help("Once a quest is complete, lines at the bottom of the screen say which keys skip the "
+                   "scene and which end the quest, show the hold, and online who hasn't asked to end it.");
         ImGui::EndTable();
     }
 

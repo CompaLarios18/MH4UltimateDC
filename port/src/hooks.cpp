@@ -99,8 +99,11 @@ struct Options {
                             // of the top screen for the right eye, even with the 3D slider at 0)
     u32 kick_button = 0;    // kick / MH4U_KICK: 3DS button that kicks (the game's pad bits)
     u32 target_button = 0;  // target / MH4U_TARGET: 3DS button for the target camera panel
-    u32 skip_button = 0x800;  // skip / MH4U_SKIP: 3DS button that skips the wait after a quest
-                              // is complete (ZR unless set: the kick does nothing then)
+    u32 skip_button = 0x800;  // skip / MH4U_SKIP: 3DS button that taps the touch screen's Skip
+                              // once a quest is complete (ZR unless set: the kick does nothing then)
+    u32 skip_end_buttons = 0x400 | 0x800;  // skip_end / MH4U_SKIP_END: buttons held together to end
+                                           // the wait after a quest (ZL+ZR), with everyone's say-so online
+    float skip_end_hold = 1.0f;  // skip_end_hold / MH4U_SKIP_END_HOLD: seconds they are held
     u32 skip_panel = 7;     // skip_panel: the touch-screen button whose tap the skip button makes
     int skip_hint = 1;      // skip_hint / MH4U_SKIP_HINT: 0 off, 1 a hint on screen, 2 flashing
     Layout::ScreenOverlay touch_overlay;  // touch_overlay / MH4U_TOUCH_OVERLAY (custom layout)
@@ -155,6 +158,34 @@ std::string PadName(u32 bit) {
     return "";
 }
 
+/// "ZL+ZR" -> the bits of those buttons (0 for a name that isn't one, or "off").
+u32 PadBits(const std::string& names) {
+    u32 bits = 0;
+    std::stringstream in(names);
+    std::string name;
+    while (std::getline(in, name, '+')) {
+        name.erase(std::remove_if(name.begin(), name.end(), [](unsigned char c) { return std::isspace(c); }),
+                   name.end());
+        const u32 bit = PadBit(name);
+        if (bit == 0) {
+            return 0;
+        }
+        bits |= bit;
+    }
+    return bits;
+}
+
+/// The names of the buttons in `bits`, "ZL+ZR".
+std::string PadNames(u32 bits) {
+    std::string names;
+    for (const auto& [n, b] : PAD_BITS) {
+        if (bits & b) {
+            names += (names.empty() ? "" : "+") + std::string(n);
+        }
+    }
+    return names;
+}
+
 bool IsOn(const std::string& value) {
     return value == "1" || value == "true" || value == "on" || value == "yes";
 }
@@ -203,6 +234,10 @@ void Set(Options& o, const std::string& key, const std::string& value) {
         o.target_button = PadBit(value);
     } else if (key == "skip") {
         o.skip_button = PadBit(value);
+    } else if (key == "skip_end") {
+        o.skip_end_buttons = PadBits(value);
+    } else if (key == "skip_end_hold") {
+        o.skip_end_hold = std::clamp(std::strtof(value.c_str(), nullptr), 0.2f, 10.0f);
     } else if (key == "skip_panel") {
         o.skip_panel = static_cast<u32>(std::clamp(std::strtol(value.c_str(), nullptr, 0), 0L, 0xffL));
     } else if (key == "skip_hint") {
@@ -270,6 +305,8 @@ Options LoadOptions(std::vector<std::string>& log) {
         {"MH4U_KICK", "kick"},
         {"MH4U_TARGET", "target"},
         {"MH4U_SKIP", "skip"},
+        {"MH4U_SKIP_END", "skip_end"},
+        {"MH4U_SKIP_END_HOLD", "skip_end_hold"},
         {"MH4U_SKIP_HINT", "skip_hint"},
         {"MH4U_TOUCH_OVERLAY", "touch_overlay"},
         {"MH4U_QUEST_OVERLAY", "quest_overlay"},
@@ -674,13 +711,17 @@ constexpr u32 AQUEST_WAIT_LEFT = 0x3c;    // s32: units of the wait left (loaded
 constexpr u32 AQUEST_END_STAGE = 0x48;    // u32: the end sequence's stage, 0 while waiting
 constexpr u32 QUEST_STATE_PHASE = 0x24;   // u8 in the state block: 0 playing, 1 waiting, then over
 constexpr u8 QUEST_PHASE_WAITING = 1;
-constexpr double SKIP_CUT_AFTER_SECONDS = 0.3;  // time for the tap to take (a frame or two)
 std::atomic<bool> skip_offered{false};   // SkipOffered()
 bool skip_held = false;                  // the skip button, last frame
 bool skip_tap = false;                   // a tap to make after the next processTouch
 bool skip_tap_seen = false;              // isTapped has reported that tap
 u32 skip_polls = 0;                      // isTapped asked about the button while offered
-double skip_cut_at = 0;                  // when to cut the wait short if the tap did nothing
+// The end of the wait (skip_end): the buttons held for skip_end_hold seconds ask for it; the
+// wait is cut once every port console in the session asks (NetSync), by QuestPlaying
+double end_hold_since = 0;               // emulated seconds when the hold began, 0 while not held
+std::atomic<float> end_hold_fraction{0}; // EndSkipHold(): 0..1 of the hold, 1 once asked
+std::atomic<bool> end_requested{false};  // EndSkipRequested(): this player asked
+bool end_cut = false;                    // the wait was cut this quest
 void UpdateSkip(RCtx* ctx);
 double EmulatedSeconds();
 
@@ -753,37 +794,58 @@ void MhPadUpdate(RCtx* ctx, RFunc original) {
         target_held = now;
     }
     UpdateSkip(ctx);
-    // the skip: a press while it is offered, one tap per press
+    const bool offered = skip_offered.load(std::memory_order_relaxed);
+    // the end of the wait: the combo held for skip_end_hold seconds, once per quest
+    const u32 combo = options.skip_end_buttons;
+    const bool combo_held = combo && (held & combo) == combo;
+    if (offered && combo_held && !end_requested.load(std::memory_order_relaxed)) {
+        const double now = EmulatedSeconds();
+        if (end_hold_since == 0) {
+            end_hold_since = now;
+        }
+        const float fraction = std::min(1.0f, static_cast<float>((now - end_hold_since) / options.skip_end_hold));
+        end_hold_fraction.store(fraction, std::memory_order_relaxed);
+        if (fraction >= 1.0f) {
+            end_requested.store(true, std::memory_order_relaxed);
+            NetSync::SetEndSkipVote(true);
+            LOG_INFO(Frontend, "skip: {} held {:.1f} s: asking to end the wait", PadNames(combo),
+                     options.skip_end_hold);
+        }
+    } else {
+        end_hold_since = 0;
+        if (!end_requested.load(std::memory_order_relaxed)) {
+            end_hold_fraction.store(0.0f, std::memory_order_relaxed);
+        }
+    }
+    // the touch screen's Skip: a press while it is offered, one tap per press; not while the
+    // rest of the combo is held (a combo that includes this button is the end, not the skip)
+    const u32 rest = combo & ~options.skip_button;
+    const bool rest_held = rest && (held & rest) == rest;
     const bool skip_now = options.skip_button && (held & options.skip_button);
-    if (skip_now && !skip_held && skip_offered.load(std::memory_order_relaxed)) {
+    if (skip_now && !skip_held && offered && !rest_held) {
         skip_tap = true;
-        // the tap is the kick's action, which the hunter can't take with the weapon drawn: if
-        // the wait is still running shortly after, QuestPlaying cuts it short itself
-        skip_cut_at = EmulatedSeconds() + SKIP_CUT_AFTER_SECONDS;
         LOG_INFO(Frontend, "skip: {} pressed", PadName(options.skip_button));
     }
     skip_held = skip_now;
 }
 
 /// aQuest's playing state (this, state block), once a frame during a quest. Once the quest is
-/// complete, state +0x24 is 1 while the wait before the return runs: +0x40 of the quest area
-/// accumulates the frame's delta (sMain+0x5c) and takes one off the counter at +0x3c per whole
-/// unit; when the counter is 0 or less the game sets sGameControl+0x2f89 and its end sequence
-/// (0x0065a378, stage at +0x48, 0 while waiting) goes on to the "Quest Complete" stamp. The skip
-/// button's tap takes that same road through the hunter's kick; when it didn't (the weapon out:
-/// no kick), the counter is set to 0 here, which is what running out of time does.
+/// complete, state +0x24 is 1 while the wait before the return runs (the carving time): +0x40
+/// of the quest area accumulates the frame's delta (sMain+0x5c) and takes one off the counter
+/// at +0x3c per whole unit; when the counter is 0 or less the game sets sGameControl+0x2f89
+/// and its end sequence (0x0065a378, stage at +0x48, 0 while waiting) goes on to the "Quest
+/// Complete" stamp. Once this player has asked to end the wait (skip_end held) and every port
+/// console in the session has too, the counter is set to 0 here: what running out of time does.
 void QuestPlaying(RCtx* ctx, RFunc original) {
     const u32 quest = ctx->r[0];
     const u32 state = ctx->r[1];
-    if (skip_cut_at > 0 && EmulatedSeconds() >= skip_cut_at) {
-        skip_cut_at = 0;
+    if (end_requested.load(std::memory_order_relaxed) && !end_cut && NetSync::EndSkipAgreed()) {
         const s32 left = static_cast<s32>(rd32(ctx, quest + AQUEST_WAIT_LEFT));
         if (rd8(ctx, state + QUEST_STATE_PHASE) == QUEST_PHASE_WAITING &&
-            rd32(ctx, quest + AQUEST_END_STAGE) == 0 && left > 0 &&
-            skip_offered.load(std::memory_order_relaxed)) {
+            rd32(ctx, quest + AQUEST_END_STAGE) == 0 && left > 0) {
             wr32(ctx, quest + AQUEST_WAIT_LEFT, 0);
-            LOG_INFO(Frontend, "skip: the tap did nothing (the weapon out?); the wait cut short with {} units left",
-                     left);
+            end_cut = true;
+            LOG_INFO(Frontend, "skip: everyone asked; the wait ended with {} units left", left);
         }
     }
     original(ctx);
@@ -946,7 +1008,12 @@ void UpdateSkip(RCtx* ctx) {
                      now - skip_since, status, due ? "due" : "not due", options.skip_panel, skip_polls);
         }
         skip_tap = false;
-        skip_cut_at = 0;
+        end_hold_since = 0;
+        end_hold_fraction.store(0.0f, std::memory_order_relaxed);
+        if (end_requested.exchange(false)) {
+            NetSync::SetEndSkipVote(false);
+        }
+        end_cut = false;
     }
 }
 
@@ -1250,7 +1317,10 @@ std::vector<std::string> Install(const RCodeInfo& info) {
     skip_offered = false;
     skip_held = skip_tap = skip_tap_seen = skip_complete = false;
     skip_polls = 0;
-    skip_cut_at = 0;
+    end_hold_since = 0;
+    end_hold_fraction = 0.0f;
+    end_requested = false;
+    end_cut = false;
     last_panel_touch = 0xFFFFFFFF;
     quest_panels_ran = false;
     quest_map_slot = -1;
@@ -1305,6 +1375,11 @@ std::vector<std::string> Install(const RCodeInfo& info) {
     if (options.skip_button) {
         log.push_back(fmt::format("skip after a quest on {} (a tap on the touch screen's button {})",
                                   PadName(options.skip_button), options.skip_panel));
+    }
+    if (options.skip_end_buttons) {
+        log.push_back(fmt::format("the end of the wait after a quest on {} held {:.1f} s, with every port "
+                                  "player's say-so",
+                                  PadNames(options.skip_end_buttons), options.skip_end_hold));
     }
     Layout::SetScreenOverlay(options.touch_overlay);
     applied_map_slot = applied_target_slot = -1;
@@ -1377,6 +1452,18 @@ bool SkipOffered() {
     return skip_offered.load(std::memory_order_relaxed);
 }
 
+std::string SkipEndButtons() {
+    return PadNames(options.skip_end_buttons);
+}
+
+float EndSkipHold() {
+    return end_hold_fraction.load(std::memory_order_relaxed);
+}
+
+bool EndSkipRequested() {
+    return end_requested.load(std::memory_order_relaxed);
+}
+
 std::string SkipButton() {
     return PadName(options.skip_button);
 }
@@ -1389,7 +1476,8 @@ bool SetOption(const std::string& key, const std::string& value) {
     // the options the hooks read each time they run; the others are applied once at start-up
     static constexpr std::string_view live[] = {
         "fps", "refresh_rate", "dither", "stereo_3d", "render_flags_set", "render_flags_clear", "kick",
-        "target", "skip", "skip_panel", "skip_hint", "touch_overlay", "quest_overlay", "target_overlay",
+        "target", "skip", "skip_panel", "skip_hint", "skip_end", "skip_end_hold", "touch_overlay",
+        "quest_overlay", "target_overlay",
         "hud_edges", "trace_frames", "trace_layout", "trace_panels", "bloom", "motion_blur",
         "depth_of_field", "radial_blur", "haze", "trace_filters"};
     if (std::find(std::begin(live), std::end(live), key) == std::end(live)) {

@@ -40,7 +40,8 @@ using Network::WifiPacket;
 
 constexpr auto kPacketType = static_cast<WifiPacket::PacketType>(0x4d); // no 3DS frame's type
 constexpr u32 kMagic = 0x434e5953;     // "SYNC"
-constexpr u32 kVersion = 1;
+constexpr u32 kVersion = 2;         // 2: the end-skip vote in the flags byte (1: no flags)
+constexpr u8 kFlagEndSkip = 0x01;   // flags: this console's player asks to end the wait after a quest
 constexpr double kSendEveryS = 0.05;   // how often a console tells its clock
 constexpr double kSessionMs = 3000.0;  // game data from a peer within this much of our emulated
                                        // time: we play together (emulated, not host time, so
@@ -49,6 +50,10 @@ constexpr double kPeerTimeoutS = 6.0;  // a peer silent this long is left to the
                                        // paused in Azahar, say, or gone)
 constexpr double kMaxWaitS = 8.0;      // then the leads are counted again from zero
 constexpr double kTicksPerMs = 268111.856;
+constexpr double kVoteLingerS = 2.0;   // a vote to end the wait is still told this long after it
+                                       // is withdrawn: the wait ends (and the vote with it) the
+                                       // moment the last console asks, and the others must still
+                                       // hear that this one had asked
 
 struct Peer {
     double clock_ms = 0.0;      // its last report
@@ -59,6 +64,8 @@ struct Peer {
     double data_at_ms = -1e18;  // our emulated clock when it noticed the last one
     bool reported = false;
     bool syncing = false;
+    u32 version = 0;            // of its reports: 1 can't vote on the end skip
+    bool end_skip = false;      // its player asks to end the wait after a quest
     Lead lead;
 };
 
@@ -71,6 +78,8 @@ struct State {
     std::weak_ptr<Network::RoomMember> bound;
     MacAddress self{};  // this console's address in the room
     Clock::time_point last_send{};
+    bool end_skip = false;  // this console's player asks to end the wait after a quest
+    Clock::time_point end_skip_until{};  // ... or did, until then (kVoteLingerS)
 };
 
 State& GetState() {
@@ -100,15 +109,18 @@ void OnWifiPacket(const WifiPacket& packet) {
         std::memcpy(&version, packet.data.data() + 4, 4);
         std::memcpy(&clock_ms, packet.data.data() + 8, 8);
         std::memcpy(waiting_for.data(), packet.data.data() + 16, waiting_for.size());
-        if (magic != kMagic || version != kVersion || !std::isfinite(clock_ms)) {
+        if (magic != kMagic || version < 1 || version > kVersion || !std::isfinite(clock_ms)) {
             return;
         }
+        const u8 flags = version >= 2 ? packet.data[22] : 0;
         std::scoped_lock lock{state.mutex};
         auto& peer = state.peers[packet.transmitter_address];
         peer.clock_ms = clock_ms;
         peer.waiting_for = waiting_for;
         peer.heard = now;
         peer.reported = true;
+        peer.version = version;
+        peer.end_skip = (flags & kFlagEndSkip) != 0;
     } else if (packet.type == WifiPacket::PacketType::Data) {
         std::scoped_lock lock{state.mutex};
         if (packet.destination_address == state.self) {
@@ -118,8 +130,8 @@ void OnWifiPacket(const WifiPacket& packet) {
 }
 
 /// Packet: magic, version (u32 each), the emulated clock in ms (f64), the MAC of the peer this
-/// console is waiting for (zeros: none), two bytes of padding.
-void SendClock(Network::RoomMember& member, double own_ms, const MacAddress& waiting_for) {
+/// console is waiting for (zeros: none), the flags byte (kFlagEndSkip), a byte of padding.
+void SendClock(Network::RoomMember& member, double own_ms, const MacAddress& waiting_for, u8 flags) {
     WifiPacket packet{};
     packet.type = kPacketType;
     packet.channel = 0;
@@ -130,6 +142,7 @@ void SendClock(Network::RoomMember& member, double own_ms, const MacAddress& wai
     std::memcpy(packet.data.data() + 4, &kVersion, 4);
     std::memcpy(packet.data.data() + 8, &own_ms, 8);
     std::memcpy(packet.data.data() + 16, waiting_for.data(), waiting_for.size());
+    packet.data[22] = flags;
     member.SendWifiPacket(packet);
 }
 
@@ -198,7 +211,12 @@ void BeforeRunLoop(Core::System& system) {
     }
     const auto send = [&](Clock::time_point now, const MacAddress& waiting_for) {
         if (now - state.last_send >= std::chrono::duration<double>(kSendEveryS)) {
-            SendClock(*member, own_ms(), waiting_for);
+            bool end_skip = false;
+            {
+                std::scoped_lock lock{state.mutex};
+                end_skip = state.end_skip || now < state.end_skip_until;
+            }
+            SendClock(*member, own_ms(), waiting_for, end_skip ? kFlagEndSkip : 0);
             state.last_send = now;
         }
     };
@@ -225,7 +243,62 @@ void BeforeRunLoop(Core::System& system) {
     }
 }
 
+/// The port consoles this one plays with that haven't asked to end the wait (those that can
+/// vote: version 2 reports). Under the lock.
+std::vector<MacAddress> PendingPeers(State& state) {
+    std::vector<MacAddress> pending;
+    for (const auto& [mac, peer] : state.peers) {
+        if (peer.syncing && peer.version >= 2 && !peer.end_skip) {
+            pending.push_back(mac);
+        }
+    }
+    return pending;
+}
+
 } // namespace
+
+void SetEndSkipVote(bool vote) {
+    auto& state = GetState();
+    std::scoped_lock lock{state.mutex};
+    if (state.end_skip != vote) {
+        LOG_INFO(Frontend, "net sync: {} to end the wait after the quest", vote ? "asking" : "no longer asking");
+        if (!vote) {
+            state.end_skip_until = Clock::now() + std::chrono::duration_cast<Clock::duration>(
+                                                      std::chrono::duration<double>(kVoteLingerS));
+        }
+    }
+    state.end_skip = vote;
+}
+
+bool EndSkipAgreed() {
+    auto& state = GetState();
+    std::scoped_lock lock{state.mutex};
+    return state.end_skip && PendingPeers(state).empty();
+}
+
+std::vector<std::string> EndSkipPending() {
+    auto& state = GetState();
+    std::vector<MacAddress> pending;
+    {
+        std::scoped_lock lock{state.mutex};
+        pending = PendingPeers(state);
+    }
+    std::vector<std::string> names;
+    const auto member = Network::GetRoomMember().lock();
+    const auto members = member && member->IsConnected() ? member->GetMemberInformation()
+                                                         : Network::RoomMember::MemberList{};
+    for (const MacAddress& mac : pending) {
+        std::string name = MacText(mac);
+        for (const auto& info : members) {
+            if (info.mac_address == mac && !info.nickname.empty()) {
+                name = info.nickname;
+                break;
+            }
+        }
+        names.push_back(name);
+    }
+    return names;
+}
 
 Mode ParseMode(const std::string& value) {
     if (value == "0" || value == "off" || value == "false" || value == "no") {
@@ -244,6 +317,8 @@ void Install(Core::System& system, Mode mode, double slack_ms, std::vector<std::
         state.mode = mode;
         state.slack_ms = slack_ms > 0.0 ? slack_ms : kDefaultSlackMs;
         state.peers.clear();
+        state.end_skip = false;
+        state.end_skip_until = {};
     }
     if (mode == Mode::Off) {
         system.SetRunLoopHook(nullptr);

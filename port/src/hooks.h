@@ -35,6 +35,17 @@ bool SkipOffered();
 /// The 3DS button that skips (mh4u.ini's skip: "ZR", ...), or "" when none.
 std::string SkipButton();
 
+/// The 3DS buttons held together to end the wait after a quest (mh4u.ini's skip_end:
+/// "ZL+ZR", ...), or "" when none.
+std::string SkipEndButtons();
+
+/// How much of the hold of those buttons is done, 0..1 (1 once the player has asked).
+float EndSkipHold();
+
+/// Whether this player has asked to end the wait (the hold done); the wait ends once every
+/// port console in the session has (NetSync::EndSkipPending names those that haven't).
+bool EndSkipRequested();
+
 /// mh4u.ini's skip_hint: 0 no hint on the screen while the skip is offered, 1 a hint, 2 a
 /// flashing one.
 int SkipHint();

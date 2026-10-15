@@ -30,6 +30,24 @@ void Install(Core::System& system, Mode mode, double slack_ms, std::vector<std::
 
 constexpr double kDefaultSlackMs = 200.0;
 
+// ── The skip of the wait after a quest, agreed by everyone (hooks.cpp, the skip_end option).
+// Each port console tells the room whether its player asks to end the wait, in the same
+// packets as its clock; the wait is cut only once every port console this one plays with
+// asks too. Consoles on official Azahar, and ports from before this, can't ask and aren't
+// waited for.
+
+/// Whether this console's player asks to end the wait (set by the hooks; false once the
+/// wait is over).
+void SetEndSkipVote(bool vote);
+
+/// Whether every port console this one plays with (and this one) asks to end the wait.
+/// True with no room, no peers, or peers that can't vote.
+bool EndSkipAgreed();
+
+/// The nicknames (the room's; a MAC when unknown) of the port consoles this one plays with
+/// that haven't asked yet, for the screen.
+std::vector<std::string> EndSkipPending();
+
 /// How far this console's emulated clock has run ahead of a peer's since they began to play
 /// together, from our clock and the peer's last report (emulated ms; the clocks' origins
 /// don't matter, only how they advance).

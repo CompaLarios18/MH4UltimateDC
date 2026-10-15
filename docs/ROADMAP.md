@@ -75,7 +75,8 @@ The game's code is native already; what remains of the 3DS is Azahar's core (sys
 - [x] Quest HUD: the map anywhere at any size, the target camera panel in a view of its own (whom the camera targets; a click on it is a tap), *Edit HUD layout* to drag and resize both over the game; checked on an expedition with Vulkan and OpenGL
 - [x] Mod catalog in the launcher (`tools/mods_catalog.json`): the HD texture pack and four more, installed with one click (downloads resumed and checked, `.zip`/`.7z`/`.tar`); code mods with a code cave recompiled into the library
 - [x] A frame-rate counter (F3, off by default); the touch screen's *Skip* after a quest on a button with a hint on screen (`skip`; tried by the maintainer)
-- [x] The skip with the weapon drawn (the tap is the kick's action, which the game ignores then): the port ends the wait itself through `aQuest::playing`; the game's second-eye pass off (`stereo_3d = off`), which doubled and softened the picture; both tried by the maintainer (v0.1.1)
+- [x] The game's second-eye pass off (`stereo_3d = off`), which doubled and softened the picture (v0.1.1); `skip_end`: ZL+ZR held ends the wait after a quest through `aQuest::playing`, online once every port player has held it, with the players still to ask on the screen
+- [ ] The touch screen's *Skip* (the scene of the monster's end) with the weapon drawn: the tap is the kick's action, which the game ignores then; what the action does during the scene is still to be found (research/second-screen.md)
 - [ ] The second screen gone: the touch screen only when the game needs it (`touch_screen = map/hidden`), the bottom pass skipped while hidden, item shortcuts on buttons, a controller cursor for touch menus
 - [ ] Measure on Apple silicon (checklist in research/metal.md); native Metal only if MoltenVK can't hold the frame rate
 

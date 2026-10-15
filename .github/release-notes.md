@@ -2,9 +2,14 @@
 
 🇲🇽 *Port de MH4U para PC: 60/120 fps, pantalla ancha, la pantalla táctil encima del juego y multijugador por internet. Necesitas tu propia copia del juego y su actualización v1.3.0.*
 
+## What's new in 0.1.2
+
+- **End the quest together.** Hold **ZL+ZR** (Q+C) for a second once a quest is complete to end the wait before the return, as if the carving time had run out. Online, the quest ends once every player with the port has held it, and the screen names who hasn't. `skip_end` / `skip_end_hold` in `mh4u.ini` and the menu.
+- **The scene skip is just that again.** ZR / C taps the touch screen's *Skip* (the scene of the monster's end) and leaves the carving time alone. 0.1.1 ended the quest instead when the tap didn't take.
+
 ## What's new in 0.1.1
 
-- **Skip with the weapon drawn.** The *Skip* button after a quest (ZR / C) did nothing while the weapon was out, because its tap is the kick's action; the port now ends the wait itself when the tap didn't take. Rebuild the code library once (the launcher asks).
+- **Skip with the weapon drawn.** The *Skip* button after a quest (ZR / C) did nothing while the weapon was out, because its tap is the kick's action; the port ended the wait itself when the tap didn't take (changed in 0.1.2). Rebuild the code library once (the launcher asks).
 - **Sharper picture.** The game drew the top screen twice (one pass per eye) even with Azahar's 3D at 0, which showed as a doubled, soft image; `stereo_3d = off` (the default, also in Esc → Game → Picture) draws it once and saves a scene pass.
 - **Faster rebuilds.** Unpacking a new package no longer recompiles the whole code library: only the files that changed.
 

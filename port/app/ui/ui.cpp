@@ -375,9 +375,9 @@ void Layer::Frame() {
     const bool keyboard_up = keyboard->Active();
     SetCapture(menu_open || keyboard_up);
     // a hint over the game (the skip after a quest) while nothing else of the menu's is up
-    const std::string hint = capturing ? std::string{} : HintButtons(config);
+    const Hint hint = capturing ? Hint{} : CurrentHint(config);
     const bool fps_counter = FpsCounterOn(config.fps_counter);
-    const bool draw = capturing || keyboard->HasNotice() || !hint.empty() || fps_counter;
+    const bool draw = capturing || keyboard->HasNotice() || !hint.Empty() || fps_counter;
     if (!draw || !renderer_ready.load(std::memory_order_acquire)) {
         if (visible.load(std::memory_order_relaxed)) {
             std::scoped_lock lock{mutex};
@@ -430,7 +430,7 @@ void Layer::Frame() {
     if (!keyboard_up && keyboard->HasNotice()) {
         keyboard->DrawNotice();
     }
-    if (!hint.empty()) {
+    if (!hint.Empty()) {
         DrawHint(hint, Port::Hooks::SkipHint() == 2);
     }
     if (fps_counter) {

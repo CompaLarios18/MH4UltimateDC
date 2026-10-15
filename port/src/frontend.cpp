@@ -96,10 +96,15 @@ target_overlay = on
 # (A B X Y L R ZL ZR START UP DOWN LEFT RIGHT; ZL and ZR are a controller's triggers)
 kick = ZR
 target = ZL
-# a button for the touch screen's Skip, which replaces the kick button for the 20 seconds
-# before the return once a quest is complete (the kick does nothing then, so ZR suits both);
-# skip_hint: a line on the screen says which key skips (on, flash or off)
+# a button for the touch screen's Skip, which replaces the kick button once a quest is
+# complete and skips the scene of the monster's end (the kick does nothing then, so ZR suits
+# both); buttons held together for skip_end_hold seconds to end the wait before the return,
+# the carving time, as if it had run out (online, once every player with the port has held
+# them; the screen says who hasn't); skip_hint: lines on the screen say which keys do what
+# (on, flash or off)
 skip = ZR
+skip_end = ZL+ZR
+skip_end_hold = 1.0
 skip_hint = on
 
 # the game's dither pattern: off for a clean picture at an Internal Resolution above 1x
