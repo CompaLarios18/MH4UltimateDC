@@ -46,7 +46,7 @@ Mods come in a few layouts, and none of them needs a `mod.json`:
 
 Readmes, pictures and the like are left out. Names are matched without regard to capitals (`RomFS/` is `romfs/`), and the game's folders are given their own spelling (`Data/` becomes `data/`), since the game finds its files only by their exact names. Where Azahar would take only one file of a group, the mod manager deploys only that one and says so: `exefs/code.ips` before `exefs/code.bps`, `code.ips` and `code.bps`; `exefs/banner.bnr` before `banner.bnr`.
 
-One limit of Azahar: it reads only the files **at the top of `romfs_ext/`** (layered_fs.cpp looks at that folder without going into its sub-folders), so a `.stub` or patch for a file in a folder (`romfs_ext/data/x.arc.ips`) does nothing, and the mod manager leaves it out with a warning. MH4U's archives are in folders (`data/`, `eng/data/`), so a mod for one of them has to ship the whole changed file in `romfs/` instead.
+Patches and `.stub` files can sit in folders like the game's own (`romfs_ext/data/x.arc.ips` patches `data/x.arc`): upstream Azahar reads only the top of `romfs_ext/`, and the port's Azahar reads its sub-folders too, which MH4U's archives need (they are in `data/` and `eng/data/`). With an Azahar without that fix, such a file does nothing.
 
 ## Order and conflicts
 

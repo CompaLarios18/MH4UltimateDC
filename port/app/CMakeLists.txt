@@ -1,6 +1,20 @@
 # mh4u: the port's own app (main.cpp). A window of its own (SDL2) around Azahar's core with the
 # game's recompiled code as the CPU. Built with port/ when Azahar is configured with SDL2.
 
+# Dear ImGui (MIT, third_party/imgui/LICENSE.txt), v1.92.9b, for the app's menus: the core and
+# the SDL2 platform backend here; each renderer's backend is added where it is used.
+set(MH4U_IMGUI_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/imgui")
+add_library(mh4u_imgui STATIC
+    ${MH4U_IMGUI_DIR}/imgui.cpp
+    ${MH4U_IMGUI_DIR}/imgui_draw.cpp
+    ${MH4U_IMGUI_DIR}/imgui_tables.cpp
+    ${MH4U_IMGUI_DIR}/imgui_widgets.cpp
+    ${MH4U_IMGUI_DIR}/backends/imgui_impl_sdl2.cpp
+)
+target_include_directories(mh4u_imgui PUBLIC ${MH4U_IMGUI_DIR} ${MH4U_IMGUI_DIR}/backends)
+target_link_libraries(mh4u_imgui PUBLIC SDL2::SDL2)
+target_compile_definitions(mh4u_imgui PUBLIC IMGUI_DISABLE_OBSOLETE_FUNCTIONS SDL_MAIN_HANDLED)
+
 add_executable(mh4u
     config.cpp
     config.h
@@ -31,7 +45,7 @@ if (ENABLE_WEB_SERVICE)
 endif()
 
 if (WIN32)
-    # a game's window, no console window behind it (main.cpp has a WinMain)
+    # a game's window, no console window behind it
     set_target_properties(mh4u PROPERTIES WIN32_EXECUTABLE TRUE)
     target_link_libraries(mh4u PRIVATE comdlg32 shell32)
 endif()

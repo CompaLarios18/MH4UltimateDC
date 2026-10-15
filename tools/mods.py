@@ -66,9 +66,10 @@ PATCHES = ("exefs/code.ips", "exefs/code.bps", "code.ips", "code.bps")  # the fi
 TOP_DIRS = ("romfs", "romfs_ext", "exefs")
 TOP_FILES = SECTIONS + ("code.ips", "code.bps", "exheader.bin")
 EXT_KINDS = (".stub", ".ips", ".bps")
-# LayeredFS::LoadExtRelocations looks only at the files at the top of romfs_ext/ (it skips
-# folders without going into them), so a .stub or patch for a file in a folder does nothing
-ROMFS_EXT_IN_FOLDERS = False
+# Upstream Azahar's LayeredFS::LoadExtRelocations looks only at the files at the top of
+# romfs_ext/; the port's Azahar (port/azahar/azahar.patch) reads its sub-folders too, which MH4U's
+# archives need (data/, eng/data/). False would leave such files out with a warning.
+ROMFS_EXT_IN_FOLDERS = True
 
 # The top-level folders of MH4U's RomFS, as far as they are known without reading game files:
 # data/ holds the archives (the code builds archive paths such as data\m%02d and

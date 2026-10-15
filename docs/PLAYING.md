@@ -46,6 +46,17 @@ The log (*File → Open Folder → log folder*) says `running recompiled code fr
 
 Everything else is Azahar's own: controls, graphics settings, screen layouts, save data, cheats, texture packs. Two exceptions: **save states** aren't available while the game runs on recompiled code (the game's call stacks live on the PC's own stacks, which a save state can't capture), so save in the game; and cheats that rewrite code don't apply to recompiled functions (cheats that change data do).
 
+## 2b. Or play with the port's app
+
+The packages also carry the port's own app: `mh4u.exe` on Windows (next to `azahar.exe`), `mh4u.AppImage` on Linux, `MH4U.app` on a Mac. It is the same game on the same core and code library, without Azahar's interface: it opens the game directly, full screen. Do step 1 first (the code library, and the update installed in Azahar; the app uses Azahar's user folder, so your saves, the update and `mh4u.ini` are shared with the port's Azahar).
+
+- The first time it asks for your decrypted game (`.3ds`, `.cci` or `.cxi`) and remembers it in `mh4u-app.ini`, next to `mh4u.ini`. That file has the app's settings, each explained: renderer (`vulkan`, `opengl`, `software`; Vulkan runs on Metal through MoltenVK on a Mac), full screen, internal resolution, vsync, the screens (`overlay`: the game fills the window with the touch screen in a corner as `mh4u.ini` says; `single`, `stacked`, `side`, `windows`), volume, keys, multiplayer. `mh4u --help` lists its command-line options (`--windowed`, `--renderer`, `--join HOST:PORT`, `--host PORT`, `--user DIR`).
+- **F11** or **Alt+Enter**: full screen on/off. **F12**, or a controller's **right-stick click**: in a quest, the map or the whole touch screen in the corner. The mouse is the stylus.
+- **Keyboard** (change it in `mh4u-app.ini`): circle pad W A S D (Left Ctrl: half way, to walk), camera (C-stick) the arrow keys, A = E, B = Space, X = R, Y = F, L = Q, R = Left Shift, ZL = Tab (target camera), ZR = C (kick), START = Enter, SELECT = Backspace, D-pad 1 2 3 4.
+- **Controller**: the first one found is mapped on its own like MH3U on a Wii U (A, B, X, Y by position, ZL/ZR on the triggers, the C-stick on the right stick), and mapped again when you plug one in; keyboard and controller work at the same time.
+- **Multiplayer**: `join = HOST:PORT` (or `--join`) enters a room before the game starts, `host = 24872` hosts one, and with `lobby` and `token` set your room is listed in that lobby ([SERVER.md](SERVER.md)).
+- Not in the app yet: an in-game menu (edit the two `.ini` files for now; most of `mh4u.ini` applies the next time the game starts), the 3DS's software keyboard (a new hunter's name; make the character in the port's Azahar), installing CIAs (use the port's Azahar or `Build code library`). The log is `mh4u_log.txt` in Azahar's log folder.
+
 ## 3. Options
 
 Write them in `mh4u.ini` in Azahar's user folder (next to the `recomp` folder), one `key = value` per line. *Tools → MH4U Port Options...* in the port's Azahar opens that file in a text editor, and first makes it with the recommended settings when there is none. Changes apply the next time the game starts. All the options:
@@ -146,6 +157,8 @@ With a higher internal resolution, set `dither = off`. The game draws a dither p
 - `trace_filters = 1` writes to the log which filters are drawn whenever that changes.
 
 ## 6. Mods
+
+Several mods at once, in an order, with conflicts shown: [MODS.md](MODS.md) (`tools/mods.py`).
 
 Mods go where Azahar looks for them (right-click the game → *Open Mods Location*, i.e. `load/mods/0004000000126300/` in Azahar's user folder):
 

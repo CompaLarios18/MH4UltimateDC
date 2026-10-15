@@ -6,6 +6,7 @@
 //
 // usage: mh4u [GAME] [--windowed | --fullscreen] [--renderer vulkan|opengl|software]
 //             [--join HOST[:PORT]] [--host PORT] [--nickname NAME] [--password PASSWORD]
+//             [--user DIR]
 // Settings: mh4u-app.ini (the app) and mh4u.ini (the game's options) in Azahar's user folder.
 
 #include <atomic>
@@ -72,11 +73,13 @@ constexpr const char* TITLE = "MH4U PC port";
 constexpr const char* USAGE =
     "usage: mh4u [GAME] [--windowed | --fullscreen] [--renderer vulkan|opengl|software]\n"
     "            [--join HOST[:PORT]] [--host PORT] [--nickname NAME] [--password PASSWORD]\n"
+    "            [--user DIR]\n"
     "GAME: your decrypted Monster Hunter 4 Ultimate (.3ds, .cci, .cxi); without it, the one in\n"
-    "mh4u-app.ini, or the app asks. Settings: mh4u-app.ini and mh4u.ini in Azahar's user folder.\n";
+    "mh4u-app.ini, or the app asks. Settings: mh4u-app.ini and mh4u.ini in Azahar's user folder\n"
+    "(--user: another one, e.g. for a portable setup).\n";
 
 struct Args {
-    std::string game, renderer, join, nickname, password;
+    std::string game, renderer, join, nickname, password, user;
     int fullscreen = -1;  // -1: as the settings say
     int host = -1;
     bool help = false, bad = false;
@@ -109,6 +112,8 @@ Args Parse(const std::vector<std::string>& argv) {
             a.nickname = value();
         } else if (arg == "--password") {
             a.password = value();
+        } else if (arg == "--user") {
+            a.user = value();
         } else if (!arg.empty() && arg[0] == '-') {
             a.bad = true;
         } else {
@@ -302,6 +307,16 @@ std::string LoadError(Core::System::ResultStatus status, Core::System& system) {
 
 int Run(const std::vector<std::string>& argv) {
     Common::DetachedTasks detached_tasks;
+    const Args args = Parse(argv);
+    if (args.help || args.bad) {
+        std::fputs(USAGE, args.bad ? stderr : stdout);
+        return args.bad ? 1 : 0;
+    }
+    if (!args.user.empty()) {
+        // before anything looks at the user folder (the log is in it)
+        const char last = args.user.back();
+        FileUtil::SetUserPath(last == '/' || last == '\\' ? args.user : args.user + '/');
+    }
     Common::Log::Initialize("mh4u_log.txt");
     Common::Log::SetColorConsoleBackendEnabled(true);
     Common::Log::Start();
@@ -309,11 +324,6 @@ int Run(const std::vector<std::string>& argv) {
     filter.ParseFilterString(Settings::values.log_filter.GetValue());
     Common::Log::SetGlobalFilter(filter);
 
-    const Args args = Parse(argv);
-    if (args.help || args.bad) {
-        std::fputs(USAGE, args.bad ? stderr : stdout);
-        return args.bad ? 1 : 0;
-    }
     LOG_INFO(Frontend, "MH4U PC port app, Azahar {} | {}-{}", Common::g_build_fullname,
              Common::g_scm_branch, Common::g_scm_desc);
 
@@ -476,20 +486,19 @@ int Run(const std::vector<std::string>& argv) {
 
 } // namespace
 
+int main(int argc, char** argv) {
 #ifdef _WIN32
-// A windowed program on Windows (no console): the command line comes as UTF-16.
-int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
-    int argc = 0;
-    LPWSTR* wargv = CommandLineToArgvW(GetCommandLineW(), &argc);
+    // the arguments as UTF-16, so that paths with any characters arrive whole (MinGW's runtime
+    // calls main even in a windowed program, with the arguments in the ANSI code page)
+    int wargc = 0;
+    LPWSTR* wargv = CommandLineToArgvW(GetCommandLineW(), &wargc);
     std::vector<std::string> args;
-    for (int i = 0; i < argc; ++i) {
+    for (int i = 0; i < wargc; ++i) {
         args.push_back(Common::UTF16ToUTF8(std::wstring(wargv[i])));
     }
     LocalFree(wargv);
     return Run(args);
-}
-#endif
-
-int main(int argc, char** argv) {
+#else
     return Run(std::vector<std::string>(argv, argv + argc));
+#endif
 }

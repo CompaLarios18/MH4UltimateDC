@@ -188,11 +188,13 @@ def test_what_azahar_reads_from_a_mod(tmp_path):
         "exheader.bin": ("exheader", "exheader.bin"),
         "romfs_ext/top.arc.stub": ("romfs:top.arc", "romfs_ext/top.arc.stub"),
         "romfs_ext/Patch.arc.ips": ("romfs:patch.arc", "romfs_ext/Patch.arc.IPS"),
+        # the port's Azahar reads romfs_ext/'s sub-folders too
+        "romfs_ext/data/deep.arc.ips": ("romfs:data/deep.arc", "romfs_ext/data/deep.arc.ips"),
     }
     text = "\n".join(mod.warnings)
     assert "code.bps: not used, Azahar applies only exefs/code.ips" in text
     assert "code.ips: not used" in text and "banner.bnr: not used, Azahar takes exefs/banner.bnr first" in text
-    assert "romfs_ext/data/deep.arc.ips: does nothing" in text and "romfs_ext/odd.txt: not a .stub" in text
+    assert "romfs_ext/odd.txt: not a .stub" in text and "deep.arc" not in text
     assert "exheader.bin replaces the game's exheader" in text
     assert set(mod.ignored) == {"readme.txt", "screens/", "exefs/notes.txt"}
     assert mod.contains == ["code", "exefs", "exheader", "romfs_ext"]
@@ -580,7 +582,16 @@ def test_adding_azahar_mods_folder_as_a_mod(user, tmp_path):
     assert run(user, "add", str(folder(user)), code=1)["error"]["code"] == "bad_path"   # holds deployed files
 
 
-def test_romfs_ext_in_folders_is_not_deployed(user, tmp_path):
+def test_romfs_ext_in_folders_is_deployed(user, tmp_path):
+    """The port's Azahar reads romfs_ext/'s sub-folders, where MH4U's archives are."""
+    run(user, "add", str(make(tmp_path / "A", {"romfs_ext/data/x.arc.ips": ips((0, b"P")),
+                                               "romfs_ext/root.arc.ips": ips((0, b"P"))})))
+    run(user, "deploy")
+    assert sorted(deployed(user)) == ["romfs_ext/data/x.arc.ips", "romfs_ext/root.arc.ips"]
+
+
+def test_romfs_ext_in_folders_is_not_deployed_for_upstream_azahar(user, tmp_path, monkeypatch):
+    monkeypatch.setattr(mods, "ROMFS_EXT_IN_FOLDERS", False)
     out = run(user, "add", str(make(tmp_path / "A", {"romfs_ext/data/x.arc.ips": ips((0, b"P")),
                                                      "romfs_ext/root.arc.ips": ips((0, b"P"))})))
     assert any("does nothing" in w for w in out["mods"][0]["warnings"])
@@ -684,3 +695,12 @@ def test_text_output(user, tmp_path, capsys):
     assert "(up to date)" in out and "code library: missing" in out
     assert mods.main(["--user-dir", str(user), "enable", "nothing"]) == 1
     assert "mods.py: no mod 'nothing' in the library" in capsys.readouterr().err
+
+
+def test_romfs_ext_folders_without_the_ports_fix(tmp_path, monkeypatch):
+    """Upstream Azahar reads only the top of romfs_ext/: a patch in a folder is left out."""
+    monkeypatch.setattr(mods, "ROMFS_EXT_IN_FOLDERS", False)
+    root = make(tmp_path / "m", {"romfs_ext/top.arc.stub": "", "romfs_ext/data/deep.arc.ips": ips((0, b"D"))})
+    mod = mods.scan(str(root), "m")
+    assert [f.dest for f in mod.files] == ["romfs_ext/top.arc.stub"]
+    assert "romfs_ext/data/deep.arc.ips: does nothing" in "\n".join(mod.warnings)

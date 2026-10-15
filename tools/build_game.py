@@ -41,6 +41,7 @@ import code_mods  # noqa: E402
 import codebin2elf  # noqa: E402
 import exheader as exh  # noqa: E402
 import extract_ncch  # noqa: E402
+import mods  # noqa: E402
 import recompile  # noqa: E402
 from recomp import build as rbuild  # noqa: E402
 from recomp.analysis import Image  # noqa: E402
@@ -254,6 +255,7 @@ def main(argv=None) -> int:
     program_id = struct.unpack_from("<Q", exheader_bytes, 0x200)[0]
 
     mods_dir = None if args.no_mods else (args.mods or args.install)
+    used, changes_code = [], False
     if mods_dir:
         modded, used = code_mods.apply_mods(code, mods_dir, program_id)
         if used:
@@ -263,7 +265,8 @@ def main(argv=None) -> int:
             print("code mods: " + ", ".join(used))
             for line in code_mods.describe(code, modded, segments):
                 print(f"  {line}")
-            if code_mods.changed_bytes(code, modded, 0, header.text.size):
+            changes_code = code_mods.changed_bytes(code, modded, 0, header.text.size) > 0
+            if changes_code:
                 print("  the mod changes the game's code: this library runs only with the same mod in "
                       "Azahar's mods folder (build again after adding, changing or removing it)")
             code = modded
@@ -294,6 +297,8 @@ def main(argv=None) -> int:
         dest_dir = os.path.join(args.install, "recomp")
         os.makedirs(dest_dir, exist_ok=True)
         shutil.copy2(lib, os.path.join(dest_dir, name))
+        # what it was built from, for tools/mods.py status (docs/MODS.md)
+        mods.write_build_record(os.path.join(dest_dir, name), used, header.text.size, changes_code, program_id)
         print(f"installed to {os.path.join(dest_dir, name)}")
     return 0
 

@@ -167,3 +167,39 @@ def test_default_user_dir(monkeypatch):
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setenv("APPDATA", "C:/Users/x/AppData/Roaming")
     assert build_game.default_user_dir() == os.path.join("C:/Users/x/AppData/Roaming", "Azahar")
+
+
+def test_build_game_records_code_mods(tmp_path):
+    """--install writes what the library was built from next to it, for tools/mods.py status."""
+    import json
+    import build_game
+    import make_cxi
+    import mods
+    text = struct.pack("<4I", 0xE3A0002A, 0xE12FFF1E, 0xE0800001, 0xE12FFF1E).ljust(0x1000, b"\0")
+    exheader = bytearray(0x800)
+    exheader[0:8] = b"SYNTH\0\0\0"
+    struct.pack_into("<III", exheader, 0x10, 0x00100000, 1, len(text))
+    struct.pack_into("<III", exheader, 0x20, 0x00101000, 1, 0x1000)
+    struct.pack_into("<III", exheader, 0x30, 0x00102000, 1, 0x1000)
+    struct.pack_into("<Q", exheader, 0x200, mods.PROGRAM_ID)
+    cxi = tmp_path / "synthetic.cxi"
+    cxi.write_bytes(make_cxi.make_cxi(bytes(exheader), fake_exefs(text + bytes(0x2000))))
+    functions = tmp_path / "functions.tsv"
+    functions.write_text("address\tsize\tmode\tkind\tname\tstatus\towner\tnotes\n"
+                         "0x00100000\t0x8\tarm\tunknown\t\ttodo\t\t\n0x00100008\t0x8\tarm\tunknown\t\ttodo\t\t\n")
+    install = tmp_path / "azahar-user"
+    exefs = install / "load" / "mods" / "0004000000126300" / "exefs"
+    exefs.mkdir(parents=True)
+    (exefs / "code.ips").write_bytes(b"PATCH" + (10).to_bytes(3, "big") + (1).to_bytes(2, "big") + b"\x40EOF")
+    args = ["--dump", str(cxi), "--opt", "O0", "--any-version", "--functions", str(functions), "--extra", "",
+            "--hooks", "", "--install", str(install), "-j", "2", "--out", str(tmp_path / "out")]
+    assert build_game.main(args) == 0
+    lib = install / "recomp" / build_game.library_name(mods.PROGRAM_ID)
+    record = json.loads((install / "recomp" / "0004000000126300.build.json").read_text())
+    assert record["changes_code"] is True and record["text_size"] == 0x1000 and record["code_mods"][0]["kind"] == "ips"
+    assert mods.code_library_state(str(install), str(lib))["state"] == "ok"
+    (exefs / "code.ips").write_bytes(b"PATCH" + (11).to_bytes(3, "big") + (1).to_bytes(2, "big") + b"\x40EOF")
+    assert mods.code_library_state(str(install), str(lib))["state"] == "rebuild"
+    assert build_game.main(args + ["--no-mods"]) == 0
+    record = json.loads((install / "recomp" / "0004000000126300.build.json").read_text())
+    assert record["code_mods"] == [] and record["changes_code"] is False

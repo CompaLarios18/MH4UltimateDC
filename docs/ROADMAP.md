@@ -53,7 +53,7 @@ A hybrid is common: recompile everything first (B) to get a running port, then r
 - [ ] Save data compatibility with real 3DS saves
 - [x] Gameplay loop: village → quest → hunt (played on Windows)
 
-## Phase 4 — PC niceties *(current)*
+## Phase 4 — PC niceties
 - [x] Research: frame pacing (the engine is delta-time based; frame limiter in `sMain`), widescreen (projection, render targets, culling, HUD anchoring), second screen (viewport 7, layout views, touch panels) — [`research/`](research/README.md)
 - [x] 60 fps: frame-rate cap hook, verified on the real game (frame delta 1/60 s, game speed unchanged); find what holds it at 30 on hardware
 - [x] Above 60: 120 fps (delta 1/120 s, movies stay at their own 30; the quest-start loading race it exposes is worked around), played on Windows in hunts
@@ -62,6 +62,17 @@ A hybrid is common: recompile everything first (B) to get a running port, then r
 - [x] Screen filters: bloom, depth of field (it blurs whole cutscenes in emulation), motion and radial blur and heat haze can each be turned off (`bloom`, `depth_of_field`, ... in `mh4u.ini`; [research/screen-filters.md](research/screen-filters.md))
 - [x] Resolution scaling, texture packs, rebindable controls and controllers: Azahar's
 - [ ] Multiplayer: Azahar's network rooms carry MH4U's local play; runners (`--room-host`, `--room-join`, `--lockstep`) meet in a Gathering Hall and go on a quest together: two (also with one on Azahar's own CPU emulation), three and four (after fixing Azahar's node ids for consoles that join at the same moment); net sync keeps the port's consoles together through a PC's stalls; two players in an Arena quest with preset gear; next a hunt with the monster in sight
+
+## Phase 5 — The port's own app *(current)*
+The game's code is native already; what remains of the 3DS is Azahar's core (system services, PICA200 graphics, DSP audio, network rooms), used as libraries. This phase replaces Azahar's *interface* with the port's own and builds the PC features on it; parts of the core get replaced only where they are in the way.
+- [x] `mh4u` app (`port/app/`): an SDL2 window on Azahar's core that opens MH4U directly, full screen, with the port's code library and options, Vulkan / OpenGL / software renderers (falling back in that order), the keyboard and a controller at once (the controller mapped on its own, remapped when plugged in), the mouse as the stylus, rooms joined or hosted from its settings (`mh4u-app.ini`); built for Windows, Linux and macOS in CI and shipped in the packages (`mh4u.exe`, `mh4u.AppImage`, `MH4U.app`)
+- [x] Servers of our own ([SERVER.md](SERVER.md)): a lobby (`server/lobby/mh4u_lobby.py`) compatible with Azahar's lobby client, so *Browse Public Game Lobby* and public rooms work again, checked end to end against Azahar's dedicated room; host scripts and Docker for dedicated rooms; a room's host rights only for the host's checked name
+- [x] Mods ([MODS.md](MODS.md)): a mod library with order, conflicts and deployment into Azahar's mods folder (`tools/mods.py`, JSON for the app), code mods tied to the code library; the port's Azahar reads `romfs_ext/` sub-folders, where MH4U's archives are
+- [x] Metal: MoltenVK now, a native backend only on a measured trigger ([research/metal.md](research/metal.md))
+- [ ] In-game menu (Dear ImGui over the game): the options of `mh4u.ini` and `mh4u-app.ini` live, controls, the room and its players, quitting
+- [ ] Launcher screens: first-run setup (game file, update, code library with progress), mods, servers (a lobby's room list, join/host)
+- [ ] The second screen gone: the touch screen only when the game needs it (`touch_screen = map/hidden`), the bottom pass skipped while hidden, item shortcuts on buttons, a controller cursor for touch menus, the software keyboard (names, chat) in the app
+- [ ] Measure on Apple silicon (checklist in research/metal.md); native Metal only if MoltenVK can't hold the frame rate
 
 ## Prior art to study
 - N64Recomp + Zelda64Recomp, XenonRecomp + UnleashedRecomp — static recompilation to PC

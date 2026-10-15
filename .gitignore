@@ -36,11 +36,18 @@ out/
 *.idb
 *.bndb
 
+# ── Servers' own state (server/): a lobby's private key and names, a room's token ──
+lobby-data/
+server/docker/.env
+
 # ── Python ─────────────────────────────────────────────
 __pycache__/
 *.pyc
 .venv/
 .pytest_cache/
+
+# ── Agents' git worktrees ──────────────────────────────
+.claude/worktrees/
 
 # ── Editors / OS ───────────────────────────────────────
 .vscode/

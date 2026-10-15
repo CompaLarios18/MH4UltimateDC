@@ -196,6 +196,23 @@ index 5920595..bc107db 100644
      std::vector<std::shared_ptr<ARM_Interface>> cpu_cores;
      ARM_Interface* running_core = nullptr;
  
+diff --git a/src/core/file_sys/layered_fs.cpp b/src/core/file_sys/layered_fs.cpp
+index 7bcb6a4..34460df 100644
+--- a/src/core/file_sys/layered_fs.cpp
++++ b/src/core/file_sys/layered_fs.cpp
+@@ -200,7 +200,11 @@ void LayeredFS::LoadExtRelocations() {
+     FileUtil::FSTEntry result;
+     FileUtil::ScanDirectoryTree(patch_ext_path, result, 256);
+ 
+-    for (const auto& entry : result.children) {
++    // MH4U port: the files in sub-folders too (a game's archives sit in folders, e.g. MH4U's
++    // data/ and eng/data/; only the top level used to be looked at)
++    std::vector<FileUtil::FSTEntry> files;
++    FileUtil::GetAllFilesFromNestedEntries(result, files);
++    for (const auto& entry : files) {
+         if (FileUtil::IsDirectory(entry.physicalName)) {
+             continue;
+         }
 diff --git a/src/core/frontend/emu_window.cpp b/src/core/frontend/emu_window.cpp
 index 9a2d032..803a647 100644
 --- a/src/core/frontend/emu_window.cpp
@@ -818,6 +835,25 @@ index c17f61b..a53d79b 100644
  #ifdef ENABLE_GCADAPTER
      if (engine == "gcpad") {
          return gcanalog->GetGcTo3DSMappedAnalog(params.Get("port", 0), native_analog);
+diff --git a/src/network/room.cpp b/src/network/room.cpp
+index a30ab0a..08b51ed 100644
+--- a/src/network/room.cpp
++++ b/src/network/room.cpp
+@@ -373,7 +373,13 @@ void Room::RoomImpl::HandleJoinRequest(const ENetEvent* event) {
+     }
+     member.user_data = verify_backend->LoadUserData(uid, token);
+ 
+-    if (nickname == room_information.host_username) {
++    // MH4U port: the host's rights go to the host's checked name (a lobby vouched for it), or to
++    // the host's own client, which joins the room it created from this machine. A nickname alone
++    // is anyone's to type, and a lobby shows a dedicated room's username as its owner.
++    const bool from_this_machine = event->peer->address.host == ENET_HOST_TO_NET_32(0x7F000001);
++    if (!room_information.host_username.empty() &&
++        (member.user_data.username == room_information.host_username ||
++         (from_this_machine && nickname == room_information.host_username))) {
+         member.user_data.moderator = true;
+         LOG_INFO(Network, "User {} is a moderator", std::string(room_information.host_username));
+     }
 diff --git a/src/video_core/gpu.cpp b/src/video_core/gpu.cpp
 index 87b7707..2d2f6a2 100644
 --- a/src/video_core/gpu.cpp

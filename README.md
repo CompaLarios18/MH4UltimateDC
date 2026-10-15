@@ -6,7 +6,7 @@ A work-in-progress decompilation of **Monster Hunter 4 Ultimate** (Nintendo 3DS)
 
 ## Status
 
-🟩 **Playable; Phase 4 — PC niceties.** Target version is **USA v1.3.0**.
+🟩 **Playable; Phase 5 — the port's own app.** Target version is **USA v1.3.0**.
 
 - A **static recompiler** translates the whole game (~40,000 functions, 3.2 M ARM/Thumb instructions) into C, generated on your machine from your own dump and verified against an ARM11 model ([`docs/RECOMPILER.md`](docs/RECOMPILER.md)).
 - That code runs as the CPU of **Azahar's 3DS core** (kernel, services, GPU, audio, network rooms), inside Azahar's normal interface, on Windows, Linux and macOS ([`docs/PORT_ARCHITECTURE.md`](docs/PORT_ARCHITECTURE.md), [`port/`](port/)). The village, quests and hunts are played on Windows at 60 and 120 fps, with sound.
@@ -16,7 +16,9 @@ A work-in-progress decompilation of **Monster Hunter 4 Ultimate** (Nintendo 3DS)
   - no dither grid when upscaling, and the game's screen filters (bloom, the focus blur of cutscenes, motion and radial blur) each switchable;
   - the kick and the target camera on buttons, and the touch screen as an overlay in a corner of a full-window game (in quests, just the map).
 - **Local multiplayer** goes over Azahar's network rooms, also with players on official Azahar: two to four players meet in a Gathering Hall and go on quests together, at different frame rates if they like, and the port keeps them together when a PC stalls.
-- **Community mods**: code mods (`code.ips`, `code.bps`) are applied before recompiling; data and RomFS mods work as on Azahar.
+- **The port's own app**, `mh4u`: opens the game directly in a window of its own (no emulator interface), full screen, Vulkan, OpenGL or software, keyboard and controller at once, the touch screen as an overlay; in the Windows, Linux and macOS packages next to the port's Azahar ([`port/app/`](port/app/), [`docs/ROADMAP.md`](docs/ROADMAP.md) Phase 5).
+- **Servers of our own** for online play: a lobby server compatible with Azahar's lobby client (public room lists work again) and scripts/Docker for dedicated rooms ([`docs/SERVER.md`](docs/SERVER.md)).
+- **Community mods**: a mod manager with load order and conflicts ([`docs/MODS.md`](docs/MODS.md)); code mods (`code.ips`, `code.bps`) are applied before recompiling; data and RomFS mods work as on Azahar.
 - Where the port needs to change behaviour, functions also get hand-decompiled into readable C, each one verified with `tools/difftest.py`.
 
 How to play it: [`docs/PLAYING.md`](docs/PLAYING.md). The plan: [`docs/ROADMAP.md`](docs/ROADMAP.md).
@@ -58,7 +60,8 @@ python3 tools/build_game.py --dump "MH4U v1.3.0 update.cia" --install --fetch-co
 | `tools/` | Python tooling (BLZ decompression, exheader parsing, code.bin → ELF, difftest, static recompiler in `tools/recomp/`) |
 | `config/` | Per-region version info (hashes, title IDs) — filled in as dumps are verified |
 | `src/`, `include/` | Hand-decompiled C, each function verified with `tools/difftest.py` |
-| `port/` | The PC port: a recompiled-code CPU backend for Azahar's 3DS core, the hooks on game functions, a headless runner for tests |
+| `port/` | The PC port: a recompiled-code CPU backend for Azahar's 3DS core, the hooks on game functions, a headless runner for tests, and the app (`port/app/`) |
+| `server/` | Online play: a lobby server and dedicated-room scripts ([`docs/SERVER.md`](docs/SERVER.md)) |
 | `docs/` | Roadmap, setup, legal, research notes |
 | `baserom/`, `build/` | **Git-ignored.** Your dump and build output |
 
