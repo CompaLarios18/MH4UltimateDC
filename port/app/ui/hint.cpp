@@ -32,8 +32,6 @@ int ButtonIndex(const std::string& name) {
     return -1;
 }
 
-} // namespace
-
 /// The app's key and controller button for one 3DS button ("C / RT"), each part "" when
 /// unbound: `key`, `pad`.
 std::pair<std::string, std::string> Names(const Config& config, const std::string& button) {
