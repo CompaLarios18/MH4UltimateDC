@@ -108,12 +108,16 @@ const char* const USAGE = R"(usage: mh4u_runner <file> [options]
                     the hooks read as the game runs: fps, refresh_rate, dither, kick, target,
                     quest_overlay, hud_edges, bloom, depth_of_field, ...), e.g. one player of a
                     session at 120 fps once everyone is in (repeatable)
-or:    mh4u_runner --overlay-layout SPEC WIDTHxHEIGHT[:TOP_WIDTH] [QUEST SLOT]
+or:    mh4u_runner --overlay-layout SPEC WIDTHxHEIGHT[:TOP_WIDTH] [QUEST SLOT [TARGET TSLOT]]
                     print the custom screen layout the port's touch_overlay option SPEC
                     gives a window that size (top screen TOP_WIDTH x 240, default 400);
                     with the quest_overlay option QUEST and the map's touch-panel slot,
                     the layout while a quest's panels are up, the part of the touch screen
-                    shown, and where on the touch screen a click in the overlay's middle lands
+                    shown, and where on the touch screen a click in the overlay's middle lands;
+                    with the target_overlay option TARGET and the target camera's slot, the
+                    same for the target camera's view
+or:    mh4u_runner --panel-view quest_overlay|target_overlay VALUE
+                    print the option's value as the port reads it and writes it back
 or:    mh4u_runner --quest-overlay-frames FPS KIND:SECONDS[,KIND:SECONDS...]
                     run a made-up quest's frames through the choice of what the touch overlay
                     shows and print each change; KIND: map0..map5 (the small panels up, the map
@@ -684,7 +688,7 @@ void PrintRoomMembers() {
 /// with a quest_overlay option and the map's panel slot, what a quest shows: the part of the
 /// touch screen in the corner and where a click in its middle touches.
 int PrintOverlayLayout(const std::string& spec, const std::string& size, const std::string& quest,
-                       const std::string& slot) {
+                       const std::string& slot, const std::string& target, const std::string& target_slot) {
     unsigned width = 0, height = 0, top_width = Core::kScreenTopWidth;
     if (std::sscanf(size.c_str(), "%ux%u:%u", &width, &height, &top_width) < 2 || !width ||
         !height || !top_width) {
@@ -693,9 +697,11 @@ int PrintOverlayLayout(const std::string& spec, const std::string& size, const s
     Layout::SetTopScreenWidth(top_width);
     auto overlay = Port::Hooks::ParseOverlay(spec);
     if (!quest.empty()) {
-        const float map_height = Port::Hooks::ParseQuestOverlay(quest);
-        if (map_height >= 0) {
-            overlay = Port::Hooks::MapOverlay(overlay, std::atoi(slot.c_str()), map_height);
+        const auto map = Port::Hooks::ParseQuestOverlay(quest);
+        if (map.on) {
+            overlay = Port::Hooks::QuestOverlay(overlay, std::atoi(slot.c_str()), map,
+                                                target.empty() ? -1 : std::atoi(target_slot.c_str()),
+                                                Port::Hooks::ParseTargetOverlay(target));
         }
     }
     Layout::SetScreenOverlay(overlay);
@@ -724,6 +730,26 @@ int PrintOverlayLayout(const std::string& spec, const std::string& size, const s
     const auto [touch_x, touch_y, pressed] = touch->GetStatus();
     std::printf("a click at %u,%u touches %.0f,%.0f%s\n", x, y, touch_x * Core::kScreenBottomWidth,
                 touch_y * Core::kScreenBottomHeight, pressed ? "" : " (not pressed)");
+    window.TouchReleased();
+    // the further views (the target camera): where, which part, and a click on each, then
+    // dragged to the window's bottom-left corner (the touch stays on the view's part)
+    const auto& framebuffer = window.GetFramebufferLayout();
+    for (u32 i = 0; i < framebuffer.bottom_view_count; ++i) {
+        const auto& [r, part] = framebuffer.bottom_views[i];
+        std::printf("view %u,%u %u,%u shows %.0f,%.0f %.0f,%.0f of the touch screen\n", r.left, r.top,
+                    r.right, r.bottom, part.left * Core::kScreenBottomWidth, part.top * Core::kScreenBottomHeight,
+                    part.right * Core::kScreenBottomWidth, part.bottom * Core::kScreenBottomHeight);
+        const unsigned vx = (r.left + r.right) / 2, vy = (r.top + r.bottom) / 2;
+        window.TouchPressed(vx, vy);
+        const auto [view_x, view_y, view_pressed] = touch->GetStatus();
+        std::printf("a click at %u,%u touches %.0f,%.0f%s\n", vx, vy, view_x * Core::kScreenBottomWidth,
+                    view_y * Core::kScreenBottomHeight, view_pressed ? "" : " (not pressed)");
+        window.TouchMoved(0, height - 1);
+        const auto [drag_x, drag_y, drag_pressed] = touch->GetStatus();
+        std::printf("dragged to 0,%u it touches %.0f,%.0f%s\n", height - 1, drag_x * Core::kScreenBottomWidth,
+                    drag_y * Core::kScreenBottomHeight, drag_pressed ? "" : " (not pressed)");
+        window.TouchReleased();
+    }
     return 0;
 }
 
@@ -784,8 +810,20 @@ int PrintQuestOverlayFrames(const std::string& fps_text, const std::string& span
 }
 
 int main(int argc, char** argv) {
-    if ((argc == 4 || argc == 6) && std::string(argv[1]) == "--overlay-layout") {
-        return PrintOverlayLayout(argv[2], argv[3], argc == 6 ? argv[4] : "", argc == 6 ? argv[5] : "");
+    if (argc == 4 && std::string(argv[1]) == "--panel-view") {
+        // a quest_overlay or target_overlay value as the hooks read it and the menu writes it
+        const std::string key = argv[2];
+        if (key != "quest_overlay" && key != "target_overlay") {
+            return Usage();
+        }
+        const bool map = key == "quest_overlay";
+        const auto view = map ? Port::Hooks::ParseQuestOverlay(argv[3]) : Port::Hooks::ParseTargetOverlay(argv[3]);
+        std::printf("%s\n", (map ? Port::Hooks::FormatQuestOverlay(view) : Port::Hooks::FormatTargetOverlay(view)).c_str());
+        return 0;
+    }
+    if ((argc == 4 || argc == 6 || argc == 8) && std::string(argv[1]) == "--overlay-layout") {
+        return PrintOverlayLayout(argv[2], argv[3], argc >= 6 ? argv[4] : "", argc >= 6 ? argv[5] : "",
+                                  argc == 8 ? argv[6] : "", argc == 8 ? argv[7] : "");
     }
     if (argc == 4 && std::string(argv[1]) == "--quest-overlay-frames") {
         return PrintQuestOverlayFrames(argv[2], argv[3]);

@@ -424,6 +424,79 @@ def test_quest_map_overlay(quest, slot, expected):
     assert r.stdout == expected
 
 
+@pytest.mark.skipif(not os.environ.get("MH4U_RUNNER"), reason="port not built (set MH4U_RUNNER)")
+@pytest.mark.parametrize("quest, slot, target, tslot, expected", [
+    # the map placed at the bottom of the window, in the middle
+    ("map 40 at 50 100", "0", None, None,
+     "top 6,0 1914,1080 opacity 1.00\nbottom 706,648 1214,1080 opacity 0.85\n"
+     "shows 0,36 160,172 of the touch screen\na click at 960,864 touches 80,104\n"),
+    # the target camera (slot 2 of the default layout) right under the map, at the same scale;
+    # a click on it touches the panel, and a drag that started on it stays on it
+    ("map", "0", "on", "2",
+     "top 6,0 1914,1080 opacity 1.00\nbottom 1704,0 1920,184 opacity 0.85\n"
+     "shows 0,36 160,172 of the touch screen\na click at 1812,92 touches 80,104\n"
+     "view 1704,184 1920,276 shows 0,172 160,240 of the touch screen\n"
+     "a click at 1812,230 touches 80,206\ndragged to 0,1079 it touches 0,239\n"),
+    # the map in the bottom-right corner: the target camera goes over it
+    ("map 40 at 100 100", "3", "on", "5",
+     "top 6,0 1914,1080 opacity 1.00\nbottom 1412,648 1920,1080 opacity 0.85\n"
+     "shows 160,36 320,172 of the touch screen\na click at 1666,864 touches 240,104\n"
+     "view 1704,556 1920,648 shows 160,172 320,240 of the touch screen\n"
+     "a click at 1812,602 touches 240,206\ndragged to 0,1079 it touches 160,239\n"),
+    # placed on its own: the top-left corner, 10% of the window's height
+    ("map", "0", "on 10 at 0 0", "2",
+     "top 6,0 1914,1080 opacity 1.00\nbottom 1704,0 1920,184 opacity 0.85\n"
+     "shows 0,36 160,172 of the touch screen\na click at 1812,92 touches 80,104\n"
+     "view 0,0 254,108 shows 0,172 160,240 of the touch screen\n"
+     "a click at 127,54 touches 80,206\ndragged to 0,1079 it touches 0,239\n"),
+    # off, or no target camera panel in the layout: the map alone
+    ("map", "0", "off", "2",
+     "top 6,0 1914,1080 opacity 1.00\nbottom 1704,0 1920,184 opacity 0.85\n"
+     "shows 0,36 160,172 of the touch screen\na click at 1812,92 touches 80,104\n"),
+    ("map", "0", "on", "-1",
+     "top 6,0 1914,1080 opacity 1.00\nbottom 1704,0 1920,184 opacity 0.85\n"
+     "shows 0,36 160,172 of the touch screen\na click at 1812,92 touches 80,104\n"),
+])
+def test_quest_panel_views(quest, slot, target, tslot, expected):
+    """The quest's map placed anywhere in the window (quest_overlay = map SIZE at X Y), and the
+    target camera panel in a view of its own (target_overlay): drawn where the options say,
+    showing its slot of the touch screen, and a click on it is a tap on the panel."""
+    args = [quest, slot] + ([target, tslot] if target else [])
+    r = subprocess.run([os.environ["MH4U_RUNNER"], "--overlay-layout", "top-right 30 85", "1920x1080:424", *args],
+                       capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0, r.stderr
+    assert r.stdout == expected
+
+
+@pytest.mark.skipif(not os.environ.get("MH4U_RUNNER"), reason="port not built (set MH4U_RUNNER)")
+@pytest.mark.parametrize("key, value, expected", [
+    ("quest_overlay", "map", "map"),
+    ("quest_overlay", "on", "map"),
+    ("quest_overlay", "MAP 40", "map 40"),
+    ("quest_overlay", "map 40 at 98 2", "map 40 at 98 2"),
+    ("quest_overlay", "map at 50 100", "map at 50 100"),
+    ("quest_overlay", "map 17.53 at 33.333 0.04", "map 17.5 at 33.3 0"),
+    ("quest_overlay", "map 40 at 150 -5", "map 40 at 100 0"),
+    ("quest_overlay", "map 40 at", "map 40"),
+    ("quest_overlay", "off", "off"),
+    ("target_overlay", "on", "on"),
+    ("target_overlay", "target 10", "on 10"),
+    ("target_overlay", "on 12 at 100 45", "on 12 at 100 45"),
+    ("target_overlay", "off", "off"),
+    ("target_overlay", "", "off"),
+])
+def test_panel_view_option(key, value, expected):
+    """quest_overlay and target_overlay as the hooks read them and the in-game menu writes them
+    back to mh4u.ini (to 0.1%, inside the window)."""
+    r = subprocess.run([os.environ["MH4U_RUNNER"], "--panel-view", key, value], capture_output=True, text=True,
+                       timeout=60)
+    assert r.returncode == 0, r.stderr
+    assert r.stdout == expected + "\n"
+    again = subprocess.run([os.environ["MH4U_RUNNER"], "--panel-view", key, expected], capture_output=True,
+                           text=True, timeout=60)
+    assert again.stdout == expected + "\n"
+
+
 QUEST_FLICKER = ",".join(["map0:2"] + ["none:0.3,map0:0.3"] * 6 + ["map0:1"])
 
 

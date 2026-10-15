@@ -125,6 +125,12 @@ private:
         } else {
             top();
             bottom();
+            // and further parts of the touch screen, each where the layout puts it (the quest's
+            // target camera beside the map)
+            for (u32 i = 0; i < layout.bottom_view_count && layout.bottom_screen_enabled; ++i) {
+                DrawScreen(surface, VideoCore::ScreenId::Bottom, scaled(layout.bottom_views[i].screen),
+                           layout.bottom_views[i].crop, layout.bottom_opacity);
+            }
         }
         if (!is_secondary) {
             Ui::DrawSoftware(surface); // the in-game menu over them

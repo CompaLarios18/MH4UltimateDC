@@ -21,8 +21,8 @@ std::vector<std::string> Install(const RCodeInfo& info);
 /// Changes one of the options above while the game runs (the runner's --set, for tests: one
 /// player of a session at another frame rate once everyone is in, say; the app's in-game
 /// menu). Only options that the hooks read as the game runs can change: fps, refresh_rate,
-/// dither, render_flags_set, render_flags_clear, kick, target, touch_overlay, quest_overlay
-/// (both redo the screen layout at once), hud_edges, the screen filters (bloom, motion_blur,
+/// dither, render_flags_set, render_flags_clear, kick, target, touch_overlay, quest_overlay,
+/// target_overlay (these redo the screen layout at once), hud_edges, the screen filters (bloom, motion_blur,
 /// depth_of_field, radial_blur, haze) and the trace_* options. Call it on the emulation
 /// thread. Returns false for any other key.
 bool SetOption(const std::string& key, const std::string& value);
@@ -40,15 +40,54 @@ int MissingHookPoints();
 /// in %), "on" (top right, 30%, 85%) or "off".
 Layout::ScreenOverlay ParseOverlay(std::string value);
 
+/// The quest's touch panels: six slots of 160x68 touch-screen pixels under a 36-pixel bar, in
+/// two columns of three. The map takes two slots one above the other, the target camera one.
+constexpr int PANEL_SLOT_WIDTH = 160, PANEL_SLOT_HEIGHT = 68, PANEL_SLOTS_TOP = 36;
+
+/// A touch panel shown on its own over the game in a quest (the map, the target camera):
+/// whether it is, its height as a fraction of the window's (0: at the touch overlay's scale)
+/// and, when `placed`, where: x and y from 0 (its left or top edge at the window's) to 1 (its
+/// right or bottom edge at the window's), fractions of the room the window leaves beside and
+/// above it, so that it stays in the window at any size. Not placed, the map goes in the touch
+/// overlay's corner and the target camera right under the map (over it if there is no room).
+struct PanelView {
+    bool on = false;
+    float height = 0.0f;
+    bool placed = false;
+    float x = 1.0f, y = 0.0f;
+};
+
 /// The quest_overlay option: "map" (while a quest's touch panels are up, the touch overlay
 /// shows the map panel alone, at its own scale), "map 40" (the map 40% of the window's
-/// height) or "off". Returns that height as a fraction, 0 for the overlay's scale, < 0 off.
-float ParseQuestOverlay(std::string value);
+/// height), "map 40 at 100 0" (and at x = 100%, y = 0%: the top-right corner) or "off".
+PanelView ParseQuestOverlay(std::string value);
+/// The target_overlay option: "on" (with the map, the target camera panel in a view of its
+/// own beside it), "on 12" (12% of the window's height), "on 12 at 100 20" or "off".
+PanelView ParseTargetOverlay(std::string value);
+/// The options' text for these ("map 40 at 100 0", "on", "off"), numbers to 0.1%.
+std::string FormatQuestOverlay(const PanelView& map);
+std::string FormatTargetOverlay(const PanelView& target);
 
-/// The touch overlay `overlay` cut down to the quest's map in touch-panel slot `slot` (0-2
-/// the left column from the top, 3-5 the right one), `height` times the window's height
-/// (0: at the overlay's own scale).
-Layout::ScreenOverlay MapOverlay(const Layout::ScreenOverlay& overlay, int slot, float height);
+/// Where a panel's view goes in the end: its height (a fraction of the window's) and its place
+/// (as PanelView's x and y).
+struct Placement {
+    float height = 0.0f, x = 1.0f, y = 0.0f;
+};
+Placement MapPlacement(const Layout::ScreenOverlay& touch, const PanelView& map);
+Placement TargetPlacement(const Layout::ScreenOverlay& touch, const PanelView& map,
+                          const PanelView& target);
+
+/// The touch overlay `touch` cut down to the quest's map in touch-panel slot `map_slot` (0-2
+/// the left column from the top, 3-5 the right one), placed as `map` says, and with
+/// `target_slot` >= 0 the target camera panel in that slot as a further view placed as
+/// `target` says.
+Layout::ScreenOverlay QuestOverlay(const Layout::ScreenOverlay& touch, int map_slot, const PanelView& map,
+                                   int target_slot = -1, const PanelView& target = {});
+
+/// The app's layout editor: while on, the touch overlay shows the map and the target camera
+/// as in a quest (in the slots a quest last had them, else the default panel layout's), even
+/// outside quests. Call it on the emulation thread.
+void SetLayoutEditing(bool on);
 
 /// What the touch overlay shows in a quest (quest_overlay), worked out once a frame. The map
 /// alone while the quest's small touch panels are up; the whole touch screen while the quest
