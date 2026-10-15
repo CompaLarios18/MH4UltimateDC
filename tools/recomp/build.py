@@ -47,7 +47,9 @@ def build(outdir: str, jobs: int, opt: str, defines: list[str], lib_name: str, e
     with open(runtime_header or os.path.join(RUNTIME, "recomp.h"), "rb") as fh:
         header_hash = hashlib.sha1(fh.read()).hexdigest()
     stamp = os.path.join(obj_dir, "recomp.h.sha1")
-    header_changed = not os.path.exists(stamp) or open(stamp).read().strip() != header_hash
+    # no stamp yet (objects from before it was kept): they were built against the header
+    # of their day, which the old date check kept current, so they stand and get the stamp
+    header_changed = os.path.exists(stamp) and open(stamp).read().strip() != header_hash
     flags = [f"-{opt}", *BASE_FLAGS, f"-I{src_dir}", *[f"-D{d}" for d in defines], *(extra_flags or [])]
     sources = sorted(os.path.join(src_dir, f) for f in os.listdir(src_dir) if f.endswith(".c")) + extra_sources
     # objects are named after everything that changes the code, so builds with other

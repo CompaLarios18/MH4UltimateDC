@@ -47,6 +47,10 @@ def test_header_date_does_not_matter_its_contents_do(tmp_path):
     rbuild.build(str(tmp_path), 1, "O0", [], "one.so", [], runtime_header=str(header))
     assert objects(tmp_path) == objs
     assert os.path.getmtime(tmp_path / "obj" / objs[0]) == stamp          # nothing recompiled
+    os.remove(tmp_path / "obj" / "recomp.h.sha1")                        # objects from before the stamp
+    rbuild.build(str(tmp_path), 1, "O0", [], "one.so", [], runtime_header=str(header))
+    assert os.path.getmtime(tmp_path / "obj" / objs[0]) == stamp          # kept, and stamped now
+    assert (tmp_path / "obj" / "recomp.h.sha1").exists()
     header.write_text("/* v2 */\n")                                        # changed contents
     os.utime(header, (stamp - 3600, stamp - 3600))                       # even with an old date
     rbuild.build(str(tmp_path), 1, "O0", [], "one.so", [], runtime_header=str(header))
