@@ -74,7 +74,7 @@ The game's code is native already; what remains of the 3DS is Azahar's core (sys
 - [x] Rooms while the game runs: join, host and leave from the menu's *Multiplayer* tab without starting again, invite codes (`mh4u://HOST:PORT?password=...`) with Copy and Paste, a lobby's rooms in the menu, Rejoin last room; a late join checked with two instances in the cloud (room and local-wireless traffic both ways)
 - [x] Quest HUD: the map anywhere at any size, the target camera panel in a view of its own (whom the camera targets; a click on it is a tap), *Edit HUD layout* to drag and resize both over the game; checked on an expedition with Vulkan and OpenGL
 - [x] Mod catalog in the launcher (`tools/mods_catalog.json`): the HD texture pack and four more, installed with one click (downloads resumed and checked, `.zip`/`.7z`/`.tar`); code mods with a code cave recompiled into the library
-- [x] A frame-rate counter (F3, off by default); the touch screen's *Skip* after a quest on a button with a hint on screen (`skip`; to be tried in a quest)
+- [x] A frame-rate counter (F3, off by default); the touch screen's *Skip* after a quest on a button with a hint on screen (`skip`; tried by the maintainer)
 - [ ] The second screen gone: the touch screen only when the game needs it (`touch_screen = map/hidden`), the bottom pass skipped while hidden, item shortcuts on buttons, a controller cursor for touch menus
 - [ ] Measure on Apple silicon (checklist in research/metal.md); native Metal only if MoltenVK can't hold the frame rate
 

@@ -10,7 +10,7 @@ These packages contain **no game code or data**. You need your own decrypted cop
 
 | System | File | Status |
 |---|---|---|
-| Windows 10/11 (x64) | `mh4u-port-windows.zip` | played for hours, hunts included, at 120 fps (in Azahar) |
+| Windows 10/11 (x64) | `mh4u-port-windows.zip` | played for hours, hunts included, at 120 fps; the app tried by the maintainer before this release |
 | Linux (x86-64, Steam Deck too) | `mh4u-port-linux.tar.gz` | two AppImages, the app and Azahar; Azahar tried on Ubuntu 24.04 |
 | macOS (Apple silicon) | `mh4u-port-macos.zip` | two apps, MH4U and Azahar; builds, not tried on a Mac yet |
 
@@ -43,7 +43,7 @@ In the app: Esc → *Multiplayer* → *Host a room*, *Copy* the invite and send 
 
 ## Known limits
 
-- The app is new: it can't install other CIAs or change Azahar's own settings (Azahar, in the same package, does); the game has run in it in the cloud on Vulkan and OpenGL, but only Azahar has been played for hours.
+- The app is new: it can't install other CIAs or change Azahar's own settings (Azahar, in the same package, does); it has been tried on Windows and in the cloud (Vulkan and OpenGL), less than Azahar.
 - Save states don't work with the recompiled code: save in the game.
 - Cheats that rewrite code don't apply (ones that change data do).
 - The macOS build hasn't been tried on a Mac yet.
