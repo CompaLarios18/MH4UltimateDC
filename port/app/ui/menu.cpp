@@ -47,11 +47,13 @@ const std::map<std::string, std::string> GAME_DEFAULTS = {
     {"fps", "0"},           {"refresh_rate", "0"}, {"widescreen", "off"}, {"wide_render", "0"},
     {"hud_edges", "1"},     {"touch_overlay", "off"}, {"quest_overlay", "map"}, {"kick", "off"},
     {"target", "off"},      {"dither", "on"},      {"bloom", "on"},       {"depth_of_field", "on"},
-    {"motion_blur", "on"},  {"radial_blur", "on"}, {"haze", "on"},        {"net_sync", "on"}};
+    {"motion_blur", "on"},  {"radial_blur", "on"}, {"haze", "on"},        {"net_sync", "on"},
+    {"target_overlay", "on"}};
 const std::set<std::string> GAME_LIVE = {"fps",           "refresh_rate", "hud_edges", "touch_overlay",
-                                         "quest_overlay", "kick",         "target",    "dither",
-                                         "bloom",         "depth_of_field", "motion_blur",
+                                         "quest_overlay", "target_overlay", "kick",    "target",
+                                         "dither",        "bloom",        "depth_of_field", "motion_blur",
                                          "radial_blur",   "haze"};
+constexpr const char* PANEL_VIEW_KEYS[] = {"quest_overlay", "target_overlay"};
 
 bool IsOn(const std::string& v) {
     return v == "1" || v == "on" || v == "yes" || v == "true";
@@ -401,6 +403,9 @@ void Menu::Opened() {
 
 void Menu::Closed() {
     capture = -1;
+    if (layout_edit) {
+        EndLayoutEdit(); // closed from the editor (Done, or the controller's Guide): kept
+    }
     if (!game_changes.empty()) {
         const std::string path = Port::OptionsPath();
         std::string text;
@@ -527,6 +532,11 @@ void Menu::OnCapturedKey(int scancode) {
 }
 
 void Menu::Draw() {
+    if (layout_edit) {
+        DrawLayoutEditor();
+        just_opened = false;
+        return;
+    }
     const ImGuiIO& io = ImGui::GetIO();
     const float em = ImGui::GetFontSize();
     // the game, dimmed behind the menu
@@ -730,21 +740,38 @@ void Menu::DrawGame() {
             }
         }
         Row("In quests, only the map");
-        const float quest = Port::Hooks::ParseQuestOverlay(Game("quest_overlay"));
-        bool map = quest >= 0.0f;
-        if (ImGui::Checkbox("##quest_overlay", &map)) {
-            SetGame("quest_overlay", map ? "map" : "off");
+        auto map = Port::Hooks::ParseQuestOverlay(Game("quest_overlay"));
+        if (ImGui::Checkbox("##quest_overlay", &map.on)) {
+            SetGame("quest_overlay", map.on ? "map" : "off");
         }
         layer.Help("In a quest the corner shows the map alone, and the whole touch screen again for the "
                    "quest menu (F12 or the right stick's click switch it while you play).");
-        if (map) {
-            Row("Map size");
-            int percent = static_cast<int>(std::lround(std::max(quest, 0.0f) * 100));
-            if (ImGui::SliderInt("##map", &percent, 0, 100,
-                                 percent == 0 ? "the touch screen's scale" : "%d%% of the window's height")) {
-                SetGame("quest_overlay", percent == 0 ? "map" : fmt::format("map {}", std::max(percent, 5)));
+        if (map.on) {
+            DrawPanelViewRows("quest_overlay", "Map");
+            Row("Target camera beside the map");
+            auto target = Port::Hooks::ParseTargetOverlay(Game("target_overlay"));
+            if (ImGui::Checkbox("##target_overlay", &target.on)) {
+                SetGame("target_overlay", target.on ? "on" : "off");
             }
-            layer.Help("0: the map as large as it is in the touch screen.");
+            layer.Help("With the map, the target camera panel (the large monster the camera follows; a tap on "
+                       "it changes the target) in a small view of its own, if your panel layout has it.");
+            if (target.on) {
+                DrawPanelViewRows("target_overlay", "Target camera");
+            }
+        }
+        if (on) {
+            Row("Move them with the mouse");
+            const bool overlay_layout =
+                Settings::values.layout_option.GetValue() == Settings::LayoutOption::CustomLayout;
+            ImGui::BeginDisabled(!overlay_layout);
+            if (ImGui::Button("Edit HUD layout", ImVec2(-FLT_MIN, 0.0f))) {
+                StartLayoutEdit();
+            }
+            ImGui::EndDisabled();
+            layer.Help(overlay_layout
+                           ? "Shows the map and the target camera over the game as in a quest (outside one, "
+                             "whatever the touch screen has there): drag them, and drag a corner to resize."
+                           : "Needs the screens set to the game with the touch screen in a corner (Display).");
         }
         ImGui::EndTable();
     }
@@ -812,6 +839,284 @@ void Menu::DrawGame() {
         layer.Help("In a room, the port's players wait a moment for one whose PC stalls, instead of the "
                    "game dropping them.");
         ImGui::EndTable();
+    }
+}
+
+// ── Touch screen: the quest's map and target camera views, and their editor ──
+
+namespace {
+
+using Port::Hooks::PanelView;
+using Port::Hooks::Placement;
+
+bool IsMapKey(const std::string& key) {
+    return key == "quest_overlay";
+}
+
+PanelView ParseView(const std::string& key, const std::string& value) {
+    return IsMapKey(key) ? Port::Hooks::ParseQuestOverlay(value) : Port::Hooks::ParseTargetOverlay(value);
+}
+
+std::string FormatView(const std::string& key, const PanelView& view) {
+    return IsMapKey(key) ? Port::Hooks::FormatQuestOverlay(view) : Port::Hooks::FormatTargetOverlay(view);
+}
+
+/// A view's width over its height: the map is two touch-panel slots tall, the target camera one.
+float ViewAspect(const std::string& key) {
+    return static_cast<float>(Port::Hooks::PANEL_SLOT_WIDTH) /
+           static_cast<float>(Port::Hooks::PANEL_SLOT_HEIGHT * (IsMapKey(key) ? 2 : 1));
+}
+
+/// Where a view is in a `width` x `height` window, as Azahar's overlay layout puts it.
+ImVec4 ViewRect(const Placement& p, float aspect, float width, float height) {
+    const float h = std::clamp(std::round(height * p.height), 1.0f, height);
+    const float w = std::min(width, std::floor(h * aspect));
+    return ImVec4(std::round(p.x * (width - w)), std::round(p.y * (height - h)), w, h);
+}
+
+} // namespace
+
+void Menu::DrawPanelViewRows(const char* key, const char* name) {
+    auto view = ParseView(key, Game(key));
+    const auto touch = Port::Hooks::ParseOverlay(Game("touch_overlay"));
+    const auto map = Port::Hooks::ParseQuestOverlay(Game("quest_overlay"));
+    const Placement now = IsMapKey(key) ? Port::Hooks::MapPlacement(touch, view)
+                                        : Port::Hooks::TargetPlacement(touch, map, view);
+    const std::string id = std::string("##") + key;
+    const auto set = [&] { SetGame(key, FormatView(key, view)); };
+
+    Row(fmt::format("{} size", name).c_str());
+    float percent = view.height * 100.0f;
+    if (ImGui::SliderFloat((id + "_size").c_str(), &percent, 0.0f, 100.0f,
+                           percent < 1.0f ? "the touch screen's scale" : "%.0f%% of the window's height")) {
+        view.height = percent < 1.0f ? 0.0f : std::max(percent, 3.0f) / 100.0f;
+        set();
+    }
+    layer.Help("0: as large as it is in the touch screen in the corner.");
+
+    Row(fmt::format("{} position", name).c_str());
+    int where = view.placed ? 1 : 0;
+    if (Choose((id + "_where").c_str(), where,
+               {IsMapKey(key) ? "In the touch screen's corner" : "Under the map (over it at the bottom)",
+                "Where you put it"})) {
+        view.placed = where == 1;
+        view.x = now.x;
+        view.y = now.y;
+        set();
+    }
+    layer.Help("Edit HUD layout below places it with the mouse; or set it here.");
+    if (view.placed) {
+        Row("    Across");
+        float x = view.x * 100.0f;
+        if (ImGui::SliderFloat((id + "_x").c_str(), &x, 0.0f, 100.0f, "%.0f%% (0 left, 100 right)")) {
+            view.x = x / 100.0f;
+            set();
+        }
+        layer.Help("0: at the window's left edge, 100: at its right edge, 50: in the middle.");
+        Row("    Down");
+        float y = view.y * 100.0f;
+        if (ImGui::SliderFloat((id + "_y").c_str(), &y, 0.0f, 100.0f, "%.0f%% (0 top, 100 bottom)")) {
+            view.y = y / 100.0f;
+            set();
+        }
+        layer.Help("0: at the window's top edge, 100: at its bottom edge.");
+    }
+}
+
+void Menu::StartLayoutEdit() {
+    layout_edit = true;
+    drag = -1;
+    layout_before.clear();
+    layout_before_missing.clear();
+    for (const char* key : PANEL_VIEW_KEYS) {
+        if (const auto it = game_changes.find(key); it != game_changes.end()) {
+            layout_before[key] = it->second;
+        } else {
+            layout_before_missing.insert(key);
+        }
+    }
+    layer.Post([] { Port::Hooks::SetLayoutEditing(true); });
+    LOG_INFO(Frontend, "menu: the HUD layout editor");
+}
+
+void Menu::EndLayoutEdit() {
+    layout_edit = false;
+    drag = -1;
+    layer.Post([] { Port::Hooks::SetLayoutEditing(false); });
+}
+
+void Menu::CancelLayoutEdit() {
+    if (!layout_edit) {
+        return;
+    }
+    for (const char* key : PANEL_VIEW_KEYS) {
+        if (layout_before_missing.count(key)) {
+            game_changes.erase(key);
+        } else {
+            game_changes[key] = layout_before[key];
+        }
+        layer.Post([key = std::string(key), value = Game(key)] { Port::Hooks::SetOption(key, value); });
+    }
+    EndLayoutEdit();
+    select_tab = 0; // back to Game > Touch screen
+}
+
+void Menu::DrawLayoutEditor() {
+    const ImGuiIO& io = ImGui::GetIO();
+    const float em = ImGui::GetFontSize();
+    const float width = io.DisplaySize.x, height = io.DisplaySize.y;
+    const auto touch = Port::Hooks::ParseOverlay(Game("touch_overlay"));
+    PanelView views[2] = {Port::Hooks::ParseQuestOverlay(Game("quest_overlay")),
+                          Port::Hooks::ParseTargetOverlay(Game("target_overlay"))};
+    const char* names[2] = {"Map", "Target camera"};
+    ImVec4 rects[2];
+    bool shown[2];
+    for (int i = 0; i < 2; ++i) {
+        const Placement p = i == 0 ? Port::Hooks::MapPlacement(touch, views[0])
+                                   : Port::Hooks::TargetPlacement(touch, views[0], views[1]);
+        rects[i] = ViewRect(p, ViewAspect(PANEL_VIEW_KEYS[i]), width, height);
+        shown[i] = views[0].on && views[i].on; // the target camera only with the map
+    }
+
+    // the toolbar, at the top in the middle
+    ImGui::SetNextWindowPos(ImVec2(width * 0.5f, em * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.0f));
+    // a fixed width, so that its buttons stay put whatever the help line says
+    ImGui::SetNextWindowSize(ImVec2(std::min(width * 0.9f, em * 26.0f), 0.0f), ImGuiCond_Always);
+    ImGui::SetNextWindowBgAlpha(0.92f);
+    if (just_opened) {
+        ImGui::SetNextWindowFocus();
+    }
+    ImGui::Begin("##layout_editor", nullptr,
+                 ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
+                     ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings |
+                     ImGuiWindowFlags_NoScrollbar);
+    ImGui::TextUnformatted("Edit HUD layout");
+    ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+    ImGui::TextWrapped("Drag a view to move it, its corner to resize it.");
+    ImGui::PopStyleColor();
+    for (int i = 0; i < 2; ++i) {
+        if (i == 1) {
+            ImGui::SameLine();
+        }
+        bool on = views[i].on;
+        ImGui::BeginDisabled(i == 1 && !views[0].on);
+        if (ImGui::Checkbox(names[i], &on)) {
+            views[i].on = on;
+            SetGame(PANEL_VIEW_KEYS[i], FormatView(PANEL_VIEW_KEYS[i], views[i]));
+        }
+        ImGui::EndDisabled();
+    }
+    if (ImGui::Button("Done")) {
+        EndLayoutEdit();
+        layer.CloseMenu();
+    }
+    layer.Help("Keeps the views where they are (saved in mh4u.ini) and goes back to the game.");
+    ImGui::SameLine();
+    if (ImGui::Button("Reset")) {
+        // the touch screen's corner at its scale, the target camera under the map
+        for (int i = 0; i < 2; ++i) {
+            SetGame(PANEL_VIEW_KEYS[i], views[i].on ? (i == 0 ? "map" : "on") : "off");
+        }
+    }
+    layer.Help("The map in the touch screen's corner at its scale, the target camera under it.");
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel")) {
+        CancelLayoutEdit();
+    }
+    layer.Help("Puts them back as they were (Esc, or a controller's B).");
+    const char* help = layer.HelpText();
+    ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+    ImGui::TextWrapped("%s", help ? help : "Esc or a controller's B: cancel. Sliders for both: Game > Touch screen.");
+    ImGui::PopStyleColor();
+    ImGui::End();
+    if (!layout_edit) {
+        return;
+    }
+    if (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false)) {
+        CancelLayoutEdit();
+        return;
+    }
+
+    // the mouse on the game: pick a view (the target camera is drawn over the map) or its corner
+    const ImVec2 mouse = io.MousePos;
+    const float handle = em * 1.1f;
+    if (drag < 0 && ImGui::IsMouseClicked(ImGuiMouseButton_Left) &&
+        !ImGui::IsWindowHovered(ImGuiHoveredFlags_AnyWindow)) {
+        for (int i = 1; i >= 0; --i) {
+            const ImVec4& r = rects[i];
+            if (!shown[i] || mouse.x < r.x || mouse.y < r.y || mouse.x >= r.x + r.z || mouse.y >= r.y + r.w) {
+                continue;
+            }
+            drag = i;
+            drag_resize = mouse.x >= r.x + r.z - handle && mouse.y >= r.y + r.w - handle;
+            drag_mouse_x = mouse.x;
+            drag_mouse_y = mouse.y;
+            drag_left = r.x;
+            drag_top = r.y;
+            drag_height = r.w;
+            break;
+        }
+    }
+    if (drag >= 0 && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+        drag = -1;
+    }
+    if (drag >= 0 && width > 0 && height > 0) {
+        const std::string key = PANEL_VIEW_KEYS[drag];
+        const float aspect = ViewAspect(key);
+        float left = drag_left, top = drag_top, h = drag_height;
+        if (drag_resize) {
+            // the top-left corner stays; the size follows the mouse, inside the window
+            h = std::max((mouse.x - left) / aspect, mouse.y - top);
+            h = std::clamp(h, std::max(height * 0.03f, 1.0f),
+                           std::max(1.0f, std::min(height - top, (width - left) / aspect)));
+        } else {
+            left += mouse.x - drag_mouse_x;
+            top += mouse.y - drag_mouse_y;
+        }
+        const float w = std::min(width, h * aspect);
+        left = std::clamp(left, 0.0f, width - w);
+        top = std::clamp(top, 0.0f, height - h);
+        // the window's edges hold it a little, so that it sits right against them
+        const float snap = em * 0.6f;
+        left = left < snap ? 0.0f : width - w - left < snap ? width - w : left;
+        top = top < snap ? 0.0f : height - h - top < snap ? height - h : top;
+        PanelView view = views[drag];
+        view.on = true;
+        view.placed = true;
+        view.height = h / height;
+        view.x = width - w > 0.5f ? left / (width - w) : 0.0f;
+        view.y = height - h > 0.5f ? top / (height - h) : 0.0f;
+        if (const std::string text = FormatView(key, view); text != Game(key)) {
+            SetGame(key, text);
+        }
+    }
+
+    // the frames, under the toolbar
+    ImDrawList* draw = ImGui::GetBackgroundDrawList();
+    const ImU32 accent = ImGui::GetColorU32(ImGuiCol_CheckMark);
+    for (int i = 0; i < 2; ++i) {
+        if (!shown[i]) {
+            continue;
+        }
+        const ImVec4& r = rects[i];
+        const ImVec2 a(r.x, r.y), b(r.x + r.z, r.y + r.w);
+        const bool hot = drag == i || (drag < 0 && mouse.x >= a.x && mouse.y >= a.y && mouse.x < b.x && mouse.y < b.y);
+        draw->AddRectFilled(a, b, IM_COL32(255, 200, 120, hot ? 48 : 24));
+        draw->AddRect(a, b, hot ? accent : IM_COL32(255, 255, 255, 200), 0.0f, std::max(2.0f, em * 0.12f));
+        const ImVec2 text = ImGui::CalcTextSize(names[i]);
+        const ImVec2 at(a.x + em * 0.3f, a.y + em * 0.2f);
+        draw->PushClipRect(a, b, true); // a small view cuts its name short
+        draw->AddRectFilled(ImVec2(at.x - em * 0.2f, at.y - em * 0.1f),
+                            ImVec2(at.x + text.x + em * 0.2f, at.y + text.y + em * 0.1f), IM_COL32(0, 0, 0, 170),
+                            em * 0.2f);
+        draw->AddText(at, IM_COL32(255, 255, 255, 255), names[i]);
+        draw->PopClipRect();
+        draw->AddTriangleFilled(ImVec2(b.x, b.y - handle), b, ImVec2(b.x - handle, b.y), accent);
+    }
+    if (!shown[0]) {
+        const char* text = "Tick Map in the box above to place the map.";
+        const ImVec2 size = ImGui::CalcTextSize(text);
+        draw->AddText(ImVec2((width - size.x) * 0.5f, (height - size.y) * 0.5f), IM_COL32(255, 255, 255, 230), text);
     }
 }
 

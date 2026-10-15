@@ -33,7 +33,21 @@ public:
 
     enum class AppSetting { Fullscreen, Screens, Resolution, LinearFilter, Vsync, Renderer, Volume, Output, Controls };
 
+    /// The layout editor is up in place of the menu's window: frames over the game for the
+    /// quest's map and target camera views, moved and resized with the mouse.
+    bool EditingLayout() const {
+        return layout_edit;
+    }
+    /// Esc or a controller's B in the editor: what it changed is undone and the menu comes back.
+    void CancelLayoutEdit();
+
 private:
+    void DrawLayoutEditor();
+    void StartLayoutEdit();
+    /// The editor goes; the menu comes back unless it is closing.
+    void EndLayoutEdit();
+    /// Touch screen: a quest panel's view (quest_overlay, target_overlay) as sliders and lists.
+    void DrawPanelViewRows(const char* key, const char* name);
     void DrawGame();
     void DrawDisplay();
     void DrawAudio();
@@ -61,6 +75,15 @@ private:
 
     struct Room;
     std::shared_ptr<Room> room; ///< what the network room's callbacks last said
+
+    // the layout editor
+    bool layout_edit = false;
+    /// quest_overlay's and target_overlay's entries in game_changes before it (empty: none)
+    std::map<std::string, std::string> layout_before;
+    std::set<std::string> layout_before_missing;
+    int drag = -1;             ///< the view being dragged: 0 the map, 1 the target camera
+    bool drag_resize = false;  ///< by its corner
+    float drag_mouse_x = 0, drag_mouse_y = 0, drag_left = 0, drag_top = 0, drag_height = 0;
 };
 
 } // namespace App::Ui

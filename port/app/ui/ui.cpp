@@ -344,7 +344,11 @@ void Layer::Frame() {
     if (escape_pressed) {
         escape_pressed = false;
         if (menu_open && !was_busy && !key_capture) {
-            Close();
+            if (menu->EditingLayout()) {
+                menu->CancelLayoutEdit(); // the layout editor's Esc: back to the menu as it was
+            } else {
+                Close();
+            }
         }
     }
     if (close_requested) {
