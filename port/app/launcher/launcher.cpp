@@ -34,6 +34,7 @@ constexpr int IDLE_WAIT_MS = 50;
 
 SDL_Window* g_window = nullptr;
 bool g_fullscreen = false;
+bool g_code_notice_seen = false;  ///< CodeNoticeSeen()
 
 void SetFullscreen(bool on) {
     if (g_window && SDL_SetWindowFullscreen(g_window, on ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0) == 0) {
@@ -816,7 +817,8 @@ void State::Pick(bool folder, const std::string& title, const std::string& kind,
 }
 
 void State::Play(int stage) {
-    if (job.Active() || dialog) {
+    // (a finished job's on_done may go on to play)
+    if ((job.Active() && !job.finished) || dialog) {
         return;
     }
     if (stage <= 0) {
@@ -828,17 +830,24 @@ void State::Play(int stage) {
         stage = 1;
     }
     if (stage == 1) {
+        // the tools and the mod library first, when Play comes right at the start
+        if (probing || (ToolsReady() && !mods.loaded && mods.error.empty())) {
+            play_waiting = 1;
+            return;
+        }
         if (ToolsReady() && mods.loaded && !mods.deploy_state.empty() && mods.deploy_state != "up_to_date") {
-            DeployMods(*this, false, [this](bool go_on) {
-                if (go_on) {
-                    Play(2);
-                }
-            });
+            // (a "play anyway" to the rebuild question needn't be asked again as stage 2)
+            DeployMods(*this, false, [this](bool without_code) { Play(without_code ? 3 : 2); });
             return;
         }
         stage = 2;
     }
     if (stage == 2) {
+        // the code library's check first (it runs again after the mods were put in place)
+        if (code.state == Checks::Code::State::Checking) {
+            play_waiting = 2;
+            return;
+        }
         constexpr const char* WITHOUT =
             " The game then runs on Azahar's own CPU emulation, without the port's options (frame rate, "
             "widescreen, the touch screen overlay, net sync).";
@@ -860,7 +869,19 @@ void State::Play(int stage) {
             Show(std::move(d));
             return;
         }
+        if (code.state == Checks::Code::State::Partial) {
+            Dialog d;
+            d.title = "Some of the port's options won't work";
+            d.text = code.notice + " Building it again takes a few minutes.";
+            d.buttons = {{"Build it now", [this] { StartBuild(); }, true},
+                         {"Play anyway", [this] { Play(3); }, false},
+                         {"Back", nullptr, false}};
+            Show(std::move(d));
+            return;
+        }
     }
+    // (stage 3: the player was told about the code library and plays anyway)
+    g_code_notice_seen = stage == 3;
     LOG_INFO(Frontend, "launcher: play {}", config.game);
     result = Result::Play;
     done = true;
@@ -908,7 +929,12 @@ std::string RoomSummary(const State& state) {
 
 // ── the launcher's window ────────────────────────────────────────────────────────────────────
 
+bool CodeNoticeSeen() {
+    return g_code_notice_seen;
+}
+
 Result Run(App::Config& config, bool show) {
+    g_code_notice_seen = false;
     State s(config);
     s.saved = App::Load();
     s.Recheck();
@@ -1009,6 +1035,12 @@ Result Run(App::Config& config, bool show) {
         PumpJob(s);
         PumpProbe(s);
         PumpRooms(s);
+        if (s.play_waiting > 0) {
+            // Play goes on once what it waits for is there (it waits again, or stops at a dialog)
+            const int stage = s.play_waiting;
+            s.play_waiting = 0;
+            s.Play(stage);
+        }
 
         int w = 0, h = 0;
         SDL_GetWindowSize(window, &w, &h);

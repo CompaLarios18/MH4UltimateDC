@@ -159,7 +159,7 @@ void HandleOverview(State& s, int exit_code, const std::string& output, bool qui
     const std::string error = ErrorText(j, output);
     LOG_WARNING(Frontend, "launcher: mods.py: {}", error);
     if (!s.mods.loaded) {
-        s.mods.error = error;
+        s.mods.error = error.empty() ? "mods.py didn't say why." : error;
     }
     if (!quiet) {
         s.Message("The mod library", error);
@@ -317,7 +317,7 @@ void RefreshMods(State& s) {
     QueueDetails(s);
 }
 
-void DeployMods(State& s, bool force, std::function<void(bool go_on)> then) {
+void DeployMods(State& s, bool force, std::function<void(bool without_code)> then) {
     if (s.job.Active() || !s.ToolsReady()) {
         return;
     }
@@ -338,8 +338,8 @@ void DeployMods(State& s, bool force, std::function<void(bool go_on)> then) {
     s.job.process = std::move(process);
     s.job.on_done = [&s, then](int exit_code, const std::string& output) {
         const Json j = Parse(output);
-        const auto go_on = [then](const char* label) -> Dialog::Button {
-            return {label, [then] { then(true); }, false};
+        const auto go_on = [then](const char* label, bool without_code) -> Dialog::Button {
+            return {label, [then, without_code] { then(without_code); }, false};
         };
         if (exit_code == 0 && j.is_object() && Bool(j, "ok")) {
             ApplyStatus(s.mods, j);
@@ -353,14 +353,14 @@ void DeployMods(State& s, bool force, std::function<void(bool go_on)> then) {
                                                      "without the port's options.";
                 d.buttons = {{"Build it now", [&s] { s.StartBuild(); }, true}};
                 if (then) {
-                    d.buttons.push_back(go_on("Play anyway"));
+                    d.buttons.push_back(go_on("Play anyway", true));
                 }
                 d.buttons.push_back({"Later", nullptr, false});
                 s.Show(std::move(d));
                 return;
             }
             if (then) {
-                then(true);
+                then(false);
             }
             return;
         }
@@ -376,7 +376,7 @@ void DeployMods(State& s, bool force, std::function<void(bool go_on)> then) {
             d.details = Strings(j["error"], "files");
             d.buttons = {{"Replace them", [&s, then] { DeployMods(s, true, then); }, true}};
             if (then) {
-                d.buttons.push_back(go_on("Play without deploying"));
+                d.buttons.push_back(go_on("Play without deploying", false));
             }
             d.buttons.push_back({"Back", nullptr, false});
         } else {
@@ -386,7 +386,7 @@ void DeployMods(State& s, bool force, std::function<void(bool go_on)> then) {
                 d.details = Strings(j["error"], "problems");
             }
             if (then) {
-                d.buttons.push_back(go_on("Play anyway"));
+                d.buttons.push_back(go_on("Play anyway", false));
             }
             d.buttons.push_back({"Back", nullptr, true});
         }

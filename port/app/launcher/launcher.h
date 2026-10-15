@@ -25,6 +25,10 @@ enum class Result {
 /// too. SDL must be initialised (video, controllers, events).
 Result Run(App::Config& config, bool show);
 
+/// After Run returned Play: the player was told in the launcher what the code library's state
+/// means for the game and chose to play anyway, so the start needn't say it again.
+bool CodeNoticeSeen();
+
 /// mh4u --check-code GAME, in a process of its own: what the port's start-up would say about
 /// the code library for GAME (Port::PrepareBackendFor, Port::BackendNotice), printed for the
 /// launcher, which doesn't load the library itself (it couldn't be built again while loaded).
