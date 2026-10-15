@@ -1,11 +1,15 @@
 // Mods: the mod library through tools/mods.py --json (docs/MODS.md): on/off, the order, which
-// mod wins a conflict, adding a folder or a .zip, removing; the mods are put in Azahar's mods
-// folder when the player presses Play (deploy), and a code library that the code mods made
-// stale can be built again from here.
+// mod wins a conflict, adding a folder or an archive, removing; the mods are put in Azahar's
+// mods folder when the player presses Play (deploy), and a code library that the code mods made
+// stale can be built again from here. The catalog (tools/mods_catalog.json, or a newer one
+// from the web): mods and texture packs picked for the port, downloaded and installed here.
+#include <algorithm>
+#include <SDL.h>
 #include <fmt/format.h>
 #include <imgui.h>
 #include <json.hpp>
 
+#include "common/file_util.h"
 #include "common/logging/log.h"
 #include "launcher/state.h"
 #include "launcher/ui.h"
@@ -48,8 +52,10 @@ std::vector<std::string> Strings(const Json& j, const char* key) {
     return out;
 }
 
-/// The one JSON object mods.py --json prints (null if it printed something else: a crash).
-Json Parse(const std::string& output) {
+/// The one JSON object mods.py --json prints (null if it printed something else: a crash),
+/// without the progress lines of a download or an install.
+Json Parse(const std::string& raw) {
+    const std::string output = Tools::WithoutProgress(raw);
     Json j = Json::parse(output, nullptr, false);
     if (!j.is_discarded() && j.is_object()) {
         return j;
@@ -64,10 +70,11 @@ Json Parse(const std::string& output) {
     return Json();
 }
 
-std::string ErrorText(const Json& j, const std::string& output) {
+std::string ErrorText(const Json& j, const std::string& raw) {
     if (j.is_object() && j.contains("error") && j["error"].is_object()) {
         return Str(j["error"], "message");
     }
+    const std::string output = Tools::WithoutProgress(raw);
     std::vector<std::string> lines;
     std::size_t start = 0;
     while (start < output.size()) {
@@ -112,6 +119,7 @@ void ApplyOverview(ModLibrary& lib, const Json& j) {
                 mod.code = true;
                 const auto changes = code->find("changes_code");
                 mod.changes_code = changes == code->end() || !changes->is_boolean() ? -1 : changes->get<bool>() ? 1 : 0;
+                mod.adds_code = Bool(*code, "adds_code");
             }
             if (mod.name.empty()) {
                 mod.name = mod.id;
@@ -182,6 +190,8 @@ void QueueDetails(State& s) {
                            ApplyStatus(s.mods, j);
                        }
                    });
+    // (what of the catalog is installed follows the library)
+    RefreshCatalog(s, false);
 }
 
 /// A command that changes the library (add, remove, enable, disable, order).
@@ -227,7 +237,10 @@ void Details(State& s, const ModInfo& mod) {
     }
     ImGui::Spacing();
     std::string what = fmt::format("{} file{}", mod.files, mod.files == 1 ? "" : "s");
-    if (mod.code) {
+    if (mod.code && mod.adds_code) {
+        what += ", a code mod that adds code after the game's own: with it on, the game runs on Azahar's own CPU "
+                "emulation";
+    } else if (mod.code) {
         what += mod.changes_code == 1   ? ", a code mod that changes the game's code (the code library has to be built again)"
                 : mod.changes_code == 0 ? ", a code mod that changes only data"
                                         : ", a code mod";
@@ -304,7 +317,563 @@ bool RowActions(State& s, const ModInfo& mod, bool busy) {
     return focused;
 }
 
+// ── the catalog ──────────────────────────────────────────────────────────────
+
+long long Long(const Json& j, const char* key, long long def = -1) {
+    const auto it = j.find(key);
+    return it != j.end() && it->is_number_integer() ? it->get<long long>() : def;
+}
+
+bool Has(const std::vector<std::string>& list, const char* item) {
+    return std::find(list.begin(), list.end(), item) != list.end();
+}
+
+std::string SizeText(long long n) {
+    if (n < 0) {
+        return "size not known";
+    }
+    if (n >= (1LL << 30)) {
+        return fmt::format("{:.1f} GB", static_cast<double>(n) / (1LL << 30));
+    }
+    if (n >= (1LL << 20)) {
+        return fmt::format("{:.1f} MB", static_cast<double>(n) / (1LL << 20));
+    }
+    return fmt::format("{} KB", std::max(1LL, (n + 512) / 1024));
+}
+
+void ApplyCatalog(ModCatalog& c, const Json& j) {
+    c.loaded = true;
+    c.error.clear();
+    if (const auto info = j.find("catalog"); info != j.end() && info->is_object()) {
+        c.source = Str(*info, "source");
+        c.updated = Str(*info, "updated");
+    }
+    c.warnings = Strings(j, "warnings");
+    c.textures_folder = Str(j, "textures_folder");
+    c.downloads_folder = Str(j, "downloads_folder");
+    c.entries.clear();
+    if (const auto it = j.find("entries"); it != j.end() && it->is_array()) {
+        for (const auto& e : *it) {
+            if (!e.is_object()) {
+                continue;
+            }
+            CatalogEntry x;
+            x.id = Str(e, "id");
+            x.kind = Str(e, "kind");
+            x.name = Str(e, "name");
+            x.author = Str(e, "author");
+            x.version = Str(e, "version");
+            x.description = Str(e, "description");
+            x.details = Str(e, "details");
+            x.category = Str(e, "category");
+            x.region = Str(e, "region");
+            x.region_note = Str(e, "region_note");
+            x.license = Str(e, "license");
+            x.page_url = Str(e, "page_url");
+            x.note = Str(e, "note");
+            x.recommended = Bool(e, "recommended");
+            x.direct = Bool(e, "direct");
+            x.update = Bool(e, "update");
+            x.needs = Strings(e, "needs");
+            x.conflicts = Strings(e, "conflicts");
+            x.size = Long(e, "size");
+            x.installed_size = Long(e, "installed_size");
+            x.downloaded = Long(e, "downloaded", 0);
+            if (const auto inst = e.find("installed"); inst != e.end() && inst->is_object()) {
+                x.installed = true;
+                x.installed_as = Str(*inst, "as");
+                x.installed_id = Str(*inst, "id");
+                x.installed_version = Str(*inst, "version");
+                x.enabled = Bool(*inst, "enabled");
+            }
+            if (!x.id.empty()) {
+                c.entries.push_back(std::move(x));
+            }
+        }
+    }
+    c.textures.clear();
+    if (const auto it = j.find("textures"); it != j.end() && it->is_array()) {
+        for (const auto& t : *it) {
+            if (t.is_object()) {
+                c.textures.push_back({Str(t, "id"), Str(t, "name"), Str(t, "version"), Str(t, "catalog"),
+                                      Int(t, "files"), Long(t, "size")});
+            }
+        }
+    }
+    const bool still_there = std::any_of(c.entries.begin(), c.entries.end(),
+                                         [&](const CatalogEntry& e) { return e.id == c.selected; });
+    if (!still_there) {
+        const auto rec = std::find_if(c.entries.begin(), c.entries.end(),
+                                      [](const CatalogEntry& e) { return e.recommended; });
+        c.selected = rec != c.entries.end() ? rec->id : c.entries.empty() ? std::string() : c.entries.front().id;
+    }
+}
+
+void OpenUrl(State& s, const std::string& url) {
+    if (SDL_OpenURL(url.c_str()) != 0) {
+        s.Message("It can't be opened from here", "Open it yourself: " + url);
+    }
+}
+
+void OpenFolder(State& s, const std::string& path) {
+    FileUtil::CreateFullPath(path + "/");
+    std::string url = path;
+    std::replace(url.begin(), url.end(), '\\', '/');
+    OpenUrl(s, (url.rfind('/', 0) == 0 ? "file://" : "file:///") + url);
+}
+
+std::string ParentOf(const std::string& path) {
+    const auto slash = path.find_last_of("/\\");
+    return slash == std::string::npos ? path : path.substr(0, slash);
+}
+
+void TurnOnTextures(State& s) {
+    s.Change([](App::Config& c) { c.custom_textures = true; });
+}
+
+/// A download and install by mods.py in the job window, with its progress; `ok` gets its
+/// result. A refusal that --force overcomes (another pack's files, files of the player's own)
+/// asks first and runs `force` (if any).
+void StartModsJob(State& s, std::vector<std::string> args, std::string title, std::function<void(const Json&)> ok,
+                  std::function<void()> force, std::string page_url) {
+    if (s.job.Active() || !s.ToolsReady()) {
+        return;
+    }
+    auto process = std::make_unique<Process>();
+    std::string error;
+    if (!process->Start(Tools::ModsCommand(s.python, s.tools_dir, args), error, true)) {
+        s.Message(title, error);
+        return;
+    }
+    s.job = Job{};
+    s.job.kind = Job::Kind::Download;
+    s.job.title = title;
+    s.job.cancellable = true;
+    s.job.close_when_done = true;
+    s.job.stop_question = "Stop it? A download goes on from where it stopped the next time.";
+    s.job.keep_label = "Keep going";
+    s.job.stop_label = "Stop it";
+    s.job.process = std::move(process);
+    s.job.on_done = [&s, title, ok, force, page_url](int exit_code, const std::string& output) {
+        if (s.job.process && s.job.process->WasStopped()) {
+            RefreshCatalog(s, false);
+            return;
+        }
+        const Json j = Parse(output);
+        if (exit_code == 0 && j.is_object() && Bool(j, "ok")) {
+            LOG_INFO(Frontend, "launcher: {}: done", title);
+            ok(j);
+            return;
+        }
+        const Json err = j.is_object() && j.contains("error") && j["error"].is_object() ? j["error"] : Json::object();
+        const std::string code = Str(err, "code");
+        Dialog d;
+        d.title = "It wasn't installed";
+        d.text = ErrorText(j, output);
+        LOG_WARNING(Frontend, "launcher: {}: {}", title, d.text);
+        if (code == "manual_extract") {
+            const std::string download = Str(err, "download"), target = Str(err, "target");
+            d.title = "Unpack it yourself";
+            d.text += fmt::format("\n\nThe download: {}\nIts files go in: {}", download, target);
+            d.buttons = {{"Open the download's folder", [&s, download] { OpenFolder(s, ParentOf(download)); }, true},
+                         {"Open where they go", [&s, target] { OpenFolder(s, target); }, false}};
+            if (!page_url.empty()) {
+                d.buttons.push_back({"Its page", [&s, page_url] { OpenUrl(s, page_url); }, false});
+            }
+            d.buttons.push_back({"Back", nullptr, false});
+        } else if ((code == "conflict" || code == "foreign_files") && force) {
+            d.details = Strings(err, "files");
+            d.buttons = {{"Back", nullptr, true}, {"Install it anyway (replace them)", force, false}};
+        } else {
+            d.details = Strings(err, "problems");
+            d.buttons = {{"Back", nullptr, true}};
+            if (!page_url.empty()) {
+                d.buttons.push_back({"Its page", [&s, page_url] { OpenUrl(s, page_url); }, false});
+            }
+        }
+        s.Show(std::move(d));
+        RefreshCatalog(s, false);
+    };
+}
+
+void InstallFromCatalog(State& s, const CatalogEntry& e, bool force) {
+    std::vector<std::string> args{"install-from-catalog", e.id};
+    if (force) {
+        args.push_back("--force");
+    }
+    const CatalogEntry entry = e;  // (the catalog is read again meanwhile)
+    StartModsJob(
+        s, args, "Installing " + e.name,
+        [&s, entry](const Json& j) {
+            RefreshMods(s);
+            // where it went: the texture folder, or the library (on, or off behind another code mod)
+            std::string text = "Its files are in the game's texture folder.";
+            if (const auto mods = j.find("mods"); mods != j.end() && mods->is_array()) {
+                const std::string id = Str(j, "mod");
+                for (const auto& m : *mods) {
+                    if (m.is_object() && Str(m, "id") == id) {
+                        text = Bool(m, "enabled")
+                                   ? "It is in your mods, turned on: it is put in place when you play."
+                                   : "It is in your mods, turned off: another code mod is on, and only one can "
+                                     "be (Your mods).";
+                    }
+                }
+            }
+            Dialog d;
+            d.title = entry.name + " is installed";
+            if (Has(entry.needs, "custom_textures") && !s.config.custom_textures) {
+                d.text = text + " Texture packs show only with custom textures on (Settings). Turn them on now?";
+                d.buttons = {{"Turn them on", [&s] { TurnOnTextures(s); }, true}, {"Not now", nullptr, false}};
+            } else {
+                d.text = text;
+                if (Has(entry.needs, "cpu_emulation")) {
+                    d.text += " With it on, the game runs on Azahar's own CPU emulation, without the port's code.";
+                }
+                d.buttons = {{"OK", nullptr, true}};
+            }
+            s.Show(std::move(d));
+        },
+        force ? std::function<void()>() : [&s, entry] { InstallFromCatalog(s, entry, true); }, e.page_url);
+}
+
+/// Install, asking first for a big download.
+void AskInstall(State& s, const CatalogEntry& e) {
+    if (e.size < (512LL << 20)) {
+        InstallFromCatalog(s, e, false);
+        return;
+    }
+    Dialog d;
+    d.title = "Download " + e.name + "?";
+    const long long left = std::max(0LL, e.size - e.downloaded);
+    d.text = fmt::format("It is {} to download{}, and {} once installed: about {} have to be free while it "
+                         "unpacks. It takes a while; you can stop it, and it goes on from there the next time.",
+                         SizeText(left), e.downloaded > 0 ? " (the rest of it)" : "",
+                         SizeText(e.installed_size >= 0 ? e.installed_size : e.size),
+                         SizeText(e.size + std::max(0LL, e.installed_size)));
+    const CatalogEntry entry = e;
+    d.buttons = {{"Download and install", [&s, entry] { InstallFromCatalog(s, entry, false); }, true},
+                 {"Back", nullptr, false}};
+    s.Show(std::move(d));
+}
+
+void AskRemove(State& s, const std::string& id, const std::string& name, bool textures) {
+    Dialog d;
+    d.title = "Remove " + name + "?";
+    d.text = textures ? "Its files are taken out of the game's texture folder (files of your own there stay)."
+                      : "It is deleted from the mod library. Its files leave Azahar's mods folder the next time "
+                        "the mods are put in place (when you play).";
+    d.buttons = {{"Keep it", nullptr, true},
+                 {"Remove", [&s, id, name] { Change(s, {"remove", id}, "Removing " + name); }, false}};
+    s.Show(std::move(d));
+}
+
+/// A small label in a frame ("RECOMMENDED"), on the current line.
+void Badge(const char* text, ImU32 color) {
+    const float scale = Ui::Scale();
+    const float line = ImGui::GetTextLineHeight();
+    Ui::PushFont(0.68f, true);
+    const ImVec2 size = ImGui::CalcTextSize(text);
+    const ImVec2 pad(6.0f * scale, 2.0f * scale);
+    ImVec2 pos = ImGui::GetCursorScreenPos();
+    pos.y += std::max(0.0f, (line - size.y - pad.y * 2.0f) * 0.5f);
+    const ImVec2 end(pos.x + size.x + pad.x * 2.0f, pos.y + size.y + pad.y * 2.0f);
+    ImDrawList* draw = ImGui::GetWindowDrawList();
+    draw->AddRectFilled(pos, end, (color & 0x00FFFFFF) | (40u << 24), 4.0f * scale);
+    draw->AddRect(pos, end, color, 4.0f * scale);
+    draw->AddText(ImVec2(pos.x + pad.x, pos.y + pad.y), color, text);
+    Ui::PopFont();
+    ImGui::Dummy(ImVec2(end.x - ImGui::GetCursorScreenPos().x, line));
+}
+
+const CatalogEntry* SelectedEntry(const State& s) {
+    for (const auto& e : s.mods.catalog.entries) {
+        if (e.id == s.mods.catalog.selected) {
+            return &e;
+        }
+    }
+    return nullptr;
+}
+
+std::string EntryLine(const CatalogEntry& e) {
+    std::string line = e.category.empty() ? (e.kind == "textures" ? "Texture pack" : "Mod") : e.category;
+    if (e.size >= 0) {
+        line += " · " + SizeText(e.size);
+    }
+    if (!e.author.empty()) {
+        line += " · " + e.author;
+    }
+    return line;
+}
+
+void CatalogDetails(State& s, const CatalogEntry& e, bool busy) {
+    const auto& c = s.mods.catalog;
+    Ui::PushFont(1.25f, true);
+    ImGui::PushTextWrapPos(0.0f);
+    ImGui::TextUnformatted(e.name.c_str());
+    ImGui::PopTextWrapPos();
+    Ui::PopFont();
+    if (e.recommended) {
+        Badge("RECOMMENDED", Ui::Color::Accent);
+        ImGui::SameLine();
+    }
+    Badge(e.kind == "textures" ? "TEXTURE PACK" : "MOD", Ui::Color::Dim);
+    if (!e.region.empty()) {
+        ImGui::SameLine();
+        Badge(e.region.c_str(), Ui::Color::Info);
+    }
+    std::string by;
+    if (!e.version.empty()) {
+        by += "Version " + e.version;
+    }
+    if (!e.author.empty()) {
+        by += (by.empty() ? "By " : ", by ") + e.author;
+    }
+    if (!by.empty()) {
+        Ui::TextDim(by);
+    }
+    ImGui::Spacing();
+
+    // what can be done, first
+    const bool textures_off = Has(e.needs, "custom_textures") && !s.config.custom_textures;
+    ImGui::BeginDisabled(busy);
+    if (e.direct) {
+        const char* label = e.update ? "Update" : e.installed ? "Install again" : e.downloaded > 0 ? "Go on installing"
+                                                                                                    : "Install";
+        if (Ui::AccentButton(label)) {
+            AskInstall(s, e);
+        }
+        ImGui::SameLine();
+    }
+    if (e.direct ? ImGui::Button("Open its page") : Ui::AccentButton("Open its page")) {
+        OpenUrl(s, e.page_url);
+    }
+    if (e.installed) {
+        ImGui::SameLine();
+        if (ImGui::Button("Remove")) {
+            AskRemove(s, e.installed_id.empty() ? e.id : e.installed_id, e.name, e.installed_as == "textures");
+        }
+        if (e.kind == "textures") {
+            ImGui::SameLine();
+            if (ImGui::Button("Open the texture folder")) {
+                OpenFolder(s, c.textures_folder);
+            }
+        }
+    }
+    ImGui::EndDisabled();
+    if (!e.direct) {
+        Ui::TextDim("Installed from its page (its site asks you to sign in or to choose a file).");
+    }
+    if (e.installed) {
+        std::string where = e.installed_as == "textures" ? "In the game's texture folder"
+                            : e.enabled                  ? "In your mods, turned on"
+                                                         : "In your mods, turned off (Your mods)";
+        if (e.update) {
+            where += fmt::format(" (version {}; the catalog has {})", e.installed_version, e.version);
+        }
+        Ui::StatusLine(Ui::Status::Ok, "Installed", where);
+    } else if (e.downloaded > 0) {
+        Ui::StatusLine(Ui::Status::Off, "Partly downloaded",
+                       SizeText(e.downloaded) + " so far: installing goes on from there");
+    }
+    if (textures_off) {
+        Ui::StatusLine(Ui::Status::Warn, "Custom textures are off", "Texture packs show only with them on.");
+        ImGui::BeginDisabled(busy);
+        if (ImGui::Button("Turn on custom textures")) {
+            TurnOnTextures(s);
+        }
+        ImGui::EndDisabled();
+    }
+    std::string clash;
+    for (const auto& other : c.entries) {
+        if (other.installed && Has(e.conflicts, other.id.c_str())) {
+            clash += (clash.empty() ? "" : ", ") + other.name;
+        }
+    }
+    if (!clash.empty() && !e.installed) {
+        Ui::StatusLine(Ui::Status::Warn, "Doesn't go with", clash + ", which is installed: remove it first");
+    }
+
+    // what it is
+    ImGui::Spacing();
+    if (!e.description.empty()) {
+        Ui::TextColored(Ui::Color::Text, e.description);
+    }
+    if (!e.details.empty()) {
+        Ui::PushFont(0.9f);
+        Ui::TextDim(e.details);
+        Ui::PopFont();
+    }
+    ImGui::Spacing();
+    if (!e.note.empty()) {
+        Ui::StatusLine(Ui::Status::Warn, "Note", e.note);
+    }
+    if (!e.region_note.empty()) {
+        Ui::StatusLine(Ui::Status::Off, "Made for", e.region_note);
+    }
+    std::string size = e.size >= 0 ? SizeText(e.size) + " to download" : "Download size not known";
+    if (e.installed_size >= 0) {
+        size += ", " + SizeText(e.installed_size) + " installed";
+    }
+    Ui::StatusLine(Ui::Status::Off, "Size", size);
+    if (!e.license.empty()) {
+        Ui::StatusLine(Ui::Status::Off, "Licence", e.license);
+    }
+}
+
+void DrawCatalog(State& s, bool busy) {
+    auto& c = s.mods.catalog;
+    const float scale = Ui::Scale();
+    Ui::TextDim("Mods and texture packs picked for the port, installed with one click from their authors' own "
+                "downloads. Texture packs go in the game's texture folder; mods join your mods.");
+    ImGui::BeginDisabled(busy);
+    FocusNext(s, !busy);
+    if (ImGui::Button("Add a texture pack...")) {
+        s.Pick(false, "A texture pack's archive", "Archives", {"zip", "7z", "tar", "gz", "tgz"},
+               [&s](const std::string& path) {
+                   StartModsJob(
+                       s, {"install", "--textures", path}, "Installing a texture pack",
+                       [&s](const Json&) {
+                           RefreshCatalog(s, false);
+                           if (!s.config.custom_textures) {
+                               Dialog d;
+                               d.title = "The texture pack is installed";
+                               d.text = "Texture packs show only with custom textures on. Turn them on now?";
+                               d.buttons = {{"Turn them on", [&s] { TurnOnTextures(s); }, true},
+                                            {"Not now", nullptr, false}};
+                               s.Show(std::move(d));
+                           }
+                       },
+                       [&s, path] {
+                           StartModsJob(s, {"install", "--textures", "--force", path}, "Installing a texture pack",
+                                        [&s](const Json&) { RefreshCatalog(s, false); }, nullptr, "");
+                       },
+                       "");
+               });
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Open the texture folder")) {
+        OpenFolder(s, c.textures_folder.empty() ? Tools::UserDir() + "/load/textures/0004000000126300"
+                                                : c.textures_folder);
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Check for a newer catalog")) {
+        c.fetched = false;
+        RefreshCatalog(s, true);
+    }
+    ImGui::EndDisabled();
+    if (!c.loaded) {
+        if (!c.error.empty()) {
+            Ui::StatusLine(Ui::Status::Error, "The catalog can't be read", c.error);
+        } else {
+            Ui::Spinner();
+            ImGui::SameLine();
+            Ui::TextDim("Reading the catalog...");
+        }
+        return;
+    }
+    ImGui::Spacing();
+    const ImVec2 avail = ImGui::GetContentRegionAvail();
+    ImGui::BeginChild("##catalog_list", ImVec2(avail.x * 0.42f, 0), ImGuiChildFlags_NavFlattened);
+    const float pad = 8.0f * scale;
+    for (const auto& e : c.entries) {
+        ImGui::PushID(e.id.c_str());
+        const ImVec2 start = ImGui::GetCursorPos();
+        const float h = ImGui::GetTextLineHeightWithSpacing() * 1.9f + pad;
+        const bool selected = c.selected == e.id;
+        if (ImGui::Selectable("##row", selected, ImGuiSelectableFlags_AllowOverlap, ImVec2(0, h))) {
+            c.selected = e.id;
+        }
+        if (ImGui::IsItemFocused()) {
+            c.selected = e.id;
+        }
+        const ImVec2 end = ImGui::GetCursorPos();
+        ImGui::SetCursorPos(ImVec2(start.x + pad, start.y + pad * 0.6f));
+        Ui::PushFont(1.0f, true);
+        ImGui::TextUnformatted(e.name.c_str());
+        Ui::PopFont();
+        if (e.recommended) {
+            ImGui::SameLine();
+            Badge("RECOMMENDED", Ui::Color::Accent);
+        }
+        if (e.installed) {
+            ImGui::SameLine();
+            Badge(e.update ? "UPDATE" : "INSTALLED", e.update ? Ui::Color::Info : Ui::Color::Ok);
+        }
+        ImGui::SetCursorPosX(start.x + pad);
+        Ui::PushFont(0.85f);
+        ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(Ui::Color::Dim), "%s", EntryLine(e).c_str());
+        Ui::PopFont();
+        ImGui::SetCursorPos(end);
+        ImGui::Dummy(ImVec2(0, 0));  // (an item where the cursor was moved: the list's extent)
+        ImGui::PopID();
+    }
+    // texture packs installed otherwise (Add a texture pack...)
+    bool heading = false;
+    for (const auto& t : c.textures) {
+        if (!t.catalog.empty()) {
+            continue;
+        }
+        if (!heading) {
+            ImGui::Spacing();
+            Ui::PushFont(0.85f, true);
+            ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(Ui::Color::Dim), "OTHER TEXTURE PACKS");
+            Ui::PopFont();
+            heading = true;
+        }
+        ImGui::PushID(t.id.c_str());
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted(fmt::format("{} ({} files)", t.name, t.files).c_str());
+        ImGui::SameLine();
+        ImGui::BeginDisabled(busy);
+        if (Ui::IconButton("##remove", Ui::Glyph::Remove)) {
+            AskRemove(s, t.id, t.name, true);
+        }
+        ImGui::EndDisabled();
+        ImGui::PopID();
+    }
+    ImGui::EndChild();
+    ImGui::SameLine(0, 20.0f * scale);
+    ImGui::BeginChild("##catalog_details", ImVec2(0, 0), ImGuiChildFlags_NavFlattened);
+    if (const CatalogEntry* e = SelectedEntry(s)) {
+        Ui::BeginCard("##catalog_card", ImVec2(0, 0));
+        CatalogDetails(s, *e, busy);
+        Ui::EndCard();
+    }
+    // where the catalog came from (a catalog on the web that can't be had is no trouble: the
+    // app's own is used)
+    Ui::PushFont(0.8f);
+    Ui::TextDim(fmt::format("Catalog of {}{}.", c.updated.empty() ? "an unknown date" : c.updated,
+                            c.source == "remote" || c.source == "cache" ? ", from the web" : ", as it came with the app"));
+    for (const auto& w : c.warnings) {
+        Ui::TextDim(w);
+    }
+    Ui::PopFont();
+    ImGui::EndChild();
+}
+
 } // namespace
+
+void RefreshCatalog(State& s, bool fetch) {
+    if (!s.ToolsReady()) {
+        return;
+    }
+    std::vector<std::string> args{"catalog", "--catalog-url", s.config.catalog_url};
+    if (fetch && !s.mods.catalog.fetched) {
+        s.mods.catalog.fetched = true;
+        if (!s.config.catalog_url.empty()) {
+            args.push_back("--refresh");
+        }
+    }
+    s.runner.Queue(Tools::ModsCommand(s.python, s.tools_dir, args), "Reading the mod catalog",
+                   [&s](int exit_code, const std::string& output) {
+                       const Json j = Parse(output);
+                       if (exit_code == 0 && j.is_object() && Bool(j, "ok")) {
+                           ApplyCatalog(s.mods.catalog, j);
+                       } else if (!s.mods.catalog.loaded) {
+                           s.mods.catalog.error = ErrorText(j, output);
+                       }
+                   });
+}
 
 void RefreshMods(State& s) {
     if (!s.ToolsReady()) {
@@ -315,6 +884,9 @@ void RefreshMods(State& s) {
                        HandleOverview(s, exit_code, output, true);
                    });
     QueueDetails(s);
+    if (!s.mods.catalog.fetched) {
+        RefreshCatalog(s, true);  // a newer catalog from the web, once
+    }
 }
 
 void DeployMods(State& s, bool force, std::function<void(bool without_code)> then) {
@@ -346,6 +918,14 @@ void DeployMods(State& s, bool force, std::function<void(bool without_code)> the
             LOG_INFO(Frontend, "launcher: mods deployed");
             RefreshMods(s);
             s.CheckCode();
+            if (s.mods.code_state == "unsupported" && then) {
+                Dialog d;
+                d.title = "Play on Azahar's CPU emulation?";
+                d.text = s.mods.code_reason + ".";
+                d.buttons = {go_on("Play", true), {"Back", nullptr, false}};
+                s.Show(std::move(d));
+                return;
+            }
             if (s.mods.code_state == "rebuild") {
                 Dialog d;
                 d.title = "Build the code library again?";
@@ -425,6 +1005,24 @@ void DrawMods(State& s) {
         return;
     }
 
+    // your mods, or the catalog
+    if (Ui::Tab("Your mods", !s.mods.show_catalog)) {
+        s.mods.show_catalog = false;
+    }
+    ImGui::SameLine();
+    if (Ui::Tab("Catalog", s.mods.show_catalog)) {
+        s.mods.show_catalog = true;
+        if (!s.mods.catalog.loaded) {
+            RefreshCatalog(s, true);
+        }
+    }
+    ImGui::Spacing();
+    if (s.mods.show_catalog) {
+        DrawCatalog(s, busy);
+        ImGui::EndChild();
+        return;
+    }
+
     // the buttons that add mods
     ImGui::BeginDisabled(busy);
     // (the callbacks may run later, from a dialog: the state outlives them)
@@ -434,8 +1032,8 @@ void DrawMods(State& s) {
         s.Pick(true, "A mod's folder", "", {}, add);
     }
     ImGui::SameLine();
-    if (ImGui::Button("Add a .zip...")) {
-        s.Pick(false, "A mod's .zip", "Zip archives", {"zip"}, add);
+    if (ImGui::Button("Add an archive...")) {
+        s.Pick(false, "A mod's archive", "Archives (.zip, .7z, .tar)", {"zip", "7z", "tar", "gz", "tgz"}, add);
     }
     ImGui::SameLine();
     if (ImGui::Button("Refresh")) {
@@ -471,6 +1069,9 @@ void DrawMods(State& s) {
                                    "): you'll be asked whether to replace them.");
             }
         }
+        if (s.mods.code_state == "unsupported") {
+            Ui::StatusLine(Ui::Status::Warn, "A code mod needs Azahar's CPU emulation", s.mods.code_reason);
+        }
         if (s.mods.code_state == "rebuild") {
             Ui::StatusLine(Ui::Status::Warn, "The code library needs building again", REBUILD_TEXT);
             ImGui::BeginDisabled(busy || s.update.state != Checks::Update::State::Ok);
@@ -487,9 +1088,9 @@ void DrawMods(State& s) {
     if (s.mods.loaded && s.mods.mods.empty()) {
         Ui::BeginCard("##empty", ImVec2(0, 0));
         Ui::TextColored(Ui::Color::Text, "No mods yet.");
-        Ui::TextDim("Add a mod's folder or its .zip: Azahar's layout (romfs/, exefs/), a title folder "
-                    "(0004000000126300/, luma/titles/...), or the game's own folders (data/...). Later "
-                    "mods win where two change the same file.");
+        Ui::TextDim("Pick one from the Catalog, or add a mod's folder or its archive (.zip, .7z): Azahar's "
+                    "layout (romfs/, exefs/), a title folder (0004000000126300/, luma/titles/...), or the game's "
+                    "own folders (data/...). Later mods win where two change the same file.");
         Ui::EndCard();
         ImGui::EndChild();
         return;

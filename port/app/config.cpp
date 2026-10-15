@@ -124,6 +124,8 @@ Config Load() {
     c.lobby = str("Multiplayer", "lobby", c.lobby);
     c.token = str("Multiplayer", "token", c.token);
     c.room_public = flag("Multiplayer", "room_public", c.room_public);
+
+    c.catalog_url = str("Mods", "catalog_url", c.catalog_url);
     LOG_INFO(Frontend, "settings from {}", path);
     return c;
 }
@@ -224,12 +226,18 @@ lobby = {}
 token = {}
 # room_public = off keeps a hosted room out of the lobby's list (players join it by address)
 room_public = {}
+
+[Mods]
+# the launcher's mod catalog (Mods, Catalog) comes with the app's tools; a newer one is fetched
+# from here when the launcher starts (empty: never; the copy that came with the app is used)
+catalog_url = {}
 )",
                        c.game, OnOff(c.launcher), c.renderer, OnOff(c.fullscreen), c.resolution,
                        OnOff(c.vsync), c.screens, OnOff(c.linear_filter), OnOff(c.custom_textures),
                        c.shader, c.volume, c.audio_output, c.controller_auto ? "auto" : "off", keys,
                        params, c.touch_screen_key, c.fullscreen_key, c.nickname, c.join, c.password,
-                       c.host, c.room_name, c.room_members, c.lobby, c.token, OnOff(c.room_public));
+                       c.host, c.room_name, c.room_members, c.lobby, c.token, OnOff(c.room_public),
+                       c.catalog_url);
 }
 
 void Apply(const Config& c) {

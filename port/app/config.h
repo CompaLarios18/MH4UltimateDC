@@ -58,6 +58,13 @@ struct Config {
     std::string lobby;                ///< a lobby server (server/lobby): the hosted room is listed
     std::string token;                ///< the token for that lobby
     bool room_public = true;          ///< list the hosted room in the lobby (with lobby and token)
+
+    // [Mods]
+    static constexpr const char* DEFAULT_CATALOG_URL =
+        "https://raw.githubusercontent.com/CompaLarios18/MH4UltimateDC/native-app/tools/mods_catalog.json";
+    /// Where the launcher fetches a newer mod catalog from (tools/mods.py catalog --refresh);
+    /// empty: only the catalog that comes with the tools
+    std::string catalog_url = DEFAULT_CATALOG_URL;
 };
 
 /// The settings file's path.

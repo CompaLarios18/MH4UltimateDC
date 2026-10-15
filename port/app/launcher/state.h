@@ -54,9 +54,10 @@ private:
 };
 
 /// A long job the player waits for in a window of its own: building the code library (a
-/// child process, with its output and a Cancel button), installing the update, deploying mods.
+/// child process, with its output and a Cancel button), installing the update, deploying mods,
+/// downloading and installing a mod or texture pack (mods.py's progress lines).
 struct Job {
-    enum class Kind { None, Build, Install, Command };
+    enum class Kind { None, Build, Install, Command, Download };
     Kind kind = Kind::None;
     std::string title;
     std::unique_ptr<Process> process;
@@ -73,6 +74,8 @@ struct Job {
     bool quit_asked = false;         ///< the player closed the window during the job
     bool cancel_asked = false;       ///< the player pressed Cancel: asked whether to stop it
     bool quit_after = false;         ///< ... and chose to stop it and quit
+    /// What Cancel asks, and its two answers (a build's, when empty)
+    std::string stop_question, keep_label, stop_label;
     std::function<void(int exit_code, const std::string& output)> on_done;
     bool Active() const {
         return kind != Kind::None;
@@ -107,7 +110,42 @@ struct ModInfo {
     int loses = 0;
     bool code = false;
     int changes_code = -1;  ///< a code mod: 1 changes the game's code, 0 only data, -1 unknown
+    bool adds_code = false; ///< a code mod that adds code after the game's own (CPU emulation only)
     std::vector<std::string> warnings, errors;
+};
+
+/// A mod or texture pack of the catalog (tools/mods.py catalog --json).
+struct CatalogEntry {
+    std::string id, kind, name, author, version, description, details, category, region, region_note,
+        license, page_url, note;
+    bool recommended = false;
+    bool direct = false;     ///< installed from here (else from its page)
+    bool installed = false;
+    bool update = false;     ///< installed, in another version than the catalog's
+    bool enabled = false;    ///< a mod: on in the library
+    std::string installed_as, installed_id, installed_version;
+    std::vector<std::string> needs, conflicts;
+    long long size = -1, installed_size = -1;  ///< -1: not known
+    long long downloaded = 0;                  ///< already in the downloads folder (to go on with)
+};
+
+/// A texture pack installed by the mod manager (from the catalog or not).
+struct TexturePack {
+    std::string id, name, version, catalog;
+    int files = 0;
+    long long size = -1;
+};
+
+struct ModCatalog {
+    bool loaded = false;
+    bool fetched = false;    ///< asked the web for a newer one this session
+    std::string error;
+    std::string source, updated;
+    std::string textures_folder, downloads_folder;
+    std::vector<std::string> warnings;
+    std::vector<CatalogEntry> entries;
+    std::vector<TexturePack> textures;
+    std::string selected;    ///< the entry whose details show
 };
 
 struct Conflict {
@@ -130,6 +168,8 @@ struct ModLibrary {
     std::string library_path;
     std::string folder;                 ///< Azahar's mods folder for the game
     std::string selected;               ///< the mod whose details show
+    bool show_catalog = false;          ///< the Mods screen shows the catalog, not the library
+    ModCatalog catalog;
 };
 
 struct State {
@@ -251,6 +291,9 @@ void DrawSettings(State& state);
 
 // the mod library (screen_mods.cpp)
 void RefreshMods(State& state);
+/// The catalog and which of it is installed; `fetch`: also a newer catalog from the web
+/// (mh4u-app.ini's catalog_url), once a session.
+void RefreshCatalog(State& state, bool fetch);
 /// then (if any) runs when the player goes on to play; without_code says they already agreed to
 /// play without the port's code (asked when the code mods need the library built again).
 void DeployMods(State& state, bool force, std::function<void(bool without_code)> then);
