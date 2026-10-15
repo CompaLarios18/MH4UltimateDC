@@ -12,7 +12,8 @@ namespace {
 
 /// A setup line with its fix-it button on the right; true when the button was pressed.
 bool SetupLine(const SetupRow& row, const char* button, bool enabled = true) {
-    const float button_width = ImGui::CalcTextSize(button).x + ImGui::GetStyle().FramePadding.x * 2;
+    // (the label's width without its ##id)
+    const float button_width = ImGui::CalcTextSize(button, nullptr, true).x + ImGui::GetStyle().FramePadding.x * 2;
     const float right = ImGui::GetContentRegionAvail().x;
     ImGui::BeginGroup();
     ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + right - button_width - ImGui::GetStyle().ItemSpacing.x * 2);
@@ -141,7 +142,8 @@ void DrawHome(State& s) {
         }
     }
     const float button_width = ImGui::CalcTextSize("Manage").x + ImGui::GetStyle().FramePadding.x * 2;
-    ImGui::PushTextWrapPos(ImGui::GetContentRegionAvail().x - button_width - ImGui::GetStyle().ItemSpacing.x);
+    ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x - button_width -
+                           ImGui::GetStyle().ItemSpacing.x * 2);
     ImGui::AlignTextToFramePadding();
     ImGui::TextUnformatted(mods_text.c_str());
     ImGui::PopTextWrapPos();
