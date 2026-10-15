@@ -203,28 +203,30 @@ jobs:
           (USA) and its v1.3.0 update (.cia):
           1. The Xcode command-line tools (xcode-select --install in Terminal) and Python 3.10 or
              newer (python.org or Homebrew).
-          2. Open "Build code library.command" and choose your v1.3.0 update .cia: it builds the
-             game's code library on this Mac and installs it in
-             ~/Library/Application Support/Azahar/recomp.
-          3. Open Azahar-mh4u once: File > Install CIA... (the update), then quit it.
-          4. Play: open MH4U. The first time it asks for your game (the decrypted .3ds, .cci or
-             .cxi) and remembers it.
+          2. Open MH4U. The first time its launcher opens on Setup: choose your game (the
+             decrypted .3ds, .cci or .cxi) and your v1.3.0 update .cia; it installs the update and
+             builds the game's code library on this Mac (several minutes). "Build code
+             library.command" does the same build in Terminal, if you prefer.
+          3. Play: PLAY on the launcher (Return, or A on a controller). In the game, Esc (or the
+             controller's Home/Guide button, or Back and Start together) opens the menu: the
+             game's options, the display, sound, controls, the room you're in, quit.
 
           MH4U opens the game full screen, with the keyboard, a controller (mapped on its own, like
           MH3U on a Wii U) and the mouse or trackpad as the stylus. Option+Return: full screen or
           a window (F11 as well, where macOS doesn't take it for Show Desktop). fn+F12, or the
           right stick's click: in quests, the touch screen's map or the whole touch screen.
-          Its settings are in ~/Library/Application Support/Azahar/mh4u-app.ini, written with
-          explanations the first time it runs: the game file, the renderer (vulkan, on Metal, or
+          The launcher's other screens: Mods (several mods, in an order, conflicts shown), Online
+          (a lobby's rooms, joining by address, hosting) and Settings. Its settings are in
+          ~/Library/Application Support/Azahar/mh4u-app.ini, written with explanations the first
+          time it runs: the game file, the renderer (vulkan, on Metal, or
           software), full screen, the screens, sound, the keys and the controller, and a
           multiplayer room to join or host before the game starts. The game's options (frame rate,
           widescreen, the touch screen's corner, ...) are in mh4u.ini next to it; docs/PLAYING.md
           in the repository has them all. If the app doesn't start, log/mh4u_log.txt in that
           folder says why.
 
-          Azahar-mh4u stays for what the app can't do yet: installing CIAs (File > Install
-          CIA...), Azahar's settings (system files, the username, controls in detail), Tools >
-          MH4U Port Options... and the Multiplayer menu. It plays the game as well (File > Load
+          Azahar-mh4u stays for what the app can't do yet: installing other CIAs (File > Install
+          CIA...) and Azahar's own settings (system files, the username). It plays the game as well (File > Load
           File...). Both use ~/Library/Application Support/Azahar: the same saves, code library
           and mh4u.ini.
           EOF

@@ -17,13 +17,22 @@ namespace App {
 
 namespace {
 
-/// A hidden window's context, shared with the main one, for the renderer's thread.
+/// A hidden window's context, shared with the one current when it is made, for the renderer's
+/// threads. As Azahar expects (its Qt frontend's contexts behave so), making one doesn't change
+/// the thread's current context, and DoneCurrent() only lets go of this one: the renderer makes
+/// a context for its frame dumper and one per shader-compiling thread while its own is current,
+/// and SDL_GL_CreateContext makes the new context current. Left so, the renderer went on in the
+/// frame dumper's context, where the vertex arrays it had made don't exist (they aren't shared
+/// between contexts), and the next context was shared with nothing: no picture at all.
 class SharedContext final : public Frontend::GraphicsContext {
 public:
     SharedContext() {
+        SDL_Window* const previous_window = SDL_GL_GetCurrentWindow();
+        const SDL_GLContext previous_context = SDL_GL_GetCurrentContext();
         window = SDL_CreateWindow(nullptr, SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, 1, 1,
                                   SDL_WINDOW_HIDDEN | SDL_WINDOW_OPENGL);
         context = window ? SDL_GL_CreateContext(window) : nullptr;
+        SDL_GL_MakeCurrent(previous_window, previous_context);
     }
     ~SharedContext() override {
         if (context) {
@@ -40,7 +49,9 @@ public:
         SDL_GL_MakeCurrent(window, context);
     }
     void DoneCurrent() override {
-        SDL_GL_MakeCurrent(window, nullptr);
+        if (SDL_GL_GetCurrentContext() == context) {
+            SDL_GL_MakeCurrent(window, nullptr);
+        }
     }
 
 private:
@@ -124,11 +135,15 @@ public:
     void DoneCurrent() override {
         core_context->DoneCurrent();
     }
+    // Azahar saves the emulation thread's context around making the shader-compiling threads'
+    // contexts; it goes back on its own (hidden) window, not on the one the present thread draws
+    // into with the window's context
     void SaveContext() override {
+        last_saved_window = SDL_GL_GetCurrentWindow();
         last_saved_context = SDL_GL_GetCurrentContext();
     }
     void RestoreContext() override {
-        SDL_GL_MakeCurrent(render_window, last_saved_context);
+        SDL_GL_MakeCurrent(last_saved_window ? last_saved_window : render_window, last_saved_context);
     }
 
     void Present() override {
@@ -161,6 +176,7 @@ public:
 
 private:
     SDL_GLContext window_context = nullptr;
+    SDL_Window* last_saved_window = nullptr;
     SDL_GLContext last_saved_context = nullptr;
     std::unique_ptr<Frontend::GraphicsContext> core_context;
 };

@@ -19,14 +19,15 @@ Each package has the port's own app (`mh4u.exe`, `mh4u.AppImage`, `MH4U.app`), w
 ## How to play (Windows)
 
 1. Install [Python](https://www.python.org/downloads/) 3.10 or newer (tick *Add python.exe to PATH*).
-2. Unzip, double-click `Build code library.bat` and choose your v1.3.0 update `.cia`. It builds the game's code library (the first time it downloads the C compiler, about 180 MB) and installs the update in Azahar.
-3. Double-click `mh4u.exe`. The first time it asks for your game, then it opens it full screen (F11: a window).
+2. Unzip and double-click `mh4u.exe`. The first time its launcher opens on *Setup*: choose your game and your v1.3.0 update `.cia`; it installs the update and builds the game's code library (the first time it downloads the C compiler, about 180 MB). (`Build code library.bat` still does the same from a console.)
+3. *PLAY*. The game opens full screen (F11: a window); **Esc** (or a controller's Guide, or Back+Start) opens the menu over the game.
 
-The app's settings (renderer, screens, keys, controller, a multiplayer room) are in `%APPDATA%\Azahar\mh4u-app.ini`, the game's options (frame rate, widescreen, the touch screen…) in `mh4u.ini` next to it. `azahar.exe` plays the game too (*File → Load File…*), installs other CIAs and has Azahar's settings and *Tools → MH4U Port Options…*. If Windows 11's Smart App Control blocks `mh4u.exe` or `azahar.exe` (unsigned), it has to be turned off. Linux and macOS: the steps are in `README-mh4u.txt` in each package.
+The launcher also has *Mods* (several at once, in an order, conflicts shown), *Online* (a lobby's rooms, joining, hosting) and *Settings*. The in-game menu changes the game's options (frame rate, widescreen, the touch screen, filters…), the display, sound and controls, mostly at once, and saves them in `mh4u.ini` and `mh4u-app.ini` (in `%APPDATA%\Azahar`). `azahar.exe` plays the game too (*File → Load File…*), installs other CIAs and has Azahar's own settings. If Windows 11's Smart App Control blocks `mh4u.exe` or `azahar.exe` (unsigned), it has to be turned off. Linux and macOS: the steps are in `README-mh4u.txt` in each package.
 
 ## What's in it
 
-- **The port's own app**: the game opens directly in a window of its own, full screen, with the keyboard, a controller mapped on its own (like MH3U on a Wii U) and the mouse as the stylus; Vulkan, OpenGL or software rendering; multiplayer rooms from its settings.
+- **The port's own app**: a launcher (setup, mods, online rooms, settings), then the game in a window of its own, full screen, with the keyboard, a controller mapped on its own (like MH3U on a Wii U) and the mouse as the stylus; Vulkan, OpenGL or software rendering; a menu over the game (Esc) for options and controls; the 3DS keyboard (names, chat) drawn by the app.
+- **Servers of our own**: a lobby server that brings back public room lists (in the app's *Online* screen and Azahar's *Browse Public Game Lobby*), and scripts or Docker for dedicated rooms (`mh4u-server`, `SERVER.md`).
 - **Frame rate**: 60, 120 or your monitor's rate (`fps = 120`); the game keeps its normal speed.
 - **Widescreen drawn at full width**: 16:9, 21:9 and 32:9, with the hunting HUD at the screen's edges; 16:10 and 4:3 without distortion.
 - **The touch screen** as an overlay in a corner of a full-window game (*View → Screen Layout → Custom Layout*); in quests just the map; the kick and the target camera on buttons.
@@ -36,11 +37,11 @@ The app's settings (renderer, screens, keys, controller, a multiplayer room) are
 
 ## Multiplayer in short
 
-Azahar has no public room list, so one player hosts: *Multiplayer → Create Room*, type *Unlisted*, with UDP port 24872 forwarded on the router (or everyone in one virtual network: Tailscale, ZeroTier, Radmin VPN). The others use *Multiplayer → Direct Connect to Room*. Everyone needs their own name in *Emulation → Configure → System → Username*. In the app, the same is `host = 24872` or `join = <the host's address>`, and `nickname`, in `mh4u-app.ini`.
+With a lobby server (yours or a friend's, `SERVER.md`), the app's *Online* screen lists its rooms. Without one, one player hosts: *Multiplayer → Create Room*, type *Unlisted*, with UDP port 24872 forwarded on the router (or everyone in one virtual network: Tailscale, ZeroTier, Radmin VPN). The others use *Multiplayer → Direct Connect to Room*. Everyone needs their own name in *Emulation → Configure → System → Username*. In the app, the same is `host = 24872` or `join = <the host's address>`, and `nickname`, in `mh4u-app.ini`.
 
 ## Known limits
 
-- The app is new: it can't install CIAs or change Azahar's settings yet (Azahar, in the same package, does), and only Azahar has been played for hours.
+- The app is new: it can't install other CIAs or change Azahar's own settings (Azahar, in the same package, does); the game has run in it in the cloud on Vulkan and OpenGL, but only Azahar has been played for hours.
 - Save states don't work with the recompiled code: save in the game.
 - Cheats that rewrite code don't apply (ones that change data do).
 - The macOS build hasn't been tried on a Mac yet.

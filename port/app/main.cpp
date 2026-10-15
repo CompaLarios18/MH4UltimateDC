@@ -6,7 +6,7 @@
 //
 // usage: mh4u [GAME] [--windowed | --fullscreen] [--renderer vulkan|opengl|software]
 //             [--join HOST[:PORT]] [--host PORT] [--nickname NAME] [--password PASSWORD]
-//             [--user DIR] [--launcher | --no-launcher]
+//             [--user DIR] [--launcher | --no-launcher] [--log FILTER]
 // Settings: mh4u-app.ini (the app) and mh4u.ini (the game's options) in Azahar's user folder.
 // Before the game, the launcher (launcher/) shows the home screen, setup, mods, room, settings.
 
@@ -76,14 +76,14 @@ constexpr const char* TITLE = "MH4U PC port";
 constexpr const char* USAGE =
     "usage: mh4u [GAME] [--windowed | --fullscreen] [--renderer vulkan|opengl|software]\n"
     "            [--join HOST[:PORT]] [--host PORT] [--nickname NAME] [--password PASSWORD]\n"
-    "            [--user DIR] [--launcher | --no-launcher]\n"
+    "            [--user DIR] [--launcher | --no-launcher] [--log FILTER]\n"
     "GAME: your decrypted Monster Hunter 4 Ultimate (.3ds, .cci, .cxi); without it, the one in\n"
     "mh4u-app.ini, or the app asks. Settings: mh4u-app.ini and mh4u.ini in Azahar's user folder\n"
     "(--user: another one, e.g. for a portable setup). --no-launcher: straight into the game\n"
     "(launcher = off in mh4u-app.ini), unless the setup is incomplete.\n";
 
 struct Args {
-    std::string game, renderer, join, nickname, password, user;
+    std::string game, renderer, join, nickname, password, user, log;
     int fullscreen = -1;  // -1: as the settings say
     int host = -1;
     int launcher = -1;       // -1: as the settings say
@@ -120,6 +120,8 @@ Args Parse(const std::vector<std::string>& argv) {
             a.password = value();
         } else if (arg == "--user") {
             a.user = value();
+        } else if (arg == "--log") {
+            a.log = value();  // Azahar's log filter, e.g. "*:Info Render.OpenGL:Debug"
         } else if (arg == "--launcher" || arg == "--no-launcher") {
             a.launcher = arg == "--launcher" ? 1 : 0;
         } else if (arg == "--check-code") {
@@ -332,7 +334,7 @@ int Run(const std::vector<std::string>& argv) {
     Common::Log::SetColorConsoleBackendEnabled(true);
     Common::Log::Start();
     Common::Log::Filter filter;
-    filter.ParseFilterString(Settings::values.log_filter.GetValue());
+    filter.ParseFilterString(args.log.empty() ? Settings::values.log_filter.GetValue() : args.log);
     Common::Log::SetGlobalFilter(filter);
     if (!args.check_code.empty()) {
         const int status = Launcher::CheckCode(args.check_code);

@@ -125,29 +125,32 @@ jobs:
           No game code is included. To play, with your own decrypted Monster Hunter 4 Ultimate
           (USA) and its v1.3.0 update (.cia):
           1. Python 3.10 or newer (most distributions have it; on a Steam Deck too).
-          2. Run ./build-code-library.sh (or double-click it) and choose your v1.3.0 update .cia:
-             it builds the game's code library on this computer (with clang if installed,
-             otherwise it downloads Zig's C compiler, about 80 MB) and installs it in
-             ~/.local/share/azahar-emu/recomp.
-          3. Start azahar-mh4u.AppImage once: File > Install CIA... (the update), then close it.
-          4. Play: ./mh4u.AppImage (or double-click it). The first time it asks for your game (the
-             decrypted .3ds, .cci or .cxi) with zenity or kdialog, and remembers it. Without
-             either, start it with the game as its argument: ./mh4u.AppImage path/to/game.3ds
+          2. Run ./mh4u.AppImage (or double-click it). The first time its launcher opens on
+             Setup: choose your game (the decrypted .3ds, .cci or .cxi; the file dialog is zenity
+             or kdialog, or start it with the game as its argument) and your v1.3.0 update .cia;
+             it installs the update and builds the game's code library on this computer (with
+             clang if installed, otherwise it downloads Zig's C compiler, about 80 MB).
+             ./build-code-library.sh does the same build from a terminal, if you prefer.
+          3. Play: PLAY on the launcher (Enter, or A on a controller). In the game, Esc (or the
+             controller's Guide button, or Back and Start together) opens the menu: the game's
+             options, the display, sound, controls, the room you're in, quit.
 
           mh4u.AppImage opens the game full screen, with the keyboard, a controller (mapped on its
           own, like MH3U on a Wii U) and the mouse as the stylus. F11 or Alt+Enter: full screen or
           a window. F12, or the right stick's click: in quests, the touch screen's map or the
           whole touch screen.
-          Its settings are in ~/.local/share/azahar-emu/mh4u-app.ini, written with explanations
-          the first time it runs: the game file, the renderer (vulkan, opengl or software), full
+          The launcher's other screens: Mods (several mods, in an order, conflicts shown), Online
+          (a lobby's rooms, joining by address, hosting) and Settings. Its settings are in
+          ~/.local/share/azahar-emu/mh4u-app.ini, written with explanations the first time it
+          runs: the game file, the renderer (vulkan, opengl or software), full
           screen, the screens, sound, the keys and the controller, and a multiplayer room to join
           or host before the game starts. The game's options (frame rate, widescreen, the touch
           screen's corner, ...) are in mh4u.ini next to it; docs/PLAYING.md in the repository has
           them all. If the app doesn't start, ~/.local/share/azahar-emu/log/mh4u_log.txt says why.
 
-          azahar-mh4u.AppImage stays for what the app can't do yet: installing CIAs (File >
-          Install CIA...), Azahar's settings (Emulation > Configure...: system files, the
-          username, controls in detail), Tools > MH4U Port Options... and the Multiplayer menu.
+          azahar-mh4u.AppImage stays for what the app can't do yet: installing other CIAs (File >
+          Install CIA...) and Azahar's own settings (Emulation > Configure...: system files, the
+          username).
           It plays the game as well (File > Load File...). Both use ~/.local/share/azahar-emu: the
           same saves, code library and mh4u.ini.
 

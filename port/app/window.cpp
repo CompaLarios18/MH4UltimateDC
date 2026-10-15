@@ -55,6 +55,9 @@ std::unique_ptr<Window> Window::Create(Core::System& system, Api api, const Conf
 
 bool Window::InitSDL() {
     SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
+    // Windows: draw at the screen's own pixels on a scaled (high-DPI) display instead of being
+    // stretched blurry by the system (the window's coordinates are pixels then, as ToPixels expects)
+    SDL_SetHint(SDL_HINT_WINDOWS_DPI_AWARENESS, "permonitorv2");
     // the game is played with the mouse as a stylus: no touch-to-mouse doubling
     SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS, "0");
     SDL_SetHint(SDL_HINT_MOUSE_FOCUS_CLICKTHROUGH, "1");
