@@ -13,6 +13,7 @@
 #include "input.h"
 #include "input_common/keyboard.h"
 #include "input_common/main.h"
+#include "ui/fps_counter.h"
 #include "ui/hint.h"
 #include "ui/keyboard.h"
 #include "ui/layer.h"
@@ -342,6 +343,20 @@ void Layer::UpdateScale(float display_height) {
     style.FontSizeBase = size;
 }
 
+void Layer::ToggleFpsCounter() {
+    if (FpsCounterOn(config.fps_counter)) {
+        last_fps_corner = config.fps_counter;
+        config.fps_counter = "off";
+    } else {
+        config.fps_counter = last_fps_corner;
+    }
+    // the file's settings with this one changed: not the command line's
+    Config file = App::Load();
+    file.fps_counter = config.fps_counter;
+    App::Save(file);
+    LOG_INFO(Frontend, "frame-rate counter: {}", config.fps_counter);
+}
+
 void Layer::Frame() {
     if (escape_pressed) {
         escape_pressed = false;
@@ -361,7 +376,8 @@ void Layer::Frame() {
     SetCapture(menu_open || keyboard_up);
     // a hint over the game (the skip after a quest) while nothing else of the menu's is up
     const std::string hint = capturing ? std::string{} : HintButtons(config);
-    const bool draw = capturing || keyboard->HasNotice() || !hint.empty();
+    const bool fps_counter = FpsCounterOn(config.fps_counter);
+    const bool draw = capturing || keyboard->HasNotice() || !hint.empty() || fps_counter;
     if (!draw || !renderer_ready.load(std::memory_order_acquire)) {
         if (visible.load(std::memory_order_relaxed)) {
             std::scoped_lock lock{mutex};
@@ -416,6 +432,9 @@ void Layer::Frame() {
     }
     if (!hint.empty()) {
         DrawHint(hint, Port::Hooks::SkipHint() == 2);
+    }
+    if (fps_counter) {
+        DrawFpsCounter(config.fps_counter);
     }
     was_busy = ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopup) || ImGui::IsAnyItemActive();
     ImGui::Render();
@@ -474,7 +493,13 @@ void Frame() {
 
 bool Visible() {
     const Layer* layer = Get();
-    return layer && layer->Visible();
+    return layer && layer->Capturing();
+}
+
+void ToggleFpsCounter() {
+    if (Layer* layer = Get()) {
+        layer->ToggleFpsCounter();
+    }
 }
 
 } // namespace App::Ui

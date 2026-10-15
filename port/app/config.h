@@ -27,6 +27,8 @@ struct Config {
     bool linear_filter = true;        ///< smooth the picture when it is scaled
     bool custom_textures = false;     ///< texture packs in load/textures/<program id>/
     std::string shader;               ///< a post-processing shader, empty: none
+    /// The frame-rate counter over the game: off, top-left, top-right, bottom-left, bottom-right
+    std::string fps_counter = "off";
 
     // [Audio]
     int volume = 100;                 ///< 0-100
@@ -47,6 +49,7 @@ struct Config {
     std::array<std::string, Settings::NativeAnalog::NumAnalogs> stick_params;
     std::string touch_screen_key = "F12";  ///< in quests: the map / the whole touch screen
     std::string fullscreen_key = "F11";
+    std::string fps_counter_key = "F3";  ///< shows and hides the frame-rate counter
 
     // [Multiplayer]
     std::string nickname;             ///< empty: the console's user name

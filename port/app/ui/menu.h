@@ -35,7 +35,7 @@ public:
     /// clears it).
     void OnCapturedKey(int scancode);
 
-    enum class AppSetting { Fullscreen, Screens, Resolution, LinearFilter, Vsync, Renderer, Volume, Output, Controls };
+    enum class AppSetting { Fullscreen, Screens, Resolution, LinearFilter, Vsync, Renderer, Volume, Output, Controls, FpsCounter };
 
     /// The layout editor is up in place of the menu's window: frames over the game for the
     /// quest's map and target camera views, moved and resized with the mouse.

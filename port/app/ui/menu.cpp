@@ -22,6 +22,7 @@
 #include "frontend.h"
 #include "hooks.h"
 #include "input.h"
+#include "ui/fps_counter.h"
 #include "ui/layer.h"
 #include "ui/multiplayer_tab.h"
 #include "ui/options.h"
@@ -411,6 +412,9 @@ void Menu::Closed() {
             case AppSetting::Output:
                 file.audio_output = now.audio_output;
                 break;
+            case AppSetting::FpsCounter:
+                file.fps_counter = now.fps_counter;
+                break;
             case AppSetting::Controls:
                 file.keys = now.keys;
                 file.stick_keys = now.stick_keys;
@@ -473,7 +477,8 @@ void Menu::OnCapturedKey(int scancode) {
         SetKey(config, binding, "");
         ControlsChanged();
     } else if (scancode == Input::KeyCode(config.fullscreen_key) ||
-               scancode == Input::KeyCode(config.touch_screen_key)) {
+               scancode == Input::KeyCode(config.touch_screen_key) ||
+               scancode == Input::KeyCode(config.fps_counter_key)) {
         capture_note = fmt::format("{} is the app's own key.", SDL_GetScancodeName(static_cast<SDL_Scancode>(scancode)));
     } else if (const std::string key = SDL_GetScancodeName(static_cast<SDL_Scancode>(scancode)); key.empty()) {
         capture_note = "That key has no name to keep in mh4u-app.ini.";
@@ -1106,6 +1111,20 @@ void Menu::DrawDisplay() {
             layer.Post([&window = layer.window, full] { window.SetFullscreen(full); });
         }
         layer.Help("F11 or Alt+Enter switch it too.");
+
+        Row("Frame-rate counter");
+        std::string counter = FpsCounterOn(config.fps_counter) ? config.fps_counter : "off";
+        if (ChooseValue("##fps_counter", counter, {std::begin(FPS_COUNTER_PLACES), std::end(FPS_COUNTER_PLACES)},
+                        {"Off", "Top left", "Top right", "Bottom left", "Bottom right"})) {
+            config.fps_counter = counter;
+            Changed(AppSetting::FpsCounter);
+        }
+        // (the help line is drawn after this frame's widgets: the text has to outlive them)
+        static std::string counter_help;
+        counter_help = fmt::format("The game's frames per second over the picture. {} shows and hides it while "
+                                   "you play.", config.fps_counter_key.empty() ? "A key (fps_counter_key)"
+                                                                               : config.fps_counter_key);
+        layer.Help(counter_help.c_str());
 
         // a window of its own for the touch screen exists only from the start
         const bool windows_now = Settings::values.layout_option.GetValue() == Settings::LayoutOption::SeparateWindows;

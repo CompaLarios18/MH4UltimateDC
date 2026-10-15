@@ -42,7 +42,11 @@ bool OnEvent(const SDL_Event& event);
 /// The main window's PollEvents, after the events: builds the menu's frame while it is up.
 void Frame();
 
-/// Whether the menu (or the software keyboard) is on the screen.
+/// Shows or hides the frame-rate counter (mh4u-app.ini's fps_counter: back to its last corner,
+/// top left at first) and saves the choice. The main window's fps_counter_key.
+void ToggleFpsCounter();
+
+/// Whether the menu (or the software keyboard) is on the screen and has the input.
 bool Visible();
 
 /// OpenGL, on the window's present thread with its context current: the menu's renderer before

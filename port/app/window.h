@@ -98,10 +98,12 @@ private:
 
     std::atomic<bool> is_open{true};
     bool fullscreen = false;
-    int touch_key = 0, fullscreen_key = 0;
+    int touch_key = 0, fullscreen_key = 0, fps_counter_key = 0;
     std::atomic<bool> controllers_changed{false};
     u32 cursor_hide_at = 0;  ///< SDL ticks after which an idle mouse cursor hides (full screen)
     u32 last_title = 0;
+    u32 last_measure = 0;
+    double fps = 0.0;  ///< the game's frame rate at the last measure
 };
 
 } // namespace App

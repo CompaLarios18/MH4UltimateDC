@@ -63,6 +63,12 @@ public:
     bool Visible() const {
         return visible.load(std::memory_order_acquire);
     }
+    /// The menu or the software keyboard is up and has the input (not only a hint or the
+    /// frame-rate counter over the game).
+    bool Capturing() const {
+        return capturing;
+    }
+    void ToggleFpsCounter();
 
     // ── The renderers' threads (render_*.cpp) ──
     std::unique_lock<std::mutex> Lock() {
@@ -126,6 +132,7 @@ private:
     std::atomic<bool> renderer_ready{false};
     bool menu_open = false;
     bool capturing = false;      ///< the game's input cut off
+    std::string last_fps_corner = "top-left";  ///< where ToggleFpsCounter puts the counter back
     bool fresh_input = false;    ///< the next frame starts from a clean input state
     bool close_requested = false;
     bool escape_pressed = false; ///< Esc while open: closes the menu unless something takes it

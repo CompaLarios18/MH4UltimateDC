@@ -13,6 +13,7 @@
 #include "input.h"
 #include "input_common/keyboard.h"
 #include "input_common/main.h"
+#include "ui/fps_counter.h"
 #include "ui/ui.h"
 
 namespace App {
@@ -30,6 +31,7 @@ std::unique_ptr<Window> MakeSoftwareWindow(Core::System& system, const Config& c
 namespace {
 constexpr u32 CURSOR_IDLE_MS = 2000;  // full screen: the mouse cursor hides after this long
 constexpr u32 TITLE_EVERY_MS = 2000;
+constexpr u32 MEASURE_EVERY_MS = 500;  // the frame rate, for the title and the counter
 } // namespace
 
 std::unique_ptr<Window> Window::Create(Core::System& system, Api api, const Config& config,
@@ -73,6 +75,7 @@ Window::Window(Core::System& system_, const Config& config, bool is_secondary_)
     : EmuWindow(is_secondary_), system(system_) {
     touch_key = Input::KeyCode(config.touch_screen_key);
     fullscreen_key = Input::KeyCode(config.fullscreen_key);
+    fps_counter_key = Input::KeyCode(config.fps_counter_key);
 }
 
 Window::~Window() {
@@ -148,6 +151,12 @@ void Window::OnKey(int scancode, bool down, u16 modifiers) {
     if (scancode == fullscreen_key || alt_enter) {
         if (down) {
             SetFullscreen(!fullscreen);
+        }
+        return;
+    }
+    if (scancode == fps_counter_key && fps_counter_key != 0) {
+        if (down && !is_secondary) {
+            Ui::ToggleFpsCounter();
         }
         return;
     }
@@ -261,11 +270,15 @@ void Window::PollEvents() {
     }
     if (!is_secondary) {
         const u32 now = SDL_GetTicks();
+        if (now - last_measure >= MEASURE_EVERY_MS) {
+            last_measure = now;
+            const auto stats = system.GetAndResetPerfStats();
+            fps = stats.game_fps;
+            Ui::SetFpsMeasure(fps, fps > 0.0 ? 1000.0 / fps : 0.0, stats.emulation_speed);
+        }
         if (now - last_title >= TITLE_EVERY_MS) {
             last_title = now;
-            const auto stats = system.GetAndResetPerfStats();
-            SDL_SetWindowTitle(render_window,
-                               fmt::format("MH4U PC port | {:.0f} fps", stats.game_fps).c_str());
+            SDL_SetWindowTitle(render_window, fmt::format("MH4U PC port | {:.0f} fps", fps).c_str());
         }
         Ui::Frame(); // the in-game menu's frame, when it is up
     }

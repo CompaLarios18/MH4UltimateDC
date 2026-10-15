@@ -67,7 +67,7 @@ The downloaded archives are deleted once installed (`--keep-download` keeps them
 
 ### Suggesting a mod for the catalog
 
-Open an issue or a pull request that adds an entry to `tools/mods_catalog.json` (and raise its `updated` date). A mod belongs in it when it works with the port (USA, the v1.1 update, title 0004000000126300; texture packs through Azahar's custom textures), when its author shares it publicly with a direct download (GitHub releases, GameBanana, Codeberg, a Dropbox or Drive link of the author's own), and when it neither contains the game nor needs anything that isn't yours. A download behind a sign-in or a click-through (Nexus Mods, Patreon) can still be listed, with no `downloads`: the launcher then shows only *Open its page*. `python3 -m pytest tests/test_mods_catalog.py` checks the file.
+Open an issue or a pull request that adds an entry to `tools/mods_catalog.json` (and raise its `updated` date). A mod belongs in it when it works with the port (USA, title 0004000000126300, with the update the port's code is built from; texture packs through Azahar's custom textures), when its author shares it publicly with a direct download (GitHub releases, GameBanana, Codeberg, a Dropbox or Drive link of the author's own), and when it neither contains the game nor needs anything that isn't yours. A download behind a sign-in or a click-through (Nexus Mods, Patreon) can still be listed, with no `downloads`: the launcher then shows only *Open its page*. `python3 -m pytest tests/test_mods_catalog.py` checks the file.
 
 An entry's fields (`id`, `kind`, `name` and `page_url` are needed; the rest is optional):
 

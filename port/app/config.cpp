@@ -98,6 +98,7 @@ Config Load() {
     c.linear_filter = flag("Display", "linear_filter", c.linear_filter);
     c.custom_textures = flag("Display", "custom_textures", c.custom_textures);
     c.shader = str("Display", "shader", c.shader);
+    c.fps_counter = str("Display", "fps_counter", c.fps_counter);
 
     c.volume = num("Audio", "volume", c.volume, 0, 100);
     c.audio_output = str("Audio", "output", c.audio_output);
@@ -114,6 +115,7 @@ Config Load() {
     c.controller_auto = str("Controls", "controller", "auto") == "auto";
     c.touch_screen_key = str("Controls", "touch_screen_key", c.touch_screen_key);
     c.fullscreen_key = str("Controls", "fullscreen_key", c.fullscreen_key);
+    c.fps_counter_key = str("Controls", "fps_counter_key", c.fps_counter_key);
 
     c.nickname = str("Multiplayer", "nickname", c.nickname);
     c.join = str("Multiplayer", "join", c.join);
@@ -190,6 +192,9 @@ linear_filter = {}
 custom_textures = {}
 # a post-processing shader from the shaders folder (empty: none)
 shader = {}
+# the frame-rate counter over the game: off, top-left, top-right, bottom-left or bottom-right
+# (fps_counter_key, F3, shows and hides it while you play)
+fps_counter = {}
 
 [Audio]
 # 0-100
@@ -209,6 +214,7 @@ controller = {}
 # param_button_a = engine:sdl,guid:...,port:0,api:controller,button:1
 {}touch_screen_key = {}
 fullscreen_key = {}
+fps_counter_key = {}
 
 [Multiplayer]
 # MH4U's local play over the internet, through a room (Azahar's network rooms; docs/SERVER.md).
@@ -243,8 +249,8 @@ catalog_url = {}
 )",
                        c.game, OnOff(c.launcher), c.renderer, OnOff(c.fullscreen), c.resolution,
                        OnOff(c.vsync), c.screens, OnOff(c.linear_filter), OnOff(c.custom_textures),
-                       c.shader, c.volume, c.audio_output, c.controller_auto ? "auto" : "off", keys,
-                       params, c.touch_screen_key, c.fullscreen_key, c.nickname, c.join, c.password,
+                       c.shader, c.fps_counter, c.volume, c.audio_output, c.controller_auto ? "auto" : "off", keys,
+                       params, c.touch_screen_key, c.fullscreen_key, c.fps_counter_key, c.nickname, c.join, c.password,
                        c.host, c.room_port, c.room_name, c.room_members, c.lobby, c.token,
                        OnOff(c.room_public), c.last_room, c.catalog_url);
 }
