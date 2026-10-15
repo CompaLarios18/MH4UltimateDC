@@ -70,6 +70,7 @@ struct Job {
     bool follow = true;              ///< the output view scrolls with new lines
     bool focus_set = false;          ///< a button that just appeared got the focus
     bool quit_asked = false;         ///< the player closed the window during the job
+    bool cancel_asked = false;       ///< the player pressed Cancel: asked whether to stop it
     bool quit_after = false;         ///< ... and chose to stop it and quit
     std::function<void(int exit_code, const std::string& output)> on_done;
     bool Active() const {
