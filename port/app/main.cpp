@@ -423,7 +423,8 @@ int Run(const std::vector<std::string>& argv) {
     }
 
     LOG_INFO(Frontend, "{}", Port::PrepareBackendFor(system, game));
-    if (const std::string notice = Port::BackendNotice(); !notice.empty()) {
+    // (not again when the launcher said it and the player chose to play anyway)
+    if (const std::string notice = Port::BackendNotice(); !notice.empty() && !Launcher::CodeNoticeSeen()) {
         App::Dialog::Message(TITLE, notice);
     }
 

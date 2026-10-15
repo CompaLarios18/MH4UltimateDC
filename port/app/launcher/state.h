@@ -142,6 +142,9 @@ struct State {
     int setup_step = -1;      ///< the setup's step to do next (0: none), as last drawn
     bool done = false;
     Result result = Result::Quit;
+    /// Play was pressed while something it needs was still being read or checked (the mod
+    /// library, the code library): the stage of Play to go on with once it is there
+    int play_waiting = 0;
 
     // the launcher's own keys and buttons, seen as SDL events (Dear ImGui's navigation would
     // take some of them first), applied between frames
@@ -234,7 +237,9 @@ void DrawSettings(State& state);
 
 // the mod library (screen_mods.cpp)
 void RefreshMods(State& state);
-void DeployMods(State& state, bool force, std::function<void(bool ok)> then);
+/// then (if any) runs when the player goes on to play; without_code says they already agreed to
+/// play without the port's code (asked when the code mods need the library built again).
+void DeployMods(State& state, bool force, std::function<void(bool without_code)> then);
 
 // the setup's three parts as status lines (screen_setup.cpp)
 struct SetupRow {

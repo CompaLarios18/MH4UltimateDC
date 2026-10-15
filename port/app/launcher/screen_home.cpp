@@ -51,7 +51,11 @@ void DrawHome(State& s) {
         s.Play();
     }
     ImGui::Spacing();
-    if (!ready) {
+    if (s.play_waiting > 0) {
+        Ui::Spinner();
+        ImGui::SameLine();
+        Ui::TextDim(s.play_waiting == 1 ? "Reading the mod library first..." : "Checking the code library first...");
+    } else if (!ready) {
         Ui::TextColored(Ui::Color::Warn, "Choose your game in Setup first.");
     } else if (!s.SetupComplete()) {
         Ui::TextDim("The setup isn't complete: the game would run without the port's code library.");
