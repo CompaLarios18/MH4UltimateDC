@@ -160,7 +160,7 @@ void TopBar(State& s) {
     ImGui::EndGroup();
 
     // the tabs, on the right, with the controller's shoulder buttons around them
-    const bool pad = GImGui->NavInputSource == ImGuiInputSource_Gamepad;
+    const bool pad = s.pad;
     float width = 0.0f;
     Ui::PushFont(1.1f, true);
     for (int i = 0; i < SCREEN_COUNT; ++i) {
@@ -172,11 +172,13 @@ void TopBar(State& s) {
         width += 80.0f * scale;
     }
     Ui::SameLineRight(width);
+    // (the keycaps a little lower than the tabs: the line's own y set again after each)
+    const float line_y = ImGui::GetCursorPosY();
     if (pad) {
-        ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 8.0f * scale);
+        ImGui::SetCursorPosY(line_y + 8.0f * scale);
         Ui::KeyHint("LB", "");
         ImGui::SameLine();
-        ImGui::SetCursorPosY(ImGui::GetCursorPosY() - 8.0f * scale);
+        ImGui::SetCursorPosY(line_y);
     }
     for (int i = 0; i < SCREEN_COUNT; ++i) {
         const auto screen = static_cast<Screen>(i);
@@ -186,7 +188,7 @@ void TopBar(State& s) {
         ImGui::SameLine(0, ImGui::GetStyle().ItemSpacing.x * 0.5f);
     }
     if (pad) {
-        ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 8.0f * scale);
+        ImGui::SetCursorPosY(line_y + 8.0f * scale);
         Ui::KeyHint("RB", "");
     } else {
         ImGui::NewLine();
@@ -199,7 +201,7 @@ void TopBar(State& s) {
 }
 
 void Footer(State& s) {
-    const bool pad = GImGui->NavInputSource == ImGuiInputSource_Gamepad;
+    const bool pad = s.pad;
     const float gap = 24.0f * Ui::Scale();
     Ui::KeyHint(pad ? "A" : "Enter", "Select");
     if (s.screen != Screen::Home) {
@@ -407,7 +409,9 @@ void DrawDialog(State& s) {
     if (d.input) {
         ImGui::Spacing();
         ImGui::SetNextItemWidth(-FLT_MIN);
-        if (ImGui::IsWindowAppearing()) {
+        // typing right away with a keyboard; with a controller the field only has the focus (A
+        // opens it, B still closes the dialog)
+        if (ImGui::IsWindowAppearing() && !s.pad) {
             ImGui::SetKeyboardFocusHere();
         }
         ImGuiInputTextFlags flags = ImGuiInputTextFlags_EnterReturnsTrue;
@@ -415,6 +419,9 @@ void DrawDialog(State& s) {
             flags |= ImGuiInputTextFlags_Password;
         }
         submit = Ui::InputText("##value", &d.value, flags, d.input_hint.c_str());
+        if (ImGui::IsWindowAppearing() && s.pad) {
+            ImGui::SetItemDefaultFocus();
+        }
     }
     ImGui::Spacing();
     ImGui::Spacing();
@@ -491,6 +498,12 @@ void GlobalKeys(State& s) {
 
 /// The SDL events the launcher looks at itself; false when Dear ImGui shouldn't see it.
 bool OwnKeys(State& s, const SDL_Event& event) {
+    // which hints to show: the controller's or the keyboard's
+    if (event.type == SDL_CONTROLLERBUTTONDOWN) {
+        s.pad = true;
+    } else if (event.type == SDL_KEYDOWN || event.type == SDL_MOUSEBUTTONDOWN || event.type == SDL_TEXTINPUT) {
+        s.pad = false;
+    }
     if (event.type == SDL_KEYDOWN && event.key.repeat == 0) {
         const auto key = event.key.keysym.scancode;
         const auto mod = event.key.keysym.mod;
@@ -906,7 +919,7 @@ void FocusNext(State& state, bool enabled) {
     if (state.focus_first && enabled) {
         state.focus_first = false;
         ImGui::SetKeyboardFocusHere();
-        if (GImGui->NavInputSource == ImGuiInputSource_Gamepad || GImGui->NavCursorVisible) {
+        if (state.pad || GImGui->NavInputSource == ImGuiInputSource_Gamepad || GImGui->NavCursorVisible) {
             ImGui::SetNavCursorVisible(true);
         }
     }

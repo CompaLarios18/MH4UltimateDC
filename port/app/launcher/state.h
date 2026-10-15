@@ -154,6 +154,7 @@ struct State {
     bool cursor_was_hidden = false;
     bool text_was_active = false;
     bool modal_was_open = false;
+    bool pad = false;  ///< the last button pressed was a controller's: its hints, not the keyboard's
 
     // the setup
     Checks::Game game;
