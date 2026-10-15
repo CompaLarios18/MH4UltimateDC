@@ -6,6 +6,7 @@
 
 #include "common/file_util.h"
 #include "common/logging/log.h"
+#include "core/hle/service/service.h"
 #include "input.h"
 
 namespace App {
@@ -266,6 +267,11 @@ void Apply(const Config& c) {
         v.output_type = AudioCore::SinkType::Auto;
     }
     v.frame_limit = 100;
+    // every system module high-level emulated, as Azahar's other frontends set it (Service::Init
+    // looks each one up and throws on one that isn't there)
+    for (const auto& module : Service::service_module_map) {
+        v.lle_modules.emplace(module.name, false);
+    }
     Input::BuildProfile(c);
 }
 
