@@ -89,6 +89,7 @@ Config Load() {
 
     c.game = str("Game", "game", c.game);
     c.launcher = flag("Game", "launcher", c.launcher);
+    c.new_3ds = str("Game", "new_3ds", c.new_3ds);
 
     c.renderer = str("Display", "renderer", c.renderer);
     c.fullscreen = flag("Display", "fullscreen", c.fullscreen);
@@ -172,6 +173,9 @@ game = {}
 # the launcher before the game: Play, the setup, mods, the room, settings. off: straight into
 # the game (the launcher still shows while the game, the update or the code library is missing)
 launcher = {}
+# Azahar's New 3DS mode: on, off or auto (off while custom textures are on: the HD texture pack's
+# monsters show only then; on otherwise)
+new_3ds = {}
 
 [Display]
 # vulkan, opengl or software (opengl isn't available on macOS; vulkan runs on Metal there)
@@ -247,7 +251,7 @@ last_room = {}
 # from here when the launcher starts (empty: never; the copy that came with the app is used)
 catalog_url = {}
 )",
-                       c.game, OnOff(c.launcher), c.renderer, OnOff(c.fullscreen), c.resolution,
+                       c.game, OnOff(c.launcher), c.new_3ds, c.renderer, OnOff(c.fullscreen), c.resolution,
                        OnOff(c.vsync), c.screens, OnOff(c.linear_filter), OnOff(c.custom_textures),
                        c.shader, c.fps_counter, c.volume, c.audio_output, c.controller_auto ? "auto" : "off", keys,
                        params, c.touch_screen_key, c.fullscreen_key, c.fps_counter_key, c.nickname, c.join, c.password,
@@ -268,6 +272,7 @@ void Apply(const Config& c) {
     v.use_vsync = c.vsync;
     v.filter_mode = c.linear_filter;
     v.custom_textures = c.custom_textures;
+    v.is_new_3ds = c.new_3ds == "auto" ? !c.custom_textures : IsOn(c.new_3ds);
     v.async_custom_loading = true;
     if (!c.shader.empty()) {
         v.pp_shader_name = c.shader;

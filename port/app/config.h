@@ -14,6 +14,9 @@ struct Config {
     // [Game]
     std::string game;  ///< the decrypted game (.3ds, .cci, .cxi); empty: ask
     bool launcher = true;  ///< the launcher first (off: only while the setup is incomplete)
+    /// Azahar's New 3DS mode: on, off, or auto (off while custom textures are on: the HD texture
+    /// pack's monsters show only then, its author says; on otherwise, as Azahar has it)
+    std::string new_3ds = "auto";
 
     // [Display]
     std::string renderer = "vulkan";  ///< vulkan, opengl or software

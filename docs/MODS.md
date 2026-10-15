@@ -47,7 +47,7 @@ The launcher's Mods screen has a **Catalog**: mods and texture packs picked for 
 | Charge Blade: Fast Morph Guard Point | JackUnderTheHood | A Guard Point on the Fast Morph Slash. | direct (GameBanana) |
 | Weapon Honing: Life rework | JackUnderTheHood | Life heals like MHW's Health Regen augment; includes both Charge Blade Guard Point mods. | direct (GameBanana) |
 
-Texture packs need **custom textures** on (Settings, or `custom_textures = on` in mh4u-app.ini); the launcher offers to turn them on. The HD pack's author notes that the monsters' HD textures show only with Azahar's New 3DS mode off. The two Guard Point mods change the game's code and add new code after it (a "code cave", see [below](#code-mods-and-the-code-library)): with one of them on, build the code library again (the launcher offers to); until then the game runs on Azahar's own CPU emulation.
+Texture packs need **custom textures** on (Settings, or `custom_textures = on` in mh4u-app.ini); the launcher offers to turn them on. The HD pack's author notes that the monsters' HD textures show only with Azahar's New 3DS mode off. The app turns New 3DS mode off by itself while custom textures are on (`new_3ds = auto` in mh4u-app.ini); in the port's Azahar, untick New 3DS mode in *Emulation → Configure → System*. The two Guard Point mods change the game's code and add new code after it (a "code cave", see [below](#code-mods-and-the-code-library)): with one of them on, build the code library again (the launcher offers to); until then the game runs on Azahar's own CPU emulation.
 
 ```bash
 python3 tools/mods.py catalog                        # the catalog, and what of it is installed
