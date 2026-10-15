@@ -18,7 +18,9 @@ public:
 
     /// Starts `args` (args[0] is looked for on the PATH when it has no folder), with no input
     /// and its standard output and error in one pipe. False with `error` if it didn't start.
-    bool Start(const std::vector<std::string>& args, std::string& error);
+    /// `low_priority`: below the desktop's own programs, and so is all it starts (a build that
+    /// takes every core then leaves the desktop and the launcher responsive).
+    bool Start(const std::vector<std::string>& args, std::string& error, bool low_priority = false);
 
     /// Until it has ended and all its output is read.
     bool Running() const;

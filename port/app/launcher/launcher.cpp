@@ -834,7 +834,7 @@ void State::StartBuild() {
     auto process = std::make_unique<Process>();
     const auto args = Tools::BuildCommand(python, tools_dir, update.content);
     std::string error;
-    if (!process->Start(args, error)) {
+    if (!process->Start(args, error, /*low_priority=*/true)) {
         Message("The build didn't start", error);
         return;
     }

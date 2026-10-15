@@ -21,6 +21,7 @@
 #include <fcntl.h>
 #include <poll.h>
 #include <spawn.h>
+#include <sys/resource.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -160,7 +161,7 @@ void Process::Impl::Read() {
     running = false;
 }
 
-bool Process::Start(const std::vector<std::string>& args, std::string& error) {
+bool Process::Start(const std::vector<std::string>& args, std::string& error, bool low_priority) {
     if (args.empty()) {
         error = "nothing to run";
         return false;
@@ -197,10 +198,11 @@ bool Process::Start(const std::vector<std::string>& args, std::string& error) {
         command += (command.empty() ? L"" : L" ") + QuoteArg(Common::UTF8ToUTF16W(arg));
     }
     PROCESS_INFORMATION info{};
-    const BOOL started =
-        CreateProcessW(nullptr, command.data(), nullptr, nullptr, TRUE,
-                       CREATE_NO_WINDOW | CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT, nullptr,
-                       nullptr, &startup.StartupInfo, &info);
+    // (the processes a below-normal one starts are below normal too)
+    const DWORD flags = CREATE_NO_WINDOW | CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT |
+                        (low_priority ? BELOW_NORMAL_PRIORITY_CLASS : 0);
+    const BOOL started = CreateProcessW(nullptr, command.data(), nullptr, nullptr, TRUE, flags, nullptr,
+                                        nullptr, &startup.StartupInfo, &info);
     if (!started) {
         error = LastError();
     }
@@ -326,7 +328,7 @@ void Process::Impl::Read() {
     running = false;
 }
 
-bool Process::Start(const std::vector<std::string>& args, std::string& error) {
+bool Process::Start(const std::vector<std::string>& args, std::string& error, bool low_priority) {
     if (args.empty()) {
         error = "nothing to run";
         return false;
@@ -375,6 +377,10 @@ bool Process::Start(const std::vector<std::string>& args, std::string& error) {
         close(fds[0]);
         error = std::strerror(result);
         return false;
+    }
+    if (low_priority) {
+        // nice 10, inherited by what it starts (it starts nothing before its interpreter is up)
+        setpriority(PRIO_PROCESS, static_cast<id_t>(pid), 10);
     }
     impl->pid = pid;
     impl->fd = fds[0];
