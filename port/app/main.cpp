@@ -5,7 +5,8 @@
 // game is the player's own dump, and the code library is built from it on their machine.
 //
 // usage: mh4u [GAME] [--windowed | --fullscreen] [--renderer vulkan|opengl|software]
-//             [--join HOST[:PORT]] [--host PORT] [--nickname NAME] [--password PASSWORD]
+//             [--join HOST[:PORT] | --join mh4u://INVITE] [--host PORT] [--nickname NAME]
+//             [--password PASSWORD] [--join-after SECONDS] [--new-console-id]
 //             [--user DIR] [--launcher | --no-launcher] [--log FILTER]
 // Settings: mh4u-app.ini (the app) and mh4u.ini (the game's options) in Azahar's user folder.
 // Before the game, the launcher (launcher/) shows the home screen, setup, mods, room, settings.
@@ -44,21 +45,15 @@
 #include "frontend.h"
 #include "input.h"
 #include "input_common/main.h"
+#include "invite.h"
 #include "launcher/launcher.h"
+#include "multiplayer.h"
 #include "network/network.h"
-#include "network/room.h"
-#include "network/room_member.h"
-#include "network/verify_user.h"
 #include "ui/ui.h"
 #include "video_core/gpu.h"
 #include "video_core/rasterizer_interface.h"
 #include "video_core/renderer_base.h"
 #include "window.h"
-
-#ifdef ENABLE_WEB_SERVICE
-#include "network/announce_multiplayer_session.h"
-#include "web_service/verify_user_jwt.h"
-#endif
 
 #ifdef _WIN32
 #include <windows.h>
@@ -75,18 +70,26 @@ namespace {
 constexpr const char* TITLE = "MH4U PC port";
 constexpr const char* USAGE =
     "usage: mh4u [GAME] [--windowed | --fullscreen] [--renderer vulkan|opengl|software]\n"
-    "            [--join HOST[:PORT]] [--host PORT] [--nickname NAME] [--password PASSWORD]\n"
+    "            [--join HOST[:PORT] | --join mh4u://INVITE] [--host PORT] [--nickname NAME]\n"
+    "            [--password PASSWORD] [--join-after SECONDS] [--new-console-id]\n"
     "            [--user DIR] [--launcher | --no-launcher] [--log FILTER]\n"
     "GAME: your decrypted Monster Hunter 4 Ultimate (.3ds, .cci, .cxi); without it, the one in\n"
     "mh4u-app.ini, or the app asks. Settings: mh4u-app.ini and mh4u.ini in Azahar's user folder\n"
     "(--user: another one, e.g. for a portable setup). --no-launcher: straight into the game\n"
-    "(launcher = off in mh4u-app.ini), unless the setup is incomplete.\n";
+    "(launcher = off in mh4u-app.ini), unless the setup is incomplete.\n"
+    "--join: a room's address or an invite code; the room is joined before the game starts, or\n"
+    "with --join-after that many seconds after it started (as the menu's Join does).\n"
+    "--new-console-id: give this console a new ID first (a room lets in one player per console\n"
+    "ID, and copies of one Azahar user folder have the same one).\n"
+    "Rooms can also be joined, hosted and left in the game: Esc > Multiplayer.\n";
 
 struct Args {
     std::string game, renderer, join, nickname, password, user, log;
     int fullscreen = -1;  // -1: as the settings say
     int host = -1;
     int launcher = -1;       // -1: as the settings say
+    double join_after = -1;  // seconds after the game started (the menu's way); -1: before
+    bool new_console_id = false;
     std::string check_code;  // the launcher's code check, in a process of its own
     bool help = false, bad = false;
 };
@@ -112,6 +115,13 @@ Args Parse(const std::vector<std::string>& argv) {
             a.renderer = value();
         } else if (arg == "--join") {
             a.join = value();
+        } else if (arg == "--join-after") {
+            a.join_after = std::atof(value().c_str());
+            if (a.join_after < 0) {
+                a.bad = true;
+            }
+        } else if (arg == "--new-console-id") {
+            a.new_console_id = true;
         } else if (arg == "--host") {
             a.host = std::atoi(value().c_str());
         } else if (arg == "--nickname") {
@@ -209,94 +219,14 @@ void ReloadInput(Core::System& system) {
     }
 }
 
-#ifdef ENABLE_WEB_SERVICE
-std::shared_ptr<Network::AnnounceMultiplayerSession> announce;
-#endif
-
-/// Hosts and/or joins the room the settings ask for, before the game starts: the console's
-/// local-wireless service only talks to a room that exists when it starts, and takes the
-/// room's MAC address for the console's (as Azahar's Multiplayer menu does). Returns false
-/// with a message for the player if that fails.
-bool StartMultiplayer(Core::System& system, const App::Config& config, std::string& error) {
-    if (config.join.empty() && config.host <= 0) {
-        return true;
-    }
-    std::string nickname = config.nickname;
-    if (nickname.empty()) {
-        nickname = Service::CFG::GetUsername(system);
-    }
-    std::string host = "127.0.0.1";
-    u16 port = Network::DefaultRoomPort;
-    if (config.host > 0) {
-        port = static_cast<u16>(config.host);
-        const auto room = Network::GetRoom().lock();
-        const bool listed = config.room_public && !config.lobby.empty() && !config.token.empty();
-        std::unique_ptr<Network::VerifyUser::Backend> verify =
-            std::make_unique<Network::VerifyUser::NullBackend>();
-#ifdef ENABLE_WEB_SERVICE
-        if (listed) {
-            Settings::values.web_api_url = config.lobby;
-            Settings::values.network_token = config.token;
-            verify = std::make_unique<WebService::VerifyUserJWT>(config.lobby);
-        }
-#endif
-        if (!room || !room->Create(config.room_name, "", "", port, config.password,
-                                   static_cast<u32>(config.room_members), nickname,
-                                   "Monster Hunter 4 Ultimate", 0x0004000000126300,
-                                   std::move(verify))) {
-            error = fmt::format("Couldn't host a room on port {} (is it in use?).", port);
-            return false;
-        }
-        LOG_INFO(Network, "hosting room \"{}\" on port {}", config.room_name, port);
-#ifdef ENABLE_WEB_SERVICE
-        if (listed) {
-            announce = std::make_shared<Network::AnnounceMultiplayerSession>(nickname);
-            const auto result = announce->Register();
-            if (result.result_code != Common::WebResult::Code::Success) {
-                LOG_ERROR(Network, "the lobby at {} didn't list the room: {}", config.lobby,
-                          result.result_string);
-            } else {
-                announce->Start();
-                LOG_INFO(Network, "room listed in the lobby at {}", config.lobby);
-            }
-        }
-#endif
-    } else {
-        host = config.join;
-        if (const auto colon = host.rfind(':'); colon != std::string::npos) {
-            port = static_cast<u16>(std::atoi(host.c_str() + colon + 1));
-            host = host.substr(0, colon);
-        }
-    }
-    const auto member = Network::GetRoomMember().lock();
-    if (!member) {
-        error = "The network library didn't start.";
-        return false;
-    }
-    member->BindOnError([](const Network::RoomMember::Error& e) {
-        LOG_WARNING(Network, "room: {}", Network::GetErrorStr(e));
-    });
-    member->BindOnStatusMessageReceived([](const Network::StatusMessageEntry& msg) {
-        if (msg.type == Network::IdMemberJoin) {
-            LOG_INFO(Network, "{} joined the room", msg.nickname);
-        } else if (msg.type == Network::IdMemberLeave) {
-            LOG_INFO(Network, "{} left the room", msg.nickname);
-        }
-    });
-    member->Join(nickname, Service::CFG::GetConsoleIdHash(system), host.c_str(), port, 0,
-                 Network::NoPreferredMac, config.password);
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
-    while (member->GetState() == Network::RoomMember::State::Joining &&
-           std::chrono::steady_clock::now() < deadline) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    }
-    if (!member->IsConnected()) {
-        error = fmt::format("Couldn't join the room at {}:{} ({}).", host, port,
-                            Network::GetStateStr(member->GetState()));
-        return false;
-    }
-    LOG_INFO(Network, "in the room at {}:{} as {}", host, port, nickname);
-    return true;
+/// A new random console ID, kept in the user folder's system settings: two copies of one Azahar
+/// user folder are one console to a room, which lets in only one of them.
+void NewConsoleId(Core::System& system) {
+    const auto cfg = Service::CFG::GetModule(system);
+    const auto [random_number, console_id] = cfg->GenerateConsoleUniqueId();
+    cfg->SetConsoleUniqueId(random_number, console_id);
+    cfg->UpdateConfigNANDSavegame();
+    LOG_INFO(Frontend, "the console has a new ID: {:016x}", console_id);
 }
 
 std::string LoadError(Core::System::ResultStatus status, Core::System& system) {
@@ -377,6 +307,8 @@ int Run(const std::vector<std::string>& argv) {
     InputCommon::Init();
     App::Input::Register();
     Network::Init();
+    auto& system = Core::System::GetInstance();
+    App::Multiplayer::Init(system, config);
 
     // ── the launcher (launcher/): the home screen, setup, mods, the room and settings; it
     // leaves the game file and the room in `config`. Without a window of its own, as before.
@@ -416,12 +348,28 @@ int Run(const std::vector<std::string>& argv) {
     App::Apply(config);
     LOG_INFO(Frontend, "{}", App::Input::ControllerDescription());
 
-    auto& system = Core::System::GetInstance();
     Frontend::RegisterDefaultApplets(system);
     system.ApplySettings();
 
-    if (std::string error; !StartMultiplayer(system, config, error)) {
-        App::Dialog::Message(TITLE, error + " The game starts without the room.", true);
+    if (args.new_console_id) {
+        NewConsoleId(system);
+    }
+    if (args.join_after >= 0) {
+        // --join-after: the room is joined from the game, by the menu's own Join
+        if (const auto room = App::Invite::Parse(config.join); room.ok) {
+            App::Multiplayer::JoinRequest request;
+            request.host = room.host;
+            request.port = room.port;
+            request.password = room.code ? room.password : config.password;
+            App::Multiplayer::JoinLater(request, args.join_after);
+        } else {
+            LOG_ERROR(Frontend, "--join-after: no room to join ({})", room.error);
+        }
+        config.join.clear();
+    }
+    if (std::string error; !App::Multiplayer::StartAtBoot(error)) {
+        App::Dialog::Message(TITLE, error + " The game starts without the room (Esc > Multiplayer joins "
+                             "one while it runs).", true);
     }
 
     LOG_INFO(Frontend, "{}", Port::PrepareBackendFor(system, game));
@@ -434,6 +382,7 @@ int Run(const std::vector<std::string>& argv) {
     auto window = MakeWindow(system, api, config, api);
     if (!window) {
         App::Dialog::Message(TITLE, "No renderer could open a window (see mh4u_log.txt).", true);
+        App::Multiplayer::Shutdown();
         return 1;
     }
     std::unique_ptr<App::Window> secondary;
@@ -455,6 +404,7 @@ int Run(const std::vector<std::string>& argv) {
     const auto status = system.Load(*window, game, secondary.get());
     if (status != Core::System::ResultStatus::Success) {
         App::Dialog::Message(TITLE, LoadError(status, system), true);
+        App::Multiplayer::Shutdown();
         Network::Shutdown();
         return 1;
     }
@@ -488,6 +438,7 @@ int Run(const std::vector<std::string>& argv) {
             App::Dialog::Message(TITLE, "The game stopped: " + system.GetStatusDetails(), true);
             break;
         }
+        App::Multiplayer::Tick();
         if (window->TakeControllersChanged()) {
             App::Input::BuildProfile(config);
             ReloadInput(system);
@@ -501,20 +452,9 @@ int Run(const std::vector<std::string>& argv) {
     present.join();
     present_secondary.join();
 
-#ifdef ENABLE_WEB_SERVICE
-    if (announce) {
-        announce->Stop();
-        announce.reset();
-    }
-#endif
     system.Shutdown();
     App::Ui::Stop(); // after the renderer, before SDL and the room go
-    if (const auto member = Network::GetRoomMember().lock(); member && member->IsConnected()) {
-        member->Leave();
-    }
-    if (const auto room = Network::GetRoom().lock(); room && room->GetState() == Network::Room::State::Open) {
-        room->Destroy();
-    }
+    App::Multiplayer::Shutdown();
     Network::Shutdown();
     InputCommon::Shutdown();
     detached_tasks.WaitForAllTasks();

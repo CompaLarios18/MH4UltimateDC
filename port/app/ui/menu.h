@@ -58,9 +58,6 @@ private:
     std::set<AppSetting> app_changes;
     int capture = -1;          ///< Controls: the row waiting for a key
     std::string capture_note;  ///< why the last key wasn't taken
-
-    struct Room;
-    std::shared_ptr<Room> room; ///< what the network room's callbacks last said
 };
 
 } // namespace App::Ui

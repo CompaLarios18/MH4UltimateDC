@@ -119,11 +119,13 @@ Config Load() {
     c.join = str("Multiplayer", "join", c.join);
     c.password = str("Multiplayer", "password", c.password);
     c.host = num("Multiplayer", "host", c.host, 0, 65535);
+    c.room_port = num("Multiplayer", "room_port", c.room_port, 1, 65535);
     c.room_name = str("Multiplayer", "room_name", c.room_name);
     c.room_members = num("Multiplayer", "room_members", c.room_members, 2, 254);
     c.lobby = str("Multiplayer", "lobby", c.lobby);
     c.token = str("Multiplayer", "token", c.token);
     c.room_public = flag("Multiplayer", "room_public", c.room_public);
+    c.last_room = str("Multiplayer", "last_room", c.last_room);
     LOG_INFO(Frontend, "settings from {}", path);
     return c;
 }
@@ -208,14 +210,19 @@ fullscreen_key = {}
 
 [Multiplayer]
 # MH4U's local play over the internet, through a room (Azahar's network rooms; docs/SERVER.md).
-# The room is joined before the game starts. Your name in the room (empty: the console's user
-# name, set in Azahar's System settings)
+# The in-game menu's Multiplayer tab (Esc) joins, hosts and leaves rooms while the game runs and
+# keeps these lines up to date. Your name in the room (empty: the console's user name, set in
+# Azahar's System settings)
 nickname = {}
-# join a room: HOST or HOST:PORT (default port 24872), and its password if it has one
+# join this room when the game starts: HOST, HOST:PORT (default port 24872) or an invite code
+# (mh4u://...), and its password if it has one
 join = {}
 password = {}
-# host a room on this UDP port instead (24872; forward it on your router), and join it
+# or host a room on this UDP port when the game starts (24872; forward it on your router), and
+# join it (0: don't)
 host = {}
+# the port the menu hosts on
+room_port = {}
 room_name = {}
 room_members = {}
 # a lobby server lists the hosted room publicly (http://HOST:PORT); the token is your password
@@ -224,12 +231,15 @@ lobby = {}
 token = {}
 # room_public = off keeps a hosted room out of the lobby's list (players join it by address)
 room_public = {}
+# the last room joined (its invite code) or hosted ("host"), for the menu's Rejoin last room
+last_room = {}
 )",
                        c.game, OnOff(c.launcher), c.renderer, OnOff(c.fullscreen), c.resolution,
                        OnOff(c.vsync), c.screens, OnOff(c.linear_filter), OnOff(c.custom_textures),
                        c.shader, c.volume, c.audio_output, c.controller_auto ? "auto" : "off", keys,
                        params, c.touch_screen_key, c.fullscreen_key, c.nickname, c.join, c.password,
-                       c.host, c.room_name, c.room_members, c.lobby, c.token, OnOff(c.room_public));
+                       c.host, c.room_port, c.room_name, c.room_members, c.lobby, c.token,
+                       OnOff(c.room_public), c.last_room);
 }
 
 void Apply(const Config& c) {
