@@ -6,8 +6,9 @@
 //
 // usage: mh4u [GAME] [--windowed | --fullscreen] [--renderer vulkan|opengl|software]
 //             [--join HOST[:PORT]] [--host PORT] [--nickname NAME] [--password PASSWORD]
-//             [--user DIR]
+//             [--user DIR] [--launcher | --no-launcher]
 // Settings: mh4u-app.ini (the app) and mh4u.ini (the game's options) in Azahar's user folder.
+// Before the game, the launcher (launcher/) shows the home screen, setup, mods, room, settings.
 
 #include <atomic>
 #include <chrono>
@@ -43,6 +44,7 @@
 #include "frontend.h"
 #include "input.h"
 #include "input_common/main.h"
+#include "launcher/launcher.h"
 #include "network/network.h"
 #include "network/room.h"
 #include "network/room_member.h"
@@ -74,15 +76,18 @@ constexpr const char* TITLE = "MH4U PC port";
 constexpr const char* USAGE =
     "usage: mh4u [GAME] [--windowed | --fullscreen] [--renderer vulkan|opengl|software]\n"
     "            [--join HOST[:PORT]] [--host PORT] [--nickname NAME] [--password PASSWORD]\n"
-    "            [--user DIR]\n"
+    "            [--user DIR] [--launcher | --no-launcher]\n"
     "GAME: your decrypted Monster Hunter 4 Ultimate (.3ds, .cci, .cxi); without it, the one in\n"
     "mh4u-app.ini, or the app asks. Settings: mh4u-app.ini and mh4u.ini in Azahar's user folder\n"
-    "(--user: another one, e.g. for a portable setup).\n";
+    "(--user: another one, e.g. for a portable setup). --no-launcher: straight into the game\n"
+    "(launcher = off in mh4u-app.ini), unless the setup is incomplete.\n";
 
 struct Args {
     std::string game, renderer, join, nickname, password, user;
     int fullscreen = -1;  // -1: as the settings say
     int host = -1;
+    int launcher = -1;       // -1: as the settings say
+    std::string check_code;  // the launcher's code check, in a process of its own
     bool help = false, bad = false;
 };
 
@@ -115,6 +120,10 @@ Args Parse(const std::vector<std::string>& argv) {
             a.password = value();
         } else if (arg == "--user") {
             a.user = value();
+        } else if (arg == "--launcher" || arg == "--no-launcher") {
+            a.launcher = arg == "--launcher" ? 1 : 0;
+        } else if (arg == "--check-code") {
+            a.check_code = value();
         } else if (!arg.empty() && arg[0] == '-') {
             a.bad = true;
         } else {
@@ -219,7 +228,7 @@ bool StartMultiplayer(Core::System& system, const App::Config& config, std::stri
     if (config.host > 0) {
         port = static_cast<u16>(config.host);
         const auto room = Network::GetRoom().lock();
-        const bool listed = !config.lobby.empty() && !config.token.empty();
+        const bool listed = config.room_public && !config.lobby.empty() && !config.token.empty();
         std::unique_ptr<Network::VerifyUser::Backend> verify =
             std::make_unique<Network::VerifyUser::NullBackend>();
 #ifdef ENABLE_WEB_SERVICE
@@ -318,12 +327,18 @@ int Run(const std::vector<std::string>& argv) {
         const char last = args.user.back();
         FileUtil::SetUserPath(last == '/' || last == '\\' ? args.user : args.user + '/');
     }
-    Common::Log::Initialize("mh4u_log.txt");
+    // (the launcher's code check logs to a file of its own: the launcher's process has this one)
+    Common::Log::Initialize(args.check_code.empty() ? "mh4u_log.txt" : "mh4u_check_log.txt");
     Common::Log::SetColorConsoleBackendEnabled(true);
     Common::Log::Start();
     Common::Log::Filter filter;
     filter.ParseFilterString(Settings::values.log_filter.GetValue());
     Common::Log::SetGlobalFilter(filter);
+    if (!args.check_code.empty()) {
+        const int status = Launcher::CheckCode(args.check_code);
+        Common::Log::Stop();
+        return status;
+    }
 
     LOG_INFO(Frontend, "MH4U PC port app, Azahar {} | {}-{}", Common::g_build_fullname,
              Common::g_scm_branch, Common::g_scm_desc);
@@ -361,7 +376,22 @@ int Run(const std::vector<std::string>& argv) {
     App::Input::Register();
     Network::Init();
 
-    std::string game = args.game.empty() ? config.game : args.game;
+    // ── the launcher (launcher/): the home screen, setup, mods, the room and settings; it
+    // leaves the game file and the room in `config`. Without a window of its own, as before.
+    if (!args.game.empty()) {
+        config.game = args.game;
+    }
+    const bool show_launcher = args.launcher >= 0 ? args.launcher == 1 : config.launcher;
+    if (Launcher::Run(config, show_launcher) == Launcher::Result::Quit) {
+        Network::Shutdown();
+        InputCommon::Shutdown();
+        Common::Log::Stop();
+        SDL_Quit();
+        return 0;
+    }
+    // ──
+
+    std::string game = config.game;
     if (game.empty() || !FileUtil::Exists(game)) {
         if (!game.empty()) {
             LOG_WARNING(Frontend, "{} isn't there any more", game);

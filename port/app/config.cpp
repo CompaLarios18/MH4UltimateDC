@@ -88,6 +88,7 @@ Config Load() {
     };
 
     c.game = str("Game", "game", c.game);
+    c.launcher = flag("Game", "launcher", c.launcher);
 
     c.renderer = str("Display", "renderer", c.renderer);
     c.fullscreen = flag("Display", "fullscreen", c.fullscreen);
@@ -122,6 +123,7 @@ Config Load() {
     c.room_members = num("Multiplayer", "room_members", c.room_members, 2, 254);
     c.lobby = str("Multiplayer", "lobby", c.lobby);
     c.token = str("Multiplayer", "token", c.token);
+    c.room_public = flag("Multiplayer", "room_public", c.room_public);
     LOG_INFO(Frontend, "settings from {}", path);
     return c;
 }
@@ -161,6 +163,9 @@ std::string Template(const Config& c) {
 # your decrypted Monster Hunter 4 Ultimate (USA): .3ds, .cci or .cxi. Empty: the app asks.
 # The v1.3.0 update must be installed (Build code library does that) for the port's code.
 game = {}
+# the launcher before the game: Play, the setup, mods, the room, settings. off: straight into
+# the game (the launcher still shows while the game, the update or the code library is missing)
+launcher = {}
 
 [Display]
 # vulkan, opengl or software (opengl isn't available on macOS; vulkan runs on Metal there)
@@ -217,12 +222,14 @@ room_members = {}
 # there (any you like on an open lobby)
 lobby = {}
 token = {}
+# room_public = off keeps a hosted room out of the lobby's list (players join it by address)
+room_public = {}
 )",
-                       c.game, c.renderer, OnOff(c.fullscreen), c.resolution, OnOff(c.vsync),
-                       c.screens, OnOff(c.linear_filter), OnOff(c.custom_textures), c.shader,
-                       c.volume, c.audio_output, c.controller_auto ? "auto" : "off", keys, params,
-                       c.touch_screen_key, c.fullscreen_key, c.nickname, c.join, c.password,
-                       c.host, c.room_name, c.room_members, c.lobby, c.token);
+                       c.game, OnOff(c.launcher), c.renderer, OnOff(c.fullscreen), c.resolution,
+                       OnOff(c.vsync), c.screens, OnOff(c.linear_filter), OnOff(c.custom_textures),
+                       c.shader, c.volume, c.audio_output, c.controller_auto ? "auto" : "off", keys,
+                       params, c.touch_screen_key, c.fullscreen_key, c.nickname, c.join, c.password,
+                       c.host, c.room_name, c.room_members, c.lobby, c.token, OnOff(c.room_public));
 }
 
 void Apply(const Config& c) {
