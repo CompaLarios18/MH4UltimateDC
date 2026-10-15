@@ -630,8 +630,8 @@ void Menu::DrawGame() {
         layer.Help("The most frames per second the game draws. Its speed stays right at any rate; above 60 a "
                    "busy scene may need a higher CPU clock speed.");
         Row("CPU clock speed");
-        int clock = std::clamp(config.cpu_clock, 5, 400);
-        if (ImGui::SliderInt("##cpu_clock", &clock, 50, 400, "%d%%")) {
+        int clock = std::clamp(config.cpu_clock, 100, 400);
+        if (ImGui::SliderInt("##cpu_clock", &clock, 100, 400, "%d%%")) {
             config.cpu_clock = clock;
             Changed(AppSetting::CpuClock);
             layer.Post([&system = layer.system, clock] {
@@ -639,8 +639,8 @@ void Menu::DrawGame() {
                 system.CoreTiming().UpdateClockSpeed(static_cast<u32>(clock));
             });
         }
-        layer.Help("The emulated CPU's speed, in % of a 3DS's (Azahar's CPU Clock Speed). More keeps a high "
-                   "frame rate in busy scenes, if your PC can take it; too much makes some games misbehave.");
+        layer.Help("The emulated CPU's speed, in % of a 3DS's (Azahar's CPU Clock Speed): 100 is a 3DS. More "
+                   "keeps a high frame rate in busy scenes, if your PC can take it; too much can misbehave.");
         Row("Screen refresh rate");
         std::string hz = Game("refresh_rate");
         if (std::atof(hz.c_str()) <= 0.0) {

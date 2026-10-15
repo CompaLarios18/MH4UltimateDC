@@ -90,7 +90,7 @@ Config Load() {
     c.game = str("Game", "game", c.game);
     c.launcher = flag("Game", "launcher", c.launcher);
     c.new_3ds = str("Game", "new_3ds", c.new_3ds);
-    c.cpu_clock = num("Game", "cpu_clock", c.cpu_clock, 5, 400);
+    c.cpu_clock = num("Game", "cpu_clock", c.cpu_clock, 100, 400);
 
     c.renderer = str("Display", "renderer", c.renderer);
     c.fullscreen = flag("Display", "fullscreen", c.fullscreen);
@@ -177,8 +177,9 @@ launcher = {}
 # Azahar's New 3DS mode: on, off or auto (off while custom textures are on: the HD texture pack's
 # monsters show only then; on otherwise)
 new_3ds = {}
-# the CPU's clock speed in % of the 3DS's (5-400): above 100 a busy scene keeps a high frame
-# rate (fps in mh4u.ini) at the cost of more work for your PC; the same as Azahar's CPU Clock Speed
+# the CPU's clock speed in % of the 3DS's (100-400): above 100 a busy scene keeps a high frame
+# rate (fps in mh4u.ini) at the cost of more work for your PC; the same as Azahar's CPU Clock
+# Speed, which also goes below 100 (slower than a 3DS: no use in the port)
 cpu_clock = {}
 
 [Display]
@@ -277,7 +278,7 @@ void Apply(const Config& c) {
     v.filter_mode = c.linear_filter;
     v.custom_textures = c.custom_textures;
     v.is_new_3ds = c.new_3ds == "auto" ? !c.custom_textures : IsOn(c.new_3ds);
-    v.cpu_clock_percentage = static_cast<u32>(std::clamp(c.cpu_clock, 5, 400));
+    v.cpu_clock_percentage = static_cast<u32>(std::clamp(c.cpu_clock, 100, 400));
     v.async_custom_loading = true;
     if (!c.shader.empty()) {
         v.pp_shader_name = c.shader;
