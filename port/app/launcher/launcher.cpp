@@ -435,6 +435,9 @@ void DrawJob(State& s) {
     ImGui::EndPopup();
     if (close) {
         s.job = Job{};
+        // the button that started it may be another now (Build → Build it again): the focus
+        // goes to the screen's next step
+        s.focus_first = true;
     }
 }
 
@@ -990,8 +993,10 @@ std::string FileName(const std::string& path) {
 
 void FocusNext(State& state, bool enabled) {
     // a disabled item can't take it: the next frame it is enabled does (e.g. after the tools
-    // probe). The request reaches items scrolled out of view too, and scrolls to them.
-    if (state.focus_first && enabled) {
+    // probe), and neither can one behind a window on top (a build's: once it closes). The
+    // request reaches items scrolled out of view too, and scrolls to them.
+    if (state.focus_first && enabled &&
+        !ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel)) {
         state.focus_first = false;
         ImGui::SetKeyboardFocusHere();
         if (state.pad || GImGui->NavInputSource == ImGuiInputSource_Gamepad || GImGui->NavCursorVisible) {
