@@ -14,6 +14,7 @@
 #include "launcher/checks.h"
 #include "launcher/launcher.h"
 #include "launcher/lobby.h"
+#include "launcher/pick.h"
 #include "launcher/process.h"
 #include "launcher/tools.h"
 #include "launcher/ui.h"
@@ -176,6 +177,17 @@ struct State {
     Job job;
     std::optional<Dialog> dialog;
     bool dialog_open = false;  ///< the popup for `dialog` is up
+
+    /// The system's file picker while it is up (Linux, macOS: another program, waited for on a
+    /// thread of its own so that the launcher keeps drawing and answering the desktop)
+    struct Picking {
+        std::future<Pick::Result> result;
+        std::function<void(const std::string&)> then;
+        bool folder = false;
+        std::string title;
+        bool was_fullscreen = false;
+    };
+    std::optional<Picking> picking;
 
     ModLibrary mods;
 
