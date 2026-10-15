@@ -171,3 +171,4 @@
 0x0065a378 aQuest::endSequence         # (this, state): after the wait, the questclear/questfailed animations and the stamp; sets the holder's status to 4
 0x006a62c8 QuestHolder::outcome        # (this, 1): -1 failed/abandoned, 0 running, 1 complete (statuses 3, 4, 7)
 0x006a025c QuestHolder::waitUnits      # (this): the units of the wait before the return (+0xad60), 0 for the default
+0x0028f2f0 PanelManager::touchAllowed    # (hit): whether touches are allowed now (+0xb3 of the manager clear); processTouch keeps the hit test's result in r5 across the call

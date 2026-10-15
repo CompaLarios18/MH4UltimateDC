@@ -104,8 +104,8 @@ struct Options {
     u32 skip_end_buttons = 0x400 | 0x800;  // skip_end / MH4U_SKIP_END: buttons held together to end
                                            // the wait after a quest (ZL+ZR), with everyone's say-so online
     float skip_end_hold = 1.0f;  // skip_end_hold / MH4U_SKIP_END_HOLD: seconds they are held
-    u32 skip_panel = 0xb;   // skip_panel: the touch-screen button whose tap the skip button makes
-                            // first (the panel manager's Skip; then the kick's, 7)
+    u32 skip_panel = 7;     // skip_panel: the touch-screen button whose tap the skip button makes
+                            // (the kick's, which reads Skip then)
     int skip_hint = 1;      // skip_hint / MH4U_SKIP_HINT: 0 off, 1 a hint on screen, 2 flashing
     Layout::ScreenOverlay touch_overlay;  // touch_overlay / MH4U_TOUCH_OVERLAY (custom layout)
     PanelView quest_overlay{true};   // quest_overlay / MH4U_QUEST_OVERLAY: in quests, the map
@@ -699,16 +699,24 @@ constexpr u8 PANELS_BIG = 2;
 constexpr u32 PANEL_BUSY = 0xac;        // u8 (panel manager)
 u32 target_held = 0;
 // The skip after a quest (docs/research/second-screen.md, "Skipping the wait after a quest").
-// Once the quest is complete the touch screen shows "Skip" while the scene of the monster's
-// end plays: the panel manager's fixed button 0xb, which the scene's code polls with
-// isTapped(0xb) (0x009dc278, 0x00a4717c), or the kick button (id 7) whose tap is the kick's
-// action. The skip button makes a tap on each, a frame apart: the panel manager's last touch
-// becomes that button's id with the "activated" flags right after processTouch, so that
-// isTapped and the code reading the touch directly see it as they would a tap. UpdateSkip
+// Once the quest is complete the touch screen's kick button (the panel manager's fixed
+// button 7) reads "Skip" while the scene of the monster's end plays, and a tap on it skips
+// the scene; the game handles that tap inside PanelManager::processTouch (0x002951fc), in
+// the state machine that follows the hit test, not only through isTapped(7) (which the HUD
+// turns into the kick's action, refused with the weapon drawn). So the skip button's tap is
+// made where the hit test leaves its result: processTouch calls 0x0028f2f0 (whether touches
+// are allowed) with the hit in r5, index of the touched button in the mode's id table
+// (0x00df5410) plus event flags; the hook on it puts the Skip button's index with "pressed"
+// one frame and "released on it, activated" the next, and processTouch goes on as for a real
+// tap: the id in +0xce, the flags in +0xcc, the state machine, the HUD's poll. UpdateSkip
 // (below, once a frame) works out when the skip is offered.
 constexpr u16 PANEL_TAP_FLAGS = 0x0a00;  // released on the button pressed (0x0800), activated
                                          // (0x0200)
-constexpr u32 SKIP_PANEL_KICK = 7;       // the second tap, the kick's button
+constexpr u16 PANEL_PRESS_FLAGS = 0x4000;  // pressed on the button
+constexpr u32 PANEL_MODE = 0xb1;         // u8: which buttons the touch screen has (the id table)
+constexpr u32 PANEL_ID_TABLES = 0x00df5410;  // u32[4] per mode: the id of each hit index
+constexpr u32 PANEL_TOUCH_ALLOWED = 0x0028f2f0;  // the call processTouch makes with the hit in r5
+constexpr u32 PANEL_TOUCH_ALLOWED_RETURN = 0x002957a4;  // its return address in processTouch
 // The wait itself (aQuest::playing 0x0065c18c, hooked as QuestPlaying below)
 constexpr u32 AQUEST_WAIT_LEFT = 0x3c;    // s32: units of the wait left (loaded from the holder's
                                           // +0xad60: 20 s × sMain+0x2c)
@@ -717,8 +725,9 @@ constexpr u32 QUEST_STATE_PHASE = 0x24;   // u8 in the state block: 0 playing, 1
 constexpr u8 QUEST_PHASE_WAITING = 1;
 std::atomic<bool> skip_offered{false};   // SkipOffered()
 bool skip_held = false;                  // the skip button, last frame
-bool skip_tap = false;                   // a tap to make after the next processTouch
-bool skip_tap_kick = false;              // ... and the kick button's, the frame after
+int skip_tap = 0;                        // frames of the tap left: 2 pressed, 1 released
+bool skip_tap_direct = false;            // the tap couldn't go through the hit test: write
+                                         // the id and flags after processTouch instead
 bool skip_tap_seen = false;              // isTapped has reported that tap
 u32 skip_polls = 0;                      // isTapped asked about the button while offered
 // The end of the wait (skip_end): the buttons held for skip_end_hold seconds ask for it; the
@@ -730,17 +739,52 @@ bool end_cut = false;                    // the wait was cut this quest
 void UpdateSkip(RCtx* ctx);
 double EmulatedSeconds();
 
+/// The hit index whose id is `panel` in the touch screen's current mode, or -1.
+int PanelIndex(RCtx* ctx, u32 panel) {
+    const u32 mode = rd8(ctx, PANEL_MANAGER + PANEL_MODE);
+    for (u32 index = 0; index < 4; ++index) {
+        if ((rd32(ctx, PANEL_ID_TABLES + mode * 16 + index * 4) & 0xFF) == panel) {
+            return static_cast<int>(index);
+        }
+    }
+    return -1;
+}
+
+/// 0x0028f2f0 (whether touches are allowed), called by processTouch with the hit test's
+/// result in r5 (kept in r5 across the call): while the skip button's tap is being made, the
+/// Skip button's index goes there, pressed one frame and released the next, so processTouch
+/// handles it as it would the stylus.
+void PanelTouchAllowed(RCtx* ctx, RFunc original) {
+    const bool from_process_touch = ctx->r[14] == PANEL_TOUCH_ALLOWED_RETURN;
+    original(ctx);
+    if (!from_process_touch || skip_tap == 0) {
+        return;
+    }
+    const int index = PanelIndex(ctx, options.skip_panel);
+    if (index < 0) {
+        // no such button on this touch screen: the direct write after processTouch instead
+        skip_tap_direct = true;
+        return;
+    }
+    const u32 hit = static_cast<u32>(index) | (skip_tap == 2 ? PANEL_PRESS_FLAGS : PANEL_TAP_FLAGS);
+    ctx->r[5] = hit;
+    LOG_INFO(Frontend, "skip: {} the touch screen's button {} (hit {:04X}, touches {})",
+             skip_tap == 2 ? "pressing" : "releasing", options.skip_panel, hit,
+             ctx->r[0] ? "allowed" : "not allowed");
+    --skip_tap;
+}
+
 /// PanelManager::processTouch(): runs the touch groups, leaves the touched panel's id.
 void PanelProcessTouch(RCtx* ctx, RFunc original) {
     original(ctx);
-    if (skip_tap || skip_tap_kick) {
-        const u32 panel = skip_tap ? options.skip_panel : SKIP_PANEL_KICK;
-        skip_tap_kick = skip_tap && options.skip_panel != SKIP_PANEL_KICK;
-        skip_tap = false;
+    if (skip_tap_direct) {
+        skip_tap_direct = false;
+        skip_tap = 0;
         skip_tap_seen = false;
-        wr8(ctx, PANEL_MANAGER + PANEL_ID, panel);
+        wr8(ctx, PANEL_MANAGER + PANEL_ID, options.skip_panel);
         wr16(ctx, PANEL_MANAGER + PANEL_FLAGS, PANEL_TAP_FLAGS);
-        LOG_INFO(Frontend, "skip: a tap on the touch screen's button {}", panel);
+        LOG_INFO(Frontend, "skip: a tap on the touch screen's button {} (written after processTouch)",
+                 options.skip_panel);
         return;
     }
     const bool skipping = skip_offered.load(std::memory_order_relaxed);
@@ -762,7 +806,7 @@ void PanelIsTapped(RCtx* ctx, RFunc original) {
     const u32 id = ctx->r[0];
     const u32 caller = ctx->r[14];
     original(ctx);
-    if ((id == options.skip_panel || id == SKIP_PANEL_KICK) && skip_offered.load(std::memory_order_relaxed)) {
+    if (id == options.skip_panel && skip_offered.load(std::memory_order_relaxed)) {
         ++skip_polls;
         if (ctx->r[0] != 0 && !skip_tap_seen) {
             skip_tap_seen = true;
@@ -830,7 +874,8 @@ void MhPadUpdate(RCtx* ctx, RFunc original) {
     const bool rest_held = rest && (held & rest) == rest;
     const bool skip_now = options.skip_button && (held & options.skip_button);
     if (skip_now && !skip_held && offered && !rest_held) {
-        skip_tap = true;
+        skip_tap = 2;
+        skip_tap_seen = false;
         LOG_INFO(Frontend, "skip: {} pressed", PadName(options.skip_button));
     }
     skip_held = skip_now;
@@ -1011,10 +1056,11 @@ void UpdateSkip(RCtx* ctx) {
         } else {
             LOG_INFO(Frontend,
                      "skip: no longer offered after {:.1f} s (status {}, return {}); the game asked about "
-                     "buttons {} and 7 {} times",
+                     "button {} {} times",
                      now - skip_since, status, due ? "due" : "not due", options.skip_panel, skip_polls);
         }
-        skip_tap = skip_tap_kick = false;
+        skip_tap = 0;
+        skip_tap_direct = false;
         end_hold_since = 0;
         end_hold_fraction.store(0.0f, std::memory_order_relaxed);
         if (end_requested.exchange(false)) {
@@ -1288,6 +1334,7 @@ constexpr Hook HOOKS[] = {
     {0x0062e184, "nDraw::DisplayBuffer::init", DisplayBufferInit},
     {0x00aefd44, "sCamera::Viewport::updateRegion", UpdateRegion},
     {0x002951fc, "PanelManager::processTouch", PanelProcessTouch},
+    {0x0028f2f0, "PanelManager::touchAllowed", PanelTouchAllowed},
     {0x00288f4c, "PanelManager::isTapped", PanelIsTapped},
     {0x00694c98, "sMhPad::update", MhPadUpdate},
     {0x00b7c010, "QuestFlow::startQuest", StartQuest},
@@ -1322,7 +1369,8 @@ std::vector<std::string> Install(const RCodeInfo& info) {
     quest_start_held = 0;
     target_held = 0;
     skip_offered = false;
-    skip_held = skip_tap = skip_tap_kick = skip_tap_seen = skip_complete = false;
+    skip_held = skip_tap_direct = skip_tap_seen = skip_complete = false;
+    skip_tap = 0;
     skip_polls = 0;
     end_hold_since = 0;
     end_hold_fraction = 0.0f;
@@ -1380,7 +1428,7 @@ std::vector<std::string> Install(const RCodeInfo& info) {
         log.push_back(fmt::format("target camera on pad button {:04X}", options.target_button));
     }
     if (options.skip_button) {
-        log.push_back(fmt::format("skip after a quest on {} (a tap on the touch screen's button {}, then 7)",
+        log.push_back(fmt::format("skip after a quest on {} (a tap on the touch screen's button {})",
                                   PadName(options.skip_button), options.skip_panel));
     }
     if (options.skip_end_buttons) {
