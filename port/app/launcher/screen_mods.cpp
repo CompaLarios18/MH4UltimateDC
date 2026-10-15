@@ -21,7 +21,7 @@ namespace {
 using Json = nlohmann::json;
 
 constexpr const char* REBUILD_TEXT =
-    "The code mods in Azahar's mods folder changed since the code library was built, and they change "
+    "The code library wasn't built with the code mods now in Azahar's mods folder, and they change "
     "the game's code: the library has to be built again from them (a few minutes).";
 
 std::string Str(const Json& j, const char* key) {
@@ -238,8 +238,8 @@ void Details(State& s, const ModInfo& mod) {
     ImGui::Spacing();
     std::string what = fmt::format("{} file{}", mod.files, mod.files == 1 ? "" : "s");
     if (mod.code && mod.adds_code) {
-        what += ", a code mod that adds code after the game's own: with it on, the game runs on Azahar's own CPU "
-                "emulation";
+        what += ", a code mod that adds new code after the game's own (the code library has to be built again "
+                "with it)";
     } else if (mod.code) {
         what += mod.changes_code == 1   ? ", a code mod that changes the game's code (the code library has to be built again)"
                 : mod.changes_code == 0 ? ", a code mod that changes only data"
@@ -918,14 +918,6 @@ void DeployMods(State& s, bool force, std::function<void(bool without_code)> the
             LOG_INFO(Frontend, "launcher: mods deployed");
             RefreshMods(s);
             s.CheckCode();
-            if (s.mods.code_state == "unsupported" && then) {
-                Dialog d;
-                d.title = "Play on Azahar's CPU emulation?";
-                d.text = s.mods.code_reason + ".";
-                d.buttons = {go_on("Play", true), {"Back", nullptr, false}};
-                s.Show(std::move(d));
-                return;
-            }
             if (s.mods.code_state == "rebuild") {
                 Dialog d;
                 d.title = "Build the code library again?";
@@ -1068,9 +1060,6 @@ void DrawMods(State& s) {
                                "Files you put there yourself are where the mods go (" + files +
                                    "): you'll be asked whether to replace them.");
             }
-        }
-        if (s.mods.code_state == "unsupported") {
-            Ui::StatusLine(Ui::Status::Warn, "A code mod needs Azahar's CPU emulation", s.mods.code_reason);
         }
         if (s.mods.code_state == "rebuild") {
             Ui::StatusLine(Ui::Status::Warn, "The code library needs building again", REBUILD_TEXT);

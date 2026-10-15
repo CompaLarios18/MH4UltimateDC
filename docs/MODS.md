@@ -47,7 +47,7 @@ The launcher's Mods screen has a **Catalog**: mods and texture packs picked for 
 | Charge Blade: Fast Morph Guard Point | JackUnderTheHood | A Guard Point on the Fast Morph Slash. | direct (GameBanana) |
 | Weapon Honing: Life rework | JackUnderTheHood | Life heals like MHW's Health Regen augment; includes both Charge Blade Guard Point mods. | direct (GameBanana) |
 
-Texture packs need **custom textures** on (Settings, or `custom_textures = on` in mh4u-app.ini); the launcher offers to turn them on. The HD pack's author notes that the monsters' HD textures show only with Azahar's New 3DS mode off. The two Guard Point mods add new code after the game's own code (a "code cave"), which the port's recompiled code library can't run yet: `status` says `unsupported`, and with one of them on the game runs on Azahar's own CPU emulation (the launcher says so before it starts).
+Texture packs need **custom textures** on (Settings, or `custom_textures = on` in mh4u-app.ini); the launcher offers to turn them on. The HD pack's author notes that the monsters' HD textures show only with Azahar's New 3DS mode off. The two Guard Point mods change the game's code and add new code after it (a "code cave", see [below](#code-mods-and-the-code-library)): with one of them on, build the code library again (the launcher offers to); until then the game runs on Azahar's own CPU emulation.
 
 ```bash
 python3 tools/mods.py catalog                        # the catalog, and what of it is installed
@@ -134,18 +134,18 @@ The port runs the game's code recompiled for your PC (the code library, [PLAYING
 
 - A code mod that only changes the game's **data** (such as the crafting patch of [anco's MH4U quality-of-life project](https://codeberg.org/anco/mh4u_qol)) works as it is.
 - One that changes the game's **code** needs the code library built again with it in place: deploy, then build (`tools/build_game.py --install`, or the package's build script, which apply the code mods in Azahar's folder). Build again after adding, changing or removing such a mod. Without that, the port runs the game on Azahar's own CPU emulation and says why when the game starts.
+- One that **adds new code** after the game's own, in the padding between the end of the code and the read-only data (the rest of the code's last page, a "code cave" that the code it patches branches to, like JackUnderTheHood's Guard Point mods), is the same: `build_game.py` then recompiles that page to its end too (it says `recompiling 0x... bytes (to the end of the code's last page)`), and the library checks and runs the new code with the rest. The game's own padding is zeros, so without such a mod nothing changes.
 
 `list` shows for each code mod whether it changes the code or only data, read from the patch itself (the offsets it writes, compared with the size of the code segment in `config/versions.json`); for a whole `code.bin` that can't be told without the game's code. `status` (and `deploy`) says whether the code library needs building again:
 
 | `status` says | Meaning |
 |---|---|
 | `ok` | built with the code mods now in Azahar's folder, or both those and the ones it was built with change only data |
-| `rebuild` | the code mods changed since it was built: build it again |
+| `rebuild` | the code mods changed since it was built (or the code mod adds new code after the game's own and the library was built by a `build_game.py` that left that out): build it again |
 | `unknown` | it was built without a record of its code mods (by an older `build_game.py`, or the record is from another build) |
 | `missing` | no code library: [PLAYING.md](PLAYING.md) step 1 |
-| `unsupported` | the code mod adds new code after the game's own (in the padding before the read-only data), which the code library, recompiled from the code segment alone, can't run: the game runs on Azahar's own CPU emulation with it |
 
-The record is `recomp/0004000000126300.build.json` next to the library, written by `build_game.py --install`. `status` also notices Luma's code patch (`sdmc/luma/titles/0004000E00126300/code.ips`), which Azahar applies when the mods folder has none but `build_game.py` doesn't: move it into a mod instead.
+The record is `recomp/0004000000126300.build.json` next to the library, written by `build_game.py --install` (with `code_size`, how much of the code segment it recompiled). `status` also notices Luma's code patch (`sdmc/luma/titles/0004000E00126300/code.ips`), which Azahar applies when the mods folder has none but `build_game.py` doesn't: move it into a mod instead.
 
 ## For mod authors
 

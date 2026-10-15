@@ -213,7 +213,8 @@ def main(argv=None) -> int:
         code = codebin2elf.load_code(header, f.read())
     fixed, rw = build_regions(header, code)
     global TEXT_RANGE
-    TEXT_RANGE = (header.text.address, header.text.address + header.text.size)
+    import recompile    # the range build_game.py recompiles: with a code mod's new code after the code too
+    TEXT_RANGE = (header.text.address, header.text.address + recompile.code_size(header, code))
     tester = Tester(args.lib, fixed, rw, args.seed)
     funcs = tester.funcs
     if args.only:
