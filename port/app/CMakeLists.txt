@@ -37,6 +37,47 @@ if (ENABLE_SOFTWARE_RENDERER)
     target_sources(mh4u PRIVATE window_sw.cpp)
 endif()
 
+# The launcher (launcher/): the home screen before the game, in a window of its own drawn with
+# an SDL_Renderer and Dear ImGui (its SDL_Renderer backend), so it needs none of Azahar's
+# renderers. It lists a lobby's rooms with httplib and reads the tools' JSON with nlohmann's.
+target_sources(mh4u PRIVATE
+    launcher/checks.cpp
+    launcher/checks.h
+    launcher/launcher.cpp
+    launcher/launcher.h
+    launcher/lobby.cpp
+    launcher/lobby.h
+    launcher/pick.cpp
+    launcher/pick.h
+    launcher/process.cpp
+    launcher/process.h
+    launcher/screen_home.cpp
+    launcher/screen_mods.cpp
+    launcher/screen_online.cpp
+    launcher/screen_settings.cpp
+    launcher/screen_setup.cpp
+    launcher/state.h
+    launcher/tools.cpp
+    launcher/tools.h
+    launcher/ui.cpp
+    launcher/ui.h
+    ${MH4U_IMGUI_DIR}/backends/imgui_impl_sdlrenderer2.cpp
+)
+target_include_directories(mh4u PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(mh4u PRIVATE mh4u_imgui httplib json-headers)
+# the port's commit on the home screen, and the repository's tools/ for a build from source
+# (a package carries them in mh4u-tools/)
+execute_process(COMMAND git rev-parse --short HEAD WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                OUTPUT_VARIABLE MH4U_PORT_COMMIT OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+set_source_files_properties(launcher/launcher.cpp PROPERTIES
+                            COMPILE_DEFINITIONS "MH4U_PORT_COMMIT=\"${MH4U_PORT_COMMIT}\"")
+set_source_files_properties(launcher/tools.cpp PROPERTIES
+                            COMPILE_DEFINITIONS "MH4U_SOURCE_TOOLS_DIR=\"${MH4U_TOOLS_DIR}\"")
+if (WIN32)
+    # httplib's TLS (the system's certificates), the folder picker (COM)
+    target_link_libraries(mh4u PRIVATE crypt32 ole32 uuid)
+endif()
+
 target_compile_definitions(mh4u PRIVATE SDL_MAIN_HANDLED)
 target_link_libraries(mh4u PRIVATE mh4u_backend audio_core citra_common citra_core input_common
                       network video_core inih SDL2::SDL2 ${PLATFORM_LIBRARIES} Threads::Threads)

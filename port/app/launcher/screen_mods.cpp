@@ -1,0 +1,572 @@
+// Mods: the mod library through tools/mods.py --json (docs/MODS.md): on/off, the order, which
+// mod wins a conflict, adding a folder or a .zip, removing; the mods are put in Azahar's mods
+// folder when the player presses Play (deploy), and a code library that the code mods made
+// stale can be built again from here.
+#include <fmt/format.h>
+#include <imgui.h>
+#include <json.hpp>
+
+#include "common/logging/log.h"
+#include "launcher/state.h"
+#include "launcher/ui.h"
+
+namespace Launcher {
+
+namespace {
+
+using Json = nlohmann::json;
+
+constexpr const char* REBUILD_TEXT =
+    "The code mods in Azahar's mods folder changed since the code library was built, and they change "
+    "the game's code: the library has to be built again from them (a few minutes).";
+
+std::string Str(const Json& j, const char* key) {
+    const auto it = j.find(key);
+    return it != j.end() && it->is_string() ? it->get<std::string>() : std::string();
+}
+
+int Int(const Json& j, const char* key) {
+    const auto it = j.find(key);
+    return it != j.end() && it->is_number_integer() ? it->get<int>() : 0;
+}
+
+bool Bool(const Json& j, const char* key) {
+    const auto it = j.find(key);
+    return it != j.end() && it->is_boolean() && it->get<bool>();
+}
+
+std::vector<std::string> Strings(const Json& j, const char* key) {
+    std::vector<std::string> out;
+    const auto it = j.find(key);
+    if (it != j.end() && it->is_array()) {
+        for (const auto& item : *it) {
+            if (item.is_string()) {
+                out.push_back(item.get<std::string>());
+            }
+        }
+    }
+    return out;
+}
+
+/// The one JSON object mods.py --json prints (null if it printed something else: a crash).
+Json Parse(const std::string& output) {
+    Json j = Json::parse(output, nullptr, false);
+    if (!j.is_discarded() && j.is_object()) {
+        return j;
+    }
+    // anything printed before it (a warning from Python itself)
+    if (const auto start = output.find("\n{"); start != std::string::npos) {
+        j = Json::parse(output.substr(start + 1), nullptr, false);
+        if (!j.is_discarded() && j.is_object()) {
+            return j;
+        }
+    }
+    return Json();
+}
+
+std::string ErrorText(const Json& j, const std::string& output) {
+    if (j.is_object() && j.contains("error") && j["error"].is_object()) {
+        return Str(j["error"], "message");
+    }
+    std::vector<std::string> lines;
+    std::size_t start = 0;
+    while (start < output.size()) {
+        const auto end = std::min(output.find('\n', start), output.size());
+        lines.push_back(output.substr(start, end - start));
+        start = end + 1;
+    }
+    return "mods.py didn't work: " + Tools::ErrorSummary(lines);
+}
+
+void ApplyOverview(ModLibrary& lib, const Json& j) {
+    lib.loaded = true;
+    lib.error.clear();
+    lib.library_path = Str(j, "library");
+    lib.folder = Str(j, "mods_folder");
+    lib.deploy_state = Str(j, "deploy_state");
+    lib.problems = Strings(j, "problems");
+    lib.warnings = Strings(j, "warnings");
+    lib.messages = Strings(j, "messages");
+    lib.mods.clear();
+    if (const auto it = j.find("mods"); it != j.end() && it->is_array()) {
+        for (const auto& m : *it) {
+            if (!m.is_object()) {
+                continue;
+            }
+            ModInfo mod;
+            mod.id = Str(m, "id");
+            mod.name = Str(m, "name");
+            mod.version = Str(m, "version");
+            mod.author = Str(m, "author");
+            mod.description = Str(m, "description");
+            mod.url = Str(m, "url");
+            mod.enabled = Bool(m, "enabled");
+            mod.is_new = Bool(m, "new");
+            mod.position = Int(m, "position");
+            mod.files = Int(m, "files");
+            mod.wins = Int(m, "wins");
+            mod.loses = Int(m, "loses");
+            mod.warnings = Strings(m, "warnings");
+            mod.errors = Strings(m, "errors");
+            if (const auto code = m.find("code"); code != m.end() && code->is_object()) {
+                mod.code = true;
+                const auto changes = code->find("changes_code");
+                mod.changes_code = changes == code->end() || !changes->is_boolean() ? -1 : changes->get<bool>() ? 1 : 0;
+            }
+            if (mod.name.empty()) {
+                mod.name = mod.id;
+            }
+            lib.mods.push_back(std::move(mod));
+        }
+    }
+    const bool still_there = std::any_of(lib.mods.begin(), lib.mods.end(),
+                                         [&](const ModInfo& m) { return m.id == lib.selected; });
+    if (!still_there) {
+        lib.selected = lib.mods.empty() ? std::string() : lib.mods.front().id;
+    }
+}
+
+void ApplyConflicts(ModLibrary& lib, const Json& j) {
+    lib.conflicts.clear();
+    if (const auto it = j.find("conflicts"); it != j.end() && it->is_array()) {
+        for (const auto& c : *it) {
+            if (c.is_object()) {
+                lib.conflicts.push_back({Str(c, "path"), Str(c, "winner"), Strings(c, "mods")});
+            }
+        }
+    }
+}
+
+void ApplyStatus(ModLibrary& lib, const Json& j) {
+    if (const auto deploy = j.find("deploy"); deploy != j.end() && deploy->is_object()) {
+        lib.deploy_state = Str(*deploy, "state");
+        lib.in_the_way = Strings(*deploy, "in_the_way");
+        lib.problems = Strings(*deploy, "problems");
+    }
+    if (const auto code = j.find("code_library"); code != j.end() && code->is_object()) {
+        lib.code_state = Str(*code, "state");
+        lib.code_reason = Str(*code, "reason");
+    }
+}
+
+/// The library as mods.py returns it after a command; errors to a dialog.
+void HandleOverview(State& s, int exit_code, const std::string& output, bool quiet = false) {
+    const Json j = Parse(output);
+    if (exit_code == 0 && j.is_object() && Bool(j, "ok")) {
+        ApplyOverview(s.mods, j);
+        return;
+    }
+    const std::string error = ErrorText(j, output);
+    LOG_WARNING(Frontend, "launcher: mods.py: {}", error);
+    if (!s.mods.loaded) {
+        s.mods.error = error;
+    }
+    if (!quiet) {
+        s.Message("The mod library", error);
+    }
+}
+
+/// Conflicts and the code library's state, after the library changed.
+void QueueDetails(State& s) {
+    s.runner.Queue(Tools::ModsCommand(s.python, s.tools_dir, {"conflicts"}), "Reading the mod library",
+                   [&s](int exit_code, const std::string& output) {
+                       const Json j = Parse(output);
+                       if (exit_code == 0 && j.is_object()) {
+                           ApplyConflicts(s.mods, j);
+                       }
+                   });
+    s.runner.Queue(Tools::ModsCommand(s.python, s.tools_dir, {"status"}), "Reading the mod library",
+                   [&s](int exit_code, const std::string& output) {
+                       const Json j = Parse(output);
+                       if (exit_code == 0 && j.is_object()) {
+                           ApplyStatus(s.mods, j);
+                       }
+                   });
+}
+
+/// A command that changes the library (add, remove, enable, disable, order).
+void Change(State& s, std::vector<std::string> args, std::string what) {
+    s.runner.Queue(Tools::ModsCommand(s.python, s.tools_dir, args), std::move(what),
+                   [&s](int exit_code, const std::string& output) {
+                       HandleOverview(s, exit_code, output);
+                   });
+    QueueDetails(s);
+}
+
+const ModInfo* Selected(const State& s) {
+    for (const auto& mod : s.mods.mods) {
+        if (mod.id == s.mods.selected) {
+            return &mod;
+        }
+    }
+    return nullptr;
+}
+
+void Details(State& s, const ModInfo& mod) {
+    Ui::PushFont(1.25f, true);
+    ImGui::PushTextWrapPos(0.0f);
+    ImGui::TextUnformatted(mod.name.c_str());
+    ImGui::PopTextWrapPos();
+    Ui::PopFont();
+    std::string by;
+    if (!mod.version.empty()) {
+        by += "Version " + mod.version;
+    }
+    if (!mod.author.empty()) {
+        by += (by.empty() ? "By " : ", by ") + mod.author;
+    }
+    if (!by.empty()) {
+        Ui::TextDim(by);
+    }
+    if (!mod.description.empty()) {
+        ImGui::Spacing();
+        Ui::TextColored(Ui::Color::Text, mod.description);
+    }
+    if (!mod.url.empty()) {
+        Ui::TextColored(Ui::Color::Info, mod.url);
+    }
+    ImGui::Spacing();
+    std::string what = fmt::format("{} file{}", mod.files, mod.files == 1 ? "" : "s");
+    if (mod.code) {
+        what += mod.changes_code == 1   ? ", a code mod that changes the game's code (the code library has to be built again)"
+                : mod.changes_code == 0 ? ", a code mod that changes only data"
+                                        : ", a code mod";
+    }
+    Ui::TextDim(what);
+    for (const auto& error : mod.errors) {
+        Ui::StatusLine(Ui::Status::Error, "Can't be used", error);
+    }
+    for (const auto& warning : mod.warnings) {
+        Ui::StatusLine(Ui::Status::Warn, "Note", warning);
+    }
+    // the files it shares with other mods
+    std::vector<const Conflict*> shared;
+    for (const auto& c : s.mods.conflicts) {
+        if (std::find(c.mods.begin(), c.mods.end(), mod.id) != c.mods.end()) {
+            shared.push_back(&c);
+        }
+    }
+    if (!shared.empty()) {
+        ImGui::Spacing();
+        Ui::PushFont(0.85f, true);
+        ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(Ui::Color::Dim), "CONFLICTS (LATER MODS WIN)");
+        Ui::PopFont();
+        for (const auto* c : shared) {
+            const bool wins = c->winner == mod.id;
+            Ui::StatusLine(wins ? Ui::Status::Ok : Ui::Status::Warn, c->path,
+                           wins ? "this mod's file is used" : "the file of " + c->winner + " is used");
+        }
+    }
+}
+
+/// A row's actions: up and down the order, remove (with a question first). True when one of
+/// them has the focus.
+bool RowActions(State& s, const ModInfo& mod, bool busy) {
+    const int count = static_cast<int>(s.mods.mods.size());
+    bool focused = false;
+    ImGui::BeginDisabled(busy || mod.position <= 1);
+    if (Ui::IconButton("##up", Ui::Glyph::Up)) {
+        Change(s, {"order", mod.id, std::to_string(mod.position - 1)}, "Moving " + mod.name);
+    }
+    focused = focused || ImGui::IsItemFocused();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+        ImGui::SetTooltip("Earlier in the order (later mods win)");
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::BeginDisabled(busy || mod.position >= count);
+    if (Ui::IconButton("##down", Ui::Glyph::Down)) {
+        Change(s, {"order", mod.id, std::to_string(mod.position + 1)}, "Moving " + mod.name);
+    }
+    focused = focused || ImGui::IsItemFocused();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+        ImGui::SetTooltip("Later in the order");
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::BeginDisabled(busy);
+    const bool remove = Ui::IconButton("##remove", Ui::Glyph::Remove);
+    focused = focused || ImGui::IsItemFocused();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+        ImGui::SetTooltip("Remove from the library");
+    }
+    if (remove) {
+        Dialog d;
+        d.title = "Remove " + mod.name + "?";
+        d.text = "It is deleted from the mod library. Its files leave Azahar's mods folder the next "
+                 "time the mods are put in place (when you play).";
+        const std::string id = mod.id, name = mod.name;
+        d.buttons = {{"Keep it", nullptr, true},
+                     {"Remove", [&s, id, name] { Change(s, {"remove", id}, "Removing " + name); }, false}};
+        s.Show(std::move(d));
+    }
+    ImGui::EndDisabled();
+    return focused;
+}
+
+} // namespace
+
+void RefreshMods(State& s) {
+    if (!s.ToolsReady()) {
+        return;
+    }
+    s.runner.Queue(Tools::ModsCommand(s.python, s.tools_dir, {"list"}), "Reading the mod library",
+                   [&s](int exit_code, const std::string& output) {
+                       HandleOverview(s, exit_code, output, true);
+                   });
+    QueueDetails(s);
+}
+
+void DeployMods(State& s, bool force, std::function<void(bool go_on)> then) {
+    if (s.job.Active() || !s.ToolsReady()) {
+        return;
+    }
+    std::vector<std::string> args{"deploy"};
+    if (force) {
+        args.push_back("--force");
+    }
+    auto process = std::make_unique<Process>();
+    std::string error;
+    if (!process->Start(Tools::ModsCommand(s.python, s.tools_dir, args), error)) {
+        s.Message("The mods weren't put in place", error);
+        return;
+    }
+    s.job = Job{};
+    s.job.kind = Job::Kind::Command;
+    s.job.title = "Putting the mods in place";
+    s.job.close_when_done = true;
+    s.job.process = std::move(process);
+    s.job.on_done = [&s, then](int exit_code, const std::string& output) {
+        const Json j = Parse(output);
+        const auto go_on = [then](const char* label) -> Dialog::Button {
+            return {label, [then] { then(true); }, false};
+        };
+        if (exit_code == 0 && j.is_object() && Bool(j, "ok")) {
+            ApplyStatus(s.mods, j);
+            LOG_INFO(Frontend, "launcher: mods deployed");
+            RefreshMods(s);
+            s.CheckCode();
+            if (s.mods.code_state == "rebuild") {
+                Dialog d;
+                d.title = "Build the code library again?";
+                d.text = std::string(REBUILD_TEXT) + " Until then, the game runs on Azahar's own CPU emulation, "
+                                                     "without the port's options.";
+                d.buttons = {{"Build it now", [&s] { s.StartBuild(); }, true}};
+                if (then) {
+                    d.buttons.push_back(go_on("Play anyway"));
+                }
+                d.buttons.push_back({"Later", nullptr, false});
+                s.Show(std::move(d));
+                return;
+            }
+            if (then) {
+                then(true);
+            }
+            return;
+        }
+        const std::string code = j.is_object() && j.contains("error") && j["error"].is_object()
+                                     ? Str(j["error"], "code")
+                                     : std::string();
+        Dialog d;
+        if (code == "foreign_files") {
+            d.title = "Files of your own are in the way";
+            d.text = "Azahar's mods folder has files the mod manager didn't put there, and the mods "
+                     "would replace them. Replace them with the mods' files? (To keep them, put them in "
+                     "a mod of their own first.)";
+            d.details = Strings(j["error"], "files");
+            d.buttons = {{"Replace them", [&s, then] { DeployMods(s, true, then); }, true}};
+            if (then) {
+                d.buttons.push_back(go_on("Play without deploying"));
+            }
+            d.buttons.push_back({"Back", nullptr, false});
+        } else {
+            d.title = "The mods can't be put in place";
+            d.text = ErrorText(j, output);
+            if (j.is_object() && j.contains("error") && j["error"].is_object()) {
+                d.details = Strings(j["error"], "problems");
+            }
+            if (then) {
+                d.buttons.push_back(go_on("Play anyway"));
+            }
+            d.buttons.push_back({"Back", nullptr, true});
+        }
+        LOG_WARNING(Frontend, "launcher: deploy: {}", d.text);
+        s.Show(std::move(d));
+        RefreshMods(s);
+    };
+}
+
+void DrawMods(State& s) {
+    const float scale = Ui::Scale();
+    const bool busy = s.runner.Busy() || s.job.Active();
+    ImGui::BeginChild("##mods_screen", ImVec2(0, 0), ImGuiChildFlags_NavFlattened);
+    Ui::Heading("Mods");
+    if (s.probing) {
+        Ui::Spinner();
+        ImGui::SameLine();
+        Ui::TextDim("Looking for the port's tools and Python...");
+        ImGui::EndChild();
+        return;
+    }
+    if (!s.ToolsReady()) {
+        Ui::TextDim("The mod library is run by the port's tools (tools/mods.py), which need Python 3.10 "
+                    "or newer.");
+        if (s.tools_dir.empty()) {
+            Ui::StatusLine(Ui::Status::Error, "The port's tools aren't here",
+                           "Keep the package's mh4u-tools folder next to the app.");
+        } else {
+            Ui::StatusLine(Ui::Status::Error, "Python 3.10 or newer is needed", Tools::PythonHint(s.python));
+        }
+        FocusNext(s);
+        if (ImGui::Button("Check again")) {
+            s.ProbeTools();
+        }
+        ImGui::EndChild();
+        return;
+    }
+
+    // the buttons that add mods
+    ImGui::BeginDisabled(busy);
+    // (the callbacks may run later, from a dialog: the state outlives them)
+    const auto add = [&s](const std::string& path) { Change(s, {"add", path}, "Adding a mod"); };
+    FocusNext(s, !busy);
+    if (ImGui::Button("Add a mod's folder...")) {
+        s.Pick(true, "A mod's folder", "", {}, add);
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Add a .zip...")) {
+        s.Pick(false, "A mod's .zip", "Zip archives", {"zip"}, add);
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Refresh")) {
+        RefreshMods(s);
+    }
+    ImGui::SameLine();
+    ImGui::BeginDisabled(s.mods.deploy_state == "up_to_date" || s.mods.deploy_state.empty());
+    if (ImGui::Button("Put them in place now")) {
+        DeployMods(s, false, nullptr);
+    }
+    ImGui::EndDisabled();
+    ImGui::EndDisabled();
+
+    // the state of Azahar's mods folder and of the code library
+    if (s.mods.loaded) {
+        if (s.mods.deploy_state == "up_to_date") {
+            Ui::StatusLine(Ui::Status::Ok, "Azahar's mods folder", "Up to date with the library");
+        } else if (s.mods.deploy_state == "out_of_date") {
+            Ui::StatusLine(Ui::Status::Off, "Azahar's mods folder", "Changed in the library: put in place when you play");
+        } else if (s.mods.deploy_state == "blocked") {
+            if (!s.mods.problems.empty()) {
+                Ui::StatusLine(Ui::Status::Error, "Azahar's mods folder", "The mods can't be put in place as they are:");
+                for (const auto& problem : s.mods.problems) {
+                    Ui::TextColored(Ui::Color::Error, problem);
+                }
+            } else {
+                std::string files;
+                for (const auto& file : s.mods.in_the_way) {
+                    files += (files.empty() ? "" : ", ") + file;
+                }
+                Ui::StatusLine(Ui::Status::Warn, "Azahar's mods folder",
+                               "Files you put there yourself are where the mods go (" + files +
+                                   "): you'll be asked whether to replace them.");
+            }
+        }
+        if (s.mods.code_state == "rebuild") {
+            Ui::StatusLine(Ui::Status::Warn, "The code library needs building again", REBUILD_TEXT);
+            ImGui::BeginDisabled(busy || s.update.state != Checks::Update::State::Ok);
+            if (Ui::AccentButton("Build the code library again")) {
+                s.StartBuild();
+            }
+            ImGui::EndDisabled();
+        }
+    } else if (!s.mods.error.empty()) {
+        Ui::StatusLine(Ui::Status::Error, "The mod library can't be read", s.mods.error);
+    }
+    ImGui::Spacing();
+
+    if (s.mods.loaded && s.mods.mods.empty()) {
+        Ui::BeginCard("##empty", ImVec2(0, 0));
+        Ui::TextColored(Ui::Color::Text, "No mods yet.");
+        Ui::TextDim("Add a mod's folder or its .zip: Azahar's layout (romfs/, exefs/), a title folder "
+                    "(0004000000126300/, luma/titles/...), or the game's own folders (data/...). Later "
+                    "mods win where two change the same file.");
+        Ui::EndCard();
+        ImGui::EndChild();
+        return;
+    }
+
+    // the list, and the selected mod's details
+    const ImVec2 avail = ImGui::GetContentRegionAvail();
+    // (no scrolling table: that would be a child window, which a controller enters only with A;
+    // the list's own window scrolls)
+    // (a row: its switch, its name, what its conflicts come to, then up, down, remove: left and
+    // right move along a row, up and down between rows)
+    ImGui::BeginChild("##mod_list", ImVec2(avail.x * 0.62f, 0), ImGuiChildFlags_NavFlattened);
+    if (ImGui::BeginTable("##mods_table", 4, ImGuiTableFlags_RowBg | ImGuiTableFlags_PadOuterX)) {
+        ImGui::TableSetupColumn("On", ImGuiTableColumnFlags_WidthFixed);
+        ImGui::TableSetupColumn("Mod", ImGuiTableColumnFlags_WidthStretch);
+        ImGui::TableSetupColumn("Conflicts", ImGuiTableColumnFlags_WidthFixed);
+        ImGui::TableSetupColumn("Actions", ImGuiTableColumnFlags_WidthFixed);
+        Ui::TableHeaders({"ON", "MOD (LATER ONES WIN)", "CONFLICTS", ""});
+        for (const auto& mod : s.mods.mods) {
+            ImGui::PushID(mod.id.c_str());
+            ImGui::TableNextRow();
+            if (s.mods.selected == mod.id) {
+                ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg1, IM_COL32(232, 163, 61, 28));
+            }
+            ImGui::TableNextColumn();
+            bool on = mod.enabled;
+            ImGui::BeginDisabled(busy || !mod.errors.empty());
+            if (Ui::Toggle("##on", &on)) {
+                Change(s, {on ? "enable" : "disable", mod.id}, (on ? "Turning on " : "Turning off ") + mod.name);
+            }
+            bool row_focused = ImGui::IsItemFocused();
+            ImGui::EndDisabled();
+            // the name: text a click selects (no stop for the keyboard and controller, whose up and
+            // down go from switch to switch; the details follow the row they are on)
+            ImGui::TableNextColumn();
+            ImGui::AlignTextToFramePadding();
+            std::string label = fmt::format("{}. {}", mod.position, mod.name);
+            if (!mod.version.empty()) {
+                label += "  " + mod.version;
+            }
+            ImGui::TextUnformatted(label.c_str());
+            if (ImGui::IsItemClicked()) {
+                s.mods.selected = mod.id;
+            }
+            ImGui::TableNextColumn();
+            ImGui::AlignTextToFramePadding();
+            if (!mod.errors.empty()) {
+                ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(Ui::Color::Error), "can't be used");
+            } else if (mod.wins + mod.loses == 0) {
+                ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(Ui::Color::Dim), "%s",
+                                   mod.is_new ? "new" : mod.code ? "code mod" : "-");
+            } else {
+                ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(mod.loses ? Ui::Color::Warn : Ui::Color::Ok),
+                                   "wins %d, loses %d", mod.wins, mod.loses);
+            }
+            ImGui::TableNextColumn();
+            row_focused = RowActions(s, mod, busy) || row_focused;
+            if (row_focused) {
+                s.mods.selected = mod.id;
+            }
+            ImGui::PopID();
+        }
+        ImGui::EndTable();
+    }
+    ImGui::EndChild();
+    ImGui::SameLine(0, 20.0f * scale);
+    ImGui::BeginChild("##mod_details", ImVec2(0, 0), ImGuiChildFlags_NavFlattened);
+    if (const ModInfo* mod = Selected(s)) {
+        Ui::BeginCard("##details_card", ImVec2(0, 0));
+        Details(s, *mod);
+        Ui::EndCard();
+    }
+    for (const auto& warning : s.mods.warnings) {
+        Ui::StatusLine(Ui::Status::Warn, "Note", warning);
+    }
+    ImGui::EndChild();
+    ImGui::EndChild();
+}
+
+} // namespace Launcher

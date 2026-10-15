@@ -13,6 +13,7 @@ namespace App {
 struct Config {
     // [Game]
     std::string game;  ///< the decrypted game (.3ds, .cci, .cxi); empty: ask
+    bool launcher = true;  ///< the launcher first (off: only while the setup is incomplete)
 
     // [Display]
     std::string renderer = "vulkan";  ///< vulkan, opengl or software
@@ -56,6 +57,7 @@ struct Config {
     int room_members = 16;
     std::string lobby;                ///< a lobby server (server/lobby): the hosted room is listed
     std::string token;                ///< the token for that lobby
+    bool room_public = true;          ///< list the hosted room in the lobby (with lobby and token)
 };
 
 /// The settings file's path.
