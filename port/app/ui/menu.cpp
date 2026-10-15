@@ -48,10 +48,11 @@ const std::map<std::string, std::string> GAME_DEFAULTS = {
     {"hud_edges", "1"},     {"touch_overlay", "off"}, {"quest_overlay", "map"}, {"kick", "off"},
     {"target", "off"},      {"dither", "on"},      {"bloom", "on"},       {"depth_of_field", "on"},
     {"motion_blur", "on"},  {"radial_blur", "on"}, {"haze", "on"},        {"net_sync", "on"},
-    {"target_overlay", "on"}};
+    {"target_overlay", "on"}, {"skip", "ZR"}, {"skip_hint", "on"}};
 const std::set<std::string> GAME_LIVE = {"fps",           "refresh_rate", "hud_edges", "touch_overlay",
                                          "quest_overlay", "target_overlay", "kick",    "target",
-                                         "dither",        "bloom",        "depth_of_field", "motion_blur",
+                                         "skip",          "skip_hint",    "dither",
+                                         "bloom",         "depth_of_field", "motion_blur",
                                          "radial_blur",   "haze"};
 constexpr const char* PANEL_VIEW_KEYS[] = {"quest_overlay", "target_overlay"};
 
@@ -343,6 +344,10 @@ Settings::LayoutOption LayoutFor(const std::string& screens) {
 }
 
 } // namespace
+
+std::string ControllerInputName(const std::string& params) {
+    return ControllerName(params);
+}
 
 // ── The network room, as its callbacks (on the network's thread) last told it ──
 
@@ -787,7 +792,11 @@ void Menu::DrawGame() {
              {std::tuple{"kick", "Kick", "The kick, which on a 3DS only the touch screen's kick panel does."},
               std::tuple{"target", "Target camera",
                          "What a tap on the target camera panel does: the camera's target on the large "
-                         "monster (two: the first, the second, off)."}}) {
+                         "monster (two: the first, the second, off)."},
+              std::tuple{"skip", "Skip after a quest",
+                         "Once a quest is complete, the touch screen's kick button reads Skip for the 20 "
+                         "seconds before the return: this button taps it. It can be the kick's: the kick "
+                         "does nothing then."}}) {
             Row(name);
             std::string value = Upper(Game(key));
             if (value.empty() || IsOff(Lower(value)) || value == "NONE") {
@@ -798,6 +807,14 @@ void Menu::DrawGame() {
             }
             layer.Help(help);
         }
+        Row("Skip hint");
+        std::string hint = Lower(Game("skip_hint"));
+        hint = IsOff(hint) ? "off" : hint == "flash" ? "flash" : "on";
+        if (ChooseValue("##skip_hint", hint, {"on", "flash", "off"}, {"On", "Flashing", "Off"})) {
+            SetGame("skip_hint", hint);
+        }
+        layer.Help("While the skip is offered, a line at the bottom of the screen says which key or "
+                   "controller button skips.");
         ImGui::EndTable();
     }
 

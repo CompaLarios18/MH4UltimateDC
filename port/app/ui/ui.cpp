@@ -9,9 +9,11 @@
 #include "common/logging/log.h"
 #include "config.h"
 #include "core/core.h"
+#include "hooks.h"
 #include "input.h"
 #include "input_common/keyboard.h"
 #include "input_common/main.h"
+#include "ui/hint.h"
 #include "ui/keyboard.h"
 #include "ui/layer.h"
 #include "ui/menu.h"
@@ -357,7 +359,9 @@ void Layer::Frame() {
     }
     const bool keyboard_up = keyboard->Active();
     SetCapture(menu_open || keyboard_up);
-    const bool draw = capturing || keyboard->HasNotice();
+    // a hint over the game (the skip after a quest) while nothing else of the menu's is up
+    const std::string hint = capturing ? std::string{} : HintButtons(config);
+    const bool draw = capturing || keyboard->HasNotice() || !hint.empty();
     if (!draw || !renderer_ready.load(std::memory_order_acquire)) {
         if (visible.load(std::memory_order_relaxed)) {
             std::scoped_lock lock{mutex};
@@ -409,6 +413,9 @@ void Layer::Frame() {
     }
     if (!keyboard_up && keyboard->HasNotice()) {
         keyboard->DrawNotice();
+    }
+    if (!hint.empty()) {
+        DrawHint(hint, Port::Hooks::SkipHint() == 2);
     }
     was_busy = ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopup) || ImGui::IsAnyItemActive();
     ImGui::Render();

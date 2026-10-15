@@ -96,6 +96,10 @@ struct Options {
     bool dither = true;     // dither / MH4U_DITHER: the game's dither pattern on both screens
     u32 kick_button = 0;    // kick / MH4U_KICK: 3DS button that kicks (the game's pad bits)
     u32 target_button = 0;  // target / MH4U_TARGET: 3DS button for the target camera panel
+    u32 skip_button = 0x800;  // skip / MH4U_SKIP: 3DS button that skips the wait after a quest
+                              // is complete (ZR unless set: the kick does nothing then)
+    u32 skip_panel = 7;     // skip_panel: the touch-screen button whose tap the skip button makes
+    int skip_hint = 1;      // skip_hint / MH4U_SKIP_HINT: 0 off, 1 a hint on screen, 2 flashing
     Layout::ScreenOverlay touch_overlay;  // touch_overlay / MH4U_TOUCH_OVERLAY (custom layout)
     PanelView quest_overlay{true};   // quest_overlay / MH4U_QUEST_OVERLAY: in quests, the map
                                      // alone, at its size and place
@@ -121,19 +125,31 @@ constexpr std::pair<const char*, u32> FILTER_OPTIONS[] = {{"bloom", FILTER_BLOOM
                                                           {"radial_blur", FILTER_RADIAL_BLUR},
                                                           {"haze", FILTER_HAZE}};
 
+/// The 3DS buttons by name, and the bit sPad::processInput gives each in the held word.
+constexpr std::pair<const char*, u32> PAD_BITS[] = {
+    {"A", 0x2000}, {"B", 0x4000},  {"X", 0x1000},  {"Y", 0x8000},  {"L", 0x100},
+    {"R", 0x200},  {"ZL", 0x400},  {"ZR", 0x800},  {"START", 0x8}, {"UP", 0x10},
+    {"DOWN", 0x40}, {"LEFT", 0x80}, {"RIGHT", 0x20}};
+
 /// A 3DS button name -> the bit sPad::processInput gives it in the held word.
 u32 PadBit(std::string name) {
     std::transform(name.begin(), name.end(), name.begin(), [](unsigned char c) { return std::toupper(c); });
-    const std::pair<const char*, u32> bits[] = {
-        {"A", 0x2000}, {"B", 0x4000},  {"X", 0x1000},  {"Y", 0x8000},  {"L", 0x100},
-        {"R", 0x200},  {"ZL", 0x400},  {"ZR", 0x800},  {"START", 0x8}, {"UP", 0x10},
-        {"DOWN", 0x40}, {"LEFT", 0x80}, {"RIGHT", 0x20}};
-    for (const auto& [n, bit] : bits) {
+    for (const auto& [n, bit] : PAD_BITS) {
         if (name == n) {
             return bit;
         }
     }
     return 0;
+}
+
+/// The name of the 3DS button with that bit ("ZR"), or "".
+std::string PadName(u32 bit) {
+    for (const auto& [n, b] : PAD_BITS) {
+        if (b == bit) {
+            return n;
+        }
+    }
+    return "";
 }
 
 bool IsOn(const std::string& value) {
@@ -180,6 +196,12 @@ void Set(Options& o, const std::string& key, const std::string& value) {
         o.kick_button = PadBit(value);
     } else if (key == "target") {
         o.target_button = PadBit(value);
+    } else if (key == "skip") {
+        o.skip_button = PadBit(value);
+    } else if (key == "skip_panel") {
+        o.skip_panel = static_cast<u32>(std::clamp(std::strtol(value.c_str(), nullptr, 0), 0L, 0xffL));
+    } else if (key == "skip_hint") {
+        o.skip_hint = IsOff(value) ? 0 : value == "flash" ? 2 : 1;
     } else if (key == "touch_overlay") {
         o.touch_overlay = ParseOverlay(value);
     } else if (key == "quest_overlay") {
@@ -242,6 +264,8 @@ Options LoadOptions(std::vector<std::string>& log) {
         {"MH4U_TRACE_PANELS", "trace_panels"},
         {"MH4U_KICK", "kick"},
         {"MH4U_TARGET", "target"},
+        {"MH4U_SKIP", "skip"},
+        {"MH4U_SKIP_HINT", "skip_hint"},
         {"MH4U_TOUCH_OVERLAY", "touch_overlay"},
         {"MH4U_QUEST_OVERLAY", "quest_overlay"},
         {"MH4U_TARGET_OVERLAY", "target_overlay"},
@@ -628,16 +652,42 @@ constexpr u32 HUD_PANEL_STATE = 0x2a9;  // u8
 constexpr u8 PANELS_BIG = 2;
 constexpr u32 PANEL_BUSY = 0xac;        // u8 (panel manager)
 u32 target_held = 0;
+// The skip after a quest (docs/research/second-screen.md, "Skipping the wait after a quest").
+// While the 20 seconds before the return run, the touch screen's kick button (a button of the
+// panel manager's own, id 7, not a slot panel) reads "Skip". The skip button makes a tap on
+// it: the panel manager's last touch becomes that button's id with the "activated" flags
+// right after processTouch, so that isTapped and the code reading the touch directly see it
+// as they would a tap. UpdateSkip (below, once a frame) works out when the skip is offered.
+constexpr u16 PANEL_TAP_FLAGS = 0x0a00;  // released on the button pressed (0x0800), activated
+                                         // (0x0200)
+std::atomic<bool> skip_offered{false};   // SkipOffered()
+bool skip_held = false;                  // the skip button, last frame
+bool skip_tap = false;                   // a tap to make after the next processTouch
+bool skip_tap_seen = false;              // isTapped has reported that tap
+u32 skip_polls = 0;                      // isTapped asked about the button while offered
+void UpdateSkip(RCtx* ctx);
 
 /// PanelManager::processTouch(): runs the touch groups, leaves the touched panel's id.
 void PanelProcessTouch(RCtx* ctx, RFunc original) {
     original(ctx);
-    if (!options.trace_panels) {
+    if (skip_tap) {
+        skip_tap = false;
+        skip_tap_seen = false;
+        wr8(ctx, PANEL_MANAGER + PANEL_ID, options.skip_panel);
+        wr16(ctx, PANEL_MANAGER + PANEL_FLAGS, PANEL_TAP_FLAGS);
+        LOG_INFO(Frontend, "skip: a tap on the touch screen's button {}", options.skip_panel);
+        return;
+    }
+    const bool skipping = skip_offered.load(std::memory_order_relaxed);
+    if (!options.trace_panels && !skipping) {
         return;
     }
     const u32 touch = rd16(ctx, PANEL_MANAGER + PANEL_ID) | rd16(ctx, PANEL_MANAGER + PANEL_FLAGS) << 16;
     if (touch != last_panel_touch && !(touch >> 16 & 0x8000)) {
-        LOG_INFO(Frontend, "panels: touch on panel {} flags {:04X}", touch & 0xFFFF, touch >> 16);
+        // while the skip is offered, taps are logged anyway: a tap on the touch screen's Skip
+        // says which button it is (skip_panel)
+        LOG_INFO(Frontend, "{}: touch on panel {} flags {:04X}", skipping ? "skip" : "panels",
+                 touch & 0xFF, touch >> 16);
     }
     last_panel_touch = touch;
 }
@@ -647,6 +697,14 @@ void PanelIsTapped(RCtx* ctx, RFunc original) {
     const u32 id = ctx->r[0];
     const u32 caller = ctx->r[14];
     original(ctx);
+    if (id == options.skip_panel && skip_offered.load(std::memory_order_relaxed)) {
+        ++skip_polls;
+        if (ctx->r[0] != 0 && !skip_tap_seen) {
+            skip_tap_seen = true;
+            LOG_INFO(Frontend, "skip: button {} tapped, handled at {:08X}", id, caller);
+            return;
+        }
+    }
     if (options.trace_panels && ctx->r[0] != 0) {
         LOG_INFO(Frontend, "panels: panel {} tapped, handled at {:08X}", id, caller);
     }
@@ -677,6 +735,14 @@ void MhPadUpdate(RCtx* ctx, RFunc original) {
         }
         target_held = now;
     }
+    UpdateSkip(ctx);
+    // the skip: a press while it is offered, one tap per press
+    const bool skip_now = options.skip_button && (held & options.skip_button);
+    if (skip_now && !skip_held && skip_offered.load(std::memory_order_relaxed)) {
+        skip_tap = true;
+        LOG_INFO(Frontend, "skip: {} pressed", PadName(options.skip_button));
+    }
+    skip_held = skip_now;
 }
 
 // ── Quest start (docs/research/system-services.md, "A loading race at the start of a
@@ -788,6 +854,56 @@ void StartQuest(RCtx* ctx, RFunc original) {
         quest_start_held = 0;
     }
     original(ctx);
+}
+
+// ── The wait after a quest is complete (docs/research/second-screen.md, "Skipping the wait
+// after a quest"). The quest holder's status byte says how the quest stands: 3 and 7 complete
+// (0x006a62c8 reads 3, 4 and 7 as complete, 5 and 6 as failed and abandoned). From the moment
+// it is complete, the quest area (aQuest, 0x0065c18c) counts down the 20 seconds before the
+// return (from the holder's +0xad60, set by 0x006b2de0); when they are over it sets
+// sGameControl+0x2f89 and its end sequence (0x0065a378) plays the "Quest Complete" stamp and
+// sets the status to 4. So the skip is offered while the status is 3 or 7, until 0x2f89 is
+// set (if it wasn't at the start), and for 25 seconds at most: quests that end at once (the
+// arena, training) leave the status as it was without a wait.
+constexpr u32 QUEST_STATUS = 0xad24;             // u8 in the quest holder
+constexpr u32 GAME_CONTROL = 0x00fb6b7c;         // sGameControl*
+constexpr u32 GAME_CONTROL_RETURN_DUE = 0x2f89;  // u8: the wait is over
+constexpr double SKIP_MOST_SECONDS = 25.0;
+bool skip_complete = false;     // last frame: the quest complete
+double skip_since = 0;          // when it was
+u32 skip_due_at_start = 0;      // GAME_CONTROL_RETURN_DUE then
+double EmulatedSeconds();
+
+/// Once a frame (sMhPad::update): whether the game offers the skip now.
+void UpdateSkip(RCtx* ctx) {
+    const u32 holder = rd32(ctx, QUEST_HOLDER);
+    const u32 status = holder ? rd8(ctx, holder + QUEST_STATUS) : 0;
+    const bool complete = status == 3 || status == 7;
+    const u32 control = rd32(ctx, GAME_CONTROL);
+    const u32 due = control ? rd8(ctx, control + GAME_CONTROL_RETURN_DUE) : 0;
+    const double now = EmulatedSeconds();
+    if (complete && !skip_complete) {
+        skip_since = now;
+        skip_due_at_start = due;
+        skip_polls = 0;
+        LOG_INFO(Frontend, "skip: quest complete (status {}, return {})", status, due ? "due" : "not due");
+    }
+    skip_complete = complete;
+    const bool offered =
+        complete && now - skip_since < SKIP_MOST_SECONDS && !(skip_due_at_start == 0 && due != 0);
+    if (offered != skip_offered.load(std::memory_order_relaxed)) {
+        skip_offered.store(offered, std::memory_order_relaxed);
+        if (offered) {
+            LOG_INFO(Frontend, "skip: offered ({} taps the touch screen's button {})",
+                     options.skip_button ? PadName(options.skip_button) : "no button", options.skip_panel);
+        } else {
+            LOG_INFO(Frontend,
+                     "skip: no longer offered after {:.1f} s (status {}, return {}); the game asked about "
+                     "button {} {} times",
+                     now - skip_since, status, due ? "due" : "not due", options.skip_panel, skip_polls);
+        }
+        skip_tap = false;
+    }
 }
 
 // ── The touch screen during a quest (docs/research/second-screen.md, "The quest's touch
@@ -1086,6 +1202,9 @@ std::vector<std::string> Install(const RCodeInfo& info) {
     owner_regions.clear();
     quest_start_held = 0;
     target_held = 0;
+    skip_offered = false;
+    skip_held = skip_tap = skip_tap_seen = skip_complete = false;
+    skip_polls = 0;
     last_panel_touch = 0xFFFFFFFF;
     quest_panels_ran = false;
     quest_map_slot = -1;
@@ -1136,6 +1255,10 @@ std::vector<std::string> Install(const RCodeInfo& info) {
     }
     if (options.target_button) {
         log.push_back(fmt::format("target camera on pad button {:04X}", options.target_button));
+    }
+    if (options.skip_button) {
+        log.push_back(fmt::format("skip after a quest on {} (a tap on the touch screen's button {})",
+                                  PadName(options.skip_button), options.skip_panel));
     }
     Layout::SetScreenOverlay(options.touch_overlay);
     applied_map_slot = applied_target_slot = -1;
@@ -1201,13 +1324,25 @@ void ToggleQuestMap() {
     LOG_INFO(Frontend, "touch overlay: {} in quests", off ? "the whole touch screen" : "the map");
 }
 
+bool SkipOffered() {
+    return skip_offered.load(std::memory_order_relaxed);
+}
+
+std::string SkipButton() {
+    return PadName(options.skip_button);
+}
+
+int SkipHint() {
+    return options.skip_hint;
+}
+
 bool SetOption(const std::string& key, const std::string& value) {
     // the options the hooks read each time they run; the others are applied once at start-up
     static constexpr std::string_view live[] = {
         "fps", "refresh_rate", "dither", "render_flags_set", "render_flags_clear", "kick",
-        "target", "touch_overlay", "quest_overlay", "target_overlay", "hud_edges", "trace_frames",
-        "trace_layout", "trace_panels", "bloom", "motion_blur", "depth_of_field", "radial_blur",
-        "haze", "trace_filters"};
+        "target", "skip", "skip_panel", "skip_hint", "touch_overlay", "quest_overlay", "target_overlay",
+        "hud_edges", "trace_frames", "trace_layout", "trace_panels", "bloom", "motion_blur",
+        "depth_of_field", "radial_blur", "haze", "trace_filters"};
     if (std::find(std::begin(live), std::end(live), key) == std::end(live)) {
         return false;
     }

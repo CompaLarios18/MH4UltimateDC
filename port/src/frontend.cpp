@@ -96,6 +96,11 @@ target_overlay = on
 # (A B X Y L R ZL ZR START UP DOWN LEFT RIGHT; ZL and ZR are a controller's triggers)
 kick = ZR
 target = ZL
+# a button for the touch screen's Skip, which replaces the kick button for the 20 seconds
+# before the return once a quest is complete (the kick does nothing then, so ZR suits both);
+# skip_hint: a line on the screen says which key skips (on, flash or off)
+skip = ZR
+skip_hint = on
 
 # the game's dither pattern: off for a clean picture at an Internal Resolution above 1x
 dither = off

@@ -21,11 +21,23 @@ std::vector<std::string> Install(const RCodeInfo& info);
 /// Changes one of the options above while the game runs (the runner's --set, for tests: one
 /// player of a session at another frame rate once everyone is in, say; the app's in-game
 /// menu). Only options that the hooks read as the game runs can change: fps, refresh_rate,
-/// dither, render_flags_set, render_flags_clear, kick, target, touch_overlay, quest_overlay,
-/// target_overlay (these redo the screen layout at once), hud_edges, the screen filters (bloom, motion_blur,
-/// depth_of_field, radial_blur, haze) and the trace_* options. Call it on the emulation
-/// thread. Returns false for any other key.
+/// dither, render_flags_set, render_flags_clear, kick, target, skip, skip_panel, skip_hint,
+/// touch_overlay, quest_overlay, target_overlay (these redo the screen layout at once),
+/// hud_edges, the screen filters (bloom, motion_blur, depth_of_field, radial_blur, haze) and
+/// the trace_* options. Call it on the emulation thread. Returns false for any other key.
 bool SetOption(const std::string& key, const std::string& value);
+
+/// Whether the game offers to skip the wait after a quest is complete (the 20 seconds before
+/// the return, while the touch screen's kick button reads "Skip"): worked out once a frame on
+/// the emulation thread, safe to read from any thread.
+bool SkipOffered();
+
+/// The 3DS button that skips (mh4u.ini's skip: "ZR", ...), or "" when none.
+std::string SkipButton();
+
+/// mh4u.ini's skip_hint: 0 no hint on the screen while the skip is offered, 1 a hint, 2 a
+/// flashing one.
+int SkipHint();
 
 /// In quests, switches the touch overlay between the map alone (quest_overlay) and the whole
 /// touch screen (for the chat or the item shortcuts), until switched back. Safe to call from

@@ -13,6 +13,10 @@ namespace App::Ui {
 
 class Layer;
 
+/// What a controller does for an input of the input profile (Settings' parameters: "RT",
+/// "A (bottom)", ...), or "" when no controller does.
+std::string ControllerInputName(const std::string& params);
+
 class Menu {
 public:
     explicit Menu(Layer& layer);
