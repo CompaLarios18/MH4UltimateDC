@@ -213,13 +213,15 @@ def test_bad_ignore_file_and_missing_trace_exit_2(tmp_path, capsys):
 def test_an_input_that_is_not_an_ipc_trace_is_refused(tmp_path, capsys):
     svc = ["# svctrace v1 2026-10-16 game=0x0004000000000000 cpu=jit new3ds=off",
            "main 00000001 svc=0x32 in=00000000 out=00000000"]
-    for bad in ([], [""], svc, [HEADER], trace()):           # empty, SVC trace, header only, no request
+    cases = (([], "no '# ipctrace' header"), ([""], "no '# ipctrace' header"),
+             (svc, "not an IPC trace"), ([HEADER], "holds no request"), (trace(), "holds no request"))
+    for bad, message in cases:                               # empty, SVC trace, header only, no request
         for ref, cand in ((bad, BASE), (BASE, bad), (bad, bad)):
             for extra in ((), ("--prefix",)):
                 assert run(tmp_path, ref, cand, *extra) == 2
                 err = capsys.readouterr()
                 assert "all threads match" not in err.out
-                assert "error:" in err.err
+                assert "error:" in err.err and message in err.err
 
 
 def test_the_header_is_checked_on_its_own_even_when_requests_follow(tmp_path, capsys):
@@ -248,6 +250,28 @@ def test_a_file_that_is_not_utf8_text_is_refused_not_a_traceback(tmp_path, capsy
         assert cmp.main([good, str(bad)]) == 2
         assert cmp.main([str(bad), good]) == 2
         assert "not UTF-8 text" in capsys.readouterr().err
+
+
+def test_an_ignore_file_that_is_not_utf8_text_is_refused_not_a_traceback(tmp_path, capsys):
+    a = write(tmp_path, "a.txt", BASE)
+    for name, data in (("latin1.txt", "srv: 0x00010040  # caf\xe9\n".encode("latin-1")),
+                       ("utf16.txt", "srv: 0x00010040\n".encode("utf-16")),
+                       ("ff.txt", b"srv: 0x00010040  # \xff\xfe\n")):
+        bad = tmp_path / name
+        bad.write_bytes(data)
+        assert cmp.main([a, a, "--ignore", str(bad)]) == 2, name
+        assert "not UTF-8 text" in capsys.readouterr().err
+
+
+def test_digits_that_are_not_plain_decimal_do_not_crash_the_parser(tmp_path, capsys):
+    odd = [HEADER, thread_line(1, 0, 0x100000),
+           "1 seq=\u00b2 session=srv: cmd=0x00010040 in=0x00010040 desc=- out=- outdesc=- t=0",         # superscript two
+           "1 seq=" + "9" * 5000 + " session=srv: cmd=0x00010040 in=0x00010040 desc=- out=- outdesc=- t=0",
+           "\u00b2 seq=1 session=srv: cmd=0x00010040 in=0x00010040 desc=- out=- outdesc=- t=0",     # odd thread token
+           "1 seq=2 session=srv: cmd=0x00010040 in=0x00010040 desc=- out=- outdesc=- t=0 data=\u00b2:aa"]
+    assert run(tmp_path, odd, odd) == 0
+    assert "Traceback" not in capsys.readouterr().err
+    assert run(tmp_path, odd[:2] + odd[2:4], BASE) == 2      # only malformed request lines: nothing to compare
 
 
 def test_ignore_that_removes_every_request_is_refused(tmp_path, capsys):

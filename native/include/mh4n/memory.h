@@ -1,11 +1,15 @@
 // Derived from Azahar src/core/memory.h, src/core/hle/kernel/errors.h,
-// src/core/hle/kernel/vm_manager.h and src/video_core/gpu.cpp at
-// 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-2.0-or-later): the address-space constants, the
-// result code values, the permission and state enumerations (VMAPermission, MemoryState) and the
-// windows of GPU::VirtualToPhysicalAddress.
+// src/core/hle/kernel/vm_manager.h, vm_manager.cpp, src/core/hle/kernel/memory.h and
+// src/video_core/gpu.cpp at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-2.0-or-later): the
+// address-space constants, the result code values, the permission and state enumerations
+// (VMAPermission, MemoryState), the names and meaning of the mapping and FCRAM allocator calls
+// (MemoryRegionInfo: HeapAllocate, LinearAllocate, RLinearAllocate, Free) and the windows of
+// GPU::VirtualToPhysicalAddress.
 // Copyright 2014-2026 Citra Emulator Project / Azahar Emulator Project (memory.h)
 // Copyright 2017 Citra Emulator Project (errors.h)
 // Copyright 2015 Citra Emulator Project (vm_manager.h)
+// Copyright 2015-2024 Citra Emulator Project / Azahar Emulator Project (vm_manager.cpp)
+// Copyright 2014 Citra Emulator Project (kernel/memory.h)
 // Copyright 2023-2026 Citra Emulator Project / Azahar Emulator Project (gpu.cpp)
 // Guest memory (N1-02): the 3DS process's 4 GiB address space as one host reservation, the
 // mapping bookkeeping behind svcQueryMemory, the physical view the GPU and DSP use, and Azahar's

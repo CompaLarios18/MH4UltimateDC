@@ -1,3 +1,13 @@
+// Derived from Azahar src/video_core/gpu.cpp, src/common/color.h and
+// src/video_core/renderer_software/renderer_software.cpp at
+// 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-2.0-or-later; every one of those files says
+// "GPLv2 or any later version"): the expected values, worked out from
+// GPU::VirtualToPhysicalAddress, the colour decoders and the software renderer's loop over a
+// displayed screen (including its off-by-one column).
+// Copyright 2023-2026 Citra Emulator Project / Azahar Emulator Project (gpu.cpp)
+// Copyright 2014 Citra Emulator Project (color.h)
+// Copyright 2023-2025 Citra Emulator Project / Azahar Emulator Project (renderer_software.cpp)
+//
 // mh4n_gpu_capture (N2-02): the MGPU reader, the capture host, the image thresholds and the
 // capture player, with captures made by a C++ writer in this file from synthetic data.
 //

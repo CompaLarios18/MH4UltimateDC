@@ -1,14 +1,23 @@
 // Derived from Azahar src/core/hle/kernel/handle_table.cpp, wait_object.cpp, event.cpp, mutex.cpp,
 // semaphore.cpp, timer.cpp, address_arbiter.cpp, shared_memory.cpp, resource_limit.cpp, thread.cpp,
-// errors.h and svc.cpp at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6
-// (GPL-3.0-or-later: svc.cpp says "GPLv3 or any later version"; every other one of those files says
-// "GPLv2 or any later version"): the expected values, worked out from their algorithms, and the
-// Block helper, which restates the wait set-up of SVC::WaitSynchronization1/N.
+// errors.h, svc.cpp, kernel.cpp, kernel.h, process.cpp, vm_manager.cpp and memory.cpp at
+// 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6
+// (GPL-3.0-or-later: svc.cpp, kernel.cpp and kernel.h say "GPLv3 or any later version"; every other
+// one of those files says "GPLv2 or any later version"): the expected values, worked out from
+// their algorithms (process, thread and object numbering from kernel.cpp, kernel.h and
+// process.cpp; the merging of blocks from vm_manager.cpp; the region sizes and where HeapAllocate
+// takes from, from memory.cpp), and the Block helper, which restates the wait set-up of
+// SVC::WaitSynchronization1/N.
 // Copyright 2014-2024 Citra Emulator Project / Azahar Emulator Project (handle_table.cpp,
 //   wait_object.cpp, event.cpp, mutex.cpp, semaphore.cpp, address_arbiter.cpp, shared_memory.cpp)
 // Copyright 2015-2024 Citra Emulator Project / Azahar Emulator Project (timer.cpp)
 // Copyright 2015-2026 Citra Emulator Project / Azahar Emulator Project (resource_limit.cpp)
-// Copyright 2014-2026 Citra Emulator Project / Azahar Emulator Project (thread.cpp, svc.cpp)
+// Copyright 2014-2026 Citra Emulator Project / Azahar Emulator Project (thread.cpp, svc.cpp,
+//   kernel.cpp, kernel.h)
+// PPSSPP Project (kernel.h, second notice: Licensed under GPLv2 or any later version)
+// Copyright 2015-2026 Citra Emulator Project / Azahar Emulator Project (process.cpp)
+// Copyright 2015-2024 Citra Emulator Project / Azahar Emulator Project (vm_manager.cpp)
+// Copyright 2014-2025 Citra Emulator Project / Azahar Emulator Project (memory.cpp)
 // Copyright 2017 Citra Emulator Project (errors.h)
 //
 // mh4n_kernel (N1-05): kernel objects, the handle table and their rules, driven by a fake

@@ -30,6 +30,11 @@ uses are checked (and only if they exist):
     followed), so a header that is not named still cannot bring Azahar in;
   - a native/ file that mentions nothing from port/src checks nothing from it.
 
+Best effort, not a sandbox: a symlink under native/ that points into port/src, an upper-case
+spelling, a source list kept in a data file (file(STRINGS ...), a .cmake.in) and an include that
+only resolves through -I port/src are not seen. The maintainer reads changes to native/ CMake
+files and to this script.
+
 A mention in a CMake comment is ignored; one in a comment of a .cpp/.h file counts (it is
 conservative: the file is checked although nothing may use it).
 
@@ -85,8 +90,8 @@ CMAKE_SUFFIXES = {".cmake"}
 
 INCLUDE_RE = re.compile(r'^\s*#\s*(?:include|import)\s*[<"]([^>"]+)[>"]')
 TOKEN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_.+\-]*")
-PORT_AZAHAR_RE = re.compile(r"port/azahar(?![A-Za-z0-9_])")
-PORT_SRC_RE = re.compile(r"port/src(?:/([A-Za-z0-9_][A-Za-z0-9_.+\-/]*))?")
+PORT_AZAHAR_RE = re.compile(r"(?<![A-Za-z0-9_.+\-])port/azahar(?![A-Za-z0-9_])")
+PORT_SRC_RE = re.compile(r"(?<![A-Za-z0-9_.+\-])port/src(?:/([A-Za-z0-9_][A-Za-z0-9_.+\-/]*))?")
 # `port` as the last component of a path (the directory held in a variable, with or without a
 # trailing slash, or in a list) or followed by a variable component, in a CMake file. A bare word
 # `port` ("the native port") is not a path and does not match.
@@ -113,6 +118,16 @@ def _strip_cmake_comment(line: str) -> str:
     return line
 
 
+def _normalise_path(text: str) -> str:
+    """The spellings of a path that reach the same file made equal: backslashes become '/', '//'
+    and '/./' collapse, '/x/../' is resolved."""
+    text = text.replace("\\", "/")
+    text = PATH_NOISE_RE.sub("/", text)
+    while (collapsed := PARENT_RE.sub("/", text)) != text:
+        text = collapsed
+    return text
+
+
 def check_includes(path: Path, shown: str) -> list[str]:
     lines = _read(path)
     problems: list[str] = []
@@ -120,7 +135,9 @@ def check_includes(path: Path, shown: str) -> list[str]:
         match = INCLUDE_RE.match(line)
         if not match:
             continue
-        target = match.group(1).strip()
+        target = _normalise_path(match.group(1).strip())
+        while target.startswith("./"):
+            target = target[2:]
         for prefix in FORBIDDEN_INCLUDE_PREFIXES:
             if target.startswith(prefix):
                 problems.append(f"{shown}:{number}: includes '{target}' (Azahar's '{prefix}' headers)")
@@ -136,7 +153,7 @@ def check_cmake(path: Path, shown: str) -> list[str]:
         for token in TOKEN_RE.findall(code):
             if token in AZAHAR_TARGETS:
                 problems.append(f"{shown}:{number}: names the Azahar target '{token}'")
-        if PORT_AZAHAR_RE.search(code):
+        if PORT_AZAHAR_RE.search(_normalise_path(code)):
             problems.append(f"{shown}:{number}: uses a path under port/azahar/")
     return problems
 
@@ -149,10 +166,7 @@ def port_src_mentions(text: str, cmake: bool = False) -> tuple[set[str], bool]:
     """(files of port/src named in the text, whether the bare directory is mentioned). `cmake`:
     the text is a CMake file, where the port directory may be held in a variable."""
     named: set[str] = set()
-    text = text.replace("\\", "/")
-    text = PATH_NOISE_RE.sub("/", text)
-    while (collapsed := PARENT_RE.sub("/", text)) != text:    # port/tests/../src -> port/src
-        text = collapsed
+    text = _normalise_path(text)
     bare = cmake and bool(PORT_DIR_VARIABLE_RE.search(text))
     for match in PORT_SRC_RE.finditer(text):
         rel = (match.group(1) or "").rstrip(".-/+")
@@ -205,7 +219,10 @@ def check(root: Path) -> tuple[list[str], int]:
             continue
         seen.add(rel)
         path = src / rel
-        if not path.is_file():
+        try:
+            if not path.is_file():
+                continue
+        except OSError:                                       # a name too long for the file system
             continue
         count += 1
         problems += check_includes(path, f"port/src/{rel}")
@@ -216,8 +233,11 @@ def check(root: Path) -> tuple[list[str], int]:
                 if os.path.isabs(target):
                     continue
                 local = os.path.normpath(os.path.join(os.path.dirname(rel), target))
-                if not local.startswith("..") and (src / local).is_file():
-                    queue.append(local.replace(os.sep, "/"))
+                try:
+                    if not local.startswith("..") and (src / local).is_file():
+                        queue.append(local.replace(os.sep, "/"))
+                except OSError:
+                    pass
     return sorted(problems), count
 
 

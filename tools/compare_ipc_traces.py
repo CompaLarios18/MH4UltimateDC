@@ -76,18 +76,21 @@ def load_ignore(paths: list[str]) -> set[tuple[str, int]]:
     """The (service, header) pairs of the ignore files."""
     ignored: set[tuple[str, int]] = set()
     for path in paths:
-        with open(path) as f:
-            for n, line in enumerate(f, 1):
-                text = line.split("#", 1)[0].split()
-                if not text:
-                    continue
-                if len(text) != 2:
-                    raise IgnoreError(f"{path}:{n}: expected `<service> <header>`")
-                try:
-                    header = int(text[1], 16)
-                except ValueError:
-                    raise IgnoreError(f"{path}:{n}: the header {text[1]!r} is not hex") from None
-                ignored.add((text[0], header))
+        try:
+            with open(path, encoding="utf-8") as f:
+                for n, line in enumerate(f, 1):
+                    text = line.split("#", 1)[0].split()
+                    if not text:
+                        continue
+                    if len(text) != 2:
+                        raise IgnoreError(f"{path}:{n}: expected `<service> <header>`")
+                    try:
+                        header = int(text[1], 16)
+                    except ValueError:
+                        raise IgnoreError(f"{path}:{n}: the header {text[1]!r} is not hex") from None
+                    ignored.add((text[0], header))
+        except UnicodeError:
+            raise IgnoreError(f"{path}: not an ignore file (not UTF-8 text)") from None
     return ignored
 
 
@@ -173,7 +176,8 @@ def load(path: str, ignored: set[tuple[str, int]]) -> dict[str, list[IpcCall]]:
 
 
 def _thread_order(tid: str) -> tuple:
-    return (0, 0, tid) if tid == "main" else ((1, int(tid), "") if tid.isdigit() else (2, 0, tid))
+    plain = tid.isascii() and tid.isdigit() and len(tid) <= 18
+    return (0, 0, tid) if tid == "main" else ((1, int(tid), "") if plain else (2, 0, tid))
 
 
 def compare(ref: dict[str, list[IpcCall]], cand: dict[str, list[IpcCall]], strict: bool = False,

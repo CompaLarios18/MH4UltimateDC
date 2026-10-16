@@ -377,6 +377,83 @@ def test_angle_includes_are_followed_cycles_end_and_outside_paths_are_not_follow
     assert _checked(result) == {"port/src/angle.h"}
 
 
+@pytest.mark.parametrize("cmake", [
+    'set(DIRS ${R}/port/;${R}/other)\n',               # only the ';' after 'port/' matches
+    'set(P ${R}/port/ )\n',                            # only a blank after 'port/' matches
+    'set(P ${R}/port )\n',                             # only a blank after 'port' matches
+    'set(P\n    ${R}/port/\n)\n',                      # 'port/' at the end of a line
+    'set(P ${R}/port/',                                # 'port/' at the very end of the file
+])
+def test_every_spelling_of_a_port_directory_variable_is_seen(tree, cmake):
+    _port_tree(tree)
+    write(tree, "port/src/hooks.cpp", '#include "core/core.h"\n')
+    write(tree, "native/src/kernel/CMakeLists.txt", cmake)
+    result = run(tree)
+    assert result.returncode == 1, repr(cmake)
+    assert "port/src/hooks.cpp:1:" in result.stdout
+
+
+@pytest.mark.parametrize("text, cmake", [
+    ("target_include_directories(k PRIVATE third_party/support/src)\n", True),
+    ("target_include_directories(k PRIVATE ../transport/src ../report/azahar)\n", True),
+    ("// see support/src and transport/src for details\n", False),
+])
+def test_words_that_end_in_port_are_not_the_port_directory(tree, text, cmake):
+    _port_tree(tree)
+    write(tree, "port/src/hooks.cpp", '#include "core/core.h"\n')
+    if cmake:
+        write(tree, "native/src/kernel/CMakeLists.txt", text)
+    else:
+        write(tree, "native/src/kernel/kernel.cpp", CLEAN_CPP + text)
+    result = run(tree)
+    assert result.returncode == 0, result.stdout
+
+
+@pytest.mark.parametrize("cmake", [
+    "add_subdirectory(../../../port//azahar/src azahar)\n",
+    "add_subdirectory(../../../port/./azahar/src azahar)\n",
+    "add_subdirectory(../../../port/tests/../azahar/src azahar)\n",
+    "add_subdirectory(..\\..\\..\\port\\azahar\\src azahar)\n",
+])
+def test_port_azahar_is_found_however_the_path_is_spelled(tree, cmake):
+    result = run(write_cmake(tree, cmake))
+    assert result.returncode == 1, cmake
+    assert "uses a path under port/azahar/" in result.stdout
+
+
+def write_cmake(tree, text):
+    write(tree, "native/src/kernel/CMakeLists.txt", text)
+    return tree
+
+
+@pytest.mark.parametrize("include", ['"core\\core.h"', '"./core/core.h"', '"video_core//pica.h"', '<common/./x.h>'])
+def test_azahar_includes_are_found_however_the_path_is_spelled(tree, include):
+    write(tree, "native/src/kernel/kernel.cpp", CLEAN_CPP + f"#include {include}\n")
+    assert run(tree).returncode == 1, include
+
+
+def test_a_backslash_include_in_a_checked_port_file_is_followed(tree):
+    write(tree, "port/src/fiber.cpp", '#include "fiber.h"\n')
+    write(tree, "port/src/fiber.h", '#include "inner\\deep.h"\n')
+    write(tree, "port/src/inner/deep.h", '#include "core/core.h"\n')
+    write(tree, "native/src/kernel/CMakeLists.txt", "mh4n_module(SOURCES k.cpp ../../../port/src/fiber.cpp)\n")
+    assert _checked(run(tree)) == {"port/src/inner/deep.h"}
+
+
+def test_a_name_too_long_for_the_file_system_does_not_crash_the_check(tree):
+    _port_tree(tree)
+    write(tree, "native/src/kernel/kernel.cpp", CLEAN_CPP + "// see port/src/" + "a" * 300 + ".h\n")
+    result = run(tree)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Traceback" not in result.stderr
+    write(tree, "port/src/fiber.cpp", '#include "fiber.h"\n')
+    write(tree, "port/src/fiber.h", '#include "' + "b" * 300 + '.h"\n')
+    write(tree, "native/src/kernel/CMakeLists.txt", "mh4n_module(SOURCES k.cpp ../../../port/src/fiber.cpp)\n")
+    result = run(tree)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Traceback" not in result.stderr
+
+
 @pytest.mark.parametrize("header", ["nihstro/shader_binary.h", "teakra/teakra.h", "dynarmic/interface/A32/a32.h",
                                     "soundtouch/SoundTouch.h", "cryptopp/sha.h", "xbyak/xbyak.h"])
 def test_azahars_externals_are_forbidden_includes(tree, header):

@@ -1,10 +1,17 @@
-// Derived from Azahar src/core/hle/kernel/vm_manager.cpp and src/core/hle/kernel/memory.cpp at
-// 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6
-// (GPL-2.0-or-later; both files say "GPLv2 or any later version"): the expected values of the VMA
-// and allocator cases, worked out from VMManager and MemoryRegionInfo, and the table of FCRAM
-// region sizes per memory mode (memory_region_sizes), written out again.
+// Derived from Azahar src/core/hle/kernel/vm_manager.cpp, src/core/hle/kernel/memory.cpp,
+// src/core/hle/kernel/process.cpp, src/core/hle/kernel/errors.h, src/core/memory.h and
+// src/video_core/gpu.cpp at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6
+// (GPL-2.0-or-later; every one of those files says "GPLv2 or any later version"): the expected
+// values of the VMA, allocator and physical-view cases, worked out from VMManager,
+// MemoryRegionInfo, Process::Map/HeapAllocate and GPU::VirtualToPhysicalAddress, the result code
+// values, the address constants, and the table of FCRAM region sizes per memory mode
+// (memory_region_sizes), written out again.
 // Copyright 2015-2024 Citra Emulator Project / Azahar Emulator Project (vm_manager.cpp)
 // Copyright 2014-2025 Citra Emulator Project / Azahar Emulator Project (memory.cpp)
+// Copyright 2015-2026 Citra Emulator Project / Azahar Emulator Project (process.cpp)
+// Copyright 2017 Citra Emulator Project (errors.h)
+// Copyright 2014-2026 Citra Emulator Project / Azahar Emulator Project (memory.h)
+// Copyright 2023-2026 Citra Emulator Project / Azahar Emulator Project (gpu.cpp)
 //
 // mh4n_memory (N1-02): guest memory mapping, zero regions, the physical view, the FCRAM
 // allocator and bad accesses.
@@ -318,7 +325,8 @@ TEST_CASE("ChangeState checks the expected state and permission first") {
     auto memory = MakeMemory();
     const u32 A = 0x08000000;
     REQUIRE(memory->Map(A, 0x3000, RW, MemState::Private) == 0);
-    // Azahar's svcControlMemory(Map): the source becomes Aliased, read-only
+    // The source of a Map becomes Aliased, as in Process::Map (Azahar leaves a non-privileged
+    // source read-write; read-only here exercises ChangeState's permission rules below)
     REQUIRE(memory->ChangeState(A + 0x1000, 0x1000, MemState::Private, RW, MemState::Aliased, R) ==
             0);
     CHECK(memory->Query(A + 0x1000) == MemoryInfo{A + 0x1000, 0x1000, R, MemState::Aliased});
@@ -624,12 +632,14 @@ TEST_CASE("PhysicalPointer: VRAM, DSP RAM and FCRAM through the linear heap") {
     CHECK(memory->PhysicalPointer(0x17FFFFFF, 1) == nullptr);
     CHECK(memory->PhysicalPointer(0x18000000, 0x600001) == nullptr);
     CHECK(memory->PhysicalPointer(0x18000000, 0) == base + 0x1F000000); // size 0: the byte at paddr
+    CHECK(memory->PhysicalPointer(0x18600000, 0) == nullptr);           // so an area's end is null
 
     // DSP RAM 0x1FF00000-0x1FF80000 at the same guest address
     CHECK(memory->PhysicalPointer(0x1FF00000, 0x80000) == base + 0x1FF00000);
     CHECK(memory->PhysicalPointer(0x1FF7FFFF, 1) == base + 0x1FF7FFFF);
     CHECK(memory->PhysicalPointer(0x1FF7FFFF, 2) == nullptr);
     CHECK(memory->PhysicalPointer(0x1FF80000, 1) == nullptr);
+    CHECK(memory->PhysicalPointer(0x1FF80000, 0) == nullptr); // size 0 is the byte at paddr too
 
     // between the areas
     CHECK(memory->PhysicalPointer(0x19000000, 4) == nullptr);

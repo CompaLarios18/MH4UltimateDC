@@ -490,11 +490,11 @@ def parse_ipc_lines(lines) -> IpcTrace:
                 continue
             if key == "data":
                 index, _, hexbytes = value.partition(":")
-                if index.isdigit():
+                if _is_uint(index):
                     data.append((int(index), hexbytes))
             else:
                 f[key] = value
-        if "seq" not in f or not f["seq"].isdigit():
+        if "seq" not in f or not _is_uint(f["seq"]):
             continue
         cmd = f.get("cmd")
         trace.calls.append(IpcCall(
@@ -505,14 +505,20 @@ def parse_ipc_lines(lines) -> IpcTrace:
     return trace
 
 
+def _is_uint(text: str) -> bool:
+    """Plain decimal digits, at most 18 (str.isdigit() also accepts superscripts and the like, and
+    int() refuses more than 4300 digits)."""
+    return text.isascii() and text.isdigit() and len(text) <= 18
+
+
 def parse_ipc(path: str) -> IpcTrace:
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         return parse_ipc_lines(f)
 
 
 def is_ipc_trace(path: str) -> bool:
     """Whether the file's first non-empty line is an IPC trace header."""
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         for line in f:
             if line.strip():
                 return is_ipc_header(line)

@@ -78,8 +78,10 @@ struct ShaderSetup {
     std::array<bool, 16> uniform_b{};
     std::array<std::array<u8, 4>, 4> uniform_i{}; // x, y, z, w
     PackedAttribute uniform_queue;
-    // The entry point the shader starts at: when a draw is issued Azahar's DrawArrays/DrawImmediate
-    // pass the unit's main_offset register to ShaderEngine::SetupBatch, which stores it.
+    // The entry point the shader starts at: Azahar's DrawImmediate and LoadVertices (which
+    // DrawArrays calls unless the draw is accelerated) pass the vertex unit's main_offset register
+    // to ShaderEngine::SetupBatch, GeometryPipeline::Setup passes the geometry unit's, and both
+    // engines store it.
     u32 entry_point = 0;
     std::array<u32, kMaxProgramWords> program_code{};
     std::array<u32, kMaxSwizzleWords> swizzle_data{};
