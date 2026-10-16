@@ -3,8 +3,12 @@
 
 Usage:
     check_no_game_data.py --staged          check what is staged in the index
-    check_no_game_data.py --range A..B      check the files added or changed between A and B
+    check_no_game_data.py --range A..B      check every file version introduced by the commits in A..B
     check_no_game_data.py --range A...B     same, from the merge base of A and B
+
+--range inspects every blob the range introduces (git rev-list --objects), not
+the net diff, so a file added in one commit and removed in a later one of the
+same push is still reported: it would be published in the history.
 
 Rules (each offending path is printed with the rule it broke; exit status 1):
     ci-pattern    the patterns of the guard in .github/workflows/ci.yml
@@ -122,17 +126,50 @@ def check_file(path: str, data: bytes, allowed: dict[str, str]) -> list[str]:
 
 
 def run_checks(
-    paths: Iterable[str], read: Reader, allowed: dict[str, str]
+    paths: Iterable[str],
+    read: Reader,
+    allowed: dict[str, str],
+    skip_content: Callable[[str], bool] = lambda p: False,
 ) -> list[tuple[str, str]]:
+    """Apply the rules to each path. A regular file that cannot be read is an error
+    (RuntimeError, exit 2); only entries skip_content() accepts (gitlinks) get name rules only."""
     offences: list[tuple[str, str]] = []
     for path in paths:
-        try:
-            data = read(path)
-        except RuntimeError:
-            data = b""  # unreadable entry (submodule, vanished file): name rules still apply
+        if skip_content(path):
+            data = b""
+        else:
+            try:
+                data = read(path)
+            except RuntimeError as e:
+                raise RuntimeError(f"cannot read {path}: {e}") from e
         for rule in check_file(path, data, allowed):
             offences.append((path, rule))
     return offences
+
+
+def range_blobs(root: Path, rng: str) -> list[tuple[str, str]]:
+    """(blob sha, path) for every blob introduced by the commits of the range."""
+    if "..." in rng:
+        a, b = rng.split("...", 1)
+        a, b = a or "HEAD", b or "HEAD"
+        base = git("merge-base", a, b, cwd=root, text=True).strip()
+        spec = f"{base}..{b}"
+    else:
+        a, b = rng.split("..", 1)
+        spec = f"{a or 'HEAD'}..{b or 'HEAD'}"
+    listing = git("rev-list", "--objects", spec, cwd=root, text=True)
+    cand = [ln.split(" ", 1) for ln in listing.splitlines() if " " in ln]
+    if not cand:
+        return []
+    check = subprocess.run(
+        ["git", "cat-file", "--batch-check=%(objecttype)"],
+        cwd=root, input="".join(f"{sha}\n" for sha, _ in cand),
+        capture_output=True, text=True, check=False,
+    )
+    if check.returncode != 0:
+        raise RuntimeError(f"git cat-file --batch-check failed: {check.stderr.strip()}")
+    types = check.stdout.splitlines()
+    return [(sha, path) for (sha, path), t in zip(cand, types) if t == "blob"]
 
 
 def read_allowlist(root: Path) -> dict[str, str]:
@@ -152,22 +189,28 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     try:
         root = Path(git("rev-parse", "--show-toplevel", cwd=Path(args.repo), text=True).strip())
+        allowed = read_allowlist(root)
         if args.staged:
             names = split_z(
                 git("diff", "--cached", "--name-only", "-z", "--diff-filter=ACMR", cwd=root)
             )
-            read: Reader = lambda p: git("show", f":{p}", cwd=root)
-        else:
-            rng = args.range
-            if ".." not in rng:
-                ap.error("--range needs A..B")
-            end = rng.split("...")[-1] if "..." in rng else rng.split("..")[-1]
-            end = end or "HEAD"
-            names = split_z(
-                git("diff", "--name-only", "-z", "--diff-filter=ACMR", rng, cwd=root)
+            gitlinks = {
+                p for p in names
+                if git("ls-files", "-s", "--", p, cwd=root, text=True).startswith("160000")
+            }
+            offences = run_checks(
+                names, lambda p: git("show", f":{p}", cwd=root), allowed, lambda p: p in gitlinks
             )
-            read = lambda p: git("show", f"{end}:{p}", cwd=root)
-        offences = run_checks(names, read, read_allowlist(root))
+        else:
+            if ".." not in args.range:
+                ap.error("--range needs A..B")
+            blobs = range_blobs(root, args.range)
+            names = sorted({path for _, path in blobs})
+            offences = []
+            for sha, path in blobs:
+                data = git("cat-file", "blob", sha, cwd=root)
+                for rule in check_file(path, data, allowed):
+                    offences.append((path, rule))
     except RuntimeError as e:
         print(f"check_no_game_data: {e}", file=sys.stderr)
         return 2

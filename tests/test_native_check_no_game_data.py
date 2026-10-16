@@ -187,15 +187,60 @@ def test_range_dirty_commit(repo: Path) -> None:
     assert "x/y.sav" in r.stdout and "docs/new.md" not in r.stdout
 
 
-def test_range_dirty_in_middle_commit_removed_later_is_not_reported(repo: Path) -> None:
-    # The check works on the net diff A..B, as the CI step does.
+def test_range_dirty_added_and_removed_within_range_is_reported(repo: Path) -> None:
     base = git(repo, "rev-parse", "HEAD")
     put(repo, "a.ppm", "x")
     git(repo, "add", "a.ppm")
     git(repo, "commit", "-q", "-m", "add")
     git(repo, "rm", "-q", "a.ppm")
     git(repo, "commit", "-q", "-m", "remove")
-    assert run(repo, "--range", f"{base}..HEAD").returncode == 0
+    r = run(repo, "--range", f"{base}..HEAD")
+    assert r.returncode == 1 and "a.ppm" in r.stdout
+
+
+def test_range_dirty_in_merged_branch_is_reported(repo: Path) -> None:
+    base = git(repo, "rev-parse", "HEAD")
+    git(repo, "checkout", "-q", "-b", "side")
+    put(repo, "side/t.wav", "x")
+    git(repo, "add", "side/t.wav")
+    git(repo, "commit", "-q", "-m", "side")
+    git(repo, "rm", "-q", "side/t.wav")
+    git(repo, "commit", "-q", "-m", "side rm")
+    git(repo, "checkout", "-q", "-")
+    put(repo, "m.md", "m\n")
+    git(repo, "add", "m.md")
+    git(repo, "commit", "-q", "-m", "main")
+    git(repo, "merge", "-q", "--no-ff", "-m", "merge", "side")
+    r = run(repo, "--range", f"{base}..HEAD")
+    assert r.returncode == 1 and "side/t.wav" in r.stdout
+
+
+def test_range_dirty_commit_before_range_is_accepted(repo: Path) -> None:
+    put(repo, "old.ppm", "x")
+    git(repo, "add", "old.ppm")
+    git(repo, "commit", "-q", "-m", "old")
+    base = git(repo, "rev-parse", "HEAD")
+    put(repo, "ok.md", "fine\n")
+    git(repo, "add", "ok.md")
+    git(repo, "commit", "-q", "-m", "ok")
+    r = run(repo, "--range", f"{base}..HEAD")
+    assert r.returncode == 0, r.stdout
+
+
+def test_unreadable_regular_file_is_an_error() -> None:
+    def read(p: str) -> bytes:
+        raise RuntimeError("gone")
+
+    with pytest.raises(RuntimeError, match="a.md"):
+        guard.run_checks(["a.md"], read, {})
+    # gitlinks keep the name rules only
+    assert guard.run_checks(["sub/x.sav"], read, {}, lambda p: True)
+
+
+def test_staged_submodule_gitlink_is_not_an_error(repo: Path) -> None:
+    sha = git(repo, "rev-parse", "HEAD")
+    git(repo, "update-index", "--add", "--cacheinfo", f"160000,{sha},sub")
+    assert run(repo, "--staged").returncode == 0
 
 
 def test_range_three_dots(repo: Path) -> None:
