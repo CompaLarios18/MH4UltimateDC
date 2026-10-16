@@ -1,0 +1,13 @@
+# The game state the runners record at every game frame (mh4u_runner --state-trace,
+# tools/native/state_diff.py). One line per value: <expr> <size> <name> <eq|ignore>
+#   <expr>  an address (0x010571d4) or a pointer chain: [[0x0104dea0]+0x30] reads the u32 at
+#           0x0104dea0, adds 0x30 and reads <size> bytes there. Every [..] inside the
+#           outermost one is a u32 read; a null pointer anywhere gives "-".
+#   <size>  1, 2 or 4 (bytes, little-endian)
+#   eq      compared by state_diff.py;  ignore  recorded, never compared
+# Addresses come from docs/research/system-services.md. The orchestrator owns this list.
+[[0x0104dea0]+0x30]  1 scene               eq
+0x010571d4           4 frame_counter       eq
+[[0x01057194]+0x5c]  4 smain_delta         ignore
+[[0x00edbe90]+0x9788+0x8c] 2 quest_id      eq
+[[0x00fb7190]+0x42c] 4 stage_loader_state  eq

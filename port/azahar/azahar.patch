@@ -978,10 +978,64 @@ index 1d66da3..0a0f608 100644
      eapol_logoff.max_nodes = max_nodes;
  
 diff --git a/src/core/memory.cpp b/src/core/memory.cpp
-index c1dbbd0..49745de 100644
+index c1dbbd0..153f60a 100644
 --- a/src/core/memory.cpp
 +++ b/src/core/memory.cpp
-@@ -892,11 +892,11 @@ std::string MemorySystem::ReadCString(VAddr vaddr, std::size_t max_length) {
+@@ -98,6 +98,12 @@ private:
+     }
+ };
+ 
++static UnmappedObserver unmapped_observer = nullptr;
++
++void SetUnmappedObserver(UnmappedObserver observer) {
++    unmapped_observer = observer;
++}
++
+ class MemorySystem::Impl {
+ public:
+     // Visual Studio would try to allocate these on compile time
+@@ -170,6 +176,16 @@ public:
+         return system.GetRunningCore().GetPC();
+     }
+ 
++    u32 GetLR() const noexcept {
++        return system.GetRunningCore().GetReg(14);
++    }
++
++    void NoteUnmapped(VAddr vaddr, std::size_t size, bool read) const {
++        if (unmapped_observer) {
++            unmapped_observer(vaddr, static_cast<u32>(size), read, GetLR());
++        }
++    }
++
+     template <bool UNSAFE>
+     void ReadBlockImpl(const Kernel::Process& process, const VAddr src_addr, void* dest_buffer,
+                        const std::size_t size) {
+@@ -191,6 +207,7 @@ public:
+                     "unmapped ReadBlock @ 0x{:08X} (start address = 0x{:08X}, size = {}) at PC "
+                     "0x{:08X}",
+                     current_vaddr, src_addr, size, GetPC());
++                NoteUnmapped(current_vaddr, copy_amount, true);
+                 std::memset(dest_buffer, 0, copy_amount);
+                 break;
+             }
+@@ -250,6 +267,7 @@ public:
+                     "unmapped WriteBlock @ 0x{:08X} (start address = 0x{:08X}, size = {}) at PC "
+                     "0x{:08X}",
+                     current_vaddr, dest_addr, size, GetPC());
++                NoteUnmapped(current_vaddr, copy_amount, false);
+                 break;
+             }
+             case PageType::Memory: {
+@@ -577,6 +595,7 @@ void MemorySystem::UnmappedAccess(const VAddr vaddr, const T value, bool read) {
+     }
+ #endif
+     LOG_ERROR(HW_Memory, "{}", message);
++    impl->NoteUnmapped(vaddr, sizeof(T), read);
+     if (Settings::values.enable_exception_handler) {
+         Core::LogException(impl->system, read ? Core::ExceptionType::UnmappedRead
+                                               : Core::ExceptionType::UnmappedWrite);
+@@ -892,11 +911,11 @@ std::string MemorySystem::ReadCString(VAddr vaddr, std::size_t max_length) {
  }
  
  MemorySystem::PhysMemRegionInfo MemorySystem::GetPhysMemRegionInfo(PAddr address) {
@@ -998,7 +1052,7 @@ index c1dbbd0..49745de 100644
      constexpr std::array memory_areas = {
          std::make_pair(VRAM_PADDR, VRAM_SIZE),
          std::make_pair(DSP_RAM_PADDR, DSP_RAM_SIZE),
-@@ -913,28 +913,27 @@ MemorySystem::PhysMemRegionInfo MemorySystem::GetPhysMemRegionInfo(PAddr address
+@@ -913,28 +932,27 @@ MemorySystem::PhysMemRegionInfo MemorySystem::GetPhysMemRegionInfo(PAddr address
      if (area == memory_areas.end()) [[unlikely]] {
          LOG_ERROR(HW_Memory, "Unknown GetPhysMemRegionInfo @ {:#08X} at PC {:#08X}", address,
                    impl->GetPC());
@@ -1033,6 +1087,23 @@ index c1dbbd0..49745de 100644
  }
  
  u8* MemorySystem::GetPhysicalPointer(PAddr address) {
+diff --git a/src/core/memory.h b/src/core/memory.h
+index d490734..c6a8596 100644
+--- a/src/core/memory.h
++++ b/src/core/memory.h
+@@ -36,6 +36,12 @@ constexpr u32 CITRA_PAGE_MASK = CITRA_PAGE_SIZE - 1;
+ constexpr int CITRA_PAGE_BITS = 12;
+ constexpr std::size_t PAGE_TABLE_NUM_ENTRIES = 1 << (32 - CITRA_PAGE_BITS);
+ 
++/// Optional observer of every access to an unmapped page (the ones logged as "unmapped ..."):
++/// the address, the size in bytes (a page's share of a block access), whether it was a read, and
++/// the running CPU's LR. The runner counts them (--count-unmapped).
++using UnmappedObserver = void (*)(VAddr vaddr, u32 size, bool read, u32 lr);
++void SetUnmappedObserver(UnmappedObserver observer);
++
+ enum class PageType : u8 {
+     /// Page is unmapped and should cause an access error.
+     Unmapped,
 diff --git a/src/core/savestate.cpp b/src/core/savestate.cpp
 index e065efd..66a3a28 100644
 --- a/src/core/savestate.cpp

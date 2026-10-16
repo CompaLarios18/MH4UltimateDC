@@ -72,6 +72,22 @@ from its virtual SD card), the runner can also drive it without a window:
 reference runs are Old 3DS runs, because the mode changes the cores, the FCRAM size and what
 the cfg, ptm and APT services answer.
 
+`--state-trace FILE [--observable FILE]` writes the game's observable state: after the header
+(`# statetrace v1 <date> game=<title id> cpu=<cpu> new3ds=<on|off>`), a line
+`f=<frame> t=<ticks> <name>=<0x value | ->` whenever the game's frame counter (`0x010571d4`)
+changes, with the values listed in `config/native/observable.txt` (the default, relative to the
+current directory; an address or a pointer chain such as `[[0x0104dea0]+0x30]`, a size, a name
+and `eq` or `ignore`; `-` is a null pointer in the chain or unreadable memory). The values are
+read page by page after checking that the pages are mapped, so the trace adds no unmapped
+accesses and writes nothing. `tools/native/state_diff.py reference candidate [--tolerance N]
+[--order-only]` aligns two traces on their scene changes and exits 0 if each happens within N
+frames (default 2) of its counterpart with equal `eq` values (`--order-only`: only the order of
+the scenes). `--count-unmapped FILE` counts the accesses to unmapped memory that Azahar logs as
+`unmapped ...` (scalar reads and writes, and block reads and writes by pages) and writes
+`count=<n> addr=<hex> size=<n> rw=<read|write> lr=<hex>` lines, the most frequent first, at the
+end of the run; the LR is the CPU's `r14` at the access (with `--cpu recomp`, the recompiled
+code's context, which a leaf function does not update).
+
 `--trace-svc FILE` writes every system call with its thread, caller and arguments; the
 same run on `--cpu jit` gives the reference, and the first difference per thread points at
 the recompiled function that went wrong (`tools/compare_svc_traces.py jit.txt recomp.txt`).

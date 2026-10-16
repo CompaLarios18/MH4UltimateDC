@@ -12,9 +12,12 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <fstream>
+#include <tuple>
 #include <limits>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -43,6 +46,7 @@
 #include "core/hle/service/cfg/cfg.h"
 #include "core/hle/service/service.h"
 #include "core/loader/loader.h"
+#include "core/memory.h"
 #include "network/network.h"
 #include "network/verify_user.h"
 #include "video_core/gpu.h"
@@ -89,6 +93,13 @@ const char* const USAGE = R"(usage: mh4u_runner <file> [options]
                     r4-r6 on entry, r0-r3 when the call completes for its thread), a line per
                     thread created and a header, to compare CPU backends thread by thread
                     (tools/compare_svc_traces.py)
+  --state-trace FILE  write the game's observable state (the values listed in --observable)
+                    on every game frame: a line whenever the frame counter changes, to compare
+                    runtimes scene by scene (tools/native/state_diff.py)
+  --observable FILE  the values --state-trace records (default config/native/observable.txt,
+                    relative to the current directory)
+  --count-unmapped FILE  at the end of the run, write how often the game touched unmapped
+                    memory, by address, size, read or write and caller (LR), most often first
   --new-3ds on|off  run as a New 3DS or an Old 3DS (default off: the reference is an Old 3DS)
   --input SCRIPT    comma-separated presses at emulated times, e.g.
                     "3000:A,3500:START:200,5000:TOUCH:160:120,6000:CIRCLE:0:1:500"
@@ -447,6 +458,268 @@ void WriteDumps(Core::System& system, const std::string& dir) {
             std::fclose(f);
         }
     }
+}
+
+// ── game-state trace and unmapped-access counter (N0-07) ────────────────────────────
+
+constexpr u32 kFrameCounterAddress = 0x010571d4; // the game's frame counter (mirrors sLtRender+0x6b90)
+
+/// One line of the observable file: `<expr> <size> <name> <eq|ignore>` (the syntax is documented in
+/// config/native/observable.txt and implemented the same way by tools/native/state_diff.py).
+struct StateValue {
+    std::string expr; // as written, without the outermost brackets if it has them
+    u32 size;
+    std::string name;
+};
+
+struct StateTrace {
+    std::FILE* file = nullptr;
+    std::vector<StateValue> values;
+    bool have_frame = false;
+    u32 last_frame = 0;
+} g_state_trace;
+
+bool IsWrapped(const std::string& text) {
+    if (text.size() < 2 || text.front() != '[' || text.back() != ']') {
+        return false;
+    }
+    int depth = 0;
+    for (std::size_t i = 0; i < text.size(); ++i) {
+        depth += text[i] == '[';
+        depth -= text[i] == ']';
+        if (depth == 0) {
+            return i + 1 == text.size();
+        }
+    }
+    return false;
+}
+
+/// Splits at the '+' outside brackets; false if the brackets do not match.
+bool SplitTerms(const std::string& text, std::vector<std::string>& terms) {
+    int depth = 0;
+    std::string current;
+    terms.clear();
+    for (const char c : text) {
+        depth += c == '[';
+        depth -= c == ']';
+        if (depth < 0) {
+            return false;
+        }
+        if (c == '+' && depth == 0) {
+            terms.push_back(current);
+            current.clear();
+        } else {
+            current += c;
+        }
+    }
+    terms.push_back(current);
+    return depth == 0;
+}
+
+bool IsHexTerm(const std::string& term) {
+    return term.size() > 2 && term[0] == '0' && term[1] == 'x' &&
+           term.find_first_not_of("0123456789abcdefABCDEF", 2) == std::string::npos;
+}
+
+bool CheckAddressExpr(const std::string& text) {
+    std::vector<std::string> terms;
+    if (!SplitTerms(text, terms)) {
+        return false;
+    }
+    for (const std::string& term : terms) {
+        if (IsWrapped(term) ? !CheckAddressExpr(term.substr(1, term.size() - 2)) : !IsHexTerm(term)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/// Reads SIZE (1, 2 or 4) bytes of guest memory, little-endian. Looks the pages up first, so an
+/// unmapped address gives false instead of a logged error that the unmapped counter would count,
+/// and nothing is written.
+bool ReadGuest(Core::System& system, u32 address, u32 size, u32& value) {
+    const auto process = system.Kernel().GetCurrentProcess();
+    if (!process) {
+        return false;
+    }
+    auto& memory = system.Memory();
+    if (address + size < address || !memory.IsValidVirtualAddress(*process, address) ||
+        !memory.IsValidVirtualAddress(*process, address + size - 1)) {
+        return false;
+    }
+    value = 0;
+    u8 bytes[4] = {};
+    memory.ReadBlock(*process, address, bytes, size);
+    for (u32 i = 0; i < size; ++i) {
+        value |= static_cast<u32>(bytes[i]) << (8 * i);
+    }
+    return true;
+}
+
+/// The address an expression stands for; false if a pointer in a chain is null or unreadable.
+bool EvalAddress(Core::System& system, const std::string& text, u32& address) {
+    std::vector<std::string> terms;
+    if (!SplitTerms(text, terms)) {
+        return false;
+    }
+    address = 0;
+    for (const std::string& term : terms) {
+        u32 part = 0;
+        if (IsWrapped(term)) {
+            u32 inner = 0;
+            if (!EvalAddress(system, term.substr(1, term.size() - 2), inner) ||
+                !ReadGuest(system, inner, 4, part) || part == 0) {
+                return false;
+            }
+        } else {
+            part = static_cast<u32>(std::strtoul(term.c_str(), nullptr, 16));
+        }
+        address += part;
+    }
+    return true;
+}
+
+/// config/native/observable.txt: lines `<expr> <size> <name> <eq|ignore>`, `#` starts a comment.
+bool LoadObservable(const std::string& path, std::vector<StateValue>& values, std::string& error) {
+    std::ifstream in(path);
+    if (!in) {
+        error = fmt::format("cannot read the observable file {} (--observable FILE)", path);
+        return false;
+    }
+    std::string line;
+    int number = 0;
+    while (std::getline(in, line)) {
+        ++number;
+        line = line.substr(0, line.find('#'));
+        std::istringstream fields(line);
+        std::string expr, size, name, mode, extra;
+        if (!(fields >> expr)) {
+            continue; // blank
+        }
+        if (!(fields >> size >> name >> mode) || (fields >> extra)) {
+            error = fmt::format("{}:{}: want '<expr> <size> <name> <eq|ignore>'", path, number);
+            return false;
+        }
+        if (!CheckAddressExpr(IsWrapped(expr) ? expr.substr(1, expr.size() - 2) : expr) ||
+            (size != "1" && size != "2" && size != "4") || (mode != "eq" && mode != "ignore")) {
+            error = fmt::format("{}:{}: bad expression, size or mode", path, number);
+            return false;
+        }
+        values.push_back({IsWrapped(expr) ? expr.substr(1, expr.size() - 2) : expr,
+                          static_cast<u32>(std::atoi(size.c_str())), name});
+    }
+    if (values.empty()) {
+        error = path + " lists no values";
+        return false;
+    }
+    return true;
+}
+
+/// `# <tool> v1 <ISO date> game=0x<title id> cpu=<cpu> new3ds=<on|off>`
+void WriteHeader(std::FILE* file, Core::System& system, const char* tool, const std::string& cpu,
+                 bool new_3ds) {
+    u64 program_id = 0;
+    if (system.GetAppLoader().ReadProgramId(program_id) != Loader::ResultStatus::Success) {
+        program_id = 0;
+    }
+    const std::time_t now = std::time(nullptr);
+    char date[16] = "0000-00-00";
+    if (const std::tm* utc = std::gmtime(&now)) {
+        std::strftime(date, sizeof(date), "%Y-%m-%d", utc);
+    }
+    std::fprintf(file, "# %s v1 %s game=0x%016llx cpu=%s new3ds=%s\n", tool, date,
+                 static_cast<unsigned long long>(program_id), cpu.c_str(), new_3ds ? "on" : "off");
+}
+
+bool BeginStateTrace(Core::System& system, const std::string& path, const std::string& observable,
+                     const std::string& cpu, bool new_3ds) {
+    std::string error;
+    if (!LoadObservable(observable, g_state_trace.values, error)) {
+        std::fprintf(stderr, "%s\n", error.c_str());
+        return false;
+    }
+    g_state_trace.file = std::fopen(path.c_str(), "w");
+    if (!g_state_trace.file) {
+        std::fprintf(stderr, "cannot write %s\n", path.c_str());
+        return false;
+    }
+    WriteHeader(g_state_trace.file, system, "statetrace", cpu, new_3ds);
+    return true;
+}
+
+/// After each slice of emulation: a line if the frame counter changed since the last one.
+/// `f=<frame> t=<ticks> <name>=<0x value | ->`, every value as wide as its size.
+void WriteStateTrace(Core::System& system) {
+    if (!g_state_trace.file) {
+        return;
+    }
+    u32 frame = 0;
+    if (!ReadGuest(system, kFrameCounterAddress, 4, frame) ||
+        (g_state_trace.have_frame && frame == g_state_trace.last_frame)) {
+        return;
+    }
+    g_state_trace.have_frame = true;
+    g_state_trace.last_frame = frame;
+    std::string line = fmt::format("f={} t={}", frame,
+                                   static_cast<long long>(system.CoreTiming().GetGlobalTicks() - g_start_ticks));
+    for (const StateValue& v : g_state_trace.values) {
+        u32 address = 0, value = 0;
+        if (EvalAddress(system, v.expr, address) && ReadGuest(system, address, v.size, value)) {
+            line += fmt::format(" {}=0x{:0{}x}", v.name, value, v.size * 2);
+        } else {
+            line += fmt::format(" {}=-", v.name);
+        }
+    }
+    line += '\n';
+    std::fputs(line.c_str(), g_state_trace.file);
+}
+
+void EndStateTrace() {
+    if (g_state_trace.file) {
+        std::fclose(g_state_trace.file);
+        g_state_trace.file = nullptr;
+    }
+}
+
+/// Accesses to unmapped pages, by (address, size, read, caller's LR).
+struct UnmappedKey {
+    u32 address, size, lr;
+    bool read;
+    bool operator<(const UnmappedKey& o) const {
+        return std::tie(address, size, read, lr) < std::tie(o.address, o.size, o.read, o.lr);
+    }
+};
+std::map<UnmappedKey, unsigned long long> g_unmapped;
+std::mutex g_unmapped_mutex;
+
+void CountUnmapped(VAddr address, u32 size, bool read, u32 lr) {
+    std::lock_guard lock{g_unmapped_mutex};
+    ++g_unmapped[{address, size, lr, read}];
+}
+
+/// `# unmapped v1 ...` header, then `count=<n> addr=<hex> size=<n> rw=<read|write> lr=<hex>`,
+/// the most frequent first.
+void WriteUnmappedReport(Core::System& system, const std::string& path, const std::string& cpu,
+                         bool new_3ds) {
+    Memory::SetUnmappedObserver(nullptr);
+    std::vector<std::pair<UnmappedKey, unsigned long long>> rows;
+    {
+        std::lock_guard lock{g_unmapped_mutex};
+        rows.assign(g_unmapped.begin(), g_unmapped.end());
+    }
+    std::stable_sort(rows.begin(), rows.end(), [](const auto& a, const auto& b) { return a.second > b.second; });
+    std::FILE* f = std::fopen(path.c_str(), "w");
+    if (!f) {
+        std::fprintf(stderr, "cannot write %s\n", path.c_str());
+        return;
+    }
+    WriteHeader(f, system, "unmapped", cpu, new_3ds);
+    for (const auto& [key, count] : rows) {
+        std::fprintf(f, "count=%llu addr=0x%08x size=%u rw=%s lr=0x%08x\n", count, key.address, key.size,
+                     key.read ? "read" : "write", key.lr);
+    }
+    std::fclose(f);
+    std::printf("unmapped accesses: %zu distinct, %s\n", rows.size(), path.c_str());
 }
 
 const Press* Active(int button) {
@@ -962,6 +1235,7 @@ int main(int argc, char** argv) {
     std::string log_filter = "*:Warning Debug.Emulated:Debug Kernel:Info";
     double emulated_ms = 10000.0;
     std::string user_dir, shots_dir, input_script, svc_trace;
+    std::string state_trace, unmapped_report, observable_file = "config/native/observable.txt";
     std::vector<std::string> install;
     double shot_every = 1000.0;
     double shots_from = -1.0;
@@ -1023,6 +1297,12 @@ int main(int argc, char** argv) {
             g_call_snapshots.emplace_back(std::atof(argv[++i]), false);
         } else if (arg == "--trace-svc" && i + 1 < argc) {
             svc_trace = argv[++i];
+        } else if (arg == "--state-trace" && i + 1 < argc) {
+            state_trace = argv[++i];
+        } else if (arg == "--observable" && i + 1 < argc) {
+            observable_file = argv[++i];
+        } else if (arg == "--count-unmapped" && i + 1 < argc) {
+            unmapped_report = argv[++i];
         } else if (arg == "--new-3ds" && i + 1 < argc) {
             const std::string mode = argv[++i];
             if (mode != "on" && mode != "off") {
@@ -1183,6 +1463,13 @@ int main(int argc, char** argv) {
             BeginSvcTrace(system, cpu, new_3ds);
         }
     }
+    if (!state_trace.empty() && !BeginStateTrace(system, state_trace, observable_file, cpu, new_3ds)) {
+        system.Shutdown();
+        return 1;
+    }
+    if (!unmapped_report.empty()) {
+        Memory::SetUnmappedObserver(CountUnmapped);
+    }
 
     if (!shots_dir.empty()) {
         FileUtil::CreateFullPath(shots_dir.back() == '/' ? shots_dir : shots_dir + '/');
@@ -1218,6 +1505,7 @@ int main(int argc, char** argv) {
             }
         }
         WriteDumps(system, shots_dir);
+        WriteStateTrace(system);
         DoReplaces(system);
         WriteCallCounts(shots_dir);
         if (!shots_dir.empty() && EmulatedMs() >= next_shot) {
@@ -1263,6 +1551,10 @@ int main(int argc, char** argv) {
     std::fflush(stdout);
     if (g_svc_trace) {
         EndSvcTrace();
+    }
+    EndStateTrace();
+    if (!unmapped_report.empty()) {
+        WriteUnmappedReport(system, unmapped_report, cpu, new_3ds);
     }
     system.Shutdown();
     if (in_room) {
