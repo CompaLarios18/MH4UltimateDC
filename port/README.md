@@ -8,6 +8,7 @@ The PC port: [Azahar](https://github.com/azahar-emu/azahar)'s 3DS core (kernel, 
 | `src/fiber.*` | Host fibers (ucontext on Linux/macOS, Win32 fibers on Windows) |
 | `src/frontend.*` | `Port::PrepareBackendFor()`: called by a frontend before loading a game; installs the recompiled backend when there is a code library for that game and the code Azahar is about to load (the installed update's, with the code mods in its mods folder) is the code the library was recompiled from; otherwise Azahar's own CPU emulation runs the game at its usual speed (the interpreter the recompiled code falls back to would be far too slow). `Port::BackendNotice()` then tells the player why MH4U runs without the port, or that the library lacks some hook points, and how to build it; Azahar's Qt frontend calls both when built with this directory and shows the notice in a message box (see `azahar/azahar.patch`); its *Tools → MH4U Port Options...* opens `Port::OptionsPath()`, made from `Port::OptionsTemplate()` when missing, and its hotkey *MH4U Quest Map On/Off* (F12) calls `Port::ToggleQuestMap()` |
 | `src/runner.cpp` | `mh4u_runner`: boots a 3DS executable with no window, with the recompiled code (`--cpu recomp --code LIB`) or Azahar's own JIT/interpreter; can install a CIA first, play an input script and save screenshots; for tests and for comparing backends |
+| `src/schedule.cpp`, `src/schedule.h` | the runner's script parsers (times, `--input` events, scheduled options); standard library only, shared with the native runner |
 | `src/hooks.cpp` | The port's hooks on game functions (hook points from `config/hooks.txt`) and its options (`mh4u.ini`): frame rate, widescreen, HUD, touch screen, fixes, traces |
 | `app/` | The port's own app, `mh4u` (SDL2): opens the game directly in a window of its own on Azahar's core, with the recompiled code and the hooks, Vulkan/OpenGL/software renderers, keyboard and controller at once, the touch overlay, rooms from its settings (`mh4u-app.ini`), an in-game menu and the 3DS software keyboard drawn with Dear ImGui (`app/ui/`, vendored in `app/third_party/imgui/`); built with this directory when Azahar has SDL2 (`MH4U_APP`) |
 | `src/netsync.*` | Net sync: the port's consoles in a network room keep their emulated clocks together, so that one whose PC stalls isn't dropped |
@@ -104,7 +105,14 @@ thread gets a line when it is created
 the main thread has `parent=0`). To compare two runtimes whose thread ids and handle values
 differ, add `--normalize` (threads become `main` or `<entry>#<k>`, handles `<kind>#<k>`, times
 are dropped) and `--outputs` (compare the results too); `tools/native/tracefmt.py` describes
-the rules. `--input` presses buttons, touches the bottom screen (pixels) or moves the circle pad
+the rules. Every time in a script is emulated milliseconds or a game frame: `f600` is the first moment the
+frame counter (the u32 at `0x010571d4`) reads 600 or more, so a script means the same on every CPU backend and
+runtime (`--input "f600:START,f900:A:f3"`; a hold may be `f<N>` frames, default 100 ms; `--dump`, `--replace`,
+`--set`, `--freeze`, `--call-counts`, `--shots-from` and `--ms` take the same). `--frames N` (or `--ms f<N>`) stops the
+run at frame N, exit status 0, with no time limit unless `--ms` is also given. `--input-file PATH` reads
+one event per line, `#` comments allowed, and `--print-schedule` prints the parsed schedule and exits (no game
+needed). Keep the default of reading files in place: with `--async-io` frame numbers vary between runs.
+`--input` presses buttons, touches the bottom screen (pixels) or moves the circle pad
 (-1..1) at emulated times; `--shots` saves both screens as PPM images, and
 `--draw-window 100` draws only the 100 ms before each screenshot, which makes long runs
 many times faster (the software renderer, and the vertex shaders the GPU runs on the CPU, take

@@ -31,7 +31,7 @@ add_library(mh4u_backend STATIC
 target_include_directories(mh4u_backend PUBLIC src PRIVATE "${MH4U_RUNTIME_DIR}")
 target_link_libraries(mh4u_backend PUBLIC citra_core citra_common network)
 
-add_executable(mh4u_runner src/runner.cpp)
+add_executable(mh4u_runner src/runner.cpp src/schedule.cpp src/schedule.h)
 target_include_directories(mh4u_runner PRIVATE "${MH4U_RUNTIME_DIR}")
 target_link_libraries(mh4u_runner PRIVATE mh4u_backend network)
 

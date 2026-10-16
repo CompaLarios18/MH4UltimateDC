@@ -619,3 +619,85 @@ def test_svc_traces_match_jit_per_thread(tmp_path):
         traces[cpu] = _svc_trace_by_thread(trace)
     assert len(traces["jit"]) >= 4                        # main thread + 3 workers
     assert traces["recomp"] == traces["jit"]
+
+
+def _print_schedule(*args):
+    return subprocess.run([os.environ["MH4U_RUNNER"], "--print-schedule", *args], capture_output=True,
+                          text=True, timeout=60)
+
+
+@pytest.mark.skipif(not os.environ.get("MH4U_RUNNER"), reason="port not built (set MH4U_RUNNER)")
+def test_schedule_prints_milliseconds_and_frames():
+    """--print-schedule shows the parsed schedule and exits without a game; a time is emulated
+    ms or f<N>, and a hold may be ms or f<N> frames (src/schedule.cpp, N0-08)."""
+    r = _print_schedule(
+        "--input", "f600:START,f900:A:f3,3000:A,3500:START:200,5000:TOUCH:160:120,6000:CIRCLE:0:1:f30",
+        "--dump", "f600:100000:40", "--replace", "1500.5:55:aa", "--set", "f800:fps=120",
+        "--freeze", "500:30", "--call-counts", "f77", "--shots-from", "f1200", "--frames", "3000")
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.splitlines() == [
+        "# schedule v1",
+        "stop frames=3000",
+        "press at=f600 hold=100ms kind=button button=START",
+        "press at=f900 hold=f3 kind=button button=A",
+        "press at=3000ms hold=100ms kind=button button=A",
+        "press at=3500ms hold=200ms kind=button button=START",
+        "press at=5000ms hold=100ms kind=touch x=160 y=120",
+        "press at=6000ms hold=f30 kind=circle x=0 y=1",
+        "dump at=f600 addr=0x00100000 size=0x00000040",
+        "replace at=1500.5ms from=55 to=aa",
+        "set at=f800 key=fps value=120",
+        "freeze at=500ms host=30ms",
+        "call-counts at=f77",
+        "shots-from at=f1200",
+    ]
+
+
+@pytest.mark.skipif(not os.environ.get("MH4U_RUNNER"), reason="port not built (set MH4U_RUNNER)")
+def test_schedule_stop_options():
+    """--ms takes ms or f<N>; --frames N is the same as --ms f<N>; --frames alone has no time limit."""
+    assert "stop ms=10000" in _print_schedule().stdout.splitlines()
+    assert _print_schedule("--ms", "1200").stdout.splitlines()[1:] == ["stop ms=1200"]
+    assert _print_schedule("--ms", "f300").stdout.splitlines()[1:] == ["stop frames=300"]
+    assert _print_schedule("--frames", "300").stdout.splitlines()[1:] == ["stop frames=300"]
+    both = _print_schedule("--frames", "300", "--ms", "2000").stdout.splitlines()
+    assert both[1:] == ["stop ms=2000", "stop frames=300"]
+    # values of 1e6 ms or more (a 16 minute run) print exactly, not as 1.2e+06
+    assert _print_schedule("--ms", "1200000").stdout.splitlines()[1:] == ["stop ms=1200000"]
+    big = _print_schedule("--ms", "1234567.5", "--input", "1200000:A").stdout.splitlines()
+    assert big[1:] == ["stop ms=1234567.5", "press at=1200000ms hold=100ms kind=button button=A"]
+
+
+@pytest.mark.skipif(not os.environ.get("MH4U_RUNNER"), reason="port not built (set MH4U_RUNNER)")
+def test_schedule_input_file(tmp_path):
+    """--input-file reads one event per line, with '#' comments and blank lines, and combines
+    with --input."""
+    script = tmp_path / "script.txt"
+    script.write_text("# a script\n\nf600:START   # comment after an event\n  1000:A:f2\n"
+                      "2000:TOUCH:10:20:50\n")
+    r = _print_schedule("--input", "500:B", "--input-file", str(script))
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.splitlines()[2:] == [
+        "press at=500ms hold=100ms kind=button button=B",
+        "press at=f600 hold=100ms kind=button button=START",
+        "press at=1000ms hold=f2 kind=button button=A",
+        "press at=2000ms hold=50ms kind=touch x=10 y=20",
+    ]
+    bad = tmp_path / "bad.txt"
+    bad.write_text("100:A\n200:NOPE\n")
+    r = _print_schedule("--input-file", str(bad))
+    assert r.returncode == 1 and "line 2" in r.stderr and "NOPE" in r.stderr
+    r = _print_schedule("--input-file", str(tmp_path / "missing.txt"))
+    assert r.returncode == 1 and "bad --input-file" in r.stderr
+
+
+@pytest.mark.skipif(not os.environ.get("MH4U_RUNNER"), reason="port not built (set MH4U_RUNNER)")
+@pytest.mark.parametrize("args", [
+    ["--input", "f:A"], ["--input", "-5:A"], ["--input", "100:A:fx"], ["--input", "100:Q"],
+    ["--input", "100:TOUCH:1"], ["--dump", "f600:zz:40"], ["--dump", "500:10:0"],
+    ["--set", "f600:=1"], ["--set", "fps=120"], ["--freeze", "500:0"], ["--call-counts", "g5"],
+    ["--shots-from", "-1"], ["--ms", "f"], ["--frames", "x"], ["--frames", "-3"],
+])
+def test_schedule_rejects_bad_times(args):
+    r = _print_schedule(*args)
+    assert r.returncode == 1 and r.stdout == "" and "bad --" in r.stderr, (r.stdout, r.stderr)
