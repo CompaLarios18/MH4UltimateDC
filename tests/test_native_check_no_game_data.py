@@ -1023,3 +1023,37 @@ def test_legit_sources_mentioning_hex_pass(repo: Path) -> None:
     git(repo, "add", "-A")
     r = run(repo, "--staged")
     assert r.returncode == 0, r.stdout + r.stderr
+
+
+# --- N0-19 round 2 fixes -----------------------------------------------------------------
+
+def _rules(found: list[tuple[str, str]]) -> str:
+    return " ".join(r for _, r in found)
+
+
+def test_allowlisted_invalid_utf8_file_still_gets_trace_rule() -> None:
+    data = "".join(svc_line(i) for i in range(60)).encode() + b"\xff"
+    digest = hashlib.sha256(data).hexdigest()
+    found = check_bytes("x.dat", data, {"x.dat": digest})
+    assert found and all(r.startswith("trace") for _, r in found)
+    # Not allowlisted: refused as binary content as well.
+    assert "binary-content" in _rules(check_bytes("x.dat", data))
+    # Allowlisted with 50 trace lines only: fine.
+    ok = "".join(svc_line(i) for i in range(50)).encode() + b"\xff"
+    assert check_bytes("x.dat", ok, {"x.dat": hashlib.sha256(ok).hexdigest()}) == []
+
+
+def test_dense_blob_reached_only_with_padding() -> None:
+    assert check_bytes("a.txt", b"A" * 1020 + b"====\n")
+    assert check_bytes("a.txt", b"A" * 1020 + b"===\n") == []
+
+
+def test_disassembly_with_eight_byte_groups() -> None:
+    line = "00008000: " + " ".join(["e1"] * 8) + " mov r0, r0\n"
+    assert check_bytes("d.txt", (line * 51).encode())
+    assert check_bytes("d.txt", (line * 50).encode()) == []
+
+
+def test_lone_byte_is_not_a_mnemonic() -> None:
+    assert check_bytes("d.txt", ("00008000 e1 mov r0,r0\n" * 51).encode())
+    assert check_bytes("d.txt", ("00008000 e1\n" * 51).encode()) == []

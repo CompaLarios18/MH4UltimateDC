@@ -228,15 +228,18 @@ def content_rules(data: bytes) -> list[str]:
         broken.append(
             f"size ({len(data)} bytes > {MAX_BYTES}; list path and sha256 in {ALLOWLIST})"
         )
-    if not is_text(data):
+    text_like = is_text(data)
+    if not text_like:
         broken.append("binary-content (NUL byte in the first 8 KiB; list path and sha256 in "
                       f"{ALLOWLIST} if it is ours)")
     elif not is_utf8(data):
         broken.append(f"binary-content (not valid UTF-8; list path and sha256 in {ALLOWLIST})")
-    else:
+    if text_like:
+        # The trace rule never depends on UTF-8 validity (an allowlisted file is still checked).
         n = count_trace_lines(data)
         if n > TRACE_LINE_LIMIT:
             broken.append(f"trace ({n} lines look like trace lines, limit {TRACE_LINE_LIMIT})")
+    if text_like and is_utf8(data):
         n = count_listing_lines(data)
         if n > TRACE_LINE_LIMIT:
             broken.append(
