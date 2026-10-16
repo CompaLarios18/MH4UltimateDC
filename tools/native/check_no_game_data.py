@@ -21,6 +21,8 @@ Rules (each offending path is printed with the rule it broke; exit status 1):
                   their path and SHA-256
     trace         text files with more than 50 lines that look like trace lines
 
+Trailing spaces, dots and newlines of a path component are ignored by the name rules (Windows
+does the same); git replace refs are ignored; each (path, rule) is printed once.
 Only the names and the rule are printed, never the content of a file.
 Exit status: 0 clean, 1 offending files, 2 usage or git error.
 """
@@ -32,7 +34,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
-from typing import Callable, Iterable, Optional
+from typing import Callable, Optional
 
 MAX_BYTES = 2 * 1024 * 1024
 TRACE_LINE_LIMIT = 50
@@ -59,12 +61,14 @@ TRACE_PATTERNS = tuple(
     )
 )
 
-Reader = Callable[[str], bytes]
+Reader = Callable[[str], bytes]  # blob sha -> content
 
 
 def git(*args: str, cwd: Optional[Path] = None, text: bool = False):
     proc = subprocess.run(
-        ["git", *args], cwd=cwd, capture_output=True, text=text, check=False
+        # --no-replace-objects: a local refs/replace entry must not show the guard a
+        # substitute commit or blob instead of the real one.
+        ["git", "--no-replace-objects", *args], cwd=cwd, capture_output=True, text=text, check=False
     )
     if proc.returncode != 0:
         err = proc.stderr if text else proc.stderr.decode("utf-8", "replace")
@@ -101,7 +105,14 @@ def count_trace_lines(data: bytes) -> int:
     return count
 
 
+def normalize_path(path: str) -> str:
+    """Strip what Windows ignores at the end of a path component (spaces, dots, newlines),
+    so 'a.ppm ', 'b.wav.', 'export ' and 'x.ppm\\n' are judged like 'a.ppm', 'b.wav', 'export'."""
+    return "/".join(p.rstrip(" .\r\n") for p in path.split("/"))
+
+
 def name_rules(path: str) -> list[str]:
+    path = normalize_path(path)
     broken: list[str] = []
     if CI_PATTERN.search(path):
         broken.append("ci-pattern (game data file name)")
@@ -132,52 +143,21 @@ def content_rules(data: bytes) -> list[str]:
     return broken
 
 
-def check_file(path: str, data: bytes, allowed: dict[str, str]) -> list[str]:
-    """Return the names of the rules the file breaks."""
-    broken = name_rules(path)
-    digest = hashlib.sha256(data).hexdigest() if len(data) > MAX_BYTES else ""
-    for rule in content_rules(data):
-        if rule.startswith("size") and allowed.get(path) == digest:
-            continue
-        broken.append(rule)
-    return broken
-
-
-def run_checks(
-    paths: Iterable[str],
-    read: Reader,
-    allowed: dict[str, str],
-    skip_content: Callable[[str], bool] = lambda p: False,
-) -> list[tuple[str, str]]:
-    """Apply the rules to each path. A regular file that cannot be read is an error
-    (RuntimeError, exit 2); only entries skip_content() accepts (gitlinks) get name rules only."""
-    offences: list[tuple[str, str]] = []
-    for path in paths:
-        if skip_content(path):
-            data = b""
-        else:
-            try:
-                data = read(path)
-            except RuntimeError as e:
-                raise RuntimeError(f"cannot read {path}: {e}") from e
-        for rule in check_file(path, data, allowed):
-            offences.append((path, rule))
-    return offences
-
-
 def range_entries(root: Path, rng: str) -> list[tuple[str, str, str]]:
     """(mode, blob sha, path) for every added or modified entry of every commit in the range.
 
     Merge commits report their diff against each parent (-m), so a file that only a
     merge resolution introduces is covered. Deleted entries are skipped."""
-    if "..." in rng:
-        a, b = rng.split("...", 1)
-        a, b = a or "HEAD", b or "HEAD"
+    sep = "..." if "..." in rng else ".."
+    a, _, b = rng.partition(sep)
+    a, b = a.strip(), b.strip()
+    if not a or not b:
+        raise RuntimeError(f"--range {rng!r}: both endpoints are required (A..B or A...B)")
+    if sep == "...":
         base = git("merge-base", a, b, cwd=root, text=True).strip()
         spec = f"{base}..{b}"
     else:
-        a, b = rng.split("..", 1)
-        spec = f"{a or 'HEAD'}..{b or 'HEAD'}"
+        spec = f"{a}..{b}"
     raw = git(
         "log", "--format=", "--no-show-signature", "--raw", "-z", "--no-abbrev",
         "--no-renames", "--ignore-submodules=none", "-m", spec,
@@ -211,16 +191,24 @@ def parse_raw(raw: bytes) -> list[tuple[str, str, str]]:
 
 
 def check_entries(
-    root: Path, entries: list[tuple[str, str, str]], allowed: dict[str, str]
+    entries: list[tuple[str, str, str]], read_blob: Reader, allowed: dict[str, str]
 ) -> list[tuple[str, str]]:
-    """Name rules for every (sha, path); content rules once per blob sha."""
+    """The one checking path (main() and the tests): name rules for every (sha, path),
+    content rules once per blob sha, each (path, rule) pair reported once.
+
+    read_blob(sha) returns the content; a regular file whose blob cannot be read is an
+    error (RuntimeError, exit 2). Gitlinks (mode 160000) get the name rules only."""
     offences: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
     cache: dict[str, tuple[list[str], list[str], str]] = {}
     for mode, sha, path in entries:
         rules = name_rules(path)
         if mode != "160000":
             if sha not in cache:
-                data = git("cat-file", "blob", sha, cwd=root)
+                try:
+                    data = read_blob(sha)
+                except RuntimeError as e:
+                    raise RuntimeError(f"cannot read {path}: {e}") from e
                 found = content_rules(data)
                 cache[sha] = (
                     [r for r in found if not r.startswith("size")],
@@ -231,7 +219,10 @@ def check_entries(
             rules += plain
             if size and allowed.get(path) != digest:
                 rules += size
-        offences += [(path, r) for r in rules]
+        for r in rules:
+            if (path, r) not in seen:
+                seen.add((path, r))
+                offences.append((path, r))
     return offences
 
 
@@ -262,13 +253,14 @@ def main(argv: Optional[list[str]] = None) -> int:
                 )
             )
             names = sorted({path for _, _, path in entries})
-            offences = check_entries(root, entries, allowed)
         else:
             if ".." not in args.range:
                 ap.error("--range needs A..B")
             entries = range_entries(root, args.range)
-            names = sorted({path for _, _, path in entries})
-            offences = check_entries(root, entries, allowed)
+        names = sorted({path for _, _, path in entries})
+        offences = check_entries(
+            entries, lambda sha: git("cat-file", "blob", sha, cwd=root), allowed
+        )
     except RuntimeError as e:
         print(f"check_no_game_data: {e}", file=sys.stderr)
         return 2

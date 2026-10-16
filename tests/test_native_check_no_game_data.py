@@ -108,8 +108,13 @@ def test_capture_magics(repo: Path, magic: str) -> None:
     assert r.returncode == 1 and "magic" in r.stdout and magic in r.stdout
 
 
+def check_bytes(path: str, data: bytes, allowed: dict[str, str] | None = None) -> list[tuple[str, str]]:
+    """Run the one checking path (check_entries) on a single in-memory file."""
+    return guard.check_entries([("100644", "s", path)], lambda sha: data, allowed or {})
+
+
 def test_magic_not_at_start_is_fine() -> None:
-    assert guard.check_file("a.dat", b"xMGPU", {}) == []
+    assert check_bytes("a.dat", b"xMGPU") == []
 
 
 def test_size_rule_and_exemption(repo: Path) -> None:
@@ -138,7 +143,7 @@ def test_size_rule_and_exemption(repo: Path) -> None:
 
 
 def test_exactly_2mb_is_allowed() -> None:
-    assert guard.check_file("a.dat", b"A" * guard.MAX_BYTES, {}) == []
+    assert check_bytes("a.dat", b"A" * guard.MAX_BYTES) == []
 
 
 def svc_line(i: int) -> str:
@@ -166,10 +171,10 @@ def test_trace_rule(repo: Path, make) -> None:
 
 def test_trace_rule_limit_and_binary(repo: Path) -> None:
     put(repo, "notes/ok.txt", "".join(svc_line(i) for i in range(50)))
-    assert guard.check_file("n.txt", "".join(svc_line(i) for i in range(50)).encode(), {}) == []
-    assert guard.check_file("n.txt", "".join(svc_line(i) for i in range(51)).encode(), {})
+    assert check_bytes("n.txt", "".join(svc_line(i) for i in range(50)).encode()) == []
+    assert check_bytes("n.txt", "".join(svc_line(i) for i in range(51)).encode())
     # Binary data is not scanned as text.
-    assert guard.check_file("n.dat", b"\0" + "".join(svc_line(i) for i in range(60)).encode(), {}) == []
+    assert check_bytes("n.dat", b"\0" + "".join(svc_line(i) for i in range(60)).encode()) == []
 
 
 def test_range_only_checks_the_range(repo: Path) -> None:
@@ -228,13 +233,24 @@ def test_range_dirty_commit_before_range_is_accepted(repo: Path) -> None:
 
 
 def test_unreadable_regular_file_is_an_error() -> None:
-    def read(p: str) -> bytes:
+    def read(sha: str) -> bytes:
         raise RuntimeError("gone")
 
     with pytest.raises(RuntimeError, match="a.md"):
-        guard.run_checks(["a.md"], read, {})
+        guard.check_entries([("100644", "s", "a.md")], read, {})
     # gitlinks keep the name rules only
-    assert guard.run_checks(["sub/x.sav"], read, {}, lambda p: True)
+    assert guard.check_entries([("160000", "s", "sub/x.sav")], read, {})
+
+
+def test_main_exit_2_when_cat_file_fails(repo: Path) -> None:
+    rng = commit_range(repo, {"docs/lost.md": "unique lost content\n"})
+    sha = git(repo, "rev-parse", "HEAD:docs/lost.md")
+    obj = repo / ".git" / "objects" / sha[:2] / sha[2:]
+    obj.chmod(0o644)
+    obj.unlink()
+    r = run(repo, "--range", rng)
+    assert r.returncode == 2
+    assert "cannot read docs/lost.md" in r.stderr
 
 
 def test_staged_submodule_gitlink_is_not_an_error(repo: Path) -> None:
@@ -430,3 +446,105 @@ def test_forbidden_dir_is_case_insensitive(repo: Path, path: str) -> None:
     git(repo, "add", "-f", path)
     r = run(repo, "--staged")
     assert r.returncode == 1 and "forbidden-dir" in r.stdout
+
+
+# --- polish round: replace refs, Windows-equivalent names, dedupe, range endpoints ---
+
+
+def test_range_ignores_git_replace(repo: Path) -> None:
+    base = git(repo, "rev-parse", "HEAD")
+    put(repo, "shot.ppm", "x")
+    commit_all(repo, "dirty")
+    real = git(repo, "rev-parse", "HEAD")
+    clean = git(repo, "commit-tree", f"{base}^{{tree}}", "-p", base, "-m", "clean")
+    git(repo, "replace", real, clean)
+    assert git(repo, "diff", "--name-only", f"{base}..HEAD") == ""  # the substitute is what git shows
+    r = run(repo, "--range", f"{base}..HEAD")
+    assert r.returncode == 1 and "shot.ppm" in r.stdout
+
+
+def test_range_ignores_replaced_blob(repo: Path) -> None:
+    base = git(repo, "rev-parse", "HEAD")
+    put(repo, "cap.dat", b"MGPU" + b"\0" * 8)
+    commit_all(repo, "magic")
+    real = git(repo, "rev-parse", "HEAD:cap.dat")
+    clean = git(repo, "rev-parse", f"{base}:README.md")
+    git(repo, "replace", real, clean)
+    r = run(repo, "--range", f"{base}..HEAD")
+    assert r.returncode == 1 and "cap.dat: magic" in r.stdout
+
+
+WINDOWS_EQUIVALENT = [
+    ("a.ppm ", "extension"),
+    ("b.wav.", "extension"),
+    ("c.wav . .", "extension"),
+    ("export /x.txt", "forbidden-dir"),
+    ("Export./x.txt", "forbidden-dir"),
+    ("a/build . /x.txt", "forbidden-dir"),
+    ("x.ppm\n", "extension"),
+    ("dir/x.bin\n", "extension"),
+    ("game.3ds.", "ci-pattern"),
+    ("sub/code.bin ", "ci-pattern"),
+]
+
+
+@pytest.mark.parametrize("path,rule", WINDOWS_EQUIVALENT)
+def test_windows_equivalent_names_staged(repo: Path, path: str, rule: str) -> None:
+    put(repo, path, "x")
+    git(repo, "add", "-f", "--", path)
+    r = run(repo, "--staged")
+    assert r.returncode == 1 and rule in r.stdout
+
+
+@pytest.mark.parametrize("path,rule", WINDOWS_EQUIVALENT)
+def test_windows_equivalent_names_range(repo: Path, path: str, rule: str) -> None:
+    rng = commit_range(repo, {path: "x"})
+    r = run(repo, "--range", rng)
+    assert r.returncode == 1 and rule in r.stdout
+
+
+def test_trailing_dots_in_clean_names_are_fine(repo: Path) -> None:
+    rng = commit_range(repo, {"notes. /readme.md.": "fine\n", "exports/a.txt": "fine\n"})
+    assert run(repo, "--range", rng).returncode == 0
+
+
+def test_merge_reports_each_path_and_rule_once(repo: Path) -> None:
+    base = git(repo, "rev-parse", "HEAD")
+    git(repo, "checkout", "-q", "-b", "side")
+    put(repo, "both.ppm", "side\n")
+    commit_all(repo, "side")
+    git(repo, "checkout", "-q", "-")
+    put(repo, "both.ppm", "main\n")
+    commit_all(repo, "main")
+    subprocess.run(["git", "merge", "-q", "--no-ff", "--no-commit", "side"], cwd=repo, capture_output=True)
+    put(repo, "both.ppm", "resolved\n")
+    git(repo, "add", "both.ppm")
+    git(repo, "commit", "-q", "-m", "merge")
+    r = run(repo, "--range", f"{base}..HEAD")
+    assert r.returncode == 1
+    assert r.stdout.count("both.ppm: extension") == 1
+    assert "1 problem(s)" in r.stderr
+
+
+def test_check_entries_dedupes_pairs() -> None:
+    entries = [("100644", "s", "a.ppm"), ("100644", "s", "a.ppm")]
+    assert len(guard.check_entries(entries, lambda sha: b"x", {})) == 1
+
+
+@pytest.mark.parametrize("rng", ["..HEAD", "HEAD..", "..", "...", "HEAD...", "...HEAD", " ..HEAD"])
+def test_range_with_empty_endpoint_is_an_error(repo: Path, rng: str) -> None:
+    r = run(repo, "--range", rng)
+    assert r.returncode == 2
+    assert "endpoint" in r.stderr and "ok" not in r.stdout
+
+
+def test_range_two_and_three_dots_still_work(repo: Path) -> None:
+    base = git(repo, "rev-parse", "HEAD")
+    commit_range(repo, {"s.wav": "x"})
+    assert run(repo, "--range", f"{base}..HEAD").returncode == 1
+    assert run(repo, "--range", f"{base}...HEAD").returncode == 1
+
+
+def test_valid_empty_range_is_ok(repo: Path) -> None:
+    r = run(repo, "--range", "HEAD..HEAD")
+    assert r.returncode == 0 and "0 file(s) checked" in r.stdout
