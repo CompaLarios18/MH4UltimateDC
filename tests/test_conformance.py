@@ -113,6 +113,24 @@ def test_program_builds_and_recompiles(built, program):
     assert os.path.exists(native_lib)
 
 
+def all_programs() -> list[str]:
+    import build_svc_test
+    return build_svc_test.programs()
+
+
+@pytest.mark.parametrize("program", all_programs())
+def test_every_port_test_program_compiles(tmp_path, program):
+    """Every port/tests/*.c program (io_test and bench included, not only the conformance ones)
+    compiles and links, so a clash with svc.h is caught without a runner."""
+    import build_svc_test
+    assert os.path.exists(build_svc_test.build(str(tmp_path), program))
+
+
+def test_every_port_test_program_is_known():
+    assert {"svc_test", "io_test", "bench"} <= set(all_programs())
+    assert set(PROGRAMS) <= set(all_programs())
+
+
 @pytest.mark.parametrize("program", [p for p in PROGRAMS if p.startswith("conf_")])
 def test_conformance_programs_are_short(program):
     with open(os.path.join(PORT_TESTS, program + ".c"), encoding="utf-8") as f:

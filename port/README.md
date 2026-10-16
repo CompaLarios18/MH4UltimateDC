@@ -15,6 +15,7 @@ The PC port: [Azahar](https://github.com/azahar-emu/azahar)'s 3DS core (kernel, 
 | `windows/` | For the Windows package: `Build code library.bat` and `build-code-library.ps1`, which build the game's code library from the player's update with the tools the package carries in `mh4u-tools`, then install the update in Azahar with `mh4u_runner --install` |
 | `unix/` | For the Linux and macOS packages: `build-code-library.sh` (`Build code library.command` in the Mac package), the same build with a file dialog (zenity, kdialog or the Mac's own) |
 | `tests/svc_test.c` | Freestanding 3DS test program (threads, events, mutexes, atomics, VFP short vectors, Thumb) |
+| `tests/` | The freestanding 3DS test programs (no game code): `conf_*.c`, the kernel conformance programs, each with Azahar's expected output in `tests/expected/`; `svc.h`, the system-call wrappers and helpers they all share (`io_test.c` and `bench.c` include it too, so a change there must keep every program compiling); `build_svc_test.py`, which builds any program by name (`--program NAME`, `--list`); `io_test.c` (HID input and a known picture in the top framebuffer, for the runner's `--input` and `--shots`); `bench.c`; `svc_test.c` (above) |
 | `azahar/` | The Azahar commit this builds against, and a small patch: a hook to replace the CPU backend, a hook to build this directory inside Azahar's tree, hooks for the port's options (refresh rate, system-call observer, the top screen's width in every screen layout, the custom layout as a touch-screen overlay that follows the window's size and can show just a part of the touch screen), a switch for the headless runner to skip drawing (vertex shaders included), a fix to Azahar's local-wireless emulation (two consoles joining a network at the same moment got the same node id, and the game dropped one), a hook at the start of each run of the emulation loop (for net sync), a frontend's own drawing over the Vulkan renderer's screens (the app's menu; none unless one is registered), *Create Room* offering an unlisted room when there is no lobby server (Azahar has none of its own, and a public room then fails to start), a room's host rights only for the host's checked name or the host's own client on the same machine (a nickname alone is anyone's to type, and a lobby shows a dedicated room's name as its owner), LayeredFS reading `romfs_ext/`'s sub-folders (MH4U's archives are in `data/` and `eng/data/`), and two fixes to Azahar's software renderer that the game needs: a data race on physical-memory lookups between the renderer's worker threads and the emulation thread (it sent texture reads gigabytes off and crashed both CPU backends on the game's first textured frame), and textures outside of memory read as black instead of crashing |
 
 The runner contains no game code. The game's recompiled code is a separate shared library, generated and compiled on the user's machine from their own dump and loaded at run time.
@@ -40,6 +41,9 @@ cd ../MH4UltimateDC
 
 # Check the backend against Azahar's JIT with the test program (no game data needed)
 MH4U_RUNNER=../azahar/build/bin/Release/mh4u_runner python3 -m pytest tests/test_port.py
+
+# The same runner also runs the kernel conformance programs and the port's runner tests
+MH4U_RUNNER=../azahar/build/bin/Release/mh4u_runner python3 -m pytest tests/test_conformance.py tests/test_port.py
 ```
 
 ## Running the game's code
