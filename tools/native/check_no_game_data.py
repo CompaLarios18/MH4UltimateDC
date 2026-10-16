@@ -94,8 +94,12 @@ LISTING_PATTERNS = tuple(
         # hexdump -C / xxd: offset (4 to 8 digits), optional colon, 8+ byte groups or 4+ word groups
         rf"^\s*{_H}{{4,8}}:?(?:\s+{_H}{{2}}(?!{_H})){{8,}}",
         rf"^\s*{_H}{{4,8}}:?(?:\s+{_H}{{4}}(?!{_H})){{4,}}",
-        # objdump: address, colon, instruction word of 4 or 8 digits, mnemonic
-        rf"^\s*{_H}+:\s+{_H}{{4}}(?:{_H}{{4}})?\s+[A-Za-z][A-Za-z0-9._]*(?:\s|$)",
+        # disassembly (objdump, gdb, Ghidra, IDA): optional section label and 0x prefix, address,
+        # optional <symbol>, optional colon, one 4 or 8 digit word or 1 to 8 byte groups, mnemonic
+        # (a lone two-digit hex token is a byte group, not a mnemonic)
+        rf"^\s*(?:[A-Za-z_.][\w.]*:)?(?:0[xX])?{_H}+\s*(?:<[^>\n]*>)?:?"
+        rf"(?:\s+{_H}{{4}}(?:{_H}{{4}})?(?!{_H})|(?:\s+{_H}{{2}}(?!{_H})){{1,8}})"
+        rf"\s+(?!{_H}{{2}}(?:\s|$))[A-Za-z][A-Za-z0-9._]*(?:\s|$)",
         # C byte array: 16 or more 0xNN entries on one line
         rf"(?:0[xX]{_H}{{2}}[\s,]+){{15}}0[xX]{_H}{{2}}(?!{_H})",
     )
@@ -173,7 +177,7 @@ def count_listing_lines(data: bytes) -> int:
 
 def has_dense_line(data: bytes) -> bool:
     return any(
-        len(raw) >= DENSE_LINE_MIN and DENSE_LINE.fullmatch(raw.rstrip("\r"))
+        len(raw) >= DENSE_LINE_MIN and DENSE_LINE.search(raw)
         for raw in data.decode("utf-8", "replace").split("\n")
     )
 

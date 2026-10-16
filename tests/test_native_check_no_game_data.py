@@ -793,8 +793,38 @@ def test_generic_binary_invalid_utf8_without_nul(repo: Path) -> None:
     assert r.returncode == 1 and "binary-content" in r.stdout
 
 
+def _pad(n: int) -> bytes:
+    """n bytes of short text lines (one long run of letters would be a dense blob)."""
+    return (b"a" * 63 + b"\n") * (n // 64) + b"a" * (n % 64)
+
+
+def test_generic_binary_nul_window_edges(repo: Path) -> None:
+    put(repo, "in.txt", _pad(8191) + b"\x00\n")
+    git(repo, "add", "-f", "in.txt")
+    r = run(repo, "--staged")
+    assert r.returncode == 1 and "binary-content" in r.stdout
+    git(repo, "reset", "-q")
+    put(repo, "out.txt", _pad(8192) + b"\x00\n")
+    git(repo, "add", "-f", "out.txt")
+    assert run(repo, "--staged").returncode == 0
+
+
+def test_xxd_three_groups_not_refused_four_refused(repo: Path) -> None:
+    def lines(g: int) -> str:
+        return "".join(f"{i * 8:08x}: " + " ".join(f"{(i + k) % 256:02x}{k:02x}" for k in range(g)) + "\n"
+                       for i in range(51))
+    put(repo, "three.txt", lines(3))
+    git(repo, "add", "three.txt")
+    assert run(repo, "--staged").returncode == 0
+    git(repo, "reset", "-q")
+    put(repo, "four.txt", lines(4))
+    git(repo, "add", "four.txt")
+    r = run(repo, "--staged")
+    assert r.returncode == 1 and "listing" in r.stdout
+
+
 def test_generic_binary_nul_only_after_8k_and_valid_utf8_passes(repo: Path) -> None:
-    put(repo, "a.txt", b"a" * 8192 + b"\x00\n")
+    put(repo, "a.txt", _pad(8192) + b"\x00\n")
     put(repo, "b.txt", b"\xef\xbb\xbfhello \xc3\xa9\n")  # BOM + e-acute
     git(repo, "add", "-f", "a.txt", "b.txt")
     assert run(repo, "--staged").returncode == 0
@@ -853,7 +883,42 @@ def _carray(i: int) -> str:
     return "    " + ", ".join(f"0x{(i + k) % 256:02X}" for k in range(16)) + ","
 
 
+def _ghidra(i: int) -> str:
+    return f"        {0x8000 + i * 4:08x} 00 00 a0 e1     mov        r0,r0"
+
+
+def _ghidra_seg(i: int) -> str:
+    return f"ram:{0x8000 + i * 4:08x} 00 00 a0 e1 mov r0, r0"
+
+
+def _ida(i: int) -> str:
+    return f"ROM:{0x8000 + i * 4:08X} 00 00 A0 E1  MOV R0, R0"
+
+
+def _gdb(i: int) -> str:
+    return f"0x{0x8000 + i * 4:08x}: e1a00000 mov r0, r0"
+
+
+def _prefix_addr(i: int) -> str:
+    return f"{0x8000 + i * 4:08x} <foo+0x{i * 4:x}>:\te1a00000\tmov\tr0, r0"
+
+
+def _byte_groups(i: int) -> str:
+    return f"{0x8000 + i * 4:x}:\t00 00 a0 e1 \tnop"
+
+
+def _no_colon(i: int) -> str:
+    return f"{0x8000 + i * 4:08x}  e1a00000  mov r0, r0"
+
+
+def _xxd_four_groups(i: int) -> str:
+    return f"{i * 8:08x}: " + " ".join(f"{(i + k) % 256:02x}{(i + k + 1) % 256:02x}" for k in range(4))
+
+
 LISTINGS = {
+    "ghidra": _ghidra, "ghidra-seg": _ghidra_seg, "ida": _ida, "gdb": _gdb,
+    "objdump-prefix": _prefix_addr, "objdump-bytes": _byte_groups, "no-colon": _no_colon,
+    "xxd-4-groups": _xxd_four_groups,
     "hexdump-c": _hexdump_c, "xxd": _xxd, "xxd-short": _xxd_short,
     "objdump": _objdump, "objdump-thumb": _thumb, "c-array": _carray,
 }
@@ -921,6 +986,23 @@ def test_dense_blob(repo: Path, alphabet: str, ok: bool, mode: str) -> None:
     else:
         r = run(repo, "--range", commit_range(repo, {"blob.txt": text}))
     assert r.returncode == (0 if ok else 1), r.stdout + r.stderr
+    if not ok:
+        assert "dense-blob" in r.stdout
+
+
+@pytest.mark.parametrize("line,ok", [
+    ("QUJD" * 256 + " ", False),
+    ('"' + "QUJD" * 256 + '"', False),
+    ("data = " + "QUJD" * 256, False),
+    ('{"k": "' + "QUJD" * 256 + '"},', False),
+    ("QUJD" * 255 + "QUJ" + " more text here", True),
+    ("x = " + "QUJD" * 255 + "QUJ", True),
+])
+def test_dense_blob_embedded_in_a_line(repo: Path, line: str, ok: bool) -> None:
+    put(repo, "blob.h", "header\n" + line + "\n")
+    git(repo, "add", "blob.h")
+    r = run(repo, "--staged")
+    assert r.returncode == (0 if ok else 1), r.stdout
     if not ok:
         assert "dense-blob" in r.stdout
 
