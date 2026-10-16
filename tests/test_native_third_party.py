@@ -17,12 +17,13 @@ PINNED = os.path.join(ROOT, "port", "azahar", "COMMIT")
 HEADER_RE = re.compile(r"^(?://|#) Derived (?:from|in part from) Azahar")
 SOURCE_NAME_RE = re.compile(r"\b[A-Za-z0-9_]+\.(?:cpp|h)\b")
 
-pytestmark = pytest.mark.skipif(not (os.path.isdir(os.path.join(ROOT, ".git")) and os.path.isfile(TABLE)),
+# .git is a directory in a clone and a file in a linked worktree (the workers use worktrees)
+pytestmark = pytest.mark.skipif(not (os.path.exists(os.path.join(ROOT, ".git")) and os.path.isfile(TABLE)),
                                 reason="needs a git checkout with native/THIRD_PARTY.md")
 
 
 def headed_files() -> list[str]:
-    out = subprocess.run(["git", "grep", "-lE", "^(//|#) Derived (from|in part from) Azahar", "--",
+    out = subprocess.run(["git", "grep", "--untracked", "-lE", "^(//|#) Derived (from|in part from) Azahar", "--",
                           "native", "tools", "port"], cwd=ROOT, capture_output=True, text=True).stdout
     return sorted(out.split())
 
@@ -67,8 +68,8 @@ def test_every_source_named_in_a_header_is_named_in_its_row():
     for path in headed_files():
         sources = split_cells(rows[path])[1]                  # the "Azahar source" column
         for name in sorted(set(SOURCE_NAME_RE.findall(header_text(path)))):
-            if name not in sources:
-                missing.append((path, name))
+            if not re.search(r"(?<![A-Za-z0-9_])" + re.escape(name) + r"(?![A-Za-z0-9_])", sources):
+                missing.append((path, name))                  # a whole name: object.cpp is not wait_object.cpp
     # runner.cpp's header also quotes headers of its own includes; nothing else may be missing
     assert [m for m in missing if m[0] != "port/src/runner.cpp"] == []
 

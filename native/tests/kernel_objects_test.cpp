@@ -1,7 +1,8 @@
 // Derived from Azahar src/core/hle/kernel/handle_table.cpp, wait_object.cpp, event.cpp, mutex.cpp,
 // semaphore.cpp, timer.cpp, address_arbiter.cpp, shared_memory.cpp, resource_limit.cpp, thread.cpp,
 // errors.h, svc.cpp, kernel.cpp, kernel.h, process.cpp, vm_manager.cpp, memory.cpp and object.cpp
-// (all in src/core/hle/kernel/), and src/core/memory.cpp (an unmapped Read32 gives 0) at
+// (all in src/core/hle/kernel/; object.cpp for the waitable classification), and
+// src/core/memory.cpp (an unmapped Read32 gives 0) at
 // 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6
 // (GPL-3.0-or-later: svc.cpp, kernel.cpp and kernel.h say "GPLv3 or any later version"; every other
 // one of those files says "GPLv2 or any later version"): the expected values, worked out from
