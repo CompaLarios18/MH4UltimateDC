@@ -61,7 +61,7 @@ def test_parse_header_threads_and_calls():
 
 
 def test_old_format_still_parses():
-    t = parse(["1 21 pc=00107328 lr=00106790 0FFFFFE0 00000000 00000000 00000000 t=10"])
+    t = parse(["1 21 pc=00100500 lr=00100504 00300000 00000000 00000000 00000000 t=10"])
     (c,) = t.calls
     assert c.thread == "1" and c.in4 is None and c.out is None and c.ticks == 10
     assert t.header is None and not t.threads
@@ -213,10 +213,10 @@ def test_by_thread_keeps_each_threads_order():
 
 
 def test_matches_skips_what_a_trace_does_not_have():
-    old = parse(["1 21 pc=00107328 lr=00106790 0FFFFFE0 00000000 00000000 00000000 t=10"]).calls[0]
-    new = parse([call(1, "21", (0x0FFFFFE0, 0, 0, 0), pc=0x107328, lr=0x106790, out=(0, 1, 2, 3))]).calls[0]
+    old = parse(["1 21 pc=00100500 lr=00100504 00300000 00000000 00000000 00000000 t=10"]).calls[0]
+    new = parse([call(1, "21", (0x00300000, 0, 0, 0), pc=0x100500, lr=0x100504, out=(0, 1, 2, 3))]).calls[0]
     assert old.matches(new, with_outputs=True, with_in4=True)
-    other = parse([call(1, "21", (0x0FFFFFE0, 0, 0, 0), pc=0x107328, lr=0x106790, out=(0, 1, 2, 4))]).calls[0]
+    other = parse([call(1, "21", (0x00300000, 0, 0, 0), pc=0x100500, lr=0x100504, out=(0, 1, 2, 4))]).calls[0]
     assert new.matches(other) and not new.matches(other, with_outputs=True)
 
 
