@@ -21,6 +21,7 @@
 #include <mutex>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 #include <fmt/format.h>
@@ -1097,7 +1098,13 @@ std::string IpcWords(const std::vector<u32>& words) {
 /// file's path.
 std::string IpcSessionName(const IPCDebugger::RequestRecord& r) {
     if (!r.client_port.name.empty()) {
-        return r.client_port.name;
+        // Azahar's CreatePortPair names the client port "<service>_Client"; the service is the bare name.
+        constexpr std::string_view suffix = "_Client";
+        std::string name = r.client_port.name;
+        if (name.size() > suffix.size() && name.compare(name.size() - suffix.size(), suffix.size(), suffix) == 0) {
+            name.resize(name.size() - suffix.size());
+        }
+        return name;
     }
     const auto known = g_ipc_names.find(static_cast<u32>(r.client_session.id));
     if (known != g_ipc_names.end()) {
