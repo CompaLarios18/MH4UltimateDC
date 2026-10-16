@@ -30,7 +30,7 @@ A newer push to a `wp/` branch (or to a PR) cancels the older run of the same re
 
 ## Fetching the runner (cloud session)
 
-The newest runner that still has its artifact, for a branch (`<branch>` is `native` or a `wp/...` name):
+The newest runner that still has its artifact, for a branch (`<branch>` is `native` or a `wp/...` name). From a cloud session this needs the environment to allow the host GitHub serves artifacts from, `*.blob.core.windows.net` (the download fails with `Forbidden` otherwise; see `AGENTS.md` §7):
 
 ```bash
 id=$(gh api 'repos/CompaLarios18/MH4UltimateDC/actions/artifacts?name=mh4u-runner-linux&per_page=50' \
@@ -55,4 +55,4 @@ GitHub accepts a dispatch for a workflow that is not on the default branch once 
 
 ## Not covered
 
-Windows and macOS builds (`windows.yml`, `macos.yml` on `main`; dispatch them with `ref` set to any branch) and the game-data guard of N0-19.
+Windows and macOS builds (`windows.yml`, `macos.yml` on `main`; dispatch them with `ref` set to any branch). The game-data guard of N0-19 is its own workflow, `native-guard.yml`: it runs `tools/native/check_no_game_data.py --range` over the pushed or proposed commits, on the same triggers (pushes to `native` and `wp/**`, PRs into `native`). On a PR it runs the script from the PR's own checkout, so it is a check, not a barrier: review changes to `tools/native/check_no_game_data.py` and `.github/workflows/` like code that guards the repository.

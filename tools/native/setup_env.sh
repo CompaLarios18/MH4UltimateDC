@@ -22,7 +22,7 @@ Usage: tools/native/setup_env.sh [--no-sdl] [--with-azahar] [--azahar-only] [--h
 
 Prepares a cloud container for native-port work:
   apt packages, Python packages (requirements.txt), SDL3 3.4.18 built into ~/.local,
-  and ~/.mh4n_env (CC, CXX, PKG_CONFIG_PATH, CMAKE_PREFIX_PATH).
+  and ~/.mh4n_env (CC, CXX, PKG_CONFIG_PATH, CMAKE_PREFIX_PATH, LD_LIBRARY_PATH).
 
 Flags:
   --no-sdl        skip the SDL3 clone/build/install

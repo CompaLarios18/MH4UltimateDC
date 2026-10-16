@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [native]
 
+# nothing here writes to the repository or uses a secret
+permissions:
+  contents: read
+
 jobs:
   guard:
     runs-on: ubuntu-latest

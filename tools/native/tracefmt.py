@@ -6,7 +6,7 @@ differently, so a trace can only be compared after its names have been replaced 
 that follow from what the program did. This module reads the trace format and does that.
 
 Trace format (N0-04, docs/native/wp/N0.md); hex is 8 uppercase digits without 0x:
-    # svctrace v1 <ISO date> game=0x<title id> cpu=<jit|recomp|native> new3ds=<on|off>
+    # svctrace v1 <ISO date> game=0x<title id> cpu=<jit|recomp|interp|native> new3ds=<on|off>
     # thread <id> parent=<id> entry=<hex> arg=<hex> stack=<hex> prio=<n> core=<requested>/<resolved>
     <thread> <svc> pc=<hex> lr=<hex> <r0> <r1> <r2> <r3> t=<ticks> in4=<r4>,<r5>,<r6> out=<r0>,<r1>,<r2>,<r3>
 A call's line is written when the call completes for its thread (so a call that blocked comes
@@ -48,8 +48,9 @@ PSEUDO_HANDLES = frozenset({"FFFF8000", "FFFF8001"})  # the current thread, the 
 SVC_GET_SYSTEM_TICK = "28"
 SVC_CLOSE_HANDLE = "23"
 
-# SVC -> registers (r0..r3, as the call is made) that hold a handle. From Azahar's SVC table
-# and its wrapper's register assignment, which follows the hardware's.
+# SVC -> registers (r0..r3, as the call is made) that hold a handle. Facts about the SVC
+# interface (the numbers and the register assignment follow the hardware's), read from Azahar's
+# SVC table and its wrapper; no code is copied.
 INPUT_HANDLES: dict[str, tuple[int, ...]] = {
     "0B": (1,),   # GetThreadPriority
     "0C": (0,),   # SetThreadPriority

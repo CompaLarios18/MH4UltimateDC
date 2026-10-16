@@ -2,6 +2,7 @@
 // (GPL-2.0-or-later): the region size table and the algorithms of MemoryRegionInfo (Reset,
 // HeapAllocate, both LinearAllocate, RLinearAllocate, Free), on a std::map of free intervals
 // instead of boost::icl::interval_set.
+// Copyright 2014-2025 Citra Emulator Project / Azahar Emulator Project (the source file's notice)
 #include <algorithm>
 
 #include "mh4n/assert.h"

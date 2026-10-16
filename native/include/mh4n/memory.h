@@ -1,5 +1,10 @@
-// Derived from Azahar src/core/memory.h and src/core/hle/kernel/errors.h at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6
-// (GPL-2.0-or-later): the address-space constants and the result code values.
+// Derived from Azahar src/core/memory.h, src/core/hle/kernel/errors.h and
+// src/core/hle/kernel/vm_manager.h at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6
+// (GPL-2.0-or-later): the address-space constants, the result code values, and the permission
+// and state enumerations (VMAPermission, MemoryState).
+// Copyright 2014-2026 Citra Emulator Project / Azahar Emulator Project (memory.h)
+// Copyright 2017 Citra Emulator Project (errors.h)
+// Copyright 2015 Citra Emulator Project (vm_manager.h)
 // Guest memory (N1-02): the 3DS process's 4 GiB address space as one host reservation, the
 // mapping bookkeeping behind svcQueryMemory, the physical view the GPU and DSP use, and Azahar's
 // FCRAM allocation order.

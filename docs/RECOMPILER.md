@@ -39,7 +39,7 @@ One compiler flag chooses the runtime a code library is for. The generated C is 
 | Azahar backend | `-D RC_PAGED` (the default for `--code-library`) | page table, `rc_slow_read`/`rc_slow_write` | `if ((ctx->budget -= n) < 0) rc_budget(ctx)` | 0 |
 | Native runtime | `--native` (`-D RC_NATIVE`) | flat | `if (*rc_preempt_flag) rc_budget(ctx)` | 1 |
 | Native, deterministic | `--native --deterministic` (`-D RC_NATIVE -D RC_NATIVE_DETERMINISTIC`) | flat | as the Azahar backend: cycles charged to `ctx->budget` | 2 |
-| Test harness | none (`--harness`) | flat | as the Azahar backend | - |
+| Test harness | none (`--harness`); `--harness --native [--deterministic]` gives it the matching yield point of the native rows | flat | as the Azahar backend (or as the native row chosen) | - |
 
 - **Native, release (`RC_NATIVE`).** A yield point is one load and a branch: no cycle counting, `ctx->budget` is never touched. The host owns a `u32` flag and passes its address in `RHost.preempt_flag`; `rc_code_init` stores it in `rc_preempt_flag` (a `volatile u32 *`). When the host sets the flag, from any thread (a timer, the scheduler), the running guest code calls `rc_budget(ctx)` at its next block; `rc_budget` is the yield and the host clears the flag there. A host that passes `NULL` gets a flag that stays 0, so such a library never yields by itself.
 - **Native, deterministic (`RC_NATIVE_DETERMINISTIC`).** Flat memory with the cycle charging of the Azahar backend, so the guest's scheduling depends only on the instructions executed (same budget in `ctx->budget`, `rc_budget` when it runs out). The preemption flag is not looked at.

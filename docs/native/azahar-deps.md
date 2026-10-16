@@ -2,7 +2,7 @@
 
 Every place where the app, the launcher, the hooks, the runner and `server/` depend on Azahar, grouped by concern, each with its planned replacement. Written for N0-18 (hooks on a platform interface), N0-20 and N0-24 (`IRuntime`) and the N1 workers.
 
-Pinned Azahar commit: `5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6`. Counts below come from the grep in the next section, run on `def93e9`. No game data is involved: this is a map of our own sources.
+Pinned Azahar commit: `5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6`. Counts below come from the grep in the next section, run on `def93e9`; the section "Since the recount" lists what N0-04 and N0-07 added to the runner and the patch afterwards. No game data is involved: this is a map of our own sources.
 
 ## Replacement vocabulary
 
@@ -13,6 +13,19 @@ Pinned Azahar commit: `5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6`. Counts below c
 | **util** | `port/app/util/` (N0-20): the app's own logging and file helpers; the Azahar implementation forwards logging to Azahar's logger. |
 | **native module** | A module of the native runtime (`native/src/...`, N1+), named in the cell. |
 | **Azahar build only** | Stays in the Azahar executable (the oracle factory, D12). The native executable has no counterpart because N2b/N1 replace the whole piece. |
+
+## Since the recount
+
+N0-04 and N0-07 changed `port/src/runner.cpp` and `port/azahar/azahar.patch` after `def93e9`: `runner.cpp` now has 25 Azahar includes (it gained `core/loader/loader.h` and `core/memory.h`) and the patch is 1,525 lines. The rows below for `runner.cpp` and the patch are otherwise as counted; these APIs are new, with their replacement:
+
+| API | Used for | Replacement |
+|---|---|---|
+| `Kernel::SetSVCPostObserver` (the patch adds it in `svc.cpp`/`svc.h`) | the `out=` registers of each SVC call in the SVC trace (N0-04) | the native runtime writes the same trace format from its own SVC table (N1-07, N1-09); Azahar build only here |
+| `Kernel::SetThreadResumeObserver` (the patch adds it in `thread.cpp`/`thread.h`) | writes the `out=` of a call that blocked, when its thread next runs (N0-04) | the native scheduler (N1-06) |
+| `Settings::values.is_new_3ds` | `--new-3ds on\|off` (N0-04); reference runs are Old 3DS (D10) | the `new_3ds` setting goes away in the native port (D10) |
+| `Core::System::GetAppLoader()` and `Loader::AppLoader::ReadProgramId` | the title id in trace headers (N0-04, N0-07) | native loader (N1-03) |
+| `Memory::SetUnmappedObserver` (the patch adds it in `memory.cpp`/`memory.h`) | the unmapped-access report of `--count-unmapped` (N0-07) | guest memory reports bad accesses itself (N1-02) |
+| `Memory::MemorySystem::ReadBlock`, `IsValidVirtualAddress` | reading the observable values of `--state-trace` (N0-07) | guest memory helpers (N1-02) |
 
 ## How to recount
 

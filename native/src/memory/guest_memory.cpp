@@ -3,6 +3,8 @@
 // SplitVMA, MergeAdjacent, ChangeMemoryState, UnmapRange, ReprotectRange) and the address
 // translation of GPU::VirtualToPhysicalAddress (src/video_core/gpu.cpp). The host side (one flat
 // reservation, no page table) is ours.
+// Copyright 2015-2024 Citra Emulator Project / Azahar Emulator Project (vm_manager.cpp)
+// Copyright 2023-2026 Citra Emulator Project / Azahar Emulator Project (gpu.cpp)
 #include <algorithm>
 #include <cstring>
 

@@ -1,3 +1,9 @@
+// Derived from Azahar src/video_core/gpu.h and src/core/hle/service/gsp/gsp_gpu.h at
+// 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-2.0-or-later): the shape of the interface and the
+// FrameBufferInfo layout (members, order and names, as GSP shared memory holds them).
+// Copyright 2023-2026 Citra Emulator Project / Azahar Emulator Project (gpu.h)
+// Copyright 2014-2026 Citra Emulator Project / Azahar Emulator Project (gsp_gpu.h)
+//
 // The GPU contract (D20, N1-01). The runtime and every renderer meet here; it mirrors the entry
 // points of Azahar's VideoCore::GPU, which N0-05's captures record. Implemented by the null GPU
 // (N1-17), the capture player's GPUs (N2-02) and the renderer (N2).

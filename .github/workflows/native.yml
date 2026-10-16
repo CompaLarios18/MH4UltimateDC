@@ -13,6 +13,10 @@ on:
     branches: [native]
   workflow_dispatch:
 
+# nothing here writes to the repository or uses a secret
+permissions:
+  contents: read
+
 concurrency:
   # a newer push to a wp/ branch or a PR replaces the older run; runs on native are kept
   group: native-ci-${{ github.workflow }}-${{ github.ref }}

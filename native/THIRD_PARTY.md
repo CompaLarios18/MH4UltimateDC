@@ -18,10 +18,13 @@ the tests.
 
 Each copied file starts with
 `// Derived from Azahar <path> at <commit> (GPL-2.0-or-later or GPL-3.0-or-later, as the file says)`
-and gets a row here: `native/<file>` ← `<Azahar path>`, the pinned commit (`port/azahar/COMMIT`).
+followed by the source file's own `// Copyright …` line(s), and gets a row here:
+`native/<file>` ← `<Azahar path>`, the pinned commit (`port/azahar/COMMIT`), the licence and the
+copyright line as the source says.
 
-| File | Azahar source | Commit | Licence (as the source says) | What |
-|---|---|---|---|---|
-| `native/src/memory/fcram_regions.cpp` | `src/core/hle/kernel/memory.cpp` | `5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6` | GPL-2.0-or-later | the region size table and `MemoryRegionInfo` (`Reset`, `HeapAllocate`, both `LinearAllocate`, `RLinearAllocate`, `Free`), on a `std::map` of free intervals instead of `boost::icl` |
-| `native/src/memory/guest_memory.cpp` | `src/core/hle/kernel/vm_manager.cpp`, `src/video_core/gpu.cpp` | `5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6` | GPL-2.0-or-later | the splitting and merging of the block list (`CarveVMA`, `CarveVMARange`, `SplitVMA`, `MergeAdjacent`, `ChangeMemoryState`, `UnmapRange`, `ReprotectRange`) and `GPU::VirtualToPhysicalAddress` |
-| `native/include/mh4n/memory.h` | `src/core/memory.h`, `src/core/hle/kernel/errors.h` | `5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6` | GPL-2.0-or-later | the address-space constants and the result code values |
+| File | Azahar source | Commit | Licence (as the source says) | Copyright (as the source says) | What |
+|---|---|---|---|---|---|
+| `native/src/memory/fcram_regions.cpp` | `src/core/hle/kernel/memory.cpp` | `5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6` | GPL-2.0-or-later | 2014-2025 Citra Emulator Project / Azahar Emulator Project | the region size table and `MemoryRegionInfo` (`Reset`, `HeapAllocate`, both `LinearAllocate`, `RLinearAllocate`, `Free`), on a `std::map` of free intervals instead of `boost::icl` |
+| `native/src/memory/guest_memory.cpp` | `src/core/hle/kernel/vm_manager.cpp`, `src/video_core/gpu.cpp` | `5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6` | GPL-2.0-or-later | 2015-2024 and 2023-2026 Citra Emulator Project / Azahar Emulator Project | the splitting and merging of the block list (`CarveVMA`, `CarveVMARange`, `SplitVMA`, `MergeAdjacent`, `ChangeMemoryState`, `UnmapRange`, `ReprotectRange`) and `GPU::VirtualToPhysicalAddress` |
+| `native/include/mh4n/memory.h` | `src/core/memory.h`, `src/core/hle/kernel/errors.h`, `src/core/hle/kernel/vm_manager.h` | `5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6` | GPL-2.0-or-later | 2014-2026 Citra Emulator Project / Azahar Emulator Project; 2017 and 2015 Citra Emulator Project | the address-space constants, the result code values, and the permission and state enumerations (`VMAPermission`, `MemoryState`) |
+| `native/include/mh4n/gpu.h` | `src/video_core/gpu.h`, `src/core/hle/service/gsp/gsp_gpu.h` | `5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6` | GPL-2.0-or-later | 2023-2026 and 2014-2026 Citra Emulator Project / Azahar Emulator Project | the shape of the GPU interface (D20) and the `FrameBufferInfo` layout |
