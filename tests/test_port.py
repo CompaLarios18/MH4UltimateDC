@@ -662,6 +662,10 @@ def test_schedule_stop_options():
     assert _print_schedule("--frames", "300").stdout.splitlines()[1:] == ["stop frames=300"]
     both = _print_schedule("--frames", "300", "--ms", "2000").stdout.splitlines()
     assert both[1:] == ["stop ms=2000", "stop frames=300"]
+    # values of 1e6 ms or more (a 16 minute run) print exactly, not as 1.2e+06
+    assert _print_schedule("--ms", "1200000").stdout.splitlines()[1:] == ["stop ms=1200000"]
+    big = _print_schedule("--ms", "1234567.5", "--input", "1200000:A").stdout.splitlines()
+    assert big[1:] == ["stop ms=1234567.5", "press at=1200000ms hold=100ms kind=button button=A"]
 
 
 @pytest.mark.skipif(not os.environ.get("MH4U_RUNNER"), reason="port not built (set MH4U_RUNNER)")

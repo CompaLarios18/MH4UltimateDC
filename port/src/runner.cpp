@@ -228,7 +228,7 @@ void DoReplaces(Core::System& system) {
                 at += static_cast<std::ptrdiff_t>(r.from.size());
             }
         }
-        std::printf("replace at %.0f ms (frame %u): %u found\n", now, g_frame, found);
+        std::printf("replace at %.0f ms: %u found\n", now, found);
         std::fflush(stdout);
     }
 }

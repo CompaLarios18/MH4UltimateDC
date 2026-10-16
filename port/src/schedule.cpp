@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <fstream>
+#include <iomanip>
 #include <iterator>
 #include <sstream>
 
@@ -124,7 +125,7 @@ bool ParseHexBytes(const std::string& hex, std::vector<std::uint8_t>& out) {
 
 std::string Number(double value) {
     std::ostringstream out;
-    out << value; // default format: "3000", "1500.5"
+    out << std::setprecision(15) << value; // "3000", "1500.5", "1234567.5"
     return out.str();
 }
 
