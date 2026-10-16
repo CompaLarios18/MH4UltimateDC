@@ -12,10 +12,13 @@
 // next to it), never by running the code under test.
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <array>
 #include <cstring>
+#include <span>
 #include <vector>
 
+#include "gpu/gx/blitter.h"
 #include "gpu/gx/engine.h"
 #include "gpu_capture/capture_host.h"
 #include "mh4n/gpu.h"
@@ -62,6 +65,10 @@ struct Fixture {
         for (u8 b : bytes) {
             *p++ = b;
         }
+    }
+    void PutVec(u32 paddr, const std::vector<u8>& bytes) {
+        u8* p = Mem(paddr, static_cast<u32>(bytes.size()));
+        std::memcpy(p, bytes.data(), bytes.size());
     }
     void Put32(u32 paddr, u32 index, u32 value) {
         u8* p = Mem(paddr + index * 4, 4);
@@ -748,4 +755,654 @@ TEST_CASE("blitter helpers") {
     // (9, 2): coarse_x = 8 adds 8 * 8 = 64 texels, the texel inside the tile is column 1 of row 2,
     // index 9; (64 + 9) * 4 bytes.
     CHECK(MortonOffset(9, 2, 4) == 73 * 4);
+}
+
+// ================================================================================================
+// Display transfer: every pixel size (2 and 3 bytes), tiled, scaled, flipped and cropped
+// ================================================================================================
+
+namespace {
+
+// A pixel of a 2 or 3 byte format with the id `id`: bytes id, 255 - id (, 0x5A). Every 16-bit
+// value is a valid RGB565 / RGBA4 pixel and a same-format transfer is lossless (5 -> 8 -> 5, 6 ->
+// 8 -> 6 and 4 -> 8 -> 4 bits come back unchanged), so the bytes arrive as they were.
+std::vector<u8> PixelBytes(u32 bpp, u32 id) {
+    if (bpp == 2) {
+        return {static_cast<u8>(id), static_cast<u8>(255 - id)};
+    }
+    return {static_cast<u8>(id), static_cast<u8>(255 - id), 0x5A};
+}
+
+struct SizedFormat {
+    u32 format;
+    u32 bpp;
+};
+// RGB565 (2), RGBA4 (4), RGB8 (1).
+constexpr SizedFormat kSizedFormats[] = {{2, 2}, {4, 2}, {1, 3}};
+
+// Four texels of a 16x16 image that tell the terms of the offset apart, with the id y * 16 + x:
+// the byte offset in the tiled image is index * bpp, the index worked out here from the tile
+// (tx = x / 8, ty = y / 8; two tiles per row of tiles):
+//   index = ty * 128 (coarse_y * stride = 8 * 16 = 128 texels) + tx * 64 (coarse_x * 8) + kTile.
+struct Spot {
+    u32 x, y, id;
+    u32 index;
+};
+constexpr Spot kSpots[] = {
+    {8, 0, 8, 64},    // tx 1, ty 0: 0 + 64 + kTile[0][0] (0)
+    {0, 8, 128, 128}, // tx 0, ty 1: 128 + 0 + 0
+    {9, 10, 169, 201}, // tx 1, ty 1: 128 + 64 + kTile[2][1] (9)
+    {15, 15, 255, 255}, // tx 1, ty 1: 128 + 64 + kTile[7][7] (63)
+};
+
+} // namespace
+
+TEST_CASE("transfer: 2 and 3 byte formats, linear to tiled, 16x16") {
+    for (const SizedFormat& fmt : kSizedFormats) {
+        INFO("format " << fmt.format);
+        Fixture f;
+        for (u32 y = 0; y < 16; ++y) {
+            for (u32 x = 0; x < 16; ++x) {
+                f.PutVec(kRamPhys + (y * 16 + x) * fmt.bpp, PixelBytes(fmt.bpp, y * 16 + x));
+            }
+        }
+        f.Transfer(kRam, kRam + 0x10000, Size(16, 16), Size(16, 16),
+                   Flags(0, 1, 0, 0, fmt.format, fmt.format, 0));
+        // The four texels of kSpots, at their literal offsets index * bpp (bpp 2: 128, 256, 402,
+        // 510; bpp 3: 192, 384, 603, 765), hold the bytes of their id.
+        for (const Spot& spot : kSpots) {
+            const auto got = f.Read(kRamPhys + 0x10000 + spot.index * fmt.bpp, fmt.bpp);
+            INFO("spot " << spot.x << "," << spot.y);
+            CHECK(got == PixelBytes(fmt.bpp, spot.id));
+        }
+        CHECK(kSpots[2].index * fmt.bpp == (fmt.bpp == 2 ? 402u : 603u));
+        // All the texels: the tile (tx, ty) starts at (ty * 2 + tx) * 64 texels.
+        for (u32 y = 0; y < 16; ++y) {
+            for (u32 x = 0; x < 16; ++x) {
+                const u32 index = ((y / 8) * 2 + (x / 8)) * 64 + kTile[y % 8][x % 8];
+                INFO("texel " << x << "," << y);
+                REQUIRE(f.Read(kRamPhys + 0x10000 + index * fmt.bpp, fmt.bpp) ==
+                        PixelBytes(fmt.bpp, y * 16 + x));
+            }
+        }
+        // Nothing past the image.
+        CHECK(f.Read(kRamPhys + 0x10000 + 256 * fmt.bpp, 4) == std::vector<u8>(4, 0));
+    }
+}
+
+TEST_CASE("transfer: 2 and 3 byte formats, tiled to linear, 16x16") {
+    for (const SizedFormat& fmt : kSizedFormats) {
+        INFO("format " << fmt.format);
+        Fixture f;
+        // Only the four texels of kSpots are set, at index * bpp in the tiled input (same offsets
+        // as above); the linear output holds them at (y * 16 + x) * bpp: bpp 2: 16, 256, 338,
+        // 510; bpp 3: 24, 384, 507, 765 (ids 8, 128, 169, 255). Everything else decodes from
+        // zero bytes and encodes back to zero bytes.
+        std::vector<u8> expected(16 * 16 * fmt.bpp, 0);
+        for (const Spot& spot : kSpots) {
+            const auto bytes = PixelBytes(fmt.bpp, spot.id);
+            f.PutVec(kRamPhys + spot.index * fmt.bpp, bytes);
+            std::copy(bytes.begin(), bytes.end(),
+                      expected.begin() + (spot.y * 16 + spot.x) * fmt.bpp);
+        }
+        f.Transfer(kRam, kRam + 0x10000, Size(16, 16), Size(16, 16),
+                   Flags(0, 0, 0, 0, fmt.format, fmt.format, 0));
+        CHECK(f.Read(kRamPhys + 0x10000, 16 * 16 * fmt.bpp) == expected);
+        CHECK(expected[(9 + 10 * 16) * fmt.bpp] == 0xA9);
+    }
+}
+
+TEST_CASE("transfer: 3 byte input, scaling 1 and 2 on a tiled image") {
+    // RGB8 memory order is B, G, R. Texels by their index in the tile (3 bytes each):
+    //   0: B 10 G 20 R 30   1: B 20 G 41 R 51   2: B 08 G 09 R 0B   3: B 0D G 10 R 0F
+    //   4: B 64 G 00 R C8   5: B C9 G 03 R C9   (6, 7 and the rest are zero)
+    // The neighbour read is the next texel in MEMORY (+3 bytes), not the next in the image.
+    const std::vector<std::vector<u8>> texels = {{0x10, 0x20, 0x30}, {0x20, 0x41, 0x51},
+                                                 {0x08, 0x09, 0x0B}, {0x0D, 0x10, 0x0F},
+                                                 {0x64, 0x00, 0xC8}, {0xC9, 0x03, 0xC9}};
+    {
+        Fixture f;
+        for (u32 i = 0; i < texels.size(); ++i) {
+            f.PutVec(kRamPhys + i * 3, texels[i]);
+        }
+        f.FillBytes(kRamPhys + 0x1000, 0x100, 0xEE);
+        // Scaling 1: output 8x8 -> 4 wide, 8 tall, linear, RGB8; out(x, y) averages the texels at
+        // index(2x, y) and index + 1 (integer division):
+        //  out(0,0): idx 0 + 1: B (16+32)/2 = 24 = 18, G (32+65)/2 = 48 = 30, R (48+81)/2 = 64 = 40
+        //  out(1,0): input (2,0) is index 4 (+ 5): B (100+201)/2 = 150 = 96, G (0+3)/2 = 1,
+        //            R (200+201)/2 = 200 = C8
+        //  out(0,1): input (0,1) is index 2 (+ 3): B (8+13)/2 = 10 = 0A, G (9+16)/2 = 12 = 0C,
+        //            R (11+15)/2 = 13 = 0D
+        //  out(1,1): index 6 + 7: zero. The output pixel (x, y) is at (y * 4 + x) * 3.
+        f.Transfer(kRam, kRam + 0x1000, Size(8, 8), Size(8, 8), Flags(0, 0, 0, 0, 1, 1, 1));
+        std::vector<u8> expected(4 * 8 * 3, 0);
+        const u8 p00[] = {0x18, 0x30, 0x40};
+        const u8 p10[] = {0x96, 0x01, 0xC8};
+        const u8 p01[] = {0x0A, 0x0C, 0x0D};
+        std::copy(p00, p00 + 3, expected.begin() + 0);
+        std::copy(p10, p10 + 3, expected.begin() + 3);
+        std::copy(p01, p01 + 3, expected.begin() + 12);
+        CHECK(f.Read(kRamPhys + 0x1000, 96) == expected);
+        CHECK(f.Read(kRamPhys + 0x1000 + 96, 4) == std::vector<u8>(4, 0xEE));
+    }
+    {
+        Fixture f;
+        for (u32 i = 0; i < texels.size(); ++i) {
+            f.PutVec(kRamPhys + i * 3, texels[i]);
+        }
+        f.FillBytes(kRamPhys + 0x1000, 0x100, 0xEE);
+        // Scaling 2: output 8x8 -> 4x4; out(x, y) averages index(2x, 2y) .. + 3 as
+        // ((c + p1) + (p2 + p3)) / 4.
+        //  out(0,0): idx 0..3: B (16+32+8+13)/4 = 69/4 = 17 = 11, G (32+65+9+16)/4 = 122/4 = 30
+        //            = 1E, R (48+81+11+15)/4 = 155/4 = 38 = 26
+        //  out(1,0): idx 4..7: B (100+201+0+0)/4 = 75 = 4B, G (0+3)/4 = 0, R (200+201)/4 = 100 = 64
+        //  out(0,1): input (0,2) is index 8: zero.
+        f.Transfer(kRam, kRam + 0x1000, Size(8, 8), Size(8, 8), Flags(0, 0, 0, 0, 1, 1, 2));
+        std::vector<u8> expected(4 * 4 * 3, 0);
+        const u8 p00[] = {0x11, 0x1E, 0x26};
+        const u8 p10[] = {0x4B, 0x00, 0x64};
+        std::copy(p00, p00 + 3, expected.begin() + 0);
+        std::copy(p10, p10 + 3, expected.begin() + 3);
+        CHECK(f.Read(kRamPhys + 0x1000, 48) == expected);
+        CHECK(f.Read(kRamPhys + 0x1000 + 48, 4) == std::vector<u8>(4, 0xEE));
+    }
+}
+
+namespace {
+
+// RGB565 texels by their index in the tile, little-endian (the bytes in memory are low, high):
+//   0: F81F  1: 07E0  2: F800  3: F800  4: FFFF  5: 0841  6: 1234  (7 and the rest are zero)
+// Decoded to 8 bits (5 -> v << 3 | v >> 2, 6 -> v << 2 | v >> 4):
+//   0: (255, 0, 255)  1: (0, 255, 0)  2, 3: (255, 0, 0)  4: (255, 255, 255)  5: (8, 8, 8)
+//   6: r5 = 2 -> 16, g6 = 17 -> 68 | 1 = 69, b5 = 20 -> 160 | 5 = 165
+void Put565Tile(Fixture& f) {
+    const u16 values[] = {0xF81F, 0x07E0, 0xF800, 0xF800, 0xFFFF, 0x0841, 0x1234};
+    for (u32 i = 0; i < 7; ++i) {
+        f.PutVec(kRamPhys + i * 2, {static_cast<u8>(values[i] & 0xFF), static_cast<u8>(values[i] >> 8)});
+    }
+    f.FillBytes(kRamPhys + 0x1000, 0x100, 0xEE);
+}
+
+} // namespace
+
+TEST_CASE("transfer: 2 byte input, scaling 1 on a tiled image") {
+    Fixture f;
+    Put565Tile(f);
+    // Scaling 1, RGB565 -> RGB565, output 4 wide x 8 tall, 2 bytes per pixel (the output pixel
+    // (x, y) is at (y * 4 + x) * 2). Neighbour = next texel in memory, +2 bytes:
+    //  out(0,0): idx 0 + 1: r (255+0)/2 = 127, g (0+255)/2 = 127, b (255+0)/2 = 127 ->
+    //            r5 = 15, g6 = 31, b5 = 15: 15 << 11 | 31 << 5 | 15 = 0x7BEF -> EF 7B  (byte 0)
+    //  out(1,0): idx 4 + 5: r (255+8)/2 = 131, g 131, b 131 -> 16, 32, 16:
+    //            0x8000 | 0x0400 | 0x0010 = 0x8410 -> 10 84  (byte 2)
+    //  out(0,1): idx 2 + 3: r 255 -> 31: 0xF800 -> 00 F8  (byte 8)
+    //  out(1,1): idx 6 + 7 (zero): r 16/2 = 8, g 69/2 = 34, b 165/2 = 82 -> 1, 8, 10:
+    //            0x0800 | 0x0100 | 0x000A = 0x090A -> 0A 09  (byte 10)
+    // A neighbour 4 bytes on would read index 6 for out(1,0) and give another value.
+    f.Transfer(kRam, kRam + 0x1000, Size(8, 8), Size(8, 8), Flags(0, 0, 0, 0, 2, 2, 1));
+    std::vector<u8> expected(4 * 8 * 2, 0);
+    expected[0] = 0xEF; expected[1] = 0x7B;
+    expected[2] = 0x10; expected[3] = 0x84;
+    expected[8] = 0x00; expected[9] = 0xF8;
+    expected[10] = 0x0A; expected[11] = 0x09;
+    CHECK(f.Read(kRamPhys + 0x1000, 64) == expected);
+    CHECK(f.Read(kRamPhys + 0x1000 + 64, 4) == std::vector<u8>(4, 0xEE));
+}
+
+TEST_CASE("transfer: 2 byte input, scaling 2 on a tiled image") {
+    Fixture f;
+    Put565Tile(f);
+    // Scaling 2: output 4x4, 2 bytes per pixel.
+    //  out(0,0): idx 0..3: r (255+0+255+255)/4 = 765/4 = 191, g (0+255+0+0)/4 = 63,
+    //            b (255+0+0+0)/4 = 63 -> r5 = 23, g6 = 15, b5 = 7:
+    //            23 << 11 | 15 << 5 | 7 = 0xB800 | 0x01E0 | 0x0007 = 0xB9E7 -> E7 B9  (byte 0)
+    //  out(1,0): idx 4..7: r (255+8+16+0)/4 = 279/4 = 69, g (255+8+69+0)/4 = 332/4 = 83,
+    //            b (255+8+165+0)/4 = 428/4 = 107 -> 8, 20, 13:
+    //            0x4000 | 0x0280 | 0x000D = 0x428D -> 8D 42  (byte 2)
+    f.Transfer(kRam, kRam + 0x1000, Size(8, 8), Size(8, 8), Flags(0, 0, 0, 0, 2, 2, 2));
+    std::vector<u8> expected(4 * 4 * 2, 0);
+    expected[0] = 0xE7; expected[1] = 0xB9;
+    expected[2] = 0x8D; expected[3] = 0x42;
+    CHECK(f.Read(kRamPhys + 0x1000, 32) == expected);
+    CHECK(f.Read(kRamPhys + 0x1000 + 32, 4) == std::vector<u8>(4, 0xEE));
+
+    // The same with the vertical flip: output_y = output_height - y - 1 uses the SCALED height
+    // (4), so the first row of the output lands in row 3: out(0,0) at (3 * 4 + 0) * 2 = 24,
+    // out(1,0) at (3 * 4 + 1) * 2 = 26.
+    Fixture g;
+    Put565Tile(g);
+    g.Transfer(kRam, kRam + 0x1000, Size(8, 8), Size(8, 8), Flags(1, 0, 0, 0, 2, 2, 2));
+    std::vector<u8> flipped(4 * 4 * 2, 0);
+    flipped[24] = 0xE7; flipped[25] = 0xB9;
+    flipped[26] = 0x8D; flipped[27] = 0x42;
+    CHECK(g.Read(kRamPhys + 0x1000, 32) == flipped);
+    CHECK(g.Read(kRamPhys + 0x1000 + 32, 4) == std::vector<u8>(4, 0xEE));
+}
+
+TEST_CASE("transfer: flip with scaling 1 keeps the full height") {
+    Fixture f;
+    Put565Tile(f);
+    // Scaling 1 only halves the width: the height stays 8, out(x, y) goes to row 7 - y. The
+    // values of the scaling-1 test above: out(0,0) -> row 7: (7 * 4 + 0) * 2 = 56 (EF 7B);
+    // out(1,0) -> (7 * 4 + 1) * 2 = 58 (10 84); out(0,1) -> row 6: (6 * 4) * 2 = 48 (00 F8);
+    // out(1,1) -> (6 * 4 + 1) * 2 = 50 (0A 09).
+    f.Transfer(kRam, kRam + 0x1000, Size(8, 8), Size(8, 8), Flags(1, 0, 0, 0, 2, 2, 1));
+    std::vector<u8> expected(4 * 8 * 2, 0);
+    expected[56] = 0xEF; expected[57] = 0x7B;
+    expected[58] = 0x10; expected[59] = 0x84;
+    expected[48] = 0x00; expected[49] = 0xF8;
+    expected[50] = 0x0A; expected[51] = 0x09;
+    CHECK(f.Read(kRamPhys + 0x1000, 64) == expected);
+}
+
+TEST_CASE("transfer: crop, with and without the flip, for 2 and 3 byte outputs") {
+    // Input 4x2, output 2x2, linear to linear (dont_swizzle with input_linear). Texel (x, y) of
+    // the left half has id 0x10 * (y + 1) + x + 1: p00 0x11, p10 0x12, p01 0x21, p11 0x22; the
+    // right half (x = 2, 3) is FF. Bytes: id, id + 0xC0 (, 0x77).
+    struct Case {
+        u32 format, bpp;
+    };
+    for (const Case& c : {Case{2, 2}, Case{1, 3}}) {
+        INFO("format " << c.format);
+        const auto px = [&](u32 id) {
+            std::vector<u8> bytes = {static_cast<u8>(id), static_cast<u8>(id + 0xC0)};
+            if (c.bpp == 3) {
+                bytes.push_back(0x77);
+            }
+            return bytes;
+        };
+        const auto build = [&](Fixture& f) {
+            for (u32 y = 0; y < 2; ++y) {
+                for (u32 x = 0; x < 4; ++x) {
+                    const std::vector<u8> bytes =
+                        x < 2 ? px(0x10 * (y + 1) + x + 1) : std::vector<u8>(c.bpp, 0xFF);
+                    f.PutVec(kRamPhys + (x + y * 4) * c.bpp, bytes);
+                }
+            }
+            f.FillBytes(kRamPhys + 0x100, 0x40, 0xEE);
+        };
+        const auto place = [&](std::vector<u8>& image, u32 offset, u32 id) {
+            const auto bytes = px(id);
+            std::copy(bytes.begin(), bytes.end(), image.begin() + offset);
+        };
+        const u32 total = 6 * c.bpp;
+        {
+            // Crop alone: no skew; out(x, y) at (y * 2 + x) * bpp: p00 at 0, p10 at bpp, p01 at
+            // 2 bpp, p11 at 3 bpp.
+            Fixture f;
+            build(f);
+            f.Transfer(kRam, kRam + 0x100, Size(4, 2), Size(2, 2),
+                       Flags(0, 1, 1, 1, c.format, c.format, 0));
+            std::vector<u8> expected(total, 0xEE);
+            place(expected, 0, 0x11);
+            place(expected, 1 * c.bpp, 0x12);
+            place(expected, 2 * c.bpp, 0x21);
+            place(expected, 3 * c.bpp, 0x22);
+            CHECK(f.Read(kRamPhys + 0x100, total) == expected);
+        }
+        {
+            // Flip + crop: dst += (4 - 2) * (2 - 1) * bpp = 2 bpp bytes (4 for bpp 2, 6 for bpp 3);
+            // out(x, y) goes to ((1 - y) * 2 + x) * bpp + 2 bpp: p01 at 2 bpp (byte 4 / 6),
+            // p11 at 3 bpp (6 / 9), p00 at 4 bpp (8 / 12), p10 at 5 bpp (10 / 15).
+            Fixture f;
+            build(f);
+            f.Transfer(kRam, kRam + 0x100, Size(4, 2), Size(2, 2),
+                       Flags(1, 1, 1, 1, c.format, c.format, 0));
+            std::vector<u8> expected(total + 2 * c.bpp, 0xEE);
+            place(expected, 2 * c.bpp, 0x21);
+            place(expected, 3 * c.bpp, 0x22);
+            place(expected, 4 * c.bpp, 0x11);
+            place(expected, 5 * c.bpp, 0x12);
+            CHECK(f.Read(kRamPhys + 0x100, total + 2 * c.bpp) == expected);
+        }
+    }
+}
+
+TEST_CASE("transfer: the crop skew uses the output pixel size, not the input's") {
+    Fixture f;
+    // Input RGBA8 4x2 (bytes A, B, G, R), output RGB565 2x2. Skew = (4 - 2) * (2 - 1) * 2 = 4
+    // bytes (it would be 8 with the input's 4). Texels are grey v = 8 j: RGB565 = j << 11 |
+    // 2j << 5 | j: j = 1: 0x0841, 2: 0x1082, 3: 0x18C3, 4: 0x2104. p00 j 1, p10 j 2, p01 j 3,
+    // p11 j 4; the right half is FF.
+    const u8 grey[] = {8, 16, 24, 32};
+    for (u32 y = 0; y < 2; ++y) {
+        for (u32 x = 0; x < 4; ++x) {
+            const u8 v = x < 2 ? grey[y * 2 + x] : 0xFF;
+            f.PutVec(kRamPhys + (x + y * 4) * 4, {0xFF, v, v, v});
+        }
+    }
+    f.FillBytes(kRamPhys + 0x100, 0x40, 0xEE);
+    f.Transfer(kRam, kRam + 0x100, Size(4, 2), Size(2, 2), Flags(1, 1, 1, 1, 0, 2, 0));
+    // out(x, y) at ((1 - y) * 2 + x) * 2 + 4: p01 at 4 (C3 18), p11 at 6 (04 21), p00 at 8
+    // (41 08), p10 at 10 (82 10).
+    CHECK(f.Read(kRamPhys + 0x100, 14) ==
+          std::vector<u8>{0xEE, 0xEE, 0xEE, 0xEE, 0xC3, 0x18, 0x04, 0x21, 0x41, 0x08, 0x82, 0x10,
+                          0xEE, 0xEE});
+}
+
+TEST_CASE("transfer: format pairs beyond RGBA8") {
+    // Decoders: 5 bits v -> v << 3 | v >> 2, 6 -> v << 2 | v >> 4, 4 -> v << 4 | v. Encoders:
+    // 8 -> 5 is >> 3, 8 -> 6 >> 2, 8 -> 4 >> 4, 8 -> 1 >> 7.
+    struct Case {
+        u32 in_format, out_format;
+        std::vector<u8> input, output;
+    };
+    const Case cases[] = {
+        // RGB565 0xFC08 -> (255, 130, 66, 255) -> RGB5A1: 31 << 11 | 16 << 6 | 8 << 1 | 1 = 0xFC11
+        {2, 3, {0x08, 0xFC}, {0x11, 0xFC}},
+        // RGBA4 0xF84C -> (255, 136, 68, 204) -> RGB8 (B, G, R): 44 88 FF
+        {4, 1, {0x4C, 0xF8}, {0x44, 0x88, 0xFF}},
+        // RGB8 (B, G, R) 40 80 FF -> (255, 128, 64, 255) -> RGBA4: F, 8, 4, F = 0xF84F
+        {1, 4, {0x40, 0x80, 0xFF}, {0x4F, 0xF8}},
+        // RGB5A1 0xFC11 -> (255, 132, 66, 255) -> RGB565: 31 << 11 | 33 << 5 | 8 = 0xFC28
+        {3, 2, {0x11, 0xFC}, {0x28, 0xFC}},
+        // RGB565 0xFC08 -> (255, 130, 66, 255) -> RGBA4: F, 8, 4, F = 0xF84F
+        {2, 4, {0x08, 0xFC}, {0x4F, 0xF8}},
+        // RGBA4 0xF84C -> (255, 136, 68, 204) -> RGB5A1: 31 << 11 | 17 << 6 | 8 << 1 | 1 =
+        // 0xF800 | 0x0440 | 0x0010 | 1 = 0xFC51
+        {4, 3, {0x4C, 0xF8}, {0x51, 0xFC}},
+        // RGB5A1 0xFC10 (alpha bit clear) -> (255, 132, 66, 0) -> RGBA4: F, 8, 4, 0 = 0xF840
+        {3, 4, {0x10, 0xFC}, {0x40, 0xF8}},
+        // RGB8 (B, G, R) 40 80 FF -> (255, 128, 64) -> RGB565: 31 << 11 | 32 << 5 | 8 = 0xFC08
+        {1, 2, {0x40, 0x80, 0xFF}, {0x08, 0xFC}},
+        // RGBA4 0xF84C -> (255, 136, 68) -> RGB565: 31 << 11 | 34 << 5 | 8 = 0xFC48
+        {4, 2, {0x4C, 0xF8}, {0x48, 0xFC}},
+    };
+    for (const Case& c : cases) {
+        Fixture f;
+        u8* in = f.Mem(kRamPhys, 4);
+        std::memset(in, 0, 4);
+        std::memcpy(in, c.input.data(), c.input.size());
+        f.FillBytes(kRamPhys + 0x100, 8, 0xEE);
+        f.Transfer(kRam, kRam + 0x100, Size(1, 1), Size(1, 1),
+                   Flags(0, 1, 0, 1, c.in_format, c.out_format, 0));
+        std::vector<u8> expected = c.output;
+        expected.resize(5, 0xEE);
+        INFO("formats " << c.in_format << " -> " << c.out_format);
+        CHECK(f.Read(kRamPhys + 0x100, 5) == expected);
+    }
+}
+
+TEST_CASE("transfer: formats 5 to 7 are refused as input and as output") {
+    for (u32 bad = 5; bad <= 7; ++bad) {
+        for (int side = 0; side < 3; ++side) {
+            Fixture f;
+            f.FillBytes(kRamPhys + 0x100, 16, 0xEE);
+            f.PutBytes(kRamPhys, {1, 2, 3, 4});
+            const u32 in_format = side != 1 ? bad : 0;
+            const u32 out_format = side != 0 ? bad : 0;
+            INFO("input " << in_format << " output " << out_format);
+            f.Transfer(kRam, kRam + 0x100, Size(1, 1), Size(1, 1),
+                       Flags(0, 1, 0, 1, in_format, out_format, 0));
+            CHECK(f.Read(kRamPhys + 0x100, 16) == std::vector<u8>(16, 0xEE));
+            const Signals s = f.Signals();
+            REQUIRE(s.size() == 1);
+            CHECK(s[0].id == Interrupt::PPF);
+        }
+    }
+}
+
+// ================================================================================================
+// Ranges that leave the end of an area (the part of the code that Azahar does not have)
+// ================================================================================================
+
+namespace {
+
+constexpr u32 kVramEnd = 0x18600000;
+constexpr u32 kDspEnd = 0x1FF80000;
+
+FillRegs MakeFill(u32 start, u32 end, u32 value, u32 control) {
+    FillRegs regs;
+    regs.address_start = start >> 3;
+    regs.address_end = end >> 3;
+    regs.value = value;
+    regs.control = control;
+    return regs;
+}
+
+} // namespace
+
+TEST_CASE("bounds: Window") {
+    CaptureHost host;
+    // A size of 0 one past the end of an area is valid: an empty span that points at the end.
+    {
+        const std::span<u8> w = Window(host, kVramEnd, 0);
+        CHECK(w.empty());
+        CHECK(w.data() == host.PhysicalPointer(kVramEnd, 0));
+        CHECK(w.data() != nullptr);
+        CHECK(IsValidPhysicalAddress(host, kVramEnd));
+        CHECK_FALSE(IsValidPhysicalAddress(host, kVramEnd + 8));
+    }
+    // A range that starts at the end has an empty prefix (still non-null).
+    {
+        const std::span<u8> w = Window(host, kVramEnd, 16);
+        CHECK(w.empty());
+        CHECK(w.data() != nullptr);
+    }
+    // A start in no area (below, between, above, and at the top of the address space).
+    for (const u32 paddr : {0x08000000u, 0x18600008u, 0x1FF80008u, 0x30000008u, 0xFFFFFFF0u}) {
+        const std::span<u8> w = Window(host, paddr, 16);
+        INFO("paddr " << paddr);
+        CHECK(w.empty());
+        CHECK(w.data() == nullptr);
+        CHECK_FALSE(IsValidPhysicalAddress(host, paddr));
+    }
+    // Every prefix length from 1 to 40 bytes before the end of VRAM and of DSP RAM, for a request
+    // that is longer: the binary search finds exactly the bytes that are left.
+    for (const u32 end : {kVramEnd, kDspEnd}) {
+        for (u32 left = 1; left <= 40; ++left) {
+            const std::span<u8> w = Window(host, end - left, 64);
+            INFO("end " << end << " left " << left);
+            REQUIRE(w.size() == left);
+            CHECK(w.data() == host.PhysicalPointer(end - left, 0));
+        }
+    }
+    // A request that fits is returned whole, and the exact size of the area too.
+    CHECK(Window(host, 0x185FFFF0, 16).size() == 16);
+    CHECK(Window(host, 0x18000000, 0x600000).size() == 0x600000);
+    CHECK(Window(host, 0x18000000, 0x600001).size() == 0x600000);
+    CHECK(Window(host, 0x18000000, 0x10000000).size() == 0x600000);
+    // The areas do not join: a range from DSP RAM into FCRAM is cut at the end of DSP RAM.
+    CHECK(Window(host, 0x1FF7FFF8, 0x80010).size() == 8);
+    // A size that would wrap the 32-bit address space is cut to what is left of it.
+    CHECK(Window(host, 0x2FFFFFF0, 0xFFFFFFFFull).size() == 16);
+}
+
+TEST_CASE("bounds: fill that ends past the end of VRAM writes up to the end") {
+    Fixture f;
+    // Start 0x185FFFF0 (16 bytes before the end of VRAM), end 0x20000000 (the start of FCRAM,
+    // which is a valid address, so the fill is not refused). 32-bit units of 0x11223344: the
+    // window is the 16 bytes up to 0x18600000, four units; the other 0x79FFxxxx are dropped.
+    f.FillBytes(0x185FFFE0, 0x20, 0xEE);
+    f.FillBytes(0x20000000, 16, 0xEE);
+    MemoryFill(f.host, MakeFill(0x185FFFF0, 0x20000000, 0x11223344, 0x201));
+    std::vector<u8> expected(16, 0xEE);
+    for (u32 i = 0; i < 4; ++i) {
+        expected.insert(expected.end(), {0x44, 0x33, 0x22, 0x11});
+    }
+    CHECK(f.Read(0x185FFFE0, 0x20) == expected);
+    CHECK(f.Read(0x20000000, 16) == std::vector<u8>(16, 0xEE)); // not written
+}
+
+TEST_CASE("bounds: 16-bit fill that runs out of an area") {
+    Fixture f;
+    // Start 0x1FF7FFF8 (8 bytes before the end of DSP RAM) to 0x20000008: 0x80010 bytes. The
+    // units of 2 bytes at offsets 0, 2, 4, 6 are inside (0xBEEF -> EF BE), the rest are dropped.
+    f.FillBytes(0x1FF7FFF0, 8, 0xEE);
+    f.FillBytes(0x20000000, 16, 0xEE);
+    MemoryFill(f.host, MakeFill(0x1FF7FFF8, 0x20000008, 0xBEEF, 0x001));
+    CHECK(f.Read(0x1FF7FFF0, 16) ==
+          std::vector<u8>{0xEE, 0xEE, 0xEE, 0xEE, 0xEE, 0xEE, 0xEE, 0xEE, 0xEF, 0xBE, 0xEF, 0xBE,
+                          0xEF, 0xBE, 0xEF, 0xBE});
+    CHECK(f.Read(0x20000000, 16) == std::vector<u8>(16, 0xEE));
+}
+
+TEST_CASE("bounds: 24-bit fill whose last unit straddles the end of an area") {
+    Fixture f;
+    // Same range (8 bytes before the end of DSP RAM). Units of 3 bytes start at the
+    // offsets 0, 3, 6, 9, ...: the unit at 6 covers the bytes 6, 7 (inside) and 8 (outside).
+    // 0x00CCBBAA is written as AA BB CC; the units from offset 9 on are outside. The straddling
+    // unit leaves its two inside bytes AA BB and drops CC.
+    f.FillBytes(0x1FF7FFF0, 8, 0xEE);
+    f.FillBytes(0x20000000, 16, 0xEE);
+    MemoryFill(f.host, MakeFill(0x1FF7FFF8, 0x20000008, 0x00CCBBAA, 0x101));
+    CHECK(f.Read(0x1FF7FFF0, 16) ==
+          std::vector<u8>{0xEE, 0xEE, 0xEE, 0xEE, 0xEE, 0xEE, 0xEE, 0xEE, 0xAA, 0xBB, 0xCC, 0xAA,
+                          0xBB, 0xCC, 0xAA, 0xBB});
+    CHECK(f.Read(0x20000000, 16) == std::vector<u8>(16, 0xEE));
+}
+
+TEST_CASE("bounds: a fill with its end outside memory, or its start, is refused") {
+    Fixture f;
+    f.FillBytes(0x185FFFF0, 16, 0xEE);
+    // End 0x18600008 is past the end of VRAM and in no area: refused, nothing is written.
+    MemoryFill(f.host, MakeFill(0x185FFFF0, 0x18600008, 0x11223344, 0x201));
+    CHECK(f.Read(0x185FFFF0, 16) == std::vector<u8>(16, 0xEE));
+    // End exactly at the end of VRAM: valid, the 16 bytes are filled.
+    MemoryFill(f.host, MakeFill(0x185FFFF0, kVramEnd, 0x11223344, 0x201));
+    CHECK(f.Get32(0x185FFFF0, 3) == 0x11223344);
+    CHECK(f.Get32(0x185FFFF0, 0) == 0x11223344);
+}
+
+TEST_CASE("bounds: DMA whose size runs past the end of an area copies the part inside") {
+    // Source 16 bytes before the end of VRAM, size 0x20: the first 16 bytes are copied, the DMA
+    // still signals (size 0x20 at 380 MiB/s is under 1 ns).
+    {
+        Fixture f;
+        for (u32 i = 0; i < 16; ++i) {
+            f.PutBytes(0x185FFFF0 + i, {static_cast<u8>(0x30 + i)});
+        }
+        f.FillBytes(kRamPhys, 0x30, 0xEE);
+        f.Run({0, kVram + 0x5FFFF0, kRam, 0x20});
+        std::vector<u8> expected(0x30, 0xEE);
+        for (u32 i = 0; i < 16; ++i) {
+            expected[i] = static_cast<u8>(0x30 + i);
+        }
+        CHECK(f.Read(kRamPhys, 0x30) == expected);
+        const Signals s = f.Signals();
+        REQUIRE(s.size() == 1);
+        CHECK(s[0].id == Interrupt::DMA);
+    }
+    // Destination 16 bytes before the end of VRAM: the first 16 bytes of the source arrive.
+    {
+        Fixture f;
+        for (u32 i = 0; i < 0x20; ++i) {
+            f.PutBytes(kRamPhys + i, {static_cast<u8>(0x50 + i)});
+        }
+        f.FillBytes(0x185FFFE0, 0x20, 0xEE);
+        f.Run({0, kRam, kVram + 0x5FFFF0, 0x20});
+        std::vector<u8> expected(0x20, 0xEE);
+        for (u32 i = 0; i < 16; ++i) {
+            expected[16 + i] = static_cast<u8>(0x50 + i);
+        }
+        CHECK(f.Read(0x185FFFE0, 0x20) == expected);
+        const Signals s = f.Signals();
+        REQUIRE(s.size() == 1);
+        CHECK(s[0].id == Interrupt::DMA);
+    }
+}
+
+TEST_CASE("bounds: texture copy whose size runs past the end of an area") {
+    const auto pattern = [](Fixture& f, u32 paddr, u32 count) {
+        for (u32 i = 0; i < count; ++i) {
+            f.PutBytes(paddr + i, {static_cast<u8>(0x30 + i)});
+        }
+    };
+    // Source 0x18 bytes before the end of VRAM, size 0x40, contiguous: the 0x18 bytes inside are
+    // copied in the one chunk, the rest of the destination is not touched.
+    {
+        Fixture f;
+        pattern(f, 0x185FFFE8, 0x18);
+        f.FillBytes(kRamPhys, 0x50, 0xEE);
+        f.Copy(kVram + 0x5FFFE8, kRam, 0x40, 0, 0);
+        std::vector<u8> expected(0x50, 0xEE);
+        for (u32 i = 0; i < 0x18; ++i) {
+            expected[i] = static_cast<u8>(0x30 + i);
+        }
+        CHECK(f.Read(kRamPhys, 0x50) == expected);
+        const Signals s = f.Signals();
+        REQUIRE(s.size() == 1);
+        CHECK(s[0].id == Interrupt::PPF);
+    }
+    // The same source with an input gap (width 1 unit, gap 1 unit): chunk 0 is the 16 bytes at
+    // offset 0 (inside), chunk 1 starts at source offset 32 (outside the 0x18 bytes): skipped, as
+    // are chunks 2 and 3.
+    {
+        Fixture f;
+        pattern(f, 0x185FFFE8, 0x18);
+        f.FillBytes(kRamPhys, 0x50, 0xEE);
+        f.Copy(kVram + 0x5FFFE8, kRam, 0x40, 0x00010001, 0);
+        std::vector<u8> expected(0x50, 0xEE);
+        for (u32 i = 0; i < 16; ++i) {
+            expected[i] = static_cast<u8>(0x30 + i);
+        }
+        CHECK(f.Read(kRamPhys, 0x50) == expected);
+        CHECK(f.Signals().size() == 1);
+    }
+    // Destination 0x18 bytes before the end of VRAM: only 0x18 bytes arrive.
+    {
+        Fixture f;
+        pattern(f, kRamPhys, 0x40);
+        f.FillBytes(0x185FFFD0, 0x30, 0xEE);
+        f.Copy(kRam, kVram + 0x5FFFE8, 0x40, 0, 0);
+        std::vector<u8> expected(0x30, 0xEE);
+        for (u32 i = 0; i < 0x18; ++i) {
+            expected[0x18 + i] = static_cast<u8>(0x30 + i);
+        }
+        CHECK(f.Read(0x185FFFD0, 0x30) == expected);
+        CHECK(f.Signals().size() == 1);
+    }
+}
+
+TEST_CASE("bounds: display transfers that run off the end of VRAM") {
+    // Output: RGBA8 4x2 linear to linear into the last 16 bytes of VRAM. The image needs 32
+    // bytes; row 0 (words 0..3) fits, row 1 is dropped.
+    {
+        Fixture f;
+        for (u32 i = 0; i < 8; ++i) {
+            f.Put32(kRamPhys, i, 0x01010101 * (i + 1));
+        }
+        f.FillBytes(0x185FFFE0, 0x20, 0xEE);
+        f.Transfer(kRam, kVram + 0x5FFFF0, Size(4, 2), Size(4, 2), Flags(0, 1, 0, 1, 0, 0, 0));
+        std::vector<u8> expected(16, 0xEE);
+        for (u32 i = 0; i < 4; ++i) {
+            expected.insert(expected.end(), 4, static_cast<u8>(i + 1));
+        }
+        CHECK(f.Read(0x185FFFE0, 0x20) == expected);
+        const Signals s = f.Signals();
+        REQUIRE(s.size() == 1);
+        CHECK(s[0].id == Interrupt::PPF);
+    }
+    // Output: RGBA8 6x1 to RGB8 in the last 8 bytes of VRAM. The texel i is (R, G, B) =
+    // (0x10 + i, 0x20 + i, 0x30 + i) = memory bytes FF, 30+i, 20+i, 10+i; the RGB8 pixel is
+    // stored B, G, R. Pixel 0 is bytes 0..2, pixel 1 is 3..5, pixel 2 is 6..8: 6 and 7 inside,
+    // 8 dropped; pixels 3 to 5 are outside. The last 8 bytes: 30 20 10 31 21 11 32 22.
+    {
+        Fixture f;
+        for (u32 i = 0; i < 6; ++i) {
+            f.PutVec(kRamPhys + i * 4,
+                     {0xFF, static_cast<u8>(0x30 + i), static_cast<u8>(0x20 + i),
+                      static_cast<u8>(0x10 + i)});
+        }
+        f.FillBytes(0x185FFFE8, 0x18, 0xEE);
+        f.Transfer(kRam, kVram + 0x5FFFF8, Size(6, 1), Size(6, 1), Flags(0, 1, 0, 1, 0, 1, 0));
+        std::vector<u8> expected(16, 0xEE);
+        expected.insert(expected.end(), {0x30, 0x20, 0x10, 0x31, 0x21, 0x11, 0x32, 0x22});
+        CHECK(f.Read(0x185FFFE8, 0x18) == expected);
+        CHECK(f.Signals().size() == 1);
+    }
+    // Input: RGB8 3x1 whose last pixel straddles the end of VRAM (8 bytes before it): pixel 0 is
+    // bytes 01 02 03 (B, G, R), pixel 1 is 04 05 06, pixel 2 is bytes 6, 7 = 07 08 and a byte
+    // past the end, read as 0: B 07, G 08, R 00. RGBA8 output memory is A, B, G, R:
+    // FF 01 02 03 / FF 04 05 06 / FF 07 08 00.
+    {
+        Fixture f;
+        f.PutBytes(0x185FFFF8, {1, 2, 3, 4, 5, 6, 7, 8});
+        f.FillBytes(kRamPhys + 0x100, 16, 0xEE);
+        f.Transfer(kVram + 0x5FFFF8, kRam + 0x100, Size(3, 1), Size(3, 1),
+                   Flags(0, 1, 0, 1, 1, 0, 0));
+        CHECK(f.Read(kRamPhys + 0x100, 13) ==
+              std::vector<u8>{0xFF, 0x01, 0x02, 0x03, 0xFF, 0x04, 0x05, 0x06, 0xFF, 0x07, 0x08,
+                              0x00, 0xEE});
+        CHECK(f.Signals().size() == 1);
+    }
 }
