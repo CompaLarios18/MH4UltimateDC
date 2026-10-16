@@ -1,0 +1,39 @@
+name: native-guard
+
+on:
+  push:
+    branches: [native, "wp/**"]
+  pull_request:
+    branches: [native]
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Refuse game data in the proposed commits
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          PUSH_AFTER: ${{ github.sha }}
+        run: |
+          set -eu
+          if [ "$EVENT" = "pull_request" ]; then
+            range="$PR_BASE...$PR_HEAD"
+          elif echo "$PUSH_BEFORE" | grep -Eq '^0+$' || ! git cat-file -e "$PUSH_BEFORE^{commit}" 2>/dev/null; then
+            # New branch, or a force push that dropped the old tip: compare with native.
+            git fetch --no-tags origin native:refs/remotes/origin/native || true
+            base=$(git merge-base origin/native "$PUSH_AFTER" 2>/dev/null || git rev-list --max-parents=0 "$PUSH_AFTER" | tail -n1)
+            range="$base..$PUSH_AFTER"
+          else
+            range="$PUSH_BEFORE..$PUSH_AFTER"
+          fi
+          echo "checking $range"
+          python3 tools/native/check_no_game_data.py --range "$range"

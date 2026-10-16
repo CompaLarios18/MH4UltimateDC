@@ -1,0 +1,4 @@
+# Large files allowed past the 2 MB rule of tools/native/check_no_game_data.py.
+# Only vendored third-party files (for example open-source system archives) belong here.
+# One entry per line: <sha256 of the file> <repo-relative path>
+# An entry matches only while both the path and the hash match.
