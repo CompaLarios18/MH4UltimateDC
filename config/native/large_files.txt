@@ -1,4 +1,8 @@
-# Large files allowed past the 2 MB rule of tools/native/check_no_game_data.py.
-# Only vendored third-party files (for example open-source system archives) belong here.
+# Files allowed past the size rule (2 MB) and the image/ELF/archive rules (extensions and magic
+# bytes) of tools/native/check_no_game_data.py. Capture magics, the build/, baserom/ and export/
+# directories, the ci.yml patterns, the .ppm/.bin/.wav extensions and the trace rules are never
+# exempted.
+# Only files that are ours or vendored third-party files (an application icon, open-source system
+# archives) belong here, never anything from a game run.
 # One entry per line: <sha256 of the file> <repo-relative path>
 # An entry matches only while both the path and the hash match.
