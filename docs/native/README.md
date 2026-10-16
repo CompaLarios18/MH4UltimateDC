@@ -8,6 +8,7 @@ A native PC runtime for Monster Hunter 4 Ultimate: the game's recompiled code ru
 | [`DECISIONS.md`](DECISIONS.md) | Every decision, decided, recommended or open, with who settles it |
 | [`STATUS.md`](STATUS.md) | The live state of every work package |
 | [`AGENTS.md`](AGENTS.md) | How the work runs: roles, models, branches, staging the game files, reports |
+| [`ENV.md`](ENV.md), [`CI.md`](CI.md), [`mgpu-format.md`](mgpu-format.md), [`capture-player.md`](capture-player.md), [`azahar-deps.md`](azahar-deps.md) | Written by the packages: the cloud environment, the CI, the GPU capture format, the capture player, the inventory of what depends on Azahar |
 | [`wp/`](wp/) | The work packages: [`N0`](wp/N0.md), [`N1`](wp/N1.md), [`N2a`](wp/N2a.md) in full; [`LATER`](wp/LATER.md) outlined |
 
 ## Starting a session (the maintainer)

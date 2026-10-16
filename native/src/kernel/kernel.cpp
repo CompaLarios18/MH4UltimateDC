@@ -1,6 +1,7 @@
 // Derived from Azahar src/core/hle/kernel/kernel.cpp, process.cpp, resource_limit.cpp, mutex.cpp,
 // semaphore.cpp and shared_memory.cpp at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6
-// (GPL-2.0-or-later): the object factories, the process numbering and the APPLICATION resource
+// (GPL-3.0-or-later: kernel.cpp says so, the other sources say GPL-2.0-or-later): the object
+// factories, the process numbering and the APPLICATION resource
 // limit values.
 // Copyright 2014-2026 Citra Emulator Project / Azahar Emulator Project (kernel.cpp)
 // Copyright 2015-2026 Citra Emulator Project / Azahar Emulator Project (process.cpp,

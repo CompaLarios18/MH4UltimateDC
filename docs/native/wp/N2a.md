@@ -81,6 +81,10 @@ Azahar draws no gas at all (its shader generator logs "Unimplemented gas mode", 
   - ctest passes with synthetic captures (made by a C++ writer in the test): `replay` passes; `none` fails at the expected record, and passes with `--judge none`; a 16×16 block uniformly off by 10/255 fails the block rule while PSNR stays above 40 dB; one fully wrong pixel passes both; the `INIT` state reaches the `Gpu` before the first command; each `FLUSH` kind reaches the right call; PDC records become `VBlank` calls; a GPU, a wrapper, a check, an option and a counter registered from another directory are found and shown;
   - (with the dump) `--gpu replay` passes on G1's capture, and the timing table prints.
 - **Traps:** -
+- **As built (N2-02), for the WPs that plug into the player** (the contracts are `native/include/mh4n/gpu_debug.h` and `native/src/gpu_capture/check.h`; `docs/native/capture-player.md` describes the tool):
+  - Besides the four members listed above, `GpuDebug` has `WriteBackColorBuffers` and `TakeFrameGpuTimeNs`. A wrapper (N2-22) must implement `GpuDebug` and forward it to the `Gpu` it wraps. A WP that adds a GPU, wrapper or check lists `mh4n_gpu_capture` in its `DEPENDS` and includes `gpu_capture/check.h`; nothing in the player is edited to register one.
+  - N2-04's `--check registers` needs only `GpuDebug::TakeRegisterWrites` (an empty optional means "not decoded").
+  - Open assumptions, to confirm on the first real capture (dump check): command-list judging on RGB colour buffers, Azahar's off-by-one screen column, the frame and PPM numbering, and the timing columns.
 - **Out of scope:** any real GPU work (N2-03 onwards).
 
 ### N2-03 · GX engine

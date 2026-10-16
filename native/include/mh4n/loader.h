@@ -1,7 +1,8 @@
 // Derived from Azahar src/core/file_sys/ncch_container.h, src/core/loader/ncch.cpp,
 // src/core/loader/elf.cpp, src/core/hle/kernel/process.cpp, src/core/hle/kernel/config_mem.h,
 // src/core/hle/kernel/shared_page.h and src/core/hle/kernel/memory.cpp at
-// 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-2.0-or-later): the exheader capability layouts,
+// 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-3.0-or-later: ncch_container.h says so, the
+// other sources say GPL-2.0-or-later): the exheader capability layouts,
 // ParseKernelCaps, the segment and stack mapping of Process::Run, the ELF defaults, and the
 // field layouts and initial values of the configuration memory and the shared page.
 // Copyright 2014-2026 Citra Emulator Project / Azahar Emulator Project (ncch_container.h, ncch.cpp, elf.cpp)

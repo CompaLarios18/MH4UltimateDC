@@ -127,7 +127,7 @@ The internal register writes the command processor made while executing the prec
 
 ### 3.7 `SWAP` (8)
 
-Eight words: `u32` screen (0 top, 1 bottom), then the seven words of `Service::GSP::FrameBufferInfo` in order: `active_fb`, `address_left`, `address_right`, `stride`, `format`, `shown_fb`, `unknown`. Addresses are as the game wrote them (physical).
+Eight words: `u32` screen (0 top, 1 bottom), then the seven words of `Service::GSP::FrameBufferInfo` in order: `active_fb`, `address_left`, `address_right`, `stride`, `format`, `shown_fb`, `unknown`. Addresses are as the game wrote them, physical or virtual: `GPU::SetBufferSwap` runs them through `VirtualToPhysicalAddress`, which converts an address inside the VRAM or linear-heap windows and passes any other address through unchanged, and a reader does the same.
 
 ### 3.8 `FILL` (9)
 
