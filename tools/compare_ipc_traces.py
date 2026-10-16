@@ -37,15 +37,22 @@ This tool prints only session names, headers, result codes, descriptor indices, 
 counts; with --strict it names the words that differ, never their values.
 
 usage: compare_ipc_traces.py REF CAND [--strict] [--ignore FILE]... [--prefix] [--context N]
-  --strict     also compare every word of every command (with handles as names)
+  --strict     also compare every word of every command (with handles as names). Not
+               reproducible on the oracle itself: a service that pushes a sub-word reply value can
+               leave stale bytes above it in Azahar (seen: cfg:u, one run in about eight), so two
+               Azahar runs of the same program can differ in a word. Compare two runs of the same
+               CPU first and treat the words that differ there as noise.
   --ignore F   drop the commands listed in F from both traces (repeatable). Each line is
                `<service> <header>  # reason`: the session name (`fs:USER`; `fs:USER/file` for all
                the file sessions of fs:USER), the request's header word in hex. `#` starts a comment.
-               config/native/ipc_time_dependent.txt lists the commands whose replies depend on time.
+               config/native/ipc_time_dependent.txt will list the commands whose replies depend on
+               time (N1-11 creates it).
   --prefix     a thread may stop earlier in the candidate
   --context N  requests to show before the first difference (default 3)
 Exit status 0 when every thread matches (up to the candidate's end with --prefix), 1 when
-something differs, 2 for unreadable input.
+something differs, 2 for unreadable input: a file that is missing, has no `# ipctrace` header (an
+SVC trace, an empty file, a runner that ignored --trace-ipc) or holds no request line is refused,
+so a wrong path or a missing hook never reads as "all threads match".
 """
 from __future__ import annotations
 
@@ -144,8 +151,17 @@ def describe(call: IpcCall) -> str:
             f"desc={tracefmt.join_items(call.desc)} outdesc={tracefmt.join_items(call.outdesc)}")
 
 
+class TraceError(Exception):
+    """The file is not a usable IPC trace."""
+
+
 def load(path: str, ignored: set[tuple[str, int]]) -> dict[str, list[IpcCall]]:
-    trace = tracefmt.normalise_ipc(tracefmt.parse_ipc(path))
+    raw = tracefmt.parse_ipc(path)
+    if raw.header is None or raw.header.get("tool") != "ipctrace":
+        raise TraceError(f"{path}: not an IPC trace (no '# ipctrace' header)")
+    if not raw.calls:
+        raise TraceError(f"{path}: the IPC trace holds no request")
+    trace = tracefmt.normalise_ipc(raw)
     kept = tracefmt.IpcTrace(trace.header, trace.threads, [c for c in trace.calls if not is_ignored(c, ignored)])
     return kept.by_thread()
 
@@ -185,12 +201,16 @@ def main(argv: list[str] | None = None) -> int:
     try:
         ignored = load_ignore(args.ignore)
         ref, cand = load(args.reference, ignored), load(args.candidate, ignored)
-    except (OSError, IgnoreError) as e:
+    except (OSError, IgnoreError, TraceError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
     diffs = compare(ref, cand, args.strict, args.prefix)
     for tid in sorted(set(ref) | set(cand), key=_thread_order):
         print(f"thread {tid}: {len(ref.get(tid, []))} vs {len(cand.get(tid, []))} requests")
+    if args.prefix:
+        absent = [t for t in sorted(ref, key=_thread_order) if ref[t] and not cand.get(t)]
+        if absent:
+            print(f"note: the candidate sent no request on thread(s) {', '.join(absent)}")
     for d in diffs:
         i, a = d["index"], ref.get(d["thread"], [])
         print(f"\nthread {d['thread']} differs at request {i}:")

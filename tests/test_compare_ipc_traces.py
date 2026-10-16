@@ -209,6 +209,30 @@ def test_bad_ignore_file_and_missing_trace_exit_2(tmp_path, capsys):
     assert "error" in capsys.readouterr().err
 
 
+def test_an_input_that_is_not_an_ipc_trace_is_refused(tmp_path, capsys):
+    svc = ["# svctrace v1 2026-10-16 game=0x0004000000000000 cpu=jit new3ds=off",
+           "main 00000001 svc=0x32 in=00000000 out=00000000"]
+    for bad in ([], [""], svc, [HEADER], trace()):           # empty, SVC trace, header only, no request
+        for ref, cand in ((bad, BASE), (BASE, bad), (bad, bad)):
+            for extra in ((), ("--prefix",)):
+                assert run(tmp_path, ref, cand, *extra) == 2
+                err = capsys.readouterr()
+                assert "all threads match" not in err.out
+                assert "error:" in err.err
+
+
+def test_prefix_notes_a_thread_the_candidate_never_used(tmp_path, capsys):
+    assert run(tmp_path, BASE, trace(BASE[3], BASE[4], BASE[7]), "--prefix") == 0
+    assert "no request on thread(s) 00200000#0" in capsys.readouterr().out
+    assert run(tmp_path, BASE, BASE, "--prefix") == 0
+    assert "note:" not in capsys.readouterr().out
+
+
+def test_the_docstring_warns_that_strict_is_noisy_on_the_oracle():
+    assert "stale bytes" in cmp.__doc__
+    assert "will list" in cmp.__doc__
+
+
 def test_context_shows_the_requests_before_the_difference(tmp_path, capsys):
     ref = trace(*[req(1, i, "srv:", 0x00010000 + i * 0x10000) for i in range(1, 8)])
     cand = trace(*([req(1, i, "srv:", 0x00010000 + i * 0x10000) for i in range(1, 7)] +

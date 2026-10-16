@@ -59,7 +59,7 @@ Tables between the `wp-status` markers are generated: edit the specs or use `set
 | N1-06 | Scheduler, game clock and timers | L | native-worker-high | N1-04, N1-05 | none | `todo` |  |
 | N1-27 | Threads: creation, TLS and the core-1 time limit | M | native-worker-high | N1-06 | none | `todo` |  |
 | N1-07 | The SVC table | M | native-worker-high | N1-02, N1-27 | none | `todo` |  |
-| N1-08 | Kernel conformance programs | M | native-worker | N0-04 | none | `review` | PR #5; ci green (runs 38923999146 and, for the follow-up, 38944850589); the 10 programs match the reference runner twice in a row; tests/test_port.py and tests/test_conformance.py pass with the tip's runner (146 passed, 11 skipped for the game and the native runner) |
+| N1-08 | Kernel conformance programs | M | native-worker | N0-04 | none | `review` | PR #5; ci green (runs 38923999146 and, for the follow-up, 38944850589); the 10 programs match the reference runner twice in a row; tests/test_port.py and tests/test_conformance.py pass with the tip's runner (148 passed, 11 skipped for the game and the native runner, at the third audit) |
 | N1-09 | The runtime, the native runner and the first boot | L | native-worker-high | N1-03, N1-07, N1-08, N0-08 | ci | `todo` |  |
 | N1-10 | IPC core, ports, sessions and srv | M | native-worker-high | N1-07, N1-09, N0-21 | none | `todo` |  |
 | N1-11 | IPC replay harness | M | native-worker | N1-10, N0-21 | dump-check | `todo` |  |

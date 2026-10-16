@@ -16,7 +16,7 @@ Pinned Azahar commit: `5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6`. Counts below c
 
 ## Since the recount
 
-N0-04 and N0-07 changed `port/src/runner.cpp` and `port/azahar/azahar.patch` after `def93e9`: `runner.cpp` now has 25 Azahar includes (it gained `core/loader/loader.h` and `core/memory.h`) and the patch is 1,525 lines. The rows below for `runner.cpp` and the patch are otherwise as counted; these APIs are new, with their replacement:
+N0-04, N0-07 and N0-21 changed `port/src/runner.cpp` and `port/azahar/azahar.patch` after `def93e9`: `runner.cpp` now has 32 Azahar includes (N0-04 and N0-07 added `core/loader/loader.h` and `core/memory.h`; N0-21 added seven for the IPC trace: `client_session`, `ipc_debugger/recorder`, `object`, `server_session`, `session`, `fs/directory` and `fs/file`) and the patch is 1,525 lines (N0-04 and N0-07 only; N0-21 added no hook). The rows below for `runner.cpp` and the patch are otherwise as counted; these APIs are new, with their replacement:
 
 | API | Used for | Replacement |
 |---|---|---|

@@ -701,3 +701,47 @@ def test_schedule_input_file(tmp_path):
 def test_schedule_rejects_bad_times(args):
     r = _print_schedule(*args)
     assert r.returncode == 1 and r.stdout == "" and "bad --" in r.stderr, (r.stdout, r.stderr)
+
+
+@pytest.mark.skipif(not os.environ.get("MH4U_RUNNER"), reason="port not built (set MH4U_RUNNER)")
+def test_ipc_trace_is_written_parsed_and_compared(tmp_path):
+    """--trace-ipc (N0-21): a conformance program that talks to services writes a trace that
+    tracefmt parses (header, thread lines, request lines), that compare_ipc_traces finds equal
+    for the JIT and the recompiled code, and that it refuses when it is not an IPC trace.
+    --trace-ipc-full without --trace-ipc is a usage error."""
+    import compare_ipc_traces
+    import build_svc_test
+    from recomp import build as rbuild
+    sys.path.insert(0, os.path.join(ROOT, "tools", "native"))
+    import tracefmt
+    binary = os.environ["MH4U_RUNNER"]
+    elf = build_svc_test.build(str(tmp_path), "conf_services")
+    code = rbuild.build(str(tmp_path), 2, "O1", ["RC_PAGED"], "code.so", [rbuild.DLL_GLUE],
+                        extra_flags=["-fvisibility=hidden"])
+    traces = {}
+    for cpu in ("jit", "recomp"):
+        path = tmp_path / f"ipc_{cpu}.txt"
+        r = subprocess.run([binary, elf, "--code", code, "--cpu", cpu, "--new-3ds", "off", "--ms", "5000",
+                            "--user", str(tmp_path / f"user_{cpu}"), "--trace-ipc", str(path)],
+                           capture_output=True, text=True, timeout=600)
+        assert r.returncode == 0, (cpu, r.stderr[-2000:])
+        assert tracefmt.is_ipc_trace(str(path))
+        traces[cpu] = tracefmt.parse_ipc(str(path))
+        assert traces[cpu].header["tool"] == "ipctrace" and traces[cpu].header["cpu"] == cpu
+        assert traces[cpu].threads and len(traces[cpu].calls) >= 3
+        assert all(c.session and c.seq >= 1 for c in traces[cpu].calls)
+        assert {c.session for c in traces[cpu].calls} >= {"srv:"}
+    ref, cand = str(tmp_path / "ipc_jit.txt"), str(tmp_path / "ipc_recomp.txt")
+    assert compare_ipc_traces.main([ref, cand]) == 0
+    assert compare_ipc_traces.main([ref, ref, "--strict"]) == 0
+    # an SVC trace is not an IPC trace
+    svc = tmp_path / "svc.txt"
+    r = subprocess.run([binary, elf, "--code", code, "--cpu", "jit", "--new-3ds", "off", "--ms", "5000",
+                        "--user", str(tmp_path / "user_svc"), "--trace-svc", str(svc)],
+                       capture_output=True, text=True, timeout=600)
+    assert r.returncode == 0, r.stderr[-2000:]
+    assert compare_ipc_traces.main([str(svc), ref]) == 2
+    # --trace-ipc-full needs --trace-ipc
+    r = subprocess.run([binary, elf, "--code", code, "--cpu", "jit", "--ms", "1000", "--trace-ipc-full"],
+                       capture_output=True, text=True, timeout=600)
+    assert r.returncode == 1
