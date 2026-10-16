@@ -6,15 +6,16 @@ The workflow is `.github/workflows/native.yml` ("Native CI"). It never uses game
 
 | Trigger | What runs |
 |---|---|
-| `push` to `native` or to a `wp/**` branch | `tools`; `changes`, then `runner` if it says so |
-| `pull_request` into `native` | `changes`, then `runner` if it says so (the tests are `ci.yml`'s job on PRs) |
-| `workflow_dispatch` | `tools`, and `runner` always |
+| `push` to `native` or to a `wp/**` branch | `tools`; `native`; `changes`, then `runner` if it says so |
+| `pull_request` into `native` | `native`; `changes`, then `runner` if it says so (the Python tests are `ci.yml`'s job on PRs) |
+| `workflow_dispatch` | `tools`, `native`, and `runner` always |
 
 A newer push to a `wp/` branch (or to a PR) cancels the older run of the same ref; runs on `native` are never cancelled.
 
 ## Jobs
 
 - **`tools`** (pushes and dispatch): the steps of `ci.yml`: Python 3.12, `clang lld llvm`, `pip install -r requirements.txt`, `python -m pytest -q`, and the guard that fails if `git ls-files` lists game data.
+- **`native`** (N1-01; on every trigger, `ubuntu-24.04`): installs `clang lld llvm cmake ninja-build libvulkan-dev mesa-vulkan-drivers glslang-tools spirv-tools` and `pip install -r requirements.txt` (the ARM test programs are built with `tools/difftest.py`), then configures `native/` with the one configure line of `wp/N1.md`, builds, runs `ctest`, and runs `python3 tools/native/check_native_deps.py` (nothing under `native/` may use Azahar).
 - **`changes`**: decides whether `runner` is needed, from the files changed under `port/`, `tools/`, `config/` and `.github/workflows/native.yml`:
   - dispatch: always;
   - PR: the files of the PR (`base...head`);
