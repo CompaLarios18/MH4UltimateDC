@@ -68,9 +68,27 @@ from its virtual SD card), the runner can also drive it without a window:
     --shots build/run/shots --shot-every 1000 --input "20000:A,25000:START:200,30000:TOUCH:160:120"
 ```
 
+`--new-3ds on|off` (default `off`) sets Azahar's New 3DS mode before the game loads; the
+reference runs are Old 3DS runs, because the mode changes the cores, the FCRAM size and what
+the cfg, ptm and APT services answer.
+
 `--trace-svc FILE` writes every system call with its thread, caller and arguments; the
 same run on `--cpu jit` gives the reference, and the first difference per thread points at
-the recompiled function that went wrong (`tools/compare_svc_traces.py jit.txt recomp.txt`). `--input` presses buttons, touches the bottom screen (pixels) or moves the circle pad
+the recompiled function that went wrong (`tools/compare_svc_traces.py jit.txt recomp.txt`).
+A line is `<thread> <svc> pc=<hex> lr=<hex> <r0> <r1> <r2> <r3> t=<ticks> in4=<r4>,<r5>,<r6>
+out=<r0>,<r1>,<r2>,<r3>` (8 uppercase hex digits, no `0x`): `in4=` is r4 to r6 as the call was
+made (timeouts and permissions live there for some calls), `out=` is r0 to r3 when the call
+completed for its thread, which for a call that blocks it (a wait, a sleep, a request with a
+deferred reply) is when the thread next ran, so its line can come after other threads' later
+calls; within a thread the lines stay in the order of the calls. `out=-` marks a call that was
+still blocked when the run ended. The first line is a header
+(`# svctrace v1 <date> game=<title id> cpu=<jit|recomp|interp> new3ds=<on|off>`) and every
+thread gets a line when it is created
+(`# thread <id> parent=<id> entry=<hex> arg=<hex> stack=<hex> prio=<n> core=<requested>/<resolved>`;
+the main thread has `parent=0`). To compare two runtimes whose thread ids and handle values
+differ, add `--normalize` (threads become `main` or `<entry>#<k>`, handles `<kind>#<k>`, times
+are dropped) and `--outputs` (compare the results too); `tools/native/tracefmt.py` describes
+the rules. `--input` presses buttons, touches the bottom screen (pixels) or moves the circle pad
 (-1..1) at emulated times; `--shots` saves both screens as PPM images, and
 `--draw-window 100` draws only the 100 ms before each screenshot, which makes long runs
 many times faster (the software renderer, and the vertex shaders the GPU runs on the CPU, take

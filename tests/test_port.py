@@ -569,11 +569,35 @@ def test_game_boot_matches_jit(tmp_path):
 
 
 def _svc_trace_by_thread(path) -> dict:
+    """The calls of each thread, without their times (nor the fields after them: the
+    registers at entry and the results, which hold the host's handle values and times)."""
     threads = {}
     for line in open(path):
+        if line.startswith("#") or not line.strip():          # header, thread lines, notes
+            continue
         tid, rest = line.split(" ", 1)
         threads.setdefault(tid, []).append(rest.split(" t=")[0])
     return threads
+
+
+def test_svc_trace_by_thread_skips_comment_lines(tmp_path):
+    """Header and `# thread` lines (N0-04) are not calls; the fields after `t=` are not compared."""
+    trace = tmp_path / "svc.txt"
+    trace.write_text(
+        "# svctrace v1 2026-10-16 game=0x0004000000000000 cpu=jit new3ds=off\n"
+        "# thread 1 parent=0 entry=00100000 arg=00000000 stack=0FFFF000 prio=48 core=0/0\n"
+        "1 17 pc=00100100 lr=00100104 00000001 00000000 00000000 00000000 t=10 in4=00000000,00000000,00000000"
+        " out=00000000,00008001,00000000,00000000\n"
+        "# thread 2 parent=1 entry=00200000 arg=00000000 stack=0FFFE000 prio=48 core=0/0\n"
+        "\n"
+        "2 24 pc=00200100 lr=00200104 00008001 00000000 FFFFFFFF FFFFFFFF t=20 in4=00000000,00000000,00000000"
+        " out=00000000,00000000,00000000,00000000\n"
+        "1 18 pc=00100300 lr=00100104 00008001 00000000 00000000 00000000 t=30\n")
+    assert _svc_trace_by_thread(trace) == {
+        "1": ["17 pc=00100100 lr=00100104 00000001 00000000 00000000 00000000",
+              "18 pc=00100300 lr=00100104 00008001 00000000 00000000 00000000"],
+        "2": ["24 pc=00200100 lr=00200104 00008001 00000000 FFFFFFFF FFFFFFFF"],
+    }
 
 
 @pytest.mark.skipif(not os.environ.get("MH4U_RUNNER"), reason="port not built (set MH4U_RUNNER)")
