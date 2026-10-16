@@ -367,3 +367,66 @@ def test_range_content_rule_still_applies_to_duplicate_blob(repo: Path) -> None:
     commit_all(repo)
     r = run(repo, "--range", f"{base}..HEAD")
     assert r.returncode == 1 and "a.txt" in r.stdout and "b.txt" in r.stdout
+
+
+def test_range_not_fooled_by_show_signature_config(repo: Path) -> None:
+    git(repo, "config", "log.showSignature", "true")
+    rng = commit_range(repo, {"export/q.txt": "x\n"})
+    r = run(repo, "--range", rng)
+    assert r.returncode == 1 and "export/q.txt" in r.stdout
+
+
+def test_range_not_fooled_by_ignore_submodules_config(repo: Path) -> None:
+    git(repo, "config", "diff.ignoreSubmodules", "all")
+    base = git(repo, "rev-parse", "HEAD")
+    sha = git(repo, "rev-parse", "HEAD")
+    git(repo, "update-index", "--add", "--cacheinfo", f"160000,{sha},export/sub")
+    git(repo, "commit", "-q", "-m", "gitlink")
+    r = run(repo, "--range", f"{base}..HEAD")
+    assert r.returncode == 1 and "export/sub" in r.stdout
+    git(repo, "reset", "-q", "--soft", base)
+    r = run(repo, "--staged")
+    assert r.returncode == 1 and "export/sub" in r.stdout
+
+
+def test_parse_raw_rejects_unknown_tokens() -> None:
+    with pytest.raises(RuntimeError):
+        guard.parse_raw(b"No signature\0:000000 100644 " + b"0" * 40 + b" " + b"a" * 40 + b" A\0f\0")
+
+
+def test_staged_type_change_symlink_to_magic_file(repo: Path) -> None:
+    (repo / "lnk").symlink_to("README.md")
+    git(repo, "add", "lnk")
+    git(repo, "commit", "-q", "-m", "link")
+    (repo / "lnk").unlink()
+    put(repo, "lnk", b"MGPU" + b"\0" * 8)
+    git(repo, "add", "lnk")
+    r = run(repo, "--staged")
+    assert r.returncode == 1 and "lnk" in r.stdout
+
+
+def test_staged_glob_named_gitlink_does_not_hide_file(repo: Path) -> None:
+    put(repo, "a.dat", b"MGPU" + b"\0" * 8)
+    git(repo, "add", "a.dat")
+    sha = git(repo, "rev-parse", "HEAD")
+    git(repo, "update-index", "--add", "--cacheinfo", f"160000,{sha},)x.dat")
+    r = run(repo, "--staged")
+    assert r.returncode == 1 and "a.dat: magic" in r.stdout
+
+
+@pytest.mark.parametrize("path", [".bin", "a/.PPM", ".wav", "dir/.BIN"])
+def test_extension_rule_for_dotfile_names(repo: Path, path: str) -> None:
+    put(repo, path, "x")
+    git(repo, "add", "-f", path)
+    r = run(repo, "--staged")
+    assert r.returncode == 1 and "extension" in r.stdout
+    git(repo, "commit", "-q", "-m", "c")
+    assert run(repo, "--range", "HEAD~1..HEAD").returncode == 1
+
+
+@pytest.mark.parametrize("path", ["Export/x.txt", "BUILD/x.txt", "Export/a/b.tsv"])
+def test_forbidden_dir_is_case_insensitive(repo: Path, path: str) -> None:
+    put(repo, path, "x")
+    git(repo, "add", "-f", path)
+    r = run(repo, "--staged")
+    assert r.returncode == 1 and "forbidden-dir" in r.stdout

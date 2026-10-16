@@ -106,11 +106,13 @@ def name_rules(path: str) -> list[str]:
     if CI_PATTERN.search(path):
         broken.append("ci-pattern (game data file name)")
     parts = path.split("/")
-    if any(p in FORBIDDEN_DIRS for p in parts[:-1]):
+    if any(p.lower() in FORBIDDEN_DIRS for p in parts[:-1]):
         broken.append("forbidden-dir (build/, baserom/ or export/)")
-    ext = Path(path).suffix.lower()
-    if ext in FORBIDDEN_EXTENSIONS:
-        broken.append(f"extension ({ext} files are not allowed)")
+    lowered = path.lower()
+    for ext in sorted(FORBIDDEN_EXTENSIONS):
+        # endswith, not Path.suffix: a file named just '.bin' has no suffix.
+        if lowered.endswith(ext):
+            broken.append(f"extension ({ext} files are not allowed)")
     return broken
 
 
@@ -177,20 +179,29 @@ def range_entries(root: Path, rng: str) -> list[tuple[str, str, str]]:
         a, b = rng.split("..", 1)
         spec = f"{a or 'HEAD'}..{b or 'HEAD'}"
     raw = git(
-        "log", "--format=", "--raw", "-z", "--no-abbrev", "--no-renames", "-m", spec,
+        "log", "--format=", "--no-show-signature", "--raw", "-z", "--no-abbrev",
+        "--no-renames", "--ignore-submodules=none", "-m", spec,
         cwd=root,
     )
+    return parse_raw(raw)
+
+
+def parse_raw(raw: bytes) -> list[tuple[str, str, str]]:
+    """Parse `git ... --raw -z --no-renames` output strictly: every non-empty token must be
+    a ':' meta line followed by its path; anything else is an error, never skipped."""
     toks = [t.decode("utf-8", "surrogateescape") for t in raw.split(b"\0")]
     entries: list[tuple[str, str, str]] = []
     i = 0
     while i < len(toks):
         tok = toks[i]
-        if not tok.startswith(":"):
+        if not tok:
             i += 1
             continue
+        if not tok.startswith(":"):
+            raise RuntimeError(f"unexpected git --raw output near {tok[:40]!r}")
         fields = tok[1:].split()
         if len(fields) < 5 or i + 1 >= len(toks):
-            raise RuntimeError(f"unexpected git log --raw output near {tok!r}")
+            raise RuntimeError(f"unexpected git --raw output near {tok[:40]!r}")
         new_mode, new_sha, status, path = fields[1], fields[3], fields[4], toks[i + 1]
         i += 2
         if status.startswith("D") or set(new_sha) == {"0"}:
@@ -243,16 +254,15 @@ def main(argv: Optional[list[str]] = None) -> int:
         root = Path(git("rev-parse", "--show-toplevel", cwd=Path(args.repo), text=True).strip())
         allowed = read_allowlist(root)
         if args.staged:
-            names = split_z(
-                git("diff", "--cached", "--name-only", "-z", "--diff-filter=ACMR", cwd=root)
+            # One raw listing with exact paths, modes and blob ids (no pathspec globbing).
+            entries = parse_raw(
+                git(
+                    "diff", "--cached", "--raw", "-z", "--no-abbrev", "--no-renames",
+                    "--ignore-submodules=none", "--diff-filter=ACMRT", cwd=root,
+                )
             )
-            gitlinks = {
-                p for p in names
-                if git("ls-files", "-s", "--", p, cwd=root, text=True).startswith("160000")
-            }
-            offences = run_checks(
-                names, lambda p: git("show", f":{p}", cwd=root), allowed, lambda p: p in gitlinks
-            )
+            names = sorted({path for _, _, path in entries})
+            offences = check_entries(root, entries, allowed)
         else:
             if ".." not in args.range:
                 ap.error("--range needs A..B")
