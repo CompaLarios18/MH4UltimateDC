@@ -16,6 +16,12 @@ the tests.
 
 ## Pieces copied from Azahar
 
-None yet. Each copied file starts with
+Each copied file starts with
 `// Derived from Azahar <path> at <commit> (GPL-2.0-or-later or GPL-3.0-or-later, as the file says)`
 and gets a row here: `native/<file>` ← `<Azahar path>`, the pinned commit (`port/azahar/COMMIT`).
+
+| File | Azahar source | Commit | Licence (as the source says) | What |
+|---|---|---|---|---|
+| `native/src/memory/fcram_regions.cpp` | `src/core/hle/kernel/memory.cpp` | `5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6` | GPL-2.0-or-later | the region size table and `MemoryRegionInfo` (`Reset`, `HeapAllocate`, both `LinearAllocate`, `RLinearAllocate`, `Free`), on a `std::map` of free intervals instead of `boost::icl` |
+| `native/src/memory/guest_memory.cpp` | `src/core/hle/kernel/vm_manager.cpp`, `src/video_core/gpu.cpp` | `5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6` | GPL-2.0-or-later | the splitting and merging of the block list (`CarveVMA`, `CarveVMARange`, `SplitVMA`, `MergeAdjacent`, `ChangeMemoryState`, `UnmapRange`, `ReprotectRange`) and `GPU::VirtualToPhysicalAddress` |
+| `native/include/mh4n/memory.h` | `src/core/memory.h`, `src/core/hle/kernel/errors.h` | `5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6` | GPL-2.0-or-later | the address-space constants and the result code values |
