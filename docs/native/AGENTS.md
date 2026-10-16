@@ -214,7 +214,7 @@ The game files are on the maintainer's PC (`C:\NoJales\mh4pcport`):
   - The container is Ubuntu 24.04 with 2 cores and 7 GB. Its default C and C++ compilers are GCC: the configure line names clang.
   - apt works: CMake 3.28, Ninja, clang 18, glslang, the Vulkan loader, and lavapipe (a CPU Vulkan driver, so renderer tests run without a GPU).
   - SDL3 is built from source.
-  - Network access is limited to package registries and GitHub. GitHub Actions artifacts are served from `*.blob.core.windows.net` (seen: `productionresultssa2.blob.core.windows.net`), a host the default policy denies: `gh run download` fails with `Forbidden` until the maintainer adds it under Allowed domains in the environment's network settings (first met in the 2026-10-16 session).
+  - Network access is limited to package registries and GitHub. GitHub Actions artifacts are served from `*.blob.core.windows.net` (seen: `productionresultssa2.blob.core.windows.net`), a host a Limited policy denies: `gh run download` fails with `Forbidden` until the environment's Network access is set to Full, or the host is added under Allowed domains (first met in the 2026-10-16 session; with Full the download worked in the same session).
 - **Python tools:** stdlib first. Every tool change has a test in `tests/` with synthetic data. Run `python3 -m pytest` (at the start of the branch: 312 passed, 75 skipped because the reference runner, the app or the dump isn't there; the bootstrap adds `wp_status.py`'s tests).
 - **`native/`** (from N1-01), with the same configure line everywhere (workers, reviewers, the orchestrator, Linux CI):
   ```
