@@ -20,7 +20,7 @@ Tables between the `wp-status` markers are generated: edit the specs or use `set
 <!-- wp-status:begin N0 -->
 | ID | Title | Size | Agent | Depends on | Needs | Status | Note |
 |---|---|---|---|---|---|---|---|
-| N0-01 | Bootstrap the native branch | S | orchestrator | - | none | `review` | bootstrap PR |
+| N0-01 | Bootstrap the native branch | S | orchestrator | - | none | `review` | PR #3 |
 | N0-02 | Cloud development environment | S | native-worker | - | none | `ready` |  |
 | N0-03 | Native CI | M | native-worker | - | ci | `ready` |  |
 | N0-04 | Old 3DS runs, SVC results and normalised SVC traces | M | native-worker-high | N0-03 | ci, dump-check | `todo` |  |
@@ -120,7 +120,7 @@ N2b to N7 and Track D are outlined in [`wp/LATER.md`](wp/LATER.md); the planner 
 
 | ID | Task | Status |
 |---|---|---|
-| M-1 | Merge the bootstrap PR into `native` | open |
+| M-1 | Merge the bootstrap PR (#3) into `native` | open |
 | M-2 | Confirm the new monitor's resolution (expected 3440×1440, 21:9) so D15 and the budgets drop "to confirm" | open (the monitor arrives Monday 2026-10-19) |
 | M-3 | Contact the HD pack's author about mirrors before heavy traffic (Dropbox pauses shared links for 24 h past the daily limit) | open |
 | M-4 | Keep the PC on with the desktop app open in sessions that stage game files | when asked |
