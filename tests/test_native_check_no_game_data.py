@@ -143,7 +143,10 @@ def test_size_rule_and_exemption(repo: Path) -> None:
 
 
 def test_exactly_2mb_is_allowed() -> None:
-    assert check_bytes("a.dat", b"A" * guard.MAX_BYTES) == []
+    # Fixture adjusted in N0-19 follow-up 2: short lines, since one 2 MB line is a dense blob now.
+    line = b"A" * 79 + b"\n"
+    data = (line * (guard.MAX_BYTES // 80 + 1))[: guard.MAX_BYTES]
+    assert check_bytes("a.dat", data) == []
 
 
 def svc_line(i: int) -> str:
@@ -174,7 +177,9 @@ def test_trace_rule_limit_and_binary(repo: Path) -> None:
     assert check_bytes("n.txt", "".join(svc_line(i) for i in range(50)).encode()) == []
     assert check_bytes("n.txt", "".join(svc_line(i) for i in range(51)).encode())
     # Binary data is not scanned as text.
-    assert check_bytes("n.dat", b"\0" + "".join(svc_line(i) for i in range(60)).encode()) == []
+    # (N0-19 follow-up 2: such a file is refused as binary content now, but never as a trace.)
+    found = check_bytes("n.dat", b"\0" + "".join(svc_line(i) for i in range(60)).encode())
+    assert found and all(r.startswith("binary-content") for _, r in found)
 
 
 def test_range_only_checks_the_range(repo: Path) -> None:
@@ -289,10 +294,14 @@ def test_allowlist_parsing() -> None:
     assert parsed == {"dir/f.dat": h}
 
 
-def test_shipped_allowlist_is_comments_only() -> None:
+def test_shipped_allowlist_lists_only_the_icons() -> None:
     text = (ROOT / "config" / "native" / "large_files.txt").read_text()
     assert text.startswith("#")
-    assert guard.load_allowlist(text) == {}
+    # N0-19 follow-up 2: the tracked icons (binary files and the C byte-array form) are listed.
+    assert set(guard.load_allowlist(text)) == {
+        "port/app/icon/icon_data.h", "port/app/icon/mh4u.icns",
+        "port/app/icon/mh4u.ico", "port/app/icon/mh4u.png",
+    }
 
 
 # --- every path of every commit in --range (hardening round) ---
@@ -725,8 +734,10 @@ def test_binary_exemption_does_not_cover_capture_magic() -> None:
     assert found[0][1].startswith("magic") and all(not r.startswith("binary-") for _, r in found)
 
 
-def test_tracked_tree_binary_rules_are_a_known_set() -> None:
-    allowed = guard.read_allowlist(ROOT)
+NEW_RULES = ("binary-", "listing", "dense-blob")
+
+
+def _tripped_in_tracked_tree(allowed: dict[str, str]) -> set[str]:
     files = subprocess.run(["git", "ls-files", "-z"], cwd=ROOT, capture_output=True, check=True).stdout
     tripped: set[str] = set()
     for rel in files.decode("utf-8", "surrogateescape").split("\0"):
@@ -735,7 +746,198 @@ def test_tracked_tree_binary_rules_are_a_known_set() -> None:
             continue
         data = path.read_bytes()
         found = guard.check_entries([("100644", "s", rel)], lambda sha: data, allowed)
-        if any(r.startswith("binary-") for _, r in found):
+        if any(r.startswith(NEW_RULES) for _, r in found):
             tripped.add(rel)
-    # Existing legitimate files (the application icon). A new one must be noticed here.
-    assert tripped == {"port/app/icon/mh4u.png"}
+    return tripped
+
+
+def test_tracked_tree_binary_rules_are_a_known_set() -> None:
+    # Intended change of the expected value (N0-19 follow-up 2): the icons are now listed in
+    # config/native/large_files.txt, so nothing tracked trips these rules; a new file must be noticed.
+    assert _tripped_in_tracked_tree(guard.read_allowlist(ROOT)) == set()
+
+
+def test_tracked_tree_without_the_list_trips_only_the_icons() -> None:
+    assert _tripped_in_tracked_tree({}) == {
+        "port/app/icon/icon_data.h", "port/app/icon/mh4u.icns",
+        "port/app/icon/mh4u.ico", "port/app/icon/mh4u.png",
+    }
+
+
+# ---- N0-19 follow-up 2: generic binary rule, text listings, dense blobs ----
+
+RANDOM = bytes((i * 73 + 41) % 256 for i in range(100)) + b"\x00\xff"
+
+
+@pytest.mark.parametrize(
+    "name",
+    [".dat", ".raw", ".rom", ".pcap", ".dds", ".ico", ".lz4", ".cab", ".o", ".a", ".dylib", ".pdf",
+     ".nds", ".3dsx", ".cro", ".crr", ".img", ".iso", ".dump", ".mem", ".mp3", ".mp4", ".ogg", ".tif"],
+)
+@pytest.mark.parametrize("mode", ["staged", "range"])
+def test_generic_binary_by_any_name(repo: Path, name: str, mode: str) -> None:
+    path = "assets/blob" + name
+    if mode == "staged":
+        put(repo, path, RANDOM)
+        git(repo, "add", "-f", path)
+        r = run(repo, "--staged")
+    else:
+        r = run(repo, "--range", commit_range(repo, {path: RANDOM}))
+    assert r.returncode == 1 and path in r.stdout and "binary-content" in r.stdout
+
+
+def test_generic_binary_invalid_utf8_without_nul(repo: Path) -> None:
+    put(repo, "a.txt", b"hello \xff\xfe world\n")
+    git(repo, "add", "-f", "a.txt")
+    r = run(repo, "--staged")
+    assert r.returncode == 1 and "binary-content" in r.stdout
+
+
+def test_generic_binary_nul_only_after_8k_and_valid_utf8_passes(repo: Path) -> None:
+    put(repo, "a.txt", b"a" * 8192 + b"\x00\n")
+    put(repo, "b.txt", b"\xef\xbb\xbfhello \xc3\xa9\n")  # BOM + e-acute
+    git(repo, "add", "-f", "a.txt", "b.txt")
+    assert run(repo, "--staged").returncode == 0
+
+
+def test_generic_binary_exemption_and_its_limits(repo: Path) -> None:
+    put(repo, "assets/ours.dat", RANDOM)
+    put(repo, "config/native/large_files.txt", f"{hashlib.sha256(RANDOM).hexdigest()} assets/ours.dat\n")
+    git(repo, "add", "-f", "-A")
+    assert run(repo, "--staged").returncode == 0
+    # same path, other content: refused again
+    put(repo, "assets/ours.dat", RANDOM + b"x")
+    git(repo, "add", "-f", "assets/ours.dat")
+    assert run(repo, "--staged").returncode == 1
+
+
+@pytest.mark.parametrize("path", ["build/x.dat", "a.wav", "b.ppm", "c.bin", "game.3ds"])
+def test_generic_exemption_does_not_cover_other_rules(repo: Path, path: str) -> None:
+    put(repo, path, RANDOM)
+    put(repo, "config/native/large_files.txt", f"{hashlib.sha256(RANDOM).hexdigest()} {path}\n")
+    git(repo, "add", "-f", "-A")
+    assert run(repo, "--staged").returncode == 1
+
+
+def test_capture_magic_not_exempt_with_listing(repo: Path) -> None:
+    data = b"MGPU" + RANDOM
+    put(repo, "x.dat", data)
+    put(repo, "config/native/large_files.txt", f"{hashlib.sha256(data).hexdigest()} x.dat\n")
+    git(repo, "add", "-f", "-A")
+    r = run(repo, "--staged")
+    assert r.returncode == 1 and "magic (capture" in r.stdout
+
+
+def _hexdump_c(i: int) -> str:
+    return f"{i * 16:08x}  " + " ".join(f"{(i + k) % 256:02x}" for k in range(8)) + "  " + \
+        " ".join(f"{(i + k) % 256:02x}" for k in range(8, 16)) + "  |................|"
+
+
+def _xxd(i: int) -> str:
+    return f"{i * 16:08x}: " + " ".join(f"{(i + k) % 256:02x}{(i + k + 1) % 256:02x}" for k in range(0, 16, 2)) + "  ................"
+
+
+def _xxd_short(i: int) -> str:
+    return f"{i * 16:04x}: " + " ".join(f"{(i + k) % 256:02x}" for k in range(8))
+
+
+def _objdump(i: int) -> str:
+    return f"   {0x8000 + i * 4:x}:\te1a00000 \tmov\tr0, r0"
+
+
+def _thumb(i: int) -> str:
+    return f"{0x8000 + i * 2:8x}:\t4770      \tbx\tlr"
+
+
+def _carray(i: int) -> str:
+    return "    " + ", ".join(f"0x{(i + k) % 256:02X}" for k in range(16)) + ","
+
+
+LISTINGS = {
+    "hexdump-c": _hexdump_c, "xxd": _xxd, "xxd-short": _xxd_short,
+    "objdump": _objdump, "objdump-thumb": _thumb, "c-array": _carray,
+}
+
+
+@pytest.mark.parametrize("kind", sorted(LISTINGS))
+@pytest.mark.parametrize("n,refused", [(49, False), (50, False), (51, True)])
+@pytest.mark.parametrize("mode", ["staged", "range"])
+def test_listing_boundary(repo: Path, kind: str, n: int, refused: bool, mode: str) -> None:
+    text = "\n".join(LISTINGS[kind](i) for i in range(n)) + "\n"
+    if mode == "staged":
+        put(repo, "notes.txt", text)
+        git(repo, "add", "-f", "notes.txt")
+        r = run(repo, "--staged")
+    else:
+        r = run(repo, "--range", commit_range(repo, {"notes.txt": text}))
+    assert r.returncode == (1 if refused else 0), r.stdout + r.stderr
+    if refused:
+        assert "listing" in r.stdout
+
+
+def test_listing_c_array_in_header_and_mixed_lines_count_together(repo: Path) -> None:
+    text = "\n".join([_carray(i) for i in range(26)] + [_objdump(i) for i in range(25)]) + "\n"
+    put(repo, "gen.h", text)
+    git(repo, "add", "gen.h")
+    assert run(repo, "--staged").returncode == 1
+
+
+def test_listing_c_array_15_entries_is_not_a_line(repo: Path) -> None:
+    line = "    " + ", ".join(f"0x{k:02X}" for k in range(15)) + ",\n"
+    put(repo, "t.h", line * 80)
+    git(repo, "add", "t.h")
+    assert run(repo, "--staged").returncode == 0
+
+
+def test_listing_hex_needs_eight_byte_groups(repo: Path) -> None:
+    line = "00000000: " + " ".join(f"{k:02x}" for k in range(7)) + "\n"
+    put(repo, "t.txt", line * 80)
+    git(repo, "add", "t.txt")
+    assert run(repo, "--staged").returncode == 0
+
+
+def test_listing_exemption_via_list(repo: Path) -> None:
+    text = "\n".join(_carray(i) for i in range(60)) + "\n"
+    put(repo, "icon.h", text)
+    put(repo, "config/native/large_files.txt", f"{hashlib.sha256(text.encode()).hexdigest()} icon.h\n")
+    git(repo, "add", "-A")
+    assert run(repo, "--staged").returncode == 0
+
+
+@pytest.mark.parametrize("alphabet,ok", [
+    ("QUJD" * 256, False),            # 1024 base64 characters
+    ("QUJD" * 255 + "QUJ", True),    # 1023
+    ("0123456789abcdef" * 64, False),  # hex
+    ("QUJD" * 255 + "QUJ ", True),   # space inside the budget: not only base64 characters
+    ("QUJD" * 256 + "=" , False),
+])
+@pytest.mark.parametrize("mode", ["staged", "range"])
+def test_dense_blob(repo: Path, alphabet: str, ok: bool, mode: str) -> None:
+    text = "header\n" + alphabet + "\nfooter\n"
+    if mode == "staged":
+        put(repo, "blob.txt", text)
+        git(repo, "add", "blob.txt")
+        r = run(repo, "--staged")
+    else:
+        r = run(repo, "--range", commit_range(repo, {"blob.txt": text}))
+    assert r.returncode == (0 if ok else 1), r.stdout + r.stderr
+    if not ok:
+        assert "dense-blob" in r.stdout
+
+
+def test_dense_blob_crlf_line(repo: Path) -> None:
+    put(repo, "blob.txt", ("QUJD" * 300 + "\r\n").encode())
+    git(repo, "add", "blob.txt")
+    assert run(repo, "--staged").returncode == 1
+
+
+def test_legit_sources_mentioning_hex_pass(repo: Path) -> None:
+    doc = "# Format\n\nHeader bytes are `0x7F 0x45` then 00000000: 7f 45 4c 46.\n" * 10
+    py = "MASK = 0xFF\nTABLE = [0x00, 0x01, 0x02]\n# 8000: e1a00000 mov r0, r0\n" * 10
+    cpp = "static const u8 k[] = {0x00, 0x01, 0x02, 0x03};\n" * 100
+    put(repo, "docs/a.md", doc)
+    put(repo, "tools/a.py", py)
+    put(repo, "src/a.cpp", cpp)
+    git(repo, "add", "-A")
+    r = run(repo, "--staged")
+    assert r.returncode == 0, r.stdout + r.stderr
