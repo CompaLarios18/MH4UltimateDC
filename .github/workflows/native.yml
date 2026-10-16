@@ -39,6 +39,34 @@ jobs:
             echo "::error::Game data must never be committed (see docs/LEGAL.md)"; exit 1
           fi
 
+  # The native port (native/): configure with the one configure line of docs/native/wp/N1.md,
+  # build, run the unit tests, and check that nothing in native/ uses Azahar. No game data and
+  # no Azahar build, so it runs on every push and PR.
+  native:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Toolchain and Vulkan packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang lld llvm cmake ninja-build \
+            libvulkan-dev mesa-vulkan-drivers glslang-tools spirv-tools
+      # building the ARM test programs uses tools/difftest.py
+      - run: pip install -r requirements.txt
+      - name: Configure
+        run: |
+          cmake -S native -B build/native -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo -DMH4N_WERROR=ON
+      - name: Build
+        run: cmake --build build/native
+      - name: Test
+        run: ctest --test-dir build/native --output-on-failure
+      - name: native/ does not use Azahar
+        run: python3 tools/native/check_native_deps.py
+
   # Decides whether the runner has to be built.
   changes:
     runs-on: ubuntu-latest
