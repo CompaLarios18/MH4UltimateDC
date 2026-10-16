@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cmath>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -26,6 +27,7 @@
 
 #include "arm_recomp.h"
 #include "hooks.h"
+#include "schedule.h"
 #include "common/file_util.h"
 #include "common/logging/backend.h"
 #include "common/logging/filter.h"
@@ -59,7 +61,9 @@ constexpr double TICKS_PER_MS = 268111.856; // ARM11 clock
 const char* const USAGE = R"(usage: mh4u_runner <file> [options]
   --code LIB        recompiled code library (with --cpu recomp)
   --cpu KIND        recomp (default), jit or interp
-  --ms N            stop after N ms of emulated time (default 10000)
+  --ms N            stop after N ms of emulated time (default 10000); f<N>: after game frame N
+  --frames N        stop when the game's frame counter (the u32 at 0x010571d4) reaches N
+                    (exit status 0, as --ms)
   --log FILTER      log filter (default "*:Warning Debug.Emulated:Debug Kernel:Info")
   --user DIR        Azahar user directory (NAND, SD card, saves) to use
   --install CIA     install a CIA, e.g. the game's update, before booting (repeatable)
@@ -79,7 +83,8 @@ const char* const USAGE = R"(usage: mh4u_runner <file> [options]
                     fast the host was, which moves loading screens by seconds, and the game
                     seeds its random numbers from the clock)
   --dump MS:ADDR:SIZE  at emulated time MS, write SIZE bytes of guest memory from ADDR to
-                    mem_<ms>_<addr>.bin in the --shots directory (or the current one);
+                    mem_<ms>_<addr>.bin (mem_f<frame>_<addr>.bin for a frame) in the --shots
+                    directory (or the current one);
                     repeatable, e.g. to diff the game's state with and without an input
   --replace MS:FROM:TO  at emulated time MS, replace every FROM in the game's writable
                     memory with TO (hex bytes, same length) and print how many it found;
@@ -106,6 +111,12 @@ const char* const USAGE = R"(usage: mh4u_runner <file> [options]
                     (ms:BUTTON[:hold ms], ms:TOUCH:x:y[:hold], ms:CIRCLE:x:y[:hold];
                     hold defaults to 100 ms; buttons A B X Y UP DOWN LEFT RIGHT L R
                     START SELECT ZL ZR HOME)
+  --input-file PATH  the same presses, one per line; '#' starts a comment (repeatable)
+  --print-schedule  print the parsed schedule (stop, presses, dumps, replaces, options, ...)
+                    and exit, without loading a game
+                    Everywhere a time MS is accepted (--input, --dump, --replace, --set,
+                    --freeze, --call-counts, --shots-from, --ms), f<N> means the first moment
+                    the game's frame counter reads N or more; a hold may be f<N> frames too.
   --room-host PORT  host a network room (Azahar's multiplayer) on this UDP port and join it
   --room-join HOST:PORT  join a network room; the game's local wireless play then reaches
                     the other members (use --speed 100 on every runner so they keep time)
@@ -167,65 +178,31 @@ double EmulatedMs() {
 
 // ── scripted input ──────────────────────────────────────────────────────────────────
 
-struct Press {
-    double start_ms, end_ms;
-    int button;      // Settings::NativeButton, or TOUCH / CIRCLE
-    float x, y;      // touch: pixels on the bottom screen; circle pad: -1..1
+// The schedule (times, input events, scheduled options) is parsed by schedule.cpp, which the native
+// runner shares; a time is emulated ms or a frame of the game's counter (g_frame, read after
+// each slice of emulation).
+Schedule::Plan g_plan;
+u32 g_frame = 0;
+
+// Button indexes of Schedule::ButtonName, in the same order.
+constexpr int kNativeButtons[Schedule::kButtonCount] = {
+    Settings::NativeButton::A,     Settings::NativeButton::B,    Settings::NativeButton::X,
+    Settings::NativeButton::Y,     Settings::NativeButton::Up,   Settings::NativeButton::Down,
+    Settings::NativeButton::Left,  Settings::NativeButton::Right, Settings::NativeButton::L,
+    Settings::NativeButton::R,     Settings::NativeButton::Start, Settings::NativeButton::Select,
+    Settings::NativeButton::ZL,    Settings::NativeButton::ZR,   Settings::NativeButton::Home,
 };
-constexpr int TOUCH = -1, CIRCLE = -2;
-std::vector<Press> g_presses;
 
-struct Dump {
-    double ms;
-    u32 addr, size;
-    bool done = false;
-};
-std::vector<Dump> g_dumps;
-
-struct Replace {
-    double ms;
-    std::vector<u8> from, to;
-    bool done = false;
-};
-std::vector<Replace> g_replaces;
-
-bool ParseHexBytes(const std::string& hex, std::vector<u8>& out) {
-    if (hex.empty() || hex.size() % 2) {
-        return false;
-    }
-    out.clear();
-    for (std::size_t i = 0; i < hex.size(); i += 2) {
-        if (!std::isxdigit(static_cast<unsigned char>(hex[i])) ||
-            !std::isxdigit(static_cast<unsigned char>(hex[i + 1]))) {
-            return false;
-        }
-        out.push_back(static_cast<u8>(std::stoul(hex.substr(i, 2), nullptr, 16)));
-    }
-    return true;
-}
-
-bool ParseReplace(const std::string& arg) {
-    const auto first = arg.find(':');
-    const auto second = first == std::string::npos ? first : arg.find(':', first + 1);
-    if (second == std::string::npos) {
-        return false;
-    }
-    Replace r{};
-    char* end = nullptr;
-    r.ms = std::strtod(arg.c_str(), &end);
-    if (end != arg.c_str() + first || !ParseHexBytes(arg.substr(first + 1, second - first - 1), r.from) ||
-        !ParseHexBytes(arg.substr(second + 1), r.to) || r.from.size() != r.to.size()) {
-        return false;
-    }
-    g_replaces.push_back(std::move(r));
-    return true;
+/// A moment as it appears in file names: 0001500 for ms, f0000600 for frames.
+std::string WhenStem(const Schedule::When& when) {
+    return when.by_frame ? fmt::format("f{:07}", when.frame) : fmt::format("{:07.0f}", when.ms);
 }
 
 /// Replaces byte strings in every writable region of the game's address space whose time has come.
 void DoReplaces(Core::System& system) {
     const double now = EmulatedMs();
-    for (Replace& r : g_replaces) {
-        if (r.done || now < r.ms) {
+    for (Schedule::Replace& r : g_plan.replaces) {
+        if (r.done || !r.when.Due(now, g_frame)) {
             continue;
         }
         r.done = true;
@@ -251,7 +228,7 @@ void DoReplaces(Core::System& system) {
                 at += static_cast<std::ptrdiff_t>(r.from.size());
             }
         }
-        std::printf("replace at %.0f ms: %u found\n", now, found);
+        std::printf("replace at %.0f ms (frame %u): %u found\n", now, g_frame, found);
         std::fflush(stdout);
     }
 }
@@ -362,43 +339,10 @@ void LockstepFinish() {
     }
 }
 
-bool ParseDump(const std::string& arg) {
-    Dump d{};
-    char extra = 0;
-    if (std::sscanf(arg.c_str(), "%lf:%x:%x%c", &d.ms, &d.addr, &d.size, &extra) != 3 || d.size == 0) {
-        return false;
-    }
-    g_dumps.push_back(d);
-    return true;
-}
-
-/// --set MS:KEY=VALUE: one of the port's options changed at an emulated time.
-struct OptionChange {
-    double ms;
-    std::string key, value;
-    bool done = false;
-};
-std::vector<OptionChange> g_option_changes;
-
-bool ParseOptionChange(const std::string& arg) {
-    const auto colon = arg.find(':');
-    const auto eq = arg.find('=', colon == std::string::npos ? 0 : colon);
-    if (colon == std::string::npos || eq == std::string::npos || eq == colon + 1) {
-        return false;
-    }
-    char* end = nullptr;
-    const double ms = std::strtod(arg.c_str(), &end);
-    if (end != arg.c_str() + colon || ms < 0.0) {
-        return false;
-    }
-    g_option_changes.push_back({ms, arg.substr(colon + 1, eq - colon - 1), arg.substr(eq + 1)});
-    return true;
-}
-
 /// Applies the option changes that are due; false if one names an option that can't change.
 bool ApplyOptionChanges() {
-    for (auto& c : g_option_changes) {
-        if (c.done || EmulatedMs() < c.ms) {
+    for (auto& c : g_plan.option_changes) {
+        if (c.done || !c.when.Due(EmulatedMs(), g_frame)) {
             continue;
         }
         c.done = true;
@@ -414,17 +358,16 @@ bool ApplyOptionChanges() {
 }
 
 /// Writes the dumps that are due; unmapped bytes come out as zero.
-std::vector<std::pair<double, bool>> g_call_snapshots; // emulated ms, written
 
 /// --call-counts: each function's calls so far, sorted by address (at the end of the run,
 /// `all` writes the snapshots whose time hasn't come).
 void WriteCallCounts(const std::string& dir, bool all = false) {
-    for (auto& [ms, done] : g_call_snapshots) {
-        if (done || (EmulatedMs() < ms && !all)) {
+    for (auto& snapshot : g_plan.call_counts) {
+        if (snapshot.done || (!snapshot.when.Due(EmulatedMs(), g_frame) && !all)) {
             continue;
         }
-        done = true;
-        const auto path = fmt::format("{}/calls_{:07.0f}.txt", dir.empty() ? "." : dir, ms);
+        snapshot.done = true;
+        const auto path = fmt::format("{}/calls_{}.txt", dir.empty() ? "." : dir, WhenStem(snapshot.when));
         if (FILE* f = std::fopen(path.c_str(), "w")) {
             for (const auto& [addr, calls] : Port::ARM_Recomp::CallCounts()) {
                 std::fprintf(f, "%08x %u\n", addr, calls);
@@ -436,8 +379,8 @@ void WriteCallCounts(const std::string& dir, bool all = false) {
 
 void WriteDumps(Core::System& system, const std::string& dir) {
     const double now = EmulatedMs();
-    for (Dump& d : g_dumps) {
-        if (d.done || now < d.ms) {
+    for (Schedule::Dump& d : g_plan.dumps) {
+        if (d.done || !d.when.Due(now, g_frame)) {
             continue;
         }
         d.done = true;
@@ -452,7 +395,7 @@ void WriteDumps(Core::System& system, const std::string& dir) {
             }
             off += chunk;
         }
-        const std::string path = fmt::format("{}/mem_{:07.0f}_{:08x}.bin", dir.empty() ? "." : dir, d.ms, d.addr);
+        const std::string path = fmt::format("{}/mem_{}_{:08x}.bin", dir.empty() ? "." : dir, WhenStem(d.when), d.addr);
         if (std::FILE* f = std::fopen(path.c_str(), "wb")) {
             std::fwrite(bytes.data(), 1, bytes.size(), f);
             std::fclose(f);
@@ -647,6 +590,14 @@ bool BeginStateTrace(Core::System& system, const std::string& path, const std::s
     return true;
 }
 
+/// After each slice of emulation: the frame counter the schedule's `f<N>` times are read against.
+void UpdateFrame(Core::System& system) {
+    u32 frame = 0;
+    if (ReadGuest(system, kFrameCounterAddress, 4, frame)) {
+        g_frame = frame;
+    }
+}
+
 /// After each slice of emulation: a line if the frame counter changed since the last one.
 /// `f=<frame> t=<ticks> <name>=<0x value | ->`, every value as wide as its size.
 void WriteStateTrace(Core::System& system) {
@@ -722,68 +673,23 @@ void WriteUnmappedReport(Core::System& system, const std::string& path, const st
     std::printf("unmapped accesses: %zu distinct, %s\n", rows.size(), path.c_str());
 }
 
-const Press* Active(int button) {
+/// The event of this kind being held now (for a button, the one of that NativeButton).
+const Schedule::Press* Active(Schedule::PressKind kind, int native_button = -1) {
     const double now = EmulatedMs();
-    for (const Press& p : g_presses) {
-        if (p.button == button && now >= p.start_ms && now < p.end_ms) {
+    for (Schedule::Press& p : g_plan.presses) {
+        if (p.kind == kind && (kind != Schedule::PressKind::Button || kNativeButtons[p.button] == native_button) &&
+            p.Active(now, g_frame)) {
             return &p;
         }
     }
     return nullptr;
 }
 
-bool ParseScript(const std::string& script) {
-    static const std::pair<const char*, int> names[] = {
-        {"A", Settings::NativeButton::A},         {"B", Settings::NativeButton::B},
-        {"X", Settings::NativeButton::X},         {"Y", Settings::NativeButton::Y},
-        {"UP", Settings::NativeButton::Up},       {"DOWN", Settings::NativeButton::Down},
-        {"LEFT", Settings::NativeButton::Left},   {"RIGHT", Settings::NativeButton::Right},
-        {"L", Settings::NativeButton::L},         {"R", Settings::NativeButton::R},
-        {"START", Settings::NativeButton::Start}, {"SELECT", Settings::NativeButton::Select},
-        {"ZL", Settings::NativeButton::ZL},       {"ZR", Settings::NativeButton::ZR},
-        {"HOME", Settings::NativeButton::Home},
-    };
-    std::stringstream items(script);
-    std::string item;
-    while (std::getline(items, item, ',')) {
-        std::vector<std::string> f;
-        std::stringstream fields(item);
-        std::string field;
-        while (std::getline(fields, field, ':')) {
-            f.push_back(field);
-        }
-        if (f.size() < 2) {
-            return false;
-        }
-        Press p{std::atof(f[0].c_str()), 0, 0, 0, 0};
-        std::size_t hold_at = 2;
-        if (f[1] == "TOUCH" || f[1] == "CIRCLE") {
-            if (f.size() < 4) {
-                return false;
-            }
-            p.button = f[1] == "TOUCH" ? TOUCH : CIRCLE;
-            p.x = static_cast<float>(std::atof(f[2].c_str()));
-            p.y = static_cast<float>(std::atof(f[3].c_str()));
-            hold_at = 4;
-        } else {
-            const auto it = std::find_if(std::begin(names), std::end(names),
-                                         [&](const auto& n) { return f[1] == n.first; });
-            if (it == std::end(names)) {
-                return false;
-            }
-            p.button = it->second;
-        }
-        p.end_ms = p.start_ms + (f.size() > hold_at ? std::atof(f[hold_at].c_str()) : 100.0);
-        g_presses.push_back(p);
-    }
-    return true;
-}
-
 class ScriptButton final : public Input::ButtonDevice {
 public:
     explicit ScriptButton(int button) : button(button) {}
     bool GetStatus() const override {
-        return Active(button) != nullptr;
+        return Active(Schedule::PressKind::Button, button) != nullptr;
     }
 
 private:
@@ -793,7 +699,7 @@ private:
 class ScriptCirclePad final : public Input::AnalogDevice {
 public:
     std::tuple<float, float> GetStatus() const override {
-        const Press* p = Active(CIRCLE);
+        const Schedule::Press* p = Active(Schedule::PressKind::Circle);
         return p ? std::make_tuple(p->x, p->y) : std::make_tuple(0.0f, 0.0f);
     }
 };
@@ -801,7 +707,7 @@ public:
 class ScriptTouch final : public Input::TouchDevice {
 public:
     std::tuple<float, float, bool> GetStatus() const override {
-        const Press* p = Active(TOUCH);
+        const Schedule::Press* p = Active(Schedule::PressKind::Touch);
         return p ? std::make_tuple(p->x / 320.0f, p->y / 240.0f, true)
                  : std::make_tuple(0.0f, 0.0f, false);
     }
@@ -1233,16 +1139,15 @@ int main(int argc, char** argv) {
     std::string code_library;
     std::string cpu = "recomp";
     std::string log_filter = "*:Warning Debug.Emulated:Debug Kernel:Info";
-    double emulated_ms = 10000.0;
-    std::string user_dir, shots_dir, input_script, svc_trace;
+    std::string user_dir, shots_dir, svc_trace;
+    bool print_schedule = false;
+    std::string schedule_error;
     std::string state_trace, unmapped_report, observable_file = "config/native/observable.txt";
     std::vector<std::string> install;
     double shot_every = 1000.0;
-    double shots_from = -1.0;
     double speed = 0.0;
     double draw_window = -1.0; // < 0: draw every frame
     double stall_ms = 0.0;     // > 0: report emulation steps that take longer
-    double freeze_at = -1.0, freeze_ms = 0.0;  // --freeze: stop emulating once, for a while
     int cpu_clock = 100;
     bool async_io = false;
     int room_host = 0;
@@ -1257,7 +1162,15 @@ int main(int argc, char** argv) {
         } else if (arg == "--cpu" && i + 1 < argc) {
             cpu = argv[++i];
         } else if (arg == "--ms" && i + 1 < argc) {
-            emulated_ms = std::atof(argv[++i]);
+            if (!Schedule::ParseStop(argv[++i], g_plan, schedule_error)) {
+                std::fprintf(stderr, "bad --ms %s (%s)\n", argv[i], schedule_error.c_str());
+                return 1;
+            }
+        } else if (arg == "--frames" && i + 1 < argc) {
+            if (!Schedule::ParseFrames(argv[++i], g_plan, schedule_error)) {
+                std::fprintf(stderr, "bad --frames %s (%s)\n", argv[i], schedule_error.c_str());
+                return 1;
+            }
         } else if (arg == "--log" && i + 1 < argc) {
             log_filter = argv[++i];
         } else if (arg == "--user" && i + 1 < argc) {
@@ -1274,27 +1187,30 @@ int main(int argc, char** argv) {
         } else if (arg == "--stalls" && i + 1 < argc) {
             stall_ms = std::max(0.0, std::atof(argv[++i]));
         } else if (arg == "--freeze" && i + 1 < argc) {
-            if (std::sscanf(argv[++i], "%lf:%lf", &freeze_at, &freeze_ms) != 2 || freeze_ms <= 0.0) {
-                std::fprintf(stderr, "bad --freeze %s (MS:HOST_MS)\n", argv[i]);
+            if (!Schedule::ParseFreeze(argv[++i], g_plan, schedule_error)) {
+                std::fprintf(stderr, "bad --freeze %s (MS:HOST_MS; %s)\n", argv[i], schedule_error.c_str());
                 return 1;
             }
         } else if (arg == "--set" && i + 1 < argc) {
-            if (!ParseOptionChange(argv[++i])) {
+            if (!Schedule::ParseOptionChange(argv[++i], g_plan, schedule_error)) {
                 std::fprintf(stderr, "bad --set %s (MS:KEY=VALUE)\n", argv[i]);
                 return 1;
             }
         } else if (arg == "--replace" && i + 1 < argc) {
-            if (!ParseReplace(argv[++i])) {
+            if (!Schedule::ParseReplace(argv[++i], g_plan, schedule_error)) {
                 std::fprintf(stderr, "bad --replace: %s (want MS:FROM:TO, hex bytes of equal length)\n", argv[i]);
                 return 1;
             }
         } else if (arg == "--dump" && i + 1 < argc) {
-            if (!ParseDump(argv[++i])) {
+            if (!Schedule::ParseDump(argv[++i], g_plan, schedule_error)) {
                 std::fprintf(stderr, "bad --dump: %s (want MS:ADDR:SIZE, hex address and size)\n", argv[i]);
                 return 1;
             }
         } else if (arg == "--call-counts" && i + 1 < argc) {
-            g_call_snapshots.emplace_back(std::atof(argv[++i]), false);
+            if (!Schedule::ParseCallCounts(argv[++i], g_plan, schedule_error)) {
+                std::fprintf(stderr, "bad --call-counts %s (%s)\n", argv[i], schedule_error.c_str());
+                return 1;
+            }
         } else if (arg == "--trace-svc" && i + 1 < argc) {
             svc_trace = argv[++i];
         } else if (arg == "--state-trace" && i + 1 < argc) {
@@ -1313,7 +1229,10 @@ int main(int argc, char** argv) {
         } else if (arg == "--speed" && i + 1 < argc) {
             speed = std::max(0.0, std::atof(argv[++i]));
         } else if (arg == "--shots-from" && i + 1 < argc) {
-            shots_from = std::max(0.0, std::atof(argv[++i]));
+            if (!Schedule::ParseShotsFrom(argv[++i], g_plan, schedule_error)) {
+                std::fprintf(stderr, "bad --shots-from %s (%s)\n", argv[i], schedule_error.c_str());
+                return 1;
+            }
         } else if (arg == "--shot-every" && i + 1 < argc) {
             shot_every = std::max(1.0, std::atof(argv[++i]));
         } else if (arg == "--cpu-clock" && i + 1 < argc) {
@@ -1346,16 +1265,26 @@ int main(int argc, char** argv) {
         } else if (arg == "--new-console-id") {
             new_console_id = true;
         } else if (arg == "--input" && i + 1 < argc) {
-            input_script = argv[++i];
-            if (!ParseScript(input_script)) {
-                std::fprintf(stderr, "bad --input script: %s\n", input_script.c_str());
+            if (!Schedule::ParseInput(argv[++i], g_plan, schedule_error)) {
+                std::fprintf(stderr, "bad --input script: %s (%s)\n", argv[i], schedule_error.c_str());
                 return 1;
             }
+        } else if (arg == "--input-file" && i + 1 < argc) {
+            if (!Schedule::ParseInputFile(argv[++i], g_plan, schedule_error)) {
+                std::fprintf(stderr, "bad --input-file %s: %s\n", argv[i], schedule_error.c_str());
+                return 1;
+            }
+        } else if (arg == "--print-schedule") {
+            print_schedule = true;
         } else if (!arg.empty() && arg[0] != '-' && path.empty()) {
             path = arg;
         } else {
             return Usage();
         }
+    }
+    if (print_schedule) {
+        std::fputs(Schedule::Describe(g_plan).c_str(), stdout);
+        return 0;
     }
     const bool install_only = path.empty() && !install.empty();
     if ((path.empty() && !install_only) || (cpu != "recomp" && cpu != "jit" && cpu != "interp") ||
@@ -1421,7 +1350,7 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "%s\n", code_library.empty() ? "--cpu recomp needs --code LIB" : error.c_str());
             return 1;
         }
-        if (!g_call_snapshots.empty() && !Port::ARM_Recomp::HasCallCounts()) {
+        if (!g_plan.call_counts.empty() && !Port::ARM_Recomp::HasCallCounts()) {
             std::fprintf(stderr, "--call-counts needs a code library built with -D RC_CALL_COUNTS\n");
             return 1;
         }
@@ -1454,7 +1383,9 @@ int main(int argc, char** argv) {
     }
     std::weak_ptr<Kernel::Process> process = system.Kernel().GetCurrentProcess();
     // ARM11 clock: 268,111,856 Hz
-    const s64 tick_limit = static_cast<s64>(emulated_ms * 268111.856);
+    // --frames without --ms: no time limit
+    const bool no_time_limit = g_plan.has_stop_frame && !g_plan.has_stop_ms;
+    const s64 tick_limit = no_time_limit ? std::numeric_limits<s64>::max() : static_cast<s64>(g_plan.stop_ms * 268111.856);
     const s64 start_ticks = system.CoreTiming().GetGlobalTicks();
     g_start_ticks = start_ticks;
     if (!svc_trace.empty()) {
@@ -1474,23 +1405,29 @@ int main(int argc, char** argv) {
     if (!shots_dir.empty()) {
         FileUtil::CreateFullPath(shots_dir.back() == '/' ? shots_dir : shots_dir + '/');
     }
-    double next_shot = shots_from >= 0.0 ? shots_from : shot_every;
+    // --shots-from f<N>: the first shot is taken when the frame counter gets there (the file is named
+    // f<N>_top.ppm); the next ones follow every --shot-every ms from then. Until then the
+    // renderer draws whenever --draw-window would.
+    bool shot_frame_pending = g_plan.has_shots_from && g_plan.shots_from.by_frame;
+    double next_shot = g_plan.has_shots_from && !g_plan.shots_from.by_frame ? g_plan.shots_from.ms : shot_every;
     int rc = 0;
     while (true) {
         if (draw_window >= 0.0) {
             SwRenderer::SetDrawingEnabled(!shots_dir.empty() &&
-                                          EmulatedMs() >= next_shot - draw_window);
+                                          (shot_frame_pending || EmulatedMs() >= next_shot - draw_window));
         }
         LockstepWait(EmulatedMs());
         if (!ApplyOptionChanges()) {
             rc = 1;
             break;
         }
-        if (freeze_at >= 0.0 && EmulatedMs() >= freeze_at) {
-            std::printf("freeze at %.0f ms for %.0f ms of host time\n", EmulatedMs(), freeze_ms);
-            std::fflush(stdout);
-            std::this_thread::sleep_for(std::chrono::duration<double, std::milli>(freeze_ms));
-            freeze_at = -1.0;
+        for (auto& freeze : g_plan.freezes) {
+            if (!freeze.done && freeze.when.Due(EmulatedMs(), g_frame)) {
+                freeze.done = true;
+                std::printf("freeze at %.0f ms for %.0f ms of host time\n", EmulatedMs(), freeze.host_ms);
+                std::fflush(stdout);
+                std::this_thread::sleep_for(std::chrono::duration<double, std::milli>(freeze.host_ms));
+            }
         }
         const auto step_start = std::chrono::steady_clock::now();
         const double step_emulated = EmulatedMs();
@@ -1504,15 +1441,23 @@ int main(int argc, char** argv) {
                 std::fflush(stdout);
             }
         }
+        UpdateFrame(system);
         WriteDumps(system, shots_dir);
         WriteStateTrace(system);
         DoReplaces(system);
         WriteCallCounts(shots_dir);
-        if (!shots_dir.empty() && EmulatedMs() >= next_shot) {
-            const auto stem = fmt::format("{}/{:07.0f}", shots_dir, next_shot);
+        const bool frame_shot = shot_frame_pending && g_plan.shots_from.Due(EmulatedMs(), g_frame);
+        if (!shots_dir.empty() && (frame_shot || (!shot_frame_pending && EmulatedMs() >= next_shot))) {
+            const auto stem = frame_shot ? fmt::format("{}/{}", shots_dir, WhenStem(g_plan.shots_from))
+                                         : fmt::format("{}/{:07.0f}", shots_dir, next_shot);
             SaveScreen(system, VideoCore::ScreenId::TopLeft, stem + "_top.ppm");
             SaveScreen(system, VideoCore::ScreenId::Bottom, stem + "_bottom.ppm");
-            next_shot += shot_every;
+            if (frame_shot) {
+                shot_frame_pending = false;
+                next_shot = std::floor(EmulatedMs()) + shot_every;
+            } else {
+                next_shot += shot_every;
+            }
         }
         if (result == Core::System::ResultStatus::ShutdownRequested) {
             break;
@@ -1536,6 +1481,10 @@ int main(int argc, char** argv) {
         const auto p = process.lock();
         if (!p || p->status == Kernel::ProcessStatus::Exited) {
             std::printf("process exited\n");
+            break;
+        }
+        if (g_plan.has_stop_frame && g_frame >= g_plan.stop_frame) {
+            std::printf("frame limit reached: frame %u\n", g_frame);
             break;
         }
         if (system.CoreTiming().GetGlobalTicks() - start_ticks > tick_limit) {
