@@ -8,6 +8,7 @@ Hard rules:
 - Run `python3 -m pytest` before committing.
 - Multi-agent work follows `docs/AGENT_WORKFLOW.md`: only the orchestrator edits shared files (`config/*`, `include/*`); workers write their own new files and return results. A function counts as decompiled only when `difftest` passes; report `blocked` rather than weakening a test.
 - Ghidra exports (`build/export/`) are derived from game code: read them, never commit them.
+- The 100% native port (no Azahar) lives on branch `native`. On any other branch, for anything about it, read its runbook first, `git fetch origin native && git show FETCH_HEAD:.claude/skills/native-orchestrate/SKILL.md`, and follow it (it sets the branch up). Never commit native-port work to `main`.
 
 Key facts:
 - `code.bin` from ExeFS is usually BLZ (backward LZ77) compressed; exheader flag bit 0 at offset 0x0D says so. `tools/blz.py` handles it.
