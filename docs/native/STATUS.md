@@ -22,10 +22,10 @@ Tables between the `wp-status` markers are generated: edit the specs or use `set
 |---|---|---|---|---|---|---|---|
 | N0-01 | Bootstrap the native branch | S | orchestrator | - | none | `done` | PR #3 |
 | N0-02 | Cloud development environment | S | native-worker | - | none | `review` | PR #5 |
-| N0-03 | Native CI | M | native-worker | - | ci | `review` | PR #5; ci pending (run 38880121118: green, artifact published; the download from a cloud session is blocked by the network policy, host productionresultssa2.blob.core.windows.net) |
+| N0-03 | Native CI | M | native-worker | - | ci | `review` | PR #5; ci green (run 38880121118; its artifact was downloaded and run.sh --help checked in a cloud session on 2026-10-16) |
 | N0-04 | Old 3DS runs, SVC results and normalised SVC traces | M | native-worker-high | N0-03 | ci, dump-check | `review` | PR #5; dump-check pending (G1: jit vs recomp traces compare equal); ci green (run 38885552387) |
 | N0-07 | Game-state trace and unmapped-access counter | S | native-worker | N0-04 | ci, dump-check | `review` | PR #5; dump-check pending (G1: the scene byte changes in the state trace; the unmapped report exists); ci green (run 38892421769) |
-| N0-08 | Frame-keyed scheduling in the runner | S | native-worker | N0-07 | ci, dump-check | `todo` |  |
+| N0-08 | Frame-keyed scheduling in the runner | S | native-worker | N0-07 | ci, dump-check | `review` | PR #5; ci green (run 38923994278); dump-check pending (START at f600 then A at f900: same frame numbers at each scene change on --cpu jit and --cpu recomp) |
 | N0-21 | IPC trace and comparator | M | native-worker-high | N0-08 | ci, dump-check | `todo` |  |
 | N0-06 | DSP and HID captures | M | native-worker | N0-21 | ci, dump-check | `todo` |  |
 | N0-22 | GPU capture format and `gcap.py` | S | native-worker | - | none | `review` | PR #5 |
@@ -53,13 +53,13 @@ Tables between the `wp-status` markers are generated: edit the specs or use `set
 |---|---|---|---|---|---|---|---|
 | N1-01 | `native/` skeleton, build and CI | M | native-worker-high | N0-02, N0-03 | ci | `review` | PR #5; ci green (run 38885559352) |
 | N1-02 | Guest memory | M | native-worker-high | N1-01 | none | `review` | PR #5; ci green (run 38892424838); Windows/macOS paths untested (N1-22) |
-| N1-03 | Loader and system pages | M | native-worker | N1-02 | dump-check | `todo` |  |
+| N1-03 | Loader and system pages | M | native-worker | N1-02 | dump-check | `review` | PR #5; ci green (run 38926727430); dump-check pending (prepare_game.py on the staged dump; --print-process vs tools/exheader.py; the linear base vs G1's first linear ControlMemory) |
 | N1-04 | Code host and guest fibers | M | native-worker-high | N1-02, N1-03, N0-17 | none | `todo` |  |
-| N1-05 | Kernel objects and handle table | M | native-worker-high | N1-02 | none | `todo` |  |
+| N1-05 | Kernel objects and handle table | M | native-worker-high | N1-02 | none | `review` | PR #5; ci green (run 38926731888) |
 | N1-06 | Scheduler, game clock and timers | L | native-worker-high | N1-04, N1-05 | none | `todo` |  |
 | N1-27 | Threads: creation, TLS and the core-1 time limit | M | native-worker-high | N1-06 | none | `todo` |  |
 | N1-07 | The SVC table | M | native-worker-high | N1-02, N1-27 | none | `todo` |  |
-| N1-08 | Kernel conformance programs | M | native-worker | N0-04 | none | `todo` |  |
+| N1-08 | Kernel conformance programs | M | native-worker | N0-04 | none | `review` | PR #5; ci green (run 38923999146); the 10 programs match the reference runner twice in a row |
 | N1-09 | The runtime, the native runner and the first boot | L | native-worker-high | N1-03, N1-07, N1-08, N0-08 | ci | `todo` |  |
 | N1-10 | IPC core, ports, sessions and srv | M | native-worker-high | N1-07, N1-09, N0-21 | none | `todo` |  |
 | N1-11 | IPC replay harness | M | native-worker | N1-10, N0-21 | dump-check | `todo` |  |
@@ -88,7 +88,7 @@ Tables between the `wp-status` markers are generated: edit the specs or use `set
 | ID | Title | Size | Agent | Depends on | Needs | Status | Note |
 |---|---|---|---|---|---|---|---|
 | N2-01 | RHI spike | M | native-worker-high | N0-13, N1-01 | ci, pc, mac | `todo` |  |
-| N2-02 | Capture player and comparison harness | M | native-worker-high | N0-22, N1-01 | dump-check | `todo` |  |
+| N2-02 | Capture player and comparison harness | M | native-worker-high | N0-22, N1-01 | dump-check | `review` | PR #5; ci green (run 38926737594); dump-check pending (--gpu replay passes on G1's capture; the timing table prints) |
 | N2-03 | GX engine | M | native-worker | N2-02 | dump-check, save | `todo` |  |
 | N2-04 | PICA command processor | M | native-worker-high | N2-02 | dump-check, save | `todo` |  |
 | N2-05 | Vertex loading | M | native-worker | N2-04, N2-01 | dump-check, save | `todo` |  |
@@ -124,7 +124,7 @@ N2b to N7 and Track D are outlined in [`wp/LATER.md`](wp/LATER.md); the planner 
 | M-2 | Confirm the new monitor's resolution (expected 3440×1440, 21:9) so D15 and the budgets drop "to confirm" | open (the monitor arrives Monday 2026-10-19) |
 | M-3 | Contact the HD pack's author about mirrors before heavy traffic (Dropbox pauses shared links for 24 h past the daily limit) | open |
 | M-4 | Keep the PC on with the desktop app open in sessions that stage game files | when asked |
-| M-5 | Allow the artifact host (`*.blob.core.windows.net`, seen as `productionresultssa2.blob.core.windows.net`) under Allowed domains in the cloud environment's network settings, so sessions can download the reference runner (`gh run download` fails with `Forbidden` today); blocks N0-03's last check and N1-08 | open |
+| M-5 | Let sessions download the reference runner: the cloud environment's Network access must be Full (or allow `*.blob.core.windows.net`, seen as `productionresultssa2.blob.core.windows.net`, under Allowed domains) | done (2026-10-16: set to Full; the download worked) |
 
 ## Open decisions
 
