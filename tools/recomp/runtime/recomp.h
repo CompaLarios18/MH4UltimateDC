@@ -12,6 +12,17 @@
  *   void rc_bad_return(RCtx *ctx, u32 got, u32 expected);
  *   void rc_budget(RCtx *ctx);                      cycle budget exhausted (yield point)
  *
+ * Build modes (one of, chosen by the compiler flags; rc_dll.c reports it as rc_build_mode):
+ *   RC_PAGED                  guest memory through a page table (Azahar); RC_TICK charges
+ *                             cycles to ctx->budget.                                      mode 0
+ *   RC_NATIVE                 flat guest memory (ctx->mem + addr); RC_TICK only looks at the
+ *                             preemption flag *rc_preempt_flag and calls rc_budget when the
+ *                             host has set it (the host clears it again).                 mode 1
+ *   RC_NATIVE + RC_NATIVE_DETERMINISTIC
+ *                             flat guest memory, RC_TICK charges cycles to ctx->budget as
+ *                             in the paged build (reproducible scheduling).               mode 2
+ * With none of them (the test harness) memory is flat and RC_TICK charges cycles.
+ *
  * Exactness rules: integer semantics follow the ARM ARM (ARMv6K); VFP arithmetic follows
  * ARM NaN rules (default NaN 0x7FC00000, operand priority SNaN(a), SNaN(b), QNaN(a),
  * QNaN(b)) independently of the host FPU. Compile with -ffp-contract=off.
@@ -23,6 +34,16 @@
 #include <string.h>
 #include <math.h>
 #include <fenv.h>
+
+#if defined(RC_PAGED) && defined(RC_NATIVE)
+#error "RC_PAGED and RC_NATIVE select different runtimes: define only one"
+#endif
+#if defined(RC_NATIVE_DETERMINISTIC) && !defined(RC_NATIVE)
+#error "RC_NATIVE_DETERMINISTIC only makes sense together with RC_NATIVE"
+#endif
+#if defined(RC_NATIVE) && defined(RC_NO_BUDGET)
+#error "RC_NO_BUDGET removes every yield point: a spinning guest thread would never give way on the native runtime's single host thread"
+#endif
 
 typedef uint8_t u8;
 typedef uint16_t u16;
@@ -76,11 +97,16 @@ void rc_trap(RCtx *ctx, u32 pc, u32 kind);
 void rc_bad_return(RCtx *ctx, u32 got, u32 expected);
 void rc_budget(RCtx *ctx);
 
+/* The preemption flag of RC_NATIVE builds (RC_TICK reads it). A code library points it at
+ * RHost.preempt_flag in rc_code_init (or at a word that is always 0); the test harness
+ * defines its own. */
+extern volatile u32 *rc_preempt_flag;
+
 enum { RC_TRAP_UNDEF = 1, RC_TRAP_UNSUPPORTED = 2, RC_TRAP_BKPT = 3, RC_TRAP_BAD_JUMP = 4 };
 
 /* Recompiled code can also be built as a shared library (runtime/rc_dll.c) and loaded by
  * the host at run time; it then gets the callbacks above from this table. */
-#define RC_HOST_VERSION 4
+#define RC_HOST_VERSION 5
 typedef struct RHost {
     u32 version;            /* RC_HOST_VERSION */
     u32 ctx_size;           /* sizeof(RCtx) as the host sees it */
@@ -91,6 +117,12 @@ typedef struct RHost {
     void (*budget)(RCtx *ctx);
     u32 (*slow_read)(RCtx *ctx, u32 a, u32 size);
     void (*slow_write)(RCtx *ctx, u32 a, u32 v, u32 size);
+    /* RC_NATIVE builds: address of the preemption flag, which the generated code reads at
+     * every yield point (see RC_TICK); the host sets it from any thread to make the running
+     * guest code call rc_budget, and clears it in there. NULL (and always for RC_PAGED
+     * builds) = no preemption requests: the library uses a flag that stays 0. The pointed-to
+     * word must stay valid for as long as the library is loaded. */
+    volatile u32 *preempt_flag;
 } RHost;
 
 /* Hooks: native code that wraps or replaces a recompiled function. A hook gets the guest
@@ -635,8 +667,15 @@ void rc_count_first(RCallCount *c);
 #define RC_RET(v) do { u32 _rv = (v); RC_FLUSH(); ctx->r[15] = _rv; return; } while (0)
 #endif
 
-#ifdef RC_NO_BUDGET
+/* Yield point, once per basic block. Three flavours:
+ *  - RC_NO_BUDGET (fuzzing): none;
+ *  - RC_NATIVE without RC_NATIVE_DETERMINISTIC: a load of the preemption flag, no cycle
+ *    count; the host asks for a yield by setting the flag and rc_budget() clears it;
+ *  - otherwise: charge n cycles to ctx->budget and call rc_budget() when it runs out. */
+#if defined(RC_NO_BUDGET)
 #define RC_TICK(n) ((void)0)
+#elif defined(RC_NATIVE) && !defined(RC_NATIVE_DETERMINISTIC)
+#define RC_TICK(n) do { if (__builtin_expect(*rc_preempt_flag, 0)) { RC_FLUSH(); rc_budget(ctx); RC_RELOAD(); } } while (0)
 #else
 #define RC_TICK(n) do { if ((ctx->budget -= (n)) < 0) { RC_FLUSH(); rc_budget(ctx); RC_RELOAD(); } } while (0)
 #endif

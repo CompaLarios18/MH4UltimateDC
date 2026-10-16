@@ -3,11 +3,17 @@
 
 usage: python3 -m recomp.build build/recomp [--harness] [-j N] [--opt O1] [-o game.so]
        python3 -m recomp.build build/recomp --code-library [--cc CC] [-o mh4u_code.so]
+       python3 -m recomp.build build/recomp --code-library --native [--deterministic]
 
 --harness links the differential-test harness (gametest). --code-library builds the
 library the PC port loads with `mh4u_runner --code` (paged memory, callbacks from the
 host); --cc picks another compiler, e.g. llvm-mingw's x86_64-w64-mingw32-clang for a
-Windows .dll. Incremental: an object is reused while its source is older than it and
+Windows .dll. --native builds for the native runtime instead (RC_NATIVE: flat memory, and a
+yield point that only looks at the host's preemption flag); with --deterministic the yield
+points keep charging cycles (RC_NATIVE_DETERMINISTIC), for reproducible scheduling. Such a
+library is named mh4u_code_native.so / mh4u_code_native_det.so unless -o says otherwise, and
+only a native host loads it (the library says which it was built for in rc_build_mode).
+Incremental: an object is reused while its source is older than it and
 recomp.h has the contents it was compiled with (obj/recomp.h.sha1 remembers them, so a
 copy of the tools with new dates, as unpacking a new package makes, recompiles nothing).
 """
@@ -95,6 +101,17 @@ def build(outdir: str, jobs: int, opt: str, defines: list[str], lib_name: str, e
     return lib
 
 
+def native_defines(native: bool, deterministic: bool) -> list[str]:
+    """The defines that select the native runtime (recomp.h): none for the paged build."""
+    if deterministic and not native:
+        raise SystemExit("--deterministic goes with --native")
+    return ["RC_NATIVE", *(["RC_NATIVE_DETERMINISTIC"] if deterministic else [])] if native else []
+
+
+def native_suffix(native: bool, deterministic: bool) -> str:
+    return "" if not native else "_native_det" if deterministic else "_native"
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("outdir")
@@ -102,16 +119,24 @@ def main(argv=None) -> int:
     ap.add_argument("--opt", default="O1")
     ap.add_argument("--harness", action="store_true", help="link the test harness (Linux/macOS)")
     ap.add_argument("--code-library", action="store_true", help="build the PC port's code library")
+    ap.add_argument("--native", action="store_true",
+                    help="build for the native runtime (RC_NATIVE: flat memory, preemption flag) "
+                         "instead of the Azahar backend (RC_PAGED)")
+    ap.add_argument("--deterministic", action="store_true",
+                    help="with --native: keep charging cycles at every yield point "
+                         "(RC_NATIVE_DETERMINISTIC)")
     ap.add_argument("--cc", default="clang")
     ap.add_argument("-D", dest="defines", action="append", default=[])
     ap.add_argument("-o", "--lib", default="")
     args = ap.parse_args(argv)
+    native = native_defines(args.native, args.deterministic)
+    suffix = native_suffix(args.native, args.deterministic)
     if args.code_library:
-        lib = args.lib or ("mh4u_code.dll" if "mingw" in args.cc else "mh4u_code.so")
-        build(args.outdir, args.jobs, args.opt, ["RC_PAGED", *args.defines], lib, [DLL_GLUE],
+        lib = args.lib or f"mh4u_code{suffix}." + ("dll" if "mingw" in args.cc else "so")
+        build(args.outdir, args.jobs, args.opt, [*(native or ["RC_PAGED"]), *args.defines], lib, [DLL_GLUE],
               cc=args.cc, extra_flags=["-fvisibility=hidden"])
     else:
-        build(args.outdir, args.jobs, args.opt, args.defines, args.lib or "game.so",
+        build(args.outdir, args.jobs, args.opt, [*native, *args.defines], args.lib or "game.so",
               [HARNESS] if args.harness else [], cc=args.cc)
     return 0
 

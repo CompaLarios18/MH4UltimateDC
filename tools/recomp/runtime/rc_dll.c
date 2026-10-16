@@ -1,9 +1,15 @@
 /* Glue for building recompiled code as a shared library (.so/.dll/.dylib).
  *
- * Compile together with the generated sources, with RC_PAGED and hidden visibility. The
- * host loads the library, looks up rc_code_init and passes its callbacks; the generated
- * code's calls to rc_call(), rc_svc(), ... land here and go through that table. */
+ * Compile together with the generated sources, with RC_PAGED (the Azahar backend) or
+ * RC_NATIVE [+ RC_NATIVE_DETERMINISTIC] (the native runtime), and hidden visibility. The
+ * host loads the library, checks rc_build_mode, looks up rc_code_init and passes its
+ * callbacks; the generated code's calls to rc_call(), rc_svc(), ... land here and go
+ * through that table. */
 #include "recomp.h"
+
+#if !defined(RC_PAGED) && !defined(RC_NATIVE)
+#error "a code library is built with RC_PAGED or RC_NATIVE"
+#endif
 
 #if defined(_WIN32)
 #define RC_EXPORT __declspec(dllexport)
@@ -18,7 +24,25 @@ extern const u32 rc_hook_addrs[], rc_hook_count;
 extern const u32 rc_tunable_addrs[], rc_tunable_count;
 extern const char *const rc_tunable_names[];
 
+/* Which runtime this library was built for, so a host can refuse another one with a clear
+ * message before it calls rc_code_init: 0 = RC_PAGED, 1 = RC_NATIVE, 2 = RC_NATIVE with
+ * RC_NATIVE_DETERMINISTIC. */
+#if defined(RC_NATIVE_DETERMINISTIC)
+#define RC_BUILD_MODE 2
+#elif defined(RC_NATIVE)
+#define RC_BUILD_MODE 1
+#else
+#define RC_BUILD_MODE 0
+#endif
+RC_EXPORT const u32 rc_build_mode = RC_BUILD_MODE;
+
 static RHost host;
+
+/* The preemption flag that RC_NATIVE builds read at every yield point (RC_TICK): the
+ * host's (RHost.preempt_flag) once rc_code_init has run, a word that stays 0 for a host
+ * that passes none. RC_PAGED builds never read it. */
+static volatile u32 rc_no_preempt;
+volatile u32 *rc_preempt_flag = &rc_no_preempt;
 
 /* Function lookup inside the library (open addressing, keys are addr | thumb bit); only
  * targets that aren't recompiled go to the host (which interprets them). */
@@ -67,8 +91,10 @@ void rc_svc(RCtx *ctx, u32 imm, u32 next_pc) { host.svc(ctx, imm, next_pc); }
 void rc_trap(RCtx *ctx, u32 pc, u32 kind) { host.trap(ctx, pc, kind); }
 void rc_bad_return(RCtx *ctx, u32 got, u32 expected) { host.bad_return(ctx, got, expected); }
 void rc_budget(RCtx *ctx) { host.budget(ctx); }
+#ifdef RC_PAGED
 u32 rc_slow_read(RCtx *ctx, u32 a, u32 size) { return host.slow_read(ctx, a, size); }
 void rc_slow_write(RCtx *ctx, u32 a, u32 v, u32 size) { host.slow_write(ctx, a, v, size); }
+#endif
 
 static int set_hook(u32 addr, RHookFn hook) {
     for (u32 i = 0; i < rc_hook_count; i++) {
@@ -104,6 +130,7 @@ RC_EXPORT int rc_code_init(const RHost *h, RCodeInfo *info) {
     }
     host = *h;
     if (rc_func_count > (1u << 16)) return 0;   /* hash table too small */
+    rc_preempt_flag = h->preempt_flag ? h->preempt_flag : &rc_no_preempt;
     build_slots();
     info->table = rc_func_table;
     info->count = rc_func_count;

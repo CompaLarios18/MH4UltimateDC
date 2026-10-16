@@ -9,7 +9,10 @@
    a code.bin, code.ips or code.bps; tools/code_mods.py), so that the library is the code
    that will run,
 4. recompiles it to C (build/game/recomp/src, never shared),
-5. compiles the code library (clang; on Windows llvm-mingw's x86_64-w64-mingw32-clang),
+5. compiles the code library (clang; on Windows llvm-mingw's x86_64-w64-mingw32-clang);
+   --native builds it for the native runtime instead of Azahar's (flat memory, a
+   preemption flag at the yield points; named <program id>_native.<ext>), and with
+   --deterministic the yield points charge cycles as Azahar's do (<program id>_native_det.<ext>),
 6. optionally copies it to <Azahar user dir>/recomp/<program id>.<so|dll|dylib>, where the
    port's Azahar build picks it up (--install alone: Azahar's usual user directory).
 
@@ -47,9 +50,11 @@ from recomp import build as rbuild  # noqa: E402
 from recomp.analysis import Image  # noqa: E402
 
 
-def library_name(program_id: int) -> str:
+def library_name(program_id: int, native: bool = False, deterministic: bool = False) -> str:
+    """<program id>.<ext>; a library for the native runtime is <program id>_native.<ext> (or
+    _native_det with --deterministic), so it can't be mistaken for the one Azahar loads."""
     ext = "dll" if sys.platform.startswith("win") else "dylib" if sys.platform == "darwin" else "so"
-    return f"{program_id:016X}.{ext}"
+    return f"{program_id:016X}{rbuild.native_suffix(native, deterministic)}.{ext}"
 
 
 LLVM_MINGW = "llvm-mingw-20241217-ucrt-x86_64"
@@ -223,6 +228,12 @@ def main(argv=None) -> int:
     ap.add_argument("--install", metavar="AZAHAR_USER_DIR", nargs="?", const=default_user_dir(),
                     help="copy the library to AZAHAR_USER_DIR/recomp/; without a value, to Azahar's "
                          f"usual user directory ({default_user_dir()})")
+    ap.add_argument("--native", action="store_true",
+                    help="build the library for the native runtime (RC_NATIVE) instead of Azahar's "
+                         "backend; Azahar refuses it")
+    ap.add_argument("--deterministic", action="store_true",
+                    help="with --native: charge cycles at every yield point (RC_NATIVE_DETERMINISTIC), "
+                         "for reproducible scheduling")
     ap.add_argument("--fetch-compiler", action="store_true",
                     help="no compiler installed: download llvm-mingw (Windows), or Zig's C compiler "
                          "(Linux, macOS; used only without clang), into the output directory")
@@ -237,6 +248,7 @@ def main(argv=None) -> int:
     ap.add_argument("--hooks", default=os.path.join(ROOT, "config", "hooks.txt"), help=argparse.SUPPRESS)
     ap.add_argument("--tunables", default=os.path.join(ROOT, "config", "tunables.txt"), help=argparse.SUPPRESS)
     args = ap.parse_args(argv)
+    modes = rbuild.native_defines(args.native, args.deterministic)   # exits on --deterministic alone
 
     dump_dir = os.path.join(args.out, "dump")
     print(f"extracting {args.dump}")
@@ -295,9 +307,9 @@ def main(argv=None) -> int:
         cc = fetch_compiler(toolchain_dir, args.compiler_zip)
     else:
         cc = find_compiler(args.cc, toolchain_dir, args.fetch_compiler)
-    name = library_name(program_id)
+    name = library_name(program_id, args.native, args.deterministic)
     print(f"compiling with {cc} -{args.opt} ({args.jobs} jobs; -O1 takes a while)")
-    lib = rbuild.build(out, args.jobs, args.opt, ["RC_PAGED"], name, [rbuild.DLL_GLUE], cc=cc,
+    lib = rbuild.build(out, args.jobs, args.opt, modes or ["RC_PAGED"], name, [rbuild.DLL_GLUE], cc=cc,
                        extra_flags=["-fvisibility=hidden"])
     print(f"code library: {lib}")
     if args.install:
