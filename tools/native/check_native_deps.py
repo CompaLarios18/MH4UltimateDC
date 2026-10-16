@@ -12,8 +12,20 @@ listing each offence as `path:line: reason`, if
     port/azahar/.
 
 Files of port/src/ that native/ compiles or includes (fiber.cpp, fiber.h, schedule.cpp,
-schedule.h, hooks.cpp, hooks.h, platform.h) get the include rule too. They count as used when
-a file under native/ mentions port/src, and they are checked only if they exist.
+schedule.h, hooks.cpp, hooks.h, platform.h) get the include rule too, and only the ones native/
+uses are checked (and only if they exist):
+
+  - a mention of port/src/<file> in a file under native/ checks that file; a .cpp and its .h
+    are a pair, so naming one checks both. A file that is not on the list above (for example
+    port/src/arm_recomp.cpp) is checked too when native/ names it: it is Azahar-bound and is
+    reported if it includes Azahar headers;
+  - a mention of the bare directory (port/src with no file name, a glob such as port/src/*.cpp
+    or a variable such as port/src/${X}.cpp) checks every file on the list, because any of
+    them could be pulled in;
+  - a native/ file that mentions nothing from port/src checks nothing from it.
+
+A mention in a CMake comment is ignored; one in a comment of a .cpp/.h file counts (it is
+conservative: the file is checked although nothing may use it).
 
 usage: check_native_deps.py [--root DIR]      DIR is the repository root (default: this checkout)
 exit status: 0 clean, 1 offences, 2 no native/ directory under DIR
@@ -61,6 +73,7 @@ CMAKE_SUFFIXES = {".cmake"}
 INCLUDE_RE = re.compile(r'^\s*#\s*(?:include|import)\s*[<"]([^>"]+)[>"]')
 TOKEN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_.+\-]*")
 PORT_AZAHAR_RE = re.compile(r"port/azahar(?![A-Za-z0-9_])")
+PORT_SRC_RE = re.compile(r"port/src(?:/([A-Za-z0-9_][A-Za-z0-9_.+\-/]*))?")
 
 
 def _read(path: Path) -> list[str] | None:
@@ -113,12 +126,31 @@ def _is_cmake(path: Path) -> bool:
     return path.name == "CMakeLists.txt" or path.suffix in CMAKE_SUFFIXES
 
 
+def port_src_mentions(text: str) -> tuple[set[str], bool]:
+    """(files of port/src named in the text, whether the bare directory is mentioned)."""
+    named: set[str] = set()
+    bare = False
+    for match in PORT_SRC_RE.finditer(text):
+        rel = (match.group(1) or "").rstrip(".-/+")
+        after = text[match.end():match.end() + 1]
+        base = rel.rsplit("/", 1)[-1]
+        if not rel or "." not in base.strip(".") or after in ("*", "$", "{", "?", "["):
+            bare = True
+        else:
+            named.add(rel)
+            stem, dot, suffix = rel.rpartition(".")
+            if suffix in ("cpp", "h"):
+                named.add(f"{stem}.{'h' if suffix == 'cpp' else 'cpp'}")
+    return named, bare
+
+
 def check(root: Path) -> tuple[list[str], int]:
     """Returns (offences, number of files looked at)."""
     native = root / "native"
     problems: list[str] = []
     count = 0
-    mentions_port_src = False
+    named: set[str] = set()
+    bare = False
     for dirpath, _dirnames, filenames in os.walk(native):
         for name in sorted(filenames):
             path = Path(dirpath) / name
@@ -126,19 +158,24 @@ def check(root: Path) -> tuple[list[str], int]:
             if _is_cmake(path):
                 count += 1
                 problems += check_cmake(path, shown)
-                lines = _read(path) or []
-                mentions_port_src = mentions_port_src or any("port/src" in _strip_cmake_comment(l) for l in lines)
+                text = "\n".join(_strip_cmake_comment(l) for l in _read(path) or [])
             elif path.suffix in SOURCE_SUFFIXES:
                 count += 1
                 problems += check_includes(path, shown)
-                lines = _read(path) or []
-                mentions_port_src = mentions_port_src or any("port/src" in l for l in lines)
-    if mentions_port_src:
-        for name in PORT_SRC_FILES:
-            path = root / "port" / "src" / name
-            if path.is_file():
-                count += 1
-                problems += check_includes(path, f"port/src/{name}")
+                text = "\n".join(_read(path) or [])
+            else:
+                continue
+            found, found_bare = port_src_mentions(text)
+            named |= found
+            bare = bare or found_bare
+    wanted = set(named)
+    if bare:
+        wanted |= set(PORT_SRC_FILES)
+    for rel in sorted(wanted):
+        path = root / "port" / "src" / rel
+        if path.is_file():
+            count += 1
+            problems += check_includes(path, f"port/src/{rel}")
     return sorted(problems), count
 
 
