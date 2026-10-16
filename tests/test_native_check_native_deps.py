@@ -169,9 +169,10 @@ def test_port_src_files_are_checked_when_native_uses_them(tree):
     write(
         tree,
         "native/src/kernel/CMakeLists.txt",
-        "mh4n_module(SOURCES kernel.cpp ../../../port/src/fiber.cpp)\n",
+        "mh4n_module(SOURCES kernel.cpp)\ntarget_include_directories(k PRIVATE ../../../port/src)\n",
     )
-    # port/src/fiber.cpp does not exist; hooks.h does and is on the list
+    # the bare directory (N1-01 follow-up: naming only fiber.cpp no longer checks hooks.h, see
+    # test_only_fiber_named_*): every listed file that exists is checked; hooks.h does
     result = run(tree)
     assert result.returncode == 1
     assert "port/src/hooks.h:1:" in result.stdout
@@ -186,6 +187,101 @@ def test_each_listed_port_file_is_checked(tree, name):
     result = run(tree)
     assert result.returncode == 1
     assert f"port/src/{name}:1:" in result.stdout
+
+
+def _port_tree(tree):
+    for name in PORT_FILES:
+        write(tree, f"port/src/{name}", '#include "core/core.h"\n#include <vector>\n')
+    return tree
+
+
+def _checked(result):
+    return {l.split(":")[0] for l in result.stdout.splitlines()}
+
+
+def test_only_fiber_named_checks_fiber_pair_not_hooks(tree):
+    _port_tree(tree)
+    write(tree, "native/src/kernel/CMakeLists.txt", "mh4n_module(SOURCES k.cpp ../../../port/src/fiber.cpp)\n")
+    result = run(tree)
+    assert result.returncode == 1
+    assert _checked(result) == {"port/src/fiber.cpp", "port/src/fiber.h"}
+    assert "hooks" not in result.stdout
+
+
+def test_only_fiber_named_with_clean_fiber_and_azahar_bound_hooks_is_ok(tree):
+    write(tree, "port/src/fiber.cpp", "#include <memory>\n")
+    write(tree, "port/src/fiber.h", "#pragma once\n")
+    write(tree, "port/src/hooks.cpp", '#include "core/core.h"\n')
+    write(tree, "port/src/hooks.h", '#include "common/common_types.h"\n')
+    write(tree, "native/src/kernel/CMakeLists.txt", "mh4n_module(SOURCES k.cpp ../../../port/src/fiber.cpp)\n")
+    result = run(tree)
+    assert result.returncode == 0, result.stdout
+    assert "ok" in result.stdout
+
+
+def test_hooks_named_checks_hooks_pair_with_path_and_line(tree):
+    write(tree, "port/src/hooks.cpp", "#include <vector>\n#include \"core/core.h\"\n")
+    write(tree, "port/src/hooks.h", '#include "common/common_types.h"\n')
+    write(tree, "port/src/fiber.h", '#include "core/core.h"\n')
+    write(tree, "native/src/kernel/CMakeLists.txt", "mh4n_module(SOURCES ../../../port/src/hooks.cpp)\n")
+    result = run(tree)
+    assert result.returncode == 1
+    assert "port/src/hooks.cpp:2:" in result.stdout
+    assert "port/src/hooks.h:1:" in result.stdout
+    assert "fiber" not in result.stdout
+
+
+def test_header_named_checks_its_cpp(tree):
+    write(tree, "port/src/schedule.cpp", '#include "core/core.h"\n')
+    write(tree, "native/src/kernel/kernel.cpp", CLEAN_CPP + '#include "../../../port/src/schedule.h"\n')
+    result = run(tree)
+    assert result.returncode == 1
+    assert _checked(result) == {"port/src/schedule.cpp"}
+
+
+def test_platform_h_named_checks_platform_h_only(tree):
+    _port_tree(tree)
+    write(tree, "native/src/kernel/kernel.cpp", CLEAN_CPP + '#include "../../../port/src/platform.h"\n')
+    result = run(tree)
+    assert _checked(result) == {"port/src/platform.h"}
+
+
+def test_unlisted_file_named_is_checked(tree):
+    write(tree, "port/src/arm_recomp.cpp", '#include "core/core.h"\n')
+    write(tree, "native/src/kernel/CMakeLists.txt", "mh4n_module(SOURCES k.cpp ../../../port/src/arm_recomp.cpp)\n")
+    result = run(tree)
+    assert result.returncode == 1
+    assert "port/src/arm_recomp.cpp:1:" in result.stdout
+
+
+def test_bare_directory_checks_every_listed_file(tree):
+    _port_tree(tree)
+    write(tree, "port/src/arm_recomp.cpp", '#include "core/core.h"\n')
+    write(tree, "native/src/kernel/CMakeLists.txt", "target_include_directories(k PRIVATE ../../../port/src)\n")
+    result = run(tree)
+    assert _checked(result) == {f"port/src/{n}" for n in PORT_FILES}
+
+
+@pytest.mark.parametrize("text", ["../port/src/*.cpp", "${PORT_ROOT}/port/src/", "port/src ", "port/src/${X}.cpp"])
+def test_glob_or_variable_counts_as_bare_directory(tree, text):
+    _port_tree(tree)
+    write(tree, "native/src/kernel/CMakeLists.txt", f"file(GLOB S {text})\n")
+    assert _checked(run(tree)) == {f"port/src/{n}" for n in PORT_FILES}
+
+
+def test_native_mentioning_nothing_checks_nothing_from_port_src(tree):
+    _port_tree(tree)
+    result = run(tree)
+    assert result.returncode == 0
+    assert "(3 files)" in result.stdout
+
+
+def test_cmake_comment_mention_is_ignored_but_source_comment_counts(tree):
+    _port_tree(tree)
+    write(tree, "native/src/kernel/CMakeLists.txt", "# see ../../../port/src/fiber.cpp\nmh4n_module(SOURCES k.cpp)\n")
+    assert run(tree).returncode == 0
+    write(tree, "native/src/kernel/kernel.cpp", CLEAN_CPP + "// like port/src/fiber.cpp\n")
+    assert _checked(run(tree)) == {"port/src/fiber.cpp", "port/src/fiber.h"}
 
 
 def test_no_native_directory(tmp_path):

@@ -109,7 +109,32 @@ thread gets a line when it is created
 the main thread has `parent=0`). To compare two runtimes whose thread ids and handle values
 differ, add `--normalize` (threads become `main` or `<entry>#<k>`, handles `<kind>#<k>`, times
 are dropped) and `--outputs` (compare the results too); `tools/native/tracefmt.py` describes
-the rules. Every time in a script is emulated milliseconds or a game frame: `f600` is the first moment the
+the rules.
+
+`--trace-ipc FILE [--trace-ipc-full]` writes every IPC request with its reply, using Azahar's own
+IPC recorder (`Kernel().GetIPCRecorder()`; no patch is needed). A line, written when the reply
+is recorded (so a service that answers later comes after the lines of requests that other
+threads sent in between), is `<thread> seq=<n> session=<name> cmd=<header> in=<words> desc=<...>
+out=<words> outdesc=<...> t=<ticks>`: `seq` numbers the requests in the order they were sent,
+`session` is the service's port name (`fs:USER`) or, for a session a reply handed out,
+`<service>/<kind>#<k>` (`fs:USER/file#3`; never the file's name), `in` is every word of the
+command as the client wrote it and `out` every word of the reply as the client reads it (its
+second word is the result), `desc` and `outdesc` list `<kind>:<index>:<size>:<token>` for the
+static buffers (CRC-32 of the bytes), the mapped buffers (`mapped-r|w|rw`; the CRC-32 of those
+the service may read in `desc`, and of those it may write, after the reply, in `outdesc`) and
+the handles (`copy`/`move`, with the names of the handles). The header, the `# thread` lines and
+the hex style are those of `--trace-svc` (`# ipctrace v1 ...`). `--trace-ipc-full` adds
+`data=<index>:<hex>` with the bytes of every input buffer, for the replay harness (N1-11). A
+request that never got a reply ends with `out=-`. The file holds game data (file names, save
+bytes): keep it in `build/` and never paste lines from it. `tools/compare_ipc_traces.py ref
+cand [--strict] [--ignore FILE]... [--prefix] [--context N]` compares two traces thread by thread
+after the normalisation of `tools/native/tracefmt.py` (which also names the handles of an
+SVC trace that came in IPC replies: `tracefmt.py svc.txt --ipc ipc.txt`), and prints only
+session names, headers, result codes, descriptor indices, sizes, CRCs and counts. Limits: for a
+session served by the game itself (not by an HLE service) the output CRCs are `-`, because
+Azahar records its reply before it writes the buffers.
+
+Every time in a script is emulated milliseconds or a game frame: `f600` is the first moment the
 frame counter (the u32 at `0x010571d4`) reads 600 or more, so a script means the same on every CPU backend and
 runtime (`--input "f600:START,f900:A:f3"`; a hold may be `f<N>` frames, default 100 ms; `--dump`, `--replace`,
 `--set`, `--freeze`, `--call-counts`, `--shots-from` and `--ms` take the same). `--frames N` (or `--ms f<N>`) stops the

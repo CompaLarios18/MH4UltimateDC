@@ -60,6 +60,15 @@ def copy_native(dst):
     shutil.copytree(
         NATIVE, dst, ignore=shutil.ignore_patterns("build", "CMakeCache.txt", "CMakeFiles")
     )
+    # files outside native/ that a module may compile or include, at the same relative places
+    # (dst is <tree>/native): port/src/fiber.* and tools/recomp/runtime/recomp.h
+    tree = os.path.dirname(os.path.abspath(dst))
+    for rel in ("port/src/fiber.h", "port/src/fiber.cpp", "tools/recomp/runtime/recomp.h"):
+        src = os.path.join(ROOT, rel)
+        if os.path.isfile(src):
+            out = os.path.join(tree, rel)
+            os.makedirs(os.path.dirname(out), exist_ok=True)
+            shutil.copy2(src, out)
 
 
 def add_extras(native):

@@ -26,6 +26,7 @@ N0-04 and N0-07 changed `port/src/runner.cpp` and `port/azahar/azahar.patch` aft
 | `Core::System::GetAppLoader()` and `Loader::AppLoader::ReadProgramId` | the title id in trace headers (N0-04, N0-07) | native loader (N1-03) |
 | `Memory::SetUnmappedObserver` (the patch adds it in `memory.cpp`/`memory.h`) | the unmapped-access report of `--count-unmapped` (N0-07) | guest memory reports bad accesses itself (N1-02) |
 | `Memory::MemorySystem::ReadBlock`, `IsValidVirtualAddress` | reading the observable values of `--state-trace` (N0-07) | guest memory helpers (N1-02) |
+| `Kernel().GetIPCRecorder()` (`SetEnabled`, `BindCallback`, `UnbindCallback`, `RequestRecord`), `Process::handle_table.GetGeneric`, `KernelSystem::GetProcessById`, `Thread::GetCommandBufferAddress`, `Service::FS::File` and `Directory` (a `dynamic_pointer_cast` on a session's `hle_handler`); `ClientPort::name` is `<service>_Client` and the trace strips the suffix | `--trace-ipc` (N0-21) | the native IPC core writes the same trace from its own sessions (N1-10, N1-11) |
 
 ## How to recount
 

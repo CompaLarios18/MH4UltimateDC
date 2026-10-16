@@ -47,7 +47,8 @@ public:
     virtual ~Gpu() = default;
     // Virtual addresses, as the game wrote them.
     virtual void Execute(const GxCommand& command) = 0;
-    // GSP WriteHWRegs: 0x1EB00000 + the register offset.
+    // GSP WriteHWRegs: 0x1EB00000 + the register offset, i.e. the virtual addresses LCD registers at
+    // 0x1ED02000 and GPU registers at 0x1EF00000 and 0x1EF01000 (docs/native/mgpu-format.md).
     virtual void WriteReg(u32 addr, u32 value) = 0;
     virtual u32 ReadReg(u32 addr) = 0;
     virtual void SetBufferSwap(u32 screen, const FrameBufferInfo& info) = 0;

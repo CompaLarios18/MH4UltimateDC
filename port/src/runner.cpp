@@ -21,6 +21,7 @@
 #include <mutex>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 #include <fmt/format.h>
@@ -40,12 +41,19 @@
 #include "core/frontend/framebuffer_layout.h"
 #include "core/frontend/image_interface.h"
 #include "core/frontend/input.h"
+#include "core/hle/kernel/client_session.h"
+#include "core/hle/kernel/ipc_debugger/recorder.h"
 #include "core/hle/kernel/kernel.h"
+#include "core/hle/kernel/object.h"
 #include "core/hle/kernel/process.h"
+#include "core/hle/kernel/server_session.h"
+#include "core/hle/kernel/session.h"
 #include "core/hle/kernel/svc.h"
 #include "core/hle/kernel/thread.h"
 #include "core/hle/service/am/am.h"
 #include "core/hle/service/cfg/cfg.h"
+#include "core/hle/service/fs/directory.h"
+#include "core/hle/service/fs/file.h"
 #include "core/hle/service/service.h"
 #include "core/loader/loader.h"
 #include "core/memory.h"
@@ -98,6 +106,12 @@ const char* const USAGE = R"(usage: mh4u_runner <file> [options]
                     r4-r6 on entry, r0-r3 when the call completes for its thread), a line per
                     thread created and a header, to compare CPU backends thread by thread
                     (tools/compare_svc_traces.py)
+  --trace-ipc FILE  write every IPC request with its reply (also the ones a service answers
+                    later) to FILE, one line each: thread, order sent, session, header, the
+                    words both ways, the buffers and handles with CRC-32s and names, ticks;
+                    a header and a line per thread created. The file holds game data (file
+                    names, save bytes): keep it in build/ (tools/compare_ipc_traces.py)
+  --trace-ipc-full  with --trace-ipc: also write the bytes of the input buffers (data=)
   --state-trace FILE  write the game's observable state (the values listed in --observable)
                     on every game frame: a line whenever the frame counter changes, to compare
                     runtimes scene by scene (tools/native/state_diff.py)
@@ -757,6 +771,7 @@ void UseScriptedInput() {
 // leaves in r0-r3 is only provisional).
 
 FILE* g_svc_trace = nullptr;
+FILE* g_ipc_trace = nullptr; // --trace-ipc (N0-21); shares the thread lines of the system call trace
 
 /// A call between its start and its completion: the line up to `out=`, and the registers it
 /// started with (r0-r6), which the thread line of a CreateThread needs.
@@ -781,10 +796,44 @@ u32 CurrentThreadId(Core::System& system) {
 }
 
 /// `# thread <id> parent=<id> entry=<hex> arg=<hex> stack=<hex> prio=<n> core=<requested>/<resolved>`
+void WriteThreadLineTo(FILE* file, u32 id, u32 parent, u32 entry, u32 arg, u32 stack, u32 priority, s32 requested,
+                       s32 resolved) {
+    std::fprintf(file, "# thread %u parent=%u entry=%08X arg=%08X stack=%08X prio=%u core=%d/%d\n", id, parent,
+                 entry, arg, stack, priority, requested, resolved);
+}
+
+/// The line of a thread created while the traces run, in every trace that is open.
 void WriteThreadLine(u32 id, u32 parent, u32 entry, u32 arg, u32 stack, u32 priority, s32 requested,
                      s32 resolved) {
-    std::fprintf(g_svc_trace, "# thread %u parent=%u entry=%08X arg=%08X stack=%08X prio=%u core=%d/%d\n", id,
-                 parent, entry, arg, stack, priority, requested, resolved);
+    for (FILE* file : {g_svc_trace, g_ipc_trace}) {
+        if (file) {
+            WriteThreadLineTo(file, id, parent, entry, arg, stack, priority, requested, resolved);
+        }
+    }
+}
+
+/// The lines of the threads that exist when a trace starts (the process starts its main thread
+/// before the first call).
+void WriteExistingThreadLines(FILE* file, Core::System& system) {
+    for (u32 core = 0; core < system.GetNumCores(); ++core) {
+        for (const auto& thread : system.Kernel().GetThreadManager(core).GetThreadList()) {
+            WriteThreadLineTo(file, thread->GetThreadId(), 0, static_cast<u32>(thread->entry_point),
+                              thread->context.cpu_registers[0], static_cast<u32>(thread->stack_top),
+                              thread->nominal_priority, thread->processor_id, thread->processor_id);
+        }
+    }
+}
+
+/// A CreateThread (SVC 0x08) that succeeded in thread CALLER, made with the registers REGS
+/// (priority, entry, arg, stack top, processor id) and the handle HANDLE in r1 after the call:
+/// the new thread's line.
+void NoteCreatedThread(Core::System& system, u32 caller, const std::array<u32, 7>& regs, u32 handle) {
+    if (const auto process = system.Kernel().GetCurrentProcess()) {
+        if (const auto created = process->handle_table.Get<Kernel::Thread>(handle)) {
+            WriteThreadLine(created->GetThreadId(), caller, regs[1], regs[2], regs[3], regs[0],
+                            static_cast<s32>(regs[4]), created->processor_id);
+        }
+    }
 }
 
 /// Before the call: the registers it was made with.
@@ -819,13 +868,7 @@ void TraceSvcDone(Core::System& system, u32 imm) {
     const u32 out[4] = {cpu.GetReg(0), cpu.GetReg(1), cpu.GetReg(2), cpu.GetReg(3)};
     if (imm == 0x08 && out[0] == 0) {
         // CreateThread succeeded: the new thread's id comes from the handle in r1
-        if (const auto process = system.Kernel().GetCurrentProcess()) {
-            if (const auto created = process->handle_table.Get<Kernel::Thread>(out[1])) {
-                const auto& regs = it->second.regs; // priority, entry, arg, stack top, processor id
-                WriteThreadLine(created->GetThreadId(), id, regs[1], regs[2], regs[3], regs[0],
-                                static_cast<s32>(regs[4]), created->processor_id);
-            }
-        }
+        NoteCreatedThread(system, id, it->second.regs, out[1]);
     }
     const bool blocked = thread && thread->status != Kernel::ThreadStatus::Running &&
                          thread->status != Kernel::ThreadStatus::Dead;
@@ -858,13 +901,7 @@ void BeginSvcTrace(Core::System& system, const std::string& cpu, bool new_3ds) {
     }
     std::fprintf(g_svc_trace, "# svctrace v1 %s game=0x%016llx cpu=%s new3ds=%s\n", date,
                  static_cast<unsigned long long>(program_id), cpu.c_str(), new_3ds ? "on" : "off");
-    for (u32 core = 0; core < system.GetNumCores(); ++core) {
-        for (const auto& thread : system.Kernel().GetThreadManager(core).GetThreadList()) {
-            WriteThreadLine(thread->GetThreadId(), 0, static_cast<u32>(thread->entry_point),
-                            thread->context.cpu_registers[0], static_cast<u32>(thread->stack_top),
-                            thread->nominal_priority, thread->processor_id, thread->processor_id);
-        }
-    }
+    WriteExistingThreadLines(g_svc_trace, system);
     Kernel::SetSVCObserver(TraceSvc);
     Kernel::SetSVCPostObserver(TraceSvcDone);
     Kernel::SetThreadResumeObserver(TraceSvcResume);
@@ -880,6 +917,505 @@ void EndSvcTrace() {
     g_svc_pending.clear();
     std::fclose(g_svc_trace);
     g_svc_trace = nullptr;
+}
+
+// ── IPC trace (N0-21) ──────────────────────────────────────────────────────────────
+//
+// Derived in part from Azahar at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-2.0-or-later: every
+// source below says "GPLv2 or any later version"): the descriptor layouts and the walk over the
+// translate parameters (ParseIpcCommand) follow src/core/hle/ipc.h and
+// src/core/hle/kernel/hle_ipc.cpp; the recorder is used as src/core/hle/kernel/ipc_debugger/
+// recorder.h and recorder.cpp define it.
+// Copyright 2016 Citra Emulator Project (ipc.h)
+// Copyright 2017-2025 Citra Emulator Project / Azahar Emulator Project (hle_ipc.cpp)
+// Copyright 2019 Citra Emulator Project (recorder.h, recorder.cpp)
+//
+// One line per IPC request, written when its reply is recorded (see N0-21 in docs/native/wp/N0.md
+// and the docstring of tools/compare_ipc_traces.py for the format). Azahar's own IPC recorder
+// (core/hle/kernel/ipc_debugger) calls us three times per request: when the thread sends it
+// (RegisterRequest), when the service has the command (SetRequestInfo) and when the reply is
+// written (SetReplyInfo, which a service that answers later calls later, from wherever it does).
+// The buffers' CRC-32s are taken from the client's memory at the second and the third call.
+
+constexpr u32 kIpcCommandWords = 0x40; // the command buffer, in words
+
+bool g_ipc_full = false; // --trace-ipc-full
+std::mutex g_ipc_mutex;
+IPCDebugger::CallbackHandle g_ipc_callback;
+
+/// A command's translate parameters (the descriptors after the header and the normal parameters).
+struct IpcPart {
+    enum class Type { Handles, Pid, Static, Mapped, Pxi };
+    Type type = Type::Handles;
+    bool move = false; // Handles: MoveHandle (the kernel closes them in the client), else CopyHandle
+    u32 index = 0;     // the descriptor's word
+    u32 size = 0;      // Handles: how many; buffers: bytes
+    u32 perms = 0;     // Mapped: 1 read, 2 write
+    u32 address = 0;   // buffers: the word after the descriptor
+};
+
+/// Splits the translate parameters of COMMAND (IPC::Header: translate size in bits 0-5, normal size
+/// in bits 6-11; descriptors as IPC::GetDescriptorType reads them) into parts. Stops at a descriptor
+/// of a kind it does not know.
+std::vector<IpcPart> ParseIpcCommand(const std::vector<u32>& command) {
+    std::vector<IpcPart> parts;
+    if (command.empty()) {
+        return parts;
+    }
+    const std::size_t end = std::min<std::size_t>(command.size(), 1 + ((command[0] >> 6) & 0x3F) + (command[0] & 0x3F));
+    std::size_t i = 1 + ((command[0] >> 6) & 0x3F);
+    while (i < end) {
+        const u32 d = command[i];
+        IpcPart part;
+        part.index = static_cast<u32>(i++);
+        if ((d & 0xF) == 0) { // handle descriptors: bits 4-5 tell copy (0), move (1), calling PID (2)
+            const u32 kind = d & 0x30;
+            if (kind == 0x20) {
+                part.type = IpcPart::Type::Pid;
+                part.size = 1;
+            } else if (kind == 0x00 || kind == 0x10) {
+                part.type = IpcPart::Type::Handles;
+                part.move = kind == 0x10;
+                part.size = std::min<u32>((d >> 26) + 1, static_cast<u32>(end - i));
+            } else {
+                break;
+            }
+            i += part.size;
+        } else {
+            if (d & 0x8) { // mapped buffer: permissions in bits 1-2, size above bit 4
+                part.type = IpcPart::Type::Mapped;
+                part.perms = (d >> 1) & 3;
+                part.size = d >> 4;
+            } else if (d & 0x4) { // PXI buffer: size above bit 8
+                part.type = IpcPart::Type::Pxi;
+                part.size = d >> 8;
+            } else { // static buffer: size above bit 14
+                part.type = IpcPart::Type::Static;
+                part.size = d >> 14;
+            }
+            if (i < end) {
+                part.address = command[i];
+            }
+            ++i;
+        }
+        parts.push_back(part);
+    }
+    return parts;
+}
+
+/// CRC-32 (the one zlib and gzip use) of DATA, continuing from CRC (0 to start).
+u32 Crc32(const u8* data, std::size_t size, u32 crc = 0) {
+    static const std::array<u32, 256> table = [] {
+        std::array<u32, 256> t{};
+        for (u32 i = 0; i < 256; ++i) {
+            u32 c = i;
+            for (int k = 0; k < 8; ++k) {
+                c = (c & 1) ? 0xEDB88320u ^ (c >> 1) : c >> 1;
+            }
+            t[i] = c;
+        }
+        return t;
+    }();
+    crc = ~crc;
+    for (std::size_t i = 0; i < size; ++i) {
+        crc = table[(crc ^ data[i]) & 0xFF] ^ (crc >> 8);
+    }
+    return ~crc;
+}
+
+/// The CRC-32 of SIZE bytes of the process's memory from ADDRESS, and their hex when HEX is given.
+/// False when any page of the range is unmapped (it looks first, so nothing is logged or counted).
+bool CrcGuest(Core::System& system, Kernel::Process& process, u32 address, u32 size, u32& crc, std::string* hex) {
+    crc = 0;
+    if (size == 0) {
+        return true;
+    }
+    auto& memory = system.Memory();
+    const u64 end = static_cast<u64>(address) + size;
+    if (end > 0x100000000ull) {
+        return false;
+    }
+    for (u64 page = address; page < end; page = (page | 0xFFF) + 1) {
+        if (!memory.IsValidVirtualAddress(process, static_cast<u32>(page))) {
+            return false;
+        }
+    }
+    std::vector<u8> chunk(std::min<u32>(size, 0x10000));
+    for (u64 at = address; at < end;) {
+        const std::size_t n = static_cast<std::size_t>(std::min<u64>(chunk.size(), end - at));
+        memory.ReadBlock(process, static_cast<u32>(at), chunk.data(), n);
+        crc = Crc32(chunk.data(), n, crc);
+        if (hex) {
+            for (std::size_t i = 0; i < n; ++i) {
+                *hex += fmt::format("{:02x}", chunk[i]);
+            }
+        }
+        at += n;
+    }
+    return true;
+}
+
+/// A request between its sending and its reply.
+struct IpcPending {
+    u32 seq = 0;
+    u32 thread = 0;
+    u32 process_id = 0;
+    std::string session;                      // the session's name (see SessionName)
+    std::string service;                      // what names the sessions its replies hand out
+    std::map<u32, std::string> in_handles;    // word of a request handle -> name, taken when it was sent
+    bool have_request = false;                // the service has seen the command
+    bool is_hle = false;
+    std::vector<u32> in_words;                // the command, as the client wrote it
+    std::vector<IpcPart> in_parts;
+    std::vector<std::string> desc;            // "kind:index:size:token"
+    std::vector<std::string> data;            // "index:hex" (--trace-ipc-full)
+};
+
+std::map<int, IpcPending> g_ipc_pending;      // by the recorder's request id
+u32 g_ipc_seq = 0;
+std::map<u32, std::string> g_ipc_names;       // kernel object id -> the name a reply gave it
+std::map<std::string, u32> g_ipc_counts;      // "<service>/<kind>" -> how many were handed out
+u32 g_ipc_unnamed = 0;
+
+std::string IpcJoin(const std::vector<std::string>& items) {
+    std::string out;
+    for (const std::string& item : items) {
+        out += (out.empty() ? "" : ",") + item;
+    }
+    return out.empty() ? "-" : out;
+}
+
+std::string IpcWords(const std::vector<u32>& words) {
+    std::string out;
+    for (u32 w : words) {
+        out += fmt::format("{}0x{:08x}", out.empty() ? "" : ",", w);
+    }
+    return out.empty() ? "-" : out;
+}
+
+/// The service's port name for a session that has one (fs:USER); the name a reply gave a session
+/// without one (fs:USER/file#3); else a number. Never the session's own name, which holds the
+/// file's path.
+std::string IpcSessionName(const IPCDebugger::RequestRecord& r) {
+    if (!r.client_port.name.empty()) {
+        // Azahar's CreatePortPair names the client port "<service>_Client"; the service is the bare name.
+        constexpr std::string_view suffix = "_Client";
+        std::string name = r.client_port.name;
+        if (name.size() > suffix.size() && name.compare(name.size() - suffix.size(), suffix.size(), suffix) == 0) {
+            name.resize(name.size() - suffix.size());
+        }
+        return name;
+    }
+    const auto known = g_ipc_names.find(static_cast<u32>(r.client_session.id));
+    if (known != g_ipc_names.end()) {
+        return known->second;
+    }
+    const std::string name = fmt::format("unnamed#{}", g_ipc_unnamed++);
+    g_ipc_names[static_cast<u32>(r.client_session.id)] = name;
+    return name;
+}
+
+/// `fs:USER/file#3` -> `fs:USER`.
+std::string IpcServiceOf(const std::string& session) {
+    return session.substr(0, session.find('/'));
+}
+
+/// What kind of object a reply handed out: file, dir, session, or the lowercase kernel type.
+std::string IpcKindOf(const std::shared_ptr<Kernel::Object>& object) {
+    if (const auto client = Kernel::DynamicObjectCast<Kernel::ClientSession>(object)) {
+        if (client->parent && client->parent->server) {
+            const auto& handler = client->parent->server->hle_handler;
+            if (std::dynamic_pointer_cast<Service::FS::File>(handler)) {
+                return "file";
+            }
+            if (std::dynamic_pointer_cast<Service::FS::Directory>(handler)) {
+                return "dir";
+            }
+        }
+        return "session";
+    }
+    std::string kind = object->GetTypeName();
+    std::transform(kind.begin(), kind.end(), kind.begin(), [](unsigned char c) { return std::tolower(c); });
+    return kind;
+}
+
+/// The name of an object a reply handed out: `<service>/<kind>#<k>`, k counting from 0 per service
+/// and kind in the order they are handed out; the same object keeps its name.
+std::string IpcNameHandedOut(const std::shared_ptr<Kernel::Object>& object, const std::string& service) {
+    const auto known = g_ipc_names.find(object->GetObjectId());
+    if (known != g_ipc_names.end()) {
+        return known->second;
+    }
+    const std::string prefix = service + "/" + IpcKindOf(object);
+    const std::string name = fmt::format("{}#{}", prefix, g_ipc_counts[prefix]++);
+    g_ipc_names[object->GetObjectId()] = name;
+    return name;
+}
+
+/// The names of the handles of PART, in the client's handle table: `0` for a null handle, `-` for one
+/// that is not there (or, for a request, that the trace has no name for).
+std::string IpcHandleToken(Kernel::Process* process, const std::vector<u32>& words, const IpcPart& part,
+                           const std::string* service, const std::map<u32, std::string>* snapshot) {
+    std::string token;
+    for (u32 j = 0; j < part.size; ++j) {
+        const std::size_t at = part.index + 1 + j;
+        std::string name = "-";
+        if (at < words.size() && words[at] == 0) {
+            name = "0";
+        } else if (at < words.size() && snapshot) {
+            const auto it = snapshot->find(static_cast<u32>(at));
+            if (it != snapshot->end()) {
+                name = it->second;
+            }
+        } else if (at < words.size() && service && process) {
+            if (const auto object = process->handle_table.GetGeneric(words[at])) {
+                name = IpcNameHandedOut(object, *service);
+            }
+        }
+        token += (j ? "+" : "") + name;
+    }
+    return token;
+}
+
+std::string IpcDescription(const char* kind, u32 index, u32 size, const std::string& token) {
+    return fmt::format("{}:{}:{}:{}", kind, index, size, token);
+}
+
+std::string IpcCrcToken(bool ok, u32 crc) {
+    return ok ? fmt::format("0x{:08x}", crc) : std::string("-");
+}
+
+const char* IpcMappedKind(u32 perms) {
+    return perms == 1 ? "mapped-r" : perms == 2 ? "mapped-w" : perms == 3 ? "mapped-rw" : "mapped-0";
+}
+
+void WriteIpcLine(Core::System& system, const IpcPending& p, const std::vector<u32>* reply,
+                  const std::vector<std::string>& outdesc) {
+    std::string line = fmt::format(
+        "{} seq={} session={} cmd={} in={} desc={} out={} outdesc={} t={}", p.thread, p.seq, p.session,
+        p.have_request ? fmt::format("0x{:08x}", p.in_words[0]) : std::string("-"),
+        p.have_request ? IpcWords(p.in_words) : std::string("-"), p.have_request ? IpcJoin(p.desc) : std::string("-"),
+        reply ? IpcWords(*reply) : std::string("-"), reply ? IpcJoin(outdesc) : std::string("-"),
+        static_cast<long long>(system.CoreTiming().GetGlobalTicks() - g_start_ticks));
+    for (const std::string& data : p.data) {
+        line += " data=" + data;
+    }
+    line += '\n';
+    std::fputs(line.c_str(), g_ipc_trace);
+}
+
+/// The thread sends the request: its number, the session, and the names of the handles it passes (a
+/// handle the request moves is gone from the table once the service has the command).
+void IpcSent(Core::System& system, const IPCDebugger::RequestRecord& r) {
+    const u32 thread_id = static_cast<u32>(r.client_thread.id);
+    for (auto it = g_ipc_pending.begin(); it != g_ipc_pending.end();) {
+        if (it->second.thread == thread_id) { // a request that never got a reply (the call failed)
+            WriteIpcLine(system, it->second, nullptr, {});
+            it = g_ipc_pending.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    IpcPending p;
+    p.seq = ++g_ipc_seq;
+    p.thread = thread_id;
+    p.process_id = static_cast<u32>(r.client_process.id);
+    p.session = IpcSessionName(r);
+    p.service = IpcServiceOf(p.session);
+    const auto* thread = system.Kernel().GetCurrentThreadManager().GetCurrentThread();
+    std::shared_ptr<Kernel::Process> process;
+    if (thread) {
+        process = thread->owner_process.lock();
+    }
+    if (thread && process && thread->GetThreadId() == thread_id) {
+        auto& memory = system.Memory();
+        const VAddr buffer = thread->GetCommandBufferAddress();
+        u32 header = 0;
+        if (memory.IsValidVirtualAddress(*process, buffer)) {
+            memory.ReadBlock(*process, buffer, &header, sizeof(header));
+            std::vector<u32> command(std::min<u32>(1 + ((header >> 6) & 0x3F) + (header & 0x3F), kIpcCommandWords));
+            if (memory.IsValidVirtualAddress(*process, buffer + static_cast<u32>(command.size() * 4 - 1))) {
+                memory.ReadBlock(*process, buffer, command.data(), command.size() * 4);
+                for (const IpcPart& part : ParseIpcCommand(command)) {
+                    if (part.type != IpcPart::Type::Handles) {
+                        continue;
+                    }
+                    for (u32 j = 0; j < part.size; ++j) {
+                        const std::size_t at = part.index + 1 + j;
+                        if (command[at] != 0) {
+                            const auto object = process->handle_table.GetGeneric(command[at]);
+                            const auto known = object ? g_ipc_names.find(object->GetObjectId()) : g_ipc_names.end();
+                            p.in_handles[static_cast<u32>(at)] = known != g_ipc_names.end() ? known->second : "-";
+                        }
+                    }
+                }
+            }
+        }
+    }
+    g_ipc_pending[r.id] = std::move(p);
+}
+
+/// The service has the command: the words the client wrote, and the CRC-32 of every input buffer.
+void IpcRequestSeen(Core::System& system, const IPCDebugger::RequestRecord& r) {
+    const auto it = g_ipc_pending.find(r.id);
+    if (it == g_ipc_pending.end() || r.untranslated_request_cmdbuf.empty()) {
+        return;
+    }
+    IpcPending& p = it->second;
+    p.have_request = true;
+    p.is_hle = r.is_hle;
+    p.in_words = r.untranslated_request_cmdbuf;
+    p.in_parts = ParseIpcCommand(p.in_words);
+    const auto process = system.Kernel().GetProcessById(p.process_id);
+    for (const IpcPart& part : p.in_parts) {
+        switch (part.type) {
+        case IpcPart::Type::Handles:
+            p.desc.push_back(IpcDescription(part.move ? "move" : "copy", part.index, part.size,
+                                            IpcHandleToken(process.get(), p.in_words, part, nullptr, &p.in_handles)));
+            break;
+        case IpcPart::Type::Pid:
+            p.desc.push_back(IpcDescription("pid", part.index, part.size, "-"));
+            break;
+        case IpcPart::Type::Pxi:
+            p.desc.push_back(IpcDescription("pxi", part.index, part.size, "-"));
+            break;
+        case IpcPart::Type::Static:
+        case IpcPart::Type::Mapped: {
+            const bool is_static = part.type == IpcPart::Type::Static;
+            const bool readable = is_static || (part.perms & 1);
+            u32 crc = 0;
+            std::string hex;
+            const bool ok = readable && process && CrcGuest(system, *process, part.address, part.size, crc,
+                                                            g_ipc_full ? &hex : nullptr);
+            p.desc.push_back(IpcDescription(is_static ? "static" : IpcMappedKind(part.perms), part.index, part.size,
+                                            IpcCrcToken(ok, crc)));
+            if (ok && g_ipc_full) {
+                p.data.push_back(fmt::format("{}:{}", part.index, hex));
+            }
+            break;
+        }
+        }
+    }
+}
+
+/// The reply is written: the words the client reads, the CRC-32 of the static buffers it wrote and of
+/// the request's writable mapped buffers, the names of the handles it handed out; then the line.
+void IpcReplied(Core::System& system, const IPCDebugger::RequestRecord& r) {
+    const auto it = g_ipc_pending.find(r.id);
+    if (it == g_ipc_pending.end()) {
+        return;
+    }
+    IpcPending& p = it->second;
+    const std::vector<u32>& reply = r.translated_reply_cmdbuf; // the client's view of the reply
+    const auto process = system.Kernel().GetProcessById(p.process_id);
+    std::vector<std::string> outdesc;
+    for (const IpcPart& part : ParseIpcCommand(reply)) {
+        switch (part.type) {
+        case IpcPart::Type::Handles:
+            outdesc.push_back(IpcDescription(part.move ? "move" : "copy", part.index, part.size,
+                                             IpcHandleToken(process.get(), reply, part, &p.service, nullptr)));
+            break;
+        case IpcPart::Type::Pid:
+            outdesc.push_back(IpcDescription("pid", part.index, part.size, "-"));
+            break;
+        case IpcPart::Type::Static: {
+            // an HLE service has written the bytes by now; a game's own server writes them after this
+            u32 crc = 0;
+            const bool ok = p.is_hle && process && CrcGuest(system, *process, part.address, part.size, crc, nullptr);
+            outdesc.push_back(IpcDescription("static", part.index, part.size, IpcCrcToken(ok, crc)));
+            break;
+        }
+        case IpcPart::Type::Mapped: // the request's own descriptor covers it
+        case IpcPart::Type::Pxi:
+            break;
+        }
+    }
+    for (const IpcPart& part : p.in_parts) {
+        if (part.type == IpcPart::Type::Mapped && (part.perms & 2)) {
+            u32 crc = 0;
+            const bool ok = p.is_hle && process && CrcGuest(system, *process, part.address, part.size, crc, nullptr);
+            outdesc.push_back(IpcDescription(IpcMappedKind(part.perms), part.index, part.size, IpcCrcToken(ok, crc)));
+        }
+    }
+    WriteIpcLine(system, p, &reply, outdesc);
+    g_ipc_pending.erase(it);
+}
+
+void IpcRecorded(const IPCDebugger::RequestRecord& r) {
+    std::lock_guard<std::mutex> lock(g_ipc_mutex);
+    if (!g_ipc_trace) {
+        return;
+    }
+    auto& system = Core::System::GetInstance();
+    if (r.status == IPCDebugger::RequestStatus::Sent) {
+        IpcSent(system, r);
+    } else if (r.translated_reply_cmdbuf.empty()) {
+        IpcRequestSeen(system, r);
+    } else {
+        IpcReplied(system, r);
+    }
+}
+
+/// With --trace-ipc alone, the thread lines come from these (the system call trace's observers
+/// write them to both files when it is on too).
+std::map<u32, std::array<u32, 7>> g_ipc_create_regs; // CreateThread's registers, by calling thread
+
+void IpcThreadSvc(Core::System& system, u32 imm) {
+    if (imm == 0x08) {
+        auto& cpu = system.GetRunningCore();
+        std::array<u32, 7> regs{};
+        for (std::size_t i = 0; i < regs.size(); ++i) {
+            regs[i] = cpu.GetReg(static_cast<int>(i));
+        }
+        g_ipc_create_regs[CurrentThreadId(system)] = regs;
+    }
+}
+
+void IpcThreadSvcDone(Core::System& system, u32 imm) {
+    if (imm == 0x08) {
+        auto& cpu = system.GetRunningCore();
+        const u32 id = CurrentThreadId(system);
+        const auto it = g_ipc_create_regs.find(id);
+        if (it != g_ipc_create_regs.end() && cpu.GetReg(0) == 0) {
+            NoteCreatedThread(system, id, it->second, cpu.GetReg(1));
+        }
+        g_ipc_create_regs.erase(id);
+    }
+}
+
+bool BeginIpcTrace(Core::System& system, const std::string& path, bool full, const std::string& cpu, bool new_3ds) {
+    g_ipc_trace = std::fopen(path.c_str(), "w");
+    if (!g_ipc_trace) {
+        std::fprintf(stderr, "cannot write %s\n", path.c_str());
+        return false;
+    }
+    g_ipc_full = full;
+    WriteHeader(g_ipc_trace, system, "ipctrace", cpu, new_3ds);
+    WriteExistingThreadLines(g_ipc_trace, system);
+    if (!g_svc_trace) {
+        Kernel::SetSVCObserver(IpcThreadSvc);
+        Kernel::SetSVCPostObserver(IpcThreadSvcDone);
+    }
+    system.Kernel().GetIPCRecorder().SetEnabled(true);
+    g_ipc_callback = system.Kernel().GetIPCRecorder().BindCallback(IpcRecorded);
+    return true;
+}
+
+void EndIpcTrace(Core::System& system) {
+    auto& recorder = system.Kernel().GetIPCRecorder();
+    recorder.SetEnabled(false);
+    recorder.UnbindCallback(g_ipc_callback);
+    std::lock_guard<std::mutex> lock(g_ipc_mutex);
+    if (!g_svc_trace) {
+        Kernel::SetSVCObserver(nullptr);
+        Kernel::SetSVCPostObserver(nullptr);
+    }
+    for (const auto& [id, pending] : g_ipc_pending) {
+        WriteIpcLine(system, pending, nullptr, {}); // requests still waiting for a reply when the run ended
+    }
+    g_ipc_pending.clear();
+    std::fclose(g_ipc_trace);
+    g_ipc_trace = nullptr;
 }
 
 // ── screenshots ─────────────────────────────────────────────────────────────────────
@@ -1139,7 +1675,8 @@ int main(int argc, char** argv) {
     std::string code_library;
     std::string cpu = "recomp";
     std::string log_filter = "*:Warning Debug.Emulated:Debug Kernel:Info";
-    std::string user_dir, shots_dir, svc_trace;
+    std::string user_dir, shots_dir, svc_trace, ipc_trace;
+    bool ipc_trace_full = false;
     bool print_schedule = false;
     std::string schedule_error;
     std::string state_trace, unmapped_report, observable_file = "config/native/observable.txt";
@@ -1213,6 +1750,10 @@ int main(int argc, char** argv) {
             }
         } else if (arg == "--trace-svc" && i + 1 < argc) {
             svc_trace = argv[++i];
+        } else if (arg == "--trace-ipc" && i + 1 < argc) {
+            ipc_trace = argv[++i];
+        } else if (arg == "--trace-ipc-full") {
+            ipc_trace_full = true;
         } else if (arg == "--state-trace" && i + 1 < argc) {
             state_trace = argv[++i];
         } else if (arg == "--observable" && i + 1 < argc) {
@@ -1285,6 +1826,10 @@ int main(int argc, char** argv) {
     if (print_schedule) {
         std::fputs(Schedule::Describe(g_plan).c_str(), stdout);
         return 0;
+    }
+    if (ipc_trace_full && ipc_trace.empty()) {
+        std::fprintf(stderr, "--trace-ipc-full needs --trace-ipc FILE\n");
+        return 1;
     }
     const bool install_only = path.empty() && !install.empty();
     if ((path.empty() && !install_only) || (cpu != "recomp" && cpu != "jit" && cpu != "interp") ||
@@ -1394,6 +1939,10 @@ int main(int argc, char** argv) {
             BeginSvcTrace(system, cpu, new_3ds);
         }
     }
+    if (!ipc_trace.empty() && !BeginIpcTrace(system, ipc_trace, ipc_trace_full, cpu, new_3ds)) {
+        system.Shutdown();
+        return 1;
+    }
     if (!state_trace.empty() && !BeginStateTrace(system, state_trace, observable_file, cpu, new_3ds)) {
         system.Shutdown();
         return 1;
@@ -1498,6 +2047,9 @@ int main(int argc, char** argv) {
                 (system.CoreTiming().GetGlobalTicks() - start_ticks) / 268111.856);
     PrintRoomMembers();
     std::fflush(stdout);
+    if (g_ipc_trace) {
+        EndIpcTrace(system);
+    }
     if (g_svc_trace) {
         EndSvcTrace();
     }

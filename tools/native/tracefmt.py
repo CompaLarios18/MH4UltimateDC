@@ -31,13 +31,26 @@ Normalisation (`normalise`):
 Handles are counted in the file's order, so two runtimes that create handles in another order
 on different threads name them differently; the order of one thread's own calls never changes.
 
-usage: tracefmt.py TRACE [--normalize]     print the trace's calls (normalised or as read)
+IPC traces (N0-21, `mh4u_runner --trace-ipc`) are read by the same module (`parse_ipc`,
+`normalise_ipc`); tools/compare_ipc_traces.py documents their format. `tracefmt.py` tells an IPC
+trace from an SVC trace by its header (`# ipctrace`).
+
+With an IPC trace of the same run (`normalise(svc_trace, ipc=ipc_trace)`, `--ipc FILE` on the
+command line), the handles that came in IPC replies are named after the IPC trace
+(`<service>/<kind>#<k>`) instead of `?`. A run's n-th SendSyncRequest of a thread (not counting
+the ones that failed with 'invalid handle', which the recorder never sees) is that thread's n-th
+IPC request; the handles its reply handed out start to exist then, and the ones its request
+moved (MoveHandle descriptors, which the kernel closes) are forgotten.
+
+usage: tracefmt.py TRACE [--normalize] [--ipc FILE]
+                                           print the trace's calls (normalised or as read)
 """
 from __future__ import annotations
 
 import argparse
 import re
 import sys
+from collections import deque
 from dataclasses import dataclass, field, replace
 
 OK = "00000000"
@@ -47,6 +60,8 @@ DROPPED = "~"
 PSEUDO_HANDLES = frozenset({"FFFF8000", "FFFF8001"})  # the current thread, the current process
 SVC_GET_SYSTEM_TICK = "28"
 SVC_CLOSE_HANDLE = "23"
+SVC_SEND_SYNC_REQUEST = "32"
+RESULT_INVALID_HANDLE = "D8E007F7"   # SendSyncRequest on a handle that is not a session: no IPC record
 
 # SVC -> registers (r0..r3, as the call is made) that hold a handle. Facts about the SVC
 # interface (the numbers and the register assignment follow the hardware's), read from Azahar's
@@ -296,15 +311,260 @@ def _normalise_call(c: Call, thread: str, handles: _Handles) -> Call:
                    in4=c.in4, out=tuple(out) if out is not None else None)
 
 
-def normalise(trace: Trace) -> Trace:
+def _svc_word(word: str) -> str:
+    """An IPC trace word (0x%08x) in the SVC trace's style (8 uppercase digits)."""
+    try:
+        return f"{int(word, 16):08X}"
+    except ValueError:
+        return word
+
+
+def _forget_moved_handles(call: "IpcCall", handles: _Handles) -> None:
+    """The kernel closed the handles a request moved."""
+    for d in call.desc:
+        if d.kind == "move" and call.words_in is not None:
+            for j in range(d.size):
+                if d.index + 1 + j < len(call.words_in):
+                    handles.names.pop(_svc_word(call.words_in[d.index + 1 + j]), None)
+
+
+def _learn_reply_handles(call: "IpcCall", handles: _Handles) -> None:
+    """The handles the reply handed out exist from now on, under the names the IPC trace gave them."""
+    if call.words_out is None:
+        return
+    for d in call.outdesc:
+        if d.kind not in IPC_HANDLE_KINDS:
+            continue
+        for j, name in enumerate(d.token.split("+")[:d.size]):
+            at = d.index + 1 + j
+            if name not in (IPC_NO_NAME, "0", UNKNOWN_HANDLE) and at < len(call.words_out):
+                handles.names[_svc_word(call.words_out[at])] = name
+
+
+def normalise(trace: Trace, ipc: "IpcTrace | None" = None) -> Trace:
     """A copy of the trace with threads and handles renamed and time-dependent values dropped
-    (see the module docstring). The calls keep the file's order."""
+    (see the module docstring). The calls keep the file's order. `ipc` is the IPC trace of the
+    same run, which names the handles that came in IPC replies."""
     names = thread_names(trace)
     handles = _Handles()
-    calls = [_normalise_call(c, names.get(c.thread, c.thread), handles) for c in trace.calls]
+    queues: dict[str, deque] = {}
+    if ipc is not None:
+        for ic in sorted(ipc.calls, key=lambda x: x.seq):
+            queues.setdefault(ic.thread, deque()).append(ic)
+    calls = []
+    for c in trace.calls:
+        nc = _normalise_call(c, names.get(c.thread, c.thread), handles)
+        calls.append(nc)
+        queue = queues.get(c.thread)
+        if (queue and c.svc == SVC_SEND_SYNC_REQUEST
+                and not (c.out is not None and c.out[0] == RESULT_INVALID_HANDLE)):
+            ic = queue.popleft()
+            _forget_moved_handles(ic, handles)
+            _learn_reply_handles(ic, handles)
     threads = {names[i]: replace(t, id=names[i], parent=names.get(t.parent, t.parent))
                for i, t in trace.threads.items()}
     return Trace(trace.header, threads, calls)
+
+
+# ── IPC traces (N0-21) ──────────────────────────────────────────────────────────────
+
+IPC_HANDLE_KINDS = ("copy", "move")
+IPC_NO_NAME = "-"
+
+
+@dataclass(frozen=True)
+class IpcDesc:
+    """One translate descriptor of a command: `<kind>:<index>:<size>:<token>`.
+
+    kind: `static`, `mapped-r`, `mapped-w`, `mapped-rw`, `pxi` (buffers), `copy`, `move` (handles),
+    `pid` (the calling process id). index: the word of the command the descriptor is in. size: the
+    buffer's size in bytes, or the number of handles. token: a buffer's CRC-32 (`0x%08x`; `-` when it
+    has none: a write-only mapped buffer in a request, a PXI buffer, one that could not be read), or
+    the names of a handle descriptor's handles joined by `+` (`0` for a null handle, `-` for none)."""
+    kind: str
+    index: int
+    size: int
+    token: str = IPC_NO_NAME
+
+    def __str__(self) -> str:
+        return f"{self.kind}:{self.index}:{self.size}:{self.token}"
+
+
+@dataclass(frozen=True)
+class IpcCall:
+    thread: str
+    seq: int
+    session: str
+    cmd: str | None                           # the request's header word; None: never seen
+    words_in: tuple[str, ...] | None          # every word of the request, as the client wrote it
+    desc: tuple[IpcDesc, ...]
+    words_out: tuple[str, ...] | None         # every word of the reply, as the client read it; None: no reply
+    outdesc: tuple[IpcDesc, ...]
+    ticks: int
+    line: int
+    data: tuple[tuple[int, str], ...] = ()    # (descriptor index, hex bytes) of the input buffers (--trace-ipc-full)
+
+    @property
+    def result(self) -> str | None:
+        """The reply's result code (its first normal parameter), None without a reply."""
+        if not self.words_out or len(self.words_out) < 2:
+            return None
+        try:
+            normal = (int(self.words_out[0], 16) >> 6) & 0x3F
+        except ValueError:
+            return None
+        return self.words_out[1] if normal >= 1 else None
+
+
+@dataclass
+class IpcTrace:
+    header: dict[str, str] | None = None
+    threads: dict[str, ThreadInfo] = field(default_factory=dict)
+    calls: list[IpcCall] = field(default_factory=list)      # in file order (the order replies were recorded)
+
+    def by_thread(self) -> dict[str, list[IpcCall]]:
+        """Each thread's requests in the order they were sent."""
+        out: dict[str, list[IpcCall]] = {}
+        for c in self.calls:
+            out.setdefault(c.thread, []).append(c)
+        for calls in out.values():
+            calls.sort(key=lambda x: x.seq)
+        return out
+
+
+def _word(text: str) -> str:
+    try:
+        return f"0x{int(text, 0) & 0xFFFFFFFF:08x}"
+    except ValueError:
+        return text
+
+
+def _words(text: str | None) -> tuple[str, ...] | None:
+    if text is None or text in ("", "-"):
+        return None
+    return tuple(_word(w) for w in text.split(","))
+
+
+def _descs(text: str | None) -> tuple[IpcDesc, ...]:
+    if text is None or text in ("", "-"):
+        return ()
+    out = []
+    for item in text.split(","):
+        parts = item.split(":", 3)           # the token of a handle holds service names, which have ':'
+        if len(parts) < 3:
+            continue
+        try:
+            out.append(IpcDesc(parts[0], int(parts[1]), int(parts[2]), parts[3] if len(parts) > 3 else IPC_NO_NAME))
+        except ValueError:
+            continue
+    return tuple(out)
+
+
+def is_ipc_header(line: str) -> bool:
+    m = _HEADER.match(line.strip())
+    return bool(m) and m.group(1) == "ipctrace"
+
+
+def parse_ipc_lines(lines) -> IpcTrace:
+    trace = IpcTrace()
+    for n, line in enumerate(lines, 1):
+        parts = line.split()
+        if not parts:
+            continue
+        if parts[0] == "#":
+            if len(parts) > 1 and parts[1] == "thread":
+                info = _parse_thread_line(parts[2:])
+                if info is not None:
+                    trace.threads.setdefault(info.id, info)
+            elif trace.header is None and (m := _HEADER.match(line.strip())):
+                trace.header = {"tool": m.group(1), "version": m.group(2), "date": m.group(3),
+                                **_fields(m.group(4).split())}
+            continue
+        if parts[0].startswith("#"):
+            continue
+        f: dict[str, str] = {}
+        data: list[tuple[int, str]] = []
+        for token in parts[1:]:
+            key, eq, value = token.partition("=")
+            if not eq:
+                continue
+            if key == "data":
+                index, _, hexbytes = value.partition(":")
+                if index.isdigit():
+                    data.append((int(index), hexbytes))
+            else:
+                f[key] = value
+        if "seq" not in f or not f["seq"].isdigit():
+            continue
+        cmd = f.get("cmd")
+        trace.calls.append(IpcCall(
+            parts[0], int(f["seq"]), f.get("session", "?"),
+            None if cmd in (None, "-") else _word(cmd),
+            _words(f.get("in")), _descs(f.get("desc")), _words(f.get("out")), _descs(f.get("outdesc")),
+            _int(f.get("t")), n, tuple(data)))
+    return trace
+
+
+def parse_ipc(path: str) -> IpcTrace:
+    with open(path) as f:
+        return parse_ipc_lines(f)
+
+
+def is_ipc_trace(path: str) -> bool:
+    """Whether the file's first non-empty line is an IPC trace header."""
+    with open(path) as f:
+        for line in f:
+            if line.strip():
+                return is_ipc_header(line)
+    return False
+
+
+def _name_handle_words(words: tuple[str, ...] | None, descs: tuple[IpcDesc, ...]) -> tuple[str, ...] | None:
+    """The words with the handles in them replaced by their names (`?` when the trace gave none;
+    a null handle stays 0x00000000)."""
+    if words is None:
+        return None
+    out = list(words)
+    for d in descs:
+        if d.kind not in IPC_HANDLE_KINDS:
+            continue
+        names = d.token.split("+")
+        for j in range(d.size):
+            at = d.index + 1 + j
+            if at >= len(out):
+                break
+            name = names[j] if j < len(names) else IPC_NO_NAME
+            if name == "0":
+                out[at] = "0x00000000"
+            else:
+                out[at] = UNKNOWN_HANDLE if name in (IPC_NO_NAME, "") else name
+    return tuple(out)
+
+
+def normalise_ipc(trace: IpcTrace) -> IpcTrace:
+    """A copy with threads renamed as `normalise` does, the handles in the words replaced by their
+    names, and the times dropped. Sessions and descriptors already carry names."""
+    names = thread_names(trace)
+    calls = [replace(c, thread=names.get(c.thread, c.thread),
+                     words_in=_name_handle_words(c.words_in, c.desc),
+                     words_out=_name_handle_words(c.words_out, c.outdesc), ticks=0)
+             for c in trace.calls]
+    threads = {names[i]: replace(t, id=names[i], parent=names.get(t.parent, t.parent))
+               for i, t in trace.threads.items()}
+    return IpcTrace(trace.header, threads, calls)
+
+
+def join_items(items) -> str:
+    items = list(items)
+    return ",".join(str(i) for i in items) if items else "-"
+
+
+def format_ipc_call(c: IpcCall) -> str:
+    text = (f"{c.thread} seq={c.seq} session={c.session} cmd={c.cmd or '-'} in={join_items(c.words_in or ())} "
+            f"desc={join_items(c.desc)} out={join_items(c.words_out or ())} outdesc={join_items(c.outdesc)} t={c.ticks}")
+    for index, hexbytes in c.data:
+        text += f" data={index}:{hexbytes}"
+    return text
 
 
 def format_call(c: Call) -> str:
@@ -320,10 +580,21 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("trace")
     ap.add_argument("--normalize", action="store_true", help="rename threads and handles, drop times")
+    ap.add_argument("--ipc", metavar="FILE", help="the IPC trace of the same run: names the handles of an SVC trace "
+                                                  "that came in IPC replies (implies --normalize)")
     args = ap.parse_args(argv)
+    if args.ipc:
+        args.normalize = True          # the names only exist in a normalised SVC trace
+    if is_ipc_trace(args.trace):
+        ipc_trace = parse_ipc(args.trace)
+        if args.normalize:
+            ipc_trace = normalise_ipc(ipc_trace)
+        for call in ipc_trace.calls:
+            print(format_ipc_call(call))
+        return 0
     trace = parse(args.trace)
     if args.normalize:
-        trace = normalise(trace)
+        trace = normalise(trace, parse_ipc(args.ipc) if args.ipc else None)
     for c in trace.calls:
         print(format_call(c))
     return 0
