@@ -75,6 +75,21 @@ static const RFuncEntry *find(u32 addr) {
     return NULL;
 }
 
+/* Yield points. RC_NATIVE builds look at *rc_preempt_flag (the harness owns that word and
+ * rh_set_preempt_flag sets it); the other builds count cycles in ctx->budget. Either
+ * way rc_budget ends the call with ST_BUDGET, unless rh_set_budget_resume(refill) with
+ * refill >= 0 makes it behave like a host that yields and comes back: it clears the flag,
+ * adds `refill` cycles to ctx->budget and returns. rh_budget_calls() counts the calls of
+ * rc_budget made by the latest rh_call. */
+static volatile u32 g_preempt;
+volatile u32 *rc_preempt_flag = &g_preempt;
+static s64 g_resume_refill = -1;
+static u32 g_budget_calls;
+void rh_set_preempt_flag(u32 v) { g_preempt = v; }
+u32 rh_preempt_flag(void) { return g_preempt; }
+void rh_set_budget_resume(s64 refill) { g_resume_refill = refill; }
+u32 rh_budget_calls(void) { return g_budget_calls; }
+
 static void leave(u32 status, u32 i0, u32 i1) {
     g_status = status;
     g_info0 = i0;
@@ -97,7 +112,12 @@ void rc_call_ic(RCtx *ctx, u32 target, u32 *ic_target, void (**ic_fn)(RCtx *)) {
 void rc_svc(RCtx *ctx, u32 imm, u32 next_pc) { (void)ctx; leave(ST_SVC, imm, next_pc & ~1u); }
 void rc_trap(RCtx *ctx, u32 pc, u32 kind) { (void)ctx; leave(ST_TRAP, pc, kind); }
 void rc_bad_return(RCtx *ctx, u32 got, u32 expected) { (void)ctx; leave(ST_BADRET, got, expected); }
-void rc_budget(RCtx *ctx) { (void)ctx; leave(ST_BUDGET, 0, 0); }
+void rc_budget(RCtx *ctx) {
+    g_budget_calls++;
+    if (g_resume_refill < 0) leave(ST_BUDGET, 0, 0);
+    g_preempt = 0;
+    ctx->budget += g_resume_refill;
+}
 
 static void on_signal(int sig, siginfo_t *si, void *uc) {
     (void)uc;
@@ -140,6 +160,7 @@ int rh_call(u32 addr, RCtx *ctx) {
     ctx->mem = g_mem;
     g_status = ST_RETURN;
     g_info0 = g_info1 = 0;
+    g_budget_calls = 0;
     const u32 expect = ctx->r[14];
     rc_apply_rounding(ctx->fpscr);          /* the host follows FPSCR.RMode in guest code */
     if (sigsetjmp(g_jmp, 1) == 0) {
