@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Build a port test program (port/tests/svc_test.c, bench.c, io_test.c) into a 3DS ELF
-that Azahar can boot, and recompile it.
+"""Build a port test program (any port/tests/<name>.c: svc_test, bench, io_test and the
+conf_* kernel conformance programs) into a 3DS ELF that Azahar can boot, and recompile it.
 
-usage: python3 port/tests/build_svc_test.py [-o build/port-test] [--program bench|io_test]
+usage: python3 port/tests/build_svc_test.py [-o build/port-test] [--program NAME] [--list]
 Writes <out>/<program>.elf and its recompiled code in <out>/src/; build the code library
 with `python3 -m recomp.build <out> --code-library` and run it with mh4u_runner --code.
 """
@@ -40,7 +40,20 @@ SECTIONS {{
 """
 
 
+def programs() -> list[str]:
+    """The names of the test programs: every C file here with a _start (svc.h is a header)."""
+    names = []
+    for f in sorted(os.listdir(HERE)):
+        if f.endswith(".c"):
+            with open(os.path.join(HERE, f), encoding="utf-8") as fh:
+                if "_start" in fh.read():
+                    names.append(f[:-2])
+    return names
+
+
 def build(out: str, program: str = "svc_test") -> str:
+    if program not in programs():
+        raise SystemExit(f"unknown program {program!r}; one of {', '.join(programs())}")
     os.makedirs(out, exist_ok=True)
     objs = []
     for src in (os.path.join(HERE, f"{program}.c"), dt.RT_SOURCE):
@@ -76,8 +89,12 @@ def build(out: str, program: str = "svc_test") -> str:
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("-o", "--out", default=os.path.join(ROOT, "build", "port-test"))
-    ap.add_argument("--program", default="svc_test", help="svc_test, bench or io_test")
+    ap.add_argument("--program", default="svc_test", help="a program name (see --list)")
+    ap.add_argument("--list", action="store_true", help="print the program names and exit")
     args = ap.parse_args(argv)
+    if args.list:
+        print("\n".join(programs()))
+        return 0
     print(build(args.out, args.program))
     return 0
 
