@@ -583,3 +583,159 @@ def test_range_ignores_info_grafts(repo: Path) -> None:
 def test_range_endpoint_starting_with_dash_is_exit_2(repo: Path) -> None:
     r = run(repo, "--range=--since=2100..HEAD")
     assert r.returncode == 2
+
+
+# ---- unmapped report, images, ELF files and archives (N0-19 follow-up) ----
+
+def unmapped_line(i: int) -> str:
+    return f"count={1000 - i} addr=0x{0x08000000 + i * 4:08x} size=4 rw={'read' if i % 2 else 'write'} lr=0x{0x00100000 + i:08x}\n"
+
+
+def unmapped_report(n: int) -> str:
+    return "# unmapped v1 synthetic\n" + "".join(unmapped_line(i) for i in range(n))
+
+
+@pytest.mark.parametrize("lines,refused", [(49, False), (50, False), (51, True), (200, True)])
+def test_unmapped_report_lines(repo: Path, lines: int, refused: bool) -> None:
+    put(repo, "notes/u.txt", unmapped_report(lines))
+    git(repo, "add", "notes/u.txt")
+    r = run(repo, "--staged")
+    assert (r.returncode == 1) == refused, r.stdout + r.stderr
+    if refused:
+        assert "trace" in r.stdout
+
+
+def test_unmapped_report_without_0x_and_with_crlf() -> None:
+    text = "".join(f"count=3 addr={0x1000 + i:x} size=1 rw=read lr={i:x}\r\n" for i in range(51))
+    assert check_bytes("u.txt", text.encode())
+
+
+@pytest.mark.parametrize("variant", ["trailing", "leading", "tabs"])
+def test_unmapped_report_with_extra_field_is_refused(variant: str) -> None:
+    def line(i: int) -> str:
+        base = unmapped_line(i).rstrip("\n")
+        if variant == "trailing":
+            return base + " x=1\n"
+        if variant == "leading":
+            return " " + base + "\n"
+        return base.replace(" ", "\t") + "\n"
+    text = "".join(line(i) for i in range(51))
+    assert check_bytes("u.txt", text.encode())
+    assert check_bytes("u.txt", "".join(line(i) for i in range(50)).encode()) == []
+
+
+def test_unmapped_report_near_misses_are_not_trace() -> None:
+    text = "".join(f"count={i} addr=0x10 size=4 rw=exec lr=0x10\n" for i in range(60))
+    assert check_bytes("u.txt", text.encode()) == []
+
+
+BIN_EXTS = [".png", ".jpg", ".jpeg", ".bmp", ".tga", ".gif", ".elf", ".so", ".dll", ".exe",
+            ".zip", ".7z", ".gz", ".tar", ".xz", ".zst", ".dmp", ".mgpu", ".gcap"]
+BIN_MAGICS = {
+    "ELF": b"\x7fELF", "PNG": b"\x89PNG\r\n\x1a\n", "JPEG": b"\xff\xd8\xff", "GIF87": b"GIF87a",
+    "GIF89": b"GIF89a", "ZIP": b"PK\x03\x04", "gzip": b"\x1f\x8b", "7z": b"7z\xbc\xaf\x27\x1c",
+    "xz": b"\xfd7zXZ\x00", "zstd": b"\x28\xb5\x2f\xfd",
+}
+
+
+@pytest.mark.parametrize("ext", BIN_EXTS + [e.upper() for e in BIN_EXTS[:3]])
+def test_binary_extensions_staged_and_range(repo: Path, ext: str) -> None:
+    put(repo, f"docs/file{ext}", "plain text\n")
+    git(repo, "add", f"docs/file{ext}")
+    r = run(repo, "--staged")
+    assert r.returncode == 1 and "binary-ext" in r.stdout
+    git(repo, "commit", "-q", "-m", "x")
+    r = run(repo, "--range", "HEAD~1..HEAD")
+    assert r.returncode == 1 and "binary-ext" in r.stdout
+
+
+@pytest.mark.parametrize("trail", ["file.png ", "file.png.", "file.png\n"])
+def test_binary_extension_windows_normalisation(trail: str) -> None:
+    assert any(r.startswith("binary-ext") for r in guard.name_rules("a/" + trail))
+
+
+@pytest.mark.parametrize("name", sorted(BIN_MAGICS))
+def test_binary_magics_under_clean_name(repo: Path, name: str) -> None:
+    put(repo, "notes.txt", BIN_MAGICS[name] + b"synthetic body")
+    git(repo, "add", "notes.txt")
+    r = run(repo, "--staged")
+    assert r.returncode == 1 and "binary-magic" in r.stdout
+    git(repo, "commit", "-q", "-m", "x")
+    assert run(repo, "--range", "HEAD~1..HEAD").returncode == 1
+
+
+def test_binary_magic_only_at_start() -> None:
+    assert check_bytes("a.dat", b"x\x7fELF") == []
+    assert check_bytes("a.dat", b"\x1f") == []
+
+
+@pytest.mark.parametrize("name", ["PNG", "ELF", "ZIP"])
+def test_binary_allowlist_exempts_only_matching_sha(repo: Path, name: str) -> None:
+    data = BIN_MAGICS[name] + b"synthetic body"
+    ext = {"PNG": ".png", "ELF": ".elf", "ZIP": ".zip"}[name]
+    path = f"third_party/vendored{ext}"
+    put(repo, path, data)
+    git(repo, "add", path)
+    assert run(repo, "--staged").returncode == 1
+
+    digest = hashlib.sha256(data).hexdigest()
+    put(repo, "config/native/large_files.txt", f"{digest}  {path}\n")
+    assert run(repo, "--staged").returncode == 0
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", "x")
+    assert run(repo, "--range", "HEAD~1..HEAD").returncode == 0
+
+    # Wrong sha, or the same bytes under another path: refused.
+    put(repo, "config/native/large_files.txt", f"{'0' * 64}  {path}\n")
+    put(repo, "other/copy" + ext, data)
+    git(repo, "add", "-A")
+    r = run(repo, "--staged")
+    assert r.returncode == 1 and "other/copy" + ext in r.stdout
+    git(repo, "commit", "-q", "-m", "y")
+    put(repo, path, data + b"!")
+    git(repo, "add", path)
+    assert run(repo, "--staged").returncode == 1
+
+
+def test_binary_exemption_does_not_cover_other_rules(repo: Path) -> None:
+    # Listed, but under build/ (forbidden-dir), with a .bin name, or with trace content.
+    png = BIN_MAGICS["PNG"] + b"body"
+    lines = []
+    for path, data in (("build/x.png", png), ("vendored/a.bin", png),
+                       ("vendored/t.zip", BIN_MAGICS["ZIP"][:4] + b"\n" + b"".join(svc_line(i).encode() for i in range(60)))):
+        put(repo, path, data)
+        lines.append(f"{hashlib.sha256(data).hexdigest()}  {path}")
+    put(repo, "config/native/large_files.txt", "\n".join(lines) + "\n")
+    git(repo, "add", "-f", "-A")
+    r = run(repo, "--staged")
+    assert r.returncode == 1
+    assert "build/x.png: forbidden-dir" in r.stdout
+    assert "vendored/a.bin: extension" in r.stdout
+    assert "vendored/t.zip: trace" in r.stdout
+    assert "binary-" not in r.stdout
+
+
+def test_binary_exemption_does_not_cover_capture_magic() -> None:
+    # A capture magic and an image magic cannot both start one file, so the capture rule is
+    # checked on an allowlisted file with an image name.
+    data = b"MGPU" + b"\x00" * 8
+    path = "third_party/x.png"
+    found = check_bytes(path, data, {path: hashlib.sha256(data).hexdigest()})
+    assert [p for p, _ in found] == [path]
+    assert found[0][1].startswith("magic") and all(not r.startswith("binary-") for _, r in found)
+
+
+def test_tracked_tree_binary_rules_are_a_known_set() -> None:
+    allowed = guard.read_allowlist(ROOT)
+    files = subprocess.run(["git", "ls-files", "-z"], cwd=ROOT, capture_output=True, check=True).stdout
+    tripped: set[str] = set()
+    for rel in files.decode("utf-8", "surrogateescape").split("\0"):
+        path = ROOT / rel
+        if not rel or not path.is_file() or path.is_symlink():
+            continue
+        data = path.read_bytes()
+        found = guard.check_entries([("100644", "s", rel)], lambda sha: data, allowed)
+        if any(r.startswith("binary-") for _, r in found):
+            tripped.add(rel)
+    # Existing legitimate files (the application icon). A new one must be noticed here.
+    assert tripped == {"port/app/icon/mh4u.png"}
