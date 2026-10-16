@@ -5,6 +5,9 @@
 // (src/core/hle/kernel/handle_table.cpp, wait_object.cpp, event.cpp, mutex.cpp, semaphore.cpp,
 // timer.cpp, address_arbiter.cpp, shared_memory.cpp, resource_limit.cpp, thread.cpp, errors.h,
 // svc.cpp), with the derivation in a comment next to each number: never by running this code.
+// The Block helper restates the wait set-up of SVC::WaitSynchronization1/N from Azahar's
+// src/core/hle/kernel/svc.cpp (GPL-3.0-or-later; Copyright 2014-2026 Citra Emulator Project /
+// Azahar Emulator Project).
 // Clock arithmetic: 268,111,856 ticks per second, so 1 s = 268111856 ticks and 0.5 s = 134055928.
 #include <doctest/doctest.h>
 

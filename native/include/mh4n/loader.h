@@ -6,6 +6,7 @@
 // ParseKernelCaps, the segment and stack mapping of Process::Run, the ELF defaults, and the
 // field layouts and initial values of the configuration memory and the shared page.
 // Copyright 2014-2026 Citra Emulator Project / Azahar Emulator Project (ncch_container.h, ncch.cpp, elf.cpp)
+// Copyright 2013 Dolphin Emulator Project / 2014 Citra Emulator Project (elf.cpp, second notice)
 // Copyright 2015-2026 Citra Emulator Project / Azahar Emulator Project (process.cpp)
 // Copyright 2014 Citra Emulator Project (config_mem.h)
 // Copyright 2015-2025 Citra Emulator Project / Azahar Emulator Project (shared_page.h)

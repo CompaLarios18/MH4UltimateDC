@@ -34,7 +34,7 @@ The newest runner that still has its artifact, for a branch (`<branch>` is `nati
 
 ```bash
 id=$(gh api 'repos/CompaLarios18/MH4UltimateDC/actions/artifacts?name=mh4u-runner-linux&per_page=50' \
-  --jq '[.artifacts[] | select(.expired | not) | select(.workflow_run.head_branch == "<branch>")][0] | .workflow_run.id')
+  --jq '[.artifacts[] | select(.expired | not) | select(.workflow_run.head_repository_id == .workflow_run.repository_id) | select(.workflow_run.head_branch == "<branch>")][0] | .workflow_run.id')
 case "$id" in ""|null) echo "no runner artifact for <branch>"; exit 1 ;; esac
 mkdir -p build/runner
 gh run download "$id" -n mh4u-runner-linux -D build/runner
@@ -42,7 +42,7 @@ tar -xzf build/runner/mh4u-runner-linux.tar.gz -C build/runner
 build/runner/run.sh --help        # prints the runner's usage
 ```
 
-A push that changed none of the watched paths builds no runner, so the newest artifact of a branch may come from an earlier push; for a branch without one, use `native`'s.
+Only pushes (to `native` and `wp/**`) and dispatches publish the artifact, never pull requests, and the recipe also requires the run to come from this repository (a fork's branch can carry any name). A push that changed none of the watched paths builds no runner, so the newest artifact of a branch may come from an earlier push: compare the run's `head_sha` (`gh run view <id> --json headSha`) with `git rev-parse <branch>` when it matters, and for a branch without a runner use `native`'s, or dispatch one (`gh workflow run native.yml --ref <branch>`).
 
 ## Building it when there is none
 

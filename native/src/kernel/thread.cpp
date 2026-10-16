@@ -1,7 +1,9 @@
-// Derived from Azahar src/core/hle/kernel/thread.cpp at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6
-// (GPL-2.0-or-later): the thread as a wait object, its priority rules, the wake-up and the
-// bookkeeping of Stop. The queues, the context switch and the creation are not here.
-// Copyright 2014-2026 Citra Emulator Project / Azahar Emulator Project
+// Derived from Azahar src/core/hle/kernel/thread.cpp and svc.cpp at
+// 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-3.0-or-later: svc.cpp says so, thread.cpp says
+// GPL-2.0-or-later): the thread as a wait object, its priority rules, the wake-up, the
+// bookkeeping of Stop, and the wait set-up that SVC::WaitSynchronization1/N does (BeginSynchWait).
+// The queues, the context switch and the creation are not here.
+// Copyright 2014-2026 Citra Emulator Project / Azahar Emulator Project (thread.cpp, svc.cpp)
 #include <algorithm>
 
 #include "internal.h"

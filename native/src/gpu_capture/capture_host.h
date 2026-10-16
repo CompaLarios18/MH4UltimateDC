@@ -1,3 +1,7 @@
+// Derived from Azahar src/core/memory.h (the VRAM, FCRAM and DSP RAM physical address constants)
+// at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-2.0-or-later); see native/THIRD_PARTY.md.
+// Copyright 2014-2026 Citra Emulator Project / Azahar Emulator Project (memory.h)
+//
 // The gpu::Host of a capture replay (N2-02): a physical memory image of FCRAM, VRAM and DSP RAM
 // built from MEM records, and a second copy that is the capture's own reference (what the memory
 // holds when every GPU_PAGES record is applied).

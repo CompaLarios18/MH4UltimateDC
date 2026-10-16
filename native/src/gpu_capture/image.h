@@ -1,3 +1,9 @@
+// Derived from Azahar src/video_core/pica/regs_external.h and regs_framebuffer.h (the pixel and
+// colour-buffer format numbering and the register word positions) at
+// 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-2.0-or-later); see native/THIRD_PARTY.md.
+// Copyright 2023-2026 Citra Emulator Project / Azahar Emulator Project (regs_external.h)
+// Copyright 2017-2025 Citra Emulator Project / Azahar Emulator Project (regs_framebuffer.h)
+//
 // Images for the capture player: PPM files, the comparison thresholds, the displayed screens and
 // the PICA colour buffers (N2-02).
 #pragma once

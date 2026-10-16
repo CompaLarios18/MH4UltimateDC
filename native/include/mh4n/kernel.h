@@ -1,7 +1,7 @@
 // Derived from Azahar src/core/hle/kernel/object.h, handle_table.h, wait_object.h, event.h,
 // mutex.h, semaphore.h, timer.h, address_arbiter.h, shared_memory.h, resource_limit.h, thread.h,
-// process.h, kernel.h and errors.h at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-3.0-or-later:
-// thread.h and kernel.h say so, the other sources say GPL-2.0-or-later):
+// process.h, kernel.h, errors.h and svc.cpp (result code values) at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-3.0-or-later:
+// thread.h, kernel.h and svc.cpp say so, the other sources say GPL-2.0-or-later):
 // the object types and their names (HandleType, ResetType, ThreadStatus, ArbitrationType,
 // ResourceLimitType, MemoryPermission), the layout of the handle table and the result codes.
 // Copyright 2018 Citra Emulator Project (object.h)
@@ -10,7 +10,9 @@
 // Copyright 2015 Citra Emulator Project (timer.h)
 // Copyright 2015-2026 Citra Emulator Project / Azahar Emulator Project (resource_limit.h, process.h)
 // Copyright 2014-2026 Citra Emulator Project / Azahar Emulator Project (thread.h, kernel.h)
+// Copyright 2014-2026 Citra Emulator Project / Azahar Emulator Project (svc.cpp)
 // Copyright 2017 Citra Emulator Project (errors.h)
+// PPSSPP Project (thread.h, kernel.h, second notice: Licensed under GPLv2 or any later version)
 //
 // Kernel objects and the handle table (N1-05): the kernel's objects and their rules, independent
 // of how threads run. The scheduler (N1-06) plugs in through `Scheduler`; the SVCs (N1-07), the

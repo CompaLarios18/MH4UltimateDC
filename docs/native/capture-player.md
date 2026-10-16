@@ -83,8 +83,9 @@ reference PPMs come from the same renderer, so its quirks are kept:
 
 `SWAP` addresses are converted with Azahar's `GPU::VirtualToPhysicalAddress` (`Host::VirtualToPhysical`
 of the capture host: VRAM window, linear heap, addresses that already are physical). The format
-document says they are physical; either works, since a physical address is left alone, except that a
-physical VRAM address (`0x18000000`...) falls in the old linear-heap window, exactly as in Azahar.
+document says the addresses are as the game wrote them, physical or virtual; either works, since a
+physical address is left alone, except that a physical VRAM address (`0x18000000`...) falls in the old
+linear-heap window, exactly as in Azahar.
 
 **Assumptions about the recorder (N0-05), to check against a real capture:**
 - the `FRAME` record of frame *n* is compared with `<n>_top.ppm` and `<n>_bottom.ppm` in the

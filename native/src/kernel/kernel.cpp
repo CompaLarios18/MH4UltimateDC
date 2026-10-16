@@ -1,5 +1,6 @@
 // Derived from Azahar src/core/hle/kernel/kernel.cpp, process.cpp, resource_limit.cpp, mutex.cpp,
-// semaphore.cpp and shared_memory.cpp at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6
+// semaphore.cpp, shared_memory.cpp, event.cpp, timer.cpp and address_arbiter.cpp at
+// 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6
 // (GPL-3.0-or-later: kernel.cpp says so, the other sources say GPL-2.0-or-later): the object
 // factories, the process numbering and the APPLICATION resource
 // limit values.
@@ -7,7 +8,8 @@
 // Copyright 2015-2026 Citra Emulator Project / Azahar Emulator Project (process.cpp,
 // resource_limit.cpp)
 // Copyright 2014-2024 Citra Emulator Project / Azahar Emulator Project (mutex.cpp, semaphore.cpp,
-// shared_memory.cpp)
+// shared_memory.cpp, event.cpp, address_arbiter.cpp)
+// Copyright 2015-2024 Citra Emulator Project / Azahar Emulator Project (timer.cpp)
 #include "mh4n/assert.h"
 #include "mh4n/kernel.h"
 #include "mh4n/log.h"

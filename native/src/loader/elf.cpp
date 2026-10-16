@@ -3,6 +3,8 @@
 // PT_LOAD segment becomes text, ro or data), AppLoader_ELF::Load (the defaults of ELF programs)
 // and Process::Set3dsxKernelCaps.
 // Copyright 2014-2026 Citra Emulator Project / Azahar Emulator Project (elf.cpp)
+// Copyright 2013 Dolphin Emulator Project / 2014 Citra Emulator Project (elf.cpp, second notice:
+// ElfReader comes from Dolphin; GPL-2.0-or-later)
 // Copyright 2015-2026 Citra Emulator Project / Azahar Emulator Project (process.cpp)
 #include <filesystem>
 #include <fstream>

@@ -84,7 +84,7 @@ You are a worker. The orchestrator gave you a **WP ID**, a **worktree path**, th
 - **Shared files are the orchestrator's:** `docs/native/{ROADMAP,AGENTS,STATUS,DECISIONS}.md`, `docs/native/wp/*`, `CLAUDE.md`, `.claude/**`, `native/include/mh4n/**` (once merged), `native/THIRD_PARTY.md`, `config/**` and `include/**` (unless your allowlist names the file), and `tools/recomp/runtime/recomp.h` (outside N0-17). Entries for `config/native/ipc_time_dependent.txt` go in `proposed-shared-changes`, each with its reason.
 - **Copying from Azahar is allowed** (D6) for individual functions and tables, never its architecture (kernel, memory system, timing). Every copied file starts with:
   `// Derived from Azahar <path> at <commit> (GPL-2.0-or-later or GPL-3.0-or-later, as the file says)`
-  followed by the source file's own `// Copyright …` line(s), and goes in `derived-from-azahar`. A file that takes
+  followed by the source file's own `// Copyright …` line(s), second notice blocks included, and goes in `derived-from-azahar`. Name every Azahar file the code was read from and open each one to read its licence line: if any says GPLv3 or later, the header says GPL-3.0-or-later and which source says what. This covers `tools/` and `tests/` too. A file that takes
   its names or layouts one for one from an Azahar header (enumerations, structures) counts as derived too.
 - **No design decisions.** `needs-decision` is a good outcome when the spec doesn't decide.
 - **Token budget:** S ~150 k, M ~400 k, L ~1 M. Past it, stop and report `partial`.
