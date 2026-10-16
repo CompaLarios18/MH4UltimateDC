@@ -14,6 +14,7 @@ TEST_CASE("the code host is not built without the repository's fibers and recomp
 #else
 
 #include <cfenv>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <memory>
@@ -135,9 +136,16 @@ std::string DataDir() {
     return {};
 }
 
+// With MH4N_REQUIRE_TEST_DATA=1 (CI sets it) a missing program is a failure, not a skip: the
+// cases that need it are the done-when of N1-04, and a runner image that loses llvm-objcopy must
+// not turn them into silent passes.
 bool HaveProgram() {
     if (!DataDir().empty()) {
         return true;
+    }
+    const char* require = std::getenv("MH4N_REQUIRE_TEST_DATA");
+    if (require != nullptr && std::string(require) == "1") {
+        FAIL("the test program and its code libraries were not built, and MH4N_REQUIRE_TEST_DATA=1");
     }
     WARN_MESSAGE(false, "skipped: the test program and its code libraries were not built");
     return false;

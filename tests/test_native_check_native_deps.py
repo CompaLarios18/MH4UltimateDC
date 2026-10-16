@@ -284,6 +284,53 @@ def test_cmake_comment_mention_is_ignored_but_source_comment_counts(tree):
     assert _checked(run(tree)) == {"port/src/fiber.cpp", "port/src/fiber.h"}
 
 
+def test_a_local_include_of_a_named_file_is_checked_transitively(tree):
+    write(tree, "port/src/fiber.cpp", '#include "fiber.h"\n')
+    write(tree, "port/src/fiber.h", '#pragma once\n#include "hooks.h"\n#include <vector>\n')
+    write(tree, "port/src/hooks.h", '#include "inner/deep.h"\n')
+    write(tree, "port/src/inner/deep.h", '#include "core/core.h"\n')
+    write(tree, "native/src/kernel/CMakeLists.txt", "mh4n_module(SOURCES k.cpp ../../../port/src/fiber.cpp)\n")
+    result = run(tree)
+    assert result.returncode == 1
+    assert "port/src/inner/deep.h:1:" in result.stdout
+    assert _checked(result) == {"port/src/inner/deep.h"}
+    write(tree, "port/src/inner/deep.h", "#pragma once\n")
+    assert run(tree).returncode == 0
+
+
+@pytest.mark.parametrize("cmake", [
+    'set(P "${MH4N_REPO_ROOT}/port")\nmh4n_module(SOURCES k.cpp ${P}/src/hooks.cpp)\n',
+    'mh4n_module(SOURCES k.cpp ../../../port/./src/hooks.cpp)\n',
+    'mh4n_module(SOURCES k.cpp ../../../port//src/hooks.cpp)\n',
+    'mh4n_module(SOURCES k.cpp ../../../port/${SUB}/hooks.cpp)\n',
+    'set(P ../../../port)\n',
+])
+def test_a_path_that_hides_port_src_counts_as_the_bare_directory(tree, cmake):
+    _port_tree(tree)
+    write(tree, "port/src/hooks.cpp", '#include "core/core.h"\n')
+    write(tree, "native/src/kernel/CMakeLists.txt", cmake)
+    result = run(tree)
+    assert result.returncode == 1, cmake
+    assert "port/src/hooks.cpp:1:" in result.stdout
+
+
+def test_port_paths_that_are_not_src_do_not_widen_the_check(tree):
+    _port_tree(tree)
+    write(tree, "port/src/hooks.cpp", '#include "core/core.h"\n')
+    write(tree, "native/src/kernel/CMakeLists.txt",
+          'set(PROGRAM "${MH4N_REPO_ROOT}/port/tests/codehost_test.c")\n# the port\n')
+    assert run(tree).returncode == 0
+
+
+@pytest.mark.parametrize("header", ["nihstro/shader_binary.h", "teakra/teakra.h", "dynarmic/interface/A32/a32.h",
+                                    "soundtouch/SoundTouch.h", "cryptopp/sha.h", "xbyak/xbyak.h"])
+def test_azahars_externals_are_forbidden_includes(tree, header):
+    write(tree, "native/src/kernel/kernel.cpp", CLEAN_CPP + f"#include <{header}>\n")
+    result = run(tree)
+    assert result.returncode == 1
+    assert header in result.stdout
+
+
 def test_no_native_directory(tmp_path):
     result = run(tmp_path)
     assert result.returncode == 2

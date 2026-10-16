@@ -21,7 +21,11 @@ uses are checked (and only if they exist):
     reported if it includes Azahar headers;
   - a mention of the bare directory (port/src with no file name, a glob such as port/src/*.cpp
     or a variable such as port/src/${X}.cpp) checks every file on the list, because any of
-    them could be pulled in;
+    them could be pulled in; so does a CMake file that holds the port directory in a variable
+    (`set(P "${ROOT}/port")`, then `${P}/src/hooks.cpp`) or builds a path under port/ from a
+    variable; `//` and `/./` in a path are collapsed before the text is read;
+  - the quoted includes of a checked file that name a file of port/src are checked too (and
+    theirs, and so on), so a header that is not named still cannot bring Azahar in;
   - a native/ file that mentions nothing from port/src checks nothing from it.
 
 A mention in a CMake comment is ignored; one in a comment of a .cpp/.h file counts (it is
@@ -47,6 +51,13 @@ FORBIDDEN_INCLUDE_PREFIXES = (
     "input_common/",
     "web_service/",
     "citra",
+    # Azahar's own externals (its src/ and externals/ trees), which a native file has no reason to name
+    "nihstro/",
+    "teakra/",
+    "dynarmic/",
+    "soundtouch/",
+    "cryptopp/",
+    "xbyak/",
 )
 AZAHAR_TARGETS = (
     "citra_common",
@@ -71,9 +82,14 @@ SOURCE_SUFFIXES = {".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx", ".i
 CMAKE_SUFFIXES = {".cmake"}
 
 INCLUDE_RE = re.compile(r'^\s*#\s*(?:include|import)\s*[<"]([^>"]+)[>"]')
+QUOTED_INCLUDE_RE = re.compile(r'^\s*#\s*include\s*"([^"]+)"')
 TOKEN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_.+\-]*")
 PORT_AZAHAR_RE = re.compile(r"port/azahar(?![A-Za-z0-9_])")
 PORT_SRC_RE = re.compile(r"port/src(?:/([A-Za-z0-9_][A-Za-z0-9_.+\-/]*))?")
+# `port` as the last component of a path (a variable that will be given `/src/...` later) or
+# followed by a variable component, in a CMake file.
+PORT_DIR_VARIABLE_RE = re.compile(r'(?<=[/"\s(])port(?:(?=["\s)])|/(?=\$))')
+PATH_NOISE_RE = re.compile(r"/(?:\.?/)+")
 
 
 def _read(path: Path) -> list[str] | None:
@@ -126,10 +142,12 @@ def _is_cmake(path: Path) -> bool:
     return path.name == "CMakeLists.txt" or path.suffix in CMAKE_SUFFIXES
 
 
-def port_src_mentions(text: str) -> tuple[set[str], bool]:
-    """(files of port/src named in the text, whether the bare directory is mentioned)."""
+def port_src_mentions(text: str, cmake: bool = False) -> tuple[set[str], bool]:
+    """(files of port/src named in the text, whether the bare directory is mentioned). `cmake`:
+    the text is a CMake file, where the port directory may be held in a variable."""
     named: set[str] = set()
-    bare = False
+    text = PATH_NOISE_RE.sub("/", text)
+    bare = cmake and bool(PORT_DIR_VARIABLE_RE.search(text))
     for match in PORT_SRC_RE.finditer(text):
         rel = (match.group(1) or "").rstrip(".-/+")
         after = text[match.end():match.end() + 1]
@@ -155,7 +173,8 @@ def check(root: Path) -> tuple[list[str], int]:
         for name in sorted(filenames):
             path = Path(dirpath) / name
             shown = path.relative_to(root).as_posix()
-            if _is_cmake(path):
+            is_cmake = _is_cmake(path)
+            if is_cmake:
                 count += 1
                 problems += check_cmake(path, shown)
                 text = "\n".join(_strip_cmake_comment(l) for l in _read(path) or [])
@@ -165,17 +184,31 @@ def check(root: Path) -> tuple[list[str], int]:
                 text = "\n".join(_read(path) or [])
             else:
                 continue
-            found, found_bare = port_src_mentions(text)
+            found, found_bare = port_src_mentions(text, is_cmake)
             named |= found
             bare = bare or found_bare
     wanted = set(named)
     if bare:
         wanted |= set(PORT_SRC_FILES)
-    for rel in sorted(wanted):
-        path = root / "port" / "src" / rel
-        if path.is_file():
-            count += 1
-            problems += check_includes(path, f"port/src/{rel}")
+    src = root / "port" / "src"
+    queue = sorted(wanted)
+    seen: set[str] = set()
+    while queue:
+        rel = queue.pop()
+        if rel in seen:
+            continue
+        seen.add(rel)
+        path = src / rel
+        if not path.is_file():
+            continue
+        count += 1
+        problems += check_includes(path, f"port/src/{rel}")
+        for line in _read(path) or []:
+            match = QUOTED_INCLUDE_RE.match(line)
+            if match:
+                local = os.path.normpath(os.path.join(os.path.dirname(rel), match.group(1).strip()))
+                if not local.startswith("..") and (src / local).is_file():
+                    queue.append(local.replace(os.sep, "/"))
     return sorted(problems), count
 
 

@@ -33,7 +33,11 @@ enum class Interrupt : u32 { PSC0 = 0, PSC1 = 1, PDC0 = 2, PDC1 = 3, PPF = 4, P3
 class Host {
 public:
     virtual ~Host() = default;
-    // FCRAM, VRAM or DSP RAM, else nullptr.
+    // FCRAM, VRAM or DSP RAM, else nullptr. Non-null only when the whole [paddr, paddr + size) lies
+    // inside one of those areas, mapped; a range that leaves its area, or is partly unmapped, is
+    // nullptr (Azahar's GetPhysicalPointer ignores the size; the GX engine relies on this stricter
+    // rule to cut a DMA, fill or transfer at the end of an area). Size 0 probes the address: non-null
+    // for an address inside an area and for the address one past its end.
     virtual u8* PhysicalPointer(u32 paddr, u32 size) = 0;
     virtual std::optional<u32> VirtualToPhysical(u32 vaddr) = 0;
     // Thread-safe; goes through Kernel::Post.

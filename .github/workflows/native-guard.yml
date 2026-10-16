@@ -17,6 +17,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          persist-credentials: false   # the token is not left in .git/config for the script below
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -40,4 +41,11 @@ jobs:
             range="$PUSH_BEFORE..$PUSH_AFTER"
           fi
           echo "checking $range"
-          python3 tools/native/check_no_game_data.py --range "$range"
+          # On a PR the script is the base branch's own, so a PR cannot weaken the check that judges it
+          # (the checkout is the PR's merge commit). Until the base has the script, the PR's is used.
+          guard=tools/native/check_no_game_data.py
+          if [ "$EVENT" = "pull_request" ] && git cat-file -e "$PR_BASE:$guard" 2>/dev/null; then
+            git show "$PR_BASE:$guard" > "$RUNNER_TEMP/check_no_game_data.py"
+            guard="$RUNNER_TEMP/check_no_game_data.py"
+          fi
+          python3 "$guard" --repo . --range "$range"
