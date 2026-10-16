@@ -465,13 +465,4 @@ std::string CheckRecord(const Record& record) {
     }
 }
 
-std::string DescribeRecord(size_t index, const Record& record) {
-    std::string text = fmt::format("record {} ({}", index, record.name());
-    if (record.type == kGx && record.payload.size() >= 1) {
-        text += fmt::format(" {}", GxName(record.payload[0]));
-    }
-    text += ")";
-    return text;
-}
-
 } // namespace mh4n::gpu_capture

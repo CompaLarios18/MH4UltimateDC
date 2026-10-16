@@ -28,9 +28,6 @@ enum JudgeKind : u32 {
 inline constexpr u32 kDefaultJudge =
     kJudgeFill | kJudgeTransfer | kJudgeCopy | kJudgeDma | kJudgeCmdList | kJudgeFrames;
 
-// The kind names, in the order they are listed: fill, transfer, copy, dma, cmdlist, frames,
-// cacheflush.
-std::vector<std::string> JudgeKindNames();
 // "fill,dma", "none", "all". False with *error for an unknown name.
 bool ParseJudge(const std::string& text, u32& mask, std::string* error);
 

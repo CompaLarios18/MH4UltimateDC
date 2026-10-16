@@ -9,16 +9,6 @@
 namespace mh4n::gpu_capture {
 namespace {
 
-u32 ExpandMask(u32 mask) {
-    u32 m = 0;
-    for (u32 n = 0; n < 4; ++n) {
-        if (mask & (1u << n)) {
-            m |= 0xFFu << (8 * n);
-        }
-    }
-    return m;
-}
-
 // The register writes the Gpu decoded from a command list must be the ones the capture recorded
 // for it (PICA_REG): the same registers, in the same order, with the same byte masks and the same
 // bytes under the masks.

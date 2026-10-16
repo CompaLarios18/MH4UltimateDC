@@ -23,7 +23,6 @@
 #include "gpu_capture/capture_host.h"
 #include "gpu_capture/check.h"
 #include "gpu_capture/mgpu.h"
-#include "mh4n/log.h"
 
 namespace mh4n::gpu_capture {
 
@@ -108,16 +107,6 @@ const char* InterruptName(u32 id) {
     return id < 7 ? names[id] : "unknown";
 }
 
-u32 ExpandMask(u32 mask) {
-    u32 m = 0;
-    for (u32 n = 0; n < 4; ++n) {
-        if (mask & (1u << n)) {
-            m |= 0xFFu << (8 * n);
-        }
-    }
-    return m;
-}
-
 std::string FormatDb(double psnr) {
     return std::isinf(psnr) ? "inf" : fmt::format("{:.2f}", psnr);
 }
@@ -164,7 +153,7 @@ private:
     void CompareInterrupt(size_t index, const Record& record, u32 id, bool judged);
     void CheckLeftoverInterrupts(size_t index, u32 frame);
 
-    ScreenResult JudgeScreen(u32 screen, u32 frame, bool judged, const char* suffix, Image* native_out);
+    ScreenResult JudgeScreen(u32 screen, u32 frame, const char* suffix, Image* native_out);
 
     bool Stopped() const {
         return !result_.error.empty() || (config_.fail_fast && !result_.failures.empty());
@@ -854,8 +843,7 @@ void Player::RunGroup(size_t index, const Record& anchor) {
 
 // ---- frames -------------------------------------------------------------------------------------
 
-ScreenResult Player::JudgeScreen(u32 screen, u32 frame, bool judged, const char* suffix,
-                                 Image* native_out) {
+ScreenResult Player::JudgeScreen(u32 screen, u32 frame, const char* suffix, Image* native_out) {
     ScreenResult out;
     Image native;
     std::string error;
@@ -890,7 +878,6 @@ ScreenResult Player::JudgeScreen(u32 screen, u32 frame, bool judged, const char*
     } else {
         out.note = "no reference image";
     }
-    (void)judged;
     return out;
 }
 
@@ -917,8 +904,8 @@ void Player::HandleFrame(size_t index, const Record& record) {
     row.judged = frames_selected && !(row.gas && config_.skip_gas_frames);
 
     Image top, bottom;
-    row.top = JudgeScreen(0, record.frame, row.judged, "top", &top);
-    row.bottom = JudgeScreen(1, record.frame, row.judged, "bottom", &bottom);
+    row.top = JudgeScreen(0, record.frame, "top", &top);
+    row.bottom = JudgeScreen(1, record.frame, "bottom", &bottom);
     if (!config_.dump_dir.empty()) {
         if (!top.empty()) {
             WritePpm(fmt::format("{}/{}_top.ppm", config_.dump_dir, record.frame), top, nullptr);
@@ -1048,46 +1035,45 @@ PlayerResult Player::Run() {
 
 // ---- public -------------------------------------------------------------------------------------
 
-std::vector<std::string> JudgeKindNames() {
-    return {"fill", "transfer", "copy", "dma", "cmdlist", "frames", "cacheflush"};
-}
+namespace {
+struct JudgeName {
+    const char* name;
+    u32 bit;
+};
+// The --judge names, in the order the error text lists them (all and none are handled apart).
+constexpr JudgeName kJudgeKinds[] = {
+    {"fill", kJudgeFill},         {"transfer", kJudgeTransfer},   {"copy", kJudgeCopy},
+    {"dma", kJudgeDma},           {"cmdlist", kJudgeCmdList},     {"frames", kJudgeFrames},
+    {"cacheflush", kJudgeCacheFlush},
+};
+} // namespace
 
 bool ParseJudge(const std::string& text, u32& mask, std::string* error) {
     mask = 0;
     std::stringstream stream(text);
     std::string item;
     while (std::getline(stream, item, ',')) {
-        if (item.empty()) {
+        if (item.empty() || item == "none") {
             continue;
         }
-        u32 bit = 0;
-        if (item == "none") {
+        if (item == "all") {
+            mask |= kDefaultJudge | kJudgeCacheFlush;
             continue;
-        } else if (item == "all") {
-            bit = kDefaultJudge | kJudgeCacheFlush;
-        } else if (item == "fill") {
-            bit = kJudgeFill;
-        } else if (item == "transfer") {
-            bit = kJudgeTransfer;
-        } else if (item == "copy") {
-            bit = kJudgeCopy;
-        } else if (item == "dma") {
-            bit = kJudgeDma;
-        } else if (item == "cmdlist") {
-            bit = kJudgeCmdList;
-        } else if (item == "frames") {
-            bit = kJudgeFrames;
-        } else if (item == "cacheflush") {
-            bit = kJudgeCacheFlush;
-        } else {
+        }
+        const auto* kind = std::find_if(std::begin(kJudgeKinds), std::end(kJudgeKinds),
+                                        [&](const JudgeName& k) { return item == k.name; });
+        if (kind == std::end(kJudgeKinds)) {
             if (error != nullptr) {
-                *error = fmt::format("--judge: unknown kind '{}' (fill, transfer, copy, dma, "
-                                     "cmdlist, frames, cacheflush, all, none)",
-                                     item);
+                std::string names;
+                for (const JudgeName& k : kJudgeKinds) {
+                    names += k.name;
+                    names += ", ";
+                }
+                *error = fmt::format("--judge: unknown kind '{}' ({}all, none)", item, names);
             }
             return false;
         }
-        mask |= bit;
+        mask |= kind->bit;
     }
     return true;
 }

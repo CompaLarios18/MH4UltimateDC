@@ -124,6 +124,17 @@ bool ParseGx(const Record& record, gpu::GxCommand& command, std::string* error);
 bool ParsePicaReg(const Record& record, std::vector<gpu::RegisterWrite>& writes,
                   std::string* error);
 
+// The 4-bit byte mask of a PICA_REG write as a 32-bit bit mask (bit n of the mask -> byte n).
+inline u32 ExpandMask(u32 mask) {
+    u32 m = 0;
+    for (u32 n = 0; n < 4; ++n) {
+        if (mask & (1u << n)) {
+            m |= 0xFFu << (8 * n);
+        }
+    }
+    return m;
+}
+
 struct MmioData {
     u32 address, value;
 };
@@ -153,8 +164,5 @@ bool ParseFrame(const Record& record, u32& frame, std::string* error);
 // Validates one record on its own: the unknown type, the payload size and, where the format has
 // them, the content rules (gcap.py's check_record). Empty string: valid.
 std::string CheckRecord(const Record& record);
-
-// A description of a record for messages: "record 12 (GX SUBMIT_CMDLIST)".
-std::string DescribeRecord(size_t index, const Record& record);
 
 } // namespace mh4n::gpu_capture
