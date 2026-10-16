@@ -44,12 +44,12 @@ Count of Azahar includes per file (recount):
 
 | Library | Used for | Replacement |
 |---|---|---|
-| `citra_common` | logging, file utilities, `Settings::values`, `ParamPackage`, string utilities, scm revision | util (logging, files, strings); IRuntime options (settings); native module `native/src/config` (N1) |
+| `citra_common` | logging, file utilities, `Settings::values`, `ParamPackage`, string utilities, scm revision | util (logging, files, strings); IRuntime options (settings); `native/src/common` options (`mh4n/options.h`, N1-01; the runner's options in N1-09) |
 | `citra_core` | `Core::System`, kernel, services, loader, file_sys, memory, timing, CPU interface, frontend interfaces | native modules: kernel (N1-05..N1-07), services (N1-10..N1-19), loader (N1-03), memory (N1-02), scheduler and clock (N1-06) |
 | `video_core` | GPU, renderers (software, OpenGL, Vulkan), `Pica` registers | native GPU (N2); Azahar build only for the existing renderers |
 | `audio_core` | DSP HLE sink selection | native DSP (N1-18) and audio mixer; IRuntime option for the sink |
-| `input_common` | SDL/keyboard/touch input providers | IRuntime input sink (N0-24); native input (N1-16, SDL3) |
-| `network` | room client and server, `Network::Init` | IRuntime multiplayer (N0-24); native `net/` room client compatible with Azahar's (N1-29) |
+| `input_common` | SDL/keyboard/touch input providers | IRuntime input sink (N0-24); N1-16 (scripts); SDL3 input in N2b (N2b-01/02) |
+| `network` | room client and server, `Network::Init` | IRuntime multiplayer (N0-24); native room client compatible with Azahar's (N4-01, provisional id; N1-29 only answers nwm::UDS without a room) |
 | `web_service` | JWT verification for lobby login | IRuntime multiplayer (N0-24); native `net/` lobby client |
 
 ## 1. Lifecycle
@@ -62,7 +62,7 @@ Count of Azahar includes per file (recount):
 | `port/app/ui/layer.h` | `Core::System` (declared in the layer interface) | IRuntime (N0-20): layers take `IRuntime&` |
 | `port/app/ui/ui.h` | `Core::System` (the UI owner's constructor) | IRuntime (N0-20) |
 | `port/app/window.h` | `Core::System`, `Frontend::EmuWindow`, `InputCommon::Init` | Azahar build only (window and renderer files, N2b replaces them) |
-| `port/src/arm_recomp.h` | `Core::ARM_Interface`, `Core::System`, `Core::Timing::Timer`, `Memory::MemorySystem`, `Memory::PageTable`, `Kernel::SVCContext` | native module `native/src/code` (N1-04, code host); Azahar build only for `ARM_Recomp` |
+| `port/src/arm_recomp.h` | `Core::ARM_Interface`, `Core::System`, `Core::Timing::Timer`, `Memory::MemorySystem`, `Memory::PageTable`, `Kernel::SVCContext` | native module `native/src/cpu` (N1-04, code host); Azahar build only for `ARM_Recomp` |
 | `port/src/arm_recomp.cpp` | `Core::ARM_DynCom` (fallback interpreter), `Core::System`, `Core::Timing::Timer`, `Memory::PageTable`, `Memory::CITRA_PAGE_SIZE`, `Memory::CITRA_PAGE_MASK`, `Memory::MemorySystem`, `Common::DynamicLibrary`, `ASSERT`, `UNREACHABLE` | N0-17 (`RC_NATIVE`) for the build mode; native code host (N1-04) for library loading; fallback interpreter (N1-28, D13) for `ARM_DynCom`; Azahar build only for the rest |
 | `port/src/frontend.cpp` | `Core::System`, `System::SetCPUFactory`, `Core::Timing::Timer`, `Core::ARM_Interface`, `Memory::MemorySystem`, `Loader::GetLoader`, `Loader::AppLoader_NCCH`, `Loader::ResultStatus`, `FileSys::NCCHContainer`, `Service::AM::GetTitleContentPath`, `Service::FS::MediaType::SDMC` | native loader (N1-03) and extracted RomFS (N1-12); Azahar build only for `SetCPUFactory` |
 | `port/src/netsync.h` | `Core::System::RunLoop` (comment/type reference), `Core::System` | Platform (net sync, N0-18) |
@@ -87,7 +87,7 @@ Count of Azahar includes per file (recount):
 
 | File | APIs used | Replacement |
 |---|---|---|
-| `port/app/input.cpp` | `Input::ButtonDevice`, `Input::AnalogDevice`, `Input::Factory`, `Input::RegisterFactory`, `Input::CreateDevice`, `Common::ParamPackage`, `InputCommon::GetControllerButtonBinds`, `InputCommon::GetControllerAnalogBinds`, `InputCommon::GenerateKeyboardParam`, `InputCommon::GenerateAnalogParamFromKeys`, `Common::StripSpaces`, `Common::SplitString` | IRuntime input sink (N0-24: buttons, sticks, touch, keyboard text); native hid (N1-16, scripts and SDL3) |
+| `port/app/input.cpp` | `Input::ButtonDevice`, `Input::AnalogDevice`, `Input::Factory`, `Input::RegisterFactory`, `Input::CreateDevice`, `Common::ParamPackage`, `InputCommon::GetControllerButtonBinds`, `InputCommon::GetControllerAnalogBinds`, `InputCommon::GenerateKeyboardParam`, `InputCommon::GenerateAnalogParamFromKeys`, `Common::StripSpaces`, `Common::SplitString` | IRuntime input sink (N0-24: buttons, sticks, touch, keyboard text); native hid, N1-16 (scripts); SDL3 input in N2b (N2b-01/02) |
 | `port/app/main.cpp` | `InputCommon::Init`, `InputCommon::Shutdown`, `Input::Register`, `Input::BuildProfile`, `Input::ControllerDescription` | IRuntime input (N0-24) |
 | `port/app/ui/ui.cpp` | `InputCommon::GetKeyboard`, `Input::SetMuted`, `Input::KeyCode` | IRuntime input (N0-24) |
 | `port/app/ui/menu.cpp` | `Input::KeyCode`, `Input::ControllerDescription`, `Common::ParamPackage` | IRuntime input (N0-24) |
@@ -111,18 +111,17 @@ Count of Azahar includes per file (recount):
 | `port/src/hooks.cpp` | `Layout::ScreenOverlay`, `Layout::SetScreenOverlay`, `Layout::SetTopScreenWidth`, `Core::kScreenBottomWidth`, `Core::kScreenBottomHeight`, `Core::System::GetInstance().PicaCore().regs.framebuffer_config`, `Core::System::UpdateCurrentFramebufferLayout`, `Core::System::SetRefreshRate`, `Core::System::IsPoweredOn`, `Core::System::CoreTiming().GetGlobalTicks` | Platform `SetTopScreenRows`, `SetRefreshRate`, overlay struct, `RefreshScreenLayout`, top-screen width (N0-18); constants become Platform or app constants |
 | `port/src/hooks.h` | `Layout::ScreenOverlay` (in the interface) | Platform plain struct (N0-18) |
 | `port/src/runner.cpp` | `Layout::SetTopScreenWidth`, `Layout::SetScreenOverlay`, `Layout::CustomFrameLayout`, `Core::kScreenTopWidth`, `Core::kScreenBottomWidth`, `Core::kScreenBottomHeight`, `VideoCore::ScreenId::{TopLeft,Bottom}`, `SwRenderer::RendererSoftware` (screenshots), `Frontend::EmuWindow` (headless window) | native runner and software compositor (N1-09, N2b); Azahar build only here |
-| `port/src/netsync.cpp` | none (no rendering) | - |
 | `port/app/main.cpp` | `VideoCore::LoadCallbackStage`, `VideoCore::RendererBase`, `VideoCore::RasterizerInterface`, `Core::System::GPU().Renderer()` | Azahar build only (shader-cache progress callbacks); native pipeline cache (N2-16) |
 
 ## 5. Rooms and network
 
 | File | APIs used | Replacement |
 |---|---|---|
-| `port/app/multiplayer.cpp` | `Network::GetRoomMember`, `Network::GetRoom`, `Network::RoomMember` (join, leave, callbacks, `MemberList`, `State`, `Error`), `Network::Room` (`State::Open`), `Network::RoomInformation`, `Network::WifiPacket` (`PacketType::{Data,Beacon}`), `Network::StatusMessageEntry`, `Network::MacAddress`, `Network::NoPreferredMac`, `Network::IdMemberJoin`, `Network::IdMemberLeave`, `Network::GetErrorStr`, `Network::AnnounceMultiplayerSession`, `Network::VerifyUser::{Backend,NullBackend}`, `WebService::VerifyUserJWT`, `Common::WebResult::Code`, `Service::CFG::GetConsoleMacAddress`, `Service::CFG::GetUsername`, `Service::CFG::GetConsoleIdHash`, `Kernel::GetSharedPageHandler` (via `System::Kernel()`) | IRuntime multiplayer (N0-24: join, host, leave, members, chat, callbacks); native `net/` room client and server compatible with Azahar's (N1-29); cfg identity from native cfg (N1-15) |
+| `port/app/multiplayer.cpp` | `Network::GetRoomMember`, `Network::GetRoom`, `Network::RoomMember` (join, leave, callbacks, `MemberList`, `State`, `Error`), `Network::Room` (`State::Open`), `Network::RoomInformation`, `Network::WifiPacket` (`PacketType::{Data,Beacon}`), `Network::StatusMessageEntry`, `Network::MacAddress`, `Network::NoPreferredMac`, `Network::IdMemberJoin`, `Network::IdMemberLeave`, `Network::GetErrorStr`, `Network::AnnounceMultiplayerSession`, `Network::VerifyUser::{Backend,NullBackend}`, `WebService::VerifyUserJWT`, `Common::WebResult::Code`, `Service::CFG::GetConsoleMacAddress`, `Service::CFG::GetUsername`, `Service::CFG::GetConsoleIdHash`, `Kernel::GetSharedPageHandler` (via `System::Kernel()`) | IRuntime multiplayer (N0-24: join, host, leave, members, chat, callbacks); native room client (N4-01, provisional id) and own room server (N4-04, provisional id), compatible with Azahar's; cfg identity from native cfg (N1-15) |
 | `port/app/ui/multiplayer_tab.cpp` | `LOG_INFO` only (uses `multiplayer.h`, our own) | util logging (N0-20); the tab's data comes from IRuntime multiplayer (N0-24) |
 | `port/app/main.cpp` | `Network::Init`, `Network::Shutdown`, `Network::GetRoomMember` | IRuntime multiplayer (N0-24) |
-| `port/src/netsync.cpp` | `Network::RoomMember`, `Network::GetRoomMember`, `Network::RoomMember::{MemberList,CallbackHandle}`, `Network::WifiPacket`, `Network::MacAddress`, `Network::BroadcastMac`, `Network::Init`, `Core::System::SetRunLoopHook`, `Core::System::CoreTiming().GetGlobalTicks` | Platform net sync (install with a mode, end-skip vote, N0-18); native `net/` sync (N1-20, N1-29); `SetRunLoopHook` is Azahar build only |
-| `port/src/runner.cpp` | `Network::Init`, `Network::Shutdown`, `Network::GetRoomMember`, `Network::GetRoom`, `Network::RoomMember::{State,Error}`, `Network::GetStateStr`, `Network::GetErrorStr`, `Network::VerifyUser::NullBackend`, `Service::CFG::MacToString`, `Service::CFG::GetConsoleIdHash` | native runner `net/` options (N1-29); Azahar build only here |
+| `port/src/netsync.cpp` | `Network::RoomMember`, `Network::GetRoomMember`, `Network::RoomMember::{MemberList,CallbackHandle}`, `Network::WifiPacket`, `Network::MacAddress`, `Network::BroadcastMac`, `Network::Init`, `Core::System::SetRunLoopHook`, `Core::System::CoreTiming().GetGlobalTicks` | Platform net sync (install with a mode, end-skip vote, N0-18); native net sync on the game clock (N4-03, provisional id; N1-20 only gives the local-only Platform net sync until N4); `SetRunLoopHook` is Azahar build only |
+| `port/src/runner.cpp` | `Network::Init`, `Network::Shutdown`, `Network::GetRoomMember`, `Network::GetRoom`, `Network::RoomMember::{State,Error}`, `Network::GetStateStr`, `Network::GetErrorStr`, `Network::VerifyUser::NullBackend`, `Service::CFG::MacToString`, `Service::CFG::GetConsoleIdHash` | native runner room options (N4-01, provisional id); Azahar build only here |
 
 ## 6. Title install (AM, NCCH, TMD) and files
 
@@ -136,7 +135,7 @@ Count of Azahar includes per file (recount):
 
 ## 7. Logging and common utilities
 
-The same few helpers appear in many files; the replacement is always `port/app/util/` (N0-20, app files), the Platform `Log(level, message)` (N0-18, hooks), or the native logger of N1-01 (`native/src/core`, native runtime).
+The same few helpers appear in many files; the replacement is always `port/app/util/` (N0-20, app files), the Platform `Log(level, message)` (N0-18, hooks), or the native logger of N1-01 (`native/src/common`, `mh4n/log.h`, `MH4N_LOG`, native runtime).
 
 | File | APIs used | Replacement |
 |---|---|---|
@@ -172,8 +171,8 @@ The same few helpers appear in many files; the replacement is always `port/app/u
 
 | File | APIs used | Replacement |
 |---|---|---|
-| `port/app/multiplayer.cpp` | `WebService::VerifyUserJWT` and `Network::AnnounceMultiplayerSession` (lobby announce), both under `#ifdef ENABLE_WEB_SERVICE` | IRuntime multiplayer (N0-24); native `net/` lobby client (N1-29); `server/lobby/mh4u_lobby.py` stays and speaks the same web API |
-| `port/src/runner.cpp` | `Network::VerifyUser::NullBackend` | native runner `net/` (N1-29) |
+| `port/app/multiplayer.cpp` | `WebService::VerifyUserJWT` and `Network::AnnounceMultiplayerSession` (lobby announce), both under `#ifdef ENABLE_WEB_SERVICE` | IRuntime multiplayer (N0-24); native lobby client (N4-01, provisional id); `server/lobby/mh4u_lobby.py` stays and speaks the same web API |
+| `port/src/runner.cpp` | `Network::VerifyUser::NullBackend` | native runner room options (N4-01, provisional id) |
 
 ## 9. `server/` and the patch
 
@@ -183,9 +182,9 @@ The same few helpers appear in many files; the replacement is always `port/app/u
 |---|---|---|
 | `server/docker/Dockerfile.room`, `server/docker/room-entrypoint.sh`, `server/docker/compose.yaml`, `server/docker/example.env` | builds `azahar-room` from Azahar's source at `port/azahar/COMMIT` with `port/azahar/azahar.patch`; the entrypoint starts it | native room server in `native/src/net/` (ROADMAP: network with the room server); Azahar build only until then |
 | `server/unix/host-room.sh`, `server/windows/host-room.ps1`, `server/windows/Host room.bat` | start `azahar-room` | the native room server once it exists; Azahar build only until then |
-| `server/lobby/mh4u_lobby.py` | speaks the web API Azahar's `web_service` and `network/announce_multiplayer_session` call; follows Azahar's nickname and room-list limits | stays as it is; the native room client implements the same API (N1-29) |
-| `server/tests/e2e_room.py` | drives `azahar-room` end to end | extended to the native room server (N1-29) |
-| `port/azahar/azahar.patch` | 1,387-line patch on Azahar (the 46 includes found by the grep are its own context lines): `Core::System` hooks (`SetCPUFactory`, `SetRunLoopHook`), `Kernel::SetSVCObserver`, `Layout::ScreenOverlay`/`SetTopScreenWidth`, `framebuffer_layout`, GPU/PICA changes, rooms (`network/room.cpp`), nwm/UDS, FS, savestate, LayeredFS, input_common | none: ROADMAP principle "Integration: nothing"; each piece is covered by the native module that replaces what it patches (kernel N1-05..07, GPU N2, rooms N1-29); Azahar build only |
+| `server/lobby/mh4u_lobby.py` | speaks the web API Azahar's `web_service` and `network/announce_multiplayer_session` call; follows Azahar's nickname and room-list limits | stays as it is; the native room client (N4-01, provisional id) implements the same API |
+| `server/tests/e2e_room.py` | drives `azahar-room` end to end | extended to the native room server (N4-04, provisional id) |
+| `port/azahar/azahar.patch` | 1,387-line patch on Azahar (the 46 includes found by the grep are its own context lines): `Core::System` hooks (`SetCPUFactory`, `SetRunLoopHook`), `Kernel::SetSVCObserver`, `Layout::ScreenOverlay`/`SetTopScreenWidth`, `framebuffer_layout`, GPU/PICA changes, rooms (`network/room.cpp`), nwm/UDS, FS, savestate, LayeredFS, input_common | none: ROADMAP principle "Integration: nothing"; each piece is covered by the native module that replaces what it patches (kernel N1-05..07, GPU N2, rooms N4-01/N4-04 (provisional ids)); Azahar build only |
 
 ## File index
 
