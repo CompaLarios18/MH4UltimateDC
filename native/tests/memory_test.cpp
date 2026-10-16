@@ -1,3 +1,11 @@
+// Derived from Azahar src/core/hle/kernel/vm_manager.cpp and src/core/hle/kernel/memory.cpp at
+// 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6
+// (GPL-2.0-or-later; both files say "GPLv2 or any later version"): the expected values of the VMA
+// and allocator cases, worked out from VMManager and MemoryRegionInfo, and the table of FCRAM
+// region sizes per memory mode (memory_region_sizes), written out again.
+// Copyright 2015-2024 Citra Emulator Project / Azahar Emulator Project (vm_manager.cpp)
+// Copyright 2014-2025 Citra Emulator Project / Azahar Emulator Project (memory.cpp)
+//
 // mh4n_memory (N1-02): guest memory mapping, zero regions, the physical view, the FCRAM
 // allocator and bad accesses.
 //

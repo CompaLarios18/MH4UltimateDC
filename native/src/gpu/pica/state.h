@@ -1,5 +1,6 @@
-// Derived from Azahar src/video_core/pica/pica_core.h, shader_setup.h, shader_setup.cpp,
-// packed_attribute.h, geometry_pipeline.cpp, dirty_regs.h, src/video_core/pica_types.h and
+// Derived from Azahar src/video_core/pica/pica_core.h, pica_core.cpp, shader_setup.h,
+// shader_setup.cpp, packed_attribute.h, geometry_pipeline.cpp, dirty_regs.h,
+// src/video_core/pica_types.h and
 // src/video_core/shader/shader.h, shader_interpreter.cpp, shader_jit.cpp (read for the entry-point
 // rule of ShaderEngine::SetupBatch only) at
 // 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-2.0-or-later; every one of those files says
@@ -8,7 +9,7 @@
 // the command processor keeps (the shader setups, the look-up tables, the default attributes,
 // the immediate-mode state, the geometry pipeline), the uniform and program upload rules, the
 // packed attribute queue, the float24 decoding and the GPU-time estimate for interrupts.
-// Copyright 2023-2026 Citra Emulator Project / Azahar Emulator Project (pica_core.h,
+// Copyright 2023-2026 Citra Emulator Project / Azahar Emulator Project (pica_core.h, pica_core.cpp,
 //   shader_setup.h, shader_setup.cpp, packed_attribute.h)
 // Copyright 2015-2026 Citra Emulator Project / Azahar Emulator Project (pica_types.h)
 // Copyright 2017-2024 Citra Emulator Project / Azahar Emulator Project (geometry_pipeline.cpp)
@@ -77,8 +78,8 @@ struct ShaderSetup {
     std::array<bool, 16> uniform_b{};
     std::array<std::array<u8, 4>, 4> uniform_i{}; // x, y, z, w
     PackedAttribute uniform_queue;
-    // The entry point the shader starts at: set from the unit's main_offset register when a draw
-    // is issued (Azahar's ShaderEngine::SetupBatch does it).
+    // The entry point the shader starts at: when a draw is issued Azahar's DrawArrays/DrawImmediate
+    // pass the unit's main_offset register to ShaderEngine::SetupBatch, which stores it.
     u32 entry_point = 0;
     std::array<u32, kMaxProgramWords> program_code{};
     std::array<u32, kMaxSwizzleWords> swizzle_data{};

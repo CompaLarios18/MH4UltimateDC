@@ -1,3 +1,16 @@
+// Derived from Azahar src/core/loader/ncch.cpp, src/core/loader/elf.cpp,
+// src/core/hle/kernel/process.cpp, src/core/hle/kernel/memory.cpp, config_mem.cpp and
+// shared_page.cpp at
+// 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6
+// (GPL-2.0-or-later; every one of those files says "GPLv2 or any later version"): the expected
+// values, which are what Azahar's loaders and kernel produce for the same inputs.
+// Copyright 2014-2026 Citra Emulator Project / Azahar Emulator Project (ncch.cpp, elf.cpp)
+// Copyright 2013 Dolphin Emulator Project / 2014 Citra Emulator Project (elf.cpp, second notice)
+// Copyright 2015-2026 Citra Emulator Project / Azahar Emulator Project (process.cpp)
+// Copyright 2014-2025 Citra Emulator Project / Azahar Emulator Project (memory.cpp)
+// Copyright 2014 Citra Emulator Project (config_mem.cpp)
+// Copyright 2015 Citra Emulator Project (shared_page.cpp)
+//
 // mh4n_loader (N1-03): the exheader parser, the process image and segment map of a game folder
 // and of an ELF program, the linear heap rule, and the configuration memory and shared page.
 //

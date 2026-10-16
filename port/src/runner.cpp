@@ -921,7 +921,8 @@ void EndSvcTrace() {
 
 // ── IPC trace (N0-21) ──────────────────────────────────────────────────────────────
 //
-// Derived from Azahar src/core/hle/ipc.h, src/core/hle/kernel/hle_ipc.cpp and
+// Derived from Azahar src/core/hle/ipc.h, src/core/hle/kernel/hle_ipc.cpp,
+// src/core/hle/kernel/server_port.cpp (the "_Client" suffix of a client port's name) and
 // src/core/hle/kernel/ipc_debugger/recorder.h, recorder.cpp at
 // 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-2.0-or-later; every one of those files says
 // "GPLv2 or any later version"): the descriptor layouts and the walk over the translate
@@ -929,6 +930,7 @@ void EndSvcTrace() {
 // and recorder.cpp define it. This section only.
 // Copyright 2016 Citra Emulator Project (ipc.h)
 // Copyright 2017-2025 Citra Emulator Project / Azahar Emulator Project (hle_ipc.cpp)
+// Copyright 2016-2024 Citra Emulator Project / Azahar Emulator Project (server_port.cpp)
 // Copyright 2019 Citra Emulator Project (recorder.h, recorder.cpp)
 //
 // One line per IPC request, written when its reply is recorded (see N0-21 in docs/native/wp/N0.md

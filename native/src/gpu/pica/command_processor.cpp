@@ -1,6 +1,8 @@
 // Derived from Azahar src/video_core/pica/pica_core.cpp, pica_core.h, shader_setup.cpp,
 // geometry_pipeline.cpp, primitive_assembly.cpp (read to see what a draw hands over),
-// vertex_loader.cpp (read to see where draws start) and src/video_core/gpu.cpp
+// vertex_loader.cpp (read to see where draws start), src/video_core/shader/shader.h,
+// shader_interpreter.cpp and shader_jit.cpp (read for the entry-point rule of
+// ShaderEngine::SetupBatch only) and src/video_core/gpu.cpp
 // (GPU::Execute, GPU::WriteReg, GPU::SubmitCmdList) at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6
 // (GPL-2.0-or-later; every one of those files says "Licensed under GPLv2 or any later version"):
 // the command-list loop and its decoding, every side effect of an internal register write, the
@@ -10,6 +12,9 @@
 // Copyright 2017-2024 Citra Emulator Project / Azahar Emulator Project (geometry_pipeline.cpp)
 // Copyright 2014 Citra Emulator Project (primitive_assembly.cpp)
 // Copyright 2023 Citra Emulator Project (vertex_loader.cpp)
+// Copyright 2015 Citra Emulator Project (shader.h)
+// Copyright 2014-2026 Citra Emulator Project / Azahar Emulator Project (shader_interpreter.cpp)
+// Copyright 2016-2026 Citra Emulator Project / Azahar Emulator Project (shader_jit.cpp)
 #include "gpu/pica/command_processor.h"
 
 #include <algorithm>

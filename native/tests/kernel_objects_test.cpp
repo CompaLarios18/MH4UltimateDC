@@ -1,3 +1,16 @@
+// Derived from Azahar src/core/hle/kernel/handle_table.cpp, wait_object.cpp, event.cpp, mutex.cpp,
+// semaphore.cpp, timer.cpp, address_arbiter.cpp, shared_memory.cpp, resource_limit.cpp, thread.cpp,
+// errors.h and svc.cpp at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6
+// (GPL-3.0-or-later: svc.cpp says "GPLv3 or any later version"; every other one of those files says
+// "GPLv2 or any later version"): the expected values, worked out from their algorithms, and the
+// Block helper, which restates the wait set-up of SVC::WaitSynchronization1/N.
+// Copyright 2014-2024 Citra Emulator Project / Azahar Emulator Project (handle_table.cpp,
+//   wait_object.cpp, event.cpp, mutex.cpp, semaphore.cpp, address_arbiter.cpp, shared_memory.cpp)
+// Copyright 2015-2024 Citra Emulator Project / Azahar Emulator Project (timer.cpp)
+// Copyright 2015-2026 Citra Emulator Project / Azahar Emulator Project (resource_limit.cpp)
+// Copyright 2014-2026 Citra Emulator Project / Azahar Emulator Project (thread.cpp, svc.cpp)
+// Copyright 2017 Citra Emulator Project (errors.h)
+//
 // mh4n_kernel (N1-05): kernel objects, the handle table and their rules, driven by a fake
 // scheduler (a recording Scheduler with a manual game clock and timer queue).
 //
