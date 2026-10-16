@@ -33,7 +33,9 @@ The header is 20 bytes. There is no padding or alignment between records. A sibl
 1. The first record is the only `INIT`.
 2. `frame` never decreases from one record to the next.
 3. Every `GX` record whose command id is 1 (`SubmitCmdList`) is immediately followed by one `PICA_REG` record (it may have count 0). A `PICA_REG` record appears nowhere else.
-4. Record types are 1..12; payload sizes are the ones below; INIT block kinds are 1..11 with the sizes below; page addresses are multiples of 4096.
+4. The `INIT` holds every block kind 1..11 exactly once, in increasing order (none is optional).
+5. A `FRAME` record's payload equals the `frame` field of its header.
+6. Record types are 1..12; payload sizes are the ones below; INIT block kinds are 1..11 with the sizes below; page addresses are multiples of 4096.
 
 The intended order of a recording, which the checker does not require: `INIT`, `MEM` (all of FCRAM, then all of VRAM), then per event `CPU_PAGES` (the pages the CPU changed since the last diff, taken before the event), the event (`GX`, `MMIO`, `SWAP`, `FILL`), `PICA_REG` after a command-list `GX`, `GPU_PAGES` after any `GX` the GPU executed, `IRQ` for each interrupt signalled, `FLUSH` where the game flushed, `FRAME` once per game frame.
 
@@ -63,7 +65,7 @@ Addresses are physical (FCRAM at `0x20000000`, VRAM at `0x18000000`) unless a fi
 | 0 | `u32` | block count N |
 | 4 | blocks | N blocks, back to back |
 
-A block is `{u32 kind, u32 size, u8 data[size]}`. Each kind appears at most once, in increasing kind order. The GPU state at the start of the capture; the block kinds are in section 4.
+A block is `{u32 kind, u32 size, u8 data[size]}`. Every kind 1..11 appears exactly once, in increasing kind order (`check` rejects a duplicate, an out-of-order or a missing kind; none is optional, because the register replay and the capture player need them all). The GPU state at the start of the capture; the block kinds are in section 4.
 
 ### 3.2 `MEM` (2)
 
@@ -141,7 +143,7 @@ Eight words: `u32` screen (0 top, 1 bottom), then the seven words of `Service::G
 
 ### 3.11 `FRAME` (12)
 
-`u32`: the game's frame counter. Also the `frame` field of the header, written once per game frame at its start.
+`u32`: the game's frame counter. Always equal to the `frame` field of the header (`check` enforces it), written once per game frame at its start.
 
 ## 4. `INIT` block kinds
 

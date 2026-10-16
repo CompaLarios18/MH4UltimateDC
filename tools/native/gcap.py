@@ -243,12 +243,21 @@ def check_record(rec: Record) -> None:
         if len(p) != _FIXED_SIZES[t]:
             raise GcapError(f"{rec.name}: payload is {len(p)} bytes, expected {_FIXED_SIZES[t]}")
     if t == INIT:
+        prev_kind = 0
         for kind, data in parse_init(p):
             if kind not in INIT_BLOCK_SIZES:
                 raise GcapError(f"INIT: unknown block kind {kind}")
+            if kind <= prev_kind:
+                raise GcapError(f"INIT: block kind {kind} after kind {prev_kind}; "
+                                f"kinds must appear once, in increasing order")
+            prev_kind = kind
             if len(data) != INIT_BLOCK_SIZES[kind]:
                 raise GcapError(f"INIT: block {INIT_BLOCK_NAMES[kind]} is {len(data)} bytes, "
                                 f"expected {INIT_BLOCK_SIZES[kind]}")
+        missing = sorted(set(INIT_BLOCK_SIZES) - {k for k, _ in parse_init(p)})
+        if missing:
+            raise GcapError("INIT: missing block kinds "
+                            + ", ".join(f"{k} ({INIT_BLOCK_NAMES[k]})" for k in missing))
     elif t == MEM:
         parse_mem(p)
     elif t in (CPU_PAGES, GPU_PAGES):
@@ -259,6 +268,10 @@ def check_record(rec: Record) -> None:
         kind = struct.unpack_from("<I", p, 0)[0]
         if kind not in FLUSH_NAMES:
             raise GcapError(f"FLUSH: unknown kind {kind}")
+    elif t == FRAME:
+        if struct.unpack("<I", p)[0] != rec.frame:
+            raise GcapError(f"FRAME: payload {struct.unpack('<I', p)[0]} differs from "
+                            f"the header frame {rec.frame}")
 
 
 def check_records(records: Iterable[Record]) -> list[str]:
@@ -388,6 +401,7 @@ def summarize(records: Sequence[Record]) -> dict:
     irq: dict[int, list[int]] = {}
     frames: list[int] = []
     for rec in records:
+        check_record(rec)
         counts[rec.name] += 1
         if rec.type == GX:
             gid, _ = parse_gx(rec.payload)

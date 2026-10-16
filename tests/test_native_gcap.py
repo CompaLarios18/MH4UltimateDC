@@ -278,3 +278,60 @@ def test_unaligned_page_address_rejected():
     payload = struct.pack("<II", 1, 0x20000010) + bytes(PAGE)
     with pytest.raises(gcap.GcapError, match="aligned"):
         gcap.parse_pages(payload)
+
+
+def _capture_with(tmp_path, name, init_payload=None, tail=None):
+    p = tmp_path / name
+    with gcap.Writer(str(p)) as w:
+        if init_payload is None:
+            w.init()
+        else:
+            w.record(gcap.INIT, init_payload)
+        if tail:
+            tail(w)
+    return str(p)
+
+
+def _full_blocks():
+    return {k: bytes(n) for k, n in gcap.INIT_BLOCK_SIZES.items()}
+
+
+def test_init_duplicate_kind(tmp_path):
+    b = _full_blocks()
+    payload = gcap.build_init(b) + struct.pack("<II", 2, len(b[2])) + b[2]
+    payload = struct.pack("<I", len(b) + 1) + payload[4:]
+    p = _capture_with(tmp_path, "dup.mgpu", payload)
+    assert any("increasing order" in x for x in gcap.check_file(p))
+    assert gcap.main(["check", p]) != 0
+
+
+def test_init_out_of_order_kind(tmp_path):
+    b = _full_blocks()
+    order = [2, 1] + list(range(3, 12))
+    payload = struct.pack("<I", len(order))
+    for k in order:
+        payload += struct.pack("<II", k, len(b[k])) + b[k]
+    p = _capture_with(tmp_path, "order.mgpu", payload)
+    assert any("increasing order" in x for x in gcap.check_file(p))
+
+
+def test_init_missing_kind(tmp_path):
+    b = _full_blocks()
+    del b[3]
+    p = _capture_with(tmp_path, "missing.mgpu", gcap.build_init(b))
+    assert any("missing block kinds 3" in x for x in gcap.check_file(p))
+
+
+def test_frame_payload_must_match_header(tmp_path):
+    def tail(w):
+        w.record(gcap.FRAME, struct.pack("<I", 5), frame=6)
+    p = _capture_with(tmp_path, "frame.mgpu", None, tail)
+    assert any("FRAME" in x and "header frame" in x for x in gcap.check_file(p))
+
+
+def test_summary_on_malformed_fixed_record_is_clean(tmp_path, capsys):
+    def tail(w):
+        w.record(gcap.FRAME, b"\x01\x02")
+    p = _capture_with(tmp_path, "short.mgpu", None, tail)
+    assert gcap.main(["summary", p]) == 1
+    assert "gcap:" in capsys.readouterr().err
