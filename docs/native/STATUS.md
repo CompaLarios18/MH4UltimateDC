@@ -40,7 +40,7 @@ Tables between the `wp-status` markers are generated: edit the specs or use `set
 | N0-16 | Azahar dependency inventory | S | native-worker | - | none | `review` | PR #5 |
 | N0-17 | `RC_NATIVE` mode in the recompiler runtime | M | native-worker-high | N0-03 | ci | `review` | PR #5; ci green (run 38885556028) |
 | N0-18 | Hooks on a platform interface | M | native-worker-high | N0-16, N0-17, N0-05 | ci, dump-check | `todo` |  |
-| N0-19 | Game-data guard for agents | S | native-worker | - | ci | `review` | PR #5; ci green (runs 38884722260 and, for the follow-up, 38903953519) |
+| N0-19 | Game-data guard for agents | S | native-worker | - | ci | `review` | PR #5; ci green (native-guard runs 38884722260, 38903953519 and 38944855740); guard hardened in four rounds, the last two from the batch audits |
 | N0-23 | Service command census from the code | S | native-worker | - | dump | `ready` |  |
 | N0-20 | `IRuntime` seam in the app: lifecycle, options, paths | M | native-worker-high | N0-16, N0-15 | ci, pc | `todo` |  |
 | N0-24 | `IRuntime` seam in the app: input, multiplayer, keyboard | M | native-worker-high | N0-20 | ci, pc | `todo` |  |
@@ -59,7 +59,7 @@ Tables between the `wp-status` markers are generated: edit the specs or use `set
 | N1-06 | Scheduler, game clock and timers | L | native-worker-high | N1-04, N1-05 | none | `todo` |  |
 | N1-27 | Threads: creation, TLS and the core-1 time limit | M | native-worker-high | N1-06 | none | `todo` |  |
 | N1-07 | The SVC table | M | native-worker-high | N1-02, N1-27 | none | `todo` |  |
-| N1-08 | Kernel conformance programs | M | native-worker | N0-04 | none | `review` | PR #5; ci green (run 38923999146); the 10 programs match the reference runner twice in a row |
+| N1-08 | Kernel conformance programs | M | native-worker | N0-04 | none | `review` | PR #5; ci green (runs 38923999146 and, for the follow-up, 38944850589); the 10 programs match the reference runner twice in a row; tests/test_port.py and tests/test_conformance.py pass with the tip's runner (146 passed, 11 skipped for the game and the native runner) |
 | N1-09 | The runtime, the native runner and the first boot | L | native-worker-high | N1-03, N1-07, N1-08, N0-08 | ci | `todo` |  |
 | N1-10 | IPC core, ports, sessions and srv | M | native-worker-high | N1-07, N1-09, N0-21 | none | `todo` |  |
 | N1-11 | IPC replay harness | M | native-worker | N1-10, N0-21 | dump-check | `todo` |  |
