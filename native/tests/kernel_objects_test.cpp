@@ -1,12 +1,13 @@
 // Derived from Azahar src/core/hle/kernel/handle_table.cpp, wait_object.cpp, event.cpp, mutex.cpp,
 // semaphore.cpp, timer.cpp, address_arbiter.cpp, shared_memory.cpp, resource_limit.cpp, thread.cpp,
-// errors.h, svc.cpp, kernel.cpp, kernel.h, process.cpp, vm_manager.cpp and memory.cpp at
+// errors.h, svc.cpp, kernel.cpp, kernel.h, process.cpp, vm_manager.cpp and memory.cpp (all in
+// src/core/hle/kernel/), and src/core/memory.cpp (an unmapped Read32 gives 0) at
 // 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6
 // (GPL-3.0-or-later: svc.cpp, kernel.cpp and kernel.h say "GPLv3 or any later version"; every other
 // one of those files says "GPLv2 or any later version"): the expected values, worked out from
 // their algorithms (process, thread and object numbering from kernel.cpp, kernel.h and
 // process.cpp; the merging of blocks from vm_manager.cpp; the region sizes and where HeapAllocate
-// takes from, from memory.cpp), and the Block helper, which restates the wait set-up of
+// takes from, from kernel/memory.cpp), and the Block helper, which restates the wait set-up of
 // SVC::WaitSynchronization1/N.
 // Copyright 2014-2024 Citra Emulator Project / Azahar Emulator Project (handle_table.cpp,
 //   wait_object.cpp, event.cpp, mutex.cpp, semaphore.cpp, address_arbiter.cpp, shared_memory.cpp)
@@ -17,16 +18,15 @@
 // PPSSPP Project (kernel.h, second notice: Licensed under GPLv2 or any later version)
 // Copyright 2015-2026 Citra Emulator Project / Azahar Emulator Project (process.cpp)
 // Copyright 2015-2024 Citra Emulator Project / Azahar Emulator Project (vm_manager.cpp)
-// Copyright 2014-2025 Citra Emulator Project / Azahar Emulator Project (memory.cpp)
+// Copyright 2014-2025 Citra Emulator Project / Azahar Emulator Project (kernel/memory.cpp)
+// Copyright 2014-2026 Citra Emulator Project / Azahar Emulator Project (core/memory.cpp)
 // Copyright 2017 Citra Emulator Project (errors.h)
 //
 // mh4n_kernel (N1-05): kernel objects, the handle table and their rules, driven by a fake
 // scheduler (a recording Scheduler with a manual game clock and timer queue).
 //
-// The expected values were worked out by hand from Azahar's sources at the pinned commit
-// (src/core/hle/kernel/handle_table.cpp, wait_object.cpp, event.cpp, mutex.cpp, semaphore.cpp,
-// timer.cpp, address_arbiter.cpp, shared_memory.cpp, resource_limit.cpp, thread.cpp, errors.h,
-// svc.cpp), with the derivation in a comment next to each number: never by running this code.
+// The expected values were worked out by hand from the Azahar sources named above, at the pinned
+// commit, with the derivation in a comment next to each number: never by running this code.
 // The Block helper restates the wait set-up of SVC::WaitSynchronization1/N from Azahar's
 // src/core/hle/kernel/svc.cpp (GPL-3.0-or-later; Copyright 2014-2026 Citra Emulator Project /
 // Azahar Emulator Project).

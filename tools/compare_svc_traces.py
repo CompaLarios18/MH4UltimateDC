@@ -39,7 +39,8 @@ def parse(path: str, normalize: bool = False) -> dict[str, list[Call]]:
 
 
 def _thread_order(tid: str) -> tuple:
-    return (0, int(tid), "") if tid.isdigit() else (1, 0, tid)
+    plain = tid.isascii() and tid.isdigit() and len(tid) <= 18
+    return (0, int(tid), "") if plain else (1, 0, tid)
 
 
 def compare(ref: dict[str, list[Call]], cand: dict[str, list[Call]], with_args: bool = True,

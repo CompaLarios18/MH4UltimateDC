@@ -231,7 +231,7 @@ def parse_lines(lines) -> Trace:
 
 
 def parse(path: str) -> Trace:
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         return parse_lines(f)
 
 
@@ -369,6 +369,7 @@ def normalise(trace: Trace, ipc: "IpcTrace | None" = None) -> Trace:
 # ── IPC traces (N0-21) ──────────────────────────────────────────────────────────────
 
 IPC_HANDLE_KINDS = ("copy", "move")
+IPC_COMMAND_WORDS = 64        # the size of a thread's command buffer, in words
 IPC_NO_NAME = "-"
 
 
@@ -454,9 +455,16 @@ def _descs(text: str | None) -> tuple[IpcDesc, ...]:
         if len(parts) < 3:
             continue
         try:
-            out.append(IpcDesc(parts[0], int(parts[1]), int(parts[2]), parts[3] if len(parts) > 3 else IPC_NO_NAME))
+            desc = IpcDesc(parts[0], int(parts[1]), int(parts[2]), parts[3] if len(parts) > 3 else IPC_NO_NAME)
         except ValueError:
             continue
+        # an index is a word of the 64-word command buffer and a handle descriptor holds at most that
+        # many handles: anything else is a corrupt line, and would index or loop out of range
+        if not 0 <= desc.index < IPC_COMMAND_WORDS or desc.size < 0:
+            continue
+        if desc.kind in IPC_HANDLE_KINDS and desc.size > IPC_COMMAND_WORDS:
+            continue
+        out.append(desc)
     return tuple(out)
 
 

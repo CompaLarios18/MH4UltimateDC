@@ -387,3 +387,14 @@ def test_cli_names_svc_handles_with_ipc(tmp_path, capsys):
     assert tracefmt.main([str(s), "--ipc", str(i)]) == 0
     lines = capsys.readouterr().out.strip().splitlines()
     assert "srv:/session#0" in lines[1] and "srv:/session#0" not in lines[0]
+
+
+def test_descriptors_with_an_index_or_size_that_cannot_exist_are_dropped():
+    good = tracefmt._descs("static:1:16:0x11223344,copy:0:2:a+b,move:63:64:x")
+    assert [(d.kind, d.index, d.size) for d in good] == [("static", 1, 16), ("copy", 0, 2), ("move", 63, 64)]
+    # an index is a word of the 64-word command buffer; a handle descriptor holds at most 64 handles
+    for text in ("copy:-100:1:foo", "static:-1:4:0x1", "copy:64:1:foo", "move:0:-1:foo", "static:0:-4:0x1",
+                 "copy:0:65:foo", "move:0:99999999999999999:foo"):
+        assert tracefmt._descs(text) == (), text
+    # a buffer's size is in bytes and may be large
+    assert [d.size for d in tracefmt._descs("static:1:99999999:0x11223344")] == [99999999]

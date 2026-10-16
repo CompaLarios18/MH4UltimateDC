@@ -622,6 +622,10 @@ TEST_CASE("a zero region that is not page aligned is refused") {
 TEST_CASE("PhysicalPointer: VRAM, DSP RAM and FCRAM through the linear heap") {
     auto memory = MakeMemory();
     u8* base = memory->Base();
+    // The pages right after VRAM and DSP RAM are mapped, so that a range that runs past an area
+    // is refused because of the area's end and not because nothing is there.
+    REQUIRE(memory->Map(0x1F600000, 0x1000, RW, MemState::Private) == 0);
+    REQUIRE(memory->Map(0x1FF80000, 0x1000, RW, MemState::Private) == 0);
 
     // VRAM 0x18000000-0x18600000 is at guest 0x1F000000
     CHECK(memory->PhysicalPointer(0x18000000, 0x600000) == base + 0x1F000000);

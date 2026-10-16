@@ -274,6 +274,36 @@ def test_digits_that_are_not_plain_decimal_do_not_crash_the_parser(tmp_path, cap
     assert run(tmp_path, odd[:2] + odd[2:4], BASE) == 2      # only malformed request lines: nothing to compare
 
 
+def test_descriptors_with_impossible_numbers_do_not_crash_or_hang(tmp_path, capsys):
+    base = "1 seq=1 session=srv: cmd=0x00010000 in=0x00010000 desc=- out=0x00010040,0x00000000 outdesc={} t=5"
+    for outdesc in ("copy:-100:1:foo", "move:0:-1:foo", "copy:0:99999999999999999:foo", "copy:99999999:1:foo",
+                    "static:-5:4:0x11223344"):
+        line = [HEADER, thread_line(1, 0, 0x100000), base.format(outdesc)]
+        assert run(tmp_path, line, line) in (0, 2), outdesc      # a result, never a traceback or a hang
+        assert "Traceback" not in capsys.readouterr().err
+
+
+def test_a_thread_token_of_thousands_of_digits_does_not_crash(tmp_path, capsys):
+    odd = [HEADER, "9" * 5000 + " seq=1 session=srv: cmd=0x00010040 in=0x00010040 desc=- out=- outdesc=- t=0"]
+    assert run(tmp_path, odd, odd) == 0                          # an opaque thread token, compared as one
+    assert "Traceback" not in capsys.readouterr().err
+    both = [HEADER, thread_line(1, 0, 0x100000),
+            "9" * 5000 + " seq=1 session=srv: cmd=0x00010040 in=0x00010040 desc=- out=- outdesc=- t=0",
+            "1 seq=1 session=srv: cmd=0x00010040 in=0x00010040 desc=- out=- outdesc=- t=0"]
+    assert run(tmp_path, both, both) in (0, 1)
+    assert "Traceback" not in capsys.readouterr().err
+
+
+def test_traces_are_read_as_utf8_whatever_the_locale(tmp_path):
+    import subprocess
+    lines = [HEADER + "  # caf\u00e9", *BASE[1:]]
+    a = write(tmp_path, "a.txt", lines)
+    env = {"PATH": os.environ.get("PATH", ""), "LC_ALL": "C", "PYTHONUTF8": "0", "PYTHONCOERCECLOCALE": "0"}
+    r = subprocess.run([sys.executable, cmp.__file__, a, a], env=env, capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    assert "Traceback" not in r.stderr
+
+
 def test_ignore_that_removes_every_request_is_refused(tmp_path, capsys):
     ignore = tmp_path / "ignore.txt"
     ignore.write_text("srv: 0x00010040\nfs:USER 0x00020000\nfs:USER 0x00050000\ngsp::Gpu 0x00030000\ngsp::Gpu 0x00040000\n")

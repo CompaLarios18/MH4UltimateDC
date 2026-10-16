@@ -1,10 +1,13 @@
-// Derived from Azahar src/video_core/gpu.cpp, src/common/color.h and
-// src/video_core/renderer_software/renderer_software.cpp at
-// 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-2.0-or-later; every one of those files says
-// "GPLv2 or any later version"): the expected values, worked out from
-// GPU::VirtualToPhysicalAddress, the colour decoders and the software renderer's loop over a
-// displayed screen (including its off-by-one column).
-// Copyright 2023-2026 Citra Emulator Project / Azahar Emulator Project (gpu.cpp)
+// Derived from Azahar src/video_core/gpu.cpp, src/common/color.h,
+// src/video_core/renderer_software/renderer_software.cpp, src/video_core/pica/regs_external.h,
+// regs_framebuffer.h and pica_core.h at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6
+// (GPL-2.0-or-later; every one of those files says "GPLv2 or any later version"): the expected
+// values, worked out from GPU::VirtualToPhysicalAddress, the colour decoders and the software
+// renderer's loop over a displayed screen (including its off-by-one column), and the word
+// positions of the display, colour-buffer, fill and transfer registers the test writes.
+// Copyright 2023-2026 Citra Emulator Project / Azahar Emulator Project (gpu.cpp, regs_external.h,
+//   pica_core.h)
+// Copyright 2017-2025 Citra Emulator Project / Azahar Emulator Project (regs_framebuffer.h)
 // Copyright 2014 Citra Emulator Project (color.h)
 // Copyright 2023-2025 Citra Emulator Project / Azahar Emulator Project (renderer_software.cpp)
 //

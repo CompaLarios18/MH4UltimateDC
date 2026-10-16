@@ -454,6 +454,43 @@ def test_a_name_too_long_for_the_file_system_does_not_crash_the_check(tree):
     assert "Traceback" not in result.stderr
 
 
+@pytest.mark.parametrize("cmake", [
+    "target_compile_options(k PRIVATE -Iport/azahar/src)\n",
+    "target_compile_options(k PRIVATE -isystemport/azahar/src)\n",
+    "target_compile_options(k PRIVATE -iquoteport/azahar/src)\n",
+    "target_compile_options(k PRIVATE /Iport/azahar/src)\n",
+])
+def test_a_compiler_flag_glued_to_port_azahar_is_found(tree, cmake):
+    result = run(write_cmake(tree, cmake))
+    assert result.returncode == 1, cmake
+    assert "uses a path under port/azahar/" in result.stdout
+
+
+@pytest.mark.parametrize("flag", ["-Iport/src", "-isystemport/src", "/Iport/src", "-iquoteport/src"])
+def test_a_compiler_flag_glued_to_port_src_is_the_bare_directory(tree, flag):
+    _port_tree(tree)
+    write(tree, "port/src/hooks.cpp", '#include "core/core.h"\n')
+    write(tree, "native/src/kernel/CMakeLists.txt", f"target_compile_options(k PRIVATE {flag})\n")
+    result = run(tree)
+    assert result.returncode == 1, flag
+    assert "port/src/hooks.cpp:1:" in result.stdout
+
+
+@pytest.mark.parametrize("prefix", ["my-", "my_", "my.", "my+", "1", "x"])
+def test_every_character_that_continues_a_name_blocks_port_src_and_port_azahar(tree, prefix):
+    _port_tree(tree)
+    write(tree, "port/src/hooks.cpp", '#include "core/core.h"\n')
+    write(tree, "native/src/kernel/CMakeLists.txt", f"include_directories({prefix}port/src {prefix}port/azahar/src)\n")
+    result = run(tree)
+    assert result.returncode == 0, (prefix, result.stdout)
+
+
+@pytest.mark.parametrize("include", ['"tests/../core/core.h"', '"x/y/../../video_core/pica.h"', '"a\\..\\common\\x.h"'])
+def test_relative_parent_segments_in_an_include_are_resolved(tree, include):
+    write(tree, "native/src/kernel/kernel.cpp", CLEAN_CPP + f"#include {include}\n")
+    assert run(tree).returncode == 1, include
+
+
 @pytest.mark.parametrize("header", ["nihstro/shader_binary.h", "teakra/teakra.h", "dynarmic/interface/A32/a32.h",
                                     "soundtouch/SoundTouch.h", "cryptopp/sha.h", "xbyak/xbyak.h"])
 def test_azahars_externals_are_forbidden_includes(tree, header):

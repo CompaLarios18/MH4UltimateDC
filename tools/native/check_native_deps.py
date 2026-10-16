@@ -45,6 +45,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import posixpath
 import re
 import sys
 from pathlib import Path
@@ -90,8 +91,10 @@ CMAKE_SUFFIXES = {".cmake"}
 
 INCLUDE_RE = re.compile(r'^\s*#\s*(?:include|import)\s*[<"]([^>"]+)[>"]')
 TOKEN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_.+\-]*")
-PORT_AZAHAR_RE = re.compile(r"(?<![A-Za-z0-9_.+\-])port/azahar(?![A-Za-z0-9_])")
-PORT_SRC_RE = re.compile(r"(?<![A-Za-z0-9_.+\-])port/src(?:/([A-Za-z0-9_][A-Za-z0-9_.+\-/]*))?")
+# `port/...` must start a path component; a compiler flag glued to it (-Iport/src) is a path too.
+_PATH_START = r"(?:(?<![A-Za-z0-9_.+\-])|(?<=-I)|(?<=-isystem)|(?<=-iquote)|(?<=/I))"
+PORT_AZAHAR_RE = re.compile(_PATH_START + r"port/azahar(?![A-Za-z0-9_])")
+PORT_SRC_RE = re.compile(_PATH_START + r"port/src(?:/([A-Za-z0-9_][A-Za-z0-9_.+\-/]*))?")
 # `port` as the last component of a path (the directory held in a variable, with or without a
 # trailing slash, or in a list) or followed by a variable component, in a CMake file. A bare word
 # `port` ("the native port") is not a path and does not match.
@@ -135,9 +138,7 @@ def check_includes(path: Path, shown: str) -> list[str]:
         match = INCLUDE_RE.match(line)
         if not match:
             continue
-        target = _normalise_path(match.group(1).strip())
-        while target.startswith("./"):
-            target = target[2:]
+        target = posixpath.normpath(match.group(1).strip().replace("\\", "/"))   # ./x, a//b, a/../b
         for prefix in FORBIDDEN_INCLUDE_PREFIXES:
             if target.startswith(prefix):
                 problems.append(f"{shown}:{number}: includes '{target}' (Azahar's '{prefix}' headers)")

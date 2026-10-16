@@ -201,3 +201,21 @@ def test_threads_with_the_same_entry_are_told_apart_by_creation_order(tmp_path):
     assert c.main([ref, swapped, "--normalize"]) == 0       # only the lines' order differs
     other = write(tmp_path, "other.txt", [l.replace("0000006F", "000000DE") for l in prog(2, 3)])
     assert c.main([ref, other, "--normalize"]) == 1         # the first worker slept for another time
+
+
+def test_thread_tokens_that_are_not_plain_digits_do_not_crash_the_comparison(tmp_path, capsys):
+    import compare_svc_traces as c
+    odd = ["² 21 pc=00107328 lr=00106790 0FFFFFE0 00000000 00000000 00000000 t=10",
+           "9" * 5000 + " 21 pc=00107328 lr=00106790 0FFFFFE0 00000000 00000000 00000000 t=10", LINES[0]]
+    path = write(tmp_path, "odd.txt", odd)
+    c.main([path, path])
+    assert "Traceback" not in capsys.readouterr().err
+
+
+def test_svc_traces_are_read_as_utf8_whatever_the_locale(tmp_path):
+    import subprocess
+    path = write(tmp_path, "t.txt", [LINES[0] + "  # café", *LINES[1:]])
+    env = {"PATH": os.environ.get("PATH", ""), "LC_ALL": "C", "PYTHONUTF8": "0", "PYTHONCOERCECLOCALE": "0"}
+    tool = os.path.join(HERE, "..", "tools", "compare_svc_traces.py")
+    r = subprocess.run([sys.executable, tool, path, path], env=env, capture_output=True, text=True)
+    assert "Traceback" not in r.stderr, r.stderr

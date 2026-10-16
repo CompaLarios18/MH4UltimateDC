@@ -168,11 +168,15 @@ def load(path: str, ignored: set[tuple[str, int]]) -> dict[str, list[IpcCall]]:
         raise TraceError(f"{path}: not an IPC trace (no '# ipctrace' header)")
     if not raw.calls:
         raise TraceError(f"{path}: the IPC trace holds no request")
-    trace = tracefmt.normalise_ipc(raw)
-    kept = tracefmt.IpcTrace(trace.header, trace.threads, [c for c in trace.calls if not is_ignored(c, ignored)])
+    try:
+        trace = tracefmt.normalise_ipc(raw)
+        kept = tracefmt.IpcTrace(trace.header, trace.threads, [c for c in trace.calls if not is_ignored(c, ignored)])
+        by_thread = kept.by_thread() if kept.calls else {}
+    except (ValueError, IndexError, KeyError, OverflowError) as e:
+        raise TraceError(f"{path}: not a well-formed IPC trace ({type(e).__name__})") from None
     if not kept.calls:
         raise TraceError(f"{path}: --ignore removed every request of the IPC trace")
-    return kept.by_thread()
+    return by_thread
 
 
 def _thread_order(tid: str) -> tuple:
