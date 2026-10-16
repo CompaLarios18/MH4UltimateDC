@@ -5,12 +5,15 @@
 // and touch the screen on an emulated-time script, save both screens as images, and join
 // a network room (Azahar's multiplayer) so that two runners can play locally together.
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <limits>
+#include <map>
 #include <memory>
 #include <sstream>
 #include <string>
@@ -39,6 +42,7 @@
 #include "core/hle/service/am/am.h"
 #include "core/hle/service/cfg/cfg.h"
 #include "core/hle/service/service.h"
+#include "core/loader/loader.h"
 #include "network/network.h"
 #include "network/verify_user.h"
 #include "video_core/gpu.h"
@@ -81,8 +85,11 @@ const char* const USAGE = R"(usage: mh4u_runner <file> [options]
                     often each recompiled function has run so far to calls_<ms>.txt in the
                     --shots directory (repeatable; needs a code library built with
                     -D RC_CALL_COUNTS): diff two to see what ran in between
-  --trace-svc FILE  write every system call (thread, number, pc, lr, r0-r3, ticks) to FILE,
-                    to compare CPU backends thread by thread
+  --trace-svc FILE  write every system call to FILE (thread, number, pc, lr, r0-r3, ticks,
+                    r4-r6 on entry, r0-r3 when the call completes for its thread), a line per
+                    thread created and a header, to compare CPU backends thread by thread
+                    (tools/compare_svc_traces.py)
+  --new-3ds on|off  run as a New 3DS or an Old 3DS (default off: the reference is an Old 3DS)
   --input SCRIPT    comma-separated presses at emulated times, e.g.
                     "3000:A,3500:START:200,5000:TOUCH:160:120,6000:CIRCLE:0:1:500"
                     (ms:BUTTON[:hold ms], ms:TOUCH:x:y[:hold], ms:CIRCLE:x:y[:hold];
@@ -562,17 +569,138 @@ void UseScriptedInput() {
     profile.use_touch_from_button = false;
 }
 
-// ── system call trace ───────────────────────────────────────────────────────────────
+// ── system call trace ──────────────────────────────────────────────────────────────
+//
+// One line per call, written when the call completes for its thread (see N0-04 in
+// docs/native/wp/N0.md for the format): right after the handler for a call that returns at
+// once, when the thread next runs for a call that blocks it (Azahar writes the real result of
+// a wait into the thread's saved registers when it wakes the thread up, so what the handler
+// leaves in r0-r3 is only provisional).
 
 FILE* g_svc_trace = nullptr;
 
+/// A call between its start and its completion: the line up to `out=`, and the registers it
+/// started with (r0-r6), which the thread line of a CreateThread needs.
+struct PendingSvc {
+    std::string head;
+    std::array<u32, 7> regs{};
+};
+std::map<u32, PendingSvc> g_svc_pending; // by thread id: one call per thread at a time
+
+void WriteSvcLine(const PendingSvc& call, const u32* r) {
+    std::fprintf(g_svc_trace, "%s out=%08X,%08X,%08X,%08X\n", call.head.c_str(), r[0], r[1], r[2], r[3]);
+}
+
+/// The call never completed (the run ended first): its results are unknown.
+void WriteUnfinishedSvcLine(const PendingSvc& call) {
+    std::fprintf(g_svc_trace, "%s out=-\n", call.head.c_str());
+}
+
+u32 CurrentThreadId(Core::System& system) {
+    const auto* thread = system.Kernel().GetCurrentThreadManager().GetCurrentThread();
+    return thread ? thread->GetThreadId() : 0u;
+}
+
+/// `# thread <id> parent=<id> entry=<hex> arg=<hex> stack=<hex> prio=<n> core=<requested>/<resolved>`
+void WriteThreadLine(u32 id, u32 parent, u32 entry, u32 arg, u32 stack, u32 priority, s32 requested,
+                     s32 resolved) {
+    std::fprintf(g_svc_trace, "# thread %u parent=%u entry=%08X arg=%08X stack=%08X prio=%u core=%d/%d\n", id,
+                 parent, entry, arg, stack, priority, requested, resolved);
+}
+
+/// Before the call: the registers it was made with.
 void TraceSvc(Core::System& system, u32 imm) {
     auto& cpu = system.GetRunningCore();
+    const u32 id = CurrentThreadId(system);
+    if (const auto old = g_svc_pending.find(id); old != g_svc_pending.end()) {
+        WriteUnfinishedSvcLine(old->second); // cannot happen: a thread that called has not run since
+    }
+    PendingSvc call;
+    for (std::size_t i = 0; i < call.regs.size(); ++i) {
+        call.regs[i] = cpu.GetReg(static_cast<int>(i));
+    }
+    call.head = fmt::format("{} {:02X} pc={:08X} lr={:08X} {:08X} {:08X} {:08X} {:08X} t={} in4={:08X},{:08X},{:08X}",
+                            id, imm, cpu.GetReg(15), cpu.GetReg(14), call.regs[0], call.regs[1], call.regs[2],
+                            call.regs[3],
+                            static_cast<long long>(system.CoreTiming().GetGlobalTicks() - g_start_ticks),
+                            call.regs[4], call.regs[5], call.regs[6]);
+    g_svc_pending[id] = std::move(call);
+}
+
+/// After the handler: a call that left its thread runnable (or dead) is done; one that put it
+/// to sleep waits for TraceSvcResume.
+void TraceSvcDone(Core::System& system, u32 imm) {
+    auto& cpu = system.GetRunningCore();
     const auto* thread = system.Kernel().GetCurrentThreadManager().GetCurrentThread();
-    std::fprintf(g_svc_trace, "%u %02X pc=%08X lr=%08X %08X %08X %08X %08X t=%lld\n",
-                 thread ? thread->GetThreadId() : 0u, imm, cpu.GetReg(15), cpu.GetReg(14),
-                 cpu.GetReg(0), cpu.GetReg(1), cpu.GetReg(2), cpu.GetReg(3),
-                 static_cast<long long>(system.CoreTiming().GetGlobalTicks() - g_start_ticks));
+    const u32 id = thread ? thread->GetThreadId() : 0u;
+    const auto it = g_svc_pending.find(id);
+    if (it == g_svc_pending.end()) {
+        return;
+    }
+    const u32 out[4] = {cpu.GetReg(0), cpu.GetReg(1), cpu.GetReg(2), cpu.GetReg(3)};
+    if (imm == 0x08 && out[0] == 0) {
+        // CreateThread succeeded: the new thread's id comes from the handle in r1
+        if (const auto process = system.Kernel().GetCurrentProcess()) {
+            if (const auto created = process->handle_table.Get<Kernel::Thread>(out[1])) {
+                const auto& regs = it->second.regs; // priority, entry, arg, stack top, processor id
+                WriteThreadLine(created->GetThreadId(), id, regs[1], regs[2], regs[3], regs[0],
+                                static_cast<s32>(regs[4]), created->processor_id);
+            }
+        }
+    }
+    const bool blocked = thread && thread->status != Kernel::ThreadStatus::Running &&
+                         thread->status != Kernel::ThreadStatus::Dead;
+    if (!blocked) {
+        WriteSvcLine(it->second, out);
+        g_svc_pending.erase(it);
+    }
+}
+
+/// A thread is being switched to, with its saved registers loaded: if a call blocked it, they
+/// hold the call's real results.
+void TraceSvcResume(u32 thread_id, const u32* regs) {
+    const auto it = g_svc_pending.find(thread_id);
+    if (it != g_svc_pending.end()) {
+        WriteSvcLine(it->second, regs);
+        g_svc_pending.erase(it);
+    }
+}
+
+/// The header, and the main thread's line (the process starts it before the first call).
+void BeginSvcTrace(Core::System& system, const std::string& cpu, bool new_3ds) {
+    u64 program_id = 0;
+    if (system.GetAppLoader().ReadProgramId(program_id) != Loader::ResultStatus::Success) {
+        program_id = 0;
+    }
+    const std::time_t now = std::time(nullptr);
+    char date[16] = "0000-00-00";
+    if (const std::tm* utc = std::gmtime(&now)) {
+        std::strftime(date, sizeof(date), "%Y-%m-%d", utc);
+    }
+    std::fprintf(g_svc_trace, "# svctrace v1 %s game=0x%016llx cpu=%s new3ds=%s\n", date,
+                 static_cast<unsigned long long>(program_id), cpu.c_str(), new_3ds ? "on" : "off");
+    for (u32 core = 0; core < system.GetNumCores(); ++core) {
+        for (const auto& thread : system.Kernel().GetThreadManager(core).GetThreadList()) {
+            WriteThreadLine(thread->GetThreadId(), 0, static_cast<u32>(thread->entry_point),
+                            thread->context.cpu_registers[0], static_cast<u32>(thread->stack_top),
+                            thread->nominal_priority, thread->processor_id, thread->processor_id);
+        }
+    }
+    Kernel::SetSVCObserver(TraceSvc);
+    Kernel::SetSVCPostObserver(TraceSvcDone);
+    Kernel::SetThreadResumeObserver(TraceSvcResume);
+}
+
+void EndSvcTrace() {
+    Kernel::SetSVCObserver(nullptr);
+    Kernel::SetSVCPostObserver(nullptr);
+    Kernel::SetThreadResumeObserver(nullptr);
+    for (const auto& [id, call] : g_svc_pending) {
+        WriteUnfinishedSvcLine(call); // threads still blocked when the run ended
+    }
+    g_svc_pending.clear();
+    std::fclose(g_svc_trace);
+    g_svc_trace = nullptr;
 }
 
 // ── screenshots ─────────────────────────────────────────────────────────────────────
@@ -847,6 +975,7 @@ int main(int argc, char** argv) {
     std::string room_join;
     std::string nickname = "runner";
     bool new_console_id = false;
+    bool new_3ds = false; // the reference is an Old 3DS
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
         if (arg == "--code" && i + 1 < argc) {
@@ -894,6 +1023,13 @@ int main(int argc, char** argv) {
             g_call_snapshots.emplace_back(std::atof(argv[++i]), false);
         } else if (arg == "--trace-svc" && i + 1 < argc) {
             svc_trace = argv[++i];
+        } else if (arg == "--new-3ds" && i + 1 < argc) {
+            const std::string mode = argv[++i];
+            if (mode != "on" && mode != "off") {
+                std::fprintf(stderr, "bad --new-3ds: %s (want on or off)\n", mode.c_str());
+                return 1;
+            }
+            new_3ds = mode == "on";
         } else if (arg == "--speed" && i + 1 < argc) {
             speed = std::max(0.0, std::atof(argv[++i]));
         } else if (arg == "--shots-from" && i + 1 < argc) {
@@ -987,6 +1123,7 @@ int main(int argc, char** argv) {
     // without COM, which a runner without Qt never initialises)
     Settings::values.output_type.SetValue(AudioCore::SinkType::Null);
     Settings::values.input_type.SetValue(AudioCore::InputType::Null);
+    Settings::values.is_new_3ds.SetValue(new_3ds); // before system.Load: it picks the cores and memory
     Settings::values.use_cpu_jit = cpu == "jit";
     Settings::values.use_fastinterp = false;
 
@@ -1043,7 +1180,7 @@ int main(int argc, char** argv) {
     if (!svc_trace.empty()) {
         g_svc_trace = std::fopen(svc_trace.c_str(), "w");
         if (g_svc_trace) {
-            Kernel::SetSVCObserver(TraceSvc);
+            BeginSvcTrace(system, cpu, new_3ds);
         }
     }
 
@@ -1125,8 +1262,7 @@ int main(int argc, char** argv) {
     PrintRoomMembers();
     std::fflush(stdout);
     if (g_svc_trace) {
-        Kernel::SetSVCObserver(nullptr);
-        std::fclose(g_svc_trace);
+        EndSvcTrace();
     }
     system.Shutdown();
     if (in_room) {

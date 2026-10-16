@@ -41,3 +41,163 @@ def test_first_difference_per_thread(tmp_path):
     assert c.compare(c.parse(ref), c.parse(cand), with_args=False) != []          # still shorter
     assert c.compare(c.parse(ref), c.parse(cand), with_args=False, prefix=True) == []
     assert c.main([ref, cand]) == 1
+
+
+# ── N0-04: results, thread lines, normalisation ─────────────────────────────────────
+
+HEADER = "# svctrace v1 2026-10-16 game=0x0004000000000000 cpu=jit new3ds=off"
+MAIN, WORKER = 0x00100000, 0x00200000
+
+
+def h(v):
+    return f"{v:08X}"
+
+
+def line(thread, svc, args=(0, 0, 0, 0), out=None, pc=0x00100100, lr=0x00100104, t=0, in4=(0, 0, 0)):
+    text = (f"{thread} {svc} pc={h(pc)} lr={h(lr)} {' '.join(h(a) for a in args)} t={t}"
+            f" in4={','.join(h(a) for a in in4)}")
+    if out == "-":
+        return text + " out=-"
+    return text + (f" out={','.join(h(a) for a in out)}" if out is not None else "")
+
+
+def thread_line(tid, parent, entry):
+    return f"# thread {tid} parent={parent} entry={h(entry)} arg={h(0)} stack={h(0x0FFFF000)} prio=48 core=0/0"
+
+
+def session(main, worker, event, thread_handle, blocked=True):
+    """The same program as run by a runtime that numbers threads `main`, `worker` and handles
+    `event`, `thread_handle`. In one runtime the worker's wait blocks (its line comes after the
+    main thread's later calls), in the other the event is signalled first and it doesn't."""
+    wait = line(worker, "24", (event, 0, 0xFFFFFFFF, 0xFFFFFFFF), out=(0, 0, 0, 0), pc=0x00200100, lr=0x00200104)
+    signal = line(main, "18", (event, 0, 0, 0), out=(0, 0, 0, 0), pc=0x00100300)
+    after = line(main, "32", (0x0000DEAD + main, 0, 0, 0), out=(0, 0, 0, 0), pc=0x00100400)
+    worker_end = line(worker, "0A", (1000, 0, 0, 0), out=(0, 0, 0, 0), pc=0x00200200)
+    return [
+        HEADER,
+        thread_line(main, 0, MAIN),
+        line(main, "17", (1, 0, 0, 0), out=(0, event, 0, 0), pc=0x00100200),
+        line(main, "08", (0x30, WORKER, 0, 0x0F000000), out=(0, thread_handle, 0, 0), in4=(0, 0, 0), pc=0x00100250),
+        thread_line(worker, main, WORKER),
+        *([signal, after, wait, worker_end] if blocked else [wait, signal, after, worker_end]),
+    ]
+
+
+def test_header_thread_lines_and_new_fields_are_skipped_by_the_old_comparison(tmp_path):
+    import compare_svc_traces as c
+    ref = write(tmp_path, "ref.txt", session(1, 2, 0x8001, 0x8002))
+    # same ids and values: matches without any option, although lines carry in4= and out=
+    cand = write(tmp_path, "cand.txt", session(1, 2, 0x8001, 0x8002))
+    assert c.main([ref, cand]) == 0
+    assert c.main([ref, cand, "--normalize", "--outputs", "--in4"]) == 0
+    parsed = c.parse(ref)
+    assert sorted(parsed) == ["1", "2"] and len(parsed["1"]) == 4 and len(parsed["2"]) == 2
+
+
+def test_other_interleaving_and_a_blocking_call_written_late_match(tmp_path):
+    import compare_svc_traces as c
+    blocked = write(tmp_path, "blocked.txt", session(1, 2, 0x8001, 0x8002, blocked=True))
+    quick = write(tmp_path, "quick.txt", session(1, 2, 0x8001, 0x8002, blocked=False))
+    lines = open(blocked).read().splitlines()
+    assert lines.index(next(l for l in lines if l.startswith("2 24"))) > lines.index(
+        next(l for l in lines if l.startswith("1 32")))            # the wait's line comes after the main thread's
+    for flags in ([], ["--normalize"], ["--normalize", "--outputs"]):
+        assert c.main([blocked, quick] + flags) == 0, flags
+
+
+def test_renumbered_threads_and_handles_need_normalize(tmp_path):
+    import compare_svc_traces as c
+    ref = write(tmp_path, "ref.txt", session(1, 2, 0x8001, 0x8002))
+    cand = write(tmp_path, "cand.txt", session(5, 9, 0x1000A, 0x1000C, blocked=False))
+    # the thread numbers differ, so the plain comparison sees no common thread
+    assert c.main([ref, cand]) == 1
+    assert c.main([ref, cand, "--normalize"]) == 0
+    # and the handle values are in the arguments: with normalisation they are names
+    assert c.main([ref, cand, "--normalize", "--outputs", "--in4"]) == 0
+    assert c.compare(c.parse(ref, True), c.parse(cand, True), with_outputs=True) == []
+    assert sorted(c.parse(ref, True)) == ["00200000#0", "main"]
+
+
+def test_same_thread_numbers_but_other_handle_values_differ_without_normalize(tmp_path):
+    import compare_svc_traces as c
+    ref = write(tmp_path, "ref.txt", session(1, 2, 0x8001, 0x8002))
+    cand = write(tmp_path, "cand.txt", session(1, 2, 0x8011, 0x8012))
+    assert c.main([ref, cand]) == 1
+    assert c.main([ref, cand, "--normalize"]) == 0
+
+
+def test_a_different_result_is_found_only_with_outputs(tmp_path):
+    import compare_svc_traces as c
+    good = session(1, 2, 0x8001, 0x8002)
+    bad = [l.replace("out=00000000,00000000,00000000,00000000", "out=09401BFE,00000000,00000000,00000000")
+           if l.startswith("2 24") else l for l in good]
+    ref, cand = write(tmp_path, "ref.txt", good), write(tmp_path, "cand.txt", bad)
+    assert c.main([ref, cand, "--normalize"]) == 0
+    assert c.main([ref, cand, "--normalize", "--outputs"]) == 1
+    (d,) = c.compare(c.parse(ref, True), c.parse(cand, True), with_outputs=True)
+    assert d["thread"] == "00200000#0" and d["index"] == 0
+    assert d["ref"].out[0] == "00000000" and d["cand"].out[0] == "09401BFE"
+
+
+def test_a_different_handle_in_the_results_is_found(tmp_path):
+    import compare_svc_traces as c
+    good = session(1, 2, 0x8001, 0x8002)
+    # the candidate's main thread signals a handle that is not the event it created
+    bad = [l.replace(f"pc={h(0x00100300)} lr={h(0x00100104)} {h(0x8001)}", f"pc={h(0x00100300)} lr={h(0x00100104)} {h(0x8002)}")
+           if l.startswith("1 18") else l for l in good]
+    ref, cand = write(tmp_path, "ref.txt", good), write(tmp_path, "cand.txt", bad)
+    assert c.main([ref, cand]) == 1
+    assert c.main([ref, cand, "--normalize"]) == 1
+    (d,) = c.compare(c.parse(ref, True), c.parse(cand, True))
+    assert d["ref"].args[0] == "event#0" and d["cand"].args[0] == "thread#0"
+
+
+def test_time_dependent_values_and_unset_outputs_dont_matter_when_normalized(tmp_path):
+    import compare_svc_traces as c
+    tick = lambda lo: [HEADER, line(1, "28", (0, 0, 0, 0), out=(lo, 7, 0, 0), t=lo),
+                       line(1, "25", (0, 0x1000, 2, 0), out=(0x09401BFE, lo, lo, lo), t=lo + 5)]
+    ref, cand = write(tmp_path, "ref.txt", tick(100)), write(tmp_path, "cand.txt", tick(900))
+    assert c.main([ref, cand, "--normalize", "--outputs"]) == 0
+    assert c.main([ref, cand, "--outputs"]) == 1          # without normalisation the times differ
+
+
+def test_in4_is_compared_only_when_asked(tmp_path):
+    import compare_svc_traces as c
+    ref = write(tmp_path, "ref.txt", [line(1, "22", (0x8001, 0x1000, 0, 5), in4=(0x100, 0, 0))])
+    cand = write(tmp_path, "cand.txt", [line(1, "22", (0x8001, 0x1000, 0, 5), in4=(0x200, 0, 0))])
+    assert c.main([ref, cand]) == 0
+    assert c.main([ref, cand, "--in4"]) == 1
+
+
+def test_old_format_trace_against_the_new_one(tmp_path):
+    import compare_svc_traces as c
+    old = write(tmp_path, "old.txt", ["1 21 pc=00100100 lr=00100104 0FFFFFE0 00000000 00000000 00000000 t=10"])
+    new = write(tmp_path, "new.txt", [HEADER, thread_line(1, 0, MAIN),
+                                      line(1, "21", (0x0FFFFFE0, 0, 0, 0), out=(0, 5, 6, 7), t=99)])
+    assert c.main([old, new]) == 0
+    assert c.main([old, new, "--outputs", "--in4"]) == 0     # nothing to compare on the old side
+    # an old trace has no thread lines to name its threads by, so --normalize leaves its numbers
+    assert sorted(c.parse(old, True)) == ["1"] and sorted(c.parse(new, True)) == ["main"]
+
+
+def test_a_call_still_waiting_when_the_run_ended_is_not_a_difference(tmp_path):
+    import compare_svc_traces as c
+    done = [thread_line(1, 0, MAIN), line(1, "24", (0x8001, 0, 5, 0), out=(0x09401BFE, 0, 0, 0))]
+    cut = [thread_line(1, 0, MAIN), line(1, "24", (0x8001, 0, 5, 0), out="-")]
+    ref, cand = write(tmp_path, "ref.txt", done), write(tmp_path, "cand.txt", cut)
+    assert c.main([ref, cand, "--normalize", "--outputs"]) == 0
+    assert c.parse(cand)["1"][0].out is None
+
+
+def test_threads_with_the_same_entry_are_told_apart_by_creation_order(tmp_path):
+    import compare_svc_traces as c
+    def prog(a, b):
+        return [thread_line(1, 0, MAIN), thread_line(a, 1, WORKER), thread_line(b, 1, WORKER),
+                line(a, "0A", (111, 0, 0, 0), pc=0x00200100), line(b, "0A", (222, 0, 0, 0), pc=0x00200100)]
+    ref = write(tmp_path, "ref.txt", prog(2, 3))
+    same = write(tmp_path, "same.txt", prog(7, 4))        # created in the same order, other numbers
+    swapped = write(tmp_path, "swapped.txt", prog(2, 3)[:3] + [prog(2, 3)[4], prog(2, 3)[3]])
+    assert c.main([ref, same, "--normalize"]) == 0
+    assert c.main([ref, swapped, "--normalize"]) == 0       # only the lines' order differs
+    other = write(tmp_path, "other.txt", [l.replace("0000006F", "000000DE") for l in prog(2, 3)])
+    assert c.main([ref, other, "--normalize"]) == 1         # the first worker slept for another time
