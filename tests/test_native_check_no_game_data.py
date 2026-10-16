@@ -548,3 +548,38 @@ def test_range_two_and_three_dots_still_work(repo: Path) -> None:
 def test_valid_empty_range_is_ok(repo: Path) -> None:
     r = run(repo, "--range", "HEAD..HEAD")
     assert r.returncode == 0 and "0 file(s) checked" in r.stdout
+
+
+def _hidden_history(repo: Path) -> tuple[str, str]:
+    """BASE; D adds cap.ppm; E deletes it; F adds a clean file. Returns (base, E)."""
+    base = git(repo, "rev-parse", "HEAD")
+    put(repo, "cap.ppm", "x")
+    commit_all(repo, "D")
+    git(repo, "rm", "-q", "cap.ppm")
+    git(repo, "commit", "-q", "-m", "E")
+    e = git(repo, "rev-parse", "HEAD")
+    put(repo, "clean.txt", "ok")
+    commit_all(repo, "F")
+    return base, e
+
+
+def test_range_ignores_shallow_file(repo: Path) -> None:
+    base, e = _hidden_history(repo)
+    r = run(repo, "--range", f"{base}..HEAD")
+    assert r.returncode == 1 and "cap.ppm" in r.stdout
+    (repo / ".git" / "shallow").write_text(e + "\n")
+    r = run(repo, "--range", f"{base}..HEAD")
+    assert r.returncode == 1 and "cap.ppm" in r.stdout
+
+
+def test_range_ignores_info_grafts(repo: Path) -> None:
+    base, e = _hidden_history(repo)
+    (repo / ".git" / "info").mkdir(exist_ok=True)
+    (repo / ".git" / "info" / "grafts").write_text(e + "\n")
+    r = run(repo, "--range", f"{base}..HEAD")
+    assert r.returncode == 1 and "cap.ppm" in r.stdout
+
+
+def test_range_endpoint_starting_with_dash_is_exit_2(repo: Path) -> None:
+    r = run(repo, "--range=--since=2100..HEAD")
+    assert r.returncode == 2

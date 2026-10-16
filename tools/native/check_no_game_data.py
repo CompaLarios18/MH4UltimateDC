@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import os
 import re
 import subprocess
 import sys
@@ -65,10 +66,13 @@ Reader = Callable[[str], bytes]  # blob sha -> content
 
 
 def git(*args: str, cwd: Optional[Path] = None, text: bool = False):
+    # --no-replace-objects: a local refs/replace entry must not show the guard a substitute
+    # commit or blob. GIT_SHALLOW_FILE / GIT_GRAFT_FILE=/dev/null: a local .git/shallow or
+    # .git/info/grafts must not cut the history the guard walks.
+    env = {**os.environ, "GIT_SHALLOW_FILE": os.devnull, "GIT_GRAFT_FILE": os.devnull}
     proc = subprocess.run(
-        # --no-replace-objects: a local refs/replace entry must not show the guard a
-        # substitute commit or blob instead of the real one.
-        ["git", "--no-replace-objects", *args], cwd=cwd, capture_output=True, text=text, check=False
+        ["git", "--no-replace-objects", *args], cwd=cwd, capture_output=True, text=text,
+        check=False, env=env,
     )
     if proc.returncode != 0:
         err = proc.stderr if text else proc.stderr.decode("utf-8", "replace")
@@ -151,6 +155,8 @@ def range_entries(root: Path, rng: str) -> list[tuple[str, str, str]]:
     sep = "..." if "..." in rng else ".."
     a, _, b = rng.partition(sep)
     a, b = a.strip(), b.strip()
+    if a.startswith("-") or b.startswith("-"):
+        raise RuntimeError(f"--range {rng!r}: an endpoint must not start with '-'")
     if not a or not b:
         raise RuntimeError(f"--range {rng!r}: both endpoints are required (A..B or A...B)")
     if sep == "...":
@@ -252,7 +258,6 @@ def main(argv: Optional[list[str]] = None) -> int:
                     "--ignore-submodules=none", "--diff-filter=ACMRT", cwd=root,
                 )
             )
-            names = sorted({path for _, _, path in entries})
         else:
             if ".." not in args.range:
                 ap.error("--range needs A..B")
