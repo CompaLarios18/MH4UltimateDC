@@ -25,13 +25,19 @@ Rules (each offending path is printed with the rule it broke; exit status 1):
                   .zip .7z .gz .tar .xz .zst .dmp .mgpu .gcap (case-insensitive)
     binary-magic  the same kinds by content, so a renamed file is still caught: ELF, PNG,
                   JPEG, GIF, ZIP, gzip, 7z, xz and zstd headers
+    binary-content any file with a NUL byte in its first 8 KiB or that is not valid UTF-8
+                  (a UTF-8 BOM is fine), whatever its name
+    listing       text files with more than 50 lines of hex dump (xxd, hexdump -C), objdump-style
+                  disassembly or C byte arrays (16+ 0xNN entries on a line)
+    dense-blob    a text file with a line of 1024+ characters made only of base64 or hex characters
 
 The trace rule also covers the unmapped-access report of the runner (lines
 'count=<n> addr=0x<hex> size=<n> rw=<read|write> lr=0x<hex>' under a '# unmapped v1' header).
 
 Exemption: a file listed in config/native/large_files.txt (path and SHA-256 both matching) is
-exempt from the size rule as before; the only newly exempted rules are binary-ext and
-binary-magic (vendored third-party binaries). The other rules are unchanged by the listing.
+exempt from the size rule as before; the only newly exempted rules are binary-ext,
+binary-magic, binary-content, listing and dense-blob (our own or vendored files, such as an icon
+and its C byte-array form). The other rules are unchanged by the listing.
 
 Trailing spaces, dots and newlines of a path component are ignored by the name rules (Windows
 does the same); git replace refs are ignored; each (path, rule) is printed once.
@@ -78,7 +84,28 @@ BINARY_MAGICS = (
     (b"\xfd7zXZ\x00", "xz"),
     (b"\x28\xb5\x2f\xfd", "zstd"),
 )
-BINARY_RULES = ("binary-ext", "binary-magic")
+BINARY_RULES = ("binary-ext", "binary-magic", "binary-content", "listing", "dense-blob")
+
+# Text listings of binary data (hex dumps, disassembly, C byte arrays): same limit as the traces.
+_H = "[0-9A-Fa-f]"
+LISTING_PATTERNS = tuple(
+    re.compile(p)
+    for p in (
+        # hexdump -C / xxd: offset (4 to 8 digits), optional colon, 8+ byte groups or 4+ word groups
+        rf"^\s*{_H}{{4,8}}:?(?:\s+{_H}{{2}}(?!{_H})){{8,}}",
+        rf"^\s*{_H}{{4,8}}:?(?:\s+{_H}{{4}}(?!{_H})){{4,}}",
+        # disassembly (objdump, gdb, Ghidra, IDA): optional section label and 0x prefix, address,
+        # optional <symbol>, optional colon, one 4 or 8 digit word or 1 to 8 byte groups, mnemonic
+        # (a lone two-digit hex token is a byte group, not a mnemonic)
+        rf"^\s*(?:[A-Za-z_.][\w.]*:)?(?:0[xX])?{_H}+\s*(?:<[^>\n]*>)?:?"
+        rf"(?:\s+{_H}{{4}}(?:{_H}{{4}})?(?!{_H})|(?:\s+{_H}{{2}}(?!{_H})){{1,8}})"
+        rf"\s+(?!{_H}{{2}}(?:\s|$))[A-Za-z][A-Za-z0-9._]*(?:\s|$)",
+        # C byte array: 16 or more 0xNN entries on one line
+        rf"(?:0[xX]{_H}{{2}}[\s,]+){{15}}0[xX]{_H}{{2}}(?!{_H})",
+    )
+)
+DENSE_LINE_MIN = 1024
+DENSE_LINE = re.compile(r"[A-Za-z0-9+/=]{%d,}" % DENSE_LINE_MIN)
 
 TRACE_PATTERNS = tuple(
     re.compile(p)
@@ -140,6 +167,29 @@ def count_trace_lines(data: bytes) -> int:
     return count
 
 
+def count_listing_lines(data: bytes) -> int:
+    count = 0
+    for raw in data.decode("utf-8", "replace").splitlines():
+        if any(p.search(raw) for p in LISTING_PATTERNS):
+            count += 1
+    return count
+
+
+def has_dense_line(data: bytes) -> bool:
+    return any(
+        len(raw) >= DENSE_LINE_MIN and DENSE_LINE.search(raw)
+        for raw in data.decode("utf-8", "replace").split("\n")
+    )
+
+
+def is_utf8(data: bytes) -> bool:
+    try:
+        data.decode("utf-8")  # a BOM decodes to U+FEFF and is fine
+    except UnicodeDecodeError:
+        return False
+    return True
+
+
 def normalize_path(path: str) -> str:
     """Strip what Windows ignores at the end of a path component (spaces, dots, newlines),
     so 'a.ppm ', 'b.wav.', 'export ' and 'x.ppm\\n' are judged like 'a.ppm', 'b.wav', 'export'."""
@@ -178,10 +228,26 @@ def content_rules(data: bytes) -> list[str]:
         broken.append(
             f"size ({len(data)} bytes > {MAX_BYTES}; list path and sha256 in {ALLOWLIST})"
         )
-    if is_text(data):
+    text_like = is_text(data)
+    if not text_like:
+        broken.append("binary-content (NUL byte in the first 8 KiB; list path and sha256 in "
+                      f"{ALLOWLIST} if it is ours)")
+    elif not is_utf8(data):
+        broken.append(f"binary-content (not valid UTF-8; list path and sha256 in {ALLOWLIST})")
+    if text_like:
+        # The trace rule never depends on UTF-8 validity (an allowlisted file is still checked).
         n = count_trace_lines(data)
         if n > TRACE_LINE_LIMIT:
             broken.append(f"trace ({n} lines look like trace lines, limit {TRACE_LINE_LIMIT})")
+    if text_like and is_utf8(data):
+        n = count_listing_lines(data)
+        if n > TRACE_LINE_LIMIT:
+            broken.append(
+                f"listing ({n} lines look like hex dump, disassembly or byte-array lines, "
+                f"limit {TRACE_LINE_LIMIT})"
+            )
+        if has_dense_line(data):
+            broken.append(f"dense-blob (a line of {DENSE_LINE_MIN}+ base64 or hex characters)")
     return broken
 
 
