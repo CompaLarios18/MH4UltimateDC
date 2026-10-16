@@ -331,15 +331,20 @@ void GuestMemory::HostMap(u32 lo, u32 hi) {
             std::memset(base_ + a, 0, b - a);
         }
     };
-    if (lo % host_page_ != 0) {
+    // The first and the last host page of the range, unless the range covers them whole (a range
+    // inside one host page is both; clearing a part twice is harmless).
+    if (lo > host_lo || hi < host_lo + host_page_) {
         clear(lo, std::min<u64>(hi, host_lo + host_page_));
     }
-    if (hi % host_page_ != 0 && host_hi - host_page_ > host_lo) {
+    if (hi < host_hi || lo > host_hi - host_page_) {
         clear(std::max<u64>(lo, host_hi - host_page_), hi);
     }
+    // A zero region keeps its whole host pages accessible, also the parts outside the region (when
+    // the region is not host-page aligned), and a stray write there survives until now.
     if (zero_policy_ == ZeroPolicy::ZeroFill) {
         for (const ZeroRegion& region : zero_regions_) {
-            clear(std::max<u64>(region.start, lo), std::min<u64>(region.last + 1ull, hi));
+            clear(std::max<u64>(AlignDown(region.start, host_page_), lo),
+                  std::min<u64>(AlignUp(region.last + 1ull, host_page_), hi));
         }
     }
 }

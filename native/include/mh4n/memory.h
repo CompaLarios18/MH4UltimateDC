@@ -1,3 +1,5 @@
+// Derived from Azahar src/core/memory.h and src/core/hle/kernel/errors.h at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6
+// (GPL-2.0-or-later): the address-space constants and the result code values.
 // Guest memory (N1-02): the 3DS process's 4 GiB address space as one host reservation, the
 // mapping bookkeeping behind svcQueryMemory, the physical view the GPU and DSP use, and Azahar's
 // FCRAM allocation order.

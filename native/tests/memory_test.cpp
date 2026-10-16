@@ -440,6 +440,88 @@ TEST_CASE("host pages larger than guest pages (Apple silicon's 16 KiB) share and
     CHECK(base[0x05001000] == 0);
 }
 
+TEST_CASE("host pages larger than guest pages: a new mapping inside one host page is zero-filled") {
+    GuestMemoryOptions options;
+    options.zero_policy = ZeroPolicy::ZeroFill;
+    options.zero_regions = {{0x05000000, 0x05000FFF}};
+    options.host_page_size = 0x4000;
+    auto memory = MakeMemory(options);
+    u8* base = memory->Base();
+    const u32 A = 0x08000000; // host-page aligned
+
+    // the second half of a host page is mapped, a stray write hits the free first half (the host
+    // page is accessible because of its neighbour), and a mapping of the first half, which starts
+    // on the host page boundary and ends inside the same host page, must read zero
+    REQUIRE(memory->Map(A + 0x2000, 0x2000, RW, MemState::Private) == 0);
+    std::memset(base + A + 0x2000, 0x33, 0x2000);
+    base[A + 0x100] = 0x77;
+    base[A + 0x1FFF] = 0x78;
+    REQUIRE(memory->Map(A, 0x2000, RW, MemState::Private) == 0);
+    for (u32 i = 0; i < 0x2000; ++i) {
+        REQUIRE(base[A + i] == 0);
+    }
+    for (u32 i = 0; i < 0x2000; ++i) {
+        REQUIRE(base[A + 0x2000 + i] == 0x33); // the neighbour keeps its contents
+    }
+
+    // the mirror image: the first half is mapped, the stray write hits the second half
+    const u32 B = A + 0x10000;
+    REQUIRE(memory->Map(B, 0x2000, RW, MemState::Private) == 0);
+    std::memset(base + B, 0x44, 0x2000);
+    base[B + 0x2000] = 0x77;
+    base[B + 0x3FFF] = 0x78;
+    REQUIRE(memory->Map(B + 0x2000, 0x2000, RW, MemState::Private) == 0);
+    for (u32 i = 0; i < 0x2000; ++i) {
+        REQUIRE(base[B + 0x2000 + i] == 0);
+        REQUIRE(base[B + i] == 0x44);
+    }
+
+    // one guest page in the middle of a host page, with its neighbours mapped
+    const u32 C = A + 0x20000;
+    REQUIRE(memory->Map(C, 0x1000, RW, MemState::Private) == 0);
+    REQUIRE(memory->Map(C + 0x2000, 0x2000, RW, MemState::Private) == 0);
+    base[C + 0x1000] = 0x77;
+    REQUIRE(memory->Map(C + 0x1000, 0x1000, RW, MemState::Private) == 0);
+    CHECK(base[C + 0x1000] == 0);
+}
+
+TEST_CASE("host pages larger than guest pages: a zero region off the host page grid is cleared by Map") {
+    GuestMemoryOptions options;
+    options.zero_policy = ZeroPolicy::ZeroFill;
+    options.zero_regions = {{0x08005000, 0x08007FFF}}; // starts in the middle of a host page
+    options.host_page_size = 0x4000;
+    auto memory = MakeMemory(options);
+    u8* base = memory->Base();
+
+    // the region ends at 0x08007FFF, so only the host page 0x08004000-0x08007FFF is accessible,
+    // and a stray write into its first guest page (outside the region, in the same host page) is
+    // kept
+    CHECK(ReadableAt(*memory, 0x08004000));
+    CHECK(ReadableAt(*memory, 0x08007FFF));
+    CHECK_FALSE(ReadableAt(*memory, 0x08008000));
+    CHECK_FALSE(ReadableAt(*memory, 0x08003FFF));
+    base[0x08004000] = 0xA5;
+    base[0x08006000] = 0xA6; // inside the region
+    base[0x08007FFF] = 0xA7;
+
+    // a mapping that covers the whole host page, and more, starts zero-filled
+    REQUIRE(memory->Map(0x08004000, 0x5000, RW, MemState::Private) == 0);
+    for (u32 i = 0; i < 0x5000; ++i) {
+        REQUIRE(base[0x08004000 + i] == 0);
+    }
+
+    // the same with a stray write in the part of the host page outside the region, after the
+    // range was freed again: the host page stays accessible because of the region
+    base[0x08004000] = 0xA5;
+    REQUIRE(memory->Unmap(0x08004000, 0x5000) == 0);
+    CHECK(ReadableAt(*memory, 0x08004000));
+    CHECK(ReadableAt(*memory, 0x08007FFF));
+    CHECK_FALSE(ReadableAt(*memory, 0x08008000));
+    base[0x08004000] = 0xA5;
+    REQUIRE(memory->Map(0x08004000, 0x1000, RW, MemState::Private) == 0);
+    CHECK(base[0x08004000] == 0);
+}
+
 TEST_CASE("an unusable host page size is refused") {
     GuestMemoryOptions options;
     options.host_page_size = 3000;
