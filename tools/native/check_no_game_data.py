@@ -30,9 +30,8 @@ The trace rule also covers the unmapped-access report of the runner (lines
 'count=<n> addr=0x<hex> size=<n> rw=<read|write> lr=0x<hex>' under a '# unmapped v1' header).
 
 Exemption: a file listed in config/native/large_files.txt (path and SHA-256 both matching) is
-exempt from the two binary-* rules only (vendored third-party binaries). It stays subject to the
-capture magics, the forbidden directories, the ci.yml patterns, the extension rule and the trace
-rule, and to the size rule unless it is also under 2 MB.
+exempt from the size rule as before; the only newly exempted rules are binary-ext and
+binary-magic (vendored third-party binaries). The other rules are unchanged by the listing.
 
 Trailing spaces, dots and newlines of a path component are ignored by the name rules (Windows
 does the same); git replace refs are ignored; each (path, rule) is printed once.
@@ -88,7 +87,7 @@ TRACE_PATTERNS = tuple(
         r"^# thread ",  # thread lines
         r"seq=\d+ session=",  # IPC trace
         r"^f=\d+ t=\d+",  # state trace
-        r"^count=\d+ addr=(0x)?[0-9A-Fa-f]+ size=\d+ rw=(read|write) lr=(0x)?[0-9A-Fa-f]+\s*$",  # unmapped report
+        r"^\s*count=\d+\s+addr=(0x)?[0-9A-Fa-f]+\s+size=\d+\s+rw=(read|write)\b",  # unmapped report (prefix match: new fields keep matching)
         r"svc=0x",
         r"cmd=0x",
     )

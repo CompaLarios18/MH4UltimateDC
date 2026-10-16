@@ -610,6 +610,20 @@ def test_unmapped_report_without_0x_and_with_crlf() -> None:
     assert check_bytes("u.txt", text.encode())
 
 
+@pytest.mark.parametrize("variant", ["trailing", "leading", "tabs"])
+def test_unmapped_report_with_extra_field_is_refused(variant: str) -> None:
+    def line(i: int) -> str:
+        base = unmapped_line(i).rstrip("\n")
+        if variant == "trailing":
+            return base + " x=1\n"
+        if variant == "leading":
+            return " " + base + "\n"
+        return base.replace(" ", "\t") + "\n"
+    text = "".join(line(i) for i in range(51))
+    assert check_bytes("u.txt", text.encode())
+    assert check_bytes("u.txt", "".join(line(i) for i in range(50)).encode()) == []
+
+
 def test_unmapped_report_near_misses_are_not_trace() -> None:
     text = "".join(f"count={i} addr=0x10 size=4 rw=exec lr=0x10\n" for i in range(60))
     assert check_bytes("u.txt", text.encode()) == []
