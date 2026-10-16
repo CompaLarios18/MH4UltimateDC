@@ -1,10 +1,14 @@
 // Derived from Azahar src/video_core/pica/pica_core.cpp, pica_core.h, shader_setup.cpp,
-// packed_attribute.h and src/video_core/pica_types.h at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6
+// packed_attribute.h, regs_internal.h, regs_pipeline.h, geometry_pipeline.cpp,
+// src/video_core/gpu.cpp and src/video_core/pica_types.h at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6
 // (GPL-2.0-or-later; every one of those files says "Licensed under GPLv2 or any later version"):
 // the expected values are worked out from their logic, and the interrupt delay formula and the
 // float24 packing are written out again in this file.
 // Copyright 2023-2026 Citra Emulator Project / Azahar Emulator Project (pica_core.cpp,
-//   pica_core.h, shader_setup.cpp, packed_attribute.h)
+//   pica_core.h, shader_setup.cpp, packed_attribute.h, gpu.cpp)
+// Copyright 2017-2025 Citra Emulator Project / Azahar Emulator Project (regs_internal.h,
+//   regs_pipeline.h)
+// Copyright 2017-2024 Citra Emulator Project / Azahar Emulator Project (geometry_pipeline.cpp)
 // Copyright 2015-2026 Citra Emulator Project / Azahar Emulator Project (pica_types.h)
 //
 // mh4n_gpu_pica (N2-04): the PICA command processor.

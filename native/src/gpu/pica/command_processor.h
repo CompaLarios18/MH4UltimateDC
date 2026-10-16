@@ -1,3 +1,11 @@
+// Derived from Azahar src/video_core/pica/pica_core.h and pica_core.cpp (the declarations and
+// names of the register-write handlers, the draw functions and the command list), and
+// src/video_core/gpu.cpp (GPU::SubmitCmdList, GPU::WriteReg) at
+// 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-2.0-or-later; every one of
+// those files says "Licensed under GPLv2 or any later version").
+// Copyright 2023-2026 Citra Emulator Project / Azahar Emulator Project (pica_core.h, pica_core.cpp,
+//   gpu.cpp)
+//
 // The PICA command processor (N2-04): decodes command lists, keeps the register file and the
 // state behind it, applies every side effect of a register write as Azahar's PicaCore does, and
 // hands each draw to a Backend.

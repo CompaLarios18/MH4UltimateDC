@@ -1,5 +1,7 @@
 // Derived from Azahar src/video_core/pica/pica_core.h, shader_setup.h, shader_setup.cpp,
-// packed_attribute.h, geometry_pipeline.cpp, dirty_regs.h and src/video_core/pica_types.h at
+// packed_attribute.h, geometry_pipeline.cpp, dirty_regs.h, src/video_core/pica_types.h and
+// src/video_core/shader/shader.h, shader_interpreter.cpp, shader_jit.cpp (read for the entry-point
+// rule of ShaderEngine::SetupBatch only) at
 // 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-2.0-or-later; every one of those files says
 // "Licensed under GPLv2 or any later version"). src/common/vector_math.h was read for the
 // semantics of Vec4::operator== (a memcmp); no code of it is used. What is derived: the state
@@ -11,6 +13,9 @@
 // Copyright 2015-2026 Citra Emulator Project / Azahar Emulator Project (pica_types.h)
 // Copyright 2017-2024 Citra Emulator Project / Azahar Emulator Project (geometry_pipeline.cpp)
 // Copyright 2025-2026 Citra Emulator Project / Azahar Emulator Project (dirty_regs.h)
+// Copyright 2015 Citra Emulator Project (shader.h)
+// Copyright 2014-2026 Citra Emulator Project / Azahar Emulator Project (shader_interpreter.cpp)
+// Copyright 2016-2026 Citra Emulator Project / Azahar Emulator Project (shader_jit.cpp)
 // Copyright 2015-2025 Citra Emulator Project / Azahar Emulator Project (vector_math.h)
 // Copyright 2014 Tony Wasserka (vector_math.h, second notice block)
 //

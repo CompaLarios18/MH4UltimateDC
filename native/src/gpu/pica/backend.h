@@ -1,3 +1,11 @@
+// Derived from Azahar src/video_core/pica/pica_core.cpp (DrawArrays, DrawImmediate), pica_core.h
+// and regs_pipeline.h at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6
+// (GPL-2.0-or-later; every one of those files says "Licensed under GPLv2 or any later version"):
+// the contents of a draw call and the names of its members (vertex_offset, index_u16,
+// input_vertex, max_input_attrib_index), taken from what those functions read when a draw starts.
+// Copyright 2023-2026 Citra Emulator Project / Azahar Emulator Project (pica_core.cpp, pica_core.h)
+// Copyright 2017-2025 Citra Emulator Project / Azahar Emulator Project (regs_pipeline.h)
+//
 // The interface between the PICA command processor and whatever draws (N2-04). A draw call is
 // what Azahar's PicaCore hands its rasterizer when a draw trigger register is written, or when
 // the last attribute of an immediate-mode vertex arrives, minus the work Azahar does itself

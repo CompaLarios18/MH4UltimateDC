@@ -1,5 +1,6 @@
 // Derived from Azahar src/video_core/pica/regs_internal.h, regs_pipeline.h, regs_shader.h,
-// regs_lighting.h, regs_texturing.h, regs_internal.cpp and pica_core.cpp at
+// regs_lighting.h, regs_texturing.h, regs_internal.cpp, pica_core.cpp, pica_core.h (the layout of
+// PicaCore::Regs) and src/video_core/gpu.cpp (the MMIO base address) at
 // 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-2.0-or-later; every one of those files says
 // "Licensed under GPLv2 or any later version"): the positions of the internal registers (the
 // layout of RegsInternal and of the structures inside it), the bit fields of the registers the
@@ -10,7 +11,8 @@
 // Copyright 2015-2025 Citra Emulator Project / Azahar Emulator Project (regs_internal.cpp)
 // Copyright 2017 Citra Emulator Project (regs_lighting.h)
 // Copyright 2017-2024 Citra Emulator Project / Azahar Emulator Project (regs_texturing.h)
-// Copyright 2023-2026 Citra Emulator Project / Azahar Emulator Project (pica_core.cpp)
+// Copyright 2023-2026 Citra Emulator Project / Azahar Emulator Project (pica_core.cpp, pica_core.h,
+//   gpu.cpp)
 //
 // The PICA's internal registers (N2-04): the 0x300 words a command list writes. Only the
 // registers the command processor reads or acts on are named here; the rest are plain storage

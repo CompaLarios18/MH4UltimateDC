@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Derived in part from Azahar src/core/file_sys/ncch_container.h and src/core/hle/kernel/process.cpp
+# Derived from Azahar src/core/file_sys/ncch_container.h and src/core/hle/kernel/process.cpp
 # at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-3.0-or-later: ncch_container.h says so, process.cpp
 # says GPL-2.0-or-later): the layout of the ARM11 local capabilities (parse_local_caps) and
 # Process::ParseKernelCaps (parse_kernel_caps), translated to Python. See native/THIRD_PARTY.md.

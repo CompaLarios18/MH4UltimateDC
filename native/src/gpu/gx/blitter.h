@@ -1,11 +1,13 @@
 // Derived from Azahar src/video_core/renderer_software/sw_blitter.cpp, src/video_core/gpu.cpp,
-// src/video_core/pica/regs_external.h, src/video_core/utils.h and src/common/color.h at
+// src/video_core/pica/regs_external.h, src/video_core/utils.h, src/common/color.h,
+// src/core/memory.h and src/core/memory.cpp (the physical memory areas, IsValidPhysicalAddress) at
 // 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-2.0-or-later; every one of these files says
 // "GPLv2 or any later version"): the register layouts and the algorithms of the memory fill,
 // the display transfer and the texture copy.
 // Copyright 2023 Citra Emulator Project (sw_blitter.cpp)
 // Copyright 2023-2026 Citra Emulator Project / Azahar Emulator Project (gpu.cpp, regs_external.h)
 // Copyright 2014 Citra Emulator Project (utils.h, color.h)
+// Copyright 2014-2026 Citra Emulator Project / Azahar Emulator Project (memory.h, memory.cpp)
 //
 // The blitter of the GX engine (N2-03): the three operations that work on memory, as Azahar's
 // SwBlitter does them, bit for bit. They take the register words the GPU holds (the commands of

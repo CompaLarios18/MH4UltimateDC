@@ -921,11 +921,12 @@ void EndSvcTrace() {
 
 // ── IPC trace (N0-21) ──────────────────────────────────────────────────────────────
 //
-// Derived in part from Azahar at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-2.0-or-later: every
-// source below says "GPLv2 or any later version"): the descriptor layouts and the walk over the
-// translate parameters (ParseIpcCommand) follow src/core/hle/ipc.h and
-// src/core/hle/kernel/hle_ipc.cpp; the recorder is used as src/core/hle/kernel/ipc_debugger/
-// recorder.h and recorder.cpp define it.
+// Derived from Azahar src/core/hle/ipc.h, src/core/hle/kernel/hle_ipc.cpp and
+// src/core/hle/kernel/ipc_debugger/recorder.h, recorder.cpp at
+// 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-2.0-or-later; every one of those files says
+// "GPLv2 or any later version"): the descriptor layouts and the walk over the translate
+// parameters (ParseIpcCommand) follow ipc.h and hle_ipc.cpp; the recorder is used as recorder.h
+// and recorder.cpp define it. This section only.
 // Copyright 2016 Citra Emulator Project (ipc.h)
 // Copyright 2017-2025 Citra Emulator Project / Azahar Emulator Project (hle_ipc.cpp)
 // Copyright 2019 Citra Emulator Project (recorder.h, recorder.cpp)
