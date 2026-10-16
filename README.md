@@ -21,7 +21,7 @@ A work-in-progress decompilation of **Monster Hunter 4 Ultimate** (Nintendo 3DS)
 - **Community mods**: a mod manager with load order and conflicts ([`docs/MODS.md`](docs/MODS.md)); code mods (`code.ips`, `code.bps`) are applied before recompiling; data and RomFS mods work as on Azahar.
 - Where the port needs to change behaviour, functions also get hand-decompiled into readable C, each one verified with `tools/difftest.py`.
 
-How to play it: [`docs/PLAYING.md`](docs/PLAYING.md). The plan: [`docs/ROADMAP.md`](docs/ROADMAP.md).
+How to play it: [`docs/PLAYING.md`](docs/PLAYING.md). Common questions: [`FAQ.md`](FAQ.md). The plan: [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ## ⚠️ This repository contains no game data
 
