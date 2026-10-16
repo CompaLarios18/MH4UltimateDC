@@ -20,6 +20,19 @@ Rules (each offending path is printed with the rule it broke; exit status 1):
     size          files over 2 MB, unless config/native/large_files.txt lists
                   their path and SHA-256
     trace         text files with more than 50 lines that look like trace lines
+    binary-ext    screenshots, ELF files (code.bin converted for Ghidra), archives, dumps and
+                  GPU captures by name: .png .jpg .jpeg .bmp .tga .gif .elf .so .dll .exe
+                  .zip .7z .gz .tar .xz .zst .dmp .mgpu .gcap (case-insensitive)
+    binary-magic  the same kinds by content, so a renamed file is still caught: ELF, PNG,
+                  JPEG, GIF, ZIP, gzip, 7z, xz and zstd headers
+
+The trace rule also covers the unmapped-access report of the runner (lines
+'count=<n> addr=0x<hex> size=<n> rw=<read|write> lr=0x<hex>' under a '# unmapped v1' header).
+
+Exemption: a file listed in config/native/large_files.txt (path and SHA-256 both matching) is
+exempt from the two binary-* rules only (vendored third-party binaries). It stays subject to the
+capture magics, the forbidden directories, the ci.yml patterns, the extension rule and the trace
+rule, and to the size rule unless it is also under 2 MB.
 
 Trailing spaces, dots and newlines of a path component are ignored by the name rules (Windows
 does the same); git replace refs are ignored; each (path, rule) is printed once.
@@ -50,6 +63,24 @@ CI_PATTERN = re.compile(
 FORBIDDEN_DIRS = frozenset({"build", "baserom", "export"})
 FORBIDDEN_EXTENSIONS = frozenset({".ppm", ".bin", ".wav"})
 
+BINARY_EXTENSIONS = (
+    ".png", ".jpg", ".jpeg", ".bmp", ".tga", ".gif", ".elf", ".so", ".dll", ".exe",
+    ".zip", ".7z", ".gz", ".tar", ".xz", ".zst", ".dmp", ".mgpu", ".gcap",
+)
+BINARY_MAGICS = (
+    (b"\x7fELF", "ELF"),
+    (b"\x89PNG\r\n\x1a\n", "PNG"),
+    (b"\xff\xd8\xff", "JPEG"),
+    (b"GIF87a", "GIF"),
+    (b"GIF89a", "GIF"),
+    (b"PK\x03\x04", "ZIP"),
+    (b"\x1f\x8b", "gzip"),
+    (b"7z\xbc\xaf\x27\x1c", "7z"),
+    (b"\xfd7zXZ\x00", "xz"),
+    (b"\x28\xb5\x2f\xfd", "zstd"),
+)
+BINARY_RULES = ("binary-ext", "binary-magic")
+
 TRACE_PATTERNS = tuple(
     re.compile(p)
     for p in (
@@ -57,6 +88,7 @@ TRACE_PATTERNS = tuple(
         r"^# thread ",  # thread lines
         r"seq=\d+ session=",  # IPC trace
         r"^f=\d+ t=\d+",  # state trace
+        r"^count=\d+ addr=(0x)?[0-9A-Fa-f]+ size=\d+ rw=(read|write) lr=(0x)?[0-9A-Fa-f]+\s*$",  # unmapped report
         r"svc=0x",
         r"cmd=0x",
     )
@@ -128,6 +160,9 @@ def name_rules(path: str) -> list[str]:
         # endswith, not Path.suffix: a file named just '.bin' has no suffix.
         if lowered.endswith(ext):
             broken.append(f"extension ({ext} files are not allowed)")
+    for ext in BINARY_EXTENSIONS:
+        if lowered.endswith(ext):
+            broken.append(f"binary-ext ({ext} files are not allowed)")
     return broken
 
 
@@ -136,6 +171,10 @@ def content_rules(data: bytes) -> list[str]:
     broken: list[str] = []
     if data[:4] in MAGICS:
         broken.append(f"magic (capture file starting with {data[:4].decode()})")
+    for magic, kind in BINARY_MAGICS:
+        if data.startswith(magic):
+            broken.append(f"binary-magic ({kind} file by content)")
+            break
     if len(data) > MAX_BYTES:
         broken.append(
             f"size ({len(data)} bytes > {MAX_BYTES}; list path and sha256 in {ALLOWLIST})"
@@ -219,12 +258,15 @@ def check_entries(
                 cache[sha] = (
                     [r for r in found if not r.startswith("size")],
                     [r for r in found if r.startswith("size")],
-                    hashlib.sha256(data).hexdigest() if len(data) > MAX_BYTES else "",
+                    hashlib.sha256(data).hexdigest(),
                 )
             plain, size, digest = cache[sha]
+            exempt = allowed.get(path) == digest
             rules += plain
-            if size and allowed.get(path) != digest:
+            if size and not exempt:
                 rules += size
+            if exempt:
+                rules = [r for r in rules if not r.startswith(BINARY_RULES)]
         for r in rules:
             if (path, r) not in seen:
                 seen.add((path, r))
