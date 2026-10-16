@@ -21,14 +21,14 @@ Tables between the `wp-status` markers are generated: edit the specs or use `set
 | ID | Title | Size | Agent | Depends on | Needs | Status | Note |
 |---|---|---|---|---|---|---|---|
 | N0-01 | Bootstrap the native branch | S | orchestrator | - | none | `done` | PR #3 |
-| N0-02 | Cloud development environment | S | native-worker | - | none | `review` | batch 20261016 |
-| N0-03 | Native CI | M | native-worker | - | ci | `review` | batch 20261016; ci pending (run 38880121118: green, artifact published; the download from a cloud session is blocked by the network policy, host productionresultssa2.blob.core.windows.net) |
-| N0-04 | Old 3DS runs, SVC results and normalised SVC traces | M | native-worker-high | N0-03 | ci, dump-check | `review` | batch 20261016; dump-check pending (G1: jit vs recomp traces compare equal); ci green (run 38885552387) |
-| N0-07 | Game-state trace and unmapped-access counter | S | native-worker | N0-04 | ci, dump-check | `review` | batch 20261016; dump-check pending (G1: the scene byte changes in the state trace; the unmapped report exists); ci green (run 38892421769) |
+| N0-02 | Cloud development environment | S | native-worker | - | none | `review` | PR #5 |
+| N0-03 | Native CI | M | native-worker | - | ci | `review` | PR #5; ci pending (run 38880121118: green, artifact published; the download from a cloud session is blocked by the network policy, host productionresultssa2.blob.core.windows.net) |
+| N0-04 | Old 3DS runs, SVC results and normalised SVC traces | M | native-worker-high | N0-03 | ci, dump-check | `review` | PR #5; dump-check pending (G1: jit vs recomp traces compare equal); ci green (run 38885552387) |
+| N0-07 | Game-state trace and unmapped-access counter | S | native-worker | N0-04 | ci, dump-check | `review` | PR #5; dump-check pending (G1: the scene byte changes in the state trace; the unmapped report exists); ci green (run 38892421769) |
 | N0-08 | Frame-keyed scheduling in the runner | S | native-worker | N0-07 | ci, dump-check | `todo` |  |
 | N0-21 | IPC trace and comparator | M | native-worker-high | N0-08 | ci, dump-check | `todo` |  |
 | N0-06 | DSP and HID captures | M | native-worker | N0-21 | ci, dump-check | `todo` |  |
-| N0-22 | GPU capture format and `gcap.py` | S | native-worker | - | none | `review` | batch 20261016 |
+| N0-22 | GPU capture format and `gcap.py` | S | native-worker | - | none | `review` | PR #5 |
 | N0-05 | GPU capture recorder | M | native-worker-high | N0-06, N0-22 | ci, dump-check | `todo` |  |
 | N0-09 | Golden sessions G1, G2, G6 | M | native-worker | N0-04, N0-05, N0-06, N0-07, N0-08, N0-21 | dump | `todo` |  |
 | N0-10 | Golden sessions G3, G4, G7 | M | native-worker | N0-09 | dump, save | `todo` |  |
@@ -37,10 +37,10 @@ Tables between the `wp-status` markers are generated: edit the specs or use `set
 | N0-13 | PICA census | M | native-worker | N0-05, N0-10 | dump, save | `todo` |  |
 | N0-14 | Flat-memory coherence check | M | native-worker-high | N0-15, N0-10 | ci, dump, save | `todo` |  |
 | N0-15 | Performance baseline | M | native-worker | N0-18 | ci, pc, mac | `todo` |  |
-| N0-16 | Azahar dependency inventory | S | native-worker | - | none | `review` | batch 20261016 |
-| N0-17 | `RC_NATIVE` mode in the recompiler runtime | M | native-worker-high | N0-03 | ci | `review` | batch 20261016; ci green (run 38885556028) |
+| N0-16 | Azahar dependency inventory | S | native-worker | - | none | `review` | PR #5 |
+| N0-17 | `RC_NATIVE` mode in the recompiler runtime | M | native-worker-high | N0-03 | ci | `review` | PR #5; ci green (run 38885556028) |
 | N0-18 | Hooks on a platform interface | M | native-worker-high | N0-16, N0-17, N0-05 | ci, dump-check | `todo` |  |
-| N0-19 | Game-data guard for agents | S | native-worker | - | ci | `review` | batch 20261016; ci green (runs 38884722260 and, for the follow-up, 38903953519) |
+| N0-19 | Game-data guard for agents | S | native-worker | - | ci | `review` | PR #5; ci green (runs 38884722260 and, for the follow-up, 38903953519) |
 | N0-23 | Service command census from the code | S | native-worker | - | dump | `ready` |  |
 | N0-20 | `IRuntime` seam in the app: lifecycle, options, paths | M | native-worker-high | N0-16, N0-15 | ci, pc | `todo` |  |
 | N0-24 | `IRuntime` seam in the app: input, multiplayer, keyboard | M | native-worker-high | N0-20 | ci, pc | `todo` |  |
@@ -51,8 +51,8 @@ Tables between the `wp-status` markers are generated: edit the specs or use `set
 <!-- wp-status:begin N1 -->
 | ID | Title | Size | Agent | Depends on | Needs | Status | Note |
 |---|---|---|---|---|---|---|---|
-| N1-01 | `native/` skeleton, build and CI | M | native-worker-high | N0-02, N0-03 | ci | `review` | batch 20261016; ci green (run 38885559352) |
-| N1-02 | Guest memory | M | native-worker-high | N1-01 | none | `review` | batch 20261016; ci green (run 38892424838); Windows/macOS paths untested (N1-22) |
+| N1-01 | `native/` skeleton, build and CI | M | native-worker-high | N0-02, N0-03 | ci | `review` | PR #5; ci green (run 38885559352) |
+| N1-02 | Guest memory | M | native-worker-high | N1-01 | none | `review` | PR #5; ci green (run 38892424838); Windows/macOS paths untested (N1-22) |
 | N1-03 | Loader and system pages | M | native-worker | N1-02 | dump-check | `todo` |  |
 | N1-04 | Code host and guest fibers | M | native-worker-high | N1-02, N1-03, N0-17 | none | `todo` |  |
 | N1-05 | Kernel objects and handle table | M | native-worker-high | N1-02 | none | `todo` |  |
