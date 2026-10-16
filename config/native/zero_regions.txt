@@ -1,0 +1,6 @@
+# Guest address ranges that read as zero although nothing is mapped there (N1-02).
+# Format: <start> <end>  # reason          both addresses inclusive and 4 KiB aligned
+# (start a multiple of 0x1000, end one less than a multiple). The native build embeds this file
+# at configure time (native/src/memory/CMakeLists.txt). A MH4N_DEBUG_GUARD build leaves the
+# ranges unmapped instead, so that the access faults and is reported.
+0x00000000 0x000fffff  # reads of address 0 (the quest-loading race); Azahar returns 0
