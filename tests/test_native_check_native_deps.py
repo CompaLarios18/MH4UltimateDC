@@ -45,7 +45,7 @@ def tree(tmp_path):
 
 def run(root):
     return subprocess.run(
-        [sys.executable, TOOL, "--root", str(root)], capture_output=True, text=True
+        [sys.executable, TOOL, "--root", str(root)], capture_output=True, text=True, timeout=120
     )
 
 
@@ -320,6 +320,61 @@ def test_port_paths_that_are_not_src_do_not_widen_the_check(tree):
     write(tree, "native/src/kernel/CMakeLists.txt",
           'set(PROGRAM "${MH4N_REPO_ROOT}/port/tests/codehost_test.c")\n# the port\n')
     assert run(tree).returncode == 0
+
+
+@pytest.mark.parametrize("cmake", [
+    'set(P "${R}/port/")\nmh4n_module(SOURCES k.cpp ${P}src/hooks.cpp)\n',
+    'set(P ${R}/port/)\nmh4n_module(SOURCES k.cpp ${P}src/hooks.cpp)\n',
+    'set(DIRS ${R}/port;${R}/other)\n',
+    'mh4n_module(SOURCES k.cpp ../../../port/tests/../src/hooks.cpp)\n',
+    'mh4n_module(SOURCES k.cpp ..\\..\\..\\port\\src\\hooks.cpp)\n',
+])
+def test_more_ways_to_hide_port_src_count_as_the_bare_directory(tree, cmake):
+    _port_tree(tree)
+    write(tree, "port/src/hooks.cpp", '#include "core/core.h"\n')
+    write(tree, "native/src/kernel/CMakeLists.txt", cmake)
+    result = run(tree)
+    assert result.returncode == 1, cmake
+    assert "port/src/hooks.cpp:1:" in result.stdout
+
+
+def test_a_backslash_include_path_in_a_native_source_names_the_port_file(tree):
+    _port_tree(tree)
+    write(tree, "port/src/hooks.h", '#include "core/core.h"\n')
+    write(tree, "native/src/kernel/kernel.cpp", CLEAN_CPP + '#include "..\\..\\..\\port\\src\\hooks.h"\n')
+    assert "port/src/hooks.h:1:" in run(tree).stdout
+
+
+@pytest.mark.parametrize("cmake", [
+    'message(STATUS "mh4n: building the native port")\n',
+    'project(mh4n DESCRIPTION "the native port of a game")\n',
+    'find_package(port QUIET)\n',
+    'set(SUPPORT_DIR support)\n',
+])
+def test_the_word_port_alone_is_not_the_port_directory(tree, cmake):
+    _port_tree(tree)
+    write(tree, "port/src/hooks.cpp", '#include "core/core.h"\n')
+    write(tree, "native/src/kernel/CMakeLists.txt", cmake)
+    result = run(tree)
+    assert result.returncode == 0, result.stdout
+
+
+def test_angle_includes_are_followed_cycles_end_and_outside_paths_are_not_followed(tree, tmp_path_factory):
+    outside = tmp_path_factory.mktemp("outside") / "evil.h"
+    outside.write_text('#include "core/core.h"\n')
+    write(tree, "port/src/fiber.cpp", '#include "fiber.h"\n')
+    write(tree, "port/src/fiber.h", '#include <angle.h>\n#include "../hooks_outside.h"\n#include "%s"\n#include "a.h"\n' % outside)
+    write(tree, "port/src/angle.h", '#pragma once\n')
+    write(tree, "port/src/a.h", '#include "b.h"\n')
+    write(tree, "port/src/b.h", '#include "a.h"\n')                 # a cycle
+    write(tree, "port/hooks_outside.h", '#include "core/core.h"\n')  # one level above port/src
+    write(tree, "native/src/kernel/CMakeLists.txt", "mh4n_module(SOURCES k.cpp ../../../port/src/fiber.cpp)\n")
+    result = run(tree)
+    assert result.returncode == 0, result.stdout
+    write(tree, "port/src/angle.h", '#include "common/common_types.h"\n')
+    result = run(tree)
+    assert result.returncode == 1
+    assert _checked(result) == {"port/src/angle.h"}
 
 
 @pytest.mark.parametrize("header", ["nihstro/shader_binary.h", "teakra/teakra.h", "dynarmic/interface/A32/a32.h",

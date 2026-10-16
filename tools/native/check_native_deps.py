@@ -23,9 +23,11 @@ uses are checked (and only if they exist):
     or a variable such as port/src/${X}.cpp) checks every file on the list, because any of
     them could be pulled in; so does a CMake file that holds the port directory in a variable
     (`set(P "${ROOT}/port")`, then `${P}/src/hooks.cpp`) or builds a path under port/ from a
-    variable; `//` and `/./` in a path are collapsed before the text is read;
-  - the quoted includes of a checked file that name a file of port/src are checked too (and
-    theirs, and so on), so a header that is not named still cannot bring Azahar in;
+    variable; `//`, `/./`, `/x/../` and backslashes in a path are normalised before the text is
+    read;
+  - the includes (quoted or in angle brackets) of a checked file that name a file of port/src
+    are checked too (and theirs, and so on; absolute paths and paths that leave port/src are not
+    followed), so a header that is not named still cannot bring Azahar in;
   - a native/ file that mentions nothing from port/src checks nothing from it.
 
 A mention in a CMake comment is ignored; one in a comment of a .cpp/.h file counts (it is
@@ -82,14 +84,15 @@ SOURCE_SUFFIXES = {".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx", ".i
 CMAKE_SUFFIXES = {".cmake"}
 
 INCLUDE_RE = re.compile(r'^\s*#\s*(?:include|import)\s*[<"]([^>"]+)[>"]')
-QUOTED_INCLUDE_RE = re.compile(r'^\s*#\s*include\s*"([^"]+)"')
 TOKEN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_.+\-]*")
 PORT_AZAHAR_RE = re.compile(r"port/azahar(?![A-Za-z0-9_])")
 PORT_SRC_RE = re.compile(r"port/src(?:/([A-Za-z0-9_][A-Za-z0-9_.+\-/]*))?")
-# `port` as the last component of a path (a variable that will be given `/src/...` later) or
-# followed by a variable component, in a CMake file.
-PORT_DIR_VARIABLE_RE = re.compile(r'(?<=[/"\s(])port(?:(?=["\s)])|/(?=\$))')
+# `port` as the last component of a path (the directory held in a variable, with or without a
+# trailing slash, or in a list) or followed by a variable component, in a CMake file. A bare word
+# `port` ("the native port") is not a path and does not match.
+PORT_DIR_VARIABLE_RE = re.compile(r'(?<=/)port(?:(?=["\s);])|/(?=["\s);$]|$))', re.MULTILINE)
 PATH_NOISE_RE = re.compile(r"/(?:\.?/)+")
+PARENT_RE = re.compile(r"/(?!\.\.)[^/\s\"';()]+/\.\./")
 
 
 def _read(path: Path) -> list[str] | None:
@@ -146,7 +149,10 @@ def port_src_mentions(text: str, cmake: bool = False) -> tuple[set[str], bool]:
     """(files of port/src named in the text, whether the bare directory is mentioned). `cmake`:
     the text is a CMake file, where the port directory may be held in a variable."""
     named: set[str] = set()
+    text = text.replace("\\", "/")
     text = PATH_NOISE_RE.sub("/", text)
+    while (collapsed := PARENT_RE.sub("/", text)) != text:    # port/tests/../src -> port/src
+        text = collapsed
     bare = cmake and bool(PORT_DIR_VARIABLE_RE.search(text))
     for match in PORT_SRC_RE.finditer(text):
         rel = (match.group(1) or "").rstrip(".-/+")
@@ -204,9 +210,12 @@ def check(root: Path) -> tuple[list[str], int]:
         count += 1
         problems += check_includes(path, f"port/src/{rel}")
         for line in _read(path) or []:
-            match = QUOTED_INCLUDE_RE.match(line)
+            match = INCLUDE_RE.match(line)
             if match:
-                local = os.path.normpath(os.path.join(os.path.dirname(rel), match.group(1).strip()))
+                target = match.group(1).strip().replace("\\", "/")
+                if os.path.isabs(target):
+                    continue
+                local = os.path.normpath(os.path.join(os.path.dirname(rel), target))
                 if not local.startswith("..") and (src / local).is_file():
                     queue.append(local.replace(os.sep, "/"))
     return sorted(problems), count

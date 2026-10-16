@@ -41,8 +41,10 @@ jobs:
             range="$PUSH_BEFORE..$PUSH_AFTER"
           fi
           echo "checking $range"
-          # On a PR the script is the base branch's own, so a PR cannot weaken the check that judges it
-          # (the checkout is the PR's merge commit). Until the base has the script, the PR's is used.
+          # On a PR the script is the base branch's own, so a PR cannot weaken the script that judges it
+          # (the checkout is the PR's merge commit). The allowlist config/native/large_files.txt is still
+          # the PR's (path + SHA-256 per entry): review changes to it. Until the base has the script,
+          # the PR's is used.
           guard=tools/native/check_no_game_data.py
           if [ "$EVENT" = "pull_request" ] && git cat-file -e "$PR_BASE:$guard" 2>/dev/null; then
             git show "$PR_BASE:$guard" > "$RUNNER_TEMP/check_no_game_data.py"

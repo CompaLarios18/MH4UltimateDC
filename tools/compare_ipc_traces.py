@@ -51,8 +51,9 @@ usage: compare_ipc_traces.py REF CAND [--strict] [--ignore FILE]... [--prefix] [
   --context N  requests to show before the first difference (default 3)
 Exit status 0 when every thread matches (up to the candidate's end with --prefix), 1 when
 something differs, 2 for unreadable input: a file that is missing, has no `# ipctrace` header (an
-SVC trace, an empty file, a runner that ignored --trace-ipc) or holds no request line is refused,
-so a wrong path or a missing hook never reads as "all threads match".
+SVC trace, an empty file, a runner that ignored --trace-ipc), is not UTF-8 text, holds no request
+line, or has none left after --ignore is refused, so a wrong path or a missing hook never reads as
+"all threads match".
 """
 from __future__ import annotations
 
@@ -156,13 +157,18 @@ class TraceError(Exception):
 
 
 def load(path: str, ignored: set[tuple[str, int]]) -> dict[str, list[IpcCall]]:
-    raw = tracefmt.parse_ipc(path)
+    try:
+        raw = tracefmt.parse_ipc(path)
+    except UnicodeError:
+        raise TraceError(f"{path}: not an IPC trace (not UTF-8 text)") from None
     if raw.header is None or raw.header.get("tool") != "ipctrace":
         raise TraceError(f"{path}: not an IPC trace (no '# ipctrace' header)")
     if not raw.calls:
         raise TraceError(f"{path}: the IPC trace holds no request")
     trace = tracefmt.normalise_ipc(raw)
     kept = tracefmt.IpcTrace(trace.header, trace.threads, [c for c in trace.calls if not is_ignored(c, ignored)])
+    if not kept.calls:
+        raise TraceError(f"{path}: --ignore removed every request of the IPC trace")
     return kept.by_thread()
 
 

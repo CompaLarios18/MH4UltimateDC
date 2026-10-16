@@ -189,8 +189,9 @@ def test_ignore_drops_commands_from_both_traces_with_two_files(tmp_path):
 
 
 def test_ignore_matches_the_service_kind_of_a_handed_out_session(tmp_path):
-    a = trace(req(1, 1, "fs:USER/file#0", 0x080200C2, result=0), req(1, 2, "fs:USER/file#1", 0x080200C2, result=0))
-    b = trace(req(1, 1, "fs:USER/file#0", 0x080200C2, result=9), req(1, 2, "fs:USER/file#1", 0x080200C2, result=9))
+    keep = req(1, 3, "srv:", 0x00010000)                          # something must be left to compare
+    a = trace(req(1, 1, "fs:USER/file#0", 0x080200C2, result=0), req(1, 2, "fs:USER/file#1", 0x080200C2, result=0), keep)
+    b = trace(req(1, 1, "fs:USER/file#0", 0x080200C2, result=9), req(1, 2, "fs:USER/file#1", 0x080200C2, result=9), keep)
     ignore = tmp_path / "i.txt"
     ignore.write_text("fs:USER/file 080200c2  # reads depend on the clock\n")
     assert run(tmp_path, a, b) == 1
@@ -219,6 +220,46 @@ def test_an_input_that_is_not_an_ipc_trace_is_refused(tmp_path, capsys):
                 err = capsys.readouterr()
                 assert "all threads match" not in err.out
                 assert "error:" in err.err
+
+
+def test_the_header_is_checked_on_its_own_even_when_requests_follow(tmp_path, capsys):
+    requests = BASE[3:]                                     # BASE's thread lines and request lines
+    for header in ("# svctrace v1 2026-10-16 game=0x0004000000000000 cpu=jit new3ds=off",
+                   "# ipctrace2 v1 2026-10-16 game=0x0004000000000000 cpu=jit new3ds=off",
+                   "# IPCtrace v1 2026-10-16 game=0x0004000000000000 cpu=jit new3ds=off"):
+        bad = [header, *BASE[1:]]
+        assert run(tmp_path, bad, BASE) == 2, header
+        assert "not an IPC trace" in capsys.readouterr().err
+        assert run(tmp_path, BASE, bad, "--prefix") == 2
+        capsys.readouterr()
+    no_header = BASE[1:]
+    assert run(tmp_path, BASE, no_header) == 2
+    assert "no '# ipctrace' header" in capsys.readouterr().err
+    assert requests                                          # the fixtures do have requests
+
+
+def test_a_file_that_is_not_utf8_text_is_refused_not_a_traceback(tmp_path, capsys):
+    good = write(tmp_path, "good.txt", BASE)
+    binary = tmp_path / "bin.bin"
+    binary.write_bytes(bytes(range(256)) * 4)
+    utf16 = tmp_path / "utf16.txt"
+    utf16.write_bytes(("\n".join(BASE) + "\n").encode("utf-16"))
+    for bad in (binary, utf16):
+        assert cmp.main([good, str(bad)]) == 2
+        assert cmp.main([str(bad), good]) == 2
+        assert "not UTF-8 text" in capsys.readouterr().err
+
+
+def test_ignore_that_removes_every_request_is_refused(tmp_path, capsys):
+    ignore = tmp_path / "ignore.txt"
+    ignore.write_text("srv: 0x00010040\nfs:USER 0x00020000\nfs:USER 0x00050000\ngsp::Gpu 0x00030000\ngsp::Gpu 0x00040000\n")
+    a = write(tmp_path, "a.txt", BASE)
+    assert cmp.main([a, a, "--ignore", str(ignore)]) == 2
+    err = capsys.readouterr()
+    assert "--ignore removed every request" in err.err and "all threads match" not in err.out
+    partial = tmp_path / "partial.txt"
+    partial.write_text("fs:USER 0x00020000\n")
+    assert cmp.main([a, a, "--ignore", str(partial)]) == 0
 
 
 def test_prefix_notes_a_thread_the_candidate_never_used(tmp_path, capsys):
