@@ -277,3 +277,93 @@ def test_shipped_allowlist_is_comments_only() -> None:
     text = (ROOT / "config" / "native" / "large_files.txt").read_text()
     assert text.startswith("#")
     assert guard.load_allowlist(text) == {}
+
+
+# --- every path of every commit in --range (hardening round) ---
+
+
+def commit_all(repo: Path, msg: str = "c") -> None:
+    git(repo, "add", "-f", "-A")
+    git(repo, "commit", "-q", "-m", msg)
+
+
+def test_range_duplicate_content_under_forbidden_second_name(repo: Path) -> None:
+    base = git(repo, "rev-parse", "HEAD")
+    put(repo, "a/clean.txt", "same bytes\n")
+    put(repo, "export/b.txt", "same bytes\n")
+    put(repo, "z/dump.ppm", "same bytes\n")
+    commit_all(repo)
+    r = run(repo, "--range", f"{base}..HEAD")
+    assert r.returncode == 1
+    assert "export/b.txt" in r.stdout and "z/dump.ppm" in r.stdout
+    assert "a/clean.txt" not in r.stdout
+
+
+def test_range_duplicate_content_across_commits(repo: Path) -> None:
+    base = git(repo, "rev-parse", "HEAD")
+    put(repo, "clean.txt", "dup\n")
+    commit_all(repo, "one")
+    put(repo, "build/out.txt", "dup\n")
+    commit_all(repo, "two")
+    r = run(repo, "--range", f"{base}..HEAD")
+    assert r.returncode == 1 and "build/out.txt" in r.stdout
+
+
+@pytest.mark.parametrize("content", ["", "README content\n"])
+def test_range_forbidden_path_with_content_already_in_base(repo: Path, content: str) -> None:
+    # README.md holds "synthetic\n"; the empty blob is added to the base here.
+    put(repo, "empty.txt", "")
+    commit_all(repo, "empty in base")
+    base = git(repo, "rev-parse", "HEAD")
+    data = "" if content == "" else "synthetic\n"
+    put(repo, "baserom/x.txt", data)
+    put(repo, "snap.wav", data)
+    commit_all(repo)
+    r = run(repo, "--range", f"{base}..HEAD")
+    assert r.returncode == 1
+    assert "baserom/x.txt" in r.stdout and "snap.wav" in r.stdout
+
+
+def test_range_evil_merge_adds_forbidden_path(repo: Path) -> None:
+    base = git(repo, "rev-parse", "HEAD")
+    git(repo, "checkout", "-q", "-b", "side")
+    put(repo, "side.md", "side\n")
+    commit_all(repo, "side")
+    git(repo, "checkout", "-q", "-")
+    put(repo, "main.md", "main\n")
+    commit_all(repo, "main")
+    git(repo, "merge", "-q", "--no-ff", "--no-commit", "side")
+    put(repo, "export/evil.txt", "only in the merge\n")
+    git(repo, "add", "-f", "export/evil.txt")
+    git(repo, "commit", "-q", "-m", "evil merge")
+    r = run(repo, "--range", f"{base}..HEAD")
+    assert r.returncode == 1 and "export/evil.txt" in r.stdout
+
+
+def test_range_added_then_deleted_forbidden_name_with_clean_twin(repo: Path) -> None:
+    base = git(repo, "rev-parse", "HEAD")
+    put(repo, "keep.txt", "twin\n")
+    put(repo, "gone.ppm", "twin\n")
+    commit_all(repo, "add")
+    git(repo, "rm", "-q", "gone.ppm")
+    git(repo, "commit", "-q", "-m", "rm")
+    r = run(repo, "--range", f"{base}..HEAD")
+    assert r.returncode == 1 and "gone.ppm" in r.stdout
+
+
+def test_range_deleting_a_forbidden_path_is_not_reported(repo: Path) -> None:
+    put(repo, "old.ppm", "x")
+    commit_all(repo, "old")
+    base = git(repo, "rev-parse", "HEAD")
+    git(repo, "rm", "-q", "old.ppm")
+    git(repo, "commit", "-q", "-m", "rm")
+    assert run(repo, "--range", f"{base}..HEAD").returncode == 0
+
+
+def test_range_content_rule_still_applies_to_duplicate_blob(repo: Path) -> None:
+    base = git(repo, "rev-parse", "HEAD")
+    put(repo, "a.txt", b"MGPU" + b"\0" * 8)
+    put(repo, "b.txt", b"MGPU" + b"\0" * 8)
+    commit_all(repo)
+    r = run(repo, "--range", f"{base}..HEAD")
+    assert r.returncode == 1 and "a.txt" in r.stdout and "b.txt" in r.stdout

@@ -3,12 +3,14 @@
 
 Usage:
     check_no_game_data.py --staged          check what is staged in the index
-    check_no_game_data.py --range A..B      check every file version introduced by the commits in A..B
+    check_no_game_data.py --range A..B      check every (blob, path) of every commit in A..B
     check_no_game_data.py --range A...B     same, from the merge base of A and B
 
---range inspects every blob the range introduces (git rev-list --objects), not
-the net diff, so a file added in one commit and removed in a later one of the
-same push is still reported: it would be published in the history.
+--range inspects every added or modified path of every commit of the range
+(git log --raw, merges against each parent), not the net diff and not a
+deduplicated blob list: a file added in one commit and removed in a later one is
+still reported, and so is a forbidden name whose content also exists under a
+clean name or already in the base.
 
 Rules (each offending path is printed with the rule it broke; exit status 1):
     ci-pattern    the patterns of the guard in .github/workflows/ci.yml
@@ -99,8 +101,7 @@ def count_trace_lines(data: bytes) -> int:
     return count
 
 
-def check_file(path: str, data: bytes, allowed: dict[str, str]) -> list[str]:
-    """Return the names of the rules the file breaks."""
+def name_rules(path: str) -> list[str]:
     broken: list[str] = []
     if CI_PATTERN.search(path):
         broken.append("ci-pattern (game data file name)")
@@ -110,18 +111,33 @@ def check_file(path: str, data: bytes, allowed: dict[str, str]) -> list[str]:
     ext = Path(path).suffix.lower()
     if ext in FORBIDDEN_EXTENSIONS:
         broken.append(f"extension ({ext} files are not allowed)")
+    return broken
+
+
+def content_rules(data: bytes) -> list[str]:
+    """Rules that depend only on the content (the size rule is exempted per path by the caller)."""
+    broken: list[str] = []
     if data[:4] in MAGICS:
         broken.append(f"magic (capture file starting with {data[:4].decode()})")
     if len(data) > MAX_BYTES:
-        digest = hashlib.sha256(data).hexdigest()
-        if allowed.get(path) != digest:
-            broken.append(
-                f"size ({len(data)} bytes > {MAX_BYTES}; list path and sha256 in {ALLOWLIST})"
-            )
+        broken.append(
+            f"size ({len(data)} bytes > {MAX_BYTES}; list path and sha256 in {ALLOWLIST})"
+        )
     if is_text(data):
         n = count_trace_lines(data)
         if n > TRACE_LINE_LIMIT:
             broken.append(f"trace ({n} lines look like trace lines, limit {TRACE_LINE_LIMIT})")
+    return broken
+
+
+def check_file(path: str, data: bytes, allowed: dict[str, str]) -> list[str]:
+    """Return the names of the rules the file breaks."""
+    broken = name_rules(path)
+    digest = hashlib.sha256(data).hexdigest() if len(data) > MAX_BYTES else ""
+    for rule in content_rules(data):
+        if rule.startswith("size") and allowed.get(path) == digest:
+            continue
+        broken.append(rule)
     return broken
 
 
@@ -147,8 +163,11 @@ def run_checks(
     return offences
 
 
-def range_blobs(root: Path, rng: str) -> list[tuple[str, str]]:
-    """(blob sha, path) for every blob introduced by the commits of the range."""
+def range_entries(root: Path, rng: str) -> list[tuple[str, str, str]]:
+    """(mode, blob sha, path) for every added or modified entry of every commit in the range.
+
+    Merge commits report their diff against each parent (-m), so a file that only a
+    merge resolution introduces is covered. Deleted entries are skipped."""
     if "..." in rng:
         a, b = rng.split("...", 1)
         a, b = a or "HEAD", b or "HEAD"
@@ -157,19 +176,52 @@ def range_blobs(root: Path, rng: str) -> list[tuple[str, str]]:
     else:
         a, b = rng.split("..", 1)
         spec = f"{a or 'HEAD'}..{b or 'HEAD'}"
-    listing = git("rev-list", "--objects", spec, cwd=root, text=True)
-    cand = [ln.split(" ", 1) for ln in listing.splitlines() if " " in ln]
-    if not cand:
-        return []
-    check = subprocess.run(
-        ["git", "cat-file", "--batch-check=%(objecttype)"],
-        cwd=root, input="".join(f"{sha}\n" for sha, _ in cand),
-        capture_output=True, text=True, check=False,
+    raw = git(
+        "log", "--format=", "--raw", "-z", "--no-abbrev", "--no-renames", "-m", spec,
+        cwd=root,
     )
-    if check.returncode != 0:
-        raise RuntimeError(f"git cat-file --batch-check failed: {check.stderr.strip()}")
-    types = check.stdout.splitlines()
-    return [(sha, path) for (sha, path), t in zip(cand, types) if t == "blob"]
+    toks = [t.decode("utf-8", "surrogateescape") for t in raw.split(b"\0")]
+    entries: list[tuple[str, str, str]] = []
+    i = 0
+    while i < len(toks):
+        tok = toks[i]
+        if not tok.startswith(":"):
+            i += 1
+            continue
+        fields = tok[1:].split()
+        if len(fields) < 5 or i + 1 >= len(toks):
+            raise RuntimeError(f"unexpected git log --raw output near {tok!r}")
+        new_mode, new_sha, status, path = fields[1], fields[3], fields[4], toks[i + 1]
+        i += 2
+        if status.startswith("D") or set(new_sha) == {"0"}:
+            continue
+        entries.append((new_mode, new_sha, path))
+    return entries
+
+
+def check_entries(
+    root: Path, entries: list[tuple[str, str, str]], allowed: dict[str, str]
+) -> list[tuple[str, str]]:
+    """Name rules for every (sha, path); content rules once per blob sha."""
+    offences: list[tuple[str, str]] = []
+    cache: dict[str, tuple[list[str], list[str], str]] = {}
+    for mode, sha, path in entries:
+        rules = name_rules(path)
+        if mode != "160000":
+            if sha not in cache:
+                data = git("cat-file", "blob", sha, cwd=root)
+                found = content_rules(data)
+                cache[sha] = (
+                    [r for r in found if not r.startswith("size")],
+                    [r for r in found if r.startswith("size")],
+                    hashlib.sha256(data).hexdigest() if len(data) > MAX_BYTES else "",
+                )
+            plain, size, digest = cache[sha]
+            rules += plain
+            if size and allowed.get(path) != digest:
+                rules += size
+        offences += [(path, r) for r in rules]
+    return offences
 
 
 def read_allowlist(root: Path) -> dict[str, str]:
@@ -204,13 +256,9 @@ def main(argv: Optional[list[str]] = None) -> int:
         else:
             if ".." not in args.range:
                 ap.error("--range needs A..B")
-            blobs = range_blobs(root, args.range)
-            names = sorted({path for _, path in blobs})
-            offences = []
-            for sha, path in blobs:
-                data = git("cat-file", "blob", sha, cwd=root)
-                for rule in check_file(path, data, allowed):
-                    offences.append((path, rule))
+            entries = range_entries(root, args.range)
+            names = sorted({path for _, _, path in entries})
+            offences = check_entries(root, entries, allowed)
     except RuntimeError as e:
         print(f"check_no_game_data: {e}", file=sys.stderr)
         return 2
