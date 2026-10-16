@@ -1,0 +1,15 @@
+svc_test: start
+crc32 13e8bac1
+thumb_mix 445127c5
+dispatch 00002c80
+dot4 40380000
+vec_madd 40200000
+vec_madd 40300000
+vec_madd 3f400000
+vec_madd 42080000
+worker 0699cd00
+worker 00000000
+worker 00000028
+counter 00000078
+locked_sum 00049f36
+svc_test: done
