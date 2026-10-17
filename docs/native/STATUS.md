@@ -27,22 +27,22 @@ Tables between the `wp-status` markers are generated: edit the specs or use `set
 | N0-07 | Game-state trace and unmapped-access counter | S | native-worker | N0-04 | ci, dump-check | `done` | PR #5; dump-check pending (G1: the scene byte changes in the state trace; the unmapped report exists); ci green (run 38892421769) |
 | N0-08 | Frame-keyed scheduling in the runner | S | native-worker | N0-07 | ci, dump-check | `done` | PR #5; ci green (run 38923994278); dump-check pending (START at f600 then A at f900: same frame numbers at each scene change on --cpu jit and --cpu recomp) |
 | N0-21 | IPC trace and comparator | M | native-worker-high | N0-08 | ci, dump-check | `done` | PR #5; ci green (run 38954204863: the runner compiles the IPC section); dump-check pending (G1: jit vs recomp IPC traces compare equal; the first line shows bare session names) |
-| N0-06 | DSP and HID captures | M | native-worker | N0-21 | ci, dump-check | `review` | batch 20261017-n1; ci: native and runner jobs green (run 39003477255: the runner job compiles the DSP and HID section); its tools job failed only for the THIRD_PARTY rows, added in the merge; dump-check pending (300 audio frames from G1's title have non-silent PCM and type-3 records, the HID records equal the frames run, and type-2 (IR) records appear) |
+| N0-06 | DSP and HID captures | M | native-worker | N0-21 | ci, dump-check | `done` | PR #6; ci: native and runner jobs green (run 39003477255: the runner job compiles the DSP and HID section); its tools job failed only for the THIRD_PARTY rows, added in the merge; dump-check pending (300 audio frames from G1's title have non-silent PCM and type-3 records, the HID records equal the frames run, and type-2 (IR) records appear) |
 | N0-22 | GPU capture format and `gcap.py` | S | native-worker | - | none | `done` | PR #5 |
-| N0-05 | GPU capture recorder | M | native-worker-high | N0-06, N0-22 | ci, dump-check | `review` | batch 20261017-n1; ci green (run 39006180963: the runner job compiles and links the recorder and its patch); dump-check pending (a 3-frame capture of G1's title passes gcap.py check, has at least 3 command-list submissions, PICA_REG records, 3 FRAME records and 6 PPMs; report its size; FLUSH records appear) |
-| N0-09 | Golden sessions G1, G2, G6 | M | native-worker | N0-04, N0-05, N0-06, N0-07, N0-08, N0-21 | dump | `todo` |  |
+| N0-05 | GPU capture recorder | M | native-worker-high | N0-06, N0-22 | ci, dump-check | `done` | PR #6; ci green (run 39006180963: the runner job compiles and links the recorder and its patch); dump-check pending (a 3-frame capture of G1's title passes gcap.py check, has at least 3 command-list submissions, PICA_REG records, 3 FRAME records and 6 PPMs; report its size; FLUSH records appear) |
+| N0-09 | Golden sessions G1, G2, G6 | M | native-worker | N0-04, N0-05, N0-06, N0-07, N0-08, N0-21 | dump | `ready` |  |
 | N0-10 | Golden sessions G3, G4, G7 | M | native-worker | N0-09 | dump, save | `todo` |  |
 | N0-11 | Golden session G5 (two players) | M | native-worker | N0-10 | dump, save | `todo` |  |
 | N0-12 | Kernel census | S | native-worker | N0-04, N0-21, N0-10 | dump, save | `todo` |  |
 | N0-13 | PICA census | M | native-worker | N0-05, N0-10 | dump, save | `todo` |  |
 | N0-14 | Flat-memory coherence check | M | native-worker-high | N0-15, N0-10 | ci, dump, save | `todo` |  |
-| N0-15 | Performance baseline | M | native-worker | N0-18 | ci, pc, mac | `review` | batch 20261017-n1; ci green (Native CI run 39011509987; windows.yml 39011525115 and macos.yml 39011526794 on its branch); the --perf-log item ran on the CI runner with io_test (149 frames, report ok); maintainer: numbers on the reference PC and the M2 following docs/native/perf-procedure.md (the orchestrator writes docs/research/perf-baseline.md) |
+| N0-15 | Performance baseline | M | native-worker | N0-18 | ci, pc, mac | `done` | PR #6; ci green (Native CI run 39011509987; windows.yml 39011525115 and macos.yml 39011526794 on its branch); the --perf-log item ran on the CI runner with io_test (149 frames, report ok); maintainer: numbers on the reference PC and the M2 following docs/native/perf-procedure.md (the orchestrator writes docs/research/perf-baseline.md) |
 | N0-16 | Azahar dependency inventory | S | native-worker | - | none | `done` | PR #5 |
 | N0-17 | `RC_NATIVE` mode in the recompiler runtime | M | native-worker-high | N0-03 | ci | `done` | PR #5; ci green (run 38885556028) |
-| N0-18 | Hooks on a platform interface | M | native-worker-high | N0-16, N0-17, N0-05 | ci, dump-check | `review` | batch 20261017-n1; ci green (run 39008761854, windows.yml 39008783719 and macos.yml 39008785589 on its branch); dump-check pending (runs with --set 0:fps=60 --set f600:hud_edges=1 give the same state trace before and after the change) |
+| N0-18 | Hooks on a platform interface | M | native-worker-high | N0-16, N0-17, N0-05 | ci, dump-check | `done` | PR #6; ci green (run 39008761854, windows.yml 39008783719 and macos.yml 39008785589 on its branch); dump-check pending (runs with --set 0:fps=60 --set f600:hud_edges=1 give the same state trace before and after the change) |
 | N0-19 | Game-data guard for agents | S | native-worker | - | ci | `done` | PR #5; ci green (native-guard runs 38884722260, 38903953519 and 38944855740); guard hardened in four rounds, the last two from the batch audits |
 | N0-23 | Service command census from the code | S | native-worker | - | dump | `ready` |  |
-| N0-20 | `IRuntime` seam in the app: lifecycle, options, paths | M | native-worker-high | N0-16, N0-15 | ci, pc | `todo` |  |
+| N0-20 | `IRuntime` seam in the app: lifecycle, options, paths | M | native-worker-high | N0-16, N0-15 | ci, pc | `active` | session 20261017; base 59dfbb3 |
 | N0-24 | `IRuntime` seam in the app: input, multiplayer, keyboard | M | native-worker-high | N0-20 | ci, pc | `todo` |  |
 <!-- wp-status:end N0 -->
 
@@ -56,12 +56,12 @@ Tables between the `wp-status` markers are generated: edit the specs or use `set
 | N1-03 | Loader and system pages | M | native-worker | N1-02 | dump-check | `done` | PR #5; ci green (run 38926727430); dump-check pending (prepare_game.py on the staged dump; --print-process vs tools/exheader.py; the linear base vs G1's first linear ControlMemory) |
 | N1-04 | Code host and guest fibers | M | native-worker-high | N1-02, N1-03, N0-17 | none | `done` | PR #5; ci green (run 38958762393: native builds the cpu module and the test program); no dump items |
 | N1-05 | Kernel objects and handle table | M | native-worker-high | N1-02 | none | `done` | PR #5; ci green (run 38926731888) |
-| N1-06 | Scheduler, game clock and timers | L | native-worker-high | N1-04, N1-05 | none | `review` | batch 20261017-n1; ci pending |
-| N1-27 | Threads: creation, TLS and the core-1 time limit | M | native-worker-high | N1-06 | none | `review` | batch 20261017-n1; ci pending |
-| N1-07 | The SVC table | M | native-worker-high | N1-02, N1-27 | none | `review` | batch 20261017-n1; ci pending |
+| N1-06 | Scheduler, game clock and timers | L | native-worker-high | N1-04, N1-05 | none | `done` | PR #6; ci green (Native CI run 39018443575 on PR #6's head) |
+| N1-27 | Threads: creation, TLS and the core-1 time limit | M | native-worker-high | N1-06 | none | `done` | PR #6; ci green (Native CI run 39018443575 on PR #6's head) |
+| N1-07 | The SVC table | M | native-worker-high | N1-02, N1-27 | none | `done` | PR #6; ci green (Native CI run 39018443575 on PR #6's head) |
 | N1-08 | Kernel conformance programs | M | native-worker | N0-04 | none | `done` | PR #5; ci green (runs 38923999146 and, for the follow-up, 38944850589); the 10 programs match the reference runner twice in a row; tests/test_port.py and tests/test_conformance.py pass with the tip's runner (148 passed, 11 skipped for the game and the native runner, at the third audit) |
-| N1-09 | The runtime, the native runner and the first boot | L | native-worker-high | N1-03, N1-07, N1-08, N0-08 | ci | `review` | batch 20261017-n1; ci green on its branch (Native CI run 39012897629: native job ctest 22/22 and the conformance step 51 passed; the tools job failed only for the THIRD_PARTY row added in the merge); no dump items |
-| N1-10 | IPC core, ports, sessions and srv | M | native-worker-high | N1-07, N1-09, N0-21 | none | `todo` |  |
+| N1-09 | The runtime, the native runner and the first boot | L | native-worker-high | N1-03, N1-07, N1-08, N0-08 | ci | `done` | PR #6; ci green on its branch (Native CI run 39012897629: native job ctest 22/22 and the conformance step 51 passed; the tools job failed only for the THIRD_PARTY row added in the merge); no dump items |
+| N1-10 | IPC core, ports, sessions and srv | M | native-worker-high | N1-07, N1-09, N0-21 | none | `active` | session 20261017; base 59dfbb3 |
 | N1-11 | IPC replay harness | M | native-worker | N1-10, N0-21 | dump-check | `todo` |  |
 | N1-12 | fs: archives, RomFS and system archives | M | native-worker | N1-10, N1-11, N0-23 | dump-check | `todo` |  |
 | N1-13 | fs: save data and extdata | M | native-worker | N1-12 | dump-check, save | `todo` |  |
@@ -75,7 +75,7 @@ Tables between the `wp-status` markers are generated: edit the specs or use `set
 | N1-20 | Hooks on the native platform | S | native-worker | N0-18, N1-04, N1-17 | none | `todo` |  |
 | N1-21 | First game boot: G1 and G2 headless | M | native-worker-high | N1-09, N1-12, N1-13, N1-14, N1-15, N1-16, N1-17, N1-18, N1-19, N1-20, N1-22, N1-29, N0-09 | dump | `todo` |  |
 | N1-26 | G3 headless: from the save to the Arena hunt | L | native-worker-high | N1-21, N1-13, N0-10 | dump, save | `todo` |  |
-| N1-22 | Windows and macOS builds | M | native-worker | N1-09 | ci | `todo` |  |
+| N1-22 | Windows and macOS builds | M | native-worker | N1-09 | ci | `active` | session 20261017; base 59dfbb3 |
 | N1-23 | CPU budget measurement | S | native-worker | N1-26, N1-22, N0-15 | ci, pc | `todo` |  |
 | N1-24 | Fallback interpreter: spike | S | native-worker-high | N1-04, N1-09, N1-22 | none | `todo` |  |
 | N1-28 | Fallback interpreter | L | native-worker-high | N1-24 | none | `todo` |  |
@@ -97,7 +97,7 @@ Tables between the `wp-status` markers are generated: edit the specs or use `set
 | N2-21 | Backend foundation | M | native-worker-high | N2-01, N2-02 | none | `todo` |  |
 | N2-22 | Renderer thread and synchronisation | M | native-worker-high | N2-21, N2-03, N2-04 | dump-check, save | `todo` |  |
 | N2-13 | Framebuffer operations | M | native-worker-high | N2-07, N2-21 | none | `todo` |  |
-| N2-14 | Textures: decoding, hashes, cache | M | native-worker | N2-02 | dump-check, save, pc | `review` | batch 20261017-n1; dump-check pending (every texture in the G1-G4 captures decodes equal to the CPU reference); maintainer check (hd_hash_check.py with the HD pack on G3's capture); ci pending |
+| N2-14 | Textures: decoding, hashes, cache | M | native-worker | N2-02 | dump-check, save, pc | `done` | PR #6; dump-check pending (every texture in the G1-G4 captures decodes equal to the CPU reference); maintainer check (hd_hash_check.py with the HD pack on G3's capture); ci green (Native CI run 39018443575 on PR #6's head) |
 | N2-08 | Fragment generator, TEV and alpha test | L | native-worker-high | N2-03, N2-05, N2-06, N2-13, N2-14, N2-21 | none | `todo` |  |
 | N2-23 | Texture sampling and the first captured frames | M | native-worker-high | N2-08 | dump-check | `todo` |  |
 | N2-09 | Fragment lighting | L | native-worker-high | N2-08, N2-23 | none | `todo` |  |
@@ -107,7 +107,7 @@ Tables between the `wp-status` markers are generated: edit the specs or use `set
 | N2-20 | Fragment integration on the captures | M | native-worker-high | N2-09, N2-10, N2-11, N2-12, N2-23 | dump, save | `todo` |  |
 | N2-15 | Surface cache and resolution scaling | L | native-worker-high | N2-20, N2-22, N0-14 | dump-check, save | `todo` |  |
 | N2-16 | Pipeline cache, ubershader and background compilation | L | native-worker-high | N2-07, N2-20, N2-15 | dump-check, save, pc | `todo` |  |
-| N2-17 | HD pack pre-processor | M | native-worker | N2-14 | pc | `review` | batch 20261017-n1; ci pending; maintainer check (the real pack converts on the reference PC; time and archive size go into docs/native/hdpack.md) |
+| N2-17 | HD pack pre-processor | M | native-worker | N2-14 | pc | `done` | PR #6; ci green (Native CI run 39018443575 on PR #6's head); maintainer check (the real pack converts on the reference PC; time and archive size go into docs/native/hdpack.md) |
 | N2-18 | HD texture streaming and the VRAM budget | M | native-worker-high | N2-17, N2-15 | dump-check, save, pc | `todo` |  |
 | N2-19 | GPU budget measurement | S | native-worker | N2-15, N2-16, N2-18, N1-22, N1-23 | ci, pc, mac | `todo` |  |
 <!-- wp-status:end N2a -->
