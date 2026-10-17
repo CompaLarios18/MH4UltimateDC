@@ -103,11 +103,25 @@ jobs:
       - name: llvm-mingw (as tools/build_game.py fetches it)
         run: |
           set -eu
-          bin="$(python -c "import sys; sys.path.insert(0, 'tools'); import build_game; print(build_game.fetch_compiler('build/toolchain'))")"
-          bindir="$(dirname "$bin")"
+          # fetch_compiler (the code tools/build_game.py uses) prints its progress to stdout and
+          # returns a path relative to its argument: give it an absolute folder, send the chatter
+          # to stderr and print only the compiler's folder (a Windows path, as $GITHUB_PATH wants)
+          winbin="$(python - "$PWD/build/toolchain" <<'PY'
+          import contextlib, os, sys
+          sys.path.insert(0, "tools")
+          import build_game
+          with contextlib.redirect_stdout(sys.stderr):
+              clang = build_game.fetch_compiler(os.path.abspath(sys.argv[1]))
+          sys.stdout.write(os.path.dirname(os.path.abspath(clang)))
+          PY
+          )"
+          test -n "$winbin" || { echo "::error::no llvm-mingw folder"; exit 1; }
+          case "$winbin" in *$'\n'*) echo "::error::llvm-mingw folder isn't one line"; exit 1 ;; esac
+          bindir="$(cygpath -u "$winbin")"
+          test -x "$bindir/x86_64-w64-mingw32-clang.exe" || { echo "::error::no clang in $bindir"; exit 1; }
           echo "llvm-mingw: $bindir"
           # the runner needs its libc++ and libunwind DLLs from this folder at run time
-          echo "$(cygpath -w "$bindir")" >> "$GITHUB_PATH"
+          echo "$winbin" >> "$GITHUB_PATH"
           command -v ninja >/dev/null || choco install ninja -y --no-progress
       - name: Tools found
         run: |
@@ -144,14 +158,21 @@ jobs:
           mkdir -p "$pkg"
           cp build/native/bin/mh4u_native_runner.exe "$pkg/"
           bindir="$(dirname "$(command -v x86_64-w64-mingw32-clang)")"
+          # llvm-mingw keeps libc++.dll and libunwind.dll in <root>/x86_64-w64-mingw32/bin as well
+          dlldirs="$bindir"
+          [ -d "$bindir/../x86_64-w64-mingw32/bin" ] && dlldirs="$dlldirs $bindir/../x86_64-w64-mingw32/bin"
           # the DLLs the runner imports (and the ones those import) that llvm-mingw provides;
           # the system's DLLs stay where they are
           copy_dlls() {
             for dll in $(llvm-objdump -p "$1" | awk '/DLL Name:/ {print $3}'); do
-              if [ -f "$bindir/$dll" ] && [ ! -f "$pkg/$dll" ]; then
-                cp "$bindir/$dll" "$pkg/"
-                copy_dlls "$pkg/$dll"
-              fi
+              [ -f "$pkg/$dll" ] && continue
+              for d in $dlldirs; do
+                if [ -f "$d/$dll" ]; then
+                  cp "$d/$dll" "$pkg/"
+                  copy_dlls "$pkg/$dll"
+                  break
+                fi
+              done
             done
           }
           copy_dlls "$pkg/mh4u_native_runner.exe"

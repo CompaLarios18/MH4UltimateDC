@@ -15,6 +15,13 @@ else()
     set(mh4n_cpu_sources unavailable.cpp)
 endif()
 
+# macOS marks getcontext/makecontext/swapcontext deprecated (they still work on the SDKs we build
+# with); -Werror would turn that into an error in the port's fiber.cpp. Only that warning, only
+# for that file, only on macOS.
+if (APPLE AND EXISTS "${MH4N_FIBER_SOURCE}")
+    set_source_files_properties("${MH4N_FIBER_SOURCE}" PROPERTIES COMPILE_OPTIONS -Wno-deprecated-declarations)
+endif()
+
 mh4n_module(
     SOURCES ${mh4n_cpu_sources}
     DEPENDS
