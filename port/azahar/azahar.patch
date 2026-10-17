@@ -125,7 +125,16 @@ diff --git a/src/audio_core/hle/source.cpp b/src/audio_core/hle/source.cpp
                  state.current_buffer = Codec::DecodePCM16(num_channels, memory, config.length);
                  state.current_buffer_length = config.length;
                  state.current_buffer_mono_or_stereo = state.mono_or_stereo;
-@@ -460,6 +488,7 @@
+@@ -380,6 +408,8 @@ void Source::GenerateFrame() {
+ 
+         if (memory) {
+             const u32 remaining_samples = state.current_buffer_length - state.current_sample_number;
++            NoteSampleRead(physical_address, Format::PCM16, num_channels, remaining_samples,
++                           memory);
+             state.current_buffer = Codec::DecodePCM16(num_channels, memory, remaining_samples);
+         }
+     }
+@@ -460,6 +490,7 @@
      const u8* const memory = memory_system->GetPhysicalPointer(buf.physical_address & 0xFFFFFFFC);
      if (memory) {
          const unsigned num_channels = buf.mono_or_stereo == MonoOrStereo::Stereo ? 2 : 1;

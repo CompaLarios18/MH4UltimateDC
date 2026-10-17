@@ -144,8 +144,9 @@ before the frame is generated, then type 3 for each sample buffer a source read 
 address, size, CRC-32, and the bytes only the first time that address, size and CRC appear), and
 type 2 the 160 stereo `s16` samples of the mixed output, taken before the (null) sink. It needs
 three observer hooks in Azahar's HLE DSP (`AudioCore::HLE::g_capture_hooks`, in `azahar.patch`);
-buffers are noted when the DSP dequeues them or extends an embedded buffer, not when it refreshes
-a looping buffer in place (the same bytes were recorded at the dequeue). `--capture-hid` writes,
+buffers are noted when the DSP dequeues them, extends an embedded buffer, and each audio frame it
+re-reads the unconsumed part of a looping buffer from guest memory (the application may rewrite it
+while it plays; the (address, size, CRC) rule stores bytes only when they change). `--capture-hid` writes,
 on every change of the frame counter, type 1 the 0x2b0 bytes of HID shared memory as the game has
 it mapped (zeros until it does) and, once a game has handed a shared-memory block to `ir:USER`
 (the runner turns Azahar's IPC recorder on to see it), type 2 the first 0x200 bytes of that block

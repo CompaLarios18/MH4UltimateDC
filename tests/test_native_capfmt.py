@@ -343,3 +343,50 @@ def test_cli_check(tmp_path, capsys):
     assert capfmt.main(["check", p]) == 0
     assert "ok" in capsys.readouterr().out
     assert capfmt.main(["check", str(tmp_path / "missing")]) == 2
+
+
+# ── diff-dsp: the region the DSP reads ───────────────────────────────────────────────
+
+
+def pair_capture(path, pairs):
+    """One audio frame per (region 0 counter, region 1 counter) pair."""
+    with capfmt.Writer(str(path), "dsp", game=0x0004000000155400) as w:
+        for i, (c0, c1) in enumerate(pairs):
+            w.dsp_regions(1200, i * TICKS, capfmt.make_region(c0), capfmt.make_region(c1))
+            w.dsp_pcm(1200, i * TICKS, capfmt.make_pcm([(1, 1)] * 160))
+    return str(path)
+
+
+def test_diff_dsp_keys_on_the_region_the_dsp_reads(tmp_path):
+    # Region 1 holds the higher counter, region 0 never changes: the key is region 1's counter.
+    # A capture that starts one DSP frame later must be aligned by it and compare equal.
+    a = pair_capture(tmp_path / "a", [(3, 10), (3, 11), (3, 12)])
+    b = pair_capture(tmp_path / "b", [(3, 11), (3, 12)])
+    assert capfmt.diff_dsp(a, b) == []
+    assert capfmt.diff_dsp(b, a) == []
+    assert capfmt.summarize(a)["dsp_counter_first"] == 10
+    assert capfmt.summarize(a)["dsp_counter_last"] == 12
+
+
+def test_diff_dsp_region_one_counter_differs(tmp_path):
+    a = pair_capture(tmp_path / "a", [(3, 10), (3, 11)])
+    b = pair_capture(tmp_path / "b", [(3, 10), (3, 12)])
+    problems = capfmt.diff_dsp(a, b)
+    assert any("DSP frame #1" in p and "11" in p and "12" in p for p in problems)
+
+
+def test_diff_dsp_keys_through_wraparound(tmp_path):
+    # Region 0 sits at 0xFFFF while region 1 has wrapped: the DSP reads region 1, keys 0, 1, 2.
+    a = pair_capture(tmp_path / "a", [(0xFFFF, 0), (0xFFFF, 1), (0xFFFF, 2)])
+    b = pair_capture(tmp_path / "b", [(0xFFFF, 1), (0xFFFF, 2)])
+    assert capfmt.diff_dsp(a, b) == []
+    assert capfmt.summarize(a)["dsp_counter_first"] == 0
+    c = pair_capture(tmp_path / "c", [(0xFFFF, 0), (0xFFFF, 1), (0xFFFF, 5)])
+    assert any("counter 2 in the reference, 5 in" in p for p in capfmt.diff_dsp(a, c))
+
+
+def test_diff_dsp_region_zero_read_when_higher(tmp_path):
+    a = pair_capture(tmp_path / "a", [(12, 3), (13, 3), (14, 3)])
+    b = pair_capture(tmp_path / "b", [(13, 3), (14, 3)])
+    assert capfmt.diff_dsp(a, b) == []
+    assert capfmt.summarize(a)["dsp_counter_first"] == 12
