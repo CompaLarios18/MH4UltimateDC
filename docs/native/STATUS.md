@@ -61,7 +61,7 @@ Tables between the `wp-status` markers are generated: edit the specs or use `set
 | N1-07 | The SVC table | M | native-worker-high | N1-02, N1-27 | none | `done` | PR #6; ci green (Native CI run 39018443575 on PR #6's head) |
 | N1-08 | Kernel conformance programs | M | native-worker | N0-04 | none | `done` | PR #5; ci green (runs 38923999146 and, for the follow-up, 38944850589); the 10 programs match the reference runner twice in a row; tests/test_port.py and tests/test_conformance.py pass with the tip's runner (148 passed, 11 skipped for the game and the native runner, at the third audit) |
 | N1-09 | The runtime, the native runner and the first boot | L | native-worker-high | N1-03, N1-07, N1-08, N0-08 | ci | `done` | PR #6; ci green on its branch (Native CI run 39012897629: native job ctest 22/22 and the conformance step 51 passed; the tools job failed only for the THIRD_PARTY row added in the merge); no dump items |
-| N1-10 | IPC core, ports, sessions and srv | M | native-worker-high | N1-07, N1-09, N0-21 | none | `active` | session 20261017; base 59dfbb3 |
+| N1-10 | IPC core, ports, sessions and srv | M | native-worker-high | N1-07, N1-09, N0-21 | none | `review` | batch 20261017-n1-2; ci pending; conf_srv stays in NATIVE_NOT_YET until N1-15 (cfg:u, ptm:u) |
 | N1-11 | IPC replay harness | M | native-worker | N1-10, N0-21 | dump-check | `todo` |  |
 | N1-12 | fs: archives, RomFS and system archives | M | native-worker | N1-10, N1-11, N0-23 | dump-check | `todo` |  |
 | N1-13 | fs: save data and extdata | M | native-worker | N1-12 | dump-check, save | `todo` |  |

@@ -42,6 +42,8 @@ for that.
 | `--gpu NAME` | the GPU (default `null`) |
 | `--input-source NAME` | where the buttons, circle pad and touch screen come from (default `script`) |
 | `--audio NAME` | where the DSP's output goes (default `null`) |
+| `--trace-ipc FILE` | every IPC request with its reply, in the format of `tools/native/tracefmt.py` and `tools/compare_ipc_traces.py` (N0-21): session names (`srv:`, `<service>/<kind>#k`), `t=` in game ticks (N1-10) |
+| `--trace-ipc-full` | with `--trace-ipc`: also the bytes of the input buffers as `data=<index>:<hex>`; alone it is refused with exit status 2 |
 
 A device name nothing has registered yet leaves that interface empty, with an Info line; the null
 GPU, the script input source and the audio sinks come with N1-17, N1-19 and N2b.
@@ -90,8 +92,8 @@ MH4N_REGISTER(BootStep, "services.srv", BootStep{Phase::Services, [](Runtime& rt
 | Phase | For |
 |---|---|
 | `devices` | the host interfaces. The runtime's own step (`runtime.devices`) makes the GPU, input source and audio sink named by `--gpu`, `--input-source` and `--audio` from the registries of `gpu::GpuFactory`, `InputSourceFactory` and `AudioSinkFactory` (`mh4n/host.h`) |
-| `services` | ports and services (N1-10 on). `rt.Svc().SetConnectToPortHandler(...)` and `SetSendSyncRequestHandler(...)` are theirs to set |
-| `tracing` | traces and captures: the runtime's `--trace-svc` and `--state-trace`; N1-10's `--trace-ipc` |
+| `services` | ports and services. N1-10's step `services.ipc` makes the `ServiceManager`, installs every registered `ServiceFactory` and sets `rt.Svc().SetConnectToPortHandler(...)` and `SetSendSyncRequestHandler(...)`; later services only register a factory |
+| `tracing` | traces and captures: the runtime's `--trace-svc` and `--state-trace`; N1-10's `tracing.ipc` (`--trace-ipc`, `--trace-ipc-full`) |
 | `started` | whatever needs the main thread (`rt.MainThread()`) |
 
 A step that cannot do its job (a trace file that cannot be written) logs it and calls
@@ -164,10 +166,12 @@ python3 tools/native/state_diff.py reference.state native.state
   `--ignore-regs config/native/svc_unused_registers.txt` the comparison of the two traces fails
   there and only there (checked on 10 runs); with the rule file it passes. The deterministic mode
   (N1-25) is where cycle-driven time lives, and compares without the rules.
-- **Services.** Until N1-10 and the services of N1-12 on exist, every `svcConnectToPort` answers
-  "not found" and every `svcSendSyncRequest` "invalid handle": `conf_srv` and `conf_services` stay
-  in `NATIVE_NOT_YET` of `tests/test_conformance.py` together with `conf_mem` (N1-05 does not alias
-  shared-memory pages) and `conf_info` (the SYSTEM region is empty without the HID and GSP blocks).
+- **Services.** Only `srv:` and `err:f` exist (N1-10): until the services of N1-12 on are written,
+  `srv:` GetServiceHandle for any other name answers Azahar's error (or waits for the service, with
+  the flag's bit 0 clear) and `svcConnectToPort` answers "not found" for every other port. `conf_srv` (it asks for `cfg:u` and `ptm:u`, N1-15) and
+  `conf_services` stay in `NATIVE_NOT_YET` of `tests/test_conformance.py` together with `conf_mem`
+  (N1-05 does not alias shared-memory pages) and `conf_info` (the SYSTEM region is empty without the
+  HID and GSP blocks).
 
 ## Running the conformance programs
 
