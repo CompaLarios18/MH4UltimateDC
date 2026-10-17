@@ -78,7 +78,7 @@ Tables between the `wp-status` markers are generated: edit the specs or use `set
 | N1-22 | Windows and macOS builds | M | native-worker | N1-09 | ci | `review` | batch 20261017-n1-2; ci green (Native CI run 39047113161 on its branch: native-windows and native-macos jobs green, ctest 22/22 and conformance 51 passed on both, artifact mh4n-runner-windows uploaded) |
 | N1-23 | CPU budget measurement | S | native-worker | N1-26, N1-22, N0-15 | ci, pc | `todo` |  |
 | N1-24 | Fallback interpreter: spike | S | native-worker-high | N1-04, N1-09, N1-22 | none | `review` | batch 20261017-n1-2; ci pending (the tools job runs tests/test_recomp_interp_gen.py, about 90 s); the spike's verdict: generator feasible (20/20 spike forms, 28/29 extra) |
-| N1-28 | Fallback interpreter | L | native-worker-high | N1-24 | none | `todo` |  |
+| N1-28 | Fallback interpreter | L | native-worker-high | N1-24 | none | `active` | session 20261017; base 29fb243 |
 | N1-25 | Deterministic mode and the shuffling scheduler | M | native-worker-high | N1-06, N1-26, N0-17 | dump-check | `todo` |  |
 <!-- wp-status:end N1 -->
 
