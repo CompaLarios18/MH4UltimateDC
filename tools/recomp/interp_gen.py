@@ -35,6 +35,7 @@ r15 never occurs in a handler, branches and returns set the next address instead
 from __future__ import annotations
 
 import argparse
+import ast
 import functools
 import itertools
 import os
@@ -99,6 +100,44 @@ class Field:
         return f"(({sh}) & 0x{self.mask:X}u)"
 
 
+_CMP = {ast.Eq: "==", ast.NotEq: "!=", ast.Lt: "<", ast.LtE: "<=", ast.Gt: ">", ast.GtE: ">="}
+_BIN = {ast.BitAnd: "&", ast.BitOr: "|", ast.BitXor: "^", ast.RShift: ">>", ast.LShift: "<<", ast.Add: "+",
+        ast.Sub: "-"}
+
+
+def py_to_c(expr: str, fields: dict[str, Field]) -> str:
+    """The C (on u32 values) of a `where` expression: names are fields; and/or/not, comparisons (chained
+    ones and `in` a tuple of numbers), & | ^ << >> + - and non-negative integers are understood."""
+    def conv(n: ast.AST) -> str:
+        if isinstance(n, ast.Expression):
+            return conv(n.body)
+        if isinstance(n, ast.BoolOp):
+            return "(" + (" && " if isinstance(n.op, ast.And) else " || ").join(conv(v) for v in n.values) + ")"
+        if isinstance(n, ast.UnaryOp) and isinstance(n.op, ast.Not):
+            return f"(!{conv(n.operand)})"
+        if isinstance(n, ast.Compare):
+            parts, left = [], n.left
+            for op, right in zip(n.ops, n.comparators):
+                if isinstance(op, ast.In) and isinstance(right, ast.Tuple):
+                    parts.append("(" + " || ".join(f"{conv(left)} == {conv(e)}" for e in right.elts) + ")")
+                elif type(op) in _CMP:
+                    parts.append(f"{conv(left)} {_CMP[type(op)]} {conv(right)}")
+                else:
+                    raise GenError(f"where: unsupported comparison in {expr!r}")
+                left = right
+            return "(" + " && ".join(parts) + ")"
+        if isinstance(n, ast.BinOp) and type(n.op) in _BIN:
+            return f"({conv(n.left)} {_BIN[type(n.op)]} {conv(n.right)})"
+        if isinstance(n, ast.Name):
+            if n.id not in fields:
+                raise GenError(f"where: {n.id!r} is not a field of the form")
+            return fields[n.id].c()
+        if isinstance(n, ast.Constant) and isinstance(n.value, int) and n.value >= 0:
+            return f"{n.value}u"
+        raise GenError(f"where: unsupported construct {type(n).__name__} in {expr!r}")
+    return conv(ast.parse(expr, mode="eval"))
+
+
 @dataclass
 class Form:
     name: str
@@ -109,8 +148,20 @@ class Form:
     valid: Callable[[dict], bool] | None = None  # excludes encodings that belong to other forms
     doc: str = ""
     list_base: str | None = None      # register field whose bit in the list changes the C (Thumb LDMIA writeback)
+    where: str | None = None          # Python expression over the field names: the encodings that belong to this form
+    uncond: bool = False              # ARM only: the condition field is 0b1111 (unconditional space), no condition check
 
     def __post_init__(self) -> None:
+        if self.where is not None:
+            fields = {f.name: f for f in self.fields}
+            # raises GenError for a name that is not a field or a construct that has no C translation
+            self.where_c = py_to_c(self.where, fields)
+            code = compile(ast.parse(self.where, mode="eval"), f"<where of {self.name}>", "eval")
+            extra = self.valid
+            self.valid = lambda a, code=code, extra=extra: bool(eval(code, {"__builtins__": {}}, dict(a))) and (
+                extra is None or extra(a))
+        else:
+            self.where_c = None
         used = {"insn": self.base, "fpscr": 0}
         names = set()
         for f in self.fields:
@@ -454,7 +505,7 @@ class FormGen:
 
     def effect(self, a: dict, addr: int) -> Eff | None:
         word, vec = self.form.pack(a)
-        if self.form.mode == "arm":
+        if self.form.mode == "arm" and not self.form.uncond:
             word = (word & 0x0FFFFFFF) | (0xE << 28)
         key = (word, vec, addr)
         if key in self.cache:
@@ -1066,7 +1117,7 @@ def emit_form(form: Form, tree, gen: FormGen) -> list[str]:
     out.append(f"#undef RR\n#define RR(n) ((n) == 15u ? ih_pc + {off}u : ctx->r[(n)])")
     out.append(f"void ih_{form.name}(RCtx *ctx, u32 insn) {{")
     out.append("    const u32 ih_pc = ctx->r[15]; (void)insn;")
-    if form.mode == "arm":
+    if form.mode == "arm" and not form.uncond:
         out.append("    if (!ih_cond(ctx, insn >> 28)) { ctx->r[15] = ih_pc + 4; return; }")
     out += emit_node(tree, form, "  ")
     out.append("}")
@@ -1126,7 +1177,7 @@ def reference_c(ins: Insn) -> list[str]:
     if k in (OP, SVC):
         return straight_line(ins) + [nxt]
     if k == TRAP:
-        return straight_line(ins)
+        return [nxt] + straight_line(ins)           # a failed condition skips the trap
     tb = 1 if ins.target_mode == "thumb" else 0
     if k == B:
         return [nxt] + wrap(ins, [f"ctx->r[15] = 0x{(ins.target | tb) & MASK32:x}u;"])
@@ -1134,6 +1185,10 @@ def reference_c(ins: Insn) -> list[str]:
         return [nxt] + wrap(ins, [f"R(14) = 0x{_lr_value(ins):x}u;", f"ctx->r[15] = 0x{(ins.target | tb) & MASK32:x}u;"])
     if k in (RET, IJUMP):
         return [nxt] + wrap(ins, ins.body + [f"ctx->r[15] = {ins.pcexpr};"])
+    if k == JTAB:
+        # the analysis turns these into switches over the table; an interpreter just jumps
+        where = f"0x{ins.jt_base & MASK32:x}u + (R({ins.jt_index}) << 2)"
+        return [nxt] + wrap(ins, [f"ctx->r[15] = {where if ins.jt_kind == 'addpc' else f'rd32(ctx, {where})'};"])
     if k == ICALL:
         return [nxt] + wrap(ins, ins.body + [f"u32 t_ = {ins.pcexpr};", f"R(14) = 0x{_lr_value(ins):x}u;",
                                              "ctx->r[15] = t_;"])
@@ -1157,7 +1212,7 @@ def sample_words(form: Form, rng: random.Random, count: int) -> list[tuple[int, 
         if form.valid is not None and not form.valid(a):
             continue
         word, vec = form.pack(a)
-        if form.mode == "arm":
+        if form.mode == "arm" and not form.uncond:
             word |= (0xE if rng.random() < 0.7 else rng.randrange(14)) << 28
         if (word, vec) in seen:
             continue
@@ -1174,12 +1229,10 @@ def _reg(name: str, lsb: int, width: int = 4) -> Field:
     return Field(name, lsb, width, "reg")
 
 
-def _dp_valid(a: dict) -> bool:
-    return not (8 <= a["opc"] <= 11 and a["S"] == 0)       # TST/TEQ/CMP/CMN without S are other instructions
-
-
-def _vfp_arith_valid(a: dict) -> bool:
-    return a["p"] == 0 or (a["q"] == 0 and a["r"] == 0 and a["s"] == 0)     # opcodes 0-8
+# TST/TEQ/CMP/CMN without S are other instructions (the miscellaneous space); a pc destination is a jump
+_DP_WHERE = "not (8 <= opc <= 11 and S == 0)"
+_DP_WHERE_RD = _DP_WHERE + " and rd != 15"
+_VFP_ARITH_WHERE = "p == 0 or (q == 0 and r == 0 and s == 0)"     # opcodes 0-8
 
 
 _VEC = [Field("len", 16, 3, "num", "fpscr"), Field("stride", 20, 2, "num", "fpscr", (0, 3))]
@@ -1187,25 +1240,26 @@ _VEC = [Field("len", 16, 3, "num", "fpscr"), Field("stride", 20, 2, "num", "fpsc
 FORMS: list[Form] = [
     Form("arm_dp_imm_shift", "arm", 0x00000000,
          [Field("opc", 21, 4), Field("S", 20, 1), _reg("rn", 16), _reg("rd", 12), Field("imm5", 7, 5),
-          Field("typ", 5, 2), _reg("rm", 0)], valid=_dp_valid,
+          Field("typ", 5, 2), _reg("rm", 0)], where=_DP_WHERE_RD,
          doc="data processing, register operand shifted by an immediate (all 16 opcodes, S)"),
     Form("arm_dp_reg_shift", "arm", 0x00000010,
          [Field("opc", 21, 4), Field("S", 20, 1), _reg("rn", 16), _reg("rd", 12), _reg("rs", 8),
-          Field("typ", 5, 2), _reg("rm", 0)], valid=_dp_valid,
+          Field("typ", 5, 2), _reg("rm", 0)], where=_DP_WHERE_RD,
          doc="data processing, register operand shifted by a register"),
     Form("arm_dp_imm", "arm", 0x02000000,
          [Field("opc", 21, 4), Field("S", 20, 1), _reg("rn", 16), _reg("rd", 12), Field("rot", 8, 4),
-          Field("imm8", 0, 8)], valid=_dp_valid,
+          Field("imm8", 0, 8)], where=_DP_WHERE_RD,
          doc="data processing, rotated 8-bit immediate"),
     Form("arm_mul", "arm", 0x00000090,
          [Field("op4", 20, 4), _reg("rdhi", 16), _reg("rdlo", 12), _reg("rs", 8), _reg("rm", 0)],
          doc="MUL, MLA, UMAAL and the long multiplies (UMULL, UMLAL, SMULL, SMLAL), S"),
     Form("arm_ldst_imm", "arm", 0x04000000,
          [Field("pubwl", 20, 5), _reg("rn", 16), _reg("rt", 12), Field("imm12", 0, 12)],
+         where="not ((pubwl & 1) != 0 and rt == 15)",         # a load into pc is arm_ldrpc
          doc="LDR, STR, LDRB, STRB, immediate offset, pre/post index, writeback"),
     Form("arm_ldst_reg", "arm", 0x06000000,
          [Field("pubwl", 20, 5), _reg("rn", 16), _reg("rt", 12), Field("shimm", 7, 5), Field("typ", 5, 2),
-          _reg("rm", 0)],
+          _reg("rm", 0)], where="not ((pubwl & 1) != 0 and rt == 15)",    # a load into pc is arm_ldrpc_reg
          doc="LDR, STR, LDRB, STRB, shifted register offset, writeback"),
     Form("arm_ldst_extra", "arm", 0x00000090,
          [Field("puiwl", 20, 5), _reg("rn", 16), _reg("rt", 12), Field("hi", 8, 4), Field("sh", 5, 2, "num", "insn", (1, 2, 3)),
@@ -1231,7 +1285,7 @@ FORMS: list[Form] = [
     Form("vfp_arith", "arm", 0x0E000A00,
          [Field("p", 23, 1), Field("D", 22, 1), Field("q", 21, 1), Field("r", 20, 1), Field("vn", 16, 4),
           Field("vd", 12, 4), Field("sz", 8, 1), Field("N", 7, 1), Field("s", 6, 1), Field("M", 5, 1),
-          Field("vm", 0, 4)] + _VEC, valid=_vfp_arith_valid,
+          Field("vm", 0, 4)] + _VEC, where=_VFP_ARITH_WHERE,
          doc="VMLA, VMLS, VNMLS, VNMLA, VMUL, VNMUL, VADD, VSUB, VDIV; F32/F64; scalar and short vectors"),
     Form("vfp_ext", "arm", 0x0E000A40 | (1 << 23) | (1 << 21) | (1 << 20),
          [Field("D", 22, 1), Field("x", 16, 4), Field("vd", 12, 4), Field("sz", 8, 1), Field("N", 7, 1),
@@ -1282,6 +1336,7 @@ EXTRA_FORMS: list[Form] = [
     Form("arm_vldm", "arm", 0x0C000A00,
          [Field("p", 24, 1), Field("u", 23, 1), Field("D", 22, 1), Field("w", 21, 1), Field("l", 20, 1),
           _reg("rn", 16), Field("vd", 12, 4), Field("sz", 8, 1), Field("imm8", 0, 8)],
+         where="(p == 0 and u == 1) or (p == 1 and u == 0 and w == 1)",
          doc="VLDM, VSTM (a register count in imm8)"),
     Form("arm_vmov2", "arm", 0x0C400A10,
          [Field("l", 20, 1), _reg("rt2", 16), _reg("rt", 12), Field("sz", 8, 1), Field("M", 5, 1),
@@ -1291,14 +1346,15 @@ EXTRA_FORMS: list[Form] = [
     Form("arm_cp15", "arm", 0x0E000F10,
          [Field("opc1", 21, 3, "num", "insn", (0,)), Field("L", 20, 1), Field("crn", 16, 4, "num", "insn", (7, 13)),
           _reg("rt", 12), Field("opc2", 5, 3, "num", "insn", (2, 3, 4, 5)),
-          Field("crm", 0, 4, "num", "insn", (0, 5, 10))],
+          Field("crm", 0, 4, "num", "insn", (0, 5, 10))], where="rt != 15",
          doc="MRC/MCR to CP15 (thread ID registers, barriers; every other register is unsupported and traps)"),
     Form("arm_ldrpc", "arm", 0x04100000,
-         [Field("pu", 23, 2), Field("b", 22, 1), Field("w", 21, 1), _reg("rn", 16), Field("rt", 12, 4, "sel"),
-          Field("imm12", 0, 12)], kinds=(OP, RET, IJUMP), doc="LDR/LDRB immediate including loads into pc"),
+         [Field("pu", 23, 2), Field("b", 22, 1), Field("w", 21, 1), _reg("rn", 16),
+          Field("rt", 12, 4, "sel", "insn", (15,)), Field("imm12", 0, 12)], kinds=(RET, IJUMP),
+         doc="LDR/LDRB immediate into pc"),
     Form("arm_dp_rd15", "arm", 0x0000F000,
          [Field("opc", 21, 4), Field("S", 20, 1), _reg("rn", 16), Field("imm5", 7, 5), Field("typ", 5, 2),
-          _reg("rm", 0)], valid=_dp_valid, kinds=(RET, IJUMP), doc="data processing with pc as the destination"),
+          _reg("rm", 0)], where=_DP_WHERE, kinds=(RET, IJUMP), doc="data processing with pc as the destination"),
     Form("arm_svc", "arm", 0x0F000000, [Field("imm", 0, 24)], kinds=(SVC,), doc="SVC"),
     Form("t_addsub", "thumb", 0x1800,
          [Field("i", 10, 1), Field("sub", 9, 1), Field("rn", 6, 3), _reg("rs", 3, 3), _reg("rd", 0, 3)],
@@ -1337,44 +1393,600 @@ EXTRA_FORMS: list[Form] = [
          doc="Thumb BLX immediate (two halfwords; the target is aligned down to a word)"),
 ]
 
+# The decoder paths no form above covers (N1-28). Each is a form of its own because the C differs from every
+# neighbour's; a few exist only to name an encoding the dispatcher must send somewhere (hints, BKPT, UDF).
+EXTRA_FORMS += [
+    Form("arm_clz", "arm", 0x016F0F10, [_reg("rd", 12), _reg("rm", 0)], doc="CLZ"),
+    Form("arm_msr_imm", "arm", 0x0320F000,
+         [Field("mask", 16, 4, "num", "insn", (4, 8, 12)), Field("rot", 8, 4), Field("imm8", 0, 8)],
+         doc="MSR CPSR_f / CPSR_s / CPSR_fs, #immediate (the control and extension fields are unsupported)"),
+    Form("arm_hint", "arm", 0x0320F000, [Field("imm8", 0, 8, "num", "insn", (0, 1, 2, 3, 4))],
+         doc="NOP, YIELD, WFE, WFI, SEV (no effect)"),
+    Form("arm_sat16", "arm", 0x06A00F30,
+         [Field("U", 22, 1), Field("sat", 16, 4), _reg("rd", 12), _reg("rm", 0)], doc="SSAT16, USAT16"),
+    Form("arm_pkh", "arm", 0x06800010,
+         [_reg("rn", 16), _reg("rd", 12), Field("imm5", 7, 5), Field("tb", 6, 1), _reg("rm", 0)],
+         doc="PKHBT, PKHTB"),
+    Form("arm_sel", "arm", 0x06800FB0, [_reg("rn", 16), _reg("rd", 12), _reg("rm", 0)], doc="SEL (uses GE)"),
+    Form("arm_rev", "arm", 0x06BF0F30,
+         [Field("U", 22, 1), Field("b7", 7, 1), _reg("rd", 12), _reg("rm", 0)], where="not (U == 1 and b7 == 0)",
+         doc="REV, REV16, REVSH"),
+    Form("arm_usad8", "arm", 0x07800010,
+         [_reg("rd", 16), Field("ra", 12, 4, "sel"), _reg("rm", 8), _reg("rn", 0)], doc="USAD8, USADA8"),
+    Form("arm_smlad", "arm", 0x07000010,
+         [_reg("rd", 16), Field("ra", 12, 4, "sel"), _reg("rm", 8), Field("op2", 5, 2), _reg("rn", 0)],
+         doc="SMLAD, SMLADX, SMLSD, SMLSDX, SMUAD, SMUADX, SMUSD, SMUSDX"),
+    Form("arm_smlald", "arm", 0x07400010,
+         [_reg("rdhi", 16), _reg("rdlo", 12), _reg("rm", 8), Field("op2", 5, 2), _reg("rn", 0)],
+         doc="SMLALD, SMLALDX, SMLSLD, SMLSLDX"),
+    Form("arm_smmla", "arm", 0x07500010,
+         [_reg("rd", 16), Field("ra", 12, 4, "sel"), _reg("rm", 8), Field("op2", 5, 3, "num", "insn", (0, 1, 6, 7)),
+          _reg("rn", 0)], doc="SMMLA, SMMLAR, SMMLS, SMMLSR, SMMUL, SMMULR"),
+    Form("arm_bkpt", "arm", 0x01200070, [Field("imm12", 8, 12), Field("imm4", 0, 4)], kinds=(TRAP,),
+         doc="BKPT (a breakpoint trap)"),
+    Form("arm_udf", "arm", 0x07F000F0, [Field("imm12", 8, 12), Field("imm4", 0, 4)], kinds=(TRAP,),
+         doc="the permanently undefined instruction (an undefined-instruction trap)"),
+    Form("arm_blx_imm", "arm", 0xFA000000,
+         [Field("H", 24, 1), Field("imm24", 0, 24, "num", "insn", None, True)], kinds=(BL,), uncond=True,
+         doc="BLX immediate (unconditional space; to Thumb)"),
+    Form("arm_pld", "arm", 0xF550F000,
+         [Field("I", 25, 1), Field("U", 23, 1), Field("rn", 16, 4, "sel"), Field("lo", 0, 12)], uncond=True,
+         where="not (I == 1 and (lo & 16) != 0)", doc="PLD (no effect)"),
+    Form("arm_clrex", "arm", 0xF57FF01F, [], uncond=True, doc="CLREX"),
+    Form("arm_dp_imm_rd15", "arm", 0x0200F000,
+         [Field("opc", 21, 4), Field("S", 20, 1), _reg("rn", 16), Field("rot", 8, 4), Field("imm8", 0, 8)],
+         where=_DP_WHERE, kinds=(IJUMP,), doc="data processing, rotated immediate, pc as the destination"),
+    Form("arm_ldrpc_reg", "arm", 0x0610F000,
+         [Field("pu", 23, 2), Field("b", 22, 1), Field("w", 21, 1), _reg("rn", 16), Field("shimm", 7, 5),
+          Field("typ", 5, 2), _reg("rm", 0)], kinds=(IJUMP, JTAB), doc="LDR into pc, shifted register offset"),
+    Form("t_svc", "thumb", 0xDF00, [Field("imm8", 0, 8)], kinds=(SVC,), doc="Thumb SVC"),
+    Form("t_udf", "thumb", 0xDE00, [Field("imm8", 0, 8)], kinds=(TRAP,), doc="Thumb UDF (an undefined-instruction trap)"),
+    Form("t_bkpt", "thumb", 0xBE00, [Field("imm8", 0, 8)], kinds=(TRAP,), doc="Thumb BKPT (a breakpoint trap)"),
+]
+
 EXPECTED_FAILURES = {
     "arm_vldm": "wide field imm8",
 }
+
+
+# ── hand-written handlers ───────────────────────────────────────────────────────────────
+
+# The forms the generator cannot express. Each is tested against the recompiled form like the others
+# (tests/test_recomp_interp_gen.py), with the same sample words.
+HAND_WRITTEN: dict[str, str] = {
+    # VLDM / VSTM: the recompiler writes one statement per register, so the register count (imm8) shapes the C.
+    # Encodings the decoder calls UNPREDICTABLE (no registers, past the register file, a pc base) transfer
+    # what fits, never touching memory outside ctx->f.
+    "arm_vldm": r"""void ih_arm_vldm(RCtx *ctx, u32 insn) {
+    const u32 ih_pc = ctx->r[15];
+    if (!ih_cond(ctx, insn >> 28)) { ctx->r[15] = ih_pc + 4; return; }
+    const u32 up = (insn >> 23) & 1, wb = (insn >> 21) & 1, load = (insn >> 20) & 1;
+    const u32 rn = (insn >> 16) & 15, vd = (insn >> 12) & 15, dbl = (insn >> 8) & 1, dbit = (insn >> 22) & 1;
+    const u32 imm8 = insn & 0xFF;
+    if (dbl && dbit) { rc_trap(ctx, ih_pc, 2); return; }              /* d16-d31 (VFPv3) */
+    const u32 first = dbl ? 2 * vd : 2 * vd + dbit;                  /* first 32-bit register of the file */
+    const u32 words = dbl ? (imm8 & ~1u) : imm8;
+    const u32 base = rn == 15 ? ih_pc + 8 : ctx->r[rn];
+    const u32 low = up ? base : base - imm8 * 4;
+    for (u32 k = 0; k < words && first + k < 32; k++) {
+        if (load) ctx->f.sw[first + k] = rd32(ctx, low + 4 * k);
+        else wr32(ctx, low + 4 * k, ctx->f.sw[first + k]);
+    }
+    if (wb && rn != 15) ctx->r[rn] = up ? base + imm8 * 4 : base - imm8 * 4;
+    ctx->r[15] = ih_pc + 4;
+}""",
+}
+
+
+def generate_form(form: Form, seed: int = 1, verify: int = 2000) -> Generated:
+    """`generate`, or the hand-written handler of a form the generator cannot express."""
+    if form.name in HAND_WRITTEN:
+        c = HAND_WRITTEN[form.name].split("\n")
+        return Generated(form, c, 0, 0, sum(len(x) + 1 for x in c))
+    return generate(form, seed, verify)
+
+
+ALL_FORMS: list[Form] = FORMS + EXTRA_FORMS
+
+
+# ── the dispatcher ──────────────────────────────────────────────────────────────────────
+
+@dataclass
+class Route:
+    """Where a word of an instruction set goes: the bits the form fixes (`mask`/`value`, over the 32-bit word for
+    ARM and the 16-bit one for Thumb, or both halfwords for BL and BLX), the fields that are limited to a few
+    values, and the form's `where`. A word that matches no route is an unsupported encoding."""
+    id: int
+    form: Form
+    mask: int
+    value: int
+    sets: list[tuple[Field, tuple[int, ...]]]
+
+    def matches(self, word: int) -> bool:
+        if word & self.mask != self.value:
+            return False
+        a = {f.name: (word >> f.lsb) & f.mask for f in self.form.fields if f.src == "insn"}
+        return all(a[f.name] in vals for f, vals in self.sets) and (self.form.valid is None or self.form.valid(a))
+
+    @property
+    def simple(self) -> bool:
+        return not self.sets and self.form.where_c is None and self.form.valid is None
+
+    def c(self) -> str:
+        parts = [f"(insn & 0x{self.mask:X}u) == 0x{self.value:X}u"]
+        for f, vals in self.sets:
+            if max(vals) < 64:
+                parts.append(f"((0x{sum(1 << v for v in vals):X}ull >> {f.c()}) & 1)")
+            else:
+                parts.append("(" + " || ".join(f"{f.c()} == {v}u" for v in vals) + ")")
+        if self.form.where_c:
+            parts.append(self.form.where_c)
+        return " && ".join(parts)
+
+
+def thumb_wide(form: Form) -> bool:
+    return form.mode == "thumb" and (form.base > 0xFFFF or any(f.src == "insn" and f.lsb + f.width > 16 for f in form.fields))
+
+
+def make_route(form: Form, rid: int) -> Route:
+    if form.mode == "arm":
+        mask = 0xFFFFFFFF if form.uncond else 0x0FFFFFFF
+    else:
+        mask = 0xFFFFFFFF if thumb_wide(form) else 0xFFFF
+    value_bits = form.base & mask
+    sets = []
+    for f in form.fields:
+        if f.src != "insn":
+            continue
+        mask &= ~(f.mask << f.lsb)
+        value_bits &= mask
+        if f.values is not None:
+            if len(f.values) == 1:
+                mask |= f.mask << f.lsb
+                value_bits |= f.values[0] << f.lsb
+            else:
+                sets.append((f, tuple(f.values)))
+    return Route(rid, form, mask, value_bits & mask, sets)
+
+
+@dataclass
+class Dispatch:
+    """The lookup for one instruction set: a table over the bits `index_mask` (shifted down by `shift`) that
+    names the route outright, or a cascade of routes to test in order."""
+    name: str
+    routes: list[Route]
+    index_mask: int
+    slots: list[int]                      # route id, or CASCADE | k
+    cascades: list[list[Route]]
+    default: int = 0                      # the route of a word no other route takes
+
+    CASCADE = 0x8000
+
+    def lookup(self, word: int) -> int:
+        """The route id the C tables give for `word`, by scanning the routes in order (the model the C is
+        checked against)."""
+        for r in self.routes:
+            if r.matches(word):
+                return r.id
+        return self.default
+
+
+def build_dispatch(name: str, routes: list[Route], index_mask: int, words: Callable[[int], int],
+                   default: int = 0) -> Dispatch:
+    """`words(slot)` gives the word with the index bits of that slot and every other bit 0."""
+    nslots = 1 << bin(index_mask).count("1")
+    slots, cascades, seen = [], [], {}
+    for s in range(nslots):
+        bits = words(s)
+        cands = []
+        for r in routes:
+            if (bits ^ r.value) & r.mask & index_mask:
+                continue                                    # the route fixes an index bit differently
+            cands.append(r)
+            if r.simple and not r.mask & ~index_mask:
+                break                                       # nothing after a route that cannot fail
+        if not cands:
+            slots.append(default)
+        elif len(cands) == 1 and cands[0].simple and not cands[0].mask & ~index_mask:
+            slots.append(cands[0].id)
+        else:
+            key = tuple(r.id for r in cands)
+            if key not in seen:
+                seen[key] = len(cascades)
+                cascades.append(cands)
+            slots.append(Dispatch.CASCADE | seen[key])
+    return Dispatch(name, routes, index_mask, slots, cascades, default)
+
+
+ARM_INDEX = 0x0FF000F0          # bits 27:20 and 7:4
+ARM_UNCOND_INDEX = 0x0FF00000   # bits 27:20
+THUMB_INDEX = 0xFFC0            # bits 15:6
+
+
+def arm_slot_word(s: int) -> int:
+    return ((s & 0xFF0) << 16) | ((s & 0xF) << 4)
+
+
+def build_dispatchers(forms: list[Form]) -> tuple[list[Route], dict[str, Dispatch]]:
+    routes = [make_route(f, i + 1) for i, f in enumerate(forms)]
+    arm = [r for r in routes if r.form.mode == "arm" and not r.form.uncond]
+    uncond = [r for r in routes if r.form.mode == "arm" and r.form.uncond]
+    thumb = [r for r in routes if r.form.mode == "thumb"]
+    return routes, {
+        "arm": build_dispatch("arm", arm, ARM_INDEX, arm_slot_word),
+        "arm_uncond": build_dispatch("arm_uncond", uncond, ARM_UNCOND_INDEX, lambda s: s << 20),
+        "thumb": build_dispatch("thumb", thumb, THUMB_INDEX, lambda s: s << 6, len(routes) + 1),
+    }
+
+
+def _table(name: str, ctype: str, values: list[str], per_line: int = 16) -> list[str]:
+    out = [f"static const {ctype} {name}[{len(values)}] = {{"]
+    for i in range(0, len(values), per_line):
+        out.append("    " + ", ".join(values[i:i + per_line]) + ",")
+    return out + ["};"]
+
+
+def dispatch_c(forms: list[Form], routes: list[Route], disp: dict[str, Dispatch]) -> list[str]:
+    out = ["/* ---- the dispatcher: a table over a few opcode bits, then a cascade where routes overlap ---- */",
+           "typedef void (*ih_fn)(RCtx *ctx, u32 insn);",
+           "/* an ARM word no form takes: the recompiler's trap, which a failed condition skips */",
+           "static void ih_trap_unsupported(RCtx *ctx, u32 insn) {",
+           "    const u32 pc = ctx->r[15];",
+           "    if ((insn >> 28) != 0xF && !ih_cond(ctx, insn >> 28)) { ctx->r[15] = pc + 4; return; }",
+           "    rc_trap(ctx, pc, 2);",
+           "}",
+           "static void ih_trap_unsupported_thumb(RCtx *ctx, u32 insn) { (void)insn; rc_trap(ctx, ctx->r[15], 2); }",
+           "const ih_fn ih_routes[] = {", "    ih_trap_unsupported,"]
+    out += [f"    ih_{r.form.name}," for r in routes]
+    out += ["    ih_trap_unsupported_thumb,", "};", f"const u32 ih_route_count = {len(routes) + 2};",
+            "const char *const ih_route_names[] = {", '    "unsupported",']
+    out += [f'    "{r.form.name}",' for r in routes]
+    out += ['    "unsupported_thumb",', "};"]
+    for key, fn in (("arm", "ih_arm_cascade"), ("arm_uncond", "ih_arm_ucascade"), ("thumb", "ih_thumb_cascade")):
+        d = disp[key]
+        out.append(f"static u32 {fn}(u32 k, u32 insn) {{")
+        out.append("    switch (k) {")
+        for k, cands in enumerate(d.cascades):
+            out.append(f"    case {k}:")
+            for r in cands:
+                out.append(f"        if ({r.c()}) return {r.id};")
+            out.append(f"        return {d.default};")
+        out += ["    }", f"    return {d.default};", "}"]
+        out += _table(f"ih_{key}_slot", "u16", [f"0x{v:X}" for v in d.slots])
+    out += [
+        "u32 ih_classify_arm(u32 insn) {",
+        "    u32 s;",
+        "    if ((insn >> 28) == 0xF) {",
+        "        s = ih_arm_uncond_slot[(insn >> 20) & 0xFF];",
+        "        return s & 0x8000 ? ih_arm_ucascade(s & 0x7FFF, insn) : s;",
+        "    }",
+        "    s = ih_arm_slot[((insn >> 16) & 0xFF0) | ((insn >> 4) & 0xF)];",
+        "    return s & 0x8000 ? ih_arm_cascade(s & 0x7FFF, insn) : s;",
+        "}",
+        "u32 ih_classify_thumb(u32 word) {",
+        "    u32 s = ih_thumb_slot[(word & 0xFFFF) >> 6];",
+        "    return s & 0x8000 ? ih_thumb_cascade(s & 0x7FFF, word) : s;",
+        "}",
+        "void ih_exec_arm(RCtx *ctx, u32 insn) { ih_routes[ih_classify_arm(insn)](ctx, insn); }",
+        "void ih_exec_thumb(RCtx *ctx, u32 word) { ih_routes[ih_classify_thumb(word)](ctx, word); }",
+    ]
+    return out
+
+
+STEP_C = r"""
+/* Runs the instruction at ctx->r[15] (bit 0 set: Thumb): fetches it from guest memory, dispatches it and leaves the
+ * address of the next one in ctx->r[15] (bit 0 set for Thumb). Returns IH_UNPREDICTABLE when the encoding is one
+ * the architecture leaves UNPREDICTABLE (the handler ran the nearest defined form), else 0. */
+u32 ih_step(RCtx *ctx) {
+    u32 pc = ctx->r[15], flags;
+    if (pc & 1) {
+        pc &= ~1u;
+        ctx->r[15] = pc;
+        u32 word = rd16(ctx, pc);
+        if ((word >> 11) == 0x1E) word |= rd16(ctx, pc + 2) << 16;      /* BL / BLX prefix + suffix */
+        flags = ih_unpredictable_thumb(word);
+        ih_exec_thumb(ctx, word);
+    } else {
+        const u32 insn = rd32(ctx, pc);
+        flags = ih_unpredictable_arm(insn);
+        ih_exec_arm(ctx, insn);
+    }
+    return flags;
+}
+"""
+
+
+def file_c(results: list[Generated], forms: list[Form]) -> str:
+    routes, disp = build_dispatchers(forms)
+    out = [PREAMBLE % cond_switch(), "#define IH_UNPREDICTABLE 1u", ""]
+    for g in results:
+        out += [""] + g.c
+    out += [""] + unpredictable_c() + [""] + dispatch_c(forms, routes, disp) + [STEP_C]
+    return "\n".join(out) + "\n"
+
+
+# ── UNPREDICTABLE encodings ─────────────────────────────────────────────────────────────
+
+# The recompiler's decoders (arm.py, thumb.py) raise `Unpredictable` for the encodings the architecture leaves
+# UNPREDICTABLE and compilers never emit. A handler runs such a word as the nearest defined form instead; this
+# predicate says which words those are, so the interpreter can log them. It repeats the decoders' checks in
+# their order (an `Unsupported` that comes first ends the walk) and is compared with them on every Thumb
+# halfword and on millions of ARM words (tests/test_recomp_interp_gen.py). FPSCR-dependent cases (a short vector
+# longer than its bank, a bad stride) are not reported: they are a property of the state, not of the word.
+UNPREDICTABLE_C = r"""
+/* ---- UNPREDICTABLE encodings: 1 where arm.py / thumb.py raise Unpredictable ---- */
+#define IH_F(w, lsb, n) (((w) >> (lsb)) & ((1u << (n)) - 1u))
+static u32 ih_unp_dataproc(u32 w) {
+    const u32 opc = IH_F(w, 21, 4), s = IH_F(w, 20, 1), rn = IH_F(w, 16, 4), rd = IH_F(w, 12, 4);
+    const u32 is_test = opc >= 8 && opc <= 11, imm_form = IH_F(w, 25, 1), reg_shift = !imm_form && (w & 0x10);
+    if (is_test && !s) return 0;
+    if (reg_shift && (rd == 15 || rn == 15)) return 1;
+    if (rd == 15 && !is_test) {
+        if (s) return 0;
+        if (opc == 13 && !imm_form && (w & 0xFFF) == 14) return 0;
+        if (opc == 4 && rn == 15 && !imm_form && !reg_shift && (w & 0x60) == 0 && IH_F(w, 7, 5) == 2 && (w & 15) != 15)
+            return 0;
+    }
+    if (is_test && rd != 0) return 1;
+    if ((opc == 13 || opc == 15) && rn != 0) return 1;
+    if (!imm_form && (w & 0x10) && ((w & 15) == 15 || IH_F(w, 8, 4) == 15)) return 1;
+    return 0;
+}
+static u32 ih_unp_mul_swap_excl(u32 w) {
+    const u32 rn = IH_F(w, 16, 4), rt = IH_F(w, 12, 4), r2 = w & 15;
+    if (!IH_F(w, 24, 1)) {
+        const u32 sub = IH_F(w, 21, 3), s = IH_F(w, 20, 1), rs = IH_F(w, 8, 4), r19 = rn, r15 = rt, rm = r2;
+        if (r19 == 15 || rs == 15 || rm == 15 || ((sub == 1 || sub == 2 || sub >= 4) && r15 == 15)) return 1;
+        if (sub == 0 && r15 != 0) return 1;
+        if (sub <= 1) return 0;
+        if (sub == 2) return s ? 0 : r19 == r15;
+        if (sub == 3) return 0;
+        return r19 == r15;
+    }
+    if (!IH_F(w, 23, 1)) {
+        if (IH_F(w, 20, 2) || IH_F(w, 8, 4)) return 0;
+        return rn == 15 || rt == 15 || r2 == 15 || rn == rt || rn == r2;
+    }
+    const u32 op = IH_F(w, 20, 3), load = op & 1, size8 = (op & 6) == 2;
+    if (rn == 15) return 1;
+    if ((load && (w & 0xFFF) != 0xF9F) || (!load && (w & 0xF00) != 0xF00)) return 1;
+    if (load) return rt == 15 || (size8 && ((rt & 1) || rt == 14));
+    return rt == 15 || r2 == 15 || rt == rn || rt == r2 || (size8 && ((r2 & 1) || r2 == 14 || rt == r2 + 1));
+}
+static u32 ih_unp_ldst_extra(u32 w) {
+    const u32 p = IH_F(w, 24, 1), imm = IH_F(w, 22, 1), wb = IH_F(w, 21, 1), load = IH_F(w, 20, 1);
+    const u32 rn = IH_F(w, 16, 4), rt = IH_F(w, 12, 4), sh = IH_F(w, 5, 2);
+    if (!p && wb) return 0;
+    const u32 wback = !p || wb;
+    if (!imm) {
+        if ((w & 15) == 15) return 1;
+        if (IH_F(w, 8, 4)) return 0;
+        if (wback && (w & 15) == rn) return 1;
+    }
+    const u32 dual = !load && (sh == 2 || sh == 3);
+    if (dual && ((rt & 1) || rt == 14)) return 1;
+    if (wback && (rn == 15 || rn == rt || (dual && rn == rt + 1))) return 1;
+    if (load && rt == 15) return 1;
+    if (!imm && dual && ((w & 15) == rt || (w & 15) == rt + 1) && sh == 2) return 1;
+    return !load && sh == 1 && rt == 15;
+}
+static u32 ih_unp_misc(u32 w) {
+    const u32 op2 = IH_F(w, 4, 4), op = IH_F(w, 21, 2), rd = IH_F(w, 12, 4), rm = w & 15;
+    if (op2 == 0) {
+        if (IH_F(w, 22, 1)) return 0;
+        if (!(op & 1)) return rd == 15 || IH_F(w, 16, 4) != 15 || (w & 0xFFF);
+        if (rm == 15) return 1;
+        return rd != 15 || IH_F(w, 4, 8);
+    }
+    if ((op2 == 1 || op2 == 2 || op2 == 3) && op == 1 && IH_F(w, 8, 12) != 0xFFF) return 1;
+    if ((op2 == 1 || op2 == 2) && op == 1) return rm == 15;
+    if (op2 == 1 && op == 3) return rd == 15 || rm == 15 || IH_F(w, 16, 4) != 15 || IH_F(w, 8, 4) != 15;
+    if (op2 == 3 && op == 1) return rm == 15;
+    if (op2 == 5) return IH_F(w, 16, 4) == 15 || rd == 15 || rm == 15 || IH_F(w, 8, 4);
+    if (op2 == 7) return 0;
+    if ((op2 & 9) == 8) {
+        const u32 x = IH_F(w, 5, 1), r_d = IH_F(w, 16, 4), rn = rd, rs = IH_F(w, 8, 4);
+        if (r_d == 15 || rs == 15 || rm == 15 || (op != 3 && !(op == 1 && x) && rn == 15)) return 1;
+        if ((op == 3 || (op == 1 && x)) && rn != 0) return 1;
+        return op == 2 && r_d == rn;
+    }
+    return 0;
+}
+static u32 ih_unp_ldst(u32 w) {
+    const u32 reg = IH_F(w, 25, 1), p = IH_F(w, 24, 1), byte = IH_F(w, 22, 1), wb = IH_F(w, 21, 1);
+    const u32 rn = IH_F(w, 16, 4), rt = IH_F(w, 12, 4), wback = !p || wb;
+    if (reg) {
+        if ((w & 15) == 15) return 1;
+        if (wback && (w & 15) == rn) return 1;
+    }
+    if (wback && (rn == 15 || rn == rt)) return 1;
+    return rt == 15 && byte;
+}
+static u32 ih_unp_ldm_stm(u32 w) {
+    const u32 rn = IH_F(w, 16, 4), regs = w & 0xFFFF, wb = IH_F(w, 21, 1), load = IH_F(w, 20, 1);
+    if (IH_F(w, 22, 1)) return 0;
+    if (rn == 15 || regs == 0) return 1;
+    if (load && wb && ((regs >> rn) & 1)) return 1;
+    return !load && wb && ((regs >> rn) & 1) && (regs & ((1u << rn) - 1u));
+}
+static u32 ih_unp_media(u32 w) {
+    const u32 op1 = IH_F(w, 20, 5), op2 = IH_F(w, 5, 3), rn = IH_F(w, 16, 4), rd = IH_F(w, 12, 4), rm = w & 15;
+    const u32 any15 = rd == 15 || rm == 15;
+    if ((op1 >> 3) == 0) {
+        const u32 kind = op1 & 7;
+        if (kind == 0 || kind == 4 || op2 == 5 || op2 == 6) return 0;
+        return rn == 15 || rd == 15 || rm == 15 || IH_F(w, 8, 4) != 15;
+    }
+    if ((op1 >> 3) == 1) {
+        if ((op1 == 0x0A || op1 == 0x0B || op1 == 0x0E || op1 == 0x0F) && !(op2 & 1)) return any15;
+        if (op1 == 0x08) {
+            if (!(op2 & 1)) return rn == 15 || any15;
+            if (op2 == 3) return any15 || IH_F(w, 8, 2);
+            if (op2 == 5) return rn == 15 || any15 || IH_F(w, 8, 4) != 15;
+        }
+        if (op2 == 1 && (op1 == 0x0A || op1 == 0x0E) && IH_F(w, 8, 4) != 15) return 1;
+        if ((op2 == 1 || op2 == 5) && (op1 == 0x0B || op1 == 0x0F) && (IH_F(w, 8, 4) != 15 || rn != 15)) return 1;
+        if (op2 == 3 && IH_F(w, 8, 2)) return 1;
+        if ((op1 == 0x0A || op1 == 0x0E) && op2 == 1) return any15;
+        if ((op1 == 0x0A || op1 == 0x0B || op1 == 0x0E || op1 == 0x0F) && op2 == 3) return any15;
+        if (op1 == 0x0C && op2 == 3) return any15;
+        if (op1 == 0x0B && (op2 == 1 || op2 == 5)) return any15;
+        if (op1 == 0x0F && op2 == 5) return any15;
+        return 0;
+    }
+    if ((op1 >> 3) == 2) {
+        const u32 r_d = rn, ra = rd, r_m = IH_F(w, 8, 4), r_n = w & 15;
+        if (r_d == 15 || r_m == 15 || r_n == 15) return 1;
+        if (op1 == 0x10 && op2 <= 3) return 0;
+        if (op1 == 0x14 && op2 <= 3) return ra == 15 || r_d == ra;
+        if (op1 == 0x15 && (op2 <= 1 || op2 >= 6)) return op2 >= 6 && ra == 15;
+        return 0;
+    }
+    if (op1 == 0x18 && op2 == 0) return IH_F(w, 16, 4) == 15 || IH_F(w, 8, 4) == 15 || (w & 15) == 15;
+    return 0;
+}
+static u32 ih_unp_coproc_ls(u32 w) {
+    const u32 cp = IH_F(w, 8, 4), sz = cp & 1;
+    if (cp != 10 && cp != 11) return 0;
+    const u32 p = IH_F(w, 24, 1), up = IH_F(w, 23, 1), d = IH_F(w, 22, 1), wb = IH_F(w, 21, 1);
+    const u32 rn = IH_F(w, 16, 4), vd = IH_F(w, 12, 4), imm8 = w & 0xFF;
+    if (IH_F(w, 21, 7) == 0x62) {
+        if ((w & 0xD0) != 0x10) return 0;
+        const u32 to_core = IH_F(w, 20, 1), rt2 = rn, rt = vd;
+        if (rt == 15 || rt2 == 15 || (to_core && rt == rt2)) return 1;
+        if (sz) return 0;
+        return IH_F(w, 0, 4) * 2 + IH_F(w, 5, 1) + 1 > 31;
+    }
+    if (p == 1 && wb == 0) return 0;
+    if (!((p == 0 && up == 1) || (p == 1 && up == 0 && wb == 1))) return 0;
+    if (rn == 15 || imm8 == 0) return 1;
+    if (sz) return d ? 0 : (imm8 / 2 == 0 || vd + imm8 / 2 > 16);
+    return ((vd << 1) | d) + imm8 > 32;
+}
+static u32 ih_unp_vfp_xfer(u32 w) {
+    if (IH_F(w, 24, 4) != 14 || (w & 0x6F) != 0) return 0;
+    const u32 cp = IH_F(w, 8, 4), opc1 = IH_F(w, 21, 3), load = IH_F(w, 20, 1), rt = IH_F(w, 12, 4), vn = IH_F(w, 16, 4);
+    if (cp == 10 && opc1 == 0) return rt == 15;
+    if (cp == 10 && opc1 == 7) return vn == 1 && !load && rt == 15;
+    if (cp == 11 && (opc1 & 6) == 0) return rt == 15;
+    return 0;
+}
+u32 ih_unpredictable_arm(u32 w) {
+    if ((w >> 28) == 0xF) return 0;
+    switch (IH_F(w, 25, 3)) {
+    case 0:
+        if ((w & 0x90) == 0x90) return IH_F(w, 5, 2) == 0 ? ih_unp_mul_swap_excl(w) : ih_unp_ldst_extra(w);
+        if ((w & 0x01900000) == 0x01000000) return ih_unp_misc(w);
+        return ih_unp_dataproc(w);
+    case 1:
+        if ((w & 0x01900000) == 0x01000000) return IH_F(w, 21, 1) && !IH_F(w, 22, 1) && IH_F(w, 12, 4) != 15;
+        return ih_unp_dataproc(w);
+    case 2: return ih_unp_ldst(w);
+    case 3: return (w & 0x10) ? ih_unp_media(w) : ih_unp_ldst(w);
+    case 4: return ih_unp_ldm_stm(w);
+    case 6: return ih_unp_coproc_ls(w);
+    case 7:
+        if (IH_F(w, 24, 1)) return 0;
+        if (IH_F(w, 8, 4) == 10 || IH_F(w, 8, 4) == 11) return (w & 0x10) ? ih_unp_vfp_xfer(w) : 0;
+        return 0;
+    default: return 0;
+    }
+}
+u32 ih_unpredictable_thumb(u32 word) {
+    const u32 hw = word & 0xFFFF;
+    if ((hw >> 10) == 0x11) {
+        const u32 op = IH_F(hw, 8, 2), h1 = IH_F(hw, 7, 1), rm = IH_F(hw, 3, 4), rd = (h1 << 3) | (hw & 7);
+        if (op == 3) return (hw & 7) || (h1 && rm == 15);
+        if (op != 2 && h1 == 0 && rm < 8) return 1;
+        return op == 1 && rd == 15;
+    }
+    if ((hw >> 12) == 0xB) {
+        if ((hw >> 9) == 0x5A || (hw >> 9) == 0x5E) return !(hw & 0xFF) && !IH_F(hw, 8, 1);
+        return 0;
+    }
+    if ((hw >> 12) == 0xC) {
+        const u32 regs = hw & 0xFF, rn = IH_F(hw, 8, 3);
+        if (!regs) return 1;
+        return !IH_F(hw, 11, 1) && ((regs >> rn) & 1) && (regs & ((1u << rn) - 1u));
+    }
+    return 0;
+}
+"""
+
+
+def unpredictable_c() -> list[str]:
+    return UNPREDICTABLE_C.strip("\n").split("\n")
+
+
+def _job(args: tuple[str, int, int]) -> tuple[str, list[str], int, int, int, int, float]:
+    name, seed, verify = args
+    form = next(f for f in ALL_FORMS if f.name == name)
+    g = generate_form(form, seed, verify)
+    return name, g.c, g.leaves, g.verified, g.tables, g.table_entries, g.seconds
+
+
+def generate_all(forms: list[Form], seed: int = 1, verify: int = 2000, jobs: int = 1) -> list[Generated]:
+    """Generated for each form (the forms must be in ALL_FORMS), in order; `jobs` > 1 spreads them over processes."""
+    if jobs <= 1:
+        return [generate_form(f, seed, verify) for f in forms]
+    import concurrent.futures as cf
+    byname = {f.name: f for f in forms}
+    with cf.ProcessPoolExecutor(max_workers=jobs) as ex:
+        rows = list(ex.map(_job, [(f.name, seed, verify) for f in forms], chunksize=1))
+    return [Generated(byname[n], c, leaves, ver, sum(len(x) + 1 for x in c), tables, entries, secs)
+            for n, c, leaves, ver, tables, entries, secs in rows]
 
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="Generate the fallback interpreter's instruction handlers.")
     ap.add_argument("--out", help="write the C file here")
     ap.add_argument("--form", action="append", help="only these forms (default: the 20 of the spike)")
-    ap.add_argument("--extra", action="store_true", help="also the extra forms probed for the estimate")
+    ap.add_argument("--extra", action="store_true", help="also the extra forms")
+    ap.add_argument("--all", action="store_true",
+                    help="every form, with the dispatcher, ih_step and the UNPREDICTABLE predicate: the file the "
+                         "native runtime is built from")
     ap.add_argument("--seed", type=int, default=1)
+    ap.add_argument("--jobs", type=int, default=1, help="processes to generate with")
     args = ap.parse_args(argv)
-    todo = FORMS + (EXTRA_FORMS if args.extra or args.form else [])
     names = {f.name for f in FORMS + EXTRA_FORMS}
     for n in args.form or []:
         if n not in names:
             print(f"unknown form {n!r}; the forms are: {', '.join(sorted(names))}", file=sys.stderr)
             return 2
-    out = [PREAMBLE % cond_switch()]
-    failed = 0
-    for form in todo:
-        if args.form and form.name not in args.form:
-            continue
-        try:
-            g = generate(form, args.seed)
-        except GenError as e:
-            if form.name in EXPECTED_FAILURES and EXPECTED_FAILURES[form.name] in str(e):
-                print(f"{form.name:18} not generated (known): {str(e).splitlines()[0]}")
-                continue
-            failed += 1
-            print(f"{form.name:18} FAILED: {str(e).splitlines()[0]}")
-            continue
-        print(f"{form.name:18} leaves={g.leaves:5d} C={g.c_bytes:7d} bytes  tables={g.tables}({g.table_entries})"
-              f"  verified={g.verified}  {g.seconds:.1f}s")
-        out += [""] + g.c
+    if args.all:
+        todo = ALL_FORMS
+    else:
+        todo = [f for f in FORMS + (EXTRA_FORMS if args.extra or args.form else [])
+                if not args.form or f.name in args.form]
+    failed, results = 0, []
+    # forms the generator cannot express are reported, not fatal, unless they have a hand-written handler
+    try:
+        gens = generate_all(todo, args.seed, jobs=args.jobs)
+    except GenError:
+        gens = None
+    if gens is None:                       # one form failed: find out which, one by one
+        gens = []
+        for form in todo:
+            try:
+                gens.append(generate_form(form, args.seed))
+            except GenError as e:
+                if form.name in EXPECTED_FAILURES and EXPECTED_FAILURES[form.name] in str(e):
+                    print(f"{form.name:18} not generated (known): {str(e).splitlines()[0]}")
+                    continue
+                failed += 1
+                print(f"{form.name:18} FAILED: {str(e).splitlines()[0]}")
+    for g in gens:
+        note = "  (hand-written)" if g.form.name in HAND_WRITTEN else ""
+        print(f"{g.form.name:18} leaves={g.leaves:5d} C={g.c_bytes:7d} bytes  tables={g.tables}({g.table_entries})"
+              f"  verified={g.verified}  {g.seconds:.1f}s{note}")
+        results.append(g)
     if args.out and not failed:
+        if args.all:
+            text = file_c(results, [g.form for g in results])
+        else:
+            text = "\n".join([PREAMBLE % cond_switch()] + [x for g in results for x in [""] + g.c]) + "\n"
         with open(args.out, "w") as f:
-            f.write("\n".join(out) + "\n")
+            f.write(text)
     return 1 if failed else 0
 
 
