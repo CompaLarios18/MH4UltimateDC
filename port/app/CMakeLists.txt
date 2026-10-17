@@ -48,6 +48,16 @@ add_executable(mh4u
     ui/options.h
     ui/ui.cpp
     ui/ui.h
+    # the app's own logging, file and string helpers (util/), and the Azahar runtime's logger
+    util/file.cpp
+    util/file.h
+    util/log.cpp
+    util/log.h
+    util/strings.cpp
+    util/strings.h
+    util/types.h
+    runtime_azahar/log_sink.cpp
+    runtime_azahar/log_sink.h
 )
 target_include_directories(mh4u PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 # each renderer's window, with Dear ImGui's backend for it (compiled in ui/render_*.cpp)
@@ -125,4 +135,14 @@ if (APPLE)
     # it next to the executable
     set_target_properties(mh4u PROPERTIES BUILD_RPATH "@executable_path"
                           INSTALL_RPATH "@executable_path;@executable_path/../Frameworks")
+endif()
+
+# The tests of util/ (doctest, from native/third_party; no Azahar): cmake -DMH4U_APP_TESTS=ON, then
+# build and run mh4u_util_test.
+option(MH4U_APP_TESTS "Build the app's unit tests" OFF)
+if (MH4U_APP_TESTS)
+    add_executable(mh4u_util_test util/tests/util_test.cpp util/file.cpp util/log.cpp util/strings.cpp)
+    target_include_directories(mh4u_util_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}
+                               ${CMAKE_CURRENT_SOURCE_DIR}/../../native/third_party/doctest)
+    target_link_libraries(mh4u_util_test PRIVATE fmt::fmt)
 endif()

@@ -27,10 +27,8 @@
 #include "common/file_util.h"
 #include "common/logging/backend.h"
 #include "common/logging/filter.h"
-#include "common/logging/log.h"
 #include "common/scm_rev.h"
 #include "common/settings.h"
-#include "common/string_util.h"
 #include "config.h"
 #include "core/core.h"
 #include "core/frontend/applets/default_applets.h"
@@ -49,7 +47,11 @@
 #include "launcher/launcher.h"
 #include "multiplayer.h"
 #include "network/network.h"
+#include "runtime_azahar/log_sink.h"
 #include "ui/ui.h"
+#include "util/file.h"
+#include "util/log.h"
+#include "util/strings.h"
 #include "video_core/gpu.h"
 #include "video_core/rasterizer_interface.h"
 #include "video_core/renderer_base.h"
@@ -192,7 +194,7 @@ std::unique_ptr<App::Window> MakeWindow(Core::System& system, App::Window::Api w
         Settings::values.graphics_api = SettingFor(api);
         if (auto window = App::Window::Create(system, api, config)) {
             if (api != wanted) {
-                LOG_WARNING(Frontend, "{} didn't start; using {}", NameOf(wanted), NameOf(api));
+                APP_LOG_WARNING("{} didn't start; using {}", NameOf(wanted), NameOf(api));
             }
             used = api;
             return window;
@@ -226,7 +228,7 @@ void NewConsoleId(Core::System& system) {
     const auto [random_number, console_id] = cfg->GenerateConsoleUniqueId();
     cfg->SetConsoleUniqueId(random_number, console_id);
     cfg->UpdateConfigNANDSavegame();
-    LOG_INFO(Frontend, "the console has a new ID: {:016x}", console_id);
+    APP_LOG_INFO("the console has a new ID: {:016x}", console_id);
 }
 
 std::string LoadError(Core::System::ResultStatus status, Core::System& system) {
@@ -249,6 +251,7 @@ std::string LoadError(Core::System::ResultStatus status, Core::System& system) {
 
 int Run(const std::vector<std::string>& argv) {
     Common::DetachedTasks detached_tasks;
+    App::Azahar::InstallLogSink();
     const Args args = Parse(argv);
     if (args.help || args.bad) {
         std::fputs(USAGE, args.bad ? stderr : stdout);
@@ -272,7 +275,7 @@ int Run(const std::vector<std::string>& argv) {
         return status;
     }
 
-    LOG_INFO(Frontend, "MH4U PC port app, Azahar {} | {}-{}", Common::g_build_fullname,
+    APP_LOG_INFO("MH4U PC port app, Azahar {} | {}-{}", Common::g_build_fullname,
              Common::g_scm_branch, Common::g_scm_desc);
 
     App::Config config = App::Load();
@@ -297,8 +300,8 @@ int Run(const std::vector<std::string>& argv) {
     }
     // the game's options, with the recommended settings when there are none yet (as the Qt
     // frontend's Tools > MH4U Port Options... does)
-    if (!FileUtil::Exists(Port::OptionsPath())) {
-        FileUtil::WriteStringToFile(true, Port::OptionsPath(), Port::OptionsTemplate());
+    if (!App::Util::Exists(Port::OptionsPath())) {
+        App::Util::WriteStringToFile(true, Port::OptionsPath(), Port::OptionsTemplate());
     }
 
     if (!App::Window::InitSDL()) {
@@ -326,9 +329,9 @@ int Run(const std::vector<std::string>& argv) {
     // ──
 
     std::string game = config.game;
-    if (game.empty() || !FileUtil::Exists(game)) {
+    if (game.empty() || !App::Util::Exists(game)) {
         if (!game.empty()) {
-            LOG_WARNING(Frontend, "{} isn't there any more", game);
+            APP_LOG_WARNING("{} isn't there any more", game);
         }
         game = App::Dialog::OpenFile(
             "Choose your Monster Hunter 4 Ultimate (decrypted .3ds, .cci or .cxi)",
@@ -346,7 +349,7 @@ int Run(const std::vector<std::string>& argv) {
     }
 
     App::Apply(config);
-    LOG_INFO(Frontend, "{}", App::Input::ControllerDescription());
+    APP_LOG_INFO("{}", App::Input::ControllerDescription());
 
     Frontend::RegisterDefaultApplets(system);
     system.ApplySettings();
@@ -363,7 +366,7 @@ int Run(const std::vector<std::string>& argv) {
             request.password = room.code ? room.password : config.password;
             App::Multiplayer::JoinLater(request, args.join_after);
         } else {
-            LOG_ERROR(Frontend, "--join-after: no room to join ({})", room.error);
+            APP_LOG_ERROR("--join-after: no room to join ({})", room.error);
         }
         config.join.clear();
     }
@@ -372,7 +375,7 @@ int Run(const std::vector<std::string>& argv) {
                              "one while it runs).", true);
     }
 
-    LOG_INFO(Frontend, "{}", Port::PrepareBackendFor(system, game));
+    APP_LOG_INFO("{}", Port::PrepareBackendFor(system, game));
     // (not again when the launcher said it and the player chose to play anyway)
     if (const std::string notice = Port::BackendNotice(); !notice.empty() && !Launcher::CodeNoticeSeen()) {
         App::Dialog::Message(TITLE, notice);
@@ -393,7 +396,7 @@ int Run(const std::vector<std::string>& argv) {
             Settings::values.layout_option = Settings::LayoutOption::CustomLayout;
         }
     }
-    LOG_INFO(Frontend, "renderer: {}", NameOf(api));
+    APP_LOG_INFO("renderer: {}", NameOf(api));
 
     // the in-game menu (Esc, a controller's Guide or Back+Start), and the 3DS software keyboard
     // drawn in it instead of Azahar's default one (ui/)
@@ -424,7 +427,7 @@ int Run(const std::vector<std::string>& argv) {
         stop_loading, [](VideoCore::LoadCallbackStage, std::size_t value, std::size_t total,
                          const std::string&) {
             if (total && (value == total || value % 256 == 0)) {
-                LOG_DEBUG(Frontend, "shader cache {}/{}", value, total);
+                APP_LOG_DEBUG("shader cache {}/{}", value, total);
             }
         });
 
@@ -434,7 +437,7 @@ int Run(const std::vector<std::string>& argv) {
             break;
         }
         if (result != Core::System::ResultStatus::Success) {
-            LOG_ERROR(Frontend, "emulation stopped: {}", system.GetStatusDetails());
+            APP_LOG_ERROR("emulation stopped: {}", system.GetStatusDetails());
             App::Dialog::Message(TITLE, "The game stopped: " + system.GetStatusDetails(), true);
             break;
         }
@@ -442,7 +445,7 @@ int Run(const std::vector<std::string>& argv) {
         if (window->TakeControllersChanged()) {
             App::Input::BuildProfile(config);
             ReloadInput(system);
-            LOG_INFO(Frontend, "{}", App::Input::ControllerDescription());
+            APP_LOG_INFO("{}", App::Input::ControllerDescription());
         }
     }
     window->RequestClose();
@@ -473,7 +476,7 @@ int main(int argc, char** argv) {
     LPWSTR* wargv = CommandLineToArgvW(GetCommandLineW(), &wargc);
     std::vector<std::string> args;
     for (int i = 0; i < wargc; ++i) {
-        args.push_back(Common::UTF16ToUTF8(std::wstring(wargv[i])));
+        args.push_back(App::Util::WideToUtf8(std::wstring(wargv[i])));
     }
     LocalFree(wargv);
     return Run(args);

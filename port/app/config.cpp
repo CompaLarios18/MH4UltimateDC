@@ -1,3 +1,4 @@
+#include "common/file_util.h"
 #include "config.h"
 
 #include <algorithm>
@@ -5,11 +6,11 @@
 #include <fmt/format.h>
 #include <INIReader.h>
 
-#include "common/file_util.h"
-#include "common/logging/log.h"
 #include "core/hle/service/service.h"
 #include "input.h"
 #include "perf.h"
+#include "util/file.h"
+#include "util/log.h"
 #include "video_core/pica/pica_core.h"
 
 namespace App {
@@ -64,13 +65,13 @@ void StartPerfLog(const Config& c, bool new_3ds) {
                                            c.vsync ? "on" : "off", c.screens);
     std::string error;
     if (!Port::Perf::Start(g_perf_log, header, error)) {
-        LOG_ERROR(Frontend, "perf_log: {}", error);
+        APP_LOG_ERROR("perf_log: {}", error);
         return;
     }
     Port::Perf::ChainGpuHooks(Pica::g_capture_hooks, [](Service::GSP::InterruptId id) {
         return id == Service::GSP::InterruptId::PDC0;
     });
-    LOG_INFO(Frontend, "writing the frame times to {}", g_perf_log);
+    APP_LOG_INFO("writing the frame times to {}", g_perf_log);
 }
 
 bool IsOn(const std::string& v) {
@@ -95,19 +96,19 @@ std::string ConfigPath() {
 Config Load() {
     Config c = Defaults();
     const std::string path = ConfigPath();
-    if (!FileUtil::Exists(path)) {
-        FileUtil::CreateFullPath(path);
-        FileUtil::WriteStringToFile(true, path, Template(c));
-        LOG_INFO(Frontend, "wrote {} with the defaults", path);
+    if (!App::Util::Exists(path)) {
+        App::Util::CreateFullPath(path);
+        App::Util::WriteStringToFile(true, path, Template(c));
+        APP_LOG_INFO("wrote {} with the defaults", path);
         return c;
     }
     INIReader ini(path);
     if (ini.ParseError() < 0) {
-        LOG_ERROR(Frontend, "couldn't read {}, using the defaults", path);
+        APP_LOG_ERROR("couldn't read {}, using the defaults", path);
         return c;
     }
     if (ini.ParseError() > 0) {
-        LOG_WARNING(Frontend, "{}: line {} isn't understood", path, ini.ParseError());
+        APP_LOG_WARNING("{}: line {} isn't understood", path, ini.ParseError());
     }
     const auto str = [&](const char* section, const char* key, const std::string& def) {
         return ini.Get(section, key, def);
@@ -165,15 +166,15 @@ Config Load() {
 
     c.catalog_url = str("Mods", "catalog_url", c.catalog_url);
     g_perf_log = str("Debug", "perf_log", "");
-    LOG_INFO(Frontend, "settings from {}", path);
+    APP_LOG_INFO("settings from {}", path);
     return c;
 }
 
 void Save(const Config& config) {
     const std::string path = ConfigPath();
-    FileUtil::CreateFullPath(path);
-    if (!FileUtil::WriteStringToFile(true, path, Template(config))) {
-        LOG_ERROR(Frontend, "couldn't write {}", path);
+    App::Util::CreateFullPath(path);
+    if (!App::Util::WriteStringToFile(true, path, Template(config))) {
+        APP_LOG_ERROR("couldn't write {}", path);
     }
 }
 

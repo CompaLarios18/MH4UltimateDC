@@ -7,7 +7,7 @@
 #include <string>
 #include <thread>
 
-#include "common/common_types.h"
+#include "util/types.h"
 
 namespace Launcher::Checks {
 

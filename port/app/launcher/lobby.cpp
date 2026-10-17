@@ -2,14 +2,14 @@
 #include <httplib.h>
 
 #include "launcher/lobby.h"
+#include "util/file.h"
+#include "util/log.h"
 
 #include <algorithm>
 #include <cctype>
 #include <fmt/format.h>
 #include <json.hpp>
 
-#include "common/file_util.h"
-#include "common/logging/log.h"
 
 namespace Launcher::Lobby {
 
@@ -118,7 +118,7 @@ List Fetch(const std::string& lobby_url) {
     // the bundled TLS library looks for /etc/ssl/cert.pem, which not every distribution has
     for (const char* bundle : {"/etc/ssl/certs/ca-certificates.crt", "/etc/pki/tls/certs/ca-bundle.crt",
                                "/etc/ssl/ca-bundle.pem", "/etc/ssl/cert.pem"}) {
-        if (FileUtil::Exists(bundle)) {
+        if (App::Util::Exists(bundle)) {
             client.set_ca_cert_path(bundle);
             break;
         }
@@ -129,16 +129,16 @@ List Fetch(const std::string& lobby_url) {
     if (!result) {
         list.error = fmt::format("The lobby at {} didn't answer ({}).", url,
                                  httplib::to_string(result.error()));
-        LOG_WARNING(Frontend, "{}", list.error);
+        APP_LOG_WARNING("{}", list.error);
         return list;
     }
     if (result->status != 200) {
         list.error = fmt::format("The lobby at {} answered with error {}.", url, result->status);
-        LOG_WARNING(Frontend, "{}", list.error);
+        APP_LOG_WARNING("{}", list.error);
         return list;
     }
     list = Parse(result->body);
-    LOG_INFO(Frontend, "{} rooms in the lobby at {}", list.rooms.size(), url);
+    APP_LOG_INFO("{} rooms in the lobby at {}", list.rooms.size(), url);
     return list;
 }
 

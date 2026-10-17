@@ -1,14 +1,15 @@
+#include "common/file_util.h"
 #include "launcher/checks.h"
 
 #include <fmt/format.h>
 
-#include "common/file_util.h"
-#include "common/logging/log.h"
 #include "core/file_sys/ncch_container.h"
 #include "core/file_sys/title_metadata.h"
 #include "core/hle/service/am/am.h"
 #include "core/hle/service/fs/archive.h"
 #include "core/loader/loader.h"
+#include "util/file.h"
+#include "util/log.h"
 
 namespace Launcher::Checks {
 
@@ -17,7 +18,7 @@ Game CheckGame(const std::string& path) {
     if (path.empty()) {
         return game;
     }
-    if (!FileUtil::Exists(path) || FileUtil::IsDirectory(path)) {
+    if (!App::Util::Exists(path) || App::Util::IsDirectory(path)) {
         game.state = Game::State::Missing;
         return game;
     }
@@ -75,7 +76,7 @@ Update CheckUpdate() {
     }
     update.version = tmd.GetTitleVersion();
     update.content = Service::AM::GetTitleContentPath(media, MH4U_UPDATE, 0);
-    if (update.content.empty() || !FileUtil::Exists(update.content)) {
+    if (update.content.empty() || !App::Util::Exists(update.content)) {
         update.content.clear();
         return update;
     }
@@ -203,7 +204,7 @@ void Install::Start(const std::string& path) {
             error = "This file isn't a CIA that can be installed.";
             break;
         }
-        LOG_INFO(Frontend, "installing {}: {}", path, error.empty() ? "done" : error);
+        APP_LOG_INFO("installing {}: {}", path, error.empty() ? "done" : error);
         progress = 1.0f;
         running = false;
     });

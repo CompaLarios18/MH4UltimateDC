@@ -12,11 +12,8 @@
 #include <fmt/format.h>
 #include <imgui.h>
 
-#include "common/file_util.h"
-#include "common/logging/log.h"
 #include "common/param_package.h"
 #include "common/settings.h"
-#include "common/string_util.h"
 #include "config.h"
 #include "core/core.h"
 #include "core/core_timing.h"
@@ -27,6 +24,9 @@
 #include "ui/layer.h"
 #include "ui/multiplayer_tab.h"
 #include "ui/options.h"
+#include "util/file.h"
+#include "util/log.h"
+#include "util/strings.h"
 #include "video_core/gpu.h"
 #include "video_core/renderer_base.h"
 #include "window.h"
@@ -200,8 +200,8 @@ constexpr int BINDING_COUNT = static_cast<int>(std::size(BINDINGS));
 /// A stick's keys, "up,down,left,right[,half way]", as five names (empty: none).
 std::vector<std::string> StickKeys(const std::string& spec) {
     std::vector<std::string> keys;
-    for (const std::string& part : Common::SplitString(spec, ',')) {
-        keys.push_back(Common::StripSpaces(part));
+    for (const std::string& part : App::Util::SplitString(spec, ',')) {
+        keys.push_back(App::Util::StripSpaces(part));
     }
     keys.resize(5);
     return keys;
@@ -361,7 +361,7 @@ void Menu::Opened() {
     capture = -1;
     capture_note.clear();
     std::string text;
-    FileUtil::ReadFileToString(true, Port::OptionsPath(), text);
+    App::Util::ReadFileToString(true, Port::OptionsPath(), text);
     game_file = ReadOptions(text);
     game_changes.clear();
 }
@@ -374,15 +374,15 @@ void Menu::Closed() {
     if (!game_changes.empty()) {
         const std::string path = Port::OptionsPath();
         std::string text;
-        FileUtil::ReadFileToString(true, path, text);
-        if (FileUtil::WriteStringToFile(true, path, WriteOptions(text, game_changes))) {
+        App::Util::ReadFileToString(true, path, text);
+        if (App::Util::WriteStringToFile(true, path, WriteOptions(text, game_changes))) {
             std::string what;
             for (const auto& [key, value] : game_changes) {
                 what += fmt::format("{}{} = {}", what.empty() ? "" : ", ", key, value);
             }
-            LOG_INFO(Frontend, "menu: {} in {}", what, path);
+            APP_LOG_INFO("menu: {} in {}", what, path);
         } else {
-            LOG_ERROR(Frontend, "menu: couldn't write {}", path);
+            APP_LOG_ERROR("menu: couldn't write {}", path);
         }
         game_changes.clear();
     }
@@ -432,7 +432,7 @@ void Menu::Closed() {
             }
         }
         App::Save(file);
-        LOG_INFO(Frontend, "menu: settings saved in {}", App::ConfigPath());
+        APP_LOG_INFO("menu: settings saved in {}", App::ConfigPath());
         app_changes.clear();
     }
 }
@@ -453,7 +453,7 @@ void Menu::SetGame(const std::string& key, const std::string& value) {
     if (GAME_LIVE.count(key)) {
         layer.Post([key, value] {
             if (!Port::Hooks::SetOption(key, value)) {
-                LOG_WARNING(Frontend, "menu: {} applies from the next start", key);
+                APP_LOG_WARNING("menu: {} applies from the next start", key);
             }
         });
     }
@@ -966,7 +966,7 @@ void Menu::StartLayoutEdit() {
         }
     }
     layer.Post([] { Port::Hooks::SetLayoutEditing(true); });
-    LOG_INFO(Frontend, "menu: the HUD layout editor");
+    APP_LOG_INFO("menu: the HUD layout editor");
 }
 
 void Menu::EndLayoutEdit() {
@@ -1372,7 +1372,7 @@ void Menu::DrawQuit() {
             ImGui::CloseCurrentPopup();
             layer.CloseMenu(); // its changes are saved first
             layer.Post([&window = layer.window] {
-                LOG_INFO(Frontend, "quit from the menu");
+                APP_LOG_INFO("quit from the menu");
                 window.RequestClose();
             });
         }

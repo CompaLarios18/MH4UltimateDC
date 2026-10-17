@@ -9,10 +9,10 @@
 #include <imgui.h>
 #include <json.hpp>
 
-#include "common/file_util.h"
-#include "common/logging/log.h"
 #include "launcher/state.h"
 #include "launcher/ui.h"
+#include "util/file.h"
+#include "util/log.h"
 
 namespace Launcher {
 
@@ -165,7 +165,7 @@ void HandleOverview(State& s, int exit_code, const std::string& output, bool qui
         return;
     }
     const std::string error = ErrorText(j, output);
-    LOG_WARNING(Frontend, "launcher: mods.py: {}", error);
+    APP_LOG_WARNING("launcher: mods.py: {}", error);
     if (!s.mods.loaded) {
         s.mods.error = error.empty() ? "mods.py didn't say why." : error;
     }
@@ -416,7 +416,7 @@ void OpenUrl(State& s, const std::string& url) {
 }
 
 void OpenFolder(State& s, const std::string& path) {
-    FileUtil::CreateFullPath(path + "/");
+    App::Util::CreateFullPath(path + "/");
     std::string url = path;
     std::replace(url.begin(), url.end(), '\\', '/');
     OpenUrl(s, (url.rfind('/', 0) == 0 ? "file://" : "file:///") + url);
@@ -461,7 +461,7 @@ void StartModsJob(State& s, std::vector<std::string> args, std::string title, st
         }
         const Json j = Parse(output);
         if (exit_code == 0 && j.is_object() && Bool(j, "ok")) {
-            LOG_INFO(Frontend, "launcher: {}: done", title);
+            APP_LOG_INFO("launcher: {}: done", title);
             ok(j);
             return;
         }
@@ -470,7 +470,7 @@ void StartModsJob(State& s, std::vector<std::string> args, std::string title, st
         Dialog d;
         d.title = "It wasn't installed";
         d.text = ErrorText(j, output);
-        LOG_WARNING(Frontend, "launcher: {}: {}", title, d.text);
+        APP_LOG_WARNING("launcher: {}: {}", title, d.text);
         if (code == "manual_extract") {
             const std::string download = Str(err, "download"), target = Str(err, "target");
             d.title = "Unpack it yourself";
@@ -915,7 +915,7 @@ void DeployMods(State& s, bool force, std::function<void(bool without_code)> the
         };
         if (exit_code == 0 && j.is_object() && Bool(j, "ok")) {
             ApplyStatus(s.mods, j);
-            LOG_INFO(Frontend, "launcher: mods deployed");
+            APP_LOG_INFO("launcher: mods deployed");
             RefreshMods(s);
             s.CheckCode();
             if (s.mods.code_state == "rebuild") {
@@ -962,7 +962,7 @@ void DeployMods(State& s, bool force, std::function<void(bool without_code)> the
             }
             d.buttons.push_back({"Back", nullptr, true});
         }
-        LOG_WARNING(Frontend, "launcher: deploy: {}", d.text);
+        APP_LOG_WARNING("launcher: deploy: {}", d.text);
         s.Show(std::move(d));
         RefreshMods(s);
     };
