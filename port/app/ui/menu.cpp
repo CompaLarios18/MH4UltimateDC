@@ -685,7 +685,7 @@ void Menu::DrawGame() {
 
     Section("Touch screen");
     if (BeginSettings("##touch")) {
-        Layout::ScreenOverlay overlay = Port::Hooks::ParseOverlay(Game("touch_overlay"));
+        Port::ScreenOverlay overlay = Port::Hooks::ParseOverlay(Game("touch_overlay"));
         bool on = overlay.height > 0.0f;
         const auto write = [&] {
             static constexpr const char* corners[] = {"top-left", "top-right", "bottom-left", "bottom-right"};
@@ -707,7 +707,7 @@ void Menu::DrawGame() {
             Row("Corner");
             int corner = static_cast<int>(overlay.corner);
             if (Choose("##corner", corner, {"Top left", "Top right", "Bottom left", "Bottom right"})) {
-                overlay.corner = static_cast<Layout::ScreenOverlay::Corner>(corner);
+                overlay.corner = static_cast<Port::ScreenOverlay::Corner>(corner);
                 write();
             }
             layer.Help("The item bar is at the bottom right of the game's screen.");
