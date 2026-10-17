@@ -3,9 +3,10 @@
 // implements them in runtime_azahar/. The window and renderer integration (EmuWindow, the
 // overlay renderers) is not behind it yet.
 //
-// Threads: the methods say which thread may call them. "Emulation thread" is the thread that
-// runs RunStep (main()'s loop), "main thread" is the one that started the app. The launcher's
-// worker threads only call the ones marked "any thread".
+// Threads: the notes say which thread the app calls each method from. In this build the main
+// thread and the emulation thread are the same one (the thread that runs main(): it runs
+// RunStep in a loop and the menu builds its frames inside it); the windows' present threads and
+// the launcher's worker threads only call the ones marked "any thread".
 #pragma once
 
 #include <cstddef>
@@ -189,9 +190,9 @@ public:
     /// Main thread, before the game loads.
     virtual void CommitOptions() = 0;
 
-    /// Transitional (N0-24 removes the menu's and the rooms' use of it, N2b the windows'): the
-    /// Azahar system that the windows, the menu layer and the rooms are still built on. Null in
-    /// a runtime that isn't Azahar's.
+    /// Transitional: the Azahar system that main() hands to the windows, the menu layer (ui.h)
+    /// and the rooms (multiplayer.h), which still take it. N0-24 and N2b take it away. Null in a
+    /// runtime that isn't Azahar's.
     virtual Core::System* HostSystem() = 0;
 
     // ── Paths ──

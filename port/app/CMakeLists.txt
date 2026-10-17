@@ -145,12 +145,19 @@ if (APPLE)
                           INSTALL_RPATH "@executable_path;@executable_path/../Frameworks")
 endif()
 
-# The tests of util/ (doctest, from native/third_party; no Azahar): cmake -DMH4U_APP_TESTS=ON, then
-# build and run mh4u_util_test.
+# The unit tests (doctest, from native/third_party; no Azahar code runs in them): cmake
+# -DMH4U_APP_TESTS=ON, then build and run mh4u_util_test (util/) and mh4u_app_test (the settings
+# file and the launcher's checks, against a fake IRuntime).
 option(MH4U_APP_TESTS "Build the app's unit tests" OFF)
 if (MH4U_APP_TESTS)
-    add_executable(mh4u_util_test util/tests/util_test.cpp util/file.cpp util/log.cpp util/strings.cpp)
-    target_include_directories(mh4u_util_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}
-                               ${CMAKE_CURRENT_SOURCE_DIR}/../../native/third_party/doctest)
-    target_link_libraries(mh4u_util_test PRIVATE fmt::fmt)
+    set(MH4U_APP_TEST_UTIL util/file.cpp util/log.cpp util/strings.cpp)
+    add_executable(mh4u_util_test util/tests/util_test.cpp ${MH4U_APP_TEST_UTIL})
+    add_executable(mh4u_app_test util/tests/app_test.cpp config.cpp launcher/checks.cpp
+                   ${MH4U_APP_TEST_UTIL})
+    foreach(test mh4u_util_test mh4u_app_test)
+        target_include_directories(${test} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}
+                                   ${CMAKE_CURRENT_SOURCE_DIR}/../../native/third_party/doctest)
+        target_link_libraries(${test} PRIVATE fmt::fmt Threads::Threads)
+    endforeach()
+    target_link_libraries(mh4u_app_test PRIVATE inih)
 endif()
