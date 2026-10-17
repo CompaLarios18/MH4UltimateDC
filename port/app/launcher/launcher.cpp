@@ -12,15 +12,13 @@
 #include <imgui_impl_sdlrenderer2.h>
 #include <imgui_internal.h>
 
-#include "common/file_util.h"
-#include "common/logging/log.h"
-#include "common/scm_rev.h"
 #include "config.h"
-#include "core/core.h"
-#include "frontend.h"
 #include "launcher/pick.h"
 #include "launcher/state.h"
 #include "launcher/ui.h"
+#include "runtime.h"
+#include "util/file.h"
+#include "util/log.h"
 
 #ifndef MH4U_PORT_COMMIT
 #define MH4U_PORT_COMMIT ""
@@ -183,7 +181,7 @@ void PumpProbe(State& s) {
     s.probing = false;
     s.tools_dir = tools;
     s.python = python;
-    LOG_INFO(Frontend, "launcher: tools {}, Python {}", tools.empty() ? "not found" : tools,
+    APP_LOG_INFO("launcher: tools {}, Python {}", tools.empty() ? "not found" : tools,
              python.command.empty() ? "not found" : python.version);
     if (s.ToolsReady()) {
         RefreshMods(s);
@@ -746,7 +744,7 @@ void Runner::Pump() {
         auto next = std::make_unique<Process>();
         std::string error;
         if (!next->Start(item.args, error)) {
-            LOG_ERROR(Frontend, "launcher: {} didn't start: {}", item.args.front(), error);
+            APP_LOG_ERROR("launcher: {} didn't start: {}", item.args.front(), error);
             if (item.done) {
                 item.done(-1, error);
             }
@@ -787,7 +785,7 @@ void State::Message(const std::string& title, const std::string& text) {
 void State::Recheck() {
     game = Checks::CheckGame(config.game);
     update = Checks::CheckUpdate();
-    library_exists = FileUtil::Exists(Checks::LibraryPath());
+    library_exists = App::Util::Exists(Checks::LibraryPath());
     if (!library_exists) {
         code = {Checks::Code::State::Missing, ""};
     } else if (code.state == Checks::Code::State::Missing) {
@@ -808,7 +806,7 @@ void State::CheckCode() {
     runner.Queue({SelfPath(), "--user", Tools::UserDir(), "--check-code", config.game},
                  "Checking the code library", [this](int exit_code, const std::string& output) {
                      code = Checks::CodeFromCheck(exit_code, output);
-                     LOG_INFO(Frontend, "launcher: code library check {}: {}", exit_code,
+                     APP_LOG_INFO("launcher: code library check {}: {}", exit_code,
                               code.notice.empty() ? "fine" : code.notice);
                  });
 }
@@ -869,7 +867,7 @@ void State::StartBuild() {
         Message("The build didn't start", error);
         return;
     }
-    LOG_INFO(Frontend, "launcher: building the code library from {}", update.content);
+    APP_LOG_INFO("launcher: building the code library from {}", update.content);
     job = Job{};
     job.kind = Job::Kind::Build;
     job.title = "Building the code library";
@@ -880,7 +878,7 @@ void State::StartBuild() {
             job.summary = "The code library is built from your update and installed. The game runs "
                           "on it from now on.";
         }
-        LOG_INFO(Frontend, "launcher: build finished with status {}", exit_code);
+        APP_LOG_INFO("launcher: build finished with status {}", exit_code);
         Recheck();
         CheckCode();
         if (ToolsReady()) {
@@ -899,7 +897,7 @@ void State::ChooseAndInstallUpdate() {
                      Message("This isn't the update", problem);
                      return;
                  }
-                 LOG_INFO(Frontend, "launcher: installing {}", path);
+                 APP_LOG_INFO("launcher: installing {}", path);
                  job = Job{};
                  job.kind = Job::Kind::Install;
                  job.title = "Installing the v1.3.0 update";
@@ -924,7 +922,7 @@ void State::ChooseGame() {
                      return;
                  }
                  Change([&](App::Config& c) { c.game = path; });
-                 LOG_INFO(Frontend, "launcher: game {}", path);
+                 APP_LOG_INFO("launcher: game {}", path);
                  Recheck();
                  CheckCode();
              });
@@ -1001,7 +999,7 @@ void State::Play(int stage) {
     }
     // (stage 3: the player was told about the code library and plays anyway)
     g_code_notice_seen = stage == 3;
-    LOG_INFO(Frontend, "launcher: play {}", config.game);
+    APP_LOG_INFO("launcher: play {}", config.game);
     result = Result::Play;
     done = true;
 }
@@ -1011,7 +1009,7 @@ std::string AppVersion() {
     if (std::string(MH4U_PORT_COMMIT).size() > 0) {
         version += fmt::format(" {}", MH4U_PORT_COMMIT);
     }
-    return version + fmt::format(" \xC2\xB7 Azahar {}", Common::g_build_fullname);
+    return version + fmt::format(" \xC2\xB7 Azahar {}", App::Runtime().Build().name);
 }
 
 std::string FileName(const std::string& path) {
@@ -1060,7 +1058,7 @@ Result Run(App::Config& config, bool show) {
     s.saved = App::Load();
     s.Recheck();
     if (!show && s.SetupComplete()) {
-        LOG_INFO(Frontend, "launcher off, setup complete: starting the game");
+        APP_LOG_INFO("launcher off, setup complete: starting the game");
         return Result::Play;
     }
 
@@ -1072,7 +1070,7 @@ Result Run(App::Config& config, bool show) {
                                           width, height,
                                           SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI | SDL_WINDOW_HIDDEN);
     if (!window) {
-        LOG_ERROR(Frontend, "launcher: no window: {}", SDL_GetError());
+        APP_LOG_ERROR("launcher: no window: {}", SDL_GetError());
         return Result::Unavailable;
     }
     App::Icon::Apply(window);
@@ -1080,17 +1078,17 @@ Result Run(App::Config& config, bool show) {
     SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "linear");
     SDL_Renderer* renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
     if (!renderer) {
-        LOG_WARNING(Frontend, "launcher: no accelerated renderer ({}), using SDL's software one", SDL_GetError());
+        APP_LOG_WARNING("launcher: no accelerated renderer ({}), using SDL's software one", SDL_GetError());
         renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_SOFTWARE);
     }
     if (!renderer) {
-        LOG_ERROR(Frontend, "launcher: no renderer: {}", SDL_GetError());
+        APP_LOG_ERROR("launcher: no renderer: {}", SDL_GetError());
         SDL_DestroyWindow(window);
         return Result::Unavailable;
     }
     SDL_RendererInfo info{};
     SDL_GetRendererInfo(renderer, &info);
-    LOG_INFO(Frontend, "launcher: SDL renderer {}", info.name ? info.name : "?");
+    APP_LOG_INFO("launcher: SDL renderer {}", info.name ? info.name : "?");
     const bool vsync = (info.flags & SDL_RENDERER_PRESENTVSYNC) != 0;
     SDL_SetWindowMinimumSize(window, 640, 360);
     g_window = window;
@@ -1120,7 +1118,7 @@ Result Run(App::Config& config, bool show) {
     s.focus_first = true;
     s.ProbeTools();
     s.CheckCode();
-    LOG_INFO(Frontend, "launcher: {}", s.wizard ? "the setup isn't complete" : "ready to play");
+    APP_LOG_INFO("launcher: {}", s.wizard ? "the setup isn't complete" : "ready to play");
 
     Uint32 last_input = SDL_GetTicks();
     bool first_frame = true;
@@ -1217,15 +1215,16 @@ Result Run(App::Config& config, bool show) {
     if (s.result == Result::Play) {
         // what the game should start with: the launcher's full-screen choice of the moment
         // doesn't change the setting
-        LOG_INFO(Frontend, "launcher: room: {}", RoomSummary(s));
+        APP_LOG_INFO("launcher: room: {}", RoomSummary(s));
     }
     return s.result;
 }
 
 int CheckCode(const std::string& game) {
-    auto& system = Core::System::GetInstance();
-    const std::string line = Port::PrepareBackendFor(system, game);
-    const std::string notice = Port::BackendNotice();
+    App::LoadRequest request;
+    request.game = game;
+    const std::string line = App::Runtime().PrepareCode(request);
+    const std::string notice = App::Runtime().CodeNotice();
     std::printf("backend: %s\n", line.c_str());
     if (!notice.empty()) {
         std::printf("notice:\n%s\n", notice.c_str());

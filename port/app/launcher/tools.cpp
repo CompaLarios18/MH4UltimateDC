@@ -7,16 +7,17 @@
 #include <fmt/format.h>
 #include <json.hpp>
 
-#include "common/file_util.h"
 #include "launcher/process.h"
+#include "runtime.h"
+#include "util/file.h"
 
 namespace Launcher::Tools {
 
 namespace {
 
 bool HasTools(const std::string& dir) {
-    return !dir.empty() && FileUtil::Exists(dir + "/build_game.py") &&
-           FileUtil::Exists(dir + "/mods.py");
+    return !dir.empty() && App::Util::Exists(dir + "/build_game.py") &&
+           App::Util::Exists(dir + "/mods.py");
 }
 
 std::string ParentOf(const std::string& path) {
@@ -68,17 +69,17 @@ std::vector<std::vector<std::string>> PythonCandidates() {
     // python.org's installer puts it here, also when "Add python.exe to PATH" wasn't ticked
     std::vector<std::string> installed;
     for (const auto& root : {Env("LOCALAPPDATA") + "\\Programs\\Python", Env("ProgramFiles")}) {
-        if (root.size() < 3 || !FileUtil::IsDirectory(root)) {
+        if (root.size() < 3 || !App::Util::IsDirectory(root)) {
             continue;
         }
-        FileUtil::ForeachDirectoryEntry(
-            nullptr, root, [&](u64*, const std::string& dir, const std::string& name) {
-                const std::string exe = dir + "\\" + name + "\\python.exe";
-                if (name.rfind("Python3", 0) == 0 && FileUtil::Exists(exe)) {
-                    installed.push_back(exe);
-                }
-                return true;
-            });
+        std::vector<std::string> names;
+        App::Util::ListDirectory(root, names);
+        for (const std::string& name : names) {
+            const std::string exe = root + "\\" + name + "\\python.exe";
+            if (name.rfind("Python3", 0) == 0 && App::Util::Exists(exe)) {
+                installed.push_back(exe);
+            }
+        }
     }
     // Python313 before Python39
     std::sort(installed.begin(), installed.end(), [](const std::string& a, const std::string& b) {
@@ -96,7 +97,7 @@ std::vector<std::vector<std::string>> PythonCandidates() {
     // the command-line tools when they aren't there: the usual installs first, by path
     for (const char* path : {"/opt/homebrew/bin/python3", "/usr/local/bin/python3",
                              "/Library/Frameworks/Python.framework/Versions/Current/bin/python3"}) {
-        if (FileUtil::Exists(path)) {
+        if (App::Util::Exists(path)) {
             candidates.push_back({path});
         }
     }
@@ -105,12 +106,12 @@ std::vector<std::vector<std::string>> PythonCandidates() {
     while (start <= path_env.size()) {
         const auto end = std::min(path_env.find(':', start), path_env.size());
         const auto dir = path_env.substr(start, end - start);
-        if (!dir.empty() && dir != "/usr/bin" && FileUtil::Exists(dir + "/python3")) {
+        if (!dir.empty() && dir != "/usr/bin" && App::Util::Exists(dir + "/python3")) {
             candidates.push_back({dir + "/python3"});
         }
         start = end + 1;
     }
-    if (FileUtil::Exists("/Library/Developer/CommandLineTools/usr/bin/python3")) {
+    if (App::Util::Exists("/Library/Developer/CommandLineTools/usr/bin/python3")) {
         candidates.push_back({"/usr/bin/python3"});
     }
 #else
@@ -198,7 +199,7 @@ std::string PythonHint(const Python& found) {
 }
 
 std::string UserDir() {
-    std::string dir = FileUtil::GetUserPath(FileUtil::UserPath::UserDir);
+    std::string dir = App::Runtime().UserDir();
     while (dir.size() > 1 && (dir.back() == '/' || dir.back() == '\\')) {
         dir.pop_back();
     }

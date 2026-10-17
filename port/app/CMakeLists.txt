@@ -48,6 +48,24 @@ add_executable(mh4u
     ui/options.h
     ui/ui.cpp
     ui/ui.h
+    # the app's own logging, file and string helpers (util/)
+    util/buttons.h
+    util/file.cpp
+    util/file.h
+    util/log.cpp
+    util/log.h
+    util/strings.cpp
+    util/strings.h
+    util/types.h
+    # IRuntime (runtime.h), the seam to the emulation runtime, and its Azahar implementation
+    runtime.h
+    runtime_azahar/azahar_input.cpp
+    runtime_azahar/azahar_options.cpp
+    runtime_azahar/azahar_runtime.cpp
+    runtime_azahar/azahar_runtime.h
+    runtime_azahar/azahar_title.cpp
+    runtime_azahar/log_sink.cpp
+    runtime_azahar/log_sink.h
 )
 target_include_directories(mh4u PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 # each renderer's window, with Dear ImGui's backend for it (compiled in ui/render_*.cpp)
@@ -125,4 +143,21 @@ if (APPLE)
     # it next to the executable
     set_target_properties(mh4u PROPERTIES BUILD_RPATH "@executable_path"
                           INSTALL_RPATH "@executable_path;@executable_path/../Frameworks")
+endif()
+
+# The unit tests (doctest, from native/third_party; no Azahar code runs in them): cmake
+# -DMH4U_APP_TESTS=ON, then build and run mh4u_util_test (util/) and mh4u_app_test (the settings
+# file and the launcher's checks, against a fake IRuntime).
+option(MH4U_APP_TESTS "Build the app's unit tests" OFF)
+if (MH4U_APP_TESTS)
+    set(MH4U_APP_TEST_UTIL util/file.cpp util/log.cpp util/strings.cpp)
+    add_executable(mh4u_util_test util/tests/util_test.cpp ${MH4U_APP_TEST_UTIL})
+    add_executable(mh4u_app_test util/tests/app_test.cpp config.cpp launcher/checks.cpp
+                   ${MH4U_APP_TEST_UTIL})
+    foreach(test mh4u_util_test mh4u_app_test)
+        target_include_directories(${test} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}
+                                   ${CMAKE_CURRENT_SOURCE_DIR}/../../native/third_party/doctest)
+        target_link_libraries(${test} PRIVATE fmt::fmt Threads::Threads)
+    endforeach()
+    target_link_libraries(mh4u_app_test PRIVATE inih)
 endif()

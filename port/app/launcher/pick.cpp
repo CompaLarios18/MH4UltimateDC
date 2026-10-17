@@ -15,7 +15,7 @@
 #include <windows.h>
 #include <commdlg.h>
 #include <shobjidl.h>
-#include "common/string_util.h"
+#include "util/strings.h"
 #endif
 
 namespace Launcher::Pick {
@@ -94,9 +94,9 @@ Result File(const std::string& title, const std::string& kind,
 #if defined(_WIN32)
     std::wstring patterns;
     for (const auto& ext : extensions) {
-        patterns += (patterns.empty() ? L"" : L";") + std::wstring(L"*.") + Common::UTF8ToUTF16W(ext);
+        patterns += (patterns.empty() ? L"" : L";") + std::wstring(L"*.") + App::Util::Utf8ToWide(ext);
     }
-    std::wstring filter = Common::UTF8ToUTF16W(kind);
+    std::wstring filter = App::Util::Utf8ToWide(kind);
     filter.push_back(L'\0');
     filter += patterns;
     filter.push_back(L'\0');
@@ -106,7 +106,7 @@ Result File(const std::string& title, const std::string& kind,
     filter.push_back(L'\0');
     filter.push_back(L'\0');
     wchar_t file[MAX_PATH * 4] = {};
-    const std::wstring wtitle = Common::UTF8ToUTF16W(title);
+    const std::wstring wtitle = App::Util::Utf8ToWide(title);
     OPENFILENAMEW ofn{};
     ofn.lStructSize = sizeof(ofn);
     ofn.hwndOwner = OwnerWindow();
@@ -116,7 +116,7 @@ Result File(const std::string& title, const std::string& kind,
     ofn.lpstrTitle = wtitle.c_str();
     ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
     if (GetOpenFileNameW(&ofn)) {
-        result.path = Common::UTF16ToUTF8(file);
+        result.path = App::Util::WideToUtf8(file);
     }
 #elif defined(__APPLE__)
     std::string types;
@@ -155,13 +155,13 @@ Result Folder(const std::string& title) {
         DWORD options = 0;
         dialog->GetOptions(&options);
         dialog->SetOptions(options | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST);
-        dialog->SetTitle(Common::UTF8ToUTF16W(title).c_str());
+        dialog->SetTitle(App::Util::Utf8ToWide(title).c_str());
         if (SUCCEEDED(dialog->Show(OwnerWindow()))) {
             IShellItem* item = nullptr;
             if (SUCCEEDED(dialog->GetResult(&item))) {
                 PWSTR path = nullptr;
                 if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &path))) {
-                    result.path = Common::UTF16ToUTF8(path);
+                    result.path = App::Util::WideToUtf8(path);
                     CoTaskMemFree(path);
                 }
                 item->Release();
