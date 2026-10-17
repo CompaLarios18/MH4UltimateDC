@@ -42,6 +42,7 @@ for that.
 | `--gpu NAME` | the GPU (default `null`) |
 | `--input-source NAME` | where the buttons, circle pad and touch screen come from (default `script`) |
 | `--audio NAME` | where the DSP's output goes (default `null`) |
+| `--missing-entries FILE` | append the entry of each function the fallback interpreter had to run, in the format of `config/extra_entries.txt` (default `build/missing_entries.txt`; `""` for none), deduplicated against the file (N1-28) |
 | `--trace-ipc FILE` | every IPC request with its reply, in the format of `tools/native/tracefmt.py` and `tools/compare_ipc_traces.py` (N0-21): session names (`srv:`, `<service>/<kind>#k`), `t=` in game ticks (N1-10) |
 | `--trace-ipc-full` | with `--trace-ipc`: also the bytes of the input buffers as `data=<index>:<hex>`; alone it is refused with exit status 2 |
 
@@ -94,7 +95,7 @@ MH4N_REGISTER(BootStep, "services.srv", BootStep{Phase::Services, [](Runtime& rt
 | `devices` | the host interfaces. The runtime's own step (`runtime.devices`) makes the GPU, input source and audio sink named by `--gpu`, `--input-source` and `--audio` from the registries of `gpu::GpuFactory`, `InputSourceFactory` and `AudioSinkFactory` (`mh4n/host.h`) |
 | `services` | ports and services. N1-10's step `services.ipc` makes the `ServiceManager`, installs every registered `ServiceFactory` and sets `rt.Svc().SetConnectToPortHandler(...)` and `SetSendSyncRequestHandler(...)`; later services only register a factory |
 | `tracing` | traces and captures: the runtime's `--trace-svc` and `--state-trace`; N1-10's `tracing.ipc` (`--trace-ipc`, `--trace-ipc-full`) |
-| `started` | whatever needs the main thread (`rt.MainThread()`) |
+| `started` | whatever needs the main thread (`rt.MainThread()`). N1-28's step `cpu.interp` installs the fallback interpreter as the missing-function handler, only when a code library is loaded |
 
 A step that cannot do its job (a trace file that cannot be written) logs it and calls
 `rt.RequestExit(2, reason)`: Boot returns that status before the program runs.

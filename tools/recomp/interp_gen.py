@@ -1982,6 +1982,11 @@ def main(argv=None) -> int:
         if n not in names:
             print(f"unknown form {n!r}; the forms are: {', '.join(sorted(names))}", file=sys.stderr)
             return 2
+    if args.out:                           # before minutes of generation, not after
+        out_dir = os.path.dirname(os.path.abspath(args.out))
+        if not os.path.isdir(out_dir) or not os.access(out_dir, os.W_OK) or os.path.isdir(args.out):
+            print(f"cannot write {args.out}", file=sys.stderr)
+            return 2
     if args.all:
         todo = ALL_FORMS
     else:
@@ -2010,12 +2015,19 @@ def main(argv=None) -> int:
               f"  verified={g.verified}  {g.seconds:.1f}s{note}")
         results.append(g)
     if args.out and not failed:
+        if not results:                    # only known gaps were asked for: a file with just the preamble is no result
+            print("nothing generated: no handler to write", file=sys.stderr)
+            return 1
         if args.all:
             text = file_c(results, [g.form for g in results])
         else:
             text = "\n".join([PREAMBLE % cond_switch()] + [x for g in results for x in [""] + g.c]) + "\n"
-        with open(args.out, "w") as f:
-            f.write(text)
+        try:
+            with open(args.out, "w") as f:
+                f.write(text)
+        except OSError as e:
+            print(f"cannot write {args.out}: {e.strerror}", file=sys.stderr)
+            return 2
     return 1 if failed else 0
 
 

@@ -329,6 +329,20 @@ def test_cli_lists_unknown_forms_and_writes_a_c_file(tmp_path, capsys):
     assert "t_push_pop" in capsys.readouterr().out
 
 
+def test_cli_refuses_an_unwritable_output_before_generating_and_a_file_with_no_handler(tmp_path, monkeypatch, capsys):
+    started = []
+    monkeypatch.setattr(ig, "generate_all", lambda *a, **k: started.append(1) or [])
+    assert ig.main(["--form", "t_push_pop", "--out", str(tmp_path / "no-such-folder" / "h.c")]) == 2
+    assert ig.main(["--form", "t_push_pop", "--out", str(tmp_path)]) == 2             # a folder
+    assert started == []                                                              # nothing was generated first
+    assert capsys.readouterr().err.count("cannot write ") == 2
+    monkeypatch.undo()
+    monkeypatch.setattr(ig, "HAND_WRITTEN", {})            # arm_vldm is then only a known gap: no handler to write
+    out = tmp_path / "gap.c"
+    assert ig.main(["--form", "arm_vldm", "--out", str(out)]) == 1
+    assert not out.exists() and "nothing generated" in capsys.readouterr().err
+
+
 def test_sample_words_respects_kinds_and_validity():
     rng = random.Random(5)
     for name in ("arm_b_bl", "arm_bx_blx", "arm_ldm_stm", "t_push_pop"):
