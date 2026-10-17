@@ -277,8 +277,8 @@ public:
 
     // ── The software keyboard ──
 
-    /// The game's keyboard requests go to `keyboard` instead of the runtime's default one (which
-    /// shows nothing). The runtime keeps it until the end. Main thread, after CommitOptions.
+    /// The game's keyboard requests go to `keyboard` instead of the runtime's default one. The
+    /// runtime keeps it until the end. Main thread, after CommitOptions.
     virtual void SetSoftwareKeyboard(std::shared_ptr<ISoftwareKeyboard> keyboard) = 0;
 
     /// The player is done: hands the game the text and the number of the button pressed (the
