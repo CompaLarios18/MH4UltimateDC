@@ -1,3 +1,13 @@
+// Derived from Azahar src/video_core/custom_textures/custom_tex_manager.cpp (FindCustomTextures,
+// ParseFilename, ReadConfig, GetTextures), custom_tex_manager.h (the option defaults),
+// material.cpp (Material::AddMapTexture) and custom_format.h at
+// 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-2.0-or-later; every one of those files says
+// "Licensed under GPLv2 or any later version"): the expected results of the pack rules restate how
+// those functions read file names, pack.json and the legacy defaults; they are worked out by hand
+// from the source, never by running it.
+// Copyright 2023-2026 Citra Emulator Project / Azahar Emulator Project (custom_tex_manager.cpp)
+// Copyright 2023 Citra Emulator Project (material.cpp, custom_format.h, custom_tex_manager.h)
+//
 // Tests for the HD pack pre-processor (N2-17): the pack rules, the mip chains, the BC7 encoder
 // (checked with a decoder written here from the BC7 specification), the archive and the
 // resumable conversion. Every texture is made in the test; no real pack is read.
@@ -38,7 +48,7 @@ namespace {
 //   a p-bit for each of the two subsets (shared by both its endpoints), 16 3-bit indices (the
 //   first, and the one at the anchor of subset 1, have 2 bits). 128 bits.
 // Partition tables of the two-subset shapes are those of the specification (a fact table, taken
-// from the public-domain bc7decomp.cpp of bc7enc_rdo).
+// from g_bc7_partition2 of the vendored bc7enc.cpp, bc7enc_rdo, public domain or MIT).
 constexpr unsigned char kPartition2[64][16] = {
     {0,0,1,1,0,0,1,1,0,0,1,1,0,0,1,1},
     {0,0,0,1,0,0,0,1,0,0,0,1,0,0,0,1},

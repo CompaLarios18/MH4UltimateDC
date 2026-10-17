@@ -12,7 +12,8 @@
 //
 // Boot order (Boot):
 //   1. the program is loaded (Loader::OpenGameFolder or OpenElf);
-//   2. memory, the game clock (paused: game time starts when the scheduler does), the code host,
+//   2. memory, the game clock (paused once the world is built, keeping the ticks of the setup; it
+//      runs again when the scheduler starts), the code host,
 //      the kernel, the scheduler, the thread manager and the SVC table are made, and the process;
 //   3. the segments, the configuration memory and the shared page are mapped (Loader::Map,
 //      SystemPages::Map);

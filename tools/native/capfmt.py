@@ -1,12 +1,18 @@
 #!/usr/bin/env python3
-# Derived from Azahar src/audio_core/hle/shared_memory.h and src/core/hle/service/hid/hid.h at
-# 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (both say "Licensed under GPLv2 or any later version",
-# so GPL-2.0-or-later): the offsets of the DSP shared-memory regions and of the source status
-# blocks, the layout of the HID pad and touch entries.  Also read for the IR header: Azahar
-# src/core/hle/service/ir/ir_user.cpp (GPLv2 or any later version).
+# Derived from Azahar src/audio_core/hle/shared_memory.h, hle.cpp, common.h, audio_types.h and
+# src/core/hle/service/hid/hid.h at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (all say
+# "Licensed under GPLv2 or any later version", so GPL-2.0-or-later): the offsets of the DSP
+# shared-memory regions and of the source status blocks, the number of sources (common.h), the sample
+# rate and samples per frame (audio_types.h), the ticks of an audio frame and the rule that picks
+# the region the DSP reads (hle.cpp, CurrentRegionIndex), the layout of the HID pad and touch
+# entries.  Also read for the IR header: Azahar src/core/hle/service/ir/ir_user.cpp (GPLv2 or any
+# later version).
 # Copyright 2015-2026 Citra Emulator Project / Azahar Emulator Project (hid.h)
 # Copyright 2015-2025 Citra Emulator Project / Azahar Emulator Project (ir_user.cpp)
 # Copyright 2016-2025 Citra Emulator Project / Azahar Emulator Project (shared_memory.h)
+# Copyright 2017-2026 Citra Emulator Project / Azahar Emulator Project (hle.cpp)
+# Copyright 2017 Citra Emulator Project (audio_types.h)
+# Copyright 2016 Citra Emulator Project (common.h)
 """Reader, summariser, comparator and writer for the DSP (MDSP) and HID (MHID) captures.
 
 Written by ``mh4u_runner --capture-dsp START:FRAMES:FILE`` and ``--capture-hid FILE`` (N0-06) and,
@@ -470,14 +476,17 @@ def pcm_to_wav(path: str, out: str) -> int:
     if file_kind(path) != "dsp":
         raise CapError(f"{path}: not a DSP capture")
     frames = 0
-    with wave.open(out, "wb") as w:
-        w.setnchannels(2)
-        w.setsampwidth(2)
-        w.setframerate(SAMPLE_RATE)
-        for r in read(path):
-            if r.type == DSP_PCM:
-                w.writeframes(r.payload)  # s16 little-endian, as the wave module wants
-                frames += 1
+    try:
+        with wave.open(out, "wb") as w:
+            w.setnchannels(2)
+            w.setsampwidth(2)
+            w.setframerate(SAMPLE_RATE)
+            for r in read(path):
+                if r.type == DSP_PCM:
+                    w.writeframes(r.payload)  # s16 little-endian, as the wave module wants
+                    frames += 1
+    except OSError as e:
+        raise CapError(f"cannot write {out}: {e.strerror}") from e
     return frames
 
 

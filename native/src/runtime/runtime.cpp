@@ -260,7 +260,8 @@ int Runtime::Run(const Options& options) {
     }
     const ProcessImage& image = loader_->Image();
 
-    // 2. the world, with the clock stopped: game time starts with the scheduler
+    // 2. the world; the clock is stopped afterwards (it keeps the ticks of the setup, so the process
+    // is created at a tick above 0) and runs again when the scheduler starts
     if (!CreateWorld(image.memory_mode, &error)) {
         MH4N_LOG(Error, kLog, "{}", error);
         return 2;

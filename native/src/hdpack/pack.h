@@ -1,10 +1,10 @@
 // Derived from Azahar src/video_core/custom_textures/custom_tex_manager.cpp (FindCustomTextures,
 // ParseFilename, ReadConfig, GetTextures), custom_tex_manager.h (the option defaults),
-// material.cpp (Material::AddMapTexture) and custom_format.h (CustomFileFormat, MapType) at
-// 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-2.0-or-later; every one of those files says
-// "Licensed under GPLv2 or any later version").
+// material.cpp (Material::AddMapTexture), material.h (MapType) and custom_format.h
+// (CustomFileFormat) at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-2.0-or-later; every one of
+// those files says "Licensed under GPLv2 or any later version").
 // Copyright 2023-2026 Citra Emulator Project / Azahar Emulator Project (custom_tex_manager.cpp)
-// Copyright 2023 Citra Emulator Project (material.cpp, custom_format.h, custom_tex_manager.h)
+// Copyright 2023 Citra Emulator Project (material.cpp, material.h, custom_format.h, custom_tex_manager.h)
 //
 // How a texture pack in the layout Azahar loads (load/textures/<title id>/) is read (N2-17):
 // the file names, pack.json's "options" and "textures", and which files make up which material.

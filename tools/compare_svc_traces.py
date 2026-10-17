@@ -53,9 +53,12 @@ def load_register_rules(paths: list[str]) -> dict[str, dict[str, set[int]]]:
                 if not text:
                     continue
                 try:
-                    svc = format(int(text[0], 16), "X")
+                    number = int(text[0], 16)
                 except ValueError:
                     raise RegisterRuleError(f"{path}:{n}: the svc number {text[0]!r} is not hex") from None
+                if not 0 <= number <= 0xFF:
+                    raise RegisterRuleError(f"{path}:{n}: the svc number {text[0]!r} is not in 0x00-0xFF")
+                svc = format(number, "X")
                 entry = rules.setdefault(svc, {"in": set(), "out": set()})
                 if len(text) < 2:
                     raise RegisterRuleError(f"{path}:{n}: expected `<svc> [in=r1,..] [out=r1,..]`")
@@ -71,7 +74,8 @@ def load_register_rules(paths: list[str]) -> dict[str, dict[str, set[int]]]:
 
 
 def mask_registers(calls: list[Call], rules: dict[str, dict[str, set[int]]]) -> list[Call]:
-    """The calls with the registers the rules name replaced by `*` (equal to anything but another `*`)."""
+    """The calls with the registers the rules name replaced by `*`. Both traces go through the same rules, so
+    the masked registers are equal on both sides and carry no value into the comparison."""
     out = []
     for call in calls:
         rule = rules.get(call.svc.upper().lstrip("0") or "0")

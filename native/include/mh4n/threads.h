@@ -1,7 +1,8 @@
 // Derived from Azahar src/core/hle/kernel/thread.h, kernel.h, errors.h, process.cpp, svc.cpp and
-// resource_limit.cpp and src/core/memory.h at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6
+// resource_limit.cpp, src/core/hle/service/pm/pm_app.cpp and src/core/memory.h at
+// 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6
 // (GPL-3.0-or-later: thread.h, kernel.h and svc.cpp say so; errors.h, process.cpp,
-// resource_limit.cpp and memory.h say GPL-2.0-or-later): the processor-id and priority
+// resource_limit.cpp, pm_app.cpp and memory.h say GPL-2.0-or-later): the processor-id and priority
 // enumerations (ThreadProcessorId, ThreadPrio), the core-1 schedule modes and CPU time values
 // (Core1ScheduleMode, Core1CpuTime), the TLS layout constants (TLS_AREA_VADDR, TLS_ENTRY_SIZE),
 // the result code values and the FPSCR constants of the thread creation paths.
@@ -10,6 +11,7 @@
 // Copyright 2017 Citra Emulator Project (errors.h)
 // Copyright 2015-2026 Citra Emulator Project / Azahar Emulator Project (process.cpp,
 //   resource_limit.cpp)
+// Copyright 2014-2026 Citra Emulator Project / Azahar Emulator Project (pm_app.cpp)
 // PPSSPP Project (thread.h, kernel.h, second notice: Licensed under GPLv2 or any later version)
 //
 // Threads (N1-27): how guest threads are made (the main thread and svcCreateThread), their
@@ -159,8 +161,10 @@ public:
     // thread gets id 1 (the first the kernel makes), `main_thread_priority`, the ideal processor,
     // the stack top and the image's FPSCR, and is ready. The loader has mapped the segments and the
     // stack (Loader::Map) already. Errors: kResultOutOfRange (a priority above 63, an ideal
-    // processor other than 0 and 1), kResultInvalidEntryAddress (the entry is not mapped), and
-    // those of TLS allocation. `host_entry` is as in ThreadSpec.
+    // processor of 2 to 4: the exheader's field has 2 bits, so only a hand-built image has more
+    // than 3), kResultOutOfRangeKernel (an ideal processor of 5 or more, hand-built images only),
+    // kResultInvalidEntryAddress (the entry is not mapped), and those of TLS allocation.
+    // `host_entry` is as in ThreadSpec.
     Result CreateMainThread(const ProcessImage& image, std::shared_ptr<Thread>* out = nullptr,
                             GuestThread::Entry host_entry = {});
 

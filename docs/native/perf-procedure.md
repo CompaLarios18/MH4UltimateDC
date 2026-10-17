@@ -37,6 +37,8 @@ the app writes them on its first start).
 
 `mh4u-app.ini` (comments go on their own lines, not after a value):
 ```
+[Game]
+new_3ds = off
 [Display]
 renderer = vulkan
 fullscreen = on
@@ -49,7 +51,11 @@ perf_log = D:\perf\village_hd-off_fps120.csv
 ```
 `resolution = 0` means as many times the 3DS's size as the window needs (3440x1440 full
 screen); `custom_textures = on` is the HD pack; `vsync` is explained in the notes. Change
-`perf_log` before every run (one file per run).
+`perf_log` before every run (one file per run). `new_3ds = off` stays the same in every run: its
+default, `auto`, turns New 3DS mode **on** when `custom_textures` is off and off when it is on, so
+the two columns of the matrix would differ in the console model (memory layout, the second core's
+extra work) as well as in the HD pack. The header line of a log records `new3ds=` so a run with
+the wrong value is visible.
 
 `mh4u.ini`: `fps = 60`, `120` or `180`, as the matrix says.
 

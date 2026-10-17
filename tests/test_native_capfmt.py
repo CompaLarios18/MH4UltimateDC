@@ -1,3 +1,11 @@
+# Derived from Azahar src/audio_core/hle/shared_memory.h, hle.cpp and src/core/hle/service/hid/hid.h
+# at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-2.0-or-later; each says "Licensed under GPLv2 or
+# any later version"): the synthetic captures put the frame counters, the source status blocks and
+# the HID entries at the offsets of those headers, and the expected choice of the region the DSP
+# reads restates CurrentRegionIndex of hle.cpp.
+# Copyright 2015-2026 Citra Emulator Project / Azahar Emulator Project (hid.h)
+# Copyright 2016-2025 Citra Emulator Project / Azahar Emulator Project (shared_memory.h)
+# Copyright 2017-2026 Citra Emulator Project / Azahar Emulator Project (hle.cpp)
 """tools/native/capfmt.py: MDSP / MHID capture reader, summariser, comparator, writer (synthetic captures only)."""
 import json
 import os
@@ -133,6 +141,11 @@ def test_current_region_rules():
     assert capfmt.current_region(0xFFFF, 0) == 1  # wraparound: region 0 is the old one
     assert capfmt.current_region(0, 0xFFFF) == 0
     assert capfmt.current_region(0xFFFF, 0xFFFE) == 0  # no wraparound
+    assert capfmt.current_region(0xFFFE, 0xFFFF) == 1  # no wraparound, the other way
+    assert capfmt.current_region(0, 0) == 1            # a tie: the DSP reads region 1 (not `>`)
+    assert capfmt.current_region(7, 7) == 1
+    assert capfmt.current_region(0xFFFF, 0xFFFF) == 1
+    assert capfmt.current_region(1, 0) == 0            # the smallest margin
 
 
 def test_dsp_counter_and_statuses():
@@ -211,6 +224,15 @@ def test_pcm_to_wav(tmp_path):
         first = struct.unpack("<hh", w.readframes(1))
         assert first == (100, -100)
     assert capfmt.main(["pcm-to-wav", hid_capture(tmp_path / "h", [1]), str(tmp_path / "x.wav")]) == 2
+
+
+def test_pcm_to_wav_with_an_output_that_cannot_be_written(tmp_path, capsys):
+    p = dsp_capture(tmp_path / "a.mdsp", [1])
+    capsys.readouterr()
+    assert capfmt.main(["pcm-to-wav", p, str(tmp_path / "no-such-folder" / "o.wav")]) == 2
+    assert capfmt.main(["pcm-to-wav", p, str(tmp_path)]) == 2  # a folder
+    err = capsys.readouterr().err
+    assert err.count("capfmt: cannot write ") == 2
 
 
 # ── diff-hid ──────────────────────────────────────────────────────────────────────────

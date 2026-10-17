@@ -197,6 +197,11 @@ def test_missing_inputs_and_a_hashes_file_without_the_needed_section(tmp_path):
     missing = subprocess.run([sys.executable, TOOL, str(tmp_path / "none.txt"), str(pack)],
                              capture_output=True, text=True)
     assert missing.returncode == 2
+    not_text = tmp_path / "binary.txt"
+    not_text.write_bytes(b"# use_new_hash=1\n\xff\xfe\x00 not utf-8\n")
+    binary = subprocess.run([sys.executable, TOOL, str(not_text), str(pack)], capture_output=True, text=True)
+    assert binary.returncode == 2
+    assert "Traceback" not in binary.stderr and "hd_hash_check:" in binary.stderr
 
 
 def test_the_report_of_an_empty_pack(tmp_path):

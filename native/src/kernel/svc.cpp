@@ -1,9 +1,10 @@
-// Derived from Azahar src/core/hle/kernel/svc.cpp, svc_wrapper.h and errors.h at
-// 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-3.0-or-later: svc.cpp says so; svc_wrapper.h and
-// errors.h say GPL-2.0-or-later): the SVC table (numbers and names), the arguments each wrapper
-// decodes and the registers it uses (SVCWrapper's ABI), the order of the checks and the result
-// codes of each call, the GetSystemInfo, GetProcessInfo, GetHandleInfo and GetThreadInfo values.
-// Copyright 2014-2026 Citra Emulator Project / Azahar Emulator Project (svc.cpp, svc_wrapper.h)
+// Derived from Azahar src/core/hle/kernel/svc.cpp, svc_wrapper.h, errors.h and src/core/memory.cpp
+// at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-3.0-or-later: svc.cpp says so; svc_wrapper.h,
+// errors.h and memory.cpp say GPL-2.0-or-later): the SVC table (numbers and names), the arguments
+// each wrapper decodes and the registers it uses (SVCWrapper's ABI), the order of the checks and the
+// result codes of each call, the GetSystemInfo, GetProcessInfo, GetHandleInfo and GetThreadInfo
+// values, and the bounded string read of the debug output (MemorySystem::ReadCString).
+// Copyright 2014-2026 Citra Emulator Project / Azahar Emulator Project (svc.cpp, svc_wrapper.h, memory.cpp)
 // Copyright 2017 Citra Emulator Project (errors.h)
 //
 // The SVC table (N1-07): see mh4n/svc.h. The memory calls (ControlMemory, QueryMemory and the

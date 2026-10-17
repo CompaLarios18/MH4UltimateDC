@@ -263,7 +263,7 @@ def test_ignore_regs_leaves_out_only_the_registers_named(tmp_path, capsys):
 def test_ignore_regs_rules_with_a_bad_line_or_file_exit_2(tmp_path, capsys):
     import compare_svc_traces as c
     ref = _write(tmp_path, "ref.txt", [HEADER, _release(7, 1)])
-    for text in ("zz in=r1\n", "14\n", "14 in=r4\n", "14 foo=r1\n", "14 in=\n"):
+    for text in ("zz in=r1\n", "14\n", "14 in=r4\n", "14 foo=r1\n", "14 in=\n", "100 in=r1\n", "-1 in=r1\n"):
         bad = tmp_path / "bad.txt"
         bad.write_text(text)
         assert c.main([ref, ref, "--ignore-regs", str(bad)]) == 2, text
@@ -272,6 +272,17 @@ def test_ignore_regs_rules_with_a_bad_line_or_file_exit_2(tmp_path, capsys):
     binary = tmp_path / "bin.txt"
     binary.write_bytes(b"\xff\xfe\x00")
     assert c.main([ref, ref, "--ignore-regs", str(binary)]) == 2
+
+
+def test_a_rule_for_a_single_digit_svc_matches_the_traces_two_digit_number(tmp_path):
+    import compare_svc_traces as c
+    rules = tmp_path / "rules.txt"
+    for spelling in ("0x0A", "0a", "A"):
+        rules.write_text(f"{spelling} in=r1 out=r1\n")
+        ref = _write(tmp_path, "ref.txt", [HEADER, line(1, "0A", (5, 0x111, 0, 0), out=(0, 0x111, 0, 0), pc=0x00100500)])
+        other = _write(tmp_path, "o.txt", [HEADER, line(1, "0A", (5, 0x999, 0, 0), out=(0, 0x999, 0, 0), pc=0x00100500)])
+        assert c.main([ref, other, "--outputs", "--ignore-regs", str(rules)]) == 0, spelling
+    assert c.main([ref, other, "--outputs"]) == 1
 
 
 def test_the_repository_rule_file_is_well_formed_and_names_releasemutex():

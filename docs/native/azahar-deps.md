@@ -36,7 +36,7 @@ N0-04, N0-07 and N0-21 changed `port/src/runner.cpp` and `port/azahar/azahar.pat
 grep -rlE '#include "(core|video_core|audio_core|network|input_common|common|citra[a-z_]*|web_service)/' port server | sort
 ```
 
-This finds 42 files, all under `port/` (`server/` includes no Azahar header; its dependency is on the `azahar-room` binary, see section 9). The bootstrap table of N0-16 listed counts per file; the exact recount below differs in a few small files, so the table is the starting point, not a contract. `common/` is Azahar's common library (logging, file utilities, settings), not ours.
+This finds 41 files, all under `port/` (the hooks reach Azahar only through `src/platform_azahar.cpp` now) (`server/` includes no Azahar header; its dependency is on the `azahar-room` binary, see section 9). The bootstrap table of N0-16 listed counts per file; the exact recount below differs in a few small files, so the table is the starting point, not a contract. `common/` is Azahar's common library (logging, file utilities, settings), not ours.
 
 Count of Azahar includes per file (recount):
 

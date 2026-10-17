@@ -69,9 +69,11 @@ logs the same words with its own prefix). Log lines (`MH4N_LOG`) go to standard 
 `Runtime::Boot(options)` does this, in order:
 
 1. loads the program (`Loader::OpenGameFolder` or `OpenElf`);
-2. makes guest memory, the game clock (stopped: game time starts when the scheduler does, so the
-   first call of a trace is at tick 0), the code host, the kernel, the scheduler, the thread manager
-   and the SVC table, and the process;
+2. makes guest memory, the game clock (stopped once the world is built: it keeps the ticks of the
+   setup, a host-dependent few tens of thousands, and runs again when the scheduler starts, so the
+   first call of a trace is at that tick and the process is created at a tick above 0, as `conf_info`
+   expects), the code host, the kernel, the scheduler, the thread manager and the SVC table, and the
+   process;
 3. maps the segments, the configuration memory and the shared page;
 4. loads the code library and checks it against the text segment;
 5. runs the **boot steps** of the phases `devices`, `services` and `tracing`;

@@ -1,7 +1,8 @@
 // Derived from Azahar src/core/hle/kernel/svc.cpp, svc_wrapper.h, errors.h, process.cpp,
-// resource_limit.cpp, memory.cpp and src/core/memory.h at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6
-// (GPL-3.0-or-later: svc.cpp says so; svc_wrapper.h, errors.h, process.cpp, resource_limit.cpp,
-// memory.cpp and memory.h say GPL-2.0-or-later): the expected register encodings (worked out from
+// resource_limit.cpp, memory.cpp, handle_table.cpp, mutex.cpp and src/core/memory.h at
+// 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-3.0-or-later: svc.cpp says so; svc_wrapper.h,
+// errors.h, process.cpp, resource_limit.cpp, memory.cpp, handle_table.cpp, mutex.cpp and memory.h
+// say GPL-2.0-or-later): the expected register encodings (worked out from
 // the argument lists of the SVC:: functions with the ABI rules of SVCWrapper::GetSVCABI), the result
 // codes (errors.h, and the checks of each SVC:: function in their order), the initial resource
 // limit values, the address ranges and the order in which MemoryRegionInfo hands out FCRAM, never
@@ -12,6 +13,7 @@
 // Copyright 2015-2026 Citra Emulator Project / Azahar Emulator Project (process.cpp,
 //   resource_limit.cpp)
 // Copyright 2014-2025 Citra Emulator Project / Azahar Emulator Project (memory.cpp)
+// Copyright 2014-2024 Citra Emulator Project / Azahar Emulator Project (handle_table.cpp, mutex.cpp)
 //
 // mh4n_kernel (N1-07): the SVC table. Every call is made through `SvcTable::CallSvc` with a fake
 // guest context (an RCtx whose registers the test fills), on a guest thread whose body is a C++

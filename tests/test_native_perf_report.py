@@ -110,6 +110,12 @@ def test_command_line(tmp_path, capsys):
     (tmp_path / "bad.csv").write_text("hello\n")
     assert perf_report.main([str(tmp_path / "bad.csv")]) == 2
     assert perf_report.main([str(path), "--budget-ms", "0"]) == 2
+    # a frame rate of 0 is a bad budget, not "use the default"; neither is a budget that is not finite
+    for bad in (["--fps", "0"], ["--fps", "-60"], ["--budget-ms", "inf"], ["--budget-ms", "nan"], ["--fps", "inf"]):
+        assert perf_report.main([str(path), *bad]) == 2, bad
+    capsys.readouterr()
+    assert perf_report.main([str(path)]) == 0
+    assert "budget of 8.333 ms" in capsys.readouterr().out
 
 
 # ── the timers, built without Azahar ───────────────────────────────────────────────────

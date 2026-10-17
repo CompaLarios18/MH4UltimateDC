@@ -1,9 +1,11 @@
-// Derived from Azahar src/core/hle/kernel/errors.h and svc.cpp at
-// 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-3.0-or-later: svc.cpp says so; errors.h says
-// GPL-2.0-or-later): the values of the result codes of the SVC layer (ResultMisalignedAddress,
-// ResultInvalidEnumValue, ResultOutOfHeapMemory ... and the ErrCodes::OutOf* answers of the
-// resource limit), built from the same description, module, summary and level.
+// Derived from Azahar src/core/hle/kernel/errors.h, src/core/hle/result.h and svc.cpp at
+// 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-3.0-or-later: svc.cpp says so; errors.h and
+// result.h say GPL-2.0-or-later): the values of the result codes of the SVC layer
+// (ResultMisalignedAddress, ResultInvalidEnumValue, ResultOutOfHeapMemory ... and the ErrCodes::OutOf*
+// answers of the resource limit), built with the encoding of result.h from the same description,
+// module, summary and level.
 // Copyright 2017 Citra Emulator Project (errors.h)
+// Copyright 2014-2024 Citra Emulator Project / Azahar Emulator Project (result.h)
 // Copyright 2014-2026 Citra Emulator Project / Azahar Emulator Project (svc.cpp)
 //
 // Shared by the two files of the SVC table (N1-07); not a public header.

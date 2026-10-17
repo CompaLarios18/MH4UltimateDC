@@ -146,9 +146,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument("--column", default=PRESENT, help="column the budget applies to (default present_us)")
     ap.add_argument("--skip", type=int, default=0, help="frames to leave out at the start (warm-up)")
     args = ap.parse_args(argv)
-    ms = args.budget_ms if args.budget_ms is not None else 1000.0 / (args.fps or DEFAULT_FPS)
-    if not ms > 0 or args.skip < 0:
-        print("perf_report: the budget must be above 0 and --skip not negative", file=sys.stderr)
+    if args.budget_ms is not None:
+        ms = args.budget_ms
+    elif args.fps is not None:
+        ms = 1000.0 / args.fps if args.fps != 0 else math.nan
+    else:
+        ms = 1000.0 / DEFAULT_FPS
+    if not (math.isfinite(ms) and ms > 0) or args.skip < 0:
+        print("perf_report: the budget must be a finite number above 0 and --skip not negative", file=sys.stderr)
         return 2
     try:
         text = args.csv.read_text(encoding="utf-8")

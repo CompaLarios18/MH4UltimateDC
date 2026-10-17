@@ -1,6 +1,6 @@
 """native/THIRD_PARTY.md and the 'Derived from Azahar' headers agree (docs/native/AGENTS.md, rule 6).
 
-Every file under native/, tools/ and port/ that carries a header has exactly one row, every row
+Every file under native/, tools/, port/ and tests/ that carries a header has exactly one row, every row
 names a file that carries one, and every source file named in a header (the text before its
 Copyright lines) is named in the row too. The licence and Copyright lines still need a person (or
 a reviewer) to open the Azahar files; this only keeps the two documents from drifting apart.
@@ -24,7 +24,7 @@ pytestmark = pytest.mark.skipif(not (os.path.exists(os.path.join(ROOT, ".git")) 
 
 def headed_files() -> list[str]:
     out = subprocess.run(["git", "grep", "--untracked", "-lE", "^(//|#) Derived (from|in part from) Azahar", "--",
-                          "native", "tools", "port"], cwd=ROOT, capture_output=True, text=True).stdout
+                          "native", "tools", "port", "tests"], cwd=ROOT, capture_output=True, text=True).stdout
     return sorted(out.split())
 
 
@@ -48,7 +48,7 @@ def table_rows() -> dict[str, str]:
     rows: dict[str, str] = {}
     for line in open(TABLE, encoding="utf-8").read().splitlines():
         m = re.match(r"^\| `([^`]+)`", line)
-        if m and m.group(1).startswith(("native/", "tools/", "port/")):
+        if m and m.group(1).startswith(("native/", "tools/", "port/", "tests/")):
             key = m.group(1).split(" ")[0]
             assert key not in rows, f"two rows for {key}"
             rows[key] = line

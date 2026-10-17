@@ -209,7 +209,7 @@ def main(argv: list[str] | None = None) -> int:
         try:
             with open(args.hashes, encoding="utf-8") as handle:
                 text = handle.read()
-        except OSError as error:
+        except (OSError, UnicodeDecodeError) as error:
             raise ToolError(f"{args.hashes}: {error}")
         text_report, _found = report(parse_hashes(text), scan_pack(args.pack_dir), args.mode, args.list)
     except ToolError as error:
