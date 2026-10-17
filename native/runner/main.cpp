@@ -1,5 +1,6 @@
-// mh4u_native_runner: the native port's command-line program. N1-09 adds the options, the
-// loader and the boot; this file only parses the command line and answers --help and --version.
+// mh4u_native_runner: the native port's command-line program (docs/native/runner.md). The runtime
+// does the work (mh4n/runtime.h); this file parses the command line, answers --help, --version and
+// --print-process, prints the program's debug strings and returns Boot's exit status.
 #include <cstdio>
 #include <filesystem>
 #include <string>
@@ -7,16 +8,24 @@
 #include "mh4n/loader.h"
 #include "mh4n/log.h"
 #include "mh4n/options.h"
+#include "mh4n/runtime.h"
 #include "mh4n_version.h"
 
 MH4N_OPTION("runner", "--help", "", "print this help and exit");
 MH4N_OPTION("runner", "--version", "", "print the git revision and exit");
 MH4N_OPTION("runner", "--log", "FILTER", "log filter, e.g. \"*:Info Kernel:Debug\" (default \"*:Info\")");
-
-MH4N_OPTION("runner", "--print-process", "PATH",
-            "load a game folder or an ELF program, print its process image and segment map, and exit");
+MH4N_OPTION("runner", "--print-process", "",
+            "load PROGRAM (a game folder or an ELF), print its process image and segment map, and exit");
 
 namespace {
+
+constexpr const char* kUsage =
+    "usage: mh4u_native_runner PROGRAM --code LIB [options]\n"
+    "PROGRAM is a game folder (tools/native/prepare_game.py) or a 3DS ELF test program.\n"
+    "exit status: 0 the program exited or a --ms / --frames limit was reached, 2 loading failed,\n"
+    "             3 a runtime error (svcBreak, a fatal error, a bad memory access), 4 the recompiled\n"
+    "             code stopped\n"
+    "options:\n";
 
 // --print-process: the loader's view of a program (N1-03). Exit status 2 when loading fails.
 int PrintProcess(const std::string& path) {
@@ -49,7 +58,7 @@ int main(int argc, char** argv) {
         return 2;
     }
     if (options.Has("--help")) {
-        const std::string text = "usage: mh4u_native_runner [options]\noptions:\n" + mh4n::Usage("runner");
+        const std::string text = kUsage + mh4n::Usage("runner");
         std::fputs(text.c_str(), stdout);
         return 0;
     }
@@ -66,9 +75,23 @@ int main(int argc, char** argv) {
         }
         mh4n::SetLogFilter(parsed);
     }
-    if (const auto path = options.Get("--print-process")) {
-        return PrintProcess(*path);
+    if (options.positional().size() != 1) {
+        const std::string text = kUsage + mh4n::Usage("runner");
+        std::fputs(text.c_str(), stderr);
+        return 2;
     }
-    MH4N_LOG(Info, "Runner", "nothing to run yet (N1-09)");
-    return 0;
+    if (options.Has("--print-process")) {
+        return PrintProcess(options.positional()[0]);
+    }
+
+    mh4n::Runtime runtime;
+    // The program's debug strings (svcOutputDebugString) go to stdout, one per line, in the form
+    // of the reference runner's log so that the tests' regular expression reads both runners.
+    mh4n::SvcHooks print;
+    print.debug_string = [](std::string_view text) {
+        std::printf("OutputDebugString:0: %.*s\n", static_cast<int>(text.size()), text.data());
+        std::fflush(stdout);
+    };
+    runtime.AddSvcHooks(std::move(print));
+    return runtime.Boot(options);
 }
