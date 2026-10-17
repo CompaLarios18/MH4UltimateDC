@@ -134,6 +134,29 @@ session names, headers, result codes, descriptor indices, sizes, CRCs and counts
 session served by the game itself (not by an HLE service) the output CRCs are `-`, because
 Azahar records its reply before it writes the buffers.
 
+`--capture-dsp START:FRAMES:FILE` and `--capture-hid FILE` write binary captures of the audio and
+the input (`MDSP` and `MHID`: magic, `u32` version 1, then records `{u32 type, u32 frame, u64
+ticks, u32 size, payload}`, plus a sibling `FILE.json` manifest). `frame` is the game's frame
+counter (`0x010571d4`) when the record is written. `--capture-dsp` starts at the first DSP audio
+frame at or after game frame START and records FRAMES audio frames (160 samples, 1,310,720 ticks,
+32,728 Hz): per frame, type 1 the two DSP shared-memory regions (0x8000 bytes each) as they are
+before the frame is generated, then type 3 for each sample buffer a source read (physical
+address, size, CRC-32, and the bytes only the first time that address, size and CRC appear), and
+type 2 the 160 stereo `s16` samples of the mixed output, taken before the (null) sink. It needs
+three observer hooks in Azahar's HLE DSP (`AudioCore::HLE::g_capture_hooks`, in `azahar.patch`);
+buffers are noted when the DSP dequeues them, extends an embedded buffer, and each audio frame it
+re-reads the unconsumed part of a looping buffer from guest memory (the application may rewrite it
+while it plays; the (address, size, CRC) rule stores bytes only when they change). `--capture-hid` writes,
+on every change of the frame counter, type 1 the 0x2b0 bytes of HID shared memory as the game has
+it mapped (zeros until it does) and, once a game has handed a shared-memory block to `ir:USER`
+(the runner turns Azahar's IPC recorder on to see it), type 2 the first 0x200 bytes of that block
+(the Circle Pad Pro header and receive-buffer info). Captures are game data: keep them in
+`build/`, never commit or paste them. `tools/native/capfmt.py` has `summary FILE`, `check FILE`,
+`pcm-to-wav FILE OUT.wav`, `diff-hid REF CAND` (buttons, circle pad and touch per game frame,
+ticks ignored) and `diff-dsp REF CAND [--frames N]` (every source's status block and the DSP's
+own frame counter, keyed on that counter rather than on game frames); they print counts, frame
+numbers and statuses, never samples. The native runtime's captures (N1-16, N1-18) use the same format.
+
 Every time in a script is emulated milliseconds or a game frame: `f600` is the first moment the
 frame counter (the u32 at `0x010571d4`) reads 600 or more, so a script means the same on every CPU backend and
 runtime (`--input "f600:START,f900:A:f3"`; a hold may be `f<N>` frames, default 100 ms; `--dump`, `--replace`,

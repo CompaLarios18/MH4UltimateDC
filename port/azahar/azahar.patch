@@ -29,6 +29,119 @@ index 70f8173..2b04b4c 100644
  if (ENABLE_QT)
      add_subdirectory(citra_qt)
  endif()
+diff --git a/src/audio_core/hle/hle.cpp b/src/audio_core/hle/hle.cpp
+--- a/src/audio_core/hle/hle.cpp
++++ b/src/audio_core/hle/hle.cpp
+@@ -448,10 +448,18 @@
+     if (is_on) {
+         StereoFrame16 current_frame = {};
+ 
++        if (HLE::g_capture_hooks.frame_start) {
++            HLE::g_capture_hooks.frame_start(dsp_memory->raw_memory.data());
++        }
++
+         // TODO: Check dsp::DSP semaphore (which indicates emulated application has finished writing
+         // to shared memory region)
+         current_frame = GenerateCurrentFrame();
+ 
++        if (HLE::g_capture_hooks.frame_output) {
++            HLE::g_capture_hooks.frame_output(&current_frame[0][0]);
++        }
++
+         parent.OutputFrame(std::move(current_frame));
+     }
+ 
+diff --git a/src/audio_core/hle/common.h b/src/audio_core/hle/common.h
+--- a/src/audio_core/hle/common.h
++++ b/src/audio_core/hle/common.h
+@@ -6,11 +6,25 @@
+ 
+ #include <algorithm>
+ #include <cstddef>
++#include <cstdint>
++#include <functional>
+ 
+ namespace AudioCore::HLE {
+ 
+ constexpr std::size_t num_sources = 24;
+ 
++/// mh4u_runner (--capture-dsp): observers of the HLE DSP. All empty (off) unless the runner sets them.
++struct CaptureHooks {
++    /// Start of an audio frame, before it is generated: all of DSP memory (0x80000 bytes).
++    std::function<void(const std::uint8_t* dsp_memory)> frame_start;
++    /// The frame handed to the sink: 160 stereo s16 samples, interleaved.
++    std::function<void(const std::int16_t* samples)> frame_output;
++    /// Sample data a source read from guest memory (physical address, size in bytes, the bytes).
++    std::function<void(std::uint32_t physical_address, std::uint32_t size, const std::uint8_t* data)>
++        sample_read;
++};
++inline CaptureHooks g_capture_hooks;
++
+ /**
+  * This performs the filter operation defined by FilterT::ProcessSample on the frame in-place.
+  * FilterT::ProcessSample is called sequentially on the samples.
+diff --git a/src/audio_core/hle/source.cpp b/src/audio_core/hle/source.cpp
+--- a/src/audio_core/hle/source.cpp
++++ b/src/audio_core/hle/source.cpp
+@@ -14,6 +14,32 @@
+ 
+ namespace AudioCore::HLE {
+ 
++namespace {
++using Format = SourceConfiguration::Configuration::Format;
++
++/// mh4u_runner (--capture-dsp): tells the observer which guest bytes a buffer was decoded from.
++void NoteSampleRead(PAddr address, Format format, unsigned num_channels, u32 samples, const u8* data) {
++    if (!g_capture_hooks.sample_read) {
++        return;
++    }
++    u32 size = 0;
++    switch (format) {
++    case Format::PCM8:
++        size = samples * num_channels;
++        break;
++    case Format::PCM16:
++        size = samples * num_channels * 2;
++        break;
++    case Format::ADPCM:
++        size = (samples + 13) / 14 * 8; // 8-byte frames of 14 samples
++        break;
++    default:
++        return;
++    }
++    g_capture_hooks.sample_read(address, size, data);
++}
++} // namespace
++
+ SourceStatus::Status Source::Tick(SourceConfiguration::Configuration& config,
+                                   const s16_le (&adpcm_coeffs)[16]) {
+     ParseConfig(config, adpcm_coeffs);
+@@ -236,6 +262,8 @@
+                 // state.current_buffer = Codec::DecodePCM8(num_channels, memory, config.length);
+                 break;
+             case Format::PCM16:
++                NoteSampleRead(state.current_buffer_physical_address & 0xFFFFFFFC, Format::PCM16,
++                               num_channels, config.length, memory);
+                 state.current_buffer = Codec::DecodePCM16(num_channels, memory, config.length);
+                 state.current_buffer_length = config.length;
+                 state.current_buffer_mono_or_stereo = state.mono_or_stereo;
+@@ -380,6 +408,8 @@ void Source::GenerateFrame() {
+ 
+         if (memory) {
+             const u32 remaining_samples = state.current_buffer_length - state.current_sample_number;
++            NoteSampleRead(physical_address, Format::PCM16, num_channels, remaining_samples,
++                           memory);
+             state.current_buffer = Codec::DecodePCM16(num_channels, memory, remaining_samples);
+         }
+     }
+@@ -460,6 +490,7 @@
+     const u8* const memory = memory_system->GetPhysicalPointer(buf.physical_address & 0xFFFFFFFC);
+     if (memory) {
+         const unsigned num_channels = buf.mono_or_stereo == MonoOrStereo::Stereo ? 2 : 1;
++        NoteSampleRead(buf.physical_address & 0xFFFFFFFC, buf.format, num_channels, buf.length, memory);
+         switch (buf.format) {
+         case Format::PCM8:
+             state.current_buffer = Codec::DecodePCM8(num_channels, memory, buf.length);
 diff --git a/src/citra_qt/CMakeLists.txt b/src/citra_qt/CMakeLists.txt
 index 8723f05..88dceae 100644
 --- a/src/citra_qt/CMakeLists.txt
