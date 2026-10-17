@@ -10,6 +10,7 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
+#undef Yield  // winbase.h defines it as an empty macro; GuestThread::Yield (mh4n/cpu.h) is a method
 #else
 #include <dlfcn.h>
 #endif

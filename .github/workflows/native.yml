@@ -84,6 +84,182 @@ jobs:
       - name: native/ does not use Azahar
         run: python3 tools/native/check_native_deps.py
 
+  # The native runner on Windows (N1-22): x86-64, clang from llvm-mingw (the archive
+  # tools/build_game.py fetches). Same steps as `native`; the tests that need a Vulkan device skip.
+  # The ARM test programs and the code libraries are built with the same llvm-mingw.
+  native-windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - name: llvm-mingw (as tools/build_game.py fetches it)
+        run: |
+          set -eu
+          # fetch_compiler (the code tools/build_game.py uses) prints its progress to stdout and
+          # returns a path relative to its argument: give it an absolute folder, send the chatter
+          # to stderr and print only the compiler's folder (a Windows path, as $GITHUB_PATH wants)
+          winbin="$(python - "$PWD/build/toolchain" <<'PY'
+          import contextlib, os, sys
+          sys.path.insert(0, "tools")
+          import build_game
+          with contextlib.redirect_stdout(sys.stderr):
+              clang = build_game.fetch_compiler(os.path.abspath(sys.argv[1]))
+          sys.stdout.write(os.path.dirname(os.path.abspath(clang)))
+          PY
+          )"
+          test -n "$winbin" || { echo "::error::no llvm-mingw folder"; exit 1; }
+          case "$winbin" in *$'\n'*) echo "::error::llvm-mingw folder isn't one line"; exit 1 ;; esac
+          bindir="$(cygpath -u "$winbin")"
+          test -x "$bindir/x86_64-w64-mingw32-clang.exe" || { echo "::error::no clang in $bindir"; exit 1; }
+          echo "llvm-mingw: $bindir"
+          # the runner needs its libc++ and libunwind DLLs from this folder at run time
+          echo "$winbin" >> "$GITHUB_PATH"
+          command -v ninja >/dev/null || choco install ninja -y --no-progress
+      - name: Tools found
+        run: |
+          for tool in x86_64-w64-mingw32-clang x86_64-w64-mingw32-clang++ clang ld.lld llvm-objcopy llvm-readelf llvm-objdump cmake ninja python; do
+            printf '%s: ' "$tool"; command -v "$tool" || echo "NOT FOUND"
+          done
+          clang --version
+          cmake --version
+      - name: Configure
+        run: |
+          cmake -S native -B build/native -G Ninja -DCMAKE_C_COMPILER=x86_64-w64-mingw32-clang \
+            -DCMAKE_CXX_COMPILER=x86_64-w64-mingw32-clang++ \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo -DMH4N_WERROR=ON
+      - name: Build
+        run: cmake --build build/native -- -k 0   # ninja keeps going: one run lists every error
+      - name: Test
+        if: ${{ !cancelled() }}   # report every step in one run
+        env:
+          MH4N_REQUIRE_TEST_DATA: "1"
+        run: ctest --test-dir build/native --output-on-failure
+      # Same conformance programs as on Linux. CCC_OVERRIDE_OPTIONS puts the mingw target first
+      # on every clang command line of the test (the code libraries); the ARM programs name
+      # their own target after it.
+      - name: Conformance programs on the native runner
+        if: ${{ !cancelled() }}   # report every step in one run
+        env:
+          MH4N_RUNNER: ${{ github.workspace }}/build/native/bin/mh4u_native_runner.exe
+          CCC_OVERRIDE_OPTIONS: "^--target=x86_64-w64-mingw32"
+        run: python -m pytest -q tests/test_conformance.py
+      - name: native/ does not use Azahar
+        if: ${{ !cancelled() }}   # report every step in one run
+        run: python tools/native/check_native_deps.py
+      - name: Package the runner and its DLLs
+        if: ${{ !cancelled() }}   # report every step in one run
+        run: |
+          set -eu
+          pkg=runner-windows
+          mkdir -p "$pkg"
+          cp build/native/bin/mh4u_native_runner.exe "$pkg/"
+          bindir="$(dirname "$(command -v x86_64-w64-mingw32-clang)")"
+          # llvm-mingw keeps libc++.dll and libunwind.dll in <root>/x86_64-w64-mingw32/bin as well
+          dlldirs="$bindir"
+          [ -d "$bindir/../x86_64-w64-mingw32/bin" ] && dlldirs="$dlldirs $bindir/../x86_64-w64-mingw32/bin"
+          # the DLLs the runner imports (and the ones those import) that llvm-mingw provides;
+          # the system's DLLs stay where they are
+          copy_dlls() {
+            for dll in $(llvm-objdump -p "$1" | awk '/DLL Name:/ {print $3}'); do
+              [ -f "$pkg/$dll" ] && continue
+              for d in $dlldirs; do
+                if [ -f "$d/$dll" ]; then
+                  cp "$d/$dll" "$pkg/"
+                  copy_dlls "$pkg/$dll"
+                  break
+                fi
+              done
+            done
+          }
+          copy_dlls "$pkg/mh4u_native_runner.exe"
+          ls -l "$pkg"
+      - name: The packaged runner starts
+        if: ${{ !cancelled() }}   # report every step in one run
+        run: |
+          set -u
+          # a PATH without llvm-mingw: the DLLs next to the runner must be enough
+          usage="$(env PATH="/c/Windows/System32:/c/Windows" ./runner-windows/mh4u_native_runner.exe --help 2>&1 || true)"
+          echo "$usage"
+          case "$usage" in
+            *"usage: mh4u_native_runner"*) ;;
+            *) echo "::error::the packaged runner didn't print its usage"; exit 1 ;;
+          esac
+      - name: Upload
+        # not on pull requests (see the `runner` job)
+        if: ${{ github.event_name != 'pull_request' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: mh4n-runner-windows
+          path: runner-windows
+          retention-days: 30
+          if-no-files-found: error
+
+  # The native runner on Apple silicon (N1-22). Xcode's clang builds native/; Homebrew's llvm
+  # and lld supply ld.lld, llvm-objcopy, llvm-readelf and llvm-nm for the ARM test programs, through
+  # symlinks only (their clang and libc++ must not come first on PATH).
+  native-macos:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - name: Tools
+        run: |
+          brew install ninja llvm lld
+          # Xcode's clang/clang++ must stay first on PATH ($GITHUB_PATH prepends), so Homebrew's whole
+          # llvm bin folder (its clang, newer libc++) is not added: a folder of symlinks to just the
+          # LLVM tools the ARM test programs and code libraries need is.
+          tools="$RUNNER_TEMP/llvm-tools"
+          mkdir -p "$tools"
+          for tool in ld.lld llvm-objcopy llvm-readelf llvm-nm; do
+            for prefix in llvm lld; do
+              src="$(brew --prefix "$prefix")/bin/$tool"
+              if [ -x "$src" ]; then ln -sf "$src" "$tools/$tool"; break; fi
+            done
+            test -e "$tools/$tool" || { echo "::error::$tool not found in Homebrew's llvm or lld"; exit 1; }
+          done
+          echo "$tools" >> "$GITHUB_PATH"
+      - name: Tools found
+        run: |
+          for tool in clang clang++ ld.lld llvm-objcopy llvm-readelf llvm-nm cmake ninja python; do
+            printf '%s: ' "$tool"; command -v "$tool" || echo "NOT FOUND"
+          done
+          clang --version
+          cmake --version
+          uname -m
+          python -c "import os; print('page size', os.sysconf('SC_PAGE_SIZE'))"
+      - name: Configure
+        run: |
+          cmake -S native -B build/native -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo -DMH4N_WERROR=ON
+      - name: Build
+        run: cmake --build build/native -- -k 0   # ninja keeps going: one run lists every error
+      - name: Test
+        if: ${{ !cancelled() }}   # report every step in one run
+        env:
+          MH4N_REQUIRE_TEST_DATA: "1"
+        run: ctest --test-dir build/native --output-on-failure
+      - name: Conformance programs on the native runner
+        if: ${{ !cancelled() }}   # report every step in one run
+        env:
+          MH4N_RUNNER: ${{ github.workspace }}/build/native/bin/mh4u_native_runner
+        run: python -m pytest -q tests/test_conformance.py
+      - name: native/ does not use Azahar
+        if: ${{ !cancelled() }}   # report every step in one run
+        run: python tools/native/check_native_deps.py
+
   # Decides whether the runner has to be built.
   changes:
     runs-on: ubuntu-latest
