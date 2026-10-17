@@ -74,6 +74,13 @@ jobs:
         env:
           MH4N_REQUIRE_TEST_DATA: "1"   # a test that needs the built ARM programs fails instead of skipping
         run: ctest --test-dir build/native --output-on-failure
+      # our own 3DS programs (port/tests): the native runner's output must equal Azahar's, which is
+      # committed as port/tests/expected. Needs clang, ld.lld, llvm-objcopy and llvm-readelf
+      # (installed above) to build the programs and their code libraries; no game data.
+      - name: Conformance programs on the native runner
+        env:
+          MH4N_RUNNER: ${{ github.workspace }}/build/native/bin/mh4u_native_runner
+        run: python3 -m pytest -q tests/test_conformance.py
       - name: native/ does not use Azahar
         run: python3 tools/native/check_native_deps.py
 
