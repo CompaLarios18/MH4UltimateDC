@@ -24,7 +24,8 @@ Trace lines: "<thread> <svc> pc=<hex> lr=<hex> <r0> <r1> <r2> <r3> t=<ticks>", a
                code left there (svc_test leaves a timing-dependent partial sum in r1 at
                ReleaseMutex), which two runtimes with different timing do not share.
                config/native/svc_unused_registers.txt lists them.
-Exit status 0 when every thread matches (up to the shorter trace if --prefix is given).
+Exit status 0 when every thread matches (up to the shorter trace if --prefix is given), 1 when a thread
+differs, 2 when an option file or a trace cannot be read or holds no call line.
 """
 from __future__ import annotations
 
@@ -122,6 +123,23 @@ def compare(ref: dict[str, list[Call]], cand: dict[str, list[Call]], with_args: 
     return out
 
 
+class TraceError(Exception):
+    pass
+
+
+def load(path: str, normalize: bool, rules: dict[str, dict[str, set[int]]] | None) -> dict[str, list[Call]]:
+    """parse(), but a file that cannot be read, is not UTF-8 text or holds no call line is a TraceError."""
+    try:
+        by_thread = parse(path, normalize, rules)
+    except OSError as e:
+        raise TraceError(f"cannot read {path}: {e.strerror or e}") from None
+    except UnicodeError:
+        raise TraceError(f"{path}: not a system-call trace (not UTF-8 text)") from None
+    if not any(by_thread.values()):
+        raise TraceError(f"{path}: the trace holds no system call")
+    return by_thread
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("reference")
@@ -140,7 +158,11 @@ def main(argv: list[str] | None = None) -> int:
     except (OSError, UnicodeError, RegisterRuleError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
-    ref, cand = parse(args.reference, args.normalize, rules), parse(args.candidate, args.normalize, rules)
+    try:
+        ref, cand = load(args.reference, args.normalize, rules), load(args.candidate, args.normalize, rules)
+    except TraceError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
     diffs = compare(ref, cand, not args.ignore_args, args.prefix, args.outputs, args.in4)
     for tid in sorted(set(ref) | set(cand), key=_thread_order):
         print(f"thread {tid}: {len(ref.get(tid, []))} vs {len(cand.get(tid, []))} calls")
