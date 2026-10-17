@@ -235,6 +235,55 @@ def test_pcm_to_wav_with_an_output_that_cannot_be_written(tmp_path, capsys):
     assert err.count("capfmt: cannot write ") == 2
 
 
+def test_pcm_to_wav_never_hands_wave_a_path(tmp_path, monkeypatch):
+    # wave.open() on a path that cannot be opened leaves a half-made writer whose __del__ prints a
+    # traceback on Python 3.11/3.12; opening the file first avoids it on every version
+    p = dsp_capture(tmp_path / "a.mdsp", [1])
+    seen = []
+    real = wave.open
+
+    def spy(f, mode=None):
+        seen.append(f)
+        return real(f, mode)
+
+    monkeypatch.setattr(capfmt.wave, "open", spy)
+    assert capfmt.main(["pcm-to-wav", p, str(tmp_path / "o.wav")]) == 0
+    assert len(seen) == 1 and not isinstance(seen[0], (str, bytes, os.PathLike))
+
+
+def test_pcm_to_wav_with_an_unwritable_output_prints_no_traceback(tmp_path):
+    # a fresh interpreter, so that a stray 'Exception ignored in' from a finalizer reaches stderr
+    import subprocess
+    p = dsp_capture(tmp_path / "a.mdsp", [1])
+    tool = os.path.join(os.path.dirname(__file__), "..", "tools", "native", "capfmt.py")
+    for out in (str(tmp_path / "no-such-folder" / "o.wav"), str(tmp_path)):
+        r = subprocess.run([sys.executable, tool, "pcm-to-wav", p, out], capture_output=True, text=True)
+        assert r.returncode == 2
+        assert r.stderr.count("capfmt: cannot write ") == 1, r.stderr
+        assert "Exception ignored" not in r.stderr and "Traceback" not in r.stderr, r.stderr
+
+
+def test_pcm_to_wav_refuses_the_capture_as_its_output(tmp_path, capsys):
+    p = dsp_capture(tmp_path / "a.mdsp", [1, 2])
+    before = open(p, "rb").read()
+    capsys.readouterr()
+    assert capfmt.main(["pcm-to-wav", p, p]) == 2
+    assert "the output is the capture itself" in capsys.readouterr().err
+    assert open(p, "rb").read() == before
+
+
+def test_pcm_to_wav_removes_the_partial_output_of_a_truncated_capture(tmp_path, capsys):
+    p = dsp_capture(tmp_path / "a.mdsp", [1, 2, 3])
+    raw = open(p, "rb").read()
+    cut = tmp_path / "cut.mdsp"
+    cut.write_bytes(raw[:-30])
+    out = tmp_path / "o.wav"
+    capsys.readouterr()
+    assert capfmt.main(["pcm-to-wav", str(cut), str(out)]) == 2
+    assert not out.exists()
+    assert "capfmt:" in capsys.readouterr().err
+
+
 # ── diff-hid ──────────────────────────────────────────────────────────────────────────
 
 

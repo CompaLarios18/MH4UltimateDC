@@ -4,7 +4,7 @@ The tests are doctest binaries (util_test, app_test, multiplayer_test, input_tes
 CMake option MH4U_APP_TESTS builds them inside Azahar's tree, which CI does not do for them. Here
 each is compiled against doctest and {fmt} from native/third_party, and inih, httplib, nlohmann's
 json, SDL2's headers and OpenSSL's headers from Azahar's externals (MH4N_AZAHAR_DIR, else
-~/azahar), and skipped when something is missing.
+~/azahar), and skipped when something is missing, or when clang is not the compiler available.
 """
 from __future__ import annotations
 
@@ -18,10 +18,11 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 APP = os.path.join(ROOT, "port", "app")
 AZAHAR = os.environ.get("MH4N_AZAHAR_DIR", os.path.expanduser("~/azahar"))
 EXT = os.path.join(AZAHAR, "externals")
-CXX = next((c for c in ("clang++", "c++", "g++") if shutil.which(c)), None)
-CC = next((c for c in ("clang", "cc", "gcc") if shutil.which(c)), None)
+# the tests are written and built with clang (the keyboard test does not compile with GCC's -Werror=range-loop-construct)
+CXX = shutil.which("clang++")
+CC = shutil.which("clang")
 
-pytestmark = pytest.mark.skipif(CXX is None or CC is None, reason="needs a C and a C++ compiler")
+pytestmark = pytest.mark.skipif(CXX is None or CC is None, reason="needs clang and clang++ (GCC does not build these tests)")
 
 UTIL = ["util/file.cpp", "util/log.cpp", "util/strings.cpp"]
 IMGUI_DIR = os.path.join(APP, "third_party", "imgui")
