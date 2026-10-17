@@ -1,0 +1,17 @@
+# name: G6
+# needs: none
+# frames: 6000
+# checkpoints:
+# captures:
+# draft: yes
+#
+# G6: the software keyboard used again (the name, or the chat in the village). Needs no save.
+#
+# SCAFFOLD (phase 1 of N0-09, made without the reference runner or the game). Placeholders:
+#   - frames: 6000 is a guess; phase 2 sets the real total.
+#   - events: none yet. Phase 2 adds frame-keyed lines that reach the keyboard a second time (the
+#     same way G2 reaches it for the name, or the village chat if that is reachable without a
+#     save), press the keyboard's button, and come back to the screen it was opened from.
+#   - checkpoints: `<frame>:<scene>` before the keyboard, with it open, and after it closed.
+#   - captures: none are required by the spec for G6.
+# Then delete "draft: yes".

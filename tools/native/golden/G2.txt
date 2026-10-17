@@ -1,0 +1,21 @@
+# name: G2
+# needs: none
+# frames: 6000
+# checkpoints:
+# captures: gpu:3000:3
+# draft: yes
+#
+# G2: title -> new game -> character creation (the name through the software keyboard) -> first
+# control in the village. Needs no save.
+#
+# SCAFFOLD (phase 1 of N0-09, made without the reference runner or the game). Placeholders:
+#   - frames: 6000 is a guess; phase 2 sets the real total.
+#   - events: none yet. Phase 2 adds frame-keyed lines, one or more per line separated by commas
+#     (f<frame>:BUTTON[:hold], f<frame>:TOUCH:x:y[:hold]), found by recording with --shots and
+#     looking at the screens: START at the title, the new-game prompts, the keyboard (the runner's
+#     default keyboard answers with the config's user name), the character creation steps, the
+#     first control in the village.
+#   - checkpoints: `<frame>:<scene>` pairs (observable `scene` values) at the title, in character
+#     creation and at the first control in the village.
+#   - captures: gpu 3 frames in character creation; 3000 is a placeholder.
+# Then delete "draft: yes".
