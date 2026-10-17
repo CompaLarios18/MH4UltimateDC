@@ -24,7 +24,6 @@
 
 #include "common/common_types.h"
 #include "common/detached_tasks.h"
-#include "common/settings.h"
 #include "config.h"
 #include "core/core.h"
 #include "core/frontend/applets/default_applets.h"
@@ -153,14 +152,14 @@ App::Window::Api ApiFor(const std::string& name) {
     return App::Window::Api::Vulkan;
 }
 
-Settings::GraphicsAPI SettingFor(App::Window::Api api) {
+App::Renderer RendererOf(App::Window::Api api) {
     switch (api) {
     case App::Window::Api::OpenGL:
-        return Settings::GraphicsAPI::OpenGL;
+        return App::Renderer::OpenGL;
     case App::Window::Api::Software:
-        return Settings::GraphicsAPI::Software;
+        return App::Renderer::Software;
     default:
-        return Settings::GraphicsAPI::Vulkan;
+        return App::Renderer::Vulkan;
     }
 }
 
@@ -176,7 +175,7 @@ const char* NameOf(App::Window::Api api) {
 }
 
 /// The window for the chosen renderer, or for the next one that works (Vulkan, OpenGL,
-/// software); Settings::values.graphics_api follows.
+/// software); the runtime's active renderer follows.
 std::unique_ptr<App::Window> MakeWindow(Core::System& system, App::Window::Api wanted,
                                         const App::Config& config, App::Window::Api& used) {
     std::vector<App::Window::Api> order{wanted};
@@ -187,7 +186,7 @@ std::unique_ptr<App::Window> MakeWindow(Core::System& system, App::Window::Api w
         }
     }
     for (const auto api : order) {
-        Settings::values.graphics_api = SettingFor(api);
+        App::Runtime().SetActiveRenderer(RendererOf(api));
         if (auto window = App::Window::Create(system, api, config)) {
             if (api != wanted) {
                 APP_LOG_WARNING("{} didn't start; using {}", NameOf(wanted), NameOf(api));
@@ -340,7 +339,7 @@ int Run(const std::vector<std::string>& argv) {
         App::Save(config);
     }
 
-    App::Apply(config);
+    runtime->ApplyConfig(config);
     APP_LOG_INFO("{}", App::Input::ControllerDescription());
 
     Frontend::RegisterDefaultApplets(system);
@@ -381,11 +380,11 @@ int Run(const std::vector<std::string>& argv) {
         return 1;
     }
     std::unique_ptr<App::Window> secondary;
-    if (Settings::values.layout_option.GetValue() == Settings::LayoutOption::SeparateWindows &&
+    if (runtime->CurrentLayout() == App::ScreenLayout::SeparateWindows &&
         api != App::Window::Api::Software) {
         secondary = App::Window::Create(system, api, config, true);
         if (!secondary) {
-            Settings::values.layout_option = Settings::LayoutOption::CustomLayout;
+            runtime->SetLayout(App::ScreenLayout::Overlay);
         }
     }
     APP_LOG_INFO("renderer: {}", NameOf(api));

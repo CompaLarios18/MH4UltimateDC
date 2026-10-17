@@ -23,6 +23,26 @@ public:
     void StartLogging(const std::string& file_name, const std::string& filter) override;
     void StopLogging() override;
     void LogOptions() override;
+
+    void ApplyConfig(const Config& config) override;
+    Renderer ActiveRenderer() const override;
+    void SetActiveRenderer(Renderer renderer) override;
+    ScreenLayout CurrentLayout() const override;
+    void SetLayout(ScreenLayout layout) override;
+    void ApplyLayout(ScreenLayout layout) override;
+    void SetResolution(int factor) override;
+    void SetLinearFilter(bool on) override;
+    void SetVsync(bool on) override;
+    void SetVolume(int percent) override;
+    void SetCpuClock(int percent) override;
+    bool SetGameOption(const std::string& key, const std::string& value) override;
+    void SetLayoutEditing(bool on) override;
+
+    const char* ButtonSettingName(int button) const override;
+    const char* StickSettingName(int stick) const override;
+    std::string ButtonBinding(int button) const override;
+    std::string StickBinding(int stick) const override;
+    std::string DescribeControllerInput(const std::string& binding) const override;
 };
 
 } // namespace App::Azahar

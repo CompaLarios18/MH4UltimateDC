@@ -57,7 +57,10 @@ add_executable(mh4u
     util/strings.h
     util/types.h
     # IRuntime (runtime.h), the seam to the emulation runtime, and its Azahar implementation
+    buttons.h
     runtime.h
+    runtime_azahar/azahar_input.cpp
+    runtime_azahar/azahar_options.cpp
     runtime_azahar/azahar_runtime.cpp
     runtime_azahar/azahar_runtime.h
     runtime_azahar/log_sink.cpp

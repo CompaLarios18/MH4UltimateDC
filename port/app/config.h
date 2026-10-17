@@ -6,7 +6,7 @@
 #include <array>
 #include <string>
 
-#include "common/settings.h"
+#include "buttons.h"
 
 namespace App {
 
@@ -41,18 +41,18 @@ struct Config {
     std::string audio_output = "auto";
 
     // [Controls]
-    /// Per 3DS button (Settings::NativeButton) and stick (Settings::NativeAnalog): keyboard keys
+    /// Per 3DS button (App::Button) and stick (App::Analog): keyboard keys
     /// by SDL name ("W", "Left Shift"), and for a stick its four keys and the key that halves it
     /// ("W,S,A,D,Left Shift"). A controller is mapped on its own (controller = auto) like the
     /// Wii U's MH3U: the 3DS's A on the controller's right face button, ZL/ZR on the triggers,
     /// the circle pad and C-stick on the sticks.
-    std::array<std::string, Settings::NativeButton::NumButtons> keys;
-    std::array<std::string, Settings::NativeAnalog::NumAnalogs> stick_keys;
+    std::array<std::string, Button::Count> keys;
+    std::array<std::string, Analog::Count> stick_keys;
     bool controller_auto = true;
     /// Azahar input parameters that replace a button's or stick's binding altogether (as the
     /// Qt frontend writes them), empty: keys + the controller
-    std::array<std::string, Settings::NativeButton::NumButtons> button_params;
-    std::array<std::string, Settings::NativeAnalog::NumAnalogs> stick_params;
+    std::array<std::string, Button::Count> button_params;
+    std::array<std::string, Analog::Count> stick_params;
     std::string touch_screen_key = "F12";  ///< in quests: the map / the whole touch screen
     std::string fullscreen_key = "F11";
     std::string fps_counter_key = "F3";  ///< shows and hides the frame-rate counter
@@ -92,8 +92,8 @@ Config Load();
 /// Writes the settings back (the game's path after it was chosen, say), keeping the comments.
 void Save(const Config& config);
 
-/// Azahar's settings for these choices (renderer, screens, sound, input profile).
-void Apply(const Config& config);
+/// The perf_log setting ([Debug], empty: off) of the file the last Load read.
+const std::string& PerfLogPath();
 
 /// What a new settings file says.
 std::string Template(const Config& config);

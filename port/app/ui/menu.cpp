@@ -13,11 +13,7 @@
 #include <fmt/format.h>
 #include <imgui.h>
 
-#include "common/param_package.h"
-#include "common/settings.h"
 #include "config.h"
-#include "core/core.h"
-#include "core/core_timing.h"
 #include "frontend.h"
 #include "hooks.h"
 #include "input.h"
@@ -28,22 +24,17 @@
 #include "util/file.h"
 #include "util/log.h"
 #include "util/strings.h"
-#include "video_core/gpu.h"
-#include "video_core/renderer_base.h"
 #include "window.h"
 
 namespace App::Ui {
 
 namespace {
 
-namespace NativeAnalog = Settings::NativeAnalog;
-namespace NativeButton = Settings::NativeButton;
-
 constexpr const char* TABS[] = {"Game", "Display", "Audio", "Controls", "Multiplayer", "Quit"};
 constexpr int TAB_COUNT = static_cast<int>(std::size(TABS));
 
 // mh4u.ini: what the hooks take when a key has no line (port/src/hooks.cpp, Options), and
-// the keys they take while the game runs (Port::Hooks::SetOption)
+// the keys they take while the game runs (IRuntime::SetGameOption)
 const std::map<std::string, std::string> GAME_DEFAULTS = {
     {"fps", "0"},           {"refresh_rate", "0"}, {"widescreen", "off"}, {"wide_render", "0"},
     {"hud_edges", "1"},     {"touch_overlay", "off"}, {"quest_overlay", "map"}, {"kick", "off"},
@@ -166,35 +157,35 @@ bool ChooseValue(const char* id, std::string& value, std::vector<std::string> va
 
 struct Binding {
     const char* name;
-    int button; ///< Settings::NativeButton, or -1 for a stick's direction
-    int stick;  ///< Settings::NativeAnalog
+    int button; ///< a Button, or -1 for a stick's direction
+    int stick;  ///< an Analog
     int part;   ///< of the stick's keys: up, down, left, right, the half-way key
 };
 
 constexpr Binding BINDINGS[] = {
-    {"A", NativeButton::A, -1, 0},
-    {"B", NativeButton::B, -1, 0},
-    {"X", NativeButton::X, -1, 0},
-    {"Y", NativeButton::Y, -1, 0},
-    {"L", NativeButton::L, -1, 0},
-    {"R", NativeButton::R, -1, 0},
-    {"ZL", NativeButton::ZL, -1, 0},
-    {"ZR", NativeButton::ZR, -1, 0},
-    {"START", NativeButton::Start, -1, 0},
-    {"SELECT", NativeButton::Select, -1, 0},
-    {"D-pad up", NativeButton::Up, -1, 0},
-    {"D-pad down", NativeButton::Down, -1, 0},
-    {"D-pad left", NativeButton::Left, -1, 0},
-    {"D-pad right", NativeButton::Right, -1, 0},
-    {"Circle pad up", -1, NativeAnalog::CirclePad, 0},
-    {"Circle pad down", -1, NativeAnalog::CirclePad, 1},
-    {"Circle pad left", -1, NativeAnalog::CirclePad, 2},
-    {"Circle pad right", -1, NativeAnalog::CirclePad, 3},
-    {"Circle pad half way (walk)", -1, NativeAnalog::CirclePad, 4},
-    {"C-stick up (camera)", -1, NativeAnalog::CStick, 0},
-    {"C-stick down", -1, NativeAnalog::CStick, 1},
-    {"C-stick left", -1, NativeAnalog::CStick, 2},
-    {"C-stick right", -1, NativeAnalog::CStick, 3},
+    {"A", Button::A, -1, 0},
+    {"B", Button::B, -1, 0},
+    {"X", Button::X, -1, 0},
+    {"Y", Button::Y, -1, 0},
+    {"L", Button::L, -1, 0},
+    {"R", Button::R, -1, 0},
+    {"ZL", Button::ZL, -1, 0},
+    {"ZR", Button::ZR, -1, 0},
+    {"START", Button::Start, -1, 0},
+    {"SELECT", Button::Select, -1, 0},
+    {"D-pad up", Button::Up, -1, 0},
+    {"D-pad down", Button::Down, -1, 0},
+    {"D-pad left", Button::Left, -1, 0},
+    {"D-pad right", Button::Right, -1, 0},
+    {"Circle pad up", -1, Analog::CirclePad, 0},
+    {"Circle pad down", -1, Analog::CirclePad, 1},
+    {"Circle pad left", -1, Analog::CirclePad, 2},
+    {"Circle pad right", -1, Analog::CirclePad, 3},
+    {"Circle pad half way (walk)", -1, Analog::CirclePad, 4},
+    {"C-stick up (camera)", -1, Analog::CStick, 0},
+    {"C-stick down", -1, Analog::CStick, 1},
+    {"C-stick left", -1, Analog::CStick, 2},
+    {"C-stick right", -1, Analog::CStick, 3},
 };
 constexpr int BINDING_COUNT = static_cast<int>(std::size(BINDINGS));
 
@@ -230,127 +221,21 @@ void SetKey(Config& config, const Binding& b, const std::string& key) {
     }
 }
 
-std::string ControllerButtonName(int button) {
-    switch (button) {
-    case SDL_CONTROLLER_BUTTON_A:
-        return "A (bottom)";
-    case SDL_CONTROLLER_BUTTON_B:
-        return "B (right)";
-    case SDL_CONTROLLER_BUTTON_X:
-        return "X (left)";
-    case SDL_CONTROLLER_BUTTON_Y:
-        return "Y (top)";
-    case SDL_CONTROLLER_BUTTON_BACK:
-        return "Back";
-    case SDL_CONTROLLER_BUTTON_GUIDE:
-        return "Guide";
-    case SDL_CONTROLLER_BUTTON_START:
-        return "Start";
-    case SDL_CONTROLLER_BUTTON_LEFTSTICK:
-        return "Left stick click";
-    case SDL_CONTROLLER_BUTTON_RIGHTSTICK:
-        return "Right stick click";
-    case SDL_CONTROLLER_BUTTON_LEFTSHOULDER:
-        return "LB";
-    case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER:
-        return "RB";
-    case SDL_CONTROLLER_BUTTON_DPAD_UP:
-        return "D-pad up";
-    case SDL_CONTROLLER_BUTTON_DPAD_DOWN:
-        return "D-pad down";
-    case SDL_CONTROLLER_BUTTON_DPAD_LEFT:
-        return "D-pad left";
-    case SDL_CONTROLLER_BUTTON_DPAD_RIGHT:
-        return "D-pad right";
-    default:
-        return fmt::format("button {}", button);
-    }
-}
-
-std::string ControllerAxisName(int axis) {
-    switch (axis) {
-    case SDL_CONTROLLER_AXIS_LEFTX:
-    case SDL_CONTROLLER_AXIS_LEFTY:
-        return "Left stick";
-    case SDL_CONTROLLER_AXIS_RIGHTX:
-    case SDL_CONTROLLER_AXIS_RIGHTY:
-        return "Right stick";
-    case SDL_CONTROLLER_AXIS_TRIGGERLEFT:
-        return "LT";
-    case SDL_CONTROLLER_AXIS_TRIGGERRIGHT:
-        return "RT";
-    default:
-        return fmt::format("axis {}", axis);
-    }
-}
-
-/// What a controller does for an input in the profile (Settings' parameters), or empty.
-std::string ControllerName(const std::string& params) {
-    const Common::ParamPackage p{params};
-    const std::string engine = p.Get("engine", "");
-    if (engine == "mh4u_any") { // the app's keyboard + controller pair (input.cpp)
-        for (const char* side : {"b", "a"}) {
-            if (std::string name = ControllerName(p.Get(side, "")); !name.empty()) {
-                return name;
-            }
-        }
-        return "";
-    }
-    if (engine == "analog_from_button") {
-        return "";
-    }
-    if (engine == "keyboard" || engine.empty()) {
-        return "";
-    }
-    if (engine != "sdl" && engine != "gcpad") {
-        return engine;
-    }
-    if (p.Has("button")) {
-        return ControllerButtonName(p.Get("button", -1));
-    }
-    if (p.Has("axis_x")) {
-        return ControllerAxisName(p.Get("axis_x", -1));
-    }
-    if (p.Has("axis")) {
-        return ControllerAxisName(p.Get("axis", -1));
-    }
-    if (p.Has("hat")) {
-        return "D-pad (" + p.Get("direction", "") + ")";
-    }
-    return "controller";
-}
-
-const char* NameOf(Settings::GraphicsAPI api) {
-    switch (api) {
-    case Settings::GraphicsAPI::OpenGL:
+const char* NameOf(Renderer renderer) {
+    switch (renderer) {
+    case Renderer::OpenGL:
         return "OpenGL";
-    case Settings::GraphicsAPI::Software:
+    case Renderer::Software:
         return "software";
     default:
         return "Vulkan";
     }
 }
 
-Settings::LayoutOption LayoutFor(const std::string& screens) {
-    if (screens == "single") {
-        return Settings::LayoutOption::SingleScreen;
-    }
-    if (screens == "stacked") {
-        return Settings::LayoutOption::Default;
-    }
-    if (screens == "side") {
-        return Settings::LayoutOption::SideScreen;
-    }
-    if (screens == "windows") {
-        return Settings::LayoutOption::SeparateWindows;
-    }
-    return Settings::LayoutOption::CustomLayout; // the overlay (mh4u.ini's touch_overlay)
-}
-
 } // namespace
 
 std::string ControllerInputName(const std::string& params) {
-    return ControllerName(params);
+    return Runtime().DescribeControllerInput(params);
 }
 
 Menu::Menu(Layer& layer_) : layer{layer_} {}
@@ -453,7 +338,7 @@ void Menu::SetGame(const std::string& key, const std::string& value) {
     game_changes[key] = value;
     if (GAME_LIVE.count(key)) {
         layer.Post([key, value] {
-            if (!Port::Hooks::SetOption(key, value)) {
+            if (!Runtime().SetGameOption(key, value)) {
                 APP_LOG_WARNING("menu: {} applies from the next start", key);
             }
         });
@@ -635,10 +520,7 @@ void Menu::DrawGame() {
         if (ImGui::SliderInt("##cpu_clock", &clock, 50, 400, "%d%%")) {
             config.cpu_clock = clock;
             Changed(AppSetting::CpuClock);
-            layer.Post([&system = layer.system, clock] {
-                Settings::values.cpu_clock_percentage = static_cast<u32>(clock);
-                system.CoreTiming().UpdateClockSpeed(static_cast<u32>(clock));
-            });
+            layer.Post([clock] { Runtime().SetCpuClock(clock); });
         }
         layer.Help("The emulated CPU's speed, in % of a 3DS's (Azahar's CPU Clock Speed). More keeps a high "
                    "frame rate in busy scenes, if your PC can take it; too much makes some games misbehave.");
@@ -747,8 +629,7 @@ void Menu::DrawGame() {
         }
         if (on) {
             Row("Move them with the mouse");
-            const bool overlay_layout =
-                Settings::values.layout_option.GetValue() == Settings::LayoutOption::CustomLayout;
+            const bool overlay_layout = Runtime().CurrentLayout() == ScreenLayout::Overlay;
             ImGui::BeginDisabled(!overlay_layout);
             if (ImGui::Button("Edit HUD layout", ImVec2(-FLT_MIN, 0.0f))) {
                 StartLayoutEdit();
@@ -966,14 +847,14 @@ void Menu::StartLayoutEdit() {
             layout_before_missing.insert(key);
         }
     }
-    layer.Post([] { Port::Hooks::SetLayoutEditing(true); });
+    layer.Post([] { Runtime().SetLayoutEditing(true); });
     APP_LOG_INFO("menu: the HUD layout editor");
 }
 
 void Menu::EndLayoutEdit() {
     layout_edit = false;
     drag = -1;
-    layer.Post([] { Port::Hooks::SetLayoutEditing(false); });
+    layer.Post([] { Runtime().SetLayoutEditing(false); });
 }
 
 void Menu::CancelLayoutEdit() {
@@ -986,7 +867,7 @@ void Menu::CancelLayoutEdit() {
         } else {
             game_changes[key] = layout_before[key];
         }
-        layer.Post([key = std::string(key), value = Game(key)] { Port::Hooks::SetOption(key, value); });
+        layer.Post([key = std::string(key), value = Game(key)] { Runtime().SetGameOption(key, value); });
     }
     EndLayoutEdit();
     select_tab = 0; // back to Game > Touch screen
@@ -1155,7 +1036,7 @@ void Menu::DrawLayoutEditor() {
 
 void Menu::DrawDisplay() {
     Config& config = layer.config;
-    const bool software = Settings::values.graphics_api.GetValue() == Settings::GraphicsAPI::Software;
+    const bool software = Runtime().ActiveRenderer() == Renderer::Software;
     if (BeginSettings("##display")) {
         Row("Full screen");
         bool full = layer.window.IsFullscreen();
@@ -1181,7 +1062,7 @@ void Menu::DrawDisplay() {
         layer.Help(counter_help.c_str());
 
         // a window of its own for the touch screen exists only from the start
-        const bool windows_now = Settings::values.layout_option.GetValue() == Settings::LayoutOption::SeparateWindows;
+        const bool windows_now = Runtime().CurrentLayout() == ScreenLayout::SeparateWindows;
         Row("Screens", !windows_now);
         std::string screens = config.screens;
         if (ChooseValue("##screens", screens, {"overlay", "single", "stacked", "side", "windows"},
@@ -1190,12 +1071,7 @@ void Menu::DrawDisplay() {
             config.screens = screens;
             Changed(AppSetting::Screens);
             if (!windows_now && screens != "windows") {
-                layer.Post([&system = layer.system, screens] {
-                    Settings::values.layout_option = LayoutFor(screens);
-                    Settings::values.swap_screen = false;
-                    Settings::values.upright_screen = false;
-                    system.GPU().Renderer().UpdateCurrentFramebufferLayout();
-                });
+                layer.Post([screens] { Runtime().ApplyLayout(ScreenLayoutFor(screens)); });
             }
         }
         layer.Help("Where the two screens go. The corner is set in Game > Touch screen.");
@@ -1210,7 +1086,7 @@ void Menu::DrawDisplay() {
         if (Choose("##resolution", resolution, factors)) {
             config.resolution = resolution;
             Changed(AppSetting::Resolution);
-            Settings::values.resolution_factor = static_cast<u32>(resolution);
+            Runtime().SetResolution(resolution);
         }
         ImGui::EndDisabled();
         layer.Help(software ? "The software renderer draws at the 3DS's own resolution."
@@ -1221,7 +1097,7 @@ void Menu::DrawDisplay() {
         if (ImGui::Checkbox("##linear", &linear)) {
             config.linear_filter = linear;
             Changed(AppSetting::LinearFilter);
-            Settings::values.filter_mode = linear;
+            Runtime().SetLinearFilter(linear);
         }
         layer.Help("Smooths the picture when it is scaled to the window.");
 
@@ -1231,7 +1107,7 @@ void Menu::DrawDisplay() {
         if (ImGui::Checkbox("##vsync", &vsync)) {
             config.vsync = vsync;
             Changed(AppSetting::Vsync);
-            Settings::values.use_vsync = vsync;
+            Runtime().SetVsync(vsync);
         }
         ImGui::EndDisabled();
         layer.Help("Frames shown in step with the monitor, without tearing.");
@@ -1247,7 +1123,7 @@ void Menu::DrawDisplay() {
                    "next one does.");
         ImGui::EndTable();
     }
-    ImGui::TextDisabled("In use: %s.", NameOf(Settings::values.graphics_api.GetValue()));
+    ImGui::TextDisabled("In use: %s.", NameOf(Runtime().ActiveRenderer()));
 }
 
 void Menu::DrawAudio() {
@@ -1258,7 +1134,7 @@ void Menu::DrawAudio() {
         if (ImGui::SliderInt("##volume", &volume, 0, 100, "%d%%")) {
             config.volume = volume;
             Changed(AppSetting::Volume);
-            Settings::values.volume = static_cast<float>(volume) / 100.0f;
+            Runtime().SetVolume(volume);
         }
         layer.Help("The game's sound.");
         Row("Output", false);
@@ -1290,7 +1166,6 @@ void Menu::DrawControls() {
         ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.4f, 1.0f), "%s", capture_note.c_str());
     }
 
-    const auto& profile = Settings::values.current_input_profile;
     if (ImGui::BeginTable("##controls", 3, ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_RowBg)) {
         ImGui::TableSetupColumn("3DS", ImGuiTableColumnFlags_WidthStretch, 0.38f);
         ImGui::TableSetupColumn("Keyboard", ImGuiTableColumnFlags_WidthStretch, 0.32f);
@@ -1323,8 +1198,9 @@ void Menu::DrawControls() {
                                 "none). A key taken from another input leaves that one without.");
             ImGui::TableSetColumnIndex(2);
             ImGui::AlignTextToFramePadding();
-            std::string pad = b.button >= 0 ? ControllerName(profile.buttons[b.button])
-                                            : ControllerName(profile.analogs[b.stick]);
+            std::string pad = b.button >= 0
+                                  ? Runtime().DescribeControllerInput(Runtime().ButtonBinding(b.button))
+                                  : Runtime().DescribeControllerInput(Runtime().StickBinding(b.stick));
             if (b.button < 0 && !pad.empty()) {
                 static constexpr const char* directions[] = {"up", "down", "left", "right", ""};
                 pad = b.part < 4 ? pad + " " + directions[b.part] : std::string("by how far it is pushed");
