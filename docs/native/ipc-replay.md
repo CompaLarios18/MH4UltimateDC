@@ -71,8 +71,9 @@ difference; its thread is ended and the next request has a new one.
   with `D9001BF7` instead, so it is counted. A call that fails before a request exists some other way
   (the server side of the session is closed, `C920181A`) has no record in either runtime and is counted
   too: the lining-up is wrong from that call on for that thread. The object is the one the last creating
-  call before that SendSyncRequest made, in the SVC trace's file order. A CloseHandle in the SVC trace closes the native handle after the
-  request that most recently precedes it there. Any other handle skips the request.
+  call before that SendSyncRequest made, in the SVC trace's file order. A CloseHandle in the SVC trace
+  closes the native handle after the request that most recently precedes it there. Any other handle
+  skips the request.
 - **Skipped requests** are listed with a reason: no recorded request or reply (`cmd=-`, `out=-`), a
   handle that cannot be made, a service not registered natively (default mode), a session that
   cannot be reached, "after the first difference".
