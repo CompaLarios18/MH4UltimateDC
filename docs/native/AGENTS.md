@@ -63,7 +63,7 @@ The runbooks agents follow are skills: `.claude/skills/native-orchestrate/` (the
 - A subagent's shell starts in the main checkout before every command, so workers and reviewers prefix each command with `cd <worktree> && `. Outputs later WPs need (golden sessions, captures, code libraries) go to the main checkout's `build/`, since removing a worktree deletes its own.
 
 **Commits:**
-- Author: the same identity as the rest of the history, read from `git log -1 --format='%an <%ae>' origin/main` and passed with `git -c user.name=… -c user.email=… commit`.
+- Author: the same identity as the rest of the history, read from `git log -1 --format='%an <%ae>' origin/main` and passed with `git -c user.name=… -c user.email=… commit`. In a cloud Claude Code session the stop hook flags any committer address other than `noreply@anthropic.com` as Unverified on GitHub: there the author is the maintainer and the committer stays the session's own, `GIT_AUTHOR_NAME=<name> GIT_AUTHOR_EMAIL=<email> git -c user.name=Claude -c user.email=noreply@anthropic.com <commit|merge|revert>`, and the trailer lines keep the credit to Claude.
 - Message: `<ID>: <imperative summary>`, an optional body, then the attribution trailer lines the session's instructions specify. Workers don't see those instructions; the orchestrator passes the lines in the dispatch message.
 - One WP may have several commits; keep them in the WP's scope.
 - `STATUS.md` changes stay uncommitted in the main checkout during the session and are committed once at the end, after every row is settled, so no pushed commit shows a WP as `active`.
