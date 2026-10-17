@@ -352,9 +352,9 @@ public:
     /// Main thread, before the game loads.
     virtual void CommitOptions() = 0;
 
-    /// Transitional: the Azahar system that main() hands to the windows, the menu layer (ui.h)
-    /// and the rooms (multiplayer.h), which still take it. N0-24 and N2b take it away. Null in a
-    /// runtime that isn't Azahar's.
+    /// Transitional: the Azahar system that main() hands to the windows (window.h), which take
+    /// it. Ui::Start and Multiplayer::Init are still given it and don't use it. N2b takes it
+    /// away. Null in a runtime that isn't Azahar's.
     virtual Core::System* HostSystem() = 0;
 
     // ── Paths ──
