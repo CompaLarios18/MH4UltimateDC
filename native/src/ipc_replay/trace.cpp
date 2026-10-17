@@ -221,7 +221,7 @@ bool ParseIpcTrace(std::string_view text, IpcTrace* trace, std::string* error) {
         for (std::size_t i = 1; i < fields.size(); ++i) {
             const std::size_t eq = fields[i].find('=');
             if (eq == std::string_view::npos) {
-                *err = Where(line, fmt::format("`{}` is not key=value", fields[i]));
+                *err = Where(line, fmt::format("field {} is not key=value", i));
                 return false;
             }
             const std::string_view key = fields[i].substr(0, eq);

@@ -842,6 +842,24 @@ TEST_CASE("the tool refuses what it cannot use") {
         CHECK(run.status == 2);
         CHECK(Contains(run.err, "line 2"));
     }
+    SUBCASE("an error message never repeats the trace's text") {
+        const Run field = RunTool({dir.Write("tok.txt", "# ipctrace v1 x\nT0 SECRETTOKEN\n")});
+        CHECK(field.status == 2);
+        CHECK(Contains(field.err, "line 2: field 1 is not key=value"));
+        CHECK_FALSE(Contains(field.err, "SECRETTOKEN"));
+        const Run value = RunTool({dir.Write("val.txt", "# ipctrace v1 x\nT0 seq=SECRETTOKEN\n")});
+        CHECK(value.status == 2);
+        CHECK_FALSE(Contains(value.err, "SECRETTOKEN"));
+        const Run bytes = RunTool({dir.Write("bin.txt", std::string("# ipctrace v1 x\nT0 seq=1 \xC3\xFF\xFE", 28))});
+        CHECK(bytes.status == 2);
+        CHECK_FALSE(Contains(bytes.err, "\xFF"));
+        CHECK_FALSE(Contains(bytes.err, "\xFE"));
+        const std::string list = dir.Write("td.txt", "SECRETTOKEN zz\n");
+        const Run header = RunTool({good, "--time-dependent", list});
+        CHECK(header.status == 2);
+        CHECK(Contains(header.err, "td.txt:1"));
+        CHECK_FALSE(Contains(header.err, "zz"));
+    }
     SUBCASE("a missing SVC trace") {
         CHECK(RunTool({good, "--svc-trace", dir.Path("missing.txt")}).status == 2);
     }

@@ -25,6 +25,7 @@ mh4n_ipc_replay TRACE [--svc-trace FILE] [--service NAME]... [--continue] [--gam
 | `--user DIR` | the user directory the services are given |
 | `--time-dependent FILE` | a list of commands compared by result only (below). Repeatable |
 | `--reply-timeout MS` | how long to wait for a deferred reply (default 30000) |
+| `--help` | print the usage and exit 0 |
 
 `config/native/ipc_time_dependent.txt` is read first when it exists relative to the current
 directory (run the tool from the repository root).

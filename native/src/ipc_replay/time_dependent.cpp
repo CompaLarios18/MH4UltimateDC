@@ -70,7 +70,7 @@ bool TimeDependent::LoadText(const std::string& text, const std::string& name, s
         const auto [end, ec] = std::from_chars(digits.data(), digits.data() + digits.size(), header, 16);
         if (digits.empty() || ec != std::errc() || end != digits.data() + digits.size() ||
             header > 0xFFFFFFFFull) {
-            *error = fmt::format("{}:{}: the header `{}` is not hex", name, number, parts[1]);
+            *error = fmt::format("{}:{}: the header is not hex", name, number);
             return false;
         }
         found.insert({parts[0], static_cast<u32>(header)});
