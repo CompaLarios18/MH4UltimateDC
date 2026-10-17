@@ -157,6 +157,43 @@ ticks ignored) and `diff-dsp REF CAND [--frames N]` (every source's status block
 own frame counter, keyed on that counter rather than on game frames); they print counts, frame
 numbers and statuses, never samples. The native runtime's captures (N1-16, N1-18) use the same format.
 
+`--capture-gpu START:FRAMES:FILE` writes an `MGPU` capture (format: `docs/native/mgpu-format.md`; `tools/native/gcap.py`
+has `summary` and `check`) of everything that crosses Azahar's `VideoCore::GPU` interface for FRAMES game frames
+(at most 30) from the first frame at or after START (`f<N>` is accepted too). The run reaches START as usual, then, between
+two slices of emulation, the runner writes `INIT` (the GPU's registers, the LCD registers, the PICA register file, both
+shader setups, the default attributes, the lighting, fog and procedural-texture tables, the immediate-mode state and the
+geometry pipeline) and `MEM` (all of FCRAM, 128 MiB on the Old 3DS and 256 MiB with `--new-3ds on`, then VRAM, in pieces
+of 16 MiB), keeps a copy of both as the shadow, and writes the first `FRAME`. From then on, before every GX command,
+register write (`GPU::WriteReg`), buffer swap and colour fill it compares FCRAM and VRAM with the shadow page by page and
+writes the pages the CPU changed (`CPU_PAGES`), then the event (`GX`, `MMIO`, `SWAP`, `FILL`); after a GX command or a
+register write it compares again and writes what the GPU changed (`GPU_PAGES`), and the shadow is brought up to date after
+each comparison, so the GPU's writes never show up as the CPU's. A command list's `PICA_REG` record holds every internal
+register write the command processor made, in order, one entry per register written (a repeated write of one register,
+as a shader upload makes, is one entry per word) and follows its `GX` at once; the interrupts the command signalled
+(`IRQ`: the id and the delay it was given) come after that and after `GPU_PAGES`. `FLUSH` records the game's
+FlushDataCache, InvalidateDataCache and StoreDataCache requests to `gsp::Gpu` (read from Azahar's IPC recorder, which
+the runner turns on) and the regions of each CacheFlush GX command. A `FRAME` record, with the reference images
+`FILE.frames/<n>_top.ppm` and `<n>_bottom.ppm` (`<n>` the frame counter in decimal; the software renderer at 1x, as it
+holds the screens when the record is written), is
+written when the frame counter changes: at the first GPU event of the new frame, or after the slice if none came.
+The capture ends at the first event of frame START+FRAMES (a capture of 3 frames has 3 `FRAME` records and 6 images);
+the run goes on. `FILE.json` is the manifest: game, format version, the frames covered, the renderer, the memory sizes, the
+record counts and the file size. The observers (`Pica::g_capture_hooks` in `azahar.patch`: `GPU::Execute`,
+`GPU::WriteReg`, `SetBufferSwap`, `SetColorFill`, the interrupt handler, and the four places in `PicaCore` that write an
+internal register) are empty unless the option is given, and then cost one test each. Notes:
+drawing stays on for the whole run, whatever `--draw-window` says (the memory at START has to hold the render targets of the
+frames before it), and `disable_right_eye_render` is set off; a command list started by a register write
+(`GPU::WriteReg` to a trigger register, which `gsp::Gpu`'s WriteHWRegs allows) gets its `MMIO` record but no `PICA_REG`, because the format
+only has one after a command-list `GX`: the manifest counts such writes as `unrecorded_register_writes`; the geometry pipeline block
+holds 0 for the fields a backend has not set up (`main_vertex_num`, `total_vertex_num` and the buffer index of the
+variable-primitive backend while it waits for its index). The memory is not compared again after the last event, so the
+last GPU change before the end of the capture is in the file and later CPU changes are not. A capture is about 140 MB
+before its first event and the diffs take a while (a pass over 134 MB per GX command, twice): keep FRAMES small. Captures are game
+data: keep them in `build/`, never commit or paste them. The recording logic (everything but the reading of Azahar's
+state) is the region `BEGIN gpu-capture-core` of `runner.cpp`, free of Azahar types; `tests/test_native_gcap_recorder.py`
+compiles it alone and makes captures from a scripted game. What only the CI runner and a run with the game exercise: the
+hooks, the INIT blocks built from Azahar's state, the cache-flush match on `gsp::Gpu`, the reference images.
+
 Every time in a script is emulated milliseconds or a game frame: `f600` is the first moment the
 frame counter (the u32 at `0x010571d4`) reads 600 or more, so a script means the same on every CPU backend and
 runtime (`--input "f600:START,f900:A:f3"`; a hold may be `f<N>` frames, default 100 ms; `--dump`, `--replace`,
