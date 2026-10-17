@@ -477,7 +477,9 @@ def pcm_to_wav(path: str, out: str) -> int:
         raise CapError(f"{path}: not a DSP capture")
     frames = 0
     try:
-        with wave.open(out, "wb") as w:
+        # open the file here: wave.open() on a path that cannot be opened leaves a half-made writer behind
+        # whose __del__ prints a traceback
+        with open(out, "wb") as raw, wave.open(raw, "wb") as w:
             w.setnchannels(2)
             w.setsampwidth(2)
             w.setframerate(SAMPLE_RATE)
