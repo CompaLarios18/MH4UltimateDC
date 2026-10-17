@@ -23,6 +23,7 @@
 #define MH4N_TEST_OWN_MAIN
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <array>
 #include <cstdio>
 #include <cstdlib>
@@ -76,6 +77,24 @@ bool HostReadable(const void* p) {
     close(fds[1]);
     return ok;
 #endif
+}
+
+// The host's page size, and the size the memory module works in: the larger of that and
+// GuestMemoryOptions::host_page_size. The guest's pages are 4 KiB; on a coarser host page the
+// module keeps a host page committed while one of its guest pages is mapped (guest permissions
+// are not enforced, see memory.h), so only a whole host page that was released faults.
+std::size_t HostPageSize() {
+#if defined(_WIN32)
+    SYSTEM_INFO info;
+    GetSystemInfo(&info);
+    return info.dwPageSize;
+#else
+    return static_cast<std::size_t>(sysconf(_SC_PAGESIZE));
+#endif
+}
+
+std::size_t EffectivePage(const GuestMemoryOptions& options = {}) {
+    return std::max<std::size_t>(HostPageSize(), options.host_page_size);
 }
 
 bool ReadableAt(const GuestMemory& memory, u64 guest_addr) {
@@ -346,13 +365,25 @@ TEST_CASE("ChangeState checks the expected state and permission first") {
 
 TEST_CASE("Unmap gives the pages back and a new mapping is zero-filled") {
     auto memory = MakeMemory();
-    const u32 A = 0x08000000;
+    const u32 A = 0x08000000; // aligned to any host page
     REQUIRE(memory->Map(A, 0x3000, RW, MemState::Private) == 0);
     std::memset(memory->Base() + A, 0xAB, 0x3000);
     REQUIRE(memory->Unmap(A + 0x1000, 0x1000) == 0);
+    CHECK(memory->Query(A + 0x1000) == MemoryInfo{A + 0x1000, 0x1000, MemPerm::None, MemState::Free});
     CHECK(ReadableAt(*memory, A));
-    CHECK_FALSE(ReadableAt(*memory, A + 0x1000));
-    CHECK_FALSE(ReadableAt(*memory, A + 0x1FFF));
+    if (EffectivePage() <= 0x1000) {
+        // 4 KiB host pages: the freed guest page is gone from the host too
+        CHECK_FALSE(ReadableAt(*memory, A + 0x1000));
+        CHECK_FALSE(ReadableAt(*memory, A + 0x1FFF));
+    } else {
+        // a coarser host page stays committed while its neighbours are mapped, and the freed
+        // guest page reads zero (the same facts as the 16 KiB case below, on the default options)
+        CHECK(ReadableAt(*memory, A + 0x1000));
+        CHECK(ReadableAt(*memory, A + 0x1FFF));
+        for (u32 i = 0; i < 0x1000; ++i) {
+            REQUIRE(memory->Base()[A + 0x1000 + i] == 0);
+        }
+    }
     CHECK(ReadableAt(*memory, A + 0x2000));
     CHECK(memory->Base()[A + 0x2000] == 0xAB); // the neighbours keep their contents
     REQUIRE(memory->Map(A + 0x1000, 0x1000, RW, MemState::Private) == 0);
@@ -360,6 +391,10 @@ TEST_CASE("Unmap gives the pages back and a new mapping is zero-filled") {
         REQUIRE(memory->Base()[A + 0x1000 + i] == 0);
     }
     CHECK(memory->Base()[A] == 0xAB);
+    // the last pages go: no host page of the range is left accessible, whatever its size
+    REQUIRE(memory->Unmap(A, 0x3000) == 0);
+    CHECK_FALSE(ReadableAt(*memory, A));
+    CHECK_FALSE(ReadableAt(*memory, A + 0x2000));
 }
 
 #if defined(__linux__)
@@ -595,7 +630,10 @@ TEST_CASE("a custom zero region survives a mapping being removed over it") {
     auto memory = MakeMemory(options);
     CHECK(ReadableAt(*memory, 0x05000000));
     CHECK(ReadableAt(*memory, 0x05001FFF));
-    CHECK_FALSE(ReadableAt(*memory, 0x05002000));
+    const bool coarse = EffectivePage(options) > 0x1000;
+    // a coarser host page holding the region stays accessible whole; the next one is not
+    CHECK(ReadableAt(*memory, 0x05002000) == coarse);
+    CHECK_FALSE(ReadableAt(*memory, 0x05000000 + std::max<std::size_t>(EffectivePage(options), 0x2000)));
     CHECK_FALSE(ReadableAt(*memory, 0)); // the default regions are replaced, not added to
     memory->Base()[0x05000100] = 4; // kept, being in a zero region
     CHECK(memory->Base()[0x05000100] == 4);
@@ -606,7 +644,12 @@ TEST_CASE("a custom zero region survives a mapping being removed over it") {
     REQUIRE(memory->Unmap(0x05000000, 0x3000) == 0);
     CHECK(ReadableAt(*memory, 0x05000100)); // back to a zero region
     CHECK(memory->Base()[0x05000100] == 0);
-    CHECK_FALSE(ReadableAt(*memory, 0x05002100));
+    // outside the region, 4 KiB host pages give the page back; a coarser host page is part of the
+    // zero region's host page and stays accessible, zeroed
+    CHECK(ReadableAt(*memory, 0x05002100) == coarse);
+    if (coarse) {
+        CHECK(memory->Base()[0x05002100] == 0);
+    }
 }
 
 TEST_CASE("a zero region that is not page aligned is refused") {
@@ -998,10 +1041,16 @@ TEST_CASE("an unmapped write is reported as a write") {
 }
 
 TEST_CASE("a page that was unmapped faults, its neighbours do not") {
+    // The scenario works in host pages (the guest's 4 KiB where the host's are that size): the
+    // middle one of three is unmapped, and a coarser host page only faults once it is whole free.
     const ChildResult child = RunSelf("--fault-test after-unmap");
+    char expected[32];
+    std::snprintf(expected, sizeof expected, " at 0x%08x ",
+                  static_cast<unsigned>(0x08000000 + EffectivePage() + 0x10));
+    CAPTURE(child.output);
     CHECK(child.output.find("neighbours ok\n") == 0);
     CHECK(child.exit_code == 3);
-    CHECK(child.output.find(" at 0x08001010 ") != std::string::npos);
+    CHECK(child.output.find(expected) != std::string::npos);
 }
 
 TEST_CASE("the report names the guest thread and its LR") {
@@ -1092,15 +1141,16 @@ int RunFaultScenario(const std::string& name) {
     } else if (name == "write-unmapped") {
         base[0x08001234] = 1;
     } else if (name == "after-unmap") {
-        if (memory->Map(0x08000000, 0x3000, MemPerm::ReadWrite, MemState::Private) != 0 ||
-            memory->Unmap(0x08001000, 0x1000) != 0) {
+        const u32 page = static_cast<u32>(EffectivePage(options));
+        if (memory->Map(0x08000000, 3 * page, MemPerm::ReadWrite, MemState::Private) != 0 ||
+            memory->Unmap(0x08000000 + page, page) != 0) {
             return 1;
         }
-        base[0x08000FFF] = 1;
-        g_sink = base[0x08002000];
+        base[0x08000000 + page - 1] = 1;
+        g_sink = base[0x08000000 + 2 * page];
         std::fputs("neighbours ok\n", stderr);
         std::fflush(stderr);
-        g_sink = base[0x08001010];
+        g_sink = base[0x08000000 + page + 0x10];
     } else if (name == "context") {
         u32 regs[16] = {};
         regs[14] = 0x00100ABC;

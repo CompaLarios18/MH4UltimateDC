@@ -55,21 +55,24 @@ def build(out: str, program: str = "svc_test") -> str:
     if program not in programs():
         raise SystemExit(f"unknown program {program!r}; one of {', '.join(programs())}")
     os.makedirs(out, exist_ok=True)
+    # Full paths from PATH (PATHEXT aware): on Windows CreateProcess only appends ".exe" to a
+    # name without an extension, so a bare "ld.lld" is not found although ld.lld.exe is on PATH.
+    clang, lld, objcopy, readelf = (dt.tool(n) for n in ("clang", "ld.lld", "llvm-objcopy", "llvm-readelf"))
     objs = []
     for src in (os.path.join(HERE, f"{program}.c"), dt.RT_SOURCE):
         obj = os.path.join(out, os.path.basename(src) + ".o")
-        subprocess.run(["clang", *dt.CFLAGS, f"-I{HERE}", "-c", src, "-o", obj], check=True)
+        subprocess.run([clang, *dt.CFLAGS, f"-I{HERE}", "-c", src, "-o", obj], check=True)
         objs.append(obj)
     script = os.path.join(out, f"{program}.ld")
     with open(script, "w") as f:
         f.write(LINKER_SCRIPT)
     elf = os.path.join(out, f"{program}.elf")
-    subprocess.run(["ld.lld", "-T", script, *objs, "-o", elf], check=True)
+    subprocess.run([lld, "-T", script, *objs, "-o", elf], check=True)
     image = os.path.join(out, f"{program}.bin")
-    subprocess.run(["llvm-objcopy", "-O", "binary", elf, image], check=True)
+    subprocess.run([objcopy, "-O", "binary", elf, image], check=True)
 
     entries, text_end = {}, BASE
-    for line in subprocess.run(["llvm-readelf", "-sS", elf], capture_output=True, text=True,
+    for line in subprocess.run([readelf, "-sS", elf], capture_output=True, text=True,
                                check=True).stdout.splitlines():
         parts = line.split()
         if len(parts) >= 8 and parts[3] == "FUNC":
