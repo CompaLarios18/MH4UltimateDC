@@ -22,7 +22,10 @@
 // them, see CMakeLists.txt, so this module defines no symbol a code library or another module could
 // clash with).
 extern "C" {
-void ih_host_svc(RCtx* ctx, u32 imm, u32 next_pc) { mh4n::CodeHostCallbacks::Svc(ctx, imm, next_pc); }
+void ih_host_svc(RCtx* ctx, u32 imm, u32 next_pc) {
+    mh4n::CodeHostCallbacks::Svc(ctx, imm, next_pc);
+    ctx->excl_valid = 0;  // other threads may have run: see Interpreter::Run
+}
 void ih_host_trap(RCtx* ctx, u32 pc, u32 kind) { mh4n::CodeHostCallbacks::Trap(ctx, pc, kind); }
 }
 
@@ -129,12 +132,19 @@ void Interpreter::Run(RCtx& ctx, u32 target) {
         if (ctx.r[15] == return_to && ctx.r[13] >= return_sp) {
             break;
         }
+        // Unlike recompiled code, which checks at the start of a basic block, this check follows every
+        // instruction, so it can fall between an LDREX and its STREX. A thread that other threads displaced may find the word it
+        // loaded changed; the exclusive monitor is per thread (RCtx), so what hardware does on a context
+        // switch (the kernel clears the monitor) is done here: its STREX fails and the guest's loop retries.
+        // (The Windows CI lost increments of svc_test's atomic counter without it.)
         if (tick_budget) {
             if ((ctx.budget -= 1) < 0) {
                 CodeHostCallbacks::Budget(&ctx);
+                ctx.excl_valid = 0;
             }
         } else if (__atomic_load_n(preempt_flag_, __ATOMIC_RELAXED) != 0) {
             CodeHostCallbacks::Budget(&ctx);
+            ctx.excl_valid = 0;
         }
     }
 }

@@ -445,6 +445,57 @@ TEST_CASE("preemption: the interpreter yields when the flag is raised and goes o
     CHECK(m.Ctx().r[15] == kReturn);
 }
 
+// A context switch clears the exclusive monitor (the kernel does it on hardware). The monitor lives in each
+// thread's own context, so the thread that was displaced between LDREX and STREX must not store: the thread
+// that ran meanwhile has changed the word. (Found by the Windows CI: the whole of svc_test interpreted lost
+// increments of its LDREX/STREX counter when the preemption flag, raised by the timer thread, was seen between
+// the two.)
+TEST_CASE("a preemption between LDREX and STREX makes the STREX fail") {
+    constexpr mh4n::u32 kWord = kStack - 0x100;
+    const std::vector<mh4n::u32> increment = {0xE1921F9F,    // ldrex r1, [r2]
+                                              0xE2811001,    // add r1, r1, #1
+                                              0xE1823F91,    // strex r3, r1, [r2]
+                                              0xE12FFF1E};   // bx lr
+    SUBCASE("nothing runs in between: the store succeeds") {
+        Machine m;
+        m.Write32(kCode, increment);
+        m.Write32(kWord, {5});
+        m.Call(kCode, kReturn, [](RCtx& ctx) { ctx.r[2] = kWord; });
+        REQUIRE(m.finished);
+        CHECK(m.budget_calls == 0);
+        CHECK(m.Ctx().r[3] == 0);
+        CHECK(m.Read32(kWord) == 6);
+    }
+    SUBCASE("another thread changed the word while this one was displaced: the store fails") {
+        Machine m;
+        m.on_budget = [&m](RCtx&) { m.Write32(kWord, {100}); };  // what the thread that ran meanwhile did
+        m.Write32(kCode, increment);
+        m.Write32(kWord, {5});
+        m.Call(kCode, kReturn, [&m](RCtx& ctx) {
+            ctx.r[2] = kWord;
+            m.preempt_flag = 1;  // seen after the LDREX
+        });
+        REQUIRE(m.finished);
+        CHECK(m.budget_calls == 1);
+        CHECK(m.Ctx().r[3] == 1);
+        CHECK(m.Read32(kWord) == 100);
+    }
+    SUBCASE("the same through a system call that lets other threads run") {
+        Machine m;
+        m.on_svc = [&m](RCtx&, mh4n::u32, mh4n::u32) { m.Write32(kWord, {100}); };
+        m.Write32(kCode, {0xE1921F9F,    // ldrex r1, [r2]
+                          0xEF000001,    // svc #1
+                          0xE2811001,    // add r1, r1, #1
+                          0xE1823F91,    // strex r3, r1, [r2]
+                          0xE12FFF1E});
+        m.Write32(kWord, {5});
+        m.Call(kCode, kReturn, [](RCtx& ctx) { ctx.r[2] = kWord; });
+        REQUIRE(m.finished);
+        CHECK(m.Ctx().r[3] == 1);
+        CHECK(m.Read32(kWord) == 100);
+    }
+}
+
 TEST_CASE("a deterministic library's budget is charged one tick per instruction") {
     Machine m;
     m.interp->SetChargeBudget(true);
