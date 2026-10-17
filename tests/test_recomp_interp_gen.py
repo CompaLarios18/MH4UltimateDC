@@ -336,6 +336,12 @@ def test_cli_refuses_an_unwritable_output_before_generating_and_a_file_with_no_h
     assert ig.main(["--form", "t_push_pop", "--out", str(tmp_path)]) == 2             # a folder
     assert started == []                                                              # nothing was generated first
     assert capsys.readouterr().err.count("cannot write ") == 2
+    existing = tmp_path / "existing.c"                    # a file that is there but not writable (the test may run as root)
+    existing.write_text("old")
+    real_access = ig.os.access
+    monkeypatch.setattr(ig.os, "access", lambda path, mode: False if str(path) == str(existing) else real_access(path, mode))
+    assert ig.main(["--form", "t_push_pop", "--out", str(existing)]) == 2
+    assert started == [] and existing.read_text() == "old" and "cannot write" in capsys.readouterr().err
     monkeypatch.undo()
     monkeypatch.setattr(ig, "HAND_WRITTEN", {})            # arm_vldm is then only a known gap: no handler to write
     out = tmp_path / "gap.c"

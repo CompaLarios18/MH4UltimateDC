@@ -19,7 +19,7 @@ the tests.
 
 ## Redistributed build-time material
 
-The CI artifact `mh4n-runner-windows` (N1-22) contains `mh4u_native_runner.exe` and the runtime DLLs of the llvm-mingw toolchain that built it (`libc++.dll`, `libunwind.dll`, `libwinpthread-1.dll` and whatever the executable imports; LLVM's Apache-2.0 with LLVM exceptions, and the MinGW-w64 runtime's permissive licences) without their licence texts. It is for the maintainer's measurements (N1-23); a release package (N3) must ship the licence files of everything it redistributes. Nothing else in the repository redistributes toolchain files.
+The CI artifact `mh4n-runner-windows` (N1-22) contains `mh4u_native_runner.exe` and the runtime DLLs of the llvm-mingw toolchain that built it (`libc++.dll`, `libunwind.dll`, `libwinpthread-1.dll` and whatever the executable imports; LLVM's Apache-2.0 with LLVM exceptions, and the MinGW-w64 runtime's permissive licences) without their licence texts. It is for the maintainer's measurements (N1-23); a release package (N3) must ship the licence files of everything it redistributes. The other CI artifacts do the same: `mh4u-runner-linux` (the `runner` job of `native.yml` copies the shared libraries `ldd` resolves from the build image into it) and the packages of `windows.yml`, `macos.yml` and `linux.yml` carry libraries of their build environments; none of them carries licence texts yet, so the same rule applies to every one of them before anything is released.
 
 ## Pieces copied from Azahar
 

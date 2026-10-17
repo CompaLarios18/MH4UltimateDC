@@ -1984,7 +1984,8 @@ def main(argv=None) -> int:
             return 2
     if args.out:                           # before minutes of generation, not after
         out_dir = os.path.dirname(os.path.abspath(args.out))
-        if not os.path.isdir(out_dir) or not os.access(out_dir, os.W_OK) or os.path.isdir(args.out):
+        if (not os.path.isdir(out_dir) or not os.access(out_dir, os.W_OK) or os.path.isdir(args.out)
+                or (os.path.exists(args.out) and not os.access(args.out, os.W_OK))):
             print(f"cannot write {args.out}", file=sys.stderr)
             return 2
     if args.all:
