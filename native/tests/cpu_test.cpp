@@ -557,6 +557,59 @@ TEST_CASE("many suspended threads can be created and dropped") {
     CHECK(host.Failure() == nullptr);
 }
 
+// ---- the exclusive monitor ------------------------------------------------------------------------
+
+TEST_CASE("the exclusive monitor is cleared when a budget or SVC callback returns") {
+    auto memory = GuestMemory::Create();
+    REQUIRE(memory != nullptr);
+    // A thread can be displaced between its LDREX and its STREX (the preemption check sits at the start
+    // of every basic block), and the kernel clears the monitor on a switch; the same goes for a system
+    // call. Whether or not the handler switched threads, the monitor is clear when the call returns.
+    for (const bool budget : {true, false}) {
+        for (const bool switches : {false, true}) {
+            CAPTURE(budget);
+            CAPTURE(switches);
+            CodeHost host(*memory);
+            GuestThread* self = nullptr;
+            host.SetBudgetHandler([&](RCtx&) {
+                if (switches) {
+                    self->Yield();
+                }
+            });
+            host.SetSvcHandler([&](RCtx&, mh4n::u32, mh4n::u32) {
+                if (switches) {
+                    self->Yield();
+                }
+            });
+            bool open_before = false;
+            bool cleared_after = false;
+            auto thread = host.NewThread(1, [&](GuestThread& t) {
+                RCtx& ctx = t.Context();
+                ctx.excl_addr = 0x1000;
+                ctx.excl_valid = 1;  // an LDREX is open
+                open_before = ctx.excl_valid == 1;
+                if (budget) {
+                    CodeHostCallbacks::Budget(&ctx);
+                } else {
+                    CodeHostCallbacks::Svc(&ctx, 0x3D, 0x100);
+                }
+                cleared_after = ctx.excl_valid == 0;
+                for (;;) {
+                    t.Yield();
+                }
+            });
+            self = thread.get();
+            host.Enter(*thread);
+            if (switches) {
+                host.Enter(*thread);  // resumes after the handler's switch
+            }
+            CHECK(open_before);
+            CHECK(cleared_after);
+            CHECK(host.Failure() == nullptr);
+        }
+    }
+}
+
 // ---- the failure paths ---------------------------------------------------------------------------
 
 TEST_CASE("trap, bad_return and slow memory accesses fail the thread and log the registers") {
