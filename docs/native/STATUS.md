@@ -43,7 +43,7 @@ Tables between the `wp-status` markers are generated: edit the specs or use `set
 | N0-19 | Game-data guard for agents | S | native-worker | - | ci | `done` | PR #5; ci green (native-guard runs 38884722260, 38903953519 and 38944855740); guard hardened in four rounds, the last two from the batch audits |
 | N0-23 | Service command census from the code | S | native-worker | - | dump | `ready` |  |
 | N0-20 | `IRuntime` seam in the app: lifecycle, options, paths | M | native-worker-high | N0-16, N0-15 | ci, pc | `review` | batch 20261017-n1-2; ci green (linux.yml 39040404737, windows.yml 39040406726, macos.yml 39040409014 on its branch; Native CI native and runner jobs green, tools job failed only for the THIRD_PARTY rows added in the merge); maintainer smoke test pending (launcher -> play -> menu -> change an option -> quit) |
-| N0-24 | `IRuntime` seam in the app: input, multiplayer, keyboard | M | native-worker-high | N0-20 | ci, pc | `review` | batch 20261017-n1-2; ci pending (linux.yml, windows.yml, macos.yml on the batch branch); maintainer smoke test pending (launcher -> play -> host a room and join it from a second instance -> name a character with the keyboard -> quit) |
+| N0-24 | `IRuntime` seam in the app: input, multiplayer, keyboard | M | native-worker-high | N0-20 | ci, pc | `review` | batch 20261017-n1-2; ci green (linux.yml 39048239100, windows.yml 39048241157, macos.yml 39048243336 dispatched on the batch branch with the window.cpp change; the app code is unchanged since); maintainer smoke test pending (launcher -> play -> host a room and join it from a second instance -> name a character with the keyboard -> quit) |
 <!-- wp-status:end N0 -->
 
 ## N1 · Headless runtime
