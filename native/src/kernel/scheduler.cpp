@@ -273,8 +273,14 @@ void GuestScheduler::Wake(const std::shared_ptr<Thread>& thread, std::optional<R
     MH4N_ASSERT(threads_.count(thread.get()) != 0, "thread {} was woken but never attached",
                 thread->thread_id);
     SchedThread& sd = Sd(*thread);
-    sd.wake_result = result;
-    sd.wake_index = index;
+    // An empty result with no index leaves r0 alone: it must not erase the outcome of an earlier
+    // wake-up of the same wait. That happens when the selection filter of core 1 (the time limit,
+    // N1-27) held the thread back after the signal woke it, and ResumeFromWait wakes it again.
+    // Park() cleared the outcome when the wait began, so a first wake loses nothing.
+    if (result.has_value() || index >= 0) {
+        sd.wake_result = result;
+        sd.wake_index = index;
+    }
     if (!sd.in_queue) {
         Enqueue(*thread, /*front=*/false);  // Azahar: ResumeFromWait pushes to the back
     }

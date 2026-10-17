@@ -2,7 +2,7 @@
 // 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-3.0-or-later: svc.cpp says so, thread.cpp says
 // GPL-2.0-or-later): the thread as a wait object, its priority rules, the wake-up, the
 // bookkeeping of Stop, and the wait set-up that SVC::WaitSynchronization1/N does (BeginSynchWait).
-// The queues, the context switch and the creation are not here.
+// The queues, the context switch and the creation (N1-27) are not here.
 // Copyright 2014-2026 Citra Emulator Project / Azahar Emulator Project (thread.cpp, svc.cpp)
 #include <algorithm>
 
@@ -177,6 +177,15 @@ void Thread::Stop() {
     }
     wait_objects.clear();
     ReleaseThreadMutexes(this);
+
+    // A thread made by ThreadManager (N1-27) has a TLS slot and counts against the process's
+    // resource limit. Azahar gives both back here; the slot is found free by its thread being Dead
+    // (see threads.h), the count is released now. A bare thread (tls_address 0) never reserved one.
+    if (tls_address != 0) {
+        if (const auto process = owner_process.lock()) {
+            process->resource_limit->Release(ResourceLimitType::Thread, 1);
+        }
+    }
 }
 
 } // namespace mh4n
