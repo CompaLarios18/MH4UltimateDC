@@ -9,6 +9,14 @@
 cmake_minimum_required(VERSION 3.25)
 project(mh4n C CXX)
 
+# MinGW (llvm-mingw's lld): CMake's Windows-GNU module decides between --push-state/--pop-state and
+# plain --whole-archive by asking CMAKE_LINKER (a GNU ld or none), not the linker lld that will run,
+# and lld's MinGW driver has no --push-state. Plain --whole-archive/--no-whole-archive is enough.
+if (WIN32 AND NOT MSVC)
+    set(CMAKE_LINK_LIBRARY_USING_WHOLE_ARCHIVE "LINKER:--whole-archive" "<LINK_ITEM>" "LINKER:--no-whole-archive")
+    set(CMAKE_LINK_LIBRARY_USING_WHOLE_ARCHIVE_SUPPORTED TRUE)
+endif()
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)

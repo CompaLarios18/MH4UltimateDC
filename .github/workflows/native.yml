@@ -136,7 +136,7 @@ jobs:
             -DCMAKE_CXX_COMPILER=x86_64-w64-mingw32-clang++ \
             -DCMAKE_BUILD_TYPE=RelWithDebInfo -DMH4N_WERROR=ON
       - name: Build
-        run: cmake --build build/native
+        run: cmake --build build/native -- -k 0   # ninja keeps going: one run lists every error
       - name: Test
         env:
           MH4N_REQUIRE_TEST_DATA: "1"
@@ -212,12 +212,22 @@ jobs:
       - name: Tools
         run: |
           brew install ninja llvm lld
-          # appended, not prepended: `clang` stays Xcode's, the LLVM tools come from Homebrew
-          echo "$(brew --prefix llvm)/bin" >> "$GITHUB_PATH"
-          echo "$(brew --prefix lld)/bin" >> "$GITHUB_PATH"
+          # Xcode's clang/clang++ must stay first on PATH ($GITHUB_PATH prepends), so Homebrew's whole
+          # llvm bin folder (its clang, newer libc++) is not added: a folder of symlinks to just the
+          # LLVM tools the ARM test programs and code libraries need is.
+          tools="$RUNNER_TEMP/llvm-tools"
+          mkdir -p "$tools"
+          for tool in ld.lld llvm-objcopy llvm-readelf llvm-nm; do
+            for prefix in llvm lld; do
+              src="$(brew --prefix "$prefix")/bin/$tool"
+              if [ -x "$src" ]; then ln -sf "$src" "$tools/$tool"; break; fi
+            done
+            test -e "$tools/$tool" || { echo "::error::$tool not found in Homebrew's llvm or lld"; exit 1; }
+          done
+          echo "$tools" >> "$GITHUB_PATH"
       - name: Tools found
         run: |
-          for tool in clang clang++ ld.lld llvm-objcopy llvm-readelf cmake ninja python; do
+          for tool in clang clang++ ld.lld llvm-objcopy llvm-readelf llvm-nm cmake ninja python; do
             printf '%s: ' "$tool"; command -v "$tool" || echo "NOT FOUND"
           done
           clang --version
@@ -229,7 +239,7 @@ jobs:
           cmake -S native -B build/native -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
             -DCMAKE_BUILD_TYPE=RelWithDebInfo -DMH4N_WERROR=ON
       - name: Build
-        run: cmake --build build/native
+        run: cmake --build build/native -- -k 0   # ninja keeps going: one run lists every error
       - name: Test
         env:
           MH4N_REQUIRE_TEST_DATA: "1"
