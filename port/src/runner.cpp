@@ -29,6 +29,7 @@
 
 #include "arm_recomp.h"
 #include "hooks.h"
+#include "perf.h"
 #include "platform.h"
 #include "schedule.h"
 #include "audio_core/hle/common.h"
@@ -142,6 +143,11 @@ const char* const USAGE = R"(usage: mh4u_runner <file> [options]
                     (tools/native/gcap.py)
   --capture-hid FILE  record the HID shared memory (and ir:USER's, once a game sets it up) on every
                     game frame to FILE (an MHID capture; tools/native/capfmt.py)
+  --perf-log FILE   write one CSV row per frame (a vertical blank to the next) to FILE: the
+                    frame time and the host time in the recompiled code, in system calls and in
+                    the GPU's command processing (tools/native/perf_report.py reports on it;
+                    not together with --capture-gpu). The numbers say nothing of the game: it can
+                    be shared
   --new-3ds on|off  run as a New 3DS or an Old 3DS (default off: the reference is an Old 3DS)
   --input SCRIPT    comma-separated presses at emulated times, e.g.
                     "3000:A,3500:START:200,5000:TOUCH:160:120,6000:CIRCLE:0:1:500"
@@ -2486,6 +2492,45 @@ void EndGpuCapture(Core::System& system) {
     c.requested = false;
 }
 
+// ── --perf-log (N0-15) ──────────────────────────────────────────────────────────────
+// One CSV row per frame: the timers are in perf.h; the scopes around the recompiled code and the
+// system calls are in arm_recomp.cpp, the GPU's through the capture hooks (azahar.patch).
+
+bool BeginPerfLog(Core::System& system, const std::string& path, const std::string& cpu, bool new_3ds) {
+    u64 program_id = 0;
+    if (system.GetAppLoader().ReadProgramId(program_id) != Loader::ResultStatus::Success) {
+        program_id = 0;
+    }
+    const std::time_t now = std::time(nullptr);
+    char date[16] = "0000-00-00";
+    if (const std::tm* utc = std::gmtime(&now)) {
+        std::strftime(date, sizeof(date), "%Y-%m-%d", utc);
+    }
+    const std::string header = fmt::format("perf v1 {} game=0x{:016x} cpu={} new3ds={}", date, program_id, cpu,
+                                           new_3ds ? "on" : "off");
+    std::string error;
+    if (!Port::Perf::Start(path, header, error)) {
+        std::fprintf(stderr, "--perf-log: %s\n", error.c_str());
+        return false;
+    }
+    Port::Perf::ChainGpuHooks(Pica::g_capture_hooks,
+                        [](Service::GSP::InterruptId id) { return id == Service::GSP::InterruptId::PDC0; });
+    return true;
+}
+
+void EndPerfLog() {
+    if (!Port::Perf::Enabled()) {
+        return;
+    }
+    Pica::g_capture_hooks = {};
+    Port::Perf::Stop();
+    if (Port::Perf::DroppedFrames()) {
+        std::fprintf(stderr, "--perf-log: %llu frames were dropped (the disk is too slow)\n",
+                     static_cast<unsigned long long>(Port::Perf::DroppedFrames()));
+    }
+}
+
+
 // ── network room ────────────────────────────────────────────────────────────────────
 
 /// A new random console ID, saved in the user folder's system settings.
@@ -2722,7 +2767,7 @@ int main(int argc, char** argv) {
     std::string capture_dsp_file, capture_hid_file, capture_gpu_file;
     u32 capture_dsp_start = 0, capture_dsp_frames = 0;
     u32 capture_gpu_start = 0, capture_gpu_frames = 0;
-    std::string state_trace, unmapped_report, observable_file = "config/native/observable.txt";
+    std::string state_trace, unmapped_report, perf_log, observable_file = "config/native/observable.txt";
     std::vector<std::string> install;
     double shot_every = 1000.0;
     double speed = 0.0;
@@ -2815,6 +2860,8 @@ int main(int argc, char** argv) {
             state_trace = argv[++i];
         } else if (arg == "--observable" && i + 1 < argc) {
             observable_file = argv[++i];
+        } else if (arg == "--perf-log" && i + 1 < argc) {
+            perf_log = argv[++i];
         } else if (arg == "--count-unmapped" && i + 1 < argc) {
             unmapped_report = argv[++i];
         } else if (arg == "--new-3ds" && i + 1 < argc) {
@@ -2886,6 +2933,10 @@ int main(int argc, char** argv) {
     }
     if (ipc_trace_full && ipc_trace.empty()) {
         std::fprintf(stderr, "--trace-ipc-full needs --trace-ipc FILE\n");
+        return 1;
+    }
+    if (!perf_log.empty() && !capture_gpu_file.empty()) {
+        std::fprintf(stderr, "--perf-log and --capture-gpu both use the GPU hooks: run them one at a time\n");
         return 1;
     }
     const bool install_only = path.empty() && !install.empty();
@@ -3021,6 +3072,10 @@ int main(int argc, char** argv) {
         system.Shutdown();
         return 1;
     }
+    if (!perf_log.empty() && !BeginPerfLog(system, perf_log, cpu, new_3ds)) {
+        system.Shutdown();
+        return 1;
+    }
     if (!unmapped_report.empty()) {
         Memory::SetUnmappedObserver(CountUnmapped);
     }
@@ -3133,6 +3188,7 @@ int main(int argc, char** argv) {
     EndDspCapture(system);
     EndHidCapture(system);
     EndGpuCapture(system);
+    EndPerfLog();
     if (!unmapped_report.empty()) {
         WriteUnmappedReport(system, unmapped_report, cpu, new_3ds);
     }

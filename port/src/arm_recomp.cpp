@@ -15,6 +15,7 @@
 #include "core/memory.h"
 #include "fiber.h"
 #include "hooks.h"
+#include "perf.h"
 #include "platform.h"
 
 #include "common/dynamic_library.h"
@@ -219,7 +220,12 @@ void ARM_Recomp::Execute(s64 budget) {
     ctx->budget = budget;
     running = slot.get();
     running_context = loaded;
-    host->SwitchTo(*running->fiber);
+    {
+        // the time the guest code runs for, system calls and GPU work inside it excluded
+        // (--perf-log, perf_log); this scope lives on the host's stack, the guest's calls run inside it
+        Perf::Scope perf(Perf::Slot::Recomp);
+        host->SwitchTo(*running->fiber);
+    }
     if (running->finished) {
         // The thread exited; its fiber is parked for good and nothing on its stack needs
         // unwinding, so the stack can go.
@@ -356,7 +362,10 @@ void ARM_Recomp::Svc(u32 imm, u32 next_pc) {
     ctx->r[15] = next_pc & ~1u;
     thumb = (next_pc & 1) != 0;
     rc_apply_rounding(0); // Azahar's own code runs with the default rounding
-    svc_context.CallSVC(imm);
+    {
+        Perf::Scope perf(Perf::Slot::Svc); // closed before the thread can yield below
+        svc_context.CallSVC(imm);
+    }
     if (imm == SVC_EXIT_THREAD || imm == SVC_EXIT_PROCESS) {
         running->finished = true;
         YieldToHost();
