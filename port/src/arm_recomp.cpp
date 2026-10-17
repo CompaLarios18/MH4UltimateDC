@@ -15,6 +15,7 @@
 #include "core/memory.h"
 #include "fiber.h"
 #include "hooks.h"
+#include "platform.h"
 
 #include "common/dynamic_library.h"
 
@@ -167,6 +168,7 @@ bool ARM_Recomp::LoadCode(const std::string& path, std::string& error) {
     g_call_counts = library->GetSymbol<RCallCounts>("rc_call_counts");
     g_library = std::move(library);
     SetCode(info);
+    Hooks::SetPlatform(&AzaharPlatform());  // what the hooks use of Azahar: platform_azahar.cpp
     for (const auto& line : Hooks::Install(info)) {
         LOG_INFO(Core_ARM11, "hooks: {}", line);
     }

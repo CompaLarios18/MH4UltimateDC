@@ -1,32 +1,22 @@
 #include "hooks.h"
-#include "netsync.h"
 
 #include <algorithm>
 #include <atomic>
 #include <cctype>
 #include <cmath>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <iterator>
 #include <sstream>
 #include <string_view>
+#include <utility>
 #include <vector>
 #include <fmt/format.h>
 
-#include "common/common_types.h"
-#include "common/file_util.h"
-#include "common/logging/log.h"
-#include "core/frontend/top_screen.h"
-#include "common/settings.h"
-#include "core/3ds.h"
-#include "core/core.h"
-#include "video_core/gpu.h"
-#include "video_core/pica/pica_core.h"
-#include "video_core/renderer_base.h"
-
-// Hooks read and write guest memory through Azahar's page table, like recompiled code.
-#define RC_PAGED
+// Guest memory is read and written like recompiled code does, in the mode the build selects
+// (RC_PAGED for Azahar's page table, flat otherwise: see tools/recomp/runtime/recomp.h).
 extern "C" {
 #include "recomp.h"
 }
@@ -34,6 +24,38 @@ extern "C" {
 namespace Port::Hooks {
 
 namespace {
+
+// ── The platform: everything the hooks use from the program that runs the game (platform.h).
+
+/// What the hooks do when no platform was set: nothing.
+class NullPlatform final : public Platform {
+public:
+    void Log(LogLevel, const std::string&) override {}
+    std::string UserDir() override { return {}; }
+    void SetRefreshRate(double) override {}
+    void SetTopScreenRows(std::uint32_t) override {}
+    double GameSeconds() override { return 0.0; }
+    bool IsRunning() override { return false; }
+    void RefreshScreenLayout() override {}
+    void SetScreenOverlay(const ScreenOverlay&) override {}
+    void SetTopScreenWidth(std::uint32_t) override {}
+    bool SetOption(const std::string&, const std::string&) override { return false; }
+    std::string GetOption(const std::string&) override { return {}; }
+    void InstallNetSync(NetSyncMode, double, std::vector<std::string>&) override {}
+    void VoteEndSkip(bool) override {}
+    bool EndSkipAgreed() override { return true; }  // no room, no peers
+};
+NullPlatform null_platform;
+Platform* platform = &null_platform;
+
+Platform& P() {
+    return *platform;
+}
+
+template <typename... Args>
+void LogInfo(fmt::format_string<Args...> format, Args&&... args) {
+    P().Log(LogLevel::Info, fmt::format(format, std::forward<Args>(args)...));
+}
 
 // USA v1.3.0 addresses and offsets (docs/research/system-services.md, widescreen.md).
 constexpr u32 SMAIN_INSTANCE = 0x01057194;  // sMhMain*: the engine's main system (an sMain)
@@ -112,7 +134,7 @@ struct Options {
     u32 skip_panel = 0xb;   // skip_panel: the touch-screen button whose tap the skip button makes
                             // (the panel manager's Skip, 0xb, as the stylus's tap on it shows)
     int skip_hint = 1;      // skip_hint / MH4U_SKIP_HINT: 0 off, 1 a hint on screen, 2 flashing
-    Layout::ScreenOverlay touch_overlay;  // touch_overlay / MH4U_TOUCH_OVERLAY (custom layout)
+    ScreenOverlay touch_overlay;  // touch_overlay / MH4U_TOUCH_OVERLAY (custom layout)
     PanelView quest_overlay{true};   // quest_overlay / MH4U_QUEST_OVERLAY: in quests, the map
                                      // alone, at its size and place
     PanelView target_overlay{true};  // target_overlay / MH4U_TARGET_OVERLAY: with it, the
@@ -121,7 +143,7 @@ struct Options {
                                   // part of slot n all the time (to check the drawing)
     bool hud_edges = true;  // hud_edges / MH4U_HUD_EDGES: with wide_render, HUD to the edges
     u32 trace_layout = 0;   // trace_layout / MH4U_TRACE_LAYOUT: log HUD objects every n frames
-    NetSync::Mode net_sync = NetSync::Mode::Session;  // net_sync / MH4U_NET_SYNC
+    NetSyncMode net_sync = NetSyncMode::Session;  // net_sync / MH4U_NET_SYNC
     float net_sync_slack = 0;  // net_sync_slack / MH4U_NET_SYNC_SLACK: ms, 0 = the default
     u32 filters_off = 0;    // bloom, motion_blur, depth_of_field, radial_blur, haze = off: the
                             // screen filters (FILTER_* bits) the port skips
@@ -261,7 +283,7 @@ void Set(Options& o, const std::string& key, const std::string& value) {
         const long slot = std::strtol(value.c_str(), nullptr, 10);
         o.quest_overlay_test = slot >= 0 && slot <= 4 && slot != 2 ? static_cast<int>(slot) : -1;
     } else if (key == "net_sync") {
-        o.net_sync = NetSync::ParseMode(value);
+        o.net_sync = ParseNetSyncMode(value);
     } else if (key == "net_sync_slack") {
         o.net_sync_slack = std::max(0.0f, std::strtof(value.c_str(), nullptr));
     } else if (key == "hud_edges") {
@@ -290,7 +312,7 @@ std::string Trim(const std::string& s) {
 
 Options LoadOptions(std::vector<std::string>& log) {
     Options o;
-    const std::string path = FileUtil::GetUserPath(FileUtil::UserPath::UserDir) + "mh4u.ini";
+    const std::string path = P().UserDir() + "mh4u.ini";
     std::ifstream file(path);
     if (file) {
         std::string line;
@@ -370,7 +392,7 @@ void TraceFilters();
 void Frame(RCtx* ctx, RFunc original) {
     if (frames == 0 && RefreshRate() > 0) {
         // the game presents at most once per VBlank: more VBlanks allow more than 60 fps
-        Core::System::GetInstance().GPU().SetRefreshRate(RefreshRate());
+        P().SetRefreshRate(RefreshRate());
     }
     const u32 clear = options.render_clear | (options.dither ? 0 : RENDER_DITHER) |
                       (options.stereo_3d ? 0 : RENDER_STEREO) | (options.antialiasing ? 0 : RENDER_ANTIALIASING);
@@ -399,15 +421,14 @@ void Frame(RCtx* ctx, RFunc original) {
     if (main == 0 || render == 0) {
         return;
     }
-    LOG_INFO(Frontend,
-             "frame {}: delta {:.3f} fps {:.2f} rate {:.1f} cap {:.1f} vblanks {}/{} "
-             "submitted {} display skip {}/{} render flags {:08X}",
-             frames, ReadF32(ctx, main + SMAIN_DELTA), ReadF32(ctx, main + SMAIN_FPS),
-             ReadF32(ctx, main + SMAIN_RATE), ReadF32(ctx, main + SMAIN_CAP), rd32(ctx, VBLANK_TOP),
-             rd32(ctx, VBLANK_BOTTOM), rd32(ctx, FRAMES_SUBMITTED),
-             rd32(ctx, render + SLTRENDER_DISPLAY_SKIP),
-             rd32(ctx, render + SLTRENDER_DISPLAY_SKIP + 4),
-             rd32(ctx, render + SLTRENDER_RENDER_FLAGS));
+    LogInfo("frame {}: delta {:.3f} fps {:.2f} rate {:.1f} cap {:.1f} vblanks {}/{} "
+            "submitted {} display skip {}/{} render flags {:08X}",
+            frames, ReadF32(ctx, main + SMAIN_DELTA), ReadF32(ctx, main + SMAIN_FPS),
+            ReadF32(ctx, main + SMAIN_RATE), ReadF32(ctx, main + SMAIN_CAP), rd32(ctx, VBLANK_TOP),
+            rd32(ctx, VBLANK_BOTTOM), rd32(ctx, FRAMES_SUBMITTED),
+            rd32(ctx, render + SLTRENDER_DISPLAY_SKIP),
+            rd32(ctx, render + SLTRENDER_DISPLAY_SKIP + 4),
+            rd32(ctx, render + SLTRENDER_RENDER_FLAGS));
 }
 
 /// Whether `camera` is shown on the bottom screen (only top-screen views get widened).
@@ -470,7 +491,7 @@ void SceneCtor(RCtx* ctx, RFunc original) {
     const u32 params = ctx->r[1];
     if (rows && rd32(ctx, params) == LCD_COLUMNS && rd32(ctx, params + 4) == TOP_ROWS) {
         wr32(ctx, params + 4, rows);
-        LOG_INFO(Frontend, "wide render: scene target {}x{}", rows, LCD_COLUMNS);
+        LogInfo("wide render: scene target {}x{}", rows, LCD_COLUMNS);
     }
     original(ctx);
 }
@@ -481,7 +502,7 @@ void DisplayBufferInit(RCtx* ctx, RFunc original) {
     const u32 rows = WideRows();
     if (rows && ctx->r[1] == LCD_COLUMNS && ctx->r[2] == TOP_ROWS) {
         ctx->r[2] = rows;
-        Core::System::GetInstance().GPU().PicaCore().regs.framebuffer_config[0].height.Assign(rows);
+        P().SetTopScreenRows(rows);
     }
     original(ctx);
 }
@@ -567,12 +588,12 @@ void WideTransfer(RCtx* ctx) {
     const u32 height = (rd32(ctx, texture + TEXTURE_SIZE) >> 16) & 0x7FFF;
     if (height >= rows && rd32(ctx, render + SLTRENDER_TOP_TRANSFER_Y) != height - rows) {
         wr32(ctx, render + SLTRENDER_TOP_TRANSFER_Y, height - rows);
-        LOG_INFO(Frontend, "wide render: top screen transferred from row {} of {}", height - rows, height);
+        LogInfo("wide render: top screen transferred from row {} of {}", height - rows, height);
     }
     if (height >= TOP_ROWS && rd32(ctx, render + SLTRENDER_BOTTOM_TRANSFER_Y) != height - TOP_ROWS) {
         wr32(ctx, render + SLTRENDER_BOTTOM_TRANSFER_Y, height - TOP_ROWS);
-        LOG_INFO(Frontend, "wide render: bottom screen transferred from row {} of {}", height - TOP_ROWS,
-                 height);
+        LogInfo("wide render: bottom screen transferred from row {} of {}", height - TOP_ROWS,
+                height);
     }
 }
 
@@ -625,8 +646,8 @@ void LayoutObjectConstants(RCtx* ctx, RFunc original) {
     const u32 screen = rd32(ctx, draw + CDRAW_SCREEN) >> 1 & 0x1f;
     const u32 hash = rd32(ctx, object);
     if (trace) {
-        LOG_INFO(Frontend, "layout: frame {} object {:08X} hash {:08X} screen {} at {:.1f}, {:.1f}", frames, object,
-                 hash, screen, ReadF32(ctx, constants), ReadF32(ctx, constants + 4));
+        LogInfo("layout: frame {} object {:08X} hash {:08X} screen {} at {:.1f}, {:.1f}", frames, object,
+                hash, screen, ReadF32(ctx, constants), ReadF32(ctx, constants + 4));
     }
     if (screen == LAYOUT_TOUCH_SCREEN) {
         NoteTouchScreenObject(ReadF32(ctx, constants), ReadF32(ctx, constants + 4));
@@ -658,20 +679,20 @@ u32 SetTunables(const RCodeInfo& info, std::string_view name, u32 value) {
 /// Shows the top screen at the widescreen aspect ratio: every screen layout gets a top
 /// screen that wide, and the single-screen layout uses the matching aspect setting.
 void SetScreenAspect(float aspect, std::vector<std::string>& log) {
-    Layout::SetTopScreenWidth(static_cast<u32>(std::lround(LCD_COLUMNS * aspect)));
-    using Settings::AspectRatio;
-    const std::pair<float, AspectRatio> known[] = {{16.0f / 9.0f, AspectRatio::R16_9},
-                                                   {16.0f / 10.0f, AspectRatio::R16_10},
-                                                   {21.0f / 9.0f, AspectRatio::R21_9},
-                                                   {4.0f / 3.0f, AspectRatio::R4_3}};
-    AspectRatio choice = AspectRatio::Stretch;
+    P().SetTopScreenWidth(static_cast<u32>(std::lround(LCD_COLUMNS * aspect)));
+    // the platform's names for the aspect ratios the single-screen layout knows
+    const std::pair<float, const char*> known[] = {{16.0f / 9.0f, "16:9"},
+                                                   {16.0f / 10.0f, "16:10"},
+                                                   {21.0f / 9.0f, "21:9"},
+                                                   {4.0f / 3.0f, "4:3"}};
+    std::string choice = "stretch";
     for (const auto& [value, ratio] : known) {
         if (std::fabs(aspect - value) < 0.01f) {
             choice = ratio;
         }
     }
-    Settings::values.aspect_ratio.SetValue(choice);
-    log.push_back(choice == AspectRatio::Stretch
+    P().SetOption("aspect_ratio", choice);
+    log.push_back(choice == "stretch"
                       ? "screen layouts show the top screen wider; single screen stretches it to the window"
                       : "screen layouts show the top screen at that aspect ratio");
 }
@@ -777,25 +798,24 @@ void PanelTouchAllowed(RCtx* ctx, RFunc original) {
     if (index < 0) {
         // no such button on this touch screen: the direct write after processTouch instead
         const u32 mode = rd8(ctx, PANEL_MANAGER + PANEL_MODE);
-        LOG_INFO(Frontend,
-                 "skip: no hit index is button {} (mode {}: slots {} {} {} {}, their panels {} {} {} {}); the tap "
-                 "is written after processTouch instead",
-                 options.skip_panel, mode, rd32(ctx, PANEL_ID_TABLES + mode * 16) & 0xFF,
-                 rd32(ctx, PANEL_ID_TABLES + mode * 16 + 4) & 0xFF, rd32(ctx, PANEL_ID_TABLES + mode * 16 + 8) & 0xFF,
-                 rd32(ctx, PANEL_ID_TABLES + mode * 16 + 12) & 0xFF,
-                 rd8(ctx, PANEL_MANAGER + PANEL_SLOT_IDS + (rd32(ctx, PANEL_ID_TABLES + mode * 16) & 0xFF)),
-                 rd8(ctx, PANEL_MANAGER + PANEL_SLOT_IDS + (rd32(ctx, PANEL_ID_TABLES + mode * 16 + 4) & 0xFF)),
-                 rd8(ctx, PANEL_MANAGER + PANEL_SLOT_IDS + (rd32(ctx, PANEL_ID_TABLES + mode * 16 + 8) & 0xFF)),
-                 rd8(ctx, PANEL_MANAGER + PANEL_SLOT_IDS + (rd32(ctx, PANEL_ID_TABLES + mode * 16 + 12) & 0xFF)));
+        LogInfo("skip: no hit index is button {} (mode {}: slots {} {} {} {}, their panels {} {} {} {}); the tap "
+                "is written after processTouch instead",
+                options.skip_panel, mode, rd32(ctx, PANEL_ID_TABLES + mode * 16) & 0xFF,
+                rd32(ctx, PANEL_ID_TABLES + mode * 16 + 4) & 0xFF, rd32(ctx, PANEL_ID_TABLES + mode * 16 + 8) & 0xFF,
+                rd32(ctx, PANEL_ID_TABLES + mode * 16 + 12) & 0xFF,
+                rd8(ctx, PANEL_MANAGER + PANEL_SLOT_IDS + (rd32(ctx, PANEL_ID_TABLES + mode * 16) & 0xFF)),
+                rd8(ctx, PANEL_MANAGER + PANEL_SLOT_IDS + (rd32(ctx, PANEL_ID_TABLES + mode * 16 + 4) & 0xFF)),
+                rd8(ctx, PANEL_MANAGER + PANEL_SLOT_IDS + (rd32(ctx, PANEL_ID_TABLES + mode * 16 + 8) & 0xFF)),
+                rd8(ctx, PANEL_MANAGER + PANEL_SLOT_IDS + (rd32(ctx, PANEL_ID_TABLES + mode * 16 + 12) & 0xFF)));
         skip_tap_direct = true;
         return;
     }
     const u16 flags = skip_tap == 3 ? PANEL_PRESS_FLAGS : skip_tap == 2 ? PANEL_HELD_FLAGS : PANEL_TAP_FLAGS;
     const u32 hit = static_cast<u32>(index) | flags;
     ctx->r[5] = hit;
-    LOG_INFO(Frontend, "skip: {} the touch screen's button {} (hit {:04X}, touches {})",
-             skip_tap == 3 ? "pressing" : skip_tap == 2 ? "holding" : "releasing", options.skip_panel, hit,
-             ctx->r[0] ? "allowed" : "not allowed");
+    LogInfo("skip: {} the touch screen's button {} (hit {:04X}, touches {})",
+            skip_tap == 3 ? "pressing" : skip_tap == 2 ? "holding" : "releasing", options.skip_panel, hit,
+            ctx->r[0] ? "allowed" : "not allowed");
     --skip_tap;
 }
 
@@ -808,8 +828,8 @@ void PanelProcessTouch(RCtx* ctx, RFunc original) {
         skip_tap_seen = false;
         wr8(ctx, PANEL_MANAGER + PANEL_ID, options.skip_panel);
         wr16(ctx, PANEL_MANAGER + PANEL_FLAGS, PANEL_TAP_FLAGS);
-        LOG_INFO(Frontend, "skip: a tap on the touch screen's button {} (written after processTouch)",
-                 options.skip_panel);
+        LogInfo("skip: a tap on the touch screen's button {} (written after processTouch)",
+                options.skip_panel);
         return;
     }
     const bool skipping = skip_offered.load(std::memory_order_relaxed);
@@ -820,8 +840,8 @@ void PanelProcessTouch(RCtx* ctx, RFunc original) {
     if (touch != last_panel_touch && !(touch >> 16 & 0x8000)) {
         // while the skip is offered, taps are logged anyway: a tap on the touch screen's Skip
         // says which button it is (skip_panel)
-        LOG_INFO(Frontend, "{}: touch on panel {} flags {:04X}", skipping ? "skip" : "panels",
-                 touch & 0xFF, touch >> 16);
+        LogInfo("{}: touch on panel {} flags {:04X}", skipping ? "skip" : "panels",
+                touch & 0xFF, touch >> 16);
     }
     last_panel_touch = touch;
 }
@@ -835,12 +855,12 @@ void PanelIsTapped(RCtx* ctx, RFunc original) {
         ++skip_polls;
         if (ctx->r[0] != 0 && !skip_tap_seen) {
             skip_tap_seen = true;
-            LOG_INFO(Frontend, "skip: button {} tapped, handled at {:08X}", id, caller);
+            LogInfo("skip: button {} tapped, handled at {:08X}", id, caller);
             return;
         }
     }
     if (options.trace_panels && ctx->r[0] != 0) {
-        LOG_INFO(Frontend, "panels: panel {} tapped, handled at {:08X}", id, caller);
+        LogInfo("panels: panel {} tapped, handled at {:08X}", id, caller);
     }
 }
 
@@ -853,7 +873,7 @@ void MhPadUpdate(RCtx* ctx, RFunc original) {
         const u32 gameplay = rd32(ctx, pad + SMHPAD_INJECTED);
         const u32 menu = rd32(ctx, pad + SMHPAD_INJECTED_MENU);
         if (gameplay || menu) {
-            LOG_INFO(Frontend, "panels: injected actions {:04X}, menu actions {:04X}", gameplay, menu);
+            LogInfo("panels: injected actions {:04X}, menu actions {:04X}", gameplay, menu);
         }
     }
     original(ctx);
@@ -883,9 +903,9 @@ void MhPadUpdate(RCtx* ctx, RFunc original) {
         end_hold_fraction.store(fraction, std::memory_order_relaxed);
         if (fraction >= 1.0f) {
             end_requested.store(true, std::memory_order_relaxed);
-            NetSync::SetEndSkipVote(true);
-            LOG_INFO(Frontend, "skip: {} held {:.1f} s: asking to end the wait", PadNames(combo),
-                     options.skip_end_hold);
+            P().VoteEndSkip(true);
+            LogInfo("skip: {} held {:.1f} s: asking to end the wait", PadNames(combo),
+                    options.skip_end_hold);
         }
     } else {
         end_hold_since = 0;
@@ -901,7 +921,7 @@ void MhPadUpdate(RCtx* ctx, RFunc original) {
     if (skip_now && !skip_held && offered && !rest_held) {
         skip_tap = 3;
         skip_tap_seen = false;
-        LOG_INFO(Frontend, "skip: {} pressed", PadName(options.skip_button));
+        LogInfo("skip: {} pressed", PadName(options.skip_button));
     }
     skip_held = skip_now;
 }
@@ -916,13 +936,13 @@ void MhPadUpdate(RCtx* ctx, RFunc original) {
 void QuestPlaying(RCtx* ctx, RFunc original) {
     const u32 quest = ctx->r[0];
     const u32 state = ctx->r[1];
-    if (end_requested.load(std::memory_order_relaxed) && !end_cut && NetSync::EndSkipAgreed()) {
-        const s32 left = static_cast<s32>(rd32(ctx, quest + AQUEST_WAIT_LEFT));
+    if (end_requested.load(std::memory_order_relaxed) && !end_cut && P().EndSkipAgreed()) {
+        const std::int32_t left = static_cast<std::int32_t>(rd32(ctx, quest + AQUEST_WAIT_LEFT));
         if (rd8(ctx, state + QUEST_STATE_PHASE) == QUEST_PHASE_WAITING &&
             rd32(ctx, quest + AQUEST_END_STAGE) == 0 && left > 0) {
             wr32(ctx, quest + AQUEST_WAIT_LEFT, 0);
             end_cut = true;
-            LOG_INFO(Frontend, "skip: everyone asked; the wait ended with {} units left", left);
+            LogInfo("skip: everyone asked; the wait ended with {} units left", left);
         }
     }
     original(ctx);
@@ -1024,16 +1044,16 @@ void StartQuest(RCtx* ctx, RFunc original) {
     const u32 id = NextQuestId(ctx);
     if (holder && id && quest_start_held < QUEST_HOLD_MAX_FRAMES && QuestLeftOut(ctx, holder, id)) {
         if (quest_start_held++ == 0) {
-            LOG_INFO(Frontend, "quest {}: its file wasn't ready for the quest list; building the list again",
-                     id);
+            LogInfo("quest {}: its file wasn't ready for the quest list; building the list again",
+                    id);
         }
         CallGame(ctx, QUEST_LIST_RELEASE, holder);
         rc_hook_return(ctx);
         return;
     }
     if (quest_start_held) {
-        LOG_INFO(Frontend, "quest {}: started after {} more frames{}", id, quest_start_held,
-                 quest_start_held >= QUEST_HOLD_MAX_FRAMES ? " (gave up)" : "");
+        LogInfo("quest {}: started after {} more frames{}", id, quest_start_held,
+                quest_start_held >= QUEST_HOLD_MAX_FRAMES ? " (gave up)" : "");
         quest_start_held = 0;
     }
     original(ctx);
@@ -1068,7 +1088,7 @@ void UpdateSkip(RCtx* ctx) {
         skip_since = now;
         skip_due_at_start = due;
         skip_polls = 0;
-        LOG_INFO(Frontend, "skip: quest complete (status {}, return {})", status, due ? "due" : "not due");
+        LogInfo("skip: quest complete (status {}, return {})", status, due ? "due" : "not due");
     }
     skip_complete = complete;
     const bool offered =
@@ -1076,20 +1096,19 @@ void UpdateSkip(RCtx* ctx) {
     if (offered != skip_offered.load(std::memory_order_relaxed)) {
         skip_offered.store(offered, std::memory_order_relaxed);
         if (offered) {
-            LOG_INFO(Frontend, "skip: offered ({} taps the touch screen's button {})",
-                     options.skip_button ? PadName(options.skip_button) : "no button", options.skip_panel);
+            LogInfo("skip: offered ({} taps the touch screen's button {})",
+                    options.skip_button ? PadName(options.skip_button) : "no button", options.skip_panel);
         } else {
-            LOG_INFO(Frontend,
-                     "skip: no longer offered after {:.1f} s (status {}, return {}); the game asked about "
-                     "button {} {} times",
-                     now - skip_since, status, due ? "due" : "not due", options.skip_panel, skip_polls);
+            LogInfo("skip: no longer offered after {:.1f} s (status {}, return {}); the game asked about "
+                    "button {} {} times",
+                    now - skip_since, status, due ? "due" : "not due", options.skip_panel, skip_polls);
         }
         skip_tap = 0;
         skip_tap_direct = false;
         end_hold_since = 0;
         end_hold_fraction.store(0.0f, std::memory_order_relaxed);
         if (end_requested.exchange(false)) {
-            NetSync::SetEndSkipVote(false);
+            P().VoteEndSkip(false);
         }
         end_cut = false;
     }
@@ -1169,8 +1188,7 @@ void QuestPanels(RCtx* ctx, RFunc original) {
 
 /// Emulated time in seconds.
 double EmulatedSeconds() {
-    return static_cast<double>(Core::System::GetInstance().CoreTiming().GetGlobalTicks()) /
-           static_cast<double>(BASE_CLOCK_RATE_ARM11);
+    return P().GameSeconds();
 }
 
 /// The map's slot the touch overlay shows, -1 for the whole touch screen.
@@ -1208,23 +1226,23 @@ void ApplyQuestOverlay(bool force) {
     const bool changed = map != applied_map_slot || target != applied_target_slot;
     applied_map_slot = map;
     applied_target_slot = target;
-    Layout::SetScreenOverlay(map < 0 ? options.touch_overlay
-                                     : QuestOverlay(options.touch_overlay, map, options.quest_overlay,
-                                                    target, options.target_overlay));
-    if (auto& system = Core::System::GetInstance(); frames > 0 && system.IsPoweredOn()) {
+    P().SetScreenOverlay(map < 0 ? options.touch_overlay
+                                 : QuestOverlay(options.touch_overlay, map, options.quest_overlay,
+                                                target, options.target_overlay));
+    if (frames > 0 && P().IsRunning()) {
         // the screen layout is worked out when it changes, so work it out again
-        system.GPU().Renderer().UpdateCurrentFramebufferLayout();
+        P().RefreshScreenLayout();
     }
     if (!changed || options.touch_overlay.height <= 0) {
         return;
     }
     if (map < 0) {
-        LOG_INFO(Frontend, "touch overlay: the whole touch screen");
+        LogInfo("touch overlay: the whole touch screen");
     } else if (target < 0) {
-        LOG_INFO(Frontend, "touch overlay: the quest's map (panel slot {})", map);
+        LogInfo("touch overlay: the quest's map (panel slot {})", map);
     } else {
-        LOG_INFO(Frontend, "touch overlay: the quest's map (panel slot {}) and target camera (slot {})", map,
-                 target);
+        LogInfo("touch overlay: the quest's map (panel slot {}) and target camera (slot {})", map,
+                target);
     }
 }
 
@@ -1241,12 +1259,11 @@ void UpdateQuestOverlay(RCtx* ctx) {
         const u32 states = hud | panel_state << 8 | rd8(ctx, PANEL_MANAGER + PANEL_BUSY) << 16 |
                            (panels ? 1u : 0u) << 24 | (map_drawn ? 1u : 0u) << 25;
         if (states != last_panel_states) {
-            LOG_INFO(Frontend,
-                     "panels: at {:.2f} s HUD state {}, panel state {}, panel manager {}, small panels {}, "
-                     "map {}, target camera {}",
-                     EmulatedSeconds(), hud, panel_state, states >> 16 & 0xFF ? "busy" : "free",
-                     panels ? "ran" : "not run", map_drawn ? "drawn" : "not drawn",
-                     panels ? fmt::format("in slot {}", quest_target_slot) : std::string("-"));
+            LogInfo("panels: at {:.2f} s HUD state {}, panel state {}, panel manager {}, small panels {}, "
+                    "map {}, target camera {}",
+                    EmulatedSeconds(), hud, panel_state, states >> 16 & 0xFF ? "busy" : "free",
+                    panels ? "ran" : "not run", map_drawn ? "drawn" : "not drawn",
+                    panels ? fmt::format("in slot {}", quest_target_slot) : std::string("-"));
             last_panel_states = states;
         }
     }
@@ -1335,8 +1352,8 @@ void TraceFilters() {
         return;
     }
     if (filters_drawn != filters_logged || filters_skipped != skipped_logged) {
-        LOG_INFO(Frontend, "screen filters at {:.1f} s: {}{}", now, FilterNames(filters_drawn),
-                 filters_skipped ? " (skipped: " + FilterNames(filters_skipped) + ")" : "");
+        LogInfo("screen filters at {:.1f} s: {}{}", now, FilterNames(filters_drawn),
+                filters_skipped ? " (skipped: " + FilterNames(filters_skipped) + ")" : "");
         filters_logged = filters_drawn;
         skipped_logged = filters_skipped;
     }
@@ -1384,6 +1401,10 @@ constexpr Hook HOOKS[] = {
 
 } // namespace
 
+void SetPlatform(Platform* p) {
+    platform = p ? p : &null_platform;
+}
+
 std::vector<std::string> Install(const RCodeInfo& info) {
     std::vector<std::string> log;
     options = LoadOptions(log);
@@ -1411,7 +1432,7 @@ std::vector<std::string> Install(const RCodeInfo& info) {
     filters_logged = skipped_logged = 0xFFFFFFFF;
     filters_since = 0;
     // local wireless play over network rooms, for any program on recompiled code
-    NetSync::Install(Core::System::GetInstance(), options.net_sync, options.net_sync_slack, log);
+    P().InstallNetSync(options.net_sync, options.net_sync_slack, log);
     if (!info.set_hook || info.hook_count == 0) {
         return log; // a test program, or a library from before hook points
     }
@@ -1461,7 +1482,7 @@ std::vector<std::string> Install(const RCodeInfo& info) {
                                   "player's say-so",
                                   PadNames(options.skip_end_buttons), options.skip_end_hold));
     }
-    Layout::SetScreenOverlay(options.touch_overlay);
+    P().SetScreenOverlay(options.touch_overlay);
     applied_map_slot = applied_target_slot = -1;
     if (const auto& overlay = options.touch_overlay; overlay.height > 0) {
         constexpr const char* corners[] = {"top left", "top right", "bottom left", "bottom right"};
@@ -1528,7 +1549,7 @@ int MissingHookPoints() {
 void ToggleQuestMap() {
     const bool off = !quest_map_off.load();
     quest_map_off = off;
-    LOG_INFO(Frontend, "touch overlay: {} in quests", off ? "the whole touch screen" : "the map");
+    LogInfo("touch overlay: {} in quests", off ? "the whole touch screen" : "the map");
 }
 
 bool SkipOffered() {
@@ -1569,7 +1590,7 @@ bool SetOption(const std::string& key, const std::string& value) {
     }
     Set(options, key, value);
     if ((key == "refresh_rate" || key == "fps") && frames > 0) {
-        Core::System::GetInstance().GPU().SetRefreshRate(RefreshRate()); // 0: the 3DS's
+        P().SetRefreshRate(RefreshRate()); // 0: the 3DS's
     }
     if (key == "touch_overlay" || key == "quest_overlay" || key == "target_overlay") {
         // the corner as the options now say, with the quest's map in it if it shows the map
@@ -1581,15 +1602,15 @@ bool SetOption(const std::string& key, const std::string& value) {
 void SetLayoutEditing(bool on) {
     if (on != layout_editing) {
         layout_editing = on;
-        LOG_INFO(Frontend, "touch overlay: {}", on ? "the layout editor is up" : "the layout editor is done");
+        LogInfo("touch overlay: {}", on ? "the layout editor is up" : "the layout editor is done");
     }
     ApplyQuestOverlay(true);
 }
 
-Layout::ScreenOverlay ParseOverlay(std::string v) {
+ScreenOverlay ParseOverlay(std::string v) {
     std::transform(v.begin(), v.end(), v.begin(), [](unsigned char c) { return std::tolower(c); });
-    using Corner = Layout::ScreenOverlay::Corner;
-    Layout::ScreenOverlay overlay{0.30f, 0.85f, Corner::TopRight};
+    using Corner = ScreenOverlay::Corner;
+    ScreenOverlay overlay{0.30f, 0.85f, Corner::TopRight};
     std::istringstream words(v);
     std::string corner;
     words >> corner;
@@ -1601,7 +1622,7 @@ Layout::ScreenOverlay ParseOverlay(std::string v) {
     const auto it = std::find_if(std::begin(corners), std::end(corners),
                                  [&](const auto& c) { return corner == c.first; });
     if (it == std::end(corners)) {
-        return IsOn(corner) ? overlay : Layout::ScreenOverlay{};
+        return IsOn(corner) ? overlay : ScreenOverlay{};
     }
     overlay.corner = it->second;
     std::string height, opacity;
@@ -1665,10 +1686,10 @@ void CropToSlots(float& left, float& top, float& right, float& bottom, int slot,
     const int column = slot / 3, row = slot % 3;
     const float x0 = static_cast<float>(column * SLOT_WIDTH);
     const float y0 = static_cast<float>(SLOTS_TOP + row * SLOT_HEIGHT);
-    left = x0 / Core::kScreenBottomWidth;
-    right = (x0 + SLOT_WIDTH) / Core::kScreenBottomWidth;
-    top = y0 / Core::kScreenBottomHeight;
-    bottom = (y0 + static_cast<float>(rows * SLOT_HEIGHT)) / Core::kScreenBottomHeight;
+    left = x0 / kBottomScreenWidth;
+    right = (x0 + SLOT_WIDTH) / kBottomScreenWidth;
+    top = y0 / kBottomScreenHeight;
+    bottom = (y0 + static_cast<float>(rows * SLOT_HEIGHT)) / kBottomScreenHeight;
 }
 
 } // namespace
@@ -1701,12 +1722,12 @@ std::string FormatTargetOverlay(const PanelView& target) {
     return FormatPanelView("on", target);
 }
 
-Placement MapPlacement(const Layout::ScreenOverlay& touch, const PanelView& map) {
-    using Corner = Layout::ScreenOverlay::Corner;
+Placement MapPlacement(const ScreenOverlay& touch, const PanelView& map) {
+    using Corner = ScreenOverlay::Corner;
     Placement p;
     // at the touch overlay's own scale unless a height is given
     p.height = map.height > 0 ? map.height
-                              : touch.height * static_cast<float>(2 * SLOT_HEIGHT) / Core::kScreenBottomHeight;
+                              : touch.height * static_cast<float>(2 * SLOT_HEIGHT) / kBottomScreenHeight;
     if (map.placed) {
         p.x = map.x;
         p.y = map.y;
@@ -1717,10 +1738,10 @@ Placement MapPlacement(const Layout::ScreenOverlay& touch, const PanelView& map)
     return p;
 }
 
-Placement TargetPlacement(const Layout::ScreenOverlay& touch, const PanelView& map, const PanelView& target) {
+Placement TargetPlacement(const ScreenOverlay& touch, const PanelView& map, const PanelView& target) {
     Placement p;
     p.height = target.height > 0 ? target.height
-                                 : touch.height * static_cast<float>(SLOT_HEIGHT) / Core::kScreenBottomHeight;
+                                 : touch.height * static_cast<float>(SLOT_HEIGHT) / kBottomScreenHeight;
     p.height = std::min(p.height, 1.0f);
     if (target.placed) {
         p.x = target.x;
@@ -1738,9 +1759,9 @@ Placement TargetPlacement(const Layout::ScreenOverlay& touch, const PanelView& m
     return p;
 }
 
-Layout::ScreenOverlay QuestOverlay(const Layout::ScreenOverlay& touch, int map_slot, const PanelView& map,
+ScreenOverlay QuestOverlay(const ScreenOverlay& touch, int map_slot, const PanelView& map,
                                    int target_slot, const PanelView& target) {
-    Layout::ScreenOverlay overlay = touch;
+    ScreenOverlay overlay = touch;
     // the map takes two slots, one above the other
     CropToSlots(overlay.crop_left, overlay.crop_top, overlay.crop_right, overlay.crop_bottom, map_slot, 2);
     const Placement m = MapPlacement(touch, map);

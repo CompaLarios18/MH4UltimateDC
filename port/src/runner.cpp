@@ -29,6 +29,7 @@
 
 #include "arm_recomp.h"
 #include "hooks.h"
+#include "platform.h"
 #include "schedule.h"
 #include "audio_core/hle/common.h"
 #include "common/file_util.h"
@@ -2576,7 +2577,7 @@ int PrintOverlayLayout(const std::string& spec, const std::string& size, const s
         !height || !top_width) {
         return Usage();
     }
-    Layout::SetTopScreenWidth(top_width);
+    Port::AzaharPlatform().SetTopScreenWidth(top_width);
     auto overlay = Port::Hooks::ParseOverlay(spec);
     if (!quest.empty()) {
         const auto map = Port::Hooks::ParseQuestOverlay(quest);
@@ -2586,7 +2587,7 @@ int PrintOverlayLayout(const std::string& spec, const std::string& size, const s
                                                 Port::Hooks::ParseTargetOverlay(target));
         }
     }
-    Layout::SetScreenOverlay(overlay);
+    Port::AzaharPlatform().SetScreenOverlay(overlay);
     const auto layout = Layout::CustomFrameLayout(width, height, false, false);
     const auto& t = layout.top_screen;
     const auto& b = layout.bottom_screen;
