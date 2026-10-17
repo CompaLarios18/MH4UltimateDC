@@ -236,6 +236,8 @@ public:
     // ready queue of `core`, before it does. Returning true means the filter kept the thread back
     // (Azahar's CpuLimiter puts it to WaitSleep and wakes it later with ResumeFromWait); the scheduler
     // then takes the next one. The filter runs inside the scheduler: it must not switch fibers.
+    // A thread kept back after it was woken keeps the outcome of that wake-up (Wake does not overwrite
+    // an earlier result or index with an empty one), so the wait still returns its r0 and index.
     using SelectionFilter = std::function<bool(Thread& candidate)>;
     void SetSelectionFilter(int core, SelectionFilter filter);
 
