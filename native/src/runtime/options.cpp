@@ -13,7 +13,8 @@ MH4N_OPTION("runner", "--frames", "N",
             "no time limit");
 MH4N_OPTION("runner", "--trace-svc", "FILE",
             "write every system call to FILE, a line per thread created and a header (format of "
-            "tools/native/tracefmt.py; compare with tools/compare_svc_traces.py --normalize --outputs)");
+            "tools/native/tracefmt.py; compare with tools/compare_svc_traces.py --normalize --outputs "
+            "--ignore-regs config/native/svc_unused_registers.txt)");
 MH4N_OPTION("runner", "--state-trace", "FILE",
             "write the game's observable state on every game frame (tools/native/state_diff.py)");
 MH4N_OPTION("runner", "--observable", "FILE",

@@ -146,7 +146,8 @@ A bad guest memory access ends the process at once (`_exit`, memory.h), so the l
 of a trace are lost; the files are closed and complete in every other case.
 
 ```
-python3 tools/compare_svc_traces.py reference.svc native.svc --normalize --outputs
+python3 tools/compare_svc_traces.py reference.svc native.svc --normalize --outputs \
+    --ignore-regs config/native/svc_unused_registers.txt
 python3 tools/native/state_diff.py reference.state native.state
 ```
 
@@ -157,8 +158,10 @@ python3 tools/native/state_diff.py reference.state native.state
   few hundred microseconds between short computations) interleaves differently from run to run.
   `svc_test` is such a program: the calls, their places and their results agree with the
   reference, but the registers that carry a value built under a mutex at the time of the call
-  (r1 of `ReleaseMutex`, which the call ignores) can differ. The deterministic mode (N1-25) is
-  where cycle-driven time lives.
+  (r1 of `ReleaseMutex`, which the call neither reads nor writes) differ from run to run. Without
+  `--ignore-regs config/native/svc_unused_registers.txt` the comparison of the two traces fails
+  there and only there (checked on 10 runs); with the rule file it passes. The deterministic mode
+  (N1-25) is where cycle-driven time lives, and compares without the rules.
 - **Services.** Until N1-10 and the services of N1-12 on exist, every `svcConnectToPort` answers
   "not found" and every `svcSendSyncRequest` "invalid handle": `conf_srv` and `conf_services` stay
   in `NATIVE_NOT_YET` of `tests/test_conformance.py` together with `conf_mem` (N1-05 does not alias

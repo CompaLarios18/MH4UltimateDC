@@ -36,7 +36,7 @@ Tables between the `wp-status` markers are generated: edit the specs or use `set
 | N0-12 | Kernel census | S | native-worker | N0-04, N0-21, N0-10 | dump, save | `todo` |  |
 | N0-13 | PICA census | M | native-worker | N0-05, N0-10 | dump, save | `todo` |  |
 | N0-14 | Flat-memory coherence check | M | native-worker-high | N0-15, N0-10 | ci, dump, save | `todo` |  |
-| N0-15 | Performance baseline | M | native-worker | N0-18 | ci, pc, mac | `active` | session 20261017; base b1f744e |
+| N0-15 | Performance baseline | M | native-worker | N0-18 | ci, pc, mac | `review` | batch 20261017-n1; ci green (Native CI run 39011509987; windows.yml 39011525115 and macos.yml 39011526794 on its branch); the --perf-log item ran on the CI runner with io_test (149 frames, report ok); maintainer: numbers on the reference PC and the M2 following docs/native/perf-procedure.md (the orchestrator writes docs/research/perf-baseline.md) |
 | N0-16 | Azahar dependency inventory | S | native-worker | - | none | `done` | PR #5 |
 | N0-17 | `RC_NATIVE` mode in the recompiler runtime | M | native-worker-high | N0-03 | ci | `done` | PR #5; ci green (run 38885556028) |
 | N0-18 | Hooks on a platform interface | M | native-worker-high | N0-16, N0-17, N0-05 | ci, dump-check | `review` | batch 20261017-n1; ci green (run 39008761854, windows.yml 39008783719 and macos.yml 39008785589 on its branch); dump-check pending (runs with --set 0:fps=60 --set f600:hud_edges=1 give the same state trace before and after the change) |
@@ -60,7 +60,7 @@ Tables between the `wp-status` markers are generated: edit the specs or use `set
 | N1-27 | Threads: creation, TLS and the core-1 time limit | M | native-worker-high | N1-06 | none | `review` | batch 20261017-n1; ci pending |
 | N1-07 | The SVC table | M | native-worker-high | N1-02, N1-27 | none | `review` | batch 20261017-n1; ci pending |
 | N1-08 | Kernel conformance programs | M | native-worker | N0-04 | none | `done` | PR #5; ci green (runs 38923999146 and, for the follow-up, 38944850589); the 10 programs match the reference runner twice in a row; tests/test_port.py and tests/test_conformance.py pass with the tip's runner (148 passed, 11 skipped for the game and the native runner, at the third audit) |
-| N1-09 | The runtime, the native runner and the first boot | L | native-worker-high | N1-03, N1-07, N1-08, N0-08 | ci | `active` | session 20261017; base f293998 |
+| N1-09 | The runtime, the native runner and the first boot | L | native-worker-high | N1-03, N1-07, N1-08, N0-08 | ci | `review` | batch 20261017-n1; ci green on its branch (Native CI run 39012897629: native job ctest 22/22 and the conformance step 51 passed; the tools job failed only for the THIRD_PARTY row added in the merge); no dump items |
 | N1-10 | IPC core, ports, sessions and srv | M | native-worker-high | N1-07, N1-09, N0-21 | none | `todo` |  |
 | N1-11 | IPC replay harness | M | native-worker | N1-10, N0-21 | dump-check | `todo` |  |
 | N1-12 | fs: archives, RomFS and system archives | M | native-worker | N1-10, N1-11, N0-23 | dump-check | `todo` |  |
