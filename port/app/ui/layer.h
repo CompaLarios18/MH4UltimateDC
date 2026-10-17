@@ -16,13 +16,9 @@
 #include <vector>
 #include <imgui.h>
 
-#include "common/common_types.h"
+#include "util/types.h"
 
 union SDL_Event;
-
-namespace Core {
-class System;
-}
 
 namespace App {
 
@@ -50,7 +46,7 @@ private:
 
 class Layer {
 public:
-    Layer(Core::System& system, Window& window, Config& config);
+    Layer(Window& window, Config& config);
     ~Layer();
 
     Layer(const Layer&) = delete;
@@ -92,7 +88,6 @@ public:
     }
 
     // ── The menu and the keyboard, in a frame ──
-    Core::System& system;
     Window& window;
     Config& config;
     /// Runs `action` after the frame, on the emulation thread, without the lock.

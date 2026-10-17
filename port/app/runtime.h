@@ -15,7 +15,10 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <vector>
 
+#include "util/room.h"
+#include "util/swkbd.h"
 
 namespace Core {
 class System;
@@ -105,15 +108,97 @@ struct LoadRequest {
 enum class LoadResult { Ok, NotAGame, Encrypted, MissingSystemFiles, Failed };
 
 /// What one step of the run ended with.
-enum class RunState { Running, Paused, ShutdownRequested, Failed };
-
-enum class RuntimeStatus { Idle, Loaded, Running, Paused, Stopped };
+enum class RunState { Running, ShutdownRequested, Failed };
 
 /// How the game is running, since the last time it was asked.
 struct PerfStats {
     double game_fps = 0.0;         ///< the game's frames per second
     double system_fps = 0.0;       ///< the screens' refreshes per second
     double emulation_speed = 0.0;  ///< emulated time over real time
+};
+
+/// What the game's software keyboard applet calls (the app's keyboard, ui/keyboard.h, is one).
+/// Both are called on the emulation thread. Execute only takes the request and returns: the game
+/// polls for the text, and the app builds its frames on the same thread, so the keyboard shows
+/// itself in a frame and hands the text over with IRuntime::FinishKeyboard when the player is
+/// done.
+class ISoftwareKeyboard {
+public:
+    virtual ~ISoftwareKeyboard() = default;
+
+    /// The game asks for a text.
+    virtual void Execute(const KeyboardConfig& config) = 0;
+
+    /// The game says why it didn't take the last text (an empty message: no reason given).
+    virtual void ShowError(const std::string& error) = 0;
+};
+
+/// One member of the room.
+struct RoomMemberInfo {
+    std::string nickname;
+    std::string username;  ///< checked by a lobby, if any
+    std::string game;      ///< what it plays
+    MacAddress mac{};
+};
+
+/// What the room says about itself.
+struct RoomDetails {
+    std::string name;
+    unsigned slots = 0;
+};
+
+/// Who joins which room.
+struct RoomJoinRequest {
+    std::string nickname;
+    std::string console_id;  ///< the console's ID hash, which a room lets in once
+    std::string host;
+    int port = 0;
+    std::optional<MacAddress> preferred_mac;  ///< none: the room gives one
+    std::string password;
+};
+
+/// A room to open on this PC.
+struct RoomOpenRequest {
+    std::string name;
+    int port = 0;
+    std::string password;
+    int slots = 4;
+    std::string host_nickname;
+    std::string game_name;
+    std::uint64_t game_id = 0;
+    std::string lobby_url;  ///< the lobby to list the room in; empty: not listed
+    std::string token;      ///< the player's token there
+};
+
+struct RoomOpenResult {
+    enum class Listing { None, Listed, Failed };
+    bool ok = false;  ///< the room is open
+    Listing listing = Listing::None;
+    std::string listing_error;  ///< when Failed
+};
+
+/// What the other members and the network do, as the runtime tells the app. Every function
+/// runs on the network's thread, and none may bind or unbind callbacks. An empty function is
+/// not called.
+struct RoomCallbacks {
+    std::function<void(RoomError)> on_error;
+    std::function<void(RoomState)> on_state;
+    /// The room's details or its members changed.
+    std::function<void(const RoomDetails&, const std::vector<RoomMemberInfo>&)> on_info;
+    /// A member joined or left the room.
+    std::function<void(bool joined, const std::string& nickname)> on_member;
+    /// A local-play frame (or a net sync report, the port's own packet type) arrived from
+    /// `transmitter`.
+    enum class Packet { Beacon, Data, NetSync, Other };
+    std::function<void(const MacAddress& transmitter, Packet)> on_packet;
+};
+
+/// A game controller the app found, as the input profile names it: the SDL GUID, its number
+/// among controllers with that GUID, and its name.
+struct ControllerInfo {
+    std::string guid;
+    int port = 0;
+    std::string name;
 };
 
 class IRuntime {
@@ -146,18 +231,12 @@ public:
     /// the shader cache. Main thread.
     virtual void Start() = 0;
 
-    /// Runs the game for a slice and returns. While paused it runs nothing and returns Paused
-    /// (the windows pump their events inside it, so a paused game's windows don't answer). The
+    /// Runs the game for a slice and returns (the windows pump their events inside it). The
     /// emulation thread.
     virtual RunState RunStep() = 0;
 
-    /// Pauses the game or lets it go on; RunStep notices at its next call. Any thread.
-    virtual void SetPaused(bool paused) = 0;
-
     /// Shuts the emulated system down. The emulation thread, after the last RunStep.
     virtual void Stop() = 0;
-
-    virtual RuntimeStatus Status() const = 0;
 
     /// The game's speed since the last call (it starts a new measure). The emulation thread.
     virtual PerfStats TakePerfStats() = 0;
@@ -165,21 +244,105 @@ public:
     /// Waits for the work the runtime left running in the background. Main thread, at the end.
     virtual void WaitForBackgroundTasks() = 0;
 
-    // ── Input and network layers ──
-    // (N0-24 moves them behind the input and multiplayer interfaces)
+    // ── Input ──
+    // The 3DS's buttons and sticks come from the input profile (BuildInputProfile): each one
+    // reads the app's keys, a controller, or the full parameters of the player's choice. The
+    // window sends keys through KeyDown/KeyUp, the mouse as touches through the window itself
+    // (until N2b), and the software keyboard's text goes through the keyboard (below).
 
     /// Starts the input layer (the keyboard and controller engines) after the app's SDL, and
     /// stops it. Main thread.
     virtual void InitInput() = 0;
     virtual void ShutdownInput() = 0;
 
-    /// The input devices read the settings' input profile again (a controller came or went).
-    /// Emulation thread.
+    /// Makes the input profile: every button and stick from `config` (full parameters first,
+    /// else the key, joined with `controller` when there is one), the mouse as the stylus, no
+    /// motion sensor. Main thread before the game loads, or the emulation thread; follow it
+    /// with ReloadInputDevices while the game runs.
+    virtual void BuildInputProfile(const Config& config, const ControllerInfo* controller) = 0;
+
+    /// The input devices read the profile again (a controller came or went). Emulation thread.
     virtual void ReloadInputDevices() = 0;
+
+    /// While muted (the in-game menu is up) every button reads released and every stick
+    /// centred; once unmuted, a button still held from before reads released until it is let
+    /// go, and a stick still pushed reads centred until it comes back. Any thread.
+    virtual void SetInputMuted(bool muted) = 0;
+
+    /// A key (an SDL scancode) went down or up for the console, and all of them let go. The
+    /// window's thread (the emulation thread).
+    virtual void KeyDown(int scancode) = 0;
+    virtual void KeyUp(int scancode) = 0;
+    virtual void ReleaseAllKeys() = 0;
+
+    // ── The software keyboard ──
+
+    /// The game's keyboard requests go to `keyboard` instead of the runtime's default one. The
+    /// runtime keeps it until the end. Main thread, after CommitOptions.
+    virtual void SetSoftwareKeyboard(std::shared_ptr<ISoftwareKeyboard> keyboard) = 0;
+
+    /// The player is done: hands the game the text and the number of the button pressed (the
+    /// buttons are numbered from the left, KeyboardButtons). None when the game takes it, else
+    /// why it doesn't and the keyboard stays up. Emulation thread, after Execute.
+    virtual KeyboardError FinishKeyboard(const std::string& text, std::uint8_t button) = 0;
+
+    // ── Rooms ──
+    // The network room of Azahar's multiplayer (multiplayer.h): one room client, which joins a
+    // room at an address, and one room server, which this PC can open. The calls below are the
+    // main thread's or the room job's thread's unless said otherwise; the callbacks arrive on
+    // the network's thread.
 
     /// Starts the network layer (rooms) and stops it. Main thread.
     virtual void InitNetwork() = 0;
     virtual void ShutdownNetwork() = 0;
+
+    /// Whether the network layer is up (between InitNetwork and ShutdownNetwork). Any thread.
+    virtual bool RoomsAvailable() const = 0;
+
+    /// Makes the folder the console's MAC address is kept in, so that the address is the same
+    /// every time it is read (otherwise each read before the game starts gives a new one).
+    virtual void PrepareConsoleData() = 0;
+
+    /// The console's identity: its user name, ID hash and MAC address, as its settings say.
+    virtual std::string ConsoleUsername() const = 0;
+    virtual std::string ConsoleIdHash() const = 0;
+    virtual MacAddress ConsoleMac() const = 0;
+
+    /// Whether the game is loaded and not shut down. Any thread.
+    virtual bool IsGameRunning() const = 0;
+
+    /// Gives the running console this MAC address (the page the game reads it from). False when
+    /// the game isn't running or the console already has it. Emulation thread.
+    virtual bool SetConsoleMac(const MacAddress& mac) = 0;
+
+    /// The room client's events go to `callbacks` until UnbindRoomCallbacks. A no-op without
+    /// the network layer.
+    virtual void BindRoomCallbacks(RoomCallbacks callbacks) = 0;
+    virtual void UnbindRoomCallbacks() = 0;
+
+    /// Starts joining; the answer comes as the state (RoomMemberState, on_state) and, when the
+    /// room refuses, on_error. Returns at once.
+    virtual void JoinRoom(const RoomJoinRequest& request) = 0;
+
+    /// Leaves the room. Blocks for a moment.
+    virtual void LeaveRoom() = 0;
+
+    virtual RoomState RoomMemberState() const = 0;
+    virtual bool RoomConnected() const = 0;
+    virtual MacAddress RoomMacAddress() const = 0;
+    virtual std::string RoomNickname() const = 0;
+    virtual RoomDetails RoomInformation() const = 0;
+    virtual std::vector<RoomMemberInfo> RoomMembers() const = 0;
+
+    /// Whether this PC runs a room that is open.
+    virtual bool HostingRoom() const = 0;
+
+    /// Opens a room on this PC (and lists it in the lobby when `request.lobby_url` is set and
+    /// the build can); blocks while the lobby answers.
+    virtual RoomOpenResult OpenRoom(const RoomOpenRequest& request) = 0;
+
+    /// Stops the lobby listing and closes the room this PC runs. Blocks for a moment.
+    virtual void CloseRoom() = 0;
 
     /// Gives the console a new random ID, kept in the user folder (a room lets in one player
     /// per console ID). Main thread, before the game loads.
@@ -189,9 +352,9 @@ public:
     /// Main thread, before the game loads.
     virtual void CommitOptions() = 0;
 
-    /// Transitional: the Azahar system that main() hands to the windows, the menu layer (ui.h)
-    /// and the rooms (multiplayer.h), which still take it. N0-24 and N2b take it away. Null in a
-    /// runtime that isn't Azahar's.
+    /// Transitional: the Azahar system that main() hands to the windows (window.h), which take
+    /// it. Ui::Start and Multiplayer::Init are still given it and don't use it. N2b takes it
+    /// away. Null in a runtime that isn't Azahar's.
     virtual Core::System* HostSystem() = 0;
 
     // ── Paths ──
@@ -202,9 +365,6 @@ public:
 
     /// Another user folder (--user), before anything reads or writes in the old one. Main thread.
     virtual void SetUserDir(const std::string& dir) = 0;
-
-    /// The virtual SD card, with the separator at its end: the saves and the installed update.
-    virtual std::string SdmcDir() const = 0;
 
     /// The game's options file (mh4u.ini) and what a new one says. Any thread.
     virtual std::string GameOptionsPath() const = 0;

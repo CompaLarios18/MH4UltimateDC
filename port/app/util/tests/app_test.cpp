@@ -19,148 +19,16 @@
 #include "runtime.h"
 #include "util/file.h"
 #include "util/log.h"
+#include "util/tests/fake_runtime.h"
 
 namespace fs = std::filesystem;
 using namespace App;
 
 namespace {
 
-struct FakeRuntime final : IRuntime {
-    // what the tests set
-    std::string user_dir;
-    GameHeader header;
-    InstalledTitle installed;
-    CiaResult cia_check = CiaResult::Ok;
-    std::optional<CiaInfo> cia_info;
-    CiaResult cia_install = CiaResult::Ok;
-    std::vector<std::string> asked;  ///< the paths the checks asked about
-
-    std::string PrepareCode(const LoadRequest&) override { return ""; }
-    std::string CodeNotice() override { return ""; }
-    LoadResult Load(const LoadRequest&, Window&, Window*) override { return LoadResult::Ok; }
-    std::string StatusDetails() const override { return ""; }
-    void Start() override {}
-    RunState RunStep() override { return RunState::Running; }
-    void SetPaused(bool) override {}
-    void Stop() override {}
-    RuntimeStatus Status() const override { return RuntimeStatus::Idle; }
-    PerfStats TakePerfStats() override { return {}; }
-    void WaitForBackgroundTasks() override {}
-    void InitInput() override {}
-    void ShutdownInput() override {}
-    void ReloadInputDevices() override {}
-    void InitNetwork() override {}
-    void ShutdownNetwork() override {}
-    void NewConsoleId() override {}
-    void CommitOptions() override {}
-    Core::System* HostSystem() override { return nullptr; }
-
-    std::string UserDir() const override { return user_dir; }
-    void SetUserDir(const std::string& dir) override { user_dir = dir; }
-    std::string SdmcDir() const override { return user_dir + "sdmc/"; }
-    std::string GameOptionsPath() const override { return user_dir + "mh4u.ini"; }
-    std::string GameOptionsTemplate() const override { return ""; }
-    BuildInfo Build() const override { return {"fake 1", "main", "abc"}; }
-    void StartLogging(const std::string&, const std::string&) override {}
-    void StopLogging() override {}
-    void LogOptions() override {}
-
-    void ApplyConfig(const Config&) override {}
-    Renderer ActiveRenderer() const override { return Renderer::Vulkan; }
-    void SetActiveRenderer(Renderer) override {}
-    ScreenLayout CurrentLayout() const override { return ScreenLayout::Overlay; }
-    void SetLayout(ScreenLayout) override {}
-    void ApplyLayout(ScreenLayout) override {}
-    void SetResolution(int) override {}
-    void SetLinearFilter(bool) override {}
-    void SetVsync(bool) override {}
-    void SetVolume(int) override {}
-    void SetCpuClock(int) override {}
-    bool SetGameOption(const std::string&, const std::string&) override { return false; }
-    void SetLayoutEditing(bool) override {}
-
-    const char* ButtonSettingName(int button) const override {
-        static std::vector<std::string> names;
-        if (names.empty()) {
-            for (int i = 0; i < Button::Count; ++i) {
-                names.push_back(fmt::format("key{}", i));
-            }
-        }
-        return names[static_cast<std::size_t>(button)].c_str();
-    }
-    const char* StickSettingName(int stick) const override {
-        return stick == Analog::CirclePad ? "stickA" : "stickB";
-    }
-    std::string ButtonBinding(int) const override { return ""; }
-    std::string StickBinding(int) const override { return ""; }
-    std::string DescribeControllerInput(const std::string&) const override { return ""; }
-
-    GameHeader ReadGameHeader(const std::string& path) const override {
-        const_cast<FakeRuntime*>(this)->asked.push_back(path);
-        return header;
-    }
-    InstalledTitle FindInstalledTitle(std::uint64_t) const override { return installed; }
-    CiaResult CheckCia(const std::string&, std::optional<CiaInfo>& info) const override {
-        info = cia_info;
-        return cia_check;
-    }
-    CiaResult InstallCia(const std::string&,
-                         const std::function<void(std::size_t, std::size_t)>& progress) override {
-        if (progress) {
-            progress(0, 0);  // nothing to measure yet
-            progress(50, 100);
-        }
-        return cia_install;
-    }
-};
-
-struct TempDir {
-    fs::path path;
-    TempDir() {
-        static int counter = 0;
-        path = fs::temp_directory_path() /
-               ("mh4u_app_test_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) +
-                "_" + std::to_string(counter++));
-        fs::create_directories(path);
-    }
-    ~TempDir() {
-        std::error_code ec;
-        fs::remove_all(path, ec);
-    }
-    std::string str(const std::string& name = "") const {
-        return name.empty() ? path.generic_string() + "/" : (path / name).generic_string();
-    }
-};
-
-/// Installs a fake as the app's runtime for a test, with a user folder of its own.
-struct Env {
-    TempDir dir;
-    FakeRuntime runtime;
-    std::vector<std::string> logged;
-    Env() {
-        runtime.user_dir = dir.str();
-        SetRuntime(&runtime);
-        collector = this;
-        Util::SetLogSink([](Util::LogLevel, const char*, unsigned, const char*, const std::string& message) {
-            collector->logged.push_back(message);
-        });
-    }
-    ~Env() {
-        Util::SetLogSink(nullptr);
-        SetRuntime(nullptr);
-        collector = nullptr;
-    }
-    bool Logged(const std::string& part) const {
-        for (const std::string& line : logged) {
-            if (line.find(part) != std::string::npos) {
-                return true;
-            }
-        }
-        return false;
-    }
-    static Env* collector;
-};
-Env* Env::collector = nullptr;
+using fake::Env;
+using fake::FakeRuntime;
+using fake::TempDir;
 
 }  // namespace
 

@@ -84,7 +84,8 @@ struct Status {
     bool public_checked = false;
 };
 
-/// Before anything else, after Network::Init.
+/// Before anything else, after IRuntime::InitNetwork. The system argument is not used: main()
+/// still passes it (N0-24 left that call as it was).
 void Init(Core::System& system, Config& config);
 
 /// After the game stopped: leaves, closes a hosted room, waits for a job that runs.

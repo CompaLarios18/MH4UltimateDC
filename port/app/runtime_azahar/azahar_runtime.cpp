@@ -1,9 +1,7 @@
 #include "runtime_azahar/azahar_runtime.h"
 
 #include <atomic>
-#include <chrono>
 #include <cstdlib>
-#include <thread>
 
 #include <fmt/format.h>
 
@@ -16,18 +14,11 @@
 #include "common/settings.h"
 #include "core/core.h"
 #include "core/frontend/applets/default_applets.h"
-#include "core/hle/service/apt/apt.h"
 #include "core/hle/service/cfg/cfg.h"
-#include "core/hle/service/hid/hid.h"
-#include "core/hle/service/ir/ir_rst.h"
-#include "core/hle/service/ir/ir_user.h"
-#include "core/hle/service/sm/sm.h"
 #include "core/loader/loader.h"
 #include "core/perf_stats.h"
 #include "frontend.h"
-#include "input.h"
-#include "input_common/main.h"
-#include "network/network.h"
+#include "runtime_azahar/azahar_keyboard.h"
 #include "runtime_azahar/log_sink.h"
 #include "util/log.h"
 #include "video_core/gpu.h"
@@ -66,9 +57,8 @@ struct AzaharRuntime::Impl {
     /// Keeps the work detached from the threads that started it finished before the program ends
     /// (Azahar's rule: one of these in main, waited for at the end).
     Common::DetachedTasks detached_tasks;
-    std::atomic<bool> paused{false};
-    std::atomic<RuntimeStatus> status{RuntimeStatus::Idle};
     std::string update_notice;  ///< why request.update didn't install, if it didn't
+    std::shared_ptr<AzaharKeyboard> keyboard;  ///< the software keyboard the core was given
 };
 
 AzaharRuntime::AzaharRuntime() : impl(std::make_unique<Impl>()) {
@@ -107,7 +97,6 @@ LoadResult AzaharRuntime::Load(const LoadRequest& request, Window& window, Windo
     const Status status = Core::System::GetInstance().Load(window, request.game, secondary);
     switch (status) {
     case Status::Success:
-        impl->status = RuntimeStatus::Loaded;
         return LoadResult::Ok;
     case Status::ErrorGetLoader:
     case Status::ErrorLoader_ErrorInvalidFormat:
@@ -138,16 +127,9 @@ void AzaharRuntime::Start() {
                 APP_LOG_DEBUG("shader cache {}/{}", value, total);
             }
         });
-    impl->status = RuntimeStatus::Running;
 }
 
 RunState AzaharRuntime::RunStep() {
-    if (impl->paused) {
-        impl->status = RuntimeStatus::Paused;
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
-        return RunState::Paused;
-    }
-    impl->status = RuntimeStatus::Running;
     const auto result = Core::System::GetInstance().RunLoop();
     if (result == Core::System::ResultStatus::ShutdownRequested) {
         return RunState::ShutdownRequested;
@@ -155,17 +137,8 @@ RunState AzaharRuntime::RunStep() {
     return result == Core::System::ResultStatus::Success ? RunState::Running : RunState::Failed;
 }
 
-void AzaharRuntime::SetPaused(bool paused) {
-    impl->paused = paused;
-}
-
 void AzaharRuntime::Stop() {
     Core::System::GetInstance().Shutdown();
-    impl->status = RuntimeStatus::Stopped;
-}
-
-RuntimeStatus AzaharRuntime::Status() const {
-    return impl->status;
 }
 
 PerfStats AzaharRuntime::TakePerfStats() {
@@ -177,38 +150,14 @@ void AzaharRuntime::WaitForBackgroundTasks() {
     impl->detached_tasks.WaitForAllTasks();
 }
 
-void AzaharRuntime::InitInput() {
-    InputCommon::Init();
-    Input::Register();
+void AzaharRuntime::SetSoftwareKeyboard(std::shared_ptr<ISoftwareKeyboard> keyboard) {
+    impl->keyboard = std::make_shared<AzaharKeyboard>(std::move(keyboard));
+    Core::System::GetInstance().RegisterSoftwareKeyboard(impl->keyboard);
 }
 
-void AzaharRuntime::ShutdownInput() {
-    InputCommon::Shutdown();
-}
-
-void AzaharRuntime::ReloadInputDevices() {
-    auto& system = Core::System::GetInstance();
-    if (const auto hid = Service::HID::GetModule(system)) {
-        hid->ReloadInputDevices();
-    }
-    if (const auto apt = Service::APT::GetModule(system)) {
-        apt->GetAppletManager()->ReloadInputDevices();
-    }
-    auto& sm = system.ServiceManager();
-    if (const auto ir_user = sm.GetService<Service::IR::IR_USER>("ir:USER")) {
-        ir_user->ReloadInputDevices();
-    }
-    if (const auto ir_rst = sm.GetService<Service::IR::IR_RST>("ir:rst")) {
-        ir_rst->ReloadInputDevices();
-    }
-}
-
-void AzaharRuntime::InitNetwork() {
-    Network::Init();
-}
-
-void AzaharRuntime::ShutdownNetwork() {
-    Network::Shutdown();
+KeyboardError AzaharRuntime::FinishKeyboard(const std::string& text, std::uint8_t button) {
+    // (no keyboard was set: CallbackFailed, the nearest answer of the game's own)
+    return impl->keyboard ? impl->keyboard->Finish(text, button) : KeyboardError::CallbackFailed;
 }
 
 void AzaharRuntime::NewConsoleId() {
@@ -235,10 +184,6 @@ std::string AzaharRuntime::UserDir() const {
 
 void AzaharRuntime::SetUserDir(const std::string& dir) {
     FileUtil::SetUserPath(dir);
-}
-
-std::string AzaharRuntime::SdmcDir() const {
-    return FileUtil::GetUserPath(FileUtil::UserPath::SDMCDir);
 }
 
 std::string AzaharRuntime::GameOptionsPath() const {

@@ -26,33 +26,17 @@
 #include <sys/socket.h>
 #endif
 
-#include "common/file_util.h"
-#include "common/logging/log.h"
-#include "common/settings.h"
 #include "config.h"
-#include "core/core.h"
-#include "core/hle/kernel/kernel.h"
-#include "core/hle/kernel/shared_page.h"
-#include "core/hle/service/cfg/cfg.h"
 #include "invite.h"
 #include "launcher/lobby.h"
-#include "network/network.h"
-#include "network/room.h"
-#include "network/room_member.h"
-#include "network/verify_user.h"
-
-#ifdef ENABLE_WEB_SERVICE
-#include "network/announce_multiplayer_session.h"
-#include "web_service/verify_user_jwt.h"
-#endif
+#include "runtime.h"
+#include "util/log.h"
 
 namespace App::Multiplayer {
 
 namespace {
 
 using Clock = std::chrono::steady_clock;
-using Network::MacAddress;
-using Network::RoomMember;
 
 constexpr u64 MH4U_USA = 0x0004000000126300;
 constexpr const char* MH4U_NAME = "Monster Hunter 4 Ultimate";
@@ -69,12 +53,8 @@ struct Traffic {
     u64 beacons = 0, data = 0, other = 0, clocks = 0;
 };
 
-/// The port's net sync clock reports (port/src/netsync.cpp): a Wi-Fi packet type no 3DS frame
-/// uses. They show that a port player is in the room, not that their game plays locally.
-constexpr auto NET_SYNC_PACKET = static_cast<Network::WifiPacket::PacketType>(0x4d);
-
 struct State {
-    Core::System* system = nullptr;
+    bool active = false;  ///< between Init and Shutdown
     Config* config = nullptr;
 
     std::mutex mutex;  // everything below
@@ -86,8 +66,8 @@ struct State {
     std::map<MacAddress, Traffic> traffic;          // local-play packets per sender
     Clock::time_point traffic_logged{};
     std::map<MacAddress, Traffic> traffic_at_log;
-    RoomMember::MemberList members;
-    RoomMember::Error last_error{};
+    std::vector<RoomMemberInfo> members;
+    RoomError last_error{};
     u64 error_count = 0;
     bool was_in_room = false;
     // --join-after
@@ -96,15 +76,6 @@ struct State {
     double later_seconds = 0;
     Clock::time_point started{};
     bool tick_seen = false;
-
-#ifdef ENABLE_WEB_SERVICE
-    std::shared_ptr<Network::AnnounceMultiplayerSession> announce;
-#endif
-    RoomMember::CallbackHandle<RoomMember::Error> on_error;
-    RoomMember::CallbackHandle<RoomMember::State> on_state;
-    RoomMember::CallbackHandle<Network::RoomInformation> on_info;
-    RoomMember::CallbackHandle<Network::WifiPacket> on_wifi;
-    RoomMember::CallbackHandle<Network::StatusMessageEntry> on_status;
 
     ~State() {
         // (an exit that didn't go through Shutdown)
@@ -126,10 +97,43 @@ std::string MacText(const MacAddress& mac) {
                        mac[4], mac[5]);
 }
 
+/// The error's name, for the log.
+const char* ErrorName(RoomError error) {
+    switch (error) {
+    case RoomError::LostConnection:
+        return "LostConnection";
+    case RoomError::HostKicked:
+        return "HostKicked";
+    case RoomError::Unknown:
+        return "UnknownError";
+    case RoomError::NameCollision:
+        return "NameCollision";
+    case RoomError::MacCollision:
+        return "MacCollision";
+    case RoomError::ConsoleIdCollision:
+        return "ConsoleIdCollision";
+    case RoomError::WrongVersion:
+        return "WrongVersion";
+    case RoomError::WrongPassword:
+        return "WrongPassword";
+    case RoomError::CouldNotConnect:
+        return "CouldNotConnect";
+    case RoomError::RoomIsFull:
+        return "RoomIsFull";
+    case RoomError::HostBanned:
+        return "HostBanned";
+    case RoomError::PermissionDenied:
+        return "PermissionDenied";
+    case RoomError::NoSuchUser:
+        return "NoSuchUser";
+    }
+    return "Unknown";
+}
+
 /// What a room's refusal (or its end) means, and what to do about it.
-void Explain(RoomMember::Error error, const std::string& where, const std::string& nickname,
+void Explain(RoomError error, const std::string& where, const std::string& nickname,
              std::string& message, std::string& hint) {
-    using E = RoomMember::Error;
+    using E = RoomError;
     switch (error) {
     case E::CouldNotConnect:
         message = fmt::format("No room answered at {}.", where);
@@ -181,7 +185,7 @@ void Explain(RoomMember::Error error, const std::string& where, const std::strin
         hint = "The host's PC or connection went away, or the network dropped. Rejoin when it's back.";
         break;
     default:
-        message = fmt::format("Couldn't join the room at {} ({}).", where, Network::GetErrorStr(error));
+        message = fmt::format("Couldn't join the room at {} ({}).", where, ErrorName(error));
         hint = "Is the network up? Try again.";
         break;
     }
@@ -199,59 +203,35 @@ Identity Me() {
     Identity me;
     me.nickname = s.config->nickname;
     if (me.nickname.empty()) {
-        me.nickname = Service::CFG::GetUsername(*s.system);
+        me.nickname = Runtime().ConsoleUsername();
     }
-    me.console_id = Service::CFG::GetConsoleIdHash(*s.system);
-    me.mac = Service::CFG::GetConsoleMacAddress(*s.system);
+    me.console_id = Runtime().ConsoleIdHash();
+    me.mac = Runtime().ConsoleMac();
     return me;
 }
 
-/// Gives the running console this MAC address (the shared page the game reads it from), as
-/// Azahar's local-wireless service does when it starts in a room. The emulation thread.
+/// Gives the running console this MAC address (the page the game reads it from), as Azahar's
+/// local-wireless service does when it starts in a room. The emulation thread.
 void SetConsoleMac(const MacAddress& mac) {
-    auto& system = *S().system;
-    if (!system.IsPoweredOn()) {
-        return;
+    if (Runtime().SetConsoleMac(mac)) {
+        APP_LOG_INFO("the console's MAC address is now {}", MacText(mac));
     }
-    auto& page = system.Kernel().GetSharedPageHandler();
-    if (page.GetMacAddress() != mac) {
-        page.SetMacAddress(mac);
-        LOG_INFO(Network, "the console's MAC address is now {}", MacText(mac));
-    }
-}
-
-void StopAnnounce() {
-#ifdef ENABLE_WEB_SERVICE
-    std::shared_ptr<Network::AnnounceMultiplayerSession> announce;
-    {
-        auto& s = S();
-        std::scoped_lock lock{s.mutex};
-        announce = std::move(s.announce);
-    }
-    if (announce) {
-        announce->Stop();
-    }
-#endif
 }
 
 /// Leaves (and closes a hosted room when `close`): blocks for a moment.
 void LeaveNow(bool close) {
-    const auto member = Network::GetRoomMember().lock();
-    if (member && member->IsConnected()) {
-        member->Leave();
-        LOG_INFO(Network, "left the room");
+    if (Runtime().RoomConnected()) {
+        Runtime().LeaveRoom();
+        APP_LOG_INFO("left the room");
     }
-    const auto room = Network::GetRoom().lock();
-    if (close && room && room->GetState() == Network::Room::State::Open) {
-        StopAnnounce();
-        room->Destroy();
-        LOG_INFO(Network, "closed the room");
+    if (close && Runtime().HostingRoom()) {
+        Runtime().CloseRoom();
+        APP_LOG_INFO("closed the room");
     }
 }
 
 bool Hosting() {
-    const auto room = Network::GetRoom().lock();
-    return room && room->GetState() == Network::Room::State::Open;
+    return Runtime().HostingRoom();
 }
 
 /// Joins and waits for the room's answer. The console's own MAC address first (the one the
@@ -259,8 +239,8 @@ bool Hosting() {
 bool JoinNow(const Identity& me, const std::string& host, int port, const std::string& password,
              std::string& error, std::string& hint) {
     auto& s = S();
-    const auto member = Network::GetRoomMember().lock();
-    if (!member) {
+    auto& runtime = Runtime();
+    if (!runtime.RoomsAvailable()) {
         error = "The network library didn't start.";
         return false;
     }
@@ -271,25 +251,33 @@ bool JoinNow(const Identity& me, const std::string& host, int port, const std::s
             std::scoped_lock lock{s.mutex};
             errors_before = s.error_count;
         }
-        LOG_INFO(Network, "joining the room at {} as {}{}", where, me.nickname,
-                 own_mac ? fmt::format(" (MAC {})", MacText(me.mac)) : "");
-        member->Join(me.nickname, me.console_id, host.c_str(), static_cast<u16>(port), 0,
-                     own_mac ? me.mac : Network::NoPreferredMac, password);
+        APP_LOG_INFO("joining the room at {} as {}{}", where, me.nickname,
+                     own_mac ? fmt::format(" (MAC {})", MacText(me.mac)) : "");
+        RoomJoinRequest request;
+        request.nickname = me.nickname;
+        request.console_id = me.console_id;
+        request.host = host;
+        request.port = port;
+        if (own_mac) {
+            request.preferred_mac = me.mac;
+        }
+        request.password = password;
+        runtime.JoinRoom(request);
         const auto deadline = Clock::now() + std::chrono::seconds(10);
-        while (member->GetState() == RoomMember::State::Joining && Clock::now() < deadline) {
+        while (runtime.RoomMemberState() == RoomState::Joining && Clock::now() < deadline) {
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
-        if (member->GetState() == RoomMember::State::Joined ||
-            member->GetState() == RoomMember::State::Moderator) {
-            LOG_INFO(Network, "in the room at {} as {}, MAC {}", where, me.nickname,
-                     MacText(member->GetMacAddress()));
+        if (runtime.RoomMemberState() == RoomState::Joined ||
+            runtime.RoomMemberState() == RoomState::Moderator) {
+            APP_LOG_INFO("in the room at {} as {}, MAC {}", where, me.nickname,
+                         MacText(runtime.RoomMacAddress()));
             return true;
         }
         // (the member gives its state, then the reason)
-        RoomMember::Error why = RoomMember::Error::CouldNotConnect;
+        RoomError why = RoomError::CouldNotConnect;
         bool known = false;
         const auto reason_deadline = Clock::now() + std::chrono::milliseconds(300);
-        while (!known && member->GetState() != RoomMember::State::Joining) {
+        while (!known && runtime.RoomMemberState() != RoomState::Joining) {
             {
                 std::scoped_lock lock{s.mutex};
                 if (s.error_count != errors_before) {
@@ -302,16 +290,16 @@ bool JoinNow(const Identity& me, const std::string& host, int port, const std::s
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(5));
         }
-        if (member->GetState() == RoomMember::State::Joining) {
-            member->Leave();  // no answer to the join request in 10 s
+        if (runtime.RoomMemberState() == RoomState::Joining) {
+            runtime.LeaveRoom();  // no answer to the join request in 10 s
         }
-        if (known && why == RoomMember::Error::MacCollision && own_mac) {
-            LOG_INFO(Network, "the room has another console with MAC {}: joining with one it gives",
-                     MacText(me.mac));
+        if (known && why == RoomError::MacCollision && own_mac) {
+            APP_LOG_INFO("the room has another console with MAC {}: joining with one it gives",
+                         MacText(me.mac));
             continue;
         }
         Explain(why, where, me.nickname, error, hint);
-        LOG_WARNING(Network, "couldn't join the room at {}: {}", where, error);
+        APP_LOG_WARNING("couldn't join the room at {}: {}", where, error);
         return false;
     }
     return false;
@@ -320,8 +308,8 @@ bool JoinNow(const Identity& me, const std::string& host, int port, const std::s
 bool HostNow(const Identity& me, const HostRequest& request, std::string& error, std::string& hint,
              std::string& lobby_note) {
     auto& s = S();
-    const auto room = Network::GetRoom().lock();
-    if (!room) {
+    auto& runtime = Runtime();
+    if (!runtime.RoomsAvailable()) {
         error = "The network library didn't start.";
         return false;
     }
@@ -332,48 +320,39 @@ bool HostNow(const Identity& me, const HostRequest& request, std::string& error,
         token = s.config->token;
     }
     const bool listed = request.listed && !lobby.empty() && !token.empty();
-    std::unique_ptr<Network::VerifyUser::Backend> verify =
-        std::make_unique<Network::VerifyUser::NullBackend>();
-#ifdef ENABLE_WEB_SERVICE
+    RoomOpenRequest open;
+    open.name = request.name.empty() ? "MH4U" : request.name;
+    open.port = request.port;
+    open.password = request.password;
+    open.slots = std::clamp(request.slots, 2, 254);
+    open.host_nickname = me.nickname;
+    open.game_name = MH4U_NAME;
+    open.game_id = MH4U_USA;
     if (listed) {
-        Settings::values.web_api_url = Launcher::Lobby::NormalizeUrl(lobby);
-        Settings::values.network_token = token;
-        verify = std::make_unique<WebService::VerifyUserJWT>(Settings::values.web_api_url.GetValue());
+        open.lobby_url = Launcher::Lobby::NormalizeUrl(lobby);
+        open.token = token;
     }
-#endif
-    const std::string name = request.name.empty() ? "MH4U" : request.name;
-    if (!room->Create(name, "", "", static_cast<u16>(request.port), request.password,
-                      static_cast<u32>(std::clamp(request.slots, 2, 254)), me.nickname, MH4U_NAME,
-                      MH4U_USA, std::move(verify))) {
+    const RoomOpenResult opened = runtime.OpenRoom(open);
+    if (!opened.ok) {
         error = fmt::format("Couldn't open a room on UDP port {}.", request.port);
         hint = "Another program (another room, or a second copy of the app) uses that port: close it "
                "or choose another port.";
         return false;
     }
-    LOG_INFO(Network, "hosting room \"{}\" on port {}", name, request.port);
+    APP_LOG_INFO("hosting room \"{}\" on port {}", open.name, request.port);
     lobby_note = listed ? "" : (request.listed ? "Not listed: listing needs a lobby and your token there."
                                                : "Unlisted: friends join by address or invite.");
-#ifdef ENABLE_WEB_SERVICE
-    if (listed) {
-        auto announce = std::make_shared<Network::AnnounceMultiplayerSession>(me.nickname);
-        const auto result = announce->Register();
-        if (result.result_code != Common::WebResult::Code::Success) {
-            lobby_note = fmt::format("The lobby didn't list the room: {}. Friends can still join "
-                                     "by address or invite.",
-                                     result.result_string);
-            LOG_ERROR(Network, "the lobby at {} didn't list the room: {}", lobby, result.result_string);
-        } else {
-            announce->Start();
-            lobby_note = "Listed in the lobby at " + Launcher::Lobby::NormalizeUrl(lobby) + ".";
-            LOG_INFO(Network, "room listed in the lobby at {}", lobby);
-            std::scoped_lock lock{s.mutex};
-            s.announce = std::move(announce);
-        }
+    if (opened.listing == RoomOpenResult::Listing::Failed) {
+        lobby_note = fmt::format("The lobby didn't list the room: {}. Friends can still join "
+                                 "by address or invite.",
+                                 opened.listing_error);
+        APP_LOG_ERROR("the lobby at {} didn't list the room: {}", lobby, opened.listing_error);
+    } else if (opened.listing == RoomOpenResult::Listing::Listed) {
+        lobby_note = "Listed in the lobby at " + open.lobby_url + ".";
+        APP_LOG_INFO("room listed in the lobby at {}", lobby);
     }
-#endif
     if (!JoinNow(me, "127.0.0.1", request.port, request.password, error, hint)) {
-        StopAnnounce();
-        room->Destroy();
+        runtime.CloseRoom();
         return false;
     }
     return true;
@@ -472,7 +451,7 @@ void FindAddresses(const std::string& lobby) {
     s.status.public_address = address;
     s.status.public_checked = true;
     if (!address.empty()) {
-        LOG_INFO(Network, "the lobby sees this PC at {}", address);
+        APP_LOG_INFO("the lobby sees this PC at {}", address);
     }
 }
 
@@ -510,9 +489,9 @@ bool StartJob(const std::string& action, std::function<void()> work) {
 /// After a job: the status as the room member is now.
 void Refresh(const std::string& error, const std::string& hint) {
     auto& s = S();
-    const auto member = Network::GetRoomMember().lock();
-    const bool in_room = member && (member->GetState() == RoomMember::State::Joined ||
-                                    member->GetState() == RoomMember::State::Moderator);
+    auto& runtime = Runtime();
+    const RoomState state = runtime.RoomMemberState();
+    const bool in_room = state == RoomState::Joined || state == RoomState::Moderator;
     std::scoped_lock lock{s.mutex};
     s.status.phase = in_room ? Phase::InRoom : Phase::Off;
     s.status.error = error;
@@ -520,12 +499,12 @@ void Refresh(const std::string& error, const std::string& hint) {
     s.status.hosting = Hosting();
     s.was_in_room = in_room;
     if (in_room) {
-        const auto info = member->GetRoomInformation();
+        const RoomDetails info = runtime.RoomInformation();
         s.status.room_name = info.name;
-        s.status.slots = info.member_slots;
-        s.status.nickname = member->GetNickname();
-        s.status.moderator = member->GetState() == RoomMember::State::Moderator;
-        s.members = member->GetMemberInformation();
+        s.status.slots = info.slots;
+        s.status.nickname = runtime.RoomNickname();
+        s.status.moderator = state == RoomState::Moderator;
+        s.members = runtime.RoomMembers();
     }
 }
 
@@ -554,54 +533,53 @@ std::string Nickname() {
     if (!s.config->nickname.empty()) {
         return s.config->nickname;
     }
-    return Service::CFG::GetUsername(*s.system);
+    return Runtime().ConsoleUsername();
 }
 
-void Init(Core::System& system, Config& config) {
+void Init(Core::System&, Config& config) {
     auto& s = S();
-    s.system = &system;
+    s.active = true;
     s.config = &config;
+    // (--join-after counts from the first Tick after this)
+    {
+        std::scoped_lock lock{s.mutex};
+        s.join_later = false;
+        s.tick_seen = false;
+    }
     // the console's MAC address is kept in sysdata/mac.txt; without the folder it is a new random
     // one each time it's read before the game starts, and the room's differs from the game's
-    FileUtil::CreateFullPath(FileUtil::GetUserPath(FileUtil::UserPath::SysDataDir));
-    const auto member = Network::GetRoomMember().lock();
-    if (!member) {
+    Runtime().PrepareConsoleData();
+    if (!Runtime().RoomsAvailable()) {
         return;
     }
-    s.on_error = member->BindOnError([](const RoomMember::Error& error) {
-        LOG_WARNING(Network, "room: {}", Network::GetErrorStr(error));
+    RoomCallbacks callbacks;
+    callbacks.on_error = [](RoomError error) {
+        APP_LOG_WARNING("room: {}", ErrorName(error));
         auto& s = S();
         std::scoped_lock lock{s.mutex};
         s.last_error = error;
         ++s.error_count;
-        using E = RoomMember::Error;
+        using E = RoomError;
         if (!s.job_running && (error == E::LostConnection || error == E::HostKicked || error == E::HostBanned)) {
             // out of the room without asking (the state came first, see on_state)
             Explain(error, Invite::Address(s.status.host, s.status.port), s.status.nickname,
                     s.status.error, s.status.hint);
         }
-    });
-    s.on_status = member->BindOnStatusMessageReceived([](const Network::StatusMessageEntry& msg) {
-        if (msg.type == Network::IdMemberJoin) {
-            LOG_INFO(Network, "{} joined the room", msg.nickname);
-        } else if (msg.type == Network::IdMemberLeave) {
-            LOG_INFO(Network, "{} left the room", msg.nickname);
-        }
-    });
-    // the list is copied on the network's thread, right after it changed it
-    s.on_info = member->BindOnRoomInformationChanged([](const Network::RoomInformation& info) {
-        const auto member = Network::GetRoomMember().lock();
+    };
+    callbacks.on_member = [](bool joined, const std::string& nickname) {
+        APP_LOG_INFO("{} {} the room", nickname, joined ? "joined" : "left");
+    };
+    // the list is copied on the network's thread, right after it changed
+    callbacks.on_info = [](const RoomDetails& info, const std::vector<RoomMemberInfo>& members) {
         auto& s = S();
         std::scoped_lock lock{s.mutex};
         s.status.room_name = info.name;
-        s.status.slots = info.member_slots;
-        if (member) {
-            s.members = member->GetMemberInformation();
-        }
-    });
-    s.on_state = member->BindOnStateChanged([](const RoomMember::State& state) {
+        s.status.slots = info.slots;
+        s.members = members;
+    };
+    callbacks.on_state = [](RoomState state) {
         auto& s = S();
-        const bool in_room = state == RoomMember::State::Joined || state == RoomMember::State::Moderator;
+        const bool in_room = state == RoomState::Joined || state == RoomState::Moderator;
         std::scoped_lock lock{s.mutex};
         if (s.was_in_room && !in_room && !s.job_running) {
             // dropped, kicked, or the room closed (on_error then says why): the console gets
@@ -611,39 +589,40 @@ void Init(Core::System& system, Config& config) {
             s.status.hint.clear();
             s.status.joined_in_game = false;
             s.status.hosting = Hosting();
-            s.for_main.push_back([] { SetConsoleMac(Service::CFG::GetConsoleMacAddress(*S().system)); });
+            s.for_main.push_back([] { SetConsoleMac(Runtime().ConsoleMac()); });
         }
         s.was_in_room = in_room;
         if (in_room) {
-            s.status.moderator = state == RoomMember::State::Moderator;
+            s.status.moderator = state == RoomState::Moderator;
         }
-    });
-    s.on_wifi = member->BindOnWifiPacketReceived([](const Network::WifiPacket& packet) {
+    };
+    callbacks.on_packet = [](const MacAddress& transmitter, RoomCallbacks::Packet packet) {
         auto& s = S();
         std::scoped_lock lock{s.mutex};
-        auto& t = s.traffic[packet.transmitter_address];
-        if (packet.type == NET_SYNC_PACKET) {
+        auto& t = s.traffic[transmitter];
+        if (packet == RoomCallbacks::Packet::NetSync) {
             ++t.clocks;
             return;
         }
         t.last = Clock::now();
-        switch (packet.type) {
-        case Network::WifiPacket::PacketType::Beacon:
+        switch (packet) {
+        case RoomCallbacks::Packet::Beacon:
             ++t.beacons;
             break;
-        case Network::WifiPacket::PacketType::Data:
+        case RoomCallbacks::Packet::Data:
             ++t.data;
             break;
         default:
             ++t.other;
             break;
         }
-    });
+    };
+    Runtime().BindRoomCallbacks(std::move(callbacks));
 }
 
 void Shutdown() {
     auto& s = S();
-    if (!s.system) {
+    if (!s.active) {
         return;
     }
     std::thread job, lookup;
@@ -658,16 +637,9 @@ void Shutdown() {
     if (lookup.joinable()) {
         lookup.join();
     }
-    StopAnnounce();
     LeaveNow(true);
-    if (const auto member = Network::GetRoomMember().lock()) {
-        member->Unbind(s.on_error);
-        member->Unbind(s.on_status);
-        member->Unbind(s.on_info);
-        member->Unbind(s.on_state);
-        member->Unbind(s.on_wifi);
-    }
-    s.system = nullptr;
+    Runtime().UnbindRoomCallbacks();
+    s.active = false;
 }
 
 bool StartAtBoot(std::string& error) {
@@ -733,11 +705,11 @@ bool StartAtBoot(std::string& error) {
 
 bool Join(const JoinRequest& request) {
     auto& s = S();
-    if (!s.system) {
+    if (!s.active) {
         return false;
     }
     const Identity me = Me();
-    const bool in_game = s.system->IsPoweredOn();
+    const bool in_game = Runtime().IsGameRunning();
     return StartJob(fmt::format("Joining {}...", request.label.empty()
                                                      ? Invite::Address(request.host, request.port)
                                                      : request.label),
@@ -761,8 +733,8 @@ bool Join(const JoinRequest& request) {
                                 s.status.public_checked = false;
                                 s.traffic.clear();
                             }
-                            if (const auto member = Network::GetRoomMember().lock(); member && member->IsConnected()) {
-                                const MacAddress mac = member->GetMacAddress();
+                            if (Runtime().RoomConnected()) {
+                                const MacAddress mac = Runtime().RoomMacAddress();
                                 ForMain([mac] { SetConsoleMac(mac); });
                             }
                             const std::string address = Invite::Address(request.host, request.port);
@@ -775,7 +747,7 @@ bool Join(const JoinRequest& request) {
                                 c.last_room = code;
                             });
                         } else {
-                            ForMain([] { SetConsoleMac(Service::CFG::GetConsoleMacAddress(*S().system)); });
+                            ForMain([] { SetConsoleMac(Runtime().ConsoleMac()); });
                         }
                         Refresh(error, hint);
                     });
@@ -783,11 +755,11 @@ bool Join(const JoinRequest& request) {
 
 bool Host(const HostRequest& request) {
     auto& s = S();
-    if (!s.system) {
+    if (!s.active) {
         return false;
     }
     const Identity me = Me();
-    const bool in_game = s.system->IsPoweredOn();
+    const bool in_game = Runtime().IsGameRunning();
     std::string lobby;
     {
         std::scoped_lock lock{s.mutex};
@@ -811,8 +783,8 @@ bool Host(const HostRequest& request) {
                 s.status.public_checked = false;
                 s.traffic.clear();
             }
-            if (const auto member = Network::GetRoomMember().lock(); member && member->IsConnected()) {
-                const MacAddress mac = member->GetMacAddress();
+            if (Runtime().RoomConnected()) {
+                const MacAddress mac = Runtime().RoomMacAddress();
                 ForMain([mac] { SetConsoleMac(mac); });
             }
             Remember([request](Config& c) {
@@ -826,7 +798,7 @@ bool Host(const HostRequest& request) {
                 c.last_room = "host";
             });
         } else {
-            ForMain([] { SetConsoleMac(Service::CFG::GetConsoleMacAddress(*S().system)); });
+            ForMain([] { SetConsoleMac(Runtime().ConsoleMac()); });
         }
         Refresh(error, hint);
         if (ok) {
@@ -837,7 +809,7 @@ bool Host(const HostRequest& request) {
 
 bool Leave(bool close) {
     auto& s = S();
-    if (!s.system) {
+    if (!s.active) {
         return false;
     }
     return StartJob(close ? "Closing the room..." : "Leaving the room...", [close] {
@@ -847,7 +819,7 @@ bool Leave(bool close) {
             s.was_in_room = false;  // not an error
         }
         LeaveNow(close);
-        ForMain([] { SetConsoleMac(Service::CFG::GetConsoleMacAddress(*S().system)); });
+        ForMain([] { SetConsoleMac(Runtime().ConsoleMac()); });
         Remember([](Config& c) {
             c.join.clear();
             c.host = 0;
@@ -936,7 +908,7 @@ void Tick() {
                 }
                 std::string who = MacText(mac);
                 for (const auto& m : s.members) {
-                    if (m.mac_address == mac) {
+                    if (m.mac == mac) {
                         who = m.nickname + " " + who;
                     }
                 }
@@ -952,12 +924,12 @@ void Tick() {
         action();
     }
     if (!traffic_line.empty()) {
-        LOG_INFO(Network, "room traffic in the last 10 s from {}", traffic_line);
+        APP_LOG_INFO("room traffic in the last 10 s from {}", traffic_line);
     }
     if (join_now) {
-        LOG_INFO(Network, "joining {}:{} from the game (--join-after)", later.host, later.port);
+        APP_LOG_INFO("joining {}:{} from the game (--join-after)", later.host, later.port);
         if (!Join(later)) {
-            LOG_WARNING(Network, "--join-after: another room job runs");
+            APP_LOG_WARNING("--join-after: another room job runs");
         }
     }
 }
@@ -972,9 +944,9 @@ Status GetStatus() {
             Member member;
             member.nickname = m.nickname;
             member.username = m.username;
-            member.game = m.game_info.name;
+            member.game = m.game;
             member.you = m.nickname == status.nickname;
-            if (const auto it = s.traffic.find(m.mac_address);
+            if (const auto it = s.traffic.find(m.mac);
                 it != s.traffic.end() && it->second.last != Clock::time_point{}) {
                 member.heard = std::chrono::duration<double>(now - it->second.last).count();
             }

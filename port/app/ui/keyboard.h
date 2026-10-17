@@ -2,27 +2,27 @@
 // it), drawn by the in-game menu: a text field with the game's limits and buttons, and keys on
 // the screen for a controller.
 //
-// Azahar's HLE applet calls Execute() on the emulation thread and then polls DataReady() on that
-// thread until the text is there. The app builds its frames on the same thread, so Execute only
-// takes the request and returns; the menu's frame shows the keyboard and hands the text over
-// with Finalize() when the player is done (Azahar's Qt frontend instead blocks the emulation
-// thread in Execute until its dialog closes, which would stop the app's frames).
+// The game's applet calls Execute() on the emulation thread and then waits for the text on that
+// thread. The app builds its frames on the same thread, so Execute only takes the request and
+// returns; the menu's frame shows the keyboard and hands the text over with
+// IRuntime::FinishKeyboard() when the player is done (a frontend that blocks the emulation
+// thread in Execute until its dialog closes would stop the app's frames).
 #pragma once
 
 #include <mutex>
 #include <string>
 #include <vector>
 
-#include "common/common_types.h"
-#include "core/frontend/applets/swkbd.h"
+#include "runtime.h"
+#include "util/types.h"
 
 struct ImGuiInputTextCallbackData;
 
 namespace App::Ui {
 
-class Keyboard final : public Frontend::SoftwareKeyboard {
+class Keyboard final : public ISoftwareKeyboard {
 public:
-    void Execute(const Frontend::KeyboardConfig& config) override;
+    void Execute(const KeyboardConfig& config) override;
     void ShowError(const std::string& error) override;
 
     /// The game waits for the player's text.
@@ -45,6 +45,7 @@ private:
     static int TextCallback(ImGuiInputTextCallbackData* data);
 
     mutable std::mutex mutex;
+    KeyboardConfig config;          ///< the game's last request
     bool active = false;
     bool appeared = false;          ///< the first frame since it came up: the text field takes focus
     std::string text;
