@@ -43,6 +43,12 @@ public:
     std::string ButtonBinding(int button) const override;
     std::string StickBinding(int stick) const override;
     std::string DescribeControllerInput(const std::string& binding) const override;
+
+    GameHeader ReadGameHeader(const std::string& path) const override;
+    InstalledTitle FindInstalledTitle(std::uint64_t title_id) const override;
+    CiaResult CheckCia(const std::string& path, std::optional<CiaInfo>& info) const override;
+    CiaResult InstallCia(const std::string& path,
+                         const std::function<void(std::size_t, std::size_t)>& progress) override;
 };
 
 } // namespace App::Azahar

@@ -8,7 +8,11 @@
 // worker threads only call the ones marked "any thread".
 #pragma once
 
+#include <cstddef>
+#include <cstdint>
+#include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 
 #include "buttons.h"
@@ -59,6 +63,30 @@ struct BuildInfo {
     std::string name;
     std::string branch;
     std::string description;
+};
+
+/// A game file's header: unreadable (not a 3DS game file), readable, or readable but encrypted.
+/// `program_id` is set for the last two.
+struct GameHeader {
+    enum class State { Unreadable, Ok, Encrypted };
+    State state = State::Unreadable;
+    std::uint64_t program_id = 0;
+};
+
+/// A title installed on the SD card. `content_path` is its first content file's path (empty when
+/// the title has none); it may not exist on disk.
+struct InstalledTitle {
+    bool found = false;
+    std::uint16_t version = 0;
+    std::string content_path;
+};
+
+/// What reading or installing a .cia came to.
+enum class CiaResult { Ok, Encrypted, Unreadable, Aborted, Invalid };
+
+struct CiaInfo {
+    std::uint64_t title_id = 0;
+    std::uint16_t version = 0;
 };
 
 class IRuntime {
@@ -141,6 +169,23 @@ public:
     /// What a controller does for such a parameter string ("A (bottom)", "Left stick"), or empty
     /// when no controller does.
     virtual std::string DescribeControllerInput(const std::string& binding) const = 0;
+
+    // ── Titles: the game file, and titles installed on the virtual SD card ──
+    // (the launcher's setup; any thread)
+
+    /// What the header of a game file says (.3ds, .cci, .cxi).
+    virtual GameHeader ReadGameHeader(const std::string& path) const = 0;
+
+    /// The title installed on the SD card with this id, if there is one.
+    virtual InstalledTitle FindInstalledTitle(std::uint64_t title_id) const = 0;
+
+    /// Whether a .cia can be installed, and the title it holds when the file says it.
+    virtual CiaResult CheckCia(const std::string& path, std::optional<CiaInfo>& info) const = 0;
+
+    /// Installs a .cia on the SD card, blocking; `progress` is told the bytes written and the
+    /// bytes in all (it may be empty, and runs on the calling thread).
+    virtual CiaResult InstallCia(const std::string& path,
+                                 const std::function<void(std::size_t, std::size_t)>& progress) = 0;
 };
 
 /// The runtime the app runs on. Set once by main() before anything else uses it.

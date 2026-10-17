@@ -1,12 +1,9 @@
 #include "launcher/checks.h"
 
+#include <optional>
+
 #include <fmt/format.h>
 
-#include "core/file_sys/ncch_container.h"
-#include "core/file_sys/title_metadata.h"
-#include "core/hle/service/am/am.h"
-#include "core/hle/service/fs/archive.h"
-#include "core/loader/loader.h"
 #include "runtime.h"
 #include "util/file.h"
 #include "util/log.h"
@@ -22,19 +19,18 @@ Game CheckGame(const std::string& path) {
         game.state = Game::State::Missing;
         return game;
     }
-    FileSys::NCCHContainer ncch(path);
-    const auto status = ncch.LoadHeader();
-    switch (status) {
-    case Loader::ResultStatus::Success:
-        game.program_id = ncch.ncch_header.program_id;
+    const App::GameHeader header = App::Runtime().ReadGameHeader(path);
+    switch (header.state) {
+    case App::GameHeader::State::Ok:
+        game.program_id = header.program_id;
         game.state = game.program_id == MH4U_USA ? Game::State::Ok : Game::State::OtherGame;
         break;
-    case Loader::ResultStatus::ErrorEncrypted:
+    case App::GameHeader::State::Encrypted:
         // the header itself is readable: it says which game it is
-        game.program_id = ncch.ncch_header.program_id;
+        game.program_id = header.program_id;
         game.state = Game::State::Encrypted;
         break;
-    default:
+    case App::GameHeader::State::Unreadable:
         game.state = Game::State::NotA3ds;
         break;
     }
@@ -68,14 +64,12 @@ std::string Describe(const Game& game) {
 
 Update CheckUpdate() {
     Update update;
-    const auto media = Service::FS::MediaType::SDMC;
-    FileSys::TitleMetadata tmd;
-    if (tmd.Load(Service::AM::GetTitleMetadataPath(media, MH4U_UPDATE)) !=
-        Loader::ResultStatus::Success) {
+    const App::InstalledTitle title = App::Runtime().FindInstalledTitle(MH4U_UPDATE);
+    if (!title.found) {
         return update;
     }
-    update.version = tmd.GetTitleVersion();
-    update.content = Service::AM::GetTitleContentPath(media, MH4U_UPDATE, 0);
+    update.version = title.version;
+    update.content = title.content_path;
     if (update.content.empty() || !App::Util::Exists(update.content)) {
         update.content.clear();
         return update;
@@ -90,30 +84,28 @@ std::string VersionText(u16 version) {
 }
 
 std::string CheckUpdateCia(const std::string& path) {
-    bool compressed = false;
-    switch (Service::AM::CheckCIAToInstall(path, compressed, true)) {
-    case Service::AM::InstallStatus::Success:
+    std::optional<App::CiaInfo> info;
+    switch (App::Runtime().CheckCia(path, info)) {
+    case App::CiaResult::Ok:
         break;
-    case Service::AM::InstallStatus::ErrorEncrypted:
+    case App::CiaResult::Encrypted:
         return "This .cia is encrypted. The port needs a decrypted one (GodMode9 can build one from "
                "the update installed on your 3DS).";
-    case Service::AM::InstallStatus::ErrorFileNotFound:
-    case Service::AM::InstallStatus::ErrorFailedToOpenFile:
+    case App::CiaResult::Unreadable:
         return "The file can't be read.";
     default:
         return "This file isn't a CIA the app can read.";
     }
-    if (const auto infos = Service::AM::GetCIAInfos(path)) {
-        const auto& info = infos->first;
-        if (info.tid != MH4U_UPDATE) {
+    if (info) {
+        if (info->title_id != MH4U_UPDATE) {
             return fmt::format("This .cia is title {:016X}, not Monster Hunter 4 Ultimate's update "
                                "({:016X}).",
-                               info.tid, MH4U_UPDATE);
+                               info->title_id, MH4U_UPDATE);
         }
-        if (info.version != UPDATE_VERSION) {
+        if (info->version != UPDATE_VERSION) {
             return fmt::format("This is Monster Hunter 4 Ultimate's update v{}; the port is made for "
                                "v{}.",
-                               VersionText(info.version), VersionText(UPDATE_VERSION));
+                               VersionText(info->version), VersionText(UPDATE_VERSION));
         }
     }
     return "";
@@ -182,22 +174,21 @@ void Install::Start(const std::string& path) {
     running = true;
     thread = std::thread([this, path] {
         const auto status =
-            Service::AM::InstallCIA(path, [this](std::size_t done, std::size_t total) {
+            App::Runtime().InstallCia(path, [this](std::size_t done, std::size_t total) {
                 if (total > 0) {
                     progress = static_cast<float>(static_cast<double>(done) / static_cast<double>(total));
                 }
             });
         switch (status) {
-        case Service::AM::InstallStatus::Success:
+        case App::CiaResult::Ok:
             break;
-        case Service::AM::InstallStatus::ErrorEncrypted:
+        case App::CiaResult::Encrypted:
             error = "The .cia is encrypted: the port needs a decrypted one.";
             break;
-        case Service::AM::InstallStatus::ErrorFileNotFound:
-        case Service::AM::InstallStatus::ErrorFailedToOpenFile:
+        case App::CiaResult::Unreadable:
             error = "The .cia can't be read.";
             break;
-        case Service::AM::InstallStatus::ErrorAborted:
+        case App::CiaResult::Aborted:
             error = "Installing stopped half-way (is the disk full?). The log has the details.";
             break;
         default:

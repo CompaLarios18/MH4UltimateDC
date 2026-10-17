@@ -63,6 +63,7 @@ add_executable(mh4u
     runtime_azahar/azahar_options.cpp
     runtime_azahar/azahar_runtime.cpp
     runtime_azahar/azahar_runtime.h
+    runtime_azahar/azahar_title.cpp
     runtime_azahar/log_sink.cpp
     runtime_azahar/log_sink.h
 )
