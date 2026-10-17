@@ -15,7 +15,9 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <vector>
 
+#include "util/room.h"
 #include "util/swkbd.h"
 
 namespace Core {
@@ -131,6 +133,66 @@ public:
     virtual void ShowError(const std::string& error) = 0;
 };
 
+/// One member of the room.
+struct RoomMemberInfo {
+    std::string nickname;
+    std::string username;  ///< checked by a lobby, if any
+    std::string game;      ///< what it plays
+    MacAddress mac{};
+};
+
+/// What the room says about itself.
+struct RoomDetails {
+    std::string name;
+    unsigned slots = 0;
+};
+
+/// Who joins which room.
+struct RoomJoinRequest {
+    std::string nickname;
+    std::string console_id;  ///< the console's ID hash, which a room lets in once
+    std::string host;
+    int port = 0;
+    std::optional<MacAddress> preferred_mac;  ///< none: the room gives one
+    std::string password;
+};
+
+/// A room to open on this PC.
+struct RoomOpenRequest {
+    std::string name;
+    int port = 0;
+    std::string password;
+    int slots = 4;
+    std::string host_nickname;
+    std::string game_name;
+    std::uint64_t game_id = 0;
+    std::string lobby_url;  ///< the lobby to list the room in; empty: not listed
+    std::string token;      ///< the player's token there
+};
+
+struct RoomOpenResult {
+    enum class Listing { None, Listed, Failed };
+    bool ok = false;  ///< the room is open
+    Listing listing = Listing::None;
+    std::string listing_error;  ///< when Failed
+};
+
+/// What the other members and the network do, as the runtime tells the app. Every function
+/// runs on the network's thread, and none may bind or unbind callbacks. An empty function is
+/// not called.
+struct RoomCallbacks {
+    std::function<void(RoomError)> on_error;
+    std::function<void(RoomState)> on_state;
+    /// The room's details or its members changed.
+    std::function<void(const RoomDetails&, const std::vector<RoomMemberInfo>&)> on_info;
+    /// A member joined or left the room.
+    std::function<void(bool joined, const std::string& nickname)> on_member;
+    /// A local-play frame (or a net sync report, the port's own packet type) arrived from
+    /// `transmitter`.
+    enum class Packet { Beacon, Data, NetSync, Other };
+    std::function<void(const MacAddress& transmitter, Packet)> on_packet;
+};
+
 /// A game controller the app found, as the input profile names it: the SDL GUID, its number
 /// among controllers with that GUID, and its name.
 struct ControllerInfo {
@@ -224,12 +286,63 @@ public:
     /// why it doesn't and the keyboard stays up. Emulation thread, after Execute.
     virtual KeyboardError FinishKeyboard(const std::string& text, std::uint8_t button) = 0;
 
-    // ── Network ──
-    // (N0-24 moves it behind the room methods below)
+    // ── Rooms ──
+    // The network room of Azahar's multiplayer (multiplayer.h): one room client, which joins a
+    // room at an address, and one room server, which this PC can open. The calls below are the
+    // main thread's or the room job's thread's unless said otherwise; the callbacks arrive on
+    // the network's thread.
 
     /// Starts the network layer (rooms) and stops it. Main thread.
     virtual void InitNetwork() = 0;
     virtual void ShutdownNetwork() = 0;
+
+    /// Whether the network layer is up (between InitNetwork and ShutdownNetwork). Any thread.
+    virtual bool RoomsAvailable() const = 0;
+
+    /// Makes the folder the console's MAC address is kept in, so that the address is the same
+    /// every time it is read (otherwise each read before the game starts gives a new one).
+    virtual void PrepareConsoleData() = 0;
+
+    /// The console's identity: its user name, ID hash and MAC address, as its settings say.
+    virtual std::string ConsoleUsername() const = 0;
+    virtual std::string ConsoleIdHash() const = 0;
+    virtual MacAddress ConsoleMac() const = 0;
+
+    /// Whether the game is loaded and not shut down. Any thread.
+    virtual bool IsGameRunning() const = 0;
+
+    /// Gives the running console this MAC address (the page the game reads it from). False when
+    /// the game isn't running or the console already has it. Emulation thread.
+    virtual bool SetConsoleMac(const MacAddress& mac) = 0;
+
+    /// The room client's events go to `callbacks` until UnbindRoomCallbacks. A no-op without
+    /// the network layer.
+    virtual void BindRoomCallbacks(RoomCallbacks callbacks) = 0;
+    virtual void UnbindRoomCallbacks() = 0;
+
+    /// Starts joining; the answer comes as the state (RoomMemberState, on_state) and, when the
+    /// room refuses, on_error. Returns at once.
+    virtual void JoinRoom(const RoomJoinRequest& request) = 0;
+
+    /// Leaves the room. Blocks for a moment.
+    virtual void LeaveRoom() = 0;
+
+    virtual RoomState RoomMemberState() const = 0;
+    virtual bool RoomConnected() const = 0;
+    virtual MacAddress RoomMacAddress() const = 0;
+    virtual std::string RoomNickname() const = 0;
+    virtual RoomDetails RoomInformation() const = 0;
+    virtual std::vector<RoomMemberInfo> RoomMembers() const = 0;
+
+    /// Whether this PC runs a room that is open.
+    virtual bool HostingRoom() const = 0;
+
+    /// Opens a room on this PC (and lists it in the lobby when `request.lobby_url` is set and
+    /// the build can); blocks while the lobby answers.
+    virtual RoomOpenResult OpenRoom(const RoomOpenRequest& request) = 0;
+
+    /// Stops the lobby listing and closes the room this PC runs. Blocks for a moment.
+    virtual void CloseRoom() = 0;
 
     /// Gives the console a new random ID, kept in the user folder (a room lets in one player
     /// per console ID). Main thread, before the game loads.

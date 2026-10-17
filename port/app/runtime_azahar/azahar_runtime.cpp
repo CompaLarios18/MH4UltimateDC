@@ -18,7 +18,6 @@
 #include "core/loader/loader.h"
 #include "core/perf_stats.h"
 #include "frontend.h"
-#include "network/network.h"
 #include "runtime_azahar/azahar_keyboard.h"
 #include "runtime_azahar/log_sink.h"
 #include "util/log.h"
@@ -159,14 +158,6 @@ void AzaharRuntime::SetSoftwareKeyboard(std::shared_ptr<ISoftwareKeyboard> keybo
 KeyboardError AzaharRuntime::FinishKeyboard(const std::string& text, std::uint8_t button) {
     // (no keyboard was set: CallbackFailed, the nearest answer of the game's own)
     return impl->keyboard ? impl->keyboard->Finish(text, button) : KeyboardError::CallbackFailed;
-}
-
-void AzaharRuntime::InitNetwork() {
-    Network::Init();
-}
-
-void AzaharRuntime::ShutdownNetwork() {
-    Network::Shutdown();
 }
 
 void AzaharRuntime::NewConsoleId() {

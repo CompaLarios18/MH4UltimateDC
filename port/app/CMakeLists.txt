@@ -54,6 +54,7 @@ add_executable(mh4u
     util/file.h
     util/log.cpp
     util/log.h
+    util/room.h
     util/strings.cpp
     util/strings.h
     util/swkbd.h
@@ -63,6 +64,7 @@ add_executable(mh4u
     runtime_azahar/azahar_input.cpp
     runtime_azahar/azahar_keyboard.cpp
     runtime_azahar/azahar_keyboard.h
+    runtime_azahar/azahar_network.cpp
     runtime_azahar/azahar_options.cpp
     runtime_azahar/azahar_runtime.cpp
     runtime_azahar/azahar_runtime.h
