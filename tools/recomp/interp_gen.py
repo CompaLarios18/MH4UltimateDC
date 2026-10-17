@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fallback-interpreter handlers generated from the recompiler's own decoders (N1-24 spike).
+"""Fallback-interpreter handlers generated from the recompiler's own decoders (N1-24 spike, N1-28).
 
 The recompiler turns one instruction word into `Insn.body`, C statements in which the
 registers, immediates and short-vector lengths are baked in as literals. This module
@@ -24,9 +24,22 @@ thumb.py is changed):
     list");
   * the result is checked: the template is instantiated for random encodings and must give
     exactly the skeleton and numbers the decoder gives.
-A form for which any step fails raises `GenError`; the reason is the finding of the spike.
+A form for which any step fails raises `GenError`; the reason is the finding of the spike. The one
+form the generator cannot express (VLDM / VSTM: the register count is in a field) has a hand-written
+handler (`HAND_WRITTEN`), tested against the recompiled form like the generated ones.
 
-Handler contract (the dispatcher of N1-28 is not part of the spike): on entry
+`python3 -m recomp.interp_gen --all --out FILE.c` writes everything the native runtime's interpreter is
+built from (native/src/cpu/interp): the handlers of every form (`ALL_FORMS`) and
+  * the dispatcher: each form is a `Route` (the bits it fixes, its fields limited to a few values, its
+    `where` guard); `ih_classify_arm` / `ih_classify_thumb` look a word up in a table over a few opcode bits
+    and, where routes overlap, test the candidates in `ALL_FORMS` order; a word no route takes goes to
+    `ih_trap_unsupported`, the trap the recompiler emits for it. `ih_exec_arm` / `ih_exec_thumb` run a word,
+    `ih_step` fetches the instruction at `ctx->r[15]` first;
+  * `ih_unpredictable_arm` / `ih_unpredictable_thumb`: which words the decoders call UNPREDICTABLE (the
+    handlers run them as the nearest defined form; the interpreter logs them).
+The tests compare the tables with the decoders on every Thumb halfword and on large random samples of ARM words.
+
+Handler contract: on entry
 `ctx->r[15]` is the address of the instruction; on exit it is the address of the next
 instruction to run, with bit 0 set when that one is Thumb. The handler checks the ARM
 condition itself. A read of r15 gives the address plus 8 (ARM) or 4 (Thumb); a write to
@@ -65,6 +78,11 @@ MAX_LEAVES = 1500
 
 class GenError(Exception):
     """The handler of a form cannot be generated; the message says why."""
+
+
+class EmptyRegion(GenError):
+    """No encoding of a region is valid (the form's `where` excludes all of it). Below the top of the tree that
+    is a region no word can reach, not an error."""
 
 
 # ── forms ───────────────────────────────────────────────────────────────────────────────
@@ -145,7 +163,8 @@ class Form:
     base: int                                   # the bits that are not in a field
     fields: list[Field]
     kinds: tuple[str, ...] = (OP,)              # Insn kinds the form produces (what the test accepts)
-    valid: Callable[[dict], bool] | None = None  # excludes encodings that belong to other forms
+    valid: Callable[[dict], bool] | None = None  # excludes encodings that belong to other forms (generation and sampling
+    #                                              only: the dispatcher knows `where`, not this)
     doc: str = ""
     list_base: str | None = None      # register field whose bit in the list changes the C (Thumb LDMIA writeback)
     where: str | None = None          # Python expression over the field names: the encodings that belong to this form
@@ -526,7 +545,7 @@ class FormGen:
             a = {n: self.rng.choice(vals) for n, vals in region.items()}
             if self.ok(a):
                 return a
-        raise GenError("no valid encoding in region")
+        raise EmptyRegion("no valid encoding in region")
 
     # gathering -----------------------------------------------------------------------
     def gather(self, region: dict):
@@ -578,8 +597,13 @@ class FormGen:
         return samples, groups
 
     # tree ----------------------------------------------------------------------------
-    def build(self, region: dict):
-        samples, groups = self.gather(region)
+    def build(self, region: dict, nested: bool = False):
+        try:
+            samples, groups = self.gather(region)
+        except EmptyRegion:
+            if not nested:
+                raise
+            samples, groups = [], []                   # a corner the form's `where` rules out: unreachable
         real = [s for s in samples if s.eff]
         skels = {s.eff.skel for s in real}
         if not real:
@@ -615,7 +639,7 @@ class FormGen:
                 for vals in classes:
                     sub = dict(region)
                     sub[fname] = vals
-                    children.append((vals, self.build(sub)))
+                    children.append((vals, self.build(sub, True)))
                 return Split(f, children)
         raise GenError("the C varies but no single field explains it (a relation between fields)")
 
@@ -949,7 +973,7 @@ class FormGen:
 
 # ── C emission ──────────────────────────────────────────────────────────────────────────
 
-PREAMBLE = r"""/* Generated by tools/recomp/interp_gen.py (N1-24): handlers of the fallback interpreter.
+PREAMBLE = r"""/* Generated by tools/recomp/interp_gen.py (N1-24, N1-28): handlers of the fallback interpreter.
  * Contract: on entry ctx->r[15] is the address of the instruction, on exit the address of the next
  * one (bit 0 set for Thumb). No game data: the handlers are derived from the recompiler's decoders. */
 #include "recomp.h"

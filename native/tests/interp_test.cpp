@@ -46,14 +46,20 @@ constexpr mh4n::u32 kCode = 0x00100000;
 constexpr mh4n::u32 kStack = 0x00200000;
 constexpr mh4n::u32 kReturn = 0x00180000;  // where interpreted calls are told to return (never executed)
 
+// The folder make_test_data.py wrote (empty if the build did not make it). svc_none.so is its last output.
 std::string DataDir() {
 #ifdef MH4N_INTERP_TEST_DATA_DIR
     const std::string dir = MH4N_INTERP_TEST_DATA_DIR;
-    if (std::filesystem::exists(dir + "/vectors.bin")) {
+    if (std::filesystem::exists(dir + "/svc_none.so")) {
         return dir;
     }
 #endif
     return {};
+}
+
+bool Required() {
+    const char* require = std::getenv("MH4N_REQUIRE_TEST_DATA");
+    return require != nullptr && std::string(require) == "1";
 }
 
 // The cases that need the data built by make_test_data.py are the done-when of N1-28: a machine that
@@ -62,11 +68,29 @@ bool HaveData() {
     if (!DataDir().empty()) {
         return true;
     }
-    const char* require = std::getenv("MH4N_REQUIRE_TEST_DATA");
-    if (require != nullptr && std::string(require) == "1") {
+    if (Required()) {
         FAIL("the interpreter's test data was not built, and MH4N_REQUIRE_TEST_DATA=1");
     }
     WARN_MESSAGE(false, "skipped: the interpreter's test data was not built");
+    return false;
+}
+
+// The vectors need the harness that runs the recompiled side, which exists on Linux and macOS only.
+bool HaveVectors() {
+    if (!HaveData()) {
+        return false;
+    }
+    if (std::filesystem::exists(DataDir() + "/vectors.bin")) {
+        return true;
+    }
+#if defined(_WIN32)
+    WARN_MESSAGE(false, "skipped: no vectors on Windows (the harness that makes them is for Linux and macOS)");
+#else
+    if (Required()) {
+        FAIL("vectors.bin was not built, and MH4N_REQUIRE_TEST_DATA=1");
+    }
+    WARN_MESSAGE(false, "skipped: vectors.bin was not built");
+#endif
     return false;
 }
 
@@ -493,7 +517,7 @@ void FillBuffer(std::uint8_t* base, mh4n::u32 seed) {
 }  // namespace
 
 TEST_CASE("every form, run from random states, gives what the recompiled code gives") {
-    if (!HaveData()) {
+    if (!HaveVectors()) {
         return;
     }
     QuietLog log;

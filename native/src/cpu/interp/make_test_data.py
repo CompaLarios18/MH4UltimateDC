@@ -17,7 +17,10 @@ decoders.
       The buffer at 0x30000000 is zero except the 16 KiB at +0x6000, which holds the output of the generator
       x = x * 1664525 + 1013904223 (mod 2^32), 4096 words, started from `seed`.
 
-usage: make_test_data.py OUTDIR [--vectors N] [--seed S]
+usage: make_test_data.py OUTDIR [--vectors N] [--seed S] [--cc CC] [--no-vectors]
+
+--cc builds the code libraries with another compiler (llvm-mingw's, for a Windows .dll). --no-vectors leaves out
+vectors.bin: the harness that makes it (tools/recomp/harness/harness.c) runs on Linux and macOS only.
 """
 from __future__ import annotations
 
@@ -53,7 +56,7 @@ def buffer(seed: int) -> bytes:
     return bytes(WINDOW) + fill_window(seed) + bytes(BUF_SIZE - WINDOW - 4 * WINDOW_WORDS)
 
 
-def build_svc_libraries(out: str) -> None:
+def build_svc_libraries(out: str, cc: str = "clang") -> None:
     import build_svc_test
     from recomp import build as rbuild
     elf = build_svc_test.build(out, "svc_test")
@@ -66,7 +69,7 @@ def build_svc_libraries(out: str) -> None:
             syms[p[7]] = int(p[1], 16) & ~1
 
     def lib(name: str) -> None:
-        got = rbuild.build(out, 2, "O1", rbuild.native_defines(True, False), name, [rbuild.DLL_GLUE],
+        got = rbuild.build(out, 2, "O1", rbuild.native_defines(True, False), name, [rbuild.DLL_GLUE], cc=cc,
                            extra_flags=["-fvisibility=hidden"])
         if os.path.abspath(got) != os.path.abspath(os.path.join(out, name)):
             raise SystemExit(f"unexpected library path {got}")
@@ -219,11 +222,13 @@ def main(argv=None) -> int:
     ap.add_argument("out")
     ap.add_argument("--vectors", type=int, default=24, help="encodings per form")
     ap.add_argument("--seed", type=int, default=1)
+    ap.add_argument("--cc", default="clang")
+    ap.add_argument("--no-vectors", action="store_true")
     args = ap.parse_args(argv)
     os.makedirs(args.out, exist_ok=True)
-    build_svc_libraries(args.out)
-    n = make_vectors(args.out, args.vectors, args.seed)
-    print(f"{n} vectors")
+    build_svc_libraries(args.out, args.cc)
+    if not args.no_vectors:
+        print(f"{make_vectors(args.out, args.vectors, args.seed)} vectors")
     return 0
 
 

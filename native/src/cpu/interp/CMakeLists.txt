@@ -54,8 +54,10 @@ mh4n_module(
 # the recompiler emits for random words of every form, writing what the interpreter must reproduce. It
 # needs Python 3 with Unicorn (requirements.txt, for the harness's machine model) and the clang tools that
 # port/tests/build_svc_test.py calls; without them the cases of interp_test that use it skip (or fail with
-# MH4N_REQUIRE_TEST_DATA=1). Not built on Windows, where the libraries would need llvm-mingw's compiler.
-if (mh4n_interp_available AND NOT WIN32)
+# MH4N_REQUIRE_TEST_DATA=1). On Windows the libraries are built with llvm-mingw's x86_64-w64-mingw32-clang
+# (as the code host's test libraries are) and there are no vectors: the harness that runs the recompiled
+# side is for Linux and macOS.
+if (mh4n_interp_available)
     find_program(MH4N_TOOL_CLANG NAMES clang)
     find_program(MH4N_TOOL_LLD NAMES ld.lld)
     find_program(MH4N_TOOL_OBJCOPY NAMES llvm-objcopy)
@@ -64,23 +66,38 @@ if (mh4n_interp_available AND NOT WIN32)
                     OUTPUT_QUIET ERROR_QUIET)
     set(MH4N_INTERP_DATA_DIR "${CMAKE_BINARY_DIR}/test-data/interp")
     set(MH4N_INTERP_PROGRAM "${MH4N_REPO_ROOT}/port/tests/svc_test.c")
-    if (MH4N_TOOL_CLANG AND MH4N_TOOL_LLD AND MH4N_TOOL_OBJCOPY AND MH4N_TOOL_READELF
+    set(mh4n_interp_data_args "")
+    set(mh4n_interp_data_outputs "${MH4N_INTERP_DATA_DIR}/svc_none.so")
+    set(mh4n_interp_have_cc TRUE)
+    if (WIN32)
+        find_program(MH4N_TOOL_MINGW_CLANG NAMES x86_64-w64-mingw32-clang)
+        if (MH4N_TOOL_MINGW_CLANG)
+            list(APPEND mh4n_interp_data_args --cc "${MH4N_TOOL_MINGW_CLANG}" --no-vectors)
+        else()
+            set(mh4n_interp_have_cc FALSE)
+        endif()
+    else()
+        list(APPEND mh4n_interp_data_outputs "${MH4N_INTERP_DATA_DIR}/vectors.bin")
+    endif()
+    if (mh4n_interp_have_cc AND MH4N_TOOL_CLANG AND MH4N_TOOL_LLD AND MH4N_TOOL_OBJCOPY AND MH4N_TOOL_READELF
         AND mh4n_have_unicorn EQUAL 0 AND EXISTS "${MH4N_INTERP_PROGRAM}")
         file(GLOB mh4n_interp_data_tools CONFIGURE_DEPENDS "${MH4N_REPO_ROOT}/tools/*.py")
         add_custom_command(
-            OUTPUT "${MH4N_INTERP_DATA_DIR}/vectors.bin"
+            OUTPUT ${mh4n_interp_data_outputs}
             COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/make_test_data.py" "${MH4N_INTERP_DATA_DIR}"
+                    ${mh4n_interp_data_args}
             DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/make_test_data.py" "${MH4N_INTERP_PROGRAM}"
                     "${MH4N_REPO_ROOT}/port/tests/svc.h" "${MH4N_REPO_ROOT}/port/tests/build_svc_test.py"
                     ${mh4n_interp_tool_sources} ${mh4n_interp_data_tools}
             COMMENT "Building the fallback interpreter's test data"
             VERBATIM)
-        add_custom_target(mh4n_cpu_interp_test_data ALL DEPENDS "${MH4N_INTERP_DATA_DIR}/vectors.bin")
+        add_custom_target(mh4n_cpu_interp_test_data ALL DEPENDS ${mh4n_interp_data_outputs})
         target_compile_definitions(mh4n_cpu_interp PUBLIC
             "MH4N_INTERP_TEST_DATA_DIR=\"${MH4N_INTERP_DATA_DIR}\""
             "MH4N_INTERP_EXPECTED_DIR=\"${MH4N_REPO_ROOT}/port/tests/expected\"")
     else()
         message(STATUS "mh4n_cpu_interp: no test data (needs Python 3 with Unicorn, clang, ld.lld, "
-                       "llvm-objcopy and llvm-readelf): the cases of interp_test that use it will skip")
+                       "llvm-objcopy and llvm-readelf, and on Windows x86_64-w64-mingw32-clang): the cases of "
+                       "interp_test that use it will skip")
     endif()
 endif()

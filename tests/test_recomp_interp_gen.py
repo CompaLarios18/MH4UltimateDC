@@ -795,3 +795,71 @@ def test_svc_test_passes_natively_with_its_functions_forced_into_the_interpreter
     lines, out = run(none, none_entries)
     assert lines == expected
     assert "interpreting 00100000 (arm)" in out
+
+
+def test_a_corner_the_where_rules_out_is_unreachable_not_an_error():
+    """With seed 7 the tree of vfp_arith splits on fields in an order that leaves a sub-region (p = 1 with q, r or s
+    set) in which no encoding is valid: it becomes a trap leaf no routed word can reach."""
+    g = ig.generate_form(EXTRA.get("vfp_arith") or FORMS["vfp_arith"], 7, verify=300)
+    assert g.leaves > 100
+    never = ig.Form("never", "arm", 0x0, [ig.Field("x", 0, 4)], valid=lambda a: False)
+    with pytest.raises(ig.EmptyRegion):            # at the top of the tree it is still an error
+        ig.generate(never)
+
+
+# ── the test data of native/tests/interp_test.cpp ────────────────────────────────────────
+
+def _load_make_test_data():
+    import importlib.util
+    path = os.path.join(HERE, "..", "native", "src", "cpu", "interp", "make_test_data.py")
+    spec = importlib.util.spec_from_file_location("make_test_data", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_the_buffer_the_vectors_use_is_a_documented_generator():
+    mtd = _load_make_test_data()
+    words = struct.unpack("<4096I", mtd.fill_window(1))
+    assert words[0] == (1 * 1664525 + 1013904223) & 0xFFFFFFFF
+    assert words[1] == (words[0] * 1664525 + 1013904223) & 0xFFFFFFFF
+    buf = mtd.buffer(5)
+    assert len(buf) == mtd.BUF_SIZE
+    assert buf[:mtd.WINDOW] == bytes(mtd.WINDOW) and buf[mtd.WINDOW + 4 * 4096:] == bytes(mtd.BUF_SIZE - mtd.WINDOW - 16384)
+    assert mtd.fill_window(5) != mtd.fill_window(6)
+
+
+@needs_clang
+def test_make_test_data_writes_vectors_the_cpp_test_can_read(tmp_path):
+    pytest.importorskip("recomp.harness.machines")
+    mtd = _load_make_test_data()
+    assert mtd.main([str(tmp_path), "--vectors", "3"]) == 0
+    for name in ("svc_test.elf", "svc_all.so", "svc_workers.so", "svc_none.so", "vectors.bin"):
+        assert (tmp_path / name).stat().st_size > 1000, name
+    data = (tmp_path / "vectors.bin").read_bytes()
+    assert data[:4] == b"IHV1"
+    pos = 4
+    images, = struct.unpack_from("<I", data, pos)
+    pos += 4
+    assert images == 2
+    for _ in range(images):
+        base, size = struct.unpack_from("<II", data, pos)
+        pos += 8 + size
+        assert size % 4 == 0 and base in (0x00100000, 0x00200000)
+    count, = struct.unpack_from("<I", data, pos)
+    pos += 4
+    kinds = collections.Counter()
+    for _ in range(count):
+        image, addr, thumb, word, kind = struct.unpack_from("<5I", data, pos)
+        pos += 5 * 4 + (15 + 6 + 32 + 3) * 4
+        assert kind in (0, 1, 2) and thumb in (0, 1) and image in (0x00100000, 0x00200000)
+        pos += (16 + 6 + 32 + 1 + 1) * 4 if kind == 0 else 2 * 4
+        kinds[kind] += 1
+    assert pos == len(data), (pos, len(data))                # the record sizes are the ones interp_test.cpp reads
+    assert count > 100 and kinds[0] > 50 and kinds[1] > 0 and kinds[2] > 0, kinds
+
+
+def test_make_test_data_fails_loudly_without_its_compiler(tmp_path):
+    mtd = _load_make_test_data()
+    with pytest.raises((FileNotFoundError, SystemExit, subprocess.CalledProcessError)):
+        mtd.main([str(tmp_path), "--cc", "/nonexistent/clang", "--no-vectors"])
