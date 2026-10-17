@@ -13,6 +13,27 @@ public:
     AzaharRuntime();
     ~AzaharRuntime() override;
 
+    std::string PrepareCode(const LoadRequest& request) override;
+    std::string CodeNotice() override;
+    LoadResult Load(const LoadRequest& request, Window& window, Window* secondary) override;
+    std::string StatusDetails() const override;
+    void Start() override;
+    RunState RunStep() override;
+    void SetPaused(bool paused) override;
+    void Stop() override;
+    RuntimeStatus Status() const override;
+    PerfStats TakePerfStats() override;
+    void WaitForBackgroundTasks() override;
+
+    void InitInput() override;
+    void ShutdownInput() override;
+    void ReloadInputDevices() override;
+    void InitNetwork() override;
+    void ShutdownNetwork() override;
+    void NewConsoleId() override;
+    void CommitOptions() override;
+    Core::System* HostSystem() override;
+
     std::string UserDir() const override;
     void SetUserDir(const std::string& dir) override;
     std::string SdmcDir() const override;
@@ -49,6 +70,10 @@ public:
     CiaResult CheckCia(const std::string& path, std::optional<CiaInfo>& info) const override;
     CiaResult InstallCia(const std::string& path,
                          const std::function<void(std::size_t, std::size_t)>& progress) override;
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> impl;
 };
 
 } // namespace App::Azahar

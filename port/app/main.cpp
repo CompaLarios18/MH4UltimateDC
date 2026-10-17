@@ -11,7 +11,6 @@
 // Settings: mh4u-app.ini (the app) and mh4u.ini (the game's options) in Azahar's user folder.
 // Before the game, the launcher (launcher/) shows the home screen, setup, mods, room, settings.
 
-#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
@@ -22,34 +21,17 @@
 #include <SDL.h>
 #include <fmt/format.h>
 
-#include "common/common_types.h"
-#include "common/detached_tasks.h"
 #include "config.h"
-#include "core/core.h"
-#include "core/frontend/applets/default_applets.h"
-#include "core/hle/service/apt/apt.h"
-#include "core/hle/service/cfg/cfg.h"
-#include "core/hle/service/hid/hid.h"
-#include "core/hle/service/ir/ir_rst.h"
-#include "core/hle/service/ir/ir_user.h"
-#include "core/hle/service/sm/sm.h"
-#include "core/loader/loader.h"
 #include "dialog.h"
-#include "frontend.h"
 #include "input.h"
-#include "input_common/main.h"
 #include "invite.h"
 #include "launcher/launcher.h"
 #include "multiplayer.h"
-#include "network/network.h"
 #include "runtime_azahar/azahar_runtime.h"
 #include "ui/ui.h"
 #include "util/file.h"
 #include "util/log.h"
 #include "util/strings.h"
-#include "video_core/gpu.h"
-#include "video_core/rasterizer_interface.h"
-#include "video_core/renderer_base.h"
 #include "window.h"
 
 #ifdef _WIN32
@@ -198,54 +180,23 @@ std::unique_ptr<App::Window> MakeWindow(Core::System& system, App::Window::Api w
     return nullptr;
 }
 
-/// The input devices again, after the profile changed (a controller came or went), without
-/// the rest of System::ApplySettings (which also restarts the sound).
-void ReloadInput(Core::System& system) {
-    if (const auto hid = Service::HID::GetModule(system)) {
-        hid->ReloadInputDevices();
-    }
-    if (const auto apt = Service::APT::GetModule(system)) {
-        apt->GetAppletManager()->ReloadInputDevices();
-    }
-    auto& sm = system.ServiceManager();
-    if (const auto ir_user = sm.GetService<Service::IR::IR_USER>("ir:USER")) {
-        ir_user->ReloadInputDevices();
-    }
-    if (const auto ir_rst = sm.GetService<Service::IR::IR_RST>("ir:rst")) {
-        ir_rst->ReloadInputDevices();
-    }
-}
-
-/// A new random console ID, kept in the user folder's system settings: two copies of one Azahar
-/// user folder are one console to a room, which lets in only one of them.
-void NewConsoleId(Core::System& system) {
-    const auto cfg = Service::CFG::GetModule(system);
-    const auto [random_number, console_id] = cfg->GenerateConsoleUniqueId();
-    cfg->SetConsoleUniqueId(random_number, console_id);
-    cfg->UpdateConfigNANDSavegame();
-    APP_LOG_INFO("the console has a new ID: {:016x}", console_id);
-}
-
-std::string LoadError(Core::System::ResultStatus status, Core::System& system) {
-    using Status = Core::System::ResultStatus;
-    switch (status) {
-    case Status::ErrorGetLoader:
-    case Status::ErrorLoader_ErrorInvalidFormat:
+std::string LoadError(App::LoadResult result, const std::string& details) {
+    switch (result) {
+    case App::LoadResult::NotAGame:
         return "This file isn't a 3DS game the app can open. Choose your decrypted Monster Hunter "
                "4 Ultimate (.3ds, .cci or .cxi) in mh4u-app.ini (game = ...) or remove that line to "
                "be asked again.";
-    case Status::ErrorLoader_ErrorEncrypted:
+    case App::LoadResult::Encrypted:
         return "The game file is encrypted. The port needs a decrypted dump of your own cartridge "
                "(GodMode9 can make one; docs/SETUP.md in the port's repository).";
-    case Status::ErrorSystemFiles:
+    case App::LoadResult::MissingSystemFiles:
         return "Some 3DS system files are missing (Azahar's System settings can set them up).";
     default:
-        return fmt::format("The game didn't start: {}", system.GetStatusDetails());
+        return fmt::format("The game didn't start: {}", details);
     }
 }
 
 int Run(const std::vector<std::string>& argv) {
-    Common::DetachedTasks detached_tasks;
     const auto runtime = std::make_unique<App::Azahar::AzaharRuntime>();
     App::SetRuntime(runtime.get());
     const Args args = Parse(argv);
@@ -298,10 +249,10 @@ int Run(const std::vector<std::string>& argv) {
     if (!App::Window::InitSDL()) {
         return 1;
     }
-    InputCommon::Init();
-    App::Input::Register();
-    Network::Init();
-    auto& system = Core::System::GetInstance();
+    runtime->InitInput();
+    runtime->InitNetwork();
+    // (until N0-24 and N2b, the windows, the menu and the rooms are built on Azahar's system)
+    Core::System& system = *runtime->HostSystem();
     App::Multiplayer::Init(system, config);
 
     // ── the launcher (launcher/): the home screen, setup, mods, the room and settings; it
@@ -311,8 +262,8 @@ int Run(const std::vector<std::string>& argv) {
     }
     const bool show_launcher = args.launcher >= 0 ? args.launcher == 1 : config.launcher;
     if (Launcher::Run(config, show_launcher) == Launcher::Result::Quit) {
-        Network::Shutdown();
-        InputCommon::Shutdown();
+        runtime->ShutdownNetwork();
+        runtime->ShutdownInput();
         runtime->StopLogging();
         SDL_Quit();
         return 0;
@@ -342,11 +293,10 @@ int Run(const std::vector<std::string>& argv) {
     runtime->ApplyConfig(config);
     APP_LOG_INFO("{}", App::Input::ControllerDescription());
 
-    Frontend::RegisterDefaultApplets(system);
-    system.ApplySettings();
+    runtime->CommitOptions();
 
     if (args.new_console_id) {
-        NewConsoleId(system);
+        runtime->NewConsoleId();
     }
     if (args.join_after >= 0) {
         // --join-after: the room is joined from the game, by the menu's own Join
@@ -366,9 +316,11 @@ int Run(const std::vector<std::string>& argv) {
                              "one while it runs).", true);
     }
 
-    APP_LOG_INFO("{}", Port::PrepareBackendFor(system, game));
+    App::LoadRequest request;
+    request.game = game;
+    APP_LOG_INFO("{}", runtime->PrepareCode(request));
     // (not again when the launcher said it and the player chose to play anyway)
-    if (const std::string notice = Port::BackendNotice(); !notice.empty() && !Launcher::CodeNoticeSeen()) {
+    if (const std::string notice = runtime->CodeNotice(); !notice.empty() && !Launcher::CodeNoticeSeen()) {
         App::Dialog::Message(TITLE, notice);
     }
 
@@ -395,11 +347,11 @@ int Run(const std::vector<std::string>& argv) {
 
     const auto scope = window->Acquire();
     runtime->LogOptions();
-    const auto status = system.Load(*window, game, secondary.get());
-    if (status != Core::System::ResultStatus::Success) {
-        App::Dialog::Message(TITLE, LoadError(status, system), true);
+    const App::LoadResult loaded = runtime->Load(request, *window, secondary.get());
+    if (loaded != App::LoadResult::Ok) {
+        App::Dialog::Message(TITLE, LoadError(loaded, runtime->StatusDetails()), true);
         App::Multiplayer::Shutdown();
-        Network::Shutdown();
+        runtime->ShutdownNetwork();
         return 1;
     }
 
@@ -410,32 +362,22 @@ int Run(const std::vector<std::string>& argv) {
         }
     });
 
-    u64 program_id = 0;
-    system.GetAppLoader().ReadProgramId(program_id);
-    system.GPU().ApplyPerProgramSettings(program_id);
-    std::atomic_bool stop_loading{false};
-    system.GPU().Renderer().Rasterizer()->LoadDefaultDiskResources(
-        stop_loading, [](VideoCore::LoadCallbackStage, std::size_t value, std::size_t total,
-                         const std::string&) {
-            if (total && (value == total || value % 256 == 0)) {
-                APP_LOG_DEBUG("shader cache {}/{}", value, total);
-            }
-        });
+    runtime->Start();
 
     while (window->IsOpen() && (!secondary || secondary->IsOpen())) {
-        const auto result = system.RunLoop();
-        if (result == Core::System::ResultStatus::ShutdownRequested) {
+        const App::RunState state = runtime->RunStep();
+        if (state == App::RunState::ShutdownRequested) {
             break;
         }
-        if (result != Core::System::ResultStatus::Success) {
-            APP_LOG_ERROR("emulation stopped: {}", system.GetStatusDetails());
-            App::Dialog::Message(TITLE, "The game stopped: " + system.GetStatusDetails(), true);
+        if (state == App::RunState::Failed) {
+            APP_LOG_ERROR("emulation stopped: {}", runtime->StatusDetails());
+            App::Dialog::Message(TITLE, "The game stopped: " + runtime->StatusDetails(), true);
             break;
         }
         App::Multiplayer::Tick();
         if (window->TakeControllersChanged()) {
             App::Input::BuildProfile(config);
-            ReloadInput(system);
+            runtime->ReloadInputDevices();
             APP_LOG_INFO("{}", App::Input::ControllerDescription());
         }
     }
@@ -446,12 +388,12 @@ int Run(const std::vector<std::string>& argv) {
     present.join();
     present_secondary.join();
 
-    system.Shutdown();
+    runtime->Stop();
     App::Ui::Stop(); // after the renderer, before SDL and the room go
     App::Multiplayer::Shutdown();
-    Network::Shutdown();
-    InputCommon::Shutdown();
-    detached_tasks.WaitForAllTasks();
+    runtime->ShutdownNetwork();
+    runtime->ShutdownInput();
+    runtime->WaitForBackgroundTasks();
     runtime->StopLogging();
     SDL_Quit();
     return 0;

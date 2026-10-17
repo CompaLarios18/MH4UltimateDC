@@ -13,8 +13,6 @@
 #include <imgui_internal.h>
 
 #include "config.h"
-#include "core/core.h"
-#include "frontend.h"
 #include "launcher/pick.h"
 #include "launcher/state.h"
 #include "launcher/ui.h"
@@ -1223,9 +1221,10 @@ Result Run(App::Config& config, bool show) {
 }
 
 int CheckCode(const std::string& game) {
-    auto& system = Core::System::GetInstance();
-    const std::string line = Port::PrepareBackendFor(system, game);
-    const std::string notice = Port::BackendNotice();
+    App::LoadRequest request;
+    request.game = game;
+    const std::string line = App::Runtime().PrepareCode(request);
+    const std::string notice = App::Runtime().CodeNotice();
     std::printf("backend: %s\n", line.c_str());
     if (!notice.empty()) {
         std::printf("notice:\n%s\n", notice.c_str());

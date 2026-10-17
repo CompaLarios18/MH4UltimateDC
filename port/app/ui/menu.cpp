@@ -1,4 +1,3 @@
-#include "runtime.h"
 #include "ui/menu.h"
 
 #include <algorithm>
@@ -14,9 +13,9 @@
 #include <imgui.h>
 
 #include "config.h"
-#include "frontend.h"
 #include "hooks.h"
 #include "input.h"
+#include "runtime.h"
 #include "ui/fps_counter.h"
 #include "ui/layer.h"
 #include "ui/multiplayer_tab.h"
@@ -495,7 +494,7 @@ void Menu::Draw() {
 
 void Menu::DrawGame() {
     Config& config = layer.config;
-    if (const std::string notice = Port::BackendNotice(); !notice.empty()) {
+    if (const std::string notice = Runtime().CodeNotice(); !notice.empty()) {
         ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.75f, 0.45f, 1.0f));
         ImGui::TextWrapped("%s", notice.c_str());
         ImGui::PopStyleColor();

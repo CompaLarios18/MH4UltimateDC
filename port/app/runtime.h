@@ -17,9 +17,14 @@
 
 #include "buttons.h"
 
+namespace Core {
+class System;
+}
+
 namespace App {
 
 struct Config;
+class Window;
 
 /// The graphics API the game is drawn with.
 enum class Renderer { Vulkan, OpenGL, Software };
@@ -89,9 +94,105 @@ struct CiaInfo {
     std::uint16_t version = 0;
 };
 
+/// What to run. Every path is a file of the player's.
+struct LoadRequest {
+    std::string game;          ///< the decrypted game (.3ds, .cci, .cxi)
+    std::string update;        ///< a .cia to install first; empty: the update already installed is used
+    std::string code_library;  ///< the code library to run; empty: the usual lookup (environment, user folder)
+};
+
+/// How loading the game ended.
+enum class LoadResult { Ok, NotAGame, Encrypted, MissingSystemFiles, Failed };
+
+/// What one step of the run ended with.
+enum class RunState { Running, Paused, ShutdownRequested, Failed };
+
+enum class RuntimeStatus { Idle, Loaded, Running, Paused, Stopped };
+
+/// How the game is running, since the last time it was asked.
+struct PerfStats {
+    double game_fps = 0.0;         ///< the game's frames per second
+    double system_fps = 0.0;       ///< the screens' refreshes per second
+    double emulation_speed = 0.0;  ///< emulated time over real time
+};
+
 class IRuntime {
 public:
     virtual ~IRuntime() = default;
+
+    // ── Lifecycle ──
+    // The order is PrepareCode, a window for Load, Load, Start, then RunStep until it says
+    // ShutdownRequested or Failed, then Stop. The window and the renderer are still Azahar's:
+    // Load takes the app's windows (window.h).
+
+    /// Chooses the CPU backend for the game, before it loads: installs `request.update` when it
+    /// has one, makes `request.code_library` the one to run when it has one, and returns a line
+    /// for the log saying what was chosen. Main thread.
+    virtual std::string PrepareCode(const LoadRequest& request) = 0;
+
+    /// After PrepareCode: a note for the player when the game runs without the port's code
+    /// library, or with one that lacks some of the port's hooks, or when the update given to
+    /// PrepareCode didn't install. Empty when all is well. Any thread.
+    virtual std::string CodeNotice() = 0;
+
+    /// Loads the game, to be drawn in `window` (and its touch screen in `secondary`, if any).
+    /// Main thread. On a result other than Ok, StatusDetails() says more.
+    virtual LoadResult Load(const LoadRequest& request, Window& window, Window* secondary) = 0;
+
+    /// What the runtime says about the last load or run that went wrong. Any thread.
+    virtual std::string StatusDetails() const = 0;
+
+    /// After Load, once the windows' present threads run: the settings of the game's program and
+    /// the shader cache. Main thread.
+    virtual void Start() = 0;
+
+    /// Runs the game for a slice and returns. While paused it runs nothing and returns Paused
+    /// (the windows pump their events inside it, so a paused game's windows don't answer). The
+    /// emulation thread.
+    virtual RunState RunStep() = 0;
+
+    /// Pauses the game or lets it go on; RunStep notices at its next call. Any thread.
+    virtual void SetPaused(bool paused) = 0;
+
+    /// Shuts the emulated system down. The emulation thread, after the last RunStep.
+    virtual void Stop() = 0;
+
+    virtual RuntimeStatus Status() const = 0;
+
+    /// The game's speed since the last call (it starts a new measure). The emulation thread.
+    virtual PerfStats TakePerfStats() = 0;
+
+    /// Waits for the work the runtime left running in the background. Main thread, at the end.
+    virtual void WaitForBackgroundTasks() = 0;
+
+    // ── Input and network layers ──
+    // (N0-24 moves them behind the input and multiplayer interfaces)
+
+    /// Starts the input layer (the keyboard and controller engines) after the app's SDL, and
+    /// stops it. Main thread.
+    virtual void InitInput() = 0;
+    virtual void ShutdownInput() = 0;
+
+    /// The input devices read the settings' input profile again (a controller came or went).
+    /// Emulation thread.
+    virtual void ReloadInputDevices() = 0;
+
+    /// Starts the network layer (rooms) and stops it. Main thread.
+    virtual void InitNetwork() = 0;
+    virtual void ShutdownNetwork() = 0;
+
+    /// Gives the console a new random ID, kept in the user folder (a room lets in one player
+    /// per console ID). Main thread, before the game loads.
+    virtual void NewConsoleId() = 0;
+
+    /// Puts what ApplyConfig set in force: the default applets, then the system's settings.
+    /// Main thread, before the game loads.
+    virtual void CommitOptions() = 0;
+
+    /// Transitional (N0-24 removes the menu's and the rooms' use of it, N2b the windows'): the
+    /// Azahar system that the windows, the menu layer and the rooms are still built on. Null in
+    /// a runtime that isn't Azahar's.
+    virtual Core::System* HostSystem() = 0;
 
     // ── Paths ──
 
