@@ -7,15 +7,12 @@
 #include <fmt/format.h>
 #include <imgui.h>
 
-#include "common/logging/log.h"
-#include "common/string_util.h"
+#include "util/log.h"
+#include "util/strings.h"
 
 namespace App::Ui {
 
 namespace {
-
-using Frontend::ButtonConfig;
-using Frontend::ValidationError;
 
 constexpr u32 NOTICE_MS = 5000;
 // keys on the screen, for a controller (Shift gives the capitals)
@@ -23,7 +20,7 @@ constexpr const char* KEY_ROWS[] = {"1234567890-", "qwertyuiop'", "asdfghjkl.,",
 constexpr int KEYS_PER_ROW = 11;
 
 std::size_t Utf16Length(const std::string& s) {
-    return Common::UTF8ToUTF16(s).size();
+    return Util::Utf8ToUtf16(s).size();
 }
 
 int Digits(const std::string& s) {
@@ -42,32 +39,32 @@ void Truncate(std::string& s, std::size_t max) {
     }
 }
 
-std::string ErrorText(ValidationError error, const Frontend::KeyboardConfig& config) {
+std::string ErrorText(KeyboardError error, const KeyboardConfig& config) {
     switch (error) {
-    case ValidationError::FixedLengthRequired:
+    case KeyboardError::FixedLengthRequired:
         return fmt::format("The text must be {} characters long.", config.max_text_length);
-    case ValidationError::MaxLengthExceeded:
+    case KeyboardError::MaxLengthExceeded:
         return fmt::format("At most {} characters.", config.max_text_length);
-    case ValidationError::BlankInputNotAllowed:
+    case KeyboardError::BlankInputNotAllowed:
         return "The text can't be only spaces.";
-    case ValidationError::EmptyInputNotAllowed:
+    case KeyboardError::EmptyInputNotAllowed:
         return "The text can't be empty.";
-    case ValidationError::MaxDigitsExceeded:
+    case KeyboardError::MaxDigitsExceeded:
         return fmt::format("At most {} digits.", config.max_digits);
-    case ValidationError::AtSignNotAllowed:
+    case KeyboardError::AtSignNotAllowed:
         return "@ isn't allowed here.";
-    case ValidationError::PercentNotAllowed:
+    case KeyboardError::PercentNotAllowed:
         return "% isn't allowed here.";
-    case ValidationError::BackslashNotAllowed:
+    case KeyboardError::BackslashNotAllowed:
         return "\\ isn't allowed here.";
-    case ValidationError::ProfanityNotAllowed:
+    case KeyboardError::ProfanityNotAllowed:
         return "That word isn't allowed.";
     default:
         return "The game didn't take the text.";
     }
 }
 
-const char* ButtonText(const Frontend::KeyboardConfig& config, std::size_t i, const char* fallback) {
+const char* ButtonText(const KeyboardConfig& config, std::size_t i, const char* fallback) {
     return i < config.button_text.size() && !config.button_text[i].empty()
                ? config.button_text[i].c_str()
                : fallback;
@@ -75,9 +72,9 @@ const char* ButtonText(const Frontend::KeyboardConfig& config, std::size_t i, co
 
 } // namespace
 
-void Keyboard::Execute(const Frontend::KeyboardConfig& config_) {
-    SoftwareKeyboard::Execute(config_);
+void Keyboard::Execute(const KeyboardConfig& config_) {
     std::scoped_lock lock{mutex};
+    config = config_;
     // asked again after the game turned the text down: it stays, to be put right
     if (error.empty()) {
         text.clear();
@@ -88,13 +85,13 @@ void Keyboard::Execute(const Frontend::KeyboardConfig& config_) {
     shift = false;
     start_armed = false;
     notice.clear();
-    LOG_INFO(Frontend, "software keyboard: \"{}\", up to {} characters", config.hint_text,
+    APP_LOG_INFO("software keyboard: \"{}\", up to {} characters", config.hint_text,
              config.max_text_length);
 }
 
 void Keyboard::ShowError(const std::string& message) {
     std::scoped_lock lock{mutex};
-    LOG_WARNING(Frontend, "software keyboard: the game says \"{}\"", message);
+    APP_LOG_WARNING("software keyboard: the game says \"{}\"", message);
     error = message.empty() ? "The game didn't take the text." : message;
     // shown on its own unless the game asks for the text again (Execute)
     notice = error;
@@ -144,21 +141,21 @@ int Keyboard::TextCallback(ImGuiInputTextCallbackData* data) {
 }
 
 void Keyboard::Insert(const std::string& characters) {
-    for (const char16_t c : Common::UTF8ToUTF16(characters)) {
+    for (const char16_t c : Util::Utf8ToUtf16(characters)) {
         if (Accepts(c)) {
-            text += Common::UTF16ToUTF8(std::u16string(1, c));
+            text += Util::Utf16ToUtf8(std::u16string(1, c));
         }
     }
     error.clear();
 }
 
 void Keyboard::Submit(u8 button) {
-    const ValidationError result = Finalize(text, button);
-    if (result != ValidationError::None) {
+    const KeyboardError result = Runtime().FinishKeyboard(text, button);
+    if (result != KeyboardError::None) {
         error = ErrorText(result, config);
         return;
     }
-    LOG_INFO(Frontend, "software keyboard: done ({} characters, button {})", Utf16Length(text),
+    APP_LOG_INFO("software keyboard: done ({} characters, button {})", Utf16Length(text),
              button);
     active = false;
     error.clear();
@@ -268,17 +265,17 @@ void Keyboard::Draw() {
     };
     std::vector<Choice> choices;
     switch (config.button_config) {
-    case ButtonConfig::Triple:
-        choices = {{ButtonText(config, 0, Frontend::SWKBD_BUTTON_CANCEL), 0},
-                   {ButtonText(config, 1, Frontend::SWKBD_BUTTON_FORGOT), 1},
-                   {ButtonText(config, 2, Frontend::SWKBD_BUTTON_OKAY), ok_id}};
+    case KeyboardButtons::Triple:
+        choices = {{ButtonText(config, 0, KEYBOARD_BUTTON_CANCEL), 0},
+                   {ButtonText(config, 1, KEYBOARD_BUTTON_FORGOT), 1},
+                   {ButtonText(config, 2, KEYBOARD_BUTTON_OKAY), ok_id}};
         break;
-    case ButtonConfig::Dual:
-        choices = {{ButtonText(config, 0, Frontend::SWKBD_BUTTON_CANCEL), 0},
-                   {ButtonText(config, 2, Frontend::SWKBD_BUTTON_OKAY), ok_id}};
+    case KeyboardButtons::Dual:
+        choices = {{ButtonText(config, 0, KEYBOARD_BUTTON_CANCEL), 0},
+                   {ButtonText(config, 2, KEYBOARD_BUTTON_OKAY), ok_id}};
         break;
-    case ButtonConfig::Single:
-        choices = {{ButtonText(config, 2, Frontend::SWKBD_BUTTON_OKAY), ok_id}};
+    case KeyboardButtons::Single:
+        choices = {{ButtonText(config, 2, KEYBOARD_BUTTON_OKAY), ok_id}};
         break;
     default: // none on a 3DS; something to finish with all the same
         choices = {{"Done", ok_id}};

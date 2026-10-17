@@ -16,6 +16,7 @@
 #include <optional>
 #include <string>
 
+#include "util/swkbd.h"
 
 namespace Core {
 class System;
@@ -114,6 +115,22 @@ struct PerfStats {
     double emulation_speed = 0.0;  ///< emulated time over real time
 };
 
+/// What the game's software keyboard applet calls (the app's keyboard, ui/keyboard.h, is one).
+/// Both are called on the emulation thread. Execute only takes the request and returns: the game
+/// polls for the text, and the app builds its frames on the same thread, so the keyboard shows
+/// itself in a frame and hands the text over with IRuntime::FinishKeyboard when the player is
+/// done.
+class ISoftwareKeyboard {
+public:
+    virtual ~ISoftwareKeyboard() = default;
+
+    /// The game asks for a text.
+    virtual void Execute(const KeyboardConfig& config) = 0;
+
+    /// The game says why it didn't take the last text (an empty message: no reason given).
+    virtual void ShowError(const std::string& error) = 0;
+};
+
 /// A game controller the app found, as the input profile names it: the SDL GUID, its number
 /// among controllers with that GUID, and its name.
 struct ControllerInfo {
@@ -195,6 +212,17 @@ public:
     virtual void KeyDown(int scancode) = 0;
     virtual void KeyUp(int scancode) = 0;
     virtual void ReleaseAllKeys() = 0;
+
+    // ── The software keyboard ──
+
+    /// The game's keyboard requests go to `keyboard` instead of the runtime's default one (which
+    /// shows nothing). The runtime keeps it until the end. Main thread, after CommitOptions.
+    virtual void SetSoftwareKeyboard(std::shared_ptr<ISoftwareKeyboard> keyboard) = 0;
+
+    /// The player is done: hands the game the text and the number of the button pressed (the
+    /// buttons are numbered from the left, KeyboardButtons). None when the game takes it, else
+    /// why it doesn't and the keyboard stays up. Emulation thread, after Execute.
+    virtual KeyboardError FinishKeyboard(const std::string& text, std::uint8_t button) = 0;
 
     // ── Network ──
     // (N0-24 moves it behind the room methods below)

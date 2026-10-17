@@ -31,6 +31,8 @@ public:
     void KeyDown(int scancode) override;
     void KeyUp(int scancode) override;
     void ReleaseAllKeys() override;
+    void SetSoftwareKeyboard(std::shared_ptr<ISoftwareKeyboard> keyboard) override;
+    KeyboardError FinishKeyboard(const std::string& text, std::uint8_t button) override;
     void InitNetwork() override;
     void ShutdownNetwork() override;
     void NewConsoleId() override;

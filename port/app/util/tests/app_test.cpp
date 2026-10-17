@@ -52,6 +52,8 @@ struct FakeRuntime final : IRuntime {
     void KeyDown(int) override {}
     void KeyUp(int) override {}
     void ReleaseAllKeys() override {}
+    void SetSoftwareKeyboard(std::shared_ptr<ISoftwareKeyboard>) override {}
+    KeyboardError FinishKeyboard(const std::string&, std::uint8_t) override { return KeyboardError::None; }
     void InitNetwork() override {}
     void ShutdownNetwork() override {}
     void NewConsoleId() override {}

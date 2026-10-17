@@ -19,6 +19,7 @@
 #include "core/perf_stats.h"
 #include "frontend.h"
 #include "network/network.h"
+#include "runtime_azahar/azahar_keyboard.h"
 #include "runtime_azahar/log_sink.h"
 #include "util/log.h"
 #include "video_core/gpu.h"
@@ -58,6 +59,7 @@ struct AzaharRuntime::Impl {
     /// (Azahar's rule: one of these in main, waited for at the end).
     Common::DetachedTasks detached_tasks;
     std::string update_notice;  ///< why request.update didn't install, if it didn't
+    std::shared_ptr<AzaharKeyboard> keyboard;  ///< the software keyboard the core was given
 };
 
 AzaharRuntime::AzaharRuntime() : impl(std::make_unique<Impl>()) {
@@ -147,6 +149,16 @@ PerfStats AzaharRuntime::TakePerfStats() {
 
 void AzaharRuntime::WaitForBackgroundTasks() {
     impl->detached_tasks.WaitForAllTasks();
+}
+
+void AzaharRuntime::SetSoftwareKeyboard(std::shared_ptr<ISoftwareKeyboard> keyboard) {
+    impl->keyboard = std::make_shared<AzaharKeyboard>(std::move(keyboard));
+    Core::System::GetInstance().RegisterSoftwareKeyboard(impl->keyboard);
+}
+
+KeyboardError AzaharRuntime::FinishKeyboard(const std::string& text, std::uint8_t button) {
+    // (no keyboard was set: CallbackFailed, the nearest answer of the game's own)
+    return impl->keyboard ? impl->keyboard->Finish(text, button) : KeyboardError::CallbackFailed;
 }
 
 void AzaharRuntime::InitNetwork() {
