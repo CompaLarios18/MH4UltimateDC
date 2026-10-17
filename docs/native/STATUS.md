@@ -29,7 +29,7 @@ Tables between the `wp-status` markers are generated: edit the specs or use `set
 | N0-21 | IPC trace and comparator | M | native-worker-high | N0-08 | ci, dump-check | `done` | PR #5; ci green (run 38954204863: the runner compiles the IPC section); dump-check pending (G1: jit vs recomp IPC traces compare equal; the first line shows bare session names) |
 | N0-06 | DSP and HID captures | M | native-worker | N0-21 | ci, dump-check | `review` | batch 20261017-n1; ci green (run 39003477255: runner job compiles the DSP and HID section); dump-check pending (300 audio frames from G1's title have non-silent PCM and type-3 records, the HID records equal the frames run, and type-2 (IR) records appear) |
 | N0-22 | GPU capture format and `gcap.py` | S | native-worker | - | none | `done` | PR #5 |
-| N0-05 | GPU capture recorder | M | native-worker-high | N0-06, N0-22 | ci, dump-check | `active` | session 20261017; base 040f7c1 |
+| N0-05 | GPU capture recorder | M | native-worker-high | N0-06, N0-22 | ci, dump-check | `review` | batch 20261017-n1; ci green (run 39006180963: the runner job compiles and links the recorder and its patch); dump-check pending (a 3-frame capture of G1's title passes gcap.py check, has at least 3 command-list submissions, PICA_REG records, 3 FRAME records and 6 PPMs; report its size; FLUSH records appear) |
 | N0-09 | Golden sessions G1, G2, G6 | M | native-worker | N0-04, N0-05, N0-06, N0-07, N0-08, N0-21 | dump | `todo` |  |
 | N0-10 | Golden sessions G3, G4, G7 | M | native-worker | N0-09 | dump, save | `todo` |  |
 | N0-11 | Golden session G5 (two players) | M | native-worker | N0-10 | dump, save | `todo` |  |
@@ -58,7 +58,7 @@ Tables between the `wp-status` markers are generated: edit the specs or use `set
 | N1-05 | Kernel objects and handle table | M | native-worker-high | N1-02 | none | `done` | PR #5; ci green (run 38926731888) |
 | N1-06 | Scheduler, game clock and timers | L | native-worker-high | N1-04, N1-05 | none | `review` | batch 20261017-n1; ci pending |
 | N1-27 | Threads: creation, TLS and the core-1 time limit | M | native-worker-high | N1-06 | none | `review` | batch 20261017-n1; ci pending |
-| N1-07 | The SVC table | M | native-worker-high | N1-02, N1-27 | none | `todo` |  |
+| N1-07 | The SVC table | M | native-worker-high | N1-02, N1-27 | none | `active` | session 20261017; base 5218b7e |
 | N1-08 | Kernel conformance programs | M | native-worker | N0-04 | none | `done` | PR #5; ci green (runs 38923999146 and, for the follow-up, 38944850589); the 10 programs match the reference runner twice in a row; tests/test_port.py and tests/test_conformance.py pass with the tip's runner (148 passed, 11 skipped for the game and the native runner, at the third audit) |
 | N1-09 | The runtime, the native runner and the first boot | L | native-worker-high | N1-03, N1-07, N1-08, N0-08 | ci | `todo` |  |
 | N1-10 | IPC core, ports, sessions and srv | M | native-worker-high | N1-07, N1-09, N0-21 | none | `todo` |  |
