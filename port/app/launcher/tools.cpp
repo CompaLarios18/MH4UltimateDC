@@ -1,4 +1,3 @@
-#include "common/file_util.h"
 #include "launcher/tools.h"
 
 #include <algorithm>
@@ -9,6 +8,7 @@
 #include <json.hpp>
 
 #include "launcher/process.h"
+#include "runtime.h"
 #include "util/file.h"
 
 namespace Launcher::Tools {
@@ -199,7 +199,7 @@ std::string PythonHint(const Python& found) {
 }
 
 std::string UserDir() {
-    std::string dir = FileUtil::GetUserPath(FileUtil::UserPath::UserDir);
+    std::string dir = App::Runtime().UserDir();
     while (dir.size() > 1 && (dir.back() == '/' || dir.back() == '\\')) {
         dir.pop_back();
     }

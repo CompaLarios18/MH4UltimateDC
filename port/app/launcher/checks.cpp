@@ -1,4 +1,3 @@
-#include "common/file_util.h"
 #include "launcher/checks.h"
 
 #include <fmt/format.h>
@@ -8,6 +7,7 @@
 #include "core/hle/service/am/am.h"
 #include "core/hle/service/fs/archive.h"
 #include "core/loader/loader.h"
+#include "runtime.h"
 #include "util/file.h"
 #include "util/log.h"
 
@@ -127,7 +127,7 @@ std::string LibraryPath() {
 #else
     constexpr const char* ext = "so";
 #endif
-    return fmt::format("{}recomp/{:016X}.{}", FileUtil::GetUserPath(FileUtil::UserPath::UserDir),
+    return fmt::format("{}recomp/{:016X}.{}", App::Runtime().UserDir(),
                        MH4U_USA, ext);
 }
 

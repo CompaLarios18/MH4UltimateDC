@@ -12,13 +12,13 @@
 #include <imgui_impl_sdlrenderer2.h>
 #include <imgui_internal.h>
 
-#include "common/scm_rev.h"
 #include "config.h"
 #include "core/core.h"
 #include "frontend.h"
 #include "launcher/pick.h"
 #include "launcher/state.h"
 #include "launcher/ui.h"
+#include "runtime.h"
 #include "util/file.h"
 #include "util/log.h"
 
@@ -1011,7 +1011,7 @@ std::string AppVersion() {
     if (std::string(MH4U_PORT_COMMIT).size() > 0) {
         version += fmt::format(" {}", MH4U_PORT_COMMIT);
     }
-    return version + fmt::format(" \xC2\xB7 Azahar {}", Common::g_build_fullname);
+    return version + fmt::format(" \xC2\xB7 Azahar {}", App::Runtime().Build().name);
 }
 
 std::string FileName(const std::string& path) {

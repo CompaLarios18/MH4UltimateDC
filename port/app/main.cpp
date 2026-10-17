@@ -24,10 +24,6 @@
 
 #include "common/common_types.h"
 #include "common/detached_tasks.h"
-#include "common/file_util.h"
-#include "common/logging/backend.h"
-#include "common/logging/filter.h"
-#include "common/scm_rev.h"
 #include "common/settings.h"
 #include "config.h"
 #include "core/core.h"
@@ -47,7 +43,7 @@
 #include "launcher/launcher.h"
 #include "multiplayer.h"
 #include "network/network.h"
-#include "runtime_azahar/log_sink.h"
+#include "runtime_azahar/azahar_runtime.h"
 #include "ui/ui.h"
 #include "util/file.h"
 #include "util/log.h"
@@ -251,7 +247,8 @@ std::string LoadError(Core::System::ResultStatus status, Core::System& system) {
 
 int Run(const std::vector<std::string>& argv) {
     Common::DetachedTasks detached_tasks;
-    App::Azahar::InstallLogSink();
+    const auto runtime = std::make_unique<App::Azahar::AzaharRuntime>();
+    App::SetRuntime(runtime.get());
     const Args args = Parse(argv);
     if (args.help || args.bad) {
         std::fputs(USAGE, args.bad ? stderr : stdout);
@@ -260,23 +257,18 @@ int Run(const std::vector<std::string>& argv) {
     if (!args.user.empty()) {
         // before anything looks at the user folder (the log is in it)
         const char last = args.user.back();
-        FileUtil::SetUserPath(last == '/' || last == '\\' ? args.user : args.user + '/');
+        runtime->SetUserDir(last == '/' || last == '\\' ? args.user : args.user + '/');
     }
     // (the launcher's code check logs to a file of its own: the launcher's process has this one)
-    Common::Log::Initialize(args.check_code.empty() ? "mh4u_log.txt" : "mh4u_check_log.txt");
-    Common::Log::SetColorConsoleBackendEnabled(true);
-    Common::Log::Start();
-    Common::Log::Filter filter;
-    filter.ParseFilterString(args.log.empty() ? Settings::values.log_filter.GetValue() : args.log);
-    Common::Log::SetGlobalFilter(filter);
+    runtime->StartLogging(args.check_code.empty() ? "mh4u_log.txt" : "mh4u_check_log.txt", args.log);
     if (!args.check_code.empty()) {
         const int status = Launcher::CheckCode(args.check_code);
-        Common::Log::Stop();
+        runtime->StopLogging();
         return status;
     }
 
-    APP_LOG_INFO("MH4U PC port app, Azahar {} | {}-{}", Common::g_build_fullname,
-             Common::g_scm_branch, Common::g_scm_desc);
+    const App::BuildInfo build = runtime->Build();
+    APP_LOG_INFO("MH4U PC port app, Azahar {} | {}-{}", build.name, build.branch, build.description);
 
     App::Config config = App::Load();
     if (args.fullscreen >= 0) {
@@ -300,8 +292,8 @@ int Run(const std::vector<std::string>& argv) {
     }
     // the game's options, with the recommended settings when there are none yet (as the Qt
     // frontend's Tools > MH4U Port Options... does)
-    if (!App::Util::Exists(Port::OptionsPath())) {
-        App::Util::WriteStringToFile(true, Port::OptionsPath(), Port::OptionsTemplate());
+    if (!App::Util::Exists(runtime->GameOptionsPath())) {
+        App::Util::WriteStringToFile(true, runtime->GameOptionsPath(), runtime->GameOptionsTemplate());
     }
 
     if (!App::Window::InitSDL()) {
@@ -322,7 +314,7 @@ int Run(const std::vector<std::string>& argv) {
     if (Launcher::Run(config, show_launcher) == Launcher::Result::Quit) {
         Network::Shutdown();
         InputCommon::Shutdown();
-        Common::Log::Stop();
+        runtime->StopLogging();
         SDL_Quit();
         return 0;
     }
@@ -403,7 +395,7 @@ int Run(const std::vector<std::string>& argv) {
     App::Ui::Start(system, *window, config);
 
     const auto scope = window->Acquire();
-    Settings::LogSettings();
+    runtime->LogOptions();
     const auto status = system.Load(*window, game, secondary.get());
     if (status != Core::System::ResultStatus::Success) {
         App::Dialog::Message(TITLE, LoadError(status, system), true);
@@ -461,7 +453,7 @@ int Run(const std::vector<std::string>& argv) {
     Network::Shutdown();
     InputCommon::Shutdown();
     detached_tasks.WaitForAllTasks();
-    Common::Log::Stop();
+    runtime->StopLogging();
     SDL_Quit();
     return 0;
 }

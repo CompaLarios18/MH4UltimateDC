@@ -1,3 +1,4 @@
+#include "runtime.h"
 #include "ui/menu.h"
 
 #include <algorithm>
@@ -361,7 +362,7 @@ void Menu::Opened() {
     capture = -1;
     capture_note.clear();
     std::string text;
-    App::Util::ReadFileToString(true, Port::OptionsPath(), text);
+    App::Util::ReadFileToString(true, Runtime().GameOptionsPath(), text);
     game_file = ReadOptions(text);
     game_changes.clear();
 }
@@ -372,7 +373,7 @@ void Menu::Closed() {
         EndLayoutEdit(); // closed from the editor (Done, or the controller's Guide): kept
     }
     if (!game_changes.empty()) {
-        const std::string path = Port::OptionsPath();
+        const std::string path = Runtime().GameOptionsPath();
         std::string text;
         App::Util::ReadFileToString(true, path, text);
         if (App::Util::WriteStringToFile(true, path, WriteOptions(text, game_changes))) {

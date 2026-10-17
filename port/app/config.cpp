@@ -1,4 +1,3 @@
-#include "common/file_util.h"
 #include "config.h"
 
 #include <algorithm>
@@ -9,6 +8,7 @@
 #include "core/hle/service/service.h"
 #include "input.h"
 #include "perf.h"
+#include "runtime.h"
 #include "util/file.h"
 #include "util/log.h"
 #include "video_core/pica/pica_core.h"
@@ -90,7 +90,7 @@ std::string ButtonKeyName(int button) {
 } // namespace
 
 std::string ConfigPath() {
-    return FileUtil::GetUserPath(FileUtil::UserPath::UserDir) + "mh4u-app.ini";
+    return Runtime().UserDir() + "mh4u-app.ini";
 }
 
 Config Load() {
