@@ -219,3 +219,64 @@ def test_svc_traces_are_read_as_utf8_whatever_the_locale(tmp_path):
     tool = os.path.join(HERE, "..", "tools", "compare_svc_traces.py")
     r = subprocess.run([sys.executable, tool, path, path], env=env, capture_output=True, text=True)
     assert "Traceback" not in r.stderr, r.stderr
+
+
+# ── --ignore-regs: registers a call does not define ─────────────────────────────────
+
+def _release(handle, junk, out_junk=None, thread=1):
+    """ReleaseMutex (svc 0x14): the handle in r0, a leftover in r1; r0 = result, r1 = leftover."""
+    return line(thread, "14", (handle, junk, 0, 0), out=(0, out_junk if out_junk is not None else junk, 0, 0),
+                pc=0x00100500)
+
+
+def _write(tmp_path, name, lines):
+    p = tmp_path / name
+    p.write_text("\n".join(lines) + "\n")
+    return str(p)
+
+
+RULES = "0x14 in=r1,r2,r3 out=r1,r2,r3  # ReleaseMutex defines r0 only\n"
+
+
+def test_ignore_regs_leaves_out_only_the_registers_named(tmp_path, capsys):
+    import compare_svc_traces as c
+    rules = tmp_path / "rules.txt"
+    rules.write_text(RULES)
+    ref = _write(tmp_path, "ref.txt", [HEADER, _release(7, 0x111)])
+    junk = _write(tmp_path, "junk.txt", [HEADER, _release(7, 0x999)])           # r1 in and out differ
+    other_handle = _write(tmp_path, "h.txt", [HEADER, _release(8, 0x111)])      # r0 differs
+    assert c.main([ref, junk, "--outputs"]) == 1                                 # without the rules
+    assert c.main([ref, junk, "--outputs", "--ignore-regs", str(rules)]) == 0
+    assert c.main([ref, other_handle, "--outputs", "--ignore-regs", str(rules)]) == 1
+    # another svc is not touched by the rule
+    a = _write(tmp_path, "a.txt", [HEADER, line(1, "13", (7, 0x111, 0, 0), out=(0, 0x111, 0, 0), pc=0x00100500)])
+    b = _write(tmp_path, "b.txt", [HEADER, line(1, "13", (7, 0x999, 0, 0), out=(0, 0x999, 0, 0), pc=0x00100500)])
+    assert c.main([a, b, "--outputs", "--ignore-regs", str(rules)]) == 1
+    # only the inputs, or only the outputs
+    ins = tmp_path / "in.txt"
+    ins.write_text("14 in=r1\n")
+    outs_differ = _write(tmp_path, "o.txt", [HEADER, _release(7, 0x111, out_junk=0x222)])
+    assert c.main([ref, junk, "--ignore-regs", str(ins)]) == 0                   # args only
+    assert c.main([ref, outs_differ, "--outputs", "--ignore-regs", str(ins)]) == 1
+
+
+def test_ignore_regs_rules_with_a_bad_line_or_file_exit_2(tmp_path, capsys):
+    import compare_svc_traces as c
+    ref = _write(tmp_path, "ref.txt", [HEADER, _release(7, 1)])
+    for text in ("zz in=r1\n", "14\n", "14 in=r4\n", "14 foo=r1\n", "14 in=\n"):
+        bad = tmp_path / "bad.txt"
+        bad.write_text(text)
+        assert c.main([ref, ref, "--ignore-regs", str(bad)]) == 2, text
+        assert "error:" in capsys.readouterr().err
+    assert c.main([ref, ref, "--ignore-regs", str(tmp_path / "missing.txt")]) == 2
+    binary = tmp_path / "bin.txt"
+    binary.write_bytes(b"\xff\xfe\x00")
+    assert c.main([ref, ref, "--ignore-regs", str(binary)]) == 2
+
+
+def test_the_repository_rule_file_is_well_formed_and_names_releasemutex():
+    import compare_svc_traces as c
+    root = os.path.join(HERE, "..")
+    rules = c.load_register_rules([os.path.join(root, "config", "native", "svc_unused_registers.txt")])
+    assert rules["14"] == {"in": {1, 2, 3}, "out": {1, 2, 3}}
+    assert set(rules) == {"14"}                  # a new line is a decision: review it against svc.cpp

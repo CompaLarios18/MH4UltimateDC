@@ -1,0 +1,5 @@
+# Registers a system call neither reads nor writes, which tools/compare_svc_traces.py --ignore-regs
+# leaves out of the comparison of two runtimes' traces. Format: `<svc hex> [in=r1,r2,r3] [out=r1,r2,r3]  # reason`.
+# Add a line only for registers the call's ABI does not define (check Azahar's svc.cpp and 3dbrew), never to
+# hide a difference in an argument or a result.
+0x14 in=r1,r2,r3 out=r1,r2,r3  # ReleaseMutex takes the handle in r0 and returns only r0; svc_test leaves a partial sum, which depends on the order of its workers, in r1

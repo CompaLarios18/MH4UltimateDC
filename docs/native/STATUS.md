@@ -36,7 +36,7 @@ Tables between the `wp-status` markers are generated: edit the specs or use `set
 | N0-12 | Kernel census | S | native-worker | N0-04, N0-21, N0-10 | dump, save | `todo` |  |
 | N0-13 | PICA census | M | native-worker | N0-05, N0-10 | dump, save | `todo` |  |
 | N0-14 | Flat-memory coherence check | M | native-worker-high | N0-15, N0-10 | ci, dump, save | `todo` |  |
-| N0-15 | Performance baseline | M | native-worker | N0-18 | ci, pc, mac | `todo` |  |
+| N0-15 | Performance baseline | M | native-worker | N0-18 | ci, pc, mac | `active` | session 20261017; base b1f744e |
 | N0-16 | Azahar dependency inventory | S | native-worker | - | none | `done` | PR #5 |
 | N0-17 | `RC_NATIVE` mode in the recompiler runtime | M | native-worker-high | N0-03 | ci | `done` | PR #5; ci green (run 38885556028) |
 | N0-18 | Hooks on a platform interface | M | native-worker-high | N0-16, N0-17, N0-05 | ci, dump-check | `review` | batch 20261017-n1; ci green (run 39008761854, windows.yml 39008783719 and macos.yml 39008785589 on its branch); dump-check pending (runs with --set 0:fps=60 --set f600:hud_edges=1 give the same state trace before and after the change) |
