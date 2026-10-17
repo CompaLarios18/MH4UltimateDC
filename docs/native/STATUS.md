@@ -75,7 +75,7 @@ Tables between the `wp-status` markers are generated: edit the specs or use `set
 | N1-20 | Hooks on the native platform | S | native-worker | N0-18, N1-04, N1-17 | none | `todo` |  |
 | N1-21 | First game boot: G1 and G2 headless | M | native-worker-high | N1-09, N1-12, N1-13, N1-14, N1-15, N1-16, N1-17, N1-18, N1-19, N1-20, N1-22, N1-29, N0-09 | dump | `todo` |  |
 | N1-26 | G3 headless: from the save to the Arena hunt | L | native-worker-high | N1-21, N1-13, N0-10 | dump, save | `todo` |  |
-| N1-22 | Windows and macOS builds | M | native-worker | N1-09 | ci | `active` | session 20261017; base 59dfbb3 |
+| N1-22 | Windows and macOS builds | M | native-worker | N1-09 | ci | `review` | batch 20261017-n1-2; ci green (Native CI run 39047113161 on its branch: native-windows and native-macos jobs green, ctest 22/22 and conformance 51 passed on both, artifact mh4n-runner-windows uploaded) |
 | N1-23 | CPU budget measurement | S | native-worker | N1-26, N1-22, N0-15 | ci, pc | `todo` |  |
 | N1-24 | Fallback interpreter: spike | S | native-worker-high | N1-04, N1-09, N1-22 | none | `todo` |  |
 | N1-28 | Fallback interpreter | L | native-worker-high | N1-24 | none | `todo` |  |
