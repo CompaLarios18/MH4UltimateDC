@@ -34,7 +34,7 @@ What "the recompiled code for the same instruction" is in the comparison: for st
 | 5 | `arm_ldst_imm` | LDR/STR/LDRB/STRB, 12-bit offset, pre/post index, writeback | yes | yes | 24 | 4,818 | 0 | switch on P U B W L; offset is the field |
 | 6 | `arm_ldst_reg` | same, shifted register offset | yes | yes | 168 | 43,332 | 1 (32) | like 1 |
 | 7 | `arm_ldst_extra` | LDRH, STRH, LDRSB, LDRSH, LDRD, STRD, immediate or register | yes | yes | 85 | 20,169 | 0 | offset `16*hi + lo` is affine in two fields |
-| 8 | `arm_ldm_stm` | LDM/STM, four modes, writeback, with or without pc in the list | yes | yes | 28 | 23,195 | 0 | register-list recipe; the pc element is a tail line that is a conditional on an empty list |
+| 8 | `arm_ldm_stm` | LDM/STM, four modes, writeback, with or without pc in the list | yes | yes | 28 | 23,203 | 0 | register-list recipe; the pc element is a tail line that is a conditional on an empty list |
 | 9 | `arm_b_bl` | B, BL | yes | yes | 2 | 514 | 0 | target = `ih_pc + 8 + 4*sext24(imm24)`; link = `ih_pc + 4` |
 | 10 | `arm_bx_blx` | BX, BXJ, BLX (register) | yes | yes | 3 | 571 | 0 | kinds return, indirect jump and indirect call |
 | 11 | `arm_media_ext` | SXTB/UXTB/SXTH/UXTH, SXTAB/UXTAH..., 16-bit pairs | yes | yes | 24 | 5,575 | 0 | switch on rotation and on `rn == 15` (no accumulate) |
