@@ -216,6 +216,9 @@ TEST_CASE("file errors: nothing there, no folder to write in, a folder instead o
     CHECK(WriteStringToFile(true, dir / "nodir/f.txt", "x") == 0);
     CHECK_FALSE(Exists(dir / "nodir"));
     CHECK(WriteStringToFile(true, dir.root(), "x") == 0);  // it is a folder
+    back = "stale";
+    CHECK(ReadFileToString(true, dir.root(), back) == 0);  // reading a folder fails too
+    CHECK(back == "stale");
 }
 
 TEST_CASE("ListDirectory names the entries and fails on a missing folder or a file") {

@@ -9,9 +9,9 @@
 #include "util/file.h"
 
 #include <cerrno>
+#include <cstdio>
 #include <cstring>
 #include <filesystem>
-#include <fstream>
 #include <utility>
 
 #ifndef _WIN32
@@ -19,6 +19,7 @@
 #endif
 
 #include "util/log.h"
+#include "util/strings.h"
 
 namespace App::Util {
 
@@ -57,6 +58,15 @@ fs::path SystemPath(const std::string& utf8) {
     }
 #endif
     return ToPath(copy);
+}
+
+/// fopen on a UTF-8 path (a wide one on Windows).
+std::FILE* OpenFile(const std::string& path, const char* mode) {
+#ifdef _WIN32
+    return _wfopen(Utf8ToWide(path).c_str(), Utf8ToWide(mode).c_str());
+#else
+    return std::fopen(path.c_str(), mode);
+#endif
 }
 
 bool MakeDirectory(const std::string& path) {
@@ -120,24 +130,29 @@ bool CreateFullPath(const std::string& path) {
 }
 
 std::size_t WriteStringToFile(bool text_file, const std::string& path, std::string_view text) {
-    std::ofstream file(ToPath(path), text_file ? std::ios::out : std::ios::out | std::ios::binary);
-    if (!file.is_open()) {
+    std::FILE* file = OpenFile(path, text_file ? "w" : "wb");
+    if (!file) {
         return 0;
     }
-    file.write(text.data(), static_cast<std::streamsize>(text.size()));
-    file.flush();
-    return file.good() ? text.size() : 0;
+    const std::size_t written = text.empty() ? 0 : std::fwrite(text.data(), 1, text.size(), file);
+    const bool closed = std::fclose(file) == 0;
+    return closed && written == text.size() ? written : 0;
 }
 
 std::size_t ReadFileToString(bool text_file, const std::string& path, std::string& text) {
-    std::ifstream file(ToPath(path), text_file ? std::ios::in : std::ios::in | std::ios::binary);
-    if (!file.is_open()) {
+    std::FILE* file = OpenFile(path, text_file ? "r" : "rb");
+    if (!file) {
         return 0;
     }
     std::string content;
     char buffer[4096];
-    while (file.read(buffer, sizeof(buffer)) || file.gcount() > 0) {
-        content.append(buffer, static_cast<std::size_t>(file.gcount()));
+    while (const std::size_t count = std::fread(buffer, 1, sizeof(buffer), file)) {
+        content.append(buffer, count);
+    }
+    const bool failed = std::ferror(file) != 0;
+    std::fclose(file);
+    if (failed) {
+        return 0;
     }
     text = std::move(content);
     return text.size();
