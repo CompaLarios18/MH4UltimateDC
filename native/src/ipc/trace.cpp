@@ -1,7 +1,9 @@
-// Derived from Azahar src/core/hle/ipc.h at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6
-// (GPL-2.0-or-later: it says "GPLv2 or any later version"): the layouts of the translate descriptors
-// that the trace walks (handles, the calling PID, static, PXI and mapped buffers).
-// Copyright 2016 Citra Emulator Project
+// Derived from Azahar src/core/hle/ipc.h and src/core/hle/kernel/hle_ipc.cpp at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6
+// (GPL-2.0-or-later: each says "GPLv2 or any later version"): the layouts of the translate descriptors
+// that the trace walks (handles, the calling PID, static, PXI and mapped buffers) and the walk over the
+// translate parameters of a command (PopulateFromIncomingCommandBuffer).
+// Copyright 2016 Citra Emulator Project (ipc.h)
+// Copyright 2017-2025 Citra Emulator Project / Azahar Emulator Project (hle_ipc.cpp)
 //
 // --trace-ipc FILE and --trace-ipc-full (N1-10): every IPC request with its reply, in the format of
 // N0-21 (tools/compare_ipc_traces.py, tools/native/tracefmt.py):

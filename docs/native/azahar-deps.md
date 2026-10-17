@@ -18,7 +18,7 @@ Pinned Azahar commit: `5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6`. Counts below c
 
 N0-18 moved every use of Azahar in `port/src/hooks.cpp` and `hooks.h` (the logger, `Layout::ScreenOverlay` and `SetTopScreenWidth`, `Core::System`, `Settings::values`, `FileUtil::GetUserPath`, `NetSync`) behind `Port::Platform` (`port/src/platform.h`); `port/src/platform_azahar.cpp` holds the calls and `Port::AzaharPlatform()` is its instance. The two files no longer count in the grep below. `runner.cpp` reaches Azahar's layout through `Port::AzaharPlatform()` in `--overlay-layout`. N1-20 implements `Platform` for the native runtime; `NetSync::ParseMode` is now unused by the hooks (`platform.h` has `Port::ParseNetSyncMode` with the same rules).
 
-N0-04, N0-07 and N0-21 changed `port/src/runner.cpp` and `port/azahar/azahar.patch` after `def93e9`: `runner.cpp` now has 32 Azahar includes (N0-04 and N0-07 added `core/loader/loader.h` and `core/memory.h`; N0-21 added seven for the IPC trace: `client_session`, `ipc_debugger/recorder`, `object`, `server_session`, `session`, `fs/directory` and `fs/file`) and the patch is 1,525 lines (N0-04 and N0-07 only; N0-21 added no hook). The rows below for `runner.cpp` and the patch are otherwise as counted; these APIs are new, with their replacement:
+N0-04, N0-07 and N0-21 changed `port/src/runner.cpp` and `port/azahar/azahar.patch` after `def93e9`: `runner.cpp` had 32 Azahar includes at the time (38 after N0-05 and N0-06; the recount below is current) (N0-04 and N0-07 added `core/loader/loader.h` and `core/memory.h`; N0-21 added seven for the IPC trace: `client_session`, `ipc_debugger/recorder`, `object`, `server_session`, `session`, `fs/directory` and `fs/file`) and the patch is 1,525 lines (N0-04 and N0-07 only; N0-21 added no hook). The rows below for `runner.cpp` and the patch are otherwise as counted; these APIs are new, with their replacement:
 
 | API | Used for | Replacement |
 |---|---|---|
@@ -255,5 +255,5 @@ Every file found by the recount, with its concerns (section numbers above) and t
 ## Notes for the consumers
 
 - **N0-18 (hooks):** the Azahar uses of `port/src/hooks.cpp`, `port/src/hooks.h` and `port/src/netsync.cpp` are exactly the rows tagged Platform above; `SetRefreshRate`, `IsPoweredOn`, `UpdateCurrentFramebufferLayout` and `GetGlobalTicks` map to `Platform::SetRefreshRate`, `IsRunning`, `RefreshScreenLayout` and `GameSeconds`.
-- **N0-20 and N0-24:** the file lists of their allowlists match the files tagged IRuntime or util in the index; after N0-24 the only app files that still include Azahar are `port/app/window.h`, `port/app/window*.cpp` and `port/app/ui/render_*.cpp`.
+- **N0-20 and N0-24:** the file lists of their allowlists match the files tagged IRuntime or util in the index; after N0-24 the only app files that still include Azahar are `port/app/runtime_azahar/**` (by design), `port/app/window.h`, `port/app/window*.cpp` and `port/app/ui/render_*.cpp`.
 - **Every `LOG_*` call and `u8`..`u64` alias** is a trivial dependency; do it in one commit per file group to keep reviews short.

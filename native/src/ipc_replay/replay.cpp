@@ -1,3 +1,9 @@
+// Derived from Azahar src/core/hle/ipc.h and src/core/hle/kernel/hle_ipc.cpp at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6
+// (GPL-2.0-or-later: each says "GPLv2 or any later version"): the layouts of the translate descriptors
+// and the walk over the translate parameters of a recorded command (Part and ParseCommand, the same
+// walk as the runtime's IPC trace writer, which is derived from the same two files).
+// Copyright 2016 Citra Emulator Project (ipc.h)
+// Copyright 2017-2025 Citra Emulator Project / Azahar Emulator Project (hle_ipc.cpp)
 #include "ipc_replay/replay.h"
 
 #include <algorithm>

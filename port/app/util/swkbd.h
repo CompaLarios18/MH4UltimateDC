@@ -1,8 +1,9 @@
-// Derived from Azahar src/core/frontend/applets/swkbd.h at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6
-// (GPL-2.0-or-later): the software keyboard's request (KeyboardConfig and the modes, button
-// layouts and filters in it, with the default button texts) and the reasons the game turns a text
-// down (ValidationError), as the app's own types.
-// Copyright 2018 Citra Emulator Project
+// Derived from Azahar src/core/frontend/applets/swkbd.h and src/core/frontend/applets/swkbd.cpp at
+// 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-2.0-or-later): the software keyboard's request
+// (KeyboardConfig and the modes, button layouts and filters in it, with the default button texts), the
+// reasons the game turns a text down (ValidationError), and the number of the OK button for each layout
+// (the order of ButtonConfig, which Finalize compares with the pressed button), as the app's own types.
+// Copyright 2018 Citra Emulator Project (swkbd.h, swkbd.cpp)
 //
 // What the 3DS's software keyboard applet asks of the app and what it answers. The runtime
 // converts its applet's types to these (runtime_azahar/azahar_keyboard.cpp).

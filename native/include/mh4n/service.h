@@ -1,13 +1,13 @@
 // Derived from Azahar src/core/hle/service/service.h, src/core/hle/service/service.cpp,
 // src/core/hle/service/sm/sm.h, src/core/hle/service/sm/sm.cpp, src/core/hle/kernel/client_port.cpp,
-// src/core/hle/kernel/server_port.cpp and src/core/hle/kernel/server_session.cpp at
-// 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-2.0-or-later: each of them says "GPLv2 or any later
-// version"): the shape of a service (ServiceFrameworkBase: a name, a maximum number of sessions and a
+// src/core/hle/kernel/server_port.cpp, src/core/hle/kernel/server_session.cpp and
+// src/core/hle/kernel/svc.cpp at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-3.0-or-later: svc.cpp says
+// "GPLv3 or any later version"; the others say "GPLv2 or any later version"): the shape of a service (ServiceFrameworkBase: a name, a maximum number of sessions and a
 // table from command id to handler, DefaultMaxSessions, kMaxPortSize), the service manager's checks
 // and result codes (ServiceManager, ValidateServiceName, the SRV result codes), the connection limit
-// of a port (ClientPort::Connect) and the delay a reply to an HLE service takes
-// (ServerSession::HandleSyncRequest).
-// Copyright 2014-2026 Citra Emulator Project / Azahar Emulator Project (service.h, service.cpp)
+// of a port (ClientPort::Connect), the longest name svcConnectToPort takes (PortNameMaxLength) and the
+// delay a reply to an HLE service takes (ServerSession::HandleSyncRequest).
+// Copyright 2014-2026 Citra Emulator Project / Azahar Emulator Project (service.h, service.cpp, svc.cpp)
 // Copyright 2017-2025 Citra Emulator Project / Azahar Emulator Project (sm.h)
 // Copyright 2017 Citra Emulator Project (sm.cpp)
 // Copyright 2016-2024 Citra Emulator Project / Azahar Emulator Project (client_port.cpp,

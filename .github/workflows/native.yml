@@ -85,7 +85,7 @@ jobs:
         run: python3 tools/native/check_native_deps.py
 
   # The native runner on Windows (N1-22): x86-64, clang from llvm-mingw (the archive
-  # tools/build_game.py fetches). Same steps as `native`; the tests that need a Vulkan device skip.
+  # tools/build_game.py fetches). Same steps as `native` (there are no Vulkan-device tests yet).
   # The ARM test programs and the code libraries are built with the same llvm-mingw.
   native-windows:
     runs-on: windows-latest

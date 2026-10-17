@@ -1,7 +1,8 @@
-// Derived from Azahar src/core/frontend/applets/swkbd.h at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6
-// (GPL-2.0-or-later): the number of the OK button for each button layout (Single 0, Dual 1, Triple
-// 2), which is the order of ButtonConfig there.
-// Copyright 2018 Citra Emulator Project
+// Derived from Azahar src/core/frontend/applets/swkbd.h and src/core/frontend/applets/swkbd.cpp at
+// 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-2.0-or-later): the number of the OK button for each
+// button layout (Single 0, Dual 1, Triple 2), which is the order of ButtonConfig in swkbd.h and what
+// Finalize in swkbd.cpp compares with the pressed button.
+// Copyright 2018 Citra Emulator Project (swkbd.h, swkbd.cpp)
 //
 // The app's software keyboard (ui/keyboard.cpp) in a headless Dear ImGui context, against a fake
 // runtime and a fake SDL clock: what a request limits, which button finishes it, what the game's

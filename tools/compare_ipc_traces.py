@@ -46,7 +46,8 @@ usage: compare_ipc_traces.py REF CAND [--strict] [--ignore FILE]... [--prefix] [
                `<service> <header>  # reason`: the session name (`fs:USER`; `fs:USER/file` for all
                the file sessions of fs:USER), the request's header word in hex. `#` starts a comment.
                config/native/ipc_time_dependent.txt will list the commands whose replies depend on
-               time (N1-11 creates it).
+               time as they are found (it exists since N1-11 and is empty so far; mh4n_ipc_replay reads
+               the same format).
   --prefix     a thread may stop earlier in the candidate
   --context N  requests to show before the first difference (default 3)
 Exit status 0 when every thread matches (up to the candidate's end with --prefix), 1 when

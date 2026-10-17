@@ -1,3 +1,8 @@
+// Derived from Azahar src/citra_qt/multiplayer/validation.h at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6
+// (GPL-2.0-or-later: it says "GPLv2 or any later version"): the nickname rule the test "nicknames
+// follow Azahar's rule" checks (4 to 20 characters of letters, digits, space, '.', '_' and '-').
+// Copyright 2017 Citra Emulator Project
+//
 // The app's network room (multiplayer.cpp) against a scripted fake runtime: joining with the
 // console's MAC address first and the room's after a collision, a refusal with its reason,
 // hosting (the room's request, the lobby listing, the join to itself), leaving, the room's events

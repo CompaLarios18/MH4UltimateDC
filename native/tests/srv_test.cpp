@@ -1,7 +1,8 @@
 // Derived from Azahar src/core/hle/service/sm/srv.cpp, src/core/hle/service/sm/sm.h,
-// src/core/hle/service/sm/sm.cpp, src/core/hle/service/err/err_f.cpp and src/core/hle/service/service.cpp
-// at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-2.0-or-later: each of them says "GPLv2 or any later
-// version"): the commands of srv: and err:f with their headers and result codes (RegisterClient,
+// src/core/hle/service/sm/sm.cpp, src/core/hle/service/err/err_f.cpp, src/core/hle/service/service.cpp,
+// src/core/hle/kernel/client_port.cpp, src/core/hle/kernel/errors.h and src/core/hle/kernel/svc.cpp
+// at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-3.0-or-later: svc.cpp says "GPLv3 or any later version";
+// the others say "GPLv2 or any later version"): the commands of srv: and err:f with their headers and result codes (RegisterClient,
 // EnableNotification, GetServiceHandle with its flags and name checks, Subscribe, Unsubscribe,
 // PublishToSubscriber, ThrowFatalError), the SRV result codes, the answer to an unknown command, the
 // limits of the two named ports (srv: 64 sessions, err:f 1), and the layout of the error information. The
@@ -9,9 +10,10 @@
 // Azahar.
 // Copyright 2016-2025 Citra Emulator Project / Azahar Emulator Project (srv.cpp)
 // Copyright 2017-2025 Citra Emulator Project / Azahar Emulator Project (sm.h)
-// Copyright 2017 Citra Emulator Project (sm.cpp)
+// Copyright 2017 Citra Emulator Project (sm.cpp, errors.h)
 // Copyright 2014 Citra Emulator Project (err_f.cpp)
-// Copyright 2014-2026 Citra Emulator Project / Azahar Emulator Project (service.cpp)
+// Copyright 2014-2026 Citra Emulator Project / Azahar Emulator Project (service.cpp, svc.cpp)
+// Copyright 2016-2024 Citra Emulator Project / Azahar Emulator Project (client_port.cpp)
 //
 // The srv: and err:f ports (N1-10), through the SVC layer: the guest connects to the ports by name and
 // sends requests as a program would. The programs are ELF files written by the test whose main thread

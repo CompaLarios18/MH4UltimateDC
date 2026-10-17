@@ -38,7 +38,8 @@ NATIVE_NOT_YET: set[str] = {
     # one line differs, sysinfo.memory_region2.nonzero: something must allocate from the SYSTEM
     # region (the HID and GSP shared-memory blocks, N1-14 and N1-17)
     "conf_info",
-    # srv:, cfg:u and ptm:u: N1-10 (IPC core and srv:) and N1-15 (cfg, ptm, ac) take both out
+    # srv:, cfg:u and ptm:u: the program asks srv: for cfg:u and ptm:u, so N1-15 (cfg, ptm, ac) takes
+    # both out (N1-10 has srv: and err:f only)
     "conf_srv",
     "conf_services",
 }

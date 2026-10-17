@@ -1,17 +1,21 @@
 // Derived from Azahar src/core/hle/ipc.h, src/core/hle/ipc_helpers.h, src/core/hle/kernel/hle_ipc.cpp,
-// src/core/hle/service/service.cpp, src/core/hle/service/sm/sm.cpp and src/core/hle/kernel/server_session.cpp
-// at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-2.0-or-later: each of them says "GPLv2 or any later
-// version"): the expected values of the descriptor encodings (the example headers 0x00050042 and
-// 0x00010800 of the srv: and err:f commands), the translation rules the tests check (moved handles
-// closed, static and mapped buffers, the calling PID), the answer to an unknown command (the request's
-// command id, one normal parameter, the result 0), the limit on a port's sessions and the 39 microsecond
-// wait after a reply to an HLE service.
+// src/core/hle/service/service.cpp, src/core/hle/service/sm/sm.cpp, src/core/hle/kernel/server_session.cpp,
+// src/core/hle/kernel/client_port.cpp, src/core/hle/kernel/errors.h, src/core/hle/service/err/err_f.h and
+// src/core/hle/kernel/svc.cpp at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-3.0-or-later: svc.cpp
+// says "GPLv3 or any later version"; the others say "GPLv2 or any later version"): the expected values of
+// the descriptor encodings (the example headers 0x00050042 and 0x00010800 of the srv: and err:f commands),
+// the translation rules the tests check (moved handles closed, static and mapped buffers, the calling PID),
+// the answer to an unknown command (the request's command id, one normal parameter, the result 0), the
+// limit on a port's sessions and the 39 microsecond wait after a reply to an HLE service, and the results
+// of svcConnectToPort and svcSendSyncRequest (the port-name checks, the invalid handle, the full port) with
+// the values of errors.h.
 // Copyright 2016 Citra Emulator Project (ipc.h)
 // Copyright 2016-2026 Citra Emulator Project / Azahar Emulator Project (ipc_helpers.h)
 // Copyright 2017-2025 Citra Emulator Project / Azahar Emulator Project (hle_ipc.cpp)
-// Copyright 2014-2026 Citra Emulator Project / Azahar Emulator Project (service.cpp)
-// Copyright 2017 Citra Emulator Project (sm.cpp)
-// Copyright 2016-2024 Citra Emulator Project / Azahar Emulator Project (server_session.cpp)
+// Copyright 2014-2026 Citra Emulator Project / Azahar Emulator Project (service.cpp, svc.cpp)
+// Copyright 2017 Citra Emulator Project (sm.cpp, errors.h)
+// Copyright 2016-2024 Citra Emulator Project / Azahar Emulator Project (server_session.cpp, client_port.cpp)
+// Copyright 2014 Citra Emulator Project (err_f.h)
 //
 // mh4n_ipc (N1-10): descriptors, requests and replies, sessions and ports, deferred replies and the
 // IPC trace. The programs are ELF files written by the test whose main thread runs a C++ function

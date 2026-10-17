@@ -251,7 +251,7 @@ int Run(const std::vector<std::string>& argv) {
     }
     runtime->InitInput();
     runtime->InitNetwork();
-    // (until N0-24 and N2b, the windows, the menu and the rooms are built on Azahar's system)
+    // (the windows still take Azahar's system until N2b; Multiplayer::Init and Ui::Start ignore it)
     Core::System& system = *runtime->HostSystem();
     App::Multiplayer::Init(system, config);
 
