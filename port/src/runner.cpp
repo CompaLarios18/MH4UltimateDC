@@ -19,6 +19,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -29,6 +30,7 @@
 #include "arm_recomp.h"
 #include "hooks.h"
 #include "schedule.h"
+#include "audio_core/hle/common.h"
 #include "common/file_util.h"
 #include "common/logging/backend.h"
 #include "common/logging/filter.h"
@@ -47,6 +49,7 @@
 #include "core/hle/kernel/object.h"
 #include "core/hle/kernel/process.h"
 #include "core/hle/kernel/server_session.h"
+#include "core/hle/kernel/shared_memory.h"
 #include "core/hle/kernel/session.h"
 #include "core/hle/kernel/svc.h"
 #include "core/hle/kernel/thread.h"
@@ -119,6 +122,13 @@ const char* const USAGE = R"(usage: mh4u_runner <file> [options]
                     relative to the current directory)
   --count-unmapped FILE  at the end of the run, write how often the game touched unmapped
                     memory, by address, size, read or write and caller (LR), most often first
+  --capture-dsp START:FRAMES:FILE  from the first DSP audio frame at or after game frame START,
+                    record FRAMES audio frames to FILE (an MDSP capture): per frame the DSP shared
+                    memory, the sample data the DSP read (bytes only the first time) and the 160
+                    mixed stereo samples, before the sink (tools/native/capfmt.py). The file holds
+                    game data: keep it in build/
+  --capture-hid FILE  record the HID shared memory (and ir:USER's, once a game sets it up) on every
+                    game frame to FILE (an MHID capture; tools/native/capfmt.py)
   --new-3ds on|off  run as a New 3DS or an Old 3DS (default off: the reference is an Old 3DS)
   --input SCRIPT    comma-separated presses at emulated times, e.g.
                     "3000:A,3500:START:200,5000:TOUCH:160:120,6000:CIRCLE:0:1:500"
@@ -771,6 +781,7 @@ void UseScriptedInput() {
 // leaves in r0-r3 is only provisional).
 
 FILE* g_svc_trace = nullptr;
+bool g_hid_capture_active = false; // --capture-hid keeps Azahar's IPC recorder enabled (N0-06)
 FILE* g_ipc_trace = nullptr; // --trace-ipc (N0-21); shares the thread lines of the system call trace
 
 /// A call between its start and its completion: the line up to `out=`, and the registers it
@@ -1406,7 +1417,9 @@ bool BeginIpcTrace(Core::System& system, const std::string& path, bool full, con
 
 void EndIpcTrace(Core::System& system) {
     auto& recorder = system.Kernel().GetIPCRecorder();
-    recorder.SetEnabled(false);
+    if (!g_hid_capture_active) {
+        recorder.SetEnabled(false);
+    }
     recorder.UnbindCallback(g_ipc_callback);
     std::lock_guard<std::mutex> lock(g_ipc_mutex);
     if (!g_svc_trace) {
@@ -1419,6 +1432,314 @@ void EndIpcTrace(Core::System& system) {
     g_ipc_pending.clear();
     std::fclose(g_ipc_trace);
     g_ipc_trace = nullptr;
+}
+
+// ── DSP and HID captures (N0-06) ───────────────────────────────────────────────────
+//
+// Derived from Azahar src/audio_core/hle/hle.cpp, src/audio_core/hle/shared_memory.h,
+// src/audio_core/hle/source.cpp, src/audio_core/hle/common.h, src/audio_core/audio_types.h,
+// src/core/hle/service/hid/hid.h, src/core/hle/service/ir/ir_user.cpp,
+// src/core/hle/kernel/shared_memory.h at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6
+// (GPL-2.0-or-later; every one of those files says "Licensed under GPLv2 or any later version"):
+// the sizes and offsets of the DSP shared-memory regions and the layout of the IR header follow
+// those headers; the three hooks the DSP section uses are in azahar.patch. This section only.
+// Copyright 2016-2025 Citra Emulator Project / Azahar Emulator Project (audio_core/hle/shared_memory.h)
+// Copyright 2016-2026 Citra Emulator Project / Azahar Emulator Project (source.cpp)
+// Copyright 2016 Citra Emulator Project (common.h); 2017 (audio_types.h)
+// Copyright 2017-2026 Citra Emulator Project / Azahar Emulator Project (hle.cpp)
+// Copyright 2015-2026 Citra Emulator Project / Azahar Emulator Project (hid.h)
+// Copyright 2015-2025 Citra Emulator Project / Azahar Emulator Project (ir_user.cpp)
+// Copyright 2014 Citra Emulator Project (kernel/shared_memory.h)
+//
+// --capture-dsp START:FRAMES:FILE and --capture-hid FILE write the binary captures that
+// tools/native/capfmt.py reads (its docstring defines the records): magic, u32 version 1, then
+// {u32 type, u32 frame, u64 ticks, u32 size, payload}, little-endian (this host is), and a sibling
+// FILE.json manifest. The frame is the game's frame counter read when the record is written.
+
+constexpr u32 kDspMemoryRegion0 = 0x50000; // HLE::DspMemory::region_0 in the 0x80000-byte DSP memory
+constexpr u32 kDspMemoryRegion1 = 0x70000; // region_1: 0x50000 + 0x8000 + 0x18000 of padding
+constexpr u32 kDspRegionSize = 0x8000;
+constexpr u32 kDspPcmBytes = 160 * 2 * 2; // one audio frame: 160 stereo s16 samples
+constexpr u32 kHidReaderBlock = 0x0110e488; // the game's HID reader block (docs/research/system-services.md)
+constexpr u32 kHidMappedPointer = kHidReaderBlock + 0x34; // where it keeps the mapped shared memory's address
+constexpr u32 kHidSize = 0x2b0;
+constexpr u32 kIrMaxBytes = 0x200;
+
+/// An open capture file with its record counts (index = record type).
+struct CaptureFile {
+    std::FILE* file = nullptr;
+    std::string path;
+    const char* magic = "";
+    u32 frames = 0; // audio frames (DSP) or game frames (HID)
+    std::array<u32, 4> counts{};
+};
+
+bool CaptureOpen(CaptureFile& cap, const std::string& path, const char* magic) {
+    cap.file = std::fopen(path.c_str(), "wb");
+    if (!cap.file) {
+        std::fprintf(stderr, "cannot write %s\n", path.c_str());
+        return false;
+    }
+    cap.path = path;
+    cap.magic = magic;
+    const u32 version = 1;
+    std::fwrite(magic, 1, 4, cap.file);
+    std::fwrite(&version, 4, 1, cap.file);
+    return true;
+}
+
+void CaptureRecord(Core::System& system, CaptureFile& cap, u32 type, u32 frame, const void* data, u32 size) {
+    const u64 ticks = static_cast<u64>(system.CoreTiming().GetGlobalTicks() - g_start_ticks);
+    std::fwrite(&type, 4, 1, cap.file);
+    std::fwrite(&frame, 4, 1, cap.file);
+    std::fwrite(&ticks, 8, 1, cap.file);
+    std::fwrite(&size, 4, 1, cap.file);
+    if (size) {
+        std::fwrite(data, 1, size, cap.file);
+    }
+    ++cap.counts[type];
+}
+
+/// Closes the file and writes FILE.json: tool, format, version, game (title id), frames, record counts.
+void CaptureClose(Core::System& system, CaptureFile& cap) {
+    if (!cap.file) {
+        return;
+    }
+    std::fclose(cap.file);
+    cap.file = nullptr;
+    u64 program_id = 0;
+    if (system.GetAppLoader().ReadProgramId(program_id) != Loader::ResultStatus::Success) {
+        program_id = 0;
+    }
+    if (std::FILE* manifest = std::fopen((cap.path + ".json").c_str(), "w")) {
+        std::fprintf(manifest,
+                     "{\n  \"tool\": \"mh4u_runner\",\n  \"format\": \"%s\",\n  \"version\": 1,\n"
+                     "  \"game\": \"0x%016llx\",\n  \"frames\": %u,\n"
+                     "  \"records\": {\"1\": %u, \"2\": %u, \"3\": %u}\n}\n",
+                     cap.magic, static_cast<unsigned long long>(program_id), cap.frames, cap.counts[1],
+                     cap.counts[2], cap.counts[3]);
+        std::fclose(manifest);
+    }
+}
+
+/// The game's frame counter now (not the value of the last slice), 0 if it can't be read.
+u32 CaptureFrame(Core::System& system) {
+    u32 frame = 0;
+    return ReadGuest(system, kFrameCounterAddress, 4, frame) ? frame : g_frame;
+}
+
+/// `bytes` bytes of guest memory from ADDRESS into OUT, if the whole range is mapped (nothing is
+/// logged or counted otherwise).
+bool ReadGuestBytes(Core::System& system, u32 address, u32 size, u8* out) {
+    const auto process = system.Kernel().GetCurrentProcess();
+    if (!process || address + size < address) {
+        return false;
+    }
+    auto& memory = system.Memory();
+    for (u64 page = address; page < static_cast<u64>(address) + size; page = (page | 0xFFF) + 1) {
+        if (!memory.IsValidVirtualAddress(*process, static_cast<u32>(page))) {
+            return false;
+        }
+    }
+    memory.ReadBlock(*process, address, out, size);
+    return true;
+}
+
+// DSP: the hooks of AudioCore::HLE::g_capture_hooks (azahar.patch) run on the emulation thread,
+// from the DSP's audio event: frame_start, the sample reads while the frame is generated,
+// frame_output. Records of one frame: 1, then the 3s, then 2.
+struct DspCapture {
+    CaptureFile cap;
+    std::mutex mutex;
+    u32 start_frame = 0;
+    u32 frames = 0;
+    bool started = false;
+    bool in_frame = false;
+    std::set<std::tuple<u32, u32, u32>> seen; // (address, size, CRC-32) whose bytes are in the file
+    u32 frame_now = 0;
+} g_dsp_capture;
+
+void DspFrameStart(const u8* dsp_memory) {
+    auto& c = g_dsp_capture;
+    std::lock_guard lock{c.mutex};
+    auto& system = Core::System::GetInstance();
+    if (!c.cap.file) {
+        return;
+    }
+    c.frame_now = CaptureFrame(system);
+    if (!c.started && c.frame_now < c.start_frame) {
+        return;
+    }
+    c.started = true;
+    c.in_frame = true;
+    std::vector<u8> both(2 * kDspRegionSize);
+    std::memcpy(both.data(), dsp_memory + kDspMemoryRegion0, kDspRegionSize);
+    std::memcpy(both.data() + kDspRegionSize, dsp_memory + kDspMemoryRegion1, kDspRegionSize);
+    CaptureRecord(system, c.cap, 1, c.frame_now, both.data(), static_cast<u32>(both.size()));
+}
+
+void DspSampleRead(u32 address, u32 size, const u8* data) {
+    auto& c = g_dsp_capture;
+    std::lock_guard lock{c.mutex};
+    if (!c.cap.file || !c.in_frame) {
+        return;
+    }
+    const u32 crc = Crc32(data, size);
+    std::vector<u8> payload(12);
+    std::memcpy(payload.data(), &address, 4);
+    std::memcpy(payload.data() + 4, &size, 4);
+    std::memcpy(payload.data() + 8, &crc, 4);
+    if (c.seen.insert({address, size, crc}).second) { // the bytes only the first time
+        payload.insert(payload.end(), data, data + size);
+    }
+    CaptureRecord(Core::System::GetInstance(), c.cap, 3, c.frame_now, payload.data(), static_cast<u32>(payload.size()));
+}
+
+void DspFrameOutput(const s16* samples) {
+    auto& c = g_dsp_capture;
+    std::lock_guard lock{c.mutex};
+    if (!c.cap.file || !c.in_frame) {
+        return;
+    }
+    auto& system = Core::System::GetInstance();
+    c.in_frame = false;
+    CaptureRecord(system, c.cap, 2, c.frame_now, samples, kDspPcmBytes);
+    if (++c.cap.frames >= c.frames) {
+        CaptureClose(system, c.cap); // the hooks stay set and do nothing from now on
+    }
+}
+
+/// START and FRAMES are decimal (START may be written f<N>); FILE is the rest.
+bool ParseCaptureDsp(const std::string& arg, u32& start, u32& frames, std::string& file) {
+    const auto first = arg.find(':');
+    const auto second = first == std::string::npos ? first : arg.find(':', first + 1);
+    if (second == std::string::npos || second + 1 >= arg.size()) {
+        return false;
+    }
+    std::string start_text = arg.substr(0, first);
+    if (!start_text.empty() && start_text[0] == 'f') {
+        start_text.erase(0, 1);
+    }
+    const std::string frames_text = arg.substr(first + 1, second - first - 1);
+    const auto numeric = [](const std::string& s) {
+        return !s.empty() && s.size() <= 9 && std::all_of(s.begin(), s.end(), [](char ch) { return std::isdigit(static_cast<unsigned char>(ch)); });
+    };
+    if (!numeric(start_text) || !numeric(frames_text)) {
+        return false;
+    }
+    start = static_cast<u32>(std::stoul(start_text));
+    frames = static_cast<u32>(std::stoul(frames_text));
+    file = arg.substr(second + 1);
+    return frames > 0;
+}
+
+bool BeginDspCapture(const std::string& path, u32 start, u32 frames) {
+    auto& c = g_dsp_capture;
+    c.start_frame = start;
+    c.frames = frames;
+    if (!CaptureOpen(c.cap, path, "MDSP")) {
+        return false;
+    }
+    auto& hooks = AudioCore::HLE::g_capture_hooks;
+    hooks.frame_start = DspFrameStart;
+    hooks.sample_read = DspSampleRead;
+    hooks.frame_output = DspFrameOutput;
+    return true;
+}
+
+void EndDspCapture(Core::System& system) {
+    auto& hooks = AudioCore::HLE::g_capture_hooks;
+    hooks = {};
+    std::lock_guard lock{g_dsp_capture.mutex};
+    CaptureClose(system, g_dsp_capture.cap);
+}
+
+// HID: after each slice of emulation, once per change of the frame counter: the HID shared memory
+// as the game maps it (record 1) and, when a game has set up ir:USER, the start of that
+// shared memory (record 2). The IR memory is found from the request that handed it to ir:USER.
+struct HidCapture {
+    CaptureFile cap;
+    bool have_frame = false;
+    u32 last_frame = 0;
+    std::shared_ptr<Kernel::SharedMemory> ir_memory;
+    IPCDebugger::CallbackHandle callback;
+} g_hid_capture;
+
+/// ir:USER's Initialize requests carry the shared memory block as a handle: keep the first block.
+void HidIpcRecorded(const IPCDebugger::RequestRecord& r) {
+    auto& c = g_hid_capture;
+    if (c.ir_memory || r.status == IPCDebugger::RequestStatus::Sent || !r.translated_reply_cmdbuf.empty() ||
+        r.untranslated_request_cmdbuf.empty() || r.client_port.name.rfind("ir:USER", 0) != 0) {
+        return;
+    }
+    const auto process = Core::System::GetInstance().Kernel().GetProcessById(static_cast<u32>(r.client_process.id));
+    if (!process) {
+        return;
+    }
+    const std::vector<u32>& words = r.untranslated_request_cmdbuf;
+    for (const IpcPart& part : ParseIpcCommand(words)) {
+        if (part.type != IpcPart::Type::Handles) {
+            continue;
+        }
+        for (u32 j = 0; j < part.size && !c.ir_memory; ++j) {
+            const std::size_t at = part.index + 1 + j;
+            if (at < words.size() && words[at] != 0) {
+                c.ir_memory = Kernel::DynamicObjectCast<Kernel::SharedMemory>(process->handle_table.GetGeneric(words[at]));
+            }
+        }
+    }
+}
+
+bool BeginHidCapture(Core::System& system, const std::string& path) {
+    if (!CaptureOpen(g_hid_capture.cap, path, "MHID")) {
+        return false;
+    }
+    auto& recorder = system.Kernel().GetIPCRecorder();
+    g_hid_capture_active = true;
+    recorder.SetEnabled(true);
+    g_hid_capture.callback = recorder.BindCallback(HidIpcRecorded);
+    return true;
+}
+
+void WriteHidCapture(Core::System& system) {
+    auto& c = g_hid_capture;
+    if (!c.cap.file) {
+        return;
+    }
+    u32 frame = 0;
+    if (!ReadGuest(system, kFrameCounterAddress, 4, frame) || (c.have_frame && frame == c.last_frame)) {
+        return;
+    }
+    c.have_frame = true;
+    c.last_frame = frame;
+    std::array<u8, kHidSize> hid{}; // zeros until the game has mapped the shared memory
+    u32 mapped = 0;
+    if (ReadGuest(system, kHidMappedPointer, 4, mapped) && mapped != 0) {
+        ReadGuestBytes(system, mapped, kHidSize, hid.data());
+    }
+    CaptureRecord(system, c.cap, 1, frame, hid.data(), kHidSize);
+    if (c.ir_memory) {
+        const u32 size = static_cast<u32>(std::min<u64>(c.ir_memory->GetSize(), kIrMaxBytes));
+        if (size >= 16) {
+            CaptureRecord(system, c.cap, 2, frame, c.ir_memory->GetPointer(), size);
+        }
+    }
+    ++c.cap.frames;
+}
+
+void EndHidCapture(Core::System& system) {
+    auto& c = g_hid_capture;
+    if (!c.cap.file) {
+        return;
+    }
+    auto& recorder = system.Kernel().GetIPCRecorder();
+    recorder.UnbindCallback(c.callback);
+    g_hid_capture_active = false;
+    if (!g_ipc_trace) {
+        recorder.SetEnabled(false);
+    }
+    c.ir_memory.reset();
+    CaptureClose(system, c.cap);
 }
 
 // ── screenshots ─────────────────────────────────────────────────────────────────────
@@ -1682,6 +2003,8 @@ int main(int argc, char** argv) {
     bool ipc_trace_full = false;
     bool print_schedule = false;
     std::string schedule_error;
+    std::string capture_dsp_file, capture_hid_file;
+    u32 capture_dsp_start = 0, capture_dsp_frames = 0;
     std::string state_trace, unmapped_report, observable_file = "config/native/observable.txt";
     std::vector<std::string> install;
     double shot_every = 1000.0;
@@ -1757,6 +2080,13 @@ int main(int argc, char** argv) {
             ipc_trace = argv[++i];
         } else if (arg == "--trace-ipc-full") {
             ipc_trace_full = true;
+        } else if (arg == "--capture-dsp" && i + 1 < argc) {
+            if (!ParseCaptureDsp(argv[++i], capture_dsp_start, capture_dsp_frames, capture_dsp_file)) {
+                std::fprintf(stderr, "bad --capture-dsp: %s (want START:FRAMES:FILE, START a game frame, FRAMES above 0)\n", argv[i]);
+                return 1;
+            }
+        } else if (arg == "--capture-hid" && i + 1 < argc) {
+            capture_hid_file = argv[++i];
         } else if (arg == "--state-trace" && i + 1 < argc) {
             state_trace = argv[++i];
         } else if (arg == "--observable" && i + 1 < argc) {
@@ -1950,6 +2280,14 @@ int main(int argc, char** argv) {
         system.Shutdown();
         return 1;
     }
+    if (!capture_dsp_file.empty() && !BeginDspCapture(capture_dsp_file, capture_dsp_start, capture_dsp_frames)) {
+        system.Shutdown();
+        return 1;
+    }
+    if (!capture_hid_file.empty() && !BeginHidCapture(system, capture_hid_file)) {
+        system.Shutdown();
+        return 1;
+    }
     if (!unmapped_report.empty()) {
         Memory::SetUnmappedObserver(CountUnmapped);
     }
@@ -1996,6 +2334,7 @@ int main(int argc, char** argv) {
         UpdateFrame(system);
         WriteDumps(system, shots_dir);
         WriteStateTrace(system);
+        WriteHidCapture(system);
         DoReplaces(system);
         WriteCallCounts(shots_dir);
         const bool frame_shot = shot_frame_pending && g_plan.shots_from.Due(EmulatedMs(), g_frame);
@@ -2057,6 +2396,8 @@ int main(int argc, char** argv) {
         EndSvcTrace();
     }
     EndStateTrace();
+    EndDspCapture(system);
+    EndHidCapture(system);
     if (!unmapped_report.empty()) {
         WriteUnmappedReport(system, unmapped_report, cpu, new_3ds);
     }
