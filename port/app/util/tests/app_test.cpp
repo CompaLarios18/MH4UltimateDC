@@ -46,7 +46,12 @@ struct FakeRuntime final : IRuntime {
     void WaitForBackgroundTasks() override {}
     void InitInput() override {}
     void ShutdownInput() override {}
+    void BuildInputProfile(const Config&, const ControllerInfo*) override {}
     void ReloadInputDevices() override {}
+    void SetInputMuted(bool) override {}
+    void KeyDown(int) override {}
+    void KeyUp(int) override {}
+    void ReleaseAllKeys() override {}
     void InitNetwork() override {}
     void ShutdownNetwork() override {}
     void NewConsoleId() override {}

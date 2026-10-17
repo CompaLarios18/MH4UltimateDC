@@ -114,6 +114,14 @@ struct PerfStats {
     double emulation_speed = 0.0;  ///< emulated time over real time
 };
 
+/// A game controller the app found, as the input profile names it: the SDL GUID, its number
+/// among controllers with that GUID, and its name.
+struct ControllerInfo {
+    std::string guid;
+    int port = 0;
+    std::string name;
+};
+
 class IRuntime {
 public:
     virtual ~IRuntime() = default;
@@ -157,17 +165,39 @@ public:
     /// Waits for the work the runtime left running in the background. Main thread, at the end.
     virtual void WaitForBackgroundTasks() = 0;
 
-    // ── Input and network layers ──
-    // (N0-24 moves them behind the input and multiplayer interfaces)
+    // ── Input ──
+    // The 3DS's buttons and sticks come from the input profile (BuildInputProfile): each one
+    // reads the app's keys, a controller, or the full parameters of the player's choice. The
+    // window sends keys through KeyDown/KeyUp, the mouse as touches through the window itself
+    // (until N2b), and the software keyboard's text goes through the keyboard (below).
 
     /// Starts the input layer (the keyboard and controller engines) after the app's SDL, and
     /// stops it. Main thread.
     virtual void InitInput() = 0;
     virtual void ShutdownInput() = 0;
 
-    /// The input devices read the settings' input profile again (a controller came or went).
-    /// Emulation thread.
+    /// Makes the input profile: every button and stick from `config` (full parameters first,
+    /// else the key, joined with `controller` when there is one), the mouse as the stylus, no
+    /// motion sensor. Main thread before the game loads, or the emulation thread; follow it
+    /// with ReloadInputDevices while the game runs.
+    virtual void BuildInputProfile(const Config& config, const ControllerInfo* controller) = 0;
+
+    /// The input devices read the profile again (a controller came or went). Emulation thread.
     virtual void ReloadInputDevices() = 0;
+
+    /// While muted (the in-game menu is up) every button reads released and every stick
+    /// centred; once unmuted, a button still held from before reads released until it is let
+    /// go, and a stick still pushed reads centred until it comes back. Any thread.
+    virtual void SetInputMuted(bool muted) = 0;
+
+    /// A key (an SDL scancode) went down or up for the console, and all of them let go. The
+    /// window's thread (the emulation thread).
+    virtual void KeyDown(int scancode) = 0;
+    virtual void KeyUp(int scancode) = 0;
+    virtual void ReleaseAllKeys() = 0;
+
+    // ── Network ──
+    // (N0-24 moves it behind the room methods below)
 
     /// Starts the network layer (rooms) and stops it. Main thread.
     virtual void InitNetwork() = 0;

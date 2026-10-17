@@ -14,17 +14,10 @@
 #include "common/settings.h"
 #include "core/core.h"
 #include "core/frontend/applets/default_applets.h"
-#include "core/hle/service/apt/apt.h"
 #include "core/hle/service/cfg/cfg.h"
-#include "core/hle/service/hid/hid.h"
-#include "core/hle/service/ir/ir_rst.h"
-#include "core/hle/service/ir/ir_user.h"
-#include "core/hle/service/sm/sm.h"
 #include "core/loader/loader.h"
 #include "core/perf_stats.h"
 #include "frontend.h"
-#include "input.h"
-#include "input_common/main.h"
 #include "network/network.h"
 #include "runtime_azahar/log_sink.h"
 #include "util/log.h"
@@ -154,32 +147,6 @@ PerfStats AzaharRuntime::TakePerfStats() {
 
 void AzaharRuntime::WaitForBackgroundTasks() {
     impl->detached_tasks.WaitForAllTasks();
-}
-
-void AzaharRuntime::InitInput() {
-    InputCommon::Init();
-    Input::Register();
-}
-
-void AzaharRuntime::ShutdownInput() {
-    InputCommon::Shutdown();
-}
-
-void AzaharRuntime::ReloadInputDevices() {
-    auto& system = Core::System::GetInstance();
-    if (const auto hid = Service::HID::GetModule(system)) {
-        hid->ReloadInputDevices();
-    }
-    if (const auto apt = Service::APT::GetModule(system)) {
-        apt->GetAppletManager()->ReloadInputDevices();
-    }
-    auto& sm = system.ServiceManager();
-    if (const auto ir_user = sm.GetService<Service::IR::IR_USER>("ir:USER")) {
-        ir_user->ReloadInputDevices();
-    }
-    if (const auto ir_rst = sm.GetService<Service::IR::IR_RST>("ir:rst")) {
-        ir_rst->ReloadInputDevices();
-    }
 }
 
 void AzaharRuntime::InitNetwork() {

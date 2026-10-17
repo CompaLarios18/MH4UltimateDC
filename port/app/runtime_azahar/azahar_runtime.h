@@ -25,7 +25,12 @@ public:
 
     void InitInput() override;
     void ShutdownInput() override;
+    void BuildInputProfile(const Config& config, const ControllerInfo* controller) override;
     void ReloadInputDevices() override;
+    void SetInputMuted(bool muted) override;
+    void KeyDown(int scancode) override;
+    void KeyUp(int scancode) override;
+    void ReleaseAllKeys() override;
     void InitNetwork() override;
     void ShutdownNetwork() override;
     void NewConsoleId() override;

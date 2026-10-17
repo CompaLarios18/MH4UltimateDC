@@ -11,8 +11,7 @@
 #include "core/core.h"
 #include "hooks.h"
 #include "input.h"
-#include "input_common/keyboard.h"
-#include "input_common/main.h"
+#include "runtime.h"
 #include "ui/fps_counter.h"
 #include "ui/hint.h"
 #include "ui/keyboard.h"
@@ -228,7 +227,7 @@ void Layer::SetCapture(bool on) {
     Input::SetMuted(on);
     if (on) {
         // what the game had held is let go: the menu has the keys and the mouse now
-        InputCommon::GetKeyboard()->ReleaseAllKeys();
+        Runtime().ReleaseAllKeys();
         window.TouchReleased();
         fresh_input = true;
         SDL_ShowCursor(SDL_ENABLE);
