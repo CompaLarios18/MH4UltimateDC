@@ -19,6 +19,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -28,7 +29,10 @@
 
 #include "arm_recomp.h"
 #include "hooks.h"
+#include "perf.h"
+#include "platform.h"
 #include "schedule.h"
+#include "audio_core/hle/common.h"
 #include "common/file_util.h"
 #include "common/logging/backend.h"
 #include "common/logging/filter.h"
@@ -47,6 +51,7 @@
 #include "core/hle/kernel/object.h"
 #include "core/hle/kernel/process.h"
 #include "core/hle/kernel/server_session.h"
+#include "core/hle/kernel/shared_memory.h"
 #include "core/hle/kernel/session.h"
 #include "core/hle/kernel/svc.h"
 #include "core/hle/kernel/thread.h"
@@ -54,12 +59,16 @@
 #include "core/hle/service/cfg/cfg.h"
 #include "core/hle/service/fs/directory.h"
 #include "core/hle/service/fs/file.h"
+#include "core/hle/service/gsp/gsp_command.h"
+#include "core/hle/service/gsp/gsp_gpu.h"
 #include "core/hle/service/service.h"
 #include "core/loader/loader.h"
 #include "core/memory.h"
 #include "network/network.h"
 #include "network/verify_user.h"
 #include "video_core/gpu.h"
+#include "video_core/pica/pica_core.h"
+#include "video_core/pica/shader_setup.h"
 #include "video_core/renderer_software/renderer_software.h"
 
 namespace {
@@ -119,6 +128,26 @@ const char* const USAGE = R"(usage: mh4u_runner <file> [options]
                     relative to the current directory)
   --count-unmapped FILE  at the end of the run, write how often the game touched unmapped
                     memory, by address, size, read or write and caller (LR), most often first
+  --capture-dsp START:FRAMES:FILE  from the first DSP audio frame at or after game frame START,
+                    record FRAMES audio frames to FILE (an MDSP capture): per frame the DSP shared
+                    memory, the sample data the DSP read (bytes only the first time) and the 160
+                    mixed stereo samples, before the sink (tools/native/capfmt.py). The file holds
+                    game data: keep it in build/
+  --capture-gpu START:FRAMES:FILE  from the first game frame at or after START, record FRAMES
+                    frames (at most 30) of everything the GPU is told (an MGPU capture): its
+                    state, all of FCRAM and VRAM, then each GX command, register write, buffer
+                    swap, colour fill, interrupt and cache flush with the pages the CPU and the
+                    GPU changed, plus FILE.frames/<n>_top.ppm and _bottom.ppm at every frame
+                    (the software renderer at 1x). Drawing stays on for the whole run, whatever
+                    --draw-window says. The files hold game data: keep them in build/
+                    (tools/native/gcap.py)
+  --capture-hid FILE  record the HID shared memory (and ir:USER's, once a game sets it up) on every
+                    game frame to FILE (an MHID capture; tools/native/capfmt.py)
+  --perf-log FILE   write one CSV row per frame (a vertical blank to the next) to FILE: the
+                    frame time and the host time in the recompiled code, in system calls and in
+                    the GPU's command processing (tools/native/perf_report.py reports on it;
+                    not together with --capture-gpu). The numbers say nothing of the game: it can
+                    be shared
   --new-3ds on|off  run as a New 3DS or an Old 3DS (default off: the reference is an Old 3DS)
   --input SCRIPT    comma-separated presses at emulated times, e.g.
                     "3000:A,3500:START:200,5000:TOUCH:160:120,6000:CIRCLE:0:1:500"
@@ -771,6 +800,8 @@ void UseScriptedInput() {
 // leaves in r0-r3 is only provisional).
 
 FILE* g_svc_trace = nullptr;
+bool g_hid_capture_active = false; // --capture-hid keeps Azahar's IPC recorder enabled (N0-06)
+bool g_gpu_capture_active = false; // so does --capture-gpu (N0-05): it sees the cache flush requests
 FILE* g_ipc_trace = nullptr; // --trace-ipc (N0-21); shares the thread lines of the system call trace
 
 /// A call between its start and its completion: the line up to `out=`, and the registers it
@@ -1406,7 +1437,9 @@ bool BeginIpcTrace(Core::System& system, const std::string& path, bool full, con
 
 void EndIpcTrace(Core::System& system) {
     auto& recorder = system.Kernel().GetIPCRecorder();
-    recorder.SetEnabled(false);
+    if (!g_hid_capture_active && !g_gpu_capture_active) {
+        recorder.SetEnabled(false);
+    }
     recorder.UnbindCallback(g_ipc_callback);
     std::lock_guard<std::mutex> lock(g_ipc_mutex);
     if (!g_svc_trace) {
@@ -1419,6 +1452,315 @@ void EndIpcTrace(Core::System& system) {
     g_ipc_pending.clear();
     std::fclose(g_ipc_trace);
     g_ipc_trace = nullptr;
+}
+
+// ── DSP and HID captures (N0-06) ───────────────────────────────────────────────────
+//
+// Derived from Azahar src/audio_core/hle/hle.cpp, src/audio_core/hle/shared_memory.h,
+// src/audio_core/hle/source.cpp, src/audio_core/hle/common.h, src/audio_core/audio_types.h,
+// src/core/hle/service/hid/hid.h, src/core/hle/service/ir/ir_user.cpp,
+// src/core/hle/kernel/shared_memory.h at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6
+// (GPL-2.0-or-later; every one of those files says "Licensed under GPLv2 or any later version"):
+// the sizes and offsets of the DSP shared-memory regions and the layout of the IR header follow
+// those headers; the three hooks the DSP section uses are in azahar.patch. This section only.
+// Copyright 2016-2025 Citra Emulator Project / Azahar Emulator Project (audio_core/hle/shared_memory.h)
+// Copyright 2016-2026 Citra Emulator Project / Azahar Emulator Project (source.cpp)
+// Copyright 2016 Citra Emulator Project (common.h); 2017 (audio_types.h)
+// Copyright 2017-2026 Citra Emulator Project / Azahar Emulator Project (hle.cpp)
+// Copyright 2015-2026 Citra Emulator Project / Azahar Emulator Project (hid.h)
+// Copyright 2015-2025 Citra Emulator Project / Azahar Emulator Project (ir_user.cpp)
+// Copyright 2014 Citra Emulator Project (kernel/shared_memory.h)
+//
+// --capture-dsp START:FRAMES:FILE and --capture-hid FILE write the binary captures that
+// tools/native/capfmt.py reads (its docstring defines the records): magic, u32 version 1, then
+// {u32 type, u32 frame, u64 ticks, u32 size, payload}, little-endian (this host is), and a sibling
+// FILE.json manifest. The frame is the game's frame counter read when the record is written.
+
+constexpr u32 kDspMemoryRegion0 = 0x50000; // HLE::DspMemory::region_0 in the 0x80000-byte DSP memory
+constexpr u32 kDspMemoryRegion1 = 0x70000; // region_1: 0x50000 + 0x8000 + 0x18000 of padding
+constexpr u32 kDspRegionSize = 0x8000;
+constexpr u32 kDspPcmBytes = 160 * 2 * 2; // one audio frame: 160 stereo s16 samples
+constexpr u32 kHidReaderBlock = 0x0110e488; // the game's HID reader block (docs/research/system-services.md)
+constexpr u32 kHidMappedPointer = kHidReaderBlock + 0x34; // where it keeps the mapped shared memory's address
+constexpr u32 kHidSize = 0x2b0;
+constexpr u32 kIrMaxBytes = 0x200;
+constexpr u32 kGpuCaptureMaxFrames = 30; // --capture-gpu: a capture is about 140 MB before the first frame
+
+/// An open capture file with its record counts (index = record type).
+struct CaptureFile {
+    std::FILE* file = nullptr;
+    std::string path;
+    const char* magic = "";
+    u32 frames = 0; // audio frames (DSP) or game frames (HID)
+    std::array<u32, 4> counts{};
+};
+
+bool CaptureOpen(CaptureFile& cap, const std::string& path, const char* magic) {
+    cap.file = std::fopen(path.c_str(), "wb");
+    if (!cap.file) {
+        std::fprintf(stderr, "cannot write %s\n", path.c_str());
+        return false;
+    }
+    cap.path = path;
+    cap.magic = magic;
+    const u32 version = 1;
+    std::fwrite(magic, 1, 4, cap.file);
+    std::fwrite(&version, 4, 1, cap.file);
+    return true;
+}
+
+void CaptureRecord(Core::System& system, CaptureFile& cap, u32 type, u32 frame, const void* data, u32 size) {
+    const u64 ticks = static_cast<u64>(system.CoreTiming().GetGlobalTicks() - g_start_ticks);
+    std::fwrite(&type, 4, 1, cap.file);
+    std::fwrite(&frame, 4, 1, cap.file);
+    std::fwrite(&ticks, 8, 1, cap.file);
+    std::fwrite(&size, 4, 1, cap.file);
+    if (size) {
+        std::fwrite(data, 1, size, cap.file);
+    }
+    ++cap.counts[type];
+}
+
+/// Closes the file and writes FILE.json: tool, format, version, game (title id), frames, record counts.
+void CaptureClose(Core::System& system, CaptureFile& cap) {
+    if (!cap.file) {
+        return;
+    }
+    std::fclose(cap.file);
+    cap.file = nullptr;
+    u64 program_id = 0;
+    if (system.GetAppLoader().ReadProgramId(program_id) != Loader::ResultStatus::Success) {
+        program_id = 0;
+    }
+    if (std::FILE* manifest = std::fopen((cap.path + ".json").c_str(), "w")) {
+        std::fprintf(manifest,
+                     "{\n  \"tool\": \"mh4u_runner\",\n  \"format\": \"%s\",\n  \"version\": 1,\n"
+                     "  \"game\": \"0x%016llx\",\n  \"frames\": %u,\n"
+                     "  \"records\": {\"1\": %u, \"2\": %u, \"3\": %u}\n}\n",
+                     cap.magic, static_cast<unsigned long long>(program_id), cap.frames, cap.counts[1],
+                     cap.counts[2], cap.counts[3]);
+        std::fclose(manifest);
+    }
+}
+
+/// The game's frame counter now (not the value of the last slice), 0 if it can't be read.
+u32 CaptureFrame(Core::System& system) {
+    u32 frame = 0;
+    return ReadGuest(system, kFrameCounterAddress, 4, frame) ? frame : g_frame;
+}
+
+/// `bytes` bytes of guest memory from ADDRESS into OUT, if the whole range is mapped (nothing is
+/// logged or counted otherwise).
+bool ReadGuestBytes(Core::System& system, u32 address, u32 size, u8* out) {
+    const auto process = system.Kernel().GetCurrentProcess();
+    if (!process || address + size < address) {
+        return false;
+    }
+    auto& memory = system.Memory();
+    for (u64 page = address; page < static_cast<u64>(address) + size; page = (page | 0xFFF) + 1) {
+        if (!memory.IsValidVirtualAddress(*process, static_cast<u32>(page))) {
+            return false;
+        }
+    }
+    memory.ReadBlock(*process, address, out, size);
+    return true;
+}
+
+// DSP: the hooks of AudioCore::HLE::g_capture_hooks (azahar.patch) run on the emulation thread,
+// from the DSP's audio event: frame_start, the sample reads while the frame is generated,
+// frame_output. Records of one frame: 1, then the 3s, then 2.
+struct DspCapture {
+    CaptureFile cap;
+    std::mutex mutex;
+    u32 start_frame = 0;
+    u32 frames = 0;
+    bool started = false;
+    bool in_frame = false;
+    std::set<std::tuple<u32, u32, u32>> seen; // (address, size, CRC-32) whose bytes are in the file
+    u32 frame_now = 0;
+} g_dsp_capture;
+
+void DspFrameStart(const u8* dsp_memory) {
+    auto& c = g_dsp_capture;
+    std::lock_guard lock{c.mutex};
+    auto& system = Core::System::GetInstance();
+    if (!c.cap.file) {
+        return;
+    }
+    c.frame_now = CaptureFrame(system);
+    if (!c.started && c.frame_now < c.start_frame) {
+        return;
+    }
+    c.started = true;
+    c.in_frame = true;
+    std::vector<u8> both(2 * kDspRegionSize);
+    std::memcpy(both.data(), dsp_memory + kDspMemoryRegion0, kDspRegionSize);
+    std::memcpy(both.data() + kDspRegionSize, dsp_memory + kDspMemoryRegion1, kDspRegionSize);
+    CaptureRecord(system, c.cap, 1, c.frame_now, both.data(), static_cast<u32>(both.size()));
+}
+
+void DspSampleRead(u32 address, u32 size, const u8* data) {
+    auto& c = g_dsp_capture;
+    std::lock_guard lock{c.mutex};
+    if (!c.cap.file || !c.in_frame) {
+        return;
+    }
+    const u32 crc = Crc32(data, size);
+    std::vector<u8> payload(12);
+    std::memcpy(payload.data(), &address, 4);
+    std::memcpy(payload.data() + 4, &size, 4);
+    std::memcpy(payload.data() + 8, &crc, 4);
+    if (c.seen.insert({address, size, crc}).second) { // the bytes only the first time
+        payload.insert(payload.end(), data, data + size);
+    }
+    CaptureRecord(Core::System::GetInstance(), c.cap, 3, c.frame_now, payload.data(), static_cast<u32>(payload.size()));
+}
+
+void DspFrameOutput(const s16* samples) {
+    auto& c = g_dsp_capture;
+    std::lock_guard lock{c.mutex};
+    if (!c.cap.file || !c.in_frame) {
+        return;
+    }
+    auto& system = Core::System::GetInstance();
+    c.in_frame = false;
+    CaptureRecord(system, c.cap, 2, c.frame_now, samples, kDspPcmBytes);
+    if (++c.cap.frames >= c.frames) {
+        CaptureClose(system, c.cap); // the hooks stay set and do nothing from now on
+    }
+}
+
+/// START and FRAMES are decimal (START may be written f<N>); FILE is the rest.
+bool ParseCaptureDsp(const std::string& arg, u32& start, u32& frames, std::string& file) {
+    const auto first = arg.find(':');
+    const auto second = first == std::string::npos ? first : arg.find(':', first + 1);
+    if (second == std::string::npos || second + 1 >= arg.size()) {
+        return false;
+    }
+    std::string start_text = arg.substr(0, first);
+    if (!start_text.empty() && start_text[0] == 'f') {
+        start_text.erase(0, 1);
+    }
+    const std::string frames_text = arg.substr(first + 1, second - first - 1);
+    const auto numeric = [](const std::string& s) {
+        return !s.empty() && s.size() <= 9 && std::all_of(s.begin(), s.end(), [](char ch) { return std::isdigit(static_cast<unsigned char>(ch)); });
+    };
+    if (!numeric(start_text) || !numeric(frames_text)) {
+        return false;
+    }
+    start = static_cast<u32>(std::stoul(start_text));
+    frames = static_cast<u32>(std::stoul(frames_text));
+    file = arg.substr(second + 1);
+    return frames > 0;
+}
+
+bool BeginDspCapture(const std::string& path, u32 start, u32 frames) {
+    auto& c = g_dsp_capture;
+    c.start_frame = start;
+    c.frames = frames;
+    if (!CaptureOpen(c.cap, path, "MDSP")) {
+        return false;
+    }
+    auto& hooks = AudioCore::HLE::g_capture_hooks;
+    hooks.frame_start = DspFrameStart;
+    hooks.sample_read = DspSampleRead;
+    hooks.frame_output = DspFrameOutput;
+    return true;
+}
+
+void EndDspCapture(Core::System& system) {
+    auto& hooks = AudioCore::HLE::g_capture_hooks;
+    hooks = {};
+    std::lock_guard lock{g_dsp_capture.mutex};
+    CaptureClose(system, g_dsp_capture.cap);
+}
+
+// HID: after each slice of emulation, once per change of the frame counter: the HID shared memory
+// as the game maps it (record 1) and, when a game has set up ir:USER, the start of that
+// shared memory (record 2). The IR memory is found from the request that handed it to ir:USER.
+struct HidCapture {
+    CaptureFile cap;
+    bool have_frame = false;
+    u32 last_frame = 0;
+    std::shared_ptr<Kernel::SharedMemory> ir_memory;
+    IPCDebugger::CallbackHandle callback;
+} g_hid_capture;
+
+/// ir:USER's Initialize requests carry the shared memory block as a handle: keep the first block.
+void HidIpcRecorded(const IPCDebugger::RequestRecord& r) {
+    auto& c = g_hid_capture;
+    if (c.ir_memory || r.status == IPCDebugger::RequestStatus::Sent || !r.translated_reply_cmdbuf.empty() ||
+        r.untranslated_request_cmdbuf.empty() || r.client_port.name.rfind("ir:USER", 0) != 0) {
+        return;
+    }
+    const auto process = Core::System::GetInstance().Kernel().GetProcessById(static_cast<u32>(r.client_process.id));
+    if (!process) {
+        return;
+    }
+    const std::vector<u32>& words = r.untranslated_request_cmdbuf;
+    for (const IpcPart& part : ParseIpcCommand(words)) {
+        if (part.type != IpcPart::Type::Handles) {
+            continue;
+        }
+        for (u32 j = 0; j < part.size && !c.ir_memory; ++j) {
+            const std::size_t at = part.index + 1 + j;
+            if (at < words.size() && words[at] != 0) {
+                c.ir_memory = Kernel::DynamicObjectCast<Kernel::SharedMemory>(process->handle_table.GetGeneric(words[at]));
+            }
+        }
+    }
+}
+
+bool BeginHidCapture(Core::System& system, const std::string& path) {
+    if (!CaptureOpen(g_hid_capture.cap, path, "MHID")) {
+        return false;
+    }
+    auto& recorder = system.Kernel().GetIPCRecorder();
+    g_hid_capture_active = true;
+    recorder.SetEnabled(true);
+    g_hid_capture.callback = recorder.BindCallback(HidIpcRecorded);
+    return true;
+}
+
+void WriteHidCapture(Core::System& system) {
+    auto& c = g_hid_capture;
+    if (!c.cap.file) {
+        return;
+    }
+    u32 frame = 0;
+    if (!ReadGuest(system, kFrameCounterAddress, 4, frame) || (c.have_frame && frame == c.last_frame)) {
+        return;
+    }
+    c.have_frame = true;
+    c.last_frame = frame;
+    std::array<u8, kHidSize> hid{}; // zeros until the game has mapped the shared memory
+    u32 mapped = 0;
+    if (ReadGuest(system, kHidMappedPointer, 4, mapped) && mapped != 0) {
+        ReadGuestBytes(system, mapped, kHidSize, hid.data());
+    }
+    CaptureRecord(system, c.cap, 1, frame, hid.data(), kHidSize);
+    if (c.ir_memory) {
+        const u32 size = static_cast<u32>(std::min<u64>(c.ir_memory->GetSize(), kIrMaxBytes));
+        if (size >= 16) {
+            CaptureRecord(system, c.cap, 2, frame, c.ir_memory->GetPointer(), size);
+        }
+    }
+    ++c.cap.frames;
+}
+
+void EndHidCapture(Core::System& system) {
+    auto& c = g_hid_capture;
+    if (!c.cap.file) {
+        return;
+    }
+    auto& recorder = system.Kernel().GetIPCRecorder();
+    recorder.UnbindCallback(c.callback);
+    g_hid_capture_active = false;
+    if (!g_ipc_trace && !g_gpu_capture_active) {
+        recorder.SetEnabled(false);
+    }
+    c.ir_memory.reset();
+    CaptureClose(system, c.cap);
 }
 
 // ── screenshots ─────────────────────────────────────────────────────────────────────
@@ -1448,6 +1790,746 @@ bool SaveScreen(Core::System& system, VideoCore::ScreenId id, const std::string&
     std::fclose(f);
     return true;
 }
+
+// ── GPU capture (N0-05) ──────────────────────────────────────────────────────────
+//
+// Derived from Azahar src/video_core/gpu.h, src/video_core/gpu.cpp, src/video_core/pica/pica_core.h,
+// src/video_core/pica/pica_core.cpp, src/video_core/pica/geometry_pipeline.h,
+// src/video_core/pica/geometry_pipeline.cpp, src/video_core/pica/shader_setup.h,
+// src/video_core/pica/packed_attribute.h, src/video_core/pica_types.h,
+// src/video_core/pica/regs_lcd.h, src/video_core/pica/regs_internal.h,
+// src/video_core/pica/output_vertex.h, src/video_core/renderer_software/renderer_software.cpp,
+// src/core/hle/service/gsp/gsp_command.h, src/core/hle/service/gsp/gsp_gpu.h,
+// src/core/hle/service/gsp/gsp_interrupt.h, src/core/hle/service/gsp/gsp_gpu.cpp,
+// src/core/memory.h, src/core/memory.cpp, src/common/vector_math.h
+// at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6
+// (GPL-2.0-or-later; every one of those files says "Licensed under GPLv2 or any later version"):
+// the INIT blocks hold the state the way pica_core.h, shader_setup.h and the geometry pipeline
+// keep it, the register-write sites and the GPU entry points the observers stand at are those of
+// pica_core.cpp and gpu.cpp, and the memory the capture covers is the one memory.h defines; the
+// observers themselves are in azahar.patch. This section only.
+// Copyright 2023-2026 Citra Emulator Project / Azahar Emulator Project (gpu.h, gpu.cpp, pica_core.h, pica_core.cpp, shader_setup.h, packed_attribute.h, gsp_interrupt.h)
+// Copyright 2017 Citra Emulator Project (geometry_pipeline.h)
+// Copyright 2017-2024 Citra Emulator Project / Azahar Emulator Project (geometry_pipeline.cpp)
+// Copyright 2015-2026 Citra Emulator Project / Azahar Emulator Project (pica_types.h)
+// Copyright 2023-2024 Citra Emulator Project / Azahar Emulator Project (regs_lcd.h, output_vertex.h, gsp_command.h)
+// Copyright 2017-2025 Citra Emulator Project / Azahar Emulator Project (regs_internal.h)
+// Copyright 2023-2025 Citra Emulator Project / Azahar Emulator Project (renderer_software.cpp)
+// Copyright 2014-2026 Citra Emulator Project / Azahar Emulator Project (gsp_gpu.h, gsp_gpu.cpp, memory.h, memory.cpp)
+// Copyright 2015-2025 Citra Emulator Project / Azahar Emulator Project (vector_math.h)
+// Copyright 2014 Tony Wasserka (vector_math.h, second notice block)
+//
+// --capture-gpu START:FRAMES:FILE writes an MGPU capture (docs/native/mgpu-format.md, read by
+// tools/native/gcap.py) of everything that crosses Azahar's VideoCore::GPU interface for FRAMES
+// game frames from the first frame at or after START: the GPU's state, all of FCRAM and VRAM, and
+// then each GX command, register write, buffer swap, colour fill, interrupt and cache flush with
+// the pages the CPU changed before it and the pages the GPU changed during it, and, at every
+// FRAME, FILE.frames/<n>_top.ppm and <n>_bottom.ppm from the software renderer at 1x. FILE.json
+// is the manifest. The observers (Pica::g_capture_hooks) are empty unless this option is given.
+
+// BEGIN gpu-capture-core
+// The recording logic of --capture-gpu with no Azahar type in it: tests/test_native_gcap_recorder.py
+// compiles this region alone and drives it with a scripted game, so keep it free of anything but
+// the standard library (and the u8, u32 and u64 types).
+constexpr u32 kGcapInit = 1, kGcapMem = 2, kGcapCpuPages = 3, kGcapGx = 4, kGcapPicaReg = 5,
+              kGcapGpuPages = 6, kGcapMmio = 7, kGcapSwap = 8, kGcapFill = 9, kGcapIrq = 10,
+              kGcapFlush = 11, kGcapFrame = 12;
+constexpr u32 kGcapPage = 4096;
+constexpr u32 kGcapMemChunk = 16u << 20;   // one MEM record covers at most this much
+constexpr u32 kGcapGxSubmitCmdList = 1;    // Service::GSP::CommandId
+constexpr u32 kGcapGxCacheFlush = 5;
+constexpr u32 kGcapFlushRegion = 4;        // FLUSH kind of a CacheFlush GX region
+constexpr u32 kGcapMaxPicaReg = 0x300;     // PICA internal registers
+// The size of each INIT block, kinds 1 to 11 (mgpu-format.md section 4; gcap.INIT_BLOCK_SIZES).
+constexpr u32 kGcapInitSizes[11] = {4296, 4096, 3072, 34368, 34368, 256, 24576, 512, 3584, 284, 288};
+
+/// What the recorder needs to know about its surroundings: the runner answers from Azahar, the
+/// test from a script.
+struct GpuCaptureHost {
+    virtual ~GpuCaptureHost() = default;
+    virtual u32 Frame() = 0;                 // the game's frame counter now
+    virtual u64 Ticks() = 0;                 // ARM11 ticks since the run started
+    virtual void FrameImages(u32 frame) = 0; // save the reference images of the screens as they are now
+};
+
+/// A range of the memory the GPU sees: where it is, the live bytes, and what was last recorded.
+struct GpuMemoryRegion {
+    u32 paddr = 0;
+    u32 size = 0; // a multiple of kGcapPage
+    const u8* live = nullptr;
+    std::vector<u8> shadow;
+};
+
+struct GpuInitBlock {
+    u32 kind = 0;
+    std::vector<u8> data;
+};
+
+class GpuRecorder {
+public:
+    GpuRecorder(GpuCaptureHost& host, u32 frames) : host_(host), frames_wanted_(frames) {}
+    ~GpuRecorder() {
+        Close();
+    }
+
+    bool Open(const std::string& path) {
+        file_ = std::fopen(path.c_str(), "wb");
+        if (!file_) {
+            return false;
+        }
+        const u32 version = 1;
+        std::fwrite("MGPU", 1, 4, file_);
+        std::fwrite(&version, 4, 1, file_);
+        bytes_ = 8;
+        return true;
+    }
+
+    void Close() {
+        if (file_) {
+            std::fclose(file_);
+            file_ = nullptr;
+        }
+    }
+
+    /// Between two GPU events: INIT, then MEM for every region (which also becomes its shadow), then
+    /// the FRAME record of the frame the game is on.
+    void Start(const std::vector<GpuInitBlock>& init, std::vector<GpuMemoryRegion> regions) {
+        regions_ = std::move(regions);
+        frame_ = host_.Frame();
+        std::vector<u8> payload;
+        PutWord(payload, static_cast<u32>(init.size()));
+        for (const GpuInitBlock& block : init) {
+            PutWord(payload, block.kind);
+            PutWord(payload, static_cast<u32>(block.data.size()));
+            payload.insert(payload.end(), block.data.begin(), block.data.end());
+        }
+        Write(kGcapInit, payload.data(), static_cast<u32>(payload.size()));
+        for (GpuMemoryRegion& region : regions_) {
+            region.shadow.assign(region.live, region.live + region.size);
+            for (u32 offset = 0; offset < region.size; offset += kGcapMemChunk) {
+                const u32 size = std::min(kGcapMemChunk, region.size - offset);
+                const u32 head[2] = {region.paddr + offset, size};
+                Write(kGcapMem, head, 8, region.shadow.data() + offset, size);
+            }
+        }
+        started_ = true;
+        BeginFrame(frame_);
+    }
+
+    bool Started() const {
+        return started_;
+    }
+    /// The last frame has been recorded and the game has moved on: nothing more is written.
+    bool Finished() const {
+        return finished_;
+    }
+
+    // ── observers: GSP commands and register writes ──
+
+    /// GPU::Execute is about to carry out GX (the 8 words of the command).
+    void ExecuteBegin(const u32 (&gx)[8]) {
+        if (!Enter()) {
+            return;
+        }
+        WritePages(kGcapCpuPages);
+        Write(kGcapGx, gx, 32);
+        in_command_ = true;
+        is_submit_ = (gx[0] & 0xFF) == kGcapGxSubmitCmdList;
+        reg_writes_.clear();
+        if ((gx[0] & 0xFF) == kGcapGxCacheFlush) { // three {address, size} regions, empty ones have size 0
+            for (u32 i = 0; i < 3; ++i) {
+                if (gx[2 + 2 * i] != 0) {
+                    const u32 flush[3] = {kGcapFlushRegion, gx[1 + 2 * i], gx[2 + 2 * i]};
+                    Write(kGcapFlush, flush, 12);
+                }
+            }
+        }
+    }
+
+    /// The command is done: its register writes, what the GPU changed, the interrupts it signalled.
+    void ExecuteEnd() {
+        EndCommand();
+    }
+
+    /// GPU::WriteReg(vaddr, value) is about to write.
+    void WriteRegBegin(u32 vaddr, u32 value) {
+        if (!Enter()) {
+            return;
+        }
+        WritePages(kGcapCpuPages);
+        const u32 mmio[2] = {vaddr, value};
+        Write(kGcapMmio, mmio, 8);
+        in_command_ = true;
+        is_submit_ = false;
+        reg_writes_.clear();
+    }
+
+    void WriteRegEnd() {
+        EndCommand();
+    }
+
+    /// A write of the command processor to PICA register REG (BYTE_MASK has 4 bits).
+    void RegWrite(u32 reg, u32 byte_mask, u32 value) {
+        if (!in_command_ || reg >= kGcapMaxPicaReg) {
+            return;
+        }
+        if (!is_submit_) { // a command list started by a register write: the format has no place for it
+            ++dropped_reg_writes_;
+            return;
+        }
+        reg_writes_.push_back({reg, byte_mask, value});
+    }
+
+    // ── observers: everything else ──
+
+    /// GPU::SetBufferSwap: the screen and the seven words of FrameBufferInfo.
+    void Swap(u32 screen, const u32 (&info)[7]) {
+        if (!Enter()) {
+            return;
+        }
+        WritePages(kGcapCpuPages);
+        u32 words[8] = {screen};
+        std::memcpy(words + 1, info, sizeof(info));
+        Write(kGcapSwap, words, 32);
+    }
+
+    /// GPU::SetColorFill.
+    void Fill(u32 word) {
+        if (!Enter()) {
+            return;
+        }
+        WritePages(kGcapCpuPages);
+        Write(kGcapFill, &word, 4);
+    }
+
+    /// An interrupt on its way to GSP. During a command it waits, so that PICA_REG follows the GX.
+    void Interrupt(u32 id, u64 delay_ns) {
+        if (in_command_) {
+            irqs_.push_back({id, delay_ns});
+        } else if (Enter()) {
+            WriteIrq({id, delay_ns});
+        }
+    }
+
+    /// The game flushed or invalidated a range of its memory (KIND 1 to 3, an address and a size).
+    void Flush(u32 kind, u32 vaddr, u32 size) {
+        if (Enter()) {
+            const u32 flush[3] = {kind, vaddr, size};
+            Write(kGcapFlush, flush, 12);
+        }
+    }
+
+    /// Between two slices of emulation: notices a new game frame even if no GPU event came with it.
+    void Poll() {
+        Enter();
+    }
+
+    u32 FramesWritten() const {
+        return frames_written_;
+    }
+    u32 FirstFrame() const {
+        return first_frame_;
+    }
+    u32 LastFrame() const {
+        return frame_;
+    }
+    u64 Bytes() const {
+        return bytes_;
+    }
+    u32 Count(u32 type) const {
+        return type < counts_.size() ? counts_[type] : 0;
+    }
+    u32 DroppedRegWrites() const {
+        return dropped_reg_writes_;
+    }
+    const std::vector<GpuMemoryRegion>& Regions() const {
+        return regions_;
+    }
+
+private:
+    struct RegWriteEntry {
+        u32 reg, mask, value;
+    };
+    struct IrqEntry {
+        u32 id;
+        u64 delay_ns;
+    };
+    struct PageRef {
+        u32 region, offset;
+    };
+
+    static void PutWord(std::vector<u8>& out, u32 value) { // the format is little-endian, like this host
+        const u8* bytes = reinterpret_cast<const u8*>(&value);
+        out.insert(out.end(), bytes, bytes + 4);
+    }
+
+    /// Starts a record: type, the current frame, ticks and the payload size.
+    void BeginRecord(u32 type, u32 size) {
+        const u64 ticks = host_.Ticks();
+        std::fwrite(&type, 4, 1, file_);
+        std::fwrite(&frame_, 4, 1, file_);
+        std::fwrite(&ticks, 8, 1, file_);
+        std::fwrite(&size, 4, 1, file_);
+        ++counts_[type];
+        bytes_ += 20 + size;
+    }
+    void Put(const void* data, u32 size) {
+        if (size) {
+            std::fwrite(data, 1, size, file_);
+        }
+    }
+    void Write(u32 type, const void* a, u32 a_size, const void* b = nullptr, u32 b_size = 0) {
+        BeginRecord(type, a_size + b_size);
+        Put(a, a_size);
+        Put(b, b_size);
+    }
+
+    void BeginFrame(u32 frame) {
+        frame_ = frame;
+        if (frames_written_ == 0) {
+            first_frame_ = frame;
+        }
+        Write(kGcapFrame, &frame, 4);
+        ++frames_written_;
+        host_.FrameImages(frame);
+    }
+
+    /// A top-level event begins: false if nothing is recorded (not started, or finished). A new
+    /// game frame gets its FRAME record first; after the last one wanted, the capture finishes.
+    bool Enter() {
+        if (!started_ || finished_) {
+            return false;
+        }
+        const u32 frame = host_.Frame();
+        if (frame > frame_) {
+            if (frames_written_ >= frames_wanted_) {
+                finished_ = true;
+                return false;
+            }
+            BeginFrame(frame);
+        }
+        return true;
+    }
+
+    /// The pages of every region that differ from the shadow, which is brought up to date.
+    void ChangedPages(std::vector<PageRef>& pages) {
+        pages.clear();
+        for (u32 r = 0; r < regions_.size(); ++r) {
+            GpuMemoryRegion& region = regions_[r];
+            for (u32 offset = 0; offset < region.size; offset += kGcapPage) {
+                if (std::memcmp(region.live + offset, region.shadow.data() + offset, kGcapPage) != 0) {
+                    std::memcpy(region.shadow.data() + offset, region.live + offset, kGcapPage);
+                    pages.push_back({r, offset});
+                }
+            }
+        }
+    }
+
+    /// A CPU_PAGES or GPU_PAGES record with the pages that changed since the last one; none, no record.
+    void WritePages(u32 type) {
+        ChangedPages(pages_);
+        if (pages_.empty()) {
+            return;
+        }
+        BeginRecord(type, 4 + static_cast<u32>(pages_.size()) * (4 + kGcapPage));
+        const u32 count = static_cast<u32>(pages_.size());
+        Put(&count, 4);
+        for (const PageRef& page : pages_) {
+            const GpuMemoryRegion& region = regions_[page.region];
+            const u32 paddr = region.paddr + page.offset;
+            Put(&paddr, 4);
+            Put(region.shadow.data() + page.offset, kGcapPage);
+        }
+    }
+
+    void WriteIrq(const IrqEntry& irq) {
+        u8 payload[12];
+        std::memcpy(payload, &irq.id, 4);
+        std::memcpy(payload + 4, &irq.delay_ns, 8);
+        Write(kGcapIrq, payload, 12);
+    }
+
+    void EndCommand() {
+        if (!in_command_) {
+            return;
+        }
+        if (is_submit_) { // PICA_REG goes right after the GX; count 0 is fine
+            std::vector<u8> payload;
+            PutWord(payload, static_cast<u32>(reg_writes_.size()));
+            for (const RegWriteEntry& write : reg_writes_) {
+                PutWord(payload, (write.reg & 0xFFFF) | ((write.mask & 0xF) << 16));
+                PutWord(payload, write.value);
+            }
+            Write(kGcapPicaReg, payload.data(), static_cast<u32>(payload.size()));
+        }
+        WritePages(kGcapGpuPages);
+        for (const IrqEntry& irq : irqs_) {
+            WriteIrq(irq);
+        }
+        irqs_.clear();
+        reg_writes_.clear();
+        in_command_ = false;
+    }
+
+    GpuCaptureHost& host_;
+    const u32 frames_wanted_;
+    std::FILE* file_ = nullptr;
+    std::vector<GpuMemoryRegion> regions_;
+    std::vector<PageRef> pages_;
+    std::vector<RegWriteEntry> reg_writes_;
+    std::vector<IrqEntry> irqs_;
+    std::array<u32, 13> counts_{};
+    u64 bytes_ = 0;
+    u32 frame_ = 0;       // stamps the records
+    u32 first_frame_ = 0;
+    u32 frames_written_ = 0;
+    u32 dropped_reg_writes_ = 0;
+    bool started_ = false;
+    bool finished_ = false;
+    bool in_command_ = false;
+    bool is_submit_ = false;
+};
+// END gpu-capture-core
+
+/// The runner's side of the recorder: the frame counter, the clock and the screens.
+class RunnerGpuHost : public GpuCaptureHost {
+public:
+    RunnerGpuHost(Core::System& system, std::string images_dir) : system_(system), dir_(std::move(images_dir)) {}
+
+    u32 Frame() override {
+        return CaptureFrame(system_);
+    }
+    u64 Ticks() override {
+        return static_cast<u64>(system_.CoreTiming().GetGlobalTicks() - g_start_ticks);
+    }
+    void FrameImages(u32 frame) override {
+        SaveScreen(system_, VideoCore::ScreenId::TopLeft, fmt::format("{}/{}_top.ppm", dir_, frame));
+        SaveScreen(system_, VideoCore::ScreenId::Bottom, fmt::format("{}/{}_bottom.ppm", dir_, frame));
+    }
+
+private:
+    Core::System& system_;
+    std::string dir_;
+};
+
+struct GpuCapture {
+    bool requested = false;
+    bool new_3ds = false;
+    std::string path;
+    u32 start_frame = 0;
+    u32 frames = 0;
+    std::unique_ptr<RunnerGpuHost> host;
+    std::unique_ptr<GpuRecorder> recorder;
+    IPCDebugger::CallbackHandle callback;
+} g_gpu_capture;
+
+void PutWord(std::vector<u8>& out, u32 value) {
+    const u8* bytes = reinterpret_cast<const u8*>(&value); // little-endian, like the format
+    out.insert(out.end(), bytes, bytes + 4);
+}
+
+void PutFloat(std::vector<u8>& out, float value) {
+    u32 word;
+    std::memcpy(&word, &value, 4);
+    PutWord(out, word);
+}
+
+/// A Vec4<f24> as four IEEE singles (Azahar keeps an f24 as a float).
+void PutVec4(std::vector<u8>& out, const Common::Vec4<Pica::f24>& v) {
+    PutFloat(out, v.x.ToFloat32());
+    PutFloat(out, v.y.ToFloat32());
+    PutFloat(out, v.z.ToFloat32());
+    PutFloat(out, v.w.ToFloat32());
+}
+
+/// INIT block kinds 4 and 5 (mgpu-format.md): entry point, the two biggest sizes, program, swizzle
+/// data, float, boolean and integer uniforms, the uniform queue.
+std::vector<u8> ShaderSetupBlock(const Pica::ShaderSetup& setup) {
+    std::vector<u8> out;
+    PutWord(out, setup.entry_point);
+    PutWord(out, setup.GetBiggestProgramSize());
+    PutWord(out, setup.GetBiggestSwizzleSize());
+    for (u32 word : setup.GetProgramCode()) {
+        PutWord(out, word);
+    }
+    for (u32 word : setup.GetSwizzleData()) {
+        PutWord(out, word);
+    }
+    for (const auto& v : setup.uniforms.f) {
+        PutVec4(out, v);
+    }
+    for (bool b : setup.uniforms.b) {
+        out.push_back(b ? 1 : 0);
+    }
+    for (const auto& v : setup.uniforms.i) {
+        out.insert(out.end(), {v.x, v.y, v.z, v.w});
+    }
+    for (u32 word : setup.uniform_queue.buffer) {
+        PutWord(out, word);
+    }
+    PutWord(out, setup.uniform_queue.index);
+    return out;
+}
+
+/// The eleven INIT blocks from the PICA core's state, in the order and layout of mgpu-format.md.
+std::vector<GpuInitBlock> BuildGpuInit(Pica::PicaCore& pica) {
+    static_assert(Pica::PicaCore::Regs::NUM_REGS == 0x432 + Pica::RegsInternal::NUM_REGS);
+    static_assert(Pica::RegsLcd::NumIds() == 0x400);
+    static_assert(Pica::RegsInternal::NUM_REGS == kGcapMaxPicaReg);
+    std::vector<std::vector<u8>> data(11);
+    for (u32 i = 0; i < 0x432; ++i) {
+        PutWord(data[0], pica.regs.reg_array[i]);
+    }
+    for (u32 i = 0; i < Pica::RegsLcd::NumIds(); ++i) {
+        PutWord(data[1], pica.regs_lcd[static_cast<int>(i)]);
+    }
+    for (u32 i = 0; i < Pica::RegsInternal::NUM_REGS; ++i) {
+        PutWord(data[2], pica.regs.reg_array[0x432 + i]);
+    }
+    data[3] = ShaderSetupBlock(pica.vs_setup);
+    data[4] = ShaderSetupBlock(pica.gs_setup);
+    for (const auto& v : pica.input_default_attributes) {
+        PutVec4(data[5], v);
+    }
+    for (const auto& table : pica.lighting.luts) {
+        for (const auto& entry : table) {
+            PutWord(data[6], entry.raw);
+        }
+    }
+    for (const auto& entry : pica.fog.lut) {
+        PutWord(data[7], entry.raw);
+    }
+    for (const auto& entry : pica.proctex.noise_table) {
+        PutWord(data[8], entry.raw);
+    }
+    for (const auto& entry : pica.proctex.color_map_table) {
+        PutWord(data[8], entry.raw);
+    }
+    for (const auto& entry : pica.proctex.alpha_map_table) {
+        PutWord(data[8], entry.raw);
+    }
+    for (const auto& entry : pica.proctex.color_table) {
+        PutWord(data[8], entry.raw);
+    }
+    for (const auto& entry : pica.proctex.color_diff_table) {
+        PutWord(data[8], entry.raw);
+    }
+    for (const auto& v : pica.immediate.input_vertex) {
+        PutVec4(data[9], v);
+    }
+    PutWord(data[9], pica.immediate.current_attribute);
+    PutWord(data[9], pica.immediate.reset_geometry_pipeline ? 1 : 0);
+    for (u32 word : pica.immediate.queue.buffer) {
+        PutWord(data[9], word);
+    }
+    PutWord(data[9], pica.immediate.queue.index);
+    std::array<u32, 72> geometry{};
+    pica.ExportGeometryPipelineState(geometry);
+    for (u32 word : geometry) {
+        PutWord(data[10], word);
+    }
+    std::vector<GpuInitBlock> blocks;
+    for (u32 i = 0; i < 11; ++i) {
+        if (data[i].size() != kGcapInitSizes[i]) {
+            std::fprintf(stderr, "capture-gpu: INIT block %u is %zu bytes, the format says %u\n", i + 1,
+                         data[i].size(), kGcapInitSizes[i]);
+            return {};
+        }
+        blocks.push_back({i + 1, std::move(data[i])});
+    }
+    return blocks;
+}
+
+/// IPC recorder callback: the game's FlushDataCache, InvalidateDataCache and StoreDataCache requests
+/// to gsp::Gpu (address and size are the first two words after the header).
+void GpuIpcRecorded(const IPCDebugger::RequestRecord& r) {
+    auto& c = g_gpu_capture;
+    if (!c.recorder || !c.recorder->Started() || r.status == IPCDebugger::RequestStatus::Sent ||
+        !r.translated_reply_cmdbuf.empty() || r.untranslated_request_cmdbuf.size() < 3 ||
+        r.client_port.name.rfind("gsp::Gpu", 0) != 0) {
+        return;
+    }
+    const std::vector<u32>& words = r.untranslated_request_cmdbuf;
+    const u32 kind = words[0] == 0x00080082 ? 1 : words[0] == 0x00090082 ? 2 : words[0] == 0x001F0082 ? 3 : 0;
+    if (kind != 0) {
+        c.recorder->Flush(kind, words[1], words[2]);
+    }
+}
+
+/// Opens the capture file and arms the capture; the recording itself starts from the main loop
+/// (StartGpuCaptureIfDue) at the first frame at or after START, between two slices of emulation.
+bool BeginGpuCapture(Core::System& system, const std::string& path, u32 start, u32 frames, bool new_3ds) {
+    auto& c = g_gpu_capture;
+    c.path = path;
+    c.start_frame = start;
+    c.frames = frames;
+    c.new_3ds = new_3ds;
+    FileUtil::CreateFullPath(path);
+    FileUtil::CreateFullPath(path + ".frames/");
+    c.host = std::make_unique<RunnerGpuHost>(system, path + ".frames");
+    c.recorder = std::make_unique<GpuRecorder>(*c.host, frames);
+    if (!c.recorder->Open(path)) {
+        std::fprintf(stderr, "cannot write %s\n", path.c_str());
+        return false;
+    }
+    c.requested = true;
+    g_gpu_capture_active = true;
+    auto& recorder = system.Kernel().GetIPCRecorder();
+    recorder.SetEnabled(true);
+    c.callback = recorder.BindCallback(GpuIpcRecorded);
+    return true;
+}
+
+/// Takes the snapshot (INIT, MEM) and installs the observers; false if there is no snapshot to take.
+bool StartGpuCapture(Core::System& system) {
+    auto& c = g_gpu_capture;
+    auto& memory = system.Memory();
+    const u32 fcram_size = c.new_3ds ? Memory::FCRAM_N3DS_SIZE : Memory::FCRAM_SIZE;
+    std::vector<GpuMemoryRegion> regions(2);
+    regions[0].paddr = Memory::FCRAM_PADDR;
+    regions[0].size = fcram_size;
+    regions[0].live = memory.GetFCRAMPointer(0);
+    regions[1].paddr = Memory::VRAM_PADDR;
+    regions[1].size = Memory::VRAM_SIZE;
+    regions[1].live = memory.GetPhysicalPointer(Memory::VRAM_PADDR);
+    std::vector<GpuInitBlock> init = BuildGpuInit(system.GPU().PicaCore());
+    if (init.empty() || !regions[0].live || !regions[1].live) {
+        std::fprintf(stderr, "capture-gpu: could not take the snapshot\n");
+        return false;
+    }
+    c.recorder->Start(init, std::move(regions));
+
+    auto& hooks = Pica::g_capture_hooks;
+    auto* recorder = c.recorder.get();
+    hooks.execute_begin = [recorder](const Service::GSP::Command& command) {
+        static_assert(sizeof(Service::GSP::Command) == 32);
+        u32 words[8];
+        std::memcpy(words, static_cast<const void*>(&command), sizeof(words));
+        recorder->ExecuteBegin(words);
+    };
+    hooks.execute_end = [recorder]() { recorder->ExecuteEnd(); };
+    hooks.write_reg_begin = [recorder](u32 vaddr, u32 value) { recorder->WriteRegBegin(vaddr, value); };
+    hooks.write_reg_end = [recorder]() { recorder->WriteRegEnd(); };
+    hooks.buffer_swap = [recorder](u32 screen, const Service::GSP::FrameBufferInfo& info) {
+        static_assert(sizeof(Service::GSP::FrameBufferInfo) == 28);
+        u32 words[7];
+        std::memcpy(words, static_cast<const void*>(&info), sizeof(words));
+        recorder->Swap(screen, words);
+    };
+    hooks.color_fill = [recorder](const Pica::ColorFill& fill) { recorder->Fill(fill.raw); };
+    hooks.interrupt = [recorder](Service::GSP::InterruptId id, u64 delay_ns) {
+        recorder->Interrupt(static_cast<u32>(id), delay_ns);
+    };
+    hooks.reg_write = [recorder](u32 reg, u32 mask, u32 value) { recorder->RegWrite(reg, mask, value); };
+    return true;
+}
+
+void EndGpuCapture(Core::System& system);
+
+/// After each slice of emulation: start when the game reaches START, and stop observing once the
+/// last frame is done.
+void WriteGpuCapture(Core::System& system) {
+    auto& c = g_gpu_capture;
+    if (!c.requested) {
+        return;
+    }
+    if (!c.recorder->Started()) {
+        if (g_frame >= c.start_frame && !StartGpuCapture(system)) {
+            EndGpuCapture(system);
+        }
+        return;
+    }
+    c.recorder->Poll();
+    if (c.recorder->Finished()) {
+        Pica::g_capture_hooks = {};
+    }
+}
+
+void EndGpuCapture(Core::System& system) {
+    auto& c = g_gpu_capture;
+    if (!c.requested) {
+        return;
+    }
+    Pica::g_capture_hooks = {};
+    auto& recorder = system.Kernel().GetIPCRecorder();
+    recorder.UnbindCallback(c.callback);
+    g_gpu_capture_active = false;
+    if (!g_ipc_trace && !g_hid_capture_active) {
+        recorder.SetEnabled(false);
+    }
+    c.recorder->Close();
+    if (!c.recorder->Started()) {
+        std::fprintf(stderr, "capture-gpu: nothing was recorded (the game never reached frame %u, or no snapshot); %s is empty\n",
+                     c.start_frame, c.path.c_str());
+    }
+    u64 program_id = 0;
+    if (system.GetAppLoader().ReadProgramId(program_id) != Loader::ResultStatus::Success) {
+        program_id = 0;
+    }
+    if (std::FILE* manifest = std::fopen((c.path + ".json").c_str(), "w")) {
+        const GpuRecorder& r = *c.recorder;
+        std::string records;
+        for (u32 type = kGcapInit; type <= kGcapFrame; ++type) {
+            records += fmt::format("{}\"{}\": {}", type == kGcapInit ? "" : ", ", type, r.Count(type));
+        }
+        const auto slash = c.path.find_last_of("/\\");
+        const std::string name = slash == std::string::npos ? c.path : c.path.substr(slash + 1);
+        std::string text = fmt::format(
+            "{{\n  \"tool\": \"mh4u_runner\",\n  \"format\": \"MGPU\",\n  \"version\": 1,\n"
+            "  \"game\": \"0x{:016x}\",\n  \"renderer\": \"software\",\n  \"resolution_scale\": 1,\n"
+            "  \"new_3ds\": {},\n  \"start_frame\": {},\n  \"frames_wanted\": {},\n"
+            "  \"frames\": {},\n  \"first_frame\": {},\n  \"last_frame\": {},\n"
+            "  \"fcram_size\": {},\n  \"vram_size\": {},\n  \"bytes\": {},\n"
+            "  \"images\": \"{}.frames\",\n  \"unrecorded_register_writes\": {},\n"
+            "  \"records\": {{{}}}\n}}\n",
+            program_id, c.new_3ds ? "true" : "false", c.start_frame, c.frames, r.FramesWritten(), r.FirstFrame(),
+            r.LastFrame(), r.Regions().empty() ? 0 : r.Regions()[0].size, r.Regions().empty() ? 0 : r.Regions()[1].size,
+            r.Bytes(), name, r.DroppedRegWrites(), records);
+        std::fputs(text.c_str(), manifest);
+        std::fclose(manifest);
+    }
+    c.recorder.reset();
+    c.requested = false;
+}
+
+// ── --perf-log (N0-15) ──────────────────────────────────────────────────────────────
+// One CSV row per frame: the timers are in perf.h; the scopes around the recompiled code and the
+// system calls are in arm_recomp.cpp, the GPU's through the capture hooks (azahar.patch).
+
+bool BeginPerfLog(Core::System& system, const std::string& path, const std::string& cpu, bool new_3ds) {
+    u64 program_id = 0;
+    if (system.GetAppLoader().ReadProgramId(program_id) != Loader::ResultStatus::Success) {
+        program_id = 0;
+    }
+    const std::time_t now = std::time(nullptr);
+    char date[16] = "0000-00-00";
+    if (const std::tm* utc = std::gmtime(&now)) {
+        std::strftime(date, sizeof(date), "%Y-%m-%d", utc);
+    }
+    const std::string header = fmt::format("perf v1 {} game=0x{:016x} cpu={} new3ds={}", date, program_id, cpu,
+                                           new_3ds ? "on" : "off");
+    std::string error;
+    if (!Port::Perf::Start(path, header, error)) {
+        std::fprintf(stderr, "--perf-log: %s\n", error.c_str());
+        return false;
+    }
+    Port::Perf::ChainGpuHooks(Pica::g_capture_hooks,
+                        [](Service::GSP::InterruptId id) { return id == Service::GSP::InterruptId::PDC0; });
+    return true;
+}
+
+void EndPerfLog() {
+    if (!Port::Perf::Enabled()) {
+        return;
+    }
+    Pica::g_capture_hooks = {};
+    Port::Perf::Stop();
+    if (Port::Perf::DroppedFrames()) {
+        std::fprintf(stderr, "--perf-log: %llu frames were dropped (the disk is too slow)\n",
+                     static_cast<unsigned long long>(Port::Perf::DroppedFrames()));
+    }
+}
+
 
 // ── network room ────────────────────────────────────────────────────────────────────
 
@@ -1540,7 +2622,7 @@ int PrintOverlayLayout(const std::string& spec, const std::string& size, const s
         !height || !top_width) {
         return Usage();
     }
-    Layout::SetTopScreenWidth(top_width);
+    Port::AzaharPlatform().SetTopScreenWidth(top_width);
     auto overlay = Port::Hooks::ParseOverlay(spec);
     if (!quest.empty()) {
         const auto map = Port::Hooks::ParseQuestOverlay(quest);
@@ -1550,7 +2632,7 @@ int PrintOverlayLayout(const std::string& spec, const std::string& size, const s
                                                 Port::Hooks::ParseTargetOverlay(target));
         }
     }
-    Layout::SetScreenOverlay(overlay);
+    Port::AzaharPlatform().SetScreenOverlay(overlay);
     const auto layout = Layout::CustomFrameLayout(width, height, false, false);
     const auto& t = layout.top_screen;
     const auto& b = layout.bottom_screen;
@@ -1682,7 +2764,10 @@ int main(int argc, char** argv) {
     bool ipc_trace_full = false;
     bool print_schedule = false;
     std::string schedule_error;
-    std::string state_trace, unmapped_report, observable_file = "config/native/observable.txt";
+    std::string capture_dsp_file, capture_hid_file, capture_gpu_file;
+    u32 capture_dsp_start = 0, capture_dsp_frames = 0;
+    u32 capture_gpu_start = 0, capture_gpu_frames = 0;
+    std::string state_trace, unmapped_report, perf_log, observable_file = "config/native/observable.txt";
     std::vector<std::string> install;
     double shot_every = 1000.0;
     double speed = 0.0;
@@ -1757,10 +2842,26 @@ int main(int argc, char** argv) {
             ipc_trace = argv[++i];
         } else if (arg == "--trace-ipc-full") {
             ipc_trace_full = true;
+        } else if (arg == "--capture-dsp" && i + 1 < argc) {
+            if (!ParseCaptureDsp(argv[++i], capture_dsp_start, capture_dsp_frames, capture_dsp_file)) {
+                std::fprintf(stderr, "bad --capture-dsp: %s (want START:FRAMES:FILE, START a game frame, FRAMES above 0)\n", argv[i]);
+                return 1;
+            }
+        } else if (arg == "--capture-gpu" && i + 1 < argc) {
+            if (!ParseCaptureDsp(argv[++i], capture_gpu_start, capture_gpu_frames, capture_gpu_file) ||
+                capture_gpu_frames > kGpuCaptureMaxFrames) {
+                std::fprintf(stderr, "bad --capture-gpu: %s (want START:FRAMES:FILE, FRAMES from 1 to %u: a capture starts at about 140 MB)\n",
+                             argv[i], kGpuCaptureMaxFrames);
+                return 1;
+            }
+        } else if (arg == "--capture-hid" && i + 1 < argc) {
+            capture_hid_file = argv[++i];
         } else if (arg == "--state-trace" && i + 1 < argc) {
             state_trace = argv[++i];
         } else if (arg == "--observable" && i + 1 < argc) {
             observable_file = argv[++i];
+        } else if (arg == "--perf-log" && i + 1 < argc) {
+            perf_log = argv[++i];
         } else if (arg == "--count-unmapped" && i + 1 < argc) {
             unmapped_report = argv[++i];
         } else if (arg == "--new-3ds" && i + 1 < argc) {
@@ -1834,6 +2935,10 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "--trace-ipc-full needs --trace-ipc FILE\n");
         return 1;
     }
+    if (!perf_log.empty() && !capture_gpu_file.empty()) {
+        std::fprintf(stderr, "--perf-log and --capture-gpu both use the GPU hooks: run them one at a time\n");
+        return 1;
+    }
     const bool install_only = path.empty() && !install.empty();
     if ((path.empty() && !install_only) || (cpu != "recomp" && cpu != "jit" && cpu != "interp") ||
         (room_host && !room_join.empty())) {
@@ -1881,6 +2986,10 @@ int main(int argc, char** argv) {
     Settings::values.output_type.SetValue(AudioCore::SinkType::Null);
     Settings::values.input_type.SetValue(AudioCore::InputType::Null);
     Settings::values.is_new_3ds.SetValue(new_3ds); // before system.Load: it picks the cores and memory
+    if (!capture_gpu_file.empty()) {
+        // a capture needs every command list and display transfer to run (Azahar's default, kept explicitly)
+        Settings::values.disable_right_eye_render.SetValue(false);
+    }
     Settings::values.use_cpu_jit = cpu == "jit";
     Settings::values.use_fastinterp = false;
 
@@ -1950,6 +3059,23 @@ int main(int argc, char** argv) {
         system.Shutdown();
         return 1;
     }
+    if (!capture_dsp_file.empty() && !BeginDspCapture(capture_dsp_file, capture_dsp_start, capture_dsp_frames)) {
+        system.Shutdown();
+        return 1;
+    }
+    if (!capture_hid_file.empty() && !BeginHidCapture(system, capture_hid_file)) {
+        system.Shutdown();
+        return 1;
+    }
+    if (!capture_gpu_file.empty() &&
+        !BeginGpuCapture(system, capture_gpu_file, capture_gpu_start, capture_gpu_frames, new_3ds)) {
+        system.Shutdown();
+        return 1;
+    }
+    if (!perf_log.empty() && !BeginPerfLog(system, perf_log, cpu, new_3ds)) {
+        system.Shutdown();
+        return 1;
+    }
     if (!unmapped_report.empty()) {
         Memory::SetUnmappedObserver(CountUnmapped);
     }
@@ -1964,7 +3090,7 @@ int main(int argc, char** argv) {
     double next_shot = g_plan.has_shots_from && !g_plan.shots_from.by_frame ? g_plan.shots_from.ms : shot_every;
     int rc = 0;
     while (true) {
-        if (draw_window >= 0.0) {
+        if (draw_window >= 0.0 && capture_gpu_file.empty()) { // a capture needs every frame drawn
             SwRenderer::SetDrawingEnabled(!shots_dir.empty() &&
                                           (shot_frame_pending || EmulatedMs() >= next_shot - draw_window));
         }
@@ -1996,6 +3122,8 @@ int main(int argc, char** argv) {
         UpdateFrame(system);
         WriteDumps(system, shots_dir);
         WriteStateTrace(system);
+        WriteHidCapture(system);
+        WriteGpuCapture(system);
         DoReplaces(system);
         WriteCallCounts(shots_dir);
         const bool frame_shot = shot_frame_pending && g_plan.shots_from.Due(EmulatedMs(), g_frame);
@@ -2057,6 +3185,10 @@ int main(int argc, char** argv) {
         EndSvcTrace();
     }
     EndStateTrace();
+    EndDspCapture(system);
+    EndHidCapture(system);
+    EndGpuCapture(system);
+    EndPerfLog();
     if (!unmapped_report.empty()) {
         WriteUnmappedReport(system, unmapped_report, cpu, new_3ds);
     }

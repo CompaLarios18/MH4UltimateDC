@@ -5,14 +5,19 @@
 #include <string>
 #include <vector>
 
-#include "core/frontend/top_screen.h"
+#include "platform.h"
 
 struct RCodeInfo;
 
 namespace Port::Hooks {
 
+/// Gives the hooks the platform they run on (see platform.h). Call it once, before Install, and
+/// keep the platform alive for as long as the hooks can run. Hooks installed without one log
+/// nowhere and change nothing outside the guest.
+void SetPlatform(Platform* platform);
+
 /// Installs the port's hooks on a freshly loaded code library. Options come from
-/// "mh4u.ini" in Azahar's user directory (`key = value` lines: fps, widescreen,
+/// "mh4u.ini" in the platform's user directory (`key = value` lines: fps, widescreen,
 /// trace_frames), and environment variables override them (MH4U_FPS, MH4U_WIDESCREEN,
 /// MH4U_TRACE_FRAMES). Returns lines for the log: options in effect and hooks the library
 /// has no hook point for (it was built with an older hooks.txt).
@@ -61,7 +66,7 @@ int MissingHookPoints();
 
 /// The touch_overlay option: "top-right 30 85" (corner, height in % of the window's, opacity
 /// in %), "on" (top right, 30%, 85%) or "off".
-Layout::ScreenOverlay ParseOverlay(std::string value);
+ScreenOverlay ParseOverlay(std::string value);
 
 /// The quest's touch panels: six slots of 160x68 touch-screen pixels under a 36-pixel bar, in
 /// two columns of three. The map takes two slots one above the other, the target camera one.
@@ -96,16 +101,16 @@ std::string FormatTargetOverlay(const PanelView& target);
 struct Placement {
     float height = 0.0f, x = 1.0f, y = 0.0f;
 };
-Placement MapPlacement(const Layout::ScreenOverlay& touch, const PanelView& map);
-Placement TargetPlacement(const Layout::ScreenOverlay& touch, const PanelView& map,
+Placement MapPlacement(const ScreenOverlay& touch, const PanelView& map);
+Placement TargetPlacement(const ScreenOverlay& touch, const PanelView& map,
                           const PanelView& target);
 
 /// The touch overlay `touch` cut down to the quest's map in touch-panel slot `map_slot` (0-2
 /// the left column from the top, 3-5 the right one), placed as `map` says, and with
 /// `target_slot` >= 0 the target camera panel in that slot as a further view placed as
 /// `target` says.
-Layout::ScreenOverlay QuestOverlay(const Layout::ScreenOverlay& touch, int map_slot, const PanelView& map,
-                                   int target_slot = -1, const PanelView& target = {});
+ScreenOverlay QuestOverlay(const ScreenOverlay& touch, int map_slot, const PanelView& map,
+                           int target_slot = -1, const PanelView& target = {});
 
 /// The app's layout editor: while on, the touch overlay shows the map and the target camera
 /// as in a quest (in the slots a quest last had them, else the default panel layout's), even

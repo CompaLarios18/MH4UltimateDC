@@ -27,7 +27,14 @@ add_library(mh4u_backend STATIC
     src/hooks.h
     src/netsync.cpp
     src/netsync.h
+    src/perf.cpp
+    src/perf.h
+    src/platform.h
+    src/platform_azahar.cpp
 )
+# hooks.cpp builds for either memory mode (src/platform.h is all it needs of the host); here it
+# reads guest memory through Azahar's page table, like the recompiled code.
+set_source_files_properties(src/hooks.cpp PROPERTIES COMPILE_DEFINITIONS RC_PAGED)
 target_include_directories(mh4u_backend PUBLIC src PRIVATE "${MH4U_RUNTIME_DIR}")
 target_link_libraries(mh4u_backend PUBLIC citra_core citra_common network)
 

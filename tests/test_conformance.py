@@ -30,9 +30,18 @@ sys.path.insert(0, PORT_TESTS)
 
 PROGRAMS = ["svc_test", "conf_sync", "conf_wait", "conf_arbiter", "conf_timer", "conf_sched",
             "conf_mem", "conf_info", "conf_srv", "conf_services"]
-# Programs the native runner does not pass yet (N1-09 fills this in; N1-15 takes conf_srv and
-# conf_services out, once cfg and ptm exist).
-NATIVE_NOT_YET: set[str] = set()
+# Programs the native runner does not pass yet, and what each is waiting for. The work package that
+# provides it takes the program out of the set.
+NATIVE_NOT_YET: set[str] = {
+    # N1-05 does not alias shared-memory pages: a block mapped at a second address is refused
+    "conf_mem",
+    # one line differs, sysinfo.memory_region2.nonzero: something must allocate from the SYSTEM
+    # region (the HID and GSP shared-memory blocks, N1-14 and N1-17)
+    "conf_info",
+    # srv:, cfg:u and ptm:u: N1-10 (IPC core and srv:) and N1-15 (cfg, ptm, ac) take both out
+    "conf_srv",
+    "conf_services",
+}
 
 NEEDED_TOOLS = ["clang", "ld.lld", "llvm-objcopy", "llvm-readelf"]
 MAX_SOURCE_LINES = 300
@@ -147,6 +156,13 @@ def test_expected_file_is_wellformed(program):
     if program.startswith("conf_"):
         # one "<check>: <value>" line per check
         assert all(re.fullmatch(r"[A-Za-z0-9_.:]+: \S.*", line) for line in lines[1:-1]), lines
+
+
+def test_native_not_yet_names_conformance_programs():
+    assert NATIVE_NOT_YET <= set(PROGRAMS)
+    # what the native runner must pass today
+    assert {"svc_test", "conf_sync", "conf_wait", "conf_arbiter", "conf_timer", "conf_sched"} <= (
+        set(PROGRAMS) - NATIVE_NOT_YET)
 
 
 def test_every_conf_program_is_listed():

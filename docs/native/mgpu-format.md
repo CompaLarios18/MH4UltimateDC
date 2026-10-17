@@ -193,6 +193,8 @@ Layouts follow how Azahar holds the state at the pinned commit (`5f3306d13cab40b
 | 28 | `u32` | `total_vertex_num` (Variable) |
 | 32 | 256 | `attribute_buffer` (Point): 16 x `Vec4<f24>` as 4 x `f32` |
 
+The buffer index, offset and size of Variable and Fixed are `buffer_cur`, `buffer_begin` and `buffer_end` minus `gs_setup.uniforms.f`, the geometry shader's float uniforms. For the Variable backend while it waits for its index (`need_index` = 1) words 2, 6 and 7 are written as 0: Azahar leaves `buffer_cur`, `main_vertex_num` and `total_vertex_num` uninitialised until the first index arrives (N0-05).
+
 Not captured in version 1: the `PrimitiveAssembler` buffer and the geometry shader's emitter. Recording starts between command lists, where both are rebuilt from the registers by the next draw. If N0-05 finds otherwise, add a block kind and bump the version.
 
 ## 5. Tools

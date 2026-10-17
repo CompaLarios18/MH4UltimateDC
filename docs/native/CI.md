@@ -15,7 +15,7 @@ A newer push to a `wp/` branch (or to a PR) cancels the older run of the same re
 ## Jobs
 
 - **`tools`** (pushes and dispatch): the steps of `ci.yml`: Python 3.12, `clang lld llvm`, `pip install -r requirements.txt`, `python -m pytest -q`, and the guard that fails if `git ls-files` lists game data.
-- **`native`** (N1-01; on every trigger, `ubuntu-24.04`): installs `clang lld llvm cmake ninja-build libvulkan-dev mesa-vulkan-drivers glslang-tools spirv-tools` and `pip install -r requirements.txt` (the ARM test programs are built with `tools/difftest.py`), then configures `native/` with the one configure line of `wp/N1.md`, builds, runs `ctest`, and runs `python3 tools/native/check_native_deps.py` (nothing under `native/` may use Azahar).
+- **`native`** (N1-01; on every trigger, `ubuntu-24.04`): installs `clang lld llvm cmake ninja-build libvulkan-dev mesa-vulkan-drivers glslang-tools spirv-tools` and `pip install -r requirements.txt` (the ARM test programs are built with `tools/difftest.py`), then configures `native/` with the one configure line of `wp/N1.md`, builds, runs `ctest`, runs `python3 tools/native/check_native_deps.py` (nothing under `native/` may use Azahar), and runs `tests/test_conformance.py` with `MH4N_RUNNER` set to the native runner it just built (the ARM conformance programs on `mh4u_native_runner`, except those listed in `NATIVE_NOT_YET`; `docs/native/runner.md`).
 - **`changes`**: decides whether `runner` is needed, from the files changed under `port/`, `tools/`, `config/` and `.github/workflows/native.yml`:
   - dispatch: always;
   - PR: the files of the PR (`base...head`);

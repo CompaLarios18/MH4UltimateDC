@@ -249,6 +249,10 @@ Azahar draws no gas at all (its shader generator logs "Unimplemented gas mode", 
   - (with the dump) every texture in the G1–G4 captures decodes equal to the CPU reference;
   - (the maintainer, with the pack) `hd_hash_check.py` on G3's capture finds pack files for the textures the pack replaces.
 - **Traps:** -
+- **As built (N2-14):**
+  - Module `mh4n_gpu_texture` (DEPENDS `mh4n_gpu_capture`, `mh4n_gpu_pica`); the content hash of the cache is XXH3 from the vendored xxHash 0.8.3 (`native/third_party/xxhash/`, BSD-2-Clause). `cityhash.{h,cpp}` are MIT (Google's notice only), not GPL.
+  - `--check tex-hashes` writes a file (option `--tex-hashes-out FILE`, default `<capture>.tex-hashes.txt`) with the sections `# use_new_hash=1` and `# use_new_hash=0` and lines `<16 hex digits> <w>x<h> <format number>`. It runs its own `gpu/pica` command processor over the capture's GX and MMIO records on the capture host's memory, so it works with any `--gpu` and needs nothing from the Gpu. Level 0 only; shadow textures are skipped; cube faces are hashed as six textures; an old-mode hash of a texture whose size is not a multiple of 8 is refused, not guessed; a texture memory that a command list draws into is hashed as it is after that list.
+  - `docs/research/flat-memory-check.md` (N0-14) does not exist yet, so the cache's safety net (every flush and invalidate marks every texture for rehash, `Config::check_all_on_notify`) is on by default.
 - **Out of scope:** loading HD textures (N2-17, N2-18).
 
 ### N2-08 · Fragment generator, TEV and alpha test

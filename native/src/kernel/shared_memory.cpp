@@ -95,6 +95,14 @@ Result SharedMemory::Map(Process& target, u32 address, MemoryPermission permissi
     }
 
     GuestMemory& memory = kernel_.Memory();
+    // A guest can pass any address. Azahar answers a misaligned one with the state error only when
+    // its range overlaps mapped memory, and asserts otherwise (N1-07 hardening): flat memory maps
+    // whole pages, so the answer is the same without the overlap.
+    if ((target_address & kPageMask) != 0) {
+        MH4N_LOG(Error, "Kernel", "cannot map id={}, address=0x{:08X} name={}, address not aligned",
+                 ObjectId(), address, Name());
+        return kResultInvalidAddressState;
+    }
     const auto block = memory.Query(target_address);
     if (!block) {
         return kResultInvalidAddress;
