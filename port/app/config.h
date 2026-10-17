@@ -6,7 +6,7 @@
 #include <array>
 #include <string>
 
-#include "buttons.h"
+#include "util/buttons.h"
 
 namespace App {
 

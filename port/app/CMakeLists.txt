@@ -48,7 +48,8 @@ add_executable(mh4u
     ui/options.h
     ui/ui.cpp
     ui/ui.h
-    # the app's own logging, file and string helpers (util/), and the Azahar runtime's logger
+    # the app's own logging, file and string helpers (util/)
+    util/buttons.h
     util/file.cpp
     util/file.h
     util/log.cpp
@@ -57,7 +58,6 @@ add_executable(mh4u
     util/strings.h
     util/types.h
     # IRuntime (runtime.h), the seam to the emulation runtime, and its Azahar implementation
-    buttons.h
     runtime.h
     runtime_azahar/azahar_input.cpp
     runtime_azahar/azahar_options.cpp

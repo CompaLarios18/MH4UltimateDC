@@ -11,7 +11,7 @@
 
 namespace App::Azahar {
 
-// the app numbers the 3DS's buttons and sticks (buttons.h) the way Azahar does
+// the app numbers the 3DS's buttons and sticks (util/buttons.h) the way Azahar does
 static_assert(Button::A == Settings::NativeButton::A && Button::B == Settings::NativeButton::B &&
               Button::X == Settings::NativeButton::X && Button::Y == Settings::NativeButton::Y &&
               Button::Up == Settings::NativeButton::Up && Button::Down == Settings::NativeButton::Down &&

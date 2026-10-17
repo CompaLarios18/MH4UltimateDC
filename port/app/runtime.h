@@ -16,7 +16,7 @@
 #include <optional>
 #include <string>
 
-#include "buttons.h"
+#include "util/buttons.h"
 
 namespace Core {
 class System;
