@@ -258,7 +258,7 @@ Result Request::Translate(std::span<const u32> area) {
                         MH4N_LOG(Error, kLog,
                                  "request 0x{:08X}: handle 0x{:08X} is not in the client's table",
                                  header.raw, handle);
-                        return kResultInvalidHandle;
+                        return kResultInvalidHandleInCommand;
                     }
                     if (info.type == ipc::MoveHandle) {
                         to_close.push_back(handle);

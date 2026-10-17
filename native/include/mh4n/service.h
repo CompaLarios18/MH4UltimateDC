@@ -41,15 +41,20 @@
 // registered factory and the SVC layer's ConnectToPort and SendSyncRequest handlers. `FindServiceManager`
 // gives it to a tool that boots a runtime with `Runtime::Prepare`.
 //
-// Every reply to an HLE service makes the client wait 39 microseconds of game time after the reply is
-// written (Azahar's IPCDelayNanoseconds): without it a thread that only talks to services would never
-// let a lower-priority thread of its core run. `SetReplyDelayNs(0)` turns it off.
+// Every immediate reply to an HLE service (the handler returned Handled::Done) makes the client wait 39
+// microseconds of game time after the reply is written (Azahar's IPCDelayNanoseconds): without it a
+// thread that only talks to services would never let a lower-priority thread of its core run. A deferred
+// reply (Handled::Deferred, then `Complete`) wakes the client when it is delivered, with no delay, as
+// Azahar's does for a handler that put the thread to sleep. `SetReplyDelayNs(0)` turns the delay off.
 //
 // Departures from Azahar:
 //  - A port's session count drops when the client closes its last handle to a session (Azahar counts
 //    the server session's destruction, which comes with it).
 //  - GetServiceHandle for a service with all its sessions open does not wait (Azahar asserts); the
 //    caller gets the error.
+//  - Every client waiting for a service that is not registered yet gets its session when the service
+//    is. Azahar keeps one event per name (get_service_handle_delayed_map[name] = ...), so a second
+//    waiter replaces the first, which is never woken.
 //
 // Threads (principle 6): the manager, the sessions and the services belong to the scheduler thread; a
 // service hands work to other host threads itself and answers with `Complete` (ipc.h).
@@ -287,8 +292,10 @@ public:
     // The SVC layer's two handlers (svc.h) are these.
     void Install(SvcTable& svc);
     // The request in the command buffer of `thread`, through the session `handle` names. kResultInvalidHandle
-    // if it is not a session of the thread's process (nothing else happens); an error code if the
-    // translation fails (the thread keeps running); else kResultSuccess. A reply that is ready is in the
+    // if it is not a session of the thread's process (nothing else happens: the IPC observers are not
+    // told); an error code if the translation fails (the observers are told, with that code; the thread
+    // keeps running; kResultInvalidHandleInCommand for a handle the client does not have); else
+    // kResultSuccess. A reply that is ready is in the
     // thread's command buffer; the thread then waits the reply delay (status WaitIPC, woken by the
     // timer), and a deferred reply leaves it in WaitIPC until Complete. The caller (the SVC layer)
     // parks a thread that is not Running. Needs `thread` to have a TLS slot.

@@ -46,10 +46,14 @@
 // Departures from Azahar, all deliberate:
 //  - A command that is too long, a descriptor that is cut off or not known and a handle that is not in
 //    the client's table make svcSendSyncRequest fail (kResultInvalidBufferDescriptor,
-//    kResultInvalidHandle); Azahar asserts.
+//    kResultInvalidHandleInCommand); Azahar asserts.
 //  - Every handle of a move descriptor is closed in the client. Azahar compares the whole descriptor
 //    word with MoveHandle, so a descriptor with more than one handle leaves them open.
 //  - A static receive buffer that is smaller than the data is written short (and logged); Azahar asserts.
+//  - A reply handle that cannot be created in the client's table (it is full) is logged and the client
+//    reads the handle 0 with the reply's own result; Azahar asserts.
+//  - A calling-PID descriptor in a reply is filled in with the client's process id; Azahar's
+//    WriteToOutgoingCommandBuffer has no case for it (UNIMPLEMENTED_MSG).
 //  - The reply has its own storage, so a service can read the request after starting the reply; the
 //    bytes above a sub-word value are zero.
 //  - A handler that returns without a reply gets the reply of an unimplemented command, and it is logged.
@@ -105,10 +109,16 @@ inline constexpr Result kResultSessionClosed = 0xC920181A;
 inline constexpr Result kResultMaxConnectionsReached =
     0xD0401834;                                           // a port with all its sessions open
 inline constexpr Result kResultUnknownPort = 0xD88007FA;  // svcConnectToPort, a name nobody has
+// A handle inside a command that is not in the client's table (Azahar's ResultInvalidHandleOs, "returned
+// instead of ResultInvalidHandle in some code paths"). svcSendSyncRequest keeps kResultInvalidHandle
+// (0xD8E007F7) for a session handle that is not a client session, which leaves no IPC trace record; a
+// request that failed here has one (see the IPC trace), so the two are told apart by the result.
+inline constexpr Result kResultInvalidHandleInCommand = 0xD9001BF7;
 static_assert(kResultInvalidBufferDescriptor == MakeResult(48, 6, 8, 27));
 static_assert(kResultSessionClosed == MakeResult(26, 6, 9, 25));
 static_assert(kResultMaxConnectionsReached == MakeResult(52, 6, 2, 26));
 static_assert(kResultUnknownPort == MakeResult(1018, 1, 4, 27));
+static_assert(kResultInvalidHandleInCommand == MakeResult(1015, 6, 8, 27));
 
 namespace ipc {
 
@@ -532,7 +542,9 @@ public:
 
     // For Handled::Deferred.
     std::shared_ptr<Request> Share() { return shared_from_this(); }
-    // True once the reply has been written (or the client thread ended before it came). Any thread.
+    // True once the reply has been delivered, or dropped because the client had stopped waiting for it
+    // (`Complete` ran). A client thread that ended before the reply came makes `Cancelled()` true, but
+    // not `Finished()`, until `Complete` has run. Any thread.
     bool Finished() const { return finished_; }
 
     // ---- for the IPC layer ----

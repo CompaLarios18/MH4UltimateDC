@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <memory>
 #include <ostream>
+#include <system_error>
 
 #include "ipc_replay/replay.h"
 #include "mh4n/options.h"
@@ -86,8 +87,15 @@ int RunIpcReplay(const std::vector<std::string>& args, std::ostream& out, std::o
         err << "error: " << e.what() << "\n";
         return 2;
     }
-    if (std::filesystem::exists(kDefaultTimeDependent) &&
-        !config.time_dependent.LoadFile(kDefaultTimeDependent, &error)) {
+    // The error_code overloads: a path that cannot be examined (a symbolic link loop, a directory the
+    // user may not enter) is an exit 2, not an exception.
+    std::error_code status_error;
+    const bool have_default = std::filesystem::exists(kDefaultTimeDependent, status_error);
+    if (status_error) {
+        err << "error: cannot examine " << kDefaultTimeDependent << ": " << status_error.message() << "\n";
+        return 2;
+    }
+    if (have_default && !config.time_dependent.LoadFile(kDefaultTimeDependent, &error)) {
         err << "error: " << error << "\n";
         return 2;
     }
@@ -98,9 +106,18 @@ int RunIpcReplay(const std::vector<std::string>& args, std::ostream& out, std::o
         }
     }
     const std::string game = options.GetString("--game");
-    if (!game.empty() && !std::filesystem::is_directory(game)) {
-        err << "error: --game " << game << " is not a directory\n";
-        return 2;
+    if (!game.empty()) {
+        const bool is_directory = std::filesystem::is_directory(game, status_error);
+        const bool absent = status_error == std::errc::no_such_file_or_directory ||
+                            status_error == std::errc::not_a_directory;
+        if (status_error && !absent) {
+            err << "error: cannot examine --game " << game << ": " << status_error.message() << "\n";
+            return 2;
+        }
+        if (!is_directory) {
+            err << "error: --game " << game << " is not a directory\n";
+            return 2;
+        }
     }
 
     Runtime runtime;

@@ -183,7 +183,9 @@ Alignment Align(const IpcTrace& trace, const SvcTrace& svc) {
     for (const SvcCall& call : svc.calls) {
         const bool ok = call.has_out && call.out[0] == 0;
         if (call.svc == kSvcSendSyncRequest) {
-            // A call that failed with 'invalid handle' is not a request the recorder saw.
+            // A call that failed with 'invalid handle' (its session handle is not a client session) is not
+            // a request either runtime's recorder saw. A request that failed in translation has a record
+            // (cmd=-) and its own result code (ipc.h: kResultInvalidHandleInCommand), so it is counted.
             if (call.has_out && call.out[0] == kResultInvalidHandle) {
                 continue;
             }

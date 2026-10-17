@@ -19,8 +19,11 @@
 //    call; a mutex is made unlocked;
 //  - any other handle (no SVC trace, or an object this cannot make) skips the request.
 // The SVC trace and the IPC trace are lined up as tracefmt.py lines them up: the n-th
-// SendSyncRequest of a thread (not counting the ones that failed with 'invalid handle') is that
-// thread's n-th request. A handle's object is the one the last creating call before that
+// SendSyncRequest of a thread (not counting the ones that failed with 'invalid handle', 0xD8E007F7: the
+// session handle was not a client session, and neither runtime writes an IPC record for that) is that
+// thread's n-th request. A call that fails some other way before a request exists (a session whose
+// server side is closed, 0xC920181A) leaves no record either, and is counted; the lining-up is wrong
+// from there on for that thread. A handle's object is the one the last creating call before that
 // SendSyncRequest, in the SVC trace's file order, made. A CloseHandle that follows a request in the SVC
 // trace closes the native handle after the request that most recently precedes it there.
 //
@@ -87,8 +90,11 @@ struct ReplayReport {
 ReplayReport Replay(Runtime& runtime, ServiceManager& manager, const IpcTrace& trace,
                     const SvcTrace* svc, const ReplayConfig& config);
 
-// The report as the tool prints it: a line per difference, then the totals. Only service, header,
-// result, descriptor index, size and CRC appear.
+// The report as the tool prints it: a line per difference, then the totals. What appears is the service,
+// sequence number, session and header of a request, result codes, descriptor kinds, indices, sizes and
+// CRCs, handle counts, the kinds of objects, and fixed phrases. The session, the kinds and the CRCs come
+// from the trace only after ParseIpcTrace checked their shape; never the words of a reply that differ,
+// the bytes of a buffer, or any other text of the trace.
 std::string FormatReport(const ReplayReport& report);
 
 }  // namespace mh4n::ipc_replay

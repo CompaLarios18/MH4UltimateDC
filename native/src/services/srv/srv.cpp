@@ -16,6 +16,9 @@
 //  - ReceiveNotification answers "nothing pending" explicitly (Azahar has no handler, and answers an
 //    unknown command: the same words) and does not log an error.
 //  - GetServiceHandle for a service with all its sessions open answers with the error; Azahar asserts.
+//  - Every client that waits for the same unregistered service gets a session when it is registered
+//    (ServiceManager::RegisterService wakes all of them). Azahar keeps one event per name in
+//    get_service_handle_delayed_map, so a second waiter replaces the first, which is never woken.
 //  - The notification semaphore belongs to the session (Azahar's SRV object is one for all of them).
 #include <array>
 #include <memory>

@@ -32,8 +32,10 @@ directory (run the tool from the repository root).
 
 Exit status: 0 nothing differs; 1 something does; 2 the tool could not do its job: a usage error, a
 trace that is missing, empty, damaged or of the wrong kind, a `--service` nobody registered, a
-`--time-dependent` file that cannot be read, or a run in which no request was replayed (so a wrong
-`--service`, or a trace of other services, never reads as a pass).
+`--time-dependent` file that cannot be read (a directory, or not UTF-8 text, included), a `--game` that
+is not a directory or cannot be examined (a symbolic link loop, a directory it may not enter), or a run
+in which no request was replayed (so a wrong `--service`, or a trace of other services, never reads as a
+pass).
 
 ## How a request is replayed
 
@@ -63,8 +65,13 @@ difference; its thread is ended and the next request has a new one.
   0x1E (memory block, from the BASE region at an address the kernel picks) or 0x21 (address arbiter) is a
   new object of that kind, one per creating call. The two traces are lined up as `tracefmt.py` lines
   them up (the n-th SendSyncRequest of a thread is its n-th request, not counting the ones that failed
-  with `D8E007F7`); the object is the one the last creating call before that SendSyncRequest made, in
-  the SVC trace's file order. A CloseHandle in the SVC trace closes the native handle after the
+  with `D8E007F7`). That result is what `svcSendSyncRequest` gives when its session handle is not a client
+  session, and neither runtime writes an IPC record for such a call. In the native runtime a request
+  whose command holds a handle the client does not have does get a record (`cmd=-`, `in=-`), and fails
+  with `D9001BF7` instead, so it is counted. A call that fails before a request exists some other way
+  (the server side of the session is closed, `C920181A`) has no record in either runtime and is counted
+  too: the lining-up is wrong from that call on for that thread. The object is the one the last creating
+  call before that SendSyncRequest made, in the SVC trace's file order. A CloseHandle in the SVC trace closes the native handle after the
   request that most recently precedes it there. Any other handle skips the request.
 - **Skipped requests** are listed with a reason: no recorded request or reply (`cmd=-`, `out=-`), a
   handle that cannot be made, a service not registered natively (default mode), a session that
@@ -86,14 +93,28 @@ For a request with a recorded reply:
 **Time-dependent commands** (`config/native/ipc_time_dependent.txt` and the files given with
 `--time-dependent`) are compared by result only. A line is `<session> <header>   # reason`: the
 session name as the trace writes it (`fs:USER`; `fs:USER/file` for every file session), the request's
-header word in hex. `#` starts a comment. It is the format `tools/compare_ipc_traces.py --ignore`
-reads. A file with a line that does not parse is refused, naming the file and the line.
+header word in hex. `#` starts a comment. It has the shape of the file `tools/compare_ipc_traces.py --ignore`
+reads, but the reader is this tool's own: it demands strict UTF-8 as Python's decoder does (no overlong
+forms, no surrogates, nothing above U+10FFFF), splits a line at ASCII white space only (Python's `split`
+also takes Unicode white space), reads the header as hex digits with an optional `0x` of at most 32 bits
+(Python's `int(x, 16)` also takes a sign, underscores and any size), and does not end a line at a lone
+CR. A list in the form above is read by both. A file with a line that does not parse, that
+is not UTF-8 text or that is a directory is refused, naming the file and the line.
 
 ## Output
 
-Only service, sequence number, session, header, result codes, descriptor index, sizes and CRCs are
-printed; never the words of a reply that differ, the bytes of a buffer, or anything else the trace
-holds.
+The report (standard output) has only the service, sequence number, session name, header, result
+codes, descriptor kind, index, size and CRC, the position of a handle in its descriptor, the kind of an
+object (`file`, `event`, ...), counts, and fixed phrases; never the words of a reply that differ, the
+bytes of a buffer, or any other text of the trace. The error messages of the tool (standard error) name
+the line of a trace, never its text. That holds because the reader checks what the report will print:
+a session name must be `<service>`, `<service>/<kind>#<k>` or
+`unnamed#<k>` (a service is letters, digits and `:_.$-`, a kind lowercase letters, digits and `_-`; at
+most 64 characters); a descriptor must be of one of the kinds `static`, `mapped-r`, `mapped-w`,
+`mapped-rw`, `mapped-0` (a mapped buffer with neither permission), `pxi`, `copy`, `move`, `pid`; a
+buffer's token must be `-` or `0x` and eight hex digits, a handle descriptor's the names of its handles
+joined by `+` (each `-`, `0` or a session name), and the token of `pxi` and `pid` must be `-`. A trace
+with anything else in those places is refused with its line number and without the text.
 
 ```
 DIFF fs:USER seq=12 session=fs:USER header=0x00080142
@@ -103,6 +124,11 @@ replayed 120 requests: 119 matched, 1 differ, 4 skipped
   fs:USER: 120 replayed, 1 differ
   skipped 3 x cfg:u: service not registered natively
 ```
+
+The report is not all that is printed. The services' own log lines go to standard error as in the
+runner, unfiltered: they can hold what the replayed requests carry (a service name that
+`GetServiceHandle` asks for today, the paths of a file service once there is one). Do not paste them
+either.
 
 Traces hold game data (file names, save bytes). Keep them under `build/` and do not paste lines from
 them.

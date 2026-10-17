@@ -3,8 +3,10 @@
 // data): their words are what the fake service answers, worked out here from its code.
 #include <doctest/doctest.h>
 
+#include <array>
 #include <atomic>
 #include <chrono>
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <map>
@@ -39,7 +41,8 @@ std::vector<std::shared_ptr<Request>> g_hung;  // requests the fake service neve
 // The service a session of rpl:tst hands out (command 0x000C).
 class SubService final : public Service {
 public:
-    explicit SubService(ServiceContext& context) : Service(context, "rpl:tst") {
+    // `serial` counts the sub-sessions one session of FakeService has handed out.
+    SubService(ServiceContext& context, u32 serial) : Service(context, "rpl:tst"), serial_(serial) {
         Register(0x0001, "Answer", &SubService::Answer);
     }
     const char* SessionKind() const override { return "sub"; }
@@ -48,8 +51,9 @@ private:
     void Answer(Request& request) {
         Reply& reply = request.MakeReply(2, 0);
         reply.Push(kResultSuccess);
-        reply.Push(u32{0x5555});
+        reply.Push(u32{0x5555} + serial_);
     }
+    u32 serial_;
 };
 
 // Commands:
@@ -64,7 +68,11 @@ private:
 //   0x09 MappedOut    writes 8 bytes 9.. into the mapped buffer it is given
 //   0x0A StaticIn     the sum of the bytes of a static buffer
 //   0x0D Hang         defers and never replies
-//   0x0C NewSub       a move handle to a session of SubService
+//   0x0C NewSub       a move handle to a session of SubService (its Answer, 0x01, gives 0x5555 + how many
+//                     this session handed out before it)
+//   0x0E UserFolder   the length of the user folder the service was given
+//   0x0F NullHandle   a copy handle that is 0
+//   0x10 KindOf       the HandleType of the object a handle stands for, 0xFFFF for none
 class FakeService final : public Service {
 public:
     explicit FakeService(ServiceContext& context) : Service(context, "rpl:tst") {
@@ -80,6 +88,9 @@ public:
         Register(0x000A, "StaticIn", &FakeService::StaticIn);
         Register(0x000C, "NewSub", &FakeService::NewSub);
         Register(0x000D, "Hang", &FakeService::Hang);
+        Register(0x000E, "UserFolder", &FakeService::UserFolder);
+        Register(0x000F, "NullHandle", &FakeService::NullHandle);
+        Register(0x0010, "KindOf", &FakeService::KindOf);
     }
 
 private:
@@ -158,8 +169,26 @@ private:
     void NewSub(Request& request) {
         Reply& reply = request.MakeReply(1, 2);
         reply.Push(kResultSuccess);
-        reply.PushMoveObjects(Context().CreateSession(std::make_unique<SubService>(Context())));
+        reply.PushMoveObjects(Context().CreateSession(std::make_unique<SubService>(Context(), subs_++)));
     }
+    void UserFolder(Request& request) {
+        Reply& reply = request.MakeReply(2, 0);
+        reply.Push(kResultSuccess);
+        reply.Push(static_cast<u32>(Context().UserFolder().size()));
+    }
+    void NullHandle(Request& request) {
+        Reply& reply = request.MakeReply(1, 2);
+        reply.Push(kResultSuccess);
+        reply.PushCopyObjects(std::shared_ptr<Event>());
+    }
+    void KindOf(Request& request) {
+        const std::shared_ptr<Object> object = request.PopGenericObject();
+        Reply& reply = request.MakeReply(2, 0);
+        reply.Push(kResultSuccess);
+        reply.Push(object ? static_cast<u32>(object->GetHandleType()) : u32{0xFFFF});
+    }
+
+    u32 subs_ = 0;
 };
 
 MH4N_REGISTER(ServiceFactory, "rpl:tst",
@@ -265,6 +294,41 @@ Req UseEvent(u32 seq, u32 handle, const std::string& name, u32 answer) {
     r.desc = "copy:1:1:" + name;
     r.out = {ipc::MakeHeader(5, 2, 0), 0, answer};
     return r;
+}
+
+Req KindOf(u32 seq, u32 handle, HandleType type, const std::string& thread = "1") {
+    Req r;
+    r.thread = thread;
+    r.seq = seq;
+    r.in = {ipc::MakeHeader(0x10, 0, 2), ipc::CopyHandleDesc(1), handle};
+    r.out = {ipc::MakeHeader(0x10, 2, 0), 0, static_cast<u32>(type)};
+    return r;
+}
+
+// One call of an SVC trace: the registers it was made with and the ones it returned.
+std::string SvcLine(const std::string& thread, u32 svc, std::array<u32, 4> args, std::array<u32, 4> out) {
+    const auto reg = [](u32 value) {
+        char text[16];
+        std::snprintf(text, sizeof(text), "%08x", value);
+        return std::string(text);
+    };
+    char number[8];
+    std::snprintf(number, sizeof(number), "%x", svc);
+    return thread + " " + number + " pc=00100000 lr=00100004 " + reg(args[0]) + " " + reg(args[1]) + " " +
+           reg(args[2]) + " " + reg(args[3]) + " t=5 in4=0,0,0 out=" + reg(out[0]) + "," + reg(out[1]) + "," +
+           reg(out[2]) + "," + reg(out[3]) + "\n";
+}
+
+const char* const kSvcHeader = "# svctrace v1 2026-01-01 game=0x0 cpu=native new3ds=off\n";
+
+// A SendSyncRequest of the program and what it returned.
+std::string SvcSend(const std::string& thread, u32 result = 0) {
+    return SvcLine(thread, 0x32, {0x1234, 0, 0, 0}, {result, 0, 0, 0});
+}
+
+// A creating call that returned the handle `handle`.
+std::string SvcCreate(const std::string& thread, u32 svc, std::array<u32, 4> args, u32 handle) {
+    return SvcLine(thread, svc, args, {0, handle, 0, 0});
 }
 
 class TempDir {
@@ -460,6 +524,95 @@ TEST_CASE("a time-dependent list that cannot be read is refused") {
     CHECK(list.size() == 0);  // a file with a bad line adds nothing
     CHECK_FALSE(list.LoadText(std::string("fs:USER 1\n\xff\xfe\n"), "list", &error));
     CHECK(Contains(error, "UTF-8"));
+    // a directory reads as an empty file: it is refused
+    CHECK_FALSE(list.LoadFile(dir.Path(), &error));
+    CHECK(Contains(error, "cannot read"));
+}
+
+TEST_CASE("a time-dependent list is UTF-8 as strictly as Python's decoder demands") {
+    TimeDependent list;
+    std::string error;
+    // what Python's utf-8 codec refuses: overlong forms, surrogates, above U+10FFFF, stray bytes
+    for (const std::string& bad : {std::string("\xC0\x80"), std::string("\xC1\xBF"), std::string("\xE0\x80\x80"),
+                                  std::string("\xE0\x9F\xBF"), std::string("\xED\xA0\x80"),
+                                  std::string("\xED\xBF\xBF"), std::string("\xF0\x80\x80\x80"),
+                                  std::string("\xF0\x8F\xBF\xBF"), std::string("\xF4\x90\x80\x80"),
+                                  std::string("\xF5\x80\x80\x80"), std::string("\xF8\x88\x80\x80\x80"),
+                                  std::string("\x80"), std::string("\xC2"), std::string("\xE2\x82"),
+                                  std::string("\xF0\x9F\x98")}) {
+        INFO("bytes: " << bad.size() << " starting 0x" << std::hex << (static_cast<int>(bad[0]) & 0xFF));
+        CHECK_FALSE(list.LoadText("srv:" + bad + " 00010002\n", "list", &error));
+        CHECK(Contains(error, "UTF-8"));
+        CHECK_FALSE(list.LoadText("srv: 00010002 # " + bad + "\n", "list", &error));
+    }
+    // what it takes, at the edges of each range
+    for (const std::string& good : {std::string("\xC2\x80"), std::string("\xDF\xBF"), std::string("\xE0\xA0\x80"),
+                                   std::string("\xEC\xBF\xBF"), std::string("\xED\x80\x80"),
+                                   std::string("\xED\x9F\xBF"), std::string("\xEE\x80\x80"),
+                                   std::string("\xEF\xBF\xBF"), std::string("\xF0\x90\x80\x80"),
+                                   std::string("\xF3\xBF\xBF\xBF"), std::string("\xF4\x8F\xBF\xBF"),
+                                   std::string("\xC3\xA9"), std::string("\xE2\x82\xAC")}) {
+        INFO("bytes: " << good.size() << " starting 0x" << std::hex << (static_cast<int>(good[0]) & 0xFF));
+        CHECK_MESSAGE(list.LoadText("srv:" + good + " 00010002\n", "list", &error), error);
+    }
+}
+
+TEST_CASE("--time-dependent and --game refuse what they cannot examine or read") {
+    TempDir dir;
+    const std::string good = dir.Write("ipc.txt", IpcTraceText({Add(1, 1, 2)}));
+    SUBCASE("a directory as the list") {
+        const Run run = RunTool({good, "--time-dependent", dir.Path()});
+        CHECK(run.status == 2);
+        CHECK(Contains(run.err, "cannot read"));
+    }
+    SUBCASE("a file that is not UTF-8 text as the list") {
+        const Run run = RunTool({good, "--time-dependent", dir.Write("td.txt", "srv:\xED\xA0\x80 1\n")});
+        CHECK(run.status == 2);
+        CHECK(Contains(run.err, "UTF-8"));
+    }
+    SUBCASE("a game folder that is a symbolic link loop") {
+        std::error_code ec;
+        std::filesystem::create_directory_symlink("loop", dir.Path("loop"), ec);
+        if (ec) {
+            MESSAGE("symbolic links are not available here: skipped");
+            return;
+        }
+        const Run run = RunTool({good, "--game", dir.Path("loop")});
+        CHECK(run.status == 2);
+        CHECK(Contains(run.err, "cannot examine --game"));
+    }
+    SUBCASE("a default time-dependent list that cannot be examined") {
+        std::error_code ec;
+        std::filesystem::create_directory_symlink("config", dir.Path("config"), ec);
+        if (ec) {
+            MESSAGE("symbolic links are not available here: skipped");
+            return;
+        }
+        // the default list is looked for relative to the current directory
+        struct ChangeDirectory {
+            std::filesystem::path before = std::filesystem::current_path();
+            explicit ChangeDirectory(const std::string& to) { std::filesystem::current_path(to); }
+            ~ChangeDirectory() {
+                std::error_code ignored;
+                std::filesystem::current_path(before, ignored);
+            }
+        } change(dir.Path());
+        const Run run = RunTool({good, "--service", "rpl:tst"});
+        CHECK(run.status == 2);
+        CHECK(Contains(run.err, "cannot examine config/native/ipc_time_dependent.txt"));
+    }
+    SUBCASE("no default list at all is not an error") {
+        struct ChangeDirectory {
+            std::filesystem::path before = std::filesystem::current_path();
+            explicit ChangeDirectory(const std::string& to) { std::filesystem::current_path(to); }
+            ~ChangeDirectory() {
+                std::error_code ignored;
+                std::filesystem::current_path(before, ignored);
+            }
+        } change(dir.Path());
+        const Run run = RunTool({good, "--service", "rpl:tst"});
+        CHECK_MESSAGE(run.status == 0, run.out << run.err);
+    }
 }
 
 // ---- the replay -------------------------------------------------------------------------------------------------
@@ -645,6 +798,10 @@ TEST_CASE("a reply that never comes is a difference, and the next request still 
     CHECK(run.status == 1);
     CHECK(Contains(run.out, "no reply within 150 ms"));
     CHECK(Contains(run.out, "replayed 2 requests: 1 matched, 1 differ, 0 skipped"));
+    // the thread that waited was ended, which cancelled its request and let go of the thread
+    REQUIRE(g_hung.size() == 1);
+    CHECK(g_hung[0]->Cancelled());
+    CHECK(g_hung[0]->ClientThreadPtr() == nullptr);
     g_hung.clear();
 }
 
@@ -905,4 +1062,254 @@ TEST_CASE("the shipped time-dependent list is a list the tool reads") {
     TimeDependent list;
     std::string error;
     CHECK_MESSAGE(list.LoadFile(list_path.string(), &error), error);
+}
+
+// ---- what the report can print of the trace --------------------------------------------------------------------
+
+TEST_CASE("a trace with text the report could print is refused when it is read, without the text") {
+    TempDir dir;
+    // Each line puts text of its own where the report prints the trace's: a descriptor kind, a buffer's
+    // token, the kind in a handle's name, a session name. They are refused with the line number and
+    // nothing of the text; no output is written.
+    struct Case {
+        const char* what;
+        std::string session, desc, outdesc;
+    };
+    const std::vector<Case> cases = {
+        {"a descriptor kind", "rpl:tst", "-", "SECRETKIND:2:1:-"},
+        {"a descriptor kind in the request", "rpl:tst", "SECRETKIND:2:1:-", "-"},
+        {"the token of a buffer", "rpl:tst", "-", "static:2:1:SECRETTOKEN"},
+        {"a CRC with too few digits", "rpl:tst", "-", "static:2:1:0x1234"},
+        {"a CRC with a letter that is not a digit", "rpl:tst", "-", "static:2:1:0x1234567g"},
+        {"a CRC without 0x", "rpl:tst", "-", "static:2:1:12345678"},
+        {"the token of a pid descriptor", "rpl:tst", "-", "pid:2:1:SECRETTOKEN"},
+        {"the token of a PXI descriptor", "rpl:tst", "pxi:1:4:SECRETTOKEN", "-"},
+        {"the kind in a handle's name", "rpl:tst", "-", "copy:2:1:rpl:tst/SECRETKIND#0"},
+        {"the number in a handle's name", "rpl:tst", "-", "copy:2:1:rpl:tst/event#SECRET"},
+        {"a handle's name without a kind", "rpl:tst", "-", "copy:2:1:SECRET NAME"},
+        {"a handle's name among several", "rpl:tst", "-", "copy:2:2:rpl:tst/event#0+SECRET/x"},
+        {"a session without a number", "rpl:tst/SECRETKIND", "-", "-"},
+        {"a session with a kind in capitals", "rpl:tst/SECRETKIND#0", "-", "-"},
+        {"a session that is not a name", "SECRET@NAME", "-", "-"},
+        {"an empty session", "", "-", "-"},
+        {"an unnamed session with letters", "unnamed#SECRET", "-", "-"},
+        {"a session that is too long", std::string(80, 'a'), "-", "-"},
+    };
+    for (const Case& c : cases) {
+        INFO("case: " << c.what);
+        Req r = Add(1, 1, 2);
+        r.session = c.session;
+        r.desc = c.desc;
+        r.outdesc = c.outdesc;
+        const std::string trace = IpcTraceText({r});
+        IpcTrace parsed;
+        std::string error;
+        CHECK_FALSE(ParseIpcTrace(trace, &parsed, &error));
+        CHECK(Contains(error, "line 2"));
+        CHECK_FALSE(Contains(error, "SECRET"));
+        const Run run = RunTool({dir.Write("secret.txt", trace)});
+        CHECK(run.status == 2);
+        CHECK(run.out.empty());
+        CHECK_FALSE(Contains(run.err, "SECRET"));
+    }
+}
+
+TEST_CASE("the descriptors and sessions the tracers write are read") {
+    Req r = Add(1, 1, 2);
+    r.session = "gsp::Gpu";
+    r.desc = "copy:1:3:0+-+unnamed#3,move:5:1:fs:USER/file#12,static:7:16:0x0000abcd,mapped-r:9:4:0xDEADBEEF,"
+             "mapped-w:11:4:-,mapped-rw:13:4:-,mapped-0:15:4:-,pxi:17:4:-,pid:19:1:-";
+    r.outdesc = "copy:2:2:rpl:tst/event#0+rpl:tst/sub-type_2#10";
+    IpcTrace trace;
+    std::string error;
+    REQUIRE_MESSAGE(ParseIpcTrace(IpcTraceText({r}), &trace, &error), error);
+    CHECK(trace.records[0].desc.size() == 9);
+    CHECK(trace.records[0].outdesc.size() == 1);
+    for (const char* session : {"srv:", "fs:USER/dir#0", "unnamed#0", "boss:U", "a.b$c-d_e"}) {
+        Req named = Add(1, 1, 2);
+        named.session = session;
+        CHECK_MESSAGE(ParseIpcTrace(IpcTraceText({named}), &trace, &error), session << ": " << error);
+    }
+}
+
+// ---- what the comparison and the alignment must notice -------------------------------------------------------
+
+TEST_CASE("the number of the reply's descriptors is compared") {
+    TempDir dir;
+    SUBCASE("the trace lists none, the reply has one") {
+        Req r = StaticOut(1, CrcOf(kStaticOutBytes));
+        r.outdesc = "-";
+        const Run run = RunTool({dir.Write("ipc.txt", IpcTraceText({r})), "--service", "rpl:tst"});
+        CHECK(run.status == 1);
+        CHECK(Contains(run.out, "the reply has 1 descriptors, expected 0"));
+    }
+    SUBCASE("the trace lists two, the reply has one") {
+        Req r = StaticOut(1, CrcOf(kStaticOutBytes));
+        r.outdesc += ",static:5:8:" + CrcOf(kStaticOutBytes);
+        const Run run = RunTool({dir.Write("ipc.txt", IpcTraceText({r})), "--service", "rpl:tst"});
+        CHECK(run.status == 1);
+        CHECK(Contains(run.out, "the reply has 1 descriptors, expected 2"));
+    }
+}
+
+TEST_CASE("the index of a descriptor is compared") {
+    TempDir dir;
+    Req r = StaticOut(1, CrcOf(kStaticOutBytes));
+    r.outdesc = "static:3:8:" + CrcOf(kStaticOutBytes);
+    const Run run = RunTool({dir.Write("ipc.txt", IpcTraceText({r})), "--service", "rpl:tst"});
+    CHECK(run.status == 1);
+    CHECK(Contains(run.out, "descriptor 0 (static, index 3): got it at index 2"));
+}
+
+TEST_CASE("a reply handle that is null in one reply and not in the other is reported") {
+    TempDir dir;
+    SUBCASE("the trace has a handle, the service gives none") {
+        Req r;
+        r.seq = 1;
+        r.in = {ipc::MakeHeader(0x0F, 0, 0)};
+        r.out = {ipc::MakeHeader(0x0F, 1, 2), 0, ipc::CopyHandleDesc(1), kEventRef};
+        r.outdesc = "copy:2:1:rpl:tst/event#0";
+        const Run run = RunTool({dir.Write("ipc.txt", IpcTraceText({r})), "--service", "rpl:tst"});
+        CHECK(run.status == 1);
+        CHECK(Contains(run.out, "handle 0 expected a handle, got null"));
+    }
+    SUBCASE("the trace has none, the service gives one") {
+        Req r = NewEvent(1);
+        r.out[3] = 0;
+        r.outdesc = "copy:2:1:0";
+        const Run run = RunTool({dir.Write("ipc.txt", IpcTraceText({r})), "--service", "rpl:tst"});
+        CHECK(run.status == 1);
+        CHECK(Contains(run.out, "handle 0 expected null, got a handle"));
+    }
+    SUBCASE("both are null") {
+        Req r;
+        r.seq = 1;
+        r.in = {ipc::MakeHeader(0x0F, 0, 0)};
+        r.out = {ipc::MakeHeader(0x0F, 1, 2), 0, ipc::CopyHandleDesc(1), 0};
+        r.outdesc = "copy:2:1:0";
+        const Run run = RunTool({dir.Write("ipc.txt", IpcTraceText({r})), "--service", "rpl:tst"});
+        CHECK_MESSAGE(run.status == 0, run.out << run.err);
+    }
+}
+
+TEST_CASE("requests are sent in the order of their seq, not of the lines") {
+    TempDir dir;
+    // the lines come in the order the replies were written; the second request was sent first
+    const std::string trace = dir.Write(
+        "ipc.txt", IpcTraceText({UseEvent(2, kEventRef, "rpl:tst/event#0", 1), NewEvent(1)}));
+    const Run run = RunTool({trace, "--service", "rpl:tst"});
+    CHECK_MESSAGE(run.status == 0, run.out << run.err);
+    CHECK(Contains(run.out, "replayed 2 requests: 2 matched, 0 differ, 0 skipped"));
+}
+
+TEST_CASE("a SendSyncRequest that failed with 'invalid handle' is not one of the requests") {
+    TempDir dir;
+    const std::string trace = dir.Write("ipc.txt", IpcTraceText({UseEvent(1, kSvcEventRef, "-", 1)}));
+    // The call that failed comes before the event is made; the request is the call after it. Counted as
+    // a request it would take the record, and the event would not be one of the request's handles.
+    const std::string svc = std::string(kSvcHeader) + SvcSend("1", kResultInvalidHandle) +
+                            SvcCreate("1", 0x17, {0, 0, 0, 0}, kSvcEventRef) + SvcSend("1");
+    SUBCASE("skipped") {
+        const Run run = RunTool({trace, "--service", "rpl:tst", "--svc-trace", dir.Write("svc.txt", svc)});
+        CHECK_MESSAGE(run.status == 0, run.out << run.err);
+        CHECK(Contains(run.out, "replayed 1 requests: 1 matched, 0 differ, 0 skipped"));
+    }
+    SUBCASE("any other result is a request") {
+        const std::string other = std::string(kSvcHeader) + SvcSend("1", kResultSessionClosed) +
+                                  SvcCreate("1", 0x17, {0, 0, 0, 0}, kSvcEventRef) + SvcSend("1");
+        const Run run = RunTool({trace, "--service", "rpl:tst", "--svc-trace", dir.Write("other.txt", other)});
+        CHECK(Contains(run.out, "1 skipped"));
+    }
+}
+
+TEST_CASE("the SVC trace and the IPC trace are lined up for each thread") {
+    TempDir dir;
+    // thread 2's request carries the event thread 2 made; thread 1's request was sent first
+    Req carries = UseEvent(1, kSvcEventRef, "-", 1);
+    carries.thread = "2";
+    Req plain = Add(2, 3, 4);
+    plain.thread = "1";
+    const std::string svc = std::string(kSvcHeader) + SvcSend("1") +
+                            SvcCreate("2", 0x17, {0, 0, 0, 0}, kSvcEventRef) + SvcSend("2");
+    const Run run = RunTool({dir.Write("ipc.txt", IpcTraceText({carries, plain})), "--service", "rpl:tst",
+                             "--svc-trace", dir.Write("svc.txt", svc)});
+    CHECK_MESSAGE(run.status == 0, run.out << run.err);
+    CHECK(Contains(run.out, "replayed 2 requests: 2 matched, 0 differ, 0 skipped"));
+}
+
+TEST_CASE("the newest session of a name answers to it") {
+    TempDir dir;
+    constexpr u32 kSecondSubRef = 0xCCCC;
+    const auto new_sub = [](u32 seq, u32 handle) {
+        Req r;
+        r.seq = seq;
+        r.in = {ipc::MakeHeader(12, 0, 0)};
+        r.out = {ipc::MakeHeader(12, 1, 2), 0, ipc::MoveHandleDesc(1), handle};
+        r.outdesc = "move:2:1:rpl:tst/sub#0";  // the same name both times
+        return r;
+    };
+    Req answer;
+    answer.seq = 3;
+    answer.session = "rpl:tst/sub#0";
+    answer.in = {ipc::MakeHeader(1, 0, 0)};
+    answer.out = {ipc::MakeHeader(1, 2, 0), 0, 0x5556};  // the second session the service handed out
+    const Run run = RunTool({dir.Write("ipc.txt", IpcTraceText({new_sub(1, kSubRef), new_sub(2, kSecondSubRef),
+                                                                 answer})),
+                             "--service", "rpl:tst"});
+    CHECK_MESSAGE(run.status == 0, run.out << run.err);
+    CHECK(Contains(run.out, "replayed 3 requests: 3 matched, 0 differ, 0 skipped"));
+}
+
+TEST_CASE("an object an SVC call made is an object of that kind") {
+    TempDir dir;
+    struct Kind {
+        const char* name;
+        u32 svc;
+        std::array<u32, 4> args;
+        HandleType type;
+    };
+    // CreateMutex(initially locked), CreateSemaphore(initial, max), CreateEvent(reset type),
+    // CreateTimer(reset type), CreateMemoryBlock(other permission, address, size, permission),
+    // CreateAddressArbiter
+    const Kind kinds[] = {
+        {"event", 0x17, {0, 0, 0, 0}, HandleType::Event},
+        {"mutex", 0x13, {0, 0, 0, 0}, HandleType::Mutex},
+        {"semaphore", 0x15, {0, 0, 1, 0}, HandleType::Semaphore},
+        {"timer", 0x1A, {0, 0, 0, 0}, HandleType::Timer},
+        {"memory block", 0x1E, {3, 0, 0x1000, 3}, HandleType::SharedMemory},
+        {"address arbiter", 0x21, {0, 0, 0, 0}, HandleType::AddressArbiter},
+    };
+    for (const Kind& kind : kinds) {
+        INFO("object: " << kind.name);
+        const std::string trace =
+            dir.Write("ipc.txt", IpcTraceText({KindOf(1, kSvcEventRef, kind.type)}));
+        const std::string svc = std::string(kSvcHeader) + SvcCreate("1", kind.svc, kind.args, kSvcEventRef) +
+                                SvcSend("1");
+        const Run run = RunTool({trace, "--service", "rpl:tst", "--svc-trace", dir.Write("svc.txt", svc)});
+        CHECK_MESSAGE(run.status == 0, run.out << run.err);
+        CHECK(Contains(run.out, "replayed 1 requests: 1 matched, 0 differ, 0 skipped"));
+    }
+}
+
+TEST_CASE("--user is the user folder the service is given") {
+    TempDir dir;
+    const std::string folder = dir.Path("user_folder_for_the_test");
+    std::filesystem::create_directories(folder);
+    Req r;
+    r.seq = 1;
+    r.in = {ipc::MakeHeader(0x0E, 0, 0)};
+    r.out = {ipc::MakeHeader(0x0E, 2, 0), 0, static_cast<u32>(folder.size())};
+    const std::string trace = dir.Write("ipc.txt", IpcTraceText({r}));
+    SUBCASE("given") {
+        const Run run = RunTool({trace, "--service", "rpl:tst", "--user", folder});
+        CHECK_MESSAGE(run.status == 0, run.out << run.err);
+    }
+    SUBCASE("given with a game folder, which makes a second service manager") {
+        const Run run = RunTool({trace, "--service", "rpl:tst", "--user", folder, "--game", dir.Path()});
+        CHECK_MESSAGE(run.status == 0, run.out << run.err);
+    }
+    SUBCASE("not given: the folder is empty") {
+        const Run run = RunTool({trace, "--service", "rpl:tst"});
+        CHECK(run.status == 1);
+    }
 }

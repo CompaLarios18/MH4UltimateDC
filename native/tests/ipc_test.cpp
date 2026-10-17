@@ -319,6 +319,7 @@ private:
 //   0x0D Objects      a session of another service and a semaphore
 //   0x0E Overflow     pushes more words than a command buffer has
 //   0x10 Typed        an event and a semaphore, an event, a null handle: which are of the type asked for
+//   0x11 WriteOnly    one write-only mapped buffer: whether a read of it, and a write to it, were accepted
 class TestService final : public Service {
 public:
     explicit TestService(ServiceContext& context) : Service(context, "tst:ipc") {
@@ -338,6 +339,7 @@ public:
         Register(0x000E, "Overflow", &TestService::Overflow);
         Register(0x000F, "Known");  // listed, not implemented
         Register(0x0010, "Typed", &TestService::Typed);
+        Register(0x0011, "WriteOnly", &TestService::WriteOnly);
     }
     ~TestService() override {
         if (Probe* probe = g_probe) {
@@ -441,6 +443,20 @@ private:
         reply.Push(past_end);
         reply.PushMappedBuffer(*rw);
         reply.PushMappedBuffer(*ro);
+    }
+
+    void WriteOnly(Request& request) {
+        const MappedBuffer* buffer = request.PopMappedBuffer();
+        REQUIRE(buffer != nullptr);
+        u8 byte = 0;
+        const bool read_ok = buffer->Read(&byte, 0, 1);  // refused: the client gave no read permission
+        const u8 bytes[2] = {0xAB, 0xCD};
+        const bool write_ok = buffer->Write(bytes, 0, 2);
+        Reply& reply = request.MakeReply(3, 2);
+        reply.Push(kResultSuccess);
+        reply.Push(read_ok);
+        reply.Push(write_ok);
+        reply.PushMappedBuffer(*buffer);
     }
 
     void Pid(Request& request) {
@@ -774,8 +790,11 @@ TEST_CASE("a handle descriptor with several handles: copies stay, every moved ha
     CHECK(reply[4] == ipc::MoveHandleDesc(2));
     CHECK(reply[5] != 0);
     CHECK(reply[6] != 0);
-    // a handle the client does not have stops the request
-    CHECK(invalid_result == 0xD8E007F7);
+    // a handle the client does not have stops the request, with a result of its own: 0xD8E007F7 is the
+    // result of a session handle that is not a client session, for which the IPC trace has no record
+    CHECK(invalid_result == 0xD9001BF7);
+    CHECK(invalid_result == kResultInvalidHandleInCommand);
+    CHECK(invalid_result != kResultInvalidHandle);
 }
 
 TEST_CASE("objects are cast to the type a service asks for, and null if it is another one") {
@@ -941,6 +960,34 @@ TEST_CASE("mapped buffers stay in the client's memory, behind their permissions 
     CHECK(ro_after == std::vector<u8>{9, 9, 9, 9});
     CHECK(f.Logged("no write permission"));
     CHECK(f.Logged("is outside mapped buffer"));
+}
+
+TEST_CASE("a mapped buffer the client gave no read permission is not read, but is written") {
+    Fixture f;
+    TempDir dir;
+    std::vector<u32> reply;
+    std::vector<u8> after;
+    u32 address = 0;
+    const int status = BootWith(f, dir, {"--ms", "100"}, [&] {
+        Guest g(*f.runtime);
+        const Handle session = ConnectTest(g);
+        address = g.Scratch(0x400);
+        g.PutBytes(address, {1, 2, 3, 4});
+        reply = g.Request(session,
+                          {ipc::MakeHeader(0x0011, 0, 2), ipc::MappedBufferDesc(4, ipc::W), address}, 6);
+        after = g.GetBytes(address, 4);
+        ExitProcess(*f.runtime);
+    });
+    CHECK(status == 0);
+    REQUIRE(reply.size() == 6);
+    CHECK(reply[0] == ipc::MakeHeader(0x0011, 3, 2));
+    CHECK(reply[1] == kResultSuccess);
+    CHECK(reply[2] == 0);  // the read is refused
+    CHECK(reply[3] == 1);  // the write is not
+    CHECK(reply[4] == ipc::MappedBufferDesc(4, ipc::W));
+    CHECK(reply[5] == address);
+    CHECK(after == std::vector<u8>{0xAB, 0xCD, 3, 4});
+    CHECK(f.Logged("no read permission"));
 }
 
 TEST_CASE("the calling PID is filled in, in requests and in replies") {
@@ -1318,6 +1365,7 @@ TEST_CASE("a client thread that ends while it waits for a deferred reply cancels
     std::atomic<int> replied{0};
     bool client_resumed = false;
     bool cancelled = false, finished = false, released = false;
+    bool cancelled_at_once = false, finished_at_once = true, released_at_once = false;
     u32 client_command = 0;
     std::array<u32, 1> client_words{};
     const int status = BootWith(f, dir, {"--ms", "100"}, [&] {
@@ -1350,6 +1398,12 @@ TEST_CASE("a client thread that ends while it waits for a deferred reply cancels
         REQUIRE(probe.pending != nullptr);
         CHECK(client->status == ThreadStatus::WaitIPC);
         scheduler.Terminate(client);
+        // Cancel ran by itself, before anyone completed the request: it let go of what the request held,
+        // and the request is cancelled but not finished (Finished() is the reply's, see ipc.h)
+        cancelled_at_once = probe.pending->Cancelled();
+        finished_at_once = probe.pending->Finished();
+        released_at_once = probe.pending->ClientThreadPtr() == nullptr &&
+                           probe.pending->Session() == nullptr && probe.pending->IncomingObjects().empty();
         Reply answer(0x0007, 1, 0);
         answer.Push(kResultSuccess);
         Complete(probe.pending, std::move(answer));
@@ -1363,9 +1417,12 @@ TEST_CASE("a client thread that ends while it waits for a deferred reply cancels
     });
     g_probe = nullptr;
     CHECK(status == 0);
+    CHECK(cancelled_at_once);
+    CHECK_FALSE(finished_at_once);
+    CHECK(released_at_once);  // Cancel (the thread ended) let go of the thread, the session and the objects
     CHECK(cancelled);
-    CHECK(finished);
-    CHECK(released);  // Cancel (the thread ended) let go of the thread and the session
+    CHECK(finished);  // the late Complete finished it
+    CHECK(released);
     CHECK_FALSE(client_resumed);
     CHECK(replied == 0);
     CHECK(client_words[0] == ipc::MakeHeader(0x0007, 0, 0));  // nothing was written for it
@@ -1377,13 +1434,26 @@ TEST_CASE("a client thread that ends while it waits for a deferred reply cancels
 namespace {
 
 // The worker of the two tests below: takes the deferred request out of the probe (so its copy is the only
-// one besides the kernel's), completes it, waits until the scheduler thread has delivered the reply and
-// the posted function is gone, and only then lets its copy go.
+// one besides the kernel's), completes it, and waits until the test has looked at what the request holds
+// (Check, which runs on the scheduler thread once the client has resumed: the thread that may read a
+// request) before it lets its copy go. It reads nothing but Finished() itself.
 struct LateDropper {
     std::atomic<bool> go{true};  // a test that has to do something first clears it and sets it later
     std::atomic<bool> finished_seen{false};
     std::atomic<bool> holds_nothing{false};
+    std::atomic<Request*> held{nullptr};  // the request the worker keeps until Check has run
+    std::atomic<bool> checked{false};
     std::thread thread;
+
+    // Scheduler thread, after the reply was delivered and the client woke: whether the request holds
+    // nothing of the kernel any more. Lets the worker drop its copy.
+    void Check() {
+        const Request* request = held.load();
+        holds_nothing = request != nullptr && request->Session() == nullptr &&
+                        request->IncomingObjects().empty() && request->ClientThreadPtr() == nullptr &&
+                        !request->HasReply();
+        checked = true;
+    }
 
     void Start(Probe& probe) {
         thread = std::thread([this, &probe] {
@@ -1400,6 +1470,7 @@ struct LateDropper {
             for (int i = 0; i < 30000 && !go; ++i) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(1));
             }
+            held = request.get();
             Reply answer(request->CommandId(), 1, 0);
             answer.Push(kResultSuccess);
             Complete(request, std::move(answer));
@@ -1407,10 +1478,11 @@ struct LateDropper {
                 std::this_thread::sleep_for(std::chrono::milliseconds(1));
             }
             finished_seen = request->Finished();
-            // the scheduler thread is done with its copy by now
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
-            holds_nothing = request->Session() == nullptr && request->IncomingObjects().empty() &&
-                            request->ClientThreadPtr() == nullptr && !request->HasReply();
+            // the scheduler thread looks at the request now; this copy goes after it did
+            for (int i = 0; i < 30000 && !checked; ++i) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+            held = nullptr;
             request.reset();
         });
     }
@@ -1445,6 +1517,7 @@ TEST_CASE("objects a client moved into a deferred request are released on the sc
         // ... and, once the request moved it, the request's own
         reply = g.Request(session, {ipc::MakeHeader(0x0007, 0, 2), ipc::MoveHandleDesc(1), sub}, 2);
         deaths_at_resume = probe.sub_deaths;
+        dropper.Check();
         send_moved_again = g.Send(sub);
         ExitProcess(*f.runtime);
     });
@@ -1493,6 +1566,7 @@ TEST_CASE("the session of a deferred request, closed by the client meanwhile, is
         scheduler.Start(closer);
         reply = g.Request(session, {ipc::MakeHeader(0x0007, 0, 0)}, 2);
         deaths_at_resume = probe.test_deaths;
+        dropper.Check();
         ExitProcess(*f.runtime);
     });
     dropper.go = true;
@@ -1561,6 +1635,7 @@ TEST_CASE("--trace-ipc writes every request with its reply in the format of "
     Probe probe;
     g_probe = &probe;
     u32 rw_address = 0;
+    Result translation_failed = 0;
     const std::vector<u8> static_bytes = {1, 2, 3, 4, 5, 6};
     const int status =
         BootWith(f, dir, {"--ms", "50", "--trace-ipc", path, "--trace-ipc-full"}, [&] {
@@ -1595,7 +1670,7 @@ TEST_CASE("--trace-ipc writes every request with its reply in the format of "
             g.Request(objects[3], {ipc::MakeHeader(0x0001, 0, 0)}, 3);
             // 8. a request that fails in translation (a handle the client does not have)
             g.Request(session, {ipc::MakeHeader(0x0002, 0, 2), ipc::CopyHandleDesc(1), 0x12345678},
-                      1);
+                      1, &translation_failed);
             (void)event;
             // 9. a request that never gets a reply: the run ends first
             g.Request(session, {ipc::MakeHeader(0x0007, 1, 0), 0x99}, 1);
@@ -1662,6 +1737,7 @@ TEST_CASE("--trace-ipc writes every request with its reply in the format of "
     // 7. a request through that session
     CHECK(requests[6].fields.at("cmd") == "0x00010000");
     // 8. a request that failed in translation has no contents
+    CHECK(translation_failed == kResultInvalidHandleInCommand);  // not 0xD8E007F7, which has no record
     CHECK(requests[7].fields.at("cmd") == "-");
     CHECK(requests[7].fields.at("in") == "-");
     CHECK(requests[7].fields.at("desc") == "-");
