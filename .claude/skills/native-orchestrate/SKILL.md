@@ -96,7 +96,7 @@ Never let two subagents write in the same worktree, and keep merging into the ba
 - **The reference runner** (once N0-03 exists), the newest run of `native` that still has the artifact:
   ```
   id=$(gh api 'repos/CompaLarios18/MH4UltimateDC/actions/artifacts?name=mh4u-runner-linux&per_page=50' \
-       --jq '[.artifacts[] | select(.expired | not) | select(.workflow_run.head_branch == "native")][0] | .workflow_run.id')
+       --jq '[.artifacts[] | select(.expired | not) | select(.workflow_run.head_repository_id == .workflow_run.repository_id) | select(.workflow_run.head_branch == "native")][0] | .workflow_run.id')
   [ -n "$id" ] && [ "$id" != null ] && gh run download "$id" -n mh4u-runner-linux -D /home/claude/mh4ultimatedc/build/runner \
     && tar -xzf /home/claude/mh4ultimatedc/build/runner/mh4u-runner-linux.tar.gz -C /home/claude/mh4ultimatedc/build/runner \
     || echo "no runner artifact on native"

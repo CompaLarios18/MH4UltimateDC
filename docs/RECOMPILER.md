@@ -24,11 +24,28 @@ python3 -m recomp.gametest --sample 2000 --cases 3 --report ../build/recomp/samp
    - every function knows its return address (LR at entry, or the caller's own when code runs into the next function without a call or tail-calls it), so a computed jump to it is a return (Thumb's `pop {r3}; bx r3`). Tail calls pass it on (`expect_next`), as LR can hold something else by then: the decoder's block routines are entered right after a `bl` and return by popping their caller's frame.
    New call targets are analysed too, until the set is closed.
 4. **Emission** (`recomp/emit.py`). One C function per guest function, `goto` for local control flow, `switch` for jump tables, a cycle charge per basic block (`RC_TICK`). Direct calls become direct C calls; anything else goes through `rc_call`.
-5. **Build** (`recomp/build.py`). Parallel, incremental clang build into a shared library (or object files for the port).
+5. **Build** (`recomp/build.py`). Parallel, incremental clang build into a shared library (or object files for the port). The same C builds for three runtimes (see the build modes below).
 
 ## Runtime contract (`tools/recomp/runtime/recomp.h`)
 
-Generated code only touches `RCtx` (core registers, split NZCVQ/GE flags, VFP registers and FPSCR, TLS registers, exclusive monitor, cycle budget) and guest memory. Memory is either one flat mapping (`ctx->mem + addr`, used by the tests) or, with `RC_PAGED`, a table of host pointers per 4 KiB page, as used by Azahar (`PageTable::pointers`), with `rc_slow_read`/`rc_slow_write` for pages that need special handling.
+Generated code only touches `RCtx` (core registers, split NZCVQ/GE flags, VFP registers and FPSCR, TLS registers, exclusive monitor, cycle budget) and guest memory. Memory is either one flat mapping (`ctx->mem + addr`, used by the tests and the native runtime) or, with `RC_PAGED`, a table of host pointers per 4 KiB page, as used by Azahar (`PageTable::pointers`), with `rc_slow_read`/`rc_slow_write` for pages that need special handling.
+
+### Build modes
+
+One compiler flag chooses the runtime a code library is for. The generated C is the same for all of them; only `recomp.h` (memory access, the yield point `RC_TICK` that every basic block runs) and `rc_dll.c` differ.
+
+| Mode | Flags (`python3 -m recomp.build <dir> --code-library ...`) | Guest memory | `RC_TICK(n)` | `rc_build_mode` |
+|---|---|---|---|---|
+| Azahar backend | `-D RC_PAGED` (the default for `--code-library`) | page table, `rc_slow_read`/`rc_slow_write` | `if ((ctx->budget -= n) < 0) rc_budget(ctx)` | 0 |
+| Native runtime | `--native` (`-D RC_NATIVE`) | flat | `if (*rc_preempt_flag) rc_budget(ctx)` | 1 |
+| Native, deterministic | `--native --deterministic` (`-D RC_NATIVE -D RC_NATIVE_DETERMINISTIC`) | flat | as the Azahar backend: cycles charged to `ctx->budget` | 2 |
+| Test harness | none (`--harness`); `--harness --native [--deterministic]` gives it the matching yield point of the native rows | flat | as the Azahar backend (or as the native row chosen) | - |
+
+- **Native, release (`RC_NATIVE`).** A yield point is one load and a branch: no cycle counting, `ctx->budget` is never touched. The host owns a `u32` flag and passes its address in `RHost.preempt_flag`; `rc_code_init` stores it in `rc_preempt_flag` (a `volatile u32 *`). When the host sets the flag, from any thread (a timer, the scheduler), the running guest code calls `rc_budget(ctx)` at its next block; `rc_budget` is the yield and the host clears the flag there. A host that passes `NULL` gets a flag that stays 0, so such a library never yields by itself.
+- **Native, deterministic (`RC_NATIVE_DETERMINISTIC`).** Flat memory with the cycle charging of the Azahar backend, so the guest's scheduling depends only on the instructions executed (same budget in `ctx->budget`, `rc_budget` when it runs out). The preemption flag is not looked at.
+- **`RC_NO_BUDGET`** (no yield points at all, used by the instruction fuzzer) is refused together with `RC_NATIVE`: a guest thread that spins would never give way on the native runtime's single host thread. `RC_PAGED` with `RC_NATIVE`, and `RC_NATIVE_DETERMINISTIC` without `RC_NATIVE`, are compile errors too.
+- **Which runtime a library is for.** `rc_dll.c` exports `const u32 rc_build_mode` (0, 1 or 2 as in the table), readable before `rc_code_init` is called, so a host can refuse another runtime's library with a clear message. The Azahar backend (`ARM_Recomp::LoadCode`) accepts only 0. A library from before `RC_HOST_VERSION` 5 has no `rc_build_mode`; `rc_code_init` refuses it.
+- **Names.** `build.py --code-library` writes `mh4u_code.so`, `mh4u_code_native.so` or `mh4u_code_native_det.so` (`.dll` for a mingw compiler) unless `-o` says otherwise. `tools/build_game.py --native [--deterministic]` builds the game's library the same way and names it `<program id>_native.<ext>` or `<program id>_native_det.<ext>`, next to the Azahar one (`<program id>.<ext>`), which `--install` still puts where Azahar looks.
 
 The host provides:
 
@@ -38,7 +55,9 @@ The host provides:
 | `rc_svc(ctx, imm, next_pc)` | `svc` (system calls) |
 | `rc_trap(ctx, addr, kind)` | undefined/unsupported instructions, bad jump-table indices, jumps into the middle of nowhere |
 | `rc_bad_return(ctx, got, expected)` | with `RC_CHECK_RETURNS`: a function returned somewhere other than its caller |
-| `rc_budget(ctx)` | the cycle budget ran out (yield point for the scheduler) |
+| `rc_budget(ctx)` | the cycle budget ran out, or (`RC_NATIVE`) the preemption flag was set: yield point for the scheduler |
+
+A code library gets these through `RHost` (`RC_HOST_VERSION` 5): `version`, `ctx_size`, then `call`, `svc`, `trap`, `bad_return`, `budget`, `slow_read`, `slow_write` (paged builds only; native hosts may pass `NULL`), and `preempt_flag` (`volatile u32 *`, `RC_NATIVE` builds only; `NULL` = never preempt). `rc_code_init` refuses a host whose `version` or `ctx_size` differs from the library's. The test harness (`harness/harness.c`, linked instead of `rc_dll.c`) defines `rc_preempt_flag` itself; `rh_set_preempt_flag(v)` sets it, and `rh_set_budget_resume(refill)` makes its `rc_budget` return after clearing the flag and adding `refill` to `ctx->budget`, as a host that yields and comes back (the default ends the call with a budget status).
 
 ### Hook points
 

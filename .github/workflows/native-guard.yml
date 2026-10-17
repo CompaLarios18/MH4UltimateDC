@@ -1,0 +1,53 @@
+name: native-guard
+
+on:
+  push:
+    branches: [native, "wp/**"]
+  pull_request:
+    branches: [native]
+
+# nothing here writes to the repository or uses a secret
+permissions:
+  contents: read
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false   # the token is not left in .git/config for the script below
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Refuse game data in the proposed commits
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          PUSH_AFTER: ${{ github.sha }}
+        run: |
+          set -eu
+          if [ "$EVENT" = "pull_request" ]; then
+            range="$PR_BASE...$PR_HEAD"
+          elif echo "$PUSH_BEFORE" | grep -Eq '^0+$' || ! git cat-file -e "$PUSH_BEFORE^{commit}" 2>/dev/null; then
+            # New branch, or a force push that dropped the old tip: compare with native.
+            git fetch --no-tags origin native:refs/remotes/origin/native || true
+            base=$(git merge-base origin/native "$PUSH_AFTER" 2>/dev/null || git rev-list --max-parents=0 "$PUSH_AFTER" | tail -n1)
+            range="$base..$PUSH_AFTER"
+          else
+            range="$PUSH_BEFORE..$PUSH_AFTER"
+          fi
+          echo "checking $range"
+          # On a PR the script is the base branch's own, so a PR cannot weaken the script that judges it
+          # (the checkout is the PR's merge commit). The allowlist config/native/large_files.txt is still
+          # the PR's (path + SHA-256 per entry): review changes to it. Until the base has the script,
+          # the PR's is used.
+          guard=tools/native/check_no_game_data.py
+          if [ "$EVENT" = "pull_request" ] && git cat-file -e "$PR_BASE:$guard" 2>/dev/null; then
+            git show "$PR_BASE:$guard" > "$RUNNER_TEMP/check_no_game_data.py"
+            guard="$RUNNER_TEMP/check_no_game_data.py"
+          fi
+          python3 "$guard" --repo . --range "$range"

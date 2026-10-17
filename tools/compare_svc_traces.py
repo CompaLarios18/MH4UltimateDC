@@ -7,54 +7,51 @@ calls, from the same places, with the same arguments. The first call that differ
 thread points at the code that ran between it and the previous (matching) call.
 
 usage: compare_svc_traces.py reference.txt candidate.txt [--context 3] [--ignore-args]
-Trace lines: "<thread> <svc> pc=<hex> lr=<hex> <r0> <r1> <r2> <r3> t=<ticks>".
+                             [--normalize] [--outputs] [--in4] [--prefix]
+Trace lines: "<thread> <svc> pc=<hex> lr=<hex> <r0> <r1> <r2> <r3> t=<ticks>", and since N0-04
+"in4=<r4>,<r5>,<r6> out=<r0>,<r1>,<r2>,<r3>" after that, `# thread` lines and a header
+(tools/native/tracefmt.py describes the format). Traces in the old format still compare.
+  --normalize  rename threads (to their entry point and creation order) and handles (to their
+               kind and creation order) and drop times first, so that two runtimes whose ids
+               and handle values differ can be compared
+  --outputs    also compare the results (out=): r0 always, r1-r3 except handles (normalised
+               with --normalize) and time; a call with no out= in either trace isn't compared
+  --in4        also compare r4-r6 as the call was made (timeouts and the like)
 Exit status 0 when every thread matches (up to the shorter trace if --prefix is given).
 """
 from __future__ import annotations
 
 import argparse
+import os
 import sys
-from dataclasses import dataclass
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "native"))
+import tracefmt  # noqa: E402
+
+Call = tracefmt.Call
 
 
-@dataclass(frozen=True)
-class Call:
-    svc: str
-    pc: str
-    lr: str
-    args: tuple[str, ...]
-    ticks: int
-    line: int
-
-    def key(self, with_args: bool) -> tuple:
-        return (self.svc, self.pc, self.lr, self.args if with_args else ())
-
-    def __str__(self) -> str:
-        return f"svc {self.svc} pc={self.pc} lr={self.lr} {' '.join(self.args)} (line {self.line}, t={self.ticks})"
+def parse(path: str, normalize: bool = False) -> dict[str, list[Call]]:
+    trace = tracefmt.parse(path)
+    if normalize:
+        trace = tracefmt.normalise(trace)
+    return trace.by_thread()
 
 
-def parse(path: str) -> dict[str, list[Call]]:
-    threads: dict[str, list[Call]] = {}
-    with open(path) as f:
-        for n, line in enumerate(f, 1):
-            parts = line.split()
-            if len(parts) < 9:
-                continue
-            tid, svc, pc, lr = parts[0], parts[1], parts[2][3:], parts[3][3:]
-            ticks = int(parts[8][2:]) if parts[8].startswith("t=") else 0
-            threads.setdefault(tid, []).append(Call(svc, pc, lr, tuple(parts[4:8]), ticks, n))
-    return threads
+def _thread_order(tid: str) -> tuple:
+    plain = tid.isascii() and tid.isdigit() and len(tid) <= 18
+    return (0, int(tid), "") if plain else (1, 0, tid)
 
 
 def compare(ref: dict[str, list[Call]], cand: dict[str, list[Call]], with_args: bool = True,
-            prefix: bool = False) -> list[dict]:
+            prefix: bool = False, with_outputs: bool = False, with_in4: bool = False) -> list[dict]:
     """One report per thread that differs: thread, index of the first difference, the two
     calls (None past the end of a trace)."""
     out = []
-    for tid in sorted(set(ref) | set(cand), key=lambda t: int(t) if t.isdigit() else 0):
+    for tid in sorted(set(ref) | set(cand), key=_thread_order):
         a, b = ref.get(tid, []), cand.get(tid, [])
         n = min(len(a), len(b))
-        first = next((i for i in range(n) if a[i].key(with_args) != b[i].key(with_args)), None)
+        first = next((i for i in range(n) if not a[i].matches(b[i], with_args, with_outputs, with_in4)), None)
         if first is None and (len(a) == len(b) or prefix):
             continue
         if first is None:
@@ -71,10 +68,13 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--context", type=int, default=3, help="matching calls to show before a difference")
     ap.add_argument("--ignore-args", action="store_true", help="compare only svc, pc and lr")
     ap.add_argument("--prefix", action="store_true", help="a thread may stop earlier in one trace")
+    ap.add_argument("--normalize", action="store_true", help="rename threads and handles, drop times")
+    ap.add_argument("--outputs", action="store_true", help="also compare the results (out=)")
+    ap.add_argument("--in4", action="store_true", help="also compare r4-r6 as the call was made")
     args = ap.parse_args(argv)
-    ref, cand = parse(args.reference), parse(args.candidate)
-    diffs = compare(ref, cand, not args.ignore_args, args.prefix)
-    for tid in sorted(set(ref) | set(cand), key=lambda t: int(t) if t.isdigit() else 0):
+    ref, cand = parse(args.reference, args.normalize), parse(args.candidate, args.normalize)
+    diffs = compare(ref, cand, not args.ignore_args, args.prefix, args.outputs, args.in4)
+    for tid in sorted(set(ref) | set(cand), key=_thread_order):
         print(f"thread {tid}: {len(ref.get(tid, []))} vs {len(cand.get(tid, []))} calls")
     for d in diffs:
         i, a = d["index"], ref.get(d["thread"], [])

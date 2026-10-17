@@ -6,18 +6,6 @@
  * (columns 0-199) red and the right half blue. Built by port/tests/build_svc_test.py. */
 #include "svc.h"
 
-NAKED s32 svcConnectToPort(Handle *out, const char *name) {
-    __asm__ volatile("str r0, [sp, #-4]!\n svc 0x2D\n ldr r2, [sp], #4\n str r1, [r2]\n bx lr");
-}
-NAKED s32 svcSendSyncRequest(Handle h) { __asm__ volatile("svc 0x32\n bx lr"); }
-NAKED s32 svcMapMemoryBlock(Handle mem, u32 addr, u32 perm, u32 other_perm) { __asm__ volatile("svc 0x1F\n bx lr"); }
-
-static u32 *cmdbuf(void) {
-    u32 *tls;
-    __asm__ volatile("mrc p15, 0, %0, c13, c0, 3" : "=r"(tls));
-    return tls + 0x80 / 4;
-}
-
 static Handle srv;
 
 static s32 srv_init(void) {

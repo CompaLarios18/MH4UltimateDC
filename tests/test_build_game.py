@@ -288,3 +288,63 @@ def test_build_game_recompiles_a_code_cave(tmp_path, capsys):
     assert {p.name: p.read_text() for p in src.iterdir()} == plain
     record = json.loads((install / "recomp" / f"{mods.PROGRAM_ID:016X}.build.json").read_text())
     assert record["code_size"] == text_size
+
+
+def synthetic_dump(tmp_path):
+    """A tiny synthetic CXI (two ARM functions) and its function list; returns both paths."""
+    import make_cxi
+    text = struct.pack("<4I", 0xE3A0002A, 0xE12FFF1E, 0xE0800001, 0xE12FFF1E).ljust(0x1000, b"\0")
+    rodata, data = bytes(0x1000), bytes(0x1000)
+    exheader = bytearray(0x800)
+    exheader[0:8] = b"SYNTH\0\0\0"
+    struct.pack_into("<III", exheader, 0x10, 0x00100000, 1, len(text))
+    struct.pack_into("<III", exheader, 0x20, 0x00101000, 1, len(rodata))
+    struct.pack_into("<III", exheader, 0x30, 0x00102000, 1, len(data))
+    struct.pack_into("<Q", exheader, 0x200, 0x0004000000ABCD00)
+    cxi = tmp_path / "synthetic.cxi"
+    cxi.write_bytes(make_cxi.make_cxi(bytes(exheader), fake_exefs(text + rodata + data)))
+    functions = tmp_path / "functions.tsv"
+    functions.write_text("address\tsize\tmode\tkind\tname\tstatus\towner\tnotes\n"
+                         "0x00100000\t0x8\tarm\tunknown\t\ttodo\t\t\n0x00100008\t0x8\tarm\tunknown\t\ttodo\t\t\n")
+    return cxi, functions
+
+
+def test_library_names_for_the_native_runtime():
+    import build_game
+    pid = 0x0004000000ABCD00
+    plain, native, det = (build_game.library_name(pid, *a) for a in ((False, False), (True, False), (True, True)))
+    stem, ext = plain.split(".")
+    assert stem == f"{pid:016X}" and native == f"{stem}_native.{ext}" and det == f"{stem}_native_det.{ext}"
+    assert build_game.library_name(pid) == plain
+
+
+@pytest.mark.skipif(sys.platform.startswith("win"), reason="loads the library with ctypes")
+def test_build_game_native_and_deterministic(tmp_path):
+    """--native builds the library for the native runtime, --native --deterministic the
+    cycle-charging variant, each under its own name and beside the Azahar one; the library
+    says which runtime it is for (rc_build_mode: 0 Azahar, 1 native, 2 deterministic)."""
+    import ctypes
+    import build_game
+    cxi, functions = synthetic_dump(tmp_path)
+    install = tmp_path / "azahar-user"
+    out = tmp_path / "out"
+    args = ["--dump", str(cxi), "--out", str(out), "--opt", "O0", "--any-version", "--functions", str(functions),
+            "--extra", "", "--hooks", "", "--install", str(install), "-j", "2"]
+    pid = 0x0004000000ABCD00
+    for flags, native, det, mode in (([], False, False, 0), (["--native"], True, False, 1),
+                                     (["--native", "--deterministic"], True, True, 2)):
+        assert build_game.main(args + flags) == 0
+        lib = install / "recomp" / build_game.library_name(pid, native, det)
+        assert lib.exists(), lib
+        assert ctypes.c_uint32.in_dll(ctypes.CDLL(str(lib)), "rc_build_mode").value == mode
+    assert sorted(p.name for p in (install / "recomp").iterdir() if not p.name.endswith(".json")) == \
+        sorted(build_game.library_name(pid, n, d) for n, d in ((False, False), (True, False), (True, True)))
+
+
+def test_build_game_deterministic_needs_native(tmp_path):
+    import build_game
+    cxi, functions = synthetic_dump(tmp_path)
+    with pytest.raises(SystemExit) as e:
+        build_game.main(["--dump", str(cxi), "--out", str(tmp_path / "out"), "--any-version", "--deterministic"])
+    assert "--native" in str(e.value)
+    assert not (tmp_path / "out").exists()                # refused before extracting anything

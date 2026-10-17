@@ -1,0 +1,233 @@
+name: Native CI
+
+# CI of the native-port branch (docs/native/CI.md). Every push to `native` and to a `wp/`
+# branch runs the Python tests; the reference runner (Azahar at port/azahar/COMMIT with the
+# port's patch, the port's CPU backend, no Qt, software renderer) is built when port/, tools/,
+# config/ or this file changed, and published as the artifact `mh4u-runner-linux` that cloud
+# sessions download. No step here uses game data.
+
+on:
+  push:
+    branches: [native, "wp/**"]
+  pull_request:
+    branches: [native]
+  workflow_dispatch:
+
+# nothing here writes to the repository or uses a secret
+permissions:
+  contents: read
+
+concurrency:
+  # a newer push to a wp/ branch or a PR replaces the older run; runs on native are kept
+  group: native-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/native' }}
+
+jobs:
+  # Same steps as ci.yml's `tools`. PRs get ci.yml's own run, so this one is for pushes (and
+  # for a manual dispatch).
+  tools:
+    if: ${{ github.event_name != 'pull_request' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: ARM cross toolchain for difftest
+        run: sudo apt-get update && sudo apt-get install -y clang lld llvm
+      - run: pip install -r requirements.txt
+      - run: python -m pytest -q
+      - name: Refuse committed game data
+        run: |
+          if git ls-files | grep -Ei '\.(3ds|cci|cia|cxi|cfa|arc|sav)$|(^|/)(code|exheader|romfs|exefs)\.bin$|^baserom/'; then
+            echo "::error::Game data must never be committed (see docs/LEGAL.md)"; exit 1
+          fi
+
+  # The native port (native/): configure with the one configure line of docs/native/wp/N1.md,
+  # build, run the unit tests, and check that nothing in native/ uses Azahar. No game data and
+  # no Azahar build, so it runs on every push and PR.
+  native:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Toolchain and Vulkan packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang lld llvm cmake ninja-build \
+            libvulkan-dev mesa-vulkan-drivers glslang-tools spirv-tools
+      # building the ARM test programs uses tools/difftest.py
+      - run: pip install -r requirements.txt
+      - name: Configure
+        run: |
+          cmake -S native -B build/native -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo -DMH4N_WERROR=ON
+      - name: Build
+        run: cmake --build build/native
+      - name: Test
+        env:
+          MH4N_REQUIRE_TEST_DATA: "1"   # a test that needs the built ARM programs fails instead of skipping
+        run: ctest --test-dir build/native --output-on-failure
+      - name: native/ does not use Azahar
+        run: python3 tools/native/check_native_deps.py
+
+  # Decides whether the runner has to be built.
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      runner: ${{ steps.decide.outputs.runner }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Did port/, tools/, config/ or this workflow change?
+        id: decide
+        env:
+          EVENT: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          BEFORE: ${{ github.event.before }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -u
+          paths=(port tools config .github/workflows/native.yml)
+          range=""
+          case "$EVENT" in
+            workflow_dispatch)
+              echo "dispatch: build"
+              echo "runner=true" >> "$GITHUB_OUTPUT"; exit 0 ;;
+            pull_request)
+              range="$PR_BASE...$PR_HEAD" ;;
+            push)
+              case "$REF_NAME" in
+                wp/*)
+                  # the files changed since the merge base with native
+                  git fetch --no-tags origin native:refs/remotes/origin/native
+                  range="$(git merge-base origin/native HEAD)..HEAD" ;;
+                *)
+                  # the pushed commits; a new branch or a forced push has no usable "before"
+                  if [ "$BEFORE" != "0000000000000000000000000000000000000000" ] \
+                     && git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+                    range="$BEFORE..HEAD"
+                  fi ;;
+              esac ;;
+          esac
+          if [ -z "$range" ]; then
+            echo "no usable range for this push: build"
+            echo "runner=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          echo "range: $range"
+          changed="$(git diff --name-only "$range" -- "${paths[@]}")"
+          if [ -n "$changed" ]; then
+            echo "changed:"; echo "$changed"
+            echo "runner=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "nothing relevant changed: no runner build"
+            echo "runner=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  runner:
+    needs: changes
+    if: ${{ needs.changes.outputs.runner == 'true' }}
+    runs-on: ubuntu-latest
+    # the image linux.yml builds Azahar in
+    container:
+      image: opensauce04/azahar-build-environment:latest
+      options: -u 1001
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_COMPILERCHECK: content
+      CCACHE_SLOPPINESS: time_macros
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: mh4u
+          persist-credentials: false
+      - name: Azahar at the pinned commit, with the port's patch
+        run: |
+          git clone https://github.com/azahar-emu/azahar.git azahar
+          cd azahar
+          git checkout "$(cat ../mh4u/port/azahar/COMMIT)"
+          git submodule update --init --recursive --depth 1
+          git apply ../mh4u/port/azahar/azahar.patch
+      - name: Compiler cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: native-runner-${{ hashFiles('mh4u/port/azahar/COMMIT', 'mh4u/port/azahar/azahar.patch') }}-${{ github.sha }}
+          restore-keys: native-runner-${{ hashFiles('mh4u/port/azahar/COMMIT', 'mh4u/port/azahar/azahar.patch') }}-
+      - name: Build mh4u_runner
+        run: |
+          # the flags of port/README.md's Linux runner build; ENABLE_* stay off (a longer
+          # build otherwise)
+          cmake -S azahar -B azahar/build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
+            -DENABLE_QT=OFF -DENABLE_TESTS=OFF -DENABLE_ROOM=OFF -DENABLE_WEB_SERVICE=OFF \
+            -DENABLE_SCRIPTING=OFF -DENABLE_CUBEB=OFF -DENABLE_OPENAL=OFF -DENABLE_LIBUSB=OFF \
+            -DENABLE_VULKAN=OFF -DENABLE_OPENGL=OFF -DENABLE_SDL2=OFF \
+            -DCITRA_WARNINGS_AS_ERRORS=OFF \
+            -DMH4U_PORT_DIR="${GITHUB_WORKSPACE}/mh4u/port"
+          cmake --build azahar/build --target mh4u_runner
+          ccache -s
+      - name: Package the runner
+        run: |
+          set -eu
+          bin="$(find azahar/build -type f -name mh4u_runner -perm -u+x | head -n 1)"
+          [ -n "$bin" ] || { echo "::error::mh4u_runner was not built"; exit 1; }
+          pkg=runner-pkg
+          mkdir -p "$pkg/lib" out
+          cp "$bin" "$pkg/mh4u_runner"
+          strip -s "$pkg/mh4u_runner"
+          ldd "$pkg/mh4u_runner" > ldd.txt
+          cat ldd.txt
+          if grep -q "not found" ldd.txt; then
+            echo "::error::mh4u_runner has libraries that ldd cannot find"; exit 1
+          fi
+          # every library ldd resolves, except the C library's own (the host provides those)
+          awk '/=> \//{print $3}' ldd.txt | while read -r lib; do
+            case "$(basename "$lib")" in
+              ld-linux*|libc.so*|libm.so*|libpthread.so*|libdl.so*|librt.so*|libutil.so*|libresolv.so*) ;;
+              *) cp -L "$lib" "$pkg/lib/" ;;
+            esac
+          done
+          cat > "$pkg/run.sh" <<'RUN'
+          #!/bin/sh
+          # mh4u_runner with the libraries that came with it
+          here="$(cd "$(dirname "$0")" && pwd)"
+          LD_LIBRARY_PATH="$here/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" exec "$here/mh4u_runner" "$@"
+          RUN
+          chmod +x "$pkg/run.sh" "$pkg/mh4u_runner"
+          ls -l "$pkg" "$pkg/lib"
+          tar -czf out/mh4u-runner-linux.tar.gz -C "$pkg" .
+      - name: The runner starts from the package
+        run: |
+          set -u
+          rm -rf unpacked && mkdir unpacked
+          tar -xzf out/mh4u-runner-linux.tar.gz -C unpacked
+          # no game given: it prints its usage
+          usage="$(unpacked/run.sh --help 2>&1 || true)"
+          echo "$usage"
+          case "$usage" in
+            *"usage: mh4u_runner"*) ;;
+            *) echo "::error::run.sh --help didn't print the runner's usage"; exit 1 ;;
+          esac
+      # not on pull requests: the recipes of CI.md pick a runner by branch name, and a fork's
+      # pull request can carry any branch name
+      - name: Upload
+        if: ${{ github.event_name != 'pull_request' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: mh4u-runner-linux
+          path: out/mh4u-runner-linux.tar.gz
+          retention-days: 30
+          if-no-files-found: error

@@ -8,12 +8,13 @@ The PC port: [Azahar](https://github.com/azahar-emu/azahar)'s 3DS core (kernel, 
 | `src/fiber.*` | Host fibers (ucontext on Linux/macOS, Win32 fibers on Windows) |
 | `src/frontend.*` | `Port::PrepareBackendFor()`: called by a frontend before loading a game; installs the recompiled backend when there is a code library for that game and the code Azahar is about to load (the installed update's, with the code mods in its mods folder) is the code the library was recompiled from; otherwise Azahar's own CPU emulation runs the game at its usual speed (the interpreter the recompiled code falls back to would be far too slow). `Port::BackendNotice()` then tells the player why MH4U runs without the port, or that the library lacks some hook points, and how to build it; Azahar's Qt frontend calls both when built with this directory and shows the notice in a message box (see `azahar/azahar.patch`); its *Tools → MH4U Port Options...* opens `Port::OptionsPath()`, made from `Port::OptionsTemplate()` when missing, and its hotkey *MH4U Quest Map On/Off* (F12) calls `Port::ToggleQuestMap()` |
 | `src/runner.cpp` | `mh4u_runner`: boots a 3DS executable with no window, with the recompiled code (`--cpu recomp --code LIB`) or Azahar's own JIT/interpreter; can install a CIA first, play an input script and save screenshots; for tests and for comparing backends |
+| `src/schedule.cpp`, `src/schedule.h` | the runner's script parsers (times, `--input` events, scheduled options); standard library only, shared with the native runner |
 | `src/hooks.cpp` | The port's hooks on game functions (hook points from `config/hooks.txt`) and its options (`mh4u.ini`): frame rate, widescreen, HUD, touch screen, fixes, traces |
 | `app/` | The port's own app, `mh4u` (SDL2): opens the game directly in a window of its own on Azahar's core, with the recompiled code and the hooks, Vulkan/OpenGL/software renderers, keyboard and controller at once, the touch overlay, rooms from its settings (`mh4u-app.ini`), an in-game menu and the 3DS software keyboard drawn with Dear ImGui (`app/ui/`, vendored in `app/third_party/imgui/`); built with this directory when Azahar has SDL2 (`MH4U_APP`) |
 | `src/netsync.*` | Net sync: the port's consoles in a network room keep their emulated clocks together, so that one whose PC stalls isn't dropped |
 | `windows/` | For the Windows package: `Build code library.bat` and `build-code-library.ps1`, which build the game's code library from the player's update with the tools the package carries in `mh4u-tools`, then install the update in Azahar with `mh4u_runner --install` |
 | `unix/` | For the Linux and macOS packages: `build-code-library.sh` (`Build code library.command` in the Mac package), the same build with a file dialog (zenity, kdialog or the Mac's own) |
-| `tests/svc_test.c` | Freestanding 3DS test program (threads, events, mutexes, atomics, VFP short vectors, Thumb) |
+| `tests/` | The freestanding 3DS test programs (no game code): `conf_*.c`, the kernel conformance programs, each with Azahar's expected output in `tests/expected/`; `svc.h`, the system-call wrappers and helpers they all share (`io_test.c` and `bench.c` include it too, so a change there must keep every program compiling); `build_svc_test.py`, which builds any program by name (`--program NAME`, `--list`); `io_test.c` (HID input and a known picture in the top framebuffer, for the runner's `--input` and `--shots`); `bench.c`; `svc_test.c` (threads, events, mutexes, atomics, VFP short vectors, Thumb); `codehost_test.c` (the native code host's test program, built by `native/src/cpu/CMakeLists.txt`) |
 | `azahar/` | The Azahar commit this builds against, and a small patch: a hook to replace the CPU backend, a hook to build this directory inside Azahar's tree, hooks for the port's options (refresh rate, system-call observer, the top screen's width in every screen layout, the custom layout as a touch-screen overlay that follows the window's size and can show just a part of the touch screen), a switch for the headless runner to skip drawing (vertex shaders included), a fix to Azahar's local-wireless emulation (two consoles joining a network at the same moment got the same node id, and the game dropped one), a hook at the start of each run of the emulation loop (for net sync), a frontend's own drawing over the Vulkan renderer's screens (the app's menu; none unless one is registered), *Create Room* offering an unlisted room when there is no lobby server (Azahar has none of its own, and a public room then fails to start), a room's host rights only for the host's checked name or the host's own client on the same machine (a nickname alone is anyone's to type, and a lobby shows a dedicated room's name as its owner), LayeredFS reading `romfs_ext/`'s sub-folders (MH4U's archives are in `data/` and `eng/data/`), and two fixes to Azahar's software renderer that the game needs: a data race on physical-memory lookups between the renderer's worker threads and the emulation thread (it sent texture reads gigabytes off and crashed both CPU backends on the game's first textured frame), and textures outside of memory read as black instead of crashing |
 
 The runner contains no game code. The game's recompiled code is a separate shared library, generated and compiled on the user's machine from their own dump and loaded at run time.
@@ -39,6 +40,9 @@ cd ../MH4UltimateDC
 
 # Check the backend against Azahar's JIT with the test program (no game data needed)
 MH4U_RUNNER=../azahar/build/bin/Release/mh4u_runner python3 -m pytest tests/test_port.py
+
+# The same runner also runs the kernel conformance programs and the port's runner tests
+MH4U_RUNNER=../azahar/build/bin/Release/mh4u_runner python3 -m pytest tests/test_conformance.py tests/test_port.py
 ```
 
 ## Running the game's code
@@ -68,9 +72,76 @@ from its virtual SD card), the runner can also drive it without a window:
     --shots build/run/shots --shot-every 1000 --input "20000:A,25000:START:200,30000:TOUCH:160:120"
 ```
 
+`--new-3ds on|off` (default `off`) sets Azahar's New 3DS mode before the game loads; the
+reference runs are Old 3DS runs, because the mode changes the cores, the FCRAM size and what
+the cfg, ptm and APT services answer.
+
+`--state-trace FILE [--observable FILE]` writes the game's observable state: after the header
+(`# statetrace v1 <date> game=<title id> cpu=<cpu> new3ds=<on|off>`), a line
+`f=<frame> t=<ticks> <name>=<0x value | ->` whenever the game's frame counter (`0x010571d4`)
+changes, with the values listed in `config/native/observable.txt` (the default, relative to the
+current directory; an address or a pointer chain such as `[[0x0104dea0]+0x30]`, a size, a name
+and `eq` or `ignore`; `-` is a null pointer in the chain or unreadable memory). The values are
+read page by page after checking that the pages are mapped, so the trace adds no unmapped
+accesses and writes nothing. `tools/native/state_diff.py reference candidate [--tolerance N]
+[--order-only]` aligns two traces on their scene changes and exits 0 if each happens within N
+frames (default 2) of its counterpart with equal `eq` values (`--order-only`: only the order of
+the scenes). `--count-unmapped FILE` counts the accesses to unmapped memory that Azahar logs as
+`unmapped ...` (scalar reads and writes, and block reads and writes by pages) and writes
+`count=<n> addr=<hex> size=<n> rw=<read|write> lr=<hex>` lines, the most frequent first, at the
+end of the run; the LR is the CPU's `r14` at the access (with `--cpu recomp`, the recompiled
+code's context, which a leaf function does not update).
+
 `--trace-svc FILE` writes every system call with its thread, caller and arguments; the
 same run on `--cpu jit` gives the reference, and the first difference per thread points at
-the recompiled function that went wrong (`tools/compare_svc_traces.py jit.txt recomp.txt`). `--input` presses buttons, touches the bottom screen (pixels) or moves the circle pad
+the recompiled function that went wrong (`tools/compare_svc_traces.py jit.txt recomp.txt`).
+A line is `<thread> <svc> pc=<hex> lr=<hex> <r0> <r1> <r2> <r3> t=<ticks> in4=<r4>,<r5>,<r6>
+out=<r0>,<r1>,<r2>,<r3>` (8 uppercase hex digits, no `0x`): `in4=` is r4 to r6 as the call was
+made (timeouts and permissions live there for some calls), `out=` is r0 to r3 when the call
+completed for its thread, which for a call that blocks it (a wait, a sleep, a request with a
+deferred reply) is when the thread next ran, so its line can come after other threads' later
+calls; within a thread the lines stay in the order of the calls. `out=-` marks a call that was
+still blocked when the run ended. The first line is a header
+(`# svctrace v1 <date> game=<title id> cpu=<jit|recomp|interp> new3ds=<on|off>`) and every
+thread gets a line when it is created
+(`# thread <id> parent=<id> entry=<hex> arg=<hex> stack=<hex> prio=<n> core=<requested>/<resolved>`;
+the main thread has `parent=0`). To compare two runtimes whose thread ids and handle values
+differ, add `--normalize` (threads become `main` or `<entry>#<k>`, handles `<kind>#<k>`, times
+are dropped) and `--outputs` (compare the results too); `tools/native/tracefmt.py` describes
+the rules.
+
+`--trace-ipc FILE [--trace-ipc-full]` writes every IPC request with its reply, using Azahar's own
+IPC recorder (`Kernel().GetIPCRecorder()`; no patch is needed). A line, written when the reply
+is recorded (so a service that answers later comes after the lines of requests that other
+threads sent in between), is `<thread> seq=<n> session=<name> cmd=<header> in=<words> desc=<...>
+out=<words> outdesc=<...> t=<ticks>`: `seq` numbers the requests in the order they were sent,
+`session` is the service's port name (`fs:USER`) or, for a session a reply handed out,
+`<service>/<kind>#<k>` (`fs:USER/file#3`; never the file's name), `in` is every word of the
+command as the client wrote it and `out` every word of the reply as the client reads it (its
+second word is the result), `desc` and `outdesc` list `<kind>:<index>:<size>:<token>` for the
+static buffers (CRC-32 of the bytes), the mapped buffers (`mapped-r|w|rw`; the CRC-32 of those
+the service may read in `desc`, and of those it may write, after the reply, in `outdesc`) and
+the handles (`copy`/`move`, with the names of the handles). The header and the `# thread` lines
+are those of `--trace-svc` (`# ipctrace v1 ...`); the words are `0x` and 8 lowercase digits, not
+--trace-svc's bare uppercase hex. `--trace-ipc-full` adds
+`data=<index>:<hex>` with the bytes of every input buffer, for the replay harness (N1-11). A
+request that never got a reply ends with `out=-`. The file holds game data (file names, save
+bytes): keep it in `build/` and never paste lines from it. `tools/compare_ipc_traces.py ref
+cand [--strict] [--ignore FILE]... [--prefix] [--context N]` compares two traces thread by thread
+after the normalisation of `tools/native/tracefmt.py` (which also names the handles of an
+SVC trace that came in IPC replies: `tracefmt.py svc.txt --ipc ipc.txt`), and prints only
+session names, headers, result codes, descriptor indices, sizes, CRCs and counts. Limits: for a
+session served by the game itself (not by an HLE service) the output CRCs are `-`, because
+Azahar records its reply before it writes the buffers.
+
+Every time in a script is emulated milliseconds or a game frame: `f600` is the first moment the
+frame counter (the u32 at `0x010571d4`) reads 600 or more, so a script means the same on every CPU backend and
+runtime (`--input "f600:START,f900:A:f3"`; a hold may be `f<N>` frames, default 100 ms; `--dump`, `--replace`,
+`--set`, `--freeze`, `--call-counts`, `--shots-from` and `--ms` take the same). `--frames N` (or `--ms f<N>`) stops the
+run at frame N, exit status 0, with no time limit unless `--ms` is also given. `--input-file PATH` reads
+one event per line, `#` comments allowed, and `--print-schedule` prints the parsed schedule and exits (no game
+needed). Keep the default of reading files in place: with `--async-io` frame numbers vary between runs.
+`--input` presses buttons, touches the bottom screen (pixels) or moves the circle pad
 (-1..1) at emulated times; `--shots` saves both screens as PPM images, and
 `--draw-window 100` draws only the 100 ms before each screenshot, which makes long runs
 many times faster (the software renderer, and the vertex shaders the GPU runs on the CPU, take

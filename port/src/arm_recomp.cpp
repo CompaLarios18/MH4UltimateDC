@@ -146,8 +146,19 @@ bool ARM_Recomp::LoadCode(const std::string& path, std::string& error) {
         error = fmt::format("{} is not a recompiled code library", path);
         return false;
     }
+    // A library built for the native runtime (RC_NATIVE: flat memory, a preemption flag
+    // instead of cycle charging) can't run on Azahar's page table. Libraries from before
+    // rc_build_mode existed are refused by rc_code_init below (their host version is older).
+    if (const auto* mode = library->GetSymbol<const u32*>("rc_build_mode"); mode && *mode != 0) {
+        error = fmt::format("{} was built for the native runtime (rc_build_mode {}: {}); "
+                            "build the library for Azahar without --native",
+                            path, *mode, *mode == 2 ? "RC_NATIVE_DETERMINISTIC" : "RC_NATIVE");
+        return false;
+    }
+    // preempt_flag is only read by RC_NATIVE builds, which are refused above.
     static const RHost host{RC_HOST_VERSION, sizeof(RCtx), rc_call, rc_svc, rc_trap,
-                            rc_bad_return, rc_budget, rc_slow_read, rc_slow_write};
+                            rc_bad_return, rc_budget, rc_slow_read, rc_slow_write,
+                            /*preempt_flag=*/nullptr};
     RCodeInfo info{};
     if (!init(&host, &info)) {
         error = fmt::format("{} was built against a different runtime (recomp.h)", path);

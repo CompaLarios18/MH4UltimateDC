@@ -781,10 +781,10 @@ index 0000000..e9418e0
 +
 +} // namespace Layout
 diff --git a/src/core/hle/kernel/svc.cpp b/src/core/hle/kernel/svc.cpp
-index 87b2c5e..5ae478e 100644
+index 87b2c5e..e41a34e 100644
 --- a/src/core/hle/kernel/svc.cpp
 +++ b/src/core/hle/kernel/svc.cpp
-@@ -2436,8 +2436,17 @@ const SVC::FunctionDef* SVC::GetSVCInfo(u32 func_num) {
+@@ -2436,8 +2436,23 @@ const SVC::FunctionDef* SVC::GetSVCInfo(u32 func_num) {
  
  MICROPROFILE_DEFINE(Kernel_SVC, "Kernel", "SVC", MP_RGB(70, 200, 70));
  
@@ -792,6 +792,12 @@ index 87b2c5e..5ae478e 100644
 +
 +void SetSVCObserver(SVCObserver observer) {
 +    svc_observer = observer;
++}
++
++static SVCObserver svc_post_observer = nullptr;
++
++void SetSVCPostObserver(SVCObserver observer) {
++    svc_post_observer = observer;
 +}
 +
  void SVC::CallSVC(u32 immediate) {
@@ -802,11 +808,21 @@ index 87b2c5e..5ae478e 100644
      system.perf_stats->BeginSVCProcessing();
  
      // Lock the kernel mutex when we enter the kernel HLE.
+@@ -2456,6 +2471,9 @@ void SVC::CallSVC(u32 immediate) {
+             LOG_ERROR(Kernel_SVC, "unimplemented SVC function {:02X} {}(..)", info->id, info->name);
+         }
+     }
++    if (svc_post_observer) {
++        svc_post_observer(system, immediate);
++    }
+     system.perf_stats->EndSVCProcessing();
+ }
+ 
 diff --git a/src/core/hle/kernel/svc.h b/src/core/hle/kernel/svc.h
-index d26f80e..f7806e7 100644
+index d26f80e..ba78825 100644
 --- a/src/core/hle/kernel/svc.h
 +++ b/src/core/hle/kernel/svc.h
-@@ -29,6 +29,11 @@ private:
+@@ -29,6 +29,17 @@ private:
  class SVC_SyncCallback;
  class SVC_IPCCallback;
  
@@ -815,9 +831,60 @@ index d26f80e..f7806e7 100644
 +using SVCObserver = void (*)(Core::System& system, u32 immediate);
 +void SetSVCObserver(SVCObserver observer);
 +
++/// Optional observer called after a system call's handler ran, with the same arguments. The
++/// calling CPU's registers hold the results, except for a call that blocks the thread: Azahar
++/// writes its real result into the thread's saved registers when it wakes the thread up, and
++/// SetThreadResumeObserver (thread.h) sees it.
++void SetSVCPostObserver(SVCObserver observer);
++
  } // namespace Kernel
  
  BOOST_CLASS_EXPORT_KEY(Kernel::SVC_SyncCallback)
+diff --git a/src/core/hle/kernel/thread.cpp b/src/core/hle/kernel/thread.cpp
+index c35b166..039114e 100644
+--- a/src/core/hle/kernel/thread.cpp
++++ b/src/core/hle/kernel/thread.cpp
+@@ -34,6 +34,12 @@ SERIALIZE_EXPORT_IMPL(Kernel::WakeupCallback)
+ 
+ namespace Kernel {
+ 
++static ThreadResumeObserver thread_resume_observer = nullptr;
++
++void SetThreadResumeObserver(ThreadResumeObserver observer) {
++    thread_resume_observer = observer;
++}
++
+ template <class Archive>
+ void ThreadManager::serialize(Archive& ar, const unsigned int) {
+     ar & current_thread;
+@@ -191,6 +197,10 @@ void ThreadManager::SwitchContext(Thread* new_thread) {
+ 
+         cpu->LoadContext(new_thread->context);
+         cpu->SetCP15Register(CP15_THREAD_URO, new_thread->GetTLSAddress());
++        if (thread_resume_observer) {
++            thread_resume_observer(new_thread->thread_id,
++                                   new_thread->context.cpu_registers.data());
++        }
+     } else {
+         current_thread = nullptr;
+         // Note: We do not reset the current process and current page table when idling because
+diff --git a/src/core/hle/kernel/thread.h b/src/core/hle/kernel/thread.h
+index 5bd73ec..e297944 100644
+--- a/src/core/hle/kernel/thread.h
++++ b/src/core/hle/kernel/thread.h
+@@ -441,6 +441,12 @@ private:
+ std::shared_ptr<Thread> SetupMainThread(KernelSystem& kernel, u32 entry_point, u32 priority,
+                                         std::shared_ptr<Process> owner_process);
+ 
++/// Optional observer called whenever a thread is switched to, after its registers are loaded: the
++/// thread's id and its saved r0 to r15. For a thread that was blocked in a system call, r0 to r3
++/// are what the call returns (the kernel writes the real result when it wakes the thread up).
++using ThreadResumeObserver = void (*)(u32 thread_id, const u32* regs);
++void SetThreadResumeObserver(ThreadResumeObserver observer);
++
+ } // namespace Kernel
+ 
+ BOOST_CLASS_EXPORT_KEY(Kernel::Thread)
 diff --git a/src/core/hle/service/fs/file.cpp b/src/core/hle/service/fs/file.cpp
 index c1c947b..4bb8624 100644
 --- a/src/core/hle/service/fs/file.cpp
@@ -911,10 +978,64 @@ index 1d66da3..0a0f608 100644
      eapol_logoff.max_nodes = max_nodes;
  
 diff --git a/src/core/memory.cpp b/src/core/memory.cpp
-index c1dbbd0..49745de 100644
+index c1dbbd0..153f60a 100644
 --- a/src/core/memory.cpp
 +++ b/src/core/memory.cpp
-@@ -892,11 +892,11 @@ std::string MemorySystem::ReadCString(VAddr vaddr, std::size_t max_length) {
+@@ -98,6 +98,12 @@ private:
+     }
+ };
+ 
++static UnmappedObserver unmapped_observer = nullptr;
++
++void SetUnmappedObserver(UnmappedObserver observer) {
++    unmapped_observer = observer;
++}
++
+ class MemorySystem::Impl {
+ public:
+     // Visual Studio would try to allocate these on compile time
+@@ -170,6 +176,16 @@ public:
+         return system.GetRunningCore().GetPC();
+     }
+ 
++    u32 GetLR() const noexcept {
++        return system.GetRunningCore().GetReg(14);
++    }
++
++    void NoteUnmapped(VAddr vaddr, std::size_t size, bool read) const {
++        if (unmapped_observer) {
++            unmapped_observer(vaddr, static_cast<u32>(size), read, GetLR());
++        }
++    }
++
+     template <bool UNSAFE>
+     void ReadBlockImpl(const Kernel::Process& process, const VAddr src_addr, void* dest_buffer,
+                        const std::size_t size) {
+@@ -191,6 +207,7 @@ public:
+                     "unmapped ReadBlock @ 0x{:08X} (start address = 0x{:08X}, size = {}) at PC "
+                     "0x{:08X}",
+                     current_vaddr, src_addr, size, GetPC());
++                NoteUnmapped(current_vaddr, copy_amount, true);
+                 std::memset(dest_buffer, 0, copy_amount);
+                 break;
+             }
+@@ -250,6 +267,7 @@ public:
+                     "unmapped WriteBlock @ 0x{:08X} (start address = 0x{:08X}, size = {}) at PC "
+                     "0x{:08X}",
+                     current_vaddr, dest_addr, size, GetPC());
++                NoteUnmapped(current_vaddr, copy_amount, false);
+                 break;
+             }
+             case PageType::Memory: {
+@@ -577,6 +595,7 @@ void MemorySystem::UnmappedAccess(const VAddr vaddr, const T value, bool read) {
+     }
+ #endif
+     LOG_ERROR(HW_Memory, "{}", message);
++    impl->NoteUnmapped(vaddr, sizeof(T), read);
+     if (Settings::values.enable_exception_handler) {
+         Core::LogException(impl->system, read ? Core::ExceptionType::UnmappedRead
+                                               : Core::ExceptionType::UnmappedWrite);
+@@ -892,11 +911,11 @@ std::string MemorySystem::ReadCString(VAddr vaddr, std::size_t max_length) {
  }
  
  MemorySystem::PhysMemRegionInfo MemorySystem::GetPhysMemRegionInfo(PAddr address) {
@@ -931,7 +1052,7 @@ index c1dbbd0..49745de 100644
      constexpr std::array memory_areas = {
          std::make_pair(VRAM_PADDR, VRAM_SIZE),
          std::make_pair(DSP_RAM_PADDR, DSP_RAM_SIZE),
-@@ -913,28 +913,27 @@ MemorySystem::PhysMemRegionInfo MemorySystem::GetPhysMemRegionInfo(PAddr address
+@@ -913,28 +932,27 @@ MemorySystem::PhysMemRegionInfo MemorySystem::GetPhysMemRegionInfo(PAddr address
      if (area == memory_areas.end()) [[unlikely]] {
          LOG_ERROR(HW_Memory, "Unknown GetPhysMemRegionInfo @ {:#08X} at PC {:#08X}", address,
                    impl->GetPC());
@@ -966,6 +1087,23 @@ index c1dbbd0..49745de 100644
  }
  
  u8* MemorySystem::GetPhysicalPointer(PAddr address) {
+diff --git a/src/core/memory.h b/src/core/memory.h
+index d490734..c6a8596 100644
+--- a/src/core/memory.h
++++ b/src/core/memory.h
+@@ -36,6 +36,12 @@ constexpr u32 CITRA_PAGE_MASK = CITRA_PAGE_SIZE - 1;
+ constexpr int CITRA_PAGE_BITS = 12;
+ constexpr std::size_t PAGE_TABLE_NUM_ENTRIES = 1 << (32 - CITRA_PAGE_BITS);
+ 
++/// Optional observer of every access to an unmapped page (the ones logged as "unmapped ..."):
++/// the address, the size in bytes (a page's share of a block access), whether it was a read, and
++/// the running CPU's LR. The runner counts them (--count-unmapped).
++using UnmappedObserver = void (*)(VAddr vaddr, u32 size, bool read, u32 lr);
++void SetUnmappedObserver(UnmappedObserver observer);
++
+ enum class PageType : u8 {
+     /// Page is unmapped and should cause an access error.
+     Unmapped,
 diff --git a/src/core/savestate.cpp b/src/core/savestate.cpp
 index e065efd..66a3a28 100644
 --- a/src/core/savestate.cpp
