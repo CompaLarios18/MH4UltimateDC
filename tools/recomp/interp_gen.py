@@ -1954,9 +1954,14 @@ def generate_all(forms: list[Form], seed: int = 1, verify: int = 2000, jobs: int
     if jobs <= 1:
         return [generate_form(f, seed, verify) for f in forms]
     import concurrent.futures as cf
+    from concurrent.futures.process import BrokenProcessPool
     byname = {f.name: f for f in forms}
-    with cf.ProcessPoolExecutor(max_workers=jobs) as ex:
-        rows = list(ex.map(_job, [(f.name, seed, verify) for f in forms], chunksize=1))
+    try:
+        with cf.ProcessPoolExecutor(max_workers=jobs) as ex:
+            rows = list(ex.map(_job, [(f.name, seed, verify) for f in forms], chunksize=1))
+    except (OSError, ImportError, BrokenProcessPool):
+        # a machine that does not let us start processes (no semaphores, a sandbox): one process, slower
+        return [generate_form(f, seed, verify) for f in forms]
     return [Generated(byname[n], c, leaves, ver, sum(len(x) + 1 for x in c), tables, entries, secs)
             for n, c, leaves, ver, tables, entries, secs in rows]
 

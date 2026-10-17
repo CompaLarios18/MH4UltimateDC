@@ -12,8 +12,9 @@
 // No game data: the programs and words are synthetic.
 #include <doctest/doctest.h>
 
-#if !__has_include("recomp.h")
-TEST_CASE("interp_test needs recomp.h (the repository around native/)" * doctest::skip()) {}
+#if !__has_include("recomp.h") || !defined(MH4N_INTERP_AVAILABLE)
+TEST_CASE("interp_test needs recomp.h and the generated handlers (the repository around native/, Python 3)" *
+          doctest::skip()) {}
 #else
 
 #include <array>

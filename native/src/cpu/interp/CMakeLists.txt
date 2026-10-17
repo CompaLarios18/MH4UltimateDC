@@ -47,6 +47,10 @@ mh4n_module(
     THIRD_PARTY
         mh4n_fmt
 )
+# interp_test.cpp skips itself when the module is empty.
+if (mh4n_interp_available)
+    target_compile_definitions(mh4n_cpu_interp PUBLIC MH4N_INTERP_AVAILABLE=1)
+endif()
 
 # ---- test data (native/tests/interp_test.cpp) -------------------------------------------------------
 # make_test_data.py builds the 3DS test program svc_test with three native code libraries (everything

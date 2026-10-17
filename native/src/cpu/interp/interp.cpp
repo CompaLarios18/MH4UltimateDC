@@ -1,6 +1,6 @@
 // The fallback interpreter's loop and its glue to the code host (N1-28). The structure follows
-// ARM_Recomp::Interpret of the port's Azahar backend (port/src/arm_recomp.cpp: the return address and the
-// stack pointer that end an interpreted call); the instruction handlers are generated C.
+// ARM_Recomp::Interpret of the port's own Azahar backend (arm_recomp.cpp in the port's sources): the return
+// address and the stack pointer that end an interpreted call. The instruction handlers are generated C.
 #include "interp.h"
 
 #include <cstdio>

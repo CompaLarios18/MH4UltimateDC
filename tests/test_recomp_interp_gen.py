@@ -814,7 +814,11 @@ def _load_make_test_data():
     path = os.path.join(HERE, "..", "native", "src", "cpu", "interp", "make_test_data.py")
     spec = importlib.util.spec_from_file_location("make_test_data", path)
     mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
+    keep, sys.dont_write_bytecode = sys.dont_write_bytecode, True      # no __pycache__ inside native/
+    try:
+        spec.loader.exec_module(mod)
+    finally:
+        sys.dont_write_bytecode = keep
     return mod
 
 
@@ -863,3 +867,14 @@ def test_make_test_data_fails_loudly_without_its_compiler(tmp_path):
     mtd = _load_make_test_data()
     with pytest.raises((FileNotFoundError, SystemExit, subprocess.CalledProcessError)):
         mtd.main([str(tmp_path), "--cc", "/nonexistent/clang", "--no-vectors"])
+
+
+def test_generation_falls_back_to_one_process_where_processes_cannot_start(monkeypatch):
+    import concurrent.futures as cf
+
+    def refuse(*args, **kwargs):
+        raise OSError("no semaphores in this sandbox")
+    monkeypatch.setattr(cf, "ProcessPoolExecutor", refuse)
+    forms = [EXTRA["arm_clz"], EXTRA["t_svc"]]
+    got = ig.generate_all(forms, 1, verify=100, jobs=2)
+    assert [g.form.name for g in got] == ["arm_clz", "t_svc"] and all(g.c for g in got)
