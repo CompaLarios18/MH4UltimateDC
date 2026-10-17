@@ -18,7 +18,7 @@ Pinned Azahar commit: `5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6`. Counts below c
 
 N0-18 moved every use of Azahar in `port/src/hooks.cpp` and `hooks.h` (the logger, `Layout::ScreenOverlay` and `SetTopScreenWidth`, `Core::System`, `Settings::values`, `FileUtil::GetUserPath`, `NetSync`) behind `Port::Platform` (`port/src/platform.h`); `port/src/platform_azahar.cpp` holds the calls and `Port::AzaharPlatform()` is its instance. The two files no longer count in the grep below. `runner.cpp` reaches Azahar's layout through `Port::AzaharPlatform()` in `--overlay-layout`. N1-20 implements `Platform` for the native runtime; `NetSync::ParseMode` is now unused by the hooks (`platform.h` has `Port::ParseNetSyncMode` with the same rules).
 
-N0-04, N0-07 and N0-21 changed `port/src/runner.cpp` and `port/azahar/azahar.patch` after `def93e9`: `runner.cpp` now has 32 Azahar includes (N0-04 and N0-07 added `core/loader/loader.h` and `core/memory.h`; N0-21 added seven for the IPC trace: `client_session`, `ipc_debugger/recorder`, `object`, `server_session`, `session`, `fs/directory` and `fs/file`) and the patch is 1,525 lines (N0-04 and N0-07 only; N0-21 added no hook). The rows below for `runner.cpp` and the patch are otherwise as counted; these APIs are new, with their replacement:
+N0-04, N0-07 and N0-21 changed `port/src/runner.cpp` and `port/azahar/azahar.patch` after `def93e9`: `runner.cpp` had 32 Azahar includes at the time (38 after N0-05 and N0-06; the recount below is current) (N0-04 and N0-07 added `core/loader/loader.h` and `core/memory.h`; N0-21 added seven for the IPC trace: `client_session`, `ipc_debugger/recorder`, `object`, `server_session`, `session`, `fs/directory` and `fs/file`) and the patch is 1,525 lines (N0-04 and N0-07 only; N0-21 added no hook). The rows below for `runner.cpp` and the patch are otherwise as counted; these APIs are new, with their replacement:
 
 | API | Used for | Replacement |
 |---|---|---|
@@ -36,23 +36,24 @@ N0-04, N0-07 and N0-21 changed `port/src/runner.cpp` and `port/azahar/azahar.pat
 grep -rlE '#include "(core|video_core|audio_core|network|input_common|common|citra[a-z_]*|web_service)/' port server | sort
 ```
 
-This finds 41 files, all under `port/` (the hooks reach Azahar only through `src/platform_azahar.cpp` now) (`server/` includes no Azahar header; its dependency is on the `azahar-room` binary, see section 9). The bootstrap table of N0-16 listed counts per file; the exact recount below differs in a few small files, so the table is the starting point, not a contract. `common/` is Azahar's common library (logging, file utilities, settings), not ours.
+This finds 23 files, all under `port/` (the hooks reach Azahar only through `src/platform_azahar.cpp`; in the app, only `app/runtime_azahar/`, the window files (`window.h`, `window*.cpp`) and `ui/render_*.cpp` include Azahar since N0-20 and N0-24; `server/` includes no Azahar header; its dependency is on the `azahar-room` binary, see section 9). The bootstrap table of N0-16 listed counts per file; the exact recount below differs in a few small files, so the table is the starting point, not a contract. `common/` is Azahar's common library (logging, file utilities, settings), not ours.
 
-Count of Azahar includes per file (recount):
+After N0-24 `port/app/main.cpp` still gets `Core::System` through `IRuntime::HostSystem()` (transitional) for `Window::Create`; `Multiplayer::Init(system, config)` and `Ui::Start(system, window, config)` keep an unused `Core::System&` parameter that goes when `main.cpp` is edited. The window and renderer files are what N2b replaces.
+
+Count of Azahar includes per file (recount after N0-24; the grep also counts `applets/` includes):
 
 | Includes | File |
 |---|---|
-| 46 | `port/azahar/azahar.patch` (the patch's own context lines, not code of ours) |
-| 23 | `port/src/runner.cpp`, `port/app/main.cpp` |
-| 13 | `port/app/multiplayer.cpp` |
-| 10 | `port/src/hooks.cpp` |
-| 9 | `port/app/ui/menu.cpp` |
+| 50 | `port/azahar/azahar.patch` (the patch's own context lines, not code of ours) |
+| 38 | `port/src/runner.cpp` |
+| 15 | `port/app/runtime_azahar/azahar_runtime.cpp` |
+| 12 | `port/app/runtime_azahar/azahar_network.cpp`, `port/app/runtime_azahar/azahar_input.cpp` |
+| 11 | `port/src/platform_azahar.cpp` |
 | 8 | `port/src/arm_recomp.cpp` |
-| 7 | `port/app/launcher/checks.cpp` |
-| 6 | `port/src/frontend.cpp`, `port/app/input.cpp` |
-| 5 | `port/src/netsync.cpp`, `port/app/window.cpp`, `port/app/window_gl.cpp`, `port/app/window_sw.cpp` |
-| 4 | `port/app/ui/ui.cpp`, `port/app/launcher/launcher.cpp` |
-| 1-3 | the rest (listed per concern below and in the file index) |
+| 7 | `port/app/runtime_azahar/azahar_options.cpp` |
+| 6 | `port/src/frontend.cpp`, `port/app/runtime_azahar/azahar_title.cpp` |
+| 5 | `port/src/netsync.cpp`, `port/app/window_gl.cpp`, `port/app/window_sw.cpp` |
+| 1-2 | the rest (`window.cpp`, `window.h`, `window_vk.cpp`, `ui/render_*.cpp`, `src/arm_recomp.h`, `src/netsync.h`, `runtime_azahar/azahar_keyboard.h`, `runtime_azahar/log_sink.cpp`) |
 
 ## Libraries linked
 
@@ -200,7 +201,7 @@ The same few helpers appear in many files; the replacement is always `port/app/u
 | `server/unix/host-room.sh`, `server/windows/host-room.ps1`, `server/windows/Host room.bat` | start `azahar-room` | the native room server once it exists; Azahar build only until then |
 | `server/lobby/mh4u_lobby.py` | speaks the web API Azahar's `web_service` and `network/announce_multiplayer_session` call; follows Azahar's nickname and room-list limits | stays as it is; the native room client (N4-01, provisional id) implements the same API |
 | `server/tests/e2e_room.py` | drives `azahar-room` end to end | extended to the native room server (N4-04, provisional id) |
-| `port/azahar/azahar.patch` | 1,387-line patch on Azahar (the 46 includes found by the grep are its own context lines): `Core::System` hooks (`SetCPUFactory`, `SetRunLoopHook`), `Kernel::SetSVCObserver`, `Layout::ScreenOverlay`/`SetTopScreenWidth`, `framebuffer_layout`, GPU/PICA changes, rooms (`network/room.cpp`), nwm/UDS, FS, savestate, LayeredFS, input_common | none: ROADMAP principle "Integration: nothing"; each piece is covered by the native module that replaces what it patches (kernel N1-05..07, GPU N2, rooms N4-01/N4-04 (provisional ids)); Azahar build only |
+| `port/azahar/azahar.patch` | 1,387-line patch on Azahar (the 46 includes the grep found at `def93e9`, 50 now, are its own context lines): `Core::System` hooks (`SetCPUFactory`, `SetRunLoopHook`), `Kernel::SetSVCObserver`, `Layout::ScreenOverlay`/`SetTopScreenWidth`, `framebuffer_layout`, GPU/PICA changes, rooms (`network/room.cpp`), nwm/UDS, FS, savestate, LayeredFS, input_common | none: ROADMAP principle "Integration: nothing"; each piece is covered by the native module that replaces what it patches (kernel N1-05..07, GPU N2, rooms N4-01/N4-04 (provisional ids)); Azahar build only |
 
 ## File index
 
@@ -254,5 +255,5 @@ Every file found by the recount, with its concerns (section numbers above) and t
 ## Notes for the consumers
 
 - **N0-18 (hooks):** the Azahar uses of `port/src/hooks.cpp`, `port/src/hooks.h` and `port/src/netsync.cpp` are exactly the rows tagged Platform above; `SetRefreshRate`, `IsPoweredOn`, `UpdateCurrentFramebufferLayout` and `GetGlobalTicks` map to `Platform::SetRefreshRate`, `IsRunning`, `RefreshScreenLayout` and `GameSeconds`.
-- **N0-20 and N0-24:** the file lists of their allowlists match the files tagged IRuntime or util in the index; after N0-24 the only app files that still include Azahar are `port/app/window.h`, `port/app/window*.cpp` and `port/app/ui/render_*.cpp`.
+- **N0-20 and N0-24:** the file lists of their allowlists match the files tagged IRuntime or util in the index; after N0-24 the only app files that still include Azahar are `port/app/runtime_azahar/**` (by design), `port/app/window.h`, `port/app/window*.cpp` and `port/app/ui/render_*.cpp`.
 - **Every `LOG_*` call and `u8`..`u64` alias** is a trivial dependency; do it in one commit per file group to keep reviews short.

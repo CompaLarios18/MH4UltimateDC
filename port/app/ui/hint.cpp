@@ -4,26 +4,25 @@
 #include <sstream>
 #include <imgui.h>
 
-#include "common/settings.h"
 #include "config.h"
 #include "hooks.h"
 #include "netsync.h"
+#include "runtime.h"
 #include "ui/menu.h"
+#include "util/buttons.h"
 
 namespace App::Ui {
 
 namespace {
 
-namespace NativeButton = Settings::NativeButton;
-
 /// mh4u.ini's 3DS button names (port/src/hooks.cpp, PAD_BITS) -> the app's buttons.
 int ButtonIndex(const std::string& name) {
     static constexpr std::pair<const char*, int> buttons[] = {
-        {"A", NativeButton::A},         {"B", NativeButton::B},       {"X", NativeButton::X},
-        {"Y", NativeButton::Y},         {"L", NativeButton::L},       {"R", NativeButton::R},
-        {"ZL", NativeButton::ZL},       {"ZR", NativeButton::ZR},     {"START", NativeButton::Start},
-        {"UP", NativeButton::Up},       {"DOWN", NativeButton::Down}, {"LEFT", NativeButton::Left},
-        {"RIGHT", NativeButton::Right}};
+        {"A", Button::A},       {"B", Button::B},       {"X", Button::X},
+        {"Y", Button::Y},       {"L", Button::L},       {"R", Button::R},
+        {"ZL", Button::ZL},     {"ZR", Button::ZR},     {"START", Button::Start},
+        {"UP", Button::Up},     {"DOWN", Button::Down}, {"LEFT", Button::Left},
+        {"RIGHT", Button::Right}};
     for (const auto& [n, index] : buttons) {
         if (name == n) {
             return index;
@@ -41,7 +40,7 @@ std::pair<std::string, std::string> Names(const Config& config, const std::strin
     }
     // a button given full input parameters has no key of the app's
     const std::string key = config.button_params[index].empty() ? config.keys[index] : "";
-    const std::string pad = ControllerInputName(Settings::values.current_input_profile.buttons[index]);
+    const std::string pad = ControllerInputName(Runtime().ButtonBinding(index));
     return {key, pad};
 }
 

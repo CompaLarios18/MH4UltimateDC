@@ -14,7 +14,7 @@
 
 #ifdef _WIN32
 #include <windows.h>
-#include "common/string_util.h"
+#include "util/strings.h"
 #else
 #include <cerrno>
 #include <csignal>
@@ -75,7 +75,7 @@ std::string LastError() {
     FormatMessageW(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM |
                        FORMAT_MESSAGE_IGNORE_INSERTS,
                    nullptr, code, 0, reinterpret_cast<wchar_t*>(&text), 0, nullptr);
-    std::string message = text ? Common::UTF16ToUTF8(text) : "error " + std::to_string(code);
+    std::string message = text ? App::Util::WideToUtf8(text) : "error " + std::to_string(code);
     if (text) {
         LocalFree(text);
     }
@@ -195,7 +195,7 @@ bool Process::Start(const std::vector<std::string>& args, std::string& error, bo
 
     std::wstring command;
     for (const auto& arg : args) {
-        command += (command.empty() ? L"" : L" ") + QuoteArg(Common::UTF8ToUTF16W(arg));
+        command += (command.empty() ? L"" : L" ") + QuoteArg(App::Util::Utf8ToWide(arg));
     }
     PROCESS_INFORMATION info{};
     // (the processes a below-normal one starts are below normal too)
@@ -259,7 +259,7 @@ std::string SelfPath() {
         }
         if (n < path.size()) {
             path.resize(n);
-            return Common::UTF16ToUTF8(path);
+            return App::Util::WideToUtf8(path);
         }
         path.resize(path.size() * 2);
     }

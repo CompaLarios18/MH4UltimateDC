@@ -6,18 +6,16 @@
 #include <imgui.h>
 #include <imgui_impl_sdl2.h>
 
-#include "common/logging/log.h"
 #include "config.h"
-#include "core/core.h"
 #include "hooks.h"
 #include "input.h"
-#include "input_common/keyboard.h"
-#include "input_common/main.h"
+#include "runtime.h"
 #include "ui/fps_counter.h"
 #include "ui/hint.h"
 #include "ui/keyboard.h"
 #include "ui/layer.h"
 #include "ui/menu.h"
+#include "util/log.h"
 #include "window.h"
 
 namespace App::Ui {
@@ -143,8 +141,7 @@ void DrawCopy::Clear() {
 
 // ── The layer ──
 
-Layer::Layer(Core::System& system_, Window& window_, Config& config_)
-    : system{system_}, window{window_}, config{config_} {
+Layer::Layer(Window& window_, Config& config_) : window{window_}, config{config_} {
     IMGUI_CHECKVERSION();
     context = ImGui::CreateContext();
     ImGui::SetCurrentContext(context);
@@ -163,11 +160,11 @@ Layer::Layer(Core::System& system_, Window& window_, Config& config_)
 
     menu = std::make_unique<Menu>(*this);
     keyboard = std::make_shared<Keyboard>();
-    system.RegisterSoftwareKeyboard(keyboard);
+    Runtime().SetSoftwareKeyboard(keyboard);
 #ifdef ENABLE_VULKAN
     RegisterVulkanOverlay(*this);
 #endif
-    LOG_INFO(Frontend, "in-game menu: Esc, or a controller's Guide or Back+Start");
+    APP_LOG_INFO("in-game menu: Esc, or a controller's Guide or Back+Start");
 }
 
 Layer::~Layer() {
@@ -228,7 +225,7 @@ void Layer::SetCapture(bool on) {
     Input::SetMuted(on);
     if (on) {
         // what the game had held is let go: the menu has the keys and the mouse now
-        InputCommon::GetKeyboard()->ReleaseAllKeys();
+        Runtime().ReleaseAllKeys();
         window.TouchReleased();
         fresh_input = true;
         SDL_ShowCursor(SDL_ENABLE);
@@ -354,7 +351,7 @@ void Layer::ToggleFpsCounter() {
     Config file = App::Load();
     file.fps_counter = config.fps_counter;
     App::Save(file);
-    LOG_INFO(Frontend, "frame-rate counter: {}", config.fps_counter);
+    APP_LOG_INFO("frame-rate counter: {}", config.fps_counter);
 }
 
 void Layer::Frame() {
@@ -470,9 +467,9 @@ Layer* Get() {
 
 // ── ui.h ──
 
-void Start(Core::System& system, Window& window, Config& config) {
+void Start(Core::System&, Window& window, Config& config) {
     if (!Get()) {
-        instance.store(new Layer(system, window, config), std::memory_order_release);
+        instance.store(new Layer(window, config), std::memory_order_release);
     }
 }
 

@@ -8,12 +8,10 @@
 #include "common/logging/log.h"
 #include "config.h"
 #include "core/core.h"
-#include "core/perf_stats.h"
 #include "frontend.h"
 #include "icon.h"
 #include "input.h"
-#include "input_common/keyboard.h"
-#include "input_common/main.h"
+#include "runtime.h"
 #include "ui/fps_counter.h"
 #include "ui/ui.h"
 
@@ -169,9 +167,9 @@ void Window::OnKey(int scancode, bool down, u16 modifiers) {
         return;
     }
     if (down) {
-        InputCommon::GetKeyboard()->PressKey(scancode);
+        Runtime().KeyDown(scancode);
     } else {
-        InputCommon::GetKeyboard()->ReleaseKey(scancode);
+        Runtime().KeyUp(scancode);
     }
 }
 
@@ -200,7 +198,7 @@ void Window::PollEvents() {
                 break;
             case SDL_WINDOWEVENT_FOCUS_LOST:
                 // keys held while switching away would stay down
-                InputCommon::GetKeyboard()->ReleaseAllKeys();
+                Runtime().ReleaseAllKeys();
                 break;
             }
             break;
@@ -274,7 +272,7 @@ void Window::PollEvents() {
         const u32 now = SDL_GetTicks();
         if (now - last_measure >= MEASURE_EVERY_MS) {
             last_measure = now;
-            const auto stats = system.GetAndResetPerfStats();
+            const PerfStats stats = Runtime().TakePerfStats();
             fps = stats.game_fps;
             Ui::SetFpsMeasure(fps, fps > 0.0 ? 1000.0 / fps : 0.0, stats.emulation_speed);
         }

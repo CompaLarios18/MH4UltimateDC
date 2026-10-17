@@ -1,6 +1,6 @@
 // The Windows side of the guest memory (N1-02): VirtualAlloc for the reservation and a vectored
-// exception handler for the bad accesses. Written but not built or tested in this session
-// (Windows is exercised by N1-22).
+// exception handler for the bad accesses. Built and tested by the native-windows job of
+// .github/workflows/native.yml (N1-22), and cross-built and run under wine when working without a runner.
 #if defined(_WIN32)
 
 #define WIN32_LEAN_AND_MEAN

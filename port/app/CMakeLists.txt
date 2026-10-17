@@ -48,6 +48,29 @@ add_executable(mh4u
     ui/options.h
     ui/ui.cpp
     ui/ui.h
+    # the app's own logging, file and string helpers (util/)
+    util/buttons.h
+    util/file.cpp
+    util/file.h
+    util/log.cpp
+    util/log.h
+    util/room.h
+    util/strings.cpp
+    util/strings.h
+    util/swkbd.h
+    util/types.h
+    # IRuntime (runtime.h), the seam to the emulation runtime, and its Azahar implementation
+    runtime.h
+    runtime_azahar/azahar_input.cpp
+    runtime_azahar/azahar_keyboard.cpp
+    runtime_azahar/azahar_keyboard.h
+    runtime_azahar/azahar_network.cpp
+    runtime_azahar/azahar_options.cpp
+    runtime_azahar/azahar_runtime.cpp
+    runtime_azahar/azahar_runtime.h
+    runtime_azahar/azahar_title.cpp
+    runtime_azahar/log_sink.cpp
+    runtime_azahar/log_sink.h
 )
 target_include_directories(mh4u PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 # each renderer's window, with Dear ImGui's backend for it (compiled in ui/render_*.cpp)
@@ -125,4 +148,50 @@ if (APPLE)
     # it next to the executable
     set_target_properties(mh4u PROPERTIES BUILD_RPATH "@executable_path"
                           INSTALL_RPATH "@executable_path;@executable_path/../Frameworks")
+endif()
+
+# The unit tests (doctest, from native/third_party; no Azahar code runs in them): cmake
+# -DMH4U_APP_TESTS=ON, then build and run
+#   mh4u_util_test        util/
+#   mh4u_app_test         the settings file and the launcher's checks, against a fake IRuntime
+#   mh4u_multiplayer_test the network room (multiplayer.cpp), against a scripted fake IRuntime
+#   mh4u_input_test       input.cpp, against a fake IRuntime and a fake SDL (no SDL library)
+#   mh4u_keyboard_test    ui/keyboard.cpp in a headless Dear ImGui context
+option(MH4U_APP_TESTS "Build the app's unit tests" OFF)
+if (MH4U_APP_TESTS)
+    set(MH4U_APP_TEST_UTIL util/file.cpp util/log.cpp util/strings.cpp)
+    add_executable(mh4u_util_test util/tests/util_test.cpp ${MH4U_APP_TEST_UTIL})
+    add_executable(mh4u_app_test util/tests/app_test.cpp config.cpp launcher/checks.cpp
+                   ${MH4U_APP_TEST_UTIL})
+    add_executable(mh4u_multiplayer_test util/tests/multiplayer_test.cpp multiplayer.cpp invite.cpp
+                   launcher/lobby.cpp config.cpp ${MH4U_APP_TEST_UTIL})
+    add_executable(mh4u_input_test util/tests/input_test.cpp input.cpp config.cpp
+                   ${MH4U_APP_TEST_UTIL})
+    add_executable(mh4u_keyboard_test util/tests/keyboard_test.cpp ui/keyboard.cpp config.cpp
+                   ${MH4U_APP_TEST_UTIL}
+                   ${MH4U_IMGUI_DIR}/imgui.cpp
+                   ${MH4U_IMGUI_DIR}/imgui_draw.cpp
+                   ${MH4U_IMGUI_DIR}/imgui_tables.cpp
+                   ${MH4U_IMGUI_DIR}/imgui_widgets.cpp)
+    foreach(test mh4u_util_test mh4u_app_test mh4u_multiplayer_test mh4u_input_test mh4u_keyboard_test)
+        target_include_directories(${test} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}
+                                   ${CMAKE_CURRENT_SOURCE_DIR}/../../native/third_party/doctest)
+        target_link_libraries(${test} PRIVATE fmt::fmt Threads::Threads)
+    endforeach()
+    target_link_libraries(mh4u_app_test PRIVATE inih)
+    target_link_libraries(mh4u_multiplayer_test PRIVATE inih httplib json-headers)
+    target_link_libraries(mh4u_input_test PRIVATE inih)
+    target_link_libraries(mh4u_keyboard_test PRIVATE inih)
+    if (WIN32)
+        target_link_libraries(mh4u_multiplayer_test PRIVATE crypt32 ws2_32)
+    endif()
+    # input_test and keyboard_test define the few SDL functions the files under test call, so
+    # they use SDL's headers and not its library
+    foreach(test mh4u_input_test mh4u_keyboard_test)
+        target_include_directories(${test} PRIVATE
+                                   $<TARGET_PROPERTY:SDL2::SDL2,INTERFACE_INCLUDE_DIRECTORIES>)
+        target_compile_definitions(${test} PRIVATE SDL_MAIN_HANDLED)
+    endforeach()
+    target_include_directories(mh4u_keyboard_test PRIVATE ${MH4U_IMGUI_DIR})
+    target_compile_definitions(mh4u_keyboard_test PRIVATE IMGUI_DISABLE_OBSOLETE_FUNCTIONS)
 endif()

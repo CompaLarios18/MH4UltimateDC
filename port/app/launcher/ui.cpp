@@ -8,8 +8,8 @@
 #include <vector>
 #include <imgui_internal.h>
 
-#include "common/file_util.h"
-#include "common/logging/log.h"
+#include "util/file.h"
+#include "util/log.h"
 
 namespace Launcher::Ui {
 
@@ -81,11 +81,11 @@ ImFont* LoadFont(bool want_bold) {
             return s;
         }();
         const bool usable = lower.ends_with(".ttf") || lower.ends_with(".otf") || lower.ends_with(".ttc");
-        if (!usable || !FileUtil::Exists(file)) {
+        if (!usable || !App::Util::Exists(file)) {
             continue;
         }
         if (ImFont* font = ImGui::GetIO().Fonts->AddFontFromFileTTF(file.c_str(), BASE_FONT, &config)) {
-            LOG_INFO(Frontend, "launcher font: {}", file);
+            APP_LOG_INFO("launcher font: {}", file);
             return font;
         }
     }
@@ -178,7 +178,7 @@ void LoadFonts() {
         ImFontConfig config;
         config.SizePixels = BASE_FONT;
         regular = io.Fonts->AddFontDefaultVector(&config);
-        LOG_INFO(Frontend, "launcher font: Dear ImGui's own");
+        APP_LOG_INFO("launcher font: Dear ImGui's own");
     }
     bold = LoadFont(true);
     if (!bold) {

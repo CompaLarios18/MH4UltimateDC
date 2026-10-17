@@ -1,5 +1,7 @@
 // The app's input: the keyboard and a controller at the same time on every 3DS button, a
-// controller mapped on its own when one is plugged in, and the keys of the app's hotkeys.
+// controller mapped on its own when one is plugged in, and the keys of the app's hotkeys. The
+// keys and controllers are SDL's; the input profile that joins them is the runtime's
+// (IRuntime::BuildInputProfile).
 #pragma once
 
 #include <string>
@@ -10,13 +12,9 @@ struct Config;
 
 namespace Input {
 
-/// Registers the input engine that joins two bindings ("mh4u_any": pressed when either is),
-/// so that the keyboard and a controller both work. Call after InputCommon::Init().
-void Register();
-
-/// Settings::values.current_input_profile from the config's keys, the first controller found
+/// Makes the runtime's input profile from the config's keys, the first controller found
 /// (controller = auto) and any full parameters. Call again when a controller comes or goes,
-/// then reload the input devices.
+/// then reload the input devices (IRuntime::ReloadInputDevices).
 void BuildProfile(const Config& config);
 
 /// The SDL scancode for a key name ("W", "Left Shift", "F12"), 0 if there is no such key.
