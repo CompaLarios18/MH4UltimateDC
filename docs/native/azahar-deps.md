@@ -36,23 +36,25 @@ N0-04, N0-07 and N0-21 changed `port/src/runner.cpp` and `port/azahar/azahar.pat
 grep -rlE '#include "(core|video_core|audio_core|network|input_common|common|citra[a-z_]*|web_service)/' port server | sort
 ```
 
-This finds 41 files, all under `port/` (the hooks reach Azahar only through `src/platform_azahar.cpp` now) (`server/` includes no Azahar header; its dependency is on the `azahar-room` binary, see section 9). The bootstrap table of N0-16 listed counts per file; the exact recount below differs in a few small files, so the table is the starting point, not a contract. `common/` is Azahar's common library (logging, file utilities, settings), not ours.
+This finds 31 files, all under `port/` (the hooks reach Azahar only through `src/platform_azahar.cpp`, and the app's `main.cpp`, `config.*`, `launcher/*` and `ui/menu.cpp` only through `app/runtime_azahar/` since N0-20; `server/` includes no Azahar header; its dependency is on the `azahar-room` binary, see section 9). The bootstrap table of N0-16 listed counts per file; the exact recount below differs in a few small files, so the table is the starting point, not a contract. `common/` is Azahar's common library (logging, file utilities, settings), not ours.
 
-Count of Azahar includes per file (recount):
+After N0-20 `port/app/main.cpp` still gets `Core::System` through `IRuntime::HostSystem()` (transitional) for `Window::Create`, `Ui::Start` and `Multiplayer::Init`, which N0-24 and N2b remove; `ui/hint.cpp` and `input.cpp` still use `Settings::NativeButton` and `Settings::values` directly (N0-24).
+
+Count of Azahar includes per file (recount after N0-20):
 
 | Includes | File |
 |---|---|
-| 46 | `port/azahar/azahar.patch` (the patch's own context lines, not code of ours) |
-| 23 | `port/src/runner.cpp`, `port/app/main.cpp` |
+| 50 | `port/azahar/azahar.patch` (the patch's own context lines, not code of ours) |
+| 38 | `port/src/runner.cpp` |
+| 22 | `port/app/runtime_azahar/azahar_runtime.cpp` |
 | 13 | `port/app/multiplayer.cpp` |
-| 10 | `port/src/hooks.cpp` |
-| 9 | `port/app/ui/menu.cpp` |
+| 11 | `port/src/platform_azahar.cpp` |
 | 8 | `port/src/arm_recomp.cpp` |
-| 7 | `port/app/launcher/checks.cpp` |
-| 6 | `port/src/frontend.cpp`, `port/app/input.cpp` |
+| 7 | `port/app/runtime_azahar/azahar_options.cpp` |
+| 6 | `port/src/frontend.cpp`, `port/app/input.cpp`, `port/app/runtime_azahar/azahar_title.cpp` |
 | 5 | `port/src/netsync.cpp`, `port/app/window.cpp`, `port/app/window_gl.cpp`, `port/app/window_sw.cpp` |
-| 4 | `port/app/ui/ui.cpp`, `port/app/launcher/launcher.cpp` |
-| 1-3 | the rest (listed per concern below and in the file index) |
+| 4 | `port/app/ui/ui.cpp` |
+| 1-2 | the rest (listed per concern below and in the file index) |
 
 ## Libraries linked
 
