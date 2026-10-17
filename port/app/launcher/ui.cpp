@@ -1,6 +1,4 @@
 #include "launcher/ui.h"
-#include "util/file.h"
-#include "util/log.h"
 
 #include <algorithm>
 #include <cctype>
@@ -10,6 +8,8 @@
 #include <vector>
 #include <imgui_internal.h>
 
+#include "util/file.h"
+#include "util/log.h"
 
 namespace Launcher::Ui {
 

@@ -2,14 +2,14 @@
 #include <httplib.h>
 
 #include "launcher/lobby.h"
-#include "util/file.h"
-#include "util/log.h"
 
 #include <algorithm>
 #include <cctype>
 #include <fmt/format.h>
 #include <json.hpp>
 
+#include "util/file.h"
+#include "util/log.h"
 
 namespace Launcher::Lobby {
 

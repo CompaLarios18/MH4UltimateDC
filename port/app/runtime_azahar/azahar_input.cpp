@@ -8,23 +8,37 @@
 #include "common/param_package.h"
 #include "common/settings.h"
 #include "runtime_azahar/azahar_runtime.h"
+#include "util/buttons.h"
 
 namespace App::Azahar {
 
-// the app numbers the 3DS's buttons and sticks (util/buttons.h) the way Azahar does
-static_assert(Button::A == Settings::NativeButton::A && Button::B == Settings::NativeButton::B &&
-              Button::X == Settings::NativeButton::X && Button::Y == Settings::NativeButton::Y &&
-              Button::Up == Settings::NativeButton::Up && Button::Down == Settings::NativeButton::Down &&
-              Button::Left == Settings::NativeButton::Left && Button::Right == Settings::NativeButton::Right &&
-              Button::L == Settings::NativeButton::L && Button::R == Settings::NativeButton::R &&
-              Button::Start == Settings::NativeButton::Start && Button::Select == Settings::NativeButton::Select &&
-              Button::Debug == Settings::NativeButton::Debug && Button::Gpio14 == Settings::NativeButton::Gpio14 &&
-              Button::ZL == Settings::NativeButton::ZL && Button::ZR == Settings::NativeButton::ZR &&
-              Button::Home == Settings::NativeButton::Home && Button::Power == Settings::NativeButton::Power &&
-              Button::Count == Settings::NativeButton::NumButtons);
-static_assert(Analog::CirclePad == Settings::NativeAnalog::CirclePad &&
-              Analog::CStick == Settings::NativeAnalog::CStick &&
-              Analog::Count == Settings::NativeAnalog::NumAnalogs);
+// the app numbers the 3DS's buttons and sticks (util/buttons.h) the way Azahar does. The two sides
+// are different enumeration types, so they are compared as ints.
+constexpr int V(auto e) {
+    return static_cast<int>(e);
+}
+static_assert(V(Button::A) == V(Settings::NativeButton::A) &&
+              V(Button::B) == V(Settings::NativeButton::B) &&
+              V(Button::X) == V(Settings::NativeButton::X) &&
+              V(Button::Y) == V(Settings::NativeButton::Y) &&
+              V(Button::Up) == V(Settings::NativeButton::Up) &&
+              V(Button::Down) == V(Settings::NativeButton::Down) &&
+              V(Button::Left) == V(Settings::NativeButton::Left) &&
+              V(Button::Right) == V(Settings::NativeButton::Right) &&
+              V(Button::L) == V(Settings::NativeButton::L) &&
+              V(Button::R) == V(Settings::NativeButton::R) &&
+              V(Button::Start) == V(Settings::NativeButton::Start) &&
+              V(Button::Select) == V(Settings::NativeButton::Select) &&
+              V(Button::Debug) == V(Settings::NativeButton::Debug) &&
+              V(Button::Gpio14) == V(Settings::NativeButton::Gpio14) &&
+              V(Button::ZL) == V(Settings::NativeButton::ZL) &&
+              V(Button::ZR) == V(Settings::NativeButton::ZR) &&
+              V(Button::Home) == V(Settings::NativeButton::Home) &&
+              V(Button::Power) == V(Settings::NativeButton::Power) &&
+              V(Button::Count) == V(Settings::NativeButton::NumButtons));
+static_assert(V(Analog::CirclePad) == V(Settings::NativeAnalog::CirclePad) &&
+              V(Analog::CStick) == V(Settings::NativeAnalog::CStick) &&
+              V(Analog::Count) == V(Settings::NativeAnalog::NumAnalogs));
 
 namespace {
 
