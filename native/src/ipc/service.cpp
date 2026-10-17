@@ -63,4 +63,4 @@ void Service::ReplyUnimplemented(Request& request) {
     request.MakeReply(1, 0).Push(kResultSuccess);
 }
 
-} // namespace mh4n
+}  // namespace mh4n

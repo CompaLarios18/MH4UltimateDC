@@ -43,7 +43,7 @@ TEST_CASE("srv_test needs recomp.h (the repository around native/)" * doctest::s
 #include "mh4n/runtime.h"
 #include "mh4n/service.h"
 #include "mh4n/threads.h"
-#include "../src/cpu/recomp_c.h" // last: it defines macros
+#include "../src/cpu/recomp_c.h"  // last: it defines macros
 
 using namespace mh4n;
 
@@ -65,7 +65,7 @@ std::vector<u8> MakeElf() {
     b[0] = 0x7F, b[1] = 'E', b[2] = 'L', b[3] = 'F', b[4] = 1, b[5] = 1, b[6] = 1;
     Put16(b, 16, 2), Put16(b, 18, 40), Put32(b, 20, 1), Put32(b, 24, kText);
     Put32(b, 28, 52), Put16(b, 40, 52), Put16(b, 42, 32), Put16(b, 44, 1);
-    Put32(b, 52, 1); // PT_LOAD
+    Put32(b, 52, 1);  // PT_LOAD
     Put32(b, 52 + 4, 84), Put32(b, 52 + 8, kText), Put32(b, 52 + 12, kText);
     Put32(b, 52 + 16, 0x40), Put32(b, 52 + 20, 0x40), Put32(b, 52 + 24, 5),
         Put32(b, 52 + 28, 0x1000);
@@ -287,7 +287,7 @@ Handle ConnectSrv(Guest& g) {
     return h;
 }
 
-} // namespace
+}  // namespace
 
 // ---- srv: -----------------------------------------------------------------------------------------------------
 
@@ -299,7 +299,7 @@ TEST_CASE("srv: RegisterClient answers with the PID checked, and does not need t
         Guest g(*f.runtime);
         const Handle srv = ConnectSrv(g);
         early =
-            GetService(g, srv, "tst:srv", 7, 0).reply; // before RegisterClient: fine, as in Azahar
+            GetService(g, srv, "tst:srv", 7, 0).reply;  // before RegisterClient: fine, as in Azahar
         ok = g.Request(srv, {ipc::MakeHeader(0x0001, 0, 2), ipc::CallingPidDesc(), 0}, 2);
         wrong = g.Request(srv, {ipc::MakeHeader(0x0001, 0, 2), ipc::CopyHandleDesc(1), 0}, 2);
         ExitProcess(*f.runtime);
@@ -311,7 +311,7 @@ TEST_CASE("srv: RegisterClient answers with the PID checked, and does not need t
     CHECK(ok[0] == 0x00010040);
     CHECK(ok[1] == kResultSuccess);
     CHECK(wrong[0] == 0x00010040);
-    CHECK(wrong[1] == 0xD9001830); // the descriptor is not the calling PID's
+    CHECK(wrong[1] == 0xD9001830);  // the descriptor is not the calling PID's
 }
 
 TEST_CASE("srv: GetServiceHandle gives a new session of a registered service every time") {
@@ -358,16 +358,16 @@ TEST_CASE("srv: GetServiceHandle checks the name as Azahar does (conf_srv's case
     const int status = BootWith(f, dir, {"--ms", "100"}, [&] {
         Guest g(*f.runtime);
         const Handle srv = ConnectSrv(g);
-        got.push_back(GetService(g, srv, "nope:u", 6, 1));  // 0: unknown, don't wait
-        got.push_back(GetService(g, srv, "tst:srv", 3, 1)); // 1: a shorter name than the service's
-        got.push_back(GetService(g, srv, "tst:srv", 9, 0)); // 2: longer than 8
-        got.push_back(GetService(g, srv, "tst:srv", 0, 1)); // 3: no name
-        got.push_back(GetService(g, srv, "tst:srv", 8, 0)); // 4: 8 bytes, with a NUL inside
-        got.push_back(GetService(g, srv, "tst:srv", 7, 1)); // 5: flags 1 on a service that exists
-        got.push_back(
-            GetService(g, srv, "tst:srv", 7, 2)); // 6: flags 2: bit 0 clear, it exists, no wait
-        got.push_back(GetService(g, srv, "err:f", 5, 1)); // 7: a named port is not a service
-        got.push_back(GetService(g, srv, "srv:", 4, 1));  // 8: neither is srv:
+        got.push_back(GetService(g, srv, "nope:u", 6, 1));   // 0: unknown, don't wait
+        got.push_back(GetService(g, srv, "tst:srv", 3, 1));  // 1: a shorter name than the service's
+        got.push_back(GetService(g, srv, "tst:srv", 9, 0));  // 2: longer than 8
+        got.push_back(GetService(g, srv, "tst:srv", 0, 1));  // 3: no name
+        got.push_back(GetService(g, srv, "tst:srv", 8, 0));  // 4: 8 bytes, with a NUL inside
+        got.push_back(GetService(g, srv, "tst:srv", 7, 1));  // 5: flags 1 on a service that exists
+        // 6: flags 2: bit 0 clear, it exists, no wait
+        got.push_back(GetService(g, srv, "tst:srv", 7, 2));
+        got.push_back(GetService(g, srv, "err:f", 5, 1));  // 7: a named port is not a service
+        got.push_back(GetService(g, srv, "srv:", 4, 1));   // 8: neither is srv:
         ExitProcess(*f.runtime);
     });
     CHECK(status == 0);
@@ -421,7 +421,7 @@ TEST_CASE("srv: GetServiceHandle with the wait flag clear waits until the servic
     });
     CHECK(status == 0);
     CHECK(waited >=
-          NsToTicks(3000000) - 2); // it came back when the service was registered, not before
+          NsToTicks(3000000) - 2);  // it came back when the service was registered, not before
     CHECK(got.reply[0] == 0x00050042);
     CHECK(got.reply[1] == kResultSuccess);
     CHECK(got.handle != 0);
@@ -436,12 +436,12 @@ TEST_CASE("srv: a client that waits for a service forever is the thread's proble
     const int status = BootWith(f, dir, {"--ms", "20"}, [&] {
         Guest g(*f.runtime);
         const Handle srv = ConnectSrv(g);
-        GetService(g, srv, "never:u", 7,
-                   0); // Azahar waits for ever too (conf_srv avoids it with flags = 1)
+        // Azahar waits for ever too (conf_srv avoids it with flags = 1)
+        GetService(g, srv, "never:u", 7, 0);
         returned = true;
         ExitProcess(*f.runtime);
     });
-    CHECK(status == 0); // the time limit
+    CHECK(status == 0);  // the time limit
     CHECK_FALSE(returned);
 }
 
@@ -475,10 +475,10 @@ TEST_CASE(
     const int status = BootWith(f, dir, {"--ms", "100"}, [&] {
         Guest g(*f.runtime);
         const Handle srv = ConnectSrv(g);
-        replies.push_back(g.Request(srv, {0x00090040, 0x1000}, 2));    // Subscribe
-        replies.push_back(g.Request(srv, {0x000A0040, 0x1000}, 2));    // Unsubscribe
-        replies.push_back(g.Request(srv, {0x000B0000}, 2));            // ReceiveNotification
-        replies.push_back(g.Request(srv, {0x000C0080, 0x1000, 1}, 2)); // PublishToSubscriber
+        replies.push_back(g.Request(srv, {0x00090040, 0x1000}, 2));     // Subscribe
+        replies.push_back(g.Request(srv, {0x000A0040, 0x1000}, 2));     // Unsubscribe
+        replies.push_back(g.Request(srv, {0x000B0000}, 2));             // ReceiveNotification
+        replies.push_back(g.Request(srv, {0x000C0080, 0x1000, 1}, 2));  // PublishToSubscriber
         ExitProcess(*f.runtime);
     });
     CHECK(status == 0);
@@ -499,7 +499,7 @@ TEST_CASE("srv: PublishToSubscriber of the power-off notification ends the run, 
         Guest g(*f.runtime);
         const Handle srv = ConnectSrv(g);
         g.Request(srv, {0x000C0080, 0x203, 0}, 2);
-        for (int i = 0; i < 10000; ++i) { // the run has to stop by itself
+        for (int i = 0; i < 10000; ++i) {  // the run has to stop by itself
             f.runtime->Scheduler().Sleep(1000000);
         }
         ran_on = true;
@@ -575,21 +575,21 @@ namespace {
 std::vector<u32> ErrWords(u8 type, u32 result, u32 pc, const std::vector<u32>& body = {}) {
     std::vector<u32> words(1 + 32, 0);
     words[0] = ipc::MakeHeader(0x0001, 32, 0);
-    words[1] = type | (0x04u << 8) | (0x1234u << 16); // specifier, rev_high, rev_low
+    words[1] = type | (0x04u << 8) | (0x1234u << 16);  // specifier, rev_high, rev_low
     words[2] = result;
     words[3] = pc;
     words[4] = kApplicationProcessId;
-    words[5] = 0x00001234; // title id low
-    words[6] = 0x00040000; // title id high
-    words[7] = 0x0000ABCD; // application title id low
-    words[8] = 0x00040000; // application title id high
+    words[5] = 0x00001234;  // title id low
+    words[6] = 0x00040000;  // title id high
+    words[7] = 0x0000ABCD;  // application title id low
+    words[8] = 0x00040000;  // application title id high
     for (std::size_t i = 0; i < body.size(); ++i) {
         words[9 + i] = body[i];
     }
     return words;
 }
 
-} // namespace
+}  // namespace
 
 TEST_CASE("err:f ThrowFatalError logs the information and ends the run with status 3") {
     Fixture f;
@@ -599,7 +599,7 @@ TEST_CASE("err:f ThrowFatalError logs the information and ends the run with stat
         Handle errf = 0;
         REQUIRE(g.ConnectToPort("err:f", &errf) == kResultSuccess);
         g.Request(errf, ErrWords(0, 0xC8804464, 0x00123456), 2);
-        ExitProcess(*f.runtime); // the run was ended by err:f first: its status counts
+        ExitProcess(*f.runtime);  // the run was ended by err:f first: its status counts
     });
     CHECK(status == 3);
     // the reply was written before the run stopped: a success
@@ -636,18 +636,18 @@ TEST_CASE("err:f logs what each type of error carries") {
     };
     // an exception: ExceptionInfo (type, sr, ar, fpexc, fpinst, fpinst2), then r0-r15 and cpsr
     std::vector<u32> exception(6 + 17 + 1, 0);
-    exception[0] = 1;               // a data abort
-    exception[1] = 0x00000805;      // DFSR
-    exception[2] = 0xCAFEF00D;      // DFAR
-    exception[6 + 13] = 0x0FFFE000; // sp
-    exception[6 + 14] = 0x00100ABC; // lr
-    exception[6 + 15] = 0x00100DEF; // pc
-    exception[6 + 16] = 0x60000010; // cpsr
+    exception[0] = 1;                // a data abort
+    exception[1] = 0x00000805;       // DFSR
+    exception[2] = 0xCAFEF00D;       // DFAR
+    exception[6 + 13] = 0x0FFFE000;  // sp
+    exception[6 + 14] = 0x00100ABC;  // lr
+    exception[6 + 15] = 0x00100DEF;  // pc
+    exception[6 + 16] = 0x60000010;  // cpsr
     std::vector<u32> vector_fp = exception;
     vector_fp[0] = 3;
-    vector_fp[3] = 0x40000000; // fpexc
-    vector_fp[4] = 0x11111111; // fpinst
-    vector_fp[5] = 0x22222222; // fpinst2
+    vector_fp[3] = 0x40000000;  // fpexc
+    vector_fp[4] = 0x11111111;  // fpinst
+    vector_fp[5] = 0x22222222;  // fpinst2
     std::vector<u32> prefetch = exception;
     prefetch[0] = 0;
     prefetch[1] = 0x00000007;

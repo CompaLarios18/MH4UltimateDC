@@ -57,10 +57,10 @@ struct Part {
     enum class Type { Handles, Pid, Static, Mapped, Pxi };
     Type type = Type::Handles;
     bool move = false;
-    u32 index = 0;   // the descriptor's word
-    u32 size = 0;    // handles: how many; buffers: bytes
-    u32 perms = 0;   // mapped: 1 read, 2 write
-    u32 address = 0; // buffers: the word after the descriptor
+    u32 index = 0;    // the descriptor's word
+    u32 size = 0;     // handles: how many; buffers: bytes
+    u32 perms = 0;    // mapped: 1 read, 2 write
+    u32 address = 0;  // buffers: the word after the descriptor
 };
 
 // Splits the translate parameters of `command` into parts. Stops at a descriptor it does not know.
@@ -455,7 +455,7 @@ private:
                 outdesc.push_back(Describe("static", part.index, part.size, CrcToken(ok, crc)));
                 break;
             }
-            case Part::Type::Mapped: // the request's own descriptor covers it
+            case Part::Type::Mapped:  // the request's own descriptor covers it
             case Part::Type::Pxi:
                 break;
             }
@@ -475,9 +475,9 @@ private:
     bool full_;
     std::FILE* file_;
     bool main_written_ = false;
-    std::map<u32, Pending> pending_;    // by sequence number
-    std::map<u32, std::string> names_;  // kernel object id -> the name a reply gave it
-    std::map<std::string, u32> counts_; // "<service>/<kind>" -> how many were handed out
+    std::map<u32, Pending> pending_;     // by sequence number
+    std::map<u32, std::string> names_;   // kernel object id -> the name a reply gave it
+    std::map<std::string, u32> counts_;  // "<service>/<kind>" -> how many were handed out
     u32 unnamed_ = 0;
 };
 
@@ -512,6 +512,6 @@ void StartIpcTrace(Runtime& rt) {
 
 MH4N_REGISTER(BootStep, "tracing.ipc", BootStep{Phase::Tracing, StartIpcTrace});
 
-} // namespace
+}  // namespace
 
-} // namespace mh4n
+}  // namespace mh4n

@@ -69,16 +69,16 @@ struct ExceptionData {
 static_assert(sizeof(ExceptionData) == 0x60, "ExceptionData struct has incorrect size");
 
 struct ErrInfoCommon {
-    u8 specifier;          // 0x0
-    u8 rev_high;           // 0x1
-    u16 rev_low;           // 0x2
-    u32 result_code;       // 0x4
-    u32 pc_address;        // 0x8
-    u32 pid;               // 0xC
-    u32 title_id_low;      // 0x10
-    u32 title_id_high;     // 0x14
-    u32 app_title_id_low;  // 0x18
-    u32 app_title_id_high; // 0x1C
+    u8 specifier;           // 0x0
+    u8 rev_high;            // 0x1
+    u16 rev_low;            // 0x2
+    u32 result_code;        // 0x4
+    u32 pc_address;         // 0x8
+    u32 pid;                // 0xC
+    u32 title_id_low;       // 0x10
+    u32 title_id_high;      // 0x14
+    u32 app_title_id_low;   // 0x18
+    u32 app_title_id_high;  // 0x1C
 };
 static_assert(sizeof(ErrInfoCommon) == 0x20, "ErrInfoCommon struct has incorrect size");
 
@@ -205,7 +205,7 @@ private:
                 MH4N_LOG(Critical, kLog, "FINST2: 0x{:08X}", data.exception_info.fpinst2);
                 break;
             case ExceptionType::Undefined:
-                break; // Azahar does not log the exception information for this one
+                break;  // Azahar does not log the exception information for this one
             }
             MH4N_LOG(Critical, kLog, "Datetime: {}", CurrentSystemTime());
             detail = ", " + ExceptionTypeName(data.exception_info.exception_type) + " at PC=0x" +
@@ -237,6 +237,6 @@ MH4N_REGISTER(ServiceFactory, "err:f",
               ServiceFactory::NamedPort(
                   [](ServiceContext& context) { return std::make_unique<ErrF>(context); }, 1));
 
-} // namespace
+}  // namespace
 
-} // namespace mh4n
+}  // namespace mh4n

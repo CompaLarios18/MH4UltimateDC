@@ -50,7 +50,7 @@ TEST_CASE("ipc_test needs recomp.h (the repository around native/)" * doctest::s
 #include "mh4n/runtime.h"
 #include "mh4n/service.h"
 #include "mh4n/threads.h"
-#include "../src/cpu/recomp_c.h" // last: it defines macros
+#include "../src/cpu/recomp_c.h"  // last: it defines macros
 
 using namespace mh4n;
 
@@ -72,7 +72,7 @@ std::vector<u8> MakeElf() {
     b[0] = 0x7F, b[1] = 'E', b[2] = 'L', b[3] = 'F', b[4] = 1, b[5] = 1, b[6] = 1;
     Put16(b, 16, 2), Put16(b, 18, 40), Put32(b, 20, 1), Put32(b, 24, kText);
     Put32(b, 28, 52), Put16(b, 40, 52), Put16(b, 42, 32), Put16(b, 44, 1);
-    Put32(b, 52, 1); // PT_LOAD
+    Put32(b, 52, 1);  // PT_LOAD
     Put32(b, 52 + 4, 84), Put32(b, 52 + 8, kText), Put32(b, 52 + 12, kText);
     Put32(b, 52 + 16, 0x40), Put32(b, 52 + 20, 0x40), Put32(b, 52 + 24, 5),
         Put32(b, 52 + 28, 0x1000);
@@ -262,10 +262,10 @@ struct Guest {
 struct Probe {
     std::mutex mutex;
     std::condition_variable cv;
-    std::shared_ptr<Request> pending; // a request that returned Deferred
-    std::vector<u32> seen_words;      // what a handler read (see the commands)
-    std::vector<std::string> events;  // the order things happened in
-    std::thread::id replied_on;       // the thread an observer saw the reply on
+    std::shared_ptr<Request> pending;  // a request that returned Deferred
+    std::vector<u32> seen_words;       // what a handler read (see the commands)
+    std::vector<std::string> events;   // the order things happened in
+    std::thread::id replied_on;        // the thread an observer saw the reply on
     std::atomic<int> replied{0};
 };
 Probe* g_probe = nullptr;
@@ -318,7 +318,7 @@ public:
         Register(0x000C, "NoReply", &TestService::NoReply);
         Register(0x000D, "Objects", &TestService::Objects);
         Register(0x000E, "Overflow", &TestService::Overflow);
-        Register(0x000F, "Known"); // listed, not implemented
+        Register(0x000F, "Known");  // listed, not implemented
         Register(0x0010, "Typed", &TestService::Typed);
     }
 
@@ -355,8 +355,8 @@ private:
         Context().GetKernel().NewSemaphore(&semaphore, 0, 3, "tst");
         Reply& reply = request.MakeReply(1, 5);
         reply.Push(kResultSuccess);
-        reply.PushCopyObjects(first[0]);             // 2 words
-        reply.PushMoveObjects(semaphore, second[1]); // 3 words
+        reply.PushCopyObjects(first[0]);              // 2 words
+        reply.PushMoveObjects(semaphore, second[1]);  // 3 words
     }
 
     void StaticIn(Request& request) {
@@ -404,8 +404,8 @@ private:
         std::reverse(bytes.begin(), bytes.end());
         const bool write_ok = rw->Write(bytes.data(), 0, rw->Size());
         u8 one = 1;
-        const bool ro_write = ro->Write(&one, 0, 1);         // refused: read-only
-        const bool past_end = rw->Read(&one, rw->Size(), 1); // refused: outside the buffer
+        const bool ro_write = ro->Write(&one, 0, 1);          // refused: read-only
+        const bool past_end = rw->Read(&one, rw->Size(), 1);  // refused: outside the buffer
         Reply& reply = request.MakeReply(5, 4);
         reply.Push(kResultSuccess);
         reply.Push(read_ok);
@@ -474,8 +474,8 @@ private:
 
     void Typed(Request& request) {
         const auto [event, semaphore] = request.PopObjects<Event, Semaphore>();
-        const auto wrong = request.PopObject<Semaphore>(); // the next descriptor holds an event
-        const auto missing = request.PopObject<Event>();   // and the last one a null handle
+        const auto wrong = request.PopObject<Semaphore>();  // the next descriptor holds an event
+        const auto missing = request.PopObject<Event>();    // and the last one a null handle
         Reply& reply = request.MakeReply(5, 0);
         reply.Push(kResultSuccess);
         reply.Push(event != nullptr);
@@ -514,7 +514,7 @@ Handle ConnectTest(Guest& g) {
     return h;
 }
 
-} // namespace
+}  // namespace
 
 // ---- descriptors ---------------------------------------------------------------------------------------
 
@@ -572,7 +572,7 @@ TEST_CASE("headers and descriptors encode and decode as the 3DS (and Azahar) do"
     CHECK(GetDescriptorType(0x00400802) == ipc::StaticBuffer);
     CHECK(GetDescriptorType(0x0001000E) == ipc::MappedBuffer);
     CHECK(GetDescriptorType(0x00004036) == PXIBuffer);
-    CHECK(static_cast<u32>(GetDescriptorType(0x00000030)) == 0x30); // no such type
+    CHECK(static_cast<u32>(GetDescriptorType(0x00000030)) == 0x30);  // no such type
     static_assert(kCommandBufferLength == 0x40 && kCommandAreaLength == 0x60);
     static_assert(StaticBufferDescriptorWord(0) == 0x40 && StaticBufferDescriptorWord(15) == 0x5E);
 }
@@ -595,9 +595,9 @@ TEST_CASE("a Reply is built word by word, the sizes are checked, and what it hol
         const auto& w = reply.Words();
         CHECK(w[1] == 0);
         CHECK(w[2] == 0x11223344);
-        CHECK(w[3] == 0x05060708); // 64-bit values: low word first
+        CHECK(w[3] == 0x05060708);  // 64-bit values: low word first
         CHECK(w[4] == 0x01020304);
-        CHECK(w[5] == 0x000000AB); // the bytes above a small value are zero
+        CHECK(w[5] == 0x000000AB);  // the bytes above a small value are zero
         CHECK(w[6] == 0x0000CDEF);
         CHECK(w[7] == 1);
         CHECK(w[8] == 0x3FC00000);
@@ -607,7 +607,7 @@ TEST_CASE("a Reply is built word by word, the sizes are checked, and what it hol
     }
     {
         Reply reply(0x0001, 3, 0);
-        reply.Push(kResultSuccess, u32{1}); // one word short
+        reply.Push(kResultSuccess, u32{1});  // one word short
         CHECK_FALSE(reply.Validate());
         CHECK(f.Logged("declares 4 words and 3 were pushed"));
     }
@@ -617,7 +617,7 @@ TEST_CASE("a Reply is built word by word, the sizes are checked, and what it hol
         };
         Reply reply(0x0001, 4, 0);
         reply.Push(kResultSuccess);
-        reply.PushRaw(Six{{1, 2, 3, 4, 5, 6}}); // two words, the rest zero
+        reply.PushRaw(Six{{1, 2, 3, 4, 5, 6}});  // two words, the rest zero
         reply.Push(u32{9});
         const auto& w = reply.Words();
         CHECK(w[2] == 0x04030201);
@@ -638,14 +638,14 @@ TEST_CASE("a Reply is built word by word, the sizes are checked, and what it hol
         CHECK(w[5] == ipc::CopyHandleDesc(1));
         CHECK(w[6] == 2);
         CHECK(reply.Objects().size() == 3);
-        CHECK_FALSE(reply.Validate()); // 7 words for a declared 6
+        CHECK_FALSE(reply.Validate());  // 7 words for a declared 6
     }
     {
         Reply reply(0x0001, 1, 2);
         reply.Push(kResultSuccess);
         reply.PushStaticBuffer({1, 2, 3}, 4);
         CHECK(reply.Words()[2] == ipc::StaticBufferDesc(3, 4));
-        CHECK(reply.Words()[3] == 0xDEADC0DE); // replaced when the reply is written
+        CHECK(reply.Words()[3] == 0xDEADC0DE);  // replaced when the reply is written
         REQUIRE(reply.StaticData(4).has_value());
         CHECK(reply.StaticData(4)->size() == 3);
         CHECK_FALSE(reply.StaticData(5).has_value());
@@ -681,14 +681,14 @@ TEST_CASE("normal parameters of every type come out of a request and back into a
     REQUIRE(services.find("tst:ipc") != services.end());
     CHECK(services.find("tst:ipc")->second.calls == 1);
     REQUIRE(reply.size() == 8);
-    CHECK(reply[0] == ipc::MakeHeader(0x0001, 7, 0)); // the reply keeps the request's command id
+    CHECK(reply[0] == ipc::MakeHeader(0x0001, 7, 0));  // the reply keeps the request's command id
     CHECK(reply[1] == kResultSuccess);
-    CHECK(reply[2] == 42);         // u32 + 1
-    CHECK(reply[3] == 6);          // u64 * 2: low word,
-    CHECK(reply[4] == 4);          // high word
-    CHECK(reply[5] == 0x00000000); // the u8 0xFF + 1 wraps to 0; the bytes above it are zero
-    CHECK(reply[6] == 1);          // !bool: the low byte was 0, so false became true
-    CHECK(reply[7] == 0x40900000); // 2.25f * 2 = 4.5f
+    CHECK(reply[2] == 42);          // u32 + 1
+    CHECK(reply[3] == 6);           // u64 * 2: low word,
+    CHECK(reply[4] == 4);           // high word
+    CHECK(reply[5] == 0x00000000);  // the u8 0xFF + 1 wraps to 0; the bytes above it are zero
+    CHECK(reply[6] == 1);           // !bool: the low byte was 0, so false became true
+    CHECK(reply[7] == 0x40900000);  // 2.25f * 2 = 4.5f
 }
 
 TEST_CASE("a handle descriptor with several handles: copies stay, every moved handle is closed") {
@@ -711,7 +711,7 @@ TEST_CASE("a handle descriptor with several handles: copies stay, every moved ha
                           {ipc::MakeHeader(0x0002, 0, 8), ipc::CopyHandleDesc(2), e1, e2,
                            ipc::MoveHandleDesc(2), e3, e4, ipc::CopyHandleDesc(1), 0},
                           7);
-        copied_open[0] = g.Wait(e1, 0) == kTimeout; // an open, unsignalled event times out
+        copied_open[0] = g.Wait(e1, 0) == kTimeout;  // an open, unsignalled event times out
         copied_open[1] = g.Wait(e2, 0) == kTimeout;
         moved_open[0] = g.Wait(e3, 0) != 0xD8E007F7;
         moved_open[1] = g.Wait(e4, 0) != 0xD8E007F7;
@@ -734,15 +734,16 @@ TEST_CASE("a handle descriptor with several handles: copies stay, every moved ha
     CHECK(probe.seen_words[4] == 0xFFFF);
     CHECK(copied_open[0]);
     CHECK(copied_open[1]);
-    CHECK_FALSE(
-        moved_open[0]); // both handles of the move descriptor are closed (Azahar closes only a
-    CHECK_FALSE(moved_open[1]); // descriptor with one: it compares the whole word with MoveHandle)
+    // both handles of the move descriptor are closed (Azahar closes only a descriptor with one: it
+    // compares the whole word with MoveHandle)
+    CHECK_FALSE(moved_open[0]);
+    CHECK_FALSE(moved_open[1]);
     // the reply: header, result, copy desc + 1 handle, move desc + 2 handles = 7 words
     REQUIRE(reply.size() == 7);
     CHECK(reply[0] == ipc::MakeHeader(0x0002, 1, 5));
     CHECK(reply[2] == ipc::CopyHandleDesc(1));
     CHECK(reply[3] != 0);
-    CHECK(reply[3] != first_event); // the same object, under a new handle
+    CHECK(reply[3] != first_event);  // the same object, under a new handle
     CHECK(reply[4] == ipc::MoveHandleDesc(2));
     CHECK(reply[5] != 0);
     CHECK(reply[6] != 0);
@@ -760,7 +761,7 @@ TEST_CASE("objects are cast to the type a service asks for, and null if it is an
         const Handle event = g.NewEvent();
         const Handle event2 = g.NewEvent();
         const Handle semaphore =
-            CallSvc(*f.runtime, 0x15, {0, 0, 1}).r[1]; // svcCreateSemaphore: initial 0, maximum 1
+            CallSvc(*f.runtime, 0x15, {0, 0, 1}).r[1];  // svcCreateSemaphore: initial 0, maximum 1
         REQUIRE(semaphore != 0);
         reply = g.Request(session,
                           {ipc::MakeHeader(0x0010, 0, 7), ipc::CopyHandleDesc(2), event, semaphore,
@@ -771,10 +772,10 @@ TEST_CASE("objects are cast to the type a service asks for, and null if it is an
     CHECK(status == 0);
     REQUIRE(reply.size() == 6);
     CHECK(reply[1] == kResultSuccess);
-    CHECK(reply[2] == 1); // an event where an event was asked for
-    CHECK(reply[3] == 1); // a semaphore where a semaphore was asked for
-    CHECK(reply[4] == 0); // an event where a semaphore was asked for
-    CHECK(reply[5] == 0); // no object at all
+    CHECK(reply[2] == 1);  // an event where an event was asked for
+    CHECK(reply[3] == 1);  // a semaphore where a semaphore was asked for
+    CHECK(reply[4] == 0);  // an event where a semaphore was asked for
+    CHECK(reply[5] == 0);  // no object at all
 }
 
 TEST_CASE("the sessions of a service share the state the context keeps for it") {
@@ -828,20 +829,20 @@ TEST_CASE(
     REQUIRE(in_reply.size() == 6);
     CHECK(in_reply[0] == ipc::MakeHeader(0x0003, 5, 0));
     CHECK(in_reply[1] == kResultSuccess);
-    CHECK(in_reply[2] == 2);          // the buffer id
-    CHECK(in_reply[4] == 6);          // the size
-    CHECK(in_reply[5] == 21);         // 1 + 2 + 3 + 4 + 5 + 6
-    CHECK(in_reply[3] == in_address); // the address the client gave
+    CHECK(in_reply[2] == 2);           // the buffer id
+    CHECK(in_reply[4] == 6);           // the size
+    CHECK(in_reply[5] == 21);          // 1 + 2 + 3 + 4 + 5 + 6
+    CHECK(in_reply[3] == in_address);  // the address the client gave
     REQUIRE(out_reply.size() == 4);
     CHECK(out_reply[0] == ipc::MakeHeader(0x0004, 1, 2));
     CHECK(out_reply[1] == kResultSuccess);
     CHECK(out_reply[2] == ipc::StaticBufferDesc(10, 1));
-    CHECK(out_reply[3] == receive); // the address word is the receive buffer's
+    CHECK(out_reply[3] == receive);  // the address word is the receive buffer's
     for (u32 i = 0; i < 10; ++i) {
         CHECK(received[i] == 0xA0 + i);
     }
     for (u32 i = 10; i < 16; ++i) {
-        CHECK(received[i] == 0xEE); // only the bytes of the reply are written
+        CHECK(received[i] == 0xEE);  // only the bytes of the reply are written
     }
     REQUIRE(empty_reply.size() == 6);
     CHECK(empty_reply[2] == 3);
@@ -901,12 +902,12 @@ TEST_CASE("mapped buffers stay in the client's memory, behind their permissions 
     REQUIRE(reply.size() == 10);
     CHECK(reply[0] == ipc::MakeHeader(0x0005, 5, 4));
     CHECK(reply[1] == kResultSuccess);
-    CHECK(reply[2] == 1);                                 // the read-write buffer was read
-    CHECK(reply[3] == 1);                                 // and written
-    CHECK(reply[4] == 0);                                 // a write to the read-only one is refused
-    CHECK(reply[5] == 0);                                 // a read past the end is refused
-    CHECK(reply[6] == ipc::MappedBufferDesc(8, ipc::RW)); // the descriptors come back
-    CHECK(reply[7] == rw_address);                        // with the client's own addresses
+    CHECK(reply[2] == 1);  // the read-write buffer was read
+    CHECK(reply[3] == 1);  // and written
+    CHECK(reply[4] == 0);  // a write to the read-only one is refused
+    CHECK(reply[5] == 0);  // a read past the end is refused
+    CHECK(reply[6] == ipc::MappedBufferDesc(8, ipc::RW));  // the descriptors come back
+    CHECK(reply[7] == rw_address);                         // with the client's own addresses
     CHECK(reply[8] == ipc::MappedBufferDesc(4, ipc::R));
     CHECK(reply[9] == ro_address);
     CHECK(rw_after == std::vector<u8>{8, 7, 6, 5, 4, 3, 2, 1});
@@ -928,7 +929,7 @@ TEST_CASE("the calling PID is filled in, in requests and in replies") {
     CHECK(status == 0);
     REQUIRE(reply.size() == 5);
     CHECK(reply[0] == ipc::MakeHeader(0x0006, 2, 2));
-    CHECK(reply[2] == kApplicationProcessId); // what the service read
+    CHECK(reply[2] == kApplicationProcessId);  // what the service read
     CHECK(reply[3] == ipc::CallingPidDesc());
     CHECK(reply[4] == kApplicationProcessId);
 }
@@ -943,8 +944,8 @@ TEST_CASE("an unknown command is logged once and answered with the command id, o
         const Handle session = ConnectTest(g);
         first = g.Request(session, {0x00FF0040, 7}, 3);
         second = g.Request(session, {0x00FF0040, 7}, 3);
-        known = g.Request(session, {0x000F0000}, 3);        // registered without a handler
-        other_header = g.Request(session, {0x00FF0000}, 3); // same command, another header
+        known = g.Request(session, {0x000F0000}, 3);         // registered without a handler
+        other_header = g.Request(session, {0x00FF0000}, 3);  // same command, another header
         ExitProcess(*f.runtime);
     });
     CHECK(status == 0);
@@ -956,10 +957,10 @@ TEST_CASE("an unknown command is logged once and answered with the command id, o
     CHECK(known[0] == 0x000F0040);
     CHECK(known[1] == 0);
     CHECK(other_header[0] == 0x00FF0040);
-    CHECK(f.LoggedCount("unimplemented tst:ipc 0x00ff0040") == 1); // once per header
+    CHECK(f.LoggedCount("unimplemented tst:ipc 0x00ff0040") == 1);  // once per header
     CHECK(f.LoggedCount("unimplemented tst:ipc 0x000f0000") == 1);
     CHECK(f.LoggedCount("unimplemented tst:ipc 0x00ff0000") == 1);
-    CHECK(f.Logged("Known")); // the name of a command that is listed
+    CHECK(f.Logged("Known"));  // the name of a command that is listed
 }
 
 TEST_CASE("a malformed command makes svcSendSyncRequest fail and the thread keeps running") {
@@ -1001,7 +1002,7 @@ TEST_CASE(
     CHECK(f.Logged("the handler returned without a reply"));
     CHECK(wrong[0] == ipc::MakeHeader(0x000A, 2, 0));
     CHECK(wrong[1] == 0);
-    CHECK(wrong[2] == 1); // the words that fit
+    CHECK(wrong[2] == 1);  // the words that fit
     CHECK(f.Logged("declares 3 words and 4 were pushed"));
     CHECK(overflow[0] == ipc::MakeHeader(0x000E, 1, 0));
     CHECK(f.Logged("more than 64 words pushed"));
@@ -1037,7 +1038,7 @@ TEST_CASE(
     CHECK(after_close == kResultSuccess);
     CHECK(again != 0);
     CHECK(unknown == 0xD88007FA);
-    CHECK(too_long == 0xE0E0181E); // the SVC layer's check, before the manager
+    CHECK(too_long == 0xE0E0181E);  // the SVC layer's check, before the manager
     CHECK(empty == 0xD88007FA);
 }
 
@@ -1047,15 +1048,15 @@ TEST_CASE("the manager registers ports and services by name, with Azahar's check
     std::vector<Result> results;
     const int status = BootWith(f, dir, {"--ms", "100"}, [&] {
         ServiceManager& m = Manager(f);
-        results.push_back(m.RegisterService("tst:svc", MakeTestFactory()));   // ok
-        results.push_back(m.RegisterService("tst:svc", MakeTestFactory()));   // taken
-        results.push_back(m.RegisterService("", MakeTestFactory()));          // empty
-        results.push_back(m.RegisterService("ninechars", MakeTestFactory())); // 9 characters
-        results.push_back(m.RegisterService(std::string("ab\0cd", 5), MakeTestFactory())); // a NUL
-        results.push_back(m.RegisterService("tst:nof", ServiceFactory()));     // no factory
-        results.push_back(m.AddNamedPort("tst:long:port", MakeTestFactory())); // 13 characters
-        results.push_back(m.AddNamedPort("tst:port", MakeTestFactory()));      // ok
-        results.push_back(m.AddNamedPort("tst:port", MakeTestFactory()));      // taken
+        results.push_back(m.RegisterService("tst:svc", MakeTestFactory()));    // ok
+        results.push_back(m.RegisterService("tst:svc", MakeTestFactory()));    // taken
+        results.push_back(m.RegisterService("", MakeTestFactory()));           // empty
+        results.push_back(m.RegisterService("ninechars", MakeTestFactory()));  // 9 characters
+        results.push_back(m.RegisterService(std::string("ab\0cd", 5), MakeTestFactory()));  // a NUL
+        results.push_back(m.RegisterService("tst:nof", ServiceFactory()));      // no factory
+        results.push_back(m.AddNamedPort("tst:long:port", MakeTestFactory()));  // 13 characters
+        results.push_back(m.AddNamedPort("tst:port", MakeTestFactory()));       // ok
+        results.push_back(m.AddNamedPort("tst:port", MakeTestFactory()));       // taken
         // a service is not a port and a port is not a service
         std::shared_ptr<Object> port_session;
         std::shared_ptr<ClientSession> service_session;
@@ -1266,12 +1267,12 @@ TEST_CASE(
             answer.Push(kResultSuccess);
             Complete(probe.pending, std::move(answer));
         });
-        g.Request(session, {ipc::MakeHeader(0x0009, 1, 0), 0x77},
-                  2); // never returns: nobody wakes the client
+        // never returns: nobody wakes the client
+        g.Request(session, {ipc::MakeHeader(0x0009, 1, 0), 0x77}, 2);
         ExitProcess(*f.runtime);
     });
     g_probe = nullptr;
-    CHECK(status == 0); // the time limit
+    CHECK(status == 0);  // the time limit
     REQUIRE(probe.pending != nullptr);
     CHECK(probe.pending->Finished());
     CHECK(replied == 0);
@@ -1313,19 +1314,19 @@ TEST_CASE("a client thread that ends while it waits for a deferred reply cancels
             const Result result = manager.SendSyncRequest(*client, session);
             REQUIRE(result == kResultSuccess);
             if (client->status != ThreadStatus::Running) {
-                scheduler.Park(*client); // what the SVC layer does
+                scheduler.Park(*client);  // what the SVC layer does
             }
             client_resumed = true;
         });
         scheduler.Start(client);
-        scheduler.Sleep(1000000); // the client sends its request and waits
+        scheduler.Sleep(1000000);  // the client sends its request and waits
         REQUIRE(probe.pending != nullptr);
         CHECK(client->status == ThreadStatus::WaitIPC);
         scheduler.Terminate(client);
         Reply answer(0x0007, 1, 0);
         answer.Push(kResultSuccess);
         Complete(probe.pending, std::move(answer));
-        scheduler.Sleep(1000000); // the completion runs
+        scheduler.Sleep(1000000);  // the completion runs
         cancelled = probe.pending->Cancelled();
         finished = probe.pending->Finished();
         REQUIRE(f.runtime->Memory().ReadBlock(client_words.data(), client_command, 4));
@@ -1337,7 +1338,7 @@ TEST_CASE("a client thread that ends while it waits for a deferred reply cancels
     CHECK(finished);
     CHECK_FALSE(client_resumed);
     CHECK(replied == 0);
-    CHECK(client_words[0] == ipc::MakeHeader(0x0007, 0, 0)); // nothing was written for it
+    CHECK(client_words[0] == ipc::MakeHeader(0x0007, 0, 0));  // nothing was written for it
 }
 
 // ---- --trace-ipc ------------------------------------------------------------------------------------------------------
@@ -1348,7 +1349,7 @@ namespace {
 struct TraceLine {
     std::string thread;
     std::map<std::string, std::string> fields;
-    std::vector<std::string> data; // the data= fields, in order
+    std::vector<std::string> data;  // the data= fields, in order
 };
 
 std::vector<TraceLine> RequestLines(const std::vector<std::string>& lines) {
@@ -1379,7 +1380,7 @@ std::string Crc(const std::vector<u8>& bytes) {
     return fmt::format("0x{:08x}", Crc32(bytes.data(), bytes.size()));
 }
 
-} // namespace
+}  // namespace
 
 TEST_CASE("--trace-ipc writes every request with its reply in the format of "
           "tools/compare_ipc_traces.py") {
@@ -1430,7 +1431,7 @@ TEST_CASE("--trace-ipc writes every request with its reply in the format of "
             ExitProcess(*f.runtime);
         });
     g_probe = nullptr;
-    CHECK(status == 0); // the time limit
+    CHECK(status == 0);  // the time limit
     const std::vector<std::string> lines = Lines(ReadFile(path));
     REQUIRE(lines.size() >= 3);
     CHECK(lines[0].rfind("# ipctrace v1 ", 0) == 0);

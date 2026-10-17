@@ -23,7 +23,7 @@ namespace {
 
 constexpr const char* kLog = "Kernel.IPC";
 
-} // namespace
+}  // namespace
 
 // ---- MappedBuffer ------------------------------------------------------------------------------------------
 
@@ -107,8 +107,8 @@ void Reply::PushBytes(const void* data, std::size_t size) {
         overflow_ = true;
         return;
     }
-    std::memcpy(&words_[index_], data,
-                size); // the words are zero, so the bytes above the value are too
+    // the words are zero, so the bytes above the value are too
+    std::memcpy(&words_[index_], data, size);
     index_ += count;
 }
 
@@ -126,8 +126,8 @@ void Reply::PushStaticBuffer(std::vector<u8> buffer, u8 buffer_id) {
         return;
     }
     PushWord(ipc::StaticBufferDesc(buffer.size(), buffer_id));
-    PushWord(
-        0xDEADC0DE); // replaced by the address of the client's receive buffer when the reply is written
+    // replaced by the address of the client's receive buffer when the reply is written
+    PushWord(0xDEADC0DE);
     static_buffers_[buffer_id] = std::move(buffer);
 }
 
@@ -138,7 +138,7 @@ void Reply::PushMappedBuffer(const MappedBuffer& buffer) {
 
 void Reply::PushPid() {
     PushWord(ipc::CallingPidDesc());
-    PushWord(0); // the client's process id, filled in when the reply is written
+    PushWord(0);  // the client's process id, filled in when the reply is written
 }
 
 bool Reply::Validate() const {
@@ -370,7 +370,7 @@ u32 Request::PopPid() {
 
 const StaticBuffer* Request::PopStaticBuffer() {
     const u32 descriptor = NextWord();
-    NextWord(); // the address, which the translation left as it was
+    NextWord();  // the address, which the translation left as it was
     if (ipc::GetDescriptorType(descriptor) != ipc::StaticBuffer) {
         MH4N_LOG(Error, kLog,
                  "request 0x{:08X}: expected a static buffer descriptor, found 0x{:08X}", Header(),
@@ -537,4 +537,4 @@ void Complete(const std::shared_ptr<Request>& request, Reply reply) {
     request->GetKernel().Post([request, shared] { request->Deliver(std::move(*shared)); });
 }
 
-} // namespace mh4n
+}  // namespace mh4n

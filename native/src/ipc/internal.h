@@ -13,6 +13,6 @@ namespace detail {
 void RememberServiceManager(Runtime* runtime, ServiceManager* manager);
 void ForgetServiceManager(ServiceManager* manager);
 
-} // namespace detail
+}  // namespace detail
 
-} // namespace mh4n
+}  // namespace mh4n

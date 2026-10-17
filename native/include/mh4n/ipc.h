@@ -93,8 +93,8 @@ static_assert(std::endian::native == std::endian::little, "IPC words are copied 
 inline constexpr Result kResultInvalidBufferDescriptor = 0xD9001830;
 inline constexpr Result kResultSessionClosed = 0xC920181A;
 inline constexpr Result kResultMaxConnectionsReached =
-    0xD0401834;                                          // a port with all its sessions open
-inline constexpr Result kResultUnknownPort = 0xD88007FA; // svcConnectToPort, a name nobody has
+    0xD0401834;                                           // a port with all its sessions open
+inline constexpr Result kResultUnknownPort = 0xD88007FA;  // svcConnectToPort, a name nobody has
 static_assert(kResultInvalidBufferDescriptor == MakeResult(48, 6, 8, 27));
 static_assert(kResultSessionClosed == MakeResult(26, 6, 9, 25));
 static_assert(kResultMaxConnectionsReached == MakeResult(52, 6, 2, 26));
@@ -216,10 +216,10 @@ constexpr DescriptorType GetDescriptorType(u32 descriptor) {
 // One translate descriptor of a request, in the order they appear.
 struct Descriptor {
     DescriptorType type = CopyHandle;
-    u32 word = 0;    // the descriptor as the client wrote it
-    u32 index = 0;   // its position in the command (the header is word 0)
-    u32 size = 0;    // handles: how many; buffers: bytes; the calling PID: 1
-    u32 address = 0; // buffers: the word after the descriptor (the client's address)
+    u32 word = 0;     // the descriptor as the client wrote it
+    u32 index = 0;    // its position in the command (the header is word 0)
+    u32 size = 0;     // handles: how many; buffers: bytes; the calling PID: 1
+    u32 address = 0;  // buffers: the word after the descriptor (the client's address)
     // Handle descriptors: what the client's handles were (null for the handle 0).
     std::vector<std::shared_ptr<Object>> objects;
     // Mapped buffers: the permissions and the index in Request::MappedBuffers.
@@ -227,7 +227,7 @@ struct Descriptor {
     u32 mapped_id = 0;
 };
 
-} // namespace ipc
+}  // namespace ipc
 
 // ---- buffers -----------------------------------------------------------------------------------------
 
@@ -358,7 +358,7 @@ private:
     std::array<u32, ipc::kCommandBufferLength> words_{};
     std::size_t index_ = 1;
     bool overflow_ = false;
-    std::vector<std::shared_ptr<Object>> objects_; // the words of handles hold indices into this
+    std::vector<std::shared_ptr<Object>> objects_;  // the words of handles hold indices into this
     std::array<std::optional<std::vector<u8>>, ipc::kMaxStaticBuffers> static_buffers_;
 };
 
@@ -386,7 +386,7 @@ private:
     void Close();
 
     std::unique_ptr<Service> service_;
-    std::shared_ptr<Port> port_; // null for sessions services hand out
+    std::shared_ptr<Port> port_;  // null for sessions services hand out
     std::string name_;
 };
 
@@ -427,7 +427,7 @@ public:
     Result Translate(std::span<const u32> area);
 
     // ---- who ----
-    u32 Sequence() const { return sequence_; } // 1 for the first request of the run
+    u32 Sequence() const { return sequence_; }  // 1 for the first request of the run
     Thread& ClientThread() const { return *thread_; }
     const std::shared_ptr<Thread>& ClientThreadPtr() const { return thread_; }
     // The client session the request came through.
@@ -576,4 +576,4 @@ private:
 // (and logs) if the request already has its reply, and nothing if the client thread ended meanwhile.
 void Complete(const std::shared_ptr<Request>& request, Reply reply);
 
-} // namespace mh4n
+}  // namespace mh4n

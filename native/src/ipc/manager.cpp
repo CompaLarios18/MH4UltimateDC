@@ -40,14 +40,14 @@ Result ValidateServiceName(const std::string& name) {
     return kResultSuccess;
 }
 
-} // namespace
+}  // namespace
 
 // ---- sessions ----------------------------------------------------------------------------------------------------
 
 struct ServerSession::Port {
     std::string name;
     u32 max_sessions = kDefaultMaxSessions;
-    u32 active = 0; // sessions open now
+    u32 active = 0;  // sessions open now
 };
 
 ServerSession::~ServerSession() {
@@ -345,4 +345,4 @@ Result ServiceManager::SendSyncRequest(Thread& thread, Handle handle) {
     return kResultSuccess;
 }
 
-} // namespace mh4n
+}  // namespace mh4n

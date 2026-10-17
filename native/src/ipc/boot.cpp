@@ -40,7 +40,7 @@ void StartServices(Runtime& rt) {
 
 MH4N_REGISTER(BootStep, "services.ipc", BootStep{Phase::Services, StartServices});
 
-} // namespace
+}  // namespace
 
 namespace detail {
 
@@ -56,7 +56,7 @@ void ForgetServiceManager(ServiceManager* manager) {
     }
 }
 
-} // namespace detail
+}  // namespace detail
 
 ServiceManager* FindServiceManager(Runtime& runtime) {
     std::lock_guard lock(g_managers_mutex);
@@ -64,4 +64,4 @@ ServiceManager* FindServiceManager(Runtime& runtime) {
     return it == Managers().end() ? nullptr : it->second;
 }
 
-} // namespace mh4n
+}  // namespace mh4n

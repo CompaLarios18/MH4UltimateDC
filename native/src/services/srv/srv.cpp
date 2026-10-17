@@ -194,6 +194,6 @@ MH4N_REGISTER(ServiceFactory, "srv:",
               ServiceFactory::NamedPort(
                   [](ServiceContext& context) { return std::make_unique<Srv>(context); }, 64));
 
-} // namespace
+}  // namespace
 
-} // namespace mh4n
+}  // namespace mh4n

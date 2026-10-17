@@ -83,10 +83,10 @@ class ThreadManager;
 
 // ---- limits and result codes ---------------------------------------------------------------------------
 
-inline constexpr std::size_t kMaxServiceNameLength = 8; // a name registered with srv:
-inline constexpr std::size_t kMaxPortNameLength = 11;   // a name svcConnectToPort takes
-inline constexpr u32 kDefaultMaxSessions = 10;          // Azahar's DefaultMaxSessions
-inline constexpr s64 kIpcReplyDelayNs = 39000;          // see the overview
+inline constexpr std::size_t kMaxServiceNameLength = 8;  // a name registered with srv:
+inline constexpr std::size_t kMaxPortNameLength = 11;    // a name svcConnectToPort takes
+inline constexpr u32 kDefaultMaxSessions = 10;           // Azahar's DefaultMaxSessions
+inline constexpr s64 kIpcReplyDelayNs = 39000;           // see the overview
 
 // The results of src/core/hle/service/sm/sm.h (the values are its comments').
 inline constexpr Result kResultSrvServiceNotRegistered = 0xD0406401;
@@ -219,13 +219,13 @@ struct ServiceFactory {
     using Create = std::function<std::unique_ptr<Service>(ServiceContext&)>;
 
     Create create;
-    u32 max_sessions = kDefaultMaxSessions; // sessions open at once; more are refused
-    bool named_port = false;                // reached by svcConnectToPort, not by srv:
+    u32 max_sessions = kDefaultMaxSessions;  // sessions open at once; more are refused
+    bool named_port = false;                 // reached by svcConnectToPort, not by srv:
 
     ServiceFactory() = default;
     template <class F, class = std::enable_if_t<
                            std::is_invocable_r_v<std::unique_ptr<Service>, F&, ServiceContext&>>>
-    ServiceFactory(F&& factory, u32 sessions = kDefaultMaxSessions) // NOLINT: lambdas convert
+    ServiceFactory(F&& factory, u32 sessions = kDefaultMaxSessions)  // NOLINT: lambdas convert
         : create(std::forward<F>(factory)), max_sessions(sessions) {}
 
     template <class F>
@@ -332,4 +332,4 @@ private:
 // The manager of a runtime whose `services` boot step has run, or null.
 ServiceManager* FindServiceManager(Runtime& runtime);
 
-} // namespace mh4n
+}  // namespace mh4n
