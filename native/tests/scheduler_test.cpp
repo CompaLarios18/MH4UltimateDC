@@ -25,6 +25,7 @@
 // the test checks it afterwards.
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <atomic>
 #include <string>
 #include <thread>

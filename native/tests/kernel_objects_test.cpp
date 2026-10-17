@@ -35,6 +35,7 @@
 // Clock arithmetic: 268,111,856 ticks per second, so 1 s = 268111856 ticks and 0.5 s = 134055928.
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <map>
 #include <mutex>
 #include <thread>
