@@ -56,10 +56,20 @@
 //
 // Threads (principle 6): a Request, its Reply and the cursor belong to the scheduler thread. The
 // exceptions are `MappedBuffer::Read/Write` (they touch only the client's range lent by the request, so
-// an I/O thread can fill it while the client waits) and `Complete`.
+// an I/O thread can fill it while the client waits), `Complete`, `Finished` and `Cancelled`.
+//
+// What a request holds of the kernel (the client thread, the process, the client session, the objects
+// the client moved or copied in, the objects of a reply) is released on the scheduler thread, by the
+// IPC layer, when the request ends: after the reply is written (immediate or deferred), when the reply
+// is dropped because the client stopped waiting, and when the client thread ends (`Cancel`). After
+// that, `ClientThreadPtr()`, `Session()`, `IncomingObjects()` and the objects of `Descriptors()` are
+// empty, `ClientThread()` must not be called, and `HasReply()` is false. So a copy kept with `Share()`
+// can be dropped on any host thread once the request has finished; a service that drops its copy
+// without ever completing it leaves the client waiting and the release to whoever drops the last one.
 #pragma once
 
 #include <array>
+#include <atomic>
 #include <bit>
 #include <cstddef>
 #include <cstring>
@@ -428,9 +438,11 @@ public:
 
     // ---- who ----
     u32 Sequence() const { return sequence_; }  // 1 for the first request of the run
+    // The client thread; only until the request ends (see the top of this file).
     Thread& ClientThread() const { return *thread_; }
+    u32 ClientThreadId() const { return thread_id_; }  // valid for ever
     const std::shared_ptr<Thread>& ClientThreadPtr() const { return thread_; }
-    // The client session the request came through.
+    // The client session the request came through; null once the request has ended.
     const std::shared_ptr<ClientSession>& Session() const { return session_; }
     // The process id the calling PID descriptor carries.
     u32 CallingPid() const { return pid_; }
@@ -520,7 +532,7 @@ public:
 
     // For Handled::Deferred.
     std::shared_ptr<Request> Share() { return shared_from_this(); }
-    // True once the reply has been written (or the client thread ended before it came).
+    // True once the reply has been written (or the client thread ended before it came). Any thread.
     bool Finished() const { return finished_; }
 
     // ---- for the IPC layer ----
@@ -529,8 +541,13 @@ public:
     std::vector<u32> WriteReply(const Reply& reply);
     void MarkFinished() { finished_ = true; }
     // The client thread ended while the request waited (Thread::Stop): a late Complete does nothing.
-    void Cancel() { cancelled_ = true; }
+    // Scheduler thread; releases what the request holds (ReleaseKernelObjects).
+    void Cancel();
     bool Cancelled() const { return cancelled_; }
+    // Lets go of the client thread, process and session, the incoming objects and the reply, and of the
+    // replied hook: the destructors that run are the scheduler thread's. Scheduler thread; the IPC layer
+    // calls it when the request ends.
+    void ReleaseKernelObjects();
     // Called after the reply is written, with the words the client reads.
     using RepliedHook = std::function<void(const Request&, std::span<const u32> words)>;
     void SetRepliedHook(RepliedHook hook) { replied_hook_ = std::move(hook); }
@@ -554,6 +571,7 @@ private:
     std::shared_ptr<Thread> thread_;
     std::shared_ptr<Process> process_;
     std::shared_ptr<ClientSession> session_;
+    u32 thread_id_ = 0;
     u32 sequence_;
     u32 pid_ = 0;
     std::array<u32, ipc::kCommandBufferLength> untranslated_{};
@@ -566,8 +584,8 @@ private:
     std::size_t cursor_ = 1;
     bool cursor_warned_ = false;
     std::optional<Reply> reply_;
-    bool finished_ = false;
-    bool cancelled_ = false;
+    std::atomic<bool> finished_{false};
+    std::atomic<bool> cancelled_{false};
     RepliedHook replied_hook_;
 };
 

@@ -267,6 +267,11 @@ struct Probe {
     std::vector<std::string> events;   // the order things happened in
     std::thread::id replied_on;        // the thread an observer saw the reply on
     std::atomic<int> replied{0};
+    // Services that were destroyed: how many, and the thread of the last one (under `mutex`).
+    std::atomic<int> sub_deaths{0};
+    std::atomic<int> test_deaths{0};
+    std::thread::id sub_died_on;
+    std::thread::id test_died_on;
 };
 Probe* g_probe = nullptr;
 
@@ -276,6 +281,15 @@ public:
         Register(0x0001, "Answer", &SubService::Answer);
     }
     const char* SessionKind() const override { return "file"; }
+    ~SubService() override {
+        if (Probe* probe = g_probe) {
+            {
+                std::lock_guard lock(probe->mutex);
+                probe->sub_died_on = std::this_thread::get_id();
+            }
+            ++probe->sub_deaths;
+        }
+    }
 
 private:
     void Answer(Request& request) {
@@ -320,6 +334,15 @@ public:
         Register(0x000E, "Overflow", &TestService::Overflow);
         Register(0x000F, "Known");  // listed, not implemented
         Register(0x0010, "Typed", &TestService::Typed);
+    }
+    ~TestService() override {
+        if (Probe* probe = g_probe) {
+            {
+                std::lock_guard lock(probe->mutex);
+                probe->test_died_on = std::this_thread::get_id();
+            }
+            ++probe->test_deaths;
+        }
     }
 
 private:
@@ -1290,7 +1313,7 @@ TEST_CASE("a client thread that ends while it waits for a deferred reply cancels
     g_probe = &probe;
     std::atomic<int> replied{0};
     bool client_resumed = false;
-    bool cancelled = false, finished = false;
+    bool cancelled = false, finished = false, released = false;
     u32 client_command = 0;
     std::array<u32, 1> client_words{};
     const int status = BootWith(f, dir, {"--ms", "100"}, [&] {
@@ -1329,6 +1352,8 @@ TEST_CASE("a client thread that ends while it waits for a deferred reply cancels
         scheduler.Sleep(1000000);  // the completion runs
         cancelled = probe.pending->Cancelled();
         finished = probe.pending->Finished();
+        released = probe.pending->ClientThreadPtr() == nullptr &&
+                   probe.pending->Session() == nullptr;
         REQUIRE(f.runtime->Memory().ReadBlock(client_words.data(), client_command, 4));
         ExitProcess(*f.runtime);
     });
@@ -1336,10 +1361,152 @@ TEST_CASE("a client thread that ends while it waits for a deferred reply cancels
     CHECK(status == 0);
     CHECK(cancelled);
     CHECK(finished);
+    CHECK(released);  // Cancel (the thread ended) let go of the thread and the session
     CHECK_FALSE(client_resumed);
     CHECK(replied == 0);
     CHECK(client_words[0] == ipc::MakeHeader(0x0007, 0, 0));  // nothing was written for it
 }
+
+// What a service keeps with Request::Share() holds nothing the kernel owns once the request is finished,
+// so the last copy can go on any host thread: the objects the client moved in, and the session the request
+// came through, are released on the scheduler thread.
+namespace {
+
+// The worker of the two tests below: takes the deferred request out of the probe (so its copy is the only
+// one besides the kernel's), completes it, waits until the scheduler thread has delivered the reply and
+// the posted function is gone, and only then lets its copy go.
+struct LateDropper {
+    std::atomic<bool> go{true};  // a test that has to do something first clears it and sets it later
+    std::atomic<bool> finished_seen{false};
+    std::atomic<bool> holds_nothing{false};
+    std::thread thread;
+
+    void Start(Probe& probe) {
+        thread = std::thread([this, &probe] {
+            std::shared_ptr<Request> request;
+            {
+                std::unique_lock lock(probe.mutex);
+                if (!probe.cv.wait_for(lock, std::chrono::seconds(30),
+                                       [&] { return probe.pending != nullptr; })) {
+                    return;
+                }
+                request = std::move(probe.pending);
+                probe.pending.reset();
+            }
+            for (int i = 0; i < 30000 && !go; ++i) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+            Reply answer(request->CommandId(), 1, 0);
+            answer.Push(kResultSuccess);
+            Complete(request, std::move(answer));
+            for (int i = 0; i < 30000 && !request->Finished(); ++i) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+            finished_seen = request->Finished();
+            // the scheduler thread is done with its copy by now
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            holds_nothing = request->Session() == nullptr && request->IncomingObjects().empty() &&
+                            request->ClientThreadPtr() == nullptr && !request->HasReply();
+            request.reset();
+        });
+    }
+    void Join() {
+        if (thread.joinable()) {
+            thread.join();
+        }
+    }
+};
+
+}  // namespace
+
+TEST_CASE("objects a client moved into a deferred request are released on the scheduler thread, "
+          "whoever drops the last copy of the request") {
+    Fixture f;
+    TempDir dir;
+    Probe probe;
+    g_probe = &probe;
+    const std::thread::id scheduler_thread = std::this_thread::get_id();
+    LateDropper dropper;
+    dropper.Start(probe);
+    std::vector<u32> reply;
+    Result send_moved_again = 0;
+    int deaths_at_resume = -1;
+    const int status = BootWith(f, dir, {"--frames", "100000000"}, [&] {
+        Guest g(*f.runtime);
+        const Handle session = ConnectTest(g);
+        const std::vector<u32> objects = g.Request(session, {ipc::MakeHeader(0x000D, 0, 0)}, 6);
+        const Handle sub = objects[3];
+        // the only references to the sub-session's service are now the client's handle ...
+        REQUIRE(probe.sub_deaths == 0);
+        // ... and, once the request moved it, the request's own
+        reply = g.Request(session, {ipc::MakeHeader(0x0007, 0, 2), ipc::MoveHandleDesc(1), sub}, 2);
+        deaths_at_resume = probe.sub_deaths;
+        send_moved_again = g.Send(sub);
+        ExitProcess(*f.runtime);
+    });
+    dropper.Join();
+    g_probe = nullptr;
+    CHECK(status == 0);
+    REQUIRE(reply.size() == 2);
+    CHECK(reply[0] == ipc::MakeHeader(0x0007, 1, 0));
+    CHECK(reply[1] == kResultSuccess);
+    CHECK(send_moved_again == 0xD8E007F7);  // the handle was moved out of the client's table
+    CHECK(dropper.finished_seen);
+    CHECK(dropper.holds_nothing);
+    // gone by the time the client resumed, and on the thread that runs the scheduler
+    CHECK(deaths_at_resume == 1);
+    CHECK(probe.sub_deaths == 1);
+    CHECK(probe.sub_died_on == scheduler_thread);
+}
+
+TEST_CASE("the session of a deferred request, closed by the client meanwhile, is released on the "
+          "scheduler thread") {
+    Fixture f;
+    TempDir dir;
+    Probe probe;
+    g_probe = &probe;
+    const std::thread::id scheduler_thread = std::this_thread::get_id();
+    LateDropper dropper;
+    dropper.go = false;
+    dropper.Start(probe);
+    std::vector<u32> reply;
+    Result closed = 0xFFFFFFFF;
+    int deaths_after_close = -1, deaths_at_resume = -1;
+    const int status = BootWith(f, dir, {"--frames", "100000000"}, [&] {
+        Guest g(*f.runtime);
+        const Handle session = ConnectTest(g);
+        Kernel& kernel = f.runtime->GetKernel();
+        GuestScheduler& scheduler = f.runtime->Scheduler();
+        // A second guest thread closes the handle while the first waits for the reply.
+        const std::shared_ptr<Thread> closer =
+            kernel.NewThread("closer", 48, 0, kernel.CurrentProcess());
+        scheduler.AttachFunction(closer, [&] {
+            scheduler.Sleep(1000000);
+            closed = CallSvc(*f.runtime, 0x23, {session}).r[0];
+            deaths_after_close = probe.test_deaths;
+            dropper.go = true;
+        });
+        scheduler.Start(closer);
+        reply = g.Request(session, {ipc::MakeHeader(0x0007, 0, 0)}, 2);
+        deaths_at_resume = probe.test_deaths;
+        ExitProcess(*f.runtime);
+    });
+    dropper.go = true;
+    dropper.Join();
+    g_probe = nullptr;
+    CHECK(status == 0);
+    CHECK(closed == kResultSuccess);
+    // the request kept the session, and with it the service, alive until the reply
+    CHECK(deaths_after_close == 0);
+    REQUIRE(reply.size() == 2);
+    CHECK(reply[1] == kResultSuccess);
+    CHECK(dropper.finished_seen);
+    CHECK(dropper.holds_nothing);
+    CHECK(deaths_at_resume == 1);
+    CHECK(probe.test_deaths == 1);
+    CHECK(probe.test_died_on == scheduler_thread);
+}
+
 
 // ---- --trace-ipc ------------------------------------------------------------------------------------------------------
 

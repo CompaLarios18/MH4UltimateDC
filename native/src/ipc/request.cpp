@@ -157,6 +157,7 @@ Request::Request(Kernel& kernel, std::shared_ptr<Thread> thread,
                  std::shared_ptr<ClientSession> session, u32 sequence)
     : kernel_(kernel), thread_(std::move(thread)), session_(std::move(session)),
       sequence_(sequence) {
+    thread_id_ = thread_->thread_id;
     process_ = thread_->owner_process.lock();
     if (!process_) {
         process_ = kernel_.CurrentProcess();
@@ -167,6 +168,35 @@ Request::Request(Kernel& kernel, std::shared_ptr<Thread> thread,
 }
 
 Request::~Request() = default;
+
+void Request::ReleaseKernelObjects() {
+    // Everything goes into locals that die at the end of this function, on the calling (scheduler)
+    // thread, whoever drops the last copy of the request afterwards. The objects can be the last
+    // reference to a session, whose destructor destroys a service, or to a thread.
+    std::vector<std::shared_ptr<Object>> objects = std::move(incoming_);
+    incoming_.clear();
+    for (ipc::Descriptor& descriptor : descriptors_) {
+        for (std::shared_ptr<Object>& object : descriptor.objects) {
+            objects.push_back(std::move(object));
+        }
+        descriptor.objects.clear();
+    }
+    std::optional<Reply> reply = std::move(reply_);
+    reply_.reset();
+    RepliedHook hook = std::move(replied_hook_);
+    replied_hook_ = nullptr;
+    std::shared_ptr<ClientSession> session = std::move(session_);
+    session_.reset();
+    std::shared_ptr<Process> process = std::move(process_);
+    process_.reset();
+    std::shared_ptr<Thread> thread = std::move(thread_);
+    thread_.reset();
+}
+
+void Request::Cancel() {
+    cancelled_ = true;
+    ReleaseKernelObjects();
+}
 
 u32 Request::AddIncoming(std::shared_ptr<Object> object) {
     incoming_.push_back(std::move(object));
@@ -512,16 +542,21 @@ std::vector<u32> Request::WriteReply(const Reply& reply) {
 }
 
 void Request::Deliver(Reply reply) {
+    // On every path out of here (reply written, dropped, already finished) the kernel objects go.
+    struct Release {
+        Request& request;
+        ~Release() { request.ReleaseKernelObjects(); }
+    } release{*this};
     if (finished_) {
         MH4N_LOG(Error, kLog, "request 0x{:08X} of thread {} already has its reply", Header(),
-                 thread_->thread_id);
+                 thread_id_);
         return;
     }
     finished_ = true;
-    if (cancelled_ || thread_->status != ThreadStatus::WaitIPC) {
+    if (cancelled_ || thread_ == nullptr || thread_->status != ThreadStatus::WaitIPC) {
         MH4N_LOG(Debug, kLog,
                  "the reply to request 0x{:08X} comes after thread {} stopped waiting for it",
-                 Header(), thread_->thread_id);
+                 Header(), thread_id_);
         return;
     }
     const std::vector<u32> words = WriteReply(reply);

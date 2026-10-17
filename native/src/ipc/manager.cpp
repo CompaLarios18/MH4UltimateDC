@@ -337,6 +337,8 @@ Result ServiceManager::SendSyncRequest(Thread& thread, Handle handle) {
             observer.replied(*request, words);
         }
     }
+    // A service may have kept a copy (Share) of a request it answered at once.
+    request->ReleaseKernelObjects();
     if (reply_delay_ns_ > 0) {
         // Azahar's IPC overhead: the client sleeps a moment after the reply (see service.h).
         thread.status = ThreadStatus::WaitIPC;

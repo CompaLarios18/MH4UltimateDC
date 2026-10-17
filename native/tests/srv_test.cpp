@@ -5,7 +5,8 @@
 // EnableNotification, GetServiceHandle with its flags and name checks, Subscribe, Unsubscribe,
 // PublishToSubscriber, ThrowFatalError), the SRV result codes, the answer to an unknown command, the
 // limits of the two named ports (srv: 64 sessions, err:f 1), and the layout of the error information. The
-// expected values for the name checks are the ones tests/ expected/conf_srv.txt records from Azahar.
+// expected values for the name checks are the ones port/tests/expected/conf_srv.txt records from
+// Azahar.
 // Copyright 2016-2025 Citra Emulator Project / Azahar Emulator Project (srv.cpp)
 // Copyright 2017-2025 Citra Emulator Project / Azahar Emulator Project (sm.h)
 // Copyright 2017 Citra Emulator Project (sm.cpp)
