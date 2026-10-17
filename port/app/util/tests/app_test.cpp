@@ -41,9 +41,7 @@ struct FakeRuntime final : IRuntime {
     std::string StatusDetails() const override { return ""; }
     void Start() override {}
     RunState RunStep() override { return RunState::Running; }
-    void SetPaused(bool) override {}
     void Stop() override {}
-    RuntimeStatus Status() const override { return RuntimeStatus::Idle; }
     PerfStats TakePerfStats() override { return {}; }
     void WaitForBackgroundTasks() override {}
     void InitInput() override {}
@@ -57,7 +55,6 @@ struct FakeRuntime final : IRuntime {
 
     std::string UserDir() const override { return user_dir; }
     void SetUserDir(const std::string& dir) override { user_dir = dir; }
-    std::string SdmcDir() const override { return user_dir + "sdmc/"; }
     std::string GameOptionsPath() const override { return user_dir + "mh4u.ini"; }
     std::string GameOptionsTemplate() const override { return ""; }
     BuildInfo Build() const override { return {"fake 1", "main", "abc"}; }

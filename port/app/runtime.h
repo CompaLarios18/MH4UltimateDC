@@ -105,9 +105,7 @@ struct LoadRequest {
 enum class LoadResult { Ok, NotAGame, Encrypted, MissingSystemFiles, Failed };
 
 /// What one step of the run ended with.
-enum class RunState { Running, Paused, ShutdownRequested, Failed };
-
-enum class RuntimeStatus { Idle, Loaded, Running, Paused, Stopped };
+enum class RunState { Running, ShutdownRequested, Failed };
 
 /// How the game is running, since the last time it was asked.
 struct PerfStats {
@@ -146,18 +144,12 @@ public:
     /// the shader cache. Main thread.
     virtual void Start() = 0;
 
-    /// Runs the game for a slice and returns. While paused it runs nothing and returns Paused
-    /// (the windows pump their events inside it, so a paused game's windows don't answer). The
+    /// Runs the game for a slice and returns (the windows pump their events inside it). The
     /// emulation thread.
     virtual RunState RunStep() = 0;
 
-    /// Pauses the game or lets it go on; RunStep notices at its next call. Any thread.
-    virtual void SetPaused(bool paused) = 0;
-
     /// Shuts the emulated system down. The emulation thread, after the last RunStep.
     virtual void Stop() = 0;
-
-    virtual RuntimeStatus Status() const = 0;
 
     /// The game's speed since the last call (it starts a new measure). The emulation thread.
     virtual PerfStats TakePerfStats() = 0;
@@ -202,9 +194,6 @@ public:
 
     /// Another user folder (--user), before anything reads or writes in the old one. Main thread.
     virtual void SetUserDir(const std::string& dir) = 0;
-
-    /// The virtual SD card, with the separator at its end: the saves and the installed update.
-    virtual std::string SdmcDir() const = 0;
 
     /// The game's options file (mh4u.ini) and what a new one says. Any thread.
     virtual std::string GameOptionsPath() const = 0;

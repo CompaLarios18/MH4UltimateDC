@@ -19,9 +19,7 @@ public:
     std::string StatusDetails() const override;
     void Start() override;
     RunState RunStep() override;
-    void SetPaused(bool paused) override;
     void Stop() override;
-    RuntimeStatus Status() const override;
     PerfStats TakePerfStats() override;
     void WaitForBackgroundTasks() override;
 
@@ -36,7 +34,6 @@ public:
 
     std::string UserDir() const override;
     void SetUserDir(const std::string& dir) override;
-    std::string SdmcDir() const override;
     std::string GameOptionsPath() const override;
     std::string GameOptionsTemplate() const override;
 

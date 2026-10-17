@@ -1,9 +1,7 @@
 #include "runtime_azahar/azahar_runtime.h"
 
 #include <atomic>
-#include <chrono>
 #include <cstdlib>
-#include <thread>
 
 #include <fmt/format.h>
 
@@ -66,8 +64,6 @@ struct AzaharRuntime::Impl {
     /// Keeps the work detached from the threads that started it finished before the program ends
     /// (Azahar's rule: one of these in main, waited for at the end).
     Common::DetachedTasks detached_tasks;
-    std::atomic<bool> paused{false};
-    std::atomic<RuntimeStatus> status{RuntimeStatus::Idle};
     std::string update_notice;  ///< why request.update didn't install, if it didn't
 };
 
@@ -107,7 +103,6 @@ LoadResult AzaharRuntime::Load(const LoadRequest& request, Window& window, Windo
     const Status status = Core::System::GetInstance().Load(window, request.game, secondary);
     switch (status) {
     case Status::Success:
-        impl->status = RuntimeStatus::Loaded;
         return LoadResult::Ok;
     case Status::ErrorGetLoader:
     case Status::ErrorLoader_ErrorInvalidFormat:
@@ -138,16 +133,9 @@ void AzaharRuntime::Start() {
                 APP_LOG_DEBUG("shader cache {}/{}", value, total);
             }
         });
-    impl->status = RuntimeStatus::Running;
 }
 
 RunState AzaharRuntime::RunStep() {
-    if (impl->paused) {
-        impl->status = RuntimeStatus::Paused;
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
-        return RunState::Paused;
-    }
-    impl->status = RuntimeStatus::Running;
     const auto result = Core::System::GetInstance().RunLoop();
     if (result == Core::System::ResultStatus::ShutdownRequested) {
         return RunState::ShutdownRequested;
@@ -155,17 +143,8 @@ RunState AzaharRuntime::RunStep() {
     return result == Core::System::ResultStatus::Success ? RunState::Running : RunState::Failed;
 }
 
-void AzaharRuntime::SetPaused(bool paused) {
-    impl->paused = paused;
-}
-
 void AzaharRuntime::Stop() {
     Core::System::GetInstance().Shutdown();
-    impl->status = RuntimeStatus::Stopped;
-}
-
-RuntimeStatus AzaharRuntime::Status() const {
-    return impl->status;
 }
 
 PerfStats AzaharRuntime::TakePerfStats() {
@@ -235,10 +214,6 @@ std::string AzaharRuntime::UserDir() const {
 
 void AzaharRuntime::SetUserDir(const std::string& dir) {
     FileUtil::SetUserPath(dir);
-}
-
-std::string AzaharRuntime::SdmcDir() const {
-    return FileUtil::GetUserPath(FileUtil::UserPath::SDMCDir);
 }
 
 std::string AzaharRuntime::GameOptionsPath() const {
