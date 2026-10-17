@@ -291,3 +291,48 @@ def test_the_repository_rule_file_is_well_formed_and_names_releasemutex():
     rules = c.load_register_rules([os.path.join(root, "config", "native", "svc_unused_registers.txt")])
     assert rules["14"] == {"in": {1, 2, 3}, "out": {1, 2, 3}}
     assert set(rules) == {"14"}                  # a new line is a decision: review it against svc.cpp
+
+
+# ── unreadable or empty traces exit 2, not 1 ("differs") or 0 ("matches") ────────────
+
+def test_a_missing_trace_exits_2_with_one_line(tmp_path, capsys):
+    import compare_svc_traces as c
+    ok = write(tmp_path, "ok.txt", LINES)
+    for args in ([str(tmp_path / "nope.txt"), ok], [ok, str(tmp_path / "nope.txt")], [ok, str(tmp_path)]):
+        capsys.readouterr()
+        assert c.main(args) == 2
+        err = capsys.readouterr().err
+        assert err.startswith("error: cannot read ") and err.count("\n") == 1 and "Traceback" not in err
+
+
+def test_a_trace_that_is_not_utf8_exits_2(tmp_path, capsys):
+    import compare_svc_traces as c
+    ok = write(tmp_path, "ok.txt", LINES)
+    bad = tmp_path / "bad.bin"
+    bad.write_bytes(bytes(range(128, 256)) * 3)
+    assert c.main([ok, str(bad)]) == 2
+    err = capsys.readouterr().err
+    assert "not UTF-8 text" in err and str(bad) in err and err.count("\n") == 1
+
+
+def test_empty_and_garbage_traces_are_refused(tmp_path, capsys):
+    import compare_svc_traces as c
+    ok = write(tmp_path, "ok.txt", LINES)
+    empty = write(tmp_path, "empty.txt", [])
+    only_header = write(tmp_path, "header.txt", [HEADER, "# thread 1 parent=0 entry=00100000"])
+    garbage = write(tmp_path, "garbage.txt", ["hello world", "this is not a trace", "1 2 3"])
+    for bad in (empty, only_header, garbage):
+        for args in ([bad, bad], [bad, ok], [ok, bad]):
+            capsys.readouterr()
+            assert c.main(args) == 2, (bad, args)
+            err = capsys.readouterr().err
+            assert "holds no system call" in err and bad in err
+    assert c.main([ok, ok]) == 0
+
+
+def test_the_exit_codes_hold_for_the_script_itself(tmp_path):
+    import subprocess
+    ok = write(tmp_path, "ok.txt", LINES)
+    tool = os.path.join(HERE, "..", "tools", "compare_svc_traces.py")
+    r = subprocess.run([sys.executable, tool, str(tmp_path / "nope.txt"), ok], capture_output=True, text=True)
+    assert r.returncode == 2 and "Traceback" not in r.stderr

@@ -183,6 +183,9 @@ void CodeHostCallbacks::Svc(RCtx* ctx, u32 imm, u32 next_pc) {
     thread.EnterHost();
     thread.host_.svc_(*ctx, imm, next_pc);
     thread.LeaveHost();
+    // The exclusive monitor is not held across a system call: the kernel may have switched threads,
+    // and a switch clears it (a STREX after one must fail, so that its LDREX loop retries).
+    ctx->excl_valid = 0;
 }
 
 void CodeHostCallbacks::Budget(RCtx* ctx) {
@@ -193,6 +196,11 @@ void CodeHostCallbacks::Budget(RCtx* ctx) {
     thread.EnterHost();
     thread.host_.budget_(*ctx);
     thread.LeaveHost();
+    // A preemption is a context switch, and a context switch clears the exclusive monitor (RC_TICK
+    // sits at the start of every basic block, so a thread can be displaced between its LDREX and its
+    // STREX, and the other thread may have written the word in between). Clearing it when no switch
+    // happened is allowed too: a STREX may fail spuriously and the loops retry.
+    ctx->excl_valid = 0;
 }
 
 void CodeHostCallbacks::Trap(RCtx* ctx, u32 pc, u32 kind) {

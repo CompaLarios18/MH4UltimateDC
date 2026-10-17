@@ -477,7 +477,14 @@ def pcm_to_wav(path: str, out: str) -> int:
         raise CapError(f"{path}: not a DSP capture")
     frames = 0
     try:
-        with wave.open(out, "wb") as w:
+        if os.path.exists(out) and os.path.samefile(path, out):
+            raise CapError(f"{out}: the output is the capture itself")
+    except OSError:
+        pass  # a path that cannot be compared is reported by the open below
+    try:
+        # open the file here: wave.open() on a path that cannot be opened leaves a half-made writer behind
+        # whose __del__ prints a traceback
+        with open(out, "wb") as raw, wave.open(raw, "wb") as w:
             w.setnchannels(2)
             w.setsampwidth(2)
             w.setframerate(SAMPLE_RATE)
@@ -487,6 +494,13 @@ def pcm_to_wav(path: str, out: str) -> int:
                     frames += 1
     except OSError as e:
         raise CapError(f"cannot write {out}: {e.strerror}") from e
+    except CapError:
+        # a capture that fails halfway leaves no partial WAV behind
+        try:
+            os.remove(out)
+        except OSError:
+            pass
+        raise
     return frames
 
 

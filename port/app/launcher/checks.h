@@ -1,5 +1,5 @@
 // What the launcher's setup checks: the game file (Monster Hunter 4 Ultimate USA, decrypted),
-// the v1.3.0 update in Azahar's virtual SD card (and installing it from the player's .cia),
+// the v1.3.0 update on the virtual SD card (and installing it from the player's .cia),
 // and the code library (installed, and built from the code the game will run).
 #pragma once
 
@@ -7,7 +7,7 @@
 #include <string>
 #include <thread>
 
-#include "common/common_types.h"
+#include "util/types.h"
 
 namespace Launcher::Checks {
 
@@ -21,7 +21,7 @@ struct Game {
     u64 program_id = 0;
 };
 
-/// Reads the game file's NCCH header (Azahar's NCCHContainer): which program, decrypted or not.
+/// Reads the game file's NCCH header (through the runtime): which program, decrypted or not.
 Game CheckGame(const std::string& path);
 
 /// A sentence for the player about the game file.
@@ -34,7 +34,7 @@ struct Update {
     std::string content;  ///< the installed update's program (an NCCH that build_game.py reads)
 };
 
-/// The update in Azahar's virtual SD card (Service::AM's title paths).
+/// The update installed on the virtual SD card (the runtime says what is there).
 Update CheckUpdate();
 
 /// "1.3.0" for a title version.

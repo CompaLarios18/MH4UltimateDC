@@ -3,7 +3,6 @@
 #include <fmt/format.h>
 #include <imgui.h>
 
-#include "common/file_util.h"
 #include "frontend.h"
 #include "launcher/state.h"
 #include "launcher/ui.h"

@@ -3,8 +3,8 @@
 #include <cstdio>
 #include <SDL.h>
 
-#include "common/logging/log.h"
-#include "common/string_util.h"
+#include "util/log.h"
+#include "util/strings.h"
 
 #ifdef _WIN32
 #include <windows.h>
@@ -56,7 +56,7 @@ std::string OpenFile(const std::string& title, const std::vector<std::string>& e
     std::wstring filter;
     std::wstring patterns;
     for (const auto& ext : extensions) {
-        patterns += (patterns.empty() ? L"" : L";") + std::wstring(L"*.") + Common::UTF8ToUTF16W(ext);
+        patterns += (patterns.empty() ? L"" : L";") + std::wstring(L"*.") + Util::Utf8ToWide(ext);
     }
     filter += L"Monster Hunter 4 Ultimate";
     filter.push_back(L'\0');
@@ -64,7 +64,7 @@ std::string OpenFile(const std::string& title, const std::vector<std::string>& e
     filter.push_back(L'\0');
     filter.push_back(L'\0');
     wchar_t file[MAX_PATH * 4] = {};
-    const std::wstring wtitle = Common::UTF8ToUTF16W(title);
+    const std::wstring wtitle = Util::Utf8ToWide(title);
     OPENFILENAMEW ofn{};
     ofn.lStructSize = sizeof(ofn);
     ofn.lpstrFilter = filter.c_str();
@@ -75,7 +75,7 @@ std::string OpenFile(const std::string& title, const std::vector<std::string>& e
     if (!GetOpenFileNameW(&ofn)) {
         return "";
     }
-    return Common::UTF16ToUTF8(file);
+    return Util::WideToUtf8(file);
 #elif defined(__APPLE__)
     std::string types;
     for (const auto& ext : extensions) {
@@ -105,9 +105,9 @@ std::string OpenFile(const std::string& title, const std::vector<std::string>& e
 
 void Message(const std::string& title, const std::string& text, bool error) {
     if (error) {
-        LOG_ERROR(Frontend, "{}", text);
+        APP_LOG_ERROR("{}", text);
     } else {
-        LOG_INFO(Frontend, "{}", text);
+        APP_LOG_INFO("{}", text);
     }
     SDL_ShowSimpleMessageBox(error ? SDL_MESSAGEBOX_ERROR : SDL_MESSAGEBOX_INFORMATION,
                              title.c_str(), text.c_str(), nullptr);

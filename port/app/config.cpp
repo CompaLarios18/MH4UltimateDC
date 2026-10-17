@@ -1,77 +1,43 @@
 #include "config.h"
 
 #include <algorithm>
-#include <ctime>
 #include <fmt/format.h>
 #include <INIReader.h>
 
-#include "common/file_util.h"
-#include "common/logging/log.h"
-#include "core/hle/service/service.h"
-#include "input.h"
-#include "perf.h"
-#include "video_core/pica/pica_core.h"
+#include "runtime.h"
+#include "util/file.h"
+#include "util/log.h"
 
 namespace App {
-
-namespace {
-namespace NativeAnalog = Settings::NativeAnalog;
-namespace NativeButton = Settings::NativeButton;
-} // namespace
 
 /// The keyboard as it comes: the left hand on the circle pad and the hunter's actions (R, the
 /// dash, on Shift), the arrows on the C-stick (the camera).
 Config Defaults() {
     Config c;
-    c.keys[NativeButton::A] = "E";
-    c.keys[NativeButton::B] = "Space";
-    c.keys[NativeButton::X] = "R";
-    c.keys[NativeButton::Y] = "F";
-    c.keys[NativeButton::Up] = "1";
-    c.keys[NativeButton::Down] = "2";
-    c.keys[NativeButton::Left] = "3";
-    c.keys[NativeButton::Right] = "4";
-    c.keys[NativeButton::L] = "Q";
-    c.keys[NativeButton::R] = "Left Shift";
-    c.keys[NativeButton::Start] = "Return";
-    c.keys[NativeButton::Select] = "Backspace";
-    c.keys[NativeButton::ZL] = "Tab";
-    c.keys[NativeButton::ZR] = "C";
-    c.stick_keys[NativeAnalog::CirclePad] = "W,S,A,D,Left Ctrl";
-    c.stick_keys[NativeAnalog::CStick] = "Up,Down,Left,Right";
+    c.keys[Button::A] = "E";
+    c.keys[Button::B] = "Space";
+    c.keys[Button::X] = "R";
+    c.keys[Button::Y] = "F";
+    c.keys[Button::Up] = "1";
+    c.keys[Button::Down] = "2";
+    c.keys[Button::Left] = "3";
+    c.keys[Button::Right] = "4";
+    c.keys[Button::L] = "Q";
+    c.keys[Button::R] = "Left Shift";
+    c.keys[Button::Start] = "Return";
+    c.keys[Button::Select] = "Backspace";
+    c.keys[Button::ZL] = "Tab";
+    c.keys[Button::ZR] = "C";
+    c.stick_keys[Analog::CirclePad] = "W,S,A,D,Left Ctrl";
+    c.stick_keys[Analog::CStick] = "Up,Down,Left,Right";
     return c;
 }
 
 namespace {
 
-/// [Debug] perf_log: where Apply starts the per-frame CSV (N0-15; empty: off). Kept here, not in
-/// Config, so that Template writes it back unchanged whoever saves the file.
+/// [Debug] perf_log: where the runtime starts the per-frame CSV (N0-15; empty: off). Kept here,
+/// not in Config, so that Template writes it back unchanged whoever saves the file.
 std::string g_perf_log;
-
-/// Starts the frame-time log (src/perf.h) once, with the GPU timers on Azahar's hooks.
-void StartPerfLog(const Config& c, bool new_3ds) {
-    if (g_perf_log.empty() || Port::Perf::Enabled()) {
-        return;
-    }
-    const std::time_t now = std::time(nullptr);
-    char date[16] = "0000-00-00";
-    if (const std::tm* utc = std::gmtime(&now)) {
-        std::strftime(date, sizeof(date), "%Y-%m-%d", utc);
-    }
-    const std::string header = fmt::format("perf v1 {} game=0x0004000000126300 cpu=recomp new3ds={} renderer={} "
-                                           "resolution={} vsync={} screens={}",
-                                           date, new_3ds ? "on" : "off", c.renderer, c.resolution,
-                                           c.vsync ? "on" : "off", c.screens);
-    std::string error;
-    if (!Port::Perf::Start(g_perf_log, header, error)) {
-        LOG_ERROR(Frontend, "perf_log: {}", error);
-        return;
-    }
-    Port::Perf::ChainGpuHooks(Pica::g_capture_hooks, [](Service::GSP::InterruptId id) {
-        return id == Service::GSP::InterruptId::PDC0;
-    });
-    LOG_INFO(Frontend, "writing the frame times to {}", g_perf_log);
-}
 
 bool IsOn(const std::string& v) {
     return v == "1" || v == "on" || v == "yes" || v == "true";
@@ -83,31 +49,31 @@ std::string OnOff(bool v) {
 
 /// A value without its key: "button_a" -> "a" for the template's key list.
 std::string ButtonKeyName(int button) {
-    return NativeButton::mapping[button];
+    return Runtime().ButtonSettingName(button);
 }
 
 } // namespace
 
 std::string ConfigPath() {
-    return FileUtil::GetUserPath(FileUtil::UserPath::UserDir) + "mh4u-app.ini";
+    return Runtime().UserDir() + "mh4u-app.ini";
 }
 
 Config Load() {
     Config c = Defaults();
     const std::string path = ConfigPath();
-    if (!FileUtil::Exists(path)) {
-        FileUtil::CreateFullPath(path);
-        FileUtil::WriteStringToFile(true, path, Template(c));
-        LOG_INFO(Frontend, "wrote {} with the defaults", path);
+    if (!App::Util::Exists(path)) {
+        App::Util::CreateFullPath(path);
+        App::Util::WriteStringToFile(true, path, Template(c));
+        APP_LOG_INFO("wrote {} with the defaults", path);
         return c;
     }
     INIReader ini(path);
     if (ini.ParseError() < 0) {
-        LOG_ERROR(Frontend, "couldn't read {}, using the defaults", path);
+        APP_LOG_ERROR("couldn't read {}, using the defaults", path);
         return c;
     }
     if (ini.ParseError() > 0) {
-        LOG_WARNING(Frontend, "{}: line {} isn't understood", path, ini.ParseError());
+        APP_LOG_WARNING("{}: line {} isn't understood", path, ini.ParseError());
     }
     const auto str = [&](const char* section, const char* key, const std::string& def) {
         return ini.Get(section, key, def);
@@ -137,14 +103,14 @@ Config Load() {
     c.volume = num("Audio", "volume", c.volume, 0, 100);
     c.audio_output = str("Audio", "output", c.audio_output);
 
-    for (int i = 0; i < NativeButton::NumButtons; ++i) {
-        c.keys[i] = str("Controls", NativeButton::mapping[i], c.keys[i]);
+    for (int i = 0; i < Button::Count; ++i) {
+        c.keys[i] = str("Controls", Runtime().ButtonSettingName(i), c.keys[i]);
         c.button_params[i] = str("Controls", ("param_" + ButtonKeyName(i)).c_str(), "");
     }
-    for (int i = 0; i < NativeAnalog::NumAnalogs; ++i) {
-        c.stick_keys[i] = str("Controls", NativeAnalog::mapping[i], c.stick_keys[i]);
+    for (int i = 0; i < Analog::Count; ++i) {
+        c.stick_keys[i] = str("Controls", Runtime().StickSettingName(i), c.stick_keys[i]);
         c.stick_params[i] =
-            str("Controls", (std::string("param_") + NativeAnalog::mapping[i]).c_str(), "");
+            str("Controls", (std::string("param_") + Runtime().StickSettingName(i)).c_str(), "");
     }
     c.controller_auto = str("Controls", "controller", "auto") == "auto";
     c.touch_screen_key = str("Controls", "touch_screen_key", c.touch_screen_key);
@@ -165,35 +131,35 @@ Config Load() {
 
     c.catalog_url = str("Mods", "catalog_url", c.catalog_url);
     g_perf_log = str("Debug", "perf_log", "");
-    LOG_INFO(Frontend, "settings from {}", path);
+    APP_LOG_INFO("settings from {}", path);
     return c;
 }
 
 void Save(const Config& config) {
     const std::string path = ConfigPath();
-    FileUtil::CreateFullPath(path);
-    if (!FileUtil::WriteStringToFile(true, path, Template(config))) {
-        LOG_ERROR(Frontend, "couldn't write {}", path);
+    App::Util::CreateFullPath(path);
+    if (!App::Util::WriteStringToFile(true, path, Template(config))) {
+        APP_LOG_ERROR("couldn't write {}", path);
     }
 }
 
 std::string Template(const Config& c) {
     std::string keys;
-    for (int i = 0; i < NativeButton::NumButtons; ++i) {
-        keys += fmt::format("{} = {}\n", NativeButton::mapping[i], c.keys[i]);
+    for (int i = 0; i < Button::Count; ++i) {
+        keys += fmt::format("{} = {}\n", Runtime().ButtonSettingName(i), c.keys[i]);
     }
-    for (int i = 0; i < NativeAnalog::NumAnalogs; ++i) {
-        keys += fmt::format("{} = {}\n", NativeAnalog::mapping[i], c.stick_keys[i]);
+    for (int i = 0; i < Analog::Count; ++i) {
+        keys += fmt::format("{} = {}\n", Runtime().StickSettingName(i), c.stick_keys[i]);
     }
     std::string params;
-    for (int i = 0; i < NativeButton::NumButtons; ++i) {
+    for (int i = 0; i < Button::Count; ++i) {
         if (!c.button_params[i].empty()) {
-            params += fmt::format("param_{} = {}\n", NativeButton::mapping[i], c.button_params[i]);
+            params += fmt::format("param_{} = {}\n", Runtime().ButtonSettingName(i), c.button_params[i]);
         }
     }
-    for (int i = 0; i < NativeAnalog::NumAnalogs; ++i) {
+    for (int i = 0; i < Analog::Count; ++i) {
         if (!c.stick_params[i].empty()) {
-            params += fmt::format("param_{} = {}\n", NativeAnalog::mapping[i], c.stick_params[i]);
+            params += fmt::format("param_{} = {}\n", Runtime().StickSettingName(i), c.stick_params[i]);
         }
     }
     return fmt::format(R"(# MH4U PC port: the app's settings. The game's own options (frame rate, widescreen, the touch
@@ -301,60 +267,8 @@ perf_log = {}
                        OnOff(c.room_public), c.last_room, c.catalog_url, g_perf_log);
 }
 
-void Apply(const Config& c) {
-    auto& v = Settings::values;
-    if (c.renderer == "opengl") {
-        v.graphics_api = Settings::GraphicsAPI::OpenGL;
-    } else if (c.renderer == "software") {
-        v.graphics_api = Settings::GraphicsAPI::Software;
-    } else {
-        v.graphics_api = Settings::GraphicsAPI::Vulkan;
-    }
-    v.resolution_factor = static_cast<u32>(c.resolution);
-    v.use_vsync = c.vsync;
-    v.filter_mode = c.linear_filter;
-    v.custom_textures = c.custom_textures;
-    const bool new_3ds = c.new_3ds == "auto" ? !c.custom_textures : IsOn(c.new_3ds);
-    v.is_new_3ds = new_3ds;
-    v.cpu_clock_percentage = static_cast<u32>(std::clamp(c.cpu_clock, 5, 400));
-    v.async_custom_loading = true;
-    if (!c.shader.empty()) {
-        v.pp_shader_name = c.shader;
-    }
-    v.swap_screen = false;
-    v.upright_screen = false;
-    if (c.screens == "single") {
-        v.layout_option = Settings::LayoutOption::SingleScreen;
-    } else if (c.screens == "stacked") {
-        v.layout_option = Settings::LayoutOption::Default;
-    } else if (c.screens == "side") {
-        v.layout_option = Settings::LayoutOption::SideScreen;
-    } else if (c.screens == "windows") {
-        v.layout_option = Settings::LayoutOption::SeparateWindows;
-    } else {
-        // the custom layout is the port's overlay when mh4u.ini's touch_overlay is on
-        v.layout_option = Settings::LayoutOption::CustomLayout;
-    }
-    v.volume = static_cast<float>(c.volume) / 100.0f;
-    if (c.audio_output == "cubeb") {
-        v.output_type = AudioCore::SinkType::Cubeb;
-    } else if (c.audio_output == "sdl2") {
-        v.output_type = AudioCore::SinkType::SDL2;
-    } else if (c.audio_output == "openal") {
-        v.output_type = AudioCore::SinkType::OpenAL;
-    } else if (c.audio_output == "null") {
-        v.output_type = AudioCore::SinkType::Null;
-    } else {
-        v.output_type = AudioCore::SinkType::Auto;
-    }
-    v.frame_limit = 100;
-    // every system module high-level emulated, as Azahar's other frontends set it (Service::Init
-    // looks each one up and throws on one that isn't there)
-    for (const auto& module : Service::service_module_map) {
-        v.lle_modules.emplace(module.name, false);
-    }
-    Input::BuildProfile(c);
-    StartPerfLog(c, new_3ds);
+const std::string& PerfLogPath() {
+    return g_perf_log;
 }
 
 } // namespace App

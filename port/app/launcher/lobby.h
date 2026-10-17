@@ -5,7 +5,7 @@
 #include <string>
 #include <vector>
 
-#include "common/common_types.h"
+#include "util/types.h"
 
 namespace Launcher::Lobby {
 

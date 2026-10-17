@@ -1,5 +1,5 @@
-// The POSIX side of the guest memory (N1-02): Linux and macOS. The macOS paths are written but
-// only the Linux ones are tested here (macOS is exercised by N1-22).
+// The POSIX side of the guest memory (N1-02): Linux and macOS. The macOS paths are built and tested
+// by the native-macos job of .github/workflows/native.yml (N1-22; Apple silicon has 16 KiB host pages).
 #if !defined(_WIN32)
 
 #include <signal.h>

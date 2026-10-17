@@ -47,6 +47,7 @@
 // all 300 published vectors), and the bytes a decoder must produce are worked out in the comments.
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <array>
 #include <cstdio>
 #include <cstring>

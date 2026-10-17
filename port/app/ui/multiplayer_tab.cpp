@@ -10,12 +10,12 @@
 #include <fmt/format.h>
 #include <imgui.h>
 
-#include "common/logging/log.h"
 #include "config.h"
 #include "invite.h"
 #include "launcher/lobby.h"
 #include "multiplayer.h"
 #include "ui/layer.h"
+#include "util/log.h"
 
 namespace App::Ui {
 
@@ -232,7 +232,7 @@ void DrawInvite(Layer& layer, TabState& tab, const MP::Status& st) {
     ImGui::SameLine();
     if (ImGui::Button(JustCopied(tab) ? "Copied!" : "Copy", ImVec2(button, 0))) {
         Copy(tab, code);
-        LOG_INFO(Frontend, "menu: invite copied");
+        APP_LOG_INFO("menu: invite copied");
     }
     layer.Help("Send it to your friends; they use Paste invite here or in the launcher's Online screen. "
                "It carries the password.");

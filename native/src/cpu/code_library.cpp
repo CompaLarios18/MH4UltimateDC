@@ -1,5 +1,6 @@
 // Loading a code library and handing it the host's callbacks (N1-04). The Windows branch
-// (LoadLibraryExW) and the macOS one (dlopen, as Linux) are written but not tested here.
+// (LoadLibraryExW) and the macOS one (dlopen, as Linux) run in the native-windows and native-macos
+// jobs of .github/workflows/native.yml (N1-22).
 #include <algorithm>
 #include <filesystem>
 #include <string>
@@ -10,6 +11,7 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
+#undef Yield  // winbase.h defines it as an empty macro; GuestThread::Yield (mh4n/cpu.h) is a method
 #else
 #include <dlfcn.h>
 #endif
