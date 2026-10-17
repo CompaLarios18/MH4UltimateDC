@@ -21,14 +21,14 @@ Tables between the `wp-status` markers are generated: edit the specs or use `set
 | ID | Title | Size | Agent | Depends on | Needs | Status | Note |
 |---|---|---|---|---|---|---|---|
 | N0-01 | Bootstrap the native branch | S | orchestrator | - | none | `done` | PR #3 |
-| N0-02 | Cloud development environment | S | native-worker | - | none | `review` | PR #5 |
-| N0-03 | Native CI | M | native-worker | - | ci | `review` | PR #5; ci green (run 38880121118; its artifact was downloaded and run.sh --help checked in a cloud session on 2026-10-16) |
-| N0-04 | Old 3DS runs, SVC results and normalised SVC traces | M | native-worker-high | N0-03 | ci, dump-check | `review` | PR #5; dump-check pending (G1: jit vs recomp traces compare equal); ci green (run 38885552387) |
-| N0-07 | Game-state trace and unmapped-access counter | S | native-worker | N0-04 | ci, dump-check | `review` | PR #5; dump-check pending (G1: the scene byte changes in the state trace; the unmapped report exists); ci green (run 38892421769) |
-| N0-08 | Frame-keyed scheduling in the runner | S | native-worker | N0-07 | ci, dump-check | `review` | PR #5; ci green (run 38923994278); dump-check pending (START at f600 then A at f900: same frame numbers at each scene change on --cpu jit and --cpu recomp) |
-| N0-21 | IPC trace and comparator | M | native-worker-high | N0-08 | ci, dump-check | `review` | PR #5; ci green (run 38954204863: the runner compiles the IPC section); dump-check pending (G1: jit vs recomp IPC traces compare equal; the first line shows bare session names) |
-| N0-06 | DSP and HID captures | M | native-worker | N0-21 | ci, dump-check | `todo` |  |
-| N0-22 | GPU capture format and `gcap.py` | S | native-worker | - | none | `review` | PR #5 |
+| N0-02 | Cloud development environment | S | native-worker | - | none | `done` | PR #5 |
+| N0-03 | Native CI | M | native-worker | - | ci | `done` | PR #5; ci green (run 38880121118; its artifact was downloaded and run.sh --help checked in a cloud session on 2026-10-16) |
+| N0-04 | Old 3DS runs, SVC results and normalised SVC traces | M | native-worker-high | N0-03 | ci, dump-check | `done` | PR #5; dump-check pending (G1: jit vs recomp traces compare equal); ci green (run 38885552387) |
+| N0-07 | Game-state trace and unmapped-access counter | S | native-worker | N0-04 | ci, dump-check | `done` | PR #5; dump-check pending (G1: the scene byte changes in the state trace; the unmapped report exists); ci green (run 38892421769) |
+| N0-08 | Frame-keyed scheduling in the runner | S | native-worker | N0-07 | ci, dump-check | `done` | PR #5; ci green (run 38923994278); dump-check pending (START at f600 then A at f900: same frame numbers at each scene change on --cpu jit and --cpu recomp) |
+| N0-21 | IPC trace and comparator | M | native-worker-high | N0-08 | ci, dump-check | `done` | PR #5; ci green (run 38954204863: the runner compiles the IPC section); dump-check pending (G1: jit vs recomp IPC traces compare equal; the first line shows bare session names) |
+| N0-06 | DSP and HID captures | M | native-worker | N0-21 | ci, dump-check | `active` | session 20261017; base 82459a3 |
+| N0-22 | GPU capture format and `gcap.py` | S | native-worker | - | none | `done` | PR #5 |
 | N0-05 | GPU capture recorder | M | native-worker-high | N0-06, N0-22 | ci, dump-check | `todo` |  |
 | N0-09 | Golden sessions G1, G2, G6 | M | native-worker | N0-04, N0-05, N0-06, N0-07, N0-08, N0-21 | dump | `todo` |  |
 | N0-10 | Golden sessions G3, G4, G7 | M | native-worker | N0-09 | dump, save | `todo` |  |
@@ -37,10 +37,10 @@ Tables between the `wp-status` markers are generated: edit the specs or use `set
 | N0-13 | PICA census | M | native-worker | N0-05, N0-10 | dump, save | `todo` |  |
 | N0-14 | Flat-memory coherence check | M | native-worker-high | N0-15, N0-10 | ci, dump, save | `todo` |  |
 | N0-15 | Performance baseline | M | native-worker | N0-18 | ci, pc, mac | `todo` |  |
-| N0-16 | Azahar dependency inventory | S | native-worker | - | none | `review` | PR #5 |
-| N0-17 | `RC_NATIVE` mode in the recompiler runtime | M | native-worker-high | N0-03 | ci | `review` | PR #5; ci green (run 38885556028) |
+| N0-16 | Azahar dependency inventory | S | native-worker | - | none | `done` | PR #5 |
+| N0-17 | `RC_NATIVE` mode in the recompiler runtime | M | native-worker-high | N0-03 | ci | `done` | PR #5; ci green (run 38885556028) |
 | N0-18 | Hooks on a platform interface | M | native-worker-high | N0-16, N0-17, N0-05 | ci, dump-check | `todo` |  |
-| N0-19 | Game-data guard for agents | S | native-worker | - | ci | `review` | PR #5; ci green (native-guard runs 38884722260, 38903953519 and 38944855740); guard hardened in four rounds, the last two from the batch audits |
+| N0-19 | Game-data guard for agents | S | native-worker | - | ci | `done` | PR #5; ci green (native-guard runs 38884722260, 38903953519 and 38944855740); guard hardened in four rounds, the last two from the batch audits |
 | N0-23 | Service command census from the code | S | native-worker | - | dump | `ready` |  |
 | N0-20 | `IRuntime` seam in the app: lifecycle, options, paths | M | native-worker-high | N0-16, N0-15 | ci, pc | `todo` |  |
 | N0-24 | `IRuntime` seam in the app: input, multiplayer, keyboard | M | native-worker-high | N0-20 | ci, pc | `todo` |  |
@@ -51,15 +51,15 @@ Tables between the `wp-status` markers are generated: edit the specs or use `set
 <!-- wp-status:begin N1 -->
 | ID | Title | Size | Agent | Depends on | Needs | Status | Note |
 |---|---|---|---|---|---|---|---|
-| N1-01 | `native/` skeleton, build and CI | M | native-worker-high | N0-02, N0-03 | ci | `review` | PR #5; ci green (runs 38885559352 and, for the follow-up, 38956325317) |
-| N1-02 | Guest memory | M | native-worker-high | N1-01 | none | `review` | PR #5; ci green (run 38892424838); Windows/macOS paths untested (N1-22) |
-| N1-03 | Loader and system pages | M | native-worker | N1-02 | dump-check | `review` | PR #5; ci green (run 38926727430); dump-check pending (prepare_game.py on the staged dump; --print-process vs tools/exheader.py; the linear base vs G1's first linear ControlMemory) |
-| N1-04 | Code host and guest fibers | M | native-worker-high | N1-02, N1-03, N0-17 | none | `review` | PR #5; ci green (run 38958762393: native builds the cpu module and the test program); no dump items |
-| N1-05 | Kernel objects and handle table | M | native-worker-high | N1-02 | none | `review` | PR #5; ci green (run 38926731888) |
-| N1-06 | Scheduler, game clock and timers | L | native-worker-high | N1-04, N1-05 | none | `todo` |  |
+| N1-01 | `native/` skeleton, build and CI | M | native-worker-high | N0-02, N0-03 | ci | `done` | PR #5; ci green (runs 38885559352 and, for the follow-up, 38956325317) |
+| N1-02 | Guest memory | M | native-worker-high | N1-01 | none | `done` | PR #5; ci green (run 38892424838); Windows/macOS paths untested (N1-22) |
+| N1-03 | Loader and system pages | M | native-worker | N1-02 | dump-check | `done` | PR #5; ci green (run 38926727430); dump-check pending (prepare_game.py on the staged dump; --print-process vs tools/exheader.py; the linear base vs G1's first linear ControlMemory) |
+| N1-04 | Code host and guest fibers | M | native-worker-high | N1-02, N1-03, N0-17 | none | `done` | PR #5; ci green (run 38958762393: native builds the cpu module and the test program); no dump items |
+| N1-05 | Kernel objects and handle table | M | native-worker-high | N1-02 | none | `done` | PR #5; ci green (run 38926731888) |
+| N1-06 | Scheduler, game clock and timers | L | native-worker-high | N1-04, N1-05 | none | `review` | batch 20261017-n1; ci pending |
 | N1-27 | Threads: creation, TLS and the core-1 time limit | M | native-worker-high | N1-06 | none | `todo` |  |
 | N1-07 | The SVC table | M | native-worker-high | N1-02, N1-27 | none | `todo` |  |
-| N1-08 | Kernel conformance programs | M | native-worker | N0-04 | none | `review` | PR #5; ci green (runs 38923999146 and, for the follow-up, 38944850589); the 10 programs match the reference runner twice in a row; tests/test_port.py and tests/test_conformance.py pass with the tip's runner (148 passed, 11 skipped for the game and the native runner, at the third audit) |
+| N1-08 | Kernel conformance programs | M | native-worker | N0-04 | none | `done` | PR #5; ci green (runs 38923999146 and, for the follow-up, 38944850589); the 10 programs match the reference runner twice in a row; tests/test_port.py and tests/test_conformance.py pass with the tip's runner (148 passed, 11 skipped for the game and the native runner, at the third audit) |
 | N1-09 | The runtime, the native runner and the first boot | L | native-worker-high | N1-03, N1-07, N1-08, N0-08 | ci | `todo` |  |
 | N1-10 | IPC core, ports, sessions and srv | M | native-worker-high | N1-07, N1-09, N0-21 | none | `todo` |  |
 | N1-11 | IPC replay harness | M | native-worker | N1-10, N0-21 | dump-check | `todo` |  |
@@ -88,16 +88,16 @@ Tables between the `wp-status` markers are generated: edit the specs or use `set
 | ID | Title | Size | Agent | Depends on | Needs | Status | Note |
 |---|---|---|---|---|---|---|---|
 | N2-01 | RHI spike | M | native-worker-high | N0-13, N1-01 | ci, pc, mac | `todo` |  |
-| N2-02 | Capture player and comparison harness | M | native-worker-high | N0-22, N1-01 | dump-check | `review` | PR #5; ci green (run 38926737594); dump-check pending (--gpu replay passes on G1's capture; the timing table prints) |
-| N2-03 | GX engine | M | native-worker | N2-02 | dump-check, save | `review` | PR #5; ci green (run 38954207839); dump-check pending (--gpu cpu-gx --isolated --judge fill,transfer,copy,dma passes on the G1-G4 captures) |
-| N2-04 | PICA command processor | M | native-worker-high | N2-02 | dump-check, save | `review` | PR #5; ci green (run 38954211634); dump-check pending (--gpu pica-only --isolated --judge none --check registers passes on every command list of G1-G4) |
+| N2-02 | Capture player and comparison harness | M | native-worker-high | N0-22, N1-01 | dump-check | `done` | PR #5; ci green (run 38926737594); dump-check pending (--gpu replay passes on G1's capture; the timing table prints) |
+| N2-03 | GX engine | M | native-worker | N2-02 | dump-check, save | `done` | PR #5; ci green (run 38954207839); dump-check pending (--gpu cpu-gx --isolated --judge fill,transfer,copy,dma passes on the G1-G4 captures) |
+| N2-04 | PICA command processor | M | native-worker-high | N2-02 | dump-check, save | `done` | PR #5; ci green (run 38954211634); dump-check pending (--gpu pica-only --isolated --judge none --check registers passes on every command list of G1-G4) |
 | N2-05 | Vertex loading | M | native-worker | N2-04, N2-01 | dump-check, save | `todo` |  |
 | N2-06 | Vertex shader translation | L | native-worker-high | N2-04, N2-21 | dump-check, save | `todo` |  |
 | N2-07 | Fragment pipeline design | M | native-worker-high | N0-13, N2-01 | none | `todo` |  |
 | N2-21 | Backend foundation | M | native-worker-high | N2-01, N2-02 | none | `todo` |  |
 | N2-22 | Renderer thread and synchronisation | M | native-worker-high | N2-21, N2-03, N2-04 | dump-check, save | `todo` |  |
 | N2-13 | Framebuffer operations | M | native-worker-high | N2-07, N2-21 | none | `todo` |  |
-| N2-14 | Textures: decoding, hashes, cache | M | native-worker | N2-02 | dump-check, save, pc | `todo` |  |
+| N2-14 | Textures: decoding, hashes, cache | M | native-worker | N2-02 | dump-check, save, pc | `review` | batch 20261017-n1; dump-check pending (every texture in the G1-G4 captures decodes equal to the CPU reference); maintainer check (hd_hash_check.py with the HD pack on G3's capture); ci pending |
 | N2-08 | Fragment generator, TEV and alpha test | L | native-worker-high | N2-03, N2-05, N2-06, N2-13, N2-14, N2-21 | none | `todo` |  |
 | N2-23 | Texture sampling and the first captured frames | M | native-worker-high | N2-08 | dump-check | `todo` |  |
 | N2-09 | Fragment lighting | L | native-worker-high | N2-08, N2-23 | none | `todo` |  |

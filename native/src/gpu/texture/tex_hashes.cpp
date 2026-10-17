@@ -1,7 +1,7 @@
 // Derived from Azahar src/video_core/gpu.cpp (GPU::Execute for the command list submission,
 // GPU::VirtualToPhysicalAddress's treatment of an address it does not know) at
 // 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-2.0-or-later; the file says "Licensed under GPLv2
-// or any later version"). The same rules as gpu/pica/pica_gpu.cpp, which this file repeats for the
+// or any later version"). The same rules as our pica_gpu module, which this file repeats for the
 // GX and MMIO records it replays.
 // Copyright 2023-2026 Citra Emulator Project / Azahar Emulator Project (gpu.cpp)
 #include "gpu/texture/tex_hashes.h"

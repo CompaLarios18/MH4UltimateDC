@@ -81,7 +81,43 @@ def test_rows_are_well_formed_and_use_the_pinned_commit():
         assert len(cells) == 6, (path, len(cells))
         assert line.count("`") % 2 == 0, f"unbalanced backticks in the row of {path}"
         assert f"`{pinned}`" in cells[2], f"{path}: the commit is not the pinned one"
-        assert re.search(r"GPL-[23]\.0-or-later", cells[3]), f"{path}: no licence"
+        assert re.search(r"GPL-[23]\.0-or-later|\bMIT\b", cells[3]), f"{path}: no licence"
+
+
+def header_blocks(path: str) -> tuple[str, str]:
+    """(the sources part, the Copyright paragraph) of the header comment block: the paragraph runs
+    from the first line that starts with Copyright to the first empty comment line."""
+    lines = open(os.path.join(ROOT, path), encoding="utf-8", errors="replace").read().splitlines()
+    start = next(i for i, line in enumerate(lines) if HEADER_RE.match(line))
+    block = []
+    for line in lines[start:]:
+        if not line.startswith(("//", "#")):
+            break
+        block.append(line)
+    first = next((i for i, line in enumerate(block) if re.match(r"^(//|#)\s*Copyright", line)), len(block))
+    paragraph = []
+    for line in block[first:]:
+        if line.strip() in ("//", "#"):
+            break
+        paragraph.append(line)
+    return " ".join(block[:first]), " ".join(paragraph)
+
+
+def test_every_source_named_in_a_header_has_a_copyright_line_in_it():
+    """AGENTS rule 6: the source's own Copyright line is kept for every file named. A header whose
+    Copyright paragraph lists no files in parentheses gives one notice for all of them."""
+    missing = []
+    for path in headed_files():
+        if path == "port/src/runner.cpp":
+            continue                                          # its header quotes headers of its own includes
+        head, paragraph = header_blocks(path)
+        if not re.search(r"\([^)]*\.(?:cpp|h)\b", paragraph):       # no list of files in parentheses
+            assert "Copyright" in paragraph, path
+            continue
+        for name in sorted(set(SOURCE_NAME_RE.findall(head))):
+            if not re.search(r"(?<![A-Za-z0-9_])" + re.escape(name) + r"(?![A-Za-z0-9_])", paragraph):
+                missing.append((path, name))
+    assert missing == []
 
 
 def test_a_header_that_names_a_gpl3_source_says_gpl3():

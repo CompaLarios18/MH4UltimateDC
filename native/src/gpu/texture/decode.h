@@ -10,6 +10,7 @@
 // Copyright 2023-2026 Citra Emulator Project / Azahar Emulator Project (pixel_format.h)
 // Copyright 2023 Citra Emulator Project (utils.cpp)
 // Copyright 2014 Citra Emulator Project (utils.h, color.h)
+// Copyright 2017-2024 Citra Emulator Project / Azahar Emulator Project (regs_texturing.h)
 //
 // Texture decoding (N2-14), bit for bit as Azahar's.
 //
