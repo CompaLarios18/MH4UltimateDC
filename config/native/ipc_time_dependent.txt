@@ -1,0 +1,13 @@
+# Commands whose replies depend on time (a tick count, a timer state), which the IPC replay
+# (mh4n_ipc_replay, N1-11) and `tools/compare_ipc_traces.py --ignore` compare by result only.
+#
+# One command per line:
+#
+#     <session> <header>   # why the reply depends on time
+#
+#   <session>  the trace's session name: `fs:USER`, or `fs:USER/file` for every file session of fs:USER
+#              (the instance number of `fs:USER/file#3` is left out)
+#   <header>   the request's header word in hex, with or without 0x (command id in the top 16 bits)
+#
+# `#` starts a comment; empty lines are skipped. Only the orchestrator edits this file: a WP that finds
+# such a command proposes the line, with its reason, in its report.
