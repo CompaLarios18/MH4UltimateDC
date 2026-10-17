@@ -1,6 +1,7 @@
 #include "ipc_replay/time_dependent.h"
 
 #include <charconv>
+#include <filesystem>
 #include <fstream>
 #include <sstream>
 
@@ -10,28 +11,43 @@ namespace mh4n::ipc_replay {
 
 namespace {
 
+// Strict UTF-8, as Python's decoder is (Unicode, table 3-7): no overlong forms, no surrogates, nothing
+// above U+10FFFF.
 bool ValidUtf8(const std::string& text) {
+    const auto at = [&](std::size_t i) { return static_cast<unsigned char>(text[i]); };
+    const auto continuation = [&](std::size_t i, unsigned char low, unsigned char high) {
+        return i < text.size() && at(i) >= low && at(i) <= high;
+    };
     std::size_t i = 0;
     while (i < text.size()) {
-        const unsigned char c = static_cast<unsigned char>(text[i]);
-        std::size_t extra = 0;
+        const unsigned char c = at(i);
         if (c < 0x80) {
-            extra = 0;
-        } else if ((c & 0xE0) == 0xC0 && c >= 0xC2) {
-            extra = 1;
-        } else if ((c & 0xF0) == 0xE0) {
-            extra = 2;
-        } else if ((c & 0xF8) == 0xF0 && c <= 0xF4) {
-            extra = 3;
+            i += 1;
+        } else if (c >= 0xC2 && c <= 0xDF) {
+            if (!continuation(i + 1, 0x80, 0xBF)) {
+                return false;
+            }
+            i += 2;
+        } else if (c >= 0xE0 && c <= 0xEF) {
+            // E0 takes A0..BF (no overlong form), ED takes 80..9F (no surrogate)
+            const unsigned char low = c == 0xE0 ? 0xA0 : 0x80;
+            const unsigned char high = c == 0xED ? 0x9F : 0xBF;
+            if (!continuation(i + 1, low, high) || !continuation(i + 2, 0x80, 0xBF)) {
+                return false;
+            }
+            i += 3;
+        } else if (c >= 0xF0 && c <= 0xF4) {
+            // F0 takes 90..BF (no overlong form), F4 takes 80..8F (nothing above U+10FFFF)
+            const unsigned char low = c == 0xF0 ? 0x90 : 0x80;
+            const unsigned char high = c == 0xF4 ? 0x8F : 0xBF;
+            if (!continuation(i + 1, low, high) || !continuation(i + 2, 0x80, 0xBF) ||
+                !continuation(i + 3, 0x80, 0xBF)) {
+                return false;
+            }
+            i += 4;
         } else {
             return false;
         }
-        for (std::size_t k = 1; k <= extra; ++k) {
-            if (i + k >= text.size() || (static_cast<unsigned char>(text[i + k]) & 0xC0) != 0x80) {
-                return false;
-            }
-        }
-        i += extra + 1;
     }
     return true;
 }
@@ -80,6 +96,12 @@ bool TimeDependent::LoadText(const std::string& text, const std::string& name, s
 }
 
 bool TimeDependent::LoadFile(const std::string& path, std::string* error) {
+    // A directory opens as a stream and reads as an empty file: refuse it.
+    std::error_code status_error;
+    if (std::filesystem::is_directory(path, status_error) || status_error) {
+        *error = fmt::format("cannot read {}", path);
+        return false;
+    }
     std::ifstream in(path, std::ios::binary);
     if (!in) {
         *error = fmt::format("cannot read {}", path);

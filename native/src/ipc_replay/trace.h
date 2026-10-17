@@ -1,7 +1,12 @@
 // The two trace formats the replay reads (N1-11): the IPC trace of `--trace-ipc-full`
 // (tools/native/tracefmt.py, `# ipctrace`) and the SVC trace of `--trace-svc` (`# svctrace`). Both are
-// read as tracefmt.py reads them, with one difference: a line that cannot be understood is an error
-// (with its line number), where tracefmt.py skips it, so a damaged trace never reads as a shorter one.
+// read as tracefmt.py reads them, with these differences: a line that cannot be understood is an error
+// (with its line number), where tracefmt.py skips it, so a damaged trace never reads as a shorter one; and
+// the text the replay report can print is checked when the trace is read (docs/native/ipc-replay.md,
+// "Output"): a session name must be `<service>`, `<service>/<kind>#<k>` or `unnamed#<k>` (a service is
+// letters, digits and `:_.$-`; a kind is lowercase letters, digits and `_-`; at most 64 characters), a
+// descriptor must be of one of the kinds below, and its token must have the shape of its kind. Anything
+// else is an error that does not repeat the text.
 #pragma once
 
 #include <array>
@@ -17,8 +22,10 @@
 namespace mh4n::ipc_replay {
 
 // One translate descriptor of a command: `<kind>:<index>:<size>:<token>` (tracefmt.IpcDesc). Kinds are
-// static, mapped-r, mapped-w, mapped-rw, pxi, copy, move, pid. A buffer's token is its CRC-32
-// (`0x%08x`) or `-`; a handle descriptor's is the names of its handles joined by `+`.
+// static, mapped-r, mapped-w, mapped-rw, pxi, copy, move, pid, and mapped-0 (both tracers write it for a
+// mapped buffer with neither permission). A buffer's token is its CRC-32 (`0x%08x`) or `-`; a handle
+// descriptor's is the names of its handles joined by `+` (each `-`, `0` or a session name); pxi and pid
+// have `-`.
 struct IpcDesc {
     std::string kind;
     u32 index = 0;

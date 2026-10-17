@@ -77,6 +77,100 @@ std::string Where(std::size_t line, const std::string& what) {
     return fmt::format("line {}: {}", line, what);
 }
 
+// What the report prints of a trace is a name or a number that passed one of the checks below, so a
+// damaged or hand-made trace cannot put text of its own into the report (docs/native/ipc-replay.md,
+// "Output"). The shapes are those the tracers write (ipc/trace.cpp, and the reference runner's trace writer).
+
+bool AllOf(std::string_view text, bool (*accepts)(char)) {
+    if (text.empty()) {
+        return false;
+    }
+    for (const char c : text) {
+        if (!accepts(c)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool IsDigit(char c) {
+    return c >= '0' && c <= '9';
+}
+
+bool IsHexDigit(char c) {
+    return IsDigit(c) || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+}
+
+bool IsLower(char c) {
+    return (c >= 'a' && c <= 'z');
+}
+
+// A port or service name (`fs:USER`, `gsp::Gpu`).
+bool IsServiceChar(char c) {
+    return IsDigit(c) || IsLower(c) || (c >= 'A' && c <= 'Z') || c == ':' || c == '_' || c == '.' ||
+           c == '$' || c == '-';
+}
+
+// The kind of an object a reply handed out (`file`, `dir`, `session`, a lowercase kernel type).
+bool IsKindChar(char c) {
+    return IsDigit(c) || IsLower(c) || c == '_' || c == '-';
+}
+
+constexpr std::size_t kMaxNameLength = 64;
+
+// `<service>`, `<service>/<kind>#<k>` or `unnamed#<k>`.
+bool ValidName(std::string_view name) {
+    if (name.size() > kMaxNameLength) {
+        return false;
+    }
+    if (name.starts_with("unnamed#")) {
+        return AllOf(name.substr(8), IsDigit);
+    }
+    const std::size_t slash = name.find('/');
+    if (slash == std::string_view::npos) {
+        return AllOf(name, IsServiceChar);
+    }
+    const std::string_view rest = name.substr(slash + 1);
+    const std::size_t hash = rest.find('#');
+    return AllOf(name.substr(0, slash), IsServiceChar) && hash != std::string_view::npos &&
+           AllOf(rest.substr(0, hash), IsKindChar) && AllOf(rest.substr(hash + 1), IsDigit);
+}
+
+// The kinds of tracefmt.IpcDesc, and `mapped-0`, which both tracers write for a mapped buffer that has
+// neither permission.
+bool KnownKind(std::string_view kind) {
+    return kind == "static" || kind == "mapped-r" || kind == "mapped-w" || kind == "mapped-rw" ||
+           kind == "mapped-0" || kind == "pxi" || kind == "copy" || kind == "move" || kind == "pid";
+}
+
+// A CRC-32 as the tracers write it, `0x%08x`.
+bool ValidCrc(std::string_view token) {
+    return token.size() == 10 && token.starts_with("0x") && AllOf(token.substr(2), IsHexDigit);
+}
+
+// The token a descriptor of `kind` may carry: a handle descriptor's names joined by `+` (`-` for none,
+// `0` for a null handle); a buffer's CRC or `-`; `-` for the others.
+bool ValidToken(std::string_view kind, std::string_view token) {
+    if (token == "-") {
+        return true;
+    }
+    if (kind == "copy" || kind == "move") {
+        std::size_t start = 0;
+        while (true) {
+            const std::size_t at = token.find('+', start);
+            const std::string_view name = token.substr(start, at == std::string_view::npos ? at : at - start);
+            if (name != "-" && name != "0" && !ValidName(name)) {
+                return false;
+            }
+            if (at == std::string_view::npos) {
+                return true;
+            }
+            start = at + 1;
+        }
+    }
+    return kind != "pxi" && kind != "pid" && ValidCrc(token);
+}
+
 // `-` and the empty field are "none".
 bool ParseWords(std::string_view text, std::optional<std::vector<u32>>* out, std::string* why) {
     out->reset();
@@ -116,6 +210,10 @@ bool ParseDescs(std::string_view text, std::vector<IpcDesc>* out, std::string* w
             rest.remove_prefix(at + 1);
         }
         parts[3] = rest;
+        if (!KnownKind(parts[0])) {
+            *why = "a descriptor of a kind that does not exist";
+            return false;
+        }
         IpcDesc desc;
         desc.kind = std::string(parts[0]);
         u64 index = 0, size = 0;
@@ -128,6 +226,10 @@ bool ParseDescs(std::string_view text, std::vector<IpcDesc>* out, std::string* w
         if (index >= ipc::kCommandBufferLength ||
             ((desc.kind == "copy" || desc.kind == "move") && size > ipc::kCommandBufferLength)) {
             *why = "a descriptor outside the command buffer";
+            return false;
+        }
+        if (!ValidToken(parts[0], parts[3])) {
+            *why = "a descriptor whose token has not the shape of its kind";
             return false;
         }
         desc.index = static_cast<u32>(index);
@@ -234,7 +336,9 @@ bool ParseIpcTrace(std::string_view text, IpcTrace* trace, std::string* error) {
                 have_seq = ok;
                 why = "seq is not a number";
             } else if (key == "session") {
+                ok = ValidName(value);
                 record.session = std::string(value);
+                why = "session is not a service or session name";
             } else if (key == "cmd") {
                 if (value != "-") {
                     u32 word = 0;

@@ -400,16 +400,18 @@ TEST_CASE("srv: GetServiceHandle with the wait flag clear waits until the servic
     Got got;
     std::vector<u32> through;
     u64 waited = 0;
+    Result other_registered = 0xFFFFFFFF;
     const int status = BootWith(f, dir, {"--ms", "100"}, [&] {
         Guest g(*f.runtime);
         const Handle srv = ConnectSrv(g);
         Kernel& kernel = f.runtime->GetKernel();
         ServiceManager& manager = Manager(f);
         // another service registers first and does not wake the client; the one it wants comes later
-        kernel.ScheduleAt(kernel.NowTicks() + NsToTicks(1000000), [&manager] {
-            manager.RegisterService("tst:other", ServiceFactory([](ServiceContext& c) {
-                                        return std::make_unique<Echo>(c);
-                                    }));
+        // (a name has 8 characters at most: a longer one would be refused and register nothing)
+        kernel.ScheduleAt(kernel.NowTicks() + NsToTicks(1000000), [&manager, &other_registered] {
+            other_registered = manager.RegisterService("tst:oth", ServiceFactory([](ServiceContext& c) {
+                                                           return std::make_unique<Echo>(c);
+                                                       }));
         });
         kernel.ScheduleAt(kernel.NowTicks() + NsToTicks(3000000), [&manager] {
             manager.RegisterService("tst:late", ServiceFactory([](ServiceContext& c) {
@@ -423,6 +425,7 @@ TEST_CASE("srv: GetServiceHandle with the wait flag clear waits until the servic
         ExitProcess(*f.runtime);
     });
     CHECK(status == 0);
+    CHECK(other_registered == kResultSuccess);  // the other service did register, 2 ms before the one waited for
     CHECK(waited >=
           NsToTicks(3000000) - 2);  // it came back when the service was registered, not before
     CHECK(got.reply[0] == 0x00050042);
