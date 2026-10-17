@@ -197,9 +197,15 @@ bool ArchiveReader::Open(const std::string& path, std::string& error) {
     entries_.reserve(count);
     for (u32 i = 0; i < count; ++i) {
         ArchiveEntry e = GetEntry(index.data() + static_cast<std::size_t>(i) * kArchiveEntrySize);
-        if (e.offset < kArchiveHeaderSize || e.offset + e.size > index_offset ||
-            e.mip_count == 0 || static_cast<u8>(e.format) > 4 || static_cast<u8>(e.type) > 1 ||
-            LevelOffset(e, e.mip_count) - e.offset != e.size) {
+        // Every field is range-checked before LevelOffset runs on it (a shift by 32 or more is
+        // undefined, and offset + size could wrap), so a damaged index with a valid CRC is refused.
+        const bool sane =
+            e.width != 0 && e.height != 0 && e.width <= kMaxDimension &&
+            e.height <= kMaxDimension && e.mip_count != 0 &&
+            e.mip_count <= FullMipCount(e.width, e.height) && static_cast<u8>(e.format) <= 4 &&
+            static_cast<u8>(e.type) <= 1 && e.offset >= kArchiveHeaderSize &&
+            e.offset <= index_offset && e.size <= index_offset - e.offset;
+        if (!sane || LevelOffset(e, e.mip_count) - e.offset != e.size) {
             error = fmt::format("{}: entry {} is inconsistent", path, i);
             return false;
         }

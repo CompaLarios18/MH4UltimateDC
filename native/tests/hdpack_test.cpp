@@ -635,6 +635,27 @@ TEST_CASE("archive: round trip, lookup and damage") {
     bad[bad.size() - 5] ^= 0xFF;
     { std::ofstream f(dir.out("bad.bin"), std::ios::binary); f.write(reinterpret_cast<const char*>(bad.data()), static_cast<std::streamsize>(bad.size())); }
     CHECK_FALSE(reader.Open(dir.out("bad.bin"), error));
+    // Entries that are wrong but carry a correct index CRC (Finish writes whatever it is given).
+    auto refused = [&](const char* name, auto&& change) {
+        ArchiveWriter w;
+        std::string err;
+        REQUIRE(w.Begin(dir.out(name), true, 0, err));
+        const auto at = w.Append(blob.data(), blob.size(), err);
+        REQUIRE(at.has_value());
+        ArchiveEntry x = a;
+        x.offset = *at;
+        change(x);
+        REQUIRE(w.Finish({x}, err));
+        ArchiveReader r;
+        CHECK_FALSE(r.Open(dir.out(name), err));
+    };
+    refused("mip40.bin", [](ArchiveEntry& x) { x.mip_count = 40; });
+    refused("mip255.bin", [](ArchiveEntry& x) { x.mip_count = 255; });
+    refused("offbig.bin", [](ArchiveEntry& x) { x.offset = ~u64{0} - 8; });
+    refused("sizebig.bin", [](ArchiveEntry& x) { x.size = ~u64{0} - 8; });
+    refused("w0.bin", [](ArchiveEntry& x) { x.width = 0; });
+    refused("hbig.bin", [](ArchiveEntry& x) { x.height = kMaxDimension + 1; });
+    refused("mip3.bin", [](ArchiveEntry& x) { x.mip_count = 4; }); // 4x2 has only 3 levels
     bytes.resize(bytes.size() - 1);
     { std::ofstream f(dir.out("cut.bin"), std::ios::binary); f.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size())); }
     CHECK_FALSE(reader.Open(dir.out("cut.bin"), error));
