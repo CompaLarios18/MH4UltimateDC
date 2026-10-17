@@ -245,6 +245,18 @@ take options from the environment: `MH4U_FPS=60` raises the engine's frame-rate 
 0) all the time, to look at the drawing outside a quest (checked with the Qt frontend and OpenGL
 under Xvfb).
 
+`--perf-log FILE` writes one CSV row per frame (a vertical blank of the emulated GPU to the next):
+the frame time (`present_us`) and the host time in the recompiled code, in system calls and in the
+GPU's command processing (`recomp_us`, `svc_us`, `gpu_us`; each microsecond counted once, in the
+innermost of the three). The timers are in `src/perf.h` (a clock read at each end and an atomic
+add; rows go to the file from a writer thread, nothing is logged or allocated per frame); the
+scopes sit in `ARM_Recomp::Execute` and `ARM_Recomp::Svc`, the GPU's on the hooks of
+`Pica::g_capture_hooks` (azahar.patch), so `--perf-log` and `--capture-gpu` cannot run together.
+`tools/native/perf_report.py FILE [--fps N] [--skip N]` prints p50 / p95 / p99 / max per column
+as a markdown table, with the frames over the budget. The app does the same with `perf_log = FILE`
+under `[Debug]` in `mh4u-app.ini`. The numbers say nothing of the game, so the CSV can be shared.
+The maintainer's steps for the baseline are in `docs/native/perf-procedure.md`.
+
 Everything under `build/` contains game code: it never goes into the repository.
 
 ## With Azahar's normal interface

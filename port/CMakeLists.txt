@@ -27,6 +27,8 @@ add_library(mh4u_backend STATIC
     src/hooks.h
     src/netsync.cpp
     src/netsync.h
+    src/perf.cpp
+    src/perf.h
     src/platform.h
     src/platform_azahar.cpp
 )

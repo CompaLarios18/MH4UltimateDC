@@ -1,6 +1,7 @@
 #include "config.h"
 
 #include <algorithm>
+#include <ctime>
 #include <fmt/format.h>
 #include <INIReader.h>
 
@@ -8,6 +9,8 @@
 #include "common/logging/log.h"
 #include "core/hle/service/service.h"
 #include "input.h"
+#include "perf.h"
+#include "video_core/pica/pica_core.h"
 
 namespace App {
 
@@ -40,6 +43,35 @@ Config Defaults() {
 }
 
 namespace {
+
+/// [Debug] perf_log: where Apply starts the per-frame CSV (N0-15; empty: off). Kept here, not in
+/// Config, so that Template writes it back unchanged whoever saves the file.
+std::string g_perf_log;
+
+/// Starts the frame-time log (src/perf.h) once, with the GPU timers on Azahar's hooks.
+void StartPerfLog(const Config& c, bool new_3ds) {
+    if (g_perf_log.empty() || Port::Perf::Enabled()) {
+        return;
+    }
+    const std::time_t now = std::time(nullptr);
+    char date[16] = "0000-00-00";
+    if (const std::tm* utc = std::gmtime(&now)) {
+        std::strftime(date, sizeof(date), "%Y-%m-%d", utc);
+    }
+    const std::string header = fmt::format("perf v1 {} game=0x0004000000126300 cpu=recomp new3ds={} renderer={} "
+                                           "resolution={} vsync={} screens={}",
+                                           date, new_3ds ? "on" : "off", c.renderer, c.resolution,
+                                           c.vsync ? "on" : "off", c.screens);
+    std::string error;
+    if (!Port::Perf::Start(g_perf_log, header, error)) {
+        LOG_ERROR(Frontend, "perf_log: {}", error);
+        return;
+    }
+    Port::Perf::ChainGpuHooks(Pica::g_capture_hooks, [](Service::GSP::InterruptId id) {
+        return id == Service::GSP::InterruptId::PDC0;
+    });
+    LOG_INFO(Frontend, "writing the frame times to {}", g_perf_log);
+}
 
 bool IsOn(const std::string& v) {
     return v == "1" || v == "on" || v == "yes" || v == "true";
@@ -132,6 +164,7 @@ Config Load() {
     c.last_room = str("Multiplayer", "last_room", c.last_room);
 
     c.catalog_url = str("Mods", "catalog_url", c.catalog_url);
+    g_perf_log = str("Debug", "perf_log", "");
     LOG_INFO(Frontend, "settings from {}", path);
     return c;
 }
@@ -254,13 +287,18 @@ last_room = {}
 # the launcher's mod catalog (Mods, Catalog) comes with the app's tools; a newer one is fetched
 # from here when the launcher starts (empty: never; the copy that came with the app is used)
 catalog_url = {}
+
+[Debug]
+# write one CSV row per frame to this file: the frame time and the time in the game's code, in
+# system calls and in the GPU's command processing (docs/native/perf-procedure.md). Empty: off
+perf_log = {}
 )",
                        c.game, OnOff(c.launcher), c.new_3ds, c.cpu_clock, c.renderer, OnOff(c.fullscreen), c.resolution,
                        OnOff(c.vsync), c.screens, OnOff(c.linear_filter), OnOff(c.custom_textures),
                        c.shader, c.fps_counter, c.volume, c.audio_output, c.controller_auto ? "auto" : "off", keys,
                        params, c.touch_screen_key, c.fullscreen_key, c.fps_counter_key, c.nickname, c.join, c.password,
                        c.host, c.room_port, c.room_name, c.room_members, c.lobby, c.token,
-                       OnOff(c.room_public), c.last_room, c.catalog_url);
+                       OnOff(c.room_public), c.last_room, c.catalog_url, g_perf_log);
 }
 
 void Apply(const Config& c) {
@@ -276,7 +314,8 @@ void Apply(const Config& c) {
     v.use_vsync = c.vsync;
     v.filter_mode = c.linear_filter;
     v.custom_textures = c.custom_textures;
-    v.is_new_3ds = c.new_3ds == "auto" ? !c.custom_textures : IsOn(c.new_3ds);
+    const bool new_3ds = c.new_3ds == "auto" ? !c.custom_textures : IsOn(c.new_3ds);
+    v.is_new_3ds = new_3ds;
     v.cpu_clock_percentage = static_cast<u32>(std::clamp(c.cpu_clock, 5, 400));
     v.async_custom_loading = true;
     if (!c.shader.empty()) {
@@ -315,6 +354,7 @@ void Apply(const Config& c) {
         v.lle_modules.emplace(module.name, false);
     }
     Input::BuildProfile(c);
+    StartPerfLog(c, new_3ds);
 }
 
 } // namespace App
