@@ -215,6 +215,26 @@ def test_newer_catalog_from_the_web(user, tmp_path, server):
     assert any("can't be had" in w for w in out["warnings"])
 
 
+def test_a_mod_download_without_sha256_is_refused():
+    """A mod can carry a code patch (native code once recompiled): the catalog has to pin it."""
+    base = {"name": "X", "page_url": "https://example.org/x"}
+    raw = {"mods": [
+        dict(base, id="pinned", kind="mod", downloads=[{"url": "https://example.org/a.ips", "file": "a.ips",
+                                                         "archive": "file", "as": "code.ips", "sha256": "0" * 64}]),
+        dict(base, id="unpinned", kind="mod", downloads=[{"url": "https://example.org/b.ips", "file": "b.ips",
+                                                           "archive": "file", "as": "code.ips"}]),
+        dict(base, id="pack", kind="textures", downloads=[{"url": "https://example.org/t.zip"}])]}
+    cat, warnings = mods.validate_catalog(raw, remote=True)
+    assert [e["id"] for e in cat["mods"]] == ["pinned", "pack"]
+    assert len(warnings) == 1 and "unpinned" in warnings[0] and "sha256" in warnings[0]
+
+
+def test_the_default_catalog_url_is_on_main():
+    assert "/MH4UltimateDC/main/tools/mods_catalog.json" in mods.CATALOG_URL
+    with open(os.path.join(HERE, "..", "port", "app", "config.h"), encoding="utf-8") as f:
+        assert mods.CATALOG_URL in f.read()
+
+
 # ── texture packs ──
 
 def hd_like(tmp_path):

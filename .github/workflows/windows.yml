@@ -24,7 +24,7 @@ jobs:
   mxe:
     runs-on: ubuntu-latest
     container:
-      image: opensauce04/azahar-build-environment:latest
+      image: opensauce04/azahar-build-environment:latest@sha256:b62af13c7c6bf17bb530aa56ce67458f1cfba44379055865af0d12fbd060e2cd   # pinned: the release packages are built in it
       options: -u 1001
     env:
       CCACHE_DIR: ${{ github.workspace }}/.ccache
