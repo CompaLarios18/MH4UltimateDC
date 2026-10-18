@@ -42,8 +42,8 @@ Tables between the `wp-status` markers are generated: edit the specs or use `set
 | N0-18 | Hooks on a platform interface | M | native-worker-high | N0-16, N0-17, N0-05 | ci, dump-check | `done` | PR #6; ci green (run 39008761854, windows.yml 39008783719 and macos.yml 39008785589 on its branch); dump-check pending (runs with --set 0:fps=60 --set f600:hud_edges=1 give the same state trace before and after the change) |
 | N0-19 | Game-data guard for agents | S | native-worker | - | ci | `done` | PR #5; ci green (native-guard runs 38884722260, 38903953519 and 38944855740); guard hardened in four rounds, the last two from the batch audits |
 | N0-23 | Service command census from the code | S | native-worker | - | dump | `ready` |  |
-| N0-20 | `IRuntime` seam in the app: lifecycle, options, paths | M | native-worker-high | N0-16, N0-15 | ci, pc | `review` | PR #7; ci green (linux.yml 39040404737, windows.yml 39040406726, macos.yml 39040409014 on its branch; Native CI native and runner jobs green, tools job failed only for the THIRD_PARTY rows added in the merge); maintainer smoke test pending (launcher -> play -> menu -> change an option -> quit) |
-| N0-24 | `IRuntime` seam in the app: input, multiplayer, keyboard | M | native-worker-high | N0-20 | ci, pc | `review` | PR #7; ci green (linux.yml 39048239100, windows.yml 39048241157, macos.yml 39048243336 dispatched on the batch branch with the window.cpp change; the app code is unchanged since); maintainer smoke test pending (launcher -> play -> host a room and join it from a second instance -> name a character with the keyboard -> quit) |
+| N0-20 | `IRuntime` seam in the app: lifecycle, options, paths | M | native-worker-high | N0-16, N0-15 | ci, pc | `done` | PR #7; ci green (linux.yml 39040404737, windows.yml 39040406726, macos.yml 39040409014 on its branch; Native CI native and runner jobs green, tools job failed only for the THIRD_PARTY rows added in the merge); maintainer smoke test pending (launcher -> play -> menu -> change an option -> quit) |
+| N0-24 | `IRuntime` seam in the app: input, multiplayer, keyboard | M | native-worker-high | N0-20 | ci, pc | `done` | PR #7; ci green (linux.yml 39048239100, windows.yml 39048241157, macos.yml 39048243336 dispatched on the batch branch with the window.cpp change; the app code is unchanged since); maintainer smoke test pending (launcher -> play -> host a room and join it from a second instance -> name a character with the keyboard -> quit) |
 <!-- wp-status:end N0 -->
 
 ## N1 · Headless runtime
@@ -61,8 +61,8 @@ Tables between the `wp-status` markers are generated: edit the specs or use `set
 | N1-07 | The SVC table | M | native-worker-high | N1-02, N1-27 | none | `done` | PR #6; ci green (Native CI run 39018443575 on PR #6's head) |
 | N1-08 | Kernel conformance programs | M | native-worker | N0-04 | none | `done` | PR #5; ci green (runs 38923999146 and, for the follow-up, 38944850589); the 10 programs match the reference runner twice in a row; tests/test_port.py and tests/test_conformance.py pass with the tip's runner (148 passed, 11 skipped for the game and the native runner, at the third audit) |
 | N1-09 | The runtime, the native runner and the first boot | L | native-worker-high | N1-03, N1-07, N1-08, N0-08 | ci | `done` | PR #6; ci green on its branch (Native CI run 39012897629: native job ctest 22/22 and the conformance step 51 passed; the tools job failed only for the THIRD_PARTY row added in the merge); no dump items |
-| N1-10 | IPC core, ports, sessions and srv | M | native-worker-high | N1-07, N1-09, N0-21 | none | `review` | PR #7; ci green (PR #7: Native CI, CI and native-guard); conf_srv stays in NATIVE_NOT_YET until N1-15 (cfg:u, ptm:u) |
-| N1-11 | IPC replay harness | M | native-worker | N1-10, N0-21 | dump-check | `review` | PR #7; ci green (PR #7: Native CI, CI and native-guard); dump-check pending (replaying G1's srv: requests, build/golden/G1/ipc.txt and svc.txt, finds no differences) |
+| N1-10 | IPC core, ports, sessions and srv | M | native-worker-high | N1-07, N1-09, N0-21 | none | `done` | PR #7; ci green (PR #7: Native CI, CI and native-guard); conf_srv stays in NATIVE_NOT_YET until N1-15 (cfg:u, ptm:u) |
+| N1-11 | IPC replay harness | M | native-worker | N1-10, N0-21 | dump-check | `done` | PR #7; ci green (PR #7: Native CI, CI and native-guard); dump-check pending (replaying G1's srv: requests, build/golden/G1/ipc.txt and svc.txt, finds no differences) |
 | N1-12 | fs: archives, RomFS and system archives | M | native-worker | N1-10, N1-11, N0-23 | dump-check | `todo` |  |
 | N1-13 | fs: save data and extdata | M | native-worker | N1-12 | dump-check, save | `todo` |  |
 | N1-15 | cfg, ptm, ndm, ac and the console's identity | M | native-worker | N1-10, N1-11, N0-23 | dump-check | `todo` |  |
@@ -75,10 +75,10 @@ Tables between the `wp-status` markers are generated: edit the specs or use `set
 | N1-20 | Hooks on the native platform | S | native-worker | N0-18, N1-04, N1-17 | none | `todo` |  |
 | N1-21 | First game boot: G1 and G2 headless | M | native-worker-high | N1-09, N1-12, N1-13, N1-14, N1-15, N1-16, N1-17, N1-18, N1-19, N1-20, N1-22, N1-29, N0-09 | dump | `todo` |  |
 | N1-26 | G3 headless: from the save to the Arena hunt | L | native-worker-high | N1-21, N1-13, N0-10 | dump, save | `todo` |  |
-| N1-22 | Windows and macOS builds | M | native-worker | N1-09 | ci | `review` | PR #7; ci green (Native CI run 39047113161 on its branch: native-windows and native-macos jobs green, ctest 22/22 and conformance 51 passed on both, artifact mh4n-runner-windows uploaded) |
+| N1-22 | Windows and macOS builds | M | native-worker | N1-09 | ci | `done` | PR #7; ci green (Native CI run 39047113161 on its branch: native-windows and native-macos jobs green, ctest 22/22 and conformance 51 passed on both, artifact mh4n-runner-windows uploaded) |
 | N1-23 | CPU budget measurement | S | native-worker | N1-26, N1-22, N0-15 | ci, pc | `todo` |  |
-| N1-24 | Fallback interpreter: spike | S | native-worker-high | N1-04, N1-09, N1-22 | none | `review` | PR #7; ci green (Native CI run 39065116199 on the N1-28 branch ran the tools job with tests/test_recomp_interp_gen.py); the spike's verdict: generator feasible (20/20 spike forms, 28/29 extra) |
-| N1-28 | Fallback interpreter | L | native-worker-high | N1-24 | none | `review` | PR #7; ci green (Native CI run 39065116199 on its branch: native, native-windows, native-macos and runner jobs green) |
+| N1-24 | Fallback interpreter: spike | S | native-worker-high | N1-04, N1-09, N1-22 | none | `done` | PR #7; ci green (Native CI run 39065116199 on the N1-28 branch ran the tools job with tests/test_recomp_interp_gen.py); the spike's verdict: generator feasible (20/20 spike forms, 28/29 extra) |
+| N1-28 | Fallback interpreter | L | native-worker-high | N1-24 | none | `done` | PR #7; ci green (Native CI run 39065116199 on its branch: native, native-windows, native-macos and runner jobs green) |
 | N1-25 | Deterministic mode and the shuffling scheduler | M | native-worker-high | N1-06, N1-26, N0-17 | dump-check | `todo` |  |
 <!-- wp-status:end N1 -->
 
