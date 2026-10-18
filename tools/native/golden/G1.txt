@@ -1,18 +1,18 @@
 # name: G1
 # needs: none
-# frames: 1800
-# checkpoints:
-# captures: gpu:1200:3, dsp:1200:300
-# draft: yes
+# frames: 1700
+# checkpoints: 1450:0x00, 1700:0x00
+# captures: gpu:1500:3, dsp:1500:300
 #
-# G1: power-on to the title screen, "Press Start" stable. No input.
+# G1: power-on to the title, stable. From a user folder with the update installed and no save.
 #
-# SCAFFOLD (phase 1 of N0-09, made without the reference runner or the game). The numbers above
-# are placeholders and `golden.py record` refuses the file while "draft: yes" is here:
-#   - frames: 1800 is a guess; phase 2 sets it to the frame where the title is stable plus the
-#     300 frames of the dsp capture (1200 is the frame N0.md names for "G1's title").
-#   - checkpoints: phase 2 fills in `<frame>:<scene>` pairs from the state trace of a first run
-#     (scene = the observable `scene` value, e.g. 600:0x01); the first one must be the title.
-#   - captures: gpu 3 frames and dsp 300 frames "at the title", starting at the first frame where
-#     the title is stable (found with --shots); 1200 is a placeholder.
-# Then delete "draft: yes".
+# Button presses only (A, 6 frames each). The first five answer the first-start prompts (save
+# formatting, extra data on the SD card, Circle Pad Pro); the last three skip the notice and the
+# intro movie. The title is on screen from about frame 1360 and waits for A, so the captures at
+# frame 1500 are on a stable title screen. 300 DSP audio frames are about 90 game frames, so the
+# run stops at 1700.
+#
+# The scene observable (config/native/observable.txt) reads 0x00 from frame 1 to the end of every
+# golden session, so the checkpoints can only say "still scene 0x00 here".
+f300:A:f6,f450:A:f6,f600:A:f6,f750:A:f6,f900:A:f6
+f1050:A:f6,f1200:A:f6,f1350:A:f6

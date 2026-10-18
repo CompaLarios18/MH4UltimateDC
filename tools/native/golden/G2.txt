@@ -1,21 +1,39 @@
 # name: G2
 # needs: none
-# frames: 6000
-# checkpoints:
-# captures: gpu:3000:3
-# draft: yes
+# frames: 9000
+# checkpoints: 1450:0x00, 2500:0x00, 3600:0x00, 8300:0x00, 9000:0x00
+# captures: gpu:2500:3
 #
-# G2: title -> new game -> character creation (the name through the software keyboard) -> first
-# control in the village. Needs no save.
+# G2: new game -> character creation (the name on the software keyboard, then the second
+# creation step, its name on the keyboard again) -> the first control after the opening scene.
+# From a user folder with the update installed and no save.
 #
-# SCAFFOLD (phase 1 of N0-09, made without the reference runner or the game). Placeholders:
-#   - frames: 6000 is a guess; phase 2 sets the real total.
-#   - events: none yet. Phase 2 adds frame-keyed lines, one or more per line separated by commas
-#     (f<frame>:BUTTON[:hold], f<frame>:TOUCH:x:y[:hold]), found by recording with --shots and
-#     looking at the screens: START at the title, the new-game prompts, the keyboard (the runner's
-#     default keyboard answers with the config's user name), the character creation steps, the
-#     first control in the village.
-#   - checkpoints: `<frame>:<scene>` pairs (observable `scene` values) at the title, in character
-#     creation and at the first control in the village.
-#   - captures: gpu 3 frames in character creation; 3000 is a placeholder.
-# Then delete "draft: yes".
+# Button presses and touches only.
+#   f300..f1350   first-start prompts, notice, intro movie (as G1); the title waits for A
+#   f1500, f1650  A: title -> menu -> new game
+#   f1800         A on "Name": the software keyboard opens (a touch keyboard: it does NOT answer
+#                 by itself in this runner, the touches below type four letters and press OK)
+#   f2400         OK (touch)             f2600  Confirm (touch)         f2800  A: yes, proceed
+#   f3000         A on the second name entry: the keyboard again (G6 stops after this one)
+#   f3550         OK (touch)             f3750  Confirm (touch)         f3950  A
+#   f4150..f7900  A every 150 frames: settings, selection, one question, the opening scene and its
+#                 text. The first control is from about frame 8240 (A no longer changes anything).
+#   f8700         circle pad forward for 60 frames: the screenshots after it show the view move
+# Scene observable: 0x00 throughout (see G1).
+f300:A:f6,f450:A:f6,f600:A:f6,f750:A:f6,f900:A:f6
+f1050:A:f6,f1200:A:f6,f1350:A:f6
+f1500:A:f6,f1650:A:f6,f1800:A:f6
+f1950:TOUCH:45:115:f6,f2000:TOUCH:68:115:f6,f2050:TOUCH:48:136:f6,f2100:TOUCH:72:136:f6
+f2400:TOUCH:236:228:f6
+f2600:TOUCH:285:183:f6
+f2800:A:f6
+f3000:A:f6
+f3250:TOUCH:45:115:f6,f3300:TOUCH:68:115:f6,f3350:TOUCH:48:136:f6
+f3550:TOUCH:236:228:f6
+f3750:TOUCH:285:183:f6
+f3950:A:f6
+f4150:A:f6,f4300:A:f6,f4450:A:f6,f4600:A:f6,f4750:A:f6,f4900:A:f6,f5050:A:f6,f5200:A:f6
+f5350:A:f6,f5500:A:f6,f5650:A:f6,f5800:A:f6,f5950:A:f6,f6100:A:f6,f6250:A:f6,f6400:A:f6
+f6550:A:f6,f6700:A:f6,f6850:A:f6,f7000:A:f6,f7150:A:f6,f7300:A:f6,f7450:A:f6,f7600:A:f6
+f7750:A:f6,f7900:A:f6
+f8700:CIRCLE:0:1:f60

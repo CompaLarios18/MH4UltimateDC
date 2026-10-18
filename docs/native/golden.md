@@ -1,13 +1,14 @@
 # Golden sessions
 
-> **Status: skeleton (N0-09, phase 1).** The tool and its tests are done; the sessions are scaffolds
-> (`draft: yes`) and nothing has been recorded yet. Sections marked **TODO (phase 2)** need the
-> reference runner and the game.
-
 A golden session is a frame-keyed input script plus the recording of what the reference runner (the Azahar-based
 `mh4u_runner`, Old 3DS) did with it. Later work packages check a candidate runtime against the recordings
 (`tools/native/golden.py check`). The recordings are game data: they live in `build/golden/<S>/` and never in the
 repository.
+
+> **Status (N0-09).** G1, G2 and G6 are recorded with the Windows build of the reference runner (CI run 39075253705,
+> native `e6cd840`), `--cpu recomp`, and every recording passes its own checkpoints and its capture checks. The
+> reference runner is **not reproducible** on that PC, so `golden.py check` against the same runner does not pass yet:
+> see [Reproducibility](#reproducibility-of-the-reference-runner).
 
 ## Files
 
@@ -29,8 +30,10 @@ repository.
 f600:START                      events: f<frame>:BUTTON[:hold], f<frame>:TOUCH:x:y[:hold], f<frame>:CIRCLE:x:y[:hold]
 ```
 
-Event times are frames (`f<N>`), never milliseconds, so a script means the same on every CPU backend and runtime.
-Several events may share a line, separated by commas. The scripts are only button presses: they may be committed.
+Event times are frames (`f<N>`, the game's frame counter), never milliseconds, so a script means the same on every CPU
+backend and runtime. Several events may share a line, separated by commas. The scripts are only button presses and
+touches: they may be committed. A checkpoint `<frame>:<scene>` holds when the first state-trace record at or after that
+frame has that `scene`.
 
 ### A recording
 
@@ -41,7 +44,7 @@ Several events may share a line, separated by commas. The scripts are only butto
 | `state.txt`, `unmapped.txt` | the state trace and the unmapped-access report |
 | `hid.mhid`, `dsp-<start>.mdsp` | the HID capture and each DSP capture |
 | `gpu-<start>.mgpu` (with `.json` and `.frames/`) | each GPU capture |
-| `shots/` | screenshots (`--shot-every`, default 1000 ms of emulated time) |
+| `shots/` | screenshots (`--shot-every`, default 1000 ms of emulated time; names are the emulated millisecond) |
 | `runner.log` | the runner's output |
 | `manifest.json` | the runner and code library used (with SHA-256), the time zone, the arguments, the checkpoint results, the capture problems, and size and SHA-256 of every file above |
 
@@ -56,6 +59,17 @@ golden.py check  S --runner RUN --game CXI --update CIA [--code LIB]
                    [--candidate-runner RUN2] [--candidate-program PATH] [--candidate-code LIB]
                    [--candidate-args "..."] [--repeat N] [--ignore FILE]
 ```
+
+The recordings of this document were made with:
+
+```
+python tools/native/golden.py record <S> --runner build/runner-win/mh4u-port-windows/mh4u_runner.exe \
+    --game baserom/juego.cxi --update baserom/update_v130.cia --user build/userbase \
+    --code build/game/recomp/0004000000126300.dll --cpu recomp --out build/golden
+```
+
+`build/userbase` is a user folder with the 1.3.0 update installed and no save. `--cpu recomp` because the recompiled
+code is what the native runtime is compared with; `jit` is no more reproducible than `recomp` (see below).
 
 - `RUN` and `LIB` are paths: `mh4u_runner.exe` and a `.dll` on Windows, `mh4u_runner` and a `.so` on Linux. A runner
   that is a `.py` script is started with the Python interpreter (the tests use that).
@@ -75,41 +89,142 @@ golden.py check  S --runner RUN --game CXI --update CIA [--code LIB]
 - `--repeat N` runs the run N times and also requires the state traces (header lines aside) to be identical.
 - GPU captures are not compared by `check` (that is the capture player's job, N2).
 
-## Time zone
-
-Azahar's shared page turns the start date into the 3DS clock through the host's local time zone, so recordings should
-be made on a UTC host. `record` and `check` start the runner with `TZ=UTC0` in the child's environment and
-`manifest.json` has `"tz": "UTC0"`. **TODO (phase 2):** confirm that the Windows runner honours `TZ` (this PC is on
-UTC-8): record twice and compare the clock-dependent state, or read the clock the game sees.
-
 ## The software keyboard
 
-The runner's keyboard is Azahar's default one: it answers with the user name from the config (Azahar's default is
-`AZAHAR`) and the button the configuration expects. The native keyboard answers the same way (N1-14).
+The runner's keyboard is **not** answered by the runner: the game opens it, and it stays open until a touch presses its
+`OK` key (the config's user name is not entered). The sessions therefore type four letters with touches and press
+`OK` at the bottom right of the touch screen. Typed text is part of the input script, so every runtime sees the same
+touches. The native keyboard (N1-14) has to take the same touches.
+
+Touch coordinates used (pixels of the 320x240 touch screen): the first row of letter keys at y = 115 and the second at
+y = 136, `OK` at (236, 228), the `Confirm` button of the creation menu at (285, 183).
+
+## First start
+
+The user folder has no save, so every session starts with the game's first-start prompts: formatting of the save data,
+a question about extra data on the SD card, a question about the Circle Pad Pro, a notice, and the intro movie. The
+sessions answer them with `A` at frames 300, 450, 600, 750 and 900 (the prompts), then 1050, 1200 and 1350 (the notice
+and the movie). The title is on screen from about frame 1360 and waits for `A`. (`docs/native/wp/N0.md` says "from game
+frame 1200 on": that is the intro movie without input; with the presses above the title is at 1360.)
 
 ## Sessions
 
+The `scene` observable (`config/native/observable.txt`) is `0x00` from frame 1 to the end of every session, and
+`quest_id` is `-`: it never changes outside a quest. The checkpoints below are therefore all `<frame>:0x00` and can only
+show that the run reached that frame with the scene unchanged; the discriminating checks are `state_diff.py` on the
+other values and the screenshots. A richer observable is a decision for `config/native/observable.txt`.
+
 ### G1: power-on to the title
 
-Power-on, no input, until "Press Start" is stable. Captures: `gpu` 3 frames and `dsp` 300 frames at the title.
+Frames: 1700. Input: the eight `A` presses of [First start](#first-start). Checkpoints: 1450:0x00, 1700:0x00. Captures:
+`gpu:1500:3` (frames 1500 to 1502 of the title) and `dsp:1500:300` (300 DSP audio frames are game frames 1500 to 1587).
+The title is stable from 1360 on (it waits for `A`), so the captures start 140 frames after it appears.
+Recording: 60 s of host time, about 337 MiB (the GPU capture is 144 MB).
 
-**TODO (phase 2):** the real total, the checkpoints (title scene and its frame), the capture start (found with
-`--shots`).
+The title is **silent**: the DSP capture has 300 `REGIONS` and 300 `PCM` records, 0 non-silent PCM frames and no source
+enabled (`sources_enabled_max: 0`, no type-3 records). The same holds at game frame 2300 on the same screen. Audio is
+there earlier (the notice before the movie, from about frame 1000: sources enabled, 125 non-silent frames in 88 game
+frames). A work package that needs non-silent PCM at the title (N0-06's "G1" item) has to take it from there, or from G2.
 
-### G2: new game to the first control in the village
+### G2: new game to the first control
 
-Title, new game, character creation with the name through the software keyboard, first control in the village. Capture:
-`gpu` 3 frames in character creation.
+Frames: 9000. Checkpoints: 1450:0x00, 2500:0x00, 3600:0x00, 8300:0x00, 9000:0x00. Capture: `gpu:2500:3`, in character
+creation, with the name already entered and the creation menu showing.
+Recording: 1100 s of host time, about 1245 MiB (323 files).
 
-**TODO (phase 2):** the input events, the checkpoints, the capture start.
+| Frames | What |
+|---|---|
+| 300 to 1350 | first-start prompts, notice, intro movie (as G1) |
+| 1500, 1650 | `A`: title to menu, menu to new game |
+| 1800 | `A` on "Name": the software keyboard opens |
+| 1950 to 2100 | four touches on letter keys; 2400: `OK`; the creation menu is back |
+| 2600 | touch `Confirm`; 2800: `A` answers the question that follows (second creation step) |
+| 3000 | `A` on the second name entry: the keyboard opens again (G6) |
+| 3250 to 3350 | three letters; 3550: `OK`; 3750: `Confirm`; 3950: `A` |
+| 4150 to 7900 | `A` every 150 frames through a settings screen, a selection screen, one question, the opening scene and its text |
+| about 8240 | the first control: more `A` presses change nothing |
+| 8700 | circle pad forward for 60 frames: the screenshots after it show the view move |
 
 ### G6: the software keyboard again
 
-The keyboard used a second time (the name, or the village chat). No capture required.
-
-**TODO (phase 2):** the input events and the checkpoints.
+Frames: 3700. Checkpoints: 1450:0x00, 2500:0x00, 3700:0x00. No capture (the spec asks for none). The first 3550
+frames of G2: the keyboard is used for the first name (frames 1800 to 2400) and again for the second (3000 to 3550),
+and the run stops on the creation screen it was opened from. Recording: 282 s of host time, about 575 MiB.
 
 ## Numbers from `gcap.py summary` of G1's capture
 
-**TODO (phase 2):** interrupt counts and delays (per interrupt id), GX command kinds and the frames covered, from
-`gcap.py summary build/golden/G1/gpu-<start>.mgpu`. Do not paste anything else from the capture.
+`gcap.py summary build/golden/G1/gpu-1500.mgpu`, frames 1500 to 1502, 3 `FRAME` records:
+
+| Record | Count |
+|---|---|
+| `INIT` | 1 |
+| `MEM` | 9 |
+| `CPU_PAGES` | 23 |
+| `GX` | 17 (`SUBMIT_CMDLIST` 6, `DISPLAY_TRANSFER` 6, `CACHE_FLUSH` 5) |
+| `PICA_REG` | 6 |
+| `GPU_PAGES` | 12 |
+| `SWAP` | 6 |
+| `IRQ` | 18 |
+| `FLUSH` | 14 |
+| `FRAME` | 3 |
+
+Interrupts and the delays the reference gave them (nanoseconds):
+
+| Interrupt | Id | Count | Delay min / median / max |
+|---|---|---|---|
+| PDC0 (top screen vertical blank) | 2 | 3 | 0 / 0 / 0 |
+| PDC1 (bottom screen vertical blank) | 3 | 3 | 0 / 0 / 0 |
+| PPF (display transfer done) | 4 | 6 | 92592 / 92592 / 92592 |
+| P3D (command list done) | 5 | 6 | 49590 / 50454 / 50716 |
+
+Per frame that is one `PDC0` and one `PDC1`, two `PPF` (one display transfer per screen) and two `P3D` (two command
+lists). Fog modes set: none (3 times). The DSP capture of the same session has `dsp_counter_first` 5701 and
+`dsp_counter_last` 6000; the HID capture has 1701 records, one per frame from 0 to 1700, with buttons on 48 of them
+(`A` only).
+
+## Time zone
+
+Azahar's shared page turns the start date into the 3DS clock through the host's local time zone, so recordings are made
+with `TZ=UTC0` in the child's environment (`record` and `check` set it; `manifest.json` has `"tz": "UTC0"`).
+
+**The Windows (mingw) runner honours `TZ`.** Three runs of the first 200 frames, dumping the shared page
+(`--dump f100:1FF81000:0x100`) with `TZ=UTC0`, with `TZ` unset (this PC: UTC-8) and with `TZ=PST8PDT` gave a date
+field in the shared page that is 28,800,000 ms (8 hours) lower for the last two than for the first. Two runs with
+`TZ=UTC0` differ in the same field only by about 0.9 s, which is host timing (below), not time zone. G1's state, SVC and IPC
+traces recorded with `TZ=UTC0` and without it agree as much as two `TZ=UTC0` runs do: they do not differ because of the
+time zone (the date does not reach the state or the IPC of G1), so the time zone cannot be told apart from the run-to-run
+noise there. Keep `TZ=UTC0`: it is what makes the clock the game reads the same on every machine.
+
+## Reproducibility of the reference runner
+
+On this PC (Windows 11, the CI build of the runner) two runs with identical arguments are **not** identical, for
+`--cpu recomp` and for `--cpu jit`, with and without the GPU capture and with `TZ=UTC0`. Measured on G1 (two runs each,
+no screenshots):
+
+- the state trace: the same scenes, `frame_counter` and `stage_loader_state` in every record; the tick count `t` of
+  a record differs from some frame on (recomp: first at frame 468 by 8 ticks; jit: first at frame 29), 100 to 120 of 1701
+  records; `smain_delta`, the game's own frame delta (`ignore` in the observable list), differs in about 500 to 700;
+- the SVC trace: the first difference is in the registers that carry tick values around `svc 0x28`
+  (GetSystemTick, which takes no register arguments), and later threads make different numbers of calls
+  (one thread 108 against 97; the main thread 1014391 against 1021315);
+- the IPC trace: equal in some pairs of G1 runs (a `jit` pair, and one `recomp` pair) and different in others (a
+  thread one request short); for G2 one `fs:USER` write of 81408 bytes has a different CRC and two threads have one
+  request more or fewer;
+- the clock the game reads: the shared page's date at game frame 100 differs by about 0.9 s between two identical runs,
+  so the game seeds its random numbers and times its loads from a clock that is not the fixed start date alone.
+
+`golden.py check` against the same runner, on the recordings of this document:
+
+| Session | Passed | Failed |
+|---|---|---|
+| G1 | ipc, state, checkpoints, hid, dsp-1500, images | svc |
+| G6 | ipc, state, checkpoints, hid | svc, images (13 of 130 screenshots differ) |
+| G2 | state, checkpoints, hid | svc, ipc, images (50 of 308 differ) |
+
+The comparisons were not loosened to make them pass. A `check` against a candidate runtime needs the same thing the
+roadmap already asks for: the deterministic mode (N1-25) for exact comparisons, and for the reference either a run on an
+idle host with the shared page's clock fixed (a change in `port/`, not in this work package) or rules for the registers
+and requests that carry time (`config/native/svc_unused_registers.txt`, `ipc_time_dependent.txt`: proposed to the
+orchestrator, not edited here). Until then `check` against the reference runner is a measure of how much of a run is
+host-timing noise, and `state_diff.py` (scenes within two frames, `eq` values equal), the checkpoints and the HID
+capture are the comparisons that hold.
