@@ -56,9 +56,9 @@ frame has that `scene`.
 | `manifest.json` | the runner and code library used (with SHA-256), the time zone, the arguments, the checkpoint results, the capture problems, and size and SHA-256 of every file above |
 
 `--shot-every` counts **emulated milliseconds**: the runner has no frame-keyed screenshot option, so a screenshot is
-taken at a time, not at a game frame. The spec table calls the screenshots frame-keyed, but they are themselves exposed
-to the reference runner's timing noise (see [Reproducibility](#reproducibility-of-the-reference-runner)): the same
-millisecond can fall on a different game frame in two runs.
+taken at a time, not at a game frame. The spec table calls the screenshots frame-keyed. The reference runner does not
+repeat exactly between runs (see [Reproducibility](#reproducibility-of-the-reference-runner)), so the same millisecond
+may fall on a different game frame in two runs.
 
 `check` runs into `build/golden/<S>/check/run<N>/` and writes `check/result.json`.
 
@@ -218,7 +218,7 @@ with `TZ=UTC0` in the child's environment (`record` and `check` set it; `manifes
 field in the shared page that is 28,800,000 ms (8 hours) lower for the last two than for the first. G1's state, SVC and
 IPC traces recorded with `TZ=UTC0` and without it agree as much as two `TZ=UTC0` runs do: they do not differ because of
 the time zone (the date does not reach the state or the IPC of G1), so the time zone cannot be told apart from the
-run-to-run noise there. Keep `TZ=UTC0`: it is what makes the clock the game reads the same on every machine.
+run-to-run noise there. Keep `TZ=UTC0`: it makes the date field of the shared page the same on every machine.
 
 The fixed start date does not make the whole shared page repeat. Dumping 0x100 bytes at 0x1FF81000 at game frame 100
 (`--dump f100:1FF81000:0x100`) in three identical runs (`TZ=UTC0`) gave pages that differ in 12 bytes, and the runner
@@ -271,8 +271,8 @@ so far, not a fixed result:
 Stable in the samples: `state`, `checkpoints` and `hid` (all three sessions) and `images` for G1; `ipc` was identical in
 the two 800-frame pairs compared on an idle PC. Not stable: `svc` (the main thread differs in every pair compared: its
 `GetSystemTick` results differ by a few ticks at the first difference, and its call count differs by about 0.2%) and,
-under load, `ipc`. For G6 and G2 there is one sample each, so `ipc` and `images` are not
-known to be stable either way. `dsp-1500` of G1 passed in the samples (a silent title, so it compares little).
+under load, `ipc`. For G6 and G2 there is one sample each, so `ipc` and `images` are not known to be stable either way.
+`dsp-1500` of G1 passed in the samples (a silent title, so it compares little).
 
 The comparisons were not loosened to make them pass. Options for the maintainer (not decided here):
 
@@ -285,5 +285,5 @@ The comparisons were not loosened to make them pass. Options for the maintainer 
 
 Whether `jit` and `recomp` (or the native runtime) should be compared as equal is a different question from the
 repeatability of one backend (the `jit` against `recomp` row above). Until one of the options is chosen, `check` against
-the reference runner measures how much a run differs from the next run, and `state_diff.py` (scenes within two frames, `eq`
-values equal), the checkpoints and the HID capture are the comparisons that hold.
+the reference runner measures how much a run differs from the next run, and `state_diff.py` (scenes within two frames,
+`eq` values equal), the checkpoints and the HID capture are the comparisons that hold.
