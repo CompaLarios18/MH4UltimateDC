@@ -54,6 +54,8 @@ def library_name(program_id: int) -> str:
 
 LLVM_MINGW = "llvm-mingw-20241217-ucrt-x86_64"
 LLVM_MINGW_URL = f"https://github.com/mstorsjo/llvm-mingw/releases/download/20241217/{LLVM_MINGW}.zip"
+# the SHA-256 of that zip: the compiler runs on the player's PC, so it must be exactly this file
+LLVM_MINGW_SHA256 = "f4f3ad8616c4183ce7b0d72df634400945b41ea9816145fc2430df6003455db7"
 MINGW_CLANG = "x86_64-w64-mingw32-clang"
 
 
@@ -149,15 +151,20 @@ def fetched_compilers(toolchain_dir: str) -> list[str]:
     return sorted(glob.glob(os.path.join(toolchain_dir, "*", "bin", MINGW_CLANG + exe)))
 
 
-def fetch_compiler(toolchain_dir: str, source: str = LLVM_MINGW_URL) -> str:
+def fetch_compiler(toolchain_dir: str, source: str = LLVM_MINGW_URL, sha256: str | None = None) -> str:
     """Download and unpack llvm-mingw (a zip URL, or a local zip for tests) into
-    toolchain_dir; returns its x86_64-w64-mingw32-clang."""
+    toolchain_dir; returns its x86_64-w64-mingw32-clang. A download is refused unless its
+    SHA-256 is sha256 (by default LLVM_MINGW_SHA256 for LLVM_MINGW_URL; another URL needs one)."""
+    if sha256 is None and source == LLVM_MINGW_URL:
+        sha256 = LLVM_MINGW_SHA256
     found = fetched_compilers(toolchain_dir)
     if found:
         return found[0]
     os.makedirs(toolchain_dir, exist_ok=True)
     archive = source
     if "://" in source:
+        if not sha256:
+            raise SystemExit(f"{source}: no SHA-256 to check the compiler against")
         archive = os.path.join(toolchain_dir, os.path.basename(source))
         print(f"downloading {source}")
         with urllib.request.urlopen(source) as r, open(archive + ".part", "wb") as f:
@@ -168,6 +175,14 @@ def fetch_compiler(toolchain_dir: str, source: str = LLVM_MINGW_URL) -> str:
                 if total:
                     print(f"\r  {done >> 20}/{total >> 20} MB", end="", flush=True)
         print()
+        digest = hashlib.sha256()
+        with open(archive + ".part", "rb") as f:
+            while chunk := f.read(1 << 20):
+                digest.update(chunk)
+        if digest.hexdigest() != sha256.lower():
+            os.remove(archive + ".part")
+            raise SystemExit(f"{source}: its SHA-256 is {digest.hexdigest()}, not {sha256.lower()} "
+                             "(a changed or damaged download): nothing was installed")
         os.replace(archive + ".part", archive)
     print(f"unpacking {os.path.basename(archive)}")
     with zipfile.ZipFile(archive) as z:
