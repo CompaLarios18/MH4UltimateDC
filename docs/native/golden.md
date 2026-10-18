@@ -7,10 +7,14 @@ repository.
 
 > **Status (N0-09).** G1, G2 and G6 are recorded with the Windows build of the reference runner (CI run 39075253705,
 > native `e6cd840`), `--cpu recomp`, and every recording passes its own checkpoints and its capture checks. The
-> reference runner is **not reproducible** on that PC, so `golden.py check` against the same runner does not pass yet:
-> see [Reproducibility](#reproducibility-of-the-reference-runner). The `ipc` comparison of G1 passes in some runs and
-> fails in others; `state`, `checkpoints` and `hid` (all sessions) and `images` (G1) were stable in the runs made, and
-> `svc` failed in every one.
+> reference runner is **nearly reproducible** on that PC, not exactly: two runs with the same arguments agree in scene,
+> frame counter, quest id and stage loader state in every state record, and differ only by a few ticks of game time in a
+> few records and, in the SVC trace, in the main thread (its `GetSystemTick` polling returns values that differ by a few
+> ticks, and its call count differs by about 0.2%). So `golden.py check` against the same runner does not pass the `svc`
+> comparison yet: see [Reproducibility](#reproducibility-of-the-reference-runner). Every result below is a **sample** of
+> the runs made, not a fixed result. Stable in the samples: `state`, `checkpoints` and `hid` (all sessions), `images`
+> (G1), and `ipc` on an idle PC (a G1 re-run made while other work was using the PC failed `ipc` in the main thread; the
+> effect of load on IPC is not settled). Not stable: `svc`, which failed in every run made.
 
 ## Files
 
@@ -116,7 +120,9 @@ frame 1200 on": that is the intro movie without input; with the presses above th
 ## Sessions
 
 The `scene` observable (`config/native/observable.txt`) is `0x00` from frame 1 to the end of every session, and
-`quest_id` is `-`: it never changes outside a quest. The checkpoints below are therefore all `<frame>:0x00` and can only
+`quest_id` is `-`: it never changes outside a quest. The `scene` observable is `[[0x0104dea0]+0x30]`, the sApplet state
+byte (`config/symbols.txt`, `docs/research/second-screen.md`), which is `0x00` outside HOME and the applet overlays.
+The checkpoints below are therefore all `<frame>:0x00` and can only
 show that the run reached that frame with the scene unchanged; the discriminating checks are `state_diff.py` on the
 other values and the screenshots. A richer observable is a decision for `config/native/observable.txt`.
 
@@ -136,7 +142,7 @@ user folder): 6000 `REGIONS`, 6000 `PCM` and 236 type-3 (`SAMPLES`) records, 119
 between game frames 300 and 1350, and at most one source enabled at a time (1204 `REGIONS` records have one). The
 non-silent frames come in six stretches, 300-327, 451-467, 601-625, 751-772, 901-918 and 1234-1350, so the sound is
 there from about frame 300 on and not at the title (none from 1360 on), and **none in game frames 1000 to 1087**. The
-exact stretches vary between runs (the reference runner is not reproducible, below): treat the frames above as the
+exact stretches may vary between runs (the reference runner is only nearly reproducible, below): treat the frames above as the
 range of one run. Two consequences for other work packages:
 
 - the item of N0-06 that asks for non-silent PCM "at G1's title" cannot hold, because the title (from about frame 1360)
@@ -208,50 +214,74 @@ with `TZ=UTC0` in the child's environment (`record` and `check` set it; `manifes
 
 **The Windows (mingw) runner honours `TZ`.** Three runs of the first 200 frames, dumping the shared page
 (`--dump f100:1FF81000:0x100`) with `TZ=UTC0`, with `TZ` unset (this PC: UTC-8) and with `TZ=PST8PDT` gave a date
-field in the shared page that is 28,800,000 ms (8 hours) lower for the last two than for the first. Two runs with
-`TZ=UTC0` differ in the same field only by about 0.9 s, which is host timing (below), not time zone. G1's state, SVC and IPC
-traces recorded with `TZ=UTC0` and without it agree as much as two `TZ=UTC0` runs do: they do not differ because of the
-time zone (the date does not reach the state or the IPC of G1), so the time zone cannot be told apart from the run-to-run
-noise there. Keep `TZ=UTC0`: it is what makes the clock the game reads the same on every machine.
+field in the shared page that is 28,800,000 ms (8 hours) lower for the last two than for the first. G1's state, SVC and
+IPC traces recorded with `TZ=UTC0` and without it agree as much as two `TZ=UTC0` runs do: they do not differ because of
+the time zone (the date does not reach the state or the IPC of G1), so the time zone cannot be told apart from the
+run-to-run noise there. Keep `TZ=UTC0`: it is what makes the clock the game reads the same on every machine.
+
+The fixed start date does not make the whole shared page repeat. Dumping 0x100 bytes at 0x1FF81000 at game frame 100
+(`--dump f100:1FF81000:0x100`) in three identical runs (`TZ=UTC0`) gave pages that differ in 12 bytes, and the runner
+already sets `InitClock::FixedTime` with `init_time` 1767268800 and deterministic asynchronous operations:
+
+- offsets 0x60 to 0x65 (six bytes, the layout of the Wi-Fi MAC address): a different value in each run, so it is random
+  per run;
+- in the second date record, offsets 0x40-0x41 (low bytes of the date) and 0x48-0x4B (low bytes of the update tick):
+  they differ between runs by seconds of game time, so the last update of that record happens at a different time.
 
 ## Reproducibility of the reference runner
 
-On this PC (Windows 11, the CI build of the runner) two runs with identical arguments are **not** identical, for
-`--cpu recomp` and for `--cpu jit`, with and without the GPU capture and with `TZ=UTC0`. Measured on G1 (two runs each,
-no screenshots):
+The reference runner is **nearly reproducible** on this PC (Windows 11, the CI build of the runner), not exactly. The
+measurements below were made on an idle PC (no other emulator running) with `TZ=UTC0`, a fresh copy of the user folder
+per run, G1 as the input file, `--frames 800`, `--state-trace` and `--trace-svc`. They are samples; the numbers will
+move a little from run to run.
 
-- the state trace: the same scenes, `frame_counter` and `stage_loader_state` in every record; the tick count `t` of
-  a record differs from some frame on (recomp: first at frame 468 by 8 ticks; jit: first at frame 29), 100 to 120 of 1701
-  records; `smain_delta`, the game's own frame delta (`ignore` in the observable list), differs in about 500 to 700;
-- the SVC trace: the first difference is in the registers that carry tick values around `svc 0x28`
-  (GetSystemTick, which takes no register arguments), and later threads make different numbers of calls
-  (one thread 108 against 97; the main thread 1014391 against 1021315);
-- the IPC trace: equal in some pairs of G1 runs (a `jit` pair, and one `recomp` pair) and different in others (a
-  thread one request short); for G2 one `fs:USER` write has a different CRC and two threads have one
-  request more or fewer;
-- the clock the game reads: the shared page's date at game frame 100 differs by about 0.9 s between two identical runs,
-  so the game seeds its random numbers and times its loads from a clock that is not the fixed start date alone.
+| Measurement | Result |
+|---|---|
+| State trace, `--cpu recomp`, two runs | `scene`, `frame_counter`, `quest_id` and `stage_loader_state` agree in 801 of 801 records. The tick count `t` is equal in 793 of 801; the 8 that differ are around frame 471 and differ by at most 562 ticks (about 2 microseconds of game time), and the traces are tick-identical again at the last frame. `smain_delta` (the game's frame delta, `ignore` in the observable list) differs in 197 of 801 records (low bits of a float) |
+| SVC trace, same two runs | 16 of 17 threads are identical call for call. Only the main thread differs: the first difference is at call 338025, in a loop that polls `GetSystemTick` (svc 0x28) where the returned tick differs by 8; its call count is 460698 against 461742 (about 0.2%) |
+| SVC trace, another `recomp` pair (with `--trace-ipc` on) | the first difference is at call 25767 and the main thread's counts are 463524 against 461734 |
+| IPC trace (`--trace-ipc`), `recomp` pair and `jit` pair | identical (`compare_ipc_traces.py` exits 0) |
+| `--cpu jit`, two runs | the same picture as `recomp`: only the main thread differs in the SVC trace (equal call counts in that pair), IPC identical |
+| Before and after N0-18 (the runner of `batch/20261016-n0` with its own code library against the current one) | the same noise as between two runs of one runner: ticks differ in 3 records by at most 55; the SVC trace differs only in the main thread |
+| `jit` against `recomp` (same arguments) | see below |
 
-`golden.py check` against the same runner, on the recordings of this document:
+- **IPC and load.** A reviewer's `golden.py check G1` made while other work was using the PC failed `ipc` in the main
+  thread, so the load of the PC may matter for IPC. That is not settled; the idle-PC pairs above are identical.
+- **Shared page.** The date and tick of the last update and the MAC address differ between runs: see
+  [Time zone](#time-zone). This is a clock the game can read that is not fixed by the start date.
+- **Longer sessions.** For G2, an earlier sample had one `fs:USER` write with a different CRC and two threads with one
+  request more or fewer; that was not repeated on the idle PC.
+- **`jit` against `recomp` is a separate question.** Each backend repeats itself, but the two interleave threads
+  differently. With `--cpu jit` against `--cpu recomp` (same arguments): `state_diff.py` agrees (2 scene changes, within
+  2 frames); in the SVC trace 10 of 17 threads have different call counts (main 511886 against 463524; thread 9 11913
+  against 7275) and the main thread diverges at call 393; in the IPC trace the main thread differs at request 256 (header
+  and descriptor entry 0 differ, a `gsp::Gpu` command in the same position) and thread 9 at request 827. So "the jit and
+  recomp traces compare equal" (the N0-04 and N0-21 dump-check items) does not hold as written.
 
-Each row is a **sample** of the runs made so far (the author's, and a reviewer's re-run of G1), not a fixed result:
+`golden.py check` against the same runner, on the recordings of this document. Each row is a **sample** of the runs made
+so far, not a fixed result:
 
 | Session | Passed in the sample | Failed in the sample | Not stable between runs |
 |---|---|---|---|
-| G1 | state, checkpoints, hid, dsp-1500, images | svc | **ipc** (passed in the author's run, FAILED in the reviewer's re-run) |
+| G1 | state, checkpoints, hid, dsp-1500, images | svc | **ipc** (passed in the author's run and on an idle PC, failed in a reviewer's re-run made under load) |
 | G6 | ipc, state, checkpoints, hid | svc, images (13 of 130 screenshots differ) | ipc and images are one sample each |
 | G2 | state, checkpoints, hid | svc, ipc, images (50 of 308 differ) | ipc and images are one sample each |
 
-Across the runs made so far, **stable** comparisons: `state`, `checkpoints` and `hid` (all three sessions), and
-`images` for G1. **Not stable**: `ipc` of G1 (it passes in some runs and fails in others, as the IPC paragraph above
-says); `svc` failed in every run made and is not expected to pass until time is fixed; the G6 and G2 columns have one
-sample each, so for them `ipc` and `images` are not known to be stable either way. `dsp-1500` of G1 passed in the
-samples (a silent title, so it compares little).
+Stable in the samples: `state`, `checkpoints` and `hid` (all three sessions), `images` for G1, and `ipc` of G1 on an idle
+PC. Not stable: `svc` (the main thread's `GetSystemTick` polling differs by a few ticks every run, and with it the
+main thread's call count) and, under load, `ipc`. For G6 and G2 there is one sample each, so `ipc` and `images` are not
+known to be stable either way. `dsp-1500` of G1 passed in the samples (a silent title, so it compares little).
 
-The comparisons were not loosened to make them pass. A `check` against a candidate runtime needs the same thing the
-roadmap already asks for: the deterministic mode (N1-25) for exact comparisons, and for the reference either a run on an
-idle host with the shared page's clock fixed (a change in `port/`, not in this work package) or rules for the registers
-and requests that carry time (`config/native/svc_unused_registers.txt`, `ipc_time_dependent.txt`: proposed to the
-orchestrator, not edited here). Until then `check` against the reference runner is a measure of how much of a run is
-host-timing noise, and `state_diff.py` (scenes within two frames, `eq` values equal), the checkpoints and the HID
-capture are the comparisons that hold.
+The comparisons were not loosened to make them pass. Options for the maintainer (not decided here):
+
+1. In the comparator, tolerate a few ticks in the results of `GetSystemTick` and a small difference in the main
+   thread's call count (rules for `config/native/svc_unused_registers.txt` and `ipc_time_dependent.txt`, proposed to the
+   orchestrator, not edited here).
+2. Make the runner deterministic (a change in `port/`, not in this work package): fix the Wi-Fi MAC address, find why
+   the last shared page update happens at a different time, and find the source of the tick jitter.
+3. Both: the tolerance for the references already recorded, the deterministic mode (N1-25) for exact comparisons.
+
+Whether `jit` and `recomp` (or the native runtime) should be compared as equal is a different question from the
+repeatability of one backend (the `jit` against `recomp` row above). Until one of the options is chosen, `check` against
+the reference runner measures how much of a run is timing noise, and `state_diff.py` (scenes within two frames, `eq`
+values equal), the checkpoints and the HID capture are the comparisons that hold.
