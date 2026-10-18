@@ -41,7 +41,7 @@ Tables between the `wp-status` markers are generated: edit the specs or use `set
 | N0-17 | `RC_NATIVE` mode in the recompiler runtime | M | native-worker-high | N0-03 | ci | `done` | PR #5; ci green (run 38885556028) |
 | N0-18 | Hooks on a platform interface | M | native-worker-high | N0-16, N0-17, N0-05 | ci, dump-check | `done` | PR #6; ci green (run 39008761854, windows.yml 39008783719 and macos.yml 39008785589 on its branch); dump-check passed 20261017 (G1 to frame 800 with --set 0:fps=60 --set f600:hud_edges=1 on the runner of batch/20261016-n0, from before this change, and on the current one: state_diff agrees, every compared value is equal in 801 of 801 records and the ticks in 798, and the SVC traces differ only in the main thread tick polling, as two runs of one runner do) |
 | N0-19 | Game-data guard for agents | S | native-worker | - | ci | `done` | PR #5; ci green (native-guard runs 38884722260, 38903953519 and 38944855740); guard hardened in four rounds, the last two from the batch audits |
-| N0-23 | Service command census from the code | S | native-worker | - | dump | `review` | PR #11; batch 20261017-n0-dump (run on the maintainer PC, Windows) |
+| N0-23 | Service command census from the code | S | native-worker | - | dump | `done` | PR #11; batch 20261017-n0-dump (run on the maintainer PC, Windows) |
 | N0-20 | `IRuntime` seam in the app: lifecycle, options, paths | M | native-worker-high | N0-16, N0-15 | ci, pc | `done` | PR #7; ci green (linux.yml 39040404737, windows.yml 39040406726, macos.yml 39040409014 on its branch; Native CI native and runner jobs green, tools job failed only for the THIRD_PARTY rows added in the merge); maintainer smoke test pending (launcher -> play -> menu -> change an option -> quit) |
 | N0-24 | `IRuntime` seam in the app: input, multiplayer, keyboard | M | native-worker-high | N0-20 | ci, pc | `done` | PR #7; ci green (linux.yml 39048239100, windows.yml 39048241157, macos.yml 39048243336 dispatched on the batch branch with the window.cpp change; the app code is unchanged since); maintainer smoke test pending (launcher -> play -> host a room and join it from a second instance -> name a character with the keyboard -> quit) |
 <!-- wp-status:end N0 -->
@@ -63,15 +63,15 @@ Tables between the `wp-status` markers are generated: edit the specs or use `set
 | N1-09 | The runtime, the native runner and the first boot | L | native-worker-high | N1-03, N1-07, N1-08, N0-08 | ci | `done` | PR #6; ci green on its branch (Native CI run 39012897629: native job ctest 22/22 and the conformance step 51 passed; the tools job failed only for the THIRD_PARTY row added in the merge); no dump items |
 | N1-10 | IPC core, ports, sessions and srv | M | native-worker-high | N1-07, N1-09, N0-21 | none | `done` | PR #7; ci green (PR #7: Native CI, CI and native-guard); conf_srv stays in NATIVE_NOT_YET until N1-15 (cfg:u, ptm:u) |
 | N1-11 | IPC replay harness | M | native-worker | N1-10, N0-21 | dump-check | `done` | PR #7; ci green (PR #7: Native CI, CI and native-guard); dump-check pending (replaying G1's srv: requests, build/golden/G1/ipc.txt and svc.txt, finds no differences) |
-| N1-12 | fs: archives, RomFS and system archives | M | native-worker | N1-10, N1-11, N0-23 | dump-check | `todo` |  |
+| N1-12 | fs: archives, RomFS and system archives | M | native-worker | N1-10, N1-11, N0-23 | dump-check | `ready` |  |
 | N1-13 | fs: save data and extdata | M | native-worker | N1-12 | dump-check, save | `todo` |  |
-| N1-15 | cfg, ptm, ndm, ac and the console's identity | M | native-worker | N1-10, N1-11, N0-23 | dump-check | `todo` |  |
+| N1-15 | cfg, ptm, ndm, ac and the console's identity | M | native-worker | N1-10, N1-11, N0-23 | dump-check | `ready` |  |
 | N1-14 | APT and the software keyboard | M | native-worker-high | N1-10, N1-11, N1-12, N1-15, N0-23 | dump-check | `todo` |  |
-| N1-16 | hid and ir:USER from scripts | M | native-worker | N1-10, N0-08, N0-06, N0-23 | none | `todo` |  |
-| N1-17 | gsp::Gpu with a null GPU | M | native-worker-high | N1-10, N1-06, N1-11, N0-23 | dump-check | `todo` |  |
-| N1-18 | dsp::DSP without sound | M | native-worker-high | N1-10, N1-06, N1-11, N0-06, N0-23 | dump-check | `todo` |  |
-| N1-19 | The remaining services | M | native-worker | N1-10, N1-11, N0-23 | dump-check | `todo` |  |
-| N1-29 | nwm::UDS without a room | M | native-worker | N1-10, N1-11, N0-23 | dump-check | `todo` |  |
+| N1-16 | hid and ir:USER from scripts | M | native-worker | N1-10, N0-08, N0-06, N0-23 | none | `ready` |  |
+| N1-17 | gsp::Gpu with a null GPU | M | native-worker-high | N1-10, N1-06, N1-11, N0-23 | dump-check | `ready` |  |
+| N1-18 | dsp::DSP without sound | M | native-worker-high | N1-10, N1-06, N1-11, N0-06, N0-23 | dump-check | `ready` |  |
+| N1-19 | The remaining services | M | native-worker | N1-10, N1-11, N0-23 | dump-check | `ready` |  |
+| N1-29 | nwm::UDS without a room | M | native-worker | N1-10, N1-11, N0-23 | dump-check | `ready` |  |
 | N1-20 | Hooks on the native platform | S | native-worker | N0-18, N1-04, N1-17 | none | `todo` |  |
 | N1-21 | First game boot: G1 and G2 headless | M | native-worker-high | N1-09, N1-12, N1-13, N1-14, N1-15, N1-16, N1-17, N1-18, N1-19, N1-20, N1-22, N1-29, N0-09 | dump | `todo` |  |
 | N1-26 | G3 headless: from the save to the Arena hunt | L | native-worker-high | N1-21, N1-13, N0-10 | dump, save | `todo` |  |
