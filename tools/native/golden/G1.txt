@@ -6,9 +6,8 @@
 #
 # G1: power-on to the title, stable. From a user folder with the update installed and no save.
 #
-# Button presses only (A, 6 frames each). The first five answer the first-start prompts (save
-# formatting, extra data on the SD card, Circle Pad Pro); the last three skip the notice and the
-# intro movie. The title is on screen from about frame 1360 and waits for A, so the captures at
+# Button presses only (A, 6 frames each): five first-start prompts, then a notice and the intro
+# movie. The title is on screen from about frame 1360 and waits for A, so the captures at
 # frame 1500 are on a stable title screen. 300 DSP audio frames are about 90 game frames, so the
 # run stops at 1700.
 #

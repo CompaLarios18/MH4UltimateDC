@@ -53,7 +53,9 @@ if opt("--trace-svc"):
     open(opt("--trace-svc"), "w").write("\\n".join(svc) + "\\n")
 if opt("--trace-ipc"):
     ipc = ["# ipctrace v1 2026-01-01 game=0004000000155400 cpu=recomp new3ds=off",
-           "1 seq=1 session=srv:USER cmd=0x00010040 in=0x00010040 desc=- out=0x00010040,0x00000000 outdesc=- t=5"]
+           "1 seq=1 session=srv:USER cmd=0x00010040 in=0x00010040 desc=- out=0x00010040,0x00000000 outdesc=- t=5",
+           "1 seq=2 session=srv:USER cmd=0x00020080 in=0x00020080 desc=- out=0x00020080,%s outdesc=- t=6"
+           % ("0xC8804464" if mode == "ipc_diff" else "0x00000000")]
     open(opt("--trace-ipc"), "w").write("\\n".join(ipc) + "\\n")
 if opt("--state-trace"):
     lines = ["# statetrace v1 run %d" % n]
@@ -62,11 +64,12 @@ if opt("--state-trace"):
         extra = (n if mode == "vary_state" else 0)
         lines.append("f=%d t=%d scene=0x%02x frame_counter=0x%08x smain_delta=- quest_id=%d stage_loader_state=-"
                      % (fr, fr * 4470000, scene, fr, extra))
-    open(opt("--state-trace"), "w").write("\\n".join(lines) + "\\n")
+    if mode != "no_state":
+        open(opt("--state-trace"), "w").write("\\n".join(lines) + "\\n")
 if opt("--capture-hid"):
     with capfmt.Writer(opt("--capture-hid"), "hid") as w:
         for fr in range(1, frames + 1):
-            w.hid(fr, fr * 4470000, capfmt.make_hid(buttons=1 if fr == 12 else 0))
+            w.hid(fr, fr * 4470000, capfmt.make_hid(buttons=1 if fr == (13 if mode == "hid_diff" else 12) else 0))
 for flag, kind in (("--capture-dsp", "dsp"), ("--capture-gpu", "gpu")):
     if flag in argv:
         start, count, path = opt(flag).split(":", 2)
@@ -74,7 +77,7 @@ for flag, kind in (("--capture-dsp", "dsp"), ("--capture-gpu", "gpu")):
         if kind == "dsp":
             with capfmt.Writer(path, "dsp") as w:
                 for i in range(count):
-                    r = capfmt.make_region(i)
+                    r = capfmt.make_region(i, {{0: capfmt.make_status(enabled=1)}} if mode == "dsp_diff" else None)
                     w.dsp_regions(start + i, i, r, r)
                     w.dsp_pcm(start + i, i, capfmt.make_pcm([(i, 0)] * 160))
         else:
@@ -204,10 +207,19 @@ def test_shipped_sessions_parse():
     assert [(c.kind, c.frames) for c in g2.captures] == [("gpu", 3)]
 
 
-def test_session_file_is_a_runner_input_file(tmp_path):
-    # Headers and events are valid for --input-file: no line is anything but a comment or an event.
-    for line in SESSION.splitlines():
-        assert line.startswith("#") or ":" in line
+def test_shipped_sessions_event_counts():
+    # golden.py's own parser: the number of input events of each shipped session
+    counts = {n: golden.parse_session(golden.SESSIONS_DIR / f"{n}.txt").events for n in ("G1", "G2", "G6")}
+    assert counts == {"G1": 8, "G2": 52, "G6": 23}
+
+
+@pytest.mark.skipif(not os.environ.get("MH4U_RUNNER"), reason="reference runner not set (MH4U_RUNNER)")
+@pytest.mark.parametrize("name", ["G1", "G2", "G6"])
+def test_reference_runner_accepts_the_shipped_sessions(name):
+    import subprocess
+    done = subprocess.run([os.environ["MH4U_RUNNER"], "--input-file", str(golden.SESSIONS_DIR / f"{name}.txt"),
+                           "--print-schedule"], capture_output=True, timeout=120, check=False)
+    assert done.returncode == 0, done.stderr.decode("utf-8", "replace")[-300:]
 
 
 # ---- record
@@ -302,6 +314,76 @@ def test_check_detects_differences(env, capsys, monkeypatch, mode, failing):
     capsys.readouterr()
     assert env.check() == 1
     assert f"S1: {failing}: FAIL" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("mode,failing", [("ipc_diff", "ipc"), ("dsp_diff", "dsp-10"), ("hid_diff", "hid")])
+def test_check_detects_ipc_dsp_and_hid_differences(env, capsys, monkeypatch, mode, failing):
+    monkeypatch.setattr(golden, "IPC_TIME_DEPENDENT", env.tmp / "no_such_file.txt")
+    assert env.record() == 0
+    monkeypatch.setenv("FAKE_MODE", mode)
+    capsys.readouterr()
+    assert env.check() == 1
+    out = capsys.readouterr().out
+    assert f"S1: {failing}: FAIL" in out
+    for other in {"ipc", "dsp-10", "hid"} - {failing}:
+        assert f"S1: {other}: PASS" in out
+
+
+def test_ignore_option_and_the_time_dependent_list(env, capsys, monkeypatch):
+    absent = env.tmp / "no_such_file.txt"
+    monkeypatch.setattr(golden, "IPC_TIME_DEPENDENT", absent)
+    assert env.record() == 0
+    monkeypatch.setenv("FAKE_MODE", "ipc_diff")
+    capsys.readouterr()
+    assert env.check() == 1 and "S1: ipc: FAIL" in capsys.readouterr().out
+    # --ignore drops the command whose reply differs
+    ignore = env.tmp / "ignore.txt"
+    ignore.write_text("srv:USER 00020080   # test\n", encoding="utf-8")
+    assert env.check("--ignore", str(ignore)) == 0
+    assert "S1: ipc: PASS" in capsys.readouterr().out
+    # an ignore file for another command does not help
+    other = env.tmp / "other.txt"
+    other.write_text("srv:USER 00010040\n", encoding="utf-8")
+    assert env.check("--ignore", str(other)) == 1
+    capsys.readouterr()
+    # the repository's list is honoured when it exists
+    monkeypatch.setattr(golden, "IPC_TIME_DEPENDENT", ignore)
+    assert env.check() == 0
+    assert "S1: ipc: PASS" in capsys.readouterr().out
+
+
+def test_candidate_without_a_state_trace_skips_state_and_checkpoints(env, capsys, monkeypatch):
+    assert env.record() == 0
+    monkeypatch.setenv("FAKE_MODE", "no_state")
+    capsys.readouterr()
+    assert env.check("--candidate-runner", str(env.script)) == 0
+    out = capsys.readouterr().out
+    assert "S1: state: SKIPPED" in out and "S1: checkpoints: SKIPPED" in out
+    assert "S1: svc: PASS" in out and "0 failed, 3 skipped" in out        # state, checkpoints, images
+    # the reference runner not writing it is a failure, for both
+    assert env.check() == 1
+    out = capsys.readouterr().out
+    assert "S1: state: FAIL" in out and "S1: checkpoints: FAIL" in out
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("--code C:\\a\\b.dll --x 1", ["--code", "C:\\a\\b.dll", "--x", "1"]),
+    ('--code "C:\\Program Files\\b.dll"', ["--code", "C:\\Program Files\\b.dll"]),
+] if os.name == "nt" else [
+    ("--code /a/b.so --x 1", ["--code", "/a/b.so", "--x", "1"]),
+    ("--code '/a b/c.so'", ["--code", "/a b/c.so"]),
+])
+def test_split_args_keeps_backslash_paths_on_windows(text, expected):
+    assert golden.split_args(text) == expected
+    assert golden.split_args(None) == [] and golden.split_args("") == []
+
+
+@pytest.mark.skipif(os.name != "nt", reason="backslash paths")
+def test_candidate_args_with_a_windows_path_reach_the_runner_intact(env):
+    assert env.record() == 0
+    path = "C:\\no\\such\\dir\\native.dll"
+    assert env.check("--candidate-runner", str(env.script), f"--candidate-args=--native {path}") == 0
+    assert env.calls()[1]["argv"][-2:] == ["--native", path]
 
 
 def test_check_runner_failure(env, capsys, monkeypatch):

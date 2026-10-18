@@ -57,6 +57,16 @@ class GoldenError(Exception):
     """A usage or environment problem (exit status 2)."""
 
 
+def split_args(text: str | None) -> list[str]:
+    """Split a --runner-args / --candidate-args string.  POSIX mode treats a backslash as an escape,
+    which would mangle Windows paths (C:\\a\\b.dll), so it is used only off Windows."""
+    posix = os.name != "nt"
+    parts = shlex.split(text or "", posix=posix)
+    if not posix:     # non-POSIX mode keeps the quotes around a token: drop them
+        parts = [p[1:-1] if len(p) >= 2 and p[0] == p[-1] and p[0] in "\"'" else p for p in parts]
+    return parts
+
+
 # --------------------------------------------------------------------------
 # Session files
 
@@ -394,7 +404,7 @@ def record(session: Session, a: argparse.Namespace) -> int:
         copy_tree(Path(a.save), before)
     copy_tree(before, work)
     spec = RunSpec(a.runner, a.game, a.code, cpu, a.update or [], work, out, session, a.set or [],
-                   shlex.split(a.runner_args or ""), True, a.shot_every)
+                   split_args(a.runner_args), True, a.shot_every)
     started = time.time()
     status, args = run_runner(spec, a.timeout)
     seconds = round(time.time() - started, 1)
@@ -496,6 +506,9 @@ def compare_outputs(session: Session, ref: Path, cand: Path, candidate: bool,
         bad = [c for c in evaluate_checkpoints(cand / "state.txt", session.checkpoints) if c["result"] != "ok"]
         results.append(Result("checkpoints", "fail" if bad else "pass",
                               "; ".join(f"{c['frame']}:{c['scene']:#x} {c['result']}" for c in bad[:5])))
+    elif (ref / "state.txt").exists():
+        # need() already reported "state"; the checkpoints have no input either: skipped (failed for the reference)
+        results.append(Result("checkpoints", "skipped" if candidate else "fail", "the run wrote no state.txt"))
     if need("hid", "hid.mhid"):
         try:
             lines = capfmt.diff_hid(str(ref / "hid.mhid"), str(cand / "hid.mhid"))
@@ -545,7 +558,7 @@ def check(session: Session, a: argparse.Namespace) -> int:
     if a.repeat < 1:
         raise GoldenError("--repeat must be at least 1")
     ignore = ([IPC_TIME_DEPENDENT] if IPC_TIME_DEPENDENT.is_file() else []) + [Path(p) for p in a.ignore or []]
-    extra = shlex.split(a.candidate_args or "") if candidate else shlex.split(a.runner_args or "")
+    extra = split_args(a.candidate_args if candidate else a.runner_args)
     checks_dir = ref / "check"
     if checks_dir.exists():
         shutil.rmtree(checks_dir)
