@@ -2084,8 +2084,8 @@ def textures_info(ctx: Context) -> list[dict]:
 # ── the catalog: mods recommended for the port, installed with one command ────
 
 CATALOG = os.path.join(HERE, "mods_catalog.json")       # comes with the tools
-CATALOG_URL = ("https://raw.githubusercontent.com/CompaLarios18/MH4UltimateDC/native-app/tools/"
-               "mods_catalog.json")                      # a newer one, when there is
+CATALOG_URL = ("https://raw.githubusercontent.com/CompaLarios18/MH4UltimateDC/main/tools/"
+               "mods_catalog.json")                      # a newer one, when there is (the app's default too)
 CATALOG_CACHE = "catalog-cache.json"                    # in the library: the last one fetched
 CATALOG_MAX = 1 << 20
 _CATALOG_ID = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
@@ -2106,9 +2106,14 @@ def _url_ok(url: str, remote: bool) -> bool:
     return scheme == "https" if remote else scheme in ("https", "http", "file")
 
 
-def validate_catalog(data, remote: bool) -> tuple[dict, list[str]]:
+def validate_catalog(data, remote: bool, pinned: bool | None = None) -> tuple[dict, list[str]]:
     """The catalog's entries as the commands use them; entries that aren't right are left out
-    with a warning (a catalog fetched from the web is data, checked like a zip's paths)."""
+    with a warning (a catalog fetched from the web is data, checked like a zip's paths).
+    pinned (by default: remote): every download of a mod needs its sha256. True for the web's,
+    the cached one and the one that comes with the tools; a catalog file of the player's own
+    (--catalog) is theirs to trust."""
+    if pinned is None:
+        pinned = remote
     if not isinstance(data, dict) or not isinstance(data.get("mods"), list):
         raise Error("catalog", "the catalog has no list of mods")
     warnings, entries, ids = [], [], set()
@@ -2146,6 +2151,10 @@ def validate_catalog(data, remote: bool) -> tuple[dict, list[str]]:
                     if not isinstance(d["sha256"], str) or not _SHA256.fullmatch(d["sha256"]):
                         raise Error("catalog", f"{where}: sha256 should be 64 hexadecimal digits")
                     step["sha256"] = d["sha256"].lower()
+                elif kind == "mod" and pinned:
+                    # a mod can carry a code patch, which becomes native code on the player's PC:
+                    # what the catalog points at must be exactly the file that was reviewed
+                    raise Error("catalog", f"{where}: a mod's download needs its sha256")
                 for key in ("root", "into", "as"):
                     if d.get(key):
                         if not isinstance(d[key], str):
@@ -2184,10 +2193,10 @@ def validate_catalog(data, remote: bool) -> tuple[dict, list[str]]:
     return {"format": data.get("format"), "updated": updated, "mods": entries}, warnings
 
 
-def _read_catalog_file(path: str, remote: bool) -> tuple[dict, list[str]]:
+def _read_catalog_file(path: str, remote: bool, pinned: bool | None = None) -> tuple[dict, list[str]]:
     try:
         with open(path, encoding="utf-8") as f:
-            return validate_catalog(json.load(f), remote)
+            return validate_catalog(json.load(f), remote, pinned)
     except (OSError, ValueError) as e:
         raise Error("catalog", f"{path} can't be read ({e})")
 
@@ -2216,7 +2225,7 @@ def load_catalog(ctx: Context, path: str | None = None, url: str | None = None,
     if path:
         cat, warnings = _read_catalog_file(path, remote=False)
         return cat, {"source": "file", "path": os.path.abspath(path), "updated": cat["updated"], "warnings": warnings}
-    cat, warnings = _read_catalog_file(CATALOG, remote=False)
+    cat, warnings = _read_catalog_file(CATALOG, remote=False, pinned=True)
     info = {"source": "bundled", "path": CATALOG, "updated": cat["updated"], "warnings": warnings}
     cache = os.path.join(ctx.library.path, CATALOG_CACHE)
     notes: list[str] = []

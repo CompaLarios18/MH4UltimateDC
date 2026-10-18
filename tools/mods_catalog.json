@@ -1,6 +1,6 @@
 {
  "format": 1,
- "updated": "2026-10-15",
+ "updated": "2026-10-17",
  "about": "Mods and texture packs recommended for the MH4U PC port, installed by tools/mods.py install-from-catalog (the launcher's Mods screen, Catalog). Only metadata and the authors' own download links: nothing here is the game or its files. docs/MODS.md says how to suggest a mod and what each field means.",
  "mods": [
   {
@@ -55,7 +55,7 @@
    "note": "The HD pack already has an updated version of it: install one or the other.",
    "downloads": [
     {
-     "url": "https://github.com/xl3lackout/MH4HDUI/archive/HEAD.zip",
+     "url": "https://github.com/xl3lackout/MH4HDUI/archive/16e18e85bf07f54320ffb014712dd47d38c524e9.zip",
      "file": "MH4HDUI.zip",
      "archive": "zip",
      "root": "MH4u/UI",
