@@ -102,7 +102,7 @@ float DrawMouse(ImDrawList* dl, ImVec2 at, float h, const std::string& name) {
         dl->AddRectFilled(ImVec2(o.x - w * 0.06f, o.y + h * y), ImVec2(o.x + w * 0.14f, o.y + h * (y + 0.13f)), lit,
                           w * 0.05f);
     }
-    dl->AddRect(o, ImVec2(o.x + w, o.y + h), line, r, 0, std::max(1.0f, h * 0.06f));
+    dl->AddRect(o, ImVec2(o.x + w, o.y + h), line, r, std::max(1.0f, h * 0.06f));
     dl->AddLine(ImVec2(o.x, split), ImVec2(o.x + w, split), line, std::max(1.0f, h * 0.05f));
     dl->AddLine(ImVec2(o.x + w * 0.5f, o.y), ImVec2(o.x + w * 0.5f, split), line, std::max(1.0f, h * 0.05f));
     const bool wheel = code == Input::MOUSE_KEY + SDL_BUTTON_MIDDLE || code == Input::WHEEL_UP ||
