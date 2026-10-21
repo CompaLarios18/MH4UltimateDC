@@ -9,6 +9,7 @@
 // Copyright 2015-2025 Citra Emulator Project / Azahar Emulator Project (cam.cpp)
 // Copyright Citra Emulator Project / Lime3DS Emulator Project (cam.h, cam_params.h)
 // Copyright 2015 Citra Emulator Project (cam_u.cpp)
+// Copyright 2016 Citra Emulator Project (blank_camera.cpp)
 //
 // cam:u (N1-19): the camera service, with the camera Azahar uses when none is configured: a blank one.
 // Every frame it delivers is black (YUV 0x8000 per pixel, or 0 for RGB565) in the size and format the
@@ -30,7 +31,9 @@
 // makes it on a worker thread), and a command that uses a camera whose driver has not been
 // initialised creates the blank camera instead of dereferencing a null pointer; SetSize with a size
 // that is not one of the eight presets is an invalid enumeration value (Azahar indexes past its
-// table); the Process handle SetReceiving gets is not used, the application's memory is written.
+// table); the Process handle SetReceiving gets is not used, the application's memory is written;
+// SetPackageParameterWithContext with a size that is not a preset is an invalid enumeration value; GetMaxLines
+// with width 0 and GetMaxBytes when the byte count reaches 0 stop instead of dividing by zero.
 #include <algorithm>
 #include <array>
 #include <cstring>
@@ -740,13 +743,12 @@ private:
     }
 
     // The commands that set one field of a context: the camera, [the value], the context.
-    template <class Setter> void SetContextField(Request& request, u8 value, const CameraSet& camera_select,
+    template <class Setter> void SetContextField(Request& request, const CameraSet& camera_select,
                                                  const ContextSet& context_select, Setter setter) {
         if (!camera_select.IsValid() || !context_select.IsValid()) {
             MH4N_LOG(Error, kLog, "invalid camera_select={}, context_select={}", camera_select.value, context_select.value);
             return ResultOnly(request, kResultInvalidEnumValue);
         }
-        (void)value;
         for (const int index : camera_select.Members()) {
             CameraConfig& camera = Camera(index);
             for (const int context : context_select.Members()) {
@@ -762,7 +764,7 @@ private:
         const CameraSet camera_select{request.Pop<u8>()};
         const u8 flip = request.Pop<u8>();
         const ContextSet context_select{request.Pop<u8>()};
-        SetContextField(request, flip, camera_select, context_select, [flip](ContextConfig& c) { c.flip = flip; });
+        SetContextField(request, camera_select, context_select, [flip](ContextConfig& c) { c.flip = flip; });
     }
 
     void SetDetailSize(Request& request) {
@@ -775,7 +777,7 @@ private:
         resolution.crop_x1 = request.Pop<u16>();
         resolution.crop_y1 = request.Pop<u16>();
         const ContextSet context_select{request.Pop<u8>()};
-        SetContextField(request, 0, camera_select, context_select, [resolution](ContextConfig& c) { c.resolution = resolution; });
+        SetContextField(request, camera_select, context_select, [resolution](ContextConfig& c) { c.resolution = resolution; });
     }
 
     void SetSize(Request& request) {
@@ -787,7 +789,7 @@ private:
             return ResultOnly(request, kResultInvalidEnumValue);
         }
         const Resolution resolution = kPresetResolution[size];
-        SetContextField(request, 0, camera_select, context_select, [resolution](ContextConfig& c) { c.resolution = resolution; });
+        SetContextField(request, camera_select, context_select, [resolution](ContextConfig& c) { c.resolution = resolution; });
     }
 
     void SetFrameRate(Request& request) {
@@ -809,14 +811,14 @@ private:
         const CameraSet camera_select{request.Pop<u8>()};
         const u8 effect = request.Pop<u8>();
         const ContextSet context_select{request.Pop<u8>()};
-        SetContextField(request, effect, camera_select, context_select, [effect](ContextConfig& c) { c.effect = effect; });
+        SetContextField(request, camera_select, context_select, [effect](ContextConfig& c) { c.effect = effect; });
     }
 
     void SetOutputFormat(Request& request) {
         const CameraSet camera_select{request.Pop<u8>()};
         const u8 format = request.Pop<u8>();
         const ContextSet context_select{request.Pop<u8>()};
-        SetContextField(request, format, camera_select, context_select, [format](ContextConfig& c) { c.format = format; });
+        SetContextField(request, camera_select, context_select, [format](ContextConfig& c) { c.format = format; });
     }
 
     void SynchronizeVsyncTiming(Request& request) {

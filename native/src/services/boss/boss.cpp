@@ -8,6 +8,7 @@
 // Copyright 2015-2025 Citra Emulator Project / Azahar Emulator Project (boss.cpp)
 // Copyright 2015-2026 Citra Emulator Project / Azahar Emulator Project (boss.h)
 // Copyright 2014 Citra Emulator Project (boss_u.cpp)
+// Copyright 2015 Citra Emulator Project (boss_p.cpp)
 // Copyright 2023-2024 Citra Emulator Project / Azahar Emulator Project (online_service.cpp)
 // Copyright 2023-2026 Citra Emulator Project / Azahar Emulator Project (online_service.h)
 //

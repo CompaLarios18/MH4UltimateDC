@@ -2,7 +2,7 @@
 // src/common/color.h at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-2.0-or-later: each of them says
 // "GPLv2 or any later version"): the conversion configuration and its enumerations, and the
 // conversion itself (PerformConversion).
-// Copyright 2015 Citra Emulator Project (hw/y2r.cpp)
+// Copyright 2015 Citra Emulator Project (y2r.cpp, y2r.h)
 // Copyright 2014-2024 Citra Emulator Project / Azahar Emulator Project (y2r_u.h)
 // Copyright 2014 Citra Emulator Project (color.h)
 //

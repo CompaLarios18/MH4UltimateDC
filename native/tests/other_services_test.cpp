@@ -12,8 +12,21 @@
 // the others say "GPLv2 or any later version"): the expected replies, result codes and structure
 // layouts of the services the tests send requests to.
 // Copyright 2015-2026 Citra Emulator Project / Azahar Emulator Project (am.cpp)
+// Copyright 2014 Citra Emulator Project (am_app.cpp, nim_aoc.cpp, frd_u.cpp)
+// Copyright 2016-2025 Citra Emulator Project / Azahar Emulator Project (act.cpp)
+// Copyright 2014-2024 Citra Emulator Project / Azahar Emulator Project (act_u.cpp)
+// Copyright 2024-2025 Citra Emulator Project / Azahar Emulator Project (act_errors.cpp, act_errors.h)
+// Copyright 2015-2024 Citra Emulator Project / Azahar Emulator Project (frd.cpp)
+// Copyright 2015-2025 Citra Emulator Project / Azahar Emulator Project (cecd.cpp)
+// Copyright 2015-2024 Citra Emulator Project / Azahar Emulator Project (cecd.h)
+// Copyright 2015-2025 Citra Emulator Project / Azahar Emulator Project (boss.cpp)
+// Copyright 2023-2024 Citra Emulator Project / Azahar Emulator Project (online_service.cpp)
+// Copyright 2023-2026 Citra Emulator Project / Azahar Emulator Project (online_service.h)
 // Copyright 2014-2026 Citra Emulator Project / Azahar Emulator Project (soc_u.cpp, http_c.cpp)
-// Copyright 2014-2025 Citra Emulator Project / Azahar Emulator Project (the others)
+// Copyright 2015-2025 Citra Emulator Project / Azahar Emulator Project (cam.cpp)
+// Copyright 2015-2024 Citra Emulator Project / Azahar Emulator Project (y2r_u.cpp)
+// Copyright 2016-2024 Citra Emulator Project / Azahar Emulator Project (savedata_archive.cpp)
+// Copyright 2016 Citra Emulator Project (errors.h)
 //
 // The services of N1-19 (am:app, nim:aoc, act:u, frd:u, cecd:u, boss, soc:U, http:C, cam:u, y2r:u),
 // through the SVC layer: the guest connects to srv: and sends requests as a program would. The programs
