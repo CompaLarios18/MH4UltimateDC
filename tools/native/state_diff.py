@@ -23,8 +23,14 @@ matched with the k-th of the other. The traces agree when every scene change
 The observable file also defines the expression syntax; `evaluate` is what the runners'
 C++ reader implements.
 
-usage: state_diff.py REFERENCE CANDIDATE [--tolerance N] [--observable FILE] [--order-only]
-exit status: 0 the traces agree, 1 they diverge (the first divergence is printed), 2 bad input.
+`--min-changes N` (D34, nothing compared is not a pass): the first record counts as a scene change above,
+which makes a trace whose scene never changes "agree". With the option the traces must also have N *real*
+scene changes: a record whose scene is readable (not `-`) and differs from the previous readable scene
+(the first record, and a change from `-` to a value, are not real). Fewer aligned: exit status 3.
+
+usage: state_diff.py REFERENCE CANDIDATE [--tolerance N] [--observable FILE] [--order-only] [--min-changes N]
+exit status: 0 the traces agree, 1 they diverge (the first divergence is printed), 2 bad input, 3 they agree
+but fewer than --min-changes real scene changes were aligned (a divergence wins over 3).
 """
 from __future__ import annotations
 
@@ -199,6 +205,22 @@ def scene_changes(records: list[Record]) -> list[Record]:
     return changes
 
 
+def real_scene_changes(records: list[Record]) -> list[Record]:
+    """The records that change the scene between two readable values (D34): a record whose scene is readable
+    (not `-`) and differs from the previous readable scene. The first record, a change from `-` to a value
+    (every trace starts with `scene=-`, then a value) and a change to `-` are not scenes changing."""
+    changes: list[Record] = []
+    previous: Optional[int] = None
+    for record in records:
+        scene = record.values.get(SCENE)
+        if scene is None:
+            continue
+        if previous is not None and scene != previous:
+            changes.append(record)
+        previous = scene
+    return changes
+
+
 def _fmt(value: Optional[int]) -> str:
     return "-" if value is None else f"0x{value:x}"
 
@@ -253,9 +275,14 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--observable", default=str(DEFAULT_OBSERVABLE), metavar="FILE")
     parser.add_argument("--order-only", action="store_true",
                         help="compare only the sequence of scenes, not the frames or other values")
+    parser.add_argument("--min-changes", type=int, default=0, metavar="N",
+                        help="exit 3 when fewer than N real scene changes (between two readable scenes) were "
+                             "aligned in the reference (default 0: no minimum)")
     args = parser.parse_args(argv)
     if args.tolerance < 0:
         parser.error("--tolerance must not be negative")
+    if args.min_changes < 0:
+        parser.error("--min-changes must not be negative")
     try:
         observables = parse_observable(_read(args.observable))
         reference = parse_trace(_read(args.reference))
@@ -269,8 +296,15 @@ def main(argv: Optional[list[str]] = None) -> int:
     if problem:
         print(f"DIVERGENCE: {problem}")
         return 1
+    # the traces agree, so every scene change of the reference was aligned with one of the candidate
+    real = len(real_scene_changes(reference))
+    if real < args.min_changes:
+        print(f"NOTHING COMPARED: {real} real scene change{'' if real == 1 else 's'} aligned, "
+              f"--min-changes {args.min_changes} wants at least that many")
+        return 3
     print(f"traces agree: {len(scene_changes(reference))} scene changes"
-          + ("" if args.order_only else f", within {args.tolerance} frames"))
+          + ("" if args.order_only else f", within {args.tolerance} frames")
+          + f"; {real} real scene change{'' if real == 1 else 's'}")
     return 0
 
 

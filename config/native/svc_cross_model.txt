@@ -1,0 +1,36 @@
+# The system calls tools/compare_svc_traces.py --cross-model compares between two timing models (jit against
+# recomp, the reference against the native runtime): the calls that create, map, unmap, duplicate or close
+# kernel objects or memory, or start or end a thread, and whose result depends neither on time nor on another
+# thread's progress (D31, N0-25). Every other call is left out: waits, sleeps, signals, arbitration, the clock
+# and SendSyncRequest (the IPC trace covers requests) run a different number of times in two timing models.
+#
+# Format: `<svc hex> [in=<regs>] [out=<regs>]  # reason`. The lists name the registers that ARE compared (the
+# opposite of config/native/svc_unused_registers.txt, whose lists name the ones left out):
+#   in=   registers r0-r6 as the call was made (r4-r6 come from the trace's in4= field)
+#   out=  registers r0-r3 as the call returned (compared with --outputs); handles are compared by their
+#         normalised name (`<kind>#<creating thread>.<k>`), so a handle register stands for "the same object"
+# `svc`, `pc`, `lr` and the result code (out r0) are always compared.
+#
+# Registers follow the SVC wrapper (Azahar's svc_wrapper.h, as documented in native/src/kernel/svc.cpp): the
+# result is r0, the values an output pointer receives follow in r1 up, and the inputs keep their ARM-ABI
+# positions with the output pointers' slots skipped, so the slot of an output pointer holds whatever the
+# caller left there (a stack address): it is never listed.
+#
+# Never list an address the kernel chooses, nor an input that carries one. Which address an allocation gets
+# depends on the order in which threads allocate, which differs between timing models (D21 promises Azahar's
+# order only for the native runtime). Never add a call to make a comparison pass: each line follows from what
+# the call does, and says why.
+0x01 in=r0,r3,r4 out=r0  # ControlMemory: operation (r0), size (r3), permissions (r4) and the result; not r1 (an address returned by an earlier call, or a hint) and not r2, and not the address it returns in out r1: the kernel chooses it
+0x08 in=r0,r1,r4 out=r0,r1  # CreateThread: priority (r0), entry point (r1, a code address), processor id (r4), the result and the new thread's handle; not r2 (the argument, often a heap pointer) and not r3 (the stack top, a heap address)
+0x09  # ExitThread: no arguments and no result; the call ends the thread, so its place in the thread's sequence is the check
+0x13 in=r1 out=r0,r1  # CreateMutex: initially_locked (r1; r0 holds the output pointer's slot), the result and the new handle
+0x15 in=r1,r2 out=r0,r1  # CreateSemaphore: initial count (r1), maximum count (r2), the result and the new handle
+0x17 in=r1 out=r0,r1  # CreateEvent: reset type (r1), the result and the new handle
+0x1A in=r1 out=r0,r1  # CreateTimer: reset type (r1), the result and the new handle
+0x1E in=r0,r2,r3 out=r0,r1  # CreateMemoryBlock: the other processes' permissions (r0), size (r2), the creator's permissions (r3), the result and the new handle; not r1, the address of the memory the game chose
+0x1F in=r0,r2,r3 out=r0  # MapMemoryBlock: the block (r0, a handle), the caller's permissions (r2) and the others' (r3), and the result; not r1: whether the address is a constant of the game's code or one returned by an earlier call is not known from a trace
+0x20 in=r0 out=r0  # UnmapMemoryBlock: the block (r0, a handle) and the result; not r1, the address it was mapped at
+0x21 out=r0,r1  # CreateAddressArbiter: no arguments, the result and the new handle
+0x23 in=r0 out=r0  # CloseHandle: the handle (r0) and the result
+0x27 in=r1 out=r0,r1  # DuplicateHandle: the handle to duplicate (r1), the result and the new handle (the same object)
+0x2D out=r0,r1  # ConnectToPort: the result and the new session's handle; not r1 as an input, the address of the port name, which may lie on a stack (the IPC trace names the service)
