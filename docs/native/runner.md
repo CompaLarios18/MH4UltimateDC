@@ -5,7 +5,8 @@ module `native/src/runtime/` (`mh4n_runtime`, the class `mh4n::Runtime` of
 `native/include/mh4n/runtime.h`); the program in `native/runner/` is only `main`: the command
 line, `--help`, `--version`, `--print-process` and the printing of the program's debug strings.
 Its options are those of `mh4u_runner` (the reference, `port/README.md`) wherever the meaning is
-the same.
+the same. On Windows the CI artifact `mh4n-runner-windows` ([`CI.md`](CI.md)) holds
+`mh4u_native_runner.exe`, the IPC replay, the capture player and the DLLs they need, with no game data.
 
 ```
 mh4u_native_runner PROGRAM --code LIB [options]

@@ -9,6 +9,9 @@ The logic is the module `native/src/gpu_capture/` (`mh4n_gpu_capture`); the prog
 `native/tools/capture_player/` is only `main`. The tests are `native/tests/capture_player_test.cpp`;
 every capture in them is made by a C++ writer in that file from synthetic data.
 
+Getting the tool without a build: the Windows artifact `mh4n-runner-windows` of the CI job `native-windows`
+([`CI.md`](CI.md)) holds `mh4n_capture_player.exe` next to the runner and the DLLs it needs.
+
 ```
 mh4n_capture_player --gpu NAME [options] CAPTURE.mgpu
 mh4n_capture_player --list          # the Gpus, wrappers, checks and options that are linked in
