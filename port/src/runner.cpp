@@ -53,6 +53,7 @@
 #include "core/hle/kernel/server_session.h"
 #include "core/hle/kernel/shared_memory.h"
 #include "core/hle/kernel/session.h"
+#include "core/hle/kernel/shared_page.h"
 #include "core/hle/kernel/svc.h"
 #include "core/hle/kernel/thread.h"
 #include "core/hle/service/am/am.h"
@@ -75,6 +76,11 @@ namespace {
 
 constexpr double TICKS_PER_MS = 268111.856; // ARM11 clock
 
+// The values the default mode (without --async-io) fixes, which Azahar would otherwise draw anew
+// in every run (N0-26; port/README.md, section Determinism lists what the game sees).
+constexpr s64 kFixedStartTicks = 2000000000; // the emulated clock's base: 0x77359400, about 7.5 s
+constexpr const char* kFixedConsoleMac = "02:00:00:00:00:01"; // locally administered; outside a room
+
 const char* const USAGE = R"(usage: mh4u_runner <file> [options]
   --code LIB        recompiled code library (with --cpu recomp)
   --cpu KIND        recomp (default), jit or interp
@@ -85,8 +91,11 @@ const char* const USAGE = R"(usage: mh4u_runner <file> [options]
   --user DIR        Azahar user directory (NAND, SD card, saves) to use
   --install CIA     install a CIA, e.g. the game's update, before booting (repeatable)
   --shots DIR       save the top and bottom screens as PPM images in DIR
-  --shot-every MS   how often, in emulated time (default 1000)
-  --shots-from MS   first screenshot at this emulated time (default: one interval in)
+  --shot-every MS   how often, in emulated time (default 1000); f<N>: every N game frames,
+                    the shots named f<frame>_top.ppm and f<frame>_bottom.ppm (--draw-window
+                    then has no effect: the screens are drawn all the time)
+  --shots-from MS   first screenshot at this emulated time (default: one interval in; with
+                    --shot-every f<N>, frame N); f<M>: at game frame M
   --draw-window MS  draw only during the MS of emulated time before each screenshot (and
                     nothing without --shots; the GPU's vertex shaders are skipped too): much
                     faster with the software renderer, but a screen built up over several
@@ -98,7 +107,10 @@ const char* const USAGE = R"(usage: mh4u_runner <file> [options]
                     place and starts at a fixed date, so that a run repeats exactly (an
                     asynchronous read wakes the game at an emulated time that depends on how
                     fast the host was, which moves loading screens by seconds, and the game
-                    seeds its random numbers from the clock)
+                    seeds its random numbers from the clock). It also starts the emulated clock
+                    at a fixed tick count and gives the console the Wi-Fi MAC address
+                    02:00:00:00:00:01 (not in a room, nor with --new-console-id), where Azahar
+                    draws both anew in every run; see port/README.md, section Determinism
   --dump MS:ADDR:SIZE  at emulated time MS, write SIZE bytes of guest memory from ADDR to
                     mem_<ms>_<addr>.bin (mem_f<frame>_<addr>.bin for a frame) in the --shots
                     directory (or the current one);
@@ -115,6 +127,12 @@ const char* const USAGE = R"(usage: mh4u_runner <file> [options]
                     r4-r6 on entry, r0-r3 when the call completes for its thread), a line per
                     thread created and a header, to compare CPU backends thread by thread
                     (tools/compare_svc_traces.py)
+  --trace-timing FILE  write every event Azahar's CoreTiming runs to FILE after a header, one
+                    line each: tick=<decimal> event=<name> core=<n> late=<cycles>
+                    from=<emu|host> (the tick: the core's clock since the program loaded, as
+                    the t= of --trace-svc; from=host: scheduled from a host thread other than
+                    the emulation thread; a space in a name is written as _), to find where
+                    two runs part
   --trace-ipc FILE  write every IPC request with its reply (also the ones a service answers
                     later) to FILE, one line each: thread, order sent, session, header, the
                     words both ways, the buffers and handles with CRC-32s and names, ticks;
@@ -2530,6 +2548,58 @@ void EndPerfLog() {
     }
 }
 
+// ── timing trace (--trace-timing, N0-26) ────────────────────────────────────────────
+
+std::FILE* g_timing_trace = nullptr;
+std::thread::id g_emulation_thread; // the thread that loads the game and runs the loop
+
+/// Called by CoreTiming on whichever thread schedules an event.
+bool OnHostThread() {
+    return std::this_thread::get_id() != g_emulation_thread;
+}
+
+/// Called by CoreTiming on the emulation thread for every event it runs, just before its callback:
+/// `tick=<decimal> event=<name> core=<n> late=<cycles> from=<emu|host>`. The tick is the core's
+/// clock relative to the program's load (the `t=` of --trace-svc). A space in the event's name
+/// (Azahar has a few) becomes `_`, so that the fields split on whitespace.
+void TraceTimingEvent(s64 tick, const char* name, std::size_t core, s64 cycles_late, bool from_host) {
+    if (!g_timing_trace) {
+        return;
+    }
+    std::string event = name;
+    std::replace_if(event.begin(), event.end(), [](char c) { return static_cast<unsigned char>(c) <= ' '; }, '_');
+    const std::string line = fmt::format("tick={} event={} core={} late={} from={}\n",
+                                         static_cast<long long>(tick - g_start_ticks), event, core,
+                                         static_cast<long long>(cycles_late), from_host ? "host" : "emu");
+    std::fwrite(line.data(), 1, line.size(), g_timing_trace);
+}
+
+/// Before the game loads, so that the events scheduled while it loads are told apart too.
+void InstallTimingObserver() {
+    g_emulation_thread = std::this_thread::get_id();
+    Core::SetTimingObserver(TraceTimingEvent, OnHostThread);
+}
+
+/// After the game has loaded (the header names it); nothing runs between the two.
+bool BeginTimingTrace(Core::System& system, const std::string& path, const std::string& cpu, bool new_3ds) {
+    g_timing_trace = std::fopen(path.c_str(), "w");
+    if (!g_timing_trace) {
+        std::fprintf(stderr, "cannot write %s\n", path.c_str());
+        return false;
+    }
+    std::setvbuf(g_timing_trace, nullptr, _IOFBF, 1 << 20);
+    WriteHeader(g_timing_trace, system, "timingtrace", cpu, new_3ds);
+    return true;
+}
+
+void EndTimingTrace() {
+    Core::SetTimingObserver(nullptr, nullptr);
+    if (g_timing_trace) {
+        std::fclose(g_timing_trace);
+        g_timing_trace = nullptr;
+    }
+}
+
 
 // ── network room ────────────────────────────────────────────────────────────────────
 
@@ -2760,7 +2830,7 @@ int main(int argc, char** argv) {
     std::string code_library;
     std::string cpu = "recomp";
     std::string log_filter = "*:Warning Debug.Emulated:Debug Kernel:Info";
-    std::string user_dir, shots_dir, svc_trace, ipc_trace;
+    std::string user_dir, shots_dir, svc_trace, ipc_trace, timing_trace;
     bool ipc_trace_full = false;
     bool print_schedule = false;
     std::string schedule_error;
@@ -2769,7 +2839,6 @@ int main(int argc, char** argv) {
     u32 capture_gpu_start = 0, capture_gpu_frames = 0;
     std::string state_trace, unmapped_report, perf_log, observable_file = "config/native/observable.txt";
     std::vector<std::string> install;
-    double shot_every = 1000.0;
     double speed = 0.0;
     double draw_window = -1.0; // < 0: draw every frame
     double stall_ms = 0.0;     // > 0: report emulation steps that take longer
@@ -2838,6 +2907,8 @@ int main(int argc, char** argv) {
             }
         } else if (arg == "--trace-svc" && i + 1 < argc) {
             svc_trace = argv[++i];
+        } else if (arg == "--trace-timing" && i + 1 < argc) {
+            timing_trace = argv[++i];
         } else if (arg == "--trace-ipc" && i + 1 < argc) {
             ipc_trace = argv[++i];
         } else if (arg == "--trace-ipc-full") {
@@ -2879,7 +2950,10 @@ int main(int argc, char** argv) {
                 return 1;
             }
         } else if (arg == "--shot-every" && i + 1 < argc) {
-            shot_every = std::max(1.0, std::atof(argv[++i]));
+            if (!Schedule::ParseShotEvery(argv[++i], g_plan, schedule_error)) {
+                std::fprintf(stderr, "bad --shot-every %s (%s)\n", argv[i], schedule_error.c_str());
+                return 1;
+            }
         } else if (arg == "--cpu-clock" && i + 1 < argc) {
             cpu_clock = std::clamp(std::atoi(argv[++i]), 5, 400);
         } else if (arg == "--async-io") {
@@ -2980,6 +3054,19 @@ int main(int argc, char** argv) {
         // the same down to the monster's moves (2026-01-01 12:00 UTC)
         Settings::values.init_clock.SetValue(Settings::InitClock::FixedTime);
         Settings::values.init_time.SetValue(1767268800ULL);
+        // and the clock does not start at a number drawn per run (a random 32-bit value in
+        // Azahar): the game's GetSystemTick, and the shared page's date and its update tick,
+        // carry it
+        Settings::values.init_ticks_type.SetValue(Settings::InitTicks::Fixed);
+        Settings::values.init_ticks_override.SetValue(kFixedStartTicks);
+    }
+    // the console's Wi-Fi MAC address is read from (or made in) the user folder's mac.txt, a
+    // random one in a folder that has none: fixed too, except in a room, which hands out its own,
+    // and for a console that asked for a new identity
+    const bool fix_console_mac = !async_io && !new_console_id && !room_host && room_join.empty();
+    if (fix_console_mac && !Service::CFG::SetFixedConsoleMac(kFixedConsoleMac)) {
+        std::fprintf(stderr, "internal error: the fixed MAC address %s is not valid\n", kFixedConsoleMac);
+        return 1;
     }
     // no sound card needed (and on Windows, cubeb's WASAPI backend asserts on a thread
     // without COM, which a runner without Qt never initialises)
@@ -3032,11 +3119,19 @@ int main(int argc, char** argv) {
         return 5;
     }
 
+    if (!timing_trace.empty()) {
+        InstallTimingObserver();
+    }
     HeadlessWindow window;
     const auto status = system.Load(window, path);
     if (status != Core::System::ResultStatus::Success) {
         std::fprintf(stderr, "failed to load %s (status %u)\n", path.c_str(), static_cast<unsigned>(status));
         return 2;
+    }
+    if (fix_console_mac) {
+        // (the local wireless service puts the console's address there when it starts; this makes
+        // the page right whether or not it did)
+        system.Kernel().GetSharedPageHandler().SetMacAddress(Service::CFG::MacToArray(kFixedConsoleMac));
     }
     std::weak_ptr<Kernel::Process> process = system.Kernel().GetCurrentProcess();
     // ARM11 clock: 268,111,856 Hz
@@ -3050,6 +3145,11 @@ int main(int argc, char** argv) {
         if (g_svc_trace) {
             BeginSvcTrace(system, cpu, new_3ds);
         }
+    }
+    if (!timing_trace.empty() && !BeginTimingTrace(system, timing_trace, cpu, new_3ds)) {
+        Core::SetTimingObserver(nullptr, nullptr);
+        system.Shutdown();
+        return 1;
     }
     if (!ipc_trace.empty() && !BeginIpcTrace(system, ipc_trace, ipc_trace_full, cpu, new_3ds)) {
         system.Shutdown();
@@ -3083,16 +3183,15 @@ int main(int argc, char** argv) {
     if (!shots_dir.empty()) {
         FileUtil::CreateFullPath(shots_dir.back() == '/' ? shots_dir : shots_dir + '/');
     }
-    // --shots-from f<N>: the first shot is taken when the frame counter gets there (the file is named
-    // f<N>_top.ppm); the next ones follow every --shot-every ms from then. Until then the
-    // renderer draws whenever --draw-window would.
-    bool shot_frame_pending = g_plan.has_shots_from && g_plan.shots_from.by_frame;
-    double next_shot = g_plan.has_shots_from && !g_plan.shots_from.by_frame ? g_plan.shots_from.ms : shot_every;
+    // When the screenshots are taken (schedule.h, ShotSchedule): --shots-from f<N> takes the first
+    // when the frame counter gets there (the file is named f<N>_top.ppm) and --shot-every f<N> one
+    // every N frames (named f<frame>_top.ppm), otherwise --shot-every ms. Until the first, and
+    // always with frame-keyed shots, the renderer draws whatever --draw-window says.
+    Schedule::ShotSchedule shots(g_plan);
     int rc = 0;
     while (true) {
         if (draw_window >= 0.0 && capture_gpu_file.empty()) { // a capture needs every frame drawn
-            SwRenderer::SetDrawingEnabled(!shots_dir.empty() &&
-                                          (shot_frame_pending || EmulatedMs() >= next_shot - draw_window));
+            SwRenderer::SetDrawingEnabled(!shots_dir.empty() && shots.DrawingNeeded(EmulatedMs(), draw_window));
         }
         LockstepWait(EmulatedMs());
         if (!ApplyOptionChanges()) {
@@ -3126,18 +3225,11 @@ int main(int argc, char** argv) {
         WriteGpuCapture(system);
         DoReplaces(system);
         WriteCallCounts(shots_dir);
-        const bool frame_shot = shot_frame_pending && g_plan.shots_from.Due(EmulatedMs(), g_frame);
-        if (!shots_dir.empty() && (frame_shot || (!shot_frame_pending && EmulatedMs() >= next_shot))) {
-            const auto stem = frame_shot ? fmt::format("{}/{}", shots_dir, WhenStem(g_plan.shots_from))
-                                         : fmt::format("{}/{:07.0f}", shots_dir, next_shot);
+        std::string shot_stem;
+        if (!shots_dir.empty() && shots.Due(EmulatedMs(), g_frame, shot_stem)) {
+            const auto stem = fmt::format("{}/{}", shots_dir, shot_stem);
             SaveScreen(system, VideoCore::ScreenId::TopLeft, stem + "_top.ppm");
             SaveScreen(system, VideoCore::ScreenId::Bottom, stem + "_bottom.ppm");
-            if (frame_shot) {
-                shot_frame_pending = false;
-                next_shot = std::floor(EmulatedMs()) + shot_every;
-            } else {
-                next_shot += shot_every;
-            }
         }
         if (result == Core::System::ResultStatus::ShutdownRequested) {
             break;
@@ -3184,6 +3276,7 @@ int main(int argc, char** argv) {
     if (g_svc_trace) {
         EndSvcTrace();
     }
+    EndTimingTrace();
     EndStateTrace();
     EndDspCapture(system);
     EndHidCapture(system);
