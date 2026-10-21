@@ -67,22 +67,51 @@ std::unique_ptr<PreemptionSource> ReplayTimeSource::MakePreemption() {
     return std::make_unique<RecordingPreemption>(state_);
 }
 
+ReplayTimeSource::~ReplayTimeSource() = default;
+
+RequestTimers* ReplayTimeSource::InstallTimers(Kernel& kernel) {
+    if (timers_ == nullptr) {
+        timers_ = std::make_unique<RequestTimers>(kernel.GetScheduler());
+        kernel_ = &kernel;
+        kernel.SetScheduler(timers_.get());
+    }
+    return kernel_ == &kernel ? timers_.get() : nullptr;
+}
+
+RequestTimers::RequestTimers(Scheduler& inner) : inner_(inner), book_(std::make_shared<Book>()) {}
+
+void RequestTimers::SetTracking(bool on) {
+    std::lock_guard lock(book_->mutex);
+    book_->tracking.store(on, std::memory_order_release);
+    book_->pending.clear();
+    book_->arming_for = 0;
+}
+
 void RequestTimers::BeginRequest() {
-    std::lock_guard lock(mutex_);
-    ++request_;
-    arming_for_ = request_;
+    std::lock_guard lock(book_->mutex);
+    if (!book_->tracking.load(std::memory_order_acquire)) {
+        return;
+    }
+    ++book_->request;
+    book_->arming_for = book_->request;
+    // Only the current request's timers are looked at, and a timer that runs erases its own entry
+    // if it has one: the older entries can go.
+    book_->pending.clear();
 }
 
 void RequestTimers::EndRequest() {
-    std::lock_guard lock(mutex_);
-    arming_for_ = 0;
+    std::lock_guard lock(book_->mutex);
+    book_->arming_for = 0;
 }
 
 std::optional<u64> RequestTimers::EarliestOwnTick() const {
-    std::lock_guard lock(mutex_);
+    std::lock_guard lock(book_->mutex);
+    if (!book_->tracking.load(std::memory_order_acquire)) {
+        return std::nullopt;
+    }
     std::optional<u64> earliest;
-    for (const auto& [id, own] : pending_) {
-        if (own.request == request_ && (!earliest || own.tick < *earliest)) {
+    for (const auto& [id, own] : book_->pending) {
+        if (own.request == book_->request && (!earliest || own.tick < *earliest)) {
             earliest = own.tick;
         }
     }
@@ -92,8 +121,10 @@ std::optional<u64> RequestTimers::EarliestOwnTick() const {
 u64 RequestTimers::ScheduleAt(u64 tick, std::function<void()> fn) {
     u64 request = 0;
     {
-        std::lock_guard lock(mutex_);
-        request = arming_for_;
+        std::lock_guard lock(book_->mutex);
+        if (book_->tracking.load(std::memory_order_acquire)) {
+            request = book_->arming_for;
+        }
     }
     if (request == 0) {
         return inner_.ScheduleAt(tick, std::move(fn));
@@ -101,39 +132,46 @@ u64 RequestTimers::ScheduleAt(u64 tick, std::function<void()> fn) {
     // The id is known only after the call: the wrapper reads it from a cell filled in before the timer
     // can run (an event that is due runs at the next safe point, never inside ScheduleAt).
     auto cell = std::make_shared<u64>(0);
-    const u64 id = inner_.ScheduleAt(
-        tick, [this, cell, request, fn = std::move(fn)] { Fire(*cell, request, fn); });
+    const u64 id = inner_.ScheduleAt(tick, [book = book_, cell, request, fn = std::move(fn)] {
+        Fire(book, *cell, request, fn);
+    });
     *cell = id;
-    std::lock_guard lock(mutex_);
-    pending_[id] = Own{tick, request};
+    std::lock_guard lock(book_->mutex);
+    book_->pending[id] = Own{tick, request};
     return id;
 }
 
 bool RequestTimers::Cancel(u64 id) {
     {
-        std::lock_guard lock(mutex_);
-        pending_.erase(id);
+        std::lock_guard lock(book_->mutex);
+        book_->pending.erase(id);
     }
     return inner_.Cancel(id);
 }
 
-// The timer runs: it is no longer pending, and what it arms belongs to the same request.
-void RequestTimers::Fire(u64 id, u64 request, const std::function<void()>& fn) {
+// The timer runs: it is no longer pending, and what it arms belongs to the same request. Outside a
+// replay it is just its function.
+void RequestTimers::Fire(const std::shared_ptr<Book>& book, u64 id, u64 request,
+                         const std::function<void()>& fn) {
+    if (!book->tracking.load(std::memory_order_acquire)) {
+        fn();
+        return;
+    }
     u64 before = 0;
     {
-        std::lock_guard lock(mutex_);
-        pending_.erase(id);
-        before = arming_for_;
-        arming_for_ = request;
+        std::lock_guard lock(book->mutex);
+        book->pending.erase(id);
+        before = book->arming_for;
+        book->arming_for = request;
     }
     struct Restore {
-        RequestTimers& timers;
+        Book& book;
         u64 value;
         ~Restore() {
-            std::lock_guard lock(timers.mutex_);
-            timers.arming_for_ = value;
+            std::lock_guard lock(book.mutex);
+            book.arming_for = value;
         }
-    } restore{*this, before};
+    } restore{*book, before};
     fn();
 }
 

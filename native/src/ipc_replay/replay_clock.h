@@ -10,6 +10,7 @@
 // in here reads the host's clock or waits.
 #pragma once
 
+#include <atomic>
 #include <functional>
 #include <map>
 #include <memory>
@@ -24,9 +25,12 @@
 
 namespace mh4n::ipc_replay {
 
+class RequestTimers;
+
 class ReplayTimeSource final : public TimeSource {
 public:
     ReplayTimeSource();
+    ~ReplayTimeSource() override;
 
     s64 NowNs() override;
     // Never called by the replay (nothing runs the scheduler's idle wait); like ManualTimeSource: a
@@ -48,15 +52,25 @@ public:
     // runtime lets go of the two does not matter).
     std::unique_ptr<PreemptionSource> MakePreemption();
 
+    // Puts a RequestTimers in `kernel` in place of the scheduler it has, once, and returns it; the next
+    // calls (a second Replay on the same runtime) return the same one. It belongs to this source, which
+    // the runtime owns and destroys after the kernel and the scheduler, so it lives as long as the
+    // runtime does and the kernel's scheduler pointer is written only this once. Null if this source
+    // already installed its timers in another kernel.
+    RequestTimers* InstallTimers(Kernel& kernel);
+
     struct State;
 
 private:
     std::shared_ptr<State> state_;
+    std::unique_ptr<RequestTimers> timers_;
+    Kernel* kernel_ = nullptr;
 };
 
-// The scheduler as the services see it while a replay runs (installed in the Kernel in place of the
-// GuestScheduler, which it forwards every call to), with one addition: it remembers the timers that one
-// request arms, so the replay knows what game time that request is waiting for.
+// The scheduler as the services see it (installed in the Kernel in place of the GuestScheduler, which it
+// forwards every call to, by ReplayTimeSource::InstallTimers), with one addition: while a replay runs it
+// remembers the timers that one request arms, so the replay knows what game time that request is waiting
+// for.
 //
 // A request "owns" the timers it arms while its handler runs, and the timers those timers arm from
 // their own callbacks, and so on (a retry chain). A timer that anything else arms (the runtime's
@@ -65,11 +79,20 @@ private:
 // only toward the owned timers (EarliestOwnTick): a reply that waits for a host thread arms nothing
 // and sees no game time pass, whatever the thread's speed.
 //
-// Everything but Post is called on the scheduler's thread, as the Scheduler interface says.
+// It is installed once and stays: it lives as long as the runtime, and outside a replay (tracking off)
+// it is a plain pass-through. Each timer it wraps keeps the bookkeeping alive by a shared pointer, so a
+// timer a replay left pending that runs after the replay (or on a later replay) just calls its function.
+//
+// Everything but Post is called on the scheduler's thread, as the Scheduler interface says; Post reads
+// only the inner scheduler, which never changes.
 class RequestTimers final : public Scheduler {
 public:
-    explicit RequestTimers(Scheduler& inner) : inner_(inner) {}
+    explicit RequestTimers(Scheduler& inner);
 
+    // A replay starts or ends. On: the timers armed during a request are noted (what an earlier replay
+    // noted is forgotten). Off: nothing is noted and BeginRequest, EndRequest and EarliestOwnTick do
+    // nothing.
+    void SetTracking(bool on);
     // A new request: the timers armed from now on, until EndRequest, are its own; those of earlier
     // requests are not any more.
     void BeginRequest();
@@ -95,13 +118,18 @@ private:
         u64 tick;
         u64 request;
     };
-    void Fire(u64 id, u64 request, const std::function<void()>& fn);
+    // What the wrapped timers need, shared with them so that it outlives this object if they do.
+    struct Book {
+        mutable std::mutex mutex;
+        std::atomic<bool> tracking{false};
+        std::map<u64, Own> pending;  // timer id -> its tick and the request it belongs to (guarded)
+        u64 request = 0;             // the current request; 0 before the first (guarded)
+        u64 arming_for = 0;          // the request whose timers are being armed now; 0 none (guarded)
+    };
+    static void Fire(const std::shared_ptr<Book>& book, u64 id, u64 request, const std::function<void()>& fn);
 
     Scheduler& inner_;
-    mutable std::mutex mutex_;
-    std::map<u64, Own> pending_;  // timer id -> its tick and the request it belongs to
-    u64 request_ = 0;             // the current request; 0 before the first
-    u64 arming_for_ = 0;          // the request whose timers are being armed now; 0 none
+    std::shared_ptr<Book> book_;
 };
 
 // A RuntimeConfig whose time source is a ReplayTimeSource (at nanosecond 0) with its preemption

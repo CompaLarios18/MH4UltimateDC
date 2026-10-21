@@ -117,9 +117,9 @@ reply that differs is a difference, and nothing is tolerated because time passed
 
 **A deferred reply.** The wait stays as it was: the scheduler's posted work is run every millisecond
 of real time, up to `--reply-timeout`, which is how a reply that an I/O thread completes arrives. With the
-replay clock one thing is added, because a reply that waits for game time (a file read's latency, the
-UDS delays of up to 5 s) would otherwise wait for ever on a clock that does not move. The replay
-remembers the timers the request armed: those its handler armed while it ran, and those that such a
+replay clock one thing is added, because a reply that waits for a timer its own request armed (a file
+read's latency, the UDS delays of up to 5 s) would otherwise wait for ever on a clock that does not
+move. The replay remembers the timers the request armed: those its handler armed while it ran, and those that such a
 timer arms from its own callback (a chain of retries). While one of them is pending, the clock goes on
 toward the earliest of them, timer by timer (the runtime's own periodic timers run on the way, each in
 order with the clock at its tick, no sleep in between), until the reply is delivered. Timers that
@@ -149,6 +149,26 @@ clock after the wait can depend on the thread's speed (the 1 ms poll above makes
 impossible); no service of this repository does both. Work that a host thread posts is not the request's
 either: a timer it arms is not stepped toward, and a reply that waits for it ends as a "no reply within N
 ms" difference, never as a clock that depends on the host.
+
+**A reply that waits for a timer the request did not arm is not delivered.** The clock moves during a
+wait only toward the request's own timers (above), so a reply that waits for a periodic timer of the
+runtime ends as "no reply within N ms" after the whole `--reply-timeout` (30 s by default), with the
+clock where the request left it; the timer runs at the next record's tick, with nobody waiting for it.
+In this repository that is `gsp::Gpu` `SaveVramSysArea` (0x19) and `RestoreVramSysArea` (0x1A): the
+request is put on the slot's VBlank waiters and answered by the next PDC1 VBlank, which `GspState::Start()`
+armed when the service was made, not the request. The same holds for any command that defers to a
+timer armed elsewhere. This is deliberate: stepping to any timer would make the clock after a wait
+depend on how fast a host thread is. It is a difference with the first version of N1-11b, which stepped
+to any timer after a poll of real time and so delivered these replies; a trace that has them reports
+them as differences (use `--reply-timeout` with a small value to keep the run short, or `--no-time`).
+There is no way to tell, from the scheduler alone, a reply that waits for a periodic timer from one
+that waits for a host thread; a service would have to say so, which needs a change to a shared header
+and is not part of this tool.
+
+The replay clock's scheduler (`RequestTimers`) is installed in the kernel once, by the first replay on a
+runtime, and belongs to the clock, so it lives as long as the runtime. With no replay running it only
+forwards, and a timer a replay left pending (one beyond the 60 s cap, a retry chain) runs later as plain
+work, also on a second replay on the same runtime.
 
 ## What is compared
 

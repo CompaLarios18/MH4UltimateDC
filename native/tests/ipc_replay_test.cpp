@@ -46,6 +46,10 @@ std::array<std::atomic<u32>, 2> g_slot_fired{};  // set by the timers command 0x
 // on the scheduler's thread (the replay's) and by the tests while no replay runs.
 std::vector<std::pair<u32, u64>> g_stamps;
 std::vector<std::shared_ptr<Request>> g_hung;  // requests the fake service never answers
+// Requests of command 0x1C waiting for the timer of command 0x1D (the way gsp's SaveVramSysArea waits
+// for the next VBlank); scheduler thread and tests only.
+std::vector<std::shared_ptr<Request>> g_waiters;
+std::atomic<u32> g_tick_ran{0};  // set by the timer of command 0x1D
 
 // The service a session of rpl:tst hands out (command 0x000C).
 class SubService final : public Service {
@@ -95,6 +99,9 @@ private:
 //   0x1A ReadStamp    `n`: tag, then the ticks (low word, high word) of the nth record; zeros if none
 //   0x1B DeferBoth    `lo hi`: defers; the reply is written when `lo hi` ticks of game time have passed AND
 //                     another host thread (20 ms) has said it is done (a file read with its latency)
+//   0x1C WaitTick     defers until a timer that command 0x1D armed runs, which a request that arms none of
+//                     its own cannot make come (gsp's SaveVramSysArea and the VBlank)
+//   0x1D ArmTick      `lo hi`: `lo hi` ticks from now a timer replies to every request waiting in 0x1C
 class FakeService final : public Service {
 public:
     explicit FakeService(ServiceContext& context) : Service(context, "rpl:tst") {
@@ -124,6 +131,8 @@ public:
         Register(0x0019, "ArmStamp", &FakeService::ArmStamp);
         Register(0x001A, "ReadStamp", &FakeService::ReadStamp);
         Register(0x001B, "DeferBoth", &FakeService::DeferBoth);
+        Register(0x001C, "WaitTick", &FakeService::WaitTick);
+        Register(0x001D, "ArmTick", &FakeService::ArmTick);
     }
 
 private:
@@ -332,6 +341,27 @@ private:
             });
         }).detach();
         return Handled::Deferred;
+    }
+
+    Handled WaitTick(Request& request) {
+        g_waiters.push_back(request.Share());
+        return Handled::Deferred;
+    }
+    void ArmTick(Request& request) {
+        const u64 lo = request.Pop<u32>();
+        const u64 hi = request.Pop<u32>();
+        Kernel& kernel = Context().GetKernel();
+        kernel.ScheduleAt(kernel.NowTicks() + (lo | (hi << 32)), [] {
+            g_tick_ran.fetch_add(1);
+            std::vector<std::shared_ptr<Request>> waiters;
+            waiters.swap(g_waiters);
+            for (const std::shared_ptr<Request>& waiter : waiters) {
+                Reply reply(waiter->CommandId(), 1, 0);
+                reply.Push(kResultSuccess);
+                waiter->Deliver(std::move(reply));
+            }
+        });
+        request.MakeReply(1, 0).Push(kResultSuccess);
     }
 
     u32 subs_ = 0;
@@ -1523,6 +1553,8 @@ void ResetFake() {
     g_slot_fired[0].store(0);
     g_slot_fired[1].store(0);
     g_stamps.clear();
+    g_waiters.clear();
+    g_tick_ran.store(0);
 }
 
 Req SlotReq(u32 seq, u64 at, u32 slot, u64 ticks) {
@@ -1567,6 +1599,24 @@ Req DeferBothReq(u32 seq, u64 at, u64 ticks) {
     r.ticks = at;
     r.in = {ipc::MakeHeader(0x1B, 2, 0), static_cast<u32>(ticks), static_cast<u32>(ticks >> 32)};
     r.out = {ipc::MakeHeader(0x1B, 1, 0), 0};
+    return r;
+}
+
+Req ArmTickReq(u32 seq, u64 at, u64 ticks) {
+    Req r;
+    r.seq = seq;
+    r.ticks = at;
+    r.in = {ipc::MakeHeader(0x1D, 2, 0), static_cast<u32>(ticks), static_cast<u32>(ticks >> 32)};
+    r.out = {ipc::MakeHeader(0x1D, 1, 0), 0};
+    return r;
+}
+
+Req WaitTickReq(u32 seq, u64 at) {
+    Req r;
+    r.seq = seq;
+    r.ticks = at;
+    r.in = {ipc::MakeHeader(0x1C, 0, 0)};
+    r.out = {ipc::MakeHeader(0x1C, 1, 0), 0};
     return r;
 }
 
@@ -1819,6 +1869,95 @@ TEST_CASE("the span limit is a value of ReplayConfig, exact to the tick") {
         const ReplayReport report = replay(limit + 1);
         CHECK(report.ExitStatus() == 2);
         CHECK(report.error.find("line 3") != std::string::npos);
+    }
+}
+
+TEST_CASE("a reply that waits for a timer an earlier request armed is a loud difference, not a delivery") {
+    ResetFake();
+    TempDir dir;
+    // The shape of gsp's SaveVramSysArea (0x19) and RestoreVramSysArea (0x1A): the request waits for the
+    // next VBlank, which the runtime armed when the service was made, not the request. The request arms
+    // nothing, so the replay has no timer to move the clock toward (it would otherwise walk to any timer,
+    // after a host-speed poll) and the reply never comes: "no reply within N ms", which is what is pinned
+    // here. The timer is still pending afterwards and runs once the records' ticks get past it.
+    const std::string trace = dir.Write(
+        "ipc.txt", IpcTraceText({ArmTickReq(1, 0, 1000), WaitTickReq(2, 10), NowReq(3, 5000, 5000),
+                                 Add(4, 1, 2)}));
+    const Run run = RunTool({trace, "--service", "rpl:tst", "--reply-timeout", "300", "--continue"});
+    CHECK(run.status == 1);
+    CHECK(Contains(run.out, "DIFF rpl:tst seq=2"));
+    CHECK(Contains(run.out, "no reply within 300 ms"));
+    CHECK(!Contains(run.out, "DIFF rpl:tst seq=3"));  // the clock did not move during the wait
+    CHECK(!Contains(run.out, "DIFF rpl:tst seq=4"));  // and the next request goes through
+    CHECK(Contains(run.out, "replayed 4 requests: 3 matched, 1 differ, 0 skipped"));
+    CHECK(g_tick_ran.load() == 1);  // the timer did run, at the next record, with nobody waiting
+}
+
+TEST_CASE("timers a replay left pending outlive it: a second Replay, and the scheduler run past them") {
+    ResetFake();
+    const Options options = ParseOptions("ipc-replay", {});
+    REQUIRE(options.ok());
+    std::string error;
+    Runtime runtime(MakeReplayRuntimeConfig());
+    REQUIRE_MESSAGE(runtime.Prepare(options, {Phase::Devices, Phase::Services}, &error), error);
+    ServiceManager* manager = FindServiceManager(runtime);
+    REQUIRE(manager != nullptr);
+    auto* source = dynamic_cast<ReplayTimeSource*>(&runtime.Clock().Source());
+    REQUIRE(source != nullptr);
+    ReplayConfig config;
+    config.services = {"rpl:tst"};
+    auto replay = [&](const std::vector<Req>& requests) {
+        IpcTrace trace;
+        std::string problem;
+        REQUIRE_MESSAGE(ParseIpcTrace(IpcTraceText(requests), &trace, &problem), problem);
+        const ReplayReport report = Replay(runtime, *manager, trace, nullptr, config);
+        CHECK_MESSAGE(report.error.empty(), report.error);
+        CHECK(report.ExitStatus() == 0);
+    };
+    const u64 minute = 60ull * kTicksPerSecond;
+    // The first replay arms a plain timer at 10 min, a retry chain starting at 11 min (the second link
+    // is 5 s later, armed from the first link's callback), and ends long before any of them.
+    replay({ArmTimerReq(1, 0, 10 * minute), StampArmReq(2, 0, 7, 11 * minute, 5 * kTicksPerSecond),
+            NowReq(3, 5, 5)});
+    CHECK(g_timer_fired.load() == 0);
+    CHECK(g_stamps.empty());
+    const auto clock_ticks = [&] { return runtime.Clock().Now(); };
+    const u64 after_first = clock_ticks();
+    // With no replay running, the scheduler is run past the timers in two steps (the second link of the
+    // chain is armed from the first's callback, at the clock's reading then).
+    const auto run_past_timers = [&] {
+        for (int step = 0; step < 2; ++step) {
+            source->SetNs(source->NowNs() + 12ll * 60 * 1'000'000'000);
+            runtime.Scheduler().RunPending();
+        }
+    };
+
+    SUBCASE("the scheduler is run past the timers with no replay running") {
+        run_past_timers();
+        CHECK(g_timer_fired.load() == 1);
+        REQUIRE(g_stamps.size() == 2);  // the chain ran to its end
+        CHECK(g_stamps[0].first == 7);
+        CHECK(g_stamps[1].first == 17);
+    }
+    SUBCASE("a second Replay on the same runtime runs them while it moves the clock") {
+        Req late = Add(2, 3, 4);
+        late.ticks = 12 * minute;
+        replay({Add(1, 1, 2), late});
+        CHECK(clock_ticks() >= after_first + 12 * minute);
+        CHECK(g_timer_fired.load() == 1);
+        CHECK(g_stamps.size() == 2);
+    }
+    SUBCASE("a second Replay that ends before them, then the scheduler run past them") {
+        replay({Add(1, 1, 2), Add(2, 3, 4)});
+        CHECK(g_timer_fired.load() == 0);
+        run_past_timers();
+        CHECK(g_timer_fired.load() == 1);
+        CHECK(g_stamps.size() == 2);
+    }
+    SUBCASE("the scheduler of the kernel is the same through the replays") {
+        Scheduler* before = &runtime.GetKernel().GetScheduler();
+        replay({Add(1, 1, 2)});
+        CHECK(&runtime.GetKernel().GetScheduler() == before);
     }
 }
 

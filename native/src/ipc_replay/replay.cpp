@@ -251,8 +251,8 @@ public:
                                     : nullptr) {}
 
     ~Engine() {
-        if (previous_scheduler_ != nullptr) {
-            kernel_.SetScheduler(previous_scheduler_);
+        if (timers_ != nullptr) {
+            timers_->SetTracking(false);  // the scheduler stays as it is: it outlives the runtime's users
         }
     }
     Engine(const Engine&) = delete;
@@ -298,9 +298,9 @@ private:
     GameClock& clock_;
     ReplayTimeSource* time_;  // null: the clock is not moved (ReplayConfig::advance_time false)
     // With a moving clock: the scheduler the services see, which remembers the timers of the request
-    // being sent (it forwards to the runtime's, put back when the Engine ends).
-    std::unique_ptr<RequestTimers> timers_;
-    Scheduler* previous_scheduler_ = nullptr;
+    // being sent. The replay clock owns it and keeps it in the kernel for the life of the runtime; the
+    // Engine only switches its bookkeeping on while it runs.
+    RequestTimers* timers_ = nullptr;
     std::optional<u64> origin_;  // the tick of the first record
     u64 base_ = 0;               // the clock's reading when the first record was reached
     u64 target_ = 0;             // the clock's target so far: only grows
@@ -380,9 +380,12 @@ bool Engine::Setup(std::string* error) {
         if (!CheckSpan(error)) {
             return false;
         }
-        previous_scheduler_ = &kernel_.GetScheduler();
-        timers_ = std::make_unique<RequestTimers>(*previous_scheduler_);
-        kernel_.SetScheduler(timers_.get());
+        timers_ = time_->InstallTimers(kernel_);
+        if (timers_ == nullptr) {
+            *error = "the runtime's clock already serves another kernel";
+            return false;
+        }
+        timers_->SetTracking(true);
     }
     process_ = kernel_.CurrentProcess();
     if (!process_) {
