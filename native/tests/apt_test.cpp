@@ -44,8 +44,8 @@
 #include "mh4n/registry.h"
 #include "mh4n/runtime.h"
 #include "mh4n/service.h"
-#include "services/apt/shared_font.h"
 #include "mh4n/threads.h"
+#include "services/apt/shared_font.h"
 
 using namespace mh4n;
 using namespace mh4n::apt;
@@ -638,9 +638,10 @@ TEST_CASE("the APT module holds the 0x332000-byte APT:SharedFont block of the SY
     u32 system_used = 0, base_used = 0;
     u32 size = 0;
     std::string name;
-    Result map_read_write = 0;
+    Result map_read_write = 0, map_read = 0, unmap_read = 0;
     bool held = false;
     Result second = 0, full = 0;
+    u32 used_after_second = 0;
     u32 used_after_failures = 0;
     bool second_empty = false, full_empty = false;
     const int status = BootWith(f, dir, {"--ms", "20000"}, [&] {
@@ -658,11 +659,18 @@ TEST_CASE("the APT module holds the 0x332000-byte APT:SharedFont block of the SY
             // owner none, others Read: ReadWrite is refused to a mapper, as a block of ReadWrite/Read is
             map_read_write = block->Map(*kernel.CurrentProcess(), 0, MemoryPermission::ReadWrite,
                                         MemoryPermission::DontCare);
+            // and Read is what the others get: that mapping succeeds, then goes away again
+            map_read = block->Map(*kernel.CurrentProcess(), 0, MemoryPermission::Read,
+                                  MemoryPermission::DontCare);
+            if (map_read == kResultSuccess) {
+                unmap_read = block->Unmap(*kernel.CurrentProcess(), block->MappedAddress());
+            }
         }
         // a region that cannot hold the block: an error, no crash, nothing left allocated
         std::shared_ptr<SharedMemory> another;
-        second = AllocateSharedFontBlock(kernel, &another);  // room for one more (or not)
+        second = AllocateSharedFontBlock(kernel, &another);  // the region holds many blocks
         second_empty = another == nullptr;
+        used_after_second = kernel.Regions().Used(FcramRegion::System);
         const u32 free_bytes = kernel.Regions().Size(FcramRegion::System) - kernel.Regions().Used(FcramRegion::System);
         if (free_bytes != 0) {
             kernel.Regions().LinearAllocate(FcramRegion::System, free_bytes);
@@ -681,8 +689,11 @@ TEST_CASE("the APT module holds the 0x332000-byte APT:SharedFont block of the SY
     CHECK(size == 0x332000);
     CHECK(name == "APT:SharedFont");
     CHECK(map_read_write == kResultInvalidCombination);
-    CHECK((second == kResultSuccess || second == kResultOutOfMemory));
-    CHECK((second == kResultSuccess) == !second_empty);
+    CHECK(map_read == kResultSuccess);
+    CHECK(unmap_read == kResultSuccess);
+    CHECK(second == kResultSuccess);
+    CHECK(!second_empty);
+    CHECK(used_after_second == 2 * 0x332000);
     CHECK(full == kResultOutOfMemory);
     CHECK(full_empty);
     CHECK(used_after_failures == 0);
