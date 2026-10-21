@@ -1685,6 +1685,21 @@ TEST_CASE("D37: a missing user folder stays absent after a boot that reads cfg:u
 
 namespace {
 
+// What a start-up leaves in a user folder that cfg did not write to: the play coin archive that ptm's boot
+// step makes (N1-12b) and nothing else (no config, no mac.txt, no sysdata anywhere), or an empty folder.
+bool OnlyThePlayCoinArchive(const std::string& user) {
+    std::vector<std::string> files;
+    for (const auto& entry : fs::recursive_directory_iterator(user)) {
+        if (entry.is_directory()) {
+            continue;
+        }
+        files.push_back(fs::relative(entry.path(), user).generic_string());
+    }
+    std::sort(files.begin(), files.end());
+    const std::string archive = "nand/data/00000000000000000000000000000000/extdata/00048000/F000000B/";
+    return files.empty() || files == std::vector<std::string>{archive + "metadata", archive + "user/gamecoin.dat"};
+}
+
 // The log records with their level (the Fixture keeps only the text). Make it after the Fixture: the last sink
 // set is the one that receives.
 class Records {
@@ -1858,7 +1873,7 @@ TEST_CASE("N1-15b: a random source that throws never stops the start-up, and not
         CHECK(mac == "18:2A:7B:00:00:00");
         CHECK(log.Count(LogLevel::Error, "no random numbers for the console unique ID") >= 1);
         CHECK(log.Count(LogLevel::Error, "no random numbers for the MAC address") >= 1);
-        CHECK(fs::is_empty(dir.User()));
+        CHECK(OnlyThePlayCoinArchive(dir.User()));
     }
     SUBCASE("--new-console-id exits 3 and leaves the config as it is") {
         const RandomOverride fail(FailingRandom);
@@ -1930,7 +1945,7 @@ TEST_CASE("D37: the replay's way in (Runtime::Prepare) never makes a config") {
     Fixture f;
     REQUIRE(f.runtime->Prepare(Parse({"--user", dir.User()}), {Phase::Devices, Phase::Services}));
     CHECK_FALSE(fs::exists(ConfigFilePath(dir)));
-    CHECK(fs::is_empty(dir.User()));
+    CHECK(OnlyThePlayCoinArchive(dir.User()));
 }
 
 // ---- ptm -----------------------------------------------------------------------------------------------------------

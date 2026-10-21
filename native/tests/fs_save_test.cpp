@@ -1121,7 +1121,8 @@ TEST_CASE("SharedExtSaveData lives in the NAND folder and its high id is always 
     std::map<std::string, Result> r;
     const int status = BootWith(f, dir, {"--ms", "1000", "--io-latency", "none"}, [&] {
         Guest g(f, dir);
-        r["missing"] = g.OpenArchive(7, kBinary, ExtPath(0, 0xF000000B, 0x12345))[1];
+        // (0xF000000B is the play coin archive that the ptm boot step makes, N1-12b: another id is missing)
+        r["missing"] = g.OpenArchive(7, kBinary, ExtPath(0, 0xF000000C, 0x12345))[1];
         r["create"] = g.CreateExtSaveData(0, 0x00048000, 0xF000000B, Pattern(8, 1));
         // the id the game asks with has any high word: Azahar overwrites it
         const u64 a = g.MustOpen(7, kBinary, ExtPath(0, 0xF000000B, 0xDEAD));
@@ -1140,6 +1141,53 @@ TEST_CASE("SharedExtSaveData lives in the NAND folder and its high id is always 
     CHECK(std::filesystem::exists(folder / "metadata"));
     CHECK(std::filesystem::file_size(folder / "user" / "f.bin") == 4);
     CHECK(std::filesystem::exists(folder / "icon"));  // the game's high word was the shared one
+}
+
+TEST_CASE("N1-12b: the play coin archive that the ptm step made opens through fs:USER and holds Azahar's default coins") {
+    Fixture f;
+    TempDir dir;
+    // GameCoin {0x4F00, 42, 0, 0, 0, 2014, 12, 29}, little endian (written out, not computed)
+    const std::vector<u8> expected = {0x00, 0x4F, 0x00, 0x00, 0x2A, 0x00, 0x00, 0x00, 0x00, 0x00,
+                                      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xDE, 0x07, 0x0C, 0x1D};
+    std::map<std::string, Result> r;
+    std::map<std::string, std::vector<u8>> bytes;
+    std::map<std::string, u64> sizes;
+    const int status = BootWith(f, dir, {"--ms", "1000", "--io-latency", "none"}, [&] {
+        Guest g(f, dir);
+        // the 12-byte binary path of the game: media NAND, save id low 0xF000000B, high 0x48000; and the id as
+        // Azahar's ptm builds it (high 0): the shared factory replaces the high word
+        for (const auto& [name, high] : std::vector<std::pair<std::string, u32>>{{"game", 0x00048000}, {"ptm", 0}}) {
+            const std::vector<u32> opened = g.OpenArchive(7, kBinary, ExtPath(0, 0xF000000B, high));
+            r[name + " archive"] = opened[1];
+            if (opened[1] != kResultSuccess) {
+                continue;
+            }
+            const u64 archive = opened[2] | (static_cast<u64>(opened[3]) << 32);
+            const Guest::Opened file = g.OpenFile(archive, "/gamecoin.dat", 1);
+            r[name + " file"] = file.result;
+            if (file.result == kResultSuccess) {
+                sizes[name] = g.GetSize(file.session);
+                const Guest::ReadResult read = g.Read(file.session, 0, 20);
+                r[name + " read"] = read.result;
+                bytes[name] = read.bytes;
+                g.CloseFile(file.session);
+            }
+            g.CloseArchive(archive);
+        }
+        ExitProcess(*f.runtime);
+    });
+    CHECK(status == 0);
+    for (const char* name : {"game", "ptm"}) {
+        const std::string n = name;
+        CHECK(r[n + " archive"] == kResultSuccess);
+        CHECK(r[n + " file"] == kResultSuccess);
+        CHECK(r[n + " read"] == kResultSuccess);
+        CHECK(sizes[n] == 20);
+        CHECK(bytes[n] == expected);
+    }
+    const std::filesystem::path folder = dir.SharedExtFolder(0x48000, 0xF000000B);
+    CHECK(std::filesystem::file_size(folder / "user" / "gamecoin.dat") == 20);
+    CHECK(std::filesystem::file_size(folder / "metadata") == 16);
 }
 
 // ---- OtherSaveData ----------------------------------------------------------------------------------------------------------
