@@ -1,8 +1,8 @@
 // The scripted input source (N1-16): the presses of --input and --input-file, played back on the
 // game clock and the game's frame counter. A script means the same thing as in the reference runner
-// (port/src/runner.cpp, ScriptButton / ScriptCirclePad / ScriptTouch): a press is held from its
-// start for its hold, in milliseconds of game time since the program started or in frames; the first
-// press of a kind that is held wins.
+// (the Azahar-based mh4u_runner's ScriptButton, ScriptCirclePad and ScriptTouch): a press is held
+// from its start for its hold, in milliseconds of game time since the program started or in frames;
+// the first press of a kind that is held wins.
 //
 // Nothing here reads the host's clock: the tick comes from the caller (the HID module's timer
 // event) and the frame from the game's counter at that moment (Runtime::PollFrame), so a script

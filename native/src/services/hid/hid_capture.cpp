@@ -1,5 +1,5 @@
 // --capture-hid FILE (N1-16): the HID capture of N0-06 in the MHID format of tools/native/capfmt.py
-// (its docstring defines the records), written as the reference runner (port/src/runner.cpp,
+// (its docstring defines the records), written as the reference runner (the Azahar-based mh4u_runner,
 // WriteHidCapture) writes it, so that `capfmt.py diff-hid` compares the two runs:
 //  - on every change of the game's frame counter (Runtime::OnFrame, the first reading included), one
 //    record of type 1: the first 0x2b0 bytes of the HID shared memory, or zeros until the game has
