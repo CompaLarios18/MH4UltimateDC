@@ -34,12 +34,30 @@ def fake_exefs(code: bytes) -> bytes:
     return bytes(hdr) + code.ljust((len(code) + 0x1FF) & ~0x1FF, b"\0")
 
 
-def make_ncch(compressed: bool, romfs: bytes, pid: int = PID) -> tuple[bytes, bytes]:
+def make_icon(lockout: int, size: int = 0x36C0) -> bytes:
+    """A made-up SMDH: the magic, filler, and the region lockout word at 0x2018."""
+    icon = bytearray(b"SMDH" + bytes((i * 7) & 0xFF for i in range(size - 4)))
+    struct.pack_into("<I", icon, 0x2018, lockout)
+    return bytes(icon)
+
+
+def exefs_with_icon(code: bytes, icon: bytes) -> bytes:
+    hdr = bytearray(0x200)
+    code_pad = code.ljust((len(code) + 0x1FF) & ~0x1FF, b"\0")
+    struct.pack_into("<8sII", hdr, 0, b".code", 0, len(code))
+    struct.pack_into("<8sII", hdr, 16, b"icon", len(code_pad), len(icon))
+    return bytes(hdr) + code_pad + icon.ljust((len(icon) + 0x1FF) & ~0x1FF, b"\0")
+
+
+def make_ncch(compressed: bool, romfs: bytes, pid: int = PID, icon: bytes | None = None,
+              exefs: bytes | None = None) -> tuple[bytes, bytes]:
     code = code_image()
     stored = blz_encoder.compress(code) if compressed else code
     exh = make_exheader(program_id=pid, compressed=compressed, text=(0x100000, 2, len(TEXT)),
                         ro=(0x200000, 1, len(RO)), data=(0x300000, 1, len(DATA)))
-    return make_cxi.make_cxi(exh, fake_exefs(stored), romfs), code
+    if exefs is None:
+        exefs = fake_exefs(stored) if icon is None else exefs_with_icon(stored, icon)
+    return make_cxi.make_cxi(exh, exefs, romfs), code
 
 
 @pytest.fixture
@@ -51,8 +69,8 @@ def versions(tmp_path):
     return str(p)
 
 
-def write_inputs(tmp_path, compressed=True, base_pid=PID, update_pid=PID):
-    base, _ = make_ncch(False, b"BASEROMFS" * 100, base_pid)
+def write_inputs(tmp_path, compressed=True, base_pid=PID, update_pid=PID, icon=None, base_exefs=None):
+    base, _ = make_ncch(False, b"BASEROMFS" * 100, base_pid, icon, base_exefs)
     upd, code = make_ncch(compressed, b"UPDROMFS" * 50, update_pid)
     (tmp_path / "game.cxi").write_bytes(base)
     (tmp_path / "update.cia").write_bytes(tx.make_cia(upd))
@@ -143,3 +161,89 @@ def test_romfs_is_streamed_not_read(tmp_path, versions, monkeypatch):
     base, update, _ = write_inputs(tmp_path)
     pg.prepare(base, update, str(tmp_path / "game"), versions)
     assert (tmp_path / "game" / "romfs.bin").read_bytes().startswith(b"BASEROMFS" * 100)
+
+
+# Region lockout words (bit n = region n: JPN, USA, EUR, AUS, CHN, KOR, TWN) the tests cover.
+LOCKOUTS = [0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x7F, 0x06, 0x00, 0x80000041]
+
+
+@pytest.mark.parametrize("lockout", LOCKOUTS)
+def test_icon_is_written_as_is(tmp_path, versions, lockout):
+    icon = make_icon(lockout)
+    base, update, _ = write_inputs(tmp_path, icon=icon)
+    out = tmp_path / "game"
+    pg.prepare(base, update, str(out), versions)
+    assert (out / "icon.bin").read_bytes() == icon
+    assert struct.unpack_from("<I", (out / "icon.bin").read_bytes(), 0x2018)[0] == lockout
+    assert sorted(os.listdir(out)) == ["code.bin", "exheader.bin", "icon.bin", "info.txt",
+                                       "romfs.bin", "update_romfs.bin"]
+    text = (out / "info.txt").read_text()
+    assert f"icon.bin      : 0x36C0 bytes, CRC-32 {zlib.crc32(icon):08X}" in text
+    assert "icon          : none" not in text
+
+
+def test_no_icon_is_not_an_error(tmp_path, versions):
+    base, update, _ = write_inputs(tmp_path)
+    out = tmp_path / "game"
+    pg.prepare(base, update, str(out), versions)
+    assert not (out / "icon.bin").exists()
+    assert "icon          : none" in (out / "info.txt").read_text()
+
+
+def test_stale_icon_of_an_earlier_run_is_removed(tmp_path, versions):
+    out = tmp_path / "game"
+    base, update, _ = write_inputs(tmp_path, icon=make_icon(0x02))
+    pg.prepare(base, update, str(out), versions)
+    assert (out / "icon.bin").exists()
+    base, update, _ = write_inputs(tmp_path)
+    pg.prepare(base, update, str(out), versions)
+    assert not (out / "icon.bin").exists()
+
+
+def test_icon_comes_from_the_base_not_the_update(tmp_path, versions):
+    base_icon, upd_icon = make_icon(0x04), make_icon(0x02)
+    upd, _ = make_ncch(True, b"UPDROMFS" * 50, icon=upd_icon)
+    base, _, _ = write_inputs(tmp_path, icon=base_icon)
+    (tmp_path / "update.cia").write_bytes(tx.make_cia(upd))
+    pg.prepare(base, str(tmp_path / "update.cia"), str(tmp_path / "game"), versions)
+    assert (tmp_path / "game" / "icon.bin").read_bytes() == base_icon
+
+
+def test_icon_through_the_command_line(tmp_path, versions, capsys):
+    base, update, _ = write_inputs(tmp_path, icon=make_icon(0x02))
+    assert pg.main(["--base", base, "--update", update, "-o", str(tmp_path / "g"),
+                    "--versions", versions]) == 0
+    assert "icon.bin" in capsys.readouterr().out
+
+
+def damaged_exefs(kind: str) -> bytes:
+    good = bytearray(exefs_with_icon(code_image(), make_icon(0x02)))
+    if kind == "icon_past_end":
+        struct.pack_into("<I", good, 16 + 12, 0x100000)     # icon size far beyond the ExeFS
+    elif kind == "code_past_end":
+        struct.pack_into("<I", good, 8, 0x100000)
+    elif kind == "later_entry_past_end":
+        struct.pack_into("<8sII", good, 32, b"logo", 0x100000, 0x10)
+    return bytes(good)
+
+
+@pytest.mark.parametrize("kind", ["icon_past_end", "code_past_end", "later_entry_past_end"])
+def test_damaged_exefs_header_is_an_error(tmp_path, versions, kind):
+    base, update, _ = write_inputs(tmp_path, base_exefs=damaged_exefs(kind))
+    with pytest.raises(pg.PrepareError, match="base game.*(runs past|damaged)"):
+        pg.prepare(base, update, str(tmp_path / "game"), versions)
+    assert pg.main(["--base", base, "--update", update, "-o", str(tmp_path / "g"),
+                    "--versions", versions]) == 1
+    assert not (tmp_path / "game" / ".prepare-tmp").exists()
+
+
+def test_exefs_entry_rejects_a_short_exefs():
+    with pytest.raises(pg.PrepareError, match="damaged"):
+        pg.exefs_entry(b"\0" * 0x100, "icon")
+
+
+@pytest.mark.parametrize("icon", [make_icon(0x02)[:0x1000], b"XXXX" + make_icon(0x02)[4:]])
+def test_truncated_or_unmarked_icon_is_an_error(tmp_path, versions, icon):
+    base, update, _ = write_inputs(tmp_path, icon=icon)
+    with pytest.raises(pg.PrepareError, match="icon is damaged"):
+        pg.prepare(base, update, str(tmp_path / "game"), versions)
