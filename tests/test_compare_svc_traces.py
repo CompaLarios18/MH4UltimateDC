@@ -467,6 +467,7 @@ def test_the_report_names_what_makes_two_polling_records_differ(tmp_path, capsys
     assert "1 of 3 records differ at the same position" in out
     assert "svc 28 differs in start, places" in out
 
+
 def test_the_sleep_that_precedes_a_run_is_compared_with_its_duration_but_not_its_r6(tmp_path, capsys):
     """in4 stays out of the collapse: r6 of a SleepThread holds the high word of the last GetSystemTick."""
     ref = polling_prog(sleep_call(2, junk=0x1), tick_calls(3), other_call())
@@ -611,6 +612,7 @@ def test_two_threads_with_one_entry_created_by_different_parents_in_the_opposite
     assert c.main([str(tmp_path / "ref.txt"), str(tmp_path / "cand.txt"), "--normalize", "--outputs"]) == 1
     # and a real difference between the children is still found
     assert cross_main(tmp_path, prog("12"), prog("21", {"1": 0, "2": 0})) == 1
+
 
 def test_a_control_memory_that_returns_another_address_passes(tmp_path):
     assert cross_main(tmp_path, cross_prog(), cross_prog(addr=0x08123000)) == 0

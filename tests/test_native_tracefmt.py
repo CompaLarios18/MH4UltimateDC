@@ -306,7 +306,7 @@ def test_cli_cross_model_flag_names_per_parent(tmp_path, capsys):
     assert line.startswith("main/00200000#0 17 ") and "event#main/00200000#0.0" in line
 
 
-# ── IPC traces (N0-21)──────────────────────────────────────────────────────────────
+# ── IPC traces (N0-21) ──────────────────────────────────────────────────────────────
 
 IPC_HEADER = "# ipctrace v1 2026-10-16 game=0x0004000000000000 cpu=jit new3ds=off"
 
