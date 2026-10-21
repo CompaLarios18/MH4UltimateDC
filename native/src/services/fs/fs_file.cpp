@@ -10,8 +10,9 @@
 // Copyright 2017-2026 Citra Emulator Project / Azahar Emulator Project (hle_ipc.h)
 // Copyright 2014-2024 Citra Emulator Project / Azahar Emulator Project (file_backend.h)
 //
-// A file session (N1-12): Read runs on an I/O thread and answers by a deferred reply, at the time StartIo
-// says. Write runs on the scheduler thread and answers in the request's tick (the IPC reply delay, nothing
+// A file session (N1-12): Read runs on an I/O thread (N1-13: on the scheduler thread for a file that a Write can
+// change, see FileBackend::ReadsOnSchedulerThread) and answers by a deferred reply, at the time StartIo says.
+// Write runs on the scheduler thread and answers in the request's tick (the IPC reply delay, nothing
 // else): what the game can see must not depend on how long a host thread takes. Azahar answers a Write to a
 // backend that is not cached (every disk file) the same way; on a cached reader (RomFS) it goes through a
 // worker thread, and this code answers that in the same tick instead. Departures from Azahar:
@@ -23,6 +24,7 @@
 //    from the modelled delay, so the reply moves with the host.
 //  - OpenSubFile (0x0801) is not implemented: the game does not use it.
 #include <algorithm>
+#include <functional>
 #include <memory>
 #include <vector>
 
@@ -90,29 +92,40 @@ private:
         auto data = std::make_shared<ReadData>();
         std::shared_ptr<FileBackend> backend = backend_;
         const u16 command_id = request.CommandId();
-        std::shared_ptr<Request> pending = request.Share();
         const MappedBuffer buffer = *mapped;
-        StartIo(
-            *state_, Context(), backend_->GetReadDelayNs(length),
-            [data, backend, offset, count] {
-                data->bytes = std::make_unique_for_overwrite<u8[]>(count);
-                data->result = backend->Read(offset, count, data->bytes.get(), &data->read);
-            },
-            [data, pending, buffer, command_id, count] {
-                Reply reply(command_id, 2, 2);
-                if (IsError(data->result)) {
-                    reply.Push(data->result);
-                    reply.Push<u32>(0);
-                } else {
-                    // Never copy more than was requested, even if the backend reports more.
-                    const std::size_t size = std::min(data->read, count);
-                    buffer.Write(data->bytes.get(), 0, static_cast<u32>(size));
-                    reply.Push(kResultSuccess);
-                    reply.Push<u32>(static_cast<u32>(size));
-                }
-                reply.PushMappedBuffer(buffer);
-                pending->Deliver(std::move(reply));
-            });
+        std::function<void()> work = [data, backend, offset, count] {
+            data->bytes = std::make_unique_for_overwrite<u8[]>(count);
+            data->result = backend->Read(offset, count, data->bytes.get(), &data->read);
+        };
+        const auto fill = [data, buffer, count](Reply& reply) {
+            if (IsError(data->result)) {
+                reply.Push(data->result);
+                reply.Push<u32>(0);
+            } else {
+                // Never copy more than was requested, even if the backend reports more.
+                const std::size_t size = std::min(data->read, count);
+                buffer.Write(data->bytes.get(), 0, static_cast<u32>(size));
+                reply.Push(kResultSuccess);
+                reply.Push<u32>(static_cast<u32>(size));
+            }
+            reply.PushMappedBuffer(buffer);
+        };
+        const u64 delay_ns = backend_->GetReadDelayNs(length);
+        if (backend_->ReadsOnSchedulerThread()) {
+            // A file that a Write can change is read now, in the request's tick; only the reply waits.
+            work();
+            if (!NeedsDelay(*state_, delay_ns)) {
+                fill(request.MakeReply(2, 2));
+                return Handled::Done;
+            }
+            work = nullptr;
+        }
+        std::shared_ptr<Request> pending = request.Share();
+        StartIo(*state_, Context(), delay_ns, std::move(work), [fill, pending, command_id] {
+            Reply reply(command_id, 2, 2);
+            fill(reply);
+            pending->Deliver(std::move(reply));
+        });
         return Handled::Deferred;
     }
 

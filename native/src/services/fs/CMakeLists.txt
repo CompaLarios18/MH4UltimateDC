@@ -24,11 +24,16 @@ endforeach()
 
 mh4n_module(
     SOURCES
+        archive_extsavedata.cpp
         archive_ncch.cpp
+        archive_savedata.cpp
         archive_selfncch.cpp
+        disk_file.cpp
+        fs_dir.cpp
         fs_file.cpp
         fs_state.cpp
         fs_user.cpp
+        host_files.cpp
         io.cpp
         options.cpp
         positioned_file.cpp

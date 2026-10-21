@@ -90,6 +90,16 @@ public:
         }
     }
 
+    // Every other operation is refused with UnsupportedOpenFlags (Azahar's SelfNCCHArchive).
+    Result FileDelete(const Path&) override { return kResultUnsupportedOpenFlags; }
+    Result DirectoryDelete(const Path&) override { return kResultUnsupportedOpenFlags; }
+    Result DirectoryDeleteRecursively(const Path&) override { return kResultUnsupportedOpenFlags; }
+    Result FileCreate(const Path&, u64, u32) override { return kResultUnsupportedOpenFlags; }
+    Result DirectoryCreate(const Path&, u32) override { return kResultUnsupportedOpenFlags; }
+    Result DirectoryOpen(const Path&, std::unique_ptr<DirectoryBackend>*) override {
+        return kResultUnsupportedOpenFlags;
+    }
+
 private:
     static Result OpenImage(const std::shared_ptr<PositionedFile>& image, const char* what,
                             std::shared_ptr<FileBackend>* file) {
