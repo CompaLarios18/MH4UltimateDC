@@ -315,8 +315,8 @@ setting where it has one.
 | Starting tick of the emulated clock | a random 32-bit number drawn per run (`Timing::GenerateBaseTicks`: `std::mt19937` seeded from `std::random_device`, so any value from 0 to 2^32 - 1) | `init_ticks_type` Fixed, `init_ticks_override` **2,000,000,000** (0x77359400, 7.4596 s of the 268,111,856 Hz clock); every core's timer starts there | `svcGetSystemTick` (the running core's timer: this plus the ticks emulated so far); the update ticks in the shared page's date records (0x28 and 0x48); the date in those records, which Azahar computes as `init_time` plus the whole clock, starting tick included, so at the first update the date is `init_time` + 7459 ms |
 | Console Wi-Fi MAC address | the folder's `mac.txt`, or a random address from a list of 16 Nintendo-like ranges, written to `mac.txt`, when there is none | **02:00:00:00:00:01** (locally administered), not read from or written to `mac.txt` | the shared page's bytes 0x60 to 0x65 (the local wireless service puts it there when it starts, and the runner sets the page once the game has loaded, so the page has it either way), `cfg`, and what the local wireless service and `nwm::SOC` take from it |
 | Reads of files | on host threads, finishing at a host-dependent emulated time | `deterministic_async_operations`; the patch keeps host time out of the delay of a read | when a read wakes the game |
-| Console unique ID of a config savegame that the run makes (N0-29) | drawn per run from the host's random source (`CryptoPP::AutoSeededRandomPool`): 16 random bits and, in a folder without `nand/rw/sys/LocalFriendCodeSeed_B`, a random 34-bit friend code seed | **0x4D480001A2B3C4D5** (random number **0x4D48**, friend code seed 0x1A2B3C4D5; `kFixedConsoleId`, `kFixedConsoleRandomNumber`), under the MAC address's condition (no room, no `--new-console-id`); a config savegame that already exists keeps its ID | `cfg:u` command `0x00030040` (GetTransferableId), whose reply for a salt is the last 8 bytes of SHA-256 of the ID (8 bytes, little endian) and the salt (`& 0xFFFFF`, 4 bytes): **salt 0: words 0x61B8087C, 0xB904EFF1; salt 0x1263 (the game's): words 0x9592177D, 0xFE13E102**; what the game derives from those and stores; the config savegame's blocks 0x90000 and 0x90001 (bytes `D5 C4 B3 A2 01 00 48 4D`) and 0x90002 (`48 4D 00 00`) |
-| Unwritten bytes of reply words (N0-29) | whatever the host's heap held (the command buffer of a request is not initialised) | 0 (`SetZeroedIpcReplies`) | bytes 1 to 3 of the reply word of every service that pushes a `u8`, `u16` or `bool`, or declares a word and does not push it (seen: `APT:A` 0x01010000, `cfg:u` 0x00020000, `y2r:u` 0x00280000); the value is now zero-extended |
+| Console unique ID of a config savegame that the run makes (N0-29) | drawn per run from the host's random source (`CryptoPP::AutoSeededRandomPool`): 16 random bits and, in a folder without `nand/rw/sys/LocalFriendCodeSeed_B`, a random 34-bit friend code seed | **0x4D480001A2B3C4D5** (random number **0x4D48**, friend code seed 0x1A2B3C4D5; `kFixedConsoleId`, `kFixedConsoleRandomNumber`), under the MAC address's condition (no room, no `--new-console-id`); a config savegame that already exists keeps its ID | `cfg:u` command `0x00030040` (GetTransferableId), whose reply for a salt is the last 8 bytes of SHA-256 of the ID (8 bytes, little endian) and the salt (`& 0xFFFFF`, 4 bytes): **salt 0: words 0x61B8087C, 0xB904EFF1; salt 0x1263 (the game's): words 0x9592177D, 0xFE13E102**; what the game derives from those and stores (probably: the link is not shown yet, the next measurement of G2 shows it; do not copy it as a measured value); the config savegame's blocks 0x90000 and 0x90001 (bytes `D5 C4 B3 A2 01 00 48 4D`) and 0x90002 (`48 4D 00 00`) |
+| Unwritten bytes of reply words (N0-29) | whatever the host's heap held (the command buffer of a request is not initialised) | 0 (`SetZeroedIpcReplies`) | the bytes of a reply word that the service did not write: bytes 1 to 3 after a `u8`, an enum of `u8` or a `bool`, bytes 2 and 3 after a `u16`, all four of a word it declares and does not push (seen: `APT:A` 0x01010000, `cfg:u` 0x00020000, `y2r:u` 0x00280000); the value is now zero-extended |
 | Time zone (N0-29) | the host's (`TZ`) | `UTC0`, set by the runner | the date of the shared page's records (and what `ptm` and the news database take from it) |
 
 Notes for the mirror:
@@ -434,8 +434,9 @@ removed which difference, and why the three reply words differ.
 Iteration 0 measured the N0-26 runner (the Windows CI build of `wp/N0-26` at `6fa80b1`) on the three gate sessions,
 two runs each on an idle PC, with every recorder (`--trace-svc`, `--trace-ipc`, `--trace-ipc-full`, `--state-trace`,
 `--trace-timing`, `--count-unmapped`, the HID and DSP captures, `--capture-gpu`, `--shots`): G1 to 1700 frames, G6 to
-3700, G2 to 9000. In every pair the state, SVC and timing traces, `unmapped.txt`, the HID and DSP captures, the GPU
-capture's manifest and reference images and every screenshot were identical. What still differed (the first three
+3700, G2 to 9000. In every pair the state, SVC and timing traces, `unmapped.txt`, the HID and DSP captures and every
+screenshot were identical, and so were the GPU capture's manifest and reference images in the sessions that have one
+(G1, captured at frame 1500, and G2, at frame 2500; G6 has none). What still differed (the first three
 rows are game state or what the game sees; the last is not, and is not removed):
 
 | What | Where | How much |
@@ -488,6 +489,11 @@ address, and then the same value in the IPC trace's reply. The sources, by what 
    `ArchiveSource_SDSaveData::Format` for the save) write a zeroed 16-byte buffer with the four fields copied in, when
    `deterministic_async_operations` is set (the runner sets it without `--async-io`). The game never sees the padding
    (`GetFormatInfo` returns the four fields), so no value it sees changes; the file of the user folder does.
+   One byte of this struct is seen by the game: `FS_USER::ObsoletedCreateExtSaveData` (command 0x0830) never sets
+   `duplicate_data` (byte 12 of the metadata), and `GetFormatInfo` returns `duplicate_data != 0`. **Removed:** with
+   `deterministic_async_operations` set, the patch sets it to false there, so byte 12 of that metadata and the
+   duplicate flag `GetFormatInfo` then returns are 0 (the other three callers already set it). The three sessions
+   make no request of command 0x0830, so no measurement shows it; it is the same class as the padding.
 4. **The host's time zone.** Not a difference between runs on one PC: `SharedPage::Handler::GetSystemTimeSince2000`
    converts the year 2000 with `std::mktime`, a local time, so the date in the shared page depends on `TZ`; until now
    the instructions asked for `TZ=UTC0` and the measurement script set it. **Removed:** in the default mode the runner
