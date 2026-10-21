@@ -1,0 +1,23 @@
+# Byte ranges of an fs: Write that depend on the clock, which the cross profile's comparison of a Write zeroes
+# before it compares the CRC of the written bytes (D52, N0-32; found by N0-31, docs/research/g2-save-bytes.md).
+#
+# One range per line:
+#
+#     <session> <write-size> <write-offset> <mask-offset> <mask-size>   <why it depends on time>
+#
+#   <session>       the golden session the Write belongs to (G2)
+#   <write-size>    the size of the Write request this applies to, in bytes
+#   <write-offset>  the file offset of that Write request
+#   <mask-offset>, <mask-size>   the range of the written data (after the game's cipher, which is how a
+#                   comparator sees it), relative to the start of the written data
+#
+# `#` starts a comment; empty lines are skipped. A line that matches no Write of the compared traces is an error.
+# Only the orchestrator edits this file: a WP that proves a range is derived from time proposes the line, with its
+# reason, in its report. A range here hides every difference inside it from the comparison, the native runtime's
+# included: keep to whole cipher blocks that a measurement proved, and nothing else.
+#
+# These hold only while the slot's scramble seed (the upper half of the header word 0 of the written data) is
+# equal on both sides (it was in G2 on jit and recomp); with another seed the whole buffer differs and the
+# comparison is made on the unwrapped slot (tools/native/save_probe.py unwrap), which is a decision for D52.
+G2 81408 0   0 8     block 0 of the user slot (user1): the byte-sum checksum of the plaintext from offset 8; it changes with the fields of the next line
+G2 81408 0 280 16    blocks 35 and 36 of the user slot (user1): six 16-bit words, two of them the game's random generator stepped from the first clock reading's seed and four the low 16 bits of the Unix second at two clock readings (frame 2 to 3 and frame 2813)
