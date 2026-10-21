@@ -1,6 +1,6 @@
 // Derived from Azahar src/core/hle/service/fs/archive.h, src/core/file_sys/errors.h,
 // src/core/file_sys/archive_backend.h, src/core/file_sys/file_backend.h,
-// src/core/file_sys/directory_backend.h, src/core/file_sys/ivfc_archive.h,
+// src/core/file_sys/directory_backend.h, src/core/file_sys/ivfc_archive.h, src/core/file_sys/ivfc_archive.cpp,
 // src/core/file_sys/delay_generator.h and src/core/file_sys/delay_generator.cpp at
 // 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-3.0-or-later: archive.h says "GPLv3 or any later
 // version"; the others say "GPLv2 or any later version"): the archive ids (ArchiveIdCode), the file system
@@ -10,7 +10,7 @@
 // (RomFSDelayGenerator, DefaultDelayGenerator: slope, offset, minimum and the open delay).
 // Copyright 2014-2026 Citra Emulator Project / Azahar Emulator Project (archive.h, archive_backend.h)
 // Copyright 2014-2024 Citra Emulator Project / Azahar Emulator Project (file_backend.h, ivfc_archive.h,
-//   directory_backend.h)
+//   ivfc_archive.cpp, directory_backend.h)
 // Copyright 2016 Citra Emulator Project (errors.h)
 // Copyright 2018 Citra Emulator Project (delay_generator.h, delay_generator.cpp)
 //

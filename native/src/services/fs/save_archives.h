@@ -7,10 +7,11 @@
 // path; a file is made empty or sparse; free space is a fixed 32 MiB), the directory it lists
 // (DiskDirectory: the entries in the host's order, with the 8.3 names, the hidden flag of a leading dot and
 // the archive bit of every file) and the places the archives live under the user folder.
-// Copyright 2016-2026 Citra Emulator Project / Azahar Emulator Project (savedata_archive.cpp,
-//   savedata_archive.h, disk_archive.cpp)
+// Copyright 2016-2024 Citra Emulator Project / Azahar Emulator Project (savedata_archive.cpp,
+//   savedata_archive.h, archive_other_savedata.cpp)
 // Copyright 2014-2024 Citra Emulator Project / Azahar Emulator Project (archive_source_sd_savedata.cpp,
-//   archive_savedata.cpp, archive_other_savedata.cpp)
+//   archive_savedata.cpp)
+// Copyright 2014-2026 Citra Emulator Project / Azahar Emulator Project (disk_archive.cpp)
 //
 // Save data and extdata archives (N1-13), internal to mh4n_services_fs. The folder layout is Azahar's, so
 // one --user folder works with both programs:

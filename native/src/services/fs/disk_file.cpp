@@ -1,7 +1,7 @@
 // Derived from Azahar src/core/file_sys/disk_archive.cpp, src/core/file_sys/archive_extsavedata.cpp at
 // 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-2.0-or-later: each says "GPLv2 or any later version");
 // see the header of disk_file.
-// Copyright 2016-2026 Citra Emulator Project / Azahar Emulator Project (disk_archive.cpp)
+// Copyright 2014-2026 Citra Emulator Project / Azahar Emulator Project (disk_archive.cpp)
 // Copyright 2014-2025 Citra Emulator Project / Azahar Emulator Project (archive_extsavedata.cpp)
 #include "disk_file.h"
 

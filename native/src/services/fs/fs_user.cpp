@@ -14,8 +14,8 @@
 // fs:USER (N1-12): archives, RomFS and the system archives; (N1-13) the commands of save data and extdata:
 // DeleteFile, DeleteDirectory, DeleteDirectoryRecursively, CreateFile, CreateDirectory, OpenDirectory,
 // ControlArchive, GetFreeBytes, FormatSaveData, CreateExtSaveData and DeleteExtSaveData, with their
-// parameters and replies as Azahar parses and builds them. An archive that is not a save data kind (RomFS,
-// the system archives) leaves them to the unimplemented-command answer, as before N1-13. Like OpenArchive,
+// parameters and replies as Azahar parses and builds them. An archive that does not override an operation (RomFS,
+// the system archives) answers with the defaults of ArchiveBackend, which are Azahar's IVFCArchive answers. Like OpenArchive,
 // they answer in the request's tick (Azahar runs them on a worker with no delay). Departures from Azahar:
 //  - OpenArchive, CloseArchive and the other commands that touch no file answer at once, on the scheduler
 //    thread. Azahar sends them to a worker thread and the client wakes when the host gets to it; nothing
@@ -29,11 +29,11 @@
 #include <vector>
 
 #include "fs_state.h"
-#include "save_archives.h"
 #include "mh4n/ipc.h"
 #include "mh4n/log.h"
 #include "mh4n/registry.h"
 #include "mh4n/service.h"
+#include "save_archives.h"
 
 namespace mh4n::fs {
 

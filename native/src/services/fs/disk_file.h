@@ -6,8 +6,9 @@
 // are SaveDataDelayGenerator's) and the extdata file whose size cannot change (FixSizeDiskFile: SetSize
 // refused, a write beyond the end is an error, a write at the end writes nothing, a write that crosses the
 // end is cut there).
-// Copyright 2016-2026 Citra Emulator Project / Azahar Emulator Project (disk_archive.cpp, disk_archive.h)
-// Copyright 2014-2025 Citra Emulator Project / Azahar Emulator Project (archive_extsavedata.cpp)
+// Copyright 2014-2026 Citra Emulator Project / Azahar Emulator Project (disk_archive.cpp)
+// Copyright 2014-2025 Citra Emulator Project / Azahar Emulator Project (disk_archive.h,
+//   archive_extsavedata.cpp)
 // Copyright 2016 Citra Emulator Project (errors.h)
 //
 // The files of the save data archives (N1-13). Write goes to the file at once, on the scheduler thread, and

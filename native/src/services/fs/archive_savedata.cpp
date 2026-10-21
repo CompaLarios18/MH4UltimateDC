@@ -4,9 +4,11 @@
 // src/core/hle/service/fs/archive.h at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-3.0-or-later: archive.h
 // says "GPLv3 or any later version", the source of the media types; the others say "GPLv2 or any later
 // version"); see the header of save_archives (the header file) for what is taken from them.
-// Copyright 2016-2026 Citra Emulator Project / Azahar Emulator Project (savedata_archive.cpp, disk_archive.cpp)
+// Copyright 2016-2024 Citra Emulator Project / Azahar Emulator Project (savedata_archive.cpp,
+//   archive_other_savedata.cpp)
 // Copyright 2014-2024 Citra Emulator Project / Azahar Emulator Project (archive_source_sd_savedata.cpp,
-//   archive_savedata.cpp, archive_other_savedata.cpp)
+//   archive_savedata.cpp)
+// Copyright 2014-2026 Citra Emulator Project / Azahar Emulator Project (disk_archive.cpp)
 // Copyright 2014-2026 Citra Emulator Project / Azahar Emulator Project (archive.cpp, archive.h)
 //
 // SaveData (archive 4) and OtherSaveDataPermitted / OtherSaveDataGeneral (0x567890B4 / 0x567890B2), and
