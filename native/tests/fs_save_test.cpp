@@ -2784,8 +2784,8 @@ TEST_CASE("N1-12c: the same request in SaveData, ExtSaveData and SharedExtSaveDa
                 REQUIRE(g.CreateExtSaveData(1, 0, 0x1234, Pattern(8, 1)) == kResultSuccess);
                 a = g.MustOpen(6, kBinary, ExtPath(1, 0x1234, 0));
             } else {
-                REQUIRE(g.CreateExtSaveData(0, 0x48000, 0xF000000B, Pattern(8, 1)) == kResultSuccess);
-                a = g.MustOpen(7, kBinary, ExtPath(0, 0xF000000B, 0));
+                REQUIRE(g.CreateExtSaveData(0, 0x48000, 0xF000000E, Pattern(8, 1)) == kResultSuccess);
+                a = g.MustOpen(7, kBinary, ExtPath(0, 0xF000000E, 0));
             }
             r["create"] = g.CreateFile(a, "/gamecoin.dat", 0x10);
             r["create again"] = g.CreateFile(a, "/gamecoin.dat", 0x10);
@@ -2858,7 +2858,7 @@ namespace {
 // that is not formatted and is then, directories and files, an OpenFile of a missing file, a listing.
 // Returns the trace's path; `before` is a copy of the user folder as it was before the run.
 std::string RecordStartOfGame(const TempDir& dir, const std::filesystem::path& before) {
-    const std::filesystem::path shared = dir.SharedExtFolder(0x48000, 0xF000000B);
+    const std::filesystem::path shared = dir.SharedExtFolder(0x48000, 0xF000000E);
     std::filesystem::create_directories(shared / "user");
     std::filesystem::create_directories(shared / "boss");
     WriteBytesTo(shared / "metadata", std::vector<u8>(16, 0));
@@ -2869,7 +2869,7 @@ std::string RecordStartOfGame(const TempDir& dir, const std::filesystem::path& b
     Fixture f;
     const int status = BootWith(f, dir, {"--ms", "1000", "--io-latency", "none", "--trace-ipc", trace, "--trace-ipc-full"}, [&] {
         Guest g(f, dir, false);
-        const u64 shared_archive = g.MustOpen(7, kBinary, ExtPath(0, 0xF000000B, 0));
+        const u64 shared_archive = g.MustOpen(7, kBinary, ExtPath(0, 0xF000000E, 0));
         CHECK(g.CreateFile(shared_archive, "/gamecoin.dat", 0x10) == kFileAlreadyExists);
         CHECK(g.OpenArchive(4, kEmpty, kEmptyPath)[1] == kNotFormatted);
         CHECK(g.Format() == kResultSuccess);
