@@ -103,6 +103,7 @@ def exefs_entry(exefs: bytes, wanted: str) -> bytes | None:
         raise PrepareError(f"the base game's ExeFS is damaged: 0x{len(exefs):X} bytes, smaller "
                            f"than its 0x{EXEFS_HEADER_SIZE:X}-byte header")
     found = None
+    seen = False            # Azahar's LoadSectionExeFS stops at the FIRST entry with the name
     for i in range(EXEFS_ENTRIES):
         raw, off, size = struct.unpack_from("<8sII", exefs, i * 16)
         if not raw.rstrip(b"\0"):
@@ -111,8 +112,10 @@ def exefs_entry(exefs: bytes, wanted: str) -> bytes | None:
         if EXEFS_HEADER_SIZE + off + size > len(exefs):
             raise PrepareError(f"the base game's ExeFS is damaged: entry {name!r} (offset "
                                f"0x{off:X}, size 0x{size:X}) runs past the end of the ExeFS")
-        if name == wanted and size:
-            found = exefs[EXEFS_HEADER_SIZE + off:EXEFS_HEADER_SIZE + off + size]
+        if name == wanted and not seen:
+            seen = True
+            if size:
+                found = exefs[EXEFS_HEADER_SIZE + off:EXEFS_HEADER_SIZE + off + size]
     return found
 
 
@@ -122,11 +125,18 @@ def read_icon(base_dir: str) -> bytes | None:
         icon = exefs_entry(f.read(), "icon")
     if icon is None:
         return None
-    if len(icon) < SMDH_SIZE or icon[:4] != SMDH_MAGIC:
-        raise PrepareError(f"the base game's icon is damaged: 0x{len(icon):X} bytes"
-                           f"{'' if icon[:4] == SMDH_MAGIC else ', no SMDH magic'} (an SMDH is "
+    if len(icon) < SMDH_SIZE:
+        raise PrepareError(f"the base game's icon is damaged: 0x{len(icon):X} bytes (an SMDH is "
                            f"0x{SMDH_SIZE:X} bytes)")
     return icon
+
+
+def icon_warning(icon: bytes) -> str | None:
+    """A missing SMDH magic is only a warning: Azahar (ParseRegionLockoutInfo) and native's cfg
+    check the size alone, so a game that runs there must not be refused here."""
+    if icon[:4] != SMDH_MAGIC:
+        return "the base game's icon has no SMDH magic; icon.bin is written anyway, as Azahar would read it"
+    return None
 
 
 def read_exheader(path: str) -> exheader.ExHeader:
@@ -172,6 +182,9 @@ def prepare(base: str, update: str, outdir: str, versions: str = DEFAULT_VERSION
                                "segments; is the exheader from the same title?")
 
         icon = read_icon(base_dir)
+        warning = icon_warning(icon) if icon is not None else None
+        if warning:
+            print(f"warning: {warning}", file=sys.stderr)
         with open(os.path.join(outdir, "code.bin"), "wb") as f:
             f.write(code)
         icon_path = os.path.join(outdir, "icon.bin")
@@ -195,6 +208,7 @@ def prepare(base: str, update: str, outdir: str, versions: str = DEFAULT_VERSION
             f"code.bin      : 0x{have:X} bytes (was compressed: "
             f"{upd_hdr.code_compressed}), CRC-32 {crc32_of_file(os.path.join(outdir, 'code.bin')):08X}",
             (f"icon.bin      : 0x{len(icon):X} bytes, CRC-32 {zlib.crc32(icon) & 0xFFFFFFFF:08X}"
+             + (f" (WARNING: {warning})" if warning else "")
              if icon is not None else "icon          : none"),
             f"romfs.bin     : 0x{os.path.getsize(os.path.join(outdir, 'romfs.bin')):X} bytes",
             f"update_romfs.bin: 0x{os.path.getsize(os.path.join(outdir, 'update_romfs.bin')):X} bytes",

@@ -242,8 +242,43 @@ def test_exefs_entry_rejects_a_short_exefs():
         pg.exefs_entry(b"\0" * 0x100, "icon")
 
 
-@pytest.mark.parametrize("icon", [make_icon(0x02)[:0x1000], b"XXXX" + make_icon(0x02)[4:]])
-def test_truncated_or_unmarked_icon_is_an_error(tmp_path, versions, icon):
-    base, update, _ = write_inputs(tmp_path, icon=icon)
+def test_truncated_icon_is_an_error(tmp_path, versions):
+    base, update, _ = write_inputs(tmp_path, icon=make_icon(0x02)[:0x1000])
     with pytest.raises(pg.PrepareError, match="icon is damaged"):
         pg.prepare(base, update, str(tmp_path / "game"), versions)
+
+
+def test_icon_without_magic_is_a_warning_not_an_error(tmp_path, versions, capsys):
+    icon = b"XXXX" + make_icon(0x02)[4:]
+    base, update, _ = write_inputs(tmp_path, icon=icon)
+    out = tmp_path / "game"
+    info = pg.prepare(base, update, str(out), versions)
+    assert (out / "icon.bin").read_bytes() == icon
+    assert "no SMDH magic" in capsys.readouterr().err
+    text = (out / "info.txt").read_text()
+    line = [ln for ln in text.splitlines() if ln.startswith("icon.bin")][0]
+    assert f"CRC-32 {zlib.crc32(icon):08X}" in line and "WARNING" in line and "no SMDH magic" in line
+    assert any("WARNING" in ln for ln in info)
+
+
+def test_good_icon_has_no_warning(tmp_path, versions, capsys):
+    base, update, _ = write_inputs(tmp_path, icon=make_icon(0x02))
+    pg.prepare(base, update, str(tmp_path / "game"), versions)
+    assert "warning" not in capsys.readouterr().err
+    assert "WARNING" not in (tmp_path / "game" / "info.txt").read_text()
+
+
+def test_exefs_entry_first_icon_wins():
+    first, second = b"FIRST" * 4, b"SECOND" * 4
+    hdr = bytearray(0x200)
+    struct.pack_into("<8sII", hdr, 0, b"icon", 0, len(first))
+    struct.pack_into("<8sII", hdr, 16, b"icon", 0x200, len(second))
+    exefs = bytes(hdr) + first.ljust(0x200, b"\0") + second.ljust(0x200, b"\0")
+    assert pg.exefs_entry(exefs, "icon") == first
+
+
+def test_exefs_entry_rejects_an_entry_past_the_end():
+    hdr = bytearray(0x200)
+    struct.pack_into("<8sII", hdr, 0, b"icon", 0, 0x1000)
+    with pytest.raises(pg.PrepareError, match="runs past the end"):
+        pg.exefs_entry(bytes(hdr) + b"\0" * 0x200, "icon")
