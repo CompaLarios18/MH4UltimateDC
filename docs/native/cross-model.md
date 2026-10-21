@@ -1,19 +1,20 @@
 # Cross-model calibration: jit against recomp
 
-Written by N0-28 (D31, D33, D35). The tool is `tools/native/cross_model_report.py`; the runs are `golden.py check <S> --candidate-args "--cpu jit" --profile cross` on G1, G2 and G6. This document keeps frames, counts, service names and request headers only: the traces, screenshots and user folders it was made from are game data and stay in `build/`.
+Written by N0-28 (D31, D33, D35), and brought up to date in a fix round after the orchestrator settled the first round's findings in D50, D51 and D52 (2026-10-21). The tool is `tools/native/cross_model_report.py`; the runs are `golden.py check <S> --candidate-args "--cpu jit" --profile cross` on G1, G2 and G6. This document keeps frames, counts, service names and request headers only: the traces, screenshots and user folders it was made from are game data and stay in `build/`.
 
 ## Summary
 
-**N0-28 ends `needs-decision`.** The two backends run the game correctly, each repeats itself byte for byte, and most of what the cross profile gates agrees: but four findings cannot be settled inside this work package.
+**N0-28 is done: the measurement, the report tool and the time-dependent entries are delivered, and what its first run found is settled and handed on.** The two backends run the game correctly, each repeats itself byte for byte, and most of what the cross profile gates agrees. The first round ended `needs-decision` on three findings (a fourth was "everything else passes"); the orchestrator settled them in D50 to D52 and in the specs of N0-28, N0-31 and N0-32 (`docs/native/wp/N0.md`):
 
-| # | Finding | Where | What it needs |
+| # | Finding of the first round | Settled by | Who builds it, and which part |
 |---|---|---|---|
-| 1 | Two real scene changes of G2 fall **3 frames** apart (5084 against 5087, 5086 against 5089), over D33's 2. Every other real scene change (11 of 13) is 0 to 2 frames apart | [section 3](#3-real-scene-changes-and-input-margins-d33) | D33: the threshold is not widened here |
-| 2 | The cross-profile DSP comparison of G1 fails: the two captures hold the **same audio stream** shifted by a constant 22 DSP frames (every one of 14064 compared source-status blocks is equal after the shift) | [section 6](#6-the-dsp-capture-of-g1) | a rule for DSP in the cross profile (`capfmt.py` is N0-06's) |
-| 3 | After the 18 time-dependent entries below, three `fs:` differences remain: the movie's reader thread sends 5 fewer requests on jit (G1, G2, G6), one reader thread's requests come in another order in G6 and G2, and **the save write of G2 holds 24 different bytes** | [section 5](#5-ipc-calibration) and [section 7](#7-the-save-write-of-g2) | the trap of this work package: an `fs:` command is never proposed as time-dependent, and a difference that cannot be tied to time stops it |
-| 4 | Everything else passes: the cross-model SVC comparison (`svc`), the state comparison on G1 and G6, the checkpoints and the HID capture on all three | [section 4](#4-svc-calls) | nothing |
+| 1 | Two real scene changes of G2 fall **3 frames** apart (5084 against 5087, 5086 against 5089), over D33's 2. Every other real scene change (11 of 13) is 0 to 2 frames apart; every scripted input comes at least 91 frames after the last real scene change on both sides ([section 3](#3-real-scene-changes-and-input-margins-d33-and-d50)) | **D50**: the cross profile's scene tolerance is **4 frames** (the `same` profile stays at 0), with a guard that every scripted input comes at least **60 frames** after the last real scene change on both sides | **N0-28 (this work package)**: `cross_model_report.py` has `--tolerance` (default 4) and `--min-margin` (default 60) and exits 1 when either is violated. **N0-32**: `golden.py check --profile cross` uses the same two numbers by default, in its report and in its exit status. Checked here against the tables: the tool exits 0 on G1, G2 and G6, the largest shift is 3 and the smallest margin 91 |
+| 2 | The cross-profile DSP comparison of G1 fails: the two captures hold the **same audio stream** shifted by a constant 22 DSP frames (every one of 14064 compared source-status blocks is equal after the shift) ([section 6](#6-the-dsp-capture-of-g1)) | **D51**: align the candidate on the first buffer-id change of the first enabled source, the shift constant and at most 48 DSP frames, every source status block equal after it; the PCM samples are not compared across models | **N0-32**: `capfmt.py diff-dsp --align [--max-shift 48]` and its use by the cross profile |
+| 3a | After the 18 time-dependent entries, the movie's reader thread sends 5 fewer `fs:` Read requests on jit (G1, G2, G6) and one reader thread's reads come in another order (G6, G2) ([section 5.2](#52-what-remained-and-is-not-an-entry)) | **D52**: `fs:USER/file` Reads are compared per thread as a multiset of (offset, size, CRC of the data read), order ignored, the smaller contained in the larger with a surplus of at most 16 reads; no `fs:` command is ever an entry | **N0-32**: `compare_ipc_traces.py --fs-reads-multiset [--max-surplus 16]` and its use by the cross profile |
+| 3b | **The save write of G2 holds 24 different bytes** (offsets 0 to 7 and 280 to 295 of 81,408) ([section 7](#7-the-save-write-of-g2)) | **D52**: a Write is compared in full, including the CRC of the written bytes, except the byte ranges that are proved to be derived from time | **N0-31**: finds what the 24 bytes are, and proposes the ranges for `config/native/fs_write_masks.txt` (or reports a backend bug). **N0-32**: `compare_ipc_traces.py --fs-write-mask FILE` and its use by the cross profile with that file |
+| 4 | Everything else passes: the cross-model SVC comparison (`svc`), the state comparison on G1 and G6, the checkpoints and the HID capture on all three ([section 4](#4-svc-calls)) | nothing to settle | nothing |
 
-The 18 IPC entries that **are** tied to time are proposed in [section 5.1](#51-the-entries-proposed-for-configipc_time_dependenttxt); they do not make `golden.py check` pass by themselves.
+The 18 IPC entries that **are** tied to time are now in `config/native/ipc_time_dependent.txt` (the orchestrator merged them from [section 5.1](#51-the-18-entries-now-in-confignativeipc_time_dependenttxt)). `golden.py check <S> --candidate-args "--cpu jit" --profile cross ... --require checkpoints,ipc,svc,hid` exiting 0 for the three sessions was moved to N0-32, because it needs the rules of D51 and D52: with the 18 entries alone everything passes except G1's DSP capture (a constant shift), the `fs:` reads of the movie and of one reader, and G2's save write.
 
 ## 1. What was run
 
@@ -22,7 +23,9 @@ The 18 IPC entries that **are** tied to time are proposed in [section 5.1](#51-t
 - Host time of one jit run on the maintainer PC with nothing else running: 88 s (G1), 412 s (G6) and 2021 s (G2) (recomp: 64 s, 306 s and 1198 s, `docs/native/golden.md`). A whole `check` takes longer (G1 129 s, G6 554 s, G2 2297 s) because of the comparisons.
 - **jit repeats itself exactly**, as N0-29's gates promised: the SVC, IPC and state traces and the HID capture of the jit runs of G1, G6 and G2 made for the first and for the second pass are identical by SHA-256 (the same N0-29 property in the second backend). So every difference below is a difference of the two backends' clocks or a bug, not noise.
 
-### Results of `golden.py check` (cross profile)
+### Results of `golden.py check` (cross profile), the first round: history
+
+This table is what the first round measured, with D33's 2 frames and before D51 and D52. It is the history the findings come from, **not** today's expected result: under D50 the state comparison of G2 passes (its largest shift is 3, see [section 3](#3-real-scene-changes-and-input-margins-d33-and-d50)), and the `dsp-1240` and `ipc` rows are what N0-32 builds the rules for. The expected result of the three sessions is the `exit 0` of N0-32's *Done when*.
 
 | Comparison | G1 | G6 | G2 |
 |---|---|---|---|
@@ -36,15 +39,17 @@ The 18 IPC entries that **are** tied to time are proposed in [section 5.1](#51-t
 | `svc-full`, `images` | info (never gated): 19 of 48 screenshots differ | info: 57 of 114 | info: 140 of 292 |
 | exit status | 1 | 1 | 1 |
 
-(The state comparison of `check` stops at the first divergence; the report tool of [section 3](#3-real-scene-changes-and-input-margins-d33) lists all eight real changes and shows that the next one, to `aQuest`, is 3 frames apart as well.)
+(The state comparison of `check` stops at the first divergence; the report tool of [section 3](#3-real-scene-changes-and-input-margins-d33-and-d50) lists all eight real changes and shows that the next one, to `aQuest`, is 3 frames apart as well.)
 
 ## 2. The report tool
 
-`python tools/native/cross_model_report.py --session tools/native/golden/<S>.txt --reference build/golden/<S> --candidate build/cross-model/rec/<S>/check/run1 [--observable FILE] [--tolerance N] [--no-svc] [--no-ipc]` prints markdown: each real scene change (N0-25's definition: between two readable scene values, so the `-` start is not one) with its frame on each side and the difference; each input event of the session script with the last real scene change at or before it on each side and the margin (the event's frame minus that frame); each thread's number of SVC calls under the cross-model names of N0-25 (`main`, `<parent name>/<entry>#<k>`), with the SVC numbers that differ most; and, for information, the IPC commands whose per-thread request counts differ. It exits 1 when a real scene change is more than `--tolerance` frames (default 2) apart, goes to another scene, or exists on one side only (the report is still written), and 2 for bad input. `docs/native/golden.md` and `docs/native/comparators.md` describe the profiles it reports on; N0-30 and the native runtime's calibrations use the same tool.
+`python tools/native/cross_model_report.py --session tools/native/golden/<S>.txt --reference build/golden/<S> --candidate build/cross-model/rec/<S>/check/run1 [--observable FILE] [--tolerance N] [--min-margin N] [--no-svc] [--no-ipc]` prints markdown: each real scene change (N0-25's definition: between two readable scene values, so the `-` start is not one) with its frame on each side and the difference; each input event of the session script with the last real scene change at or before it on each side and the margin (the event's frame minus that frame), and a line that says whether every margin reaches the minimum; each thread's number of SVC calls under the cross-model names of N0-25 (`main`, `<parent name>/<entry>#<k>`), with the SVC numbers that differ most; and, for information, the IPC commands whose per-thread request counts differ.
 
-## 3. Real scene changes and input margins (D33)
+The two limits are D50's: `--tolerance` (default 4) and `--min-margin` (default 60). It exits 1 when a real scene change is more than `--tolerance` frames apart, goes to another scene or exists on one side only, **or** when any input event that follows a real scene change has a margin below `--min-margin` on either side; each problem is named on stderr (for a margin: the event's frame and kind, the margin and the side) and the report is still written. An input before the first real scene change has no margin and is not checked. It exits 2 for bad input (a missing file, a trace that cannot be read, a negative number). `docs/native/golden.md` and `docs/native/comparators.md` describe the profiles it reports on; N0-30 and the native runtime's calibrations use the same tool, and `golden.py check --profile cross` takes its two numbers from D50 (N0-32).
 
-The real scene changes, each side's frame, and the difference (candidate minus reference; jit is never earlier):
+## 3. Real scene changes and input margins (D33 and D50)
+
+The real scene changes, each side's frame, and the difference (candidate minus reference; jit is never earlier). The threshold was D33's 2 frames when this was measured; the measurement is what D50 settled on (4 frames and a margin guard of 60), and [section 3.1](#31-d50s-numbers-checked-against-these-tables) checks D50's numbers against the same runs.
 
 | Session | Real changes | Differences (frames), in order | Largest |
 |---|---|---|---|
@@ -52,7 +57,7 @@ The real scene changes, each side's frame, and the difference (candidate minus r
 | G6 | 3 | +0, +2, +1 | 2 |
 | G2 | 8 | +0, +2, +1, +1, +1, +1, **+3**, **+3** | **3** |
 
-Over the three sessions 13 real scene changes were measured; 11 are within D33's 2 frames and two, both in G2, are 3 frames apart. Those two are the changes at which the area system leaves the village and enters the opening (the `aGameSys` step at 5084 and `aQuest` at 5086 on recomp): the shift is +1 from the creation (frame 1653) up to the village (4959), and +3 from there to the end of the session. This matches what N0-27 saw (`docs/research/scene-observable.md`: "3"), now with the exact N0-29 runner and the two runs repeating themselves. **D33 does not allow widening the threshold here, so the work package stops.**
+Over the three sessions 13 real scene changes were measured; 11 are within D33's 2 frames and two, both in G2, are 3 frames apart. Those two are the changes at which the area system leaves the village and enters the opening (the `aGameSys` step at 5084 and `aQuest` at 5086 on recomp): the shift is +1 from the creation (frame 1653) up to the village (4959), and +3 from there to the end of the session. This matches what N0-27 saw (`docs/research/scene-observable.md`: "3"), now with the exact N0-29 runner and the two runs repeating themselves. D33 did not allow widening the threshold from inside the work package, so the first round stopped here with this table; D50 then settled the numbers.
 
 What the shift does to the session's inputs (the margin is the input's frame minus the frame of the last real scene change on that side; the smallest margin is the closest an input comes after a scene change):
 
@@ -62,9 +67,21 @@ What the shift does to the session's inputs (the margin is the input's frame min
 | G6 | 23 | 148 (event at 1800) | 147 | -2 up to frame 1650, -1 after |
 | G2 | 52 | 92 (event at 5050) | 91 | -2, -1, then -3 from frame 5200 on |
 
-Every input of the three sessions comes **at least 91 frames** after the last real scene change on both backends, thirty times the largest shift. The scripts' inputs therefore cannot land in a different scene because of a shift of 3 frames; that is the figure the orchestrator needs for D33's criterion (the game's continuous stability). The emulated time at the last frame differs by 31.4 million ticks (7 frames of 4.48 million ticks) in G1, 35.8 million in G6 and 49.3 million in G2 (jit is later in all three): the jit run needs more emulated time for the same game frames, which is why the margins differ by a few frames.
+Every input of the three sessions comes **at least 91 frames** after the last real scene change on both backends, thirty times the largest shift. The scripts' inputs therefore cannot land in a different scene because of a shift of 3 frames; that is the figure the decision on the threshold needed (the game's continuous stability), and the guard of D50. The emulated time at the last frame differs by 31.4 million ticks (7 frames of 4.48 million ticks) in G1, 35.8 million in G6 and 49.3 million in G2 (jit is later in all three): the jit run needs more emulated time for the same game frames, which is why the margins differ by a few frames.
 
 The tables of the three sessions are in [the appendix](#appendix-the-report-tool-on-g1-g6-and-g2).
+
+### 3.1 D50's numbers checked against these tables
+
+D50 takes 4 frames (the measured largest, 3, plus one) and a margin guard of 60 frames (the measured smallest, 91, with room). The report tool was run again, with its new defaults (`--tolerance 4`, `--min-margin 60`), on the saved runs of the first round (the recordings of `build/golden/<S>` against `build/cross-model/rec/<S>/check/run1`, no emulator run):
+
+| Session | Exit status | Real scene changes (reference / candidate) | Largest shift | Smallest margin, reference | Smallest margin, candidate | Input events below 60 |
+|---|---|---|---|---|---|---|
+| G1 | 0 | 2 / 2 | 2 | 264 | 262 | 0 of 8 |
+| G6 | 0 | 3 / 3 | 2 | 148 | 147 | 0 of 23 |
+| G2 | 0 | 8 / 8 | **3** | 92 | **91** | 0 of 52 |
+
+The tool exits 0 on all three, so D50's numbers hold on the measured runs: the largest shift of the three sessions is 3 (one frame under the tolerance), the smallest margin 91 (31 frames over the guard), the same scene sequence on both sides. The two G2 changes that stopped the first round (5084 against 5087 and 5086 against 5089) are now "within". The shift the numbers must absorb is bounded the way the first round saw it: jit needs more emulated time for the same game frames, 31 to 49 million ticks over a whole session, a few frames, with every scripted input far from a scene change. The numbers are for these three sessions; N0-30 calibrates the quest sessions with the same tool.
 
 ## 4. SVC calls
 
@@ -76,9 +93,9 @@ The totals are not gated and differ, as N0-25 measured on G1 to frame 800: the f
 
 The method: `compare_ipc_traces.py` reports only the first difference per thread, so each pair was also aligned thread by thread (per-parent thread names, a request being its session, header, result and descriptors) to list every difference. The commands that differ in count or place were then tied to time one by one; the entries were added to `build/cross-model/ipc_time_dependent.txt` and the check run again, until what remained could not be tied to time.
 
-### 5.1 The entries proposed for `config/native/ipc_time_dependent.txt`
+### 5.1 The 18 entries, now in `config/native/ipc_time_dependent.txt`
 
-Each of the 18 entries was needed (without it the comparison of that command fails in at least one session), and with all of them in place the main thread and every thread but the `fs:` readers of [5.2](#52-what-remains-and-is-not-proposed) match request for request in all three sessions.
+The orchestrator merged the 18 entries below into `config/native/ipc_time_dependent.txt` (it holds exactly these 18 lines, each with its reason); the working copy of the first round stays in `build/cross-model/ipc_time_dependent.txt`. Each of the 18 entries was needed (without it the comparison of that command fails in at least one session), and with all of them in place the main thread and every thread but the `fs:` readers of [5.2](#52-what-remained-and-is-not-an-entry) match request for request in all three sessions.
 
 | Entry | What the pair shows (reference / candidate requests) | Why it depends on time |
 |---|---|---|
@@ -89,9 +106,9 @@ Each of the 18 entries was needed (without it the comparison of that command fai
 
 The entries hide those commands from both traces in every later check, the native runtime's included. They are what the pair shows and no more; the 15 `y2r:u` lines are one fact (the movie's frame count) and could be one entry if the file allowed a service-wide line (it does not).
 
-### 5.2 What remains, and is not proposed
+### 5.2 What remained, and is not an entry
 
-With the 18 entries hidden, `compare_ipc_traces.py` exits 1 on these threads (names are the comparator's `<entry>#<k>`; the entry address is the game's thread start):
+With the 18 entries hidden (as measured in the first round), `compare_ipc_traces.py` exits 1 on these threads (names are the comparator's `<entry>#<k>`; the entry address is the game's thread start):
 
 | Session | Thread | Difference | Commands |
 |---|---|---|---|
@@ -101,7 +118,7 @@ With the 18 entries hidden, `compare_ipc_traces.py` exits 1 on these threads (na
 
 The first row is consistent with the measurement of the `y2r:u` entries: the reads of that thread stop at the scripted skip (the last one 7.7 million ticks after the press on recomp and 7.8 million on jit), and jit played the movie 2.2 frames shorter, so 5 reads of 2048 bytes (10 KiB) were not made. That it is the movie's stream is an inference from those times, not something the traces name. The second row is an order difference inside one thread, with the same set of requests: it is plausibly a race between that reader and the threads that feed it, which the clock decides, but this work package did not trace the cause, and neither its spec nor DECISIONS.md has a rule for it. The third row is not tied to time. **None of the three is an entry**: the trap of N0-28 forbids an `fs:` command in `ipc_time_dependent.txt`, and a line there would hide every `fs:USER/file` Read of both traces anyway (the entry format has no thread or file, only the session and the header).
 
-Options for the orchestrator (decisions, not made here): a prefix rule for a listed reader thread (the comparator's `--prefix` exists, but is one-sided and for every thread); an order-insensitive comparison of one thread's reads of one file (a multiset, with the same counts and CRCs); or accept the `fs:` reads of the movie and the loader as not comparable across models and compare their totals only. The first row, the movie, would also disappear if the sessions' scripts were keyed to the game and not to frame 1350, but they are frame-keyed by design (`docs/native/golden.md`).
+**Resolved by D52** (the first round listed three options: a prefix rule, an order-insensitive comparison, or totals only). D52 took the second: in the cross profile, per thread, the `fs:USER/file` Reads are compared as a multiset of (offset, size, CRC of the data read), order ignored, the smaller multiset contained in the larger with a surplus of at most 16 reads (the first two rows: 5 reads short, and two reads in another order); the Writes are compared in full (the third row, [section 7](#7-the-save-write-of-g2)); and no `fs:` command is an entry. N0-32 builds the Read rule (`compare_ipc_traces.py --fs-reads-multiset [--max-surplus 16]`). The first row, the movie, would also disappear if the sessions' scripts were keyed to the game and not to frame 1350, but they are frame-keyed by design (`docs/native/golden.md`).
 
 ## 6. The DSP capture of G1
 
@@ -113,7 +130,7 @@ Analysis of the two captures (300 DSP frames each, two regions, one source enabl
 - the same buffer id comes at a DSP frame that is later on jit by a **constant**: 22 DSP frames in region 0 for 87 of 87 buffers, 22 in region 1 for 85 of 86 buffers (21 for one);
 - after shifting the candidate by 22 DSP frames, all 14064 source-status blocks that overlap are **equal** (enabled, dirty, sync count, buffer position, current and last buffer id): 0 differ.
 
-So the two backends play the same sound; it begins 22 DSP frames (about 107 ms, 28.8 million ticks) later on jit, and `diff-dsp` keys on the DSP frame counter, which is the model's own time. The emulated time at game frame 1240 is 31.4 million ticks later on jit (24 DSP frames), the same order. This is tied to time and no entry or option of this work package covers a DSP capture: `capfmt.py` belongs to N0-06. Options: align the candidate on the first buffer change before comparing (a rule in `diff_dsp`), or leave `dsp` information-only in the cross profile (D31 gates it).
+So the two backends play the same sound; it begins 22 DSP frames (about 107 ms, 28.8 million ticks) later on jit, and `diff-dsp` keys on the DSP frame counter, which is the model's own time. The emulated time at game frame 1240 is 31.4 million ticks later on jit (24 DSP frames), the same order. This is tied to time and no entry or option of this work package covers a DSP capture: `capfmt.py` belongs to N0-06. **Resolved by D51** (the first round listed two options: align the candidate on the first buffer change, or leave `dsp` information-only): D51 took the first. In the cross profile the capture is compared after aligning the candidate on the first change of the first enabled source's buffer id, the shift a constant number of DSP frames (every later buffer change at that shift within 1) and at most 48 (jit against recomp measured 22), and after it the source status blocks must all be equal; the printed shift is part of the result and the PCM samples are not compared across models. N0-32 builds it (`capfmt.py diff-dsp --align [--max-shift 48]`).
 
 ## 7. The save write of G2
 
@@ -121,20 +138,24 @@ At game frame 4917 (reference) and 4919 (candidate), thread `#13` writes the new
 
 What this means for later work: a native replay of G2 compared in the cross profile will show the same 24 bytes whenever its clock differs from the reference's, so someone has to find out what they are before the `fs:` comparison of G2 is calibrated.
 
-## 8. Conclusion for D33, and what is asked
+**Resolved by D52, in two parts.** The rule: a Write is compared in full, including the CRC of the written bytes, except the byte ranges that are proved to be derived from time, which go into `config/native/fs_write_masks.txt` with their reason; a difference outside a masked range is a failure, and a difference that is not derived from time is a backend bug, not a mask. **N0-31** takes the investigation: what the 24 bytes (offsets 0 to 7 and 280 to 295 of the 81,408-byte Write) are, shown on dumps of both backends' buffers, and the ranges to put in the mask file (or the statement that it is a bug). **N0-32** takes the comparator: `compare_ipc_traces.py --fs-write-mask FILE` zeroes the masked ranges before it compares the CRC of the written bytes, and the cross profile uses it. Until N0-31 is merged the 24 bytes stay unexplained; nothing in this document claims more than the measurement above.
 
-1. **D33 (the 2-frame threshold).** Measured on 13 real scene changes in three sessions: 0 to 2 frames apart for 11 and 3 frames for the two at the end of G2's village. The work package stops as D33 requires. The figures to decide with: the largest shift is 3 frames; every scripted input comes at least 91 frames after the last real scene change on both backends; the shift is jit running later in emulated time (31 to 49 million ticks over the whole session), not scenes in another order (every scene sequence is the same on both sides).
-2. **DSP in the cross profile**: a constant shift of the DSP counter, with equal content; a rule is needed.
-3. **`fs:` differences across models**: the reader thread's prefix and order, the save's 24 bytes. Not time entries; they need a rule or an investigation.
-4. **Entries**: the 18 of [5.1](#51-the-entries-proposed-for-configipc_time_dependenttxt) are tied to time and proposed, to be added once the three points above are settled (a partial list does not make any `check` pass).
+## 8. Conclusion for D50, and what is handed on
 
-What this calibration confirms: the SVC cross-model list holds on 128 to 164 compared calls per session ([section 4](#4-svc-calls)); the state comparison and the checkpoints are sound as soon as D33 is decided; HID matches in all three; the time-dependent IPC commands are few (the GPU queue, the cache flush, the movie, the audio flush) and the ones that remain are all `fs:` reads and a write.
+1. **D50 (4 frames and a margin of 60).** Measured on 13 real scene changes in three sessions: 0 to 2 frames apart for 11 and 3 frames for the two at the end of G2's village; every scripted input at least 91 frames after the last real scene change on both backends; the same scene sequence on both sides; the shift is jit running later in emulated time (31 to 49 million ticks over the whole session), not scenes in another order. With D50's defaults the report tool exits 0 on G1, G2 and G6 ([section 3.1](#31-d50s-numbers-checked-against-these-tables)): the largest shift is 3 (the tolerance is 4) and the smallest margin 91 (the guard is 60). D33's 2 frames stopped the first round; they are replaced for the cross profile by D50, and the `same` profile stays at 0. The threshold is not widened again without a new decision.
+2. **DSP in the cross profile (D51)**: a constant shift of the DSP counter with equal content, aligned and bounded at 48 DSP frames. Built by N0-32.
+3. **`fs:` across models (D52)**: Reads as a per-thread multiset (surplus at most 16), Writes in full with only the proved time-derived ranges masked. N0-31 finds what the 24 bytes of G2's save are and proposes the mask; N0-32 builds the two rules.
+4. **Entries**: the 18 of [5.1](#51-the-18-entries-now-in-confignativeipc_time_dependenttxt) are in `config/native/ipc_time_dependent.txt`. They do not make a `check` pass alone; N0-32's *Done when* is the `exit 0` of the cross profile on the three sessions with them, the rules of 2 and 3, and the mask file.
+
+What this calibration confirms: the SVC cross-model list holds on 128 to 164 compared calls per session ([section 4](#4-svc-calls)); the state comparison and the checkpoints hold with D50's numbers; HID matches in all three; the time-dependent IPC commands are few (the GPU queue, the cache flush, the movie, the audio flush) and the ones that remained were all `fs:` reads and a write, which D52 gives rules and not entries.
 
 ## Appendix: the report tool on G1, G6 and G2
 
+The tool's output on the saved runs of the first round, with its defaults of D50 (tolerance 4, minimum margin 60); the SVC and IPC counts are those of the first round and do not depend on the two limits.
+
 ### G1: jit (candidate) against recomp (reference)
 
-#### Real scene changes (2 on the reference, 2 on the candidate; tolerance 2 frames)
+#### Real scene changes (2 on the reference, 2 on the candidate; tolerance 4 frames)
 
 | # | scene (reference) | scene (candidate) | frame (reference) | frame (candidate) | difference | within |
 |---|---|---|---|---|---|---|
@@ -143,7 +164,7 @@ What this calibration confirms: the SVC cross-model list holds on 128 to 164 com
 
 The largest difference is 2 frames.
 
-#### Input events (8)
+#### Input events (8; minimum margin 60 frames)
 
 | frame | input | last scene change (reference) | last scene change (candidate) | margin (reference) | margin (candidate) | margin difference |
 |---|---|---|---|---|---|---|
@@ -158,6 +179,7 @@ The largest difference is 2 frames.
 
 - smallest margin on the reference: 264 frames (the event at frame 300)
 - smallest margin on the candidate: 262 frames (the event at frame 300)
+- every input event is at least 60 frames after the last real scene change on both sides
 
 #### SVC calls per thread (cross-model names)
 
@@ -214,7 +236,7 @@ The largest difference is 2 frames.
 
 ### G6: jit (candidate) against recomp (reference)
 
-#### Real scene changes (3 on the reference, 3 on the candidate; tolerance 2 frames)
+#### Real scene changes (3 on the reference, 3 on the candidate; tolerance 4 frames)
 
 | # | scene (reference) | scene (candidate) | frame (reference) | frame (candidate) | difference | within |
 |---|---|---|---|---|---|---|
@@ -224,7 +246,7 @@ The largest difference is 2 frames.
 
 The largest difference is 2 frames.
 
-#### Input events (23)
+#### Input events (23; minimum margin 60 frames)
 
 | frame | input | last scene change (reference) | last scene change (candidate) | margin (reference) | margin (candidate) | margin difference |
 |---|---|---|---|---|---|---|
@@ -254,6 +276,7 @@ The largest difference is 2 frames.
 
 - smallest margin on the reference: 148 frames (the event at frame 1800)
 - smallest margin on the candidate: 147 frames (the event at frame 1800)
+- every input event is at least 60 frames after the last real scene change on both sides
 
 #### SVC calls per thread (cross-model names)
 
@@ -314,7 +337,7 @@ The largest difference is 2 frames.
 
 ### G2: jit (candidate) against recomp (reference)
 
-#### Real scene changes (8 on the reference, 8 on the candidate; tolerance 2 frames)
+#### Real scene changes (8 on the reference, 8 on the candidate; tolerance 4 frames)
 
 | # | scene (reference) | scene (candidate) | frame (reference) | frame (candidate) | difference | within |
 |---|---|---|---|---|---|---|
@@ -324,10 +347,12 @@ The largest difference is 2 frames.
 | 4 | 0x00e64d5c | 0x00e64d5c | 4955 | 4956 | +1 | yes |
 | 5 | 0x00e6c100 | 0x00e6c100 | 4957 | 4958 | +1 | yes |
 | 6 | 0x00e6c170 | 0x00e6c170 | 4958 | 4959 | +1 | yes |
-| 7 | 0x00e6c100 | 0x00e6c100 | 5084 | 5087 | +3 | no |
-| 8 | 0x00e655c8 | 0x00e655c8 | 5086 | 5089 | +3 | no |
+| 7 | 0x00e6c100 | 0x00e6c100 | 5084 | 5087 | +3 | yes |
+| 8 | 0x00e655c8 | 0x00e655c8 | 5086 | 5089 | +3 | yes |
 
-#### Input events (52)
+The largest difference is 3 frames.
+
+#### Input events (52; minimum margin 60 frames)
 
 | frame | input | last scene change (reference) | last scene change (candidate) | margin (reference) | margin (candidate) | margin difference |
 |---|---|---|---|---|---|---|
@@ -386,6 +411,7 @@ The largest difference is 2 frames.
 
 - smallest margin on the reference: 92 frames (the event at frame 5050)
 - smallest margin on the candidate: 91 frames (the event at frame 5050)
+- every input event is at least 60 frames after the last real scene change on both sides
 
 #### SVC calls per thread (cross-model names)
 

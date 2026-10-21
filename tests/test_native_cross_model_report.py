@@ -87,7 +87,7 @@ def run_tool(*args: str) -> subprocess.CompletedProcess:
 THREADS = [(1, 0, "00100000"), (2, 1, "0010D8D4"), (3, 1, "0010D8D4"), (4, 2, "0010D8D4")]
 
 
-# â”€â”€ scene changes â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── scene changes ────────────────────────────────────────────────────────────
 
 def test_a_scene_change_shifted_by_one_frame(tmp_path: Path) -> None:
     ref = write_run(tmp_path / "ref", state_trace([(2, SCENE_A), (36, SCENE_B)], 60, "recomp"))
@@ -130,7 +130,7 @@ def test_another_scene_or_a_missing_change_is_a_problem() -> None:
     assert lines[-1].endswith("| no: only the reference has it |")
 
 
-# â”€â”€ input events â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── input events ────────────────────────────────────────────────────────────
 
 SESSION = """\
 # name: GX
@@ -173,12 +173,13 @@ def test_an_event_on_the_frame_of_a_change_has_margin_zero() -> None:
     assert rows == ["| 36 | A | 36 | - | 0 | - | - |"]
 
 
-# â”€â”€ per-thread SVC counts â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── per-thread SVC counts ────────────────────────────────────────────────────────────
 
 def test_per_thread_svc_counts_use_cross_model_names(tmp_path: Path) -> None:
     ref = write_run(tmp_path / "ref", state_trace([(2, SCENE_A)], 5),
                     svc_trace(THREADS, {(1, "28"): 10, (1, "0A"): 3, (2, "32"): 4, (3, "0A"): 2, (4, "22"): 5}, "recomp"))
-    # the candidate numbers its threads in another order (3 before 2): the names follow the order of each parent's\n    # own creations and its entries, never the numbers
+    # the candidate numbers its threads in another order (3 before 2): the names follow the order of each parent's
+    # own creations and its entries, never the numbers
     swapped = [(1, 0, "00100000"), (3, 1, "0010D8D4"), (2, 1, "0010D8D4"), (4, 3, "0010D8D4")]
     cand = write_run(tmp_path / "cand", state_trace([(2, SCENE_A)], 5),
                      svc_trace(swapped, {(1, "28"): 7, (1, "0A"): 3, (3, "32"): 4, (2, "0A"): 5, (4, "22"): 5}))
@@ -203,7 +204,7 @@ def test_svc_counts_of_a_trace_without_calls_are_refused(tmp_path: Path) -> None
         cmr.count_svc(tmp_path / "missing.txt")
 
 
-# â”€â”€ IPC counts â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── IPC counts ────────────────────────────────────────────────────────────
 
 def test_ipc_counts_name_the_commands_whose_counts_differ(tmp_path: Path) -> None:
     ref = write_run(tmp_path / "ref", state_trace([(2, SCENE_A)], 5), ipc=ipc_trace(
@@ -234,11 +235,22 @@ def test_an_ipc_trace_without_its_header_is_refused(tmp_path: Path) -> None:
         cmr.count_ipc(path)
 
 
-# â”€â”€ the command line â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── the command line ────────────────────────────────────────────────────────────
 
-def _runs(tmp_path: Path, shift: int) -> tuple[Path, Path, Path]:
+# Four inputs: the first before the first real change (it has no margin), the others 74, 164 and 264 frames after
+# the change at frame 36 of the reference, so all at least D50's 60 frames (with room for a shift of up to 14).
+SESSION_FAR = """\
+# name: GX
+f10:A:f6,f110:A:f6
+f200:TOUCH:45:115:f6
+f300:CIRCLE:0.0:1.0:f60
+"""
+
+
+def _runs(tmp_path: Path, shift: int, session_text: str = SESSION_FAR) -> tuple[Path, Path, Path]:
+    tmp_path.mkdir(parents=True, exist_ok=True)
     session = tmp_path / "GX.txt"
-    session.write_text(SESSION, encoding="utf-8")
+    session.write_text(session_text, encoding="utf-8")
     ref = write_run(tmp_path / "ref", state_trace([(2, SCENE_A), (36, SCENE_B)], 80, "recomp"),
                     svc_trace(THREADS, {(1, "28"): 10, (2, "0A"): 3}, "recomp"),
                     ipc_trace(THREADS, {(1, "gsp::Gpu", 0x000C0000): 4}, "recomp"))
@@ -259,20 +271,112 @@ def test_the_command_line_prints_the_report(tmp_path: Path) -> None:
     assert out.startswith("## GX: jit (candidate) against recomp (reference)\n")
     assert f"| 1 | 0x{SCENE_B:08x} | 0x{SCENE_B:08x} | 36 | 37 | +1 | yes |" in out
     assert "The largest difference is 1 frame." in out
-    assert "### Input events (4)" in out
+    assert "### Input events (4; minimum margin 60 frames)" in out
     assert "| main | 10 | 6 | -4 | 0x28 GetSystemTick 10/6 |" in out
     assert "| gsp::Gpu | 0x000c0000 | 4 | 5 | +1 | main 4/5 |" in out
 
 
-def test_exit_status_1_when_a_change_is_beyond_the_tolerance_and_the_report_is_still_written(tmp_path: Path) -> None:
+def _cli(session: Path, ref: Path, cand: Path, *extra: str) -> subprocess.CompletedProcess:
+    return run_tool("--session", str(session), "--reference", str(ref), "--candidate", str(cand), *extra)
+
+
+def test_the_defaults_are_d50s_numbers() -> None:
+    assert cmr.DEFAULT_TOLERANCE == 4
+    assert cmr.DEFAULT_MIN_MARGIN == 60
+    help_text = run_tool("--help").stdout
+    assert "default 4" in help_text and "default 60" in help_text
+
+
+def test_a_shift_of_4_frames_passes_and_5_fails_by_default(tmp_path: Path) -> None:
+    session, ref, cand = _runs(tmp_path, 4)
+    done = _cli(session, ref, cand)
+    assert done.returncode == 0, done.stderr
+    assert "| 36 | 40 | +4 | yes |" in done.stdout
+    assert "The largest difference is 4 frames." in done.stdout
+    session, ref, cand = _runs(tmp_path / "five", 5)
+    done = _cli(session, ref, cand)
+    # the report is still written; the problem is named on stderr
+    assert done.returncode == 1
+    assert "| 36 | 41 | +5 | no |" in done.stdout
+    assert "real scene change #1: 5 frames apart, more than 4" in done.stderr
+    # the threshold is the caller's to give, never silently widened
+    assert _cli(session, ref, cand, "--tolerance", "5").returncode == 0
+    assert _cli(session, ref, cand, "--tolerance", "4").returncode == 1
+
+
+def test_the_unit_check_of_the_tolerance_is_4_frames() -> None:
+    ref = [cmr.Change(SCENE_B, 36), cmr.Change(SCENE_C, 100)]
+    assert cmr.scene_table(ref, [cmr.Change(SCENE_B, 40), cmr.Change(SCENE_C, 104)], cmr.DEFAULT_TOLERANCE)[1] == []
+    _, problems = cmr.scene_table(ref, [cmr.Change(SCENE_B, 40), cmr.Change(SCENE_C, 105)], cmr.DEFAULT_TOLERANCE)
+    assert problems == ["real scene change #2: 5 frames apart, more than 4"]
+
+
+def test_a_margin_of_60_frames_passes_and_59_fails() -> None:
+    ref, cand = [cmr.Change(SCENE_B, 36)], [cmr.Change(SCENE_B, 36)]
+    assert cmr.margin_problems([cmr.Event(96, "A")], ref, cand, cmr.DEFAULT_MIN_MARGIN) == []
+    problems = cmr.margin_problems([cmr.Event(95, "TOUCH")], ref, cand, cmr.DEFAULT_MIN_MARGIN)
+    # the event is named, with its frame, its kind and the side, on each side that is too close
+    assert problems == ["input event at frame 95 (TOUCH): margin 59 frames on the reference, less than 60",
+                        "input event at frame 95 (TOUCH): margin 59 frames on the candidate, less than 60"]
+    # an event before the first real scene change has no margin; one on the frame of a change has margin 0
+    assert cmr.margin_problems([cmr.Event(10, "A")], ref, cand, 60) == []
+    assert len(cmr.margin_problems([cmr.Event(36, "A")], ref, cand, 60)) == 2
+    # the margin of each side is its own: a change that comes later on the candidate leaves it less
+    problems = cmr.margin_problems([cmr.Event(97, "A")], ref, [cmr.Change(SCENE_B, 38)], 60)
+    assert problems == ["input event at frame 97 (A): margin 59 frames on the candidate, less than 60"]
+    # the last real change before the event counts, not the first
+    later = [cmr.Change(SCENE_B, 36), cmr.Change(SCENE_C, 150)]
+    assert cmr.margin_problems([cmr.Event(200, "A")], later, later, 60) == [
+        "input event at frame 200 (A): margin 50 frames on the reference, less than 60",
+        "input event at frame 200 (A): margin 50 frames on the candidate, less than 60"]
+    # a smaller or larger minimum is the caller's
+    assert cmr.margin_problems([cmr.Event(95, "A")], ref, cand, 59) == []
+
+
+def test_the_command_line_checks_the_margin_of_each_side(tmp_path: Path) -> None:
+    # ref change at 36, candidate change at 38 (a shift of 2): the margins of an input at frame 98 are 62 and 60
+    session, ref, cand = _runs(tmp_path / "pass", 2, "f98:A:f6\n")
+    done = _cli(session, ref, cand)
+    assert done.returncode == 0, done.stderr
+    assert "| 98 | A | 36 | 38 | 62 | 60 | -2 |" in done.stdout
+    # at frame 97 the margins are 61 and 59: the candidate's is too small, the event is named, the report is written
+    session, ref, cand = _runs(tmp_path / "fail", 2, "f97:A:f6\n")
+    done = _cli(session, ref, cand)
+    assert done.returncode == 1
+    assert "| 97 | A | 36 | 38 | 61 | 59 | -2 |" in done.stdout
+    assert "input event at frame 97 (A): margin 59 frames on the candidate, less than 60" in done.stderr
+    assert "margin 61" not in done.stderr
+    # the minimum is the caller's to give
+    assert _cli(session, ref, cand, "--min-margin", "59").returncode == 0
+    assert _cli(session, ref, cand, "--min-margin", "60").returncode == 1
+    # both limits at once: a shift of 5 and a margin of 59 give both problems
+    session, ref, cand = _runs(tmp_path / "both", 5, "f95:A:f6\n")
+    done = _cli(session, ref, cand)
+    assert done.returncode == 1
+    assert "5 frames apart, more than 4" in done.stderr and "input event at frame 95 (A)" in done.stderr
+
+
+def test_the_report_states_the_margin_verdict(tmp_path: Path) -> None:
+    session, ref, cand = _runs(tmp_path / "ok", 1)
+    assert "every input event is at least 60 frames after the last real scene change on both sides" in _cli(
+        session, ref, cand).stdout
+    session, ref, cand = _runs(tmp_path / "bad", 1, "f90:A:f6,f300:A:f6\n")
+    out = _cli(session, ref, cand).stdout
+    assert "1 input event is less than 60 frames after the last real scene change on one side or both" in out
+
+
+def test_a_negative_minimum_margin_is_bad_input(tmp_path: Path) -> None:
+    session, ref, cand = _runs(tmp_path, 0)
+    assert _cli(session, ref, cand, "--min-margin", "-1").returncode == 2
+
+
+def test_the_old_scene_tolerance_of_2_is_still_available(tmp_path: Path) -> None:
     session, ref, cand = _runs(tmp_path, 3)
-    done = run_tool("--session", str(session), "--reference", str(ref), "--candidate", str(cand))
+    assert _cli(session, ref, cand).returncode == 0
+    done = _cli(session, ref, cand, "--tolerance", "2")
     assert done.returncode == 1
     assert "| 36 | 39 | +3 | no |" in done.stdout
     assert "3 frames apart, more than 2" in done.stderr
-    # D33: the threshold is the caller's to give, never silently widened
-    wide = run_tool("--session", str(session), "--reference", str(ref), "--candidate", str(cand), "--tolerance", "3")
-    assert wide.returncode == 0
 
 
 def test_the_report_leaves_out_what_it_is_told_to(tmp_path: Path) -> None:

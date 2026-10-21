@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Report how two runs of one session on two timing models compare (N0-28, D31, D33).
+"""Report how two runs of one session on two timing models compare (N0-28, D31, D50).
 
 `jit` against `recomp`, and later the reference against the native runtime, run the same input script
 on clocks that differ.  What a different clock may change is calibrated with this report (and with
@@ -24,11 +24,14 @@ needs nothing but the standard library:
     does that.
 
 usage: cross_model_report.py --session FILE --reference DIR --candidate DIR [--observable FILE] [--tolerance N]
-                             [--no-svc] [--no-ipc]
-exit status: 0 the report was written and every real scene change falls on the same scenes within
---tolerance frames (default 2, D33); 1 a real scene change is more than --tolerance frames apart, goes to
-another scene, or one side has more of them (the report is still written: it is the table D33 asks for);
-2 bad input (a missing file, a trace that cannot be read).
+                             [--min-margin N] [--no-svc] [--no-ipc]
+exit status: 0 the report was written, every real scene change falls on the same scene within --tolerance
+frames (default 4, D50) and every input event is at least --min-margin frames (default 60, D50) after the
+last real scene change on both sides; 1 a real scene change is more than --tolerance frames apart, goes to
+another scene or exists on one side only, or an input event that follows a real scene change has a smaller
+margin on either side (each problem is named on stderr, the event by its frame and kind; the report is
+still written); 2 bad input (a missing file, a trace that cannot be read, a negative number).  An input
+event before the first real scene change has no margin and is not checked.
 """
 from __future__ import annotations
 
@@ -48,7 +51,8 @@ import state_diff  # noqa: E402
 import tracefmt  # noqa: E402
 
 DEFAULT_OBSERVABLE = HERE.parents[1] / "config" / "native" / "observable.txt"
-DEFAULT_TOLERANCE = 2
+DEFAULT_TOLERANCE = 4       # frames a real scene change may move by across timing models (D50; D33 said 2)
+DEFAULT_MIN_MARGIN = 60     # frames an input must come after the last real scene change on both sides (D50)
 
 # The SVC numbers of the 3DS (facts of its interface), for the names printed beside a number.
 SVC_NAMES = {
@@ -190,6 +194,30 @@ def event_table(events: Sequence[Event], ref: Sequence[Change], cand: Sequence[C
     return lines
 
 
+def margin_problems(events: Sequence[Event], ref: Sequence[Change], cand: Sequence[Change],
+                    min_margin: int) -> list[str]:
+    """One problem per event and side whose margin is below `min_margin` (D50); an event with no real scene
+    change before it on a side has no margin there and is not checked on that side."""
+    problems: list[str] = []
+    for event in events:
+        for side, changes in (("reference", ref), ("candidate", cand)):
+            change = last_change_at_or_before(changes, event.frame)
+            if change is not None and event.frame - change.frame < min_margin:
+                problems.append(f"input event at frame {event.frame} ({event.label}): margin "
+                                f"{event.frame - change.frame} frames on the {side}, less than {min_margin}")
+    return problems
+
+
+def margin_verdict(events: Sequence[Event], ref: Sequence[Change], cand: Sequence[Change], min_margin: int) -> str:
+    bad = [e for e in events if margin_problems([e], ref, cand, min_margin)]
+    if not bad:
+        return (f"- every input event is at least {min_margin} frames after the last real scene change on both "
+                f"sides")
+    n = len(bad)
+    return (f"- {n} input event{' is' if n == 1 else 's are'} less than {min_margin} frames after the last real "
+            f"scene change on one side or both")
+
+
 def margin_summary(events: Sequence[Event], ref: Sequence[Change], cand: Sequence[Change]) -> list[str]:
     """The smallest margin on each side among the events that follow a real scene change."""
     out: list[str] = []
@@ -318,8 +346,10 @@ def ipc_table(ref: Counter, cand: Counter) -> list[str]:
 # ── the report ──────────────────────────────────────────────────────────────────────
 
 def build_report(session_text: str, ref_dir: Path, cand_dir: Path, session_name: str = "",
-                 tolerance: int = DEFAULT_TOLERANCE, svc: bool = True, ipc: bool = True) -> tuple[str, list[str]]:
-    """(markdown, problems): `problems` are the real scene changes that are not within the tolerance."""
+                 tolerance: int = DEFAULT_TOLERANCE, svc: bool = True, ipc: bool = True,
+                 min_margin: int = DEFAULT_MIN_MARGIN) -> tuple[str, list[str]]:
+    """(markdown, problems): `problems` are the real scene changes that are not within the tolerance and the
+    input events whose margin on either side is below `min_margin`."""
     ref_state, cand_state = ref_dir / "state.txt", cand_dir / "state.txt"
     ref_changes, cand_changes = read_scene_changes(ref_state), read_scene_changes(cand_state)
     events = parse_events(session_text)
@@ -332,9 +362,11 @@ def build_report(session_text: str, ref_dir: Path, cand_dir: Path, session_name:
     if ref_changes and cand_changes and not problems:
         worst = max(abs(c.frame - r.frame) for r, c in zip(ref_changes, cand_changes))
         out += ["", f"The largest difference is {worst} frame{'' if worst == 1 else 's'}."]
-    out += ["", f"### Input events ({len(events)})", ""]
+    out += ["", f"### Input events ({len(events)}; minimum margin {min_margin} frames)", ""]
     out += event_table(events, ref_changes, cand_changes)
     out += [""] + margin_summary(events, ref_changes, cand_changes)
+    out += [margin_verdict(events, ref_changes, cand_changes, min_margin)]
+    problems += margin_problems(events, ref_changes, cand_changes, min_margin)
     if svc:
         ref_svc, cand_svc = count_svc(ref_dir / "svc.txt"), count_svc(cand_dir / "svc.txt")
         out += ["", "### SVC calls per thread (cross-model names)", ""] + svc_table(ref_svc, cand_svc)
@@ -352,12 +384,17 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     ap.add_argument("--observable", default=str(DEFAULT_OBSERVABLE), metavar="FILE",
                     help="the observable file; it must define `scene` (default config/native/observable.txt)")
     ap.add_argument("--tolerance", type=int, default=DEFAULT_TOLERANCE, metavar="N",
-                    help=f"frames a real scene change may move by (default {DEFAULT_TOLERANCE}, D33)")
+                    help=f"frames a real scene change may move by (default {DEFAULT_TOLERANCE}, D50)")
+    ap.add_argument("--min-margin", type=int, default=DEFAULT_MIN_MARGIN, metavar="N",
+                    help=f"the smallest margin, in frames, of every input event after a real scene change on both "
+                         f"sides (default {DEFAULT_MIN_MARGIN}, D50)")
     ap.add_argument("--no-svc", action="store_true", help="leave out the SVC counts (a large trace)")
     ap.add_argument("--no-ipc", action="store_true", help="leave out the IPC counts")
     args = ap.parse_args(list(argv) if argv is not None else None)
     if args.tolerance < 0:
         ap.error("--tolerance must not be negative")
+    if args.min_margin < 0:
+        ap.error("--min-margin must not be negative")
     session = Path(args.session)
     try:
         try:
@@ -373,7 +410,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         except OSError as error:
             raise ReportError(f"cannot read {session}: {error.strerror}") from None
         report, problems = build_report(text, Path(args.reference), Path(args.candidate), session.stem,
-                                        args.tolerance, not args.no_svc, not args.no_ipc)
+                                        args.tolerance, not args.no_svc, not args.no_ipc, args.min_margin)
     except ReportError as error:
         print(f"cross_model_report: {error}", file=sys.stderr)
         return 2
