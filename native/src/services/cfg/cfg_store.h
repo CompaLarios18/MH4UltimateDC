@@ -24,6 +24,8 @@
 //    says they are placeholders that its formatting replaces with a random value).
 //  - Formatting adds the blocks in ascending block id order (Azahar iterates an unordered_map). Readers
 //    find a block by its id, so the files are interchangeable; the data offsets differ.
+//  - Create (a block added to the file) refuses a block whose data would pass the end of the 0x8000-byte
+//    file; Azahar writes it without that check.
 //  - The file is replaced by writing a temporary file next to it and renaming it.
 #pragma once
 

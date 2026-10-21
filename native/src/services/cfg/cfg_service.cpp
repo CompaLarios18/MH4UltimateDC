@@ -27,6 +27,18 @@
 //    file is only written by SetUUIDClockSequence, never when it is read or missing.
 //  - A GetConfig for a size larger than the config file is answered with the invalid size result without
 //    allocating (Azahar allocates `size` bytes first).
+//  - GetConfig (0x0001) with a size above 0x8000 answers the invalid size result before it looks for the
+//    block, so before NotFound/NotAuthorized (Azahar allocates the buffer and then looks).
+//  - SetSystemConfig (0x0402) answers the invalid size result for a size beyond the buffer it was given
+//    or above 0x8000 (Azahar copies without checking).
+//  - GetCountryCodeString writes 0 in word 2 of its error reply, where Azahar leaves the word unwritten.
+//  - `--region auto` takes the region lockout from `<game folder>/icon.bin` (or
+//    `<game folder>/exefs/icon.bin`): the SMDH of the ExeFS 'icon' file, which Azahar's loader reads
+//    from the game itself. No tool of this repository writes that file yet (prepare_game.py writes
+//    exheader.bin, code.bin, romfs.bin, update_romfs.bin and info.txt), so with an unmodified game folder
+//    `auto` answers JPN (0) and leaves the language unadjusted. For a dump of another region GetRegion,
+//    IsCoppacsSupported and the language block then differ from Azahar's until the icon is provided
+//    (or `--region` is given). The source of the icon is a decision for the orchestrator.
 //  - Azahar's GetSystemModel/GetModelNintendo2DS/IsCoppacsSupported read a block that fails with the
 //    error result and then push the zero-filled value; so do these.
 #include <cstring>
@@ -457,6 +469,8 @@ MH4N_OPTION("runner", "--new-console-id", "",
             "give the console a new random unique ID before the game starts (saved in the user folder's config; "
             "a local wireless room lets in one player per console ID)");
 MH4N_OPTION("runner", "--region", "REGION",
+            "the console's region: auto (the game's region lockout, default) or 0 JPN, 1 USA, 2 EUR, 3 AUS, 4 CHN, 5 KOR, 6 TWN");
+MH4N_OPTION("ipc-replay", "--region", "REGION",
             "the console's region: auto (the game's region lockout, default) or 0 JPN, 1 USA, 2 EUR, 3 AUS, 4 CHN, 5 KOR, 6 TWN");
 
 void StartIdentity(Runtime& rt) {

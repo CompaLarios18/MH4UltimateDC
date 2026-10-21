@@ -63,6 +63,7 @@ public:
         if (kind == Kind::System) {
             Register(0x040A, "CheckNew3DS", &Ptm::CheckNew3DS);
             Register(0x080F, "GetSoftwareClosedFlag", &Ptm::GetSoftwareClosedFlag);
+            Register(0x0811, "GetShellState", &Ptm::GetShellState);
         }
     }
 

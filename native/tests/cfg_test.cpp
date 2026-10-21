@@ -871,7 +871,7 @@ TEST_CASE("cfg:s and cfg:i save the config; cfg:u cannot reach their commands") 
         ExitProcess(*f.runtime);
     });
     CHECK(status == 0);
-    CHECK(as_user[0] == 0x00FF0040 - 0x00FF0040 + ipc::MakeHeader(0x0401, 1, 0));
+    CHECK(as_user[0] == ipc::MakeHeader(0x0401, 1, 0));
     CHECK(as_user[1] == kResultSuccess);
     CHECK(user_rc == 0xD90103EA);
     CHECK(system_rc == kResultSuccess);
@@ -997,8 +997,8 @@ TEST_CASE("ptm:u answers Azahar's defaults (conf_services)") {
     Fixture f;
     TempDir dir;
     std::vector<u32> level, charging, adapter, shell, pedometer, steps_total, unknown, history, new3ds;
-    Result history_rc = 0;
-    std::vector<u8> history_bytes;
+    std::vector<u32> wrong_history;
+    std::vector<u8> history_bytes, wrong_bytes;
     const int status = BootWith(f, dir, {"--ms", "100"}, [&] {
         Guest g(*f.runtime);
         const Handle ptm = g.Service("ptm:u");
@@ -1015,9 +1015,9 @@ TEST_CASE("ptm:u answers Azahar's defaults (conf_services)") {
                                   g.Scratch(0x100)}, 4);
         history_bytes = g.GetBytes(g.Scratch(0x100), 8);
         g.PutBytes(g.Scratch(0x100), std::vector<u8>(8, 0xEE));
-        const std::vector<u32> wrong = g.Request(ptm, {ipc::MakeHeader(0x000B, 3, 2), 5, 0, 0,
-                                                       ipc::MappedBufferDesc(8, ipc::W), g.Scratch(0x100)}, 4);
-        history_rc = wrong[1];
+        wrong_history = g.Request(ptm, {ipc::MakeHeader(0x000B, 3, 2), 5, 0, 0,
+                                        ipc::MappedBufferDesc(8, ipc::W), g.Scratch(0x100)}, 4);
+        wrong_bytes = g.GetBytes(g.Scratch(0x100), 8);
         new3ds = g.Simple(ptm, ipc::MakeHeader(0x040A, 0, 0), 3);
         ExitProcess(*f.runtime);
     });
@@ -1040,20 +1040,29 @@ TEST_CASE("ptm:u answers Azahar's defaults (conf_services)") {
     CHECK(history[0] == ipc::MakeHeader(0x000B, 1, 2));
     CHECK(history[1] == kResultSuccess);
     CHECK(history_bytes == std::vector<u8>(8, 0));
-    CHECK(history_rc != kResultSuccess);  // 5 hours do not fit 8 bytes
+    // 5 hours do not fit 8 bytes: the invalid size result, the buffer handed back and not written
+    REQUIRE(wrong_history.size() == 4);
+    CHECK(wrong_history[0] == ipc::MakeHeader(0x000B, 1, 2));
+    CHECK(wrong_history[1] == MakeResult(1004, 53, 8, 27));
+    CHECK(wrong_history[2] == ipc::MappedBufferDesc(8, ipc::W));
+    CHECK(wrong_bytes == std::vector<u8>(8, 0xEE));
     CHECK(new3ds[0] == 0x040A0040);       // ptm:u has no 0x040A in Azahar: the answer to an unknown command
 }
 
 TEST_CASE("ptm:sysm answers CheckNew3DS as Old 3DS") {
     Fixture f;
     TempDir dir;
-    std::vector<u32> new3ds, closed;
+    std::vector<u32> new3ds, closed, shell_sysm, shell_s;
     const int status = BootWith(f, dir, {"--ms", "100"}, [&] {
         Guest g(*f.runtime);
         const Handle sysm = g.Service("ptm:sysm");
         REQUIRE(sysm != 0);
         new3ds = g.Simple(sysm, ipc::MakeHeader(0x040A, 0, 0), 3);
         closed = g.Simple(sysm, ipc::MakeHeader(0x080F, 0, 0), 3);
+        shell_sysm = g.Simple(sysm, ipc::MakeHeader(0x0811, 0, 0), 3);
+        const Handle ptm_s = g.Service("ptm:s");
+        REQUIRE(ptm_s != 0);
+        shell_s = g.Simple(ptm_s, ipc::MakeHeader(0x0811, 0, 0), 3);
         ExitProcess(*f.runtime);
     });
     CHECK(status == 0);
@@ -1061,6 +1070,11 @@ TEST_CASE("ptm:sysm answers CheckNew3DS as Old 3DS") {
     CHECK(new3ds[1] == kResultSuccess);
     CHECK(new3ds[2] == 0);
     CHECK(closed[2] == 0);
+    for (const std::vector<u32>* shell : {&shell_sysm, &shell_s}) {  // GetShellState: the shell is open
+        CHECK((*shell)[0] == ipc::MakeHeader(0x0811, 2, 0));
+        CHECK((*shell)[1] == kResultSuccess);
+        CHECK((*shell)[2] == 1);
+    }
 }
 
 // ---- ndm -----------------------------------------------------------------------------------------------------------
@@ -1193,7 +1207,8 @@ TEST_CASE("ac:u reports the internet, wifi slot 1, and connects at once (conf_se
 TEST_CASE("ac:u is shared by its sessions, and CreateDefaultConfig gives 0x200 zero bytes") {
     Fixture f;
     TempDir dir;
-    std::vector<u32> first_status, after_connect_in_second;
+    std::vector<u32> first_status, after_connect_in_second, create;
+    std::vector<u8> create_bytes;
     const int status = BootWith(f, dir, {"--ms", "100"}, [&] {
         Guest g(*f.runtime);
         const Handle one = g.Service("ac:u");
@@ -1203,10 +1218,81 @@ TEST_CASE("ac:u is shared by its sessions, and CreateDefaultConfig gives 0x200 z
         g.Request(one, {ipc::MakeHeader(0x0004, 0, 6), ipc::CallingPidDesc(), 0, ipc::CopyHandleDesc(1), event,
                         ipc::StaticBufferDesc(0x200, 0), g.Scratch(0x300)}, 2);
         after_connect_in_second = g.Request(two, {ipc::MakeHeader(0x003E, 1, 2), 0, ipc::MoveHandleDesc(1), 0}, 3);
+        // CreateDefaultConfig: the reply's static buffer 0 is received at Scratch(0x500)
+        g.PutWords(g.Cmd() + 4 * static_cast<u32>(ipc::StaticBufferDescriptorWord(0)),
+                   {ipc::StaticBufferDesc(0x200, 0), g.Scratch(0x500)});
+        g.PutBytes(g.Scratch(0x500), std::vector<u8>(0x200, 0xEE));
+        create = g.Request(one, {ipc::MakeHeader(0x0001, 0, 0)}, 4);
+        create_bytes = g.GetBytes(g.Scratch(0x500), 0x200);
         ExitProcess(*f.runtime);
     });
     CHECK(status == 0);
     CHECK(after_connect_in_second[2] == 1);
+    REQUIRE(create.size() == 4);
+    CHECK(create[0] == ipc::MakeHeader(0x0001, 1, 2));
+    CHECK(create[1] == kResultSuccess);
+    CHECK(create[2] == ipc::StaticBufferDesc(0x200, 0));
+    CHECK(create_bytes == std::vector<u8>(0x200, 0));
+}
+
+TEST_CASE("ac:u SetRequestEulaVersion returns the config, GetNZoneBeaconNotFoundEvent signals, and ac:i shares the state") {
+    Fixture f;
+    TempDir dir;
+    std::vector<u32> eula, beacon, beacon_without_event, internal_connected, unknown_internal;
+    std::vector<u8> eula_bytes;
+    Result beacon_wait = 0;
+    const int status = BootWith(f, dir, {"--ms", "100"}, [&] {
+        Guest g(*f.runtime);
+        const Handle user = g.Service("ac:u");
+        const Handle internal = g.Service("ac:i");
+        REQUIRE(user != 0);
+        REQUIRE(internal != 0);
+        // SetRequestEulaVersion (major, minor, config buffer): the config comes back in static buffer 0
+        std::vector<u8> config(0x200);
+        for (std::size_t i = 0; i < config.size(); ++i) {
+            config[i] = static_cast<u8>(i * 7 + 1);
+        }
+        g.PutBytes(g.Scratch(0x300), config);
+        g.PutWords(g.Cmd() + 4 * static_cast<u32>(ipc::StaticBufferDescriptorWord(0)),
+                   {ipc::StaticBufferDesc(0x200, 0), g.Scratch(0x500)});
+        g.PutBytes(g.Scratch(0x500), std::vector<u8>(0x200, 0));
+        eula = g.Request(user, {ipc::MakeHeader(0x002D, 2, 2), 3, 4, ipc::StaticBufferDesc(0x200, 0),
+                                g.Scratch(0x300)}, 4);
+        eula_bytes = g.GetBytes(g.Scratch(0x500), 0x200);
+        // GetNZoneBeaconNotFoundEvent (pid, event): the event is signalled
+        const Handle event = g.NewEvent();
+        beacon = g.Request(user, {ipc::MakeHeader(0x002F, 0, 4), ipc::CallingPidDesc(), 0, ipc::CopyHandleDesc(1),
+                                  event}, 2);
+        beacon_wait = g.Wait(event, 0);
+        // without an event handle the command still answers success (the guard in the service)
+        beacon_without_event = g.Request(user, {ipc::MakeHeader(0x002F, 0, 2), ipc::CallingPidDesc(), 0}, 2);
+        // ConnectAsync through ac:u is seen by ac:i (one shared state)
+        const Handle connect_event = g.NewEvent();
+        g.PutBytes(g.Scratch(0x300), std::vector<u8>(0x200, 0));
+        g.Request(user, {ipc::MakeHeader(0x0004, 0, 6), ipc::CallingPidDesc(), 0, ipc::CopyHandleDesc(1),
+                         connect_event, ipc::StaticBufferDesc(0x200, 0), g.Scratch(0x300)}, 2);
+        internal_connected = g.Request(internal, {ipc::MakeHeader(0x003E, 1, 2), 0, ipc::MoveHandleDesc(1), 0}, 3);
+        unknown_internal = g.Simple(internal, 0x00FF0000, 3);
+        ExitProcess(*f.runtime);
+    });
+    CHECK(status == 0);
+    REQUIRE(eula.size() == 4);
+    CHECK(eula[0] == ipc::MakeHeader(0x002D, 1, 2));
+    CHECK(eula[1] == kResultSuccess);
+    CHECK(eula[2] == ipc::StaticBufferDesc(0x200, 0));
+    std::vector<u8> expected(0x200);
+    for (std::size_t i = 0; i < expected.size(); ++i) {
+        expected[i] = static_cast<u8>(i * 7 + 1);
+    }
+    CHECK(eula_bytes == expected);
+    CHECK(beacon[0] == ipc::MakeHeader(0x002F, 1, 0));
+    CHECK(beacon[1] == kResultSuccess);
+    CHECK(beacon_wait == kResultSuccess);
+    CHECK(beacon_without_event[1] == kResultSuccess);
+    CHECK(internal_connected[1] == kResultSuccess);
+    CHECK(internal_connected[2] == 1);
+    CHECK(unknown_internal[0] == 0x00FF0040);
+    CHECK(unknown_internal[1] == kResultSuccess);
 }
 
 #endif  // recomp.h
