@@ -46,11 +46,12 @@
 //  - GetCountryCodeString writes 0 in word 2 of its error reply, where Azahar leaves the word unwritten.
 //  - `--region auto` takes the region lockout from `<game folder>/icon.bin` (or
 //    `<game folder>/exefs/icon.bin`): the SMDH of the ExeFS 'icon' file, which Azahar's loader reads
-//    from the game itself. No tool of this repository writes that file yet (prepare_game.py writes
-//    exheader.bin, code.bin, romfs.bin, update_romfs.bin and info.txt), so with an unmodified game folder
-//    `auto` answers JPN (0) and leaves the language unadjusted. For a dump of another region GetRegion,
-//    IsCoppacsSupported and the language block then differ from Azahar's until the icon is provided
-//    (or `--region` is given). The source of the icon is a decision for the orchestrator.
+//    from the game itself. prepare_game.py writes icon.bin from the base game's ExeFS icon (N1-15c, D38;
+//    Azahar reads the update's icon, and the lockout is the same for a real game), so a prepared game
+//    folder answers the game's own region. With a game folder that has none (an ELF run, a folder made
+//    before N1-15c) `auto` answers JPN (0) with one Warning and leaves the language unadjusted, and
+//    GetRegion, IsCoppacsSupported and the language block then differ from Azahar's for a dump of another
+//    region until `--region` is given.
 //  - Azahar's GetSystemModel/GetModelNintendo2DS/IsCoppacsSupported read a block that fails with the
 //    error result and then push the zero-filled value; so do these.
 #include <cstring>
