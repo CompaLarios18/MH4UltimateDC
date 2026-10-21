@@ -8,12 +8,17 @@
                                       [--candidate-runner RUN2] [--candidate-program PATH]
                                       [--candidate-code LIB] [--candidate-args "..."] [--repeat N]
                                       [--profile same|cross] [--fallback] [--require NAMES] [--ignore FILE]...
+                                      [--tolerance N] [--min-margin N] [--max-surplus N] [--max-shift N]
 
 A session is a frame-keyed input script (tools/native/golden/<S>.txt, the runner's --input-file
 format) with header comment lines, see parse_session.  `record` runs the reference runner on a
 copy of the user folder with every recorder on and writes build/golden/<S>/ (docs/native/golden.md
 lists the files); `check` runs again on a copy of user-before/ and compares (D31: the `same` profile
-for two runs of one backend, the `cross` profile for two timing models).  Standard library only;
+for two runs of one backend, the `cross` profile for two timing models: the scene changes within 4 frames
+and every input 60 frames after the last one (D50), the DSP capture aligned on its first buffer change
+(D51), the `fs:` Reads as a multiset per thread and the Writes in full but for the byte ranges of
+config/native/fs_write_masks.txt (D52); the `--tolerance`, `--min-margin`, `--max-shift` and `--max-surplus`
+options change those numbers in the cross profile only).  Standard library only;
 no shell, no bash: the runner and the code library (.dll or .so) come from the command line, so it
 works the same on Windows and Linux.  The recordings are game data: they stay in build/.
 
@@ -43,6 +48,7 @@ if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
 import capfmt  # noqa: E402
+import cross_model_report  # noqa: E402
 import gcap  # noqa: E402
 import state_diff  # noqa: E402
 
@@ -50,6 +56,12 @@ SESSIONS_DIR = HERE / "golden"
 DEFAULT_OUT = ROOT / "build" / "golden"
 OBSERVABLE = ROOT / "config" / "native" / "observable.txt"
 IPC_TIME_DEPENDENT = ROOT / "config" / "native" / "ipc_time_dependent.txt"
+FS_WRITE_MASKS = ROOT / "config" / "native" / "fs_write_masks.txt"
+# The cross profile's numbers (D50, D51, D52); `check` takes them as options in the cross profile only.
+CROSS_TOLERANCE = cross_model_report.DEFAULT_TOLERANCE      # frames a real scene change may move by (D50)
+CROSS_MIN_MARGIN = cross_model_report.DEFAULT_MIN_MARGIN    # frames an input must follow the last scene change by (D50)
+CROSS_MAX_SHIFT = capfmt.DEFAULT_MAX_SHIFT                  # DSP frames the candidate's audio may be shifted by (D51)
+CROSS_MAX_SURPLUS = 16                                      # fs:USER/file reads a thread may make beyond the other (D52)
 SVC_CROSS_MODEL = ROOT / "config" / "native" / "svc_cross_model.txt"
 SVC_POLLING = ROOT / "config" / "native" / "svc_polling.txt"
 TZ = "UTC0"                      # the time zone the runner is started with (see docs/native/golden.md)
@@ -615,6 +627,7 @@ class Result:
     status: str          # pass | fail | skipped | info
     detail: str = ""
     run: str = ""        # "run2: " ..., the run a repeated check's result belongs to
+    note: str = ""       # what the cross profile measured (the DSP shift, the reads' surplus ...), printed with the status
 
     @property
     def base(self) -> str:
@@ -636,6 +649,18 @@ class Compare:
     observable: Path = OBSERVABLE
     real_changes: int = 0               # the recording's real scene changes
     checkpoints: bool = True
+    # the cross profile's rules (D50 to D52); a `same` comparison has none of them
+    tolerance: int | None = None        # frames a real scene change may move by (default CROSS_TOLERANCE)
+    min_margin: int | None = None       # frames an input follows the last scene change by (CROSS_MIN_MARGIN)
+    max_surplus: int | None = None      # reads a thread may make beyond the other (CROSS_MAX_SURPLUS)
+    max_shift: int | None = None        # DSP frames of shift (CROSS_MAX_SHIFT)
+    fs_write_masks: Path | None = None  # the write-mask file (default FS_WRITE_MASKS)
+
+    def rule(self, name: str) -> int:
+        """The value of one of the cross profile's numbers: the option, else D50 to D52's own."""
+        mine = getattr(self, name)
+        return mine if mine is not None else {"tolerance": CROSS_TOLERANCE, "min_margin": CROSS_MIN_MARGIN,
+                                              "max_surplus": CROSS_MAX_SURPLUS, "max_shift": CROSS_MAX_SHIFT}[name]
 
 
 def _tool(script: Path, *args: str) -> tuple[int, str]:
@@ -690,20 +715,48 @@ def _group(ref: Path, name: str) -> list[str]:
     return names
 
 
+def margin_result(session: Session, ref: Path, cand: Path, cfg: Compare, add) -> None:
+    """D50's guard of the cross profile, with `cross_model_report.py`'s logic: every input event of the session
+    that follows a real scene change comes at least `min_margin` frames after the last one on both sides, so that
+    the shift of a scene change can never move an input into another scene.  Adds `state-margin` (the
+    `--require state` of `check` covers it).  The scene sequence and the shift itself are `state`'s."""
+    try:
+        ref_changes = cross_model_report.read_scene_changes(ref / "state.txt")
+        cand_changes = cross_model_report.read_scene_changes(cand / "state.txt")
+        events = cross_model_report.parse_events(session.path.read_text(encoding="utf-8"))
+    except (cross_model_report.ReportError, OSError, UnicodeError) as e:
+        add("state-margin", "fail", str(e))
+        return
+    minimum = cfg.rule("min_margin")
+    problems = cross_model_report.margin_problems(events, ref_changes, cand_changes, minimum)
+    parts = []
+    if ref_changes and cand_changes:
+        worst = max((abs(c.frame - r.frame) for r, c in zip(ref_changes, cand_changes)), default=0)
+        parts.append(f"largest scene-change shift {worst} frames (at most {cfg.rule('tolerance')})")
+    for label, changes in (("reference", ref_changes), ("candidate", cand_changes)):
+        margins = [e.frame - c.frame for e in events
+                   if (c := cross_model_report.last_change_at_or_before(changes, e.frame))]
+        parts.append(f"smallest input margin on the {label} {min(margins)} frames (at least {minimum})"
+                     if margins else f"no input follows a real scene change on the {label}")
+    add("state-margin", "fail" if problems else "pass", "\n".join(problems[:8]), "; ".join(parts))
+
+
 def compare_outputs(session: Session, ref: Path, cand: Path, cfg: Compare) -> list[Result]:
     """Compare a run's outputs (`cand`) with a recording or another run (`ref`) in a profile.
 
     `same` (D31): the text traces identical apart from their first line, the captures and the screenshots
     identical by SHA-256, the checkpoints.  D30's fallback (cfg.fallback) swaps the svc, ipc and state
-    comparisons for the tolerant ones of N0-25.  `cross`: what a different clock cannot change.
+    comparisons for the tolerant ones of N0-25.  `cross`: what a different clock cannot change, with the rules
+    of D50 (state: scene changes within `cfg.tolerance` frames, `state-margin`: inputs at least `cfg.min_margin`
+    frames after the last scene change), D51 (dsp: aligned) and D52 (ipc: `fs:` Reads as a multiset, masked Writes).
     A comparison whose input the run did not write is skipped for a candidate runner and a failure
     for the reference runner."""
     results: list[Result] = []
     same = cfg.profile == "same"
     tools = ROOT / "tools"
 
-    def add(name: str, status: str, detail: str = "") -> None:
-        results.append(Result(name, status, detail))
+    def add(name: str, status: str, detail: str = "", note: str = "") -> None:
+        results.append(Result(name, status, detail, note=note))
 
     def need(name: str, rel: str, info: bool = False) -> bool:
         if not (ref / rel).exists():
@@ -721,9 +774,9 @@ def compare_outputs(session: Session, ref: Path, cand: Path, cfg: Compare) -> li
             return False
         return True
 
-    def tool_result(name: str, code: int, text: str) -> None:
+    def tool_result(name: str, code: int, text: str, note: str = "") -> None:
         if code == 0:
-            add(name, "pass", _first_lines(text, 2))
+            add(name, "pass", _first_lines(text, 2), note)
         elif code == 3:
             add(name, "skipped", _first_lines(text))
         else:
@@ -755,8 +808,15 @@ def compare_outputs(session: Session, ref: Path, cand: Path, cfg: Compare) -> li
             if not same:
                 for f in cfg.ignore:
                     extra += ["--ignore", str(f)]
+                # D52: the Reads of fs:USER/file as a multiset per thread, the Writes in full except the byte
+                # ranges proved to depend on the clock (this session's lines of the mask file)
+                extra += ["--fs-reads-multiset", "--max-surplus", str(cfg.rule("max_surplus")),
+                          "--fs-write-mask", str(cfg.fs_write_masks or FS_WRITE_MASKS),
+                          "--fs-write-mask-session", session.name]
             code, text = _tool(tools / "compare_ipc_traces.py", *extra, str(ref / "ipc.txt"), str(cand / "ipc.txt"))
-            tool_result("ipc", code, text)
+            if code == 1 and "\n\n" in text:
+                text = text.split("\n\n", 1)[1]            # past the per-thread counts: the first difference
+            tool_result("ipc", code, text, " ; ".join(ln for ln in text.splitlines() if ln.startswith("fs ")))
     # -- state, checkpoints
     state_ok = need("state", "state.txt")
     if state_ok:
@@ -766,10 +826,13 @@ def compare_outputs(session: Session, ref: Path, cand: Path, cfg: Compare) -> li
         elif cfg.real_changes <= 0:
             add("state", "skipped", "the recording has no real scene change: nothing to align")
         else:
-            tol = ["--tolerance", "0"] if same else []
+            # same: exact. cross: D50's tolerance (4 frames), and D50's margin guard below
+            tol = ["--tolerance", "0" if same else str(cfg.rule("tolerance"))]
             code, text = _tool(HERE / "state_diff.py", "--observable", str(cfg.observable), *tol,
                                "--min-changes", str(cfg.real_changes), str(ref / "state.txt"), str(cand / "state.txt"))
-            tool_result("state", code, text)
+            tool_result("state", code, text, "" if same else _first_lines(text, 1))
+            if not same:
+                margin_result(session, ref, cand, cfg, add)
     if cfg.checkpoints:
         if (cand / "state.txt").is_file():
             if session.checkpoints:
@@ -802,11 +865,15 @@ def compare_outputs(session: Session, ref: Path, cand: Path, cfg: Compare) -> li
             ok, detail = _files_equal(ref, cand, _group(ref, cap.filename))
             add(f"dsp-{cap.start}", "pass" if ok else "fail", detail)
         else:
+            # D51: the candidate aligned on the first buffer change, the shift constant and bounded, then every
+            # source status block equal; the shift is part of the result
             try:
-                lines = capfmt.diff_dsp(str(ref / cap.filename), str(cand / cap.filename))
+                aligned = capfmt.diff_dsp_aligned(str(ref / cap.filename), str(cand / cap.filename),
+                                                  cfg.rule("max_shift"))
+                lines, summary = aligned.problems, aligned.summary
             except (capfmt.CapError, OSError) as e:
-                lines = [str(e)]
-            add(f"dsp-{cap.start}", "fail" if lines else "pass", "\n".join(lines[:8]))
+                lines, summary = [str(e)], ""
+            add(f"dsp-{cap.start}", "fail" if lines else "pass", "\n".join(lines[:8]), summary)
     # -- gpu captures (same profile only: the capture player compares them across runtimes, N2)
     if same:
         for cap in session.captures:
@@ -885,8 +952,18 @@ def check(session: Session, a: argparse.Namespace) -> int:
     if a.ignore and profile == "same":
         raise GoldenError("--ignore adds IPC ignore files to the cross profile only: "
                           "a same-model check is never loosened by a list")
+    rules = {"tolerance": a.tolerance, "min_margin": a.min_margin, "max_surplus": a.max_surplus,
+             "max_shift": a.max_shift}
+    if profile == "same" and any(v is not None for v in rules.values()):
+        raise GoldenError("--tolerance, --min-margin, --max-surplus and --max-shift set the cross profile's rules "
+                          "(D50 to D52): a same-model check is exact and is never loosened")
+    for flag, value in rules.items():
+        if value is not None and value < 0:
+            raise GoldenError(f"--{flag.replace('_', '-')} must not be negative")
     if (profile == "cross" or a.fallback) and not Path(SVC_CROSS_MODEL if profile == "cross" else SVC_POLLING).is_file():
         raise GoldenError(f"missing {SVC_CROSS_MODEL if profile == 'cross' else SVC_POLLING}")
+    if profile == "cross" and not FS_WRITE_MASKS.is_file():
+        raise GoldenError(f"missing {FS_WRITE_MASKS} (the write masks of D52)")
     broken = [rel for rel, meta in manifest["files"].items()
               if not (ref / rel).is_file() or sha256_file(ref / rel) != meta["sha256"]]
     if broken:
@@ -912,7 +989,7 @@ def check(session: Session, a: argparse.Namespace) -> int:
     ignore = ([IPC_TIME_DEPENDENT] if IPC_TIME_DEPENDENT.is_file() else []) + [Path(p) for p in a.ignore or []]
     real = int(manifest.get("real_scene_changes", real_scene_changes(ref / "state.txt")))
     cfg = Compare(profile, a.fallback, strict=not foreign, ignore=ignore, observable=Path(a.observable),
-                  real_changes=real)
+                  real_changes=real, **rules)
     pair = Compare("same", a.fallback, strict=not foreign, ref_is_recording=False, observable=Path(a.observable),
                    real_changes=real, checkpoints=False)
     checks_dir = ref / "check"
@@ -939,7 +1016,8 @@ def check(session: Session, a: argparse.Namespace) -> int:
             results.append(r)
     for r in results:
         detail = r.detail.splitlines()[0] if r.detail and r.status != "pass" else ""
-        print(f"{session.name}: {r.label}: {r.status.upper()}" + (f" ({detail})" if detail else ""))
+        shown = "; ".join(x for x in (detail, r.note) if x)
+        print(f"{session.name}: {r.label}: {r.status.upper()}" + (f" ({shown})" if shown else ""))
     count = {s: sum(r.status == s for r in results) for s in ("pass", "fail", "skipped", "info")}
     print(f"{session.name}: {count['pass']} passed, {count['fail']} failed, {count['skipped']} skipped"
           + (f", {count['info']} info" if count["info"] else "") + f" (profile {profile}"
@@ -1022,6 +1100,17 @@ def make_parser() -> argparse.ArgumentParser:
             s.add_argument("--require", help="comma-separated comparisons that must not be skipped: "
                                              + ", ".join(REQUIRABLE))
             s.add_argument("--ignore", action="append", help="more IPC ignore files, cross profile only (repeatable)")
+            s.add_argument("--tolerance", type=int, metavar="N",
+                           help=f"cross profile only: frames a real scene change may move by (default {CROSS_TOLERANCE}, D50)")
+            s.add_argument("--min-margin", type=int, metavar="N",
+                           help=f"cross profile only: frames every input must follow the last real scene change by, "
+                                f"on both sides (default {CROSS_MIN_MARGIN}, D50)")
+            s.add_argument("--max-surplus", type=int, metavar="N",
+                           help=f"cross profile only: fs:USER/file reads one side's thread may make beyond the other's "
+                                f"(default {CROSS_MAX_SURPLUS}, D52)")
+            s.add_argument("--max-shift", type=int, metavar="N",
+                           help=f"cross profile only: DSP frames the candidate's audio may be shifted by "
+                                f"(default {CROSS_MAX_SHIFT}, D51)")
             s.add_argument("--observable", default=str(OBSERVABLE))
         s.set_defaults(func=record if name == "record" else check)
     return p

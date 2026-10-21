@@ -23,6 +23,13 @@ later, by the native runtime (N1-16, N1-18); this tool compares the two.  Standa
     python3 tools/native/capfmt.py pcm-to-wav FILE OUT.wav
     python3 tools/native/capfmt.py diff-hid REF CAND
     python3 tools/native/capfmt.py diff-dsp REF CAND [--frames N]
+    python3 tools/native/capfmt.py diff-dsp REF CAND --align [--max-shift 48]
+
+``diff-dsp --align`` (D51, for two timing models): the candidate is aligned on the first change of the first
+enabled source's buffer id (found in the candidate by the id), the shift (DSP frames, candidate counter minus
+reference counter) must be constant (every later buffer change at that shift, within 1 frame) and at most
+``--max-shift``, and then every source status block of the overlap must be equal; the shift is printed, the PCM
+samples are not compared.  Without ``--align`` the comparison is keyed on the DSP frame counter, as before.
 
 Exit status: 0 equal / fine, 1 different (or a broken capture for ``check``), 2 a file that is not a
 capture of the right kind or cannot be read.
@@ -90,6 +97,7 @@ STATUS_OFFSET = 0xD00  # SharedMemory::source_statuses
 STATUS_SIZE = 12
 COUNTER_OFFSET = 0x7FFE  # SharedMemory::frame_counter
 SAMPLE_READ_HEAD = 12
+DEFAULT_MAX_SHIFT = 48  # diff-dsp --align: DSP frames the candidate may be shifted by (D51: about 233 ms)
 
 HID_SIZE = 0x2B0
 HID_PAD = 0x00
@@ -594,6 +602,146 @@ def diff_dsp(ref: str, cand: str, frames: int | None = None, limit: int = 10) ->
     return notes + problems if problems else []
 
 
+# ── the DSP capture across timing models (D51) ─────────────────────────────────────────
+
+
+@dataclass
+class DspAlignment:
+    """The result of `diff_dsp_aligned`: the shift found (candidate counter minus reference counter, None when
+    none could be found), what is wrong (empty: the captures agree after the shift) and a one-line summary."""
+    shift: int | None
+    problems: list[str]
+    summary: str
+
+    @property
+    def equal(self) -> bool:
+        return not self.problems
+
+
+def _signed16(value: int) -> int:
+    return ((value + 0x8000) & 0xFFFF) - 0x8000
+
+
+def _current_statuses(payload: bytes) -> list[bytes]:
+    """The 24 status blocks of the region the DSP reads in this frame."""
+    return source_statuses(payload, current_region(*region_counters(payload)))
+
+
+def _first_enabled_source(frames: list[tuple[int, bytes]]) -> int | None:
+    """The lowest-numbered enabled source of the first frame (in the region the DSP reads) that has one."""
+    for _, payload in frames:
+        for source, block in enumerate(_current_statuses(payload)):
+            if block[0]:
+                return source
+    return None
+
+
+def _buffer_changes(frames: list[tuple[int, bytes]], source: int) -> list[tuple[int, int]]:
+    """(DSP frame counter, current buffer id) at every frame whose current buffer id of `source`, in the region
+    the DSP reads, differs from the previous frame's. The first frame is never a change."""
+    out: list[tuple[int, int]] = []
+    previous: int | None = None
+    for counter, payload in frames:
+        block = _current_statuses(payload)[source]
+        buffer_id = int.from_bytes(block[8:10], "little")
+        if previous is not None and buffer_id != previous:
+            out.append((counter, buffer_id))
+        previous = buffer_id
+    return out
+
+
+def diff_dsp_aligned(ref: str, cand: str, max_shift: int = DEFAULT_MAX_SHIFT, limit: int = 10) -> DspAlignment:
+    """Compare two DSP captures made on two timing models (D51).
+
+    The candidate is aligned on the reference: the first buffer change of the first enabled source of the
+    reference (its first enabled source in the region the DSP reads, lowest number) is looked for in the
+    candidate by its buffer id, and the difference of the two DSP frame counters is the shift. It must be at
+    most `max_shift` DSP frames; every other buffer change of that source inside the overlap must come at the
+    same shift, within one frame; and after the shift every status block (enabled, dirty, sync count, buffer
+    position, current and last buffer id) of every source of both regions must be equal. The samples are not
+    compared. When neither capture has an enabled source (or an enabled source that never changes buffer) there
+    is nothing to align on and the comparison is the plain one (`diff_dsp`: shift 0).  Never prints samples."""
+    a, b = _dsp_frames(ref), _dsp_frames(cand)
+    if not a or not b:
+        return DspAlignment(None, ["a capture holds no DSP frame"], "no DSP frame to compare")
+    source = _first_enabled_source(a)
+    cand_source = _first_enabled_source(b)
+    if source is None and cand_source is None:
+        plain = diff_dsp(ref, cand)
+        return DspAlignment(0, plain, "no source is enabled in either capture: nothing to align on, shift 0")
+    if source is None or cand_source is None:
+        side = "reference" if source is None else "candidate"
+        return DspAlignment(None, [f"no source is enabled in the {side} capture and one is in the other"],
+                            "the captures do not enable the same sources")
+    ev_a, ev_b = _buffer_changes(a, source), _buffer_changes(b, source)
+    if not ev_a and not ev_b:
+        plain = diff_dsp(ref, cand)
+        return DspAlignment(0, plain, f"source {source} never changes buffer: nothing to align on, shift 0")
+    if not ev_a or not ev_b:
+        side = "reference" if not ev_a else "candidate"
+        return DspAlignment(None, [f"source {source} changes buffer in one capture and never in the {side}'s"],
+                            "the buffer changes of the captures differ")
+    anchor = next(((ca, cb, buf) for ca, buf in ev_a for cb, other in ev_b if other == buf), None)
+    if anchor is None:
+        return DspAlignment(None, [f"no buffer id of source {source} is in both captures: nothing to align on"],
+                            "no buffer id in common")
+    ca, cb, anchor_id = anchor
+    shift = _signed16(cb - ca)
+    where = f"shift {shift:+d} DSP frames (candidate counter minus reference counter)"
+    if abs(shift) > max_shift:
+        return DspAlignment(shift, [f"{where}, more than the {max_shift} allowed (source {source}, buffer id "
+                                    f"{anchor_id}: reference DSP frame {ca}, candidate {cb})"], where)
+    by_b = {k: p for k, p in b}
+    position = {k: i for i, (k, _) in enumerate(a)}
+    overlap = [i for i, (k, _) in enumerate(a) if (k + shift) & 0xFFFF in by_b]
+    if not overlap:
+        return DspAlignment(shift, [f"{where}: no DSP frame is in both captures after it"], where)
+    first, last = overlap[0], overlap[-1]
+    problems: list[str] = []
+    # every buffer change inside the overlap (a frame in from each end: a change is seen against the frame
+    # before it, and one frame of slack is allowed) has its counterpart at the shift, within one frame
+    inside = range(first + 2, last)
+
+    def counterparts(mine: list[tuple[int, int]], other: list[tuple[int, int]], sign: int, label: str) -> int:
+        worst = 0
+        for counter, buffer_id in mine:
+            ref_counter = counter if sign > 0 else (counter - shift) & 0xFFFF
+            if position.get(ref_counter) not in inside:
+                continue
+            near = [abs(_signed16(((c - shift) & 0xFFFF) - ref_counter)) if sign > 0
+                    else abs(_signed16(c - ref_counter)) for c, other_id in other if other_id == buffer_id]
+            best = min(near, default=None)
+            if best is None or best > 1:
+                problems.append(f"source {source}: the change to buffer id {buffer_id} at {label} DSP frame "
+                                f"{counter} has no counterpart within 1 frame at {where}")
+            else:
+                worst = max(worst, best)
+        return worst
+
+    deviation = max(counterparts(ev_a, ev_b, +1, "reference"), counterparts(ev_b, ev_a, -1, "candidate"))
+    matched = sum(1 for c, _ in ev_a if position.get(c) in inside)
+    compared = 0
+    for i in overlap:
+        k, pa = a[i]
+        kb = (k + shift) & 0xFFFF
+        pb = by_b[kb]
+        for region in (0, 1):
+            for number, (x, y) in enumerate(zip(source_statuses(pa, region), source_statuses(pb, region))):
+                compared += 1
+                if x != y:
+                    problems.append(f"DSP frame {k} (candidate {kb}) region {region} source {number}: "
+                                    f"ref {_describe_status(x)} cand {_describe_status(y)}")
+    total = len(problems)
+    if total > limit:
+        problems = problems[:limit] + [f"... and {total - limit} more differences"]
+    summary = (f"aligned on source {source}, buffer id {anchor_id} (reference DSP frame {ca}, candidate {cb}): "
+               f"{where}; {len(overlap)} DSP frames and {compared} status blocks compared, {matched} buffer "
+               f"changes at the shift (largest deviation {deviation} frames); "
+               f"{len(a) - len(overlap)} reference and {len(b) - len(overlap)} candidate DSP frames outside "
+               f"the overlap")
+    return DspAlignment(shift, problems, summary)
+
+
 # ── command line ──────────────────────────────────────────────────────────────────────
 
 
@@ -615,7 +763,20 @@ def main(argv: Sequence[str] | None = None) -> int:
     p.add_argument("ref")
     p.add_argument("cand")
     p.add_argument("--frames", type=int, default=None, help="compare only the first N DSP frames")
+    p.add_argument("--align", action="store_true",
+                   help="across two timing models (D51): align the candidate on the first buffer change of the first "
+                        "enabled source, the shift constant and at most --max-shift DSP frames, then compare every "
+                        "source status block; prints the shift")
+    p.add_argument("--max-shift", type=int, default=None, metavar="N",
+                   help=f"DSP frames the candidate may be shifted by (default {DEFAULT_MAX_SHIFT}; needs --align)")
     args = ap.parse_args(argv)
+    if args.cmd == "diff-dsp":
+        if args.max_shift is not None and not args.align:
+            ap.error("--max-shift needs --align")
+        if args.max_shift is not None and args.max_shift < 0:
+            ap.error("--max-shift must not be negative")
+        if args.align and args.frames is not None:
+            ap.error("--align compares the whole overlap of the captures: it does not take --frames")
     try:
         if args.cmd == "summary":
             s = summarize(args.file)
@@ -631,6 +792,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
         if args.cmd == "diff-hid":
             problems = diff_hid(args.ref, args.cand)
+        elif args.align:
+            result = diff_dsp_aligned(args.ref, args.cand,
+                                      DEFAULT_MAX_SHIFT if args.max_shift is None else args.max_shift)
+            if result.equal:
+                print("equal after alignment: " + result.summary)
+            elif not result.problems[0].startswith(result.summary):
+                print(result.summary)
+            if result.problems:
+                print("\n".join(result.problems))
+                return 1
+            return 0
         else:
             if args.frames is not None and args.frames < 0:
                 ap.error("--frames wants a count")
