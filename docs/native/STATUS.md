@@ -30,8 +30,14 @@ Tables between the `wp-status` markers are generated: edit the specs or use `set
 | N0-06 | DSP and HID captures | M | native-worker | N0-21 | ci, dump-check | `done` | PR #6; ci: native and runner jobs green (run 39003477255: the runner job compiles the DSP and HID section); its tools job failed only for the THIRD_PARTY rows, added in the merge; dump-check pending (type-2 (IR) records appear: ran 20261017, G1 never opens ir:USER so there are none; the rest passed: HID records equal the frames run, and non-silent PCM with type-3 records exists in G1 game frames 300 to 1350 (1198 non-silent frames, 236 type-3 records) but not at the title, which is silent) |
 | N0-22 | GPU capture format and `gcap.py` | S | native-worker | - | none | `done` | PR #5 |
 | N0-05 | GPU capture recorder | M | native-worker-high | N0-06, N0-22 | ci, dump-check | `done` | PR #6; ci green (run 39006180963: the runner job compiles and links the recorder and its patch); dump-check passed 20261017 (a 3-frame capture of G1 at frame 1200 passes gcap.py check: 6 SUBMIT_CMDLIST, 6 PICA_REG, 3 FRAME, 11 FLUSH, 6 PPMs, 144 MB) |
-| N0-09 | Golden sessions G1, G2, G6 | M | native-worker | N0-04, N0-05, N0-06, N0-07, N0-08, N0-21 | dump | `needs-decision` | WIP on origin/wp/N0-09-golden-sessions (base e6cd840): G1, G2 and G6 recorded on the maintainer PC (Windows runner of CI run 39075253705); golden.py check against the same runner fails in svc (the main thread polls GetSystemTick and sees a few ticks of jitter) and in some runs in ipc and images; on an idle PC two runs agree in every compared state value, in the IPC trace and in 17 of 18 threads of the SVC trace; needs a decision: tolerate those few ticks in the comparator, or make the runner deterministic (random wifi MAC and shared page date at init, tick jitter); see docs/native/golden.md on that branch |
+| N0-25 | Comparator rules: polling runs, cross-model calls, nothing compared | M | native-worker-high | N0-04, N0-07 | dump-check | `ready` |  |
+| N0-26 | Reference runner: fixed per-run values, timing trace, frame-keyed shots | M | native-worker-high | N0-15 | ci, dump-check | `ready` |  |
+| N0-29 | Reference runner repeats itself exactly | L | native-worker-high | N0-26 | ci, dump, pc | `todo` |  |
+| N0-27 | The game's own scene observable | M | native-worker-high | N0-07, N0-08 | dump | `ready` |  |
+| N0-09 | Golden sessions G1, G2, G6 | M | native-worker | N0-04, N0-05, N0-06, N0-07, N0-08, N0-21, N0-25, N0-27, N0-29 | dump | `todo` | WIP on origin/wp/N0-09-golden-sessions (base e6cd840): G1, G2 and G6 were recorded on the maintainer PC with the runner of CI run 39075253705; decisions D30 to D36 (2026-10-20) settle what blocked it: it now waits for N0-29 (a runner that repeats itself) and N0-27 (a real scene observable) and then re-records once; see docs/native/golden.md on that branch |
+| N0-28 | Cross-model calibration: jit against recomp | M | native-worker | N0-09, N0-25 | dump | `todo` |  |
 | N0-10 | Golden sessions G3, G4, G7 | M | native-worker | N0-09 | dump, save | `todo` |  |
+| N0-30 | Cross-model calibration on the quest sessions G3, G4, G7 | S | native-worker | N0-10, N0-28 | dump, save | `todo` |  |
 | N0-11 | Golden session G5 (two players) | M | native-worker | N0-10 | dump, save | `todo` |  |
 | N0-12 | Kernel census | S | native-worker | N0-04, N0-21, N0-10 | dump, save | `todo` |  |
 | N0-13 | PICA census | M | native-worker | N0-05, N0-10 | dump, save | `todo` |  |
@@ -73,8 +79,8 @@ Tables between the `wp-status` markers are generated: edit the specs or use `set
 | N1-19 | The remaining services | M | native-worker | N1-10, N1-11, N0-23 | dump-check | `ready` |  |
 | N1-29 | nwm::UDS without a room | M | native-worker | N1-10, N1-11, N0-23 | dump-check | `ready` |  |
 | N1-20 | Hooks on the native platform | S | native-worker | N0-18, N1-04, N1-17 | none | `todo` |  |
-| N1-21 | First game boot: G1 and G2 headless | M | native-worker-high | N1-09, N1-12, N1-13, N1-14, N1-15, N1-16, N1-17, N1-18, N1-19, N1-20, N1-22, N1-29, N0-09 | dump | `todo` |  |
-| N1-26 | G3 headless: from the save to the Arena hunt | L | native-worker-high | N1-21, N1-13, N0-10 | dump, save | `todo` |  |
+| N1-21 | First game boot: G1 and G2 headless | M | native-worker-high | N1-09, N1-12, N1-13, N1-14, N1-15, N1-16, N1-17, N1-18, N1-19, N1-20, N1-22, N1-29, N0-09, N0-28 | dump | `todo` |  |
+| N1-26 | G3 headless: from the save to the Arena hunt | L | native-worker-high | N1-21, N1-13, N0-10, N0-30 | dump, save | `todo` |  |
 | N1-22 | Windows and macOS builds | M | native-worker | N1-09 | ci | `done` | PR #7; ci green (Native CI run 39047113161 on its branch: native-windows and native-macos jobs green, ctest 22/22 and conformance 51 passed on both, artifact mh4n-runner-windows uploaded) |
 | N1-23 | CPU budget measurement | S | native-worker | N1-26, N1-22, N0-15 | ci, pc | `todo` |  |
 | N1-24 | Fallback interpreter: spike | S | native-worker-high | N1-04, N1-09, N1-22 | none | `done` | PR #7; ci green (Native CI run 39065116199 on the N1-28 branch ran the tools job with tests/test_recomp_interp_gen.py); the spike's verdict: generator feasible (20/20 spike forms, 28/29 extra) |
