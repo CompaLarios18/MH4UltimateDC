@@ -87,8 +87,7 @@ jobs:
   # The native runner on Windows (N1-22): x86-64, clang from llvm-mingw (the archive
   # tools/build_game.py fetches). Same steps as `native` (there are no Vulkan-device tests yet).
   # The ARM test programs and the code libraries are built with the same llvm-mingw.
-  # The native runner, the IPC replay and the capture player on Windows (N1-22, N1-22b). The
-  # artifact `mh4n-runner-windows` (pushes and dispatches, not pull requests) holds
+  # The artifact `mh4n-runner-windows` (pushes and dispatches, not pull requests; N1-22b) holds
   # mh4u_native_runner.exe, mh4n_ipc_replay.exe, mh4n_capture_player.exe and the llvm-mingw DLLs
   # they import, so the three command-line tools run on any Windows PC without a build. They are
   # our own binaries: no game data is in it.
