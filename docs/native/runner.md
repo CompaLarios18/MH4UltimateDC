@@ -37,7 +37,7 @@ for that.
 | `--state-trace FILE` | the game's observable state at each frame, in the format of `tools/native/state_diff.py` (below) |
 | `--observable FILE` | the values `--state-trace` records (default `config/native/observable.txt`, relative to the current directory) |
 | `--slice-us N` | the scheduler's slice when both virtual cores have work (default 1000) |
-| `--user DIR` | the user directory (NAND, SD card, saves) for the services that need one; never created by the runtime |
+| `--user DIR` | the user directory (NAND, SD card, saves) for the services that need one; never created by the runtime. Without it the hooks get a placeholder folder and read no `mh4u.ini` (fps and widescreen keep their defaults); only `--user` makes them read `DIR/mh4u.ini` (N1-20b) |
 | `--init-time SECONDS` | the date the console starts at, seconds since the Unix epoch, UTC. The default, 1767268800 (2026-01-01 12:00 UTC), is the fixed start of the reference runs: the game seeds its random numbers from the clock |
 | `--gpu NAME` | the GPU (default `null`) |
 | `--input-source NAME` | where the buttons, circle pad and touch screen come from (default `script`) |
