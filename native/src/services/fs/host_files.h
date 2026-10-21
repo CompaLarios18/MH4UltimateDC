@@ -23,6 +23,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "fs_types.h"
@@ -33,6 +34,26 @@ namespace host {
 
 // A host path from UTF-8 text.
 std::filesystem::path ToPath(const std::string& utf8);
+
+// The characters that separate the parts of a host path: "/" everywhere, and also "\\" on Windows, where a
+// path often mixes both (a user folder from the command line, then "/sdmc/...").
+#if defined(_WIN32)
+inline constexpr std::string_view kPlatformSeparators = "/\\";
+#else
+inline constexpr std::string_view kPlatformSeparators = "/";
+#endif
+inline bool IsSeparator(char c, std::string_view separators = kPlatformSeparators) {
+    return separators.find(c) != std::string_view::npos;
+}
+// The next separator of `separators` at or after `from`, npos if there is none.
+std::size_t FindSeparator(const std::string& path, std::size_t from, std::string_view separators = kPlatformSeparators);
+// The directories CreateFullPath makes, in order: each prefix of `path` that ends with a separator (the part
+// after the last separator is a file name and is not one). With the Windows set, the root of a UNC path
+// ("\\server\share\") is not listed: it is not a directory that can be made. At most kMaxDirectoryLevels
+// are listed; *too_deep (when not null) says that the limit was reached.
+inline constexpr int kMaxDirectoryLevels = 100;
+std::vector<std::string> DirectoryPrefixes(const std::string& path, std::string_view separators = kPlatformSeparators,
+                                           bool* too_deep = nullptr);
 
 bool Exists(const std::string& path);
 bool IsDirectory(const std::string& path);

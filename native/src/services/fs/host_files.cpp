@@ -187,33 +187,63 @@ bool CreateDir(const std::string& path) {
     return !ec && IsDirectory(path);
 }
 
+std::size_t FindSeparator(const std::string& path, std::size_t from, std::string_view separators) {
+    return path.find_first_of(separators, from);
+}
+
+std::vector<std::string> DirectoryPrefixes(const std::string& path, std::string_view separators, bool* too_deep) {
+    if (too_deep != nullptr) {
+        *too_deep = false;
+    }
+    std::vector<std::string> prefixes;
+    // "\\server\share\" (or "\\?\C:\"): two parts that are a root, not directories to make.
+    std::size_t skip_until = 0;
+    if (separators.find('\\') != std::string_view::npos && path.size() >= 2 && IsSeparator(path[0], separators) &&
+        IsSeparator(path[1], separators)) {
+        std::size_t at = 2;
+        for (int part = 0; part < 2 && at != std::string::npos; ++part) {
+            at = FindSeparator(path, at, separators);
+            if (at != std::string::npos) {
+                skip_until = ++at;
+            }
+        }
+    }
+    std::size_t position = 0;
+    for (;;) {
+        // Every step moves past the separator it found, so each separator is met once.
+        position = FindSeparator(path, position, separators);
+        if (position == std::string::npos) {
+            return prefixes;
+        }
+        if (position + 1 > skip_until) {
+            prefixes.push_back(path.substr(0, position + 1));
+            if (static_cast<int>(prefixes.size()) >= kMaxDirectoryLevels) {
+                if (too_deep != nullptr) {
+                    *too_deep = true;
+                }
+                return prefixes;
+            }
+        }
+        ++position;
+    }
+}
+
 bool CreateFullPath(const std::string& path) {
     if (Exists(path)) {
         return true;
     }
-    std::size_t position = 0;
-    int guard = 100;
-    for (;;) {
-        position = path.find('/', position);
-#if defined(_WIN32)
-        if (position == std::string::npos) {
-            position = path.find('\\', 0);
-        }
-#endif
-        if (position == std::string::npos) {
-            return true;
-        }
-        const std::string prefix = path.substr(0, position + 1);
+    bool too_deep = false;
+    for (const std::string& prefix : DirectoryPrefixes(path, kPlatformSeparators, &too_deep)) {
         if (!IsDirectory(prefix) && !CreateDir(prefix)) {
             MH4N_LOG(Error, kLog, "cannot create the directory {}", prefix);
             return false;
         }
-        if (--guard <= 0) {
-            MH4N_LOG(Error, kLog, "the directory structure of {} is too deep", path);
-            return false;
-        }
-        ++position;
     }
+    if (too_deep) {
+        MH4N_LOG(Error, kLog, "the directory structure of {} is too deep", path);
+        return false;
+    }
+    return true;
 }
 
 bool CreateEmptyFile(const std::string& path) {
@@ -730,7 +760,7 @@ PathParser::HostStatus PathParser::GetHostStatus(const std::string& mount_point)
         return DirectoryFound;
     }
     for (auto it = parts_.begin(); it != parts_.end() - 1; ++it) {
-        if (path.back() != '/') {
+        if (!host::IsSeparator(path.back())) {
             path += '/';
         }
         path += *it;
@@ -755,7 +785,7 @@ PathParser::HostStatus PathParser::GetHostStatus(const std::string& mount_point)
 std::string PathParser::BuildHostPath(const std::string& mount_point) const {
     std::string path = mount_point;
     for (const std::string& node : parts_) {
-        if (path.empty() || path.back() != '/') {
+        if (path.empty() || !host::IsSeparator(path.back())) {
             path += '/';
         }
         path += node;
