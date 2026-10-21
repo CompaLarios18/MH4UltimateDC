@@ -126,7 +126,7 @@ inline constexpr u32 kMediaNand = 0;
 inline constexpr u32 kMediaSdmc = 1;
 inline constexpr u32 kMediaGameCard = 2;
 
-// An archive handle is 64 bits and numbered from 1 (ArchiveManager::next_handle).
+// An archive handle is 64 bits and numbered from 1 (ArchiveManager::next_handle; the rule is in fs_state.h).
 using ArchiveHandle = u64;
 
 // ---- paths ---------------------------------------------------------------------------------------------------

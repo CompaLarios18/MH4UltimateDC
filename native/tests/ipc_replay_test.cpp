@@ -1,3 +1,10 @@
+// Derived from Azahar src/core/file_sys/directory_backend.h, src/core/hle/result.h and src/core/file_sys/errors.h at
+// 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-2.0-or-later: each says "GPLv2 or any later version"): the layout
+// of a directory entry (0x228 bytes: the UTF-16 name, the directory flag at 0x21C) that the fake directory writes,
+// and the result codes the diagnostics are checked against.
+// Copyright 2014-2024 Citra Emulator Project / Azahar Emulator Project (directory_backend.h, result.h)
+// Copyright 2016 Citra Emulator Project (errors.h)
+//
 // mh4n_ipc_replay (N1-11): the trace readers, the time-dependent list and the replay of synthetic IPC
 // traces against a fake service that this file registers. The traces are written by the tests (no game
 // data): their words are what the fake service answers, worked out here from its code.
@@ -16,6 +23,7 @@
 #include <thread>
 #include <vector>
 
+#include "ipc_replay/diagnostics.h"
 #include "ipc_replay/replay.h"
 #include "ipc_replay/replay_clock.h"
 #include "ipc_replay/time_dependent.h"
@@ -369,6 +377,97 @@ private:
 
 MH4N_REGISTER(ServiceFactory, "rpl:tst",
               ServiceFactory([](ServiceContext& c) { return std::make_unique<FakeService>(c); }));
+
+// ---- a fake directory service (N1-12c): what the listing diagnostics are tested against ---------------------------
+
+constexpr u32 kEntrySize = 0x228;
+
+// One directory entry as Azahar's DiskDirectory::Read writes it: the UTF-16 name, then zeros up to the 8.3
+// name at 0x20C (not written here: the tests only look at the name, the directory flag and the size).
+std::vector<u8> EntryBytes(const std::u16string& name, bool is_directory, u64 file_size = 0) {
+    std::vector<u8> bytes(kEntrySize, 0);
+    for (std::size_t i = 0; i < name.size(); ++i) {
+        bytes[i * 2] = static_cast<u8>(name[i]);
+        bytes[i * 2 + 1] = static_cast<u8>(name[i] >> 8);
+    }
+    bytes[0x21C] = is_directory ? 1 : 0;
+    bytes[0x21E] = is_directory ? 0 : 1;
+    for (int i = 0; i < 8; ++i) {
+        bytes[0x220 + i] = static_cast<u8>(file_size >> (8 * i));
+    }
+    return bytes;
+}
+
+struct ListedName {
+    std::u16string name;
+    bool is_directory = false;
+    u64 size = 0;
+};
+
+// The listing the fake directory gives, in the order it gives it; set by each test.
+std::vector<ListedName> g_listing;
+
+std::vector<u8> ListingBytes(const std::vector<ListedName>& entries, std::size_t buffer_entries = 0) {
+    std::vector<u8> bytes;
+    for (const ListedName& entry : entries) {
+        const std::vector<u8> one = EntryBytes(entry.name, entry.is_directory, entry.size);
+        bytes.insert(bytes.end(), one.begin(), one.end());
+    }
+    if (buffer_entries > entries.size()) {
+        bytes.resize(buffer_entries * kEntrySize, 0);
+    }
+    return bytes;
+}
+
+// The session of a directory: kind `dir`, the Read command (0x0801) as fs:USER's.
+class FakeDirectory final : public Service {
+public:
+    explicit FakeDirectory(ServiceContext& context) : Service(context, "rpl:dir") {
+        Register(0x0801, "Read", &FakeDirectory::Read);
+    }
+    const char* SessionKind() const override { return "dir"; }
+
+private:
+    void Read(Request& request) {
+        const u32 count = request.Pop<u32>();
+        const MappedBuffer* buffer = request.PopMappedBuffer();
+        if (buffer == nullptr) {
+            request.MakeReply(2, 0).Push(kFailure);
+            return;
+        }
+        const std::size_t fits = buffer->Size() / kEntrySize;
+        const std::size_t read = std::min<std::size_t>({count, fits, g_listing.size() - std::min(g_listing.size(), next_)});
+        for (std::size_t i = 0; i < read; ++i) {
+            const ListedName& entry = g_listing[next_ + i];
+            const std::vector<u8> bytes = EntryBytes(entry.name, entry.is_directory, entry.size);
+            buffer->Write(bytes.data(), static_cast<u32>(i * kEntrySize), kEntrySize);
+        }
+        next_ += read;
+        Reply& reply = request.MakeReply(2, 2);
+        reply.Push(kResultSuccess);
+        reply.Push(static_cast<u32>(read));
+        reply.PushMappedBuffer(*buffer);
+    }
+    std::size_t next_ = 0;
+};
+
+// rpl:dir 0x0001 OpenDirectory: a move handle to a directory session.
+class FakeDirectoryOwner final : public Service {
+public:
+    explicit FakeDirectoryOwner(ServiceContext& context) : Service(context, "rpl:dir") {
+        Register(0x0001, "OpenDirectory", &FakeDirectoryOwner::OpenDirectory);
+    }
+
+private:
+    void OpenDirectory(Request& request) {
+        Reply& reply = request.MakeReply(1, 2);
+        reply.Push(kResultSuccess);
+        reply.PushMoveObjects(Context().CreateSession(std::make_unique<FakeDirectory>(Context())));
+    }
+};
+
+MH4N_REGISTER(ServiceFactory, "rpl:dir",
+              ServiceFactory([](ServiceContext& c) { return std::make_unique<FakeDirectoryOwner>(c); }));
 
 // ---- synthetic traces -----------------------------------------------------------------------------------------
 
@@ -2017,4 +2116,348 @@ TEST_CASE("--help lists --no-time") {
     const Run run = RunTool({"--help"});
     CHECK(run.status == 0);
     CHECK(Contains(run.out, "--no-time"));
+}
+
+// ---- the diagnostics (N1-12c): result codes, normal words, directory listings ---------------------------------------
+
+TEST_CASE("DescribeResult takes a result code apart and names what Azahar names") {
+    // 0xC82044B4: FS, description 180, summary NothingHappened (1), level Status (25).
+    CHECK(DescribeResult(0xC82044B4) ==
+          "description 180 (FileAlreadyExists), module 17 (FS), summary 1 (NothingHappened), level 25 (Status)");
+    CHECK(DescribeResult(0xC8804470) ==
+          "description 112 (FileNotFound), module 17 (FS), summary 4 (NotFound), level 25 (Status)");
+    CHECK(DescribeResult(0xC8804465) ==
+          "description 101 (ArchiveNotMounted), module 17 (FS), summary 4 (NotFound), level 25 (Status)");
+    CHECK(DescribeResult(0xE0C04702) ==
+          "description 770 (UnexpectedFileOrDirectory), module 17 (FS), summary 6 (NotSupported), level 28 (Usage)");
+    CHECK(DescribeResult(0) ==
+          "description 0 (Success), module 0 (Common), summary 0 (Success), level 0 (Success)");
+    // A well-known description (1000 and above) is named in any module; others only in the FS module.
+    CHECK(DescribeResult(MakeResult(1007, 25, 9, 25)) ==
+          "description 1007 (NoData), module 25 (SRV), summary 9 (Canceled), level 25 (Status)");
+    CHECK(DescribeResult(MakeResult(5, 25, 9, 25)) ==
+          "description 5, module 25 (SRV), summary 9 (Canceled), level 25 (Status)");
+    CHECK(DescribeResult(MakeResult(112, 6, 4, 25)) ==
+          "description 112, module 6 (OS), summary 4 (NotFound), level 25 (Status)");
+    // A value with no name keeps its number.
+    CHECK(DescribeResult(MakeResult(5, 200, 40, 3)) == "description 5, module 200, summary 40, level 3");
+}
+
+TEST_CASE("a different result carries the decoded fields of both codes on the same line") {
+    TempDir dir;
+    Req wrong = Add(2, 1, 2);
+    wrong.in = {ipc::MakeHeader(2, 0, 0)};  // Fail answers kFailure = 0xC8804464
+    wrong.out = {ipc::MakeHeader(2, 1, 0), 0xC82044B4};
+    const Run run = RunTool({dir.Write("ipc.txt", IpcTraceText({Add(1, 1, 1), wrong})), "--service", "rpl:tst"});
+    CHECK(run.status == 1);
+    CHECK(Contains(run.out,
+                   "  result: expected 0xc82044b4, got 0xc8804464 (expected: description 180 (FileAlreadyExists), "
+                   "module 17 (FS), summary 1 (NothingHappened), level 25 (Status); got: description 100 "
+                   "(RomFSNotFound), module 17 (FS), summary 4 (NotFound), level 25 (Status))\n"));
+}
+
+TEST_CASE("every differing normal word is named by its index, and no value is printed") {
+    TempDir dir;
+    // ReadStamp 0 answers (result, 0, 0, 0): the trace says 7, 8 and 9 for words 2, 3 and 4 and the right
+    // value for word 1 of the stamp (the tag, word 2... all four differ except the result).
+    Req wrong;
+    wrong.seq = 1;
+    wrong.in = {ipc::MakeHeader(0x1A, 1, 0), 0};
+    wrong.out = {ipc::MakeHeader(0x1A, 4, 0), 0, 0x11111111, 0x22222222, 0};
+    const Run run = RunTool({dir.Write("ipc.txt", IpcTraceText({wrong})), "--service", "rpl:tst"});
+    CHECK(run.status == 1);
+    CHECK(Contains(run.out, "  normal word 2 differs\n"));
+    CHECK(Contains(run.out, "  normal word 3 differs\n"));
+    CHECK_FALSE(Contains(run.out, "normal word 4 differs"));
+    CHECK_FALSE(Contains(run.out, "11111111"));
+    CHECK_FALSE(Contains(run.out, "22222222"));
+    CHECK_FALSE(Contains(run.out, "result:"));
+}
+
+namespace {
+
+constexpr u32 kListAddress = 0x08300000;
+constexpr u32 kDirRef = 0xCCCC;
+
+Req OpenDir(u32 seq, const std::string& name = "rpl:dir/dir#0") {
+    Req r;
+    r.seq = seq;
+    r.session = "rpl:dir";
+    r.in = {ipc::MakeHeader(1, 0, 0)};
+    r.out = {ipc::MakeHeader(1, 1, 2), 0, ipc::MoveHandleDesc(1), kDirRef};
+    r.outdesc = "move:2:1:" + name;
+    return r;
+}
+
+// A Read of `count` entries into a buffer of `buffer_entries`; the reply says `read` entries and the
+// recorded buffer's CRC is that of `recorded`.
+Req DirRead(u32 seq, u32 count, u32 buffer_entries, u32 read, const std::vector<u8>& recorded,
+            const std::string& session = "rpl:dir/dir#0") {
+    const u32 size = buffer_entries * kEntrySize;
+    Req r;
+    r.seq = seq;
+    r.session = session;
+    r.in = {ipc::MakeHeader(0x0801, 1, 2), count, ipc::MappedBufferDesc(size, ipc::W), kListAddress};
+    r.desc = "mapped-w:2:" + std::to_string(size) + ":-";
+    r.out = {ipc::MakeHeader(0x0801, 2, 2), 0, read, ipc::MappedBufferDesc(size, ipc::W), kListAddress};
+    r.outdesc = "mapped-w:2:" + std::to_string(size) + ":" + CrcOf(recorded);
+    return r;
+}
+
+ListedName File(const std::u16string& name, u64 size = 0) {
+    return ListedName{name, false, size};
+}
+ListedName Dir(const std::u16string& name) {
+    return ListedName{name, true, 0};
+}
+
+// The listing's entries in the order of `indices`.
+std::vector<ListedName> Arranged(const std::vector<ListedName>& entries, const std::vector<std::size_t>& indices) {
+    std::vector<ListedName> out;
+    for (const std::size_t i : indices) {
+        out.push_back(entries[i]);
+    }
+    return out;
+}
+
+Run ReplayListing(const TempDir& dir, const std::vector<ListedName>& native, const std::vector<Req>& requests,
+                  const std::vector<std::string>& extra = {}) {
+    g_listing = native;
+    std::vector<std::string> args = {dir.Write("ipc.txt", IpcTraceText(requests)), "--service", "rpl:dir", "--continue"};
+    args.insert(args.end(), extra.begin(), extra.end());
+    return RunTool(args);
+}
+
+}  // namespace
+
+TEST_CASE("a listing whose entries come in another order is named by the order that reproduces the CRC") {
+    struct Case {
+        const char* order;
+        std::vector<ListedName> native;
+        std::vector<std::size_t> recorded;  // indices into native
+    };
+    // The names are chosen so that no earlier order of the list gives the same sequence.
+    const std::vector<ListedName> mixed_case = {File(u"b"), File(u"B"), File(u"a")};
+    const std::vector<ListedName> kinds = {File(u"d"), Dir(u"a"), File(u"b"), Dir(u"c")};
+    const std::vector<Case> cases = {
+        {"by name, bytewise (UTF-16 code units)", mixed_case, {1, 2, 0}},
+        {"by name, case-insensitive (simple upper-casing)", mixed_case, {2, 0, 1}},
+        {"reversed (the native's order backwards)", mixed_case, {2, 1, 0}},
+        {"by name, bytewise, reversed", mixed_case, {0, 2, 1}},
+        {"by name, case-insensitive, reversed", mixed_case, {1, 0, 2}},
+        {"directories first, then by name case-insensitively", kinds, {1, 3, 2, 0}},
+        {"files first, then by name case-insensitively", kinds, {2, 0, 1, 3}},
+    };
+    for (const Case& c : cases) {
+        CAPTURE(c.order);
+        TempDir dir;
+        const u32 n = static_cast<u32>(c.native.size());
+        const Run run = ReplayListing(dir, c.native,
+                                      {OpenDir(1), DirRead(2, n, n, n, ListingBytes(Arranged(c.native, c.recorded)))});
+        CHECK(run.status == 1);
+        CHECK(Contains(run.out, "DIFF rpl:dir seq=2 session=rpl:dir/dir#0 header=0x08010042"));
+        CHECK(Contains(run.out, std::string("listing: the recorded CRC equals the native's entries in order ") +
+                                    c.order + ": only the order differs"));
+        CHECK_FALSE(Contains(run.out, "the content differs"));
+    }
+}
+
+TEST_CASE("the orders the diagnostics try are listed") {
+    const std::vector<std::string> names = ListingOrderNames();
+    CHECK(names.size() == 7);
+    CHECK(names.front() == "by name, bytewise (UTF-16 code units)");
+}
+
+TEST_CASE("a listing with other content is reported as content, with the counts and the sizes") {
+    TempDir dir;
+    const std::vector<ListedName> native = {File(u"x", 1), File(u"y", 2), Dir(u"z")};
+    std::vector<ListedName> recorded = native;
+    recorded[1].size = 3;  // one file has another size: no order reproduces the CRC
+    const Run run = ReplayListing(dir, native, {OpenDir(1), DirRead(2, 3, 3, 3, ListingBytes(recorded))});
+    CHECK(run.status == 1);
+    CHECK(Contains(run.out, "descriptor 0 (mapped-w, index 2): crc expected " + CrcOf(ListingBytes(recorded)) +
+                                ", got " + CrcOf(ListingBytes(native))));
+    CHECK(Contains(run.out, "descriptor 0 (mapped-w, index 2): listing: native 3 entries (1 directories, 2 files), "
+                            "1656 of 1656 bytes written; recorded 3 entries (1656 bytes)\n"));
+    CHECK(Contains(run.out, "listing: no tried order reproduces the recorded CRC: the content differs\n"));
+    CHECK_FALSE(Contains(run.out, "only the order differs"));
+    CHECK_FALSE(Contains(run.out, "normal word"));  // the counts agree
+}
+
+TEST_CASE("a listing with another entry count says so, and the count word is named too") {
+    TempDir dir;
+    const std::vector<ListedName> native = {File(u"x"), File(u"y"), File(u"z")};
+    const std::vector<ListedName> recorded = {File(u"x"), File(u"y")};
+    const Run run = ReplayListing(dir, native, {OpenDir(1), DirRead(2, 3, 3, 2, ListingBytes(recorded, 3))});
+    CHECK(run.status == 1);
+    CHECK(Contains(run.out, "normal word 2 differs\n"));
+    CHECK(Contains(run.out, "listing: native 3 entries (0 directories, 3 files), 1656 of 1656 bytes written; "
+                            "recorded 2 entries (1104 bytes)\n"));
+    CHECK(Contains(run.out, "listing: the entry counts differ: the content differs\n"));
+}
+
+TEST_CASE("a listing shorter than its buffer: the unwritten tail is reported, and zeros are assumed there") {
+    const std::vector<ListedName> native = {File(u"b"), File(u"B"), File(u"a")};
+    SUBCASE("the recorded tail was zero: only the order differs") {
+        TempDir dir;
+        const Run run = ReplayListing(
+            dir, native,
+            {OpenDir(1), DirRead(2, 5, 5, 3, ListingBytes(Arranged(native, {1, 2, 0}), 5))});
+        CHECK(run.status == 1);
+        CHECK(Contains(run.out, "listing: native 3 entries (0 directories, 3 files), 1656 of 2760 bytes written; "
+                                "recorded 3 entries (1656 bytes)\n"));
+        CHECK(Contains(run.out, "listing: the recorded CRC equals the native's entries in order by name, bytewise"));
+        CHECK(Contains(run.out, "listing: the last 1104 bytes of the buffer are not written by the service; the "
+                                "trace has no bytes for a write-only buffer, so the replay gives zeros there\n"));
+    }
+    SUBCASE("the recorded tail held other bytes: the verdict says the tail may be the cause") {
+        TempDir dir;
+        std::vector<u8> recorded = ListingBytes(native, 5);
+        recorded[3 * kEntrySize + 5] = 0xEE;  // the game's old bytes after the entries
+        const Run run = ReplayListing(dir, native, {OpenDir(1), DirRead(2, 5, 5, 3, recorded)});
+        CHECK(run.status == 1);
+        CHECK(Contains(run.out, "no tried order reproduces the recorded CRC: the content differs, or the bytes after "
+                                "the entries were not zero in the recording\n"));
+    }
+}
+
+TEST_CASE("a listing that matches is not diagnosed") {
+    TempDir dir;
+    const std::vector<ListedName> native = {File(u"b"), Dir(u"a")};
+    const Run run = ReplayListing(dir, native, {OpenDir(1), DirRead(2, 2, 2, 2, ListingBytes(native))});
+    CHECK_MESSAGE(run.status == 0, run.out << run.err);
+    CHECK_FALSE(Contains(run.out, "listing:"));
+}
+
+TEST_CASE("the diagnostics print no name and no byte of the listing") {
+    TempDir dir;
+    const std::vector<ListedName> native = {File(u"SecretName-B.bin", 12345), Dir(u"SecretName-A"),
+                                            File(u"日本語.txt", 77)};
+    std::vector<ListedName> recorded = native;
+    recorded[0].size = 54321;
+    const Run run = ReplayListing(dir, native, {OpenDir(1), DirRead(2, 3, 4, 3, ListingBytes(recorded, 4))});
+    CHECK(run.status == 1);
+    CHECK(Contains(run.out, "listing:"));
+    CHECK_FALSE(Contains(run.out, "Secret"));
+    CHECK_FALSE(Contains(run.out, "bin"));
+    CHECK_FALSE(Contains(run.out, "53 00 65 00"));
+    CHECK_FALSE(Contains(run.out, "5300650063"));  // the UTF-16 bytes of "Sec" as hex
+    CHECK_FALSE(Contains(run.out, "\xE6\x97\xA5"));  // the UTF-8 of the Japanese name
+    CHECK_FALSE(Contains(run.out, "12345"));
+    CHECK_FALSE(Contains(run.out, "54321"));
+}
+
+TEST_CASE("only the Read of a directory session with a whole number of entries is diagnosed as a listing") {
+    CHECK(IsListingRead("fs:USER/dir#3", 0x08010042, "mapped-w", 2 * kListingEntrySize));
+    CHECK(IsListingRead("rpl:dir/dir#0", 0x08010042, "mapped-w", kListingEntrySize));
+    CHECK_FALSE(IsListingRead("fs:USER/file#3", 0x08010042, "mapped-w", kListingEntrySize));   // not a directory
+    CHECK_FALSE(IsListingRead("fs:USER", 0x08010042, "mapped-w", kListingEntrySize));          // no kind
+    CHECK_FALSE(IsListingRead("fs:USER/directory#3", 0x08010042, "mapped-w", kListingEntrySize));  // another kind
+    CHECK_FALSE(IsListingRead("fs:USER/dir#3", 0x08020000, "mapped-w", kListingEntrySize));    // not the Read
+    CHECK_FALSE(IsListingRead("fs:USER/dir#3", 0x08010042, "mapped-r", kListingEntrySize));    // not an output
+    CHECK_FALSE(IsListingRead("fs:USER/dir#3", 0x08010042, "mapped-w", kListingEntrySize + 1));  // not whole entries
+    CHECK_FALSE(IsListingRead("fs:USER/dir#3", 0x08010042, "mapped-w", 0));
+    CHECK_FALSE(IsListingRead("fs:USER/dir#3", 0x08010042, "static", kListingEntrySize));
+}
+
+TEST_CASE("another kind of session with the same buffer is not diagnosed as a listing") {
+    TempDir dir;
+    const std::vector<ListedName> native = {File(u"x"), File(u"y")};
+    // The trace calls the session `sub`: the replay finds the native session's kind differs, and the Read
+    // of a `sub` session gets no listing lines.
+    const Run run = ReplayListing(dir, native,
+                                  {OpenDir(1, "rpl:dir/sub#0"),
+                                   DirRead(2, 2, 2, 2, ListingBytes({File(u"y"), File(u"x")}), "rpl:dir/sub#0")});
+    INFO(run.out);
+    CHECK(run.status == 1);
+    CHECK(Contains(run.out, "kind expected sub, got dir"));
+    CHECK(Contains(run.out, "crc expected"));
+    CHECK_FALSE(Contains(run.out, "listing:"));
+}
+
+TEST_CASE("DiagnoseListing on a reply with no entry count, or more entries than the buffer holds") {
+    const std::vector<u8> buffer = ListingBytes({File(u"a")});
+    CHECK(DiagnoseListing(buffer, std::nullopt, 1, 0) ==
+          std::vector<std::string>{"listing: the native reply has no entry count"});
+    const std::vector<std::string> too_many = DiagnoseListing(buffer, 2, 2, 0);
+    REQUIRE(too_many.size() == 1);
+    CHECK(Contains(too_many[0], "the native reply says 2 entries, more than the 552-byte buffer holds"));
+    const std::vector<std::string> no_recorded_count = DiagnoseListing(buffer, 1, std::nullopt, 0);
+    REQUIRE(!no_recorded_count.empty());
+    CHECK(Contains(no_recorded_count[0], "the recorded reply has no entry count"));
+}
+
+TEST_CASE("the upper-casing the case-insensitive order uses covers Latin-1, Greek and Cyrillic") {
+    // Each pair is a capital and a small letter whose order is different by code unit and by upper case
+    // (the small letter's capital is the one before the other capital).
+    const std::vector<ListedName> native = {File(u"Б"), File(u"а"), File(u"Á"),
+                                            File(u"à"), File(u"Β"), File(u"α")};
+    // by code unit: A-acute (C1), a-grave (E0), Beta (392), alpha (3B1), Be (411), a (430)
+    // by upper case: a-grave (C0), A-acute (C1), alpha (391), Beta (392), a (410), Be (411)
+    const std::vector<ListedName> folded = Arranged(native, {3, 2, 5, 4, 1, 0});
+    const std::vector<u8> expected = ListingBytes(folded);
+    const std::vector<std::string> lines = DiagnoseListing(ListingBytes(native), 6, 6, Crc32(expected.data(), expected.size()));
+    bool found = false;
+    for (const std::string& line : lines) {
+        found = found || Contains(line, "in order by name, case-insensitive (simple upper-casing): only the order differs");
+    }
+    CHECK(found);
+}
+
+TEST_CASE("--keep-buffers: a Read that reads nothing shows the entries of the Read before it, as a game's reused buffer does") {
+    // The game reads a directory into one buffer until a Read returns fewer entries than it asked for; the
+    // last Read returns 0 and writes nothing, so the recorded buffer is still the one the Read before left. The
+    // trace has no bytes for the write-only buffer: by default the replay writes zeros into it before each
+    // request, and the second Read differs; with --keep-buffers the buffer keeps what the first Read wrote.
+    const std::vector<ListedName> native = {File(u"a", 1), Dir(u"b"), File(u"c", 3)};
+    const std::vector<u8> after_first = ListingBytes(native, 4);
+    const std::vector<Req> requests = {OpenDir(1), DirRead(2, 4, 4, 3, after_first), DirRead(3, 4, 4, 0, after_first)};
+    SUBCASE("by default the buffer is zeros before every request") {
+        TempDir dir;
+        const Run run = ReplayListing(dir, native, requests);
+        CHECK(run.status == 1);
+        CHECK(Contains(run.out, "DIFF rpl:dir seq=3 session=rpl:dir/dir#0 header=0x08010042"));
+        CHECK_FALSE(Contains(run.out, "DIFF rpl:dir seq=2"));
+        CHECK(Contains(run.out, "listing: native 0 entries (0 directories, 0 files), 0 of 2208 bytes written; recorded "
+                                "0 entries (0 bytes)\n"));
+        CHECK(Contains(run.out, "the content differs, or the bytes after the entries were not zero in the recording\n"));
+        CHECK(Contains(run.out, "the last 2208 bytes of the buffer are not written by the service; the trace has no "
+                                "bytes for a write-only buffer, so the replay gives zeros there\n"));
+    }
+    SUBCASE("with --keep-buffers it keeps what the first Read left, and nothing differs") {
+        TempDir dir;
+        const Run run = ReplayListing(dir, native, requests, {"--keep-buffers"});
+        CHECK_MESSAGE(run.status == 0, run.out << run.err);
+        CHECK(Contains(run.out, "replayed 3 requests: 3 matched, 0 differ, 0 skipped"));
+    }
+    SUBCASE("with --keep-buffers a difference says the tail was kept") {
+        TempDir dir;
+        std::vector<u8> other = after_first;
+        other[3 * kEntrySize + 1] = 0x77;  // the recording's buffer held something else after the entries
+        const Run run = ReplayListing(dir, native, {OpenDir(1), DirRead(2, 4, 4, 3, after_first), DirRead(3, 4, 4, 0, other)},
+                                      {"--keep-buffers"});
+        CHECK(run.status == 1);
+        CHECK(Contains(run.out, "the bytes after the entries were not what the earlier requests left there\n"));
+        CHECK(Contains(run.out, "so the replay keeps what the requests before this one left there (--keep-buffers)\n"));
+    }
+}
+
+TEST_CASE("--keep-buffers does not touch the buffers a trace has bytes for") {
+    // A readable buffer gets the recorded bytes whatever the option says: the sum of a static buffer.
+    TempDir dir;
+    const std::vector<u8> bytes = {1, 2, 3, 4};
+    Req r;
+    r.seq = 1;
+    r.in = {ipc::MakeHeader(10, 0, 2), ipc::StaticBufferDesc(4, 0), 0x08200000};
+    r.desc = "static:1:4:" + CrcOf(bytes);
+    r.data = "1:" + HexBytes(bytes);
+    r.out = {ipc::MakeHeader(10, 2, 0), 0, 10};
+    const Run run = RunTool({dir.Write("ipc.txt", IpcTraceText({r, r})), "--service", "rpl:tst", "--keep-buffers"});
+    CHECK_MESSAGE(run.status == 0, run.out << run.err);
+}
+
+TEST_CASE("--help lists --keep-buffers") {
+    const Run run = RunTool({"--help"});
+    CHECK(run.status == 0);
+    CHECK(Contains(run.out, "--keep-buffers"));
 }

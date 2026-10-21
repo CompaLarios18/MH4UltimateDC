@@ -1,6 +1,7 @@
 // Derived from Azahar src/core/file_sys/savedata_archive.cpp, src/core/file_sys/archive_extsavedata.cpp,
 // src/core/file_sys/archive_source_sd_savedata.cpp, src/core/file_sys/archive_other_savedata.cpp,
-// src/core/file_sys/disk_archive.cpp, src/core/file_sys/errors.h, src/core/hle/service/fs/fs_user.cpp,
+// src/core/file_sys/disk_archive.cpp, src/common/file_util.cpp (ScanDirectoryTree, SplitFilename83, the order of
+// ForeachDirectoryEntry: the expected listing bytes), src/core/file_sys/errors.h, src/core/hle/service/fs/fs_user.cpp,
 // src/core/hle/service/fs/directory.cpp, src/core/hle/service/fs/archive.cpp and
 // src/core/hle/service/fs/archive.h at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-3.0-or-later: archive.h
 // says "GPLv3 or any later version", the source of the layout of ExtSaveDataInfo; the others say "GPLv2 or any
@@ -9,8 +10,8 @@
 // Copyright 2016-2024 Citra Emulator Project / Azahar Emulator Project (savedata_archive.cpp,
 //   archive_other_savedata.cpp)
 // Copyright 2014-2024 Citra Emulator Project / Azahar Emulator Project (archive_source_sd_savedata.cpp)
-// Copyright 2014-2026 Citra Emulator Project / Azahar Emulator Project (disk_archive.cpp, fs_user.cpp,
-//   archive.cpp, archive.h)
+// Copyright 2014-2026 Citra Emulator Project / Azahar Emulator Project (disk_archive.cpp, file_util.cpp,
+//   fs_user.cpp, archive.cpp, archive.h)
 // Copyright 2018-2026 Citra Emulator Project / Azahar Emulator Project (directory.cpp)
 // Copyright 2014-2025 Citra Emulator Project / Azahar Emulator Project (archive_extsavedata.cpp)
 // Copyright 2016 Citra Emulator Project (errors.h)
@@ -38,6 +39,7 @@ TEST_CASE("fs_save_test needs recomp.h (the repository around native/)" * doctes
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -51,6 +53,7 @@ TEST_CASE("fs_save_test needs recomp.h (the repository around native/)" * doctes
 #include "../src/services/fs/fs_state.h"
 #include "../src/services/fs/host_files.h"
 #include "../src/services/fs/save_archives.h"
+#include "ipc_replay/tool.h"
 #include "mh4n/clock.h"
 #include "mh4n/ipc.h"
 #include "mh4n/log.h"
@@ -334,22 +337,29 @@ struct Guest {
     Handle fs = 0;
     u32 next_path = 0;
 
-    Guest(Fixture& f, const TempDir& dir) : rt(*f.runtime) {
+    // `own_manager`: make a second service manager that has the game folder of the test. Without it the
+    // runtime's own is used, which is the one that writes an IPC trace (--trace-ipc).
+    Guest(Fixture& f, const TempDir& dir, bool own_manager = true) : rt(*f.runtime) {
         Runtime& runtime = *f.runtime;
-        ServiceEnvironment env;
-        env.game_folder = dir.Game();
-        env.user_folder = runtime.UserFolder();
-        env.options = &runtime.GetOptions();
-        env.kernel = &runtime.GetKernel();
-        env.scheduler = &runtime.Scheduler();
-        env.threads = &runtime.Threads();
-        env.interfaces = &runtime.Interfaces();
-        env.request_exit = [&runtime](int status, const std::string& reason) { runtime.RequestExit(status, reason); };
-        auto manager = std::make_shared<ServiceManager>(std::move(env));
-        manager->InstallRegistered();
-        manager->Install(runtime.Svc());
-        runtime.Own(manager);
-        const std::shared_ptr<fs::FsState> state = manager->Context().State<fs::FsState>("fs:USER");
+        ServiceManager* manager_ptr = FindServiceManager(runtime);
+        if (own_manager) {
+            ServiceEnvironment env;
+            env.game_folder = dir.Game();
+            env.user_folder = runtime.UserFolder();
+            env.options = &runtime.GetOptions();
+            env.kernel = &runtime.GetKernel();
+            env.scheduler = &runtime.Scheduler();
+            env.threads = &runtime.Threads();
+            env.interfaces = &runtime.Interfaces();
+            env.request_exit = [&runtime](int status, const std::string& reason) { runtime.RequestExit(status, reason); };
+            auto manager = std::make_shared<ServiceManager>(std::move(env));
+            manager->InstallRegistered();
+            manager->Install(runtime.Svc());
+            runtime.Own(manager);
+            manager_ptr = manager.get();
+        }
+        REQUIRE(manager_ptr != nullptr);
+        const std::shared_ptr<fs::FsState> state = manager_ptr->Context().State<fs::FsState>("fs:USER");
         f.time->in_flight = [state] { return state->io_in_flight.load(); };
         Handle srv = 0;
         REQUIRE(ConnectToPort("srv:", &srv) == kResultSuccess);
@@ -418,6 +428,18 @@ struct Guest {
     }
     Result CloseArchive(u64 handle) {
         return Request(fs, {ipc::MakeHeader(0x080E, 2, 0), static_cast<u32>(handle), static_cast<u32>(handle >> 32)}, 2)[1];
+    }
+    // OpenFileDirectly of a char path in an archive (the file is read-only unless `mode` says more).
+    std::vector<u32> OpenFileDirectly(u32 archive_id, u32 archive_path_type, const std::vector<u8>& archive_path,
+                                      const std::string& file, u32 mode = 1) {
+        next_path = 0;
+        const std::vector<u8> file_path = CharPath(file);
+        const u32 archive_at = Place(archive_path), file_at = Place(file_path);
+        const u32 asize = static_cast<u32>(archive_path.size()), fsize = static_cast<u32>(file_path.size());
+        return Request(fs,
+                       {ipc::MakeHeader(0x0803, 8, 4), 0, archive_id, archive_path_type, asize, kChar, fsize, mode, 0,
+                        ipc::StaticBufferDesc(asize, 0), archive_at, ipc::StaticBufferDesc(fsize, 2), file_at},
+                       4);
     }
     // FormatSaveData of archive 4 with an empty archive path.
     Result Format(u32 block_size = 8, u32 directories = 10, u32 files = 20, bool duplicate = true) {
@@ -586,6 +608,18 @@ struct Guest {
         return entries;
     }
     Result CloseDirectory(Handle dir) { return Request(dir, {ipc::MakeHeader(0x0802, 0, 0)}, 2)[1]; }
+    // A directory read into a buffer of `buffer_entries` entries that was filled with `fill` first: the
+    // number of entries the reply says and the whole buffer afterwards.
+    std::pair<u32, std::vector<u8>> ReadDirectoryBuffer(Handle dir, u32 count, u32 buffer_entries, u8 fill) {
+        const u32 target = Scratch(0x1000);
+        const u32 size = buffer_entries * 0x228;
+        PutBytes(target, std::vector<u8>(size, fill));
+        const std::vector<u32> reply =
+            Request(dir, {ipc::MakeHeader(0x0801, 1, 2), count, ipc::MappedBufferDesc(size, ipc::W), target}, 5);
+        REQUIRE(reply[0] == ipc::MakeHeader(0x0801, 2, 2));
+        REQUIRE(reply[1] == kResultSuccess);
+        return {reply[2], GetBytes(target, size)};
+    }
 };
 
 // A decoded directory entry.
@@ -2386,5 +2420,499 @@ TEST_CASE("Windows: a file deleted while it is open leaves, at most, a name that
     CHECK(fs::host::WriteFileDurably(path, Pattern(8, 2).data(), 8));  // and the name can be made again
 }
 #endif
+
+// ---- N1-12c: what the replay of a recorded save session showed -----------------------------------------------------------
+//
+// The replay of G1, G2 and G6 on the maintainer's PC differs in the descriptor kind of a directory session, in
+// the archive handle words of OpenArchive, in the result codes of requests that carry a handle and in
+// directory listings. Each test below pins one of the causes the code could have (or shows that the code
+// does what Azahar does); docs/native/ipc-replay.md has the rest.
+
+namespace {
+
+// An archive with nothing in it, to count the handles of the archive manager without a runtime.
+class NothingArchive final : public fs::ArchiveBackend {
+public:
+    std::string GetName() const override { return "nothing"; }
+    Result OpenFile(const fs::Path&, u32, u32, std::shared_ptr<fs::FileBackend>*) override { return kFileNotFound; }
+};
+
+// Opens (a path whose first byte is 'o') or fails (any other): what a game's OpenArchive meets in one run,
+// a save that is there and a save that is not formatted.
+class SometimesFactory final : public fs::ArchiveFactory {
+public:
+    std::string GetName() const override { return "sometimes"; }
+    Result Open(const fs::Path& path, u64, std::unique_ptr<fs::ArchiveBackend>* archive) override {
+        if (path.data.empty() || path.data[0] != 'o') {
+            return kNotFormatted;
+        }
+        *archive = std::make_unique<NothingArchive>();
+        return kResultSuccess;
+    }
+};
+
+fs::Path TextPath(const char* text) {
+    fs::Path path;
+    path.raw_type = kChar;
+    path.data.assign(text, text + std::strlen(text));
+    return path;
+}
+
+}  // namespace
+
+TEST_CASE("N1-12c: archive handles are numbered as Azahar's ArchiveManager numbers them") {
+    // Azahar (archive.cpp, OpenArchive): `next_handle` starts at 1; a number is taken only when the open
+    // succeeded, is never given back when the archive is closed, and skips a number in use. The reference's
+    // trace therefore shows 1, 2, 3, ... for the successful opens, in the order they were made, and a
+    // replay whose opens succeed and fail in the same places sees the same numbers.
+    fs::ArchiveManager manager;
+    REQUIRE(manager.Register(0x77, std::make_unique<SometimesFactory>()));
+    fs::ArchiveHandle handle = 0;
+
+    CHECK(manager.Open(0x77, TextPath("open"), 1, &handle) == kResultSuccess);
+    CHECK(handle == 1);
+    CHECK(manager.Open(0x77, TextPath("fail"), 1, &handle) == kNotFormatted);  // takes no number
+    CHECK(manager.Open(0x99, TextPath("open"), 1, &handle) == 0xC8804478);     // an id nobody registered: NotFound (120), none either
+    CHECK(manager.Open(0x77, TextPath("open"), 1, &handle) == kResultSuccess);
+    CHECK(handle == 2);
+    CHECK(manager.Close(1) == kResultSuccess);
+    CHECK(manager.Close(1) == kInvalidArchiveHandle);  // already closed
+    CHECK(manager.Close(77) == kInvalidArchiveHandle);  // never opened; takes no number
+    CHECK(manager.Get(1) == nullptr);
+    CHECK(manager.Get(2) != nullptr);
+    CHECK(manager.Open(0x77, TextPath("open"), 1, &handle) == kResultSuccess);
+    CHECK(handle == 3);  // not 1 again
+    CHECK(manager.Close(3) == kResultSuccess);
+    CHECK(manager.Open(0x77, TextPath("open"), 1, &handle) == kResultSuccess);
+    CHECK(handle == 4);
+}
+
+TEST_CASE("N1-12c: through fs:USER an OpenFileDirectly takes a number whether or not its file opens, a failed OpenArchive none") {
+    // Azahar's OpenFileDirectly opens the archive (a number), opens the file, and closes the archive again.
+    Fixture f;
+    TempDir dir;
+    std::vector<u64> handles;
+    std::vector<Result> opened, others;
+    const int status = BootWith(f, dir, {"--ms", "1000", "--io-latency", "none"}, [&] {
+        Guest g(f, dir);
+        const auto open = [&](u32 id, u32 type, const std::vector<u8>& path) {
+            const std::vector<u32> got = g.OpenArchive(id, type, path);
+            opened.push_back(got[1]);
+            handles.push_back(got[2] | (static_cast<u64>(got[3]) << 32));
+        };
+        open(0x1234, kEmpty, kEmptyPath);       // no such archive id: no number
+        open(4, kEmpty, kEmptyPath);            // not formatted: none
+        g.Format();
+        open(4, kEmpty, kEmptyPath);            // 1
+        open(6, kBinary, ExtPath(1, 0x77, 0));  // no such extdata: none
+        open(4, kEmpty, kEmptyPath);            // 2
+        others.push_back(g.CloseArchive(handles[2]));
+        others.push_back(g.CloseArchive(handles[2]));  // closed twice: invalid handle
+        // OpenFileDirectly: the file is not there, but the archive was opened (and closed): number 3
+        others.push_back(g.OpenFileDirectly(4, kEmpty, kEmptyPath, "/missing.bin")[1]);
+        // an archive that does not open: no number
+        others.push_back(g.OpenFileDirectly(6, kBinary, ExtPath(1, 0x77, 0), "/x")[1]);
+        open(4, kEmpty, kEmptyPath);            // 4
+        ExitProcess(*f.runtime);
+    });
+    CHECK(status == 0);
+    CHECK(handles == std::vector<u64>{0, 0, 1, 0, 2, 4});
+    CHECK(opened == std::vector<Result>{0xC8804478,  // OpenArchive of an unknown id: NotFound (120)
+                                        kNotFormatted, kResultSuccess, kNotFoundInvalidState, kResultSuccess,
+                                        kResultSuccess});
+    CHECK(others == std::vector<Result>{kResultSuccess,         // CloseArchive(1)
+                                        kInvalidArchiveHandle,  // CloseArchive(1) again
+                                        kFileNotFound,          // OpenFileDirectly: the file
+                                        kNotFoundInvalidState});  // OpenFileDirectly: the archive
+}
+
+TEST_CASE("N1-12c: an IPC trace names a directory session fs:USER/dir#k and a file session fs:USER/file#k") {
+    // The reference runner names them `dir` and `file` (the reference runner's IpcKindOf); the replay compares
+    // the kind in the name of every handle a reply hands out.
+    TempDir dir;
+    const std::string trace = (dir.Path() / "ipc.txt").string();
+    {
+        Fixture f;
+        const int status = BootWith(f, dir, {"--ms", "1000", "--io-latency", "none", "--trace-ipc", trace}, [&] {
+            Guest g(f, dir, false);
+            g.Format();
+            const u64 a = g.MustOpen(4, kEmpty, kEmptyPath);
+            g.CreateFile(a, "/f.bin", 4);
+            const Guest::Opened file = g.OpenFile(a, "/f.bin", 1);
+            const Guest::Opened directory = g.OpenDirectory(a, "/");
+            const Guest::Opened second = g.OpenDirectory(a, "/");
+            g.ReadDirectory(directory.session, 2);
+            g.CloseDirectory(directory.session);
+            g.ReadDirectory(second.session, 2);
+            g.CloseFile(file.session);
+            ExitProcess(*f.runtime);
+        });
+        REQUIRE(status == 0);
+    }
+    const std::string text = [&] {
+        const std::vector<u8> bytes = ReadBytesFrom(trace);
+        return std::string(bytes.begin(), bytes.end());
+    }();
+    INFO(text);
+    // OpenFile hands out file#0, the two OpenDirectory dir#0 and dir#1, and each later request names its session
+    CHECK(text.find("outdesc=move:2:1:fs:USER/file#0") != std::string::npos);
+    CHECK(text.find("outdesc=move:2:1:fs:USER/dir#0") != std::string::npos);
+    CHECK(text.find("outdesc=move:2:1:fs:USER/dir#1") != std::string::npos);
+    CHECK(text.find("session=fs:USER/dir#0 cmd=0x08010042") != std::string::npos);
+    CHECK(text.find("session=fs:USER/dir#1 cmd=0x08010042") != std::string::npos);
+    CHECK(text.find("session=fs:USER/file#0 cmd=0x08080000") != std::string::npos);
+    CHECK(text.find("directory") == std::string::npos);
+}
+
+TEST_CASE("N1-12c: a listing is Azahar's, byte for byte: names, 8.3 names, attributes, sizes, zero padding") {
+    // Worked out from DiskDirectory::Read and FileUtil::SplitFilename83: the UTF-16 name (at most 261 units
+    // and the null), the short name from the UTF-8 bytes of the name (the letters not in ".\"/\\[]:;=, ",
+    // upper-cased bytewise, the 9th giving "~1" in places 6 and 7) and the first three bytes after the last
+    // dot as the extension, hidden for a leading dot, the archive bit for every file, the size of a file and
+    // 0 for a directory, every other byte zero.
+    struct Expected {
+        std::string name;
+        std::u16string utf16;
+        std::string short_name;  // 8 characters
+        std::string extension;   // 3 characters
+        bool is_directory;
+        bool is_hidden;
+        u64 size;
+    };
+    // 100 bytes: long, but a path with it stays under Windows' 260 characters in a temporary folder
+    const std::string long_name = std::string(96, 'L') + ".txt";
+    std::vector<Expected> expected = {
+        {"longfilename.txt", u"longfilename.txt", "LONGFI~1", "TXT", false, false, 7},
+        {".hidden", u".hidden", "        ", "HID", false, true, 3},
+        {"Folder", u"Folder", "FOLDER  ", "   ", true, false, 0},
+        {"My File.tar.gz", u"My File.tar.gz", "MYFILE~1", "GZ ", false, false, 1},
+        {"trailing.", u"trailing.", "TRAILING", "   ", false, false, 2},
+        {"UPPER.C", u"UPPER.C", "UPPER   ", "C  ", false, false, 0},
+        {"a.b.c.dd", u"a.b.c.dd", "ABC     ", "DD ", false, false, 4},
+        {"dir.d", u"dir.d", "DIR     ", "D  ", true, false, 0},  // a directory's extension is taken the same way
+        {"\xC3\xA9.bin", u"é.bin", "\xC3\xA9      ", "BIN", false, false, 5},
+        {"\xE6\x97\xA5\xE6\x9C\xAC\xE8\xAA\x9E.txt", u"日本語.txt",
+         std::string("\xE6\x97\xA5\xE6\x9C\xAC") + "~1", "TXT", false, false, 6},  // 9 bytes: the tilde
+        {"\xF0\x9F\x98\x80.txt", u"\xD83D\xDE00.txt", std::string("\xF0\x9F\x98\x80") + "    ", "TXT", false, false, 8},
+        {long_name, std::u16string(96, u'L') + u".txt", "LLLLLL~1", "TXT", false, false, 9},
+    };
+#if defined(_WIN32)
+    // Windows drops the dot at the end of a name when it makes the file
+    expected.erase(std::remove_if(expected.begin(), expected.end(),
+                                  [](const Expected& e) { return e.name == "trailing."; }),
+                   expected.end());
+#endif
+    TempDir dir;
+    const std::filesystem::path folder = dir.Path() / "listing";
+    std::filesystem::create_directories(folder);
+    for (const Expected& e : expected) {
+        const std::filesystem::path path = folder / std::filesystem::path(std::u8string(e.name.begin(), e.name.end()));
+        if (e.is_directory) {
+            std::filesystem::create_directory(path);
+            if (e.name == "Folder") {
+                WriteBytesTo(path / "inside.bin", Pattern(1000, 1));  // a directory's size stays 0
+            }
+        } else {
+            WriteBytesTo(path, Pattern(static_cast<std::size_t>(e.size), 3));
+        }
+    }
+
+    const std::unique_ptr<fs::DirectoryBackend> directory = fs::OpenDiskDirectory(Utf8(folder));
+    std::vector<fs::DirEntry> entries(expected.size() + 4);
+    const u32 count = directory->Read(static_cast<u32>(entries.size()), entries.data());
+    REQUIRE(count == expected.size());
+    CHECK(directory->Read(4, entries.data()) == 0);  // nothing left
+    for (u32 i = 0; i < count; ++i) {
+        std::vector<u8> raw(sizeof(fs::DirEntry));
+        std::memcpy(raw.data(), &entries[i], raw.size());
+        const Entry decoded = Decode(raw);
+        const auto found = std::find_if(expected.begin(), expected.end(), [&](const Expected& e) { return e.name == decoded.name; });
+        REQUIRE_MESSAGE(found != expected.end(), "an entry that was not made: " << decoded.name.size() << " bytes");
+        const Expected& e = *found;
+
+        // Azahar's Entry as bytes: all zero but the fields it sets.
+        std::vector<u8> want(0x228, 0);
+        for (std::size_t j = 0; j < e.utf16.size(); ++j) {
+            want[j * 2] = static_cast<u8>(e.utf16[j]);
+            want[j * 2 + 1] = static_cast<u8>(e.utf16[j] >> 8);
+        }
+        for (std::size_t j = 0; j < 8; ++j) {
+            want[0x20C + j] = static_cast<u8>(e.short_name[j]);  // [8] of the short name is the null
+        }
+        for (std::size_t j = 0; j < 3; ++j) {
+            want[0x216 + j] = static_cast<u8>(e.extension[j]);  // [3] of the extension is the null
+        }
+        want[0x21C] = e.is_directory ? 1 : 0;
+        want[0x21D] = e.is_hidden ? 1 : 0;
+        want[0x21E] = e.is_directory ? 0 : 1;
+        want[0x21F] = 0;
+        for (int j = 0; j < 8; ++j) {
+            want[0x220 + static_cast<std::size_t>(j)] = static_cast<u8>(e.size >> (8 * j));
+        }
+        CHECK_MESSAGE(raw == want, "entry " << i << " of " << e.name.size() << " name bytes, short name "
+                                            << e.short_name.size());
+    }
+}
+
+TEST_CASE("N1-12c: a listing is in the host's order and is not sorted") {
+    // Azahar lists in ForeachDirectoryEntry's order: readdir's on Linux, FindNextFile's on Windows. The
+    // native asks the host through the same primitives (std::filesystem iterates with them) and sorts nothing,
+    // so on one host the two give the same order.
+    TempDir dir;
+    const std::filesystem::path folder = dir.Path() / "order";
+    std::filesystem::create_directories(folder);
+    for (const char* name : {"zeta", "Alpha", "mid", "Beta", "alpha2", "0first", "Zed"}) {
+        WriteBytesTo(folder / name, Pattern(4, 1));
+    }
+    std::vector<std::string> host_order;
+    for (const auto& entry : std::filesystem::directory_iterator(folder)) {
+        host_order.push_back(Utf8(entry.path().filename()));
+    }
+    const std::unique_ptr<fs::DirectoryBackend> directory = fs::OpenDiskDirectory(Utf8(folder));
+    std::vector<fs::DirEntry> entries(16);
+    const u32 count = directory->Read(16, entries.data());
+    REQUIRE(count == host_order.size());
+    std::vector<std::string> listed;
+    for (u32 i = 0; i < count; ++i) {
+        std::vector<u8> raw(sizeof(fs::DirEntry));
+        std::memcpy(raw.data(), &entries[i], raw.size());
+        listed.push_back(Decode(raw).name);
+    }
+    CHECK(listed == host_order);
+}
+
+TEST_CASE("N1-12c: a directory read writes the entries it read and nothing after them; the bytes after stay the client's") {
+    // Azahar's Directory::Read writes `read * 0x228` bytes into the client's mapped buffer. What the buffer
+    // held after them is what the recording's CRC covers, so the native must not clear or fill it.
+    Fixture f;
+    TempDir dir;
+    u32 read = 0, second = 0;
+    std::vector<u8> buffer, after;
+    const int status = BootWith(f, dir, {"--ms", "1000", "--io-latency", "none"}, [&] {
+        Guest g(f, dir);
+        g.Format();
+        const u64 a = g.MustOpen(4, kEmpty, kEmptyPath);
+        g.CreateFile(a, "/one.bin", 1);
+        g.CreateFile(a, "/two.bin", 2);
+        const Guest::Opened opened = g.OpenDirectory(a, "/");
+        std::tie(read, buffer) = g.ReadDirectoryBuffer(opened.session, 5, 5, 0xEE);
+        std::tie(second, after) = g.ReadDirectoryBuffer(opened.session, 5, 5, 0x5A);  // nothing left
+        ExitProcess(*f.runtime);
+    });
+    CHECK(status == 0);
+    CHECK(read == 2);
+    REQUIRE(buffer.size() == 5 * 0x228);
+    CHECK(std::all_of(buffer.begin() + 2 * 0x228, buffer.end(), [](u8 b) { return b == 0xEE; }));
+    // inside an entry the bytes the service writes are all of it: after the name's null, zeros
+    CHECK(buffer[0x228 * 0 + 0x20A] == 0);
+    CHECK(buffer[0x228 * 1 + 0x20A] == 0);
+    CHECK(std::none_of(buffer.begin(), buffer.begin() + 2 * 0x228, [](u8 b) { return b == 0xEE; }));
+    CHECK(second == 0);
+    CHECK(std::all_of(after.begin(), after.end(), [](u8 b) { return b == 0x5A; }));  // not touched at all
+}
+
+TEST_CASE("N1-12c: the same request in SaveData, ExtSaveData and SharedExtSaveData gets Azahar's result code") {
+    // Decoded from Azahar's errors.h (0xC82044B4 is description 180, FileAlreadyExists, NothingHappened,
+    // Status: the answer to a CreateFile of a file that is there; 0xC8804470 is description 112,
+    // FileNotFound: the answer to an OpenFile of one that is not; 0xC8804465 is ArchiveNotMounted, a handle
+    // that is not open).
+    struct Kind {
+        const char* name;
+        bool zero_size_create;  // ExtSaveDataArchive refuses a file of size 0 and the create flag; SaveData allows both
+    };
+    const std::vector<Kind> kinds = {{"SaveData", true}, {"ExtSaveData", false}, {"SharedExtSaveData", false}};
+    for (const Kind& kind : kinds) {
+        CAPTURE(kind.name);
+        Fixture f;
+        TempDir dir;
+        std::map<std::string, Result> r;
+        const int status = BootWith(f, dir, {"--ms", "1000", "--io-latency", "none"}, [&] {
+            Guest g(f, dir);
+            u64 a = 0;
+            if (std::string(kind.name) == "SaveData") {
+                g.Format();
+                a = g.MustOpen(4, kEmpty, kEmptyPath);
+            } else if (std::string(kind.name) == "ExtSaveData") {
+                REQUIRE(g.CreateExtSaveData(1, 0, 0x1234, Pattern(8, 1)) == kResultSuccess);
+                a = g.MustOpen(6, kBinary, ExtPath(1, 0x1234, 0));
+            } else {
+                REQUIRE(g.CreateExtSaveData(0, 0x48000, 0xF000000B, Pattern(8, 1)) == kResultSuccess);
+                a = g.MustOpen(7, kBinary, ExtPath(0, 0xF000000B, 0));
+            }
+            r["create"] = g.CreateFile(a, "/gamecoin.dat", 0x10);
+            r["create again"] = g.CreateFile(a, "/gamecoin.dat", 0x10);
+            g.CreateDirectory(a, "/dir");
+            r["create over a directory"] = g.CreateFile(a, "/dir", 0x10);
+            r["create under a file"] = g.CreateFile(a, "/gamecoin.dat/x", 0x10);
+            r["create in a missing dir"] = g.CreateFile(a, "/nodir/x", 0x10);
+            r["create zero size"] = g.CreateFile(a, "/zero.bin", 0);
+            r["create invalid path"] = g.CreateFile(a, "x", 0x10);
+            r["open"] = g.OpenFile(a, "/gamecoin.dat", 3).result;
+            r["open missing"] = g.OpenFile(a, "/missing.bin", 1).result;
+            r["open missing, read and write"] = g.OpenFile(a, "/missing.bin", 3).result;
+            r["open missing in a missing dir"] = g.OpenFile(a, "/nodir/missing.bin", 1).result;
+            r["open under a file"] = g.OpenFile(a, "/gamecoin.dat/x", 1).result;
+            r["open a directory"] = g.OpenFile(a, "/dir", 1).result;
+            r["open with no flags"] = g.OpenFile(a, "/gamecoin.dat", 0).result;
+            r["open with create"] = g.OpenFile(a, "/new.bin", 7).result;
+            r["delete missing"] = g.DeleteFile(a, "/missing.bin");
+            r["delete in a missing dir"] = g.DeleteFile(a, "/nodir/missing.bin");
+            r["open directory"] = g.OpenDirectory(a, "/dir").result;
+            r["open directory missing"] = g.OpenDirectory(a, "/nodir").result;
+            r["open directory on a file"] = g.OpenDirectory(a, "/gamecoin.dat").result;
+            r["close"] = g.CloseArchive(a);
+            // The handle is closed now: every request that carries it is "invalid archive handle"
+            r["closed: create"] = g.CreateFile(a, "/gamecoin.dat", 0x10);
+            r["closed: open"] = g.OpenFile(a, "/gamecoin.dat", 1).result;
+            r["closed: open directory"] = g.OpenDirectory(a, "/").result;
+            r["closed: delete"] = g.DeleteFile(a, "/gamecoin.dat");
+            r["closed: create directory"] = g.CreateDirectory(a, "/x");
+            r["closed: close again"] = g.CloseArchive(a);
+            ExitProcess(*f.runtime);
+        });
+        CHECK(status == 0);
+        CHECK(r["create"] == kResultSuccess);
+        CHECK(r["create again"] == kFileAlreadyExists);          // 0xC82044B4
+        CHECK(r["create over a directory"] == kFileAlreadyExists);
+        CHECK(r["create under a file"] == kUnexpectedFileOrDirectory);
+        CHECK(r["create in a missing dir"] == kPathNotFound);
+        CHECK(r["create zero size"] == (kind.zero_size_create ? kResultSuccess : kUnsupportedOpenFlags));
+        CHECK(r["create invalid path"] == kInvalidPath);
+        CHECK(r["open"] == kResultSuccess);
+        CHECK(r["open missing"] == kFileNotFound);               // 0xC8804470
+        CHECK(r["open missing, read and write"] == kFileNotFound);
+        CHECK(r["open missing in a missing dir"] == kPathNotFound);
+        CHECK(r["open under a file"] == kUnexpectedFileOrDirectory);
+        CHECK(r["open a directory"] == kUnexpectedFileOrDirectory);
+        CHECK(r["open with no flags"] == kUnsupportedOpenFlags);
+        // read, write and create: SaveData makes the file; the extdata archives never take the create flag
+    CHECK(r["open with create"] == (kind.zero_size_create ? kResultSuccess : kUnsupportedOpenFlags));
+        CHECK(r["delete missing"] == kFileNotFound);
+        CHECK(r["delete in a missing dir"] == kPathNotFound);
+        CHECK(r["open directory"] == kResultSuccess);
+        CHECK(r["open directory missing"] == kPathNotFound);
+        CHECK(r["open directory on a file"] == kUnexpectedFileOrDirectory);
+        CHECK(r["close"] == kResultSuccess);
+        CHECK(r["closed: create"] == kInvalidArchiveHandle);     // 0xC8804465
+        CHECK(r["closed: open"] == kInvalidArchiveHandle);
+        CHECK(r["closed: open directory"] == kInvalidArchiveHandle);
+        CHECK(r["closed: delete"] == kInvalidArchiveHandle);
+        CHECK(r["closed: create directory"] == kInvalidArchiveHandle);
+        CHECK(r["closed: close again"] == kInvalidArchiveHandle);
+    }
+}
+
+
+namespace {
+
+// Records a session like the start of a game's: the shared extdata archive that Azahar's PTM makes at
+// start-up (it is in the user folder before the run), a CreateFile in it that finds its file there, a save
+// that is not formatted and is then, directories and files, an OpenFile of a missing file, a listing.
+// Returns the trace's path; `before` is a copy of the user folder as it was before the run.
+std::string RecordStartOfGame(const TempDir& dir, const std::filesystem::path& before) {
+    const std::filesystem::path shared = dir.SharedExtFolder(0x48000, 0xF000000B);
+    std::filesystem::create_directories(shared / "user");
+    std::filesystem::create_directories(shared / "boss");
+    WriteBytesTo(shared / "metadata", std::vector<u8>(16, 0));
+    WriteBytesTo(shared / "user" / "gamecoin.dat", Pattern(0x10, 9));
+    std::filesystem::copy(dir.User(), before, std::filesystem::copy_options::recursive);
+
+    const std::string trace = (dir.Path() / "ipc.txt").string();
+    Fixture f;
+    const int status = BootWith(f, dir, {"--ms", "1000", "--io-latency", "none", "--trace-ipc", trace, "--trace-ipc-full"}, [&] {
+        Guest g(f, dir, false);
+        const u64 shared_archive = g.MustOpen(7, kBinary, ExtPath(0, 0xF000000B, 0));
+        CHECK(g.CreateFile(shared_archive, "/gamecoin.dat", 0x10) == kFileAlreadyExists);
+        CHECK(g.OpenArchive(4, kEmpty, kEmptyPath)[1] == kNotFormatted);
+        CHECK(g.Format() == kResultSuccess);
+        const u64 save = g.MustOpen(4, kEmpty, kEmptyPath);
+        CHECK(g.CreateDirectory(save, "/d") == kResultSuccess);
+        CHECK(g.CreateFile(save, "/d/b.bin", 3) == kResultSuccess);
+        CHECK(g.CreateFile(save, "/d/a.bin", 2) == kResultSuccess);
+        CHECK(g.OpenFile(save, "/d/missing.bin", 1).result == kFileNotFound);
+        const Guest::Opened directory = g.OpenDirectory(save, "/d");
+        REQUIRE(directory.result == kResultSuccess);
+        CHECK(g.ReadDirectoryBuffer(directory.session, 4, 4, 0).first == 2);
+        CHECK(g.CloseDirectory(directory.session) == kResultSuccess);
+        CHECK(g.CloseArchive(shared_archive) == kResultSuccess);
+        CHECK(g.CloseArchive(save) == kResultSuccess);
+        g.MustOpen(4, kEmpty, kEmptyPath);
+        ExitProcess(*f.runtime);
+    });
+    REQUIRE(status == 0);
+    return trace;
+}
+
+struct ReplayRun {
+    int status = -1;
+    std::string out, err;
+};
+
+ReplayRun ReplaySave(const std::string& trace, const TempDir& dir, const std::filesystem::path& user) {
+    std::ostringstream out, err;
+    ReplayRun run;
+    run.status = ipc_replay::RunIpcReplay({trace, "--service", "fs:USER", "--game", dir.Game(), "--user", Utf8(user),
+                                           "--io-latency", "none", "--continue"},
+                                          out, err);
+    run.out = out.str();
+    run.err = err.str();
+    return run;
+}
+
+}  // namespace
+
+TEST_CASE("N1-12c: the replay of a recorded save session matches on a copy of its user folder") {
+    TempDir dir;
+    const std::filesystem::path before = dir.Path() / "before";
+    const std::string trace = RecordStartOfGame(dir, before);
+    const std::filesystem::path copy = dir.Path() / "copy";
+    std::filesystem::copy(before, copy, std::filesystem::copy_options::recursive);
+    const ReplayRun run = ReplaySave(trace, dir, copy);
+    INFO(run.out);
+    INFO(run.err);
+    CHECK(run.status == 0);
+    CHECK(run.out.find(" 0 differ, 0 skipped") != std::string::npos);
+    // the replay is not vacuous: it made the save (and its files) in the copy, and the directory session is
+    // named as the reference runner names it, `dir`, which the replay compared with the native's kind
+    CHECK(std::filesystem::exists(copy / "sdmc"));
+    const std::vector<u8> bytes = ReadBytesFrom(trace);
+    const std::string text(bytes.begin(), bytes.end());
+    CHECK(text.find("outdesc=move:2:1:fs:USER/dir#0") != std::string::npos);
+}
+
+TEST_CASE("N1-12c: an archive that opens in the recording and not in the replay shifts every later handle, and the replay says so") {
+    // What the maintainer's first workaround showed: the shared extdata archive that Azahar's PTM makes at
+    // start-up was not there, so the native's OpenArchive failed where the reference's succeeded. The
+    // reference's handles are 1, 2, 3 and the native's are 1, 2 for the same opens; the replay sends the reference's
+    // values, so every request that carries one differs, and a CreateFile in the archive that exists in the
+    // recording answers "invalid archive handle". The replay does not remap handle words (the numbering is
+    // Azahar's, see the test above): the first difference is the one to remove.
+    TempDir dir;
+    const std::filesystem::path before = dir.Path() / "before";
+    const std::string trace = RecordStartOfGame(dir, before);
+    const std::filesystem::path copy = dir.Path() / "copy";
+    std::filesystem::copy(before, copy, std::filesystem::copy_options::recursive);
+    std::filesystem::remove_all(copy / "nand");
+    const ReplayRun run = ReplaySave(trace, dir, copy);
+    INFO(run.out);
+    CHECK(run.status == 1);
+    // 1. the archive that is not there: expected success, got NotFormatted (340)
+    CHECK(run.out.find("DIFF fs:USER seq=3 session=fs:USER header=0x080c00c2\n"
+                       "  result: expected 0x00000000, got 0xc8a04554 (expected: description 0 (Success), module 0 "
+                       "(Common), summary 0 (Success), level 0 (Success); got: description 340 (NotFormatted), module "
+                       "17 (FS), summary 5 (InvalidState), level 25 (Status))\n") != std::string::npos);
+    // 2. the CreateFile in it: expected "file exists" (180), got "invalid archive handle" (101)
+    CHECK(run.out.find("result: expected 0xc82044b4, got 0xc8804465 (expected: description 180 (FileAlreadyExists), "
+                       "module 17 (FS), summary 1 (NothingHappened), level 25 (Status); got: description 101 "
+                       "(ArchiveNotMounted), module 17 (FS), summary 4 (NotFound), level 25 (Status))") != std::string::npos);
+    // 3. the save's OpenArchive, after the format: the reference's handle is 2, the native's 1; the word is named
+    //    by its number, never by value
+    CHECK(run.out.find("DIFF fs:USER seq=7 session=fs:USER header=0x080c00c2\n  normal word 2 differs\n") !=
+          std::string::npos);
+    // 4. everything that carries a reference handle fails (the native has none of that number)
+    CHECK(run.out.find("DIFF fs:USER seq=11 session=fs:USER header=0x080201c2\n  result: expected 0xc8804470, got "
+                       "0xc8804465") != std::string::npos);  // the OpenFile of a missing file
+}
+
 
 #endif  // __has_include("recomp.h")

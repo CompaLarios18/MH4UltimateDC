@@ -1,7 +1,8 @@
 // Derived from Azahar src/core/hle/ipc.h and src/core/hle/kernel/hle_ipc.cpp at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6
 // (GPL-2.0-or-later: each says "GPLv2 or any later version"): the layouts of the translate descriptors
 // and the walk over the translate parameters of a recorded command (Part and ParseCommand, the same
-// walk as the runtime's IPC trace writer, which is derived from the same two files).
+// walk as the runtime's IPC trace writer, which is derived from the same two files). What is derived for
+// the diagnostics (result codes, directory entries) is in a file of its own.
 // Copyright 2016 Citra Emulator Project (ipc.h)
 // Copyright 2017-2025 Citra Emulator Project / Azahar Emulator Project (hle_ipc.cpp)
 #include "ipc_replay/replay.h"
@@ -9,11 +10,13 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cstdio>
 #include <set>
 #include <thread>
 
 #include <fmt/format.h>
 
+#include "ipc_replay/diagnostics.h"
 #include "mh4n/crc32.h"
 #include "mh4n/ipc.h"
 #include "mh4n/registry.h"
@@ -287,6 +290,8 @@ private:
     void Compare(const IpcRecord& record, const std::vector<u32>& words,
                  const std::vector<Part>& request_parts, Difference* diff);
     void LearnHandles(const IpcRecord& record, const std::vector<u32>& words);
+    void DiagnoseBuffer(const IpcRecord& record, const std::vector<u32>& words, const IpcDesc& want,
+                        const IpcDesc& have, u32 address, const std::string& where, Difference* diff);
 
     ServiceManager& manager_;
     const IpcTrace& trace_;
@@ -766,6 +771,8 @@ Engine::Outcome Engine::Step(const IpcRecord& record) {
         if (data != record.data.end()) {
             std::copy_n(data->second.begin(), std::min<std::size_t>(data->second.size(), bytes.size()),
                         bytes.begin());
+        } else if (config_.keep_output_buffers && part.type == Part::Type::Mapped && (part.perms & 1) == 0) {
+            continue;  // write-only, nothing recorded: it keeps what the requests before this one left
         }
         if (!bytes.empty() && !memory_.WriteBlock(part.address, bytes.data(), part.size)) {
             Skip(base, "a buffer lies outside the memory the replay can map");
@@ -852,9 +859,15 @@ void Engine::Compare(const IpcRecord& record, const std::vector<u32>& words,
     const auto got_result = ResultOf(words);
     const auto result_differs = [&] {
         if (expected_result != got_result) {
-            diff->what.push_back(fmt::format("result: expected {}, got {}",
-                                             expected_result ? Hex(*expected_result) : "none",
-                                             got_result ? Hex(*got_result) : "none"));
+            std::string line = fmt::format("result: expected {}, got {}",
+                                           expected_result ? Hex(*expected_result) : "none",
+                                           got_result ? Hex(*got_result) : "none");
+            if (expected_result && got_result) {
+                // The two codes taken apart, so that one line says what is wrong (docs/native/ipc-replay.md).
+                line += fmt::format(" (expected: {}; got: {})", DescribeResult(*expected_result),
+                                    DescribeResult(*got_result));
+            }
+            diff->what.push_back(std::move(line));
         }
     };
     if (config_.time_dependent.Matches(record.session, *record.cmd)) {
@@ -876,6 +889,7 @@ void Engine::Compare(const IpcRecord& record, const std::vector<u32>& words,
     // The descriptors, as the IPC trace lists them: the reply's own, then the request's writable
     // mapped buffers.
     std::vector<IpcDesc> got;
+    std::vector<u32> got_address;  // where the buffer of got[i] lies in the replay's memory (0: not a buffer)
     for (const Part& part : ParseCommand(words)) {
         IpcDesc desc;
         desc.index = part.index;
@@ -901,6 +915,7 @@ void Engine::Compare(const IpcRecord& record, const std::vector<u32>& words,
             continue;
         }
         got.push_back(std::move(desc));
+        got_address.push_back(part.type == Part::Type::Static ? part.address : 0);
     }
     for (const Part& part : request_parts) {
         if (part.type == Part::Type::Mapped && (part.perms & 2) != 0) {
@@ -914,6 +929,7 @@ void Engine::Compare(const IpcRecord& record, const std::vector<u32>& words,
                 desc.token = Hex(Crc32(bytes.data(), bytes.size()));
             }
             got.push_back(std::move(desc));
+            got_address.push_back(part.address);
         }
     }
 
@@ -938,6 +954,7 @@ void Engine::Compare(const IpcRecord& record, const std::vector<u32>& words,
         }
         if (want.IsBuffer() && want.token != "-" && want.token != have.token) {
             diff->what.push_back(fmt::format("{}: crc expected {}, got {}", where, want.token, have.token));
+            DiagnoseBuffer(record, words, want, have, got_address[i], where, diff);
         }
         if (want.IsHandles() && want.index == have.index && want.size == have.size) {
             const std::vector<std::string> names = SplitNames(want.token);
@@ -969,6 +986,34 @@ void Engine::Compare(const IpcRecord& record, const std::vector<u32>& words,
                 }
             }
         }
+    }
+}
+
+// What can be said about a buffer whose CRC differs without printing its bytes: today, whether it is the
+// listing a directory Read wrote (diagnostics.h).
+void Engine::DiagnoseBuffer(const IpcRecord& record, const std::vector<u32>& words, const IpcDesc& want,
+                            const IpcDesc& have, u32 address, const std::string& where, Difference* diff) {
+    if (!IsListingRead(record.session, *record.cmd, want.kind, have.size) || address == 0 || have.token == "-") {
+        return;
+    }
+    std::vector<u8> buffer(have.size);
+    if (!memory_.ReadBlock(buffer.data(), address, have.size)) {
+        return;
+    }
+    // The entry count is the reply's second normal word (0x08010082: the result, then the count).
+    const auto count_of = [](const std::vector<u32>& reply) -> std::optional<u32> {
+        if (reply.size() > 2 && ipc::Header{reply[0]}.NormalParamsSize() >= 2) {
+            return reply[2];
+        }
+        return std::nullopt;
+    };
+    u32 recorded_crc = 0;
+    if (want.token.size() != 10 || std::sscanf(want.token.c_str(), "0x%8x", &recorded_crc) != 1) {
+        return;
+    }
+    for (const std::string& line : DiagnoseListing(buffer, count_of(words), count_of(*record.out), recorded_crc,
+                                                   config_.keep_output_buffers)) {
+        diff->what.push_back(fmt::format("{}: {}", where, line));
     }
 }
 

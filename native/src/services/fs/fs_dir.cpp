@@ -31,7 +31,8 @@ public:
         Register(0x0802, "Close", &FsDirectory::Close);
     }
 
-    const char* SessionKind() const override { return "directory"; }
+    // How an IPC trace names this session: `fs:USER/dir#k`, as the reference runner does (mh4n/service.h).
+    const char* SessionKind() const override { return "dir"; }
 
 private:
     // Inputs:  0: 0x08010042, 1: the number of entries, 2: the mapped buffer descriptor (write), 3: its address
