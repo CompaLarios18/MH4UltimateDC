@@ -291,14 +291,14 @@ Everything under `build/` contains game code: it never goes into the repository.
 
 The reference runner is meant to repeat itself (D30): two runs with the same arguments, in fresh copies of one
 user folder, give the same traces, captures, screenshots and user folders (the `log/` folder of the user folder
-aside, by D37: its file is stamped with the host's clock and holds the run's directory path, it is the runner's own
+aside, by D49: its file is stamped with the host's clock and holds the run's directory path, it is the runner's own
 diagnostic log and not state of the game or of the emulated console, so a comparison of two user folders skips it;
 see N0-29, iteration 0, below). Without `--async-io` (its default mode)
 it already read files in place, started at a fixed date and kept host time out of the delay of a file read; N0-26
 fixes the two values that were still drawn anew in every run, and gives `--trace-timing` to look for what is left;
 N0-29 removes the sources it found, except the runner's log (source 6; the list is below), and measures the result on the three gate sessions: with
 the game, five pairs of runs are identical in every artifact compared (the runner's own log is left out of the
-comparison, and differs: D37), see the last subsection.
+comparison, and differs: D49), see the last subsection.
 
 What each mode keeps of Azahar's behaviour:
 - `--async-io` keeps all of it: none of the values below is fixed.
@@ -334,10 +334,14 @@ Notes for the mirror:
   out an address (the local wireless service uses the room's, whatever `mac.txt` says), and a console that asked for
   a new identity keeps `mac.txt`'s.
 - The console unique ID follows the same rule (default mode, no room, no `--new-console-id`) and only decides a config
-  savegame that the run makes. The mirror takes the ID in the table as the ID of a fresh user folder; a folder that
-  already has a config savegame keeps the ID in it, and nothing rewrites it. Fixed 0x4D480001A2B3C4D5 is this port's
-  own choice (any pair of Azahar's shape would do): the mirror, and N1-15 for the ID of a fresh folder, must use the
-  same numbers.
+  savegame that the run makes. A folder that already has a config savegame keeps the ID in it, and nothing rewrites it.
+  Fixed 0x4D480001A2B3C4D5 is this port's own choice (any pair of Azahar's shape would do). The native runtime's
+  decision D37 (N1, in the batch of PR #19 when this was written) gives a fresh user folder a random ID and says that
+  goldens and replays use folders that already hold a config savegame: that fits the reference only if the folder a
+  golden starts from (`user-before`) holds the config savegame that a default-mode reference run makes, with this ID;
+  a golden recorded from a folder without one holds a config savegame made during the run (this ID) that a native
+  run, drawing its own, would not reproduce. N0-09 has to record from a folder that holds it (its spec says so), and
+  the native runtime's deterministic mode must use this ID where it makes one.
 - Why one fix covers the shared page's date: its update callback (`SharedPage::Handler::UpdateTimeCallback`) writes
   `date_time` from `init_time` plus the clock (`GetGlobalTimeUs`) and `update_tick` from the timer's own ticks, so
   both carried the random starting tick and nothing else of the host (the update is an event scheduled at tick 0 of
@@ -494,7 +498,12 @@ address, and then the same value in the IPC trace's reply. The sources, by what 
    not fully write keeps the request word's bytes there (`dsp::DSP` 0x001000c0, for one, has a four-word request and
    replies a `u16` in word 2: bytes 2 and 3 of the reply word are bytes 2 and 3 of the request word). That is the
    guest's own data and the same in every run. The mirror starts its reply buffer from the request's words and zeros
-   the rest, so the same bytes come out.
+   the rest, so the same bytes come out. The native runtime's decision D47 (N1, in the batch of PR #19 when this was
+   written) says a `u8`, `u16` or `bool` reply writes the whole word, zero-extended: that differs from the reference
+   exactly in the words described above (a reply word whose index the request had, and whose bytes the service does
+   not write), where the reference keeps the request word's bytes. The strict IPC comparison would report such a
+   word (it needs a service that replies a `u8`, `u16` or `bool` in a word where the request had a nonzero upper
+   half; `dsp::DSP` 0x001000c0 is the one known); N1 has to decide which side moves.
 3. **Padding of the metadata of an extdata or save (uninitialised).** `FS_USER::CreateExtSaveData` (and
    `FormatSaveData`, `FormatThisUserSaveData`) declare an `ArchiveFormatInfo` without initialising it, set its four
    fields, and the archive writes the whole 16 bytes, the three padding bytes after `duplicate_data` included, to the
@@ -520,7 +529,7 @@ address, and then the same value in the IPC trace's reply. The sources, by what 
    `clock_sequence` (`cfg:u` GetUUIDClockSequence), so no value it sees changes.
 6. **The runner's log (not removed).** The log file in the user folder (`log/mh4u_runner_log.txt`) differs in every
    line between two runs: Azahar stamps each with the host's clock, and a few hold the run's directory path. It is not
-   game state, the game cannot read it and nothing reads it back, so it is left as Azahar writes it, and D37 (the
+   game state, the game cannot read it and nothing reads it back, so it is left as Azahar writes it, and D49 (the
    orchestrator's decision at the maintainer's request, 2026-10-21) makes the comparison of two user folders skip
    `log/`: the exact comparison of the user folder is of every other file, byte by byte (the orchestrator's comparison
    script does this; no script in this repository compares user folders). Zeroing the stamp would need a switch in
@@ -587,7 +596,7 @@ Ryzen 5 5600X, 6 cores and 12 threads, 32 GB), idle except where stated. The run
 - What was compared (the orchestrator's comparison script, which is not in the repository; it only reads): the text
   traces line by line, line 1 left out when both start with `#` (the header, with the date); the binary captures,
   their manifests, every screenshot, the frames of the GPU capture and every file of the user folder after the run
-  (`log/` left out, D37) by SHA-256, with the same file names on both sides. Line 1 of each text trace, left out of
+  (`log/` left out, D49) by SHA-256, with the same file names on both sides. Line 1 of each text trace, left out of
   that comparison, is byte-identical in every run as well, so the whole files are identical. Line counts below are
   lines (newline characters; the traces end their lines with CRLF), line 1 included.
 
@@ -605,7 +614,7 @@ Ryzen 5 5600X, 6 cores and 12 threads, 32 GB), idle except where stated. The run
 | GPU capture | 144,248,896 bytes (manifest 550); frames folder: 6 PPM files (frames 1500 to 1502, both screens), 1,555,290 bytes | identical, the 8 bytes of iteration 0 included |
 | Shots | 49 files: 48 PPM and the 4,096-byte dump of the shared page | identical |
 | User folder after the run, without `log/` | 25 files, 51,788,928 bytes (the config savegame and the extdata metadata among them) | identical file by file |
-| Runner's log (`log/mh4u_runner_log.txt`) | 42 lines, 6,506 bytes in each run (and an empty `.old` file) | SHA-256 differs in all three runs, as predicted (left out of the comparison, D37) |
+| Runner's log (`log/mh4u_runner_log.txt`) | 42 lines, 6,506 bytes in each run (and an empty `.old` file) | SHA-256 differs in all three runs, as predicted (left out of the comparison, D49) |
 
 **G6** (3700 frames; two runs, one pair)
 
@@ -662,7 +671,7 @@ reference images were identical in iteration 0 and are identical now, so they do
 | Config savegame in the user folder | 16 bytes, every session | none differs |
 | Extdata metadata file in the user folder | 1 byte (G1, G6) | none differs |
 | The game's save file in the user folder (G2) | 16 bytes | none differs (81,408 bytes) |
-| Runner's log | every line, every session | differs (SHA-256 of the file), as predicted and left out by D37 |
+| Runner's log | every line, every session | differs (SHA-256 of the file), as predicted and left out by D49 |
 
 What this shows: with the runner of this iteration, in the five pairs of the three gate sessions, including a
 G1 run under the load of a second runner, no artifact compared differs except the runner's own log. It shows
