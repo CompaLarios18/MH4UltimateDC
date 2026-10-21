@@ -294,14 +294,23 @@ def test_allowlist_parsing() -> None:
     assert parsed == {"dir/f.dat": h}
 
 
-def test_shipped_allowlist_lists_only_the_icons() -> None:
+OPEN_SOURCE_ARCHIVES = {
+    "native/third_party/open_source_archives/data/bad_word_list.dat",
+    "native/third_party/open_source_archives/data/country_list.dat",
+    "native/third_party/open_source_archives/data/mii.dat",
+    "native/third_party/open_source_archives/data/shared_font.dat",
+}
+
+
+def test_shipped_allowlist_lists_only_the_icons_and_the_open_source_archives() -> None:
     text = (ROOT / "config" / "native" / "large_files.txt").read_text()
     assert text.startswith("#")
     # N0-19 follow-up 2: the tracked icons (binary files and the C byte-array form) are listed.
+    # N1-12: so are the four open-source replacement system archives (licences read, see their PROVENANCE.md).
     assert set(guard.load_allowlist(text)) == {
         "port/app/icon/icon_data.h", "port/app/icon/mh4u.icns",
         "port/app/icon/mh4u.ico", "port/app/icon/mh4u.png",
-    }
+    } | OPEN_SOURCE_ARCHIVES
 
 
 # --- every path of every commit in --range (hardening round) ---
@@ -757,11 +766,11 @@ def test_tracked_tree_binary_rules_are_a_known_set() -> None:
     assert _tripped_in_tracked_tree(guard.read_allowlist(ROOT)) == set()
 
 
-def test_tracked_tree_without_the_list_trips_only_the_icons() -> None:
+def test_tracked_tree_without_the_list_trips_only_the_icons_and_the_open_source_archives() -> None:
     assert _tripped_in_tracked_tree({}) == {
         "port/app/icon/icon_data.h", "port/app/icon/mh4u.icns",
         "port/app/icon/mh4u.ico", "port/app/icon/mh4u.png",
-    }
+    } | OPEN_SOURCE_ARCHIVES
 
 
 # ---- N0-19 follow-up 2: generic binary rule, text listings, dense blobs ----
