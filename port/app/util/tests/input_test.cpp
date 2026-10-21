@@ -1,8 +1,8 @@
 // The app's input (input.cpp) against a fake runtime and a fake SDL: which controller the input
 // profile is made for and how the log line names it, key names (with the mouse's and the lists of
 // alternatives), the mute that goes to the runtime, and the keyboard-and-mouse mode's calls to it
-// (the mouse's stick, the camera turn, the wheel's and the item bar's key presses). The SDL calls the file makes are defined here, so no SDL library is linked; only its
-// headers are needed. Synthetic data only.
+// (the mouse's stick, the camera turn, the wheel's and the item bar's key presses). The SDL calls the file
+// makes are defined here, so no SDL library is linked; only its headers are needed. Synthetic data only.
 // Built with -DMH4U_APP_TESTS=ON (port/app/CMakeLists.txt) or by hand against doctest, {fmt}
 // and the SDL2 headers.
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
