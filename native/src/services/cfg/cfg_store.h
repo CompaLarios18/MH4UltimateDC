@@ -164,7 +164,7 @@ std::vector<u32> RegionsFromIcon(const std::string& game_folder);
 // `language`, else the first region and its first language.
 std::pair<u32, u8> AdjustLanguage(const std::vector<u32>& regions, u8 language);
 
-// The host's random source: std::random_device, 64 bits per call (the most-significant word first). It
+// The host's random source: std::random_device, 64 bits per call (two 32-bit draws, in no promised order). It
 // can throw. Every caller that is not a test passes this as `random64`.
 u64 HostRandom64();
 // Replaces the source for the tests (an empty function puts the host's back). Never used by the program.

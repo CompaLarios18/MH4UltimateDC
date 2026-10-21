@@ -60,6 +60,13 @@ A device name nothing has registered leaves that interface empty, with an Info l
 today: the `null` GPU (N1-17), the `script` input source (N1-16) and the `null` audio sink (N1-18);
 the capture player's GPUs come with N2 and the real audio sinks with N3.
 
+## Paths on Windows (D45)
+
+On Windows the runner reads its command line as UTF-16 and works in UTF-8 inside (N1-13d, N1-13e): `--user`, the game folder, the ELF/program path and `--options FILE` may contain accents or other non-ASCII characters, and the saves, the config savegame, `mac.txt`, `mcu.dat` and `exheader.bin` are found there.
+
+- The `mh4u.ini` the port's hooks read is opened by the hooks with an ANSI string (their file is shared with the Azahar build and is not edited). For a `--user` folder with non-ASCII characters the platform therefore gives the hooks the folder's 8.3 short name; if the volume has no short names (they can be switched off) the hooks get the placeholder folder, `mh4u.ini` is not read, fps and widescreen keep their defaults and one Warning says why and how to fix it (use an ASCII `--user` path, or `fsutil 8dot3name`).
+- The developer options that write or read traces and captures keep the Windows active code page (`--trace-ipc`, `--trace-svc`, `--state-trace`, `--observable`, `--capture-hid`, `--capture-dsp`, `--tex-hashes-out`, `--missing-entries`, `--judge`, the GPU capture player, the HD pack tools and the replay tool's `--game` and `--svc-trace`): use ASCII paths for them. The goldens live in ASCII folders.
+
 ## Output and exit status
 
 The program's `svcOutputDebugString` text goes to standard output, one line each, as
