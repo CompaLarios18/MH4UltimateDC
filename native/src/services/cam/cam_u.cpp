@@ -38,7 +38,12 @@
 // resolution to the blank camera as well (ApplyContext, and LoadCameraImplementation for the first
 // use), where Azahar's commands apply only the field they change. The blank camera's output depends on
 // the format and resolution alone, so this shows only if the camera's own format or resolution lagged
-// the current context's, which Azahar's per-field commands allow.
+// the current context's, which Azahar's per-field commands allow. The error replies whose declared word
+// Azahar leaves unwritten (rb.Skip(1, false): IsBusy, IsFinishedReceiving, GetTransferBytes, IsTrimming,
+// GetTrimmingParams (its four coordinate words) and the GetMaxLines and GetMaxBytes error replies) answer
+// the request's word of that position when it lies inside the request, else 0; Azahar leaves the guest's
+// own command-buffer content there (Stale()). LatencyMs, and the vsync chain's period, use the table's
+// entry 0 (67 ms) for a frame rate above 12, where Azahar indexes past its table.
 #include <algorithm>
 #include <array>
 #include <cstring>
