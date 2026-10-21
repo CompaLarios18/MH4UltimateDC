@@ -112,8 +112,10 @@ jobs:
              controller's Guide button, or Back and Start together) opens the menu: the game's
              options, the display, sound, controls, the room you're in, quit.
 
-          mh4u.exe opens the game full screen, with the keyboard, a controller (mapped on its own,
-          like MH3U on a Wii U) and the mouse as the stylus. F11 or Alt+Enter: full screen or a
+          mh4u.exe opens the game full screen, with the keyboard and mouse (like Monster Hunter
+          Rise on PC: the mouse turns the camera, the wheel scrolls the items, hold Alt to use the
+          mouse on the touch screen, F1 shows or hides the key guides) or a controller (mapped on
+          its own, like MH3U on a Wii U). F11 or Alt+Enter: full screen or a
           window. F12, or the right stick's click: in quests, the touch screen's map or the whole
           touch screen.
           The launcher's other screens: Mods (several mods, in an order, conflicts shown; a catalog of recommended mods and texture packs, the HD pack among them, installed with one click), Online
