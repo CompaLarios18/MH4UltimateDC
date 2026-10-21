@@ -31,6 +31,7 @@
 #include <vector>
 
 #include "applet_manager.h"
+#include "shared_font.h"
 #include "mh4n/ipc.h"
 #include "mh4n/log.h"
 #include "mh4n/registry.h"
@@ -55,11 +56,23 @@ struct AptState {
     u64 program_id = 0;
     // APT::Module::screen_capture_post_permission ("TODO(JamePeng): verify the initial value")
     u32 screen_capture_post_permission = 0;
+    // APT::Module::shared_font_mem: "APT:SharedFont", 0x332000 bytes (3272 KB) from the SYSTEM region,
+    // ReadWrite for the owner and Read for the others, made with the module and kept for the run
+    // whether or not the game asks for the font. Only the allocation is reproduced (it is what the
+    // SYSTEM region's usage shows); LoadSharedFont and GetSharedFont stay unimplemented.
+    std::shared_ptr<SharedMemory> shared_font_mem;
 
     void Ensure(ServiceContext& context) {
         if (!applet_manager) {
             applet_manager = std::make_shared<AppletManager>(context);
             applet_manager->SetProgramId(program_id);
+            // Azahar unwraps the result (it asserts when the region is full); here a failure is logged
+            // and the module goes on without the block.
+            const Result result = AllocateSharedFontBlock(context.GetKernel(), &shared_font_mem);
+            if (IsError(result)) {
+                MH4N_LOG(Error, kLog, "cannot allocate the shared font block: 0x{:08X}", result);
+                shared_font_mem.reset();
+            }
         }
     }
 };
@@ -69,6 +82,20 @@ std::shared_ptr<AptState> GetState(ServiceContext& context) {
     state->Ensure(context);
     return state;
 }
+
+}  // namespace
+
+Result AllocateSharedFontBlock(Kernel& kernel, std::shared_ptr<SharedMemory>* out) {
+    out->reset();
+    return kernel.NewSharedMemory(out, nullptr, kSharedFontSize, MemoryPermission::ReadWrite,
+                                  MemoryPermission::Read, 0, FcramRegion::System, "APT:SharedFont");
+}
+
+std::shared_ptr<SharedMemory> SharedFontBlock(ServiceContext& context) {
+    return GetState(context)->shared_font_mem;
+}
+
+namespace {
 
 std::vector<u8> BufferData(const StaticBuffer* buffer) {
     return buffer != nullptr ? buffer->data : std::vector<u8>();
