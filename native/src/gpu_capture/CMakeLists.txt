@@ -5,6 +5,7 @@ mh4n_module(
     SOURCES
         capture_host.cpp
         checks.cpp
+        diagnostics.cpp
         gpus.cpp
         image.cpp
         mgpu.cpp

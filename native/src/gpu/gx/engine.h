@@ -12,6 +12,12 @@
 // transfer and texture copy commands, writes the same registers and signals the same interrupts,
 // with the same delays, as Azahar's VideoCore::GPU. It does nothing for command lists (SubmitCmdList),
 // the display (buffer swaps only update the registers) or the cache. Registered as "cpu-gx".
+//
+// An interrupt is only signalled through Host::SignalInterrupt. What the GSP service does with it
+// (Azahar writes it into its interrupt relay queue in the GSP's shared memory, at once, when the
+// GPU timings are not simulated) is not this engine's: that page is in a capture's GPU_PAGES for
+// every command that signals one, and the capture player leaves it out of the judgement when it
+// is exactly that write (docs/native/capture-player.md, N2-03b).
 #pragma once
 
 #include <array>

@@ -1,13 +1,17 @@
 // Derived from Azahar src/video_core/gpu.cpp, src/common/color.h,
 // src/video_core/renderer_software/renderer_software.cpp, src/video_core/pica/regs_external.h,
-// regs_framebuffer.h, regs_internal.h and pica_core.h at
+// regs_framebuffer.h, regs_internal.h, pica_core.h, src/core/hle/service/gsp/gsp_gpu.cpp,
+// gsp_interrupt.h and gsp_command.h at
 // 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6
 // (GPL-2.0-or-later; every one of those files says "GPLv2 or any later version"): the expected
 // values, worked out from GPU::VirtualToPhysicalAddress, the colour decoders and the software
-// renderer's loop over a displayed screen (including its off-by-one column), and the word
-// positions of the display, colour-buffer, fill and transfer registers the test writes.
+// renderer's loop over a displayed screen (including its off-by-one column), the word
+// positions of the display, colour-buffer, fill and transfer registers the test writes, the GX
+// command words, and the bytes the GSP's interrupt relay queue changes when an interrupt arrives.
 // Copyright 2023-2026 Citra Emulator Project / Azahar Emulator Project (gpu.cpp, regs_external.h,
-//   pica_core.h)
+//   pica_core.h, gsp_interrupt.h)
+// Copyright 2014-2026 Citra Emulator Project / Azahar Emulator Project (gsp_gpu.cpp)
+// Copyright 2023-2024 Citra Emulator Project / Azahar Emulator Project (gsp_command.h)
 // Copyright 2017-2025 Citra Emulator Project / Azahar Emulator Project (regs_framebuffer.h,
 //   regs_internal.h)
 // Copyright 2014 Citra Emulator Project (color.h)
@@ -40,6 +44,7 @@
 
 #include "gpu_capture/capture_host.h"
 #include "gpu_capture/check.h"
+#include "gpu_capture/diagnostics.h"
 #include "gpu_capture/image.h"
 #include "gpu_capture/mgpu.h"
 #include "gpu_capture/player.h"
@@ -1692,4 +1697,508 @@ TEST_CASE("the program: exit statuses and output") {
     out.str("");
     CHECK(RunCapturePlayer({"--gpu", "none", "--fail-fast", built.path}, out, err) == 1);
     CHECK(out.str().find("frames: 0") != std::string::npos);
+}
+
+// ===============================================================================================
+// N2-03b: the GSP's own writes are not the Gpu's, and a failing command says what it was
+// ===============================================================================================
+
+namespace {
+
+// "test-xfer": what a GX engine does for a display transfer of linear RGBA8 to linear RGBA8 of the
+// same size (flags 0x22: input linear, no swizzling; format 0 twice): copy the image and signal
+// PPF. It does not write the GSP's interrupt queue: the service does that, not the Gpu.
+struct XferState {
+    bool corrupt = false;   // flip one bit of byte 5 of the output
+    bool skip = false;      // write nothing (the PPF is still signalled)
+} xfer;
+
+class XferGpu final : public gpu::Gpu {
+public:
+    explicit XferGpu(gpu::Host& host) : host_(host) {}
+    void Execute(const gpu::GxCommand& c) override {
+        if ((c.words[0] & 0xFF) != kGxDisplayTransfer) {
+            return;
+        }
+        if (xfer.skip) {
+            host_.SignalInterrupt(gpu::Interrupt::PPF, 0);
+            return;
+        }
+        const u32 in = host_.VirtualToPhysical(c.words[1]).value();
+        const u32 out = host_.VirtualToPhysical(c.words[2]).value();
+        const u32 size = (c.words[3] & 0xFFFF) * (c.words[3] >> 16) * 4;
+        std::memcpy(host_.PhysicalPointer(out, size), host_.PhysicalPointer(in, size), size);
+        if (xfer.corrupt) {
+            host_.PhysicalPointer(out, 8)[5] ^= 1;
+        }
+        host_.SignalInterrupt(gpu::Interrupt::PPF, 0);
+    }
+    void WriteReg(u32, u32) override {}
+    u32 ReadReg(u32) override { return 0; }
+    void SetBufferSwap(u32, const gpu::FrameBufferInfo&) override {}
+    void SetColorFill(u32) override {}
+    void FlushRegion(u32, u32) override {}
+    void InvalidateRegion(u32, u32) override {}
+    void VBlank(u32) override {}
+
+private:
+    gpu::Host& host_;
+};
+MH4N_REGISTER(gpu::GpuFactory, "test-xfer", [](gpu::Host& host, const Options&) {
+    return std::unique_ptr<gpu::Gpu>(std::make_unique<XferGpu>(host));
+});
+
+constexpr u32 kQueuePage = 0x20030000; // where the test puts the GSP's shared memory
+constexpr u32 kXferIn = 0x20010000, kXferOut = 0x20020000;
+
+// A page that holds only an interrupt relay queue at `queue` (0 to 3), plus a marker byte that
+// never changes, as the GSP's shared memory does between interrupts.
+Bytes QueuePage(u32 queue, u8 index, u8 number, const std::vector<std::pair<u32, u8>>& slots,
+                u8 error = 0) {
+    Bytes page(kPageSize, 0);
+    page[0x200] = 0x77;
+    u8* q = page.data() + queue * 0x40;
+    q[0] = index;
+    q[1] = number;
+    q[2] = error;
+    for (const auto& [slot, id] : slots) q[12 + slot] = id;
+    return page;
+}
+
+// The scene of the failure on the maintainer's PC, with synthetic bytes: a 16x16 RGBA8 transfer
+// whose output page and whose GSP page (one interrupt pushed by the PPF the command signals)
+// are both in GPU_PAGES, `transfers` times in a row with nothing from the CPU in between.
+struct XferScene {
+    Bytes input = Pattern(16 * 16 * 4, 21);
+    std::vector<size_t> transfers;
+};
+
+XferScene WriteXferCapture(const std::string& path, u32 count = 1, u32 first_index = 3, u32 number = 2) {
+    XferScene scene;
+    W w;
+    w.Init();
+    w.Mem(0x20000000, Bytes(0x200000, 0));
+    Bytes in_page(kPageSize, 0);
+    std::copy(scene.input.begin(), scene.input.end(), in_page.begin());
+    w.CpuPages({{kXferIn, in_page}, {kQueuePage, QueuePage(0, static_cast<u8>(first_index),
+                                                          static_cast<u8>(number), {{3, 4}, {4, 5}})}});
+    Bytes out_page(kPageSize, 0);
+    std::copy(scene.input.begin(), scene.input.end(), out_page.begin());
+    for (u32 n = 0; n < count; ++n) {
+        scene.transfers.push_back(
+            w.Gx({kGxDisplayTransfer, 0x14010000, 0x14020000, (16u << 16) | 16, (16u << 16) | 16, 0x22, 0, 0}));
+        // The PPF the command signals is put into queue 0 at once: number + n + 1, and the id (4)
+        // goes into slot (index + number + n) % 0x34, byte 12 + that slot.
+        std::vector<std::pair<u32, u8>> slots = {{3, 4}, {4, 5}};
+        for (u32 k = 0; k <= n; ++k) slots.push_back({(first_index + number + k) % 0x34, 4});
+        w.GpuPages({{kXferOut, out_page},
+                    {kQueuePage, QueuePage(0, static_cast<u8>(first_index), static_cast<u8>(number + n + 1), slots)}});
+        w.Irq(4);
+    }
+    REQUIRE(w.Save(path));
+    return scene;
+}
+
+} // namespace
+
+TEST_CASE("a transfer whose GPU_PAGES include the GSP's interrupt queue passes: the service wrote that page") {
+    TempDir dir;
+    const std::string path = dir.File("queue.mgpu").string();
+    WriteXferCapture(path);
+    xfer.corrupt = false;
+    xfer.skip = false;
+
+    for (const char* mode : {"--chained", "--isolated"}) {
+        const PlayerResult r = Run(path, {"--gpu", "test-xfer", mode});
+        INFO(Describe(r));
+        CHECK(r.error.empty());
+        CHECK(r.failures.empty());
+        CHECK(r.judged.at("transfer") == 1);
+        CHECK(r.gsp_queue_pages == 1);
+        CHECK(FormatReport(r).find("interrupt relay queue") != std::string::npos);
+        // A capture of one transfer exercises nothing else: the report says so instead of
+        // leaving the kinds out.
+        CHECK(r.not_exercised == std::vector<std::string>{"fill", "copy", "dma", "cmdlist"});
+        CHECK(FormatReport(r).find("commands not exercised (none in the capture, so nothing is verified): "
+                                   "fill copy dma cmdlist") != std::string::npos);
+        CHECK(FormatReport(r).find("commands judged: transfer=1") != std::string::npos);
+    }
+    // A kind that is not selected is not listed, one that was skipped was exercised.
+    const PlayerResult only = Run(path, {"--gpu", "test-xfer", "--judge", "fill"});
+    CHECK(only.not_exercised == std::vector<std::string>{"fill"});
+    CHECK(only.skipped.at("transfer") == 1);
+}
+
+TEST_CASE("two transfers in a row: the queue keeps growing and each one is still the GSP's, chained or isolated") {
+    TempDir dir;
+    const std::string path = dir.File("queue2.mgpu").string();
+    WriteXferCapture(path, 3, 0x32, 1); // index 0x32 and one waiting: the slots wrap past 0x34
+    for (const char* mode : {"--chained", "--isolated"}) {
+        const PlayerResult r = Run(path, {"--gpu", "test-xfer", mode});
+        INFO(Describe(r));
+        CHECK(r.failures.empty());
+        CHECK(r.judged.at("transfer") == 3);
+        CHECK(r.gsp_queue_pages == 3);
+    }
+}
+
+TEST_CASE("a wrong output still fails when the GSP's page is there, and the report says what, where and how much") {
+    TempDir dir;
+    const std::string path = dir.File("wrong.mgpu").string();
+    WriteXferCapture(path);
+    xfer.corrupt = true;
+    const PlayerResult r = Run(path, {"--gpu", "test-xfer", "--isolated"});
+    xfer.corrupt = false;
+    INFO(Describe(r));
+    REQUIRE(r.failures.size() == 1);
+    const std::string& m = r.failures.front().message;
+    // The first line keeps its shape; the GSP's page is not counted as differing.
+    CHECK(m.find("transfer: 1 of 2 pages written by the capture's GPU differ; first at 0x20020000 "
+                 "(byte 5 of the page)") == 0);
+    CHECK(m.find("command: GX DISPLAY_TRANSFER (id 3)") != std::string::npos);
+    CHECK(m.find("input: 0x20010000 (0x14010000 in the command) RGBA8 16x16, linear") != std::string::npos);
+    CHECK(m.find("output: 0x20020000 (0x14020000 in the command) RGBA8 16x16 (as written 16x16), linear, "
+                 "row stride 64 bytes, no gap") != std::string::npos);
+    CHECK(m.find("scaling: none; vertical flip: no; crop input lines: no; dont_swizzle: yes") !=
+          std::string::npos);
+    CHECK(m.find("output region: 0x20020000 to 0x20020400 (1024 bytes, 1 page)") != std::string::npos);
+    CHECK(m.find("the capture recorded 2 (first 0x20020000, last 0x20030000); 1 of them are in the 1 "
+                 "page(s) of the output region, of which the Gpu wrote 1") != std::string::npos);
+    CHECK(m.find("1 recorded page(s) are the GSP's interrupt queue and were not judged") != std::string::npos);
+    CHECK(m.find("page 0x20020000: 1 bytes differ, offsets 5 to 5 (first of the 2 recorded pages; only of "
+                 "the output region's pages)") != std::string::npos);
+    // No page content in the text: the pattern's first bytes never appear as numbers beyond the
+    // counts above (the text is addresses, sizes, offsets and names).
+    CHECK(m.find("0x77") == std::string::npos);
+    CHECK(r.gsp_queue_pages == 1);
+}
+
+TEST_CASE("a page that looks like the GSP's but is not what the command's interrupts do is judged as the Gpu's") {
+    TempDir dir;
+    // One PPF, but the capture's queue also changed the error code: not a push, so it is judged.
+    {
+        const std::string path = dir.File("odd.mgpu").string();
+        W w;
+        w.Init();
+        w.Mem(0x20000000, Bytes(0x200000, 0));
+        w.CpuPages({{kQueuePage, QueuePage(0, 3, 2, {{3, 4}})}});
+        w.Gx({kGxDisplayTransfer, 0x14010000, 0x14020000, (16u << 16) | 16, (16u << 16) | 16, 0x22, 0, 0});
+        w.GpuPages({{kQueuePage, QueuePage(0, 3, 3, {{3, 4}, {5, 4}}, 1)}});
+        w.Irq(4);
+        REQUIRE(w.Save(path));
+        xfer.skip = true;
+        const PlayerResult r = Run(path, {"--gpu", "test-xfer"});
+        xfer.skip = false;
+        REQUIRE(r.failures.size() == 1);
+        CHECK(r.gsp_queue_pages == 0);
+        CHECK(r.failures.front().message.find("transfer: 1 of 1 pages written by the capture's GPU differ; "
+                                              "first at 0x20030000 (byte 1 of the page)") == 0);
+        CHECK(r.failures.front().message.find("offsets 1 to 17 (only of the 1 recorded pages; outside the "
+                                              "output region); all within the first 0x100 bytes") !=
+              std::string::npos);
+    }
+    // The right push, but of the wrong interrupt (the command signalled P3D, the page holds PPF).
+    {
+        const std::string path = dir.File("wrongid.mgpu").string();
+        W w;
+        w.Init();
+        w.Mem(0x20000000, Bytes(0x200000, 0));
+        w.CpuPages({{kQueuePage, QueuePage(0, 3, 2, {})}});
+        w.Gx({kGxDisplayTransfer, 0x14010000, 0x14020000, (16u << 16) | 16, (16u << 16) | 16, 0x22, 0, 0});
+        w.GpuPages({{kQueuePage, QueuePage(0, 3, 3, {{5, 4}})}});
+        w.Irq(5);
+        REQUIRE(w.Save(path));
+        xfer.skip = true;
+        const PlayerResult r = Run(path, {"--gpu", "test-xfer"});
+        xfer.skip = false;
+        REQUIRE(r.failures.size() >= 1);
+        CHECK(r.gsp_queue_pages == 0);
+    }
+    // A command that signals no interrupt cannot have changed the GSP's page.
+    {
+        const std::string path = dir.File("nonirq.mgpu").string();
+        W w;
+        w.Init();
+        w.Mem(0x20000000, Bytes(0x200000, 0));
+        w.CpuPages({{kQueuePage, QueuePage(0, 3, 2, {})}});
+        w.Gx({kGxDisplayTransfer, 0x14010000, 0x14020000, (16u << 16) | 16, (16u << 16) | 16, 0x22, 0, 0});
+        w.GpuPages({{kQueuePage, QueuePage(0, 3, 3, {{5, 4}})}});
+        REQUIRE(w.Save(path));
+        xfer.skip = true;
+        const PlayerResult r = Run(path, {"--gpu", "test-xfer"});
+        xfer.skip = false;
+        REQUIRE(r.failures.size() >= 1);
+        CHECK(r.gsp_queue_pages == 0);
+    }
+}
+
+TEST_CASE("the Gpu writing the GSP's page itself is not excused") {
+    // The same capture as the passing one, with a Gpu that also scribbles over the queue page.
+    class Scribble final : public gpu::Gpu {
+    public:
+        explicit Scribble(gpu::Host& host) : inner_(std::make_unique<XferGpu>(host)), host_(host) {}
+        void Execute(const gpu::GxCommand& c) override {
+            inner_->Execute(c);
+            host_.PhysicalPointer(kQueuePage, 4)[3] = 9;
+        }
+        void WriteReg(u32 a, u32 v) override { inner_->WriteReg(a, v); }
+        u32 ReadReg(u32 a) override { return inner_->ReadReg(a); }
+        void SetBufferSwap(u32 s, const gpu::FrameBufferInfo& i) override { inner_->SetBufferSwap(s, i); }
+        void SetColorFill(u32 f) override { inner_->SetColorFill(f); }
+        void FlushRegion(u32 a, u32 s) override { inner_->FlushRegion(a, s); }
+        void InvalidateRegion(u32 a, u32 s) override { inner_->InvalidateRegion(a, s); }
+        void VBlank(u32 s) override { inner_->VBlank(s); }
+
+    private:
+        std::unique_ptr<gpu::Gpu> inner_;
+        gpu::Host& host_;
+    };
+    static const bool registered = [] {
+        Registry<gpu::GpuFactory>::Instance().Add("test-scribble", [](gpu::Host& host, const Options&) {
+            return std::unique_ptr<gpu::Gpu>(std::make_unique<Scribble>(host));
+        });
+        return true;
+    }();
+    (void)registered;
+    TempDir dir;
+    const std::string path = dir.File("scribble.mgpu").string();
+    WriteXferCapture(path);
+    const PlayerResult r = Run(path, {"--gpu", "test-scribble", "--isolated"});
+    INFO(Describe(r));
+    REQUIRE(r.failures.size() == 1);
+    CHECK(r.gsp_queue_pages == 0);
+    CHECK(r.failures.front().message.find("page 0x20030000: 3 bytes differ, offsets 1 to 17") != std::string::npos);
+}
+
+TEST_CASE("the interrupt queue rule, worked out from GSP_GPU's queue_interrupt") {
+    // Azahar: if number_interrupts >= 0x34 the error code becomes 1 and nothing else changes;
+    // otherwise next = (index + number_interrupts) % 0x34, number_interrupts++, slot[next] = id.
+    // The queues are 0x40 bytes each, the first four in the shared memory; the slots start at 12.
+    auto explained = [](const Bytes& before, const Bytes& after, std::vector<u32> ids) {
+        return ExplainedByInterruptQueue(before, after, ids);
+    };
+    const Bytes before = QueuePage(0, 3, 2, {{3, 4}});
+    CHECK(explained(before, QueuePage(0, 3, 3, {{3, 4}, {5, 4}}), {4}));
+    // Two interrupts, in order: the second goes one slot further.
+    CHECK(explained(before, QueuePage(0, 3, 4, {{3, 4}, {5, 4}, {6, 0}}), {4, 0}));
+    CHECK_FALSE(explained(before, QueuePage(0, 3, 4, {{3, 4}, {5, 0}, {6, 4}}), {4, 0})); // order matters
+    // Any of the four queues.
+    for (u32 q = 1; q < 4; ++q) {
+        CHECK(explained(QueuePage(q, 0, 0, {}), QueuePage(q, 0, 1, {{0, 6}}), {6}));
+    }
+    // The slot index wraps at 0x34: index 0x33 with one waiting goes to slot 0.
+    CHECK(explained(QueuePage(0, 0x33, 1, {}), QueuePage(0, 0x33, 2, {{0, 5}}), {5}));
+    // A full queue only gets its error code.
+    CHECK(explained(QueuePage(0, 0, 0x34, {}), QueuePage(0, 0, 0x34, {}, 1), {4}));
+    CHECK_FALSE(explained(QueuePage(0, 0, 0x34, {}), QueuePage(0, 0, 0x35, {}, 1), {4}));
+    // No interrupt, no change, a change outside the queues, or one the interrupt does not make.
+    CHECK_FALSE(explained(before, QueuePage(0, 3, 3, {{3, 4}, {5, 4}}), {}));
+    CHECK_FALSE(explained(before, before, {4}));
+    Bytes outside = QueuePage(0, 3, 3, {{3, 4}, {5, 4}});
+    outside[0x300] = 1;
+    CHECK_FALSE(explained(before, outside, {4}));
+    CHECK_FALSE(explained(before, QueuePage(0, 3, 3, {{3, 4}, {5, 5}}), {4}));
+    // Pages of the wrong size are refused.
+    CHECK_FALSE(ExplainedByInterruptQueue(Bytes(10, 0), Bytes(10, 1), std::vector<u32>{4}));
+
+    const Bytes a = Pattern(kPageSize, 1);
+    Bytes b = a;
+    CHECK(ComparePages(a, b).count == 0);
+    b[7] ^= 1;
+    b[300] ^= 1;
+    b[4095] ^= 1;
+    const PageDifference d = ComparePages(a, b);
+    CHECK(d.count == 3);
+    CHECK(d.first == 7);
+    CHECK(d.last == 4095);
+}
+
+namespace {
+
+// A capture of one failing command per kind, for the `none` Gpu (which writes nothing): the
+// reference pages hold distinctive bytes, which must never reach the report.
+struct KindsScene {
+    size_t transfer = 0, copy = 0, dma = 0, fill = 0, mmio_transfer = 0, mmio_fill = 0, refused = 0;
+};
+
+KindsScene WriteKindsCapture(const std::string& path) {
+    KindsScene at;
+    W w;
+    w.Init();
+    w.Mem(0x20000000, Bytes(0x200000, 0));
+    // A display transfer: RGB565 tiled input 64x32 -> RGB8 linear, half the width, flipped and
+    // cropped (flags: flip 1 | crop 4 | in 2<<8 | out 1<<12 | scaling 1<<24).
+    at.transfer = w.Gx({kGxDisplayTransfer, 0x14010000, 0x14040000, (32u << 16) | 64, (32u << 16) | 64,
+                        1u | 4u | (2u << 8) | (1u << 12) | (1u << 24), 0, 0});
+    w.GpuPages({{0x20040000, Bytes(kPageSize, 0xE1)}});
+    w.Irq(4);
+    // A texture copy: 0x2008 bytes (0x2000 are copied), input lines of 0x80 bytes with a gap of
+    // 0x20, output lines of 0x100 with a gap of 0x10: 32 output lines, 31 gaps -> 0x21F0 bytes.
+    at.copy = w.Gx({kGxTextureCopy, 0x14010000, 0x14050000, 0x2008, (2u << 16) | 8, (1u << 16) | 0x10, 8, 0});
+    w.GpuPages({{0x20050000, Bytes(kPageSize, 0xE2)}, {0x20051000, Bytes(kPageSize, 0xE3)},
+                {0x20052000, Bytes(kPageSize, 0xE4)}});
+    w.Irq(4);
+    // DMA, 3 pages.
+    at.dma = w.Gx({kGxRequestDma, 0x14010000, 0x14060000, 0x3000, 0, 0, 0, 0});
+    w.GpuPages({{0x20060000, Bytes(kPageSize, 0xE5)}});
+    w.Irq(6);
+    // A memory fill of 0x2000 bytes with 32-bit units (control bit 9) in unit 0 only.
+    at.fill = w.Gx({kGxMemoryFill, 0x14070000, 0x11223344, 0x14072000, 0, 0, 0, 0x201});
+    w.GpuPages({{0x20070000, Bytes(kPageSize, 0xE6)}});
+    w.Irq(0);
+    // A transfer through the registers: 8x8 RGBA4 linear -> RGBA4 tiled (input linear, swizzling).
+    w.Mmio(0x1EF00C00, 0x20010000 >> 3);        // input address
+    w.Mmio(0x1EF00C04, 0x20080000 >> 3);        // output address
+    w.Mmio(0x1EF00C08, (8u << 16) | 8);         // output size
+    w.Mmio(0x1EF00C0C, (8u << 16) | 8);         // input size
+    w.Mmio(0x1EF00C10, 2u | (4u << 8) | (4u << 12)); // flags: input linear, RGBA4 both
+    at.mmio_transfer = w.Mmio(0x1EF00C18, 1);
+    w.GpuPages({{0x20080000, Bytes(kPageSize, 0xE7)}});
+    w.Irq(4);
+    // A fill through the registers: unit 1, 16-bit units.
+    w.Mmio(0x1EF00020, 0x20090000 >> 3);
+    w.Mmio(0x1EF00024, 0x20090400 >> 3);
+    w.Mmio(0x1EF00028, 0x1234);
+    at.mmio_fill = w.Mmio(0x1EF0002C, 1);
+    w.GpuPages({{0x20090000, Bytes(kPageSize, 0xE8)}});
+    w.Irq(1);
+    REQUIRE(w.Save(path));
+    return at;
+}
+
+const Failure* FailureAt(const PlayerResult& r, size_t record) {
+    for (const Failure& f : r.failures) {
+        if (f.record == record) return &f;
+    }
+    return nullptr;
+}
+
+} // namespace
+
+TEST_CASE("a failing command is reported with its decoded fields, pages and offsets, never bytes") {
+    TempDir dir;
+    const std::string path = dir.File("kinds.mgpu").string();
+    const KindsScene at = WriteKindsCapture(path);
+    const PlayerResult r = Run(path, {"--gpu", "none"});
+    INFO(Describe(r));
+
+    auto find = [](const std::string& text, const char* part) { return text.find(part) != std::string::npos; };
+
+    const Failure* transfer = FailureAt(r, at.transfer);
+    REQUIRE(transfer != nullptr);
+    {
+        const std::string& m = transfer->message;
+        CHECK(m.find("transfer: 1 of 1 pages written by the capture's GPU differ; first at 0x20040000 (byte 0 of the page)") == 0);
+        CHECK(find(m, "command: GX DISPLAY_TRANSFER (id 3)"));
+        CHECK(find(m, "input: 0x20010000 (0x14010000 in the command) RGB565 64x32, tiled 8x8"));
+        // RGB8 output, the width halved by the scaling: 32 pixels of 3 bytes per row, linear
+        // because the input is tiled and the output is swizzled back (dont_swizzle is 0).
+        CHECK(find(m, "output: 0x20040000 (0x14040000 in the command) RGB8 32x32 (as written 64x32), linear, row stride 96 bytes, no gap"));
+        CHECK(find(m, "scaling: halve the width (box filter); vertical flip: yes; crop input lines: yes; dont_swizzle: no"));
+        CHECK(find(m, "flags 0x01001205"));
+        // The flipped and cropped output starts (64 - 64) * 31 * 3 = 0 bytes further on.
+        CHECK(find(m, "output region: 0x20040000 to 0x20040c00 (3072 bytes, 1 page)"));
+        CHECK(find(m, "the Gpu wrote 0"));
+        CHECK(find(m, "page 0x20040000: 4096 bytes differ, offsets 0 to 4095 (only of the 1 recorded pages; only of the output region's pages)"));
+    }
+
+    const Failure* copy = FailureAt(r, at.copy);
+    REQUIRE(copy != nullptr);
+    {
+        const std::string& m = copy->message;
+        CHECK(m.find("copy: 3 of 3 pages") == 0);
+        CHECK(find(m, "command: GX TEXTURE_COPY (id 4)"));
+        CHECK(find(m, "input: 0x20010000 (0x14010000 in the command), line width 128 bytes, gap 32 bytes"));
+        CHECK(find(m, "output: 0x20050000 (0x14050000 in the command), line width 256 bytes, gap 16 bytes"));
+        CHECK(find(m, "size: 8200 bytes (the low 4 bits are ignored: 8192 bytes copied)"));
+        CHECK(find(m, "output region: 0x20050000 to 0x200521f0 (8688 bytes, 3 pages)"));
+        CHECK(find(m, "the capture recorded 3 (first 0x20050000, last 0x20052000); 3 of them are in the 3 page(s) of the output region, of which the Gpu wrote 0"));
+        CHECK(find(m, "page 0x20050000: 4096 bytes differ, offsets 0 to 4095 (first of the 3 recorded pages; first of the output region's pages)"));
+        CHECK(find(m, "page 0x20051000: 4096 bytes differ, offsets 0 to 4095 (middle of the 3 recorded pages; middle of the output region's pages)"));
+        CHECK(find(m, "page 0x20052000: 4096 bytes differ, offsets 0 to 4095 (last of the 3 recorded pages; last of the output region's pages)"));
+    }
+
+    const Failure* dma = FailureAt(r, at.dma);
+    REQUIRE(dma != nullptr);
+    {
+        const std::string& m = dma->message;
+        CHECK(m.find("dma: 1 of 1 pages") == 0);
+        CHECK(find(m, "command: GX REQUEST_DMA (id 0)"));
+        CHECK(find(m, "source: 0x20010000 (0x14010000 in the command)"));
+        CHECK(find(m, "destination: 0x20060000 (0x14060000 in the command)"));
+        CHECK(find(m, "size: 12288 bytes"));
+        CHECK(find(m, "output region: 0x20060000 to 0x20063000 (12288 bytes, 3 pages)"));
+        CHECK(find(m, "the capture recorded 1 (first 0x20060000, last 0x20060000); 1 of them are in the 3 page(s)"));
+    }
+
+    const Failure* fill = FailureAt(r, at.fill);
+    REQUIRE(fill != nullptr);
+    {
+        const std::string& m = fill->message;
+        CHECK(m.find("fill: 1 of 1 pages") == 0);
+        CHECK(find(m, "command: GX MEMORY_FILL (id 2)"));
+        CHECK(find(m, "kind: memory fill, unit 0, 32-bit units"));
+        CHECK(find(m, "range: start 0x20070000 (0x14070000 in the command) end 0x20072000 (8192 bytes)"));
+        CHECK(find(m, "output region: 0x20070000 to 0x20072000 (8192 bytes, 2 pages)"));
+        CHECK_FALSE(find(m, "11223344")); // the fill value is data, not a field of the report
+    }
+
+    const Failure* mmio_transfer = FailureAt(r, at.mmio_transfer);
+    REQUIRE(mmio_transfer != nullptr);
+    {
+        const std::string& m = mmio_transfer->message;
+        CHECK(m.find("transfer: 1 of 1 pages") == 0);
+        CHECK(find(m, "command: MMIO write of 0x00000001 to 0x1ef00c18"));
+        CHECK(find(m, "input: 0x20010000 RGBA4 8x8, linear"));
+        CHECK(find(m, "output: 0x20080000 RGBA4 8x8 (as written 8x8), tiled 8x8, tile-row stride 128 bytes, no gap"));
+        // Tiled output: whole 8x8 tiles, 8 * 8 * 2 = 128 bytes.
+        CHECK(find(m, "output region: 0x20080000 to 0x20080080 (128 bytes, 1 page)"));
+    }
+
+    const Failure* mmio_fill = FailureAt(r, at.mmio_fill);
+    REQUIRE(mmio_fill != nullptr);
+    {
+        const std::string& m = mmio_fill->message;
+        CHECK(m.find("fill: 1 of 1 pages") == 0);
+        CHECK(find(m, "command: MMIO write of 0x00000001 to 0x1ef0002c"));
+        CHECK(find(m, "kind: memory fill, unit 1, 16-bit units"));
+        CHECK(find(m, "range: start 0x20090000 end 0x20090400 (1024 bytes)"));
+    }
+
+    // Not a byte of the reference pages in any message: no 0xE1..0xE8 run, no value fields.
+    for (const Failure& f : r.failures) {
+        CHECK_FALSE(find(f.message, "e1e1"));
+        CHECK_FALSE(find(f.message, "0xe1"));
+    }
+}
+
+TEST_CASE("a refused command says its output region is empty; more than eight differing pages are summarised") {
+    TempDir dir;
+    const std::string path = dir.File("many.mgpu").string();
+    W w;
+    w.Init();
+    w.Mem(0x20000000, Bytes(0x200000, 0));
+    // A display transfer with a zero input width: Azahar refuses it and writes nothing.
+    const size_t refused = w.Gx({kGxDisplayTransfer, 0x14010000, 0x14040000, 32u << 16, (32u << 16) | 64, 0, 0, 0});
+    w.GpuPages({{0x20040000, Bytes(kPageSize, 1)}});
+    w.Irq(4);
+    // A DMA of 12 pages the Gpu does not make.
+    std::vector<std::pair<u32, Bytes>> pages;
+    for (u32 i = 0; i < 12; ++i) pages.emplace_back(0x20100000 + i * kPageSize, Bytes(kPageSize, 2));
+    const size_t dma = w.Gx({kGxRequestDma, 0x14010000, 0x14100000, 12 * kPageSize, 0, 0, 0, 0});
+    w.GpuPages(pages);
+    w.Irq(6);
+    REQUIRE(w.Save(path));
+    const PlayerResult r = Run(path, {"--gpu", "none"});
+    INFO(Describe(r));
+    const Failure* a = FailureAt(r, refused);
+    REQUIRE(a != nullptr);
+    CHECK(a->message.find("output region: none (the command's fields are refused, nothing is written)") != std::string::npos);
+    CHECK(a->message.find("the command writes no output region") != std::string::npos);
+    const Failure* b = FailureAt(r, dma);
+    REQUIRE(b != nullptr);
+    CHECK(b->message.find("dma: 12 of 12 pages") == 0);
+    CHECK(b->message.find("page 0x20107000:") != std::string::npos);          // the 8th
+    CHECK(b->message.find("page 0x20108000:") == std::string::npos);          // the 9th is not listed
+    CHECK(b->message.find("... and 4 more differing pages") != std::string::npos);
 }
