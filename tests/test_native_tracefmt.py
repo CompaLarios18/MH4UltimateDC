@@ -229,7 +229,84 @@ def test_cli_prints_normalised_calls(tmp_path, capsys):
     assert " t=0 " in line
 
 
-# ── IPC traces (N0-21) ──────────────────────────────────────────────────────────────
+# ── names across timing models (N0-25, D31) ─────────────────────────────────────────
+
+def test_cross_model_thread_names_are_per_parent():
+    """`main`, then `<parent name>/<entry>#<k>`, k counting the threads that parent created with that entry."""
+    lines = [
+        thread_line(1, 0, 0x100000),
+        thread_line(4, 1, 0x200000),
+        thread_line(5, 1, 0x300000),
+        thread_line(9, 4, 0x400000),               # created by thread 4
+        thread_line(10, 5, 0x400000),              # same entry, created by thread 5
+        thread_line(11, 4, 0x400000),              # thread 4's second thread with that entry
+    ]
+    names = tracefmt.thread_names(parse(lines), per_parent=True)
+    assert names == {"1": "main", "4": "main/00200000#0", "5": "main/00300000#0",
+                     "9": "main/00200000#0/00400000#0", "10": "main/00300000#0/00400000#0",
+                     "11": "main/00200000#0/00400000#1"}
+    # the global names are unchanged without the flag
+    assert tracefmt.thread_names(parse(lines))["10"] == "00400000#1"
+
+
+def test_cross_model_names_do_not_depend_on_the_order_of_creations_by_different_parents():
+    def prog(order):
+        lines = [thread_line(1, 0, 0x100000), thread_line(2, 1, 0x200000), thread_line(3, 1, 0x300000)]
+        children = {"a": thread_line(7, 2, 0x400000), "b": thread_line(8, 3, 0x400000)}
+        return lines + [children[k] for k in order]
+    names_ab = tracefmt.thread_names(parse(prog("ab")), per_parent=True)
+    names_ba = tracefmt.thread_names(parse(prog("ba")), per_parent=True)
+    assert names_ab["7"] == names_ba["7"] == "main/00200000#0/00400000#0"
+    assert names_ab["8"] == names_ba["8"] == "main/00300000#0/00400000#0"
+    # the global names swap when the creations happen in the other order
+    g_ab, g_ba = tracefmt.thread_names(parse(prog("ab"))), tracefmt.thread_names(parse(prog("ba")))
+    assert g_ab["7"] == "00400000#0" and g_ba["7"] == "00400000#1"
+
+
+def test_cross_model_handles_are_named_per_creating_thread():
+    def prog(order):
+        creations = {"m": call(1, "17", (0, 0, 0, 0), out=(0, 0x8001 if order == "mw" else 0x8002, 0, 0)),
+                     "w": call(2, "17", (0, 0, 0, 0), out=(0, 0x8002 if order == "mw" else 0x8001, 0, 0))}
+        return [thread_line(1, 0, 0x100000), thread_line(2, 1, 0x200000)] + [creations[k] for k in order]
+    for order in ("mw", "wm"):
+        t = tracefmt.normalise(parse(prog(order)), cross_model=True)
+        by_thread = {c.thread: c.out[1] for c in t.calls}
+        assert by_thread == {"main": "event#main.0", "main/00200000#0": "event#main/00200000#0.0"}, order
+    # the plain names depend on the interleaving
+    plain = {c.thread: c.out[1] for c in tracefmt.normalise(parse(prog("wm"))).calls}
+    assert plain == {"main": "event#1", "00200000#0": "event#0"}
+
+
+def test_cross_model_handle_counts_run_per_thread_and_kind():
+    t = tracefmt.normalise(parse([
+        thread_line(1, 0, 0x100000),
+        call(1, "17", out=(0, 0x8001, 0, 0)), call(1, "13", out=(0, 0x8002, 0, 0)), call(1, "17", out=(0, 0x8003, 0, 0)),
+        call(1, "27", (0, 0x8003, 0, 0), out=(0, 0x8004, 0, 0)),         # a duplicate is the same object
+        call(1, "18", (0x8004, 0, 0, 0), out=(0, 0, 0, 0)),
+    ]), cross_model=True)
+    assert [c.out[1] for c in t.calls[:3]] == ["event#main.0", "mutex#main.0", "event#main.1"]
+    assert t.calls[3].out[1] == "event#main.1" and t.calls[4].args[0] == "event#main.1"
+
+
+def test_cross_model_normalised_threads_keep_their_parents_names():
+    t = tracefmt.normalise(parse([
+        thread_line(1, 0, 0x100000), thread_line(6, 1, 0x200000), thread_line(8, 6, 0x300000),
+        call(8, "0A", (1, 0, 0, 0)),
+    ]), cross_model=True)
+    assert t.calls[0].thread == "main/00200000#0/00300000#0"
+    assert t.threads["main/00200000#0/00300000#0"].parent == "main/00200000#0"
+
+
+def test_cli_cross_model_flag_names_per_parent(tmp_path, capsys):
+    p = tmp_path / "t.txt"
+    p.write_text("\n".join([thread_line(1, 0, 0x100000), thread_line(2, 1, 0x200000),
+                            call(2, "17", out=(0, 0x8001, 0, 0))]) + "\n")
+    assert tracefmt.main([str(p), "--cross-model"]) == 0
+    line = capsys.readouterr().out.strip()
+    assert line.startswith("main/00200000#0 17 ") and "event#main/00200000#0.0" in line
+
+
+# ── IPC traces (N0-21)──────────────────────────────────────────────────────────────
 
 IPC_HEADER = "# ipctrace v1 2026-10-16 game=0x0004000000000000 cpu=jit new3ds=off"
 
