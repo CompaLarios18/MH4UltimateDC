@@ -174,6 +174,44 @@ python3 tools/compare_svc_traces.py reference.svc native.svc --normalize --outpu
 python3 tools/native/state_diff.py reference.state native.state
 ```
 
+## Parity with the reference runner
+
+`tools/native/golden.py check S --candidate-runner <this runner> --candidate-program <game folder> --candidate-code
+<library>` starts the runner with `PROGRAM --code LIB --user DIR --frames N --input-file SESSION`, a `--set
+MS:KEY=VALUE` for each one given, and then `--trace-svc`, `--trace-ipc`, `--trace-ipc-full`, `--state-trace`,
+`--capture-hid` and a `--capture-dsp START:FRAMES:FILE` per DSP capture of the session, plus whatever
+`--candidate-args` adds (checked in N1-09b by reading both runners' sources and running a conformance program
+with the whole line; no game was involved). `--observable`, `--ms`, `--log` and `--init-time` are not passed by
+golden.py. `same`: the same syntax, and the same format where it writes one. `differs`: how. The status of a
+value (times, ticks) is not part of this table: a different timing model is the `cross` profile's business, see
+"Differences from the reference that are on purpose".
+
+| Option | Status | Served by |
+|---|---|---|
+| `--user DIR` | `same` for a folder that exists (golden.py always passes a copy of the recording's `user-before/`): the layout is Azahar's. `differs`: a missing `DIR` is not created, and a bad folder is not an error of the option | `mh4n_runtime` (`Runtime::UserFolder`); the services that read it (cfg, fs, N1-12 to N1-15) and the platform's `mh4u.ini` (N1-20) |
+| `--frames N` | `same` parser (`Schedule::ParseFrames`, `port/src/schedule.cpp`); the run stops at the first safe point at which the counter is at least `N`, after the frame's state line and HID record were written, with exit status 0 and no time limit unless `--ms` is also given. `differs`: a bad value ends with status 2 (the reference: 1) | `mh4n_runtime` (`Runtime::PollFrame`) |
+| `--ms N\|fN` | `same` parser and default (10000 ms) | `mh4n_runtime` |
+| `--code LIB` | `same` | `mh4n_runtime` (code host) |
+| `--input-file PATH` | `same` parser (`Schedule::ParseInputFile`): `#` comments, several comma-separated events per line, `fN` times and holds: golden.py's session files (header lines `# key: value` are comments) are read as the reference reads them (a test of `hid_test` pins it). Repeatable; `--input` values are parsed before it. `differs`: an unreadable or bad file ends with status 2 before the program runs (the reference: 1) | `mh4n_input_script` (`ScriptInput`, `ParseScripts`) feeding the HID service |
+| `--set MS\|fN:KEY=VALUE` | `same` syntax and keys (`Schedule::ParseOptionChange`; the hooks' own `SetOption`, compiled from `port/src/hooks.cpp`), applied at that game time or frame. `differs`: a bad argument or a key that cannot change ends with status 2 (the reference: 1), and the changes are armed at the `started` step, so they act only when a code library is loaded | `mh4n_platform` (`InstallOptionChanges`) |
+| `--trace-svc FILE` | `same` format and header (`# svctrace v1 <date> game=0x<id> cpu=native new3ds=off`, `# thread` lines, call lines, `out=-` for a call that had not completed); `cpu=native` and `new3ds=off` are the header's only differences | `mh4n_runtime` (`svc_trace.cpp`) |
+| `--trace-ipc FILE` | `same` format: `# ipctrace v1` header, the thread lines of the SVC trace, `seq=`, `session=` (`srv:`, `<service>/file#k`, `<service>/dir#k`, `<service>/session#k`, `unnamed#k`), `cmd=`, `in=`, `desc=`, `out=`, `outdesc=`, `t=` in game ticks | `mh4n_ipc` (`trace.cpp`) |
+| `--trace-ipc-full` | `same` (a flag; adds `data=<index>:<hex>` for readable input buffers). `differs`: without `--trace-ipc` it ends with status 2 (the reference: 1) | `mh4n_ipc` |
+| `--state-trace FILE` | `same` format (`# statetrace v1` header; `f= t= <name>=0x<hex>\|-` whenever the counter changes, the first reading included) | `mh4n_runtime` (`state_trace.cpp`) |
+| `--observable FILE` | `same` file format (`config/native/observable.txt`) and default (relative to the current directory: golden.py runs the runner from the repository root). A file that cannot be read ends with status 2 (the reference: 1) | `mh4n_runtime` |
+| `--capture-hid FILE` | `same` MHID format and manifest (`FILE.json`; its `tool` is `mh4u_native_runner`): one type-1 record per change of the frame counter, a type-2 record once ir:USER has a shared memory block. `differs`: the HID memory is read from the service's own block, zeros until the game has mapped it; the reference reads it through the game's mapping | `mh4n_services_hid` (`hid_capture.cpp`) |
+| `--capture-dsp START:FRAMES:FILE` | `same` syntax (`START` may be `fN`; `FILE` may hold colons) and MDSP format and manifest. `differs`: type-1 (`REGIONS`) records only: the reference's type-2 (`PCM`) and type-3 (`SAMPLES`) records are not written, and `capfmt.py diff-dsp` compares the type-1 records only | `mh4n_services_dsp` (`dsp_capture.cpp`) |
+| `--log FILTER` | `differs`: the categories are the native modules' (`Kernel`, `Service.SRV`, ...), not Azahar's | `main.cpp` |
+| `--init-time SECONDS` | native only; its default is the reference's fixed start date, so a run without it starts at the same date | `mh4n_runtime` |
+
+The reference's other options are not in this runner, and an unknown option ends the run with status 2:
+`--cpu`, `--new-3ds`, `--install`, `--shots`, `--shots-from`, `--shot-every`, `--dump`, `--replace`,
+`--freeze`, `--stalls`, `--lockstep`, `--call-counts`, `--trace-timing`, `--count-unmapped`, `--capture-gpu`,
+`--perf-log`, `--speed`, `--cpu-clock`, `--async-io`, `--draw-window`, `--room-host`, `--room-join`, `--nick`
+and `--print-schedule`. golden.py does not pass any of them to a candidate runner (they are the reference's
+`full` list), so a candidate run does not write `timing.txt`, `unmapped.txt`, a GPU capture, screenshots or
+the shared-page dump, and golden.py skips those comparisons for it.
+
 ## Differences from the reference that are on purpose
 
 - **Time.** The reference charges emulated time to instructions; the native runtime's game clock

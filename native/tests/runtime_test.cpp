@@ -341,6 +341,40 @@ TEST_CASE("Prepare refuses a memory mode that does not exist and bad option valu
     CHECK_FALSE(error.empty());
 }
 
+// ---- the command line golden.py gives a candidate runner (N1-09b) --------------------------------------
+
+// tools/native/golden.py check --candidate-runner starts the runner with only the options both runners
+// share (build_args with full=False). Every module that serves one of them registers it in the scope
+// "runner" (this binary links them all), with the reference's syntax: a value after the name, except
+// --trace-ipc-full, which is a flag. (--log is the program's own, native/runner/main.cpp.)
+#if MH4N_HAVE_SCHEDULE  // --set and --input-file need port/src/schedule.cpp (a copy of native/ alone has neither)
+TEST_CASE("the options golden.py passes a candidate runner are all registered, with the reference's syntax") {
+    const Options options = Parse({"build/native-game", "--code", "lib.so", "--user", "work", "--frames", "9000",
+                                   "--input-file", "session.txt", "--set", "0:fps=60", "--set", "f600:fps=30",
+                                   "--trace-svc", "o/svc.txt", "--trace-ipc", "o/ipc.txt", "--trace-ipc-full",
+                                   "--state-trace", "o/state.txt", "--capture-hid", "o/hid.mhid",
+                                   "--capture-dsp", "300:2:o/dsp-300.mdsp", "--observable", "o.txt",
+                                   "--ms", "f100", "--init-time", "1767268800"});
+    REQUIRE(options.positional().size() == 1);
+    CHECK(options.positional()[0] == "build/native-game");
+    CHECK(options.GetString("--code") == "lib.so");
+    CHECK(options.GetString("--user") == "work");
+    CHECK(options.GetString("--frames") == "9000");
+    CHECK(options.GetString("--input-file") == "session.txt");
+    CHECK(options.All("--set") == std::vector<std::string>{"0:fps=60", "f600:fps=30"});
+    CHECK(options.GetString("--trace-svc") == "o/svc.txt");
+    CHECK(options.GetString("--trace-ipc") == "o/ipc.txt");
+    CHECK(options.Has("--trace-ipc-full"));
+    CHECK(options.GetString("--state-trace") == "o/state.txt");
+    CHECK(options.GetString("--capture-hid") == "o/hid.mhid");
+    CHECK(options.GetString("--capture-dsp") == "300:2:o/dsp-300.mdsp");
+    CHECK(options.GetString("--observable") == "o.txt");
+    // the flag takes no value: "--trace-ipc-full=1" is refused, as is a value option without its value
+    CHECK_FALSE(ParseOptions("runner", std::vector<std::string>{"--trace-ipc-full=1"}).ok());
+    CHECK_FALSE(ParseOptions("runner", std::vector<std::string>{"--frames"}).ok());
+}
+#endif  // MH4N_HAVE_SCHEDULE
+
 // ---- the devices step ---------------------------------------------------------------------------
 
 TEST_CASE("the devices step makes the GPU, the input source and the audio sink the options name") {
