@@ -20,6 +20,7 @@
 #include "core/frontend/input.h"
 #include "input_common/keyboard.h"
 #include "input_common/main.h"
+#include "hooks.h"
 #include "kbm.h"
 
 namespace App::Input {
@@ -410,11 +411,20 @@ const char* ModeName(Mode mode) {
     }
 }
 
-void MouseMotion(int dx, int dy) {
+void MouseMotion(const Config& config, int dx, int dy) {
+    if (Port::Hooks::CameraTurnActive()) {
+        // the game's camera turns by the mouse itself (port/src/hooks.cpp): degrees a count
+        const float degrees = static_cast<float>(std::clamp(config.mouse_sensitivity, 1, 100)) * 0.0024f;
+        const float vertical = static_cast<float>(std::clamp(config.mouse_vertical, 10, 200)) / 100.0f;
+        Port::Hooks::AddCameraTurn(static_cast<float>(dx) * degrees * (config.mouse_invert_x ? -1.0f : 1.0f),
+                                   static_cast<float>(-dy) * degrees * vertical * (config.mouse_invert_y ? -1.0f : 1.0f));
+        return;
+    }
     mouse.Motion(dx, dy);
 }
 
 void MouseReset() {
+    Port::Hooks::ClearCameraTurn();
     mouse.Reset();
     mouse_stick_x.store(0.0f, std::memory_order_relaxed);
     mouse_stick_y.store(0.0f, std::memory_order_relaxed);
@@ -445,6 +455,9 @@ void Tick(const Config& config) {
     settings.vertical = config.mouse_vertical;
     settings.invert_y = config.mouse_invert_y;
     settings.deadzone = config.mouse_deadzone;
+    if (Port::Hooks::CameraTurnActive()) {
+        mouse.Reset();  // the camera takes the mouse itself: no push on the C-stick
+    }
     const auto [x, y] = mouse.Tick(dt, settings);
     mouse_stick_x.store(x, std::memory_order_relaxed);
     mouse_stick_y.store(y, std::memory_order_relaxed);

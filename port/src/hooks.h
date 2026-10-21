@@ -55,6 +55,15 @@ int SkipHint();
 /// any thread; it takes effect a moment later.
 void ToggleQuestMap();
 
+/// The app's mouse camera: a turn to add, in degrees (to the right, up), taken by the camera's
+/// input hook the next time the game turns the camera by its buttons. Safe from any thread.
+void AddCameraTurn(float yaw_degrees, float pitch_degrees);
+/// Whether that hook ran in the last moment (the game is in a camera the mouse can turn): the
+/// app uses the C-stick's way otherwise.
+bool CameraTurnActive();
+/// A turn not taken yet is dropped (the mouse stopped being the camera).
+void ClearCameraTurn();
+
 /// How many of the port's hook points the code library loaded last didn't have (it was built
 /// with an older config/hooks.txt, so the options behind them don't work until it is rebuilt).
 int MissingHookPoints();

@@ -162,6 +162,7 @@ Config Load() {
     c.mouse_sensitivity = num("Controls", "mouse_sensitivity", c.mouse_sensitivity, 1, 100);
     c.mouse_vertical = num("Controls", "mouse_vertical", c.mouse_vertical, 10, 200);
     c.mouse_invert_y = flag("Controls", "mouse_invert_y", c.mouse_invert_y);
+    c.mouse_invert_x = flag("Controls", "mouse_invert_x", c.mouse_invert_x);
     c.mouse_deadzone = num("Controls", "mouse_deadzone", c.mouse_deadzone, 0, 60);
     c.item_prev = str("Controls", "item_prev", c.item_prev);
     c.item_next = str("Controls", "item_next", c.item_next);
@@ -273,12 +274,15 @@ controls_version = 2
 # way: the mouse turns the camera and the key guides show; hold stylus_key to use the mouse on the
 # touch screen
 input_mode = {}
-# how fast the mouse turns the camera (1-100), up and down in % of left and right (10-200),
-# up and down the other way round, and the least push on the C-stick a moving mouse gives (0-60,
-# % of the way: the game ignores smaller ones)
+# how fast the mouse turns the camera (1-100; 50 = 0.12 degrees a count, like a PC game's mouse
+# look, with a code library built with the camera hook), up and down in % of left and right
+# (10-200), up and down or left and right the other way round, and, where the mouse pushes the
+# C-stick instead (an older code library), the least push it gives (0-60, % of the way: the game
+# ignores smaller ones)
 mouse_sensitivity = {}
 mouse_vertical = {}
 mouse_invert_y = {}
+mouse_invert_x = {}
 mouse_deadzone = {}
 # the item bar: these scroll it left and right (L held with Y or A, the game's own way)
 item_prev = {}
@@ -338,7 +342,7 @@ catalog_url = {}
                        c.game, OnOff(c.launcher), OnOff(c.check_updates), c.new_3ds, c.cpu_clock, c.renderer, OnOff(c.fullscreen), c.resolution,
                        OnOff(c.vsync), c.screens, OnOff(c.linear_filter), OnOff(c.custom_textures),
                        c.shader, c.fps_counter, c.volume, c.audio_output, c.input_mode, c.mouse_sensitivity,
-                       c.mouse_vertical, OnOff(c.mouse_invert_y), c.mouse_deadzone, c.item_prev, c.item_next,
+                       c.mouse_vertical, OnOff(c.mouse_invert_y), OnOff(c.mouse_invert_x), c.mouse_deadzone, c.item_prev, c.item_next,
                        c.stylus_key, c.key_guides, c.key_guides_key, c.controller_auto ? "auto" : "off", keys,
                        params, c.touch_screen_key, c.fullscreen_key, c.fps_counter_key, c.nickname, c.join, c.password,
                        c.host, c.room_port, c.room_name, c.room_members, c.lobby, c.token,

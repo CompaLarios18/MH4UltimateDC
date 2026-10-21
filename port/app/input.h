@@ -62,8 +62,10 @@ enum class Mode { Auto, Controller, KeyboardMouse };
 Mode ParseMode(const std::string& value);
 const char* ModeName(Mode mode);
 
-/// The mouse moved this many pixels while it is the camera.
-void MouseMotion(int dx, int dy);
+/// The mouse moved this many counts while it is the camera: the game's camera turns by them
+/// directly where the port's camera hook runs (degrees a count from the sensitivity, like a
+/// PC game's mouse look), else they push the C-stick by the mouse's speed.
+void MouseMotion(const Config& config, int dx, int dy);
 /// The mouse stopped being the camera: the stick goes back to the centre at once.
 void MouseReset();
 /// The wheel turned while the mouse is the camera: `code` is WHEEL_UP, ... A wheel bound to the

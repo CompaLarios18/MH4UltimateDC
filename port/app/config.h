@@ -66,6 +66,7 @@ struct Config {
     int mouse_sensitivity = 50;   ///< 1-100: how fast the mouse turns the camera
     int mouse_vertical = 100;     ///< 10-200: up and down, in % of left and right
     bool mouse_invert_y = false;
+    bool mouse_invert_x = false;
     int mouse_deadzone = 12;      ///< 0-60: the least push on the C-stick a moving mouse gives, %
     std::string item_prev = "Wheel Up";    ///< scrolls the item bar left (L+Y)
     std::string item_next = "Wheel Down";  ///< and right (L+A)

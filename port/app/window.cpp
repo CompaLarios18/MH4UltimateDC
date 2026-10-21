@@ -302,7 +302,7 @@ void Window::PollEvents() {
         case SDL_MOUSEMOTION:
             if (mouse_camera) {
                 if (event.motion.which != SDL_TOUCH_MOUSEID) {
-                    Input::MouseMotion(event.motion.xrel, event.motion.yrel);
+                    Input::MouseMotion(config, event.motion.xrel, event.motion.yrel);
                 }
                 break;
             }

@@ -488,6 +488,7 @@ void Menu::Closed() {
                 file.mouse_sensitivity = now.mouse_sensitivity;
                 file.mouse_vertical = now.mouse_vertical;
                 file.mouse_invert_y = now.mouse_invert_y;
+                file.mouse_invert_x = now.mouse_invert_x;
                 file.mouse_deadzone = now.mouse_deadzone;
                 file.item_prev = now.item_prev;
                 file.item_next = now.item_next;
@@ -1374,8 +1375,9 @@ void Menu::DrawControls() {
         if (ImGui::SliderInt("##mouse_sensitivity", &config.mouse_sensitivity, 1, 100)) {
             Changed(AppSetting::Controls);
         }
-        layer.Help("How fast the mouse turns the camera. The camera has a top speed of its own (the 3DS's "
-                   "C-stick pushed all the way): a faster mouse doesn't turn it faster than that.");
+        layer.Help("How fast the mouse turns the camera: 50 is 0.12 degrees a mouse count. With a code library "
+                   "built from this version the mouse turns the game's camera itself, like a PC game; with an "
+                   "older one it pushes the C-stick, which has a top speed of its own.");
 
         Row("Up and down");
         if (ImGui::SliderInt("##mouse_vertical", &config.mouse_vertical, 10, 200, "%d%% of left and right")) {
@@ -1389,7 +1391,13 @@ void Menu::DrawControls() {
         }
         layer.Help("The mouse moved up turns the camera down, and the other way round.");
 
-        Row("Least push");
+        Row("Invert left and right");
+        if (ImGui::Checkbox("##mouse_invert_x", &config.mouse_invert_x)) {
+            Changed(AppSetting::Controls);
+        }
+        layer.Help("The mouse moved right turns the camera left, and the other way round.");
+
+        Row("Least push (C-stick way)");
         if (ImGui::SliderInt("##mouse_deadzone", &config.mouse_deadzone, 0, 60, "%d%%")) {
             Changed(AppSetting::Controls);
         }
