@@ -44,6 +44,7 @@
 #include "mh4n/registry.h"
 #include "mh4n/runtime.h"
 #include "mh4n/service.h"
+#include "services/apt/shared_font.h"
 #include "mh4n/threads.h"
 
 using namespace mh4n;
@@ -627,6 +628,64 @@ TEST_CASE("the three APT services share one applet manager") {
     CHECK(status == 0);
     CHECK(registered_through_u == 1);
     CHECK(registered_through_a == 1);
+}
+
+// ---- the shared font block ------------------------------------------------------------------------------------------
+
+TEST_CASE("the APT module holds the 0x332000-byte APT:SharedFont block of the SYSTEM region from the start") {
+    Fixture f;
+    TempDir dir;
+    u32 system_used = 0, base_used = 0;
+    u32 size = 0;
+    std::string name;
+    Result map_read_write = 0;
+    bool held = false;
+    Result second = 0, full = 0;
+    u32 used_after_failures = 0;
+    bool second_empty = false, full_empty = false;
+    const int status = BootWith(f, dir, {"--ms", "20000"}, [&] {
+        Guest g(*f.runtime);
+        Kernel& kernel = g.rt.GetKernel();
+        system_used = kernel.Regions().Used(FcramRegion::System);
+        base_used = kernel.Regions().Used(FcramRegion::Base);
+        ServiceManager* manager = FindServiceManager(g.rt);
+        REQUIRE(manager != nullptr);
+        const std::shared_ptr<SharedMemory> block = SharedFontBlock(manager->Context());
+        held = block != nullptr;
+        if (block) {
+            size = block->Size();
+            name = block->Name();
+            // owner none, others Read: ReadWrite is refused to a mapper, as a block of ReadWrite/Read is
+            map_read_write = block->Map(*kernel.CurrentProcess(), 0, MemoryPermission::ReadWrite,
+                                        MemoryPermission::DontCare);
+        }
+        // a region that cannot hold the block: an error, no crash, nothing left allocated
+        std::shared_ptr<SharedMemory> another;
+        second = AllocateSharedFontBlock(kernel, &another);  // room for one more (or not)
+        second_empty = another == nullptr;
+        const u32 free_bytes = kernel.Regions().Size(FcramRegion::System) - kernel.Regions().Used(FcramRegion::System);
+        if (free_bytes != 0) {
+            kernel.Regions().LinearAllocate(FcramRegion::System, free_bytes);
+        }
+        const u32 used_before = kernel.Regions().Used(FcramRegion::System);
+        std::shared_ptr<SharedMemory> none;
+        full = AllocateSharedFontBlock(kernel, &none);
+        full_empty = none == nullptr;
+        used_after_failures = kernel.Regions().Used(FcramRegion::System) - used_before;
+        ExitProcess(*f.runtime);
+    });
+    CHECK(status == 0);
+    CHECK(held);
+    CHECK(system_used == 0x332000);
+    CHECK(base_used > 0);  // HID and GSP are in BASE, which the block does not touch
+    CHECK(size == 0x332000);
+    CHECK(name == "APT:SharedFont");
+    CHECK(map_read_write == kResultInvalidCombination);
+    CHECK((second == kResultSuccess || second == kResultOutOfMemory));
+    CHECK((second == kResultSuccess) == !second_empty);
+    CHECK(full == kResultOutOfMemory);
+    CHECK(full_empty);
+    CHECK(used_after_failures == 0);
 }
 
 // ---- the application's registration and the parameters ----------------------------------------------------------
