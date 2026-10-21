@@ -14,7 +14,7 @@
 // Copyright 2008 Dolphin Emulator Project / 2017 Citra Emulator Project (core_timing.h)
 //
 // What an HLE library applet is and what it sees of APT (N1-14). The applet manager
-// (services/apt) implements `AppletHost`; an applet (swkbd.h) derives from `Applet`. The types here
+// (services/apt) implements `AppletHost`; an applet (swkbd.h, ...) derives from `Applet`. The types here
 // are the ones both sides share, so the applets module does not depend on the service.
 //
 // Threads (principle 6): everything here belongs to the scheduler thread.
@@ -227,6 +227,14 @@ protected:
     // PrepareToCloseLibraryApplet(true, false, false) and CloseLibraryApplet, then the applet is neither
     // active nor running.
     void CloseApplet(std::shared_ptr<Object> object, const std::vector<u8>& buffer);
+
+    // The Request signal of the applets that only close at once (the error and EULA applet, the Mint
+    // applet, the Mii selector; Azahar's ReceiveParameterImpl of each): the parameter holds a
+    // CaptureBufferInfo, the applet makes a shared memory block of its `size` (kept in `memory`) and
+    // answers the parent with a Response parameter that carries it. Any other signal, or a parameter
+    // of another size (Azahar asserts), is logged and answers kResultUnknown with no Response.
+    Result AnswerFramebufferRequest(ServiceContext& context, const MessageParameter& parameter,
+                                    std::shared_ptr<SharedMemory>& memory, const char* name);
 
     // The manager, if it still exists.
     std::shared_ptr<AppletHost> Host() const { return host_.lock(); }

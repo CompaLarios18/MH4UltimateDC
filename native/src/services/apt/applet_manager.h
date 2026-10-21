@@ -154,6 +154,8 @@ public:
 
     // ---- library applets ----
     Result PrepareToStartLibraryApplet(AppletId applet_id);
+    Result PreloadLibraryApplet(AppletId applet_id);
+    Result FinishPreloadingLibraryApplet(AppletId applet_id);
     Result StartLibraryApplet(AppletId applet_id, std::shared_ptr<Object> object,
                               const std::vector<u8>& buffer);
     Result CancelLibraryApplet(bool app_exiting);
@@ -223,7 +225,7 @@ private:
     void SendApplicationParameterAfterRegistration(const MessageParameter& parameter);
     void EnsureHomeMenuLoaded();
 
-    Result CreateHleApplet(AppletId id, AppletId parent);
+    Result CreateHleApplet(AppletId id, AppletId parent, bool preload);
     void ScheduleAppletUpdate(AppletId id, u64 due_tick);
     void HleAppletUpdateEvent(AppletId id, u64 due_tick);
 

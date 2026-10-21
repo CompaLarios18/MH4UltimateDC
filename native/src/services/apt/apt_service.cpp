@@ -136,8 +136,8 @@ public:
         Register(0x0013, "GetPreparationState");
         Register(0x0014, "SetPreparationState");
         Register(0x0015, "PrepareToStartApplication");
-        Register(0x0016, "PreloadLibraryApplet");
-        Register(0x0017, "FinishPreloadingLibraryApplet");
+        Register(0x0016, "PreloadLibraryApplet", &AptInterface::PreloadLibraryApplet);
+        Register(0x0017, "FinishPreloadingLibraryApplet", &AptInterface::FinishPreloadingLibraryApplet);
         Register(0x0018, "PrepareToStartLibraryApplet", &AptInterface::PrepareToStartLibraryApplet);
         Register(0x0019, "PrepareToStartSystemApplet", &AptInterface::PrepareToStartSystemApplet);
         Register(0x001A, "PrepareToStartNewestHomeMenu");
@@ -473,6 +473,24 @@ private:
         Reply& reply = request.MakeReply(2, 0);
         reply.Push(kResultSuccess);
         reply.Push(Context().Threads().AppCpuTimeLimit());
+    }
+
+    // Inputs: 1: the applet id.
+    void PreloadLibraryApplet(Request& request) {
+        const auto applet_id = request.Pop<AppletId>();
+
+        MH4N_LOG(Debug, kLog, "called, applet_id={:08X}", static_cast<u32>(applet_id));
+
+        request.MakeReply(1, 0).Push(apt_.PreloadLibraryApplet(applet_id));
+    }
+
+    // Inputs: 1: the applet id.
+    void FinishPreloadingLibraryApplet(Request& request) {
+        const auto applet_id = request.Pop<AppletId>();
+
+        request.MakeReply(1, 0).Push(apt_.FinishPreloadingLibraryApplet(applet_id));
+
+        MH4N_LOG(Warning, kLog, "(STUBBED) called, applet_id={:#05X}", static_cast<u32>(applet_id));
     }
 
     // Inputs: 1: the applet id.
