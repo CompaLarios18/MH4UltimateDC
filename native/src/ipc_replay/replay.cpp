@@ -27,6 +27,14 @@ constexpr u32 kSvcSendSyncRequest = 0x32;
 constexpr u32 kSvcCloseHandle = 0x23;
 constexpr u32 kSvcDuplicateHandle = 0x27;
 constexpr std::size_t kNoCreation = ~static_cast<std::size_t>(0);
+// The longest stretch of game time a trace may span (from its first record to its last). A recording is
+// minutes to hours long; a tick beyond this is a damaged trace, and the timers of the days in between
+// (a VBlank every 16.7 ms) would keep the replay busy for ever.
+constexpr u64 kMaxSpanTicks = 24ull * 3600ull * kTicksPerSecond;
+// How far the clock may be moved while one deferred reply is waited for. The longest delay a service
+// models is 5 s (the UDS connection timeout); a reply that needs more than this is not coming (a hung
+// service), and the clock must not run on for the whole of --reply-timeout.
+constexpr u64 kMaxWaitTicks = 60ull * kTicksPerSecond;
 
 // ---- the translate parameters of a command ---------------------------------------------------------------
 
@@ -241,7 +249,10 @@ public:
     Engine(Runtime& runtime, ServiceManager& manager, const IpcTrace& trace, const SvcTrace* svc,
            const ReplayConfig& config)
         : manager_(manager), trace_(trace), svc_(svc), config_(config),
-          kernel_(runtime.GetKernel()), memory_(runtime.Memory()), scheduler_(runtime.Scheduler()) {}
+          kernel_(runtime.GetKernel()), memory_(runtime.Memory()), scheduler_(runtime.Scheduler()),
+          clock_(runtime.Clock()),
+          time_(config.advance_time ? dynamic_cast<ReplayTimeSource*>(&runtime.Clock().Source())
+                                    : nullptr) {}
 
     ReplayReport Run();
 
@@ -265,6 +276,10 @@ private:
     void Forget(Handle native);
 
     bool WaitForReply(std::string* problem);
+    bool CheckSpan(std::string* error) const;
+    bool AdvanceTime(const IpcRecord& record);
+    bool MoveClockTo(u64 tick);
+    bool StepToNextTimer(u64 limit_tick);
     void Compare(const IpcRecord& record, const std::vector<u32>& words,
                  const std::vector<Part>& request_parts, Difference* diff);
     void LearnHandles(const IpcRecord& record, const std::vector<u32>& words);
@@ -276,6 +291,11 @@ private:
     Kernel& kernel_;
     GuestMemory& memory_;
     GuestScheduler& scheduler_;
+    GameClock& clock_;
+    ReplayTimeSource* time_;  // null: the clock is not moved (ReplayConfig::advance_time false)
+    std::optional<u64> origin_;  // the tick of the first record
+    u64 base_ = 0;               // the clock's reading when the first record was reached
+    u64 target_ = 0;             // the clock's target so far: only grows
     std::shared_ptr<Process> process_;
     std::shared_ptr<Thread> thread_;
     u32 tls_ = 0;
@@ -344,6 +364,15 @@ bool Engine::NewScratchThread() {
 }
 
 bool Engine::Setup(std::string* error) {
+    if (config_.advance_time) {
+        if (time_ == nullptr) {
+            *error = "the runtime's clock cannot be advanced (it was not made with MakeReplayRuntimeConfig)";
+            return false;
+        }
+        if (!CheckSpan(error)) {
+            return false;
+        }
+    }
     process_ = kernel_.CurrentProcess();
     if (!process_) {
         *error = "the runtime has no process";
@@ -525,12 +554,93 @@ Handle Engine::SessionFor(const std::string& session) {
     return handle;
 }
 
+// ---- game time ----------------------------------------------------------------------------------------------------------
+
+// The trace's records in replay order (by seq) must not reach farther than kMaxSpanTicks from the first.
+bool Engine::CheckSpan(std::string* error) const {
+    const IpcRecord* first = nullptr;
+    for (const IpcRecord& record : trace_.records) {
+        if (first == nullptr || record.seq < first->seq) {
+            first = &record;
+        }
+    }
+    if (first == nullptr) {
+        return true;
+    }
+    for (const IpcRecord& record : trace_.records) {
+        if (record.ticks > first->ticks && record.ticks - first->ticks > kMaxSpanTicks) {
+            *error = fmt::format("line {}: its tick is more than 24 hours of game time after that of the "
+                                 "first request (line {}); the trace is damaged",
+                                 record.line, first->line);
+            return false;
+        }
+    }
+    return true;
+}
+
+// Moves the clock to the tick the recording had at `record` (counted from the first record's), running
+// what falls due on the way. False, with the reason in report_.error, if the clock cannot be moved.
+bool Engine::AdvanceTime(const IpcRecord& record) {
+    if (time_ == nullptr) {
+        return true;
+    }
+    if (!origin_) {
+        origin_ = record.ticks;
+        base_ = clock_.Now();
+        target_ = base_;
+    } else if (record.ticks > *origin_) {
+        target_ = std::max(target_, base_ + (record.ticks - *origin_));
+    }
+    return MoveClockTo(target_);
+}
+
+// Runs the posted work and every timer up to `tick`, the clock standing at each timer's own tick while it
+// runs (the next one is the scheduler's own request to be woken, which the replay clock keeps), then
+// leaves the clock at `tick`, or where it is if that is later.
+bool Engine::MoveClockTo(u64 tick) {
+    for (;;) {
+        scheduler_.RunPending();
+        const std::optional<s64> goal = clock_.HostNsFor(tick);
+        if (!goal) {
+            report_.error = "the game clock is paused or held and cannot be advanced";
+            return false;
+        }
+        const std::optional<s64> next = time_->NextDeadlineNs();
+        if (!next || *next > *goal) {
+            time_->SetNs(*goal);
+            return true;
+        }
+        if (*next <= time_->NowNs()) {
+            report_.error = "a timer that is due did not run";
+            return false;
+        }
+        time_->SetNs(*next);
+    }
+}
+
+// Moves the clock to the earliest timer, if there is one and it is not after `limit_tick`. The caller
+// runs it (RunPending).
+bool Engine::StepToNextTimer(u64 limit_tick) {
+    const std::optional<s64> next = time_->NextDeadlineNs();
+    const std::optional<s64> limit = clock_.HostNsFor(limit_tick);
+    if (!next || !limit || *next > *limit) {
+        return false;
+    }
+    time_->SetNs(*next);
+    return true;
+}
+
 // ---- one request --------------------------------------------------------------------------------------------------------
 
 bool Engine::WaitForReply(std::string* problem) {
     const auto deadline = std::chrono::steady_clock::now() + config_.reply_timeout;
+    const u64 start = clock_.Now();
+    const u64 limit = start > ~u64{0} - kMaxWaitTicks ? ~u64{0} : start + kMaxWaitTicks;
+    bool settled = false;  // a poll after a sleep found nothing posted
+    bool stepped = false;  // the clock was just moved to a timer: what the next poll runs is that timer
     while (thread_->status == ThreadStatus::WaitIPC) {
-        scheduler_.RunPending();
+        const bool ran = scheduler_.RunPending() && !stepped;
+        stepped = false;
         if (thread_->status != ThreadStatus::WaitIPC) {
             break;
         }
@@ -541,6 +651,15 @@ bool Engine::WaitForReply(std::string* problem) {
             NewScratchThread();
             return false;
         }
+        // The host threads that may answer (an I/O pool) had their time and posted nothing: what is
+        // left to wait for is game time, so the clock goes on, timer by timer and without sleeping,
+        // until the reply is there or kMaxWaitTicks have passed. It is never moved while a poll still
+        // finds work, so a reply that a host thread completes in time is not overtaken by the timers.
+        if (time_ != nullptr && settled && !ran && StepToNextTimer(limit)) {
+            stepped = true;
+            continue;
+        }
+        settled = !ran;
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
     thread_->status = ThreadStatus::Running;
@@ -548,6 +667,9 @@ bool Engine::WaitForReply(std::string* problem) {
 }
 
 Engine::Outcome Engine::Step(const IpcRecord& record) {
+    if (!AdvanceTime(record)) {
+        return Outcome::Skipped;  // report_.error is set; Run stops
+    }
     const std::string base = BaseService(record.session);
     if (!Selected(base)) {
         if (explicit_.empty()) {
@@ -877,6 +999,9 @@ ReplayReport Engine::Run() {
                      [](const IpcRecord* a, const IpcRecord* b) { return a->seq < b->seq; });
     for (const IpcRecord* record : order) {
         Step(*record);
+        if (!report_.error.empty()) {
+            break;
+        }
         Finish(*record);
     }
     return std::move(report_);

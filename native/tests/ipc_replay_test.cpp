@@ -17,12 +17,15 @@
 #include <vector>
 
 #include "ipc_replay/replay.h"
+#include "ipc_replay/replay_clock.h"
 #include "ipc_replay/time_dependent.h"
 #include "ipc_replay/tool.h"
 #include "ipc_replay/trace.h"
 #include "mh4n/crc32.h"
 #include "mh4n/ipc.h"
+#include "mh4n/options.h"
 #include "mh4n/registry.h"
+#include "mh4n/runtime.h"
 #include "mh4n/service.h"
 
 using namespace mh4n;
@@ -36,6 +39,8 @@ constexpr u32 kSubRef = 0xBBBB;       // ... for the sub-session
 constexpr u32 kSvcEventRef = 0x7000;  // ... for an event the program created itself
 
 std::atomic<u32> g_ticks{0};
+std::atomic<u32> g_timer_fired{0};  // set by the timer command 0x11 sets, cleared by the tests
+std::atomic<u32> g_post_ran{0};     // set by the work command 0x15 posts
 std::vector<std::shared_ptr<Request>> g_hung;  // requests the fake service never answers
 
 // The service a session of rpl:tst hands out (command 0x000C).
@@ -73,6 +78,12 @@ private:
 //   0x0E UserFolder   the length of the user folder the service was given
 //   0x0F NullHandle   a copy handle that is 0
 //   0x10 KindOf       the HandleType of the object a handle stands for, 0xFFFF for none
+//   0x11 ArmTimer     a timer on the game clock: `lo hi` ticks from now it sets g_timer_fired
+//   0x12 Fired        1 if that timer has run, else 0
+//   0x13 Now          the game clock's ticks, low word then high word
+//   0x14 ReplyAfter   defers; the reply is written by a timer `lo hi` ticks from now (no host thread)
+//   0x15 PostLater    posts work to the scheduler that sets g_post_ran
+//   0x16 PostRan      1 if that work has run, else 0
 class FakeService final : public Service {
 public:
     explicit FakeService(ServiceContext& context) : Service(context, "rpl:tst") {
@@ -91,6 +102,12 @@ public:
         Register(0x000E, "UserFolder", &FakeService::UserFolder);
         Register(0x000F, "NullHandle", &FakeService::NullHandle);
         Register(0x0010, "KindOf", &FakeService::KindOf);
+        Register(0x0011, "ArmTimer", &FakeService::ArmTimer);
+        Register(0x0012, "Fired", &FakeService::Fired);
+        Register(0x0013, "Now", &FakeService::Now);
+        Register(0x0014, "ReplyAfter", &FakeService::ReplyAfter);
+        Register(0x0015, "PostLater", &FakeService::PostLater);
+        Register(0x0016, "PostRan", &FakeService::PostRan);
     }
 
 private:
@@ -188,6 +205,46 @@ private:
         reply.Push(object ? static_cast<u32>(object->GetHandleType()) : u32{0xFFFF});
     }
 
+    void ArmTimer(Request& request) {
+        const u64 lo = request.Pop<u32>();
+        const u64 hi = request.Pop<u32>();
+        Kernel& kernel = Context().GetKernel();
+        kernel.ScheduleAt(kernel.NowTicks() + (lo | (hi << 32)), [] { g_timer_fired.store(1); });
+        request.MakeReply(1, 0).Push(kResultSuccess);
+    }
+    void Fired(Request& request) {
+        Reply& reply = request.MakeReply(2, 0);
+        reply.Push(kResultSuccess);
+        reply.Push(g_timer_fired.load());
+    }
+    void Now(Request& request) {
+        const u64 now = Context().GetKernel().NowTicks();
+        Reply& reply = request.MakeReply(3, 0);
+        reply.Push(kResultSuccess);
+        reply.Push(static_cast<u32>(now));
+        reply.Push(static_cast<u32>(now >> 32));
+    }
+    Handled ReplyAfter(Request& request) {
+        const u64 lo = request.Pop<u32>();
+        const u64 hi = request.Pop<u32>();
+        Kernel& kernel = Context().GetKernel();
+        Reply reply(request.CommandId(), 1, 0);
+        reply.Push(kResultSuccess);
+        auto shared = std::make_shared<Reply>(std::move(reply));
+        kernel.ScheduleAt(kernel.NowTicks() + (lo | (hi << 32)),
+                          [pending = request.Share(), shared] { pending->Deliver(std::move(*shared)); });
+        return Handled::Deferred;
+    }
+    void PostLater(Request& request) {
+        Context().GetKernel().Post([] { g_post_ran.store(1); });
+        request.MakeReply(1, 0).Push(kResultSuccess);
+    }
+    void PostRan(Request& request) {
+        Reply& reply = request.MakeReply(2, 0);
+        reply.Push(kResultSuccess);
+        reply.Push(g_post_ran.load());
+    }
+
     u32 subs_ = 0;
 };
 
@@ -237,13 +294,14 @@ struct Req {
     std::string outdesc = "-";
     std::string data;      // "idx:hex" or empty
     bool no_request = false;
+    u64 ticks = 0;         // the t= of the record
 };
 
 std::string IpcLine(const Req& r) {
     std::string line = r.thread + " seq=" + std::to_string(r.seq) + " session=" + r.session +
                        " cmd=" + (r.no_request || r.in.empty() ? "-" : Hex(r.in[0])) +
                        " in=" + (r.no_request ? "-" : Words(r.in)) + " desc=" + r.desc +
-                       " out=" + Words(r.out) + " outdesc=" + r.outdesc + " t=0";
+                       " out=" + Words(r.out) + " outdesc=" + r.outdesc + " t=" + std::to_string(r.ticks);
     if (!r.data.empty()) {
         line += " data=" + r.data;
     }
@@ -1312,4 +1370,280 @@ TEST_CASE("--user is the user folder the service is given") {
         const Run run = RunTool({trace, "--service", "rpl:tst"});
         CHECK(run.status == 1);
     }
+}
+
+// ---- game time (N1-11b) -------------------------------------------------------------------------------------
+
+namespace {
+
+constexpr u32 kApt = 4468352;  // the ticks of the timer APT starts for the software keyboard
+
+Req ArmTimerReq(u32 seq, u64 at, u64 ticks) {
+    Req r;
+    r.seq = seq;
+    r.ticks = at;
+    r.in = {ipc::MakeHeader(0x11, 2, 0), static_cast<u32>(ticks), static_cast<u32>(ticks >> 32)};
+    r.out = {ipc::MakeHeader(0x11, 1, 0), 0};
+    return r;
+}
+
+Req FiredReq(u32 seq, u64 at, u32 expected) {
+    Req r;
+    r.seq = seq;
+    r.ticks = at;
+    r.in = {ipc::MakeHeader(0x12, 0, 0)};
+    r.out = {ipc::MakeHeader(0x12, 2, 0), 0, expected};
+    return r;
+}
+
+Req NowReq(u32 seq, u64 at, u64 expected) {
+    Req r;
+    r.seq = seq;
+    r.ticks = at;
+    r.in = {ipc::MakeHeader(0x13, 0, 0)};
+    r.out = {ipc::MakeHeader(0x13, 3, 0), 0, static_cast<u32>(expected), static_cast<u32>(expected >> 32)};
+    return r;
+}
+
+Req ReplyAfterReq(u32 seq, u64 at, u64 ticks) {
+    Req r;
+    r.seq = seq;
+    r.ticks = at;
+    r.in = {ipc::MakeHeader(0x14, 2, 0), static_cast<u32>(ticks), static_cast<u32>(ticks >> 32)};
+    r.out = {ipc::MakeHeader(0x14, 1, 0), 0};
+    return r;
+}
+
+Req PostReq(u32 seq, u64 at, bool ask, u32 expected = 0) {
+    Req r;
+    r.seq = seq;
+    r.ticks = at;
+    if (ask) {
+        r.in = {ipc::MakeHeader(0x16, 0, 0)};
+        r.out = {ipc::MakeHeader(0x16, 2, 0), 0, expected};
+    } else {
+        r.in = {ipc::MakeHeader(0x15, 0, 0)};
+        r.out = {ipc::MakeHeader(0x15, 1, 0), 0};
+    }
+    return r;
+}
+
+void ResetFake() {
+    g_timer_fired.store(0);
+    g_post_ran.store(0);
+}
+
+}  // namespace
+
+TEST_CASE("the replay advances game time to each record's tick, so a timer a request set has fired") {
+    ResetFake();
+    TempDir dir;
+    // The timer is due kApt ticks after the first request, which sets the origin (tick 1000).
+    const std::string trace = dir.Write(
+        "ipc.txt", IpcTraceText({ArmTimerReq(1, 1000, kApt), FiredReq(2, 1000 + kApt - 1, 0),
+                                 FiredReq(3, 1000 + kApt, 1), FiredReq(4, 1000 + kApt + 10, 1)}));
+    SUBCASE("by default: one tick before it is due the timer has not run, at its tick it has") {
+        const Run run = RunTool({trace, "--service", "rpl:tst"});
+        CHECK_MESSAGE(run.status == 0, run.out << run.err);
+        CHECK(Contains(run.out, "replayed 4 requests: 4 matched, 0 differ, 0 skipped"));
+    }
+    SUBCASE("with --no-time: no time passes between the requests, so the timer never fires") {
+        const Run run = RunTool({trace, "--service", "rpl:tst", "--no-time", "--continue"});
+        CHECK(run.status == 1);
+        CHECK(Contains(run.out, "DIFF rpl:tst seq=3"));
+        CHECK(Contains(run.out, "DIFF rpl:tst seq=4"));
+        CHECK(!Contains(run.out, "DIFF rpl:tst seq=2"));
+        CHECK(Contains(run.out, "replayed 4 requests: 2 matched, 2 differ, 0 skipped"));
+    }
+}
+
+TEST_CASE("a difference is still a difference with game time advancing") {
+    ResetFake();
+    TempDir dir;
+    // The reference says the timer had not fired after kApt + 5 ticks, which the replay's has.
+    const std::string trace =
+        dir.Write("ipc.txt", IpcTraceText({ArmTimerReq(1, 0, kApt), FiredReq(2, kApt + 5, 0)}));
+    const Run run = RunTool({trace, "--service", "rpl:tst"});
+    CHECK(run.status == 1);
+    CHECK(Contains(run.out, "DIFF rpl:tst seq=2"));
+}
+
+TEST_CASE("the first record sets the origin of replay time") {
+    ResetFake();
+    TempDir dir;
+    // Absolute ticks of a recording are large; only the distances from the first record count.
+    const u64 first = 5'000'000'000ull;
+    const std::string trace = dir.Write(
+        "ipc.txt", IpcTraceText({NowReq(1, first, 0), NowReq(2, first + 1234, 1234),
+                                 NowReq(3, first + 10'000'000, 10'000'000)}));
+    const Run run = RunTool({trace, "--service", "rpl:tst"});
+    CHECK_MESSAGE(run.status == 0, run.out << run.err);
+}
+
+TEST_CASE("a record whose tick goes backward does not move the clock back") {
+    ResetFake();
+    TempDir dir;
+    // Replies are written when they complete, so the ticks of consecutive requests can go down.
+    const std::string trace = dir.Write(
+        "ipc.txt", IpcTraceText({NowReq(1, 5000, 0), NowReq(2, 9000, 4000), NowReq(3, 2000, 4000),
+                                 NowReq(4, 5000, 4000), NowReq(5, 9500, 4500)}));
+    const Run run = RunTool({trace, "--service", "rpl:tst"});
+    CHECK_MESSAGE(run.status == 0, run.out << run.err);
+    CHECK(Contains(run.out, "replayed 5 requests: 5 matched, 0 differ, 0 skipped"));
+}
+
+TEST_CASE("a gap of hours takes no wall time and runs the timers inside it") {
+    ResetFake();
+    TempDir dir;
+    const u64 hour = 3600ull * kTicksPerSecond;
+    const std::string trace = dir.Write(
+        "ipc.txt", IpcTraceText({ArmTimerReq(1, 100, 3 * hour), FiredReq(2, 100 + 3 * hour - 1, 0),
+                                 FiredReq(3, 100 + 3 * hour, 1), NowReq(4, 100 + 5 * hour, 5 * hour)}));
+    const auto before = std::chrono::steady_clock::now();
+    const Run run = RunTool({trace, "--service", "rpl:tst"});
+    const auto elapsed = std::chrono::steady_clock::now() - before;
+    CHECK_MESSAGE(run.status == 0, run.out << run.err);
+    CHECK(elapsed < std::chrono::seconds(20));
+}
+
+TEST_CASE("a trace that spans more than a day of game time is refused") {
+    ResetFake();
+    TempDir dir;
+    const u64 day = 24ull * 3600ull * kTicksPerSecond;
+    SUBCASE("beyond the limit") {
+        const std::string trace =
+            dir.Write("ipc.txt", IpcTraceText({NowReq(1, 0, 0), NowReq(2, day + 1, day + 1)}));
+        const Run run = RunTool({trace, "--service", "rpl:tst"});
+        CHECK(run.status == 2);
+        CHECK(Contains(run.err, "line 3"));
+        CHECK(Contains(run.err, "damaged"));
+    }
+    SUBCASE("a day exactly is replayed") {
+        const std::string trace =
+            dir.Write("ipc.txt", IpcTraceText({NowReq(1, 0, 0), NowReq(2, day, day)}));
+        const Run run = RunTool({trace, "--service", "rpl:tst"});
+        CHECK_MESSAGE(run.status == 0, run.out << run.err);
+    }
+    SUBCASE("with --no-time the ticks are not used") {
+        Req second = Add(2, 1, 2);
+        second.ticks = ~u64{0};
+        const std::string trace = dir.Write("ipc.txt", IpcTraceText({Add(1, 1, 2), second}));
+        const Run run = RunTool({trace, "--service", "rpl:tst", "--no-time"});
+        CHECK_MESSAGE(run.status == 0, run.out << run.err);
+    }
+}
+
+TEST_CASE("posted work runs before the next request, and only with game time") {
+    ResetFake();
+    TempDir dir;
+    const std::string trace = dir.Write(
+        "ipc.txt", IpcTraceText({PostReq(1, 10, false), PostReq(2, 20, true, 1)}));
+    SUBCASE("by default") {
+        const Run run = RunTool({trace, "--service", "rpl:tst"});
+        CHECK_MESSAGE(run.status == 0, run.out << run.err);
+    }
+    SUBCASE("with --no-time the scheduler is not run between requests") {
+        const Run run = RunTool({trace, "--service", "rpl:tst", "--no-time"});
+        CHECK(run.status == 1);
+    }
+}
+
+TEST_CASE("a reply that waits for a timer arrives at the timer's tick, with no wall wait") {
+    ResetFake();
+    TempDir dir;
+    const u64 delay = 30ull * kTicksPerSecond;  // half a minute of game time
+    const std::string trace = dir.Write(
+        "ipc.txt", IpcTraceText({ReplyAfterReq(1, 0, delay), NowReq(2, 1, delay),
+                                 NowReq(3, delay + 50, delay + 50)}));
+    // 5 s: the half minute cannot have been waited for in real time.
+    const Run run = RunTool({trace, "--service", "rpl:tst", "--reply-timeout", "5000"});
+    CHECK_MESSAGE(run.status == 0, run.out << run.err);
+    CHECK(Contains(run.out, "replayed 3 requests: 3 matched, 0 differ, 0 skipped"));
+}
+
+TEST_CASE("a reply that needs more than a minute of game time is a difference, and the clock stops") {
+    ResetFake();
+    TempDir dir;
+    const u64 delay = 90ull * kTicksPerSecond;
+    const std::string trace =
+        dir.Write("ipc.txt", IpcTraceText({ReplyAfterReq(1, 0, delay), Add(2, 1, 2)}));
+    const Run run = RunTool({trace, "--service", "rpl:tst", "--reply-timeout", "300", "--continue"});
+    CHECK(run.status == 1);
+    CHECK(Contains(run.out, "DIFF rpl:tst seq=1"));
+    CHECK(Contains(run.out, "no reply within 300 ms"));
+    CHECK(Contains(run.out, "replayed 2 requests: 1 matched, 1 differ, 0 skipped"));
+}
+
+TEST_CASE("a deferred reply a host thread completes is not overtaken by game time") {
+    ResetFake();
+    TempDir dir;
+    // The fake service's Defer (20 ms on another host thread) is waited for as before; the clock
+    // stands where the request put it until a poll finds nothing posted, and then moves only to timers.
+    Req defer;
+    defer.seq = 1;
+    defer.ticks = 7;
+    defer.in = {ipc::MakeHeader(6, 0, 0)};
+    defer.out = {ipc::MakeHeader(6, 2, 0), 0, 0x77};
+    const std::string trace = dir.Write("ipc.txt", IpcTraceText({defer, Add(2, 1, 2)}));
+    const Run run = RunTool({trace, "--service", "rpl:tst"});
+    CHECK_MESSAGE(run.status == 0, run.out << run.err);
+    CHECK(Contains(run.out, "replayed 2 requests: 2 matched, 0 differ, 0 skipped"));
+}
+
+TEST_CASE("Replay needs the replay clock to advance time") {
+    ResetFake();
+    TempDir dir;
+    const std::string text = IpcTraceText({Add(1, 1, 2)});
+    IpcTrace trace;
+    std::string error;
+    REQUIRE_MESSAGE(ParseIpcTrace(text, &trace, &error), error);
+    const Options options = ParseOptions("ipc-replay", {});
+    REQUIRE(options.ok());
+    SUBCASE("a runtime with the host's clock: an error, never a silent no-op") {
+        Runtime runtime;
+        REQUIRE_MESSAGE(runtime.Prepare(options, {Phase::Devices, Phase::Services}, &error), error);
+        ServiceManager* manager = FindServiceManager(runtime);
+        REQUIRE(manager != nullptr);
+        ReplayConfig config;
+        config.services = {"rpl:tst"};
+        const ReplayReport report = Replay(runtime, *manager, trace, nullptr, config);
+        CHECK(!report.error.empty());
+        CHECK(report.ExitStatus() == 2);
+        config.advance_time = false;
+        const ReplayReport plain = Replay(runtime, *manager, trace, nullptr, config);
+        CHECK(plain.error.empty());
+        CHECK(plain.ExitStatus() == 0);
+    }
+    SUBCASE("a runtime made with MakeReplayRuntimeConfig") {
+        Runtime runtime(MakeReplayRuntimeConfig());
+        REQUIRE_MESSAGE(runtime.Prepare(options, {Phase::Devices, Phase::Services}, &error), error);
+        ServiceManager* manager = FindServiceManager(runtime);
+        REQUIRE(manager != nullptr);
+        ReplayConfig config;
+        config.services = {"rpl:tst"};
+        const ReplayReport report = Replay(runtime, *manager, trace, nullptr, config);
+        CHECK(report.error.empty());
+        CHECK(report.ExitStatus() == 0);
+    }
+}
+
+TEST_CASE("the replay clock stands still until it is set and never goes back") {
+    ReplayTimeSource source;
+    CHECK(source.NowNs() == 0);
+    CHECK(!source.NextDeadlineNs());
+    source.SetNs(500);
+    CHECK(source.NowNs() == 500);
+    source.SetNs(100);
+    CHECK(source.NowNs() == 500);
+    std::unique_ptr<PreemptionSource> preemption = source.MakePreemption();
+    preemption->Arm(900);
+    CHECK(*source.NextDeadlineNs() == 900);
+    preemption->Arm(std::nullopt);
+    CHECK(!source.NextDeadlineNs());
+}
+
+TEST_CASE("--help lists --no-time") {
+    const Run run = RunTool({"--help"});
+    CHECK(run.status == 0);
+    CHECK(Contains(run.out, "--no-time"));
 }

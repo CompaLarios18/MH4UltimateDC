@@ -12,7 +12,7 @@ trace in them is written by the test, against a fake service the test registers.
 
 ```
 mh4n_ipc_replay TRACE [--svc-trace FILE] [--service NAME]... [--continue] [--game DIR]
-                      [--user DIR] [--time-dependent FILE]... [--reply-timeout MS]
+                      [--user DIR] [--time-dependent FILE]... [--reply-timeout MS] [--no-time]
 ```
 
 | Option | Meaning |
@@ -25,6 +25,7 @@ mh4n_ipc_replay TRACE [--svc-trace FILE] [--service NAME]... [--continue] [--gam
 | `--user DIR` | the user directory the services are given |
 | `--time-dependent FILE` | a list of commands compared by result only (below). Repeatable |
 | `--reply-timeout MS` | how long to wait for a deferred reply (default 30000) |
+| `--no-time` | do not advance game time between requests (below). Default: advance |
 | `--help` | print the usage and exit 0 |
 
 `config/native/ipc_time_dependent.txt` is read first when it exists relative to the current
@@ -44,7 +45,8 @@ a process, the registered devices and services, no program and no code library. 
 on one scratch thread of that process, one at a time, with the IPC layer's reply delay switched off;
 a deferred reply is waited for in real time by draining the scheduler's posted work
 (`GuestScheduler::RunPending`). A request that gets no reply within `--reply-timeout` is a
-difference; its thread is ended and the next request has a new one.
+difference; its thread is ended and the next request has a new one. Between requests game time
+advances to the recorded ticks (next section).
 
 - **Requests in trace order**, which is the order `seq` numbers them (the order they were sent), not
   the order of the lines.
@@ -77,6 +79,62 @@ difference; its thread is ended and the next request has a new one.
 - **Skipped requests** are listed with a reason: no recorded request or reply (`cmd=-`, `out=-`), a
   handle that cannot be made, a service not registered natively (default mode), a session that
   cannot be reached, "after the first difference".
+
+## Game time
+
+A service whose answer depends on a timer (the software keyboard's update tick of APT, 4,468,352
+ticks after `PrepareToStartLibraryApplet`; the reply latency of a file read; the HID update) needs the
+game clock to move between requests, as it did in the recording. The IPC records carry the recorded
+game time: `t=`, the ticks since the run started at which the recorder wrote the reply. By default
+the replay moves game time to each record's tick before it sends that request:
+
+- **The origin is the first record's tick** (the first in replay order, that is by `seq`). The first
+  request is sent at the clock's reading when the replay starts (0), and a record whose tick is `n`
+  ticks after the first is sent `n` ticks after that. Absolute ticks do not matter, only the distances.
+- **Only forward.** `t=` is the tick of the reply, and a deferred reply is written after later requests
+  of other threads, so ticks need not grow in `seq` order. A record whose tick is not beyond the
+  clock's target so far does not move the clock; it is never moved back.
+- **The timers run on the way, in order.** The clock is moved to each timer that falls due before
+  the target, one at a time, in (tick, id) order, and the timer and the posted work run on the
+  scheduler thread (`GuestScheduler::RunPending`) with the clock at the timer's own tick, as in the
+  runtime; then the clock is set to the target tick. A timer due exactly at the target has run when
+  the request is sent; one a tick later has not.
+- **Nothing sleeps and nothing reads the host's clock.** The runtime of the tool is made with
+  `MakeReplayRuntimeConfig()` (`replay_clock.h`): a time source that stands still until the replay
+  sets it, and a preemption source that only keeps the scheduler's request to be woken at its
+  earliest timer, which is how the replay finds the next timer. A gap of hours between two requests
+  costs the events inside it (periodic timers such as the VBlank), not the time. A trace whose last
+  tick is more than 24 hours of game time after its first is refused (exit 2, with the line number): it
+  is damaged, and its days of periodic timers would never end.
+- **Skipped requests count.** Every record moves the clock, also one that is not replayed (a service
+  not registered natively, a request with no reply), so that a timer of one service falls due on
+  schedule while another's requests are skipped.
+
+`--no-time` keeps the behaviour of N1-11: no request moves game time, the scheduler is run only while
+a deferred reply is waited for, and the clock is the host's (`SteadyTimeSource`). A service that sets
+a timer is then never seen to fire between requests. The comparison is the same in both modes: a
+reply that differs is a difference, and nothing is tolerated because time passed.
+
+**A deferred reply.** The wait stays as it was: the scheduler's posted work is run every millisecond
+of real time, up to `--reply-timeout`, which is how a reply that an I/O thread completes arrives. With the
+replay clock one thing is added, because a reply that waits for game time (a file read's latency, the
+UDS delays of up to 5 s) would otherwise wait for ever on a clock that does not move: once a poll found
+nothing posted for a millisecond, the clock goes on from timer to timer, each running in order with the
+clock at its tick and no sleep in between, until the reply is delivered. Game time is therefore never moved
+while a host thread is still delivering work, but it is moved while it only waits for time; a reply that
+waits for a timer arrives at the timer's tick without waiting for it. The clock moves at most 60 s of
+game time for one reply (a hung service must not run it away): a request whose reply is not there by
+then is waited for in real time as before and, at `--reply-timeout`, is a difference ("no reply within N
+ms") with the clock where the wait left it, up to 60 s ahead of the recording.
+
+Limits. `t=` is the tick of the reply, not of the request: the replay sends a request at its reply's
+tick, so a timer a request sets falls due, in replay time, as long after the recording's as the request
+took to answer (the IPC delay, 39 us = about 10,500 ticks, or the delay of a deferred reply). Two requests
+within that distance of a timer's tick can see it on different sides. A service whose I/O pool needs more
+than one poll (1 ms) of real time to finish while its reply is also waiting for game time sees the clock
+move on by the timers it passes in the meantime (the clock then ends the wait later than it would
+have); its reply, which is delivered when both are done, does not depend on that, but what a later request
+reads from the clock can.
 
 ## What is compared
 
@@ -143,4 +201,11 @@ them.
   (as Azahar's): in the replay it ends as "no reply within N ms". Such a request is a difference
   whenever the reference had the service and the native runtime does not yet.
 - Replies that arrive later are written when the posted work runs, so a service that completes from an
-  I/O thread works as it does in the runtime. Services that read the game clock see the host's time.
+  I/O thread works as it does in the runtime. Services that read the game clock see replay time (the
+  recorded distances from the first request) by default, and the host's time with `--no-time`.
+- A service that schedules work with `Kernel::ScheduleAt` or `Kernel::Post` gets it run between requests
+  (default). A timer that re-arms itself runs once per period inside a gap, so a long gap costs its
+  period count.
+- A program that calls `Replay` itself (the tests do) makes its runtime with `MakeReplayRuntimeConfig()`
+  to advance time; with any other runtime `Replay` reports an error, unless `ReplayConfig::advance_time`
+  is false.
