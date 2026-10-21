@@ -62,6 +62,7 @@ TEST_CASE("other_services_test needs recomp.h (the repository around native/)" *
 #include "mh4n/runtime.h"
 #include "mh4n/service.h"
 #include "mh4n/threads.h"
+#include "../src/services/cecd/cecd_store.h"
 #include "../src/services/cecd/sha256.h"
 #include "../src/services/y2r/y2r_convert.h"
 #include "../src/cpu/recomp_c.h"  // last: it defines macros
@@ -2121,16 +2122,22 @@ TEST_CASE("y2r: a transfer unit that does not divide the data ends the conversio
     CHECK(out[0] == 0xEE);
 }
 
-TEST_CASE("y2r: an output unit larger than, or not dividing, the strip ends the conversion without touching memory") {
+TEST_CASE("y2r: a last output unit longer than the strip is written whole, the missing pixels as zero bytes") {
+    // Azahar's SendData converts a whole unit even when the strip has fewer pixels left. Here the
+    // strip's real pixels land and the rest of the unit is zero; the address advances by the unit.
     Fixture f;
     TempDir dir;
-    bool ok_larger = true, ok_uneven = true;
-    std::vector<u8> out;
+    std::vector<u8> out_uneven, out_larger;
+    bool ok_uneven = false, ok_larger = false;
+    const TestImage image;
     const int status = BootWith(f, dir, {"--ms", "100"}, [&] {
         Guest g(*f.runtime);
         const u32 at = g.Scratch(0);
-        g.PutBytes(at, std::vector<u8>(0x400, 0xEE));
-        const auto run = [&](u16 unit) {
+        g.PutBytes(at, std::vector<u8>(0x800, 0xEE));
+        g.PutBytes(at, image.y);
+        g.PutBytes(at + 0x40, image.u);
+        g.PutBytes(at + 0x60, image.v);
+        const auto run = [&](u32 dst, u16 unit) {
             y2r::ConversionConfiguration c;
             c.input_line_width = 8;
             c.input_lines = 8;
@@ -2140,18 +2147,36 @@ TEST_CASE("y2r: an output unit larger than, or not dividing, the strip ends the 
             c.src_U = {at + 0x40, 32, 4, 0};
             c.src_V = {at + 0x60, 32, 4, 0};
             // RGBA8, 64 pixels = 256 bytes
-            c.dst = {at + 0x100, 256, unit, 0};
+            c.dst = {dst, 256, unit, 0};
             return y2r::PerformConversion(f.runtime->Memory(), c);
         };
-        ok_larger = run(0x180);  // 96 pixels in a strip of 64
-        ok_uneven = run(0x60);   // 24 pixels do not divide 64
-        out = g.GetBytes(at + 0x100, 0x200);
+        // 24 pixels (0x60 bytes) per unit: units of 24, 24 and 16 real pixels
+        ok_uneven = run(at + 0x100, 0x60);
+        out_uneven = g.GetBytes(at + 0x100, 0x120 + 8);
+        // 96 pixels (0x180 bytes) per unit in a strip of 64: one unit, 64 real pixels
+        ok_larger = run(at + 0x300, 0x180);
+        out_larger = g.GetBytes(at + 0x300, 0x180 + 8);
         ExitProcess(*f.runtime);
     });
     CHECK(status == 0);
-    CHECK_FALSE(ok_larger);
-    CHECK_FALSE(ok_uneven);
-    CHECK(std::all_of(out.begin(), out.end(), [](u8 b) { return b == 0xEE; }));
+    CHECK(ok_uneven);
+    CHECK(ok_larger);
+    const auto check = [&](const std::vector<u8>& out, std::size_t unit_bytes_total) {
+        // the real pixels, RGBA8 as {alpha, b, g, r}
+        for (int i = 0; i < 64; ++i) {
+            const auto rgb = image.Pixel(i % 8, i / 8);
+            const std::size_t at = static_cast<std::size_t>(i) * 4;
+            CHECK(out[at + 0] == 0xFF);
+            CHECK(out[at + 1] == rgb[2]);
+            CHECK(out[at + 2] == rgb[1]);
+            CHECK(out[at + 3] == rgb[0]);
+        }
+        // zero bytes from the end of the real pixels to the end of the last unit, and nothing after
+        for (std::size_t i = 256; i < unit_bytes_total; ++i) CHECK(out[i] == 0);
+        for (std::size_t i = unit_bytes_total; i < out.size(); ++i) CHECK(out[i] == 0xEE);
+    };
+    check(out_uneven, 0x120);
+    check(out_larger, 0x180);
 }
 
 TEST_CASE("y2r:u: the service converts, signals 50000 ticks later and keeps its configuration") {
@@ -2418,6 +2443,157 @@ TEST_CASE("cam:u: ports, a blank frame one frame period after the capture starts
     CHECK(busy_off[1] == kResultSuccess);
     CHECK(other[0] == ipc::MakeHeader(0x15, 1, 0));
     CHECK(f.LoggedCount("unimplemented cam:u") == 1);
+}
+
+// ---- bounds on sizes the guest gives ----------------------------------------------------------------
+
+TEST_CASE("am:app: a title count that does not fit the ids buffer is InvalidTIDInList, whatever its size") {
+    Fixture f;
+    TempDir dir;
+    std::vector<u32> fits, too_many_dlc, too_many_patch, huge_dlc, huge_patch, huge_empty_buffer;
+    const int status = BootWith(f, dir, {"--ms", "100"}, [&] {
+        Guest g(*f.runtime);
+        const Handle srv = ConnectSrv(g);
+        const Handle am = OpenService(g, srv, "am:app");
+        const u32 ids = g.Scratch(0), infos = g.Scratch(0x100);
+        // two DLC ids
+        g.PutWords(ids, {0x00000102, 0x0004008C, 0x00000103, 0x0004008C});
+        const auto titles = [&](u32 command, u32 count, u32 ids_size) {
+            return g.Request(am,
+                             Cat({{ipc::MakeHeader(command, 2, 4), 1, count},
+                                  Mapped(ids_size, ipc::R, ids),
+                                  Mapped(0x30, ipc::W, infos)}),
+                             6);
+        };
+        fits = titles(0x1005, 2, 16);                   // the control: both ids are read, none is installed
+        too_many_dlc = titles(0x1005, 3, 16);           // 3 ids in a buffer of 2
+        g.PutWords(ids, {0x00000103, 0x0004000E, 0x00000104, 0x0004000E});
+        too_many_patch = titles(0x100D, 3, 16);
+        huge_dlc = titles(0x1005, 0xFFFFFFFF, 8);       // no allocation of 4G ids
+        huge_patch = titles(0x100D, 0x20000000, 8);
+        huge_empty_buffer = titles(0x1005, 0x7FFFFFFF, 0);
+        ExitProcess(*f.runtime);
+    });
+    CHECK(status == 0);
+    constexpr Result kInvalidTidInList = MakeResult(60, 32, 7, 28);  // 0xD8A0 in the low half
+    CHECK(fits[1] == MakeResult(1018, 32, 5, 27));
+    CHECK(too_many_dlc[0] == ipc::MakeHeader(0x1005, 1, 4));
+    CHECK(too_many_dlc[1] == kInvalidTidInList);
+    CHECK(too_many_patch[0] == ipc::MakeHeader(0x100D, 1, 4));
+    CHECK(too_many_patch[1] == kInvalidTidInList);
+    CHECK(huge_dlc[1] == kInvalidTidInList);
+    CHECK(huge_patch[1] == kInvalidTidInList);
+    CHECK(huge_empty_buffer[1] == kInvalidTidInList);
+}
+
+TEST_CASE("cecd: a new archive's eventlog.dat is 0x30D54 bytes, 01 41 12 and then zeros") {
+    const std::vector<u8> log = cecd::NewEventLogContents();
+    REQUIRE(log.size() == 0x30D54);
+    CHECK(log[0] == 0x01);
+    CHECK(log[1] == 0x41);
+    CHECK(log[2] == 0x12);
+    CHECK(std::all_of(log.begin() + 3, log.end(), [](u8 b) { return b == 0; }));
+}
+
+TEST_CASE("soc:U: sizes the guest gives are bounded: GetNameInfo, SetSockOpt and Poll") {
+    Fixture f;
+    TempDir dir;
+    std::vector<u32> name_info, name_info_small;
+    std::vector<u8> host_text;
+    s32 opt_short_buffer = 0, opt_huge_len = 0;
+    std::vector<u32> poll_big, poll_short, poll_short_huge;
+    std::vector<u8> poll_big_bytes;
+    const int status = BootWith(f, dir, {"--ms", "100"}, [&] {
+        Guest g(*f.runtime);
+        const Handle srv = ConnectSrv(g);
+        SocGuest s(g, OpenService(g, srv, "soc:U"));
+        s.Init();
+        const s32 udp = s.OpenSocket(2);
+
+        // GetNameInfo with host and service lengths above 0x1000: the reply buffers are 0x1000 long
+        const u32 host_out = s.out, serv_out = g.Scratch(0x1400);
+        g.PutBytes(s.data, InetAddr(0x5000, {10, 1, 2, 3}));
+        SetReceive(g, 0, 0x1000, host_out);
+        SetReceive(g, 1, 0x1000, serv_out);
+        name_info = s.Call({ipc::MakeHeader(0x10, 4, 2), 8, 0x2000, 0x1800, 0, ipc::StaticBufferDesc(8, 0), s.data}, 7);
+        host_text = g.GetBytes(host_out, 9);
+        // and a length of 0x10: the buffer is 0x10 long
+        SetReceive(g, 0, 0x1000, host_out);
+        SetReceive(g, 1, 0x1000, serv_out);
+        name_info_small =
+            s.Call({ipc::MakeHeader(0x10, 4, 2), 8, 0x10, 0x10, 0, ipc::StaticBufferDesc(8, 0), s.data}, 7);
+
+        // SetSockOpt(SOL_SOCKET, SO_LINGER) whose length (8) is larger than the 4 bytes of the static buffer:
+        // the value is the 4 bytes, and a linger needs 8
+        const auto set_opt = [&](u32 optlen, const std::vector<u8>& value) {
+            g.PutBytes(s.aux, value);
+            return s.Ret(s.Call({ipc::MakeHeader(0x12, 4, 4), static_cast<u32>(udp), 0xFFFF, 0x80, optlen,
+                                 ipc::CallingPidDesc(), 0, ipc::StaticBufferDesc(value.size(), 0), s.aux},
+                                3));
+        };
+        opt_short_buffer = set_opt(8, {1, 0, 0, 0});
+        // a length of 4G with an 8-byte buffer: the 8 bytes are the value and the linger is accepted
+        opt_huge_len = set_opt(0xFFFFFFF0u, {1, 0, 0, 0, 5, 0, 0, 0});
+
+        // Poll with nfds above 0x1000: the first 0x1000 structures are used. A buffer of 0x1001 structures
+        // (0xC00C bytes) in mapped memory; the descriptor is writable and ready for output (events 8).
+        constexpr u32 kBig = 0x08300000;
+        REQUIRE(IsSuccess(f.runtime->Memory().Map(kBig, 0x20000, MemPerm::ReadWrite, MemState::Private)));
+        std::vector<u8> fds(0x1001 * 12, 0);
+        for (std::size_t i = 0; i < 0x1001; ++i) {
+            const u32 fd[3] = {static_cast<u32>(udp), 8, 0};
+            std::memcpy(fds.data() + i * 12, fd, 12);
+        }
+        g.PutBytes(kBig, fds);
+        const u32 big_out = kBig + 0x10000;
+        SetReceive(g, 0, 0xC00C, big_out);
+        poll_big = s.Call({ipc::MakeHeader(0x14, 2, 4), 0x1001, 0, ipc::CallingPidDesc(), 0,
+                           ipc::StaticBufferDesc(fds.size(), 0), kBig},
+                          6);
+        poll_big_bytes = g.GetBytes(big_out, 0xC000 + 12);
+
+        // nfds above 0x1000 and a buffer of only two structures: the structure after them reads as
+        // descriptor 0, which is not a socket
+        const u32 short_out = s.out2;
+        g.PutBytes(s.data, std::vector<u8>(fds.begin(), fds.begin() + 24));
+        SetReceive(g, 0, 0x100, short_out);
+        poll_short = s.Call({ipc::MakeHeader(0x14, 2, 4), 0x2000, 0, ipc::CallingPidDesc(), 0,
+                             ipc::StaticBufferDesc(24, 0), s.data},
+                            6);
+        poll_short_huge = s.Call({ipc::MakeHeader(0x14, 2, 4), 0xFFFFFFF0u, 0, ipc::CallingPidDesc(), 0,
+                                  ipc::StaticBufferDesc(24, 0), s.data},
+                                 6);
+        ExitProcess(*f.runtime);
+    });
+    CHECK(status == 0);
+    // result words: header (2 normal, 4 translate), result, the call's result, then the two descriptors
+    CHECK(name_info[0] == ipc::MakeHeader(0x10, 2, 4));
+    CHECK(name_info[1] == kResultSuccess);
+    CHECK(name_info[2] == 0);
+    CHECK(name_info[3] == ipc::StaticBufferDesc(0x1000, 0));
+    CHECK(name_info[5] == ipc::StaticBufferDesc(0x1000, 1));
+    CHECK(std::string(host_text.begin(), host_text.begin() + 8) == "10.1.2.3");
+    // 10.1.2.3 and its NUL need 9 bytes: a host buffer of 0x10 holds them, the reply is 0x10 long
+    CHECK(name_info_small[2] == 0);
+    CHECK(name_info_small[3] == ipc::StaticBufferDesc(0x10, 0));
+    CHECK(name_info_small[5] == ipc::StaticBufferDesc(0x10, 1));
+    CHECK(opt_short_buffer == kEINVAL);
+    CHECK(opt_huge_len == 0);
+    // nfds 0x1001 is 0x1000: every descriptor is ready, the reply holds 0x1000 structures
+    CHECK(poll_big[0] == ipc::MakeHeader(0x14, 2, 2));
+    CHECK(poll_big[1] == kResultSuccess);
+    CHECK(poll_big[2] == 0x1000);
+    CHECK(poll_big[3] == ipc::StaticBufferDesc(0xC000, 0));
+    for (std::size_t i = 0; i < 0x1000; ++i) {
+        u32 revents;
+        std::memcpy(&revents, poll_big_bytes.data() + i * 12 + 8, 4);
+        REQUIRE(revents == 8);
+    }
+    // the structure after the buffer's end is descriptor 0: the invalid-descriptor answer, no layout
+    CHECK(poll_short[0] == ipc::MakeHeader(0x14, 1, 0));
+    CHECK(poll_short[1] == kSocInvalidDescriptor);
+    CHECK(poll_short_huge[0] == ipc::MakeHeader(0x14, 1, 0));
+    CHECK(poll_short_huge[1] == kSocInvalidDescriptor);
 }
 
 #endif  // recomp.h

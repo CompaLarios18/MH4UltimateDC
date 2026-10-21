@@ -99,24 +99,18 @@ constexpr u8 To1(u8 v) { return v >> 7; }
 // transfer.
 bool SendData(GuestMemory& memory, OutputFormat format, const u32* input, ConversionBuffer& buf,
               int amount_of_data, u8 alpha) {
+    // Azahar never ends with a unit of 0 (the inner loop adds no pixel and the outer one spins forever).
     if (buf.transfer_unit == 0) {
         MH4N_LOG(Error, "Service.Y2R", "the output transfer unit is 0");
-        return false;
-    }
-    // A unit holds whole pixels (the loop below adds pixels until the unit is full). Every unit must
-    // find all its pixels in the strip: validate before the first write, as ReceiveData does, so
-    // that a guest unit size cannot make this read past the pixel buffer.
-    const u32 pixel_size = format == OutputFormat::RGBA8 ? 4 : format == OutputFormat::RGB8 ? 3 : 2;
-    const u32 pixels_per_unit = (buf.transfer_unit + pixel_size - 1) / pixel_size;
-    if (amount_of_data < 0 || static_cast<u32>(amount_of_data) % pixels_per_unit != 0) {
-        MH4N_LOG(Error, "Service.Y2R", "the output transfer unit {} does not fit the {} pixels of the strip",
-                 buf.transfer_unit, amount_of_data);
         return false;
     }
     std::vector<u8> unit;
     while (amount_of_data > 0) {
         unit.clear();
-        while (unit.size() < buf.transfer_unit) {
+        // Azahar converts a full unit even when the strip has fewer pixels left: it reads past the pixel
+        // buffer. Here the pixels the strip has are converted and the rest of the unit is zero bytes, so
+        // the bytes written and the address advance are the same without reading past the buffer.
+        while (unit.size() < buf.transfer_unit && amount_of_data > 0) {
             const u32 color = *input++;
             const u8 r = static_cast<u8>(color >> 24), g = static_cast<u8>(color >> 16),
                      b = static_cast<u8>(color >> 8), a = alpha;
@@ -142,6 +136,7 @@ bool SendData(GuestMemory& memory, OutputFormat format, const u32* input, Conver
             }
             amount_of_data -= 1;
         }
+        if (unit.size() < buf.transfer_unit) unit.resize(buf.transfer_unit, u8{0});
         memory.WriteBlock(buf.address, unit.data(), static_cast<u32>(unit.size()));
         buf.address += buf.transfer_unit + buf.gap;
         buf.image_size -= buf.transfer_unit;

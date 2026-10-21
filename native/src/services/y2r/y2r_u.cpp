@@ -16,7 +16,10 @@
 // application's memory (the process handle the game passes is only logged, as in Azahar); the
 // destination range is flushed from and invalidated in the GPU's caches before the conversion, as
 // Azahar's StartConversion does through the rasterizer; GetPackageParameter returns the first 12 bytes
-// of the configuration (three words after the result), which is what Azahar's four-word reply holds.
+// of the configuration (three words after the result), which is what Azahar's four-word reply holds;
+// the conversion itself departs as y2r_convert.h lists (a partial last output unit is padded with zero
+// bytes instead of read past the pixel buffer, and the output is written at the descriptor's address,
+// not at a host pointer that drifts from it).
 #include <algorithm>
 #include <cstring>
 #include <memory>

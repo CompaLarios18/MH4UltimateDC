@@ -54,8 +54,21 @@ struct ConversionConfiguration {
 };
 
 // Converts the whole image. Memory that cannot be read gives zeros and memory that cannot be written
-// is skipped (Azahar reads and writes host pointers); a transfer unit of 0 or one that does not divide
-// the data ends the conversion early (Azahar asserts). True if it ran to the end.
+// is skipped (Azahar reads and writes host pointers). True if it ran to the end.
+//
+// Departures from Azahar:
+//  - an input transfer unit of 0, or one that does not divide the data, ends the conversion early
+//    (Azahar's ReceiveData asserts); an output transfer unit of 0 ends it early too (Azahar's SendData
+//    would loop forever);
+//  - in the last strip of a Linear image, when the strip's pixel count is not a multiple of the output
+//    unit's pixel count, Azahar's SendData converts a whole unit and so reads past its pixel buffer
+//    (it does not assert). Here the pixels the strip has are written and the rest of the unit is zero
+//    bytes: the bytes written and the address advance are those of Azahar, nothing is read past the
+//    buffer, and the bytes past the real pixels are zeros where Azahar writes whatever it read;
+//  - Azahar writes the output through a host pointer that advances by the bytes written plus the gap;
+//    with an output unit that is not a multiple of the pixel size it drifts from the descriptor's
+//    address (which advances by the unit plus the gap). Here every unit is written at the descriptor's
+//    address.
 bool PerformConversion(GuestMemory& memory, ConversionConfiguration conversion);
 
 }  // namespace mh4n::y2r

@@ -45,6 +45,11 @@ inline constexpr Result kFsFileAlreadyExists =
     MakeResult(180, kModuleFs, kSummaryNothingHappened, kLevelStatus);
 inline constexpr Result kFsDirectoryNotEmpty = MakeResult(240, kModuleFs, kSummaryCanceled, kLevelStatus);
 
+// The contents of the archive's eventlog.dat when cecd:u creates it: 0x30D54 bytes, 0x01 0x41 0x12 and
+// zeroes to the end. Azahar's comment says 0xDD after 0x1000, but its code zero-initialises the vector
+// and only memsets the first 0x1000 bytes (the memset of an already zero vector).
+std::vector<u8> NewEventLogContents();
+
 struct FileData {
     std::vector<u8> bytes;
 };

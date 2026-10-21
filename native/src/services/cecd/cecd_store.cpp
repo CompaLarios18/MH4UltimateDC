@@ -51,6 +51,14 @@ bool OpenFile::SetSize(u64 size) {
     return true;
 }
 
+std::vector<u8> NewEventLogContents() {
+    std::vector<u8> buffer(0x30d54, 0);
+    buffer[0] = 0x01;
+    buffer[1] = 0x41;
+    buffer[2] = 0x12;
+    return buffer;
+}
+
 CecStore::CecStore() {
     root_.is_dir = true;
 }

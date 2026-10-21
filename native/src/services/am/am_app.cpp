@@ -9,8 +9,8 @@
 // am:app (N1-19): the application's view of the title manager. The runtime has no installed titles,
 // tickets or DLC (Azahar answers from the NAND and SD title folders; with none of them present):
 //  - the title queries check the title ids as Azahar does (DLC ids for the DLC queries, update ids for
-//    GetPatchTitleInfos) and then find nothing: GetDLCTitleInfos and GetPatchTitleInfos answer
-//    "not found" for any title id they are given, and succeed with nothing written for an empty list;
+//    GetPatchTitleInfos): an id with the wrong prefix is answered InvalidTIDInList, and an id with the
+//    right prefix finds nothing ("not found"); an empty list succeeds with nothing written;
 //  - GetDLCContentInfoCount answers 1 for a DLC id ("the number of content infos plus one" Azahar
 //    gives for a missing TMD), ListDLCContentInfos and FindDLCContentInfos succeed and write nothing;
 //  - GetNumDataTitleTickets, GetItemRights, IsDataTitleInUse, IsExternalTitleDatabaseInitialized,
@@ -22,7 +22,8 @@
 // delay), which no game-visible state depends on. A reply word Azahar's RequestBuilder declares and
 // does not write keeps the request's word of the same position in Azahar; the same is done here for
 // positions inside the request's normal parameters, and 0 beyond them (Azahar leaves those
-// uninitialised).
+// uninitialised). TitleInfos is sized by the buffer the ids came in, not by the guest's count (a count
+// that does not fit the buffer is InvalidTIDInList, as the ids Azahar would read past it are not ids).
 #include <algorithm>
 #include <vector>
 

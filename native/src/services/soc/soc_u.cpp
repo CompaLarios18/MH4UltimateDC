@@ -36,7 +36,10 @@
 // buffer descriptor in a reply that Azahar does not complete (an error answer of gethostbyname and
 // the like) is replaced by an empty static buffer; an address of a length or family Azahar asserts
 // on is EINVAL or EAFNOSUPPORT; the sockets are shared by the service's sessions, as they are in
-// Azahar (one service object).
+// Azahar (one service object); GetNameInfo clamps hostlen and servlen to 0x1000 (the size of the
+// reply's static buffers) and so shortens the reply buffers Azahar sizes by the guest's lengths;
+// SetSockOpt sizes the value by the static buffer it came in, not by the guest's optlen; Poll
+// clamps nfds to 0x1000.
 #include <algorithm>
 #include <array>
 #include <cstring>
@@ -1211,7 +1214,8 @@ private:
         Socket* socket = Holder(request, handle, pid);
         if (socket == nullptr) return;
         // the value comes in a static buffer: its size bounds the length
-        std::vector<u8> value(value_buffer != nullptr ? std::min<std::size_t>(optlen, value_buffer->data.size()) : 0, 0);
+        std::vector<u8> value(
+            value_buffer != nullptr ? std::min<std::size_t>(optlen, value_buffer->data.size()) : 0, 0);
         if (value_buffer != nullptr) {
             std::memcpy(value.data(), value_buffer->data.data(),
                         std::min<std::size_t>(value.size(), value_buffer->data.size()));

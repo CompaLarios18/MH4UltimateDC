@@ -541,17 +541,16 @@ private:
     // ReceiveData and ReceiveDataTimeout: the context, the buffer size, [the timeout], the buffer.
     void ReceiveDataImpl(Request& request, bool timeout) {
         const u32 handle = request.Pop<u32>();
-        const u32 buffer_size = request.Pop<u32>();
+        request.Pop<u32>();  // the buffer size: nothing is received
         const std::optional<u64> timeout_ns = timeout ? std::optional(request.Pop<u64>()) : std::nullopt;
         request.PopMappedBuffer();
         const std::shared_ptr<HttpContext> context = CheckedContext(request, handle);
         if (context == nullptr) return;
         const std::shared_ptr<Request> shared = request.Share();
-        WaitOrAnswer(request, context, timeout_ns, [context, shared, buffer_size](bool timed_out) {
+        WaitOrAnswer(request, context, timeout_ns, [context, shared](bool timed_out) {
             if (timed_out) return TimeoutReply(*shared, 1, 0);
             Reply reply(shared->CommandId(), 1, 0);
             // nothing is received: the transfer is over (or cancelled), so the body is complete
-            (void)buffer_size;
             const bool completed = context->cancelled || context->transfer_finished;
             if (completed) context->state = RequestState::Completed;
             reply.Push(completed ? kResultSuccess : kErrorBufferSmall);
@@ -674,11 +673,10 @@ private:
     void AddPostDataNamed(Request& request, bool binary) {
         const u32 handle = request.Pop<u32>();
         request.Pop<u32>();
-        const u32 value_size = request.Pop<u32>();
+        request.Pop<u32>();  // the value's size
         const StaticBuffer* name_buffer = request.PopStaticBuffer();
         const MappedBuffer* value_buffer = request.PopMappedBuffer();
         const std::string name = BufferString(name_buffer);
-        (void)value_size;
         const std::shared_ptr<HttpContext> context = CheckedContext(request, handle);
         if (context == nullptr) return;
         if (context->state != RequestState::NotStarted) {
