@@ -324,7 +324,7 @@ struct Source {
                     valid = true;
                     break;
                 default:
-                    FAIL("the generator must not make a partial update of a format Azahar asserts on");
+                    FAIL("the generator must not make a partial update of a format Azahar does not handle");
                 }
                 if (valid) {
                     if (current_buffer.size() < current_sample_number) {
@@ -444,6 +444,24 @@ struct Lcg {
     bool Chance(u32 percent) { return Below(100) < percent; }
 };
 
+// The words the audio pipe holds after Initialize: the count, then the DSP word addresses of the
+// structures of the first region in the table of shared_memory.h's comment, in the order the pipe lists
+// them.
+const std::vector<u16> kAudioPipeWords = {
+    15,                                      // the count
+    0xBFFF,                                  // 0: frame counter
+    0x9E92,                                  // 1: source configurations
+    0x8680,                                  // 2: source statuses
+    0xA792,                                  // 3: ADPCM coefficients
+    0x9430,                                  // 4: DSP configuration
+    0x8400,                                  // 5: DSP status
+    0x8540,                                  // 6: final mix samples
+    0x9492,                                  // 7: intermediate mix samples
+    0x8710,                                  // 8: compressor
+    0x8410,                                  // 9: DSP debug
+    0xA912, 0xAA12, 0xAAD2, 0xAC52, 0xAC5C,  // 10-14: surround
+};
+
 }  // namespace
 
 // ---- layout ------------------------------------------------------------------------------------------------
@@ -470,22 +488,8 @@ TEST_CASE("dsp: Initialize on the audio pipe writes the fifteen structure addres
     CHECK(dsp.interrupts == std::vector<Interrupt>{{InterruptType::Pipe, DspPipe::Audio}});
     CHECK(dsp.model.PipeReadableSize(2) == 2 + 15 * 2);
 
-    // The addresses in the table of shared_memory.h's comment (DSP word addresses of the first region),
-    // in the order the audio pipe lists the structures.
-    const std::vector<u16> expected = {
-        15,                                                              // the count
-        0xBFFF,                                                          // 0: frame counter
-        0x9E92,                                                          // 1: source configurations
-        0x8680,                                                          // 2: source statuses
-        0xA792,                                                          // 3: ADPCM coefficients
-        0x9430,                                                          // 4: DSP configuration
-        0x8400,                                                          // 5: DSP status
-        0x8540,                                                          // 6: final mix samples
-        0x9492,                                                          // 7: intermediate mix samples
-        0x8710,                                                          // 8: compressor
-        0x8410,                                                          // 9: DSP debug
-        0xA912, 0xAA12, 0xAAD2, 0xAC52, 0xAC5C,                          // 10-14: surround
-    };
+    // The addresses in the table of shared_memory.h's comment, in the order the audio pipe lists them.
+    const std::vector<u16>& expected = kAudioPipeWords;
     const std::vector<u8> bytes = dsp.model.PipeRead(2, 32);
     REQUIRE(bytes.size() == 32);
     std::vector<u16> got;
@@ -890,8 +894,10 @@ TEST_CASE("dsp: the frame-start hook sees the memory before the frame changes it
 }
 
 // The model against the transcription of Azahar's source, on random configurations. The generator
-// leaves out what makes Azahar assert, hang or read past a buffer: a partial update of a format other
-// than PCM16, the format value 3, a looping buffer of no samples and a play position past the end.
+// leaves out what Azahar does not handle or what makes it hang or read past a buffer: a partial update
+// of a format other than PCM16 and the format value 3 (Azahar logs "unimplemented" and leaves the
+// buffer empty, which the transcription does not model), a looping buffer of no samples (Azahar loops
+// for ever) and a play position past the end (Azahar erases past the end of the buffer).
 TEST_CASE("dsp: the model counts as Azahar's source does, on random configurations") {
     LogCatcher quiet;  // the buffers at invalid addresses are warned about
     constexpr u32 kLengths[] = {0, 1, 2, 3, 13, 14, 15, 100, 159, 160, 161, 400, 1000};
@@ -1228,6 +1234,18 @@ struct DspClient {
             Call({ipc::MakeHeader(0x0010, 3, 0), channel, 0, size}, 5);
         return {reply, g.GetBytes(g.Scratch(0x400), reply[2])};
     }
+    // ReadPipe (0x000E), which asks for exactly `size` bytes: the reply words, and the bytes the receive
+    // buffer got (as many as the reply's static buffer descriptor says).
+    std::pair<std::vector<u32>, std::vector<u8>> ReadPipeExact(u32 channel, u32 size) {
+        g.PutWords(g.Cmd() + 4 * ipc::StaticBufferDescriptorWord(0),
+                   {ipc::StaticBufferDesc(0x100, 0), g.Scratch(0x400)});
+        std::vector<u32> reply = Call({ipc::MakeHeader(0x000E, 3, 0), channel, 0, size}, 4);
+        return {reply, g.GetBytes(g.Scratch(0x400), ipc::StaticBufferDescSize(reply[2]))};
+    }
+    // GetPipeReadableSize (0x000F): the three reply words.
+    std::vector<u32> Readable(u32 channel) {
+        return Call({ipc::MakeHeader(0x000F, 2, 0), channel, 0}, 3);
+    }
     Result Register(u32 interrupt, u32 channel, Handle event) {
         return Call({ipc::MakeHeader(0x0015, 2, 2), interrupt, channel, ipc::CopyHandleDesc(1), event},
                     2)[1];
@@ -1391,6 +1409,99 @@ TEST_CASE("dsp::DSP: the commands answer as Azahar's do") {
     char expected[64];
     std::snprintf(expected, sizeof(expected), "Firmware crc32: 0x%08x", Crc32(firmware.data(), 64));
     CHECK(f.log.Count(expected) == 1);
+}
+
+TEST_CASE("dsp::DSP: ReadPipe and GetPipeReadableSize answer as Azahar's do") {
+    Fixture f;
+    TempDir dir;
+    std::vector<u32> size_off, size_init, size_part, size_drained, size_binary, size_binary_after,
+        size_bad_pipe;
+    std::pair<std::vector<u32>, std::vector<u8>> head, rest, empty, binary, none;
+    Result garbage_audio = 0, garbage_binary = 0;
+    const int status = BootWith(f, dir, {"--ms", "100"}, [&] {
+        Guest g(*f.runtime);
+        DspClient dsp{g, ConnectDsp(g)};
+        size_off = dsp.Readable(2);  // the DSP is off: nothing on the pipe
+        // Initialize, with the bytes the game leaves at random at 1-3 of the message
+        garbage_audio = dsp.WritePipe(2, {0, 0xAA, 0xBB, 0xCC});
+        size_init = dsp.Readable(2);
+        head = dsp.ReadPipeExact(2, 4);  // the count and the first address
+        size_part = dsp.Readable(2);
+        rest = dsp.ReadPipeExact(2, 28);  // the other fourteen addresses
+        size_drained = dsp.Readable(2);
+        empty = dsp.ReadPipeExact(2, 32);  // more than the pipe holds
+        none = dsp.ReadPipeExact(2, 0);    // nothing asked, nothing given
+        size_bad_pipe = dsp.Readable(9);   // no such pipe
+        // the binary pipe: an Init request whose bytes 4-7 are what the game left on its stack
+        std::vector<u8> init(32, 0);
+        init[0] = 1;  // the codec: AAC decoder
+        init[1] = 0;
+        init[2] = 0;  // the command: Init
+        init[3] = 0;
+        init[4] = 0xDE, init[5] = 0xAD, init[6] = 0xBE, init[7] = 0xEF;
+        for (std::size_t i = 8; i < init.size(); ++i) {
+            init[i] = static_cast<u8>(i);
+        }
+        garbage_binary = dsp.WritePipe(3, init);
+        size_binary = dsp.Readable(3);
+        binary = dsp.ReadPipeExact(3, 32);
+        size_binary_after = dsp.Readable(3);
+        ExitProcess(*f.runtime);
+    });
+    CHECK(status == 0);
+    CHECK(size_off == std::vector<u32>{0x000F0080, kResultSuccess, 0});
+    CHECK(garbage_audio == kResultSuccess);
+    CHECK(size_init == std::vector<u32>{0x000F0080, kResultSuccess, 32});
+    // ReadPipe: the header 0x000E0042 (1 normal word, 2 translate words), the result, the static
+    // buffer descriptor (buffer id 0, the size read) and the address of the receive buffer
+    auto words_of = [](const std::vector<u8>& bytes) {
+        std::vector<u16> words;
+        for (std::size_t i = 0; i + 1 < bytes.size(); i += 2) {
+            words.push_back(static_cast<u16>(bytes[i] | (bytes[i + 1] << 8)));
+        }
+        return words;
+    };
+    REQUIRE(head.first.size() == 4);
+    CHECK(head.first[0] == 0x000E0042);
+    CHECK(head.first[1] == kResultSuccess);
+    CHECK(head.first[2] == ipc::StaticBufferDesc(4, 0));
+    CHECK(head.first[3] != 0);
+    CHECK(words_of(head.second) == std::vector<u16>{15, 0xBFFF});
+    CHECK(size_part == std::vector<u32>{0x000F0080, kResultSuccess, 28});
+    REQUIRE(rest.first.size() == 4);
+    CHECK(rest.first[0] == 0x000E0042);
+    CHECK(rest.first[2] == ipc::StaticBufferDesc(28, 0));
+    std::vector<u16> all = words_of(head.second);
+    const std::vector<u16> tail = words_of(rest.second);
+    all.insert(all.end(), tail.begin(), tail.end());
+    CHECK(all == kAudioPipeWords);  // the count 15 and the fifteen addresses
+    CHECK(size_drained == std::vector<u32>{0x000F0080, kResultSuccess, 0});
+    // Azahar aborts (UNREACHABLE) on a ReadPipe for more than the pipe holds; the model logs it and
+    // answers an empty buffer
+    REQUIRE(empty.first.size() == 4);
+    CHECK(empty.first[0] == 0x000E0042);
+    CHECK(empty.first[1] == kResultSuccess);
+    CHECK(empty.first[2] == ipc::StaticBufferDesc(0, 0));
+    CHECK(empty.second.empty());
+    CHECK(f.log.Count("ReadPipe of 32 bytes from pipe 2 with 0 readable") == 1);
+    CHECK(none.first[2] == ipc::StaticBufferDesc(0, 0));
+    CHECK(none.second.empty());
+    CHECK(size_bad_pipe == std::vector<u32>{0x000F0080, kResultSuccess, 0});
+    // The bytes the game leaves in a message are never seen by the DSP: the audio pipe took the
+    // Initialize whatever bytes 1-3 held (above), and the binary pipe answers an Init with a success
+    // result and the request's data, whatever bytes 4-7 held. WriteProcessPipe's clearing of those bytes
+    // (audio 2-3, binary 4-7) cannot be observed any other way: no branch of the model reads them.
+    CHECK(garbage_binary == kResultSuccess);
+    CHECK(size_binary == std::vector<u32>{0x000F0080, kResultSuccess, 32});
+    REQUIRE(binary.second.size() == 32);
+    CHECK(binary.first[2] == ipc::StaticBufferDesc(32, 0));
+    CHECK(binary.second[0] == 1);  // codec 1, command 0
+    CHECK(std::vector<u8>(binary.second.begin() + 1, binary.second.begin() + 8) ==
+          std::vector<u8>(7, 0));  // command 0, result 0 (success)
+    for (std::size_t i = 8; i < 32; ++i) {
+        CHECK(binary.second[i] == static_cast<u8>(i));
+    }
+    CHECK(size_binary_after == std::vector<u32>{0x000F0080, kResultSuccess, 0});
 }
 
 TEST_CASE("dsp::DSP: the pipe interrupt, the audio pipe's addresses and the interrupt slots") {

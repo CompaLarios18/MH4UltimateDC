@@ -32,9 +32,14 @@
 // same. The model is single-threaded: it belongs to the scheduler thread (principle 6).
 //
 // Departures from Azahar, all deliberate (the DSP memory belongs to a game that must keep running):
-//  - Where Azahar asserts (a register number other than 0, a pipe message of the wrong size, a pipe
-//    that is not implemented, PCM8 or ADPCM in a partial embedded buffer update, a format value of 3,
-//    a NaN rate multiplier), the model logs the error and goes on without the action.
+//  - Where Azahar asserts (ASSERT, ASSERT_MSG and UNREACHABLE end the process; they are the register
+//    number other than 0 in RecvData and a NaN rate multiplier, which passes Azahar's `<= 0` test and
+//    then fails ASSERT(rate > 0) in the interpolation), the model logs the error and goes on without
+//    the action. UNIMPLEMENTED and UNIMPLEMENTED_MSG only log in Azahar (src/common/assert.h) and
+//    carry on, so the cases that use them are not departures: a binary pipe message of the wrong size
+//    or codec, a pipe that is not implemented (logged, nothing written), PCM8 or ADPCM in a partial
+//    embedded buffer update and a format value of 3 (logged, the buffer left empty). The model does the
+//    same for all of them.
 //  - A source stops dequeueing buffers for a frame after kMaxDequeuesPerFrame, with the rest of the
 //    frame unfilled and an error in the log. Azahar loops for ever on a looping buffer of length 0.
 //    The cap also ends a frame that Azahar would finish, but only for a looping buffer that gives
@@ -169,9 +174,6 @@ public:
 
     // The region the DSP reads: the higher frame counter, unless one wrapped around.
     std::size_t CurrentRegionIndex() const;
-
-    // For tests.
-    const std::vector<u8>& PipeData(DspPipe pipe) const { return pipes_[static_cast<std::size_t>(pipe)]; }
 
 private:
     struct MixerState {

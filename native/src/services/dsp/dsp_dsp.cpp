@@ -22,7 +22,8 @@
 //    pipe, and a ReadPipe for more than the pipe holds (which "hangs the hardware"), are logged and
 //    answered: the register as register 0, the others with an error result (RegisterInterruptEvents:
 //    a descriptor 1005 of the DSP module) or an empty buffer. A LoadComponent whose size is larger
-//    than its buffer reads only what the buffer holds.
+//    than its buffer reads only what the buffer holds. A LoadComponent without a valid mapped-buffer
+//    descriptor answers kResultInvalidBufferDescriptor (Azahar asserts).
 //  - FlushDataCache and InvalidateDCache answer success when the process handle is not a process
 //    (Azahar dereferences it in its log line).
 //  - Reply::Push of a u8, a u16 or a bool (RecvData, RecvDataIsReady, GetPipeReadableSize,
@@ -389,7 +390,7 @@ private:
 
     // Inputs:  0: 0x001100C2, 1: the size, 2: u16 program mask, u16 data mask, 3: the mapped buffer
     //          descriptor, 4: its address
-    // Outputs: 0: 0x00110042, 1: result, 2: true, 3: the mapped buffer descriptor, 4: its id
+    // Outputs: 0: 0x00110082, 1: result, 2: true, 3: the mapped buffer descriptor, 4: its id
     void LoadComponent(Request& request) {
         const u32 size = request.Pop<u32>();
         const u16 prog_mask = request.Pop<u16>();

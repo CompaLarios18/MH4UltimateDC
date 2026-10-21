@@ -32,7 +32,6 @@ namespace mh4n::audio {
 // ---- time and sizes ---------------------------------------------------------------------------------
 
 inline constexpr u32 kSamplesPerFrame = 160;
-inline constexpr u32 kNativeSampleRate = 32728;  // Hz, the DSP's native output rate
 // 160 samples * 4096 teaklite cycles * 2 ARM11 cycles: "verified against a rough hardware test"
 // (Azahar's audio_frame_ticks). One audio frame, in ticks of the 268,111,856 Hz clock.
 inline constexpr u64 kAudioFrameTicks = kSamplesPerFrame * 4096ull * 2ull;

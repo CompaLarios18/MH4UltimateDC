@@ -1,7 +1,7 @@
 #include "audio/mdsp_writer.h"
 
 #include <cinttypes>
-#include <cstring>
+#include <utility>
 
 #include "mh4n/log.h"
 
@@ -22,7 +22,6 @@ bool MdspWriter::Open(const std::string& path, u64 program_id, std::string tool)
     tool_ = std::move(tool);
     program_id_ = program_id;
     frames_ = 0;
-    std::memset(counts_, 0, sizeof(counts_));
     failed_ = false;
     // The format is little-endian; so is every host this runs on (ipc.h asserts it).
     const u32 version = kMdspVersion;
@@ -31,28 +30,6 @@ bool MdspWriter::Open(const std::string& path, u64 program_id, std::string tool)
         std::fclose(file_);
         file_ = nullptr;
         return false;
-    }
-    return true;
-}
-
-bool MdspWriter::Add(u32 type, u32 frame, u64 ticks, const void* payload, u32 size) {
-    if (file_ == nullptr) {
-        return false;
-    }
-    bool ok = std::fwrite(&type, 4, 1, file_) == 1 && std::fwrite(&frame, 4, 1, file_) == 1 &&
-              std::fwrite(&ticks, 8, 1, file_) == 1 && std::fwrite(&size, 4, 1, file_) == 1;
-    if (ok && size != 0) {
-        ok = std::fwrite(payload, 1, size, file_) == size;
-    }
-    if (!ok) {
-        failed_ = true;
-        return false;
-    }
-    if (type < 4) {
-        ++counts_[type];
-    }
-    if (type == kMdspRegions) {
-        ++frames_;
     }
     return true;
 }
@@ -72,7 +49,6 @@ bool MdspWriter::AddRegions(u32 frame, u64 ticks, const u8* region0, const u8* r
         failed_ = true;
         return false;
     }
-    ++counts_[kMdspRegions];
     ++frames_;
     return true;
 }
@@ -92,9 +68,8 @@ void MdspWriter::Close() {
         std::fprintf(manifest,
                      "{\n  \"tool\": \"%s\",\n  \"format\": \"MDSP\",\n  \"version\": %u,\n"
                      "  \"game\": \"0x%016" PRIx64 "\",\n  \"frames\": %u,\n"
-                     "  \"records\": {\"1\": %u, \"2\": %u, \"3\": %u}\n}\n",
-                     tool_.c_str(), kMdspVersion, program_id_, frames_, counts_[1], counts_[2],
-                     counts_[3]);
+                     "  \"records\": {\"1\": %u, \"2\": 0, \"3\": 0}\n}\n",
+                     tool_.c_str(), kMdspVersion, program_id_, frames_, frames_);
         std::fclose(manifest);
     } else {
         MH4N_LOG(Error, kLog, "cannot write {}.json", path_);

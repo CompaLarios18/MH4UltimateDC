@@ -159,7 +159,8 @@ void SourceModel::ParseConfig(SourceConfiguration& config, u32 source_id) {
                 valid = true;
                 break;
             default:
-                // Azahar asserts that PCM8 and ADPCM are not handled for partial buffer updates.
+                // Azahar's UNIMPLEMENTED_MSG logs that PCM8 and ADPCM are not handled for partial
+                // buffer updates (and UNIMPLEMENTED the other values) and goes on, as here.
                 MH4N_LOG(Error, kLog,
                          "source_id={}: format {} is not handled for partial buffer updates",
                          source_id, s.format);
@@ -341,7 +342,7 @@ bool SourceModel::DequeueBuffer(u32 source_id) {
             s.current_buffer_size = static_cast<std::size_t>(buf.length) + (buf.length % 2);
             break;
         default:
-            // Azahar asserts.
+            // Azahar's UNIMPLEMENTED logs and leaves the buffer empty, as here.
             MH4N_LOG(Error, kLog, "source_id={} buffer_id={}: unknown format {}", source_id,
                      buf.buffer_id, buf.format);
             s.current_buffer_size = 0;
@@ -394,7 +395,7 @@ DspModel::DspModel(u8* memory) : memory_(memory) {}
 
 u16 DspModel::RecvData(u32 register_number) {
     if (register_number != 0) {
-        // Azahar asserts.
+        // Azahar's ASSERT_MSG ends the process here (a departure, see dsp_model.h).
         MH4N_LOG(Error, kLog, "Unknown register_number {}", register_number);
     }
     // The application reads this after requesting DSP shutdown, to verify the DSP has indeed shut

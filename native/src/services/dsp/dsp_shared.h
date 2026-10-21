@@ -47,7 +47,6 @@ public:
     // The first session makes the model on the DSP RAM, the events and the frame timer; later calls
     // do nothing.
     void Start(ServiceContext& context);
-    bool Started() const { return model_ != nullptr; }
 
     audio::DspModel& Model() { return *model_; }
     ServiceContext& Context() { return *context_; }
