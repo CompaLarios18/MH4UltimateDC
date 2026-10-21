@@ -208,7 +208,7 @@ ConfigStore::ConfigStore(const std::string& user_folder) : user_folder_(user_fol
     if (!user_folder.empty()) {
         in.open(ConfigPath(user_folder), std::ios::binary);
     }
-    if (in) {
+    if (in.is_open() && in) {
         in.read(reinterpret_cast<char*>(buffer_.data()), static_cast<std::streamsize>(buffer_.size()));
         from_file_ = true;  // a short file leaves the rest zero: no blocks there
     } else {
@@ -361,6 +361,68 @@ bool ConfigStore::Save() {
     return WriteFileAtomically(ConfigPath(user_folder_), buffer_.data(), buffer_.size());
 }
 
+bool IsValidConfigFile(const std::string& path) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    if (!fs::is_regular_file(path, ec) || fs::file_size(path, ec) != kSaveFileSize || ec) {
+        return false;
+    }
+    std::array<u8, kSaveFileSize> bytes{};
+    std::ifstream in(path, std::ios::binary);
+    in.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+    if (static_cast<std::size_t>(in.gcount()) != bytes.size()) {
+        return false;
+    }
+    const u32 total = Get16(bytes.data());
+    if (total > kMaxBlockEntries || Get16(bytes.data() + 2) != kDataEntriesOffset) {
+        return false;
+    }
+    for (u32 i = 0; i < total; ++i) {
+        const u8* entry = Entry(bytes, i);
+        const u32 size = Get16(entry + 8);
+        if (size > 4 && static_cast<u64>(Get32(entry + 4)) + size > kSaveFileSize) {
+            return false;
+        }
+    }
+    return true;
+}
+
+EnsureResult EnsureConfigFile(const std::string& user_folder, const std::function<u64()>& random64,
+                              u64* console_id) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    if (user_folder.empty() || !fs::is_directory(fs::path(user_folder), ec)) {
+        return EnsureResult::NoUserFolder;
+    }
+    const std::string path = ConfigPath(user_folder);
+    // symlink_status: a dangling link or a directory is something there, not an absent file.
+    const fs::file_status status = fs::symlink_status(path, ec);
+    if (!ec && status.type() != fs::file_type::not_found) {
+        if (IsValidConfigFile(path)) {
+            return EnsureResult::Existing;
+        }
+        MH4N_LOG(Error, kLog,
+                 "the config savegame {} is short or damaged: it is left as it is (the blocks that are "
+                 "missing read as defaults, in memory); move it away to have a new one made",
+                 path);
+        return EnsureResult::Invalid;
+    }
+    if (ec && ec != std::errc::no_such_file_or_directory && ec != std::errc::not_a_directory) {
+        MH4N_LOG(Error, kLog, "cannot look at {}: {}; no config savegame is made", path, ec.message());
+        return EnsureResult::Failed;
+    }
+    ConfigStore store(user_folder);  // no file: the default blocks, in memory
+    const auto [random_number, id] = ConfigStore::GenerateConsoleUniqueId(random64);
+    if (IsError(store.SetConsoleUniqueId(random_number, id)) || !store.Save()) {
+        MH4N_LOG(Error, kLog, "the config savegame of {} could not be made", user_folder);
+        return EnsureResult::Failed;
+    }
+    if (console_id != nullptr) {
+        *console_id = id;
+    }
+    return EnsureResult::Created;
+}
+
 std::pair<u32, u64> ConfigStore::GenerateConsoleUniqueId(const std::function<u64()>& random64) {
     const u32 random_number = static_cast<u32>(random64() % 0x10000);
     const u64 friend_code_seed = random64();
@@ -486,7 +548,7 @@ McuData ReadMcuData(const std::string& user_folder) {
     if (!user_folder.empty()) {
         in.open(McuPath(user_folder), std::ios::binary);
     }
-    if (in) {
+    if (in.is_open() && in) {
         u8 raw[sizeof(McuData)];
         in.read(reinterpret_cast<char*>(raw), sizeof(raw));
         if (in.gcount() == static_cast<std::streamsize>(sizeof(raw))) {
@@ -571,7 +633,7 @@ std::string ReadMacAddress(const std::string& user_folder, const std::function<u
     if (!user_folder.empty()) {
         in.open(MacPath(user_folder), std::ios::binary);
     }
-    if (in) {
+    if (in.is_open() && in) {
         std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
         std::array<u8, 6> ignored{};
         if (text.size() <= 100 && ParseMac(text, &ignored)) {
