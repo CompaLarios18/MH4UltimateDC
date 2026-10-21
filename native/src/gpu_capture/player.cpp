@@ -1062,7 +1062,20 @@ void Player::RunGroup(size_t index, const Record& anchor) {
             }
         }
     }
-    result_.gsp_queue_pages += static_cast<u32>(std::count(queue_pages.begin(), queue_pages.end(), true));
+    {
+        // One listing per command and page, counted by the kind of the command and by whether
+        // --judge selected it: every command that signals an interrupt lists the queue page, not
+        // only the judged transfers (command lists do too).
+        std::set<u32> listed;
+        const std::string name = kind == Kind::None ? "other" : KindName(kind);
+        for (size_t i = 0; i < queue_pages.size(); ++i) {
+            if (queue_pages[i] && listed.insert(reference.pages[i].address).second) {
+                ++result_.gsp_queue_pages;
+                ++(judged ? result_.gsp_queue_judged : result_.gsp_queue_skipped)[name];
+                result_.gsp_queue_addresses.insert(reference.pages[i].address);
+            }
+        }
+    }
 
     // ---- the rest of the group, in file order ----
     Deliver(index, anchor);
@@ -1510,8 +1523,22 @@ std::string FormatReport(const PlayerResult& result) {
         out += fmt::format("commands not exercised (none in the capture, so nothing is verified): {}\n", names);
     }
     if (result.gsp_queue_pages != 0) {
-        out += fmt::format("pages of the GSP's interrupt relay queue (the service writes them, not the Gpu; not judged): {}\n",
-                           result.gsp_queue_pages);
+        std::string addresses;
+        size_t shown = 0;
+        for (const u32 address : result.gsp_queue_addresses) {
+            if (shown++ == 4) {
+                addresses += ", ...";
+                break;
+            }
+            addresses += fmt::format("{}0x{:08x}", addresses.empty() ? "" : ", ", address);
+        }
+        out += fmt::format(
+            "pages of the GSP's interrupt relay queue (the service writes them, not the Gpu; not judged): "
+            "{} (one for each command that signalled an interrupt into it, whatever its kind; {} distinct "
+            "page{}: {}); in commands judged: {}; in commands skipped (not in --judge): {}\n",
+            result.gsp_queue_pages, result.gsp_queue_addresses.size(),
+            result.gsp_queue_addresses.size() == 1 ? "" : "s", addresses, counts(result.gsp_queue_judged),
+            counts(result.gsp_queue_skipped));
     }
     if (result.unjudged_pages != 0) {
         out += fmt::format("command-list pages outside any judged colour buffer: {}\n",
