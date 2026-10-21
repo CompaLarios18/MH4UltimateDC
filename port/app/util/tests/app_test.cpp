@@ -68,21 +68,25 @@ TEST_CASE("a missing settings file is written with the defaults, with the runtim
     std::string text;
     Util::ReadFileToString(true, ConfigPath(), text);
     CHECK(text.find("[Controls]") != std::string::npos);
-    CHECK(text.find(fmt::format("key{} = E\n", static_cast<int>(Button::A))) != std::string::npos);
-    CHECK(text.find("stickA = W,S,A,D,Left Ctrl\n") != std::string::npos);
-    CHECK(text.find("stickB = Up,Down,Left,Right\n") != std::string::npos);
+    CHECK(text.find(fmt::format("key{} = F | Mouse Right\n", static_cast<int>(Button::A))) != std::string::npos);
+    CHECK(text.find("stickA = W,S,A,D\n") != std::string::npos);
+    CHECK(text.find("stickB = O,L,K,;\n") != std::string::npos);
+    CHECK(text.find("controls_version = 2\n") != std::string::npos);
     CHECK(env.Logged("with the defaults"));
 }
 
 TEST_CASE("the defaults put the keys where the app says") {
     Env env;
     const Config d = Defaults();
-    CHECK(d.keys[Button::A] == "E");
+    CHECK(d.keys[Button::A] == "F | Mouse Right");
     CHECK(d.keys[Button::B] == "Space");
-    CHECK(d.keys[Button::R] == "Left Shift");
+    CHECK(d.keys[Button::R] == "Left Shift | Mouse 4");
     CHECK(d.keys[Button::ZR] == "C");
     CHECK(d.keys[Button::Home].empty());
-    CHECK(d.stick_keys[Analog::CStick] == "Up,Down,Left,Right");
+    CHECK(d.stick_keys[Analog::CirclePad] == "W,S,A,D");
+    CHECK(d.stick_keys[Analog::CStick] == "O,L,K,;");
+    CHECK(d.input_mode == "auto");
+    CHECK(d.touch_screen_key == "F12 | M");
     CHECK(d.controller_auto);
     CHECK(d.renderer == "vulkan");
     CHECK(d.screens == "overlay");
@@ -112,6 +116,18 @@ TEST_CASE("Save then Load keeps every setting") {
     c.stick_params[Analog::CirclePad] = "engine:sdl,axis_x:0,axis_y:1";
     c.controller_auto = false;
     c.touch_screen_key = "F9";
+    c.check_updates = false;
+    c.input_mode = "keyboard_mouse";
+    c.mouse_sensitivity = 70;
+    c.mouse_vertical = 80;
+    c.mouse_invert_y = true;
+    c.mouse_invert_x = true;
+    c.mouse_deadzone = 20;
+    c.item_prev = "Wheel Left";
+    c.item_next = "Wheel Right | Z";
+    c.stylus_key = "Right Alt";
+    c.key_guides = "top-right";
+    c.key_guides_key = "F2";
     c.nickname = "Hunter";
     c.join = "example.org:1234";
     c.password = "pw";
@@ -148,6 +164,18 @@ TEST_CASE("Save then Load keeps every setting") {
     CHECK(back.stick_params == c.stick_params);
     CHECK(back.controller_auto == false);
     CHECK(back.touch_screen_key == "F9");
+    CHECK(back.check_updates == false);
+    CHECK(back.input_mode == "keyboard_mouse");
+    CHECK(back.mouse_sensitivity == 70);
+    CHECK(back.mouse_vertical == 80);
+    CHECK(back.mouse_invert_y == true);
+    CHECK(back.mouse_invert_x == true);
+    CHECK(back.mouse_deadzone == 20);
+    CHECK(back.item_prev == "Wheel Left");
+    CHECK(back.item_next == "Wheel Right | Z");
+    CHECK(back.stylus_key == "Right Alt");
+    CHECK(back.key_guides == "top-right");
+    CHECK(back.key_guides_key == "F2");
     CHECK(back.nickname == "Hunter");
     CHECK(back.join == "example.org:1234");
     CHECK(back.password == "pw");
@@ -170,6 +198,51 @@ TEST_CASE("the keys of the file are the runtime's names, and a file with other n
     CHECK(c.keys[Button::A] == "Q");     // the runtime calls the A button key0
     CHECK(c.keys[Button::B] == Defaults().keys[Button::B]);
     CHECK(c.stick_keys[Analog::CirclePad] == "A,B,C,D");
+}
+
+TEST_CASE("a settings file from before the keyboard-and-mouse layout moves to it, unless its keys are the player's") {
+    Env env;
+    // controls_version 1 with the old keys untouched: the new layout (and F12 alone: its new form)
+    const Config old = OldDefaults();
+    Config c = old;
+    c.touch_screen_key = "F12";
+    Save(c);
+    Util::WriteStringToFile(true, ConfigPath(),
+                            [&] {
+                                std::string text;
+                                Util::ReadFileToString(true, ConfigPath(), text);
+                                const auto at = text.find("controls_version = 2");
+                                REQUIRE(at != std::string::npos);
+                                text.replace(at, 20, "controls_version = 1");
+                                return text;
+                            }());
+    Config moved = Load();
+    CHECK(moved.keys == Defaults().keys);
+    CHECK(moved.stick_keys == Defaults().stick_keys);
+    CHECK(moved.touch_screen_key == Config{}.touch_screen_key);
+    CHECK(env.Logged("the keys move to the keyboard-and-mouse layout"));
+
+    // one key of the player's own: nothing moves
+    c.keys[Button::A] = "Z";
+    Save(c);
+    std::string text;
+    Util::ReadFileToString(true, ConfigPath(), text);
+    text.replace(text.find("controls_version = 2"), 20, "controls_version = 1");
+    Util::WriteStringToFile(true, ConfigPath(), text);
+    const Config kept = Load();
+    CHECK(kept.keys == c.keys);
+    CHECK(kept.stick_keys == c.stick_keys);
+}
+
+TEST_CASE("the keyboard-and-mouse settings are clamped") {
+    Env env;
+    Util::WriteStringToFile(true, ConfigPath(),
+                            "[Controls]\ncontrols_version = 2\nmouse_sensitivity = 500\nmouse_vertical = 1\n"
+                            "mouse_deadzone = 99\n");
+    const Config c = Load();
+    CHECK(c.mouse_sensitivity == 100);
+    CHECK(c.mouse_vertical == 10);
+    CHECK(c.mouse_deadzone == 60);
 }
 
 TEST_CASE("values are clamped and on/off words are understood") {

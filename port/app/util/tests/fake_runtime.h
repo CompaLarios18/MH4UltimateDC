@@ -77,6 +77,15 @@ struct FakeRuntime final : IRuntime {
     void KeyDown(int scancode) override { keys_down.push_back(scancode); }
     void KeyUp(int scancode) override { keys_up.push_back(scancode); }
     void ReleaseAllKeys() override { ++keys_released; }
+    // the mouse as the camera
+    std::vector<std::pair<float, float>> mouse_sticks;  ///< what the app pushed the C-stick with
+    bool camera_turn_active = false;                    ///< what CameraTurnActive answers
+    std::vector<std::pair<float, float>> camera_turns;  ///< (yaw, pitch) the app added
+    int camera_turn_clears = 0;
+    void SetMouseStick(float x, float y) override { mouse_sticks.push_back({x, y}); }
+    bool CameraTurnActive() override { return camera_turn_active; }
+    void AddCameraTurn(float yaw, float pitch) override { camera_turns.push_back({yaw, pitch}); }
+    void ClearCameraTurn() override { ++camera_turn_clears; }
     void SetSoftwareKeyboard(std::shared_ptr<ISoftwareKeyboard>) override {}
     struct Finished {
         std::string text;

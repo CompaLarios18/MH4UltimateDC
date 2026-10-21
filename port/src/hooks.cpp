@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cctype>
 #include <cmath>
 #include <cstdint>
@@ -1361,6 +1362,72 @@ void TraceFilters() {
     filters_since = now;
 }
 
+// ── The mouse turns the camera (docs/research/camera.md) ──
+//
+// sMhCamera::turnByInput (0x00bfcfd8; this, input, invert flags) turns the camera's input
+// angles by the camera buttons' bits (D-pad, C-stick, the touch screen's camera pad): the
+// pitch at input+8 and the yaw at input+0xc, u16 angles (0x10000 = a turn), the pitch kept
+// within +-0x3f00. The quest camera (sMhCamera::updatePlayerCamera 0x00c0095c) then eases its
+// rig (sMhCamera+0xe40: pitch +0x80/+0x88, yaw +0x84/+0x8c) toward them. The hook adds the
+// mouse's turn after the original: to the input angles, and for the main camera
+// (input = sMhCamera+0xe80) to the rig as well, so that the turn shows in the same frame
+// instead of being eased in.
+constexpr u32 CAMERA_INPUT_MAIN = 0xe80;   // sMhCamera: the player camera's input angles
+constexpr u32 CAMERA_RIG = 0xe40;          // sMhCamera: its rig
+constexpr u32 INPUT_PITCH = 0x08, INPUT_YAW = 0x0c;
+constexpr u32 RIG_PITCH = 0x80, RIG_PITCH_NOW = 0x88, RIG_YAW = 0x84, RIG_YAW_NOW = 0x8c;
+constexpr int PITCH_LIMIT = 0x3f00;        // the game's own limit, either way
+// "camera left" (pad action 0x0800, input bit 6) adds to the yaw, "camera up" (0x2000, bit 2)
+// to the pitch: the mouse to the right turns the other way, the mouse up as "camera up"
+constexpr float YAW_SIGN = -1.0f, PITCH_SIGN = 1.0f;
+constexpr float UNITS_PER_DEGREE = 65536.0f / 360.0f;
+
+std::atomic<double> camera_turn_yaw{0.0}, camera_turn_pitch{0.0};  // degrees not taken yet
+std::atomic<s64> camera_hook_ran_at{0};    // steady-clock ns of its last run
+float camera_rest_yaw = 0.0f, camera_rest_pitch = 0.0f;  // angle units' fractions left over
+
+s64 SteadyNs() {
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(
+               std::chrono::steady_clock::now().time_since_epoch())
+        .count();
+}
+
+u32 AddPitch(u32 pitch, int delta) {
+    const int now = static_cast<s16>(static_cast<u16>(pitch));
+    return static_cast<u16>(std::clamp(now + delta, -PITCH_LIMIT, PITCH_LIMIT));
+}
+
+void CameraTurnByInput(RCtx* ctx, RFunc original) {
+    const u32 camera = ctx->r[0];
+    const u32 input = ctx->r[1];
+    original(ctx);
+    camera_hook_ran_at.store(SteadyNs(), std::memory_order_relaxed);
+    const float yaw_units = static_cast<float>(camera_turn_yaw.exchange(0.0)) * UNITS_PER_DEGREE * YAW_SIGN +
+                            camera_rest_yaw;
+    const float pitch_units = static_cast<float>(camera_turn_pitch.exchange(0.0)) * UNITS_PER_DEGREE *
+                                  PITCH_SIGN +
+                              camera_rest_pitch;
+    const int yaw = static_cast<int>(yaw_units), pitch = static_cast<int>(pitch_units);
+    camera_rest_yaw = yaw_units - static_cast<float>(yaw);
+    camera_rest_pitch = pitch_units - static_cast<float>(pitch);
+    if (yaw == 0 && pitch == 0) {
+        return;
+    }
+    const u32 r0 = ctx->r[0];  // (the original's result stays)
+    wr32(ctx, input + INPUT_YAW, static_cast<u16>(rd32(ctx, input + INPUT_YAW) + yaw));
+    wr32(ctx, input + INPUT_PITCH, AddPitch(rd32(ctx, input + INPUT_PITCH), pitch));
+    if (input == camera + CAMERA_INPUT_MAIN) {
+        const u32 rig = camera + CAMERA_RIG;
+        for (const u32 field : {RIG_YAW, RIG_YAW_NOW}) {
+            wr32(ctx, rig + field, static_cast<u16>(rd32(ctx, rig + field) + yaw));
+        }
+        for (const u32 field : {RIG_PITCH, RIG_PITCH_NOW}) {
+            wr32(ctx, rig + field, AddPitch(rd32(ctx, rig + field), pitch));
+        }
+    }
+    ctx->r[0] = r0;
+}
+
 struct Hook {
     u32 addr;
     const char* name;
@@ -1379,6 +1446,7 @@ constexpr Hook HOOKS[] = {
     {0x0028f2f0, "PanelManager::touchAllowed", PanelTouchAllowed},
     {0x00288f4c, "PanelManager::isTapped", PanelIsTapped},
     {0x00694c98, "sMhPad::update", MhPadUpdate},
+    {0x00bfcfd8, "sMhCamera::turnByInput", CameraTurnByInput},
     {0x00b7c010, "QuestFlow::startQuest", StartQuest},
     {0x0065c18c, "aQuest::playing", QuestPlaying},
     {0x00ae65a4, "nLayout::objectConstants", LayoutObjectConstants},
@@ -1431,6 +1499,9 @@ std::vector<std::string> Install(const RCodeInfo& info) {
     filters_drawn = filters_skipped = 0;
     filters_logged = skipped_logged = 0xFFFFFFFF;
     filters_since = 0;
+    camera_turn_yaw = camera_turn_pitch = 0.0;
+    camera_hook_ran_at = 0;
+    camera_rest_yaw = camera_rest_pitch = 0.0f;
     // local wireless play over network rooms, for any program on recompiled code
     P().InstallNetSync(options.net_sync, options.net_sync_slack, log);
     if (!info.set_hook || info.hook_count == 0) {
@@ -1540,6 +1611,25 @@ std::vector<std::string> Install(const RCodeInfo& info) {
         }
     }
     return log;
+}
+
+void AddCameraTurn(float yaw_degrees, float pitch_degrees) {
+    const auto add = [](std::atomic<double>& total, double v) {
+        double now = total.load(std::memory_order_relaxed);
+        while (!total.compare_exchange_weak(now, now + v, std::memory_order_relaxed)) {
+        }
+    };
+    add(camera_turn_yaw, yaw_degrees);
+    add(camera_turn_pitch, pitch_degrees);
+}
+
+bool CameraTurnActive() {
+    const s64 at = camera_hook_ran_at.load(std::memory_order_relaxed);
+    return at != 0 && SteadyNs() - at < 300'000'000;  // within 0.3 s
+}
+
+void ClearCameraTurn() {
+    camera_turn_yaw = camera_turn_pitch = 0.0;
 }
 
 int MissingHookPoints() {

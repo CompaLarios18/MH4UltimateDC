@@ -30,6 +30,9 @@ add_executable(mh4u
     # the network room: join, host, leave, before the game and while it runs
     multiplayer.cpp
     multiplayer.h
+    # the keyboard-and-mouse mode's arithmetic (the mouse as the camera, the item bar's scroll)
+    kbm.cpp
+    kbm.h
     window.cpp
     window.h
     # the in-game menu (Dear ImGui over the game) and the 3DS software keyboard
@@ -37,6 +40,8 @@ add_executable(mh4u
     ui/fps_counter.h
     ui/hint.cpp
     ui/hint.h
+    ui/key_guides.cpp
+    ui/key_guides.h
     ui/keyboard.cpp
     ui/keyboard.h
     ui/layer.h
@@ -110,6 +115,7 @@ target_sources(mh4u PRIVATE
     launcher/tools.h
     launcher/ui.cpp
     launcher/ui.h
+    launcher/updater.cpp
     ${MH4U_IMGUI_DIR}/backends/imgui_impl_sdlrenderer2.cpp
 )
 target_include_directories(mh4u PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
@@ -118,7 +124,7 @@ target_link_libraries(mh4u PRIVATE mh4u_imgui httplib json-headers)
 # (a package carries them in mh4u-tools/)
 execute_process(COMMAND git rev-parse --short HEAD WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
                 OUTPUT_VARIABLE MH4U_PORT_COMMIT OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
-set_source_files_properties(launcher/launcher.cpp PROPERTIES
+set_source_files_properties(launcher/launcher.cpp launcher/updater.cpp PROPERTIES
                             COMPILE_DEFINITIONS "MH4U_PORT_COMMIT=\"${MH4U_PORT_COMMIT}\"")
 set_source_files_properties(launcher/tools.cpp PROPERTIES
                             COMPILE_DEFINITIONS "MH4U_SOURCE_TOOLS_DIR=\"${MH4U_TOOLS_DIR}\"")
@@ -165,7 +171,7 @@ if (MH4U_APP_TESTS)
                    ${MH4U_APP_TEST_UTIL})
     add_executable(mh4u_multiplayer_test util/tests/multiplayer_test.cpp multiplayer.cpp invite.cpp
                    launcher/lobby.cpp config.cpp ${MH4U_APP_TEST_UTIL})
-    add_executable(mh4u_input_test util/tests/input_test.cpp input.cpp config.cpp
+    add_executable(mh4u_input_test util/tests/input_test.cpp input.cpp kbm.cpp config.cpp
                    ${MH4U_APP_TEST_UTIL})
     add_executable(mh4u_keyboard_test util/tests/keyboard_test.cpp ui/keyboard.cpp config.cpp
                    ${MH4U_APP_TEST_UTIL}

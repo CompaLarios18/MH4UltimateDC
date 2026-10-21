@@ -215,6 +215,21 @@ struct State {
 
     Runner runner;
     Job job;
+    /// A newer release of the port (tools/update.py): looked for when the tools are found
+    struct Update {
+        std::string root;       ///< the installed package's folder; empty: a build from the source
+        bool checking = false;
+        bool checked = false;
+        std::string status;     ///< update, current, newer, unknown
+        std::string tag, name, url, error;
+        long long size = -1;
+        std::string app;        ///< after an install: what starts the new app
+    } updates;
+    /// Asks GitHub for the latest release; `manual`: the player pressed Check now (says so
+    /// when it fails, and even with check_updates off).
+    void CheckForUpdate(bool manual);
+    /// Downloads the release and puts it in place, then offers to start it.
+    void InstallUpdate();
     std::optional<Dialog> dialog;
     bool dialog_open = false;  ///< the popup for `dialog` is up
 
@@ -298,6 +313,10 @@ void RefreshCatalog(State& state, bool fetch);
 /// then (if any) runs when the player goes on to play; without_code says they already agreed to
 /// play without the port's code (asked when the code mods need the library built again).
 void DeployMods(State& state, bool force, std::function<void(bool without_code)> then);
+
+// updates (updater.cpp): a card on Home when there is one, and a row of Settings
+void DrawUpdateCard(State& state);
+void DrawUpdateSettings(State& state);
 
 // the setup's three parts as status lines (screen_setup.cpp)
 struct SetupRow {

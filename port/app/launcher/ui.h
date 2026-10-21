@@ -70,6 +70,9 @@ bool Tab(const char* label, bool selected);
 enum class Glyph { Up, Down, Remove };
 bool IconButton(const char* id, Glyph glyph);
 
+/// The window's close button (an X, red when hovered), `size` points square; true when pressed.
+bool CloseButton(const char* id, float size);
+
 /// A framed panel with padding; End with EndCard().
 bool BeginCard(const char* id, const ImVec2& size, bool highlight = false);
 void EndCard();

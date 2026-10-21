@@ -173,3 +173,10 @@
 0x006a62c8 QuestHolder::outcome        # (this, 1): -1 failed/abandoned, 0 running, 1 complete (statuses 3, 4, 7)
 0x006a025c QuestHolder::waitUnits      # (this): the units of the wait before the return (+0xad60), 0 for the default
 0x0028f2f0 PanelManager::touchAllowed    # (hit): whether touches are allowed now (+0xb3 of the manager clear); processTouch keeps the hit test's result in r5 across the call
+# The player camera and its input (docs/research/camera.md)
+0x00bfcfd8 sMhCamera::turnByInput         # (this, input, invert flags +0xe36): camera bits -> input pitch +8 / yaw +0xc (u16), pitch within +-0x3f00
+0x00c0095c sMhCamera::updatePlayerCamera  # quest camera: turnByInput on +0xe80, eases rig +0xe40 (pitch +0x80, yaw +0x84) toward it
+0x00c06e04 sMhCamera::updateQuestCamera   # sGameControl mode 1 branch of sMhCamera::update
+0x00b0d718 Player::cameraDirectionHeld    # (player, n): bit n of [player+0xe30]+0x3cc (2 up, 4 down, 6 left, 8 right)
+0x00bff694 sMhCamera::resetBehindPlayer   # L: yaw = player angle + 0x8000 (target camera: 0x00c040fc)
+0x00d0cc00 sMhCamera::easeAngle           # (this, target, now, speed): step of a u16 angle toward its target

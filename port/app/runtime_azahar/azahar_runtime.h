@@ -31,6 +31,10 @@ public:
     void KeyDown(int scancode) override;
     void KeyUp(int scancode) override;
     void ReleaseAllKeys() override;
+    void SetMouseStick(float x, float y) override;
+    bool CameraTurnActive() override;
+    void AddCameraTurn(float yaw, float pitch) override;
+    void ClearCameraTurn() override;
     void SetSoftwareKeyboard(std::shared_ptr<ISoftwareKeyboard> keyboard) override;
     KeyboardError FinishKeyboard(const std::string& text, std::uint8_t button) override;
     void InitNetwork() override;

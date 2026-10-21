@@ -41,6 +41,10 @@ constexpr u32 CPSR_MISC_MASK = 0x07F0FFFFu & ~CPSR_T;
 RCodeInfo g_code{};
 /// Recompiled functions by entry address; Thumb entries have bit 0 set.
 std::unordered_map<u32, RFunc> g_functions;
+// The code was compared with the library's once this boot (by the first core to run: the game
+// starts on core 0 before anything can have changed its code; a core that starts later, as
+// the threads the New 3DS's extra cores run, would see what Azahar's cheats wrote over it).
+bool g_code_checked = false;
 /// Keeps a loaded code library mapped.
 std::unique_ptr<Common::DynamicLibrary> g_library;
 /// rc_call_counts() of a diagnostic code library (-DRC_CALL_COUNTS), or null.
@@ -107,6 +111,7 @@ bool ARM_Recomp::IsRecompiledCode(const std::vector<u8>& code) {
 
 void ARM_Recomp::SetCode(const RCodeInfo& info) {
     g_code = info;
+    g_code_checked = false;
     g_functions.clear();
     g_functions.reserve(info.count);
     for (u32 i = 0; i < info.count; ++i) {
@@ -192,7 +197,12 @@ void ARM_Recomp::Execute(s64 budget) {
     }
     if (!host) {
         host = Fiber::FromCurrentThread(); // the emulation thread, created lazily
-        // The recompiled code is only valid for exactly the code it came from.
+    }
+    if (!g_code_checked) {
+        g_code_checked = true;
+        // The recompiled code is only valid for exactly the code it came from. Checked as the
+        // game starts: cheats that rewrite code a moment later don't apply to recompiled code
+        // (they would make every core fall back to the interpreter, which is far too slow).
         std::vector<u8> text(g_code.text_size);
         memory.ReadBlock(g_code.text_base, text.data(), text.size());
         const u32 crc = Crc32(text.data(), text.size());
