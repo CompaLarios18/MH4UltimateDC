@@ -295,8 +295,10 @@ aside, by D37: its file is stamped with the host's clock and holds the run's dir
 diagnostic log and not state of the game or of the emulated console, so a comparison of two user folders skips it;
 see N0-29, iteration 0, below). Without `--async-io` (its default mode)
 it already read files in place, started at a fixed date and kept host time out of the delay of a file read; N0-26
-fixes the two values that were still drawn anew in every run, and gives `--trace-timing` to look for what is left
-(N0-29).
+fixes the two values that were still drawn anew in every run, and gives `--trace-timing` to look for what is left;
+N0-29 removes the sources it found (the list is below) and measures the result on the three gate sessions: with
+the game, five pairs of runs are identical in every artifact compared (the runner's own log is left out of the
+comparison, and differs: D37), see the last subsection.
 
 What each mode keeps of Azahar's behaviour:
 - `--async-io` keeps all of it: none of the values below is fixed.
@@ -317,9 +319,9 @@ setting where it has one.
 | Starting tick of the emulated clock | a random 32-bit number drawn per run (`Timing::GenerateBaseTicks`: `std::mt19937` seeded from `std::random_device`, so any value from 0 to 2^32 - 1) | `init_ticks_type` Fixed, `init_ticks_override` **2,000,000,000** (0x77359400, 7.4596 s of the 268,111,856 Hz clock); every core's timer starts there | `svcGetSystemTick` (the running core's timer: this plus the ticks emulated so far); the update ticks in the shared page's date records (0x28 and 0x48); the date in those records, which Azahar computes as `init_time` plus the whole clock, starting tick included, so at the first update the date is `init_time` + 7459 ms |
 | Console Wi-Fi MAC address | the folder's `mac.txt`, or a random address from a list of 16 Nintendo-like ranges, written to `mac.txt`, when there is none | **02:00:00:00:00:01** (locally administered), not read from or written to `mac.txt` | the shared page's bytes 0x60 to 0x65 (the local wireless service puts it there when it starts, and the runner sets the page once the game has loaded, so the page has it either way), `cfg`, and what the local wireless service and `nwm::SOC` take from it |
 | Reads of files | on host threads, finishing at a host-dependent emulated time | `deterministic_async_operations`; the patch keeps host time out of the delay of a read | when a read wakes the game |
-| Console unique ID of a config savegame that the run makes (N0-29) | drawn per run from the host's random source (`CryptoPP::AutoSeededRandomPool`): 16 random bits and, in a folder without `nand/rw/sys/LocalFriendCodeSeed_B`, a random 34-bit friend code seed | **0x4D480001A2B3C4D5** (random number **0x4D48**, friend code seed 0x1A2B3C4D5; `kFixedConsoleId`, `kFixedConsoleRandomNumber`), under the MAC address's condition (no room, no `--new-console-id`); a config savegame that already exists keeps its ID | `cfg:u` command `0x00030040` (GetTransferableId), whose reply for a salt is the last 8 bytes of SHA-256 of the ID (8 bytes, little endian) and the salt (`& 0xFFFFF`, 4 bytes): **salt 0: words 0x61B8087C, 0xB904EFF1; salt 0x1263 (the game's): words 0x9592177D, 0xFE13E102**; what the game derives from those and stores (probably: the link is not measured yet; do not copy it as a measured value); the config savegame's blocks 0x90000 and 0x90001 (bytes `D5 C4 B3 A2 01 00 48 4D`) and 0x90002 (`48 4D 00 00`) |
+| Console unique ID of a config savegame that the run makes (N0-29) | drawn per run from the host's random source (`CryptoPP::AutoSeededRandomPool`): 16 random bits and, in a folder without `nand/rw/sys/LocalFriendCodeSeed_B`, a random 34-bit friend code seed | **0x4D480001A2B3C4D5** (random number **0x4D48**, friend code seed 0x1A2B3C4D5; `kFixedConsoleId`, `kFixedConsoleRandomNumber`), under the MAC address's condition (no room, no `--new-console-id`); a config savegame that already exists keeps its ID | `cfg:u` command `0x00030040` (GetTransferableId), whose reply for a salt is the last 8 bytes of SHA-256 of the ID (8 bytes, little endian) and the salt (`& 0xFFFFF`, 4 bytes): **salt 0: words 0x61B8087C, 0xB904EFF1; salt 0x1263 (the game's): words 0x9592177D, 0xFE13E102**; what the game derives from those and stores (the data show this and no more: in G2 the game's save file is equal in two runs with this ID, where 16 bytes of it differed with the previous runner; the ID was fixed together with the other changes, so the measurement does not show that the save holds anything derived from the ID: see the gates measurement, last subsection); the config savegame's blocks 0x90000 and 0x90001 (bytes `D5 C4 B3 A2 01 00 48 4D`) and 0x90002 (`48 4D 00 00`) |
 | Unwritten bytes of reply words (N0-29) | whatever the host's heap held (the command buffer of a request is not initialised) | 0 (`SetZeroedIpcReplies`), except in a word whose index the request also had: the request's words are copied into the same buffer first, and a reply word the service does not fully write keeps those bytes there (the guest's own bytes, the same in every run, as before this change) | the bytes of a reply word that the service did not write: bytes 1 to 3 after a `u8`, an enum of `u8` or a `bool`, bytes 2 and 3 after a `u16`, all four of a word it declares and does not push (seen: `APT:A` 0x01010000, `cfg:u` 0x00020000, `y2r:u` 0x00280000) |
-| Duplicate flag of an extdata created by the obsolete command (N0-29) | `FS_USER::ObsoletedCreateExtSaveData` (command 0x0830) never sets `duplicate_data`: stack residue, which `GetFormatInfo` returns | false (with `deterministic_async_operations`) | `fs:USER` `GetFormatInfo` after command 0x0830 (and byte 12 of the archive's `metadata` file); not reached by G1, G2 or G6 |
+| Duplicate flag of an extdata created by the obsolete command (N0-29) | `FS_USER::ObsoletedCreateExtSaveData` (command 0x0830) never sets `duplicate_data`: stack residue, which `GetFormatInfo` returns | false (with `deterministic_async_operations`) | `fs:USER` `GetFormatInfo` after command 0x0830 (and byte 12 of the archive's `metadata` file); not reached by G1, G2 or G6, so not measured |
 | Time zone (N0-29) | the host's (`TZ`) | `UTC0`, set by the runner | the date of the shared page's records (and what `ptm` and the news database take from it) |
 
 Notes for the mirror:
@@ -339,7 +341,8 @@ Notes for the mirror:
 - Why one fix covers the shared page's date: its update callback (`SharedPage::Handler::UpdateTimeCallback`) writes
   `date_time` from `init_time` plus the clock (`GetGlobalTimeUs`) and `update_tick` from the timer's own ticks, so
   both carried the random starting tick and nothing else of the host (the update is an event scheduled at tick 0 of
-  core 0, and then once an hour). Read from the sources; the measurement below finds the page identical in two runs.
+  core 0, and then once an hour). Read from the sources; the measurements below find the page identical in two runs
+  (N0-26: the dumps at frames 100 and 800; the gates: the dump at frame 300, in every pair).
 
 ### Finding what is left
 
@@ -462,9 +465,11 @@ address, and then the same value in the IPC trace's reply. The sources, by what 
    config savegame that differ (the low 34 bits and the top 16 bits of each copy of the ID, and the number: the bits
    between are always 0). `cfg:u` GetTransferableId answers from the ID, so its reply words differed in every run; the
    game keeps that reply in its memory, which is the 8 bytes of the GPU capture (the capture records the guest's
-   memory); and the game stores what it derives from it, which is the likely cause of the differing 16 bytes of its
-   save in G2 and of the CRC of the buffer of the `fs:USER` write that stores it (*likely*, not shown: the next
-   measurement shows whether the two save files are then equal). **Removed:** the patch adds
+   memory). In G2 the game's own save file also differed in 16 bytes, and so did the CRC of the buffer of the
+   `fs:USER` write that stores it. With this ID fixed (together with the other changes of the iteration: sources 2
+   and 3) the two save files, that CRC and the GPU capture are equal in the gate runs (last subsection). That is what
+   the data show and no more: they do not show that the 16 bytes of the save are derived from the transferable ID,
+   nor which of the changes removed which difference. **Removed:** the patch adds
    `Service::CFG::SetFixedConsoleUniqueId(random_number, console_id)` (a switch like `SetFixedConsoleMac`: it refuses a
    pair that is not in the shape Azahar makes, and nothing else changes) and `Module::GenerateConsoleUniqueId`, which
    a config savegame that is made calls, returns that pair when it is set; the runner sets `kFixedConsoleId` under the
@@ -522,12 +527,15 @@ address, and then the same value in the IPC trace's reply. The sources, by what 
    Azahar's logging backend, and the paths would still differ unless both runs used the same directory; the log is
    also what shows what a run did when something is wrong, which a silenced log would not.
 
-What is expected to change with the next runner build (an expectation from the code, not a measurement; the
-orchestrator measures it with the gates): the IPC traces repeat in four kinds of request (`APT:A` 0x01010000,
-`cfg:u` 0x00030040 and 0x00020000, `y2r:u` 0x00280000), the config savegame and the extdata metadata are equal in every
-run (from a folder without a config savegame), the GPU capture file is equal, and the game's save in G2 and the CRC of
-the `fs:USER` write that stores it (the fifth kind) are equal if source 1 is what the game stores. If one of those
-still differs, it is a source this list does not have. The runner's log (source 6) stays different.
+What was measured with the runner of this iteration (the next subsection has the setup and the numbers): the IPC
+traces repeat in all five kinds of request (`APT:A` 0x01010000, `cfg:u` 0x00030040 and 0x00020000, `y2r:u` 0x00280000,
+and in G2 the CRC of the `fs:USER` write of the game's save), the config savegame and the extdata metadata are equal
+in every run (from a folder without a config savegame), the GPU capture file is equal, and the game's save in G2 is
+equal; in none of the five pairs of runs did one of those differ. The runner's log (source 6) stays different, as
+predicted. The contributions of the individual fixes were not separated, since they were applied together (the ID,
+the zeroed reply bytes, the padding of the metadata), so the measurement does not say which fix removed which
+difference; the previous paragraphs say which source each difference was traced to, and that is from the code and
+the record of the differing bytes, not from a run with one fix alone.
 
 Found by reading the code and not removed, because no session reaches it or it has not differed (a lead for the next
 iteration, none of it measured):
@@ -548,6 +556,131 @@ iteration, none of it measured):
   (`ac:u`, `soc:U`). None differed or is reached by the three sessions.
 - `arm_recomp.cpp` and `arm_recomp.h` are not changed in this iteration, so there is no `--perf-log` comparison to
   make; the timing and SVC traces were already identical in every pair.
+
+### Measurement with the game (N0-29, gates)
+
+Measured on 2026-10-21 (the UTC date written in the headers of the traces) on the maintainer's Windows 11 PC (AMD
+Ryzen 5 5600X, 6 cores and 12 threads, 32 GB), idle except where stated. The runs are kept under the git-ignored
+`build/` of the maintainer's checkout; this section holds numbers and names only.
+
+**Setup**
+- Runner: the Windows CI build of `wp/N0-29-runner-exact` at `3aef9b8` (`windows.yml` run 39582006178; Native CI
+  run 39581995274, all six jobs green, `runner`, `native-windows` and `native-macos` among them; `native-guard` run
+  39581995229 green), `mh4u_runner.exe` with a SHA-256 starting `FDD639F5F2EEAE7C`. This is the runner of the
+  iteration that applied the fixes of sources 1 to 5 together; it is not the N0-26 runner of iteration 0.
+- Code library: the paged library built from the update at `e6cd840` (the port's hooks are unchanged since).
+- User folder: a fresh copy of one folder per run (update 1.3.0 installed, no save and no config savegame), so every
+  run makes its own config savegame. `--cpu recomp --new-3ds off`.
+- `TZ=UTC0` was set by the measurement script as well, so this measurement does not isolate the runner's own
+  setting of the time zone (source 4).
+- Sessions: G1 to 1700 frames, G6 to 3700, G2 to 9000, each as `--input-file` (the golden sessions of the N0-09
+  work, `G1.txt`, `G6.txt` and `G2.txt`). Runs: G1 three times (62, 63 and 95 s), G6 twice (301 and 300 s), G2 twice
+  (1180 and 1197 s). All exited 0.
+- Recorders, in every run: `--state-trace` (with `config/native/observable.txt`), `--trace-svc`, `--trace-ipc`
+  with `--trace-ipc-full`, `--trace-timing`, `--capture-hid`, `--count-unmapped`, `--shots` from frame 300 every 60
+  frames, and `--dump f300:1FF81000:0x1000` (the shared page; the dump is written into the shots folder). Besides
+  that: G1 with `--capture-dsp 1240:300` and `--capture-gpu 1500:3`, G2 with `--capture-gpu 2500:3`, G6 with
+  neither (its session file lists none).
+- In parallel: nothing, except in the third G1 run. It ran while a second `mh4u_runner` process ran G2 on the same PC
+  (with `--shots` only, no other recorder): the script started that process 15 s before the run and stopped it after
+  the run, so it was there for the whole of the run (95 s against 62 and 63 s).
+- What was compared (the orchestrator's comparison script, which is not in the repository; it only reads): the text
+  traces line by line, line 1 left out when both start with `#` (the header, with the date); the binary captures,
+  their manifests, every screenshot, the frames of the GPU capture and every file of the user folder after the run
+  (`log/` left out, D37) by SHA-256, with the same file names on both sides. Line counts below are lines (newline
+  characters), line 1 included.
+
+**G1** (1700 frames; three runs, compared in all three pairs: 1-2, 1-3, 2-3; run 3 under load)
+
+| What | Size | Result |
+|---|---|---|
+| State trace | 1,702 lines | identical in all three pairs |
+| SVC trace | 1,082,077 lines | identical |
+| IPC trace | 18,954 lines (21 comment lines and 18,932 requests besides line 1) | identical, including every reply word |
+| Timing trace | 78,579 lines | identical |
+| Unmapped-access count | 1 line (the header only) | identical |
+| HID capture | 1,204,316 bytes (manifest 164) | identical |
+| DSP capture | 20,149,224 bytes (manifest 165) | identical |
+| GPU capture | 144,248,896 bytes (manifest 550); frames folder: 6 PPM files (frames 1500 to 1502, both screens), 1,555,290 bytes | identical, the 8 bytes of iteration 0 included |
+| Shots | 49 files: 48 PPM and the 4,096-byte dump of the shared page | identical |
+| User folder after the run, without `log/` | 25 files, 51,788,928 bytes (the config savegame and the extdata metadata among them) | identical file by file |
+| Runner's log (`log/mh4u_runner_log.txt`) | 42 lines, 6,506 bytes in each run (and an empty `.old` file) | SHA-256 differs in all three runs, as predicted (left out of the comparison, D37) |
+
+**G6** (3700 frames; two runs, one pair)
+
+| What | Size | Result |
+|---|---|---|
+| State trace | 3,702 lines | identical |
+| SVC trace | 3,711,176 lines | identical |
+| IPC trace | 47,780 lines (25 comment lines and 47,754 requests besides line 1) | identical, including every reply word |
+| Timing trace | 188,524 lines | identical |
+| Unmapped-access count | 1 line (the header only) | identical |
+| HID capture | 2,620,316 bytes (manifest 164) | identical |
+| DSP and GPU captures | none requested | not applicable |
+| Shots | 115 files: 114 PPM and the 4,096-byte dump of the shared page | identical |
+| User folder after the run, without `log/` | 25 files, 51,788,928 bytes | identical file by file |
+| Runner's log | 42 lines, 6,506 bytes in each run | SHA-256 differs |
+
+**G2** (9000 frames; two runs, one pair)
+
+| What | Size | Result |
+|---|---|---|
+| State trace | 9,002 lines | identical |
+| SVC trace | 7,007,565 lines | identical |
+| IPC trace | 97,094 lines (25 comment lines and 97,068 requests besides line 1) | identical, including every reply word and the CRC of the `fs:USER` write of the save |
+| Timing trace | 398,679 lines | identical |
+| Unmapped-access count | 1 line (the header only) | identical |
+| HID capture | 6,372,716 bytes (manifest 164) | identical |
+| DSP capture | none requested | not applicable |
+| GPU capture | 145,694,492 bytes (manifest 550); frames folder: 6 PPM files (frames 2500 to 2502, both screens), 1,555,290 bytes | identical |
+| Shots | 293 files: 292 PPM and the 4,096-byte dump of the shared page | identical |
+| User folder after the run, without `log/` | 26 files, 51,870,336 bytes (the game's save file, 81,408 bytes, among them) | identical file by file |
+| Runner's log | 51 lines, 8,717 bytes in each run | SHA-256 differs |
+
+**What the comparators of the repository say**, run on the saved runs (they only read). The same three commands were
+run on every pair of the table above, and all of them report a match:
+- `tools/native/state_diff.py --tolerance 0`: exit 0 on all five pairs. G1 (all three pairs): "traces agree: 4 scene
+  changes, within 0 frames; 2 real scene changes"; G6: 5 and 3; G2: 10 and 8. For G1 run 1 against run 2 it was run
+  with and without `--observable config/native/observable.txt` (same result).
+- `tools/compare_ipc_traces.py --strict` (every word of every request): "all threads match" on all five pairs. G1:
+  9 threads, 16,092 requests in the main thread and 2, 294, 168, 3, 576, 39, 31 and 1,727 in the others; G2: 13
+  threads, 84,634 requests in the main thread (the others: 2, 1,544, 563, 224, 3, 16, 576, 65, 65, 151, 147 and 9,078).
+  This is the comparison that reported differing reply words on the N0-26 runner.
+- `tools/compare_svc_traces.py --normalize --outputs`: "all threads match" on all five pairs. G1: 21 threads, 1,017,886
+  calls in the main thread; G6: 3,564,667 in the main thread; G2: 25 threads, 6,687,785 calls in the main thread.
+
+**Compared with iteration 0** (the N0-26 runner, the Windows CI build at `6fa80b1`, two runs of each of G1, G6 and
+G2, one pair per session; the table in "Sources found by N0-29, iteration 0" above). The state, SVC and timing
+traces, the unmapped-access count, the HID and DSP captures, every screenshot and the GPU capture's manifest and
+reference images were identical in iteration 0 and are identical now, so they do not appear below.
+
+| What differed in iteration 0 | Iteration 0 (3 pairs) | This runner (5 pairs: G1 x3, G6, G2) |
+|---|---|---|
+| Reply words of five kinds of IPC request: `APT:A` 0x01010000, `cfg:u` 0x00030040 and 0x00020000, `y2r:u` 0x00280000, and in G2 the CRC of the `fs:USER` write of the save | a few lines per session | none differs |
+| GPU capture file (`.mgpu`) | 8 bytes (G1, G2) | none differs (144,248,896 and 145,694,492 bytes) |
+| Config savegame in the user folder | 16 bytes, every session | none differs |
+| Extdata metadata file in the user folder | 1 byte (G1, G6) | none differs |
+| The game's save file in the user folder (G2) | 16 bytes | none differs (81,408 bytes) |
+| Runner's log | every line, every session | differs (SHA-256 of the file), as predicted and left out by D37 |
+
+What this shows: with the runner of this iteration, in the five pairs of the three gate sessions, including a
+G1 run under the load of a second runner, no artifact compared differs except the runner's own log. It shows
+the result of the whole set of changes: the contributions of the individual fixes were not separated.
+
+**Not measured**
+- The contribution of each fix (they were applied together: the ID, the zeroed reply bytes, the metadata padding).
+- The runner's own time zone setting on its own (the script set `TZ=UTC0` too).
+- The cost of zeroing the 256-byte command buffer for every HLE request (no `--perf-log` run; `arm_recomp.cpp` is not
+  changed, so no `--perf-log` comparison is due).
+- The metadata fix in `ObsoletedCreateExtSaveData` (no session calls command 0x0830).
+- Other machines or operating systems (the Linux and macOS runners), and a second run of the measurement on another
+  day.
+- `--cpu jit`; `--async-io`, rooms and `--new-console-id` (they keep Azahar's behaviour).
+- Sessions with a save or quests (G3, G4, G7).
+- A user folder that already has a config savegame (it keeps its ID).
+- Runs longer than 9000 frames.
+- The app (it does not use these switches).
+- A load other than one second runner (G1 only); G6 and G2 were measured on an idle PC.
 
 ## With Azahar's normal interface
 
