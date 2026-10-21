@@ -498,12 +498,12 @@ address, and then the same value in the IPC trace's reply. The sources, by what 
    not fully write keeps the request word's bytes there (`dsp::DSP` 0x001000c0, for one, has a four-word request and
    replies a `u16` in word 2: bytes 2 and 3 of the reply word are bytes 2 and 3 of the request word). That is the
    guest's own data and the same in every run. The mirror starts its reply buffer from the request's words and zeros
-   the rest, so the same bytes come out. The native runtime's decision D47 (N1, in the batch of PR #19 when this was
-   written) says a `u8`, `u16` or `bool` reply writes the whole word, zero-extended: that differs from the reference
-   exactly in the words described above (a reply word whose index the request had, and whose bytes the service does
-   not write), where the reference keeps the request word's bytes. The strict IPC comparison would report such a
-   word (it needs a service that replies a `u8`, `u16` or `bool` in a word where the request had a nonzero upper
-   half; `dsp::DSP` 0x001000c0 is the one known); N1 has to decide which side moves.
+   the rest, so the same bytes come out. The native runtime's decision D47 (N1, in the batch of PR #19) said a `u8`, `u16` or `bool` reply writes the
+   whole word, zero-extended, which would differ from the reference exactly in the words described above (a reply
+   word whose index the request had, and whose bytes the service does not write). D53 (2026-10-21) amended it:
+   the native runtime keeps the request word's bytes in the bytes a service does not write (and zero where the
+   request had no word at that index), as the reference does; N1-10b implements it in the IPC framework's `Reply`,
+   so the strict IPC comparison finds those words equal.
 3. **Padding of the metadata of an extdata or save (uninitialised).** `FS_USER::CreateExtSaveData` (and
    `FormatSaveData`, `FormatThisUserSaveData`) declare an `ArchiveFormatInfo` without initialising it, set its four
    fields, and the archive writes the whole 16 bytes, the three padding bytes after `duplicate_data` included, to the
