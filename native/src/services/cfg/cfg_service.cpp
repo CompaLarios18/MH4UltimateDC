@@ -14,6 +14,14 @@
 // "cfg"), made on first use: the config savegame of the user folder, or Azahar's default blocks. See
 // cfg_store.h for what is read and written and when.
 //
+// Start-up (D37): when a runner starts with --user DIR, DIR exists and holds no config savegame, a
+// random console unique ID is made and the file is written once (EnsureConfigFile), so the folder works
+// with Azahar too. A read command never writes. Without --user, or when DIR does not exist (this step never
+// creates it, and neither do mac.txt or mcu.dat; a saving cfg:s/cfg:i command and `--new-console-id`
+// still do), nothing is written by it and the ID is 0 for that run. The replay tool (ipc-replay, Runtime::Prepare) does not
+// run this: it is repeatable on the folder of a recording, which holds a config. A short or damaged
+// config is left alone with an Error log.
+//
 // Options: `--new-console-id` gives the console a new random unique ID before the game starts, as the
 // runner of the reference does with Azahar's GenerateConsoleUniqueId + SetConsoleUniqueId +
 // UpdateConfigNANDSavegame (the file is written); `--region auto|0..6` is Azahar's region setting
@@ -45,6 +53,7 @@
 //  - Azahar's GetSystemModel/GetModelNintendo2DS/IsCoppacsSupported read a block that fails with the
 //    error result and then push the zero-filled value; so do these.
 #include <cstring>
+#include <filesystem>
 #include <memory>
 #include <random>
 #include <string>
@@ -69,6 +78,10 @@ constexpr u32 kMaxSessions = 23;
 
 // ---- randomness for the identity (the one thing here that is not a function of the files) -----------
 
+// The host's secure random (std::random_device: the OS source). This is the one place where
+// randomness is allowed: Azahar draws the console unique ID, the MAC address and the like the same way,
+// and each value is written to the user folder at once, so every later run reads it back and nothing
+// the game sees depends on a fresh draw.
 u64 HostRandom64() {
     static std::random_device device;
     return (static_cast<u64>(device()) << 32) | device();
@@ -490,6 +503,23 @@ void StartIdentity(Runtime& rt) {
         }
     }
     if (!options.Has("--new-console-id")) {
+        // D37: the first start of a user folder that exists and holds no config makes it, once. Only a
+        // runner boot does (it has a loader); Runtime::Prepare, the replay tool's way in, never writes.
+        if (rt.GetLoader() != nullptr) {
+            u64 id = 0;
+            if (EnsureConfigFile(rt.UserFolder(), HostRandom64, &id) == EnsureResult::Created) {
+                MH4N_LOG(Info, kLog, "new user folder: config savegame made, console id {:016x}", id);
+            }
+        }
+        return;
+    }
+    // A damaged config is never replaced (not even when asked to): the player's data comes first.
+    const std::string config_path = ConfigPath(rt.UserFolder());
+    const ConfigFileState state = rt.UserFolder().empty() ? ConfigFileState::Absent : GetConfigFileState(config_path);
+    if (state == ConfigFileState::Invalid || state == ConfigFileState::LookupFailed) {
+        MH4N_LOG(Error, kLog, "--new-console-id: the config savegame {} is short, damaged or unreadable and is not replaced",
+                 config_path);
+        rt.RequestExit(3, "--new-console-id failed");
         return;
     }
     // Before the game: the file is read (or the default blocks made), the ID replaced, the file saved.
