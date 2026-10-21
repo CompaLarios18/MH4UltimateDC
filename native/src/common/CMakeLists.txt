@@ -5,6 +5,7 @@ mh4n_module(
         log.cpp
         options.cpp
         registry.cpp
+        utf8.cpp
     THIRD_PARTY
         mh4n_fmt
         Threads::Threads
