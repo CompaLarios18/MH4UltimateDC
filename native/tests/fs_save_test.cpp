@@ -39,6 +39,7 @@ TEST_CASE("fs_save_test needs recomp.h (the repository around native/)" * doctes
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <span>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -1122,6 +1123,38 @@ TEST_CASE("ExtSaveData: create, open, fixed-size files, delete") {
     CHECK(r["gone"] == kNotFoundInvalidState);
     CHECK(r["delete again"] == kResultSuccess);
     CHECK(!std::filesystem::exists(dir.ExtFolder(0, 0x1234)));
+}
+
+TEST_CASE("FormatAsExtData takes an optional icon: none makes no icon file, one makes it") {
+    Fixture f;
+    TempDir dir;
+    Result none = kUnknown, with_icon = kUnknown, empty_icon = kUnknown;
+    const int status = BootWith(f, dir, {"--ms", "1000", "--io-latency", "none"}, [&] {
+        Guest g(f, dir, false);
+        ServiceManager* manager = FindServiceManager(*f.runtime);
+        REQUIRE(manager != nullptr);
+        const std::shared_ptr<fs::FsState> state = manager->Context().State<fs::FsState>("fs:USER");
+        fs::ArchiveFactory* factory = state->archives.Factory(fs::archive_id::kExtSaveData);
+        REQUIRE(factory != nullptr);
+        const fs::ArchiveFormatInfo info;
+        none = factory->FormatAsExtData(fs::ConstructExtDataBinaryPath(fs::kMediaSdmc, 0, 0x71), info, std::nullopt);
+        const std::vector<u8> icon = Pattern(0x18, 3);
+        with_icon = factory->FormatAsExtData(fs::ConstructExtDataBinaryPath(fs::kMediaSdmc, 0, 0x72), info,
+                                             std::span<const u8>(icon));
+        empty_icon = factory->FormatAsExtData(fs::ConstructExtDataBinaryPath(fs::kMediaSdmc, 0, 0x73), info,
+                                              std::span<const u8>());
+        ExitProcess(*f.runtime);
+    });
+    CHECK(status == 0);
+    CHECK(none == kResultSuccess);
+    CHECK(with_icon == kResultSuccess);
+    CHECK(empty_icon == kResultSuccess);
+    CHECK(std::filesystem::is_directory(dir.ExtFolder(0, 0x71) / "user"));
+    CHECK(std::filesystem::exists(dir.ExtFolder(0, 0x71) / "metadata"));
+    CHECK_FALSE(std::filesystem::exists(dir.ExtFolder(0, 0x71) / "icon"));
+    CHECK(ReadBytesFrom(dir.ExtFolder(0, 0x72) / "icon") == Pattern(0x18, 3));
+    CHECK(std::filesystem::exists(dir.ExtFolder(0, 0x73) / "icon"));  // an empty icon is a (empty) file
+    CHECK(std::filesystem::file_size(dir.ExtFolder(0, 0x73) / "icon") == 0);
 }
 
 TEST_CASE("CreateExtSaveData leaves Azahar's folders, metadata and icon") {
@@ -2702,31 +2735,156 @@ TEST_CASE("N1-12c: a listing is Azahar's, byte for byte: names, 8.3 names, attri
     }
 }
 
-TEST_CASE("N1-12c: a listing is in the host's order and is not sorted") {
-    // Azahar lists in ForeachDirectoryEntry's order: readdir's on Linux, FindNextFile's on Windows. The
-    // native asks the host through the same primitives (std::filesystem iterates with them) and sorts nothing,
-    // so on one host the two give the same order.
+namespace {
+
+// A folder whose names were made in an order that is not the sorted one: mixed case, digits, an underscore, a
+// name beyond ASCII, a directory among the files and (where the host tells the case apart) two names that
+// differ only by the case of a letter. Returns the names in the D54 order; `kinds` says which are directories.
+struct OrderFolder {
+    std::vector<std::string> sorted;
+    std::map<std::string, bool> is_directory;
+};
+
+OrderFolder MakeOrderFolder(const std::filesystem::path& folder) {
+    std::filesystem::create_directories(folder);
+    OrderFolder made;
+    const auto file = [&](const std::string& name) { WriteBytesTo(folder / std::filesystem::path(std::u8string(name.begin(), name.end())), Pattern(4, 1)); };
+    for (const char* name : {"zeta", "Alpha", "_under", "mid", "Beta", "alpha2", "0first", "Zed", "tie", "Zz"}) {
+        file(name);
+    }
+    file("\xC3\xA9.bin");  // U+00E9: beyond ASCII, so after '_' (0x5F)
+    std::filesystem::create_directories(folder / "Mdir");
+    made.is_directory["Mdir"] = true;
+    // Two names that differ only by case: a case-insensitive host (NTFS, APFS by default) has made one
+    file("Tie");
+    std::size_t on_host = 0;
+    for (const auto& entry : std::filesystem::directory_iterator(folder)) {
+        (void)entry;
+        ++on_host;
+    }
+    const bool case_sensitive = on_host == 13;
+    // folded: 0FIRST ALPHA ALPHA2 BETA MDIR MID TIE(Tie, tie: 'T' < 't') ZED ZETA ZZ _UNDER U+00E9
+    made.sorted = {"0first", "Alpha", "alpha2", "Beta", "Mdir", "mid"};
+    if (case_sensitive) {
+        made.sorted.insert(made.sorted.end(), {"Tie", "tie"});
+    } else {
+        // the host kept one of the two names (which one is the host's)
+        for (const auto& entry : std::filesystem::directory_iterator(folder)) {
+            const std::string name = Utf8(entry.path().filename());
+            if (name == "Tie" || name == "tie") {
+                made.sorted.push_back(name);
+            }
+        }
+    }
+    made.sorted.insert(made.sorted.end(), {"Zed", "zeta", "Zz", "_under", "\xC3\xA9.bin"});
+    return made;
+}
+
+std::vector<std::string> NamesOf(const std::vector<std::vector<u8>>& raw_entries, std::vector<Entry>* decoded = nullptr) {
+    std::vector<std::string> names;
+    for (const std::vector<u8>& raw : raw_entries) {
+        const Entry entry = Decode(raw);
+        names.push_back(entry.name);
+        if (decoded != nullptr) {
+            decoded->push_back(entry);
+        }
+    }
+    return names;
+}
+
+void CheckOrderedEntries(const OrderFolder& made, const std::vector<std::vector<u8>>& raw_entries) {
+    std::vector<Entry> decoded;
+    CHECK(NamesOf(raw_entries, &decoded) == made.sorted);
+    REQUIRE(decoded.size() == made.sorted.size());
+    for (std::size_t i = 0; i < decoded.size(); ++i) {
+        const bool directory = made.is_directory.count(made.sorted[i]) != 0;
+        CHECK_MESSAGE(decoded[i].is_directory == directory, "entry " << i);
+        CHECK_MESSAGE(decoded[i].file_size == (directory ? 0u : 4u), "entry " << i);
+        CHECK_MESSAGE(decoded[i].is_archive == !directory, "entry " << i);
+        CHECK_MESSAGE(decoded[i].is_hidden == false, "entry " << i);
+    }
+}
+
+}  // namespace
+
+TEST_CASE("D54: the ordering helper compares UTF-16 code units after upper-casing the ASCII letters") {
+    using fs::host::DirectoryNameLess;
+    // '_' (0x5F) is after the letters, which compare as upper case (0x41..0x5A): NTFS's order for such names
+    CHECK(DirectoryNameLess(u"Zed", u"_a"));
+    CHECK(!DirectoryNameLess(u"_a", u"Zed"));
+    CHECK(DirectoryNameLess(u"zeta", u"_a"));
+    // 'a' and 'B' compare as 'A' and 'B'
+    CHECK(DirectoryNameLess(u"a", u"B"));
+    CHECK(!DirectoryNameLess(u"B", u"a"));
+    CHECK(DirectoryNameLess(u"Ab", u"aC"));
+    // digits before letters
+    CHECK(DirectoryNameLess(u"9", u"a"));
+    CHECK(DirectoryNameLess(u"0first", u"Alpha"));
+    // a prefix first
+    CHECK(DirectoryNameLess(u"Alpha", u"alpha2"));
+    // names that differ only by the case of ASCII letters: bytewise, so upper case first
+    CHECK(DirectoryNameLess(u"Tie", u"tie"));
+    CHECK(!DirectoryNameLess(u"tie", u"Tie"));
+    CHECK(!DirectoryNameLess(u"tie", u"tie"));
+    // only ASCII letters are folded: U+00C9 and U+00E9 stay what they are, and both are after 'z'
+    CHECK(DirectoryNameLess(u"É", u"é"));
+    CHECK(DirectoryNameLess(u"z", u"É"));
+    // UTF-16 code units, not code points: a surrogate (0xD800) is before U+FF21, though U+10000 is the larger
+    // code point
+    CHECK(DirectoryNameLess(u"\U00010000", u"Ａ"));
+}
+
+TEST_CASE("D54: a listing is sorted, not in the host's order") {
     TempDir dir;
     const std::filesystem::path folder = dir.Path() / "order";
-    std::filesystem::create_directories(folder);
-    for (const char* name : {"zeta", "Alpha", "mid", "Beta", "alpha2", "0first", "Zed"}) {
-        WriteBytesTo(folder / name, Pattern(4, 1));
-    }
-    std::vector<std::string> host_order;
-    for (const auto& entry : std::filesystem::directory_iterator(folder)) {
-        host_order.push_back(Utf8(entry.path().filename()));
-    }
+    const OrderFolder made = MakeOrderFolder(folder);
     const std::unique_ptr<fs::DirectoryBackend> directory = fs::OpenDiskDirectory(Utf8(folder));
-    std::vector<fs::DirEntry> entries(16);
-    const u32 count = directory->Read(16, entries.data());
-    REQUIRE(count == host_order.size());
-    std::vector<std::string> listed;
+    std::vector<fs::DirEntry> entries(32);
+    const u32 count = directory->Read(32, entries.data());
+    REQUIRE(count == made.sorted.size());
+    std::vector<std::vector<u8>> raw;
     for (u32 i = 0; i < count; ++i) {
-        std::vector<u8> raw(sizeof(fs::DirEntry));
-        std::memcpy(raw.data(), &entries[i], raw.size());
-        listed.push_back(Decode(raw).name);
+        raw.emplace_back(sizeof(fs::DirEntry));
+        std::memcpy(raw.back().data(), &entries[i], sizeof(fs::DirEntry));
     }
-    CHECK(listed == host_order);
+    CheckOrderedEntries(made, raw);
+    // host::ListDirectory is in that order too
+    const auto children = fs::host::ListDirectory(Utf8(folder));
+    REQUIRE(children.has_value());
+    std::vector<std::string> listed;
+    for (const fs::host::Child& child : *children) {
+        listed.push_back(child.name);
+    }
+    CHECK(listed == made.sorted);
+}
+
+TEST_CASE("D54: fs:USER lists a SaveData and an ExtSaveData directory in the sorted order") {
+    Fixture f;
+    TempDir dir;
+    OrderFolder save_made, ext_made;
+    std::vector<std::vector<u8>> save_entries, ext_entries;
+    Result save_result = kUnknown, ext_result = kUnknown;
+    const int status = BootWith(f, dir, {"--ms", "1000", "--io-latency", "none"}, [&] {
+        Guest g(f, dir);
+        g.Format();
+        REQUIRE(g.CreateExtSaveData(1, 0, 0x1234, Pattern(8, 1)) == kResultSuccess);
+        save_made = MakeOrderFolder(dir.SaveFolder() / "d");
+        ext_made = MakeOrderFolder(dir.ExtFolder(0, 0x1234) / "user" / "d");
+        const u64 save = g.MustOpen(4, kEmpty, kEmptyPath);
+        const Guest::Opened save_dir = g.OpenDirectory(save, "/d");
+        REQUIRE(save_dir.result == kResultSuccess);
+        save_entries = g.ReadDirectory(save_dir.session, 14, &save_result);
+        const u64 ext = g.MustOpen(6, kBinary, ExtPath(1, 0x1234, 0));
+        const Guest::Opened ext_dir = g.OpenDirectory(ext, "/d");
+        REQUIRE(ext_dir.result == kResultSuccess);
+        ext_entries = g.ReadDirectory(ext_dir.session, 14, &ext_result);
+        ExitProcess(*f.runtime);
+    });
+    CHECK(status == 0);
+    CHECK(save_result == kResultSuccess);
+    CHECK(ext_result == kResultSuccess);
+    CheckOrderedEntries(save_made, save_entries);
+    CheckOrderedEntries(ext_made, ext_entries);
 }
 
 TEST_CASE("N1-12c: a directory read writes the entries it read and nothing after them; the bytes after stay the client's") {
@@ -2834,7 +2992,7 @@ TEST_CASE("N1-12c: the same request in SaveData, ExtSaveData and SharedExtSaveDa
         CHECK(r["open a directory"] == kUnexpectedFileOrDirectory);
         CHECK(r["open with no flags"] == kUnsupportedOpenFlags);
         // read, write and create: SaveData makes the file; the extdata archives never take the create flag
-    CHECK(r["open with create"] == (kind.zero_size_create ? kResultSuccess : kUnsupportedOpenFlags));
+        CHECK(r["open with create"] == (kind.zero_size_create ? kResultSuccess : kUnsupportedOpenFlags));
         CHECK(r["delete missing"] == kFileNotFound);
         CHECK(r["delete in a missing dir"] == kPathNotFound);
         CHECK(r["open directory"] == kResultSuccess);

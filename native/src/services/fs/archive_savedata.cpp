@@ -323,7 +323,9 @@ namespace {
 class DiskDirectory final : public DirectoryBackend {
 public:
     explicit DiskDirectory(const std::string& host_path) {
-        // Taken once, when the directory is opened (Azahar scans the tree then too).
+        // Taken once, when the directory is opened (Azahar scans the tree then too), and in the order of D54
+        // (host::ListDirectory sorts): Azahar's entries come in the host's own order, which is not the same
+        // on every host; the entries and their fields are Azahar's, only the order is fixed.
         if (auto children = host::ListDirectory(host_path)) {
             children_ = std::move(*children);
         }

@@ -13,8 +13,9 @@
 //    threads and the scheduler thread can use one file at the same time and there is no cursor. A file
 //    written with Sync() is on the disk when it returns (fdatasync or fsync / FlushFileBuffers); Azahar's "flush" is an
 //    fflush, which only hands the bytes to the operating system.
-//  - A directory listing is the host's own order (readdir, FindNextFile), as Azahar's ForeachDirectoryEntry
-//    gives; nothing sorts it.
+//  - A directory listing is sorted (D54, DirectoryNameLess), never in the host's own order that Azahar's
+//    ForeachDirectoryEntry gives (readdir, FindNextFile): the entries and their fields are Azahar's, only the
+//    order is fixed, so every host and every copy of a user folder shows the game one order.
 //  - A symbolic link in a tree that is deleted is removed, never followed.
 //  - CreateFullPath (via DirectoryPrefixes) is not Azahar's loop on Windows. Azahar (file_util.cpp:346-385)
 //    takes the next '/' from the previous position and looks for '\' from there only when no '/' is
@@ -99,7 +100,17 @@ struct Child {
     bool is_directory = false;
     u64 size = 0;      // of a file; 0 for a directory
 };
-// The children of a directory in the host's order, without "." and ".."; nullopt if it cannot be listed.
+// D54: the order of a directory listing. Names compare as UTF-16 code units after the ASCII letters a-z are
+// made A-Z (and nothing else: that is what NTFS does for names of ASCII characters, so '_' (0x5F) sorts after
+// the letters, 'a' and 'B' compare as 'A' and 'B', digits come before letters); two names that differ only by
+// the case of ASCII letters (a case-sensitive file system) are then ordered bytewise on the code units. The
+// result is a strict weak order, in fact total on distinct names.
+// Why: Azahar lists in the host's order (NTFS: by name; Linux and macOS: the file system's own, hash order on
+// ext4; FAT-family volumes: creation order), so one user folder could show the game its files in another
+// order on another host. Departure from Azahar on those hosts, where the order was never defined.
+bool DirectoryNameLess(std::u16string_view a, std::u16string_view b);
+// The children of a directory sorted by DirectoryNameLess on the UTF-16 form of the name (directories and files
+// together, as one stream), without "." and ".."; nullopt if it cannot be listed.
 std::optional<std::vector<Child>> ListDirectory(const std::string& path);
 
 // Writes a whole small file (metadata, an icon) and makes it durable before returning. False if it could

@@ -149,7 +149,8 @@ public:
         return kResultSuccess;
     }
 
-    Result FormatAsExtData(const Path& path, const ArchiveFormatInfo& info, const std::vector<u8>& icon) override {
+    Result FormatAsExtData(const Path& path, const ArchiveFormatInfo& info,
+                           std::optional<std::span<const u8>> icon) override {
         ExtId id;
         if (!ParseExtId(path, &id)) {
             return kResultInvalidPath;
@@ -172,8 +173,10 @@ public:
             return kResultUnknown;  // Azahar: "TODO(Subv): Find the correct error code"
         }
         // The icon goes under the id as given (see the top of this file); a folder that is not there makes
-        // the write fail, quietly.
-        host::WriteFileDurably(ExtSaveDataFolder(mount_point_, id) + "icon", icon.data(), icon.size());
+        // the write fail, quietly. With no icon (Azahar's std::nullopt) no file is made.
+        if (icon) {
+            host::WriteFileDurably(ExtSaveDataFolder(mount_point_, id) + "icon", icon->data(), icon->size());
+        }
         host::SyncDirectoryTree(base);
         return kResultSuccess;
     }

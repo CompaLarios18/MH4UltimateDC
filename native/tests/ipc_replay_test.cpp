@@ -2158,8 +2158,8 @@ TEST_CASE("a different result carries the decoded fields of both codes on the sa
 
 TEST_CASE("every differing normal word is named by its index, and no value is printed") {
     TempDir dir;
-    // ReadStamp 0 answers (result, 0, 0, 0): the trace says 7, 8 and 9 for words 2, 3 and 4 and the right
-    // value for word 1 of the stamp (the tag, word 2... all four differ except the result).
+    // ReadStamp 0 answers (result, 0, 0, 0); the trace gives 0x11111111 and 0x22222222 for words 2 and 3 and
+    // the right values for word 1 (the result) and word 4, so exactly words 2 and 3 differ.
     Req wrong;
     wrong.seq = 1;
     wrong.in = {ipc::MakeHeader(0x1A, 1, 0), 0};

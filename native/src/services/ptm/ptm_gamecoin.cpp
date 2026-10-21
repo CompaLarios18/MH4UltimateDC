@@ -24,9 +24,6 @@
 //    the replay's user folder is the place where the reference's start-up result has to appear.
 //  - Azahar asserts when the archive exists but cannot be opened (an extdata folder without `user/`); here
 //    the step logs it and leaves the folder alone.
-//  - The fs module's FormatAsExtData always writes an icon file (Azahar passes none for this archive, and no
-//    file is made then). It is written empty here, under the id as given, and the step removes it again, so
-//    the folder is what Azahar leaves. (An empty icon is told apart from none only by this step.)
 #include <array>
 #include <cstring>
 #include <memory>
@@ -89,7 +86,7 @@ std::array<u8, sizeof(GameCoin)> DefaultBytes() {
 // WriteGameCoinData, for a folder where the archive was not formatted.
 void MakeGameCoinArchive(fs::ArchiveFactory& factory, const fs::Path& archive_path) {
     const fs::ArchiveFormatInfo format_info;  // all zero, as ArchiveFormatInfo() in Azahar
-    const Result formatted = factory.FormatAsExtData(archive_path, format_info, {});
+    const Result formatted = factory.FormatAsExtData(archive_path, format_info, std::nullopt);  // no icon, as Azahar
     if (formatted != kResultSuccess) {
         MH4N_LOG(Error, kLog, "the play coin archive could not be formatted: 0x{:08X}", formatted);
         return;
@@ -99,15 +96,6 @@ void MakeGameCoinArchive(fs::ArchiveFactory& factory, const fs::Path& archive_pa
     if (opened != kResultSuccess || archive == nullptr) {
         MH4N_LOG(Error, kLog, "the play coin archive does not open after its format: 0x{:08X}", opened);
         return;
-    }
-    // The icon that the format wrote (empty: Azahar writes none, see the top of this file).
-    if (const auto* extdata = dynamic_cast<const fs::SaveDataArchive*>(archive.get())) {
-        const std::string user_folder = extdata->MountPoint();  // <archive>/user/
-        const std::string icon = user_folder.substr(0, user_folder.size() - std::string("user/").size()) + "icon";
-        if (fs::host::Exists(icon) && fs::host::FileSize(icon) == 0) {
-            fs::host::RemoveFile(icon);
-            fs::host::SyncDirectory(icon.substr(0, icon.size() - std::string("icon").size()));
-        }
     }
     const fs::Path file_path = CharPath("/gamecoin.dat");
     const Result created = archive->FileCreate(file_path, sizeof(GameCoin), 0);
