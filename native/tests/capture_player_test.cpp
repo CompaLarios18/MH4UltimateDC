@@ -38,6 +38,7 @@
 #include <fstream>
 #include <functional>
 #include <map>
+#include <set>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -1707,16 +1708,24 @@ namespace {
 
 // "test-xfer": what a GX engine does for a display transfer of linear RGBA8 to linear RGBA8 of the
 // same size (flags 0x22: input linear, no swizzling; format 0 twice): copy the image and signal
-// PPF. It does not write the GSP's interrupt queue: the service does that, not the Gpu.
+// PPF; a command list draws nothing and signals P3D; a write of kOtherReg (an MMIO that starts
+// nothing) signals PPF. It does not write the GSP's interrupt queue: the service does that, not
+// the Gpu.
 struct XferState {
     bool corrupt = false;   // flip one bit of byte 5 of the output
     bool skip = false;      // write nothing (the PPF is still signalled)
 } xfer;
 
+constexpr u32 kOtherReg = 0x1EF00080; // GPU register 0x20: starts nothing
+
 class XferGpu final : public gpu::Gpu {
 public:
     explicit XferGpu(gpu::Host& host) : host_(host) {}
     void Execute(const gpu::GxCommand& c) override {
+        if ((c.words[0] & 0xFF) == kGxSubmitCmdList) {
+            host_.SignalInterrupt(gpu::Interrupt::P3D, 0); // draws nothing, signals as a command list does
+            return;
+        }
         if ((c.words[0] & 0xFF) != kGxDisplayTransfer) {
             return;
         }
@@ -1733,7 +1742,11 @@ public:
         }
         host_.SignalInterrupt(gpu::Interrupt::PPF, 0);
     }
-    void WriteReg(u32, u32) override {}
+    void WriteReg(u32 address, u32) override {
+        if (address == kOtherReg) {
+            host_.SignalInterrupt(gpu::Interrupt::PPF, 0);
+        }
+    }
     u32 ReadReg(u32) override { return 0; }
     void SetBufferSwap(u32, const gpu::FrameBufferInfo&) override {}
     void SetColorFill(u32) override {}
@@ -1840,6 +1853,251 @@ TEST_CASE("two transfers in a row: the queue keeps growing and each one is still
         CHECK(r.judged.at("transfer") == 3);
         CHECK(r.gsp_queue_pages == 3);
     }
+}
+
+// The queue page after more interrupts: one queue (0), the way GSP_GPU pushes them.
+struct QueueSim {
+    u8 index = 3, number = 2;
+    std::vector<std::pair<u32, u8>> slots = {{3, 4}, {4, 5}};
+    Bytes Page() const { return QueuePage(0, index, number, slots); }
+    Bytes Push(u8 id) {
+        slots.push_back({(index + number) % 0x34u, id});
+        ++number;
+        return Page();
+    }
+};
+
+// Transfers and command lists in one capture, as the golden sessions have them (6 and 6): each
+// command signals one interrupt (PPF for a transfer, P3D for a command list) and so lists the
+// same page of the GSP's shared memory once. `order`: 't' a transfer, 'c' a command list.
+void WriteMixedCapture(const std::string& path, const std::string& order, bool twice = false) {
+    W w;
+    w.Init();
+    w.Mem(0x20000000, Bytes(0x200000, 0));
+    Bytes in_page(kPageSize, 0);
+    const Bytes input = Pattern(16 * 16 * 4, 21);
+    std::copy(input.begin(), input.end(), in_page.begin());
+    QueueSim queue;
+    w.CpuPages({{kXferIn, in_page}, {kQueuePage, queue.Page()}});
+    Bytes out_page(kPageSize, 0);
+    std::copy(input.begin(), input.end(), out_page.begin());
+    for (const char kind : order) {
+        if (kind == 't') {
+            w.Gx({kGxDisplayTransfer, 0x14010000, 0x14020000, (16u << 16) | 16, (16u << 16) | 16, 0x22, 0, 0});
+            const Bytes page = queue.Push(4);
+            w.GpuPages({{kXferOut, out_page}, {kQueuePage, page}});
+            if (twice) w.GpuPages({{kQueuePage, page}});
+            w.Irq(4);
+        } else {
+            w.Gx({kGxSubmitCmdList, 0x14100000, 0x400, 0, 0, 0, 0, 1});
+            w.PicaReg({});
+            w.GpuPages({{kQueuePage, queue.Push(5)}});
+            w.Irq(5);
+        }
+    }
+    REQUIRE(w.Save(path));
+}
+
+TEST_CASE("the relay queue line counts each command that listed the page, by kind and by --judge, "
+          "with the number of pages") {
+    TempDir dir;
+    const std::string path = dir.File("mixed.mgpu").string();
+    WriteMixedCapture(path, "tctt" "c"); // 3 transfers and 2 command lists, interleaved
+    xfer.corrupt = false;
+    xfer.skip = false;
+
+    struct Case {
+        std::vector<std::string> args;
+        std::map<std::string, u32> judged, skipped;
+        std::string line_tail; // what follows "...not judged): 5 (" up to the end of the line
+    };
+    const std::string head =
+        "pages of the GSP's interrupt relay queue (the service writes them, not the Gpu; not judged): 5 "
+        "(one for each command that signalled an interrupt into it, whatever its kind; 1 distinct page: "
+        "0x20030000); ";
+    const std::vector<Case> cases = {
+        {{}, {{"cmdlist", 2}, {"transfer", 3}}, {},
+         "in commands judged: cmdlist=2 transfer=3; in commands skipped (not in --judge): none\n"},
+        // The selection of the golden dump-check: the command lists are not judged but their
+        // interrupts are in the same queue, so they are counted (skipped), not left out.
+        {{"--judge", "fill,transfer,copy,dma"}, {{"transfer", 3}}, {{"cmdlist", 2}},
+         "in commands judged: transfer=3; in commands skipped (not in --judge): cmdlist=2\n"},
+        {{"--judge", "cmdlist"}, {{"cmdlist", 2}}, {{"transfer", 3}},
+         "in commands judged: cmdlist=2; in commands skipped (not in --judge): transfer=3\n"},
+        {{"--judge", "none"}, {}, {{"cmdlist", 2}, {"transfer", 3}},
+         "in commands judged: none; in commands skipped (not in --judge): cmdlist=2 transfer=3\n"},
+    };
+    for (const Case& c : cases) {
+        for (const char* mode : {"--chained", "--isolated"}) {
+            std::vector<std::string> args = {"--gpu", "test-xfer", mode};
+            args.insert(args.end(), c.args.begin(), c.args.end());
+            const PlayerResult r = Run(path, args);
+            INFO(Describe(r));
+            CHECK(r.error.empty());
+            CHECK(r.failures.empty());
+            CHECK(r.gsp_queue_pages == 5);
+            CHECK(r.gsp_queue_addresses == std::set<u32>{kQueuePage});
+            CHECK(r.gsp_queue_judged == c.judged);
+            CHECK(r.gsp_queue_skipped == c.skipped);
+            CHECK(r.judged == c.judged);
+            CHECK(r.skipped == c.skipped);
+            const std::string report = FormatReport(r);
+            CHECK(report.find(head + c.line_tail) != std::string::npos);
+        }
+    }
+    // The golden selection, in full: the transfers alone are 3, not 5, and the line says so.
+    const PlayerResult golden = Run(path, {"--gpu", "test-xfer", "--isolated", "--judge", "fill,transfer,copy,dma"});
+    CHECK(golden.gsp_queue_judged.at("transfer") == 3);
+    CHECK(golden.gsp_queue_pages == golden.gsp_queue_judged.at("transfer") + golden.gsp_queue_skipped.at("cmdlist"));
+    CHECK(FormatReport(golden).find("commands judged: transfer=3\n") != std::string::npos);
+}
+
+TEST_CASE("a command that lists the queue page twice counts it once; no queue page, no line") {
+    TempDir dir;
+    const std::string path = dir.File("twice.mgpu").string();
+    WriteMixedCapture(path, "tt", true);
+    xfer.corrupt = false;
+    xfer.skip = false;
+    const PlayerResult r = Run(path, {"--gpu", "test-xfer", "--isolated"});
+    INFO(Describe(r));
+    CHECK(r.failures.empty());
+    CHECK(r.gsp_queue_pages == 2);
+    CHECK(r.gsp_queue_judged.at("transfer") == 2);
+    CHECK(FormatReport(r).find("): 2 (one for each command that signalled an interrupt into it, whatever its "
+                               "kind; 1 distinct page: 0x20030000); in commands judged: transfer=2; in "
+                               "commands skipped (not in --judge): none\n") != std::string::npos);
+    // Without any queue page the line is not printed at all.
+    const std::string plain = dir.File("plain.mgpu").string();
+    {
+        W w;
+        w.Init();
+        w.Mem(0x20000000, Bytes(0x200000, 0));
+        w.CpuPages({{kXferIn, Pattern(kPageSize, 3)}});
+        w.Gx({kGxDisplayTransfer, 0x14010000, 0x14020000, (16u << 16) | 16, (16u << 16) | 16, 0x22, 0, 0});
+        w.Irq(4);
+        REQUIRE(w.Save(plain));
+    }
+    xfer.skip = true;
+    const PlayerResult none = Run(plain, {"--gpu", "test-xfer"});
+    xfer.skip = false;
+    CHECK(none.gsp_queue_pages == 0);
+    CHECK(FormatReport(none).find("interrupt relay queue") == std::string::npos);
+}
+
+// `count` transfers, the n-th of which signals into its own queue page (kQueuePage + n * 0x1000):
+// several GSP shared-memory pages, as when the game registers more than one thread.
+void WriteManyQueuePages(const std::string& path, u32 count) {
+    W w;
+    w.Init();
+    w.Mem(0x20000000, Bytes(0x200000, 0));
+    Bytes in_page(kPageSize, 0);
+    const Bytes input = Pattern(16 * 16 * 4, 21);
+    std::copy(input.begin(), input.end(), in_page.begin());
+    std::vector<QueueSim> queues(count);
+    std::vector<std::pair<u32, Bytes>> cpu = {{kXferIn, in_page}};
+    for (u32 n = 0; n < count; ++n) cpu.push_back({kQueuePage + n * 0x1000, queues[n].Page()});
+    w.CpuPages(cpu);
+    Bytes out_page(kPageSize, 0);
+    std::copy(input.begin(), input.end(), out_page.begin());
+    for (u32 n = 0; n < count; ++n) {
+        w.Gx({kGxDisplayTransfer, 0x14010000, 0x14020000, (16u << 16) | 16, (16u << 16) | 16, 0x22, 0, 0});
+        w.GpuPages({{kXferOut, out_page}, {kQueuePage + n * 0x1000, queues[n].Push(4)}});
+        w.Irq(4);
+    }
+    REQUIRE(w.Save(path));
+}
+
+TEST_CASE("the relay queue line counts the distinct pages and lists at most four of them") {
+    TempDir dir;
+    xfer.corrupt = false;
+    xfer.skip = false;
+    // Two pages: both counted, both listed.
+    {
+        const std::string path = dir.File("two.mgpu").string();
+        WriteManyQueuePages(path, 2);
+        const PlayerResult r = Run(path, {"--gpu", "test-xfer", "--isolated"});
+        INFO(Describe(r));
+        CHECK(r.failures.empty());
+        CHECK(r.gsp_queue_pages == 2);
+        CHECK(r.gsp_queue_addresses == std::set<u32>{kQueuePage, kQueuePage + 0x1000});
+        CHECK(r.gsp_queue_addresses.size() == 2);
+        CHECK(FormatReport(r).find("): 2 (one for each command that signalled an interrupt into it, "
+                                   "whatever its kind; 2 distinct pages: 0x20030000, 0x20031000); "
+                                   "in commands judged: transfer=2; ") != std::string::npos);
+    }
+    // Five pages: the list stops after four with ", ...", the counts do not.
+    {
+        const std::string path = dir.File("five.mgpu").string();
+        WriteManyQueuePages(path, 5);
+        const PlayerResult r = Run(path, {"--gpu", "test-xfer", "--isolated"});
+        INFO(Describe(r));
+        CHECK(r.failures.empty());
+        CHECK(r.gsp_queue_pages == 5);
+        CHECK(r.gsp_queue_addresses.size() == 5);
+        CHECK(FormatReport(r).find("whatever its kind; 5 distinct pages: 0x20030000, 0x20031000, "
+                                   "0x20032000, 0x20033000, ...); in commands judged: transfer=5; ") !=
+              std::string::npos);
+    }
+    // Exactly four: nothing cut off.
+    {
+        const std::string path = dir.File("four.mgpu").string();
+        WriteManyQueuePages(path, 4);
+        const PlayerResult r = Run(path, {"--gpu", "test-xfer", "--isolated"});
+        CHECK(FormatReport(r).find("4 distinct pages: 0x20030000, 0x20031000, 0x20032000, 0x20033000); ") !=
+              std::string::npos);
+    }
+}
+
+TEST_CASE("an event of none of the kinds counts under 'other', with the commands judged") {
+    TempDir dir;
+    const std::string path = dir.File("other.mgpu").string();
+    {
+        W w;
+        w.Init();
+        w.Mem(0x20000000, Bytes(0x200000, 0));
+        QueueSim queue;
+        Bytes in_page(kPageSize, 0);
+        const Bytes input = Pattern(16 * 16 * 4, 21);
+        std::copy(input.begin(), input.end(), in_page.begin());
+        w.CpuPages({{kXferIn, in_page}, {kQueuePage, queue.Page()}});
+        // An MMIO write that starts nothing (classified none), whose interrupt the service queued.
+        w.Mmio(kOtherReg, 1);
+        w.GpuPages({{kQueuePage, queue.Push(4)}});
+        w.Irq(4);
+        // Then a transfer.
+        w.Gx({kGxDisplayTransfer, 0x14010000, 0x14020000, (16u << 16) | 16, (16u << 16) | 16, 0x22, 0, 0});
+        Bytes out_page(kPageSize, 0);
+        std::copy(input.begin(), input.end(), out_page.begin());
+        w.GpuPages({{kXferOut, out_page}, {kQueuePage, queue.Push(4)}});
+        w.Irq(4);
+        REQUIRE(w.Save(path));
+    }
+    xfer.corrupt = false;
+    xfer.skip = false;
+    // 'other' is not a kind of --judge: it is passed through, and the line shows it with the
+    // commands judged, while the "commands judged:" line lists only the kinds.
+    for (const char* judge : {"all", "transfer", "none"}) {
+        const PlayerResult r = Run(path, {"--gpu", "test-xfer", "--isolated", "--judge", judge});
+        INFO(judge << "\n" << Describe(r));
+        CHECK(r.failures.empty());
+        CHECK(r.gsp_queue_pages == 2);
+        CHECK(r.gsp_queue_judged.at("other") == 1);
+        CHECK(r.judged.count("other") == 0);
+        CHECK(r.skipped.count("other") == 0);
+        CHECK(r.gsp_queue_skipped.count("other") == 0);
+        CHECK(FormatReport(r).find("in commands judged: ") != std::string::npos);
+    }
+    const PlayerResult all = Run(path, {"--gpu", "test-xfer", "--isolated", "--judge", "transfer"});
+    CHECK(all.gsp_queue_judged == std::map<std::string, u32>{{"other", 1}, {"transfer", 1}});
+    CHECK(all.judged == std::map<std::string, u32>{{"transfer", 1}});
+    CHECK(FormatReport(all).find("; in commands judged: other=1 transfer=1; in commands skipped (not in "
+                                 "--judge): none\n") != std::string::npos);
+    CHECK(FormatReport(all).find("commands judged: transfer=1\n") != std::string::npos);
+    const PlayerResult none = Run(path, {"--gpu", "test-xfer", "--isolated", "--judge", "none"});
+    CHECK(none.gsp_queue_judged == std::map<std::string, u32>{{"other", 1}});
+    CHECK(none.gsp_queue_skipped == std::map<std::string, u32>{{"transfer", 1}});
+    CHECK(FormatReport(none).find("; in commands judged: other=1; in commands skipped (not in --judge): "
+                                  "transfer=1\n") != std::string::npos);
 }
 
 TEST_CASE("a wrong output still fails when the GSP's page is there, and the report says what, where and how much") {

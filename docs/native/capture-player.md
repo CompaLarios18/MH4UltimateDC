@@ -66,6 +66,25 @@ rest of the group to the Gpu and the checks in file order.
   service's write (in every mode), and counted in the summary line `pages of the GSP's interrupt
   relay queue ... not judged`. Any other change of such a page, a page the Gpu wrote, or a page
   whose command signalled no interrupt, is judged as before.
+  The line counts listings, not distinct pages: every command that signals an interrupt lists the
+  same page of the GSP's shared memory, once, in its `GPU_PAGES`, and the player counts it for
+  every command of every kind (command lists too, and also when `--judge` leaves their kind out,
+  because the page is looked for in every event). A page that one event lists twice is counted once
+  on purpose (per event and address), so the totals by kind tell the readings apart. The line says
+  the total, how many distinct pages that was, and the total by kind, first for the commands
+  judged and then for the commands skipped (not in `--judge`): `... not judged): 12 (one for each
+  command that signalled an interrupt into it, whatever its kind; 1 distinct page: 0x26c00000); in
+  commands judged: transfer=6; in commands skipped (not in --judge): cmdlist=6`. At most four
+  addresses are listed, then `, ...`; a kind with no listing is `none`. `other` is every command
+  that is none of the kinds of `--judge` (an MMIO write that starts nothing, a buffer swap, a GX
+  command of another id): the player passes it through whatever `--judge` says, so the line shows
+  it under the commands judged, although the `commands judged:` line lists only the kinds.
+  The 12 that the dump-check of N2-03 printed on both golden captures (with `--judge
+  fill,transfer,copy,dma`) is expected to be the 6 transfers plus the 6 command lists, inferred
+  from the code and from the golden counts transfer=6 and cmdlist=6, not two pages per transfer;
+  re-running the dump-check confirms it, and the new line shows which reading holds (the totals by
+  kind: transfer=6 and cmdlist=6 on 1 page for the first, transfer=12 on 2 or more pages for the
+  second).
 - Command lists: the colour buffers go through the image thresholds. The buffers judged are the
   ones the command list drew into (the colour-buffer registers, 0x117, 0x11D and 0x11E, at each
   draw trigger 0x22E and 0x22F), and the final one when the capture's GPU wrote into it. Before
