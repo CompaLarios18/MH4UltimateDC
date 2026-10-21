@@ -12,8 +12,8 @@
 // (`Settings::values.steps_per_hour` = 0).
 //
 // Departures from Azahar:
-//  - ptm:u has no CheckNew3DS in Azahar (it is a ptm:s/ptm:sysm command, 0x040A); it is answered the
-//    same way here: Old 3DS (false), D10.
+//  - (Not a departure.) CheckNew3DS (0x040A) is a ptm:s/ptm:sysm command only, as in Azahar; ptm:u does not register it and
+//    answers it as an unknown command. ptm:s/ptm:sysm answer Old 3DS (false), D10.
 //  - GetStepHistory with a buffer that is not 2 bytes per hour asserts in Azahar; here it answers the
 //    invalid size result and leaves the buffer alone.
 //  - ptm:gets, ptm:play and ptm:sets, the info LED commands and GetSystemTime of ptm:s/ptm:sysm (they

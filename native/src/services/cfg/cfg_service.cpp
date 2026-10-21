@@ -20,9 +20,12 @@
 // (auto: the region lockout of the game's icon, as its loader reads it).
 //
 // Departures from Azahar:
-//  - Azahar's cfg:s/cfg:i commands that read the secure info and the local friend code seed (cfg:s
-//    0x0404, 0x0405, 0x0407, 0x0408; cfg:i 0x0407) need a dump of the console's secure data that is
-//    not available; they are answered as unknown commands. The game does not send them.
+//  - Azahar's commands that read the secure info and the local friend code seed need a dump of the
+//    console's secure data that is not available. They are cfg:s 0x0404, 0x0405, 0x0407, 0x0408 and
+//    cfg:i 0x0404, 0x0405, 0x0407, 0x0408, 0x0817 (cfg:i inherits the cfg:s ids and has 0x0817 too);
+//    all are registered without a handler here, so they are answered as unknown commands. Azahar
+//    without a dump answers 0x0404/0x0405 with a success reply that carries a zero seed (its error
+//    reply is built but overwritten by the later success one). The game does not send them.
 //  - SetUUIDClockSequence and GetUUIDClockSequence keep the sequence in mcu.dat as Azahar does, but the
 //    file is only written by SetUUIDClockSequence, never when it is read or missing.
 //  - A GetConfig for a size larger than the config file is answered with the invalid size result without
@@ -108,6 +111,9 @@ struct Module {
         preferred_region_chosen = true;
         const std::vector<u32> regions = RegionsFromIcon(context.GameFolder());
         if (regions.empty()) {
+            MH4N_LOG(Warning, kLog,
+                     "--region auto: no icon.bin in the game folder, so GetRegion answers JPN; give "
+                     "--region or provide icon.bin");
             return;
         }
         ConfigStore& config = Store(context);

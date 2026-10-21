@@ -329,6 +329,32 @@ TEST_CASE("cfg store: a block missing from the file is made from its default in 
     CHECK(ReadAll(path) == original);  // the file was not touched
 }
 
+TEST_CASE("cfg store: a block that would pass the end of the file is not created") {
+    TempDir dir;
+    const std::string path =
+        dir.User() + "/nand/data/00000000000000000000000000000000/sysdata/00010017/00000000/config";
+    // one big block whose data ends 0x10 bytes before the end of the 0x8000-byte file
+    const std::size_t big = 0x8000 - 0x455C - 0x10;
+    WriteAll(path, MakeConfigFile({{0x00FF0001, kGlobal, std::vector<u8>(big, 0x5A)}}));
+    cfg::ConfigStore store(dir.User());
+    REQUIRE(store.FromFile());
+    // the big block, and the EULA version block the constructor makes (4 bytes, kept in its entry)
+    const u32 entries = Le16(std::vector<u8>(store.Raw().begin(), store.Raw().begin() + 2), 0);
+    CHECK(entries == 2);
+    u8 name[0x1C];
+    // the user name (0x1C bytes) has a default, but its data would end at 0x800C
+    CHECK(store.Get(0x000A0000, 0x1C, cfg::kUserRead, name) == cfg::kResultUnknown);
+    CHECK(Le16(std::vector<u8>(store.Raw().begin(), store.Raw().begin() + 2), 0) == entries);  // none added
+    for (std::size_t i = 0x7FF0; i < 0x8000; ++i) {
+        CHECK(store.Raw()[i] == 0);  // nothing written at the end of the file
+    }
+    CHECK(store.Raw()[0x7FEF] == 0x5A);
+    // a block of 4 bytes or less keeps its data in the entry, so it still fits
+    u8 sound = 0;
+    CHECK(store.Get(0x00070001, 1, cfg::kUserRead, &sound) == kResultSuccess);
+    CHECK(sound == 1);
+}
+
 TEST_CASE("cfg store: a different EULA version is replaced by the default one, in memory") {
     TempDir dir;
     const std::string path =
@@ -885,6 +911,203 @@ TEST_CASE("cfg:s and cfg:i save the config; cfg:u cannot reach their commands") 
     CHECK(saved.FromFile());
     CHECK(saved.GetLanguageRaw() == 3);
     CHECK(saved.GetUsername() == u"Hunter");
+}
+
+// A second service manager over the same runtime whose game folder is `game` (a Runtime started from
+// an ELF has none): the SVC layer then reaches the services made from it.
+void UseGameFolder(Runtime& rt, const std::string& game) {
+    ServiceEnvironment env;
+    env.game_folder = game;
+    env.user_folder = rt.UserFolder();
+    env.options = &rt.GetOptions();
+    env.kernel = &rt.GetKernel();
+    env.scheduler = &rt.Scheduler();
+    env.threads = &rt.Threads();
+    env.interfaces = &rt.Interfaces();
+    env.request_exit = [&rt](int status, const std::string& reason) { rt.RequestExit(status, reason); };
+    auto manager = std::make_shared<ServiceManager>(std::move(env));
+    manager->InstallRegistered();
+    manager->Install(rt.Svc());
+    rt.Own(manager);
+}
+
+std::vector<u8> SmdhWithLockout(u32 lockout) {
+    std::vector<u8> smdh(0x36C0, 0);
+    Set32(smdh, 0x2018, lockout);
+    return smdh;
+}
+
+TEST_CASE("cfg:u and cfg:s answer an invalid size for a block size above 0x8000, and leave the buffer alone") {
+    Fixture f;
+    TempDir dir;
+    WriteAll(ConfigFilePath(dir).string(), UserConfigFile());
+    std::vector<u32> user_known, user_missing, sys_known, sys_missing, set_big, set_beyond;
+    std::vector<u8> buffers[4], country_after;
+    const int status = BootWith(f, dir, {"--ms", "100", "--region", "1"}, [&] {
+        Guest g(*f.runtime);
+        const Handle user = g.Service("cfg:u");
+        const Handle sys = g.Service("cfg:s");
+        REQUIRE(user != 0);
+        REQUIRE(sys != 0);
+        auto get = [&](Handle h, u32 command, u32 size, u32 id, std::vector<u8>* buffer) {
+            g.PutBytes(g.Scratch(0x100), std::vector<u8>(8, 0xEE));
+            auto reply = g.Request(h, {ipc::MakeHeader(static_cast<u16>(command), 2, 2), size, id,
+                                       ipc::MappedBufferDesc(8, ipc::W), g.Scratch(0x100)}, 4);
+            *buffer = g.GetBytes(g.Scratch(0x100), 8);
+            return reply;
+        };
+        user_known = get(user, 1, 0x8001, 0x000A0002, &buffers[0]);
+        user_missing = get(user, 1, 0xFFFFFFFF, 0x00FF0000, &buffers[1]);  // not NotFound
+        sys_known = get(sys, 0x0401, 0x8001, 0x000F0004, &buffers[2]);
+        sys_missing = get(sys, 0x0401, 0x10000, 0x00FF0000, &buffers[3]);
+        // SetSystemConfig of the country block (4 bytes): a size above the buffer, then above 0x8000
+        g.PutBytes(g.Scratch(0x200), std::vector<u8>(8, 0x55));
+        set_beyond = g.Request(sys, {ipc::MakeHeader(0x0402, 2, 2), 0x000B0000, 4,
+                                     ipc::MappedBufferDesc(2, ipc::R), g.Scratch(0x200)}, 4);
+        set_big = g.Request(sys, {ipc::MakeHeader(0x0402, 2, 2), 0x000B0000, 0x8001,
+                                  ipc::MappedBufferDesc(8, ipc::R), g.Scratch(0x200)}, 4);
+        g.ReadBlock(user, 1, 0x000B0000, 4, &country_after);
+        ExitProcess(*f.runtime);
+    });
+    CHECK(status == 0);
+    const std::vector<u32>* gets[] = {&user_known, &user_missing, &sys_known, &sys_missing};
+    const u32 commands[] = {1, 1, 0x0401, 0x0401};
+    for (int i = 0; i < 4; ++i) {
+        INFO("get " << i);
+        CHECK((*gets[i])[0] == ipc::MakeHeader(static_cast<u16>(commands[i]), 1, 2));
+        CHECK((*gets[i])[1] == 0xD90103EC);
+        CHECK(buffers[i] == std::vector<u8>(8, 0xEE));
+    }
+    for (const std::vector<u32>* set : {&set_beyond, &set_big}) {
+        CHECK((*set)[0] == ipc::MakeHeader(0x0402, 1, 2));
+        CHECK((*set)[1] == 0xD90103EC);
+    }
+    CHECK(country_after == std::vector<u8>{0, 0, 1, 78});  // the block is unchanged
+}
+
+TEST_CASE("cfg:u and cfg:s answer InvalidBufferDescriptor when the buffer argument is not a mapped buffer") {
+    Fixture f;
+    TempDir dir;
+    WriteAll(ConfigFilePath(dir).string(), UserConfigFile());
+    std::vector<u32> get, get_system, set;
+    std::vector<u8> country_after;
+    const int status = BootWith(f, dir, {"--ms", "100", "--region", "1"}, [&] {
+        Guest g(*f.runtime);
+        const Handle user = g.Service("cfg:u");
+        const Handle sys = g.Service("cfg:s");
+        REQUIRE(user != 0);
+        REQUIRE(sys != 0);
+        // the two translate words are 0 (an immediate-handle-less, not mapped-buffer, descriptor)
+        get = g.Request(user, {ipc::MakeHeader(0x0001, 2, 2), 4, 0x000B0000, 0, 0}, 2);
+        get_system = g.Request(sys, {ipc::MakeHeader(0x0401, 2, 2), 4, 0x000B0000, 0, 0}, 2);
+        set = g.Request(sys, {ipc::MakeHeader(0x0402, 2, 2), 0x000B0000, 4, 0, 0}, 2);
+        g.ReadBlock(user, 1, 0x000B0000, 4, &country_after);
+        ExitProcess(*f.runtime);
+    });
+    CHECK(status == 0);
+    CHECK(get[0] == ipc::MakeHeader(0x0001, 1, 0));
+    CHECK(get[1] == kResultInvalidBufferDescriptor);
+    CHECK(get_system[0] == ipc::MakeHeader(0x0401, 1, 0));
+    CHECK(get_system[1] == kResultInvalidBufferDescriptor);
+    CHECK(set[0] == ipc::MakeHeader(0x0402, 1, 0));
+    CHECK(set[1] == kResultInvalidBufferDescriptor);
+    CHECK(country_after == std::vector<u8>{0, 0, 1, 78});
+}
+
+TEST_CASE("cfg:u --region auto takes the region lockout of the game's icon.bin") {
+    // USA only: GetRegion 1, IsCoppacsSupported 1, and French (a USA language) stays
+    {
+        Fixture f;
+        TempDir dir;
+        const std::string game = dir.File("game");
+        WriteAll(game + "/icon.bin", SmdhWithLockout(0b10));
+        WriteAll(ConfigFilePath(dir).string(), UserConfigFile());
+        const std::vector<u8> before = ReadAll(ConfigFilePath(dir).string());
+        std::vector<u32> region, coppacs;
+        std::vector<u8> language;
+        const int status = BootWith(f, dir, {"--ms", "100", "--region", "auto"}, [&] {
+            UseGameFolder(*f.runtime, game);
+            Guest g(*f.runtime);
+            const Handle cfg = g.Service("cfg:u");
+            REQUIRE(cfg != 0);
+            region = g.Simple(cfg, 0x00020000, 3);
+            coppacs = g.Simple(cfg, 0x00040000, 3);
+            g.ReadBlock(cfg, 1, 0x000A0002, 1, &language);
+            ExitProcess(*f.runtime);
+        });
+        CHECK(status == 0);
+        CHECK(region[0] == 0x00020080);
+        CHECK(region[1] == kResultSuccess);
+        CHECK((region[2] & 0xFF) == 1);
+        CHECK(coppacs[1] == kResultSuccess);
+        CHECK(coppacs[2] == 1);
+        CHECK(language == std::vector<u8>{2});
+        CHECK(f.Logged("Preferred region code set to 1"));
+        CHECK_FALSE(f.Logged("does not fit the region"));
+        CHECK(ReadAll(ConfigFilePath(dir).string()) == before);
+    }
+    // JPN only: GetRegion 0, and French is not a Japan language, so the language becomes Japanese (0)
+    // in memory; the file is not written
+    {
+        Fixture f;
+        TempDir dir;
+        const std::string game = dir.File("game");
+        WriteAll(game + "/exefs/icon.bin", SmdhWithLockout(0b1));
+        WriteAll(ConfigFilePath(dir).string(), UserConfigFile());
+        const std::vector<u8> before = ReadAll(ConfigFilePath(dir).string());
+        std::vector<u32> region, coppacs;
+        std::vector<u8> language;
+        const int status = BootWith(f, dir, {"--ms", "100"}, [&] {
+            UseGameFolder(*f.runtime, game);
+            Guest g(*f.runtime);
+            const Handle cfg = g.Service("cfg:u");
+            REQUIRE(cfg != 0);
+            region = g.Simple(cfg, 0x00020000, 3);
+            coppacs = g.Simple(cfg, 0x00040000, 3);
+            g.ReadBlock(cfg, 1, 0x000A0002, 1, &language);
+            ExitProcess(*f.runtime);
+        });
+        CHECK(status == 0);
+        CHECK((region[2] & 0xFF) == 0);
+        CHECK(coppacs[2] == 0);
+        CHECK(language == std::vector<u8>{0});
+        CHECK(f.Logged("System language 2 does not fit the region. Adjusted to 0"));
+        CHECK(ReadAll(ConfigFilePath(dir).string()) == before);
+    }
+}
+
+TEST_CASE("cfg:u --region auto without an icon.bin warns once that GetRegion answers JPN") {
+    Fixture f;
+    TempDir dir;
+    const std::string game = dir.File("game");
+    fs::create_directories(game);
+    std::vector<u32> first, second;
+    const int status = BootWith(f, dir, {"--ms", "100"}, [&] {
+        UseGameFolder(*f.runtime, game);
+        Guest g(*f.runtime);
+        const Handle cfg = g.Service("cfg:u");
+        REQUIRE(cfg != 0);
+        first = g.Simple(cfg, 0x00020000, 3);
+        second = g.Simple(cfg, 0x00020000, 3);
+        ExitProcess(*f.runtime);
+    });
+    CHECK(status == 0);
+    CHECK((first[2] & 0xFF) == 0);
+    CHECK((second[2] & 0xFF) == 0);
+    const std::string warning = "give --region or provide icon.bin";
+    CHECK(std::count_if(f.logged.begin(), f.logged.end(), [&](const std::string& l) {
+              return l.find(warning) != std::string::npos;
+          }) == 1);
+    // with --region given there is nothing to warn about
+    Fixture g2;
+    TempDir dir2;
+    BootWith(g2, dir2, {"--ms", "100", "--region", "2"}, [&] {
+        UseGameFolder(*g2.runtime, game);
+        Guest g(*g2.runtime);
+        g.Simple(g.Service("cfg:u"), 0x00020000, 3);
+        ExitProcess(*g2.runtime);
+    });
+    CHECK_FALSE(g2.Logged(warning));
 }
 
 TEST_CASE("cfg:i FormatConfig puts the defaults back with a new console unique ID") {
