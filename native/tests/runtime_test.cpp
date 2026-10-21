@@ -329,7 +329,7 @@ TEST_CASE("Prepare with two phases and no program runs only those steps") {
     CHECK(f.runtime.Interfaces().gpu == nullptr);
     CHECK(f.Logged("no GPU named 'null'"));
     CHECK(f.runtime.Interfaces().input != nullptr);  // N1-16 registers `script`
-    CHECK(f.Logged("no audio sink named 'null'"));
+    CHECK(f.runtime.Interfaces().audio != nullptr);  // N1-18 registers the `null` sink
 }
 
 TEST_CASE("Prepare refuses a memory mode that does not exist and bad option values") {
