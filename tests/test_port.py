@@ -5,6 +5,7 @@ into a code library with tools/recomp/build.py. If a port build is available
 (MH4U_RUNNER=path/to/mh4u_runner; see port/README.md), the program also runs under Azahar's kernel with the recompiled code and
 with Azahar's JIT, and both must print the same thing.
 """
+import hashlib
 import os
 import re
 import shutil
@@ -19,8 +20,20 @@ sys.path.insert(0, os.path.join(ROOT, "tools"))
 sys.path.insert(0, os.path.join(ROOT, "port", "tests"))
 
 needed = ["clang", "ld.lld", "llvm-objcopy", "llvm-readelf"]
-pytestmark = pytest.mark.skipif(any(shutil.which(t) is None for t in needed),
-                                reason="clang/lld toolchain not installed")
+_TOOLCHAIN_MISSING = any(shutil.which(t) is None for t in needed)
+
+
+def source_only(test):
+    """Marks a test that reads this repository's sources and needs no toolchain (N0-29): the other
+    tests of this file are skipped, as before, when the clang/lld toolchain is not installed."""
+    test.source_only = True
+    return test
+
+
+@pytest.fixture(autouse=True)
+def _toolchain_installed(request):
+    if _TOOLCHAIN_MISSING and not getattr(request.function, "source_only", False):
+        pytest.skip("clang/lld toolchain not installed")
 
 
 def test_svc_test_program_recompiles(tmp_path):
@@ -697,10 +710,204 @@ def test_schedule_input_file(tmp_path):
     ["--input", "100:TOUCH:1"], ["--dump", "f600:zz:40"], ["--dump", "500:10:0"],
     ["--set", "f600:=1"], ["--set", "fps=120"], ["--freeze", "500:0"], ["--call-counts", "g5"],
     ["--shots-from", "-1"], ["--ms", "f"], ["--frames", "x"], ["--frames", "-3"],
+    ["--shot-every", "f0"], ["--shot-every", "f"], ["--shot-every", "x"], ["--shot-every", "-5"],
 ])
 def test_schedule_rejects_bad_times(args):
     r = _print_schedule(*args)
     assert r.returncode == 1 and r.stdout == "" and "bad --" in r.stderr, (r.stdout, r.stderr)
+
+
+@pytest.mark.skipif(not os.environ.get("MH4U_RUNNER"), reason="port not built (set MH4U_RUNNER)")
+def test_schedule_prints_frame_keyed_shots():
+    """--shot-every f<N> (N0-26): --print-schedule lists the interval in frames and the frame of the
+    first shot (--shots-from, or frame N without it). The millisecond form prints nothing new."""
+    r = _print_schedule("--shots-from", "f100", "--shot-every", "f60")
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.splitlines()[2:] == ["shots-from at=f100", "shot-every every=f60 first=f100"]
+    assert _print_schedule("--shot-every", "f60").stdout.splitlines()[2:] == ["shot-every every=f60 first=f60"]
+    assert _print_schedule("--shots-from", "1500", "--shot-every", "f60").stdout.splitlines()[2:] == [
+        "shots-from at=1500ms", "shot-every every=f60 first=1500ms"]
+    assert _print_schedule("--shots-from", "f100", "--shot-every", "500").stdout.splitlines()[2:] == [
+        "shots-from at=f100"]
+
+
+SHOT_HARNESS = r'''
+// Throwaway driver for port/src/schedule.cpp (standard library only): the screenshot schedule
+// without Azahar. usage: shots describe EVERY FROM | shots run EVERY FROM FRAMES_PER_STEP MS_PER_STEP STEPS
+// ("-" for an option that is not given). `run` takes a step of that many frames and milliseconds at a
+// time and prints the name stem of each screenshot that is due.
+#include <cstdio>
+#include <cstdlib>
+#include <string>
+#include "schedule.h"
+
+int main(int argc, char** argv) {
+    if (argc < 4) return 2;
+    Schedule::Plan plan;
+    std::string error;
+    const std::string every = argv[2], from = argv[3];
+    if (every != "-" && !Schedule::ParseShotEvery(every, plan, error)) {
+        std::printf("bad --shot-every (%s)\n", error.c_str());
+        return 1;
+    }
+    if (from != "-" && !Schedule::ParseShotsFrom(from, plan, error)) {
+        std::printf("bad --shots-from (%s)\n", error.c_str());
+        return 1;
+    }
+    if (std::string(argv[1]) == "describe") {
+        std::fputs(Schedule::Describe(plan).c_str(), stdout);
+        return 0;
+    }
+    if (argc != 7) return 2;
+    Schedule::ShotSchedule shots(plan);
+    const unsigned frames = std::atoi(argv[4]);
+    const double ms = std::atof(argv[5]);
+    const int steps = std::atoi(argv[6]);
+    unsigned frame = 0;
+    for (int i = 1; i <= steps; ++i) {
+        frame += frames;
+        std::string stem;
+        if (shots.Due(i * ms, frame, stem)) std::printf("%s\n", stem.c_str());
+    }
+    return 0;
+}
+'''
+
+
+@pytest.fixture(scope="module")
+def shot_harness(tmp_path_factory):
+    """port/src/schedule.cpp built with a throwaway driver, so the screenshot schedule is tested
+    without the runner (and shows that the file includes only the standard library)."""
+    cxx = shutil.which("clang++") or shutil.which("g++")
+    if not cxx:
+        pytest.skip("no C++ compiler")
+    out = tmp_path_factory.mktemp("shots")
+    (out / "shots.cpp").write_text(SHOT_HARNESS)
+    exe = out / ("shots.exe" if sys.platform == "win32" else "shots")
+    src = os.path.join(ROOT, "port", "src")
+    flags = ["-static"] if sys.platform == "win32" else []
+    r = subprocess.run([cxx, "-std=c++20", "-Wall", "-Wextra", "-Werror", f"-I{src}", str(out / "shots.cpp"),
+                        os.path.join(src, "schedule.cpp"), "-o", str(exe)] + flags,
+                       capture_output=True, text=True, timeout=600)
+    assert r.returncode == 0, r.stderr
+    return str(exe)
+
+
+def _shots(harness, every, start, frames=1, ms=16.7, steps=300):
+    r = subprocess.run([harness, "run", every, start, str(frames), str(ms), str(steps)], capture_output=True,
+                       text=True, timeout=60)
+    assert r.returncode == 0, r.stdout + r.stderr
+    return r.stdout.split()
+
+
+def test_frame_keyed_shots_follow_the_frame_counter(shot_harness):
+    """--shot-every f<N> (N0-26): a shot every N frames, the first at --shots-from f<M> (frame M), at
+    frame N without it, or at the first frame after --shots-from in ms; named f<frame>."""
+    assert _shots(shot_harness, "f60", "f100") == ["f0000100", "f0000160", "f0000220", "f0000280"]
+    assert _shots(shot_harness, "f60", "-") == ["f0000060", "f0000120", "f0000180", "f0000240", "f0000300"]
+    # 16.7 ms per frame: 1500 ms has come at frame 90
+    assert _shots(shot_harness, "f60", "1500") == ["f0000090", "f0000150", "f0000210", "f0000270"]
+    # a counter that skips frames (7 per step): no shot for a frame it skipped over, none twice
+    assert _shots(shot_harness, "f4", "f0", frames=7, steps=4) == ["f0000000", "f0000008", "f0000016", "f0000024"]
+    # the shot waits for its frame, whatever the time
+    assert _shots(shot_harness, "f100", "f50", ms=1000, steps=60) == ["f0000050"]
+
+
+def test_millisecond_shots_keep_their_names(shot_harness):
+    """The millisecond forms behave as before N0-26: names are the time in ms, 7 digits."""
+    assert _shots(shot_harness, "-", "-", steps=250) == ["0001000", "0002000", "0003000", "0004000"]
+    assert _shots(shot_harness, "500", "-", steps=100) == ["0000500", "0001000", "0001500"]
+    assert _shots(shot_harness, "500", "1500", steps=130) == ["0001500", "0002000"]
+    # --shots-from f<M> with a millisecond interval: the first shot is f<M>, the next ones follow in ms
+    assert _shots(shot_harness, "500", "f100", steps=200)[:3] == ["f0000100", "0002170", "0002670"]
+    assert _shots(shot_harness, "0.2", "-", steps=3) == ["0000001", "0000002", "0000003"]   # below 1 ms counts as 1
+
+
+@pytest.mark.parametrize("every", ["f0", "f", "x", "-5", "f1.5"])
+def test_shot_every_rejects_what_is_not_a_time(shot_harness, every):
+    r = subprocess.run([shot_harness, "describe", every, "-"], capture_output=True, text=True, timeout=60)
+    assert r.returncode == 1 and r.stdout.startswith("bad --shot-every"), (r.stdout, r.stderr)
+
+
+def test_shot_schedule_describes_frame_keyed_shots(shot_harness):
+    def describe(every, start):
+        return subprocess.run([shot_harness, "describe", every, start], capture_output=True, text=True,
+                              timeout=60).stdout.splitlines()
+    assert describe("f60", "f100") == ["# schedule v1", "stop ms=10000", "shots-from at=f100",
+                                       "shot-every every=f60 first=f100"]
+    assert describe("f60", "-")[2:] == ["shot-every every=f60 first=f60"]
+    assert describe("500", "f1200")[2:] == ["shots-from at=f1200"]
+
+
+FIXED_START_TICKS = 2000000000        # port/README.md, section Determinism (kFixedStartTicks in runner.cpp)
+FIXED_CONSOLE_MAC = bytes.fromhex("020000000001")
+
+
+def _shared_page_after(binary, elf, code, tmp_path, name, *extra):
+    """The 4 KiB shared page (0x1FF81000) at 1000 ms of a run of io_test in a fresh user folder."""
+    shots = tmp_path / f"shots_{name}"
+    r = subprocess.run([binary, elf, "--code", code, "--ms", "1500", "--user", str(tmp_path / f"user_{name}"),
+                        "--shots", str(shots), "--dump", "1000:1FF81000:0x1000", *extra],
+                       capture_output=True, text=True, timeout=600)
+    assert r.returncode == 0, (name, r.stdout[-2000:], r.stderr[-2000:])
+    page = (shots / "mem_0001000_1ff81000.bin").read_bytes()
+    assert len(page) == 0x1000
+    return page
+
+
+@pytest.mark.skipif(not os.environ.get("MH4U_RUNNER"), reason="port not built (set MH4U_RUNNER)")
+def test_shared_page_repeats_and_holds_the_fixed_values(tmp_path):
+    """N0-26: without --async-io, two runs with the same arguments (each in a fresh user folder) give a
+    byte-identical shared page: the Wi-Fi MAC address (offsets 0x60 to 0x65) is the fixed 02:00:00:00:00:01
+    and the clock starts at the fixed tick, which the date records carry (update ticks at 0x28 and 0x48).
+    With --async-io Azahar's own values stay (a random address from its list, in the folder's mac.txt)."""
+    import build_svc_test
+    from recomp import build as rbuild
+    binary = os.environ["MH4U_RUNNER"]
+    elf = build_svc_test.build(str(tmp_path), "io_test")
+    code = rbuild.build(str(tmp_path), 2, "O1", ["RC_PAGED"], "code.so", [rbuild.DLL_GLUE],
+                        extra_flags=["-fvisibility=hidden"])
+    first = _shared_page_after(binary, elf, code, tmp_path, "a")
+    second = _shared_page_after(binary, elf, code, tmp_path, "b")
+    assert hashlib.sha256(first).digest() == hashlib.sha256(second).digest()
+    assert first[0x60:0x66] == FIXED_CONSOLE_MAC
+    # the first update of the date (at the first slice of emulation) is in the record that was written last
+    update_ticks = [int.from_bytes(first[o:o + 8], "little") for o in (0x28, 0x48)]
+    assert FIXED_START_TICKS <= max(update_ticks) < FIXED_START_TICKS + (1 << 28), update_ticks
+    # the asynchronous mode is Azahar's: its address is not the fixed one
+    assert _shared_page_after(binary, elf, code, tmp_path, "c", "--async-io")[0x60:0x66] != FIXED_CONSOLE_MAC
+
+
+@pytest.mark.skipif(not os.environ.get("MH4U_RUNNER"), reason="port not built (set MH4U_RUNNER)")
+def test_timing_trace_lists_the_events_that_ran(tmp_path):
+    """--trace-timing FILE (N0-26): a header in the shared format, then a line per CoreTiming event run:
+    tick, event, core, cycles late, and where it was scheduled from. Each core's ticks never go back.
+    A file that can't be written is an error."""
+    import build_svc_test
+    from recomp import build as rbuild
+    binary = os.environ["MH4U_RUNNER"]
+    elf = build_svc_test.build(str(tmp_path), "io_test")
+    code = rbuild.build(str(tmp_path), 2, "O1", ["RC_PAGED"], "code.so", [rbuild.DLL_GLUE],
+                        extra_flags=["-fvisibility=hidden"])
+    trace = tmp_path / "timing.txt"
+    r = subprocess.run([binary, elf, "--code", code, "--ms", "500", "--user", str(tmp_path / "user"),
+                        "--trace-timing", str(trace)], capture_output=True, text=True, timeout=600)
+    assert r.returncode == 0, (r.stdout[-2000:], r.stderr[-2000:])
+    lines = trace.read_text().splitlines()
+    assert re.fullmatch(r"# timingtrace v1 \d{4}-\d\d-\d\d game=0x[0-9a-f]{16} cpu=recomp new3ds=off", lines[0]), lines[0]
+    events = [re.fullmatch(r"tick=(-?\d+) event=(\S+) core=(\d+) late=(\d+) from=(emu|host)", ln) for ln in lines[1:]]
+    assert events and all(events), [ln for ln, m in zip(lines[1:], events) if not m][:3]
+    names = {m.group(2) for m in events}
+    assert "SharedPage::UpdateTimeCallback" in names, sorted(names)
+    last = {}
+    for m in events:
+        core, tick = m.group(3), int(m.group(1))
+        assert tick >= last.get(core, tick), (core, tick, last.get(core))
+        last[core] = tick
+    assert max(last.values()) > 400 * 268111           # ~500 ms of emulated time
+    bad = subprocess.run([binary, elf, "--code", code, "--ms", "100", "--trace-timing",
+                          str(tmp_path / "missing" / "t.txt")], capture_output=True, text=True, timeout=600)
+    assert bad.returncode == 1 and "cannot write" in bad.stderr
 
 
 @pytest.mark.skipif(not os.environ.get("MH4U_RUNNER"), reason="port not built (set MH4U_RUNNER)")
@@ -745,3 +952,213 @@ def test_ipc_trace_is_written_parsed_and_compared(tmp_path):
     r = subprocess.run([binary, elf, "--code", code, "--cpu", "jit", "--ms", "1000", "--trace-ipc-full"],
                        capture_output=True, text=True, timeout=600)
     assert r.returncode == 1
+
+
+# ── N0-29: what the sources alone show (no emulator, no game data) ─────────────────────
+
+PATCH = os.path.join(ROOT, "port", "azahar", "azahar.patch")
+
+
+def _text(*parts):
+    with open(os.path.join(ROOT, *parts), encoding="utf-8", newline="") as f:
+        return f.read()
+
+
+def _patch_section(path):
+    """The part of azahar.patch that changes `path`, from its 'diff --git' line to the next file's."""
+    patch = _text("port", "azahar", "azahar.patch")
+    start = patch.index(f"diff --git a/{path} b/{path}\n")
+    end = patch.find("\ndiff --git ", start + 1)
+    return patch[start:] if end < 0 else patch[start:end + 1]
+
+
+def _console_id_in_azahars_shape(random_number, console_id):
+    """What SetFixedConsoleUniqueId accepts (patch, cfg.cpp): GenerateConsoleUniqueId's shape."""
+    return (random_number <= 0xFFFF and (console_id >> 48) == random_number
+            and (console_id & 0x0000FFFC00000000) == 0)
+
+
+@source_only
+def test_patch_applies_to_the_pinned_azahar_sources():
+    """port/azahar/azahar.patch applies, as the workflows apply it (git apply), to Azahar at the commit in
+    port/azahar/COMMIT. Needs git and those sources (AZAHAR_SRC, default ~/azahar), unmodified."""
+    git = shutil.which("git")
+    src = os.environ.get("AZAHAR_SRC") or os.path.expanduser("~/azahar")
+    if not git or not os.path.isdir(os.path.join(src, "src")):
+        pytest.skip("git or the pinned Azahar sources (AZAHAR_SRC, default ~/azahar) are not available")
+
+    def run(*args):
+        return subprocess.run([git, "-C", src, *args], capture_output=True, text=True, timeout=300)
+    head = run("rev-parse", "HEAD")
+    if head.returncode != 0 or head.stdout.strip() != _text("port", "azahar", "COMMIT").strip():
+        pytest.skip("the Azahar sources are not at the commit of port/azahar/COMMIT")
+    if run("status", "--porcelain", "--untracked-files=no").stdout.strip():
+        pytest.skip("the Azahar sources are modified (already patched?)")
+    r = run("apply", "--check", PATCH)
+    assert r.returncode == 0, r.stderr[-2000:]
+
+
+@source_only
+def test_patch_keeps_the_earlier_work_packages_hunks():
+    """N0-29 adds to the patch; the MAC address switch (N0-26) and the timing observer stay."""
+    cfg = _patch_section("src/core/hle/service/cfg/cfg.cpp")
+    assert "+bool SetFixedConsoleMac(const std::string& mac) {" in cfg
+    assert "+static std::string fixed_console_mac;" in cfg
+    assert "bool SetFixedConsoleMac(const std::string& mac);" in _patch_section("src/core/hle/service/cfg/cfg.h")
+    timing = _patch_section("src/core/core_timing.cpp")
+    assert "+void SetTimingObserver(" in timing and "evt.from_host" in timing
+
+
+@source_only
+def test_patch_adds_the_fixed_console_unique_id_switch():
+    """SetFixedConsoleUniqueId (cfg.cpp, cfg.h): refuses a pair that GenerateConsoleUniqueId could not have
+    made, and GenerateConsoleUniqueId, which a config savegame that is made calls, returns it when it is set."""
+    cpp = _patch_section("src/core/hle/service/cfg/cfg.cpp")
+    assert "+bool SetFixedConsoleUniqueId(u32 random_number, u64 console_id) {" in cpp
+    assert "+    if (random_number > 0xFFFF || (console_id >> 48) != random_number ||" in cpp
+    assert "+        (console_id & 0x0000FFFC00000000ULL) != 0) {" in cpp
+    assert "+        return false;" in cpp
+    assert "ClearFixedConsoleUniqueId" not in cpp      # nothing would call it
+    # the switch is checked before anything is drawn from the host's random source
+    assert "+    if (fixed_console_unique_id_set) {" in cpp
+    assert cpp.index("+    if (fixed_console_unique_id_set) {") < cpp.index("CryptoPP::AutoSeededRandomPool rng;")
+    h = _patch_section("src/core/hle/service/cfg/cfg.h")
+    assert "+bool SetFixedConsoleUniqueId(u32 random_number, u64 console_id);" in h
+    assert "ClearFixedConsoleUniqueId" not in h
+
+
+@source_only
+def test_the_fixed_console_unique_id_is_in_azahars_shape_and_documented():
+    """The runner's constants pass the patch's check (mirrored here), the check refuses what it should, and
+    the README table has the ID and the GetTransferableId replies that follow from it."""
+    import hashlib
+    import struct
+    runner = _text("port", "src", "runner.cpp")
+    number = int(re.search(r"constexpr u32 kFixedConsoleRandomNumber = (0x[0-9A-Fa-f]+);", runner).group(1), 16)
+    ident = int(re.search(r"constexpr u64 kFixedConsoleId = (0x[0-9A-Fa-f]+)ULL;", runner).group(1), 16)
+    assert _console_id_in_azahars_shape(number, ident)
+    assert ident & 0x3FFFFFFFF == 0x1A2B3C4D5 and ident >> 48 == number
+    assert not _console_id_in_azahars_shape(number, ident ^ (1 << 48))       # another top 16 bits
+    assert not _console_id_in_azahars_shape(number, ident | (1 << 34))       # a bit of 34 to 47
+    assert not _console_id_in_azahars_shape(number, ident | (1 << 47))
+    assert not _console_id_in_azahars_shape(0x10000, ident)                  # more than 16 bits
+    readme = _text("port", "README.md")
+    assert f"**0x{ident:016X}**" in readme and f"**0x{number:04X}**" in readme
+    # cfg:u GetTransferableId: the last 8 bytes of SHA-256(ID as 8 bytes LE, salt & 0xFFFFF as 4 bytes LE)
+    for salt, words in ((0, (0x61B8087C, 0xB904EFF1)), (0x1263, (0x9592177D, 0xFE13E102))):
+        digest = hashlib.sha256(struct.pack("<QI", ident, salt & 0xFFFFF)).digest()
+        assert struct.unpack("<II", digest[24:32]) == words, hex(salt)
+        assert f"words 0x{words[0]:08X}, 0x{words[1]:08X}" in readme
+    assert ident.to_bytes(8, "little").hex(" ").upper() == "D5 C4 B3 A2 01 00 48 4D"
+
+
+@source_only
+def test_the_runner_sets_the_n0_29_values_in_its_default_mode():
+    """runner.cpp: the zeroed IPC replies and the time zone with the other default-mode settings (no
+    --async-io), the console unique ID under the MAC address's condition (no room, no --new-console-id),
+    all before the system loads."""
+    runner = _text("port", "src", "runner.cpp")
+    load = runner.index("system.Load(window, path)")
+    block = runner[runner.index("    if (!async_io) {\n        // the game seeds"):]
+    block = block[:block.index("    // the console's Wi-Fi MAC address")]
+    assert "Kernel::SetZeroedIpcReplies(true);" in block
+    assert '_putenv_s("TZ", "UTC0");' in block and 'setenv("TZ", "UTC0", 1);' in block
+    assert runner.index("Kernel::SetZeroedIpcReplies(true);") < load
+    assert '#include "core/hle/kernel/hle_ipc.h"' in runner
+    mac = "const bool fix_console_mac = !async_io && !new_console_id && !room_host && room_join.empty();"
+    assert mac in runner
+    assert "const bool fix_console_id = fix_console_mac;" in runner
+    call = "Service::CFG::SetFixedConsoleUniqueId(kFixedConsoleRandomNumber, kFixedConsoleId)"
+    assert f"if (fix_console_id &&\n        !{call}) {{" in runner
+    assert runner.index(mac) < runner.index(call) < load
+    # --new-console-id keeps drawing its own: NewConsoleId asks Azahar, which is not told to fix it
+    assert "cfg->GenerateConsoleUniqueId();" in runner and runner.count("SetFixedConsoleUniqueId(") == 1
+
+
+@source_only
+def test_patch_zeroes_the_command_buffer_behind_a_switch():
+    """hle_ipc.cpp, hle_ipc.h: Kernel::SetZeroedIpcReplies; without it the constructor is Azahar's."""
+    h = _patch_section("src/core/hle/kernel/hle_ipc.h")
+    assert "+void SetZeroedIpcReplies(bool enable);" in h
+    cpp = _patch_section("src/core/hle/kernel/hle_ipc.cpp")
+    assert "+#include <atomic>" in cpp
+    assert "+static std::atomic<bool> zeroed_ipc_replies{false};" in cpp
+    assert "+void SetZeroedIpcReplies(bool enable) {" in cpp
+    assert "+    if (zeroed_ipc_replies.load(std::memory_order_relaxed)) {" in cpp
+    assert "+        cmd_buf.fill(0);" in cpp
+    assert "+    } else {\n+        cmd_buf[0] = 0;\n+    }" in cpp
+    assert "-    cmd_buf[0] = 0;" in cpp
+
+
+@source_only
+@pytest.mark.parametrize("path", ["src/core/file_sys/archive_extsavedata.cpp",
+                                  "src/core/file_sys/archive_source_sd_savedata.cpp"])
+def test_patch_writes_zero_padding_in_the_format_metadata(path):
+    """Both writers of the 16-byte ArchiveFormatInfo write the 13 bytes of its fields and zeros after them
+    when deterministic_async_operations is set, and the whole struct as before when it is not."""
+    section = _patch_section(path)
+    assert '+#include "common/settings.h"' in section and "+#include <cstring>" in section
+    flat = " ".join(line[1:].strip() for line in section.splitlines() if line.startswith("+"))
+    assert "if (Settings::values.deterministic_async_operations) {" in flat
+    assert "std::array<u8, sizeof(format_info)> metadata{};" in flat
+    assert ("std::memcpy(metadata.data(), &format_info, sizeof(format_info.total_size) + "
+            "sizeof(format_info.number_directories) + sizeof(format_info.number_files) + "
+            "sizeof(format_info.duplicate_data));") in flat
+    assert "file.WriteBytes(metadata.data(), metadata.size()); } else { " \
+           "file.WriteBytes(&format_info, sizeof(format_info)); }" in flat       # Azahar's branch kept
+
+
+@source_only
+def test_patch_sets_duplicate_data_of_the_obsoleted_create_ext_save_data():
+    """fs_user.cpp: ObsoletedCreateExtSaveData never set duplicate_data, which GetFormatInfo hands to the
+    game; with deterministic_async_operations the patch (a second section for the file, after the
+    asynchronous-read one of an earlier package) sets it to false."""
+    patch = _text("port", "azahar", "azahar.patch")
+    header = "diff --git a/src/core/hle/service/fs/fs_user.cpp b/src/core/hle/service/fs/fs_user.cpp\n"
+    assert patch.count(header) == 2
+    start = patch.rindex(header)
+    end = patch.find("\ndiff --git ", start + 1)
+    section = patch[start:end + 1]
+    assert "ObsoletedCreateExtSaveData" in section.splitlines()[4]               # the hunk's context line
+    flat = " ".join(line[1:].strip() for line in section.splitlines() if line.startswith("+")
+                    and not line.startswith("+++"))
+    assert ("if (Settings::values.deterministic_async_operations) { // the other callers set this field, "
+            "this one left it as whatever the stack held, and // GetFormatInfo hands it to the game "
+            "format_info.duplicate_data = false; }") in flat
+    assert not any(line.startswith("-") for line in section.splitlines()[5:])      # nothing of Azahar's removed
+
+
+@source_only
+def test_patch_writes_zero_padding_in_mcu_dat():
+    """cfg.cpp SaveMCUConfig: the 20 bytes of MCUData and zeros for its 4 tail padding bytes when
+    deterministic_async_operations is set, the whole struct as before when it is not."""
+    cpp = _patch_section("src/core/hle/service/cfg/cfg.cpp")
+    flat = " ".join(line[1:].strip() for line in cpp.splitlines() if line.startswith("+"))
+    assert "if (Settings::values.deterministic_async_operations) {" in flat
+    assert "std::array<u8, sizeof(MCUData)> raw{};" in flat
+    assert "std::copy_n(reinterpret_cast<const u8*>(&mcu_data.header), sizeof(MCUData::Header), raw.begin());" in flat
+    assert ("std::copy_n(reinterpret_cast<const u8*>(&mcu_data.clock_sequence), "
+            "sizeof(mcu_data.clock_sequence), raw.begin() + sizeof(MCUData::Header));") in flat
+    assert "mcu_data_file.WriteBytes(raw.data(), raw.size()); } else { " \
+           "mcu_data_file.WriteBytes(&mcu_data, sizeof(MCUData)); }" in flat       # Azahar's branch kept
+
+
+@source_only
+def test_readme_documents_the_sources_n0_29_found():
+    readme = _text("port", "README.md")
+    determinism = readme[readme.index("## Determinism"):readme.index("## With Azahar's normal interface")]
+    assert "### Sources found by N0-29, iteration 0" in determinism
+    for term in ("SetFixedConsoleUniqueId", "kFixedConsoleId", "SetZeroedIpcReplies", "ArchiveFormatInfo",
+                 "TZ", "UTC0", "GetTransferableId", "APT:A", "y2r:u", "cfg:u", "--perf-log",
+                 "mh4u_runner_log.txt", "mcu.dat", "MH4U_*"):
+        assert term in determinism, term
+    # N0-26's measurement is kept as it was written
+    assert "### Measurement with the game (N0-26)" in determinism
+    assert "Where N0-29 starts: the three IPC reply words." in determinism
+    # the README no longer tells the reader to set TZ by hand, and says what each mode keeps
+    assert "run with `TZ=UTC0`" not in readme
+    intro = determinism.split("### What the game sees")[0]
+    assert "What each mode keeps of Azahar's behaviour:" in intro and "`--async-io` keeps all of it" in intro
+    assert "log/" in intro
+    assert "ObsoletedCreateExtSaveData` (command 0x0830)" in determinism and "`GetFormatInfo`" in determinism
+    assert "bytes 2 and 3 after a `u16`" in determinism and "G6 has none" in determinism

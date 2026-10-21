@@ -10,3 +10,9 @@
 95aa5a5b6658c8e1c5c2ea81ce20f2b8b12b311ad39d7a4f49413ed045e647a8 port/app/icon/mh4u.icns
 973f6cc396e6ed1874eaabaf0c45d0285a96ee55b699d729c9692b3bc42aa190 port/app/icon/mh4u.ico
 ad5592a76c787ef52de9bcdf7cedf4012b410b94bd710373a9982ac2f4888b8c port/app/icon/mh4u.png
+# Open-source replacement system archives of Azahar's externals (N1-12; licences in
+# native/third_party/open_source_archives/PROVENANCE.md): the byte arrays of its four headers as binaries.
+12be8852e0cc399d6d2018f1d8b705954edc230f01e7b68a270c5b9bda50eec6 native/third_party/open_source_archives/data/bad_word_list.dat
+4a4f770d617d93bffa1d6437d1caae0626b31b9f01c15d43aa3ed9bbb566b20b native/third_party/open_source_archives/data/country_list.dat
+3627a36b166b145afa8ed07576b3c47554aa7fbcd6e4a79ea8b735360fa397de native/third_party/open_source_archives/data/mii.dat
+5c1ffba10c60a5ec11a3e566fc3a4c4ff356403ea9c2802e5a502ffa66405111 native/third_party/open_source_archives/data/shared_font.dat

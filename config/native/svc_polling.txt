@@ -1,0 +1,7 @@
+# The system calls tools/compare_svc_traces.py --collapse-polling treats as polling (D30's fallback for a
+# comparison of two runs of one backend, N0-25): a call whose result depends only on the clock and that
+# changes nothing. A run of consecutive calls of one of them, in one thread, is compared as one record,
+# whatever its length. Format: `<svc hex>  # reason`.
+# Never add a call to make a comparison pass: a call that waits, sleeps, signals or writes does not belong
+# here, and a SleepThread that follows a polling run is compared like any other call.
+0x28  # GetSystemTick: the result is the clock's tick count; no side effect

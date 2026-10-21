@@ -45,9 +45,20 @@ for that.
 | `--missing-entries FILE` | append the entry of each function the fallback interpreter had to run, in the format of `config/extra_entries.txt` (default `build/missing_entries.txt`; `""` for none), deduplicated against the file (N1-28) |
 | `--trace-ipc FILE` | every IPC request with its reply, in the format of `tools/native/tracefmt.py` and `tools/compare_ipc_traces.py` (N0-21): session names (`srv:`, `<service>/<kind>#k`), `t=` in game ticks (N1-10) |
 | `--trace-ipc-full` | with `--trace-ipc`: also the bytes of the input buffers as `data=<index>:<hex>`; alone it is refused with exit status 2 |
+| `--input SCRIPT` | scripted input (N1-16): comma-separated presses `WHEN:BUTTON[:HOLD]`, `WHEN:TOUCH:x:y[:HOLD]`, `WHEN:CIRCLE:x:y[:HOLD]`, e.g. `3000:A,5000:TOUCH:160:120`; `WHEN` and `HOLD` are ms of game time or `fN` frames; repeatable. The grammar is the reference runner's (`--print-schedule`). `--input` values are parsed before `--input-file` values, so overlapping presses of the same kind from the two options can order differently from the reference runner's argv order |
+| `--input-file PATH` | the same presses, one per line; `#` starts a comment (repeatable) |
+| `--capture-hid FILE` | the HID shared memory (and ir:USER's, once the game sets it up) on every game frame, in the MHID format of `tools/native/capfmt.py` (N1-16); compare with `capfmt.py diff-hid` |
+| `--capture-dsp START:FRAMES:FILE` | from the first DSP audio frame at or after game frame `START` (`fN` allowed), record `FRAMES` audio frames to `FILE`, MDSP type-1 records only (N1-18); compare with `capfmt.py diff-dsp`. A bad argument or an unwritable file ends the run with status 2 |
+| `--io-latency azahar\|none` | when file replies arrive (N1-12, D26): no earlier than Azahar's modelled delay on the game clock (`azahar`, the default), or as soon as the data is read (`none`). Also an option of `mh4n_ipc_replay` |
+| `--new-console-id` | give the console a new random unique ID before the game starts, saved in the user folder's config (N1-15). Without a config file the ID is 0 and nothing is written (Azahar makes a random one: open question in the batch PR) |
+| `--region REGION` | the console's region (N1-15): `auto` (the game's region lockout from `icon.bin` in the game folder, the default; `prepare_game.py` does not write one yet, so GetRegion answers JPN and logs a warning once) or `0` JPN, `1` USA, `2` EUR, `3` AUS, `4` CHN, `5` KOR, `6` TWN. Also an option of `mh4n_ipc_replay`; every cfg replay passes it |
+| `--swkbd-text TEXT` | the text the software keyboard answers with (N1-14), repeatable: the Nth keyboard the game opens gets the Nth; without one it answers with the user name of the cfg service. Also an option of `mh4n_ipc_replay` |
+| `--set MS\|fN:KEY=VALUE` | at that game time (ms) or game frame (`fN`), change one of the hooks' options that can change while the game runs, e.g. `0:fps=120` or `f600:fps=60` (N1-20); repeatable. A key that cannot change while the game runs ends the run with status 2 (the reference stops with status 1) |
+| `--options FILE` | the host's own settings in the layout of `mh4u-app.ini` (`[Section]` lines, `key = value` lines) (N1-20). All keys are stored for the renderer (N2b); only `aspect_ratio` answers Get/SetOption. A bad line or value ends Boot with status 2 |
 
-A device name nothing has registered yet leaves that interface empty, with an Info line; the null
-GPU, the script input source and the audio sinks come with N1-17, N1-19 and N2b.
+A device name nothing has registered leaves that interface empty, with an Info line. Registered
+today: the `null` GPU (N1-17), the `script` input source (N1-16) and the `null` audio sink (N1-18);
+the capture player's GPUs come with N2 and the real audio sinks with N3.
 
 ## Output and exit status
 
@@ -95,7 +106,7 @@ MH4N_REGISTER(BootStep, "services.srv", BootStep{Phase::Services, [](Runtime& rt
 | `devices` | the host interfaces. The runtime's own step (`runtime.devices`) makes the GPU, input source and audio sink named by `--gpu`, `--input-source` and `--audio` from the registries of `gpu::GpuFactory`, `InputSourceFactory` and `AudioSinkFactory` (`mh4n/host.h`) |
 | `services` | ports and services. N1-10's step `services.ipc` makes the `ServiceManager`, installs every registered `ServiceFactory` and sets `rt.Svc().SetConnectToPortHandler(...)` and `SetSendSyncRequestHandler(...)`; later services only register a factory |
 | `tracing` | traces and captures: the runtime's `--trace-svc` and `--state-trace`; N1-10's `tracing.ipc` (`--trace-ipc`, `--trace-ipc-full`) |
-| `started` | whatever needs the main thread (`rt.MainThread()`). N1-28's step `cpu.interp` installs the fallback interpreter as the missing-function handler, only when a code library is loaded |
+| `started` | whatever needs the main thread (`rt.MainThread()`). N1-28's step `cpu.interp` installs the fallback interpreter as the missing-function handler, only when a code library is loaded; N1-20's step `platform.hooks` installs the native `Platform` and then the hooks on the loaded library, and arms the `--set` changes |
 
 A step that cannot do its job (a trace file that cannot be written) logs it and calls
 `rt.RequestExit(2, reason)`: Boot returns that status before the program runs.

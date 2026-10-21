@@ -110,6 +110,8 @@ struct Plan {
     std::vector<Freeze> freezes;
     bool has_shots_from = false;
     When shots_from;
+    bool has_shot_every = false;
+    When shot_every;                 // --shot-every: ms (at least 1) or frames (at least 1)
     double stop_ms = 10000.0;        // --ms (without --ms but with --frames: no time limit)
     bool has_stop_ms = false;
     std::uint32_t stop_frame = 0;    // --frames; 0: none
@@ -135,6 +137,9 @@ bool ParseOptionChange(const std::string& arg, Plan& plan, std::string& error); 
 bool ParseFreeze(const std::string& arg, Plan& plan, std::string& error);   // WHEN:HOST_MS
 bool ParseCallCounts(const std::string& arg, Plan& plan, std::string& error); // WHEN
 bool ParseShotsFrom(const std::string& arg, Plan& plan, std::string& error);  // WHEN
+/// --shot-every: a number of milliseconds (below 1 counts as 1), or f<N> with N at least 1
+/// (every N game frames).
+bool ParseShotEvery(const std::string& arg, Plan& plan, std::string& error);
 /// --ms: a number of milliseconds, or f<N> (the same as --frames N).
 bool ParseStop(const std::string& arg, Plan& plan, std::string& error);
 /// --frames N
@@ -142,7 +147,46 @@ bool ParseFrames(const std::string& arg, Plan& plan, std::string& error);
 
 /// The text --print-schedule prints: a header `# schedule v1`, then one line per scheduled
 /// item as `<kind> at=<when> ...`, in this order: stop, press, dump, replace, set, freeze,
-/// call-counts, shots-from.
+/// call-counts, shots-from, and, when --shot-every is a number of frames,
+/// `shot-every every=f<N> first=<when>` (first: the --shots-from time, or f<N> without one).
 std::string Describe(const Plan& plan);
+
+/// When the screenshots are taken (--shots-from, --shot-every). The runner asks it after every
+/// slice of emulation.
+///
+/// Milliseconds (the default, every 1000 ms): the first shot is at --shots-from (default: one
+/// interval in) and the next ones follow every interval of emulated time, from the moment the
+/// last was taken when --shots-from is a frame. A shot's name stem is its time in ms, 7 digits
+/// (`0001500`), or `f<frame>`, 7 digits (`f0000600`), for the first shot of a --shots-from f<N>.
+///
+/// Frames (--shot-every f<N>): a shot every N game frames, the first at --shots-from f<M> (frame
+/// M), at the first moment --shots-from in ms has come (the frame then), or at frame N without
+/// --shots-from. A shot is taken at the first moment the frame counter reads its frame or more
+/// and is named after that frame (`f0000160`); a frame the counter skipped over has no shot.
+class ShotSchedule {
+public:
+    explicit ShotSchedule(const Plan& plan);
+
+    /// Whether a screenshot is due at this time and frame; if so, its name stem is in `stem` and
+    /// the schedule has moved on to the next one.
+    bool Due(double now_ms, std::uint32_t now_frame, std::string& stem);
+
+    /// Whether the renderer has to draw now: always with frame-keyed shots and while the first
+    /// shot is waiting for a frame; with millisecond shots from `draw_window_ms` before the next.
+    bool DrawingNeeded(double now_ms, double draw_window_ms) const;
+
+private:
+    bool frame_interval_ = false;
+    double every_ms_ = 1000.0;
+    std::uint32_t every_frames_ = 1;
+    // millisecond interval
+    bool first_by_frame_ = false;    // the first shot waits for a frame (--shots-from f<M>)
+    std::uint32_t first_frame_ = 0;
+    double next_ms_ = 0.0;
+    // frame interval
+    bool first_by_ms_ = false;       // the first shot waits for a time (--shots-from <ms>)
+    double first_ms_ = 0.0;
+    std::uint64_t next_frame_ = 0;
+};
 
 } // namespace Schedule

@@ -77,6 +77,7 @@
 0x005b825c sPad::update
 
 # Camera, projection, render targets and 2D layout (docs/research/widescreen.md)
+0x01057298 g_sAreaInstance                # sMhArea*: area count at +0x3818, eight cArea* slots at +0x3820 (the topmost is slot count-1; its vtable names the scene: D32, N0-27)
 0x0105729c g_sCameraInstance              # sMhCamera*: 8 viewports at +0x18 (0x1a8 each), +0x16 mDisplay 0 top / 1 bottom
 0x010572a4 g_sEffectInstance
 0x010572ac g_sGUIInstance

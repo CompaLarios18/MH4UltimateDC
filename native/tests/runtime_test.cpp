@@ -325,11 +325,10 @@ TEST_CASE("Prepare with two phases and no program runs only those steps") {
     CHECK(f.runtime.MainThread() == nullptr);
     CHECK(f.runtime.GetCodeHost().Library() == nullptr);
     CHECK(f.runtime.GetKernel().Regions().MemoryMode() == kPrepareMemoryMode);
-    // the runtime's own devices step ran: nothing is registered under the default names
-    CHECK(f.runtime.Interfaces().gpu == nullptr);
-    CHECK(f.Logged("no GPU named 'null'"));
-    CHECK(f.Logged("no input source named 'script'"));
-    CHECK(f.Logged("no audio sink named 'null'"));
+    // the runtime's own devices step ran: the default devices exist, each registered by its own module
+    CHECK(f.runtime.Interfaces().gpu != nullptr);    // N1-17 registers the `null` GPU
+    CHECK(f.runtime.Interfaces().input != nullptr);  // N1-16 registers `script`
+    CHECK(f.runtime.Interfaces().audio != nullptr);  // N1-18 registers the `null` sink
 }
 
 TEST_CASE("Prepare refuses a memory mode that does not exist and bad option values") {
@@ -364,7 +363,8 @@ TEST_CASE("the devices step makes the GPU, the input source and the audio sink t
 
 TEST_CASE("a device name nothing has registered leaves that interface empty, the others stay") {
     Fixture f;
-    REQUIRE(f.runtime.Prepare(Parse({"--gpu", "nope", "--audio", "test-audio"}), {Phase::Devices}));
+    REQUIRE(f.runtime.Prepare(Parse({"--gpu", "nope", "--input-source", "nope", "--audio", "test-audio"}),
+                              {Phase::Devices}));
     CHECK(f.runtime.Interfaces().gpu == nullptr);
     CHECK(f.runtime.Interfaces().input == nullptr);
     CHECK(f.runtime.Interfaces().audio != nullptr);

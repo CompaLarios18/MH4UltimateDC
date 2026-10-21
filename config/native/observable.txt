@@ -6,7 +6,12 @@
 #   <size>  1, 2 or 4 (bytes, little-endian)
 #   eq      compared by state_diff.py;  ignore  recorded, never compared
 # Addresses come from docs/research/system-services.md. The orchestrator owns this list.
-[[0x0104dea0]+0x30]  1 scene               eq
+# scene: the class of the topmost game area (D32, N0-27, docs/research/scene-observable.md). The
+#   sArea instance is at 0x01057298, its area count at +0x3818 and its area table at +0x3820; the
+#   chain reads table[count-1] (the count four times is the byte offset) and then the u32 at +0 of
+#   that cArea object, its vtable, which names its class.
+[[[0x01057298]+0x381c+[[0x01057298]+0x3818]+[[0x01057298]+0x3818]+[[0x01057298]+0x3818]+[[0x01057298]+0x3818]]]  4 scene               eq
+[[0x0104dea0]+0x30]  1 applet_state        eq
 0x010571d4           4 frame_counter       eq
 [[0x01057194]+0x5c]  4 smain_delta         ignore
 [[0x00edbe90]+0x9788+0x8c] 2 quest_id      eq

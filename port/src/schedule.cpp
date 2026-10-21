@@ -361,6 +361,19 @@ bool ParseShotsFrom(const std::string& arg, Plan& plan, std::string& error) {
     return true;
 }
 
+bool ParseShotEvery(const std::string& arg, Plan& plan, std::string& error) {
+    When w;
+    if (!When::Parse(arg, w) || (w.by_frame && w.frame == 0)) {
+        return Fail(error, "want a number of milliseconds, or f<N> with N at least 1");
+    }
+    if (!w.by_frame && w.ms < 1.0) {
+        w.ms = 1.0;
+    }
+    plan.has_shot_every = true;
+    plan.shot_every = w;
+    return true;
+}
+
 bool ParseStop(const std::string& arg, Plan& plan, std::string& error) {
     When w;
     if (!When::Parse(arg, w)) {
@@ -428,7 +441,90 @@ std::string Describe(const Plan& plan) {
     if (plan.has_shots_from) {
         out << "shots-from at=" << plan.shots_from.ToString() << "\n";
     }
+    if (plan.has_shot_every && plan.shot_every.by_frame) {
+        out << "shot-every every=" << plan.shot_every.ToString()
+            << " first=" << (plan.has_shots_from ? plan.shots_from.ToString() : plan.shot_every.ToString())
+            << "\n";
+    }
     return out.str();
+}
+
+namespace {
+
+std::string MsStem(double ms) {
+    char buffer[40];
+    std::snprintf(buffer, sizeof buffer, "%07.0f", ms);
+    return buffer;
+}
+
+std::string FrameStem(std::uint64_t frame) {
+    char buffer[40];
+    std::snprintf(buffer, sizeof buffer, "f%07llu", static_cast<unsigned long long>(frame));
+    return buffer;
+}
+
+} // namespace
+
+ShotSchedule::ShotSchedule(const Plan& plan) {
+    if (plan.has_shot_every && plan.shot_every.by_frame) {
+        frame_interval_ = true;
+        every_frames_ = plan.shot_every.frame ? plan.shot_every.frame : 1;
+        if (plan.has_shots_from && !plan.shots_from.by_frame) {
+            first_by_ms_ = true;
+            first_ms_ = plan.shots_from.ms;
+        } else {
+            next_frame_ = plan.has_shots_from ? plan.shots_from.frame : every_frames_;
+        }
+    } else {
+        every_ms_ = plan.has_shot_every ? plan.shot_every.ms : 1000.0;
+        if (plan.has_shots_from && plan.shots_from.by_frame) {
+            first_by_frame_ = true;
+            first_frame_ = plan.shots_from.frame;
+        }
+        next_ms_ = plan.has_shots_from && !plan.shots_from.by_frame ? plan.shots_from.ms : every_ms_;
+    }
+}
+
+bool ShotSchedule::Due(double now_ms, std::uint32_t now_frame, std::string& stem) {
+    if (frame_interval_) {
+        if (first_by_ms_) {
+            if (now_ms < first_ms_) {
+                return false;
+            }
+            first_by_ms_ = false;
+            stem = FrameStem(now_frame);
+            next_frame_ = static_cast<std::uint64_t>(now_frame) + every_frames_;
+            return true;
+        }
+        if (now_frame < next_frame_) {
+            return false;
+        }
+        stem = FrameStem(next_frame_);
+        next_frame_ += every_frames_;
+        while (next_frame_ <= now_frame) { // the counter skipped over it: no shot for that frame
+            next_frame_ += every_frames_;
+        }
+        return true;
+    }
+    if (first_by_frame_) {
+        if (now_frame < first_frame_) {
+            return false;
+        }
+        first_by_frame_ = false;
+        stem = FrameStem(first_frame_);
+        next_ms_ = std::floor(now_ms) + every_ms_;
+        return true;
+    }
+    if (now_ms < next_ms_) {
+        return false;
+    }
+    stem = MsStem(next_ms_);
+    next_ms_ += every_ms_;
+    return true;
+}
+
+bool ShotSchedule::DrawingNeeded(double now_ms, double draw_window_ms) const {
+    return frame_interval_ || first_by_frame_ || now_ms >= next_ms_ - draw_window_ms;
 }
 
 } // namespace Schedule
