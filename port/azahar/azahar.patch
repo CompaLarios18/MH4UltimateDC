@@ -2265,6 +2265,22 @@ index 173868f..582bba2 100644
              return ResultSuccess;
          }
          return ResultSuccess;
+diff --git a/src/core/hle/service/fs/fs_user.cpp b/src/core/hle/service/fs/fs_user.cpp
+index 9643823..9de709a 100644
+--- a/src/core/hle/service/fs/fs_user.cpp
++++ b/src/core/hle/service/fs/fs_user.cpp
+@@ -1285,6 +1285,11 @@ void FS_USER::ObsoletedCreateExtSaveData(Kernel::HLERequestContext& ctx) {
+     format_info.number_directories = directories;
+     format_info.number_files = files;
+     format_info.total_size = -1;
++    if (Settings::values.deterministic_async_operations) {
++        // the other callers set this field, this one left it as whatever the stack held, and
++        // GetFormatInfo hands it to the game
++        format_info.duplicate_data = false;
++    }
+ 
+     IPC::RequestBuilder rb = rp.MakeBuilder(1, 2);
+     ClientSlot* slot = GetSessionData(ctx.Session());
 diff --git a/src/core/hle/kernel/hle_ipc.cpp b/src/core/hle/kernel/hle_ipc.cpp
 index c72097e..e18df21 100644
 --- a/src/core/hle/kernel/hle_ipc.cpp

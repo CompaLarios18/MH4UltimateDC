@@ -1109,6 +1109,26 @@ def test_patch_writes_zero_padding_in_the_format_metadata(path):
 
 
 @source_only
+def test_patch_sets_duplicate_data_of_the_obsoleted_create_ext_save_data():
+    """fs_user.cpp: ObsoletedCreateExtSaveData never set duplicate_data, which GetFormatInfo hands to the
+    game; with deterministic_async_operations the patch (a second section for the file, after the
+    asynchronous-read one of an earlier package) sets it to false."""
+    patch = _text("port", "azahar", "azahar.patch")
+    header = "diff --git a/src/core/hle/service/fs/fs_user.cpp b/src/core/hle/service/fs/fs_user.cpp\n"
+    assert patch.count(header) == 2
+    start = patch.rindex(header)
+    end = patch.find("\ndiff --git ", start + 1)
+    section = patch[start:end + 1]
+    assert "ObsoletedCreateExtSaveData" in section.splitlines()[4]               # the hunk's context line
+    flat = " ".join(line[1:].strip() for line in section.splitlines() if line.startswith("+")
+                    and not line.startswith("+++"))
+    assert ("if (Settings::values.deterministic_async_operations) { // the other callers set this field, "
+            "this one left it as whatever the stack held, and // GetFormatInfo hands it to the game "
+            "format_info.duplicate_data = false; }") in flat
+    assert not any(line.startswith("-") for line in section.splitlines()[5:])      # nothing of Azahar's removed
+
+
+@source_only
 def test_patch_writes_zero_padding_in_mcu_dat():
     """cfg.cpp SaveMCUConfig: the 20 bytes of MCUData and zeros for its 4 tail padding bytes when
     deterministic_async_operations is set, the whole struct as before when it is not."""
@@ -1140,3 +1160,5 @@ def test_readme_documents_the_sources_n0_29_found():
     intro = determinism.split("### What the game sees")[0]
     assert "What each mode keeps of Azahar's behaviour:" in intro and "`--async-io` keeps all of it" in intro
     assert "log/" in intro
+    assert "ObsoletedCreateExtSaveData` (command 0x0830)" in determinism and "`GetFormatInfo`" in determinism
+    assert "bytes 2 and 3 after a `u16`" in determinism and "G6 has none" in determinism
