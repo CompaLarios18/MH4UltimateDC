@@ -1625,4 +1625,330 @@ TEST_CASE("soc:U: waiting calls wait in game time and end when their socket does
     CHECK(poll_elapsed <= NsToTicks(50000000) + NsToTicks(100000));  // exact to the timer queue's tick
 }
 
+
+// ---- http:C ---------------------------------------------------------------------------------------------------
+
+namespace {
+
+constexpr Result kHttpStateError = MakeResult(102, 40, 5, 27);          // 0xD8A0A066
+constexpr Result kHttpNotImplemented = MakeResult(1012, 40, 11, 27);    // 0xD960A3F4
+constexpr Result kHttpContextNotFound = MakeResult(100, 40, 5, 27);
+constexpr Result kHttpTimeout = MakeResult(105, 40, 1, 27);             // 0xD820A069
+constexpr Result kHttpHeaderNotFound = MakeResult(40, 40, 5, 27);       // 0xD8A0A028
+constexpr Result kHttpInvalidMethod = MakeResult(32, 40, 5, 27);
+constexpr Result kHttpTooManyContexts = MakeResult(26, 40, 5, 27);
+constexpr Result kHttpInvalidState = MakeResult(22, 40, 5, 27);
+constexpr Result kHttpIncompatibleAdd = MakeResult(50, 40, 5, 27);
+constexpr Result kHttpIncompatibleSend = MakeResult(54, 40, 5, 27);
+constexpr Result kHttpInvalidEncoding = MakeResult(53, 40, 5, 27);
+constexpr Result kHttpWrongCertId = MakeResult(57, 46, 7, 27);
+constexpr Result kHttpWrongCertHandle = MakeResult(201, 40, 5, 27);
+constexpr Result kHttpTooManyClientCerts = MakeResult(203, 40, 5, 27);
+
+struct HttpGuest {
+    Guest& g;
+    Handle h;
+    u32 data, aux, out;
+    HttpGuest(Guest& guest, Handle service)
+        : g(guest), h(service), data(guest.Scratch(0)), aux(guest.Scratch(0x200)), out(guest.Scratch(0x400)) {}
+    std::vector<u32> Call(const std::vector<u32>& words, std::size_t reply) { return g.Request(h, words, reply); }
+    Result Initialize() {
+        return Call({ipc::MakeHeader(1, 1, 4), 0x1000, ipc::CallingPidDesc(), 0, ipc::CopyHandleDesc(1), 0}, 2)[1];
+    }
+    // CreateContext: the reply (result, the context)
+    std::vector<u32> Create(const std::string& url, u32 method) {
+        std::vector<u8> text(url.begin(), url.end());
+        text.push_back(0);
+        g.PutBytes(data, text);
+        return Call(Cat({{ipc::MakeHeader(2, 2, 2), static_cast<u32>(text.size()), method},
+                         Mapped(static_cast<u32>(text.size()), ipc::R, data)}),
+                    5);
+    }
+    Result Simple(u32 command, std::vector<u32> params) {
+        std::vector<u32> words = {ipc::MakeHeader(static_cast<u16>(command), static_cast<u32>(params.size()), 0)};
+        words.insert(words.end(), params.begin(), params.end());
+        return Call(words, 2)[1];
+    }
+    Result Bind(u32 context) {
+        return Call({ipc::MakeHeader(8, 1, 2), context, ipc::CallingPidDesc(), 0}, 2)[1];
+    }
+};
+
+}  // namespace
+
+TEST_CASE("http:C: sessions and contexts follow Azahar's rules; a request fails at once") {
+    Fixture f;
+    TempDir dir;
+    std::vector<u32> not_init, ok, created, bad_zero, bad_nine, no_bound, state_before, state_after, status, status_timeout,
+        header, data_reply, receive, download, closed, close_missing, unknown, ssl_error, begin_again, state_on_other;
+    Result init_again = 0, bind_missing = 0, bind_twice = 0, bound_mismatch = 0, begin = 0, add_header = 0,
+           add_header_after = 0;
+    std::vector<u32> contexts;
+    Result too_many = 0;
+    std::vector<u8> data_bytes;
+    const int status_code = BootWith(f, dir, {"--ms", "100"}, [&] {
+        Guest g(*f.runtime);
+        const Handle srv = ConnectSrv(g);
+        HttpGuest unbound(g, OpenService(g, srv, "http:C"));
+        not_init = unbound.Create("http://x.test/", 1);
+        REQUIRE(unbound.Initialize() == kResultSuccess);
+        init_again = unbound.Initialize();
+        created = unbound.Create("http://x.test/a", 1);
+        bad_zero = unbound.Create("http://x.test/", 0);
+        bad_nine = unbound.Create("http://x.test/", 9);
+        for (int i = 0; i < 7; ++i) contexts.push_back(unbound.Create("http://x.test/", 1)[2]);
+        too_many = unbound.Create("http://x.test/", 1)[1];
+        // commands that need a bound context
+        no_bound = unbound.Call({ipc::MakeHeader(0xA, 1, 0), created[2]}, 2);
+        // a session bound to the context
+        HttpGuest bound(g, OpenService(g, srv, "http:C"));
+        bind_missing = bound.Bind(99);
+        REQUIRE(bound.Bind(created[2]) == kResultSuccess);
+        bind_twice = bound.Bind(created[2]);
+        bound_mismatch = bound.Call({ipc::MakeHeader(0xA, 1, 0), contexts[0]}, 2)[1];
+        state_before = bound.Call({ipc::MakeHeader(5, 1, 0), created[2]}, 3);
+        add_header = bound.Call(Cat({{ipc::MakeHeader(0x11, 3, 4), created[2], 6, 4, ipc::StaticBufferDesc(6, 0), bound.aux},
+                                     Mapped(4, ipc::R, bound.data)}),
+                                4)[1];
+        begin = bound.Call({ipc::MakeHeader(0xA, 1, 0), created[2]}, 2)[1];
+        begin_again = bound.Call({ipc::MakeHeader(0xA, 1, 0), created[2]}, 2);
+        state_after = bound.Call({ipc::MakeHeader(5, 1, 0), created[2]}, 3);
+        add_header_after = bound.Call(Cat({{ipc::MakeHeader(0x11, 3, 4), created[2], 6, 4, ipc::StaticBufferDesc(6, 0), bound.aux},
+                                           Mapped(4, ipc::R, bound.data)}),
+                                      4)[1];
+        // the response of a request that failed
+        status = bound.Call({ipc::MakeHeader(0x22, 1, 0), created[2]}, 3);
+        status_timeout = bound.Call({ipc::MakeHeader(0x23, 3, 0), created[2], 1000000, 0}, 3);
+        g.PutBytes(bound.aux, {'X', '-', 'A', 0});
+        g.PutBytes(bound.out, std::vector<u8>(0x40, 0xEE));
+        header = bound.Call(Cat({{ipc::MakeHeader(0x1E, 3, 4), created[2], 4, 0x40, ipc::StaticBufferDesc(4, 0), bound.aux},
+                                 Mapped(0x40, ipc::W, bound.out)}),
+                            6);
+        g.PutBytes(bound.out, std::vector<u8>(0x40, 0xEE));
+        data_reply = bound.Call(Cat({{ipc::MakeHeader(0x20, 2, 2), created[2], 0x40}, Mapped(0x40, ipc::W, bound.out)}), 3);
+        data_bytes = g.GetBytes(bound.out, 12);
+        receive = bound.Call(Cat({{ipc::MakeHeader(0xB, 2, 2), created[2], 0x40}, Mapped(0x40, ipc::W, bound.out)}), 2);
+        download = bound.Call({ipc::MakeHeader(6, 1, 0), created[2]}, 4);
+        ssl_error = bound.Call({ipc::MakeHeader(0x2A, 1, 0), created[2]}, 3);
+        // closing: a context that does not exist succeeds
+        closed = unbound.Call({ipc::MakeHeader(3, 1, 0), created[2]}, 2);
+        close_missing = unbound.Call({ipc::MakeHeader(3, 1, 0), 777}, 2);
+        state_on_other = unbound.Call({ipc::MakeHeader(5, 1, 0), created[2]}, 2);
+        unknown = unbound.Call({ipc::MakeHeader(0xC00, 0, 0)}, 2);
+        ExitProcess(*f.runtime);
+    });
+    CHECK(status_code == 0);
+    CHECK(not_init[0] == ipc::MakeHeader(2, 1, 0));
+    CHECK(not_init[1] == kHttpStateError);
+    CHECK(init_again == kHttpStateError);
+    CHECK(created[0] == ipc::MakeHeader(2, 2, 2));
+    CHECK(created[1] == kResultSuccess);
+    CHECK(created[2] == 1);
+    CHECK(created[3] == ipc::MappedBufferDesc(16, ipc::R));  // the URL and its NUL
+    CHECK(bad_zero[0] == ipc::MakeHeader(2, 1, 2));
+    CHECK(bad_zero[1] == kHttpInvalidMethod);
+    CHECK(bad_nine[1] == kHttpInvalidMethod);
+    REQUIRE(contexts.size() == 7);
+    CHECK(contexts[6] == 8);   // the eighth context of the session
+    CHECK(too_many == kHttpTooManyContexts);
+    CHECK(no_bound[1] == kHttpNotImplemented);
+    CHECK(bind_missing == kHttpContextNotFound);
+    CHECK(bind_twice == kHttpStateError);
+    CHECK(bound_mismatch == kHttpStateError);
+    CHECK(state_before[2] == 1);   // NotStarted
+    CHECK(add_header == kResultSuccess);
+    CHECK(begin == kResultSuccess);
+    CHECK(begin_again[1] == kResultSuccess);
+    CHECK(state_after[2] == 0xA);  // Completed: the request failed
+    CHECK(add_header_after == kHttpInvalidState);
+    CHECK(status[0] == ipc::MakeHeader(0x22, 2, 0));
+    CHECK(status[1] == kResultSuccess);
+    CHECK(status[2] == 0xFFFFFFFF);
+    CHECK(status_timeout[1] == kResultSuccess);
+    CHECK(status_timeout[2] == 0xFFFFFFFF);
+    CHECK(header[0] == ipc::MakeHeader(0x1E, 2, 2));
+    CHECK(header[1] == kHttpHeaderNotFound);
+    CHECK(header[2] == 0);
+    CHECK(data_reply == std::vector<u32>{ipc::MakeHeader(0x20, 2, 0), kResultSuccess, 8});
+    CHECK(std::string(data_bytes.begin(), data_bytes.begin() + 8) == " -1 \r\n\r\n");
+    CHECK(data_bytes[8] == 0xEE);
+    CHECK(receive == std::vector<u32>{ipc::MakeHeader(0xB, 1, 0), kResultSuccess});
+    CHECK(download == std::vector<u32>{ipc::MakeHeader(6, 3, 0), kResultSuccess, 0, 0});
+    CHECK(ssl_error == std::vector<u32>{ipc::MakeHeader(0x2A, 2, 0), kResultSuccess, 0});
+    CHECK(closed[1] == kResultSuccess);
+    CHECK(close_missing[1] == kResultSuccess);
+    CHECK(state_on_other[1] == kHttpContextNotFound);  // the context is gone (Azahar asserts)
+    CHECK(unknown[0] == ipc::MakeHeader(0xC00, 1, 0));
+    CHECK(f.Logged("unimplemented http:C"));
+}
+
+TEST_CASE("http:C: post data checks, the pending POST request and certificates") {
+    Fixture f;
+    TempDir dir;
+    std::vector<u32> post;
+    Result raw_after_ascii = 0, type_after_data = 0, encoding_bad = 0, encoding_ascii = 0, encoding_auto = 0,
+           notify_early = 0, begin = 0, notify = 0, add_ascii = 0, state_pending_result = 0, chunk_after_ascii = 0,
+           send_ascii_not_chunked = 0, set_chunk = 0, send_raw = 0, add_after_chunk = 0,
+           cert_id_bad = 0, cert_default = 0, begin_with_cert = 0, set_handle_bad = 0, close_cert = 0,
+           open_third = 0, set_after_close = 0, set_ssl = 0, keepalive = 0, finalize = 0;
+    u32 state_pending = 0, state_after_notify = 0, cert_a = 0, cert_b = 0, cert_c = 0;
+    const int status = BootWith(f, dir, {"--ms", "100"}, [&] {
+        Guest g(*f.runtime);
+        const Handle srv = ConnectSrv(g);
+        HttpGuest main(g, OpenService(g, srv, "http:C"));
+        REQUIRE(main.Initialize() == kResultSuccess);
+        const u32 post_ctx = main.Create("http://x.test/post", 2)[2];  // POST
+        const u32 other_ctx = main.Create("http://x.test/other", 2)[2];
+        HttpGuest s(g, OpenService(g, srv, "http:C"));
+        REQUIRE(s.Bind(post_ctx) == kResultSuccess);
+        g.PutBytes(s.aux, {'f', 'o', 'o', 0});
+        g.PutBytes(s.data, {'b', 'a', 'r', 0});
+        const auto add_ascii_call = [&](u16 command) {
+            return s.Call(Cat({{ipc::MakeHeader(command, 3, 4), post_ctx, 4, 4, ipc::StaticBufferDesc(4, 0), s.aux},
+                               Mapped(4, ipc::R, s.data)}),
+                          4)[1];
+        };
+        // a POST with no data waits for it: the state reads "sending"
+        begin = s.Call({ipc::MakeHeader(0xA, 1, 0), post_ctx}, 2)[1];
+        state_pending = s.Call({ipc::MakeHeader(5, 1, 0), post_ctx}, 3)[2];
+        notify_early = s.Call({ipc::MakeHeader(0x1D, 1, 0), post_ctx}, 2)[1];
+        add_ascii = add_ascii_call(0x12);
+        raw_after_ascii = s.Call(Cat({{ipc::MakeHeader(0x14, 2, 2), post_ctx, 4}, Mapped(4, ipc::R, s.data)}), 4)[1];
+        type_after_data = s.Call({ipc::MakeHeader(0x15, 2, 0), post_ctx, 2}, 2)[1];
+        encoding_bad = s.Call({ipc::MakeHeader(0x1C, 2, 0), post_ctx, 5}, 2)[1];
+        encoding_ascii = s.Call({ipc::MakeHeader(0x1C, 2, 0), post_ctx, 1}, 2)[1];
+        encoding_auto = s.Call({ipc::MakeHeader(0x1C, 2, 0), post_ctx, 0}, 2)[1];
+        send_ascii_not_chunked = s.Call(Cat({{ipc::MakeHeader(0x16, 3, 4), post_ctx, 4, 4, ipc::StaticBufferDesc(4, 0), s.aux},
+                                             Mapped(4, ipc::R, s.data)}),
+                                        4)[1];
+        notify = s.Call({ipc::MakeHeader(0x1D, 1, 0), post_ctx}, 2)[1];
+        state_after_notify = s.Call({ipc::MakeHeader(5, 1, 0), post_ctx}, 3)[2];
+
+        // chunked mode: raw data only after SetPostDataType, never together with added data
+        HttpGuest c(g, OpenService(g, srv, "http:C"));
+        REQUIRE(c.Bind(other_ctx) == kResultSuccess);
+        set_chunk = c.Call({ipc::MakeHeader(0x15, 2, 0), other_ctx, 2}, 2)[1];
+        add_after_chunk = c.Call(Cat({{ipc::MakeHeader(0x14, 2, 2), other_ctx, 4}, Mapped(4, ipc::R, c.data)}), 4)[1];
+        send_raw = c.Call(Cat({{ipc::MakeHeader(0x1A, 2, 2), other_ctx, 4}, Mapped(4, ipc::R, c.data)}), 4)[1];
+        chunk_after_ascii = c.Call({ipc::MakeHeader(0x15, 2, 0), other_ctx, 0}, 2)[1];
+
+        // certificates
+        cert_id_bad = c.Call({ipc::MakeHeader(0x28, 2, 0), other_ctx, 0x41}, 2)[1];
+        set_handle_bad = c.Call({ipc::MakeHeader(0x29, 2, 0), other_ctx, 55}, 2)[1];
+        cert_default = c.Call({ipc::MakeHeader(0x28, 2, 0), other_ctx, 0x40}, 2)[1];
+        begin_with_cert = c.Call({ipc::MakeHeader(0xA, 1, 0), other_ctx}, 2)[1];
+        const auto open_default = [&](HttpGuest& h) { return h.Call({ipc::MakeHeader(0x33, 1, 0), 0x40}, 3); };
+        HttpGuest certs(g, OpenService(g, srv, "http:C"));
+        REQUIRE(certs.Initialize() == kResultSuccess);
+        cert_a = open_default(certs)[2];
+        cert_b = open_default(certs)[2];
+        open_third = open_default(certs)[1];
+        cert_c = certs.Call({ipc::MakeHeader(0x34, 1, 0), cert_a}, 2)[1];
+        close_cert = certs.Call({ipc::MakeHeader(0x34, 1, 0), 9999}, 2)[1];
+        set_after_close = open_default(certs)[1];
+        set_ssl = c.Call({ipc::MakeHeader(0x2B, 2, 0), other_ctx, 3}, 2)[1];
+        keepalive = c.Call({ipc::MakeHeader(0x37, 2, 0), other_ctx, 1}, 2)[1];
+        finalize = c.Call({ipc::MakeHeader(0x39, 0, 0)}, 2)[1];
+        post = s.Call({ipc::MakeHeader(0x22, 1, 0), post_ctx}, 3);
+        (void)state_pending_result;
+        ExitProcess(*f.runtime);
+    });
+    CHECK(status == 0);
+    CHECK(begin == kResultSuccess);
+    CHECK(state_pending == 6);  // SendingRequest: waiting for the post data
+    CHECK(notify_early == kHttpInvalidState);
+    CHECK(add_ascii == kResultSuccess);
+    CHECK(raw_after_ascii == kHttpIncompatibleAdd);
+    CHECK(type_after_data == kHttpIncompatibleSend);
+    CHECK(encoding_bad == kHttpInvalidEncoding);
+    CHECK(encoding_ascii == kResultSuccess);
+    CHECK(encoding_auto == kResultSuccess);
+    CHECK(send_ascii_not_chunked == kHttpInvalidState);
+    CHECK(notify == kResultSuccess);   // the request starts, and fails
+    CHECK(state_after_notify == 0xA);
+    CHECK(post[2] == 0xFFFFFFFF);
+    CHECK(set_chunk == kResultSuccess);
+    CHECK(add_after_chunk == kHttpIncompatibleAdd);
+    CHECK(send_raw == kResultSuccess);  // chunked mode, type Raw
+    CHECK(chunk_after_ascii == kHttpIncompatibleSend);  // the type cannot change once data was sent
+    CHECK(cert_id_bad == kHttpWrongCertId);
+    CHECK(set_handle_bad == kHttpWrongCertHandle);
+    CHECK(cert_default == kResultSuccess);
+    CHECK(begin_with_cert == kHttpStateError);  // the default client certificate is not there
+    CHECK(cert_a == 1);
+    CHECK(cert_b == 2);   // Azahar stores cert id 0 on the context it makes, so the same call makes another one
+    CHECK(open_third == kHttpTooManyClientCerts);
+    CHECK(cert_c == kResultSuccess);
+    CHECK(close_cert == kResultSuccess);
+    CHECK(set_after_close == kResultSuccess);
+    CHECK(set_ssl == kResultSuccess);
+    CHECK(keepalive == kResultSuccess);
+    CHECK(finalize == kResultSuccess);
+    (void)send_ascii_not_chunked;
+    (void)state_pending_result;
+    (void)set_handle_bad;
+}
+
+TEST_CASE("http:C: a call waiting for a response waits in game time") {
+    Fixture f;
+    TempDir dir;
+    std::deque<OtherThread> threads;
+    std::vector<u32> timeout_words, woken_words, closed_words, cancel_words;
+    u64 timeout_elapsed = 0;
+    bool early = true;
+    const int status = BootWith(f, dir, {"--ms", "500"}, [&] {
+        Guest g(*f.runtime);
+        const Handle srv = ConnectSrv(g);
+        HttpGuest main(g, OpenService(g, srv, "http:C"));
+        REQUIRE(main.Initialize() == kResultSuccess);
+        const u32 a = main.Create("http://x.test/a", 1)[2];
+        const u32 b = main.Create("http://x.test/b", 1)[2];
+        const u32 c = main.Create("http://x.test/c", 1)[2];
+        const u32 d = main.Create("http://x.test/d", 1)[2];
+        HttpGuest sa(g, OpenService(g, srv, "http:C")), sb(g, OpenService(g, srv, "http:C")),
+            sc(g, OpenService(g, srv, "http:C")), sd(g, OpenService(g, srv, "http:C"));
+        REQUIRE(sa.Bind(a) == kResultSuccess);
+        REQUIRE(sb.Bind(b) == kResultSuccess);
+        REQUIRE(sc.Bind(c) == kResultSuccess);
+        REQUIRE(sd.Bind(d) == kResultSuccess);
+        GuestScheduler& scheduler = f.runtime->Scheduler();
+        // a: GetResponseStatusCodeTimeout with 20 ms; b: GetResponseStatusCode without a timeout, woken by
+        // the request starting; c: the same, woken by CloseContext; d: ReceiveData woken by CancelConnection
+        OtherThread* ta = SpawnRequest(f, threads, sa.h, {ipc::MakeHeader(0x23, 3, 0), a, 20000000, 0}, {});
+        OtherThread* tb = SpawnRequest(f, threads, sb.h, {ipc::MakeHeader(0x22, 1, 0), b}, {});
+        OtherThread* tc = SpawnRequest(f, threads, sc.h, {ipc::MakeHeader(0x22, 1, 0), c}, {});
+        const u32 scratch = 0x08100000;
+        REQUIRE(IsSuccess(f.runtime->Memory().Map(scratch, kPageSize, MemPerm::ReadWrite, MemState::Private)));
+        OtherThread* td = SpawnRequest(f, threads, sd.h,
+                                       {ipc::MakeHeader(0xB, 2, 2), d, 0x10, ipc::MappedBufferDesc(0x10, ipc::W), scratch}, {});
+        scheduler.Sleep(1000000);
+        early = ta->resumed || tb->resumed || tc->resumed || td->resumed;
+        REQUIRE(sb.Call({ipc::MakeHeader(0xA, 1, 0), b}, 2)[1] == kResultSuccess);  // the request starts (and fails)
+        scheduler.Sleep(1000000);
+        woken_words = g.GetWords(tb->command, 3);
+        REQUIRE(main.Call({ipc::MakeHeader(3, 1, 0), c}, 2)[1] == kResultSuccess);  // CloseContext
+        scheduler.Sleep(1000000);
+        closed_words = g.GetWords(tc->command, 3);
+        REQUIRE(sd.Call({ipc::MakeHeader(4, 1, 0), d}, 2)[1] == kResultSuccess);    // CancelConnection
+        scheduler.Sleep(1000000);
+        cancel_words = g.GetWords(td->command, 2);
+        scheduler.Sleep(30000000);
+        timeout_words = g.GetWords(ta->command, 2);
+        timeout_elapsed = ta->end - ta->start;
+        ExitProcess(*f.runtime);
+    });
+    CHECK(status == 0);
+    CHECK_FALSE(early);
+    CHECK(threads[1].resumed);
+    CHECK(woken_words == std::vector<u32>{ipc::MakeHeader(0x22, 2, 0), kResultSuccess, 0xFFFFFFFF});
+    CHECK(threads[2].resumed);
+    CHECK(closed_words == std::vector<u32>{ipc::MakeHeader(0x22, 2, 0), kResultSuccess, 0xFFFFFFFF});
+    CHECK(threads[3].resumed);
+    CHECK(cancel_words == std::vector<u32>{ipc::MakeHeader(0xB, 1, 0), kResultSuccess});
+    CHECK(threads[0].resumed);
+    CHECK(timeout_words == std::vector<u32>{ipc::MakeHeader(0x23, 1, 0), kHttpTimeout});
+    CHECK(timeout_elapsed >= NsToTicks(20000000));
+    CHECK(timeout_elapsed <= NsToTicks(20000000) + NsToTicks(100000));
+}
+
 #endif  // recomp.h
