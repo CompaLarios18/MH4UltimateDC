@@ -103,6 +103,16 @@ bool SendData(GuestMemory& memory, OutputFormat format, const u32* input, Conver
         MH4N_LOG(Error, "Service.Y2R", "the output transfer unit is 0");
         return false;
     }
+    // A unit holds whole pixels (the loop below adds pixels until the unit is full). Every unit must
+    // find all its pixels in the strip: validate before the first write, as ReceiveData does, so
+    // that a guest unit size cannot make this read past the pixel buffer.
+    const u32 pixel_size = format == OutputFormat::RGBA8 ? 4 : format == OutputFormat::RGB8 ? 3 : 2;
+    const u32 pixels_per_unit = (buf.transfer_unit + pixel_size - 1) / pixel_size;
+    if (amount_of_data < 0 || static_cast<u32>(amount_of_data) % pixels_per_unit != 0) {
+        MH4N_LOG(Error, "Service.Y2R", "the output transfer unit {} does not fit the {} pixels of the strip",
+                 buf.transfer_unit, amount_of_data);
+        return false;
+    }
     std::vector<u8> unit;
     while (amount_of_data > 0) {
         unit.clear();

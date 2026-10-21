@@ -107,7 +107,7 @@ constexpr u32 kSolTcp = 0x0006;
 constexpr u32 kSolConfig = 0xFFFE;
 constexpr u32 kSolSocket = 0xFFFF;
 constexpr s32 kTtlDefault = 64;
-constexpr u32 kMsgOob = 1, kMsgPeek = 2, kMsgDontWait = 4;
+constexpr u32 kMsgOob = 1, kMsgDontWait = 4;
 constexpr u32 kNetoptMac = 0x1004;
 constexpr u32 kNetoptIpInfo = 0x4003;
 
@@ -854,10 +854,8 @@ private:
     }
 
     // SendToImpl on the offline host.
-    s32 SendResult(const Socket& socket, u32 len, u32 flags, u32 addr_len, const StaticBuffer* dest,
+    s32 SendResult(const Socket& socket, u32 len, u32 addr_len, const StaticBuffer* dest,
                    std::size_t dest_offset) const {
-        (void)flags;
-        (void)kMsgPeek;
         if (socket.type == kTypeStream) return Err(kEpipe);
         if (len > 65535) return Err(kEmsgSize);
         if (addr_len == 0) return Err(kEdestAddrReq);
@@ -876,14 +874,14 @@ private:
     void SendToOther(Request& request) {
         const u32 handle = request.Pop<u32>();
         const u32 len = request.Pop<u32>();
-        const u32 flags = request.Pop<u32>();
+        request.Pop<u32>();  // flags: an offline send ignores them
         const u32 addr_len = request.Pop<u32>();
         const u32 pid = request.PopPid();
         const StaticBuffer* dest = request.PopStaticBuffer();
         const MappedBuffer* data = request.PopMappedBuffer();
         Socket* socket = Holder(request, handle, pid);
         if (socket == nullptr) return;
-        const s32 ret = SendResult(*socket, len, flags, addr_len, dest, 0);
+        const s32 ret = SendResult(*socket, len, addr_len, dest, 0);
         Reply& reply = request.MakeReply(2, 2);
         reply.Push(kResultSuccess);
         reply.Push(ret);
@@ -900,14 +898,14 @@ private:
     void SendToSingle(Request& request) {
         const u32 handle = request.Pop<u32>();
         const u32 len = request.Pop<u32>();
-        const u32 flags = request.Pop<u32>();
+        request.Pop<u32>();  // flags
         const u32 addr_len = request.Pop<u32>();
         const u32 pid = request.PopPid();
         request.PopStaticBuffer();
         const StaticBuffer* dest = request.PopStaticBuffer();
         Socket* socket = Holder(request, handle, pid);
         if (socket == nullptr) return;
-        ReplyRet(request, SendResult(*socket, len, flags, addr_len, dest, 0));
+        ReplyRet(request, SendResult(*socket, len, addr_len, dest, 0));
     }
 
     // 0x00200146: handle, length, flags, address length, total length of the addresses, the PID, the
@@ -915,7 +913,7 @@ private:
     void SendToMultiple(Request& request) {
         const u32 handle = request.Pop<u32>();
         const u32 len = request.Pop<u32>();
-        const u32 flags = request.Pop<u32>();
+        request.Pop<u32>();  // flags
         const u32 addr_len = request.Pop<u32>();
         const u32 total_addr_len = request.Pop<u32>();
         const u32 pid = request.PopPid();
@@ -927,7 +925,7 @@ private:
         s32 ret = 0;
         u32 i = 0;
         do {
-            ret = SendResult(*socket, len, flags, addr_len, dest, static_cast<std::size_t>(i) * addr_len);
+            ret = SendResult(*socket, len, addr_len, dest, static_cast<std::size_t>(i) * addr_len);
             ++i;
         } while (i < count && ret >= 0);
         ReplyRet(request, ret);
@@ -1126,7 +1124,9 @@ private:
         const s32 flags = request.Pop<s32>();
         const StaticBuffer* sa = request.PopStaticBuffer();
         const Address address = ParseAddress(sa, socklen);
-        std::vector<u8> host(hostlen, 0), serv(servlen, 0);
+        // the reply buffers are small static buffers: a longer request is clamped
+        constexpr u32 kMaxNameInfo = 0x1000;
+        std::vector<u8> host(std::min(hostlen, kMaxNameInfo), 0), serv(std::min(servlen, kMaxNameInfo), 0);
         s32 ret = 0;
         if (!address.valid || address.family != kDomainInet) {
             ret = -kEaiNoName;
@@ -1138,11 +1138,11 @@ private:
             if (!(flags & 2) && address.raw_addr == raw_loopback) host_text = "localhost";
             if ((flags & 4) && host_text != "localhost" && !(flags & 2)) ret = -kEaiNoName;  // NI_NAMEREQD
             const std::string serv_text = std::to_string(Swap16(address.raw_port));
-            if (ret == 0 && hostlen > 0 && host_text.size() + 1 > hostlen) ret = -12;  // EAI_OVERFLOW
-            if (ret == 0 && servlen > 0 && serv_text.size() + 1 > servlen) ret = -12;
+            if (ret == 0 && !host.empty() && host_text.size() + 1 > host.size()) ret = -12;  // EAI_OVERFLOW
+            if (ret == 0 && !serv.empty() && serv_text.size() + 1 > serv.size()) ret = -12;
             if (ret == 0) {
-                if (hostlen > 0) std::memcpy(host.data(), host_text.c_str(), host_text.size() + 1);
-                if (servlen > 0) std::memcpy(serv.data(), serv_text.c_str(), serv_text.size() + 1);
+                if (!host.empty()) std::memcpy(host.data(), host_text.c_str(), host_text.size() + 1);
+                if (!serv.empty()) std::memcpy(serv.data(), serv_text.c_str(), serv_text.size() + 1);
             }
         }
         Reply& reply = request.MakeReply(2, 4);
@@ -1210,7 +1210,8 @@ private:
         const StaticBuffer* value_buffer = request.PopStaticBuffer();
         Socket* socket = Holder(request, handle, pid);
         if (socket == nullptr) return;
-        std::vector<u8> value(optlen, 0);
+        // the value comes in a static buffer: its size bounds the length
+        std::vector<u8> value(value_buffer != nullptr ? std::min<std::size_t>(optlen, value_buffer->data.size()) : 0, 0);
         if (value_buffer != nullptr) {
             std::memcpy(value.data(), value_buffer->data.data(),
                         std::min<std::size_t>(value.size(), value_buffer->data.size()));
@@ -1282,10 +1283,12 @@ private:
 
     // 0x00140084: count, timeout (ms), the calling PID, the poll structures (static buffer).
     void Poll(Request& request) {
-        const u32 nfds = request.Pop<u32>();
+        const u32 requested_nfds = request.Pop<u32>();
         const s32 timeout = request.Pop<s32>();
         const u32 pid = request.PopPid();
         const StaticBuffer* input = request.PopStaticBuffer();
+        // a count the guest cannot have meant (the structures are 12 bytes in a static buffer) is clamped
+        const u32 nfds = std::min<u32>(requested_nfds, 0x1000);
 
         auto pending = std::make_shared<Pending>();
         pending->is_poll = true;

@@ -2121,6 +2121,39 @@ TEST_CASE("y2r: a transfer unit that does not divide the data ends the conversio
     CHECK(out[0] == 0xEE);
 }
 
+TEST_CASE("y2r: an output unit larger than, or not dividing, the strip ends the conversion without touching memory") {
+    Fixture f;
+    TempDir dir;
+    bool ok_larger = true, ok_uneven = true;
+    std::vector<u8> out;
+    const int status = BootWith(f, dir, {"--ms", "100"}, [&] {
+        Guest g(*f.runtime);
+        const u32 at = g.Scratch(0);
+        g.PutBytes(at, std::vector<u8>(0x400, 0xEE));
+        const auto run = [&](u16 unit) {
+            y2r::ConversionConfiguration c;
+            c.input_line_width = 8;
+            c.input_lines = 8;
+            c.coefficients = {0x100, 0x166, 0xB6, 0x58, 0x1C5, -0x166F, 0x10EE, -0x1C5B};
+            c.alpha = 0xFF;
+            c.src_Y = {at, 64, 8, 0};
+            c.src_U = {at + 0x40, 32, 4, 0};
+            c.src_V = {at + 0x60, 32, 4, 0};
+            // RGBA8, 64 pixels = 256 bytes
+            c.dst = {at + 0x100, 256, unit, 0};
+            return y2r::PerformConversion(f.runtime->Memory(), c);
+        };
+        ok_larger = run(0x180);  // 96 pixels in a strip of 64
+        ok_uneven = run(0x60);   // 24 pixels do not divide 64
+        out = g.GetBytes(at + 0x100, 0x200);
+        ExitProcess(*f.runtime);
+    });
+    CHECK(status == 0);
+    CHECK_FALSE(ok_larger);
+    CHECK_FALSE(ok_uneven);
+    CHECK(std::all_of(out.begin(), out.end(), [](u8 b) { return b == 0xEE; }));
+}
+
 TEST_CASE("y2r:u: the service converts, signals 50000 ticks later and keeps its configuration") {
     Fixture f;
     TempDir dir;
@@ -2261,7 +2294,7 @@ TEST_CASE("cam:u: ports, a blank frame one frame period after the capture starts
         finished1, busy0, busy1, busy_off, trim_bad, trim_get, trim_reply, calib, other, timing_reply, timing_bad, third,
         trim_flag;
     std::vector<u8> frame, trimmed, timing_data;
-    Result early = 0, late = 0, vsync_early = 0, vsync_late = 0, completion_again = 0;
+    Result early = 0, late = 0, vsync_late = 0, completion_again = 0;
     u64 activated = 0;
     const int status = BootWith(f, dir, {"--ms", "2000"}, [&] {
         Guest g(*f.runtime);
@@ -2352,7 +2385,6 @@ TEST_CASE("cam:u: ports, a blank frame one frame period after the capture starts
     CHECK(completion_again == kResultSuccess);
     CHECK(finished1 == std::vector<u32>{ipc::MakeHeader(0x08, 2, 0), kResultSuccess, 1});
     CHECK(vsync_late == kResultSuccess);
-    (void)vsync_early;
     CHECK(timing_reply[0] == ipc::MakeHeader(0x2A, 1, 2));
     CHECK(timing_reply[1] == kResultSuccess);
     REQUIRE(timing_data.size() == 40);

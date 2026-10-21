@@ -284,12 +284,12 @@ void Create(CecdModule& module, ServiceContext& context) {
     mode.write = true;
     mode.create = true;
 
-    // eventlog.dat: 0x01 0x41 0x12 and zeroes up to 0x1000, then 0xDD to the end (0x30D54 bytes).
+    // eventlog.dat: 0x01 0x41 0x12 and zeroes to the end (0x30D54 bytes). Azahar's comment says 0xDD after
+    // 0x1000, but its code zero-initialises the vector and only memsets the first 0x1000 bytes.
     std::shared_ptr<OpenFile> file;
     if (module.store.OpenFile("/eventlog.dat", mode, &file) == kFsOk) {
         constexpr u32 kEventLogSize = 0x30d54;
-        std::vector<u8> buffer(kEventLogSize, 0xDD);
-        std::fill(buffer.begin(), buffer.begin() + 0x1000, u8{0});
+        std::vector<u8> buffer(kEventLogSize, 0);
         buffer[0] = 0x01;
         buffer[1] = 0x41;
         buffer[2] = 0x12;

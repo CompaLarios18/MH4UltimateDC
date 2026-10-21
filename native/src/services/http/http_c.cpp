@@ -264,10 +264,6 @@ public:
         Register(0x0C01, "UnregisterURLReplacement");
     }
 
-    ~HttpC() override {
-        // Azahar cancels the contexts when the service goes; a session ending closes nothing.
-    }
-
     Handled Handle(Request& request) override {
         deferred_ = false;
         const Handled handled = Service::Handle(request);

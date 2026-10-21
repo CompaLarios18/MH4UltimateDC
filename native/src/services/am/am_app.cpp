@@ -155,8 +155,11 @@ private:
         const MappedBuffer* infos = request.PopMappedBuffer();
 
         Result result = kResultSuccess;
-        std::vector<u64> title_ids(count);
-        if (ids != nullptr && count != 0 && count <= ids->Size() / sizeof(u64)) {
+        // A list that does not fit the buffer reads as zero ids (which fail the TID check); the
+        // vector is sized by the buffer, not by the guest's count.
+        const bool fits = ids != nullptr && count <= ids->Size() / sizeof(u64);
+        std::vector<u64> title_ids(fits ? count : std::min<u32>(count, 1), 0);
+        if (fits && count != 0) {
             ids->Read(title_ids.data(), 0, count * static_cast<u32>(sizeof(u64)));
         }
         for (const u64 title_id : title_ids) {
@@ -189,7 +192,7 @@ private:
     void GetDLCTitleInfos(Request& request) { TitleInfos(request, kTidHighDlc); }
     void GetPatchTitleInfos(Request& request) { TitleInfos(request, kTidHighUpdate); }
 
-    // 0x100701C2... (header 0x10070102): ticket count (u32), title id (u64), start index (u32), the
+    // 0x10070102: ticket count (u32), title id (u64), start index (u32), the
     // ticket infos (mapped, out). Azahar answers an id that is not a data title with an error and then
     // overwrites it with the success reply it builds next, so the result is always success. No
     // tickets are installed: nothing is written.
