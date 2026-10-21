@@ -16,6 +16,13 @@
 //  - A directory listing is the host's own order (readdir, FindNextFile), as Azahar's ForeachDirectoryEntry
 //    gives; nothing sorts it.
 //  - A symbolic link in a tree that is deleted is removed, never followed.
+//  - CreateFullPath (via DirectoryPrefixes) is not Azahar's loop on Windows. Azahar (file_util.cpp:346-385)
+//    takes the next '/' from the previous position and looks for '\' from there only when no '/' is
+//    left, so on "C:\a\b/c/d/" it never makes "C:\" and "C:\a\". Here every separator of both kinds is a
+//    directory boundary, in order, and a UNC or extended-length root (\\server\share, \\?\C:\) is not
+//    created, as mkdir cannot make it. On Linux/macOS (separator set "/") the prefixes and the mkdir order
+//    are Azahar's. The guard is the same 100 levels, counted the same way (the 100th prefix is made, then
+//    the call fails).
 #pragma once
 
 #include <cstddef>

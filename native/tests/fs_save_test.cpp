@@ -31,7 +31,6 @@ TEST_CASE("fs_save_test needs recomp.h (the repository around native/)" * doctes
 #include <condition_variable>
 #include <cstring>
 #include <filesystem>
-#include <string_view>
 #include <fstream>
 #include <functional>
 #include <map>
@@ -39,6 +38,7 @@ TEST_CASE("fs_save_test needs recomp.h (the repository around native/)" * doctes
 #include <mutex>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
