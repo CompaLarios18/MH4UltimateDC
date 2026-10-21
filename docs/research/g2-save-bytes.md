@@ -16,7 +16,7 @@ The tool is `tools/native/save_probe.py`.
 | Ciphertext bytes | What they are | Why they differ between `jit` and `recomp` | Certainty |
 |---|---|---|---|
 | 0 to 7 (ECB block 0) | the slot's header: a format word and the **byte-sum checksum** of everything from plaintext offset 8 to the end | the sum changes because the bytes of the other range changed | proven on both buffers (the checksum is reproduced) |
-| 280 to 295 (ECB blocks 35 and 36) | six 16-bit **random-number words** of the save object (the four the game keeps in its control object, and two more), plus two constants that do not change | they are **functions of the wall clock**: the low 16 bits of the Unix time, in seconds, at two clock readings the game makes (frame 2 to 3 and frame 2813), and of the random generator stepped from the first one | proven for the values (each follows from the clock readings of its own run, exactly, in both backends); the code that stores the second reading was not located (section 5) |
+| 280 to 295 (ECB blocks 35 and 36) | six 16-bit words of the save object (the four the game keeps in its control object, and two more), plus two constants that do not change: two of the words are the game's random generator stepped from the first clock reading's seed, four are the low 16 bits of the Unix second at the two readings | they are **functions of the wall clock**: the low 16 bits of the Unix time, in seconds, at two clock readings the game makes (frame 2 to 3 and frame 2813), and the generator stepped from the first one | proven for the values (each follows from the clock readings of its own run, exactly, in both backends); the code that stores the second reading was not located (section 5) |
 
 **Neither backend is wrong.** In `recomp` both readings fall 4.4 ms and 14.4 ms before a second boundary of the
 emulated clock, in `jit` (which reaches the same point 10.8 and 31.4 million ticks later) they fall after it,
@@ -150,7 +150,9 @@ Every value is reproduced exactly:
 Therefore every plaintext byte that differs is a function of the Unix second at reading 1 or reading 2, and
 the checksum follows from those bytes. The differences between the backends are the emulated clocks: `jit`
 reaches frame 3 about 9.0 million ticks (33 ms) later than `recomp` and frame 2813 about 31.4 million ticks
-(117 ms) later, and with the date the runner fixes, those delays move both readings across a second boundary.
+(117 ms) later (the 9.0 million is the frame-3 record of the state trace; the first clock reading itself, a
+little before that record, is 10.8 million ticks later, as the table above says), and with the date the runner
+fixes, those delays move both readings across a second boundary.
 Nothing in the pair follows from anything but time.
 
 ## 5. What this does not establish

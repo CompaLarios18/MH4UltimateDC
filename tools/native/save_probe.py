@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Probe the bytes of a game save buffer without ever printing them (N0-31, docs/research/g2-save-bytes.md).
 
-The commands print offsets, sizes, counts, CRCs and yes/no answers; never the bytes of a file.
+The commands print offsets, sizes, counts, CRCs, checksums (32-bit sums of a whole buffer) and yes/no
+answers; never the bytes of a file.
 
   diff A B [--limit N] [--align K]
       The byte ranges where the first N bytes (default: all of the shorter file) of two files differ,
