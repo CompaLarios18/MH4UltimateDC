@@ -1,19 +1,21 @@
 // Derived from Azahar src/video_core/gpu.cpp, src/video_core/gpu.h, src/video_core/pica/pica_core.h,
 // src/video_core/pica/pica_core.cpp, src/video_core/pica/regs_external.h,
 // src/video_core/pica/regs_internal.h, src/video_core/pica/regs_pipeline.h,
-// src/video_core/pica/regs_lcd.h and src/core/hle/service/gsp/gsp_command.h at
+// src/video_core/pica/regs_lcd.h, src/core/hle/service/gsp/gsp_command.h and src/core/memory.cpp at
 // 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-2.0-or-later; every one of these files says
 // "GPLv2 or any later version").
 // Copyright 2023-2026 Citra Emulator Project / Azahar Emulator Project (gpu.cpp, gpu.h, pica_core.h,
 //   pica_core.cpp, regs_external.h)
 // Copyright 2017-2025 Citra Emulator Project / Azahar Emulator Project (regs_internal.h, regs_pipeline.h)
 // Copyright 2023-2024 Citra Emulator Project / Azahar Emulator Project (regs_lcd.h, gsp_command.h)
+// Copyright 2014-2026 Citra Emulator Project / Azahar Emulator Project (memory.cpp)
 #include "gpu_null/null_gpu.h"
 
 #include <algorithm>
 #include <cstring>
 #include <limits>
 #include <memory>
+#include <span>
 
 #include "gpu/gx/blitter.h"
 #include "gpu/gx/engine.h"
@@ -244,27 +246,57 @@ void NullGpu::Execute(const GxCommand& command) {
     }
 }
 
+std::span<u8> NullGpu::Reach(u32 vaddr, u32 size, bool* through_guest) {
+    // The physical view first: the linear heap and VRAM, where a prefix is as good as it gets (the
+    // memory ends there). What it cannot serve completely, the host's guest memory may: any range
+    // that is fully mapped, as the application's memory map gives it to Azahar's CopyBlock.
+    std::span<u8> span;
+    if (const auto physical = host_.VirtualToPhysical(vaddr)) {
+        span = gx::Window(host_, *physical, size);
+        if (span.size() == size) {
+            return span;
+        }
+    }
+    if (u8* guest = host_.GuestPointer(vaddr, size)) {
+        *through_guest = true;
+        return {guest, size};
+    }
+    return span;
+}
+
 void NullGpu::Dma(const GxCommand& command) {
     const u32 source = command.words[1];
     const u32 dest = command.words[2];
     const u32 size = command.words[3];
 
-    // Azahar copies through the application's memory map (CopyBlock); the host only knows the
-    // physical areas, which is where a DMA goes: the linear heap and VRAM.
-    const auto source_physical = host_.VirtualToPhysical(source);
-    const auto dest_physical = host_.VirtualToPhysical(dest);
-    if (!source_physical || !dest_physical) {
-        MH4N_LOG(Error, kLog, "DMA with an address that is not physical memory: {:#010X} -> {:#010X}",
-                 source, dest);
-    } else {
-        std::span<u8> src = gx::Window(host_, *source_physical, size);
-        std::span<u8> dst = gx::Window(host_, *dest_physical, size);
-        const size_t count = std::min(src.size(), dst.size());
-        if (count < size) {
-            MH4N_LOG(Error, kLog, "DMA of {:#x} bytes leaves the memory ({:#x} copied)", size, count);
-        }
-        if (count != 0) {
-            std::memmove(dst.data(), src.data(), count);
+    // Azahar copies through the application's memory map (CopyBlock): any two mapped ranges.
+    bool through_guest = false;
+    const std::span<u8> src = Reach(source, size, &through_guest);
+    const std::span<u8> dst = Reach(dest, size, &through_guest);
+    const size_t count = std::min(src.size(), dst.size());
+    if (count != 0) {
+        std::memmove(dst.data(), src.data(), count);
+    }
+    if (through_guest) {
+        ++stats_.dma_through_guest;
+    }
+    if (count < size) {
+        ++stats_.dma_not_copied;
+        // A game that does this does it again and again: the first few are logged.
+        constexpr u32 kDmaReports = 8;
+        if (dma_reports_ < kDmaReports) {
+            ++dma_reports_;
+            if (src.empty() || dst.empty()) {
+                MH4N_LOG(Error, kLog,
+                         "DMA with an address that is not physical memory nor mapped guest memory: "
+                         "{:#010X} -> {:#010X} ({:#x} bytes, nothing copied)",
+                         source, dest, size);
+            } else {
+                MH4N_LOG(Error, kLog, "DMA of {:#x} bytes leaves the memory ({:#x} copied)", size, count);
+            }
+            if (dma_reports_ == kDmaReports) {
+                MH4N_LOG(Warning, kLog, "further DMAs that cannot be completed are counted, not logged");
+            }
         }
     }
 

@@ -1,7 +1,5 @@
 #include "gpu_host.h"
 
-#include "mh4n/clock.h"
-
 namespace mh4n::detail {
 
 u8* RuntimeGpuHost::PhysicalPointer(u32 paddr, u32 size) {
@@ -25,19 +23,27 @@ u8* RuntimeGpuHost::PhysicalPointer(u32 paddr, u32 size) {
     return nullptr;
 }
 
+u8* RuntimeGpuHost::GuestPointer(u32 vaddr, u32 size) {
+    // Flat memory: guest address A is Base() + A. Only the managed range [0, kManagedEnd) is ever
+    // mapped; an empty range at or below its end is an address, as in PhysicalPointer.
+    if (static_cast<u64>(vaddr) + size > kManagedEnd || !memory_.IsMapped(vaddr, size)) {
+        return nullptr;
+    }
+    return memory_.Base() + vaddr;
+}
+
 void RuntimeGpuHost::SignalInterrupt(gpu::Interrupt id, u64 delay_ns) {
+    // At once, on the scheduler thread: Kernel::Post runs the call at the next safe point, in the
+    // order the interrupts were signalled, and from the thread that signals it, directly. The delay
+    // is not waited for (D25, D41); it is only handed to the sink's reader, which records it.
     kernel_.Post([this, id, delay_ns] {
-        if (delay_ns == 0) {
-            if (sink_) {
-                sink_(id);
-            }
+        if (!sink_) {
             return;
         }
-        kernel_.ScheduleAt(kernel_.NowTicks() + NsToTicks(delay_ns), [this, id] {
-            if (sink_) {
-                sink_(id);
-            }
-        });
+        const u64 outer = delivering_delay_ns_;  // a sink that signals again
+        delivering_delay_ns_ = delay_ns;
+        sink_(id);
+        delivering_delay_ns_ = outer;
     });
 }
 
