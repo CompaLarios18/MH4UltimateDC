@@ -10,8 +10,12 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <exception>
 #include <iterator>
+#include <mutex>
+#include <random>
 
+#include "../../common/utf8.h"
 #include "mh4n/log.h"
 
 namespace mh4n::cfg {
@@ -142,6 +146,13 @@ const DefaultBlock* FindDefault(u32 id) {
     return nullptr;
 }
 
+// The host path of a UTF-8 text (D45): every file call below goes through this, so a user or game folder
+// with an accent (or any other character outside the ANSI code page of Windows) is the folder the player
+// named. The paths of this file are UTF-8 text everywhere (they are logged and compared as text).
+std::filesystem::path HostPath(const std::string& utf8_path) {
+    return utf8::PathFromUtf8(utf8_path);
+}
+
 std::string UserPath(const std::string& user_folder, const char* relative) {
     std::string path = user_folder;
     if (!path.empty() && path.back() != '/' && path.back() != '\\') {
@@ -154,7 +165,7 @@ std::string UserPath(const std::string& user_folder, const char* relative) {
 bool WriteFileAtomically(const std::string& path, const void* bytes, std::size_t size) {
     namespace fs = std::filesystem;
     std::error_code ec;
-    const fs::path target(path);
+    const fs::path target = HostPath(path);
     if (target.has_parent_path()) {
         fs::create_directories(target.parent_path(), ec);
         if (ec) {
@@ -162,13 +173,13 @@ bool WriteFileAtomically(const std::string& path, const void* bytes, std::size_t
             return false;
         }
     }
-    const fs::path temporary = fs::path(path + ".tmp");
+    const fs::path temporary = HostPath(path + ".tmp");
     {
         std::ofstream out(temporary, std::ios::binary | std::ios::trunc);
         out.write(static_cast<const char*>(bytes), static_cast<std::streamsize>(size));
         out.close();
         if (!out) {
-            MH4N_LOG(Error, kLog, "cannot write {}", temporary.string());
+            MH4N_LOG(Error, kLog, "cannot write {}", utf8::PathToUtf8(temporary));
             fs::remove(temporary, ec);
             return false;
         }
@@ -206,9 +217,9 @@ ConfigStore::ConfigStore(const std::string& user_folder) : user_folder_(user_fol
     // No user folder (no --user): the default blocks, and nothing to save to.
     std::ifstream in;
     if (!user_folder.empty()) {
-        in.open(ConfigPath(user_folder), std::ios::binary);
+        in.open(HostPath(ConfigPath(user_folder)), std::ios::binary);
     }
-    if (in) {
+    if (in.is_open() && in) {
         in.read(reinterpret_cast<char*>(buffer_.data()), static_cast<std::streamsize>(buffer_.size()));
         from_file_ = true;  // a short file leaves the rest zero: no blocks there
     } else {
@@ -361,6 +372,131 @@ bool ConfigStore::Save() {
     return WriteFileAtomically(ConfigPath(user_folder_), buffer_.data(), buffer_.size());
 }
 
+ConfigFileState GetConfigFileState(const std::string& path) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    // symlink_status: a dangling link or a directory is something there, not an absent file.
+    const fs::file_status status = fs::symlink_status(HostPath(path), ec);
+    if (ec) {
+        if (ec == std::errc::no_such_file_or_directory || ec == std::errc::not_a_directory) {
+            return ConfigFileState::Absent;
+        }
+        MH4N_LOG(Error, kLog, "cannot look at {}: {}", path, ec.message());
+        return ConfigFileState::LookupFailed;
+    }
+    if (status.type() == fs::file_type::not_found) {
+        return ConfigFileState::Absent;
+    }
+    return IsValidConfigFile(path) ? ConfigFileState::Valid : ConfigFileState::Invalid;
+}
+
+bool IsValidConfigFile(const std::string& path) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    const fs::path host_path = HostPath(path);
+    if (!fs::is_regular_file(host_path, ec) || fs::file_size(host_path, ec) != kSaveFileSize || ec) {
+        return false;
+    }
+    std::array<u8, kSaveFileSize> bytes{};
+    std::ifstream in(host_path, std::ios::binary);
+    in.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+    if (static_cast<std::size_t>(in.gcount()) != bytes.size()) {
+        return false;
+    }
+    const u32 total = Get16(bytes.data());
+    if (total > kMaxBlockEntries || Get16(bytes.data() + 2) != kDataEntriesOffset) {
+        return false;
+    }
+    for (u32 i = 0; i < total; ++i) {
+        const u8* entry = Entry(bytes, i);
+        const u32 size = Get16(entry + 8);
+        if (size > 4 && static_cast<u64>(Get32(entry + 4)) + size > kSaveFileSize) {
+            return false;
+        }
+    }
+    return true;
+}
+
+EnsureResult EnsureConfigFile(const std::string& user_folder, const std::function<u64()>& random64,
+                              u64* console_id) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    if (user_folder.empty() || !fs::is_directory(HostPath(user_folder), ec)) {
+        return EnsureResult::NoUserFolder;
+    }
+    const std::string path = ConfigPath(user_folder);
+    switch (GetConfigFileState(path)) {
+    case ConfigFileState::Valid:
+        return EnsureResult::Existing;
+    case ConfigFileState::Invalid:
+        MH4N_LOG(Error, kLog,
+                 "the config savegame {} is short or damaged: it is left as it is (the blocks that are "
+                 "missing read as defaults, in memory); move it away to have a new one made",
+                 path);
+        return EnsureResult::Invalid;
+    case ConfigFileState::LookupFailed:
+        MH4N_LOG(Error, kLog, "no config savegame is made in {}", user_folder);
+        return EnsureResult::Failed;
+    case ConfigFileState::Absent:
+        break;
+    }
+    ConfigStore store(user_folder);  // no file: the default blocks, in memory
+    std::pair<u32, u64> drawn;
+    if (!TryGenerateConsoleUniqueId(random64, &drawn)) {
+        // Nothing is written: this run's console unique ID is 0, and the next start tries again.
+        MH4N_LOG(Error, kLog, "no config savegame is made in {}: console id 0 for this run", user_folder);
+        return EnsureResult::Failed;
+    }
+    const auto [random_number, id] = drawn;
+    if (IsError(store.SetConsoleUniqueId(random_number, id)) || !store.Save()) {
+        MH4N_LOG(Error, kLog, "the config savegame of {} could not be made", user_folder);
+        return EnsureResult::Failed;
+    }
+    if (console_id != nullptr) {
+        *console_id = id;
+    }
+    return EnsureResult::Created;
+}
+
+namespace {
+std::mutex g_random_override_mutex;
+std::function<u64()> g_random_override;  // empty: the host's random_device
+}  // namespace
+
+u64 HostRandom64() {
+    std::function<u64()> injected;
+    {
+        std::lock_guard lock(g_random_override_mutex);
+        injected = g_random_override;
+    }
+    if (injected) {
+        return injected();
+    }
+    // The host's secure random (std::random_device: the OS source). This is the one place where
+    // randomness is allowed: Azahar draws the console unique ID, the MAC address and the like the same way,
+    // and each value is written to the user folder at once, so every later run reads it back and nothing
+    // the game sees depends on a fresh draw. The source can throw (a system without it): the callers catch
+    // that. A throwing constructor leaves the static unbuilt, so the next call tries again.
+    static std::random_device device;
+    return (static_cast<u64>(device()) << 32) | device();
+}
+
+void SetHostRandom64ForTest(std::function<u64()> source) {
+    std::lock_guard lock(g_random_override_mutex);
+    g_random_override = std::move(source);
+}
+
+bool TryGenerateConsoleUniqueId(const std::function<u64()>& random64, std::pair<u32, u64>* out) {
+    try {
+        *out = ConfigStore::GenerateConsoleUniqueId(random64);
+        return true;
+    } catch (const std::exception& e) {
+        MH4N_LOG(Error, kLog, "no random numbers for the console unique ID (the host's random source failed: {})",
+                 e.what());
+        return false;
+    }
+}
+
 std::pair<u32, u64> ConfigStore::GenerateConsoleUniqueId(const std::function<u64()>& random64) {
     const u32 random_number = static_cast<u32>(random64() % 0x10000);
     const u64 friend_code_seed = random64();
@@ -430,14 +566,14 @@ std::vector<u32> RegionsFromIcon(const std::string& game_folder) {
     constexpr std::size_t kSmdhSize = 0x36C0;
     constexpr std::size_t kLockoutOffset = 0x2018;
     for (const char* name : {"/icon.bin", "/exefs/icon.bin"}) {
-        std::FILE* file = std::fopen((game_folder + name).c_str(), "rb");
-        if (file == nullptr) {
+        // A path-based stream (D45): std::fopen takes the ANSI code page on Windows.
+        std::ifstream file(HostPath(game_folder + name), std::ios::binary);
+        if (!file) {
             continue;
         }
         std::vector<u8> smdh(kSmdhSize);
-        const std::size_t got = std::fread(smdh.data(), 1, smdh.size(), file);
-        std::fclose(file);
-        if (got < kSmdhSize) {
+        file.read(reinterpret_cast<char*>(smdh.data()), static_cast<std::streamsize>(smdh.size()));
+        if (static_cast<std::size_t>(file.gcount()) < kSmdhSize) {
             continue;
         }
         u32 lockout = static_cast<u32>(smdh[kLockoutOffset]) |
@@ -484,9 +620,9 @@ McuData ReadMcuData(const std::string& user_folder) {
     McuData data;
     std::ifstream in;
     if (!user_folder.empty()) {
-        in.open(McuPath(user_folder), std::ios::binary);
+        in.open(HostPath(McuPath(user_folder)), std::ios::binary);
     }
-    if (in) {
+    if (in.is_open() && in) {
         u8 raw[sizeof(McuData)];
         in.read(reinterpret_cast<char*>(raw), sizeof(raw));
         if (in.gcount() == static_cast<std::streamsize>(sizeof(raw))) {
@@ -504,7 +640,9 @@ McuData ReadMcuData(const std::string& user_folder) {
 }
 
 bool WriteMcuData(const std::string& user_folder, const McuData& data) {
-    if (user_folder.empty()) {
+    // Never creates a missing user folder (only the folders under it).
+    std::error_code ec;
+    if (user_folder.empty() || !std::filesystem::is_directory(HostPath(user_folder), ec)) {
         return false;
     }
     u8 raw[sizeof(McuData)] = {};
@@ -548,6 +686,9 @@ bool ParseMac(const std::string& text, std::array<u8, 6>* mac) {
 
 namespace {
 
+// The MAC of a run whose host random source failed: the first address of Azahar's first range.
+constexpr const char* kFallbackMac = "18:2A:7B:00:00:00";
+
 std::string RandomMac(const std::function<u64()>& random64) {
     // Azahar's GenerateRandomMAC: 16 vendor ranges.
     static const std::array<std::pair<u64, u64>, 16> ranges = {{
@@ -569,9 +710,9 @@ std::string RandomMac(const std::function<u64()>& random64) {
 std::string ReadMacAddress(const std::string& user_folder, const std::function<u64()>& random64) {
     std::ifstream in;
     if (!user_folder.empty()) {
-        in.open(MacPath(user_folder), std::ios::binary);
+        in.open(HostPath(MacPath(user_folder)), std::ios::binary);
     }
-    if (in) {
+    if (in.is_open() && in) {
         std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
         std::array<u8, 6> ignored{};
         if (text.size() <= 100 && ParseMac(text, &ignored)) {
@@ -581,9 +722,19 @@ std::string ReadMacAddress(const std::string& user_folder, const std::function<u
     } else {
         MH4N_LOG(Info, kLog, "Cannot open mac address file for read, generating a new one");
     }
-    const std::string mac = RandomMac(random64);
-    if (user_folder.empty()) {
-        return mac;  // nowhere to keep it: this run only
+    std::string mac;
+    try {
+        mac = RandomMac(random64);
+    } catch (const std::exception& e) {
+        // The host's random source failed: this run gets the first address of Azahar's first range and
+        // nothing is written, so the next start (with a working source) makes the console's own.
+        MH4N_LOG(Error, kLog, "no random numbers for the MAC address (the host's random source failed: {}): "
+                 "using {} for this run only", e.what(), kFallbackMac);
+        return kFallbackMac;
+    }
+    std::error_code folder_ec;
+    if (user_folder.empty() || !std::filesystem::is_directory(HostPath(user_folder), folder_ec)) {
+        return mac;  // nowhere to keep it (no folder, and a read never creates one): this run only
     }
     if (!WriteFileAtomically(MacPath(user_folder), mac.data(), mac.size())) {
         MH4N_LOG(Error, kLog, "Cannot open mac address file for write");

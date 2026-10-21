@@ -51,6 +51,13 @@ std::array<u8, 16> EncodeFormatInfo(const ArchiveFormatInfo& info) {
     return bytes;
 }
 
+void RemoveStaleFiles(const std::string& folder) {
+    const std::size_t removed = host::RemoveStaleDeletedFiles(folder);
+    if (removed != 0) {
+        MH4N_LOG(Info, kLog, "removed {} file(s) left by an earlier run that died while deleting them", removed);
+    }
+}
+
 std::string SdmcDirectory(const FsState& state) {
     return state.user_folder.empty() ? std::string() : state.user_folder + "sdmc/";
 }
@@ -368,6 +375,7 @@ Result OpenSdSave(const FsState& state, u64 program_id, std::unique_ptr<ArchiveB
         // Not formatted yet: the game answers by formatting it.
         return kResultNotFormatted;
     }
+    RemoveStaleFiles(concrete);
     *archive = std::make_unique<SaveDataArchive>(concrete);
     return kResultSuccess;
 }

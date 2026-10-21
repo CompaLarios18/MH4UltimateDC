@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <filesystem>
 
+#include "../common/utf8.h"
 #include "gpu_host.h"
 #include "mh4n/assert.h"
 #include "mh4n/log.h"
@@ -248,7 +249,7 @@ int Runtime::Run(const Options& options) {
     stop_frame_ = limits.stop_frame;
 
     // 1. the program
-    const bool is_folder = std::filesystem::is_directory(program_path_);
+    const bool is_folder = std::filesystem::is_directory(utf8::PathFromUtf8(program_path_));
     loader_ = is_folder ? Loader::OpenGameFolder(program_path_, &error)
                         : Loader::OpenElf(program_path_, &error);
     if (!loader_) {
@@ -511,13 +512,29 @@ void Runtime::SetRefreshRateSink(RefreshRateSink sink) {
 
 void Runtime::SetRefreshRate(double hz) {
     refresh_hz_.store(hz);
-    if (kernel_) {
-        kernel_->Post([this, hz] {
-            if (refresh_sink_) {
-                refresh_sink_(hz);
-            }
-        });
+    if (!kernel_) {
+        return;
     }
+    // The reference (the patch's GPU::SetRefreshRate) sets frame_ticks at once on the emulation
+    // thread. Guest code runs on the scheduler thread (every fiber shares its host thread), so a call
+    // from guest code is on the right thread and the sink can run now: the VBlank due next already
+    // gets the new period. CodeHost::CurrentThread is a thread-local: it is null on any other host
+    // thread (the platform's, a tool's) and on the scheduler's own host stack (timer events and posted
+    // work), and those go through the kernel's queue, to the next safe point.
+    if (CodeHost::CurrentThread() != nullptr) {
+        refresh_inline_calls_.fetch_add(1);
+        if (refresh_sink_) {
+            refresh_sink_(hz);
+        }
+        return;
+    }
+    const u64 inline_calls = refresh_inline_calls_.load();
+    kernel_->Post([this, hz, inline_calls] {
+        // An inline call made since this one was posted is newer: the rate it set stands.
+        if (refresh_sink_ && refresh_inline_calls_.load() == inline_calls) {
+            refresh_sink_(hz);
+        }
+    });
 }
 
 double Runtime::RefreshRate() const {

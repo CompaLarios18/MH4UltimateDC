@@ -1,7 +1,8 @@
 // Derived from Azahar src/core/hle/service/apt/apt.cpp, src/core/hle/service/apt/applet_manager.cpp,
 // src/core/hle/service/apt/applet_manager.h, src/core/hle/service/apt/errors.h,
 // src/core/hle/applets/applet.cpp, src/core/hle/applets/swkbd.cpp, src/core/hle/applets/swkbd.h,
-// src/core/frontend/applets/swkbd.cpp, src/core/hle/service/pm/pm_app.cpp and src/core/core_timing.h at
+// src/core/frontend/applets/swkbd.cpp, src/core/hle/applets/erreula.cpp, src/core/hle/applets/mint.cpp,
+// src/core/hle/applets/mii_selector.cpp, src/core/frontend/applets/mii_selector.cpp, src/core/hle/service/pm/pm_app.cpp and src/core/core_timing.h at
 // 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-2.0-or-later: each of them says "GPLv2 or any later
 // version" or "GPLv2+"): the expected answers (the command ids and reply layouts, the result codes of the
 // applet module, the signals, the return codes of the keyboard, the validation rules, the update period)
@@ -11,6 +12,9 @@
 //   applet_manager.h)
 // Copyright 2018-2025 Citra Emulator Project / Azahar Emulator Project (errors.h)
 // Copyright 2015 Citra Emulator Project (applet.cpp, hle/applets/swkbd.cpp, hle/applets/swkbd.h)
+// Copyright 2016-2025 Citra Emulator Project / Azahar Emulator Project (hle/applets/erreula.cpp)
+// Copyright 2016 Citra Emulator Project (hle/applets/mint.cpp, hle/applets/mii_selector.cpp)
+// Copyright 2018 Citra Emulator Project (frontend/applets/mii_selector.cpp)
 // Copyright 2018 Citra Emulator Project (frontend/applets/swkbd.cpp)
 // Copyright 2014-2026 Citra Emulator Project / Azahar Emulator Project (pm_app.cpp)
 // Copyright 2008 Dolphin Emulator Project / 2017 Citra Emulator Project (core_timing.h)
@@ -36,6 +40,9 @@
 #include <vector>
 
 #include "applets/applet.h"
+#include "applets/erreula.h"
+#include "applets/mii_selector.h"
+#include "applets/mint.h"
 #include "applets/swkbd.h"
 #include "mh4n/clock.h"
 #include "mh4n/ipc.h"
@@ -168,6 +175,7 @@ struct Fixture {
     ManualTimeSource* time = nullptr;
     std::unique_ptr<Runtime> runtime;
     std::vector<std::string> logged;
+    std::vector<LogLevel> levels;
     Fixture() {
         auto source = std::make_unique<ManualTimeSource>();
         time = source.get();
@@ -175,7 +183,10 @@ struct Fixture {
         config.time = std::move(source);
         runtime = std::make_unique<Runtime>(std::move(config));
         SetLogFilter(LogFilter(LogLevel::Info));
-        SetLogSink([this](const LogRecord& r) { logged.push_back(std::string(r.message)); });
+        SetLogSink([this](const LogRecord& r) { 
+            logged.push_back(std::string(r.message));
+            levels.push_back(r.level);
+        });
     }
     ~Fixture() {
         runtime.reset();
@@ -185,6 +196,14 @@ struct Fixture {
     bool Logged(const std::string& needle) const {
         return std::any_of(logged.begin(), logged.end(),
                            [&](const std::string& l) { return l.find(needle) != std::string::npos; });
+    }
+    bool LoggedAt(LogLevel level, const std::string& needle) const {
+        for (std::size_t i = 0; i < logged.size(); ++i) {
+            if (levels[i] == level && logged[i].find(needle) != std::string::npos) {
+                return true;
+            }
+        }
+        return false;
     }
     std::size_t Count(const std::string& needle) const {
         return static_cast<std::size_t>(
@@ -1281,31 +1300,528 @@ TEST_CASE("a keyboard started with a parameter of the wrong size does not start,
     CHECK(f.Logged("The size of the parameter (SoftwareKeyboardConfig) is wrong: 256 bytes"));
 }
 
-TEST_CASE("another library applet cannot be made, and the system applet starters fail as Azahar's do without "
-          "the title") {
+namespace {
+
+constexpr u32 kError = 0x206, kError2 = 0x406, kMint = 0x207, kMint2 = 0x407, kMii1 = 0x202, kMii2 = 0x402;
+
+// The Mii selector's answer, byte by byte (the data of Azahar's GetStandardMiiResult, written out by hand
+// from the fields of Mii::MiiData at their offsets; the CRC16 at the end was computed independently).
+const std::vector<u8> kStandardMiiBytes = {
+    0x03, 0x00, 0x10, 0x30, 0xD2, 0x85, 0xB6, 0xB3, 0x00, 0xC8, 0x85, 0x0A, 0x98, 0x39, 0x1E, 0xE4,
+    0x40, 0xF4, 0x07, 0xB7, 0x37, 0x10, 0x00, 0x00, 0xA6, 0x00, 0x43, 0x00, 0x69, 0x00, 0x74, 0x00,
+    0x72, 0x00, 0x61, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x40, 0x40,
+    0x00, 0x00, 0x21, 0x01, 0x02, 0x68, 0x44, 0x18, 0x26, 0x34, 0x46, 0x14, 0x81, 0x12, 0x17, 0x68,
+    0x0D, 0x00, 0x00, 0x29, 0x00, 0x52, 0x48, 0x50, 0x66, 0x00, 0x6C, 0x00, 0x54, 0x00, 0x6F, 0x00,
+    0x62, 0x00, 0x69, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x05, 0x6C};
+
+// An error applet's parameter: the display type, the error code, a language and a message, the flags, and
+// (to be told from the applet's output) a pattern in the output fields.
+std::vector<u8> MakeErrParam(u8 type) {
+    std::vector<u8> p(0xF80, 0);
+    p[0x000] = type;
+    Put32(p, 0x004, 0xFFFFF5E9);  // an error code
+    Put16(p, 0x00A, 1);           // a language
+    Put16(p, 0x00C, 'N'), Put16(p, 0x00E, 'e'), Put16(p, 0x010, 't');
+    p[0xEE4] = 1;  // allow_home_button
+    p[0xEE6] = 0;  // launch_system_settings
+    Put32(p, 0xF70, 0x0BAD0BAD);  // the result field: what the game left there
+    p[0xF74] = 2, p[0xF75] = 7;   // the agreed EULA version
+    return p;
+}
+
+// PrepareToStartLibraryApplet, the Request and its Response, StartLibraryApplet with `param` and no handle:
+// the applets that close inside StartLibraryApplet.
+struct Handshake {
+    Launch launch;
+    Param closing;
+    u64 start_tick = 0, closed_tick = 0;
+    std::vector<u32> info;
+};
+Handshake RunAtOnce(Guest& g, Apt& apt, u32 applet, const std::vector<u8>& param, u32 receive_size,
+                    u32 framebuffer_size = 0x8000) {
+    Handshake h;
+    h.launch.prepare = apt.PrepareToStartLibraryApplet(applet);
+    h.launch.request = apt.Send(kApplication, applet, kRequest, 0, MakeCaptureInfo(framebuffer_size));
+    h.launch.response = apt.Receive(kApplication, 0x20);
+    h.start_tick = Now(g.rt);
+    h.launch.start = apt.StartLibraryApplet(applet, 0, param);
+    h.closed_tick = Now(g.rt);
+    h.closing = apt.Receive(kApplication, receive_size);
+    h.info = g.Request(apt.h, {ipc::MakeHeader(0x0005, 1, 0), 0}, 6);
+    return h;
+}
+
+}  // namespace
+
+TEST_CASE("the error applet (0x206 and 0x406) accepts the parameter and closes inside StartLibraryApplet, "
+          "with the 0xF80 bytes it got") {
+    for (const u32 applet : {kError, kError2}) {
+        INFO("applet " << applet);
+        Fixture f;
+        TempDir dir;
+        Handshake h;
+        const std::vector<u8> param = MakeErrParam(1);  // DisplayType::Error
+        std::shared_ptr<SharedMemory> memory;
+        Result close_handle = 0;
+        const int status = BootWith(f, dir, {"--ms", "20000"}, [&] {
+            Guest g(*f.runtime);
+            Apt apt{g, g.Service("APT:U")};
+            apt.StartApplication();
+            h = RunAtOnce(g, apt, applet, param, 0xF80);
+            memory = g.rt.GetKernel().GetObject<SharedMemory>(h.launch.response.object);
+            close_handle = g.Close(h.launch.response.object);
+            ExitProcess(*f.runtime);
+        });
+        CHECK(status == 0);
+        CHECK(h.launch.prepare == kResultSuccess);
+        CHECK(h.launch.request == kResultSuccess);
+        // the Response: from the applet to the application, with the framebuffer's shared memory
+        CHECK(h.launch.response.result == kResultSuccess);
+        CHECK(h.launch.response.sender == applet);
+        CHECK(h.launch.response.signal == kResponse);
+        CHECK(h.launch.response.size == 0);
+        REQUIRE(memory != nullptr);
+        CHECK(memory->Size() == 0x8000);
+        CHECK(close_handle == kResultSuccess);
+        CHECK(h.launch.start == kResultSuccess);
+        // no time passed in between: the applet closed inside the command, not at an update tick
+        CHECK(h.closed_tick == h.start_tick);
+        // the closing parameter: WakeupByExit from the applet, the whole parameter, nothing changed for
+        // the Error display type
+        CHECK(h.closing.result == kResultSuccess);
+        CHECK(h.closing.sender == applet);
+        CHECK(h.closing.signal == kWakeupByExit);
+        CHECK(h.closing.size == 0xF80);
+        CHECK(h.closing.object == 0);
+        CHECK(h.closing.data == param);
+        // the application is the active applet again
+        CHECK(h.info[2] == 0);
+        CHECK(h.info[5] == kApplication);
+        CHECK(f.Logged("closed at once"));
+    }
+}
+
+TEST_CASE("the error applet's Agree display type answers that the player agreed, and the other types leave "
+          "the result as the game put it") {
+    struct Case {
+        u8 type;
+        u32 expected_result;
+    };
+    // ErrorCode 0, Error 1, Agree 5 and a type that Azahar does not know
+    for (const Case c : {Case{0, 0x0BAD0BAD}, Case{1, 0x0BAD0BAD}, Case{5, 1}, Case{3, 0x0BAD0BAD}}) {
+        INFO("display type " << static_cast<int>(c.type));
+        Fixture f;
+        TempDir dir;
+        Handshake h;
+        const std::vector<u8> param = MakeErrParam(c.type);
+        const int status = BootWith(f, dir, {"--ms", "20000"}, [&] {
+            Guest g(*f.runtime);
+            Apt apt{g, g.Service("APT:U")};
+            apt.StartApplication();
+            h = RunAtOnce(g, apt, kError, param, 0xF80);
+            ExitProcess(*f.runtime);
+        });
+        CHECK(status == 0);
+        CHECK(h.launch.start == kResultSuccess);
+        REQUIRE(h.closing.data.size() == 0xF80);
+        CHECK(Get32(h.closing.data, 0xF70) == c.expected_result);
+        // the EULA version the game put there is not touched, nor is anything else
+        CHECK(h.closing.data[0xF74] == 2);
+        CHECK(h.closing.data[0xF75] == 7);
+        std::vector<u8> expected = param;
+        Put32(expected, 0xF70, c.expected_result);
+        CHECK(h.closing.data == expected);
+    }
+}
+
+TEST_CASE("the error applet copies at most 0xF80 bytes, and a short parameter leaves the rest zero") {
     Fixture f;
     TempDir dir;
-    Result mii = 0, error_applet = 0, prepare_system = 0, start_system = 0, then_keyboard = 0;
+    Handshake short_one, long_one;
+    const std::vector<u8> full = MakeErrParam(5);
+    std::vector<u8> shorter(full.begin(), full.begin() + 0x20);
+    std::vector<u8> longer = full;
+    longer.resize(0x1000, 0x77);  // 0x80 bytes more than the applet has room for
     const int status = BootWith(f, dir, {"--ms", "20000"}, [&] {
         Guest g(*f.runtime);
         Apt apt{g, g.Service("APT:U")};
         apt.StartApplication();
-        mii = apt.PrepareToStartLibraryApplet(0x402);  // the Mii selector (Azahar has an HLE one)
-        error_applet = apt.PrepareToStartLibraryApplet(0x406);
-        prepare_system = apt.Simple(0x0019, {0x101});
-        const std::vector<u32> r = g.Request(
-            apt.h, {ipc::MakeHeader(0x001F, 2, 4), 0x101, 0, ipc::CopyHandleDesc(1), 0, ipc::StaticBufferDesc(0, 0), g.Scratch(0xC00)},
-            2);
-        start_system = r[1];
+        short_one = RunAtOnce(g, apt, kError2, shorter, 0xF80);
+        // the slot is free again at once: the same applet id can be made anew, with its own state
+        SleepNs(g.rt, 2 * TicksToNsCeil(kAppletUpdateIntervalTicks));
+        long_one = RunAtOnce(g, apt, kError2, longer, 0x1000);
+        ExitProcess(*f.runtime);
+    });
+    CHECK(status == 0);
+    CHECK(short_one.launch.start == kResultSuccess);
+    REQUIRE(short_one.closing.data.size() == 0xF80);
+    std::vector<u8> expected_short(0xF80, 0);
+    std::copy(shorter.begin(), shorter.end(), expected_short.begin());
+    Put32(expected_short, 0xF70, 1);  // Agree: the type is in the first 0x20 bytes
+    CHECK(short_one.closing.data == expected_short);
+    CHECK(long_one.launch.start == kResultSuccess);
+    CHECK(long_one.closing.signal == kWakeupByExit);
+    CHECK(long_one.closing.size == 0xF80);  // the applet's parameter is 0xF80 bytes whatever the game sent
+    std::vector<u8> expected_long = full;
+    Put32(expected_long, 0xF70, 1);
+    CHECK(long_one.closing.data == expected_long);
+}
+
+TEST_CASE("the error applet started with an empty parameter closes with an all-zero one (no copy from a null "
+          "pointer)") {
+    Fixture f;
+    TempDir dir;
+    Handshake h;
+    const int status = BootWith(f, dir, {"--ms", "20000"}, [&] {
+        Guest g(*f.runtime);
+        Apt apt{g, g.Service("APT:U")};
+        apt.StartApplication();
+        h = RunAtOnce(g, apt, kError, {}, 0xF80);
+        ExitProcess(*f.runtime);
+    });
+    CHECK(status == 0);
+    CHECK(h.launch.start == kResultSuccess);
+    CHECK(h.closing.signal == kWakeupByExit);
+    REQUIRE(h.closing.data.size() == 0xF80);
+    CHECK(h.closing.data == std::vector<u8>(0xF80, 0));  // type 0 is not Agree: nothing is written
+}
+
+TEST_CASE("after the error applet closed, the game can make another one at once, and the dead applet is "
+          "cleaned up at its next update tick") {
+    Fixture f;
+    TempDir dir;
+    Handshake first, second;
+    Result prepare_again = 0, prepare_keyboard = 0;
+    const int status = BootWith(f, dir, {"--ms", "20000"}, [&] {
+        Guest g(*f.runtime);
+        Apt apt{g, g.Service("APT:U")};
+        apt.StartApplication();
+        first = RunAtOnce(g, apt, kError, MakeErrParam(1), 0xF80);
+        // the library applet slot was reset by the close: another library applet can be prepared
+        prepare_keyboard = apt.PrepareToStartLibraryApplet(kKeyboard);
+        // (cancel that keyboard; it is not the subject)
+        apt.Simple(0x003B, {0});
+        apt.Receive(kApplication, 0x400);
+        SleepNs(g.rt, 2 * TicksToNsCeil(kAppletUpdateIntervalTicks));
+        second = RunAtOnce(g, apt, kError, MakeErrParam(5), 0xF80);
+        prepare_again = second.launch.prepare;
+        ExitProcess(*f.runtime);
+    });
+    CHECK(status == 0);
+    CHECK(first.launch.start == kResultSuccess);
+    CHECK(prepare_keyboard == kResultSuccess);
+    CHECK(prepare_again == kResultSuccess);
+    CHECK(second.launch.start == kResultSuccess);
+    CHECK(second.closing.signal == kWakeupByExit);
+    CHECK(Get32(second.closing.data, 0xF70) == 1);
+    // the first applet and the second are different applets: the first one's closing was received once
+    CHECK(first.closing.result == kResultSuccess);
+}
+
+TEST_CASE("CancelLibraryApplet on the error applet closes it with the parameter as it is (all zero before "
+          "Start)") {
+    Fixture f;
+    TempDir dir;
+    Param cancelled;
+    Result prepare = 0, cancel = 0;
+    const int status = BootWith(f, dir, {"--ms", "20000"}, [&] {
+        Guest g(*f.runtime);
+        Apt apt{g, g.Service("APT:U")};
+        apt.StartApplication();
+        prepare = apt.PrepareToStartLibraryApplet(kError);
+        cancel = apt.Simple(0x003B, {0});
+        cancelled = apt.Receive(kApplication, 0xF80);
+        ExitProcess(*f.runtime);
+    });
+    CHECK(status == 0);
+    CHECK(prepare == kResultSuccess);
+    CHECK(cancel == kResultSuccess);
+    CHECK(cancelled.result == kResultSuccess);
+    CHECK(cancelled.sender == kError);
+    CHECK(cancelled.signal == kWakeupByExit);
+    CHECK(cancelled.size == 0xF80);
+    CHECK(cancelled.data == std::vector<u8>(0xF80, 0));
+}
+
+TEST_CASE("a Request parameter that is not a capture info is logged and gets no Response, and other signals "
+          "are refused, for the error applet, the Mint applet and the Mii selector") {
+    for (const u32 applet : {kError, kMint2, kMii2}) {
+        INFO("applet " << applet);
+        Fixture f;
+        TempDir dir;
+        Result prepare = 0, bad_size = 0, bad_signal = 0, start = 0;
+        Param response;
+        const int status = BootWith(f, dir, {"--ms", "20000"}, [&] {
+            Guest g(*f.runtime);
+            Apt apt{g, g.Service("APT:U")};
+            apt.StartApplication();
+            prepare = apt.PrepareToStartLibraryApplet(applet);
+            bad_size = apt.Send(kApplication, applet, kRequest, 0, std::vector<u8>(0x10, 0));
+            bad_signal = apt.Send(kApplication, applet, kMessage, 0, MakeCaptureInfo(0x100));
+            response = apt.Receive(kApplication, 0x20);
+            start = apt.StartLibraryApplet(applet, 0, std::vector<u8>(0x10, 0));
+            ExitProcess(*f.runtime);
+        });
+        CHECK(status == 0);
+        CHECK(prepare == kResultSuccess);
+        // the applet's error does not reach the game: SendParameter to an HLE applet is the applet's
+        // own business, as in Azahar
+        CHECK(bad_size == kResultSuccess);
+        CHECK(bad_signal == kResultSuccess);
+        CHECK(response.result == kNoData);
+        CHECK(start == kResultSuccess);
+        CHECK(f.Logged("Request parameter of"));
+        CHECK(f.Logged("unsupported signal 00000005"));
+    }
+}
+
+TEST_CASE("the Mint applet (0x207 and 0x407) closes inside StartLibraryApplet with zeros of the parameter's "
+          "size") {
+    for (const u32 applet : {kMint, kMint2}) {
+        INFO("applet " << applet);
+        Fixture f;
+        TempDir dir;
+        Handshake h;
+        Handshake empty;
+        std::shared_ptr<SharedMemory> memory;
+        const int status = BootWith(f, dir, {"--ms", "20000"}, [&] {
+            Guest g(*f.runtime);
+            Apt apt{g, g.Service("APT:U")};
+            apt.StartApplication();
+            h = RunAtOnce(g, apt, applet, std::vector<u8>(0x30, 0xAB), 0x100, 0x4000);
+            memory = g.rt.GetKernel().GetObject<SharedMemory>(h.launch.response.object);
+            SleepNs(g.rt, 2 * TicksToNsCeil(kAppletUpdateIntervalTicks));
+            empty = RunAtOnce(g, apt, applet, {}, 0x100);
+            ExitProcess(*f.runtime);
+        });
+        CHECK(status == 0);
+        CHECK(h.launch.prepare == kResultSuccess);
+        CHECK(h.launch.response.sender == applet);
+        CHECK(h.launch.response.signal == kResponse);
+        REQUIRE(memory != nullptr);
+        CHECK(memory->Size() == 0x4000);
+        CHECK(h.launch.start == kResultSuccess);
+        CHECK(h.closed_tick == h.start_tick);
+        CHECK(h.closing.result == kResultSuccess);
+        CHECK(h.closing.sender == applet);
+        CHECK(h.closing.signal == kWakeupByExit);
+        CHECK(h.closing.size == 0x30);
+        CHECK(h.closing.data == std::vector<u8>(0x30, 0));  // not the 0xAB the game sent
+        CHECK(h.info[2] == 0);
+        // an empty parameter: an empty answer
+        CHECK(empty.launch.start == kResultSuccess);
+        CHECK(empty.closing.result == kResultSuccess);
+        CHECK(empty.closing.signal == kWakeupByExit);
+        CHECK(empty.closing.size == 0);
+    }
+}
+
+TEST_CASE("the Mii selector (0x202 and 0x402) closes at the next update tick with the standard Mii of "
+          "Azahar's default selector") {
+    for (const u32 applet : {kMii1, kMii2}) {
+        INFO("applet " << applet);
+        Fixture f;
+        TempDir dir;
+        Launch launch;
+        Param before_tick, closing, again;
+        u64 created_at = 0, awake_at = 0;
+        std::shared_ptr<SharedMemory> memory;
+        std::vector<u32> app_info;
+        const int status = BootWith(f, dir, {"--ms", "20000"}, [&] {
+            Guest g(*f.runtime);
+            Apt apt{g, g.Service("APT:U")};
+            apt.StartApplication();
+            created_at = Now(g.rt);
+            launch.prepare = apt.PrepareToStartLibraryApplet(applet);
+            launch.request = apt.Send(kApplication, applet, kRequest, 0, MakeCaptureInfo(0x6000));
+            launch.response = apt.Receive(kApplication, 0x20);
+            memory = g.rt.GetKernel().GetObject<SharedMemory>(launch.response.object);
+            std::vector<u8> config(0x104, 0);
+            config[0] = 1;  // enable_cancel_button: no effect
+            launch.start = apt.StartLibraryApplet(applet, 0, config);
+            SleepToTick(g.rt, created_at + kAppletUpdateIntervalTicks - 1);
+            before_tick = apt.Receive(kApplication, 0x84);
+            SleepNs(g.rt, 40);
+            awake_at = Now(g.rt);
+            closing = apt.Receive(kApplication, 0x84);
+            app_info = g.Request(apt.h, {ipc::MakeHeader(0x0005, 1, 0), 0}, 6);
+            again = apt.Receive(kApplication, 0x84);
+            ExitProcess(*f.runtime);
+        });
+        CHECK(status == 0);
+        CHECK(launch.prepare == kResultSuccess);
+        CHECK(launch.response.sender == applet);
+        CHECK(launch.response.signal == kResponse);
+        REQUIRE(memory != nullptr);
+        CHECK(memory->Size() == 0x6000);
+        CHECK(launch.start == kResultSuccess);
+        CHECK(before_tick.result == kNoData);
+        CHECK(awake_at >= created_at + kAppletUpdateIntervalTicks);
+        CHECK(closing.result == kResultSuccess);
+        CHECK(closing.sender == applet);
+        CHECK(closing.signal == kWakeupByExit);
+        CHECK(closing.size == 0x84);
+        REQUIRE(closing.data.size() == 0x84);
+        // MiiResult: return code 0, no guest Mii (index 0xFFFFFFFF), the Mii at 0xC and a zero guest name
+        CHECK(std::vector<u8>(closing.data.begin(), closing.data.begin() + 8) == std::vector<u8>(8, 0));
+        CHECK(std::vector<u8>(closing.data.begin() + 8, closing.data.begin() + 12) ==
+              std::vector<u8>(4, 0xFF));
+        CHECK(std::vector<u8>(closing.data.begin() + 12, closing.data.begin() + 0x6C) == kStandardMiiBytes);
+        CHECK(std::vector<u8>(closing.data.begin() + 0x6C, closing.data.end()) == std::vector<u8>(0x18, 0));
+        CHECK(app_info[2] == 0);
+        CHECK(again.result == kNoData);  // one closing parameter only
+    }
+}
+
+TEST_CASE("the Mii selector's checksum is the CRC-16 of 3dbrew, and the code's answer is the hand-written one") {
+    // CRC-16/XMODEM's check value
+    const std::string check = "123456789";
+    CHECK(MiiCrc16(reinterpret_cast<const u8*>(check.data()), check.size()) == 0x31C3);
+    CHECK(MiiCrc16(nullptr, 0) == 0);
+    const std::array<u8, kMiiResultSize> result = StandardMiiResult();
+    CHECK(std::vector<u8>(result.begin() + miiresult::kSelectedMiiData,
+                          result.begin() + miiresult::kGuestMiiName) == kStandardMiiBytes);
+    CHECK(std::vector<u8>(result.begin(), result.begin() + 8) == std::vector<u8>(8, 0));
+    // the stored checksum covers the Mii and the two bytes of padding before it
+    CHECK(MiiCrc16(&result[miiresult::kSelectedMiiData], kMiiDataSize + 2) == 0x056C);
+    CHECK(sizeof(CaptureBufferInfo) == 0x20);
+    CHECK(kMiiResultSize == 0x84);
+    CHECK(errlayout::kSize == 0xF80);
+}
+
+TEST_CASE("a Mii selector started with a configuration of the wrong size does not start, and nothing crashes") {
+    Fixture f;
+    TempDir dir;
+    Result prepare = 0, start = 0;
+    Param closing;
+    const int status = BootWith(f, dir, {"--ms", "20000"}, [&] {
+        Guest g(*f.runtime);
+        Apt apt{g, g.Service("APT:U")};
+        apt.StartApplication();
+        prepare = apt.PrepareToStartLibraryApplet(kMii2);
+        apt.Send(kApplication, kMii2, kRequest, 0, MakeCaptureInfo(0x100));
+        apt.Receive(kApplication, 0x20);
+        start = apt.StartLibraryApplet(kMii2, 0, std::vector<u8>(0x100, 0));
+        SleepNs(g.rt, 3 * TicksToNsCeil(kAppletUpdateIntervalTicks));
+        closing = apt.Receive(kApplication, 0x84);
+        ExitProcess(*f.runtime);
+    });
+    CHECK(status == 0);
+    CHECK(prepare == kResultSuccess);
+    CHECK(start == kResultSuccess);
+    CHECK(closing.result == kNoData);  // an applet that never became active never closes
+    CHECK(f.LoggedAt(LogLevel::Warning,
+                     "The size of the parameter (MiiConfig) is wrong: 256 bytes, expected 260"));
+    CHECK(f.Logged("never closes"));
+}
+
+TEST_CASE("PreloadLibraryApplet makes the applet and marks it loaded, and the flow is the same afterwards") {
+    Fixture f;
+    TempDir dir;
+    Result preload = 0, preload_again = 0, finish = 0, prepare_after = 0;
+    u32 registered_before = 9, registered_after = 0;
+    Handshake h;
+    const int status = BootWith(f, dir, {"--ms", "20000"}, [&] {
+        Guest g(*f.runtime);
+        Apt apt{g, g.Service("APT:U")};
+        apt.StartApplication();
+        registered_before = apt.IsRegistered(kError2);
+        preload = apt.Simple(0x0016, {kError2});
+        registered_after = apt.IsRegistered(kError2);
+        preload_again = apt.Simple(0x0016, {kError2});
+        finish = apt.Simple(0x0017, {kError2});
+        prepare_after = apt.PrepareToStartLibraryApplet(kError2);
+        // the game starts it without a Prepare, as after a preload
+        const Param none = apt.Receive(kApplication, 0x10, true);
+        CHECK(none.result == kNoData);
+        apt.Send(kApplication, kError2, kRequest, 0, MakeCaptureInfo(0x2000));
+        h.launch.response = apt.Receive(kApplication, 0x20);
+        h.launch.start = apt.StartLibraryApplet(kError2, 0, MakeErrParam(5));
+        h.closing = apt.Receive(kApplication, 0xF80);
+        ExitProcess(*f.runtime);
+    });
+    CHECK(status == 0);
+    CHECK(registered_before == 0);
+    CHECK(preload == kResultSuccess);
+    CHECK(registered_after == 1);
+    CHECK(preload_again == kAlreadyExists);
+    CHECK(finish == kResultSuccess);
+    CHECK(prepare_after == kAlreadyExists);  // the applet's slot is taken, as in Azahar
+    CHECK(h.launch.response.signal == kResponse);
+    CHECK(h.launch.response.sender == kError2);
+    CHECK(h.launch.start == kResultSuccess);
+    CHECK(h.closing.signal == kWakeupByExit);
+    CHECK(Get32(h.closing.data, 0xF70) == 1);
+}
+
+TEST_CASE("every other library or system applet id answers as the default case of Azahar's CreateHLEApplet: "
+          "0xD8C0CFFA, and nothing is left behind") {
+    // The ids of Azahar's AppletId that its HLE does not make (the keyboard 0x201/0x401, the Mii selector
+    // 0x202/0x402, the error applet 0x206/0x406 and the Mint applet 0x207/0x407 are made), and ids that are
+    // not applets at all.
+    const std::vector<u32> ids = {0x000, 0x100, 0x101, 0x103, 0x110, 0x112, 0x113, 0x114, 0x115, 0x116,
+                                  0x117, 0x118, 0x119, 0x200, 0x204, 0x205, 0x208, 0x209, 0x300, 0x301,
+                                  0x400, 0x404, 0x405, 0x408, 0x409, 0xF00, 0x999};
+    Fixture f;
+    TempDir dir;
+    std::vector<Result> prepare;
+    Result then_keyboard = 0;
+    std::vector<u32> info;
+    const int status = BootWith(f, dir, {"--ms", "20000"}, [&] {
+        Guest g(*f.runtime);
+        Apt apt{g, g.Service("APT:U")};
+        apt.StartApplication();
+        for (const u32 id : ids) {
+            prepare.push_back(apt.PrepareToStartLibraryApplet(id));
+        }
+        info = g.Request(apt.h, {ipc::MakeHeader(0x0005, 1, 0), 0}, 6);
         then_keyboard = apt.PrepareToStartLibraryApplet(kKeyboard);
         ExitProcess(*f.runtime);
     });
     CHECK(status == 0);
-    CHECK(mii == kNotSupported);
-    CHECK(error_applet == kNotSupported);
-    CHECK(prepare_system == kResultSuccess);
-    CHECK(start_system == kNotSupported);
+    REQUIRE(prepare.size() == ids.size());
+    for (std::size_t i = 0; i < ids.size(); ++i) {
+        INFO("applet id " << ids[i]);
+        CHECK(prepare[i] == kNotSupported);
+    }
+    CHECK(info[2] == 0);  // the application is still the active applet
     CHECK(then_keyboard == kResultSuccess);
+    CHECK(f.Count("Could not create applet") == ids.size());
+}
+
+TEST_CASE("StartSystemApplet fails as Azahar's does without the applet's title, for the HOME menu and for "
+          "the other system applets, and the application stays active") {
+    for (const u32 applet : {0x101u, 0x112u, 0x114u, 0x103u, 0x110u}) {
+        INFO("applet " << applet);
+        Fixture f;
+        TempDir dir;
+        Result prepare = 0, start = 0, prepare_library = 0;
+        std::vector<u32> info;
+        Param pending;
+        const int status = BootWith(f, dir, {"--ms", "20000"}, [&] {
+            Guest g(*f.runtime);
+            Apt apt{g, g.Service("APT:U")};
+            apt.StartApplication();
+            prepare = apt.Simple(0x0019, {applet});
+            const std::vector<u32> r = g.Request(
+                apt.h,
+                {ipc::MakeHeader(0x001F, 2, 4), applet, 0, ipc::CopyHandleDesc(1), 0, ipc::StaticBufferDesc(0, 0), g.Scratch(0xC00)},
+                2);
+            start = r[1];
+            info = g.Request(apt.h, {ipc::MakeHeader(0x0005, 1, 0), 0}, 6);
+            pending = apt.Receive(kApplication, 0x20, true);
+            prepare_library = apt.PrepareToStartLibraryApplet(kError);
+            ExitProcess(*f.runtime);
+        });
+        CHECK(status == 0);
+        CHECK(prepare == kResultSuccess);
+        CHECK(start == kNotSupported);
+        CHECK(info[2] == 0);                // the application is still active
+        CHECK(info[5] == kApplication);
+        CHECK(pending.result == kNoData);   // no parameter was sent anywhere
+        CHECK(prepare_library == kResultSuccess);  // and the game can show an error dialog afterwards
+        CHECK(f.Logged("no such title"));
+    }
 }
 
 // ---- the other commands the game sends --------------------------------------------------------------------------------

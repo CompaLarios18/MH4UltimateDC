@@ -7,6 +7,8 @@
 
 #include <fmt/format.h>
 
+#include "../../common/utf8.h"
+
 #if defined(_WIN32)
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -36,7 +38,8 @@ struct PositionedFile::Impl {
 };
 
 std::shared_ptr<PositionedFile> PositionedFile::Open(const std::string& path, std::string* error) {
-    const std::filesystem::path native(std::u8string(path.begin(), path.end()));
+    // The path is UTF-8 text; the file call takes UTF-16 and never the ANSI code page (D45).
+    const std::wstring native = utf8::ToWide(path);
     HANDLE handle = CreateFileW(native.c_str(), GENERIC_READ,
                                 FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
                                 OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);

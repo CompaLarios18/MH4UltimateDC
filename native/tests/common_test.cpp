@@ -2,6 +2,7 @@
 #include <doctest/doctest.h>
 
 #include <cstring>
+#include <filesystem>
 #include <string>
 #include <vector>
 
@@ -15,6 +16,8 @@
 #include "mh4n/crc32.h"
 #include "mh4n/log.h"
 #include "mh4n/types.h"
+
+#include "../src/common/utf8.h"
 
 using namespace mh4n;
 
@@ -243,3 +246,133 @@ TEST_CASE("CRC-32 continues over a second block") {
         CHECK(Crc32(text + split, 9 - split, Crc32(text, split)) == whole);
     }
 }
+
+// ---- UTF-8 and UTF-16 (D45) -------------------------------------------------------------------------------------------
+
+namespace {
+// The text of the paths that carry the Windows fix: "José-ñ-日本" as UTF-8 bytes and as UTF-16 units. Written
+// as escapes so that no source or compiler setting changes it.
+const std::string kAccented = std::string("Jos") + "\xC3\xA9" + "-" + "\xC3\xB1" + "-" + "\xE6\x97\xA5" + "\xE6\x9C\xAC";
+const std::u16string kAccentedUnits = std::u16string(u"Jos") + char16_t(0x00E9) + u'-' + char16_t(0x00F1) + u'-' +
+                                      char16_t(0x65E5) + char16_t(0x672C);
+}  // namespace
+
+TEST_CASE("UTF-8 to UTF-16: ASCII, two, three and four byte characters, and the empty string") {
+    CHECK(utf8::ToUtf16("") == std::u16string());
+    CHECK(utf8::ToUtf16("abc/def.txt") == std::u16string(u"abc/def.txt"));
+    CHECK(utf8::ToUtf16(kAccented) == kAccentedUnits);
+    CHECK(utf8::ToUtf16("\xC3\xA9") == std::u16string(1, char16_t(0x00E9)));
+    CHECK(utf8::ToUtf16("\xE2\x82\xAC") == std::u16string(1, char16_t(0x20AC)));
+    // U+1F600 is a surrogate pair in UTF-16
+    CHECK(utf8::ToUtf16("\xF0\x9F\x98\x80") == std::u16string({char16_t(0xD83D), char16_t(0xDE00)}));
+    // the largest code point, and the first one of each length
+    CHECK(utf8::ToUtf16("\xF4\x8F\xBF\xBF") == std::u16string({char16_t(0xDBFF), char16_t(0xDFFF)}));
+    CHECK(utf8::ToUtf16("\x7F") == std::u16string(1, char16_t(0x7F)));
+    CHECK(utf8::ToUtf16("\xC2\x80") == std::u16string(1, char16_t(0x80)));
+    CHECK(utf8::ToUtf16("\xE0\xA0\x80") == std::u16string(1, char16_t(0x800)));
+    CHECK(utf8::ToUtf16("\xF0\x90\x80\x80") == std::u16string({char16_t(0xD800), char16_t(0xDC00)}));
+    // a null inside the text is kept (the size says where the text ends)
+    CHECK(utf8::ToUtf16(std::string_view("a\0b", 3)) == std::u16string({u'a', char16_t(0), u'b'}));
+}
+
+TEST_CASE("UTF-8 to UTF-16: bad input becomes U+FFFD, one per bad byte, and never stops the text") {
+    const char16_t bad = 0xFFFD;
+    CHECK(utf8::ToUtf16("\xFF") == std::u16string(1, bad));
+    CHECK(utf8::ToUtf16("\x80") == std::u16string(1, bad));          // a continuation byte alone
+    CHECK(utf8::ToUtf16("a\xC3") == std::u16string({u'a', bad}));    // cut short at the end
+    CHECK(utf8::ToUtf16("a\xE2\x82") == std::u16string({u'a', bad, bad}));
+    CHECK(utf8::ToUtf16("\xC3z") == std::u16string({bad, u'z'}));    // not followed by a continuation
+    CHECK(utf8::ToUtf16("\xF8\x88\x80\x80\x80") == std::u16string(5, bad));  // a five byte lead
+    CHECK(utf8::ToUtf16("\xF4\x90\x80\x80") == std::u16string(4, bad));       // beyond U+10FFFF
+    // a surrogate written in UTF-8 (CESU-8) is not text
+    CHECK(utf8::ToUtf16("\xED\xA0\x80") == std::u16string(3, bad));
+    CHECK(utf8::ToUtf16("\xED\xB0\x80") == std::u16string(3, bad));
+    // what follows a bad byte is read on
+    CHECK(utf8::ToUtf16(std::string("\xFF") + kAccented) == std::u16string(1, bad) + kAccentedUnits);
+}
+
+TEST_CASE("UTF-16 to UTF-8: ASCII, accents, surrogate pairs, lone surrogates and the empty string") {
+    CHECK(utf8::FromUtf16(u"") == "");
+    CHECK(utf8::FromUtf16(u"abc/def.txt") == "abc/def.txt");
+    CHECK(utf8::FromUtf16(kAccentedUnits) == kAccented);
+    CHECK(utf8::FromUtf16(std::u16string({char16_t(0xD83D), char16_t(0xDE00)})) == "\xF0\x9F\x98\x80");
+    CHECK(utf8::FromUtf16(std::u16string({char16_t(0xDBFF), char16_t(0xDFFF)})) == "\xF4\x8F\xBF\xBF");
+    CHECK(utf8::FromUtf16(std::u16string(1, char16_t(0x20AC))) == "\xE2\x82\xAC");
+    CHECK(utf8::FromUtf16(std::u16string({u'a', char16_t(0), u'b'})) == std::string("a\0b", 3));
+    // a lone surrogate, high or low, becomes U+FFFD (EF BF BD) and the text goes on
+    const std::string replacement = "\xEF\xBF\xBD";
+    CHECK(utf8::FromUtf16(std::u16string(1, char16_t(0xD800))) == replacement);
+    CHECK(utf8::FromUtf16(std::u16string(1, char16_t(0xDC00))) == replacement);
+    CHECK(utf8::FromUtf16(std::u16string({u'a', char16_t(0xD83D)})) == "a" + replacement);          // at the end
+    CHECK(utf8::FromUtf16(std::u16string({char16_t(0xD83D), u'a'})) == replacement + "a");          // not followed by its partner
+    CHECK(utf8::FromUtf16(std::u16string({char16_t(0xDE00), char16_t(0xD83D)})) == replacement + replacement);  // reversed
+    CHECK(utf8::FromUtf16(std::u16string({char16_t(0xD83D), char16_t(0xD83D), char16_t(0xDE00)})) ==
+          replacement + "\xF0\x9F\x98\x80");  // the second high surrogate takes the low one
+}
+
+TEST_CASE("UTF-8 and UTF-16 round-trip, for text that is valid") {
+    for (const std::string& text : {std::string(), std::string("plain"), kAccented, std::string("\xF0\x9F\x98\x80x\xF0\x9F\x8E\xAE"),
+                                   std::string("/user/") + kAccented + "/sdmc/Nintendo 3DS/"}) {
+        CHECK(utf8::FromUtf16(utf8::ToUtf16(text)) == text);
+    }
+    // every code point of the BMP except the surrogates, and a few beyond it
+    std::u16string all;
+    for (u32 c = 1; c < 0x10000; ++c) {
+        if (c < 0xD800 || c >= 0xE000) {
+            all.push_back(static_cast<char16_t>(c));
+        }
+    }
+    CHECK(utf8::ToUtf16(utf8::FromUtf16(all)) == all);
+    for (const u32 c : {0x10000u, 0x1F600u, 0x10FFFFu, 0x20000u}) {
+        const u32 v = c - 0x10000;
+        const std::u16string pair({static_cast<char16_t>(0xD800 + (v >> 10)), static_cast<char16_t>(0xDC00 + (v & 0x3FF))});
+        CHECK(utf8::ToUtf16(utf8::FromUtf16(pair)) == pair);
+    }
+}
+
+TEST_CASE("PathFromUtf8 and PathToUtf8: ASCII, accents and the empty path") {
+    CHECK(utf8::PathToUtf8(utf8::PathFromUtf8("")) == "");
+    CHECK(utf8::PathToUtf8(utf8::PathFromUtf8("plain/folder/file.bin")) == "plain/folder/file.bin");
+    const std::filesystem::path accented = utf8::PathFromUtf8(std::string("user/") + kAccented + "/sysdata");
+    CHECK(utf8::PathToUtf8(accented) == std::string("user/") + kAccented + "/sysdata");
+    // a join keeps the characters: the name taken from it is the same bytes
+    const std::filesystem::path joined = utf8::PathFromUtf8(kAccented) / "icon.bin";
+    CHECK(utf8::PathToUtf8(joined.filename()) == "icon.bin");
+    CHECK(utf8::PathToUtf8(joined.parent_path()) == kAccented);
+    CHECK(utf8::PathToUtf8(utf8::PathFromUtf8(kAccented + ".elf").filename()) == kAccented + ".elf");
+}
+
+#if !defined(_WIN32)
+TEST_CASE("PathFromUtf8 and PathToUtf8 on POSIX: the bytes are the path, valid UTF-8 or not") {
+    for (const std::string& text : {std::string(), std::string("a b"), kAccented, std::string("\xF0\x9F\x98\x80"),
+                                   std::string("bad\xFF\xC3(\x80name"), std::string("\xED\xA0\x80"),
+                                   std::string("/abs/") + kAccented + "/file"}) {
+        const std::filesystem::path path = utf8::PathFromUtf8(text);
+        CHECK(path.native() == text);  // not converted, not replaced
+        CHECK(utf8::PathToUtf8(path) == text);
+    }
+}
+#endif
+
+#if defined(_WIN32)
+TEST_CASE("PathFromUtf8 and PathToUtf8 on Windows: the path holds the wide characters") {
+    const std::filesystem::path path = utf8::PathFromUtf8(kAccented);
+    CHECK(path.native() == std::wstring(L"Jos\u00E9-\u00F1-\u65E5\u672C"));
+    CHECK(utf8::PathToUtf8(path) == kAccented);
+    // the text of a path never goes through the ANSI .string(): a character outside the code page survives
+    CHECK(utf8::PathToUtf8(std::filesystem::path(L"C:\\Users\\\u65E5\u672C\\x")) == "C:\\Users\\\xE6\x97\xA5\xE6\x9C\xAC\\x");
+    // text that is not UTF-8 becomes U+FFFD in the wide path, as ToWide does
+    CHECK(utf8::PathFromUtf8("a\xFF").native() == std::wstring(L"a\xFFFD"));
+}
+#endif
+
+#if defined(_WIN32)
+TEST_CASE("UTF-8 and the wide characters of Windows") {
+    CHECK(utf8::ToWide(kAccented) == std::wstring(L"Jos\u00E9-\u00F1-\u65E5\u672C"));
+    CHECK(utf8::FromWide(L"Jos\u00E9-\u00F1-\u65E5\u672C") == kAccented);
+    CHECK(utf8::FromWide(static_cast<const wchar_t*>(nullptr)) == "");
+    CHECK(utf8::FromWide(std::wstring_view()) == "");
+    CHECK(utf8::ToWide("") == std::wstring());
+    CHECK(utf8::FromWide(L"\xD83D") == "\xEF\xBF\xBD");
+}
+#endif

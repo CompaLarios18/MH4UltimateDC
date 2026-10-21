@@ -20,6 +20,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <climits>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -28,9 +29,11 @@
 #include <memory>
 #include <optional>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
+#include "../src/common/utf8.h"
 #include "../src/services/cfg/cfg_store.h"
 #include "../src/services/cfg/sha256.h"
 #include "mh4n/clock.h"
@@ -76,6 +79,17 @@ std::vector<u8> ReadAll(const std::string& path) {
 
 void WriteAll(const std::string& path, const std::vector<u8>& bytes) {
     fs::create_directories(fs::path(path).parent_path());
+    std::ofstream(path, std::ios::binary)
+        .write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+}
+
+std::vector<u8> ReadAllFrom(const fs::path& path) {
+    std::ifstream in(path, std::ios::binary);
+    return std::vector<u8>((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+}
+
+void WriteAllTo(const fs::path& path, const std::vector<u8>& bytes) {
+    fs::create_directories(path.parent_path());
     std::ofstream(path, std::ios::binary)
         .write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
 }
@@ -422,6 +436,11 @@ TEST_CASE("cfg: the MAC address is read from mac.txt, or made once and kept") {
     TempDir dir;
     u64 counter = 0;
     const auto random = [&] { return counter += 0x1234567; };
+    // a missing user folder is not created for it: the MAC lives for this run only
+    const std::string temporary = cfg::ReadMacAddress(dir.User(), random);
+    CHECK_FALSE(temporary.empty());
+    CHECK_FALSE(fs::exists(dir.User()));
+    fs::create_directories(dir.User());
     const std::string made = cfg::ReadMacAddress(dir.User(), random);
     std::array<u8, 6> bytes{};
     CHECK(cfg::ParseMac(made, &bytes));
@@ -449,6 +468,9 @@ TEST_CASE("cfg: the MCU data file is valid or the default, and written only on r
     CHECK_FALSE(fs::exists(dir.User()));
     cfg::McuData data;
     data.clock_sequence = 0x1234;
+    CHECK_FALSE(cfg::WriteMcuData(dir.User(), data));  // a missing user folder is not created
+    CHECK_FALSE(fs::exists(dir.User()));
+    fs::create_directories(dir.User());
     REQUIRE(cfg::WriteMcuData(dir.User(), data));
     const std::vector<u8> file = ReadAll(dir.User() + "/sysdata/mcu.dat");
     REQUIRE(file.size() == 0x18);
@@ -460,6 +482,193 @@ TEST_CASE("cfg: the MCU data file is valid or the default, and written only on r
     bad[0] ^= 1;
     WriteAll(dir.User() + "/sysdata/mcu.dat", bad);
     CHECK(cfg::ReadMcuData(dir.User()).clock_sequence == 0);
+}
+
+// ---- D45: user and game folders with accents and characters outside the ANSI code page -------------------------
+
+namespace {
+
+// "José-ñ-día" in UTF-8 bytes, with Japanese characters: what the tests of N1-13e call the user's folder.
+const std::string kUnicodeName =
+    std::string("Jos") + "\xC3\xA9" + "-" + "\xC3\xB1" + "-" + "\xE6\x97\xA5" + "\xE6\x9C\xAC";
+
+// A temporary folder with an ASCII name that holds the folders of a test, so that "nothing in a differently
+// named folder" can be checked: after a test, its entries must be exactly the ones that were asked for (a
+// name that went through the ANSI code page would show up as another entry).
+class UnicodeDirs {
+public:
+    UnicodeDirs() {
+        static std::atomic<int> counter{0};
+        root_ = fs::temp_directory_path() /
+                ("mh4n_cfg_test_unicode_" +
+                 std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + "_" +
+                 std::to_string(counter++));
+        fs::create_directories(root_);
+    }
+    ~UnicodeDirs() {
+        std::error_code ignored;
+        fs::remove_all(root_, ignored);
+    }
+    // A folder named kUnicodeName under the root, as the UTF-8 text the runner gives the modules (it is not
+    // created), and the same for the other names.
+    std::string Folder(const std::string& name = kUnicodeName) const {
+        return utf8::PathToUtf8(root_ / utf8::PathFromUtf8(name));
+    }
+    // The names of what is directly under the root, as UTF-8, sorted.
+    std::vector<std::string> Entries() const {
+        std::vector<std::string> names;
+        for (const auto& entry : fs::directory_iterator(root_)) {
+            names.push_back(utf8::PathToUtf8(entry.path().filename()));
+        }
+        std::sort(names.begin(), names.end());
+        return names;
+    }
+
+private:
+    fs::path root_;
+};
+
+fs::path Host(const std::string& utf8_text) {
+    return utf8::PathFromUtf8(utf8_text);
+}
+
+u64 CountingRandom() {
+    static u64 n = 0x5DEECE66Dull;
+    n = n * 6364136223846793005ull + 1442695040888963407ull;
+    return n | 1;
+}
+
+}  // namespace
+
+TEST_CASE("D45: the config savegame is made, replaced and read in a user folder with non-ASCII characters") {
+    UnicodeDirs dirs;
+    const std::string user = dirs.Folder();
+    REQUIRE(user.find(kUnicodeName) != std::string::npos);
+    // the place of the file: the folder's text and Azahar's relative path, byte for byte
+    const std::string config = cfg::ConfigPath(user);
+    CHECK(config == user + "/nand/data/00000000000000000000000000000000/sysdata/00010017/00000000/config");
+    CHECK(cfg::McuPath(user) == user + "/sysdata/mcu.dat");
+    CHECK(cfg::MacPath(user) == user + "/sysdata/mac.txt");
+
+    // nothing there: absent, and the store reads the defaults
+    CHECK(cfg::GetConfigFileState(config) == cfg::ConfigFileState::Absent);
+    CHECK(cfg::EnsureConfigFile(user, CountingRandom) == cfg::EnsureResult::NoUserFolder);  // the folder is not made
+    CHECK(dirs.Entries().empty());
+
+    // Save makes the folders (the user folder too) with the name as it was given
+    {
+        cfg::ConfigStore store(user);
+        CHECK_FALSE(store.FromFile());
+        REQUIRE(store.SetConsoleUniqueId(0x1234, 0x1234'0000'AABBCCDDull) == kResultSuccess);
+        REQUIRE(store.Save());
+    }
+    CHECK(dirs.Entries() == std::vector<std::string>{kUnicodeName});
+    REQUIRE(fs::is_regular_file(Host(config)));
+    CHECK(fs::file_size(Host(config)) == 0x8000);
+    CHECK_FALSE(fs::exists(Host(config + ".tmp")));  // the temporary file was renamed away
+    const std::vector<u8> first = ReadAllFrom(Host(config));
+    CHECK(cfg::GetConfigFileState(config) == cfg::ConfigFileState::Valid);
+    CHECK(cfg::IsValidConfigFile(config));
+    {
+        cfg::ConfigStore back(user);
+        CHECK(back.FromFile());
+        CHECK(back.GetConsoleUniqueId() == 0x1234'0000'AABBCCDDull);
+        // a second Save replaces the file in place: same size, new content, no leftovers
+        REQUIRE(back.SetConsoleUniqueId(0x4321, 0x4321'0000'11223344ull) == kResultSuccess);
+        REQUIRE(back.Save());
+    }
+    CHECK(fs::file_size(Host(config)) == 0x8000);
+    CHECK(ReadAllFrom(Host(config)) != first);
+    CHECK_FALSE(fs::exists(Host(config + ".tmp")));
+    CHECK(cfg::ConfigStore(user).GetConsoleUniqueId() == 0x4321'0000'11223344ull);
+    CHECK(dirs.Entries() == std::vector<std::string>{kUnicodeName});
+}
+
+TEST_CASE("D45: the start-up step makes the config of an existing user folder with non-ASCII characters, once") {
+    UnicodeDirs dirs;
+    const std::string user = dirs.Folder();
+    fs::create_directories(Host(user));
+    u64 id = 0;
+    REQUIRE(cfg::EnsureConfigFile(user, CountingRandom, &id) == cfg::EnsureResult::Created);
+    CHECK(id != 0);
+    const fs::path config = Host(cfg::ConfigPath(user));
+    REQUIRE(fs::is_regular_file(config));
+    const std::vector<u8> bytes = ReadAllFrom(config);
+    REQUIRE(bytes.size() == 0x8000);
+    CHECK(Le16(bytes, 2) == 0x455C);
+    CHECK(Le16(bytes, 0) == cfg::DefaultBlocks().size());
+    CHECK(cfg::ConfigStore(user).GetConsoleUniqueId() == id);
+    CHECK(cfg::EnsureConfigFile(user, CountingRandom) == cfg::EnsureResult::Existing);
+    CHECK(ReadAllFrom(config) == bytes);
+    // a damaged file in that folder is left alone
+    WriteAllTo(config, {});
+    CHECK(cfg::GetConfigFileState(cfg::ConfigPath(user)) == cfg::ConfigFileState::Invalid);
+    CHECK(cfg::EnsureConfigFile(user, CountingRandom) == cfg::EnsureResult::Invalid);
+    CHECK(fs::file_size(config) == 0);
+    CHECK(dirs.Entries() == std::vector<std::string>{kUnicodeName});
+}
+
+TEST_CASE("D45: mac.txt and mcu.dat are read and written in a user folder with non-ASCII characters") {
+    UnicodeDirs dirs;
+    const std::string user = dirs.Folder();
+    // a missing folder is not made for either file, and the answer is the default or a MAC for this run
+    const std::string temporary = cfg::ReadMacAddress(user, CountingRandom);
+    CHECK_FALSE(temporary.empty());
+    CHECK(cfg::ReadMcuData(user).clock_sequence == 0);
+    cfg::McuData data;
+    data.clock_sequence = 0x1234;
+    CHECK_FALSE(cfg::WriteMcuData(user, data));
+    CHECK(dirs.Entries().empty());
+
+    fs::create_directories(Host(user));
+    const std::string made = cfg::ReadMacAddress(user, CountingRandom);
+    std::array<u8, 6> bytes{};
+    CHECK(cfg::ParseMac(made, &bytes));
+    CHECK(ReadAllFrom(Host(user + "/sysdata/mac.txt")) == std::vector<u8>(made.begin(), made.end()));
+    CHECK_FALSE(fs::exists(Host(user + "/sysdata/mac.txt.tmp")));
+    CHECK(cfg::ReadMacAddress(user, CountingRandom) == made);  // kept
+    const std::string good = "18:2A:7B:0A:0B:0C";
+    WriteAllTo(Host(user + "/sysdata/mac.txt"), std::vector<u8>(good.begin(), good.end()));
+    CHECK(cfg::ReadMacAddress(user, CountingRandom) == good);  // a file the player or Azahar left is read as it is
+
+    REQUIRE(cfg::WriteMcuData(user, data));
+    const std::vector<u8> file = ReadAllFrom(Host(user + "/sysdata/mcu.dat"));
+    REQUIRE(file.size() == 0x18);
+    CHECK(Le32(file, 0) == 0x4455434D);
+    CHECK(Le32(file, 16) == 0x1234);
+    CHECK_FALSE(fs::exists(Host(user + "/sysdata/mcu.dat.tmp")));
+    CHECK(cfg::ReadMcuData(user).clock_sequence == 0x1234);
+    CHECK(dirs.Entries() == std::vector<std::string>{kUnicodeName});
+}
+
+TEST_CASE("D45: the region lockout is read from the icon of a game folder with non-ASCII characters") {
+    UnicodeDirs dirs;
+    const std::string game = dirs.Folder();
+    CHECK(cfg::RegionsFromIcon(game).empty());  // no folder
+    std::vector<u8> smdh(0x36C0, 0);
+    Set32(smdh, 0x2018, 0b0000101);  // JPN and EUR
+    fs::create_directories(Host(game));
+    {
+        std::ofstream out(Host(game + "/icon.bin"), std::ios::binary);
+        out.write(reinterpret_cast<const char*>(smdh.data()), static_cast<std::streamsize>(smdh.size()));
+    }
+    CHECK(cfg::RegionsFromIcon(game) == std::vector<u32>{0, 2});
+    fs::remove(Host(game + "/icon.bin"));
+    CHECK(cfg::RegionsFromIcon(game).empty());
+    fs::create_directories(Host(game + "/exefs"));
+    Set32(smdh, 0x2018, 0b0100010);  // regions 1 (USA) and 5 (KOR)
+    {
+        std::ofstream out(Host(game + "/exefs/icon.bin"), std::ios::binary);
+        out.write(reinterpret_cast<const char*>(smdh.data()), static_cast<std::streamsize>(smdh.size()));
+    }
+    CHECK(cfg::RegionsFromIcon(game) == std::vector<u32>{1, 5});
+    // a file that is too short is not an icon
+    {
+        std::ofstream out(Host(game + "/exefs/icon.bin"), std::ios::binary | std::ios::trunc);
+        out.write("short", 5);
+    }
+    CHECK(cfg::RegionsFromIcon(game).empty());
+    CHECK(dirs.Entries() == std::vector<std::string>{kUnicodeName});
 }
 
 // ---- region and language ---------------------------------------------------------------------------------------
@@ -736,6 +945,8 @@ TEST_CASE("cfg:u answers the defaults of a fresh user folder as Azahar does (con
     CHECK(unknown[0] == 0x00FF0040);
     CHECK(unknown[1] == kResultSuccess);
     CHECK(f.Logged("unimplemented cfg:u 0x00ff0000"));
+    // The user folder does not exist and nothing made it: not the reads, and not the nwm start-up
+    // that asks for the console MAC (D37, D40: mac.txt never creates a missing user folder).
     CHECK_FALSE(fs::exists(dir.User()));  // none of it made a file
 }
 
@@ -1137,6 +1348,7 @@ TEST_CASE("cfg:i FormatConfig puts the defaults back with a new console unique I
 TEST_CASE("cfg:s keeps the UUID clock sequence in mcu.dat") {
     Fixture f;
     TempDir dir;
+    fs::create_directories(dir.User());  // the module keeps mcu.dat only in a user folder that exists
     std::vector<u32> before, set, after;
     const int status = BootWith(f, dir, {"--ms", "100"}, [&] {
         Guest g(*f.runtime);
@@ -1212,6 +1424,513 @@ TEST_CASE("--new-console-id keeps the rest of an existing config savegame") {
     CHECK(saved.GetUsername() == u"Hunter");
     CHECK(saved.GetLanguageRaw() == 2);
     CHECK(saved.GetConsoleUniqueId() != 0x1234000123456789ull);
+}
+
+// ---- D37: the config of a new user folder -----------------------------------------------------------------------
+
+namespace {
+
+u64 FixedRandom() {
+    static u64 n = 0x0123456789ABCDEFull;
+    n = n * 6364136223846793005ull + 1442695040888963407ull;
+    return n | 1;
+}
+
+// The console unique ID the guest reads through cfg:u in a runner boot with `extra` options.
+u64 BootAndReadId(const TempDir& dir, std::vector<std::string> extra, int* status = nullptr) {
+    Fixture f;
+    std::vector<u8> id_block;
+    extra.insert(extra.begin(), {"--ms", "100"});
+    const int rc = BootWith(f, dir, extra, [&] {
+        Guest g(*f.runtime);
+        g.ReadBlock(g.Service("cfg:u"), 1, 0x00090001, 8, &id_block);
+        ExitProcess(*f.runtime);
+    });
+    if (status != nullptr) {
+        *status = rc;
+    }
+    u64 id = 0;
+    if (id_block.size() == 8) {
+        std::memcpy(&id, id_block.data(), 8);
+    }
+    return id;
+}
+
+}  // namespace
+
+TEST_CASE("D37: a fresh existing user folder gets a config with a random ID, kept by the next start") {
+    TempDir dir;
+    fs::create_directories(dir.User());
+    const u64 first = BootAndReadId(dir, {});
+    CHECK(first != 0);
+    REQUIRE(fs::exists(ConfigFilePath(dir)));
+    CHECK(fs::file_size(ConfigFilePath(dir)) == 0x8000);
+    CHECK_FALSE(fs::exists(ConfigFilePath(dir).string() + ".tmp"));
+    const std::vector<u8> bytes = ReadAll(ConfigFilePath(dir).string());
+    CHECK(BootAndReadId(dir, {}) == first);
+    CHECK(ReadAll(ConfigFilePath(dir).string()) == bytes);  // an existing config is not touched
+    cfg::ConfigStore store(dir.User());
+    CHECK(store.FromFile());
+    CHECK(store.GetConsoleUniqueId() == first);
+}
+
+TEST_CASE("D37: the file made has Azahar's header and block table, and the module's reader parses it") {
+    TempDir dir;
+    fs::create_directories(dir.User());
+    u64 id = 0;
+    REQUIRE(cfg::EnsureConfigFile(dir.User(), FixedRandom, &id) == cfg::EnsureResult::Created);
+    const std::vector<u8> file = ReadAll(ConfigFilePath(dir).string());
+    REQUIRE(file.size() == 0x8000);
+    CHECK(Le16(file, 2) == 0x455C);
+    CHECK(Le16(file, 0) == cfg::DefaultBlocks().size());
+    CHECK(cfg::IsValidConfigFile(ConfigFilePath(dir).string()));
+    // every default block is in the table with its id, size and access flags (entries of 12 bytes)
+    std::size_t entry = 4;
+    for (const cfg::DefaultBlock& block : cfg::DefaultBlocks()) {
+        CHECK(Le32(file, entry) == block.id);
+        CHECK(Le16(file, entry + 8) == block.data.size());
+        CHECK(Le16(file, entry + 10) == block.access);
+        entry += 12;
+    }
+    cfg::ConfigStore store(dir.User());
+    CHECK(store.FromFile());
+    CHECK(store.GetConsoleUniqueId() == id);
+    CHECK((id & 0x0000FFFC'00000000ull) == 0);
+    CHECK(store.GetUsername() == u"AZAHAR");
+    u32 random = 0;
+    CHECK(store.Get(0x00090002, 4, cfg::kUserRead, &random) == kResultSuccess);
+    CHECK(random == (id >> 48));
+    // the second console unique ID block and the first hold the same ID
+    u64 first = 0;
+    CHECK(store.Get(0x00090000, 8, cfg::kUserRead, &first) == kResultSuccess);
+    CHECK(first == id);
+    // a second call does nothing
+    CHECK(cfg::EnsureConfigFile(dir.User(), FixedRandom) == cfg::EnsureResult::Existing);
+    CHECK(ReadAll(ConfigFilePath(dir).string()) == file);
+}
+
+TEST_CASE("D37: without --user nothing is written and the ID stays 0") {
+    TempDir dir;
+    Fixture f;
+    std::vector<u8> id_block;
+    const fs::path before = fs::current_path();
+    std::vector<std::string> args = {WriteElf(dir), "--ms", "100"};
+    f.runtime->SetMainThreadEntry([&](GuestThread&) {
+        Guest g(*f.runtime);
+        g.ReadBlock(g.Service("cfg:u"), 1, 0x00090001, 8, &id_block);
+        ExitProcess(*f.runtime);
+    });
+    CHECK(f.runtime->Boot(Parse(args)) == 0);
+    CHECK(id_block == std::vector<u8>(8, 0));
+    CHECK_FALSE(fs::exists(dir.User()));
+    CHECK(fs::current_path() == before);
+    CHECK(cfg::EnsureConfigFile("", FixedRandom) == cfg::EnsureResult::NoUserFolder);
+    // the store of "no folder" is the default blocks (it once read a zeroed file here)
+    cfg::ConfigStore store("");
+    CHECK_FALSE(store.FromFile());
+    CHECK(store.GetUsername() == u"AZAHAR");
+    CHECK(store.GetLanguageRaw() == 1);
+    CHECK(store.GetConsoleUniqueId() == 0);
+}
+
+TEST_CASE("D37: a missing user folder is not created") {
+    TempDir dir;
+    CHECK(BootAndReadId(dir, {}) == 0);
+    CHECK_FALSE(fs::exists(dir.User()));
+    CHECK(cfg::EnsureConfigFile(dir.User(), FixedRandom) == cfg::EnsureResult::NoUserFolder);
+    CHECK_FALSE(fs::exists(dir.User()));
+    // a plain file where the folder should be is not a folder either
+    WriteAll(dir.User(), {1, 2, 3});
+    CHECK(cfg::EnsureConfigFile(dir.User(), FixedRandom) == cfg::EnsureResult::NoUserFolder);
+    CHECK(fs::is_regular_file(dir.User()));
+}
+
+TEST_CASE("D37: a read command does not write; --new-console-id replaces the ID of a made config") {
+    TempDir dir;
+    fs::create_directories(dir.User());
+    const u64 first = BootAndReadId(dir, {});
+    const std::vector<u8> bytes = ReadAll(ConfigFilePath(dir).string());
+    // cfg:u reads of several kinds
+    {
+        Fixture f;
+        BootWith(f, dir, {"--ms", "100"}, [&] {
+            Guest g(*f.runtime);
+            const Handle cfg = g.Service("cfg:u");
+            g.ReadBlock(cfg, 1, 0x000A0002, 1, nullptr);
+            g.ReadBlock(cfg, 1, 0x00FF0000, 4, nullptr);  // unknown block
+            g.Simple(cfg, 0x00020000, 3);
+            ExitProcess(*f.runtime);
+        });
+    }
+    CHECK(ReadAll(ConfigFilePath(dir).string()) == bytes);
+    const u64 second = BootAndReadId(dir, {"--new-console-id"});
+    CHECK(second != 0);
+    CHECK(second != first);
+    CHECK(cfg::ConfigStore(dir.User()).GetConsoleUniqueId() == second);
+    CHECK(BootAndReadId(dir, {}) == second);
+}
+
+TEST_CASE("D37: a short or damaged config is kept byte for byte, with an Error") {
+    const std::vector<std::vector<u8>> files = {
+        std::vector<u8>(10, 0xFF),                    // short, with a header that claims 0xFFFF entries
+        std::vector<u8>(0x7FFF, 0),                   // one byte short
+        std::vector<u8>(0x8000, 0xAB),                // the right size, garbage
+        std::vector<u8>(),                            // empty
+        [] {                                          // a block whose data is outside the file
+            std::vector<u8> file = MakeConfigFile({{0x000A0000, kGlobal, std::vector<u8>(0x1C, 0)}});
+            Set32(file, 4 + 4, 0x7FF0);
+            return file;
+        }(),
+    };
+    for (const auto& original : files) {
+        TempDir dir;
+        WriteAll(ConfigFilePath(dir).string(), original);
+        Fixture f;
+        std::vector<u8> language;
+        const int status = BootWith(f, dir, {"--ms", "100"}, [&] {
+            Guest g(*f.runtime);
+            g.ReadBlock(g.Service("cfg:u"), 1, 0x000A0002, 1, &language);
+            ExitProcess(*f.runtime);
+        });
+        CHECK(status == 0);  // the game goes on
+        CHECK(ReadAll(ConfigFilePath(dir).string()) == original);
+        CHECK(f.Logged("short or damaged"));
+        CHECK_FALSE(fs::exists(ConfigFilePath(dir).string() + ".tmp"));
+        CHECK(cfg::EnsureConfigFile(dir.User(), FixedRandom) == cfg::EnsureResult::Invalid);
+        CHECK(ReadAll(ConfigFilePath(dir).string()) == original);
+    }
+}
+
+TEST_CASE("D37: --new-console-id does not replace a damaged config either") {
+    TempDir dir;
+    const std::vector<u8> original(100, 0x5A);
+    WriteAll(ConfigFilePath(dir).string(), original);
+    Fixture f;
+    const int status = BootWith(f, dir, {"--ms", "100", "--new-console-id"}, [&] { ExitProcess(*f.runtime); });
+    CHECK(status == 3);
+    CHECK(ReadAll(ConfigFilePath(dir).string()) == original);
+    CHECK(f.Logged("not replaced"));
+}
+
+TEST_CASE("D37: --new-console-id with a directory at the config path exits 3 and leaves it untouched") {
+    TempDir dir;
+    fs::create_directories(ConfigFilePath(dir));
+    WriteAll(ConfigFilePath(dir).string() + "/inner", {1, 2, 3});
+    CHECK(cfg::GetConfigFileState(ConfigFilePath(dir).string()) == cfg::ConfigFileState::Invalid);
+    Fixture f;
+    const int status = BootWith(f, dir, {"--ms", "100", "--new-console-id"}, [&] { ExitProcess(*f.runtime); });
+    CHECK(status == 3);
+    CHECK(fs::is_directory(ConfigFilePath(dir)));
+    CHECK(ReadAll(ConfigFilePath(dir).string() + "/inner") == std::vector<u8>{1, 2, 3});
+    CHECK(f.Logged("not replaced"));
+}
+
+// Whether this host can make a symlink (Windows without the privilege or Developer Mode cannot). Asked when
+// the test is registered, so that a host that cannot is shown as a skipped test in the summary instead of
+// a test that returned early and counts as passed.
+namespace {
+bool HostCanMakeSymlinks() {
+    std::error_code ec;
+    const fs::path folder = fs::temp_directory_path(ec) / ("mh4n_cfg_test_symlink_probe_" +
+                            std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    fs::create_directories(folder, ec);
+    if (ec) {
+        return false;
+    }
+    fs::create_symlink(folder / "target", folder / "link", ec);
+    const bool made = !ec;
+    fs::remove_all(folder, ec);
+    return made;
+}
+}  // namespace
+
+TEST_CASE("D37: a dangling symlink at the config path is something there, in both paths" *
+          doctest::skip(!HostCanMakeSymlinks())) {
+    TempDir dir;
+    fs::create_directories(ConfigFilePath(dir).parent_path());
+    std::error_code ec;
+    fs::create_symlink(dir.File("nowhere"), ConfigFilePath(dir), ec);
+    REQUIRE_MESSAGE(!ec, ec.message());
+    CHECK(cfg::GetConfigFileState(ConfigFilePath(dir).string()) == cfg::ConfigFileState::Invalid);
+    CHECK(cfg::EnsureConfigFile(dir.User(), FixedRandom) == cfg::EnsureResult::Invalid);
+    Fixture f;
+    CHECK(BootWith(f, dir, {"--ms", "100", "--new-console-id"}, [&] { ExitProcess(*f.runtime); }) == 3);
+    CHECK(fs::is_symlink(ConfigFilePath(dir)));
+}
+
+TEST_CASE("D37: a lookup through a file or a missing folder reads as absent, without throwing") {
+    // a path component that is a file: not_a_directory counts as absent; the folder here is a file
+    TempDir dir;
+    WriteAll(dir.User(), {1});
+    CHECK(cfg::GetConfigFileState(ConfigFilePath(dir).string()) == cfg::ConfigFileState::Absent);
+    CHECK(cfg::GetConfigFileState(dir.File("missing")) == cfg::ConfigFileState::Absent);
+}
+
+TEST_CASE("D37: a missing user folder stays absent after a boot that reads cfg:u and asks for the MAC") {
+    TempDir dir;
+    Fixture f;
+    std::string mac;
+    BootWith(f, dir, {"--ms", "100"}, [&] {
+        Guest g(*f.runtime);
+        std::vector<u8> block;
+        g.ReadBlock(g.Service("cfg:u"), 1, 0x00090001, 8, &block);
+        mac = cfg::ReadMacAddress(dir.User(), FixedRandom);
+        ExitProcess(*f.runtime);
+    });
+    CHECK_FALSE(mac.empty());
+    CHECK_FALSE(fs::exists(dir.User()));
+}
+
+// ---- N1-15b leftovers and N1-13e: the start-up step's lines, a failing random source, ENAMETOOLONG -----------------
+
+namespace {
+
+// The log records with their level (the Fixture keeps only the text). Make it after the Fixture: the last sink
+// set is the one that receives.
+class Records {
+public:
+    Records() {
+        SetLogFilter(LogFilter(LogLevel::Info));
+        SetLogSink([this](const LogRecord& r) { records_.emplace_back(r.level, std::string(r.message)); });
+    }
+    ~Records() { SetLogSink({}); }
+    // How many records of `level` contain `needle` (an empty needle: how many of that level).
+    int Count(LogLevel level, const std::string& needle = "") const {
+        int n = 0;
+        for (const auto& [l, text] : records_) {
+            n += (l == level && text.find(needle) != std::string::npos) ? 1 : 0;
+        }
+        return n;
+    }
+    // How many records of any level contain `needle`.
+    int CountText(const std::string& needle) const {
+        int n = 0;
+        for (const auto& record : records_) {
+            n += record.second.find(needle) != std::string::npos ? 1 : 0;
+        }
+        return n;
+    }
+
+private:
+    std::vector<std::pair<LogLevel, std::string>> records_;
+};
+
+// Puts the host's random source back when the test ends, also when a check throws.
+class RandomOverride {
+public:
+    explicit RandomOverride(std::function<u64()> source) { cfg::SetHostRandom64ForTest(std::move(source)); }
+    ~RandomOverride() { cfg::SetHostRandom64ForTest({}); }
+};
+
+u64 FailingRandom() {
+    throw std::runtime_error("no entropy");
+}
+
+// Boots the ELF of `dir` with --user `user` (UTF-8 text) and `extra`; `body` runs on the main thread.
+int BootWithUser(Fixture& f, const TempDir& dir, const std::string& user, std::vector<std::string> extra,
+                 std::function<void()> body) {
+    std::vector<std::string> args = {WriteElf(dir), "--user", user};
+    args.insert(args.end(), extra.begin(), extra.end());
+    f.runtime->SetMainThreadEntry([body = std::move(body)](GuestThread&) { body(); });
+    return f.runtime->Boot(Parse(args));
+}
+
+}  // namespace
+
+TEST_CASE("N1-15b: --user DIR that does not exist logs one Info line, and DIR is not made") {
+    TempDir dir;
+    const std::string expected_tail = ": no config is made, console id 0 for this run";
+    {
+        Fixture f;
+        Records log;
+        CHECK(BootWith(f, dir, {"--ms", "100"}, [&] { ExitProcess(*f.runtime); }) == 0);
+        CHECK(log.Count(LogLevel::Info, "user folder " + dir.User() + " does not exist" + expected_tail) == 1);
+        CHECK(log.CountText("does not exist") == 1);  // one line, whatever its level
+        CHECK_FALSE(fs::exists(dir.User()));
+    }
+    {
+        // the same for a name with accents: the line holds the UTF-8 text the player gave
+        UnicodeDirs dirs;
+        const std::string user = dirs.Folder();
+        Fixture f;
+        Records log;
+        CHECK(BootWithUser(f, dir, user, {"--ms", "100"}, [&] { ExitProcess(*f.runtime); }) == 0);
+        CHECK(log.Count(LogLevel::Info, "user folder " + user + " does not exist" + expected_tail) == 1);
+        CHECK(log.CountText("does not exist") == 1);
+        CHECK(dirs.Entries().empty());
+    }
+    {
+        // a file where the folder should be: said as it is
+        TempDir other;
+        WriteAll(other.User(), {1});
+        Fixture f;
+        Records log;
+        CHECK(BootWith(f, other, {"--ms", "100"}, [&] { ExitProcess(*f.runtime); }) == 0);
+        CHECK(log.Count(LogLevel::Info, "user folder " + other.User() + " is not a folder" + expected_tail) == 1);
+        CHECK(log.CountText("does not exist") == 0);
+        CHECK(fs::is_regular_file(other.User()));
+    }
+    {
+        // an existing folder: no such line (the config is made instead)
+        TempDir other;
+        fs::create_directories(other.User());
+        Fixture f;
+        Records log;
+        CHECK(BootWith(f, other, {"--ms", "100"}, [&] { ExitProcess(*f.runtime); }) == 0);
+        CHECK(log.CountText("no config is made") == 0);
+        CHECK(log.CountText("new user folder: config savegame made") == 1);
+    }
+    {
+        // no --user at all: no such line either
+        TempDir other;
+        Fixture f;
+        Records log;
+        f.runtime->SetMainThreadEntry([&](GuestThread&) { ExitProcess(*f.runtime); });
+        CHECK(f.runtime->Boot(Parse({WriteElf(other), "--ms", "100"})) == 0);
+        CHECK(log.CountText("no config is made") == 0);
+        CHECK(log.CountText("does not exist") == 0);
+    }
+}
+
+TEST_CASE("N1-15b: a random source that throws never stops the start-up, and nothing is written") {
+    SUBCASE("the draw of the console unique ID") {
+        Fixture f;
+        Records log;
+        std::pair<u32, u64> drawn{7, 9};
+        CHECK_FALSE(cfg::TryGenerateConsoleUniqueId(FailingRandom, &drawn));
+        CHECK(drawn == std::pair<u32, u64>{7, 9});  // untouched
+        CHECK(log.Count(LogLevel::Error, "no random numbers for the console unique ID") == 1);
+        CHECK(log.CountText("no entropy") == 1);  // the reason is in the line
+        // a source that works gives what GenerateConsoleUniqueId gives
+        CHECK(cfg::TryGenerateConsoleUniqueId(FixedRandom, &drawn));
+        CHECK(drawn.first <= 0xFFFF);
+    }
+    SUBCASE("EnsureConfigFile writes nothing and the folder stays empty") {
+        TempDir dir;
+        fs::create_directories(dir.User());
+        Fixture f;
+        Records log;
+        u64 id = 5;
+        CHECK(cfg::EnsureConfigFile(dir.User(), FailingRandom, &id) == cfg::EnsureResult::Failed);
+        CHECK(id == 5);
+        CHECK(fs::is_empty(dir.User()));
+        CHECK(log.Count(LogLevel::Error, "no random numbers for the console unique ID") == 1);
+        CHECK(log.Count(LogLevel::Error, "console id 0 for this run") == 1);
+        // the next start, with a working source, makes the file
+        CHECK(cfg::EnsureConfigFile(dir.User(), FixedRandom, &id) == cfg::EnsureResult::Created);
+    }
+    SUBCASE("the MAC address: a fixed one for this run, nothing written, a stored one needs no random") {
+        TempDir dir;
+        fs::create_directories(dir.User());
+        Fixture f;
+        Records log;
+        CHECK(cfg::ReadMacAddress(dir.User(), FailingRandom) == "18:2A:7B:00:00:00");
+        CHECK(log.Count(LogLevel::Error, "no random numbers for the MAC address") == 1);
+        CHECK(log.Count(LogLevel::Error, "for this run only") == 1);
+        CHECK(fs::is_empty(dir.User()));  // not even a sysdata folder
+        std::array<u8, 6> ignored{};
+        CHECK(cfg::ParseMac("18:2A:7B:00:00:00", &ignored));  // a well-formed address
+        const std::string good = "2C:10:C1:0A:0B:0C";
+        WriteAll(dir.User() + "/sysdata/mac.txt", std::vector<u8>(good.begin(), good.end()));
+        CHECK(cfg::ReadMacAddress(dir.User(), FailingRandom) == good);
+        CHECK(log.Count(LogLevel::Error) == 1);  // no second error: the stored address needed no draw
+        // no folder either: the same answer
+        TempDir missing;
+        CHECK(cfg::ReadMacAddress(missing.User(), FailingRandom) == "18:2A:7B:00:00:00");
+        CHECK_FALSE(fs::exists(missing.User()));
+    }
+    SUBCASE("a runner boot in an existing user folder: ID 0, the game starts, nothing is written") {
+        const RandomOverride fail(FailingRandom);
+        TempDir dir;
+        fs::create_directories(dir.User());
+        Fixture f;
+        Records log;
+        std::vector<u8> id_block;
+        std::string mac;
+        const int status = BootWith(f, dir, {"--ms", "100"}, [&] {
+            Guest g(*f.runtime);
+            g.ReadBlock(g.Service("cfg:u"), 1, 0x00090001, 8, &id_block);
+            mac = cfg::ReadMacAddress(dir.User(), cfg::HostRandom64);
+            ExitProcess(*f.runtime);
+        });
+        CHECK(status == 0);
+        CHECK(id_block == std::vector<u8>(8, 0));
+        CHECK(mac == "18:2A:7B:00:00:00");
+        CHECK(log.Count(LogLevel::Error, "no random numbers for the console unique ID") >= 1);
+        CHECK(log.Count(LogLevel::Error, "no random numbers for the MAC address") >= 1);
+        CHECK(fs::is_empty(dir.User()));
+    }
+    SUBCASE("--new-console-id exits 3 and leaves the config as it is") {
+        const RandomOverride fail(FailingRandom);
+        TempDir dir;
+        const std::vector<u8> original = UserConfigFile();
+        WriteAll(ConfigFilePath(dir).string(), original);
+        Fixture f;
+        Records log;
+        CHECK(BootWith(f, dir, {"--ms", "100", "--new-console-id"}, [&] { ExitProcess(*f.runtime); }) == 3);
+        CHECK(ReadAll(ConfigFilePath(dir).string()) == original);
+        CHECK_FALSE(fs::exists(ConfigFilePath(dir).string() + ".tmp"));
+        CHECK(log.Count(LogLevel::Error, "no random numbers for the console unique ID") == 1);
+        CHECK(log.Count(LogLevel::Error, "--new-console-id: no new console unique ID could be made") == 1);
+    }
+    SUBCASE("cfg:i FormatConfig answers an error and changes nothing, in memory or in the file") {
+        const RandomOverride fail(FailingRandom);
+        TempDir dir;
+        const std::vector<u8> original = UserConfigFile();
+        WriteAll(ConfigFilePath(dir).string(), original);
+        Fixture f;
+        Records log;
+        std::vector<u32> reply;
+        std::vector<u8> language, username;
+        const int status = BootWith(f, dir, {"--ms", "100"}, [&] {
+            Guest g(*f.runtime);
+            reply = g.Simple(g.Service("cfg:i"), ipc::MakeHeader(0x0806, 0, 0), 2);
+            g.ReadBlock(g.Service("cfg:u"), 1, 0x000A0002, 1, &language);
+            ExitProcess(*f.runtime);
+        });
+        CHECK(status == 0);
+        REQUIRE(reply.size() == 2);
+        CHECK(reply[1] == 0xFFFFFFFF);  // kResultUnknown, Azahar's ResultUnknown
+        CHECK(language == std::vector<u8>{2});  // still the French of the file: the store was not formatted
+        CHECK(ReadAll(ConfigFilePath(dir).string()) == original);
+        CHECK(log.Count(LogLevel::Error, "no random numbers for the console unique ID") == 1);
+    }
+}
+
+#if !defined(_WIN32)
+TEST_CASE("N1-15b: a path component longer than NAME_MAX is a failed lookup (ENAMETOOLONG), not an absent file") {
+    TempDir dir;
+    const std::string user = dir.File(std::string(NAME_MAX + 1, 'u'));
+    {
+        // the lookup itself
+        Fixture f;
+        Records log;
+        CHECK(cfg::GetConfigFileState(cfg::ConfigPath(user)) == cfg::ConfigFileState::LookupFailed);
+        CHECK(log.Count(LogLevel::Error, "cannot look at") == 1);
+        // not the same as the file being absent
+        CHECK(cfg::GetConfigFileState(dir.File("missing")) == cfg::ConfigFileState::Absent);
+    }
+    {
+        // --new-console-id gives up, as it does for a damaged file, with an Error and exit status 3
+        Fixture f;
+        Records log;
+        const int status =
+            BootWithUser(f, dir, user, {"--ms", "100", "--new-console-id"}, [&] { ExitProcess(*f.runtime); });
+        CHECK(status == 3);
+        CHECK(log.Count(LogLevel::Error, "cannot look at") == 1);
+        CHECK(log.Count(LogLevel::Error, "is not replaced") == 1);
+        CHECK_FALSE(fs::exists(dir.File("anything")));
+    }
+}
+#endif
+
+TEST_CASE("D37: the replay's way in (Runtime::Prepare) never makes a config") {
+    TempDir dir;
+    fs::create_directories(dir.User());
+    Fixture f;
+    REQUIRE(f.runtime->Prepare(Parse({"--user", dir.User()}), {Phase::Devices, Phase::Services}));
+    CHECK_FALSE(fs::exists(ConfigFilePath(dir)));
+    CHECK(fs::is_empty(dir.User()));
 }
 
 // ---- ptm -----------------------------------------------------------------------------------------------------------

@@ -15,23 +15,42 @@
 //   <user>/sysdata/mcu.dat                                                               (UUID clock sequence)
 //   <user>/sysdata/mac.txt                                                               (the console's MAC)
 //
-// Departures from Azahar, all so that a read never touches the disk:
+// Departures from Azahar (the first ones so that a read never touches the disk):
 //  - Azahar's Module constructor formats and writes the file when there is none (with a random console
 //    unique ID), writes the EULA version it changes, and writes the file again when a block that a
-//    program asks for is missing. Here the same blocks exist in memory and nothing is written until
-//    Save() (the cfg:s/cfg:i commands that save, and `--new-console-id`).
-//  - Without a file the console unique ID blocks hold the default table's value, 0 (Azahar's table
-//    says they are placeholders that its formatting replaces with a random value).
+//    program asks for is missing. Here the blocks exist in memory and a read never writes: the file is
+//    written only by Save() (the cfg:s/cfg:i commands that save, and `--new-console-id`) and by the
+//    start-up step of the runner (EnsureConfigFile, D37), which makes it once, with a random console
+//    unique ID, in a user folder that exists and holds none. The replay tool (scope ipc-replay,
+//    Runtime::Prepare) never runs that step: a replay takes the folder of its recording, which holds
+//    a config, and must stay repeatable. Without --user, or when the folder does not exist, nothing is
+//    written by that step and the console unique ID blocks hold the default table's value, 0 (Azahar's table says
+//    they are placeholders that its formatting replaces with a random value).
+//  - A config file that is short or damaged is never replaced by the start-up step or by
+//    `--new-console-id` (Azahar reads it without checking): an Error is logged and the blocks are
+//    read as they are, the missing ones from the defaults in memory.
 //  - Formatting adds the blocks in ascending block id order (Azahar iterates an unordered_map). Readers
 //    find a block by its id, so the files are interchangeable; the data offsets differ.
 //  - Create (a block added to the file) refuses a block whose data would pass the end of the 0x8000-byte
 //    file; Azahar writes it without that check.
 //  - The file is replaced by writing a temporary file next to it and renaming it.
+//  - mac.txt and mcu.dat no longer create a missing user folder: they are written only when the folder
+//    exists (Azahar creates the user folder when it sets its user path, FileUtil::CreateFullPath in
+//    file_util.cpp, so its writes always find it). Only Save() creates folders here.
+//  - The console unique ID's seed (the low 34 bits) is always drawn from the host's random source. Azahar
+//    uses the friend code seed of LocalFriendCodeSeed_B instead when the user supplied that file
+//    (GenerateConsoleUniqueId); the native runtime has no such file.
+//  - A host random source that throws (std::random_device on a system without its source) does not
+//    stop the start-up: an Error is logged, the console unique ID stays 0 and the MAC is
+//    18:2A:7B:00:00:00 for that run only, and nothing is written (the next start tries again).
+//  - Paths are UTF-8 text and every file call goes through the wide-character API on Windows (D45), so a
+//    user or game folder with accents works; Azahar's FileUtil does the same.
 #pragma once
 
 #include <array>
 #include <functional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "mh4n/kernel.h"
@@ -144,6 +163,41 @@ std::vector<u32> RegionsFromIcon(const std::string& game_folder);
 // Azahar's AdjustLanguageInfoBlock: the (region, language) among `regions` (not empty) that fits
 // `language`, else the first region and its first language.
 std::pair<u32, u8> AdjustLanguage(const std::vector<u32>& regions, u8 language);
+
+// The host's random source: std::random_device, 64 bits per call (two 32-bit draws, in no promised order). It
+// can throw. Every caller that is not a test passes this as `random64`.
+u64 HostRandom64();
+// Replaces the source for the tests (an empty function puts the host's back). Never used by the program.
+void SetHostRandom64ForTest(std::function<u64()> source);
+// ConfigStore::GenerateConsoleUniqueId, but a source that throws gives false (an Error logged) instead of
+// an exception, and `*out` is left as it was.
+bool TryGenerateConsoleUniqueId(const std::function<u64()>& random64, std::pair<u32, u64>* out);
+
+// The start-up step's outcome (D37).
+enum class EnsureResult {
+    NoUserFolder,  // --user not given, or the folder does not exist: nothing written (this step never creates it)
+    Existing,      // a valid config is there: untouched
+    Created,       // there was none: written once, with a new random console unique ID
+    Invalid,       // there is a file that is short or damaged (or not a file): untouched, Error logged
+    Failed,        // there was none and it could not be written (or the random source failed), or the file could not be looked at: Error logged
+};
+// What is at a config savegame's path.
+enum class ConfigFileState {
+    Absent,        // nothing there (not found)
+    Valid,         // a file IsValidConfigFile accepts
+    Invalid,       // something there that is not a valid file: short, damaged, a directory, a dangling link
+    LookupFailed,  // the status call failed for another reason than not found (Error logged)
+};
+ConfigFileState GetConfigFileState(const std::string& path);
+// True when `path`'s content is a config savegame this module can use: 0x8000 bytes, at most 1479
+// entries, data offset 0x455C, and every entry's data inside the file.
+bool IsValidConfigFile(const std::string& path);
+// Makes the config savegame of an existing user folder that holds none: the default blocks and a console
+// unique ID from `random64` (Azahar's GenerateConsoleUniqueId), written atomically in Azahar's path. The
+// folder itself is never created by this step (mac.txt and mcu.dat do not create it either; only Save()
+// does). `*console_id` receives the new ID when the result is Created.
+EnsureResult EnsureConfigFile(const std::string& user_folder, const std::function<u64()>& random64,
+                              u64* console_id = nullptr);
 
 class ConfigStore {
 public:

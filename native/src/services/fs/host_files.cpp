@@ -10,11 +10,13 @@
 #include <cctype>
 #include <cerrno>
 #include <cstring>
+#include <mutex>
 #include <set>
 #include <system_error>
 
 #include <fmt/format.h>
 
+#include "../../common/utf8.h"
 #include "mh4n/log.h"
 
 #if defined(_WIN32)
@@ -41,75 +43,11 @@ constexpr const char* kLog = "Service.FS";
 // ---- names ---------------------------------------------------------------------------------------------------------
 
 std::u16string Utf8ToUtf16(const std::string& text) {
-    std::u16string out;
-    out.reserve(text.size());
-    std::size_t i = 0;
-    while (i < text.size()) {
-        const u8 lead = static_cast<u8>(text[i]);
-        u32 code = 0xFFFD;
-        std::size_t length = 1;
-        if (lead < 0x80) {
-            code = lead;
-        } else if ((lead & 0xE0) == 0xC0) {
-            length = 2, code = lead & 0x1Fu;
-        } else if ((lead & 0xF0) == 0xE0) {
-            length = 3, code = lead & 0x0Fu;
-        } else if ((lead & 0xF8) == 0xF0) {
-            length = 4, code = lead & 0x07u;
-        }
-        if (length > 1) {
-            bool good = i + length <= text.size();
-            for (std::size_t k = 1; good && k < length; ++k) {
-                const u8 next = static_cast<u8>(text[i + k]);
-                good = (next & 0xC0) == 0x80;
-                code = (code << 6) | (next & 0x3Fu);
-            }
-            if (!good || code > 0x10FFFF || (code >= 0xD800 && code < 0xE000)) {
-                code = 0xFFFD;
-                length = 1;
-            }
-        }
-        i += length;
-        if (code >= 0x10000) {
-            code -= 0x10000;
-            out.push_back(static_cast<char16_t>(0xD800 + (code >> 10)));
-            out.push_back(static_cast<char16_t>(0xDC00 + (code & 0x3FF)));
-        } else {
-            out.push_back(static_cast<char16_t>(code));
-        }
-    }
-    return out;
+    return utf8::ToUtf16(text);
 }
 
 std::string Utf16ToUtf8(const std::u16string& text) {
-    std::string out;
-    out.reserve(text.size());
-    for (std::size_t i = 0; i < text.size(); ++i) {
-        u32 code = text[i];
-        if (code >= 0xD800 && code < 0xDC00 && i + 1 < text.size() && text[i + 1] >= 0xDC00 &&
-            text[i + 1] < 0xE000) {
-            code = 0x10000 + ((code - 0xD800) << 10) + (text[i + 1] - 0xDC00u);
-            ++i;
-        } else if (code >= 0xD800 && code < 0xE000) {
-            code = 0xFFFD;
-        }
-        if (code < 0x80) {
-            out.push_back(static_cast<char>(code));
-        } else if (code < 0x800) {
-            out.push_back(static_cast<char>(0xC0 | (code >> 6)));
-            out.push_back(static_cast<char>(0x80 | (code & 0x3F)));
-        } else if (code < 0x10000) {
-            out.push_back(static_cast<char>(0xE0 | (code >> 12)));
-            out.push_back(static_cast<char>(0x80 | ((code >> 6) & 0x3F)));
-            out.push_back(static_cast<char>(0x80 | (code & 0x3F)));
-        } else {
-            out.push_back(static_cast<char>(0xF0 | (code >> 18)));
-            out.push_back(static_cast<char>(0x80 | ((code >> 12) & 0x3F)));
-            out.push_back(static_cast<char>(0x80 | ((code >> 6) & 0x3F)));
-            out.push_back(static_cast<char>(0x80 | (code & 0x3F)));
-        }
-    }
-    return out;
+    return utf8::FromUtf16(text);
 }
 
 void SplitFilename83(const std::string& filename, char short_name[9], char extension[4]) {
@@ -147,16 +85,23 @@ void SplitFilename83(const std::string& filename, char short_name[9], char exten
 
 namespace host {
 
-std::filesystem::path ToPath(const std::string& utf8) {
-    return std::filesystem::path(std::u8string(utf8.begin(), utf8.end()));
+std::filesystem::path ToPath(const std::string& utf8_text) {
+#if defined(_WIN32)
+    // The wide-character path, from our own conversion: the file calls take UTF-16 and never the ANSI code page.
+    return std::filesystem::path(utf8::ToWide(utf8_text));
+#else
+    return std::filesystem::path(std::u8string(utf8_text.begin(), utf8_text.end()));
+#endif
 }
 
-namespace {
 std::string ToUtf8(const std::filesystem::path& path) {
+#if defined(_WIN32)
+    return utf8::FromWide(path.native());
+#else
     const std::u8string text = path.u8string();
     return std::string(text.begin(), text.end());
+#endif
 }
-}  // namespace
 
 bool Exists(const std::string& path) {
     std::error_code ec;
@@ -298,6 +243,64 @@ bool RemoveFile(const std::string& path) {
 #endif
 }
 
+namespace {
+bool AllAsciiDigits(std::string_view text) {
+    return !text.empty() && std::all_of(text.begin(), text.end(), [](char c) { return c >= '0' && c <= '9'; });
+}
+}  // namespace
+
+bool IsStaleDeletedName(std::string_view name) {
+    // <name>.deleted.<digits>.<digits>, with something in front of ".deleted"
+    const std::size_t last_dot = name.rfind('.');
+    if (last_dot == std::string_view::npos || !AllAsciiDigits(name.substr(last_dot + 1))) {
+        return false;
+    }
+    const std::string_view rest = name.substr(0, last_dot);
+    const std::size_t second_dot = rest.rfind('.');
+    if (second_dot == std::string_view::npos || !AllAsciiDigits(rest.substr(second_dot + 1))) {
+        return false;
+    }
+    constexpr std::string_view kMarker = ".deleted";
+    const std::string_view stem = rest.substr(0, second_dot);
+    return stem.size() > kMarker.size() && stem.substr(stem.size() - kMarker.size()) == kMarker;
+}
+
+std::size_t RemoveStaleDeletedFiles(const std::string& folder) {
+    std::error_code ec;
+    std::filesystem::recursive_directory_iterator it(
+        ToPath(folder), std::filesystem::directory_options::skip_permission_denied, ec);
+    if (ec) {
+        return 0;
+    }
+    // Found first and removed after, so the walk does not change the folder it is reading. A link is never
+    // followed (the walk does not enter one) and never removed; only a regular file is.
+    std::vector<std::filesystem::path> stale;
+    for (const std::filesystem::recursive_directory_iterator end; it != end; it.increment(ec)) {
+        if (ec) {
+            break;
+        }
+        std::error_code status_error;
+        const auto status = it->symlink_status(status_error);
+        if (status_error || status.type() != std::filesystem::file_type::regular) {
+            continue;
+        }
+        if (IsStaleDeletedName(ToUtf8(it->path().filename()))) {
+            stale.push_back(it->path());
+        }
+    }
+    std::size_t removed = 0;
+    for (const std::filesystem::path& path : stale) {
+        // Not RemoveFile: on Windows that renames a file it cannot delete to a new ".deleted." name.
+        std::error_code remove_error;
+        if (std::filesystem::remove(path, remove_error) && !remove_error) {
+            ++removed;
+        } else {
+            MH4N_LOG(Debug, kLog, "cannot remove the stale file {}", ToUtf8(path));
+        }
+    }
+    return removed;
+}
+
 bool RemoveEmptyDirectory(const std::string& path) {
     if (!IsDirectory(path)) {
         return false;
@@ -434,11 +437,47 @@ void SyncDirectoryTree(const std::string& path) {
 
 // ---- WritableFile ------------------------------------------------------------------------------------------------
 
+namespace {
+
+std::atomic<u64> g_total_host_syncs{0};
+
+// What a file needs so that a clean file is never synced and a dirty one always is (D42). A write or a
+// resize sets `dirty` AFTER the host call has returned; Sync() clears it BEFORE it asks the host to sync.
+// So a change that is not covered by a sync leaves the flag set: a write that lands before the host sync
+// starts is covered and the flag it sets afterwards only costs one more sync, and a write that lands after
+// it sets the flag for the next one. The mutex makes a second Sync() wait for the first one's host call
+// instead of answering "clean" while the data is still on its way to the disk. A failed host sync puts the
+// flag back, so the next Sync() tries again.
+struct SyncState {
+    std::mutex mutex;
+    std::atomic<bool> dirty{false};
+    std::atomic<u64> host_syncs{0};
+};
+
+template <class HostSync>
+bool SyncIfDirty(SyncState& state, HostSync&& host_sync) {
+    std::lock_guard<std::mutex> lock(state.mutex);
+    if (!state.dirty.load()) {
+        return true;
+    }
+    state.dirty.store(false);
+    ++state.host_syncs;
+    ++g_total_host_syncs;
+    if (host_sync()) {
+        return true;
+    }
+    state.dirty.store(true);
+    return false;
+}
+
+}  // namespace
+
 #if defined(_WIN32)
 
 struct WritableFile::Impl {
     HANDLE handle = INVALID_HANDLE_VALUE;
     std::atomic<bool> closed{false};
+    SyncState sync;
     ~Impl() {
         if (handle != INVALID_HANDLE_VALUE) {
             CloseHandle(handle);
@@ -511,9 +550,10 @@ std::size_t WritableFile::WriteAt(u64 offset, const void* buffer, std::size_t le
         overlapped.Offset = static_cast<DWORD>(at & 0xFFFFFFFFu);
         overlapped.OffsetHigh = static_cast<DWORD>(at >> 32);
         DWORD put = 0;
-        if (!WriteFile(impl_->handle, in + done, static_cast<DWORD>(std::min<std::size_t>(length - done, 1u << 30)),
-                       &put, &overlapped) ||
-            put == 0) {
+        const BOOL wrote = WriteFile(impl_->handle, in + done, static_cast<DWORD>(std::min<std::size_t>(length - done, 1u << 30)),
+                                     &put, &overlapped);
+        impl_->sync.dirty.store(true);  // after the host call, see SyncState
+        if (!wrote || put == 0) {
             if (failed != nullptr) {
                 *failed = true;
             }
@@ -525,14 +565,23 @@ std::size_t WritableFile::WriteAt(u64 offset, const void* buffer, std::size_t le
 }
 
 bool WritableFile::Resize(u64 size) const {
+    if (!writable_ || impl_->closed.load()) {
+        return false;
+    }
     FILE_END_OF_FILE_INFO info{};
     info.EndOfFile.QuadPart = static_cast<LONGLONG>(size);
-    return writable_ && !impl_->closed.load() &&
-           SetFileInformationByHandle(impl_->handle, FileEndOfFileInfo, &info, sizeof(info));
+    if (!SetFileInformationByHandle(impl_->handle, FileEndOfFileInfo, &info, sizeof(info))) {
+        return false;
+    }
+    impl_->sync.dirty.store(true);
+    return true;
 }
 
 bool WritableFile::Sync() const {
-    return !writable_ || FlushFileBuffers(impl_->handle);
+    if (!writable_) {
+        return true;
+    }
+    return SyncIfDirty(impl_->sync, [this] { return FlushFileBuffers(impl_->handle) != 0; });
 }
 
 #else
@@ -540,6 +589,7 @@ bool WritableFile::Sync() const {
 struct WritableFile::Impl {
     int fd = -1;
     std::atomic<bool> closed{false};
+    SyncState sync;
     ~Impl() {
         if (fd >= 0) {
             ::close(fd);
@@ -615,6 +665,7 @@ std::size_t WritableFile::WriteAt(u64 offset, const void* buffer, std::size_t le
         if (put < 0 && errno == EINTR) {
             continue;
         }
+        impl_->sync.dirty.store(true);  // after the host call, see SyncState
         if (put <= 0) {
             if (failed != nullptr) {
                 *failed = true;
@@ -627,35 +678,54 @@ std::size_t WritableFile::WriteAt(u64 offset, const void* buffer, std::size_t le
 }
 
 bool WritableFile::Resize(u64 size) const {
-    return writable_ && !impl_->closed.load() && ::ftruncate(impl_->fd, static_cast<off_t>(size)) == 0;
+    if (!writable_ || impl_->closed.load() || ::ftruncate(impl_->fd, static_cast<off_t>(size)) != 0) {
+        return false;
+    }
+    impl_->sync.dirty.store(true);
+    return true;
 }
 
 bool WritableFile::Sync() const {
     if (!writable_) {
         return true;
     }
-    for (;;) {
+    return SyncIfDirty(impl_->sync, [this] {
+        for (;;) {
 #if defined(__linux__)
-        // The data and the size, which is all a reader of the file needs; not the times.
-        if (::fdatasync(impl_->fd) == 0) {
-            return true;
-        }
+            // The data and the size, which is all a reader of the file needs; not the times.
+            if (::fdatasync(impl_->fd) == 0) {
+                return true;
+            }
 #else
-        if (::fsync(impl_->fd) == 0) {
-            return true;
-        }
+            if (::fsync(impl_->fd) == 0) {
+                return true;
+            }
 #endif
-        if (errno != EINTR) {
-            return false;
+            if (errno != EINTR) {
+                return false;
+            }
         }
-    }
+    });
 }
 
 #endif
 
-// A file that was never closed (the game ended with it open) still gets its data to the disk.
+bool WritableFile::Dirty() const {
+    return writable_ && impl_->sync.dirty.load();
+}
+
+u64 WritableFile::HostSyncCount() const {
+    return impl_->sync.host_syncs.load();
+}
+
+u64 WritableFile::TotalHostSyncs() {
+    return g_total_host_syncs.load();
+}
+
+// A file that was never closed (the game ended with it open) still gets its data to the disk; one that is
+// clean costs nothing here (and a write that was still running when Close() returned is synced too).
 WritableFile::~WritableFile() {
-    if (impl_ != nullptr && writable_ && !impl_->closed.load()) {
+    if (impl_ != nullptr && writable_) {
         Sync();
     }
 }

@@ -27,6 +27,10 @@ constexpr u32 kSvcSendSyncRequest = 0x32;
 constexpr u32 kSvcCloseHandle = 0x23;
 constexpr u32 kSvcDuplicateHandle = 0x27;
 constexpr std::size_t kNoCreation = ~static_cast<std::size_t>(0);
+// How far the clock may be moved while one deferred reply is waited for. The longest delay a service
+// models is 5 s (the UDS connection timeout); a reply that needs more than this is not coming (a hung
+// service), and the clock must not run on for the whole of --reply-timeout.
+constexpr u64 kMaxWaitTicks = 60ull * kTicksPerSecond;
 
 // ---- the translate parameters of a command ---------------------------------------------------------------
 
@@ -241,7 +245,18 @@ public:
     Engine(Runtime& runtime, ServiceManager& manager, const IpcTrace& trace, const SvcTrace* svc,
            const ReplayConfig& config)
         : manager_(manager), trace_(trace), svc_(svc), config_(config),
-          kernel_(runtime.GetKernel()), memory_(runtime.Memory()), scheduler_(runtime.Scheduler()) {}
+          kernel_(runtime.GetKernel()), memory_(runtime.Memory()), scheduler_(runtime.Scheduler()),
+          clock_(runtime.Clock()),
+          time_(config.advance_time ? dynamic_cast<ReplayTimeSource*>(&runtime.Clock().Source())
+                                    : nullptr) {}
+
+    ~Engine() {
+        if (timers_ != nullptr) {
+            timers_->SetTracking(false);  // the scheduler stays as it is: it outlives the runtime's users
+        }
+    }
+    Engine(const Engine&) = delete;
+    Engine& operator=(const Engine&) = delete;
 
     ReplayReport Run();
 
@@ -265,6 +280,10 @@ private:
     void Forget(Handle native);
 
     bool WaitForReply(std::string* problem);
+    bool CheckSpan(std::string* error) const;
+    bool AdvanceTime(const IpcRecord& record);
+    bool MoveClockTo(u64 tick);
+    bool StepToNextTimer(u64 limit_tick);
     void Compare(const IpcRecord& record, const std::vector<u32>& words,
                  const std::vector<Part>& request_parts, Difference* diff);
     void LearnHandles(const IpcRecord& record, const std::vector<u32>& words);
@@ -276,6 +295,15 @@ private:
     Kernel& kernel_;
     GuestMemory& memory_;
     GuestScheduler& scheduler_;
+    GameClock& clock_;
+    ReplayTimeSource* time_;  // null: the clock is not moved (ReplayConfig::advance_time false)
+    // With a moving clock: the scheduler the services see, which remembers the timers of the request
+    // being sent. The replay clock owns it and keeps it in the kernel for the life of the runtime; the
+    // Engine only switches its bookkeeping on while it runs.
+    RequestTimers* timers_ = nullptr;
+    std::optional<u64> origin_;  // the tick of the first record
+    u64 base_ = 0;               // the clock's reading when the first record was reached
+    u64 target_ = 0;             // the clock's target so far: only grows
     std::shared_ptr<Process> process_;
     std::shared_ptr<Thread> thread_;
     u32 tls_ = 0;
@@ -344,6 +372,21 @@ bool Engine::NewScratchThread() {
 }
 
 bool Engine::Setup(std::string* error) {
+    if (config_.advance_time) {
+        if (time_ == nullptr) {
+            *error = "the runtime's clock cannot be advanced (it was not made with MakeReplayRuntimeConfig)";
+            return false;
+        }
+        if (!CheckSpan(error)) {
+            return false;
+        }
+        timers_ = time_->InstallTimers(kernel_);
+        if (timers_ == nullptr) {
+            *error = "the runtime's clock already serves another kernel";
+            return false;
+        }
+        timers_->SetTracking(true);
+    }
     process_ = kernel_.CurrentProcess();
     if (!process_) {
         *error = "the runtime has no process";
@@ -525,10 +568,90 @@ Handle Engine::SessionFor(const std::string& session) {
     return handle;
 }
 
+// ---- game time ----------------------------------------------------------------------------------------------------------
+
+// The trace's records must not reach farther than ReplayConfig::max_span_ticks from the first (by seq).
+bool Engine::CheckSpan(std::string* error) const {
+    const IpcRecord* first = nullptr;
+    for (const IpcRecord& record : trace_.records) {
+        if (first == nullptr || record.seq < first->seq) {
+            first = &record;
+        }
+    }
+    if (first == nullptr) {
+        return true;
+    }
+    for (const IpcRecord& record : trace_.records) {
+        if (record.ticks > first->ticks && record.ticks - first->ticks > config_.max_span_ticks) {
+            *error = fmt::format("line {}: its tick is more than {} ticks of game time ({} s) after that "
+                                 "of the first request (line {}); the trace is damaged",
+                                 record.line, config_.max_span_ticks,
+                                 config_.max_span_ticks / kTicksPerSecond, first->line);
+            return false;
+        }
+    }
+    return true;
+}
+
+// Moves the clock to the tick the recording had at `record` (counted from the first record's), running
+// what falls due on the way. False, with the reason in report_.error, if the clock cannot be moved.
+bool Engine::AdvanceTime(const IpcRecord& record) {
+    if (time_ == nullptr) {
+        return true;
+    }
+    if (!origin_) {
+        origin_ = record.ticks;
+        base_ = clock_.Now();
+        target_ = base_;
+    } else if (record.ticks > *origin_) {
+        target_ = std::max(target_, base_ + (record.ticks - *origin_));
+    }
+    return MoveClockTo(target_);
+}
+
+// Runs the posted work and every timer up to `tick`, the clock standing at each timer's own tick while it
+// runs (the next one is the scheduler's own request to be woken, which the replay clock keeps), then
+// leaves the clock at `tick`, or where it is if that is later.
+bool Engine::MoveClockTo(u64 tick) {
+    for (;;) {
+        scheduler_.RunPending();
+        const std::optional<s64> goal = clock_.HostNsFor(tick);
+        if (!goal) {
+            report_.error = "the game clock is paused or held and cannot be advanced";
+            return false;
+        }
+        const std::optional<s64> next = time_->NextDeadlineNs();
+        if (!next || *next > *goal) {
+            time_->SetNs(*goal);
+            return true;
+        }
+        if (*next <= time_->NowNs()) {
+            report_.error = "a timer that is due did not run";
+            return false;
+        }
+        time_->SetNs(*next);
+    }
+}
+
+// Moves the clock to the earliest timer, if there is one and it is not after `limit_tick`. The caller
+// runs it (RunPending).
+bool Engine::StepToNextTimer(u64 limit_tick) {
+    const std::optional<s64> next = time_->NextDeadlineNs();
+    const std::optional<s64> limit = clock_.HostNsFor(limit_tick);
+    if (!next || !limit || *next > *limit) {
+        return false;
+    }
+    time_->SetNs(*next);
+    return true;
+}
+
 // ---- one request --------------------------------------------------------------------------------------------------------
 
 bool Engine::WaitForReply(std::string* problem) {
     const auto deadline = std::chrono::steady_clock::now() + config_.reply_timeout;
+    const u64 start = clock_.Now();
+    const u64 limit = start > ~u64{0} - kMaxWaitTicks ? ~u64{0} : start + kMaxWaitTicks;
+    bool settled = false;
     while (thread_->status == ThreadStatus::WaitIPC) {
         scheduler_.RunPending();
         if (thread_->status != ThreadStatus::WaitIPC) {
@@ -541,6 +664,29 @@ bool Engine::WaitForReply(std::string* problem) {
             NewScratchThread();
             return false;
         }
+        // Game time passes during the wait only toward a timer the request itself armed (RequestTimers):
+        // that is what a reply that waits for the clock waits for (a file read's latency, the UDS
+        // delays), and the clock goes there timer by timer, the runtime's own timers on the way, as it
+        // would in a game that runs. A reply that waits for another host thread arms nothing, so the clock
+        // stands where the request put it, whatever the thread's speed. At most kMaxWaitTicks from the
+        // start; past that the clock stops and only the real-time wait is left (a hung service).
+        if (timers_ != nullptr) {
+            if (const std::optional<u64> own = timers_->EarliestOwnTick()) {
+                // A request that arms a timer and also waits for a host thread (a file read with its
+                // latency) can reach its timer before the thread is done: one poll of real time lets
+                // a thread that needs about a millisecond finish first. The clock never passes the
+                // timer that is waited for, so what is left to a slower thread is only which of the
+                // two arrives first, not where the clock stands afterwards.
+                if (!settled) {
+                    settled = true;
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                    continue;
+                }
+                if (StepToNextTimer(std::min(*own, limit))) {
+                    continue;
+                }
+            }
+        }
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
     thread_->status = ThreadStatus::Running;
@@ -548,6 +694,9 @@ bool Engine::WaitForReply(std::string* problem) {
 }
 
 Engine::Outcome Engine::Step(const IpcRecord& record) {
+    if (!AdvanceTime(record)) {
+        return Outcome::Skipped;  // report_.error is set; Run stops
+    }
     const std::string base = BaseService(record.session);
     if (!Selected(base)) {
         if (explicit_.empty()) {
@@ -654,7 +803,13 @@ Engine::Outcome Engine::Step(const IpcRecord& record) {
     diff.header = *record.cmd;
 
     thread_->status = ThreadStatus::Running;
+    if (timers_ != nullptr) {
+        timers_->BeginRequest();
+    }
     const Result sent = manager_.SendSyncRequest(*thread_, session);
+    if (timers_ != nullptr) {
+        timers_->EndRequest();
+    }
     for (const Handle native : moved) {
         Forget(native);  // the kernel closed it in the client's table
     }
@@ -877,6 +1032,9 @@ ReplayReport Engine::Run() {
                      [](const IpcRecord* a, const IpcRecord* b) { return a->seq < b->seq; });
     for (const IpcRecord* record : order) {
         Step(*record);
+        if (!report_.error.empty()) {
+            break;
+        }
         Finish(*record);
     }
     return std::move(report_);

@@ -25,9 +25,11 @@
 //    first thread asleep for ever).
 //  - The delay_game_render_thread_us setting (0 for the reference) is not implemented:
 //    TriggerCmdReqQueue always answers at once.
-//  - GetPerfLog: the times of the interrupts other than the VBlanks are 0 (Azahar records the delay
-//    the GPU passes; D25 has the sink ignore it). The reply has Azahar's layout (no result word, the
-//    14 entries in words 1-14); its word 15, which Azahar does not write, is 0.
+//  - GetPerfLog: the time of an interrupt other than a VBlank is the delay the GPU passed with it,
+//    as Azahar's PerformanceRecorder keeps it (D41). The null GPU computes it for PSC0, PSC1, PPF and
+//    DMA; for P3D it passes 0 (Azahar's is made of the register writes and triangles of the list,
+//    which the null GPU does not run). The reply has Azahar's layout (no result word, the 14 entries
+//    in words 1-14); its word 15, which Azahar does not write, is 0.
 #include <algorithm>
 #include <cstring>
 

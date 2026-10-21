@@ -125,4 +125,24 @@ void SystemPages::Set3DSlider(float value) {
     }
 }
 
+void SystemPages::SetMacAddress(const std::array<u8, 6>& mac) {
+    if (!memory_) {
+        return;
+    }
+    for (u32 i = 0; i < mac.size(); ++i) {
+        memory_->Write<u8>(kSharedPageVaddr + shared_page::kWifiMacAddress + i, mac[i]);
+    }
+}
+
+std::array<u8, 6> SystemPages::GetMacAddress() const {
+    std::array<u8, 6> mac{};
+    if (!memory_) {
+        return mac;
+    }
+    for (u32 i = 0; i < mac.size(); ++i) {
+        mac[i] = memory_->Read<u8>(kSharedPageVaddr + shared_page::kWifiMacAddress + i).value_or(0);
+    }
+    return mac;
+}
+
 }  // namespace mh4n
