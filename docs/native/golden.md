@@ -85,6 +85,7 @@ golden.py check  S --runner RUN --game CXI --update CIA [--code LIB]
                    [--candidate-runner RUN2] [--candidate-program PATH] [--candidate-code LIB]
                    [--candidate-args "..."] [--repeat N] [--profile same|cross] [--fallback]
                    [--require NAMES] [--ignore FILE]...
+                   [--tolerance N] [--min-margin N] [--max-surplus N] [--max-shift N]     # the cross profile's numbers
 ```
 
 The recordings of this document were made with (PowerShell, from the worktree; `TZ` is set by `golden.py`):
@@ -144,12 +145,21 @@ python tools/native/golden.py check <S> --repeat 2 --require svc,ipc,state,check
 
 | Comparison | Rule |
 |---|---|
-| `state` | `state_diff.py --min-changes <the recording's real scene changes>` (default tolerance 2); skipped when the recording has none: nothing to align |
+| `state` | `state_diff.py --tolerance 4 --min-changes <the recording's real scene changes>`: the real scene changes in the same order, to the same scene, up to **4 frames** apart (D50; D33 said 2); skipped when the recording has none: nothing to align. The result prints the tolerance |
+| `state-margin` | D50's guard, with `cross_model_report.py`'s logic: every input event of the session script that follows a real scene change comes at least **60 frames** after the last real scene change **on both sides**. Runs with `state` (`--require state` covers it) and prints the largest scene-change shift and the smallest margin of each side |
 | `checkpoints` | as in `same` |
-| `ipc` | `compare_ipc_traces.py --ignore config/native/ipc_time_dependent.txt` plus every `--ignore FILE` |
+| `ipc` | `compare_ipc_traces.py --ignore config/native/ipc_time_dependent.txt` (plus every `--ignore FILE`) `--fs-reads-multiset --max-surplus 16 --fs-write-mask config/native/fs_write_masks.txt --fs-write-mask-session <S>` (D52): per thread the `fs:USER/file` Reads as a multiset of (offset, size, result, CRC of the data read) with at most 16 reads more on one side; every other `fs:` request in order and in full; a Write by the CRC of its data with the byte ranges of the session's mask lines zeroed. The result prints the reads and the masks used |
 | `svc` | `compare_svc_traces.py --normalize --outputs --cross-model config/native/svc_cross_model.txt` (N0-25) |
 | `svc-full`, `images` | run and printed as `INFO`, never gated (the image threshold comes in N2b) |
-| `hid`, `dsp-<start>` | `capfmt.py diff-hid`, `diff-dsp` |
+| `hid` | `capfmt.py diff-hid` |
+| `dsp-<start>` | `capfmt.py diff-dsp --align --max-shift 48` (D51): the candidate aligned on the first buffer change of the first enabled source, the shift constant and at most **48** DSP frames, every source status block equal after it; the PCM samples are not compared. The result prints the shift |
+
+`comparators.md` (sections 7 to 9) describes each rule, what it still catches and what it cannot. The numbers of the
+cross profile (`--tolerance`, `--min-margin`, `--max-surplus`, `--max-shift`) default to those of D50, D51 and D52 and
+can be changed **in the cross profile only**; with the `same` profile they are a usage error, like `--ignore`, so a
+same-model check can never be loosened. `config/native/fs_write_masks.txt` must exist for a cross check (usage error
+otherwise); it is edited by the orchestrator, and a line of the recording's session that matches no Write of the two
+traces makes the `ipc` comparison fail (a stale mask never passes silently).
 
 `--ignore FILE` (repeatable) adds IPC ignore files to the `cross` profile only; with the `same` profile it is a usage
 error, so a same-model check can never be loosened by a list.

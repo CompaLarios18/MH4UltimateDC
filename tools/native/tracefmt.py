@@ -582,6 +582,74 @@ def normalise_ipc(trace: IpcTrace) -> IpcTrace:
     return IpcTrace(trace.header, threads, calls)
 
 
+# ── `fs:` file requests (N0-32, D52) ────────────────────────────────────────────────
+#
+# Facts of the file session's interface (the command numbers and where the parameters sit are the
+# console's own, confirmed against Azahar's `File::Read` and `File::Write` and against the traces; no
+# code is copied).  Read (0x080200c2): normal parameters offset (u64, two words) and size, then a
+# writable mapped buffer; the reply has the result, the bytes read, and the buffer.  Write
+# (0x08030102): offset (u64), size, flush option, then a readable mapped buffer.
+
+FS_FILE_SESSION = "fs:USER/file"
+FS_FILE_READ = "0x080200c2"
+FS_FILE_WRITE = "0x08030102"
+IPC_READ_BUFFERS = ("static", "mapped-r", "mapped-rw")      # buffers a service can read
+IPC_WRITE_BUFFERS = ("mapped-w", "mapped-rw")               # buffers a service can write
+
+
+def instance_free(session: str) -> str:
+    """`fs:USER/file#3` -> `fs:USER/file`."""
+    return re.sub(r"#\d+$", "", session)
+
+
+def command_words(words: tuple[str, ...] | None) -> tuple[str, ...] | None:
+    """The header and the normal parameters of a request or a reply: the words that follow them are
+    translate parameters (descriptors, handles, buffer addresses), and a buffer's address is chosen by
+    the process, not by the command."""
+    if not words:
+        return None
+    try:
+        normal = (int(words[0], 16) >> 6) & 0x3F
+    except ValueError:
+        return None
+    return words[:1 + normal]
+
+
+def fs_file_command(call: IpcCall) -> str | None:
+    """`read` or `write` for a Read or Write of a file session of fs:USER, else None."""
+    if call.cmd is None or instance_free(call.session) != FS_FILE_SESSION:
+        return None
+    return {FS_FILE_READ: "read", FS_FILE_WRITE: "write"}.get(call.cmd)
+
+
+def fs_file_request(call: IpcCall) -> tuple[int, int] | None:
+    """(offset, size) of a Read or Write of a file session, None when the request does not carry them."""
+    words = call.words_in
+    if fs_file_command(call) is None or not words or len(words) < 4:
+        return None
+    try:
+        return (int(words[1], 16) | (int(words[2], 16) << 32), int(words[3], 16))
+    except ValueError:
+        return None
+
+
+def fs_read_crc(call: IpcCall) -> str:
+    """The CRC-32 token of the data a Read's reply wrote into the caller's buffer (`-` when there is none)."""
+    for d in call.outdesc:
+        if d.kind in IPC_WRITE_BUFFERS:
+            return d.token
+    return IPC_NO_NAME
+
+
+def ipc_data(call: IpcCall, index: int) -> bytes | None:
+    """The bytes of the input buffer whose descriptor is at word `index` (`--trace-ipc-full`), None when the
+    trace did not keep them.  ValueError for something that is not hex."""
+    for at, hexbytes in call.data:
+        if at == index:
+            return bytes.fromhex(hexbytes)
+    return None
+
+
 def join_items(items) -> str:
     items = list(items)
     return ",".join(str(i) for i in items) if items else "-"

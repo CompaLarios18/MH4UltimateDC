@@ -354,3 +354,336 @@ def test_the_docstring_documents_the_format():
     for word in ("seq=", "session=", "outdesc=", "--strict", "--ignore", "--prefix", "--context", "data=",
                  "ipctrace"):
         assert word in cmp.__doc__
+
+
+# ── across timing models: the fs: Reads as multisets and the masked Writes (N0-32, D52) ──────────────
+
+import zlib  # noqa: E402
+
+import pytest  # noqa: E402
+
+FILE = "fs:USER/file#1"
+MULTISET = ("--fs-reads-multiset",)
+
+
+def fs_read(thread, seq, offset, size, crc, session=FILE, result=0, reply=True):
+    """A Read of a file session: offset (two words), size, the writable buffer; the reply wrote data of CRC `crc`."""
+    return req(thread, seq, session, 0x08020000, result=result, params=(offset & 0xFFFFFFFF, offset >> 32, size),
+               in_extra=((size << 4) | 0xC, 0x0FFFDAF8), out_extra=((size << 4) | 0xC, 0x0FFFDAF8),
+               desc=(f"mapped-w:4:{size}:-",), outdesc=(f"mapped-w:4:{size}:0x{crc:08x}",) if reply else (),
+               reply=reply)
+
+
+def fs_write(thread, seq, offset, data: bytes, session="fs:USER/file#2", with_data=True, crc=None, ptr=0x32EF8DF0):
+    size = len(data)
+    crc = zlib.crc32(data) if crc is None else crc
+    return req(thread, seq, session, 0x08030000, params=(offset & 0xFFFFFFFF, offset >> 32, size, 0x00010001),
+               in_extra=((size << 4) | 0xA, ptr), desc=(f"mapped-r:5:{size}:0x{crc:08x}",),
+               data=((5, data.hex()),) if with_data else ())
+
+
+def reads(thread, *items, first_seq=1):
+    """Reads of (offset, size, crc) in the order given."""
+    return [fs_read(thread, first_seq + i, *item) for i, item in enumerate(items)]
+
+
+def mask_file(tmp_path, *lines, name="masks.txt"):
+    p = tmp_path / name
+    p.write_text("# a mask file\n" + "\n".join(lines) + "\n")
+    return str(p)
+
+
+STREAM = [(i * 2048, 2048, 0x1000 + i) for i in range(30)]
+
+
+def test_a_reader_that_stops_five_reads_early_passes_the_multiset_rule_and_fails_the_plain_one(tmp_path):
+    full, short = trace(*reads(5, *STREAM)), trace(*reads(5, *STREAM[:-5]))
+    assert run(tmp_path, full, short) == 1                                        # the plain comparison: a missing request
+    assert run(tmp_path, full, short, *MULTISET) == 0
+    assert run(tmp_path, short, full, *MULTISET) == 0                              # either side may be the shorter one
+
+
+def test_two_reads_in_another_order_pass_the_multiset_rule_and_fail_the_plain_one(tmp_path):
+    a = trace(*reads(5, *STREAM[:6]))
+    swapped = list(STREAM[:6])
+    swapped[2], swapped[5] = swapped[5], swapped[2]
+    b = trace(*reads(5, *swapped))
+    assert run(tmp_path, a, b) == 1
+    assert run(tmp_path, a, b, *MULTISET) == 0
+
+
+def test_the_surplus_is_bounded_by_max_surplus(tmp_path, capsys):
+    full = trace(*reads(5, *STREAM + [(99999 + i, 2048, 7000 + i) for i in range(3)]))
+    base = trace(*reads(5, *STREAM))
+    assert run(tmp_path, full[:-1], base, *MULTISET) == 0                          # 2 reads more
+    sixteen = trace(*reads(5, *STREAM + [(70000 + i, 8, i) for i in range(16)]))
+    assert run(tmp_path, sixteen, base, *MULTISET) == 0                            # exactly 16: allowed (the default)
+    seventeen = trace(*reads(5, *STREAM + [(70000 + i, 8, i) for i in range(17)]))
+    capsys.readouterr()
+    assert run(tmp_path, seventeen, base, *MULTISET) == 1                          # 17: fails
+    out = capsys.readouterr().out
+    assert "surplus 17" in out and "at most 16" in out
+    assert run(tmp_path, seventeen, base, *MULTISET, "--max-surplus", "17") == 0
+    assert run(tmp_path, sixteen, base, *MULTISET, "--max-surplus", "15") == 1
+    assert run(tmp_path, seventeen, base, *MULTISET, "--max-surplus", "0") == 1
+
+
+@pytest.mark.parametrize("what,changed", [
+    ("the CRC of the data", (0, 2048, 0xDEAD)), ("the offset", (4, 2048, 0x1000)), ("the size", (0, 1024, 0x1000)),
+])
+def test_a_read_that_differs_in_offset_size_or_data_fails(tmp_path, capsys, what, changed):
+    a = trace(*reads(5, *STREAM[:4]))
+    b = trace(*reads(5, changed, *STREAM[1:4]))
+    capsys.readouterr()
+    assert run(tmp_path, a, b, *MULTISET) == 1, what
+    out = capsys.readouterr().out
+    assert "differ as multisets" in out and "not on the other side" in out
+    # the report names offsets, sizes and CRCs, never data
+    assert "0x0000dead" not in out or what == "the CRC of the data"
+
+
+def test_a_read_with_another_result_fails(tmp_path):
+    a = trace(*reads(5, *STREAM[:3]))
+    b = trace(fs_read(5, 1, *STREAM[0], result=0xC8804464), *reads(5, *STREAM[1:3], first_seq=2))
+    assert run(tmp_path, a, b, *MULTISET) == 1
+
+
+def test_a_smaller_side_must_be_contained_in_the_larger_even_inside_the_surplus(tmp_path):
+    a = trace(*reads(5, *STREAM[:10]))
+    b = trace(*reads(5, *STREAM[:8], (123456, 2048, 1), (123457, 2048, 2), (123458, 2048, 3)))      # 10 against 11
+    assert run(tmp_path, a, b, *MULTISET) == 1
+
+
+def test_equal_numbers_of_reads_must_be_equal_multisets(tmp_path):
+    a = trace(*reads(5, *STREAM[:4]))
+    b = trace(*reads(5, *STREAM[:3], (555, 2048, 5)))
+    assert run(tmp_path, a, b, *MULTISET) == 1
+    # a read repeated on one side and not on the other is not contained either
+    c = trace(*reads(5, STREAM[0], STREAM[0], STREAM[1]))
+    d = trace(*reads(5, STREAM[0], STREAM[1], STREAM[1]))
+    assert run(tmp_path, c, d, *MULTISET) == 1
+
+
+def test_the_reads_of_each_thread_are_a_multiset_of_their_own(tmp_path):
+    a = trace(*reads(1, *STREAM[:3]), *reads(5, *STREAM[3:6], first_seq=1))
+    b = trace(*reads(5, *STREAM[:3]), *reads(1, *STREAM[3:6], first_seq=1))        # the same reads on the other thread
+    assert run(tmp_path, a, b, *MULTISET) == 1
+
+
+def test_a_thread_that_reads_on_one_side_only_is_a_difference_beyond_the_surplus(tmp_path):
+    a = trace(*reads(5, *STREAM))
+    b = trace(req(5, 1, "srv:", 0x00010000))
+    assert run(tmp_path, a, b, *MULTISET) == 1
+    assert run(tmp_path, trace(*reads(5, *STREAM[:3])), b, *MULTISET) == 1         # 3 reads: inside the surplus, not contained
+
+
+def test_reads_of_other_sessions_and_commands_are_compared_in_order(tmp_path):
+    # a Read-looking request on a directory session, or a Read of a non-file service, is not a file Read
+    a = trace(fs_read(5, 1, 0, 8, 1, session="fs:USER/dir#1"), fs_read(5, 2, 8, 8, 2, session="fs:USER/dir#1"))
+    b = trace(fs_read(5, 1, 8, 8, 2, session="fs:USER/dir#1"), fs_read(5, 2, 0, 8, 1, session="fs:USER/dir#1"))
+    assert run(tmp_path, a, b, *MULTISET) == 1
+    c = trace(fs_read(5, 1, 0, 8, 1, session="xx:USER/file#1"), fs_read(5, 2, 8, 8, 2, session="xx:USER/file#1"))
+    d = trace(fs_read(5, 1, 8, 8, 2, session="xx:USER/file#1"), fs_read(5, 2, 0, 8, 1, session="xx:USER/file#1"))
+    assert run(tmp_path, c, d, *MULTISET) == 1
+
+
+def test_the_file_session_number_does_not_matter_for_a_read(tmp_path):
+    a = trace(fs_read(5, 1, 0, 8, 1, session="fs:USER/file#1"))
+    b = trace(fs_read(5, 1, 0, 8, 1, session="fs:USER/file#9"))
+    assert run(tmp_path, a, b, *MULTISET) == 0
+
+
+def fs_request(thread, seq, session, cmd, params=(), **kw):
+    return req(thread, seq, session, cmd, params=params, in_extra=(0x00000002, 0x12345678), **kw)
+
+
+def test_the_other_fs_requests_are_compared_in_order_and_in_full(tmp_path, capsys):
+    # an Open with its normal parameters (a path size here), then a Close
+    a = trace(fs_request(5, 1, "fs:USER", 0x08010000, params=(0, 0x10, 3, 0x2A)),
+              fs_request(5, 2, FILE, 0x08040000))
+    assert run(tmp_path, a, a, *MULTISET) == 0
+    b = trace(fs_request(5, 1, "fs:USER", 0x08010000, params=(0, 0x10, 3, 0x2B)), fs_request(5, 2, FILE, 0x08040000))
+    assert run(tmp_path, a, b) == 0                                            # the plain comparison reads no words
+    capsys.readouterr()
+    assert run(tmp_path, a, b, *MULTISET) == 1                                 # in full: a normal parameter differs
+    assert "in parameter word 4" in capsys.readouterr().out
+    # a different order
+    c = trace(fs_request(5, 1, FILE, 0x08040000), fs_request(5, 2, "fs:USER", 0x08010000, params=(0, 0x10, 3, 0x2A)))
+    assert run(tmp_path, a, c, *MULTISET) == 1
+    # a buffer's address (a translate word) is not a parameter of the command
+    d = trace(fs_request(5, 1, "fs:USER", 0x08010000, params=(0, 0x10, 3, 0x2A)).replace("0x12345678", "0x87654321"),
+              fs_request(5, 2, FILE, 0x08040000))
+    assert run(tmp_path, a, d, *MULTISET) == 0
+
+
+def test_requests_of_other_services_are_not_compared_word_by_word_with_the_multiset_option(tmp_path):
+    a = trace(req(1, 1, "gsp::Gpu", 0x00030000, params=(1,)), req(5, 1, "gsp::Gpu", 0x00040000, params=(2,)))
+    b = trace(req(1, 1, "gsp::Gpu", 0x00030000, params=(9,)), req(5, 1, "gsp::Gpu", 0x00040000, params=(2,)))
+    assert run(tmp_path, a, b, *MULTISET) == 0
+
+
+def test_a_write_that_differs_fails_without_a_mask(tmp_path, capsys):
+    a = trace(fs_write(5, 1, 0, bytes(range(16))))
+    b = trace(fs_write(5, 1, 0, bytes(range(1, 17))))
+    capsys.readouterr()
+    assert run(tmp_path, a, b, *MULTISET) == 1
+    out = capsys.readouterr().out
+    assert "differs in: desc entry 0" in out and "000102030405" not in out        # CRCs, never the bytes
+    assert run(tmp_path, a, a, *MULTISET) == 0
+
+
+def test_a_write_that_differs_only_in_a_masked_range_passes(tmp_path):
+    data = bytearray(range(32))
+    other = bytearray(data)
+    other[4:8] = b"\xff\xff\xff\xff"
+    other[20] ^= 0x55
+    a = trace(fs_write(5, 1, 0x40, bytes(data)))
+    b = trace(fs_write(5, 1, 0x40, bytes(other)))
+    masks = mask_file(tmp_path, "S1 32 64 4 4   the first range: derived from the clock",
+                      "S1 32 64 20 1   the second range: also from the clock")
+    assert run(tmp_path, a, b, *MULTISET) == 1
+    assert run(tmp_path, a, b, *MULTISET, "--fs-write-mask", masks, "--fs-write-mask-session", "S1") == 0
+    # the plain comparison does not read the options
+    assert run(tmp_path, a, b, "--fs-write-mask", masks, "--fs-write-mask-session", "S1") == 0
+
+
+def test_a_write_that_differs_outside_the_masked_ranges_fails(tmp_path, capsys):
+    data = bytearray(range(32))
+    for where in (0, 3, 8, 19, 21, 31):                    # just outside the two ranges above, and the ends
+        other = bytearray(data)
+        other[4:8] = b"\xff\xff\xff\xff"                   # the masked bytes differ as well
+        other[20] ^= 0x55
+        other[where] ^= 0x01
+        masks = mask_file(tmp_path, "S1 32 64 4 4   reason", "S1 32 64 20 1   reason")
+        capsys.readouterr()
+        code = run(tmp_path, trace(fs_write(5, 1, 0x40, bytes(data))), trace(fs_write(5, 1, 0x40, bytes(other))),
+                   *MULTISET, "--fs-write-mask", masks, "--fs-write-mask-session", "S1")
+        assert code == 1, where
+        assert "desc entry 0" in capsys.readouterr().out
+    # a mask one byte short does not cover the range that differs
+    other = bytearray(data)
+    other[4:8] = b"\xff\xff\xff\xff"
+    short = mask_file(tmp_path, "S1 32 64 4 3   reason")
+    assert run(tmp_path, trace(fs_write(5, 1, 0x40, bytes(data))), trace(fs_write(5, 1, 0x40, bytes(other))),
+               *MULTISET, "--fs-write-mask", short, "--fs-write-mask-session", "S1") == 1
+
+
+def test_a_mask_applies_to_the_write_of_its_size_and_offset_only(tmp_path):
+    base = bytes(range(32))
+    changed = bytearray(base)
+    changed[4] = 0xEE
+    masks = mask_file(tmp_path, "S1 32 64 4 4   reason")
+    options = (*MULTISET, "--fs-write-mask", masks, "--fs-write-mask-session", "S1")
+    anchor = fs_write(1, 1, 64, base, session="fs:USER/file#1")     # a Write the line applies to, equal on both sides
+    # the same bytes differ in a Write of another offset, or of another size: the line does not hide them
+    for size, offset in ((32, 128), (40, 64)):
+        pad = bytes(size - 32)
+        a = trace(anchor, fs_write(5, 1, offset, base + pad))
+        b = trace(anchor, fs_write(5, 1, offset, bytes(changed) + pad))
+        assert run(tmp_path, a, b, *options) == 1, (size, offset)
+    # at its own size and offset it does
+    a = trace(anchor, fs_write(5, 1, 64, base))
+    b = trace(anchor, fs_write(5, 1, 64, bytes(changed)))
+    assert run(tmp_path, a, b, *options) == 0
+
+def test_the_masks_of_other_sessions_are_not_looked_at(tmp_path):
+    data, other = bytearray(range(32)), bytearray(range(32))
+    other[4] = 0xEE
+    a, b = trace(fs_write(5, 1, 0x40, bytes(data))), trace(fs_write(5, 1, 0x40, bytes(other)))
+    masks = mask_file(tmp_path, "S2 32 64 4 4   the same range, for another session", "S1 99 0 0 1   a Write of S1")
+    # session S2's mask would hide the difference; asked for S1 it is not used (and S1's line matches no Write)
+    assert run(tmp_path, a, b, *MULTISET, "--fs-write-mask", masks, "--fs-write-mask-session", "S2") == 0
+    assert run(tmp_path, a, b, *MULTISET, "--fs-write-mask", masks, "--fs-write-mask-session", "S1") == 2
+
+
+def test_a_session_with_no_line_in_the_mask_file_is_compared_in_full(tmp_path):
+    data, other = bytearray(range(32)), bytearray(range(32))
+    other[4] = 0xEE
+    a, b = trace(fs_write(5, 1, 0x40, bytes(data))), trace(fs_write(5, 1, 0x40, bytes(other)))
+    masks = mask_file(tmp_path, "S2 32 64 4 4   for another session")
+    assert run(tmp_path, a, b, *MULTISET, "--fs-write-mask", masks, "--fs-write-mask-session", "G9") == 1
+    assert run(tmp_path, a, a, *MULTISET, "--fs-write-mask", masks, "--fs-write-mask-session", "G9") == 0
+
+
+def test_a_mask_that_matches_no_write_is_an_error(tmp_path, capsys):
+    a = trace(fs_write(5, 1, 0x40, bytes(range(32))))
+    masks = mask_file(tmp_path, "S1 32 64 4 4   applies", "S1 32 0 4 4   a Write that is not in the traces")
+    capsys.readouterr()
+    assert run(tmp_path, a, a, "--fs-write-mask", masks, "--fs-write-mask-session", "S1") == 2
+    err = capsys.readouterr().err
+    assert "masks.txt:3" in err and "matches no Write" in err
+
+
+def test_a_mask_on_a_trace_without_write_data_is_an_error(tmp_path, capsys):
+    a = trace(fs_write(5, 1, 0x40, bytes(range(32)), with_data=False))
+    masks = mask_file(tmp_path, "S1 32 64 4 4   reason")
+    capsys.readouterr()
+    assert run(tmp_path, a, a, "--fs-write-mask", masks, "--fs-write-mask-session", "S1") == 2
+    assert "--trace-ipc-full" in capsys.readouterr().err
+
+
+def test_write_data_that_does_not_match_its_crc_is_an_error(tmp_path, capsys):
+    a = trace(fs_write(5, 1, 0x40, bytes(range(32)), crc=0x12345678))
+    masks = mask_file(tmp_path, "S1 32 64 4 4   reason")
+    capsys.readouterr()
+    assert run(tmp_path, a, a, "--fs-write-mask", masks, "--fs-write-mask-session", "S1") == 2
+    assert "does not match its CRC-32" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("line,message", [
+    ("S1 32 64 4 4", "a reason is required"),
+    ("S1 32 64 4", "expected"),
+    ("S1 32 64 x 4   reason", "not a number"),
+    ("S1 32 64 -4 4   reason", "negative"),
+    ("S1 32 64 4 0   reason", "empty or outside"),
+    ("S1 32 64 30 4   reason", "empty or outside"),
+])
+def test_a_malformed_mask_file_is_an_error(tmp_path, capsys, line, message):
+    a = trace(fs_write(5, 1, 0x40, bytes(range(32))))
+    capsys.readouterr()
+    assert run(tmp_path, a, a, "--fs-write-mask", mask_file(tmp_path, line), "--fs-write-mask-session", "S1") == 2
+    assert message in capsys.readouterr().err
+
+
+def test_a_missing_or_empty_mask_file_is_an_error(tmp_path, capsys):
+    a = trace(fs_write(5, 1, 0x40, bytes(range(32))))
+    assert run(tmp_path, a, a, "--fs-write-mask", str(tmp_path / "nothing.txt"), "--fs-write-mask-session", "S1") == 2
+    assert "cannot read the write-mask file" in capsys.readouterr().err
+    assert run(tmp_path, a, a, "--fs-write-mask", mask_file(tmp_path), "--fs-write-mask-session", "S1") == 2
+    assert "holds no line" in capsys.readouterr().err
+
+
+def test_a_mask_file_that_is_not_text_is_an_error(tmp_path, capsys):
+    a = trace(fs_write(5, 1, 0x40, bytes(range(32))))
+    bad = tmp_path / "bad.txt"
+    bad.write_bytes(b"\xff\xfe\x00G2 1 0 0 1 x\n")
+    assert run(tmp_path, a, a, "--fs-write-mask", str(bad), "--fs-write-mask-session", "S1") == 2
+    assert "not UTF-8" in capsys.readouterr().err
+
+
+def test_the_new_options_have_their_usage_errors(tmp_path, capsys):
+    a = trace(fs_write(5, 1, 0x40, bytes(range(32))))
+    masks = mask_file(tmp_path, "S1 32 64 4 4   reason")
+    for extra in (["--max-surplus", "3"], ["--fs-reads-multiset", "--max-surplus", "-1"],
+                  ["--fs-write-mask", masks], ["--fs-write-mask-session", "S1"]):
+        with pytest.raises(SystemExit) as stop:
+            run(tmp_path, a, a, *extra)
+        assert stop.value.code == 2, extra
+    capsys.readouterr()
+
+
+def test_the_report_of_the_multiset_rule_says_how_many_reads_and_masks(tmp_path, capsys):
+    a = trace(*reads(5, *STREAM), fs_write(1, 1, 0x40, bytes(range(32))))
+    b = trace(*reads(5, *STREAM[:-5]), fs_write(1, 1, 0x40, bytes(range(32))))
+    masks = mask_file(tmp_path, "S1 32 64 4 4   reason")
+    capsys.readouterr()
+    assert run(tmp_path, a, b, *MULTISET, "--fs-write-mask", masks, "--fs-write-mask-session", "S1") == 0
+    out = capsys.readouterr().out
+    assert "fs reads: 1 thread(s) read; 30 on the reference and 25 on the candidate; the largest difference is 5" in out
+    assert "fs write masks: 1 line(s) of session S1, applied to 1 Write(s) of the reference and 1 of the candidate" in out
+
+
+def test_the_docstring_documents_the_cross_model_options():
+    for word in ("--fs-reads-multiset", "--max-surplus", "--fs-write-mask", "--fs-write-mask-session", "D52",
+                 "multiset"):
+        assert word in cmp.__doc__
