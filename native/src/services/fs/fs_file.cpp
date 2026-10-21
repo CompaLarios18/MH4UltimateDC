@@ -10,8 +10,11 @@
 // Copyright 2017-2026 Citra Emulator Project / Azahar Emulator Project (hle_ipc.h)
 // Copyright 2014-2024 Citra Emulator Project / Azahar Emulator Project (file_backend.h)
 //
-// A file session (N1-12): Read and Write run on an I/O thread and answer by a deferred reply, at the time
-// StartIo says. Departures from Azahar:
+// A file session (N1-12): Read runs on an I/O thread and answers by a deferred reply, at the time StartIo
+// says. Write runs on the scheduler thread and answers in the request's tick (the IPC reply delay, nothing
+// else): what the game can see must not depend on how long a host thread takes. Azahar answers a Write to a
+// backend that is not cached (every disk file) the same way; on a cached reader (RomFS) it goes through a
+// worker thread, and this code answers that in the same tick instead. Departures from Azahar:
 //  - The data is read into a buffer on the I/O thread and copied into the client's buffer on the scheduler
 //    thread when the reply is written (Azahar does the same); the I/O thread never touches guest memory.
 //  - The count of a read is cut to the client's buffer and to what is left of the file before anything is
@@ -130,39 +133,18 @@ private:
         const bool flush = (flags & 0xFF) != 0;
         const bool update_timestamp = (flags & 0xFF00) != 0;
 
-        struct WriteData {
-            Result result = kResultHostFailure;
-            std::size_t written = 0;
-            std::vector<u8> bytes;
-        };
-        auto data = std::make_shared<WriteData>();
-        data->bytes.resize(std::min<u64>(length, mapped->Size()));
-        if (!data->bytes.empty()) {
-            mapped->Read(data->bytes.data(), 0, static_cast<u32>(data->bytes.size()));
+        std::vector<u8> bytes(std::min<u64>(length, mapped->Size()));
+        if (!bytes.empty()) {
+            mapped->Read(bytes.data(), 0, static_cast<u32>(bytes.size()));
         }
-        std::shared_ptr<FileBackend> backend = backend_;
-        const u16 command_id = request.CommandId();
-        std::shared_ptr<Request> pending = request.Share();
-        const MappedBuffer buffer = *mapped;
-        StartIo(
-            *state_, Context(), 0,
-            [data, backend, offset, flush, update_timestamp] {
-                data->result = backend->Write(offset, data->bytes.size(), flush, update_timestamp,
-                                              data->bytes.data(), &data->written);
-            },
-            [this, backend, data, pending, buffer, command_id] {
-                // The session is alive while the request is (a client that stopped waiting releases it,
-                // and then the size has no reader).
-                if (pending->Session() != nullptr) {
-                    size_ = backend->GetSize();
-                }
-                Reply reply(command_id, 2, 2);
-                reply.Push(data->result);
-                reply.Push<u32>(IsError(data->result) ? 0 : static_cast<u32>(data->written));
-                reply.PushMappedBuffer(buffer);
-                pending->Deliver(std::move(reply));
-            });
-        return Handled::Deferred;
+        std::size_t written = 0;
+        const Result result = backend_->Write(offset, bytes.size(), flush, update_timestamp, bytes.data(), &written);
+        size_ = backend_->GetSize();
+        Reply& reply = request.MakeReply(2, 2);
+        reply.Push(result);
+        reply.Push<u32>(IsError(result) ? 0 : static_cast<u32>(written));
+        reply.PushMappedBuffer(*mapped);
+        return Handled::Done;
     }
 
     // Outputs: 0: 0x08040140 (3 normal words), 1: result, 2-3: size

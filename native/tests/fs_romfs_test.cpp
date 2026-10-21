@@ -1148,6 +1148,32 @@ TEST_CASE("--io-latency azahar: opens and reads are answered after Azahar's dela
     CHECK(ReadDelayNs(t.big_length) == 0x1000 * 94 + 582778);
 }
 
+TEST_CASE("--io-latency azahar: a Write reply costs the IPC reply delay and nothing else") {
+    Fixture f;
+    TempDir dir;
+    GameFolder game;
+    game.Write(dir);
+    u64 write_ticks = 0;
+    std::vector<u32> reply;
+    const int status = BootWith(f, dir, {"--ms", "1000", "--io-latency", "azahar"}, [&] {
+        FsGuest g(f, dir);
+        g.Initialize();
+        const Opened opened = g.OpenFileDirectly(3, kEmpty, kEmptyPath, SelfNcchPath(0));
+        g.PutBytes(g.Scratch(0x1000), Pattern(16, 0));
+        const u64 before = g.Now();
+        reply = g.Request(opened.file,
+                          {ipc::MakeHeader(0x0803, 4, 2), 0, 0, 16, 0, ipc::MappedBufferDesc(16, ipc::R),
+                           g.Scratch(0x1000)},
+                          5);
+        write_ticks = g.Now() - before;
+        ExitProcess(*f.runtime);
+    });
+    CHECK(status == 0);
+    CHECK(reply[0] == ipc::MakeHeader(0x0803, 2, 2));
+    CHECK(reply[1] == kResultSuccess);
+    CHECK(write_ticks == NsToTicks(kIpcReplyDelayNs));
+}
+
 TEST_CASE("--io-latency is azahar by default") {
     int status = 0;
     const Timing t = MeasureTimes({}, &status);
