@@ -1,7 +1,12 @@
-// Derived from Azahar src/core/hle/applets/applet.cpp at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6
-// (GPL-2.0-or-later: it says "GPLv2 or any later version"): Applet::ReceiveParameter,
-// Applet::SendParameter and Applet::CloseApplet.
-// Copyright 2015 Citra Emulator Project
+// Derived from Azahar src/core/hle/applets/applet.cpp, src/core/hle/applets/erreula.cpp,
+// src/core/hle/applets/mint.cpp and src/core/hle/applets/mii_selector.cpp at
+// 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-2.0-or-later: each of them says "GPLv2 or any later
+// version"): Applet::ReceiveParameter, Applet::SendParameter and Applet::CloseApplet, and the
+// Request/Response handshake the Error, Mint and Mii selector applets share (AnswerFramebufferRequest,
+// from their ReceiveParameterImpl).
+// Copyright 2015 Citra Emulator Project (applet.cpp)
+// Copyright 2016-2025 Citra Emulator Project / Azahar Emulator Project (erreula.cpp)
+// Copyright 2016 Citra Emulator Project (mint.cpp, mii_selector.cpp)
 #include "applets/applet.h"
 
 #include <cstring>
