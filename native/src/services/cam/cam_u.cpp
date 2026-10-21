@@ -17,9 +17,7 @@
 //  - Activate starts a port's vsync chain: the vsync event is signalled every frame period (67, 100,
 //    118, 200, 50 or 33 ms by the frame rate, in exact ticks of the timer queue: the next signal is the
 //    previous one's scheduled tick plus the period), and the latest five times (microseconds of game
-//    time) are kept for GetLatestVsyncTiming. A second Activate starts a second chain, as in Azahar, and
-//    Activate of the inner camera (0x02) calls ActivatePort(0, 1) twice, as Azahar does, so it starts two
-//    chains at once and each period adds two equal entries to the times.
+//    time) are kept for GetLatestVsyncTiming. A second Activate starts a second chain, as in Azahar.
 //  - SetReceiving on a port that is capturing delivers a frame one frame period later: the pixels are
 //    written to the destination (trimmed if SetTrimming asked) and the completion event, which is
 //    sticky and cleared by the next SetReceiving, is signalled. On a port that is not capturing the
@@ -732,8 +730,6 @@ private:
         if (camera_select[0]) {
             ActivatePort(0, 0);
         } else if (camera_select[1]) {
-            // Azahar calls this twice for the inner camera: two vsync chains
-            ActivatePort(0, 1);
             ActivatePort(0, 1);
         }
         if (camera_select[2]) {

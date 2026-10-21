@@ -2309,7 +2309,7 @@ TEST_CASE("y2r:u: the service converts, signals 50000 ticks later and keeps its 
 
 // ---- cam:u -------------------------------------------------------------------------------------------------
 
-TEST_CASE("cam:u: Activate of the inner camera starts two vsync chains, as Azahar does") {
+TEST_CASE("cam:u: Activate of the inner camera starts one vsync chain") {
     constexpr u64 kPeriod = kTicksPerSecond * 67 / 1000;  // Rate_15
     Fixture f;
     TempDir dir;
@@ -2338,13 +2338,13 @@ TEST_CASE("cam:u: Activate of the inner camera starts two vsync chains, as Azaha
     REQUIRE(timing_data.size() == 40);
     std::array<s64, 5> times{};
     std::memcpy(times.data(), timing_data.data(), 40);
-    // two periods have passed: each added two entries at the same time, newest first
+    // two periods have passed: one entry each, newest first
     const s64 second = static_cast<s64>(TicksToNs(activated + kPeriod * 2) / 1000);
     const s64 first = static_cast<s64>(TicksToNs(activated + kPeriod) / 1000);
     CHECK(times[0] == second);
-    CHECK(times[1] == second);
-    CHECK(times[2] == first);
-    CHECK(times[3] == first);
+    CHECK(times[1] == first);
+    CHECK(times[2] == 0);
+    CHECK(times[3] == 0);
     CHECK(times[4] == 0);
 }
 
