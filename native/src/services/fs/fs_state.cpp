@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "fs_state.h"
+#include "host_files.h"
 #include "mh4n/loader.h"
 #include "mh4n/log.h"
 #include "mh4n/options.h"
@@ -116,7 +117,7 @@ void FsState::Init(ServiceContext& context) {
     }
     MakeIoPool(*this, context.GetKernel());
     user_folder = context.UserFolder();
-    if (!user_folder.empty() && user_folder.back() != '/' && user_folder.back() != '\\') {
+    if (!user_folder.empty() && !host::IsSeparator(user_folder.back())) {
         user_folder += '/';
     }
 

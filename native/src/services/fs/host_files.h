@@ -16,6 +16,13 @@
 //  - A directory listing is the host's own order (readdir, FindNextFile), as Azahar's ForeachDirectoryEntry
 //    gives; nothing sorts it.
 //  - A symbolic link in a tree that is deleted is removed, never followed.
+//  - CreateFullPath (via DirectoryPrefixes) is not Azahar's loop on Windows. Azahar (file_util.cpp:346-385)
+//    takes the next '/' from the previous position and looks for '\' from there only when no '/' is
+//    left, so on "C:\a\b/c/d/" it never makes "C:\" and "C:\a\". Here every separator of both kinds is a
+//    directory boundary, in order, and a UNC or extended-length root (\\server\share, \\?\C:\) is not
+//    created, as mkdir cannot make it. On Linux/macOS (separator set "/") the prefixes and the mkdir order
+//    are Azahar's. The guard is the same 100 levels, counted the same way (the 100th prefix is made, then
+//    the call fails).
 #pragma once
 
 #include <cstddef>
@@ -23,6 +30,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "fs_types.h"
@@ -33,6 +41,26 @@ namespace host {
 
 // A host path from UTF-8 text.
 std::filesystem::path ToPath(const std::string& utf8);
+
+// The characters that separate the parts of a host path: "/" everywhere, and also "\\" on Windows, where a
+// path often mixes both (a user folder from the command line, then "/sdmc/...").
+#if defined(_WIN32)
+inline constexpr std::string_view kPlatformSeparators = "/\\";
+#else
+inline constexpr std::string_view kPlatformSeparators = "/";
+#endif
+inline bool IsSeparator(char c, std::string_view separators = kPlatformSeparators) {
+    return separators.find(c) != std::string_view::npos;
+}
+// The next separator of `separators` at or after `from`, npos if there is none.
+std::size_t FindSeparator(const std::string& path, std::size_t from, std::string_view separators = kPlatformSeparators);
+// The directories CreateFullPath makes, in order: each prefix of `path` that ends with a separator (the part
+// after the last separator is a file name and is not one). With the Windows set, the root of a UNC path
+// ("\\server\share\") is not listed: it is not a directory that can be made. At most kMaxDirectoryLevels
+// are listed; *too_deep (when not null) says that the limit was reached.
+inline constexpr int kMaxDirectoryLevels = 100;
+std::vector<std::string> DirectoryPrefixes(const std::string& path, std::string_view separators = kPlatformSeparators,
+                                           bool* too_deep = nullptr);
 
 bool Exists(const std::string& path);
 bool IsDirectory(const std::string& path);

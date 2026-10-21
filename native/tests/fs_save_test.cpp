@@ -38,6 +38,7 @@ TEST_CASE("fs_save_test needs recomp.h (the repository around native/)" * doctes
 #include <mutex>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -1646,6 +1647,85 @@ TEST_CASE("SplitFilename83 and the UTF conversions") {
     CHECK(fs::Utf16ToUtf8(u"aé€\U0001F600") == "a\xC3\xA9\xE2\x82\xAC\xF0\x9F\x98\x80");
     CHECK(fs::Utf8ToUtf16("\xFF") == std::u16string(u"�"));
     CHECK(fs::Utf16ToUtf8(std::u16string(1, char16_t(0xD800))) == "\xEF\xBF\xBD");
+}
+
+// The old loop of CreateFullPath on Windows: the next "/", and when there is none the first "\" from index 0
+// (not from the position). Returns the prefixes it would have made before its guard of 100 stopped it.
+static std::vector<std::string> OldWindowsPrefixes(const std::string& path, bool* hit_guard) {
+    std::vector<std::string> out;
+    std::size_t position = 0;
+    int guard = 100;
+    *hit_guard = false;
+    for (;;) {
+        position = path.find('/', position);
+        if (position == std::string::npos) {
+            position = path.find('\\', 0);
+        }
+        if (position == std::string::npos) {
+            return out;
+        }
+        out.push_back(path.substr(0, position + 1));
+        if (--guard <= 0) {
+            *hit_guard = true;
+            return out;
+        }
+        ++position;
+    }
+}
+
+TEST_CASE("CreateFullPath: the directories of a path with the Windows separators (run on every platform)") {
+    using Prefixes = std::vector<std::string>;
+    const std::string_view win = "/\\";
+    bool deep = true;
+    // a user folder with backslashes, then the forward slashes of the archive paths (the failure of CI)
+    CHECK(fs::host::DirectoryPrefixes("C:\\a\\b/c/d/", win, &deep) ==
+          Prefixes{"C:\\", "C:\\a\\", "C:\\a\\b/", "C:\\a\\b/c/", "C:\\a\\b/c/d/"});
+    CHECK(!deep);
+    // only backslashes; the last part has no separator after it, so it is a file
+    CHECK(fs::host::DirectoryPrefixes("C:\\a\\b\\c", win, &deep) == Prefixes{"C:\\", "C:\\a\\", "C:\\a\\b\\"});
+    // a UNC root is not made; the parts after the share are
+    CHECK(fs::host::DirectoryPrefixes("\\\\server\\share\\x/y/", win, &deep) ==
+          Prefixes{"\\\\server\\share\\x/", "\\\\server\\share\\x/y/"});
+    CHECK(fs::host::DirectoryPrefixes("\\\\?\\C:\\a\\b/", win, &deep) == Prefixes{"\\\\?\\C:\\a\\", "\\\\?\\C:\\a\\b/"});
+    // with only "/" a backslash is part of a name (what the platforms other than Windows do, unchanged)
+    CHECK(fs::host::DirectoryPrefixes("/a\\b/c/d", "/", &deep) == Prefixes{"/", "/a\\b/", "/a\\b/c/"});
+    CHECK(fs::host::DirectoryPrefixes("//x//y/", "/", &deep) == Prefixes{"/", "//", "//x/", "//x//", "//x//y/"});
+    CHECK(fs::host::DirectoryPrefixes("name", win, &deep).empty());
+    CHECK(fs::host::DirectoryPrefixes("", win, &deep).empty());
+    CHECK(fs::host::FindSeparator("a\\b/c", 0, win) == 1);
+    CHECK(fs::host::FindSeparator("a\\b/c", 2, win) == 3);
+    CHECK(fs::host::FindSeparator("a\\b/c", 4, win) == std::string::npos);
+    CHECK(fs::host::FindSeparator("a\\b/c", 0, "/") == 3);
+
+    // the guard counts directory levels: 100 are the limit, as before, and a long path of 99 is fine
+    std::string levels99 = "/", levels100 = "/";
+    for (int i = 0; i < 98; ++i) {
+        levels99 += "d/";
+    }
+    for (int i = 0; i < 99; ++i) {
+        levels100 += "d/";
+    }
+    deep = true;
+    CHECK(fs::host::DirectoryPrefixes(levels99, win, &deep).size() == 99);
+    CHECK(!deep);
+    CHECK(fs::host::DirectoryPrefixes(levels100, win, &deep).size() == 100);
+    CHECK(deep);
+    std::string mixed = "C:\\";
+    for (int i = 0; i < 40; ++i) {
+        mixed += (i % 2 == 0 ? "d\\" : "d/");
+    }
+    CHECK(fs::host::DirectoryPrefixes(mixed, win, &deep).size() == 41);
+    CHECK(!deep);
+
+    // the old Windows loop: a path with a backslash before its last "/" ran into its guard (it went back to
+    // the first backslash again and again), and so did one with backslashes only
+    bool old_guard = false;
+    OldWindowsPrefixes("C:\\a\\b/c/d/", &old_guard);
+    CHECK(old_guard);
+    OldWindowsPrefixes("C:\\a\\b\\c", &old_guard);
+    CHECK(old_guard);
+    OldWindowsPrefixes("C:/a/b/", &old_guard);
+    CHECK(!old_guard);
 }
 
 TEST_CASE("host helpers: delete, recursive delete, listing, create full path") {
