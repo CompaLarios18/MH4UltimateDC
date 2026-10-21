@@ -186,7 +186,6 @@ public:
 
     gpu::Gpu* GetGpu() const { return interfaces_ != nullptr ? interfaces_->gpu : nullptr; }
     GuestMemory& Memory() const { return *memory_; }
-    Kernel& GetKernel() const { return *kernel_; }
 
     // ---- shared memory ----
     // A pointer to `size` bytes at `offset` of the block, or null if they are not inside it.

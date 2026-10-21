@@ -370,19 +370,20 @@ void GspState::ScheduleVBlank() {
 void GspState::OnVBlank() {
     vblank_event_ = 0;
     ++vblank_count_;
-    // Reschedule from the deadline of this event, not from now (GPU::VBlankCallback's
-    // FRAME_TICKS - cycles_late), so a late callback shortens the next wait and the cadence does not
-    // drift. The period in force now is the one for the next VBlank.
-    next_vblank_tick_ += period_ticks_;
-    ScheduleVBlank();
 
-    // Signal to GSP that a GPU interrupt has occurred, then present.
+    // Signal to GSP that a GPU interrupt has occurred, then present (GPU::VBlankCallback).
     SignalInterrupt(gpu::Interrupt::PDC0);
     SignalInterrupt(gpu::Interrupt::PDC1);
     if (gpu::Gpu* gpu = GetGpu()) {
         gpu->VBlank(0);
         gpu->VBlank(1);
     }
+
+    // Reschedule last, as Azahar does, from the deadline of this event and not from now
+    // (FRAME_TICKS - cycles_late), so a late callback shortens the next wait and the cadence does
+    // not drift. The period in force now is the one for the next VBlank.
+    next_vblank_tick_ += period_ticks_;
+    ScheduleVBlank();
 }
 
 void GspState::SetRefreshRate(double hz) {
