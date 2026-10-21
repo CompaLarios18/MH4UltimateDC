@@ -733,6 +733,36 @@ TEST_CASE("a refresh rate reaches the sink, before or after the sink is set") {
     CHECK(f.runtime.RefreshRate() == 60.0);
 }
 
+TEST_CASE("SetRefreshRate from guest code calls the sink before it returns; elsewhere it is queued") {
+    Fixture f;
+    REQUIRE(f.runtime.Prepare(Parse({}), {}));
+    std::vector<double> got;
+    f.runtime.SetRefreshRateSink([&](double hz) { got.push_back(hz); });
+    bool finished = false;
+    std::size_t inside = 0;
+    Kernel& kernel = f.runtime.GetKernel();
+    auto thread = kernel.NewThread("guest", 0x30, 0, kernel.CurrentProcess());
+    f.runtime.Scheduler().AttachFunction(thread, [&] {
+        std::thread([&] { f.runtime.SetRefreshRate(90.0); }).join();  // queued: not on this thread
+        CHECK(got.empty());
+        f.runtime.SetRefreshRate(120.0);  // guest code: applied before it returns
+        inside = got.size();
+        finished = true;
+    });
+    f.runtime.Scheduler().Start(thread);
+    REQUIRE(f.runtime.Scheduler().Run([&] { return finished; }) == RunStatus::Stopped);
+    REQUIRE(inside == 1);
+    CHECK(got[0] == 120.0);
+    f.runtime.Scheduler().RunPending();
+    CHECK(got.size() == 1);  // the queued 90 Hz was older than the call that was applied at once
+    CHECK(f.runtime.RefreshRate() == 120.0);
+    // The scheduler's own host stack (a posted function, a timer event) is not guest code: queued.
+    f.runtime.GetKernel().Post([&] { f.runtime.SetRefreshRate(75.0); });
+    f.runtime.Scheduler().RunPending();
+    REQUIRE(got.size() == 2);
+    CHECK(got[1] == 75.0);
+}
+
 // ---- Host::PhysicalPointer at the edges of the areas ----------------------------------------------------
 
 namespace {
