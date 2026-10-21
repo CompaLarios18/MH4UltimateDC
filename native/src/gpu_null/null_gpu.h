@@ -37,17 +37,19 @@
 // length and still runs the slow path, reading a header and a value from past the end of the list,
 // while here the scan stops.
 //
-// DMA: Azahar's CopyBlock copies between any two mapped addresses of the application's memory map.
-// Here each end is read through the physical view first (VirtualToPhysical and the host's
-// PhysicalPointer: the linear heap and VRAM) and, where that does not serve the whole range,
-// through Host::GuestPointer (any fully mapped range, such as the application's heap), so a DMA
-// between any two mapped ranges copies. Departures (N1-17b report): a range that is not mapped
-// copies nothing (CopyBlock zero-fills the destination for an unmapped source page and skips the
-// unmapped pages of a destination), and is logged, for the first few times only; a range that is
-// mapped only in part and has no physical view copies nothing (CopyBlock copies the pages that are
-// mapped); overlapping ranges are moved as memmove does (CopyBlock copies forwards, a page at a
-// time). The DMA interrupt is signalled in every case. A host whose GuestPointer is the default
-// (a capture's) serves the physical areas only.
+// DMA: Azahar's CopyBlock copies between any two mapped addresses of the application's memory map,
+// page by page, and the null GPU does the same (N1-17b, D41). Each 4 KiB piece is read through the
+// physical view first (VirtualToPhysical and the host's PhysicalPointer: the linear heap and VRAM)
+// and, where that does not serve it, through Host::GuestPointer (any mapped page, such as the
+// application's heap). As CopyBlock does: the source is walked forwards a page at a time; a source
+// page that is not mapped (a zero region of config/native/zero_regions.txt is not mapped either)
+// makes the matching part of the destination zeros; a destination page that is not mapped is
+// skipped; a range that is mapped only in part copies the pages that are. Each piece is moved with
+// memmove, so ranges that overlap give the bytes of a forwards copy a page at a time, which is the
+// order Azahar's has (its memcpy has no defined result for an overlap inside one piece; memmove's
+// is the one a host gives). A DMA that touches unmapped memory is counted (Stats::dma_not_copied,
+// dma_zero_filled) and logged for the first few only. The DMA interrupt is signalled in every case.
+// A host whose GuestPointer is the default (a capture's) serves the physical areas only.
 //
 // The delay of each interrupt: Azahar's GPU passes the time the work would take on a console
 // (DelayGenerator); its GSP, with the reference's settings (D25), records it for GetPerfLog and
@@ -82,8 +84,9 @@ struct Stats {
     u64 vblanks[2] = {};
     u64 buffer_swaps[2] = {};
     u64 skipped_transfers = 0;  // display transfers and texture copies, which draw nothing
-    u64 dma_through_guest = 0;  // DMAs that went through Host::GuestPointer, in whole or in part
-    u64 dma_not_copied = 0;     // DMAs that copied less than their size (unmapped memory)
+    u64 dma_through_guest = 0;  // DMAs that copied or zeroed through a Host::GuestPointer pointer
+    u64 dma_not_copied = 0;     // DMAs with a page that is not mapped, at either end
+    u64 dma_zero_filled = 0;    // DMAs that wrote zeros for a source page that is not mapped
     u64 command_lists = 0;      // lists read (GX SubmitCmdList and the command buffer registers)
     u64 command_list_jumps = 0; // writes to a command buffer trigger inside a list
     u64 flushes = 0;            // FlushRegion calls
@@ -116,9 +119,13 @@ private:
     void ReportUnknownAddress(const char* what, u32 addr);
     void Signal(Interrupt id, u64 delay_ns);
     void Dma(const GxCommand& command);
-    // The memory [vaddr, vaddr + size) as far as it can be reached: through the physical view, then
-    // through the host's guest memory. Shorter than `size` when only a prefix is known.
-    std::span<u8> Reach(u32 vaddr, u32 size, bool* through_guest);
+    // A host pointer for [vaddr, vaddr + size), which lies in one 4 KiB page: through the physical
+    // view, else through the host's guest memory; null when the page is not mapped.
+    struct Page {
+        u8* data = nullptr;
+        bool guest = false;  // `data` came from Host::GuestPointer
+    };
+    Page ReachPage(u64 vaddr, u32 size);
     void MemoryFill(u32 index, u32 interrupt_index);
     void MemoryTransfer();
     // GPU::SubmitCmdList for command buffer channel 0 or 1: reads the list if the channel's
@@ -134,7 +141,7 @@ private:
     // Addresses outside the two register windows are logged once per 4 KiB page.
     std::array<u32, 8> reported_pages_{};
     u32 reported_count_ = 0;
-    // DMAs that could not be completed are logged for the first kDmaReports only.
+    // DMAs that touch unmapped memory are logged for the first kDmaReports only.
     u32 dma_reports_ = 0;
     Stats stats_;
 };

@@ -246,56 +246,91 @@ void NullGpu::Execute(const GxCommand& command) {
     }
 }
 
-std::span<u8> NullGpu::Reach(u32 vaddr, u32 size, bool* through_guest) {
-    // The physical view first: the linear heap and VRAM, where a prefix is as good as it gets (the
-    // memory ends there). What it cannot serve completely, the host's guest memory may: any range
-    // that is fully mapped, as the application's memory map gives it to Azahar's CopyBlock.
-    std::span<u8> span;
-    if (const auto physical = host_.VirtualToPhysical(vaddr)) {
-        span = gx::Window(host_, *physical, size);
+NullGpu::Page NullGpu::ReachPage(u64 vaddr, u32 size) {
+    // One chunk inside one 4 KiB page (the page size of Azahar's page table). The physical view
+    // first: the linear heap and VRAM. What it cannot serve completely, the host's guest memory
+    // may: any range that is fully mapped, as the application's memory map gives it to CopyBlock.
+    // An address that does not fit in 32 bits is not mapped (Azahar's page table ends there).
+    if (vaddr + size > (u64{1} << 32)) {
+        return {};
+    }
+    const u32 address = static_cast<u32>(vaddr);
+    if (const auto physical = host_.VirtualToPhysical(address)) {
+        const std::span<u8> span = gx::Window(host_, *physical, size);
         if (span.size() == size) {
-            return span;
+            return {span.data(), false};
         }
     }
-    if (u8* guest = host_.GuestPointer(vaddr, size)) {
-        *through_guest = true;
-        return {guest, size};
-    }
-    return span;
+    return {host_.GuestPointer(address, size), true};
 }
 
+// MemorySystem::CopyBlock: the source is walked forwards in the pieces its pages make; a piece of an
+// unmapped source page becomes zeros in the destination (ZeroBlock), a mapped one is written there
+// (WriteBlock, which walks the destination's pages); a destination page that is not mapped is
+// skipped. A piece is the part of the range in one page of the source and one of the destination,
+// copied with memmove: Azahar's memcpy has no defined result for pieces that overlap.
 void NullGpu::Dma(const GxCommand& command) {
     const u32 source = command.words[1];
     const u32 dest = command.words[2];
     const u32 size = command.words[3];
 
-    // Azahar copies through the application's memory map (CopyBlock): any two mapped ranges.
-    bool through_guest = false;
-    const std::span<u8> src = Reach(source, size, &through_guest);
-    const std::span<u8> dst = Reach(dest, size, &through_guest);
-    const size_t count = std::min(src.size(), dst.size());
-    if (count != 0) {
-        std::memmove(dst.data(), src.data(), count);
+    constexpr u32 kPage = 0x1000;
+    u32 unmapped_source_pieces = 0;  // zero-filled in the destination, or skipped with it
+    u32 unmapped_dest_pieces = 0;    // skipped
+    u32 zeroed_pieces = 0;
+    bool used_guest_pointer = false;
+    u64 remaining = size;
+    u64 src = source;
+    u64 dst = dest;
+    while (remaining > 0) {
+        const u32 src_chunk = static_cast<u32>(std::min<u64>(kPage - (src & (kPage - 1)), remaining));
+        const Page src_page = ReachPage(src, src_chunk);
+        if (src_page.data == nullptr) {
+            ++unmapped_source_pieces;
+        }
+        u64 piece_src = src;
+        u64 piece_dst = dst;
+        u32 left = src_chunk;
+        while (left > 0) {
+            const u32 piece = static_cast<u32>(std::min<u64>(kPage - (piece_dst & (kPage - 1)), left));
+            const Page dst_page = ReachPage(piece_dst, piece);
+            if (dst_page.data == nullptr) {
+                ++unmapped_dest_pieces;
+            } else if (src_page.data == nullptr) {
+                std::memset(dst_page.data, 0, piece);
+                ++zeroed_pieces;
+                used_guest_pointer |= dst_page.guest;
+            } else {
+                std::memmove(dst_page.data, src_page.data + (piece_src - src), piece);
+                used_guest_pointer |= dst_page.guest || src_page.guest;
+            }
+            piece_src += piece;
+            piece_dst += piece;
+            left -= piece;
+        }
+        src += src_chunk;
+        dst += src_chunk;
+        remaining -= src_chunk;
     }
-    if (through_guest) {
+
+    if (used_guest_pointer) {
         ++stats_.dma_through_guest;
     }
-    if (count < size) {
+    if (zeroed_pieces != 0) {
+        ++stats_.dma_zero_filled;
+    }
+    if (unmapped_source_pieces != 0 || unmapped_dest_pieces != 0) {
         ++stats_.dma_not_copied;
         // A game that does this does it again and again: the first few are logged.
         constexpr u32 kDmaReports = 8;
         if (dma_reports_ < kDmaReports) {
             ++dma_reports_;
-            if (src.empty() || dst.empty()) {
-                MH4N_LOG(Error, kLog,
-                         "DMA with an address that is not physical memory nor mapped guest memory: "
-                         "{:#010X} -> {:#010X} ({:#x} bytes, nothing copied)",
-                         source, dest, size);
-            } else {
-                MH4N_LOG(Error, kLog, "DMA of {:#x} bytes leaves the memory ({:#x} copied)", size, count);
-            }
+            MH4N_LOG(Error, kLog,
+                     "DMA {:#010X} -> {:#010X} of {:#x} bytes touches memory that is not mapped: "
+                     "{} source pieces (the destination gets zeros), {} destination pieces (skipped)",
+                     source, dest, size, unmapped_source_pieces, unmapped_dest_pieces);
             if (dma_reports_ == kDmaReports) {
-                MH4N_LOG(Warning, kLog, "further DMAs that cannot be completed are counted, not logged");
+                MH4N_LOG(Warning, kLog, "further DMAs that touch unmapped memory are counted, not logged");
             }
         }
     }

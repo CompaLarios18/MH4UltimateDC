@@ -33,9 +33,10 @@ u8* RuntimeGpuHost::GuestPointer(u32 vaddr, u32 size) {
 }
 
 void RuntimeGpuHost::SignalInterrupt(gpu::Interrupt id, u64 delay_ns) {
-    // At once, on the scheduler thread: Kernel::Post runs the call at the next safe point, in the
-    // order the interrupts were signalled, and from the thread that signals it, directly. The delay
-    // is not waited for (D25, D41); it is only handed to the sink's reader, which records it.
+    // At once, on the scheduler thread: Kernel::Post always queues the call and ProcessPending runs
+    // it at the next safe point, in the order the interrupts were signalled, whichever thread
+    // signals. The delay is not waited for (D25, D41); it is only handed to the sink's reader,
+    // which records it.
     kernel_.Post([this, id, delay_ns] {
         if (!sink_) {
             return;
