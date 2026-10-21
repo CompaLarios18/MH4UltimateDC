@@ -16,9 +16,36 @@ namespace NativeAnalog = Settings::NativeAnalog;
 namespace NativeButton = Settings::NativeButton;
 } // namespace
 
-/// The keyboard as it comes: the left hand on the circle pad and the hunter's actions (R, the
-/// dash, on Shift), the arrows on the C-stick (the camera).
+/// The keyboard and mouse as they come, after Monster Hunter Rise on PC: W A S D move, the mouse
+/// turns the camera (the C-stick), the left button draws and attacks (X), the right one is the
+/// other attack (A, which F also is: gather, carve, talk), Space evades (B), E uses an item or
+/// sheathes (Y), Shift dashes and the side button guards (R), Ctrl or the wheel's click resets
+/// the camera (L), Q targets a monster (ZL), C kicks or skips (ZR), the wheel scrolls the item
+/// bar; O K L ; are the C-stick too and the arrows the D-pad.
 Config Defaults() {
+    Config c;
+    c.keys[NativeButton::A] = "F | Mouse Right";
+    c.keys[NativeButton::B] = "Space";
+    c.keys[NativeButton::X] = "Mouse Left | V";
+    c.keys[NativeButton::Y] = "E";
+    c.keys[NativeButton::Up] = "Up";
+    c.keys[NativeButton::Down] = "Down";
+    c.keys[NativeButton::Left] = "Left";
+    c.keys[NativeButton::Right] = "Right";
+    c.keys[NativeButton::L] = "Left Ctrl | Mouse Middle";
+    c.keys[NativeButton::R] = "Left Shift | Mouse 4";
+    c.keys[NativeButton::Start] = "Return";
+    c.keys[NativeButton::Select] = "Backspace";
+    c.keys[NativeButton::ZL] = "Q";
+    c.keys[NativeButton::ZR] = "C";
+    c.stick_keys[NativeAnalog::CirclePad] = "W,S,A,D";
+    c.stick_keys[NativeAnalog::CStick] = "O,L,K,;";
+    return c;
+}
+
+/// The keyboard as it came before: the left hand on the circle pad and the hunter's actions (R,
+/// the dash, on Shift), the arrows on the C-stick (the camera).
+Config OldDefaults() {
     Config c;
     c.keys[NativeButton::A] = "E";
     c.keys[NativeButton::B] = "Space";
@@ -89,6 +116,7 @@ Config Load() {
 
     c.game = str("Game", "game", c.game);
     c.launcher = flag("Game", "launcher", c.launcher);
+    c.check_updates = flag("Game", "check_updates", c.check_updates);
     c.new_3ds = str("Game", "new_3ds", c.new_3ds);
     c.cpu_clock = num("Game", "cpu_clock", c.cpu_clock, 5, 400);
 
@@ -116,6 +144,30 @@ Config Load() {
     }
     c.controller_auto = str("Controls", "controller", "auto") == "auto";
     c.touch_screen_key = str("Controls", "touch_screen_key", c.touch_screen_key);
+    if (ini.GetInteger("Controls", "controls_version", 1) < 2) {
+        // a file from before the keyboard-and-mouse layout: with the old keys untouched it moves
+        // to the new ones; keys of the player's own stay
+        const Config old = OldDefaults();
+        if (c.keys == old.keys && c.stick_keys == old.stick_keys) {
+            const Config now = Defaults();
+            c.keys = now.keys;
+            c.stick_keys = now.stick_keys;
+            LOG_INFO(Frontend, "the keys move to the keyboard-and-mouse layout");
+        }
+        if (c.touch_screen_key == "F12") {
+            c.touch_screen_key = Config{}.touch_screen_key;
+        }
+    }
+    c.input_mode = str("Controls", "input_mode", c.input_mode);
+    c.mouse_sensitivity = num("Controls", "mouse_sensitivity", c.mouse_sensitivity, 1, 100);
+    c.mouse_vertical = num("Controls", "mouse_vertical", c.mouse_vertical, 10, 200);
+    c.mouse_invert_y = flag("Controls", "mouse_invert_y", c.mouse_invert_y);
+    c.mouse_deadzone = num("Controls", "mouse_deadzone", c.mouse_deadzone, 0, 60);
+    c.item_prev = str("Controls", "item_prev", c.item_prev);
+    c.item_next = str("Controls", "item_next", c.item_next);
+    c.stylus_key = str("Controls", "stylus_key", c.stylus_key);
+    c.key_guides = str("Controls", "key_guides", c.key_guides);
+    c.key_guides_key = str("Controls", "key_guides_key", c.key_guides_key);
     c.fullscreen_key = str("Controls", "fullscreen_key", c.fullscreen_key);
     c.fps_counter_key = str("Controls", "fps_counter_key", c.fps_counter_key);
 
@@ -174,6 +226,9 @@ game = {}
 # the launcher before the game: Play, the setup, mods, the room, settings. off: straight into
 # the game (the launcher still shows while the game, the update or the code library is missing)
 launcher = {}
+# the launcher looks for a newer release of the port when it opens (it asks GitHub; Settings >
+# Updates installs it). off: only when you press Check now
+check_updates = {}
 # Azahar's New 3DS mode: on, off or auto (off while custom textures are on: the HD texture pack's
 # monsters show only then; on otherwise)
 new_3ds = {}
@@ -211,13 +266,38 @@ volume = {}
 output = {}
 
 [Controls]
+# controls_version: which layout the keys below follow (2: keyboard and mouse)
+controls_version = 2
+# input_mode: auto (the keyboard and mouse's way while you use them, the controller's while you
+# use it), controller (the mouse is always the stylus) or keyboard_mouse. The keyboard and mouse's
+# way: the mouse turns the camera and the key guides show; hold stylus_key to use the mouse on the
+# touch screen
+input_mode = {}
+# how fast the mouse turns the camera (1-100), up and down in % of left and right (10-200),
+# up and down the other way round, and the least push on the C-stick a moving mouse gives (0-60,
+# % of the way: the game ignores smaller ones)
+mouse_sensitivity = {}
+mouse_vertical = {}
+mouse_invert_y = {}
+mouse_deadzone = {}
+# the item bar: these scroll it left and right (L held with Y or A, the game's own way)
+item_prev = {}
+item_next = {}
+stylus_key = {}
+# the key guides (the keys for what the hunter does, small over the game while you play with the
+# keyboard and mouse): off, top-left, top-right, bottom-left or bottom-right; key_guides_key
+# shows and hides them
+key_guides = {}
+key_guides_key = {}
 # controller = auto maps the first controller found like MH3U on a Wii U: the 3DS's A, B, X, Y
 # on the right face buttons by position, L/R on the bumpers, ZL/ZR on the triggers (target
 # camera and kick, see mh4u.ini), the circle pad and C-stick (camera) on the sticks, START and
 # SELECT on Start and Back; the right stick's click switches the touch screen. off: keys only.
 controller = {}
-# keyboard keys by their SDL names (https://wiki.libsdl.org/SDL2/SDL_Scancode): a 3DS button
-# each; a stick takes up,down,left,right and optionally a key that makes it move half way
+# keyboard keys by their SDL names (https://wiki.libsdl.org/SDL2/SDL_Scancode) or Mouse Left,
+# Mouse Right, Mouse Middle, Mouse 4, Mouse 5, Wheel Up, Wheel Down, several for a 3DS button
+# separated by | (F | Mouse Right); a stick takes up,down,left,right and optionally a key that
+# makes it move half way. The keys as they come follow Monster Hunter Rise on PC
 {}# full Azahar input parameters replace a binding altogether, e.g.
 # param_button_a = engine:sdl,guid:...,port:0,api:controller,button:1
 {}touch_screen_key = {}
@@ -255,9 +335,11 @@ last_room = {}
 # from here when the launcher starts (empty: never; the copy that came with the app is used)
 catalog_url = {}
 )",
-                       c.game, OnOff(c.launcher), c.new_3ds, c.cpu_clock, c.renderer, OnOff(c.fullscreen), c.resolution,
+                       c.game, OnOff(c.launcher), OnOff(c.check_updates), c.new_3ds, c.cpu_clock, c.renderer, OnOff(c.fullscreen), c.resolution,
                        OnOff(c.vsync), c.screens, OnOff(c.linear_filter), OnOff(c.custom_textures),
-                       c.shader, c.fps_counter, c.volume, c.audio_output, c.controller_auto ? "auto" : "off", keys,
+                       c.shader, c.fps_counter, c.volume, c.audio_output, c.input_mode, c.mouse_sensitivity,
+                       c.mouse_vertical, OnOff(c.mouse_invert_y), c.mouse_deadzone, c.item_prev, c.item_next,
+                       c.stylus_key, c.key_guides, c.key_guides_key, c.controller_auto ? "auto" : "off", keys,
                        params, c.touch_screen_key, c.fullscreen_key, c.fps_counter_key, c.nickname, c.join, c.password,
                        c.host, c.room_port, c.room_name, c.room_members, c.lobby, c.token,
                        OnOff(c.room_public), c.last_room, c.catalog_url);

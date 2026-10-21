@@ -435,6 +435,23 @@ bool IconButton(const char* id, Glyph glyph) {
     return pressed;
 }
 
+bool CloseButton(const char* id, float size) {
+    const ImVec2 at = ImGui::GetCursorScreenPos();
+    const bool pressed = ImGui::InvisibleButton(id, ImVec2(size, size), ImGuiButtonFlags_EnableNav);
+    const bool hovered = ImGui::IsItemHovered() || ImGui::IsItemFocused();
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    if (hovered) {
+        dl->AddRectFilled(at, ImVec2(at.x + size, at.y + size), Color::Error, ImGui::GetStyle().FrameRounding);
+    }
+    const ImVec2 c(at.x + size * 0.5f, at.y + size * 0.5f);
+    const float r = size * 0.2f;
+    const float t = std::max(1.5f, size * 0.06f);
+    const ImU32 color = hovered ? Color::Text : Color::Dim;
+    dl->AddLine(ImVec2(c.x - r, c.y - r), ImVec2(c.x + r, c.y + r), color, t);
+    dl->AddLine(ImVec2(c.x + r, c.y - r), ImVec2(c.x - r, c.y + r), color, t);
+    return pressed;
+}
+
 bool BeginCard(const char* id, const ImVec2& size, bool highlight) {
     ImGuiWindow* window = ImGui::GetCurrentWindow();
     const ImVec2 pad = CardPadding();

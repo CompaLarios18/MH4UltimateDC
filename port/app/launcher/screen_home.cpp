@@ -96,6 +96,7 @@ void DrawHome(State& s) {
     // ── right: the setup, the mods
     ImGui::BeginChild("##home_right", ImVec2(0, 0), ImGuiChildFlags_NavFlattened);
     ImGui::Dummy(ImVec2(0, avail.y * 0.06f));
+    DrawUpdateCard(s);
     Ui::BeginCard("##setup", ImVec2(0, 0), !s.SetupComplete());
     Ui::PushFont(0.85f, true);
     ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(Ui::Color::Dim), "SETUP");

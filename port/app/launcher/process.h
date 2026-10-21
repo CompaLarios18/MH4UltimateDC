@@ -51,6 +51,9 @@ private:
 /// it didn't start (`output` then says why).
 int RunToEnd(const std::vector<std::string>& args, std::string& output);
 
+/// Starts `args` on its own, to go on after this program ends (the app again after an update).
+bool StartDetached(const std::vector<std::string>& args, std::string& error);
+
 /// This program's own executable, to run it again in a process of its own.
 std::string SelfPath();
 

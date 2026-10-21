@@ -6,6 +6,7 @@
 #pragma once
 
 #include <string>
+#include <vector>
 
 namespace App {
 struct Config;
@@ -16,6 +17,7 @@ namespace Launcher {
 enum class Result {
     Play,         ///< start the game with the config as the launcher left it
     Quit,         ///< the player closed the launcher
+    Restart,      ///< an update was installed: quit, and start RestartCommand() on its own
     Unavailable,  ///< no window could be opened (the log says why): carry on without it
 };
 
@@ -24,6 +26,9 @@ enum class Result {
 /// with (command-line choices included); what the player changes is saved in mh4u-app.ini
 /// too. SDL must be initialised (video, controllers, events).
 Result Run(App::Config& config, bool show);
+
+/// After Run returned Restart: what starts the updated app.
+std::vector<std::string> RestartCommand();
 
 /// After Run returned Play: the player was told in the launcher what the code library's state
 /// means for the game and chose to play anyway, so the start needn't say it again.

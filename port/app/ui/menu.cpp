@@ -24,6 +24,7 @@
 #include "hooks.h"
 #include "input.h"
 #include "ui/fps_counter.h"
+#include "ui/key_guides.h"
 #include "ui/layer.h"
 #include "ui/multiplayer_tab.h"
 #include "ui/options.h"
@@ -163,22 +164,26 @@ bool ChooseValue(const char* id, std::string& value, std::vector<std::string> va
 
 // ── Controls ──
 
+/// The app's settings with a binding that aren't a 3DS button or stick.
+enum class Extra { None, ItemPrev, ItemNext, Stylus, TouchScreen, Guides };
+
 struct Binding {
     const char* name;
-    int button; ///< Settings::NativeButton, or -1 for a stick's direction
+    int button; ///< Settings::NativeButton, or -1 for a stick's direction or an extra
     int stick;  ///< Settings::NativeAnalog
     int part;   ///< of the stick's keys: up, down, left, right, the half-way key
+    Extra extra = Extra::None;
 };
 
 constexpr Binding BINDINGS[] = {
-    {"A", NativeButton::A, -1, 0},
-    {"B", NativeButton::B, -1, 0},
-    {"X", NativeButton::X, -1, 0},
-    {"Y", NativeButton::Y, -1, 0},
-    {"L", NativeButton::L, -1, 0},
-    {"R", NativeButton::R, -1, 0},
-    {"ZL", NativeButton::ZL, -1, 0},
-    {"ZR", NativeButton::ZR, -1, 0},
+    {"A (attack, gather, talk)", NativeButton::A, -1, 0},
+    {"B (evade, crouch)", NativeButton::B, -1, 0},
+    {"X (draw, attack)", NativeButton::X, -1, 0},
+    {"Y (item, sheathe)", NativeButton::Y, -1, 0},
+    {"L (camera, focus)", NativeButton::L, -1, 0},
+    {"R (dash, guard)", NativeButton::R, -1, 0},
+    {"ZL (target monster)", NativeButton::ZL, -1, 0},
+    {"ZR (kick, skip)", NativeButton::ZR, -1, 0},
     {"START", NativeButton::Start, -1, 0},
     {"SELECT", NativeButton::Select, -1, 0},
     {"D-pad up", NativeButton::Up, -1, 0},
@@ -194,8 +199,14 @@ constexpr Binding BINDINGS[] = {
     {"C-stick down", -1, NativeAnalog::CStick, 1},
     {"C-stick left", -1, NativeAnalog::CStick, 2},
     {"C-stick right", -1, NativeAnalog::CStick, 3},
+    {"Item bar left (L+Y)", -1, -1, 0, Extra::ItemPrev},
+    {"Item bar right (L+A)", -1, -1, 0, Extra::ItemNext},
+    {"Mouse on the touch screen (hold)", -1, -1, 0, Extra::Stylus},
+    {"Map / touch screen", -1, -1, 0, Extra::TouchScreen},
+    {"Show / hide the key guides", -1, -1, 0, Extra::Guides},
 };
 constexpr int BINDING_COUNT = static_cast<int>(std::size(BINDINGS));
+constexpr int SLOTS = 2;  ///< keys a binding takes in the menu (mh4u-app.ini takes more)
 
 /// A stick's keys, "up,down,left,right[,half way]", as five names (empty: none).
 std::vector<std::string> StickKeys(const std::string& spec) {
@@ -215,18 +226,60 @@ std::string JoinStickKeys(const std::vector<std::string>& keys) {
     return spec;
 }
 
-std::string KeyOf(const Config& config, const Binding& b) {
-    return b.button >= 0 ? config.keys[b.button] : StickKeys(config.stick_keys[b.stick])[b.part];
+/// The setting a button or an extra keeps its keys in ("F | Mouse Right"); null for a stick.
+std::string* SpecOf(Config& config, const Binding& b) {
+    if (b.button >= 0) {
+        return &config.keys[b.button];
+    }
+    switch (b.extra) {
+    case Extra::ItemPrev:
+        return &config.item_prev;
+    case Extra::ItemNext:
+        return &config.item_next;
+    case Extra::Stylus:
+        return &config.stylus_key;
+    case Extra::TouchScreen:
+        return &config.touch_screen_key;
+    case Extra::Guides:
+        return &config.key_guides_key;
+    default:
+        return nullptr;
+    }
 }
 
-void SetKey(Config& config, const Binding& b, const std::string& key) {
-    if (b.button >= 0) {
-        config.keys[b.button] = key;
-    } else {
+bool IsStick(const Binding& b) {
+    return b.button < 0 && b.extra == Extra::None;
+}
+
+std::string KeyOf(Config& config, const Binding& b, int slot) {
+    if (IsStick(b)) {
+        return slot == 0 ? StickKeys(config.stick_keys[b.stick])[b.part] : "";
+    }
+    const auto names = Input::KeyNames(*SpecOf(config, b));
+    return slot < static_cast<int>(names.size()) ? names[slot] : "";
+}
+
+void SetKey(Config& config, const Binding& b, int slot, const std::string& key) {
+    if (IsStick(b)) {
         auto keys = StickKeys(config.stick_keys[b.stick]);
         keys[b.part] = key;
         config.stick_keys[b.stick] = JoinStickKeys(keys);
+        return;
     }
+    std::string* spec = SpecOf(config, b);
+    auto names = Input::KeyNames(*spec);
+    if (slot < static_cast<int>(names.size())) {
+        names[slot] = key;
+    } else {
+        names.push_back(key);
+    }
+    std::string joined;
+    for (const std::string& name : names) {
+        if (!name.empty()) {
+            joined += (joined.empty() ? "" : " | ") + name;
+        }
+    }
+    *spec = joined;
 }
 
 std::string ControllerButtonName(int button) {
@@ -287,12 +340,15 @@ std::string ControllerAxisName(int axis) {
 std::string ControllerName(const std::string& params) {
     const Common::ParamPackage p{params};
     const std::string engine = p.Get("engine", "");
-    if (engine == "mh4u_any") { // the app's keyboard + controller pair (input.cpp)
-        for (const char* side : {"b", "a"}) {
-            if (std::string name = ControllerName(p.Get(side, "")); !name.empty()) {
+    if (engine == "mh4u_any") { // the app's keys, mouse and controller together (input.cpp)
+        for (int i = p.Get("n", 0) - 1; i >= 0; --i) {
+            if (std::string name = ControllerName(p.Get(fmt::format("d{}", i), "")); !name.empty()) {
                 return name;
             }
         }
+        return "";
+    }
+    if (engine == "mh4u_mouse") {
         return "";
     }
     if (engine == "analog_from_button") {
@@ -428,6 +484,17 @@ void Menu::Closed() {
                 file.controller_auto = now.controller_auto;
                 file.button_params = now.button_params;
                 file.stick_params = now.stick_params;
+                file.input_mode = now.input_mode;
+                file.mouse_sensitivity = now.mouse_sensitivity;
+                file.mouse_vertical = now.mouse_vertical;
+                file.mouse_invert_y = now.mouse_invert_y;
+                file.mouse_deadzone = now.mouse_deadzone;
+                file.item_prev = now.item_prev;
+                file.item_next = now.item_next;
+                file.stylus_key = now.stylus_key;
+                file.touch_screen_key = now.touch_screen_key;
+                file.key_guides = now.key_guides;
+                file.key_guides_key = now.key_guides_key;
                 break;
             }
         }
@@ -470,33 +537,46 @@ void Menu::ControlsChanged() {
     layer.window.RequestInputReload();
 }
 
-void Menu::OnCapturedKey(int scancode) {
-    if (capture < 0 || capture >= BINDING_COUNT) {
+void Menu::OnCapturedKey(int code) {
+    if (capture < 0 || capture >= BINDING_COUNT * SLOTS) {
         layer.SetKeyCapture(false);
         return;
     }
-    const Binding& binding = BINDINGS[capture];
+    const Binding& binding = BINDINGS[capture / SLOTS];
+    const int slot = capture % SLOTS;
     Config& config = layer.config;
     capture_note.clear();
-    if (scancode == SDL_SCANCODE_ESCAPE) {
+    const auto app_key = [&](int c) {
+        const auto has = [c](const std::string& spec) {
+            const auto codes = Input::KeyCodes(spec);
+            return std::find(codes.begin(), codes.end(), c) != codes.end();
+        };
+        return c == SDL_SCANCODE_ESCAPE || c == Input::KeyCode(config.fullscreen_key) ||
+               c == Input::KeyCode(config.fps_counter_key) ||
+               (binding.extra != Extra::TouchScreen && has(config.touch_screen_key)) ||
+               (binding.extra != Extra::Guides && has(config.key_guides_key));
+    };
+    if (code == SDL_SCANCODE_ESCAPE) {
         // kept as it was
-    } else if (scancode == SDL_SCANCODE_DELETE) {
-        SetKey(config, binding, "");
+    } else if (code == SDL_SCANCODE_DELETE) {
+        SetKey(config, binding, slot, "");
         ControlsChanged();
-    } else if (scancode == Input::KeyCode(config.fullscreen_key) ||
-               scancode == Input::KeyCode(config.touch_screen_key) ||
-               scancode == Input::KeyCode(config.fps_counter_key)) {
-        capture_note = fmt::format("{} is the app's own key.", SDL_GetScancodeName(static_cast<SDL_Scancode>(scancode)));
-    } else if (const std::string key = SDL_GetScancodeName(static_cast<SDL_Scancode>(scancode)); key.empty()) {
+    } else if (const std::string key = Input::KeyName(code); key.empty()) {
         capture_note = "That key has no name to keep in mh4u-app.ini.";
+    } else if (app_key(code)) {
+        capture_note = fmt::format("{} is the app's own key.", key);
+    } else if (IsStick(binding) && Input::MouseCode(key) != 0) {
+        capture_note = "A stick's direction takes a key, not the mouse.";
     } else {
         // one key, one input: it leaves the one it had
         for (const Binding& other : BINDINGS) {
-            if (&other != &binding && KeyOf(config, other) == key) {
-                SetKey(config, other, "");
+            for (int other_slot = 0; other_slot < SLOTS; ++other_slot) {
+                if ((&other != &binding || other_slot != slot) && KeyOf(config, other, other_slot) == key) {
+                    SetKey(config, other, other_slot, "");
+                }
             }
         }
-        SetKey(config, binding, key);
+        SetKey(config, binding, slot, key);
         ControlsChanged();
     }
     capture = -1;
@@ -1276,6 +1356,63 @@ void Menu::DrawAudio() {
 
 void Menu::DrawControls() {
     Config& config = layer.config;
+
+    Section("Keyboard and mouse");
+    if (BeginSettings("##kbm")) {
+        Row("Play with");
+        std::string mode = Input::ModeName(Input::ParseMode(config.input_mode));
+        if (ChooseValue("##input_mode", mode, {"auto", "keyboard_mouse", "controller"},
+                        {"Whatever I use (auto)", "Keyboard and mouse", "Controller"})) {
+            config.input_mode = mode;
+            Changed(AppSetting::Controls);
+        }
+        layer.Help("Keyboard and mouse: the mouse turns the camera (hold the stylus key, Alt, to use it on the "
+                   "touch screen) and the keys show over the game. Controller: the mouse is the stylus. Auto: "
+                   "the keyboard and mouse's way once you press a key, the controller's once you press a button.");
+
+        Row("Mouse sensitivity");
+        if (ImGui::SliderInt("##mouse_sensitivity", &config.mouse_sensitivity, 1, 100)) {
+            Changed(AppSetting::Controls);
+        }
+        layer.Help("How fast the mouse turns the camera. The camera has a top speed of its own (the 3DS's "
+                   "C-stick pushed all the way): a faster mouse doesn't turn it faster than that.");
+
+        Row("Up and down");
+        if (ImGui::SliderInt("##mouse_vertical", &config.mouse_vertical, 10, 200, "%d%% of left and right")) {
+            Changed(AppSetting::Controls);
+        }
+        layer.Help("The mouse's sensitivity up and down, in % of left and right.");
+
+        Row("Invert up and down");
+        if (ImGui::Checkbox("##mouse_invert_y", &config.mouse_invert_y)) {
+            Changed(AppSetting::Controls);
+        }
+        layer.Help("The mouse moved up turns the camera down, and the other way round.");
+
+        Row("Least push");
+        if (ImGui::SliderInt("##mouse_deadzone", &config.mouse_deadzone, 0, 60, "%d%%")) {
+            Changed(AppSetting::Controls);
+        }
+        layer.Help("The least push on the C-stick a moving mouse gives: the game ignores small pushes, so "
+                   "with less a slow mouse may not turn the camera at all; with more, small moves jump.");
+
+        Row("Key guides");
+        std::string guides = FpsCounterOn(config.key_guides) ? config.key_guides : "off";
+        if (ChooseValue("##key_guides", guides, {std::begin(KEY_GUIDES_PLACES), std::end(KEY_GUIDES_PLACES)},
+                        {"Off", "Top left", "Top right", "Bottom left", "Bottom right"})) {
+            config.key_guides = guides;
+            Changed(AppSetting::Controls);
+        }
+        static std::string guides_help;
+        guides_help = fmt::format("The keys for what the hunter does, small over the game while you play with the "
+                                  "keyboard and mouse, each with the 3DS button the game's own prompts name. {} "
+                                  "shows and hides them.",
+                                  config.key_guides_key.empty() ? "A key (key_guides_key)" : config.key_guides_key);
+        layer.Help(guides_help.c_str());
+        ImGui::EndTable();
+    }
+
+    Section("Keys and controller");
     bool controller = config.controller_auto;
     if (ImGui::Checkbox("Map a controller on its own", &controller)) {
         config.controller_auto = controller;
@@ -1290,10 +1427,11 @@ void Menu::DrawControls() {
     }
 
     const auto& profile = Settings::values.current_input_profile;
-    if (ImGui::BeginTable("##controls", 3, ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_RowBg)) {
-        ImGui::TableSetupColumn("3DS", ImGuiTableColumnFlags_WidthStretch, 0.38f);
-        ImGui::TableSetupColumn("Keyboard", ImGuiTableColumnFlags_WidthStretch, 0.32f);
-        ImGui::TableSetupColumn("Controller", ImGuiTableColumnFlags_WidthStretch, 0.30f);
+    if (ImGui::BeginTable("##controls", 4, ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_RowBg)) {
+        ImGui::TableSetupColumn("3DS", ImGuiTableColumnFlags_WidthStretch, 0.34f);
+        ImGui::TableSetupColumn("Key or mouse", ImGuiTableColumnFlags_WidthStretch, 0.23f);
+        ImGui::TableSetupColumn("Another", ImGuiTableColumnFlags_WidthStretch, 0.23f);
+        ImGui::TableSetupColumn("Controller", ImGuiTableColumnFlags_WidthStretch, 0.20f);
         HeaderRow();
         for (int i = 0; i < BINDING_COUNT; ++i) {
             const Binding& b = BINDINGS[i];
@@ -1301,32 +1439,47 @@ void Menu::DrawControls() {
             ImGui::TableSetColumnIndex(0);
             ImGui::AlignTextToFramePadding();
             ImGui::TextUnformatted(b.name);
-            ImGui::TableSetColumnIndex(1);
             const bool custom = b.button >= 0 ? !config.button_params[b.button].empty()
-                                              : !config.stick_params[b.stick].empty();
-            const std::string key = KeyOf(config, b);
-            const std::string label = capture == i ? std::string("Press a key...")
-                                      : custom     ? std::string("(Azahar parameters)")
-                                      : key.empty() ? std::string("-")
-                                                    : key;
-            ImGui::BeginDisabled(custom);
-            if (ImGui::Button(fmt::format("{}##key{}", label, i).c_str(), ImVec2(-FLT_MIN, 0.0f))) {
-                capture = i;
-                capture_note.clear();
-                layer.SetKeyCapture(true);
+                                : IsStick(b)  ? !config.stick_params[b.stick].empty()
+                                              : false;
+            for (int slot = 0; slot < SLOTS; ++slot) {
+                ImGui::TableSetColumnIndex(1 + slot);
+                if (slot == 1 && IsStick(b)) {
+                    continue; // a stick's direction takes one key
+                }
+                const int id = i * SLOTS + slot;
+                const std::string key = KeyOf(config, b, slot);
+                const std::string label = capture == id ? std::string("Press a key...")
+                                          : custom      ? std::string("(Azahar parameters)")
+                                          : key.empty() ? std::string("-")
+                                                        : key;
+                ImGui::BeginDisabled(custom);
+                if (ImGui::Button(fmt::format("{}##key{}", label, id).c_str(), ImVec2(-FLT_MIN, 0.0f))) {
+                    capture = id;
+                    capture_note.clear();
+                    layer.SetKeyCapture(true);
+                }
+                ImGui::EndDisabled();
+                layer.Help(custom ? "Set with Azahar's input parameters in mh4u-app.ini (param_...): Reset "
+                                    "to the defaults to use keys again."
+                                  : "Choose, then press the key or the mouse button for it (Esc: keep the one it "
+                                    "has, Delete: none). A key taken from another input leaves that one without.");
             }
-            ImGui::EndDisabled();
-            layer.Help(custom ? "Set with Azahar's input parameters in mh4u-app.ini (param_...): Reset "
-                                "to the defaults to use keys again."
-                              : "Choose, then press the key for it (Esc: keep the one it has, Delete: "
-                                "none). A key taken from another input leaves that one without.");
-            ImGui::TableSetColumnIndex(2);
+            ImGui::TableSetColumnIndex(3);
             ImGui::AlignTextToFramePadding();
-            std::string pad = b.button >= 0 ? ControllerName(profile.buttons[b.button])
-                                            : ControllerName(profile.analogs[b.stick]);
-            if (b.button < 0 && !pad.empty()) {
-                static constexpr const char* directions[] = {"up", "down", "left", "right", ""};
-                pad = b.part < 4 ? pad + " " + directions[b.part] : std::string("by how far it is pushed");
+            std::string pad;
+            if (b.button >= 0) {
+                pad = ControllerName(profile.buttons[b.button]);
+            } else if (IsStick(b)) {
+                pad = ControllerName(profile.analogs[b.stick]);
+                if (!pad.empty()) {
+                    static constexpr const char* directions[] = {"up", "down", "left", "right", ""};
+                    pad = b.part < 4 ? pad + " " + directions[b.part] : std::string("by how far it is pushed");
+                }
+            } else if (b.extra == Extra::TouchScreen) {
+                pad = "Right stick click";
+            } else if (b.extra == Extra::ItemPrev || b.extra == Extra::ItemNext) {
+                pad = "L + Y / A";
             }
             ImGui::TextDisabled("%s", pad.empty() ? "-" : pad.c_str());
         }
@@ -1340,12 +1493,18 @@ void Menu::DrawControls() {
         config.button_params = defaults.button_params;
         config.stick_params = defaults.stick_params;
         config.controller_auto = defaults.controller_auto;
+        config.item_prev = defaults.item_prev;
+        config.item_next = defaults.item_next;
+        config.stylus_key = defaults.stylus_key;
+        config.touch_screen_key = defaults.touch_screen_key;
+        config.key_guides_key = defaults.key_guides_key;
         capture = -1;
         layer.SetKeyCapture(false);
         ControlsChanged();
     }
-    layer.Help("The keys as they come (W A S D, E, Space, ...) and the controller mapped on its own.");
-    ImGui::TextDisabled("The app's own keys: Esc menu, F11 full screen, F12 touch screen in quests.");
+    layer.Help("The keys as they come, after Monster Hunter Rise on PC (W A S D, the mouse, F, E, Space, "
+               "Shift, ...), and the controller mapped on its own. The mouse settings stay.");
+    ImGui::TextDisabled("The app's own keys: Esc menu, F11 full screen, F3 frame rate.");
 }
 
 // ── Multiplayer ──

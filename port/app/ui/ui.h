@@ -46,6 +46,10 @@ void Frame();
 /// top left at first) and saves the choice. The main window's fps_counter_key.
 void ToggleFpsCounter();
 
+/// Shows or hides the key guides (mh4u-app.ini's key_guides: back to their last corner) and
+/// saves the choice. The main window's key_guides_key.
+void ToggleKeyGuides();
+
 /// Whether the menu (or the software keyboard) is on the screen and has the input.
 bool Visible();
 

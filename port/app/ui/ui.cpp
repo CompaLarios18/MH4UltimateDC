@@ -15,6 +15,7 @@
 #include "input_common/main.h"
 #include "ui/fps_counter.h"
 #include "ui/hint.h"
+#include "ui/key_guides.h"
 #include "ui/keyboard.h"
 #include "ui/layer.h"
 #include "ui/menu.h"
@@ -243,7 +244,10 @@ bool Layer::OnEvent(const SDL_Event& event) {
         if (event.key.repeat == 0 && event.key.keysym.scancode == SDL_SCANCODE_ESCAPE &&
             !key_capture) {
             if (!menu_open) {
-                Open();
+                // a moment later, unless a controller's button came with it: Steam Input's
+                // desktop layouts (a Steam Deck's, say) send Esc for B while the game sees the
+                // controller too, and B would open the menu (Frame decides)
+                escape_at = std::max<u32>(SDL_GetTicks(), 1);
                 return true;
             }
             escape_pressed = true; // the frame decides: a list or a text field takes it first
@@ -252,6 +256,9 @@ bool Layer::OnEvent(const SDL_Event& event) {
     case SDL_CONTROLLERBUTTONDOWN:
     case SDL_CONTROLLERBUTTONUP: {
         const bool down = event.type == SDL_CONTROLLERBUTTONDOWN;
+        if (down) {
+            pad_button_at = std::max<u32>(SDL_GetTicks(), 1);
+        }
         const u8 button = event.cbutton.button;
         if (button == SDL_CONTROLLER_BUTTON_GUIDE) {
             if (down) {
@@ -297,6 +304,15 @@ bool Layer::OnEvent(const SDL_Event& event) {
         if (event.key.repeat == 0) {
             menu->OnCapturedKey(static_cast<int>(event.key.keysym.scancode));
         }
+        return true;
+    }
+    // (and a mouse button or the wheel: Mouse Right, Wheel Up, ...)
+    if (key_capture && event.type == SDL_MOUSEBUTTONDOWN && event.button.which != SDL_TOUCH_MOUSEID) {
+        menu->OnCapturedKey(Input::MOUSE_KEY + event.button.button);
+        return true;
+    }
+    if (key_capture && event.type == SDL_MOUSEWHEEL && event.wheel.y != 0) {
+        menu->OnCapturedKey(event.wheel.y > 0 ? Input::WHEEL_UP : Input::WHEEL_DOWN);
         return true;
     }
     {
@@ -357,7 +373,37 @@ void Layer::ToggleFpsCounter() {
     LOG_INFO(Frontend, "frame-rate counter: {}", config.fps_counter);
 }
 
+void Layer::ToggleKeyGuides() {
+    if (FpsCounterOn(config.key_guides)) {
+        last_guides_corner = config.key_guides;
+        config.key_guides = "off";
+    } else {
+        config.key_guides = last_guides_corner;
+    }
+    Config file = App::Load();
+    file.key_guides = config.key_guides;
+    App::Save(file);
+    LOG_INFO(Frontend, "key guides: {}", config.key_guides);
+}
+
 void Layer::Frame() {
+    if (escape_at != 0) {
+        constexpr u32 ECHO_MS = 150;
+        const u32 now = SDL_GetTicks();
+        const bool echo = pad_button_at != 0 && (pad_button_at >= escape_at ? pad_button_at - escape_at
+                                                                              : escape_at - pad_button_at) < ECHO_MS;
+        if (echo) {
+            escape_at = 0;
+            if (!echo_logged) {
+                echo_logged = true;
+                LOG_INFO(Frontend, "an Esc that came with a controller's button didn't open the menu (Steam "
+                                   "Input sends keys for a controller's buttons in its desktop layouts)");
+            }
+        } else if (now - escape_at >= 80) {
+            escape_at = 0;
+            Open();
+        }
+    }
     if (escape_pressed) {
         escape_pressed = false;
         if (menu_open && !was_busy && !key_capture) {
@@ -377,7 +423,9 @@ void Layer::Frame() {
     // a hint over the game (the skip after a quest) while nothing else of the menu's is up
     const Hint hint = capturing ? Hint{} : CurrentHint(config);
     const bool fps_counter = FpsCounterOn(config.fps_counter);
-    const bool draw = capturing || keyboard->HasNotice() || !hint.Empty() || fps_counter;
+    // the key guides while the keyboard and mouse are in use, under nothing else of the menu's
+    const bool guides = !capturing && window.KeyboardMouseActive() && FpsCounterOn(config.key_guides);
+    const bool draw = capturing || keyboard->HasNotice() || !hint.Empty() || fps_counter || guides;
     if (!draw || !renderer_ready.load(std::memory_order_acquire)) {
         if (visible.load(std::memory_order_relaxed)) {
             std::scoped_lock lock{mutex};
@@ -435,6 +483,9 @@ void Layer::Frame() {
     }
     if (fps_counter) {
         DrawFpsCounter(config.fps_counter);
+    }
+    if (guides) {
+        DrawKeyGuides(config, config.key_guides);
     }
     was_busy = ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopup) || ImGui::IsAnyItemActive();
     ImGui::Render();
@@ -499,6 +550,12 @@ bool Visible() {
 void ToggleFpsCounter() {
     if (Layer* layer = Get()) {
         layer->ToggleFpsCounter();
+    }
+}
+
+void ToggleKeyGuides() {
+    if (Layer* layer = Get()) {
+        layer->ToggleKeyGuides();
     }
 }
 

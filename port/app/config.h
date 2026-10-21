@@ -14,6 +14,7 @@ struct Config {
     // [Game]
     std::string game;  ///< the decrypted game (.3ds, .cci, .cxi); empty: ask
     bool launcher = true;  ///< the launcher first (off: only while the setup is incomplete)
+    bool check_updates = true;  ///< the launcher asks GitHub for a newer release when it opens
     /// Azahar's New 3DS mode: on, off, or auto (off while custom textures are on: the HD texture
     /// pack's monsters show only then, its author says; on otherwise, as Azahar has it)
     std::string new_3ds = "auto";
@@ -42,10 +43,12 @@ struct Config {
 
     // [Controls]
     /// Per 3DS button (Settings::NativeButton) and stick (Settings::NativeAnalog): keyboard keys
-    /// by SDL name ("W", "Left Shift"), and for a stick its four keys and the key that halves it
-    /// ("W,S,A,D,Left Shift"). A controller is mapped on its own (controller = auto) like the
+    /// by SDL name ("W", "Left Shift") or mouse buttons ("Mouse Right", "Wheel Up"), several
+    /// separated by | ("F | Mouse Right"), and for a stick its four keys and the key that halves
+    /// it ("W,S,A,D,Left Shift"). A controller is mapped on its own (controller = auto) like the
     /// Wii U's MH3U: the 3DS's A on the controller's right face button, ZL/ZR on the triggers,
-    /// the circle pad and C-stick on the sticks.
+    /// the circle pad and C-stick on the sticks. The keys as they come are Monster Hunter Rise's
+    /// on PC, the mouse turning the camera.
     std::array<std::string, Settings::NativeButton::NumButtons> keys;
     std::array<std::string, Settings::NativeAnalog::NumAnalogs> stick_keys;
     bool controller_auto = true;
@@ -53,9 +56,24 @@ struct Config {
     /// Qt frontend writes them), empty: keys + the controller
     std::array<std::string, Settings::NativeButton::NumButtons> button_params;
     std::array<std::string, Settings::NativeAnalog::NumAnalogs> stick_params;
-    std::string touch_screen_key = "F12";  ///< in quests: the map / the whole touch screen
+    std::string touch_screen_key = "F12 | M";  ///< in quests: the map / the whole touch screen
     std::string fullscreen_key = "F11";
     std::string fps_counter_key = "F3";  ///< shows and hides the frame-rate counter
+    /// auto: the keyboard and mouse's way (the mouse turns the camera, the key guides show) while
+    /// they were used last, the controller's otherwise (the mouse is the stylus); controller;
+    /// keyboard_mouse
+    std::string input_mode = "auto";
+    int mouse_sensitivity = 50;   ///< 1-100: how fast the mouse turns the camera
+    int mouse_vertical = 100;     ///< 10-200: up and down, in % of left and right
+    bool mouse_invert_y = false;
+    int mouse_deadzone = 12;      ///< 0-60: the least push on the C-stick a moving mouse gives, %
+    std::string item_prev = "Wheel Up";    ///< scrolls the item bar left (L+Y)
+    std::string item_next = "Wheel Down";  ///< and right (L+A)
+    std::string stylus_key = "Left Alt";   ///< held: the mouse is the stylus again
+    /// The keys for what the hunter does, drawn small over the game while the keyboard and mouse
+    /// are in use: off, top-left, top-right, bottom-left, bottom-right
+    std::string key_guides = "bottom-left";
+    std::string key_guides_key = "F1";     ///< shows and hides them
 
     // [Multiplayer]
     std::string nickname;             ///< empty: the console's user name
@@ -85,6 +103,10 @@ std::string ConfigPath();
 
 /// The settings as they come (the keys of a new settings file).
 Config Defaults();
+
+/// The [Controls] layout before the keyboard-and-mouse one (controls_version 1): a settings
+/// file that still has it, untouched, moves to the new one.
+Config OldDefaults();
 
 /// Reads the settings file; one that doesn't exist yet is written with the defaults, explained.
 Config Load();

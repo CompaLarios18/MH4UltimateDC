@@ -7,6 +7,7 @@
 #include "common/settings.h"
 #include "config.h"
 #include "hooks.h"
+#include "input.h"
 #include "netsync.h"
 #include "ui/menu.h"
 
@@ -40,7 +41,7 @@ std::pair<std::string, std::string> Names(const Config& config, const std::strin
         return {};
     }
     // a button given full input parameters has no key of the app's
-    const std::string key = config.button_params[index].empty() ? config.keys[index] : "";
+    const std::string key = config.button_params[index].empty() ? Input::FirstKey(config.keys[index]) : "";
     const std::string pad = ControllerInputName(Settings::values.current_input_profile.buttons[index]);
     return {key, pad};
 }

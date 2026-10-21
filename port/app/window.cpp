@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <SDL.h>
 #include <fmt/format.h>
 
@@ -72,11 +73,65 @@ bool Window::InitSDL() {
     return true;
 }
 
-Window::Window(Core::System& system_, const Config& config, bool is_secondary_)
-    : EmuWindow(is_secondary_), system(system_) {
-    touch_key = Input::KeyCode(config.touch_screen_key);
+Window::Window(Core::System& system_, const Config& config_, bool is_secondary_)
+    : EmuWindow(is_secondary_), system(system_), config(config_) {
+    ReadKeys();
+    // auto starts with the controller's way when there is a controller (a Steam Deck's, say)
+    bool have_pad = false;
+    for (int i = 0; i < SDL_NumJoysticks(); ++i) {
+        have_pad = have_pad || SDL_IsGameController(i);
+    }
+    const auto mode = Input::ParseMode(config.input_mode);
+    last_used_keyboard = mode == Input::Mode::KeyboardMouse || (mode == Input::Mode::Auto && !have_pad);
+    keyboard_mouse = last_used_keyboard;
+}
+
+void Window::ReadKeys() {
+    touch_keys = Input::KeyCodes(config.touch_screen_key);
+    stylus_keys = Input::KeyCodes(config.stylus_key);
     fullscreen_key = Input::KeyCode(config.fullscreen_key);
     fps_counter_key = Input::KeyCode(config.fps_counter_key);
+    key_guides_key = Input::KeyCode(config.key_guides_key);
+}
+
+bool Window::EchoOfController() const {
+    // Steam Input's desktop layouts send keys (B: Esc, A: Enter, ...) for a controller's buttons
+    // while SDL still sees the controller itself; the key comes within a few milliseconds of it
+    return last_pad_event != 0 && SDL_GetTicks() - last_pad_event < 150;
+}
+
+void Window::UpdateMouseMode() {
+    if (is_secondary) {
+        return;
+    }
+    const auto mode = Input::ParseMode(config.input_mode);
+    const bool active = mode == Input::Mode::KeyboardMouse ||
+                        (mode == Input::Mode::Auto && last_used_keyboard);
+    keyboard_mouse = active;
+    // the camera only while the game has the mouse: not under the menu, not without the focus,
+    // not while the stylus key is held (the touch screen's turn)
+    bool stylus = false;
+    const Uint8* held = SDL_GetKeyboardState(nullptr);
+    for (const int code : stylus_keys) {
+        stylus = stylus || (code > 0 && code < SDL_NUM_SCANCODES && held[code]);
+    }
+    const bool focused = (SDL_GetWindowFlags(render_window) & SDL_WINDOW_INPUT_FOCUS) != 0;
+    const bool want = active && focused && !stylus && !Ui::Visible();
+    if (want == mouse_camera) {
+        return;
+    }
+    mouse_camera = want;
+    SDL_SetRelativeMouseMode(want ? SDL_TRUE : SDL_FALSE);
+    if (want) {
+        TouchReleased();
+    } else {
+        // the mouse's buttons let go as it stops being the camera, and the stick centred
+        for (const int button : {SDL_BUTTON_LEFT, SDL_BUTTON_MIDDLE, SDL_BUTTON_RIGHT, SDL_BUTTON_X1, SDL_BUTTON_X2}) {
+            InputCommon::GetKeyboard()->ReleaseKey(Input::MOUSE_KEY + button);
+        }
+        Input::MouseReset();
+        ShowCursorFor(CURSOR_IDLE_MS);
+    }
 }
 
 Window::~Window() {
@@ -144,6 +199,9 @@ std::pair<unsigned, unsigned> Window::ToPixels(s32 x, s32 y) const {
 }
 
 void Window::ShowCursorFor(u32 ms) {
+    if (mouse_camera) {
+        return; // hidden while the mouse turns the camera
+    }
     SDL_ShowCursor(SDL_ENABLE);
     cursor_hide_at = fullscreen ? SDL_GetTicks() + ms : 0;
 }
@@ -162,9 +220,15 @@ void Window::OnKey(int scancode, bool down, u16 modifiers) {
         }
         return;
     }
-    if (scancode == touch_key) {
+    if (std::find(touch_keys.begin(), touch_keys.end(), scancode) != touch_keys.end()) {
         if (down) {
             Port::ToggleQuestMap();
+        }
+        return;
+    }
+    if (scancode == key_guides_key && key_guides_key != 0) {
+        if (down && !is_secondary) {
+            Ui::ToggleKeyGuides();
         }
         return;
     }
@@ -176,8 +240,32 @@ void Window::OnKey(int scancode, bool down, u16 modifiers) {
 }
 
 void Window::PollEvents() {
+    if (keys_changed.exchange(false)) {
+        ReadKeys();
+    }
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
+        // a controller's button: what Steam Input may send as a key with it isn't the keyboard's
+        if (event.type == SDL_CONTROLLERBUTTONDOWN) {
+            last_pad_event = SDL_GetTicks();
+            last_used_keyboard = false;
+        } else if (event.type == SDL_CONTROLLERAXISMOTION && std::abs(event.caxis.value) > 8000) {
+            // (a stick too: Steam Input's desktop layouts send keys for the sticks as well)
+            last_pad_event = SDL_GetTicks();
+            if (std::abs(event.caxis.value) > 16000) {
+                last_used_keyboard = false;
+            }
+        } else if (event.type == SDL_KEYDOWN && event.key.repeat == 0 && !EchoOfController()) {
+            const auto code = event.key.keysym.scancode;
+            // (the app's own keys don't count: F11 doesn't make a controller player's mouse the camera)
+            if (code != SDL_SCANCODE_ESCAPE && code != fullscreen_key && code != fps_counter_key &&
+                code != key_guides_key &&
+                std::find(stylus_keys.begin(), stylus_keys.end(), code) == stylus_keys.end()) {
+                last_used_keyboard = true;
+            }
+        } else if (event.type == SDL_MOUSEBUTTONDOWN && mouse_camera) {
+            last_used_keyboard = true;
+        }
         // the in-game menu's (ui/): its toggle, and while it is up the keys, mouse and controller
         if (Ui::OnEvent(event)) {
             continue;
@@ -212,6 +300,12 @@ void Window::PollEvents() {
             }
             break;
         case SDL_MOUSEMOTION:
+            if (mouse_camera) {
+                if (event.motion.which != SDL_TOUCH_MOUSEID) {
+                    Input::MouseMotion(event.motion.xrel, event.motion.yrel);
+                }
+                break;
+            }
             if (event.motion.which != SDL_TOUCH_MOUSEID && event.motion.windowID == window_id) {
                 ShowCursorFor(CURSOR_IDLE_MS);
                 if (event.motion.state & SDL_BUTTON_LMASK) {
@@ -222,6 +316,18 @@ void Window::PollEvents() {
             break;
         case SDL_MOUSEBUTTONDOWN:
         case SDL_MOUSEBUTTONUP:
+            if (mouse_camera) {
+                // the mouse's buttons are keys like any other (Mouse Left, ...)
+                if (event.button.which != SDL_TOUCH_MOUSEID) {
+                    const int code = Input::MOUSE_KEY + event.button.button;
+                    if (event.type == SDL_MOUSEBUTTONDOWN) {
+                        InputCommon::GetKeyboard()->PressKey(code);
+                    } else {
+                        InputCommon::GetKeyboard()->ReleaseKey(code);
+                    }
+                }
+                break;
+            }
             if (event.button.which != SDL_TOUCH_MOUSEID && event.button.windowID == window_id &&
                 event.button.button == SDL_BUTTON_LEFT) {
                 ShowCursorFor(CURSOR_IDLE_MS);
@@ -230,6 +336,16 @@ void Window::PollEvents() {
                     TouchPressed(x, y);
                 } else {
                     TouchReleased();
+                }
+            }
+            break;
+        case SDL_MOUSEWHEEL:
+            if (mouse_camera && event.wheel.which != SDL_TOUCH_MOUSEID) {
+                if (event.wheel.y != 0) {
+                    Input::Wheel(config, event.wheel.y > 0 ? Input::WHEEL_UP : Input::WHEEL_DOWN);
+                }
+                if (event.wheel.x != 0) {
+                    Input::Wheel(config, event.wheel.x > 0 ? Input::WHEEL_RIGHT : Input::WHEEL_LEFT);
                 }
             }
             break;
@@ -265,6 +381,10 @@ void Window::PollEvents() {
         default:
             break;
         }
+    }
+    UpdateMouseMode();
+    if (!is_secondary) {
+        Input::Tick(config);
     }
     if (cursor_hide_at && SDL_GetTicks() >= cursor_hide_at && !Ui::Visible()) {
         SDL_ShowCursor(SDL_DISABLE);

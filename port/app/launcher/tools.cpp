@@ -221,6 +221,42 @@ std::vector<std::string> ModsCommand(const Python& python, const std::string& to
     return args;
 }
 
+std::vector<std::string> UpdateCommand(const Python& python, const std::string& tools,
+                                       const std::vector<std::string>& extra) {
+    std::vector<std::string> args = python.command;
+    args.insert(args.end(), {"-u", tools + "/update.py", "--json"});
+    args.insert(args.end(), extra.begin(), extra.end());
+    return args;
+}
+
+std::string PackageRoot(const std::string& tools_dir) {
+    std::string dir = tools_dir;
+    std::replace(dir.begin(), dir.end(), '\\', '/');
+    while (!dir.empty() && dir.back() == '/') {
+        dir.pop_back();
+    }
+    const std::string tail = "/mh4u-tools/tools";
+    if (dir.size() <= tail.size() || dir.compare(dir.size() - tail.size(), tail.size(), tail) != 0) {
+        return "";
+    }
+    std::string root = dir.substr(0, dir.size() - tail.size());
+    // (a Mac app's own Resources aren't a package's folder)
+    if (root.size() >= 19 && root.compare(root.size() - 19, 19, "/Contents/Resources") == 0) {
+        return "";
+    }
+    return root;
+}
+
+const char* Platform() {
+#if defined(_WIN32)
+    return "windows";
+#elif defined(__APPLE__)
+    return "macos";
+#else
+    return "linux";
+#endif
+}
+
 Progress BuildProgress(const std::vector<std::string>& lines) {
     Progress p{0.01f, "Starting"};
     for (const auto& line : lines) {

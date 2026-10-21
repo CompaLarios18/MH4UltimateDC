@@ -187,6 +187,9 @@ void PumpProbe(State& s) {
              python.command.empty() ? "not found" : python.version);
     if (s.ToolsReady()) {
         RefreshMods(s);
+        if (s.config.check_updates) {
+            s.CheckForUpdate(false);
+        }
     }
 }
 
@@ -199,6 +202,8 @@ void PumpRooms(State& s) {
     s.rooms_loading = false;
     s.rooms_fetched = true;
 }
+
+void RequestQuit(State& s);
 
 void TopBar(State& s) {
     const float scale = Ui::Scale();
@@ -230,6 +235,9 @@ void TopBar(State& s) {
     if (pad) {
         width += 80.0f * scale;
     }
+    // the window's own close button at the far right (full screen has no title bar)
+    const float close_size = ImGui::GetFrameHeight() * 1.15f;
+    width += close_size + 18.0f * scale;
     Ui::SameLineRight(width);
     // (the keycaps a little lower than the tabs: the line's own y set again after each)
     const float line_y = ImGui::GetCursorPosY();
@@ -249,8 +257,15 @@ void TopBar(State& s) {
     if (pad) {
         ImGui::SetCursorPosY(line_y + 8.0f * scale);
         Ui::KeyHint("RB", "");
-    } else {
-        ImGui::NewLine();
+        ImGui::SameLine();
+    }
+    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + 12.0f * scale);
+    ImGui::SetCursorPosY(line_y + 2.0f * scale);
+    if (Ui::CloseButton("##close", close_size)) {
+        RequestQuit(s);
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Close (Alt+F4)");
     }
     // a hairline under the bar
     const ImVec2 at = ImGui::GetCursorScreenPos();

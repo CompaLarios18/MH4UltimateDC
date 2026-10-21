@@ -167,6 +167,10 @@ void DrawSettings(State& s) {
     if (Ui::Toggle(launcher ? "Shown when the app starts##launcher" : "Not shown##launcher", &launcher)) {
         s.Change([&](App::Config& cfg) { cfg.launcher = launcher; });
     }
+
+    Label("Updates", "New releases of the port from its GitHub page: downloaded and put in place over this "
+                     "one. Your settings, saves, mods and code library aren't touched.");
+    DrawUpdateSettings(s);
     ImGui::EndTable();
     ImGui::EndChild();
 }

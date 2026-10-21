@@ -47,6 +47,7 @@
 #include "input_common/main.h"
 #include "invite.h"
 #include "launcher/launcher.h"
+#include "launcher/process.h"
 #include "multiplayer.h"
 #include "network/network.h"
 #include "ui/ui.h"
@@ -316,7 +317,20 @@ int Run(const std::vector<std::string>& argv) {
         config.game = args.game;
     }
     const bool show_launcher = args.launcher >= 0 ? args.launcher == 1 : config.launcher;
-    if (Launcher::Run(config, show_launcher) == Launcher::Result::Quit) {
+    if (const auto result = Launcher::Run(config, show_launcher);
+        result == Launcher::Result::Quit || result == Launcher::Result::Restart) {
+        if (result == Launcher::Result::Restart) {
+            // an update was put in place: the new app starts on its own once this one has let go
+            std::string error;
+            const auto command = Launcher::RestartCommand();
+            if (!Launcher::StartDetached(command, error)) {
+                LOG_ERROR(Frontend, "the updated app didn't start ({}): start it again yourself", error);
+                App::Dialog::Message(TITLE, "The update is in place, but the app couldn't start it: open it "
+                                            "again yourself.");
+            } else {
+                LOG_INFO(Frontend, "restarting after the update: {}", command.empty() ? "" : command.front());
+            }
+        }
         Network::Shutdown();
         InputCommon::Shutdown();
         Common::Log::Stop();

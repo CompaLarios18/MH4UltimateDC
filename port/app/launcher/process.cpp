@@ -16,6 +16,9 @@
 #include <windows.h>
 #include "common/string_util.h"
 #else
+#include <cstdlib>
+#include <string>
+#include <vector>
 #include <cerrno>
 #include <csignal>
 #include <fcntl.h>
@@ -265,6 +268,33 @@ std::string SelfPath() {
     }
 }
 
+bool StartDetached(const std::vector<std::string>& args, std::string& error) {
+    if (args.empty()) {
+        error = "nothing to run";
+        return false;
+    }
+    std::wstring command;
+    for (const auto& arg : args) {
+        command += (command.empty() ? L"" : L" ") + QuoteArg(Common::UTF8ToUTF16W(arg));
+    }
+    STARTUPINFOW startup{};
+    startup.cb = sizeof(startup);
+    PROCESS_INFORMATION info{};
+    // out of any job this process is in (a launcher that started it would end it with itself),
+    // where the job allows; else without
+    for (const DWORD extra : {static_cast<DWORD>(CREATE_BREAKAWAY_FROM_JOB), static_cast<DWORD>(0)}) {
+        if (CreateProcessW(nullptr, command.data(), nullptr, nullptr, FALSE,
+                           CREATE_NEW_PROCESS_GROUP | CREATE_UNICODE_ENVIRONMENT | extra, nullptr, nullptr,
+                           &startup, &info)) {
+            CloseHandle(info.hThread);
+            CloseHandle(info.hProcess);
+            return true;
+        }
+        error = LastError();
+    }
+    return false;
+}
+
 #else  // POSIX
 
 void Process::Impl::Kill(bool hard) {
@@ -414,6 +444,56 @@ std::string SelfPath() {
     const ssize_t n = readlink("/proc/self/exe", buffer, sizeof(buffer) - 1);
     return n > 0 ? std::string(buffer, static_cast<std::size_t>(n)) : std::string();
 #endif
+}
+
+bool StartDetached(const std::vector<std::string>& args, std::string& error) {
+    if (args.empty()) {
+        error = "nothing to run";
+        return false;
+    }
+    posix_spawn_file_actions_t actions;
+    posix_spawn_file_actions_init(&actions);
+    posix_spawn_file_actions_addopen(&actions, 0, "/dev/null", O_RDONLY, 0);
+    posix_spawnattr_t attributes;
+    posix_spawnattr_init(&attributes);
+    // a process group of its own: it outlives this one
+    posix_spawnattr_setflags(&attributes, POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_SETSIGMASK);
+    posix_spawnattr_setpgroup(&attributes, 0);
+    sigset_t none;
+    sigemptyset(&none);
+    posix_spawnattr_setsigmask(&attributes, &none);
+    std::vector<char*> argv;
+    for (const auto& arg : args) {
+        argv.push_back(const_cast<char*>(arg.c_str()));
+    }
+    argv.push_back(nullptr);
+    // an AppImage's own variables stay behind: the new one mounts itself elsewhere, and this
+    // one's mount (which they point into) goes when it ends
+    const char* appdir = std::getenv("APPDIR");
+    std::vector<std::string> kept;
+    for (char** e = environ; *e; ++e) {
+        const std::string entry = *e;
+        const auto is = [&entry](const char* name) { return entry.rfind(std::string(name) + "=", 0) == 0; };
+        if (is("APPDIR") || is("APPIMAGE") || is("ARGV0") || is("OWD") ||
+            (appdir && *appdir && is("LD_LIBRARY_PATH") && entry.find(appdir) != std::string::npos)) {
+            continue;
+        }
+        kept.push_back(entry);
+    }
+    std::vector<char*> env;
+    for (auto& entry : kept) {
+        env.push_back(entry.data());
+    }
+    env.push_back(nullptr);
+    pid_t pid = -1;
+    const int result = posix_spawnp(&pid, argv[0], &actions, &attributes, argv.data(), env.data());
+    posix_spawn_file_actions_destroy(&actions);
+    posix_spawnattr_destroy(&attributes);
+    if (result != 0) {
+        error = std::strerror(result);
+        return false;
+    }
+    return true;
 }
 
 #endif
