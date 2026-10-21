@@ -104,8 +104,8 @@ the replay moves game time to each record's tick before it sends that request:
   sets it, and a preemption source that only keeps the scheduler's request to be woken at its
   earliest timer, which is how the replay finds the next timer. A gap of hours between two requests
   costs the events inside it (periodic timers such as the VBlank), not the time. A trace whose last
-  tick is more than 24 hours of game time after its first is refused (exit 2, with the line number): it
-  is damaged, and its days of periodic timers would never end.
+  tick is more than 24 hours of game time after its first (`ReplayConfig::max_span_ticks`) is refused
+  (exit 2, with the line number): it is damaged, and its days of periodic timers would never end.
 - **Skipped requests count.** Every record moves the clock, also one that is not replayed (a service
   not registered natively, a request with no reply), so that a timer of one service falls due on
   schedule while another's requests are skipped.
@@ -118,23 +118,37 @@ reply that differs is a difference, and nothing is tolerated because time passed
 **A deferred reply.** The wait stays as it was: the scheduler's posted work is run every millisecond
 of real time, up to `--reply-timeout`, which is how a reply that an I/O thread completes arrives. With the
 replay clock one thing is added, because a reply that waits for game time (a file read's latency, the
-UDS delays of up to 5 s) would otherwise wait for ever on a clock that does not move: once a poll found
-nothing posted for a millisecond, the clock goes on from timer to timer, each running in order with the
-clock at its tick and no sleep in between, until the reply is delivered. Game time is therefore never moved
-while a host thread is still delivering work, but it is moved while it only waits for time; a reply that
-waits for a timer arrives at the timer's tick without waiting for it. The clock moves at most 60 s of
-game time for one reply (a hung service must not run it away): a request whose reply is not there by
-then is waited for in real time as before and, at `--reply-timeout`, is a difference ("no reply within N
-ms") with the clock where the wait left it, up to 60 s ahead of the recording.
+UDS delays of up to 5 s) would otherwise wait for ever on a clock that does not move. The replay
+remembers the timers the request armed: those its handler armed while it ran, and those that such a
+timer arms from its own callback (a chain of retries). While one of them is pending, the clock goes on
+toward the earliest of them, timer by timer (the runtime's own periodic timers run on the way, each in
+order with the clock at its tick, no sleep in between), until the reply is delivered. Timers that
+anything else arms (the runtime's periodic ones re-arming themselves, work another host thread posts) are
+not the request's, so the host's speed cannot change which timers count. Two consequences:
+
+- A reply that waits only for a host thread (an I/O pool, the `--io-latency none` file read) arms no
+  timer, so no game time passes however long the thread takes (a millisecond or a second on a cold
+  disk): the clock after the wait, and every later reading of it, is the same on every run.
+- A reply that waits for a timer arrives at that timer's tick, and the clock ends the wait exactly
+  there (the file read with its latency, which also waits for an I/O thread, ends at the latency's
+  tick, whether the thread is faster or slower than the clock's walk to it).
+
+The clock moves at most 60 s of game time for one reply (a hung service must not run it away): a request
+whose own timers lie beyond that is stepped up to the 60 s, no farther, and is then waited for in real
+time as before; at `--reply-timeout` it is a difference ("no reply within N ms") with the clock where
+the wait left it, up to 60 s ahead of the recording. One poll of real time (1 ms) goes before the first
+step of a wait that has a timer of its own, so that an I/O thread that is about done delivers first.
 
 Limits. `t=` is the tick of the reply, not of the request: the replay sends a request at its reply's
 tick, so a timer a request sets falls due, in replay time, as long after the recording's as the request
 took to answer (the IPC delay, 39 us = about 10,500 ticks, or the delay of a deferred reply). Two requests
-within that distance of a timer's tick can see it on different sides. A service whose I/O pool needs more
-than one poll (1 ms) of real time to finish while its reply is also waiting for game time sees the clock
-move on by the timers it passes in the meantime (the clock then ends the wait later than it would
-have); its reply, which is delivered when both are done, does not depend on that, but what a later request
-reads from the clock can.
+within that distance of a timer's tick can see it on different sides. A request that arms a timer of its
+own that its reply does not wait for (a handler that also starts a periodic timer) and then defers to a
+host thread has the clock walk toward that timer while the thread works, so for that one request the
+clock after the wait can depend on the thread's speed (the 1 ms poll above makes it rare, not
+impossible); no service of this repository does both. Work that a host thread posts is not the request's
+either: a timer it arms is not stepped toward, and a reply that waits for it ends as a "no reply within N
+ms" difference, never as a clock that depends on the host.
 
 ## What is compared
 

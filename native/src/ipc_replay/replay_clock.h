@@ -10,11 +10,14 @@
 // in here reads the host's clock or waits.
 #pragma once
 
+#include <functional>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
 
 #include "mh4n/clock.h"
+#include "mh4n/kernel.h"
 #include "mh4n/runtime.h"
 #include "mh4n/scheduler.h"
 #include "mh4n/types.h"
@@ -49,6 +52,56 @@ public:
 
 private:
     std::shared_ptr<State> state_;
+};
+
+// The scheduler as the services see it while a replay runs (installed in the Kernel in place of the
+// GuestScheduler, which it forwards every call to), with one addition: it remembers the timers that one
+// request arms, so the replay knows what game time that request is waiting for.
+//
+// A request "owns" the timers it arms while its handler runs, and the timers those timers arm from
+// their own callbacks, and so on (a retry chain). A timer that anything else arms (the runtime's
+// periodic ones re-arming themselves, work another host thread posts) is not owned, so the host's speed
+// cannot change which timers are. While a deferred reply is waited for, the replay moves the clock
+// only toward the owned timers (EarliestOwnTick): a reply that waits for a host thread arms nothing
+// and sees no game time pass, whatever the thread's speed.
+//
+// Everything but Post is called on the scheduler's thread, as the Scheduler interface says.
+class RequestTimers final : public Scheduler {
+public:
+    explicit RequestTimers(Scheduler& inner) : inner_(inner) {}
+
+    // A new request: the timers armed from now on, until EndRequest, are its own; those of earlier
+    // requests are not any more.
+    void BeginRequest();
+    void EndRequest();
+    // The earliest tick at which a timer of the current request is still pending.
+    std::optional<u64> EarliestOwnTick() const;
+
+    void Wake(const std::shared_ptr<Thread>& thread, std::optional<Result> result, s32 index) override {
+        inner_.Wake(thread, result, index);
+    }
+    void OnPriorityChanged(Thread& thread, u32 old_priority) override {
+        inner_.OnPriorityChanged(thread, old_priority);
+    }
+    void PrepareReschedule() override { inner_.PrepareReschedule(); }
+    Thread* CurrentThread() override { return inner_.CurrentThread(); }
+    u64 NowTicks() override { return inner_.NowTicks(); }
+    u64 ScheduleAt(u64 tick, std::function<void()> fn) override;
+    bool Cancel(u64 id) override;
+    void Post(std::function<void()> fn) override { inner_.Post(std::move(fn)); }
+
+private:
+    struct Own {
+        u64 tick;
+        u64 request;
+    };
+    void Fire(u64 id, u64 request, const std::function<void()>& fn);
+
+    Scheduler& inner_;
+    mutable std::mutex mutex_;
+    std::map<u64, Own> pending_;  // timer id -> its tick and the request it belongs to
+    u64 request_ = 0;             // the current request; 0 before the first
+    u64 arming_for_ = 0;          // the request whose timers are being armed now; 0 none
 };
 
 // A RuntimeConfig whose time source is a ReplayTimeSource (at nanosecond 0) with its preemption

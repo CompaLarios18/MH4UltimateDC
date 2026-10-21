@@ -27,10 +27,6 @@ constexpr u32 kSvcSendSyncRequest = 0x32;
 constexpr u32 kSvcCloseHandle = 0x23;
 constexpr u32 kSvcDuplicateHandle = 0x27;
 constexpr std::size_t kNoCreation = ~static_cast<std::size_t>(0);
-// The longest stretch of game time a trace may span (from its first record to its last). A recording is
-// minutes to hours long; a tick beyond this is a damaged trace, and the timers of the days in between
-// (a VBlank every 16.7 ms) would keep the replay busy for ever.
-constexpr u64 kMaxSpanTicks = 24ull * 3600ull * kTicksPerSecond;
 // How far the clock may be moved while one deferred reply is waited for. The longest delay a service
 // models is 5 s (the UDS connection timeout); a reply that needs more than this is not coming (a hung
 // service), and the clock must not run on for the whole of --reply-timeout.
@@ -254,6 +250,14 @@ public:
           time_(config.advance_time ? dynamic_cast<ReplayTimeSource*>(&runtime.Clock().Source())
                                     : nullptr) {}
 
+    ~Engine() {
+        if (previous_scheduler_ != nullptr) {
+            kernel_.SetScheduler(previous_scheduler_);
+        }
+    }
+    Engine(const Engine&) = delete;
+    Engine& operator=(const Engine&) = delete;
+
     ReplayReport Run();
 
 private:
@@ -293,6 +297,10 @@ private:
     GuestScheduler& scheduler_;
     GameClock& clock_;
     ReplayTimeSource* time_;  // null: the clock is not moved (ReplayConfig::advance_time false)
+    // With a moving clock: the scheduler the services see, which remembers the timers of the request
+    // being sent (it forwards to the runtime's, put back when the Engine ends).
+    std::unique_ptr<RequestTimers> timers_;
+    Scheduler* previous_scheduler_ = nullptr;
     std::optional<u64> origin_;  // the tick of the first record
     u64 base_ = 0;               // the clock's reading when the first record was reached
     u64 target_ = 0;             // the clock's target so far: only grows
@@ -372,6 +380,9 @@ bool Engine::Setup(std::string* error) {
         if (!CheckSpan(error)) {
             return false;
         }
+        previous_scheduler_ = &kernel_.GetScheduler();
+        timers_ = std::make_unique<RequestTimers>(*previous_scheduler_);
+        kernel_.SetScheduler(timers_.get());
     }
     process_ = kernel_.CurrentProcess();
     if (!process_) {
@@ -556,7 +567,7 @@ Handle Engine::SessionFor(const std::string& session) {
 
 // ---- game time ----------------------------------------------------------------------------------------------------------
 
-// The trace's records in replay order (by seq) must not reach farther than kMaxSpanTicks from the first.
+// The trace's records must not reach farther than ReplayConfig::max_span_ticks from the first (by seq).
 bool Engine::CheckSpan(std::string* error) const {
     const IpcRecord* first = nullptr;
     for (const IpcRecord& record : trace_.records) {
@@ -568,10 +579,11 @@ bool Engine::CheckSpan(std::string* error) const {
         return true;
     }
     for (const IpcRecord& record : trace_.records) {
-        if (record.ticks > first->ticks && record.ticks - first->ticks > kMaxSpanTicks) {
-            *error = fmt::format("line {}: its tick is more than 24 hours of game time after that of the "
-                                 "first request (line {}); the trace is damaged",
-                                 record.line, first->line);
+        if (record.ticks > first->ticks && record.ticks - first->ticks > config_.max_span_ticks) {
+            *error = fmt::format("line {}: its tick is more than {} ticks of game time ({} s) after that "
+                                 "of the first request (line {}); the trace is damaged",
+                                 record.line, config_.max_span_ticks,
+                                 config_.max_span_ticks / kTicksPerSecond, first->line);
             return false;
         }
     }
@@ -636,11 +648,9 @@ bool Engine::WaitForReply(std::string* problem) {
     const auto deadline = std::chrono::steady_clock::now() + config_.reply_timeout;
     const u64 start = clock_.Now();
     const u64 limit = start > ~u64{0} - kMaxWaitTicks ? ~u64{0} : start + kMaxWaitTicks;
-    bool settled = false;  // a poll after a sleep found nothing posted
-    bool stepped = false;  // the clock was just moved to a timer: what the next poll runs is that timer
+    bool settled = false;
     while (thread_->status == ThreadStatus::WaitIPC) {
-        const bool ran = scheduler_.RunPending() && !stepped;
-        stepped = false;
+        scheduler_.RunPending();
         if (thread_->status != ThreadStatus::WaitIPC) {
             break;
         }
@@ -651,15 +661,29 @@ bool Engine::WaitForReply(std::string* problem) {
             NewScratchThread();
             return false;
         }
-        // The host threads that may answer (an I/O pool) had their time and posted nothing: what is
-        // left to wait for is game time, so the clock goes on, timer by timer and without sleeping,
-        // until the reply is there or kMaxWaitTicks have passed. It is never moved while a poll still
-        // finds work, so a reply that a host thread completes in time is not overtaken by the timers.
-        if (time_ != nullptr && settled && !ran && StepToNextTimer(limit)) {
-            stepped = true;
-            continue;
+        // Game time passes during the wait only toward a timer the request itself armed (RequestTimers):
+        // that is what a reply that waits for the clock waits for (a file read's latency, the UDS
+        // delays), and the clock goes there timer by timer, the runtime's own timers on the way, as it
+        // would in a game that runs. A reply that waits for another host thread arms nothing, so the clock
+        // stands where the request put it, whatever the thread's speed. At most kMaxWaitTicks from the
+        // start; past that the clock stops and only the real-time wait is left (a hung service).
+        if (timers_ != nullptr) {
+            if (const std::optional<u64> own = timers_->EarliestOwnTick()) {
+                // A request that arms a timer and also waits for a host thread (a file read with its
+                // latency) can reach its timer before the thread is done: one poll of real time lets
+                // a thread that needs about a millisecond finish first. The clock never passes the
+                // timer that is waited for, so what is left to a slower thread is only which of the
+                // two arrives first, not where the clock stands afterwards.
+                if (!settled) {
+                    settled = true;
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                    continue;
+                }
+                if (StepToNextTimer(std::min(*own, limit))) {
+                    continue;
+                }
+            }
         }
-        settled = !ran;
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
     thread_->status = ThreadStatus::Running;
@@ -776,7 +800,13 @@ Engine::Outcome Engine::Step(const IpcRecord& record) {
     diff.header = *record.cmd;
 
     thread_->status = ThreadStatus::Running;
+    if (timers_ != nullptr) {
+        timers_->BeginRequest();
+    }
     const Result sent = manager_.SendSyncRequest(*thread_, session);
+    if (timers_ != nullptr) {
+        timers_->EndRequest();
+    }
     for (const Handle native : moved) {
         Forget(native);  // the kernel closed it in the client's table
     }

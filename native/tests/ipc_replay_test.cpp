@@ -41,6 +41,10 @@ constexpr u32 kSvcEventRef = 0x7000;  // ... for an event the program created it
 std::atomic<u32> g_ticks{0};
 std::atomic<u32> g_timer_fired{0};  // set by the timer command 0x11 sets, cleared by the tests
 std::atomic<u32> g_post_ran{0};     // set by the work command 0x15 posts
+std::array<std::atomic<u32>, 2> g_slot_fired{};  // set by the timers command 0x17 sets
+// What the timers of command 0x19 saw: their tag and the clock's ticks inside the callback. Touched only
+// on the scheduler's thread (the replay's) and by the tests while no replay runs.
+std::vector<std::pair<u32, u64>> g_stamps;
 std::vector<std::shared_ptr<Request>> g_hung;  // requests the fake service never answers
 
 // The service a session of rpl:tst hands out (command 0x000C).
@@ -84,6 +88,13 @@ private:
 //   0x14 ReplyAfter   defers; the reply is written by a timer `lo hi` ticks from now (no host thread)
 //   0x15 PostLater    posts work to the scheduler that sets g_post_ran
 //   0x16 PostRan      1 if that work has run, else 0
+//   0x17 ArmSlot      `slot lo hi`: like 0x11 for one of two flags
+//   0x18 FiredSlot    `slot`: 1 if that timer has run, else 0
+//   0x19 ArmStamp     `tag lo hi rearm`: `lo hi` ticks from now a timer records (tag, the clock's ticks); with
+//                     a rearm it arms a second one `rearm` ticks later from its own callback (tag + 10)
+//   0x1A ReadStamp    `n`: tag, then the ticks (low word, high word) of the nth record; zeros if none
+//   0x1B DeferBoth    `lo hi`: defers; the reply is written when `lo hi` ticks of game time have passed AND
+//                     another host thread (20 ms) has said it is done (a file read with its latency)
 class FakeService final : public Service {
 public:
     explicit FakeService(ServiceContext& context) : Service(context, "rpl:tst") {
@@ -108,6 +119,11 @@ public:
         Register(0x0014, "ReplyAfter", &FakeService::ReplyAfter);
         Register(0x0015, "PostLater", &FakeService::PostLater);
         Register(0x0016, "PostRan", &FakeService::PostRan);
+        Register(0x0017, "ArmSlot", &FakeService::ArmSlot);
+        Register(0x0018, "FiredSlot", &FakeService::FiredSlot);
+        Register(0x0019, "ArmStamp", &FakeService::ArmStamp);
+        Register(0x001A, "ReadStamp", &FakeService::ReadStamp);
+        Register(0x001B, "DeferBoth", &FakeService::DeferBoth);
     }
 
 private:
@@ -243,6 +259,79 @@ private:
         Reply& reply = request.MakeReply(2, 0);
         reply.Push(kResultSuccess);
         reply.Push(g_post_ran.load());
+    }
+
+    void ArmSlot(Request& request) {
+        const u32 slot = request.Pop<u32>() & 1;
+        const u64 lo = request.Pop<u32>();
+        const u64 hi = request.Pop<u32>();
+        Kernel& kernel = Context().GetKernel();
+        kernel.ScheduleAt(kernel.NowTicks() + (lo | (hi << 32)), [slot] { g_slot_fired[slot].store(1); });
+        request.MakeReply(1, 0).Push(kResultSuccess);
+    }
+    void FiredSlot(Request& request) {
+        const u32 slot = request.Pop<u32>() & 1;
+        Reply& reply = request.MakeReply(2, 0);
+        reply.Push(kResultSuccess);
+        reply.Push(g_slot_fired[slot].load());
+    }
+    static void Stamp(Kernel* kernel, u32 tag, u32 rearm) {
+        g_stamps.emplace_back(tag, kernel->NowTicks());
+        if (rearm != 0) {
+            kernel->ScheduleAt(kernel->NowTicks() + rearm, [kernel, tag] { Stamp(kernel, tag + 10, 0); });
+        }
+    }
+    void ArmStamp(Request& request) {
+        const u32 tag = request.Pop<u32>();
+        const u64 lo = request.Pop<u32>();
+        const u64 hi = request.Pop<u32>();
+        const u32 rearm = request.Pop<u32>();
+        Kernel& kernel = Context().GetKernel();
+        kernel.ScheduleAt(kernel.NowTicks() + (lo | (hi << 32)),
+                          [kernel = &kernel, tag, rearm] { Stamp(kernel, tag, rearm); });
+        request.MakeReply(1, 0).Push(kResultSuccess);
+    }
+    void ReadStamp(Request& request) {
+        const std::size_t n = request.Pop<u32>();
+        const std::pair<u32, u64> stamp = n < g_stamps.size() ? g_stamps[n] : std::pair<u32, u64>{0, 0};
+        Reply& reply = request.MakeReply(4, 0);
+        reply.Push(kResultSuccess);
+        reply.Push(stamp.first);
+        reply.Push(static_cast<u32>(stamp.second));
+        reply.Push(static_cast<u32>(stamp.second >> 32));
+    }
+    Handled DeferBoth(Request& request) {
+        const u64 lo = request.Pop<u32>();
+        const u64 hi = request.Pop<u32>();
+        Kernel& kernel = Context().GetKernel();
+        // Both marks come on the scheduler's thread, in either order, as the file system's gate does.
+        struct Gate {
+            bool due = false;
+            bool done = false;
+            std::shared_ptr<Request> pending;
+            void Check() {
+                if (due && done && pending) {
+                    Reply reply(pending->CommandId(), 1, 0);
+                    reply.Push(kResultSuccess);
+                    std::shared_ptr<Request> request = std::move(pending);
+                    request->Deliver(std::move(reply));
+                }
+            }
+        };
+        auto gate = std::make_shared<Gate>();
+        gate->pending = request.Share();
+        kernel.ScheduleAt(kernel.NowTicks() + (lo | (hi << 32)), [gate] {
+            gate->due = true;
+            gate->Check();
+        });
+        std::thread([kernel = &kernel, gate] {
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            kernel->Post([gate] {
+                gate->done = true;
+                gate->Check();
+            });
+        }).detach();
+        return Handled::Deferred;
     }
 
     u32 subs_ = 0;
@@ -1431,6 +1520,54 @@ Req PostReq(u32 seq, u64 at, bool ask, u32 expected = 0) {
 void ResetFake() {
     g_timer_fired.store(0);
     g_post_ran.store(0);
+    g_slot_fired[0].store(0);
+    g_slot_fired[1].store(0);
+    g_stamps.clear();
+}
+
+Req SlotReq(u32 seq, u64 at, u32 slot, u64 ticks) {
+    Req r;
+    r.seq = seq;
+    r.ticks = at;
+    r.in = {ipc::MakeHeader(0x17, 3, 0), slot, static_cast<u32>(ticks), static_cast<u32>(ticks >> 32)};
+    r.out = {ipc::MakeHeader(0x17, 1, 0), 0};
+    return r;
+}
+
+Req SlotFiredReq(u32 seq, u64 at, u32 slot, u32 expected) {
+    Req r;
+    r.seq = seq;
+    r.ticks = at;
+    r.in = {ipc::MakeHeader(0x18, 1, 0), slot};
+    r.out = {ipc::MakeHeader(0x18, 2, 0), 0, expected};
+    return r;
+}
+
+Req StampArmReq(u32 seq, u64 at, u32 tag, u64 ticks, u32 rearm) {
+    Req r;
+    r.seq = seq;
+    r.ticks = at;
+    r.in = {ipc::MakeHeader(0x19, 4, 0), tag, static_cast<u32>(ticks), static_cast<u32>(ticks >> 32), rearm};
+    r.out = {ipc::MakeHeader(0x19, 1, 0), 0};
+    return r;
+}
+
+Req StampReadReq(u32 seq, u64 at, u32 n, u32 tag, u64 ticks) {
+    Req r;
+    r.seq = seq;
+    r.ticks = at;
+    r.in = {ipc::MakeHeader(0x1A, 1, 0), n};
+    r.out = {ipc::MakeHeader(0x1A, 4, 0), 0, tag, static_cast<u32>(ticks), static_cast<u32>(ticks >> 32)};
+    return r;
+}
+
+Req DeferBothReq(u32 seq, u64 at, u64 ticks) {
+    Req r;
+    r.seq = seq;
+    r.ticks = at;
+    r.in = {ipc::MakeHeader(0x1B, 2, 0), static_cast<u32>(ticks), static_cast<u32>(ticks >> 32)};
+    r.out = {ipc::MakeHeader(0x1B, 1, 0), 0};
+    return r;
 }
 
 }  // namespace
@@ -1507,6 +1644,7 @@ TEST_CASE("a gap of hours takes no wall time and runs the timers inside it") {
 }
 
 TEST_CASE("a trace that spans more than a day of game time is refused") {
+    CHECK(ReplayConfig{}.max_span_ticks == 24ull * 3600ull * kTicksPerSecond);
     ResetFake();
     TempDir dir;
     const u64 day = 24ull * 3600ull * kTicksPerSecond;
@@ -1517,12 +1655,6 @@ TEST_CASE("a trace that spans more than a day of game time is refused") {
         CHECK(run.status == 2);
         CHECK(Contains(run.err, "line 3"));
         CHECK(Contains(run.err, "damaged"));
-    }
-    SUBCASE("a day exactly is replayed") {
-        const std::string trace =
-            dir.Write("ipc.txt", IpcTraceText({NowReq(1, 0, 0), NowReq(2, day, day)}));
-        const Run run = RunTool({trace, "--service", "rpl:tst"});
-        CHECK_MESSAGE(run.status == 0, run.out << run.err);
     }
     SUBCASE("with --no-time the ticks are not used") {
         Req second = Add(2, 1, 2);
@@ -1565,29 +1697,129 @@ TEST_CASE("a reply that needs more than a minute of game time is a difference, a
     ResetFake();
     TempDir dir;
     const u64 delay = 90ull * kTicksPerSecond;
-    const std::string trace =
-        dir.Write("ipc.txt", IpcTraceText({ReplyAfterReq(1, 0, delay), Add(2, 1, 2)}));
+    // Two timers set before the request, one inside the minute and one beyond it: the clock goes on up to
+    // the first (the reply's own timer is beyond the cap) and no farther.
+    const std::string trace = dir.Write(
+        "ipc.txt", IpcTraceText({SlotReq(1, 0, 0, 59ull * kTicksPerSecond),
+                                 SlotReq(2, 0, 1, 61ull * kTicksPerSecond), ReplyAfterReq(3, 0, delay),
+                                 SlotFiredReq(4, 10, 0, 1), SlotFiredReq(5, 10, 1, 0), Add(6, 1, 2)}));
     const Run run = RunTool({trace, "--service", "rpl:tst", "--reply-timeout", "300", "--continue"});
     CHECK(run.status == 1);
-    CHECK(Contains(run.out, "DIFF rpl:tst seq=1"));
+    CHECK(Contains(run.out, "DIFF rpl:tst seq=3"));
     CHECK(Contains(run.out, "no reply within 300 ms"));
-    CHECK(Contains(run.out, "replayed 2 requests: 1 matched, 1 differ, 0 skipped"));
+    CHECK(!Contains(run.out, "DIFF rpl:tst seq=4"));  // the timer at 59 s ran
+    CHECK(!Contains(run.out, "DIFF rpl:tst seq=5"));  // the timer at 61 s did not
+    CHECK(Contains(run.out, "replayed 6 requests: 5 matched, 1 differ, 0 skipped"));
 }
 
-TEST_CASE("a deferred reply a host thread completes is not overtaken by game time") {
+TEST_CASE("a deferred reply a host thread completes sees no game time pass") {
     ResetFake();
     TempDir dir;
-    // The fake service's Defer (20 ms on another host thread) is waited for as before; the clock
-    // stands where the request put it until a poll finds nothing posted, and then moves only to timers.
-    Req defer;
-    defer.seq = 1;
-    defer.ticks = 7;
-    defer.in = {ipc::MakeHeader(6, 0, 0)};
-    defer.out = {ipc::MakeHeader(6, 2, 0), 0, 0x77};
-    const std::string trace = dir.Write("ipc.txt", IpcTraceText({defer, Add(2, 1, 2)}));
+    // The fake service's Defer answers 20 ms later from another host thread and arms no timer: the clock
+    // stands where the request put it, so the Now that follows reads the recorded distance exactly
+    // (never the time the host thread took, which the clock would keep for good if it had moved).
+    auto defer = [](u32 seq, u64 at) {
+        Req r;
+        r.seq = seq;
+        r.ticks = at;
+        r.in = {ipc::MakeHeader(6, 0, 0)};
+        r.out = {ipc::MakeHeader(6, 2, 0), 0, 0x77};
+        return r;
+    };
+    const std::string trace = dir.Write(
+        "ipc.txt", IpcTraceText({defer(1, 7), NowReq(2, 7, 0), NowReq(3, 100, 93), defer(4, 200),
+                                 NowReq(5, 200, 193), NowReq(6, 250, 243), Add(7, 1, 2)}));
+    for (int i = 0; i < 3; ++i) {
+        const Run run = RunTool({trace, "--service", "rpl:tst"});
+        CHECK_MESSAGE(run.status == 0, run.out << run.err);
+        CHECK(Contains(run.out, "replayed 7 requests: 7 matched, 0 differ, 0 skipped"));
+    }
+}
+
+TEST_CASE("a reply that waits for a timer and a host thread arrives at the timer's tick") {
+    ResetFake();
+    TempDir dir;
+    // The shape of a file read with its latency: the reply needs 2 s of game time and a 20 ms thread. Whichever
+    // comes last, the clock is at the timer's tick afterwards, not wherever the thread's speed took it.
+    const u64 delay = 2ull * kTicksPerSecond;
+    const std::string trace = dir.Write(
+        "ipc.txt", IpcTraceText({DeferBothReq(1, 0, delay), NowReq(2, 1, delay), NowReq(3, delay + 77, delay + 77),
+                                 DeferBothReq(4, delay + 100, 500), NowReq(5, delay + 101, delay + 600)}));
+    for (int i = 0; i < 3; ++i) {
+        const Run run = RunTool({trace, "--service", "rpl:tst", "--reply-timeout", "10000"});
+        CHECK_MESSAGE(run.status == 0, run.out << run.err);
+        CHECK(Contains(run.out, "replayed 5 requests: 5 matched, 0 differ, 0 skipped"));
+    }
+}
+
+TEST_CASE("a skipped request moves the clock like any other") {
+    ResetFake();
+    TempDir dir;
+    // Each Now asks for a tick that is behind the record skipped before it, so what it reads is where that
+    // record put the clock. Three ways to be skipped: a service that is not selected, a record the trace
+    // gives no reply for, and a session the trace never saw handed out.
+    Req not_selected = Add(2, 1, 2);
+    not_selected.session = "other:svc";
+    not_selected.ticks = 10'000;
+    Req no_reply = Add(4, 1, 2);
+    no_reply.out.clear();
+    no_reply.ticks = 30'000;
+    Req no_session = Add(6, 1, 2);
+    no_session.session = "rpl:tst/sub#9";
+    no_session.ticks = 50'000;
+    const std::string trace = dir.Write(
+        "ipc.txt", IpcTraceText({NowReq(1, 0, 0), not_selected, NowReq(3, 1, 10'000), no_reply,
+                                 NowReq(5, 2, 30'000), no_session, NowReq(7, 3, 50'000)}));
     const Run run = RunTool({trace, "--service", "rpl:tst"});
     CHECK_MESSAGE(run.status == 0, run.out << run.err);
-    CHECK(Contains(run.out, "replayed 2 requests: 2 matched, 0 differ, 0 skipped"));
+    CHECK(Contains(run.out, "replayed 4 requests: 4 matched, 0 differ, 2 skipped"));
+}
+
+TEST_CASE("a timer runs with the clock at its own tick, in (tick, id) order") {
+    ResetFake();
+    TempDir dir;
+    // Four timers fall due inside the one gap before the first read (tick 9000): tag 2 at 3000 (which arms
+    // tag 12 from its own callback, 1000 ticks on, so at 4000), then tags 1 and 3 together at 5000, tag 1
+    // first because it was armed first.
+    const std::string trace = dir.Write(
+        "ipc.txt", IpcTraceText({StampArmReq(1, 0, 1, 5000, 0), StampArmReq(2, 0, 2, 3000, 1000),
+                                 StampArmReq(3, 0, 3, 5000, 0), StampReadReq(4, 9000, 0, 2, 3000),
+                                 StampReadReq(5, 9000, 1, 12, 4000), StampReadReq(6, 9000, 2, 1, 5000),
+                                 StampReadReq(7, 9000, 3, 3, 5000), StampReadReq(8, 9000, 4, 0, 0)}));
+    const Run run = RunTool({trace, "--service", "rpl:tst"});
+    CHECK_MESSAGE(run.status == 0, run.out << run.err);
+    CHECK(Contains(run.out, "replayed 8 requests: 8 matched, 0 differ, 0 skipped"));
+}
+
+TEST_CASE("the span limit is a value of ReplayConfig, exact to the tick") {
+    ResetFake();
+    const u64 limit = 2ull * kTicksPerSecond;  // two seconds, so that the boundary is cheap to replay
+    auto replay = [&](u64 last) {
+        const std::string text = IpcTraceText({NowReq(1, 0, 0), NowReq(2, last, last)});
+        IpcTrace trace;
+        std::string error;
+        REQUIRE_MESSAGE(ParseIpcTrace(text, &trace, &error), error);
+        const Options options = ParseOptions("ipc-replay", {});
+        REQUIRE(options.ok());
+        Runtime runtime(MakeReplayRuntimeConfig());
+        REQUIRE_MESSAGE(runtime.Prepare(options, {Phase::Devices, Phase::Services}, &error), error);
+        ServiceManager* manager = FindServiceManager(runtime);
+        REQUIRE(manager != nullptr);
+        ReplayConfig config;
+        config.services = {"rpl:tst"};
+        config.max_span_ticks = limit;
+        return Replay(runtime, *manager, trace, nullptr, config);
+    };
+    SUBCASE("exactly the limit is replayed") {
+        const ReplayReport report = replay(limit);
+        CHECK_MESSAGE(report.error.empty(), report.error);
+        CHECK(report.ExitStatus() == 0);
+    }
+    SUBCASE("one tick more is refused, with the line") {
+        const ReplayReport report = replay(limit + 1);
+        CHECK(report.ExitStatus() == 2);
+        CHECK(report.error.find("line 3") != std::string::npos);
+    }
 }
 
 TEST_CASE("Replay needs the replay clock to advance time") {

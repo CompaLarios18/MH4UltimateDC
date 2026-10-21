@@ -44,14 +44,18 @@
 // runtime's clock to be a ReplayTimeSource (MakeReplayRuntimeConfig); ReplayConfig::advance_time false
 // leaves the clock to the runtime (today's behaviour: the host's, which no request moves).
 // A deferred reply is waited for in real time, up to ReplayConfig::reply_timeout, by running the
-// scheduler's posted work. With the replay clock, once a poll of 1 ms found nothing posted the clock goes
-// on from timer to timer (each runs, in order, with no sleep) until the reply is there, but at most
-// 60 s of game time: a reply that waits for game time (a file read's latency, the UDS delays of up to 5 s)
-// is delivered at its tick instead of never, and a hung service does not run the clock away.
+// scheduler's posted work. With the replay clock, game time passes during that wait only toward a timer
+// the request itself armed (while its handler ran, or from the callback of such a timer): the clock goes
+// there timer by timer (each runs, in order, with no sleep), at most 60 s of game time from the start of
+// the wait. A reply that waits for game time (a file read's latency, the UDS delays of up to 5 s) is
+// delivered at its tick instead of never; a reply that waits only for a host thread (an I/O pool) sees
+// no game time pass, however long the thread takes, so the clock does not depend on the host's speed;
+// a hung service does not run the clock away.
 #pragma once
 
 #include <chrono>
 #include <map>
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
@@ -75,6 +79,9 @@ struct ReplayConfig {
     // Advance the game clock to each record's tick before its request is sent (above). The runtime
     // must have been made with MakeReplayRuntimeConfig; otherwise the replay cannot start (error).
     bool advance_time = true;
+    // The most game time a trace may span, from its first record (by seq) to any other: a record beyond
+    // it is an error (a damaged trace, whose timers would keep the replay busy for days of game time).
+    u64 max_span_ticks = 24ull * 3600ull * kTicksPerSecond;
 };
 
 struct Difference {
