@@ -4,6 +4,9 @@
 // Copyright 2015 Citra Emulator Project
 #include "applets/applet.h"
 
+#include <cstring>
+#include <string>
+
 #include "mh4n/log.h"
 
 namespace mh4n::apt {
@@ -48,6 +51,45 @@ void Applet::CloseApplet(std::shared_ptr<Object> object, const std::vector<u8>& 
 
     is_active_ = false;
     is_running_ = false;
+}
+
+Result Applet::AnswerFramebufferRequest(ServiceContext& context, const MessageParameter& parameter,
+                                        std::shared_ptr<SharedMemory>& memory, const char* name) {
+    if (parameter.signal != SignalType::Request) {
+        MH4N_LOG(Error, kLog, "unsupported signal {:08X}", static_cast<u32>(parameter.signal));
+        // TODO(Subv): Find the right error code (Azahar's too)
+        return kResultUnknown;
+    }
+
+    // The message contains a buffer with the size of the framebuffer shared memory.
+    if (parameter.buffer.size() != sizeof(CaptureBufferInfo)) {
+        // Azahar asserts.
+        MH4N_LOG(Error, kLog, "the Request parameter of {} has {} bytes, not {}", name,
+                 parameter.buffer.size(), sizeof(CaptureBufferInfo));
+        return kResultUnknown;
+    }
+    CaptureBufferInfo capture_info;
+    std::memcpy(&capture_info, parameter.buffer.data(), sizeof(capture_info));
+
+    // Create the SharedMemory that will hold the framebuffer data: a block of the system region.
+    memory = context.GetKernel().NewSharedMemoryForApplet(
+        0, capture_info.size, MemoryPermission::ReadWrite, MemoryPermission::ReadWrite,
+        std::string(name) + " Memory");
+    if (!memory) {
+        // Azahar: "Not enough space in region to allocate shared memory!" (an assertion).
+        MH4N_LOG(Error, kLog, "cannot make the framebuffer shared memory of {} bytes for {}",
+                 capture_info.size, name);
+    }
+
+    // Send the response message with the newly created SharedMemory.
+    SendParameter({
+        .sender_id = id_,
+        .destination_id = parent_,
+        .signal = SignalType::Response,
+        .object = memory,
+        .buffer = {},
+    });
+    return kResultSuccess;
 }
 
 }  // namespace mh4n::apt

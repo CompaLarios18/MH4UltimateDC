@@ -8,6 +8,9 @@
 #include <algorithm>
 #include <cstring>
 
+#include "applets/erreula.h"
+#include "applets/mii_selector.h"
+#include "applets/mint.h"
 #include "applets/swkbd.h"
 #include "mh4n/assert.h"
 #include "mh4n/log.h"
@@ -446,14 +449,26 @@ void AppletManager::SendApplicationParameterAfterRegistration(const MessageParam
 
 // ---- library applets -----------------------------------------------------------------------------------------
 
-Result AppletManager::CreateHleApplet(AppletId id, AppletId parent) {
+Result AppletManager::CreateHleApplet(AppletId id, AppletId parent, bool preload) {
     switch (id) {
     case AppletId::SoftwareKeyboard1:
     case AppletId::SoftwareKeyboard2:
         hle_applets_[id] = std::make_shared<SoftwareKeyboard>(id, parent, weak_from_this(), context_);
         break;
+    case AppletId::Ed1:
+    case AppletId::Ed2:
+        hle_applets_[id] = std::make_shared<MiiSelector>(id, parent, weak_from_this(), context_);
+        break;
+    case AppletId::Error:
+    case AppletId::Error2:
+        hle_applets_[id] = std::make_shared<ErrEula>(id, parent, weak_from_this(), context_);
+        break;
+    case AppletId::Mint:
+    case AppletId::Mint2:
+        hle_applets_[id] = std::make_shared<Mint>(id, parent, weak_from_this(), context_);
+        break;
     default:
-        // Azahar also makes the Mii selector, the error and EULA applet and the mint applet.
+        // Azahar's default case (the other ids, the system applets' too: "Could not create applet").
         MH4N_LOG(Error, kLog, "Could not create applet {:03X}", static_cast<u32>(id));
         // TODO(Subv): Find the right error code
         return kResultAppletNotSupported;
@@ -466,6 +481,9 @@ Result AppletManager::CreateHleApplet(AppletId id, AppletId parent) {
 
     Initialize(id, lock_handle_data.value.corrected_attributes);
     Enable(lock_handle_data.value.corrected_attributes);
+    if (preload) {
+        FinishPreloadingLibraryApplet(id);
+    }
 
     // Schedule the update event
     ScheduleAppletUpdate(id, context_.GetKernel().NowTicks() + kAppletUpdateIntervalTicks);
@@ -531,7 +549,34 @@ Result AppletManager::PrepareToStartLibraryApplet(AppletId applet_id) {
     const AppletId parent = GetAppletSlotId(last_library_launcher_slot_);
     MH4N_LOG(Debug, kLog, "Creating HLE applet {:03X} with parent {:03X}", static_cast<u32>(applet_id),
              static_cast<u32>(parent));
-    return CreateHleApplet(applet_id, parent);
+    return CreateHleApplet(applet_id, parent, false);
+}
+
+Result AppletManager::PreloadLibraryApplet(AppletId applet_id) {
+    if (GetAppletSlot(AppletSlot::LibraryApplet)->registered) {
+        return kResultAlreadyExists;
+    }
+
+    last_library_launcher_slot_ = active_slot_;
+    last_prepared_library_applet_ = applet_id;
+
+    // As PrepareToStartLibraryApplet: no title to start, the HLE applet or nothing.
+    const auto it = hle_applets_.find(applet_id);
+    if (it != hle_applets_.end() && it->second != nullptr) {
+        MH4N_LOG(Warning, kLog, "Applet has already been started id={:08X}", static_cast<u32>(applet_id));
+        return kResultSuccess;
+    }
+
+    const AppletId parent = GetAppletSlotId(last_library_launcher_slot_);
+    MH4N_LOG(Debug, kLog, "Creating HLE applet {:03X} with parent {:03X}", static_cast<u32>(applet_id),
+             static_cast<u32>(parent));
+    return CreateHleApplet(applet_id, parent, true);
+}
+
+Result AppletManager::FinishPreloadingLibraryApplet(AppletId /*applet_id*/) {
+    // TODO(Subv): This function should fail depending on the applet preparation state (Azahar's note).
+    GetAppletSlot(AppletSlot::LibraryApplet)->loaded = true;
+    return kResultSuccess;
 }
 
 Result AppletManager::StartLibraryApplet(AppletId applet_id, std::shared_ptr<Object> object,
