@@ -18,7 +18,8 @@
 //    invalid size result and leaves the buffer alone.
 //  - ptm:gets, ptm:play and ptm:sets, the info LED commands and GetSystemTime of ptm:s/ptm:sysm (they
 //    need the MCU and the shared page) are not provided: no application of the game sends them.
-//  - The play coin file (gamecoin.dat) that Azahar's ptm creates at start is not made.
+//  - (Not a departure.) The play coin file (gamecoin.dat) that Azahar's ptm creates at start is made too, by
+//    the boot step of ptm_gamecoin.cpp (N1-12b), with Azahar's defaults.
 #include <memory>
 #include <vector>
 
