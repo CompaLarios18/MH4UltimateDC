@@ -1207,7 +1207,7 @@ TEST_CASE("a keyboard started with a parameter of the wrong size does not start,
     CHECK(response.result == kNoData);     // and the applet did not answer
     CHECK(start == kResultSuccess);
     CHECK(closing.result == kNoData);
-    CHECK(f.Logged("The Request parameter has 16 bytes"));
+    CHECK(f.Logged("the Request parameter has 16 bytes"));
     CHECK(f.Logged("The size of the parameter (SoftwareKeyboardConfig) is wrong: 256 bytes"));
 }
 
