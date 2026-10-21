@@ -15,7 +15,7 @@
 // Every frame it delivers is black (YUV 0x8000 per pixel, or 0 for RGB565) in the size and format the
 // game selected. The ports work as in Azahar:
 //  - Activate starts a port's vsync chain: the vsync event is signalled every frame period (67, 100,
-//    200, 50 or 33 ms by the frame rate, in exact ticks of the timer queue: the next signal is the
+//    118, 200, 50 or 33 ms by the frame rate, in exact ticks of the timer queue: the next signal is the
 //    previous one's scheduled tick plus the period), and the latest five times (microseconds of game
 //    time) are kept for GetLatestVsyncTiming. A second Activate starts a second chain, as in Azahar.
 //  - SetReceiving on a port that is capturing delivers a frame one frame period later: the pixels are
@@ -33,12 +33,18 @@
 // that is not one of the eight presets is an invalid enumeration value (Azahar indexes past its
 // table); the Process handle SetReceiving gets is not used, the application's memory is written;
 // SetPackageParameterWithContext with a size that is not a preset is an invalid enumeration value; GetMaxLines
-// with width 0 and GetMaxBytes when the byte count reaches 0 stop instead of dividing by zero; a
+// when its first guess of lines is 0 (width 0 or above 2560, or height 0) and GetMaxBytes when the
+// byte count reaches 0 stop instead of dividing by zero; a
 // command that changes one field of the camera's current context re-applies the context's format and
 // resolution to the blank camera as well (ApplyContext, and LoadCameraImplementation for the first
 // use), where Azahar's commands apply only the field they change. The blank camera's output depends on
 // the format and resolution alone, so this shows only if the camera's own format or resolution lagged
-// the current context's, which Azahar's per-field commands allow.
+// the current context's, which Azahar's per-field commands allow. The error replies whose declared word
+// Azahar leaves unwritten (rb.Skip(1, false): IsBusy, IsFinishedReceiving, GetTransferBytes, IsTrimming,
+// GetTrimmingParams (its four coordinate words) and the GetMaxLines and GetMaxBytes error replies) answer
+// the request's word of that position when it lies inside the request, else 0; Azahar leaves the guest's
+// own command-buffer content there (Stale()). LatencyMs, and the vsync chain's period, use the table's
+// entry 0 (67 ms) for a frame rate above 12, where Azahar indexes past its table.
 #include <algorithm>
 #include <array>
 #include <cstring>
