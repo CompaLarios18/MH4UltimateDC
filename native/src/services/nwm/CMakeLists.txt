@@ -6,4 +6,6 @@ mh4n_module(
     DEPENDS
         mh4n_ipc
         mh4n_kernel
+        mh4n_runtime
+        mh4n_services_cfg
 )
