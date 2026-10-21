@@ -20,8 +20,11 @@ Result ErrEula::ReceiveParameterImpl(const MessageParameter& parameter) {
 }
 
 Result ErrEula::Start(const MessageParameter& parameter) {
-    std::memcpy(param_.data(), parameter.buffer.data(),
-                std::min(parameter.buffer.size(), param_.size()));
+    // An empty parameter has no data pointer to copy from (memcpy with a null source is undefined).
+    if (!parameter.buffer.empty()) {
+        std::memcpy(param_.data(), parameter.buffer.data(),
+                    std::min(parameter.buffer.size(), param_.size()));
+    }
 
     // Do something here, like showing error codes, or prompting for EULA agreement (Azahar's note).
     // Nothing is shown: the player "agrees" to an EULA, and an error is "read".

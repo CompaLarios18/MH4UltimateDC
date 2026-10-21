@@ -62,9 +62,6 @@ public:
     Result Finalize() override;
     void Update() override {}
 
-    // The parameter the applet holds, as the game gets it back (tests).
-    const std::array<u8, errlayout::kSize>& Param() const { return param_; }
-
 private:
     ServiceContext& context_;
     // Made when the Request message arrives: it holds the framebuffer info the game gets with

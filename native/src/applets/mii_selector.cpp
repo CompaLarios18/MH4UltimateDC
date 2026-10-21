@@ -98,8 +98,10 @@ Result MiiSelector::ReceiveParameterImpl(const MessageParameter& parameter) {
 Result MiiSelector::Start(const MessageParameter& parameter) {
     if (parameter.buffer.size() != kMiiConfigSize) {
         // Azahar asserts.
-        MH4N_LOG(Error, kLog, "The size of the parameter (MiiConfig) is wrong: {} bytes",
-                 parameter.buffer.size());
+        MH4N_LOG(Warning, kLog,
+                 "The size of the parameter (MiiConfig) is wrong: {} bytes, expected {}; the Mii "
+                 "selector does not start and never closes",
+                 parameter.buffer.size(), kMiiConfigSize);
         return kResultUnknown;
     }
     // The default selector (DefaultMiiSelector::Setup) is ready at once with the standard Mii; the

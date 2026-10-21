@@ -18,7 +18,8 @@
 //
 // Departures from Azahar: as the error applet's (a Request parameter of the wrong size, and here a
 // configuration of the wrong size, are logged and answered with kResultUnknown instead of an
-// assertion: the applet then does not start).
+// assertion, at warning level with the size seen and expected: the applet then does not start, so the
+// applet never closes).
 //
 // Threads (principle 6): scheduler thread only.
 #pragma once

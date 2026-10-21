@@ -175,6 +175,7 @@ struct Fixture {
     ManualTimeSource* time = nullptr;
     std::unique_ptr<Runtime> runtime;
     std::vector<std::string> logged;
+    std::vector<LogLevel> levels;
     Fixture() {
         auto source = std::make_unique<ManualTimeSource>();
         time = source.get();
@@ -182,7 +183,10 @@ struct Fixture {
         config.time = std::move(source);
         runtime = std::make_unique<Runtime>(std::move(config));
         SetLogFilter(LogFilter(LogLevel::Info));
-        SetLogSink([this](const LogRecord& r) { logged.push_back(std::string(r.message)); });
+        SetLogSink([this](const LogRecord& r) { 
+            logged.push_back(std::string(r.message));
+            levels.push_back(r.level);
+        });
     }
     ~Fixture() {
         runtime.reset();
@@ -192,6 +196,14 @@ struct Fixture {
     bool Logged(const std::string& needle) const {
         return std::any_of(logged.begin(), logged.end(),
                            [&](const std::string& l) { return l.find(needle) != std::string::npos; });
+    }
+    bool LoggedAt(LogLevel level, const std::string& needle) const {
+        for (std::size_t i = 0; i < logged.size(); ++i) {
+            if (levels[i] == level && logged[i].find(needle) != std::string::npos) {
+                return true;
+            }
+        }
+        return false;
     }
     std::size_t Count(const std::string& needle) const {
         return static_cast<std::size_t>(
@@ -1455,6 +1467,25 @@ TEST_CASE("the error applet copies at most 0xF80 bytes, and a short parameter le
     CHECK(long_one.closing.data == expected_long);
 }
 
+TEST_CASE("the error applet started with an empty parameter closes with an all-zero one (no copy from a null "
+          "pointer)") {
+    Fixture f;
+    TempDir dir;
+    Handshake h;
+    const int status = BootWith(f, dir, {"--ms", "20000"}, [&] {
+        Guest g(*f.runtime);
+        Apt apt{g, g.Service("APT:U")};
+        apt.StartApplication();
+        h = RunAtOnce(g, apt, kError, {}, 0xF80);
+        ExitProcess(*f.runtime);
+    });
+    CHECK(status == 0);
+    CHECK(h.launch.start == kResultSuccess);
+    CHECK(h.closing.signal == kWakeupByExit);
+    REQUIRE(h.closing.data.size() == 0xF80);
+    CHECK(h.closing.data == std::vector<u8>(0xF80, 0));  // type 0 is not Agree: nothing is written
+}
+
 TEST_CASE("after the error applet closed, the game can make another one at once, and the dead applet is "
           "cleaned up at its next update tick") {
     Fixture f;
@@ -1679,7 +1710,9 @@ TEST_CASE("a Mii selector started with a configuration of the wrong size does no
     CHECK(prepare == kResultSuccess);
     CHECK(start == kResultSuccess);
     CHECK(closing.result == kNoData);  // an applet that never became active never closes
-    CHECK(f.Logged("The size of the parameter (MiiConfig) is wrong: 256 bytes"));
+    CHECK(f.LoggedAt(LogLevel::Warning,
+                     "The size of the parameter (MiiConfig) is wrong: 256 bytes, expected 260"));
+    CHECK(f.Logged("never closes"));
 }
 
 TEST_CASE("PreloadLibraryApplet makes the applet and marks it loaded, and the flow is the same afterwards") {
