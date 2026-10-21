@@ -22,6 +22,7 @@
 
 #include "gpu_capture/capture_host.h"
 #include "gpu_capture/check.h"
+#include "gpu_capture/diagnostics.h"
 #include "gpu_capture/mgpu.h"
 
 namespace mh4n::gpu_capture {
@@ -143,10 +144,27 @@ private:
     void RunGroup(size_t index, const Record& anchor);
 
     // ---- judging ------------------------------------------------------------------------------
+    // What the player knows of a fill, transfer, copy or DMA before it runs: how to describe it
+    // and the pages of its output as the Gpu's memory holds them (to tell afterwards which the Gpu
+    // wrote).
+    struct CommandContext {
+        std::string header;                 // "GX DISPLAY_TRANSFER (id 3)", "MMIO write ..."
+        CommandInfo info;
+        std::vector<u32> pages;             // the output region's pages (ascending, in memory)
+        std::vector<u8> before;             // kPageSize bytes per page: the Gpu's memory before
+        bool measured = false;              // `pages` and `before` are there (the region is not too large)
+        u32 gpu_wrote = 0;                  // pages of the region the Gpu changed (set after the run)
+    };
     Kind Classify(const Record& anchor);
-    std::string JudgeExact(const EventReference& reference, Kind kind);
+    CommandContext PrepareContext(const Record& anchor, Kind kind);
+    void MeasureWrites(CommandContext& context);
+    // `queue_pages[i]`: reference.pages[i] is the GSP's interrupt queue (not judged).
+    std::string JudgeExact(const EventReference& reference, Kind kind, const CommandContext& context,
+                           const std::vector<bool>& queue_pages);
+    std::vector<bool> FindQueuePages(const EventReference& reference);
     std::string JudgeCommandList(const EventReference& reference, const std::vector<ColorBufferConfig>& draws,
-                                 const ColorBufferConfig& final_config);
+                                 const ColorBufferConfig& final_config,
+                                 const std::vector<bool>& queue_pages);
     void ApplyPicaWrites(const std::vector<gpu::RegisterWrite>& writes,
                          std::vector<ColorBufferConfig>* draw_targets);
     void RefillSignals();
@@ -568,36 +586,237 @@ Kind Player::Classify(const Record& anchor) {
     return Kind::None;
 }
 
-// Bit-exact: every page the capture's GPU wrote must hold the same bytes in the Gpu's memory.
-std::string Player::JudgeExact(const EventReference& reference, Kind kind) {
-    u32 differing = 0;
-    u32 first_page = 0;
-    u32 first_offset = 0;
-    for (const PageData& page : reference.pages) {
+// The pages of the capture's GPU_PAGES that the GSP service wrote, not the Gpu. With the
+// reference's settings (D25) an interrupt reaches the GSP at once, inside GPU::Execute, and the
+// service puts it into its interrupt relay queue in the shared memory: that page changes during
+// the command, so the recorder lists it with the command's output (diagnostics.h). A page counts
+// when the capture's change of it is exactly the command's interrupts pushed into a queue, and
+// the Gpu has not touched it (it still holds what the capture held before the command).
+std::vector<bool> Player::FindQueuePages(const EventReference& reference) {
+    std::vector<bool> queue_pages(reference.pages.size(), false);
+    std::vector<u32> ids;
+    for (const IrqData& irq : reference.interrupts) {
+        ids.push_back(irq.id);
+    }
+    if (ids.empty()) {
+        return queue_pages;
+    }
+    for (size_t i = 0; i < reference.pages.size(); ++i) {
+        const PageData& page = reference.pages[i];
+        const u8* before = host_.ReferencePointer(page.address, kPageSize);
+        const u8* mine = host_.PhysicalPointer(page.address, kPageSize);
+        if (before == nullptr || mine == nullptr || std::memcmp(mine, before, kPageSize) != 0) {
+            continue;
+        }
+        queue_pages[i] = ExplainedByInterruptQueue({before, kPageSize}, page.data, ids);
+    }
+    return queue_pages;
+}
+
+namespace {
+constexpr u32 kMaxMeasuredPages = 16384; // 64 MiB of output is measured; more is not
+}
+
+Player::CommandContext Player::PrepareContext(const Record& anchor, Kind kind) {
+    CommandContext context;
+    if (kind != Kind::Fill && kind != Kind::Transfer && kind != Kind::Copy && kind != Kind::Dma) {
+        return context;
+    }
+    if (anchor.type == kGx) {
+        gpu::GxCommand command;
+        ParseGx(anchor, command, nullptr);
+        context.header = fmt::format("GX {} (id {})", GxName(command.words[0] & 0xFF),
+                                     command.words[0] & 0xFF);
+        context.info = DescribeGxCommand(
+            std::span<const u32, 8>(command.words),
+            [this](u32 address) { return host_.VirtualToPhysical(address); });
+    } else if (anchor.type == kMmio) {
+        MmioData mmio;
+        ParseMmio(anchor, mmio, nullptr);
+        context.header = fmt::format("MMIO write of 0x{:08x} to 0x{:08x}", mmio.value, mmio.address);
+        const u32 index = (mmio.address - DisplayShadow::kGpuBase) / 4;
+        if (kind == Kind::Fill) {
+            const u32 unit = index == kGpuRegFillTrigger[1] ? 1 : 0;
+            std::array<u32, 4> regs{};
+            for (u32 i = 0; i < 4; ++i) {
+                regs[i] = display_.GpuReg(4 + 4 * unit + i);
+            }
+            regs[3] = mmio.value; // the control word is the register being written
+            context.info = DescribeFillRegisters(unit, regs);
+        } else {
+            std::array<u32, 11> regs{};
+            for (u32 i = 0; i < 11; ++i) {
+                regs[i] = display_.GpuReg(0x300 + i);
+            }
+            context.info = DescribeTransferRegisters(regs);
+        }
+    }
+
+    // The pages the command's output covers, and what the Gpu's memory holds there now.
+    std::vector<u32> pages;
+    for (const AddressRange& range : context.info.output) {
+        if (range.length == 0) {
+            continue;
+        }
+        const u64 first = range.begin / kPageSize;
+        const u64 last = (static_cast<u64>(range.begin) + range.length - 1) / kPageSize;
+        if (last - first + 1 > kMaxMeasuredPages) {
+            return context;
+        }
+        for (u64 page = first; page <= last; ++page) {
+            pages.push_back(static_cast<u32>(page * kPageSize));
+        }
+    }
+    std::sort(pages.begin(), pages.end());
+    pages.erase(std::unique(pages.begin(), pages.end()), pages.end());
+    if (pages.size() > kMaxMeasuredPages) {
+        return context;
+    }
+    for (const u32 address : pages) {
+        const u8* mine = host_.PhysicalPointer(address, kPageSize);
+        if (mine == nullptr) {
+            continue; // a page that is not in memory cannot be written
+        }
+        context.pages.push_back(address);
+        context.before.insert(context.before.end(), mine, mine + kPageSize);
+    }
+    context.measured = !context.pages.empty();
+    return context;
+}
+
+void Player::MeasureWrites(CommandContext& context) {
+    context.gpu_wrote = 0;
+    for (size_t i = 0; i < context.pages.size(); ++i) {
+        const u8* mine = host_.PhysicalPointer(context.pages[i], kPageSize);
+        if (mine != nullptr &&
+            std::memcmp(mine, context.before.data() + i * kPageSize, kPageSize) != 0) {
+            ++context.gpu_wrote;
+        }
+    }
+}
+
+// Bit-exact: every page the capture's GPU wrote must hold the same bytes in the Gpu's memory,
+// except the pages that are the GSP's. A failure says what the command was, how many pages the
+// capture and the Gpu wrote of its output, and, for each differing page, where and how much it
+// differs (never the bytes).
+std::string Player::JudgeExact(const EventReference& reference, Kind kind,
+                               const CommandContext& context, const std::vector<bool>& queue_pages) {
+    struct Differing {
+        size_t index;
+        PageDifference difference;
+    };
+    std::vector<Differing> differing;
+    for (size_t i = 0; i < reference.pages.size(); ++i) {
+        if (queue_pages[i]) {
+            continue;
+        }
+        const PageData& page = reference.pages[i];
         const u8* mine = host_.PhysicalPointer(page.address, kPageSize);
         if (mine == nullptr || std::memcmp(mine, page.data.data(), kPageSize) == 0) {
             continue;
         }
-        if (differing == 0) {
-            first_page = page.address;
-            while (first_offset < kPageSize && mine[first_offset] == page.data[first_offset]) {
-                ++first_offset;
-            }
-        }
-        ++differing;
+        differing.push_back({i, ComparePages({mine, kPageSize}, page.data)});
     }
-    if (differing == 0) {
+    if (differing.empty()) {
         return {};
     }
-    return fmt::format("{}: {} of {} pages written by the capture's GPU differ; first at "
-                       "0x{:08x} (byte {} of the page)",
-                       KindName(kind), differing, reference.pages.size(), first_page, first_offset);
+
+    std::string message =
+        fmt::format("{}: {} of {} pages written by the capture's GPU differ; first at "
+                    "0x{:08x} (byte {} of the page)",
+                    KindName(kind), differing.size(), reference.pages.size(),
+                    reference.pages[differing.front().index].address,
+                    differing.front().difference.first);
+
+    // The command.
+    if (context.info.type != CommandInfo::Type::None) {
+        message += "\n    command: " + context.header;
+        std::string description = context.info.description;
+        for (size_t at = 0; (at = description.find('\n', at)) != std::string::npos; at += 5) {
+            description.insert(at + 1, "    ");
+        }
+        message += "\n    " + description;
+        for (const AddressRange& range : context.info.output) {
+            message += "\n    output region: " + DescribeRange(range.begin, range.length);
+        }
+        if (context.info.output.empty()) {
+            message += "\n    output region: none (the command's fields are refused, nothing is written)";
+        }
+    }
+
+    // The pages: recorded by the capture and written by the Gpu.
+    std::vector<u32> recorded;
+    for (const PageData& page : reference.pages) {
+        recorded.push_back(page.address);
+    }
+    std::sort(recorded.begin(), recorded.end());
+    size_t recorded_in_region = 0;
+    if (context.measured) {
+        for (const u32 address : recorded) {
+            recorded_in_region += std::binary_search(context.pages.begin(), context.pages.end(), address);
+        }
+    }
+    const size_t queue_count = static_cast<size_t>(std::count(queue_pages.begin(), queue_pages.end(), true));
+    message += fmt::format("\n    pages: the capture recorded {} (first 0x{:08x}, last 0x{:08x})",
+                           recorded.size(), recorded.front(), recorded.back());
+    if (context.measured) {
+        message += fmt::format(
+            "; {} of them are in the {} page(s) of the output region, of which the Gpu wrote {}",
+            recorded_in_region, context.pages.size(), context.gpu_wrote);
+    } else if (context.info.type != CommandInfo::Type::None) {
+        message += context.info.output.empty()
+                       ? "; the command writes no output region"
+                       : "; the output region is too large to measure or not in memory";
+    }
+    if (queue_count != 0) {
+        message += fmt::format("; {} recorded page(s) are the GSP's interrupt queue and were not judged",
+                               queue_count);
+    }
+
+    // Each differing page.
+    constexpr size_t kMaxLines = 8;
+    for (size_t n = 0; n < differing.size() && n < kMaxLines; ++n) {
+        const u32 address = reference.pages[differing[n].index].address;
+        const PageDifference& d = differing[n].difference;
+        const size_t rank = static_cast<size_t>(
+            std::lower_bound(recorded.begin(), recorded.end(), address) - recorded.begin());
+        auto place = [](size_t position, size_t count) {
+            if (count == 1) {
+                return "only";
+            }
+            return position == 0 ? "first" : (position + 1 == count ? "last" : "middle");
+        };
+        std::string where = fmt::format("{} of the {} recorded pages", place(rank, recorded.size()),
+                                        recorded.size());
+        if (context.measured) {
+            const auto in_region =
+                std::lower_bound(context.pages.begin(), context.pages.end(), address);
+            if (in_region != context.pages.end() && *in_region == address) {
+                where += fmt::format("; {} of the output region's pages",
+                                     place(static_cast<size_t>(in_region - context.pages.begin()),
+                                           context.pages.size()));
+            } else {
+                where += "; outside the output region";
+            }
+        }
+        message += fmt::format("\n    page 0x{:08x}: {} bytes differ, offsets {} to {} ({}){}", address,
+                               d.count, d.first, d.last, where,
+                               d.last < kRelayQueueCount * kRelayQueueBytes
+                                   ? "; all within the first 0x100 bytes, where the GSP keeps its "
+                                     "interrupt relay queues"
+                                   : "");
+    }
+    if (differing.size() > kMaxLines) {
+        message += fmt::format("\n    ... and {} more differing pages", differing.size() - kMaxLines);
+    }
+    return message;
 }
 
 // Draws: the colour buffers go through the image thresholds.
 std::string Player::JudgeCommandList(const EventReference& reference,
                                      const std::vector<ColorBufferConfig>& draws,
-                                     const ColorBufferConfig& final_config) {
+                                     const ColorBufferConfig& final_config,
+                                     const std::vector<bool>& queue_pages) {
     // Every colour buffer a draw targeted is judged; the final one too when the capture's GPU
     // wrote into it.
     std::vector<ColorBufferConfig> targets = draws;
@@ -642,9 +861,12 @@ std::string Player::JudgeCommandList(const EventReference& reference,
                 kMaxBlockError);
         }
     }
-    for (const PageData& page : reference.pages) {
+    for (size_t i = 0; i < reference.pages.size(); ++i) {
+        if (queue_pages[i]) {
+            continue; // the GSP's, counted apart
+        }
         const bool inside = std::any_of(judged.begin(), judged.end(), [&](const auto& config) {
-            return overlaps(config, page.address);
+            return overlaps(config, reference.pages[i].address);
         });
         if (!inside) {
             ++result_.unjudged_pages;
@@ -723,6 +945,13 @@ void Player::RunGroup(size_t index, const Record& anchor) {
     CheckLeftoverInterrupts(index, anchor.frame);
     last_judged_ = judged;
 
+    // What a failing fill, transfer, copy or DMA is reported with: decoded before it runs, so
+    // that the pages it writes can be told afterwards.
+    CommandContext context;
+    if (judged) {
+        context = PrepareContext(anchor, kind);
+    }
+
     // ---- run it ----
     host_.SetCurrentEvent(&reference);
     {
@@ -757,6 +986,12 @@ void Player::RunGroup(size_t index, const Record& anchor) {
         }
     }
     host_.SetCurrentEvent(nullptr);
+    if (context.measured) {
+        MeasureWrites(context);
+    }
+    // The GSP's own writes among the capture's pages (before the capture's pages go into the
+    // reference copy, which is what they are compared with).
+    const std::vector<bool> queue_pages = FindQueuePages(reference);
 
     // The player's own copy of the display registers.
     if (anchor.type == kMmio) {
@@ -802,9 +1037,9 @@ void Player::RunGroup(size_t index, const Record& anchor) {
                     ScopedTimer timer(cpu_ns_);
                     debug_->WriteBackColorBuffers();
                 }
-                message = JudgeCommandList(reference, draw_targets, final_config);
+                message = JudgeCommandList(reference, draw_targets, final_config, queue_pages);
             } else {
-                message = JudgeExact(reference, kind);
+                message = JudgeExact(reference, kind, context, queue_pages);
             }
             if (!message.empty()) {
                 Fail(index, anchor, std::move(message));
@@ -819,7 +1054,15 @@ void Player::RunGroup(size_t index, const Record& anchor) {
         for (const PageData& page : reference.pages) {
             host_.ApplyPageToGpu(page);
         }
+    } else {
+        // Chained: the Gpu's output stays, but the GSP's pages are not the Gpu's to write.
+        for (size_t i = 0; i < reference.pages.size(); ++i) {
+            if (queue_pages[i]) {
+                host_.ApplyPageToGpu(reference.pages[i]);
+            }
+        }
     }
+    result_.gsp_queue_pages += static_cast<u32>(std::count(queue_pages.begin(), queue_pages.end(), true));
 
     // ---- the rest of the group, in file order ----
     Deliver(index, anchor);
@@ -1024,6 +1267,16 @@ PlayerResult Player::Run() {
                     FailAt(records_read_ == 0 ? 0 : records_read_ - 1, last_frame_, "end",
                            fmt::format("[check {}] {}", name, message));
                 }
+            }
+        }
+    }
+    if (result_.error.empty()) {
+        for (const Kind kind : {Kind::Fill, Kind::Transfer, Kind::Copy, Kind::Dma, Kind::CmdList,
+                                Kind::CacheFlush}) {
+            const std::string name = KindName(kind);
+            if ((config_.judge & JudgeBit(kind)) != 0 && result_.judged.count(name) == 0 &&
+                result_.skipped.count(name) == 0) {
+                result_.not_exercised.push_back(name);
             }
         }
     }
@@ -1249,6 +1502,17 @@ std::string FormatReport(const PlayerResult& result) {
     out += fmt::format("records: {}  frames: {}\n", result.records, result.frames.size());
     out += fmt::format("commands judged: {}\n", counts(result.judged));
     out += fmt::format("commands skipped (not in --judge): {}\n", counts(result.skipped));
+    if (!result.not_exercised.empty()) {
+        std::string names;
+        for (const std::string& name : result.not_exercised) {
+            names += (names.empty() ? "" : " ") + name;
+        }
+        out += fmt::format("commands not exercised (none in the capture, so nothing is verified): {}\n", names);
+    }
+    if (result.gsp_queue_pages != 0) {
+        out += fmt::format("pages of the GSP's interrupt relay queue (the service writes them, not the Gpu; not judged): {}\n",
+                           result.gsp_queue_pages);
+    }
     if (result.unjudged_pages != 0) {
         out += fmt::format("command-list pages outside any judged colour buffer: {}\n",
                            result.unjudged_pages);

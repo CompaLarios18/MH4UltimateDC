@@ -82,7 +82,9 @@ struct PlayerResult {
     size_t records = 0;
     std::map<std::string, u32> judged;        // commands judged, by kind
     std::map<std::string, u32> skipped;       // commands sent to the Gpu but not judged, by kind
+    std::vector<std::string> not_exercised;   // kinds in --judge the capture has no command of: nothing was verified for them
     u32 unjudged_pages = 0;                   // reference pages of command lists outside any colour buffer
+    u32 gsp_queue_pages = 0;                  // GPU_PAGES that are the GSP's interrupt relay queue (diagnostics.h): not the Gpu's, not judged
     std::vector<std::string> check_columns;   // the columns checks declared, in order
 
     int ExitStatus() const {

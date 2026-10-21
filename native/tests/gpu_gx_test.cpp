@@ -1408,3 +1408,62 @@ TEST_CASE("bounds: display transfers that run off the end of VRAM") {
         CHECK(f.Signals().size() == 1);
     }
 }
+
+// ================================================================================================
+// N2-03b: the engine writes its output region and nothing else (the GSP's queue is not its)
+// ================================================================================================
+
+TEST_CASE("the output of a transfer, a copy and a DMA is all the engine writes; interrupts only signal") {
+    // 16 pages of 0xA5; each command's expected region is worked out from its fields.
+    auto fresh = [](Fixture& f) { f.FillBytes(kRamPhys, 0x10000, 0xA5); };
+    SUBCASE("display transfer, linear to linear 16x16 RGBA8: 1024 bytes at the output") {
+        Fixture f;
+        fresh(f);
+        for (u32 i = 0; i < 256; ++i) f.Put32(kRamPhys + 0x4000, i, 0x01020304 + i);
+        f.Transfer(kRam + 0x4000, kRam + 0x8000, Size(16, 16), Size(16, 16), Flags(0, 1, 0, 1, 0, 0, 0));
+        for (u32 i = 0; i < 256; ++i) REQUIRE(f.Get32(kRamPhys + 0x8000, i) == 0x01020304 + i);
+        // Every other byte of the 16 pages is as it was, the input's included (0x4000..0x4400
+        // holds the texels; the rest of the pages is 0xA5).
+        const std::vector<u8> all = f.Read(kRamPhys, 0x10000);
+        for (u32 i = 0; i < 0x10000; ++i) {
+            if ((i >= 0x4000 && i < 0x4400) || (i >= 0x8000 && i < 0x8400)) continue;
+            INFO("byte " << i);
+            REQUIRE(all[i] == 0xA5);
+        }
+        const Signals s = f.Signals();
+        REQUIRE(s.size() == 1);
+        CHECK(s[0].id == Interrupt::PPF);
+    }
+    SUBCASE("texture copy with gaps: 0x40 bytes in lines of 0x20 bytes with a 0x10 gap on the output") {
+        Fixture f;
+        fresh(f);
+        for (u32 i = 0; i < 16; ++i) f.Put32(kRamPhys + 0x4000, i, 0x11110000 + i);
+        // size 0x40, input contiguous (gap 0), output lines of 2 units (0x20 bytes) and a gap of
+        // 1 unit (0x10 bytes): the first 0x20 bytes at 0x8000, the second at 0x8030.
+        f.Copy(kRam + 0x4000, kRam + 0x8000, 0x40, 0, (1u << 16) | 2);
+        for (u32 i = 0; i < 8; ++i) REQUIRE(f.Get32(kRamPhys + 0x8000, i) == 0x11110000 + i);
+        for (u32 i = 0; i < 8; ++i) REQUIRE(f.Get32(kRamPhys + 0x8030, i) == 0x11110000 + 8 + i);
+        const std::vector<u8> all = f.Read(kRamPhys, 0x10000);
+        for (u32 i = 0; i < 0x10000; ++i) {
+            if ((i >= 0x4000 && i < 0x4040) || (i >= 0x8000 && i < 0x8020) || (i >= 0x8030 && i < 0x8050)) continue;
+            INFO("byte " << i);
+            REQUIRE(all[i] == 0xA5);
+        }
+    }
+    SUBCASE("DMA: exactly the bytes asked for") {
+        Fixture f;
+        fresh(f);
+        f.PutBytes(kRamPhys + 0x4000, {1, 2, 3, 4, 5, 6, 7, 8});
+        f.Run({0, kRam + 0x4000, kRam + 0x8000, 8});
+        CHECK(f.Read(kRamPhys + 0x8000, 8) == std::vector<u8>{1, 2, 3, 4, 5, 6, 7, 8});
+        const std::vector<u8> all = f.Read(kRamPhys, 0x10000);
+        for (u32 i = 0; i < 0x10000; ++i) {
+            if ((i >= 0x4000 && i < 0x4008) || (i >= 0x8000 && i < 0x8008)) continue;
+            INFO("byte " << i);
+            REQUIRE(all[i] == 0xA5);
+        }
+        const Signals s = f.Signals();
+        REQUIRE(s.size() == 1);
+        CHECK(s[0].id == Interrupt::DMA);
+    }
+}
