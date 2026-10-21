@@ -1,8 +1,8 @@
 // What other modules read of the console's configuration (N1-15): the software keyboard's default
 // text (the user name, N1-14), the console unique ID and the MAC address that the local wireless
 // service sends (UDS), the language and region the services answer with. They read the same state the
-// cfg: services answer from, on the scheduler thread. Include as "../cfg/cfg_api.h"; the header should
-// move to native/include/mh4n/cfg.h (proposed in the N1-15 report).
+// cfg: services answer from, on the scheduler thread. Include as "mh4n/cfg.h"; implemented by
+// native/src/services/cfg/cfg_service.cpp.
 #pragma once
 
 #include <array>

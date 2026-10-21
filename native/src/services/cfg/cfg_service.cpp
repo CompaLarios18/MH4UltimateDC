@@ -50,7 +50,7 @@
 #include <string>
 #include <vector>
 
-#include "cfg_api.h"
+#include "mh4n/cfg.h"
 #include "cfg_store.h"
 #include "mh4n/ipc.h"
 #include "mh4n/log.h"
@@ -507,7 +507,7 @@ MH4N_REGISTER(BootStep, "services.cfg", BootStep{Phase::Services, StartIdentity}
 
 }  // namespace
 
-// ---- cfg_api.h ---------------------------------------------------------------------------------------------------
+// ---- mh4n/cfg.h ---------------------------------------------------------------------------------------------------
 
 std::u16string GetUserName(ServiceContext& context) {
     return ModuleOf(context).Store(context).GetUsername();
