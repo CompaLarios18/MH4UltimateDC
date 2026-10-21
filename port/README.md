@@ -319,7 +319,7 @@ Notes for the mirror:
 - Why one fix covers the shared page's date: its update callback (`SharedPage::Handler::UpdateTimeCallback`) writes
   `date_time` from `init_time` plus the clock (`GetGlobalTimeUs`) and `update_tick` from the timer's own ticks, so
   both carried the random starting tick and nothing else of the host (the update is an event scheduled at tick 0 of
-  core 0, and then once an hour). Read from the sources, not yet measured: see below.
+  core 0, and then once an hour). Read from the sources; the measurement below finds the page identical in two runs.
 
 ### Finding what is left
 
@@ -332,16 +332,57 @@ runs are to repeat, so they are the first suspects. `tools/compare_svc_traces.py
 code the game reaches (`std::chrono::system_clock`, `steady_clock`, `Common::Timer`, `time(`, `std::random_device`,
 `rand`) is a candidate; the two this section started with were found that way in `core_timing.cpp` and `cfg.cpp`.
 
-### Measurement with the game (N0-26, pending)
+### Measurement with the game (N0-26)
 
-Not measured yet: it needs the game's files, which this package's worker did not have. The orchestrator's
-*(with the dump)* items of N0-26 fill this in: two G1 runs with `--dump f100:1FF81000:0x1000` and
-`--dump f800:1FF81000:0x1000` (identical by SHA-256 expected), and with `--trace-svc`, `--trace-ipc`,
-`--state-trace` and `--trace-timing`, which traces are identical apart from their first line and, for each that is
-not, the first differing line of the timing traces (event name and tick) and of the SVC trace (thread, call number,
-SVC). That is the measurement N0-29 starts from, not a gate. The first experiment is whether the one starting tick
-accounts for all the per-run offsets in the saved traces (the clock, the shared page) and whether it also removes the
-8-tick differences, the polling-loop counts and the 1 ms `SleepThread` differences of N0-25.
+Measured on 2026-10-21 on the maintainer's PC, idle: two runs (30 s and 31 s) of the runner built from this branch
+(the Windows CI build), the code library built from the update at `e6cd840`, `TZ=UTC0`, a fresh copy of one user
+folder per run (update 1.3.0 installed, no save), golden session G1 as `--input-file`, `--cpu recomp --new-3ds off
+--frames 800` with `--state-trace --trace-svc --trace-ipc --trace-timing` and `--dump f100:1FF81000:0x1000
+--dump f800:1FF81000:0x1000`. This is the measurement N0-29 starts from, not a gate.
+
+Identical in the two runs (apart from line 1, the header with the date):
+
+| What | Size | Result |
+|---|---|---|
+| Shared page, 4 dumps (frames 100 and 800, two runs) | 0x1000 bytes each | one SHA-256 for all four: the page does not change between frame 100 and frame 800; bytes 0x60 to 0x65 are `02 00 00 00 00 01` |
+| State trace (`--state-trace`) | 802 lines | identical, so the tick `t` of every record too |
+| SVC trace (`--trace-svc`) | 489,775 lines | identical; `compare_svc_traces.py --normalize --outputs` reports "all threads match": 18 threads, equal call counts in every thread, 460,699 calls in the main thread in both runs |
+| Timing trace (`--trace-timing`) | 33,963 lines | identical |
+
+Not identical: the IPC trace (`--trace-ipc`, 7,171 lines in both runs). Three lines differ, all in the reply words
+(`out=`) and nowhere else (the session, the command header, the result code, the descriptors and the CRCs are the
+same in every line):
+
+| Line | Session | Command header | What differs |
+|---|---|---|---|
+| 236 (the first) | `APT:A` | `0x01010000` | the third reply word |
+| 243 | `APT:A` | `0x01010000` | the third reply word |
+| 245 | `cfg:u` | `0x00030040` | the last two reply words (together a 64-bit value) |
+
+What the comparators say:
+- `compare_ipc_traces.py` reports "all threads match" for the two runs (8 threads, with 6083, 2, 4, 163, 3, 39, 31
+  and 827 requests). That is expected and does not mean the three lines are equal: without `--strict` it compares,
+  per thread and in order, the session, the command header, the result code (the first reply parameter) and the
+  descriptors, and never the other reply words. With `--strict` it also compares every word and names the words that
+  differ, so it would report these three lines. The measurement did not run it with `--strict`; the three lines were
+  found by comparing the files line by line.
+- `compare_svc_traces.py --normalize --outputs`: "all threads match" (above). The earlier recompiler pairs of
+  2026-10-17 differed in the main thread's call count only; at 800 frames with the fixed starting tick that
+  difference is gone.
+
+What this shows: with the fixed starting tick (`kFixedStartTicks`) and the fixed MAC address, two 800-frame G1 runs
+repeat exactly in the state trace, the SVC trace, the timing trace and the shared page. The per-run tick jitter and
+the differences in the main thread's polling counts seen before are gone at this length, so the random starting tick
+did account for them here.
+
+Where N0-29 starts: the three IPC reply words. They are leads, nothing more is known about them: a 64-bit value in
+`cfg:u` command `0x00030040` that varies from run to run (it looks random, so a random source in `cfg` is the lead), and a reply
+word of `APT:A` command `0x01010000` that varies (a stale reply word is the lead). Neither is in
+`config/native/ipc_time_dependent.txt`, which has no entries yet.
+
+Not measured: runs of 1700 and 9000 frames, golden sessions G2 and G6, a run under load, the captures (HID, DSP,
+GPU), the screenshots and the user folders after the run (these are N0-29's gates), and why the three reply words
+differ.
 
 ## With Azahar's normal interface
 
