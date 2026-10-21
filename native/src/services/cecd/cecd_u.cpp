@@ -35,11 +35,13 @@
 #include <algorithm>
 #include <array>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <memory>
 #include <string>
 #include <vector>
 
+#include "../../common/utf8.h"
 #include "cecd_store.h"
 #include "mh4n/ipc.h"
 #include "mh4n/kernel.h"
@@ -625,7 +627,7 @@ private:
     u64 ProgramId() {
         if (!module_->program_id_read) {
             module_->program_id_read = true;
-            std::ifstream in(Context().GameFolder() + "/exheader.bin", std::ios::binary);
+            std::ifstream in(utf8::PathFromUtf8(Context().GameFolder() + "/exheader.bin"), std::ios::binary);
             std::vector<u8> bytes(kExHeaderMinSize);
             in.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
             ExHeader header;

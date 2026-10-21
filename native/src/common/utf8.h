@@ -9,6 +9,7 @@
 // and a UTF-16 unit that is a surrogate without its partner becomes U+FFFD.
 #pragma once
 
+#include <filesystem>
 #include <string>
 #include <string_view>
 
@@ -23,5 +24,13 @@ std::wstring ToWide(std::string_view utf8);
 std::string FromWide(const wchar_t* text);
 std::string FromWide(std::wstring_view text);
 #endif
+
+// A host path from the UTF-8 text of the command line or of a stored path (D45), and the text of a host
+// path back. On Windows the path is built from the wide characters (ToWide), so the file calls never go
+// through the ANSI code page, and the text is made from path.native() (FromWide), never from the ANSI
+// .string(). Elsewhere the bytes are the path, unchanged (a POSIX file name is a byte string: invalid UTF-8
+// survives a round trip). Every place that opens a file for a path the player gave goes through these.
+std::filesystem::path PathFromUtf8(const std::string& utf8);
+std::string PathToUtf8(const std::filesystem::path& path);
 
 }  // namespace mh4n::utf8

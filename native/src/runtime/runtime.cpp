@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <filesystem>
 
+#include "../common/utf8.h"
 #include "gpu_host.h"
 #include "mh4n/assert.h"
 #include "mh4n/log.h"
@@ -248,7 +249,7 @@ int Runtime::Run(const Options& options) {
     stop_frame_ = limits.stop_frame;
 
     // 1. the program
-    const bool is_folder = std::filesystem::is_directory(program_path_);
+    const bool is_folder = std::filesystem::is_directory(utf8::PathFromUtf8(program_path_));
     loader_ = is_folder ? Loader::OpenGameFolder(program_path_, &error)
                         : Loader::OpenElf(program_path_, &error);
     if (!loader_) {

@@ -1870,6 +1870,16 @@ TEST_CASE("D45: the host file calls take UTF-8 paths with accents and other non-
 
 TEST_CASE("D45: a save, an extdata and a listing in a user folder with non-ASCII characters") {
     Fixture f;
+    // The fixture keeps only the message text, so another module's "cannot ..." line (the cfg module's start-up
+    // step, say) would trip a check on `f.logged`. The fs module's own lines are told apart by their category
+    // (all of them are "Service.FS"), and any line of it that says "cannot" still fails the test.
+    std::vector<std::string> fs_trouble;
+    SetLogSink([&](const LogRecord& r) {
+        f.logged.push_back(std::string(r.message));
+        if (r.category.rfind("Service.FS", 0) == 0 && r.message.find("cannot") != std::string_view::npos) {
+            fs_trouble.push_back(std::string(r.message));
+        }
+    });
     TempDir dir(kUnicodeName);
     const std::string accent_name = "caf\xC3\xA9-\xE6\x97\xA5.bin";
     Result format = 0, create_save_file = 0, create_named = 0, create_ext = 0, create_ext_file = 0, close_save = 0,
@@ -1930,7 +1940,7 @@ TEST_CASE("D45: a save, an extdata and a listing in a user folder with non-ASCII
     std::sort(ext_names.begin(), ext_names.end());
     CHECK(ext_names == std::vector<std::string>{accent_name, "data.bin"});
     // the folders are where Azahar would leave them, under the user folder with the accents
-    CHECK(f.Logged("cannot") == false);
+    CHECK(fs_trouble == std::vector<std::string>{});
     CHECK(ReadBytesFrom(dir.SaveFolder() / "save.bin") == Pattern(0x40, 6));
     CHECK(ReadBytesFrom(dir.SaveFolder() / std::filesystem::path(u8"café-日.bin")).size() == 0x10);
     CHECK(ReadBytesFrom(dir.SaveFolder().parent_path() / "00000001.metadata") ==

@@ -99,4 +99,20 @@ std::string FromWide(std::wstring_view text) {
 }
 #endif
 
+std::filesystem::path PathFromUtf8(const std::string& utf8) {
+#if defined(_WIN32)
+    return std::filesystem::path(ToWide(utf8));
+#else
+    return std::filesystem::path(utf8);
+#endif
+}
+
+std::string PathToUtf8(const std::filesystem::path& path) {
+#if defined(_WIN32)
+    return FromWide(path.native());
+#else
+    return path.string();
+#endif
+}
+
 }  // namespace mh4n::utf8

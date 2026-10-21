@@ -2,6 +2,7 @@
 #include <doctest/doctest.h>
 
 #include <cstring>
+#include <filesystem>
 #include <string>
 #include <vector>
 
@@ -328,6 +329,42 @@ TEST_CASE("UTF-8 and UTF-16 round-trip, for text that is valid") {
         CHECK(utf8::ToUtf16(utf8::FromUtf16(pair)) == pair);
     }
 }
+
+TEST_CASE("PathFromUtf8 and PathToUtf8: ASCII, accents and the empty path") {
+    CHECK(utf8::PathToUtf8(utf8::PathFromUtf8("")) == "");
+    CHECK(utf8::PathToUtf8(utf8::PathFromUtf8("plain/folder/file.bin")) == "plain/folder/file.bin");
+    const std::filesystem::path accented = utf8::PathFromUtf8(std::string("user/") + kAccented + "/sysdata");
+    CHECK(utf8::PathToUtf8(accented) == std::string("user/") + kAccented + "/sysdata");
+    // a join keeps the characters: the name taken from it is the same bytes
+    const std::filesystem::path joined = utf8::PathFromUtf8(kAccented) / "icon.bin";
+    CHECK(utf8::PathToUtf8(joined.filename()) == "icon.bin");
+    CHECK(utf8::PathToUtf8(joined.parent_path()) == kAccented);
+    CHECK(utf8::PathToUtf8(utf8::PathFromUtf8(kAccented + ".elf").filename()) == kAccented + ".elf");
+}
+
+#if !defined(_WIN32)
+TEST_CASE("PathFromUtf8 and PathToUtf8 on POSIX: the bytes are the path, valid UTF-8 or not") {
+    for (const std::string& text : {std::string(), std::string("a b"), kAccented, std::string("\xF0\x9F\x98\x80"),
+                                   std::string("bad\xFF\xC3(\x80name"), std::string("\xED\xA0\x80"),
+                                   std::string("/abs/") + kAccented + "/file"}) {
+        const std::filesystem::path path = utf8::PathFromUtf8(text);
+        CHECK(path.native() == text);  // not converted, not replaced
+        CHECK(utf8::PathToUtf8(path) == text);
+    }
+}
+#endif
+
+#if defined(_WIN32)
+TEST_CASE("PathFromUtf8 and PathToUtf8 on Windows: the path holds the wide characters") {
+    const std::filesystem::path path = utf8::PathFromUtf8(kAccented);
+    CHECK(path.native() == std::wstring(L"Jos\u00E9-\u00F1-\u65E5\u672C"));
+    CHECK(utf8::PathToUtf8(path) == kAccented);
+    // the text of a path never goes through the ANSI .string(): a character outside the code page survives
+    CHECK(utf8::PathToUtf8(std::filesystem::path(L"C:\\Users\\\u65E5\u672C\\x")) == "C:\\Users\\\xE6\x97\xA5\xE6\x9C\xAC\\x");
+    // text that is not UTF-8 becomes U+FFFD in the wide path, as ToWide does
+    CHECK(utf8::PathFromUtf8("a\xFF").native() == std::wstring(L"a\xFFFD"));
+}
+#endif
 
 #if defined(_WIN32)
 TEST_CASE("UTF-8 and the wide characters of Windows") {
