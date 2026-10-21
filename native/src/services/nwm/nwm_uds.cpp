@@ -69,11 +69,14 @@
 #include <string>
 #include <vector>
 
+#include "mh4n/cfg.h"
 #include "mh4n/clock.h"
 #include "mh4n/ipc.h"
 #include "mh4n/kernel.h"
+#include "mh4n/loader.h"
 #include "mh4n/log.h"
 #include "mh4n/registry.h"
+#include "mh4n/runtime.h"
 #include "mh4n/service.h"
 
 namespace mh4n {
@@ -866,6 +869,25 @@ private:
 
 MH4N_REGISTER(ServiceFactory, "nwm::UDS",
               ServiceFactory([](ServiceContext& context) { return std::make_unique<NwmUds>(context); }));
+
+// Azahar's UDS constructor puts the cfg module's MAC address in the shared page
+// (`GetSharedPageHandler().SetMacAddress(GetMacAddress())`), when the system makes its services and
+// before the game runs (D40). The name sorts after "services.ipc", which makes the service manager
+// whose context holds the cfg module's state. A runtime without a loader has no shared page.
+void StartNwm(Runtime& rt) {
+    ServiceManager* manager = FindServiceManager(rt);
+    if (manager == nullptr) {
+        MH4N_LOG(Error, kLog, "the nwm module needs the service manager");
+        return;
+    }
+    SystemPages* pages = rt.Pages();
+    if (pages == nullptr) {
+        return;
+    }
+    pages->SetMacAddress(cfg::GetMacAddress(manager->Context()));
+}
+
+MH4N_REGISTER(BootStep, "services.ipc.nwm", BootStep{Phase::Services, StartNwm});
 
 }  // namespace
 

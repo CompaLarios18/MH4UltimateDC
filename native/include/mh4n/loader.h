@@ -25,6 +25,7 @@
 // (N1-27).
 #pragma once
 
+#include <array>
 #include <bitset>
 #include <cstddef>
 #include <memory>
@@ -285,6 +286,11 @@ public:
     u64 InitTime() const { return init_time_; }
     // The 3D slider (0.0 to 1.0).
     void Set3DSlider(float value);
+    // Azahar's Handler::SetMacAddress / GetMacAddress: the Wi-Fi MAC at offset 0x60 of the shared
+    // page (nwm::UDS sets it when it starts). Written through the host side, as the page is read-only
+    // for the guest. Before Map, Set does nothing and Get returns zeros.
+    void SetMacAddress(const std::array<u8, 6>& mac);
+    std::array<u8, 6> GetMacAddress() const;
 
 private:
     GuestMemory* memory_ = nullptr;

@@ -561,6 +561,31 @@ TEST_CASE("the shared page: the clock before 2000 and another init_time") {
     CHECK(*memory->Read<float>(0x1FF81080) == 0.5f);
 }
 
+TEST_CASE("the shared page: the MAC address at 0x60 round-trips and touches nothing else") {
+    SystemPages unmapped;
+    unmapped.SetMacAddress({1, 2, 3, 4, 5, 6});  // before Map: nothing to write, no crash
+    CHECK(unmapped.GetMacAddress() == std::array<u8, 6>{});
+
+    auto memory = NewMemory();
+    FcramRegions regions(2);
+    SystemPages pages;
+    REQUIRE(IsSuccess(pages.Map(*memory, regions)));
+    CHECK(pages.GetMacAddress() == std::array<u8, 6>{});  // Azahar's page starts zeroed there
+    const std::array<u8, 6> mac{0x18, 0x2A, 0x7B, 0x01, 0x02, 0xFF};
+    pages.SetMacAddress(mac);
+    CHECK(pages.GetMacAddress() == mac);
+    CHECK(shared_page::kWifiMacAddress == 0x60);
+    for (u32 i = 0; i < 6; ++i) {
+        CHECK(*memory->Read<u8>(0x1FF81060 + i) == mac[i]);
+    }
+    CHECK(*memory->Read<u8>(0x1FF8105F) == 0);  // the bytes around it are as they were
+    CHECK(*memory->Read<u8>(0x1FF81066) == 3);  // Wi-Fi link level
+    CHECK(*memory->Read<u8>(0x1FF81067) == 2);  // Wi-Fi state
+    // the hourly date update leaves it alone
+    pages.UpdateSharedPage(kSharedPageUpdateIntervalTicks);
+    CHECK(pages.GetMacAddress() == mac);
+}
+
 TEST_CASE("the game clock does not overflow for long runs") {
     SystemPages pages(kDefaultInitTime);
     // 30 days of game time

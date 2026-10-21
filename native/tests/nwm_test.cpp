@@ -22,6 +22,7 @@ TEST_CASE("nwm_test needs recomp.h (the repository around native/)" * doctest::s
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -30,8 +31,10 @@ TEST_CASE("nwm_test needs recomp.h (the repository around native/)" * doctest::s
 #include <string>
 #include <vector>
 
+#include "mh4n/cfg.h"
 #include "mh4n/clock.h"
 #include "mh4n/ipc.h"
+#include "mh4n/loader.h"
 #include "mh4n/log.h"
 #include "mh4n/options.h"
 #include "mh4n/runtime.h"
@@ -1011,6 +1014,96 @@ TEST_CASE("nwm::UDS the deprecated Initialize and BeginHostingNetwork work as th
     CHECK(begin == kResultSuccess);
     CHECK(st.status() == ConnectedAsHost);
     CHECK(st.max() == 6);
+}
+
+// ---- the shared page's MAC address (N1-29b, D40) -------------------------------------------------------------
+
+namespace {
+
+std::array<u8, 6> PageMac(Runtime& rt) {
+    std::array<u8, 6> mac{};
+    for (u32 i = 0; i < 6; ++i) {
+        mac[i] = rt.Memory().Read<u8>(0x1FF81060 + i).value_or(0xEE);
+    }
+    return mac;
+}
+
+}  // namespace
+
+TEST_CASE("nwm::UDS start-up puts the cfg MAC of the user folder in the shared page before the game runs") {
+    Fixture f;
+    TempDir dir;
+    std::filesystem::create_directories(dir.File("user/sysdata"));
+    const std::string text = "18:2A:7B:01:02:03";
+    std::ofstream(dir.File("user/sysdata/mac.txt"), std::ios::binary) << text;
+    std::array<u8, 6> seen{};
+    const int status = BootWith(f, dir, {"--user", dir.File("user")}, [&] {
+        seen = PageMac(*f.runtime);  // read by the main thread: the boot steps already ran
+        ExitProcess(*f.runtime);
+    });
+    CHECK(status == 0);
+    CHECK(seen == std::array<u8, 6>{0x18, 0x2A, 0x7B, 1, 2, 3});
+    CHECK(f.runtime->Pages()->GetMacAddress() == seen);
+}
+
+TEST_CASE("nwm::UDS start-up: the page follows another mac.txt, and a missing one is made and kept") {
+    {
+        Fixture f;
+        TempDir dir;
+        std::filesystem::create_directories(dir.File("user/sysdata"));
+        std::ofstream(dir.File("user/sysdata/mac.txt"), std::ios::binary) << "00:11:22:33:44:55";
+        std::array<u8, 6> seen{};
+        CHECK(BootWith(f, dir, {"--user", dir.File("user")}, [&] {
+                  seen = PageMac(*f.runtime);
+                  ExitProcess(*f.runtime);
+              }) == 0);
+        CHECK(seen == std::array<u8, 6>{0x00, 0x11, 0x22, 0x33, 0x44, 0x55});
+    }
+    {
+        Fixture f;
+        TempDir dir;
+        std::filesystem::create_directories(dir.File("user"));
+        std::array<u8, 6> seen{};
+        CHECK(BootWith(f, dir, {"--user", dir.File("user")}, [&] {
+                  seen = PageMac(*f.runtime);
+                  ExitProcess(*f.runtime);
+              }) == 0);
+        // cfg made the file; the page holds what it says
+        std::ifstream in(dir.File("user/sysdata/mac.txt"), std::ios::binary);
+        REQUIRE(in);
+        const std::string saved((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        unsigned b[6] = {};
+        REQUIRE(std::sscanf(saved.c_str(), "%x:%x:%x:%x:%x:%x", &b[0], &b[1], &b[2], &b[3], &b[4],
+                            &b[5]) == 6);
+        for (int i = 0; i < 6; ++i) {
+            CHECK(seen[i] == b[i]);
+        }
+    }
+}
+
+TEST_CASE("nwm::UDS start-up without --user: a stable MAC for the run, and nothing written") {
+    Fixture f;
+    TempDir dir;
+    std::array<u8, 6> seen{};
+    std::array<u8, 6> asked{};
+    CHECK(BootWith(f, dir, {}, [&] {
+              seen = PageMac(*f.runtime);
+              // what the game asks the cfg module later is the same address
+              asked = cfg::GetMacAddress(FindServiceManager(*f.runtime)->Context());
+              ExitProcess(*f.runtime);
+          }) == 0);
+    CHECK(seen != std::array<u8, 6>{});
+    CHECK(seen == asked);
+    CHECK_FALSE(std::filesystem::exists(dir.File("sysdata")));
+}
+
+TEST_CASE("nwm::UDS start-up with no loader (no shared page) does not crash") {
+    Fixture f;
+    TempDir dir;
+    std::filesystem::create_directories(dir.File("user"));
+    REQUIRE(f.runtime->Prepare(Parse({"--user", dir.File("user")}), {Phase::Devices, Phase::Services}));
+    CHECK(f.runtime->Pages() == nullptr);
+    CHECK_FALSE(f.Logged("needs the service manager"));
 }
 
 #endif  // recomp.h
