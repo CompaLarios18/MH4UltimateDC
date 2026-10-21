@@ -129,7 +129,7 @@ jobs:
           command -v ninja >/dev/null || choco install ninja -y --no-progress
       - name: Tools found
         run: |
-          for tool in x86_64-w64-mingw32-clang x86_64-w64-mingw32-clang++ clang ld.lld llvm-objcopy llvm-readelf llvm-objdump cmake ninja python; do
+          for tool in x86_64-w64-mingw32-clang x86_64-w64-mingw32-clang++ clang ld.lld llvm-objcopy llvm-readelf llvm-objdump llvm-strip cmake ninja python; do
             printf '%s: ' "$tool"; command -v "$tool" || echo "NOT FOUND"
           done
           clang --version
@@ -166,13 +166,16 @@ jobs:
           mkdir -p "$pkg"
           tools="mh4u_native_runner mh4n_ipc_replay mh4n_capture_player"
           for tool in $tools; do cp "build/native/bin/$tool.exe" "$pkg/"; done
+          # RelWithDebInfo keeps DWARF inside a MinGW exe (about 35 MB each, 87 % of it debug
+          # information): the two diagnostic tools go out without it, to keep the artifact small
+          # (the runner is packaged as before)
+          for tool in mh4n_ipc_replay mh4n_capture_player; do llvm-strip --strip-debug "$pkg/$tool.exe"; done
           bindir="$(dirname "$(command -v x86_64-w64-mingw32-clang)")"
           # llvm-mingw keeps libc++.dll and libunwind.dll in <root>/x86_64-w64-mingw32/bin as well
           dlldirs="$bindir"
           [ -d "$bindir/../x86_64-w64-mingw32/bin" ] && dlldirs="$dlldirs $bindir/../x86_64-w64-mingw32/bin"
           # the DLLs the tools import (and the ones those import) that llvm-mingw provides, each
-          # copied once;
-          # the system's DLLs stay where they are
+          # copied once; the system's DLLs stay where they are
           copy_dlls() {
             for dll in $(llvm-objdump -p "$1" | awk '/DLL Name:/ {print $3}'); do
               [ -f "$pkg/$dll" ] && continue
@@ -193,16 +196,22 @@ jobs:
         run: |
           set -u
           # a PATH without llvm-mingw: the DLLs next to the tools must be enough. Each tool
-          # prints "usage: <name>" for --help (exit 0); all three are tried, then the step fails
+          # prints "usage: <name>" for --help and exits 0; all three are tried, then the step fails
           failed=0
           for tool in mh4u_native_runner mh4n_ipc_replay mh4n_capture_player; do
             echo "== $tool --help"
-            usage="$(env PATH="/c/Windows/System32:/c/Windows" "./runner-windows/$tool.exe" --help 2>&1 || true)"
+            rc=0
+            usage="$(env PATH="/c/Windows/System32:/c/Windows" "./runner-windows/$tool.exe" --help 2>&1)" || rc=$?
             echo "$usage"
             case "$usage" in
-              *"usage: $tool"*) echo "ok: $tool printed its usage" ;;
-              *) echo "::error::the packaged $tool didn't print its usage"; failed=1 ;;
+              *"usage: $tool"*) ;;
+              *) echo "::error::the packaged $tool didn't print its usage"; failed=1; continue ;;
             esac
+            if [ "$rc" -ne 0 ]; then
+              echo "::error::the packaged $tool printed its usage but exited with status $rc"; failed=1
+            else
+              echo "ok: $tool printed its usage"
+            fi
           done
           exit "$failed"
       - name: Upload
