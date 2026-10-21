@@ -296,7 +296,7 @@ diagnostic log and not state of the game or of the emulated console, so a compar
 see N0-29, iteration 0, below). Without `--async-io` (its default mode)
 it already read files in place, started at a fixed date and kept host time out of the delay of a file read; N0-26
 fixes the two values that were still drawn anew in every run, and gives `--trace-timing` to look for what is left;
-N0-29 removes the sources it found (the list is below) and measures the result on the three gate sessions: with
+N0-29 removes the sources it found, except the runner's log (source 6; the list is below), and measures the result on the three gate sessions: with
 the game, five pairs of runs are identical in every artifact compared (the runner's own log is left out of the
 comparison, and differs: D37), see the last subsection.
 
@@ -447,7 +447,7 @@ rows are game state or what the game sees; the last is not, and is not removed):
 
 | What | Where | How much |
 |---|---|---|
-| Reply words (`out=`) of five kinds of IPC request: `APT:A` 0x01010000, `cfg:u` 0x00030040 and 0x00020000, `y2r:u` 0x00280000, and, in G2, the CRC of the buffer of one `fs:USER` file write | the IPC traces | a few lines in each session |
+| Reply words (`out=`) of five kinds of IPC request: `APT:A` 0x01010000, `cfg:u` 0x00030040 and 0x00020000, `y2r:u` 0x00280000, and, in G2, the CRC of the buffer of one `fs:USER` file write | the IPC traces | 7, 15 and 18 lines in G1, G6 and G2 (the five kinds are the union over the three sessions) |
 | The GPU capture file | `.mgpu` | 8 consecutive bytes |
 | The user folder after the run | the config savegame of `cfg` (every session), a metadata byte of the game's extdata (G1 and G6), the game's own save file (G2) | 16 bytes of the config savegame, 1 byte, 16 bytes |
 | The runner's log file, in the same user folder | `log/mh4u_runner_log.txt` (every session) | every line: Azahar stamps each line with the host's clock (`steady_clock`, `common/logging/backend.cpp`), and some lines hold the absolute path of the run's directory; with the stamp and that path removed, the lines are equal |
@@ -587,8 +587,9 @@ Ryzen 5 5600X, 6 cores and 12 threads, 32 GB), idle except where stated. The run
 - What was compared (the orchestrator's comparison script, which is not in the repository; it only reads): the text
   traces line by line, line 1 left out when both start with `#` (the header, with the date); the binary captures,
   their manifests, every screenshot, the frames of the GPU capture and every file of the user folder after the run
-  (`log/` left out, D37) by SHA-256, with the same file names on both sides. Line counts below are lines (newline
-  characters), line 1 included.
+  (`log/` left out, D37) by SHA-256, with the same file names on both sides. Line 1 of each text trace, left out of
+  that comparison, is byte-identical in every run as well, so the whole files are identical. Line counts below are
+  lines (newline characters; the traces end their lines with CRLF), line 1 included.
 
 **G1** (1700 frames; three runs, compared in all three pairs: 1-2, 1-3, 2-3; run 3 under load)
 
@@ -598,7 +599,7 @@ Ryzen 5 5600X, 6 cores and 12 threads, 32 GB), idle except where stated. The run
 | SVC trace | 1,082,077 lines | identical |
 | IPC trace | 18,954 lines (21 comment lines and 18,932 requests besides line 1) | identical, including every reply word |
 | Timing trace | 78,579 lines | identical |
-| Unmapped-access count | 1 line (the header only) | identical |
+| Unmapped-access count | 1 line (the header only) | identical: no unmapped access was counted in any run |
 | HID capture | 1,204,316 bytes (manifest 164) | identical |
 | DSP capture | 20,149,224 bytes (manifest 165) | identical |
 | GPU capture | 144,248,896 bytes (manifest 550); frames folder: 6 PPM files (frames 1500 to 1502, both screens), 1,555,290 bytes | identical, the 8 bytes of iteration 0 included |
@@ -614,7 +615,7 @@ Ryzen 5 5600X, 6 cores and 12 threads, 32 GB), idle except where stated. The run
 | SVC trace | 3,711,176 lines | identical |
 | IPC trace | 47,780 lines (25 comment lines and 47,754 requests besides line 1) | identical, including every reply word |
 | Timing trace | 188,524 lines | identical |
-| Unmapped-access count | 1 line (the header only) | identical |
+| Unmapped-access count | 1 line (the header only) | identical: no unmapped access was counted in any run |
 | HID capture | 2,620,316 bytes (manifest 164) | identical |
 | DSP and GPU captures | none requested | not applicable |
 | Shots | 115 files: 114 PPM and the 4,096-byte dump of the shared page | identical |
@@ -629,7 +630,7 @@ Ryzen 5 5600X, 6 cores and 12 threads, 32 GB), idle except where stated. The run
 | SVC trace | 7,007,565 lines | identical |
 | IPC trace | 97,094 lines (25 comment lines and 97,068 requests besides line 1) | identical, including every reply word and the CRC of the `fs:USER` write of the save |
 | Timing trace | 398,679 lines | identical |
-| Unmapped-access count | 1 line (the header only) | identical |
+| Unmapped-access count | 1 line (the header only) | identical: no unmapped access was counted in any run |
 | HID capture | 6,372,716 bytes (manifest 164) | identical |
 | DSP capture | none requested | not applicable |
 | GPU capture | 145,694,492 bytes (manifest 550); frames folder: 6 PPM files (frames 2500 to 2502, both screens), 1,555,290 bytes | identical |
@@ -656,7 +657,7 @@ reference images were identical in iteration 0 and are identical now, so they do
 
 | What differed in iteration 0 | Iteration 0 (3 pairs) | This runner (5 pairs: G1 x3, G6, G2) |
 |---|---|---|
-| Reply words of five kinds of IPC request: `APT:A` 0x01010000, `cfg:u` 0x00030040 and 0x00020000, `y2r:u` 0x00280000, and in G2 the CRC of the `fs:USER` write of the save | a few lines per session | none differs |
+| Reply words of five kinds of IPC request: `APT:A` 0x01010000, `cfg:u` 0x00030040 and 0x00020000, `y2r:u` 0x00280000, and in G2 the CRC of the `fs:USER` write of the save | 7, 15 and 18 lines (G1, G6, G2) | none differs |
 | GPU capture file (`.mgpu`) | 8 bytes (G1, G2) | none differs (144,248,896 and 145,694,492 bytes) |
 | Config savegame in the user folder | 16 bytes, every session | none differs |
 | Extdata metadata file in the user folder | 1 byte (G1, G6) | none differs |
@@ -678,6 +679,8 @@ the result of the whole set of changes: the contributions of the individual fixe
 - `--cpu jit`; `--async-io`, rooms and `--new-console-id` (they keep Azahar's behaviour).
 - Sessions with a save or quests (G3, G4, G7).
 - A user folder that already has a config savegame (it keeps its ID).
+- A user folder other than the one copied for every run: that one has no `nand/rw/sys/LocalFriendCodeSeed_B`, the
+  case in which Azahar draws the friend code seed too (a folder with that file was not tried).
 - Runs longer than 9000 frames.
 - The app (it does not use these switches).
 - A load other than one second runner (G1 only); G6 and G2 were measured on an idle PC.
