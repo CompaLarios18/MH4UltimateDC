@@ -5,6 +5,7 @@ into a code library with tools/recomp/build.py. If a port build is available
 (MH4U_RUNNER=path/to/mh4u_runner; see port/README.md), the program also runs under Azahar's kernel with the recompiled code and
 with Azahar's JIT, and both must print the same thing.
 """
+import hashlib
 import os
 import re
 import shutil
@@ -697,10 +698,204 @@ def test_schedule_input_file(tmp_path):
     ["--input", "100:TOUCH:1"], ["--dump", "f600:zz:40"], ["--dump", "500:10:0"],
     ["--set", "f600:=1"], ["--set", "fps=120"], ["--freeze", "500:0"], ["--call-counts", "g5"],
     ["--shots-from", "-1"], ["--ms", "f"], ["--frames", "x"], ["--frames", "-3"],
+    ["--shot-every", "f0"], ["--shot-every", "f"], ["--shot-every", "x"], ["--shot-every", "-5"],
 ])
 def test_schedule_rejects_bad_times(args):
     r = _print_schedule(*args)
     assert r.returncode == 1 and r.stdout == "" and "bad --" in r.stderr, (r.stdout, r.stderr)
+
+
+@pytest.mark.skipif(not os.environ.get("MH4U_RUNNER"), reason="port not built (set MH4U_RUNNER)")
+def test_schedule_prints_frame_keyed_shots():
+    """--shot-every f<N> (N0-26): --print-schedule lists the interval in frames and the frame of the
+    first shot (--shots-from, or frame N without it). The millisecond form prints nothing new."""
+    r = _print_schedule("--shots-from", "f100", "--shot-every", "f60")
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.splitlines()[2:] == ["shots-from at=f100", "shot-every every=f60 first=f100"]
+    assert _print_schedule("--shot-every", "f60").stdout.splitlines()[2:] == ["shot-every every=f60 first=f60"]
+    assert _print_schedule("--shots-from", "1500", "--shot-every", "f60").stdout.splitlines()[2:] == [
+        "shots-from at=1500ms", "shot-every every=f60 first=1500ms"]
+    assert _print_schedule("--shots-from", "f100", "--shot-every", "500").stdout.splitlines()[2:] == [
+        "shots-from at=f100"]
+
+
+SHOT_HARNESS = r'''
+// Throwaway driver for port/src/schedule.cpp (standard library only): the screenshot schedule
+// without Azahar. usage: shots describe EVERY FROM | shots run EVERY FROM FRAMES_PER_STEP MS_PER_STEP STEPS
+// ("-" for an option that is not given). `run` takes a step of that many frames and milliseconds at a
+// time and prints the name stem of each screenshot that is due.
+#include <cstdio>
+#include <cstdlib>
+#include <string>
+#include "schedule.h"
+
+int main(int argc, char** argv) {
+    if (argc < 4) return 2;
+    Schedule::Plan plan;
+    std::string error;
+    const std::string every = argv[2], from = argv[3];
+    if (every != "-" && !Schedule::ParseShotEvery(every, plan, error)) {
+        std::printf("bad --shot-every (%s)\n", error.c_str());
+        return 1;
+    }
+    if (from != "-" && !Schedule::ParseShotsFrom(from, plan, error)) {
+        std::printf("bad --shots-from (%s)\n", error.c_str());
+        return 1;
+    }
+    if (std::string(argv[1]) == "describe") {
+        std::fputs(Schedule::Describe(plan).c_str(), stdout);
+        return 0;
+    }
+    if (argc != 7) return 2;
+    Schedule::ShotSchedule shots(plan);
+    const unsigned frames = std::atoi(argv[4]);
+    const double ms = std::atof(argv[5]);
+    const int steps = std::atoi(argv[6]);
+    unsigned frame = 0;
+    for (int i = 1; i <= steps; ++i) {
+        frame += frames;
+        std::string stem;
+        if (shots.Due(i * ms, frame, stem)) std::printf("%s\n", stem.c_str());
+    }
+    return 0;
+}
+'''
+
+
+@pytest.fixture(scope="module")
+def shot_harness(tmp_path_factory):
+    """port/src/schedule.cpp built with a throwaway driver, so the screenshot schedule is tested
+    without the runner (and shows that the file includes only the standard library)."""
+    cxx = shutil.which("clang++") or shutil.which("g++")
+    if not cxx:
+        pytest.skip("no C++ compiler")
+    out = tmp_path_factory.mktemp("shots")
+    (out / "shots.cpp").write_text(SHOT_HARNESS)
+    exe = out / ("shots.exe" if sys.platform == "win32" else "shots")
+    src = os.path.join(ROOT, "port", "src")
+    flags = ["-static"] if sys.platform == "win32" else []
+    r = subprocess.run([cxx, "-std=c++20", "-Wall", "-Wextra", "-Werror", f"-I{src}", str(out / "shots.cpp"),
+                        os.path.join(src, "schedule.cpp"), "-o", str(exe)] + flags,
+                       capture_output=True, text=True, timeout=600)
+    assert r.returncode == 0, r.stderr
+    return str(exe)
+
+
+def _shots(harness, every, start, frames=1, ms=16.7, steps=300):
+    r = subprocess.run([harness, "run", every, start, str(frames), str(ms), str(steps)], capture_output=True,
+                       text=True, timeout=60)
+    assert r.returncode == 0, r.stdout + r.stderr
+    return r.stdout.split()
+
+
+def test_frame_keyed_shots_follow_the_frame_counter(shot_harness):
+    """--shot-every f<N> (N0-26): a shot every N frames, the first at --shots-from f<M> (frame M), at
+    frame N without it, or at the first frame after --shots-from in ms; named f<frame>."""
+    assert _shots(shot_harness, "f60", "f100") == ["f0000100", "f0000160", "f0000220", "f0000280"]
+    assert _shots(shot_harness, "f60", "-") == ["f0000060", "f0000120", "f0000180", "f0000240", "f0000300"]
+    # 16.7 ms per frame: 1500 ms has come at frame 90
+    assert _shots(shot_harness, "f60", "1500") == ["f0000090", "f0000150", "f0000210", "f0000270"]
+    # a counter that skips frames (7 per step): no shot for a frame it skipped over, none twice
+    assert _shots(shot_harness, "f4", "f0", frames=7, steps=4) == ["f0000000", "f0000008", "f0000016", "f0000024"]
+    # the shot waits for its frame, whatever the time
+    assert _shots(shot_harness, "f100", "f50", ms=1000, steps=60) == ["f0000050"]
+
+
+def test_millisecond_shots_keep_their_names(shot_harness):
+    """The millisecond forms behave as before N0-26: names are the time in ms, 7 digits."""
+    assert _shots(shot_harness, "-", "-", steps=250) == ["0001000", "0002000", "0003000", "0004000"]
+    assert _shots(shot_harness, "500", "-", steps=100) == ["0000500", "0001000", "0001500"]
+    assert _shots(shot_harness, "500", "1500", steps=130) == ["0001500", "0002000"]
+    # --shots-from f<M> with a millisecond interval: the first shot is f<M>, the next ones follow in ms
+    assert _shots(shot_harness, "500", "f100", steps=200)[:3] == ["f0000100", "0002170", "0002670"]
+    assert _shots(shot_harness, "0.2", "-", steps=3) == ["0000001", "0000002", "0000003"]   # below 1 ms counts as 1
+
+
+@pytest.mark.parametrize("every", ["f0", "f", "x", "-5", "f1.5"])
+def test_shot_every_rejects_what_is_not_a_time(shot_harness, every):
+    r = subprocess.run([shot_harness, "describe", every, "-"], capture_output=True, text=True, timeout=60)
+    assert r.returncode == 1 and r.stdout.startswith("bad --shot-every"), (r.stdout, r.stderr)
+
+
+def test_shot_schedule_describes_frame_keyed_shots(shot_harness):
+    def describe(every, start):
+        return subprocess.run([shot_harness, "describe", every, start], capture_output=True, text=True,
+                              timeout=60).stdout.splitlines()
+    assert describe("f60", "f100") == ["# schedule v1", "stop ms=10000", "shots-from at=f100",
+                                       "shot-every every=f60 first=f100"]
+    assert describe("f60", "-")[2:] == ["shot-every every=f60 first=f60"]
+    assert describe("500", "f1200")[2:] == ["shots-from at=f1200"]
+
+
+FIXED_START_TICKS = 2000000000        # port/README.md, section Determinism (kFixedStartTicks in runner.cpp)
+FIXED_CONSOLE_MAC = bytes.fromhex("020000000001")
+
+
+def _shared_page_after(binary, elf, code, tmp_path, name, *extra):
+    """The 4 KiB shared page (0x1FF81000) at 1000 ms of a run of io_test in a fresh user folder."""
+    shots = tmp_path / f"shots_{name}"
+    r = subprocess.run([binary, elf, "--code", code, "--ms", "1500", "--user", str(tmp_path / f"user_{name}"),
+                        "--shots", str(shots), "--dump", "1000:1FF81000:0x1000", *extra],
+                       capture_output=True, text=True, timeout=600)
+    assert r.returncode == 0, (name, r.stdout[-2000:], r.stderr[-2000:])
+    page = (shots / "mem_0001000_1ff81000.bin").read_bytes()
+    assert len(page) == 0x1000
+    return page
+
+
+@pytest.mark.skipif(not os.environ.get("MH4U_RUNNER"), reason="port not built (set MH4U_RUNNER)")
+def test_shared_page_repeats_and_holds_the_fixed_values(tmp_path):
+    """N0-26: without --async-io, two runs with the same arguments (each in a fresh user folder) give a
+    byte-identical shared page: the Wi-Fi MAC address (offsets 0x60 to 0x65) is the fixed 02:00:00:00:00:01
+    and the clock starts at the fixed tick, which the date records carry (update ticks at 0x28 and 0x48).
+    With --async-io Azahar's own values stay (a random address from its list, in the folder's mac.txt)."""
+    import build_svc_test
+    from recomp import build as rbuild
+    binary = os.environ["MH4U_RUNNER"]
+    elf = build_svc_test.build(str(tmp_path), "io_test")
+    code = rbuild.build(str(tmp_path), 2, "O1", ["RC_PAGED"], "code.so", [rbuild.DLL_GLUE],
+                        extra_flags=["-fvisibility=hidden"])
+    first = _shared_page_after(binary, elf, code, tmp_path, "a")
+    second = _shared_page_after(binary, elf, code, tmp_path, "b")
+    assert hashlib.sha256(first).digest() == hashlib.sha256(second).digest()
+    assert first[0x60:0x66] == FIXED_CONSOLE_MAC
+    # the first update of the date (at the first slice of emulation) is in the record that was written last
+    update_ticks = [int.from_bytes(first[o:o + 8], "little") for o in (0x28, 0x48)]
+    assert FIXED_START_TICKS <= max(update_ticks) < FIXED_START_TICKS + (1 << 28), update_ticks
+    # the asynchronous mode is Azahar's: its address is not the fixed one
+    assert _shared_page_after(binary, elf, code, tmp_path, "c", "--async-io")[0x60:0x66] != FIXED_CONSOLE_MAC
+
+
+@pytest.mark.skipif(not os.environ.get("MH4U_RUNNER"), reason="port not built (set MH4U_RUNNER)")
+def test_timing_trace_lists_the_events_that_ran(tmp_path):
+    """--trace-timing FILE (N0-26): a header in the shared format, then a line per CoreTiming event run:
+    tick, event, core, cycles late, and where it was scheduled from. Each core's ticks never go back.
+    A file that can't be written is an error."""
+    import build_svc_test
+    from recomp import build as rbuild
+    binary = os.environ["MH4U_RUNNER"]
+    elf = build_svc_test.build(str(tmp_path), "io_test")
+    code = rbuild.build(str(tmp_path), 2, "O1", ["RC_PAGED"], "code.so", [rbuild.DLL_GLUE],
+                        extra_flags=["-fvisibility=hidden"])
+    trace = tmp_path / "timing.txt"
+    r = subprocess.run([binary, elf, "--code", code, "--ms", "500", "--user", str(tmp_path / "user"),
+                        "--trace-timing", str(trace)], capture_output=True, text=True, timeout=600)
+    assert r.returncode == 0, (r.stdout[-2000:], r.stderr[-2000:])
+    lines = trace.read_text().splitlines()
+    assert re.fullmatch(r"# timingtrace v1 \d{4}-\d\d-\d\d game=0x[0-9a-f]{16} cpu=recomp new3ds=off", lines[0]), lines[0]
+    events = [re.fullmatch(r"tick=(-?\d+) event=(\S+) core=(\d+) late=(\d+) from=(emu|host)", ln) for ln in lines[1:]]
+    assert events and all(events), [ln for ln, m in zip(lines[1:], events) if not m][:3]
+    names = {m.group(2) for m in events}
+    assert "SharedPage::UpdateTimeCallback" in names, sorted(names)
+    last = {}
+    for m in events:
+        core, tick = m.group(3), int(m.group(1))
+        assert tick >= last.get(core, tick), (core, tick, last.get(core))
+        last[core] = tick
+    assert max(last.values()) > 400 * 268111           # ~500 ms of emulated time
+    bad = subprocess.run([binary, elf, "--code", code, "--ms", "100", "--trace-timing",
+                          str(tmp_path / "missing" / "t.txt")], capture_output=True, text=True, timeout=600)
+    assert bad.returncode == 1 and "cannot write" in bad.stderr
 
 
 @pytest.mark.skipif(not os.environ.get("MH4U_RUNNER"), reason="port not built (set MH4U_RUNNER)")

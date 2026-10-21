@@ -128,9 +128,11 @@ def test_observable_file_syntax():
 def test_the_shipped_observable_file_parses():
     parsed = state_diff.parse_observable((ROOT / "config" / "native" / "observable.txt").read_text())
     names = [o.name for o in parsed]
-    assert names[:2] == ["scene", "frame_counter"] and len(set(names)) == len(names)
+    # D32: scene is the game's own area class (4 bytes, the vtable); the sApplet byte is applet_state
+    assert names[0] == "scene" and {"applet_state", "frame_counter"} <= set(names) and len(set(names)) == len(names)
     by_name = {o.name: o for o in parsed}
-    assert by_name["smain_delta"].compare is False and by_name["scene"].size == 1
+    assert by_name["smain_delta"].compare is False
+    assert by_name["scene"].size == 4 and by_name["applet_state"].size == 1
 
 
 def test_expression_evaluation():
@@ -166,3 +168,91 @@ def test_command_line(tmp_path, capsys):
     assert state_diff.main([str(ref), str(shifted), "--tolerance", "5"] + args) == 0
     assert state_diff.main([str(ref), str(bad)] + args) == 2
     assert state_diff.main([str(ref), str(tmp_path / "missing")] + args) == 2
+
+
+# ── --min-changes: nothing compared is not a pass (N0-25, D34) ───────────────────────
+
+def scene_trace(*scenes: object) -> str:
+    """One record per frame from f=0: a scene is an int, or '-' for a null chain."""
+    out = HEADER
+    for frame, scene in enumerate(scenes):
+        text = "-" if scene == "-" else f"0x{scene:02x}"
+        out += f"f={frame} t={frame * 4470000} scene={text} frame_counter=0x{frame:08x} delta=0x00000000 quest=-\n"
+    return out
+
+
+def real_changes(*scenes: object) -> int:
+    return len(state_diff.real_scene_changes(state_diff.parse_trace(scene_trace(*scenes))))
+
+
+def test_a_real_scene_change_is_between_two_readable_scenes():
+    assert real_changes("-", 1, 1, 1) == 0                # the first value after a null chain is not a change
+    assert real_changes(1, 1, 1) == 0                     # nor is the first record
+    assert real_changes("-", 1, 2) == 1
+    assert real_changes(1, 2, 3) == 2
+    assert real_changes(1, "-", 2) == 1                   # the scene before the gap is the one compared
+    assert real_changes(1, "-", 1) == 0                   # the same scene after a gap is no change
+    assert real_changes(1, 2, "-") == 1                   # a change to '-' is not a real one
+    assert real_changes("-", "-") == 0
+    # the records returned are the ones that changed
+    (change,) = state_diff.real_scene_changes(state_diff.parse_trace(scene_trace(5, 5, 7, 7)))
+    assert change.frame == 2 and change.values["scene"] == 7
+
+
+def min_changes(tmp_path, observables_file, ref, cand, n, capsys, *extra):
+    r, c = tmp_path / "r.txt", tmp_path / "c.txt"
+    r.write_text(ref)
+    c.write_text(cand)
+    capsys.readouterr()
+    code = state_diff.main([str(r), str(c), "--observable", str(observables_file), "--min-changes", str(n), *extra])
+    return code, capsys.readouterr().out
+
+
+def test_min_changes_exits_3_when_too_few_real_changes_were_aligned(tmp_path, capsys):
+    obs = tmp_path / "obs.txt"
+    obs.write_text(OBSERVABLE)
+    constant = scene_trace("-", 1, 1, 1, 1)
+    code, out = min_changes(tmp_path, obs, constant, constant, 1, capsys)
+    assert code == 3 and "0 real scene change" in out and "--min-changes 1" in out
+    ab = scene_trace(1, 1, 2, 2)
+    assert min_changes(tmp_path, obs, ab, ab, 1, capsys)[0] == 0
+    code, out = min_changes(tmp_path, obs, ab, ab, 2, capsys)
+    assert code == 3 and "1 real scene change" in out
+    abc = scene_trace(1, 2, 2, 3)
+    assert min_changes(tmp_path, obs, abc, abc, 2, capsys)[0] == 0
+    assert min_changes(tmp_path, obs, abc, abc, 3, capsys)[0] == 3
+
+
+def test_without_min_changes_a_constant_trace_still_passes(tmp_path, capsys):
+    obs = tmp_path / "obs.txt"
+    obs.write_text(OBSERVABLE)
+    for flags in ([], ["--min-changes", "0"]):
+        r = tmp_path / "r.txt"
+        r.write_text(scene_trace("-", 1, 1, 1))
+        assert state_diff.main([str(r), str(r), "--observable", str(obs), *flags]) == 0
+    assert "traces agree" in capsys.readouterr().out
+
+
+def test_a_difference_wins_over_too_few_changes(tmp_path, capsys):
+    obs = tmp_path / "obs.txt"
+    obs.write_text(OBSERVABLE)
+    code, out = min_changes(tmp_path, obs, scene_trace(1, 2), scene_trace(1, 3), 5, capsys)
+    assert code == 1 and "DIVERGENCE" in out
+
+
+def test_the_last_line_prints_the_real_changes(tmp_path, capsys):
+    obs = tmp_path / "obs.txt"
+    obs.write_text(OBSERVABLE)
+    code, out = min_changes(tmp_path, obs, scene_trace("-", 1, 2, 3), scene_trace("-", 1, 2, 3), 1, capsys)
+    assert code == 0
+    assert out.strip().splitlines()[-1].endswith("; 2 real scene changes")
+    code, out = min_changes(tmp_path, obs, scene_trace("-", 1, 2, 3), scene_trace("-", 1, 2, 3), 0, capsys, "--order-only")
+    assert out.strip().splitlines()[-1].endswith("; 2 real scene changes")
+
+
+def test_a_negative_min_changes_is_a_usage_error(tmp_path):
+    r = tmp_path / "r.txt"
+    r.write_text(scene_trace(1, 2))
+    with pytest.raises(SystemExit) as stop:
+        state_diff.main([str(r), str(r), "--min-changes", "-1"])
+    assert stop.value.code == 2
