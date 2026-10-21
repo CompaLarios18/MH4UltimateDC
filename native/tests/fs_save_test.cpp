@@ -46,10 +46,6 @@ TEST_CASE("fs_save_test needs recomp.h (the repository around native/)" * doctes
 #include <thread>
 #include <vector>
 
-#if !defined(_WIN32)
-#include <dirent.h>
-#endif
-
 #include "../src/services/fs/disk_file.h"
 #include "../src/services/fs/fs_state.h"
 #include "../src/services/fs/host_files.h"
@@ -850,7 +846,7 @@ TEST_CASE("SaveData: OpenFile with the create flag, read-only and write-only ope
     CHECK(std::filesystem::file_size(dir.SaveFolder() / "wide.bin") == 4);
 }
 
-TEST_CASE("SaveData: a directory listing has Azahar's entries, in the host's order") {
+TEST_CASE("SaveData: a directory listing has Azahar's entries, in the order of D54") {
     Fixture f;
     TempDir dir;
     std::vector<Entry> entries;
@@ -885,27 +881,12 @@ TEST_CASE("SaveData: a directory listing has Azahar's entries, in the host's ord
     CHECK(close == kResultSuccess);
     entries.push_back(Decode(second_read[0]));
 
-    // the host's own order: readdir's, without "." and ".."
-    std::vector<std::string> host_order;
-#if !defined(_WIN32)
-    DIR* d = opendir(dir.SaveFolder().c_str());
-    REQUIRE(d != nullptr);
-    while (const dirent* e = readdir(d)) {
-        if (std::strcmp(e->d_name, ".") != 0 && std::strcmp(e->d_name, "..") != 0) {
-            host_order.push_back(e->d_name);
-        }
-    }
-    closedir(d);
-#else
-    for (const auto& e : std::filesystem::directory_iterator(dir.SaveFolder())) {
-        host_order.push_back(e.path().filename().string());
-    }
-#endif
     std::vector<std::string> names;
     for (const Entry& e : entries) {
         names.push_back(e.name);
     }
-    CHECK(names == host_order);
+    // created as longfilename.txt, .hidden, Folder, b.bin: listed sorted (D54)
+    CHECK(names == std::vector<std::string>{".hidden", "b.bin", "Folder", "longfilename.txt"});
 
     for (const Entry& e : entries) {
         if (e.name == "longfilename.txt") {
@@ -2748,7 +2729,9 @@ struct OrderFolder {
 OrderFolder MakeOrderFolder(const std::filesystem::path& folder) {
     std::filesystem::create_directories(folder);
     OrderFolder made;
-    const auto file = [&](const std::string& name) { WriteBytesTo(folder / std::filesystem::path(std::u8string(name.begin(), name.end())), Pattern(4, 1)); };
+    const auto file = [&](const std::string& name) {
+        WriteBytesTo(folder / std::filesystem::path(std::u8string(name.begin(), name.end())), Pattern(4, 1));
+    };
     for (const char* name : {"zeta", "Alpha", "_under", "mid", "Beta", "alpha2", "0first", "Zed", "tie", "Zz"}) {
         file(name);
     }
@@ -2780,7 +2763,8 @@ OrderFolder MakeOrderFolder(const std::filesystem::path& folder) {
     return made;
 }
 
-std::vector<std::string> NamesOf(const std::vector<std::vector<u8>>& raw_entries, std::vector<Entry>* decoded = nullptr) {
+std::vector<std::string> NamesOf(const std::vector<std::vector<u8>>& raw_entries,
+                                 std::vector<Entry>* decoded = nullptr) {
     std::vector<std::string> names;
     for (const std::vector<u8>& raw : raw_entries) {
         const Entry entry = Decode(raw);

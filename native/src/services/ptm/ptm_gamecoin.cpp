@@ -27,6 +27,7 @@
 #include <array>
 #include <cstring>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -86,7 +87,8 @@ std::array<u8, sizeof(GameCoin)> DefaultBytes() {
 // WriteGameCoinData, for a folder where the archive was not formatted.
 void MakeGameCoinArchive(fs::ArchiveFactory& factory, const fs::Path& archive_path) {
     const fs::ArchiveFormatInfo format_info;  // all zero, as ArchiveFormatInfo() in Azahar
-    const Result formatted = factory.FormatAsExtData(archive_path, format_info, std::nullopt);  // no icon, as Azahar
+    // no icon, as Azahar
+    const Result formatted = factory.FormatAsExtData(archive_path, format_info, std::nullopt);
     if (formatted != kResultSuccess) {
         MH4N_LOG(Error, kLog, "the play coin archive could not be formatted: 0x{:08X}", formatted);
         return;
