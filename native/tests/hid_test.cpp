@@ -23,7 +23,10 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <memory>
 #include <string>
 #include <vector>
@@ -414,6 +417,47 @@ TEST_CASE("when two presses of one kind overlap, the first one that is held wins
     CHECK(s.circle_y == 154);
     CHECK(s.buttons == kPadA);  // the second A (120..220)
     CHECK(source.Sample(TickAt(230)).buttons == 0);
+}
+
+// A golden session file (tools/native/golden/<S>.txt) is what golden.py gives --input-file for a
+// candidate runner: `# key: value` header lines, then input event lines with several comma-separated
+// events, frame-keyed times, holds and trailing comments. The reference's parser reads it as one
+// script; so must the native runner's, with the same presses (N1-09b, parity with the reference).
+TEST_CASE("--input-file reads a golden session file as the reference runner does") {
+    const std::filesystem::path path =
+        std::filesystem::temp_directory_path() / ("mh4n_hid_session_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + ".txt");
+    {
+        std::ofstream out(path);
+        out << "# name: SYNTH\n# needs: none\n# frames: 900\n# captures: dsp:300:2:silent\n#\n"
+               "# prose lines are comments, f300 and A in them are not events\n\n"
+               "f10:A,f20:TOUCH:10:20:f2   # a touch\n"
+               "f30:CIRCLE:1:0:f3\n"
+               "f40:START\n";
+    }
+    Schedule::Plan from_file;
+    std::string error;
+    const bool ok = input_script::ParseScripts({}, {path.string()}, &from_file, &error);
+    std::filesystem::remove(path);
+    REQUIRE_MESSAGE(ok, error);
+    input_script::ScriptInput file(from_file, nullptr, kStart);
+    input_script::ScriptInput inline_script(Parse("f10:A,f20:TOUCH:10:20:f2,f30:CIRCLE:1:0:f3,f40:START"), nullptr,
+                                            kStart);
+    // frame by frame, both sources give the same inputs
+    for (u32 frame = 0; frame < 60; ++frame) {
+        *file.FrameCell() = frame;
+        *inline_script.FrameCell() = frame;
+        const InputState a = file.Sample(TickAt(frame));
+        const InputState b = inline_script.Sample(TickAt(frame));
+        CHECK_MESSAGE(a.buttons == b.buttons, "frame " << frame);
+        CHECK_MESSAGE(a.touch_down == b.touch_down, "frame " << frame);
+        CHECK_MESSAGE(a.circle_x == b.circle_x, "frame " << frame);
+    }
+    *file.FrameCell() = 10;
+    CHECK(file.Sample(TickAt(100)).buttons == kPadA);
+    *file.FrameCell() = 21;
+    CHECK(file.Sample(TickAt(101)).touch_down);
+    *file.FrameCell() = 40;
+    CHECK((file.Sample(TickAt(102)).buttons & kPadStart) != 0);
 }
 
 #endif  // MH4N_HAVE_SCHEDULE
