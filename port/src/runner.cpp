@@ -46,6 +46,7 @@
 #include "core/frontend/image_interface.h"
 #include "core/frontend/input.h"
 #include "core/hle/kernel/client_session.h"
+#include "core/hle/kernel/hle_ipc.h"
 #include "core/hle/kernel/ipc_debugger/recorder.h"
 #include "core/hle/kernel/kernel.h"
 #include "core/hle/kernel/object.h"
@@ -80,6 +81,11 @@ constexpr double TICKS_PER_MS = 268111.856; // ARM11 clock
 // in every run (N0-26; port/README.md, section Determinism lists what the game sees).
 constexpr s64 kFixedStartTicks = 2000000000; // the emulated clock's base: 0x77359400, about 7.5 s
 constexpr const char* kFixedConsoleMac = "02:00:00:00:00:01"; // locally administered; outside a room
+// The console unique ID a new config savegame gets (N0-29), in the shape Azahar makes: the
+// friend code seed 0x1A2B3C4D5 (34 bits) in bits 0 to 33, zero in bits 34 to 47, the random
+// number in bits 48 to 63. A user folder that already has a config savegame keeps its own.
+constexpr u32 kFixedConsoleRandomNumber = 0x4D48;
+constexpr u64 kFixedConsoleId = 0x4D480001A2B3C4D5ULL;
 
 const char* const USAGE = R"(usage: mh4u_runner <file> [options]
   --code LIB        recompiled code library (with --cpu recomp)
@@ -109,8 +115,11 @@ const char* const USAGE = R"(usage: mh4u_runner <file> [options]
                     fast the host was, which moves loading screens by seconds, and the game
                     seeds its random numbers from the clock). It also starts the emulated clock
                     at a fixed tick count and gives the console the Wi-Fi MAC address
-                    02:00:00:00:00:01 (not in a room, nor with --new-console-id), where Azahar
-                    draws both anew in every run; see port/README.md, section Determinism
+                    02:00:00:00:00:01 and the unique ID of a config savegame it makes a fixed
+                    value (not in a room, nor with --new-console-id), where Azahar draws them
+                    anew in every run; and it sets TZ=UTC0, zeroes the bytes of IPC replies
+                    that a service does not write and the padding of metadata files; see
+                    port/README.md, section Determinism
   --dump MS:ADDR:SIZE  at emulated time MS, write SIZE bytes of guest memory from ADDR to
                     mem_<ms>_<addr>.bin (mem_f<frame>_<addr>.bin for a frame) in the --shots
                     directory (or the current one);
@@ -3059,6 +3068,18 @@ int main(int argc, char** argv) {
         // carry it
         Settings::values.init_ticks_type.SetValue(Settings::InitTicks::Fixed);
         Settings::values.init_ticks_override.SetValue(kFixedStartTicks);
+        // (N0-29) the date the shared page shows is the start date through the host's time zone
+        // (it converts with mktime): UTC, whatever zone the host is in
+#ifdef _WIN32
+        _putenv_s("TZ", "UTC0");
+        _tzset();
+#else
+        setenv("TZ", "UTC0", 1);
+        tzset();
+#endif
+        // (N0-29) the words of a reply that a service does not write (the three bytes after a
+        // u8, u16 or bool, say) are 0, not whatever the host's heap held
+        Kernel::SetZeroedIpcReplies(true);
     }
     // the console's Wi-Fi MAC address is read from (or made in) the user folder's mac.txt, a
     // random one in a folder that has none: fixed too, except in a room, which hands out its own,
@@ -3066,6 +3087,16 @@ int main(int argc, char** argv) {
     const bool fix_console_mac = !async_io && !new_console_id && !room_host && room_join.empty();
     if (fix_console_mac && !Service::CFG::SetFixedConsoleMac(kFixedConsoleMac)) {
         std::fprintf(stderr, "internal error: the fixed MAC address %s is not valid\n", kFixedConsoleMac);
+        return 1;
+    }
+    // (N0-29) the console unique ID of a config savegame that this run makes (a folder without
+    // one: Azahar draws it from the host's random source): fixed under the same condition as the
+    // MAC address, since it identifies the console to a room too
+    const bool fix_console_id = fix_console_mac;
+    if (fix_console_id &&
+        !Service::CFG::SetFixedConsoleUniqueId(kFixedConsoleRandomNumber, kFixedConsoleId)) {
+        std::fprintf(stderr, "internal error: the fixed console id %016llx is not valid\n",
+                     static_cast<unsigned long long>(kFixedConsoleId));
         return 1;
     }
     // no sound card needed (and on Windows, cubeb's WASAPI backend asserts on a thread
