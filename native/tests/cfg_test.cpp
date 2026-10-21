@@ -736,7 +736,15 @@ TEST_CASE("cfg:u answers the defaults of a fresh user folder as Azahar does (con
     CHECK(unknown[0] == 0x00FF0040);
     CHECK(unknown[1] == kResultSuccess);
     CHECK(f.Logged("unimplemented cfg:u 0x00ff0000"));
-    CHECK_FALSE(fs::exists(dir.User()));  // none of it made a file
+    // None of the reads made a file. The only thing in the user folder is what the nwm start-up
+    // makes and keeps (D40): sysdata/mac.txt. No config savegame, nothing else.
+    REQUIRE(fs::is_directory(dir.User()));
+    std::vector<std::string> made;
+    for (const auto& entry : fs::recursive_directory_iterator(dir.User())) {
+        made.push_back(fs::relative(entry.path(), dir.User()).generic_string());
+    }
+    std::sort(made.begin(), made.end());
+    CHECK(made == std::vector<std::string>{"sysdata", "sysdata/mac.txt"});
 }
 
 TEST_CASE("cfg:u reads the blocks of the user's config savegame") {
