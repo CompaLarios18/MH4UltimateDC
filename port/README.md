@@ -16,7 +16,7 @@ The PC port: [Azahar](https://github.com/azahar-emu/azahar)'s 3DS core (kernel, 
 | `windows/` | For the Windows package: `Build code library.bat` and `build-code-library.ps1`, which build the game's code library from the player's update with the tools the package carries in `mh4u-tools`, then install the update in Azahar with `mh4u_runner --install` |
 | `unix/` | For the Linux and macOS packages: `build-code-library.sh` (`Build code library.command` in the Mac package), the same build with a file dialog (zenity, kdialog or the Mac's own) |
 | `tests/` | The freestanding 3DS test programs (no game code): `conf_*.c`, the kernel conformance programs, each with Azahar's expected output in `tests/expected/`; `svc.h`, the system-call wrappers and helpers they all share (`io_test.c` and `bench.c` include it too, so a change there must keep every program compiling); `build_svc_test.py`, which builds any program by name (`--program NAME`, `--list`); `io_test.c` (HID input and a known picture in the top framebuffer, for the runner's `--input` and `--shots`); `bench.c`; `svc_test.c` (threads, events, mutexes, atomics, VFP short vectors, Thumb); `codehost_test.c` (the native code host's test program, built by `native/src/cpu/CMakeLists.txt`) |
-| `azahar/` | The Azahar commit this builds against, and a small patch: a hook to replace the CPU backend, a hook to build this directory inside Azahar's tree, hooks for the port's options (refresh rate, system-call observer, the top screen's width in every screen layout, the custom layout as a touch-screen overlay that follows the window's size and can show just a part of the touch screen), a switch for the headless runner to skip drawing (vertex shaders included), a fix to Azahar's local-wireless emulation (two consoles joining a network at the same moment got the same node id, and the game dropped one), a hook at the start of each run of the emulation loop (for net sync), a frontend's own drawing over the Vulkan renderer's screens (the app's menu; none unless one is registered), *Create Room* offering an unlisted room when there is no lobby server (Azahar has none of its own, and a public room then fails to start), a room's host rights only for the host's checked name or the host's own client on the same machine (a nickname alone is anyone's to type, and a lobby shows a dedicated room's name as its owner), LayeredFS reading `romfs_ext/`'s sub-folders (MH4U's archives are in `data/` and `eng/data/`), and two fixes to Azahar's software renderer that the game needs: a data race on physical-memory lookups between the renderer's worker threads and the emulation thread (it sent texture reads gigabytes off and crashed both CPU backends on the game's first textured frame), and textures outside of memory read as black instead of crashing |
+| `azahar/` | The Azahar commit this builds against, and a small patch: a hook to replace the CPU backend, a hook to build this directory inside Azahar's tree, hooks for the port's options (refresh rate, system-call observer, the top screen's width in every screen layout, the custom layout as a touch-screen overlay that follows the window's size and can show just a part of the touch screen), a switch for the headless runner to skip drawing (vertex shaders included), a fix to Azahar's local-wireless emulation (two consoles joining a network at the same moment got the same node id, and the game dropped one), a hook at the start of each run of the emulation loop (for net sync), an observer of every event CoreTiming runs (the runner's `--trace-timing`; none unless one is set), a switch that fixes the console's Wi-Fi MAC address (only the runner's default mode sets it), a frontend's own drawing over the Vulkan renderer's screens (the app's menu; none unless one is registered), *Create Room* offering an unlisted room when there is no lobby server (Azahar has none of its own, and a public room then fails to start), a room's host rights only for the host's checked name or the host's own client on the same machine (a nickname alone is anyone's to type, and a lobby shows a dedicated room's name as its owner), LayeredFS reading `romfs_ext/`'s sub-folders (MH4U's archives are in `data/` and `eng/data/`), and two fixes to Azahar's software renderer that the game needs: a data race on physical-memory lookups between the renderer's worker threads and the emulation thread (it sent texture reads gigabytes off and crashed both CPU backends on the game's first textured frame), and textures outside of memory read as black instead of crashing |
 
 The runner contains no game code. The game's recompiled code is a separate shared library, generated and compiled on the user's machine from their own dump and loaded at run time.
 
@@ -135,6 +135,22 @@ session names, headers, result codes, descriptor indices, sizes, CRCs and counts
 session served by the game itself (not by an HLE service) the output CRCs are `-`, because
 Azahar records its reply before it writes the buffers.
 
+`--trace-timing FILE` writes every event Azahar's CoreTiming runs (the shared page's clock, the HID
+updates, and whatever else the services and the GPU schedule), to find where two runs part (N0-29;
+[Determinism](#determinism)). After a header
+(`# timingtrace v1 <date> game=<title id> cpu=<cpu> new3ds=<on|off>`) a line is
+`tick=<decimal> event=<name> core=<n> late=<cycles> from=<emu|host>`, written just before the event's
+callback runs: `tick` is that core's clock since the program loaded (the `t=` of `--trace-svc`, so a
+tick finds the system calls of the thread that was running), `event` is the name the event was
+registered with (a space in it is written as `_`: `Y2R_Completion_Signal_Event`), `core` is the core
+whose timer ran it, `late` how many cycles after its time (`tick` minus `late` is when it was due),
+and `from=host` marks an event scheduled from a host thread other than the emulation thread (the
+thread that loaded the game; recorded when it was scheduled, so a host thread that cannot know the
+emulated time is told apart from the loop). The observer is a pair of function pointers in the patch
+(`Core::SetTimingObserver`); with none set, `ScheduleEvent` and `Advance` each do one atomic load and
+nothing else changes. The file holds event names and ticks, no game data, but a long run writes a
+line per event: keep it in `build/`.
+
 `--capture-dsp START:FRAMES:FILE` and `--capture-hid FILE` write binary captures of the audio and
 the input (`MDSP` and `MHID`: magic, `u32` version 1, then records `{u32 type, u32 frame, u64
 ticks, u32 size, payload}`, plus a sibling `FILE.json` manifest). `frame` is the game's frame
@@ -207,7 +223,18 @@ needed). Keep the default of reading files in place: with `--async-io` frame num
 `--draw-window 100` draws only the 100 ms before each screenshot, which makes long runs
 many times faster (the software renderer, and the vertex shaders the GPU runs on the CPU, take
 nearly all the time), and `--shots-from MS`
-starts the screenshots late, so a close look at one moment doesn't image the whole run;
+starts the screenshots late, so a close look at one moment doesn't image the whole run.
+`--shot-every MS` (default 1000) is in emulated milliseconds and names the files by the time
+(`0001500_top.ppm`, `0001500_bottom.ppm`); `--shot-every f<N>` is every N game frames, the first at
+`--shots-from f<M>` (frame M; with `--shots-from` in ms, at the first frame after that time; without it,
+at frame N), each taken at the first moment the frame counter reads that frame or more, and named
+by it: `f0000100_top.ppm` and `f0000100_bottom.ppm` (7 digits, as `mem_f0000100_...` for a frame dump).
+A frame the counter skipped over has no shot, and `--draw-window` has no effect with frame-keyed
+shots (the screens are drawn all the time). `--print-schedule` shows the interval and the first
+frame (`shot-every every=f60 first=f100`). With `--shots-from f<M>` and a millisecond `--shot-every`
+the first shot is `f<M>` and the next ones follow every interval of emulated time. The golden
+sessions use the frame-keyed form (N0-09): a screenshot taken at a frame does not depend on the
+millisecond that frame falls at;
 `--dump MS:ADDR:SIZE` writes guest memory at an emulated time, to diff the game's state
 between two runs that differ in one input, and `--replace MS:FROM:TO` changes every copy of a
 byte string in the game's writable memory at an emulated time; with a code library built with
@@ -258,6 +285,63 @@ under `[Debug]` in `mh4u-app.ini`. The numbers say nothing of the game, so the C
 The maintainer's steps for the baseline are in `docs/native/perf-procedure.md`.
 
 Everything under `build/` contains game code: it never goes into the repository.
+
+## Determinism
+
+The reference runner is meant to repeat itself (D30): two runs with the same arguments, in fresh copies of one
+user folder, give the same traces, captures, screenshots and user folders. Without `--async-io` (its default mode)
+it already read files in place, started at a fixed date and kept host time out of the delay of a file read; N0-26
+fixes the two values that were still drawn anew in every run, and gives `--trace-timing` to look for what is left
+(N0-29). `--async-io`, a room (`--room-host`, `--room-join`) and `--new-console-id` keep Azahar's behaviour.
+
+### What the game sees, for the native runtime to start from
+
+These are the values the default mode fixes, and so the values the native runtime's deterministic mode starts from
+(the follow-up that D30 asks for is opened from this list). Each is a constant in the runner, set through Azahar's own
+setting where it has one.
+
+| Value | Azahar | Default mode of the runner | Where the game sees it |
+|---|---|---|---|
+| Start date | the host's date (`init_clock` SystemTime) | `init_clock` FixedTime, `init_time` 1767268800 (2026-01-01 12:00:00 UTC; run with `TZ=UTC0`, because the shared page converts it through the host's time zone) | the shared page's date records (0x20, 0x40) |
+| Starting tick of the emulated clock | a random 32-bit number drawn per run (`Timing::GenerateBaseTicks`: `std::mt19937` seeded from `std::random_device`, so any value from 0 to 2^32 - 1) | `init_ticks_type` Fixed, `init_ticks_override` **2,000,000,000** (0x77359400, 7.4596 s of the 268,111,856 Hz clock); every core's timer starts there | `svcGetSystemTick` (the running core's timer: this plus the ticks emulated so far); the update ticks in the shared page's date records (0x28 and 0x48); the date in those records, which Azahar computes as `init_time` plus the whole clock, starting tick included, so at the first update the date is `init_time` + 7459 ms |
+| Console Wi-Fi MAC address | the folder's `mac.txt`, or a random address from a list of 16 Nintendo-like ranges, written to `mac.txt`, when there is none | **02:00:00:00:00:01** (locally administered), not read from or written to `mac.txt` | the shared page's bytes 0x60 to 0x65 (the local wireless service puts it there when it starts, and the runner sets the page once the game has loaded, so the page has it either way), `cfg`, and what the local wireless service and `nwm::SOC` take from it |
+| Reads of files | on host threads, finishing at a host-dependent emulated time | `deterministic_async_operations`; the patch keeps host time out of the delay of a read | when a read wakes the game |
+
+Notes for the mirror:
+- The starting tick 2,000,000,000 is also when the clock's high word changes: `svcGetSystemTick` reaches 2^32 after
+  2,294,967,296 more ticks (8.56 s of emulated time), at the same moment in every run (the random start used to put
+  it at a different moment in every run, from the first tick to 16 s in).
+- The traces' `t=` and `tick=` are relative to the load of the program (`g_start_ticks`), so the starting tick shows
+  in the game's own clock, not in those fields.
+- The MAC address is fixed only when the default mode has no room and no `--new-console-id`. In a room the room hands
+  out an address (the local wireless service uses the room's, whatever `mac.txt` says), and a console that asked for
+  a new identity keeps `mac.txt`'s.
+- Why one fix covers the shared page's date: its update callback (`SharedPage::Handler::UpdateTimeCallback`) writes
+  `date_time` from `init_time` plus the clock (`GetGlobalTimeUs`) and `update_tick` from the timer's own ticks, so
+  both carried the random starting tick and nothing else of the host (the update is an event scheduled at tick 0 of
+  core 0, and then once an hour). Read from the sources, not yet measured: see below.
+
+### Finding what is left
+
+Two runs with the same arguments, each with `--trace-timing` and `--trace-svc` (and `--state-trace`): the first line
+where the two timing traces differ names the event and its tick; that tick is a `t=` of the SVC trace, whose lines
+around it show which thread was running and what it was doing. `from=host` lines are events scheduled from host
+threads (asynchronous work that a host thread finished, say): their emulated time cannot depend on the host if the
+runs are to repeat, so they are the first suspects. `tools/compare_svc_traces.py`, `tools/compare_ipc_traces.py` and
+`tools/native/state_diff.py` compare the other traces. Anything that reads the host's clock or a random source in
+code the game reaches (`std::chrono::system_clock`, `steady_clock`, `Common::Timer`, `time(`, `std::random_device`,
+`rand`) is a candidate; the two this section started with were found that way in `core_timing.cpp` and `cfg.cpp`.
+
+### Measurement with the game (N0-26, pending)
+
+Not measured yet: it needs the game's files, which this package's worker did not have. The orchestrator's
+*(with the dump)* items of N0-26 fill this in: two G1 runs with `--dump f100:1FF81000:0x1000` and
+`--dump f800:1FF81000:0x1000` (identical by SHA-256 expected), and with `--trace-svc`, `--trace-ipc`,
+`--state-trace` and `--trace-timing`, which traces are identical apart from their first line and, for each that is
+not, the first differing line of the timing traces (event name and tick) and of the SVC trace (thread, call number,
+SVC). That is the measurement N0-29 starts from, not a gate. The first experiment is whether the one starting tick
+accounts for all the per-run offsets in the saved traces (the clock, the shared page) and whether it also removes the
+8-tick differences, the polling-loop counts and the 1 ms `SleepThread` differences of N0-25.
 
 ## With Azahar's normal interface
 
