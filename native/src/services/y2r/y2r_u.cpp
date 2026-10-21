@@ -244,8 +244,12 @@ private:
         const u32 total_output_size = static_cast<u32>(c.input_lines) * (static_cast<u32>(c.dst.transfer_unit) + c.dst.gap);
         gpu::Gpu* gpu = Context().Interfaces().gpu;
         if (gpu != nullptr) {
-            gpu->InvalidateRegion(c.dst.address, total_output_size);  // write back what the GPU holds
-            gpu->FlushRegion(c.dst.address, total_output_size);       // and forget it: it is overwritten
+            // Azahar's FlushAndInvalidate, in the terms of gpu.h: InvalidateRegion ("the CPU is about
+            // to read this range") makes memory current with what the GPU holds for it, so the bytes
+            // the conversion leaves in the gaps are the ones the game had; FlushRegion ("the CPU wrote
+            // this range") then drops the GPU's copy, because the conversion below overwrites it.
+            gpu->InvalidateRegion(c.dst.address, total_output_size);
+            gpu->FlushRegion(c.dst.address, total_output_size);
         }
         PerformConversion(Context().Memory(), c);
 

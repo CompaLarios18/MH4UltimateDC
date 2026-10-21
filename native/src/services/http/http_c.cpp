@@ -27,6 +27,9 @@
 //    for a file of replacement rules; they are answered as unknown commands, and no request is made
 //    that could use them.
 //  - A context handle that no context has is answered with 0xD8A0A064 where Azahar asserts.
+//  - Azahar's CloseContext answers through ctx.RunAsync (the reply waits for the context to be
+//    destroyed on a host thread); here it answers at once, plus the standard IPC delay. Nothing the
+//    game can see in game time depends on that wait.
 //  - The error answers that Azahar leaves with words it did not write (timeouts of the commands that
 //    return buffers) give the empty static buffer or the mapped buffer of the request.
 #include <algorithm>
