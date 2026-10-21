@@ -386,7 +386,7 @@ user folder per run, `--state-trace --trace-svc --trace-ipc` and the dumps at fr
 
 | What | Previous runner (random values), run 1 against run 2 | This branch's runner (fixed values), run 1 against run 2 |
 |---|---|---|
-| Shared page (0x1000 bytes at frames 100 and 800) | the two runs differ by SHA-256 (frames 100 and 800 are equal within a run); bytes 0x60 to 0x65 differ | one SHA-256 for all four dumps |
+| Shared page (0x1000 bytes at frames 100 and 800) | the two runs differ by SHA-256 (frames 100 and 800 are equal within a run); 12 bytes differ, at 0x40-0x41, 0x48-0x4B and 0x60-0x65 (the second date record's date and update tick, and the MAC address) | one SHA-256 for all four dumps |
 | State trace (802 lines in both) | `t` differs in 7 of 801 records, the first at frame 468, by -562 to +8 ticks, and is equal again at the last frame; the game's own frame delta (`smain_delta`, marked `ignore` in `config/native/observable.txt`) differs in 471 of 801 records; `scene`, `frame_counter`, `quest_id` and `stage_loader_state` are equal in all records; by raw lines, 472 of 802 differ | identical |
 | SVC trace | 489,728 lines against 492,180; `compare_svc_traces.py --normalize --outputs`: one thread differs, the main thread, at call 82233, in the loop that polls `GetSystemTick` (svc 0x28), the returned tick differing by 8 | 489,775 lines in both; all threads match |
 | IPC trace (7,171 lines in both) | 271 lines differ (raw comparison, line 1 equal); `compare_ipc_traces.py` without `--strict`: "all threads match" (8 threads, 6083, 2, 4, 163, 3, 39, 31 and 827 requests); with `--strict`: only the main thread differs, first at request 54 (`fs:USER`, command `0x08170000`), in reply word 2 | 3 lines differ (above) |
