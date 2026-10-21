@@ -2236,4 +2236,143 @@ TEST_CASE("y2r:u: the service converts, signals 50000 ticks later and keeps its 
     CHECK(get_package[4] == 0x01930100);  // the first two coefficients of the Rec. 709 set
 }
 
+// ---- cam:u -------------------------------------------------------------------------------------------------
+
+TEST_CASE("cam:u: ports, a blank frame one frame period after the capture starts, vsync timings and calibration") {
+    constexpr Result kInvalidEnum = MakeResult(1005, 20, 7, 28);
+    constexpr Result kOutOfRange = MakeResult(1021, 20, 7, 28);
+    constexpr u64 kPeriod = kTicksPerSecond * 67 / 1000;  // Rate_15
+    Fixture f;
+    TempDir dir;
+    std::vector<u32> bad_port, bad_camera, bad_size, max_bytes, max_lines, max_bad, both, event_reply, receiving, finished0,
+        finished1, busy0, busy1, busy_off, trim_bad, trim_get, trim_reply, calib, other, timing_reply, timing_bad, third,
+        trim_flag;
+    std::vector<u8> frame, trimmed, timing_data;
+    Result early = 0, late = 0, vsync_early = 0, vsync_late = 0, completion_again = 0;
+    u64 activated = 0;
+    const int status = BootWith(f, dir, {"--ms", "2000"}, [&] {
+        Guest g(*f.runtime);
+        const Handle srv = ConnectSrv(g);
+        const Handle cam = OpenService(g, srv, "cam:u");
+        third = GetService(g, srv, "cam:u", 5, 0).reply;
+        const auto call = [&](std::vector<u32> words, std::size_t reply) { return g.Request(cam, words, reply); };
+        // the scheduler sleeps in nanoseconds: sleep until the game clock has reached `tick`
+        const auto sleep_to = [&](u64 tick) {
+            const u64 now = f.runtime->Clock().Now();
+            if (tick > now) {
+                f.runtime->Scheduler().Sleep(TicksToNsCeil(tick - now));
+            }
+        };
+        const u32 out_at = g.Scratch(0), trim_at = g.Scratch(0x400), timing_at = g.Scratch(0x800);
+        call({ipc::MakeHeader(0x39, 0, 0)}, 2);  // DriverInitialize
+        bad_port = call({ipc::MakeHeader(0x01, 1, 0), 4}, 2);
+        bad_camera = call({ipc::MakeHeader(0x13, 1, 0), 8}, 2);
+        both = call({ipc::MakeHeader(0x13, 1, 0), 3}, 2);
+        // the outer-left camera, context 0: 16 by 16 pixels
+        bad_size = call({ipc::MakeHeader(0x1F, 3, 0), 1, 8, 1}, 2);
+        REQUIRE(call({ipc::MakeHeader(0x1E, 8, 0), 1, 16, 16, 0, 0, 15, 15, 1}, 2)[1] == kResultSuccess);
+        max_bytes = call({ipc::MakeHeader(0x0D, 2, 0), 16, 16}, 3);
+        max_lines = call({ipc::MakeHeader(0x0A, 2, 0), 16, 16}, 3);
+        max_bad = call({ipc::MakeHeader(0x0D, 2, 0), 3, 5}, 3);
+        event_reply = call({ipc::MakeHeader(0x05, 1, 0), 1}, 4);
+        g.PutBytes(out_at, std::vector<u8>(512, 0xEE));
+        activated = f.runtime->Clock().Now();
+        REQUIRE(call({ipc::MakeHeader(0x13, 1, 0), 1}, 2)[1] == kResultSuccess);  // Activate
+        // the receive waits for the capture to start
+        receiving = call({ipc::MakeHeader(0x07, 5, 2), out_at, 1, 512, 512, ipc::CopyHandleDesc(1), 0xFFFF8001}, 4);
+        finished0 = call({ipc::MakeHeader(0x08, 1, 0), 1}, 3);
+        busy0 = call({ipc::MakeHeader(0x03, 1, 0), 1}, 3);
+        const u64 before = f.runtime->Clock().Now();
+        REQUIRE(call({ipc::MakeHeader(0x01, 1, 0), 1}, 2)[1] == kResultSuccess);  // StartCapture
+        busy1 = call({ipc::MakeHeader(0x03, 1, 0), 1}, 3);
+        g.Wait(receiving[3], 0);
+        sleep_to(before + kPeriod - 8);
+        early = g.Wait(receiving[3], 0);
+        frame = g.GetBytes(out_at, 512);
+        sleep_to(before + kPeriod + 8);
+        late = g.Wait(receiving[3], 0);
+        completion_again = g.Wait(receiving[3], 0);  // the event stays signalled
+        finished1 = call({ipc::MakeHeader(0x08, 1, 0), 1}, 3);
+        // the vsync event was signalled one period after Activate
+        vsync_late = g.Wait(event_reply[3], 0);
+        // three more periods of vsync, then the times
+        sleep_to(activated + kPeriod * 4 + 8);
+        SetReceive(g, 0, 40, timing_at);
+        timing_reply = call({ipc::MakeHeader(0x2A, 2, 0), 1, 5}, 4);
+        timing_data = g.GetBytes(timing_at, 40);
+        SetReceive(g, 0, 8, timing_at);
+        timing_bad = call({ipc::MakeHeader(0x2A, 2, 0), 3, 1}, 4);
+        // trimming: the middle 8 by 8 pixels
+        trim_bad = call({ipc::MakeHeader(0x0E, 2, 0), 8, 1}, 2);
+        REQUIRE(call({ipc::MakeHeader(0x0E, 2, 0), 1, 1}, 2)[1] == kResultSuccess);
+        REQUIRE(call({ipc::MakeHeader(0x10, 5, 0), 1, 4, 4, 12, 12}, 2)[1] == kResultSuccess);
+        trim_flag = call({ipc::MakeHeader(0x0F, 1, 0), 1}, 3);
+        trim_get = call({ipc::MakeHeader(0x11, 1, 0), 1}, 6);
+        g.PutBytes(trim_at, std::vector<u8>(512, 0xEE));
+        trim_reply = call({ipc::MakeHeader(0x07, 5, 2), trim_at, 1, 128, 512, ipc::CopyHandleDesc(1), 0xFFFF8001}, 4);
+        sleep_to(f.runtime->Clock().Now() + kPeriod + 8);
+        trimmed = g.GetBytes(trim_at, 512);
+        calib = call({ipc::MakeHeader(0x2B, 0, 0)}, 18);
+        busy_off = call({ipc::MakeHeader(0x02, 1, 0), 1}, 2);  // StopCapture
+        other = call({ipc::MakeHeader(0x15, 4, 0), 1, 0, 0, 0}, 2);  // SetExposure: not in the table
+        ExitProcess(*f.runtime);
+    });
+    CHECK(status == 0);
+    CHECK(bad_port == std::vector<u32>{ipc::MakeHeader(0x01, 1, 0), kInvalidEnum});
+    CHECK(bad_camera == std::vector<u32>{ipc::MakeHeader(0x13, 1, 0), kInvalidEnum});
+    CHECK(both == std::vector<u32>{ipc::MakeHeader(0x13, 1, 0), kInvalidEnum});
+    CHECK(bad_size == std::vector<u32>{ipc::MakeHeader(0x1F, 1, 0), kInvalidEnum});
+    CHECK(max_bytes == std::vector<u32>{ipc::MakeHeader(0x0D, 2, 0), kResultSuccess, 512});
+    CHECK(max_lines == std::vector<u32>{ipc::MakeHeader(0x0A, 2, 0), kResultSuccess, 16});
+    CHECK(max_bad[1] == kOutOfRange);
+    CHECK(third[1] == 0xD0401834);  // one session at most
+    CHECK(event_reply[0] == ipc::MakeHeader(0x05, 1, 2));
+    CHECK(receiving[0] == ipc::MakeHeader(0x07, 1, 2));
+    CHECK(receiving[1] == kResultSuccess);
+    CHECK(finished0 == std::vector<u32>{ipc::MakeHeader(0x08, 2, 0), kResultSuccess, 0});
+    CHECK(busy0 == std::vector<u32>{ipc::MakeHeader(0x03, 2, 0), kResultSuccess, 0});
+    CHECK(busy1 == std::vector<u32>{ipc::MakeHeader(0x03, 2, 0), kResultSuccess, 1});
+    CHECK(early == kTimeout);
+    REQUIRE(frame.size() == 512);
+    CHECK(frame == std::vector<u8>(512, 0xEE));  // nothing is written before the frame arrives
+    CHECK(late == kResultSuccess);
+    CHECK(completion_again == kResultSuccess);
+    CHECK(finished1 == std::vector<u32>{ipc::MakeHeader(0x08, 2, 0), kResultSuccess, 1});
+    CHECK(vsync_late == kResultSuccess);
+    (void)vsync_early;
+    CHECK(timing_reply[0] == ipc::MakeHeader(0x2A, 1, 2));
+    CHECK(timing_reply[1] == kResultSuccess);
+    REQUIRE(timing_data.size() == 40);
+    {
+        // four periods have passed since Activate (plus the capture): the newest time first, 67 ms apart
+        std::array<s64, 5> times{};
+        std::memcpy(times.data(), timing_data.data(), 40);
+        const s64 newest = static_cast<s64>(TicksToNs(activated + kPeriod * 4) / 1000);
+        CHECK(times[0] == newest);
+        CHECK(times[0] - times[1] == static_cast<s64>(TicksToNs(activated + kPeriod * 4) / 1000) -
+                                         static_cast<s64>(TicksToNs(activated + kPeriod * 3) / 1000));
+        CHECK(times[4] == 0);  // only four have happened
+    }
+    CHECK(timing_bad[1] == kOutOfRange);
+    CHECK(trim_bad[1] == kInvalidEnum);
+    CHECK(trim_flag == std::vector<u32>{ipc::MakeHeader(0x0F, 2, 0), kResultSuccess, 1});
+    CHECK(trim_get == std::vector<u32>{ipc::MakeHeader(0x11, 5, 0), kResultSuccess, 4, 4, 12, 12});
+    CHECK(trim_reply[1] == kResultSuccess);
+    REQUIRE(trimmed.size() == 512);
+    for (int i = 0; i < 128; ++i) {
+        INFO("byte " << i);
+        CHECK(trimmed[static_cast<std::size_t>(i)] == ((i & 1) ? 0x80 : 0x00));
+    }
+    for (int i = 128; i < 512; ++i) {
+        CHECK(trimmed[static_cast<std::size_t>(i)] == 0xEE);
+    }
+    CHECK(calib[0] == ipc::MakeHeader(0x2B, 17, 0));
+    CHECK(calib[1] == kResultSuccess);
+    CHECK(calib[3] == std::bit_cast<u32>(1.001776f));
+    CHECK(calib[13] == (640u | (480u << 16)));
+    CHECK(busy_off[1] == kResultSuccess);
+    CHECK(other[0] == ipc::MakeHeader(0x15, 1, 0));
+    CHECK(f.LoggedCount("unimplemented cam:u") == 1);
+}
+
 #endif  // recomp.h
