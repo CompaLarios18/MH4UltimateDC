@@ -1810,7 +1810,15 @@ TEST_CASE("D45: the host file calls take UTF-8 paths with accents and other non-
     REQUIRE(user.find(kUnicodeBytes) != std::string::npos);
     CHECK(fs::host::ToPath(user) == dir.User());
     CHECK(fs::host::ToUtf8(dir.User()) == user);
-    CHECK(fs::host::ToUtf8(fs::host::ToPath(user + "/sdmc/")) == fs::host::ToUtf8(dir.User() / "sdmc" / ""));
+    // fs::path's operator/ writes the preferred separator and ToPath keeps the separators of its input, so on
+    // Windows the text of the two is the same folder with '\\' against '/': compare it in one style (the accents
+    // and every byte of the names stay exact).
+    const auto one_style = [](std::string text) {
+        std::replace(text.begin(), text.end(), '\\', '/');
+        return text;
+    };
+    CHECK(one_style(fs::host::ToUtf8(fs::host::ToPath(user + "/sdmc/"))) ==
+          one_style(fs::host::ToUtf8(dir.User() / "sdmc" / "")));
     CHECK(fs::host::IsDirectory(user));
     CHECK(fs::host::Exists(user));
 

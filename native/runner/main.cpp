@@ -6,6 +6,15 @@
 #include <string>
 #include <vector>
 
+#include "../src/common/utf8.h"
+#include "mh4n/loader.h"
+#include "mh4n/log.h"
+#include "mh4n/options.h"
+#include "mh4n/runtime.h"
+#include "mh4n_version.h"
+
+// windows.h last: it defines macros (Yield() is an empty one) that would break the declarations of
+// the project headers above it (GuestThread::Yield in mh4n/cpu.h).
 #if defined(_WIN32)
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -16,13 +25,6 @@
 #include <windows.h>
 #include <shellapi.h>
 #endif
-
-#include "../src/common/utf8.h"
-#include "mh4n/loader.h"
-#include "mh4n/log.h"
-#include "mh4n/options.h"
-#include "mh4n/runtime.h"
-#include "mh4n_version.h"
 
 MH4N_OPTION("runner", "--help", "", "print this help and exit");
 MH4N_OPTION("runner", "--version", "", "print the git revision and exit");
