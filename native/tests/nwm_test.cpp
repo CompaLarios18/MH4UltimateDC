@@ -482,7 +482,7 @@ TEST_CASE("nwm::UDS a scan finds nothing, and the reply comes 300 ms of game tim
     }
     // exactly 300 ms (Azahar's nsToCycles), with no 39 microsecond reply delay on top
     CHECK(elapsed >= NsToTicks(300000000));
-    CHECK(elapsed <= NsToTicks(300000000) + 2);
+    CHECK(elapsed == NsToTicks(300000000));
 }
 
 TEST_CASE("nwm::UDS a scan loop with nothing to find keeps its pace: every scan is 300 ms") {
@@ -511,7 +511,7 @@ TEST_CASE("nwm::UDS a scan loop with nothing to find keeps its pace: every scan 
     REQUIRE(elapsed.size() == 4);
     for (const u64 e : elapsed) {
         CHECK(e >= NsToTicks(300000000));
-        CHECK(e <= NsToTicks(300000000) + 2);
+        CHECK(e == NsToTicks(300000000));
     }
 }
 
@@ -644,6 +644,27 @@ TEST_CASE("nwm::UDS hosting a network of fewer than two nodes is fatal, as in th
     CHECK(f.Logged("trying to host a network of only one member"));
 }
 
+TEST_CASE("nwm::UDS hosting with application data over 0xC8 bytes is fatal, as in the real module") {
+    Fixture f;
+    TempDir dir;
+    const int status = BootWith(f, dir, {"--ms", "100"}, [&] {
+        Guest g(*f.runtime);
+        Session s{g, OpenUds(g, ConnectSrv(g))};
+        Initialize(s, MakeBlock(g));
+        std::vector<u8> info(0x108, 0);
+        info[0x1D] = 4;
+        info[0x3F] = 0xC9;
+        g.PutBytes(g.Scratch(0x100), info);
+        g.PutBytes(g.Scratch(0x300), {'p', 'a', 's', 's'});
+        s.CallResult({ipc::MakeHeader(0x001D, 1, 4), 4, ipc::StaticBufferDesc(0x108, 0),
+                      g.Scratch(0x100), ipc::StaticBufferDesc(4, 1), g.Scratch(0x300)});
+        g.Wait(g.NewEvent(), 1000000000);
+        ExitProcess(*f.runtime);
+    });
+    CHECK(status == 3);
+    CHECK(f.Logged("application data is too big"));
+}
+
 // ---- connecting, disconnecting -------------------------------------------------------------------------------
 
 TEST_CASE("nwm::UDS ConnectNetwork stays Connecting and answers the timeout error 5 s later") {
@@ -672,8 +693,38 @@ TEST_CASE("nwm::UDS ConnectNetwork stays Connecting and answers the timeout erro
     CHECK(reply[0] == ipc::MakeHeader(0x001E, 1, 0));
     CHECK(result == kConnectTimeout);
     CHECK(elapsed >= NsToTicks(5000000000ull));
-    CHECK(elapsed <= NsToTicks(5000000000ull) + 2);
+    CHECK(elapsed == NsToTicks(5000000000ull));
     CHECK(st.status() == Connecting);  // Azahar never resets it after the timeout
+}
+
+TEST_CASE("nwm::UDS ConnectToNetwork (deprecated, 0x09) stays Connecting and answers the timeout 5 s later") {
+    Fixture f;
+    TempDir dir;
+    std::vector<u32> reply;
+    u64 elapsed = 0;
+    ConnectionStatusWords st;
+    const int status = BootWith(f, dir, {"--ms", "10000"}, [&] {
+        Guest g(*f.runtime);
+        Session s{g, OpenUds(g, ConnectSrv(g))};
+        Initialize(s, MakeBlock(g));
+        g.PutBytes(g.Scratch(0x300), {'p', 'a', 's', 's'});
+        std::vector<u32> words = {ipc::MakeHeader(0x0009, 17, 2)};
+        words.resize(1 + 15, 0);  // the first 0x3C bytes of the network structure
+        words.push_back(1);       // connection type
+        words.push_back(4);       // passphrase size
+        words.push_back(ipc::StaticBufferDesc(4, 2));
+        words.push_back(g.Scratch(0x300));
+        const u64 before = Now(g);
+        reply = s.Call(words, 2);
+        elapsed = Now(g) - before;
+        st = GetStatus(s);
+        ExitProcess(*f.runtime);
+    });
+    CHECK(status == 0);
+    CHECK(reply[0] == ipc::MakeHeader(0x0009, 1, 0));
+    CHECK(reply[1] == kConnectTimeout);
+    CHECK(elapsed == NsToTicks(5000000000ull));
+    CHECK(st.status() == Connecting);
 }
 
 TEST_CASE("nwm::UDS DisconnectNetwork: as the host it fails and resets the status, else it succeeds and signals") {

@@ -56,6 +56,8 @@
 //    chosen titles) is not implemented; it is off for every title by default. The console MAC address
 //    (cfg) is only used by Azahar for the host address of a hosted network and for the shared page, and
 //    nothing here shows either, so this module needs nothing from cfg.
+//  - BeginHostingNetwork does not set host_mac_address of the network information (Azahar writes the cfg
+//    console MAC there): nothing answered without a room shows it, and N4 sets it with the beacons.
 //  - The deprecated commands read the first 0x3C bytes of the network information as Azahar does; the
 //    rest of the structure is zero (Azahar leaves it uninitialised).
 #include <algorithm>
@@ -207,8 +209,6 @@ struct BindNodeData {
     u8 channel = 0;
     u16 network_node_id = 0;
     std::shared_ptr<Event> event;
-    // Packets received on the channel: with no room, none ever arrive.
-    std::size_t queued_packets = 0;
 };
 
 struct UdsState {
@@ -512,6 +512,11 @@ private:
             return kResultSuccess;
         }
         s.network_info = info;
+        // Basic information for this network (Azahar: NintendoOUI and NintendoTagId::NetworkInfo).
+        s.network_info.oui_value[0] = 0x00;
+        s.network_info.oui_value[1] = 0x1F;
+        s.network_info.oui_value[2] = 0x32;
+        s.network_info.oui_type = 21;
 
         s.connection_status.status = static_cast<u32>(NetworkStatus::ConnectedAsHost);
         s.connection_status.status_change_reason =
