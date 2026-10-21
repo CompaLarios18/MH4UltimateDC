@@ -248,7 +248,8 @@ screens by seconds between identical runs and let time-based input scripts land 
 screens. It also sends sound nowhere, so it needs no sound card. `--room-host PORT` makes
 a network room inside the runner (Azahar's multiplayer) and joins it, `--room-join HOST:PORT`
 joins one, so two runners play the game's local wireless modes together (a copy of a user
-folder needs `--new-console-id`: a room turns away a console it already has). Give runners on
+folder needs `--new-console-id`: a room turns away a console it already has, and every folder
+made by a default-mode run now carries the same console ID, so any two such folders need it). Give runners on
 one machine `--lockstep FILE:COUNT:INDEX` as well: it holds each runner's emulated clock within
 a few milliseconds of the others'. The emulated clock stands still while the GPU works, so a
 runner drawing a screenshot falls silent for the others for the second or so that takes, and
@@ -290,8 +291,9 @@ Everything under `build/` contains game code: it never goes into the repository.
 
 The reference runner is meant to repeat itself (D30): two runs with the same arguments, in fresh copies of one
 user folder, give the same traces, captures, screenshots and user folders (the `log/` folder of the user folder
-aside: its file is stamped with the host's clock and holds the run's directory path, so a comparison of two user
-folders skips it; see N0-29, iteration 0, below). Without `--async-io` (its default mode)
+aside, by D37: its file is stamped with the host's clock and holds the run's directory path, it is the runner's own
+diagnostic log and not state of the game or of the emulated console, so a comparison of two user folders skips it;
+see N0-29, iteration 0, below). Without `--async-io` (its default mode)
 it already read files in place, started at a fixed date and kept host time out of the delay of a file read; N0-26
 fixes the two values that were still drawn anew in every run, and gives `--trace-timing` to look for what is left
 (N0-29).
@@ -315,8 +317,9 @@ setting where it has one.
 | Starting tick of the emulated clock | a random 32-bit number drawn per run (`Timing::GenerateBaseTicks`: `std::mt19937` seeded from `std::random_device`, so any value from 0 to 2^32 - 1) | `init_ticks_type` Fixed, `init_ticks_override` **2,000,000,000** (0x77359400, 7.4596 s of the 268,111,856 Hz clock); every core's timer starts there | `svcGetSystemTick` (the running core's timer: this plus the ticks emulated so far); the update ticks in the shared page's date records (0x28 and 0x48); the date in those records, which Azahar computes as `init_time` plus the whole clock, starting tick included, so at the first update the date is `init_time` + 7459 ms |
 | Console Wi-Fi MAC address | the folder's `mac.txt`, or a random address from a list of 16 Nintendo-like ranges, written to `mac.txt`, when there is none | **02:00:00:00:00:01** (locally administered), not read from or written to `mac.txt` | the shared page's bytes 0x60 to 0x65 (the local wireless service puts it there when it starts, and the runner sets the page once the game has loaded, so the page has it either way), `cfg`, and what the local wireless service and `nwm::SOC` take from it |
 | Reads of files | on host threads, finishing at a host-dependent emulated time | `deterministic_async_operations`; the patch keeps host time out of the delay of a read | when a read wakes the game |
-| Console unique ID of a config savegame that the run makes (N0-29) | drawn per run from the host's random source (`CryptoPP::AutoSeededRandomPool`): 16 random bits and, in a folder without `nand/rw/sys/LocalFriendCodeSeed_B`, a random 34-bit friend code seed | **0x4D480001A2B3C4D5** (random number **0x4D48**, friend code seed 0x1A2B3C4D5; `kFixedConsoleId`, `kFixedConsoleRandomNumber`), under the MAC address's condition (no room, no `--new-console-id`); a config savegame that already exists keeps its ID | `cfg:u` command `0x00030040` (GetTransferableId), whose reply for a salt is the last 8 bytes of SHA-256 of the ID (8 bytes, little endian) and the salt (`& 0xFFFFF`, 4 bytes): **salt 0: words 0x61B8087C, 0xB904EFF1; salt 0x1263 (the game's): words 0x9592177D, 0xFE13E102**; what the game derives from those and stores (probably: the link is not shown yet, the next measurement of G2 shows it; do not copy it as a measured value); the config savegame's blocks 0x90000 and 0x90001 (bytes `D5 C4 B3 A2 01 00 48 4D`) and 0x90002 (`48 4D 00 00`) |
-| Unwritten bytes of reply words (N0-29) | whatever the host's heap held (the command buffer of a request is not initialised) | 0 (`SetZeroedIpcReplies`) | the bytes of a reply word that the service did not write: bytes 1 to 3 after a `u8`, an enum of `u8` or a `bool`, bytes 2 and 3 after a `u16`, all four of a word it declares and does not push (seen: `APT:A` 0x01010000, `cfg:u` 0x00020000, `y2r:u` 0x00280000); the value is now zero-extended |
+| Console unique ID of a config savegame that the run makes (N0-29) | drawn per run from the host's random source (`CryptoPP::AutoSeededRandomPool`): 16 random bits and, in a folder without `nand/rw/sys/LocalFriendCodeSeed_B`, a random 34-bit friend code seed | **0x4D480001A2B3C4D5** (random number **0x4D48**, friend code seed 0x1A2B3C4D5; `kFixedConsoleId`, `kFixedConsoleRandomNumber`), under the MAC address's condition (no room, no `--new-console-id`); a config savegame that already exists keeps its ID | `cfg:u` command `0x00030040` (GetTransferableId), whose reply for a salt is the last 8 bytes of SHA-256 of the ID (8 bytes, little endian) and the salt (`& 0xFFFFF`, 4 bytes): **salt 0: words 0x61B8087C, 0xB904EFF1; salt 0x1263 (the game's): words 0x9592177D, 0xFE13E102**; what the game derives from those and stores (probably: the link is not measured yet; do not copy it as a measured value); the config savegame's blocks 0x90000 and 0x90001 (bytes `D5 C4 B3 A2 01 00 48 4D`) and 0x90002 (`48 4D 00 00`) |
+| Unwritten bytes of reply words (N0-29) | whatever the host's heap held (the command buffer of a request is not initialised) | 0 (`SetZeroedIpcReplies`), except in a word whose index the request also had: the request's words are copied into the same buffer first, and a reply word the service does not fully write keeps those bytes there (the guest's own bytes, the same in every run, as before this change) | the bytes of a reply word that the service did not write: bytes 1 to 3 after a `u8`, an enum of `u8` or a `bool`, bytes 2 and 3 after a `u16`, all four of a word it declares and does not push (seen: `APT:A` 0x01010000, `cfg:u` 0x00020000, `y2r:u` 0x00280000) |
+| Duplicate flag of an extdata created by the obsolete command (N0-29) | `FS_USER::ObsoletedCreateExtSaveData` (command 0x0830) never sets `duplicate_data`: stack residue, which `GetFormatInfo` returns | false (with `deterministic_async_operations`) | `fs:USER` `GetFormatInfo` after command 0x0830 (and byte 12 of the archive's `metadata` file); not reached by G1, G2 or G6 |
 | Time zone (N0-29) | the host's (`TZ`) | `UTC0`, set by the runner | the date of the shared page's records (and what `ptm` and the news database take from it) |
 
 Notes for the mirror:
@@ -480,7 +483,13 @@ address, and then the same value in the IPC trace's reply. The sources, by what 
    and timing traces were identical, so the game did not act on the residue in these sessions. **Removed:** the patch adds
    `Kernel::SetZeroedIpcReplies(bool)`; with it set, the constructor of the context zeroes the whole 256-byte buffer
    instead of its first word; the runner sets it in the default mode (no `--async-io`). Cost: one 256-byte fill per
-   HLE request (not measured). Every such reply word is now zero-extended: the mirror returns whole words.
+   HLE request (not measured). The unwritten bytes of a reply word are now 0, with one exception that was already
+   deterministic: `PopulateFromIncomingCommandBuffer` copies the request's words (1 plus its normal parameters) into
+   the same buffer before the handler runs, so a reply word whose index the request also had and that the service does
+   not fully write keeps the request word's bytes there (`dsp::DSP` 0x001000c0, for one, has a four-word request and
+   replies a `u16` in word 2: bytes 2 and 3 of the reply word are bytes 2 and 3 of the request word). That is the
+   guest's own data and the same in every run. The mirror starts its reply buffer from the request's words and zeros
+   the rest, so the same bytes come out.
 3. **Padding of the metadata of an extdata or save (uninitialised).** `FS_USER::CreateExtSaveData` (and
    `FormatSaveData`, `FormatThisUserSaveData`) declare an `ArchiveFormatInfo` without initialising it, set its four
    fields, and the archive writes the whole 16 bytes, the three padding bytes after `duplicate_data` included, to the
@@ -506,17 +515,19 @@ address, and then the same value in the IPC trace's reply. The sources, by what 
    `clock_sequence` (`cfg:u` GetUUIDClockSequence), so no value it sees changes.
 6. **The runner's log (not removed).** The log file in the user folder (`log/mh4u_runner_log.txt`) differs in every
    line between two runs: Azahar stamps each with the host's clock, and a few hold the run's directory path. It is not
-   game state and nothing reads it back, so it is left as Azahar writes it, and the comparison of two user folders has
-   to skip `log/` (the orchestrator's comparison script does; no script in this repository compares user folders).
-   Zeroing the stamp would need a switch in Azahar's logging backend, and the paths would still differ unless both
-   runs used the same directory: that is a decision for the maintainer if the exact comparison of whole user folders,
-   `log/` included, is wanted.
+   game state, the game cannot read it and nothing reads it back, so it is left as Azahar writes it, and D37 (the
+   orchestrator's decision at the maintainer's request, 2026-10-21) makes the comparison of two user folders skip
+   `log/`: the exact comparison of the user folder is of every other file, byte by byte (the orchestrator's comparison
+   script does this; no script in this repository compares user folders). Zeroing the stamp would need a switch in
+   Azahar's logging backend, and the paths would still differ unless both runs used the same directory; the log is
+   also what shows what a run did when something is wrong, which a silenced log would not.
 
 What is expected to change with the next runner build (an expectation from the code, not a measurement; the
-orchestrator measures it with the gates): the IPC traces repeat in all five kinds of request, the config savegame and
-the extdata metadata are equal in every run (from a folder without a config savegame), the GPU capture file is
-equal, and the game's save in G2 and the CRC of its write are equal if source 1 is what the game stores. If one of
-those still differs, it is a source this list does not have. The runner's log (source 6) stays different.
+orchestrator measures it with the gates): the IPC traces repeat in four kinds of request (`APT:A` 0x01010000,
+`cfg:u` 0x00030040 and 0x00020000, `y2r:u` 0x00280000), the config savegame and the extdata metadata are equal in every
+run (from a folder without a config savegame), the GPU capture file is equal, and the game's save in G2 and the CRC of
+the `fs:USER` write that stores it (the fifth kind) are equal if source 1 is what the game stores. If one of those
+still differs, it is a source this list does not have. The runner's log (source 6) stays different.
 
 Found by reading the code and not removed, because no session reaches it or it has not differed (a lead for the next
 iteration, none of it measured):
@@ -527,8 +538,8 @@ iteration, none of it measured):
   that SVC.
 - Environment variables `MH4U_*` and `<user dir>/mh4u.ini` are read by the port's hooks when the code library loads
   (`hooks.cpp`: the frame rate, widescreen, injected buttons, overlays and so on). The runner does not clear them: its
-  own tests and the tools set some of them on purpose (`MH4U_NET_SYNC` in `tests/test_port.py`), so unsetting every
-  `MH4U_*` in the default mode would break those. A reference run has to start without them and without an
+  own test sets one on purpose (`MH4U_NET_SYNC` in `tests/test_port.py`), so unsetting every `MH4U_*` in the default
+  mode would break that. A reference run has to start without them and without an
   `mh4u.ini` in the user folder (the measurement scripts set none).
 - The vertex shader JIT picks instructions by the host CPU (reciprocal and reciprocal square root), which could change
   low bits of the pixels between two machines (not between two runs on one); `lle_applets` is on by default but the

@@ -115,8 +115,11 @@ const char* const USAGE = R"(usage: mh4u_runner <file> [options]
                     fast the host was, which moves loading screens by seconds, and the game
                     seeds its random numbers from the clock). It also starts the emulated clock
                     at a fixed tick count and gives the console the Wi-Fi MAC address
-                    02:00:00:00:00:01 (not in a room, nor with --new-console-id), where Azahar
-                    draws both anew in every run; see port/README.md, section Determinism
+                    02:00:00:00:00:01 and the unique ID of a config savegame it makes a fixed
+                    value (not in a room, nor with --new-console-id), where Azahar draws them
+                    anew in every run; and it sets TZ=UTC0, zeroes the bytes of IPC replies
+                    that a service does not write and the padding of metadata files; see
+                    port/README.md, section Determinism
   --dump MS:ADDR:SIZE  at emulated time MS, write SIZE bytes of guest memory from ADDR to
                     mem_<ms>_<addr>.bin (mem_f<frame>_<addr>.bin for a frame) in the --shots
                     directory (or the current one);
