@@ -3,17 +3,22 @@
 
     python3 tools/native/golden.py list [--out DIR]
     python3 tools/native/golden.py record S --runner RUN --game CXI --update CIA --user DIR
-                                      [--code LIB] [--cpu jit|recomp] [--save DIR]
-    python3 tools/native/golden.py check S --runner RUN --game CXI --update CIA --user DIR [--code LIB]
+                                      [--code LIB] [--cpu jit|recomp] [--save DIR] [--shot-every-frames N]
+    python3 tools/native/golden.py check S --runner RUN --game CXI --update CIA [--code LIB]
                                       [--candidate-runner RUN2] [--candidate-program PATH]
                                       [--candidate-code LIB] [--candidate-args "..."] [--repeat N]
+                                      [--profile same|cross] [--fallback] [--require NAMES] [--ignore FILE]...
 
 A session is a frame-keyed input script (tools/native/golden/<S>.txt, the runner's --input-file
 format) with header comment lines, see parse_session.  `record` runs the reference runner on a
 copy of the user folder with every recorder on and writes build/golden/<S>/ (docs/native/golden.md
-lists the files); `check` runs again on a copy of user-before/ and compares.  Standard library only;
+lists the files); `check` runs again on a copy of user-before/ and compares (D31: the `same` profile
+for two runs of one backend, the `cross` profile for two timing models).  Standard library only;
 no shell, no bash: the runner and the code library (.dll or .so) come from the command line, so it
 works the same on Windows and Linux.  The recordings are game data: they stay in build/.
+
+Exit status of `check` (D34): 0 every gated comparison passed and at least one ran; 1 a comparison
+failed; 2 a usage problem; 3 no gated comparison ran, or a comparison named in --require was skipped.
 """
 from __future__ import annotations
 
@@ -45,12 +50,26 @@ SESSIONS_DIR = HERE / "golden"
 DEFAULT_OUT = ROOT / "build" / "golden"
 OBSERVABLE = ROOT / "config" / "native" / "observable.txt"
 IPC_TIME_DEPENDENT = ROOT / "config" / "native" / "ipc_time_dependent.txt"
+SVC_CROSS_MODEL = ROOT / "config" / "native" / "svc_cross_model.txt"
+SVC_POLLING = ROOT / "config" / "native" / "svc_polling.txt"
 TZ = "UTC0"                      # the time zone the runner is started with (see docs/native/golden.md)
-MANIFEST_FORMAT = 1
+MANIFEST_FORMAT = 2
 MAX_GPU_FRAMES = 30
+DEFAULT_SHOT_EVERY_FRAMES = 60   # --shot-every-frames: a screenshot every N game frames
+SHOTS_FROM_FRAME = 300           # the first screenshot (the runner's --shots-from f300), and the shared-page dump
+SHARED_PAGE_ADDR = "1FF81000"    # the shared page the runner dumps at SHOTS_FROM_FRAME (--dump), size SHARED_PAGE_SIZE
+SHARED_PAGE_SIZE = "0x1000"
 BUTTONS = {"A", "B", "X", "Y", "UP", "DOWN", "LEFT", "RIGHT", "L", "R", "START", "SELECT", "ZL", "ZR", "HOME"}
 # Folders of a recording that the manifest's file inventory leaves out.
 NOT_RECORDED_DIRS = {"user-before", "user-after", "work", "check"}
+# What a recording of a session must show (N0-09 spec): real scene changes in state.txt, distinct scene values
+# among the checkpoints.
+MINIMUMS = {"G2": {"scene_changes": 2, "checkpoint_scenes": 3}}
+# The comparisons `--require` can name (D34).
+REQUIRABLE = ("svc", "ipc", "state", "checkpoints", "hid", "dsp", "images", "unmapped")
+PROFILES = ("same", "cross")
+# The config savegame one default-mode reference run makes (docs/native/golden.md, "The user folder").
+CONFIG_SAVEGAME = re.compile(r"^nand/data/[^/]+/sysdata/00010017/00000000/config$")
 
 
 class GoldenError(Exception):
@@ -67,6 +86,14 @@ def split_args(text: str | None) -> list[str]:
     return parts
 
 
+def option_value(args: Sequence[str], name: str) -> str | None:
+    """The value after `name` in a list of runner options, or None."""
+    for i, token in enumerate(args[:-1]):
+        if token == name:
+            return args[i + 1]
+    return None
+
+
 # --------------------------------------------------------------------------
 # Session files
 
@@ -75,10 +102,14 @@ class Capture:
     kind: str                    # "gpu" or "dsp"
     start: int
     frames: int
+    silent: bool = False         # a DSP capture that is expected to be silent
 
     @property
     def filename(self) -> str:
         return f"{self.kind}-{self.start}.{'mgpu' if self.kind == 'gpu' else 'mdsp'}"
+
+    def text(self) -> str:
+        return f"{self.kind}:{self.start}:{self.frames}" + (":silent" if self.silent else "")
 
 
 @dataclasses.dataclass
@@ -139,11 +170,11 @@ def parse_session(path: str | Path) -> Session:
     """Read a session file.
 
     Header lines (`# key: value`): name, needs (none|save), frames (total), checkpoints
-    (`<frame>:<scene>, ...`, the scene being the observable `scene` value), captures
-    (`gpu:<start>:<frames>, dsp:<start>:<frames>, ...`) and optionally `draft: yes` (the numbers
-    are placeholders; `record` refuses it).  Every other line is an input event line for the
-    runner's --input-file (comma separated `f<frame>:BUTTON[:hold]`, `f<frame>:TOUCH:x:y[:hold]`,
-    `f<frame>:CIRCLE:x:y[:hold]`).
+    (`<frame>:<scene>, ...`, the scene being the observable `scene` value: the class of the topmost game
+    area, N0-27), captures (`gpu:<start>:<frames>, dsp:<start>:<frames>[:silent], ...`; `:silent` marks a
+    DSP capture that is expected to be silent) and optionally `draft: yes` (the numbers are placeholders;
+    `record` refuses it).  Every other line is an input event line for the runner's --input-file (comma
+    separated `f<frame>:BUTTON[:hold]`, `f<frame>:TOUCH:x:y[:hold]`, `f<frame>:CIRCLE:x:y[:hold]`).
     """
     path = Path(path)
     try:
@@ -194,10 +225,13 @@ def parse_session(path: str | Path) -> Session:
         raise GoldenError(f"{where}: no checkpoints (only a draft may have none)")
     captures: list[Capture] = []
     for item in [x.strip() for x in headers["captures"].split(",") if x.strip()]:
-        m = re.match(r"^(gpu|dsp):(\d+):(\d+)$", item)
+        m = re.match(r"^(gpu|dsp):(\d+):(\d+)(?::(silent))?$", item)
         if not m:
-            raise GoldenError(f"{where}: bad capture {item!r} (want gpu|dsp:<start>:<frames>)")
-        cap = Capture(m.group(1), int(m.group(2)), int(m.group(3)))
+            raise GoldenError(f"{where}: bad capture {item!r} (want gpu:<start>:<frames> or "
+                              f"dsp:<start>:<frames>[:silent])")
+        if m.group(4) and m.group(1) != "dsp":
+            raise GoldenError(f"{where}: {item!r}: only a DSP capture can be marked silent")
+        cap = Capture(m.group(1), int(m.group(2)), int(m.group(3)), bool(m.group(4)))
         if cap.frames < 1 or (cap.kind == "gpu" and cap.frames > MAX_GPU_FRAMES):
             raise GoldenError(f"{where}: {item!r}: frames must be 1..{MAX_GPU_FRAMES if cap.kind == 'gpu' else 'N'}")
         if cap.start > frames:
@@ -248,11 +282,15 @@ def inventory(folder: Path) -> dict[str, dict]:
     return files
 
 
+def read_state(state_path: Path) -> list[state_diff.Record]:
+    return state_diff.parse_trace(state_path.read_text(encoding="utf-8"))
+
+
 def evaluate_checkpoints(state_path: Path, checkpoints: Sequence[tuple[int, int]]) -> list[dict]:
     """For each (frame, scene): the scene in the state trace at the first record at or after the frame."""
     results = []
     try:
-        records = state_diff.parse_trace(state_path.read_text(encoding="utf-8"))
+        records = read_state(state_path)
     except (OSError, state_diff.FormatError) as e:
         return [{"frame": f, "scene": s, "actual": None, "result": f"unreadable state trace: {e}"}
                 for f, s in checkpoints]
@@ -267,6 +305,31 @@ def evaluate_checkpoints(state_path: Path, checkpoints: Sequence[tuple[int, int]
             result = "mismatch"
         results.append({"frame": frame, "scene": scene, "actual": actual, "result": result})
     return results
+
+
+def real_scene_changes(state_path: Path) -> int:
+    """The number of real scene changes in a state trace (N0-25's definition: between two readable values)."""
+    try:
+        return len(state_diff.real_scene_changes(read_state(state_path)))
+    except (OSError, state_diff.FormatError):
+        return 0
+
+
+def has_config_savegame(user: Path) -> bool:
+    for dirpath, _dirs, filenames in os.walk(user):
+        for fn in filenames:
+            if CONFIG_SAVEGAME.match((Path(dirpath) / fn).relative_to(user).as_posix()):
+                return True
+    return False
+
+
+def shared_page_dump() -> str:
+    """The runner's --dump value for the shared page, and the file it writes in the shots folder."""
+    return f"f{SHOTS_FROM_FRAME}:{SHARED_PAGE_ADDR}:{SHARED_PAGE_SIZE}"
+
+
+def shared_page_file() -> str:
+    return f"shots/mem_f{SHOTS_FROM_FRAME:07d}_{SHARED_PAGE_ADDR.lower()}.bin"
 
 
 # --------------------------------------------------------------------------
@@ -293,16 +356,17 @@ class RunSpec:
     runner: str
     program: str
     code: str | None
-    cpu: str | None            # None: not passed (candidate runners)
+    cpu: str | None            # None: not passed
     updates: list[str]
     user: Path
     outdir: Path
     session: Session
     sets: list[str]
     extra: list[str]
-    full: bool                 # reference options (new-3ds, install, unmapped, gpu, shots) or the shared ones
-    shot_every: int = 1000
-    gpu: bool = True
+    full: bool                 # the reference's whole option list (new-3ds, install, observable, unmapped, timing,
+                               # gpu, shots, shared page), or only the options both runners share
+    shot_every: int = DEFAULT_SHOT_EVERY_FRAMES      # frames between screenshots, 0: none
+    observable: str | None = None
 
 
 def build_args(spec: RunSpec) -> list[str]:
@@ -312,8 +376,8 @@ def build_args(spec: RunSpec) -> list[str]:
     args = [spec.program]
     if spec.full:
         args += ["--new-3ds", "off"]
-        if spec.cpu:
-            args += ["--cpu", spec.cpu]
+    if spec.cpu:
+        args += ["--cpu", spec.cpu]
     if spec.code:
         args += ["--code", spec.code]
     if spec.full:
@@ -324,22 +388,26 @@ def build_args(spec: RunSpec) -> list[str]:
         args += ["--set", item]
     args += ["--trace-svc", str(o / "svc.txt"), "--trace-ipc", str(o / "ipc.txt"), "--trace-ipc-full",
              "--state-trace", str(o / "state.txt"), "--capture-hid", str(o / "hid.mhid")]
+    if spec.full and spec.observable:
+        args += ["--observable", spec.observable]
     for cap in s.captures:
         if cap.kind == "dsp":
             args += ["--capture-dsp", f"{cap.start}:{cap.frames}:{o / cap.filename}"]
-        elif cap.kind == "gpu" and spec.full and spec.gpu:
+        elif cap.kind == "gpu" and spec.full:
             args += ["--capture-gpu", f"{cap.start}:{cap.frames}:{o / cap.filename}"]
     if spec.full:
-        args += ["--count-unmapped", str(o / "unmapped.txt")]
+        args += ["--trace-timing", str(o / "timing.txt"), "--count-unmapped", str(o / "unmapped.txt")]
         if spec.shot_every > 0:
-            args += ["--shots", str(o / "shots"), "--shot-every", str(spec.shot_every)]
+            args += ["--shots", str(o / "shots"), "--shots-from", f"f{SHOTS_FROM_FRAME}",
+                     "--shot-every", f"f{spec.shot_every}", "--dump", shared_page_dump()]
     return args + spec.extra
 
 
 def run_runner(spec: RunSpec, timeout: float | None) -> tuple[int, list[str]]:
     """Start the runner (no shell), log to <outdir>/runner.log; returns (exit status, arguments)."""
     spec.outdir.mkdir(parents=True, exist_ok=True)
-    (spec.outdir / "shots").mkdir(exist_ok=True)
+    if spec.full and spec.shot_every > 0:
+        (spec.outdir / "shots").mkdir(exist_ok=True)
     args = build_args(spec)
     cmd = runner_argv(spec.runner) + args
     with open(spec.outdir / "runner.log", "wb") as log:
@@ -361,22 +429,100 @@ def copy_tree(src: Path, dst: Path) -> None:
     shutil.copytree(src, dst, dirs_exist_ok=True)
 
 
-def validate_captures(outdir: Path, session: Session) -> list[str]:
-    """Structural problems of the binary captures a run wrote (empty list: fine)."""
+# --------------------------------------------------------------------------
+# Capture problems (what makes `record` exit 1)
+
+def _dsp_problems(path: Path, cap: Capture) -> list[str]:
+    """Structure of a DSP capture, and, unless it is marked :silent, sound in it: a non-silent PCM frame
+    and a type-3 (SAMPLES) record."""
+    pcm_sound = samples = False
+    for rec in capfmt.read(str(path)):
+        capfmt.check_record("dsp", rec)
+        if rec.type == capfmt.DSP_PCM and any(rec.payload):
+            pcm_sound = True
+        elif rec.type == capfmt.DSP_SAMPLES:
+            samples = True
     problems: list[str] = []
-    paths = [(outdir / "hid.mhid", "hid")] + [(outdir / c.filename, c.kind) for c in session.captures]
-    for path, kind in paths:
+    if not cap.silent and not pcm_sound:
+        problems.append(f"{path.name}: no non-silent PCM frame (mark the capture :silent if it should be silent)")
+    if not cap.silent and not samples:
+        problems.append(f"{path.name}: no type-3 (SAMPLES) record (mark the capture :silent if it should be silent)")
+    return problems
+
+
+def _ir_requests(ipc_path: Path) -> list[int]:
+    """The ticks (t=) of the `ir:USER` requests of an IPC trace."""
+    ticks: list[int] = []
+    with open(ipc_path, "r", encoding="utf-8", errors="replace") as f:
+        for line in f:
+            if line.startswith("#") or "session=ir:USER" not in line:
+                continue
+            m = re.search(r"\bt=(\d+)", line)
+            if m:
+                ticks.append(int(m.group(1)))
+    return ticks
+
+
+def _ir_problems(outdir: Path) -> list[str]:
+    """An `ir:USER` request needs a type-2 (IR) record in the HID capture from that request's frame on."""
+    ipc, hid = outdir / "ipc.txt", outdir / "hid.mhid"
+    if not ipc.is_file() or not hid.is_file():
+        return []
+    requests = _ir_requests(ipc)
+    if not requests:
+        return []
+    records = capfmt.read_all(str(hid))
+    shared = [(r.ticks, r.frame) for r in records if r.type == capfmt.HID_SHARED]
+    ir_frames = [r.frame for r in records if r.type == capfmt.HID_IR]
+    problems: list[str] = []
+    last = max(requests)           # the strictest: no IR record after it means none after the earlier ones either
+    frame = next((fr for t, fr in shared if t >= last), (shared[-1][1] + 1) if shared else 0)
+    if not any(fr >= frame for fr in ir_frames):
+        problems.append(f"ipc.txt has {len(requests)} ir:USER request(s) (the last at frame {frame}) but "
+                        f"hid.mhid has no type-2 (IR) record from that frame on")
+    return problems
+
+
+def validate_captures(outdir: Path, session: Session) -> list[str]:
+    """Problems of the binary captures a run wrote (empty list: fine)."""
+    problems: list[str] = []
+    paths = [(outdir / "hid.mhid", "hid", None)] + [(outdir / c.filename, c.kind, c) for c in session.captures]
+    for path, kind, cap in paths:
         if not path.is_file():
             problems.append(f"{path.name}: not written")
             continue
         try:
             if kind == "gpu":
                 problems += [f"{path.name}: {p}" for p in gcap.check_file(str(path))]
+            elif kind == "dsp":
+                problems += _dsp_problems(path, cap)
             else:
                 for rec in capfmt.read(str(path)):
                     capfmt.check_record(kind, rec)
         except (capfmt.CapError, gcap.GcapError, OSError) as e:
             problems.append(f"{path.name}: {e}")
+    try:
+        problems += _ir_problems(outdir)
+    except (capfmt.CapError, OSError) as e:
+        problems.append(f"ir:USER check: {e}")
+    return problems
+
+
+def minimum_problems(session: Session, outdir: Path) -> list[str]:
+    """What the session's recording must show at least (MINIMUMS): real scene changes, distinct checkpoint scenes."""
+    want = MINIMUMS.get(session.name)
+    if not want:
+        return []
+    problems: list[str] = []
+    state = outdir / "state.txt"
+    changes = real_scene_changes(state) if state.is_file() else 0
+    if changes < want["scene_changes"]:
+        problems.append(f"state.txt has {changes} real scene change(s), {session.name} needs at least "
+                        f"{want['scene_changes']}")
+    distinct = len({s for _, s in session.checkpoints})
+    if distinct < want["checkpoint_scenes"]:
+        problems.append(f"{session.name}'s checkpoints hold {distinct} distinct scene value(s), at least "
+                        f"{want['checkpoint_scenes']} wanted")
     return problems
 
 
@@ -389,6 +535,8 @@ def record(session: Session, a: argparse.Namespace) -> int:
                           f"finish it first, or pass --allow-draft to try it")
     if session.needs == "save" and not a.save:
         raise GoldenError(f"{session.name} needs a save: pass --save DIR")
+    if a.shot_every_frames < 0:
+        raise GoldenError("--shot-every-frames must not be negative")
     cpu = a.cpu or "recomp"
     if cpu == "recomp" and not a.code:
         raise GoldenError("--cpu recomp needs --code LIB")
@@ -402,9 +550,13 @@ def record(session: Session, a: argparse.Namespace) -> int:
     copy_tree(Path(a.user), before)
     if a.save:
         copy_tree(Path(a.save), before)
+    config_savegame = has_config_savegame(before)
+    if not config_savegame:
+        print(f"{session.name}: warning: user-before/ has no config savegame (nand/data/<id>/sysdata/00010017/"
+              f"00000000/config): a native replay would draw its own console ID (docs/native/golden.md)")
     copy_tree(before, work)
-    spec = RunSpec(a.runner, a.game, a.code, cpu, a.update or [], work, out, session, a.set or [],
-                   split_args(a.runner_args), True, a.shot_every)
+    spec = RunSpec(a.runner, a.game, a.code if cpu == "recomp" else None, cpu, a.update or [], work, out, session,
+                   a.set or [], split_args(a.runner_args), True, a.shot_every_frames, str(OBSERVABLE))
     started = time.time()
     status, args = run_runner(spec, a.timeout)
     seconds = round(time.time() - started, 1)
@@ -412,9 +564,10 @@ def record(session: Session, a: argparse.Namespace) -> int:
     if after.exists():
         shutil.rmtree(after)
     work.rename(after)
-    checkpoints = evaluate_checkpoints(out / "state.txt", session.checkpoints) if (out / "state.txt").is_file() else [
+    state = out / "state.txt"
+    checkpoints = evaluate_checkpoints(state, session.checkpoints) if state.is_file() else [
         {"frame": f, "scene": s, "actual": None, "result": "missing"} for f, s in session.checkpoints]
-    problems = validate_captures(out, session)
+    problems = validate_captures(out, session) + minimum_problems(session, out)
     manifest = {
         "format": MANIFEST_FORMAT,
         "tool": "golden.py",
@@ -424,13 +577,16 @@ def record(session: Session, a: argparse.Namespace) -> int:
                     "events": session.events, "sha256": session.sha256()},
         "runner": {"path": str(a.runner), "sha256": sha256_file(Path(a.runner)), "cpu": cpu,
                    "new_3ds": "off", "exit": status, "seconds": seconds},
-        "code_library": {"path": a.code, "sha256": sha256_file(Path(a.code))} if a.code else None,
+        "code_library": {"path": a.code, "sha256": sha256_file(Path(a.code))} if a.code and cpu == "recomp" else None,
         "game": {"name": Path(a.game).name, "size": Path(a.game).stat().st_size},
         "updates": [{"name": Path(u).name, "size": Path(u).stat().st_size} for u in (a.update or [])],
         "save": Path(a.save).name if a.save else None,
+        "user_config_savegame": config_savegame,
         "tz": TZ,
         "host": platform.system(),
         "observable_sha256": sha256_file(OBSERVABLE) if OBSERVABLE.is_file() else None,
+        "shots": {"from_frame": SHOTS_FROM_FRAME, "every_frames": a.shot_every_frames},
+        "real_scene_changes": real_scene_changes(state) if state.is_file() else 0,
         "args": [Path(args[0]).name] + args[1:],
         "checkpoint_results": checkpoints,
         "capture_problems": problems,
@@ -440,23 +596,46 @@ def record(session: Session, a: argparse.Namespace) -> int:
     ok = status == 0 and not problems and all(c["result"] == "ok" for c in checkpoints)
     print(f"{session.name}: runner exit {status}, {len(manifest['files'])} files, "
           f"checkpoints {sum(c['result'] == 'ok' for c in checkpoints)}/{len(checkpoints)} ok, "
-          f"{len(problems)} capture problems -> {out}")
+          f"{manifest['real_scene_changes']} real scene changes, {len(problems)} capture problems -> {out}")
     for p in problems:
         print(f"  capture: {p}")
     for c in checkpoints:
         if c["result"] != "ok":
-            print(f"  checkpoint {c['frame']}:{c['scene']:#x} {c['result']} (scene {c['actual']})")
+            print(f"  checkpoint {c['frame']}:{c['scene']:#x} {c['result']} (scene "
+                  f"{'-' if c['actual'] is None else format(c['actual'], '#x')})")
     return 0 if ok else 1
 
 
 # --------------------------------------------------------------------------
-# check
+# check: comparisons
 
 @dataclasses.dataclass
 class Result:
     name: str
-    status: str          # pass | fail | skipped
+    status: str          # pass | fail | skipped | info
     detail: str = ""
+    run: str = ""        # "run2: " ..., the run a repeated check's result belongs to
+
+    @property
+    def base(self) -> str:
+        """The comparison a --require names: `dsp-1240` is `dsp`."""
+        return self.name.split("-")[0]
+
+    @property
+    def label(self) -> str:
+        return self.run + self.name
+
+
+@dataclasses.dataclass
+class Compare:
+    profile: str                        # same | cross
+    fallback: bool = False              # D30's fallback of the same profile
+    strict: bool = True                 # a file the run did not write is a failure (reference runner), not a skip
+    ref_is_recording: bool = True       # a file the reference side lacks is a failure (a recording) or a skip
+    ignore: Sequence[Path] = ()         # IPC ignore files (cross)
+    observable: Path = OBSERVABLE
+    real_changes: int = 0               # the recording's real scene changes
+    checkpoints: bool = True
 
 
 def _tool(script: Path, *args: str) -> tuple[int, str]:
@@ -469,73 +648,217 @@ def _first_lines(text: str, n: int = 8) -> str:
     return "\n".join(text.splitlines()[:n])
 
 
-def _strip_header(path: Path) -> list[str]:
-    return [ln for ln in path.read_text(encoding="utf-8").splitlines() if not ln.startswith("#")]
+def compare_after_header(ref: Path, cand: Path, block: int = 1 << 23) -> tuple[bool, str]:
+    """Two text traces are identical apart from their first line (the header; `#` lines after it are content).
+    Reads in blocks; prints sizes and the line of the first difference, never a line."""
+    with open(ref, "rb") as f1, open(cand, "rb") as f2:
+        f1.readline()
+        f2.readline()
+        lines = 0
+        total = 0
+        while True:
+            b1, b2 = f1.read(block), f2.read(block)
+            if b1 == b2:
+                if not b1:
+                    return True, f"identical apart from the header ({total} bytes, {lines} lines)"
+                lines += b1.count(b"\n")
+                total += len(b1)
+                continue
+            n = min(len(b1), len(b2))
+            at = next((i for i in range(n) if b1[i] != b2[i]), n)
+            line = 1 + lines + b1.count(b"\n", 0, at)
+            return False, (f"differs at line {line} after the header (file sizes {ref.stat().st_size} and "
+                           f"{cand.stat().st_size} bytes)")
 
 
-def compare_outputs(session: Session, ref: Path, cand: Path, candidate: bool,
-                    ignore: Sequence[Path], observable: Path) -> list[Result]:
-    """Compare a run's outputs with the recording; a comparison whose candidate file is missing is
-    skipped for a candidate runner and a failure for the reference runner."""
+def _files_equal(ref: Path, cand: Path, names: Sequence[str]) -> tuple[bool, str]:
+    """The files `names` (relative to both folders, those the reference has) have equal SHA-256."""
+    differ = [n for n in names if not (cand / n).is_file() or sha256_file(cand / n) != sha256_file(ref / n)]
+    if differ:
+        return False, f"{len(differ)} of {len(names)} differ: " + ", ".join(differ[:5])
+    return True, f"{len(names)} file(s) equal"
+
+
+def _group(ref: Path, name: str) -> list[str]:
+    """A capture and what goes with it: the file, its .json manifest and its .frames folder."""
+    names = [name]
+    if (ref / (name + ".json")).is_file():
+        names.append(name + ".json")
+    frames = ref / (name + ".frames")
+    if frames.is_dir():
+        names += sorted(p.relative_to(ref).as_posix() for p in frames.rglob("*") if p.is_file())
+    return names
+
+
+def compare_outputs(session: Session, ref: Path, cand: Path, cfg: Compare) -> list[Result]:
+    """Compare a run's outputs (`cand`) with a recording or another run (`ref`) in a profile.
+
+    `same` (D31): the text traces identical apart from their first line, the captures and the screenshots
+    identical by SHA-256, the checkpoints.  D30's fallback (cfg.fallback) swaps the svc, ipc and state
+    comparisons for the tolerant ones of N0-25.  `cross`: what a different clock cannot change.
+    A comparison whose input the run did not write is skipped for a candidate runner and a failure
+    for the reference runner."""
     results: list[Result] = []
+    same = cfg.profile == "same"
+    tools = ROOT / "tools"
 
-    def need(name: str, rel: str) -> bool:
+    def add(name: str, status: str, detail: str = "") -> None:
+        results.append(Result(name, status, detail))
+
+    def need(name: str, rel: str, info: bool = False) -> bool:
         if not (ref / rel).exists():
-            results.append(Result(name, "fail", f"the recording has no {rel}"))
+            if info:
+                return False
+            if cfg.ref_is_recording:
+                add(name, "fail", f"the recording has no {rel}")
+            else:
+                add(name, "skipped", f"the first run wrote no {rel}")
             return False
         if not (cand / rel).exists():
-            results.append(Result(name, "skipped" if candidate else "fail", f"the run wrote no {rel}"))
+            if info:
+                return False
+            add(name, "fail" if cfg.strict else "skipped", f"the run wrote no {rel}")
             return False
         return True
 
-    tools = ROOT / "tools"
+    def tool_result(name: str, code: int, text: str) -> None:
+        if code == 0:
+            add(name, "pass", _first_lines(text, 2))
+        elif code == 3:
+            add(name, "skipped", _first_lines(text))
+        else:
+            add(name, "fail", _first_lines(text))
+
+    # -- svc
     if need("svc", "svc.txt"):
-        code, text = _tool(tools / "compare_svc_traces.py", "--normalize", "--outputs",
-                           str(ref / "svc.txt"), str(cand / "svc.txt"))
-        results.append(Result("svc", "pass" if code == 0 else "fail", _first_lines(text)))
+        if same and not cfg.fallback:
+            ok, detail = compare_after_header(ref / "svc.txt", cand / "svc.txt")
+            add("svc", "pass" if ok else "fail", detail)
+        elif same:
+            code, text = _tool(tools / "compare_svc_traces.py", "--normalize", "--outputs", "--collapse-polling",
+                               str(SVC_POLLING), str(ref / "svc.txt"), str(cand / "svc.txt"))
+            tool_result("svc", code, text)
+        else:
+            code, text = _tool(tools / "compare_svc_traces.py", "--normalize", "--outputs", "--cross-model",
+                               str(SVC_CROSS_MODEL), str(ref / "svc.txt"), str(cand / "svc.txt"))
+            tool_result("svc", code, text)
+            code, text = _tool(tools / "compare_svc_traces.py", "--normalize", "--outputs",
+                               str(ref / "svc.txt"), str(cand / "svc.txt"))
+            add("svc-full", "info", f"the full SVC comparison (never gated) exits {code}: " + _first_lines(text, 3))
+    # -- ipc
     if need("ipc", "ipc.txt"):
-        extra: list[str] = []
-        for f in ignore:
-            extra += ["--ignore", str(f)]
-        code, text = _tool(tools / "compare_ipc_traces.py", *extra, str(ref / "ipc.txt"), str(cand / "ipc.txt"))
-        results.append(Result("ipc", "pass" if code == 0 else "fail", _first_lines(text)))
-    if need("state", "state.txt"):
-        code, text = _tool(HERE / "state_diff.py", "--observable", str(observable),
-                           str(ref / "state.txt"), str(cand / "state.txt"))
-        results.append(Result("state", "pass" if code == 0 else "fail", _first_lines(text)))
-        bad = [c for c in evaluate_checkpoints(cand / "state.txt", session.checkpoints) if c["result"] != "ok"]
-        results.append(Result("checkpoints", "fail" if bad else "pass",
-                              "; ".join(f"{c['frame']}:{c['scene']:#x} {c['result']}" for c in bad[:5])))
-    elif (ref / "state.txt").exists():
-        # need() already reported "state"; the checkpoints have no input either: skipped (failed for the reference)
-        results.append(Result("checkpoints", "skipped" if candidate else "fail", "the run wrote no state.txt"))
+        if same and not cfg.fallback:
+            ok, detail = compare_after_header(ref / "ipc.txt", cand / "ipc.txt")
+            add("ipc", "pass" if ok else "fail", detail)
+        else:
+            extra: list[str] = []
+            if not same:
+                for f in cfg.ignore:
+                    extra += ["--ignore", str(f)]
+            code, text = _tool(tools / "compare_ipc_traces.py", *extra, str(ref / "ipc.txt"), str(cand / "ipc.txt"))
+            tool_result("ipc", code, text)
+    # -- state, checkpoints
+    state_ok = need("state", "state.txt")
+    if state_ok:
+        if same and not cfg.fallback:
+            ok, detail = compare_after_header(ref / "state.txt", cand / "state.txt")
+            add("state", "pass" if ok else "fail", detail)
+        elif cfg.real_changes <= 0:
+            add("state", "skipped", "the recording has no real scene change: nothing to align")
+        else:
+            tol = ["--tolerance", "0"] if same else []
+            code, text = _tool(HERE / "state_diff.py", "--observable", str(cfg.observable), *tol,
+                               "--min-changes", str(cfg.real_changes), str(ref / "state.txt"), str(cand / "state.txt"))
+            tool_result("state", code, text)
+    if cfg.checkpoints:
+        if (cand / "state.txt").is_file():
+            if session.checkpoints:
+                bad = [c for c in evaluate_checkpoints(cand / "state.txt", session.checkpoints) if c["result"] != "ok"]
+                add("checkpoints", "fail" if bad else "pass",
+                    "; ".join(f"{c['frame']}:{c['scene']:#x} {c['result']}" for c in bad[:5]))
+            else:
+                add("checkpoints", "skipped", "the session has no checkpoints")
+        elif (ref / "state.txt").is_file():
+            add("checkpoints", "fail" if cfg.strict else "skipped", "the run wrote no state.txt")
+    # -- unmapped (same profile only)
+    if same and need("unmapped", "unmapped.txt"):
+        ok, detail = compare_after_header(ref / "unmapped.txt", cand / "unmapped.txt")
+        add("unmapped", "pass" if ok else "fail", detail)
+    # -- hid, dsp
     if need("hid", "hid.mhid"):
-        try:
-            lines = capfmt.diff_hid(str(ref / "hid.mhid"), str(cand / "hid.mhid"))
-        except (capfmt.CapError, OSError) as e:
-            lines = [str(e)]
-        results.append(Result("hid", "fail" if lines else "pass", "\n".join(lines[:8])))
+        if same:
+            ok, detail = _files_equal(ref, cand, _group(ref, "hid.mhid"))
+            add("hid", "pass" if ok else "fail", detail)
+        else:
+            try:
+                lines = capfmt.diff_hid(str(ref / "hid.mhid"), str(cand / "hid.mhid"))
+            except (capfmt.CapError, OSError) as e:
+                lines = [str(e)]
+            add("hid", "fail" if lines else "pass", "\n".join(lines[:8]))
     for cap in session.captures:
-        if cap.kind == "dsp" and need(f"dsp-{cap.start}", cap.filename):
+        if cap.kind != "dsp" or not need(f"dsp-{cap.start}", cap.filename):
+            continue
+        if same:
+            ok, detail = _files_equal(ref, cand, _group(ref, cap.filename))
+            add(f"dsp-{cap.start}", "pass" if ok else "fail", detail)
+        else:
             try:
                 lines = capfmt.diff_dsp(str(ref / cap.filename), str(cand / cap.filename))
             except (capfmt.CapError, OSError) as e:
                 lines = [str(e)]
-            results.append(Result(f"dsp-{cap.start}", "fail" if lines else "pass", "\n".join(lines[:8])))
-    # Image hashes of the frame-keyed screenshots.
-    shots = sorted(p.relative_to(ref).as_posix() for p in (ref / "shots").rglob("*") if p.is_file()) \
+            add(f"dsp-{cap.start}", "fail" if lines else "pass", "\n".join(lines[:8]))
+    # -- gpu captures (same profile only: the capture player compares them across runtimes, N2)
+    if same:
+        for cap in session.captures:
+            if cap.kind == "gpu" and need(f"gpu-{cap.start}", cap.filename):
+                ok, detail = _files_equal(ref, cand, _group(ref, cap.filename))
+                add(f"gpu-{cap.start}", "pass" if ok else "fail", detail)
+    # -- screenshots: gated in the same profile, information in cross
+    shots = sorted(p.relative_to(ref).as_posix() for p in (ref / "shots").rglob("*.ppm")) \
         if (ref / "shots").is_dir() else []
-    cand_shots = [p for p in (cand / "shots").rglob("*") if p.is_file()] if (cand / "shots").is_dir() else []
+    cand_shots = [p for p in (cand / "shots").rglob("*.ppm")] if (cand / "shots").is_dir() else []
     if not shots:
-        results.append(Result("images", "fail", "the recording has no screenshots"))
+        if same:
+            add("images", "skipped", "there are no screenshots to compare with")
     elif not cand_shots:
-        results.append(Result("images", "skipped" if candidate else "fail", "the run wrote no screenshots"))
+        if same:
+            add("images", "fail" if cfg.strict else "skipped", "the run wrote no screenshots")
     else:
-        differ = [rel for rel in shots if not (cand / rel).is_file() or sha256_file(cand / rel) != sha256_file(ref / rel)]
-        results.append(Result("images", "fail" if differ else "pass",
-                              f"{len(differ)} of {len(shots)} differ: " + ", ".join(differ[:5]) if differ else
-                              f"{len(shots)} images equal"))
+        ok, detail = _files_equal(ref, cand, shots)
+        add("images", ("pass" if ok else "fail") if same else "info", detail)
+    # -- the shared page and the timing trace of the reference runner
+    if same and (ref / shared_page_file()).is_file() and (cfg.strict or (cand / shared_page_file()).is_file()):
+        if need("shared-page", shared_page_file()):
+            ok, detail = _files_equal(ref, cand, [shared_page_file()])
+            add("shared-page", "pass" if ok else "fail", detail)
+    if same and need("timing", "timing.txt", info=True):
+        ok, detail = compare_after_header(ref / "timing.txt", cand / "timing.txt")
+        add("timing", "info", ("identical apart from the header" if ok else detail) + " (not gated)")
     return results
+
+
+def exit_status(results: Sequence[Result], require: Sequence[str]) -> int:
+    """D34: 1 a failure; 3 nothing gated ran or a required comparison was skipped (or did not run); else 0."""
+    gated = [r for r in results if r.status != "info"]
+    if any(r.status == "fail" for r in gated):
+        return 1
+    if not any(r.status == "pass" for r in gated):
+        return 3
+    for name in require:
+        mine = [r for r in gated if r.base == name]
+        if not mine or any(r.status == "skipped" for r in mine):
+            return 3
+    return 0
+
+
+def resolve_profile(forced: str | None, candidate_runner: str | None, args_cpu: str | None,
+                    recording_cpu: str) -> str:
+    """D31: `same` when there is no candidate runner and --candidate-args does not change --cpu, else `cross`."""
+    if forced:
+        return forced
+    if candidate_runner or (args_cpu is not None and args_cpu != recording_cpu):
+        return "cross"
+    return "same"
 
 
 def check(session: Session, a: argparse.Namespace) -> int:
@@ -544,54 +867,96 @@ def check(session: Session, a: argparse.Namespace) -> int:
     if not manifest_path.is_file():
         raise GoldenError(f"{session.name} is not recorded ({manifest_path} missing)")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    # usage problems first
+    require = [x.strip() for x in (a.require or "").split(",") if x.strip()]
+    for name in require:
+        if name not in REQUIRABLE:
+            raise GoldenError(f"--require: unknown comparison {name!r} (one of {', '.join(REQUIRABLE)})")
+    if a.repeat < 1:
+        raise GoldenError("--repeat must be at least 1")
+    if (a.candidate_program or a.candidate_code) and not a.candidate_runner:
+        raise GoldenError("--candidate-program and --candidate-code need --candidate-runner")
+    cand_args = split_args(a.candidate_args)
+    recording_cpu = manifest["runner"]["cpu"]
+    args_cpu = option_value(cand_args, "--cpu")
+    profile = resolve_profile(a.profile, a.candidate_runner, args_cpu, recording_cpu)
+    if a.fallback and (profile != "same" or a.candidate_runner):
+        raise GoldenError("--fallback is for the same profile and the reference runner only")
+    if a.ignore and profile == "same":
+        raise GoldenError("--ignore adds IPC ignore files to the cross profile only: "
+                          "a same-model check is never loosened by a list")
+    if (profile == "cross" or a.fallback) and not Path(SVC_CROSS_MODEL if profile == "cross" else SVC_POLLING).is_file():
+        raise GoldenError(f"missing {SVC_CROSS_MODEL if profile == 'cross' else SVC_POLLING}")
     broken = [rel for rel, meta in manifest["files"].items()
               if not (ref / rel).is_file() or sha256_file(ref / rel) != meta["sha256"]]
     if broken:
         raise GoldenError(f"the recording was changed since it was made: {', '.join(broken[:5])}")
-    candidate = any([a.candidate_runner, a.candidate_program, a.candidate_code, a.candidate_args])
-    runner = (a.candidate_runner or a.runner) if candidate else a.runner
-    program = (a.candidate_program or a.game) if candidate else a.game
-    code = (a.candidate_code or (a.code if not a.candidate_runner else None)) if candidate else a.code
-    cpu = None if candidate else (a.cpu or manifest["runner"]["cpu"])
-    if not candidate and cpu == "recomp" and not code:
-        raise GoldenError("--cpu recomp needs --code LIB")
-    if a.repeat < 1:
-        raise GoldenError("--repeat must be at least 1")
+
+    foreign = bool(a.candidate_runner)
+    if not foreign and manifest.get("updates") and not a.update:
+        raise GoldenError("the recording was made with --install: pass --update CIA so the run starts the same way")
+    shot_every =int(manifest.get("shots", {}).get("every_frames", DEFAULT_SHOT_EVERY_FRAMES))
+    if foreign:
+        runner, program, code, cpu, full = a.candidate_runner, a.candidate_program or a.game, a.candidate_code, None, False
+        extra = cand_args
+    else:
+        runner, program, full = a.runner, a.game, True
+        extra = split_args(a.runner_args) + cand_args
+        cpu_value = args_cpu or a.cpu or recording_cpu
+        cpu = None if "--cpu" in extra else cpu_value
+        code = None
+        if cpu_value == "recomp" and "--code" not in extra:
+            code = a.code
+            if not code:
+                raise GoldenError("--cpu recomp needs --code LIB")
     ignore = ([IPC_TIME_DEPENDENT] if IPC_TIME_DEPENDENT.is_file() else []) + [Path(p) for p in a.ignore or []]
-    extra = split_args(a.candidate_args if candidate else a.runner_args)
+    real = int(manifest.get("real_scene_changes", real_scene_changes(ref / "state.txt")))
+    cfg = Compare(profile, a.fallback, strict=not foreign, ignore=ignore, observable=Path(a.observable),
+                  real_changes=real)
+    pair = Compare("same", a.fallback, strict=not foreign, ref_is_recording=False, observable=Path(a.observable),
+                   real_changes=real, checkpoints=False)
     checks_dir = ref / "check"
     if checks_dir.exists():
         shutil.rmtree(checks_dir)
-    all_results: list[Result] = []
-    states: list[list[str]] = []
-    failed_runs = 0
+    results: list[Result] = []
     for n in range(1, a.repeat + 1):
         outdir = checks_dir / f"run{n}"
-        work = outdir.parent / f"work{n}"
+        work = checks_dir / f"work{n}"
         copy_tree(ref / "user-before", work)
-        spec = RunSpec(runner, program, code, cpu, a.update or [], work, outdir, session, a.set or [], extra,
-                       not candidate, a.shot_every, gpu=False)
+        spec = RunSpec(runner, program, code, cpu, a.update or [], work, outdir, session, a.set or [], extra, full,
+                       shot_every, str(a.observable))
         status, _ = run_runner(spec, a.timeout)
         shutil.rmtree(work, ignore_errors=True)
         prefix = f"run{n}: " if a.repeat > 1 else ""
         if status != 0:
-            failed_runs += 1
-            all_results.append(Result(prefix + "runner", "fail", f"exit status {status}"))
-        for r in compare_outputs(session, ref, outdir, candidate, ignore, Path(a.observable)):
-            all_results.append(Result(prefix + r.name, r.status, r.detail))
-        if (outdir / "state.txt").is_file():
-            states.append(_strip_header(outdir / "state.txt"))
-    if a.repeat > 1:
-        same = len(states) == a.repeat and all(s == states[0] for s in states[1:])
-        all_results.append(Result("repeat", "pass" if same else "fail",
-                                  f"state traces of {a.repeat} runs " + ("are identical" if same else "differ")))
-    for r in all_results:
-        print(f"{session.name}: {r.name}: {r.status.upper()}" + (f" ({r.detail.splitlines()[0]})" if r.detail and r.status != "pass" else ""))
-    summary = {s: sum(r.status == s for r in all_results) for s in ("pass", "fail", "skipped")}
-    print(f"{session.name}: {summary['pass']} passed, {summary['fail']} failed, {summary['skipped']} skipped")
-    (checks_dir / "result.json").write_text(json.dumps([dataclasses.asdict(r) for r in all_results], indent=2) + "\n",
-                                            encoding="utf-8")
-    return 1 if summary["fail"] else 0
+            results.append(Result("runner", "fail", f"exit status {status}", prefix))
+        for r in compare_outputs(session, ref, outdir, cfg):
+            r.run = prefix
+            results.append(r)
+    for n in range(2, a.repeat + 1):          # the runs against each other, in the same profile
+        for r in compare_outputs(session, checks_dir / "run1", checks_dir / f"run{n}", pair):
+            r.run = f"run{n} against run1: "
+            results.append(r)
+    for r in results:
+        detail = r.detail.splitlines()[0] if r.detail and r.status != "pass" else ""
+        print(f"{session.name}: {r.label}: {r.status.upper()}" + (f" ({detail})" if detail else ""))
+    count = {s: sum(r.status == s for r in results) for s in ("pass", "fail", "skipped", "info")}
+    print(f"{session.name}: {count['pass']} passed, {count['fail']} failed, {count['skipped']} skipped"
+          + (f", {count['info']} info" if count["info"] else "") + f" (profile {profile}"
+          + (", D30 fallback" if a.fallback else "") + ")")
+    status = exit_status(results, require)
+    if status == 3:
+        gated = [r for r in results if r.status != "info"]
+        if not any(r.status == "pass" for r in gated):
+            print(f"{session.name}: nothing was compared: no gated comparison passed (exit 3)")
+        for name in require:
+            if not any(r.base == name and r.status != "skipped" for r in gated) or \
+                    any(r.base == name and r.status == "skipped" for r in gated):
+                print(f"{session.name}: --require {name}: skipped or not run (exit 3)")
+    checks_dir.mkdir(parents=True, exist_ok=True)
+    (checks_dir / "result.json").write_text(
+        json.dumps([dataclasses.asdict(r) | {"label": r.label} for r in results], indent=2) + "\n", encoding="utf-8")
+    return status
 
 
 # --------------------------------------------------------------------------
@@ -608,7 +973,7 @@ def list_sessions(a: argparse.Namespace) -> int:
             print(f"{p.stem}: INVALID: {e}")
             continue
         recorded = (Path(a.out) / s.name / "manifest.json").is_file()
-        caps = ",".join(f"{c.kind}:{c.start}:{c.frames}" for c in s.captures) or "-"
+        caps = ",".join(c.text() for c in s.captures) or "-"
         print(f"{s.name}: needs={s.needs} frames={s.frames} events={s.events} checkpoints={len(s.checkpoints)} "
               f"captures={caps} {'DRAFT ' if s.draft else ''}{'recorded' if recorded else 'not recorded'}")
     return 0
@@ -634,9 +999,11 @@ def make_parser() -> argparse.ArgumentParser:
         s.add_argument("--cpu", choices=["jit", "recomp"])
         s.add_argument("--set", action="append", help="MS:KEY=VALUE for the runner (repeatable)")
         s.add_argument("--runner-args", help="more reference-runner options, one string")
-        s.add_argument("--shot-every", type=int, default=1000, help="screenshot interval in ms (0: none)")
         s.add_argument("--timeout", type=float, default=None, help="seconds before the runner is killed")
         if name == "record":
+            s.add_argument("--shot-every-frames", type=int, default=DEFAULT_SHOT_EVERY_FRAMES, metavar="N",
+                           help=f"a screenshot every N game frames from frame {SHOTS_FROM_FRAME} "
+                                f"(default {DEFAULT_SHOT_EVERY_FRAMES}, 0: none)")
             s.add_argument("--save", help="a save folder, merged into user-before/ (sessions that need one)")
             s.add_argument("--force", action="store_true", help="record over an existing recording")
             s.add_argument("--allow-draft", action="store_true", help="record a draft session")
@@ -645,8 +1012,16 @@ def make_parser() -> argparse.ArgumentParser:
             s.add_argument("--candidate-program", help="its program (the native runner: a prepare_game.py folder)")
             s.add_argument("--candidate-code", help="its code library (a --native library)")
             s.add_argument("--candidate-args", help="more options for the candidate, one string")
-            s.add_argument("--repeat", type=int, default=1, help="runs; the state traces must be identical")
-            s.add_argument("--ignore", action="append", help="more IPC ignore files (repeatable)")
+            s.add_argument("--repeat", type=int, default=1,
+                           help="runs; besides each against the recording, the runs against each other (same profile)")
+            s.add_argument("--profile", choices=PROFILES,
+                           help="same (two runs of one backend) or cross (two timing models); the default follows "
+                                "--candidate-runner and --candidate-args")
+            s.add_argument("--fallback", action="store_true",
+                           help="D30's fallback of the same profile (only if N0-29 ended needs-decision)")
+            s.add_argument("--require", help="comma-separated comparisons that must not be skipped: "
+                                             + ", ".join(REQUIRABLE))
+            s.add_argument("--ignore", action="append", help="more IPC ignore files, cross profile only (repeatable)")
             s.add_argument("--observable", default=str(OBSERVABLE))
         s.set_defaults(func=record if name == "record" else check)
     return p

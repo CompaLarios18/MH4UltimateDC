@@ -1,7 +1,7 @@
 # name: G2
 # needs: none
 # frames: 9000
-# checkpoints: 1450:0x00, 2500:0x00, 3600:0x00, 8300:0x00, 9000:0x00
+# checkpoints: 1450:0x00e64d5c, 2500:0x00e6c138, 3600:0x00e6c138, 5000:0x00e6c170, 5500:0x00e655c8, 8300:0x00e655c8, 9000:0x00e655c8
 # captures: gpu:2500:3
 #
 # G2: new game -> character creation (the name on the software keyboard, then the second
@@ -9,8 +9,8 @@
 # From a user folder with the update installed and no save.
 #
 # Button presses and touches only.
-#   f300..f1350   five first-start prompts, then a notice and the intro movie (as G1); the title
-#                 waits for A
+#   f300..f1350   the eight presses the game asks for without a save: five first-start prompts,
+#                 then a notice and the intro movie (as G1); the title waits for A
 #   f1500, f1650  A: title -> menu -> new game
 #   f1800         A on "Name": the software keyboard opens (a touch keyboard: it does NOT answer
 #                 by itself in this runner, the touches below type four letters and press OK)
@@ -20,7 +20,14 @@
 #   f4150..f7900  A presses through the creation steps and the opening, every 150 frames. The
 #                 first control is at about frame 8240.
 #   f8700         circle pad forward for 60 frames
-# Scene observable: 0x00 throughout (see G1).
+#
+# Scenes (the class of the topmost game area, config/native/observable.txt and
+# docs/research/scene-observable.md), one checkpoint in each that lasts more than 100 frames:
+#   0x00e64d5c  aDemo     the intro movies and the title            frames 36 to 1651
+#   0x00e6c138  aNewGame  character creation, both name entries     frames 1652 to 4954
+#   0x00e6c170  aVillage                                            frames 4958 to 5083
+#   0x00e655c8  aQuest    the opening and the first control         frames 5086 to the end
+# (the steps between them last 1 to 3 frames: aGameSys, aDemo again)
 f300:A:f6,f450:A:f6,f600:A:f6,f750:A:f6,f900:A:f6
 f1050:A:f6,f1200:A:f6,f1350:A:f6
 f1500:A:f6,f1650:A:f6,f1800:A:f6

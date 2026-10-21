@@ -1,17 +1,21 @@
 # name: G1
 # needs: none
 # frames: 1700
-# checkpoints: 1450:0x00, 1700:0x00
-# captures: gpu:1500:3, dsp:1500:300
+# checkpoints: 1450:0x00e64d5c, 1700:0x00e64d5c
+# captures: gpu:1500:3, dsp:1240:300
 #
 # G1: power-on to the title, stable. From a user folder with the update installed and no save.
 #
-# Button presses only (A, 6 frames each): five first-start prompts, then a notice and the intro
-# movie. The title is on screen from about frame 1360 and waits for A, so the captures at
-# frame 1500 are on a stable title screen. 300 DSP audio frames are about 90 game frames, so the
-# run stops at 1700.
+# Button presses only (A, 6 frames each): the eight presses the game asks for without a save (five
+# first-start prompts, then a notice and the intro movie). The title is on screen from about frame
+# 1360 and waits for A, so the GPU capture at frame 1500 is on a stable title screen.
 #
-# The scene observable (config/native/observable.txt) reads 0x00 from frame 1 to the end of every
-# golden session, so the checkpoints can only say "still scene 0x00 here".
+# Scene (config/native/observable.txt, docs/research/scene-observable.md): the class of the topmost
+# game area. 0x00e64d5c is aDemo, the area of the intro movies and the title: it is the only scene
+# of G1 that lasts more than 100 frames (aInit is frame 1, aGameSys frames 2 to 35, aDemo from 36).
+#
+# Audio: the title is silent, the sound of G1 is between frames 300 and 1350, its last stretch
+# 1234 to 1350. The DSP capture starts at 1240, so its 300 DSP frames (about 88 game frames) all
+# fall inside that stretch.
 f300:A:f6,f450:A:f6,f600:A:f6,f750:A:f6,f900:A:f6
 f1050:A:f6,f1200:A:f6,f1350:A:f6
