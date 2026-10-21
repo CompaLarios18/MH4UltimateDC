@@ -339,6 +339,7 @@ Measured on 2026-10-21 on the maintainer's PC, idle: two runs (30 s and 31 s) of
 folder per run (update 1.3.0 installed, no save), golden session G1 as `--input-file`, `--cpu recomp --new-3ds off
 --frames 800` with `--state-trace --trace-svc --trace-ipc --trace-timing` and `--dump f100:1FF81000:0x1000
 --dump f800:1FF81000:0x1000`. This is the measurement N0-29 starts from, not a gate.
+"Measured on 2026-10-21" is the UTC date written in the headers of the traces.
 
 Identical in the two runs (apart from line 1, the header with the date):
 
@@ -365,24 +366,51 @@ What the comparators say:
   per thread and in order, the session, the command header, the result code (the first reply parameter) and the
   descriptors, and never the other reply words. With `--strict` it also compares every word and names the words that
   differ, so it would report these three lines. The measurement did not run it with `--strict`; the three lines were
-  found by comparing the files line by line.
+  found by comparing the files line by line. (The control below did run it with `--strict`.)
 - `compare_svc_traces.py --normalize --outputs`: "all threads match" (above). The earlier recompiler pairs of
   2026-10-17 differed in the main thread's call count only; at 800 frames with the fixed starting tick that
   difference is gone.
 
 What this shows: with the fixed starting tick (`kFixedStartTicks`) and the fixed MAC address, two 800-frame G1 runs
-repeat exactly in the state trace, the SVC trace, the timing trace and the shared page. The per-run tick jitter and
-the differences in the main thread's polling counts seen before are gone at this length, so the random starting tick
-did account for them here.
+repeat exactly in the state trace, the SVC trace, the timing trace and the shared page, and differ in three IPC reply
+lines. What this measurement alone does not show is why the earlier runs differed; the control below is the
+comparison with the previous runner.
 
-Where N0-29 starts: the three IPC reply words. They are leads, nothing more is known about them: a 64-bit value in
-`cfg:u` command `0x00030040` that varies from run to run (it looks random, so a random source in `cfg` is the lead), and a reply
-word of `APT:A` command `0x01010000` that varies (a stale reply word is the lead). Neither is in
-`config/native/ipc_time_dependent.txt`, which has no entries yet.
+#### Control: the previous runner on the same setup
+
+This control was taken on 2026-10-21 (the UTC date of the trace headers) with the previous runner: the Windows
+CI build of `e6cd840` (`windows.yml` run 39075253705), which draws the starting tick and the MAC address at random in
+every run. Everything else is as above: the same code library, the same G1 script, `--frames 800`, `TZ=UTC0`, a fresh
+user folder per run, `--state-trace --trace-svc --trace-ipc` and the dumps at frames 100 and 800. There is no
+`--trace-timing`, because that runner has none. Two runs of each runner are compared with each other:
+
+| What | Previous runner (random values), run 1 against run 2 | This branch's runner (fixed values), run 1 against run 2 |
+|---|---|---|
+| Shared page (0x1000 bytes at frames 100 and 800) | the two runs differ by SHA-256 (frames 100 and 800 are equal within a run); bytes 0x60 to 0x65 differ | one SHA-256 for all four dumps |
+| State trace (802 lines in both) | `t` differs in 7 of 801 records, the first at frame 468, by -562 to +8 ticks, and is equal again at the last frame; the game's own frame delta (`smain_delta`, marked `ignore` in `config/native/observable.txt`) differs in 471 of 801 records; `scene`, `frame_counter`, `quest_id` and `stage_loader_state` are equal in all records; by raw lines, 472 of 802 differ | identical |
+| SVC trace | 489,728 lines against 492,180; `compare_svc_traces.py --normalize --outputs`: one thread differs, the main thread, at call 82233, in the loop that polls `GetSystemTick` (svc 0x28), the returned tick differing by 8 | 489,775 lines in both; all threads match |
+| IPC trace (7,171 lines in both) | 271 lines differ (raw comparison, line 1 equal); `compare_ipc_traces.py` without `--strict`: "all threads match" (8 threads, 6083, 2, 4, 163, 3, 39, 31 and 827 requests); with `--strict`: only the main thread differs, first at request 54 (`fs:USER`, command `0x08170000`), in reply word 2 | 3 lines differ (above) |
+
+Two caveats, both of the control and not of the runs above:
+- One other emulator process (another job of the same session) was running on the PC during the control, so the PC
+  was not fully idle for it; the runs above were taken on an idle PC.
+- Both fixed values changed at once between the control and the runs above. The control does not say which of the two
+  removed which difference. The MAC address is not a clock, which makes the starting tick the likelier source of the
+  tick differences (the state trace's `t`, the polling loop in the main thread), but that was not measured separately:
+  there was no run with only one of the two values fixed.
+
+What the control does show: with the previous runner, two runs differ in the shared page, in the state trace's ticks,
+in the main thread's polling and in 271 IPC lines; with this branch's runner, on the same setup, they do not, except
+for three IPC reply lines. How many of the 271 lines are the same kind as the three was not looked at.
+
+Where N0-29 starts: the three IPC reply words. They are leads, nothing more is known about them. For both the lead is
+"a random source or a stale reply word" (a 64-bit value in `cfg:u` command `0x00030040` that varies from run to run,
+and a reply word of `APT:A` command `0x01010000` that varies), and the data cannot tell the two apart, so the choice
+is left to N0-29. Neither is in `config/native/ipc_time_dependent.txt`, which has no entries yet.
 
 Not measured: runs of 1700 and 9000 frames, golden sessions G2 and G6, a run under load, the captures (HID, DSP,
-GPU), the screenshots and the user folders after the run (these are N0-29's gates), and why the three reply words
-differ.
+GPU), the screenshots and the user folders after the run (these are N0-29's gates), which of the two fixed values
+removed which difference, and why the three reply words differ.
 
 ## With Azahar's normal interface
 
