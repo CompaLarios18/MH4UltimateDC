@@ -40,8 +40,25 @@ public:
     // for an address inside an area and for the address one past its end.
     virtual u8* PhysicalPointer(u32 paddr, u32 size) = 0;
     virtual std::optional<u32> VirtualToPhysical(u32 vaddr) = 0;
-    // Thread-safe; goes through Kernel::Post.
+    // A pointer to guest memory for [vaddr, vaddr + size) when the whole range is mapped, else
+    // nullptr (size 0 is an empty range, which is mapped). `vaddr` is a guest virtual address of
+    // the application's memory map, not a physical one: Azahar's DMA goes through that map
+    // (MemorySystem::CopyBlock), so it can copy between ranges that have no physical view, such as
+    // the application's heap. Scheduler thread only, as every access to guest memory (principle 6).
+    // The default is nullptr, a host with no guest memory of its own (a capture's) serves none.
+    virtual u8* GuestPointer(u32 vaddr, u32 size) {
+        (void)vaddr;
+        (void)size;
+        return nullptr;
+    }
+    // Thread-safe; goes through Kernel::Post. The interrupt reaches the runtime's sink at once, on
+    // the scheduler thread, whatever `delay_ns` is (D25, D41): the delay is the time the work would
+    // take on a console, which Azahar's GSP only records (GetPerfLog), with the reference's
+    // settings. A host that wants it while the sink runs asks InterruptDelayNs.
     virtual void SignalInterrupt(Interrupt id, u64 delay_ns) = 0;
+    // While the runtime's interrupt sink is being called: the `delay_ns` the GPU passed for that
+    // interrupt. 0 at any other time and for a host that does not keep it. Scheduler thread only.
+    virtual u64 InterruptDelayNs() const { return 0; }
     // Thread-safe; runs on the scheduler thread at a safe point (a capture's host: at once).
     virtual void Post(std::function<void()> work) = 0;
 };

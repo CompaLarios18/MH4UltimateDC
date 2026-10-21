@@ -182,7 +182,7 @@ std::pair<bool, gpu::FrameBufferInfo*> GspState::GetFrameBufferInfo(u32 thread, 
 
 // ---- interrupts -----------------------------------------------------------------------------------------------
 
-void GspState::SignalInterrupt(gpu::Interrupt id) {
+void GspState::SignalInterrupt(gpu::Interrupt id, u64 delay_ns) {
     if (!shared_memory_) {
         MH4N_LOG(Warning, kLog, "cannot synchronize until GSP shared memory has been created!");
         return;
@@ -192,7 +192,7 @@ void GspState::SignalInterrupt(gpu::Interrupt id) {
     // but the PDC0/1 interrupts are signaled for every registered thread.
     if (id == gpu::Interrupt::PDC0 || id == gpu::Interrupt::PDC1) {
         for (u32 thread = 0; thread < kMaxThreads; ++thread) {
-            SignalInterruptForThread(id, thread);
+            SignalInterruptForThread(id, thread, delay_ns);
         }
         return;
     }
@@ -200,21 +200,21 @@ void GspState::SignalInterrupt(gpu::Interrupt id) {
     if (thread_with_rights_ == kNoThread) {
         return;
     }
-    SignalInterruptForThread(id, thread_with_rights_);
+    SignalInterruptForThread(id, thread_with_rights_, delay_ns);
 }
 
-void GspState::SignalInterruptForThread(gpu::Interrupt id, u32 thread) {
+void GspState::SignalInterruptForThread(gpu::Interrupt id, u32 thread, u64 delay_ns) {
     // With `simulate_3ds_gpu_timings` off and no texture-copy delay for the title, Azahar's wait
     // delay is 0 for every interrupt but the VBlanks, which are signalled from an event that already
-    // has the proper timing: the interrupt is processed here and now (D25).
+    // has the proper timing: the interrupt is processed here and now (D25). What the performance
+    // recorder keeps is the delay the GPU passed (D41), taken before Azahar zeroes it.
     if (perf_enabled_) {
         if (id == gpu::Interrupt::PDC0 || id == gpu::Interrupt::PDC1) {
             constexpr u64 nanoseconds_per_frame = static_cast<u64>(
                 (static_cast<double>(kFrameTicks) / static_cast<double>(kTicksPerSecond)) * 1e9);
             PerfUpdate(id, nanoseconds_per_frame);
         } else {
-            // Azahar records the delay the GPU passed; the sink does not get it.
-            PerfUpdate(id, 0);
+            PerfUpdate(id, delay_ns);
         }
     }
     ProcessInterrupt(id, thread);
@@ -590,9 +590,12 @@ void StartGsp(Runtime& rt) {
     MH4N_ASSERT(manager != nullptr, "services.ipc.gsp runs before the service manager exists");
     std::shared_ptr<GspState> state = GspState::Get(manager->Context());
     std::weak_ptr<GspState> weak = state;
-    rt.SetGpuInterruptSink([weak](gpu::Interrupt id) {
+    // The GPU's delay for the interrupt being delivered is the host's to tell (the sink gets the id
+    // only); it is recorded, not waited for.
+    gpu::Host* host = &rt.GpuHost();
+    rt.SetGpuInterruptSink([weak, host](gpu::Interrupt id) {
         if (auto locked = weak.lock()) {
-            locked->SignalInterrupt(id);
+            locked->SignalInterrupt(id, host->InterruptDelayNs());
         }
     });
     // A rate that is already known reaches the sink at once; it is the period of the VBlanks after
