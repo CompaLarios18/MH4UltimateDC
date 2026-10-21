@@ -79,6 +79,12 @@ struct ReplayConfig {
     // Advance the game clock to each record's tick before its request is sent (above). The runtime
     // must have been made with MakeReplayRuntimeConfig; otherwise the replay cannot start (error).
     bool advance_time = true;
+    // The memory of a write-only buffer: false (the default) writes zeros into it before each request
+    // (the trace has no bytes for it); true leaves it as the requests before it left it, which is what a
+    // game's memory is when it reuses a buffer (a directory Read that leaves the rest of the buffer, or
+    // reads nothing, shows the entries of the Read before it). Readable buffers always get the recorded
+    // bytes. See docs/native/ipc-replay.md, "Diagnostics".
+    bool keep_output_buffers = false;
     // The most game time a trace may span, from its first record (by seq) to any other: a record beyond
     // it is an error (a damaged trace, whose timers would keep the replay busy for days of game time).
     u64 max_span_ticks = 24ull * 3600ull * kTicksPerSecond;
