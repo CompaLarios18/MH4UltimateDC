@@ -128,9 +128,11 @@ def test_observable_file_syntax():
 def test_the_shipped_observable_file_parses():
     parsed = state_diff.parse_observable((ROOT / "config" / "native" / "observable.txt").read_text())
     names = [o.name for o in parsed]
-    assert names[:2] == ["scene", "frame_counter"] and len(set(names)) == len(names)
+    # D32: scene is the game's own area class (4 bytes, the vtable); the sApplet byte is applet_state
+    assert names[0] == "scene" and {"applet_state", "frame_counter"} <= set(names) and len(set(names)) == len(names)
     by_name = {o.name: o for o in parsed}
-    assert by_name["smain_delta"].compare is False and by_name["scene"].size == 1
+    assert by_name["smain_delta"].compare is False
+    assert by_name["scene"].size == 4 and by_name["applet_state"].size == 1
 
 
 def test_expression_evaluation():
