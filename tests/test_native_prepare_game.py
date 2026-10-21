@@ -222,19 +222,24 @@ def damaged_exefs(kind: str) -> bytes:
         struct.pack_into("<I", good, 16 + 12, 0x100000)     # icon size far beyond the ExeFS
     elif kind == "code_past_end":
         struct.pack_into("<I", good, 8, 0x100000)
+    elif kind == "icon_size0_past_end":
+        # no data, so extract_ncch lets it through: only prepare_game's own check catches it,
+        # after the work folder exists
+        struct.pack_into("<II", good, 16 + 8, 0x100000, 0)
     elif kind == "later_entry_past_end":
         struct.pack_into("<8sII", good, 32, b"logo", 0x100000, 0x10)
     return bytes(good)
 
 
-@pytest.mark.parametrize("kind", ["icon_past_end", "code_past_end", "later_entry_past_end"])
+@pytest.mark.parametrize("kind", ["icon_past_end", "code_past_end", "later_entry_past_end",
+                                  "icon_size0_past_end"])
 def test_damaged_exefs_header_is_an_error(tmp_path, versions, kind):
     base, update, _ = write_inputs(tmp_path, base_exefs=damaged_exefs(kind))
     with pytest.raises(pg.PrepareError, match="base game.*(runs past|damaged)"):
         pg.prepare(base, update, str(tmp_path / "game"), versions)
     assert pg.main(["--base", base, "--update", update, "-o", str(tmp_path / "g"),
                     "--versions", versions]) == 1
-    assert not (tmp_path / "game" / ".prepare-tmp").exists()
+    assert not (tmp_path / "g" / ".prepare-tmp").exists()
 
 
 def test_exefs_entry_rejects_a_short_exefs():
@@ -282,3 +287,35 @@ def test_exefs_entry_rejects_an_entry_past_the_end():
     struct.pack_into("<8sII", hdr, 0, b"icon", 0, 0x1000)
     with pytest.raises(pg.PrepareError, match="runs past the end"):
         pg.exefs_entry(bytes(hdr) + b"\0" * 0x200, "icon")
+
+
+def _exefs(entries, body=b""):
+    hdr = bytearray(0x200)
+    for i, (name, off, size) in enumerate(entries):
+        struct.pack_into("<8sII", hdr, i * 16, name, off, size)
+    return bytes(hdr) + body
+
+
+def test_unused_entry_with_a_bogus_offset_is_accepted():
+    icon = b"ICON" * 8
+    exefs = _exefs([(b"", 0x100000, 0), (b"icon", 0, len(icon))], icon)
+    assert pg.exefs_entry(exefs, "icon") == icon
+
+
+def test_size_zero_icon_is_no_icon_and_only_it_is_checked_for_a_bogus_offset():
+    assert pg.exefs_entry(_exefs([(b"icon", 0, 0)]), "icon") is None
+    assert pg.exefs_entry(_exefs([(b"logo", 0x100000, 0)]), "icon") is None
+    with pytest.raises(pg.PrepareError, match="runs past the end"):
+        pg.exefs_entry(_exefs([(b"icon", 0x100000, 0)]), "icon")
+
+
+def test_first_icon_with_size_zero_wins_over_a_later_one_with_data():
+    later = b"LATER" * 4
+    exefs = _exefs([(b"icon", 0, 0), (b"icon", 0, len(later))], later)
+    assert pg.exefs_entry(exefs, "icon") is None
+
+
+def test_entry_name_ends_at_the_first_nul():
+    icon = b"ICON" * 8
+    exefs = _exefs([(b"icon\0xyz", 0, len(icon))], icon)
+    assert pg.exefs_entry(exefs, "icon") == icon

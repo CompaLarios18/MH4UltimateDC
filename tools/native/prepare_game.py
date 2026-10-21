@@ -106,13 +106,15 @@ def exefs_entry(exefs: bytes, wanted: str) -> bytes | None:
     seen = False            # Azahar's LoadSectionExeFS stops at the FIRST entry with the name
     for i in range(EXEFS_ENTRIES):
         raw, off, size = struct.unpack_from("<8sII", exefs, i * 16)
-        if not raw.rstrip(b"\0"):
-            continue
-        name = raw.rstrip(b"\0").decode("ascii", errors="replace")
-        if EXEFS_HEADER_SIZE + off + size > len(exefs):
+        # Azahar compares the name with strcmp: it ends at the first NUL
+        name = raw.split(b"\0", 1)[0].decode("ascii", errors="replace")
+        is_wanted = name == wanted
+        # Like Azahar's LoadSectionExeFS and extract_ncch, only an entry that has data or is the
+        # one we read is checked: a bogus offset on an unused (size 0) entry is not an error
+        if (size or is_wanted) and EXEFS_HEADER_SIZE + off + size > len(exefs):
             raise PrepareError(f"the base game's ExeFS is damaged: entry {name!r} (offset "
                                f"0x{off:X}, size 0x{size:X}) runs past the end of the ExeFS")
-        if name == wanted and not seen:
+        if is_wanted and not seen:
             seen = True
             if size:
                 found = exefs[EXEFS_HEADER_SIZE + off:EXEFS_HEADER_SIZE + off + size]
