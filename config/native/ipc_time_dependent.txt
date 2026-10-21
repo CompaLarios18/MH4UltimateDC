@@ -11,3 +11,24 @@
 #
 # `#` starts a comment; empty lines are skipped. Only the orchestrator edits this file: a WP that finds
 # such a command proposes the line, with its reason, in its report.
+
+# N0-28 (2026-10-21): the commands the pair jit / recomp shows as time-dependent on G1, G2 and G6 (docs/native/cross-model.md,
+# section 5.1). No fs: command is listed (D52).
+gsp::Gpu 0x000c0000   # TriggerCmdReqQueue: a loop that triggers the GPU command queue runs a number of passes set by the clock (thread 9: 1727 requests on recomp, 11907 on jit in G1; the main thread's count and place among its other requests differ too)
+gsp::Gpu 0x00080082   # FlushDataCache: the main thread flushes once per pass of its frame loop, and the passes per frame depend on the clock (G1 3669/3672 requests, G6 19719/19712, G2 35664/35468)
+dsp::DSP 0x00130082   # FlushDataCache of the audio thread: one per audio buffer queued, so the count follows how far the audio got when the movie was skipped and when the run ended (2, 2 and 6 fewer on jit; the thread's other requests are equal)
+y2r:u 0x00010040   # intro movie: one Y2R conversion set-up per movie frame; the frame count is the movie's playing time up to the scripted skip, 232 on recomp and 230 on jit in G1, G2 and G6
+y2r:u 0x00030040   # intro movie: as 0x00010040 (232/230 requests)
+y2r:u 0x00050040   # intro movie: as 0x00010040 (232/230 requests)
+y2r:u 0x00070040   # intro movie: as 0x00010040 (232/230 requests)
+y2r:u 0x000d0040   # intro movie: as 0x00010040 (233/231 requests)
+y2r:u 0x00100102   # intro movie: as 0x00010040 (232/230 requests)
+y2r:u 0x00110102   # intro movie: as 0x00010040 (232/230 requests)
+y2r:u 0x00120102   # intro movie: as 0x00010040 (232/230 requests)
+y2r:u 0x00180102   # intro movie: as 0x00010040 (232/230 requests)
+y2r:u 0x001a0040   # intro movie: as 0x00010040 (232/230 requests)
+y2r:u 0x001c0040   # intro movie: as 0x00010040 (232/230 requests)
+y2r:u 0x001e0100   # intro movie: as 0x00010040 (232/230 requests)
+y2r:u 0x00210040   # intro movie: as 0x00010040 (232/230 requests)
+y2r:u 0x00220040   # intro movie: as 0x00010040 (232/230 requests)
+y2r:u 0x00260000   # intro movie: as 0x00010040 (232/230 requests)
