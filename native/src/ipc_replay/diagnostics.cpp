@@ -190,6 +190,10 @@ std::vector<std::size_t> Reversed(std::vector<std::size_t> order) {
     return order;
 }
 
+// The orders tried for a differing CRC. The native's own entries are already in the order of D54 (the fs
+// module's DirectoryNameLess: ASCII letters folded, then bytewise); `by name, case-insensitive` below is the
+// nearest of these (it folds more scripts, ties in the native's order), and the verdicts are per Read: a
+// listing read in several Reads that differ in order shows as "the content differs" in each.
 const std::vector<Order>& Orders() {
     static const std::vector<Order> orders = {
         {"by name, bytewise (UTF-16 code units)",

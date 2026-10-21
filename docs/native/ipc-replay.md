@@ -11,8 +11,9 @@ The logic is the module `native/src/ipc_replay/` (`mh4n_ipc_replay`); the progra
 trace in them is written by the test, against a fake service the test registers.
 
 ```
-mh4n_ipc_replay TRACE [--svc-trace FILE] [--service NAME]... [--continue] [--game DIR]
-                      [--user DIR] [--time-dependent FILE]... [--reply-timeout MS] [--no-time] [--keep-buffers]
+mh4n_ipc_replay TRACE [--svc-trace FILE] [--service NAME]... [--continue]
+                      [--game DIR] [--user DIR] [--time-dependent FILE]...
+                      [--reply-timeout MS] [--no-time] [--keep-buffers]
 ```
 
 | Option | Meaning |
@@ -256,6 +257,11 @@ line, lines that start with `listing:`:
   zero in the recording`, and the last line says how many bytes that is. A recorder that also wrote the
   input bytes of write-only mapped buffers (`data=` for them) would remove this limit.
 
+A verdict covers one Read's entries only: a listing that a game reads in several Reads, in an order other
+than the recording's, shows as `the content differs` in each Read (each holds a different part of the
+sequence), although only the order differs overall. The native lists in the order of D54 (below), so a
+`by name ...` order named here is a hint about the recording's host, not a setting of the native.
+
 Nothing of this prints a name of an entry, a byte of the buffer or a file size.
 
 **Archive handle words are replayed as recorded.** An archive handle of `fs:USER` is a 64-bit value in two
@@ -317,10 +323,13 @@ build/native/bin/mh4n_ipc_replay build/golden/$S/ipc.txt --svc-trace build/golde
     --service fs:USER --game build/native-game --io-latency none --user build/replay-user-$S --continue
 ```
 
-The native lists a directory in the host's own order, as Azahar does (`readdir`, or `FindNextFile` on
-Windows, which NTFS gives sorted by name): a recording made on one host replays in the same order on that
-host, and on another only where the two hosts agree. The listing lines above say when a
-difference is the order.
+The native lists a directory in one order on every host (D54): sorted by name, comparing the UTF-16 code
+units of the name after upper-casing the ASCII letters (what NTFS gives for names of ASCII characters), a
+tie (names that differ only by the case of ASCII letters) broken bytewise; directories and files together.
+Azahar lists in the host's own order (`readdir`, or `FindNextFile` on Windows, which NTFS gives sorted by
+name), so on the maintainer's NTFS PC a recording of ordinary (ASCII) names replays in the same order; a
+recording made on a host with another order (ext4, a FAT-family volume) can differ in the order only, and
+the listing lines above say when a difference is the order.
 
 ## Notes for the services
 
