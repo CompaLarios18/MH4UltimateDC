@@ -31,6 +31,13 @@ Normalisation (`normalise`):
 Handles are counted in the file's order, so two runtimes that create handles in another order
 on different threads name them differently; the order of one thread's own calls never changes.
 
+Across timing models (`cross_model=True`, `--cross-model`; N0-25, D31) the interleaving of the
+threads differs, so both names follow from what one thread did:
+  - a thread becomes `main` or `<parent name>/<entry>#<k>`, k counting the threads that parent
+    created with that entry, in the parent's own order (one parent creates its threads in program
+    order, so two threads with one entry created by different parents cannot swap);
+  - a handle becomes `<kind>#<thread>.<k>`, k counting from 0 per creating thread and kind.
+
 IPC traces (N0-21, `mh4u_runner --trace-ipc`) are read by the same module (`parse_ipc`,
 `normalise_ipc`); tools/compare_ipc_traces.py documents their format. `tracefmt.py` tells an IPC
 trace from an SVC trace by its header (`# ipctrace`).
@@ -42,7 +49,7 @@ the ones that failed with 'invalid handle', which the recorder never sees) is th
 IPC request; the handles its reply handed out start to exist then, and the ones its request
 moved (MoveHandle descriptors, which the kernel closes) are forgotten.
 
-usage: tracefmt.py TRACE [--normalize] [--ipc FILE]
+usage: tracefmt.py TRACE [--normalize] [--ipc FILE] [--cross-model]
                                            print the trace's calls (normalised or as read)
 """
 from __future__ import annotations
@@ -235,40 +242,46 @@ def parse(path: str) -> Trace:
         return parse_lines(f)
 
 
-def thread_names(trace: Trace) -> dict[str, str]:
-    """Thread number -> normalised name, from the thread lines."""
+def thread_names(trace: Trace, per_parent: bool = False) -> dict[str, str]:
+    """Thread number -> normalised name, from the thread lines. `per_parent`: the names for a comparison
+    across timing models, `main` and `<parent name>/<entry>#<k>` (see the module docstring)."""
     names: dict[str, str] = {}
-    per_entry: dict[str, int] = {}
+    per_entry: dict[tuple[str, str], int] = {}
     have_main = False
     for info in trace.threads.values():
         if info.parent == "0" and not have_main:
             names[info.id] = "main"
             have_main = True
-        else:
-            k = per_entry.get(info.entry, 0)
-            per_entry[info.entry] = k + 1
-            names[info.id] = f"{info.entry}#{k}"
+            continue
+        # a thread whose parent has no name (a second parentless thread, a parent with no thread line) is
+        # counted with the others like it, under no prefix
+        owner = names.get(info.parent, "") if per_parent else ""
+        k = per_entry.get((owner, info.entry), 0)
+        per_entry[(owner, info.entry)] = k + 1
+        names[info.id] = f"{owner}/{info.entry}#{k}" if owner else f"{info.entry}#{k}"
     return names
 
 
 class _Handles:
     """The handles a trace has created so far, by value."""
 
-    def __init__(self) -> None:
+    def __init__(self, per_thread: bool = False) -> None:
         self.names: dict[str, str] = {}
-        self.counts: dict[str, int] = {}
+        self.counts: dict[tuple[str, str], int] = {}
+        self.per_thread = per_thread          # name a handle `<kind>#<creating thread>.<k>` (cross-model)
 
     def name(self, value: str) -> str:
         if value == OK or value in PSEUDO_HANDLES:
             return value
         return self.names.get(value, UNKNOWN_HANDLE)
 
-    def create(self, value: str, kind: str | None) -> str:
+    def create(self, value: str, kind: str | None, thread: str = "") -> str:
         if kind is None:
             return UNKNOWN_HANDLE
-        k = self.counts.get(kind, 0)
-        self.counts[kind] = k + 1
-        self.names[value] = f"{kind}#{k}"
+        owner = thread if self.per_thread else ""
+        k = self.counts.get((owner, kind), 0)
+        self.counts[(owner, kind)] = k + 1
+        self.names[value] = f"{kind}#{owner}.{k}" if self.per_thread else f"{kind}#{k}"
         return self.names[value]
 
 
@@ -304,7 +317,7 @@ def _normalise_call(c: Call, thread: str, handles: _Handles) -> Call:
                         handles.names[out[reg]] = source
                     out[reg] = source
                 else:
-                    out[reg] = handles.create(out[reg], kind)
+                    out[reg] = handles.create(out[reg], kind, thread)
             if c.svc == SVC_CLOSE_HANDLE and ok:
                 handles.names.pop(c.args[0], None)
     return replace(c, thread=thread, args=tuple(args), ticks=0,
@@ -341,12 +354,13 @@ def _learn_reply_handles(call: "IpcCall", handles: _Handles) -> None:
                 handles.names[_svc_word(call.words_out[at])] = name
 
 
-def normalise(trace: Trace, ipc: "IpcTrace | None" = None) -> Trace:
+def normalise(trace: Trace, ipc: "IpcTrace | None" = None, cross_model: bool = False) -> Trace:
     """A copy of the trace with threads and handles renamed and time-dependent values dropped
     (see the module docstring). The calls keep the file's order. `ipc` is the IPC trace of the
-    same run, which names the handles that came in IPC replies."""
-    names = thread_names(trace)
-    handles = _Handles()
+    same run, which names the handles that came in IPC replies. `cross_model`: the names for a
+    comparison between two timing models (per parent, per creating thread)."""
+    names = thread_names(trace, per_parent=cross_model)
+    handles = _Handles(per_thread=cross_model)
     queues: dict[str, deque] = {}
     if ipc is not None:
         for ic in sorted(ipc.calls, key=lambda x: x.seq):
@@ -596,8 +610,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--normalize", action="store_true", help="rename threads and handles, drop times")
     ap.add_argument("--ipc", metavar="FILE", help="the IPC trace of the same run: names the handles of an SVC trace "
                                                   "that came in IPC replies (implies --normalize)")
+    ap.add_argument("--cross-model", action="store_true",
+                    help="name threads per parent and handles per creating thread, as a comparison between "
+                         "two timing models does (implies --normalize)")
     args = ap.parse_args(argv)
-    if args.ipc:
+    if args.ipc or args.cross_model:
         args.normalize = True          # the names only exist in a normalised SVC trace
     if is_ipc_trace(args.trace):
         ipc_trace = parse_ipc(args.trace)
@@ -608,7 +625,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     trace = parse(args.trace)
     if args.normalize:
-        trace = normalise(trace, parse_ipc(args.ipc) if args.ipc else None)
+        trace = normalise(trace, parse_ipc(args.ipc) if args.ipc else None, cross_model=args.cross_model)
     for c in trace.calls:
         print(format_call(c))
     return 0
