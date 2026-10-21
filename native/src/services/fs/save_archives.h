@@ -5,7 +5,7 @@
 // version"): the archive that maps a directory on the host to the files of a save (SaveDataArchive: every
 // operation checks the path with PathParser first and answers Azahar's result for a missing or existing
 // path; a file is made empty or sparse; free space is a fixed 32 MiB), the directory it lists
-// (DiskDirectory: the entries in the host's order, with the 8.3 names, the hidden flag of a leading dot and
+// (DiskDirectory: the entries in the order of D54, with the 8.3 names, the hidden flag of a leading dot and
 // the archive bit of every file) and the places the archives live under the user folder.
 // Copyright 2016-2024 Citra Emulator Project / Azahar Emulator Project (savedata_archive.cpp,
 //   savedata_archive.h, archive_other_savedata.cpp)
@@ -82,7 +82,7 @@ protected:
 // The binary archive path of an extdata: the media type, then the low and high words of the id.
 Path ConstructExtDataBinaryPath(u32 media_type, u32 high, u32 low);
 
-// The listing of a directory, taken when it is opened.
+// The listing of a directory, taken when it is opened, in the order of D54 (host::DirectoryNameLess).
 std::unique_ptr<DirectoryBackend> OpenDiskDirectory(const std::string& host_path);
 
 }  // namespace mh4n::fs

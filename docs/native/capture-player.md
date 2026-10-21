@@ -47,7 +47,22 @@ rest of the group to the Gpu and the checks in file order.
   image columns are printed but nothing fails. An `MMIO` record is classified by the register it
   writes (memory-fill, display-transfer and command-buffer triggers, as `GPU::WriteReg`).
 - Fills, transfers, copies and DMA: every page the capture's GPU wrote must hold the same bytes
-  in the Gpu's memory (bit-exact).
+  in the Gpu's memory (bit-exact), except the pages that are the GSP service's, below.
+- **The GSP's interrupt queue is not the Gpu's.** `GPU_PAGES` are the pages that changed while
+  `GPU::Execute` ran. With the reference's settings (D25) the GSP delivers an interrupt at once,
+  inside that window, and writes it into its interrupt relay queue, which is in the GSP's shared
+  memory: four queues of 0x40 bytes at the start of a page (`index`, `number_interrupts`,
+  `error_code`, `config`, two missed-PDC counters, then 0x34 slots of one byte). So the page of
+  that shared memory is in the `GPU_PAGES` of every command that signals an interrupt, and the
+  first byte that differs from a Gpu's memory is byte 1, `number_interrupts`. A Gpu does not write
+  it (the service does; the player has no GSP). The player leaves such a page out of the
+  judgement when both hold: the capture's change of it (against the capture's own memory before
+  the command) is exactly the command's interrupts, in order, pushed into one of the four queues
+  as `GSP_GPU::ProcessPendingInterruptImpl` does (`diagnostics.h`: `ExplainedByInterruptQueue`),
+  and the Gpu has not touched the page. The page is then put into the Gpu's memory as the
+  service's write (in every mode), and counted in the summary line `pages of the GSP's interrupt
+  relay queue ... not judged`. Any other change of such a page, a page the Gpu wrote, or a page
+  whose command signalled no interrupt, is judged as before.
 - Command lists: the colour buffers go through the image thresholds. The buffers judged are the
   ones the command list drew into (the colour-buffer registers, 0x117, 0x11D and 0x11E, at each
   draw trigger 0x22E and 0x22F), and the final one when the capture's GPU wrote into it. Before
@@ -68,6 +83,46 @@ A frame or a colour buffer passes when both hold (`docs/native/ROADMAP.md` secti
   multiple of 16 and are averaged over the pixels they have).
 
 Alpha is not compared. The table prints PSNR and the worst block per screen.
+
+## What a failing fill, transfer, copy or DMA says
+
+The first line is the summary (`transfer: 1 of 7 pages written by the capture's GPU differ; first
+at 0x... (byte N of the page)`); the lines below it are indented and hold, without a byte of the
+capture (addresses, sizes, offsets, counts and names only):
+
+- `command:` the GX command (`GX DISPLAY_TRANSFER (id 3)`) or the register write that started it
+  (`MMIO write of 0x... to 0x...`), then its decoded fields:
+  - **display transfer** (flags as `Pica::DisplayTransferConfig`): input and output address (and
+    the number in the command when it was a virtual address), input and output format by name
+    (`RGBA8`, `RGB8`, `RGB565`, `RGB5A1`, `RGBA4`, `invalid(N)`), input size, output size as written
+    and as scaled, tiled 8x8 or linear for each side (the output is tiled when the input is linear
+    and swizzling is on, or the input is tiled and `dont_swizzle` is set), the output's row stride
+    (tile-row stride when tiled) with `no gap`, the scaling mode, vertical flip, crop of input
+    lines, `dont_swizzle`, the `block32` bit and the flags word. Bit 3 set on a display-transfer
+    command is called out: Azahar then runs a texture copy with the registers as they were;
+  - **texture copy** (the raw copy: bytes moved unchanged, line by line): addresses, line width and
+    gap of the input and of the output in bytes, the size and the part of it that is copied;
+  - **memory fill**: the unit, the width of its units (16, 24 or 32 bits), start and end, the
+    control word (the fill value is not printed);
+  - **DMA**: source, destination, size.
+- `output region:` the range the command writes (as far as its fields tell: a tiled output is
+  rounded up to whole 8x8 tiles, a texture copy includes its gaps), with its size and page count;
+  `none` when Azahar refuses the command's fields.
+- `pages:` how many pages the capture recorded (first and last address), how many of them lie in
+  the output region, and how many pages of the region the Gpu changed (measured against the Gpu's
+  memory just before the command; not measured when the region is over 64 MiB), and how many
+  recorded pages were the GSP's queue.
+- one `page 0x...:` line per differing page (at most eight, then `... and N more differing
+  pages`): the number of bytes that differ, the offset of the first and of the last (never their
+  values), whether the page is the first, a middle or the last of the pages the capture recorded,
+  whether it is inside the output region (and which of its pages) or outside it, and a note when
+  every difference is inside the first 0x100 bytes of the page, where the GSP keeps its queues.
+
+Reading it: a page **outside the output region** is something the command's fields do not
+explain (the GSP's memory, a second command's output, a decoding the player does not know); a page
+**inside** it with the Gpu having written fewer pages than the capture recorded is a Gpu that
+skipped part of the output; the first and last offsets show whether a whole page, a pixel or the
+start of a page is wrong.
 
 ## The displayed screens
 
@@ -104,7 +159,7 @@ linear-heap window, exactly as in Azahar.
 A table with a row per frame: `frame record result top_psnr top_blk bot_psnr bot_blk cpu_ms gpu_ms`,
 then one column per counter the Gpu reported and one per column a check declared, then the
 failures (`record N (frame F, GX SUBMIT_CMDLIST): message`), the number of commands judged and
-skipped per kind, and `result: PASS` or `FAIL (...)`. `cpu_ms` is the time spent inside the Gpu's
+skipped per kind, the kinds in `--judge` the capture has no command of (`commands not exercised`), and `result: PASS` or `FAIL (...)`. `cpu_ms` is the time spent inside the Gpu's
 calls since the previous `FRAME`; `gpu_ms` comes from `GpuDebug::TakeFrameGpuTimeNs` (`-` when the
 backend has no timestamps). Failure messages quote addresses, sizes and counts, never buffer
 contents; a register check quotes register numbers and values.
@@ -158,6 +213,10 @@ MH4N_REGISTER(gpu_capture::CheckFactory, "my-check",
 
 ## Limits of the checks
 
+- What a run judges is what its capture contains. A capture without fills, copies or DMA says
+  nothing about them: the summary line `commands judged:` counts what was judged by kind, and
+  `commands not exercised` lists the selected kinds the capture has none of: **not exercised**, not
+  verified.
 - Only the pages the capture's GPU wrote are compared. A page the Gpu writes and the capture's GPU
   did not is not seen (comparing all of memory after every command would cost a pass over 140 MB
   each).

@@ -310,6 +310,27 @@ bool RemoveEmptyDirectory(const std::string& path) {
     return std::filesystem::remove(ToPath(path), ec) && !ec;
 }
 
+namespace {
+char16_t UpperAscii(char16_t unit) {
+    return unit >= u'a' && unit <= u'z' ? static_cast<char16_t>(unit - u'a' + u'A') : unit;
+}
+}  // namespace
+
+bool DirectoryNameLess(std::u16string_view a, std::u16string_view b) {
+    const std::size_t common = std::min(a.size(), b.size());
+    for (std::size_t i = 0; i < common; ++i) {
+        const char16_t ua = UpperAscii(a[i]);
+        const char16_t ub = UpperAscii(b[i]);
+        if (ua != ub) {
+            return ua < ub;
+        }
+    }
+    if (a.size() != b.size()) {
+        return a.size() < b.size();
+    }
+    return a < b;  // only the case of ASCII letters differs: bytewise on the code units
+}
+
 std::optional<std::vector<Child>> ListDirectory(const std::string& path) {
     std::error_code ec;
     std::filesystem::directory_iterator it(ToPath(path), ec);
@@ -327,6 +348,18 @@ std::optional<std::vector<Child>> ListDirectory(const std::string& path) {
         child.is_directory = IsDirectory(full);
         child.size = child.is_directory ? 0 : FileSize(full);
         children.push_back(std::move(child));
+    }
+    // D54: one order on every host (see DirectoryNameLess)
+    std::vector<std::pair<std::u16string, Child>> keyed;
+    keyed.reserve(children.size());
+    for (Child& child : children) {
+        keyed.emplace_back(Utf8ToUtf16(child.name), std::move(child));
+    }
+    std::sort(keyed.begin(), keyed.end(),
+              [](const auto& a, const auto& b) { return DirectoryNameLess(a.first, b.first); });
+    children.clear();
+    for (auto& entry : keyed) {
+        children.push_back(std::move(entry.second));
     }
     return children;
 }

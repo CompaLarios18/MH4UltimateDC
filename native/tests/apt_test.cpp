@@ -841,9 +841,11 @@ TEST_CASE("SendParameter, GlanceParameter, ReceiveParameter and CancelParameter"
     CHECK(received.result == kResultSuccess);  // Glance did not take it
     CHECK(received.data == payload);
     CHECK(gone.result == kNoData);
-    CHECK(cancel_wrong_sender == std::pair<Result, u32>{kResultSuccess, 0});
+    // The reply word 2 is a bool, one byte; the other three are the request's word 2, the sender 0x202
+    // (0x201 for the last one), as in Azahar (D53; D47 zero-extended it).
+    CHECK(cancel_wrong_sender == std::pair<Result, u32>{kResultSuccess, 0x200});
     CHECK(cancel_wrong_receiver == std::pair<Result, u32>{kResultSuccess, 0});
-    CHECK(cancel_ok == std::pair<Result, u32>{kResultSuccess, 1});
+    CHECK(cancel_ok == std::pair<Result, u32>{kResultSuccess, 0x201});
     CHECK(cancel_again == std::pair<Result, u32>{kResultSuccess, 0});
     CHECK(after_cancel == kResultSuccess);
     CHECK(cut.result == kResultSuccess);

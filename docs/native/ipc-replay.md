@@ -11,8 +11,9 @@ The logic is the module `native/src/ipc_replay/` (`mh4n_ipc_replay`); the progra
 trace in them is written by the test, against a fake service the test registers.
 
 ```
-mh4n_ipc_replay TRACE [--svc-trace FILE] [--service NAME]... [--continue] [--game DIR]
-                      [--user DIR] [--time-dependent FILE]... [--reply-timeout MS] [--no-time]
+mh4n_ipc_replay TRACE [--svc-trace FILE] [--service NAME]... [--continue]
+                      [--game DIR] [--user DIR] [--time-dependent FILE]...
+                      [--reply-timeout MS] [--no-time] [--keep-buffers]
 ```
 
 | Option | Meaning |
@@ -26,6 +27,7 @@ mh4n_ipc_replay TRACE [--svc-trace FILE] [--service NAME]... [--continue] [--gam
 | `--time-dependent FILE` | a list of commands compared by result only (below). Repeatable |
 | `--reply-timeout MS` | how long to wait for a deferred reply (default 30000) |
 | `--no-time` | do not advance game time between requests (below). Default: advance |
+| `--keep-buffers` | do not write zeros into a write-only buffer before each request: it keeps what the requests before it left there (below). Default: zeros |
 | `--help` | print the usage and exit 0 |
 
 `config/native/ipc_time_dependent.txt` is read first when it exists relative to the current
@@ -52,7 +54,9 @@ advances to the recorded ticks (next section).
   the order of the lines.
 - **The command buffer** gets the recorded words. The buffers a request carries are written at the
   addresses the trace recorded (the pages are mapped for them), from the `data=` bytes; a buffer
-  with none (a write-only mapped one) is zeros. The thread-local storage and one receive area for the
+  with none (a write-only mapped one) is zeros before each request, or, with `--keep-buffers`, is left
+  as the requests before it left it (a game's buffer is what it was: a service that writes part of it
+  leaves the rest, and a Read that reads nothing leaves all of it). The thread-local storage and one receive area for the
   replies' static buffers are mapped where no recorded buffer lies.
 - **Sessions.** A session named after a port or a service (`fs:USER`) is connected the first time it
   is used: `svcConnectToPort` for a named port (`srv:`), the service manager's GetServiceHandle
@@ -175,13 +179,15 @@ work, also on a second replay on the same runtime.
 For a request with a recorded reply:
 
 1. the reply's **header word**;
-2. the **result** (the first normal parameter) and the **other normal words**, which are reported by
-   their number, never by value;
+2. the **result** (the first normal parameter; when it differs, the line also takes both codes apart,
+   "Diagnostics" below) and the **other normal words**, which are reported by their number, never by
+   value;
 3. the **descriptors** the IPC trace lists for a reply (`outdesc`): their kind (`copy`, `move`,
    `pid`, `static`, the request's writable mapped buffers), index and size; the **CRC-32** of every
    buffer (a recorded `-` is not compared); for a handle descriptor, whether each handle is null or
    not, that it is in the client's table, and, when the trace names it as `<service>/<kind>#k`, that the
-   native object is of that kind (`file`, `dir`, `session`, `event`, ...).
+   native object is of that kind (`file`, `dir`, `session`, `event`, ...). When the CRC that differs
+   is that of the buffer a directory Read wrote, more lines follow ("Diagnostics").
 
 **Time-dependent commands** (`config/native/ipc_time_dependent.txt` and the files given with
 `--time-dependent`) are compared by result only. A line is `<session> <header>   # reason`: the
@@ -194,12 +200,91 @@ also takes Unicode white space), reads the header as hex digits with an optional
 CR. A list in the form above is read by both. A file with a line that does not parse, that
 is not UTF-8 text or that is a directory is refused, naming the file and the line.
 
+## Diagnostics
+
+A difference says where it is without a value of the game. Three kinds of line carry more than the
+comparison above.
+
+**A result code that differs** is printed with both codes taken apart into the fields of Azahar's `Result`
+(`description` 10 bits, `module` 8, `summary` 6, `level` 5), on the same line, with the names Azahar gives
+them where it has one (the descriptions of the FS module from its `errors.h`, the well-known descriptions
+of 1000 and above, every module, summary and level of `result.h`):
+
+```
+  result: expected 0xc82044b4, got 0xc8804465 (expected: description 180 (FileAlreadyExists), module 17 (FS), summary 1 (NothingHappened), level 25 (Status); got: description 101 (ArchiveNotMounted), module 17 (FS), summary 4 (NotFound), level 25 (Status))
+```
+
+A value with no name keeps its number alone (`description 5, module 200`). A reply that has no result word
+(`none`) is printed without the fields.
+
+**A normal word that differs** is named by its index, one line each: `normal word 2 differs`. The index counts
+from the header as word 0, so word 1 is the result and word 2 the first value after it. No value is shown.
+The words that are 64-bit values (an archive handle of `fs:USER` is two normal words) show as two indices.
+
+**A directory listing whose CRC differs.** The reply to a directory Read (a session named
+`<service>/dir#<k>`, command 0x0801, an output buffer of kind `mapped-w` whose size is a whole number of
+0x228-byte entries) writes `count` entries of 0x228 bytes into the client's buffer; the trace records the
+CRC of the whole buffer afterwards, not its bytes. When that CRC differs the replay adds, after the `crc`
+line, lines that start with `listing:`:
+
+```
+  descriptor 0 (mapped-w, index 2): crc expected 0x1a2b3c4d, got 0x5e6f7a8b
+  descriptor 0 (mapped-w, index 2): listing: native 3 entries (1 directories, 2 files), 1656 of 2760 bytes written; recorded 3 entries (1656 bytes)
+  descriptor 0 (mapped-w, index 2): listing: the recorded CRC equals the native's entries in order by name, bytewise (UTF-16 code units): only the order differs
+  descriptor 0 (mapped-w, index 2): listing: the last 1104 bytes of the buffer are not written by the service; the trace has no bytes for a write-only buffer, so the replay gives zeros there
+```
+
+- The first line says how many entries the native's reply has (the count is its normal word 2), how many of
+  them are directories (the flag byte at 0x21C of each), the bytes they take and the size of the buffer, and
+  the recorded reply's count and size. Counts and sizes only: no name, no byte.
+- If the counts differ the verdict is `the entry counts differ: the content differs`.
+- Otherwise the replay puts the native's entries in each of seven orders, in this order, and compares the CRC
+  of the whole buffer (the entries, then the bytes after them, which are zeros) with the recorded one; the
+  first that reproduces it is named: `by name, bytewise (UTF-16 code units)`, `by name, case-insensitive
+  (simple upper-casing)` (ASCII, Latin-1, Latin Extended-A, Greek and Cyrillic; what a volume's own table
+  does with other scripts is not tried), `reversed (the native's order backwards)`, `by name, bytewise,
+  reversed`, `by name, case-insensitive, reversed`, `directories first, then by name case-insensitively` and
+  `files first, then by name case-insensitively` (ties in the native's order). That reads `only the order
+  differs`. If none does: `no tried order reproduces the recorded CRC: the content differs`.
+- **The bytes after the entries.** A directory Read writes the entries it read and leaves the rest of the
+  client's buffer as the game had it (Azahar does the same). The trace has no bytes for a write-only buffer
+  (only the readable buffers' `data=`), so the replay gives zeros there, and a recording whose buffer held
+  other bytes after the entries can never match, whatever the listing is (`--keep-buffers` is for the case that
+  the game reused the buffer: the Read that follows another into one buffer, and reads nothing, leaves the
+  entries of the first, which is what the recording's CRC shows; with it a write-only buffer keeps what
+  the requests before it left, and the verdict and the last line below say so). When the native wrote fewer bytes
+  than the buffer holds, the verdict says `the content differs, or the bytes after the entries were not
+  zero in the recording`, and the last line says how many bytes that is. A recorder that also wrote the
+  input bytes of write-only mapped buffers (`data=` for them) would remove this limit.
+
+A verdict covers one Read's entries only: a listing that a game reads in several Reads, in an order other
+than the recording's, shows as `the content differs` in each Read (each holds a different part of the
+sequence), although only the order differs overall. The native lists in the order of D54 (below), so a
+`by name ...` order named here is a hint about the recording's host, not a setting of the native.
+
+Nothing of this prints a name of an entry, a byte of the buffer or a file size.
+
+**Archive handle words are replayed as recorded.** An archive handle of `fs:USER` is a 64-bit value in two
+normal words, not a translate handle, so the map from the reference's handles to the native's (above) does
+not cover it, and no rule of the replay does: the request carries the handle the recording had. That is
+right because the native numbers archives as Azahar does (`ArchiveManager::OpenArchive`: from 1, one number
+for each successful open, a failed one takes none, a close gives none back, an `OpenFileDirectly` takes one
+whether or not its file opens), and Azahar numbers nothing it opens itself (its PTM module makes its shared
+extdata with a private factory, not through the archive manager), so the n-th successful open of a replay
+gets the number the n-th of the recording had. When one does not, an earlier open succeeded in the recording
+and failed in the replay (or the reverse): the replay prints `normal word 2 differs` for every later
+OpenArchive, and `0xc8804465` (`ArchiveNotMounted`) for the requests that use a number the native never
+handed out. Read such a run from its first difference: removing it removes the rest. A rule that learned the
+offset between the two numberings would hide that first difference, so there is none.
+
 ## Output
 
 The report (standard output) has only the service, sequence number, session name, header, result
-codes, descriptor kind, index, size and CRC, the position of a handle in its descriptor, the kind of an
-object (`file`, `event`, ...), counts, and fixed phrases; never the words of a reply that differ, the
-bytes of a buffer, or any other text of the trace. The error messages of the tool (standard error) name
+codes with their decoded fields (numbers and the names of Azahar's enumerations), descriptor kind, index,
+size and CRC, the position of a handle in its descriptor, the kind of an object (`file`, `event`, ...), the
+indices of the normal words that differ, counts and sizes of a directory listing and the names of the orders
+tried on it (above), and fixed phrases; never the words of a reply that differ, the bytes of a buffer, a name
+or a size of a directory entry, or any other text of the trace. The error messages of the tool (standard error) name
 the line of a trace, never its text. That holds because the reader checks what the report will print:
 a session name must be `<service>`, `<service>/<kind>#<k>` or
 `unnamed#<k>` (a service is letters, digits and `:_.$-`, a kind lowercase letters, digits and `_-`; at
@@ -211,7 +296,7 @@ with anything else in those places is refused with its line number and without t
 
 ```
 DIFF fs:USER seq=12 session=fs:USER header=0x00080142
-  result: expected 0x00000000, got 0xc8804464
+  result: expected 0x00000000, got 0xc8804464 (expected: description 0 (Success), module 0 (Common), summary 0 (Success), level 0 (Success); got: description 100 (RomFSNotFound), module 17 (FS), summary 4 (NotFound), level 25 (Status))
   descriptor 0 (static, index 2): crc expected 0x12345678, got 0x9abcdef0
 replayed 120 requests: 119 matched, 1 differ, 4 skipped
   fs:USER: 120 replayed, 1 differ
@@ -225,6 +310,26 @@ either.
 
 Traces hold game data (file names, save bytes). Keep them under `build/` and do not paste lines from
 them.
+
+## Replaying `fs:USER` on a golden session
+
+The save data and extdata archives write into the user folder, so the replay needs a copy of the folder the
+recording started from, a fresh one for each run (a replay changes it):
+
+```
+S=G1                                  # G1, G2, G6, ...
+rm -rf build/replay-user-$S && cp -r build/golden/$S/user-before build/replay-user-$S
+build/native/bin/mh4n_ipc_replay build/golden/$S/ipc.txt --svc-trace build/golden/$S/svc.txt \
+    --service fs:USER --game build/native-game --io-latency none --user build/replay-user-$S --continue
+```
+
+The native lists a directory in one order on every host (D54): sorted by name, comparing the UTF-16 code
+units of the name after upper-casing the ASCII letters (what NTFS gives for names of ASCII characters), a
+tie (names that differ only by the case of ASCII letters) broken bytewise; directories and files together.
+Azahar lists in the host's own order (`readdir`, or `FindNextFile` on Windows, which NTFS gives sorted by
+name), so on the maintainer's NTFS PC a recording of ordinary (ASCII) names replays in the same order; a
+recording made on a host with another order (ext4, a FAT-family volume) can differ in the order only, and
+the listing lines above say when a difference is the order.
 
 ## Notes for the services
 

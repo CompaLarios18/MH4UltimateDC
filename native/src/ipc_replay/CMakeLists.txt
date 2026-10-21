@@ -3,6 +3,7 @@
 # the traces is that of tools/native/tracefmt.py, the manual is docs/native/ipc-replay.md.
 mh4n_module(
     SOURCES
+        diagnostics.cpp
         replay.cpp
         replay_clock.cpp
         time_dependent.cpp

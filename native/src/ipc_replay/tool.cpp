@@ -29,6 +29,9 @@ MH4N_OPTION("ipc-replay", "--reply-timeout", "MS",
 MH4N_OPTION("ipc-replay", "--no-time", "",
             "do not advance game time to each record's tick before its request (default: advance, "
             "running the timers that fall due on the way); the clock is then the host's");
+MH4N_OPTION("ipc-replay", "--keep-buffers", "",
+            "do not write zeros into a write-only buffer before each request: it keeps what the requests "
+            "before it left (the trace has no bytes for such a buffer); the default is zeros");
 MH4N_OPTION("ipc-replay", "--time-dependent", "FILE",
             "commands whose replies depend on time, compared by result only (repeatable; "
             "config/native/ipc_time_dependent.txt is read first when it exists)");
@@ -81,6 +84,7 @@ int RunIpcReplay(const std::vector<std::string>& args, std::ostream& out, std::o
     config.services = options.All("--service");
     config.keep_going = options.Has("--continue");
     config.advance_time = !options.Has("--no-time");
+    config.keep_output_buffers = options.Has("--keep-buffers");
     try {
         const u64 timeout = options.GetUInt("--reply-timeout", 30000);
         if (timeout == 0 || timeout > 3600000) {

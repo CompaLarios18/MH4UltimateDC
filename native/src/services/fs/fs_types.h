@@ -26,6 +26,8 @@
 
 #include <cstddef>
 #include <memory>
+#include <optional>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -126,7 +128,7 @@ inline constexpr u32 kMediaNand = 0;
 inline constexpr u32 kMediaSdmc = 1;
 inline constexpr u32 kMediaGameCard = 2;
 
-// An archive handle is 64 bits and numbered from 1 (ArchiveManager::next_handle).
+// An archive handle is 64 bits and numbered from 1 (ArchiveManager::next_handle; the rule is in fs_state.h).
 using ArchiveHandle = u64;
 
 // ---- paths ---------------------------------------------------------------------------------------------------
@@ -309,8 +311,11 @@ public:
         (void)path, (void)info, (void)program_id, (void)directory_buckets, (void)file_buckets;
         return kResultUnimplementedFs;
     }
-    // CreateExtSaveData / DeleteExtSaveData, on the extdata factories.
-    virtual Result FormatAsExtData(const Path& path, const ArchiveFormatInfo& info, const std::vector<u8>& icon) {
+    // CreateExtSaveData / DeleteExtSaveData, on the extdata factories. As Azahar's FormatAsExtData, the icon is
+    // optional: with none no icon file is made (the play coin archive of the ptm step); a game's
+    // CreateExtSaveData passes the icon it sent (possibly empty, which makes an empty file).
+    virtual Result FormatAsExtData(const Path& path, const ArchiveFormatInfo& info,
+                                   std::optional<std::span<const u8>> icon) {
         (void)path, (void)info, (void)icon;
         return kResultUnimplementedFs;
     }

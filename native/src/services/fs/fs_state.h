@@ -47,6 +47,11 @@ class IoPool;
 
 // ---- archives -------------------------------------------------------------------------------------------------
 
+// Handles are numbered as Azahar's ArchiveManager numbers them (archive.cpp, OpenArchive): from 1, one number
+// for each open that succeeds, none for one that fails (an id nobody registered, an archive that is not
+// there), none given back when an archive is closed, and a number in use is skipped. fs:USER's
+// OpenFileDirectly opens an archive and closes it again, so it takes a number too, whether or not its file
+// opens. The numbers matter: a replayed request carries the handle the recording had (docs/native/ipc-replay.md).
 class ArchiveManager {
 public:
     // False if the id is taken.

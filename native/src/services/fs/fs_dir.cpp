@@ -6,7 +6,8 @@
 // Copyright 2014-2024 Citra Emulator Project / Azahar Emulator Project (directory_backend.h)
 //
 // A directory the game opened with OpenDirectory (N1-13). Azahar reads on a worker thread with no delay; the
-// listing here was taken when the directory was opened, so a read is answered in the request's tick on the
+// listing here was taken when the directory was opened (the entries' format is Azahar's, their order is
+// D54's: sorted by name, see host::DirectoryNameLess), so a read is answered in the request's tick on the
 // scheduler thread. Departure from Azahar: at most as many entries as the client's buffer holds are read,
 // whatever count the client asked for (Azahar allocates `count` entries first).
 #include <memory>
@@ -31,7 +32,8 @@ public:
         Register(0x0802, "Close", &FsDirectory::Close);
     }
 
-    const char* SessionKind() const override { return "directory"; }
+    // How an IPC trace names this session: `fs:USER/dir#k`, as the reference runner does (mh4n/service.h).
+    const char* SessionKind() const override { return "dir"; }
 
 private:
     // Inputs:  0: 0x08010042, 1: the number of entries, 2: the mapped buffer descriptor (write), 3: its address

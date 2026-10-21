@@ -94,7 +94,21 @@ void Reply::PushWord(u32 word) {
         overflow_ = true;
         return;
     }
-    words_[index_++] = word;
+    words_[index_] = word;
+    written_[index_] = 0xFFFFFFFFu;
+    ++index_;
+}
+
+void Reply::PushPartial(u32 value, std::size_t size) {
+    if (index_ >= ipc::kCommandBufferLength) {
+        PushWord(0);  // logs the overflow
+        return;
+    }
+    // D53: only `size` bytes are written; the others keep what the word holds (the request's bytes).
+    const u32 mask = size >= 4 ? 0xFFFFFFFFu : (1u << (8 * size)) - 1u;
+    words_[index_] = (words_[index_] & ~mask) | (value & mask);
+    written_[index_] |= mask;
+    ++index_;
 }
 
 void Reply::PushBytes(const void* data, std::size_t size) {
@@ -107,9 +121,38 @@ void Reply::PushBytes(const void* data, std::size_t size) {
         overflow_ = true;
         return;
     }
-    // the words are zero, so the bytes above the value are too
+    // Only `size` bytes are written (Azahar memcpys sizeof(T)): the rest of the last word keeps what it
+    // holds, the request's bytes once seeded (D53).
     std::memcpy(&words_[index_], data, size);
+    for (std::size_t k = 0; k < count; ++k) {
+        const std::size_t in_word = std::min<std::size_t>(size - 4 * k, 4);
+        written_[index_ + k] |= in_word >= 4 ? 0xFFFFFFFFu : (1u << (8 * in_word)) - 1u;
+    }
     index_ += count;
+}
+
+std::array<u32, ipc::kCommandBufferLength>
+Reply::SeededWords(std::span<const u32> request_words) const {
+    std::array<u32, ipc::kCommandBufferLength> words = words_;
+    if (seeded_) {
+        return words;
+    }
+    // The normal parameters of the reply, at the indices where the request had a word; the header is
+    // the reply's own and the translate parameters are never touched.
+    const std::size_t normal = ipc::Header{words_[0]}.NormalParamsSize();
+    const std::size_t last = std::min({normal + 1, request_words.size(), ipc::kCommandBufferLength});
+    for (std::size_t i = 1; i < last; ++i) {
+        words[i] = (words_[i] & written_[i]) | (request_words[i] & ~written_[i]);
+    }
+    return words;
+}
+
+void Reply::SeedFrom(std::span<const u32> request_words) {
+    if (seeded_) {
+        return;
+    }
+    words_ = SeededWords(request_words);
+    seeded_ = true;
 }
 
 void Reply::PushHandles(u32 descriptor, std::vector<std::shared_ptr<Object>> objects) {
@@ -436,15 +479,25 @@ Reply& Request::MakeReply(u32 normal_params_size, u32 translate_params_size) {
         MH4N_LOG(Debug, kLog, "request 0x{:08X}: the reply starts with {} of {} words read",
                  Header(), cursor_, command_size_);
     }
-    reply_.emplace(CommandId(), normal_params_size, translate_params_size);
+    reply_.emplace(NewReply(normal_params_size, translate_params_size));
     return *reply_;
+}
+
+Reply Request::NewReply(u32 normal_params_size, u32 translate_params_size) const {
+    Reply reply(CommandId(), normal_params_size, translate_params_size);
+    // D53: the bytes the service does not write are the request's (the translated words, as Azahar's
+    // command buffer holds them).
+    reply.SeedFrom(Words());
+    return reply;
 }
 
 std::vector<u32> Request::WriteReply(const Reply& reply) {
     reply.Validate();
+    // D53: a reply that was not made for this request (a Reply built by hand) is seeded here.
+    const std::array<u32, ipc::kCommandBufferLength> words = reply.SeededWords(Words());
     const std::size_t command_size =
         std::min<std::size_t>(reply.CommandSize(), ipc::kCommandBufferLength);
-    const ipc::Header header{reply.words_[0]};
+    const ipc::Header header{words[0]};
     const std::size_t untranslated_size =
         std::min<std::size_t>(1u + header.NormalParamsSize(), command_size);
 
@@ -458,10 +511,10 @@ std::vector<u32> Request::WriteReply(const Reply& reply) {
     }
 
     std::vector<u32> out(command_size, 0);
-    std::copy_n(reply.words_.begin(), untranslated_size, out.begin());
+    std::copy_n(words.begin(), untranslated_size, out.begin());
     std::size_t i = untranslated_size;
     while (i < command_size) {
-        const u32 descriptor = out[i] = reply.words_[i];
+        const u32 descriptor = out[i] = words[i];
         ++i;
         switch (ipc::GetDescriptorType(descriptor)) {
         case ipc::CopyHandle:
@@ -470,7 +523,7 @@ std::vector<u32> Request::WriteReply(const Reply& reply) {
             const u32 count =
                 std::min<std::size_t>(ipc::HandleNumberFromDesc(descriptor), command_size - i);
             for (u32 j = 0; j < count; ++j) {
-                const u32 index = reply.words_[i];
+                const u32 index = words[i];
                 Handle handle = 0;
                 const std::shared_ptr<Object> object =
                     index < reply.objects_.size() ? reply.objects_[index] : nullptr;
@@ -479,7 +532,7 @@ std::vector<u32> Request::WriteReply(const Reply& reply) {
                     if (IsError(result)) {
                         MH4N_LOG(Error, kLog,
                                  "reply 0x{:08X}: cannot give the client a handle: 0x{:08X}",
-                                 reply.words_[0], result);
+                                 words[0], result);
                         handle = 0;
                     }
                 }
@@ -507,14 +560,14 @@ std::vector<u32> Request::WriteReply(const Reply& reply) {
                     MH4N_LOG(Error, kLog,
                              "reply 0x{:08X}: static buffer {} has {} bytes and the client's "
                              "receive buffer {}",
-                             reply.words_[0], id, size, capacity);
+                             words[0], id, size, capacity);
                     size = capacity;
                 }
                 if (!memory.WriteBlock(target, data->data(), size)) {
                     MH4N_LOG(
                         Error, kLog,
                         "reply 0x{:08X}: the client's receive buffer {} (0x{:08X}) is not mapped",
-                        reply.words_[0], id, target);
+                        words[0], id, target);
                 }
             }
             out[i++] = target;
@@ -524,13 +577,13 @@ std::vector<u32> Request::WriteReply(const Reply& reply) {
             if (i >= command_size) {
                 break;
             }
-            const u32 id = reply.words_[i];
+            const u32 id = words[i];
             out[i++] = id < mapped_.size() ? mapped_[id].Address() : 0;
             break;
         }
         default:
             MH4N_LOG(Error, kLog, "reply 0x{:08X}: unsupported descriptor 0x{:08X}",
-                     reply.words_[0], descriptor);
+                     words[0], descriptor);
             break;
         }
     }
