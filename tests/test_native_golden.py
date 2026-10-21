@@ -23,7 +23,7 @@ sys.path.insert(0, str(ROOT / "tools" / "native"))
 import golden  # noqa: E402
 
 FAKE = r'''
-import json, os, struct, sys
+import json, os, struct, sys, zlib
 sys.path.insert(0, @TOOLS@)
 import capfmt, gcap
 
@@ -48,7 +48,7 @@ with open(os.path.join(user, "ran.txt"), "a") as f:
     f.write("run\n")
 jit = opt("--cpu") == "jit"
 cpu = opt("--cpu", "native")
-change = {"late_scene": 12, "very_late": 14, "shift1": 11}.get(mode, 10)
+change = {"late_scene": 12, "very_late": 15, "late4": 14, "shift1": 11}.get(mode, 10)
 second = 999 if mode == "one_change" else 25
 if mode == "no_change":
     change = second = 999
@@ -81,6 +81,27 @@ if opt("--trace-ipc"):
            "1 seq=1 session=srv:USER cmd=0x00010040 in=0x00010040 desc=- out=0x00010040,0x00000000 outdesc=- t=5",
            "1 seq=2 session=srv:USER cmd=0x00020080 in=0x00020080 desc=- out=0x00020080,%s outdesc=- t=6"
            % ("0xC8804464" if (mode == "ipc_diff" or jit) else "0x00000000")]
+    # D52: Reads of a file and a Write of 32 bytes.  Another timing model reads in another order and one read
+    # fewer, and its Write holds other bytes in the range the mask file masks (4 to 7)
+    reads = [(0, 0x11), (16, 0x22), (32, 0x33)]
+    if jit:
+        reads = reads[::-1][:2]
+    if mode == "read_crc":
+        reads[0] = (reads[0][0], 0x99)
+    if mode == "reads_many":
+        reads += [(1000 + 16 * i, 0x100 + i) for i in range(17)]
+    for k, (off, crc) in enumerate(reads):
+        ipc.append("1 seq=%d session=fs:USER/file#0 cmd=0x080200c2 in=0x080200c2,0x%08x,0x00000000,0x00000010,0x0000010c,"
+                   "0x0fffdaf8 desc=mapped-w:4:16:- out=0x08020082,0x00000000,0x00000010,0x0000010c,0x0fffdaf8 "
+                   "outdesc=mapped-w:4:16:0x%08x t=%d" % (10 + k, off, crc, 10 + k))
+    data = bytearray(range(32))
+    if jit:
+        data[4:8] = b"\xee" * 4
+    if mode == "write_outside":
+        data[10] ^= 1
+    ipc.append("1 seq=40 session=fs:USER/file#1 cmd=0x08030102 in=0x08030102,0x00000040,0x00000000,0x00000020,0x00010001,"
+               "0x0000020a,0x32ef8df0 desc=mapped-r:5:32:0x%08x out=0x08030082,0x00000000,0x00000020,0x0000020a,0x32ef8df0 "
+               "outdesc=- t=40 data=5:%s" % (zlib.crc32(bytes(data)), bytes(data).hex()))
     if mode == "thread_line":
         ipc.insert(2, "# thread 2 parent=1 entry=00200000 arg=00000000 stack=10000000 prio=48 core=0/0")
     if mode in ("ir_ok", "ir_missing"):
@@ -111,7 +132,17 @@ for flag, kind in (("--capture-dsp", "dsp"), ("--capture-gpu", "gpu")):
             with capfmt.Writer(path, "dsp") as w:
                 for i in range(count):
                     r = capfmt.make_region(i, {0: capfmt.make_status(enabled=1)} if mode == "dsp_diff" else None)
-                    w.dsp_regions(start + i, i, r, r)
+                    if mode == "dsp_stream":
+                        # one audio stream; another timing model has it 7 DSP frames later (its counter at stream
+                        # time t is t + 7), a buffer id that advances every 4 frames
+                        t = 100 + i - (7 if jit else 0)
+                        def blk(t):
+                            return capfmt.make_status(enabled=1, sync_count=1 + t // 4, buffer_position=(t % 4) * 160,
+                                                      current_buffer_id=1 + t // 4, last_buffer_id=t // 4)
+                        r = capfmt.make_region(100 + i, {0: blk(t)})
+                        w.dsp_regions(start + i, i, r, capfmt.make_region(99 + i, {0: blk(t - 1)}))
+                    else:
+                        w.dsp_regions(start + i, i, r, r)
                     sound = [] if mode == "silent_dsp" else [(i + 1, 0)] * 160
                     w.dsp_pcm(start + i, i, capfmt.make_pcm(sound))
                     if i == 0 and mode not in ("silent_dsp", "no_samples"):
@@ -192,6 +223,12 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(golden, "DEFAULT_SHOT_EVERY_FRAMES", 10)
     # no repository list unless a test wants one
     monkeypatch.setattr(golden, "IPC_TIME_DEPENDENT", tmp_path / "no_such_file.txt")
+    # the cross profile's write masks: the fake runner's Write of 32 bytes at offset 64 (session S1), bytes 4 to 7
+    masks = tmp_path / "fs_write_masks.txt"
+    masks.write_text("# test masks\nS1 32 64 4 4   test: the fake clock\nS9 32 64 0 4   another session's line\n", encoding="utf-8")
+    monkeypatch.setattr(golden, "FS_WRITE_MASKS", masks)
+    # the fake sessions are 30 frames long, their inputs a few frames after a scene change: not D50's 60
+    monkeypatch.setattr(golden, "CROSS_MIN_MARGIN", 1)
 
     class E:
         pass
@@ -205,6 +242,7 @@ def env(tmp_path, monkeypatch):
     e.record = lambda *extra, s="S1": golden.main(["record", s, *e.common, *e.ref, "--user", str(user), *extra])
     e.check = lambda *extra, s="S1": golden.main(["check", s, *e.common, *e.ref, *extra])
     e.manifest = lambda s="S1": json.loads((e.out / s / "manifest.json").read_text())
+    e.masks = masks
     e.ignore_file = tmp_path / "ignore.txt"
     e.ignore_file.write_text("srv:USER 00020080   # test: the reply carries a time\n", encoding="utf-8")
     return e
@@ -741,6 +779,150 @@ def test_cross_state_is_skipped_when_the_recording_has_no_real_scene_change(env,
     assert env.check("--candidate-args", "--cpu jit", "--ignore", str(env.ignore_file), "--require", "state") == 3
 
 
+# ---- check, the cross profile: the rules of D50, D51 and D52
+
+def cross(env, *extra, s="S1"):
+    """A check of `--cpu jit` against the recording (the recomp one) in the cross profile, with the test list."""
+    return env.check("--candidate-args", "--cpu jit", "--ignore", str(env.ignore_file), *extra, s=s)
+
+
+SESSION3 = """\
+# name: S3
+# needs: none
+# frames: 30
+# checkpoints: 5:0, 20:2
+# captures: dsp:10:40
+f12:A
+"""
+
+
+def test_the_cross_profile_numbers_are_the_decisions():
+    assert golden.CROSS_TOLERANCE == 4 and golden.CROSS_MIN_MARGIN == 60       # D50
+    assert golden.CROSS_MAX_SHIFT == 48                                        # D51
+    assert golden.CROSS_MAX_SURPLUS == 16                                      # D52
+    assert golden.FS_WRITE_MASKS == golden.ROOT / "config" / "native" / "fs_write_masks.txt"
+
+
+def test_cross_profile_applies_the_fs_rules_of_d52(env, capsys):
+    assert env.record() == 0
+    capsys.readouterr()
+    # another timing model: the Reads in another order and one fewer, and its Write holds other bytes in the
+    # range the mask file masks
+    assert cross(env) == 0
+    out = capsys.readouterr().out
+    assert statuses(out)["ipc"] == "PASS"
+    assert "fs reads: 1 thread(s) read; 3 on the reference and 2 on the candidate" in out
+    assert "fs write masks: 1 line(s) of session S1, applied to 1 Write(s) of the reference and 1 of the candidate" in out
+    # the same differences are failures to the same profile: nothing is loosened there
+    assert env.check("--candidate-args", "--cpu jit", "--profile", "same") == 1
+    assert statuses(capsys.readouterr().out)["ipc"] == "FAIL"
+
+
+@pytest.mark.parametrize("mode", ["write_outside", "read_crc"])
+def test_cross_profile_fails_an_fs_difference_the_rules_do_not_cover(env, capsys, monkeypatch, mode):
+    assert env.record() == 0
+    monkeypatch.setenv("FAKE_MODE", mode)
+    capsys.readouterr()
+    assert cross(env) == 1
+    got = statuses(capsys.readouterr().out)
+    assert got["ipc"] == "FAIL"
+    assert all(v != "FAIL" for k, v in got.items() if k != "ipc")
+
+
+def test_cross_profile_bounds_the_surplus_of_reads(env, capsys, monkeypatch):
+    assert env.record() == 0
+    monkeypatch.setenv("FAKE_MODE", "reads_many")          # 17 more reads than the recording (the same backend)
+    capsys.readouterr()
+    assert env.check("--profile", "cross", "--ignore", str(env.ignore_file)) == 1
+    out = capsys.readouterr().out
+    assert statuses(out)["ipc"] == "FAIL" and "surplus 17" in out
+    assert env.check("--profile", "cross", "--ignore", str(env.ignore_file), "--max-surplus", "17") == 0
+    assert env.check("--profile", "cross", "--ignore", str(env.ignore_file), "--max-surplus", "16") == 1
+
+
+def test_cross_profile_state_has_d50s_tolerance_and_margin_guard(env, capsys, monkeypatch):
+    assert env.record() == 0
+    capsys.readouterr()
+    assert cross(env) == 0
+    out = capsys.readouterr().out
+    got = statuses(out)
+    assert got["state"] == "PASS" and got["state-margin"] == "PASS"
+    assert "within 4 frames" in out                                            # D50's tolerance, in the state line
+    assert "smallest input margin on the reference 2 frames (at least 1)" in out
+    # a scene change four frames later is within the tolerance, five is not (the fake's change is at frame 10)
+    monkeypatch.setenv("FAKE_MODE", "late4")
+    assert cross(env) == 0
+    monkeypatch.setenv("FAKE_MODE", "very_late")
+    capsys.readouterr()
+    assert cross(env) == 1 and statuses(capsys.readouterr().out)["state"] == "FAIL"
+    capsys.readouterr()
+    assert cross(env, "--tolerance", "5") == 1          # the state passes, but the input at frame 15 now follows the change by 0
+    got = statuses(capsys.readouterr().out)
+    assert got["state"] == "PASS" and got["state-margin"] == "FAIL"
+    assert cross(env, "--tolerance", "5", "--min-margin", "0") == 0
+    # the guard: the input at frame 12 comes 2 frames after the scene change at frame 10
+    monkeypatch.delenv("FAKE_MODE")
+    capsys.readouterr()
+    assert cross(env, "--min-margin", "3") == 1
+    out = capsys.readouterr().out
+    assert statuses(out)["state-margin"] == "FAIL" and statuses(out)["state"] == "PASS"
+    assert "input event at frame 12 (A): margin 2 frames on the reference, less than 3" in out
+    # D50's own default is 60
+    monkeypatch.setattr(golden, "CROSS_MIN_MARGIN", 60)
+    assert cross(env) == 1
+    # a check that requires the state comparison requires the guard too
+    assert cross(env, "--min-margin", "1", "--require", "state") == 0
+
+
+def test_the_margin_guard_is_skipped_with_the_state_comparison(env, capsys, monkeypatch):
+    (env.sessions / "S1.txt").write_text(SESSION.replace("5:0, 20:2", "5:0, 20:0"))
+    monkeypatch.setenv("FAKE_MODE", "no_change")
+    assert env.record() == 0
+    capsys.readouterr()
+    assert cross(env) == 0
+    got = statuses(capsys.readouterr().out)
+    assert got["state"] == "SKIPPED" and "state-margin" not in got
+
+
+def test_cross_profile_aligns_the_dsp_capture(env, capsys, monkeypatch):
+    (env.sessions / "S3.txt").write_text(SESSION3)
+    env.masks.write_text(env.masks.read_text() + "S3 32 64 4 4   test: the fake clock\n")
+    monkeypatch.setenv("FAKE_MODE", "dsp_stream")      # one stream; jit has it 7 DSP frames later
+    assert env.record(s="S3") == 0
+    capsys.readouterr()
+    assert cross(env, s="S3") == 0
+    out = capsys.readouterr().out
+    assert statuses(out, "S3")["dsp-10"] == "PASS"
+    assert "shift +7 DSP frames" in out                                         # the shift is part of the result
+    result = json.loads((env.out / "S3" / "check" / "result.json").read_text())
+    assert "shift +7" in next(r for r in result if r["name"] == "dsp-10")["note"]
+    # the bound is D51's 48 by default and an option
+    assert cross(env, "--max-shift", "7", s="S3") == 0
+    capsys.readouterr()
+    assert cross(env, "--max-shift", "6", s="S3") == 1
+    out = capsys.readouterr().out
+    assert statuses(out, "S3")["dsp-10"] == "FAIL" and "more than the 6 allowed" in out
+    # the same profile compares the capture exactly: another backend's capture is a difference
+    capsys.readouterr()
+    assert env.check("--candidate-args", "--cpu jit", "--profile", "same", s="S3") == 1
+    assert statuses(capsys.readouterr().out, "S3")["dsp-10"] == "FAIL"
+
+
+def test_the_cross_rules_are_options_of_the_cross_profile_only(env, capsys, monkeypatch):
+    assert env.record() == 0
+    capsys.readouterr()
+    for flag in ("--tolerance", "--min-margin", "--max-surplus", "--max-shift"):
+        assert env.check(flag, "3") == 2, flag                                  # the same profile is exact
+        assert "never loosened" in capsys.readouterr().err
+        assert env.check("--profile", "cross", flag, "-1") == 2, flag
+        assert "must not be negative" in capsys.readouterr().err
+        assert env.check("--fallback", flag, "3") == 2, flag
+    # the cross profile needs the mask file (D52)
+    monkeypatch.setattr(golden, "FS_WRITE_MASKS", env.tmp / "no_masks.txt")
+    assert cross(env) == 2
+    assert "write masks" in capsys.readouterr().err
+    assert env.check() == 0                                                     # the same profile does not read it
+
 def test_cross_commands(env, monkeypatch):
     """The comparators the cross profile runs, and with what."""
     assert env.record() == 0
@@ -760,10 +942,15 @@ def test_cross_commands(env, monkeypatch):
     assert svc[1][:2] == ["--normalize", "--outputs"] and "--cross-model" not in svc[1]      # the full one: info
     ipc = next(a for n, a in calls if n == "compare_ipc_traces.py")
     assert ipc[:2] == ["--ignore", str(env.ignore_file)]
+    # D52: the Reads as multisets (at most 16 more), the Writes in full but for this session's masks
+    assert "--fs-reads-multiset" in ipc and ipc[ipc.index("--max-surplus") + 1] == "16"
+    assert ipc[ipc.index("--fs-write-mask") + 1] == str(env.masks)
+    assert ipc[ipc.index("--fs-write-mask-session") + 1] == "S1"
     state = next(a for n, a in calls if n == "state_diff.py")
     assert "--min-changes" in state and state[state.index("--min-changes") + 1] == "2"
-    assert "--tolerance" not in state
+    assert state[state.index("--tolerance") + 1] == "4"                                  # D50 (D33 said 2)
     assert {r.name: r.status for r in results}["svc-full"] == "info"
+    assert "state-margin" in {r.name for r in results}
 
 
 # ---- check, D30's fallback
@@ -786,6 +973,7 @@ def test_fallback_commands(env, monkeypatch):
     assert "--in4" not in svc and "--cross-model" not in svc
     ipc = next(a for n, a in calls if n == "compare_ipc_traces.py")
     assert "--ignore" not in ipc                                  # no ignore list in the same profile
+    assert not [a for a in ipc if a.startswith("--fs-") or a == "--max-surplus"]       # and none of D52's rules
     state = next(a for n, a in calls if n == "state_diff.py")
     assert state[state.index("--tolerance") + 1] == "0" and state[state.index("--min-changes") + 1] == "2"
     # unmapped, the captures and the screenshots exactly as in `same`

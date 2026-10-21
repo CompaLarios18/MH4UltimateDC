@@ -461,3 +461,219 @@ def test_diff_dsp_region_zero_read_when_higher(tmp_path):
     b = pair_capture(tmp_path / "b", [(13, 3), (14, 3)])
     assert capfmt.diff_dsp(a, b) == []
     assert capfmt.summarize(a)["dsp_counter_first"] == 12
+
+
+# ── diff-dsp --align: two timing models (N0-32, D51) ──────────────────────────────────────
+
+# The stream time at which the buffer id of source 0 advances (a model's own DSP counter is the stream time
+# plus that model's shift).
+CHANGES = [90, 93, 97, 100, 104, 107, 111, 115, 118, 122, 125, 129, 133, 136, 140, 144]
+
+
+def stream_status(t, buffer_id_at=None):
+    ident = 1 + sum(1 for c in CHANGES if t >= c)
+    last = max((c for c in CHANGES if t >= c), default=0)
+    return capfmt.make_status(enabled=1, sync_count=ident, buffer_position=(t - last) * 160,
+                              current_buffer_id=ident, last_buffer_id=ident - 1)
+
+
+def stream(path, start, t_first, count, tweak=None, source=0, sources=None, stretch_after=None):
+    """`count` DSP frames; frame i has the DSP counter (start + i) and holds the audio stream at time t_first + i
+    (from `stretch_after` on the stream falls one frame behind, and one more every three frames: no constant shift).
+    `tweak(i, region, number, block)` may change a status block."""
+    with capfmt.Writer(str(path), "dsp", game=0x0004000000155400) as w:
+        for i in range(count):
+            counter = (start + i) & 0xFFFF
+            t = t_first + i
+            if stretch_after is not None and i >= stretch_after:
+                t -= 1 + (i - stretch_after) // 3
+            blocks = {}
+            for region in (0, 1):
+                mine = {}
+                for number in ([source] if sources is None else sources):
+                    block = stream_status(t - region)
+                    if tweak is not None:
+                        block = tweak(i, region, number, block)
+                    mine[number] = block
+                blocks[region] = mine
+            w.dsp_regions(1200 + i // 2, i * TICKS, capfmt.make_region(counter, blocks[0]),
+                          capfmt.make_region((counter - 1) & 0xFFFF, blocks[1]))
+            w.dsp_pcm(1200 + i // 2, i * TICKS, capfmt.make_pcm([(i + 1, 1)] * 160))
+    return str(path)
+
+
+def aligned_pair(tmp_path, shift=22, **cand):
+    """The reference holds stream times 100..139 under counters 100..139; the candidate's counters are `shift`
+    later for the same audio and its capture starts ten audio frames earlier (counters shift - 10 on)."""
+    ref = stream(tmp_path / "ref", 100, 100, 40)
+    other = stream(tmp_path / "cand", 100 + shift - 10, 90, 40, **cand)
+    return ref, other
+
+
+def test_a_constant_shift_passes_and_is_printed(tmp_path, capsys):
+    ref, cand = aligned_pair(tmp_path, 22)
+    assert capfmt.diff_dsp(ref, cand)                                      # the plain comparison keys on the counter
+    result = capfmt.diff_dsp_aligned(ref, cand)
+    assert result.equal and result.shift == 22 and "+22 DSP frames" in result.summary
+    assert capfmt.main(["diff-dsp", ref, cand]) == 1
+    capsys.readouterr()
+    assert capfmt.main(["diff-dsp", ref, cand, "--align"]) == 0
+    out = capsys.readouterr().out
+    assert out.startswith("equal after alignment") and "shift +22 DSP frames" in out
+    assert "status blocks compared" in out and "buffer changes at the shift" in out
+
+
+@pytest.mark.parametrize("shift", [0, 1, 22, -7, 48, -48])
+def test_any_constant_shift_up_to_the_bound_passes(tmp_path, shift):
+    ref, cand = aligned_pair(tmp_path, shift)
+    result = capfmt.diff_dsp_aligned(ref, cand)
+    assert result.equal and result.shift == shift, result.problems
+
+
+def test_a_shift_over_the_bound_fails(tmp_path, capsys):
+    ref, cand = aligned_pair(tmp_path, 49)
+    result = capfmt.diff_dsp_aligned(ref, cand)
+    assert not result.equal and result.shift == 49 and "more than the 48 allowed" in result.problems[0]
+    assert capfmt.diff_dsp_aligned(ref, cand, max_shift=49).equal
+    ref, cand = aligned_pair(tmp_path, 22)
+    assert capfmt.main(["diff-dsp", ref, cand, "--align", "--max-shift", "10"]) == 1
+    out = capsys.readouterr().out
+    assert "shift +22 DSP frames" in out and "more than the 10 allowed" in out
+    assert capfmt.main(["diff-dsp", ref, cand, "--align", "--max-shift", "22"]) == 0
+    ref, cand = aligned_pair(tmp_path, -49)
+    assert not capfmt.diff_dsp_aligned(ref, cand).equal
+
+
+def test_a_shift_that_changes_fails(tmp_path):
+    # from frame 20 on the candidate's audio falls one more frame behind with every frame: no constant shift
+    ref, cand = aligned_pair(tmp_path, 22, stretch_after=20)
+    result = capfmt.diff_dsp_aligned(ref, cand)
+    assert not result.equal
+    assert any("no counterpart" in p for p in result.problems) or any("source 0" in p for p in result.problems)
+    # a candidate that is simply one frame later for the second half: a status block differs after the shift
+    ref, cand = aligned_pair(tmp_path, 22, stretch_after=10)
+    assert not capfmt.diff_dsp_aligned(ref, cand).equal
+
+
+def test_a_buffer_change_more_than_one_frame_off_the_shift_is_named(tmp_path):
+    # the candidate's stream falls behind from its frame 20 on: its later changes are 2 and more frames off the shift of 22
+    ref = stream(tmp_path / "ref", 100, 100, 40)
+    cand = stream(tmp_path / "cand", 112, 90, 40, stretch_after=20)             # late by 1, 2, 3 ... frames
+    result = capfmt.diff_dsp_aligned(ref, cand)
+    assert not result.equal and result.shift == 22
+    assert any("has no counterpart within 1 frame" in p for p in result.problems)
+
+
+def test_a_status_block_that_differs_after_the_shift_fails(tmp_path, capsys):
+    def tweak(i, region, number, block):
+        if (i, region, number) == (25, 1, 5):
+            return capfmt.make_status(enabled=1, sync_count=3, buffer_position=7)
+        return block
+    ref = stream(tmp_path / "ref", 100, 100, 40, sources=[0, 5])
+    cand = stream(tmp_path / "cand", 112, 90, 40, sources=[0, 5], tweak=tweak)
+    result = capfmt.diff_dsp_aligned(ref, cand)
+    assert not result.equal and result.shift == 22
+    assert any("region 1 source 5" in p and "sync_count=0x0003" in p for p in result.problems)
+    assert capfmt.main(["diff-dsp", ref, cand, "--align"]) == 1
+    out = capsys.readouterr().out
+    assert "shift +22" in out and "region 1 source 5" in out
+    # a difference in the source the alignment is not made on, in the frames before the overlap, is not compared
+    outside = stream(tmp_path / "cand2", 112, 90, 40, sources=[0, 5],
+                     tweak=lambda i, r, n, b: capfmt.make_status(enabled=1, sync_count=9) if (i, n) == (2, 5) else b)
+    assert capfmt.diff_dsp_aligned(ref, outside).equal
+
+
+def test_every_status_field_is_compared_after_the_shift(tmp_path):
+    base = dict(enabled=1, dirty=0, sync_count=4, buffer_position=640, current_buffer_id=4, last_buffer_id=3)
+    for field in ("dirty", "sync_count", "buffer_position", "last_buffer_id", "enabled"):
+        changed = dict(base)
+        changed[field] = base[field] + 1
+        ref = stream(tmp_path / "ref", 100, 100, 40, sources=[0, 3],
+                     tweak=lambda i, r, n, b: capfmt.make_status(**base) if (i, r, n) == (18, 0, 3) else b)
+        cand = stream(tmp_path / "cand", 112, 90, 40, sources=[0, 3],
+                      tweak=lambda i, r, n, b, c=changed: capfmt.make_status(**c) if (i, r, n) == (28, 0, 3) else b)
+        assert not capfmt.diff_dsp_aligned(ref, cand).equal, field
+
+
+def test_an_extra_or_a_missing_buffer_change_fails(tmp_path):
+    ref = stream(tmp_path / "ref", 100, 100, 40)
+    # the candidate's audio stops advancing: one buffer never changes
+    def freeze(i, region, number, block):
+        return stream_status(111 - region) if i >= 24 else block                # the stream stays at time 111 from then on
+    cand = stream(tmp_path / "cand", 112, 90, 40, tweak=freeze)
+    result = capfmt.diff_dsp_aligned(ref, cand)
+    assert not result.equal and any("no counterpart" in p for p in result.problems)
+
+
+def test_no_buffer_id_in_common_fails(tmp_path):
+    ref = stream(tmp_path / "ref", 100, 100, 40)
+
+    def other_ids(i, region, number, block):
+        return capfmt.make_status(enabled=1, current_buffer_id=int.from_bytes(block[8:10], "little") + 500)
+    cand = stream(tmp_path / "cand", 112, 90, 40, tweak=other_ids)
+    result = capfmt.diff_dsp_aligned(ref, cand)
+    assert not result.equal and "no buffer id" in result.problems[0]
+
+
+def test_the_counter_wraps_around(tmp_path):
+    ref = stream(tmp_path / "ref", 0xFFF0, 100, 40)                              # counters 0xFFF0 .. 0x0017
+    cand = stream(tmp_path / "cand", (0xFFF0 + 22 - 10) & 0xFFFF, 90, 40)
+    result = capfmt.diff_dsp_aligned(ref, cand)
+    assert result.equal and result.shift == 22, result.problems
+    back = capfmt.diff_dsp_aligned(cand, ref)                                    # and the other way round
+    assert back.equal and back.shift == -22
+
+
+def test_without_an_enabled_source_the_plain_comparison_is_made(tmp_path):
+    a = dsp_capture(tmp_path / "a", [10, 11, 12])
+    b = dsp_capture(tmp_path / "b", [10, 11, 12])
+    result = capfmt.diff_dsp_aligned(a, b)
+    assert result.equal and result.shift == 0 and "nothing to align on" in result.summary
+    # a capture of other counters is a difference of the plain kind, not a shift
+    c = dsp_capture(tmp_path / "c", [10, 12, 13])
+    assert not capfmt.diff_dsp_aligned(a, c).equal
+    # a source enabled on one side only
+    d = dsp_capture(tmp_path / "d", [10, 11, 12], statuses={11: {0: capfmt.make_status(enabled=1)}})
+    result = capfmt.diff_dsp_aligned(a, d)
+    assert not result.equal and "no source is enabled" in result.problems[0]
+    assert not capfmt.diff_dsp_aligned(d, a).equal
+
+
+def test_an_enabled_source_that_never_changes_buffer_is_compared_at_shift_zero(tmp_path):
+    steady = {c: {0: capfmt.make_status(enabled=1, current_buffer_id=4)} for c in range(10, 14)}
+    a = dsp_capture(tmp_path / "a", [10, 11, 12, 13], statuses=steady)
+    b = dsp_capture(tmp_path / "b", [10, 11, 12, 13], statuses=steady)
+    result = capfmt.diff_dsp_aligned(a, b)
+    assert result.equal and result.shift == 0 and "never changes buffer" in result.summary
+    late = dsp_capture(tmp_path / "c", [12, 13, 14, 15], statuses={c: steady[10] for c in range(12, 16)})
+    assert capfmt.diff_dsp_aligned(a, late).problems == capfmt.diff_dsp(a, late) != []      # keyed on the counters, as the plain one
+    moving = {c: {0: capfmt.make_status(enabled=1, current_buffer_id=4 + (c >= 12))} for c in range(10, 14)}
+    m = dsp_capture(tmp_path / "m", [10, 11, 12, 13], statuses=moving)
+    result = capfmt.diff_dsp_aligned(a, m)
+    assert not result.equal and "never in the reference" in result.problems[0]
+
+
+def test_the_samples_are_not_compared_when_aligning(tmp_path):
+    ref = stream(tmp_path / "ref", 100, 100, 40)
+    cand = stream(tmp_path / "cand", 112, 90, 40)
+    assert capfmt.diff_dsp_aligned(ref, cand).equal       # the PCM fill differs with the frame index: not compared
+
+
+def test_the_alignment_options_have_their_usage_errors(tmp_path, capsys):
+    ref, cand = aligned_pair(tmp_path, 22)
+    for extra in (["--max-shift", "10"], ["--align", "--max-shift", "-1"], ["--align", "--frames", "5"]):
+        with pytest.raises(SystemExit) as stop:
+            capfmt.main(["diff-dsp", ref, cand, *extra])
+        assert stop.value.code == 2, extra
+    capsys.readouterr()
+    h = hid_capture(tmp_path / "h", [1])
+    assert capfmt.main(["diff-dsp", ref, h, "--align"]) == 2
+    assert "not a DSP capture" in capsys.readouterr().err
+    assert capfmt.DEFAULT_MAX_SHIFT == 48                                  # D51
+
+
+def test_the_alignment_prints_no_samples(tmp_path, capsys):
+    ref, cand = aligned_pair(tmp_path, 22)
+    capfmt.main(["diff-dsp", ref, cand, "--align"])
+    out = capsys.readouterr().out
+    assert "PCM" not in out and "sample" not in out.lower()

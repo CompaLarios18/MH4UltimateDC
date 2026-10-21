@@ -2,6 +2,8 @@
 import os
 import sys
 
+import pytest
+
 HERE = os.path.dirname(__file__)
 sys.path.insert(0, os.path.join(HERE, "..", "tools", "native"))
 
@@ -475,3 +477,60 @@ def test_descriptors_with_an_index_or_size_that_cannot_exist_are_dropped():
         assert tracefmt._descs(text) == (), text
     # a buffer's size is in bytes and may be large
     assert [d.size for d in tracefmt._descs("static:1:99999999:0x11223344")] == [99999999]
+
+
+# ── `fs:` file requests (N0-32, D52) ────────────────────────────────────────────────
+
+def read_call(session="fs:USER/file#3", offset=0x1_0000_0010, size=0x800, crc="0x1c853882", result=0, reply=True):
+    words_in = (0x080200C2, offset & 0xFFFFFFFF, offset >> 32, size, (size << 4) | 0xC, 0x0FFFDAF8)
+    words_out = (0x08020082, result, size, (size << 4) | 0xC, 0x0FFFDAF8) if reply else None
+    return tracefmt.parse_ipc_lines([ipc_line(1, 1, session, words_in, words_out, desc=f"mapped-w:4:{size}:-",
+                                              outdesc=f"mapped-w:4:{size}:{crc}" if reply else "-")]).calls[0]
+
+
+def write_call(offset=0, size=16, flags=0x00010001, data=None):
+    words_in = (0x08030102, offset & 0xFFFFFFFF, offset >> 32, size, flags, (size << 4) | 0xA, 0x32EF8DF0)
+    return tracefmt.parse_ipc_lines([ipc_line(1, 2, "fs:USER/file#4", words_in, (0x08030082, 0, size, 0, 0),
+                                              desc=f"mapped-r:5:{size}:0x8ddaee24",
+                                              data=() if data is None else ((5, data),))]).calls[0]
+
+
+def test_instance_free_and_the_command_kinds():
+    assert tracefmt.instance_free("fs:USER/file#12") == "fs:USER/file"
+    assert tracefmt.instance_free("fs:USER") == "fs:USER"
+    assert tracefmt.fs_file_command(read_call()) == "read"
+    assert tracefmt.fs_file_command(write_call()) == "write"
+    assert tracefmt.fs_file_command(read_call(session="fs:USER/dir#1")) is None       # not a file session
+    other = tracefmt.parse_ipc_lines([ipc_line(1, 1, "fs:USER/file#1", (0x08040000,), (0x08040040, 0))]).calls[0]
+    assert tracefmt.fs_file_command(other) is None                                    # another command (Close)
+
+
+def test_a_file_request_has_a_64_bit_offset_and_a_size():
+    assert tracefmt.fs_file_request(read_call(offset=0x1_0000_0010, size=0x800)) == (0x1_0000_0010, 0x800)
+    assert tracefmt.fs_file_request(write_call(offset=0x40, size=16)) == (0x40, 16)
+    short = tracefmt.parse_ipc_lines([ipc_line(1, 1, "fs:USER/file#1", (0x080200C2, 1), None)]).calls[0]
+    assert tracefmt.fs_file_request(short) is None                                    # a truncated request
+    assert tracefmt.fs_file_request(tracefmt.parse_ipc_lines(
+        [ipc_line(1, 1, "srv:", (0x00010000,), None)]).calls[0]) is None
+
+
+def test_the_crc_of_the_data_a_read_returned_comes_from_the_reply_buffer():
+    assert tracefmt.fs_read_crc(read_call(crc="0x1c853882")) == "0x1c853882"
+    assert tracefmt.fs_read_crc(read_call(reply=False)) == "-"                         # a Read that never got a reply
+
+
+def test_command_words_stop_before_the_translate_parameters():
+    # header 0x08030102: 4 normal parameters (offset lo, offset hi, size, flags), 2 translate words
+    words = tracefmt.parse_ipc_lines([ipc_line(1, 1, "fs:USER/file#4", (0x08030102, 1, 2, 3, 4, 0xA, 0x32EF8DF0), None)]
+                                     ).calls[0].words_in
+    assert tracefmt.command_words(words) == words[:5]
+    assert tracefmt.command_words(None) is None and tracefmt.command_words(()) is None
+    assert tracefmt.command_words(("garbage", "0x1")) is None
+
+
+def test_ipc_data_is_found_by_descriptor_index():
+    call = write_call(size=3, data="00ff10")
+    assert tracefmt.ipc_data(call, 5) == b"\x00\xff\x10"
+    assert tracefmt.ipc_data(call, 4) is None and tracefmt.ipc_data(write_call(), 5) is None
+    with pytest.raises(ValueError):
+        tracefmt.ipc_data(write_call(size=3, data="zz"), 5)
