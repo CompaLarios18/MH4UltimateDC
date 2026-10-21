@@ -674,7 +674,7 @@ TEST_CASE("OnFinish runs once the run is over, in reverse order; Own objects go 
 
 // ---- the GPU host ----------------------------------------------------------------------------------
 
-TEST_CASE("an interrupt signalled from another thread reaches the sink on the scheduler thread") {
+TEST_CASE("an interrupt signalled from another thread reaches the sink on the scheduler thread, its delay ignored") {
     Fixture f;
     REQUIRE(f.runtime.Prepare(Parse({}), {}));
     ManualTimeSource& time = *f.time;
@@ -687,20 +687,20 @@ TEST_CASE("an interrupt signalled from another thread reaches the sink on the sc
     gpu::Host& host = f.runtime.GpuHost();
     std::thread([&] {
         host.SignalInterrupt(gpu::Interrupt::PSC0, 0);
-        host.SignalInterrupt(gpu::Interrupt::P3D, 2000000);  // 2 ms of game time later
+        host.SignalInterrupt(gpu::Interrupt::P3D, 2000000);  // the GPU's 2 ms: the host does not wait (D25, D41)
     }).join();
     CHECK(got.empty());  // nothing is called from the other thread
     CHECK(f.runtime.Scheduler().RunPending());
-    REQUIRE(got.size() == 1);
+    REQUIRE(got.size() == 2);  // both at the first safe point, in the order signalled, with no game time passed
     CHECK(got[0] == gpu::Interrupt::PSC0);
+    CHECK(got[1] == gpu::Interrupt::P3D);
     CHECK(threads[0] == std::this_thread::get_id());
+    CHECK(threads[1] == std::this_thread::get_id());
     time.Advance(1900000);
     f.runtime.Scheduler().RunPending();
-    CHECK(got.size() == 1);
     time.Advance(200000);
     f.runtime.Scheduler().RunPending();
-    REQUIRE(got.size() == 2);
-    CHECK(got[1] == gpu::Interrupt::P3D);
+    CHECK(got.size() == 2);  // nothing arrives later: no second delivery of the delayed one
 }
 
 TEST_CASE("gpu::Host::Post runs the work on the scheduler thread at a safe point") {
