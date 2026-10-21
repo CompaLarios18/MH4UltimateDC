@@ -1018,13 +1018,13 @@ def test_patch_adds_the_fixed_console_unique_id_switch():
     assert "+    if (random_number > 0xFFFF || (console_id >> 48) != random_number ||" in cpp
     assert "+        (console_id & 0x0000FFFC00000000ULL) != 0) {" in cpp
     assert "+        return false;" in cpp
-    assert "+void ClearFixedConsoleUniqueId() {" in cpp
+    assert "ClearFixedConsoleUniqueId" not in cpp      # nothing would call it
     # the switch is checked before anything is drawn from the host's random source
     assert "+    if (fixed_console_unique_id_set) {" in cpp
     assert cpp.index("+    if (fixed_console_unique_id_set) {") < cpp.index("CryptoPP::AutoSeededRandomPool rng;")
     h = _patch_section("src/core/hle/service/cfg/cfg.h")
     assert "+bool SetFixedConsoleUniqueId(u32 random_number, u64 console_id);" in h
-    assert "+void ClearFixedConsoleUniqueId();" in h
+    assert "ClearFixedConsoleUniqueId" not in h
 
 
 @source_only
@@ -1109,13 +1109,34 @@ def test_patch_writes_zero_padding_in_the_format_metadata(path):
 
 
 @source_only
+def test_patch_writes_zero_padding_in_mcu_dat():
+    """cfg.cpp SaveMCUConfig: the 20 bytes of MCUData and zeros for its 4 tail padding bytes when
+    deterministic_async_operations is set, the whole struct as before when it is not."""
+    cpp = _patch_section("src/core/hle/service/cfg/cfg.cpp")
+    flat = " ".join(line[1:].strip() for line in cpp.splitlines() if line.startswith("+"))
+    assert "if (Settings::values.deterministic_async_operations) {" in flat
+    assert "std::array<u8, sizeof(MCUData)> raw{};" in flat
+    assert "std::copy_n(reinterpret_cast<const u8*>(&mcu_data.header), sizeof(MCUData::Header), raw.begin());" in flat
+    assert ("std::copy_n(reinterpret_cast<const u8*>(&mcu_data.clock_sequence), "
+            "sizeof(mcu_data.clock_sequence), raw.begin() + sizeof(MCUData::Header));") in flat
+    assert "mcu_data_file.WriteBytes(raw.data(), raw.size()); } else { " \
+           "mcu_data_file.WriteBytes(&mcu_data, sizeof(MCUData)); }" in flat       # Azahar's branch kept
+
+
+@source_only
 def test_readme_documents_the_sources_n0_29_found():
     readme = _text("port", "README.md")
     determinism = readme[readme.index("## Determinism"):readme.index("## With Azahar's normal interface")]
     assert "### Sources found by N0-29, iteration 0" in determinism
     for term in ("SetFixedConsoleUniqueId", "kFixedConsoleId", "SetZeroedIpcReplies", "ArchiveFormatInfo",
-                 "TZ", "UTC0", "GetTransferableId", "APT:A", "y2r:u", "cfg:u", "--perf-log"):
+                 "TZ", "UTC0", "GetTransferableId", "APT:A", "y2r:u", "cfg:u", "--perf-log",
+                 "mh4u_runner_log.txt", "mcu.dat", "MH4U_*"):
         assert term in determinism, term
     # N0-26's measurement is kept as it was written
     assert "### Measurement with the game (N0-26)" in determinism
     assert "Where N0-29 starts: the three IPC reply words." in determinism
+    # the README no longer tells the reader to set TZ by hand, and says what each mode keeps
+    assert "run with `TZ=UTC0`" not in readme
+    intro = determinism.split("### What the game sees")[0]
+    assert "What each mode keeps of Azahar's behaviour:" in intro and "`--async-io` keeps all of it" in intro
+    assert "log/" in intro

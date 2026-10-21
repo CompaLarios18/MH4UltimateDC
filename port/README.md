@@ -289,10 +289,19 @@ Everything under `build/` contains game code: it never goes into the repository.
 ## Determinism
 
 The reference runner is meant to repeat itself (D30): two runs with the same arguments, in fresh copies of one
-user folder, give the same traces, captures, screenshots and user folders. Without `--async-io` (its default mode)
+user folder, give the same traces, captures, screenshots and user folders (the `log/` folder of the user folder
+aside: its file is stamped with the host's clock and holds the run's directory path, so a comparison of two user
+folders skips it; see N0-29, iteration 0, below). Without `--async-io` (its default mode)
 it already read files in place, started at a fixed date and kept host time out of the delay of a file read; N0-26
 fixes the two values that were still drawn anew in every run, and gives `--trace-timing` to look for what is left
-(N0-29). `--async-io`, a room (`--room-host`, `--room-join`) and `--new-console-id` keep Azahar's behaviour.
+(N0-29).
+
+What each mode keeps of Azahar's behaviour:
+- `--async-io` keeps all of it: none of the values below is fixed.
+- A room (`--room-host`, `--room-join`) and `--new-console-id` keep Azahar's Wi-Fi MAC address and console unique ID
+  (a room hands out its own address; a console that asked for a new identity gets a drawn one). Everything else in the
+  table below is as in the default mode: the start date and tick, the reads of files, the time zone, the zeroed
+  unwritten bytes of reply words and the zeroed padding of the metadata files are set in every mode but `--async-io`.
 
 ### What the game sees, for the native runtime to start from
 
@@ -302,7 +311,7 @@ setting where it has one.
 
 | Value | Azahar | Default mode of the runner | Where the game sees it |
 |---|---|---|---|
-| Start date | the host's date (`init_clock` SystemTime) | `init_clock` FixedTime, `init_time` 1767268800 (2026-01-01 12:00:00 UTC; run with `TZ=UTC0`, because the shared page converts it through the host's time zone) | the shared page's date records (0x20, 0x40) |
+| Start date | the host's date (`init_clock` SystemTime) | `init_clock` FixedTime, `init_time` 1767268800 (2026-01-01 12:00:00 UTC; the runner sets `TZ=UTC0` itself, because the shared page converts it through the host's time zone: see the time zone row) | the shared page's date records (0x20, 0x40) |
 | Starting tick of the emulated clock | a random 32-bit number drawn per run (`Timing::GenerateBaseTicks`: `std::mt19937` seeded from `std::random_device`, so any value from 0 to 2^32 - 1) | `init_ticks_type` Fixed, `init_ticks_override` **2,000,000,000** (0x77359400, 7.4596 s of the 268,111,856 Hz clock); every core's timer starts there | `svcGetSystemTick` (the running core's timer: this plus the ticks emulated so far); the update ticks in the shared page's date records (0x28 and 0x48); the date in those records, which Azahar computes as `init_time` plus the whole clock, starting tick included, so at the first update the date is `init_time` + 7459 ms |
 | Console Wi-Fi MAC address | the folder's `mac.txt`, or a random address from a list of 16 Nintendo-like ranges, written to `mac.txt`, when there is none | **02:00:00:00:00:01** (locally administered), not read from or written to `mac.txt` | the shared page's bytes 0x60 to 0x65 (the local wireless service puts it there when it starts, and the runner sets the page once the game has loaded, so the page has it either way), `cfg`, and what the local wireless service and `nwm::SOC` take from it |
 | Reads of files | on host threads, finishing at a host-dependent emulated time | `deterministic_async_operations`; the patch keeps host time out of the delay of a read | when a read wakes the game |
@@ -319,6 +328,11 @@ Notes for the mirror:
 - The MAC address is fixed only when the default mode has no room and no `--new-console-id`. In a room the room hands
   out an address (the local wireless service uses the room's, whatever `mac.txt` says), and a console that asked for
   a new identity keeps `mac.txt`'s.
+- The console unique ID follows the same rule (default mode, no room, no `--new-console-id`) and only decides a config
+  savegame that the run makes. The mirror takes the ID in the table as the ID of a fresh user folder; a folder that
+  already has a config savegame keeps the ID in it, and nothing rewrites it. Fixed 0x4D480001A2B3C4D5 is this port's
+  own choice (any pair of Azahar's shape would do): the mirror, and N1-15 for the ID of a fresh folder, must use the
+  same numbers.
 - Why one fix covers the shared page's date: its update callback (`SharedPage::Handler::UpdateTimeCallback`) writes
   `date_time` from `init_time` plus the clock (`GetGlobalTimeUs`) and `update_tick` from the timer's own ticks, so
   both carried the random starting tick and nothing else of the host (the update is an event scheduled at tick 0 of
@@ -421,13 +435,15 @@ Iteration 0 measured the N0-26 runner (the Windows CI build of `wp/N0-26` at `6f
 two runs each on an idle PC, with every recorder (`--trace-svc`, `--trace-ipc`, `--trace-ipc-full`, `--state-trace`,
 `--trace-timing`, `--count-unmapped`, the HID and DSP captures, `--capture-gpu`, `--shots`): G1 to 1700 frames, G6 to
 3700, G2 to 9000. In every pair the state, SVC and timing traces, `unmapped.txt`, the HID and DSP captures, the GPU
-capture's manifest and reference images and every screenshot were identical. What still differed, and nothing else:
+capture's manifest and reference images and every screenshot were identical. What still differed (the first three
+rows are game state or what the game sees; the last is not, and is not removed):
 
 | What | Where | How much |
 |---|---|---|
 | Reply words (`out=`) of five kinds of IPC request: `APT:A` 0x01010000, `cfg:u` 0x00030040 and 0x00020000, `y2r:u` 0x00280000, and, in G2, the CRC of the buffer of one `fs:USER` file write | the IPC traces | a few lines in each session |
 | The GPU capture file | `.mgpu` | 8 consecutive bytes |
 | The user folder after the run | the config savegame of `cfg` (every session), a metadata byte of the game's extdata (G1 and G6), the game's own save file (G2) | 16 bytes of the config savegame, 1 byte, 16 bytes |
+| The runner's log file, in the same user folder | `log/mh4u_runner_log.txt` (every session) | every line: Azahar stamps each line with the host's clock (`steady_clock`, `common/logging/backend.cpp`), and some lines hold the absolute path of the run's directory; with the stamp and that path removed, the lines are equal |
 
 How each was found: the first line is the comparison of the two runs' files; for an IPC line, which words differ
 (`compare_ipc_traces.py --strict` names them; the plain comparison does not look at reply words) and what the service's
@@ -477,21 +493,37 @@ address, and then the same value in the IPC trace's reply. The sources, by what 
    the instructions asked for `TZ=UTC0` and the measurement script set it. **Removed:** in the default mode the runner
    sets `TZ` to `UTC0` itself before it loads anything (`_putenv_s`/`_tzset` on Windows, `setenv`/`tzset` elsewhere),
    so a run from another shell or on another PC gives the same date. Nothing changes where `TZ=UTC0` was set.
+5. **Padding of `mcu.dat` (uninitialised, not seen to differ).** `Module::SaveMCUConfig` writes the 24-byte `MCUData`
+   raw; its last 4 bytes are tail padding, which the struct does not define. They were zero in every run so far, which
+   shows nothing about the next, so the same cure as for source 3: **Removed:** with `deterministic_async_operations`
+   set, the patch copies the 20 bytes of fields into a zeroed 24-byte buffer and writes that. The game only sees
+   `clock_sequence` (`cfg:u` GetUUIDClockSequence), so no value it sees changes.
+6. **The runner's log (not removed).** The log file in the user folder (`log/mh4u_runner_log.txt`) differs in every
+   line between two runs: Azahar stamps each with the host's clock, and a few hold the run's directory path. It is not
+   game state and nothing reads it back, so it is left as Azahar writes it, and the comparison of two user folders has
+   to skip `log/` (the orchestrator's comparison script does; no script in this repository compares user folders).
+   Zeroing the stamp would need a switch in Azahar's logging backend, and the paths would still differ unless both
+   runs used the same directory: that is a decision for the maintainer if the exact comparison of whole user folders,
+   `log/` included, is wanted.
 
 What is expected to change with the next runner build (an expectation from the code, not a measurement; the
 orchestrator measures it with the gates): the IPC traces repeat in all five kinds of request, the config savegame and
 the extdata metadata are equal in every run (from a folder without a config savegame), the GPU capture file is
 equal, and the game's save in G2 and the CRC of its write are equal if source 1 is what the game stores. If one of
-those still differs, it is a source this list does not have.
+those still differs, it is a source this list does not have. The runner's log (source 6) stays different.
 
 Found by reading the code and not removed, because no session reaches it or it has not differed (a lead for the next
 iteration, none of it measured):
-- `ps:ps` GenerateRandomBytes and `ssl:C` GenerateRandomData (OpenSSL `RAND_bytes`), the signing code of `am` and `nfc`
-  (`CryptoPP::AutoSeededRandomPool`) and `svcGetSystemInfo` type 0x20000 (`HOST_TICK`, the host's clock): none of the
-  sessions opens those services or calls that SVC.
-- The 4 tail bytes of `mcu.dat` (`MCUData` padding, written raw): zero in every run so far.
+- `ps:ps` GenerateRandomBytes and `ssl:C` GenerateRandomData (OpenSSL `RAND_bytes`), `am`'s export of a wrapped ticket
+  (OpenSSL `RAND_bytes`, `am.cpp`), the key and signature code in `core/hw/ecc.cpp` and `core/hw/rsa/rsa.cpp` and the
+  random tag contents of `nfc` (`nfc_device.cpp`) (all three `CryptoPP::AutoSeededRandomPool`), and
+  `svcGetSystemInfo` type 0x20000 (`HOST_TICK`, the host's clock): none of the sessions opens those services or calls
+  that SVC.
 - Environment variables `MH4U_*` and `<user dir>/mh4u.ini` are read by the port's hooks when the code library loads
-  (`hooks.cpp`); a reference run needs neither set (the measurement scripts do not set them).
+  (`hooks.cpp`: the frame rate, widescreen, injected buttons, overlays and so on). The runner does not clear them: its
+  own tests and the tools set some of them on purpose (`MH4U_NET_SYNC` in `tests/test_port.py`), so unsetting every
+  `MH4U_*` in the default mode would break those. A reference run has to start without them and without an
+  `mh4u.ini` in the user folder (the measurement scripts set none).
 - The vertex shader JIT picks instructions by the host CPU (reciprocal and reciprocal square root), which could change
   low bits of the pixels between two machines (not between two runs on one); `lle_applets` is on by default but the
   user folder has no applet titles; the order of a thread's held mutexes when it exits holding more than one (one mutex
