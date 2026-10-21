@@ -3,7 +3,9 @@
 //
 //   - GameSeconds is the game clock (never the host's): ticks over 268111856, paused when the clock is;
 //   - SetRefreshRate goes to Runtime::SetRefreshRate, and from there to the GSP's VBlank period;
-//   - UserDir is --user (the folder that holds mh4u.ini), Log is MH4N_LOG;
+//   - UserDir is --user (the folder that holds mh4u.ini), Log is MH4N_LOG; without --user it is
+//     kNoUserDir, a path that holds no file, so the hooks run on their defaults and a stray
+//     ./mh4u.ini in the current directory changes nothing;
 //   - the screen layout (top-screen rows and width, the overlay) is stored for the renderer (N2b);
 //   - network sync does nothing and the end-skip vote is always agreed: local only until N4.
 //
@@ -46,10 +48,17 @@ namespace mh4n::platform {
 bool ParseAppOptions(std::string_view text, std::map<std::string, std::string>* options,
                      std::string* error);
 
+// What UserDir() returns when there is no --user: the hooks open <UserDir()>mh4u.ini, and this is
+// the same on every platform and obviously a placeholder. '<' and '>' are not allowed in a Windows
+// file name, and on the other systems the folder would have to be made on purpose, so no mh4u.ini is
+// ever found there (an empty string would have made the hooks read ./mh4u.ini).
+inline constexpr const char* kNoUserDir = "<no --user folder>/";
+
 class NativePlatform final : public Port::Platform, public std::enable_shared_from_this<NativePlatform> {
 public:
     // `user_dir` is the folder mh4u.ini lives in, as the hooks get it from UserDir(): with a
-    // trailing separator when it is not empty. `app_options` are the host settings of --options.
+    // trailing separator. Empty means there is none: UserDir() is then kNoUserDir (logged once).
+    // `app_options` are the host settings of --options.
     NativePlatform(Runtime& runtime, std::string user_dir, std::map<std::string, std::string> app_options);
     ~NativePlatform() override;
 

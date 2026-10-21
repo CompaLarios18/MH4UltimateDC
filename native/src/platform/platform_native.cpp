@@ -104,6 +104,12 @@ NativePlatform::NativePlatform(Runtime& runtime, std::string user_dir,
     if (it != app_options_.end() && KnownAspectRatio(it->second)) {
         aspect_ratio_ = it->second;
     }
+    if (user_dir_.empty()) {
+        // The hooks would open ./mh4u.ini: a stray file in the current directory would silently change
+        // fps and widescreen. Hand them a folder that holds nothing (D44).
+        user_dir_ = kNoUserDir;
+        MH4N_LOG(Info, kLog, "no --user folder: the hooks use their defaults and read no mh4u.ini");
+    }
     std::lock_guard lock(g_registry_mutex);
     Registry()[&runtime_] = this;
 }
@@ -383,7 +389,7 @@ std::shared_ptr<NativePlatform> InstallPlatform(Runtime& runtime) {
     }
 
     // The hooks open <UserDir()>mh4u.ini: the separator is part of what they get, as from Azahar.
-    // Without --user it is empty, and the hooks read ./mh4u.ini (see the report).
+    // Without --user it is empty, and NativePlatform turns that into kNoUserDir.
     std::string user_dir = runtime.UserFolder();
     if (!user_dir.empty() && user_dir.back() != '/' && user_dir.back() != '\\') {
         user_dir.push_back('/');
