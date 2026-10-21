@@ -1685,19 +1685,29 @@ TEST_CASE("D37: a missing user folder stays absent after a boot that reads cfg:u
 
 namespace {
 
-// What a start-up leaves in a user folder that cfg did not write to: the play coin archive that ptm's boot
-// step makes (N1-12b) and nothing else (no config, no mac.txt, no sysdata anywhere), or an empty folder.
+// What a start-up leaves in a user folder that cfg did not write to: exactly the play coin archive that ptm's boot
+// step makes (N1-12b), its folders and files, and nothing else: no config, no mac.txt, no sysdata, no other
+// folder, empty ones included. The step runs in every fixture that uses this.
 bool OnlyThePlayCoinArchive(const std::string& user) {
-    std::vector<std::string> files;
+    std::vector<std::string> entries;
     for (const auto& entry : fs::recursive_directory_iterator(user)) {
-        if (entry.is_directory()) {
-            continue;
-        }
-        files.push_back(fs::relative(entry.path(), user).generic_string());
+        entries.push_back(fs::relative(entry.path(), user).generic_string() + (entry.is_directory() ? "/" : ""));
     }
-    std::sort(files.begin(), files.end());
-    const std::string archive = "nand/data/00000000000000000000000000000000/extdata/00048000/F000000B/";
-    return files.empty() || files == std::vector<std::string>{archive + "metadata", archive + "user/gamecoin.dat"};
+    std::sort(entries.begin(), entries.end());
+    const std::string extdata = "nand/data/00000000000000000000000000000000/extdata/";
+    const std::string archive = extdata + "00048000/F000000B/";
+    std::vector<std::string> expected = {"nand/",
+                                         "nand/data/",
+                                         "nand/data/00000000000000000000000000000000/",
+                                         extdata,
+                                         extdata + "00048000/",
+                                         archive,
+                                         archive + "boss/",
+                                         archive + "metadata",
+                                         archive + "user/",
+                                         archive + "user/gamecoin.dat"};
+    std::sort(expected.begin(), expected.end());
+    return entries == expected;
 }
 
 // The log records with their level (the Fixture keeps only the text). Make it after the Fixture: the last sink

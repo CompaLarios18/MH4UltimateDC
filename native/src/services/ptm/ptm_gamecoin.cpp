@@ -18,8 +18,8 @@
 // factory only (the other way round, fs would have to know the coin file).
 //
 // Departures from Azahar:
-//  - Nothing is made without --user, or when the user folder is not an existing folder (the runtime never
-//    makes the user folder itself, like cfg: D37); the archives then answer as an empty disk.
+//  - Nothing is made without --user, or when the user folder is not an existing folder: the step never makes
+//    the user folder itself (Azahar creates it); the archives then answer as an empty disk.
 //  - Azahar's start-up also runs in the replay tool's way in (Runtime::Prepare), and so does this step:
 //    the replay's user folder is the place where the reference's start-up result has to appear.
 //  - Azahar asserts when the archive exists but cannot be opened (an extdata folder without `user/`); here
@@ -133,8 +133,8 @@ void MakeGameCoinArchive(fs::ArchiveFactory& factory, const fs::Path& archive_pa
         MH4N_LOG(Error, kLog, "gamecoin.dat was written for 0x{:X} of 0x{:X} bytes", written, bytes.size());
         return;
     }
-    MH4N_LOG(Info, kLog, "play coin file made: SharedExtSaveData 0x{:08X}, /gamecoin.dat ({} bytes)", kPtmSharedExtDataLow,
-             bytes.size());
+    MH4N_LOG(Info, kLog, "play coin file made: SharedExtSaveData 0x{:08X}, /gamecoin.dat ({} bytes)",
+             kPtmSharedExtDataLow, bytes.size());
 }
 
 // Module::Module of Azahar's PTM: the archive is opened, and only if it is not formatted is it made.
@@ -150,7 +150,8 @@ void StartPtm(Runtime& rt) {
         return;
     }
     if (!fs::host::IsDirectory(state->user_folder)) {
-        MH4N_LOG(Info, kLog, "the user folder {} is not an existing folder: the play coin file is not made", state->user_folder);
+        MH4N_LOG(Info, kLog, "the user folder {} is not an existing folder: the play coin file is not made",
+                 state->user_folder);
         return;
     }
     fs::ArchiveFactory* factory = state->archives.Factory(fs::archive_id::kSharedExtSaveData);
@@ -158,7 +159,8 @@ void StartPtm(Runtime& rt) {
         MH4N_LOG(Error, kLog, "there is no SharedExtSaveData archive: the play coin file is not made");
         return;
     }
-    const fs::Path archive_path = fs::ConstructExtDataBinaryPath(fs::kMediaNand, kSharedExtDataHigh, kPtmSharedExtDataLow);
+    const fs::Path archive_path =
+        fs::ConstructExtDataBinaryPath(fs::kMediaNand, kSharedExtDataHigh, kPtmSharedExtDataLow);
     std::unique_ptr<fs::ArchiveBackend> archive;
     const Result result = factory->Open(archive_path, 0, &archive);
     if (result == fs::kResultNotFormatted) {

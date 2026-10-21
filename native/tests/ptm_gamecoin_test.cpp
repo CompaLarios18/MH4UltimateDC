@@ -119,18 +119,12 @@ TEST_CASE("an empty user folder gets Azahar's play coin archive: folders, metada
     // Azahar passes no icon for this archive: none is left
     CHECK_FALSE(stdfs::exists(archive / "icon"));
     // nothing but the nand folder and what is in it
-    CHECK(Layout(dir.UserPath()) == std::vector<std::string>{
-                                        "nand/",
-                                        "nand/data/",
-                                        "nand/data/00000000000000000000000000000000/",
-                                        "nand/data/00000000000000000000000000000000/extdata/",
-                                        "nand/data/00000000000000000000000000000000/extdata/00048000/",
-                                        "nand/data/00000000000000000000000000000000/extdata/00048000/F000000B/",
-                                        "nand/data/00000000000000000000000000000000/extdata/00048000/F000000B/boss/",
-                                        "nand/data/00000000000000000000000000000000/extdata/00048000/F000000B/metadata 16",
-                                        "nand/data/00000000000000000000000000000000/extdata/00048000/F000000B/user/",
-                                        "nand/data/00000000000000000000000000000000/extdata/00048000/F000000B/user/gamecoin.dat 20",
-                                    });
+    const std::string ids = "nand/data/00000000000000000000000000000000/";
+    const std::string home = ids + "extdata/00048000/F000000B/";
+    CHECK(Layout(dir.UserPath()) == std::vector<std::string>{"nand/", "nand/data/", ids, ids + "extdata/",
+                                                             ids + "extdata/00048000/", home, home + "boss/",
+                                                             home + "metadata 16", home + "user/",
+                                                             home + "user/gamecoin.dat 20"});
     CHECK(log.Count(LogLevel::Info, "play coin file made") == 1);
     CHECK(log.Count(LogLevel::Error, "") == 0);
     CHECK(log.Count(LogLevel::Warning, "") == 0);

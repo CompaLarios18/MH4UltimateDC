@@ -1121,11 +1121,11 @@ TEST_CASE("SharedExtSaveData lives in the NAND folder and its high id is always 
     std::map<std::string, Result> r;
     const int status = BootWith(f, dir, {"--ms", "1000", "--io-latency", "none"}, [&] {
         Guest g(f, dir);
-        // (0xF000000B is the play coin archive that the ptm boot step makes, N1-12b: another id is missing)
-        r["missing"] = g.OpenArchive(7, kBinary, ExtPath(0, 0xF000000C, 0x12345))[1];
-        r["create"] = g.CreateExtSaveData(0, 0x00048000, 0xF000000B, Pattern(8, 1));
+        // (0xF000000B is the play coin archive that the ptm boot step makes, N1-12b: this case uses fresh ids)
+        r["missing"] = g.OpenArchive(7, kBinary, ExtPath(0, 0xF000000D, 0x12345))[1];
+        r["create"] = g.CreateExtSaveData(0, 0x00048000, 0xF000000C, Pattern(8, 1));
         // the id the game asks with has any high word: Azahar overwrites it
-        const u64 a = g.MustOpen(7, kBinary, ExtPath(0, 0xF000000B, 0xDEAD));
+        const u64 a = g.MustOpen(7, kBinary, ExtPath(0, 0xF000000C, 0xDEAD));
         r["create file"] = g.CreateFile(a, "/f.bin", 4);
         r["unknown"] = g.OpenArchive(7, kBinary, ExtPath(0, 0xF0000099, 0))[1];
         ExitProcess(*f.runtime);
@@ -1135,7 +1135,7 @@ TEST_CASE("SharedExtSaveData lives in the NAND folder and its high id is always 
     CHECK(r["create"] == kResultSuccess);
     CHECK(r["create file"] == kResultSuccess);
     CHECK(r["unknown"] == kNotFormatted);
-    const std::filesystem::path folder = dir.SharedExtFolder(0x48000, 0xF000000B);
+    const std::filesystem::path folder = dir.SharedExtFolder(0x48000, 0xF000000C);
     CHECK(std::filesystem::is_directory(folder / "user"));
     CHECK(std::filesystem::is_directory(folder / "boss"));
     CHECK(std::filesystem::exists(folder / "metadata"));
