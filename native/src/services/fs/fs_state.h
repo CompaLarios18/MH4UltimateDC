@@ -15,7 +15,8 @@
 //     MH4N_REGISTER(ArchiveProvider, "03.selfncch", ArchiveProvider{archive_id::kSelfNCCH, [](FsState& s) {
 //         return std::make_unique<MyFactory>(s); }});
 //
-// N1-13 adds save data and extdata that way, from files of its own.
+// N1-13 adds save data and extdata that way, from files of its own (archive_savedata.cpp,
+// archive_extsavedata.cpp).
 //
 // Threads (principle 6): everything here belongs to the scheduler thread except `Pool()`'s workers,
 // which run the `work` of `StartIo`.
@@ -54,6 +55,8 @@ public:
     Result Open(u32 id_code, const Path& path, u64 program_id, ArchiveHandle* handle);
     Result Close(ArchiveHandle handle);  // kResultInvalidArchiveHandle if it is not open
     ArchiveBackend* Get(ArchiveHandle handle);
+    // The factory registered for an id, or null (N1-13: Format and the extdata commands go to it).
+    ArchiveFactory* Factory(u32 id_code);
 
 private:
     std::map<u32, std::unique_ptr<ArchiveFactory>> factories_;
@@ -103,6 +106,9 @@ struct FsState {
     // first.)
     std::atomic<int> io_in_flight{0};
     GameFiles game;
+    // --user, with a slash at the end; empty without it. The save data and extdata archives live under
+    // it, in Azahar's layout (N1-13).
+    std::string user_folder;
     ArchiveManager archives;
     std::unique_ptr<IoPool> pool;
 
@@ -121,6 +127,9 @@ std::shared_ptr<FsState> GetFsState(ServiceContext& context);
 // what GetPriority starts with. Scheduler thread.
 std::shared_ptr<ClientSession> CreateFileSession(ServiceContext& context, std::shared_ptr<FsState> state,
                                                  std::shared_ptr<FileBackend> backend, u32 priority);
+
+// A session of a directory the game opened (N1-13): the client side to push into the reply of OpenDirectory.
+std::shared_ptr<ClientSession> CreateDirectorySession(ServiceContext& context, std::unique_ptr<DirectoryBackend> backend);
 
 // Makes the I/O pool of `state` (io.cpp, where the pool is a complete type).
 struct FsState;

@@ -94,6 +94,11 @@ Result ArchiveManager::Close(ArchiveHandle handle) {
     return kResultSuccess;
 }
 
+ArchiveFactory* ArchiveManager::Factory(u32 id_code) {
+    const auto found = factories_.find(id_code);
+    return found == factories_.end() ? nullptr : found->second.get();
+}
+
 ArchiveBackend* ArchiveManager::Get(ArchiveHandle handle) {
     const auto found = open_.find(handle);
     return found == open_.end() ? nullptr : found->second.get();
@@ -110,6 +115,10 @@ void FsState::Init(ServiceContext& context) {
         latency = IoLatency::Azahar;
     }
     MakeIoPool(*this, context.GetKernel());
+    user_folder = context.UserFolder();
+    if (!user_folder.empty() && user_folder.back() != '/' && user_folder.back() != '\\') {
+        user_folder += '/';
+    }
 
     const std::string& folder = context.GameFolder();
     game.romfs = OpenGameFile(folder, "romfs.bin");
