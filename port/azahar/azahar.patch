@@ -2079,7 +2079,7 @@ index 7a69afb..6d62f3d 100644
          // Stores a scaling for the internal clockspeed. Changing this number results in
          // under/overclocking the guest cpu
 diff --git a/src/core/hle/service/cfg/cfg.cpp b/src/core/hle/service/cfg/cfg.cpp
-index 3546184..725aed8 100644
+index 3546184..3419ba7 100644
 --- a/src/core/hle/service/cfg/cfg.cpp
 +++ b/src/core/hle/service/cfg/cfg.cpp
 @@ -1099,11 +1099,28 @@ static std::tuple<u32 /*region*/, SystemLanguage> AdjustLanguageInfoBlock(
@@ -2111,11 +2111,44 @@ index 3546184..725aed8 100644
      FileUtil::IOFile mac_address_file(
          fmt::format("{}/mac.txt", FileUtil::GetUserPath(FileUtil::UserPath::SysDataDir)), "rb");
      if (!mac_address_file.IsOpen() || mac_address_file.GetSize() > 100) {
+@@ -1250,7 +1267,32 @@ u8 Module::GetStateCode() {
+     return block.state_code;
+ }
+ 
++/// The console unique ID the port's runner fixed (SetFixedConsoleUniqueId); none: Azahar's own
++static bool fixed_console_unique_id_set = false;
++static std::pair<u32, u64> fixed_console_unique_id;
++
++bool SetFixedConsoleUniqueId(u32 random_number, u64 console_id) {
++    // the shape GenerateConsoleUniqueId makes: bits 0 to 33 the friend code seed, bits 34 to 47
++    // zero, bits 48 to 63 the random number
++    if (random_number > 0xFFFF || (console_id >> 48) != random_number ||
++        (console_id & 0x0000FFFC00000000ULL) != 0) {
++        return false;
++    }
++    fixed_console_unique_id = std::make_pair(random_number, console_id);
++    fixed_console_unique_id_set = true;
++    return true;
++}
++
++void ClearFixedConsoleUniqueId() {
++    fixed_console_unique_id_set = false;
++}
++
+ std::pair<u32, u64> Module::GenerateConsoleUniqueId() const {
++    if (fixed_console_unique_id_set) {
++        // fixed by the port's runner: nothing is drawn from the host's random source
++        return fixed_console_unique_id;
++    }
++
+     CryptoPP::AutoSeededRandomPool rng;
+     const u32 random_number = rng.GenerateWord32(0, 0xFFFF);
+ 
 diff --git a/src/core/hle/service/cfg/cfg.h b/src/core/hle/service/cfg/cfg.h
-index 7ce1a55..3cdde3e 100644
+index 7ce1a55..c1abd66 100644
 --- a/src/core/hle/service/cfg/cfg.h
 +++ b/src/core/hle/service/cfg/cfg.h
-@@ -689,6 +689,12 @@ std::string GenerateRandomMAC();
+@@ -689,6 +689,24 @@ std::string GenerateRandomMAC();
  
  std::array<u8, 6> GetConsoleMacAddress(Core::System& system);
  
@@ -2125,6 +2158,151 @@ index 7ce1a55..3cdde3e 100644
 +/// false, changing nothing, for anything else. Used only by the port's runner.
 +bool SetFixedConsoleMac(const std::string& mac);
 +
++/// Makes the console unique ID that a new config savegame gets (Module::GenerateConsoleUniqueId,
++/// which a config savegame that is made calls) the given pair instead of one drawn from the
++/// host's random source: `random_number` at most 0xFFFF, `console_id` with that number in bits 48
++/// to 63, bits 34 to 47 zero and the friend code seed in bits 0 to 33. Call before the system
++/// loads. A config savegame that already exists keeps its ID. Returns false, changing nothing,
++/// for a pair of another shape. Used only by the port's runner (a console that asks for a new
++/// identity does not set it).
++bool SetFixedConsoleUniqueId(u32 random_number, u64 console_id);
++
++/// Goes back to Azahar's own (random) console unique IDs.
++void ClearFixedConsoleUniqueId();
++
  } // namespace Service::CFG
  
  SERVICE_CONSTRUCT(Service::CFG::Module)
+diff --git a/src/core/file_sys/archive_extsavedata.cpp b/src/core/file_sys/archive_extsavedata.cpp
+index d1dd583..9e3ffa0 100644
+--- a/src/core/file_sys/archive_extsavedata.cpp
++++ b/src/core/file_sys/archive_extsavedata.cpp
+@@ -3,6 +3,8 @@
+ // Refer to the misc/licenses/gplv2.txt file included.
+ 
+ #include <algorithm>
++#include <array>
++#include <cstring>
+ #include <memory>
+ #include <vector>
+ #include <fmt/format.h>
+@@ -10,6 +12,7 @@
+ #include "common/common_types.h"
+ #include "common/file_util.h"
+ #include "common/logging/log.h"
++#include "common/settings.h"
+ #include "core/file_sys/archive_artic.h"
+ #include "core/file_sys/archive_extsavedata.h"
+ #include "core/file_sys/disk_archive.h"
+@@ -340,7 +343,17 @@ Result ArchiveFactory_ExtSaveData::FormatAsExtData(const Path& path,
+             return ResultUnknown;
+         }
+ 
+-        file.WriteBytes(&format_info, sizeof(format_info));
++        if (Settings::values.deterministic_async_operations) {
++            // the 3 bytes after duplicate_data are padding, which a caller leaves as whatever its
++            // stack held: the port's runner writes zeros there
++            std::array<u8, sizeof(format_info)> metadata{};
++            std::memcpy(metadata.data(), &format_info,
++                        sizeof(format_info.total_size) + sizeof(format_info.number_directories) +
++                            sizeof(format_info.number_files) + sizeof(format_info.duplicate_data));
++            file.WriteBytes(metadata.data(), metadata.size());
++        } else {
++            file.WriteBytes(&format_info, sizeof(format_info));
++        }
+ 
+         if (icon.has_value()) {
+             FileUtil::IOFile icon_file(FileSys::GetExtSaveDataPath(GetMountPoint(), path) + "icon",
+diff --git a/src/core/file_sys/archive_source_sd_savedata.cpp b/src/core/file_sys/archive_source_sd_savedata.cpp
+index 173868f..582bba2 100644
+--- a/src/core/file_sys/archive_source_sd_savedata.cpp
++++ b/src/core/file_sys/archive_source_sd_savedata.cpp
+@@ -2,10 +2,13 @@
+ // Licensed under GPLv2 or any later version
+ // Refer to the misc/licenses/gplv2.txt file included.
+ 
++#include <array>
++#include <cstring>
+ #include <fmt/format.h>
+ #include "common/archives.h"
+ #include "common/file_util.h"
+ #include "common/logging/log.h"
++#include "common/settings.h"
+ #include "core/file_sys/archive_artic.h"
+ #include "core/file_sys/archive_source_sd_savedata.h"
+ #include "core/file_sys/errors.h"
+@@ -92,7 +95,19 @@ Result ArchiveSource_SDSaveData::Format(u64 program_id,
+         FileUtil::IOFile file(metadata_path, "wb");
+ 
+         if (file.IsOpen()) {
+-            file.WriteBytes(&format_info, sizeof(format_info));
++            if (Settings::values.deterministic_async_operations) {
++                // the 3 bytes after duplicate_data are padding, which a caller leaves as whatever
++                // its stack held: the port's runner writes zeros there
++                std::array<u8, sizeof(format_info)> metadata{};
++                std::memcpy(metadata.data(), &format_info,
++                            sizeof(format_info.total_size) +
++                                sizeof(format_info.number_directories) +
++                                sizeof(format_info.number_files) +
++                                sizeof(format_info.duplicate_data));
++                file.WriteBytes(metadata.data(), metadata.size());
++            } else {
++                file.WriteBytes(&format_info, sizeof(format_info));
++            }
+             return ResultSuccess;
+         }
+         return ResultSuccess;
+diff --git a/src/core/hle/kernel/hle_ipc.cpp b/src/core/hle/kernel/hle_ipc.cpp
+index c72097e..e18df21 100644
+--- a/src/core/hle/kernel/hle_ipc.cpp
++++ b/src/core/hle/kernel/hle_ipc.cpp
+@@ -3,6 +3,7 @@
+ // Refer to the misc/licenses/gplv2.txt file included.
+ 
+ #include <algorithm>
++#include <atomic>
+ #include <vector>
+ #include <boost/serialization/assume_abstract.hpp>
+ #include <boost/serialization/shared_ptr.hpp>
+@@ -125,12 +126,23 @@ std::shared_ptr<Event> HLERequestContext::SleepClientThread(
+     return event;
+ }
+ 
++static std::atomic<bool> zeroed_ipc_replies{false};
++
++void SetZeroedIpcReplies(bool enable) {
++    zeroed_ipc_replies.store(enable);
++}
++
+ HLERequestContext::HLERequestContext() : kernel(Core::Global<KernelSystem>()) {}
+ 
+ HLERequestContext::HLERequestContext(KernelSystem& kernel, std::shared_ptr<ServerSession> session,
+                                      std::shared_ptr<Thread> thread)
+     : kernel(kernel), session(std::move(session)), thread(thread) {
+-    cmd_buf[0] = 0;
++    if (zeroed_ipc_replies.load(std::memory_order_relaxed)) {
++        // set by the port's runner: the words of a reply that the service does not write are 0
++        cmd_buf.fill(0);
++    } else {
++        cmd_buf[0] = 0;
++    }
+ }
+ 
+ HLERequestContext::~HLERequestContext() = default;
+diff --git a/src/core/hle/kernel/hle_ipc.h b/src/core/hle/kernel/hle_ipc.h
+index 33511b3..3e57674 100644
+--- a/src/core/hle/kernel/hle_ipc.h
++++ b/src/core/hle/kernel/hle_ipc.h
+@@ -39,6 +39,12 @@ class Event;
+ class HLERequestContext;
+ class KernelSystem;
+ 
++/// With `enable`, every HLE request starts with a zeroed command buffer, so the bytes of a reply
++/// word that a service does not write (a u8, u16 or bool fills one to three bytes of its word, and
++/// a word a service declares but does not push) are 0 instead of whatever the host's heap held.
++/// Used only by the port's runner (not in its asynchronous mode).
++void SetZeroedIpcReplies(bool enable);
++
+ /**
+  * Interface implemented by HLE Session handlers.
+  * This can be provided to a ServerSession in order to hook into several relevant events
