@@ -6,11 +6,13 @@
 // says "GPLv3 or any later version", the source of the layout of ExtSaveDataInfo; the others say "GPLv2 or any
 // later version"): the result codes written out as numbers, the paths of the folders under the user folder,
 // the commands' parameters and replies, and what each operation answers for a missing or an existing path.
-// Copyright 2016-2026 Citra Emulator Project / Azahar Emulator Project (savedata_archive.cpp, disk_archive.cpp,
-//   directory.cpp)
-// Copyright 2014-2025 Citra Emulator Project / Azahar Emulator Project (archive_extsavedata.cpp,
-//   archive_source_sd_savedata.cpp, archive_other_savedata.cpp)
-// Copyright 2014-2026 Citra Emulator Project / Azahar Emulator Project (fs_user.cpp, archive.cpp, archive.h)
+// Copyright 2016-2024 Citra Emulator Project / Azahar Emulator Project (savedata_archive.cpp,
+//   archive_other_savedata.cpp)
+// Copyright 2014-2024 Citra Emulator Project / Azahar Emulator Project (archive_source_sd_savedata.cpp)
+// Copyright 2014-2026 Citra Emulator Project / Azahar Emulator Project (disk_archive.cpp, fs_user.cpp,
+//   archive.cpp, archive.h)
+// Copyright 2018-2026 Citra Emulator Project / Azahar Emulator Project (directory.cpp)
+// Copyright 2014-2025 Citra Emulator Project / Azahar Emulator Project (archive_extsavedata.cpp)
 // Copyright 2016 Citra Emulator Project (errors.h)
 //
 // Save data and extdata through fs:USER (N1-13): the guest sends the requests the game sends, in a temporary
