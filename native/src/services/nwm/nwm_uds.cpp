@@ -53,9 +53,9 @@
 //  - GetApplicationData with a buffer smaller than the data answers two words (the result and a size of
 //    0); Azahar declares two more translate words that it leaves as they were in the command buffer.
 //  - The SPOOF_FRIEND_CODE_SEED hack of Azahar (it replaces the friend code seed with the MAC address for
-//    chosen titles) is not implemented; it is off for every title by default. The console MAC address
-//    (cfg) is only used by Azahar for the host address of a hosted network and for the shared page, and
-//    nothing here shows either, so this module needs nothing from cfg.
+//    chosen titles) is not implemented; it is off for every title by default. The shared page's MAC
+//    address is set at start-up from cfg's console MAC (D40, see StartNwm below); only the host address
+//    of a hosted network still waits for N4.
 //  - BeginHostingNetwork does not set host_mac_address of the network information (Azahar writes the cfg
 //    console MAC there): nothing answered without a room shows it, and N4 sets it with the beacons.
 //  - The deprecated commands read the first 0x3C bytes of the network information as Azahar does; the
