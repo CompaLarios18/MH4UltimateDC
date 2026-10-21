@@ -2079,10 +2079,30 @@ index 7a69afb..6d62f3d 100644
          // Stores a scaling for the internal clockspeed. Changing this number results in
          // under/overclocking the guest cpu
 diff --git a/src/core/hle/service/cfg/cfg.cpp b/src/core/hle/service/cfg/cfg.cpp
-index 3546184..3419ba7 100644
+index 3546184..f0eb7be 100644
 --- a/src/core/hle/service/cfg/cfg.cpp
 +++ b/src/core/hle/service/cfg/cfg.cpp
-@@ -1099,11 +1099,28 @@ static std::tuple<u32 /*region*/, SystemLanguage> AdjustLanguageInfoBlock(
+@@ -1042,7 +1042,18 @@ void Module::SaveMCUConfig() {
+         fmt::format("{}/mcu.dat", FileUtil::GetUserPath(FileUtil::UserPath::SysDataDir)), "wb");
+ 
+     if (mcu_data_file.IsOpen()) {
+-        mcu_data_file.WriteBytes(&mcu_data, sizeof(MCUData));
++        if (Settings::values.deterministic_async_operations) {
++            // the 4 bytes after clock_sequence are padding, which the struct leaves as it is: the
++            // port's runner writes zeros there
++            std::array<u8, sizeof(MCUData)> raw{};
++            std::copy_n(reinterpret_cast<const u8*>(&mcu_data.header), sizeof(MCUData::Header),
++                        raw.begin());
++            std::copy_n(reinterpret_cast<const u8*>(&mcu_data.clock_sequence),
++                        sizeof(mcu_data.clock_sequence), raw.begin() + sizeof(MCUData::Header));
++            mcu_data_file.WriteBytes(raw.data(), raw.size());
++        } else {
++            mcu_data_file.WriteBytes(&mcu_data, sizeof(MCUData));
++        }
+     }
+ }
+ 
+@@ -1099,11 +1110,28 @@ static std::tuple<u32 /*region*/, SystemLanguage> AdjustLanguageInfoBlock(
      return {default_region, region_languages[default_region][0]};
  }
  
@@ -2111,7 +2131,7 @@ index 3546184..3419ba7 100644
      FileUtil::IOFile mac_address_file(
          fmt::format("{}/mac.txt", FileUtil::GetUserPath(FileUtil::UserPath::SysDataDir)), "rb");
      if (!mac_address_file.IsOpen() || mac_address_file.GetSize() > 100) {
-@@ -1250,7 +1267,32 @@ u8 Module::GetStateCode() {
+@@ -1250,7 +1278,28 @@ u8 Module::GetStateCode() {
      return block.state_code;
  }
  
@@ -2131,10 +2151,6 @@ index 3546184..3419ba7 100644
 +    return true;
 +}
 +
-+void ClearFixedConsoleUniqueId() {
-+    fixed_console_unique_id_set = false;
-+}
-+
  std::pair<u32, u64> Module::GenerateConsoleUniqueId() const {
 +    if (fixed_console_unique_id_set) {
 +        // fixed by the port's runner: nothing is drawn from the host's random source
@@ -2145,10 +2161,10 @@ index 3546184..3419ba7 100644
      const u32 random_number = rng.GenerateWord32(0, 0xFFFF);
  
 diff --git a/src/core/hle/service/cfg/cfg.h b/src/core/hle/service/cfg/cfg.h
-index 7ce1a55..c1abd66 100644
+index 7ce1a55..584c8e0 100644
 --- a/src/core/hle/service/cfg/cfg.h
 +++ b/src/core/hle/service/cfg/cfg.h
-@@ -689,6 +689,24 @@ std::string GenerateRandomMAC();
+@@ -689,6 +689,21 @@ std::string GenerateRandomMAC();
  
  std::array<u8, 6> GetConsoleMacAddress(Core::System& system);
  
@@ -2166,9 +2182,6 @@ index 7ce1a55..c1abd66 100644
 +/// for a pair of another shape. Used only by the port's runner (a console that asks for a new
 +/// identity does not set it).
 +bool SetFixedConsoleUniqueId(u32 random_number, u64 console_id);
-+
-+/// Goes back to Azahar's own (random) console unique IDs.
-+void ClearFixedConsoleUniqueId();
 +
  } // namespace Service::CFG
  
