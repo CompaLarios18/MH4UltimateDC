@@ -21,7 +21,22 @@
 // Command lists: the list is not run, but it is read far enough to know how many P3D interrupts
 // Azahar's PicaCore::ProcessCmdList would signal for it: one for each write to the finalize
 // register (irq_request) whose value matches irq_compare in some byte, up to the first one when
-// irq_autostop is set. The game's command-list progress counts those interrupts.
+// irq_autostop is set. The game's command-list progress counts those interrupts. Every write of
+// the list to a register below 0x300 is applied to the register file, as the PICA core does
+// (drawing registers hold their values; nothing draws). A write to a command buffer trigger
+// register (0x23C, 0x23D) continues the scan in the list the address and size registers name,
+// from its first word, and drops the rest of the current one (PicaCore::HandleSpecialReg). The
+// scan never draws, so the P3D counts are exact only for the finalize rule above.
+//
+// Departures from Azahar in the scan (N1-17 report): a list or a jump target that is not in
+// physical memory counts as one finalize and is logged (Azahar crashes); the data of a command
+// that leaves its list is cut; the words scanned for one submission are bounded (16M, Azahar has
+// no bound and would run for ever on a list that jumps to itself).
+//
+// Departure in DMA: Azahar's CopyBlock copies between any two mapped addresses. gpu::Host only knows
+// the physical areas, so a DMA whose source or destination is outside the linear heap and VRAM
+// copies nothing, is logged, and still signals DMA. A plain guest-memory access in gpu::Host would
+// remove the difference (a question for the orchestrator).
 //
 // The delay of each interrupt: Azahar's GPU passes the time the work would take on a console
 // (DelayGenerator); its GSP ignores it with the reference's settings (D25), so the interrupt
@@ -54,6 +69,7 @@ struct Stats {
     u64 buffer_swaps[2] = {};
     u64 skipped_transfers = 0;  // display transfers and texture copies, which draw nothing
     u64 command_lists = 0;      // lists read (GX SubmitCmdList and the command buffer registers)
+    u64 command_list_jumps = 0; // writes to a command buffer trigger inside a list
     u64 flushes = 0;            // FlushRegion calls
     u64 invalidations = 0;      // InvalidateRegion calls
 };
@@ -76,10 +92,8 @@ public:
     bool PassDelays() const { return pass_delays_; }
     const Stats& GetStats() const { return stats_; }
 
-    // The register file, by word (0x1EF00000 + 4 * index) and the LCD registers (0x1ED02000 + 4 *
-    // index), for tests.
+    // The register file, by word (0x1EF00000 + 4 * index), for tests.
     u32 GpuRegister(u32 index) const { return regs_[index]; }
-    u32 LcdRegister(u32 index) const { return lcd_[index]; }
 
 private:
     u32 ToPhysical(u32 vaddr);

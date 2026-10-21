@@ -26,7 +26,8 @@
 //  - The delay_game_render_thread_us setting (0 for the reference) is not implemented:
 //    TriggerCmdReqQueue always answers at once.
 //  - GetPerfLog: the times of the interrupts other than the VBlanks are 0 (Azahar records the delay
-//    the GPU passes; D25 has the sink ignore it).
+//    the GPU passes; D25 has the sink ignore it). The reply has Azahar's layout (no result word, the
+//    14 entries in words 1-14); its word 15, which Azahar does not write, is 0.
 #include <algorithm>
 #include <cstring>
 
@@ -246,13 +247,16 @@ private:
         request.MakeReply(1, 0).Push(kResultSuccess);
     }
 
-    // Outputs: 0: 0x001203C0, 1: result, 2-15: delta and sum for each of the seven interrupts
+    // Outputs: 0: 0x001203C0, 1-14: delta and sum for each of the seven interrupts (word 1 is the
+    //          delta of PSC0), no result code: Azahar's MakeBuilder(15, 0) and PushRaw of the 14
+    //          entries. Word 15 is declared and not written there, so it holds what the request left
+    //          in the command buffer; here it is 0.
     void GetPerfLog(Request& request) {
         Reply& reply = request.MakeReply(15, 0);
-        reply.Push(kResultSuccess);
         for (const u32 word : state_->PerfLog()) {
             reply.Push(word);
         }
+        reply.Push(u32{0});
     }
 
     // Inputs:  0: 0x00130042, 1: the flags (bit 0: AllowSaveVramSysArea), 2: the handle descriptor
@@ -297,7 +301,7 @@ private:
     }
 
     // AcquireGpuRight of gsp_gpu.cpp (without the per-title settings of the renderer).
-    Result AcquireGpuRight(const Request& request, bool blocking) {
+    Result AcquireGpuRight(bool blocking) {
         if (state_->ThreadWithRights() == thread_id_) {
             return kResultAlreadyDone;
         }
@@ -309,14 +313,14 @@ private:
             }
             return kResultBusy;
         }
-        state_->SetThreadWithRights(thread_id_, request.ClientThreadId());
+        state_->SetThreadWithRights(thread_id_);
         return kResultSuccess;
     }
 
     // Inputs:  0: 0x00150002, 1: the handle descriptor (0), 2: the process handle
     // Outputs: 0: 0x00150040, 1: result
     void TryAcquireRight(Request& request) {
-        const Result result = AcquireGpuRight(request, false);
+        const Result result = AcquireGpuRight(false);
         request.MakeReply(1, 0).Push(result);
     }
 
@@ -325,7 +329,7 @@ private:
     void AcquireRight(Request& request) {
         const u32 flag = request.Pop<u32>();
         MH4N_LOG(Debug, kLog, "AcquireRight flag={:08X} thread_id={}", flag, thread_id_);
-        const Result result = AcquireGpuRight(request, true);
+        const Result result = AcquireGpuRight(true);
         request.MakeReply(1, 0).Push(result);
     }
 

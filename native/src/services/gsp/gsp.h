@@ -179,12 +179,8 @@ public:
 
     const std::shared_ptr<SharedMemory>& SharedMem() const { return shared_memory_; }
     u32 ThreadWithRights() const { return thread_with_rights_; }
-    void SetThreadWithRights(u32 thread, u32 client_thread_id) {
-        thread_with_rights_ = thread;
-        active_client_thread_id_ = client_thread_id;
-    }
+    void SetThreadWithRights(u32 thread) { thread_with_rights_ = thread; }
     void ReleaseRight(u32 thread);
-    u32 ActiveClientThreadId() const { return active_client_thread_id_; }
     // True once, for the first RegisterInterruptRelayQueue of the run.
     bool TakeFirstInitialization();
 
@@ -224,7 +220,6 @@ public:
 
     // ---- the performance log (SetPerfLogMode, GetPerfLog) ----
     void SetPerfLogEnabled(bool enabled);
-    bool PerfLogEnabled() const { return perf_enabled_; }
     // The 14 words GetPerfLog answers with: delta and sum for each of the seven interrupts.
     std::array<u32, 14> PerfLog() const { return perf_; }
 
@@ -233,7 +228,6 @@ public:
     // are the service's (see Waiter).
     void SaveVramSysArea();
     void RestoreVramSysArea();
-    void ResetVramBackupState() { vram_state_ = 0; }
 
 private:
     void Init(ServiceContext& context);
@@ -254,7 +248,6 @@ private:
 
     std::array<ThreadSlot, kMaxThreads> slots_;
     u32 thread_with_rights_ = kNoThread;
-    u32 active_client_thread_id_ = kNoThread;
     bool first_initialization_ = true;
 
     std::array<gpu::FrameBufferInfo, 2> cached_framebuffer_infos_{};

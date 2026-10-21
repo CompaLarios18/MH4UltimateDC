@@ -62,6 +62,10 @@ constexpr u32 kCommandBufferSize = 0x238;     // size[2], bits 0-19, in units of
 constexpr u32 kCommandBufferAddress = 0x23A;  // addr[2], bits 0-27, in units of 8 bytes
 constexpr u32 kCommandBufferTrigger = 0x23C;  // trigger[2]
 
+// The most command words (headers, values and extra data) one submission is scanned for, jumps
+// included: 16M words are 64 MiB, more than VRAM. Azahar has no bound.
+constexpr u64 kMaxScanWork = u64{1} << 24;
+
 // LCD registers (regs_lcd.h).
 constexpr u32 kLcdColorFillTop = 0x81;
 constexpr u32 kLcdColorFillBottom = 0x281;
@@ -352,16 +356,24 @@ u32 NullGpu::ScanCmdList(u32 paddr, u32 size) {
         MH4N_LOG(Error, kLog, "command list at {:#010X} (+{:#x}) is not in physical memory", paddr, size);
         return 1;
     }
-    const u32 length = size / 4;
-    auto word = [&](u32 index) {
+    // PicaCore::CommandList: where the scan is. A write to a command buffer trigger register
+    // replaces it (CommandList::Reset), as the jump of a hardware command list does.
+    u32 length = size / 4;
+    u32 index = 0;
+    auto word = [](const u8* base, u32 at) {
         u32 value;
-        std::memcpy(&value, head + 4 * static_cast<size_t>(index), sizeof(value));
+        std::memcpy(&value, base + 4 * static_cast<size_t>(at), sizeof(value));
         return value;
     };
     auto reg = [&](u32 id) -> u32& { return regs_[kRegInternal + id]; };
 
     u32 signalled = 0;
     bool stop_requested = false;
+    // A list that jumps to itself runs for ever in Azahar's GPU thread; here it would stop the
+    // scheduler thread, so the work of one submission is bounded (a departure, see the header).
+    u64 work = 0;
+    bool aborted = false;
+
     // HandleSpecialReg for the finalize register.
     auto finalize = [&]() {
         if (AnyByteMatch(reg(kIrqRequest), reg(kIrqCompare))) {
@@ -371,6 +383,42 @@ u32 NullGpu::ScanCmdList(u32 paddr, u32 size) {
             }
         }
     };
+    // HandleSpecialReg for the command buffer triggers: continue in the list the channel's address
+    // and size registers describe, from its first word. What is left of the current list is
+    // dropped; stop_requested stays.
+    auto jump = [&](u32 channel) {
+        const u32 target = (reg(kCommandBufferAddress + channel) & 0x0FFFFFFFu) * 8;
+        const u32 target_size = (reg(kCommandBufferSize + channel) & 0x000FFFFFu) * 8;
+        ++stats_.command_list_jumps;
+        index = 0;
+        if (target_size < 8) {
+            length = 0;  // no command in it: the loop of ProcessCmdList ends
+            return;
+        }
+        const u8* target_head = host_.PhysicalPointer(target, target_size);
+        if (target_head == nullptr) {
+            // Azahar would read through a null pointer. As for a first list that is not in
+            // memory, the list that was not read counts as one finalize, so that the game's wait
+            // for the end of its command lists does not hang; the scan ends.
+            MH4N_LOG(Error, kLog,
+                     "command list jump to {:#010X} (+{:#x}) is not in physical memory", target,
+                     target_size);
+            ++signalled;
+            stop_requested = true;
+            length = 0;
+            return;
+        }
+        head = target_head;
+        length = target_size / 4;
+    };
+    // The handler of a register that has just been written.
+    auto special = [&](u32 id) {
+        if (id == kIrqRequest) {
+            finalize();
+        } else if (id == kCommandBufferTrigger || id == kCommandBufferTrigger + 1) {
+            jump(id - kCommandBufferTrigger);
+        }
+    };
     // WriteInternalReg: out-of-range registers are no-ops.
     auto write = [&](u32 id, u32 value, u32 mask) {
         if (id >= kInternalRegCount) {
@@ -378,12 +426,9 @@ u32 NullGpu::ScanCmdList(u32 paddr, u32 size) {
         }
         const u32 write_mask = ExpandMask(mask);
         reg(id) = (reg(id) & ~write_mask) | (value & write_mask);
-        if (id == kIrqRequest) {
-            finalize();
-        }
+        special(id);
     };
 
-    u32 index = 0;
     while (index < length) {
         if (stop_requested) {
             break;
@@ -394,9 +439,14 @@ u32 NullGpu::ScanCmdList(u32 paddr, u32 size) {
         if (index + 1 >= length) {
             break;  // Azahar would read the header past the end of the list
         }
+        work += 2;
+        if (work > kMaxScanWork) {
+            aborted = true;
+            break;
+        }
         // Read the header and the value to write.
-        const u32 value = word(index++);
-        const u32 header = word(index++);
+        const u32 value = word(head, index++);
+        const u32 header = word(head, index++);
         const u32 id = header & 0xFFFF;
         const u32 mask = (header >> 16) & 0xF;
         const u32 count = (header >> 20) & 0x7FF;
@@ -408,39 +458,52 @@ u32 NullGpu::ScanCmdList(u32 paddr, u32 size) {
             continue;
         }
 
-        // Write any extra parameters as well.
-        const u32 available = std::min(count, length - index);
+        // Write any extra parameters as well. Like Azahar, they are taken from where the scan is
+        // after the first write: when that write was a jump, from the start of the new list.
+        const u32 available = std::min(count, length > index ? length - index : 0);
         if (available < count) {
             MH4N_LOG(Error, kLog, "command list at {:#010X}: a command's data leaves the list", paddr);
         }
-        const u32 first = index;
+        const u8* extra = head + 4 * static_cast<size_t>(index);
         index += available;
+        work += available;
         if (available == 0) {
             continue;
         }
         if (!group) {
             // The same register written `available` times in a row (WriteInternalRegBatch): only
-            // the last value is stored, and a finalize register is handled once per value.
+            // the last value is stored, and a special register is handled once per value.
             if (id >= kInternalRegCount) {
                 continue;
             }
             const u32 write_mask = ExpandMask(mask);
-            reg(id) = (reg(id) & ~write_mask) | (word(first + available - 1) & write_mask);
+            reg(id) = (reg(id) & ~write_mask) | (word(extra, available - 1) & write_mask);
             if (id == kIrqRequest) {
                 for (u32 i = 0; i < available && !stop_requested; ++i) {
                     finalize();
                 }
+            } else if (id == kCommandBufferTrigger || id == kCommandBufferTrigger + 1) {
+                // Azahar resets the list once for each value; the registers read are the same
+                // each time, so once is the same.
+                jump(id - kCommandBufferTrigger);
             }
         } else {
-            // Sequential registers from id + 1 (WriteInternalRegSequential).
+            // Sequential registers from id + 1 (WriteInternalRegSequential). A jump among them
+            // leaves the rest of the values to be written, as they are read from `extra`.
             if (id + 1 >= kInternalRegCount) {
                 continue;
             }
             const u32 n = std::min(available, kInternalRegCount - (id + 1));
             for (u32 i = 0; i < n && !stop_requested; ++i) {
-                write(id + 1 + i, word(first + i), mask);
+                write(id + 1 + i, word(extra, i), mask);
             }
         }
+    }
+    if (aborted) {
+        MH4N_LOG(Error, kLog,
+                 "command list at {:#010X} (+{:#x}): the scan stopped after {} words (a list that "
+                 "never ends?)",
+                 paddr, size, kMaxScanWork);
     }
     return signalled;
 }

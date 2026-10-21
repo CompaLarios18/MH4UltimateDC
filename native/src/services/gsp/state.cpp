@@ -136,7 +136,6 @@ void GspState::ReleaseThread(u32 thread) {
 void GspState::ReleaseRight(u32 thread) {
     if (thread_with_rights_ == thread) {
         thread_with_rights_ = kNoThread;
-        active_client_thread_id_ = kNoThread;
     }
 }
 
@@ -358,7 +357,9 @@ void GspState::Start() {
         return;
     }
     started_ = true;
-    next_vblank_tick_ = kernel_->NowTicks() + period_ticks_;
+    // The first VBlank is FRAME_TICKS away whatever the refresh rate: Azahar's GPU constructor
+    // schedules it so, and the patch's SetRefreshRate only changes the later reschedules.
+    next_vblank_tick_ = kernel_->NowTicks() + kFrameTicks;
     ScheduleVBlank();
 }
 
@@ -593,7 +594,8 @@ void StartGsp(Runtime& rt) {
             locked->SignalInterrupt(id);
         }
     });
-    // A rate that is already known reaches the sink at once, so the first VBlank has its period.
+    // A rate that is already known reaches the sink at once; it is the period of the VBlanks after
+    // the first (see Start).
     rt.SetRefreshRateSink([weak](double hz) {
         if (auto locked = weak.lock()) {
             locked->SetRefreshRate(hz);

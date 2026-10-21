@@ -441,6 +441,170 @@ TEST_CASE("null GPU: a list can also be started through the command buffer regis
     CHECK(f.host.Ids() == std::vector<Interrupt>{Interrupt::P3D});
 }
 
+// ---- jumps: writes to the command buffer trigger registers inside a list ------------------------------
+
+constexpr u32 kListA = 0x1000;  // the list the GX command submits (RunList)
+constexpr u32 kListB = 0x3000;  // the list it jumps to
+
+// Appends the three writes that make `channel` describe a list and start it: size (bytes / 8), address
+// (physical / 8), trigger (registers 0x238 + c, 0x23A + c, 0x23C + c).
+ListBuilder& Jump(ListBuilder& list, u32 channel, u32 target_paddr, u32 target_size) {
+    return list.Write(0x238 + channel, target_size >> 3)
+        .Write(0x23A + channel, target_paddr >> 3)
+        .Write(0x23C + channel, 1);
+}
+
+// Runs list A (at kListA) with list B stored at kListB.
+std::vector<Interrupt> RunJump(NullFixture& f, const ListBuilder& a, const ListBuilder& b) {
+    b.Store(f.host, kListB);
+    return RunList(f, a);
+}
+
+TEST_CASE("null GPU: a jump through the trigger registers continues in the target list and drops the rest") {
+    NullFixture f;
+    const ListBuilder b = ListBuilder().Write(0x40, 7).Finalize();
+    // Autostop is off, so a finalize that is read is a P3D that is signalled: the one after the jump
+    // belongs to the list that was left (Azahar's CommandList::Reset drops it), the one in B counts.
+    for (const u32 channel : {0u, 1u}) {
+        ListBuilder a;
+        a.Write(0x34, 0);
+        Jump(a, channel, kFcramPaddr + kListB, b.Size());
+        a.Finalize();
+        CHECK(RunJump(f, a, b) == std::vector<Interrupt>{Interrupt::P3D});
+        // B was read: its write to register 0x40 reached the register file
+        CHECK(f.gpu.GpuRegister(0x400 + 0x40) == 7);
+        f.gpu.WriteReg(0x1EF01000 + 4 * 0x40, 0);
+    }
+    CHECK(f.gpu.GetStats().command_list_jumps == 2);
+    CHECK(f.gpu.GetStats().command_lists == 2);
+    // B's own P3D with autostop on, as the first list would have it
+    f.gpu.WriteReg(0x1EF01000 + 4 * 0x34, 1);
+    ListBuilder a;
+    Jump(a, 1, kFcramPaddr + kListB, b.Size());
+    a.Finalize();
+    CHECK(RunJump(f, a, b) == std::vector<Interrupt>{Interrupt::P3D});
+}
+
+TEST_CASE("null GPU: a jump as the last command of a list still runs the target; a target of no commands ends the scan") {
+    NullFixture f;
+    // the last command of A is the trigger write, with nothing after it
+    ListBuilder a;
+    Jump(a, 0, kFcramPaddr + kListB, ListBuilder().Finalize().Size());
+    CHECK(RunJump(f, a, ListBuilder().Finalize()) == std::vector<Interrupt>{Interrupt::P3D});
+    // inside a list, a size of 0 is a list of no commands: nothing is signalled and the finalize
+    // after the jump is not read
+    f.gpu.WriteReg(0x1EF01000 + 4 * 0x34, 0);
+    ListBuilder empty_target;
+    Jump(empty_target, 0, kFcramPaddr + kListB, 0);
+    empty_target.Finalize();
+    CHECK(RunJump(f, empty_target, ListBuilder().Finalize()).empty());
+}
+
+TEST_CASE("null GPU: a jump to a list that is not in physical memory counts as its finalize and ends the scan") {
+    NullFixture f;
+    f.gpu.WriteReg(0x1EF01000 + 4 * 0x34, 0);  // the finalize after the jump would show up
+    ListBuilder a;
+    Jump(a, 1, kFcramPaddr + 0x200000, 0x100);  // past the 1 MiB the fake host has
+    a.Finalize();
+    CHECK(RunJump(f, a, ListBuilder()) == std::vector<Interrupt>{Interrupt::P3D});
+    CHECK(f.Logged("command list jump to 0X20200000"));
+    CHECK(f.Logged("is not in physical memory"));
+    CHECK(f.gpu.GetStats().command_list_jumps == 1);
+}
+
+TEST_CASE("null GPU: a chain of lists counts the P3D of each list it reaches") {
+    NullFixture f;
+    // A jumps to B, B writes its own registers and jumps to C, C ends with a finalize
+    constexpr u32 kListC = 0x5000;
+    const ListBuilder c = ListBuilder().Write(0x41, 3).Finalize();
+    ListBuilder b;
+    Jump(b, 1, kFcramPaddr + kListC, c.Size());
+    b.Finalize();  // dropped
+    c.Store(f.host, kListC);
+    ListBuilder a;
+    a.Write(0x34, 0);
+    Jump(a, 0, kFcramPaddr + kListB, b.Size());
+    CHECK(RunJump(f, a, b) == std::vector<Interrupt>{Interrupt::P3D});
+    CHECK(f.gpu.GpuRegister(0x400 + 0x41) == 3);
+    CHECK(f.gpu.GetStats().command_list_jumps == 2);
+    // With autostop on, the finalize before the jump stops the scan: the jump is not reached (B's
+    // finalize would be a second P3D)
+    f.gpu.WriteReg(0x1EF01000 + 4 * 0x34, 1);
+    const u64 jumps = f.gpu.GetStats().command_list_jumps;
+    ListBuilder first;
+    first.Finalize();
+    Jump(first, 0, kFcramPaddr + kListB, b.Size());
+    CHECK(RunJump(f, first, b) == std::vector<Interrupt>{Interrupt::P3D});
+    CHECK(f.gpu.GetStats().command_list_jumps == jumps);
+}
+
+TEST_CASE("null GPU: a jump inside a grouped write leaves the other values to be written, as Azahar's batch does") {
+    NullFixture f;
+    f.gpu.WriteReg(0x1EF01000 + 4 * 0x34, 0);
+    constexpr u32 kListC = 0x5000;
+    const ListBuilder b = ListBuilder().Write(0x41, 5).Finalize();
+    const ListBuilder c = ListBuilder().Write(0x42, 9).Finalize();
+    b.Store(f.host, kListB);
+    c.Store(f.host, kListC);
+    // Channel 0 describes B and channel 1 describes C. One grouped write then covers the registers
+    // from 0x23C: the trigger of channel 0 (a jump to B) and the trigger of channel 1 (a jump to C).
+    // Both only reposition the scan (CommandList::Reset): the second wins before anything of B is
+    // read, and the finalize after the group belongs to a list that has been left.
+    ListBuilder a;
+    a.Write(0x238, b.Size() >> 3).Write(0x23A, (kFcramPaddr + kListB) >> 3);
+    a.Write(0x239, c.Size() >> 3).Write(0x23B, (kFcramPaddr + kListC) >> 3);
+    a.WriteMany(0x23B, (kFcramPaddr + kListC) >> 3, {1, 0x77}, true);
+    a.Finalize();
+    CHECK(RunList(f, a) == std::vector<Interrupt>{Interrupt::P3D});
+    CHECK(f.gpu.GpuRegister(0x400 + 0x41) == 0);  // B was never read
+    CHECK(f.gpu.GpuRegister(0x400 + 0x42) == 9);  // C was
+    CHECK(f.gpu.GpuRegister(0x400 + 0x23D) == 0x77);
+    CHECK(f.gpu.GetStats().command_list_jumps == 2);
+}
+
+TEST_CASE("null GPU: a trigger written with extra data takes the data from the start of the new list, as Azahar does") {
+    NullFixture f;
+    // pica_core.cpp: the jump of the header's own write moves the list to the target, and the extra
+    // words are then read at the list's current position, the target's first word. The register ends
+    // up holding that word, and the target is read from its start after all.
+    const ListBuilder b = ListBuilder().Finalize(0x12345678);
+    b.Store(f.host, kListB);
+    // (channel 1, because the submission clears channel 0's trigger when it ends)
+    ListBuilder a;
+    a.Write(0x239, b.Size() >> 3).Write(0x23B, (kFcramPaddr + kListB) >> 3);
+    a.WriteMany(0x23D, 1, {0xAAAAAAAA}, false);
+    CHECK(RunList(f, a) == std::vector<Interrupt>{Interrupt::P3D});
+    // B's first word is the value of its finalize write: 0x12345678
+    CHECK(f.gpu.GpuRegister(0x400 + 0x23D) == 0x12345678);
+}
+
+TEST_CASE("null GPU: a list that jumps to itself is cut after a bound and says so") {
+    NullFixture f;
+    ListBuilder a;
+    const u32 self_size = 6 * 4;  // three commands: size, address, trigger
+    Jump(a, 0, kFcramPaddr + kListA, self_size);
+    REQUIRE(a.Size() == self_size);
+    CHECK(RunList(f, a).empty());
+    CHECK(f.Logged("never ends"));
+    CHECK(f.gpu.GetStats().command_list_jumps > 1000);
+    // the GPU still works afterwards, and the trigger of a plain list is cleared
+    f.logged.clear();
+    CHECK(RunList(f, ListBuilder().Finalize()) == std::vector<Interrupt>{Interrupt::P3D});
+    CHECK_FALSE(f.Logged("never ends"));
+}
+
+TEST_CASE("null GPU: the registers a list writes are in the register file") {
+    NullFixture f;
+    CHECK(RunList(f, ListBuilder().Write(0x40, 0x1234).Write(0x2C0, 0xBEEF, 0x3).Finalize()) ==
+          std::vector<Interrupt>{Interrupt::P3D});
+    CHECK(f.gpu.GpuRegister(0x400 + 0x40) == 0x1234);
+    CHECK(f.gpu.GpuRegister(0x400 + 0x2C0) == 0x0000BEEF);
+    // a register that does not exist is a no-op
+    CHECK(RunList(f, ListBuilder().Write(0x300, 5).Write(0xFFFF, 6).Finalize()) ==
+          std::vector<Interrupt>{Interrupt::P3D});
+    CHECK(f.gpu.GpuRegister(0x400 + 0x2FF) == 0);
+}
+
 TEST_CASE("null GPU: a list outside physical memory signals one P3D and says so") {
     NullFixture f;
     f.host.signals.clear();
@@ -962,15 +1126,36 @@ TEST_CASE("gsp: a refresh rate changes the period the next VBlank is scheduled w
     CHECK(f.LoggedCount("vblank period") == 2);
 }
 
-TEST_CASE("gsp: a refresh rate known before the services start gives the first VBlank its period") {
+TEST_CASE("gsp: a refresh rate known before the services start sets the period after the first VBlank") {
     Fixture f;
     f.runtime->SetRefreshRate(120.0);  // before anything exists: only remembered
     REQUIRE(f.runtime->Prepare(Parse({}), {Phase::Devices, Phase::Services}));
     auto state = StateOf(f);
+    auto* null_gpu = dynamic_cast<gpu::null::NullGpu*>(f.runtime->Interfaces().gpu);
+    REQUIRE(null_gpu != nullptr);
     const u64 start = f.runtime->Clock().Now();
     CHECK(state->VBlankPeriodTicks() == 2234265);
-    CHECK(state->NextVBlankTick() == start + 2234265);
     CHECK(f.Logged("vblank period 2234265 ticks"));
+    // Azahar's GPU constructor schedules the first VBlank at FRAME_TICKS; the patch's SetRefreshRate
+    // only changes the reschedules (GPU::VBlankCallback).
+    const u64 first = start + 4481136;
+    CHECK(state->NextVBlankTick() == first);
+
+    const auto advance_to = [&](u64 tick) {
+        while (f.runtime->Clock().Now() < tick) {
+            f.time->Advance(static_cast<s64>(TicksToNsCeil(tick - f.runtime->Clock().Now())));
+        }
+        f.runtime->Scheduler().RunPending();
+    };
+    advance_to(first - 1);
+    CHECK(state->VBlankCount() == 0);  // nothing at the 120 Hz deadline
+    advance_to(first);
+    CHECK(state->VBlankCount() == 1);
+    CHECK(state->NextVBlankTick() == first + 2234265);
+    advance_to(first + 2234265);
+    CHECK(state->VBlankCount() == 2);
+    CHECK(state->NextVBlankTick() == first + 2 * 2234265);
+    CHECK(null_gpu->GetStats().vblanks[0] == 2);
 }
 
 TEST_CASE("gsp: a rate that is not usable is clamped and says so") {
@@ -1801,19 +1986,25 @@ TEST_CASE("gsp: the performance log keeps the VBlank times and counts them per t
         s.Register(1);
         s.Call({0x00110040, 1}, 2);  // SetPerfLogMode on
         g.Sleep(20000000);           // one VBlank
-        log = s.Call({0x00120000}, 15);
+        log = s.Call({0x00120000}, 16);
         ExitProcess(*f.runtime);
     });
     CHECK(status == 0);
-    // PDC0 is interrupt 2: delta and sum at words 4 and 5 of the 14 after the result. Azahar records
-    // the time of a frame (16,713,680 ns) once for each of the four thread indices.
+    // Azahar's layout: MakeBuilder(15, 0) and the 14 entries (delta and sum for each of the seven
+    // interrupts) pushed raw, with no result word: words 1-14, and word 15 not written (0 here).
+    // PDC0 is interrupt 2: delta and sum at words 1 + 4 and 1 + 5. Azahar records the time of a
+    // frame (16,713,680 ns) once for each of the four thread indices.
+    REQUIRE(log.size() == 16);
     CHECK(log[0] == 0x001203C0);
-    CHECK(log[1] == kResultSuccess);
-    CHECK(log[2 + 4] == 16713680);
-    CHECK(log[2 + 5] == 4 * 16713680);
-    CHECK(log[2 + 6] == 16713680);  // PDC1
-    CHECK(log[2 + 7] == 4 * 16713680);
-    CHECK(log[2 + 0] == 0);  // no PSC0 yet
+    CHECK(log[1 + 0] == 0);  // PSC0: no fill yet; also not a result code
+    CHECK(log[1 + 1] == 0);
+    CHECK(log[1 + 4] == 16713680);
+    CHECK(log[1 + 5] == 4 * 16713680);
+    CHECK(log[1 + 6] == 16713680);  // PDC1
+    CHECK(log[1 + 7] == 4 * 16713680);
+    CHECK(log[1 + 12] == 0);  // DMA, the seventh interrupt
+    CHECK(log[1 + 13] == 0);
+    CHECK(log[15] == 0);
 }
 
 TEST_CASE("gsp: gsp::Lcd gives a session and answers its commands as unimplemented ones") {
