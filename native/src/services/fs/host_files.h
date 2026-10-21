@@ -39,8 +39,11 @@ namespace mh4n::fs {
 
 namespace host {
 
-// A host path from UTF-8 text.
-std::filesystem::path ToPath(const std::string& utf8);
+// A host path from UTF-8 text, and the UTF-8 text of a host path (D45). Every host file call of this module
+// goes through these two: on Windows the path is the wide-character one (UTF-16, converted here), never the
+// ANSI code page's; elsewhere the bytes are the path's own. Invalid UTF-8 becomes U+FFFD on Windows.
+std::filesystem::path ToPath(const std::string& utf8_text);
+std::string ToUtf8(const std::filesystem::path& path);
 
 // The characters that separate the parts of a host path: "/" everywhere, and also "\\" on Windows, where a
 // path often mixes both (a user folder from the command line, then "/sdmc/...").
@@ -74,7 +77,17 @@ bool CreateFullPath(const std::string& path);
 // Makes (or empties) the file.
 bool CreateEmptyFile(const std::string& path);
 // Removes a file; a path that is not there counts as removed, a directory does not (Azahar's Delete).
+// On Windows a file that may still be open is renamed to "<name>.deleted.<pid>.<n>" first and marked for
+// deletion, so the name is free at once and the system removes the file when its last handle closes; if
+// the process dies before that, the renamed file stays (see RemoveStaleDeletedFiles).
 bool RemoveFile(const std::string& path);
+// Whether a file name is "<name>.deleted.<digits>.<digits>" (a non-empty <name>), the name a deleted file
+// of RemoveFile has on Windows while it is open.
+bool IsStaleDeletedName(std::string_view name);
+// Removes the files of that name under `folder` and its subfolders: what a process that died between the
+// rename and the last close left behind. Only regular files (never a directory or a link), and nothing
+// outside `folder`. The number of files removed; one that cannot be removed stays (and is not an error).
+std::size_t RemoveStaleDeletedFiles(const std::string& folder);
 // rmdir: only an empty directory.
 bool RemoveEmptyDirectory(const std::string& path);
 // Removes everything under `path` and `path` itself. False if `path` cannot be listed or something in it
@@ -100,7 +113,7 @@ void SyncDirectoryTree(const std::string& path);
 }  // namespace host
 
 // A file on the host that is read and written by position. Any thread may call any member at the same time.
-// Close() makes the data durable and stops all further use; the handle itself is released with the object,
+// Close() makes the data durable (when it was changed since the last sync) and stops all further use; the handle itself is released with the object,
 // so an I/O thread that is still reading never reads through a handle the host has reused.
 class WritableFile {
 public:
@@ -122,10 +135,18 @@ public:
     std::size_t WriteAt(u64 offset, const void* buffer, std::size_t length, bool* failed = nullptr) const;
     // Sets the size (zeros when it grows). False if the host refused.
     bool Resize(u64 size) const;
-    // Makes what was written durable. False if the host refused.
+    // Makes what was written durable. False if the host refused. A file that was not written or resized
+    // since its last successful sync is already durable: Sync() answers true and does not ask the host (D42).
     bool Sync() const;
     // Sync() (when writable), then no more reads or writes. False if the sync failed.
     bool Close();
+
+    // Changed since the last successful sync (always false for a file opened read-only).
+    bool Dirty() const;
+    // How many times this file asked the host to sync (fdatasync, fsync, FlushFileBuffers), and how many all
+    // files did in this process; for the tests of D42.
+    u64 HostSyncCount() const;
+    static u64 TotalHostSyncs();
 
 private:
     WritableFile() = default;

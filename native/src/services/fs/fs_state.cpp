@@ -7,8 +7,6 @@
 // readable RomFS starts in a NCCH section (NCCHContainer::ReadRomFS: 0x1000 bytes in).
 // Copyright 2014-2026 Citra Emulator Project / Azahar Emulator Project (archive.cpp, archive.h, settings.h)
 // Copyright 2017-2026 Citra Emulator Project / Azahar Emulator Project (ncch_container.cpp)
-#include <filesystem>
-#include <fstream>
 #include <vector>
 
 #include "fs_state.h"
@@ -23,13 +21,21 @@ namespace mh4n::fs {
 namespace {
 constexpr const char* kLog = "Service.FS";
 
+// The path of a file in a folder, as UTF-8 text (the folder is the user's, from the command line).
+std::string InFolder(const std::string& folder, const char* name) {
+    std::string path = folder;
+    if (!host::IsSeparator(path.back())) {
+        path += '/';
+    }
+    return path + name;
+}
+
 std::shared_ptr<PositionedFile> OpenGameFile(const std::string& folder, const char* name) {
     if (folder.empty()) {
         return nullptr;
     }
-    const std::string path = (std::filesystem::path(folder) / name).string();
-    std::error_code ignored;
-    if (!std::filesystem::exists(path, ignored)) {
+    const std::string path = InFolder(folder, name);
+    if (!host::Exists(path)) {
         return nullptr;
     }
     std::string error;
@@ -44,15 +50,14 @@ u64 ReadProgramId(const std::string& folder) {
     if (folder.empty()) {
         return 0;
     }
-    const std::filesystem::path path = std::filesystem::path(folder) / "exheader.bin";
-    std::error_code ignored;
-    if (!std::filesystem::is_regular_file(path, ignored)) {
+    // Read through PositionedFile (UTF-8 path to the wide-character call on Windows, a regular file only),
+    // as every other file of the game folder is.
+    const std::shared_ptr<PositionedFile> file = PositionedFile::Open(InFolder(folder, "exheader.bin"), nullptr);
+    if (file == nullptr || file->Size() < kExHeaderMinSize) {
         return 0;
     }
     std::vector<u8> bytes(kExHeaderMinSize);
-    std::ifstream in(path, std::ios::binary);
-    in.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
-    if (static_cast<std::size_t>(in.gcount()) != bytes.size()) {
+    if (file->ReadAt(0, bytes.data(), bytes.size()) != bytes.size()) {
         return 0;
     }
     ExHeader header;
