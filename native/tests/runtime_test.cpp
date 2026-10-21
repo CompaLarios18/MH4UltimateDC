@@ -328,7 +328,7 @@ TEST_CASE("Prepare with two phases and no program runs only those steps") {
     // the runtime's own devices step ran: nothing is registered under the default names
     CHECK(f.runtime.Interfaces().gpu == nullptr);
     CHECK(f.Logged("no GPU named 'null'"));
-    CHECK(f.Logged("no input source named 'script'"));
+    CHECK(f.runtime.Interfaces().input != nullptr);  // N1-16 registers `script`
     CHECK(f.Logged("no audio sink named 'null'"));
 }
 
@@ -364,7 +364,8 @@ TEST_CASE("the devices step makes the GPU, the input source and the audio sink t
 
 TEST_CASE("a device name nothing has registered leaves that interface empty, the others stay") {
     Fixture f;
-    REQUIRE(f.runtime.Prepare(Parse({"--gpu", "nope", "--audio", "test-audio"}), {Phase::Devices}));
+    REQUIRE(f.runtime.Prepare(Parse({"--gpu", "nope", "--input-source", "nope", "--audio", "test-audio"}),
+                              {Phase::Devices}));
     CHECK(f.runtime.Interfaces().gpu == nullptr);
     CHECK(f.runtime.Interfaces().input == nullptr);
     CHECK(f.runtime.Interfaces().audio != nullptr);
