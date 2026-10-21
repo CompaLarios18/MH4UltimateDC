@@ -35,8 +35,12 @@
 //  - Where Azahar asserts (a register number other than 0, a pipe message of the wrong size, a pipe
 //    that is not implemented, PCM8 or ADPCM in a partial embedded buffer update, a format value of 3,
 //    a NaN rate multiplier), the model logs the error and goes on without the action.
-//  - A frame stops dequeueing buffers after kMaxDequeuesPerFrame (Azahar loops for ever on a looping
-//    buffer of length 0).
+//  - A source stops dequeueing buffers for a frame after kMaxDequeuesPerFrame, with the rest of the
+//    frame unfilled and an error in the log. Azahar loops for ever on a looping buffer of length 0.
+//    The cap also ends a frame that Azahar would finish, but only for a looping buffer that gives
+//    less than one output sample in about 6.4 dequeues (a frame has 160 samples and the cap is 1024):
+//    one sample long and a rate above about 6.4, or N samples long and a rate above about 6.4 * N.
+//    A game is not expected to do that.
 //  - A play position beyond the end of a buffer empties it (Azahar erases past the end).
 //  - A buffer's address is valid when it lies in VRAM, DSP RAM, FCRAM (the size of the New 3DS's) or the
 //    New 3DS's extra RAM, ends included (Azahar's GetPhysMemRegionInfo): the model has no mapping to

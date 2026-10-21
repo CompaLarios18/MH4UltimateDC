@@ -23,6 +23,12 @@
 //    answered: the register as register 0, the others with an error result (RegisterInterruptEvents:
 //    a descriptor 1005 of the DSP module) or an empty buffer. A LoadComponent whose size is larger
 //    than its buffer reads only what the buffer holds.
+//  - FlushDataCache and InvalidateDCache answer success when the process handle is not a process
+//    (Azahar dereferences it in its log line).
+//  - Reply::Push of a u8, a u16 or a bool (RecvData, RecvDataIsReady, GetPipeReadableSize,
+//    ReadPipeIfPossible, GetHeadphoneStatus) writes a whole word, the upper bytes zero (mh4n/ipc.h).
+//    Azahar's RequestBuilder::Push does a PushRaw of the low bytes, which leaves the other bytes of
+//    that reply word as they were in the command buffer.
 //  - The firmware is identified in the log by the CRC-32 of its bytes (Azahar logs a CityHash).
 //  - GetHeadphoneStatus answers "not inserted" (Azahar's setting simulate_headphones_plugged is off).
 //  - All sessions share one DSP, as Azahar's single DSP_DSP object does, and so do their events.

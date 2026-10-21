@@ -276,7 +276,8 @@ void SourceModel::GenerateFrame(u32 source_id) {
     while (frame_position < kSamplesPerFrame) {
         if (s.current_buffer_size == 0) {
             if (dequeues++ >= kMaxDequeuesPerFrame) {
-                // Azahar goes on for ever with a looping buffer of length 0 (or an enormous rate).
+                // Azahar goes on for ever with a looping buffer of length 0, and goes on longer than
+                // this cap with a short looping buffer at a high rate (see dsp_model.h).
                 MH4N_LOG(Error, kLog,
                          "source_id={}: {} buffers dequeued in one frame without filling it; the "
                          "frame ends here",

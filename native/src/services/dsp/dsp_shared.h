@@ -1,3 +1,10 @@
+// Derived from Azahar src/core/hle/service/dsp/dsp_dsp.h at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6
+// (GPL-2.0-or-later: the file says "Licensed under GPLv2 or any later version"): the state DSP_DSP
+// keeps for all its sessions (semaphore_event, preset_semaphore, interrupt_zero, interrupt_one, pipes),
+// the six interrupt slots (max_number_of_interrupt_events), GetInterruptEvent, HasTooManyEventsRegistered
+// and SignalInterrupt.
+// Copyright 2014-2025 Citra Emulator Project / Azahar Emulator Project (dsp_dsp.h)
+//
 // What all the sessions of dsp::DSP share (N1-18), private to mh4n_services_dsp. Azahar has one DSP_DSP
 // object, with one DSP behind it, whatever the number of sessions; here the sessions are services of
 // their own and this is the part they have in common: the model of the DSP, the events the
