@@ -306,6 +306,9 @@ setting where it has one.
 | Starting tick of the emulated clock | a random 32-bit number drawn per run (`Timing::GenerateBaseTicks`: `std::mt19937` seeded from `std::random_device`, so any value from 0 to 2^32 - 1) | `init_ticks_type` Fixed, `init_ticks_override` **2,000,000,000** (0x77359400, 7.4596 s of the 268,111,856 Hz clock); every core's timer starts there | `svcGetSystemTick` (the running core's timer: this plus the ticks emulated so far); the update ticks in the shared page's date records (0x28 and 0x48); the date in those records, which Azahar computes as `init_time` plus the whole clock, starting tick included, so at the first update the date is `init_time` + 7459 ms |
 | Console Wi-Fi MAC address | the folder's `mac.txt`, or a random address from a list of 16 Nintendo-like ranges, written to `mac.txt`, when there is none | **02:00:00:00:00:01** (locally administered), not read from or written to `mac.txt` | the shared page's bytes 0x60 to 0x65 (the local wireless service puts it there when it starts, and the runner sets the page once the game has loaded, so the page has it either way), `cfg`, and what the local wireless service and `nwm::SOC` take from it |
 | Reads of files | on host threads, finishing at a host-dependent emulated time | `deterministic_async_operations`; the patch keeps host time out of the delay of a read | when a read wakes the game |
+| Console unique ID of a config savegame that the run makes (N0-29) | drawn per run from the host's random source (`CryptoPP::AutoSeededRandomPool`): 16 random bits and, in a folder without `nand/rw/sys/LocalFriendCodeSeed_B`, a random 34-bit friend code seed | **0x4D480001A2B3C4D5** (random number **0x4D48**, friend code seed 0x1A2B3C4D5; `kFixedConsoleId`, `kFixedConsoleRandomNumber`), under the MAC address's condition (no room, no `--new-console-id`); a config savegame that already exists keeps its ID | `cfg:u` command `0x00030040` (GetTransferableId), whose reply for a salt is the last 8 bytes of SHA-256 of the ID (8 bytes, little endian) and the salt (`& 0xFFFFF`, 4 bytes): **salt 0: words 0x61B8087C, 0xB904EFF1; salt 0x1263 (the game's): words 0x9592177D, 0xFE13E102**; what the game derives from those and stores; the config savegame's blocks 0x90000 and 0x90001 (bytes `D5 C4 B3 A2 01 00 48 4D`) and 0x90002 (`48 4D 00 00`) |
+| Unwritten bytes of reply words (N0-29) | whatever the host's heap held (the command buffer of a request is not initialised) | 0 (`SetZeroedIpcReplies`) | bytes 1 to 3 of the reply word of every service that pushes a `u8`, `u16` or `bool`, or declares a word and does not push it (seen: `APT:A` 0x01010000, `cfg:u` 0x00020000, `y2r:u` 0x00280000); the value is now zero-extended |
+| Time zone (N0-29) | the host's (`TZ`) | `UTC0`, set by the runner | the date of the shared page's records (and what `ptm` and the news database take from it) |
 
 Notes for the mirror:
 - The starting tick 2,000,000,000 is also when the clock's high word changes: `svcGetSystemTick` reaches 2^32 after
@@ -411,6 +414,91 @@ is left to N0-29. Neither is in `config/native/ipc_time_dependent.txt`, which ha
 Not measured: runs of 1700 and 9000 frames, golden sessions G2 and G6, a run under load, the captures (HID, DSP,
 GPU), the screenshots and the user folders after the run (these are N0-29's gates), which of the two fixed values
 removed which difference, and why the three reply words differ.
+
+### Sources found by N0-29, iteration 0
+
+Iteration 0 measured the N0-26 runner (the Windows CI build of `wp/N0-26` at `6fa80b1`) on the three gate sessions,
+two runs each on an idle PC, with every recorder (`--trace-svc`, `--trace-ipc`, `--trace-ipc-full`, `--state-trace`,
+`--trace-timing`, `--count-unmapped`, the HID and DSP captures, `--capture-gpu`, `--shots`): G1 to 1700 frames, G6 to
+3700, G2 to 9000. In every pair the state, SVC and timing traces, `unmapped.txt`, the HID and DSP captures, the GPU
+capture's manifest and reference images and every screenshot were identical. What still differed, and nothing else:
+
+| What | Where | How much |
+|---|---|---|
+| Reply words (`out=`) of five kinds of IPC request: `APT:A` 0x01010000, `cfg:u` 0x00030040 and 0x00020000, `y2r:u` 0x00280000, and, in G2, the CRC of the buffer of one `fs:USER` file write | the IPC traces | a few lines in each session |
+| The GPU capture file | `.mgpu` | 8 consecutive bytes |
+| The user folder after the run | the config savegame of `cfg` (every session), a metadata byte of the game's extdata (G1 and G6), the game's own save file (G2) | 16 bytes of the config savegame, 1 byte, 16 bytes |
+
+How each was found: the first line is the comparison of the two runs' files; for an IPC line, which words differ
+(`compare_ipc_traces.py --strict` names them; the plain comparison does not look at reply words) and what the service's
+code writes into them; for a file, the offsets that differ against the layout of the file (the config savegame's block
+table, the 16-byte `ArchiveFormatInfo`); for the GPU capture, the record the bytes sit in, which names the guest
+address, and then the same value in the IPC trace's reply. The sources, by what they are:
+
+1. **The console unique ID of a new config savegame (random).** The user folder the sessions start from has no config
+   savegame, so every run makes one (`Module::FormatConfig`), and `Module::GenerateConsoleUniqueId` draws its ID from
+   the host's random source: a 16-bit number and, because the folder has no local friend code seed, 34 random bits of
+   seed, stored in the blocks 0x90000, 0x90001 (the ID) and 0x90002 (the number). That is exactly the 16 bytes of the
+   config savegame that differ (the low 34 bits and the top 16 bits of each copy of the ID, and the number: the bits
+   between are always 0). `cfg:u` GetTransferableId answers from the ID, so its reply words differed in every run; the
+   game keeps that reply in its memory, which is the 8 bytes of the GPU capture (the capture records the guest's
+   memory); and the game stores what it derives from it, which is the likely cause of the differing 16 bytes of its
+   save in G2 and of the CRC of the buffer of the `fs:USER` write that stores it (*likely*, not shown: the next
+   measurement shows whether the two save files are then equal). **Removed:** the patch adds
+   `Service::CFG::SetFixedConsoleUniqueId(random_number, console_id)` (a switch like `SetFixedConsoleMac`: it refuses a
+   pair that is not in the shape Azahar makes, and nothing else changes) and `Module::GenerateConsoleUniqueId`, which
+   a config savegame that is made calls, returns that pair when it is set; the runner sets `kFixedConsoleId` under the
+   condition of the MAC address (no `--async-io`, no room, no `--new-console-id`: a console that asked for a new
+   identity gets one drawn, as before). A user folder that already has a config savegame keeps its ID (nothing
+   rewrites it), so two runs in copies of one such folder repeat as they did. The values the game sees are in the
+   table above; the native runtime's deterministic mode starts from the same ID (N1-15 has an open question about the
+   ID of a fresh user folder: this is the answer for the reference runner's default mode).
+2. **Unwritten bytes of reply words.** `HLERequestContext::cmd_buf` is never initialised (only its first word is), and
+   the contexts are made on the host's heap for every request. A service that pushes a `u8`, a `u16` or a `bool` writes
+   one or two bytes of its word (`RequestBuilder::Push<u8>` copies one byte), and the rest of the word, copied to the
+   guest with the reply, was whatever the block held before: in every differing line of the three kinds the low
+   byte (the value) was equal in both runs and only bits 8 to 31 differed. Seen in `APT:A` GetTargetPlatform,
+   `cfg:u` GetRegion and `y2r:u` IsBusyConversion in these sessions, and in `fs:USER` IsSdmcDetected in N0-26's
+   control: the same for every handler that pushes less than a word or declares a word it does not fill. The state, SVC
+   and timing traces were identical, so the game did not act on the residue in these sessions. **Removed:** the patch adds
+   `Kernel::SetZeroedIpcReplies(bool)`; with it set, the constructor of the context zeroes the whole 256-byte buffer
+   instead of its first word; the runner sets it in the default mode (no `--async-io`). Cost: one 256-byte fill per
+   HLE request (not measured). Every such reply word is now zero-extended: the mirror returns whole words.
+3. **Padding of the metadata of an extdata or save (uninitialised).** `FS_USER::CreateExtSaveData` (and
+   `FormatSaveData`, `FormatThisUserSaveData`) declare an `ArchiveFormatInfo` without initialising it, set its four
+   fields, and the archive writes the whole 16 bytes, the three padding bytes after `duplicate_data` included, to the
+   `metadata` file: byte 13 of the game's extdata metadata was stack residue (1 in one run, 2 in the other; in G2 the
+   two runs happened to agree). **Removed:** in the patch, both writers (`FormatAsExtData` for the extdata,
+   `ArchiveSource_SDSaveData::Format` for the save) write a zeroed 16-byte buffer with the four fields copied in, when
+   `deterministic_async_operations` is set (the runner sets it without `--async-io`). The game never sees the padding
+   (`GetFormatInfo` returns the four fields), so no value it sees changes; the file of the user folder does.
+4. **The host's time zone.** Not a difference between runs on one PC: `SharedPage::Handler::GetSystemTimeSince2000`
+   converts the year 2000 with `std::mktime`, a local time, so the date in the shared page depends on `TZ`; until now
+   the instructions asked for `TZ=UTC0` and the measurement script set it. **Removed:** in the default mode the runner
+   sets `TZ` to `UTC0` itself before it loads anything (`_putenv_s`/`_tzset` on Windows, `setenv`/`tzset` elsewhere),
+   so a run from another shell or on another PC gives the same date. Nothing changes where `TZ=UTC0` was set.
+
+What is expected to change with the next runner build (an expectation from the code, not a measurement; the
+orchestrator measures it with the gates): the IPC traces repeat in all five kinds of request, the config savegame and
+the extdata metadata are equal in every run (from a folder without a config savegame), the GPU capture file is
+equal, and the game's save in G2 and the CRC of its write are equal if source 1 is what the game stores. If one of
+those still differs, it is a source this list does not have.
+
+Found by reading the code and not removed, because no session reaches it or it has not differed (a lead for the next
+iteration, none of it measured):
+- `ps:ps` GenerateRandomBytes and `ssl:C` GenerateRandomData (OpenSSL `RAND_bytes`), the signing code of `am` and `nfc`
+  (`CryptoPP::AutoSeededRandomPool`) and `svcGetSystemInfo` type 0x20000 (`HOST_TICK`, the host's clock): none of the
+  sessions opens those services or calls that SVC.
+- The 4 tail bytes of `mcu.dat` (`MCUData` padding, written raw): zero in every run so far.
+- Environment variables `MH4U_*` and `<user dir>/mh4u.ini` are read by the port's hooks when the code library loads
+  (`hooks.cpp`); a reference run needs neither set (the measurement scripts do not set them).
+- The vertex shader JIT picks instructions by the host CPU (reciprocal and reciprocal square root), which could change
+  low bits of the pixels between two machines (not between two runs on one); `lle_applets` is on by default but the
+  user folder has no applet titles; the order of a thread's held mutexes when it exits holding more than one (one mutex
+  in the sessions); the order of host directory listings (`DiskDirectory` does not sort); the host's network answers
+  (`ac:u`, `soc:U`). None differed or is reached by the three sessions.
+- `arm_recomp.cpp` and `arm_recomp.h` are not changed in this iteration, so there is no `--perf-log` comparison to
+  make; the timing and SVC traces were already identical in every pair.
 
 ## With Azahar's normal interface
 

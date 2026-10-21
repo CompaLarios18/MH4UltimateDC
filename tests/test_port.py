@@ -20,8 +20,20 @@ sys.path.insert(0, os.path.join(ROOT, "tools"))
 sys.path.insert(0, os.path.join(ROOT, "port", "tests"))
 
 needed = ["clang", "ld.lld", "llvm-objcopy", "llvm-readelf"]
-pytestmark = pytest.mark.skipif(any(shutil.which(t) is None for t in needed),
-                                reason="clang/lld toolchain not installed")
+_TOOLCHAIN_MISSING = any(shutil.which(t) is None for t in needed)
+
+
+def source_only(test):
+    """Marks a test that reads this repository's sources and needs no toolchain (N0-29): the other
+    tests of this file are skipped, as before, when the clang/lld toolchain is not installed."""
+    test.source_only = True
+    return test
+
+
+@pytest.fixture(autouse=True)
+def _toolchain_installed(request):
+    if _TOOLCHAIN_MISSING and not getattr(request.function, "source_only", False):
+        pytest.skip("clang/lld toolchain not installed")
 
 
 def test_svc_test_program_recompiles(tmp_path):
@@ -940,3 +952,170 @@ def test_ipc_trace_is_written_parsed_and_compared(tmp_path):
     r = subprocess.run([binary, elf, "--code", code, "--cpu", "jit", "--ms", "1000", "--trace-ipc-full"],
                        capture_output=True, text=True, timeout=600)
     assert r.returncode == 1
+
+
+# ── N0-29: what the sources alone show (no emulator, no game data) ─────────────────────
+
+PATCH = os.path.join(ROOT, "port", "azahar", "azahar.patch")
+
+
+def _text(*parts):
+    with open(os.path.join(ROOT, *parts), encoding="utf-8", newline="") as f:
+        return f.read()
+
+
+def _patch_section(path):
+    """The part of azahar.patch that changes `path`, from its 'diff --git' line to the next file's."""
+    patch = _text("port", "azahar", "azahar.patch")
+    start = patch.index(f"diff --git a/{path} b/{path}\n")
+    end = patch.find("\ndiff --git ", start + 1)
+    return patch[start:] if end < 0 else patch[start:end + 1]
+
+
+def _console_id_in_azahars_shape(random_number, console_id):
+    """What SetFixedConsoleUniqueId accepts (patch, cfg.cpp): GenerateConsoleUniqueId's shape."""
+    return (random_number <= 0xFFFF and (console_id >> 48) == random_number
+            and (console_id & 0x0000FFFC00000000) == 0)
+
+
+@source_only
+def test_patch_applies_to_the_pinned_azahar_sources():
+    """port/azahar/azahar.patch applies, as the workflows apply it (git apply), to Azahar at the commit in
+    port/azahar/COMMIT. Needs git and those sources (AZAHAR_SRC, default ~/azahar), unmodified."""
+    git = shutil.which("git")
+    src = os.environ.get("AZAHAR_SRC") or os.path.expanduser("~/azahar")
+    if not git or not os.path.isdir(os.path.join(src, "src")):
+        pytest.skip("git or the pinned Azahar sources (AZAHAR_SRC, default ~/azahar) are not available")
+
+    def run(*args):
+        return subprocess.run([git, "-C", src, *args], capture_output=True, text=True, timeout=300)
+    head = run("rev-parse", "HEAD")
+    if head.returncode != 0 or head.stdout.strip() != _text("port", "azahar", "COMMIT").strip():
+        pytest.skip("the Azahar sources are not at the commit of port/azahar/COMMIT")
+    if run("status", "--porcelain", "--untracked-files=no").stdout.strip():
+        pytest.skip("the Azahar sources are modified (already patched?)")
+    r = run("apply", "--check", PATCH)
+    assert r.returncode == 0, r.stderr[-2000:]
+
+
+@source_only
+def test_patch_keeps_the_earlier_work_packages_hunks():
+    """N0-29 adds to the patch; the MAC address switch (N0-26) and the timing observer stay."""
+    cfg = _patch_section("src/core/hle/service/cfg/cfg.cpp")
+    assert "+bool SetFixedConsoleMac(const std::string& mac) {" in cfg
+    assert "+static std::string fixed_console_mac;" in cfg
+    assert "bool SetFixedConsoleMac(const std::string& mac);" in _patch_section("src/core/hle/service/cfg/cfg.h")
+    timing = _patch_section("src/core/core_timing.cpp")
+    assert "+void SetTimingObserver(" in timing and "evt.from_host" in timing
+
+
+@source_only
+def test_patch_adds_the_fixed_console_unique_id_switch():
+    """SetFixedConsoleUniqueId (cfg.cpp, cfg.h): refuses a pair that GenerateConsoleUniqueId could not have
+    made, and GenerateConsoleUniqueId, which a config savegame that is made calls, returns it when it is set."""
+    cpp = _patch_section("src/core/hle/service/cfg/cfg.cpp")
+    assert "+bool SetFixedConsoleUniqueId(u32 random_number, u64 console_id) {" in cpp
+    assert "+    if (random_number > 0xFFFF || (console_id >> 48) != random_number ||" in cpp
+    assert "+        (console_id & 0x0000FFFC00000000ULL) != 0) {" in cpp
+    assert "+        return false;" in cpp
+    assert "+void ClearFixedConsoleUniqueId() {" in cpp
+    # the switch is checked before anything is drawn from the host's random source
+    assert "+    if (fixed_console_unique_id_set) {" in cpp
+    assert cpp.index("+    if (fixed_console_unique_id_set) {") < cpp.index("CryptoPP::AutoSeededRandomPool rng;")
+    h = _patch_section("src/core/hle/service/cfg/cfg.h")
+    assert "+bool SetFixedConsoleUniqueId(u32 random_number, u64 console_id);" in h
+    assert "+void ClearFixedConsoleUniqueId();" in h
+
+
+@source_only
+def test_the_fixed_console_unique_id_is_in_azahars_shape_and_documented():
+    """The runner's constants pass the patch's check (mirrored here), the check refuses what it should, and
+    the README table has the ID and the GetTransferableId replies that follow from it."""
+    import hashlib
+    import struct
+    runner = _text("port", "src", "runner.cpp")
+    number = int(re.search(r"constexpr u32 kFixedConsoleRandomNumber = (0x[0-9A-Fa-f]+);", runner).group(1), 16)
+    ident = int(re.search(r"constexpr u64 kFixedConsoleId = (0x[0-9A-Fa-f]+)ULL;", runner).group(1), 16)
+    assert _console_id_in_azahars_shape(number, ident)
+    assert ident & 0x3FFFFFFFF == 0x1A2B3C4D5 and ident >> 48 == number
+    assert not _console_id_in_azahars_shape(number, ident ^ (1 << 48))       # another top 16 bits
+    assert not _console_id_in_azahars_shape(number, ident | (1 << 34))       # a bit of 34 to 47
+    assert not _console_id_in_azahars_shape(number, ident | (1 << 47))
+    assert not _console_id_in_azahars_shape(0x10000, ident)                  # more than 16 bits
+    readme = _text("port", "README.md")
+    assert f"**0x{ident:016X}**" in readme and f"**0x{number:04X}**" in readme
+    # cfg:u GetTransferableId: the last 8 bytes of SHA-256(ID as 8 bytes LE, salt & 0xFFFFF as 4 bytes LE)
+    for salt, words in ((0, (0x61B8087C, 0xB904EFF1)), (0x1263, (0x9592177D, 0xFE13E102))):
+        digest = hashlib.sha256(struct.pack("<QI", ident, salt & 0xFFFFF)).digest()
+        assert struct.unpack("<II", digest[24:32]) == words, hex(salt)
+        assert f"words 0x{words[0]:08X}, 0x{words[1]:08X}" in readme
+    assert ident.to_bytes(8, "little").hex(" ").upper() == "D5 C4 B3 A2 01 00 48 4D"
+
+
+@source_only
+def test_the_runner_sets_the_n0_29_values_in_its_default_mode():
+    """runner.cpp: the zeroed IPC replies and the time zone with the other default-mode settings (no
+    --async-io), the console unique ID under the MAC address's condition (no room, no --new-console-id),
+    all before the system loads."""
+    runner = _text("port", "src", "runner.cpp")
+    load = runner.index("system.Load(window, path)")
+    block = runner[runner.index("    if (!async_io) {\n        // the game seeds"):]
+    block = block[:block.index("    // the console's Wi-Fi MAC address")]
+    assert "Kernel::SetZeroedIpcReplies(true);" in block
+    assert '_putenv_s("TZ", "UTC0");' in block and 'setenv("TZ", "UTC0", 1);' in block
+    assert runner.index("Kernel::SetZeroedIpcReplies(true);") < load
+    assert '#include "core/hle/kernel/hle_ipc.h"' in runner
+    mac = "const bool fix_console_mac = !async_io && !new_console_id && !room_host && room_join.empty();"
+    assert mac in runner
+    assert "const bool fix_console_id = fix_console_mac;" in runner
+    call = "Service::CFG::SetFixedConsoleUniqueId(kFixedConsoleRandomNumber, kFixedConsoleId)"
+    assert f"if (fix_console_id &&\n        !{call}) {{" in runner
+    assert runner.index(mac) < runner.index(call) < load
+    # --new-console-id keeps drawing its own: NewConsoleId asks Azahar, which is not told to fix it
+    assert "cfg->GenerateConsoleUniqueId();" in runner and runner.count("SetFixedConsoleUniqueId(") == 1
+
+
+@source_only
+def test_patch_zeroes_the_command_buffer_behind_a_switch():
+    """hle_ipc.cpp, hle_ipc.h: Kernel::SetZeroedIpcReplies; without it the constructor is Azahar's."""
+    h = _patch_section("src/core/hle/kernel/hle_ipc.h")
+    assert "+void SetZeroedIpcReplies(bool enable);" in h
+    cpp = _patch_section("src/core/hle/kernel/hle_ipc.cpp")
+    assert "+#include <atomic>" in cpp
+    assert "+static std::atomic<bool> zeroed_ipc_replies{false};" in cpp
+    assert "+void SetZeroedIpcReplies(bool enable) {" in cpp
+    assert "+    if (zeroed_ipc_replies.load(std::memory_order_relaxed)) {" in cpp
+    assert "+        cmd_buf.fill(0);" in cpp
+    assert "+    } else {\n+        cmd_buf[0] = 0;\n+    }" in cpp
+    assert "-    cmd_buf[0] = 0;" in cpp
+
+
+@source_only
+@pytest.mark.parametrize("path", ["src/core/file_sys/archive_extsavedata.cpp",
+                                  "src/core/file_sys/archive_source_sd_savedata.cpp"])
+def test_patch_writes_zero_padding_in_the_format_metadata(path):
+    """Both writers of the 16-byte ArchiveFormatInfo write the 13 bytes of its fields and zeros after them
+    when deterministic_async_operations is set, and the whole struct as before when it is not."""
+    section = _patch_section(path)
+    assert '+#include "common/settings.h"' in section and "+#include <cstring>" in section
+    flat = " ".join(line[1:].strip() for line in section.splitlines() if line.startswith("+"))
+    assert "if (Settings::values.deterministic_async_operations) {" in flat
+    assert "std::array<u8, sizeof(format_info)> metadata{};" in flat
+    assert ("std::memcpy(metadata.data(), &format_info, sizeof(format_info.total_size) + "
+            "sizeof(format_info.number_directories) + sizeof(format_info.number_files) + "
+            "sizeof(format_info.duplicate_data));") in flat
+    assert "file.WriteBytes(metadata.data(), metadata.size()); } else { " \
+           "file.WriteBytes(&format_info, sizeof(format_info)); }" in flat       # Azahar's branch kept
+
+
+@source_only
+def test_readme_documents_the_sources_n0_29_found():
+    readme = _text("port", "README.md")
+    determinism = readme[readme.index("## Determinism"):readme.index("## With Azahar's normal interface")]
+    assert "### Sources found by N0-29, iteration 0" in determinism
+    for term in ("SetFixedConsoleUniqueId", "kFixedConsoleId", "SetZeroedIpcReplies", "ArchiveFormatInfo",
+                 "TZ", "UTC0", "GetTransferableId", "APT:A", "y2r:u", "cfg:u", "--perf-log"):
+        assert term in determinism, term
+    # N0-26's measurement is kept as it was written
+    assert "### Measurement with the game (N0-26)" in determinism
+    assert "Where N0-29 starts: the three IPC reply words." in determinism
