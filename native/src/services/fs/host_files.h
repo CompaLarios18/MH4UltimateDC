@@ -64,8 +64,6 @@ std::optional<std::vector<Child>> ListDirectory(const std::string& path);
 // Writes a whole small file (metadata, an icon) and makes it durable before returning. False if it could
 // not be created or fully written.
 bool WriteFileDurably(const std::string& path, const void* data, std::size_t size);
-// Reads up to `size` bytes from the start of a file; the count read, nullopt if it cannot be opened.
-std::optional<std::size_t> ReadFilePrefix(const std::string& path, void* data, std::size_t size);
 // Makes the entries of a directory (new and removed names) durable. Best effort; nothing on Windows.
 void SyncDirectory(const std::string& path);
 // SyncDirectory on `path` and every directory under it.

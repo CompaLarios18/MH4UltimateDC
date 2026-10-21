@@ -159,6 +159,10 @@ public:
         return kResultNotFound;
     }
 
+    // The other operations are the defaults (IVFCArchive's answers); only OpenDirectory differs: NCCHArchive
+    // answers ResultUnknown (no directory is made).
+    Result DirectoryOpen(const Path&, std::unique_ptr<DirectoryBackend>*) override { return kResultUnknown; }
+
 private:
     const GameFiles& game_;
     u64 title_id_;

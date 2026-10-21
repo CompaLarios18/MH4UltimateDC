@@ -53,7 +53,6 @@ public:
         : mount_point_(std::move(mount_point)), allow_zero_size_create_(allow_zero_size_create) {}
 
     std::string GetName() const override { return "SaveDataArchive: " + mount_point_; }
-    bool SupportsFileOps() const override { return true; }
     const std::string& MountPoint() const { return mount_point_; }
 
     Result OpenFile(const Path& path, u32 mode, u32 attributes, std::shared_ptr<FileBackend>* file) override;

@@ -16,9 +16,8 @@
 //
 // What the pieces of the file system (N1-12) share: result codes, the archive and file interfaces, and
 // the delay model. Internal to mh4n_services_fs; N1-13 (save data) adds archives behind the same
-// interfaces from its own files. An archive that does not override the operations below (RomFS, the system
-// archives) says so with SupportsFileOps() == false, and fs:USER answers those commands as it did before
-// N1-13 (as an unimplemented command).
+// interfaces from its own files. An archive that does not override the file operations below answers
+// them like Azahar's IVFCArchive (RomFS and the like: nothing can be created or deleted).
 //
 // Threads (principle 6): archives, the archive manager and the service objects belong to the scheduler
 // thread. A FileBackend is shared with the I/O threads: Read and Write may run there, and more than
@@ -92,6 +91,10 @@ inline constexpr Result kResultCreateDirectoryFailed = MakeResult(1007, kModuleF
 inline constexpr Result kResultUnimplementedFs = MakeResult(1012, kModuleFs, kSummaryNotSupported, kLevelPermanent);
 // Azahar's ResultUnknown, for the failures it did not find a code for.
 inline constexpr Result kResultUnknown = 0xFFFFFFFF;
+// IVFCArchive::DeleteFile: ErrorDescription::NoData (1007), FS, Canceled, Status.
+inline constexpr Result kResultNoDataCanceled = MakeResult(1007, kModuleFs, kSummaryCanceled, kLevelStatus);
+// IVFCArchive::CreateFile: ErrorDescription::NotAuthorized (1002), FS, NotSupported, Permanent.
+inline constexpr Result kResultNotAuthorized = MakeResult(1002, kModuleFs, kSummaryNotSupported, kLevelPermanent);
 static_assert(kResultInvalidArchiveHandle == 0xC8804465);
 
 // Not an Azahar code: the host could not do what was asked (an allocation failed on the I/O thread).
@@ -235,6 +238,12 @@ public:
     virtual bool Close() { return true; }
     virtual void Flush() {}
 
+    // True for a backend that can change under the game (a save or extdata file). Its Read is done on the
+    // scheduler thread, in the request's tick, and only the reply waits for the delay: what a read returns
+    // then cannot depend on how a host thread races a Write (Azahar reads a non-cached backend in the
+    // request too, and only sleeps the client). The others (RomFS, memory) never change and read on an I/O thread.
+    virtual bool ReadsOnSchedulerThread() const { return false; }
+
     // How long the game waits for a read of `length` bytes (Azahar FileBackend::GetReadDelayNs).
     virtual u64 GetReadDelayNs(std::size_t length) { return RomFsReadDelayNs(length); }
 };
@@ -250,25 +259,32 @@ public:
     // How long the game waits for an open (Azahar ArchiveBackend::GetOpenDelayNs).
     virtual u64 GetOpenDelayNs() { return kRomFsOpenDelayNs; }
 
-    // ---- N1-13: what save data and extdata archives do besides opening a file ---------------------------
-    // True for an archive that answers the operations below. The others (RomFS, the system archives) leave
-    // them to fs:USER's unimplemented-command answer, as before N1-13.
-    virtual bool SupportsFileOps() const { return false; }
-    virtual Result FileDelete(const Path& path) { (void)path; return kResultUnimplementedFs; }
-    virtual Result DirectoryDelete(const Path& path) { (void)path; return kResultUnimplementedFs; }
-    virtual Result DirectoryDeleteRecursively(const Path& path) { (void)path; return kResultUnimplementedFs; }
+    // ---- N1-13: what an archive does besides opening a file --------------------------------------------
+    // The defaults are the answers of Azahar's IVFCArchive (RomFS and the archives built like it), so an
+    // archive that cannot be written says what Azahar says. NCCHArchive differs only in OpenDirectory and
+    // SelfNCCHArchive answers its own codes; both override below. The save data archives override all of it.
+    virtual Result FileDelete(const Path& path) {
+        (void)path;
+        return kResultNoDataCanceled;  // "TODO(Subv): Verify error code"
+    }
+    virtual Result DirectoryDelete(const Path& path) {
+        (void)path;
+        return kResultUnknown;
+    }
+    virtual Result DirectoryDeleteRecursively(const Path& path) {
+        (void)path;
+        return kResultUnknown;
+    }
     virtual Result FileCreate(const Path& path, u64 size, u32 attributes) {
         (void)path, (void)size, (void)attributes;
-        return kResultUnimplementedFs;
+        return kResultNotAuthorized;
     }
     virtual Result DirectoryCreate(const Path& path, u32 attributes) {
         (void)path, (void)attributes;
-        return kResultUnimplementedFs;
+        return kResultUnknown;
     }
-    virtual Result DirectoryOpen(const Path& path, std::unique_ptr<DirectoryBackend>* directory) {
-        (void)path, (void)directory;
-        return kResultUnimplementedFs;
-    }
+    // IVFCArchive::OpenDirectory: an empty directory (IVFCDirectory::Read gives 0 entries).
+    virtual Result DirectoryOpen(const Path& path, std::unique_ptr<DirectoryBackend>* directory);
     virtual u64 GetFreeBytes() const { return 0; }
     // ControlArchive: Azahar's base class logs and answers success.
     virtual Result Control(u32 action, const u8* input, std::size_t input_size, u8* output, std::size_t output_size) {
@@ -303,5 +319,21 @@ public:
         return kResultUnimplementedFs;
     }
 };
+
+// IVFCDirectory: no entries, and Close says false (Azahar's, ivfc_archive.h).
+class EmptyDirectory final : public DirectoryBackend {
+public:
+    u32 Read(u32 count, DirEntry* entries) override {
+        (void)count, (void)entries;
+        return 0;
+    }
+    bool Close() override { return false; }
+};
+
+inline Result ArchiveBackend::DirectoryOpen(const Path& path, std::unique_ptr<DirectoryBackend>* directory) {
+    (void)path;
+    *directory = std::make_unique<EmptyDirectory>();
+    return kResultSuccess;
+}
 
 }  // namespace mh4n::fs

@@ -372,14 +372,6 @@ bool WriteFileDurably(const std::string& path, const void* data, std::size_t siz
 #endif
 }
 
-std::optional<std::size_t> ReadFilePrefix(const std::string& path, void* data, std::size_t size) {
-    const std::shared_ptr<WritableFile> file = WritableFile::Open(path, false, nullptr);
-    if (file == nullptr) {
-        return std::nullopt;
-    }
-    return file->ReadAt(0, data, size);
-}
-
 void SyncDirectory(const std::string& path) {
 #if !defined(_WIN32)
     const int fd = ::open(path.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
@@ -398,7 +390,10 @@ void SyncDirectoryTree(const std::string& path) {
         return;
     }
     for (const Child& child : *children) {
-        if (child.is_directory) {
+        // A link is not followed (a cycle inside a save folder would never end).
+        std::error_code ec;
+        const auto status = std::filesystem::symlink_status(ToPath(path + "/" + child.name), ec);
+        if (!ec && status.type() == std::filesystem::file_type::directory) {
             SyncDirectoryTree(path + "/" + child.name);
         }
     }

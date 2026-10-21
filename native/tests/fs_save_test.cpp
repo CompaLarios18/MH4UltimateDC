@@ -51,6 +51,7 @@ TEST_CASE("fs_save_test needs recomp.h (the repository around native/)" * doctes
 #include "mh4n/ipc.h"
 #include "mh4n/log.h"
 #include "mh4n/options.h"
+#include "mh4n/registry.h"
 #include "mh4n/runtime.h"
 #include "mh4n/service.h"
 #include "mh4n/threads.h"
@@ -81,6 +82,8 @@ constexpr Result kInvalidArchiveHandle = 0xC8804465;  // 101
 constexpr Result kUnimplementedFs = 0xD8C047F4;       // 1012, NotSupported, Permanent
 constexpr Result kHostFailure = MakeResult(1000, 17, 11, 27);
 constexpr Result kUnknown = 0xFFFFFFFF;  // Azahar's ResultUnknown
+constexpr Result kNoDataCanceled = 0xC92047EF;        // 1007, Canceled, Status (IVFCArchive::DeleteFile)
+constexpr Result kNotAuthorized = 0xD8C047EA;         // 1002, NotSupported, Permanent (IVFCArchive::CreateFile)
 
 // ---- harness: an ELF whose main thread runs a C++ body --------------------------------------------------
 
@@ -454,6 +457,21 @@ struct Guest {
                        {ipc::MakeHeader(0x080D, 5, 4), static_cast<u32>(h), static_cast<u32>(h >> 32), action, 8, 8,
                         ipc::MappedBufferDesc(8, ipc::R), in, ipc::MappedBufferDesc(8, ipc::W), out},
                        2)[1];
+    }
+    // ControlArchive with the sizes the client declares and the sizes of the mapped buffers; the output is
+    // pre-filled with 0xEE and returned.
+    std::pair<Result, std::vector<u8>> ControlSized(u64 h, u32 action, u32 in_declared, u32 out_declared, u32 in_mapped,
+                                                    u32 out_mapped) {
+        const u32 in = Scratch(0x1000), out = Scratch(0x1100);
+        PutBytes(in, std::vector<u8>(std::max<u32>(in_mapped, 1), 0x55));
+        PutBytes(out, std::vector<u8>(std::max<u32>(out_mapped, 1), 0xEE));
+        const Result result =
+            Request(fs,
+                    {ipc::MakeHeader(0x080D, 5, 4), static_cast<u32>(h), static_cast<u32>(h >> 32), action, in_declared,
+                     out_declared, ipc::MappedBufferDesc(in_mapped, ipc::R), in, ipc::MappedBufferDesc(out_mapped, ipc::W),
+                     out},
+                    2)[1];
+        return {result, GetBytes(out, out_mapped)};
     }
     std::pair<Result, u64> GetFreeBytes(u64 h) {
         const std::vector<u32> got = Request(fs, {ipc::MakeHeader(0x0812, 2, 0), static_cast<u32>(h), static_cast<u32>(h >> 32)}, 4);
@@ -1125,24 +1143,236 @@ TEST_CASE("OtherSaveDataPermitted opens another title's save by the id the path 
 
 // ---- the other archives keep their behaviour ------------------------------------------------------------------------------
 
-TEST_CASE("the file commands on an archive that is not a save are answered as unimplemented, as before") {
+// A test archive (id 0x7E57) that overrides nothing but OpenFile, so it answers the file operations with the
+// defaults of ArchiveBackend (Azahar's IVFCArchive). Its files record the thread each Read and Write ran on.
+namespace {
+struct ProbeThreads {
+    std::mutex mutex;
+    std::thread::id read, write;
+    int reads = 0;
+};
+ProbeThreads g_probe;
+
+class ProbeFile final : public fs::FileBackend {
+public:
+    explicit ProbeFile(bool on_scheduler) : on_scheduler_(on_scheduler) {}
+    Result Read(u64, std::size_t length, u8* buffer, std::size_t* read) override {
+        {
+            std::lock_guard lock(g_probe.mutex);
+            g_probe.read = std::this_thread::get_id();
+            ++g_probe.reads;
+        }
+        std::memset(buffer, 0x42, length);
+        *read = length;
+        return kResultSuccess;
+    }
+    Result Write(u64, std::size_t, bool, bool, const u8*, std::size_t* written) override {
+        std::lock_guard lock(g_probe.mutex);
+        g_probe.write = std::this_thread::get_id();
+        *written = 0;
+        return kResultSuccess;
+    }
+    u64 GetSize() override { return 0x100; }
+    bool ReadsOnSchedulerThread() const override { return on_scheduler_; }
+
+private:
+    bool on_scheduler_;
+};
+
+class ProbeArchive final : public fs::ArchiveBackend {
+public:
+    std::string GetName() const override { return "ProbeArchive"; }
+    Result OpenFile(const fs::Path& path, u32, u32, std::shared_ptr<fs::FileBackend>* file) override {
+        *file = std::make_shared<ProbeFile>(path.data.size() > 1 && path.data[1] == 's');
+        return kResultSuccess;
+    }
+};
+
+class ProbeFactory final : public fs::ArchiveFactory {
+public:
+    std::string GetName() const override { return "Probe"; }
+    Result Open(const fs::Path&, u64, std::unique_ptr<fs::ArchiveBackend>* archive) override {
+        *archive = std::make_unique<ProbeArchive>();
+        return kResultSuccess;
+    }
+};
+MH4N_REGISTER(fs::ArchiveProvider, "7e57.probe",
+              fs::ArchiveProvider{0x7E57, [](fs::FsState&) { return std::make_unique<ProbeFactory>(); }});
+}  // namespace
+
+TEST_CASE("an archive that overrides nothing answers the file operations as Azahar's IVFCArchive does") {
     Fixture f;
     TempDir dir;
-    std::vector<u32> delete_reply, create_reply, free_reply;
+    std::map<std::string, Result> r;
+    std::vector<std::vector<u8>> entries;
+    std::pair<Result, u64> free_bytes;
+    const int status = BootWith(f, dir, {"--ms", "1000", "--io-latency", "none"}, [&] {
+        Guest g(f, dir);
+        const u64 a = g.MustOpen(0x7E57, kEmpty, kEmptyPath);
+        r["delete file"] = g.DeleteFile(a, "/x");
+        r["delete directory"] = g.DeleteDirectory(a, "/x");
+        r["delete recursively"] = g.DeleteDirectoryRecursively(a, "/x");
+        r["create file"] = g.CreateFile(a, "/x", 4);
+        r["create directory"] = g.CreateDirectory(a, "/x");
+        const Guest::Opened d = g.OpenDirectory(a, "/");
+        r["open directory"] = d.result;
+        r["directory session"] = d.session != 0 ? kResultSuccess : kUnknown;
+        Result read_result = kUnknown;
+        entries = g.ReadDirectory(d.session, 4, &read_result);
+        r["read directory"] = read_result;
+        free_bytes = g.GetFreeBytes(a);
+        r["control"] = g.Control(a, 0);
+        ExitProcess(*f.runtime);
+    });
+    CHECK(status == 0);
+    CHECK(r["delete file"] == kNoDataCanceled);
+    CHECK(r["delete directory"] == kUnknown);
+    CHECK(r["delete recursively"] == kUnknown);
+    CHECK(r["create file"] == kNotAuthorized);
+    CHECK(r["create directory"] == kUnknown);
+    CHECK(r["open directory"] == kResultSuccess);  // IVFCArchive::OpenDirectory: an empty directory
+    CHECK(r["directory session"] == kResultSuccess);
+    CHECK(r["read directory"] == kResultSuccess);
+    CHECK(entries.empty());
+    CHECK(free_bytes.first == kResultSuccess);
+    CHECK(free_bytes.second == 0);
+    CHECK(r["control"] == kResultSuccess);  // ArchiveBackend::Control logs and answers success
+}
+
+TEST_CASE("SelfNCCH answers the file operations with UnsupportedOpenFlags, as Azahar's SelfNCCHArchive does") {
+    Fixture f;
+    TempDir dir;
+    std::map<std::string, Result> r;
+    std::pair<Result, u64> free_bytes;
     const int status = BootWith(f, dir, {"--ms", "1000", "--io-latency", "none"}, [&] {
         Guest g(f, dir);
         // SelfNCCH opens (without RomFS files it still opens: it is the file that is missing)
         const u64 a = g.MustOpen(3, kEmpty, kEmptyPath);
-        delete_reply = g.PathCommand(0x0804, a, "/x", {}, 2);
-        create_reply = g.PathCommand(0x0808, a, "/x", {0, 4, 0}, 2);
-        free_reply = g.Request(g.fs, {ipc::MakeHeader(0x0812, 2, 0), static_cast<u32>(a), static_cast<u32>(a >> 32)}, 4);
+        r["delete file"] = g.DeleteFile(a, "/x");
+        r["delete directory"] = g.DeleteDirectory(a, "/x");
+        r["delete recursively"] = g.DeleteDirectoryRecursively(a, "/x");
+        r["create file"] = g.CreateFile(a, "/x", 4);
+        r["create directory"] = g.CreateDirectory(a, "/x");
+        r["open directory"] = g.OpenDirectory(a, "/").result;
+        free_bytes = g.GetFreeBytes(a);
         ExitProcess(*f.runtime);
     });
     CHECK(status == 0);
-    // Azahar's answer to a command nobody handles: the command id, one normal parameter, the result 0
-    CHECK(delete_reply[1] == 0);
-    CHECK(create_reply[1] == 0);
-    CHECK(free_reply[1] == 0);
+    for (const char* name : {"delete file", "delete directory", "delete recursively", "create file", "create directory",
+                             "open directory"}) {
+        CHECK_MESSAGE(r[name] == kUnsupportedOpenFlags, name);
+    }
+    CHECK(free_bytes.first == kResultSuccess);
+    CHECK(free_bytes.second == 0);
+}
+
+TEST_CASE("a file that a Write can change is read on the scheduler thread; the others on an I/O thread") {
+    Fixture f;
+    TempDir dir;
+    std::thread::id read_sync, write_sync, read_async, write_async;
+    u32 count_sync = 0;
+    const int status = BootWith(f, dir, {"--ms", "1000", "--io-latency", "none"}, [&] {
+        Guest g(f, dir);
+        const u64 a = g.MustOpen(0x7E57, kEmpty, kEmptyPath);
+        const Guest::Opened sync = g.OpenFile(a, "/s", 1);  // the probe reads this one on the scheduler thread
+        g.Write(sync.session, 0, Pattern(4, 1));
+        count_sync = g.Read(sync.session, 0, 8).count;
+        {
+            std::lock_guard lock(g_probe.mutex);
+            read_sync = g_probe.read, write_sync = g_probe.write;
+        }
+        const Guest::Opened async = g.OpenFile(a, "/a", 1);
+        g.Write(async.session, 0, Pattern(4, 1));
+        g.Read(async.session, 0, 8);
+        {
+            std::lock_guard lock(g_probe.mutex);
+            read_async = g_probe.read, write_async = g_probe.write;
+        }
+        ExitProcess(*f.runtime);
+    });
+    CHECK(status == 0);
+    CHECK(count_sync == 8);
+    CHECK(read_sync == write_sync);   // a Write runs on the scheduler thread: so did this Read
+    CHECK(read_async != write_async);  // this one went to the I/O pool
+}
+
+TEST_CASE("--io-latency azahar: a file that a Write can change is read in the request's tick, the reply waits") {
+    Fixture f;
+    TempDir dir;
+    u64 read_ticks = 0;
+    int reads_at_reply = 0;
+    const int status = BootWith(f, dir, {"--ms", "1000", "--io-latency", "azahar"}, [&] {
+        Guest g(f, dir);
+        {
+            std::lock_guard lock(g_probe.mutex);
+            g_probe.reads = 0;
+        }
+        const u64 a = g.MustOpen(0x7E57, kEmpty, kEmptyPath);
+        const Guest::Opened o = g.OpenFile(a, "/s", 1);
+        const u64 before = g.Now();
+        g.Read(o.session, 0, 0x40);
+        read_ticks = g.Now() - before;
+        {
+            std::lock_guard lock(g_probe.mutex);
+            reads_at_reply = g_probe.reads;
+        }
+        ExitProcess(*f.runtime);
+    });
+    CHECK(status == 0);
+    CHECK(read_ticks == NsToTicks(fs::RomFsReadDelayNs(0x40)));  // the probe keeps the default delay, to the tick
+    CHECK(reads_at_reply == 1);
+}
+
+TEST_CASE("BossExtSaveData opens the boss/ folder of the extdata, apart from user/") {
+    Fixture f;
+    TempDir dir;
+    std::map<std::string, Result> r;
+    Guest::ReadResult read;
+    const int status = BootWith(f, dir, {"--ms", "1000", "--io-latency", "none"}, [&] {
+        Guest g(f, dir);
+        r["missing"] = g.OpenArchive(0x12345678, kBinary, ExtPath(1, 0x77, 0))[1];
+        g.CreateExtSaveData(1, 0, 0x77, Pattern(4, 1));
+        const u64 b = g.MustOpen(0x12345678, kBinary, ExtPath(1, 0x77, 0));
+        r["create"] = g.CreateFile(b, "/boss.bin", 0x10);
+        const Guest::Opened o = g.OpenFile(b, "/boss.bin", 1);
+        r["open"] = o.result;
+        g.Write(o.session, 0, Pattern(0x10, 9));
+        read = g.Read(o.session, 0, 0x10);
+        const u64 u = g.MustOpen(6, kBinary, ExtPath(1, 0x77, 0));
+        r["not in user"] = g.OpenFile(u, "/boss.bin", 1).result;
+        ExitProcess(*f.runtime);
+    });
+    CHECK(status == 0);
+    CHECK(r["missing"] == kNotFoundInvalidState);
+    CHECK(r["create"] == kResultSuccess);
+    CHECK(r["open"] == kResultSuccess);
+    CHECK(read.bytes == Pattern(0x10, 9));
+    CHECK(r["not in user"] == kFileNotFound);
+    CHECK(ReadBytesFrom(dir.ExtFolder(0, 0x77) / "boss" / "boss.bin") == Pattern(0x10, 9));
+    CHECK(!std::filesystem::exists(dir.ExtFolder(0, 0x77) / "user" / "boss.bin"));
+}
+
+TEST_CASE("ControlArchive with an action and sizes that differ: the buffers are cut to what is mapped") {
+    Fixture f;
+    TempDir dir;
+    std::map<std::string, std::pair<Result, std::vector<u8>>> r;
+    const int status = BootWith(f, dir, {"--ms", "1000", "--io-latency", "none"}, [&] {
+        Guest g(f, dir);
+        g.Format();
+        const u64 a = g.MustOpen(4, kEmpty, kEmptyPath);
+        r["action 1, in 4, out 2"] = g.ControlSized(a, 1, 4, 2, 8, 8);
+        r["action 0x7F, in 0, out 0"] = g.ControlSized(a, 0x7F, 0, 0, 8, 8);
+        r["declared beyond mapped"] = g.ControlSized(a, 2, 0x100, 0x100, 8, 8);
+        ExitProcess(*f.runtime);
+    });
+    CHECK(status == 0);
+    for (auto& [name, got] : r) {
+        CHECK_MESSAGE(got.first == kResultSuccess, name);
+    }
+    // the output buffer is written as far as the client declared it (zeros), never past
+    CHECK(r["action 1, in 4, out 2"].second == std::vector<u8>{0, 0, 0xEE, 0xEE, 0xEE, 0xEE, 0xEE, 0xEE});
+    CHECK(r["action 0x7F, in 0, out 0"].second == std::vector<u8>(8, 0xEE));
+    CHECK(r["declared beyond mapped"].second == std::vector<u8>(8, 0));
 }
 
 TEST_CASE("without --user the save archives are not formatted and cannot be formatted") {
@@ -1449,9 +1679,7 @@ TEST_CASE("host helpers: delete, recursive delete, listing, create full path") {
 #endif
     const std::vector<u8> bytes = Pattern(33, 2);
     CHECK(fs::host::WriteFileDurably(root + "/meta", bytes.data(), bytes.size()));
-    std::vector<u8> back(64, 0);
-    CHECK(fs::host::ReadFilePrefix(root + "/meta", back.data(), back.size()) == 33);
-    CHECK(!fs::host::ReadFilePrefix(root + "/none", back.data(), back.size()).has_value());
+    CHECK(std::filesystem::file_size(root + "/meta") == 33);
     CHECK(!fs::host::WriteFileDurably(root + "/no/such/dir/file", bytes.data(), bytes.size()));
 }
 

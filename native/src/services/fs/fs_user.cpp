@@ -219,8 +219,8 @@ private:
     // ---- N1-13: save data and extdata ---------------------------------------------------------------------
 
     // The archive a file operation names, or null with the reply already made: an unknown handle is
-    // "invalid archive handle" (`reply_words` is the size of the reply the command makes), an archive that
-    // does not do file operations is answered as an unimplemented command.
+    // "invalid archive handle" (`reply_words` is the size of the reply the command makes). Every archive
+    // answers the file operations itself (the defaults of ArchiveBackend are Azahar's IVFC ones).
     ArchiveBackend* FileOpArchive(Request& request, ArchiveHandle handle, u32 reply_words, u32 translate_words = 0) {
         ArchiveBackend* archive = state_->archives.Get(handle);
         if (archive == nullptr) {
@@ -232,10 +232,6 @@ private:
             if (translate_words != 0) {
                 reply.PushMoveObjects(std::shared_ptr<ClientSession>());
             }
-            return nullptr;
-        }
-        if (!archive->SupportsFileOps()) {
-            ReplyUnimplemented(request);
             return nullptr;
         }
         return archive;

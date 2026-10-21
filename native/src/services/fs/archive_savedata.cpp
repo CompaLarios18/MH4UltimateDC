@@ -370,6 +370,27 @@ Result OpenSdSave(const FsState& state, u64 program_id, std::unique_ptr<ArchiveB
     return kResultSuccess;
 }
 
+// ArchiveSource_SDSaveData::Format: the save's folder is deleted and made again, and the format info is
+// written next to it. A metadata file that cannot be written is not an error (Azahar's answer).
+Result FormatSdSave(const FsState& state, u64 program_id, const ArchiveFormatInfo& info) {
+    const std::string sdmc = SdmcDirectory(state);
+    if (sdmc.empty()) {
+        MH4N_LOG(Error, kLog, "FormatSaveData: there is no user folder (--user)");
+        return kResultHostFailure;
+    }
+    const std::string concrete = SaveDataPath(sdmc, program_id);
+    host::DeleteDirectoryRecursively(concrete);
+    if (!host::CreateFullPath(concrete)) {
+        MH4N_LOG(Error, kLog, "FormatSaveData: cannot make {}", concrete);
+    }
+    const std::array<u8, 16> bytes = EncodeFormatInfo(info);
+    if (!host::WriteFileDurably(SaveDataMetadataPath(sdmc, program_id), bytes.data(), bytes.size())) {
+        MH4N_LOG(Warning, kLog, "FormatSaveData: cannot write the metadata of {}", concrete);
+    }
+    host::SyncDirectory(concrete);
+    return kResultSuccess;
+}
+
 class SaveDataFactory final : public ArchiveFactory {
 public:
     explicit SaveDataFactory(FsState& state) : state_(state) {}
@@ -380,34 +401,16 @@ public:
         return OpenSdSave(state_, program_id, archive);
     }
 
-    // ArchiveSource_SDSaveData::Format: the save's folder is deleted and made again, and the format info is
-    // written next to it. A metadata file that cannot be written is not an error (Azahar's answer).
     Result Format(const Path& path, const ArchiveFormatInfo& info, u64 program_id, u32 directory_buckets,
                   u32 file_buckets) override {
         (void)path, (void)directory_buckets, (void)file_buckets;
-        const std::string sdmc = SdmcDirectory(state_);
-        if (sdmc.empty()) {
-            MH4N_LOG(Error, kLog, "FormatSaveData: there is no user folder (--user)");
-            return kResultHostFailure;
-        }
-        const std::string concrete = SaveDataPath(sdmc, program_id);
-        host::DeleteDirectoryRecursively(concrete);
-        if (!host::CreateFullPath(concrete)) {
-            MH4N_LOG(Error, kLog, "FormatSaveData: cannot make {}", concrete);
-        }
-        const std::array<u8, 16> bytes = EncodeFormatInfo(info);
-        if (!host::WriteFileDurably(SaveDataMetadataPath(sdmc, program_id), bytes.data(), bytes.size())) {
-            MH4N_LOG(Warning, kLog, "FormatSaveData: cannot write the metadata of {}", concrete);
-        }
-        host::SyncDirectory(concrete);
-        return kResultSuccess;
+        return FormatSdSave(state_, program_id, info);
     }
 
 private:
     FsState& state_;
 };
 
-constexpr u32 kMediaGameCardType = kMediaGameCard;
 
 // The archive path of OtherSaveData: binary, 12 bytes (media type, then two words that name the title).
 struct OtherPath {
@@ -427,7 +430,7 @@ Result ParseOtherPath(const Path& path, OtherPath* out) {
     std::memcpy(&out->media_type, path.data.data(), 4);
     std::memcpy(&out->word1, path.data.data() + 4, 4);
     std::memcpy(&out->word2, path.data.data() + 8, 4);
-    if (out->media_type != kMediaSdmc && out->media_type != kMediaGameCardType) {
+    if (out->media_type != kMediaSdmc && out->media_type != kMediaGameCard) {
         MH4N_LOG(Error, kLog, "OtherSaveData: unsupported media type {}", out->media_type);
         // "this is strange, but the error code was verified with a real 3DS"
         return kResultUnsupportedOpenFlags;
@@ -446,7 +449,7 @@ public:
         if (const Result result = ParseOtherPath(path, &parsed); IsError(result)) {
             return result;
         }
-        if (parsed.media_type == kMediaGameCardType) {
+        if (parsed.media_type == kMediaGameCard) {
             MH4N_LOG(Warning, kLog, "(STUBBED) Unimplemented media type GameCard");
             return kResultGamecardNotInserted;
         }
@@ -456,12 +459,24 @@ public:
         return OpenSdSave(state_, program_id, archive);
     }
 
-    // Azahar: "Attempted to format a OtherSaveDataPermitted archive" (the General one is not reachable: only
-    // FormatSaveData of archive 4 gets this far).
+    // Permitted refuses ("Attempted to format a OtherSaveDataPermitted archive"). General formats the SD
+    // save of its title, as ArchiveFactory_OtherSaveDataGeneral::Format does. FormatSaveData only lets
+    // archive 4 through today, so neither is reached from the game; the code follows Azahar for when it is.
     Result Format(const Path& path, const ArchiveFormatInfo& info, u64 program_id, u32 directory_buckets,
                   u32 file_buckets) override {
-        (void)path, (void)info, (void)program_id, (void)directory_buckets, (void)file_buckets;
-        return kResultInvalidPath;
+        (void)program_id, (void)directory_buckets, (void)file_buckets;
+        if (permitted_) {
+            return kResultInvalidPath;
+        }
+        OtherPath parsed;
+        if (const Result result = ParseOtherPath(path, &parsed); IsError(result)) {
+            return result;
+        }
+        if (parsed.media_type == kMediaGameCard) {
+            MH4N_LOG(Warning, kLog, "(STUBBED) Unimplemented media type GameCard");
+            return kResultGamecardNotInserted;
+        }
+        return FormatSdSave(state_, parsed.word1 | (static_cast<u64>(parsed.word2) << 32), info);
     }
 
 private:

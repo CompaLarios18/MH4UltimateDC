@@ -43,6 +43,7 @@ public:
     bool SetSize(u64 size) override;
     bool Close() override;
     void Flush() override;
+    bool ReadsOnSchedulerThread() const override { return true; }
     u64 GetReadDelayNs(std::size_t length) override { return SaveReadDelayNs(length); }
 
 protected:
