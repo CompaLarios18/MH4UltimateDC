@@ -2309,6 +2309,45 @@ TEST_CASE("y2r:u: the service converts, signals 50000 ticks later and keeps its 
 
 // ---- cam:u -------------------------------------------------------------------------------------------------
 
+TEST_CASE("cam:u: Activate of the inner camera starts two vsync chains, as Azahar does") {
+    constexpr u64 kPeriod = kTicksPerSecond * 67 / 1000;  // Rate_15
+    Fixture f;
+    TempDir dir;
+    std::vector<u32> timing_reply;
+    std::vector<u8> timing_data;
+    u64 activated = 0;
+    const int status = BootWith(f, dir, {"--ms", "2000"}, [&] {
+        Guest g(*f.runtime);
+        const Handle srv = ConnectSrv(g);
+        const Handle cam = OpenService(g, srv, "cam:u");
+        const auto call = [&](std::vector<u32> words, std::size_t reply) { return g.Request(cam, words, reply); };
+        const u32 timing_at = g.Scratch(0x800);
+        call({ipc::MakeHeader(0x39, 0, 0)}, 2);  // DriverInitialize
+        activated = f.runtime->Clock().Now();
+        REQUIRE(call({ipc::MakeHeader(0x13, 1, 0), 2}, 2)[1] == kResultSuccess);  // Activate, camera 1
+        const u64 target = activated + kPeriod * 2 + 8;
+        const u64 now = f.runtime->Clock().Now();
+        if (target > now) f.runtime->Scheduler().Sleep(TicksToNsCeil(target - now));
+        SetReceive(g, 0, 40, timing_at);
+        timing_reply = call({ipc::MakeHeader(0x2A, 2, 0), 1, 5}, 4);
+        timing_data = g.GetBytes(timing_at, 40);
+        ExitProcess(*f.runtime);
+    });
+    CHECK(status == 0);
+    CHECK(timing_reply[1] == kResultSuccess);
+    REQUIRE(timing_data.size() == 40);
+    std::array<s64, 5> times{};
+    std::memcpy(times.data(), timing_data.data(), 40);
+    // two periods have passed: each added two entries at the same time, newest first
+    const s64 second = static_cast<s64>(TicksToNs(activated + kPeriod * 2) / 1000);
+    const s64 first = static_cast<s64>(TicksToNs(activated + kPeriod) / 1000);
+    CHECK(times[0] == second);
+    CHECK(times[1] == second);
+    CHECK(times[2] == first);
+    CHECK(times[3] == first);
+    CHECK(times[4] == 0);
+}
+
 TEST_CASE("cam:u: ports, a blank frame one frame period after the capture starts, vsync timings and calibration") {
     constexpr Result kInvalidEnum = MakeResult(1005, 20, 7, 28);
     constexpr Result kOutOfRange = MakeResult(1021, 20, 7, 28);
