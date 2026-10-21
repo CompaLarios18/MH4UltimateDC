@@ -105,7 +105,7 @@ def test_multiplayer_tests(tmp_path, inih):
 
 def test_input_tests(tmp_path, inih):
     need(os.path.join(EXT, "sdl2", "SDL", "include", "SDL.h"))
-    out = build_and_run(tmp_path, "input_test", ["util/tests/input_test.cpp", "input.cpp", "config.cpp", *UTIL],
+    out = build_and_run(tmp_path, "input_test", ["util/tests/input_test.cpp", "input.cpp", "kbm.cpp", "config.cpp", *UTIL],
                         ["-DSDL_MAIN_HANDLED", "-I" + os.path.join(EXT, "sdl2", "SDL", "include")], inih)
     assert "Status: SUCCESS!" in out
 

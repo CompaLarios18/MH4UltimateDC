@@ -65,6 +65,7 @@ public:
         return capturing;
     }
     void ToggleFpsCounter();
+    void ToggleKeyGuides();
 
     // ── The renderers' threads (render_*.cpp) ──
     std::unique_lock<std::mutex> Lock() {
@@ -128,6 +129,10 @@ private:
     bool menu_open = false;
     bool capturing = false;      ///< the game's input cut off
     std::string last_fps_corner = "top-left";  ///< where ToggleFpsCounter puts the counter back
+    std::string last_guides_corner = "bottom-left";  ///< and ToggleKeyGuides the guides
+    u32 escape_at = 0;           ///< SDL ticks of an Esc that opens the menu once it's not an echo
+    u32 pad_button_at = 0;       ///< SDL ticks of a controller's last button
+    bool echo_logged = false;
     bool fresh_input = false;    ///< the next frame starts from a clean input state
     bool close_requested = false;
     bool escape_pressed = false; ///< Esc while open: closes the menu unless something takes it

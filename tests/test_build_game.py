@@ -88,6 +88,28 @@ def test_build_game_applies_code_mods(tmp_path, capsys):
     assert f"rc_text_crc32 = 0x{zlib.crc32(text):08x}u" in table.read_text()
 
 
+def test_fetch_compiler_checks_the_download(tmp_path):
+    """A downloaded compiler is unpacked only when its SHA-256 is the expected one; a URL with
+    none to check against is refused, and the default URL comes with its own."""
+    import hashlib
+    import zipfile
+    import build_game
+    archive = tmp_path / "srv" / "llvm-mingw-test.zip"
+    archive.parent.mkdir()
+    with zipfile.ZipFile(archive, "w") as z:
+        z.writestr(f"llvm-mingw-test/bin/{build_game.MINGW_CLANG}", "#!/bin/sh\n")
+    url = archive.resolve().as_uri()
+    with pytest.raises(SystemExit, match="SHA-256"):
+        build_game.fetch_compiler(str(tmp_path / "bad"), url, "0" * 64)
+    assert not os.listdir(tmp_path / "bad")                      # nothing left behind
+    with pytest.raises(SystemExit, match="no SHA-256"):
+        build_game.fetch_compiler(str(tmp_path / "none"), url)
+    good = hashlib.sha256(archive.read_bytes()).hexdigest()
+    cc = build_game.fetch_compiler(str(tmp_path / "good"), url, good)
+    assert cc.endswith(os.path.join("llvm-mingw-test", "bin", build_game.MINGW_CLANG))
+    assert len(build_game.LLVM_MINGW_SHA256) == 64 and build_game.LLVM_MINGW in build_game.LLVM_MINGW_URL
+
+
 def test_fetch_compiler_from_zip(tmp_path):
     """--fetch-compiler unpacks an llvm-mingw-style zip and finds its clang (here a stand-in
     script that runs the host clang), and reuses it next time without the zip."""

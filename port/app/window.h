@@ -6,6 +6,7 @@
 #include <atomic>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "common/common_types.h"
 #include "core/frontend/emu_window.h"
@@ -61,9 +62,16 @@ public:
         return controllers_changed.exchange(false);
     }
     /// The input profile built again as if a controller had come (the in-game menu changed the
-    /// controls).
+    /// controls), and the window's own keys read again.
     void RequestInputReload() {
+        keys_changed = true;
         controllers_changed = true;
+    }
+
+    /// Whether the keyboard and mouse's way is on (input_mode, or in auto the device used last):
+    /// the mouse turns the camera, and the key guides show.
+    bool KeyboardMouseActive() const {
+        return keyboard_mouse.load(std::memory_order_relaxed);
     }
 
     SDL_Window* GetSDLWindow() const {
@@ -95,11 +103,25 @@ protected:
 private:
     void OnKey(int scancode, bool down, u16 modifiers);
     void ShowCursorFor(u32 ms);
+    void ReadKeys();
+    /// The mouse as the camera (SDL's relative mode) or as the stylus, as the mode, the focus,
+    /// the menu and the stylus key say; and the input mode in auto.
+    void UpdateMouseMode();
+    /// A key event that came with a controller's button (Steam Input sends keys for a
+    /// controller's buttons in some layouts): not the keyboard's.
+    bool EchoOfController() const;
 
     std::atomic<bool> is_open{true};
     bool fullscreen = false;
-    int touch_key = 0, fullscreen_key = 0, fps_counter_key = 0;
+    const Config& config;
+    std::vector<int> touch_keys, stylus_keys;
+    int fullscreen_key = 0, fps_counter_key = 0, key_guides_key = 0;
     std::atomic<bool> controllers_changed{false};
+    std::atomic<bool> keys_changed{false};
+    std::atomic<bool> keyboard_mouse{false};
+    bool last_used_keyboard = false;  ///< auto: the keyboard or mouse was used after the controller
+    bool mouse_camera = false;        ///< SDL's relative mode is on: the mouse turns the camera
+    u32 last_pad_event = 0;           ///< SDL ticks of a controller's last button (EchoOfController)
     u32 cursor_hide_at = 0;  ///< SDL ticks after which an idle mouse cursor hides (full screen)
     u32 last_title = 0;
     u32 last_measure = 0;

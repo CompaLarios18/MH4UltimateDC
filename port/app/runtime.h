@@ -247,8 +247,9 @@ public:
     // ── Input ──
     // The 3DS's buttons and sticks come from the input profile (BuildInputProfile): each one
     // reads the app's keys, a controller, or the full parameters of the player's choice. The
-    // window sends keys through KeyDown/KeyUp, the mouse as touches through the window itself
-    // (until N2b), and the software keyboard's text goes through the keyboard (below).
+    // window sends keys through KeyDown/KeyUp (the mouse's buttons too while the mouse is the
+    // camera), the mouse as touches through the window itself otherwise (until N2b), and the
+    // software keyboard's text goes through the keyboard (below).
 
     /// Starts the input layer (the keyboard and controller engines) after the app's SDL, and
     /// stops it. Main thread.
@@ -256,8 +257,10 @@ public:
     virtual void ShutdownInput() = 0;
 
     /// Makes the input profile: every button and stick from `config` (full parameters first,
-    /// else the key, joined with `controller` when there is one), the mouse as the stylus, no
-    /// motion sensor. Main thread before the game loads, or the emulation thread; follow it
+    /// else every key of its list ("F | Mouse Right": Input::KeyCodes), the item bar's macro key
+    /// of the button, and `controller`'s input when there is one, any of them pressing it), the
+    /// C-stick also from the mouse's push (SetMouseStick), the mouse as the stylus, no motion
+    /// sensor. Main thread before the game loads, or the emulation thread; follow it
     /// with ReloadInputDevices while the game runs.
     virtual void BuildInputProfile(const Config& config, const ControllerInfo* controller) = 0;
 
@@ -269,11 +272,30 @@ public:
     /// go, and a stick still pushed reads centred until it comes back. Any thread.
     virtual void SetInputMuted(bool muted) = 0;
 
-    /// A key (an SDL scancode) went down or up for the console, and all of them let go. The
+    /// A key (an SDL scancode, or one of input.h's codes for the mouse's buttons, the wheel and
+    /// the item bar's macro) went down or up for the console, and all of them let go. The
     /// window's thread (the emulation thread).
     virtual void KeyDown(int scancode) = 0;
     virtual void KeyUp(int scancode) = 0;
     virtual void ReleaseAllKeys() = 0;
+
+    // The keyboard-and-mouse mode (input.h): the mouse is a key on the keyboard above (the codes
+    // past SDL's scancodes of input.h: Input::MOUSE_KEY + a button, Input::WHEEL_UP, ...; the item
+    // bar's macro presses Input::MACRO_KEY + a button), and it turns the camera in one of two ways.
+
+    /// Where the mouse pushes the C-stick, each part -1..1 (x to the right, y up); (0, 0) lets
+    /// go. Read by the C-stick's binding that BuildInputProfile made for it. The emulation
+    /// thread.
+    virtual void SetMouseStick(float x, float y) = 0;
+
+    /// The game's camera turns by the mouse itself (the port's camera hook): `yaw` degrees to
+    /// the right and `pitch` up are added to the turn the hook takes next, which is only done
+    /// while CameraTurnActive says the hook runs (a camera the mouse can turn, a code library
+    /// built with the hook); otherwise the app pushes the C-stick (SetMouseStick). The
+    /// emulation thread. ClearCameraTurn drops a turn not taken yet.
+    virtual bool CameraTurnActive() = 0;
+    virtual void AddCameraTurn(float yaw, float pitch) = 0;
+    virtual void ClearCameraTurn() = 0;
 
     // ── The software keyboard ──
 

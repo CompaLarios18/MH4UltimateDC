@@ -41,6 +41,17 @@ std::vector<std::string> BuildCommand(const Python& python, const std::string& t
 std::vector<std::string> ModsCommand(const Python& python, const std::string& tools,
                                      const std::vector<std::string>& args);
 
+/// update.py --json ARGS... (the launcher's Update button)
+std::vector<std::string> UpdateCommand(const Python& python, const std::string& tools,
+                                       const std::vector<std::string>& args);
+
+/// The folder of the installed package the tools came from (the one with mh4u-tools in it,
+/// which an update replaces), empty for a build from the source or tools found elsewhere.
+std::string PackageRoot(const std::string& tools_dir);
+
+/// The package's platform as the releases name it: windows, linux or macos.
+const char* Platform();
+
 struct Progress {
     float fraction = 0.0f;  ///< 0..1, roughly
     std::string stage;      ///< what it is doing, for the player

@@ -2,6 +2,15 @@
 
 🇲🇽 *Port de MH4U para PC: 60/120 fps, pantalla ancha, la pantalla táctil encima del juego y multijugador por internet. Necesitas tu propia copia del juego y su actualización v1.3.0.*
 
+## What's new in 0.1.3
+
+- **Keyboard and mouse like Monster Hunter Rise on PC.** The mouse turns the camera itself, like a PC game's mouse look (not by pushing a stick: no speed cap, no acceleration), with sensitivity, up/down sensitivity and invert in Esc → Controls. Left click attacks (X), right click or F is A (attack, gather, carve, talk), Space evades, E uses an item or sheathes, Shift dashes, the side button guards, Ctrl or the wheel's click resets the camera, Q targets a monster, C kicks / skips, the **wheel scrolls the item bar**. Every button takes two keys or mouse buttons. Hold **Alt** to use the mouse on the touch screen. **Rebuild the code library once** (the launcher asks): the mouse camera is a new hook.
+- **Key guides**: while you play with the keyboard and mouse, the keys for everything the hunter does show small in a corner, each with the 3DS button the game's own prompts name. F1 hides them; corner and on/off in Controls.
+- **Auto, controller or keyboard and mouse**: the app switches by what you used last (with a controller, the mouse is the stylus as before). Keys you changed yourself stay; untouched old keys move to the new layout.
+- **Updates from the launcher**: it looks for a new release when it opens; *Update now* downloads it, checks it and restarts. Starting with this version (from 0.1.2, download this one by hand once).
+- **A close button** on the launcher (it opens full screen, without a title bar).
+- **Steam Deck**: B no longer opens the port's menu when Steam Input sends Esc along with it.
+
 ## What's new in 0.1.2
 
 - **End the quest together.** Hold **ZL+ZR** (Q+C) for a second once a quest is complete to end the wait before the return, as if the carving time had run out. Online, the quest ends once every player with the port has held it, and the screen names who hasn't. `skip_end` / `skip_end_hold` in `mh4u.ini` and the menu.
@@ -39,7 +48,7 @@ The launcher also has *Mods* (several at once, in an order, conflicts shown), *O
 
 ## What's in it
 
-- **The port's own app**: a launcher (setup, mods, online rooms, settings), then the game in a window of its own, full screen, with the keyboard, a controller mapped on its own (like MH3U on a Wii U) and the mouse as the stylus; Vulkan, OpenGL or software rendering; a menu over the game (Esc) for options and controls; the 3DS keyboard (names, chat) drawn by the app; a frame-rate counter (F3, off by default).
+- **The port's own app**: a launcher (setup, mods, online rooms, settings), then the game in a window of its own, full screen, with the keyboard and mouse (Rise-style, the mouse on the camera, key guides on screen) or a controller mapped on its own (like MH3U on a Wii U); updates from the launcher; Vulkan, OpenGL or software rendering; a menu over the game (Esc) for options and controls; the 3DS keyboard (names, chat) drawn by the app; a frame-rate counter (F3, off by default).
 - **Rooms while you play**: join, host or leave a room from the menu's *Multiplayer* tab without restarting the game; the host copies an invite (`mh4u://…`), friends paste it and join; a lobby's rooms are listed there too.
 - **Mod catalog**: the launcher's *Mods → Catalog* installs the HD texture pack and four other community mods with one click (from their authors' own downloads).
 - **Servers of our own**: a lobby server that brings back public room lists (in the app's *Online* screen and Azahar's *Browse Public Game Lobby*), and scripts or Docker for dedicated rooms (`mh4u-server`, `SERVER.md`).

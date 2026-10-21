@@ -6,6 +6,7 @@
 #include <memory>
 #include <string>
 #include <tuple>
+#include <vector>
 
 #include <SDL.h>
 #include <fmt/format.h>
@@ -24,6 +25,7 @@
 #include "input.h"
 #include "input_common/keyboard.h"
 #include "input_common/main.h"
+#include "hooks.h"
 #include "runtime_azahar/azahar_runtime.h"
 #include "util/buttons.h"
 
@@ -63,18 +65,22 @@ namespace NativeAnalog = Settings::NativeAnalog;
 namespace NativeButton = Settings::NativeButton;
 
 constexpr const char* ANY = "mh4u_any";
+constexpr const char* MOUSE = "mh4u_mouse";
 
 /// SetInputMuted: the in-game menu is up, and the game gets nothing.
 std::atomic<bool> muted{false};
 
-/// Pressed while either of two buttons is. Muted, it reads released, and a button held when the
+/// Pressed while any of its buttons is. Muted, it reads released, and a button held when the
 /// mute ends stays released until it is let go (the B that closed the menu doesn't also roll).
 class AnyButton final : public ::Input::ButtonDevice {
 public:
-    AnyButton(std::unique_ptr<::Input::ButtonDevice> a_, std::unique_ptr<::Input::ButtonDevice> b_)
-        : a(std::move(a_)), b(std::move(b_)) {}
+    explicit AnyButton(std::vector<std::unique_ptr<::Input::ButtonDevice>> inner_)
+        : inner(std::move(inner_)) {}
     bool GetStatus() const override {
-        const bool pressed = (a && a->GetStatus()) || (b && b->GetStatus());
+        bool pressed = false;
+        for (const auto& device : inner) {
+            pressed = pressed || (device && device->GetStatus());
+        }
         if (muted.load(std::memory_order_relaxed)) {
             held_over = true;
             return false;
@@ -87,23 +93,29 @@ public:
     }
 
 private:
-    std::unique_ptr<::Input::ButtonDevice> a, b;
+    std::vector<std::unique_ptr<::Input::ButtonDevice>> inner;
     mutable bool held_over = false;  // the emulation thread is the only reader
 };
 
-/// Whichever of two sticks is pushed further. Muted, it reads centred, and a stick pushed when
+/// Whichever of its sticks is pushed furthest. Muted, it reads centred, and a stick pushed when
 /// the mute ends reads centred until it has come back.
 class AnyAnalog final : public ::Input::AnalogDevice {
 public:
-    AnyAnalog(std::unique_ptr<::Input::AnalogDevice> a_, std::unique_ptr<::Input::AnalogDevice> b_)
-        : a(std::move(a_)), b(std::move(b_)) {}
+    explicit AnyAnalog(std::vector<std::unique_ptr<::Input::AnalogDevice>> inner_)
+        : inner(std::move(inner_)) {}
     std::tuple<float, float> GetStatus() const override {
-        const auto sa = a ? a->GetStatus() : std::tuple<float, float>{};
-        const auto sb = b ? b->GetStatus() : std::tuple<float, float>{};
         const auto length = [](const std::tuple<float, float>& s) {
             return std::hypot(std::get<0>(s), std::get<1>(s));
         };
-        const auto status = length(sa) >= length(sb) ? sa : sb;
+        std::tuple<float, float> status{};
+        for (const auto& device : inner) {
+            if (device) {
+                const auto s = device->GetStatus();
+                if (length(s) > length(status)) {
+                    status = s;
+                }
+            }
+        }
         if (muted.load(std::memory_order_relaxed)) {
             held_over = true;
             return {};
@@ -116,42 +128,73 @@ public:
     }
 
 private:
-    std::unique_ptr<::Input::AnalogDevice> a, b;
+    std::vector<std::unique_ptr<::Input::AnalogDevice>> inner;
     mutable bool held_over = false;
 };
 
-/// "engine:mh4u_any,a:<params>,b:<params>": the inner parameters are serialized again, which
-/// escapes them (Common::ParamPackage).
+/// "engine:mh4u_any,n:3,d0:<params>,d1:<params>,...": the inner parameters are serialized
+/// again, which escapes them (Common::ParamPackage).
 template <typename Device, typename Any>
 class AnyFactory final : public ::Input::Factory<Device> {
 public:
     std::unique_ptr<Device> Create(const Common::ParamPackage& params) override {
-        const auto inner = [&](const char* key) -> std::unique_ptr<Device> {
-            const std::string p = params.Get(key, "");
-            return p.empty() ? nullptr : ::Input::CreateDevice<Device>(p);
-        };
-        return std::make_unique<Any>(inner("a"), inner("b"));
+        std::vector<std::unique_ptr<Device>> inner;
+        const int n = params.Get("n", 0);
+        for (int i = 0; i < n; ++i) {
+            const std::string p = params.Get(fmt::format("d{}", i), "");
+            if (!p.empty()) {
+                inner.push_back(::Input::CreateDevice<Device>(p));
+            }
+        }
+        return std::make_unique<Any>(std::move(inner));
     }
 };
 
 /// Every binding goes through "mh4u_any", even a single one, so that SetInputMuted reaches it.
-std::string Join(const std::string& a, const std::string& b) {
-    if (a.empty() && b.empty()) {
+std::string Join(const std::vector<std::string>& parts) {
+    Common::ParamPackage p{{"engine", ANY}};
+    int n = 0;
+    for (const std::string& part : parts) {
+        if (!part.empty()) {
+            p.Set(fmt::format("d{}", n++), part);
+        }
+    }
+    if (n == 0) {
         return "";
     }
-    Common::ParamPackage p{{"engine", ANY}};
-    if (!a.empty()) {
-        p.Set("a", a);
-    }
-    if (!b.empty()) {
-        p.Set("b", b);
-    }
+    p.Set("n", n);
     return p.Serialize();
 }
 
-std::string KeyParam(const std::string& name) {
-    const int code = App::Input::KeyCode(name);
-    return code ? InputCommon::GenerateKeyboardParam(code) : "";
+// ── The mouse as the camera: a stick the app's mouse code (input.cpp) pushes ──
+
+/// The C-stick's push from the mouse, written by SetMouseStick and read by the stick, both on the
+/// emulation thread (atomics so that neither has to be).
+std::atomic<float> mouse_stick_x{0.0f}, mouse_stick_y{0.0f};
+
+class MouseStick final : public ::Input::AnalogDevice {
+public:
+    std::tuple<float, float> GetStatus() const override {
+        return {mouse_stick_x.load(std::memory_order_relaxed),
+                mouse_stick_y.load(std::memory_order_relaxed)};
+    }
+};
+
+class MouseStickFactory final : public ::Input::Factory<::Input::AnalogDevice> {
+public:
+    std::unique_ptr<::Input::AnalogDevice> Create(const Common::ParamPackage&) override {
+        return std::make_unique<MouseStick>();
+    }
+};
+
+/// A binding's keys ("F | Mouse Right"), each a keyboard device of Azahar's (the mouse's codes
+/// are pressed on the same keyboard by the window).
+std::vector<std::string> KeyParams(const std::string& spec) {
+    std::vector<std::string> params;
+    for (const int code : App::Input::KeyCodes(spec)) {
+        params.push_back(InputCommon::GenerateKeyboardParam(code));
+    }
+    return params;
 }
 
 std::string StickKeysParam(const std::string& spec) {
@@ -228,12 +271,15 @@ std::string ControllerAxisName(int axis) {
 std::string ControllerName(const std::string& params) {
     const Common::ParamPackage p{params};
     const std::string engine = p.Get("engine", "");
-    if (engine == "mh4u_any") { // the app's keyboard + controller pair (input.cpp)
-        for (const char* side : {"b", "a"}) {
-            if (std::string name = ControllerName(p.Get(side, "")); !name.empty()) {
+    if (engine == ANY) { // the app's keys, mouse and controller together (the controller last)
+        for (int i = p.Get("n", 0) - 1; i >= 0; --i) {
+            if (std::string name = ControllerName(p.Get(fmt::format("d{}", i), "")); !name.empty()) {
                 return name;
             }
         }
+        return "";
+    }
+    if (engine == MOUSE) {
         return "";
     }
     if (engine == "analog_from_button") {
@@ -268,6 +314,7 @@ void AzaharRuntime::InitInput() {
         ANY, std::make_shared<AnyFactory<::Input::ButtonDevice, AnyButton>>());
     ::Input::RegisterFactory<::Input::AnalogDevice>(
         ANY, std::make_shared<AnyFactory<::Input::AnalogDevice, AnyAnalog>>());
+    ::Input::RegisterFactory<::Input::AnalogDevice>(MOUSE, std::make_shared<MouseStickFactory>());
 }
 
 void AzaharRuntime::ShutdownInput() {
@@ -284,7 +331,7 @@ void AzaharRuntime::BuildInputProfile(const Config& config, const ControllerInfo
     }
     for (int i = 0; i < NativeButton::NumButtons; ++i) {
         if (!config.button_params[i].empty()) {
-            profile.buttons[i] = Join(config.button_params[i], "");
+            profile.buttons[i] = Join({config.button_params[i]});
             continue;
         }
         std::string from_pad;
@@ -295,11 +342,15 @@ void AzaharRuntime::BuildInputProfile(const Config& config, const ControllerInfo
                 from_pad = bind.Serialize();
             }
         }
-        profile.buttons[i] = Join(KeyParam(config.keys[i]), from_pad);
+        std::vector<std::string> parts = KeyParams(config.keys[i]);
+        // the item bar's macro presses L and Y or A through codes of its own
+        parts.push_back(InputCommon::GenerateKeyboardParam(App::Input::MACRO_KEY + i));
+        parts.push_back(from_pad);
+        profile.buttons[i] = Join(parts);
     }
     for (int i = 0; i < NativeAnalog::NumAnalogs; ++i) {
         if (!config.stick_params[i].empty()) {
-            profile.analogs[i] = Join(config.stick_params[i], "");
+            profile.analogs[i] = Join({config.stick_params[i]});
             continue;
         }
         std::string from_pad;
@@ -309,7 +360,12 @@ void AzaharRuntime::BuildInputProfile(const Config& config, const ControllerInfo
                 from_pad = bind.Serialize();
             }
         }
-        profile.analogs[i] = Join(StickKeysParam(config.stick_keys[i]), from_pad);
+        std::vector<std::string> parts{StickKeysParam(config.stick_keys[i]), from_pad};
+        if (i == NativeAnalog::CStick) {
+            // the mouse turns the camera (it reads centred while it isn't the camera)
+            parts.push_back(Common::ParamPackage{{"engine", MOUSE}}.Serialize());
+        }
+        profile.analogs[i] = Join(parts);
     }
     // the mouse is the stylus (the window sends it as touches); no motion sensor
     profile.touch_device = "engine:emu_window";
@@ -347,6 +403,25 @@ void AzaharRuntime::KeyUp(int scancode) {
 
 void AzaharRuntime::ReleaseAllKeys() {
     InputCommon::GetKeyboard()->ReleaseAllKeys();
+}
+
+void AzaharRuntime::SetMouseStick(float x, float y) {
+    mouse_stick_x.store(x, std::memory_order_relaxed);
+    mouse_stick_y.store(y, std::memory_order_relaxed);
+}
+
+// the port's camera hook (port/src/hooks.cpp) takes the mouse's turn; it is the hooks' own
+// state, whatever runs the game
+bool AzaharRuntime::CameraTurnActive() {
+    return Port::Hooks::CameraTurnActive();
+}
+
+void AzaharRuntime::AddCameraTurn(float yaw, float pitch) {
+    Port::Hooks::AddCameraTurn(yaw, pitch);
+}
+
+void AzaharRuntime::ClearCameraTurn() {
+    Port::Hooks::ClearCameraTurn();
 }
 
 const char* AzaharRuntime::ButtonSettingName(int button) const {

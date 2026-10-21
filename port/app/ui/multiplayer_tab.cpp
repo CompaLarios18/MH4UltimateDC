@@ -557,7 +557,7 @@ void DrawHost(Layer& layer, TabState& tab, const Config& config, bool busy) {
         ImGui::EndTable();
     }
     ImGui::BeginDisabled(busy);
-    if (ImGui::Button("Host a room")) {
+    if (ImGui::Button("Host this room")) {
         MP::HostRequest request;
         request.port = tab.port;
         request.name = tab.name.empty() ? "MH4U" : tab.name;

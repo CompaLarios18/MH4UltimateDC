@@ -31,9 +31,9 @@ public:
     void Closed();
     /// In a frame.
     void Draw();
-    /// Controls: the key pressed while a binding waits for one (Esc keeps the old one, Delete
-    /// clears it).
-    void OnCapturedKey(int scancode);
+    /// Controls: the key (or Input::MOUSE_KEY + a mouse button, Input::WHEEL_UP, ...) pressed
+    /// while a binding waits for one (Esc keeps the old one, Delete clears it).
+    void OnCapturedKey(int code);
 
     enum class AppSetting { Fullscreen, Screens, Resolution, LinearFilter, Vsync, Renderer, Volume, Output, Controls, FpsCounter, CpuClock };
 
@@ -74,7 +74,7 @@ private:
     std::map<std::string, std::string> game_file;    ///< mh4u.ini when the menu came up
     std::map<std::string, std::string> game_changes; ///< written when it goes
     std::set<AppSetting> app_changes;
-    int capture = -1;          ///< Controls: the row waiting for a key
+    int capture = -1;          ///< Controls: the row * 2 + the key's column waiting for a key
     std::string capture_note;  ///< why the last key wasn't taken
 
     // the layout editor
