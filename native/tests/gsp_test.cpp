@@ -629,6 +629,8 @@ TEST_CASE("null GPU: registers read back what was written; buffer swaps and colo
     CHECK(f.gpu.ReadReg(0x1EF00000 + 4 * (0x100 + 0x17)) == (240u | (400u << 16)));
     CHECK(f.gpu.ReadReg(0x1EF00000 + 4 * (0x140 + 0x17)) == (240u | (320u << 16)));
     CHECK(f.gpu.ReadReg(0x1EF00000 + 4 * (0x100 + 0x24)) == 720);
+    // gs.max_input_attribute_index = 1 and gs.shader_mode = VS (0xA0), at internal register 0x289
+    CHECK(f.gpu.ReadReg(0x1EF00000 + 4 * (0x400 + 0x289)) == 0xA0000001);
 
     // SetBufferSwap: the addresses go through the virtual-to-physical map
     gpu::FrameBufferInfo info{1, kVramVaddr + 0x100, kLinearVaddr + 0x200, 960, 0, 1, 0};

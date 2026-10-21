@@ -31,7 +31,10 @@
 // Departures from Azahar in the scan (N1-17 report): a list or a jump target that is not in
 // physical memory counts as one finalize and is logged (Azahar crashes); the data of a command
 // that leaves its list is cut; the words scanned for one submission are bounded (16M, Azahar has
-// no bound and would run for ever on a list that jumps to itself).
+// no bound and would run for ever on a list that jumps to itself); when the extra data of a command
+// ends at an odd index equal to length - 1, Azahar's loop (pica_core.cpp:269-271) bumps the index to
+// length and still runs the slow path, reading a header and a value from past the end of the list,
+// while here the scan stops.
 //
 // Departure in DMA: Azahar's CopyBlock copies between any two mapped addresses. gpu::Host only knows
 // the physical areas, so a DMA whose source or destination is outside the linear heap and VRAM
@@ -55,7 +58,9 @@
 
 namespace mh4n::gpu::null {
 
-inline constexpr u32 kGpuRegCount = 0x732;  // PicaCore::Regs::NUM_REGS: external 0x400, internal 0x300
+// PicaCore::Regs::NUM_REGS (pica_core.h:148); the internal block starts at word 0x400 and has 0x300
+// words.
+inline constexpr u32 kGpuRegCount = 0x732;
 inline constexpr u32 kLcdRegCount = 0x400;
 
 // Counters of what the GPU was asked to do and what it signalled.

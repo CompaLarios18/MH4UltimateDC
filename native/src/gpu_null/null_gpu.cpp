@@ -54,6 +54,8 @@ constexpr u32 kFbRight1 = 0x25;
 constexpr u32 kFbRight2 = 0x26;
 
 // Internal registers (RegsInternal, ids; regs_internal.h and regs_pipeline.h).
+// gs is at 0x280: bool_uniforms, int_uniforms[4] and 4 words of padding come first.
+constexpr u32 kGsInputConfig = 0x289;
 constexpr u32 kIrqRequest = 0x10;
 constexpr u32 kIrqCompare = 0x20;
 constexpr u32 kIrqMask = 0x30;
@@ -109,6 +111,10 @@ NullGpu::NullGpu(Host& host) : host_(host) {
     // "Older versions of libctru didn't initialize this, initialize it here to avoid endless black
     // screen."
     regs_[kRegInternal + kIrqCompare] = 0x12345678;
+    // "Tales of Abyss expects this register to have the following default values" (pica_core.cpp:
+    // 125-128): gs.max_input_attribute_index = 1 (bits 0-3) and gs.shader_mode = ShaderMode::VS,
+    // 0xA0 (bits 24-31).
+    regs_[kRegInternal + kGsInputConfig] = 0xA0000001;
 
     u32* top = &regs_[kRegFramebuffer];
     u32* bottom = &regs_[kRegFramebuffer + 0x40];
