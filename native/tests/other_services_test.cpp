@@ -50,6 +50,7 @@ TEST_CASE("other_services_test needs recomp.h (the repository around native/)" *
 #include "mh4n/service.h"
 #include "mh4n/threads.h"
 #include "../src/services/cecd/sha256.h"
+#include "../src/services/y2r/y2r_convert.h"
 #include "../src/cpu/recomp_c.h"  // last: it defines macros
 
 using namespace mh4n;
@@ -1949,6 +1950,290 @@ TEST_CASE("http:C: a call waiting for a response waits in game time") {
     CHECK(timeout_words == std::vector<u32>{ipc::MakeHeader(0x23, 1, 0), kHttpTimeout});
     CHECK(timeout_elapsed >= NsToTicks(20000000));
     CHECK(timeout_elapsed <= NsToTicks(20000000) + NsToTicks(100000));
+}
+
+
+// ---- y2r:u ---------------------------------------------------------------------------------------------------
+
+namespace {
+
+constexpr Result kY2rOutOfRange = MakeResult(1021, 20, 7, 28);      // 0xE0E053FD
+constexpr Result kY2rInvalidEnum = MakeResult(1005, 20, 7, 28);     // 0xE0E053ED
+
+// The pixel the hardware formula gives (the ITU Rec. 601 set), written out in the test.
+std::array<u8, 3> ExpectedRgb(int Y, int U, int V) {
+    const int c[8] = {0x100, 0x166, 0xB6, 0x58, 0x1C5, -0x166F, 0x10EE, -0x1C5B};
+    int r = c[0] * Y + c[1] * V;
+    int g = c[0] * Y - c[2] * V - c[3] * U;
+    int b = c[0] * Y + c[4] * U;
+    r = ((r >> 3) + c[5] + 0x18) >> 5;
+    g = ((g >> 3) + c[6] + 0x18) >> 5;
+    b = ((b >> 3) + c[7] + 0x18) >> 5;
+    const auto clamp = [](int v) { return static_cast<u8>(v < 0 ? 0 : v > 255 ? 255 : v); };
+    return {clamp(r), clamp(g), clamp(b)};
+}
+
+// An 8x8 YUV 4:2:2 test image: Y varies with the position, U and V per pair of pixels.
+struct TestImage {
+    std::vector<u8> y, u, v;
+    TestImage() : y(64), u(32), v(32) {
+        for (int py = 0; py < 8; ++py)
+            for (int px = 0; px < 8; ++px) y[static_cast<std::size_t>(py * 8 + px)] = static_cast<u8>(16 * px + py * 3 + 20);
+        for (int i = 0; i < 32; ++i) {
+            u[static_cast<std::size_t>(i)] = static_cast<u8>(100 + 3 * i);
+            v[static_cast<std::size_t>(i)] = static_cast<u8>(190 - 4 * i);
+        }
+    }
+    std::array<u8, 3> Pixel(int x, int py) const {
+        const int i = py * 8 + x;
+        return ExpectedRgb(y[static_cast<std::size_t>(i)], u[static_cast<std::size_t>(i / 2)], v[static_cast<std::size_t>(i / 2)]);
+    }
+};
+
+}  // namespace
+
+TEST_CASE("y2r: the conversion matches the hardware formula for every output format, rotation and alignment") {
+    Fixture f;
+    TempDir dir;
+    const TestImage image;
+    struct Run {
+        y2r::OutputFormat format;
+        y2r::Rotation rotation;
+        y2r::BlockAlignment alignment;
+        std::vector<u8> out;
+    };
+    std::vector<Run> runs = {
+        {y2r::OutputFormat::RGBA8, y2r::Rotation::None, y2r::BlockAlignment::Linear, {}},
+        {y2r::OutputFormat::RGB8, y2r::Rotation::None, y2r::BlockAlignment::Linear, {}},
+        {y2r::OutputFormat::RGB565, y2r::Rotation::None, y2r::BlockAlignment::Linear, {}},
+        {y2r::OutputFormat::RGB5A1, y2r::Rotation::None, y2r::BlockAlignment::Linear, {}},
+        {y2r::OutputFormat::RGBA8, y2r::Rotation::Clockwise_90, y2r::BlockAlignment::Linear, {}},
+        {y2r::OutputFormat::RGBA8, y2r::Rotation::Clockwise_180, y2r::BlockAlignment::Linear, {}},
+        {y2r::OutputFormat::RGBA8, y2r::Rotation::Clockwise_270, y2r::BlockAlignment::Linear, {}},
+        {y2r::OutputFormat::RGBA8, y2r::Rotation::None, y2r::BlockAlignment::Block8x8, {}},
+    };
+    const int status = BootWith(f, dir, {"--ms", "100"}, [&] {
+        Guest g(*f.runtime);
+        for (Run& run : runs) {
+            const u32 y_at = g.Scratch(0), u_at = g.Scratch(0x100), v_at = g.Scratch(0x200), out_at = g.Scratch(0x400);
+            g.PutBytes(y_at, image.y);
+            g.PutBytes(u_at, image.u);
+            g.PutBytes(v_at, image.v);
+            g.PutBytes(out_at, std::vector<u8>(0x400, 0xEE));
+            y2r::ConversionConfiguration c;
+            c.input_format = y2r::InputFormat::YUV422_Indiv8;
+            c.output_format = run.format;
+            c.rotation = run.rotation;
+            c.block_alignment = run.alignment;
+            c.input_line_width = 8;
+            c.input_lines = 8;
+            c.coefficients = {0x100, 0x166, 0xB6, 0x58, 0x1C5, -0x166F, 0x10EE, -0x1C5B};
+            c.alpha = 0xFF;
+            c.src_Y = {y_at, 64, 8, 0};
+            c.src_U = {u_at, 32, 4, 0};
+            c.src_V = {v_at, 32, 4, 0};
+            const u16 bytes_per_pixel = run.format == y2r::OutputFormat::RGBA8 ? 4 : run.format == y2r::OutputFormat::RGB8 ? 3 : 2;
+            c.dst = {out_at, 64u * bytes_per_pixel, static_cast<u16>(8 * bytes_per_pixel), 0};
+            REQUIRE(y2r::PerformConversion(f.runtime->Memory(), c));
+            run.out = g.GetBytes(out_at, 0x100);
+        }
+        ExitProcess(*f.runtime);
+    });
+    CHECK(status == 0);
+    // pixel (x, y) of the output image for a run, as the bytes of its format
+    const auto bytes_of = [](const Run& run, std::array<u8, 3> rgb) {
+        const u8 r = rgb[0], g = rgb[1], b = rgb[2], a = 0xFF;
+        switch (run.format) {
+        case y2r::OutputFormat::RGBA8: return std::vector<u8>{a, b, g, r};
+        case y2r::OutputFormat::RGB8: return std::vector<u8>{b, g, r};
+        case y2r::OutputFormat::RGB565: {
+            const u16 d = static_cast<u16>(((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3));
+            return std::vector<u8>{static_cast<u8>(d), static_cast<u8>(d >> 8)};
+        }
+        default: {
+            const u16 d = static_cast<u16>(((r >> 3) << 11) | ((g >> 3) << 6) | ((b >> 3) << 1) | (a >> 7));
+            return std::vector<u8>{static_cast<u8>(d), static_cast<u8>(d >> 8)};
+        }
+        }
+    };
+    const auto check_at = [&](const Run& run, std::size_t out_index, std::array<u8, 3> rgb, const char* what) {
+        const std::vector<u8> expected = bytes_of(run, rgb);
+        const std::size_t bpp = expected.size();
+        INFO(what << " at output pixel " << out_index);
+        CHECK(std::equal(expected.begin(), expected.end(), run.out.begin() + static_cast<std::ptrdiff_t>(out_index * bpp)));
+    };
+    for (std::size_t k = 0; k < 4; ++k) {  // linear, no rotation: the pixels in order
+        for (int py = 0; py < 8; ++py)
+            for (int px = 0; px < 8; ++px) check_at(runs[k], static_cast<std::size_t>(py * 8 + px), image.Pixel(px, py), "linear");
+    }
+    for (int py = 0; py < 8; ++py)
+        for (int px = 0; px < 8; ++px) {
+            // 90 degrees clockwise: the pixel (x, y) goes to (7 - y, x)
+            check_at(runs[4], static_cast<std::size_t>(px * 8 + (7 - py)), image.Pixel(px, py), "90");
+            // 180: reversed
+            check_at(runs[5], static_cast<std::size_t>(63 - (py * 8 + px)), image.Pixel(px, py), "180");
+            // 270 clockwise: (x, y) goes to (y, 7 - x)
+            check_at(runs[6], static_cast<std::size_t>((7 - px) * 8 + py), image.Pixel(px, py), "270");
+        }
+    // 8x8 blocks: the Morton order of the PICA's tiles
+    static constexpr u8 kMorton[64] = {0,  1,  4,  5,  16, 17, 20, 21, 2,  3,  6,  7,  18, 19, 22, 23,
+                                       8,  9,  12, 13, 24, 25, 28, 29, 10, 11, 14, 15, 26, 27, 30, 31,
+                                       32, 33, 36, 37, 48, 49, 52, 53, 34, 35, 38, 39, 50, 51, 54, 55,
+                                       40, 41, 44, 45, 56, 57, 60, 61, 42, 43, 46, 47, 58, 59, 62, 63};
+    for (int py = 0; py < 8; ++py)
+        for (int px = 0; px < 8; ++px) check_at(runs[7], kMorton[py * 8 + px], image.Pixel(px, py), "block");
+}
+
+TEST_CASE("y2r: a transfer unit that does not divide the data ends the conversion without touching memory") {
+    Fixture f;
+    TempDir dir;
+    bool ok = true;
+    std::vector<u8> out;
+    const int status = BootWith(f, dir, {"--ms", "100"}, [&] {
+        Guest g(*f.runtime);
+        const u32 at = g.Scratch(0);
+        g.PutBytes(at, std::vector<u8>(0x200, 0xEE));
+        y2r::ConversionConfiguration c;
+        c.input_line_width = 8;
+        c.input_lines = 8;
+        c.coefficients = {0x100, 0x166, 0xB6, 0x58, 0x1C5, -0x166F, 0x10EE, -0x1C5B};
+        c.src_Y = {at, 64, 0, 0};  // a unit of 0
+        c.dst = {at + 0x100, 256, 32, 0};
+        ok = y2r::PerformConversion(f.runtime->Memory(), c);
+        out = g.GetBytes(at + 0x100, 16);
+        ExitProcess(*f.runtime);
+    });
+    CHECK(status == 0);
+    CHECK_FALSE(ok);
+    CHECK(out[0] == 0xEE);
+}
+
+TEST_CASE("y2r:u: the service converts, signals 50000 ticks later and keeps its configuration") {
+    Fixture f;
+    TempDir dir;
+    const TestImage image;
+    std::vector<u32> init, line_bad, line_zero, line_ok, lines_ok, lines_big, std_bad, std_get, std_get_bad, get_width,
+        get_lines, coeff, coeff_set, package_bad, package_ok, get_package, start, busy_after_start, busy_later, stop_start,
+        busy_after_stop, finished, ping, alpha, dither, tei, formats, event_reply;
+    std::vector<u8> out;
+    Result event_before = 0, event_after = 0, event_after_stop = 0;
+    u64 elapsed = 0;
+    const int status = BootWith(f, dir, {"--ms", "100"}, [&] {
+        Guest g(*f.runtime);
+        const Handle srv = ConnectSrv(g);
+        const Handle y2r = OpenService(g, srv, "y2r:u");
+        const auto call = [&](std::vector<u32> words, std::size_t reply) { return g.Request(y2r, words, reply); };
+        const u32 y_at = g.Scratch(0), u_at = g.Scratch(0x100), v_at = g.Scratch(0x200), out_at = g.Scratch(0x400);
+        g.PutBytes(y_at, image.y);
+        g.PutBytes(u_at, image.u);
+        g.PutBytes(v_at, image.v);
+        g.PutBytes(out_at, std::vector<u8>(0x400, 0xEE));
+        init = call({ipc::MakeHeader(0x2B, 0, 0)}, 2);
+        get_width = call({ipc::MakeHeader(0x1B, 0, 0)}, 3);
+        get_lines = call({ipc::MakeHeader(0x1D, 0, 0)}, 3);
+        line_bad = call({ipc::MakeHeader(0x1A, 1, 0), 7}, 2);
+        line_zero = call({ipc::MakeHeader(0x1A, 1, 0), 0}, 2);
+        line_ok = call({ipc::MakeHeader(0x1A, 1, 0), 8}, 2);
+        lines_big = call({ipc::MakeHeader(0x1C, 1, 0), 1025}, 2);
+        lines_ok = call({ipc::MakeHeader(0x1C, 1, 0), 8}, 2);
+        std_bad = call({ipc::MakeHeader(0x20, 1, 0), 4}, 2);
+        call({ipc::MakeHeader(0x20, 1, 0), 0}, 2);
+        std_get = call({ipc::MakeHeader(0x21, 1, 0), 3}, 6);
+        std_get_bad = call({ipc::MakeHeader(0x21, 1, 0), 9}, 2);
+        coeff_set = call({ipc::MakeHeader(0x1E, 4, 0), 0x01000100, 0x00020003, 0x00040005, 0x00060007}, 2);
+        coeff = call({ipc::MakeHeader(0x1F, 0, 0)}, 6);
+        call({ipc::MakeHeader(0x20, 1, 0), 0}, 2);
+        alpha = call({ipc::MakeHeader(0x22, 1, 0), 0xFF}, 2);
+        call({ipc::MakeHeader(1, 1, 0), 0}, 2);   // input 4:2:2 8-bit
+        call({ipc::MakeHeader(3, 1, 0), 0}, 2);   // output RGBA8
+        call({ipc::MakeHeader(5, 1, 0), 0}, 2);   // no rotation
+        call({ipc::MakeHeader(7, 1, 0), 0}, 2);   // linear
+        formats = call({ipc::MakeHeader(2, 0, 0)}, 3);
+        // SetSendingY/U/V and SetReceiving(address, size, unit, gap; the process)
+        const auto set_buffer = [&](u16 command, u32 at, u32 size, u32 unit) {
+            return call({ipc::MakeHeader(command, 4, 2), at, size, unit, 0, ipc::CopyHandleDesc(1), 0xFFFF8001}, 2)[1];
+        };
+        REQUIRE(set_buffer(0x10, y_at, 64, 8) == kResultSuccess);
+        REQUIRE(set_buffer(0x11, u_at, 32, 4) == kResultSuccess);
+        REQUIRE(set_buffer(0x12, v_at, 32, 4) == kResultSuccess);
+        REQUIRE(set_buffer(0x18, out_at, 256, 32) == kResultSuccess);
+        finished = call({ipc::MakeHeader(0x19, 0, 0)}, 3);
+        event_reply = call({ipc::MakeHeader(0x0F, 0, 0)}, 4);
+        event_before = g.Wait(event_reply[3], 0);
+        const u64 before = f.runtime->Clock().Now();
+        start = call({ipc::MakeHeader(0x26, 0, 0)}, 2);
+        busy_after_start = call({ipc::MakeHeader(0x28, 0, 0)}, 3);
+        out = g.GetBytes(out_at, 64);
+        f.runtime->Scheduler().Sleep(60000);  // 60 us: still busy (the conversion takes 50000 ticks, 186 us)
+        busy_later = call({ipc::MakeHeader(0x28, 0, 0)}, 3);
+        f.runtime->Scheduler().Sleep(150000);  // past 50000 ticks
+        elapsed = f.runtime->Clock().Now() - before;
+        event_after = g.Wait(event_reply[3], 0);
+        // a second conversion that is stopped before it ends does not signal
+        call({ipc::MakeHeader(0x26, 0, 0)}, 2);
+        stop_start = call({ipc::MakeHeader(0x27, 0, 0)}, 2);
+        busy_after_stop = call({ipc::MakeHeader(0x28, 0, 0)}, 3);
+        f.runtime->Scheduler().Sleep(300000);
+        event_after_stop = g.Wait(event_reply[3], 0);
+        ping = call({ipc::MakeHeader(0x2A, 0, 0)}, 3);
+        dither = call({ipc::MakeHeader(0x24, 8, 0), 1, 2, 3, 4, 5, 6, 7, 8}, 2);
+        tei = call({ipc::MakeHeader(0x0D, 1, 0), 1}, 2);
+        // SetPackageParameter(12 bytes) and GetPackageParameter
+        package_bad = call({ipc::MakeHeader(0x29, 3, 0), 0x00010100, 0x00080007, 0x00FF0000}, 2);
+        package_ok = call({ipc::MakeHeader(0x29, 3, 0), 0x00020101, 0x00100010, 0x01230001}, 2);
+        get_package = call({ipc::MakeHeader(0x2D, 0, 0)}, 5);
+        ExitProcess(*f.runtime);
+    });
+    CHECK(status == 0);
+    CHECK(init == std::vector<u32>{ipc::MakeHeader(0x2B, 1, 0), kResultSuccess});
+    CHECK(get_width == std::vector<u32>{ipc::MakeHeader(0x1B, 2, 0), kResultSuccess, 1024});
+    CHECK(get_lines[2] == 0);  // 1024 lines are not stored (Azahar mirrors the hardware bug of the camera module)
+    CHECK(line_bad[1] == kY2rOutOfRange);
+    CHECK(line_zero[1] == kY2rOutOfRange);
+    CHECK(line_ok[1] == kResultSuccess);
+    CHECK(lines_big[1] == kY2rOutOfRange);
+    CHECK(lines_ok[1] == kResultSuccess);
+    CHECK(std_bad[1] == kY2rInvalidEnum);
+    CHECK(std_get == std::vector<u32>{ipc::MakeHeader(0x21, 5, 0), kResultSuccess, 0x01CA012A, 0x00360088, 0xE0FC021C, 0xDBDF099C});
+    CHECK(std_get_bad == std::vector<u32>{ipc::MakeHeader(0x21, 1, 0), kY2rInvalidEnum});
+    CHECK(coeff_set[1] == kResultSuccess);
+    CHECK(coeff[0] == ipc::MakeHeader(0x1F, 5, 0));
+    CHECK(coeff[2] == 0x01000100);
+    CHECK(coeff[5] == 0x00060007);
+    CHECK(alpha[1] == kResultSuccess);
+    CHECK(formats == std::vector<u32>{ipc::MakeHeader(2, 2, 0), kResultSuccess, 0});
+    CHECK(finished == std::vector<u32>{ipc::MakeHeader(0x19, 2, 0), kResultSuccess, 1});
+    CHECK(event_reply[0] == ipc::MakeHeader(0x0F, 1, 2));
+    CHECK(event_before == kTimeout);
+    CHECK(start == std::vector<u32>{ipc::MakeHeader(0x26, 1, 0), kResultSuccess});
+    CHECK(busy_after_start == std::vector<u32>{ipc::MakeHeader(0x28, 2, 0), kResultSuccess, 1});
+    {
+        // the first row of the converted image (Rec. 601 coefficients, alpha 0xFF)
+        REQUIRE(out.size() == 64);
+        for (int px = 0; px < 8; ++px) {
+            const auto rgb = image.Pixel(px, 0);
+            INFO("pixel " << px);
+            CHECK(out[static_cast<std::size_t>(px * 4)] == 0xFF);
+            CHECK(out[static_cast<std::size_t>(px * 4 + 1)] == rgb[2]);
+            CHECK(out[static_cast<std::size_t>(px * 4 + 2)] == rgb[1]);
+            CHECK(out[static_cast<std::size_t>(px * 4 + 3)] == rgb[0]);
+        }
+    }
+    CHECK(busy_later[2] == 1);
+    CHECK(elapsed >= 50000);
+    CHECK(event_after == kResultSuccess);
+    CHECK(stop_start[1] == kResultSuccess);
+    CHECK(busy_after_stop[2] == 0);
+    CHECK(event_after_stop == kTimeout);
+    CHECK(ping == std::vector<u32>{ipc::MakeHeader(0x2A, 2, 0), kResultSuccess, 0});
+    CHECK(dither[1] == kResultSuccess);
+    CHECK(tei[1] == kResultSuccess);
+    CHECK(package_bad[1] == kY2rOutOfRange);
+    CHECK(package_ok[1] == kResultSuccess);
+    CHECK(get_package[0] == ipc::MakeHeader(0x2D, 4, 0));
+    CHECK(get_package[2] == 0x00020101);  // input 1, output 1, rotation 2, linear
+    CHECK(get_package[3] == 0x00100010);  // 16 by 16
+    CHECK(get_package[4] == 0x01930100);  // the first two coefficients of the Rec. 709 set
 }
 
 #endif  // recomp.h
