@@ -36,7 +36,7 @@ NATIVE_NOT_YET: set[str] = {
     # N1-05 does not alias shared-memory pages: a block mapped at a second address is refused
     "conf_mem",
     # one line differs, sysinfo.memory_region2.nonzero: something must allocate from the SYSTEM
-    # region (the HID and GSP shared-memory blocks, N1-14 and N1-17)
+    # region (in Azahar only APT:SharedFont does, N1-14; the HID and GSP blocks come from BASE)
     "conf_info",
 }
 

@@ -325,9 +325,8 @@ TEST_CASE("Prepare with two phases and no program runs only those steps") {
     CHECK(f.runtime.MainThread() == nullptr);
     CHECK(f.runtime.GetCodeHost().Library() == nullptr);
     CHECK(f.runtime.GetKernel().Regions().MemoryMode() == kPrepareMemoryMode);
-    // the runtime's own devices step ran: nothing is registered under the default names
-    CHECK(f.runtime.Interfaces().gpu == nullptr);
-    CHECK(f.Logged("no GPU named 'null'"));
+    // the runtime's own devices step ran: the default devices exist, each registered by its own module
+    CHECK(f.runtime.Interfaces().gpu != nullptr);    // N1-17 registers the `null` GPU
     CHECK(f.runtime.Interfaces().input != nullptr);  // N1-16 registers `script`
     CHECK(f.runtime.Interfaces().audio != nullptr);  // N1-18 registers the `null` sink
 }
