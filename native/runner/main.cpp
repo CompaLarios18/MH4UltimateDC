@@ -40,21 +40,12 @@ constexpr const char* kUsage =
     "             code stopped\n"
     "options:\n";
 
-// A host path from the UTF-8 text of the command line (D45): on Windows the wide-character path, never the
-// ANSI code page's.
-std::filesystem::path PathFromUtf8(const std::string& text) {
-#if defined(_WIN32)
-    return std::filesystem::path(mh4n::utf8::ToWide(text));
-#else
-    return std::filesystem::path(text);
-#endif
-}
-
 // --print-process: the loader's view of a program (N1-03). Exit status 2 when loading fails.
 int PrintProcess(const std::string& path) {
     std::string error;
-    auto loader = std::filesystem::is_directory(PathFromUtf8(path)) ? mh4n::Loader::OpenGameFolder(path, &error)
-                                                      : mh4n::Loader::OpenElf(path, &error);
+    auto loader = std::filesystem::is_directory(mh4n::utf8::PathFromUtf8(path))
+                      ? mh4n::Loader::OpenGameFolder(path, &error)
+                      : mh4n::Loader::OpenElf(path, &error);
     if (!loader) {
         std::fprintf(stderr, "cannot load %s: %s\n", path.c_str(), error.c_str());
         return 2;

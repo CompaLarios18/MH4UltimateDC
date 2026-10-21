@@ -10,6 +10,7 @@
 
 #include <fmt/format.h>
 
+#include "../common/utf8.h"
 #include "mh4n/crc32.h"
 #include "mh4n/loader.h"
 #include "mh4n/log.h"
@@ -26,14 +27,14 @@ void SetError(std::string* error, std::string message) {
 bool ReadFile(const std::filesystem::path& path, std::vector<u8>* out, std::string* error) {
     std::ifstream file(path, std::ios::binary | std::ios::ate);
     if (!file) {
-        SetError(error, fmt::format("cannot open {}", path.string()));
+        SetError(error, fmt::format("cannot open {}", utf8::PathToUtf8(path)));
         return false;
     }
     const std::streamsize size = file.tellg();
     file.seekg(0);
     out->resize(static_cast<std::size_t>(size));
     if (size > 0 && !file.read(reinterpret_cast<char*>(out->data()), size)) {
-        SetError(error, fmt::format("cannot read {}", path.string()));
+        SetError(error, fmt::format("cannot read {}", utf8::PathToUtf8(path)));
         return false;
     }
     return true;
@@ -89,7 +90,8 @@ constexpr u32 AlignUp(u32 value) {
 }  // namespace
 
 std::unique_ptr<Loader> Loader::OpenGameFolder(const std::string& dir, std::string* error) {
-    const std::filesystem::path folder(dir);
+    // `dir` is UTF-8 text (D45): the path is made from it without the ANSI code page of Windows.
+    const std::filesystem::path folder = utf8::PathFromUtf8(dir);
     std::vector<u8> exheader_bytes, code;
     if (!ReadFile(folder / "exheader.bin", &exheader_bytes, error) ||
         !ReadFile(folder / "code.bin", &code, error)) {

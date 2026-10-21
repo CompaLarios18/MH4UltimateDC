@@ -20,11 +20,13 @@ TEST_CASE("platform_test needs recomp.h and the port's hooks.h (the repository a
 #include <functional>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
 
 #include "hooks.h"
+#include "../src/common/utf8.h"
 #include "mh4n/clock.h"
 #include "mh4n/log.h"
 #include "mh4n/memory.h"
@@ -754,6 +756,247 @@ TEST_CASE("platform: an empty user folder given to the platform directly is the 
     CHECK_FALSE(std::filesystem::exists(placeholder + "mh4u.ini"));
     platform::NativePlatform given(*f.runtime, "/some/folder/", {});
     CHECK(given.UserDir() == "/some/folder/");  // --user is unchanged
+}
+
+// ---- D45: UTF-8 paths ---------------------------------------------------------------------------------------
+
+namespace {
+
+// "José-ñ-日本" as UTF-8 bytes: accents and characters outside every ANSI code page.
+const std::string kUnicodeName = std::string("Jos") + "\xC3\xA9" + "-" + "\xC3\xB1" + "-" + "\xE6\x97\xA5" + "\xE6\x9C\xAC";
+
+// The UTF-8 text of a folder or file named `name` under the temporary folder `dir`.
+std::string Under(const TempDir& dir, const std::string& name) {
+    return utf8::PathToUtf8(std::filesystem::path(dir.Path()) / utf8::PathFromUtf8(name));
+}
+
+// A short-name call that answers from a table and counts how often it was asked.
+struct FakeShortNames {
+    std::map<std::string, std::string> table;  // folder (no trailing separator) -> short name
+    std::vector<std::string> asked;
+    platform::ShortPathFunction Function() {
+        return [this](const std::string& folder) -> std::optional<std::string> {
+            asked.push_back(folder);
+            const auto it = table.find(folder);
+            if (it == table.end()) {
+                return std::nullopt;
+            }
+            return it->second;
+        };
+    }
+};
+
+}  // namespace
+
+TEST_CASE("D45: UserDir keeps an ASCII folder as it is and never asks for a short name") {
+    FakeShortNames fake;
+    fake.table["C:\\Users\\Hunter\\mh4u"] = "SHOULD-NOT-BE-USED";
+    CHECK(platform::ResolveUserDir("C:\\Users\\Hunter\\mh4u\\", fake.Function()) == "C:\\Users\\Hunter\\mh4u\\");
+    CHECK(platform::ResolveUserDir("/home/hunter/mh4u/", fake.Function()) == "/home/hunter/mh4u/");
+    CHECK(platform::ResolveUserDir("relative", fake.Function()) == "relative");
+    CHECK(platform::ResolveUserDir("", fake.Function()) == "");
+    CHECK(fake.asked.empty());
+    // an ASCII folder on a system without a short-name call is the same
+    CHECK(platform::ResolveUserDir("/home/hunter/mh4u/", {}) == "/home/hunter/mh4u/");
+}
+
+TEST_CASE("D45: UserDir of a folder with non-ASCII characters is its short name when there is one") {
+    FakeShortNames fake;
+    const std::string folder = "C:\\Users\\" + kUnicodeName;
+    fake.table[folder] = "C:\\Users\\JOS~1";
+    std::string warning;
+    // the call gets the folder without its trailing separator, and the answer gets the separator back
+    CHECK(platform::ResolveUserDir(folder + "\\", fake.Function(), &warning) == "C:\\Users\\JOS~1\\");
+    CHECK(fake.asked == std::vector<std::string>{folder});
+    CHECK(warning.empty());
+    // the separator of the folder is the one kept
+    fake.table["/home/" + kUnicodeName] = "/home/JOS~1";
+    CHECK(platform::ResolveUserDir("/home/" + kUnicodeName + "/", fake.Function(), &warning) == "/home/JOS~1/");
+    // no trailing separator at all (a caller that passes the bare folder): the hooks still get one
+    CHECK(platform::ResolveUserDir("/home/" + kUnicodeName, fake.Function(), &warning) == "/home/JOS~1/");
+    // a short name that ends with a separator does not double it
+    fake.table["/home/" + kUnicodeName] = "/home/JOS~1/";
+    CHECK(platform::ResolveUserDir("/home/" + kUnicodeName + "/", fake.Function(), &warning) == "/home/JOS~1/");
+    CHECK(warning.empty());
+    // the result is ASCII by construction: every byte is below 0x80
+    for (const char c : platform::ResolveUserDir(folder + "\\", fake.Function())) {
+        CHECK(static_cast<unsigned char>(c) < 0x80);
+    }
+    // a system whose ANSI paths are UTF-8 (no short-name call) gets the folder unchanged
+    CHECK(platform::ResolveUserDir("/home/" + kUnicodeName + "/", {}) == "/home/" + kUnicodeName + "/");
+}
+
+TEST_CASE("D45: UserDir of a folder with non-ASCII characters and no short name is the placeholder, with a reason") {
+    const std::string folder = "D:\\Juegos\\" + kUnicodeName;
+    // nothing for it (8.3 names are off for the volume, or the folder is missing)
+    {
+        FakeShortNames fake;
+        std::string warning;
+        CHECK(platform::ResolveUserDir(folder + "\\", fake.Function(), &warning) == platform::kNoUserDir);
+        CHECK(fake.asked == std::vector<std::string>{folder});
+        CHECK(warning.find(folder) != std::string::npos);  // names the folder
+        CHECK(warning.find("mh4u.ini") != std::string::npos);
+        CHECK(warning.find("8.3") != std::string::npos);
+        CHECK(warning.find("fsutil 8dot3name") != std::string::npos);
+    }
+    // an empty answer is no answer
+    {
+        FakeShortNames fake;
+        fake.table[folder] = "";
+        std::string warning;
+        CHECK(platform::ResolveUserDir(folder + "\\", fake.Function(), &warning) == platform::kNoUserDir);
+        CHECK_FALSE(warning.empty());
+    }
+    // a "short name" that still has a non-ASCII character (Windows gave the long name back for a part that has no
+    // short one) is no use to the hooks either
+    {
+        FakeShortNames fake;
+        fake.table[folder] = "D:\\JUEGOS~1\\" + kUnicodeName;
+        std::string warning;
+        CHECK(platform::ResolveUserDir(folder + "\\", fake.Function(), &warning) == platform::kNoUserDir);
+        CHECK_FALSE(warning.empty());
+    }
+    // the warning is optional
+    {
+        FakeShortNames fake;
+        CHECK(platform::ResolveUserDir(folder + "\\", fake.Function()) == platform::kNoUserDir);
+    }
+}
+
+TEST_CASE("D45: the platform logs one Warning when a folder with non-ASCII characters has no short name") {
+    Fixture f;
+    REQUIRE(f.runtime->Prepare(Parse({}), {}));
+    std::vector<std::pair<LogLevel, std::string>> records;
+    SetLogSink([&](const LogRecord& r) { records.emplace_back(r.level, std::string(r.message)); });
+    const std::string folder = "D:\\Juegos\\" + kUnicodeName;
+    {
+        FakeShortNames none;
+        platform::NativePlatform p(*f.runtime, folder + "\\", {}, none.Function());
+        CHECK(p.UserDir() == platform::kNoUserDir);
+    }
+    int warnings = 0;
+    for (const auto& [level, text] : records) {
+        if (level == LogLevel::Warning && text.find("mh4u.ini") != std::string::npos &&
+            text.find(folder) != std::string::npos) {
+            ++warnings;
+        }
+        CHECK(level != LogLevel::Error);
+    }
+    CHECK(warnings == 1);
+    // with a short name there is no warning, and UserDir is the short name
+    records.clear();
+    {
+        FakeShortNames fake;
+        fake.table[folder] = "D:\\JUEGOS~1\\JOS~1";
+        platform::NativePlatform p(*f.runtime, folder + "\\", {}, fake.Function());
+        CHECK(p.UserDir() == "D:\\JUEGOS~1\\JOS~1\\");
+    }
+    for (const auto& [level, text] : records) {
+        CHECK(level != LogLevel::Warning);
+    }
+    // an ASCII folder: not asked, no warning
+    records.clear();
+    {
+        FakeShortNames fake;
+        platform::NativePlatform p(*f.runtime, "D:\\Games\\mh4u\\", {}, fake.Function());
+        CHECK(p.UserDir() == "D:\\Games\\mh4u\\");
+        CHECK(fake.asked.empty());
+    }
+    CHECK(records.empty());
+}
+
+TEST_CASE("D45: the hooks read mh4u.ini from the short name that stands for a folder with non-ASCII characters") {
+    TempDir dir;
+    // the folder the player named, and the ASCII folder its short name stands for (the file is in the latter:
+    // the hooks open it through an ANSI std::string path and could not reach the former on Windows)
+    const std::string accented = Under(dir, kUnicodeName);
+    const std::string short_name = Under(dir, "SHORT83");
+    std::filesystem::create_directories(utf8::PathFromUtf8(accented));
+    std::filesystem::create_directories(utf8::PathFromUtf8(short_name));
+    std::ofstream(utf8::PathFromUtf8(short_name + "/mh4u.ini")) << "fps = 120\n";
+    FakeShortNames fake;
+    fake.table[accented] = short_name;
+
+    RCodeInfo info{};
+    info.hook_count = 1;
+    info.set_hook = FakeSetHook;
+    {
+        Fixture f;
+        std::map<u32, RHookFn> hooks;
+        g_hooks = &hooks;
+        REQUIRE(f.runtime->Prepare(Parse({}), {Phase::Devices, Phase::Services}));
+        {
+            platform::NativePlatform p(*f.runtime, accented + "/", {}, fake.Function());
+            CHECK(p.UserDir() == short_name + "/");
+            Port::Hooks::SetPlatform(&p);
+            platform::InstallHooks(info);
+            CHECK(f.Logged("hooks: options from " + short_name + "/mh4u.ini"));
+            CHECK(f.Logged("hooks: frame-rate cap 120"));
+        }
+        g_hooks = nullptr;
+    }
+    // and without a short name the hooks find nothing, and read no file from anywhere else
+    {
+        Fixture f;
+        std::map<u32, RHookFn> hooks;
+        g_hooks = &hooks;
+        REQUIRE(f.runtime->Prepare(Parse({}), {Phase::Devices, Phase::Services}));
+        {
+            FakeShortNames none;
+            platform::NativePlatform p(*f.runtime, accented + "/", {}, none.Function());
+            CHECK(p.UserDir() == platform::kNoUserDir);
+            Port::Hooks::SetPlatform(&p);
+            platform::InstallHooks(info);
+            for (const std::string& line : f.logged) {
+                CHECK(line.find("options from") == std::string::npos);
+            }
+        }
+        g_hooks = nullptr;
+    }
+}
+
+TEST_CASE("D45: --options is read from a folder whose name has non-ASCII characters") {
+    TempDir dir;
+    const std::string folder = Under(dir, kUnicodeName);
+    std::filesystem::create_directories(utf8::PathFromUtf8(folder));
+    const std::string ini = folder + std::string(1, static_cast<char>(std::filesystem::path::preferred_separator)) + "app.ini";
+    {
+        std::ofstream out(utf8::PathFromUtf8(ini), std::ios::binary);
+        out << "[Display]\naspect_ratio = 21:9\nrenderer = vulkan\n";
+    }
+    {
+        Fixture f;
+        std::shared_ptr<platform::NativePlatform> seen;
+        f.runtime->SetMainThreadEntry([&](GuestThread&) {
+            seen = platform::NativePlatform::Find(*f.runtime);
+            RCtx ctx{};
+            ctx.r[14] = kText + 0x20;
+            f.runtime->Svc().CallSvc(ctx, 0x03, kText + 0x11);  // svcExitProcess
+        });
+        CHECK(f.runtime->Boot(Parse({dir.WriteElf(), "--options", ini})) == 0);
+        REQUIRE(seen != nullptr);
+        CHECK(seen->GetOption("aspect_ratio") == "21:9");
+        CHECK(seen->AppOptions().at("renderer") == "vulkan");
+    }
+    // a file that is missing there is named as the exact text the player gave
+    {
+        Fixture f;
+        f.runtime->SetMainThreadEntry([](GuestThread&) {});
+        const std::string missing = folder + std::string(1, static_cast<char>(std::filesystem::path::preferred_separator)) + "nada.ini";
+        CHECK(f.runtime->Boot(Parse({dir.WriteElf(), "--options", missing})) == 2);
+        CHECK(f.Logged("--options: cannot read " + missing));
+    }
+    // a bad one names it too, in the error of the line that is wrong
+    {
+        Fixture f;
+        {
+            std::ofstream out(utf8::PathFromUtf8(ini), std::ios::binary | std::ios::trunc);
+            out << "[Display]\nnonsense\n";
+        }
+        f.runtime->SetMainThreadEntry([](GuestThread&) {});
+        CHECK(f.runtime->Boot(Parse({dir.WriteElf(), "--options", ini})) == 2);
+        CHECK(f.Logged("--options " + ini + ": line 2: expected key = value"));
+    }
 }
 
 TEST_CASE("platform: the hooks take the touch overlay and the top screen through the platform") {

@@ -5,7 +5,10 @@
 //   - SetRefreshRate goes to Runtime::SetRefreshRate, and from there to the GSP's VBlank period;
 //   - UserDir is --user (the folder that holds mh4u.ini), Log is MH4N_LOG; without --user it is
 //     kNoUserDir, a path that holds no file, so the hooks run on their defaults and a stray
-//     ./mh4u.ini in the current directory changes nothing;
+//     ./mh4u.ini in the current directory changes nothing. The hooks open the file through an ANSI
+//     std::string path (port/src/hooks.cpp is the port's file and is not edited), so on Windows a --user
+//     folder with a non-ASCII character is handed over as its 8.3 short name (ASCII by construction), or
+//     as kNoUserDir with a Warning when the volume has no short name for it (ResolveUserDir);
 //   - the screen layout (top-screen rows and width, the overlay) is stored for the renderer (N2b);
 //   - network sync does nothing and the end-skip vote is always agreed: local only until N4.
 //
@@ -26,6 +29,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -54,12 +58,30 @@ bool ParseAppOptions(std::string_view text, std::map<std::string, std::string>* 
 // ever found there (an empty string would have made the hooks read ./mh4u.ini).
 inline constexpr const char* kNoUserDir = "<no --user folder>/";
 
+// The 8.3 short name of a folder (UTF-8 text in, ASCII text out), or nothing when there is none: the one
+// call that needs the operating system, so the decision around it is a plain function the tests drive
+// with a fake. HostShortPathFunction() is GetShortPathNameW on Windows; elsewhere it is an empty function,
+// which ResolveUserDir takes to mean that the system's ANSI paths are UTF-8 already (nothing to do).
+using ShortPathFunction = std::function<std::optional<std::string>(const std::string& folder)>;
+ShortPathFunction HostShortPathFunction();
+
+// The folder text the hooks get from UserDir(), for the --user folder `user_dir` (with its trailing
+// separator, or empty):
+//   - empty, ASCII only, or `short_path` empty: `user_dir` unchanged;
+//   - otherwise (a non-ASCII character in it, on a system whose ANSI paths cannot hold it): what
+//     `short_path` gives for the folder, with the separator put back, when that is non-empty ASCII text;
+//   - else kNoUserDir, and *warning (when given) says why the hooks will not find mh4u.ini.
+std::string ResolveUserDir(const std::string& user_dir, const ShortPathFunction& short_path,
+                           std::string* warning = nullptr);
+
 class NativePlatform final : public Port::Platform, public std::enable_shared_from_this<NativePlatform> {
 public:
     // `user_dir` is the folder mh4u.ini lives in, as the hooks get it from UserDir(): with a
     // trailing separator. Empty means there is none: UserDir() is then kNoUserDir (logged once).
     // `app_options` are the host settings of --options.
-    NativePlatform(Runtime& runtime, std::string user_dir, std::map<std::string, std::string> app_options);
+    // `short_path` is the system's short-name call (see ResolveUserDir); the tests pass a fake.
+    NativePlatform(Runtime& runtime, std::string user_dir, std::map<std::string, std::string> app_options,
+                   ShortPathFunction short_path = HostShortPathFunction());
     ~NativePlatform() override;
 
     // ---- Port::Platform ------------------------------------------------------------------------
