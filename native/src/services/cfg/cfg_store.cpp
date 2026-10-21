@@ -361,6 +361,24 @@ bool ConfigStore::Save() {
     return WriteFileAtomically(ConfigPath(user_folder_), buffer_.data(), buffer_.size());
 }
 
+ConfigFileState GetConfigFileState(const std::string& path) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    // symlink_status: a dangling link or a directory is something there, not an absent file.
+    const fs::file_status status = fs::symlink_status(path, ec);
+    if (ec) {
+        if (ec == std::errc::no_such_file_or_directory || ec == std::errc::not_a_directory) {
+            return ConfigFileState::Absent;
+        }
+        MH4N_LOG(Error, kLog, "cannot look at {}: {}", path, ec.message());
+        return ConfigFileState::LookupFailed;
+    }
+    if (status.type() == fs::file_type::not_found) {
+        return ConfigFileState::Absent;
+    }
+    return IsValidConfigFile(path) ? ConfigFileState::Valid : ConfigFileState::Invalid;
+}
+
 bool IsValidConfigFile(const std::string& path) {
     namespace fs = std::filesystem;
     std::error_code ec;
@@ -395,21 +413,20 @@ EnsureResult EnsureConfigFile(const std::string& user_folder, const std::functio
         return EnsureResult::NoUserFolder;
     }
     const std::string path = ConfigPath(user_folder);
-    // symlink_status: a dangling link or a directory is something there, not an absent file.
-    const fs::file_status status = fs::symlink_status(path, ec);
-    if (!ec && status.type() != fs::file_type::not_found) {
-        if (IsValidConfigFile(path)) {
-            return EnsureResult::Existing;
-        }
+    switch (GetConfigFileState(path)) {
+    case ConfigFileState::Valid:
+        return EnsureResult::Existing;
+    case ConfigFileState::Invalid:
         MH4N_LOG(Error, kLog,
                  "the config savegame {} is short or damaged: it is left as it is (the blocks that are "
                  "missing read as defaults, in memory); move it away to have a new one made",
                  path);
         return EnsureResult::Invalid;
-    }
-    if (ec && ec != std::errc::no_such_file_or_directory && ec != std::errc::not_a_directory) {
-        MH4N_LOG(Error, kLog, "cannot look at {}: {}; no config savegame is made", path, ec.message());
+    case ConfigFileState::LookupFailed:
+        MH4N_LOG(Error, kLog, "no config savegame is made in {}", user_folder);
         return EnsureResult::Failed;
+    case ConfigFileState::Absent:
+        break;
     }
     ConfigStore store(user_folder);  // no file: the default blocks, in memory
     const auto [random_number, id] = ConfigStore::GenerateConsoleUniqueId(random64);
@@ -566,7 +583,9 @@ McuData ReadMcuData(const std::string& user_folder) {
 }
 
 bool WriteMcuData(const std::string& user_folder, const McuData& data) {
-    if (user_folder.empty()) {
+    // Never creates a missing user folder (only the folders under it).
+    std::error_code ec;
+    if (user_folder.empty() || !std::filesystem::is_directory(std::filesystem::path(user_folder), ec)) {
         return false;
     }
     u8 raw[sizeof(McuData)] = {};
@@ -644,8 +663,9 @@ std::string ReadMacAddress(const std::string& user_folder, const std::function<u
         MH4N_LOG(Info, kLog, "Cannot open mac address file for read, generating a new one");
     }
     const std::string mac = RandomMac(random64);
-    if (user_folder.empty()) {
-        return mac;  // nowhere to keep it: this run only
+    std::error_code folder_ec;
+    if (user_folder.empty() || !std::filesystem::is_directory(std::filesystem::path(user_folder), folder_ec)) {
+        return mac;  // nowhere to keep it (no folder, and a read never creates one): this run only
     }
     if (!WriteFileAtomically(MacPath(user_folder), mac.data(), mac.size())) {
         MH4N_LOG(Error, kLog, "Cannot open mac address file for write");

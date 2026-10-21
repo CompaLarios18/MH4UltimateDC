@@ -422,6 +422,11 @@ TEST_CASE("cfg: the MAC address is read from mac.txt, or made once and kept") {
     TempDir dir;
     u64 counter = 0;
     const auto random = [&] { return counter += 0x1234567; };
+    // a missing user folder is not created for it: the MAC lives for this run only
+    const std::string temporary = cfg::ReadMacAddress(dir.User(), random);
+    CHECK_FALSE(temporary.empty());
+    CHECK_FALSE(fs::exists(dir.User()));
+    fs::create_directories(dir.User());
     const std::string made = cfg::ReadMacAddress(dir.User(), random);
     std::array<u8, 6> bytes{};
     CHECK(cfg::ParseMac(made, &bytes));
@@ -449,6 +454,9 @@ TEST_CASE("cfg: the MCU data file is valid or the default, and written only on r
     CHECK_FALSE(fs::exists(dir.User()));
     cfg::McuData data;
     data.clock_sequence = 0x1234;
+    CHECK_FALSE(cfg::WriteMcuData(dir.User(), data));  // a missing user folder is not created
+    CHECK_FALSE(fs::exists(dir.User()));
+    fs::create_directories(dir.User());
     REQUIRE(cfg::WriteMcuData(dir.User(), data));
     const std::vector<u8> file = ReadAll(dir.User() + "/sysdata/mcu.dat");
     REQUIRE(file.size() == 0x18);
@@ -1137,6 +1145,7 @@ TEST_CASE("cfg:i FormatConfig puts the defaults back with a new console unique I
 TEST_CASE("cfg:s keeps the UUID clock sequence in mcu.dat") {
     Fixture f;
     TempDir dir;
+    fs::create_directories(dir.User());  // the module keeps mcu.dat only in a user folder that exists
     std::vector<u32> before, set, after;
     const int status = BootWith(f, dir, {"--ms", "100"}, [&] {
         Guest g(*f.runtime);
@@ -1398,6 +1407,57 @@ TEST_CASE("D37: --new-console-id does not replace a damaged config either") {
     CHECK(status == 3);
     CHECK(ReadAll(ConfigFilePath(dir).string()) == original);
     CHECK(f.Logged("not replaced"));
+}
+
+TEST_CASE("D37: --new-console-id with a directory at the config path exits 3 and leaves it untouched") {
+    TempDir dir;
+    fs::create_directories(ConfigFilePath(dir));
+    WriteAll(ConfigFilePath(dir).string() + "/inner", {1, 2, 3});
+    CHECK(cfg::GetConfigFileState(ConfigFilePath(dir).string()) == cfg::ConfigFileState::Invalid);
+    Fixture f;
+    const int status = BootWith(f, dir, {"--ms", "100", "--new-console-id"}, [&] { ExitProcess(*f.runtime); });
+    CHECK(status == 3);
+    CHECK(fs::is_directory(ConfigFilePath(dir)));
+    CHECK(ReadAll(ConfigFilePath(dir).string() + "/inner") == std::vector<u8>{1, 2, 3});
+    CHECK(f.Logged("not replaced"));
+}
+
+TEST_CASE("D37: a dangling symlink at the config path is something there, in both paths") {
+    TempDir dir;
+    fs::create_directories(ConfigFilePath(dir).parent_path());
+    std::error_code ec;
+    fs::create_symlink(dir.File("nowhere"), ConfigFilePath(dir), ec);
+    if (ec) {
+        return;  // the host cannot make symlinks (Windows without the privilege): nothing to test
+    }
+    CHECK(cfg::GetConfigFileState(ConfigFilePath(dir).string()) == cfg::ConfigFileState::Invalid);
+    CHECK(cfg::EnsureConfigFile(dir.User(), FixedRandom) == cfg::EnsureResult::Invalid);
+    Fixture f;
+    CHECK(BootWith(f, dir, {"--ms", "100", "--new-console-id"}, [&] { ExitProcess(*f.runtime); }) == 3);
+    CHECK(fs::is_symlink(ConfigFilePath(dir)));
+}
+
+TEST_CASE("D37: a lookup through a file or a missing folder reads as absent, without throwing") {
+    // a path component that is a file: not_a_directory counts as absent; the folder here is a file
+    TempDir dir;
+    WriteAll(dir.User(), {1});
+    CHECK(cfg::GetConfigFileState(ConfigFilePath(dir).string()) == cfg::ConfigFileState::Absent);
+    CHECK(cfg::GetConfigFileState(dir.File("missing")) == cfg::ConfigFileState::Absent);
+}
+
+TEST_CASE("D37: a missing user folder stays absent after a boot that reads cfg:u and asks for the MAC") {
+    TempDir dir;
+    Fixture f;
+    std::string mac;
+    BootWith(f, dir, {"--ms", "100"}, [&] {
+        Guest g(*f.runtime);
+        std::vector<u8> block;
+        g.ReadBlock(g.Service("cfg:u"), 1, 0x00090001, 8, &block);
+        mac = cfg::ReadMacAddress(dir.User(), FixedRandom);
+        ExitProcess(*f.runtime);
+    });
+    CHECK_FALSE(mac.empty());
+    CHECK_FALSE(fs::exists(dir.User()));
 }
 
 TEST_CASE("D37: the replay's way in (Runtime::Prepare) never makes a config") {

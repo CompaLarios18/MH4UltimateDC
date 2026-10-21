@@ -24,7 +24,7 @@
 //    unique ID, in a user folder that exists and holds none. The replay tool (scope ipc-replay,
 //    Runtime::Prepare) never runs that step: a replay takes the folder of its recording, which holds
 //    a config, and must stay repeatable. Without --user, or when the folder does not exist, nothing is
-//    written and the console unique ID blocks hold the default table's value, 0 (Azahar's table says
+//    written by that step and the console unique ID blocks hold the default table's value, 0 (Azahar's table says
 //    they are placeholders that its formatting replaces with a random value).
 //  - A config file that is short or damaged is never replaced by the start-up step or by
 //    `--new-console-id` (Azahar reads it without checking): an Error is logged and the blocks are
@@ -154,18 +154,27 @@ std::pair<u32, u8> AdjustLanguage(const std::vector<u32>& regions, u8 language);
 
 // The start-up step's outcome (D37).
 enum class EnsureResult {
-    NoUserFolder,  // --user not given, or the folder does not exist: nothing written (never created)
+    NoUserFolder,  // --user not given, or the folder does not exist: nothing written (this step never creates it)
     Existing,      // a valid config is there: untouched
     Created,       // there was none: written once, with a new random console unique ID
     Invalid,       // there is a file that is short or damaged (or not a file): untouched, Error logged
-    Failed,        // there was none and it could not be written: Error logged
+    Failed,        // there was none and it could not be written, or the file could not be looked at: Error logged
 };
+// What is at a config savegame's path.
+enum class ConfigFileState {
+    Absent,        // nothing there (not found)
+    Valid,         // a file IsValidConfigFile accepts
+    Invalid,       // something there that is not a valid file: short, damaged, a directory, a dangling link
+    LookupFailed,  // the status call failed for another reason than not found (Error logged)
+};
+ConfigFileState GetConfigFileState(const std::string& path);
 // True when `path`'s content is a config savegame this module can use: 0x8000 bytes, at most 1479
 // entries, data offset 0x455C, and every entry's data inside the file.
 bool IsValidConfigFile(const std::string& path);
 // Makes the config savegame of an existing user folder that holds none: the default blocks and a console
 // unique ID from `random64` (Azahar's GenerateConsoleUniqueId), written atomically in Azahar's path. The
-// folder itself is never created. `*console_id` receives the new ID when the result is Created.
+// folder itself is never created by this step (mac.txt and mcu.dat do not create it either; only Save()
+// does). `*console_id` receives the new ID when the result is Created.
 EnsureResult EnsureConfigFile(const std::string& user_folder, const std::function<u64()>& random64,
                               u64* console_id = nullptr);
 

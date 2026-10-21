@@ -16,8 +16,9 @@
 //
 // Start-up (D37): when a runner starts with --user DIR, DIR exists and holds no config savegame, a
 // random console unique ID is made and the file is written once (EnsureConfigFile), so the folder works
-// with Azahar too. A read command never writes. Without --user, or when DIR does not exist (it is never
-// created), nothing is written and the ID is 0. The replay tool (ipc-replay, Runtime::Prepare) does not
+// with Azahar too. A read command never writes. Without --user, or when DIR does not exist (this step never
+// creates it, and neither do mac.txt or mcu.dat; a saving cfg:s/cfg:i command and `--new-console-id`
+// still do), nothing is written by it and the ID is 0 for that run. The replay tool (ipc-replay, Runtime::Prepare) does not
 // run this: it is repeatable on the folder of a recording, which holds a config. A short or damaged
 // config is left alone with an Error log.
 //
@@ -514,8 +515,9 @@ void StartIdentity(Runtime& rt) {
     }
     // A damaged config is never replaced (not even when asked to): the player's data comes first.
     const std::string config_path = ConfigPath(rt.UserFolder());
-    if (!rt.UserFolder().empty() && std::filesystem::exists(config_path) && !IsValidConfigFile(config_path)) {
-        MH4N_LOG(Error, kLog, "--new-console-id: the config savegame {} is short or damaged and is not replaced",
+    const ConfigFileState state = rt.UserFolder().empty() ? ConfigFileState::Absent : GetConfigFileState(config_path);
+    if (state == ConfigFileState::Invalid || state == ConfigFileState::LookupFailed) {
+        MH4N_LOG(Error, kLog, "--new-console-id: the config savegame {} is short, damaged or unreadable and is not replaced",
                  config_path);
         rt.RequestExit(3, "--new-console-id failed");
         return;
