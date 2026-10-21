@@ -18,11 +18,13 @@
 //  - gsp_lcd.cpp is `gsp::Lcd`;
 //  - state.cpp is this class and the `services` boot step that wires the runtime's sinks.
 //
-// Interrupts (D25): the GPU calls Host::SignalInterrupt(id, delay), which reaches `SignalInterrupt`
-// here through Runtime::SetGpuInterruptSink. The interrupt is written into the queue of each thread
+// Interrupts (D25, D41): the GPU calls Host::SignalInterrupt(id, delay), which reaches `SignalInterrupt`
+// here through Runtime::SetGpuInterruptSink, on the scheduler thread, at once, and with the delay
+// the GPU passed (Host::InterruptDelayNs). The interrupt is written into the queue of each thread
 // it goes to and the thread's event is signalled at once, as Azahar's SignalInterruptForThread does
 // with `simulate_3ds_gpu_timings` off and a title that is not on the texture-copy list: PDC0 and
-// PDC1 go to every registered thread, the others to the thread that has the GPU right.
+// PDC1 go to every registered thread, the others to the thread that has the GPU right. The delay
+// is only recorded, for GetPerfLog, as Azahar's PerformanceRecorder does.
 //
 // VBlank: PDC0 and PDC1 come together every `VBlankPeriodTicks()` game ticks, from a timer-queue
 // event that is rescheduled from its own deadline (no drift). The period is 4,481,136 ticks unless
@@ -204,8 +206,10 @@ public:
     void ProcessCommandQueue();
 
     // ---- interrupts ----
-    // The runtime's interrupt sink.
-    void SignalInterrupt(gpu::Interrupt id);
+    // The runtime's interrupt sink. `delay_ns` is what the GPU passed with the interrupt (the time
+    // the work would take on a console): it is not waited for, it goes to the performance log.
+    // The VBlanks ignore it.
+    void SignalInterrupt(gpu::Interrupt id, u64 delay_ns = 0);
 
     // ---- VBlank ----
     // Schedules the first VBlank, one period from now. Once.
@@ -230,7 +234,7 @@ public:
 
 private:
     void Init(ServiceContext& context);
-    void SignalInterruptForThread(gpu::Interrupt id, u32 thread);
+    void SignalInterruptForThread(gpu::Interrupt id, u32 thread, u64 delay_ns);
     void ProcessInterrupt(gpu::Interrupt id, u32 thread);
     void OnVBlank();
     void ScheduleVBlank();

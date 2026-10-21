@@ -29,6 +29,7 @@ TEST_CASE("fs_save_test needs recomp.h (the repository around native/)" * doctes
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -111,35 +112,70 @@ std::vector<u8> MakeElf() {
     return b;
 }
 
+// The UTF-8 text of a path (what --user and the archive paths carry), whatever the platform's own spelling.
+std::string Utf8(const std::filesystem::path& path) {
+    const std::u8string text = path.u8string();
+    return std::string(text.begin(), text.end());
+}
+
+// The tests read and write the files that the code under test makes, so these two must open any name the
+// code can make: on Windows through the wide-character C library call, which does not depend on how the
+// standard library opens a stream.
 void WriteBytesTo(const std::filesystem::path& path, const std::vector<u8>& bytes) {
+#if defined(_WIN32)
+    if (std::FILE* file = _wfopen(path.c_str(), L"wb")) {
+        std::fwrite(bytes.data(), 1, bytes.size(), file);
+        std::fclose(file);
+    }
+#else
     std::ofstream(path, std::ios::binary)
         .write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+#endif
 }
 
 std::vector<u8> ReadBytesFrom(const std::filesystem::path& path) {
+#if defined(_WIN32)
+    std::vector<u8> bytes;
+    if (std::FILE* file = _wfopen(path.c_str(), L"rb")) {
+        u8 chunk[4096];
+        for (std::size_t got; (got = std::fread(chunk, 1, sizeof chunk, file)) != 0;) {
+            bytes.insert(bytes.end(), chunk, chunk + got);
+        }
+        std::fclose(file);
+    }
+    return bytes;
+#else
     std::ifstream in(path, std::ios::binary);
     return std::vector<u8>((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+#endif
 }
+
+// "José-ñ-日本", as the name of a folder and as the UTF-8 bytes that --user carries: written as escapes so
+// that no source or compiler setting changes it.
+const std::u8string kUnicodeName = u8"Jos\u00e9-\u00f1-\u65e5\u672c";
+const std::string kUnicodeBytes = "Jos\xC3\xA9-\xC3\xB1-\xE6\x97\xA5\xE6\x9C\xAC";
 
 // A temporary folder with a game folder and a user folder; the user folder is the one the tests look at.
 class TempDir {
 public:
-    TempDir() {
+    // `user_name`: the name of the user folder under the temporary folder (the D45 tests give it characters
+    // outside ASCII).
+    explicit TempDir(const std::u8string& user_name = u8"user") : user_name_(user_name) {
         static std::atomic<int> counter{0};
         path_ = std::filesystem::temp_directory_path() /
                 ("mh4n_save_test_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + "_" +
                  std::to_string(counter++));
         std::filesystem::create_directories(path_ / "game");
-        std::filesystem::create_directories(path_ / "user");
+        std::filesystem::create_directories(path_ / user_name_);
     }
     ~TempDir() {
         std::error_code ignored;
         std::filesystem::remove_all(path_, ignored);
     }
     std::filesystem::path Path() const { return path_; }
-    std::filesystem::path User() const { return path_ / "user"; }
+    std::filesystem::path User() const { return path_ / user_name_; }
     std::string Game() const { return (path_ / "game").string(); }
-    std::string UserText() const { return User().string(); }
+    std::string UserText() const { return Utf8(User()); }
     std::string WriteElf() const {
         const std::string path = (path_ / "program.elf").string();
         WriteBytesTo(path, MakeElf());
@@ -168,6 +204,7 @@ public:
 
 private:
     std::filesystem::path path_;
+    std::u8string user_name_;
 };
 
 std::vector<u8> Pattern(std::size_t size, u8 seed) {
@@ -1764,5 +1801,590 @@ TEST_CASE("host helpers: delete, recursive delete, listing, create full path") {
     CHECK(std::filesystem::file_size(root + "/meta") == 33);
     CHECK(!fs::host::WriteFileDurably(root + "/no/such/dir/file", bytes.data(), bytes.size()));
 }
+
+// ---- D45: UTF-8 paths ------------------------------------------------------------------------------------------------
+
+TEST_CASE("D45: the host file calls take UTF-8 paths with accents and other non-ASCII characters") {
+    TempDir dir(kUnicodeName);  // the user folder is <temporary>/José-ñ-日本
+    const std::string user = dir.UserText();
+    REQUIRE(user.find(kUnicodeBytes) != std::string::npos);
+    CHECK(fs::host::ToPath(user) == dir.User());
+    CHECK(fs::host::ToUtf8(dir.User()) == user);
+    // fs::path's operator/ writes the preferred separator and ToPath keeps the separators of its input, so on
+    // Windows the text of the two is the same folder with '\\' against '/': compare it in one style (the accents
+    // and every byte of the names stay exact).
+    const auto one_style = [](std::string text) {
+        std::replace(text.begin(), text.end(), '\\', '/');
+        return text;
+    };
+    CHECK(one_style(fs::host::ToUtf8(fs::host::ToPath(user + "/sdmc/"))) ==
+          one_style(fs::host::ToUtf8(dir.User() / "sdmc" / "")));
+    CHECK(fs::host::IsDirectory(user));
+    CHECK(fs::host::Exists(user));
+
+    // the folders of a save under it (CreateFullPath makes each one), with names of their own that are not ASCII
+    const std::string deep = user + "/sdmc/Nintendo 3DS/" + kUnicodeBytes + "/";
+    CHECK(fs::host::CreateFullPath(deep));
+    CHECK(fs::host::IsDirectory(deep));
+    CHECK(fs::host::IsDirectory(Utf8(dir.User() / "sdmc" / "Nintendo 3DS" / kUnicodeName)));
+    const std::string accent_name = "caf\xC3\xA9-\xE6\x97\xA5.bin";
+    const std::string file = deep + accent_name;
+    CHECK(fs::host::CreateEmptyFile(file));
+    CHECK(fs::host::Exists(file));
+    const std::vector<u8> bytes = Pattern(33, 4);
+    CHECK(fs::host::WriteFileDurably(deep + "meta-\xE6\x97\xA5", bytes.data(), bytes.size()));
+    CHECK(ReadBytesFrom(dir.User() / "sdmc" / "Nintendo 3DS" / kUnicodeName / std::filesystem::path(u8"meta-日")) == bytes);
+
+    // a listing gives the names as UTF-8, whole
+    const auto children = fs::host::ListDirectory(deep);
+    REQUIRE(children.has_value());
+    std::vector<std::string> names;
+    for (const fs::host::Child& child : *children) {
+        names.push_back(child.name);
+        if (child.name == accent_name) {
+            CHECK(!child.is_directory);
+            CHECK(child.size == 0);
+        } else {
+            CHECK(child.size == 33);
+        }
+    }
+    std::sort(names.begin(), names.end());
+    CHECK(names == std::vector<std::string>{accent_name, "meta-\xE6\x97\xA5"});
+
+    // a file is opened for writing and for reading by its UTF-8 name
+    std::string error;
+    {
+        const auto writable = fs::WritableFile::Open(file, true, &error);
+        REQUIRE_MESSAGE(writable != nullptr, error);
+        CHECK(writable->WriteAt(0, bytes.data(), bytes.size()) == bytes.size());
+        CHECK(writable->Close());
+    }
+    const auto positioned = fs::PositionedFile::Open(file, &error);
+    REQUIRE_MESSAGE(positioned != nullptr, error);
+    CHECK(positioned->Size() == bytes.size());
+    std::vector<u8> back(bytes.size());
+    CHECK(positioned->ReadAt(0, back.data(), back.size()) == back.size());
+    CHECK(back == bytes);
+    CHECK(fs::host::FileSize(file) == bytes.size());
+    fs::host::SyncDirectoryTree(user);
+
+    // delete one file, then the whole tree (the recursive delete lists each folder and removes by UTF-8 name)
+    CHECK(fs::host::RemoveFile(deep + "meta-\xE6\x97\xA5"));
+    CHECK(!fs::host::Exists(deep + "meta-\xE6\x97\xA5"));
+    CHECK(fs::host::DeleteDirectoryRecursively(user + "/sdmc"));
+    CHECK(!fs::host::Exists(user + "/sdmc"));
+    CHECK(fs::host::IsDirectory(user));
+}
+
+TEST_CASE("D45: a save, an extdata and a listing in a user folder with non-ASCII characters") {
+    Fixture f;
+    // The fixture keeps only the message text, so another module's "cannot ..." line (the cfg module's start-up
+    // step, say) would trip a check on `f.logged`. The fs module's own lines are told apart by their category
+    // (all of them are "Service.FS"), and any line of it that says "cannot" still fails the test.
+    std::vector<std::string> fs_trouble;
+    SetLogSink([&](const LogRecord& r) {
+        f.logged.push_back(std::string(r.message));
+        if (r.category.rfind("Service.FS", 0) == 0 && r.message.find("cannot") != std::string_view::npos) {
+            fs_trouble.push_back(std::string(r.message));
+        }
+    });
+    TempDir dir(kUnicodeName);
+    const std::string accent_name = "caf\xC3\xA9-\xE6\x97\xA5.bin";
+    Result format = 0, create_save_file = 0, create_named = 0, create_ext = 0, create_ext_file = 0, close_save = 0,
+           close_ext = 0;
+    Guest::Opened save_file, ext_file, listing_save, listing_ext;
+    Guest::ReadResult save_read, ext_read;
+    std::vector<std::string> save_names, ext_names;
+    std::string user_in_runtime;
+    const int status = BootWith(f, dir, {"--ms", "1000", "--io-latency", "none"}, [&] {
+        Guest g(f, dir);
+        user_in_runtime = f.runtime->UserFolder();
+        format = g.Format();
+        const u64 save = g.MustOpen(4, kEmpty, kEmptyPath);
+        create_save_file = g.CreateFile(save, "/save.bin", 0x40);
+        create_named = g.CreateFile(save, "/" + accent_name, 0x10);
+        save_file = g.OpenFile(save, "/save.bin", 3);
+        g.Write(save_file.session, 0, Pattern(0x40, 6), 1);
+        save_read = g.Read(save_file.session, 0, 0x40);
+        close_save = g.CloseFile(save_file.session);
+        listing_save = g.OpenDirectory(save, "/");
+        for (const auto& raw : g.ReadDirectory(listing_save.session, 8)) {
+            save_names.push_back(Decode(raw).name);
+        }
+        g.CloseDirectory(listing_save.session);
+
+        create_ext = g.CreateExtSaveData(1, 0, 0x1234, Pattern(0x30, 1));
+        const u64 ext = g.MustOpen(6, kBinary, ExtPath(1, 0x1234, 0));
+        create_ext_file = g.CreateFile(ext, "/data.bin", 0x20);
+        g.CreateFile(ext, "/" + accent_name, 0x8);
+        ext_file = g.OpenFile(ext, "/data.bin", 1);
+        g.Write(ext_file.session, 0, Pattern(0x20, 4), 1);
+        ext_read = g.Read(ext_file.session, 0, 0x20);
+        close_ext = g.CloseFile(ext_file.session);
+        listing_ext = g.OpenDirectory(ext, "/");
+        for (const auto& raw : g.ReadDirectory(listing_ext.session, 8)) {
+            ext_names.push_back(Decode(raw).name);
+        }
+        g.CloseDirectory(listing_ext.session);
+        ExitProcess(*f.runtime);
+    });
+    CHECK(status == 0);
+    // --user reached the runtime as the UTF-8 bytes it was given
+    CHECK(user_in_runtime == dir.UserText());
+    CHECK(user_in_runtime.find(kUnicodeBytes) != std::string::npos);
+    CHECK(format == kResultSuccess);
+    CHECK(create_save_file == kResultSuccess);
+    CHECK(create_named == kResultSuccess);
+    CHECK(save_file.result == kResultSuccess);
+    CHECK(save_read.bytes == Pattern(0x40, 6));
+    CHECK(close_save == kResultSuccess);
+    std::sort(save_names.begin(), save_names.end());
+    CHECK(save_names == std::vector<std::string>{accent_name, "save.bin"});
+    CHECK(create_ext == kResultSuccess);
+    CHECK(create_ext_file == kResultSuccess);
+    CHECK(ext_file.result == kResultSuccess);
+    CHECK(ext_read.bytes == Pattern(0x20, 4));
+    CHECK(close_ext == kResultSuccess);
+    std::sort(ext_names.begin(), ext_names.end());
+    CHECK(ext_names == std::vector<std::string>{accent_name, "data.bin"});
+    // the folders are where Azahar would leave them, under the user folder with the accents
+    CHECK(fs_trouble == std::vector<std::string>{});
+    CHECK(ReadBytesFrom(dir.SaveFolder() / "save.bin") == Pattern(0x40, 6));
+    CHECK(ReadBytesFrom(dir.SaveFolder() / std::filesystem::path(u8"café-日.bin")).size() == 0x10);
+    CHECK(ReadBytesFrom(dir.SaveFolder().parent_path() / "00000001.metadata") ==
+          std::vector<u8>{0x00, 0x10, 0, 0, 10, 0, 0, 0, 20, 0, 0, 0, 1, 0, 0, 0});
+    CHECK(ReadBytesFrom(dir.ExtFolder(0, 0x1234) / "user" / "data.bin") == Pattern(0x20, 4));
+    CHECK(ReadBytesFrom(dir.ExtFolder(0, 0x1234) / "icon") == Pattern(0x30, 1));
+    CHECK(ReadBytesFrom(dir.ExtFolder(0, 0x1234) / "user" / std::filesystem::path(u8"café-日.bin")).size() == 8);
+}
+
+// ---- D42: no needless sync ---------------------------------------------------------------------------------------------
+
+TEST_CASE("D42: a file that was not written since its last sync is not synced again") {
+    TempDir dir;
+    const std::string path = (dir.Path() / "f.bin").string();
+    REQUIRE(fs::host::WriteFileDurably(path, Pattern(16, 1).data(), 16));
+    std::string error;
+    const auto file = fs::WritableFile::Open(path, true, &error);
+    REQUIRE_MESSAGE(file != nullptr, error);
+    const u64 total_before = fs::WritableFile::TotalHostSyncs();
+
+    // opened and only read: clean, and Sync, Close and the destructor never ask the host
+    CHECK(!file->Dirty());
+    std::vector<u8> buffer(16);
+    CHECK(file->ReadAt(0, buffer.data(), 16) == 16);
+    CHECK(file->Size() == 16);
+    CHECK(file->Sync());
+    CHECK(file->Sync());
+    CHECK(file->HostSyncCount() == 0);
+
+    // a write makes it dirty, and the sync that follows is the only one
+    CHECK(file->WriteAt(0, buffer.data(), 4) == 4);
+    CHECK(file->Dirty());
+    CHECK(file->Sync());
+    CHECK(file->HostSyncCount() == 1);
+    CHECK(!file->Dirty());
+    CHECK(file->Sync());
+    CHECK(file->HostSyncCount() == 1);
+
+    // a resize makes it dirty too; a resize the host refuses does not
+    CHECK(file->Resize(32));
+    CHECK(file->Dirty());
+    CHECK(file->Sync());
+    CHECK(file->HostSyncCount() == 2);
+    CHECK(file->Sync());
+    CHECK(file->HostSyncCount() == 2);
+
+    // a write after a sync dirties it again (the flag is not stuck clean)
+    CHECK(file->WriteAt(20, buffer.data(), 4) == 4);
+    CHECK(file->WriteAt(24, buffer.data(), 4) == 4);
+    CHECK(file->Dirty());
+    CHECK(file->Sync());
+    CHECK(file->HostSyncCount() == 3);
+
+    // a dirty file that is closed is synced by Close, once; a clean one is not
+    CHECK(file->WriteAt(0, buffer.data(), 1) == 1);
+    CHECK(file->Close());
+    CHECK(file->HostSyncCount() == 4);
+    CHECK(!file->Dirty());
+    CHECK(file->Close());
+    CHECK(file->Sync());
+    CHECK(file->HostSyncCount() == 4);
+    CHECK(fs::WritableFile::TotalHostSyncs() - total_before == 4);
+
+    // a write after Close does nothing and leaves the file clean
+    CHECK(file->WriteAt(0, buffer.data(), 1) == 0);
+    CHECK(!file->Dirty());
+    CHECK(!file->Resize(1));
+    CHECK(!file->Dirty());
+
+    // opened and closed with nothing done: no sync at all
+    const auto untouched = fs::WritableFile::Open(path, true, &error);
+    REQUIRE(untouched != nullptr);
+    CHECK(untouched->Close());
+    CHECK(untouched->HostSyncCount() == 0);
+    CHECK(fs::WritableFile::TotalHostSyncs() - total_before == 4);
+
+    // read-only: nothing to sync, and a write that fails leaves it clean
+    const auto read_only = fs::WritableFile::Open(path, false, &error);
+    REQUIRE(read_only != nullptr);
+    CHECK(read_only->WriteAt(0, buffer.data(), 1) == 0);
+    CHECK(!read_only->Dirty());
+    CHECK(read_only->Sync());
+    CHECK(read_only->Close());
+    CHECK(read_only->HostSyncCount() == 0);
+    CHECK(fs::WritableFile::TotalHostSyncs() - total_before == 4);
+}
+
+TEST_CASE("D42: a file that was written is synced when it goes away without Close") {
+    TempDir dir;
+    const std::string path = (dir.Path() / "f.bin").string();
+    REQUIRE(fs::host::WriteFileDurably(path, Pattern(16, 1).data(), 16));
+    const u64 before = fs::WritableFile::TotalHostSyncs();
+    {
+        const auto clean = fs::WritableFile::Open(path, true, nullptr);
+        REQUIRE(clean != nullptr);
+    }
+    CHECK(fs::WritableFile::TotalHostSyncs() == before);  // clean: the destructor does not sync
+    {
+        const auto dirty = fs::WritableFile::Open(path, true, nullptr);
+        REQUIRE(dirty != nullptr);
+        const std::vector<u8> bytes = Pattern(4, 2);
+        CHECK(dirty->WriteAt(0, bytes.data(), 4) == 4);
+    }
+    CHECK(fs::WritableFile::TotalHostSyncs() == before + 1);  // dirty: the destructor syncs once
+    const std::vector<u8> content = ReadBytesFrom(path);
+    REQUIRE(content.size() >= 4);
+    CHECK(std::vector<u8>(content.begin(), content.begin() + 4) == Pattern(4, 2));
+}
+
+TEST_CASE("D42: writers and syncers on one file never leave a change unsynced") {
+    TempDir dir;
+    const std::string path = (dir.Path() / "f.bin").string();
+    REQUIRE(fs::host::WriteFileDurably(path, std::vector<u8>(256, 0).data(), 256));
+    const auto file = fs::WritableFile::Open(path, true, nullptr);
+    REQUIRE(file != nullptr);
+    std::atomic<int> failures{0};
+    std::vector<std::thread> threads;
+    for (int t = 0; t < 4; ++t) {
+        threads.emplace_back([&, t] {
+            const u8 value = static_cast<u8>(t + 1);
+            for (int round = 0; round < 200; ++round) {
+                if (file->WriteAt(static_cast<u64>(t) * 8, &value, 1) != 1 || !file->Sync()) {
+                    ++failures;
+                }
+            }
+        });
+    }
+    for (std::thread& thread : threads) {
+        thread.join();
+    }
+    CHECK(failures == 0);
+    // the last write of every thread was followed by that thread's Sync, so whatever is left is at most the
+    // flag of a write that landed while another Sync ran; one more Sync settles it, and then it is clean
+    CHECK(file->Sync());
+    CHECK(!file->Dirty());
+    const u64 count = file->HostSyncCount();
+    CHECK(count >= 1);
+    CHECK(count <= 4 * 200 + 1);
+    CHECK(file->Sync());
+    CHECK(file->HostSyncCount() == count);
+}
+
+TEST_CASE("D42: through fs:USER, a file that was only read costs no sync when it is closed") {
+    Fixture f;
+    TempDir dir;
+    u64 open_read_close = 0, flush_write = 0, flush_after = 0, close_after_flush = 0, plain_write = 0,
+        close_after_plain = 0, set_size = 0, close_after_size = 0, flush_clean = 0, ext_read_close = 0,
+        ext_flush_write = 0, ext_close = 0, ext_plain_write = 0, ext_close_dirty = 0;
+    Result close_result = 0;
+    const int status = BootWith(f, dir, {"--ms", "1000", "--io-latency", "none"}, [&] {
+        Guest g(f, dir);
+        const auto syncs = [] { return fs::WritableFile::TotalHostSyncs(); };
+        g.Format();
+        const u64 a = g.MustOpen(4, kEmpty, kEmptyPath);
+        g.CreateFile(a, "/s.bin", 0x40);
+        g.CreateFile(a, "/t.bin", 0x40);
+        g.CreateFile(a, "/u.bin", 0x40);
+        g.CreateFile(a, "/v.bin", 0x40);
+
+        // a file opened for reading and writing, only read, closed
+        u64 mark = syncs();
+        Guest::Opened o = g.OpenFile(a, "/s.bin", 3);
+        g.Read(o.session, 0, 0x10);
+        g.GetSize(o.session);
+        close_result = g.CloseFile(o.session);
+        open_read_close = syncs() - mark;
+
+        // a write with the flush flag syncs; the Flush and the Close after it find the file clean
+        o = g.OpenFile(a, "/s.bin", 3);
+        mark = syncs();
+        g.Write(o.session, 0, Pattern(8, 1), 1);
+        flush_write = syncs() - mark;
+        mark = syncs();
+        g.Flush(o.session);
+        flush_after = syncs() - mark;
+        mark = syncs();
+        g.CloseFile(o.session);
+        close_after_flush = syncs() - mark;
+
+        // a write without the flush flag is synced by the Close, once
+        o = g.OpenFile(a, "/t.bin", 3);
+        mark = syncs();
+        g.Write(o.session, 0, Pattern(8, 2), 0);
+        plain_write = syncs() - mark;
+        mark = syncs();
+        g.CloseFile(o.session);
+        close_after_plain = syncs() - mark;
+
+        // SetSize syncs (it always did), and then the file is clean
+        o = g.OpenFile(a, "/u.bin", 3);
+        mark = syncs();
+        g.SetSize(o.session, 0x80);
+        set_size = syncs() - mark;
+        mark = syncs();
+        g.CloseFile(o.session);
+        close_after_size = syncs() - mark;
+
+        // a Flush of a file that was not written does nothing
+        o = g.OpenFile(a, "/v.bin", 3);
+        mark = syncs();
+        g.Flush(o.session);
+        flush_clean = syncs() - mark;
+        g.CloseFile(o.session);
+
+        // extdata files are always opened for reading and writing, even when the game asked to read
+        g.CreateExtSaveData(1, 0, 0x55, Pattern(4, 1));
+        const u64 e = g.MustOpen(6, kBinary, ExtPath(1, 0x55, 0));
+        g.CreateFile(e, "/d.bin", 0x20);
+        o = g.OpenFile(e, "/d.bin", 1);
+        mark = syncs();
+        g.Read(o.session, 0, 0x20);
+        g.CloseFile(o.session);
+        ext_read_close = syncs() - mark;
+        o = g.OpenFile(e, "/d.bin", 1);
+        mark = syncs();
+        g.Write(o.session, 0, Pattern(8, 3), 1);
+        ext_flush_write = syncs() - mark;
+        mark = syncs();
+        g.CloseFile(o.session);
+        ext_close = syncs() - mark;
+        o = g.OpenFile(e, "/d.bin", 1);
+        mark = syncs();
+        g.Write(o.session, 0, Pattern(8, 4), 0);
+        ext_plain_write = syncs() - mark;
+        mark = syncs();
+        g.CloseFile(o.session);
+        ext_close_dirty = syncs() - mark;
+        ExitProcess(*f.runtime);
+    });
+    CHECK(status == 0);
+    CHECK(close_result == kResultSuccess);
+    CHECK(open_read_close == 0);
+    CHECK(flush_write == 1);
+    CHECK(flush_after == 0);
+    CHECK(close_after_flush == 0);
+    CHECK(plain_write == 0);
+    CHECK(close_after_plain == 1);
+    CHECK(set_size == 1);
+    CHECK(close_after_size == 0);
+    CHECK(flush_clean == 0);
+    CHECK(ext_read_close == 0);
+    CHECK(ext_flush_write == 1);
+    CHECK(ext_close == 0);
+    CHECK(ext_plain_write == 0);
+    CHECK(ext_close_dirty == 1);
+    // none of it cost data: what was written is on the disk
+    const std::vector<u8> save_content = ReadBytesFrom(dir.SaveFolder() / "s.bin");
+    REQUIRE(save_content.size() >= 8);
+    CHECK(std::vector<u8>(save_content.begin(), save_content.begin() + 8) == Pattern(8, 1));
+    CHECK(ReadBytesFrom(dir.SaveFolder() / "u.bin").size() == 0x80);
+    const std::vector<u8> ext_content = ReadBytesFrom(dir.ExtFolder(0, 0x55) / "user" / "d.bin");
+    REQUIRE(ext_content.size() >= 8);
+    CHECK(std::vector<u8>(ext_content.begin(), ext_content.begin() + 8) == Pattern(8, 4));
+}
+
+// ---- stale files of a Windows delete -----------------------------------------------------------------------------------
+
+TEST_CASE("IsStaleDeletedName matches <name>.deleted.<digits>.<digits> and nothing else") {
+    using fs::host::IsStaleDeletedName;
+    CHECK(IsStaleDeletedName("save.bin.deleted.4242.0"));
+    CHECK(IsStaleDeletedName("a.deleted.1.2"));
+    CHECK(IsStaleDeletedName("x.deleted.0.0"));
+    CHECK(IsStaleDeletedName("name with spaces.deleted.123456.789"));
+    CHECK(IsStaleDeletedName("a.deleted.b.deleted.1.2"));                // the name may hold the word
+    CHECK(IsStaleDeletedName("caf\xC3\xA9.deleted.7.8"));
+    CHECK(!IsStaleDeletedName(""));
+    CHECK(!IsStaleDeletedName("save.bin"));
+    CHECK(!IsStaleDeletedName("save.bin.deleted"));
+    CHECK(!IsStaleDeletedName("save.bin.deleted.12"));
+    CHECK(!IsStaleDeletedName("save.bin.deleted.12."));
+    CHECK(!IsStaleDeletedName("save.bin.deleted..12"));
+    CHECK(!IsStaleDeletedName("save.bin.deleted.1.2x"));
+    CHECK(!IsStaleDeletedName("save.bin.deleted.x1.2"));
+    CHECK(!IsStaleDeletedName("save.bin.deleted.1.2.txt"));
+    CHECK(!IsStaleDeletedName("save.bin.deleted.1.2.3"));                // three numbers: the second one is not ".deleted"
+    CHECK(!IsStaleDeletedName("save.bin.Deleted.1.2"));
+    CHECK(!IsStaleDeletedName("save.bin.undeleted.1.2"));                // ".undeleted" is not ".deleted"
+    CHECK(!IsStaleDeletedName("deleted.1.2"));
+    CHECK(!IsStaleDeletedName(".deleted.1.2"));                          // nothing in front of it
+    CHECK(!IsStaleDeletedName("save.bin.deleted.-1.2"));
+    CHECK(!IsStaleDeletedName("save.bin.deleted.1.+2"));
+    CHECK(!IsStaleDeletedName("save.bin.deleted. 1.2"));
+    CHECK(!IsStaleDeletedName("save.bin.deleted.\xD9\xA1.2"));           // an Arabic-Indic digit is not a digit here
+}
+
+TEST_CASE("RemoveStaleDeletedFiles removes the orphans of a folder and its subfolders, and nothing else") {
+    TempDir dir;
+    const std::string root = (dir.Path() / "t").string();
+    REQUIRE(fs::host::CreateFullPath(root + "/save/sub/deeper/"));
+    REQUIRE(fs::host::CreateFullPath(root + "/other/"));
+    const auto put = [&](const std::string& path) { WriteBytesTo(path, {1, 2, 3}); };
+    // orphans, at every depth
+    put(root + "/save/a.bin.deleted.4242.0");
+    put(root + "/save/sub/b.bin.deleted.1.2");
+    put(root + "/save/sub/deeper/c.deleted.77.78");
+    // not orphans
+    put(root + "/save/a.bin");
+    put(root + "/save/a.bin.deleted");
+    put(root + "/save/a.bin.deleted.1");
+    put(root + "/save/a.bin.deleted.x.2");
+    put(root + "/save/a.bin.deleted.1.2.bak");
+    put(root + "/save/.deleted.1.2");
+    // a directory with the name of one, with a file in it (the file is kept; the directory is not a file)
+    REQUIRE(fs::host::CreateFullPath(root + "/save/dir.deleted.3.4/"));
+    put(root + "/save/dir.deleted.3.4/keep.bin");
+    // outside the folder given
+    put(root + "/other/z.deleted.1.2");
+    put(root + "/top.deleted.1.2");
+
+    CHECK(fs::host::RemoveStaleDeletedFiles(root + "/save") == 3);
+    CHECK(!fs::host::Exists(root + "/save/a.bin.deleted.4242.0"));
+    CHECK(!fs::host::Exists(root + "/save/sub/b.bin.deleted.1.2"));
+    CHECK(!fs::host::Exists(root + "/save/sub/deeper/c.deleted.77.78"));
+    for (const char* kept : {"/save/a.bin", "/save/a.bin.deleted", "/save/a.bin.deleted.1", "/save/a.bin.deleted.x.2",
+                             "/save/a.bin.deleted.1.2.bak", "/save/.deleted.1.2", "/save/dir.deleted.3.4/keep.bin",
+                             "/other/z.deleted.1.2", "/top.deleted.1.2"}) {
+        CHECK_MESSAGE(fs::host::Exists(root + kept), kept);
+    }
+    CHECK(fs::host::IsDirectory(root + "/save/dir.deleted.3.4"));
+    CHECK(fs::host::RemoveStaleDeletedFiles(root + "/save") == 0);  // again: nothing left
+    CHECK(fs::host::RemoveStaleDeletedFiles(root + "/missing") == 0);
+    CHECK(fs::host::RemoveStaleDeletedFiles(root + "/save/a.bin") == 0);  // not a folder
+    CHECK(fs::host::RemoveStaleDeletedFiles("") == 0);
+#if !defined(_WIN32)
+    // a link is neither removed nor followed
+    std::filesystem::create_directories(dir.Path() / "outside");
+    WriteBytesTo(dir.Path() / "outside" / "o.deleted.1.2", {9});
+    std::filesystem::create_directory_symlink(dir.Path() / "outside", root + "/save/link");
+    std::filesystem::create_symlink(dir.Path() / "outside" / "o.deleted.1.2", root + "/save/l.deleted.5.6");
+    CHECK(fs::host::RemoveStaleDeletedFiles(root + "/save") == 0);
+    CHECK(std::filesystem::exists(dir.Path() / "outside" / "o.deleted.1.2"));
+    CHECK(std::filesystem::is_symlink(root + "/save/l.deleted.5.6"));
+    CHECK(std::filesystem::is_symlink(root + "/save/link"));
+#endif
+}
+
+TEST_CASE("opening a save data or extdata archive removes the orphans of a deleted-while-open file, there only") {
+    Fixture f;
+    TempDir dir;
+    const auto put = [](const std::filesystem::path& path) { WriteBytesTo(path, {1, 2, 3}); };
+    Result open_save = 0, open_save_again = 0, open_ext = 0, open_boss = 0, open_other = 0;
+    // what is on the disk after the extdata archive was opened, and after the boss archive was
+    bool ext_user_orphan = true, ext_sub_orphan = true, ext_kept = false, ext_boss_orphan_after_user = false,
+         ext_icon_orphan = false, ext_boss_orphan_after_boss = true;
+    const int status = BootWith(f, dir, {"--ms", "1000", "--io-latency", "none"}, [&] {
+        Guest g(f, dir);
+        g.Format();
+        const std::filesystem::path save = dir.SaveFolder();
+        std::filesystem::create_directories(save / "sub");
+        std::filesystem::create_directories(dir.User() / "sdmc" / "Nintendo 3DS" / "00000000000000000000000000000000" /
+                                            "00000000000000000000000000000000" / "title" / "00000000" / "00000002" / "data" /
+                                            "00000001");
+        const std::filesystem::path other_title = dir.User() / "sdmc" / "Nintendo 3DS" / "00000000000000000000000000000000" /
+                                                  "00000000000000000000000000000000" / "title" / "00000000" / "00000002" /
+                                                  "data" / "00000001";
+        put(save / "keep.bin");
+        put(save / "keep.bin.deleted.1");              // not the pattern
+        put(save / "gone.bin.deleted.4242.0");
+        put(save / "sub" / "gone2.bin.deleted.1.2");
+        put(save.parent_path() / "00000001.metadata.deleted.1.2");  // next to the folder, not in it
+        put(dir.User() / "root.bin.deleted.1.2");                    // the user folder
+        put(dir.User() / "sdmc" / "sd.bin.deleted.1.2");             // the SD card folder
+        put(other_title / "other.bin.deleted.1.2");                  // another title's save
+
+        open_save = g.OpenArchive(4, kEmpty, kEmptyPath)[1];
+        // every open looks again: a new one appears, and goes at the next open
+        put(save / "second.bin.deleted.9.9");
+        open_save_again = g.OpenArchive(4, kEmpty, kEmptyPath)[1];
+
+        // extdata: the user/ folder of the archive that is opened
+        g.CreateExtSaveData(1, 0, 0x1234, Pattern(4, 1));
+        const std::filesystem::path ext = dir.ExtFolder(0, 0x1234);
+        std::filesystem::create_directories(ext / "user" / "sub");
+        put(ext / "user" / "e.bin");
+        put(ext / "user" / "e.bin.deleted.10.20");
+        put(ext / "user" / "sub" / "f.bin.deleted.30.40");
+        put(ext / "boss" / "b.bin.deleted.50.60");
+        put(ext / "icon.deleted.1.2");
+        open_ext = g.OpenArchive(6, kBinary, ExtPath(1, 0x1234, 0))[1];
+        ext_user_orphan = std::filesystem::exists(ext / "user" / "e.bin.deleted.10.20");
+        ext_sub_orphan = std::filesystem::exists(ext / "user" / "sub" / "f.bin.deleted.30.40");
+        ext_kept = std::filesystem::exists(ext / "user" / "e.bin");
+        ext_boss_orphan_after_user = std::filesystem::exists(ext / "boss" / "b.bin.deleted.50.60");  // another archive's folder
+        ext_icon_orphan = std::filesystem::exists(ext / "icon.deleted.1.2");                         // not inside an archive
+        open_boss = g.OpenArchive(0x12345678, kBinary, ExtPath(1, 0x1234, 0))[1];
+        ext_boss_orphan_after_boss = std::filesystem::exists(ext / "boss" / "b.bin.deleted.50.60");
+        // an archive that does not exist opens nothing and removes nothing
+        open_other = g.OpenArchive(6, kBinary, ExtPath(1, 0x9999, 0))[1];
+        ExitProcess(*f.runtime);
+    });
+    CHECK(status == 0);
+    CHECK(open_save == kResultSuccess);
+    CHECK(open_save_again == kResultSuccess);
+    CHECK(open_ext == kResultSuccess);
+    CHECK(open_boss == kResultSuccess);
+    CHECK(open_other == kNotFoundInvalidState);
+    CHECK(!ext_user_orphan);
+    CHECK(!ext_sub_orphan);
+    CHECK(ext_kept);
+    CHECK(ext_boss_orphan_after_user);
+    CHECK(ext_icon_orphan);
+    CHECK(!ext_boss_orphan_after_boss);
+    const std::filesystem::path save = dir.SaveFolder();
+    CHECK(std::filesystem::exists(save / "keep.bin"));
+    CHECK(std::filesystem::exists(save / "keep.bin.deleted.1"));
+    CHECK(!std::filesystem::exists(save / "gone.bin.deleted.4242.0"));
+    CHECK(!std::filesystem::exists(save / "sub" / "gone2.bin.deleted.1.2"));
+    CHECK(!std::filesystem::exists(save / "second.bin.deleted.9.9"));
+    CHECK(std::filesystem::exists(save.parent_path() / "00000001.metadata.deleted.1.2"));
+    CHECK(std::filesystem::exists(dir.User() / "root.bin.deleted.1.2"));
+    CHECK(std::filesystem::exists(dir.User() / "sdmc" / "sd.bin.deleted.1.2"));
+    CHECK(std::filesystem::exists(dir.User() / "sdmc" / "Nintendo 3DS" / "00000000000000000000000000000000" /
+                                  "00000000000000000000000000000000" / "title" / "00000000" / "00000002" / "data" /
+                                  "00000001" / "other.bin.deleted.1.2"));
+}
+
+#if defined(_WIN32)
+TEST_CASE("Windows: a file deleted while it is open leaves, at most, a name that RemoveStaleDeletedFiles knows") {
+    TempDir dir;
+    const std::string folder = (dir.Path() / "w").string();
+    REQUIRE(fs::host::CreateFullPath(folder + "/"));
+    const std::string path = folder + "/a.bin";
+    REQUIRE(fs::host::WriteFileDurably(path, Pattern(8, 1).data(), 8));
+    const auto open = fs::WritableFile::Open(path, true, nullptr);
+    REQUIRE(open != nullptr);
+    CHECK(fs::host::RemoveFile(path));
+    CHECK(!fs::host::Exists(path));  // the name is free at once
+    // while the handle is open the file may still be listed, renamed; whatever is there has the orphan's name
+    std::size_t leftovers = 0;
+    for (const auto& entry : std::filesystem::directory_iterator(folder)) {
+        ++leftovers;
+        CHECK_MESSAGE(fs::host::IsStaleDeletedName(Utf8(entry.path().filename())), Utf8(entry.path().filename()));
+    }
+    CHECK(leftovers <= 1);
+    CHECK(fs::host::WriteFileDurably(path, Pattern(8, 2).data(), 8));  // and the name can be made again
+}
+#endif
 
 #endif  // __has_include("recomp.h")

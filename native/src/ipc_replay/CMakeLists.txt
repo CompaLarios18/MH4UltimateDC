@@ -4,6 +4,7 @@
 mh4n_module(
     SOURCES
         replay.cpp
+        replay_clock.cpp
         time_dependent.cpp
         tool.cpp
         trace.cpp

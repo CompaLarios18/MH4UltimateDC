@@ -144,6 +144,7 @@ public:
             // "ExtSaveData seems to return FS_NotFound (120) when the archive doesn't exist."
             return type_ != ExtType::Shared ? kResultNotFoundInvalidState : kResultNotFormatted;
         }
+        RemoveStaleFiles(full);
         *archive = std::make_unique<ExtSaveDataArchive>(full);
         return kResultSuccess;
     }

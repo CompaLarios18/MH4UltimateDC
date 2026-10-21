@@ -14,6 +14,7 @@
 #include <sstream>
 #include <utility>
 
+#include "../common/utf8.h"
 #include "hooks.h"
 #include "mh4n/clock.h"
 #include "mh4n/cpu.h"
@@ -24,6 +25,17 @@
 extern "C" {
 #include "recomp.h"
 }
+
+// Last, so that the names windows.h defines as macros reach none of the headers above.
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#endif
 
 namespace mh4n::platform {
 
@@ -55,6 +67,34 @@ std::string Trim(std::string_view text) {
     return std::string(text.substr(first, last - first + 1));
 }
 
+bool IsAscii(const std::string& text) {
+    return std::all_of(text.begin(), text.end(), [](char c) { return static_cast<unsigned char>(c) < 0x80; });
+}
+
+#if defined(_WIN32)
+// GetShortPathNameW for a UTF-8 folder; nothing when Windows has no short name for it (8.3 names can be
+// turned off for a volume, and the folder must exist).
+std::optional<std::string> WindowsShortPath(const std::string& folder) {
+    std::wstring wide = utf8::ToWide(folder);
+    for (wchar_t& c : wide) {
+        if (c == L'/') {
+            c = L'\\';
+        }
+    }
+    const DWORD needed = GetShortPathNameW(wide.c_str(), nullptr, 0);  // with the terminating null
+    if (needed == 0) {
+        return std::nullopt;
+    }
+    std::wstring buffer(needed, L'\0');
+    const DWORD written = GetShortPathNameW(wide.c_str(), buffer.data(), needed);
+    if (written == 0 || written >= needed) {
+        return std::nullopt;  // failed, or the name grew between the two calls
+    }
+    buffer.resize(written);
+    return utf8::FromWide(buffer);
+}
+#endif
+
 // Platforms by runtime, for NativePlatform::Find.
 std::mutex g_registry_mutex;
 std::map<Runtime*, NativePlatform*>& Registry() {
@@ -63,6 +103,48 @@ std::map<Runtime*, NativePlatform*>& Registry() {
 }
 
 }  // namespace
+
+ShortPathFunction HostShortPathFunction() {
+#if defined(_WIN32)
+    return WindowsShortPath;
+#else
+    return {};
+#endif
+}
+
+std::string ResolveUserDir(const std::string& user_dir, const ShortPathFunction& short_path,
+                           std::string* warning) {
+    if (user_dir.empty() || IsAscii(user_dir) || !short_path) {
+        return user_dir;
+    }
+    // The call takes the folder without its trailing separator (as a name, not as a directory entry).
+    std::string folder = user_dir;
+    std::string separator;
+    while (folder.size() > 1 && (folder.back() == '/' || folder.back() == '\\')) {
+        separator = std::string(1, folder.back());
+        folder.pop_back();
+    }
+    if (separator.empty()) {
+        separator = "/";
+    }
+    const std::optional<std::string> short_name = short_path(folder);
+    if (short_name && !short_name->empty() && IsAscii(*short_name)) {
+        std::string result = *short_name;
+        while (result.size() > 1 && (result.back() == '/' || result.back() == '\\')) {
+            result.pop_back();
+        }
+        return result + separator;
+    }
+    if (warning != nullptr) {
+        *warning = "the --user folder " + folder +
+                   " has a character outside ASCII in its name and Windows has no short (8.3) name for it "
+                   "(short names can be turned off for a volume, and the folder must exist): the hooks open "
+                   "mh4u.ini through an ANSI path and cannot read it from there, so they run on their "
+                   "defaults; use a --user folder whose path is ASCII, or turn on short names for the "
+                   "volume (fsutil 8dot3name)";
+    }
+    return kNoUserDir;
+}
 
 bool ParseAppOptions(std::string_view text, std::map<std::string, std::string>* options,
                      std::string* error) {
@@ -98,11 +180,23 @@ bool ParseAppOptions(std::string_view text, std::map<std::string, std::string>* 
 // ---- NativePlatform ----------------------------------------------------------------------------------
 
 NativePlatform::NativePlatform(Runtime& runtime, std::string user_dir,
-                               std::map<std::string, std::string> app_options)
+                               std::map<std::string, std::string> app_options, ShortPathFunction short_path)
     : runtime_(runtime), user_dir_(std::move(user_dir)), app_options_(std::move(app_options)) {
     const auto it = app_options_.find("aspect_ratio");
     if (it != app_options_.end() && KnownAspectRatio(it->second)) {
         aspect_ratio_ = it->second;
+    }
+    if (user_dir_.empty()) {
+        // The hooks would open ./mh4u.ini: a stray file in the current directory would silently change
+        // fps and widescreen. Hand them a folder that holds nothing (D44).
+        user_dir_ = kNoUserDir;
+        MH4N_LOG(Info, kLog, "no --user folder: the hooks use their defaults and read no mh4u.ini");
+    } else {
+        std::string warning;
+        user_dir_ = ResolveUserDir(user_dir_, short_path, &warning);
+        if (!warning.empty()) {
+            MH4N_LOG(Warning, kLog, "{}", warning);
+        }
     }
     std::lock_guard lock(g_registry_mutex);
     Registry()[&runtime_] = this;
@@ -361,7 +455,8 @@ std::shared_ptr<NativePlatform> InstallPlatform(Runtime& runtime) {
 
     std::map<std::string, std::string> app_options;
     if (const auto path = options.Get("--options")) {
-        std::ifstream file(*path, std::ios::binary);
+        // The file of the player's command line (UTF-8 text, D45): opened through the wide-character path.
+        std::ifstream file(utf8::PathFromUtf8(*path), std::ios::binary);
         std::string error;
         std::ostringstream text;
         if (!file) {
@@ -383,7 +478,7 @@ std::shared_ptr<NativePlatform> InstallPlatform(Runtime& runtime) {
     }
 
     // The hooks open <UserDir()>mh4u.ini: the separator is part of what they get, as from Azahar.
-    // Without --user it is empty, and the hooks read ./mh4u.ini (see the report).
+    // Without --user it is empty, and NativePlatform turns that into kNoUserDir.
     std::string user_dir = runtime.UserFolder();
     if (!user_dir.empty() && user_dir.back() != '/' && user_dir.back() != '\\') {
         user_dir.push_back('/');

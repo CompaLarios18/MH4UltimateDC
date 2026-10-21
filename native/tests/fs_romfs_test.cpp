@@ -29,6 +29,7 @@ TEST_CASE("fs_romfs_test needs recomp.h (the repository around native/)" * docte
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -86,27 +87,44 @@ std::vector<u8> MakeElf() {
     return b;
 }
 
+// On Windows through the wide-character C library call (a name with characters outside the ANSI code page).
 void WriteFile(const std::filesystem::path& path, const std::vector<u8>& bytes) {
+#if defined(_WIN32)
+    if (std::FILE* file = _wfopen(path.c_str(), L"wb")) {
+        std::fwrite(bytes.data(), 1, bytes.size(), file);
+        std::fclose(file);
+    }
+#else
     std::ofstream(path, std::ios::binary)
         .write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+#endif
+}
+
+// The UTF-8 text of a path (what the game folder option and the archive paths carry).
+std::string Utf8(const std::filesystem::path& path) {
+    const std::u8string text = path.u8string();
+    return std::string(text.begin(), text.end());
 }
 
 class TempDir {
 public:
-    TempDir() {
+    // `game_name`: the name of the game folder under the temporary folder (the D45 test gives it characters
+    // outside ASCII).
+    explicit TempDir(const std::u8string& game_name = u8"game") : game_name_(game_name) {
         static std::atomic<int> counter{0};
         path_ = std::filesystem::temp_directory_path() /
                 ("mh4n_fs_test_" +
                  std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + "_" +
                  std::to_string(counter++));
-        std::filesystem::create_directories(path_ / "game");
+        std::filesystem::create_directories(path_ / game_name_);
     }
     ~TempDir() {
         std::error_code ignored;
         std::filesystem::remove_all(path_, ignored);
     }
     std::filesystem::path Path() const { return path_; }
-    std::string Game() const { return (path_ / "game").string(); }
+    std::filesystem::path GameDir() const { return path_ / game_name_; }
+    std::string Game() const { return Utf8(GameDir()); }
     std::string WriteElf() const {
         const std::string path = (path_ / "program.elf").string();
         WriteFile(path, MakeElf());
@@ -115,6 +133,7 @@ public:
 
 private:
     std::filesystem::path path_;
+    std::u8string game_name_;
 };
 
 // ---- a synthetic RomFS: the root directory with some files --------------------------------------------------
@@ -253,7 +272,7 @@ struct GameFolder {
     std::vector<u8> code = Pattern(6 * 0x1000, 0x33);
 
     void Write(const TempDir& dir) const {
-        const std::filesystem::path game = dir.Path() / "game";
+        const std::filesystem::path game = dir.GameDir();
         WriteFile(game / "romfs.bin", MakeSection(base_romfs));
         WriteFile(game / "update_romfs.bin", MakeSection(update_romfs));
         WriteFile(game / "code.bin", code);
@@ -726,6 +745,54 @@ TEST_CASE("SelfNCCH: path type 5 is the update's RomFS, from update_romfs.bin") 
     CHECK(base_bytes.bytes == Slice(game.base_romfs, 0x100, 64));
     CHECK(update_bytes.bytes == Slice(game.update_romfs, 0x100, 64));
     CHECK(base_bytes.bytes != update_bytes.bytes);
+}
+
+TEST_CASE("D45: a game folder with accents and other non-ASCII characters is read: RomFS, update RomFS, code and program id") {
+    Fixture f;
+    TempDir dir(u8"Jos\u00e9-\u00f1-\u65e5\u672c");  // <temporary>/José-ñ-日本
+    REQUIRE(dir.Game().find("Jos\xC3\xA9-\xC3\xB1-\xE6\x97\xA5\xE6\x9C\xAC") != std::string::npos);
+    GameFolder game;
+    game.Write(dir);
+    Opened base, update, update_title, code;
+    u64 base_size = 0, update_size = 0, update_title_size = 0, code_size = 0;
+    FsGuest::ReadResult base_bytes, update_bytes;
+    const int status = BootWith(f, dir, {"--ms", "100", "--io-latency", "none"}, [&] {
+        FsGuest g(f, dir);
+        g.Initialize();
+        base = g.OpenFileDirectly(3, kEmpty, kEmptyPath, SelfNcchPath(0));
+        update = g.OpenFileDirectly(3, kEmpty, kEmptyPath, SelfNcchPath(5));
+        // the update title's id is the program id of exheader.bin + 0xE00000000: only a program id that was
+        // read from the exheader in the folder opens it
+        update_title = g.OpenFileDirectly(0x2345678A, kBinary, NcchArchivePath(kUpdateTitleId, 1), NcchFilePath(0, 0));
+        code = g.OpenFileDirectly(0x2345678A, kBinary, NcchArchivePath(kUpdateTitleId, 1), NcchFilePath(0, 1, ".code"));
+        if (base.result == kResultSuccess) {
+            base_size = g.GetSize(base.file);
+            base_bytes = g.Read(base.file, 0x100, 64);
+        }
+        if (update.result == kResultSuccess) {
+            update_size = g.GetSize(update.file);
+            update_bytes = g.Read(update.file, 0x100, 64);
+        }
+        if (update_title.result == kResultSuccess) {
+            update_title_size = g.GetSize(update_title.file);
+        }
+        if (code.result == kResultSuccess) {
+            code_size = g.GetSize(code.file);
+        }
+        ExitProcess(*f.runtime);
+    });
+    CHECK(status == 0);
+    CHECK(base.result == kResultSuccess);
+    CHECK(update.result == kResultSuccess);
+    CHECK(update_title.result == kResultSuccess);
+    CHECK(code.result == kResultSuccess);
+    CHECK(base_size == game.base_romfs.size());
+    CHECK(update_size == game.update_romfs.size());
+    CHECK(update_title_size == game.update_romfs.size());
+    CHECK(code_size == game.code.size());
+    CHECK(base_bytes.bytes == Slice(game.base_romfs, 0x100, 64));
+    CHECK(update_bytes.bytes == Slice(game.update_romfs, 0x100, 64));
+    CHECK(f.Logged("game folder set: romfs yes, update romfs yes"));
 }
 
 TEST_CASE("SelfNCCH: OpenArchive, OpenFile and CloseArchive, with Azahar's handles and results") {

@@ -23,8 +23,14 @@ public:
     // loader has set the heap's base (GuestMemory::SetLinearHeapArea).
     u8* PhysicalPointer(u32 paddr, u32 size) override;
     std::optional<u32> VirtualToPhysical(u32 vaddr) override { return memory_.VirtualToPhysical(vaddr); }
-    // Any thread: the sink is called on the scheduler thread after `delay_ns` of game time.
+    // GuestMemory's own pointer for a range that is completely mapped (the application's memory
+    // map, which Azahar's DMA goes through), else nullptr. Scheduler thread only.
+    u8* GuestPointer(u32 vaddr, u32 size) override;
+    // Any thread: the sink is called on the scheduler thread at the next safe point, at once and
+    // whatever `delay_ns` is (D25 and D41: Azahar's GSP, with simulate_3ds_gpu_timings off, does not
+    // wait for the delay the GPU passes). The sink can read the delay with InterruptDelayNs.
     void SignalInterrupt(gpu::Interrupt id, u64 delay_ns) override;
+    u64 InterruptDelayNs() const override { return delivering_delay_ns_; }
     // Any thread: `work` runs on the scheduler thread at its next safe point.
     void Post(std::function<void()> work) override { kernel_.Post(std::move(work)); }
 
@@ -35,6 +41,8 @@ private:
     GuestMemory& memory_;
     Kernel& kernel_;
     std::function<void(gpu::Interrupt)> sink_;
+    // The delay of the interrupt the sink is being called for (scheduler thread only).
+    u64 delivering_delay_ns_ = 0;
 };
 
 }  // namespace mh4n::detail

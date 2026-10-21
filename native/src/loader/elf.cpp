@@ -11,6 +11,7 @@
 
 #include <fmt/format.h>
 
+#include "../common/utf8.h"
 #include "mh4n/loader.h"
 #include "mh4n/log.h"
 
@@ -41,7 +42,9 @@ void SetError(std::string* error, std::string message) {
 }  // namespace
 
 std::unique_ptr<Loader> Loader::OpenElf(const std::string& path, std::string* error) {
-    std::ifstream file(path, std::ios::binary | std::ios::ate);
+    // `path` is UTF-8 text (D45): the file is opened and its name taken without the ANSI code page of Windows.
+    const std::filesystem::path host_path = utf8::PathFromUtf8(path);
+    std::ifstream file(host_path, std::ios::binary | std::ios::ate);
     if (!file) {
         SetError(error, fmt::format("cannot open {}", path));
         return nullptr;
@@ -53,7 +56,7 @@ std::unique_ptr<Loader> Loader::OpenElf(const std::string& path, std::string* er
         SetError(error, fmt::format("cannot read {}", path));
         return nullptr;
     }
-    return FromElf(std::move(bytes), std::filesystem::path(path).filename().string(), error);
+    return FromElf(std::move(bytes), utf8::PathToUtf8(host_path.filename()), error);
 }
 
 std::unique_ptr<Loader> Loader::FromElf(std::vector<u8> bytes, std::string name, std::string* error) {

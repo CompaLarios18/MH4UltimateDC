@@ -26,6 +26,7 @@
 #include <string>
 #include <vector>
 
+#include "../src/common/utf8.h"
 #include "mh4n/crc32.h"
 #include "mh4n/loader.h"
 
@@ -471,6 +472,97 @@ TEST_CASE("an ELF program: odd segments are skipped, bad files refused") {
     CHECK_FALSE(Loader::OpenElf("/nonexistent/path.elf", &error));
 }
 
+// ---- D45: UTF-8 paths -----------------------------------------------------------------------------------------------
+
+namespace {
+
+// "José-ñ-日本" as UTF-8 bytes: the accents of a Spanish user name and characters outside every ANSI code page.
+const std::string kUnicodeName = std::string("Jos") + "\xC3\xA9" + "-" + "\xC3\xB1" + "-" + "\xE6\x97\xA5" + "\xE6\x9C\xAC";
+
+// A temporary folder whose name holds kUnicodeName, made and removed through the wide-character path.
+class UnicodeTempFolder {
+public:
+    explicit UnicodeTempFolder(const std::string& tag) {
+        namespace fs = std::filesystem;
+        const std::string leaf = "mh4n_loader_test_" + tag + "_" + kUnicodeName;
+        path_ = fs::temp_directory_path() / utf8::PathFromUtf8(leaf);
+        std::error_code ec;
+        fs::remove_all(path_, ec);
+        fs::create_directories(path_);
+    }
+    ~UnicodeTempFolder() {
+        std::error_code ec;
+        std::filesystem::remove_all(path_, ec);
+    }
+    // The folder as the UTF-8 text the runner hands to the loader.
+    std::string Text() const { return utf8::PathToUtf8(path_); }
+    std::filesystem::path Path() const { return path_; }
+    static std::string Join(const std::string& folder, const std::string& name) {
+        return folder + std::string(1, static_cast<char>(std::filesystem::path::preferred_separator)) + name;
+    }
+
+private:
+    std::filesystem::path path_;
+};
+
+void WriteBytes(const std::filesystem::path& path, const std::vector<u8>& bytes) {
+    std::ofstream out(path, std::ios::binary);
+    REQUIRE(out.is_open());
+    out.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+}
+
+}  // namespace
+
+TEST_CASE("D45: OpenGameFolder reads a game folder whose name has accents and characters outside the ANSI page") {
+    const ExhParams p;
+    UnicodeTempFolder dir("game");
+    REQUIRE(dir.Text().find(kUnicodeName) != std::string::npos);  // the name is what the test says it is
+    WriteBytes(dir.Path() / "exheader.bin", MakeExheader(p));
+    WriteBytes(dir.Path() / "code.bin", MakeCode(p));
+    std::string error;
+    auto loader = Loader::OpenGameFolder(dir.Text(), &error);
+    REQUIRE_MESSAGE(loader, error);
+    const ProcessImage& image = loader->Image();
+    CHECK(image.kind == ProgramKind::GameFolder);
+    CHECK(image.program_id == 0x0004000000ABCD00);
+    CHECK(image.entry == 0x00100000);
+    CHECK(image.segments.size() == 4);
+    // the code is the file's, byte for byte
+    const auto code = MakeCode(p);
+    auto memory = NewMemory();
+    FcramRegions regions(image.memory_mode);
+    REQUIRE_MESSAGE(loader->Map(*memory, regions, &error), error);
+    CHECK(Bytes(*memory, 0x00100000, 0x3000) == std::vector<u8>(code.begin(), code.begin() + 0x3000));
+    CHECK(Bytes(*memory, 0x00300000, 0x2000) == std::vector<u8>(code.begin() + 0x4000, code.end()));
+
+    // a file that is missing is named in the error as the exact UTF-8 text of its path
+    std::filesystem::remove(dir.Path() / "code.bin");
+    CHECK_FALSE(Loader::OpenGameFolder(dir.Text(), &error));
+    CHECK(error == "cannot open " + UnicodeTempFolder::Join(dir.Text(), "code.bin"));
+    std::filesystem::remove(dir.Path() / "exheader.bin");
+    CHECK_FALSE(Loader::OpenGameFolder(dir.Text(), &error));
+    CHECK(error == "cannot open " + UnicodeTempFolder::Join(dir.Text(), "exheader.bin"));
+}
+
+TEST_CASE("D45: OpenElf reads an ELF file whose folder and name have accents, and names the program as it is") {
+    UnicodeTempFolder dir("elf");
+    const std::string file_name = kUnicodeName + ".elf";
+    const std::vector<u8> elf = MakeElf({{0x00100000, 0x40, 0x40, kRX}}, 0x00100010);
+    WriteBytes(dir.Path() / utf8::PathFromUtf8(file_name), elf);
+    const std::string path = UnicodeTempFolder::Join(dir.Text(), file_name);
+    std::string error;
+    auto loader = Loader::OpenElf(path, &error);
+    REQUIRE_MESSAGE(loader, error);
+    CHECK(loader->Image().kind == ProgramKind::Elf);
+    CHECK(loader->Image().entry == 0x00100010);
+    CHECK(loader->Image().name == file_name);  // the file name taken from the path, as the same UTF-8 bytes
+
+    // a missing file is named as the exact text it was given
+    const std::string missing = UnicodeTempFolder::Join(dir.Text(), kUnicodeName + "-missing.elf");
+    CHECK_FALSE(Loader::OpenElf(missing, &error));
+    CHECK(error == "cannot open " + missing);
+}
+
 TEST_CASE("the configuration memory") {
     for (const u32 mode : {0u, 2u}) {
         auto memory = NewMemory();
@@ -559,6 +651,31 @@ TEST_CASE("the shared page: the clock before 2000 and another init_time") {
 
     early.Set3DSlider(0.5f);
     CHECK(*memory->Read<float>(0x1FF81080) == 0.5f);
+}
+
+TEST_CASE("the shared page: the MAC address at 0x60 round-trips and touches nothing else") {
+    SystemPages unmapped;
+    unmapped.SetMacAddress({1, 2, 3, 4, 5, 6});  // before Map: nothing to write, no crash
+    CHECK(unmapped.GetMacAddress() == std::array<u8, 6>{});
+
+    auto memory = NewMemory();
+    FcramRegions regions(2);
+    SystemPages pages;
+    REQUIRE(IsSuccess(pages.Map(*memory, regions)));
+    CHECK(pages.GetMacAddress() == std::array<u8, 6>{});  // Azahar's page starts zeroed there
+    const std::array<u8, 6> mac{0x18, 0x2A, 0x7B, 0x01, 0x02, 0xFF};
+    pages.SetMacAddress(mac);
+    CHECK(pages.GetMacAddress() == mac);
+    CHECK(shared_page::kWifiMacAddress == 0x60);
+    for (u32 i = 0; i < 6; ++i) {
+        CHECK(*memory->Read<u8>(0x1FF81060 + i) == mac[i]);
+    }
+    CHECK(*memory->Read<u8>(0x1FF8105F) == 0);  // the bytes around it are as they were
+    CHECK(*memory->Read<u8>(0x1FF81066) == 3);  // Wi-Fi link level
+    CHECK(*memory->Read<u8>(0x1FF81067) == 2);  // Wi-Fi state
+    // the hourly date update leaves it alone
+    pages.UpdateSharedPage(kSharedPageUpdateIntervalTicks);
+    CHECK(pages.GetMacAddress() == mac);
 }
 
 TEST_CASE("the game clock does not overflow for long runs") {

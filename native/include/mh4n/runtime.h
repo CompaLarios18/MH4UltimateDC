@@ -170,6 +170,10 @@ public:
     // GSP sets the sink (N1-17); the platform calls SetRefreshRate (N1-20) from any thread, and
     // the sink runs on the scheduler thread. Setting a sink when a rate is already known calls it
     // at once.
+    // SetRefreshRate called from guest code (the hooks do, on the scheduler thread) calls the sink
+    // before it returns, as the reference's GPU::SetRefreshRate sets frame_ticks at once; from any
+    // other thread it posts the call to the kernel (the next safe point). A post made before an
+    // inline call that came after it never overrides the newer rate.
     void SetRefreshRateSink(RefreshRateSink sink);
     void SetRefreshRate(double hz);
     double RefreshRate() const;
@@ -242,6 +246,9 @@ private:
     bool finished_ = false;
     std::string limit_reason_;  // "frame limit reached" or "time limit reached"
     std::atomic<double> refresh_hz_{0.0};
+    // Counts the SetRefreshRate calls that applied the sink inline: a posted call made before one is
+    // out of date when it runs, and is dropped.
+    std::atomic<u64> refresh_inline_calls_{0};
     RefreshRateSink refresh_sink_;
 };
 

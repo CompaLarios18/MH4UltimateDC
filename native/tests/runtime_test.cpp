@@ -674,7 +674,7 @@ TEST_CASE("OnFinish runs once the run is over, in reverse order; Own objects go 
 
 // ---- the GPU host ----------------------------------------------------------------------------------
 
-TEST_CASE("an interrupt signalled from another thread reaches the sink on the scheduler thread") {
+TEST_CASE("an interrupt signalled from another thread reaches the sink on the scheduler thread, its delay ignored") {
     Fixture f;
     REQUIRE(f.runtime.Prepare(Parse({}), {}));
     ManualTimeSource& time = *f.time;
@@ -687,20 +687,20 @@ TEST_CASE("an interrupt signalled from another thread reaches the sink on the sc
     gpu::Host& host = f.runtime.GpuHost();
     std::thread([&] {
         host.SignalInterrupt(gpu::Interrupt::PSC0, 0);
-        host.SignalInterrupt(gpu::Interrupt::P3D, 2000000);  // 2 ms of game time later
+        host.SignalInterrupt(gpu::Interrupt::P3D, 2000000);  // the GPU's 2 ms: the host does not wait (D25, D41)
     }).join();
     CHECK(got.empty());  // nothing is called from the other thread
     CHECK(f.runtime.Scheduler().RunPending());
-    REQUIRE(got.size() == 1);
+    REQUIRE(got.size() == 2);  // both at the first safe point, in the order signalled, with no game time passed
     CHECK(got[0] == gpu::Interrupt::PSC0);
+    CHECK(got[1] == gpu::Interrupt::P3D);
     CHECK(threads[0] == std::this_thread::get_id());
+    CHECK(threads[1] == std::this_thread::get_id());
     time.Advance(1900000);
     f.runtime.Scheduler().RunPending();
-    CHECK(got.size() == 1);
     time.Advance(200000);
     f.runtime.Scheduler().RunPending();
-    REQUIRE(got.size() == 2);
-    CHECK(got[1] == gpu::Interrupt::P3D);
+    CHECK(got.size() == 2);  // nothing arrives later: no second delivery of the delayed one
 }
 
 TEST_CASE("gpu::Host::Post runs the work on the scheduler thread at a safe point") {
@@ -731,6 +731,36 @@ TEST_CASE("a refresh rate reaches the sink, before or after the sink is set") {
     REQUIRE(got.size() == 3);  // the first call's post, then the second
     CHECK(got[2] == 60.0);
     CHECK(f.runtime.RefreshRate() == 60.0);
+}
+
+TEST_CASE("SetRefreshRate from guest code calls the sink before it returns; elsewhere it is queued") {
+    Fixture f;
+    REQUIRE(f.runtime.Prepare(Parse({}), {}));
+    std::vector<double> got;
+    f.runtime.SetRefreshRateSink([&](double hz) { got.push_back(hz); });
+    bool finished = false;
+    std::size_t inside = 0;
+    Kernel& kernel = f.runtime.GetKernel();
+    auto thread = kernel.NewThread("guest", 0x30, 0, kernel.CurrentProcess());
+    f.runtime.Scheduler().AttachFunction(thread, [&] {
+        std::thread([&] { f.runtime.SetRefreshRate(90.0); }).join();  // queued: not on this thread
+        CHECK(got.empty());
+        f.runtime.SetRefreshRate(120.0);  // guest code: applied before it returns
+        inside = got.size();
+        finished = true;
+    });
+    f.runtime.Scheduler().Start(thread);
+    REQUIRE(f.runtime.Scheduler().Run([&] { return finished; }) == RunStatus::Stopped);
+    REQUIRE(inside == 1);
+    CHECK(got[0] == 120.0);
+    f.runtime.Scheduler().RunPending();
+    CHECK(got.size() == 1);  // the queued 90 Hz was older than the call that was applied at once
+    CHECK(f.runtime.RefreshRate() == 120.0);
+    // The scheduler's own host stack (a posted function, a timer event) is not guest code: queued.
+    f.runtime.GetKernel().Post([&] { f.runtime.SetRefreshRate(75.0); });
+    f.runtime.Scheduler().RunPending();
+    REQUIRE(got.size() == 2);
+    CHECK(got[1] == 75.0);
 }
 
 // ---- Host::PhysicalPointer at the edges of the areas ----------------------------------------------------

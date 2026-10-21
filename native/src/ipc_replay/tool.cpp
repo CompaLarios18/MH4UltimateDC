@@ -7,6 +7,7 @@
 #include <system_error>
 
 #include "ipc_replay/replay.h"
+#include "ipc_replay/replay_clock.h"
 #include "mh4n/options.h"
 #include "mh4n/runtime.h"
 #include "mh4n/service.h"
@@ -25,6 +26,9 @@ MH4N_OPTION("ipc-replay", "--game", "DIR",
 MH4N_OPTION("ipc-replay", "--user", "DIR", "the user directory the services read and write");
 MH4N_OPTION("ipc-replay", "--reply-timeout", "MS",
             "how long to wait for a deferred reply before calling it a difference (default 30000)");
+MH4N_OPTION("ipc-replay", "--no-time", "",
+            "do not advance game time to each record's tick before its request (default: advance, "
+            "running the timers that fall due on the way); the clock is then the host's");
 MH4N_OPTION("ipc-replay", "--time-dependent", "FILE",
             "commands whose replies depend on time, compared by result only (repeatable; "
             "config/native/ipc_time_dependent.txt is read first when it exists)");
@@ -76,6 +80,7 @@ int RunIpcReplay(const std::vector<std::string>& args, std::ostream& out, std::o
     ReplayConfig config;
     config.services = options.All("--service");
     config.keep_going = options.Has("--continue");
+    config.advance_time = !options.Has("--no-time");
     try {
         const u64 timeout = options.GetUInt("--reply-timeout", 30000);
         if (timeout == 0 || timeout > 3600000) {
@@ -120,7 +125,8 @@ int RunIpcReplay(const std::vector<std::string>& args, std::ostream& out, std::o
         }
     }
 
-    Runtime runtime;
+    // The default clock is the host's; to move game time the replay makes the runtime with its own.
+    Runtime runtime(config.advance_time ? MakeReplayRuntimeConfig() : RuntimeConfig{});
     if (!runtime.Prepare(options, {Phase::Devices, Phase::Services}, &error)) {
         err << "error: " << error << "\n";
         return 2;

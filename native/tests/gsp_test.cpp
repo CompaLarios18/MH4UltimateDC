@@ -2,17 +2,19 @@
 // src/core/hle/service/gsp/gsp_command.h, src/core/hle/service/gsp/gsp_interrupt.h,
 // src/core/hle/service/gsp/gsp_lcd.cpp, src/video_core/gpu.cpp, src/video_core/gpu.h,
 // src/video_core/pica/pica_core.cpp, src/video_core/pica/pica_core.h,
-// src/video_core/pica/regs_external.h, src/video_core/pica/regs_internal.h and
+// src/video_core/pica/regs_external.h, src/video_core/pica/regs_internal.h, src/core/memory.cpp and
 // src/core/core_timing.h at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-2.0-or-later: each of them
 // says "GPLv2 or any later version"): the expected values, worked out by hand from the same
 // algorithms: the headers and result codes of the gsp::Gpu commands, the layout of the interrupt
 // relay queue, the framebuffer updates and the GX command buffer, the order of the register-write
 // checks, the delays of the DelayGenerator (the speed table, for the sizes the tests use), the
-// interrupts each GX command signals, the command-list finalize rule and the VBlank length.
+// interrupts each GX command signals, the command-list finalize rule, the VBlank length and what a
+// DMA between mapped ranges copies (MemorySystem::CopyBlock).
 // Copyright 2014-2026 Citra Emulator Project / Azahar Emulator Project (gsp_gpu.cpp, gsp_gpu.h)
 // Copyright 2023-2024 Citra Emulator Project / Azahar Emulator Project (gsp_command.h, regs_external.h)
 // Copyright 2023-2026 Citra Emulator Project / Azahar Emulator Project (gsp_interrupt.h, gpu.cpp,
 //   gpu.h, pica_core.cpp, pica_core.h)
+// Copyright 2014-2026 Citra Emulator Project / Azahar Emulator Project (memory.cpp)
 // Copyright 2015 Citra Emulator Project (gsp_lcd.cpp)
 // Copyright 2017-2025 Citra Emulator Project / Azahar Emulator Project (regs_internal.h)
 // Copyright 2008 Dolphin Emulator Project / 2017 Citra Emulator Project (core_timing.h)
@@ -71,7 +73,7 @@ constexpr u32 kVramVaddr = 0x1F000000;
 constexpr u32 kArena = 0x100000;  // the part of FCRAM and of VRAM the fake host has
 
 // A gpu::Host with 1 MiB of FCRAM and of VRAM, which records the interrupts.
-class FakeHost final : public gpu::Host {
+class FakeHost : public gpu::Host {
 public:
     struct Signal {
         gpu::Interrupt id;
@@ -118,6 +120,42 @@ public:
     u8* Vram(u32 paddr_offset) { return vram.data() + paddr_offset; }
 };
 
+constexpr u32 kHeapVaddr = 0x08000000;   // the application's heap: guest memory with no physical view
+constexpr u32 kOtherVaddr = 0x0C000000;  // more of the same, for a copy within guest memory
+
+// A host that also serves guest memory (Host::GuestPointer), as the runtime's does: the two
+// guest-only ranges above, and the fake's FCRAM and VRAM at their virtual addresses.
+class GuestFakeHost final : public FakeHost {
+public:
+    std::vector<u8> heap = std::vector<u8>(kArena);
+    std::vector<u8> other = std::vector<u8>(kArena);
+    int guest_pointer_calls = 0;
+
+    u8* GuestPointer(u32 vaddr, u32 size) override {
+        ++guest_pointer_calls;
+        auto in = [&](u32 base, std::vector<u8>& arena) -> u8* {
+            if (vaddr >= base && static_cast<u64>(vaddr) + size <= static_cast<u64>(base) + kArena) {
+                return arena.data() + (vaddr - base);
+            }
+            return nullptr;
+        };
+        struct Range {
+            u32 base;
+            std::vector<u8>* arena;
+        };
+        const Range ranges[] = {{kHeapVaddr, &heap},
+                                {kOtherVaddr, &other},
+                                {kLinearVaddr, &fcram},
+                                {kVramVaddr, &vram}};
+        for (const Range& range : ranges) {
+            if (u8* p = in(range.base, *range.arena)) {
+                return p;
+            }
+        }
+        return nullptr;
+    }
+};
+
 gpu::GxCommand Gx(std::initializer_list<u32> words) {
     gpu::GxCommand command{};
     std::copy(words.begin(), words.end(), command.words);
@@ -126,27 +164,31 @@ gpu::GxCommand Gx(std::initializer_list<u32> words) {
 
 using gpu::Interrupt;
 
-struct NullFixture {
-    FakeHost host;
+template <class HostType>
+struct BasicNullFixture {
+    HostType host;
     gpu::null::NullGpu gpu{host};
     std::vector<std::string> logged;
-    NullFixture() {
+    BasicNullFixture() {
         SetLogFilter(LogFilter(LogLevel::Info));
         SetLogSink([this](const LogRecord& r) { logged.push_back(std::string(r.message)); });
     }
-    ~NullFixture() {
+    ~BasicNullFixture() {
         SetLogSink({});
         SetLogFilter(LogFilter(LogLevel::Info));
     }
-    bool Logged(const std::string& needle) const {
+    int LoggedCount(const std::string& needle) const {
+        int count = 0;
         for (const std::string& line : logged) {
-            if (line.find(needle) != std::string::npos) {
-                return true;
-            }
+            count += line.find(needle) != std::string::npos ? 1 : 0;
         }
-        return false;
+        return count;
     }
+    bool Logged(const std::string& needle) const { return LoggedCount(needle) > 0; }
 };
+
+
+using NullFixture = BasicNullFixture<FakeHost>;
 
 TEST_CASE("null GPU: the registry has it as 'null'") {
     CHECK(Registry<gpu::GpuFactory>::Instance().Find("null") != nullptr);
@@ -236,11 +278,18 @@ TEST_CASE("null GPU: DMA copies and signals DMA with the delay of its copy mode"
     CHECK(f.gpu.GetStats().commands[0] == 4);
 }
 
-TEST_CASE("null GPU: a DMA to memory the host does not know copies nothing and still signals DMA") {
-    NullFixture f;
-    f.gpu.Execute(Gx({0, 0x08000000, kLinearVaddr, 0x100}));  // the application's heap
+TEST_CASE("null GPU: a DMA from memory the host does not serve zeroes the destination and still signals DMA") {
+    NullFixture f;  // a host with no guest memory: the application's heap is not mapped for it
+    std::fill(f.host.fcram.begin(), f.host.fcram.end(), 0xEE);
+    std::vector<u8> expected = f.host.fcram;
+    std::fill(expected.begin() + 0x100, expected.begin() + 0x200, 0);
+    f.gpu.Execute(Gx({0, 0x08000000, kLinearVaddr + 0x100, 0x100}));
     CHECK(f.host.Ids() == std::vector<Interrupt>{Interrupt::DMA});
-    CHECK(f.Logged("DMA with an address that is not physical memory"));
+    CHECK(f.host.fcram == expected);
+    CHECK(f.gpu.GetStats().dma_not_copied == 1);
+    CHECK(f.gpu.GetStats().dma_zero_filled == 1);
+    CHECK(f.gpu.GetStats().dma_through_guest == 0);
+    CHECK(f.Logged("touches memory that is not mapped"));
 }
 
 TEST_CASE("null GPU: display transfers and texture copies draw nothing and signal PPF") {
@@ -279,17 +328,19 @@ TEST_CASE("null GPU: a cache flush does nothing, an unknown command is counted")
     CHECK(f.Logged("Unknown command"));
 }
 
-TEST_CASE("null GPU: the delay Azahar's GPU passes is kept, and handed to the host only on request") {
+TEST_CASE("null GPU: the delay Azahar's GPU passes is kept and handed to the host (D41); 0 on request") {
     NullFixture f;
-    CHECK_FALSE(f.gpu.PassDelays());
+    CHECK(f.gpu.PassDelays());
     f.gpu.Execute(Gx({0, kLinearVaddr, kLinearVaddr + 0x8000, 0x1000}));
     REQUIRE(f.host.signals.size() == 1);
-    CHECK(f.host.signals[0].delay_ns == 0);  // D25: the interrupt is not to wait
+    CHECK(f.host.signals[0].delay_ns == 20559);  // the host ignores it for the timing; GetPerfLog records it
     CHECK(f.gpu.GetStats().last_delay_ns[6] == 20559);
-    f.gpu.SetPassDelays(true);
+    f.gpu.SetPassDelays(false);
+    CHECK_FALSE(f.gpu.PassDelays());
     f.gpu.Execute(Gx({0, kLinearVaddr, kLinearVaddr + 0x8000, 0x1000}));
     REQUIRE(f.host.signals.size() == 2);
-    CHECK(f.host.signals[1].delay_ns == 20559);
+    CHECK(f.host.signals[1].delay_ns == 0);
+    CHECK(f.gpu.GetStats().last_delay_ns[6] == 20559);  // still computed
 }
 
 // ---- command lists ------------------------------------------------------------------------------
@@ -665,6 +716,294 @@ TEST_CASE("null GPU: registers read back what was written; buffer swaps and colo
     }
     CHECK(reports == 1);
 }
+
+// ---- DMA anywhere (D41) ---------------------------------------------------------------------------
+
+using GuestNullFixture = BasicNullFixture<GuestFakeHost>;
+
+void Pattern(std::vector<u8>& bytes, u32 offset, u32 count, u32 seed) {
+    for (u32 i = 0; i < count; ++i) {
+        bytes[offset + i] = static_cast<u8>(seed + i * 13);
+    }
+}
+
+bool Same(const std::vector<u8>& a, u32 a_offset, const std::vector<u8>& b, u32 b_offset, u32 count) {
+    return std::equal(a.begin() + a_offset, a.begin() + a_offset + count, b.begin() + b_offset);
+}
+
+TEST_CASE("null GPU: a DMA from the application's heap reaches the linear heap and VRAM") {
+    GuestNullFixture f;
+    Pattern(f.host.heap, 0, 0x2000, 3);
+    // heap to the linear heap: RAM to RAM, 0x1000 bytes at 190 MiB/s
+    f.gpu.Execute(Gx({0, kHeapVaddr, kLinearVaddr + 0x100, 0x1000}));
+    CHECK(Same(f.host.heap, 0, f.host.fcram, 0x100, 0x1000));
+    CHECK(f.host.fcram[0xFF] == 0);
+    CHECK(f.host.fcram[0x1100] == 0);
+    CHECK(f.gpu.GetStats().last_delay_ns[6] == 20559);
+    // heap to VRAM: RAM to VRAM, 0x800 bytes at 310 MiB/s
+    f.gpu.Execute(Gx({0, kHeapVaddr + 0x1000, kVramVaddr + 0x2000, 0x800}));
+    CHECK(Same(f.host.heap, 0x1000, f.host.vram, 0x2000, 0x800));
+    CHECK(f.host.vram[0x2800] == 0);
+    CHECK(f.gpu.GetStats().last_delay_ns[6] == 6300);
+    CHECK(f.host.Ids() == std::vector<Interrupt>(2, Interrupt::DMA));
+    CHECK(f.gpu.GetStats().dma_through_guest == 2);
+    CHECK(f.gpu.GetStats().dma_not_copied == 0);
+    CHECK(f.logged.empty());
+}
+
+TEST_CASE("null GPU: a DMA into the application's heap, and within guest memory, copies") {
+    GuestNullFixture f;
+    Pattern(f.host.fcram, 0, 0x1000, 5);
+    Pattern(f.host.vram, 0x4000, 0x400, 9);
+    // the linear heap to the heap, VRAM to the heap (VRAM to RAM: 380 MiB/s)
+    f.gpu.Execute(Gx({0, kLinearVaddr, kHeapVaddr + 0x40, 0x1000}));
+    CHECK(Same(f.host.fcram, 0, f.host.heap, 0x40, 0x1000));
+    f.gpu.Execute(Gx({0, kVramVaddr + 0x4000, kHeapVaddr + 0x3000, 0x400}));
+    CHECK(Same(f.host.vram, 0x4000, f.host.heap, 0x3000, 0x400));
+    CHECK(f.gpu.GetStats().last_delay_ns[6] == 2569);
+    // one range of guest memory to another, with no physical view at either end
+    Pattern(f.host.heap, 0x8000, 0x200, 77);
+    f.gpu.Execute(Gx({0, kHeapVaddr + 0x8000, kOtherVaddr + 0x10, 0x200}));
+    CHECK(Same(f.host.heap, 0x8000, f.host.other, 0x10, 0x200));
+    CHECK(f.host.Ids() == std::vector<Interrupt>(3, Interrupt::DMA));
+    CHECK(f.logged.empty());
+}
+
+// Bytes that do not repeat inside a page, so that a copy that is off by any amount shows.
+void Noise(std::vector<u8>& bytes, u32 offset, u32 count, u32 seed) {
+    for (u32 i = 0; i < count; ++i) {
+        bytes[offset + i] = static_cast<u8>(((i + seed) * 2654435761u) >> 24);
+    }
+}
+
+TEST_CASE("null GPU: a DMA that overlaps inside one page moves the bytes as memmove does") {
+    GuestNullFixture f;
+    Noise(f.host.heap, 0, 0x100, 1);
+    const std::vector<u8> original = f.host.heap;
+    // one piece (source and destination in one page each): memmove, whichever way it overlaps
+    f.gpu.Execute(Gx({0, kHeapVaddr, kHeapVaddr + 0x10, 0xF0}));
+    CHECK(Same(original, 0, f.host.heap, 0x10, 0xF0));
+    CHECK(Same(original, 0, f.host.heap, 0, 0x10));
+    f.host.heap = original;
+    f.gpu.Execute(Gx({0, kHeapVaddr + 0x10, kHeapVaddr, 0xF0}));
+    CHECK(Same(original, 0x10, f.host.heap, 0, 0xF0));
+}
+
+TEST_CASE("null GPU: a DMA that overlaps and is larger than a page copies forwards a page at a time") {
+    // CopyBlock walks the source a page at a time and WriteBlock the destination a page at a time,
+    // each piece copied from memory the earlier pieces may have written. Source [0, 0x3000) to
+    // destination [0x800, 0x3800): the pieces are the halves of the source pages, [0, 0x800) to
+    // [0x800, 0x1000), [0x800, 0x1000) to [0x1000, 0x1800), and so on. The first piece copies the
+    // original [0, 0x800); the second piece reads what the first wrote, which is that same
+    // original [0, 0x800); every later piece does too. memmove would instead have given the
+    // original [0, 0x3000) at 0x800.
+    GuestNullFixture f;
+    Noise(f.host.heap, 0, 0x4000, 5);
+    const std::vector<u8> original = f.host.heap;
+    f.gpu.Execute(Gx({0, kHeapVaddr, kHeapVaddr + 0x800, 0x3000}));
+    CHECK(Same(original, 0, f.host.heap, 0, 0x800));
+    std::vector<u8> expected = original;
+    for (u32 i = 0x800; i < 0x3800; ++i) {
+        expected[i] = original[i % 0x800];
+    }
+    CHECK(f.host.heap == expected);
+    CHECK(Same(original, 0x3800, f.host.heap, 0x3800, 0x800));
+    // and it is not what a single memmove gives
+    std::vector<u8> moved = original;
+    std::memmove(moved.data() + 0x800, moved.data(), 0x3000);
+    CHECK(moved != f.host.heap);
+    CHECK(f.gpu.GetStats().dma_not_copied == 0);
+    // the other way (destination before the source) is a plain forward copy: no piece reads what
+    // an earlier piece wrote
+    f.host.heap = original;
+    f.gpu.Execute(Gx({0, kHeapVaddr + 0x800, kHeapVaddr, 0x3000}));
+    CHECK(Same(original, 0x800, f.host.heap, 0, 0x3000));
+    CHECK(Same(original, 0x3000, f.host.heap, 0x3000, 0x1000));
+}
+
+TEST_CASE("null GPU: the physical view serves a DMA first; the guest pointers only fill in what it cannot") {
+    GuestNullFixture f;
+    Pattern(f.host.fcram, 0, 0x400, 21);
+    f.gpu.Execute(Gx({0, kLinearVaddr, kVramVaddr + 0x100, 0x400}));
+    CHECK(Same(f.host.fcram, 0, f.host.vram, 0x100, 0x400));
+    CHECK(f.host.guest_pointer_calls == 0);
+    CHECK(f.gpu.GetStats().dma_through_guest == 0);
+    // the end of the arena of the linear heap: the pages that are there are copied, and the source
+    // page beyond the end is not mapped, so its part of the destination is zeros (CopyBlock)
+    Pattern(f.host.fcram, kArena - 0x80, 0x80, 99);
+    std::fill(f.host.fcram.begin() + 0x2000, f.host.fcram.begin() + 0x2100, 0xEE);
+    f.gpu.Execute(Gx({0, kLinearVaddr + kArena - 0x80, kLinearVaddr + 0x2000, 0x100}));
+    CHECK(Same(f.host.fcram, kArena - 0x80, f.host.fcram, 0x2000, 0x80));
+    CHECK(std::all_of(f.host.fcram.begin() + 0x2080, f.host.fcram.begin() + 0x2100, [](u8 b) { return b == 0; }));
+    CHECK(f.host.fcram[0x2100] == 0);
+    CHECK(f.gpu.GetStats().dma_not_copied == 1);
+    CHECK(f.gpu.GetStats().dma_zero_filled == 1);
+    CHECK(f.Logged("touches memory that is not mapped"));
+}
+
+TEST_CASE("null GPU: a source page nobody maps gives zeros in the destination, a destination page nobody maps is skipped") {
+    GuestNullFixture f;
+    Noise(f.host.heap, 0, kArena, 3);
+    Noise(f.host.vram, 0, kArena, 8);
+    Noise(f.host.other, 0, kArena, 12);
+    const std::vector<u8> heap = f.host.heap, vram = f.host.vram, other = f.host.other;
+    // an unmapped source: the destination, which held noise, is zeros; its surroundings are not touched
+    f.gpu.Execute(Gx({0, 0x30000000, kVramVaddr + 0x100, 0x1800}));
+    std::vector<u8> expected_vram = vram;
+    std::fill(expected_vram.begin() + 0x100, expected_vram.begin() + 0x1900, 0);
+    CHECK(f.host.vram == expected_vram);
+    CHECK(f.host.Ids() == std::vector<Interrupt>{Interrupt::DMA});
+    CHECK(f.gpu.GetStats().dma_not_copied == 1);
+    CHECK(f.gpu.GetStats().dma_zero_filled == 1);
+    CHECK(f.gpu.GetStats().dma_through_guest == 0);  // the zeros went through the physical view
+    CHECK(f.LoggedCount("touches memory that is not mapped") == 1);
+    // an unmapped destination: nothing is written anywhere
+    f.gpu.Execute(Gx({0, kHeapVaddr, 0x30000000, 0x1800}));
+    // neither end mapped
+    f.gpu.Execute(Gx({0, 0x30000000, 0x34000000, 0x100}));
+    CHECK(f.host.heap == heap);
+    CHECK(f.host.other == other);
+    CHECK(f.host.fcram == std::vector<u8>(kArena));
+    CHECK(f.host.Ids() == std::vector<Interrupt>(3, Interrupt::DMA));
+    CHECK(f.gpu.GetStats().dma_not_copied == 3);
+    CHECK(f.gpu.GetStats().dma_zero_filled == 1);   // a zero fill into nowhere writes nothing
+    CHECK(f.gpu.GetStats().dma_through_guest == 0);  // nothing was copied through a guest pointer
+    // the delay is still Azahar's: 0x100 bytes from RAM to RAM at 190 MiB/s
+    CHECK(f.gpu.GetStats().last_delay_ns[6] == 1284);
+}
+
+TEST_CASE("null GPU: a source in a zero region (address 0) gives zeros, as Azahar's unmapped source does") {
+    // config/native/zero_regions.txt: the quest-loading race reads address 0, which Azahar maps
+    // nowhere. The host does not map it either (GuestPointer is null for it), so the DMA zero-fills.
+    GuestNullFixture f;
+    Noise(f.host.heap, 0, 0x2000, 17);
+    const std::vector<u8> heap = f.host.heap;
+    f.gpu.Execute(Gx({0, 0, kHeapVaddr + 0x20, 0x1000}));
+    std::vector<u8> expected = heap;
+    std::fill(expected.begin() + 0x20, expected.begin() + 0x1020, 0);
+    CHECK(f.host.heap == expected);
+    CHECK(f.gpu.GetStats().dma_zero_filled == 1);
+    CHECK(f.gpu.GetStats().dma_through_guest == 1);  // the heap is guest memory
+    CHECK(f.host.Ids() == std::vector<Interrupt>{Interrupt::DMA});
+}
+
+TEST_CASE("null GPU: a range mapped only in part copies the pages that are mapped") {
+    GuestNullFixture f;
+    constexpr u32 kHeapEnd = kHeapVaddr + kArena;   // the page after it is not mapped
+    constexpr u32 kOtherEnd = kOtherVaddr + kArena;
+    Noise(f.host.heap, 0, kArena, 31);
+    Noise(f.host.other, 0, kArena, 47);
+    const std::vector<u8> heap = f.host.heap, other = f.host.other;
+
+    // the source's first page is mapped and the second is not: the first page is copied, the
+    // second becomes zeros
+    f.gpu.Execute(Gx({0, kHeapEnd - 0x1000, kOtherVaddr + 0x4000, 0x2000}));
+    std::vector<u8> expected = other;
+    std::copy(heap.begin() + (kArena - 0x1000), heap.end(), expected.begin() + 0x4000);
+    std::fill(expected.begin() + 0x5000, expected.begin() + 0x6000, 0);
+    CHECK(f.host.other == expected);
+    CHECK(f.host.heap == heap);
+    CHECK(f.gpu.GetStats().dma_not_copied == 1);
+    CHECK(f.gpu.GetStats().dma_zero_filled == 1);
+    CHECK(f.gpu.GetStats().dma_through_guest == 1);
+
+    // the same, not page aligned: 0x80 bytes are there, the next 0x100 are not
+    f.host.other = other;
+    f.gpu.Execute(Gx({0, kHeapEnd - 0x80, kOtherVaddr + 0x1234, 0x180}));
+    expected = other;
+    std::copy(heap.begin() + (kArena - 0x80), heap.end(), expected.begin() + 0x1234);
+    std::fill(expected.begin() + 0x12B4, expected.begin() + 0x13B4, 0);
+    CHECK(f.host.other == expected);
+
+    // the destination's first page is mapped and the second is not: only the first is written, and
+    // the source is read at the right offset for it
+    f.host.other = other;
+    f.gpu.Execute(Gx({0, kHeapVaddr + 0x100, kOtherEnd - 0x1000, 0x2000}));
+    expected = other;
+    std::copy(heap.begin() + 0x100, heap.begin() + 0x1100, expected.begin() + (kArena - 0x1000));
+    CHECK(f.host.other == expected);
+    CHECK(f.host.heap == heap);
+
+    // the destination starts inside the last page: 0x40 bytes land, the rest has nowhere to go
+    f.host.other = other;
+    f.gpu.Execute(Gx({0, kHeapVaddr, kOtherEnd - 0x40, 0x200}));
+    expected = other;
+    std::copy(heap.begin(), heap.begin() + 0x40, expected.begin() + (kArena - 0x40));
+    CHECK(f.host.other == expected);
+
+    // source and destination pages that do not line up: the pieces are the part of the range in a
+    // page of each (0xF00 + 0x100 = a page of the source, 0x800 + 0x100 = a page of the destination)
+    f.host.other = other;
+    f.gpu.Execute(Gx({0, kHeapVaddr + 0xF00, kOtherVaddr + 0x2800, 0x1400}));
+    expected = other;
+    std::copy(heap.begin() + 0xF00, heap.begin() + 0x2300, expected.begin() + 0x2800);
+    CHECK(f.host.other == expected);
+    CHECK(f.host.Ids() == std::vector<Interrupt>(5, Interrupt::DMA));
+    CHECK(f.gpu.GetStats().dma_not_copied == 4);  // all but the last
+}
+
+TEST_CASE("null GPU: a DMA of size 0 copies nothing, counts nothing and says nothing") {
+    GuestNullFixture f;
+    f.gpu.Execute(Gx({0, kHeapVaddr, kOtherVaddr, 0}));
+    f.gpu.Execute(Gx({0, 0x30000000, kHeapVaddr, 0}));
+    f.gpu.Execute(Gx({0, kHeapVaddr, 0x30000000, 0}));
+    CHECK(f.host.Ids() == std::vector<Interrupt>(3, Interrupt::DMA));
+    CHECK(f.gpu.GetStats().dma_through_guest == 0);
+    CHECK(f.gpu.GetStats().dma_not_copied == 0);
+    CHECK(f.gpu.GetStats().dma_zero_filled == 0);
+    CHECK(f.logged.empty());
+}
+
+TEST_CASE("null GPU: a range that runs past the end of the address space is not mapped there") {
+    GuestNullFixture f;
+    std::fill(f.host.other.begin(), f.host.other.begin() + 0x2000, 0xEE);
+    // 0x2000 bytes from 0xFFFFF000: the first page is not mapped, and the walk does not wrap to 0
+    f.gpu.Execute(Gx({0, 0xFFFFF000, kOtherVaddr, 0x2000}));
+    CHECK(std::all_of(f.host.other.begin(), f.host.other.begin() + 0x2000, [](u8 b) { return b == 0; }));
+    CHECK(f.gpu.GetStats().dma_not_copied == 1);
+    CHECK(f.host.Ids() == std::vector<Interrupt>{Interrupt::DMA});
+}
+
+TEST_CASE("null GPU: a game that keeps DMAing unmapped memory does not flood the log") {
+    GuestNullFixture f;
+    for (u32 i = 0; i < 1000; ++i) {
+        f.gpu.Execute(Gx({0, 0x30000000, kHeapVaddr, 0x100}));
+    }
+    CHECK(f.host.signals.size() == 1000);
+    CHECK(f.gpu.GetStats().dma_not_copied == 1000);
+    CHECK(f.gpu.GetStats().dma_zero_filled == 1000);
+    CHECK(f.logged.size() <= 10);
+    CHECK(f.Logged("further DMAs"));
+}
+
+TEST_CASE("null GPU: every interrupt carries the delay of its work, P3D carries none") {
+    NullFixture f;
+    // a fill of 0x1000 bytes of VRAM: PSC0, the texture speed of VRAM to VRAM
+    f.gpu.Execute(Gx({2, kVramVaddr, 0xAABBCCDD, kVramVaddr + 0x1000, 0, 0, 0, 0x0201}));
+    // the second unit alone: PSC1
+    f.gpu.Execute(Gx({2, 0, 0, 0, kVramVaddr, 1, kVramVaddr + 0x1000, 0x0201u << 16}));
+    // a display transfer of 64 x 32 RGBA8 pixels from VRAM to FCRAM: PPF
+    f.gpu.Execute(Gx({3, kVramVaddr, kLinearVaddr, 64u | (32u << 16), 64u | (32u << 16), 0}));
+    // a DMA of 0x1000 bytes from VRAM to VRAM at 380 MiB/s
+    f.gpu.Execute(Gx({0, kVramVaddr, kVramVaddr + 0x8000, 0x1000}));
+    // a command list with one finalize
+    ListBuilder list;
+    list.Finalize();
+    list.Store(f.host);
+    f.gpu.Execute(Gx({1, kLinearVaddr + 0x1000, list.Size(), 0, 0, 0, 0, 1}));
+    REQUIRE(f.host.signals.size() == 5);
+    CHECK(f.host.signals[0].id == Interrupt::PSC0);
+    CHECK(f.host.signals[0].delay_ns == 723);
+    CHECK(f.host.signals[1].id == Interrupt::PSC1);
+    CHECK(f.host.signals[1].delay_ns == 723);
+    CHECK(f.host.signals[2].id == Interrupt::PPF);
+    CHECK(f.host.signals[2].delay_ns == 1446);
+    CHECK(f.host.signals[3].id == Interrupt::DMA);
+    CHECK(f.host.signals[3].delay_ns == 10279);
+    CHECK(f.host.signals[4].id == Interrupt::P3D);
+    CHECK(f.host.signals[4].delay_ns == 0);
+}
+
 
 // ===================================================================================================
 // The service, through the SVC layer
@@ -2007,6 +2346,311 @@ TEST_CASE("gsp: the performance log keeps the VBlank times and counts them per t
     CHECK(log[1 + 12] == 0);  // DMA, the seventh interrupt
     CHECK(log[1 + 13] == 0);
     CHECK(log[15] == 0);
+}
+
+// ---- N1-17b: interrupts at once, recorded delays, DMA anywhere ------------------------------------------
+
+namespace {
+
+// Maps the application's heap and the start of the linear heap, as the game would have them, and
+// returns the guest address where the linear heap starts.
+u32 MapDmaMemory(Runtime& rt) {
+    GuestMemory& memory = rt.Memory();
+    if (memory.LinearHeapArea() == 0) {
+        memory.SetLinearHeapArea(mh4n::kLinearHeapVaddr);
+    }
+    const u32 linear = memory.LinearHeapArea();
+    if (!memory.IsMapped(mh4n::kHeapVaddr, 0x10000)) {
+        REQUIRE(IsSuccess(memory.Map(mh4n::kHeapVaddr, 0x10000, MemPerm::ReadWrite, MemState::Private)));
+    }
+    if (!memory.IsMapped(linear, 0x10000)) {
+        REQUIRE(IsSuccess(memory.Map(linear, 0x10000, MemPerm::ReadWrite, MemState::Continuous)));
+    }
+    return linear;
+}
+
+std::vector<u8> Bytes(u32 count, u32 seed) {
+    std::vector<u8> bytes(count);
+    for (u32 i = 0; i < count; ++i) {
+        bytes[i] = static_cast<u8>(seed + i * 7);
+    }
+    return bytes;
+}
+
+}  // namespace
+
+TEST_CASE("gsp: an interrupt the GPU signals with a delay reaches the thread queues in the same tick") {
+    // D25 and D41: Azahar's GSP, with the reference's settings, does not wait for the delay the GPU
+    // passes; the host posts the interrupt to the sink at once and in the order it was signalled.
+    Fixture f;
+    TempDir dir;
+    std::vector<int> first_thread, second_thread;
+    std::vector<u32> first_missed;
+    u64 tick_before = 0, tick_after = 0;
+    Result first_event = 0, second_event = 0;
+    const int status = BootWith(f, dir, {"--ms", "100"}, [&] {
+        Guest g(*f.runtime);
+        Gsp gsp(g);
+        Session first(g, gsp.Open().second);
+        Session second(g, gsp.Open().second);
+        first.Register(1);
+        REQUIRE(first.AcquireRight() == kResultSuccess);
+        // the second session maps the block too, at another address: use its own queue through
+        // the same shared memory (one block, thread index 1)
+        second.event = g.NewEvent();
+        second.registered = second.Call({0x00130042, 1, ipc::CopyHandleDesc(1), second.event}, 5);
+        second.thread = second.registered[2];
+        REQUIRE(second.thread == 1);
+        gpu::Host& host = f.runtime->GpuHost();
+        FindServiceManager(*f.runtime)->SetReplyDelayNs(0);  // a request takes no game time
+        tick_before = f.runtime->Clock().Now();
+        // 20 ms, 1 ms and 7 ms of game time on a console, and a PDC0 that goes to every thread
+        host.SignalInterrupt(gpu::Interrupt::DMA, 20000000);
+        host.SignalInterrupt(gpu::Interrupt::PSC0, 1000000);
+        host.SignalInterrupt(gpu::Interrupt::P3D, 7000000);
+        host.SignalInterrupt(gpu::Interrupt::PDC0, 5000000);
+        // the next safe point: a request to the service
+        first.Call({0x00110040, 0}, 2);  // SetPerfLogMode off
+        tick_after = f.runtime->Clock().Now();
+        first_thread = first.PopAll();
+        second_thread = second.PopAll();
+        first_event = g.Wait(first.event, 0);
+        second_event = g.Wait(second.event, 0);
+        ExitProcess(*f.runtime);
+    });
+    CHECK(status == 0);
+    // in the order they were signalled, none of them later than the others for its delay
+    CHECK(first_thread == std::vector<int>{6, 0, 5, 2});
+    CHECK(second_thread == std::vector<int>{2});  // PDC0 only: the right is the first session's
+    CHECK(tick_after == tick_before);
+    CHECK(first_event == kResultSuccess);
+    CHECK(second_event == kResultSuccess);
+}
+
+TEST_CASE("gsp: the sink is called at once for a delay, from the scheduler thread, in order") {
+    Fixture f;
+    TempDir dir;
+    std::vector<std::pair<gpu::Interrupt, u64>> seen;
+    std::vector<u64> delays_outside;
+    u64 outside_after = 1;
+    const int status = BootWith(f, dir, {"--ms", "100"}, [&] {
+        Guest g(*f.runtime);
+        gpu::Host& host = f.runtime->GpuHost();
+        // a second sink on top of GSP's: it sees the delay the host reports during the call
+        f.runtime->SetGpuInterruptSink([&](gpu::Interrupt id) {
+            seen.push_back({id, host.InterruptDelayNs()});
+        });
+        delays_outside.push_back(host.InterruptDelayNs());
+        host.SignalInterrupt(gpu::Interrupt::PPF, 123456789);
+        host.SignalInterrupt(gpu::Interrupt::DMA, 5);
+        host.SignalInterrupt(gpu::Interrupt::P3D, 0);
+        g.Sleep(1000);  // a safe point
+        outside_after = host.InterruptDelayNs();
+        ExitProcess(*f.runtime);
+    });
+    CHECK(status == 0);
+    REQUIRE(seen.size() == 3);
+    CHECK(seen[0] == std::make_pair(gpu::Interrupt::PPF, u64{123456789}));
+    CHECK(seen[1] == std::make_pair(gpu::Interrupt::DMA, u64{5}));
+    CHECK(seen[2] == std::make_pair(gpu::Interrupt::P3D, u64{0}));
+    CHECK(delays_outside == std::vector<u64>{0});
+    CHECK(outside_after == 0);
+}
+
+TEST_CASE("gsp: a DMA from the application's heap to the linear heap and to VRAM copies the bytes") {
+    Fixture f;
+    TempDir dir;
+    std::vector<u8> to_linear, to_vram, source_a, source_b;
+    std::vector<int> popped;
+    const int status = BootWith(f, dir, {"--ms", "100"}, [&] {
+        Guest g(*f.runtime);
+        const u32 linear = MapDmaMemory(*f.runtime);
+        Gsp gsp(g);
+        Session s(g, gsp.Open().second);
+        s.Register(1);
+        REQUIRE(s.AcquireRight() == kResultSuccess);
+        source_a = Bytes(0x1000, 3);
+        source_b = Bytes(0x800, 91);
+        g.PutBytes(mh4n::kHeapVaddr + 0x100, source_a);
+        g.PutBytes(mh4n::kHeapVaddr + 0x2000, source_b);
+        s.PutCommands({Gx({0, mh4n::kHeapVaddr + 0x100, linear + 0x4000, 0x1000}),
+                       Gx({0, mh4n::kHeapVaddr + 0x2000, 0x1F000000 + 0x3000, 0x800})});
+        REQUIRE(s.Trigger() == kResultSuccess);
+        to_linear = g.GetBytes(linear + 0x4000, 0x1000);
+        to_vram = g.GetBytes(0x1F000000 + 0x3000, 0x800);
+        popped = s.PopAll();
+        ExitProcess(*f.runtime);
+    });
+    CHECK(status == 0);
+    CHECK(to_linear == source_a);
+    CHECK(to_vram == source_b);
+    CHECK(popped == std::vector<int>{6, 6});
+    CHECK_FALSE(f.Logged("touches memory that is not mapped"));
+}
+
+TEST_CASE("gsp: a DMA into the heap, from VRAM or the linear heap, and within the heap, copies the bytes") {
+    Fixture f;
+    TempDir dir;
+    std::vector<u8> from_linear, from_vram, within, linear_source, vram_source, heap_source;
+    const int status = BootWith(f, dir, {"--ms", "100"}, [&] {
+        Guest g(*f.runtime);
+        const u32 linear = MapDmaMemory(*f.runtime);
+        Gsp gsp(g);
+        Session s(g, gsp.Open().second);
+        s.Register(1);
+        REQUIRE(s.AcquireRight() == kResultSuccess);
+        linear_source = Bytes(0x400, 5);
+        vram_source = Bytes(0x200, 17);
+        heap_source = Bytes(0x100, 40);
+        g.PutBytes(linear + 0x100, linear_source);
+        g.PutBytes(0x1F000000 + 0x500, vram_source);
+        g.PutBytes(mh4n::kHeapVaddr + 0x6000, heap_source);
+        s.PutCommands({Gx({0, linear + 0x100, mh4n::kHeapVaddr + 0x20, 0x400}),
+                       Gx({0, 0x1F000000 + 0x500, mh4n::kHeapVaddr + 0x1000, 0x200}),
+                       Gx({0, mh4n::kHeapVaddr + 0x6000, mh4n::kHeapVaddr + 0x7000, 0x100})});
+        REQUIRE(s.Trigger() == kResultSuccess);
+        from_linear = g.GetBytes(mh4n::kHeapVaddr + 0x20, 0x400);
+        from_vram = g.GetBytes(mh4n::kHeapVaddr + 0x1000, 0x200);
+        within = g.GetBytes(mh4n::kHeapVaddr + 0x7000, 0x100);
+        ExitProcess(*f.runtime);
+    });
+    CHECK(status == 0);
+    CHECK(from_linear == linear_source);
+    CHECK(from_vram == vram_source);
+    CHECK(within == heap_source);
+}
+
+TEST_CASE("gsp: a DMA from unmapped memory or a zero region gives zeros, to unmapped memory is skipped, and signals DMA") {
+    Fixture f;
+    TempDir dir;
+    std::vector<u8> vram_after, vram2_after, heap_after, tail_after;
+    std::vector<u8> heap_tail;
+    std::vector<int> popped;
+    const int status = BootWith(f, dir, {"--ms", "100"}, [&] {
+        Guest g(*f.runtime);
+        const u32 linear = MapDmaMemory(*f.runtime);
+        (void)linear;
+        Gsp gsp(g);
+        Session s(g, gsp.Open().second);
+        s.Register(1);
+        REQUIRE(s.AcquireRight() == kResultSuccess);
+        constexpr u32 kVram = 0x1F000000;
+        g.PutBytes(kVram + 0x100, Bytes(0x100, 1));
+        g.PutBytes(kVram + 0x1000, Bytes(0x100, 3));
+        g.PutBytes(kVram + 0x2000, Bytes(0x100, 5));
+        g.PutBytes(mh4n::kHeapVaddr, Bytes(0x100, 2));
+        heap_tail = Bytes(0x10, 9);
+        g.PutBytes(mh4n::kHeapVaddr + 0xFFF0, heap_tail);
+        // from unmapped memory to VRAM; from address 0, a zero region of config/native/zero_regions.txt
+        // (the quest-loading race), to VRAM; from the heap to unmapped memory; and a range that
+        // starts 0x10 bytes before the end of the heap
+        s.PutCommands({Gx({0, 0x0C000000, kVram + 0x100, 0x100}),
+                       Gx({0, 0, kVram + 0x1000, 0x100}),
+                       Gx({0, mh4n::kHeapVaddr, 0x0D000000, 0x100}),
+                       Gx({0, mh4n::kHeapVaddr + 0xFFF0, kVram + 0x2000, 0x100})});
+        REQUIRE(s.Trigger() == kResultSuccess);
+        vram_after = g.GetBytes(kVram + 0x100, 0x100);
+        vram2_after = g.GetBytes(kVram + 0x1000, 0x100);
+        tail_after = g.GetBytes(kVram + 0x2000, 0x100);
+        heap_after = g.GetBytes(mh4n::kHeapVaddr, 0x100);
+        popped = s.PopAll();
+        ExitProcess(*f.runtime);
+    });
+    CHECK(status == 0);
+    CHECK(vram_after == std::vector<u8>(0x100, 0));
+    CHECK(vram2_after == std::vector<u8>(0x100, 0));
+    CHECK(heap_after == Bytes(0x100, 2));
+    // the 0x10 bytes that are mapped are copied, the rest is zeros
+    std::vector<u8> expected_tail = heap_tail;
+    expected_tail.resize(0x100, 0);
+    CHECK(tail_after == expected_tail);
+    CHECK(popped == std::vector<int>{6, 6, 6, 6});
+    CHECK(f.LoggedCount("touches memory that is not mapped") == 4);
+}
+
+TEST_CASE("gsp: GetPerfLog records the delays of the GPU's interrupts, as Azahar's PerformanceRecorder does") {
+    Fixture f;
+    TempDir dir;
+    std::vector<u32> first, second;
+    std::vector<int> popped;
+    const int status = BootWith(f, dir, {"--ms", "200"}, [&] {
+        Guest g(*f.runtime);
+        const u32 linear = MapDmaMemory(*f.runtime);
+        Gsp gsp(g);
+        Session s(g, gsp.Open().second);
+        s.Register(1);
+        REQUIRE(s.AcquireRight() == kResultSuccess);
+        FindServiceManager(*f.runtime)->SetReplyDelayNs(0);
+        s.Call({0x00110040, 1}, 2);  // SetPerfLogMode on
+        // a command list with one finalize, in VRAM
+        g.PutWords(0x1F000000 + 0x8000, {0x12345678, 0x000F0010});
+        s.PutCommands(
+            {FillCommand(0x1F000000, 0xAABBCCDD, 0x1F001000),  // PSC0: 0x1000 bytes VRAM to VRAM
+             Gx({2, 0, 0, 0, 0x1F000000, 1, 0x1F000000 + 0x1000, 0x0201u << 16}),  // PSC1, the same
+             Gx({3, 0x1F000000, linear, 64u | (32u << 16), 64u | (32u << 16), 0}),  // PPF: 8192 bytes
+             Gx({0, 0x1F000000, 0x1F000000 + 0x4000, 0x1000}),  // DMA: VRAM to VRAM
+             Gx({1, 0x1F000000 + 0x8000, 8, 0, 0, 0, 0, 1})});  // P3D
+        REQUIRE(s.Trigger() == kResultSuccess);
+        first = s.Call({0x00120000}, 16);
+        // a second DMA: delta is the new delay, sum has both
+        s.PutCommands({Gx({0, 0x1F000000, 0x1F000000 + 0x4000, 0x800})});
+        REQUIRE(s.Trigger() == kResultSuccess);
+        second = s.Call({0x00120000}, 16);
+        popped = s.PopAll();
+        ExitProcess(*f.runtime);
+    });
+    CHECK(status == 0);
+    // Azahar's layout: delta and sum for each interrupt, at words 1 + 2 * id: PSC0 0, PSC1 1,
+    // PDC0 2, PDC1 3, PPF 4, P3D 5, DMA 6. The time of a fill, a transfer or a DMA is
+    // size / speed (DelayGenerator); P3D's is made of the list's commands and triangles, which the
+    // null GPU does not count: 0.
+    REQUIRE(first.size() == 16);
+    CHECK(first[1 + 0] == 723);
+    CHECK(first[1 + 1] == 723);
+    CHECK(first[1 + 2] == 723);
+    CHECK(first[1 + 3] == 723);
+    CHECK(first[1 + 8] == 1446);
+    CHECK(first[1 + 9] == 1446);
+    CHECK(first[1 + 10] == 0);
+    CHECK(first[1 + 11] == 0);
+    CHECK(first[1 + 12] == 10279);
+    CHECK(first[1 + 13] == 10279);
+    // the VBlanks are not in it yet: no frame has passed
+    CHECK(first[1 + 4] == 0);
+    CHECK(first[1 + 6] == 0);
+    REQUIRE(second.size() == 16);
+    CHECK(second[1 + 12] == 5139);
+    CHECK(second[1 + 13] == 10279 + 5139);
+    CHECK(second[1 + 0] == 723);  // untouched
+    CHECK(popped == std::vector<int>{0, 1, 4, 6, 5, 6});
+}
+
+TEST_CASE("gsp: the performance log records the delay the sink is given, and only for a thread that gets it") {
+    Fixture f;
+    TempDir dir;
+    std::vector<u32> log;
+    const int status = BootWith(f, dir, {"--ms", "100"}, [&] {
+        Guest g(*f.runtime);
+        Gsp gsp(g);
+        Session s(g, gsp.Open().second);
+        s.Register(1);
+        s.Call({0x00110040, 1}, 2);
+        const std::shared_ptr<gsp::GspState> state = StateOf(f);
+        // no thread has the GPU right: Azahar returns before it records anything
+        state->SignalInterrupt(gpu::Interrupt::PPF, 777);
+        REQUIRE(s.AcquireRight() == kResultSuccess);
+        state->SignalInterrupt(gpu::Interrupt::PPF, 1000);
+        state->SignalInterrupt(gpu::Interrupt::PPF, 2345);
+        // the delay of a VBlank is the frame's, whatever is passed
+        state->SignalInterrupt(gpu::Interrupt::PDC1, 99);
+        log = s.Call({0x00120000}, 16);
+        ExitProcess(*f.runtime);
+    });
+    CHECK(status == 0);
+    REQUIRE(log.size() == 16);
+    CHECK(log[1 + 8] == 2345);
+    CHECK(log[1 + 9] == 3345);
+    CHECK(log[1 + 6] == 16713680);
 }
 
 TEST_CASE("gsp: gsp::Lcd gives a session and answers its commands as unimplemented ones") {

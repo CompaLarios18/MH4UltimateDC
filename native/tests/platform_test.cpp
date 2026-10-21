@@ -17,13 +17,16 @@ TEST_CASE("platform_test needs recomp.h and the port's hooks.h (the repository a
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
 
 #include "hooks.h"
+#include "../src/common/utf8.h"
 #include "mh4n/clock.h"
 #include "mh4n/log.h"
 #include "mh4n/memory.h"
@@ -155,6 +158,39 @@ std::shared_ptr<gsp::GspState> StateOf(Fixture& f) {
     REQUIRE(manager != nullptr);
     return manager->Context().State<gsp::GspState>("gsp::Gpu");
 }
+
+// Runs `body` on a guest thread of the runtime (its fiber, on this host thread, as the hooks run) and
+// returns once it has finished and what became due when it ended has run.
+void RunOnGuestThread(Fixture& f, std::function<void()> body) {
+    Kernel& kernel = f.runtime->GetKernel();
+    GuestScheduler& scheduler = f.runtime->Scheduler();
+    bool finished = false;
+    auto thread = kernel.NewThread("guest", 0x30, 0, kernel.CurrentProcess());
+    scheduler.AttachFunction(thread, [&] {
+        body();
+        finished = true;
+    });
+    scheduler.Start(thread);
+    REQUIRE(scheduler.Run([&] { return finished; }) == RunStatus::Stopped);
+    REQUIRE(finished);
+}
+
+// Changes the current directory for its lifetime and puts it back, also when a check throws.
+class CurrentDirGuard {
+public:
+    explicit CurrentDirGuard(const std::string& to) : saved_(std::filesystem::current_path()) {
+        std::filesystem::current_path(to);
+    }
+    ~CurrentDirGuard() {
+        std::error_code ignored;
+        std::filesystem::current_path(saved_, ignored);
+    }
+    CurrentDirGuard(const CurrentDirGuard&) = delete;
+    CurrentDirGuard& operator=(const CurrentDirGuard&) = delete;
+
+private:
+    std::filesystem::path saved_;
+};
 
 // A fake code-library table: records the hooks the port installs on it.
 std::map<u32, RHookFn>* g_hooks = nullptr;
@@ -295,6 +331,91 @@ TEST_CASE("platform: the refresh rate reaches the GSP's VBlank period") {
     f.runtime->Scheduler().RunPending();
     CHECK(state->VBlankPeriodTicks() == kDefaultPeriod);
     CHECK(p.RequestedRefreshRate() == 0.0);
+}
+
+TEST_CASE("platform: a refresh rate set from guest code changes the period for the very next VBlank") {
+    Fixture f;
+    REQUIRE(f.runtime->Prepare(Parse({}), {Phase::Devices, Phase::Services}));
+    auto state = StateOf(f);
+    platform::NativePlatform p(*f.runtime, "", {});
+    const u64 first = state->NextVBlankTick();
+    REQUIRE(first == f.runtime->Clock().Now() + kDefaultPeriod);
+
+    u64 period_inside = 0;
+    u64 count_inside = ~0ull;
+    RunOnGuestThread(f, [&] {
+        // The game clock reaches the first VBlank's deadline while the guest runs: it is due, but it
+        // runs at the next safe point, after this call (the hooks run in the same place).
+        f.time->Advance(static_cast<s64>(TicksToNsCeil(first - f.runtime->Clock().Now())));
+        p.SetRefreshRate(120.0);
+        // At once, as the reference's GPU::SetRefreshRate: not at a later safe point.
+        period_inside = state->VBlankPeriodTicks();
+        count_inside = state->VBlankCount();
+    });
+    CHECK(period_inside == kPeriod120);
+    CHECK(count_inside == 0);
+    // That VBlank, the very next one, was rescheduled with the new period.
+    CHECK(state->VBlankCount() == 1);
+    CHECK(state->NextVBlankTick() == first + kPeriod120);
+    CHECK(f.LoggedCount("vblank period 2234265 ticks") == 1);
+    f.AdvanceTo(first + 100 * kPeriod120 + 1);
+    CHECK(state->VBlankCount() == 101);
+    CHECK(state->NextVBlankTick() == first + 101 * kPeriod120);
+}
+
+TEST_CASE("platform: from another host thread the refresh rate still goes through the kernel's queue") {
+    Fixture f;
+    REQUIRE(f.runtime->Prepare(Parse({}), {Phase::Devices, Phase::Services}));
+    auto state = StateOf(f);
+    platform::NativePlatform p(*f.runtime, "", {});
+    std::thread([&] { p.SetRefreshRate(120.0); }).join();
+    // Not on the scheduler thread: the guest state is untouched until the scheduler's next safe point.
+    CHECK(state->VBlankPeriodTicks() == kDefaultPeriod);
+    CHECK(p.RequestedRefreshRate() == 120.0);
+    f.runtime->Scheduler().RunPending();
+    CHECK(state->VBlankPeriodTicks() == kPeriod120);
+    CHECK(f.LoggedCount("vblank period 2234265 ticks") == 1);
+}
+
+TEST_CASE("platform: a call from another thread that is still queued never overrides a newer one from guest code") {
+    Fixture f;
+    REQUIRE(f.runtime->Prepare(Parse({}), {Phase::Devices, Phase::Services}));
+    auto state = StateOf(f);
+    platform::NativePlatform p(*f.runtime, "", {});
+    const u64 period180 = 268111856 / 180;
+    u64 period_queued = 0;
+    RunOnGuestThread(f, [&] {
+        // While the guest runs, another thread's call is queued for the next safe point...
+        std::thread([&] { p.SetRefreshRate(120.0); }).join();
+        period_queued = state->VBlankPeriodTicks();
+        // ... and the guest's own, newer call is applied at once.
+        p.SetRefreshRate(180.0);
+    });
+    CHECK(period_queued == kDefaultPeriod);
+    // The queued call ran when the guest ended: it was out of date and did not override.
+    CHECK(state->VBlankPeriodTicks() == period180);  // the queued 120 Hz was out of date
+    CHECK(p.RequestedRefreshRate() == 180.0);
+    CHECK(f.runtime->RefreshRate() == 180.0);
+    CHECK(f.LoggedCount("vblank period 2234265 ticks") == 0);
+    // A call from another thread after that one works as before.
+    std::thread([&] { p.SetRefreshRate(120.0); }).join();
+    f.runtime->Scheduler().RunPending();
+    CHECK(state->VBlankPeriodTicks() == kPeriod120);
+}
+
+TEST_CASE("platform: the hooks' own refresh rate change, made on a guest thread, applies at once") {
+    TempDir dir;
+    dir.WriteText("mh4u.ini", "fps = 120\n");
+    HookRun run({"--user", dir.Path()});
+    auto state = StateOf(run.f);
+    CHECK(state->VBlankPeriodTicks() == kDefaultPeriod);
+    u64 period_inside = 0;
+    RunOnGuestThread(run.f, [&] {
+        run.hooks[kFrameHookAddress](&run.ctx, OriginalStub);  // sMhMain::frame, the hook that sets it
+        period_inside = state->VBlankPeriodTicks();
+    });
+    CHECK(period_inside == kPeriod120);
+    CHECK(run.platform->RequestedRefreshRate() == 120.0);
 }
 
 TEST_CASE("platform: the screen layout is stored for the renderer") {
@@ -587,6 +708,295 @@ TEST_CASE("platform: --set fN:fps=60 puts the refresh rate back once the game re
     CHECK(run.f.Logged("set fps = 60 at"));
     CHECK(state->VBlankPeriodTicks() == kDefaultPeriod);
     CHECK(run.platform->RequestedRefreshRate() == 0.0);
+}
+
+TEST_CASE("platform: without --user a stray ./mh4u.ini in the current directory is ignored") {
+    TempDir cwd;
+    cwd.WriteText("mh4u.ini", "fps = 120\nwidescreen = 1\nskip = ZR\n");
+    {
+        CurrentDirGuard guard(cwd.Path());  // put back when the scope ends, also on a failed check
+        HookRun run({});                    // no --user
+        // A path that holds no file, the same on every platform, and logged once.
+        CHECK(run.platform->UserDir() == platform::kNoUserDir);
+        CHECK(run.f.LoggedCount("no --user folder") == 1);
+        // The hooks never read the file in the current directory.
+        for (const std::string& line : run.f.logged) {
+            CHECK(line.find("options from") == std::string::npos);
+            CHECK(line.find("frame-rate cap") == std::string::npos);
+        }
+        CHECK(std::filesystem::exists("mh4u.ini"));  // it is there, in the directory the process is in
+        auto state = StateOf(run.f);
+        run.Frame();
+        run.Frame();
+        CHECK(state->VBlankPeriodTicks() == kDefaultPeriod);
+        CHECK(run.platform->RequestedRefreshRate() == 0.0);
+        CHECK(run.f.LoggedCount("vblank period") == 0);
+    }
+    // The same file is read when it is in the --user folder: the check above is not vacuous.
+    {
+        CurrentDirGuard guard(cwd.Path());
+        HookRun run({"--user", cwd.Path()});
+        CHECK(run.platform->UserDir() == cwd.Path() + "/");
+        CHECK(run.f.LoggedCount("no --user folder") == 0);
+        CHECK(run.f.Logged("hooks: options from " + cwd.Path() + "/mh4u.ini"));
+        CHECK(run.f.Logged("hooks: frame-rate cap 120"));
+    }
+}
+
+TEST_CASE("platform: an empty user folder given to the platform directly is the placeholder too") {
+    Fixture f;
+    REQUIRE(f.runtime->Prepare(Parse({}), {}));
+    platform::NativePlatform none(*f.runtime, "", {});
+    CHECK(none.UserDir() == platform::kNoUserDir);
+    // The placeholder is not a path the hooks can open a file in: it has characters no Windows file
+    // name may hold, and it is not absolute.
+    const std::string placeholder = platform::kNoUserDir;
+    CHECK(placeholder.find_first_of("<>") != std::string::npos);
+    CHECK(placeholder.back() == '/');
+    CHECK_FALSE(std::filesystem::exists(placeholder + "mh4u.ini"));
+    platform::NativePlatform given(*f.runtime, "/some/folder/", {});
+    CHECK(given.UserDir() == "/some/folder/");  // --user is unchanged
+}
+
+// ---- D45: UTF-8 paths ---------------------------------------------------------------------------------------
+
+namespace {
+
+// "José-ñ-日本" as UTF-8 bytes: accents and characters outside every ANSI code page.
+const std::string kUnicodeName = std::string("Jos") + "\xC3\xA9" + "-" + "\xC3\xB1" + "-" + "\xE6\x97\xA5" + "\xE6\x9C\xAC";
+
+// The UTF-8 text of a folder or file named `name` under the temporary folder `dir`.
+std::string Under(const TempDir& dir, const std::string& name) {
+    return utf8::PathToUtf8(std::filesystem::path(dir.Path()) / utf8::PathFromUtf8(name));
+}
+
+// A short-name call that answers from a table and counts how often it was asked.
+struct FakeShortNames {
+    std::map<std::string, std::string> table;  // folder (no trailing separator) -> short name
+    std::vector<std::string> asked;
+    platform::ShortPathFunction Function() {
+        return [this](const std::string& folder) -> std::optional<std::string> {
+            asked.push_back(folder);
+            const auto it = table.find(folder);
+            if (it == table.end()) {
+                return std::nullopt;
+            }
+            return it->second;
+        };
+    }
+};
+
+}  // namespace
+
+TEST_CASE("D45: UserDir keeps an ASCII folder as it is and never asks for a short name") {
+    FakeShortNames fake;
+    fake.table["C:\\Users\\Hunter\\mh4u"] = "SHOULD-NOT-BE-USED";
+    CHECK(platform::ResolveUserDir("C:\\Users\\Hunter\\mh4u\\", fake.Function()) == "C:\\Users\\Hunter\\mh4u\\");
+    CHECK(platform::ResolveUserDir("/home/hunter/mh4u/", fake.Function()) == "/home/hunter/mh4u/");
+    CHECK(platform::ResolveUserDir("relative", fake.Function()) == "relative");
+    CHECK(platform::ResolveUserDir("", fake.Function()) == "");
+    CHECK(fake.asked.empty());
+    // an ASCII folder on a system without a short-name call is the same
+    CHECK(platform::ResolveUserDir("/home/hunter/mh4u/", {}) == "/home/hunter/mh4u/");
+}
+
+TEST_CASE("D45: UserDir of a folder with non-ASCII characters is its short name when there is one") {
+    FakeShortNames fake;
+    const std::string folder = "C:\\Users\\" + kUnicodeName;
+    fake.table[folder] = "C:\\Users\\JOS~1";
+    std::string warning;
+    // the call gets the folder without its trailing separator, and the answer gets the separator back
+    CHECK(platform::ResolveUserDir(folder + "\\", fake.Function(), &warning) == "C:\\Users\\JOS~1\\");
+    CHECK(fake.asked == std::vector<std::string>{folder});
+    CHECK(warning.empty());
+    // the separator of the folder is the one kept
+    fake.table["/home/" + kUnicodeName] = "/home/JOS~1";
+    CHECK(platform::ResolveUserDir("/home/" + kUnicodeName + "/", fake.Function(), &warning) == "/home/JOS~1/");
+    // no trailing separator at all (a caller that passes the bare folder): the hooks still get one
+    CHECK(platform::ResolveUserDir("/home/" + kUnicodeName, fake.Function(), &warning) == "/home/JOS~1/");
+    // a short name that ends with a separator does not double it
+    fake.table["/home/" + kUnicodeName] = "/home/JOS~1/";
+    CHECK(platform::ResolveUserDir("/home/" + kUnicodeName + "/", fake.Function(), &warning) == "/home/JOS~1/");
+    CHECK(warning.empty());
+    // the result is ASCII by construction: every byte is below 0x80
+    for (const char c : platform::ResolveUserDir(folder + "\\", fake.Function())) {
+        CHECK(static_cast<unsigned char>(c) < 0x80);
+    }
+    // a system whose ANSI paths are UTF-8 (no short-name call) gets the folder unchanged
+    CHECK(platform::ResolveUserDir("/home/" + kUnicodeName + "/", {}) == "/home/" + kUnicodeName + "/");
+}
+
+TEST_CASE("D45: UserDir of a folder with non-ASCII characters and no short name is the placeholder, with a reason") {
+    const std::string folder = "D:\\Juegos\\" + kUnicodeName;
+    // nothing for it (8.3 names are off for the volume, or the folder is missing)
+    {
+        FakeShortNames fake;
+        std::string warning;
+        CHECK(platform::ResolveUserDir(folder + "\\", fake.Function(), &warning) == platform::kNoUserDir);
+        CHECK(fake.asked == std::vector<std::string>{folder});
+        CHECK(warning.find(folder) != std::string::npos);  // names the folder
+        CHECK(warning.find("mh4u.ini") != std::string::npos);
+        CHECK(warning.find("8.3") != std::string::npos);
+        CHECK(warning.find("fsutil 8dot3name") != std::string::npos);
+    }
+    // an empty answer is no answer
+    {
+        FakeShortNames fake;
+        fake.table[folder] = "";
+        std::string warning;
+        CHECK(platform::ResolveUserDir(folder + "\\", fake.Function(), &warning) == platform::kNoUserDir);
+        CHECK_FALSE(warning.empty());
+    }
+    // a "short name" that still has a non-ASCII character (Windows gave the long name back for a part that has no
+    // short one) is no use to the hooks either
+    {
+        FakeShortNames fake;
+        fake.table[folder] = "D:\\JUEGOS~1\\" + kUnicodeName;
+        std::string warning;
+        CHECK(platform::ResolveUserDir(folder + "\\", fake.Function(), &warning) == platform::kNoUserDir);
+        CHECK_FALSE(warning.empty());
+    }
+    // the warning is optional
+    {
+        FakeShortNames fake;
+        CHECK(platform::ResolveUserDir(folder + "\\", fake.Function()) == platform::kNoUserDir);
+    }
+}
+
+TEST_CASE("D45: the platform logs one Warning when a folder with non-ASCII characters has no short name") {
+    Fixture f;
+    REQUIRE(f.runtime->Prepare(Parse({}), {}));
+    std::vector<std::pair<LogLevel, std::string>> records;
+    SetLogSink([&](const LogRecord& r) { records.emplace_back(r.level, std::string(r.message)); });
+    const std::string folder = "D:\\Juegos\\" + kUnicodeName;
+    {
+        FakeShortNames none;
+        platform::NativePlatform p(*f.runtime, folder + "\\", {}, none.Function());
+        CHECK(p.UserDir() == platform::kNoUserDir);
+    }
+    int warnings = 0;
+    for (const auto& [level, text] : records) {
+        if (level == LogLevel::Warning && text.find("mh4u.ini") != std::string::npos &&
+            text.find(folder) != std::string::npos) {
+            ++warnings;
+        }
+        CHECK(level != LogLevel::Error);
+    }
+    CHECK(warnings == 1);
+    // with a short name there is no warning, and UserDir is the short name
+    records.clear();
+    {
+        FakeShortNames fake;
+        fake.table[folder] = "D:\\JUEGOS~1\\JOS~1";
+        platform::NativePlatform p(*f.runtime, folder + "\\", {}, fake.Function());
+        CHECK(p.UserDir() == "D:\\JUEGOS~1\\JOS~1\\");
+    }
+    for (const auto& [level, text] : records) {
+        CHECK(level != LogLevel::Warning);
+    }
+    // an ASCII folder: not asked, no warning
+    records.clear();
+    {
+        FakeShortNames fake;
+        platform::NativePlatform p(*f.runtime, "D:\\Games\\mh4u\\", {}, fake.Function());
+        CHECK(p.UserDir() == "D:\\Games\\mh4u\\");
+        CHECK(fake.asked.empty());
+    }
+    CHECK(records.empty());
+}
+
+TEST_CASE("D45: the hooks read mh4u.ini from the short name that stands for a folder with non-ASCII characters") {
+    TempDir dir;
+    // the folder the player named, and the ASCII folder its short name stands for (the file is in the latter:
+    // the hooks open it through an ANSI std::string path and could not reach the former on Windows)
+    const std::string accented = Under(dir, kUnicodeName);
+    const std::string short_name = Under(dir, "SHORT83");
+    std::filesystem::create_directories(utf8::PathFromUtf8(accented));
+    std::filesystem::create_directories(utf8::PathFromUtf8(short_name));
+    std::ofstream(utf8::PathFromUtf8(short_name + "/mh4u.ini")) << "fps = 120\n";
+    FakeShortNames fake;
+    fake.table[accented] = short_name;
+
+    RCodeInfo info{};
+    info.hook_count = 1;
+    info.set_hook = FakeSetHook;
+    {
+        Fixture f;
+        std::map<u32, RHookFn> hooks;
+        g_hooks = &hooks;
+        REQUIRE(f.runtime->Prepare(Parse({}), {Phase::Devices, Phase::Services}));
+        {
+            platform::NativePlatform p(*f.runtime, accented + "/", {}, fake.Function());
+            CHECK(p.UserDir() == short_name + "/");
+            Port::Hooks::SetPlatform(&p);
+            platform::InstallHooks(info);
+            CHECK(f.Logged("hooks: options from " + short_name + "/mh4u.ini"));
+            CHECK(f.Logged("hooks: frame-rate cap 120"));
+        }
+        g_hooks = nullptr;
+    }
+    // and without a short name the hooks find nothing, and read no file from anywhere else
+    {
+        Fixture f;
+        std::map<u32, RHookFn> hooks;
+        g_hooks = &hooks;
+        REQUIRE(f.runtime->Prepare(Parse({}), {Phase::Devices, Phase::Services}));
+        {
+            FakeShortNames none;
+            platform::NativePlatform p(*f.runtime, accented + "/", {}, none.Function());
+            CHECK(p.UserDir() == platform::kNoUserDir);
+            Port::Hooks::SetPlatform(&p);
+            platform::InstallHooks(info);
+            for (const std::string& line : f.logged) {
+                CHECK(line.find("options from") == std::string::npos);
+            }
+        }
+        g_hooks = nullptr;
+    }
+}
+
+TEST_CASE("D45: --options is read from a folder whose name has non-ASCII characters") {
+    TempDir dir;
+    const std::string folder = Under(dir, kUnicodeName);
+    std::filesystem::create_directories(utf8::PathFromUtf8(folder));
+    const std::string ini = folder + std::string(1, static_cast<char>(std::filesystem::path::preferred_separator)) + "app.ini";
+    {
+        std::ofstream out(utf8::PathFromUtf8(ini), std::ios::binary);
+        out << "[Display]\naspect_ratio = 21:9\nrenderer = vulkan\n";
+    }
+    {
+        Fixture f;
+        std::shared_ptr<platform::NativePlatform> seen;
+        f.runtime->SetMainThreadEntry([&](GuestThread&) {
+            seen = platform::NativePlatform::Find(*f.runtime);
+            RCtx ctx{};
+            ctx.r[14] = kText + 0x20;
+            f.runtime->Svc().CallSvc(ctx, 0x03, kText + 0x11);  // svcExitProcess
+        });
+        CHECK(f.runtime->Boot(Parse({dir.WriteElf(), "--options", ini})) == 0);
+        REQUIRE(seen != nullptr);
+        CHECK(seen->GetOption("aspect_ratio") == "21:9");
+        CHECK(seen->AppOptions().at("renderer") == "vulkan");
+    }
+    // a file that is missing there is named as the exact text the player gave
+    {
+        Fixture f;
+        f.runtime->SetMainThreadEntry([](GuestThread&) {});
+        const std::string missing = folder + std::string(1, static_cast<char>(std::filesystem::path::preferred_separator)) + "nada.ini";
+        CHECK(f.runtime->Boot(Parse({dir.WriteElf(), "--options", missing})) == 2);
+        CHECK(f.Logged("--options: cannot read " + missing));
+    }
+    // a bad one names it too, in the error of the line that is wrong
+    {
+        Fixture f;
+        {
+            std::ofstream out(utf8::PathFromUtf8(ini), std::ios::binary | std::ios::trunc);
+            out << "[Display]\nnonsense\n";
+        }
+        f.runtime->SetMainThreadEntry([](GuestThread&) {});
+        CHECK(f.runtime->Boot(Parse({dir.WriteElf(), "--options", ini})) == 2);
+        CHECK(f.Logged("--options " + ini + ": line 2: expected key = value"));
+    }
 }
 
 TEST_CASE("platform: the hooks take the touch overlay and the top screen through the platform") {

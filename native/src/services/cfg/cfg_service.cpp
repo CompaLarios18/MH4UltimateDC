@@ -14,6 +14,15 @@
 // "cfg"), made on first use: the config savegame of the user folder, or Azahar's default blocks. See
 // cfg_store.h for what is read and written and when.
 //
+// Start-up (D37): when a runner starts with --user DIR, DIR exists and holds no config savegame, a
+// random console unique ID is made and the file is written once (EnsureConfigFile), so the folder works
+// with Azahar too. A read command never writes. Without --user, or when DIR does not exist (this step never
+// creates it, and neither do mac.txt or mcu.dat; a saving cfg:s/cfg:i command and `--new-console-id`
+// still do), nothing is written by it and the ID is 0 for that run; when --user names a folder that does
+// not exist, one Info line says so. The replay tool (ipc-replay, Runtime::Prepare) does not
+// run this: it is repeatable on the folder of a recording, which holds a config. A short or damaged
+// config is left alone with an Error log.
+//
 // Options: `--new-console-id` gives the console a new random unique ID before the game starts, as the
 // runner of the reference does with Azahar's GenerateConsoleUniqueId + SetConsoleUniqueId +
 // UpdateConfigNANDSavegame (the file is written); `--region auto|0..6` is Azahar's region setting
@@ -37,19 +46,22 @@
 //  - GetCountryCodeString writes 0 in word 2 of its error reply, where Azahar leaves the word unwritten.
 //  - `--region auto` takes the region lockout from `<game folder>/icon.bin` (or
 //    `<game folder>/exefs/icon.bin`): the SMDH of the ExeFS 'icon' file, which Azahar's loader reads
-//    from the game itself. No tool of this repository writes that file yet (prepare_game.py writes
-//    exheader.bin, code.bin, romfs.bin, update_romfs.bin and info.txt), so with an unmodified game folder
-//    `auto` answers JPN (0) and leaves the language unadjusted. For a dump of another region GetRegion,
-//    IsCoppacsSupported and the language block then differ from Azahar's until the icon is provided
-//    (or `--region` is given). The source of the icon is a decision for the orchestrator.
+//    from the game itself. prepare_game.py writes icon.bin from the base game's ExeFS icon (N1-15c, D38;
+//    Azahar reads the update's icon, and the lockout is the same for a real game), so a prepared game
+//    folder answers the game's own region. With a game folder that has none (an ELF run, a folder made
+//    before N1-15c) `auto` answers JPN (0) with one Warning and leaves the language unadjusted, and
+//    GetRegion, IsCoppacsSupported and the language block then differ from Azahar's for a dump of another
+//    region until `--region` is given.
 //  - Azahar's GetSystemModel/GetModelNintendo2DS/IsCoppacsSupported read a block that fails with the
 //    error result and then push the zero-filled value; so do these.
 #include <cstring>
+#include <filesystem>
 #include <memory>
-#include <random>
 #include <string>
+#include <system_error>
 #include <vector>
 
+#include "../../common/utf8.h"
 #include "mh4n/cfg.h"
 #include "cfg_store.h"
 #include "mh4n/ipc.h"
@@ -66,13 +78,6 @@ namespace {
 
 constexpr const char* kLog = "Service.CFG";
 constexpr u32 kMaxSessions = 23;
-
-// ---- randomness for the identity (the one thing here that is not a function of the files) -----------
-
-u64 HostRandom64() {
-    static std::random_device device;
-    return (static_cast<u64>(device()) << 32) | device();
-}
 
 // ---- the module the sessions share ---------------------------------------------------------------------------
 
@@ -419,11 +424,15 @@ private:
     // cfg:i FormatConfig: all blocks back to their defaults with a new console unique ID, saved.
     void FormatConfig(Request& request) {
         ConfigStore& store = Store();
+        // The ID is drawn first: a random source that fails (an Error is logged) changes and writes nothing.
+        std::pair<u32, u64> drawn;
+        if (!TryGenerateConsoleUniqueId(HostRandom64, &drawn)) {
+            request.MakeReply(1, 0).Push(kResultUnknown);
+            return;
+        }
         Result result = store.Format();
         if (!IsError(result)) {
-            const auto [random_number, console_id] =
-                ConfigStore::GenerateConsoleUniqueId(HostRandom64);
-            result = store.SetConsoleUniqueId(random_number, console_id);
+            result = store.SetConsoleUniqueId(drawn.first, drawn.second);
         }
         if (!IsError(result) && !store.Save()) {
             result = kResultUnknown;
@@ -490,11 +499,43 @@ void StartIdentity(Runtime& rt) {
         }
     }
     if (!options.Has("--new-console-id")) {
+        // D37: the first start of a user folder that exists and holds no config makes it, once. Only a
+        // runner boot does (it has a loader); Runtime::Prepare, the replay tool's way in, never writes.
+        if (rt.GetLoader() != nullptr) {
+            u64 id = 0;
+            const EnsureResult result = EnsureConfigFile(rt.UserFolder(), HostRandom64, &id);
+            if (result == EnsureResult::Created) {
+                MH4N_LOG(Info, kLog, "new user folder: config savegame made, console id {:016x}", id);
+            } else if (result == EnsureResult::NoUserFolder && !rt.UserFolder().empty()) {
+                // --user DIR was given but DIR is not a folder: say so once, where the player can see why
+                // the console id is 0 (the runtime never creates DIR).
+                std::error_code ec;
+                const bool exists = std::filesystem::exists(utf8::PathFromUtf8(rt.UserFolder()), ec);
+                MH4N_LOG(Info, kLog, "user folder {} {}: no config is made, console id 0 for this run",
+                         rt.UserFolder(), exists ? "is not a folder" : "does not exist");
+            }
+        }
+        return;
+    }
+    // A damaged config is never replaced (not even when asked to): the player's data comes first.
+    const std::string config_path = ConfigPath(rt.UserFolder());
+    const ConfigFileState state = rt.UserFolder().empty() ? ConfigFileState::Absent : GetConfigFileState(config_path);
+    if (state == ConfigFileState::Invalid || state == ConfigFileState::LookupFailed) {
+        MH4N_LOG(Error, kLog, "--new-console-id: the config savegame {} is short, damaged or unreadable and is not replaced",
+                 config_path);
+        rt.RequestExit(3, "--new-console-id failed");
         return;
     }
     // Before the game: the file is read (or the default blocks made), the ID replaced, the file saved.
     ConfigStore store(rt.UserFolder());
-    const auto [random_number, console_id] = ConfigStore::GenerateConsoleUniqueId(HostRandom64);
+    std::pair<u32, u64> drawn;
+    if (!TryGenerateConsoleUniqueId(HostRandom64, &drawn)) {
+        // The random source failed (an Error is logged): the file is left as it is.
+        MH4N_LOG(Error, kLog, "--new-console-id: no new console unique ID could be made");
+        rt.RequestExit(3, "--new-console-id failed");
+        return;
+    }
+    const auto [random_number, console_id] = drawn;
     if (IsError(store.SetConsoleUniqueId(random_number, console_id)) || !store.Save()) {
         MH4N_LOG(Error, kLog, "--new-console-id: the console unique ID could not be saved");
         rt.RequestExit(3, "--new-console-id failed");

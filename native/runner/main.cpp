@@ -4,12 +4,27 @@
 #include <cstdio>
 #include <filesystem>
 #include <string>
+#include <vector>
 
+#include "../src/common/utf8.h"
 #include "mh4n/loader.h"
 #include "mh4n/log.h"
 #include "mh4n/options.h"
 #include "mh4n/runtime.h"
 #include "mh4n_version.h"
+
+// windows.h last: it defines macros (Yield() is an empty one) that would break the declarations of
+// the project headers above it (GuestThread::Yield in mh4n/cpu.h).
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#include <shellapi.h>
+#endif
 
 MH4N_OPTION("runner", "--help", "", "print this help and exit");
 MH4N_OPTION("runner", "--version", "", "print the git revision and exit");
@@ -30,8 +45,9 @@ constexpr const char* kUsage =
 // --print-process: the loader's view of a program (N1-03). Exit status 2 when loading fails.
 int PrintProcess(const std::string& path) {
     std::string error;
-    auto loader = std::filesystem::is_directory(path) ? mh4n::Loader::OpenGameFolder(path, &error)
-                                                      : mh4n::Loader::OpenElf(path, &error);
+    auto loader = std::filesystem::is_directory(mh4n::utf8::PathFromUtf8(path))
+                      ? mh4n::Loader::OpenGameFolder(path, &error)
+                      : mh4n::Loader::OpenElf(path, &error);
     if (!loader) {
         std::fprintf(stderr, "cannot load %s: %s\n", path.c_str(), error.c_str());
         return 2;
@@ -50,10 +66,42 @@ int PrintProcess(const std::string& path) {
     return 0;
 }
 
+#if defined(_WIN32)
+// The command line as UTF-8 text (D45). The argv that main gets on Windows is in the ANSI code page, which
+// has no place for most characters outside it: a folder with an accent or any other non-ASCII character
+// would reach the file calls as a different name. The process's own command line is UTF-16; convert that.
+// Empty when Windows cannot split it (the caller then keeps main's argv).
+std::vector<std::string> Utf8CommandLine() {
+    std::vector<std::string> args;
+    int count = 0;
+    wchar_t** wide = CommandLineToArgvW(GetCommandLineW(), &count);
+    if (wide == nullptr) {
+        return args;
+    }
+    for (int i = 0; i < count; ++i) {
+        args.push_back(mh4n::utf8::FromWide(wide[i]));
+    }
+    LocalFree(wide);
+    return args;
+}
+#endif
+
 }  // namespace
 
 int main(int argc, char** argv) {
-    const mh4n::Options options = mh4n::ParseOptions("runner", argc, argv);
+    const char* const* arguments = argv;
+#if defined(_WIN32)
+    const std::vector<std::string> utf8_args = Utf8CommandLine();
+    std::vector<const char*> utf8_argv;
+    for (const std::string& arg : utf8_args) {
+        utf8_argv.push_back(arg.c_str());
+    }
+    if (!utf8_argv.empty()) {
+        argc = static_cast<int>(utf8_argv.size());
+        arguments = utf8_argv.data();
+    }
+#endif
+    const mh4n::Options options = mh4n::ParseOptions("runner", argc, arguments);
     if (!options.ok()) {
         return 2;
     }

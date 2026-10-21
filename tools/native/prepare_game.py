@@ -9,6 +9,8 @@ tools/build_game.py's). The folder holds:
 
     exheader.bin       the update's exheader
     code.bin           the update's code, decompressed
+    icon.bin           the base game's ExeFS 'icon' file (SMDH), when it has one; the cfg
+                       service reads its region lockout for --region auto (D38)
     romfs.bin          the base game's RomFS section
     update_romfs.bin   the update's RomFS section
     info.txt           titles, versions, sizes, CRC-32 of code.bin
@@ -22,6 +24,7 @@ import argparse
 import json
 import os
 import shutil
+import struct
 import sys
 import zlib
 
@@ -36,6 +39,10 @@ import extract_ncch  # noqa: E402
 DEFAULT_OUT = os.path.join("build", "native-game")
 DEFAULT_VERSIONS = os.path.join(ROOT, "config", "versions.json")
 CHUNK = 1 << 20
+SMDH_MAGIC = b"SMDH"
+SMDH_SIZE = 0x36C0          # what native's cfg service requires of icon.bin
+EXEFS_HEADER_SIZE = 0x200
+EXEFS_ENTRIES = 10          # 10 entries of name[8], offset, size (3dbrew ExeFS)
 
 
 class PrepareError(Exception):
@@ -87,6 +94,53 @@ def extract_to(src: str, outdir: str, label: str) -> list[str]:
         raise PrepareError(f"{label}: {e}") from e
 
 
+def exefs_entry(exefs: bytes, wanted: str) -> bytes | None:
+    """The bytes of one ExeFS file, None when the ExeFS has no such file.
+
+    A damaged header (too short, an entry running past the end) is an error: it must not look
+    like a game without that file."""
+    if len(exefs) < EXEFS_HEADER_SIZE:
+        raise PrepareError(f"the base game's ExeFS is damaged: 0x{len(exefs):X} bytes, smaller "
+                           f"than its 0x{EXEFS_HEADER_SIZE:X}-byte header")
+    found = None
+    seen = False            # Azahar's LoadSectionExeFS stops at the FIRST entry with the name
+    for i in range(EXEFS_ENTRIES):
+        raw, off, size = struct.unpack_from("<8sII", exefs, i * 16)
+        # Azahar compares the name with strcmp: it ends at the first NUL
+        name = raw.split(b"\0", 1)[0].decode("ascii", errors="replace")
+        is_wanted = name == wanted
+        # Like Azahar's LoadSectionExeFS and extract_ncch, only an entry that has data or is the
+        # one we read is checked: a bogus offset on an unused (size 0) entry is not an error
+        if (size or is_wanted) and EXEFS_HEADER_SIZE + off + size > len(exefs):
+            raise PrepareError(f"the base game's ExeFS is damaged: entry {name!r} (offset "
+                               f"0x{off:X}, size 0x{size:X}) runs past the end of the ExeFS")
+        if is_wanted and not seen:
+            seen = True
+            if size:
+                found = exefs[EXEFS_HEADER_SIZE + off:EXEFS_HEADER_SIZE + off + size]
+    return found
+
+
+def read_icon(base_dir: str) -> bytes | None:
+    """The base game's ExeFS 'icon' (SMDH), None when the game has none."""
+    with open(os.path.join(base_dir, "exefs.bin"), "rb") as f:
+        icon = exefs_entry(f.read(), "icon")
+    if icon is None:
+        return None
+    if len(icon) < SMDH_SIZE:
+        raise PrepareError(f"the base game's icon is damaged: 0x{len(icon):X} bytes (an SMDH is "
+                           f"0x{SMDH_SIZE:X} bytes)")
+    return icon
+
+
+def icon_warning(icon: bytes) -> str | None:
+    """A missing SMDH magic is only a warning: Azahar (ParseRegionLockoutInfo) and native's cfg
+    check the size alone, so a game that runs there must not be refused here."""
+    if icon[:4] != SMDH_MAGIC:
+        return "the base game's icon has no SMDH magic; icon.bin is written anyway, as Azahar would read it"
+    return None
+
+
 def read_exheader(path: str) -> exheader.ExHeader:
     with open(path, "rb") as f:
         return exheader.parse(f.read())
@@ -129,8 +183,18 @@ def prepare(base: str, update: str, outdir: str, versions: str = DEFAULT_VERSION
             raise PrepareError(f"decompressed code is 0x{have:X} bytes, smaller than its "
                                "segments; is the exheader from the same title?")
 
+        icon = read_icon(base_dir)
+        warning = icon_warning(icon) if icon is not None else None
+        if warning:
+            print(f"warning: {warning}", file=sys.stderr)
         with open(os.path.join(outdir, "code.bin"), "wb") as f:
             f.write(code)
+        icon_path = os.path.join(outdir, "icon.bin")
+        if icon is not None:
+            with open(icon_path, "wb") as f:
+                f.write(icon)
+        elif os.path.exists(icon_path):
+            os.remove(icon_path)        # a stale icon of an earlier run must not outlive it
         with open(os.path.join(outdir, "exheader.bin"), "wb") as f:
             with open(os.path.join(upd_dir, "exheader.bin"), "rb") as src:
                 f.write(src.read())
@@ -145,6 +209,9 @@ def prepare(base: str, update: str, outdir: str, versions: str = DEFAULT_VERSION
             f"exheader.bin  : 0x{os.path.getsize(os.path.join(outdir, 'exheader.bin')):X} bytes",
             f"code.bin      : 0x{have:X} bytes (was compressed: "
             f"{upd_hdr.code_compressed}), CRC-32 {crc32_of_file(os.path.join(outdir, 'code.bin')):08X}",
+            (f"icon.bin      : 0x{len(icon):X} bytes, CRC-32 {zlib.crc32(icon) & 0xFFFFFFFF:08X}"
+             + (f" (WARNING: {warning})" if warning else "")
+             if icon is not None else "icon          : none"),
             f"romfs.bin     : 0x{os.path.getsize(os.path.join(outdir, 'romfs.bin')):X} bytes",
             f"update_romfs.bin: 0x{os.path.getsize(os.path.join(outdir, 'update_romfs.bin')):X} bytes",
         ]

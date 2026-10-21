@@ -43,6 +43,11 @@ std::array<u8, 16> EncodeFormatInfo(const ArchiveFormatInfo& info);
 std::string SdmcDirectory(const FsState& state);
 std::string NandDirectory(const FsState& state);
 
+// Opening a save data or extdata archive removes the files that a Windows delete left behind when the process
+// died with them open ("<name>.deleted.<pid>.<n>", see host::RemoveFile) from `folder`, the archive's own
+// directory tree and nothing else.
+void RemoveStaleFiles(const std::string& folder);
+
 // The folder that holds a title's save: <sdmc>/Nintendo 3DS/<ids>/title/<high>/<low>/data/00000001/.
 std::string SaveDataPath(const std::string& sdmc_directory, u64 program_id);
 std::string SaveDataMetadataPath(const std::string& sdmc_directory, u64 program_id);
