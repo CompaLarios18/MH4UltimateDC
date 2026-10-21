@@ -1,0 +1,999 @@
+"""tools/native/golden.py: session files, manifests, record and check, with synthetic data and a fake runner.
+
+The fake runner is a Python script behind a launcher the test creates per OS (a .cmd on Windows, a
+shell script elsewhere), so golden.py starts it the way it starts the real mh4u_runner.  What the fake
+writes follows the real runner's formats; FAKE_MODE makes it write something else (a different scene
+frame, a capture without sound, ...), and `--cpu jit` makes it behave like another timing model (other
+ticks, one more polling call, a time-dependent reply).
+"""
+import json
+import os
+import re
+import stat
+import struct
+import sys
+from pathlib import Path
+
+import pytest
+
+HERE = Path(__file__).resolve().parent
+ROOT = HERE.parent
+sys.path.insert(0, str(ROOT / "tools" / "native"))
+
+import golden  # noqa: E402
+
+FAKE = r'''
+import json, os, struct, sys
+sys.path.insert(0, @TOOLS@)
+import capfmt, gcap
+
+argv = sys.argv[1:]
+mode = os.environ.get("FAKE_MODE", "")
+
+
+def opt(name, default=None):
+    return argv[argv.index(name) + 1] if name in argv else default
+
+
+with open(os.environ["FAKE_LOG"], "a") as f:
+    f.write(json.dumps({"argv": argv, "tz": os.environ.get("TZ"), "cwd": os.getcwd()}) + "\n")
+counter = os.environ["FAKE_LOG"] + ".count"
+n = int(open(counter).read()) if os.path.exists(counter) else 0
+open(counter, "w").write(str(n + 1))
+if mode == "fail":
+    sys.exit(3)
+frames = int(opt("--frames"))
+user = opt("--user")
+with open(os.path.join(user, "ran.txt"), "a") as f:
+    f.write("run\n")
+jit = opt("--cpu") == "jit"
+cpu = opt("--cpu", "native")
+change = {"late_scene": 12, "very_late": 14, "shift1": 11}.get(mode, 10)
+second = 999 if mode == "one_change" else 25
+if mode == "no_change":
+    change = second = 999
+
+
+def tick(fr):
+    return fr * 4470000 + (7 if jit else 0)
+
+
+def head(tool):
+    return "# %s v1 2026-01-01 game=0x0004000000126300 cpu=%s new3ds=off" % (tool, cpu)
+
+
+THREAD1 = "# thread 1 parent=0 entry=00100000 arg=00000000 stack=10000000 prio=48 core=0/0"
+if opt("--trace-svc"):
+    svc = [head("svctrace"), THREAD1]
+    if mode == "thread_line":
+        svc.append("# thread 2 parent=1 entry=00200000 arg=00000000 stack=10000000 prio=48 core=0/0")
+    code = "E0E01BF5" if mode == "svc_diff" else "00000000"
+    svc.append("1 21 pc=00107328 lr=00106790 0FFFFFE0 00000000 00000000 00000000 t=%d in4=00000000,00000000,00000000 "
+               "out=%s,00000001,00000000,00000000" % (tick(1), code))
+    for k in range(4 if jit else 1):      # the polling call: another timing model runs it more often
+        svc.append("1 28 pc=00109000 lr=00109004 00000000 00000000 00000000 00000000 t=%d in4=00000000,00000000,00000000 "
+                   "out=00000000,%08X,00000000,00000000" % (tick(2) + k, tick(2) + k))
+    svc.append("1 2B pc=001091E0 lr=001078BC 0FFFFFE8 FFFF8001 00000014 00000001 t=%d in4=00000000,00000000,00000000 "
+               "out=00000000,F0000000,00000000,00000001" % tick(3))
+    open(opt("--trace-svc"), "w").write("\n".join(svc) + "\n")
+if opt("--trace-ipc"):
+    ipc = [head("ipctrace"), THREAD1,
+           "1 seq=1 session=srv:USER cmd=0x00010040 in=0x00010040 desc=- out=0x00010040,0x00000000 outdesc=- t=5",
+           "1 seq=2 session=srv:USER cmd=0x00020080 in=0x00020080 desc=- out=0x00020080,%s outdesc=- t=6"
+           % ("0xC8804464" if (mode == "ipc_diff" or jit) else "0x00000000")]
+    if mode == "thread_line":
+        ipc.insert(2, "# thread 2 parent=1 entry=00200000 arg=00000000 stack=10000000 prio=48 core=0/0")
+    if mode in ("ir_ok", "ir_missing"):
+        ipc.append("1 seq=3 session=ir:USER cmd=0x00010182 in=0x00010182 desc=- out=0x00010040,0x00000000 outdesc=- t=%d"
+                   % tick(15))
+    open(opt("--trace-ipc"), "w").write("\n".join(ipc) + "\n")
+if opt("--state-trace"):
+    lines = ["# statetrace v1 2026-01-01 run %d" % n]
+    for fr in range(1, frames + 1):
+        scene = 0 if fr < change else (2 if fr < second else 4)
+        lines.append("f=%d t=%d scene=0x%02x applet_state=0x00 frame_counter=0x%08x smain_delta=- quest_id=%s "
+                     "stage_loader_state=-" % (fr, tick(fr), scene, fr, n if mode == "vary_state" else "-"))
+    if mode != "no_state":
+        open(opt("--state-trace"), "w").write("\n".join(lines) + "\n")
+if opt("--capture-hid"):
+    with capfmt.Writer(opt("--capture-hid"), "hid") as w:
+        for fr in range(1, frames + 1):
+            w.hid(fr, tick(fr), capfmt.make_hid(buttons=1 if fr == (13 if mode == "hid_diff" else 12) else 0))
+            if fr == 16 and mode == "ir_ok":
+                w.ir(fr, tick(fr), b"\0" * 32)
+    if mode == "bad_hid":
+        open(opt("--capture-hid"), "wb").write(b"junk")
+for flag, kind in (("--capture-dsp", "dsp"), ("--capture-gpu", "gpu")):
+    if flag in argv:
+        start, count, path = opt(flag).split(":", 2)
+        start, count = int(start), int(count)
+        if kind == "dsp":
+            with capfmt.Writer(path, "dsp") as w:
+                for i in range(count):
+                    r = capfmt.make_region(i, {0: capfmt.make_status(enabled=1)} if mode == "dsp_diff" else None)
+                    w.dsp_regions(start + i, i, r, r)
+                    sound = [] if mode == "silent_dsp" else [(i + 1, 0)] * 160
+                    w.dsp_pcm(start + i, i, capfmt.make_pcm(sound))
+                    if i == 0 and mode not in ("silent_dsp", "no_samples"):
+                        w.dsp_samples(start, i, 0x1000, b"\x01\x02\x03\x04")
+        else:
+            if mode == "bad_gpu":
+                open(path, "wb").write(b"junk")
+            else:
+                with open(path, "wb") as fh:
+                    g = gcap.Writer(fh)
+                    g.init()
+                    for i in range(count):
+                        g.record(gcap.FRAME, struct.pack("<I", start + i + (1 if mode == "gpu_diff" else 0)),
+                                 frame=start + i)
+            os.makedirs(path + ".frames", exist_ok=True)
+            open(os.path.join(path + ".frames", "%d_top.ppm" % start), "w").write("P3 1 1 255 0 0 0\n")
+if opt("--trace-timing"):
+    t = [head("timingtrace"), "tick=0 event=SharedPage::UpdateTimeCallback core=0 late=0 from=emu"]
+    if mode == "timing_diff":
+        t.append("tick=5 event=ThreadWakeupCallback_0 core=0 late=0 from=emu")
+    open(opt("--trace-timing"), "w").write("\n".join(t) + "\n")
+if opt("--count-unmapped"):
+    open(opt("--count-unmapped"), "w").write(
+        head("unmapped") + "\ncount=%d addr=00000000 size=4 rw=read lr=00000000\n" % (2 if mode == "unmapped_diff" else 1))
+if opt("--shots"):
+    os.makedirs(opt("--shots"), exist_ok=True)
+    px = "1 1 1" if mode == "pixels" else "0 0 0"
+    first = int(opt("--shots-from", "f1")[1:])
+    every = int(opt("--shot-every", "f1")[1:])
+    for fr in range(first, frames + 1, every):
+        for screen in ("top", "bottom"):
+            open(os.path.join(opt("--shots"), "f%07d_%s.ppm" % (fr, screen)), "w").write("P3 1 1 255 " + px + "\n")
+    if "--dump" in argv:
+        at, addr, size = opt("--dump").split(":")
+        open(os.path.join(opt("--shots"), "mem_f%07d_%s.bin" % (int(at[1:]), addr.lower())), "w").write(
+            "page2" if mode == "shared_diff" else "page")
+'''
+
+SESSION = """\
+# name: S1
+# needs: none
+# frames: 30
+# checkpoints: 5:0, 20:2
+# captures: gpu:10:2, dsp:10:3
+f12:A
+f15:TOUCH:160:120:f3, f20:START
+"""
+# a G2-like session: three distinct scene values among its checkpoints
+G2_SESSION = SESSION.replace("S1", "G2").replace("5:0, 20:2", "5:0, 20:2, 28:4")
+
+
+@pytest.fixture
+def env(tmp_path, monkeypatch):
+    """A fake runner behind a per-OS launcher, a sessions folder, a user folder and fake game files."""
+    script = tmp_path / "fake_runner.py"
+    script.write_text(FAKE.replace("@TOOLS@", repr(str(ROOT / "tools" / "native"))), encoding="utf-8")
+    if os.name == "nt":
+        launcher = tmp_path / "fake_runner.cmd"
+        launcher.write_text(f'@"{sys.executable}" "{script}" %*\r\n', encoding="ascii")
+    else:
+        launcher = tmp_path / "fake_runner"
+        launcher.write_text(f'#!/bin/sh\nexec "{sys.executable}" "{script}" "$@"\n', encoding="ascii")
+        launcher.chmod(launcher.stat().st_mode | stat.S_IXUSR)
+    sessions = tmp_path / "sessions"
+    sessions.mkdir()
+    (sessions / "S1.txt").write_text(SESSION, encoding="utf-8")
+    user = tmp_path / "user"
+    (user / "sdmc").mkdir(parents=True)
+    (user / "sdmc" / "a.txt").write_text("x")
+    game, update, lib = tmp_path / "game.cxi", tmp_path / "update.cia", tmp_path / "code.dll"
+    for f in (game, update, lib):
+        f.write_bytes(b"synthetic")
+    log = tmp_path / "fake.log"
+    monkeypatch.setenv("FAKE_LOG", str(log))
+    monkeypatch.delenv("FAKE_MODE", raising=False)
+    # the scripts are 30 frames long here: shots and the shared page from frame 10, every 10 frames
+    monkeypatch.setattr(golden, "SHOTS_FROM_FRAME", 10)
+    monkeypatch.setattr(golden, "DEFAULT_SHOT_EVERY_FRAMES", 10)
+    # no repository list unless a test wants one
+    monkeypatch.setattr(golden, "IPC_TIME_DEPENDENT", tmp_path / "no_such_file.txt")
+
+    class E:
+        pass
+
+    e = E()
+    e.tmp, e.script, e.launcher, e.sessions, e.user = tmp_path, script, launcher, sessions, user
+    e.game, e.update, e.lib, e.log, e.out = game, update, lib, log, tmp_path / "golden"
+    e.calls = lambda: [json.loads(x) for x in log.read_text().splitlines()]
+    e.common = ["--out", str(e.out), "--sessions-dir", str(sessions)]
+    e.ref = ["--runner", str(launcher), "--game", str(game), "--update", str(update), "--code", str(lib)]
+    e.record = lambda *extra, s="S1": golden.main(["record", s, *e.common, *e.ref, "--user", str(user), *extra])
+    e.check = lambda *extra, s="S1": golden.main(["check", s, *e.common, *e.ref, *extra])
+    e.manifest = lambda s="S1": json.loads((e.out / s / "manifest.json").read_text())
+    e.ignore_file = tmp_path / "ignore.txt"
+    e.ignore_file.write_text("srv:USER 00020080   # test: the reply carries a time\n", encoding="utf-8")
+    return e
+
+
+def write_session(tmp_path, text, name="S1"):
+    p = tmp_path / f"{name}.txt"
+    p.write_text(text, encoding="utf-8")
+    return p
+
+
+def statuses(text, session="S1"):
+    """{label: STATUS} from the lines `check` printed."""
+    out = {}
+    for line in text.splitlines():
+        m = re.match(rf"^{re.escape(session)}: (.+?): (PASS|FAIL|SKIPPED|INFO)(?: |$)", line)
+        if m:
+            out[m.group(1)] = m.group(2)
+    return out
+
+
+# ---- session files
+
+def test_parse_session(tmp_path):
+    s = golden.parse_session(write_session(tmp_path, SESSION))
+    assert (s.name, s.needs, s.frames, s.events, s.draft) == ("S1", "none", 30, 3, False)
+    assert s.checkpoints == [(5, 0), (20, 2)]
+    assert [(c.kind, c.start, c.frames, c.filename, c.silent) for c in s.captures] == [
+        ("gpu", 10, 2, "gpu-10.mgpu", False), ("dsp", 10, 3, "dsp-10.mdsp", False)]
+
+
+def test_silent_dsp_capture(tmp_path):
+    s = golden.parse_session(write_session(tmp_path, SESSION.replace("dsp:10:3", "dsp:10:3:silent")))
+    assert [(c.kind, c.silent, c.text()) for c in s.captures] == [("gpu", False, "gpu:10:2"),
+                                                                  ("dsp", True, "dsp:10:3:silent")]
+    with pytest.raises(golden.GoldenError, match="only a DSP capture"):
+        golden.parse_session(write_session(tmp_path, SESSION.replace("gpu:10:2", "gpu:10:2:silent")))
+
+
+def test_hex_scene_and_draft(tmp_path):
+    text = SESSION.replace("5:0, 20:2", "").replace("# captures", "# draft: yes\n# captures")
+    s = golden.parse_session(write_session(tmp_path, text))
+    assert s.draft and s.checkpoints == []
+    s = golden.parse_session(write_session(tmp_path, SESSION.replace("20:2", "20:0x00e64d5c")))
+    assert s.checkpoints[1] == (20, 0xE64D5C)
+
+
+@pytest.mark.parametrize("old,new,message", [
+    ("# name: S1", "# name: S2", "differs from the file name"),
+    ("# needs: none", "# needs: maybe", "needs must be"),
+    ("# frames: 30", "# frames: 0", "positive"),
+    ("5:0, 20:2", "20:2, 5:0", "increasing"),
+    ("5:0, 20:2", "5:0, 99:2", "after the last frame"),
+    ("5:0, 20:2", "", "no checkpoints"),
+    ("5:0, 20:2", "five:0", "bad checkpoint"),
+    ("gpu:10:2", "gpu:10:31", "frames must be"),
+    ("gpu:10:2", "gpu:10:2, gpu:10:3", "twice"),
+    ("gpu:10:2", "vid:10:2", "bad capture"),
+    ("dsp:10:3", "dsp:10:3:loud", "bad capture"),
+    ("gpu:10:2", "gpu:99:2", "after the last frame"),
+    ("f12:A", "12:A", "must be frames"),
+    ("f12:A", "f12:JUMP", "unknown button"),
+    ("f12:A", "f99:A", "after the end"),
+    ("f12:A", "f12:TOUCH:1", "wrong number"),
+    ("f12:A", "f12:A:soon", "bad hold"),
+    ("# needs: none\n", "", "missing header"),
+])
+def test_bad_sessions(tmp_path, old, new, message):
+    with pytest.raises(golden.GoldenError, match=message):
+        golden.parse_session(write_session(tmp_path, SESSION.replace(old, new)))
+
+
+A_DEMO, A_NEWGAME, A_VILLAGE, A_QUEST = 0x00E64D5C, 0x00E6C138, 0x00E6C170, 0x00E655C8
+
+
+def test_shipped_sessions_parse():
+    names = sorted(p.stem for p in golden.SESSIONS_DIR.glob("*.txt"))
+    assert names == ["G1", "G2", "G6"]
+    sessions = {n: golden.parse_session(golden.SESSIONS_DIR / f"{n}.txt") for n in names}
+    assert all(s.needs == "none" and not s.draft for s in sessions.values())
+    g1, g2, g6 = sessions["G1"], sessions["G2"], sessions["G6"]
+    assert [(c.kind, c.start, c.frames, c.silent) for c in g1.captures] == [("gpu", 1500, 3, False),
+                                                                           ("dsp", 1240, 300, False)]
+    assert [(c.kind, c.start, c.frames) for c in g2.captures] == [("gpu", 2500, 3)]
+    assert g6.captures == []
+    # G1: the title, aDemo, is the only scene that lasts more than 100 frames before the title
+    assert {scene for _, scene in g1.checkpoints} == {A_DEMO}
+    # G2's checkpoints hold at least 3 distinct scene values (and a checkpoint in each long scene)
+    assert {scene for _, scene in g2.checkpoints} == {A_DEMO, A_NEWGAME, A_VILLAGE, A_QUEST}
+    assert {scene for _, scene in g6.checkpoints} == {A_DEMO, A_NEWGAME}
+
+
+def test_shipped_g1_dsp_capture_is_inside_the_last_audio_stretch():
+    # the audio of G1 is in game frames 300 to 1350, its last stretch 1234 to 1350; 300 DSP frames are about
+    # 90 game frames
+    g1 = golden.parse_session(golden.SESSIONS_DIR / "G1.txt")
+    dsp = next(c for c in g1.captures if c.kind == "dsp")
+    assert dsp.start >= 1234 and dsp.start + dsp.frames * 90 // 300 + 1 <= 1350
+
+
+def test_shipped_sessions_event_counts():
+    # golden.py's own parser: the number of input events of each shipped session
+    counts = {n: golden.parse_session(golden.SESSIONS_DIR / f"{n}.txt").events for n in ("G1", "G2", "G6")}
+    assert counts == {"G1": 8, "G2": 52, "G6": 23}
+
+
+@pytest.mark.skipif(not os.environ.get("MH4U_RUNNER"), reason="reference runner not set (MH4U_RUNNER)")
+@pytest.mark.parametrize("name", ["G1", "G2", "G6"])
+def test_reference_runner_accepts_the_shipped_sessions(name):
+    import subprocess
+    done = subprocess.run([os.environ["MH4U_RUNNER"], "--input-file", str(golden.SESSIONS_DIR / f"{name}.txt"),
+                           "--print-schedule"], capture_output=True, timeout=120, check=False)
+    assert done.returncode == 0, done.stderr.decode("utf-8", "replace")[-300:]
+
+
+# ---- record
+
+def test_record(env, capsys):
+    assert env.record() == 0
+    out = env.out / "S1"
+    for name in ("svc.txt", "ipc.txt", "state.txt", "unmapped.txt", "timing.txt", "hid.mhid", "hid.mhid.json",
+                 "dsp-10.mdsp", "gpu-10.mgpu", "manifest.json", "runner.log"):
+        assert (out / name).is_file(), name
+    assert (out / "shots" / "f0000010_top.ppm").is_file() and (out / "shots" / "f0000030_bottom.ppm").is_file()
+    assert (out / "shots" / "mem_f0000010_1ff81000.bin").is_file()
+    assert (out / "gpu-10.mgpu.frames" / "10_top.ppm").is_file()
+    assert (out / "user-before" / "sdmc" / "a.txt").is_file()
+    assert not (out / "user-before" / "ran.txt").exists()          # the run used a working copy
+    assert (out / "user-after" / "ran.txt").read_text() == "run\n"   # and left it as user-after/
+    assert not (out / "work").exists()
+    m = env.manifest()
+    assert m["tz"] == "UTC0" and m["runner"]["exit"] == 0 and m["runner"]["new_3ds"] == "off"
+    assert m["runner"]["cpu"] == "recomp" and m["code_library"]["sha256"] == golden.sha256_file(env.lib)
+    assert [c["result"] for c in m["checkpoint_results"]] == ["ok", "ok"]
+    assert m["capture_problems"] == [] and "manifest.json" not in m["files"]
+    assert m["files"]["svc.txt"]["sha256"] == golden.sha256_file(out / "svc.txt")
+    assert not any(k.startswith(("user-before", "user-after")) for k in m["files"])
+    assert m["real_scene_changes"] == 2              # 0 to 2 at frame 10, 2 to 4 at frame 25
+    assert m["shots"] == {"from_frame": 10, "every_frames": 10}
+    assert m["user_config_savegame"] is False
+    assert "no config savegame" in capsys.readouterr().out
+    call = env.calls()[0]
+    assert call["tz"] == "UTC0"
+    a = call["argv"]
+    assert a[0] == str(env.game)
+    for pair in (["--new-3ds", "off"], ["--cpu", "recomp"], ["--code", str(env.lib)], ["--install", str(env.update)],
+                 ["--frames", "30"], ["--input-file", str(env.sessions / "S1.txt")],
+                 ["--observable", str(golden.OBSERVABLE)], ["--trace-timing", str(out / "timing.txt")],
+                 ["--shots", str(out / "shots")], ["--shots-from", "f10"], ["--shot-every", "f10"],
+                 ["--dump", "f10:1FF81000:0x1000"]):
+        assert a[a.index(pair[0]) + 1] == pair[1], pair
+    assert a[a.index("--user") + 1] == str(out / "work")
+    assert str(out / "gpu-10.mgpu") in "".join(a) and "--trace-ipc-full" in a and "--count-unmapped" in a
+    assert f"10:3:{out / 'dsp-10.mdsp'}" in a
+
+
+def test_record_notes_the_config_savegame(env, capsys):
+    config = env.user / "nand" / "data" / "00000000000000000000000000000000" / "sysdata" / "00010017" / "00000000"
+    config.mkdir(parents=True)
+    (config / "config").write_bytes(b"cfg")
+    assert env.record() == 0
+    assert env.manifest()["user_config_savegame"] is True
+    assert "no config savegame" not in capsys.readouterr().out
+
+
+def test_record_without_screenshots(env, capsys):
+    assert env.record("--shot-every-frames", "0") == 0
+    a = env.calls()[0]["argv"]
+    assert not {"--shots", "--shots-from", "--shot-every", "--dump"} & set(a)
+    assert not (env.out / "S1" / "shots").exists()
+    assert env.manifest()["shots"]["every_frames"] == 0
+    capsys.readouterr()
+    assert env.check("--require", "svc,ipc,state") == 0          # images: skipped, not required
+    assert statuses(capsys.readouterr().out)["images"] == "SKIPPED"
+    assert env.check("--require", "images") == 3
+
+
+def test_record_refusals(env, capsys):
+    assert env.record() == 0
+    assert env.record() == 2 and "not empty" in capsys.readouterr().err
+    assert env.record("--force") == 0
+    (env.sessions / "D.txt").write_text(SESSION.replace("S1", "D").replace("5:0, 20:2", "")
+                                        .replace("# captures", "# draft: yes\n# captures"))
+    assert golden.main(["record", "D", *env.common, *env.ref, "--user", str(env.user)]) == 2
+    assert "draft" in capsys.readouterr().err
+    (env.sessions / "N.txt").write_text(SESSION.replace("S1", "N").replace("none", "save"))
+    assert golden.main(["record", "N", *env.common, *env.ref, "--user", str(env.user)]) == 2
+    assert "needs a save" in capsys.readouterr().err
+    assert golden.main(["record", "S1", *env.common, "--runner", str(env.launcher), "--game", str(env.game),
+                        "--user", str(env.user), "--force"]) == 2        # recomp with no --code
+    assert "needs --code" in capsys.readouterr().err
+    assert env.record("--force", "--shot-every-frames", "-1") == 2
+
+
+def test_record_save_is_merged(env):
+    save = env.tmp / "save"
+    (save / "sdmc").mkdir(parents=True)
+    (save / "sdmc" / "save.bin").write_text("s")
+    assert env.record("--save", str(save)) == 0
+    assert (env.out / "S1" / "user-before" / "sdmc" / "save.bin").is_file()
+
+
+def test_record_fails_when_the_runner_fails_or_misses_a_checkpoint(env, monkeypatch):
+    monkeypatch.setenv("FAKE_MODE", "fail")
+    assert env.record() == 1
+    monkeypatch.setenv("FAKE_MODE", "late_scene")      # scene changes at frame 12, checkpoint 20:2 still ok
+    assert env.record("--force") == 0
+    (env.sessions / "S1.txt").write_text(SESSION.replace("5:0, 20:2", "5:0, 11:2"))
+    assert env.record("--force") == 1                   # at frame 11 the scene is still 0
+    assert [c["result"] for c in env.manifest()["checkpoint_results"]] == ["ok", "mismatch"]
+
+
+# ---- the capture problems that make record exit 1
+
+def problems(env):
+    return env.manifest()["capture_problems"]
+
+
+def test_a_gpu_capture_the_checker_rejects(env, monkeypatch, capsys):
+    monkeypatch.setenv("FAKE_MODE", "bad_gpu")
+    assert env.record() == 1
+    assert any(p.startswith("gpu-10.mgpu:") for p in problems(env))
+    assert "capture: gpu-10.mgpu" in capsys.readouterr().out
+
+
+def test_a_hid_capture_the_reader_rejects(env, monkeypatch, capsys):
+    monkeypatch.setenv("FAKE_MODE", "bad_hid")
+    assert env.record() == 1
+    assert [p for p in problems(env) if p.startswith("hid.mhid:")]
+
+
+def test_a_dsp_capture_without_sound_or_samples(env, monkeypatch):
+    monkeypatch.setenv("FAKE_MODE", "silent_dsp")
+    assert env.record() == 1
+    text = "\n".join(problems(env))
+    assert "no non-silent PCM frame" in text and "no type-3" in text
+    monkeypatch.setenv("FAKE_MODE", "no_samples")
+    assert env.record("--force") == 1
+    text = "\n".join(problems(env))
+    assert "no type-3" in text and "no non-silent PCM frame" not in text
+
+
+def test_a_silent_dsp_capture_is_fine_when_marked(env, monkeypatch):
+    (env.sessions / "S1.txt").write_text(SESSION.replace("dsp:10:3", "dsp:10:3:silent"))
+    monkeypatch.setenv("FAKE_MODE", "silent_dsp")
+    assert env.record() == 0 and problems(env) == []
+    monkeypatch.delenv("FAKE_MODE")      # a silent capture that has sound is not a problem either
+    assert env.record("--force") == 0
+
+
+def test_an_ir_request_needs_an_ir_record_in_the_hid_capture(env, monkeypatch):
+    monkeypatch.setenv("FAKE_MODE", "ir_missing")
+    assert env.record() == 1
+    assert any("ir:USER" in p and "type-2" in p for p in problems(env))
+    monkeypatch.setenv("FAKE_MODE", "ir_ok")       # an IR record at frame 16, the request at frame 15
+    assert env.record("--force") == 0 and problems(env) == []
+    monkeypatch.delenv("FAKE_MODE")                # no ir:USER request at all: nothing to ask of the HID capture
+    assert env.record("--force") == 0
+
+
+def test_a_g2_recording_needs_two_real_scene_changes_and_three_scenes(env, monkeypatch):
+    (env.sessions / "G2.txt").write_text(G2_SESSION)
+    assert env.record(s="G2") == 0
+    assert env.manifest("G2")["real_scene_changes"] == 2
+    monkeypatch.setenv("FAKE_MODE", "one_change")
+    assert env.record("--force", s="G2") == 1
+    text = "\n".join(env.manifest("G2")["capture_problems"])
+    assert "1 real scene change" in text and "needs at least 2" in text
+    monkeypatch.delenv("FAKE_MODE")
+    (env.sessions / "G2.txt").write_text(G2_SESSION.replace("5:0, 20:2, 28:4", "5:0, 20:2, 21:2"))
+    assert env.record("--force", s="G2") == 1
+    assert env.manifest("G2")["capture_problems"] == [
+        "G2's checkpoints hold 2 distinct scene value(s), at least 3 wanted"]
+    # other sessions have no such minimum
+    monkeypatch.setenv("FAKE_MODE", "one_change")
+    (env.sessions / "S1.txt").write_text(SESSION.replace("5:0, 20:2", "5:0, 20:2, 28:2"))
+    assert env.record() == 0
+
+
+# ---- check, the same profile
+
+def test_check_same_runner_passes_exactly(env, capsys):
+    assert env.record() == 0
+    capsys.readouterr()
+    assert env.check("--require", "svc,ipc,state,checkpoints,hid,images,unmapped,dsp") == 0
+    text = capsys.readouterr().out
+    got = statuses(text)
+    for name in ("svc", "ipc", "state", "checkpoints", "unmapped", "hid", "dsp-10", "gpu-10", "images",
+                 "shared-page"):
+        assert got[name] == "PASS", name
+    assert got["timing"] == "INFO"
+    assert "0 failed, 0 skipped, 1 info (profile same)" in text
+    calls = env.calls()
+    assert len(calls) == 2 and calls[1]["tz"] == "UTC0"
+    a = calls[1]["argv"]
+    # the recording's whole argument list: every recorder, the install, the code library
+    for flag in ("--capture-gpu", "--new-3ds", "--install", "--trace-timing", "--count-unmapped", "--shots",
+                 "--dump", "--observable", "--capture-dsp", "--capture-hid", "--trace-ipc-full"):
+        assert flag in a, flag
+    assert a[a.index("--cpu") + 1] == "recomp" and a[a.index("--code") + 1] == str(env.lib)
+    # it ran on a copy of user-before/, so the recording is untouched
+    assert not (env.out / "S1" / "user-before" / "ran.txt").exists()
+    assert (env.out / "S1" / "check" / "result.json").is_file()
+
+
+@pytest.mark.parametrize("mode,failing", [
+    ("svc_diff", "svc"), ("vary_state", "state"), ("pixels", "images"), ("very_late", "state"),
+    ("shift1", "state"),                      # one frame is a difference between two runs of one backend
+    ("ipc_diff", "ipc"), ("dsp_diff", "dsp-10"), ("hid_diff", "hid"), ("gpu_diff", "gpu-10"),
+    ("unmapped_diff", "unmapped"), ("shared_diff", "shared-page"),
+])
+def test_same_profile_detects_every_difference(env, capsys, monkeypatch, mode, failing):
+    assert env.record() == 0
+    monkeypatch.setenv("FAKE_MODE", mode)
+    capsys.readouterr()
+    assert env.check() == 1
+    got = statuses(capsys.readouterr().out)
+    assert got[failing] == "FAIL"
+    assert all(v != "FAIL" for k, v in got.items() if k not in (failing, "checkpoints", "state", "ir"))
+
+
+def test_same_profile_never_uses_the_time_dependent_list(env, capsys, monkeypatch):
+    assert env.record() == 0
+    monkeypatch.setenv("FAKE_MODE", "ipc_diff")
+    monkeypatch.setattr(golden, "IPC_TIME_DEPENDENT", env.ignore_file)      # the list would hide the difference
+    capsys.readouterr()
+    assert env.check() == 1 and statuses(capsys.readouterr().out)["ipc"] == "FAIL"
+
+
+def test_two_traces_that_differ_only_in_a_thread_line_fail_the_same_profile(env, capsys, monkeypatch):
+    assert env.record() == 0
+    monkeypatch.setenv("FAKE_MODE", "thread_line")
+    capsys.readouterr()
+    assert env.check() == 1
+    got = statuses(capsys.readouterr().out)
+    assert got["svc"] == "FAIL" and got["ipc"] == "FAIL" and got["state"] == "PASS"
+
+
+def test_the_timing_trace_is_information_only(env, capsys, monkeypatch):
+    assert env.record() == 0
+    monkeypatch.setenv("FAKE_MODE", "timing_diff")
+    capsys.readouterr()
+    assert env.check() == 0
+    text = capsys.readouterr().out
+    assert statuses(text)["timing"] == "INFO" and "differs at line" in text
+
+
+def test_compare_after_header(tmp_path):
+    a, b = tmp_path / "a", tmp_path / "b"
+    a.write_bytes(b"# header one\nx 1\n# note\ny 2\n")
+    b.write_bytes(b"# header two, longer\nx 1\n# note\ny 2\n")
+    assert golden.compare_after_header(a, b, block=4)[0]
+    b.write_bytes(b"# other\nx 1\n# note\ny 3\n")
+    ok, detail = golden.compare_after_header(a, b, block=4)
+    assert not ok and "line 3 after the header" in detail
+    b.write_bytes(b"# other\nx 1\n# note\ny 2\nz 3\n")             # a longer run
+    ok, detail = golden.compare_after_header(a, b, block=4)
+    assert not ok and "line 4 after the header" in detail
+    b.write_bytes(b"# other\n")
+    assert not golden.compare_after_header(a, b)[0]
+
+
+# ---- the choice of the profile
+
+@pytest.mark.parametrize("forced,runner,args_cpu,recording,expected", [
+    (None, None, None, "recomp", "same"),
+    (None, None, "recomp", "recomp", "same"),          # --cpu given but not changed
+    (None, None, "jit", "recomp", "cross"),
+    (None, "RUN2", None, "recomp", "cross"),
+    (None, "RUN2", "recomp", "recomp", "cross"),
+    ("same", "RUN2", None, "recomp", "same"),          # forced
+    ("cross", None, None, "recomp", "cross"),
+    ("same", None, "jit", "recomp", "same"),
+])
+def test_resolve_profile(forced, runner, args_cpu, recording, expected):
+    assert golden.resolve_profile(forced, runner, args_cpu, recording) == expected
+
+
+def test_the_profile_in_use_is_printed(env, capsys):
+    assert env.record() == 0
+    capsys.readouterr()
+    env.check()
+    assert "(profile same)" in capsys.readouterr().out
+    env.check("--candidate-args", "--cpu jit", "--profile", "cross", "--ignore", str(env.ignore_file))
+    assert "(profile cross)" in capsys.readouterr().out
+
+
+# ---- the command lines of the candidates
+
+def test_candidate_args_only_runs_the_recording_s_arguments_again(env, capsys):
+    assert env.record() == 0
+    # the recording's arguments, --cpu jit, and no --code
+    env.check("--candidate-args", "--cpu jit")
+    a = env.calls()[1]["argv"]
+    assert a.count("--cpu") == 1 and a[a.index("--cpu") + 1] == "jit" and "--code" not in a
+    for flag in ("--new-3ds", "--install", "--capture-gpu", "--capture-dsp", "--count-unmapped", "--shots",
+                 "--dump", "--trace-timing", "--observable", "--trace-ipc-full"):
+        assert flag in a, flag
+    assert a[0] == str(env.game) and a[a.index("--install") + 1] == str(env.update)
+    # --cpu recomp: with --code
+    env.check("--candidate-args", "--cpu recomp")
+    a = env.calls()[2]["argv"]
+    assert a.count("--cpu") == 1 and a[a.index("--cpu") + 1] == "recomp" and a[a.index("--code") + 1] == str(env.lib)
+    # no --cpu in the arguments: the recording's (recomp, with --code), the options at the end
+    env.check("--candidate-args", "--set 5000:fps=60")
+    a = env.calls()[3]["argv"]
+    assert a[a.index("--cpu") + 1] == "recomp" and a[a.index("--code") + 1] == str(env.lib)
+    assert a[-2:] == ["--set", "5000:fps=60"]
+
+
+def test_check_without_the_update_the_recording_installed_is_a_usage_error(env, capsys):
+    assert env.record() == 0
+    assert golden.main(["check", "S1", *env.common, "--runner", str(env.launcher), "--game", str(env.game),
+                        "--code", str(env.lib)]) == 2
+    assert "pass --update" in capsys.readouterr().err
+    # a candidate runner starts without the install, so it needs no update
+    assert golden.main(["check", "S1", *env.common, "--runner", str(env.launcher), "--game", str(env.game),
+                        "--candidate-runner", str(env.script)]) == 0
+
+
+def test_candidate_args_recomp_needs_a_library(env, capsys):
+    assert env.record() == 0
+    assert golden.main(["check", "S1", *env.common, "--runner", str(env.launcher), "--game", str(env.game),
+                        "--update", str(env.update), "--candidate-args", "--cpu recomp"]) == 2
+    assert "needs --code" in capsys.readouterr().err
+
+
+def test_candidate_gets_its_own_program_library_and_shared_options_only(env, capsys):
+    assert env.record() == 0
+    prog, lib2 = env.tmp / "prog", env.tmp / "native.so"
+    prog.mkdir()
+    lib2.write_bytes(b"x")
+    cand_runner = env.tmp / "fake_runner.py"        # a .py runner is started with the Python interpreter
+    capsys.readouterr()
+    assert env.check("--candidate-runner", str(cand_runner), "--candidate-program", str(prog),
+                     "--candidate-code", str(lib2), "--candidate-args=--native --extra 1",
+                     "--set", "5000:fps=60") == 0
+    a = env.calls()[1]["argv"]
+    assert a[0] == str(prog) and a[a.index("--code") + 1] == str(lib2)
+    assert a[-3:] == ["--native", "--extra", "1"]
+    assert a[a.index("--set") + 1] == "5000:fps=60"
+    for not_shared in ("--new-3ds", "--install", "--cpu", "--capture-gpu", "--count-unmapped", "--shots",
+                       "--shot-every", "--shots-from", "--dump", "--trace-timing", "--observable"):
+        assert not_shared not in a
+    for shared in ("--user", "--frames", "--input-file", "--trace-svc", "--trace-ipc", "--trace-ipc-full",
+                   "--state-trace", "--capture-hid", "--capture-dsp"):
+        assert shared in a
+    out = capsys.readouterr().out
+    assert "(profile cross)" in out
+    got = statuses(out)
+    assert got["svc"] == "PASS" and got["state"] == "PASS" and got["hid"] == "PASS" and got["dsp-10"] == "PASS"
+    assert "images" not in got and "unmapped" not in got          # not run in the cross profile
+
+
+def test_a_candidate_program_or_library_needs_its_runner(env, capsys):
+    assert env.record() == 0
+    assert env.check("--candidate-program", str(env.tmp)) == 2
+    assert "need --candidate-runner" in capsys.readouterr().err
+    assert env.check("--candidate-code", str(env.lib)) == 2
+
+
+@pytest.mark.skipif(os.name != "nt", reason="backslash paths")
+def test_candidate_args_with_a_windows_path_reach_the_runner_intact(env):
+    assert env.record() == 0
+    path = "C:\\no\\such\\dir\\native.dll"
+    assert env.check("--candidate-runner", str(env.script), f"--candidate-args=--native {path}") == 0
+    assert env.calls()[1]["argv"][-2:] == ["--native", path]
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("--code C:\\a\\b.dll --x 1", ["--code", "C:\\a\\b.dll", "--x", "1"]),
+    ('--code "C:\\Program Files\\b.dll"', ["--code", "C:\\Program Files\\b.dll"]),
+] if os.name == "nt" else [
+    ("--code /a/b.so --x 1", ["--code", "/a/b.so", "--x", "1"]),
+    ("--code '/a b/c.so'", ["--code", "/a b/c.so"]),
+])
+def test_split_args_keeps_backslash_paths_on_windows(text, expected):
+    assert golden.split_args(text) == expected
+    assert golden.split_args(None) == [] and golden.split_args("") == []
+
+
+# ---- check, the cross profile
+
+def test_cross_profile_tolerates_a_clock_but_not_a_difference(env, capsys, monkeypatch):
+    assert env.record() == 0
+    capsys.readouterr()
+    # another timing model (--cpu jit): other ticks, one more polling call, a reply that carries a time
+    assert env.check("--candidate-args", "--cpu jit") == 1
+    got = statuses(capsys.readouterr().out)
+    assert got["ipc"] == "FAIL"                                   # only the time-dependent list could hide it
+    assert got["state"] == "PASS" and got["checkpoints"] == "PASS" and got["svc"] == "PASS"
+    assert got["hid"] == "PASS" and got["dsp-10"] == "PASS"
+    assert got["svc-full"] == "INFO" and got["images"] == "INFO"
+    assert "gpu-10" not in got and "unmapped" not in got and "timing" not in got
+    # --ignore gives the list
+    assert env.check("--candidate-args", "--cpu jit", "--ignore", str(env.ignore_file)) == 0
+    # so does the repository's list
+    monkeypatch.setattr(golden, "IPC_TIME_DEPENDENT", env.ignore_file)
+    assert env.check("--candidate-args", "--cpu jit") == 0
+    capsys.readouterr()
+    # the same run is not enough for the same profile: ticks, an extra call
+    assert env.check("--candidate-args", "--cpu jit", "--profile", "same") == 1
+    got = statuses(capsys.readouterr().out)
+    assert got["svc"] == "FAIL" and got["state"] == "FAIL"
+
+
+def test_cross_profile_gates_what_a_clock_cannot_change(env, capsys, monkeypatch):
+    assert env.record() == 0
+    for mode, failing in (("svc_diff", "svc"), ("very_late", "state")):
+        monkeypatch.setenv("FAKE_MODE", mode)
+        capsys.readouterr()
+        assert env.check("--candidate-args", "--cpu jit", "--ignore", str(env.ignore_file)) == 1, mode
+        assert statuses(capsys.readouterr().out)[failing] == "FAIL", mode
+    # a scene change one frame later is inside the default tolerance (2) of the cross profile
+    monkeypatch.setenv("FAKE_MODE", "shift1")
+    assert env.check("--candidate-args", "--cpu jit", "--ignore", str(env.ignore_file)) == 0
+    # but a difference of the hid or dsp captures is not
+    for mode, failing in (("hid_diff", "hid"), ("dsp_diff", "dsp-10")):
+        monkeypatch.setenv("FAKE_MODE", mode)
+        capsys.readouterr()
+        assert env.check("--candidate-args", "--cpu jit", "--ignore", str(env.ignore_file)) == 1
+        assert statuses(capsys.readouterr().out)[failing] == "FAIL"
+
+
+def test_cross_state_is_skipped_when_the_recording_has_no_real_scene_change(env, capsys, monkeypatch):
+    (env.sessions / "S1.txt").write_text(SESSION.replace("5:0, 20:2", "5:0, 20:0"))
+    monkeypatch.setenv("FAKE_MODE", "no_change")
+    assert env.record() == 0
+    assert env.manifest()["real_scene_changes"] == 0
+    capsys.readouterr()
+    assert env.check("--candidate-args", "--cpu jit", "--ignore", str(env.ignore_file)) == 0
+    got = statuses(capsys.readouterr().out)
+    assert got["state"] == "SKIPPED" and got["checkpoints"] == "PASS"
+    assert env.check("--candidate-args", "--cpu jit", "--ignore", str(env.ignore_file), "--require", "state") == 3
+
+
+def test_cross_commands(env, monkeypatch):
+    """The comparators the cross profile runs, and with what."""
+    assert env.record() == 0
+    calls = []
+
+    def fake_tool(script, *args):
+        calls.append((script.name, list(args)))
+        return 0, "ok"
+
+    monkeypatch.setattr(golden, "_tool", fake_tool)
+    ref = env.out / "S1"
+    session = golden.parse_session(env.sessions / "S1.txt")
+    cfg = golden.Compare("cross", ignore=[env.ignore_file], real_changes=2)
+    results = golden.compare_outputs(session, ref, ref, cfg)
+    svc = [a for n, a in calls if n == "compare_svc_traces.py"]
+    assert ["--normalize", "--outputs", "--cross-model", str(golden.SVC_CROSS_MODEL)] == svc[0][:4]
+    assert svc[1][:2] == ["--normalize", "--outputs"] and "--cross-model" not in svc[1]      # the full one: info
+    ipc = next(a for n, a in calls if n == "compare_ipc_traces.py")
+    assert ipc[:2] == ["--ignore", str(env.ignore_file)]
+    state = next(a for n, a in calls if n == "state_diff.py")
+    assert "--min-changes" in state and state[state.index("--min-changes") + 1] == "2"
+    assert "--tolerance" not in state
+    assert {r.name: r.status for r in results}["svc-full"] == "info"
+
+
+# ---- check, D30's fallback
+
+def test_fallback_commands(env, monkeypatch):
+    assert env.record() == 0
+    calls = []
+
+    def fake_tool(script, *args):
+        calls.append((script.name, list(args)))
+        return 0, "ok"
+
+    monkeypatch.setattr(golden, "_tool", fake_tool)
+    ref = env.out / "S1"
+    session = golden.parse_session(env.sessions / "S1.txt")
+    cfg = golden.Compare("same", fallback=True, ignore=[env.ignore_file], real_changes=2)
+    results = {r.name: r.status for r in golden.compare_outputs(session, ref, ref, cfg)}
+    svc = next(a for n, a in calls if n == "compare_svc_traces.py")
+    assert svc[:4] == ["--normalize", "--outputs", "--collapse-polling", str(golden.SVC_POLLING)]
+    assert "--in4" not in svc and "--cross-model" not in svc
+    ipc = next(a for n, a in calls if n == "compare_ipc_traces.py")
+    assert "--ignore" not in ipc                                  # no ignore list in the same profile
+    state = next(a for n, a in calls if n == "state_diff.py")
+    assert state[state.index("--tolerance") + 1] == "0" and state[state.index("--min-changes") + 1] == "2"
+    # unmapped, the captures and the screenshots exactly as in `same`
+    assert results["unmapped"] == "pass" and results["images"] == "pass" and results["hid"] == "pass"
+    assert len([1 for n, _ in calls if n == "compare_svc_traces.py"]) == 1        # no full comparison
+
+
+def test_fallback_end_to_end_and_its_usage_errors(env, capsys, monkeypatch):
+    assert env.record() == 0
+    capsys.readouterr()
+    assert env.check("--fallback") == 0
+    out = capsys.readouterr().out
+    assert "D30 fallback" in out and statuses(out)["svc"] == "PASS" and statuses(out)["state"] == "PASS"
+    for extra in (["--fallback", "--profile", "cross"], ["--fallback", "--candidate-runner", str(env.script)],
+                  ["--fallback", "--ignore", str(env.ignore_file)],
+                  ["--fallback", "--candidate-args", "--cpu jit"]):
+        assert env.check(*extra) == 2, extra
+    assert "fallback" in capsys.readouterr().err
+
+
+# ---- check, exit statuses
+
+def test_exit_status_function():
+    r = golden.Result
+    assert golden.exit_status([r("svc", "pass")], []) == 0
+    assert golden.exit_status([r("svc", "pass"), r("images", "info")], ["svc"]) == 0
+    assert golden.exit_status([r("svc", "pass"), r("ipc", "fail")], []) == 1
+    assert golden.exit_status([r("svc", "skipped"), r("ipc", "skipped")], []) == 3
+    assert golden.exit_status([r("svc-full", "info")], []) == 3
+    assert golden.exit_status([], []) == 3
+    assert golden.exit_status([r("svc", "pass"), r("images", "skipped")], ["images"]) == 3
+    assert golden.exit_status([r("svc", "pass")], ["images"]) == 3               # it did not run at all
+    assert golden.exit_status([r("svc", "pass"), r("images", "skipped")], []) == 0
+    assert golden.exit_status([r("dsp-10", "pass"), r("dsp-20", "pass")], ["dsp"]) == 0
+    assert golden.exit_status([r("dsp-10", "pass"), r("dsp-20", "skipped")], ["dsp"]) == 3
+    assert golden.exit_status([r("svc", "fail"), r("images", "skipped")], ["images"]) == 1    # a failure wins
+
+
+def test_a_candidate_that_writes_nothing_exits_3(env, capsys):
+    assert env.record() == 0
+    quiet = env.tmp / "quiet.py"
+    quiet.write_text("import sys, os\n"
+                     "u = sys.argv[sys.argv.index('--user') + 1]\n"
+                     "open(os.path.join(u, 'ran.txt'), 'a').write('x')\n")
+    capsys.readouterr()
+    for profile in ("same", "cross"):
+        assert env.check("--candidate-runner", str(quiet), "--profile", profile) == 3
+        out = capsys.readouterr().out
+        assert "PASS" not in out and "SKIPPED" in out and "0 passed" in out and "nothing was compared" in out
+    # but the reference runner missing a file is a failure
+    broken = env.tmp / "broken.py"
+    broken.write_text(quiet.read_text())
+    assert env.check("--runner", str(broken)) == 1
+
+
+def test_a_skipped_required_comparison_exits_3(env, capsys):
+    assert env.record() == 0
+    capsys.readouterr()
+    # a foreign candidate in the same profile writes no screenshots, no unmapped report and no GPU capture
+    assert env.check("--candidate-runner", str(env.script), "--profile", "same") == 0
+    got = statuses(capsys.readouterr().out)
+    assert got["images"] == "SKIPPED" and got["unmapped"] == "SKIPPED" and got["gpu-10"] == "SKIPPED"
+    assert got["svc"] == "PASS"
+    assert env.check("--candidate-runner", str(env.script), "--profile", "same", "--require", "svc,ipc") == 0
+    capsys.readouterr()
+    for name in ("images", "unmapped"):
+        assert env.check("--candidate-runner", str(env.script), "--profile", "same", "--require", name) == 3
+        assert f"--require {name}: skipped or not run (exit 3)" in capsys.readouterr().out
+    # a comparison that does not exist for the session is not run, so a requirement of it is not met
+    (env.sessions / "S2.txt").write_text(SESSION.replace("S1", "S2").replace(", dsp:10:3", ""))
+    assert env.record(s="S2") == 0
+    assert env.check("--require", "svc", s="S2") == 0
+    assert env.check("--require", "svc,dsp", s="S2") == 3
+
+
+def test_a_failure_together_with_skips_exits_1(env, capsys, monkeypatch):
+    assert env.record() == 0
+    monkeypatch.setenv("FAKE_MODE", "svc_diff")
+    capsys.readouterr()
+    assert env.check("--candidate-runner", str(env.script), "--profile", "same", "--require", "images") == 1
+    got = statuses(capsys.readouterr().out)
+    assert got["svc"] == "FAIL" and got["images"] == "SKIPPED"
+
+
+def test_usage_errors(env, capsys):
+    assert env.record() == 0
+    capsys.readouterr()
+    assert env.check("--require", "svc,nonsense") == 2 and "unknown comparison" in capsys.readouterr().err
+    assert env.check("--repeat", "0") == 2
+    # --ignore with the same profile: forced, or the default one
+    assert env.check("--ignore", str(env.ignore_file), "--profile", "same") == 2
+    assert "never loosened" in capsys.readouterr().err
+    assert env.check("--ignore", str(env.ignore_file)) == 2
+    assert env.check("--ignore", str(env.ignore_file), "--candidate-args", "--cpu recomp") == 2
+    # nothing ran for any of them
+    assert len(env.calls()) == 1
+    # with the cross profile it is fine
+    assert env.check("--ignore", str(env.ignore_file), "--candidate-args", "--cpu jit") == 0
+
+
+def test_check_runner_failure(env, capsys, monkeypatch):
+    assert env.record() == 0
+    monkeypatch.setenv("FAKE_MODE", "fail")
+    assert env.check() == 1
+    assert "runner: FAIL" in capsys.readouterr().out
+
+
+def test_candidate_without_a_state_trace_skips_state_and_checkpoints(env, capsys, monkeypatch):
+    assert env.record() == 0
+    monkeypatch.setenv("FAKE_MODE", "no_state")
+    capsys.readouterr()
+    assert env.check("--candidate-runner", str(env.script)) == 0
+    got = statuses(capsys.readouterr().out)
+    assert got["state"] == "SKIPPED" and got["checkpoints"] == "SKIPPED" and got["svc"] == "PASS"
+    # the reference runner not writing it is a failure, for both
+    assert env.check() == 1
+    got = statuses(capsys.readouterr().out)
+    assert got["state"] == "FAIL" and got["checkpoints"] == "FAIL"
+
+
+def test_check_needs_a_recording_and_notices_tampering(env, capsys):
+    assert env.check() == 2 and "not recorded" in capsys.readouterr().err
+    assert env.record() == 0
+    with open(env.out / "S1" / "svc.txt", "a") as f:
+        f.write("# edited\n")
+    assert env.check() == 2 and "changed since" in capsys.readouterr().err
+
+
+# ---- --repeat
+
+def test_repeat(env, capsys, monkeypatch):
+    assert env.record() == 0
+    capsys.readouterr()
+    assert env.check("--repeat", "3", "--require", "svc,ipc,state,checkpoints,hid,images,unmapped,dsp") == 0
+    out = capsys.readouterr().out
+    got = statuses(out)
+    assert got["run3: state"] == "PASS" and got["run1: svc"] == "PASS"
+    # the runs are compared with each other in the same profile as well
+    assert got["run2 against run1: state"] == "PASS" and got["run3 against run1: svc"] == "PASS"
+    assert "run2 against run1: images" in got and "run3 against run1: dsp-10" in got
+    assert len(env.calls()) == 4
+    monkeypatch.setenv("FAKE_MODE", "vary_state")     # state differs from run to run
+    assert env.check("--repeat", "2") == 1
+    got = statuses(capsys.readouterr().out)
+    assert got["run2 against run1: state"] == "FAIL" and got["run1: state"] == "FAIL"
+
+
+def test_repeat_in_the_cross_profile_compares_the_runs_exactly(env, capsys):
+    assert env.record() == 0
+    capsys.readouterr()
+    # two runs of the jit model are close to each other (same ticks), but the recording is a different model
+    assert env.check("--candidate-args", "--cpu jit", "--ignore", str(env.ignore_file), "--repeat", "2") == 0
+    got = statuses(capsys.readouterr().out)
+    assert got["run2 against run1: svc"] == "PASS" and got["run1: svc"] == "PASS"
+    assert got["run1: svc-full"] == "INFO"
+
+
+def test_repeat_skips_for_a_candidate_that_writes_less(env, capsys):
+    assert env.record() == 0
+    capsys.readouterr()
+    assert env.check("--candidate-runner", str(env.script), "--repeat", "2") == 0
+    got = statuses(capsys.readouterr().out)
+    assert got["run2 against run1: svc"] == "PASS" and got["run2 against run1: state"] == "PASS"
+    assert got["run2 against run1: images"] == "SKIPPED" and got["run2 against run1: unmapped"] == "SKIPPED"
+
+
+# ---- list, helpers
+
+def test_list(env, capsys):
+    assert golden.main(["list", *env.common]) == 0
+    assert "S1: needs=none frames=30 events=3 checkpoints=2 captures=gpu:10:2,dsp:10:3 not recorded" in capsys.readouterr().out
+    assert env.record() == 0
+    capsys.readouterr()
+    golden.main(["list", *env.common])
+    assert capsys.readouterr().out.strip().endswith(" recorded")
+    (env.sessions / "Bad.txt").write_text("# name: Bad\n")
+    golden.main(["list", *env.common])
+    assert "Bad: INVALID" in capsys.readouterr().out
+    (env.sessions / "S1.txt").write_text(SESSION.replace("dsp:10:3", "dsp:10:3:silent"))
+    golden.main(["list", *env.common])
+    assert "captures=gpu:10:2,dsp:10:3:silent" in capsys.readouterr().out
+
+
+def test_missing_runner_and_session(env, capsys):
+    assert golden.main(["record", "S1", *env.common, "--runner", str(env.tmp / "nope.exe"), "--game", str(env.game),
+                        "--user", str(env.user), "--cpu", "jit"]) == 2
+    assert "runner not found" in capsys.readouterr().err
+    assert golden.main(["record", "S9", *env.common, "--runner", "x", "--game", "y", "--user", "z"]) == 2
+    assert golden.main(["record", "../S1", *env.common, "--runner", "x", "--game", "y", "--user", "z"]) == 2
+
+
+def test_runner_argv_uses_the_interpreter_for_scripts(env):
+    assert golden.runner_argv(env.script) == [sys.executable, str(env.script)]
+    assert golden.runner_argv(env.launcher) == [str(env.launcher)]
+
+
+def test_child_env_sets_utc(monkeypatch):
+    monkeypatch.setenv("TZ", "PST8PDT")
+    assert golden.child_env()["TZ"] == "UTC0"
+    assert os.environ["TZ"] == "PST8PDT"
+
+
+def test_option_value():
+    assert golden.option_value(["--a", "1", "--cpu", "jit"], "--cpu") == "jit"
+    assert golden.option_value(["--a", "1", "--cpu"], "--cpu") is None
+    assert golden.option_value([], "--cpu") is None
+
+
+def test_the_shared_page_dump_matches_the_file_the_runner_writes():
+    assert golden.shared_page_dump() == "f300:1FF81000:0x1000"
+    assert golden.shared_page_file() == "shots/mem_f0000300_1ff81000.bin"

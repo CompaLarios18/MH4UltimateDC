@@ -1,0 +1,27 @@
+# name: G6
+# needs: none
+# frames: 3700
+# checkpoints: 1450:0x00e64d5c, 2500:0x00e6c138, 3700:0x00e6c138
+# captures:
+#
+# G6: the software keyboard used again. New game, the first name on the keyboard (first use),
+# then the second name entry on the keyboard (second use), closed with OK, back on that creation
+# screen. From a user folder with the update installed and no save.
+#
+# Same presses as G2 up to frame 3550 (see G2.txt for what each one does); the run stops
+# at 3700, before the Confirm touch. The keyboard is a touch keyboard that does not answer by
+# itself in this runner: the touches type letters and press OK.
+#
+# Scenes (the class of the topmost game area, docs/research/scene-observable.md): 0x00e64d5c is
+# aDemo (the intro movies and the title, from frame 36), 0x00e6c138 is aNewGame (character
+# creation, from frame 1652).
+f300:A:f6,f450:A:f6,f600:A:f6,f750:A:f6,f900:A:f6
+f1050:A:f6,f1200:A:f6,f1350:A:f6
+f1500:A:f6,f1650:A:f6,f1800:A:f6
+f1950:TOUCH:45:115:f6,f2000:TOUCH:68:115:f6,f2050:TOUCH:48:136:f6,f2100:TOUCH:72:136:f6
+f2400:TOUCH:236:228:f6
+f2600:TOUCH:285:183:f6
+f2800:A:f6
+f3000:A:f6
+f3250:TOUCH:45:115:f6,f3300:TOUCH:68:115:f6,f3350:TOUCH:48:136:f6
+f3550:TOUCH:236:228:f6
