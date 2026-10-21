@@ -320,6 +320,23 @@ private:
 //   0x0E Overflow     pushes more words than a command buffer has
 //   0x10 Typed        an event and a semaphore, an event, a null handle: which are of the type asked for
 //   0x11 WriteOnly    one write-only mapped buffer: whether a read of it, and a write to it, were accepted
+//   0x12 Partial      sub-word pushes (D53): u8, u16, bool, s8, s16, an enum of each, a u32, a u64, and a
+//                     declared word that is never pushed
+//   0x13 Raw          a PushRaw of 6 bytes (D53)
+//   0x14 TranslateSeed  a u8, a null copied handle, a static buffer, the PID and an unpushed translate word
+//   0x15 DeferHand    a reply made by hand and completed before the handler returns Deferred (D53)
+//   0x16 DeferNew     the same with Request::NewReply
+//   0x17 Full         a u32 and a float in the words a request had (D53: whole words replace them)
+enum class Enum8 : u8 { Value = 0x7E };
+enum class Enum16 : u16 { Value = 0x7E7F };
+enum class Enum32 : u32 { Value = 0x7E7F8081 };
+
+// The word `index` of the requests of the D53 tests: its index in the top byte, then three fixed bytes, so
+// that every byte of every word is told apart.
+constexpr u32 Marked(u32 index) {
+    return (index << 24) | 0x00B1C2D3u;
+}
+
 class TestService final : public Service {
 public:
     explicit TestService(ServiceContext& context) : Service(context, "tst:ipc") {
@@ -340,6 +357,12 @@ public:
         Register(0x000F, "Known");  // listed, not implemented
         Register(0x0010, "Typed", &TestService::Typed);
         Register(0x0011, "WriteOnly", &TestService::WriteOnly);
+        Register(0x0012, "Partial", &TestService::Partial);
+        Register(0x0013, "Raw", &TestService::Raw);
+        Register(0x0014, "TranslateSeed", &TestService::TranslateSeed);
+        Register(0x0015, "DeferHand", &TestService::DeferHand);
+        Register(0x0016, "DeferNew", &TestService::DeferNew);
+        Register(0x0017, "Full", &TestService::Full);
     }
     ~TestService() override {
         if (Probe* probe = g_probe) {
@@ -527,6 +550,67 @@ private:
         reply.Push(missing != nullptr);
     }
 
+    void Partial(Request& request) {
+        // 12 normal words; the word 12 is declared and never pushed
+        Reply& reply = request.MakeReply(12, 0);
+        reply.Push(kResultSuccess);        // 1: a whole word
+        reply.Push(u8{0x11});              // 2
+        reply.Push(u16{0x2233});           // 3
+        reply.Push(true);                  // 4
+        reply.Push(s8{-1});                // 5
+        reply.Push(s16{-2});               // 6
+        reply.Push(Enum8::Value);          // 7
+        reply.Push(Enum16::Value);         // 8
+        reply.Push(u32{0xCAFEF00D});       // 9: a whole word
+        reply.Push(u64{0x0102030405060708});  // 10, 11: two whole words
+    }
+
+    void Raw(Request& request) {
+        struct Six {
+            u8 bytes[6];
+        };
+        Reply& reply = request.MakeReply(4, 0);
+        reply.Push(kResultSuccess);
+        reply.PushRaw(Six{{1, 2, 3, 4, 5, 6}});  // 2, 3
+        reply.Push(Enum32::Value);               // 4: a whole word
+    }
+
+    void TranslateSeed(Request& request) {
+        Reply& reply = request.MakeReply(2, 7);
+        reply.Push(kResultSuccess);
+        reply.Push(u8{0x5A});
+        reply.PushCopyObjects(std::shared_ptr<Object>());  // 3, 4
+        reply.PushStaticBuffer({1, 2, 3}, 1);              // 5, 6
+        reply.PushPid();                                   // 7, 8; the word 9 is not pushed
+    }
+
+    Handled DeferHand(Request& request) {
+        Reply reply(request.CommandId(), 4, 0);
+        reply.Push(kResultSuccess);
+        reply.Push(u8{0x11});
+        reply.Push(u16{0x2233});
+        reply.Push(true);
+        Complete(request.Share(), std::move(reply));
+        return Handled::Deferred;
+    }
+
+    Handled DeferNew(Request& request) {
+        Reply reply = request.NewReply(5, 0);  // the word 5 is declared and never pushed
+        reply.Push(kResultSuccess);
+        reply.Push(u8{0x11});
+        reply.Push(u16{0x2233});
+        reply.Push(true);
+        Complete(request.Share(), std::move(reply));
+        return Handled::Deferred;
+    }
+
+    void Full(Request& request) {
+        Reply& reply = request.MakeReply(3, 0);
+        reply.Push(kResultSuccess);
+        reply.Push(u32{0x00000007});
+        reply.Push(0.0f);
+    }
+
     void Overflow(Request& request) {
         Reply& reply = request.MakeReply(1, 0);
         for (int i = 0; i < 80; ++i) {
@@ -640,7 +724,7 @@ TEST_CASE("a Reply is built word by word, the sizes are checked, and what it hol
         CHECK(w[2] == 0x11223344);
         CHECK(w[3] == 0x05060708);  // 64-bit values: low word first
         CHECK(w[4] == 0x01020304);
-        CHECK(w[5] == 0x000000AB);  // the bytes above a small value are zero
+        CHECK(w[5] == 0x000000AB);  // a reply with no request: the bytes a push leaves are zero
         CHECK(w[6] == 0x0000CDEF);
         CHECK(w[7] == 1);
         CHECK(w[8] == 0x3FC00000);
@@ -660,7 +744,7 @@ TEST_CASE("a Reply is built word by word, the sizes are checked, and what it hol
         };
         Reply reply(0x0001, 4, 0);
         reply.Push(kResultSuccess);
-        reply.PushRaw(Six{{1, 2, 3, 4, 5, 6}});  // two words, the rest zero
+        reply.PushRaw(Six{{1, 2, 3, 4, 5, 6}});  // two words, the rest of the last one zero
         reply.Push(u32{9});
         const auto& w = reply.Words();
         CHECK(w[2] == 0x04030201);
@@ -729,9 +813,10 @@ TEST_CASE("normal parameters of every type come out of a request and back into a
     CHECK(reply[2] == 42);          // u32 + 1
     CHECK(reply[3] == 6);           // u64 * 2: low word,
     CHECK(reply[4] == 4);           // high word
-    CHECK(reply[5] == 0x00000000);  // the u8 0xFF + 1 wraps to 0; the bytes above it are zero
-    CHECK(reply[6] == 1);           // !bool: the low byte was 0, so false became true
-    CHECK(reply[7] == 0x40900000);  // 2.25f * 2 = 4.5f
+    // D53: a u8 and a bool write one byte; the others are the request's bytes at the same index
+    CHECK(reply[5] == 0xFFFFFF00);  // the u8 0xFF + 1 wraps to 0; the request's word 5 was 0xFFFFFF00
+    CHECK(reply[6] == 0x40100001);  // !bool: the low byte was 0, so false became true; xbits above it
+    CHECK(reply[7] == 0x40900000);  // 2.25f * 2 = 4.5f: a whole word, and the request had none there
 }
 
 TEST_CASE("a handle descriptor with several handles: copies stay, every moved handle is closed") {
@@ -1251,6 +1336,309 @@ TEST_CASE(
     CHECK(with_delay <= NsToTicks(kIpcReplyDelayNs) + 2);
     CHECK(without == 0);
     CHECK(kIpcReplyDelayNs == 39000);
+}
+
+// ---- the bytes of a reply word that nothing writes (D53) ------------------------------------------------------
+
+TEST_CASE("D53: a Reply seeded from a request keeps the request's bytes where a push writes less than "
+          "a word") {
+    // The request's words 0 (header) to 12, each byte told apart (Marked).
+    std::vector<u32> request(13);
+    request[0] = ipc::MakeHeader(0x0012, 12, 0);
+    for (u32 i = 1; i < 13; ++i) {
+        request[i] = Marked(i);
+    }
+    Reply reply(0x0012, 12, 0);
+    reply.Push(kResultSuccess);
+    reply.Push(u8{0x11});
+    reply.Push(u16{0x2233});
+    reply.Push(true);
+    reply.Push(s8{-1});
+    reply.Push(s16{-2});
+    reply.Push(Enum8::Value);
+    reply.Push(Enum16::Value);
+    reply.Push(u32{0xCAFEF00D});
+    reply.Push(u64{0x0102030405060708});
+    // before it is seeded the reply is zero above the pushed bytes (a reply with no request)
+    CHECK_FALSE(reply.Seeded());
+    CHECK(reply.Words()[2] == 0x00000011);
+    CHECK(reply.Words()[12] == 0);
+    // SeededWords shows what is written without changing the reply
+    const auto seeded = reply.SeededWords(request);
+    CHECK(reply.Words()[2] == 0x00000011);
+    CHECK_FALSE(reply.Seeded());
+    reply.SeedFrom(request);
+    CHECK(reply.Seeded());
+    const auto& w = reply.Words();
+    for (u32 i = 0; i < 13; ++i) {
+        CHECK(seeded[i] == w[i]);
+    }
+    CHECK(w[0] == ipc::MakeHeader(0x0012, 12, 0));  // the reply's own header
+    CHECK(w[1] == 0);                               // a whole word, though the request's was not 0
+    CHECK(w[2] == 0x02B1C211);                      // u8
+    CHECK(w[3] == 0x03B12233);                      // u16
+    CHECK(w[4] == 0x04B1C201);                      // bool: one byte
+    CHECK(w[5] == 0x05B1C2FF);                      // s8
+    CHECK(w[6] == 0x06B1FFFE);                      // s16: the bytes above are the request's, not a sign
+    CHECK(w[7] == 0x07B1C27E);                      // an enumeration of one byte
+    CHECK(w[8] == 0x08B17E7F);                      // an enumeration of two
+    CHECK(w[9] == 0xCAFEF00D);                      // a u32 replaces the word
+    CHECK(w[10] == 0x05060708);                     // a u64: two whole words
+    CHECK(w[11] == 0x01020304);
+    CHECK(w[12] == Marked(12));  // declared and never pushed: the request's word, whole
+    // seeding is done once
+    reply.SeedFrom(std::vector<u32>(13, 0xFFFFFFFFu));
+    CHECK(reply.Words()[2] == 0x02B1C211);
+}
+
+TEST_CASE("D53: a request shorter than the reply gives zero where it had no word, and a reply with no "
+          "request is zero") {
+    // a request of header + 5 words; the reply has 12 normal words
+    std::vector<u32> request(6);
+    request[0] = ipc::MakeHeader(0x0012, 5, 0);
+    for (u32 i = 1; i < 6; ++i) {
+        request[i] = Marked(i);
+    }
+    Reply reply(0x0012, 12, 0);
+    reply.Push(kResultSuccess);
+    reply.Push(u8{0x11});
+    reply.Push(u16{0x2233});
+    reply.Push(true);       // 4
+    reply.Push(s8{-1});     // 5: the last word the request has
+    reply.Push(s16{-2});    // 6: none
+    reply.Push(Enum8::Value);
+    reply.SeedFrom(request);
+    const auto& w = reply.Words();
+    CHECK(w[4] == 0x04B1C201);
+    CHECK(w[5] == 0x05B1C2FF);
+    CHECK(w[6] == 0x0000FFFE);
+    CHECK(w[7] == 0x0000007E);
+    CHECK(w[8] == 0);  // not pushed, no request word: zero
+    CHECK(w[12] == 0);
+
+    Reply alone(0x0012, 3, 0);
+    alone.Push(kResultSuccess);
+    alone.Push(u8{0x11});
+    alone.Push(true);
+    CHECK(alone.Words()[2] == 0x00000011);
+    CHECK(alone.Words()[3] == 0x00000001);
+    // a request with only a header seeds nothing
+    alone.SeedFrom(std::vector<u32>{ipc::MakeHeader(0x0012, 0, 0)});
+    CHECK(alone.Words()[2] == 0x00000011);
+    CHECK(alone.Words()[3] == 0x00000001);
+}
+
+TEST_CASE("D53: PushRaw of a size that is not a multiple of four keeps the request's bytes in the last "
+          "word") {
+    struct Six {
+        u8 bytes[6];
+    };
+    struct Seven {
+        u8 bytes[7];
+    };
+    std::vector<u32> request(6);
+    request[0] = ipc::MakeHeader(0x0013, 5, 0);
+    for (u32 i = 1; i < 6; ++i) {
+        request[i] = Marked(i);
+    }
+    Reply reply(0x0013, 5, 0);
+    reply.Push(kResultSuccess);
+    reply.PushRaw(Six{{1, 2, 3, 4, 5, 6}});  // 2, 3
+    reply.PushRaw(Seven{{9, 8, 7, 6, 5, 4, 3}});  // 4, 5
+    CHECK(reply.Validate());  // words are counted whole
+    reply.SeedFrom(request);
+    const auto& w = reply.Words();
+    CHECK(w[2] == 0x04030201);   // whole
+    CHECK(w[3] == 0x03B10605);   // the two bytes of the structure, the request's upper half
+    CHECK(w[4] == 0x06070809);   // 7 bytes: a whole word,
+    CHECK(w[5] == 0x05030405);   // 7 bytes: three bytes in the last word, the request's top byte
+}
+
+TEST_CASE("D53: the translate parameters of a reply are never seeded from the request") {
+    // a request: 2 normal words, then translate words 3 to 10
+    std::vector<u32> request = {ipc::MakeHeader(0x0014, 2, 8), 0x11111111, 0x22222222};
+    for (u32 i = 3; i < 11; ++i) {
+        request.push_back(0xE0000000u | i);
+    }
+    // a reply of 2 normal words and 4 translate words, one of them not pushed
+    Reply reply(0x0014, 2, 4);
+    reply.Push(kResultSuccess);
+    reply.Push(u8{0x5A});
+    reply.PushCopyObjects(std::shared_ptr<Object>());  // 3, 4
+    reply.PushPid();                                   // 5, 6; the word 7 is not pushed
+    reply.SeedFrom(request);
+    const auto& w = reply.Words();
+    CHECK(w[2] == 0x2222225A);
+    CHECK(w[3] == ipc::CopyHandleDesc(1));
+    CHECK(w[4] == 0);
+    CHECK(w[5] == ipc::CallingPidDesc());
+    CHECK(w[6] == 0);
+    CHECK(w[7] == 0);  // a translate word nobody pushed: zero, not the request's 0xE0000007
+    // a reply that is longer in its normal parameters than the request's: the request's translate words
+    // are the words it had at those indices, as in Azahar's command buffer
+    Reply longer(0x0014, 6, 0);
+    longer.Push(kResultSuccess);
+    longer.Push(u8{1});
+    longer.SeedFrom(request);
+    CHECK(longer.Words()[2] == 0x22222201);
+    CHECK(longer.Words()[3] == 0xE0000003);  // declared, never pushed: the request's word
+    CHECK(longer.Words()[5] == 0xE0000005);
+    CHECK(longer.Words()[6] == 0xE0000006);  // the last of the reply's 6 normal words
+    CHECK(longer.Words()[7] == 0);           // past them the request's words are not used
+}
+
+TEST_CASE("D53: services' replies through the guest: a partial push keeps the request's bytes, a "
+          "whole one replaces the word") {
+    Fixture f;
+    TempDir dir;
+    std::vector<u32> full, shorter, raw;
+    const int status = BootWith(f, dir, {"--ms", "100"}, [&] {
+        Guest g(*f.runtime);
+        const Handle session = ConnectTest(g);
+        std::vector<u32> request(13);
+        request[0] = ipc::MakeHeader(0x0012, 12, 0);
+        for (u32 i = 1; i < 13; ++i) {
+            request[i] = Marked(i);
+        }
+        full = g.Request(session, request, 13);
+        // the same command with a request of 5 normal words; the client's buffer above it still holds
+        // the earlier request's words, which are not the request's
+        request.resize(6);
+        request[0] = ipc::MakeHeader(0x0012, 5, 0);
+        shorter = g.Request(session, request, 13);
+        std::vector<u32> raw_request(6);
+        raw_request[0] = ipc::MakeHeader(0x0013, 5, 0);
+        for (u32 i = 1; i < 6; ++i) {
+            raw_request[i] = Marked(i);
+        }
+        raw = g.Request(session, raw_request, 5);
+        ExitProcess(*f.runtime);
+    });
+    CHECK(status == 0);
+    REQUIRE(full.size() == 13);
+    CHECK(full[0] == ipc::MakeHeader(0x0012, 12, 0));
+    CHECK(full[1] == kResultSuccess);
+    CHECK(full[2] == 0x02B1C211);
+    CHECK(full[3] == 0x03B12233);
+    CHECK(full[4] == 0x04B1C201);
+    CHECK(full[5] == 0x05B1C2FF);
+    CHECK(full[6] == 0x06B1FFFE);
+    CHECK(full[7] == 0x07B1C27E);
+    CHECK(full[8] == 0x08B17E7F);
+    CHECK(full[9] == 0xCAFEF00D);
+    CHECK(full[10] == 0x05060708);
+    CHECK(full[11] == 0x01020304);
+    CHECK(full[12] == Marked(12));  // declared, never pushed
+    REQUIRE(shorter.size() == 13);
+    CHECK(shorter[2] == 0x02B1C211);
+    CHECK(shorter[5] == 0x05B1C2FF);
+    CHECK(shorter[6] == 0x0000FFFE);  // the request had no word 6: zero, not the earlier request's
+    CHECK(shorter[7] == 0x0000007E);
+    CHECK(shorter[8] == 0x00007E7F);
+    CHECK(shorter[9] == 0xCAFEF00D);
+    CHECK(shorter[12] == 0);
+    REQUIRE(raw.size() == 5);
+    CHECK(raw[2] == 0x04030201);
+    CHECK(raw[3] == 0x03B10605);
+    CHECK(raw[4] == 0x7E7F8081);
+}
+
+TEST_CASE("D53: a request's translate words are not seeded into the reply's translate parameters") {
+    Fixture f;
+    TempDir dir;
+    std::vector<u32> reply;
+    u32 receive = 0;
+    const int status = BootWith(f, dir, {"--ms", "100"}, [&] {
+        Guest g(*f.runtime);
+        const Handle session = ConnectTest(g);
+        receive = g.Scratch(0x200);
+        g.PutBytes(receive, std::vector<u8>(16, 0xEE));
+        g.PutWords(g.Cmd() + ipc::StaticBufferDescriptorWord(1) * 4,
+                   {ipc::StaticBufferDesc(16, 1), receive});
+        // 2 normal words and 8 translate words: a moved null handle, the PID, two static buffers
+        reply = g.Request(session,
+                          {ipc::MakeHeader(0x0014, 2, 8), 0x11111111, 0x22222222,
+                           ipc::MoveHandleDesc(1), 0, ipc::CallingPidDesc(), 0xBBBBBBBB,
+                           ipc::StaticBufferDesc(4, 0), g.Scratch(0x100),
+                           ipc::StaticBufferDesc(4, 2), g.Scratch(0x110)},
+                          10);
+        ExitProcess(*f.runtime);
+    });
+    CHECK(status == 0);
+    REQUIRE(reply.size() == 10);
+    CHECK(reply[0] == ipc::MakeHeader(0x0014, 2, 7));
+    CHECK(reply[1] == kResultSuccess);
+    CHECK(reply[2] == 0x2222225A);  // the normal word: the request's upper bytes
+    CHECK(reply[3] == ipc::CopyHandleDesc(1));
+    CHECK(reply[4] == 0);
+    CHECK(reply[5] == ipc::StaticBufferDesc(3, 1));
+    CHECK(reply[6] == receive);
+    CHECK(reply[7] == ipc::CallingPidDesc());
+    CHECK(reply[8] != 0);
+    CHECK(reply[8] != 0xBBBBBBBB);
+    CHECK(reply[9] == 0);  // declared in the translate parameters, never pushed: not the request's
+}
+
+TEST_CASE("D53: a deferred reply is seeded like an immediate one, made by hand or by NewReply") {
+    Fixture f;
+    TempDir dir;
+    std::vector<u32> by_hand, by_new, full;
+    const int status = BootWith(f, dir, {"--ms", "100"}, [&] {
+        Guest g(*f.runtime);
+        const Handle session = ConnectTest(g);
+        const std::vector<u32> request = {ipc::MakeHeader(0x0015, 5, 0), Marked(1), Marked(2),
+                                          Marked(3), Marked(4), Marked(5)};
+        by_hand = g.Request(session, request, 5);
+        std::vector<u32> request_new = request;
+        request_new[0] = ipc::MakeHeader(0x0016, 5, 0);
+        by_new = g.Request(session, request_new, 6);
+        // whole words replace the request's: a u32 and a float
+        full = g.Request(session,
+                         {ipc::MakeHeader(0x0017, 3, 0), 0xDDDDDDDD, 0xEEEEEEEE, 0xFFFFFFFF}, 4);
+        ExitProcess(*f.runtime);
+    });
+    CHECK(status == 0);
+    // Reply(request.CommandId(), 4, 0): the words 2 to 4 are partial
+    REQUIRE(by_hand.size() == 5);
+    CHECK(by_hand[0] == ipc::MakeHeader(0x0015, 4, 0));
+    CHECK(by_hand[1] == kResultSuccess);
+    CHECK(by_hand[2] == 0x02B1C211);
+    CHECK(by_hand[3] == 0x03B12233);
+    CHECK(by_hand[4] == 0x04B1C201);
+    // NewReply(5, 0): the word 5 is declared and not pushed
+    REQUIRE(by_new.size() == 6);
+    CHECK(by_new[0] == ipc::MakeHeader(0x0016, 5, 0));
+    CHECK(by_new[1] == kResultSuccess);
+    CHECK(by_new[2] == 0x02B1C211);
+    CHECK(by_new[3] == 0x03B12233);
+    CHECK(by_new[4] == 0x04B1C201);
+    CHECK(by_new[5] == Marked(5));
+    REQUIRE(full.size() == 4);
+    CHECK(full[1] == kResultSuccess);
+    CHECK(full[2] == 0x00000007);  // a u32 replaces the word
+    CHECK(full[3] == 0x00000000);  // a float too
+}
+
+TEST_CASE("D53: the IPC trace and the observers see the reply words as they are written") {
+    Fixture f;
+    TempDir dir;
+    std::vector<u32> seen, reply;
+    const int status = BootWith(f, dir, {"--ms", "100"}, [&] {
+        Guest g(*f.runtime);
+        Manager(f).AddObserver(IpcObserver{nullptr, [&](const Request&, std::span<const u32> words) {
+                                               seen.assign(words.begin(), words.end());
+                                           }});
+        const Handle session = ConnectTest(g);
+        reply = g.Request(session,
+                          {ipc::MakeHeader(0x0015, 5, 0), Marked(1), Marked(2), Marked(3),
+                           Marked(4), Marked(5)},
+                          5);
+        ExitProcess(*f.runtime);
+    });
+    CHECK(status == 0);
+    REQUIRE(reply.size() == 5);
+    CHECK(seen == reply);  // what the client reads, seeded bytes included
+    CHECK(seen[2] == 0x02B1C211);
 }
 
 // ---- deferred replies ------------------------------------------------------------------------------------------------

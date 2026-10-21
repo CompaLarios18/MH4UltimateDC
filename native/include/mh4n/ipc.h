@@ -43,6 +43,21 @@
 // from any host thread; the reply is written on the scheduler thread and the client resumes. A reply
 // can be built away from the request (`Reply(command_id, normal, translate)`).
 //
+// The bytes of a reply word that nothing writes (D53, which amends D47). A reply word that a service
+// writes only partly (`Push` of a u8, an s8, a u16, an s16, a bool or an enumeration of one or two
+// bytes; `PushRaw` of a size that is not a multiple of four, in its last word), or declares in the
+// normal parameters and never pushes, keeps in the bytes it did not write the bytes of the request's
+// word at the same index, when the request had a word there (the words of the command, header
+// excluded), and zero otherwise. The translate parameters (descriptors, handles, buffer addresses and
+// what follows) are never seeded. Why: in Azahar the command buffer of a request is filled with the
+// request's words before the handler runs and `RequestBuilder::Push` copies only `sizeof(T)` bytes
+// into it, so the other bytes of the word are the request's; the console leaves them as well, and the
+// reference runner zeroes the words past the request's size, so a game sees the same bytes in every
+// run (port/README.md, Determinism). The seeding is done when the reply is written, from the request
+// it answers, so it holds for `MakeReply`, for `Request::NewReply` and for a `Reply` that a service
+// builds itself and passes to `Complete`, with the services' code unchanged. `Reply(command_id,
+// normal, translate)` on its own seeds nothing (zeroed words), until it is written for a request.
+//
 // Departures from Azahar, all deliberate:
 //  - A command that is too long, a descriptor that is cut off or not known and a handle that is not in
 //    the client's table make svcSendSyncRequest fail (kResultInvalidBufferDescriptor,
@@ -54,8 +69,8 @@
 //    reads the handle 0 with the reply's own result; Azahar asserts.
 //  - A calling-PID descriptor in a reply is filled in with the client's process id; Azahar's
 //    WriteToOutgoingCommandBuffer has no case for it (UNIMPLEMENTED_MSG).
-//  - The reply has its own storage, so a service can read the request after starting the reply; the
-//    bytes above a sub-word value are zero.
+//  - The reply has its own storage, so a service can read the request after starting the reply. The
+//    bytes of a reply word that a sub-word value does not write are the request's, as in Azahar (D53).
 //  - A handler that returns without a reply gets the reply of an unimplemented command, and it is logged.
 //
 // Threads (principle 6): a Request, its Reply and the cursor belong to the scheduler thread. The
@@ -292,6 +307,9 @@ struct StaticBuffer {
 
 // What a service answers. The sizes are fixed when it is made (as in Azahar's RequestBuilder); the words
 // are pushed in order, normal parameters first. Pushing more or fewer words than declared is logged.
+// The bytes that are not pushed are the request's (D53, see the top of this file): a reply made by
+// `Request::MakeReply` or `Request::NewReply` holds them at once, one made by the constructor gets them
+// when it is written for its request.
 class Reply {
 public:
     // The reply to command `command_id`, `normal_params_size` words of normal parameters (the result
@@ -303,14 +321,20 @@ public:
     Reply(const Reply&) = delete;
     Reply& operator=(const Reply&) = delete;
 
-    // Integers (a word each, or two for 64 bits; 8 and 16 bits take a whole word, the rest zero),
-    // booleans (one word), floats, doubles, enumerations of up to 32 bits and Result.
+    // Integers, booleans, floats, doubles, enumerations of up to 32 bits and Result. 32-bit values and
+    // floats write a whole word, 64-bit values and doubles two whole words, low word first. A value of
+    // fewer than 32 bits (u8, s8, u16, s16, bool, an enumeration with such an underlying type) writes
+    // only its `sizeof(T)` bytes (a bool one byte), little-endian, into the low bytes of the current
+    // word, as Azahar's `RequestBuilder::Push` does with its `memcpy`; the other bytes of the word keep
+    // what the reply holds there: the request's bytes at the same word index when the request had a
+    // word there, zero otherwise (D53; D47 said zero-extended). Whatever is pushed counts as one word
+    // for `Validate`.
     template <class T> void Push(T value) {
         if constexpr (std::is_enum_v<T>) {
             static_assert(sizeof(T) <= sizeof(u32), "64-bit enumerations cannot be pushed");
             Push(static_cast<std::underlying_type_t<T>>(value));
         } else if constexpr (std::is_same_v<T, bool>) {
-            PushWord(value ? 1u : 0u);
+            PushPartial(value ? 1u : 0u, 1);
         } else if constexpr (std::is_floating_point_v<T>) {
             if constexpr (sizeof(T) == 4) {
                 PushWord(std::bit_cast<u32>(value));
@@ -323,6 +347,9 @@ public:
             if constexpr (sizeof(T) == 8) {
                 PushWord(static_cast<u32>(static_cast<u64>(value)));
                 PushWord(static_cast<u32>(static_cast<u64>(value) >> 32));
+            } else if constexpr (sizeof(T) < 4) {
+                PushPartial(static_cast<u32>(static_cast<std::make_unsigned_t<T>>(value)),
+                            sizeof(T));
             } else {
                 PushWord(static_cast<u32>(static_cast<std::make_unsigned_t<T>>(value)));
             }
@@ -333,7 +360,9 @@ public:
         (Push(other), ...);
     }
 
-    // The bytes of a trivially copyable structure, rounded up to whole words.
+    // The bytes of a trivially copyable structure, in as many words as they need. Only `sizeof(T)` bytes
+    // are written (Azahar's `PushRaw` does a `memcpy` of that size): in a size that is not a multiple of
+    // four the rest of the last word keeps what the reply holds there, the request's bytes (D53).
     template <class T> void PushRaw(const T& value) {
         static_assert(std::is_trivially_copyable_v<T>, "raw values are copied");
         PushBytes(&value, sizeof(T));
@@ -358,6 +387,15 @@ public:
     void PushPid();
 
     // ---- for the IPC layer ----
+    // Gives the words that nothing wrote their bytes from the request's words (`request_words` is the
+    // command as the service saw it, header first): in the normal parameters of this reply only, at the
+    // indices the request has, the bytes not written by a push become the request's; every pushed byte
+    // stays. Done once: a reply that is seeded already (`MakeReply`, `NewReply`) is not touched again.
+    void SeedFrom(std::span<const u32> request_words);
+    bool Seeded() const { return seeded_; }
+    // The words this reply has once seeded from `request_words` (what `SeedFrom` would leave in
+    // `Words()`), without changing the reply; for a reply that is already seeded, `Words()`.
+    std::array<u32, ipc::kCommandBufferLength> SeededWords(std::span<const u32> request_words) const;
     u32 HeaderWord() const { return words_[0]; }
     u32 CommandSize() const {
         return 1 + ipc::Header{words_[0]}.NormalParamsSize() +
@@ -372,10 +410,16 @@ public:
 private:
     friend class Request;
     void PushWord(u32 word);
+    // The low `size` (1 to 3) bytes of the current word; the others are not written.
+    void PushPartial(u32 value, std::size_t size);
     void PushBytes(const void* data, std::size_t size);
     void PushHandles(u32 descriptor, std::vector<std::shared_ptr<Object>> objects);
 
+    // The words of the reply, the bytes that were pushed in `written_` (0xFF per byte; 0 for a word that
+    // was not pushed), and whether the rest has been seeded from the request.
     std::array<u32, ipc::kCommandBufferLength> words_{};
+    std::array<u32, ipc::kCommandBufferLength> written_{};
+    bool seeded_ = false;
     std::size_t index_ = 1;
     bool overflow_ = false;
     std::vector<std::shared_ptr<Object>> objects_;  // the words of handles hold indices into this
@@ -537,6 +581,10 @@ public:
     // Starts the reply to this request (the same command id) and returns it. Call it once; a second call
     // starts over.
     Reply& MakeReply(u32 normal_params_size, u32 translate_params_size);
+    // A reply to this request (the same command id) that is not attached to it: for a service that
+    // completes the request later (`Complete`). It is seeded with the request's words as `MakeReply`'s
+    // is (D53); `Reply(command_id, normal, translate)` made by hand is seeded when it is written.
+    Reply NewReply(u32 normal_params_size, u32 translate_params_size) const;
     bool HasReply() const { return reply_.has_value(); }
     Reply* GetReply() { return reply_ ? &*reply_ : nullptr; }
 
@@ -549,7 +597,9 @@ public:
 
     // ---- for the IPC layer ----
     // Writes `reply` into the client thread's command buffer and receive buffers as the 3DS's
-    // translation does, and returns the words the client reads (the command part). Scheduler thread.
+    // translation does, and returns the words the client reads (the command part). A reply that is
+    // not seeded yet gets the request's bytes first (D53; `reply` itself is not changed). Scheduler
+    // thread.
     std::vector<u32> WriteReply(const Reply& reply);
     void MarkFinished() { finished_ = true; }
     // The client thread ended while the request waited (Thread::Stop): a late Complete does nothing.
@@ -604,6 +654,8 @@ private:
 // Delivers the reply of a deferred request. Callable from any host thread: the reply is written on the
 // scheduler thread (Kernel::Post), the client thread resumes, and the observers see it. Does nothing
 // (and logs) if the request already has its reply, and nothing if the client thread ended meanwhile.
+// A `reply` that was not made for the request (`Request::NewReply`, `MakeReply`) is seeded from the
+// request when it is written (D53), so the bytes it does not push are the request's.
 void Complete(const std::shared_ptr<Request>& request, Reply reply);
 
 }  // namespace mh4n
