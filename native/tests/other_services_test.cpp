@@ -30,6 +30,7 @@ TEST_CASE("other_services_test needs recomp.h (the repository around native/)" *
 #include <atomic>
 #include <chrono>
 #include <cstring>
+#include <deque>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -42,6 +43,7 @@ TEST_CASE("other_services_test needs recomp.h (the repository around native/)" *
 #include "mh4n/clock.h"
 #include "mh4n/ipc.h"
 #include "mh4n/log.h"
+#include "mh4n/memory.h"
 #include "mh4n/options.h"
 #include "mh4n/registry.h"
 #include "mh4n/runtime.h"
@@ -993,6 +995,634 @@ TEST_CASE("boss:P: the privileged commands are Azahar's stubs") {
     CHECK(read[0] == ipc::MakeHeader(0x0417, 3, 2));
     CHECK(read[2] == 0x40);  // Azahar echoes the size as the size read
     CHECK(unknown_in_u[0] == ipc::MakeHeader(0x0404, 1, 0));  // boss:U has no 0x04xx commands
+}
+
+
+// ---- soc:U -----------------------------------------------------------------------------------------------------
+
+namespace {
+
+constexpr Result kSocNotInitialized = MakeResult(6, 28, 7, 27);
+constexpr Result kSocInvalidDescriptor = MakeResult(7, 28, 7, 27);
+constexpr Result kSocAlreadyInitialized = MakeResult(11, 28, 5, 25);
+constexpr Result kSocUnimplemented = MakeResult(1012, 28, 6, 27);
+constexpr s32 kEAGAIN = -6, kENOTCONN = -56, kENETUNREACH = -40, kEADDRINUSE = -3,
+              kEADDRNOTAVAIL = -4, kEPIPE = -66, kEDESTADDRREQ = -17, kEBADF = -8, kEINVAL = -28,
+              kENOPROTOOPT = -51;
+
+// The 3DS sockaddr_in: length 8, family 2, port (network order), address.
+std::vector<u8> InetAddr(u16 host_port, std::array<u8, 4> ip) {
+    return {8, 2, static_cast<u8>(host_port >> 8), static_cast<u8>(host_port), ip[0], ip[1], ip[2], ip[3]};
+}
+
+struct SocGuest {
+    Guest& g;
+    Handle soc;
+    u32 data, aux, out, out2;  // scratch areas
+    SocGuest(Guest& guest, Handle service)
+        : g(guest), soc(service), data(guest.Scratch(0)), aux(guest.Scratch(0x200)),
+          out(guest.Scratch(0x400)), out2(guest.Scratch(0x800)) {}
+    std::vector<u32> Call(const std::vector<u32>& words, std::size_t reply) {
+        return g.Request(soc, words, reply);
+    }
+    Result Init() { return Call({ipc::MakeHeader(1, 1, 4), 0x10000, ipc::CallingPidDesc(), 0, ipc::CopyHandleDesc(1), 0}, 2)[1]; }
+    // Socket(domain, type, protocol): the reply's words
+    std::vector<u32> Socket(u32 domain, u32 type, u32 protocol = 0) {
+        return Call({ipc::MakeHeader(2, 3, 2), domain, type, protocol, ipc::CallingPidDesc(), 0}, 3);
+    }
+    s32 Ret(const std::vector<u32>& reply) { return static_cast<s32>(reply[2]); }
+    s32 OpenSocket(u32 type) {
+        const auto reply = Socket(2, type);
+        REQUIRE(reply[1] == kResultSuccess);
+        return Ret(reply);
+    }
+    std::vector<u32> Close(s32 fd) {
+        return Call({ipc::MakeHeader(0xB, 1, 2), static_cast<u32>(fd), ipc::CallingPidDesc(), 0}, 3);
+    }
+    std::vector<u32> Bind(s32 fd, const std::vector<u8>& address) {
+        g.PutBytes(data, address);
+        return Call({ipc::MakeHeader(5, 2, 4), static_cast<u32>(fd), static_cast<u32>(address.size()),
+                     ipc::CallingPidDesc(), 0, ipc::StaticBufferDesc(address.size(), 0), data},
+                    3);
+    }
+    // The sockaddr GetSockName returns, as bytes.
+    std::vector<u8> SockName(s32 fd, u32 max = 0x1C) {
+        g.PutBytes(out, std::vector<u8>(0x40, 0xEE));
+        SetReceive(g, 0, 0x1C, out);
+        const auto reply = Call({ipc::MakeHeader(0x17, 2, 2), static_cast<u32>(fd), max, ipc::CallingPidDesc(), 0}, 5);
+        REQUIRE(reply[1] == kResultSuccess);
+        return g.GetBytes(out, 0x20);
+    }
+    s32 Fcntl(s32 fd, u32 cmd, u32 arg) {
+        return Ret(Call({ipc::MakeHeader(0x13, 3, 2), static_cast<u32>(fd), cmd, arg, ipc::CallingPidDesc(), 0}, 3));
+    }
+    s32 SetOpt(s32 fd, u32 level, u32 opt, const std::vector<u8>& value) {
+        g.PutBytes(aux, value);
+        return Ret(Call({ipc::MakeHeader(0x12, 4, 4), static_cast<u32>(fd), level, opt, static_cast<u32>(value.size()),
+                         ipc::CallingPidDesc(), 0, ipc::StaticBufferDesc(value.size(), 0), aux},
+                        3));
+    }
+    // GetSockOpt: the error word and the value
+    std::pair<s32, std::vector<u8>> GetOpt(s32 fd, u32 level, u32 opt, u32 len) {
+        g.PutBytes(out, std::vector<u8>(0x20, 0xEE));
+        SetReceive(g, 0, 0x20, out);
+        const auto reply = Call({ipc::MakeHeader(0x11, 4, 2), static_cast<u32>(fd), level, opt, len,
+                                 ipc::CallingPidDesc(), 0},
+                                5);
+        REQUIRE(reply[0] == ipc::MakeHeader(0x11, 3, 2));
+        return {static_cast<s32>(reply[2]), g.GetBytes(out, reply[3])};
+    }
+};
+
+// Another guest thread, with a command buffer and receive buffers of its own, whose body sends one
+// request through `session` and notes when it resumes.
+struct OtherThread {
+    std::shared_ptr<Thread> thread;
+    u32 command = 0;
+    bool resumed = false;
+    u64 start = 0, end = 0;
+    Result result = 0;
+};
+
+OtherThread* SpawnRequest(Fixture& f, std::deque<OtherThread>& list, Handle session,
+                          const std::vector<u32>& words,
+                          const std::vector<std::array<u32, 3>>& receives /* id, size, address */) {
+    Kernel& kernel = f.runtime->GetKernel();
+    GuestScheduler& scheduler = f.runtime->Scheduler();
+    ServiceManager* manager = FindServiceManager(*f.runtime);
+    REQUIRE(manager != nullptr);
+    const u32 tls = 0x08200000 + static_cast<u32>(list.size()) * kPageSize;
+    REQUIRE(IsSuccess(f.runtime->Memory().Map(tls, kPageSize, MemPerm::ReadWrite, MemState::Private)));
+    OtherThread& other = list.emplace_back();
+    other.thread = kernel.NewThread("other", 48, 0, kernel.CurrentProcess());
+    other.thread->tls_address = tls;
+    other.command = CommandBufferAddress(*other.thread);
+    REQUIRE(f.runtime->Memory().WriteBlock(other.command, words.data(), static_cast<u32>(words.size() * 4)));
+    for (const auto& receive : receives) {
+        const u32 pair[2] = {ipc::StaticBufferDesc(receive[1], static_cast<u8>(receive[0])), receive[2]};
+        REQUIRE(f.runtime->Memory().WriteBlock(
+            other.command + static_cast<u32>(ipc::StaticBufferDescriptorWord(receive[0])) * 4, pair, 8));
+    }
+    OtherThread* self = &other;
+    scheduler.AttachFunction(other.thread, [&kernel, &scheduler, manager, session, self] {
+        self->start = kernel.NowTicks();
+        self->result = manager->SendSyncRequest(*self->thread, session);
+        if (self->thread->status != ThreadStatus::Running) {
+            scheduler.Park(*self->thread);  // what the SVC layer does
+        }
+        self->end = kernel.NowTicks();
+        self->resumed = true;
+    });
+    scheduler.Start(other.thread);
+    return &other;
+}
+
+}  // namespace
+
+TEST_CASE("soc:U: process and descriptor checks, socket creation and closing") {
+    Fixture f;
+    TempDir dir;
+    std::vector<u32> before_init, bad_protocol, bad_domain, bad_type, zero_type, close_ok, close_again, bind_after, again;
+    s32 first = 0, second = 0, third = 0, later = 0;
+    Result init = 0, init_again = 0, shutdown_before = 0, shutdown = 0, shutdown_again = 0;
+    std::vector<u32> unknown;
+    const int status = BootWith(f, dir, {"--ms", "100"}, [&] {
+        Guest g(*f.runtime);
+        const Handle srv = ConnectSrv(g);
+        SocGuest s(g, OpenService(g, srv, "soc:U"));
+        shutdown_before = s.Call({ipc::MakeHeader(0x19, 0, 0)}, 2)[1];
+        // Socket does not look at the process; the commands that take a socket do
+        const std::vector<u32> created = s.Socket(2, 2);
+        before_init = s.Bind(static_cast<s32>(created[2]), InetAddr(0, {0, 0, 0, 0}));
+        init = s.Init();
+        init_again = s.Init();
+        bind_after = s.Bind(static_cast<s32>(created[2]), InetAddr(0, {0, 0, 0, 0}));
+        bad_protocol = s.Socket(2, 1, 6);
+        bad_domain = s.Socket(23, 1);
+        bad_type = s.Socket(2, 3);
+        zero_type = s.Socket(2, 0);
+        first = s.Ret(created);
+        second = s.OpenSocket(1);
+        third = s.OpenSocket(2);
+        close_ok = s.Close(second);
+        close_again = s.Close(second);
+        later = s.OpenSocket(1);
+        unknown = s.Call({ipc::MakeHeader(0x1B, 0, 0)}, 2);  // ICMPSocket: a nullptr entry in Azahar
+        shutdown = s.Call({ipc::MakeHeader(0x19, 0, 0)}, 2)[1];
+        again = s.Call({ipc::MakeHeader(0x0B, 1, 2), static_cast<u32>(third), ipc::CallingPidDesc(), 0}, 2);
+        shutdown_again = s.Call({ipc::MakeHeader(0x19, 0, 0)}, 2)[1];
+        ExitProcess(*f.runtime);
+    });
+    CHECK(status == 0);
+    CHECK(shutdown_before == kSocNotInitialized);
+    CHECK(before_init == std::vector<u32>{ipc::MakeHeader(5, 1, 0), kSocNotInitialized, before_init[2]});
+    CHECK(init == kResultSuccess);
+    CHECK(init_again == kSocAlreadyInitialized);
+    CHECK(bind_after[1] == kResultSuccess);
+    CHECK(bind_after[2] == 0);
+    // protocol, family and type outside what Azahar supports: "unimplemented", and the word it skips
+    CHECK(bad_protocol[0] == ipc::MakeHeader(2, 2, 0));
+    CHECK(bad_protocol[1] == kSocUnimplemented);
+    CHECK(bad_protocol[2] == 1);  // the request's second parameter, untouched
+    CHECK(bad_domain[1] == kSocUnimplemented);
+    CHECK(bad_type[1] == kSocUnimplemented);
+    CHECK(zero_type[1] == kSocUnimplemented);
+    CHECK(first == 3);
+    CHECK(second == 4);
+    CHECK(third == 5);
+    CHECK(close_ok == std::vector<u32>{ipc::MakeHeader(0xB, 2, 0), kResultSuccess, 0});
+    CHECK(close_again[1] == kSocInvalidDescriptor);
+    CHECK(later == 6);  // descriptors are not reused
+    CHECK(unknown[0] == ipc::MakeHeader(0x1B, 1, 0));
+    CHECK(shutdown == kResultSuccess);
+    CHECK(again[1] == kSocNotInitialized);  // ShutdownSockets forgot the process
+    CHECK(shutdown_again == kSocNotInitialized);
+}
+
+TEST_CASE("soc:U: bind, names, options and flags follow the offline host") {
+    Fixture f;
+    TempDir dir;
+    s32 bind_any = 0, bind_again = 0, bind_other = 0, bind_twice = 0, bind_v6 = 0, bind_ephemeral = 0,
+        bind_broadcast = 0, bind_reuse_a = 0, bind_reuse_b = 0, listen_udp = 0, listen_tcp = 0;
+    std::vector<u8> name_unbound, name_bound, name_ephemeral;
+    s32 get_flags = 0, set_flags = 0, get_flags_after = 0, bad_cmd = 0;
+    std::pair<s32, std::vector<u8>> type_opt, reuse_before, reuse_after, ttl_default, ttl_after, rcvbuf_default,
+        sndbuf_set, nodelay_udp, error_opt, linger, unknown_opt, one_byte;
+    s32 set_reuse = 0, set_ttl = 0, set_ttl_zero = 0, set_type = 0, set_nodelay_udp = 0, set_unknown = 0,
+        set_bad_name = 0, set_sndbuf = 0, set_linger = 0;
+    std::vector<u32> host_id, mac, ip_info, bad_level, bad_opt, bad_opt_reply;
+    std::vector<u8> mac_bytes, ip_bytes;
+    const int status = BootWith(f, dir, {"--ms", "100"}, [&] {
+        Guest g(*f.runtime);
+        const Handle srv = ConnectSrv(g);
+        SocGuest s(g, OpenService(g, srv, "soc:U"));
+        s.Init();
+        const s32 a = s.OpenSocket(2), b = s.OpenSocket(2), c = s.OpenSocket(2), t = s.OpenSocket(1);
+        name_unbound = s.SockName(a);
+        bind_any = static_cast<s32>(s.Bind(a, InetAddr(0x1234, {0, 0, 0, 0}))[2]);
+        name_bound = s.SockName(a);
+        bind_again = static_cast<s32>(s.Bind(b, InetAddr(0x1234, {0, 0, 0, 0}))[2]);
+        bind_other = static_cast<s32>(s.Bind(b, InetAddr(0x1235, {192, 168, 1, 5}))[2]);
+        bind_twice = static_cast<s32>(s.Bind(a, InetAddr(0x2000, {0, 0, 0, 0}))[2]);
+        {
+            std::vector<u8> v6(28, 0);
+            v6[0] = 28, v6[1] = 23;
+            bind_v6 = static_cast<s32>(s.Bind(b, v6)[2]);
+        }
+        bind_broadcast = static_cast<s32>(s.Bind(b, InetAddr(0x1236, {255, 255, 255, 255}))[2]);
+        bind_ephemeral = static_cast<s32>(s.Bind(c, InetAddr(0, {0, 0, 0, 0}))[2]);
+        name_ephemeral = s.SockName(c);
+        // SO_REUSEADDR on both sockets allows a shared port
+        const s32 d = s.OpenSocket(2), e = s.OpenSocket(2);
+        set_reuse = s.SetOpt(d, 0xFFFF, 4, {1, 0, 0, 0});
+        s.SetOpt(e, 0xFFFF, 4, {1, 0, 0, 0});
+        bind_reuse_a = static_cast<s32>(s.Bind(d, InetAddr(0x3000, {0, 0, 0, 0}))[2]);
+        bind_reuse_b = static_cast<s32>(s.Bind(e, InetAddr(0x3000, {0, 0, 0, 0}))[2]);
+        listen_udp = s.Ret(s.Call({ipc::MakeHeader(3, 2, 2), static_cast<u32>(a), 5, ipc::CallingPidDesc(), 0}, 3));
+        listen_tcp = s.Ret(s.Call({ipc::MakeHeader(3, 2, 2), static_cast<u32>(t), 5, ipc::CallingPidDesc(), 0}, 3));
+
+        get_flags = s.Fcntl(a, 3, 0);
+        set_flags = s.Fcntl(a, 4, 4);
+        get_flags_after = s.Fcntl(a, 3, 0);
+        bad_cmd = s.Fcntl(a, 9, 0);
+        s.Fcntl(a, 4, 0);
+
+        type_opt = s.GetOpt(b, 0xFFFF, 0x1008, 4);
+        reuse_before = s.GetOpt(b, 0xFFFF, 4, 4);
+        reuse_after = s.GetOpt(d, 0xFFFF, 4, 4);
+        ttl_default = s.GetOpt(b, 0, 8, 4);
+        set_ttl = s.SetOpt(b, 0, 8, {32, 0, 0, 0});
+        ttl_after = s.GetOpt(b, 0, 8, 4);
+        set_ttl_zero = s.SetOpt(b, 0, 8, {0, 0, 0, 0});
+        rcvbuf_default = s.GetOpt(b, 0xFFFF, 0x1002, 4);
+        set_sndbuf = s.SetOpt(b, 0xFFFF, 0x1001, {0x00, 0x40, 0x00, 0x00});
+        sndbuf_set = s.GetOpt(b, 0xFFFF, 0x1001, 4);
+        set_type = s.SetOpt(b, 0xFFFF, 0x1008, {1, 0, 0, 0});
+        nodelay_udp = s.GetOpt(b, 6, 0x2001, 4);
+        set_nodelay_udp = s.SetOpt(b, 6, 0x2001, {1, 0, 0, 0});
+        error_opt = s.GetOpt(b, 0xFFFF, 0x1009, 4);
+        set_linger = s.SetOpt(b, 0xFFFF, 0x80, {1, 0, 0, 0, 5, 0, 0, 0});
+        linger = s.GetOpt(b, 0xFFFF, 0x80, 8);
+        one_byte = s.GetOpt(d, 0xFFFF, 4, 1);
+        unknown_opt = s.GetOpt(b, 0xFFFF, 0x7777, 4);
+        set_unknown = s.SetOpt(b, 0xFFFF, 0x7777, {1, 0, 0, 0});
+        set_bad_name = s.SetOpt(b, 0xFFFF, static_cast<u32>(-5), {1, 0, 0, 0});
+
+        host_id = s.Call({ipc::MakeHeader(0x16, 0, 0)}, 3);
+        g.PutBytes(s.out, std::vector<u8>(0x20, 0xEE));
+        SetReceive(g, 0, 0x20, s.out);
+        mac = s.Call({ipc::MakeHeader(0x1A, 3, 0), 0xFFFE, 0x1004, 6}, 5);
+        mac_bytes = g.GetBytes(s.out, 8);
+        g.PutBytes(s.out, std::vector<u8>(0x20, 0xEE));
+        ip_info = s.Call({ipc::MakeHeader(0x1A, 3, 0), 0xFFFE, 0x4003, 12}, 5);
+        ip_bytes = g.GetBytes(s.out, 14);
+        bad_level = s.Call({ipc::MakeHeader(0x1A, 3, 0), 0x1234, 0x4003, 12}, 5);
+        bad_opt = s.Call({ipc::MakeHeader(0x1A, 3, 0), 0xFFFE, 0x4004, 12}, 5);
+        ExitProcess(*f.runtime);
+    });
+    CHECK(status == 0);
+    // the name of a new socket: AF_INET, port 0, address 0
+    CHECK(name_unbound[0] == 8);
+    CHECK(name_unbound[1] == 2);
+    CHECK(name_unbound[2] == 0);
+    CHECK(name_unbound[4] == 0);
+    CHECK(name_unbound[8] == 0);  // past the fields Azahar fills: zero here
+    CHECK(bind_any == 0);
+    CHECK(name_bound[2] == 0x12);
+    CHECK(name_bound[3] == 0x34);
+    CHECK(bind_again == kEADDRINUSE);
+    CHECK(bind_other == kEADDRNOTAVAIL);
+    CHECK(bind_twice == kEINVAL);
+    CHECK(bind_v6 == -5);  // EAFNOSUPPORT
+    CHECK(bind_broadcast == 0);
+    CHECK(bind_ephemeral == 0);
+    CHECK(((name_ephemeral[2] << 8) | name_ephemeral[3]) >= 49152);
+    CHECK(set_reuse == 0);
+    CHECK(bind_reuse_a == 0);
+    CHECK(bind_reuse_b == 0);
+    CHECK(listen_udp == -63);  // EOPNOTSUPP
+    CHECK(listen_tcp == 0);
+    CHECK(get_flags == 0);
+    CHECK(set_flags == 0);
+    CHECK(get_flags_after == 4);  // O_NONBLOCK
+    CHECK(bad_cmd == kEINVAL);
+    CHECK(type_opt.first == 0);
+    CHECK(type_opt.second == std::vector<u8>{2, 0, 0, 0});
+    CHECK(reuse_before.second == std::vector<u8>{0, 0, 0, 0});
+    CHECK(reuse_after.second == std::vector<u8>{1, 0, 0, 0});
+    CHECK(ttl_default.second == std::vector<u8>{64, 0, 0, 0});
+    CHECK(set_ttl == 0);
+    CHECK(ttl_after.second == std::vector<u8>{32, 0, 0, 0});
+    CHECK(set_ttl_zero == 0);  // a TTL of 0 means the default
+    CHECK(rcvbuf_default.second == std::vector<u8>{0x00, 0x40, 0x03, 0x00});  // 212992
+    CHECK(set_sndbuf == 0);
+    CHECK(sndbuf_set.second == std::vector<u8>{0x00, 0x80, 0x00, 0x00});  // doubled by the kernel
+    CHECK(set_type == kENOPROTOOPT);
+    CHECK(nodelay_udp.first == kENOPROTOOPT);
+    CHECK(set_nodelay_udp == kENOPROTOOPT);
+    CHECK(error_opt.second == std::vector<u8>{0, 0, 0, 0});
+    CHECK(set_linger == 0);
+    CHECK(linger.second == std::vector<u8>{1, 0, 0, 0, 5, 0, 0, 0});
+    CHECK(one_byte.second == std::vector<u8>{1});  // an int into one byte
+    CHECK(unknown_opt.first == kENOPROTOOPT);
+    CHECK(set_unknown == kENOPROTOOPT);
+    CHECK(set_bad_name == 22);  // EINVAL, not translated (Azahar returns the host's number)
+    // the default interface is not found: zeros
+    CHECK(host_id == std::vector<u32>{ipc::MakeHeader(0x16, 2, 0), kResultSuccess, 0});
+    CHECK(mac[0] == ipc::MakeHeader(0x1A, 3, 2));
+    CHECK(mac[2] == 0);
+    CHECK(mac[3] == 6);
+    CHECK(std::all_of(mac_bytes.begin(), mac_bytes.begin() + 6, [](u8 b) { return b == 0; }));
+    CHECK(ip_info[2] == 0);
+    CHECK(ip_info[3] == 12);
+    CHECK(std::all_of(ip_bytes.begin(), ip_bytes.begin() + 12, [](u8 b) { return b == 0; }));
+    CHECK(ip_bytes[12] == 0xEE);
+    CHECK(bad_level[2] == 0xFFFF8025);
+    CHECK(bad_level[3] == 0);
+    CHECK(bad_opt[2] == 0xFFFF8025);
+}
+
+TEST_CASE("soc:U: nothing is reachable, nothing resolves, nothing is received") {
+    Fixture f;
+    TempDir dir;
+    s32 connect_tcp = 0, connect_udp = 0, connect_v6 = 0, send_udp = 0, send_no_addr = 0, send_tcp = 0,
+        send_big = 0, send_multi = 0, recv_stream = 0, recv_nonblock = 0, recv_dontwait = 0, recv_other_nonblock = 0,
+        accept_nonblock = 0, accept_stream_unbound = 0, peer = 0, shutdown_udp = 0, shutdown_tcp = 0,
+        recv_after_shutdown = 0, bad_how = 0, atmark = 0, accept_udp = 0;
+    std::vector<u32> poll_udp, poll_tcp, poll_listen, poll_bad_fd, poll_bug, name_localhost, name_remote,
+        addr_info, addr_numeric, name_info;
+    std::vector<u8> poll_udp_bytes, poll_tcp_bytes, poll_listen_bytes, poll_bug_bytes, host_bytes,
+        info_bytes, name_bytes, serv_bytes;
+    const int status = BootWith(f, dir, {"--ms", "100"}, [&] {
+        Guest g(*f.runtime);
+        const Handle srv = ConnectSrv(g);
+        SocGuest s(g, OpenService(g, srv, "soc:U"));
+        s.Init();
+        const s32 udp = s.OpenSocket(2), tcp = s.OpenSocket(1), listener = s.OpenSocket(1);
+        const std::vector<u8> remote = InetAddr(0x5000, {10, 0, 0, 1});
+        const auto connect = [&](s32 fd, const std::vector<u8>& addr) {
+            g.PutBytes(s.data, addr);
+            return s.Ret(s.Call({ipc::MakeHeader(6, 2, 4), static_cast<u32>(fd), static_cast<u32>(addr.size()),
+                                 ipc::CallingPidDesc(), 0, ipc::StaticBufferDesc(addr.size(), 0), s.data},
+                                3));
+        };
+        connect_tcp = connect(tcp, remote);
+        connect_udp = connect(udp, remote);
+        std::vector<u8> v6(28, 0);
+        v6[0] = 28, v6[1] = 23;
+        connect_v6 = connect(udp, v6);
+
+        const auto send = [&](s32 fd, u32 len, const std::vector<u8>& addr) {
+            g.PutBytes(s.data, addr);
+            g.PutBytes(s.aux, std::vector<u8>(16, 0x41));
+            return s.Ret(s.Call({ipc::MakeHeader(0xA, 4, 6), static_cast<u32>(fd), len, 0, static_cast<u32>(addr.size()),
+                                 ipc::CallingPidDesc(), 0, ipc::StaticBufferDesc(16, 0), s.aux,
+                                 ipc::StaticBufferDesc(addr.size(), 1), s.data},
+                                3));
+        };
+        send_udp = send(udp, 16, remote);
+        send_no_addr = send(udp, 16, {});
+        send_tcp = send(tcp, 16, remote);
+        send_big = send(udp, 70000, remote);
+        // SendToMultiple (0x20): stops at the first failure
+        g.PutBytes(s.data, remote);
+        g.PutBytes(s.aux, std::vector<u8>(16, 0x41));
+        send_multi = s.Ret(s.Call({ipc::MakeHeader(0x20, 5, 6), static_cast<u32>(udp), 16, 0, 8, 16,
+                                   ipc::CallingPidDesc(), 0, ipc::StaticBufferDesc(16, 0), s.aux,
+                                   ipc::StaticBufferDesc(16, 1), s.data},
+                                  3));
+
+        // RecvFrom(handle, len, flags, addr_len): result, ret, received, then the buffers
+        const auto recv = [&](s32 fd, u32 flags) {
+            g.PutBytes(s.out, std::vector<u8>(0x400, 0xEE));
+            SetReceive(g, 0, 0x100, s.out);
+            SetReceive(g, 1, 0x20, s.out2);
+            return s.Call({ipc::MakeHeader(8, 4, 2), static_cast<u32>(fd), 0x100, flags, 0x10,
+                           ipc::CallingPidDesc(), 0},
+                          6);
+        };
+        recv_stream = s.Ret(recv(tcp, 0));
+        s.Fcntl(udp, 4, 4);
+        const auto nonblock = recv(udp, 0);
+        recv_nonblock = s.Ret(nonblock);
+        recv_dontwait = s.Ret(recv(udp, 4));
+        // RecvFromOther (7)
+        g.PutBytes(s.out, std::vector<u8>(0x40, 0xEE));
+        SetReceive(g, 0, 0x20, s.out2);
+        recv_other_nonblock = s.Ret(s.Call({ipc::MakeHeader(7, 4, 4), static_cast<u32>(udp), 0x40, 0, 0x10,
+                                            ipc::CallingPidDesc(), 0,
+                                            ipc::MappedBufferDesc(0x40, ipc::W), s.out},
+                                           3));
+        s.Fcntl(udp, 4, 0);
+
+        // listen, accept
+        s.Call({ipc::MakeHeader(3, 2, 2), static_cast<u32>(listener), 5, ipc::CallingPidDesc(), 0}, 3);
+        s.Fcntl(listener, 4, 4);
+        SetReceive(g, 0, 0x1C, s.out);
+        accept_nonblock = s.Ret(s.Call({ipc::MakeHeader(4, 2, 2), static_cast<u32>(listener), 0x1C,
+                                        ipc::CallingPidDesc(), 0},
+                                       3));
+        accept_udp = s.Ret(s.Call({ipc::MakeHeader(4, 2, 2), static_cast<u32>(udp), 0x1C, ipc::CallingPidDesc(), 0}, 3));
+        accept_stream_unbound = s.Ret(s.Call({ipc::MakeHeader(4, 2, 2), static_cast<u32>(tcp), 0x1C, ipc::CallingPidDesc(), 0}, 3));
+        peer = s.Ret(s.Call({ipc::MakeHeader(0x18, 2, 2), static_cast<u32>(tcp), 0x1C, ipc::CallingPidDesc(), 0}, 3));
+        atmark = s.Ret(s.Call({ipc::MakeHeader(0x15, 1, 2), static_cast<u32>(tcp), ipc::CallingPidDesc(), 0}, 3));
+
+        // poll: three descriptors, with the events a guest asks for (3DS bits: 1 read, 8 write)
+        const auto poll = [&](const std::vector<std::array<u32, 3>>& fds, s32 timeout) {
+            std::vector<u8> bytes(fds.size() * 12);
+            for (std::size_t i = 0; i < fds.size(); ++i) std::memcpy(bytes.data() + i * 12, fds[i].data(), 12);
+            g.PutBytes(s.data, bytes);
+            g.PutBytes(s.out, std::vector<u8>(0x100, 0xEE));
+            SetReceive(g, 0, static_cast<u32>(bytes.size()), s.out);
+            return s.Call({ipc::MakeHeader(0x14, 2, 4), static_cast<u32>(fds.size()), static_cast<u32>(timeout),
+                           ipc::CallingPidDesc(), 0, ipc::StaticBufferDesc(bytes.size(), 0), s.data},
+                          6);
+        };
+        poll_udp = poll({{static_cast<u32>(udp), 1 | 8, 0}}, 0);
+        poll_udp_bytes = g.GetBytes(s.out, 12);
+        poll_tcp = poll({{static_cast<u32>(tcp), 1 | 8, 0}}, 0);
+        poll_tcp_bytes = g.GetBytes(s.out, 12);
+        poll_listen = poll({{static_cast<u32>(listener), 1 | 8, 0}}, 0);
+        poll_listen_bytes = g.GetBytes(s.out, 12);
+        poll_bad_fd = poll({{99, 1, 0}}, 0);
+        // the libctru bug: POLLOUT asked as bit 4 comes back as bit 4
+        poll_bug = poll({{static_cast<u32>(udp), 16, 0}}, 0);
+        poll_bug_bytes = g.GetBytes(s.out, 12);
+
+        // shutdown: ENOTCONN, but the direction is closed
+        shutdown_udp = s.Ret(s.Call({ipc::MakeHeader(0xC, 2, 2), static_cast<u32>(udp), 0, ipc::CallingPidDesc(), 0}, 3));
+        recv_after_shutdown = s.Ret(recv(udp, 0));
+        shutdown_tcp = s.Ret(s.Call({ipc::MakeHeader(0xC, 2, 2), static_cast<u32>(tcp), 2, ipc::CallingPidDesc(), 0}, 3));
+        bad_how = s.Ret(s.Call({ipc::MakeHeader(0xC, 2, 2), static_cast<u32>(tcp), 5, ipc::CallingPidDesc(), 0}, 3));
+
+        // names
+        const auto by_name = [&](const std::string& name) {
+            std::vector<u8> text(name.begin(), name.end());
+            text.push_back(0);
+            g.PutBytes(s.data, text);
+            g.PutBytes(s.out, std::vector<u8>(0x1A90, 0xEE));
+            SetReceive(g, 0, 0x1A88, s.out);
+            return s.Call({ipc::MakeHeader(0xD, 2, 2), static_cast<u32>(text.size()), 0x1A88,
+                           ipc::StaticBufferDesc(text.size(), 0), s.data},
+                          5);
+        };
+        name_localhost = by_name("localhost");
+        host_bytes = g.GetBytes(s.out, 0x1A88);
+        name_remote = by_name("example.com");
+        // GetAddrInfo(node length, service length, hints size, out size; node, service, hints)
+        const auto info = [&](const std::string& node, const std::string& service, s32 flags, s32 family, s32 socktype) {
+            std::vector<u8> n(node.begin(), node.end()), v(service.begin(), service.end());
+            n.push_back(0), v.push_back(0);
+            g.PutBytes(s.data, n);
+            g.PutBytes(s.aux, v);
+            std::array<s32, 5> hints = {flags, family, socktype, 0, 0};
+            g.PutBytes(s.out2, std::vector<u8>(reinterpret_cast<u8*>(hints.data()), reinterpret_cast<u8*>(hints.data()) + 20));
+            g.PutBytes(s.out, std::vector<u8>(0x400, 0xEE));
+            SetReceive(g, 0, 0x400, s.out);
+            return s.Call({ipc::MakeHeader(0xF, 4, 6), static_cast<u32>(n.size()), static_cast<u32>(v.size()), 20, 0x400,
+                           ipc::StaticBufferDesc(n.size(), 0), s.data, ipc::StaticBufferDesc(v.size(), 1), s.aux,
+                           ipc::StaticBufferDesc(20, 2), s.out2},
+                          5);
+        };
+        addr_info = info("example.com", "80", 0, 0, 1);
+        addr_numeric = info("10.1.2.3", "8080", 0, 0, 2);
+        info_bytes = g.GetBytes(s.out, 0x130);
+        // GetNameInfo(address length, host length, service length, flags; address)
+        g.PutBytes(s.data, InetAddr(0x5000, {10, 1, 2, 3}));
+        g.PutBytes(s.out, std::vector<u8>(0x40, 0xEE));
+        g.PutBytes(s.out2, std::vector<u8>(0x40, 0xEE));
+        SetReceive(g, 0, 0x20, s.out);
+        SetReceive(g, 1, 0x10, s.out2);
+        name_info = s.Call({ipc::MakeHeader(0x10, 4, 2), 8, 0x20, 0x10, 0, ipc::StaticBufferDesc(8, 0), s.data}, 6);
+        name_bytes = g.GetBytes(s.out, 0x10);
+        serv_bytes = g.GetBytes(s.out2, 8);
+        ExitProcess(*f.runtime);
+    });
+    CHECK(status == 0);
+    CHECK(connect_tcp == kENETUNREACH);
+    CHECK(connect_udp == kENETUNREACH);
+    CHECK(connect_v6 == -5);
+    CHECK(send_udp == kENETUNREACH);
+    CHECK(send_no_addr == kEDESTADDRREQ);
+    CHECK(send_tcp == kEPIPE);
+    CHECK(send_big == -35);  // EMSGSIZE
+    CHECK(send_multi == kENETUNREACH);
+    CHECK(recv_stream == kENOTCONN);
+    CHECK(recv_nonblock == kEAGAIN);
+    CHECK(recv_dontwait == kEAGAIN);
+    CHECK(recv_other_nonblock == kEAGAIN);
+    CHECK(accept_nonblock == kEAGAIN);
+    CHECK(accept_udp == -63);
+    CHECK(accept_stream_unbound == kEINVAL);
+    CHECK(peer == kENOTCONN);
+    CHECK(atmark == 0);
+    // a datagram socket is writable, an unconnected stream socket is writable and hung up, a
+    // listener has nothing
+    CHECK(poll_udp[0] == ipc::MakeHeader(0x14, 2, 2));
+    CHECK(poll_udp[2] == 1);
+    CHECK(poll_udp_bytes[8] == 8);  // revents: write only
+    CHECK(poll_tcp[2] == 1);
+    CHECK(poll_tcp_bytes[8] == (8 | 64));  // write and hang-up
+    CHECK(poll_listen[2] == 0);
+    CHECK(poll_listen_bytes[8] == 0);
+    CHECK(poll_bad_fd[1] == kSocInvalidDescriptor);
+    CHECK(poll_bug_bytes[4] == 16);  // events come back as the guest wrote them
+    CHECK(poll_bug_bytes[8] == 16);
+    CHECK(shutdown_udp == kENOTCONN);
+    CHECK(recv_after_shutdown == 0);  // the closed direction reads as the end of the stream
+    CHECK(shutdown_tcp == kENOTCONN);
+    CHECK(bad_how == kEINVAL);
+    CHECK(name_localhost[2] == 0);
+    CHECK(host_bytes[0] == 2);   // AF_INET
+    CHECK(host_bytes[2] == 4);   // address length
+    CHECK(host_bytes[4] == 1);   // one address
+    CHECK(std::string(host_bytes.begin() + 8, host_bytes.begin() + 17) == "localhost");
+    CHECK(host_bytes[8 + 256 + 24 * 256] == 127);
+    CHECK(host_bytes[8 + 256 + 24 * 256 + 3] == 1);
+    CHECK(name_remote[2] == kENETUNREACH);
+    CHECK(addr_info[0] == ipc::MakeHeader(0xF, 3, 2));
+    CHECK(static_cast<s32>(addr_info[2]) == -302);  // EAI_AGAIN
+    CHECK(addr_info[3] == 0);
+    CHECK(addr_numeric[2] == 0);
+    CHECK(addr_numeric[3] == 1);  // one entry for a datagram hint
+    CHECK(info_bytes[4] == 2);    // ai_family
+    CHECK(info_bytes[8] == 2);    // ai_socktype
+    CHECK(info_bytes[12] == 17);  // ai_protocol: UDP, derived from the type as soc does
+    CHECK(info_bytes[16] == 8);   // ai_addrlen
+    CHECK(info_bytes[20 + 256 + 1] == 2);
+    CHECK(info_bytes[20 + 256 + 2] == 0x1F);  // port 8080, network order
+    CHECK(info_bytes[20 + 256 + 3] == 0x90);
+    CHECK(info_bytes[20 + 256 + 4] == 10);
+    CHECK(name_info[2] == 0);
+    CHECK(std::string(name_bytes.begin(), name_bytes.begin() + 8) == "10.1.2.3");
+    CHECK(std::string(serv_bytes.begin(), serv_bytes.begin() + 5) == "20480");
+}
+
+
+TEST_CASE("soc:U: waiting calls wait in game time and end when their socket does") {
+    Fixture f;
+    TempDir dir;
+    std::deque<OtherThread> threads;
+    std::vector<u32> shutdown_reply, close_listener, close_d, recv_words, accept_words, poll_timeout_words, poll_closed_words;
+    std::vector<u8> poll_timeout_bytes, poll_closed_bytes;
+    bool resumed_early = true;
+    u64 poll_elapsed = 0;
+    const int status = BootWith(f, dir, {"--ms", "500"}, [&] {
+        Guest g(*f.runtime);
+        const Handle srv = ConnectSrv(g);
+        SocGuest s(g, OpenService(g, srv, "soc:U"));
+        s.Init();
+        const s32 a = s.OpenSocket(2), c = s.OpenSocket(2), d = s.OpenSocket(2), listener = s.OpenSocket(1);
+        s.Call({ipc::MakeHeader(3, 2, 2), static_cast<u32>(listener), 5, ipc::CallingPidDesc(), 0}, 3);
+        GuestScheduler& scheduler = f.runtime->Scheduler();
+
+        const u32 scratch = 0x08100000;  // the other threads' buffers
+        REQUIRE(IsSuccess(f.runtime->Memory().Map(scratch, kPageSize, MemPerm::ReadWrite, MemState::Private)));
+        const auto poll_words = [&](s32 fd, s32 timeout, u32 at) {
+            const std::array<u32, 3> entry = {static_cast<u32>(fd), 1 /* read */, 0};
+            REQUIRE(f.runtime->Memory().WriteBlock(at, entry.data(), 12));
+            return std::vector<u32>{ipc::MakeHeader(0x14, 2, 4), 1, static_cast<u32>(timeout),
+                                    ipc::CallingPidDesc(), 0, ipc::StaticBufferDesc(12, 0), at};
+        };
+        OtherThread* recv = SpawnRequest(
+            f, threads, s.soc,
+            {ipc::MakeHeader(8, 4, 2), static_cast<u32>(a), 0x40, 0, 0x10, ipc::CallingPidDesc(), 0},
+            {{0, 0x40, scratch}, {1, 0x20, scratch + 0x100}});
+        OtherThread* accept = SpawnRequest(
+            f, threads, s.soc,
+            {ipc::MakeHeader(4, 2, 2), static_cast<u32>(listener), 0x1C, ipc::CallingPidDesc(), 0},
+            {{0, 0x1C, scratch + 0x200}});
+        OtherThread* poll_timeout = SpawnRequest(f, threads, s.soc, poll_words(c, 50, scratch + 0x300),
+                                                 {{0, 12, scratch + 0x320}});
+        OtherThread* poll_closed = SpawnRequest(f, threads, s.soc, poll_words(d, -1, scratch + 0x400),
+                                                {{0, 12, scratch + 0x420}});
+        scheduler.Sleep(1000000);  // 1 ms: all four send their request and wait
+        resumed_early = recv->resumed || accept->resumed || poll_timeout->resumed || poll_closed->resumed;
+
+        // shutting the datagram socket down for reading answers ENOTCONN and wakes its receiver with 0
+        shutdown_reply = s.Call({ipc::MakeHeader(0xC, 2, 2), static_cast<u32>(a), 0, ipc::CallingPidDesc(), 0}, 3);
+        scheduler.Sleep(1000000);
+        recv_words = g.GetWords(recv->command, 5);
+        // closing the listener wakes its accept with EBADF
+        close_listener = s.Close(listener);
+        scheduler.Sleep(1000000);
+        accept_words = g.GetWords(accept->command, 4);
+        // closing the socket a poll without timeout watches ends the poll: that descriptor is invalid
+        close_d = s.Close(d);
+        scheduler.Sleep(1000000);
+        poll_closed_words = g.GetWords(poll_closed->command, 4);
+        poll_closed_bytes = g.GetBytes(scratch + 0x420, 12);
+        // the poll with a timeout of 50 ms ends 50 ms after it began, on the game clock
+        scheduler.Sleep(60000000);
+        poll_timeout_words = g.GetWords(poll_timeout->command, 4);
+        poll_timeout_bytes = g.GetBytes(scratch + 0x320, 12);
+        poll_elapsed = poll_timeout->end - poll_timeout->start;
+        ExitProcess(*f.runtime);
+    });
+    CHECK(status == 0);
+    CHECK_FALSE(resumed_early);
+    CHECK(shutdown_reply[2] == static_cast<u32>(kENOTCONN));
+    REQUIRE(threads.size() == 4);
+    CHECK(threads[0].resumed);
+    CHECK(recv_words[0] == ipc::MakeHeader(8, 3, 4));
+    CHECK(recv_words[1] == kResultSuccess);
+    CHECK(recv_words[2] == 0);
+    CHECK(recv_words[3] == 0);
+    CHECK(close_listener[2] == 0);
+    CHECK(threads[1].resumed);
+    CHECK(accept_words[0] == ipc::MakeHeader(4, 2, 2));
+    CHECK(accept_words[2] == static_cast<u32>(kEBADF));
+    CHECK(close_d[2] == 0);
+    CHECK(threads[3].resumed);
+    CHECK(poll_closed_words[0] == ipc::MakeHeader(0x14, 2, 2));
+    CHECK(poll_closed_words[2] == 1);
+    CHECK(poll_closed_bytes[8] == 128);  // POLLNVAL
+    CHECK(threads[2].resumed);
+    CHECK(poll_timeout_words[1] == kResultSuccess);
+    CHECK(poll_timeout_words[2] == 0);
+    CHECK(poll_timeout_bytes[8] == 0);
+    CHECK(poll_elapsed >= NsToTicks(50000000));
+    CHECK(poll_elapsed <= NsToTicks(50000000) + NsToTicks(100000));  // exact to the timer queue's tick
 }
 
 #endif  // recomp.h
