@@ -938,3 +938,87 @@ def test_each_run_serves_one_prefix_only(tmp_path):
 def test_the_docstring_documents_the_prefix_option():
     for word in ("--fs-reads-prefix", "part boundary", "prefix"):
         assert word in cmp.__doc__
+
+# ── the bytes only one side covers: information, never a rule (N0-36) ─────────────────────────────
+
+
+def coverage(ref_lines, cand_lines, tmp_path):
+    """read_coverage on two synthetic traces, by (thread, session)."""
+    ref = cmp.load(write(tmp_path, "cref.txt", ref_lines), set())
+    cand = cmp.load(write(tmp_path, "ccand.txt", cand_lines), set())
+    return {(r.thread, r.session): r for r in cmp.read_coverage(ref, cand)}
+
+
+def test_the_coverage_is_the_union_of_the_ranges_whatever_the_pieces(tmp_path):
+    rows = coverage(trace(*spans(5, 1, WHOLE)), trace(*spans(5, 1, PIECES)), tmp_path)
+    (row,) = rows.values()
+    assert (row.ref_bytes, row.cand_bytes, row.ref_only, row.cand_only) == (28672, 28672, 0, 0)
+    # the same range read twice covers it once
+    twice = coverage(trace(*spans(5, 1, [(0, 4096), (0, 4096), (4096, 4096)])), trace(*spans(5, 1, [(0, 8192)])),
+                     tmp_path)
+    assert [(r.ref_bytes, r.cand_bytes, r.ref_only, r.cand_only) for r in twice.values()] == [(8192, 8192, 0, 0)]
+
+
+def test_the_bytes_only_one_side_covers_are_counted_in_bytes_and_ranges(tmp_path):
+    ref = trace(*spans(5, 1, [(0, 8192), (8192, 8192), (40000, 4096), (50000, 100)]))
+    cand = trace(*spans(5, 1, [(0, 8192), (60000, 1000)]))
+    (row,) = coverage(ref, cand, tmp_path).values()
+    assert row.ref_bytes == 8192 + 8192 + 4096 + 100 and row.cand_bytes == 8192 + 1000
+    assert (row.ref_only, row.ref_only_ranges) == (8192 + 4096 + 100, 3)
+    assert (row.cand_only, row.cand_only_ranges) == (1000, 1)
+    # a range that overlaps the other side's only partly counts for the part outside it
+    (part,) = coverage(trace(*spans(5, 1, [(0, 10000)])), trace(*spans(5, 1, [(4000, 10000)])), tmp_path).values()
+    assert (part.ref_only, part.cand_only) == (4000, 4000)
+
+
+def test_a_failed_or_short_read_covers_only_the_bytes_it_returned(tmp_path):
+    ref = trace(fs_read(5, 1, 0, 4096, 0x11), fs_read(5, 2, 4096, 4096, 0x22, result=0xC8804464, reply=True),
+                fs_read(5, 3, 8192, 4096, 0x33, bytes_read=100), fs_read(5, 4, 20000, 4096, 0x44, reply=False))
+    (row,) = coverage(ref, trace(fs_read(5, 1, 0, 4096, 0x11)), tmp_path).values()
+    assert (row.ref_bytes, row.ref_only, row.cand_only) == (4096 + 100, 100, 0)
+
+
+def test_a_thread_or_a_file_session_that_one_side_never_reads_is_all_one_sided(tmp_path):
+    ref = trace(*spans(5, 1, [(0, 4096), (4096, 4096)]), *spans(1, 1, [(0, 2048)], session="fs:USER/file#3"))
+    cand = trace(*spans(5, 1, [(0, 4096), (4096, 4096)]))
+    rows = coverage(ref, cand, tmp_path)
+    assert len(rows) == 2
+    other = [r for r in rows.values() if r.session == "fs:USER/file#3"][0]
+    assert (other.ref_bytes, other.cand_bytes, other.ref_only, other.cand_only) == (2048, 0, 2048, 0)
+
+
+def test_the_report_has_a_coverage_line_with_the_multiset_option_only(tmp_path, capsys):
+    a, b = trace(*reads(5, *STREAM)), trace(*reads(5, *STREAM[:-5]))
+    capsys.readouterr()
+    assert run(tmp_path, a, b, *MULTISET) == 0
+    out = capsys.readouterr().out
+    line = [ln for ln in out.splitlines() if ln.startswith("fs coverage:")]
+    assert len(line) == 1 and out.splitlines().index(line[0]) > out.splitlines().index(
+        next(ln for ln in out.splitlines() if ln.startswith("fs reads:")))
+    assert ("1 thread/file session(s) read; bytes only the reference covers: 10240 (in 1), only the candidate "
+            "covers: 0 (in 0); the most per thread and file session: reference 10240 on thread") in line[0]
+    assert "(information, not a rule)" in line[0]
+    assert run(tmp_path, a, a, *MULTISET) == 0
+    assert "only the reference covers: 0 (in 0), only the candidate covers: 0 (in 0) (information" in capsys.readouterr().out
+    assert run(tmp_path, a, b, "--prefix") in (0, 1)
+    assert "fs coverage:" not in capsys.readouterr().out
+
+
+def test_the_coverage_is_information_it_changes_no_result(tmp_path, capsys):
+    base = trace(*reads(5, *STREAM))
+    # 4 MiB that only the candidate reads, in one read: the multiset rule accepts one read more, as it did before
+    big = trace(*reads(5, *STREAM), fs_read(5, 99, 10_000_000, 4 << 20, 0xABCD))
+    capsys.readouterr()
+    assert run(tmp_path, base, big, *MULTISET) == 0
+    assert "only the candidate covers: 4194304 (in 1)" in capsys.readouterr().out
+    # a CRC that differs on an identical (offset, size) fails, with or without a coverage difference
+    changed = list(STREAM)
+    changed[3] = (changed[3][0], changed[3][1], 0xDEAD)
+    assert run(tmp_path, base, trace(*reads(5, *changed)), *MULTISET) == 1
+    out = capsys.readouterr().out
+    assert "only the reference covers: 0 (in 0), only the candidate covers: 0 (in 0)" in out    # same ranges, other data
+
+
+def test_the_docstring_documents_the_coverage_line():
+    for word in ("fs coverage:", "N0-36", "comparators.md section 11", "information"):
+        assert word in cmp.__doc__

@@ -102,6 +102,12 @@ checks use these two options, and nothing else is loosened for `fs:`; the `nativ
                trace is an error (exit 2), never a silent pass.
   --fs-write-mask-session S   the golden session the traces belong to (`G2`): the lines of other sessions
                are not looked at.
+With --fs-reads-multiset the report also ends with an `fs coverage:` line (N0-36, docs/native/comparators.md section 11):
+for each thread and file session, the union of the byte ranges the Reads returned (whatever the pieces) on each side,
+and how many bytes only one side covers. It is information and no rule looks at it: the jit and native pairs of the
+sessions without a quest have at most 10 KB per thread that only one side reads (a stream cut at another place), the
+quest sessions G4 and G3 have 133 KB and 3 MB (the game loads other resources on the two models), and the number tells
+how far a pair is from the calibrated ones.
 Exit status 0 when every thread matches (up to the candidate's end with --prefix), 1 when
 something differs, 2 for unreadable input: a file that is missing, has no `# ipctrace` header (an
 SVC trace, an empty file, a runner that ignored --trace-ipc), is not UTF-8 text, holds no request
@@ -485,6 +491,108 @@ def compare_reads(a: list[IpcCall], b: list[IpcCall], max_surplus: int, coalesce
             "foreign": sorted(foreign, key=repr),
             "coalesced": coalesce, "ref_raw": len(a), "cand_raw": len(b), "prefix_tail": sum(tails)}
 
+class Coverage(NamedTuple):
+    """The bytes the Reads of one thread and one file session cover on each side (N0-36): the union of the ranges
+    the Reads returned, whatever the pieces, and how much of it only one side covers."""
+    thread: str
+    session: str
+    ref_bytes: int
+    cand_bytes: int
+    ref_only: int           # bytes the reference covers and the candidate does not
+    cand_only: int
+    ref_only_ranges: int
+    cand_only_ranges: int
+
+
+def fs_read_extent(call: IpcCall) -> tuple[int, int] | None:
+    """[start, end) of the file bytes a Read of a file session returned: its offset and the number of bytes its reply
+    says it read (at most the size asked for). None for a Read that failed, read nothing or has no readable
+    parameters: it covers nothing."""
+    request = tracefmt.fs_file_request(call)
+    if request is None or call.result is None:
+        return None
+    try:
+        if int(call.result, 16) != 0:
+            return None
+    except ValueError:
+        return None
+    got = tracefmt.fs_read_bytes(call)
+    size = request[1] if got is None else min(got, request[1])
+    return (request[0], request[0] + size) if size > 0 else None
+
+
+def merge_ranges(ranges) -> list[tuple[int, int]]:
+    """The union of [start, end) ranges as sorted, disjoint ranges that do not touch."""
+    out: list[list[int]] = []
+    for start, end in sorted(ranges):
+        if out and start <= out[-1][1]:
+            out[-1][1] = max(out[-1][1], end)
+        else:
+            out.append([start, end])
+    return [(a, b) for a, b in out]
+
+
+def subtract_ranges(a: list[tuple[int, int]], b: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """The parts of the merged ranges `a` that no range of the merged ranges `b` covers."""
+    out = []
+    for start, end in a:
+        at = start
+        for lo, hi in b:
+            if hi <= at or lo >= end:
+                continue
+            if lo > at:
+                out.append((at, lo))
+            at = max(at, hi)
+            if at >= end:
+                break
+        if at < end:
+            out.append((at, end))
+    return out
+
+
+def read_coverage(ref: dict[str, list[IpcCall]], cand: dict[str, list[IpcCall]]) -> list[Coverage]:
+    """For each thread and file session that either side read from: what each side covers and what only one covers.
+    Information only (N0-36): no rule of this tool looks at it. Two threads that read the same bytes are two rows."""
+    def extents(calls: list[IpcCall]) -> dict[str, list[tuple[int, int]]]:
+        out: dict[str, list[tuple[int, int]]] = {}
+        for c in calls:
+            if is_fs_read(c):
+                e = fs_read_extent(c)
+                out.setdefault(c.session, [])
+                if e is not None:
+                    out[c.session].append(e)
+        return out
+
+    rows = []
+    for tid in sorted(set(ref) | set(cand), key=_thread_order):
+        ea, eb = extents(ref.get(tid, [])), extents(cand.get(tid, []))
+        for session in sorted(set(ea) | set(eb)):
+            ua, ub = merge_ranges(ea.get(session, [])), merge_ranges(eb.get(session, []))
+            only_a, only_b = subtract_ranges(ua, ub), subtract_ranges(ub, ua)
+            rows.append(Coverage(tid, session, sum(e - s for s, e in ua), sum(e - s for s, e in ub),
+                                 sum(e - s for s, e in only_a), sum(e - s for s, e in only_b),
+                                 len(only_a), len(only_b)))
+    return rows
+
+
+def coverage_line(rows: list[Coverage]) -> str:
+    """The `fs coverage:` line of the report: bytes that only one side covers, in total and the largest per thread and
+    file session. Never gated."""
+    here_a = [r for r in rows if r.ref_only]
+    here_b = [r for r in rows if r.cand_only]
+    text = (f"fs coverage: {len(rows)} thread/file session(s) read; bytes only the reference covers: "
+            f"{sum(r.ref_only for r in rows)} (in {len(here_a)}), only the candidate covers: "
+            f"{sum(r.cand_only for r in rows)} (in {len(here_b)})")
+    worst = []
+    for label, field, rs in (("reference", "ref_only", here_a), ("candidate", "cand_only", here_b)):
+        if rs:
+            top = max(rs, key=lambda r: (getattr(r, field), r.thread))
+            worst.append(f"{label} {getattr(top, field)} on thread {top.thread}")
+    if worst:
+        text += "; the most per thread and file session: " + ", ".join(worst)
+    return text + " (information, not a rule)"
+
+
 def compare(ref: dict[str, list[IpcCall]], cand: dict[str, list[IpcCall]], strict: bool = False,
             prefix: bool = False, fs_reads: bool = False, max_surplus: int = DEFAULT_MAX_SURPLUS,
             coalesce: bool = False, read_prefix: bool = False, stats: Counter | None = None) -> list[dict]:
@@ -625,6 +733,7 @@ def main(argv: list[str] | None = None) -> int:
               f"{sum(v[1] for v in sizes.values())} on the candidate" + merged
               + (f"; the largest difference is {abs(worst[1][0] - worst[1][1])} on thread {worst[0]} "
                  f"(at most {max_surplus})" if worst else ""))
+        print(coverage_line(read_coverage(ref, cand)))                  # N0-36: information, never a rule
     if args.fs_write_mask:
         print(f"fs write masks: {len(masks)} line(s) of session {args.fs_write_mask_session}, applied to "
               f"{used_ref.writes} Write(s) of the reference and {used_cand.writes} of the candidate")
