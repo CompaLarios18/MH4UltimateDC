@@ -1644,37 +1644,80 @@ TEST_CASE("WritableFile: positioned reads and writes, resize, close") {
 }
 
 TEST_CASE("WritableFile: a reader and a writer use one file at the same time") {
+    // What WritableFile promises here: no lock, and ReadAt/WriteAt are not atomic against each other (each is a
+    // loop of pread/pwrite that retries short transfers and EINTR, and POSIX lets a read that overlaps a write
+    // see part of it, so a word written by one pwrite can be read half old, half new). What it does promise,
+    // and what this test checks:
+    //   1. both calls transfer the whole length (the file is never shortened here): ReadAt returns 64 and sets
+    //      *failed to false, WriteAt returns 8;
+    //   2. no byte is invented: a byte of a word is never older than the last value of that word whose WriteAt had
+    //      returned before the ReadAt started (a completed write is visible to a read that starts after it:
+    //      POSIX), and never newer than the last value whose WriteAt had started before the ReadAt returned.
+    //      Each word only ever gets 1, 2, 3, ... in that order, so a torn word is allowed (its bytes may differ),
+    //      but every byte is inside that window; a stale, garbled or never-written byte fails;
+    //   3. once the writer is done nothing torn survives: the final contents are exactly the last values written.
+    // It does not claim that a word is read whole.
+    constexpr std::size_t kWords = 8;
+    constexpr std::size_t kWordSize = 8;
+    constexpr std::size_t kSize = kWords * kWordSize;
+    constexpr int kRounds = 250;  // the values 1..250 fit a byte and never repeat, so "older" and "newer" are well defined
     TempDir dir;
     const std::string path = (dir.Path() / "f.bin").string();
     REQUIRE(fs::host::WriteFileDurably(path, std::vector<u8>(4096, 0).data(), 4096));
     auto file = fs::WritableFile::Open(path, true, nullptr);
     REQUIRE(file != nullptr);
+    std::array<std::atomic<int>, kWords> started{};    // the value whose WriteAt of this word began last
+    std::array<std::atomic<int>, kWords> completed{};  // the value whose WriteAt of this word returned last
     std::atomic<bool> stop{false};
-    std::atomic<int> bad{0};
+    std::atomic<u64> reads{0};
+    std::atomic<int> short_reads{0};
+    std::atomic<int> stale_or_invented{0};
     std::thread reader([&] {
-        std::vector<u8> chunk(64);
+        std::vector<u8> chunk(kSize);
         while (!stop) {
-            if (file->ReadAt(0, chunk.data(), chunk.size()) != chunk.size()) {
-                ++bad;
+            std::array<int, kWords> low{};
+            for (std::size_t w = 0; w < kWords; ++w) {
+                low[w] = completed[w].load();  // before the read starts
             }
-            // every 8-byte word is written whole by one pwrite, and all the bytes of a word are equal
-            for (std::size_t w = 0; w < 64; w += 8) {
-                if (!std::all_of(chunk.begin() + static_cast<std::ptrdiff_t>(w), chunk.begin() + static_cast<std::ptrdiff_t>(w + 8),
-                                 [&](u8 b) { return b == chunk[w]; })) {
-                    ++bad;
+            bool failed = true;
+            const std::size_t got = file->ReadAt(0, chunk.data(), chunk.size(), &failed);
+            if (got != chunk.size() || failed) {
+                ++short_reads;
+                ++reads;
+                continue;
+            }
+            for (std::size_t w = 0; w < kWords; ++w) {
+                const int high = started[w].load();  // after the read returned
+                for (std::size_t i = 0; i < kWordSize; ++i) {
+                    const int b = chunk[w * kWordSize + i];
+                    if (b < low[w] || b > high) {
+                        ++stale_or_invented;
+                    }
                 }
             }
+            ++reads;
         }
     });
-    for (int round = 0; round < 2000; ++round) {
-        const std::vector<u8> word(8, static_cast<u8>(round));
-        for (std::size_t w = 0; w < 64; w += 8) {
-            CHECK(file->WriteAt(w, word.data(), 8) == 8);
+    while (reads == 0) {  // let the reader run before the first write, so that it really overlaps them
+        std::this_thread::yield();
+    }
+    for (int round = 1; round <= kRounds; ++round) {
+        const std::vector<u8> word(kWordSize, static_cast<u8>(round));
+        for (std::size_t w = 0; w < kWords; ++w) {
+            started[w] = round;
+            bool failed = true;
+            CHECK(file->WriteAt(w * kWordSize, word.data(), kWordSize, &failed) == kWordSize);
+            CHECK(!failed);
+            completed[w] = round;
         }
     }
     stop = true;
     reader.join();
-    CHECK(bad == 0);
+    CHECK(short_reads == 0);
+    CHECK(stale_or_invented == 0);
+    std::vector<u8> final_contents(kSize);
+    CHECK(file->ReadAt(0, final_contents.data(), kSize) == kSize);
+    CHECK(final_contents == std::vector<u8>(kSize, static_cast<u8>(kRounds)));
 }
 
 TEST_CASE("DiskFile and FixSizeDiskFile: the modes and the fixed size") {
