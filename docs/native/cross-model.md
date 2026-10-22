@@ -149,6 +149,69 @@ What this means for later work: a native replay of G2 compared in the cross prof
 
 What this calibration confirms: the SVC cross-model list holds on 128 to 164 compared calls per session ([section 4](#4-svc-calls)); the state comparison and the checkpoints hold with D50's numbers; HID matches in all three; the time-dependent IPC commands are few (the GPU queue, the cache flush, the movie, the audio flush) and the ones that remained were all `fs:` reads and a write, which D52 gives rules and not entries.
 
+## 9. The quest sessions G3 and G4 (N0-30)
+
+Written by N0-30 (2026-10-22). **Status: `needs-decision`.** The scene and input rules of D50 hold on both sessions, the SVC and HID comparisons pass, and two IPC commands that carry clock values are proposed as entries; but the cross comparison of the `fs:` traffic does not pass, and the traps of N0-28 and N0-30 forbid calibrating an `fs:` difference away. The decision is the orchestrator's ([section 9.5](#95-what-needs-a-decision)).
+
+### 9.1 What was run
+
+`golden.py check <S> --candidate-args "--cpu jit" --profile cross --ignore build/cross-model/ipc_time_dependent-quests.txt --require state,checkpoints,ipc,svc,hid` for G3 and G4: the N0-29 reference runner with `--cpu jit` against the recordings of N0-10 (their `user-before/` already holds the save copy, so no `--save`), `config/native/ipc_time_dependent.txt` with the 18 entries of N0-28 and, on top of it, the file of 9.4. The recordings were hard-linked into `build/cross-model/rec/<S>/` as in N0-28. Host time of the jit run: about 580 s (G4) and 5,580 s (G3); a whole `check` about 19 minutes (G4) and 2 h 32 min (G3). The IPC comparison was repeated offline on the saved traces with the options of the cross profile (`--fs-reads-multiset --max-surplus 16`) to list every thread, because `golden.py` reports only the first difference per thread.
+
+| Comparison | G4 | G3 |
+|---|---|---|
+| `svc` (cross-model list) | pass (115 compared calls per side) | pass (197 per side) |
+| `state` | pass: 6 real scene changes | pass: 10 real scene changes |
+| `state-margin` (D50: 4 frames, 60 frames) | pass: largest shift 1 frame, smallest input margin 147 (reference) and 148 (candidate) | pass: largest shift 1 frame, smallest input margin 147 and 148 |
+| `checkpoints` | pass | pass |
+| `hid` | pass | pass |
+| `ipc` | **fail** | **fail** |
+| `svc-full`, `images` | info, never gated: 54 of 92 screenshots differ | info: 491 of 592 differ |
+| exit status | 1 | 1 |
+
+### 9.2 Scene changes and input margins (D50): the rule holds
+
+Both sessions have the scene sequence of G1, G2 and G6 and the same scene values on both sides; **jit is not later than recomp here, it is up to 1 frame earlier or later**. G4's six real changes fall at +0, +1, -1, -1, -1, -1 frames; G3's ten at +0, +1, -1, -1, -1, -1, +1, +1, -1, -1 (G4's are G3's first six). The largest shift is **1 frame**, against 3 in G2 and D50's tolerance of 4. Every scripted input comes at least **147 frames** after the last real scene change on both sides (G4: 9 events, smallest 147/148 at frame 1050; G3: 111 events, the same smallest; the three that follow the real change at frame 13464 have margins from 186 on the reference and 185 on the candidate). G3's many `A` presses in talks and menus are all at least that far from a real scene change, so the margin guard needed no loosening. The tables are in the appendix.
+
+The sessions agree on more than D50 asks: all checkpoints and the HID captures are equal, and the SVC comparison of N0-25 compares 115 (G4) and 197 (G3) calls per side, equal.
+
+### 9.3 IPC: what is the same, what differs
+
+With the 18 entries of N0-28 hidden, `golden.py` stops each thread at its first difference. Aligning every thread of the two traces (G4: 10 threads, G3: 20) gives these differences, and only these:
+
+| # | Where | G4 | G3 | Class |
+|---|---|---|---|---|
+| 1 | main thread, request 222 (`fs:USER` header `0x080d0144`, ControlArchive, in the save-loading start-up, before frame 3) | 1 request | 1 request | `fs:`: the CRC-32 of the one-byte *input* buffer differs (the output byte is equal on both sides: the reference's input is a non-zero byte, the candidate's is 0). Every other request of the main thread (547 of 548 in G4, 687 of 688 in G3) is equal |
+| 2 | thread `#14` (`nwm::UDS`), `0x001d0044` BeginHostingNetwork and `0x00100042` SetApplicationData | 1 + 1 requests of 22 | 11 + 11 requests of 237 (every call of the two commands) | not `fs:`: clock values in the request buffer, see 9.4 |
+| 3 | thread `#3` (`fs:USER/file` Reads, the asset loader), around its request 205 (the village's arrival scene, about frame 1950) | 275 against 276 Reads; 6 Reads of the reference (the side with fewer) have no equal on the candidate | the same (583 against 584) | `fs:`: two loads are made in **different pieces**: sizes 3280 and 131072 against 560 and 79617 at the same file position, and a 2185-byte piece at another file position; surplus 1, but the multiset rule asks for containment and the Reads are not contained |
+| 4 | thread `#12` (`fs:USER/file` Reads, the 8192-byte streaming reader of 5.2) | 264 against 261 Reads: passes the multiset rule (surplus 3, three Reads out of place) | 2317 against 2289 Reads: **fails**, surplus 28 (at most 16); 379 Reads of the reference and 351 of the candidate have no equal on the other side. They are 8192-byte pieces in a few contiguous ranges of the same file (5 ranges on the reference, 4 on the candidate; the largest, 322 Reads and 2.6 MB, on each side) at **different file positions**, not the same ranges in another order | `fs:`: the reader streams other parts of the file on the two backends |
+| 5 | thread `#17` (the movie stream of 5.2) | 580 against 571 Reads | 580 against 571 | `fs:`: 9 fewer Reads on jit at the scripted skip, inside the multiset rule (D52, surplus 9) |
+| 6 | thread `#5` (`fs:USER/file` Reads) | 115 against 114 | 214 against 213 | `fs:`: one 124,610-byte Read less on jit, inside the rule (surplus 1) |
+
+The other threads (G3 has 20) match request for request. **No difference of a new kind appears in G3's quest part (frames 13,000 to 14,100) outside thread `#12`:** the main thread's single difference and the loader `#3`'s (its requests 205 to 210 and one more at 221) are at the same positions in G4 and G3, and the UDS calls differ in every call of both sessions. The Y2R, DSP and GPU commands of the 18 entries differ in count as in N0-28 (G4: Y2R set-ups 234 against 230, GPU queue triggers 18,108 against 36,090) and are hidden by them.
+
+Rows 1, 3 and 4 are `fs:` differences that the cross-profile rules of D52 do not absorb, and D52 says no `fs:` command is ever an entry. Rows 5 and 6 pass the rule.
+
+### 9.4 The entries proposed (`build/cross-model/ipc_time_dependent-quests.txt`)
+
+Two entries, both for commands that are not `fs:`, each with a measured dependence on the clock. Offsets and counts only:
+
+| Entry | What the pair shows | Why it depends on time |
+|---|---|---|
+| `nwm::UDS 0x001d0044` | BeginHostingNetwork: 11 requests in G3, 1 differing in G4; the 264-byte network structure differs in the same two bytes (offsets 70 and 71) in all 12 requests, and in two more bytes (260 and 261) in 8 of the 11 requests of G3 | the 16-bit value at 70 to 71 is a different number on each call and different on the two backends (11 BeginHostingNetwork calls of G3: 11 values per side, none equal across sides), which is how the game's random generator, seeded from its first clock reading (the same mechanism N0-34 found in G2's save), behaves; the 16-bit field at 260 to 261 is a counter of emulated seconds: it rises from 0x16c0 to 0x17ad over the 11 calls on both sides, a few units apart (one unit is about 2.7e8 ticks, one second of the 3DS clock). The reply is a result code only |
+| `nwm::UDS 0x00100042` | SetApplicationData: the 200-byte beacon data differs in offsets 6 and 7 (the same random value) and, in 9 of 11 requests, 196 and 197 (the second counter) | the same two fields as above, read from the same state. The reply is a result code only |
+
+The random-value half of this is an inference from the pattern and from N0-34, not a proof: no `GetSystemTick` result of the UDS thread equals the value, and the thread's own SVC calls do not hold it (it comes from another thread's state). The counter half is plain time. Both entries leave the `nwm::UDS` thread comparing every other command in full. The orchestrator decides whether this level of evidence is enough to merge them (the alternative is to compare those two commands with the two fields masked, a rule the plan lacks).
+
+With the two entries and the 18, the offline comparison of the cross profile still exits 1 on both sessions: G4 fails on thread `main` (row 1) and thread `#3` (row 3); G3 on `main`, `#3` and `#12` (row 4). Nothing else fails.
+
+### 9.5 What needs a decision
+
+1. **Row 1, the ControlArchive input byte.** One byte of an input buffer of an `fs:USER` command differs in the start-up with the save: the reference's input is non-zero and the output is the same. It looks like uninitialised guest stack that the game passes along (the buffer is on the main thread's stack), left over from the earlier, timing-different run of the code, and not like data read or written; but this work package did not find where the byte comes from, and its trap forbids treating an `fs:` difference as time-dependent. G1, G2 and G6 start without the save and never show it. Options: a rule for an `fs:` command whose input buffer is smaller than N bytes, a finding of the byte's origin (an N0-31-style investigation), or a fix if it is a backend bug.
+2. **Rows 3 and 4, different pieces and different positions of the streams.** The loader `#3` reads one resource in pieces of 3280 and 131072 bytes on recomp and 560 and 79617 on jit, and the streaming reader `#12` reads other parts of its file on the two backends (351 pieces of 2.6 MB each side in G3). The first looks like the quest-loading race of `docs/research/system-services.md` (which resource is requested at a moment depends on how many frames have run), the second like a stream (music, by its pattern) that is at another position when the run ends or when a scene starts. D52's multiset needs equal pieces; N0-33's `--fs-reads-coalesce --fs-reads-prefix` (the `native` profile) merges touching pieces and might absorb row 3, but it is not part of the `cross` profile this WP was told to use, and neither option has been tried on these traces here. The orchestrator must say whether the `cross` profile is to take these options (and which surplus), whether the streams of G3 get a rule, or whether G3's and G4's cross calibration is replaced by a `native`-profile calibration.
+3. **The two UDS entries (9.4)** if the evidence is enough.
+
+D50's numbers (4 frames, 60 frames) need no change. `golden.py check G3`/`G4 ... --require state,checkpoints,ipc,svc,hid` exits 0 only after 1 and 2 are settled.
+
 ## Appendix: the report tool on G1, G6 and G2
 
 The tool's output on the saved runs of the first round, with its defaults of D50 (tolerance 4, minimum margin 60); the SVC and IPC counts are those of the first round and do not depend on the two limits.
@@ -469,3 +532,358 @@ The largest difference is 3 frames.
 | y2r:u | 0x00210040 | 232 | 230 | -2 | main 232/230 |
 | y2r:u | 0x00220040 | 232 | 230 | -2 | main 232/230 |
 | y2r:u | 0x00260000 | 232 | 230 | -2 | main 232/230 |
+
+
+## Appendix: the report tool on the quest sessions G4 and G3 (N0-30)
+
+The tool's output on the runs of section 9, with the defaults of D50 (tolerance 4, minimum margin 60); both exit 0.
+
+### G4: jit (candidate) against recomp (reference)
+
+#### Real scene changes (6 on the reference, 6 on the candidate; tolerance 4 frames)
+
+| # | scene (reference) | scene (candidate) | frame (reference) | frame (candidate) | difference | within |
+|---|---|---|---|---|---|---|
+| 1 | 0x00e6c100 | 0x00e6c100 | 2 | 2 | +0 | yes |
+| 2 | 0x00e64d5c | 0x00e64d5c | 42 | 43 | +1 | yes |
+| 3 | 0x00e6c778 | 0x00e6c778 | 903 | 902 | -1 | yes |
+| 4 | 0x00e64d5c | 0x00e64d5c | 1576 | 1575 | -1 | yes |
+| 5 | 0x00e6c100 | 0x00e6c100 | 1578 | 1577 | -1 | yes |
+| 6 | 0x00e6c170 | 0x00e6c170 | 1579 | 1578 | -1 | yes |
+
+The largest difference is 1 frame.
+
+#### Input events (9; minimum margin 60 frames)
+
+| frame | input | last scene change (reference) | last scene change (candidate) | margin (reference) | margin (candidate) | margin difference |
+|---|---|---|---|---|---|---|
+| 300 | A | 42 | 43 | 258 | 257 | -1 |
+| 450 | A | 42 | 43 | 408 | 407 | -1 |
+| 600 | A | 42 | 43 | 558 | 557 | -1 |
+| 750 | A | 42 | 43 | 708 | 707 | -1 |
+| 900 | A | 42 | 43 | 858 | 857 | -1 |
+| 1050 | A | 903 | 902 | 147 | 148 | +1 |
+| 1200 | A | 903 | 902 | 297 | 298 | +1 |
+| 1350 | A | 903 | 902 | 447 | 448 | +1 |
+| 1500 | A | 903 | 902 | 597 | 598 | +1 |
+
+- smallest margin on the reference: 147 frames (the event at frame 1050)
+- smallest margin on the candidate: 148 frames (the event at frame 1050)
+- every input event is at least 60 frames after the last real scene change on both sides
+
+#### SVC calls per thread (cross-model names)
+
+| thread | calls (reference) | calls (candidate) | difference | the SVC numbers that differ most |
+|---|---|---|---|---|
+| main | 2369799 | 2624196 | +254397 | 0x28 GetSystemTick 1141657/1374736, 0x37 1185687/1207168, 0x22 ArbitrateAddress 11877/11280 |
+| main/0010D8D4#0 | 1 | 1 | +0 | - |
+| main/0010D8D4#1 | 9 | 9 | +0 | - |
+| main/0010D8D4#10 | 3 | 3 | +0 | - |
+| main/0010D8D4#11 | 44678 | 44641 | -37 | 0x28 GetSystemTick 11291/11280, 0x32 SendSyncRequest 851/841, 0x22 ArbitrateAddress 45/39 |
+| main/0010D8D4#12 | 1317 | 1313 | -4 | 0x32 SendSyncRequest 264/261, 0x0A SleepThread 1043/1042 |
+| main/0010D8D4#13 | 263 | 263 | +0 | - |
+| main/0010D8D4#14 | 15741 | 12774 | -2967 | 0x28 GetSystemTick 13371/10751, 0x0A SleepThread 2300/1954, 0x22 ArbitrateAddress 7/6 |
+| main/0010D8D4#14/0010D8D4#0 | 9 | 9 | +0 | - |
+| main/0010D8D4#14/0010D8D4#1 | 3028 | 2431 | -597 | 0x24 WaitSynchronization1 3026/2429 |
+| main/0010D8D4#14/0010D8D4#2 | 3028 | 2431 | -597 | 0x24 WaitSynchronization1 3026/2429 |
+| main/0010D8D4#15 | 3136 | 3127 | -9 | 0x0A SleepThread 3132/3123 |
+| main/0010D8D4#16 | 3133 | 3124 | -9 | 0x0A SleepThread 3132/3123 |
+| main/0010D8D4#17 | 1726 | 1699 | -27 | 0x22 ArbitrateAddress 1145/1127, 0x32 SendSyncRequest 580/571 |
+| main/0010D8D4#18 | 2515 | 2469 | -46 | 0x0A SleepThread 1276/1226, 0x22 ArbitrateAddress 1238/1242 |
+| main/0010D8D4#19 | 114 | 141 | +27 | 0x22 ArbitrateAddress 113/140 |
+| main/0010D8D4#2 | 530 | 531 | +1 | 0x0A SleepThread 528/529 |
+| main/0010D8D4#20 | 3 | 3 | +0 | - |
+| main/0010D8D4#21 | 981 | 793 | -188 | 0x0A SleepThread 978/790 |
+| main/0010D8D4#22 | 964 | 775 | -189 | 0x0A SleepThread 959/771, 0x22 ArbitrateAddress 4/3 |
+| main/0010D8D4#3 | 10819 | 10756 | -63 | 0x37 9840/9790, 0x0A SleepThread 378/360, 0x22 ArbitrateAddress 326/330 |
+| main/0010D8D4#4 | 1584 | 1669 | +85 | 0x0C 555/587, 0x0A SleepThread 479/505, 0x0B 479/505 |
+| main/0010D8D4#5 | 233 | 231 | -2 | 0x22 ArbitrateAddress 118/117, 0x32 SendSyncRequest 115/114 |
+| main/0010D8D4#6 | 1 | 1 | +0 | - |
+| main/0010D8D4#7 | 1 | 1 | +0 | - |
+| main/0010D8D4#8 | 15941 | 16274 | +333 | 0x37 6626/6848, 0x0A SleepThread 3313/3424 |
+| main/0010D8D4#9 | 27115 | 44470 | +17355 | 0x32 SendSyncRequest 3165/21143, 0x22 ArbitrateAddress 5635/5042, 0x19 ClearEvent 9157/9142 |
+| **all 27 threads** | 2506672 | 2774135 | +267463 | 19 of 27 threads differ |
+
+#### IPC requests per command
+
+33855 requests on the reference, 51789 on the candidate, 97 distinct commands; 19 of them with a different count on at least one thread.
+
+| service | header | requests (reference) | requests (candidate) | difference | threads that differ (reference/candidate) |
+|---|---|---|---|---|---|
+| dsp::DSP | 0x00130082 | 851 | 841 | -10 | main/0010D8D4#11 851/841 |
+| fs:USER/file | 0x080200c2 | 1278 | 1266 | -12 | main/0010D8D4#12 264/261, main/0010D8D4#17 580/571, main/0010D8D4#3 275/276, main/0010D8D4#5 115/114 |
+| gsp::Gpu | 0x00080082 | 9436 | 9470 | +34 | main 9436/9470 |
+| gsp::Gpu | 0x000c0000 | 18108 | 36090 | +17982 | main 14943/14947, main/0010D8D4#9 3165/21143 |
+| y2r:u | 0x00010040 | 234 | 230 | -4 | main 234/230 |
+| y2r:u | 0x00030040 | 234 | 230 | -4 | main 234/230 |
+| y2r:u | 0x00050040 | 234 | 230 | -4 | main 234/230 |
+| y2r:u | 0x00070040 | 234 | 230 | -4 | main 234/230 |
+| y2r:u | 0x000d0040 | 235 | 231 | -4 | main 235/231 |
+| y2r:u | 0x00100102 | 234 | 230 | -4 | main 234/230 |
+| y2r:u | 0x00110102 | 234 | 230 | -4 | main 234/230 |
+| y2r:u | 0x00120102 | 234 | 230 | -4 | main 234/230 |
+| y2r:u | 0x00180102 | 234 | 230 | -4 | main 234/230 |
+| y2r:u | 0x001a0040 | 234 | 230 | -4 | main 234/230 |
+| y2r:u | 0x001c0040 | 234 | 230 | -4 | main 234/230 |
+| y2r:u | 0x001e0100 | 234 | 230 | -4 | main 234/230 |
+| y2r:u | 0x00210040 | 234 | 230 | -4 | main 234/230 |
+| y2r:u | 0x00220040 | 234 | 230 | -4 | main 234/230 |
+| y2r:u | 0x00260000 | 234 | 230 | -4 | main 234/230 |
+
+### G3: jit (candidate) against recomp (reference)
+
+#### Real scene changes (10 on the reference, 10 on the candidate; tolerance 4 frames)
+
+| # | scene (reference) | scene (candidate) | frame (reference) | frame (candidate) | difference | within |
+|---|---|---|---|---|---|---|
+| 1 | 0x00e6c100 | 0x00e6c100 | 2 | 2 | +0 | yes |
+| 2 | 0x00e64d5c | 0x00e64d5c | 42 | 43 | +1 | yes |
+| 3 | 0x00e6c778 | 0x00e6c778 | 903 | 902 | -1 | yes |
+| 4 | 0x00e64d5c | 0x00e64d5c | 1576 | 1575 | -1 | yes |
+| 5 | 0x00e6c100 | 0x00e6c100 | 1578 | 1577 | -1 | yes |
+| 6 | 0x00e6c170 | 0x00e6c170 | 1579 | 1578 | -1 | yes |
+| 7 | 0x00e6c100 | 0x00e6c100 | 13462 | 13463 | +1 | yes |
+| 8 | 0x00e650bc | 0x00e650bc | 13464 | 13465 | +1 | yes |
+| 9 | 0x00e6c100 | 0x00e6c100 | 14107 | 14106 | -1 | yes |
+| 10 | 0x00e655c8 | 0x00e655c8 | 14109 | 14108 | -1 | yes |
+
+The largest difference is 1 frame.
+
+#### Input events (111; minimum margin 60 frames)
+
+| frame | input | last scene change (reference) | last scene change (candidate) | margin (reference) | margin (candidate) | margin difference |
+|---|---|---|---|---|---|---|
+| 300 | A | 42 | 43 | 258 | 257 | -1 |
+| 450 | A | 42 | 43 | 408 | 407 | -1 |
+| 600 | A | 42 | 43 | 558 | 557 | -1 |
+| 750 | A | 42 | 43 | 708 | 707 | -1 |
+| 900 | A | 42 | 43 | 858 | 857 | -1 |
+| 1050 | A | 903 | 902 | 147 | 148 | +1 |
+| 1200 | A | 903 | 902 | 297 | 298 | +1 |
+| 1350 | A | 903 | 902 | 447 | 448 | +1 |
+| 1500 | A | 903 | 902 | 597 | 598 | +1 |
+| 3300 | A | 1579 | 1578 | 1721 | 1722 | +1 |
+| 3420 | A | 1579 | 1578 | 1841 | 1842 | +1 |
+| 3540 | A | 1579 | 1578 | 1961 | 1962 | +1 |
+| 3660 | A | 1579 | 1578 | 2081 | 2082 | +1 |
+| 3780 | A | 1579 | 1578 | 2201 | 2202 | +1 |
+| 3900 | A | 1579 | 1578 | 2321 | 2322 | +1 |
+| 4020 | A | 1579 | 1578 | 2441 | 2442 | +1 |
+| 4140 | A | 1579 | 1578 | 2561 | 2562 | +1 |
+| 4260 | A | 1579 | 1578 | 2681 | 2682 | +1 |
+| 4380 | A | 1579 | 1578 | 2801 | 2802 | +1 |
+| 4500 | A | 1579 | 1578 | 2921 | 2922 | +1 |
+| 4620 | A | 1579 | 1578 | 3041 | 3042 | +1 |
+| 4740 | A | 1579 | 1578 | 3161 | 3162 | +1 |
+| 4860 | A | 1579 | 1578 | 3281 | 3282 | +1 |
+| 4980 | A | 1579 | 1578 | 3401 | 3402 | +1 |
+| 5100 | A | 1579 | 1578 | 3521 | 3522 | +1 |
+| 5220 | A | 1579 | 1578 | 3641 | 3642 | +1 |
+| 5340 | A | 1579 | 1578 | 3761 | 3762 | +1 |
+| 5460 | A | 1579 | 1578 | 3881 | 3882 | +1 |
+| 5580 | A | 1579 | 1578 | 4001 | 4002 | +1 |
+| 5700 | A | 1579 | 1578 | 4121 | 4122 | +1 |
+| 5820 | A | 1579 | 1578 | 4241 | 4242 | +1 |
+| 5940 | A | 1579 | 1578 | 4361 | 4362 | +1 |
+| 6060 | A | 1579 | 1578 | 4481 | 4482 | +1 |
+| 6180 | A | 1579 | 1578 | 4601 | 4602 | +1 |
+| 6300 | A | 1579 | 1578 | 4721 | 4722 | +1 |
+| 6420 | A | 1579 | 1578 | 4841 | 4842 | +1 |
+| 6540 | A | 1579 | 1578 | 4961 | 4962 | +1 |
+| 6660 | A | 1579 | 1578 | 5081 | 5082 | +1 |
+| 6780 | A | 1579 | 1578 | 5201 | 5202 | +1 |
+| 6900 | A | 1579 | 1578 | 5321 | 5322 | +1 |
+| 7020 | A | 1579 | 1578 | 5441 | 5442 | +1 |
+| 7140 | A | 1579 | 1578 | 5561 | 5562 | +1 |
+| 7260 | A | 1579 | 1578 | 5681 | 5682 | +1 |
+| 7380 | A | 1579 | 1578 | 5801 | 5802 | +1 |
+| 7500 | A | 1579 | 1578 | 5921 | 5922 | +1 |
+| 7620 | A | 1579 | 1578 | 6041 | 6042 | +1 |
+| 7740 | A | 1579 | 1578 | 6161 | 6162 | +1 |
+| 7860 | A | 1579 | 1578 | 6281 | 6282 | +1 |
+| 7980 | A | 1579 | 1578 | 6401 | 6402 | +1 |
+| 8100 | A | 1579 | 1578 | 6521 | 6522 | +1 |
+| 8220 | A | 1579 | 1578 | 6641 | 6642 | +1 |
+| 8340 | A | 1579 | 1578 | 6761 | 6762 | +1 |
+| 8460 | A | 1579 | 1578 | 6881 | 6882 | +1 |
+| 8694 | TOUCH | 1579 | 1578 | 7115 | 7116 | +1 |
+| 8894 | TOUCH | 1579 | 1578 | 7315 | 7316 | +1 |
+| 9044 | TOUCH | 1579 | 1578 | 7465 | 7466 | +1 |
+| 9494 | CIRCLE | 1579 | 1578 | 7915 | 7916 | +1 |
+| 9914 | CIRCLE | 1579 | 1578 | 8335 | 8336 | +1 |
+| 10294 | CIRCLE | 1579 | 1578 | 8715 | 8716 | +1 |
+| 10604 | CIRCLE | 1579 | 1578 | 9025 | 9026 | +1 |
+| 10894 | CIRCLE | 1579 | 1578 | 9315 | 9316 | +1 |
+| 11444 | A | 1579 | 1578 | 9865 | 9866 | +1 |
+| 11519 | A | 1579 | 1578 | 9940 | 9941 | +1 |
+| 11594 | A | 1579 | 1578 | 10015 | 10016 | +1 |
+| 11669 | A | 1579 | 1578 | 10090 | 10091 | +1 |
+| 11744 | A | 1579 | 1578 | 10165 | 10166 | +1 |
+| 11819 | A | 1579 | 1578 | 10240 | 10241 | +1 |
+| 11894 | A | 1579 | 1578 | 10315 | 10316 | +1 |
+| 11969 | A | 1579 | 1578 | 10390 | 10391 | +1 |
+| 12044 | A | 1579 | 1578 | 10465 | 10466 | +1 |
+| 12119 | A | 1579 | 1578 | 10540 | 10541 | +1 |
+| 12250 | CIRCLE | 1579 | 1578 | 10671 | 10672 | +1 |
+| 12510 | CIRCLE | 1579 | 1578 | 10931 | 10932 | +1 |
+| 12850 | CIRCLE | 1579 | 1578 | 11271 | 11272 | +1 |
+| 13300 | A | 1579 | 1578 | 11721 | 11722 | +1 |
+| 13650 | A | 13464 | 13465 | 186 | 185 | -1 |
+| 13850 | LEFT | 13464 | 13465 | 386 | 385 | -1 |
+| 13910 | A | 13464 | 13465 | 446 | 445 | -1 |
+| 14350 | CIRCLE | 14109 | 14108 | 241 | 242 | +1 |
+| 15050 | A | 14109 | 14108 | 941 | 942 | +1 |
+| 15140 | A | 14109 | 14108 | 1031 | 1032 | +1 |
+| 15230 | A | 14109 | 14108 | 1121 | 1122 | +1 |
+| 15320 | A | 14109 | 14108 | 1211 | 1212 | +1 |
+| 15410 | A | 14109 | 14108 | 1301 | 1302 | +1 |
+| 15500 | A | 14109 | 14108 | 1391 | 1392 | +1 |
+| 15590 | A | 14109 | 14108 | 1481 | 1482 | +1 |
+| 15680 | A | 14109 | 14108 | 1571 | 1572 | +1 |
+| 15770 | A | 14109 | 14108 | 1661 | 1662 | +1 |
+| 15860 | A | 14109 | 14108 | 1751 | 1752 | +1 |
+| 15950 | A | 14109 | 14108 | 1841 | 1842 | +1 |
+| 16040 | A | 14109 | 14108 | 1931 | 1932 | +1 |
+| 16130 | A | 14109 | 14108 | 2021 | 2022 | +1 |
+| 16220 | A | 14109 | 14108 | 2111 | 2112 | +1 |
+| 16310 | A | 14109 | 14108 | 2201 | 2202 | +1 |
+| 16400 | A | 14109 | 14108 | 2291 | 2292 | +1 |
+| 16490 | A | 14109 | 14108 | 2381 | 2382 | +1 |
+| 16580 | A | 14109 | 14108 | 2471 | 2472 | +1 |
+| 16670 | A | 14109 | 14108 | 2561 | 2562 | +1 |
+| 16760 | A | 14109 | 14108 | 2651 | 2652 | +1 |
+| 16850 | A | 14109 | 14108 | 2741 | 2742 | +1 |
+| 16940 | A | 14109 | 14108 | 2831 | 2832 | +1 |
+| 17030 | A | 14109 | 14108 | 2921 | 2922 | +1 |
+| 17120 | A | 14109 | 14108 | 3011 | 3012 | +1 |
+| 17210 | A | 14109 | 14108 | 3101 | 3102 | +1 |
+| 17300 | A | 14109 | 14108 | 3191 | 3192 | +1 |
+| 17390 | A | 14109 | 14108 | 3281 | 3282 | +1 |
+| 17480 | A | 14109 | 14108 | 3371 | 3372 | +1 |
+| 17570 | A | 14109 | 14108 | 3461 | 3462 | +1 |
+| 17660 | A | 14109 | 14108 | 3551 | 3552 | +1 |
+| 17750 | A | 14109 | 14108 | 3641 | 3642 | +1 |
+| 17840 | A | 14109 | 14108 | 3731 | 3732 | +1 |
+
+- smallest margin on the reference: 147 frames (the event at frame 1050)
+- smallest margin on the candidate: 148 frames (the event at frame 1050)
+- every input event is at least 60 frames after the last real scene change on both sides
+
+#### SVC calls per thread (cross-model names)
+
+| thread | calls (reference) | calls (candidate) | difference | the SVC numbers that differ most |
+|---|---|---|---|---|
+| main | 17894935 | 18244895 | +349960 | 0x28 GetSystemTick 3160504/3342117, 0x37 14501179/14670005, 0x22 ArbitrateAddress 71468/70538 |
+| main/0010D8D4#0 | 1 | 1 | +0 | - |
+| main/0010D8D4#1 | 9 | 9 | +0 | - |
+| main/0010D8D4#10 | 3 | 3 | +0 | - |
+| main/0010D8D4#11 | 256927 | 256903 | -24 | 0x32 SendSyncRequest 7616/7546, 0x18 SignalEvent 62112/62127, 0x19 ClearEvent 62112/62127 |
+| main/0010D8D4#12 | 8347 | 8320 | -27 | 0x32 SendSyncRequest 2317/2289, 0x22 ArbitrateAddress 6/7 |
+| main/0010D8D4#13 | 263 | 263 | +0 | - |
+| main/0010D8D4#14 | 160898 | 160776 | -122 | 0x28 GetSystemTick 138728/138625, 0x0A SleepThread 21452/21437, 0x22 ArbitrateAddress 52/48 |
+| main/0010D8D4#14/0010D8D4#0 | 9 | 9 | +0 | - |
+| main/0010D8D4#14/0010D8D4#1 | 3028 | 2431 | -597 | 0x24 WaitSynchronization1 3026/2429 |
+| main/0010D8D4#14/0010D8D4#10 | 3228 | 3428 | +200 | 0x24 WaitSynchronization1 3226/3426 |
+| main/0010D8D4#14/0010D8D4#11 | 3228 | 3428 | +200 | 0x24 WaitSynchronization1 3226/3426 |
+| main/0010D8D4#14/0010D8D4#12 | 9 | 9 | +0 | - |
+| main/0010D8D4#14/0010D8D4#13 | 2830 | 3628 | +798 | 0x24 WaitSynchronization1 2828/3625, 0x22 ArbitrateAddress 0/1 |
+| main/0010D8D4#14/0010D8D4#14 | 2830 | 3627 | +797 | 0x24 WaitSynchronization1 2828/3625 |
+| main/0010D8D4#14/0010D8D4#15 | 9 | 9 | +0 | - |
+| main/0010D8D4#14/0010D8D4#16 | 3428 | 3029 | -399 | 0x24 WaitSynchronization1 3426/3027 |
+| main/0010D8D4#14/0010D8D4#17 | 3428 | 3029 | -399 | 0x24 WaitSynchronization1 3426/3027 |
+| main/0010D8D4#14/0010D8D4#18 | 9 | 9 | +0 | - |
+| main/0010D8D4#14/0010D8D4#19 | 2829 | 2430 | -399 | 0x24 WaitSynchronization1 2827/2428 |
+| main/0010D8D4#14/0010D8D4#2 | 3028 | 2431 | -597 | 0x24 WaitSynchronization1 3026/2429 |
+| main/0010D8D4#14/0010D8D4#20 | 2829 | 2430 | -399 | 0x24 WaitSynchronization1 2827/2428 |
+| main/0010D8D4#14/0010D8D4#21 | 9 | 9 | +0 | - |
+| main/0010D8D4#14/0010D8D4#22 | 2011 | 2397 | +386 | 0x24 WaitSynchronization1 2009/2395 |
+| main/0010D8D4#14/0010D8D4#23 | 2002 | 2388 | +386 | 0x24 WaitSynchronization1 2000/2386 |
+| main/0010D8D4#14/0010D8D4#24 | 9 | 9 | +0 | - |
+| main/0010D8D4#14/0010D8D4#25 | 3497 | 2898 | -599 | 0x24 WaitSynchronization1 3495/2896 |
+| main/0010D8D4#14/0010D8D4#26 | 3492 | 2891 | -601 | 0x24 WaitSynchronization1 3490/2889 |
+| main/0010D8D4#14/0010D8D4#27 | 9 | 9 | +0 | - |
+| main/0010D8D4#14/0010D8D4#28 | 3428 | 2430 | -998 | 0x24 WaitSynchronization1 3426/2428 |
+| main/0010D8D4#14/0010D8D4#29 | 3428 | 2430 | -998 | 0x24 WaitSynchronization1 3426/2428 |
+| main/0010D8D4#14/0010D8D4#3 | 9 | 9 | +0 | - |
+| main/0010D8D4#14/0010D8D4#30 | 5 | 5 | +0 | - |
+| main/0010D8D4#14/0010D8D4#31 | 1087 | 2666 | +1579 | 0x24 WaitSynchronization1 1086/2665 |
+| main/0010D8D4#14/0010D8D4#32 | 1087 | 2666 | +1579 | 0x24 WaitSynchronization1 1086/2665 |
+| main/0010D8D4#14/0010D8D4#4 | 3625 | 2430 | -1195 | 0x24 WaitSynchronization1 3623/2428 |
+| main/0010D8D4#14/0010D8D4#5 | 3625 | 2430 | -1195 | 0x24 WaitSynchronization1 3623/2428 |
+| main/0010D8D4#14/0010D8D4#6 | 9 | 9 | +0 | - |
+| main/0010D8D4#14/0010D8D4#7 | 2429 | 3625 | +1196 | 0x24 WaitSynchronization1 2427/3623 |
+| main/0010D8D4#14/0010D8D4#8 | 2429 | 3625 | +1196 | 0x24 WaitSynchronization1 2427/3623 |
+| main/0010D8D4#14/0010D8D4#9 | 9 | 9 | +0 | - |
+| main/0010D8D4#15 | 18175 | 18163 | -12 | 0x0A SleepThread 18171/18159 |
+| main/0010D8D4#16 | 18172 | 18160 | -12 | 0x0A SleepThread 18171/18159 |
+| main/0010D8D4#17 | 1726 | 1699 | -27 | 0x22 ArbitrateAddress 1145/1127, 0x32 SendSyncRequest 580/571 |
+| main/0010D8D4#18 | 2515 | 2469 | -46 | 0x0A SleepThread 1276/1226, 0x22 ArbitrateAddress 1238/1242 |
+| main/0010D8D4#19 | 114 | 141 | +27 | 0x22 ArbitrateAddress 113/140 |
+| main/0010D8D4#2 | 3042 | 3043 | +1 | 0x0A SleepThread 3040/3041 |
+| main/0010D8D4#20 | 3 | 3 | +0 | - |
+| main/0010D8D4#21 | 981 | 793 | -188 | 0x0A SleepThread 978/790 |
+| main/0010D8D4#22 | 964 | 775 | -189 | 0x0A SleepThread 959/771, 0x22 ArbitrateAddress 4/3 |
+| main/0010D8D4#23 | 3 | 3 | +0 | - |
+| main/0010D8D4#24 | 1168 | 793 | -375 | 0x0A SleepThread 1165/790 |
+| main/0010D8D4#25 | 1150 | 775 | -375 | 0x0A SleepThread 1146/771 |
+| main/0010D8D4#26 | 3 | 3 | +0 | - |
+| main/0010D8D4#27 | 793 | 1167 | +374 | 0x0A SleepThread 790/1164 |
+| main/0010D8D4#28 | 776 | 1149 | +373 | 0x0A SleepThread 771/1145, 0x22 ArbitrateAddress 4/3 |
+| main/0010D8D4#29 | 3 | 3 | +0 | - |
+| main/0010D8D4#3 | 20704 | 20643 | -61 | 0x37 18607/18557, 0x0A SleepThread 888/870, 0x22 ArbitrateAddress 626/632 |
+| main/0010D8D4#30 | 1043 | 1106 | +63 | 0x0A SleepThread 1040/1103 |
+| main/0010D8D4#31 | 1025 | 1089 | +64 | 0x0A SleepThread 1021/1084, 0x22 ArbitrateAddress 3/4 |
+| main/0010D8D4#32 | 3 | 3 | +0 | - |
+| main/0010D8D4#33 | 918 | 1169 | +251 | 0x0A SleepThread 915/1166 |
+| main/0010D8D4#34 | 901 | 1152 | +251 | 0x0A SleepThread 896/1147 |
+| main/0010D8D4#35 | 3 | 3 | +0 | - |
+| main/0010D8D4#36 | 1106 | 981 | -125 | 0x0A SleepThread 1103/978 |
+| main/0010D8D4#37 | 1088 | 963 | -125 | 0x0A SleepThread 1084/959 |
+| main/0010D8D4#38 | 3 | 3 | +0 | - |
+| main/0010D8D4#39 | 917 | 793 | -124 | 0x0A SleepThread 914/790 |
+| main/0010D8D4#4 | 3034 | 3208 | +174 | 0x0C 1068/1130, 0x0A SleepThread 915/971, 0x0B 915/971 |
+| main/0010D8D4#40 | 901 | 775 | -126 | 0x0A SleepThread 896/771, 0x22 ArbitrateAddress 4/3 |
+| main/0010D8D4#41 | 3 | 3 | +0 | - |
+| main/0010D8D4#42 | 660 | 783 | +123 | 0x0A SleepThread 657/780 |
+| main/0010D8D4#43 | 642 | 764 | +122 | 0x0A SleepThread 638/760 |
+| main/0010D8D4#44 | 3 | 3 | +0 | - |
+| main/0010D8D4#45 | 1128 | 939 | -189 | 0x0A SleepThread 1125/936 |
+| main/0010D8D4#46 | 1110 | 921 | -189 | 0x0A SleepThread 1106/917 |
+| main/0010D8D4#47 | 3 | 3 | +0 | - |
+| main/0010D8D4#48 | 1106 | 793 | -313 | 0x0A SleepThread 1103/790 |
+| main/0010D8D4#49 | 1089 | 775 | -314 | 0x0A SleepThread 1084/771, 0x22 ArbitrateAddress 4/3 |
+| main/0010D8D4#5 | 431 | 429 | -2 | 0x22 ArbitrateAddress 217/216, 0x32 SendSyncRequest 214/213 |
+| main/0010D8D4#50 | 2 | 2 | +0 | - |
+| main/0010D8D4#51 | 368 | 863 | +495 | 0x0A SleepThread 366/861 |
+| main/0010D8D4#52 | 352 | 846 | +494 | 0x0A SleepThread 348/843, 0x22 ArbitrateAddress 4/3 |
+| main/0010D8D4#6 | 1 | 1 | +0 | - |
+| main/0010D8D4#7 | 1 | 1 | +0 | - |
+| main/0010D8D4#8 | 93221 | 96941 | +3720 | 0x37 38146/40626, 0x0A SleepThread 19073/20313 |
+| main/0010D8D4#9 | 161744 | 268771 | +107027 | 0x32 SendSyncRequest 18320/126298, 0x22 ArbitrateAddress 35053/34124, 0x19 ClearEvent 54185/54174 |
+| **all 87 threads** | 18727402 | 19187897 | +460495 | 59 of 87 threads differ |
+
+#### IPC requests per command
+
+187777 requests on the reference, 295567 on the candidate, 97 distinct commands; 19 of them with a different count on at least one thread.
+
+| service | header | requests (reference) | requests (candidate) | difference | threads that differ (reference/candidate) |
+|---|---|---|---|---|---|
+| dsp::DSP | 0x00130082 | 7616 | 7546 | -70 | main/0010D8D4#11 7616/7546 |
+| fs:USER/file | 0x080200c2 | 3738 | 3701 | -37 | main/0010D8D4#12 2317/2289, main/0010D8D4#17 580/571, main/0010D8D4#3 583/584, main/0010D8D4#5 214/213 |
+| gsp::Gpu | 0x00080082 | 63655 | 63630 | -25 | main 63655/63630 |
+| gsp::Gpu | 0x000c0000 | 108212 | 216194 | +107982 | main 89892/89896, main/0010D8D4#9 18320/126298 |
+| y2r:u | 0x00010040 | 234 | 230 | -4 | main 234/230 |
+| y2r:u | 0x00030040 | 234 | 230 | -4 | main 234/230 |
+| y2r:u | 0x00050040 | 234 | 230 | -4 | main 234/230 |
+| y2r:u | 0x00070040 | 234 | 230 | -4 | main 234/230 |
+| y2r:u | 0x000d0040 | 235 | 231 | -4 | main 235/231 |
+| y2r:u | 0x00100102 | 234 | 230 | -4 | main 234/230 |
+| y2r:u | 0x00110102 | 234 | 230 | -4 | main 234/230 |
+| y2r:u | 0x00120102 | 234 | 230 | -4 | main 234/230 |
+| y2r:u | 0x00180102 | 234 | 230 | -4 | main 234/230 |
+| y2r:u | 0x001a0040 | 234 | 230 | -4 | main 234/230 |
+| y2r:u | 0x001c0040 | 234 | 230 | -4 | main 234/230 |
+| y2r:u | 0x001e0100 | 234 | 230 | -4 | main 234/230 |
+| y2r:u | 0x00210040 | 234 | 230 | -4 | main 234/230 |
+| y2r:u | 0x00220040 | 234 | 230 | -4 | main 234/230 |
+| y2r:u | 0x00260000 | 234 | 230 | -4 | main 234/230 |
