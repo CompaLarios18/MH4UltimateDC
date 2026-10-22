@@ -169,8 +169,10 @@ def test_bps_growing_the_buffer_gives_the_first_bytes_of_the_code(tmp_path):
     assert code_mods.apply_mods(code, user, PID, 1)[0] == code
     # a patched buffer shorter than the code is zero-padded to the code's length (a shorter BPS target keeps the
     # length today, so this only checks the length rule)
+    code = b"Monster Hunter 4"
     user = _mod_files(tmp_path / "c", {"code.bps": bps(code, b"Hunter", [("sc", 6, 8)])})
-    assert len(code_mods.apply_mods(code, user, PID, 1)[0]) == len(code)
+    out = code_mods.apply_mods(code, user, PID, 1)[0]
+    assert out == b"Hunter" + bytes(10)
 
 
 def test_bss_size_is_a_u32_and_is_limited(tmp_path):
