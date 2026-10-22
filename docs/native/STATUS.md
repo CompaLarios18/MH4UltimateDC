@@ -129,19 +129,20 @@ Tables between the `wp-status` markers are generated: edit the specs or use `set
 | N2b-01 | The app's UI without Azahar's window and system | M | native-worker-high | N0-24 | ci, pc | `ready` |  |
 | N2b-02 | The app's UI without SDL2 | M | native-worker-high | N2b-01 | ci, pc | `todo` |  |
 | N2b-26 | The presentation contract (`mh4n/present.h`) | S | native-worker-high | N1-01 | none | `ready` |  |
-| N2b-03 | SDL3 and the app tree in the native build | M | native-worker | N1-22, N2-24, N2b-02 | ci | `todo` |  |
+| N2b-03 | SDL3 and the app tree in the native build | M | native-worker | N1-22, N2b-02 | none | `todo` |  |
+| N2b-27 | CI and the Windows artifact of `mh4u-native` | S | native-worker | N2b-03, N2-24 | ci | `todo` |  |
 | N2b-04 | Screen layouts and touch mapping | M | native-worker | N1-20 | none | `ready` |  |
 | N2b-05 | Compositor | M | native-worker-high | N2-21, N2-06, N2b-04, N2b-26 | none | `todo` |  |
 | N2b-06 | Swapchain and the present thread | M | native-worker-high | N2b-05 | none | `todo` |  |
 | N2b-07 | Displayed screens from guest memory (`--gpu null-display`) | S | native-worker | N2b-26, N1-17 | none | `todo` |  |
 | N2b-08 | Live input, latched at frame boundaries | S | native-worker-high | N1-16, N1-09 | none | `ready` |  |
-| N2b-09 | `NativeRuntime`: load, run and present | M | native-worker-high | N2b-01, N2b-02, N2b-03, N2b-06, N2b-07, N2b-08, N1-21 | ci, dump-check | `todo` |  |
+| N2b-09 | `NativeRuntime`: load, run and present | M | native-worker-high | N2b-01, N2b-02, N2b-03, N2b-27, N2b-06, N2b-07, N2b-08, N1-21 | ci, dump-check | `todo` |  |
 | N2b-25 | `NativeRuntime`: options, input, paths and the method table | M | native-worker-high | N2b-09 | ci | `todo` |  |
 | N2b-10 | `mh4u-native`: window, events and the run loop | M | native-worker-high | N2b-25 | ci | `todo` |  |
 | N2b-11 | The app's UI in `mh4u-native` | M | native-worker-high | N2b-10 | ci, pc | `todo` |  |
-| N2b-12 | The renderer as the runtime's GPU | M | native-worker-high | N1-21, N2-15, N2-16, N2-18, N2-20, N2-22, N2b-18, N2b-26 | dump-check | `todo` |  |
+| N2b-12 | The renderer as the runtime's GPU | M | native-worker-high | N1-21, N2-15, N2-16, N2-18, N2-20, N2-22, N2b-18, N2b-26, N2b-14 | dump-check | `todo` |  |
 | N2b-13 | Displayed screens from the renderer | M | native-worker-high | N2b-12 | dump-check | `todo` |  |
-| N2b-14 | Screenshots in the native runner | S | native-worker-high | N2b-07 | none | `todo` |  |
+| N2b-14 | Screenshots in the native runner | S | native-worker-high | N2b-07, N2b-08 | none | `todo` |  |
 | N2b-15 | Synthetic GX programs | M | native-worker-high | N0-26 | none | `ready` |  |
 | N2b-16 | A synthetic PICA draw | M | native-worker-high | N2b-15 | none | `todo` |  |
 | N2b-17 | Image checks across timing models | M | native-worker | N1-21, N0-10, N0-30, N0-32 | dump-check, save | `todo` |  |

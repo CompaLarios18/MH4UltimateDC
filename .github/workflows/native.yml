@@ -83,14 +83,31 @@ jobs:
         run: python3 -m pytest -q tests/test_conformance.py
       - name: native/ does not use Azahar
         run: python3 tools/native/check_native_deps.py
+      # The Vulkan probe (N2-24) on lavapipe, the software device mesa-vulkan-drivers installs: the
+      # table must name a llvmpipe device, and the report's own --json must read back (--from-json)
+      # to the same table.
+      - name: Vulkan probe on lavapipe
+        run: |
+          set -eu
+          probe=build/native/bin/mh4n_vkprobe
+          "$probe" > build/vkprobe.txt
+          cat build/vkprobe.txt
+          grep -Eq '^device: .*llvmpipe' build/vkprobe.txt \
+            || { echo "::error::mh4n_vkprobe did not list a llvmpipe device"; exit 1; }
+          "$probe" --json > build/vkprobe.json
+          "$probe" --from-json build/vkprobe.json > build/vkprobe-again.txt
+          sed 's/^  source: .*//' build/vkprobe.txt > build/vkprobe-a.txt
+          sed 's/^  source: .*//' build/vkprobe-again.txt > build/vkprobe-b.txt
+          diff build/vkprobe-a.txt build/vkprobe-b.txt \
+            || { echo "::error::the probe's --json does not read back to the same table"; exit 1; }
 
   # The native runner on Windows (N1-22): x86-64, clang from llvm-mingw (the archive
   # tools/build_game.py fetches). Same steps as `native` (there are no Vulkan-device tests yet).
   # The ARM test programs and the code libraries are built with the same llvm-mingw.
   # The artifact `mh4n-runner-windows` (pushes and dispatches, not pull requests; N1-22b) holds
-  # mh4u_native_runner.exe, mh4n_ipc_replay.exe, mh4n_capture_player.exe and the llvm-mingw DLLs
-  # they import, so the three command-line tools run on any Windows PC without a build. They are
-  # our own binaries: no game data is in it.
+  # mh4u_native_runner.exe, mh4n_ipc_replay.exe, mh4n_capture_player.exe, mh4n_vkprobe.exe (N2-24)
+  # and the llvm-mingw DLLs they import, so the four command-line tools run on any Windows PC
+  # without a build. They are our own binaries: no game data is in it.
   native-windows:
     runs-on: windows-latest
     defaults:
@@ -164,12 +181,12 @@ jobs:
           set -eu
           pkg=runner-windows
           mkdir -p "$pkg"
-          tools="mh4u_native_runner mh4n_ipc_replay mh4n_capture_player"
+          tools="mh4u_native_runner mh4n_ipc_replay mh4n_capture_player mh4n_vkprobe"
           for tool in $tools; do cp "build/native/bin/$tool.exe" "$pkg/"; done
           # RelWithDebInfo keeps DWARF inside a MinGW exe (about 35 MB each, 87 % of it debug
-          # information): the two diagnostic tools go out without it, to keep the artifact small
+          # information): the diagnostic tools go out without it, to keep the artifact small
           # (the runner is packaged as before)
-          for tool in mh4n_ipc_replay mh4n_capture_player; do llvm-strip --strip-debug "$pkg/$tool.exe"; done
+          for tool in mh4n_ipc_replay mh4n_capture_player mh4n_vkprobe; do llvm-strip --strip-debug "$pkg/$tool.exe"; done
           bindir="$(dirname "$(command -v x86_64-w64-mingw32-clang)")"
           # llvm-mingw keeps libc++.dll and libunwind.dll in <root>/x86_64-w64-mingw32/bin as well
           dlldirs="$bindir"
@@ -196,9 +213,9 @@ jobs:
         run: |
           set -u
           # a PATH without llvm-mingw: the DLLs next to the tools must be enough. Each tool
-          # prints "usage: <name>" for --help and exits 0; all three are tried, then the step fails
+          # prints "usage: <name>" for --help and exits 0; all four are tried, then the step fails
           failed=0
-          for tool in mh4u_native_runner mh4n_ipc_replay mh4n_capture_player; do
+          for tool in mh4u_native_runner mh4n_ipc_replay mh4n_capture_player mh4n_vkprobe; do
             echo "== $tool --help"
             rc=0
             usage="$(env PATH="/c/Windows/System32:/c/Windows" "./runner-windows/$tool.exe" --help 2>&1)" || rc=$?
@@ -281,6 +298,35 @@ jobs:
       - name: native/ does not use Azahar
         if: ${{ !cancelled() }}   # report every step in one run
         run: python tools/native/check_native_deps.py
+      # The Vulkan probe (N2-24) for the maintainer's Mac: a single unsigned arm64 executable. It loads
+      # the Vulkan loader or MoltenVK at run time, so it needs no library of ours beside it. (The
+      # runner has no Vulkan driver, so the probe itself is not run here, only started.)
+      - name: The Vulkan probe starts
+        if: ${{ !cancelled() }}   # report every step in one run
+        run: |
+          set -eu
+          probe=build/native/bin/mh4n_vkprobe
+          file "$probe"
+          lipo -archs "$probe"
+          # the macOS version it was built for (it may need macOS 26); a missing tool is not a failure
+          if command -v vtool >/dev/null 2>&1; then
+            vtool -show-build "$probe" || true
+          elif command -v otool >/dev/null 2>&1; then
+            otool -l "$probe" | grep -A4 -E 'LC_BUILD_VERSION|LC_VERSION_MIN' || true
+          else
+            echo "no vtool or otool: build version not printed"
+          fi
+          [ "$(lipo -archs "$probe")" = "arm64" ] || { echo "::error::mh4n_vkprobe is not an arm64-only executable"; exit 1; }
+          "$probe" --help | grep -q "usage: mh4n_vkprobe" || { echo "::error::mh4n_vkprobe --help did not print its usage"; exit 1; }
+      - name: Upload the Vulkan probe
+        # not on pull requests (see the `runner` job)
+        if: ${{ github.event_name != 'pull_request' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: mh4n-vkprobe-macos
+          path: build/native/bin/mh4n_vkprobe
+          retention-days: 30
+          if-no-files-found: error
 
   # Decides whether the runner has to be built.
   changes:
