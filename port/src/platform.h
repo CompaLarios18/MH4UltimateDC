@@ -9,6 +9,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <fstream>
 #include <string>
 #include <vector>
 
@@ -79,6 +80,23 @@ public:
     /// The folder the port's options file ("mh4u.ini") lives in, with its trailing separator.
     virtual std::string UserDir() = 0;
 
+    /// The lines of the text file at `path` (UserDir() + a name), without their line ends, read
+    /// the way the host reads its own files: on Android the user folder is not the filesystem's
+    /// root and only the host's file layer maps the path to the file. False if it can't be
+    /// opened. The default reads it with the standard library, which is right wherever the path
+    /// is a plain host path.
+    virtual bool ReadTextLines(const std::string& path, std::vector<std::string>& lines) {
+        std::ifstream file(path);
+        if (!file) {
+            return false;
+        }
+        std::string line;
+        while (std::getline(file, line)) {
+            lines.push_back(line);
+        }
+        return true;
+    }
+
     /// The emulated screen's refresh rate in Hz; 0: the 3DS's own (59.83 Hz).
     virtual void SetRefreshRate(double hz) = 0;
 
@@ -93,8 +111,20 @@ public:
     /// Whether the game is running (its screens exist, the layout can be worked out).
     virtual bool IsRunning() = 0;
 
+    /// Whether the host's surface is in portrait orientation (a phone held upright). Ask it
+    /// from the thread that installs the hooks, not the guest's: the Android host asks Java. Hosts
+    /// that have no such thing leave the default.
+    virtual bool IsPortrait() { return false; }
+
     /// Works the screen layout out again (after the overlay changed).
     virtual void RefreshScreenLayout() = 0;
+
+    /// The same for a surface in the orientation IsPortrait() reported earlier (the layout is
+    /// worked out on the guest's thread, which must not ask Java). The default ignores it.
+    virtual void RefreshScreenLayoutFor(bool portrait) {
+        static_cast<void>(portrait);
+        RefreshScreenLayout();
+    }
 
     /// The overlay layout (see ScreenOverlay). The host keeps its own copy and may clamp it.
     virtual void SetScreenOverlay(const ScreenOverlay& overlay) = 0;
