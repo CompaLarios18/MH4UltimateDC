@@ -7,6 +7,7 @@
 #include "gpu_host.h"
 #include "mh4n/assert.h"
 #include "mh4n/log.h"
+#include "timer_resolution.h"
 
 #if defined(MH4N_HAVE_SCHEDULE)
 #include "schedule.h"
@@ -275,6 +276,14 @@ int Runtime::Run(const Options& options) {
         MH4N_LOG(Error, kLog, "cannot map {}: {}", program_path_, error);
         return 2;
     }
+    // Process::HeapAllocate charges every segment (the stack too) to the process and to its Commit
+    // limit; the game sizes its heaps from what is left of that limit (found by N1-21: without the
+    // charge its first linear allocation asked for 0x105E000 bytes more than the region has).
+    for (const SegmentMapping& segment : image.segments) {
+        kernel_->CurrentProcess()->memory_used += segment.size;
+        kernel_->CurrentProcess()->resource_limit->Reserve(ResourceLimitType::Commit,
+                                                           static_cast<s32>(segment.size));
+    }
     pages_ = std::make_unique<SystemPages>(init_time_);
     if (const Result result = pages_->Map(*memory_, kernel_->Regions()); IsError(result)) {
         MH4N_LOG(Error, kLog, "cannot map the configuration memory and the shared page: {:08X}", result);
@@ -317,7 +326,8 @@ int Runtime::Run(const Options& options) {
         return *exit_status_;
     }
 
-    // 8. run
+    // 8. run, with the host's timer tick at 1 ms (see timer_resolution.h)
+    const detail::TimerResolutionScope timer_resolution;
     clock_->Resume();
     const u64 start = clock_->Now();
     ScheduleSharedPageUpdate(start + kSharedPageUpdateIntervalTicks);

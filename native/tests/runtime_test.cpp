@@ -46,6 +46,7 @@ TEST_CASE("runtime_test needs recomp.h (the repository around native/)" * doctes
 #include "mh4n/options.h"
 #include "mh4n/registry.h"
 #include "mh4n/runtime.h"
+#include "../src/runtime/timer_resolution.h"
 #include "../src/cpu/recomp_c.h"  // last: it defines macros
 
 using namespace mh4n;
@@ -512,6 +513,56 @@ TEST_CASE("exit statuses: the process exits, svcBreak, a failing thread, a time 
         CHECK_FALSE(ran);
         CHECK(f.runtime.ExitStatus() == std::optional<int>(5));
     }
+}
+
+TEST_CASE("the segments and the stack are charged to the process and to its Commit limit (N1-21)") {
+    // Process::HeapAllocate does this for every segment in Azahar; the game sizes its heaps from the
+    // limit's current value, so without the charge it asked for more linear memory than the region has.
+    Fixture f;
+    TempDir dir;
+    std::string error;
+    const auto loader = Loader::OpenElf(dir.WriteElf(), &error);
+    REQUIRE_MESSAGE(loader, error);
+    s64 expected = 0;
+    for (const SegmentMapping& segment : loader->Image().segments) {
+        expected += segment.size;
+    }
+    REQUIRE(expected > 0);
+    s32 commit = -1;
+    u32 used = 0;
+    CHECK(BootWith(f, dir, {}, [&] {
+              const auto process = f.runtime.GetKernel().CurrentProcess();
+              commit = process->resource_limit->GetCurrentValue(ResourceLimitType::Commit);
+              used = process->memory_used;
+              ExitProcess(f.runtime);
+          }) == 0);
+    CHECK(commit == expected);
+    CHECK(used >= static_cast<u32>(expected));  // the main thread's TLS page comes on top
+}
+
+TEST_CASE("TimerResolutionScope: a 1 ms wait takes about 1 ms, not a 15.6 ms host tick (N1-21)") {
+    // Without it, on Windows, every host wait with a deadline (the scheduler asleep, the preemption
+    // timer) ends at the next 15.6 ms tick, and the game's frames drift off the VBlank.
+    SteadyTimeSource source;
+    std::mutex mutex;
+    std::condition_variable cv;
+    detail::TimerResolutionScope scope;
+#if defined(_WIN32)
+    CHECK(scope.active());
+    const auto start = std::chrono::steady_clock::now();
+    constexpr int kWaits = 40;  // 40 ticks of 15.6 ms would take 624 ms
+    for (int i = 0; i < kWaits; ++i) {
+        std::unique_lock lock(mutex);
+        source.WaitUntil(cv, lock, source.NowNs() + 1000000, [] { return false; });
+    }
+    const auto elapsed = std::chrono::steady_clock::now() - start;
+    CHECK(elapsed < std::chrono::milliseconds(400));
+#else
+    CHECK_FALSE(scope.active());  // nothing to ask on this host
+#endif
+    // a second scope nests: the host counts the requests
+    detail::TimerResolutionScope second;
+    CHECK(second.active() == scope.active());
 }
 
 TEST_CASE("Boot refuses what it cannot load, with status 2") {
