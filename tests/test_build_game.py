@@ -101,7 +101,7 @@ def test_build_game_code_mod_writing_into_the_bss_pages(tmp_path, capsys):
     struct.pack_into("<III", exheader, 0x10, 0x00100000, 1, len(text))
     struct.pack_into("<III", exheader, 0x20, 0x00101000, 1, 0x1000)
     struct.pack_into("<III", exheader, 0x30, 0x00102000, 1, 0x1000)
-    struct.pack_into("<I", exheader, 0x3C, 0x20)             # bss size: one page
+    struct.pack_into("<I", exheader, 0x3C, 0x1001)           # bss size: two pages (text and data: one page each)
     struct.pack_into("<Q", exheader, 0x200, 0x0004000000ABCD00)
     cxi = tmp_path / "synthetic.cxi"
     cxi.write_bytes(make_cxi.make_cxi(bytes(exheader), fake_exefs(text + bytes(0x2000))))
@@ -111,9 +111,9 @@ def test_build_game_code_mod_writing_into_the_bss_pages(tmp_path, capsys):
     install = tmp_path / "azahar-user"
     mods = install / "load" / "mods" / "0004000000ABCD00" / "exefs"
     mods.mkdir(parents=True)
-    # the code is 0x3000 bytes: the second record is in the bss page, the first one in the code
+    # the code is 0x3000 bytes, the pages end at 0x5000: the second record is in the second bss page
     (mods / "code.ips").write_bytes(b"PATCH" + (10).to_bytes(3, "big") + (1).to_bytes(2, "big") + b"\x40"
-                                    + (0x3010).to_bytes(3, "big") + (2).to_bytes(2, "big") + b"\x01\x02" + b"EOF")
+                                    + (0x4010).to_bytes(3, "big") + (2).to_bytes(2, "big") + b"\x01\x02" + b"EOF")
     args = ["--dump", str(cxi), "--opt", "O0", "--any-version", "--functions", str(functions), "--extra", "",
             "--hooks", "", "--install", str(install), "-j", "2"]
     table = tmp_path / "out" / "recomp" / "src" / "table.c"

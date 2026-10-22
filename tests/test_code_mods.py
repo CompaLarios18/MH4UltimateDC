@@ -155,3 +155,28 @@ def test_replacement_then_patch_into_the_pages_and_unchanged_without_pages(tmp_p
     user2 = _mod_files(tmp_path / "c", {"code.ips": ips((1, b"\x09"))})
     assert code_mods.apply_mods(b"\1\2\3", user2, PID) == code_mods.apply_mods(b"\1\2\3", user2, PID, 0x500)
     assert code_mods.apply_mods(b"\1\2\3", user2, PID)[0] == b"\1\x09\3"
+
+
+def test_bps_growing_the_buffer_gives_the_first_bytes_of_the_code(tmp_path):
+    code = bytes(range(16))
+    # made for the code only, grows it: the pages are appended but the result is cut back to the code's length
+    user = _mod_files(tmp_path / "a", {"code.bps": bps(code, code + b"\x11" * 8, [("sr", 16), ("tr", b"\x11" * 8)])})
+    assert code_mods.apply_mods(code, user, PID, 1)[0] == code
+    assert code_mods.apply_mods(code, user, PID)[0] == code + b"\x11" * 8          # no pages: as before
+    # made for the code and its page, grows beyond them
+    source = code + bytes(0x1000)
+    user = _mod_files(tmp_path / "b", {"code.bps": bps(source, source + b"\x22" * 4, [("sr", 0x1010), ("tr", b"\x22" * 4)])})
+    assert code_mods.apply_mods(code, user, PID, 1)[0] == code
+    # a patched buffer shorter than the code is zero-padded to the code's length (a shorter BPS target keeps the
+    # length today, so this only checks the length rule)
+    user = _mod_files(tmp_path / "c", {"code.bps": bps(code, b"Hunter", [("sc", 6, 8)])})
+    assert len(code_mods.apply_mods(code, user, PID, 1)[0]) == len(code)
+
+
+def test_bss_size_is_a_u32_and_is_limited(tmp_path):
+    with pytest.raises(code_mods.ModError, match="0xFFFFF001"):       # a u32 like Azahar's: -0xFFF wraps
+        code_mods.bss_pages_size(-0xFFF)
+    user = _mod_files(tmp_path, {"code.ips": ips((0, b"\x01"))})
+    with pytest.raises(code_mods.ModError, match="0x10000001"):
+        code_mods.apply_mods(b"\0", user, PID, 0x10000001)
+    assert code_mods.apply_mods(b"\0", user, PID, 0x10000000)[0] == b"\x01"

@@ -179,6 +179,11 @@ def _cases() -> list[Case]:
     add("BPS with a wrong target CRC", {"exefs/code.bps": bps(src, edited(src, 0, b"x"), target_crc_delta=1)})
     add("BPS made for the code and its bss",
         {"exefs/code.bps": bps(with_bss(src, 1), edited(with_bss(src, 1), 0x1100, b"in the bss"))}, pages=1)
+    add("BPS that grows the code, one bss page", {"exefs/code.bps": bps(src, src + b"\x11" * 0x30)}, pages=1)
+    add("BPS that grows the code, two bss pages", {"code.bps": bps(src, src + b"\x12" * 0x30)}, pages=2)
+    add("BPS a few bytes larger than its source, one bss page", {"code.bps": bps(src, src + b"\x22" * 4)}, pages=1)
+    add("BPS for the code and its page that grows beyond them",
+        {"exefs/code.bps": bps(with_bss(src, 1), with_bss(src, 1) + b"\x33" * 0x20)}, pages=1)
     add("code.bin replacement", {"exefs/code.bin": REPLACEMENT}, pages=1)
     add("code.bin replacement in the folder and an IPS", {"code.bin": REPLACEMENT, "code.ips": ips([(0x10, b"mod")])})
     add("both code.bin, the exefs one wins", {"exefs/code.bin": REPLACEMENT, "code.bin": code_bytes(0x30, 5)}, pages=1)
@@ -201,6 +206,8 @@ def _cases() -> list[Case]:
 
 
 CASES = _cases()
+
+
 def _first(path_dir: str, names) -> str | None:
     return next((n for n in names if os.path.isfile(os.path.join(path_dir, *n.split("/")))), None)
 
@@ -292,8 +299,13 @@ def test_native_equals_code_mods_py_without_the_bss_pages(native, tmp_path, case
     if theirs is None or ours is None:
         assert theirs is None and ours is None, f"{case.name}: code_mods.py and the loader disagree on failing"
         return
-    # code_mods.py's result is the code only: the native buffer without its bss pages (what the library is built from)
-    assert theirs == ours[:len(ours) - case.pages * PAGE], f"{case.name}: code_mods.py and the loader differ"
+    # code_mods.py's result is the code only (what the library is built from): the first bytes of the loader's
+    # buffer, as many as the code before the pages, zero-padded if the patched buffer is shorter. Without pages
+    # (nothing appended) the whole buffer, as before N3-31.
+    replaced = _first(mods, ("exefs/code.bin", "code.bin"))
+    base = len(_read(os.path.join(mods, *replaced.split("/")))) if replaced else len(case.code)
+    expected = ours if case.pages == 0 else ours[:base].ljust(base, b"\0")
+    assert theirs == expected, f"{case.name}: code_mods.py and the loader differ"
 
 
 def test_the_tool_exit_codes_and_usage(native, tmp_path):
