@@ -357,7 +357,7 @@ int Run(const std::vector<std::string>& argv) {
 
     // the in-game menu (Esc, a controller's Guide or Back+Start), and the 3DS software keyboard
     // drawn in it instead of Azahar's default one (ui/)
-    App::Ui::Start(system, *window, config);
+    App::Ui::Start(*window, config);
 
     const auto scope = window->Acquire();
     runtime->LogOptions();

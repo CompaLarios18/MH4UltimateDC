@@ -16,6 +16,8 @@ target_link_libraries(mh4u_imgui PUBLIC SDL2::SDL2)
 target_compile_definitions(mh4u_imgui PUBLIC IMGUI_DISABLE_OBSOLETE_FUNCTIONS SDL_MAIN_HANDLED)
 
 add_executable(mh4u
+    # the window as the shared sources see it (the menu draws over an IWindow)
+    app_window.h
     config.cpp
     config.h
     dialog.cpp
