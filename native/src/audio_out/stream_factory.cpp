@@ -63,6 +63,13 @@ std::unique_ptr<AudioSink> MakeStream(Runtime& rt) {
         streams[&rt] = stream;
     }
     rt.OnFrame([](u32 frame, u64) { PublishFrame(frame); });
+    // The registry is keyed by the runtime's address: forget the entry when the run ends, so that a
+    // later runtime at the same address (with another sink) cannot find this stream. Whoever holds
+    // the pointer keeps the stream.
+    rt.OnFinish([key = static_cast<const Runtime*>(&rt)] {
+        std::lock_guard lock(g_registry_mutex);
+        Streams().erase(key);
+    });
     MH4N_LOG(Info, kLog, "stream sink: target {} ms ({} frames), ring {} frames", latency_ms,
              stream->Target(), kRingFrames);
     return std::make_unique<StreamFront>(std::move(stream));

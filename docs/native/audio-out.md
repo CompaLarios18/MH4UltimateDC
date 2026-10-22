@@ -94,6 +94,20 @@ resampler. The fill is read in the middle of the block, not before it: the block
 `need` frames (a quarter of the 40 ms target for a 10 ms block), and steering on the value before the pull
 would hold the fill after the pull a quarter of the target too low. The tests drive the controller this way.
 
+Two facts N3-06 has to plan for:
+- **A late or resuming device starts at the mark.** A device that opens late, or that resumes after a
+  pause while the DSP kept queueing, finds up to 200 ms of old audio (the ring keeps the newest
+  `kOverflowFrames`), and starts with the fill at the mark; the controller needs about 33 s to bring it back
+  to the target. So open the device early (before the game makes sound) and keep it pulling, or discard on
+  resume (pull and throw away the excess) instead of playing the old audio.
+- **A pull larger than the mark can never be satisfied.** Priming waits for `max(target, block)` frames
+  capped at `kOverflowFrames` (6546 stream frames), and an overflow keeps the fill at or below it, so a
+  single `Pull` of more than 6546 frames always comes back short. Keep the device's blocks (after the
+  ratio) well below that, 4096 device frames at 48,000 Hz is about 2800 stream frames and fine.
+
+`Find(rt)` stops finding the stream when the run ends (`Runtime::OnFinish`); a pointer taken before stays
+valid.
+
 ## `--audio wav`
 
 `--audio wav --audio-file FILE` writes every queued frame to a 16-bit stereo PCM WAV at 32,728 Hz. The header
@@ -107,7 +121,7 @@ the file's destructor does it too). A file that cannot be created ends the run w
 |---|---|
 | `--audio stream` | the stream above (`--audio` itself is the runtime's; the default is `null`) |
 | `--audio wav` | the WAV sink |
-| `--audio-latency MS` | with `stream`: the target fill, 10 to 200 ms (default 40, first guess). Anything else ends the run with status 2 |
+| `--audio-latency MS` | with `stream`: the target fill, 10 to 200 ms (default 40, first guess). Anything else ends the run with status 2. The top of the range is not usable in practice: at 200 ms the target equals the overflow mark (6546 frames), so any `Queue` that pushes the fill past the target overflows and drops, constantly. The range stays the spec's |
 | `--audio-file FILE` | with `wav`: the file |
 
 ## The numbers, and which are guesses
@@ -142,5 +156,11 @@ its own, two real threads for 10^6 frames with overflows and full-ring discards 
 repeated but counted drops), the WAV file read back, and the factories, the options and `Find` through the
 runtime.
 
-The two-thread test is also built under ThreadSanitizer (`-fsanitize=thread`, its own build folder); see
-the package's report for the result.
+The two-thread test is also run under ThreadSanitizer. The clang here has no TSAN runtime, so the recipe
+is g++ 13 `-std=c++20 -O1 -g -fsanitize=thread` over `native/tests/audio_out_test.cpp`,
+`native/src/audio_out/{stream_sink,drift_controller,wav_writer}.cpp`, the few sources the test needs
+(`native/src/kernel/clock.cpp`, `native/src/common/{assert,log}.cpp`, `native/third_party/fmt/src/format.cc`,
+`native/tests/support/{test_main,doctest_impl}.cpp`), with `native/include`, `native/src`, doctest and fmt on the
+include path, into a build folder of its own, linked with `-lpthread`. Without `recomp.h` on the include path
+the runtime-dependent cases are skipped (the ctest run covers them). A clean run prints no
+`ThreadSanitizer` report. A relaxed `write_` or `read_` store in `stream_sink.cpp` makes it report a data race.

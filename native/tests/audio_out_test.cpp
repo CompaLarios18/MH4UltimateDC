@@ -958,6 +958,23 @@ TEST_CASE("the stream outlives the runtime for whoever holds it, and the frame t
     CHECK(LastFrame() == 7);
 }
 
+TEST_CASE("a finished run forgets its stream, so a runtime at the same address does not find it") {
+    std::shared_ptr<StreamSink> held;
+    for (int round = 0; round < 8; ++round) {
+        auto rt = std::make_unique<Runtime>();
+        REQUIRE(rt->Prepare(Parse({"--audio", "stream"}), {Phase::Devices}));
+        auto stream = Find(*rt);
+        REQUIRE(stream != nullptr);
+        held = stream;
+        rt.reset();  // the run is over: Runtime::OnFinish
+        // the allocator tends to give the next runtime the same address; whatever it gives, no stream
+        auto next = std::make_unique<Runtime>();
+        REQUIRE(next->Prepare(Parse({"--audio", "null"}), {Phase::Devices}));
+        CHECK(Find(*next) == nullptr);
+    }
+    CHECK(held != nullptr);  // and the stream outlived its runtime
+}
+
 TEST_CASE("--audio wav writes every queued frame to the file, and finishes the header when the run ends") {
     LogCapture log;
     const auto path = TempFile("sink.wav");
