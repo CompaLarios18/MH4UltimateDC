@@ -1,8 +1,10 @@
+// Derived from Azahar src/core/hle/service/ir/extra_hid.cpp at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6
+// (GPL-2.0-or-later: it says "Licensed under GPLv2 or any later version"): the expected status packets,
+// calibration answers and polling behaviour, restated from its code.
+// Copyright 2017-2024 Citra Emulator Project / Azahar Emulator Project
+//
 // mh4n_ir_device (N3-08): the Circle Pad Pro's IR protocol. No game data. The expected bytes are
-// restated here from Azahar's src/core/hle/service/ir/extra_hid.cpp at
-// 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-2.0-or-later, "Licensed under GPLv2 or any later
-// version"; Copyright 2017-2024 Citra Emulator Project / Azahar Emulator Project), worked out by hand
-// from its code:
+// worked out by hand from extra_hid.cpp:
 //   - the status packet is ExtraHIDResponse {u32 bitfield: header[0:8], c_stick_x[8:20],
 //     c_stick_y[20:32]; u8: battery_level[0:5], zl_not_held[5], zr_not_held[6], r_not_held[7]; u8
 //     unknown}, little-endian, 6 bytes, header 0x10 (PollHID); the battery level is 0x1F, R is never
