@@ -19,12 +19,12 @@ Azahar draws no gas at all (its shader generator logs "Unimplemented gas mode", 
 
 ---
 
-### N2-01 · RHI spike
-- **Size / agent:** M · native-worker-high, then the maintainer
-- **Depends on:** N0-13, N1-01 · **Needs:** ci, pc, mac
-- **Goal:** settle D4 with evidence: which of the features MH4U needs (from the PICA census) the RX 6700 XT (Windows driver), the M2 (MoltenVK, and Metal) and lavapipe offer, and what each RHI candidate costs: plume as it is, plume extended, or a thin RHI of our own.
-- **Read first:** D4; `docs/research/pica-census.md` (N0-13) and `docs/research/metal.md`; plume's README and headers (https://github.com/renderbag/plume); Azahar's `src/video_core/renderer_vulkan/vk_instance.cpp` (the features and extensions its Vulkan renderer checks for, and its fallbacks).
-- **Files (allowlist):** `native/src/vkprobe/**` (new: the probe and the JSON reader), `native/tools/vkprobe/**` (new: `main`), `native/tests/vkprobe_test.cpp`, `docs/research/rhi-spike.md` (new).
+### N2-24 · Vulkan probe (`mh4n_vkprobe`)
+- **Size / agent:** M · native-worker
+- **Depends on:** N1-01 · **Needs:** ci
+- **Goal:** build, before the PICA census exists, the tool the RHI spike (N2-01) measures with: `mh4n_vkprobe` reports which of the Vulkan features MH4U's rendering needs a device offers, from a live device or from `vulkaninfo --json`, and the CI artifacts carry it, so the maintainer can run it on the PC and the Mac while the census waits for his save.
+- **Read first:** D4; `docs/research/metal.md`; Azahar's `src/video_core/renderer_vulkan/vk_instance.cpp` (the features and extensions its Vulkan renderer checks for, and its fallbacks); `docs/native/ENV.md` (lavapipe); `.github/workflows/native.yml` (the packaging and smoke steps of `native-windows`, N1-22b) and `docs/native/CI.md`.
+- **Files (allowlist):** `native/src/vkprobe/**` (new: the probe, the report and the JSON reader), `native/tools/vkprobe/**` (new: `main`), `native/tests/vkprobe_test.cpp`, `native/third_party/vulkan/**` (new: the vendored header, see Spec), `docs/research/vkprobe.md` (new: the maintainer's procedure), `.github/workflows/native.yml` (a lavapipe step in `native`, the probe in the Windows artifact, a macOS artifact), `docs/native/CI.md` (the sentences about the artifacts).
 - **Spec:**
   - **`mh4n_vkprobe`** prints, for each Vulkan device, the features MH4U's rendering needs, each with its fallback when absent:
     - logic ops (`logicOp`);
@@ -36,8 +36,26 @@ Azahar draws no gas at all (its shader generator logs "Unimplemented gas mode", 
     - depth-stencil formats (`D24_UNORM_S8_UINT` is missing on AMD; the fallback is `D32_SFLOAT_S8_UINT`);
     - BC7;
     - dynamic rendering; `VK_EXT_graphics_pipeline_library`; push descriptors; timeline semaphores; `VK_EXT_extended_dynamic_state` 1 to 3.
-  - **`mh4n_vkprobe --from-json FILE`** reads `vulkaninfo --json` output instead of a live device, so a machine without our build can be evaluated.
-  - **The target machines:** the maintainer runs `vulkaninfo --json` on the PC and the Mac; `rhi-spike.md` starts with the procedure for him. Until he does, use reports for the same GPU, OS and a recent driver from https://vulkan.gpuinfo.org, saying which.
+  - **Output:** a text table (device, driver, API version, one line per feature: `yes`, `no (fallback: …)` or `unknown`), and `--json` for the same data as one JSON document per device, so `rhi-spike.md` can quote it.
+  - **`mh4n_vkprobe --from-json FILE`** reads `vulkaninfo --json` output (and the report's own `--json`) instead of a live device, so a machine without our build can be evaluated. The reader and the report need no Vulkan at all and are always built.
+  - **Live probe without an SDK:** the program loads the Vulkan loader at run time (`vulkan-1.dll`, `libvulkan.so.1`, `libvulkan.1.dylib`) and takes the declarations from a vendored `vulkan_core.h` (Khronos Vulkan-Headers, Apache-2.0 OR MIT: one file pinned to a release, with its licence, listed in `native/THIRD_PARTY.md` by the orchestrator), so the three CI jobs build it with no Vulkan package and a PC without the SDK can run it. No loader, or no device: the live probe says so and exits 3, and `--from-json` still works.
+  - **`docs/research/vkprobe.md`:** the procedure for the maintainer: where the CI artifact is (`mh4n-runner-windows`, `mh4n-vkprobe-macos`) and the command for each machine (`mh4n_vkprobe --json > vkprobe-<machine>.json`, plus `vulkaninfo --json` where he has it), what to send back, and until he does, how to use reports for the same GPU, OS and a recent driver from https://vulkan.gpuinfo.org (say which).
+  - **CI:** in `native`, a step runs `build/native/bin/mh4n_vkprobe` (mesa-vulkan-drivers is installed there, so lavapipe is a device) and fails unless the table names a `llvmpipe` device; in `native-windows`, the packaging step adds `mh4n_vkprobe.exe` with the same DLL copying and smoke check as the other tools (`usage: mh4n_vkprobe` for `--help`); in `native-macos`, an upload step publishes `mh4n_vkprobe` as the artifact `mh4n-vkprobe-macos` (30 days, not on pull requests; the file is an unsigned arm64 executable: say in the doc how to run one that a browser download quarantined).
+- **Done when:**
+  - *(CI)* the three native jobs build it; `native` prints the lavapipe device's table; `native-windows` runs the packaged `mh4n_vkprobe.exe --help` with no llvm-mingw on the `PATH`; the two artifacts exist;
+  - `ctest` runs `vkprobe_test`: `--from-json` reads a synthetic `vulkaninfo` file (made by the test, not a real device's) and prints the expected `yes`/`no (fallback)`/`unknown` for each feature, including the missing-extension and the portability-subset (no triangle fans) cases, and rejects a truncated file with a clear error;
+  - `python3 tools/native/check_native_deps.py` passes (nothing here uses Azahar).
+- **Traps:** a real `vulkaninfo --json` differs between SDK versions (the layout of `capabilities` and `extensions`): read the keys by name and treat an absent feature as `unknown`, not `no`. Never claim a feature from a name the driver did not report. `vulkan_core.h` is large; vendor it once and do not edit it.
+- **Out of scope:** the spike's analysis and recommendation (N2-01); the RHI (N2-21).
+
+### N2-01 · RHI spike
+- **Size / agent:** M · native-worker-high, then the maintainer
+- **Depends on:** N0-13, N1-01, N2-24 · **Needs:** pc, mac
+- **Goal:** settle D4 with evidence: which of the features MH4U needs (from the PICA census) the RX 6700 XT (Windows driver), the M2 (MoltenVK, and Metal) and lavapipe offer, and what each RHI candidate costs: plume as it is, plume extended, or a thin RHI of our own.
+- **Read first:** D4; `docs/research/pica-census.md` (N0-13), `docs/research/metal.md` and `docs/research/vkprobe.md` (N2-24); plume's README and headers (https://github.com/renderbag/plume); Azahar's `src/video_core/renderer_vulkan/vk_instance.cpp` (the features and extensions its Vulkan renderer checks for, and its fallbacks).
+- **Files (allowlist):** `docs/research/rhi-spike.md` (new).
+- **Spec:**
+  - **The target machines:** the maintainer runs `mh4n_vkprobe` (N2-24) on the PC and the Mac, following `docs/research/vkprobe.md`; `rhi-spike.md` quotes its output. Until he does, use `--from-json` on reports for the same GPU, OS and a recent driver from https://vulkan.gpuinfo.org, saying which.
   - **`rhi-spike.md`:**
     - the probe's output for lavapipe, the RX 6700 XT and the M2;
     - a table of the census's needs against plume's API: what it exposes, what needs extending, what has no equivalent;
@@ -45,11 +63,10 @@ Azahar draws no gas at all (its shader generator logs "Unimplemented gas mode", 
     - the options with their costs, and a recommendation.
   - The planner reviews the recommendation; the maintainer decides D4.
 - **Done when:**
-  - *(CI)* `mh4n_vkprobe` builds in CI and runs on lavapipe; `--from-json` reads a synthetic `vulkaninfo` file in a ctest;
   - `rhi-spike.md` has the three devices' outputs and a recommendation;
   - D4 is `Decided` in DECISIONS.md (the WP stays `review` until then).
 - **Traps:** on Windows the AMD driver is AMD's own, not RADV; the spike exists to find out what that driver really exposes.
-- **Out of scope:** building the RHI (N2-21).
+- **Out of scope:** building the probe (N2-24); building the RHI (N2-21).
 
 ### N2-02 · Capture player and comparison harness
 - **Size / agent:** M · native-worker-high
@@ -198,8 +215,12 @@ Azahar draws no gas at all (its shader generator logs "Unimplemented gas mode", 
   - **Render targets** in the PICA's colour formats (RGBA8, RGB8, RGB5A1, RGB565, RGBA4) and depth formats (D16, D24, D24S8 with its fallback).
   - **Readback:** a render target written back into guest memory in the PICA's Morton-tiled layout and format, bit-exact for what was drawn: what the capture player's draw checks compare. Only on demand (checks, and the CPU reads N0-14 found).
   - **Timestamps** per frame for the capture player's timing table.
+  - **What the app needs (N2b-05, N2b-06, N2b-11):**
+    - the instance enables `VK_KHR_surface`, the platform's surface extension and `VK_EXT_headless_surface` when the loader offers them, and the device `VK_KHR_swapchain`; `CreateBackend` takes an optional `VkSurfaceKHR`, and with one it selects a queue family that can present; with none (the capture player, the tests) nothing changes;
+    - submissions to a queue go through one submit lock, so the renderer thread and the present thread can share a queue;
+    - the Vulkan handles (instance, physical device, device, queue family index, queue) are readable from the backend, for ImGui's Vulkan backend.
   - Runs on lavapipe in the cloud.
-- **Done when:** ctest passes on lavapipe: clear-and-readback of every colour and depth format against bytes worked out from the formats; a timestamp query returns increasing values.
+- **Done when:** ctest passes on lavapipe: clear-and-readback of every colour and depth format against bytes worked out from the formats; a timestamp query returns increasing values; a backend made with no surface lists no surface extension as enabled, and one made with a headless surface (skipped with a message where the loader lacks `VK_EXT_headless_surface`) selects a queue that can present; two threads submitting through the lock complete without a validation error.
 - **Traps:** -
 - **Out of scope:** shaders and drawing state (N2-06, N2-08 onwards).
 

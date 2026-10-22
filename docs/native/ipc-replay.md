@@ -10,6 +10,9 @@ The logic is the module `native/src/ipc_replay/` (`mh4n_ipc_replay`); the progra
 `native/tools/ipc_replay/` is only `main`. The tests are `native/tests/ipc_replay_test.cpp`: every
 trace in them is written by the test, against a fake service the test registers.
 
+Getting the tool without a build: the Windows artifact `mh4n-runner-windows` of the CI job `native-windows`
+([`CI.md`](CI.md)) holds `mh4n_ipc_replay.exe` next to the runner and the DLLs it needs.
+
 ```
 mh4n_ipc_replay TRACE [--svc-trace FILE] [--service NAME]... [--continue]
                       [--game DIR] [--user DIR] [--time-dependent FILE]...
