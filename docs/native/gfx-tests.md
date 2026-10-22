@@ -199,6 +199,11 @@ test follow:
   `EvaluateBlendEquation`); over the background it gives (11, 19, 155), over red (127, 0, 128), over green
   (0, 127, 128) and over yellow (127, 127, 128).
 
+Two deviations from the package's spec: the quad's alpha comes from TEV stage 0's constant alpha
+because byte attributes reach the shader unnormalised (above), and a fourth, yellow triangle was added
+(drawn after the green one and behind both) to make the depth test observable: without it a missing
+depth test gives the same picture.
+
 ### What the test checks
 
 `tests/test_native_gfx.py` (the tests with `draw` in their names):

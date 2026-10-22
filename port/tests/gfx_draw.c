@@ -15,6 +15,7 @@
 // Copyright 2023-2026 Citra Emulator Project / Azahar Emulator Project (pica_core.cpp)
 // Copyright 2023 Citra Emulator Project (vertex_loader.cpp, output_vertex.cpp)
 // Copyright 2015-2026 Citra Emulator Project / Azahar Emulator Project (pica_types.h)
+// Copyright 2014 Tony Wasserka (shader_bytecode.h)
 
 /* PICA draw test program (N2b-16): draws with a PICA command list the way a game does, with no game
  * code: a vertex shader of three instructions written word by word, attribute buffers, TEV, the
