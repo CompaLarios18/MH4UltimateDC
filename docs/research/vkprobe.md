@@ -78,7 +78,7 @@ Nothing in these files is game data: they list a GPU's capabilities and the mach
 mh4n_vkprobe --from-json FILE [--json]
 ```
 
-Reads `vulkaninfo --json` output, or this program's own `--json`, instead of probing. It needs no Vulkan: the reader and the report are always built. A truncated or invalid file is exit status 2 with the position of the error; so are a file that holds no device, a folder, a file over 64 MB, a UTF-16 file and a flag mask that is not a valid number. Layout assumed (the Vulkan Profiles device format):
+Reads `vulkaninfo --json` output, or this program's own `--json`, instead of probing. It needs no Vulkan: the reader and the report are always built. A truncated or invalid file is exit status 2 with the position of the error; so are a file that holds no device, a folder, a file over 16 MB, a UTF-16 file and a flag mask that is not a valid number. Layout assumed (the Vulkan Profiles device format):
 
 ```
 capabilities > device > properties   > VkPhysicalDeviceProperties (deviceName, apiVersion, deviceType, vendorID, deviceID)

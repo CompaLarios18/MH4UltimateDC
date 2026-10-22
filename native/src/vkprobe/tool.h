@@ -9,7 +9,7 @@
 namespace mh4n::vkprobe {
 
 // The largest file --from-json reads (a `vulkaninfo --json` file is a few MB).
-inline constexpr size_t kMaxInputBytes = 64u * 1024 * 1024;
+inline constexpr size_t kMaxInputBytes = 16u * 1024 * 1024;
 
 // Exit status: 0 done; 2 a bad command line, or a file that is missing, truncated or not JSON;
 // 3 the live probe found no Vulkan loader or no device.
