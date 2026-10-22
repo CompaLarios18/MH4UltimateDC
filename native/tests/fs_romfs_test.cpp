@@ -939,6 +939,50 @@ TEST_CASE("SelfNCCH: the ExeFS icon is read from icon.bin like Azahar's ExeFSSec
     CHECK(other.result == kInvalidPath);
 }
 
+TEST_CASE("SelfNCCH: an icon.bin that shrank after the open answers a host failure with no bytes") {
+    Fixture f;
+    TempDir dir;
+    GameFolder game;
+    game.Write(dir);
+    const std::vector<u8> icon = Pattern(0x1200, 5);
+    WriteFile(dir.GameDir() / "icon.bin", icon);
+    Opened opened;
+    FsGuest::ReadResult read;
+    const int status = BootWith(f, dir, {"--ms", "100", "--io-latency", "none"}, [&] {
+        FsGuest g(f, dir);
+        g.Initialize();
+        opened = g.OpenFileDirectly(3, kEmpty, kEmptyPath, SelfNcchPath(2, "icon"));
+        std::filesystem::resize_file(dir.GameDir() / "icon.bin", 0x100);
+        read = g.Read(opened.file, 0, 0x1200);  // the size the file had when it was opened
+        ExitProcess(*f.runtime);
+    });
+    CHECK(status == 0);
+    CHECK(opened.result == kResultSuccess);
+    CHECK(read.result == mh4n::fs::kResultHostFailure);
+    CHECK(read.count == 0);
+}
+
+TEST_CASE("SelfNCCH: the icon read whole into a smaller buffer is cut to the buffer (a departure from Azahar)") {
+    Fixture f;
+    TempDir dir;
+    GameFolder game;
+    game.Write(dir);
+    const std::vector<u8> icon = Pattern(0x1200, 6);
+    WriteFile(dir.GameDir() / "icon.bin", icon);
+    FsGuest::ReadResult read;
+    const int status = BootWith(f, dir, {"--ms", "100", "--io-latency", "none"}, [&] {
+        FsGuest g(f, dir);
+        g.Initialize();
+        const Opened opened = g.OpenFileDirectly(3, kEmpty, kEmptyPath, SelfNcchPath(2, "icon"));
+        read = g.Read(opened.file, 0, 0x1200, 0x100);
+        ExitProcess(*f.runtime);
+    });
+    CHECK(status == 0);
+    CHECK(read.result == kResultSuccess);
+    CHECK(read.count == 0x100);
+    CHECK(read.bytes == Slice(icon, 0, 0x100));
+}
+
 TEST_CASE("SelfNCCH: an icon.bin of 0x36C0 bytes has that size, and the RomFS is still served") {
     Fixture f;
     TempDir dir;

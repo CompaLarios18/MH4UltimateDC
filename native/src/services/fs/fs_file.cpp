@@ -19,7 +19,8 @@
 //  - The data is read into a buffer on the I/O thread and copied into the client's buffer on the scheduler
 //    thread when the reply is written (Azahar does the same); the I/O thread never touches guest memory.
 //  - The count of a read is cut to the client's buffer and to what is left of the file before anything is
-//    allocated (Azahar allocates the length the client asked for).
+//    allocated (Azahar allocates the length the client asked for); a backend with ReadsRequestedLength()
+//    (the ExeFS icon) is given the length as asked, as Azahar does, and only its buffer and reply are cut.
 //  - The delay is counted from the request on the game clock. Azahar subtracts the host time the read took
 //    from the modelled delay, so the reply moves with the host.
 //  - OpenSubFile (0x0801) is not implemented: the game does not use it.

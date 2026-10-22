@@ -1,15 +1,19 @@
 // Derived from Azahar src/core/file_sys/archive_selfncch.cpp, src/core/file_sys/archive_selfncch.h,
-// src/core/file_sys/ncch_container.cpp and src/core/file_sys/romfs_reader.cpp at
-// 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-3.0-or-later: ncch_container.cpp says "GPLv3 or any later
-// version"; the others say "GPLv2 or any later version"): the SelfNCCH archive (archive id 3): the file path
+// src/core/file_sys/ncch_container.cpp, src/core/file_sys/romfs_reader.cpp, src/core/loader/ncch.cpp and
+// src/core/hle/service/fs/file.cpp at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-3.0-or-later:
+// ncch_container.cpp and file.cpp say "GPLv3 or any later version"; the others say "GPLv2 or any later
+// version"): the SelfNCCH archive (archive id 3): the file path
 // types and their layout (SelfNCCHFilePath: RomFS 0, Code 1, ExeFS 2, UpdateRomFS 5), what each answers,
 // that the open mode is not checked, that an archive of an unregistered program has no RomFS, where
-// the readable RomFS starts (NCCHContainer::ReadRomFS), the ExeFS section names (OpenExeFS) and the file
-// that serves one (ExeFSSectionFile, with NCCHContainer::LoadSectionExeFS giving it the section's bytes).
+// the readable RomFS starts (NCCHContainer::ReadRomFS), the ExeFS section names (OpenExeFS), the file
+// that serves one (ExeFSSectionFile, with NCCHContainer::LoadSectionExeFS giving it the section's bytes;
+// AppLoader_NCCH::ReadIcon is LoadSectionExeFS("icon")) and that a failed read replies with its result code
+// and 0 bytes (File::Read).
 // Copyright 2017-2024 Citra Emulator Project / Azahar Emulator Project (archive_selfncch.cpp,
 //   archive_selfncch.h)
 // Copyright 2017-2026 Citra Emulator Project / Azahar Emulator Project (ncch_container.cpp)
-// Copyright 2018-2026 Citra Emulator Project / Azahar Emulator Project (romfs_reader.cpp)
+// Copyright 2018-2026 Citra Emulator Project / Azahar Emulator Project (romfs_reader.cpp, file.cpp)
+// Copyright 2014-2026 Citra Emulator Project / Azahar Emulator Project (ncch.cpp)
 //
 // SelfNCCH (N1-12): the application's own RomFS, served from the game folder's romfs.bin, and the update's
 // from update_romfs.bin. Departures from Azahar:
