@@ -1,0 +1,75 @@
+# name: G3-perf
+# needs: save
+# frames: 18000
+# checkpoints: 600:0x00e64d5c, 1400:0x00e6c778, 2500:0x00e6c170, 8000:0x00e6c170, 13000:0x00e6c170, 13700:0x00e650bc, 15000:0x00e655c8, 17000:0x00e655c8, 18000:0x00e655c8
+# env: MH4U_WIDESCREEN=3440:1440
+# env: MH4U_WIDE_RENDER=1
+# env: MH4U_DEPTH_OF_FIELD=off
+# captures: gpu:17300:30
+#
+# G3-perf: G3 with the top screen rendered at the monitor's 21:9 (the env lines above: the port reads
+# its widescreen options once, at start-up, from these variables; the runner's --set refuses them), for
+# the GPU budget, and a GPU capture of 30 frames in the fight. The inputs are G3's, line for line: the
+# render width does not change the frame at which anything happens (the scene changes fall at the
+# frames of G3's), so the checkpoints are G3's too. The depth-of-field filter is off because with
+# wide_render on the reference runner dies in the village's arrival cutscene (`Unknown
+# GetPhysMemRegionInfo @ 0x000000` and an access violation, about frame 1900, whatever the save), and
+# not with the filter off (docs/native/golden.md, G3-perf). The rest of G3's comment follows.
+#
+# G3: save -> village -> the Arena counter's quest "Grudge Match: Yian Kut-Ku" -> the Arena with a
+# preset loadout -> 3900 frames (75 s) of the hunt. From a user folder with the update installed and
+# the maintainer's save merged in (golden.py record --save, with the Circle Pad Pro option off: see
+# docs/native/golden.md, "The save"): only button presses and touches are written here.
+#
+#   f300..f1500      nine A presses: the main menu and the character select (the first five are
+#                    for prompts this save does not show; they are harmless)
+#   f3300..f8460     A every 120 frames: the arrival scene of the village ends at about f2900, then
+#                    the caravan leader talks for about 5000 frames. The press at f8460 ends the talk
+#                    (control at about f8466); a press after it starts another talk, and the
+#                    talk waits for A, so a script that did not know the last press could not stop
+#   f8694..f9044     touches: the world map button (the touch screen's bottom right), then the
+#                    Gathering Hall and its confirmation
+#   f9494..f10894    circle pad: from the hall's door to the quest counter's desk
+#   f11444..f12119   A every 75 frames: the Arena counter's talk (the guest at the desk is next to the
+#                    Low Questatrix); "Select this Quest?" has Yes selected, the press at f12044 posts
+#                    the quest, f12119 closes the notice. NEVER press B in this stretch: B right
+#                    after the quest is accepted leaves it unposted. Another A would start the
+#                    counter's talk again ("you've already got a Quest?")
+#   f12250..f13100   circle pad: to the Quest Gate
+#   f13300, f13650   A: "Depart on Quest", then the Arena's equipment screen
+#   f13850, f13910   LEFT, then A: "Use this equipment?" has No selected, so LEFT picks Yes. The quest
+#                    loads at about f14109
+#   f14350           circle pad forward-right for 600 frames
+#   f15050..f17840   A every 90 frames: a caravan leader's explanation of the target camera, then the
+#                    swings of the hunt. The Yian Kut-Ku is on screen from about f16740 to f17800
+#
+# The Circle Pad Pro option is off in the save of the recordings, so this session never opens ir:USER:
+# see golden.md ("ir:USER") for why.
+#
+# Scenes (the class of the topmost game area, docs/research/scene-observable.md), one checkpoint in
+# each that lasts more than 100 frames:
+#   0x00e64d5c  aDemo      the intro movies                       frames 42 to 902
+#   0x00e6c778  aContinue  the "continue" screen                  frames 903 to 1575
+#   0x00e6c170  aVillage   the village and the Gathering Hall     frames 1579 to 13461
+#   0x00e650bc  aArena     the Arena's equipment screen           frames 13464 to 14106
+#   0x00e655c8  aQuest     the hunt                               frames 14109 to the end
+# (the steps between them last 1 to 3 frames: aGameSys, aDemo)
+f300:A:f6,f450:A:f6,f600:A:f6,f750:A:f6,f900:A:f6
+f1050:A:f6,f1200:A:f6,f1350:A:f6,f1500:A:f6
+f3300:A:f6,f3420:A:f6,f3540:A:f6,f3660:A:f6,f3780:A:f6,f3900:A:f6,f4020:A:f6,f4140:A:f6
+f4260:A:f6,f4380:A:f6,f4500:A:f6,f4620:A:f6,f4740:A:f6,f4860:A:f6,f4980:A:f6,f5100:A:f6
+f5220:A:f6,f5340:A:f6,f5460:A:f6,f5580:A:f6,f5700:A:f6,f5820:A:f6,f5940:A:f6,f6060:A:f6
+f6180:A:f6,f6300:A:f6,f6420:A:f6,f6540:A:f6,f6660:A:f6,f6780:A:f6,f6900:A:f6,f7020:A:f6
+f7140:A:f6,f7260:A:f6,f7380:A:f6,f7500:A:f6,f7620:A:f6,f7740:A:f6,f7860:A:f6,f7980:A:f6
+f8100:A:f6,f8220:A:f6,f8340:A:f6,f8460:A:f6
+f8694:TOUCH:290:195:f6,f8894:TOUCH:182:110:f6,f9044:TOUCH:158:100:f6
+f9494:CIRCLE:-1:0.3:f400,f9914:CIRCLE:-0.4:-1:f350,f10294:CIRCLE:0.74:0.67:f300
+f10604:CIRCLE:-0.7:0.7:f250,f10894:CIRCLE:-0.7:0.7:f350
+f11444:A:f6,f11519:A:f6,f11594:A:f6,f11669:A:f6,f11744:A:f6,f11819:A:f6,f11894:A:f6,f11969:A:f6,f12044:A:f6,f12119:A:f6
+f12250:CIRCLE:0.7:-0.7:f250,f12510:CIRCLE:1:0:f300,f12850:CIRCLE:0:1:f250
+f13300:A:f6,f13650:A:f6,f13850:LEFT:f6,f13910:A:f6
+f14350:CIRCLE:0.7:0.7:f600
+f15050:A:f6,f15140:A:f6,f15230:A:f6,f15320:A:f6,f15410:A:f6,f15500:A:f6,f15590:A:f6,f15680:A:f6
+f15770:A:f6,f15860:A:f6,f15950:A:f6,f16040:A:f6,f16130:A:f6,f16220:A:f6,f16310:A:f6,f16400:A:f6
+f16490:A:f6,f16580:A:f6,f16670:A:f6,f16760:A:f6,f16850:A:f6,f16940:A:f6,f17030:A:f6,f17120:A:f6
+f17210:A:f6,f17300:A:f6,f17390:A:f6,f17480:A:f6,f17570:A:f6,f17660:A:f6,f17750:A:f6,f17840:A:f6

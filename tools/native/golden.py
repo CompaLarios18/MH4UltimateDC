@@ -21,7 +21,9 @@ and every input 60 frames after the last one (D50), the DSP capture aligned on i
 config/native/fs_write_masks.txt (D52); the `--tolerance`, `--min-margin`, `--max-shift` and `--max-surplus`
 options change those numbers in the cross and native profiles only; the `native` profile (D76) is the cross profile
 for the native runtime in real time: scene changes within 24 frames, the DSP shift up to 300 DSP frames, the
-`fs:` Reads merged where their byte ranges touch before the multiset is built).  Standard library only;
+`fs:` Reads merged where their byte ranges touch before the multiset is built).  A session may carry `# env:`
+lines (NAME=VALUE: the port's start-up options, G3-perf's widening), which `record` and `check` give every run of it.
+Standard library only;
 no shell, no bash: the runner and the code library (.dll or .so) come from the command line, so it
 works the same on Windows and Linux.  The recordings are game data: they stay in build/.
 
@@ -85,9 +87,15 @@ SHARED_PAGE_SIZE = "0x1000"
 BUTTONS = {"A", "B", "X", "Y", "UP", "DOWN", "LEFT", "RIGHT", "L", "R", "START", "SELECT", "ZL", "ZR", "HOME"}
 # Folders of a recording that the manifest's file inventory leaves out.
 NOT_RECORDED_DIRS = {"user-before", "user-after", "work", "check"}
-# What a recording of a session must show (N0-09 spec): real scene changes in state.txt, distinct scene values
-# among the checkpoints.
-MINIMUMS = {"G2": {"scene_changes": 2, "checkpoint_scenes": 3}}
+# What a recording of a session must show: real scene changes in state.txt and distinct scene values among the
+# checkpoints (N0-09), and fog mode 7, gas, in a GPU capture (N0-10: G4's cutscene).  G3 and G3-perf pass through
+# the intro, the continue screen, the village, the Arena's equipment screen and the hunt.
+MINIMUMS = {
+    "G2": {"scene_changes": 2, "checkpoint_scenes": 3},
+    "G3": {"checkpoint_scenes": 5},
+    "G3-perf": {"checkpoint_scenes": 5},
+    "G4": {"gas_frames": 1},
+}
 # The comparisons `--require` can name (D34).
 REQUIRABLE = ("svc", "ipc", "state", "checkpoints", "hid", "dsp", "images", "unmapped")
 PROFILES = ("same", "cross", "native")
@@ -145,12 +153,15 @@ class Session:
     draft: bool
     path: Path
     events: int                              # number of input events
+    env: list[str] = dataclasses.field(default_factory=list)     # NAME=VALUE for the runner (`# env:` headers)
 
     def sha256(self) -> str:
         return sha256_file(self.path)
 
 
 _TIME = re.compile(r"^(?:f\d+|\d+)$")
+# `# env: NAME=VALUE`: an environment variable of the runner (the port's start-up options, MH4U_WIDESCREEN ...).
+_ENV = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=\S+$")
 
 
 def _frame_of(token: str) -> int | None:
@@ -195,9 +206,13 @@ def parse_session(path: str | Path) -> Session:
     Header lines (`# key: value`): name, needs (none|save), frames (total), checkpoints
     (`<frame>:<scene>, ...`, the scene being the observable `scene` value: the class of the topmost game
     area, N0-27), captures (`gpu:<start>:<frames>, dsp:<start>:<frames>[:silent], ...`; `:silent` marks a
-    DSP capture that is expected to be silent) and optionally `draft: yes` (the numbers are placeholders;
-    `record` refuses it).  Every other line is an input event line for the runner's --input-file (comma
-    separated `f<frame>:BUTTON[:hold]`, `f<frame>:TOUCH:x:y[:hold]`, `f<frame>:CIRCLE:x:y[:hold]`).
+    DSP capture that is expected to be silent), optionally `draft: yes` (the numbers are placeholders;
+    `record` refuses it) and any number of `env: NAME=VALUE` lines (an environment variable that `record` and
+    `check` give the runner on every run of the session, so that the session does not depend on what the
+    command line says: G3-perf's MH4U_WIDESCREEN and MH4U_WIDE_RENDER, which the port reads once at start-up
+    and the runner's --set cannot change).  Every other line is an input event line for the runner's
+    --input-file (comma separated `f<frame>:BUTTON[:hold]`, `f<frame>:TOUCH:x:y[:hold]`,
+    `f<frame>:CIRCLE:x:y[:hold]`).
     """
     path = Path(path)
     try:
@@ -205,14 +220,22 @@ def parse_session(path: str | Path) -> Session:
     except OSError as e:
         raise GoldenError(f"cannot read session file {path}: {e}") from None
     headers: dict[str, str] = {}
+    env: list[str] = []
     events: list[tuple[int, str]] = []
     for number, raw in enumerate(text.splitlines(), 1):
         line = raw.strip()
         if not line:
             continue
         if line.startswith("#"):
-            m = re.match(r"^#\s*(name|needs|frames|checkpoints|captures|draft)\s*:\s*(.*)$", line)
-            if m:
+            m = re.match(r"^#\s*(name|needs|frames|checkpoints|captures|draft|env)\s*:\s*(.*)$", line)
+            if m and m.group(1) == "env":
+                value = m.group(2).strip()
+                if not _ENV.match(value):
+                    raise GoldenError(f"{path.name}:{number}: bad env {value!r} (want NAME=VALUE)")
+                if value.split("=", 1)[0].upper() == "TZ":
+                    raise GoldenError(f"{path.name}:{number}: TZ is fixed by golden.py (UTC0)")
+                env.append(value)
+            elif m:
                 if m.group(1) in headers:
                     raise GoldenError(f"{path.name}:{number}: header {m.group(1)!r} given twice")
                 headers[m.group(1)] = m.group(2).strip()
@@ -264,7 +287,7 @@ def parse_session(path: str | Path) -> Session:
         captures.append(cap)
     for number, item in events:
         _check_event(item, frames, f"{where}:{number}")
-    return Session(name, headers["needs"], frames, checkpoints, captures, draft, path, len(events))
+    return Session(name, headers["needs"], frames, checkpoints, captures, draft, path, len(events), env)
 
 
 def session_path(name: str, sessions_dir: Path = SESSIONS_DIR) -> Path:
@@ -368,9 +391,13 @@ def runner_argv(runner: str | Path) -> list[str]:
     return [str(p)]
 
 
-def child_env() -> dict[str, str]:
+def child_env(extra: Sequence[str] = ()) -> dict[str, str]:
+    """The runner's environment: ours, `TZ=UTC0`, and the session's `# env:` variables (NAME=VALUE)."""
     env = dict(os.environ)
     env["TZ"] = TZ
+    for item in extra:
+        name, value = item.split("=", 1)
+        env[name] = value
     return env
 
 
@@ -436,7 +463,7 @@ def run_runner(spec: RunSpec, timeout: float | None) -> tuple[int, list[str]]:
     cmd = runner_argv(spec.runner) + args
     with open(spec.outdir / "runner.log", "wb") as log:
         try:
-            done = subprocess.run(cmd, cwd=ROOT, env=child_env(), stdout=log, stderr=subprocess.STDOUT,
+            done = subprocess.run(cmd, cwd=ROOT, env=child_env(spec.session.env), stdout=log, stderr=subprocess.STDOUT,
                                   timeout=timeout, check=False)
             status = done.returncode
         except subprocess.TimeoutExpired:
@@ -532,21 +559,40 @@ def validate_captures(outdir: Path, session: Session) -> list[str]:
     return problems
 
 
+def gas_frames(outdir: Path, session: Session) -> int:
+    """How many times the session's GPU captures set fog mode 7 (gas): the count `gcap.py summary` prints."""
+    total = 0
+    for cap in session.captures:
+        path = outdir / cap.filename
+        if cap.kind != "gpu" or not path.is_file():
+            continue
+        try:
+            total += gcap.summarize(gcap.read_all(str(path)))["fog_modes"].get("gas", 0)
+        except (gcap.GcapError, OSError):
+            pass            # the capture problem itself is reported by validate_captures
+    return total
+
+
 def minimum_problems(session: Session, outdir: Path) -> list[str]:
-    """What the session's recording must show at least (MINIMUMS): real scene changes, distinct checkpoint scenes."""
+    """What the session's recording must show at least (MINIMUMS)."""
     want = MINIMUMS.get(session.name)
     if not want:
         return []
     problems: list[str] = []
-    state = outdir / "state.txt"
-    changes = real_scene_changes(state) if state.is_file() else 0
-    if changes < want["scene_changes"]:
-        problems.append(f"state.txt has {changes} real scene change(s), {session.name} needs at least "
-                        f"{want['scene_changes']}")
-    distinct = len({s for _, s in session.checkpoints})
-    if distinct < want["checkpoint_scenes"]:
-        problems.append(f"{session.name}'s checkpoints hold {distinct} distinct scene value(s), at least "
-                        f"{want['checkpoint_scenes']} wanted")
+    if "scene_changes" in want:
+        state = outdir / "state.txt"
+        changes = real_scene_changes(state) if state.is_file() else 0
+        if changes < want["scene_changes"]:
+            problems.append(f"state.txt has {changes} real scene change(s), {session.name} needs at least "
+                            f"{want['scene_changes']}")
+    if "checkpoint_scenes" in want:
+        distinct = len({s for _, s in session.checkpoints})
+        if distinct < want["checkpoint_scenes"]:
+            problems.append(f"{session.name}'s checkpoints hold {distinct} distinct scene value(s), at least "
+                            f"{want['checkpoint_scenes']} wanted")
+    if "gas_frames" in want and gas_frames(outdir, session) < want["gas_frames"]:
+        problems.append(f"{session.name}'s GPU capture(s) never set fog mode 7 (gas): keep a cutscene where "
+                        f"`gcap.py summary` shows it")
     return problems
 
 
@@ -598,6 +644,7 @@ def record(session: Session, a: argparse.Namespace) -> int:
         "session": {"name": session.name, "needs": session.needs, "frames": session.frames,
                     "checkpoints": [list(c) for c in session.checkpoints],
                     "captures": [dataclasses.asdict(c) for c in session.captures],
+                    "env": list(session.env),
                     "events": session.events, "sha256": session.sha256()},
         "runner": {"path": str(a.runner), "sha256": sha256_file(Path(a.runner)), "cpu": cpu,
                    "new_3ds": "off", "exit": status, "seconds": seconds},
