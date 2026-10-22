@@ -240,7 +240,10 @@ struct FakeRuntime final : IRuntime {
     }
     RoomDetails RoomInformation() const override { return details; }
     std::vector<RoomMemberInfo> RoomMembers() const override { return members; }
-    std::vector<std::string> EndSkipPending() override { return {}; }
+    std::vector<std::string> end_skip_pending;  ///< what EndSkipPending answers
+    std::vector<std::string> EndSkipPending() override { return end_skip_pending; }
+    SkipInfo skip;  ///< what SkipState answers
+    SkipInfo SkipState() const override { return skip; }
     bool HostingRoom() const override {
         std::scoped_lock lock{const_cast<std::mutex&>(room_mutex)};
         return hosting;
@@ -295,9 +298,13 @@ struct FakeRuntime final : IRuntime {
     const char* StickSettingName(int stick) const override {
         return stick == Analog::CirclePad ? "stickA" : "stickB";
     }
-    std::string ButtonBinding(int) const override { return ""; }
+    std::string button_binding;         ///< what ButtonBinding answers for every button
+    std::string controller_input_name;  ///< what DescribeControllerInput answers for a non-empty binding
+    std::string ButtonBinding(int) const override { return button_binding; }
     std::string StickBinding(int) const override { return ""; }
-    std::string DescribeControllerInput(const std::string&) const override { return ""; }
+    std::string DescribeControllerInput(const std::string& binding) const override {
+        return binding.empty() ? "" : controller_input_name;
+    }
 
     GameHeader ReadGameHeader(const std::string& path) const override {
         const_cast<FakeRuntime*>(this)->asked.push_back(path);

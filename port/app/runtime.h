@@ -17,13 +17,13 @@
 #include <string>
 #include <vector>
 
+#include "app_window.h"
 #include "util/room.h"
 #include "util/swkbd.h"
 
 namespace App {
 
 struct Config;
-class IWindow;
 
 /// The graphics API the game is drawn with.
 enum class Renderer { Vulkan, OpenGL, Software };
@@ -189,12 +189,16 @@ struct RoomCallbacks {
     std::function<void(const MacAddress& transmitter, Packet)> on_packet;
 };
 
-/// A game controller the app found, as the input profile names it: the SDL GUID, its number
-/// among controllers with that GUID, and its name.
-struct ControllerInfo {
-    std::string guid;
-    int port = 0;
-    std::string name;
+/// The after-quest skip as the game offers it (the 20 seconds before the return, while the touch
+/// screen's kick button reads "Skip"), for the hint over the game (ui/hint.h). A copy: the app
+/// reads it on the thread that builds the menu's frames, never from the game's own state.
+struct SkipInfo {
+    bool offered = false;       ///< the game offers the skip now
+    int hint = 0;               ///< mh4u.ini's skip_hint: 0 no hint, 1 a hint, 2 a flashing one
+    std::string skip_button;    ///< the 3DS button that skips (mh4u.ini's skip: "ZR"), or ""
+    std::string end_buttons;    ///< those held together to end the wait ("ZL+ZR"), or ""
+    float end_hold = 0.0f;      ///< how much of that hold is done, 0..1 (1 once asked)
+    bool end_requested = false; ///< this player asked to end the wait
 };
 
 class IRuntime {
@@ -448,6 +452,13 @@ public:
     /// What a controller does for such a parameter string ("A (bottom)", "Left stick"), or empty
     /// when no controller does.
     virtual std::string DescribeControllerInput(const std::string& binding) const = 0;
+
+    // ── The game's state, for the menu ──
+
+    /// The after-quest skip's state now. Called on the thread that builds the menu's frames; the
+    /// Azahar runtime reads the hooks' own state (that thread is the hooks' too), a runtime whose
+    /// game runs on another thread keeps a copy that thread updates.
+    virtual SkipInfo SkipState() const = 0;
 
     // ── Titles: the game file, and titles installed on the virtual SD card ──
     // (the launcher's setup; any thread)

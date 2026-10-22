@@ -1,6 +1,11 @@
 """native/CMakeLists.txt: new modules, tools, tests and registrations are found without editing a
 shared file (N1-01).
 
+The app tree (native/app, N2b-03) is checked the same way: off by default (nothing needs SDL3),
+and with -DMH4N_APP=ON (skipped without SDL3 3.4.18, found through CMAKE_PREFIX_PATH; `source
+~/.mh4n_env`) an app module that registers a `runner` option shows it in `mh4u-native --help` and
+not in `mh4u_native_runner --help`.
+
 Copies native/ into a temporary directory, adds to the copy a module two levels down, a module
 that depends on it and on mh4n_common, a module nothing references that holds a registration and
 an option, a tool, a test and a test with its own main, then configures with the project's
@@ -204,3 +209,137 @@ def test_a_dependency_on_a_missing_module_is_an_error(tmp_path):
     result = run(configure_cmd(native, str(tmp_path / "build")))
     assert result.returncode != 0
     assert "mh4n_does_not_exist" in result.stderr
+
+
+# ---- the app tree (native/app, N2b-03) ----
+
+def copy_port_app(native):
+    """port/app next to the copy (native/app names the shared sources as ../../../port/app)."""
+    tree = os.path.dirname(os.path.abspath(native))
+    shutil.copytree(os.path.join(ROOT, "port", "app"), os.path.join(tree, "port", "app"))
+
+
+def sdl3_available(tmp):
+    write(tmp, "CMakeLists.txt", """\
+        cmake_minimum_required(VERSION 3.25)
+        project(find_sdl3 LANGUAGES NONE)
+        find_package(SDL3 3.4.18 CONFIG REQUIRED)
+        """)
+    return run(["cmake", "-S", tmp, "-B", os.path.join(tmp, "build")]).returncode == 0
+
+
+@pytest.fixture(scope="module")
+def sdl3(tmp_path_factory):
+    if not sdl3_available(str(tmp_path_factory.mktemp("sdl3_probe"))):
+        pytest.skip("needs SDL3 3.4.18 (source ~/.mh4n_env)")
+
+
+def test_the_app_tree_is_off_by_default_and_needs_no_sdl3(tmp_path):
+    native = str(tmp_path / "native")
+    build = str(tmp_path / "build")
+    copy_native(native)
+    conf = run(configure_cmd(native, build))
+    assert conf.returncode == 0, conf.stdout + conf.stderr
+    assert "SDL3" not in conf.stdout + conf.stderr
+    cache = open(os.path.join(build, "CMakeCache.txt")).read()
+    assert "MH4N_APP:BOOL=OFF" in cache
+    targets = run(["cmake", "--build", build, "--target", "help"]).stdout
+    assert "mh4u_native_runner" in targets
+    for name in ("mh4u-native", "mh4n_app_shared", "mh4n_imgui", "app_shared_test"):
+        assert name not in targets, name
+
+
+@pytest.fixture(scope="module")
+def built_app(built, sdl3):
+    """The module's tree again with an app module that registers a runner option, a nested one that
+    depends on it and a test, configured with MH4N_APP=ON in the same build folder."""
+    native, build = built
+    copy_port_app(native)
+    write(native, "app/probe/CMakeLists.txt", "mh4n_app_module(SOURCES probe.cpp)\n")
+    write(native, "app/probe/probe.cpp", """\
+        #include "mh4n/options.h"
+        #include "mh4n/registry.h"
+        MH4N_OPTION("runner", "--app-probe-option", "", "registered by an app module");
+        MH4N_REGISTER(int, "app-probe", 11);
+        """)
+    write(native, "app/deep/inner/CMakeLists.txt",
+          "mh4n_app_module(SOURCES inner.cpp DEPENDS mh4n_app_probe)\n")
+    write(native, "app/deep/inner/inner.cpp", """\
+        #include "app_window.h"
+        namespace probe { int Inner() { return App::Scancode::Escape; } }
+        """)
+    write(native, "app/tests/probe_app_test.cpp", """\
+        #include <doctest/doctest.h>
+        #include "app_window.h"
+        #include "mh4n/registry.h"
+        namespace probe { int Inner(); }
+        TEST_CASE("app modules are linked whole, at any depth") {
+            REQUIRE(mh4n::Registry<int>::Instance().Find("app-probe") != nullptr);
+            CHECK(*mh4n::Registry<int>::Instance().Find("app-probe") == 11);
+            CHECK(probe::Inner() == 41);
+        }
+        """)
+    conf = run(configure_cmd(native, build) + ["-DMH4N_APP=ON"])
+    assert conf.returncode == 0, conf.stdout + conf.stderr
+    result = run(["cmake", "--build", build, "--target", "mh4u-native", "mh4u_native_runner",
+                  "probe_app_test", "app_shared_test"])
+    assert result.returncode == 0, result.stdout[-6000:] + result.stderr[-3000:]
+    return native, build
+
+
+def test_an_app_option_shows_in_mh4u_native_help_and_not_in_the_runners(built_app):
+    _native, build = built_app
+    app = run([os.path.join(build, "bin", "mh4u-native"), "--help"])
+    assert app.returncode == 0, app.stderr
+    assert "usage: mh4u-native" in app.stdout
+    assert "--app-probe-option" in app.stdout
+    assert "--init-time" in app.stdout            # the runtime's options are listed too
+    runner = run([os.path.join(build, "bin", "mh4u_native_runner"), "--help"])
+    assert runner.returncode == 0
+    assert "--app-probe-option" not in runner.stdout
+
+
+def test_mh4u_native_answers_version_and_refuses_the_rest(built_app):
+    _native, build = built_app
+    exe = os.path.join(build, "bin", "mh4u-native")
+    version = run([exe, "--version"])
+    assert version.returncode == 0 and re.match(r"mh4u-native \S+\n", version.stdout)
+    for args in (["--no-such-option"], ["positional"], []):
+        refused = run([exe] + args)
+        assert refused.returncode == 2, args
+
+
+def test_app_modules_are_named_after_their_path_and_the_tests_run(built_app):
+    _native, build = built_app
+    libs = sorted(os.listdir(os.path.join(build, "lib")))
+    for name in ("libmh4n_app_probe.a", "libmh4n_app_deep_inner.a", "libmh4n_app_shared.a",
+                 "libmh4n_app_host.a"):
+        assert name in libs, libs
+    result = run(["ctest", "--test-dir", build, "--no-tests=error", "-R",
+                  "^(probe_app_test|app_shared_test)$", "--output-on-failure"])
+    assert result.returncode == 0, result.stdout + result.stderr
+    for name in ("probe_app_test", "app_shared_test"):
+        assert re.search(rf"Test\s+#\d+: {name}\b.*Passed", result.stdout), result.stdout
+
+
+def test_a_native_src_module_cannot_depend_on_an_app_module(sdl3, tmp_path):
+    native = str(tmp_path / "native")
+    copy_native(native)
+    copy_port_app(native)
+    write(native, "src/broken/CMakeLists.txt", "mh4n_module(SOURCES b.cpp DEPENDS mh4n_app_shared)\n")
+    write(native, "src/broken/b.cpp", "int broken_value() { return 1; }\n")
+    result = run(configure_cmd(native, str(tmp_path / "build")) + ["-DMH4N_APP=ON"])
+    assert result.returncode != 0
+    message = " ".join(result.stderr.split())          # (CMake wraps the line)
+    assert "mh4n_app_shared" in message and "not a module under native/src" in message
+
+
+def test_an_app_module_cannot_depend_on_a_missing_app_module(sdl3, tmp_path):
+    native = str(tmp_path / "native")
+    copy_native(native)
+    copy_port_app(native)
+    write(native, "app/broken/CMakeLists.txt", "mh4n_app_module(SOURCES b.cpp DEPENDS mh4n_app_nope)\n")
+    write(native, "app/broken/b.cpp", "int broken_value() { return 1; }\n")
+    result = run(configure_cmd(native, str(tmp_path / "build")) + ["-DMH4N_APP=ON"])
+    assert result.returncode != 0
+    assert "mh4n_app_nope" in result.stderr

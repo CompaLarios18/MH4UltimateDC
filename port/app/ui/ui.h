@@ -4,17 +4,17 @@
 // software keyboard the game asks for (a hunter's name, chat) is drawn in it too, and while it is
 // closed a hint over the game when there is one (ui/hint.h: the skip after a quest).
 //
-// Threads: the menu is built on the emulation thread, in the main window's PollEvents (where SDL's
-// events are pumped), and a copy of each frame's draw data goes to the thread that draws: the
-// OpenGL window's present thread, Azahar's Vulkan renderer (through its present overlay,
-// video_core/renderer_vulkan/vk_overlay.h in azahar.patch) or the software window's thread.
+// Threads: the menu is built on the emulation thread, in the main window's PollEvents (where the
+// window's events are pumped), and a copy of each frame's draw data goes to the thread that draws:
+// the OpenGL window's present thread, Azahar's Vulkan renderer (through its present overlay,
+// video_core/renderer_vulkan/vk_overlay.h in azahar.patch) or the software window's thread
+// (those drawing entry points are the Azahar app's, in ui/render.h).
+//
+// This header has what both executables use (mh4u and mh4u-native); it includes no SDL header.
 #pragma once
 
 #include "app_window.h"
 #include "util/types.h"
-
-union SDL_Event;
-struct SDL_Surface;
 
 namespace App {
 
@@ -31,9 +31,10 @@ void Start(IWindow& window, Config& config);
 /// After the renderer has gone (System::Shutdown) and before SDL quits.
 void Stop();
 
-/// The windows' events, in PollEvents: true when the event is the menu's (its toggle, or input
-/// while it is up) and the game mustn't have it.
-bool OnEvent(const SDL_Event& event);
+/// The windows' events, in PollEvents, translated by the window: true when the event is the
+/// menu's (its toggle, or input while it is up) and the game mustn't have it. The window has
+/// the event it is translating ready for IWindow::ImGuiForwardCurrentEvent while this runs.
+bool OnEvent(const InputEvent& event);
 
 /// The main window's PollEvents, after the events: builds the menu's frame while it is up.
 void Frame();
@@ -48,18 +49,6 @@ void ToggleKeyGuides();
 
 /// Whether the menu (or the software keyboard) is on the screen and has the input.
 bool Visible();
-
-/// OpenGL, on the window's present thread with its context current: the menu's renderer before
-/// the first frame, the menu over each presented frame (`width` x `height` pixels, before the
-/// swap) and the renderer again before the thread ends.
-void InitOpenGL();
-void DrawOpenGL(u32 width, u32 height);
-void ShutdownOpenGL();
-
-/// The software window, on its present thread: the menu drawn into the window's surface, and
-/// the renderer it used released before the thread ends.
-void DrawSoftware(SDL_Surface* surface);
-void ShutdownSoftware();
 
 } // namespace Ui
 } // namespace App

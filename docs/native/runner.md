@@ -39,6 +39,7 @@ for that.
 | `--observable FILE` | the values `--state-trace` records (default `config/native/observable.txt`, relative to the current directory) |
 | `--slice-us N` | the scheduler's slice when both virtual cores have work (default 1000) |
 | `--user DIR` | the user directory (NAND, SD card, saves) for the services that need one; the start-up step never creates it. When it exists and holds no config savegame, the start-up step makes the config once with a random console ID, atomically, in Azahar's format and path (D37, N1-15b); an existing valid config is never touched and a damaged one is left alone with an Error. With a missing `DIR` the console ID is 0 for that run and nothing is made (`mac.txt` and `mcu.dat` do not create it either; a saving `cfg:s`/`cfg:i` command still does). Without `--user` nothing is written at all. Without it the hooks get a placeholder folder and read no `mh4u.ini` (fps and widescreen keep their defaults); only `--user` makes them read `DIR/mh4u.ini` (N1-20b) |
+| `--shots DIR`, `--shot-every MS\|fN`, `--shots-from MS\|fN` | save both screens as PPM images in `DIR` (`--shot-every` default 1000 ms; `fN` is in game frames), named as the reference's. Only a GPU that shows its screens (`present::Display`: `null-display`, and `renderer` from N2b-13) can take shots; with any other `--gpu` the run ends with status 2 and a message. Also writes `DIR/gas.txt` (below, *Parity with the reference runner*) |
 | `--init-time SECONDS` | the date the console starts at, seconds since the Unix epoch, UTC. The default, 1767268800 (2026-01-01 12:00 UTC), is the fixed start of the reference runs: the game seeds its random numbers from the clock |
 | `--gpu NAME` | the GPU (default `null`) |
 | `--input-source NAME` | where the buttons, circle pad and touch screen come from (default `script`, the presses of `--input` and `--input-file`). `live` (N2b-08, D59): the app feeds it from its own thread (`input_live::Find(runtime)->Set(...)`, `SetTouch(...)`) and the game sees a change only at its next frame, see `--input-latch` and `--record-input` |
@@ -209,15 +210,34 @@ value (times, ticks) is not part of this table: a different timing model is the 
 | `--capture-dsp START:FRAMES:FILE` | `same` syntax (`START` may be `fN`; `FILE` may hold colons) and MDSP format and manifest. `differs`: type-1 (`REGIONS`) records only: the reference's type-2 (`PCM`) and type-3 (`SAMPLES`) records are not written, and `capfmt.py diff-dsp` compares the type-1 records only | `mh4n_services_dsp` (`dsp_capture.cpp`) |
 | `--log FILTER` | `differs`: the categories are the native modules' (`Kernel`, `Service.SRV`, ...), not Azahar's | `main.cpp` |
 | `--input-latch frame\|none`, `--record-input FILE` | native only (the reference has neither; golden.py does not pass them): they belong to `--input-source live` (N2b-08). A `--record-input` file is an `--input-file`: both runners read it, with the same presses at the same frames | `mh4n_input_live` |
+| `--shots DIR`, `--shot-every MS\|fN`, `--shots-from MS\|fN` | `same` syntax, defaults (1000 ms), file names and timing: the reference's own `Schedule::ShotSchedule` decides, asked once per published frame with the game clock's milliseconds and the game's frame counter. A shot is both screens as binary PPM, `f%07u_top.ppm` / `f%07u_bottom.ppm` for frames (named by the scheduled frame, taken at the first published frame that reads it or more; a frame the counter went past has no shot) and `%07u_top.ppm` for milliseconds (named by the scheduled time). Only a GPU that implements `present::Display` can take shots: `null-display` (N2b-07) and, from N2b-13, `renderer`; with any other `--gpu` (the default `null` included) `--shots` ends the run with status 2 and a message. `differs`: a bad `--shots-from` / `--shot-every` ends with status 2 whether or not `--shots` is given (the reference: 1); the folder is created like the reference's; a screen that is off has no file; a program that does not map the game's frame counter (`io_test`) has only millisecond shots; the picture is what the GPU shows at the VBlank (`null-display`: `DisplayShadow::BuildScreen` over guest memory, so a display transfer the null GPU skips is not in it); `DIR/gas.txt` is native only (below); no `--draw-window` (the screens are not drawn by the runner) | `mh4n_shots` (`ShotSink`), reading `present::Display` |
 | `--init-time SECONDS` | native only; its default is the reference's fixed start date, so a run without it starts at the same date | `mh4n_runtime` |
 
 The reference's other options are not in this runner, and an unknown option ends the run with status 2:
-`--cpu`, `--new-3ds`, `--install`, `--shots`, `--shots-from`, `--shot-every`, `--dump`, `--replace`,
+`--cpu`, `--new-3ds`, `--install`, `--dump`, `--replace`,
 `--freeze`, `--stalls`, `--lockstep`, `--call-counts`, `--trace-timing`, `--count-unmapped`, `--capture-gpu`,
 `--perf-log`, `--speed`, `--cpu-clock`, `--async-io`, `--draw-window`, `--room-host`, `--room-join`, `--nick`
 and `--print-schedule`. golden.py does not pass any of them to a candidate runner (they are the reference's
-`full` list), so a candidate run does not write `timing.txt`, `unmapped.txt`, a GPU capture, screenshots or
-the shared-page dump, and golden.py skips those comparisons for it.
+`full` list), so a candidate run does not write `timing.txt`, `unmapped.txt`, a GPU capture or the
+shared-page dump, and golden.py skips those comparisons for it. Screenshots (`--shots`, `--shots-from`,
+`--shot-every`) are the exception: the runner takes them (N2b-14; N2b-17 makes golden.py pass them to a
+candidate runner whose `--help` lists `--shots`, started with a GPU that shows its screens).
+
+**`gas.txt`** (native only). With `--shots DIR` the runner also writes `DIR/gas.txt` when the run ends: one
+line per shot that follows a published frame with `gas` set (a draw with fog mode 7, which Azahar does not
+draw) since the previous shot, the frame the shot is taken from included. A line is the shot's number
+without padding and without the `f`: `300` for `f0000300_top.ppm`, `1500` for `0001500_top.ppm`. The file
+is there, empty, when there was no gas, so its absence means a runner that does not report gas (the
+reference). The cross-profile image check (N2b-17) reports such shots and does not judge them. Under
+`null-display` nothing sets `gas`, so the file is empty; the renderer (N2b-13) sets it.
+
+**Threads.** A shot is asked for in `ScreenSink::Publish`, on the thread that handles the VBlank, and
+nothing there waits for another thread: the files are written by the `done` callbacks of
+`Display::ReadScreen`, inside the call (`null-display`) or later on the renderer's thread. At the end of the
+run (`Runtime::OnFinish`, before the GPU is destroyed) the sink is removed, the callbacks still pending are
+waited for (up to 30 s; an error line if some never come) and `gas.txt` is written. The run's last line of
+this module: `Shots: <n> screenshots taken, <m> files written` at Info.
+Under a GPU that queues its frames (`--gpu renderer`, from N2b-13) a shot due in the very last queued frames may be missed, because the sink is removed after the scheduler stops.
 
 ## Differences from the reference that are on purpose
 

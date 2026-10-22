@@ -8,7 +8,7 @@
 #include "common/settings.h"
 #include "config.h"
 #include "core/core.h"
-#include "ui/ui.h"
+#include "ui/render.h"
 #include "video_core/gpu.h"
 #include "video_core/renderer_base.h"
 #include "window.h"

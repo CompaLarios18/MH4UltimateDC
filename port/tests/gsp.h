@@ -1,12 +1,14 @@
 // Derived from Azahar src/core/hle/service/gsp/gsp_command.h, gsp_gpu.h, gsp_interrupt.h and gsp_gpu.cpp
-// and src/video_core/pica/regs_external.h at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6
+// and src/video_core/pica/regs_external.h and src/video_core/gpu.cpp at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6
 // (GPL-2.0-or-later; each says "Licensed under GPLv2 or any later version"): the command ids, the
 // framebuffer info, the interrupt ids, the offsets of the relay queue, the framebuffer updates and the
-// command queue in the shared block, the fill and transfer flag bits, and the positions of the framebuffer registers (FramebufferConfig)
+// command queue in the shared block, the fill and transfer flag bits, the layout of the command-list
+// submission (SubmitCmdListCommand), the virtual-to-physical ranges (GPU::VirtualToPhysicalAddress), and
+// the positions of the framebuffer registers (FramebufferConfig)
 // are the numbers and layouts of those files (which 3dbrew documents too).
 // Copyright 2023-2024 Citra Emulator Project / Azahar Emulator Project (gsp_command.h)
 // Copyright 2014-2026 Citra Emulator Project / Azahar Emulator Project (gsp_gpu.h, gsp_gpu.cpp)
-// Copyright 2023-2026 Citra Emulator Project / Azahar Emulator Project (gsp_interrupt.h, regs_external.h)
+// Copyright 2023-2026 Citra Emulator Project / Azahar Emulator Project (gsp_interrupt.h, regs_external.h, gpu.cpp)
 
 /* The GPU the way a game talks to it (gsp::Gpu), for the port's bare test programs (no game
  * code, no libctru): the service session, the interrupt event and the shared memory block, the
@@ -38,6 +40,23 @@ enum { /* pixel formats of the display transfer and the framebuffer registers */
 };
 
 enum { GSP_TOP = 0, GSP_BOTTOM = 1 };
+
+/* What the GPU reaches (VRAM and the linear heap) as the physical addresses the PICA registers hold:
+ * the way GPU::VirtualToPhysicalAddress maps them (0 for any other address). The linear heap is at
+ * 0x14000000 on the Old 3DS's memory layout and at 0x30000000 where the program runs under Azahar's
+ * ELF loader; both map to the start of FCRAM, 0x20000000. */
+#define GSP_VRAM_VADDR 0x1F000000u
+#define GSP_VRAM_SIZE 0x00600000u
+#define GSP_VRAM_PADDR 0x18000000u
+#define GSP_LINEAR_VADDR 0x14000000u      /* 128 MB */
+#define GSP_LINEAR_VADDR_NEW 0x30000000u  /* 256 MB */
+#define GSP_FCRAM_PADDR 0x20000000u
+static inline u32 gsp_virt_to_phys(u32 v) {
+    if (v >= GSP_VRAM_VADDR && v < GSP_VRAM_VADDR + GSP_VRAM_SIZE) return v - GSP_VRAM_VADDR + GSP_VRAM_PADDR;
+    if (v >= GSP_LINEAR_VADDR && v < GSP_LINEAR_VADDR + 0x08000000u) return v - GSP_LINEAR_VADDR + GSP_FCRAM_PADDR;
+    if (v >= GSP_LINEAR_VADDR_NEW && v < GSP_LINEAR_VADDR_NEW + 0x10000000u) return v - GSP_LINEAR_VADDR_NEW + GSP_FCRAM_PADDR;
+    return 0;
+}
 
 /* GX command ids (the low byte of the command's first word) */
 enum { GX_REQUEST_DMA = 0, GX_SUBMIT_CMDLIST = 1, GX_MEMORY_FILL = 2, GX_DISPLAY_TRANSFER = 3,
@@ -228,6 +247,15 @@ static inline void gsp_texture_copy(GspGpu *g, u32 in, u32 in_width, u32 in_gap,
                                     u32 out_width, u32 out_gap, u32 size) {
     const u32 cmd[8] = {GX_TEXTURE_COPY, in, out, size, (in_gap << 16) | in_width,
                         (out_gap << 16) | out_width, GX_RAW_COPY, 0};
+    gsp_queue(g, cmd);
+}
+
+/* Runs a PICA command list (GX command 1, SubmitCmdList): `address` is the list's virtual address
+ * (the GSP converts it) and `size` its length in bytes, a multiple of 8. The list ends with a write
+ * of 0x12345678 to the FINALIZE register, which is when the P3D interrupt arrives (GSP_INT_P3D).
+ * The layout is SubmitCmdListCommand: address, size, flags, three unused words, do_flush. */
+static inline void gsp_submit_cmdlist(GspGpu *g, u32 address, u32 size) {
+    const u32 cmd[8] = {GX_SUBMIT_CMDLIST, address, size, 0, 0, 0, 0, 0};
     gsp_queue(g, cmd);
 }
 

@@ -1,5 +1,5 @@
 // Lines over the game while the in-game menu is closed, once a quest is complete
-// (port/src/hooks.h): which buttons tap the touch screen's Skip and which, held, end the
+// (IRuntime::SkipState): which buttons tap the touch screen's Skip and which, held, end the
 // wait; the hold's progress; and, online, who hasn't asked to end it yet.
 #pragma once
 
@@ -17,6 +17,7 @@ struct Hint {
     std::string end;       ///< those held to end the wait ("Q+C / LT+RT"), or ""
     float hold = 0.0f;     ///< 0..1 of the hold, 1 once asked
     bool requested = false;          ///< this player asked to end the wait
+    bool flash = false;              ///< mh4u.ini's skip_hint = 2: the hint's frame pulses
     std::vector<std::string> waiting_for;  ///< online: port players who haven't asked yet
     bool Empty() const {
         return skip.empty() && end.empty();
@@ -24,8 +25,9 @@ struct Hint {
 };
 
 /// What to show now: nothing (Empty()) when the skip isn't offered, no button is bound, or
-/// mh4u.ini's skip_hint is off. The key names come from `config` (mh4u-app.ini) and the
-/// controller mapping. Cheap when there is nothing.
+/// mh4u.ini's skip_hint is off. The state of the skip comes from IRuntime::SkipState; the key
+/// names come from `config` (mh4u-app.ini) and the controller mapping. Cheap when there is
+/// nothing.
 Hint CurrentHint(const Config& config);
 
 /// Draws the hint at the bottom middle of the screen, in a Dear ImGui frame (the menu's
