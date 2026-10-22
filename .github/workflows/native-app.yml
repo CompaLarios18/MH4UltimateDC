@@ -1,0 +1,382 @@
+name: Native app CI
+
+# CI of the app tree native/app (mh4u-native; docs/native/CI.md, docs/native/app.md): the
+# toolchains of native.yml's three native jobs, SDL3 3.4.18 built from its release tag (cached by
+# tag), the configure line of docs/native/wp/N2b.md rule 2 (-DMH4N_APP=ON), build, ctest, and
+# `mh4u-native --version`. The Windows job publishes the artifact `mh4u-native-windows`. No step
+# here installs SDL2 (SDL2 and SDL3 export the same function names) and none uses game data.
+
+on:
+  push:
+    branches: [native, "wp/**"]
+  pull_request:
+    branches: [native]
+    paths:
+      - "native/**"
+      - "port/app/**"
+      - "port/src/**"
+      - "tests/test_native_app*.py"
+      - ".github/workflows/native-app.yml"
+  workflow_dispatch:
+
+# nothing here writes to the repository or uses a secret
+permissions:
+  contents: read
+
+concurrency:
+  # a newer push to a wp/ branch or a PR replaces the older run; runs on native are kept
+  group: native-app-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/native' }}
+
+env:
+  # D8: SDL3 3.4.18, from its release tag (the cache keys name it too)
+  SDL_TAG: release-3.4.18
+  SDL_URL: https://github.com/libsdl-org/SDL.git
+
+jobs:
+  # Linux: Clang, lavapipe as the Vulkan device (MH4N_REQUIRE_VULKAN=1 makes a test that needs one
+  # fail instead of skip), SDL3 built here into build/sdl3.
+  app-linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Toolchain and Vulkan packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang lld llvm cmake ninja-build pkg-config \
+            libvulkan-dev mesa-vulkan-drivers glslang-tools spirv-tools
+      # building the ARM test programs uses tools/difftest.py
+      - run: pip install -r requirements.txt
+      - name: SDL3 cache
+        id: sdl3
+        uses: actions/cache@v4
+        with:
+          path: build/sdl3
+          key: sdl3-${{ env.SDL_TAG }}-linux-ubuntu24.04-clang
+      # the headers SDL3 needs to build its X11, Wayland and audio backends (the same list as
+      # tools/native/setup_env.sh); only when the cache missed
+      - name: SDL3 build dependencies
+        if: ${{ steps.sdl3.outputs.cache-hit != 'true' }}
+        run: |
+          sudo apt-get install -y libx11-dev libxext-dev libwayland-dev libxkbcommon-dev \
+            libasound2-dev libpulse-dev libxcursor-dev libxi-dev libxrandr-dev libxfixes-dev \
+            libxss-dev libxtst-dev
+      - name: SDL3 3.4.18
+        if: ${{ steps.sdl3.outputs.cache-hit != 'true' }}
+        run: |
+          set -eu
+          git clone --depth 1 --branch "$SDL_TAG" "$SDL_URL" build/sdl3-src
+          cmake -S build/sdl3-src -B build/sdl3-build -G Ninja \
+            -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
+            -DCMAKE_BUILD_TYPE=Release -DSDL_TESTS=OFF \
+            -DCMAKE_INSTALL_PREFIX="$PWD/build/sdl3"
+          cmake --build build/sdl3-build
+          cmake --install build/sdl3-build
+      - name: SDL3 is the one from the cache
+        run: |
+          set -eu
+          ls build/sdl3
+          find build/sdl3 -name 'SDL3Config*.cmake'
+          echo "CMAKE_PREFIX_PATH=$PWD/build/sdl3" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=$PWD/build/sdl3/lib:$PWD/build/sdl3/lib64" >> "$GITHUB_ENV"
+      - name: Configure
+        run: |
+          cmake -S native -B build/native-app -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo -DMH4N_WERROR=ON -DMH4N_APP=ON
+          # find_package(SDL3) must have found ours, not a system copy
+          grep -E '^SDL3_DIR:' build/native-app/CMakeCache.txt
+          grep -E "^SDL3_DIR:.*=$PWD/build/sdl3/" build/native-app/CMakeCache.txt
+      - name: Build
+        run: cmake --build build/native-app
+      - name: Test
+        env:
+          MH4N_REQUIRE_VULKAN: "1"      # a test that needs a Vulkan device fails instead of skipping
+          MH4N_REQUIRE_TEST_DATA: "1"   # a test that needs the built ARM programs fails instead of skipping
+        run: ctest --test-dir build/native-app --no-tests=error --output-on-failure
+      # the device the tests above ran on must be lavapipe
+      - name: Vulkan device is lavapipe
+        run: |
+          set -eu
+          build/native-app/bin/mh4n_vkprobe | tee build/vkprobe.txt
+          grep -Eq '^device: .*llvmpipe' build/vkprobe.txt \
+            || { echo "::error::mh4n_vkprobe did not list a llvmpipe device"; exit 1; }
+      - name: mh4u-native --version
+        run: |
+          set -eu
+          out="$(build/native-app/bin/mh4u-native --version)"
+          echo "$out"
+          printf '%s\n' "$out" | grep -Eq '^mh4u-native [^ ]+$' \
+            || { echo "::error::mh4u-native --version did not print 'mh4u-native <revision>'"; exit 1; }
+      # N2b-10 adds tests/test_native_app.py; until then the `if` skips this step's command
+      - name: App end-to-end test (once tests/test_native_app.py exists)
+        run: |
+          if [ -f tests/test_native_app.py ]; then MH4N_APP_EXE=build/native-app/bin/mh4u-native MH4N_REQUIRE_TEST_DATA=1 python3 -m pytest -rs tests/test_native_app.py; fi
+          [ -f tests/test_native_app.py ] || echo "tests/test_native_app.py does not exist yet: skipped by its if"
+
+  # Windows: x86-64, clang from llvm-mingw (the archive tools/build_game.py fetches, as in
+  # native.yml's native-windows; not MXE), SDL3 built with it. The artifact `mh4u-native-windows`
+  # (pushes and dispatches, not pull requests; 30 days) is what the maintainer downloads.
+  app-windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - name: llvm-mingw (as tools/build_game.py fetches it)
+        run: |
+          set -eu
+          # fetch_compiler (the code tools/build_game.py uses) prints its progress to stdout and
+          # returns a path relative to its argument: give it an absolute folder, send the chatter
+          # to stderr and print only the compiler's folder (a Windows path, as $GITHUB_PATH wants)
+          winbin="$(python - "$PWD/build/toolchain" <<'PY'
+          import contextlib, os, sys
+          sys.path.insert(0, "tools")
+          import build_game
+          with contextlib.redirect_stdout(sys.stderr):
+              clang = build_game.fetch_compiler(os.path.abspath(sys.argv[1]))
+          sys.stdout.write(os.path.dirname(os.path.abspath(clang)))
+          PY
+          )"
+          test -n "$winbin" || { echo "::error::no llvm-mingw folder"; exit 1; }
+          case "$winbin" in *$'\n'*) echo "::error::llvm-mingw folder isn't one line"; exit 1 ;; esac
+          bindir="$(cygpath -u "$winbin")"
+          test -x "$bindir/x86_64-w64-mingw32-clang.exe" || { echo "::error::no clang in $bindir"; exit 1; }
+          echo "llvm-mingw: $bindir"
+          # the programs need its libc++ and libunwind DLLs at run time (in the tests)
+          echo "$winbin" >> "$GITHUB_PATH"
+          command -v ninja >/dev/null || choco install ninja -y --no-progress
+      - name: Tools found
+        run: |
+          for tool in x86_64-w64-mingw32-clang x86_64-w64-mingw32-clang++ clang ld.lld llvm-objcopy llvm-readelf llvm-objdump llvm-strip cmake ninja python; do
+            printf '%s: ' "$tool"; command -v "$tool" || echo "NOT FOUND"
+          done
+          clang --version
+          cmake --version
+      - name: SDL3 cache
+        id: sdl3
+        uses: actions/cache@v4
+        with:
+          path: build/sdl3
+          # the tag, and the file that names the llvm-mingw release
+          key: sdl3-${{ env.SDL_TAG }}-windows-llvm-mingw-${{ hashFiles('tools/build_game.py') }}
+      - name: SDL3 3.4.18 with llvm-mingw
+        if: ${{ steps.sdl3.outputs.cache-hit != 'true' }}
+        run: |
+          set -eu
+          git clone --depth 1 --branch "$SDL_TAG" "$SDL_URL" build/sdl3-src
+          # cmake.exe is a Windows program: give it C:/... paths
+          prefix="$(cygpath -m "$PWD/build/sdl3")"
+          cmake -S build/sdl3-src -B build/sdl3-build -G Ninja \
+            -DCMAKE_C_COMPILER=x86_64-w64-mingw32-clang -DCMAKE_CXX_COMPILER=x86_64-w64-mingw32-clang++ \
+            -DCMAKE_BUILD_TYPE=Release -DSDL_TESTS=OFF \
+            "-DCMAKE_INSTALL_PREFIX=$prefix"
+          cmake --build build/sdl3-build
+          cmake --install build/sdl3-build
+      - name: SDL3 is the one from the cache
+        run: |
+          set -eu
+          ls build/sdl3 build/sdl3/bin
+          test -f build/sdl3/bin/SDL3.dll || { echo "::error::no SDL3.dll in build/sdl3/bin"; exit 1; }
+          echo "CMAKE_PREFIX_PATH=$(cygpath -m "$PWD/build/sdl3")" >> "$GITHUB_ENV"
+          # the tests start mh4u-native.exe from the build folder: SDL3.dll is found through PATH
+          # there (the packaged-start check below runs with a PATH that does not have it)
+          cygpath -w "$PWD/build/sdl3/bin" >> "$GITHUB_PATH"
+      - name: Configure
+        run: |
+          cmake -S native -B build/native-app -G Ninja -DCMAKE_C_COMPILER=x86_64-w64-mingw32-clang \
+            -DCMAKE_CXX_COMPILER=x86_64-w64-mingw32-clang++ \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo -DMH4N_WERROR=ON -DMH4N_APP=ON
+          # find_package(SDL3) must have found ours
+          grep -E '^SDL3_DIR:' build/native-app/CMakeCache.txt
+          grep -Ei "^SDL3_DIR:.*=$(cygpath -m "$PWD")/build/sdl3/" build/native-app/CMakeCache.txt
+      - name: Build
+        run: cmake --build build/native-app -- -k 0   # ninja keeps going: one run lists every error
+      - name: Test
+        if: ${{ !cancelled() }}   # report every step in one run
+        env:
+          MH4N_REQUIRE_TEST_DATA: "1"
+        run: ctest --test-dir build/native-app --no-tests=error --output-on-failure
+      - name: mh4u-native --version
+        if: ${{ !cancelled() }}   # report every step in one run
+        run: |
+          set -eu
+          out="$(build/native-app/bin/mh4u-native.exe --version)"
+          echo "$out"
+          printf '%s\n' "$out" | grep -Eq '^mh4u-native [^ ]+$' \
+            || { echo "::error::mh4u-native --version did not print 'mh4u-native <revision>'"; exit 1; }
+      - name: Package mh4u-native and its DLLs
+        if: ${{ !cancelled() }}   # report every step in one run
+        run: |
+          set -eu
+          pkg=app-windows
+          mkdir -p "$pkg"
+          for tool in mh4u-native mh4u_native_runner mh4n_hdpack; do cp "build/native-app/bin/$tool.exe" "$pkg/"; done
+          cp build/sdl3/bin/SDL3.dll "$pkg/"
+          # RelWithDebInfo keeps DWARF inside a MinGW exe: the HD pack tool goes out without it
+          # (mh4u-native and the runner keep theirs, for a crash report)
+          llvm-strip --strip-debug "$pkg/mh4n_hdpack.exe"
+          bindir="$(dirname "$(command -v x86_64-w64-mingw32-clang)")"
+          # llvm-mingw keeps libc++.dll and libunwind.dll in <root>/x86_64-w64-mingw32/bin as well
+          dlldirs="$bindir"
+          [ -d "$bindir/../x86_64-w64-mingw32/bin" ] && dlldirs="$dlldirs $bindir/../x86_64-w64-mingw32/bin"
+          # the DLLs the programs import (and the ones those import) that llvm-mingw provides, each
+          # copied once; the system's DLLs stay where they are
+          copy_dlls() {
+            for dll in $(llvm-objdump -p "$1" | awk '/DLL Name:/ {print $3}'); do
+              [ -f "$pkg/$dll" ] && continue
+              for d in $dlldirs; do
+                if [ -f "$d/$dll" ]; then
+                  cp "$d/$dll" "$pkg/"
+                  copy_dlls "$pkg/$dll"
+                  break
+                fi
+              done
+            done
+          }
+          for f in mh4u-native.exe SDL3.dll mh4u_native_runner.exe mh4n_hdpack.exe; do copy_dlls "$pkg/$f"; done
+          echo "imports of the programs:"
+          for f in mh4u-native.exe SDL3.dll mh4u_native_runner.exe mh4n_hdpack.exe; do
+            echo "== $f"; llvm-objdump -p "$pkg/$f" | awk '/DLL Name:/ {print "  " $3}'
+          done
+          ls -l "$pkg"
+          du -sh "$pkg"
+          # the four programs must be there (the llvm-mingw DLLs are whatever they import)
+          for f in mh4u-native.exe SDL3.dll mh4u_native_runner.exe mh4n_hdpack.exe; do
+            test -f "$pkg/$f" || { echo "::error::$f is not in the package"; exit 1; }
+          done
+      # a PATH without llvm-mingw and without SDL3's folder: the files next to the programs must be
+      # enough. mh4u-native and the runner print "usage: <name>" for --help and exit 0, mh4u-native
+      # prints "mh4u-native <revision>" for --version, and mh4n_hdpack has no --help option: it
+      # prints its usage for an unknown option and exits 2 (a missing DLL is another status, and
+      # prints nothing). All are tried, then the step fails.
+      - name: The packaged programs start
+        if: ${{ !cancelled() }}   # report every step in one run
+        run: |
+          set -u
+          failed=0
+          check() {   # name, arguments, expected status, text the output must have
+            name="$1"; args="$2"; want="$3"; text="$4"
+            echo "== $name $args"
+            rc=0
+            out="$(env PATH="/c/Windows/System32:/c/Windows" "./app-windows/$name.exe" $args 2>&1)" || rc=$?
+            echo "$out"
+            case "$out" in
+              *"$text"*) ;;
+              *) echo "::error::the packaged $name $args didn't print '$text'"; failed=1; return ;;
+            esac
+            if [ "$rc" -ne "$want" ]; then
+              echo "::error::the packaged $name $args exited with status $rc, not $want"; failed=1
+            else
+              echo "ok: $name $args"
+            fi
+          }
+          check mh4u-native "--version" 0 "mh4u-native "
+          check mh4u-native "--help" 0 "usage: mh4u-native"
+          check mh4u_native_runner "--help" 0 "usage: mh4u_native_runner"
+          check mh4n_hdpack "--help" 2 "usage: mh4n_hdpack"
+          exit "$failed"
+      - name: Upload
+        # not on pull requests: the artifact is for the maintainer's runs of pushed branches
+        if: ${{ github.event_name != 'pull_request' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: mh4u-native-windows
+          path: app-windows
+          retention-days: 30
+          if-no-files-found: error
+
+  # macOS on Apple silicon: Xcode's clang builds native/ and SDL3; Homebrew's llvm and lld supply
+  # the LLVM tools the ARM test programs need, through symlinks only (as native.yml's native-macos).
+  app-macos:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - name: Tools
+        run: |
+          brew install ninja llvm lld
+          # Xcode's clang/clang++ must stay first on PATH ($GITHUB_PATH prepends), so Homebrew's whole
+          # llvm bin folder is not added: a folder of symlinks to just the LLVM tools the ARM test
+          # programs and code libraries need is.
+          tools="$RUNNER_TEMP/llvm-tools"
+          mkdir -p "$tools"
+          for tool in ld.lld llvm-objcopy llvm-readelf llvm-nm; do
+            for prefix in llvm lld; do
+              src="$(brew --prefix "$prefix")/bin/$tool"
+              if [ -x "$src" ]; then ln -sf "$src" "$tools/$tool"; break; fi
+            done
+            test -e "$tools/$tool" || { echo "::error::$tool not found in Homebrew's llvm or lld"; exit 1; }
+          done
+          echo "$tools" >> "$GITHUB_PATH"
+      - name: Tools found
+        run: |
+          for tool in clang clang++ ld.lld llvm-objcopy llvm-readelf llvm-nm cmake ninja python; do
+            printf '%s: ' "$tool"; command -v "$tool" || echo "NOT FOUND"
+          done
+          clang --version
+          cmake --version
+          uname -m
+      - name: SDL3 cache
+        id: sdl3
+        uses: actions/cache@v4
+        with:
+          path: build/sdl3
+          key: sdl3-${{ env.SDL_TAG }}-macos-arm64-xcode-clang-13.3
+      - name: SDL3 3.4.18
+        if: ${{ steps.sdl3.outputs.cache-hit != 'true' }}
+        run: |
+          set -eu
+          git clone --depth 1 --branch "$SDL_TAG" "$SDL_URL" build/sdl3-src
+          cmake -S build/sdl3-src -B build/sdl3-build -G Ninja \
+            -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
+            -DCMAKE_BUILD_TYPE=Release -DSDL_TESTS=OFF \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=13.3 \
+            -DCMAKE_INSTALL_PREFIX="$PWD/build/sdl3"
+          cmake --build build/sdl3-build
+          cmake --install build/sdl3-build
+      - name: SDL3 is the one from the cache
+        run: |
+          set -eu
+          ls build/sdl3
+          find build/sdl3 -name 'SDL3Config*.cmake'
+          echo "CMAKE_PREFIX_PATH=$PWD/build/sdl3" >> "$GITHUB_ENV"
+          echo "DYLD_FALLBACK_LIBRARY_PATH=$PWD/build/sdl3/lib" >> "$GITHUB_ENV"
+      - name: Configure
+        run: |
+          cmake -S native -B build/native-app -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo -DMH4N_WERROR=ON -DMH4N_APP=ON \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=13.3   # as native.yml's native-macos: the first macOS with std::to_chars for floating point
+          grep -E '^SDL3_DIR:' build/native-app/CMakeCache.txt
+          grep -E "^SDL3_DIR:.*=$PWD/build/sdl3/" build/native-app/CMakeCache.txt
+      - name: Build
+        run: cmake --build build/native-app -- -k 0   # ninja keeps going: one run lists every error
+      - name: Test
+        if: ${{ !cancelled() }}   # report every step in one run
+        env:
+          MH4N_REQUIRE_TEST_DATA: "1"
+        run: ctest --test-dir build/native-app --no-tests=error --output-on-failure
+      - name: mh4u-native --version
+        if: ${{ !cancelled() }}   # report every step in one run
+        run: |
+          set -eu
+          out="$(build/native-app/bin/mh4u-native --version)"
+          echo "$out"
+          printf '%s\n' "$out" | grep -Eq '^mh4u-native [^ ]+$' \
+            || { echo "::error::mh4u-native --version did not print 'mh4u-native <revision>'"; exit 1; }
