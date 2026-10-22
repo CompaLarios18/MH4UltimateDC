@@ -2,19 +2,20 @@
 # Derived from Azahar src/video_core/pica/regs_internal.h, regs_pipeline.h, regs_rasterizer.h, regs_texturing.h,
 # regs_framebuffer.h, regs_lighting.h, regs_shader.h, pica_core.h, pica_core.cpp, packed_attribute.h,
 # vertex_loader.cpp, src/video_core/shader/generator/pica_fs_config.cpp, src/video_core/renderer_vulkan/vk_rasterizer.cpp
-# and src/video_core/renderer_opengl/gl_rasterizer.cpp at
+# src/video_core/renderer_opengl/gl_rasterizer.cpp and src/video_core/shader/generator/spv_fs_shader_gen.cpp at
 # 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-3.0-or-later: pica_fs_config.cpp and vk_rasterizer.cpp say "Licensed
 # under GPLv3 or any later version"; the other files say "Licensed under GPLv2 or any later version"): the register
 # positions, bit fields and enumerations of the PICA internal registers (the FIELDS, REGS and ENUMS tables),
 # which register writes trigger a draw (pica_core.cpp: HandleSpecialReg, SubmitImmediate), the immediate-mode
 # queue (pica_core.h, packed_attribute.h), how vertex attributes and loaders are read (vertex_loader.cpp) and
 # which fields of the lighting, texturing and framebuffer state decide a draw's configuration (pica_fs_config.cpp), and
-# when the depth buffer is used (using_depth_fb in vk_rasterizer.cpp and gl_rasterizer.cpp).
+# when the depth buffer is used (using_depth_fb in vk_rasterizer.cpp and gl_rasterizer.cpp), and which logic ops the SPIR-V
+# fragment generator emulates (the logic-op switch of spv_fs_shader_gen.cpp: Clear, Set, Copy, NoOp).
 # Copyright 2017-2025 Citra Emulator Project / Azahar Emulator Project (regs_internal.h, regs_pipeline.h, regs_framebuffer.h, regs_shader.h)
 # Copyright 2017-2026 Citra Emulator Project / Azahar Emulator Project (regs_rasterizer.h)
 # Copyright 2017-2024 Citra Emulator Project / Azahar Emulator Project (regs_texturing.h)
 # Copyright 2017 Citra Emulator Project (regs_lighting.h)
-# Copyright 2023-2026 Citra Emulator Project / Azahar Emulator Project (pica_core.h, pica_core.cpp, packed_attribute.h, pica_fs_config.cpp, vk_rasterizer.cpp)
+# Copyright 2023-2026 Citra Emulator Project / Azahar Emulator Project (pica_core.h, pica_core.cpp, packed_attribute.h, pica_fs_config.cpp, vk_rasterizer.cpp, spv_fs_shader_gen.cpp)
 # Copyright 2023 Citra Emulator Project (vertex_loader.cpp)
 # Copyright 2022-2026 Citra Emulator Project / Azahar Emulator Project (gl_rasterizer.cpp)
 #

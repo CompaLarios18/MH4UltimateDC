@@ -1,15 +1,16 @@
 # Derived from Azahar src/video_core/pica/regs_internal.h, regs_pipeline.h, regs_rasterizer.h, regs_texturing.h,
 # regs_framebuffer.h, regs_lighting.h, regs_shader.h, pica_core.cpp, src/video_core/renderer_vulkan/vk_rasterizer.cpp
-# and src/video_core/renderer_opengl/gl_rasterizer.cpp at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-3.0-or-later:
+# src/video_core/renderer_opengl/gl_rasterizer.cpp and src/video_core/shader/generator/spv_fs_shader_gen.cpp at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-3.0-or-later:
 # vk_rasterizer.cpp says "Licensed under GPLv3 or any later version"; the other files say "Licensed under GPLv2 or
 # any later version"): the register numbers and bit positions the synthetic register writes use, which register
-# writes trigger a draw, the depth-buffer cases of using_depth_fb the depth tests expect, and the textual
+# writes trigger a draw, the depth-buffer cases of using_depth_fb the depth tests expect, the logic ops the SPIR-V path emulates, and the textual
 # parser of those headers that checks the tool's tables (the oracle).
 # Copyright 2017-2025 Citra Emulator Project / Azahar Emulator Project (regs_internal.h, regs_pipeline.h, regs_framebuffer.h, regs_shader.h)
 # Copyright 2017-2026 Citra Emulator Project / Azahar Emulator Project (regs_rasterizer.h)
 # Copyright 2017-2024 Citra Emulator Project / Azahar Emulator Project (regs_texturing.h)
 # Copyright 2017 Citra Emulator Project (regs_lighting.h)
 # Copyright 2023-2026 Citra Emulator Project / Azahar Emulator Project (pica_core.cpp, vk_rasterizer.cpp)
+# Copyright 2023-2026 Citra Emulator Project / Azahar Emulator Project (spv_fs_shader_gen.cpp)
 # Copyright 2022-2026 Citra Emulator Project / Azahar Emulator Project (gl_rasterizer.cpp)
 #
 """tools/native/pica_census.py: PICA census of MGPU captures (synthetic captures only)."""
