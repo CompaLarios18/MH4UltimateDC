@@ -1,6 +1,6 @@
 # The Azahar app's smoke test (`mh4u`, on the reference PC)
 
-The maintainer's procedure for every work package that changes a file under `port/app/` that the Azahar app `mh4u` compiles (N2b rule 1). It starts from the Windows package of the work package's branch and walks the app from the launcher to quitting, with the steps that exercise what the package moved. It is about **40 minutes** (25 without the two-instance room). The packages after N2b-01 (N2b-02 first) add their own steps at the end, under their own heading.
+The maintainer's procedure for every work package that changes a file under `port/app/` that the Azahar app `mh4u` compiles (N2b rule 1). It starts from the Windows package of the work package's branch and walks the app from the launcher to quitting, with the steps that exercise what the package moved. It is about **50 minutes** (40 without the two-instance room, step 14). The packages after N2b-01 (N2b-02 first) add their own steps at the end, under their own heading.
 
 It tests `mh4u` (SDL2, Azahar's core). `mh4u-native` has its own procedure, *Setting up mh4u-native on the reference PC* in `docs/native/app.md` (N2b-11).
 
@@ -22,9 +22,9 @@ Times are rough. Stop at the first step whose result is not as written, and send
 3. **Play** (3 min). Launcher → **Play** (Enter). *Expect:* the game window opens (full screen unless your settings say otherwise), the title screen and the village appear and the game runs at its usual speed.
 4. **The menu opens and takes the keys and the mouse** (2 min). Press Esc. *Expect:* the in-game menu with the tabs Game, Display, Audio, Controls, Multiplayer, Quit; the game stops reacting to your keys and mouse (a held button reads released). Move over the tabs with the mouse and with the arrow keys and Enter; click a row; scroll. With the menu still open, resize the window (or press F11 and back): the menu's text and widgets grow and shrink with the window, and stay sharp (not stretched). Press Esc to close it. *Fails if:* the menu does not open, ignores the mouse or keys, or does not scale with the window.
 5. **Touch screen is let go when the menu opens** (1 min). In the game hold the left mouse button on the touch screen (hold Alt first if the mouse is the camera), then press Esc while still holding it. *Expect:* the menu opens and, after you let go and close it, the game does not see a stuck stylus (the touch screen does not keep a finger pressed).
-6. **Change an option in each tab** (6 min). With the menu open, make one change in each of these and note what it should do. Each is saved at once; *Expect* the result in the third column, and on quit the saved file in the fourth.
+6. **Change an option in each tab** (6 min). With the menu open, make one change in each of these and note what it should do. Each is applied at once (the game's options that need a restart excepted; these do not), and saved when you close the menu; *Expect* the result in the third column, and after closing the menu the file in the fourth changed.
 
-   | Tab | Change | Expect now | Saved in |
+   | Tab | Change | Expect now | Saved in (when the menu closes) |
    |---|---|---|---|
    | Game | *Frame rate* from 60 to 30 and back to 60 | the counter of step 7 follows, the game's speed stays right | `mh4u.ini` (`fps`) |
    | Display | *Smooth scaling* off, then on | the picture sharpens, then smooths | `mh4u-app.ini` |
@@ -33,7 +33,7 @@ Times are rough. Stop at the first step whose result is not as written, and send
    | Multiplayer | open the tab | the status line and *Join a room* / *Host a room* show, no error | n/a |
    | Quit | open the tab, then choose not to quit | the "Quit?" box closes, the game goes on | n/a |
 
-   After the Controls change, move the camera with the mouse (the input profile is rebuilt when the menu closes). *Fails if:* a change does nothing, crashes the app, or the file is not updated.
+   After the Controls change, move the camera with the mouse (the input profile is rebuilt when the menu closes). *Fails if:* a change does nothing, crashes the app, or the file is not updated once the menu is closed.
 7. **The frame-rate counter** (1 min). Press F3. *Expect:* a counter appears in a corner with the game's frames per second, and F3 again hides it. In **Display** the row *Frame-rate counter* shows the same state and changes it.
 8. **Full screen** (2 min). Press F11, then F11 again; Alt+Enter, then Alt+Enter. In the menu's **Display** tab toggle *Full screen* with the mouse. *Expect:* the window switches between full screen and a window every time (the picture refits at once, the mouse still works as the stylus in both), and the menu's checkbox follows. *Fails if:* a toggle is ignored, the picture stays the old size, or the app freezes.
 9. **A controller** (3 min). Connect a controller. *Expect:* the game takes it. Press its **Guide** button: the menu opens; Guide again: it closes. Press **Back and Start** together: the menu opens; again: it closes. Move through the menu with the stick and A/B. *Fails if:* the menu opens twice, or opens on B or A being pressed while the game is running (that is a key echo of the controller and must not open it).
@@ -46,7 +46,7 @@ Times are rough. Stop at the first step whose result is not as written, and send
     2. *Second instance:* on a second PC with the same package and setup: `mh4u.exe --windowed --join <the first PC's address>:24872`. On the same PC instead: copy the user folder to `second-user`, then from a console `mh4u.exe --user second-user --new-console-id --windowed --join 127.0.0.1:24872` (a room lets in one player per console ID).
     3. *Expect on both:* the Multiplayer tab lists two members; *Local play heard* leaves "not yet" once both are in the village or a hall; with the game's Gathering Hall → Local Play one finds the other's hall.
     4. *Leave the room* on the second instance and *Close the room* on the first. *Expect:* both tabs return to no room, no error.
-15. **Quit** (1 min). Esc → **Quit** → Yes. *Expect:* the game window closes, the app ends within a few seconds and no process of it stays (check Task Manager).
+15. **Quit** (1 min). Esc → **Quit** tab → *Quit the game* → *Quit* in the "Quit?" box. *Expect:* the game window closes, the app ends within a few seconds and no process of it stays (check Task Manager).
 16. **The log** (2 min). Open `%APPDATA%\Azahar\log\mh4u_log.txt` (or `log\` in the user folder). *Expect:* it starts with `MH4U PC port app, Azahar ...`, has `renderer: Vulkan` (or the renderer your settings choose), `in-game menu: Esc, or a controller's Guide or Back+Start`, a `frame-rate counter: <corner>` or `frame-rate counter: off` line for each F3 of step 7, and no line marked `<Error>` or `<Critical>` apart from any that a step above caused on purpose.
 
 ## What to send back

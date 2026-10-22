@@ -162,7 +162,7 @@ The same few helpers appear in many files; the replacement is always `port/app/u
 | `port/app/launcher/pick.cpp` | `Common::UTF8ToUTF16W` (string_util) | util |
 | `port/app/launcher/process.cpp` | `Common::UTF8ToUTF16W` (string_util) | util |
 | `port/app/launcher/screen_mods.cpp` | `LOG_INFO`, `LOG_WARNING`, `FileUtil::CreateFullPath` | util |
-| `port/app/launcher/screen_settings.cpp` | `common/file_util.h` included, no symbol used | util (drop the include) |
+| `port/app/launcher/screen_settings.cpp` | none since N2b-01 (it includes `runtime.h`, `launcher/*.h`, ImGui and fmt only) | done |
 | `port/app/launcher/tools.cpp` | `FileUtil::Exists`, `FileUtil::IsDirectory`, `FileUtil::GetUserPath`, `FileUtil::ForeachDirectoryEntry` | util files / IRuntime paths (N0-20) |
 | `port/app/launcher/ui.cpp` | `LOG_INFO`, `FileUtil::Exists` | util |
 | `port/app/launcher/launcher.cpp` | `LOG_INFO`, `LOG_ERROR`, `LOG_WARNING`, `FileUtil::Exists`, `Common::g_build_fullname` | util; IRuntime build name (a string accessor to add in N0-20) |

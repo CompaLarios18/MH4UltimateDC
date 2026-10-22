@@ -22,10 +22,6 @@
 #include "runtime.h"
 #include "util/log.h"
 
-namespace Core {
-class System;
-}
-
 namespace fake {
 
 namespace fs = std::filesystem;
