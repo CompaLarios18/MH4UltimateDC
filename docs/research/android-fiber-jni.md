@@ -191,6 +191,8 @@ adb pull /sdcard/Games/log/azahar_log.txt
 
 # regenerate the port's Azahar patch and check it reverses cleanly
 cd /home/james/Git/azahar
+# git diff leaves out files git does not track yet: mark the ones the patch creates first
+git add -N src/core/frontend/top_screen.h src/video_core/renderer_vulkan/vk_overlay.h
 git -c color.ui=never --no-pager diff --no-ext-diff --no-color --abbrev=7 \
   > /home/james/Git/MH4UltimateDC/port/azahar/azahar.patch
 git apply --check --reverse /home/james/Git/MH4UltimateDC/port/azahar/azahar.patch

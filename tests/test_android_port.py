@@ -38,6 +38,19 @@ def added_lines() -> dict[str, str]:
     return {path: "\n".join(lines) for path, lines in files.items()}
 
 
+def created_files() -> set[str]:
+    """The files the patch creates (`new file mode`)."""
+    created: set[str] = set()
+    current = None
+    with open(PATCH, encoding="utf-8") as patch:
+        for line in patch:
+            if line.startswith("diff --git "):
+                current = line.rstrip("\n").split(" b/", 1)[1]
+            elif line.startswith("new file mode ") and current is not None:
+                created.add(current)
+    return created
+
+
 def test_patch_defines_the_jni_executor():
     utils = added_lines().get("src/common/android_utils.cpp", "")
     assert "RunOnJniThread" in utils
@@ -62,6 +75,16 @@ def test_patch_formats_save_data_or_reports_failure():
     savedata = added_lines().get("src/core/file_sys/archive_source_sd_savedata.cpp", "")
     assert "ResultUnknown" in savedata  # no unconditional ResultSuccess
     assert "Common::GetLastErrorMsg" in savedata
+
+
+def test_patch_creates_the_headers_the_port_includes():
+    """`git diff` leaves out files git does not track yet, so a patch regenerated without
+    ``git add -N`` on them loses the headers the port adds to Azahar, and every desktop build
+    (which applies this patch) stops compiling."""
+    created = created_files()
+    for path in ("src/core/frontend/top_screen.h",
+                 "src/video_core/renderer_vulkan/vk_overlay.h"):
+        assert path in created, path
 
 
 def test_options_read_uses_fileutil():

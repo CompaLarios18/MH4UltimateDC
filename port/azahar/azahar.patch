@@ -1412,6 +1412,63 @@ index 1ecc56f..7397e87 100644
  /**
   * Method to create a rotated copy of a framebuffer layout, used to rotate to upright mode
   */
+diff --git a/src/core/frontend/top_screen.h b/src/core/frontend/top_screen.h
+new file mode 100644
+index 0000000..e9418e0
+--- /dev/null
++++ b/src/core/frontend/top_screen.h
+@@ -0,0 +1,51 @@
++// Copyright 2026 Azahar Emulator Project
++// Licensed under GPLv2 or any later version
++// Refer to the misc/licenses/gplv2.txt file included.
++
++#pragma once
++
++#include <array>
++#include <cstddef>
++
++#include "common/common_types.h"
++
++namespace Layout {
++
++/// The width the screen layouts give the top screen at its 240-pixel height: 400, as on a
++/// 3DS, unless a port that shows the top screen wider sets another (427 for 16:9, say).
++u32 TopScreenWidth();
++void SetTopScreenWidth(u32 width);
++
++/// The custom layout as a port can set it up instead of fixed positions: the main screen
++/// fills the window at its aspect ratio and the other one is drawn over it in a corner,
++/// `height` times the window's height (0: off, the custom layout's own positions apply).
++/// When the bottom screen is the one in the corner, it can show just a part of it: the crop
++/// rectangle, in fractions of the bottom screen's width and height (touches map to that part).
++struct ScreenOverlay {
++    enum class Corner : u8 { TopLeft, TopRight, BottomLeft, BottomRight };
++    float height = 0.0f;
++    float opacity = 1.0f;
++    Corner corner = Corner::BottomRight;
++    float crop_left = 0.0f, crop_top = 0.0f, crop_right = 1.0f, crop_bottom = 1.0f;
++    /// A place in the window instead of the corner, when both are 0..1 (negative: the corner):
++    /// where the overlay's left and top edges go in the room the window leaves beside and above
++    /// it, 0 at the window's left (top) edge, 1 with its right (bottom) edge at the window's. So
++    /// it stays in the window at any size; (1, 0) is the top-right corner.
++    float x = -1.0f, y = -1.0f;
++
++    /// Further parts of the bottom screen drawn on their own over the main screen, at the same
++    /// opacity (the port's quest HUD: the target camera panel beside the map). Only while the
++    /// bottom screen is the one in the corner, in landscape orientation. A touch on one maps to
++    /// its part of the bottom screen.
++    struct View {
++        float height = 0.0f; ///< times the window's height; 0: off
++        float x = 1.0f, y = 0.0f; ///< as ScreenOverlay::x, y (0..1)
++        float crop_left = 0.0f, crop_top = 0.0f, crop_right = 1.0f, crop_bottom = 1.0f;
++    };
++    static constexpr std::size_t MAX_VIEWS = 2;
++    std::array<View, MAX_VIEWS> views{};
++};
++ScreenOverlay GetScreenOverlay();
++void SetScreenOverlay(const ScreenOverlay& overlay);
++
++} // namespace Layout
 diff --git a/src/core/hle/kernel/svc.cpp b/src/core/hle/kernel/svc.cpp
 index 87b2c5e..5ae478e 100644
 --- a/src/core/hle/kernel/svc.cpp
@@ -1968,3 +2025,56 @@ index 611e092..402c88d 100644
      scheduler.Record([](vk::CommandBuffer cmdbuf) { cmdbuf.endRenderPass(); });
  }
  
+diff --git a/src/video_core/renderer_vulkan/vk_overlay.h b/src/video_core/renderer_vulkan/vk_overlay.h
+new file mode 100644
+index 0000000..cf5c933
+--- /dev/null
++++ b/src/video_core/renderer_vulkan/vk_overlay.h
+@@ -0,0 +1,47 @@
++// Copyright 2026 Azahar Emulator Project
++// Licensed under GPLv2 or any later version
++// Refer to the misc/licenses/gplv2.txt file included.
++
++// MH4U port: a frontend's own drawing over the screens, e.g. the port's app's in-game menu
++// (Dear ImGui). Nothing is drawn unless a frontend registers an overlay.
++
++#pragma once
++
++#include <cstdint>
++#include <functional>
++#include <mutex>
++#ifndef VK_NO_PROTOTYPES
++#define VK_NO_PROTOTYPES
++#endif
++#include <vulkan/vulkan_core.h>
++
++namespace Vulkan {
++
++struct PresentOverlay {
++    /// What a drawing library needs of the renderer.
++    struct Context {
++        PFN_vkGetInstanceProcAddr get_instance_proc_addr;
++        VkInstance instance;
++        VkPhysicalDevice physical_device;
++        VkDevice device;
++        std::uint32_t api_version;
++        std::uint32_t queue_family;
++        VkQueue queue;
++        std::mutex* queue_mutex;   ///< held by whoever submits to `queue`
++        VkRenderPass render_pass;  ///< the main window's present render pass (subpass 0)
++        std::uint32_t image_count; ///< frames in flight
++    };
++    using Commands = std::function<void(VkCommandBuffer)>;
++
++    /// Called once a frame on the emulation thread while the main window's present render pass
++    /// is being recorded, `width` x `height` pixels: the commands it returns are recorded in
++    /// that render pass after the screens, on the scheduler's thread. Empty: nothing this frame.
++    std::function<Commands(const Context&, std::uint32_t width, std::uint32_t height)> draw;
++    /// The renderer is going away and its device is idle: release what `draw` made.
++    std::function<void()> release;
++};
++
++/// Registers the overlay (an empty one removes it).
++void SetPresentOverlay(PresentOverlay overlay);
++
++} // namespace Vulkan
