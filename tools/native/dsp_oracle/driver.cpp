@@ -5,9 +5,10 @@
 // Copyright 2016-2025 Citra Emulator Project / Azahar Emulator Project (shared_memory.h)
 //
 // The driver of the DSP oracle (tools/native/dsp_oracle/dsp_oracle.py): compiled with Azahar's
-// codec.cpp, interpolate.cpp, filter.cpp and source.cpp, it reads the cases the script wrote on
-// standard input, plays each against one Azahar Source and prints a CRC-32 of what comes out of every
-// frame. No value is computed here but the CRCs. The format is in dsp_oracle.py.
+// codec.cpp, interpolate.cpp, filter.cpp, source.cpp, mixers.cpp and effects.cpp, it reads the cases the
+// script wrote on standard input and prints a CRC-32 of what comes out of every frame. A `case` is played
+// against one Azahar Source (N3-02); an `fcase` against the whole frame, driver_frame.cpp (N3-03). No
+// value is computed here but the CRCs. The format is in dsp_oracle.py.
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -20,6 +21,7 @@
 #include "audio_core/hle/shared_memory.h"
 #include "audio_core/hle/source.h"
 #include "core/memory.h"
+#include "driver.h"
 
 namespace {
 
@@ -27,45 +29,6 @@ using AudioCore::HLE::AdpcmCoefficients;
 using AudioCore::HLE::Source;
 using AudioCore::HLE::SourceConfiguration;
 using AudioCore::HLE::SourceStatus;
-
-u32 Crc32(const void* data, std::size_t size) {
-    static u32 table[256];
-    static bool ready = false;
-    if (!ready) {
-        for (u32 i = 0; i < 256; ++i) {
-            u32 c = i;
-            for (int k = 0; k < 8; ++k) {
-                c = (c & 1) ? 0xEDB88320u ^ (c >> 1) : c >> 1;
-            }
-            table[i] = c;
-        }
-        ready = true;
-    }
-    u32 crc = 0xFFFFFFFFu;
-    const u8* bytes = static_cast<const u8*>(data);
-    for (std::size_t i = 0; i < size; ++i) {
-        crc = table[(crc ^ bytes[i]) & 0xFF] ^ (crc >> 8);
-    }
-    return crc ^ 0xFFFFFFFFu;
-}
-
-std::vector<u8> Unhex(const std::string& text) {
-    std::vector<u8> out;
-    if (text == "-") {
-        return out;
-    }
-    for (std::size_t i = 0; i + 1 < text.size(); i += 2) {
-        out.push_back(static_cast<u8>(std::stoul(text.substr(i, 2), nullptr, 16)));
-    }
-    return out;
-}
-
-struct Event {
-    u32 frame;
-    char op;  // c config bytes, d dirty bits, b buffers_dirty bits, a coefficient bytes, m memory bytes, S sleep, W wakeup
-    u32 offset;
-    std::vector<u8> bytes;
-};
 
 struct Case {
     std::string name;
@@ -163,6 +126,9 @@ int main() {
                 return 2;
             }
             open = true;
+        } else if (word == "fcase") {
+            // a frame case: the whole frame (driver_frame.cpp); it reads its lines up to `end`
+            RunFrameCase(in, std::cin);
         } else if (word == "mem" && open) {
             std::string address, hex;
             in >> address >> hex;

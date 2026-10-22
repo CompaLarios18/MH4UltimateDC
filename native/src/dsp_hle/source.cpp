@@ -7,7 +7,8 @@
 // Copyright 2016-2025 Citra Emulator Project / Azahar Emulator Project (shared_memory.h)
 // Copyright 2016 Citra Emulator Project (filter.h, codec.h, interpolate.h)
 //
-// One source of the HLE DSP (N3-02); see source.h.
+// One source of the HLE DSP (N3-02); see source.h. N3-03: MixInto converts with FloatToS32 and adds with a
+// wrapping sum (a departure of D78, listed in source.h).
 #include "dsp_hle/source.h"
 
 #include <algorithm>
@@ -22,6 +23,12 @@ namespace {
 constexpr const char* kLog = "Audio.DSP.HLE";
 
 constexpr u32 kMaskAddress = 0xFFFFFFFCu;
+
+// `dest += FloatToS32(value)`, with the sum wrapping in 32 bits (the C++ sum overflows, which is undefined;
+// D78: the oracle is built with -fwrapv and the compiled code wraps).
+void AddWrapping(s32& dest, float value) {
+    dest = static_cast<s32>(static_cast<u32>(dest) + static_cast<u32>(FloatToS32(value)));
+}
 
 unsigned NumChannels(u8 mono_or_stereo) {
     return mono_or_stereo == 2 ? 2 : 1;  // MonoOrStereo::Stereo
@@ -82,10 +89,10 @@ void Source::MixInto(QuadFrame32& dest, std::size_t intermediate_mix_id) const {
             ramp_active ? ramp_start[3] + (gains[3] - ramp_start[3]) * progress : gains[3];
 
         // Conversion from stereo (current_frame) to quadraphonic (dest) occurs here.
-        dest[samplei][0] += static_cast<s32>(gain0 * current_frame_[samplei][0]);
-        dest[samplei][1] += static_cast<s32>(gain1 * current_frame_[samplei][1]);
-        dest[samplei][2] += static_cast<s32>(gain2 * current_frame_[samplei][0]);
-        dest[samplei][3] += static_cast<s32>(gain3 * current_frame_[samplei][1]);
+        AddWrapping(dest[samplei][0], gain0 * current_frame_[samplei][0]);
+        AddWrapping(dest[samplei][1], gain1 * current_frame_[samplei][1]);
+        AddWrapping(dest[samplei][2], gain2 * current_frame_[samplei][0]);
+        AddWrapping(dest[samplei][3], gain3 * current_frame_[samplei][1]);
     }
 
     if (ramp_active) {
