@@ -51,7 +51,6 @@ import shutil
 import subprocess
 import sys
 import time
-import zlib
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
@@ -175,10 +174,14 @@ def mods_json(command: list[str], user: str, *args: str, on_line=lambda line: No
     cmd = command + ["--json", "--user-dir", user, *args]
     rc, lines = run_child(cmd, on_line)
     body = "\n".join(line for line in lines if not line.startswith("@"))
-    try:
-        out = json.loads(body)
-    except ValueError:
-        out = None
+    out = None
+    starts = [0] + [i + 1 for i in range(len(body)) if body.startswith("\n{", i)]
+    for start in starts:        # a stray warning line before the object: the first "\n{" starts it
+        try:
+            out = json.loads(body[start:])
+            break
+        except ValueError:
+            continue
     if not isinstance(out, dict):
         raise SetupError("mods_failed", f"mods.py {args[0]}: {last_line(lines)}")
     if rc != 0 or not out.get("ok", False):
@@ -358,6 +361,13 @@ def hd_state(user: str, hdpack: list[str] | None) -> tuple[str, str]:
 
 
 def run_hd(mods_cmd: list[str], hdpack: list[str], events: Events, user: str) -> None:
+    try:
+        _run_hd(mods_cmd, hdpack, events, user)
+    except OSError as e:        # a full disk, a folder that can't be written: the final JSON, not a traceback
+        raise SetupError("io", str(e)) from e
+
+
+def _run_hd(mods_cmd: list[str], hdpack: list[str], events: Events, user: str) -> None:
     folder, archive = mods.textures_folder(user), hd_archive(user)
 
     def on_mods_line(line: str) -> None:
@@ -373,7 +383,9 @@ def run_hd(mods_cmd: list[str], hdpack: list[str], events: Events, user: str) ->
         part, parts = data.pop("step", None), data.pop("steps", None)
         if part is not None:
             data["part"], data["parts"] = part, parts
-        events.emit(str(data.pop("event", "progress")), "hd", **data)
+        kind = str(data.pop("event", "progress"))
+        # not "step": that event name is ours, with a state (running, done, skipped, failed)
+        events.emit("progress" if kind == "step" else kind, "hd", **data)
 
     installed = pack_fingerprint(folder)["files"] > 0
     if installed:

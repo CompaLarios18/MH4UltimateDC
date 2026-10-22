@@ -5,8 +5,8 @@ usage: prepare_game.py --base GAME --update UPDATE [-o DIR]
 
 GAME is the base game (.3ds, .cci or .cxi) and UPDATE the v1.3.0 update title (a .cia) or
 its installed content (the .app that Azahar's setup put under the virtual SD card's
-title/0004000e/00126300/content/), both decrypted (see tools/extract_ncch.py). DIR defaults to build/native-game (build/game is
-tools/build_game.py's). The folder holds:
+title/0004000e/00126300/content/), both decrypted (see tools/extract_ncch.py). DIR defaults
+to build/native-game (build/game is tools/build_game.py's). The folder holds:
 
     exheader.bin       the update's exheader
     code.bin           the update's code, decompressed

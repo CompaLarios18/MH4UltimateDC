@@ -1,14 +1,10 @@
 """tools/native/setup_native.py on synthetic inputs only: NCCH and CIA files from the prepare_game
 tests' builders, and stub commands standing in for build_game.py, mods.py (install) and
 mh4n_hdpack. Nothing here comes from the game, and nothing touches the network."""
-import contextlib
-import io
 import json
 import os
 import shlex
-import struct
 import sys
-import textwrap
 
 import pytest
 
@@ -452,7 +448,10 @@ def test_hd_installs_the_pack_converts_it_and_records_its_source(env, capsys):
     hd = [e for e in events if e["step"] == "hd"]
     # mods.py's own events go on, its "step" counter renamed so the step name stays
     assert {"event": "download", "step": "hd", "done": 5, "total": 10, "what": "pack.zip"} in hd
-    assert any(e.get("part") == 1 and e.get("parts") == 2 and e["step"] == "hd" for e in hd)
+    # mods.py's own "step" lines are progress, never mistaken for ours (which carry a state)
+    parts = [e for e in hd if e.get("part") == 1 and e.get("parts") == 2]
+    assert parts and all(e["event"] == "progress" and e["step"] == "hd" and "state" not in e for e in parts)
+    assert all("state" in e for e in hd if e["event"] == "step")
     # mh4n_hdpack's lines become the launcher's "N of M files" update
     installs = [e for e in hd if e["event"] == "install"]
     assert installs and installs[0]["what"] == "Converting textures" and installs[0]["total"] == 2
@@ -603,3 +602,25 @@ def test_throttle_passes_the_last_line(monkeypatch):
         t(line)
     t.flush()
     assert sent == ["a", "d"]
+
+
+def test_hd_io_error_is_a_final_json_not_a_traceback(env, capsys, monkeypatch):
+    run(capsys, env.args(hd=True))
+    open(os.path.join(mods.textures_folder(str(env.user)), "c.png"), "wb").write(b"c")   # stale
+    def full(*a, **k):
+        raise OSError(28, "No space left on device")
+    monkeypatch.setattr(sn.os, "replace", full)
+    _, result = run(capsys, env.args(hd=True), code=1)
+    assert result["error"]["code"] == "io" and result["step"] == "hd"
+    assert "No space" in result["error"]["message"]
+
+
+def test_mods_json_skips_a_stray_line_before_the_object(tmp_path):
+    stub = tmp_path / "m.py"
+    stub.write_text("print('warning: odd')\nprint('{')\nprint(' \"ok\": true, \"x\": 1')\nprint('}')\n")
+    out = sn.mods_json([sys.executable, str(stub)], str(tmp_path), "status")
+    assert out["x"] == 1
+    stub.write_text('print("only noise")\n')
+    with pytest.raises(sn.SetupError) as e:
+        sn.mods_json([sys.executable, str(stub)], str(tmp_path), "status")
+    assert e.value.code == "mods_failed"
