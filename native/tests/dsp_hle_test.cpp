@@ -511,7 +511,7 @@ TEST_CASE("dsp_hle: the frame cases of the table are not silent: samples, buses 
             bus_written.insert(c.name);
         }
     }
-    CHECK(frame_cases >= 30);
+    CHECK(frame_cases >= 34);
     CHECK(silent_final.empty());
     CHECK(no_status_change.empty());
     CHECK(bus_written.size() >= 4);  // the aux bus cases
@@ -1347,7 +1347,7 @@ void WriteBoth(std::vector<u8>& a, std::vector<u8>& b, u32 at, const void* data,
 TEST_CASE("dsp_hle: Dsp leaves the shared memory the model leaves, outside the samples, on random sequences") {
     LogCatcher quiet;
     u64 frames_compared = 0;
-    u64 sleeps = 0, wakeups = 0, initializes = 0, unusual_formats = 0, bytes_written_by_dsp = 0;
+    u64 sleeps = 0, wakeups = 0, initializes = 0, unusual_formats = 0;
     for (u32 seed = 1; seed <= 12; ++seed) {
         Lcg rng(seed * 104729u);
         std::vector<u8> mem_dsp(audio::kDspMemorySize), mem_model(audio::kDspMemorySize);
@@ -1493,11 +1493,6 @@ TEST_CASE("dsp_hle: Dsp leaves the shared memory the model leaves, outside the s
                 at = skip.end;
             }
             ++frames_compared;
-            if (ran) {
-                // the frame did write something the model does not: the status of the sources is shared
-                // by both, the final samples are the only thing in the way of equality
-                bytes_written_by_dsp += audio::shm::kFinalSamplesSize;
-            }
             // the application sees the dirty bits the DSP cleared: read the configurations back
             const u32 read_region = audio::kRegionOffset[model.CurrentRegionIndex()];
             for (u32 i = 0; i < 24; ++i) {
@@ -1514,5 +1509,72 @@ TEST_CASE("dsp_hle: Dsp leaves the shared memory the model leaves, outside the s
     CHECK(wakeups > 10);
     CHECK(initializes > 10);
     CHECK(unusual_formats > 0);
-    CHECK(bytes_written_by_dsp > 0);
+}
+
+// ---- Source::MixInto where the C++ conversion and the sum are undefined (N3-03, fix round 1) ----------------------
+
+namespace {
+
+// A PCM16 mono source whose first mix has the given gain on all four channels, played for two frames (the
+// first only dequeues, and the first MixInto consumes the gain ramp); returns what the third mixes into a
+// destination that starts as `initial` everywhere.
+QuadFrame32 MixWithGain(float gain, s32 initial) {
+    CaseMemory memory;
+    std::fill(memory.data.begin(), memory.data.begin() + 4000, u8{0x40});  // every sample is 0x4040 = 16448
+    Source source;
+    AdpcmCoefficients coefficients{};
+    SourceConfiguration config{};
+    config.flags1_raw = (1u << 2) | 1;  // PCM16 mono
+    for (std::size_t i = 0; i < 4; ++i) {
+        config.gain[0][i] = gain;
+    }
+    config.physical_address = audio::SwapHalves(kFcram);
+    config.length = audio::SwapHalves(1000);
+    config.flags2_raw = 2;  // looping
+    config.buffer_id = 1;
+    config.enable = 1;
+    config.dirty_raw = audio::dirty::kFormat | audio::dirty::kMonoOrStereo | audio::dirty::kGain0 |
+                       audio::dirty::kEmbeddedBuffer | audio::dirty::kEnable;
+    QuadFrame32 scratch{};
+    source.Tick(config, coefficients, memory, 0);
+    source.MixInto(scratch, 0);
+    source.Tick(config, coefficients, memory, 0);
+    source.MixInto(scratch, 0);
+    source.Tick(config, coefficients, memory, 0);
+    QuadFrame32 out;
+    for (auto& sample : out) {
+        sample.fill(initial);
+    }
+    source.MixInto(out, 0);
+    return out;
+}
+
+}  // namespace
+
+TEST_CASE("dsp_hle: a source's mix converts its gain times a sample as defined, and the sum wraps") {
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    // in range and without overflow: the plain truncation and sum
+    QuadFrame32 plain = MixWithGain(0.5f, 1000);
+    CHECK(plain[100][0] == 1000 + 8224);  // 0.5 * 16448
+    CHECK(plain[100][3] == 1000 + 8224);
+    // a NaN gain, and a gain that takes the product out of the s32 range, in either direction: INT32_MIN
+    // (what x86 gives) on every host
+    for (const float gain : {nan, 1e30f, -1e30f, 1e12f, -1e12f}) {
+        INFO("gain " << gain);
+        const QuadFrame32 out = MixWithGain(gain, 0);
+        for (std::size_t channel = 0; channel < 4; ++channel) {
+            CHECK(out[100][channel] == std::numeric_limits<s32>::min());
+        }
+    }
+    // a sum that overflows s32 wraps (as the 32-bit sums of the filters and ADPCM do), in both directions
+    const s32 high = std::numeric_limits<s32>::max() - 100;
+    const QuadFrame32 over = MixWithGain(1.0f, high);
+    CHECK(over[100][0] == static_cast<s32>(static_cast<u32>(high) + 16448u));
+    CHECK(over[100][0] < 0);
+    const QuadFrame32 under = MixWithGain(-1.0f, std::numeric_limits<s32>::min() + 100);
+    CHECK(under[100][1] == static_cast<s32>(static_cast<u32>(std::numeric_limits<s32>::min() + 100) - 16448u));
+    CHECK(under[100][1] > 0);
+    // INT32_MIN plus INT32_MIN wraps to 0
+    const QuadFrame32 twice = MixWithGain(nan, std::numeric_limits<s32>::min());
+    CHECK(twice[100][2] == 0);
 }

@@ -53,8 +53,6 @@ public:
 
     void ProcessFrame(QuadFrame32& frame);
 
-    bool IsEnabled() const { return enabled_; }
-
 private:
     // Set a max delay to prevent garbage data allocating too much memory: 4 seconds (Azahar's).
     static constexpr u32 kMaxDelaySamples = 4 * kNativeSampleRate;
@@ -77,7 +75,6 @@ private:
 // Azahar: "TODO: Figure out the reverb effect." It does nothing.
 class ReverbEffect final {
 public:
-    void Reset() {}
     void ParseConfig(const ReverbEffectConfig& config, std::size_t index);
     void ProcessFrame(QuadFrame32&) {}
 };

@@ -91,10 +91,16 @@ N3-03 adds, for the mixers and the effects (`mixers.h`, `effects.h` say the same
    range, or a NaN: a huge or NaN volume or gain, aux samples at the `s32` limits, an unstable delay whose filter
    overflows to infinity and then NaN) are undefined in Azahar's C++ and differ between hosts (x86 gives
    `INT32_MIN`, ARM saturates). `FloatToS32` (`types.h`) gives `INT32_MIN` for them on every host: what Azahar does
-   on x86, its reference platform. In range it is the plain truncation. The oracle's table has no case in that
-   range (the cases keep sums below 2^29); `dsp_hle_test.cpp` tests the conversion and the cases above. **Proposed
-   addition to D78** (the result depends on the host). `Source::MixInto` (N3-02) still has the plain conversion for
-   a gain of 2^31 or more in magnitude over a sample: not changed here.
+   on x86, its reference platform. In range it is the plain truncation. The oracle's table has no case whose
+   conversion is out of range (the delay's clamp is exercised with values the clamp brings back into range, and the
+   downmix of those is scaled to stay below 2^31); `dsp_hle_test.cpp` tests the conversion and the cases above.
+   **Proposed addition to D78** (the result depends on the host).
+12. (Fix round 1, same reason as 9, and a change to N3-02's file.) `Source::MixInto` converts the product of a gain
+   and a sample with `FloatToS32` (a NaN gain or a product outside the `s32` range gives `INT32_MIN`) and adds it
+   to the mix with a sum that wraps in 32 bits, as D78 item 7 does for the filters' and ADPCM's sums. The gain is
+   a float from guest memory. In range, and while the sum does not overflow, the result is unchanged: the 121
+   source rows of the table are byte for byte what they were, and `dsp_hle_test.cpp` tests NaN, huge and
+   negative gains and sums that overflow in both directions.
 10. The 28 padding bytes of `DspStatus` are an uninitialised local in Azahar that is copied into the shared
    memory (indeterminate); `Dsp` writes the two words it has and leaves the rest of the memory as it is, as the
    model does. The oracle does not hash them.
@@ -106,7 +112,7 @@ the order the standard library's heap gives (as in Azahar); no committed case ha
 ## The oracle
 
 `tools/native/dsp_oracle/dsp_oracle.py --azahar ~/azahar --cases native/tests/dsp_hle_cases.txt --out
-native/tests/dsp_hle_expected.inc` (about 8 seconds since N3-03; the table has 153 cases):
+native/tests/dsp_hle_expected.inc` (about 8 seconds since N3-03; the table has 155 cases):
 
 1. copies Azahar's `codec.cpp`, `interpolate.cpp`, `filter.cpp`, `source.cpp` and (N3-03) `mixers.cpp` and
    `effects.cpp` with the headers they need (`audio_types.h`, `codec.h`, `interpolate.h`, `hle/common.h`,
@@ -211,14 +217,21 @@ volume (never set, changed, above 1, negative), the routing of a source to each 
 return volumes, gain ramps, the three output formats, saturation (24 sources of full-scale noise, a master volume
 of 40), the aux buses (enabled, disabled, toggled, the application's samples read back a frame late, a bus whose
 enable has no dirty bit), the delay on each aux mix with 1, 2 and 5 frames and changing coefficients, both
-delays with both buses enabled, the delay's edges (frame count 0, the 4-second clamp at 819 frames, disabling,
+delays with both buses enabled, the delay's edges (frame count 0, disabling,
 a new configuration of the same length, an effect whose own dirty word or whose main dirty bit is not set), the
 reverb, the unimplemented dirty bits, the wrap-around of the frame counters, sleep and wakeup, source statuses
 and stops, and **24 sources at once** (every format, rate and interpolation mode, filters, three mixes, both aux
-buses with delays, mono and stereo). Cases are 200 frames; the delay is kept stable (|b| < 1) and sums below
-2^29 so that no case goes through a float-to-`s32` conversion that is undefined in Azahar (departure 9).
+buses with delays, mono and stereo). Two cases pin the delay's limits: `frame_delay_saturates_to_the_s32_range`
+(aux samples of +-2e9 through a delay of gain 156 give about 3e11 in both directions, and the output of the delay
+is clamped to the `s32` range: without the clamp the positive half flips sign) and `frame_delay_818_and_819_frames`
+(1000 frames: 818 frames, 130,880 samples, is below the 4-second limit of 130,912 samples, 819 is above it and
+plays as 130,912, so a longer limit moves its echo 128 samples; the case runs past both echoes). What the tests
+do not pin: the clamp's upper constant (2,147,483,520.0f, a float step below 2^31, below the resolution of the
+16-bit output). Cases are 200 frames (1000 for the 819-frame delay); the delay is otherwise kept stable
+(|b| < 1) and sums below 2^29, and the saturating case scales the downmix to stay below 2^31, so that no case
+goes through a float-to-`s32` conversion that is undefined in Azahar (departure 9).
 
-Numbers: **153 cases** (121 source cases, 32 frame cases) of 200 frames each, **8 seconds** for the
+Numbers: **155 cases** (121 source cases, 34 frame cases) of 200 frames each (one of 1000), **8 seconds** for the
 harness.
 
 ### The second oracle: the memory against N1-18's model
@@ -240,5 +253,6 @@ leaves silent and `Dsp` writes.
   `SampleMemory` over the runtime's guest memory only has to return the bytes (`FCRAM`, `VRAM`, `DSP RAM`);
   validity is decided by the source) and `SetFrameOutput` (the sink of N3-05, `audio_out::Stream::Queue`).
 * The frame is generated by `Tick()`, which returns whether the DSP was on; the caller raises the audio pipe's
-  interrupt as it does with the model.
+  interrupt as it does with the model. **`Dsp` calls the frame output itself** (`SetFrameOutput`, once per frame
+  generated): N3-11 must not also push a silent frame to the sink as it does with the model.
 * `AacDecodeRequests()` is what N3-11, N3-26 and N3-27 count.

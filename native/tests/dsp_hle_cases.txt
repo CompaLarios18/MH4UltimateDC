@@ -1149,7 +1149,8 @@ mem 0x20004000 walk16 seed=233 bytes=16000
 1 auxmix 2 seed=34 amp=8000
 
 # The edges of the delay's configuration: frame_count 0 bypasses it, a long delay is clamped to 4 seconds,
-# a disabled one is reset, a new configuration of the same length keeps the buffers, an effect whose own
+# a disabled one is reset (the clamp itself is pinned by frame_delay_818_and_819_frames, at the end of the
+# file), a new configuration of the same length keeps the buffers, an effect whose own
 # dirty word is 0 or whose main dirty bit is not set is not read.
 case frame_delay_edges mode=frame
 mem 0x20000000 walk16 seed=234 bytes=16000
@@ -1175,7 +1176,8 @@ mem 0x20000000 walk16 seed=234 bytes=16000
 102 delay 0 frames=819 g=16 a=16 b=16
 140 delay 0 frames=1 g=127 a=-128 b=0 work=0x20100000 outputs=3
 
-# The delay's output is clamped to the s32 range: a gain of 256 on full-scale noise.
+# A gain of 256 on full-scale noise: the delay's output is about 8.4e6, well inside the s32 range, so nothing is
+# clamped here (frame_delay_saturates_to_the_s32_range does that).
 case frame_delay_large_values mode=frame
 mem 0x20000000 noise seed=235 bytes=16000
 0 master 0.0001
@@ -1579,3 +1581,53 @@ mem 0x2005c000 walk8 seed=323 bytes=16000
 120 s5 enable 0
 130 s5 embedded addr=0x20014000 len=2000 id=77
 131 s5 enable 1
+
+# ---- the delay's limits (N3-03, fix round 1), appended so that the rows above keep their place ----
+
+# The delay's output is clamped to the s32 range before it is converted: the aux buses carry the application's
+# samples at +-2e9, the delay (a = 156) multiplies them to about 3e11 in both directions, and the aux return
+# volume is small enough that the converted values (about 2e8) stay inside the s32 range in the downmix. Without
+# the clamp the conversion gives INT32_MIN for every one of them and the positive half flips sign.
+case frame_delay_saturates_to_the_s32_range mode=frame
+mem 0x20000000 walk16 seed=253 bytes=16000
+0 s0 format pcm16 mono
+0 s0 embedded addr=0x20000000 len=8000 id=1 loop
+0 s0 enable 1
+0 master 0.1
+0 auxreturn 0 0.1
+0 auxreturn 1 0.1
+0 auxbus 0 1
+0 auxbus 1 1
+0 delay 0 frames=1 g=0 a=20000 b=0
+0 delay 1 frames=2 g=0 a=-20000 b=0
+0 auxmix 1 seed=71 amp=2000000000
+0 auxmix 2 seed=72 amp=2000000000
+1 auxmix 1 seed=73 amp=2000000000
+1 auxmix 2 seed=74 amp=2000000000
+2 auxmix 1 seed=75 amp=2000000000
+2 auxmix 2 seed=76 amp=2000000000
+3 auxmix 1 seed=77 amp=2000000000
+3 auxmix 2 seed=78 amp=2000000000
+60 delay 0 frames=1 g=0 a=20000 b=0
+61 auxmix 1 seed=79 amp=2000000000
+62 auxmix 1 seed=80 amp=2000000000
+
+# The 4-second limit of the delay: 818 frames (130,880 samples) is below it and 819 (131,040) is above it, so it
+# becomes 130,912. The echo of the source returns after that many samples, and the case runs past it
+# (1000 frames), so a longer limit puts the echo of the 819-frame delay 128 samples later and changes the table.
+case frame_delay_818_and_819_frames mode=frame frames=1000
+mem 0x20000000 walk16 seed=251 bytes=16000
+mem 0x20004000 noise seed=252 bytes=16000
+0 master 1.0
+0 auxreturn 0 1.0
+0 auxreturn 1 1.0
+0 s0 format pcm16 stereo
+0 s0 gain 1 1.0 1.0 1.0 1.0
+0 s0 embedded addr=0x20000000 len=4000 id=1 loop
+0 s0 enable 1
+0 s1 format pcm16 stereo
+0 s1 gain 2 1.0 1.0 1.0 1.0
+0 s1 embedded addr=0x20004000 len=4000 id=1 loop
+0 s1 enable 1
+0 delay 0 frames=818 g=0 a=64 b=0
+0 delay 1 frames=819 g=0 a=64 b=0

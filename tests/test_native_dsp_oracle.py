@@ -263,11 +263,12 @@ def test_the_committed_cases_file_parses_covers_the_wp_and_matches_the_table():
     # N3-03: the frame cases (gains, the aux buses read from and written to the shared memory, the delay
     # effect, the master volume, each output format, 24 sources at once)
     frame_names = {c.name for c in cases if c.mode == "frame"}
-    assert len(frame_names) >= 30
+    assert len(frame_names) >= 34
     for wanted in ("frame_silent_until_master_volume", "frame_master_volume_0_5", "frame_routing_to_the_three_mixes",
                    "frame_output_format_mono", "frame_output_format_stereo", "frame_output_format_surround",
                    "frame_aux_bus_0", "frame_aux_bus_1", "frame_delay_on_mix_0_2_frames",
                    "frame_delay_on_mix_1_5_frames", "frame_delay_edges", "frame_24_sources",
+                   "frame_delay_saturates_to_the_s32_range", "frame_delay_818_and_819_frames",
                    "frame_counters_wrap", "frame_sleep_and_wakeup", "frame_reverb_does_nothing",
                    "frame_dirty_bits_are_cleared", "frame_saturation_40_0"):
         assert wanted in frame_names, wanted

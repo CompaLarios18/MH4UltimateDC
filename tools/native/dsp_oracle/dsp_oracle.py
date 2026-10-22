@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Derived from Azahar src/audio_core/hle/shared_memory.h at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-2.0-or-later: it says "Licensed under GPLv2 or any later version"): the byte offsets and bit positions of SourceConfiguration (and its u32_dsp middle-endian values), which the commands write.
+# Derived from Azahar src/audio_core/hle/shared_memory.h at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-2.0-or-later: it says "Licensed under GPLv2 or any later version"): the byte offsets and bit positions of SourceConfiguration (and its u32_dsp middle-endian values), of DspConfiguration (its dirty bits 6 to 31, the master and aux return volumes, the output format, the aux bus enables, the DelayEffect and ReverbEffect blocks with their dirty word, enable, frame count and g, a, b fields at offsets 22, 26, 40 and 44) and of the structures within a region of the shared memory (SharedMemory: the statuses, final samples, intermediate mix samples, configurations and ADPCM coefficients), which the commands write.
 # Copyright 2016-2025 Citra Emulator Project / Azahar Emulator Project (shared_memory.h)
 """The oracle of the native HLE DSP (N3-02 the sources, N3-03 the mixers, the effects and the frame):
 what Azahar's own code does.
