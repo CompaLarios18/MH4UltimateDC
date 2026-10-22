@@ -91,6 +91,7 @@ public:
     void SetCpuClock(int percent) override;
     bool SetGameOption(const std::string& key, const std::string& value) override;
     void SetLayoutEditing(bool on) override;
+    SkipInfo SkipState() const override;
 
     const char* ButtonSettingName(int button) const override;
     const char* StickSettingName(int stick) const override;

@@ -10,7 +10,7 @@ namespace App::Dialog {
 /// on Windows and macOS, zenity or kdialog on Linux. Empty if cancelled or there is none.
 std::string OpenFile(const std::string& title, const std::vector<std::string>& extensions);
 
-/// A message box (also in the log).
+/// A message box (also in the log), through the host (app_window.h).
 void Message(const std::string& title, const std::string& text, bool error = false);
 
 } // namespace App::Dialog

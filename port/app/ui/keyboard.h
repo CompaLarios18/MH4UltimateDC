@@ -52,7 +52,7 @@ private:
     std::vector<char> buffer;       ///< the text field's own buffer (UTF-8)
     std::string error;              ///< why the text wasn't taken
     std::string notice;
-    u32 notice_until = 0;           ///< SDL ticks
+    u32 notice_until = 0;           ///< Host::Ticks
     bool shift = false;
     bool start_armed = false;       ///< a controller's Start went down here: OK when it is let go
 };

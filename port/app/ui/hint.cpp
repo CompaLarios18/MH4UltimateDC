@@ -5,7 +5,6 @@
 #include <imgui.h>
 
 #include "config.h"
-#include "hooks.h"
 #include "input.h"
 #include "runtime.h"
 #include "ui/menu.h"
@@ -73,18 +72,19 @@ std::string ButtonsText(const Config& config, const std::string& buttons) {
 
 Hint CurrentHint(const Config& config) {
     Hint hint;
-    if (!Port::Hooks::SkipOffered() || Port::Hooks::SkipHint() == 0) {
+    // the game's state as the runtime hands it over (a copy), never the hooks' own
+    const SkipInfo state = Runtime().SkipState();
+    if (!state.offered || state.hint == 0) {
         return hint;
     }
-    const std::string skip = Port::Hooks::SkipButton();
-    if (!skip.empty()) {
-        hint.skip = ButtonsText(config, skip);
+    hint.flash = state.hint == 2;
+    if (!state.skip_button.empty()) {
+        hint.skip = ButtonsText(config, state.skip_button);
     }
-    const std::string end = Port::Hooks::SkipEndButtons();
-    if (!end.empty()) {
-        hint.end = ButtonsText(config, end);
-        hint.hold = Port::Hooks::EndSkipHold();
-        hint.requested = Port::Hooks::EndSkipRequested();
+    if (!state.end_buttons.empty()) {
+        hint.end = ButtonsText(config, state.end_buttons);
+        hint.hold = state.end_hold;
+        hint.requested = state.end_requested;
         if (hint.requested) {
             hint.waiting_for = Runtime().EndSkipPending();
         }

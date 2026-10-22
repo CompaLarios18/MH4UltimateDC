@@ -5,9 +5,9 @@
 #include <chrono>
 #include <cstring>
 
-#include <SDL.h>
 #include <fmt/format.h>
 
+#include "app_window.h"
 #include "config.h"
 #include "kbm.h"
 #include "runtime.h"
@@ -19,29 +19,6 @@ namespace App::Input {
 
 namespace {
 
-/// The first game controller SDL knows, and its port among controllers of the same kind (as
-/// Azahar's SDL engine numbers them).
-bool FirstController(ControllerInfo& out) {
-    for (int i = 0; i < SDL_NumJoysticks(); ++i) {
-        if (!SDL_IsGameController(i)) {
-            continue;
-        }
-        char guid[33];
-        SDL_JoystickGetGUIDString(SDL_JoystickGetDeviceGUID(i), guid, sizeof(guid));
-        out.guid = guid;
-        out.port = 0;
-        for (int j = 0; j < i; ++j) {
-            char other[33];
-            SDL_JoystickGetGUIDString(SDL_JoystickGetDeviceGUID(j), other, sizeof(other));
-            out.port += out.guid == other ? 1 : 0;
-        }
-        const char* name = SDL_GameControllerNameForIndex(i);
-        out.name = name ? name : "controller";
-        return true;
-    }
-    return false;
-}
-
 std::string controller_description = "no controller";
 
 struct NamedCode {
@@ -49,9 +26,9 @@ struct NamedCode {
     int code;
 };
 constexpr NamedCode MOUSE_NAMES[] = {
-    {"Mouse Left", MOUSE_KEY + SDL_BUTTON_LEFT},   {"Mouse Middle", MOUSE_KEY + SDL_BUTTON_MIDDLE},
-    {"Mouse Right", MOUSE_KEY + SDL_BUTTON_RIGHT}, {"Mouse 4", MOUSE_KEY + SDL_BUTTON_X1},
-    {"Mouse 5", MOUSE_KEY + SDL_BUTTON_X2},        {"Wheel Up", WHEEL_UP},
+    {"Mouse Left", MOUSE_KEY + MouseButton::Left},   {"Mouse Middle", MOUSE_KEY + MouseButton::Middle},
+    {"Mouse Right", MOUSE_KEY + MouseButton::Right}, {"Mouse 4", MOUSE_KEY + MouseButton::X1},
+    {"Mouse 5", MOUSE_KEY + MouseButton::X2},        {"Wheel Up", WHEEL_UP},
     {"Wheel Down", WHEEL_DOWN},                    {"Wheel Left", WHEEL_LEFT},
     {"Wheel Right", WHEEL_RIGHT},
 };
@@ -102,12 +79,12 @@ int KeyCode(const std::string& name) {
             return code;
         }
     }
-    const SDL_Scancode code = SDL_GetScancodeFromName(name.c_str());
-    if (code == SDL_SCANCODE_UNKNOWN) {
+    const int code = Host::ScancodeFromName(name);
+    if (code == 0) {
         APP_LOG_WARNING("no key called \"{}\"", name);
         return 0;
     }
-    return static_cast<int>(code);
+    return code;
 }
 
 int MouseCode(const std::string& name) {
@@ -146,10 +123,10 @@ std::string KeyName(int code) {
             return name;
         }
     }
-    if (code <= 0 || code >= SDL_NUM_SCANCODES) {
+    if (code <= 0 || code >= Scancode::Count) {
         return "";
     }
-    return SDL_GetScancodeName(static_cast<SDL_Scancode>(code));
+    return Host::ScancodeName(code);
 }
 
 std::string FirstKey(const std::string& spec) {
@@ -158,14 +135,34 @@ std::string FirstKey(const std::string& spec) {
 }
 
 void BuildProfile(const Config& config) {
+    // the first game controller the host knows, and its port among controllers of the same kind
+    // (as Azahar's SDL engine numbers them)
     ControllerInfo pad;
-    const bool have_pad = config.controller_auto && FirstController(pad);
+    bool have_pad = false;
+    if (config.controller_auto) {
+        const std::vector<ControllerInfo> pads = Host::ListControllers();
+        have_pad = !pads.empty();
+        if (have_pad) {
+            pad = pads.front();
+            if (pad.name.empty()) {
+                pad.name = "controller";
+            }
+        }
+    }
     if (have_pad) {
         controller_description = fmt::format("controller: {} (port {})", pad.name, pad.port);
     } else {
         controller_description = config.controller_auto ? "no controller found" : "controller off";
     }
     Runtime().BuildInputProfile(config, have_pad ? &pad : nullptr);
+}
+
+int ControllerPort(const std::vector<std::string>& guids, std::size_t index) {
+    int port = 0;
+    for (std::size_t i = 0; i < index && i < guids.size(); ++i) {
+        port += guids[i] == guids[index] ? 1 : 0;
+    }
+    return port;
 }
 
 std::string ControllerDescription() {

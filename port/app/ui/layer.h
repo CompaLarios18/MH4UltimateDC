@@ -19,8 +19,6 @@
 #include "app_window.h"
 #include "util/types.h"
 
-union SDL_Event;
-
 namespace App {
 
 struct Config;
@@ -53,7 +51,7 @@ public:
     Layer& operator=(const Layer&) = delete;
 
     // ── The emulation thread (ui.h) ──
-    bool OnEvent(const SDL_Event& event);
+    bool OnEvent(const InputEvent& event);
     void Frame();
     /// Something of the menu's is on the screen (the renderers draw the copy).
     bool Visible() const {
@@ -130,8 +128,8 @@ private:
     bool capturing = false;      ///< the game's input cut off
     std::string last_fps_corner = "top-left";  ///< where ToggleFpsCounter puts the counter back
     std::string last_guides_corner = "bottom-left";  ///< and ToggleKeyGuides the guides
-    u32 escape_at = 0;           ///< SDL ticks of an Esc that opens the menu once it's not an echo
-    u32 pad_button_at = 0;       ///< SDL ticks of a controller's last button
+    u32 escape_at = 0;           ///< Host::Ticks of an Esc that opens the menu once it's not an echo
+    u32 pad_button_at = 0;       ///< Host::Ticks of a controller's last button
     bool echo_logged = false;
     bool fresh_input = false;    ///< the next frame starts from a clean input state
     bool close_requested = false;

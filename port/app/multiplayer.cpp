@@ -536,6 +536,10 @@ std::string Nickname() {
     return Runtime().ConsoleUsername();
 }
 
+bool Available() {
+    return Runtime().RoomsAvailable();
+}
+
 void Init(Config& config) {
     auto& s = S();
     s.active = true;
