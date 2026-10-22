@@ -776,8 +776,8 @@ def edge_margin(corners: list[tuple[int, int]], x: float, y: float) -> float:
 
 
 def blend(src: tuple[int, int, int], alpha: int, dst: tuple[int, int, int]) -> tuple[int, int, int]:
-    """SRC_ALPHA, ONE_MINUS_SRC_ALPHA, equation add, as Azahar's software renderer computes it: integer
-    products, one division by 255 that truncates."""
+    """SRC_ALPHA, ONE_MINUS_SRC_ALPHA, equation add: the spec's formula (s * a + d * (255 - a)) / 255 with
+    truncating integer arithmetic, the same arithmetic Azahar's software renderer uses."""
     return tuple((s * alpha + d * (255 - alpha)) // 255 for s, d in zip(src, dst))
 
 

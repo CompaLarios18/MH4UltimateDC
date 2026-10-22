@@ -195,8 +195,8 @@ test follow:
   row `240 - x` of the 400x240 screenshot. The test does not do this by formula: it builds the buffer's
   memory and runs the GX model of `gfx_gx` (display transfer, screen read-out, including the one-pixel
   quirk described above) on it.
-- A **blend** is `(src * a + dst * (255 - a)) / 255` in integers, truncating (Azahar's
-  `EvaluateBlendEquation`); over the background it gives (11, 19, 155), over red (127, 0, 128), over green
+- A **blend** is the spec's formula `(s*a + d*(255-a))/255` with truncating integer arithmetic, the same
+  arithmetic Azahar's software renderer uses; over the background it gives (11, 19, 155), over red (127, 0, 128), over green
   (0, 127, 128) and over yellow (127, 127, 128).
 
 Two deviations from the package's spec: the quad's alpha comes from TEV stage 0's constant alpha
