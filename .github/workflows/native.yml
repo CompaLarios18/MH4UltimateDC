@@ -283,7 +283,7 @@ jobs:
         run: |
           cmake -S native -B build/native -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
             -DCMAKE_BUILD_TYPE=RelWithDebInfo -DMH4N_WERROR=ON \
-            -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0   # the runner is macOS 26; the executables should start on a Mac that has not updated (N2-24)
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=13.3   # the runner is macOS 26; 13.3 is the first with std::to_chars for floating point (13.0 failed in ptm_gamecoin_test); the executables start on a Mac that has not updated (N2-24)
       - name: Build
         run: cmake --build build/native -- -k 0   # ninja keeps going: one run lists every error
       - name: Test
