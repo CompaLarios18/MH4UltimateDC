@@ -1,8 +1,8 @@
 /* DSP test program: three looping sources and the DSP's mixers. Source 0 is a stereo tone, 1 and 2 are
  * mono tones. The timeline (the interrupt count t) steps through: the master volume; the gains of a
- * source into the main mix (left, right, rear); source 2 into the first aux bus with the bus
- * internal, then going through the application's memory (the program halves the samples in it once),
- * then the second bus; the delay effect on each bus; the simple and the biquad filter of a source; the
+ * source into the main mix (left, right, rear); source 2, which is in the main mix and in an aux bus
+ * at once, with the first bus internal, then going through the application's memory (the program
+ * halves the samples in it for eight frames), then the second bus; the delay effect on each bus; the simple and the biquad filter of a source; the
  * output format (stereo is the SDK's default; mono and surround follow); and the sources stopping. The
  * lines are the three sources' status and the CRC of the final mix of each frame.
  * Our own program, no game code. */
@@ -41,7 +41,7 @@ static const Ev ev[] = {
     {84, GAIN, 1, 0, F0_25, F0_25, F0_25},
     /* source 2 into aux bus 0, which stays inside the DSP; then through the application's memory, where
      * the program halves the samples for eight frames; then the second bus */
-    {96, PLAY, 2, 1, 240, 0, F0_5}, {96, AUX_RETURN, 0, 0, F1}, {108, AUX_ENABLE, 0, 0, 1}, {120, HALVE, 0, 0, 8},
+    {96, PLAY, 2, 1, 240, F0_125, F0_5}, {96, AUX_RETURN, 0, 0, F1}, {108, AUX_ENABLE, 0, 0, 1}, {120, HALVE, 0, 0, 8},
     {132, AUX_ENABLE, 0, 0, 0}, {132, GAIN, 2, 1, 0, 0, 0}, {132, GAIN, 2, 2, F0_5, F0_5, 0}, {132, AUX_RETURN, 1, 0, F0_5},
     {133, AUX_ENABLE, 1, 0, 1}, {146, AUX_ENABLE, 1, 0, 0},
     /* the delay effect on each bus: two frames with feedback (g, a, b in Q7), then one frame plain */
@@ -49,7 +49,7 @@ static const Ev ev[] = {
     {180, DELAY, 0, 0, 0, 0}, {180, DELAY, 1, 1, 1, 128 << 8}, {204, DELAY, 1, 0, 0, 0}, {204, GAIN, 2, 1, 0, 0, 0},
     /* filters: simple on source 0, biquad on source 0, both, then source 1's simple filter */
     {210, SIMPLE, 0, 0, 0x4000, 0x2000}, {210, FILTERS, 0, 0, 1, 0}, {222, BIQUAD, 0}, {222, FILTERS, 0, 0, 0, 1},
-    {234, FILTERS, 0, 0, 1, 1}, {246, FILTERS, 0, 0, 0, 0}, {246, SIMPLE, 1, 0, 0x2000, 0x5000},
+    {234, FILTERS, 0, 0, 1, 1}, {234, SIMPLE, 0, 0, 0x4000, 0x2000}, {246, FILTERS, 0, 0, 0, 0}, {246, SIMPLE, 1, 0, 0x2000, 0x5000},
     {246, FILTERS, 1, 0, 1, 0}, {258, FILTERS, 1, 0, 0, 0},
     /* the output format: mono, surround, stereo again */
     {264, FORMAT, 0, 0, 0}, {276, FORMAT, 0, 0, 2}, {288, FORMAT, 0, 0, 1},

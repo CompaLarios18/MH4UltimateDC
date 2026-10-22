@@ -35,7 +35,7 @@ static const Case cases[] = {
 
 /* the coefficients: eight pairs of Q11 numbers, set A and set B */
 static const s16 coef[2][16] = {
-    {0, 0, 0x400, 0, 0x705, -0x200, 0xDC1, -0x673, -0x400, 0, 0xA00, -0x500, 0x600, 0, 0xD00, -0x580},
+    {0, 0, 0x500, -0x180, 0x705, -0x200, 0xDC1, -0x673, -0x400, 0, 0xA00, -0x500, 0x600, 0, 0xD00, -0x580},
     {0x800, 0, 0xC00, -0x600, 0x7FF, -0x400, 0, 0x400, 0xA00, -0x400, -0x800, 0x400, 0x300, 0x300, 0x900, -0x300},
 };
 static u32 data[2], pcm;   /* 80 frames of ADPCM each; 1024 PCM16 samples */
@@ -69,7 +69,7 @@ static void during(const Case *c, u32 n, u32 rel) {
     case S_TWO:   /* the second buffer goes on from the history the first left, the third restarts it */
         if (rel == 1) {
             src_queue(0, 0, a + 160, c->len, id + 1, 0, ps, 0, 0, 0);
-            src_queue(0, 1, a + 320, c->len, id + 2, 0, ps, 0x1000, 0, 1);
+            src_queue(0, 1, a + 320, c->len, id + 2, 0, ps, 0x1000, 0xF000, 1);
         }
         break;
     case S_COEFCHG:   /* new coefficients: they decode the buffer that is queued after the change */
@@ -103,7 +103,7 @@ void _start(void) {
     print("snd_adpcm: start");
     dsp_init();
     data[0] = dsp_alloc(640); data[1] = dsp_alloc(640); pcm = dsp_alloc(2048);
-    gen_adpcm((u8 *)data[0], 80, 0, 1, 7);
+    gen_adpcm((u8 *)data[0], 80, 1, 1, 7);   /* the first frame selects pair 1 (not (0, 0)), so a history shows */
     gen_adpcm((u8 *)data[1], 80, 3, 2, 9);
     gen_tone((void *)pcm, 1024, 1, 0, 32297, 2028, 0, 0);
     flush(data[0], 640); flush(data[1], 640); flush(pcm, 2048);

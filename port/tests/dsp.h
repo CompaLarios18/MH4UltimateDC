@@ -35,6 +35,7 @@ static inline u32 g32dsp(u32 a) { return (g16(a) << 16) | g16(a + 2); }
 
 /* IEEE single bit patterns of the floats the programs use */
 #define F0 0x00000000u
+#define F0_125 0x3E000000u
 #define F0_25 0x3E800000u
 #define F0_5 0x3F000000u
 #define F0_75 0x3F400000u
@@ -184,7 +185,9 @@ static u32 dsp_alloc(u32 size) {
     if (!D.pool) {
         u32 out = 0;
         s32 rc = svcControlMemory(&out, 0, 0, 0x100000, 0x10003, 3);
-        /* the linear heap starts at 0x14000000, or at 0x30000000 when the process has the New 3DS's */
+        /* the linear heap starts at 0x30000000 for a process whose kernel version is 0x22C or higher
+         * (Azahar's Process::GetLinearHeapAreaAddress; its default is 0x23A) and at
+         * 0x14000000 below that, whatever --new-3ds says; the loader of a runner must give the same */
         if (rc || out < 0x14000000u || out >= 0x40000000u) { fail("linear heap", out); return 0; }
         D.lbase = out >= 0x30000000u ? 0x30000000u : 0x14000000u;
         D.pool = out;
@@ -341,6 +344,7 @@ static void dsp_run(void (*step)(u32 j), u32 frames) {
         D.j++;
         if (D.done) break;
         /* publish: raise the counter of the region just changed above the other one's */
+        if (svcGetSystemTick() - now >= FRAME_TICKS) { o_str("missed "); o_dec(D.j); o_end(); }   /* too late */
         D.fc[D.x] = D.fc[1 - D.x] + 1;
         p16(region() + SHM_FRAME_COUNTER, D.fc[D.x]);
     }

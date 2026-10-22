@@ -667,4 +667,24 @@ f332: s0 en=1 pos=480 buf=53 last=0 sync=53
 f332: mix crc=4b7716da peak=0
 f333: s0 en=0 pos=480 buf=0 last=53 sync=53
 f333: mix crc=4b7716da peak=0
+f334: s0 en=1 pos=0 buf=54 last=0 sync=54
+f334: mix crc=4b7716da peak=0
+f335: s0 en=1 pos=159 buf=54 last=0 sync=54
+f335: mix crc=608c27dd peak=12091
+f336: s0 en=1 pos=319 buf=54 last=0 sync=54
+f336: mix crc=6490c3dc peak=12050
+f337: s0 en=1 pos=479 buf=54 last=0 sync=54
+f337: mix crc=8e7c077a peak=12059
+f338: s0 en=1 pos=639 buf=54 last=0 sync=54
+f338: mix crc=afe76b9e peak=12098
+f339: s0 en=1 pos=159 buf=54 last=0 sync=54
+f339: mix crc=6ef9bd75 peak=12103
+f340: s0 en=1 pos=319 buf=54 last=0 sync=54
+f340: mix crc=aa5d443b peak=12050
+f341: s0 en=1 pos=479 buf=54 last=0 sync=54
+f341: mix crc=8e7c077a peak=12059
+f342: s0 en=1 pos=639 buf=54 last=0 sync=54
+f342: mix crc=afe76b9e peak=12098
+f343: s0 en=1 pos=159 buf=54 last=0 sync=54
+f343: mix crc=6ef9bd75 peak=12103
 snd_pcm: done

@@ -9,7 +9,7 @@
 
 /* what a case does besides playing its buffer */
 enum { S_NONE, S_QSAME, S_QLATER, S_QONLY, S_PRESET, S_PLAYPOS, S_RATE, S_SYNC, S_TOGGLE, S_GAIN, S_BADRATE,
-       S_BADADDR, S_MISALIGNED, S_LOOPQ };
+       S_BADADDR, S_MISALIGNED, S_LOOPQ, S_REWRITE };
 #define N INTERP_NONE
 #define L INTERP_LINEAR
 #define P INTERP_POLYPHASE
@@ -42,13 +42,15 @@ static const Case cases[] = {
     /* 48-53: more rates, and PCM8 stereo */
     {1, 1, L, 0, 0, 0, 480, F0_25}, {1, 2, L, 0, 0, 0, 480, F0_25}, {1, 1, L, 0, 0, 0, 480, F2},
     {0, 2, L, 0, 0, 0, 480, F1}, {0, 2, N, 0, 0, 0, 480, F1_37}, {0, 2, P, 0, 0, 0, 480, F0_5},
+    /* 54: a looping buffer whose memory the program rewrites while it plays */
+    {1, 1, L, 1, S_REWRITE, 0, 640, F1},
 };
 #define NCASES (sizeof(cases) / sizeof(cases[0]))
 
-static u32 b16m, b16s, b8m;   /* sample buffers: 1024 samples each */
+static u32 b16m, b16s, b8m, brw;   /* sample buffers: 1024 samples each; brw is rewritten by case 54 */
 static u32 cur, start_j;
 
-static u32 buf_of(const Case *c) { return c->fmt == FMT_PCM8 ? b8m : c->chans == 2 ? b16s : b16m; }
+static u32 buf_of(const Case *c) { return c->special == S_REWRITE ? brw : c->fmt == FMT_PCM8 ? b8m : c->chans == 2 ? b16s : b16m; }
 
 static void start(const Case *c, u32 n) {
     u32 a = phys(buf_of(c));
@@ -89,6 +91,9 @@ static void during(const Case *c, u32 rel) {
         if (rel == 2) src_gain(0, 0, F0_5, F0_5, 0, 0);
         if (rel == 4) src_gain(0, 0, F1, 0, 0, 0);
         break;
+    case S_REWRITE:   /* the DSP reads again the part of a looping PCM16 buffer it has not played yet */
+        if (rel == 2) { gen_tone((void *)brw, 640, 1, 0, 31553, 3238, 0, 0); flush(brw, 1280); }
+        break;
     case S_LOOPQ: if (rel == 4) src_queue(0, 0, a + 64, 80, 2, 0, 0, 0, 0, 0); break;
     }
 }
@@ -111,11 +116,12 @@ void _start(void) __attribute__((section(".text.start")));
 void _start(void) {
     print("snd_pcm: start");
     dsp_init();
-    b16m = dsp_alloc(2048); b16s = dsp_alloc(4096); b8m = dsp_alloc(1024);
+    b16m = dsp_alloc(2048); b16s = dsp_alloc(4096); b8m = dsp_alloc(1024); brw = dsp_alloc(2048);
     gen_tone((void *)b16m, 1024, 1, 0, 32297, 2028, 0, 0);       /* periods of 37 and 23 samples */
     gen_tone((void *)b16s, 1024, 2, 0, 32297, 2028, 31553, 3238);
     gen_tone((void *)b8m, 1024, 1, 1, 32538, 1419, 0, 0);
-    flush(b16m, 2048); flush(b16s, 4096); flush(b8m, 1024);
+    gen_tone((void *)brw, 640, 1, 0, 32538, 1419, 0, 0);
+    flush(b16m, 2048); flush(b16s, 4096); flush(b8m, 1024); flush(brw, 1280);
     D.watch = 1;
     dsp_run(step, 400);
     dsp_finish("snd_pcm: done");
