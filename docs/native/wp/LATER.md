@@ -4,7 +4,7 @@ N2c, N4 to N7, Track D and the renderer oracle N2o-02, outlined (N2b and N3 are 
 
 ## N2b · Integration: runtime, renderer and app
 
-Detailed in [`N2b.md`](N2b.md) (26 work packages, N2b-01 to N2b-26; its *Order* section maps the provisional IDs that were here).
+Detailed in [`N2b.md`](N2b.md) (27 work packages, N2b-01 to N2b-27; its *Order* section maps the provisional IDs that were here).
 
 **Exit:** G1–G4 pass end to end; 120 fps in G3 on the reference PC within the budget of [`../ROADMAP.md`](../ROADMAP.md) §7.
 
@@ -25,7 +25,7 @@ Detailed in [`N2b.md`](N2b.md) (26 work packages, N2b-01 to N2b-26; its *Order* 
 
 ## N3 · Playable end to end at 120 fps (opt-in alpha)
 
-Detailed in [`N3.md`](N3.md) (28 work packages, N3-01 to N3-28; its *Order* section maps the provisional IDs that were here, and lists what was left out of N3).
+Detailed in [`N3.md`](N3.md) (30 work packages, N3-01 to N3-30; its *Order* section maps the provisional IDs that were here, and lists what was left out of N3).
 
 **Exit:** G1–G4, G6 and G7 pass end to end natively; alpha builds in the packages; testers' reports triaged.
 
