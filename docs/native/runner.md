@@ -42,7 +42,9 @@ for that.
 | `--init-time SECONDS` | the date the console starts at, seconds since the Unix epoch, UTC. The default, 1767268800 (2026-01-01 12:00 UTC), is the fixed start of the reference runs: the game seeds its random numbers from the clock |
 | `--gpu NAME` | the GPU (default `null`) |
 | `--input-source NAME` | where the buttons, circle pad and touch screen come from (default `script`, the presses of `--input` and `--input-file`). `live` (N2b-08, D59): the app feeds it from its own thread (`input_live::Find(runtime)->Set(...)`, `SetTouch(...)`) and the game sees a change only at its next frame, see `--input-latch` and `--record-input` |
-| `--audio NAME` | where the DSP's output goes (default `null`) |
+| `--audio NAME` | where the DSP's output goes (default `null`). `stream` (N3-05, D63): a ring of 8192 stereo frames the app's audio device pulls from, with `audio_out::Find(rt)`; `wav`: every queued frame into the 16-bit stereo WAV given by `--audio-file`, at 32,728 Hz, its header finished at the end of the run (`docs/native/audio-out.md`) |
+| `--audio-latency MS` | with `--audio stream`: the target fill of the ring, 10 to 200 ms (default 40; a first guess, D63); anything else ends the run with status 2 |
+| `--audio-file FILE` | with `--audio wav`: the WAV file; missing or unwritable ends the run with status 2 |
 | `--missing-entries FILE` | append the entry of each function the fallback interpreter had to run, in the format of `config/extra_entries.txt` (default `build/missing_entries.txt`; `""` for none), deduplicated against the file (N1-28) |
 | `--trace-ipc FILE` | every IPC request with its reply, in the format of `tools/native/tracefmt.py` and `tools/compare_ipc_traces.py` (N0-21): session names (`srv:`, `<service>/<kind>#k`), `t=` in game ticks (N1-10) |
 | `--trace-ipc-full` | with `--trace-ipc`: also the bytes of the input buffers as `data=<index>:<hex>`; alone it is refused with exit status 2 |
@@ -60,8 +62,8 @@ for that.
 | `--options FILE` | the host's own settings in the layout of `mh4u-app.ini` (`[Section]` lines, `key = value` lines) (N1-20). All keys are stored for the renderer (N2b); only `aspect_ratio` answers Get/SetOption. A bad line or value ends Boot with status 2 |
 
 A device name nothing has registered leaves that interface empty, with an Info line. Registered
-today: the `null` GPU (N1-17), the `script` (N1-16) and `live` (N2b-08) input sources and the `null` audio sink (N1-18);
-the capture player's GPUs come with N2 and the real audio sinks with N3.
+today: the `null` GPU (N1-17), the `script` (N1-16) and `live` (N2b-08) input sources and the `null` (N1-18), `stream` and `wav` (N3-05) audio sinks;
+the capture player's GPUs come with N2 and the SDL3 audio device with N3-06.
 
 ## Paths on Windows (D45)
 
