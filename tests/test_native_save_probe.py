@@ -244,6 +244,143 @@ def test_unwrap_command_with_each_key_source(tmp_path: Path, capsys: pytest.Capt
     assert code == 1 and "does not match" in out
 
 
+# ── the creation stamp of a hunter slot and the clock behind it (N0-34) ──
+
+# Made-up inputs (not the values of any real run): 2030-07-09 03:47:58 UTC, a made-up 64-bit id, a made-up frame.
+SYN_ID_LOW, SYN_ID_HIGH = 0x55667788, 0x11223344
+SYN_UNIX = 1909799278          # 2030-07-09 03:47:58 UTC
+SYN_FRAME = 0x2ABC
+SYN_STAMP = bytes([
+    0x55,                       # bits 24 to 31 of the id: the top byte of the low word
+    0x44,                       # bits 32 to 39: the low byte of the high word
+    0x33,                       # bits 40 to 47
+    (2030 - 1900 + 0x6C) & 0xFF,  # the year
+    (7 << 4) | ((9 & 0x1E) >> 1),   # month and day
+    ((47 & 0x1F) | (9 << 5)) & 0xFF,  # minute (5 bits) and day
+    (58 & 0x3F) | ((SYN_FRAME & 0x300) >> 2),   # second and frame bits 8 and 9
+    SYN_FRAME & 0xFF,           # frame bits 0 to 7
+])
+
+
+def test_the_synthetic_stamp_is_what_the_layout_says() -> None:
+    assert SYN_STAMP == bytes.fromhex("554433ee742fbabc")
+    assert save_probe.calendar(SYN_UNIX).strftime("%Y-%m-%d %H:%M:%S") == "2030-07-09 03:47:58"
+
+
+def test_unix_second_follows_the_shared_page_date_and_the_tick() -> None:
+    # the date record (ms since 1900, here 250 ms into a second) plus the ticks since the update tick
+    rate = save_probe.TICKS_PER_SECOND
+    date_ms = (SYN_UNIX + save_probe.SECONDS_1900_TO_1970) * 1000 + 250
+    assert save_probe.unix_second(date_ms, 1000, 1000) == SYN_UNIX
+    assert save_probe.unix_second(date_ms, 1000, 1000 + rate * 3 // 4) == SYN_UNIX + 1      # 250 + 750 ms
+    assert save_probe.unix_second(date_ms, 1000, 1000 + rate * 3 // 4 - 1000) == SYN_UNIX   # a bit short of it
+    assert save_probe.unix_second(date_ms, 1000, 1000 + 5 * rate) == SYN_UNIX + 5
+    with pytest.raises(save_probe.UsageError):
+        save_probe.unix_second(date_ms, 2000, 1000)     # a tick before the update tick
+
+
+def test_hunter_stamp_packs_the_id_the_date_and_the_frame() -> None:
+    assert save_probe.hunter_stamp(SYN_ID_LOW, SYN_ID_HIGH, SYN_UNIX, SYN_FRAME) == SYN_STAMP
+
+
+def test_hunter_stamp_fields_move_with_their_inputs_only() -> None:
+    base = save_probe.hunter_stamp(SYN_ID_LOW, SYN_ID_HIGH, SYN_UNIX, SYN_FRAME)
+
+    def moved(other: bytes) -> list[int]:
+        return [i for i in range(8) if other[i] != base[i]]
+
+    stamp = save_probe.hunter_stamp
+    # one second later: the seconds byte only
+    assert moved(stamp(SYN_ID_LOW, SYN_ID_HIGH, SYN_UNIX + 1, SYN_FRAME)) == [6]
+    # one frame later: the frame byte only; 256 frames later: the low byte stays, a bit of byte 6 moves
+    assert moved(stamp(SYN_ID_LOW, SYN_ID_HIGH, SYN_UNIX, SYN_FRAME + 1)) == [7]
+    assert moved(stamp(SYN_ID_LOW, SYN_ID_HIGH, SYN_UNIX, SYN_FRAME + 256)) == [6]
+    # a frame 1024 later (past the ten bits the game keeps) changes nothing
+    assert stamp(SYN_ID_LOW, SYN_ID_HIGH, SYN_UNIX, SYN_FRAME + 1024) == base
+    # the id moves bytes 0 to 2 only; its low 24 bits and its top 16 bits are not in the stamp
+    assert moved(stamp(SYN_ID_LOW ^ 0x01000000, SYN_ID_HIGH, SYN_UNIX, SYN_FRAME)) == [0]
+    assert moved(stamp(SYN_ID_LOW, SYN_ID_HIGH ^ 0x0100, SYN_UNIX, SYN_FRAME)) == [2]
+    assert moved(stamp(SYN_ID_LOW ^ 0x00FFFFFF, SYN_ID_HIGH ^ 0xFFFF0000, SYN_UNIX, SYN_FRAME)) == []
+    # a minute later and a day later
+    assert moved(stamp(SYN_ID_LOW, SYN_ID_HIGH, SYN_UNIX + 60, SYN_FRAME)) == [5]
+    assert moved(stamp(SYN_ID_LOW, SYN_ID_HIGH, SYN_UNIX + 86400, SYN_FRAME)) == [4, 5]
+
+
+def test_stamp_command_says_which_bytes_match_and_never_prints_them(
+        tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    body = bytearray(synthetic_slot(256))
+    body[100:108] = SYN_STAMP
+    path = write(tmp_path, "plain", bytes(body))
+    args = ["stamp", path, "--at", "100", "--id-low", hex(SYN_ID_LOW), "--id-high", hex(SYN_ID_HIGH),
+            "--unix-second", str(SYN_UNIX), "--frame", str(SYN_FRAME)]
+    code, out = run(capsys, *args)
+    assert code == 0 and "all 8 bytes match" in out and "no match" not in out
+    assert SYN_STAMP.hex() not in out.lower() and "0x" not in out
+    # a clock one second off: only the seconds byte of the stamp disagrees
+    code, out = run(capsys, *args[:-4], "--unix-second", str(SYN_UNIX + 1), "--frame", str(SYN_FRAME))
+    assert code == 1 and "byte 6 (seconds and frame bits 8, 9): no match" in out and "1 of 8 bytes differ" in out
+    assert out.count("no match") == 1
+    # a frame one off: only byte 7
+    code, out = run(capsys, *args[:-1], str(SYN_FRAME + 1))
+    assert code == 1 and "byte 7 (frame bits 0 to 7): no match" in out and out.count("no match") == 1
+
+
+def test_stamp_command_usage_errors(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    path = write(tmp_path, "plain", bytes(16))
+    ok = ["--id-low", "1", "--id-high", "2", "--unix-second", "1900000000", "--frame", "5"]
+    assert run(capsys, "stamp", path, "--at", "12", *ok)[0] == 2           # 8 bytes do not fit at 12
+    assert run(capsys, "stamp", path, "--at", "-1", *ok)[0] == 2
+    assert run(capsys, "stamp", path, *ok)[0] == 2                           # no --at
+    assert run(capsys, "stamp", path, "--at", "0", "--id-low", "1")[0] == 2      # inputs missing
+    assert run(capsys, "stamp", path, "--at", "0", "--id-low", "x", "--id-high", "2",
+               "--unix-second", "1", "--frame", "5")[0] == 2
+    assert run(capsys, "stamp", path, "--at", "0", "--id-low", "0x1ffffffff", "--id-high", "2",
+               "--unix-second", "1900000000", "--frame", "5")[0] == 2        # not a 32-bit word
+
+
+def test_stamp_survives_the_slot_layers(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    body = bytearray(synthetic_slot(1024))
+    body[500:508] = SYN_STAMP
+    plain, *_ = save_probe.unwrap(save_probe.seal(bytes(body), KEY, seed=0x1357), KEY)
+    code, out = run(capsys, "stamp", write(tmp_path, "plain", plain), "--at", "500", "--id-low", hex(SYN_ID_LOW),
+                    "--id-high", hex(SYN_ID_HIGH), "--unix-second", str(SYN_UNIX), "--frame", str(SYN_FRAME))
+    assert code == 0
+
+
+def test_clock_second_command(capsys: pytest.CaptureFixture[str]) -> None:
+    date_ms = (SYN_UNIX + save_probe.SECONDS_1900_TO_1970) * 1000 + 500
+    tick = 2_000_000_000 + 3 * save_probe.TICKS_PER_SECOND + save_probe.TICKS_PER_SECOND // 4
+    code, out = run(capsys, "clock-second", "--date-ms", str(date_ms), "--update-tick", "2000000000",
+                    "--tick", str(tick))
+    assert code == 0
+    assert f"unix second {SYN_UNIX + 3}" in out        # 0.5 + 3.25 s: the fourth second after SYN_UNIX
+    assert "2030-07-09 03:48:01" in out and "second of the minute 1" in out
+    assert run(capsys, "clock-second", "--date-ms", str(date_ms), "--update-tick", "5", "--tick", "4")[0] == 2
+    assert run(capsys, "clock-second", "--update-tick", "5", "--tick", "4")[0] == 2
+
+
+def test_halfword_check_compares_a_value_or_the_stepped_generator(
+        tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    def step(x: int) -> int:
+        return ((x or 1) * 0xB0) % 0xFF53
+    seed, x = 0x6123, 0x6123
+    for _ in range(40):
+        x = step(x)
+    body = bytearray(64)
+    struct.pack_into("<HH", body, 10, x, seed)
+    path = write(tmp_path, "plain", bytes(body))
+    assert run(capsys, "halfword-check", path, "--at", "10", "--lcg-seed", hex(seed), "--steps", "40")[0] == 0
+    code, out = run(capsys, "halfword-check", path, "--at", "10", "--lcg-seed", hex(seed), "--steps", "41")
+    assert code == 1 and "no match" in out
+    assert run(capsys, "halfword-check", path, "--at", "12", "--equals", hex(seed))[0] == 0
+    assert run(capsys, "halfword-check", path, "--at", "12", "--equals", hex(seed + 1))[0] == 1
+    # a zero seed is not a fixed point of the generator (the game starts it from one)
+    assert save_probe.lcg_step(0) == 0xB0 and save_probe.lcg_steps(0, 2) == (0xB0 * 0xB0) % 0xFF53
+    assert run(capsys, "halfword-check", path, "--at", "10")[0] == 2
+    assert run(capsys, "halfword-check", path, "--at", "63", "--equals", "1")[0] == 2
+    assert run(capsys, "halfword-check", path, "--at", "10", "--equals", "0x10000")[0] == 2
+
+
 def test_unwrap_usage_errors(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     sealed = write(tmp_path, "slot", save_probe.seal(synthetic_slot(64), KEY, seed=1))
     assert run(capsys, "unwrap", sealed)[0] == 2
