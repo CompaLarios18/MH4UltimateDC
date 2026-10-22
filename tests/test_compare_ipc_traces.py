@@ -22,16 +22,18 @@ def thread_line(tid, parent, entry):
 
 
 def req(thread, seq, session, cmd, result=0, params=(), desc=(), outdesc=(), out_extra=(), in_extra=(),
-        t=0, reply=True, data=()):
+        t=0, reply=True, data=(), out_params=()):
     """One IPC trace line. `params`: the normal request parameters; `in_extra`/`out_extra`: the
-    translate words (descriptors and what follows them); `desc`/`outdesc`: ready-made entries."""
+    translate words (descriptors and what follows them); `desc`/`outdesc`: ready-made entries;
+    `out_params`: normal reply parameters after the result (a Read's number of bytes read)."""
     n_in = len(in_extra)
     words_in = [cmd | (len(params) << 6) | n_in] + list(params) + list(in_extra)
     text = (f"{thread} seq={seq} session={session} cmd={w(words_in[0])} in={','.join(w(x) for x in words_in)} "
             f"desc={','.join(desc) or '-'} ")
     if reply:
-        # reply header: the command id, one normal parameter (the result), len(out_extra) translate words
-        words_out = [(cmd & 0xFFFF0000) | (1 << 6) | len(out_extra), result] + list(out_extra)
+        # reply header: the command id, the result and `out_params` as normal parameters, len(out_extra) translate words
+        words_out = ([(cmd & 0xFFFF0000) | ((1 + len(out_params)) << 6) | len(out_extra), result]
+                     + list(out_params) + list(out_extra))
         text += f"out={','.join(w(x) for x in words_out)} outdesc={','.join(outdesc) or '-'} "
     else:
         text += "out=- outdesc=- "
@@ -366,10 +368,13 @@ FILE = "fs:USER/file#1"
 MULTISET = ("--fs-reads-multiset",)
 
 
-def fs_read(thread, seq, offset, size, crc, session=FILE, result=0, reply=True):
-    """A Read of a file session: offset (two words), size, the writable buffer; the reply wrote data of CRC `crc`."""
+def fs_read(thread, seq, offset, size, crc, session=FILE, result=0, reply=True, bytes_read=None):
+    """A Read of a file session: offset (two words), size, the writable buffer; the reply says how many bytes it
+    read (`bytes_read`, the size by default; none for a failed Read) and wrote data of CRC `crc`."""
+    got = size if bytes_read is None else bytes_read
     return req(thread, seq, session, 0x08020000, result=result, params=(offset & 0xFFFFFFFF, offset >> 32, size),
                in_extra=((size << 4) | 0xC, 0x0FFFDAF8), out_extra=((size << 4) | 0xC, 0x0FFFDAF8),
+               out_params=(got,) if result == 0 else (),
                desc=(f"mapped-w:4:{size}:-",), outdesc=(f"mapped-w:4:{size}:0x{crc:08x}",) if reply else (),
                reply=reply)
 
@@ -686,4 +691,250 @@ def test_the_report_of_the_multiset_rule_says_how_many_reads_and_masks(tmp_path,
 def test_the_docstring_documents_the_cross_model_options():
     for word in ("--fs-reads-multiset", "--max-surplus", "--fs-write-mask", "--fs-write-mask-session", "D52",
                  "multiset"):
+        assert word in cmp.__doc__
+
+# ── touching Reads merged before the multiset is built (N0-33, D55) ───────────────────────────────
+
+COALESCE = (*MULTISET, "--fs-reads-coalesce")
+FILE_DATA = bytes((i * 13 + i // 97) & 0xFF for i in range(70000))
+
+
+def spans(thread, first_seq, items, session=FILE):
+    """Reads of (offset, size) of the file bytes FILE_DATA, with the CRC-32 of the bytes read."""
+    return [fs_read(thread, first_seq + i, off, size, zlib.crc32(FILE_DATA[off:off + size]), session=session)
+            for i, (off, size) in enumerate(items)]
+
+
+def split(offset, pieces):
+    """Consecutive (offset, size) spans of the given sizes from `offset`."""
+    out = []
+    for n in pieces:
+        out.append((offset, n))
+        offset += n
+    return out
+
+
+# 28672 bytes as the reference's reader reads them (4096- and 2048-byte pieces)
+PIECES = split(0, [4096, 2048, 4096, 4096, 2048, 2048, 4096, 2048, 2048, 2048])
+WHOLE = [(0, 28672)]
+
+
+def test_one_28672_byte_read_equals_the_pieces_that_cover_the_same_range(tmp_path):
+    big, small = trace(*spans(5, 1, WHOLE)), trace(*spans(5, 1, PIECES))
+    assert sum(n for _, n in PIECES) == 28672
+    assert run(tmp_path, big, small, *MULTISET) == 1                        # as multisets alone they differ
+    assert run(tmp_path, big, small, *COALESCE) == 0
+    assert run(tmp_path, small, big, *COALESCE) == 0                        # either side may be the one that splits
+    # the pieces come in another order: still the same range (the order of the Reads is not compared, D52)
+    shuffled = list(PIECES)
+    shuffled[1], shuffled[2] = shuffled[2], shuffled[1]
+    shuffled.reverse()
+    assert run(tmp_path, big, trace(*spans(5, 1, shuffled)), *COALESCE) == 0
+    assert run(tmp_path, small, trace(*spans(5, 1, shuffled)), *COALESCE) == 0
+    assert run(tmp_path, small, trace(*spans(5, 1, shuffled)), *MULTISET) == 0
+
+
+def test_two_ways_of_splitting_the_same_range_match(tmp_path):
+    a = trace(*spans(5, 1, split(4096, [4096, 2048, 8192])))
+    b = trace(*spans(5, 1, split(4096, [2048, 4096, 2048, 2048, 4096])))
+    assert 4096 + 2048 + 8192 == 2048 + 4096 + 2048 + 2048 + 4096
+    assert run(tmp_path, a, b, *COALESCE) == 0
+
+
+def test_a_gap_in_the_pieces_fails(tmp_path, capsys):
+    gap = list(PIECES)
+    del gap[4]                                                              # 2048 bytes are never read
+    capsys.readouterr()
+    assert run(tmp_path, trace(*spans(5, 1, WHOLE)), trace(*spans(5, 1, gap)), *COALESCE) == 1
+    out = capsys.readouterr().out
+    assert "differ as multisets" in out and "not on the other side" in out
+    assert run(tmp_path, trace(*spans(5, 1, gap)), trace(*spans(5, 1, WHOLE)), *COALESCE) == 1
+    # a read short at the end: the pieces cover less than the whole
+    assert run(tmp_path, trace(*spans(5, 1, WHOLE)), trace(*spans(5, 1, PIECES[:-1])), *COALESCE) == 1
+    # a piece read twice is one read more than the range needs: the whole range is there, and the repeated piece
+    # is a surplus run of its own (inside the allowance, never a way to hide a missing piece)
+    twice = PIECES[:3] + PIECES[2:3] + PIECES[3:]
+    assert run(tmp_path, trace(*spans(5, 1, WHOLE)), trace(*spans(5, 1, twice)), *COALESCE) == 0
+    assert run(tmp_path, trace(*spans(5, 1, WHOLE)), trace(*spans(5, 1, twice)), *COALESCE, "--max-surplus", "0") == 1
+    twice_gap = [p for i, p in enumerate(twice) if i != 7]                 # and a piece missing as well
+    assert run(tmp_path, trace(*spans(5, 1, WHOLE)), trace(*spans(5, 1, twice_gap)), *COALESCE) == 1
+
+
+def test_pieces_with_another_crc_fail(tmp_path):
+    good = spans(5, 1, PIECES)
+    bad = list(good)
+    bad[3] = fs_read(5, 4, PIECES[3][0], PIECES[3][1], zlib.crc32(FILE_DATA[PIECES[3][0]:PIECES[3][0] + PIECES[3][1]]) ^ 1)
+    assert run(tmp_path, trace(*spans(5, 1, WHOLE)), trace(*bad), *COALESCE) == 1
+    # and a whole read whose CRC is not that of the bytes the pieces read
+    other = [fs_read(5, 1, 0, 28672, zlib.crc32(FILE_DATA[1:28673]))]
+    assert run(tmp_path, trace(*other), trace(*good), *COALESCE) == 1
+
+
+def test_a_run_longer_on_one_side_is_a_range_the_other_never_read(tmp_path):
+    # the reader on one side went on for 2048 more bytes: its run is a different range
+    longer = trace(*spans(5, 1, PIECES + [(28672, 2048)]))
+    assert run(tmp_path, trace(*spans(5, 1, WHOLE)), longer, *COALESCE) == 1
+    assert run(tmp_path, longer, longer, *COALESCE) == 0
+
+
+def test_the_surplus_counts_runs_after_the_merge(tmp_path, capsys):
+    base = spans(5, 1, [(0, 100), (1000, 100), (2000, 100)])
+    def isolated(n):
+        return spans(5, 10, [(10000 + 10 * i, 5) for i in range(n)])        # n reads that touch nothing
+    ref = trace(*base)
+    assert run(tmp_path, trace(*base, *isolated(16)), ref, *COALESCE) == 0
+    capsys.readouterr()
+    assert run(tmp_path, trace(*base, *isolated(17)), ref, *COALESCE) == 1
+    out = capsys.readouterr().out
+    assert "surplus 17" in out and "at most 16" in out
+    assert run(tmp_path, trace(*base, *isolated(17)), ref, *COALESCE, "--max-surplus", "17") == 0
+    # 40 extra reads that run on from the last one are one run: the surplus is 0 runs
+    on = spans(5, 10, split(2100, [50] * 40))
+    assert run(tmp_path, trace(*base[:2], *spans(5, 3, [(2000, 100)]), *on),
+               trace(*base[:2], *spans(5, 3, [(2000, 2100)])), *COALESCE) == 0
+
+
+def test_runs_are_per_thread_and_per_file_session(tmp_path):
+    a = trace(*spans(1, 1, PIECES[:2], session="fs:USER/file#1"), *spans(5, 1, PIECES[2:4], session="fs:USER/file#1"))
+    # the first two pieces on thread 1, the next two on thread 5: no thread reads a touching range alone
+    b = trace(*spans(1, 1, [(0, 6144)], session="fs:USER/file#1"), *spans(5, 1, [(6144, 8192)], session="fs:USER/file#1"))
+    assert run(tmp_path, a, b, *COALESCE) == 0
+    c = trace(*spans(1, 1, [(0, 14336)], session="fs:USER/file#1"))
+    assert run(tmp_path, a, c, *COALESCE) == 1                                # the threads' reads are not pooled
+    # two files read in turn: each file's pieces merge, whatever is read between them
+    mixed = [(0, 4096, "fs:USER/file#1"), (9000, 100, "fs:USER/file#2"), (4096, 2048, "fs:USER/file#1"),
+             (9100, 100, "fs:USER/file#2")]
+    lines = [spans(5, 1 + i, [(off, n)], session=s)[0] for i, (off, n, s) in enumerate(mixed)]
+    merged = [spans(5, 1, [(0, 6144)], session="fs:USER/file#7")[0],
+              spans(5, 2, [(9000, 200)], session="fs:USER/file#8")[0]]
+    assert run(tmp_path, trace(*lines), trace(*merged), *COALESCE) == 0
+
+
+def test_reads_that_cannot_be_merged_are_compared_on_their_own(tmp_path):
+    short = fs_read(5, 2, 100, 100, zlib.crc32(FILE_DATA[100:200]), bytes_read=60)       # read 60 of 100 bytes
+    a = trace(*spans(5, 1, [(0, 100)]), short, *spans(5, 3, [(200, 100)]))
+    assert run(tmp_path, a, a, *COALESCE) == 0
+    # the same range in one piece is not the same thing as a short read between two reads
+    b = trace(*spans(5, 1, [(0, 300)]))
+    assert run(tmp_path, a, b, *COALESCE) == 1
+    failed = fs_read(5, 2, 100, 100, 0, result=0xC8804464)
+    c = trace(*spans(5, 1, [(0, 100)]), failed, *spans(5, 3, [(200, 100)]))
+    assert run(tmp_path, c, b, *COALESCE) == 1
+    assert run(tmp_path, c, c, *COALESCE) == 0
+
+
+def test_without_the_coalesce_option_nothing_is_merged_and_it_needs_the_multiset_rule(tmp_path, capsys):
+    big, small = trace(*spans(5, 1, WHOLE)), trace(*spans(5, 1, PIECES))
+    assert run(tmp_path, big, small, *MULTISET) == 1
+    capsys.readouterr()
+    with pytest.raises(SystemExit) as stop:
+        run(tmp_path, big, small, "--fs-reads-coalesce")
+    assert stop.value.code == 2
+    assert "--fs-reads-coalesce is a rule of --fs-reads-multiset" in capsys.readouterr().err
+
+
+def test_the_report_says_the_reads_were_merged(tmp_path, capsys):
+    big, small = trace(*spans(5, 1, WHOLE)), trace(*spans(5, 1, PIECES))
+    capsys.readouterr()
+    assert run(tmp_path, big, small, *COALESCE) == 0
+    out = capsys.readouterr().out
+    assert "fs reads: 1 thread(s) read; 1 on the reference and 10 on the candidate" in out
+    assert "after merging touching reads: 1 and 1" in out
+    # a failure names how many runs each side has, and the reads they were merged from
+    capsys.readouterr()
+    gap = list(PIECES)
+    del gap[4]
+    assert run(tmp_path, big, trace(*spans(5, 1, gap)), *COALESCE) == 1
+    out = capsys.readouterr().out
+    assert "1 on the reference, 2 on the candidate" in out
+    assert "reads merged into runs: from 1 and 9 reads" in out
+
+
+def test_the_docstring_documents_the_coalesce_option():
+    for word in ("--fs-reads-coalesce", "D55", "crc32_combine", "touch"):
+        assert word in cmp.__doc__
+
+
+# ── a stream that ends further on one side: the shorter run is a verified prefix of the longer (N0-33) ───────────
+
+PREFIX = (*COALESCE, "--fs-reads-prefix")
+TWO_K = split(0, [2048] * 20)                                  # 40960 bytes in 2048-byte pieces
+BIG_THEN_TWO_K = split(0, [28672] + [2048] * 10)               # 49152 bytes: a boundary at 40960, 8192 bytes further on
+
+
+def test_a_run_that_is_a_prefix_of_the_other_sides_run_passes_with_the_prefix_rule_only(tmp_path, capsys):
+    short, long_ = trace(*spans(5, 1, TWO_K)), trace(*spans(5, 1, BIG_THEN_TWO_K))
+    assert sum(n for _, n in BIG_THEN_TWO_K[:7]) == 40960
+    assert run(tmp_path, short, long_, *COALESCE) == 1                      # two runs of other lengths
+    capsys.readouterr()
+    assert run(tmp_path, short, long_, *PREFIX) == 0
+    out = capsys.readouterr().out
+    assert "prefix of a longer run: 1 run(s), 4 read(s) beyond it" in out
+    assert run(tmp_path, long_, short, *PREFIX) == 0                        # either side may run further
+
+
+def test_the_prefix_must_end_at_a_part_boundary_of_the_longer_run_and_have_its_crc(tmp_path, capsys):
+    short = trace(*spans(5, 1, TWO_K))
+    # no part of the longer run ends at 40960: its data there is not known
+    no_boundary = split(0, [28672, 8192, 8192, 4096])
+    capsys.readouterr()
+    assert run(tmp_path, short, trace(*spans(5, 1, no_boundary)), *PREFIX) == 1
+    assert "not on the other side" in capsys.readouterr().out
+    # a boundary, but another CRC-32 on one of the shorter run's pieces
+    wrong = list(spans(5, 1, TWO_K))
+    wrong[7] = fs_read(5, 8, 7 * 2048, 2048, zlib.crc32(FILE_DATA[7 * 2048:8 * 2048]) ^ 1)
+    assert run(tmp_path, trace(*wrong), trace(*spans(5, 1, BIG_THEN_TWO_K)), *PREFIX) == 1
+    # a longer run with another start is not a run that goes further
+    shifted = split(2048, [28672] + [2048] * 10)
+    assert run(tmp_path, short, trace(*spans(5, 1, shifted)), *PREFIX) == 1
+    # nor is a different result
+    failed = trace(*spans(5, 1, TWO_K[:5]), fs_read(5, 6, 5 * 2048, 2048, 0, result=0xC8804464))
+    assert run(tmp_path, failed, trace(*spans(5, 1, BIG_THEN_TWO_K)), *PREFIX) == 1
+
+
+def test_the_reads_beyond_the_prefix_count_toward_the_surplus(tmp_path, capsys):
+    ref = trace(*spans(5, 1, TWO_K))
+    for tail, code in ((16, 0), (17, 1)):
+        cand = trace(*spans(5, 1, split(0, [40960] + [2048] * tail)))
+        capsys.readouterr()
+        assert run(tmp_path, ref, cand, *PREFIX) == code, tail
+    out = capsys.readouterr().out
+    assert "surplus 17" in out and "at most 16" in out
+    cand = trace(*spans(5, 1, split(0, [40960] + [2048] * 17)))
+    assert run(tmp_path, ref, cand, *PREFIX, "--max-surplus", "17") == 0
+
+
+def test_the_prefix_rule_needs_the_coalesce_rule_and_leaves_exact_matches_alone(tmp_path, capsys):
+    a = trace(*spans(5, 1, TWO_K))
+    capsys.readouterr()
+    with pytest.raises(SystemExit) as stop:
+        run(tmp_path, a, a, *MULTISET, "--fs-reads-prefix")
+    assert stop.value.code == 2
+    assert "--fs-reads-prefix is a rule of --fs-reads-coalesce" in capsys.readouterr().err
+    assert run(tmp_path, a, a, *PREFIX) == 0
+    assert "prefix of a longer run" not in capsys.readouterr().out         # nothing was a prefix
+
+
+def test_a_single_read_can_be_the_prefix_of_a_run(tmp_path):
+    ref = trace(*spans(5, 1, [(0, 4096)]))
+    cand = trace(*spans(5, 1, [(0, 4096), (4096, 4096), (8192, 2048)]))
+    assert run(tmp_path, ref, cand, *COALESCE) == 1
+    assert run(tmp_path, ref, cand, *PREFIX) == 0
+
+
+def test_each_run_serves_one_prefix_only(tmp_path):
+    # three runs of the same 4096 bytes on one side, one run that goes on from there and a run of something else
+    # on the other: the longer run takes one of the three, the other two are not contained anywhere
+    ref = trace(*spans(5, 1, [(0, 4096), (0, 4096), (0, 4096)]))
+    cand = trace(*spans(5, 1, [(0, 4096), (4096, 4096), (50000, 100)]))
+    assert run(tmp_path, ref, cand, *PREFIX) == 1                           # (50000, 100) is on the reference nowhere
+    # the same, with the other thing absent: the two remaining runs of the reference are its surplus
+    assert run(tmp_path, trace(*spans(5, 1, [(0, 4096), (0, 4096)])), trace(*spans(5, 1, [(0, 4096), (4096, 4096)])),
+               *PREFIX) == 0
+    # the same bytes under a run of another start are no prefix
+    assert run(tmp_path, trace(*spans(5, 1, [(2048, 4096)])), trace(*spans(5, 1, [(0, 8192)])), *PREFIX) == 1
+
+
+def test_the_docstring_documents_the_prefix_option():
+    for word in ("--fs-reads-prefix", "part boundary", "prefix"):
         assert word in cmp.__doc__

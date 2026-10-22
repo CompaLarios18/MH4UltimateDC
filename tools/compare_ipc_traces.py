@@ -37,7 +37,8 @@ This tool prints only session names, headers, result codes, descriptor indices, 
 counts; with --strict it names the words that differ, never their values.
 
 usage: compare_ipc_traces.py REF CAND [--strict] [--ignore FILE]... [--prefix] [--context N]
-                             [--fs-reads-multiset [--max-surplus N]] [--fs-write-mask FILE --fs-write-mask-session S]
+                             [--fs-reads-multiset [--max-surplus N] [--fs-reads-coalesce [--fs-reads-prefix]]]
+                             [--fs-write-mask FILE --fs-write-mask-session S]
   --strict     also compare every word of every command (with handles as names). Not
                reproducible on the oracle itself: a service that pushes a sub-word reply value can
                leave stale bytes above it in Azahar (seen: cfg:u, one run in about eight), so two
@@ -53,7 +54,7 @@ usage: compare_ipc_traces.py REF CAND [--strict] [--ignore FILE]... [--prefix] [
   --context N  requests to show before the first difference (default 3)
 
 Across two timing models (D52; the cross profile of tools/native/golden.py and the native runtime's
-checks use these two options, and nothing else is loosened for `fs:`):
+checks use these two options, and nothing else is loosened for `fs:`; the `native` profile adds --fs-reads-coalesce):
   --fs-reads-multiset   per thread, the Read requests of the file sessions of fs:USER (`fs:USER/file`,
                header 0x080200c2) are compared as a multiset of (offset, size, result, CRC-32 of the data
                the reply wrote), order ignored: the smaller side's multiset must be contained in the
@@ -67,6 +68,30 @@ checks use these two options, and nothing else is loosened for `fs:`):
                the --ignore files.
   --max-surplus N       reads the larger multiset may hold beyond the smaller (default 16; with
                --fs-reads-multiset only)
+  --fs-reads-coalesce   (D55, the `native` profile of tools/native/golden.py; needs --fs-reads-multiset) before the
+               multiset is built, the Reads of one thread and one file session (`fs:USER/file#3`) whose byte ranges
+               touch (offset + size of one is the offset of the next) are merged into one Read, whatever order
+               they were sent in (the multiset ignores order, D52, and two readers that interleave differently send
+               the same Reads in another order: N0-33 found that merging in the order of the requests fails the
+               jit pairs that the cross profile passes): a session's Reads are taken by offset, and each joins the
+               oldest run that ends at its offset or starts a new run. A run is the Read of the summed size, its
+               CRC-32 the combination of the parts' CRC-32s (tools/native/tracefmt.py crc32_combine). Only a Read
+               that succeeded, filled its buffer (the reply says it read `size` bytes) and has its CRC-32 in the
+               trace is merged; any other Read is compared on its own. The surplus is then counted in runs, so a
+               piece read twice is one run more, not a way to hide a missing piece. A reader that works in another
+               clock reads the same bytes in other pieces (one 28672-byte Read against 4096- and 2048-byte pieces
+               of the same range): the bytes must still be the same, so a gap, a piece read twice, a piece with
+               another CRC-32 or a run that goes on past where the other side's stops is a difference
+               (unless --fs-reads-prefix is given).
+  --fs-reads-prefix     (needs --fs-reads-coalesce; not in D55's text, found necessary on the first real pairs: see
+               docs/native/comparators.md) a streaming reader stops where its clock says, so one side's run of
+               touching Reads can go on further than the other's. A run that the other side has no equal of is then
+               also contained when it is a prefix of a run of the other side, or that run is a prefix of it: the
+               same start and result, and a part boundary of the longer run exactly where the shorter ends, with the
+               same CRC-32 of the bytes up to there (combined from the longer run's parts). Without a part boundary
+               at that offset the longer run's bytes there are not known and the runs differ; each run is in one
+               pair at most. The Reads of the longer run beyond the prefix count toward the surplus
+               (--max-surplus) with the other surplus.
   --fs-write-mask FILE  (needs --fs-write-mask-session S) byte ranges of a Write that depend on the clock,
                one per line `<session> <write-size> <write-offset> <mask-offset> <mask-size>  <reason>`
                (config/native/fs_write_masks.txt). A Write of the file sessions of fs:USER whose size and
@@ -92,6 +117,7 @@ import sys
 import zlib
 from collections import Counter
 from dataclasses import dataclass, replace
+from typing import NamedTuple
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "native"))
 import tracefmt  # noqa: E402
@@ -356,27 +382,118 @@ def read_key(call: IpcCall) -> tuple:
     return (request[0], request[1], call.result, tracefmt.fs_read_crc(call))
 
 
-def compare_reads(a: list[IpcCall], b: list[IpcCall], max_surplus: int) -> dict | None:
+class ReadUnit(NamedTuple):
+    """What one Read, or one run of touching Reads, is compared as: `key` = (offset, size, result, CRC-32 token),
+    and for a Read or run that can be merged `prefixes` = after each of its Reads (Reads so far, bytes so far,
+    CRC-32 token of those bytes), which the prefix rule needs."""
+    key: tuple
+    prefixes: tuple = ()
+
+
+def read_units(calls: list[IpcCall], coalesce: bool) -> list[ReadUnit]:
+    """What a thread's Reads are compared as: each Read's `read_key`, or with `coalesce` (D55) one unit per run of
+    Reads that touch (`tracefmt.coalesce_fs_reads`): offset of the first, sum of the sizes, the result and the
+    CRC-32 of the data of the whole run, combined from the parts'."""
+    if not coalesce:
+        return [ReadUnit(read_key(c)) for c in calls]
+    units = []
+    for run in tracefmt.coalesce_fs_reads(calls):
+        prefixes = tuple(tracefmt.fs_run_prefixes(run))
+        if len(run) == 1:
+            units.append(ReadUnit(read_key(run[0]), prefixes))
+        else:
+            offset, size, crc = tracefmt.merged_fs_read(run)
+            units.append(ReadUnit((offset, size, run[0].result, crc), prefixes))
+    return units
+
+
+def reads_beyond_prefix(short: ReadUnit, long_: ReadUnit) -> int | None:
+    """How many Reads of the unit `long_` come after the bytes that `short` is: `short` must start at the same
+    offset, have the same result, be shorter, and `long_` must have a Read that ends exactly where `short` ends
+    with the same CRC-32 of the bytes up to there (combined from its parts'). None when `short` is not a prefix of
+    `long_`: another start, no part of `long_` ends there (its bytes there are not known), or another CRC-32."""
+    if not short.prefixes or not long_.prefixes or short.key[0] != long_.key[0] or short.key[2] != long_.key[2]:
+        return None
+    size, crc = short.key[1], short.key[3]
+    if size >= long_.key[1]:
+        return None
+    for reads, covered, token in long_.prefixes:
+        if covered == size:
+            return len(long_.prefixes) - reads if token == crc else None
+    return None
+
+
+def pair_prefixes(left_a: list[ReadUnit], left_b: list[ReadUnit]) -> tuple[list[ReadUnit], list[ReadUnit], list[int]]:
+    """Pair up units that no unit of the other side equals when one is a prefix of the other (`reads_beyond_prefix`,
+    either way round), each unit in one pair at most. Returns the units of A and of B left over and, for each pair, the
+    number of Reads the longer one has beyond the shorter."""
+    by_start: dict[int, list[int]] = {}
+    for j, u in enumerate(left_b):
+        if isinstance(u.key[0], int):
+            by_start.setdefault(u.key[0], []).append(j)
+    taken: set[int] = set()
+    used_a: set[int] = set()
+    tails: list[int] = []
+    for i, u in enumerate(left_a):
+        if not isinstance(u.key[0], int):
+            continue
+        for j in by_start.get(u.key[0], []):
+            if j in taken:
+                continue
+            v = left_b[j]
+            tail = reads_beyond_prefix(u, v) if u.key[1] < v.key[1] else reads_beyond_prefix(v, u)
+            if tail is not None:
+                taken.add(j)
+                used_a.add(i)
+                tails.append(tail)
+                break
+    return ([u for i, u in enumerate(left_a) if i not in used_a],
+            [u for j, u in enumerate(left_b) if j not in taken], tails)
+
+
+def compare_reads(a: list[IpcCall], b: list[IpcCall], max_surplus: int, coalesce: bool = False,
+                  read_prefix: bool = False, stats: Counter | None = None) -> dict | None:
     """The Reads of one thread on the two sides, as multisets: the smaller side's must be contained in the larger
-    side's, which may hold at most `max_surplus` more. None when they are; else what is wrong."""
-    ca, cb = Counter(read_key(c) for c in a), Counter(read_key(c) for c in b)
-    small_is_ref = len(a) <= len(b)
-    small, large = (ca, cb) if small_is_ref else (cb, ca)
-    foreign = small - large                          # reads of the smaller side that the larger one lacks
-    surplus = len(b) - len(a) if small_is_ref else len(a) - len(b)
+    side's, which may hold at most `max_surplus` more. With `coalesce` (D55) the multisets hold the runs of touching
+    Reads, not the Reads. With `read_prefix` (needs `coalesce`) a run that the other side has no equal of is also
+    contained when it is a verified prefix of a run of the other side, or that run is a prefix of it
+    (`reads_beyond_prefix`); the Reads of the longer run beyond the prefix count toward the surplus. `stats` counts
+    the prefix pairs (`prefix_pairs`) and those Reads (`prefix_tail`). None when they are contained; else what is
+    wrong."""
+    ua, ub = read_units(a, coalesce), read_units(b, coalesce)
+    ca, cb = Counter(u.key for u in ua), Counter(u.key for u in ub)
+    small_is_ref = len(ua) <= len(ub)
+    left_a, left_b = list((ca - cb).elements()), list((cb - ca).elements())
+    tails: list[int] = []
+    if read_prefix:
+        units_a, units_b = {}, {}
+        for u in ua:
+            units_a.setdefault(u.key, u)
+        for u in ub:
+            units_b.setdefault(u.key, u)
+        rest_a, rest_b, tails = pair_prefixes([units_a[k] for k in left_a], [units_b[k] for k in left_b])
+        left_a, left_b = [u.key for u in rest_a], [u.key for u in rest_b]
+    foreign = left_a if small_is_ref else left_b       # runs of the smaller side that the larger one lacks
+    surplus = (len(ub) - len(ua) if small_is_ref else len(ua) - len(ub)) + sum(tails)
+    if stats is not None:
+        stats["prefix_pairs"] += len(tails)
+        stats["prefix_tail"] += sum(tails)
     if not foreign and surplus <= max_surplus:
         return None
-    return {"ref_reads": len(a), "cand_reads": len(b), "surplus": surplus, "max_surplus": max_surplus,
+    return {"ref_reads": len(ua), "cand_reads": len(ub), "surplus": surplus, "max_surplus": max_surplus,
             "side": "reference" if small_is_ref else "candidate",
-            "foreign": sorted(foreign.elements(), key=repr)}
-
+            "foreign": sorted(foreign, key=repr),
+            "coalesced": coalesce, "ref_raw": len(a), "cand_raw": len(b), "prefix_tail": sum(tails)}
 
 def compare(ref: dict[str, list[IpcCall]], cand: dict[str, list[IpcCall]], strict: bool = False,
-            prefix: bool = False, fs_reads: bool = False, max_surplus: int = DEFAULT_MAX_SURPLUS) -> list[dict]:
+            prefix: bool = False, fs_reads: bool = False, max_surplus: int = DEFAULT_MAX_SURPLUS,
+            coalesce: bool = False, read_prefix: bool = False, stats: Counter | None = None) -> list[dict]:
     """One report per thread that differs: thread, index of the first difference, the two requests
     (None past the end of a trace), and the lengths. With `fs_reads` (D52) a thread's Reads of the file
     sessions of fs:USER are taken out and compared as multisets (a report of kind `reads`), and its other
-    `fs:` requests are compared in full; the rest is compared as before (kind `order`)."""
+    `fs:` requests are compared in full; the rest is compared as before (kind `order`). `coalesce` (D55)
+    merges the touching Reads of a file session before the multisets are built, and read_prefix lets a run that is a
+    verified prefix of another side's run count as contained (compare_reads)."""
     out = []
     kf = fs_key if fs_reads else key
     for tid in sorted(set(ref) | set(cand), key=_thread_order):
@@ -384,7 +501,7 @@ def compare(ref: dict[str, list[IpcCall]], cand: dict[str, list[IpcCall]], stric
         if fs_reads:
             ra, rb = [c for c in a if is_fs_read(c)], [c for c in b if is_fs_read(c)]
             a, b = [c for c in a if not is_fs_read(c)], [c for c in b if not is_fs_read(c)]
-            problem = compare_reads(ra, rb, max_surplus) if ra or rb else None
+            problem = compare_reads(ra, rb, max_surplus, coalesce, read_prefix, stats) if ra or rb else None
             if problem:
                 out.append({"kind": "reads", "thread": tid, **problem})
         n = min(len(a), len(b))
@@ -414,6 +531,15 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--max-surplus", type=int, default=None, metavar="N",
                     help=f"reads the larger multiset may hold beyond the smaller (default {DEFAULT_MAX_SURPLUS}; "
                          f"needs --fs-reads-multiset)")
+    ap.add_argument("--fs-reads-coalesce", action="store_true",
+                    help="before the multiset is built, merge the consecutive Reads of one thread and one file "
+                         "session whose byte ranges touch into one Read (summed size, CRC-32 combined); needs "
+                         "--fs-reads-multiset (D55)")
+    ap.add_argument("--fs-reads-prefix", action="store_true",
+                    help="a merged run that the other side has no equal of is also contained when it is a prefix of "
+                         "a run of the other side (or that run of it): same start, the longer run has a part that ends "
+                         "where the shorter ends, with the same CRC-32 up to there; the Reads beyond the prefix count "
+                         "toward the surplus; needs --fs-reads-coalesce")
     ap.add_argument("--fs-write-mask", metavar="FILE",
                     help="byte ranges of a Write that depend on the clock (config/native/fs_write_masks.txt); "
                          "needs --fs-write-mask-session")
@@ -422,6 +548,10 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
     if args.max_surplus is not None and not args.fs_reads_multiset:
         ap.error("--max-surplus is a rule of --fs-reads-multiset")
+    if args.fs_reads_coalesce and not args.fs_reads_multiset:
+        ap.error("--fs-reads-coalesce is a rule of --fs-reads-multiset")
+    if args.fs_reads_prefix and not args.fs_reads_coalesce:
+        ap.error("--fs-reads-prefix is a rule of --fs-reads-coalesce")
     if args.max_surplus is not None and args.max_surplus < 0:
         ap.error("--max-surplus must not be negative")
     if bool(args.fs_write_mask) != bool(args.fs_write_mask_session):
@@ -442,7 +572,9 @@ def main(argv: list[str] | None = None) -> int:
     except (OSError, IgnoreError, TraceError, MaskError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
-    diffs = compare(ref, cand, args.strict, args.prefix, args.fs_reads_multiset, max_surplus)
+    stats: Counter = Counter()
+    diffs = compare(ref, cand, args.strict, args.prefix, args.fs_reads_multiset, max_surplus, args.fs_reads_coalesce,
+                    args.fs_reads_prefix, stats)
     for tid in sorted(set(ref) | set(cand), key=_thread_order):
         print(f"thread {tid}: {len(ref.get(tid, []))} vs {len(cand.get(tid, []))} requests")
     if args.prefix:
@@ -452,7 +584,11 @@ def main(argv: list[str] | None = None) -> int:
     for d in diffs:
         if d["kind"] == "reads":
             print(f"\nthread {d['thread']}: fs:USER/file Reads differ as multisets: {d['ref_reads']} on the "
-                  f"reference, {d['cand_reads']} on the candidate (surplus {d['surplus']}, at most {d['max_surplus']})")
+                  f"reference, {d['cand_reads']} on the candidate (surplus {d['surplus']}, at most {d['max_surplus']})"
+                  + (f" (reads merged into runs: from {d['ref_raw']} and {d['cand_raw']} reads)"
+                     if d["coalesced"] else "")
+                  + (f" (and {d['prefix_tail']} read(s) beyond runs that are a prefix of another)"
+                     if d["prefix_tail"] else ""))
             if d["foreign"]:
                 print(f"  {len(d['foreign'])} Read(s) of the {d['side']} (the side with fewer) are not on the other "
                       f"side (offset, size, result, CRC-32 of the data):")
@@ -471,12 +607,22 @@ def main(argv: list[str] | None = None) -> int:
     if not diffs:
         print("\nall threads match" + (" (candidate may be shorter)" if args.prefix else ""))
     if args.fs_reads_multiset:
-        sizes = {t: (sum(is_fs_read(c) for c in ref.get(t, [])), sum(is_fs_read(c) for c in cand.get(t, [])))
-                 for t in set(ref) | set(cand)}
-        reading = {t: v for t, v in sizes.items() if v != (0, 0)}
-        worst = max(reading.items(), key=lambda kv: (abs(kv[1][0] - kv[1][1]), kv[0]), default=None)
-        print(f"fs reads: {len(reading)} thread(s) read; {sum(v[0] for v in reading.values())} on the reference and "
-              f"{sum(v[1] for v in reading.values())} on the candidate"
+        mine = {t: ([c for c in ref.get(t, []) if is_fs_read(c)], [c for c in cand.get(t, []) if is_fs_read(c)])
+                for t in set(ref) | set(cand)}
+        reading = {t: v for t, v in mine.items() if v != ([], [])}
+        sizes = {t: (len(v[0]), len(v[1])) for t, v in reading.items()}
+        counted = sizes
+        merged = ""
+        if args.fs_reads_coalesce:        # the surplus is counted in runs
+            counted = {t: (len(read_units(v[0], True)), len(read_units(v[1], True))) for t, v in reading.items()}
+            merged = (f"; after merging touching reads: {sum(v[0] for v in counted.values())} and "
+                      f"{sum(v[1] for v in counted.values())}")
+        if stats["prefix_pairs"]:
+            merged += (f"; prefix of a longer run: {stats['prefix_pairs']} run(s), {stats['prefix_tail']} read(s) "
+                       f"beyond it")
+        worst = max(counted.items(), key=lambda kv: (abs(kv[1][0] - kv[1][1]), kv[0]), default=None)
+        print(f"fs reads: {len(reading)} thread(s) read; {sum(v[0] for v in sizes.values())} on the reference and "
+              f"{sum(v[1] for v in sizes.values())} on the candidate" + merged
               + (f"; the largest difference is {abs(worst[1][0] - worst[1][1])} on thread {worst[0]} "
                  f"(at most {max_surplus})" if worst else ""))
     if args.fs_write_mask:

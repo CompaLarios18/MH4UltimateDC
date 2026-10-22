@@ -4,11 +4,12 @@
     python3 tools/native/golden.py list [--out DIR]
     python3 tools/native/golden.py record S --runner RUN --game CXI --update CIA --user DIR
                                       [--code LIB] [--cpu jit|recomp] [--save DIR] [--shot-every-frames N]
-    python3 tools/native/golden.py check S --runner RUN --game CXI --update CIA [--code LIB]
+    python3 tools/native/golden.py check S [--runner RUN --game CXI] [--update CIA] [--code LIB]
                                       [--candidate-runner RUN2] [--candidate-program PATH]
                                       [--candidate-code LIB] [--candidate-args "..."] [--repeat N]
-                                      [--profile same|cross] [--fallback] [--require NAMES] [--ignore FILE]...
+                                      [--profile same|cross|native] [--fallback] [--require NAMES] [--ignore FILE]...
                                       [--tolerance N] [--min-margin N] [--max-surplus N] [--max-shift N]
+                                      [--observable FILE]
 
 A session is a frame-keyed input script (tools/native/golden/<S>.txt, the runner's --input-file
 format) with header comment lines, see parse_session.  `record` runs the reference runner on a
@@ -18,7 +19,9 @@ for two runs of one backend, the `cross` profile for two timing models: the scen
 and every input 60 frames after the last one (D50), the DSP capture aligned on its first buffer change
 (D51), the `fs:` Reads as a multiset per thread and the Writes in full but for the byte ranges of
 config/native/fs_write_masks.txt (D52); the `--tolerance`, `--min-margin`, `--max-shift` and `--max-surplus`
-options change those numbers in the cross profile only).  Standard library only;
+options change those numbers in the cross and native profiles only; the `native` profile (D55) is the cross profile
+for the native runtime in real time: scene changes within 24 frames, the DSP shift up to 300 DSP frames, the
+`fs:` Reads merged where their byte ranges touch before the multiset is built).  Standard library only;
 no shell, no bash: the runner and the code library (.dll or .so) come from the command line, so it
 works the same on Windows and Linux.  The recordings are game data: they stay in build/.
 
@@ -57,11 +60,19 @@ DEFAULT_OUT = ROOT / "build" / "golden"
 OBSERVABLE = ROOT / "config" / "native" / "observable.txt"
 IPC_TIME_DEPENDENT = ROOT / "config" / "native" / "ipc_time_dependent.txt"
 FS_WRITE_MASKS = ROOT / "config" / "native" / "fs_write_masks.txt"
-# The cross profile's numbers (D50, D51, D52); `check` takes them as options in the cross profile only.
+# The cross profile's numbers (D50, D51, D52); `check` takes them as options in the cross and native profiles only.
 CROSS_TOLERANCE = cross_model_report.DEFAULT_TOLERANCE      # frames a real scene change may move by (D50)
 CROSS_MIN_MARGIN = cross_model_report.DEFAULT_MIN_MARGIN    # frames an input must follow the last scene change by (D50)
 CROSS_MAX_SHIFT = capfmt.DEFAULT_MAX_SHIFT                  # DSP frames the candidate's audio may be shifted by (D51)
 CROSS_MAX_SURPLUS = 16                                      # fs:USER/file reads a thread may make beyond the other (D52)
+# The native profile (D55): the cross profile for the native runtime in real time, whose game clock follows the host
+# while the reference charges the modelled 268 MHz.  Only these differ from the cross profile's numbers; the margin
+# guard (CROSS_MIN_MARGIN), the surplus of reads (CROSS_MAX_SURPLUS), the write masks (D52) and every other rule are
+# the cross profile's.  A tighter profile follows from the deterministic mode of N1-25.
+NATIVE_TOLERANCE = 24                                       # frames a real scene change may move by (D55)
+NATIVE_MAX_SHIFT = 300                                      # DSP frames the candidate's audio may be shifted by (D55)
+NATIVE_FS_READS_COALESCE = True                             # fs:USER/file Reads that touch are merged first (D55)
+NATIVE_FS_READS_PREFIX = True                               # a run may go on further on one side (N0-33, see comparators.md)
 SVC_CROSS_MODEL = ROOT / "config" / "native" / "svc_cross_model.txt"
 SVC_POLLING = ROOT / "config" / "native" / "svc_polling.txt"
 TZ = "UTC0"                      # the time zone the runner is started with (see docs/native/golden.md)
@@ -79,7 +90,7 @@ NOT_RECORDED_DIRS = {"user-before", "user-after", "work", "check"}
 MINIMUMS = {"G2": {"scene_changes": 2, "checkpoint_scenes": 3}}
 # The comparisons `--require` can name (D34).
 REQUIRABLE = ("svc", "ipc", "state", "checkpoints", "hid", "dsp", "images", "unmapped")
-PROFILES = ("same", "cross")
+PROFILES = ("same", "cross", "native")
 # The config savegame one default-mode reference run makes (docs/native/golden.md, "The user folder").
 CONFIG_SAVEGAME = re.compile(r"^nand/data/[^/]+/sysdata/00010017/00000000/config$")
 
@@ -642,7 +653,7 @@ class Result:
 
 @dataclasses.dataclass
 class Compare:
-    profile: str                        # same | cross
+    profile: str                        # same | cross | native
     fallback: bool = False              # D30's fallback of the same profile
     strict: bool = True                 # a file the run did not write is a failure (reference runner), not a skip
     ref_is_recording: bool = True       # a file the reference side lacks is a failure (a recording) or a skip
@@ -650,7 +661,7 @@ class Compare:
     observable: Path = OBSERVABLE
     real_changes: int = 0               # the recording's real scene changes
     checkpoints: bool = True
-    # the cross profile's rules (D50 to D52); a `same` comparison has none of them
+    # the cross profile's rules (D50 to D52, D55 for native); a `same` comparison has none of them
     tolerance: int | None = None        # frames a real scene change may move by (default CROSS_TOLERANCE)
     min_margin: int | None = None       # frames an input follows the last scene change by (CROSS_MIN_MARGIN)
     max_surplus: int | None = None      # reads a thread may make beyond the other (CROSS_MAX_SURPLUS)
@@ -658,10 +669,14 @@ class Compare:
     fs_write_masks: Path | None = None  # the write-mask file (default FS_WRITE_MASKS)
 
     def rule(self, name: str) -> int:
-        """The value of one of the cross profile's numbers: the option, else D50 to D52's own."""
+        """The value of one of the cross profile's numbers: the option, else the profile's own (D50 to D52; the
+        native profile's tolerance and shift are D55's)."""
         mine = getattr(self, name)
-        return mine if mine is not None else {"tolerance": CROSS_TOLERANCE, "min_margin": CROSS_MIN_MARGIN,
-                                              "max_surplus": CROSS_MAX_SURPLUS, "max_shift": CROSS_MAX_SHIFT}[name]
+        if mine is not None:
+            return mine
+        native = self.profile == "native"
+        return {"tolerance": NATIVE_TOLERANCE if native else CROSS_TOLERANCE, "min_margin": CROSS_MIN_MARGIN,
+                "max_surplus": CROSS_MAX_SURPLUS, "max_shift": NATIVE_MAX_SHIFT if native else CROSS_MAX_SHIFT}[name]
 
 
 def _tool(script: Path, *args: str) -> tuple[int, str]:
@@ -750,6 +765,7 @@ def compare_outputs(session: Session, ref: Path, cand: Path, cfg: Compare) -> li
     comparisons for the tolerant ones of N0-25.  `cross`: what a different clock cannot change, with the rules
     of D50 (state: scene changes within `cfg.tolerance` frames, `state-margin`: inputs at least `cfg.min_margin`
     frames after the last scene change), D51 (dsp: aligned) and D52 (ipc: `fs:` Reads as a multiset, masked Writes).
+    `native` (D55) is `cross` with the larger tolerance and DSP shift, and the touching `fs:` Reads merged.
     A comparison whose input the run did not write is skipped for a candidate runner and a failure
     for the reference runner."""
     results: list[Result] = []
@@ -814,6 +830,11 @@ def compare_outputs(session: Session, ref: Path, cand: Path, cfg: Compare) -> li
                 extra += ["--fs-reads-multiset", "--max-surplus", str(cfg.rule("max_surplus")),
                           "--fs-write-mask", str(cfg.fs_write_masks or FS_WRITE_MASKS),
                           "--fs-write-mask-session", session.name]
+                if cfg.profile == "native":      # D55: the Reads that touch are merged before the multiset is built
+                    if NATIVE_FS_READS_COALESCE:
+                        extra.append("--fs-reads-coalesce")
+                        if NATIVE_FS_READS_PREFIX:
+                            extra.append("--fs-reads-prefix")
             code, text = _tool(tools / "compare_ipc_traces.py", *extra, str(ref / "ipc.txt"), str(cand / "ipc.txt"))
             if code == 1 and "\n\n" in text:
                 text = text.split("\n\n", 1)[1]            # past the per-thread counts: the first difference
@@ -827,7 +848,7 @@ def compare_outputs(session: Session, ref: Path, cand: Path, cfg: Compare) -> li
         elif cfg.real_changes <= 0:
             add("state", "skipped", "the recording has no real scene change: nothing to align")
         else:
-            # same: exact. cross: D50's tolerance (4 frames), and D50's margin guard below
+            # same: exact. cross: D50's tolerance (4 frames), native: D55's (24), and D50's margin guard below
             tol = ["--tolerance", "0" if same else str(cfg.rule("tolerance"))]
             code, text = _tool(HERE / "state_diff.py", "--observable", str(cfg.observable), *tol,
                                "--min-changes", str(cfg.real_changes), str(ref / "state.txt"), str(cand / "state.txt"))
@@ -955,19 +976,20 @@ def check(session: Session, a: argparse.Namespace) -> int:
     if a.fallback and (profile != "same" or a.candidate_runner):
         raise GoldenError("--fallback is for the same profile and the reference runner only")
     if a.ignore and profile == "same":
-        raise GoldenError("--ignore adds IPC ignore files to the cross profile only: "
+        raise GoldenError("--ignore adds IPC ignore files to the cross and native profiles only: "
                           "a same-model check is never loosened by a list")
     rules = {"tolerance": a.tolerance, "min_margin": a.min_margin, "max_surplus": a.max_surplus,
              "max_shift": a.max_shift}
     if profile == "same" and any(v is not None for v in rules.values()):
-        raise GoldenError("--tolerance, --min-margin, --max-surplus and --max-shift set the cross profile's rules "
-                          "(D50 to D52): a same-model check is exact and is never loosened")
+        raise GoldenError("--tolerance, --min-margin, --max-surplus and --max-shift set the rules of the cross and "
+                          "native profiles (D50 to D52, D55): a same-model check is exact and is never loosened")
     for flag, value in rules.items():
         if value is not None and value < 0:
             raise GoldenError(f"--{flag.replace('_', '-')} must not be negative")
-    if (profile == "cross" or a.fallback) and not Path(SVC_CROSS_MODEL if profile == "cross" else SVC_POLLING).is_file():
-        raise GoldenError(f"missing {SVC_CROSS_MODEL if profile == 'cross' else SVC_POLLING}")
-    if profile == "cross" and not FS_WRITE_MASKS.is_file():
+    across = profile in ("cross", "native")
+    if (across or a.fallback) and not Path(SVC_CROSS_MODEL if across else SVC_POLLING).is_file():
+        raise GoldenError(f"missing {SVC_CROSS_MODEL if across else SVC_POLLING}")
+    if across and not FS_WRITE_MASKS.is_file():
         raise GoldenError(f"missing {FS_WRITE_MASKS} (the write masks of D52)")
     broken = [rel for rel, meta in manifest["files"].items()
               if not (ref / rel).is_file() or sha256_file(ref / rel) != meta["sha256"]]
@@ -1101,24 +1123,27 @@ def make_parser() -> argparse.ArgumentParser:
             s.add_argument("--repeat", type=int, default=1,
                            help="runs; besides each against the recording, the runs against each other (same profile)")
             s.add_argument("--profile", choices=PROFILES,
-                           help="same (two runs of one backend) or cross (two timing models); the default follows "
-                                "--candidate-runner and --candidate-args")
+                           help="same (two runs of one backend), cross (two timing models) or native (D55: the native "
+                                "runtime in real time against the reference); the default is same or cross, following "
+                                "--candidate-runner and --candidate-args, never native")
             s.add_argument("--fallback", action="store_true",
                            help="D30's fallback of the same profile (only if N0-29 ended needs-decision)")
             s.add_argument("--require", help="comma-separated comparisons that must not be skipped: "
                                              + ", ".join(REQUIRABLE))
-            s.add_argument("--ignore", action="append", help="more IPC ignore files, cross profile only (repeatable)")
+            s.add_argument("--ignore", action="append",
+                           help="more IPC ignore files, cross and native profiles only (repeatable)")
             s.add_argument("--tolerance", type=int, metavar="N",
-                           help=f"cross profile only: frames a real scene change may move by (default {CROSS_TOLERANCE}, D50)")
+                           help=f"cross and native profiles only: frames a real scene change may move by (default "
+                                f"{CROSS_TOLERANCE} in cross, D50; {NATIVE_TOLERANCE} in native, D55)")
             s.add_argument("--min-margin", type=int, metavar="N",
-                           help=f"cross profile only: frames every input must follow the last real scene change by, "
-                                f"on both sides (default {CROSS_MIN_MARGIN}, D50)")
+                           help=f"cross and native profiles only: frames every input must follow the last real scene "
+                                f"change by, on both sides (default {CROSS_MIN_MARGIN}, D50)")
             s.add_argument("--max-surplus", type=int, metavar="N",
-                           help=f"cross profile only: fs:USER/file reads one side's thread may make beyond the other's "
-                                f"(default {CROSS_MAX_SURPLUS}, D52)")
+                           help=f"cross and native profiles only: fs:USER/file reads one side's thread may make "
+                                f"beyond the other's (default {CROSS_MAX_SURPLUS}, D52)")
             s.add_argument("--max-shift", type=int, metavar="N",
-                           help=f"cross profile only: DSP frames the candidate's audio may be shifted by "
-                                f"(default {CROSS_MAX_SHIFT}, D51)")
+                           help=f"cross and native profiles only: DSP frames the candidate's audio may be shifted by "
+                                f"(default {CROSS_MAX_SHIFT} in cross, D51; {NATIVE_MAX_SHIFT} in native, D55)")
             s.add_argument("--observable", default=str(OBSERVABLE))
         s.set_defaults(func=record if name == "record" else check)
     return p
