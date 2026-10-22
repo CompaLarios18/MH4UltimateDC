@@ -147,6 +147,8 @@ The port runs the game's code recompiled for your PC (the code library, [PLAYING
 
 The record is `recomp/0004000000126300.build.json` next to the library, written by `build_game.py --install` (with `code_size`, how much of the code segment it recompiled). `status` also notices Luma's code patch (`sdmc/luma/titles/0004000E00126300/code.ips`), which Azahar applies when the mods folder has none but `build_game.py` doesn't: move it into a mod instead. A library built for the native runtime (`build_game.py --native --install`) keeps its own record next to it, `recomp/0004000000126300_native.build.json` (`_native_det` with `--deterministic`), and `mods.py status --native` reads that one; the two builds never share a record. A native library built before this change wrote its record to `0004000000126300.build.json` (over the Azahar library's): `status --native` reports it as `unknown`, so the native setup rebuilds it.
 
+A code patch (`code.ips`, `code.bps`) is applied as Azahar applies it (and the native port's loader will, D79): after a replacement `code.bin`, to the code with the zeroed bss pages of the game's exheader (`(bss size + 0xFFF) & ~0xFFF` bytes) appended, so a patch that writes into those pages is accepted. `build_game.py` builds the library from the patched code without the pages (the first bytes of the patched buffer, as many as the code had; they are not part of the library, and what the patch wrote into them is dropped). A patch that does not fit even with the pages, a BPS made for other code and a malformed patch stop the build with a message.
+
 ## For mod authors
 
 The simplest mod to install is a zip of Azahar's layout with a `mod.json` next to it:

@@ -6,10 +6,11 @@ Thirty-odd synthetic mods folders (invented bytes) are applied to a synthetic co
     appended, the first patch of the order exefs/code.ips, exefs/code.bps, code.ips, code.bps) written here
     from the sources;
   - `mh4n_code_patch --mods DIR --bss-pages N IN OUT`;
-  - tools/code_mods.py's `apply_mods`, which is what build_game.py applies. It does not append the bss pages.
+  - tools/code_mods.py's `apply_mods(code, user, program id, bss size)`, which is what build_game.py applies
+    (N3-31, D79: it appends the pages like the loader and returns the code without them).
 The native tool and Azahar's code must give the same bytes, or both an error. The native tool and code_mods.py
-must agree except in the cases KNOWN_DIFFERENCES lists (the patch reads or writes the bss pages, which
-code_mods.py does not have); an unlisted difference fails the test.
+must agree in every case: the test compares code_mods.py's result with the native buffer without its bss
+pages (what the code library is built from), or both fail.
 
 Needs MH4N_AZAHAR_DIR (Azahar's sources at the pinned commit), clang++ and the built `mh4n_code_patch`
 (build/native/bin, or MH4N_CODE_PATCH); without them the tests skip, or fail with MH4N_REQUIRE_TEST_DATA=1.
@@ -178,6 +179,15 @@ def _cases() -> list[Case]:
     add("BPS with a wrong target CRC", {"exefs/code.bps": bps(src, edited(src, 0, b"x"), target_crc_delta=1)})
     add("BPS made for the code and its bss",
         {"exefs/code.bps": bps(with_bss(src, 1), edited(with_bss(src, 1), 0x1100, b"in the bss"))}, pages=1)
+    add("BPS that grows the code, one bss page", {"exefs/code.bps": bps(src, src + b"\x11" * 0x30)}, pages=1)
+    add("BPS that grows the code, two bss pages", {"code.bps": bps(src, src + b"\x12" * 0x30)}, pages=2)
+    add("BPS a few bytes larger than its source, one bss page", {"code.bps": bps(src, src + b"\x22" * 4)}, pages=1)
+    add("BPS for the code and its page that grows beyond them",
+        {"exefs/code.bps": bps(with_bss(src, 1), with_bss(src, 1) + b"\x33" * 0x20)}, pages=1)
+    add("BPS with a shorter target, one bss page", {"code.bps": bps(src, src[:0x100])}, pages=1)
+    add("BPS with a shorter target, two bss pages", {"exefs/code.bps": bps(src, src[:0x100])}, pages=2)
+    add("replacement and a growing BPS, one bss page",
+        {"code.bin": REPLACEMENT, "exefs/code.bps": bps(REPLACEMENT, REPLACEMENT + b"\x44" * 0x30)}, pages=1)
     add("code.bin replacement", {"exefs/code.bin": REPLACEMENT}, pages=1)
     add("code.bin replacement in the folder and an IPS", {"code.bin": REPLACEMENT, "code.ips": ips([(0x10, b"mod")])})
     add("both code.bin, the exefs one wins", {"exefs/code.bin": REPLACEMENT, "code.bin": code_bytes(0x30, 5)}, pages=1)
@@ -200,16 +210,6 @@ def _cases() -> list[Case]:
 
 
 CASES = _cases()
-# The cases where the patch needs the bss pages that code_mods.py does not append (a write into them, or a BPS
-# made for the code with them): code_mods.py answers with an error (or, for a replacement whose patch only
-# writes into pages that do not exist, an error too) where the loader's answer is a patched buffer.
-KNOWN_DIFFERENCES = {
-    "IPS record across the end into the bss",
-    "IPS record in the bss",
-    "IPS RLE in the bss",
-    "BPS made for the code and its bss",
-    "replacement and an IPS that writes into the bss",
-}
 
 
 def _first(path_dir: str, names) -> str | None:
@@ -263,7 +263,7 @@ def _native(native, case: Case, mods: str, tmp: str):
 
 def _code_mods(case: Case, user: str) -> bytes | None:
     try:
-        return code_mods.apply_mods(case.code, user, PROGRAM_ID)[0]
+        return code_mods.apply_mods(case.code, user, PROGRAM_ID, case.pages * PAGE)[0]
     except code_mods.ModError:
         return None
 
@@ -282,7 +282,6 @@ def _make(tmp, case: Case):
 def test_there_are_at_least_thirty_cases_with_the_ones_the_spec_names():
     assert len(CASES) >= 30
     assert len({c.name for c in CASES}) == len(CASES)
-    assert KNOWN_DIFFERENCES <= {c.name for c in CASES}
 
 
 @pytest.mark.parametrize("case", CASES, ids=[c.name for c in CASES])
@@ -297,20 +296,20 @@ def test_native_equals_azahars_patch_cpp(driver, native, tmp_path, case):
 
 
 @pytest.mark.parametrize("case", CASES, ids=[c.name for c in CASES])
-def test_native_equals_code_mods_py_except_the_listed_differences(native, tmp_path, case):
+def test_native_equals_code_mods_py_without_the_bss_pages(native, tmp_path, case):
     user, mods, work = _make(tmp_path, case)
     ours, _ = _native(native, case, mods, work)
     theirs = _code_mods(case, user)
-    if case.name in KNOWN_DIFFERENCES:
-        # code_mods.py has no bss pages: it fails (or gives other bytes) where the loader patches them
-        assert ours is not None, f"{case.name}: listed as a difference, but the native tool fails too"
-        assert theirs is None or theirs + bytes(case.pages * PAGE) != ours
-        return
     if theirs is None or ours is None:
-        assert theirs is None and ours is None, f"UNLISTED difference in {case.name}: code_mods.py and the loader disagree on failing"
+        assert theirs is None and ours is None, f"{case.name}: code_mods.py and the loader disagree on failing"
         return
-    # code_mods.py's result has no bss pages: with them appended it must be the loader's buffer
-    assert theirs + bytes(case.pages * PAGE) == ours, f"UNLISTED difference in {case.name}"
+    # code_mods.py's result is the code only (what the library is built from): the first bytes of the loader's
+    # buffer, as many as the code before the pages, zero-padded if the patched buffer is shorter. Without pages
+    # (nothing appended) the whole buffer, as before N3-31.
+    replaced = _first(mods, ("exefs/code.bin", "code.bin"))
+    base = len(_read(os.path.join(mods, *replaced.split("/")))) if replaced else len(case.code)
+    expected = ours if case.pages == 0 else ours[:base].ljust(base, b"\0")
+    assert theirs == expected, f"{case.name}: code_mods.py and the loader differ"
 
 
 def test_the_tool_exit_codes_and_usage(native, tmp_path):
