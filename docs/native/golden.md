@@ -302,7 +302,9 @@ whose HID capture has type-2 (IR) records; it cannot be had, for this reason:
 - With `--capture-hid` that second `CreateMemoryBlock` fails with `0xE0A01BF5` and the game dies with a fatal error
   (`err:f`, status 17 of the runner, the SVC trace ends with that call): the runner's HID capture
   (`HidIpcRecorded`, `port/src/runner.cpp`) keeps a reference to the first block it sees handed to `ir:USER`, so the
-  block the game freed is still mapped at 0x08DF0000 when the game asks for it again. The same run **without**
+  block the game freed would still be mapped at 0x08DF0000 when the game asks for it again (this cause is a reading of
+  the runner's code that no test has confirmed; what was measured is that the game dies with the capture and the option
+  both on, and not with either one off). The same run **without**
   `--capture-hid` goes on (both calls succeed in its SVC trace). Switching the option on from inside the game (the village's
   Options, page 3, "Circle Pad Pro") with the capture on gives the same fatal error at that moment, and with the option off
   there is no `ir:USER` request at all (0 in more than 9,000 frames).
@@ -461,8 +463,8 @@ in the village's arrival scene, at about frame 1900, whatever the save and wheth
 screenshots: `HW.Memory <Error> GetPhysMemRegionInfo: Unknown GetPhysMemRegionInfo @ 0X000000 at PC 0X56D9F4`, then an
 access violation of the runner (status -1073741819). Three runs gave it (two saves, with and without the draw window); with
 `MH4U_DEPTH_OF_FIELD=off` (the port's own option for the cutscenes' blur, `docs/PLAYING.md`) the same script ran to its end.
-The cause is in the runner or the port (`port/src/`: the widened render targets against the filter's pass), not in the game
-or in this script; N2b's G3-perf (N2b-18, N2b-20) starts from this recording and runs with the filter off as recorded.
+The cause is in the runner or the port (`port/src/`; a hypothesis from these three runs: the widened render targets
+against the filter's pass), not in the game or in this script; N2b's G3-perf (N2b-18, N2b-20) starts from this recording and runs with the filter off as recorded.
 
 ### G7: a downloaded quest (not made)
 
