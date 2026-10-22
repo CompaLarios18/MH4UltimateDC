@@ -93,7 +93,7 @@ if opt("--trace-ipc"):
     if mode == "reads_apart":                          # 17 more reads, none touching another: 17 more runs
         reads += [(1000 + 32 * i, 16, 0x100 + i) for i in range(17)]
     if mode == "pieces":
-        # D55: one reader reads 32 bytes of a file in two pieces, the other (jit) in one: the same bytes
+        # D76: one reader reads 32 bytes of a file in two pieces, the other (jit) in one: the same bytes
         blob = bytes((i * 5 + 1) & 255 for i in range(64))
         reads = [(0, 32, zlib.crc32(blob[:32]))] if jit else [(0, 16, zlib.crc32(blob[:16])), (16, 16, zlib.crc32(blob[16:32]))]
     for k, (off, size, crc) in enumerate(reads):
@@ -987,7 +987,7 @@ def test_cross_commands(env, monkeypatch):
     assert "state-margin" in {r.name for r in results}
 
 
-# ---- check, the native profile (D55)
+# ---- check, the native profile (D76)
 
 def native(env, *extra, s="S1"):
     """A check of `--cpu jit` against the recording in the native profile, with the test list."""
@@ -1014,8 +1014,8 @@ f70:A
 
 
 def test_the_native_profile_numbers_are_d55s_and_the_cross_ones_are_unchanged():
-    assert golden.NATIVE_TOLERANCE == 24 and golden.NATIVE_MAX_SHIFT == 300                  # D55
-    assert golden.NATIVE_FS_READS_COALESCE is True                                           # D55
+    assert golden.NATIVE_TOLERANCE == 24 and golden.NATIVE_MAX_SHIFT == 300                  # D76
+    assert golden.NATIVE_FS_READS_COALESCE is True                                           # D76
     assert golden.PROFILES == ("same", "cross", "native")
     assert golden.CROSS_TOLERANCE == 4 and golden.CROSS_MIN_MARGIN == 60 and golden.CROSS_MAX_SHIFT == 48
     assert golden.CROSS_MAX_SURPLUS == 16
@@ -1077,7 +1077,7 @@ def test_native_profile_tolerates_a_scene_change_24_frames_late_and_no_more(env,
     assert "(profile native)" in out
     assert native(env, "--tolerance", "14", s="S5") == 1               # the option still applies
     assert native(env, "--tolerance", "15", s="S5") == 0
-    monkeypatch.setenv("FAKE_MODE", "late30")                          # 30 frames: past D55's 24
+    monkeypatch.setenv("FAKE_MODE", "late30")                          # 30 frames: past D76's 24
     capsys.readouterr()
     assert native(env, s="S5") == 1
     assert statuses(capsys.readouterr().out, "S5")["state"] == "FAIL"
@@ -1139,7 +1139,7 @@ def test_native_profile_merges_the_reads_that_touch_and_cross_does_not(env, caps
 
 
 def test_native_commands(env, monkeypatch):
-    """The comparators the native profile runs, and with what: the cross profile's, and D55's."""
+    """The comparators the native profile runs, and with what: the cross profile's, and D76's."""
     assert env.record() == 0
     calls = []
 
@@ -1195,7 +1195,7 @@ def test_native_rules_are_options_of_the_cross_and_native_profiles_only(env, cap
 
 def test_the_native_profile_is_in_the_help_and_the_docstring():
     help_text = golden.make_parser().format_help()
-    assert "native" in golden.__doc__ and "D55" in golden.__doc__
+    assert "native" in golden.__doc__ and "D76" in golden.__doc__
     parser = golden.make_parser()
     check = next(a for a in parser._subparsers._group_actions[0].choices["check"]._actions if a.dest == "profile")
     assert tuple(check.choices) == ("same", "cross", "native")

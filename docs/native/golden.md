@@ -173,19 +173,19 @@ matches no Write of the two traces makes the `ipc` comparison fail (a stale mask
 `--ignore FILE` (repeatable) adds IPC ignore files to the `cross` and `native` profiles only; with the `same` profile
 it is a usage error, so a same-model check can never be loosened by a list.
 
-**`native`** (D55; N0-33; the native runtime in real time against the reference. Asked for with `--profile native`,
+**`native`** (D76; N0-33; the native runtime in real time against the reference. Asked for with `--profile native`,
 never the default: `--candidate-runner` alone is `cross`). Its game clock follows the host while the reference charges
 the modelled 268 MHz, so the scenes change earlier, the DSP counter runs hundreds of frames apart and a streaming
 reader chunks its reads differently (`comparators.md`, section 10). It is the `cross` profile with these differences
 and nothing else loosened (the `golden.py` constants `NATIVE_TOLERANCE`, `NATIVE_MAX_SHIFT`, `NATIVE_FS_READS_COALESCE`
-and `NATIVE_FS_READS_PREFIX`, with D55 named in the comment):
+and `NATIVE_FS_READS_PREFIX`, with D76 named in the comment):
 
 | Comparison | Rule, where it differs from `cross` |
 |---|---|
-| `state` | `--tolerance 24` (D55) instead of 4: a real scene change may fall up to **24 frames** apart, in the same order and to the same scene |
+| `state` | `--tolerance 24` (D76) instead of 4: a real scene change may fall up to **24 frames** apart, in the same order and to the same scene |
 | `state-margin` | unchanged: every input at least **60 frames** after the last real scene change on both sides (D50), so a 24-frame shift can never move an input into another scene |
 | `ipc` | `--fs-reads-coalesce --fs-reads-prefix` added: the `fs:USER/file` Reads of one thread and one file session whose byte ranges touch are merged into one Read (CRC-32 combined) before the multiset is built, and a run that goes on further than the other side's counts as contained when the other side's is its verified prefix; the surplus limit stays 16, the Writes and every other `fs:` request as in `cross` (D52's masks, `config/native/fs_write_masks.txt`) |
-| `dsp-<start>` | `--max-shift 300` (D55) instead of 48, and an **odd** shift compares the reference's region *r* with the candidate's region *1 − r* |
+| `dsp-<start>` | `--max-shift 300` (D76) instead of 48, and an **odd** shift compares the reference's region *r* with the candidate's region *1 − r* |
 | everything else | as `cross` (`svc` on the cross-model list, `hid`, `checkpoints`, `svc-full` and `images` as information) |
 
 The profile's number is printed in each result (`within 24 frames`, `largest scene-change shift 15 frames (at most

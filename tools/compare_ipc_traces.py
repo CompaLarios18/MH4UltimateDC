@@ -68,7 +68,7 @@ checks use these two options, and nothing else is loosened for `fs:`; the `nativ
                the --ignore files.
   --max-surplus N       reads the larger multiset may hold beyond the smaller (default 16; with
                --fs-reads-multiset only)
-  --fs-reads-coalesce   (D55, the `native` profile of tools/native/golden.py; needs --fs-reads-multiset) before the
+  --fs-reads-coalesce   (D76, the `native` profile of tools/native/golden.py; needs --fs-reads-multiset) before the
                multiset is built, the Reads of one thread and one file session (`fs:USER/file#3`) whose byte ranges
                touch (offset + size of one is the offset of the next) are merged into one Read, whatever order
                they were sent in (the multiset ignores order, D52, and two readers that interleave differently send
@@ -83,7 +83,7 @@ checks use these two options, and nothing else is loosened for `fs:`; the `nativ
                of the same range): the bytes must still be the same, so a gap, a piece read twice, a piece with
                another CRC-32 or a run that goes on past where the other side's stops is a difference
                (unless --fs-reads-prefix is given).
-  --fs-reads-prefix     (needs --fs-reads-coalesce; not in D55's text, found necessary on the first real pairs: see
+  --fs-reads-prefix     (needs --fs-reads-coalesce; not in D76's text, found necessary on the first real pairs: see
                docs/native/comparators.md) a streaming reader stops where its clock says, so one side's run of
                touching Reads can go on further than the other's. A run that the other side has no equal of is then
                also contained when it is a prefix of a run of the other side, or that run is a prefix of it: the
@@ -391,7 +391,7 @@ class ReadUnit(NamedTuple):
 
 
 def read_units(calls: list[IpcCall], coalesce: bool) -> list[ReadUnit]:
-    """What a thread's Reads are compared as: each Read's `read_key`, or with `coalesce` (D55) one unit per run of
+    """What a thread's Reads are compared as: each Read's `read_key`, or with `coalesce` (D76) one unit per run of
     Reads that touch (`tracefmt.coalesce_fs_reads`): offset of the first, sum of the sizes, the result and the
     CRC-32 of the data of the whole run, combined from the parts'."""
     if not coalesce:
@@ -454,7 +454,7 @@ def pair_prefixes(left_a: list[ReadUnit], left_b: list[ReadUnit]) -> tuple[list[
 def compare_reads(a: list[IpcCall], b: list[IpcCall], max_surplus: int, coalesce: bool = False,
                   read_prefix: bool = False, stats: Counter | None = None) -> dict | None:
     """The Reads of one thread on the two sides, as multisets: the smaller side's must be contained in the larger
-    side's, which may hold at most `max_surplus` more. With `coalesce` (D55) the multisets hold the runs of touching
+    side's, which may hold at most `max_surplus` more. With `coalesce` (D76) the multisets hold the runs of touching
     Reads, not the Reads. With `read_prefix` (needs `coalesce`) a run that the other side has no equal of is also
     contained when it is a verified prefix of a run of the other side, or that run is a prefix of it
     (`reads_beyond_prefix`); the Reads of the longer run beyond the prefix count toward the surplus. `stats` counts
@@ -491,7 +491,7 @@ def compare(ref: dict[str, list[IpcCall]], cand: dict[str, list[IpcCall]], stric
     """One report per thread that differs: thread, index of the first difference, the two requests
     (None past the end of a trace), and the lengths. With `fs_reads` (D52) a thread's Reads of the file
     sessions of fs:USER are taken out and compared as multisets (a report of kind `reads`), and its other
-    `fs:` requests are compared in full; the rest is compared as before (kind `order`). `coalesce` (D55)
+    `fs:` requests are compared in full; the rest is compared as before (kind `order`). `coalesce` (D76)
     merges the touching Reads of a file session before the multisets are built, and read_prefix lets a run that is a
     verified prefix of another side's run count as contained (compare_reads)."""
     out = []
@@ -534,7 +534,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--fs-reads-coalesce", action="store_true",
                     help="before the multiset is built, merge the consecutive Reads of one thread and one file "
                          "session whose byte ranges touch into one Read (summed size, CRC-32 combined); needs "
-                         "--fs-reads-multiset (D55)")
+                         "--fs-reads-multiset (D76)")
     ap.add_argument("--fs-reads-prefix", action="store_true",
                     help="a merged run that the other side has no equal of is also contained when it is a prefix of "
                          "a run of the other side (or that run of it): same start, the longer run has a part that ends "

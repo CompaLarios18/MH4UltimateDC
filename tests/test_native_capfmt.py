@@ -681,7 +681,7 @@ def test_the_alignment_prints_no_samples(tmp_path, capsys):
     assert "PCM" not in out and "sample" not in out.lower()
 
 
-# ── diff-dsp --align, odd shifts and the larger bounds of the native profile (N0-33, D55) ──────────────
+# ── diff-dsp --align, odd shifts and the larger bounds of the native profile (N0-33, D76) ──────────────
 
 def test_an_odd_shift_compares_the_region_the_shift_maps_to(tmp_path):
     ref, cand = aligned_pair(tmp_path, 21)

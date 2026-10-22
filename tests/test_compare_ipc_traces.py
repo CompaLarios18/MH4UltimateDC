@@ -693,7 +693,7 @@ def test_the_docstring_documents_the_cross_model_options():
                  "multiset"):
         assert word in cmp.__doc__
 
-# ── touching Reads merged before the multiset is built (N0-33, D55) ───────────────────────────────
+# ── touching Reads merged before the multiset is built (N0-33, D76) ───────────────────────────────
 
 COALESCE = (*MULTISET, "--fs-reads-coalesce")
 FILE_DATA = bytes((i * 13 + i // 97) & 0xFF for i in range(70000))
@@ -851,7 +851,7 @@ def test_the_report_says_the_reads_were_merged(tmp_path, capsys):
 
 
 def test_the_docstring_documents_the_coalesce_option():
-    for word in ("--fs-reads-coalesce", "D55", "crc32_combine", "touch"):
+    for word in ("--fs-reads-coalesce", "D76", "crc32_combine", "touch"):
         assert word in cmp.__doc__
 
 

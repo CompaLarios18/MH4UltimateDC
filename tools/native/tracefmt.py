@@ -650,7 +650,7 @@ def ipc_data(call: IpcCall, index: int) -> bytes | None:
     return None
 
 
-# ── touching Reads and the CRC-32 of their concatenation (N0-33, D55) ───────────────────
+# ── touching Reads and the CRC-32 of their concatenation (N0-33, D76) ───────────────────
 #
 # A streaming reader that works in a different clock reads the same bytes in other pieces (the native runner
 # one 28672-byte range where the reference reads 4096- and 2048-byte pieces of it).  The Reads of one thread and

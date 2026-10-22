@@ -536,7 +536,7 @@ def test_ipc_data_is_found_by_descriptor_index():
         tracefmt.ipc_data(write_call(size=3, data="zz"), 5)
 
 
-# ── touching Reads and the CRC-32 of their concatenation (N0-33, D55) ────────────────────
+# ── touching Reads and the CRC-32 of their concatenation (N0-33, D76) ────────────────────
 
 import random  # noqa: E402
 import zlib  # noqa: E402
