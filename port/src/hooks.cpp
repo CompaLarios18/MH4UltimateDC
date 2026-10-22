@@ -18,6 +18,9 @@
 #include "common/common_types.h"
 #include "common/file_util.h"
 #include "common/logging/log.h"
+#if defined(__ANDROID__)
+#include "common/android_utils.h"
+#endif
 #include "core/frontend/top_screen.h"
 #include "common/settings.h"
 #include "core/3ds.h"
@@ -94,6 +97,8 @@ struct Options {
     float refresh_rate = 0; // refresh_rate / MH4U_REFRESH_RATE: emulated LCD Hz, 0 = the 3DS's
                             // (or, with an fps above 60, that fps: see RefreshRate)
     float widescreen = 0;   // widescreen / MH4U_WIDESCREEN: top-screen aspect ratio, 0 = native
+    bool widescreen_match = false;  // widescreen = match: the top screen takes the frontend's
+                                    // window shape (SetWindowSize), resolved by Install
     bool wide_render = false;  // wide_render / MH4U_WIDE_RENDER: render the wider image itself
     u32 trace_every = 0;    // trace_frames / MH4U_TRACE_FRAMES: log frame timing every n frames
     bool trace_panels = false;  // trace_panels / MH4U_TRACE_PANELS: log touch-panel activity
@@ -205,6 +210,18 @@ u64 frames = 0;
 int missing_hook_points = 0;  // in the code library Install saw last
 std::atomic<bool> quest_map_off{false};  // ToggleQuestMap: the whole touch screen in quests too
 
+// The frontend's surface shape (Port::SetWindowSize), for `widescreen = match`.
+u32 window_width = 0;
+u32 window_height = 0;
+
+// An overlay or widescreen read at boot has to have the screen layout worked out again once
+// the game draws (see Frame): Android works the layout out as the surface appears, before
+// the game starts and Install() reads the options. The portrait flag is captured in Install
+// too, which runs on the Java thread; the frame hook runs on the guest fiber and must not
+// call JNI.
+bool relayout_for_overlay = false;
+bool relayout_portrait = false;
+
 /// "16:9", "1.7778", "off"/"0" -> aspect ratio (0 = native).
 float ParseAspect(const std::string& v) {
     const auto colon = v.find(':');
@@ -222,7 +239,10 @@ void Set(Options& o, const std::string& key, const std::string& value) {
     } else if (key == "refresh_rate") {
         o.refresh_rate = std::max(0.0f, std::strtof(value.c_str(), nullptr));
     } else if (key == "widescreen") {
-        o.widescreen = ParseAspect(value);
+        // match: the frontend passes its window's shape (Port::SetWindowSize) and Install
+        // resolves it; the other values are the aspect ratio itself
+        o.widescreen_match = value == "match" || value == "auto" || value == "screen";
+        o.widescreen = o.widescreen_match ? 0.0f : ParseAspect(value);
     } else if (key == "wide_render") {
         o.wide_render = IsOn(value);
     } else if (key == "dither") {
@@ -292,10 +312,12 @@ std::string Trim(const std::string& s) {
 Options LoadOptions(std::vector<std::string>& log) {
     Options o;
     const std::string path = FileUtil::GetUserPath(FileUtil::UserPath::UserDir) + "mh4u.ini";
-    std::ifstream file(path);
-    if (file) {
+    // FileUtil::IOFile, not std::ifstream: on Android the user folder is not the host's
+    // root, and only FileUtil translates the guest path to the file under it.
+    FileUtil::IOFile file(path, "r");
+    if (file.IsOpen()) {
         std::string line;
-        while (std::getline(file, line)) {
+        while (file.ReadLine(line)) {
             line = Trim(line.substr(0, line.find('#')));
             const auto eq = line.find('=');
             if (eq != std::string::npos) {
@@ -369,6 +391,19 @@ void UpdateQuestOverlay(RCtx* ctx);
 void TraceFilters();
 
 void Frame(RCtx* ctx, RFunc original) {
+    if (relayout_for_overlay) {
+        // The renderer works the screen layout out when the window changes. Android does that
+        // as the surface appears, before the game starts and Install() reads the touch
+        // overlay and widescreen options, so they would not take effect until the next resize
+        // (seen on the device). Work the layout out again on the first frame, renderer up.
+        relayout_for_overlay = false;
+#if defined(__ANDROID__)
+        Core::System::GetInstance().GPU().Renderer().UpdateCurrentFramebufferLayout(
+            relayout_portrait);
+#else
+        Core::System::GetInstance().GPU().Renderer().UpdateCurrentFramebufferLayout();
+#endif
+    }
     if (frames == 0 && RefreshRate() > 0) {
         // the game presents at most once per VBlank: more VBlanks allow more than 60 fps
         Core::System::GetInstance().GPU().SetRefreshRate(RefreshRate());
@@ -1452,9 +1487,26 @@ constexpr Hook HOOKS[] = {
 
 } // namespace
 
+void SetWindowSize(u32 width, u32 height) {
+    window_width = width;
+    window_height = height;
+}
+
 std::vector<std::string> Install(const RCodeInfo& info) {
     std::vector<std::string> log;
     options = LoadOptions(log);
+    if (options.widescreen_match) {
+        // "match": the top screen takes the window's shape. It has to be resolved here, before
+        // the game's first area (the layout and the code's size tunables are fixed in this
+        // call) and the renderer does not exist yet, so the frontend passed its size.
+        options.widescreen = window_height > 0 && window_width > window_height
+                                 ? static_cast<float>(window_width) / window_height
+                                 : 0.0f;
+        log.push_back(options.widescreen > 0
+                          ? fmt::format("widescreen: match, the window's shape {:.4f} ({}x{})",
+                                        options.widescreen, window_width, window_height)
+                          : "widescreen: match, but no landscape window size was passed; off");
+    }
     // a new boot (Azahar can start the game again in the same process): nothing carries over
     // from the last one, whose emulated clock and game objects are gone
     frames = 0;
@@ -1533,6 +1585,16 @@ std::vector<std::string> Install(const RCodeInfo& info) {
                                   PadNames(options.skip_end_buttons), options.skip_end_hold));
     }
     Layout::SetScreenOverlay(options.touch_overlay);
+    if (options.touch_overlay.height > 0 || options.widescreen > 0) {
+        // Frame: the layout this boot computed before these options were read (Android works
+        // it out as the surface appears, before the game starts) has to be worked out again
+        // on the first frame. The portrait flag is read here because Install runs on the Java
+        // thread that loads the code library, while Frame runs on the guest fiber.
+        relayout_for_overlay = true;
+#if defined(__ANDROID__)
+        relayout_portrait = AndroidUtils::IsPortraitMode();
+#endif
+    }
     applied_map_slot = applied_target_slot = -1;
     if (const auto& overlay = options.touch_overlay; overlay.height > 0) {
         constexpr const char* corners[] = {"top left", "top right", "bottom left", "bottom right"};
