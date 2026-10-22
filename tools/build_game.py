@@ -284,7 +284,7 @@ def main(argv=None) -> int:
     mods_dir = None if args.no_mods else (args.mods or args.install)
     used, changes_code = [], False
     if mods_dir:
-        modded, used = code_mods.apply_mods(code, mods_dir, program_id)
+        modded, used = code_mods.apply_mods(code, mods_dir, program_id, header.bss_size)
         if used:
             segments = [("code", 0, header.text.size),
                         ("read-only data", header.ro.address - header.text.address, header.ro.size),

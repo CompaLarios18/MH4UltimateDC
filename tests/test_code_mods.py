@@ -91,3 +91,67 @@ def test_mod_folder_like_azahar(tmp_path):
     assert code == b"\0\x09\0\0" and used == [str(base / "code.bin"), str(base / "exefs" / "code.ips")]
     assert code_mods.describe(b"\1\2\3\4", code, [("code", 0, 2), ("data", 2, 2)]) == \
         ["code: 2 bytes changed", "data: 2 bytes changed"]
+
+
+PID = 0x0004000000126300
+
+
+def _mod_files(tmp_path, files):
+    base = tmp_path / "load" / "mods" / f"{PID:016X}"
+    for rel, data in files.items():
+        (base / rel).parent.mkdir(parents=True, exist_ok=True)
+        (base / rel).write_bytes(data)
+    return str(tmp_path)
+
+
+def test_bss_pages_size_rounds_up_to_pages():
+    assert [code_mods.bss_pages_size(n) for n in (0, 1, 0x1000, 0x1001)] == [0, 0x1000, 0x1000, 0x2000]
+
+
+def test_ips_record_and_run_into_the_bss_pages_are_dropped(tmp_path):
+    code = bytes(range(16))
+    user = _mod_files(tmp_path, {"exefs/code.ips": ips((2, b"\xAA\xBB"), (14, b"\x01\x02\x03\x04"),
+                                                         (0x10 + 0x20, 8, 0x77))})
+    with pytest.raises(code_mods.ModError, match="goes past the end"):     # no pages: as before
+        code_mods.apply_mods(code, user, PID)
+    out, used = code_mods.apply_mods(code, user, PID, bss_size=0x10)       # one page of bss
+    assert out == code[:2] + b"\xAA\xBB" + code[4:14] + b"\x01\x02" and len(used) == 1
+    with pytest.raises(code_mods.ModError, match="goes past the end"):     # the pages end at 0x1010
+        code_mods.apply_mods(code, _mod_files(tmp_path / "b", {"code.ips": ips((0x1008, b"\x01" * 16))}), PID, 0x10)
+
+
+def test_bps_made_for_the_code_and_its_pages(tmp_path):
+    code = bytes(range(16))
+    source = code + bytes(0x1000)
+    target = bytearray(source)
+    target[4:6] = b"ok"
+    target[0x20:0x24] = b"bss!"
+    user = _mod_files(tmp_path, {"code.bps": bps(source, bytes(target), _bps_commands(source, bytes(target)))})
+    out, _ = code_mods.apply_mods(code, user, PID, bss_size=1)
+    assert out == code[:4] + b"ok" + code[6:]
+    with pytest.raises(code_mods.ModError):        # without the pages the source size/CRC doesn't fit
+        code_mods.apply_mods(code, user, PID)
+
+
+def _bps_commands(source, target):
+    cmds, i = [], 0
+    while i < len(target):
+        same = source[i] == target[i]
+        j = i
+        while j < len(target) and (source[j] == target[j]) == same:
+            j += 1
+        cmds.append(("sr", j - i) if same else ("tr", target[i:j]))
+        i = j
+    return cmds
+
+
+def test_replacement_then_patch_into_the_pages_and_unchanged_without_pages(tmp_path):
+    replacement = bytes(range(100, 108))
+    files = {"exefs/code.bin": replacement, "exefs/code.ips": ips((6, b"\xEE" * 4))}
+    user = _mod_files(tmp_path, files)
+    out, used = code_mods.apply_mods(b"ignored", user, PID, bss_size=0x2000)
+    assert out == replacement[:6] + b"\xEE\xEE" and len(used) == 2
+    # a mod that doesn't touch the pages gives the same bytes with or without them
+    user2 = _mod_files(tmp_path / "c", {"code.ips": ips((1, b"\x09"))})
+    assert code_mods.apply_mods(b"\1\2\3", user2, PID) == code_mods.apply_mods(b"\1\2\3", user2, PID, 0x500)
+    assert code_mods.apply_mods(b"\1\2\3", user2, PID)[0] == b"\1\x09\3"

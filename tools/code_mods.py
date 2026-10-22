@@ -128,8 +128,20 @@ def find_mods(user_dir: str, program_id: int) -> tuple[str | None, str | None]:
     return replacement, patch
 
 
-def apply_mods(code: bytes, user_dir: str, program_id: int) -> tuple[bytes, list[str]]:
-    """The code as Azahar will run it with this user folder's mods, and the files used."""
+def bss_pages_size(bss_size: int) -> int:
+    """The bytes Azahar appends to the code for an exheader's bss size: (bss_size + 0xFFF) & ~0xFFF."""
+    return (bss_size + 0xFFF) & ~0xFFF
+
+
+def apply_mods(code: bytes, user_dir: str, program_id: int, bss_size: int = 0) -> tuple[bytes, list[str]]:
+    """The code as Azahar will run it with this user folder's mods, and the files used.
+
+    `bss_size` is the exheader's bss size (after any exheader override); the default 0 keeps the old
+    behaviour (no bss pages) for callers that don't pass it. As in Azahar's AppLoader_NCCH::LoadExec (D79)
+    a replacement code.bin is loaded first, then the pages (bss_size + 0xFFF) & ~0xFFF of zeros are
+    appended, then the first patch is applied, so a patch may read and write the pages. The code returned
+    is without the pages (the code library is built from the code only, and everything the patch wrote
+    into the pages is dropped); a mod that doesn't touch the pages gives the bytes it always gave."""
     replacement, patch = find_mods(user_dir, program_id)
     used = []
     if replacement:
@@ -137,9 +149,12 @@ def apply_mods(code: bytes, user_dir: str, program_id: int) -> tuple[bytes, list
             code = f.read()
         used.append(replacement)
     if patch:
+        pages = bss_pages_size(bss_size)
         with open(patch, "rb") as f:
             data = f.read()
-        code = apply_ips(code, data) if patch.endswith(".ips") else apply_bps(code, data)
+        buffer = code + bytes(pages)
+        buffer = apply_ips(buffer, data) if patch.endswith(".ips") else apply_bps(buffer, data)
+        code = buffer[:len(buffer) - pages]
         used.append(patch)
     return code, used
 

@@ -6,10 +6,11 @@ Thirty-odd synthetic mods folders (invented bytes) are applied to a synthetic co
     appended, the first patch of the order exefs/code.ips, exefs/code.bps, code.ips, code.bps) written here
     from the sources;
   - `mh4n_code_patch --mods DIR --bss-pages N IN OUT`;
-  - tools/code_mods.py's `apply_mods`, which is what build_game.py applies. It does not append the bss pages.
+  - tools/code_mods.py's `apply_mods(code, user, program id, bss size)`, which is what build_game.py applies
+    (N3-31, D79: it appends the pages like the loader and returns the code without them).
 The native tool and Azahar's code must give the same bytes, or both an error. The native tool and code_mods.py
-must agree except in the cases KNOWN_DIFFERENCES lists (the patch reads or writes the bss pages, which
-code_mods.py does not have); an unlisted difference fails the test.
+must agree in every case: the test compares code_mods.py's result with the native buffer without its bss
+pages (what the code library is built from), or both fail.
 
 Needs MH4N_AZAHAR_DIR (Azahar's sources at the pinned commit), clang++ and the built `mh4n_code_patch`
 (build/native/bin, or MH4N_CODE_PATCH); without them the tests skip, or fail with MH4N_REQUIRE_TEST_DATA=1.
@@ -200,18 +201,6 @@ def _cases() -> list[Case]:
 
 
 CASES = _cases()
-# The cases where the patch needs the bss pages that code_mods.py does not append (a write into them, or a BPS
-# made for the code with them): code_mods.py answers with an error (or, for a replacement whose patch only
-# writes into pages that do not exist, an error too) where the loader's answer is a patched buffer.
-KNOWN_DIFFERENCES = {
-    "IPS record across the end into the bss",
-    "IPS record in the bss",
-    "IPS RLE in the bss",
-    "BPS made for the code and its bss",
-    "replacement and an IPS that writes into the bss",
-}
-
-
 def _first(path_dir: str, names) -> str | None:
     return next((n for n in names if os.path.isfile(os.path.join(path_dir, *n.split("/")))), None)
 
@@ -263,7 +252,7 @@ def _native(native, case: Case, mods: str, tmp: str):
 
 def _code_mods(case: Case, user: str) -> bytes | None:
     try:
-        return code_mods.apply_mods(case.code, user, PROGRAM_ID)[0]
+        return code_mods.apply_mods(case.code, user, PROGRAM_ID, case.pages * PAGE)[0]
     except code_mods.ModError:
         return None
 
@@ -282,7 +271,6 @@ def _make(tmp, case: Case):
 def test_there_are_at_least_thirty_cases_with_the_ones_the_spec_names():
     assert len(CASES) >= 30
     assert len({c.name for c in CASES}) == len(CASES)
-    assert KNOWN_DIFFERENCES <= {c.name for c in CASES}
 
 
 @pytest.mark.parametrize("case", CASES, ids=[c.name for c in CASES])
@@ -297,20 +285,15 @@ def test_native_equals_azahars_patch_cpp(driver, native, tmp_path, case):
 
 
 @pytest.mark.parametrize("case", CASES, ids=[c.name for c in CASES])
-def test_native_equals_code_mods_py_except_the_listed_differences(native, tmp_path, case):
+def test_native_equals_code_mods_py_without_the_bss_pages(native, tmp_path, case):
     user, mods, work = _make(tmp_path, case)
     ours, _ = _native(native, case, mods, work)
     theirs = _code_mods(case, user)
-    if case.name in KNOWN_DIFFERENCES:
-        # code_mods.py has no bss pages: it fails (or gives other bytes) where the loader patches them
-        assert ours is not None, f"{case.name}: listed as a difference, but the native tool fails too"
-        assert theirs is None or theirs + bytes(case.pages * PAGE) != ours
-        return
     if theirs is None or ours is None:
-        assert theirs is None and ours is None, f"UNLISTED difference in {case.name}: code_mods.py and the loader disagree on failing"
+        assert theirs is None and ours is None, f"{case.name}: code_mods.py and the loader disagree on failing"
         return
-    # code_mods.py's result has no bss pages: with them appended it must be the loader's buffer
-    assert theirs + bytes(case.pages * PAGE) == ours, f"UNLISTED difference in {case.name}"
+    # code_mods.py's result is the code only: the native buffer without its bss pages (what the library is built from)
+    assert theirs == ours[:len(ours) - case.pages * PAGE], f"{case.name}: code_mods.py and the loader differ"
 
 
 def test_the_tool_exit_codes_and_usage(native, tmp_path):

@@ -88,6 +88,42 @@ def test_build_game_applies_code_mods(tmp_path, capsys):
     assert f"rc_text_crc32 = 0x{zlib.crc32(text):08x}u" in table.read_text()
 
 
+def test_build_game_code_mod_writing_into_the_bss_pages(tmp_path, capsys):
+    """D79 (N3-31): the exheader's bss size gives the pages the patch is applied with. An IPS that turns
+    add into sub and also writes into the bss pages builds, and the library is built from the code
+    without the pages."""
+    import zlib
+    import build_game
+    import make_cxi
+    text = struct.pack("<4I", 0xE3A0002A, 0xE12FFF1E, 0xE0800001, 0xE12FFF1E).ljust(0x1000, b"\0")
+    exheader = bytearray(0x800)
+    exheader[0:8] = b"SYNTH\0\0\0"
+    struct.pack_into("<III", exheader, 0x10, 0x00100000, 1, len(text))
+    struct.pack_into("<III", exheader, 0x20, 0x00101000, 1, 0x1000)
+    struct.pack_into("<III", exheader, 0x30, 0x00102000, 1, 0x1000)
+    struct.pack_into("<I", exheader, 0x3C, 0x20)             # bss size: one page
+    struct.pack_into("<Q", exheader, 0x200, 0x0004000000ABCD00)
+    cxi = tmp_path / "synthetic.cxi"
+    cxi.write_bytes(make_cxi.make_cxi(bytes(exheader), fake_exefs(text + bytes(0x2000))))
+    functions = tmp_path / "functions.tsv"
+    functions.write_text("address\tsize\tmode\tkind\tname\tstatus\towner\tnotes\n"
+                         "0x00100000\t0x8\tarm\tunknown\t\ttodo\t\t\n0x00100008\t0x8\tarm\tunknown\t\ttodo\t\t\n")
+    install = tmp_path / "azahar-user"
+    mods = install / "load" / "mods" / "0004000000ABCD00" / "exefs"
+    mods.mkdir(parents=True)
+    # the code is 0x3000 bytes: the second record is in the bss page, the first one in the code
+    (mods / "code.ips").write_bytes(b"PATCH" + (10).to_bytes(3, "big") + (1).to_bytes(2, "big") + b"\x40"
+                                    + (0x3010).to_bytes(3, "big") + (2).to_bytes(2, "big") + b"\x01\x02" + b"EOF")
+    args = ["--dump", str(cxi), "--opt", "O0", "--any-version", "--functions", str(functions), "--extra", "",
+            "--hooks", "", "--install", str(install), "-j", "2"]
+    table = tmp_path / "out" / "recomp" / "src" / "table.c"
+    assert build_game.main(args + ["--out", str(tmp_path / "out")]) == 0
+    out = capsys.readouterr().out
+    assert "code mods: " in out and "code: 1 bytes changed" in out and "changes the game's code" in out
+    modded = text[:10] + b"\x40" + text[11:]                  # sub r0, r0, r1
+    assert f"rc_text_crc32 = 0x{zlib.crc32(modded):08x}u" in table.read_text()
+
+
 def test_fetch_compiler_checks_the_download(tmp_path):
     """A downloaded compiler is unpacked only when its SHA-256 is the expected one; a URL with
     none to check against is refused, and the default URL comes with its own."""
