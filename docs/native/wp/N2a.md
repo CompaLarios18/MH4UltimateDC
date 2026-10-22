@@ -209,18 +209,20 @@ Azahar draws no gas at all (its shader generator logs "Unimplemented gas mode", 
 - **Depends on:** N2-01, N2-02 · **Needs:** none
 - **Goal:** the RHI D4 chose, standing: device and queue selection, memory allocation, render targets and their formats, command submission, readback of render targets into guest memory in the PICA's layouts, and GPU timestamps. Everything that draws builds on it.
 - **Read first:** D4 and `docs/research/rhi-spike.md`; in Azahar: `src/video_core/renderer_vulkan/vk_instance.cpp`, `vk_scheduler.cpp` and `vk_texture_runtime.cpp` (what a PICA renderer needs from Vulkan), `src/video_core/texture/texture_decode.cpp` (the tiled layouts written back); `native/include/mh4n/gpu_debug.h`.
-- **Files (allowlist):** `native/src/gpu/backend/**`, `native/third_party/rhi/**` (volk, the allocator and the RHI D4 chooses, one subdirectory each), `native/tests/gpu_backend_test.cpp`.
+- **Files (allowlist):** `native/src/gpu/backend/**`, `native/third_party/rhi/**` (volk, the allocator and the RHI D4 chooses, one subdirectory each), `native/tests/gpu_backend_test.cpp`, `native/tests/support/vulkan_device.h` (new).
 - **Spec:**
   - As D4 decided: the RHI (or plume) with the fallbacks `rhi-spike.md` lists for missing features. Vulkan is loaded at run time through volk (the rules at the top of `N1.md`): with no driver, creating the backend fails with a message, and nothing else does.
   - **Render targets** in the PICA's colour formats (RGBA8, RGB8, RGB5A1, RGB565, RGBA4) and depth formats (D16, D24, D24S8 with its fallback).
   - **Readback:** a render target written back into guest memory in the PICA's Morton-tiled layout and format, bit-exact for what was drawn: what the capture player's draw checks compare. Only on demand (checks, and the CPU reads N0-14 found).
   - **Timestamps** per frame for the capture player's timing table.
-  - **What the app needs (N2b-05, N2b-06, N2b-11):**
-    - the instance enables `VK_KHR_surface`, the platform's surface extension and `VK_EXT_headless_surface` when the loader offers them, and the device `VK_KHR_swapchain`; `CreateBackend` takes an optional `VkSurfaceKHR`, and with one it selects a queue family that can present; with none (the capture player, the tests) nothing changes;
+  - **What the app needs (N2b-05, N2b-06, N2b-09, N2b-11, N2b-13):**
+    - the instance is created apart from the device: `CreateInstance(extra_extensions)` enables `VK_KHR_surface`, `VK_EXT_headless_surface` when the loader offers it, and the extra extensions the caller names (SDL3 lists the ones a window needs); `CreateBackend(instance, surface)` then takes an optional `VkSurfaceKHR`, enables `VK_KHR_swapchain` and selects a queue family that can present when a surface is given; with no surface (the capture player, the tests) nothing changes;
     - submissions to a queue go through one submit lock, so the renderer thread and the present thread can share a queue;
-    - the Vulkan handles (instance, physical device, device, queue family index, queue) are readable from the backend, for ImGui's Vulkan backend.
+    - the Vulkan handles (instance, physical device, device, queue family index, queue) and the `VkCommandBuffer` the backend is recording are readable from the backend, for ImGui's Vulkan backend;
+    - `ReadImage(image, x, y, width, height)` copies a region of any backend image to the host, in the image's own format (for the compositor's tests and the screenshots), besides the readback into guest memory;
+    - a shared test helper `native/tests/support/vulkan_device.h`: a test that needs a Vulkan device skips with a message when there is none, and fails instead when the environment variable `MH4N_REQUIRE_VULKAN=1` is set (CI sets it on the Linux job, where lavapipe is installed), as `MH4N_REQUIRE_TEST_DATA` does for the ARM programs.
   - Runs on lavapipe in the cloud.
-- **Done when:** ctest passes on lavapipe: clear-and-readback of every colour and depth format against bytes worked out from the formats; a timestamp query returns increasing values; a backend made with no surface lists no surface extension as enabled, and one made with a headless surface (skipped with a message where the loader lacks `VK_EXT_headless_surface`) selects a queue that can present; two threads submitting through the lock complete without a validation error.
+- **Done when:** ctest passes on lavapipe: clear-and-readback of every colour and depth format against bytes worked out from the formats; a timestamp query returns increasing values; a backend made with no surface lists no surface extension as enabled, and one made with a headless surface (skipped with a message where the loader lacks `VK_EXT_headless_surface`, failing under `MH4N_REQUIRE_VULKAN=1`) selects a queue that can present; two threads submitting through the lock complete without a validation error; `ReadImage` of a cleared image returns the clear colour in the image's format; with `MH4N_REQUIRE_VULKAN=1` the test log names the llvmpipe device.
 - **Traps:** -
 - **Out of scope:** shaders and drawing state (N2-06, N2-08 onwards).
 
@@ -236,6 +238,9 @@ Azahar draws no gas at all (its shader generator logs "Unimplemented gas mode", 
   - `InvalidateRegion` (the CPU is about to read) waits until earlier commands touching the range are done and written back; `FlushRegion` marks cached data stale before later commands run.
   - Writes into guest memory (fills, transfers, readbacks) are handed to the scheduler with `Host::Post`, except into buffers the request lent (principle 6).
   - At most one frame in flight beyond the one being built (the engine's lag); more blocks the queue, not the game thread, and the counter of such waits is reported (`TakeFrameCounters`).
+  - `VBlank(screen)` is queued in order with the commands, so a buffer swap and the VBlank that follows it reach the wrapped GPU in the order the game made them.
+  - `ReadReg` is answered at once from a mirror of the registers the wrapper has seen through `WriteReg` (updated when the call is made, not on the renderer thread).
+  - Per frame, the renderer thread's busy time and the time the queue spent waiting are reported through `TakeFrameCounters` (the runtime's GPU log reads them, N2b-12).
   - Registered as the GPU wrapper `queue`: the capture player's `--queue` wraps the chosen GPU in it.
 - **Done when:**
   - ctest passes: command order and interrupt order under a fake host; an invalidate that waits for an earlier transfer; writes arriving only through `Post`;
