@@ -3,9 +3,9 @@
 #include <fmt/format.h>
 #include <imgui.h>
 
-#include "frontend.h"
 #include "launcher/state.h"
 #include "launcher/ui.h"
+#include "runtime.h"
 
 namespace Launcher {
 
@@ -62,7 +62,7 @@ void DrawSettings(State& s) {
     Ui::Heading("Settings");
     Ui::TextDim(fmt::format("Saved as they change, in {}. The game's own options (frame rate, widescreen, "
                             "the touch screen's corner, the screen filters) are in {}.",
-                            App::ConfigPath(), Port::OptionsPath()));
+                            App::ConfigPath(), App::Runtime().GameOptionsPath()));
     ImGui::Spacing();
     if (!ImGui::BeginTable("##settings_table", 2, ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_PadOuterX)) {
         ImGui::EndChild();

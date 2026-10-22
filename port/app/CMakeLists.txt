@@ -170,7 +170,7 @@ if (MH4U_APP_TESTS)
     set(MH4U_APP_TEST_UTIL util/file.cpp util/log.cpp util/strings.cpp)
     add_executable(mh4u_util_test util/tests/util_test.cpp ${MH4U_APP_TEST_UTIL})
     add_executable(mh4u_app_test util/tests/app_test.cpp config.cpp launcher/checks.cpp
-                   ${MH4U_APP_TEST_UTIL})
+                   ../src/options_template.cpp ${MH4U_APP_TEST_UTIL})
     add_executable(mh4u_multiplayer_test util/tests/multiplayer_test.cpp multiplayer.cpp invite.cpp
                    launcher/lobby.cpp config.cpp ${MH4U_APP_TEST_UTIL})
     add_executable(mh4u_input_test util/tests/input_test.cpp input.cpp kbm.cpp config.cpp
@@ -186,6 +186,7 @@ if (MH4U_APP_TESTS)
                                    ${CMAKE_CURRENT_SOURCE_DIR}/../../native/third_party/doctest)
         target_link_libraries(${test} PRIVATE fmt::fmt Threads::Threads)
     endforeach()
+    target_include_directories(mh4u_app_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
     target_link_libraries(mh4u_app_test PRIVATE inih)
     target_link_libraries(mh4u_multiplayer_test PRIVATE inih httplib json-headers)
     target_link_libraries(mh4u_input_test PRIVATE inih)

@@ -88,8 +88,9 @@ def test_util_tests(tmp_path):
 
 
 def test_app_tests(tmp_path, inih):
-    out = build_and_run(tmp_path, "app_test", ["util/tests/app_test.cpp", "config.cpp", "launcher/checks.cpp", *UTIL], [],
-                        inih)
+    out = build_and_run(tmp_path, "app_test", ["util/tests/app_test.cpp", "config.cpp", "launcher/checks.cpp",
+                                               os.path.join("..", "src", "options_template.cpp"), *UTIL],
+                        ["-I" + os.path.join(ROOT, "port", "src")], inih)
     assert "Status: SUCCESS!" in out
 
 
