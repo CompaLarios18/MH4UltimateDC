@@ -5,10 +5,12 @@ CMake option MH4U_APP_TESTS builds them inside Azahar's tree, which CI does not 
 each is compiled against doctest and {fmt} from native/third_party, and inih, httplib, nlohmann's
 json, SDL2's headers and OpenSSL's headers from Azahar's externals (MH4N_AZAHAR_DIR, else
 ~/azahar), and skipped when something is missing, or when clang is not the compiler available.
+The last two tests guard the shared UI and launcher sources against Azahar's headers (N2b-01).
 """
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 
@@ -118,3 +120,42 @@ def test_keyboard_tests(tmp_path, inih, imgui):
                         ["-DSDL_MAIN_HANDLED", "-DIMGUI_DISABLE_OBSOLETE_FUNCTIONS", "-I" + IMGUI_DIR,
                          "-I" + os.path.join(EXT, "sdl2", "SDL", "include")], [*inih, *imgui])
     assert "Status: SUCCESS!" in out
+
+
+# The shared UI and launcher sources include no Azahar header (N2b-01): the window comes through
+# app_window.h, the runtime through runtime.h. The render_*.cpp files are the Azahar app's own.
+AZAHAR_INCLUDE = re.compile(r'#include "(window\.h|frontend\.h|netsync\.h|core/|video_core/|common/)')
+
+
+def shared_ui_sources() -> list[str]:
+    files = []
+    for folder in ("ui", "launcher"):
+        for name in sorted(os.listdir(os.path.join(APP, folder))):
+            if name.endswith((".cpp", ".h")) and not name.startswith("render_"):
+                files.append(os.path.join(folder, name))
+    return files
+
+
+def test_shared_ui_sources_include_no_azahar_header():
+    files = shared_ui_sources()
+    assert "ui/ui.cpp" in files and "launcher/screen_settings.cpp" in files
+    found = []
+    for rel in files:
+        with open(os.path.join(APP, rel), encoding="utf-8") as handle:
+            found += [rel for line in handle if AZAHAR_INCLUDE.match(line)]
+    assert found == []
+    with open(os.path.join(APP, "runtime.h"), encoding="utf-8") as handle:
+        assert "HostSystem" not in handle.read()
+
+
+def test_changed_shared_sources_compile(tmp_path):
+    """-fsyntax-only of the UI and launcher sources N2b-01 changed, with the test programs' flags."""
+    need(os.path.join(EXT, "sdl2", "SDL", "include", "SDL.h"))
+    flags = ["-std=c++20", "-fsyntax-only", "-Wall", "-Wextra", "-Werror", "-DFMT_HEADER_ONLY=1", "-DSDL_MAIN_HANDLED",
+             "-DIMGUI_DISABLE_OBSOLETE_FUNCTIONS", "-I" + APP, "-I" + os.path.join(ROOT, "port", "src"),
+             "-I" + IMGUI_DIR, "-I" + os.path.join(IMGUI_DIR, "backends"),
+             "-I" + os.path.join(ROOT, "native", "third_party", "fmt", "include"),
+             "-I" + os.path.join(EXT, "inih", "inih"), "-I" + os.path.join(EXT, "inih", "inih", "cpp"),
+             "-I" + os.path.join(EXT, "sdl2", "SDL", "include")]
+    for rel in ("ui/ui.cpp", "ui/menu.cpp", "ui/hint.cpp", "launcher/screen_settings.cpp"):
+        run([CXX, *flags, os.path.join(APP, rel)])
