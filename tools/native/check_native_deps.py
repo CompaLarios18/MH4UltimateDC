@@ -35,6 +35,22 @@ spelling, a source list kept in a data file (file(STRINGS ...), a .cmake.in) and
 only resolves through -I port/src are not seen. The maintainer reads changes to native/ CMake
 files and to this script.
 
+The app tree (native/app/, N2b-03) gets three more rules, and so do the shared app sources it compiles:
+
+  - no SDL2 include (`<SDL.h>`, `"SDL.h"`, `<SDL2/...>`, or SDL2's other flat headers such as
+    `<SDL_vulkan.h>`: SDL3's are `<SDL3/...>`; SDL2 and SDL3 export the same function names, so
+    nothing in native/ may link SDL2), and no httplib or JSON include (`httplib.h`,
+    `nlohmann/...`, `json.hpp`), in a file under native/app/ or in a source of port/app/ that
+    a CMakeLists.txt under native/app/ names;
+  - the files of port/app that native/app/ names are found as the port/src ones are (a mention of
+    port/app/<file> checks that file, a .cpp and its .h as a pair; a glob or a variable after
+    port/app checks every shared source, the files mh4u-native may compile: config, input, kbm,
+    invite, util/*.cpp and ui/*.cpp except render_*.cpp; the bare directory as an include path
+    checks nothing), the Azahar include rule applies to them, and the quoted includes of a checked
+    file that resolve under port/app are checked too;
+  - nothing under native/src/ includes an SDL header (`SDL...`) or one of Dear ImGui's
+    (`imgui...`): the modules there are linked into every binary.
+
 A mention in a CMake comment is ignored; one in a comment of a .cpp/.h file counts (it is
 conservative: the file is checked although nothing may use it).
 
@@ -99,6 +115,11 @@ PORT_SRC_RE = re.compile(_PATH_START + r"port/src(?:/([A-Za-z0-9_][A-Za-z0-9_.+\
 # trailing slash, or in a list) or followed by a variable component, in a CMake file. A bare word
 # `port` ("the native port") is not a path and does not match.
 PORT_DIR_VARIABLE_RE = re.compile(r'(?<=/)port(?:(?=["\s);])|/(?=["\s);$]|$))', re.MULTILINE)
+PORT_APP_RE = re.compile(_PATH_START + r"port/app(?:/([A-Za-z0-9_][A-Za-z0-9_.+\-/]*))?")
+# SDL2's headers: SDL.h, SDL2/..., and its flat SDL_x.h (SDL3's are SDL3/SDL_x.h)
+SDL2_INCLUDE_RE = re.compile(r"^(?:SDL\.h|SDL2/.*|SDL_[A-Za-z0-9_]+\.h)$")
+NETWORK_INCLUDE_RE = re.compile(r"^(?:httplib\.h|nlohmann/.*|json\.hpp)$")
+SDL_OR_IMGUI_INCLUDE_RE = re.compile(r"^(?:SDL.*|(?i:imgui).*)$")
 PATH_NOISE_RE = re.compile(r"/(?:\.?/)+")
 PARENT_RE = re.compile(r"/(?!\.\.)[^/\s\"';()]+/\.\./")
 
@@ -146,6 +167,34 @@ def check_includes(path: Path, shown: str) -> list[str]:
     return problems
 
 
+def check_app_includes(path: Path, shown: str) -> list[str]:
+    """The rules of the app tree: no SDL2, httplib or JSON include."""
+    problems: list[str] = []
+    for number, line in enumerate(_read(path) or [], 1):
+        match = INCLUDE_RE.match(line)
+        if not match:
+            continue
+        target = posixpath.normpath(match.group(1).strip().replace("\\", "/"))
+        if SDL2_INCLUDE_RE.match(target):
+            problems.append(f"{shown}:{number}: includes '{target}' (SDL2; native/ uses SDL3)")
+        elif NETWORK_INCLUDE_RE.match(target):
+            problems.append(f"{shown}:{number}: includes '{target}' (the Azahar app's network layer)")
+    return problems
+
+
+def check_no_sdl_or_imgui(path: Path, shown: str) -> list[str]:
+    """native/src is linked into every binary: no SDL and no Dear ImGui there."""
+    problems: list[str] = []
+    for number, line in enumerate(_read(path) or [], 1):
+        match = INCLUDE_RE.match(line)
+        if not match:
+            continue
+        target = posixpath.normpath(match.group(1).strip().replace("\\", "/"))
+        if SDL_OR_IMGUI_INCLUDE_RE.match(target):
+            problems.append(f"{shown}:{number}: includes '{target}' (SDL and Dear ImGui belong in native/app/)")
+    return problems
+
+
 def check_cmake(path: Path, shown: str) -> list[str]:
     lines = _read(path)
     problems: list[str] = []
@@ -183,6 +232,41 @@ def port_src_mentions(text: str, cmake: bool = False) -> tuple[set[str], bool]:
     return named, bare
 
 
+def port_app_mentions(text: str) -> tuple[set[str], bool]:
+    """(files of port/app named in the text, whether a glob or variable follows `port/app`)."""
+    named: set[str] = set()
+    glob = False
+    text = _normalise_path(text)
+    for match in PORT_APP_RE.finditer(text):
+        rel = (match.group(1) or "").rstrip(".-/+")
+        after = text[match.end():match.end() + 1]
+        if not match.group(1) and after == "/":              # port/app/*.cpp, port/app/${X}.cpp
+            after = text[match.end() + 1:match.end() + 2]
+        if after in ("*", "$", "{", "?", "["):
+            glob = True
+            continue
+        if not rel or "." not in rel.rsplit("/", 1)[-1].strip("."):
+            continue                                     # the directory, as an include path
+        named.add(rel)
+        stem, _dot, suffix = rel.rpartition(".")
+        if suffix in ("cpp", "h"):
+            named.add(f"{stem}.{'h' if suffix == 'cpp' else 'cpp'}")
+    return named, glob
+
+
+def shared_app_sources(app: Path) -> set[str]:
+    """The shared sources of port/app (tests/test_native_app_portable.py's list)."""
+    files = {"config.cpp", "input.cpp", "kbm.cpp", "invite.cpp"}
+    for sub in ("util", "ui"):
+        folder = app / sub
+        if folder.is_dir():
+            for entry in folder.glob("*.cpp"):
+                if sub == "ui" and entry.name.startswith("render_"):
+                    continue
+                files.add(f"{sub}/{entry.name}")
+    return files
+
+
 def check(root: Path) -> tuple[list[str], int]:
     """Returns (offences, number of files looked at)."""
     native = root / "native"
@@ -190,6 +274,8 @@ def check(root: Path) -> tuple[list[str], int]:
     count = 0
     named: set[str] = set()
     bare = False
+    app_named: set[str] = set()
+    app_glob = False
     for dirpath, _dirnames, filenames in os.walk(native):
         for name in sorted(filenames):
             path = Path(dirpath) / name
@@ -208,6 +294,18 @@ def check(root: Path) -> tuple[list[str], int]:
             found, found_bare = port_src_mentions(text, is_cmake)
             named |= found
             bare = bare or found_bare
+            parts = path.relative_to(native).parts
+            if parts[0] == "app":
+                if not is_cmake:
+                    problems += check_app_includes(path, shown)
+                if parts[:2] == ("app", "third_party"):
+                    continue                              # (their mentions are not the app's sources)
+                if is_cmake:
+                    found_app, found_glob = port_app_mentions(text)
+                    app_named |= found_app
+                    app_glob = app_glob or found_glob
+            elif parts[0] == "src" and not is_cmake:
+                problems += check_no_sdl_or_imgui(path, shown)
     wanted = set(named)
     if bare:
         wanted |= set(PORT_SRC_FILES)
@@ -237,6 +335,41 @@ def check(root: Path) -> tuple[list[str], int]:
                 try:
                     if not local.startswith("..") and (src / local).is_file():
                         queue.append(local.replace(os.sep, "/"))
+                except OSError:
+                    pass
+    # the shared sources of port/app that native/app/ compiles
+    app_src = root / "port" / "app"
+    queue = sorted(app_named | (shared_app_sources(app_src) if app_glob and app_src.is_dir() else set()))
+    seen = set()
+    while queue:
+        rel = queue.pop()
+        if rel in seen:
+            continue
+        seen.add(rel)
+        path = app_src / rel
+        try:
+            if not path.is_file():
+                continue
+        except OSError:
+            continue
+        count += 1
+        shown = f"port/app/{rel}"
+        problems += check_includes(path, shown)
+        problems += check_app_includes(path, shown)
+        for line in _read(path) or []:
+            match = INCLUDE_RE.match(line)
+            if not match:
+                continue
+            target = match.group(1).strip().replace("\\", "/")
+            if os.path.isabs(target):
+                continue
+            # a quoted include resolves beside the file, then through -I port/app
+            for base in (os.path.dirname(rel), ""):
+                local = os.path.normpath(os.path.join(base, target))
+                try:
+                    if not local.startswith("..") and (app_src / local).is_file():
+                        queue.append(local.replace(os.sep, "/"))
+                        break
                 except OSError:
                     pass
     return sorted(problems), count

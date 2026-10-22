@@ -33,6 +33,7 @@ option(MH4N_TESTS "Build the unit tests (native/tests)" ON)
 option(MH4N_WERROR "Treat warnings in our own code as errors" OFF)
 option(MH4N_ASAN "Build with AddressSanitizer" OFF)
 option(MH4N_DEBUG_GUARD "Guest memory debug guard (N1-02)" OFF)
+option(MH4N_APP "Build the app tree native/app (SDL3, Dear ImGui: mh4u-native, N2b-03)" OFF)
 
 # Programs go to <build>/bin.
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
@@ -187,4 +188,11 @@ endforeach()
 
 if (MH4N_TESTS)
     add_subdirectory(tests)
+endif()
+
+# The app tree (N2b-03): SDL3, Dear ImGui and the app's shared sources. Only mh4u-native and the
+# tests under native/app/tests link them; nothing above this line needs SDL3.
+if (MH4N_APP)
+    find_package(SDL3 3.4.18 CONFIG REQUIRED)
+    add_subdirectory(app)
 endif()
