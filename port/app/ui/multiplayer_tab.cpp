@@ -6,10 +6,10 @@
 #include <future>
 #include <string>
 #include <vector>
-#include <SDL.h>
 #include <fmt/format.h>
 #include <imgui.h>
 
+#include "app_window.h"
 #include "config.h"
 #include "invite.h"
 #include "launcher/lobby.h"
@@ -118,7 +118,7 @@ void StartFetch(TabState& tab, const std::string& lobby) {
 }
 
 void Copy(TabState& tab, const std::string& text) {
-    SDL_SetClipboardText(text.c_str());
+    Host::SetClipboard(text);
     tab.copied = std::chrono::steady_clock::now();
 }
 
@@ -471,15 +471,12 @@ void DrawJoin(Layer& layer, TabState& tab, const Config& config, bool busy) {
         ImGui::SameLine();
         if (ImGui::Button("Paste invite")) {
             tab.paste_note.clear();
-            if (char* text = SDL_GetClipboardText()) {
-                const auto room = Invite::Parse(text);
-                if (room.ok) {
-                    tab.invite = room.code ? Invite::Format(room.host, room.port, room.password)
-                                           : Invite::Address(room.host, room.port);
-                } else {
-                    tab.paste_note = "The clipboard has no invite: " + room.error;
-                }
-                SDL_free(text);
+            const auto room = Invite::Parse(Host::GetClipboard());
+            if (room.ok) {
+                tab.invite = room.code ? Invite::Format(room.host, room.port, room.password)
+                                       : Invite::Address(room.host, room.port);
+            } else {
+                tab.paste_note = "The clipboard has no invite: " + room.error;
             }
         }
         layer.Help("Takes the invite from the clipboard (it can sit in a longer message).");
@@ -573,6 +570,10 @@ void DrawHost(Layer& layer, TabState& tab, const Config& config, bool busy) {
 } // namespace
 
 void DrawMultiplayerTab(Layer& layer) {
+    if (!MP::Available()) {
+        ImGui::TextDisabled("Not available in this build");
+        return;
+    }
     TabState& tab = Tab();
     const Config& config = layer.config;
     if (!tab.loaded) {

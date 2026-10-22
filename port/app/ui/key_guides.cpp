@@ -4,9 +4,9 @@
 #include <cmath>
 #include <string>
 #include <vector>
-#include <SDL.h>
 #include <imgui.h>
 
+#include "app_window.h"
 #include "config.h"
 #include "input.h"
 #include "util/buttons.h"
@@ -89,20 +89,20 @@ float DrawMouse(ImDrawList* dl, ImVec2 at, float h, const std::string& name) {
     dl->AddRectFilled(o, ImVec2(o.x + w, o.y + h), body, r);
     const int code = Input::MouseCode(name);
     const ImVec2 wheel_min(o.x + w * 0.42f, o.y + h * 0.13f), wheel_max(o.x + w * 0.58f, o.y + h * 0.33f);
-    if (code == Input::MOUSE_KEY + SDL_BUTTON_LEFT) {
+    if (code == Input::MOUSE_KEY + MouseButton::Left) {
         dl->AddRectFilled(o, ImVec2(o.x + w * 0.5f, split), lit, r, ImDrawFlags_RoundCornersTopLeft);
-    } else if (code == Input::MOUSE_KEY + SDL_BUTTON_RIGHT) {
+    } else if (code == Input::MOUSE_KEY + MouseButton::Right) {
         dl->AddRectFilled(ImVec2(o.x + w * 0.5f, o.y), ImVec2(o.x + w, split), lit, r,
                           ImDrawFlags_RoundCornersTopRight);
-    } else if (code == Input::MOUSE_KEY + SDL_BUTTON_X1 || code == Input::MOUSE_KEY + SDL_BUTTON_X2) {
-        const float y = code == Input::MOUSE_KEY + SDL_BUTTON_X1 ? 0.62f : 0.48f;
+    } else if (code == Input::MOUSE_KEY + MouseButton::X1 || code == Input::MOUSE_KEY + MouseButton::X2) {
+        const float y = code == Input::MOUSE_KEY + MouseButton::X1 ? 0.62f : 0.48f;
         dl->AddRectFilled(ImVec2(o.x - w * 0.06f, o.y + h * y), ImVec2(o.x + w * 0.14f, o.y + h * (y + 0.13f)), lit,
                           w * 0.05f);
     }
     dl->AddRect(o, ImVec2(o.x + w, o.y + h), line, r, std::max(1.0f, h * 0.06f));
     dl->AddLine(ImVec2(o.x, split), ImVec2(o.x + w, split), line, std::max(1.0f, h * 0.05f));
     dl->AddLine(ImVec2(o.x + w * 0.5f, o.y), ImVec2(o.x + w * 0.5f, split), line, std::max(1.0f, h * 0.05f));
-    const bool wheel = code == Input::MOUSE_KEY + SDL_BUTTON_MIDDLE || code == Input::WHEEL_UP ||
+    const bool wheel = code == Input::MOUSE_KEY + MouseButton::Middle || code == Input::WHEEL_UP ||
                        code == Input::WHEEL_DOWN;
     dl->AddRectFilled(wheel_min, wheel_max, wheel ? lit : line, w * 0.08f);
     if (code == Input::WHEEL_UP || code == Input::WHEEL_DOWN) {

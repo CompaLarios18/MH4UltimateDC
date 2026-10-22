@@ -3,10 +3,10 @@
 #include <algorithm>
 #include <cctype>
 #include <cstring>
-#include <SDL.h>
 #include <fmt/format.h>
 #include <imgui.h>
 
+#include "app_window.h"
 #include "util/log.h"
 #include "util/strings.h"
 
@@ -95,7 +95,7 @@ void Keyboard::ShowError(const std::string& message) {
     error = message.empty() ? "The game didn't take the text." : message;
     // shown on its own unless the game asks for the text again (Execute)
     notice = error;
-    notice_until = SDL_GetTicks() + NOTICE_MS;
+    notice_until = Host::Ticks() + NOTICE_MS;
 }
 
 bool Keyboard::Active() const {
@@ -111,7 +111,8 @@ void Keyboard::Refocus() {
 
 bool Keyboard::HasNotice() const {
     std::scoped_lock lock{mutex};
-    return !notice.empty() && !SDL_TICKS_PASSED(SDL_GetTicks(), notice_until);
+    // (the ticks wrap around: the notice is up while its end is still ahead)
+    return !notice.empty() && static_cast<std::int32_t>(notice_until - Host::Ticks()) > 0;
 }
 
 bool Keyboard::Accepts(unsigned c) const {

@@ -5,12 +5,12 @@
 #include <cstdlib>
 #include <SDL.h>
 #include <fmt/format.h>
+#include <imgui_impl_sdl2.h>
 
 #include "common/logging/log.h"
 #include "config.h"
 #include "core/core.h"
 #include "frontend.h"
-#include "icon.h"
 #include "input.h"
 #include "runtime.h"
 #include "ui/fps_counter.h"
@@ -27,6 +27,8 @@ std::unique_ptr<Window> MakeVulkanWindow(Core::System& system, const Config& con
 #ifdef ENABLE_SOFTWARE_RENDERER
 std::unique_ptr<Window> MakeSoftwareWindow(Core::System& system, const Config& config, bool is_secondary);
 #endif
+
+const SDL_Event* Window::current_event = nullptr;
 
 namespace {
 constexpr u32 CURSOR_IDLE_MS = 2000;  // full screen: the mouse cursor hides after this long
@@ -132,6 +134,117 @@ void Window::UpdateMouseMode() {
     }
 }
 
+void Window::ImGuiInit() {
+    ImGui_ImplSDL2_InitForOther(render_window);
+    ImGui_ImplSDL2_SetGamepadMode(ImGui_ImplSDL2_GamepadMode_AutoAll); // any controller, not the first
+}
+
+void Window::ImGuiShutdown() {
+    ImGui_ImplSDL2_Shutdown();
+}
+
+void Window::ImGuiNewFrame() {
+    ImGui_ImplSDL2_NewFrame();
+}
+
+void Window::ImGuiForwardCurrentEvent() {
+    if (current_event) {
+        ImGui_ImplSDL2_ProcessEvent(current_event);
+    }
+}
+
+InputEvent Window::Translate(const SDL_Event& event) {
+    using Type = InputEvent::Type;
+    InputEvent out;
+    switch (event.type) {
+    case SDL_KEYDOWN:
+    case SDL_KEYUP:
+        out.type = event.type == SDL_KEYDOWN ? Type::KeyDown : Type::KeyUp;
+        out.scancode = static_cast<int>(event.key.keysym.scancode);
+        out.repeat = event.key.repeat != 0;
+        out.mods = event.key.keysym.mod;
+        break;
+    case SDL_TEXTINPUT:
+        out.type = Type::Text;
+        out.text = event.text.text;
+        break;
+    case SDL_MOUSEMOTION:
+        out.type = Type::MouseMotion;
+        out.x = event.motion.x;
+        out.y = event.motion.y;
+        out.dx = event.motion.xrel;
+        out.dy = event.motion.yrel;
+        out.from_touch = event.motion.which == SDL_TOUCH_MOUSEID;
+        break;
+    case SDL_MOUSEBUTTONDOWN:
+    case SDL_MOUSEBUTTONUP:
+        out.type = Type::MouseButton;
+        out.button = event.button.button;
+        out.down = event.type == SDL_MOUSEBUTTONDOWN;
+        out.x = event.button.x;
+        out.y = event.button.y;
+        out.from_touch = event.button.which == SDL_TOUCH_MOUSEID;
+        break;
+    case SDL_MOUSEWHEEL:
+        out.type = Type::Wheel;
+        out.wheel_x = event.wheel.x;
+        out.wheel_y = event.wheel.y;
+        out.from_touch = event.wheel.which == SDL_TOUCH_MOUSEID;
+        break;
+    case SDL_CONTROLLERBUTTONDOWN:
+    case SDL_CONTROLLERBUTTONUP:
+        out.type = Type::PadButton;
+        out.pad = event.cbutton.which;
+        out.button = event.cbutton.button;
+        out.down = event.type == SDL_CONTROLLERBUTTONDOWN;
+        break;
+    case SDL_CONTROLLERAXISMOTION:
+        out.type = Type::PadAxis;
+        out.pad = event.caxis.which;
+        out.axis = event.caxis.axis;
+        out.value = event.caxis.value;
+        break;
+    case SDL_CONTROLLERDEVICEADDED:
+        out.type = Type::PadAdded;
+        out.pad = event.cdevice.which;
+        break;
+    case SDL_CONTROLLERDEVICEREMOVED:
+        out.type = Type::PadRemoved;
+        out.pad = event.cdevice.which;
+        break;
+    case SDL_FINGERDOWN:
+    case SDL_FINGERUP:
+    case SDL_FINGERMOTION:
+        out.type = Type::Touch;
+        break;
+    case SDL_WINDOWEVENT:
+        switch (event.window.event) {
+        case SDL_WINDOWEVENT_SIZE_CHANGED:
+        case SDL_WINDOWEVENT_RESIZED:
+        case SDL_WINDOWEVENT_MAXIMIZED:
+        case SDL_WINDOWEVENT_RESTORED:
+        case SDL_WINDOWEVENT_DISPLAY_CHANGED:
+            out.type = Type::Resized;
+            break;
+        case SDL_WINDOWEVENT_CLOSE:
+            out.type = Type::CloseRequested;
+            break;
+        case SDL_WINDOWEVENT_FOCUS_LOST:
+            out.type = Type::FocusLost;
+            break;
+        default:
+            break;
+        }
+        break;
+    case SDL_QUIT:
+        out.type = Type::Quit;
+        break;
+    default:
+        break;
+    }
+    return out;
+}
+
 Window::~Window() {
     if (render_window) {
         SDL_DestroyWindow(render_window);
@@ -144,7 +257,7 @@ u32 Window::BaseFlags() {
 
 void Window::FinishSetup(bool start_fullscreen) {
     window_id = SDL_GetWindowID(render_window);
-    Icon::Apply(render_window);
+    Host::SetWindowIcon(*this);
     // a window the size of a 1280x720 picture, or the screen's if that's smaller
     SDL_Rect usable{};
     if (SDL_GetDisplayUsableBounds(SDL_GetWindowDisplayIndex(render_window), &usable) == 0) {
@@ -277,7 +390,10 @@ void Window::PollEvents() {
             last_used_keyboard = true;
         }
         // the in-game menu's (ui/): its toggle, and while it is up the keys, mouse and controller
-        if (Ui::OnEvent(event)) {
+        current_event = &event;
+        const bool taken = Ui::OnEvent(Translate(event));
+        current_event = nullptr;
+        if (taken) {
             continue;
         }
         switch (event.type) {

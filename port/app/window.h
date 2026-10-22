@@ -86,6 +86,12 @@ public:
         return render_window;
     }
 
+    // Dear ImGui's SDL2 backend, which the shared menu reaches through IWindow
+    void ImGuiInit() override;
+    void ImGuiShutdown() override;
+    void ImGuiNewFrame() override;
+    void ImGuiForwardCurrentEvent() override;
+
 protected:
     Window(Core::System& system, const Config& config, bool is_secondary);
 
@@ -118,7 +124,12 @@ private:
     /// A key event that came with a controller's button (Steam Input sends keys for a
     /// controller's buttons in some layouts): not the keyboard's.
     bool EchoOfController() const;
+    /// The event as the shared sources read it (app_window.h): SDL2's numbering, as it is.
+    static InputEvent Translate(const SDL_Event& event);
 
+    /// The event PollEvents is handing to Ui::OnEvent: of any window, as every window's PollEvents
+    /// drains SDL's one queue, and the menu's layer asks the main window to forward it.
+    static const SDL_Event* current_event;
     std::atomic<bool> is_open{true};
     bool fullscreen = false;
     const Config& config;

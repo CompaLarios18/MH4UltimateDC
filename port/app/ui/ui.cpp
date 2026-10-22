@@ -2,12 +2,10 @@
 
 #include <algorithm>
 #include <cmath>
-#include <SDL.h>
 #include <imgui.h>
-#include <imgui_impl_sdl2.h>
 
+#include "app_window.h"
 #include "config.h"
-#include "hooks.h"
 #include "input.h"
 #include "runtime.h"
 #include "ui/fps_counter.h"
@@ -155,8 +153,7 @@ Layer::Layer(IWindow& window_, Config& config_) : window{window_}, config{config
     io.Fonts->AddFontDefaultVector();
     SetStyle(ImGui::GetStyle());
     base_style = ImGui::GetStyle();
-    ImGui_ImplSDL2_InitForOther(window.SdlWindow());
-    ImGui_ImplSDL2_SetGamepadMode(ImGui_ImplSDL2_GamepadMode_AutoAll); // any controller, not the first
+    window.ImGuiInit(); // the window's platform backend, every controller driving the navigation
 
     menu = std::make_unique<Menu>(*this);
     keyboard = std::make_shared<Keyboard>();
@@ -179,7 +176,7 @@ Layer::~Layer() {
     std::scoped_lock lock{mutex};
     MakeCurrent();
     copy.Clear();
-    ImGui_ImplSDL2_Shutdown();
+    window.ImGuiShutdown();
     ImGui::DestroyContext(context);
 }
 
@@ -228,47 +225,44 @@ void Layer::SetCapture(bool on) {
         Runtime().ReleaseAllKeys();
         window.ReleaseTouch();
         fresh_input = true;
-        SDL_ShowCursor(SDL_ENABLE);
+        Host::ShowCursor(true);
     }
 }
 
-bool Layer::OnEvent(const SDL_Event& event) {
+bool Layer::OnEvent(const InputEvent& event) {
+    using Type = InputEvent::Type;
     // the menu's toggle: Esc, a controller's Guide, or its Back and Start together (Guide is
     // often Steam's or the Game Bar's)
     switch (event.type) {
-    case SDL_KEYDOWN:
-        if (event.key.repeat == 0 && event.key.keysym.scancode == SDL_SCANCODE_ESCAPE &&
-            !key_capture) {
+    case Type::KeyDown:
+        if (!event.repeat && event.scancode == Scancode::Escape && !key_capture) {
             if (!menu_open) {
                 // a moment later, unless a controller's button came with it: Steam Input's
                 // desktop layouts (a Steam Deck's, say) send Esc for B while the game sees the
                 // controller too, and B would open the menu (Frame decides)
-                escape_at = std::max<u32>(SDL_GetTicks(), 1);
+                escape_at = std::max<u32>(Host::Ticks(), 1);
                 return true;
             }
             escape_pressed = true; // the frame decides: a list or a text field takes it first
         }
         break;
-    case SDL_CONTROLLERBUTTONDOWN:
-    case SDL_CONTROLLERBUTTONUP: {
-        const bool down = event.type == SDL_CONTROLLERBUTTONDOWN;
-        if (down) {
-            pad_button_at = std::max<u32>(SDL_GetTicks(), 1);
+    case Type::PadButton: {
+        if (event.down) {
+            pad_button_at = std::max<u32>(Host::Ticks(), 1);
         }
-        const u8 button = event.cbutton.button;
-        if (button == SDL_CONTROLLER_BUTTON_GUIDE) {
-            if (down) {
+        if (event.button == PadButton::Guide) {
+            if (event.down) {
                 menu_open ? Close() : Open();
             }
             return true;
         }
-        const u32 bit = button == SDL_CONTROLLER_BUTTON_BACK    ? BACK_HELD
-                        : button == SDL_CONTROLLER_BUTTON_START ? START_HELD
-                                                                : 0;
+        const u32 bit = event.button == PadButton::Back    ? BACK_HELD
+                        : event.button == PadButton::Start ? START_HELD
+                                                           : 0;
         if (bit) {
             const u32 before = controller_buttons;
-            controller_buttons = down ? controller_buttons | bit : controller_buttons & ~bit;
-            if (down && before != controller_buttons &&
+            controller_buttons = event.down ? controller_buttons | bit : controller_buttons & ~bit;
+            if (event.down && before != controller_buttons &&
                 controller_buttons == (BACK_HELD | START_HELD)) {
                 menu_open ? Close() : Open();
                 return true;
@@ -276,15 +270,15 @@ bool Layer::OnEvent(const SDL_Event& event) {
         }
         break;
     }
-    case SDL_CONTROLLERDEVICEADDED:
-    case SDL_CONTROLLERDEVICEREMOVED: {
+    case Type::PadAdded:
+    case Type::PadRemoved: {
         // the menu's list of controllers, kept whether it is up or not (and the window's)
-        if (event.type == SDL_CONTROLLERDEVICEREMOVED) {
+        if (event.type == Type::PadRemoved) {
             controller_buttons = 0;
         }
         std::scoped_lock lock{mutex};
         MakeCurrent();
-        ImGui_ImplSDL2_ProcessEvent(&event);
+        window.ImGuiForwardCurrentEvent();
         return false;
     }
     default:
@@ -296,46 +290,40 @@ bool Layer::OnEvent(const SDL_Event& event) {
     }
     // Controls: the next key pressed is the one to bind (Dear ImGui still sees keys let go, the
     // one that started the capture among them)
-    if (key_capture && event.type == SDL_KEYDOWN) {
-        if (event.key.repeat == 0) {
-            menu->OnCapturedKey(static_cast<int>(event.key.keysym.scancode));
+    if (key_capture && event.type == Type::KeyDown) {
+        if (!event.repeat) {
+            menu->OnCapturedKey(event.scancode);
         }
         return true;
     }
     // (and a mouse button or the wheel: Mouse Right, Wheel Up, ...)
-    if (key_capture && event.type == SDL_MOUSEBUTTONDOWN && event.button.which != SDL_TOUCH_MOUSEID) {
-        menu->OnCapturedKey(Input::MOUSE_KEY + event.button.button);
+    if (key_capture && event.type == Type::MouseButton && event.down && !event.from_touch) {
+        menu->OnCapturedKey(Input::MOUSE_KEY + event.button);
         return true;
     }
-    if (key_capture && event.type == SDL_MOUSEWHEEL && event.wheel.y != 0) {
-        menu->OnCapturedKey(event.wheel.y > 0 ? Input::WHEEL_UP : Input::WHEEL_DOWN);
+    if (key_capture && event.type == Type::Wheel && event.wheel_y != 0) {
+        menu->OnCapturedKey(event.wheel_y > 0 ? Input::WHEEL_UP : Input::WHEEL_DOWN);
         return true;
     }
     {
         std::scoped_lock lock{mutex};
         MakeCurrent();
-        ImGui_ImplSDL2_ProcessEvent(&event);
+        window.ImGuiForwardCurrentEvent();
     }
     switch (event.type) {
-    case SDL_KEYDOWN:
-    case SDL_KEYUP: {
+    case Type::KeyDown:
+    case Type::KeyUp: {
         // full screen stays the window's (F11, Alt+Enter)
-        const int code = static_cast<int>(event.key.keysym.scancode);
-        const bool alt_enter = code == SDL_SCANCODE_RETURN && (event.key.keysym.mod & KMOD_ALT);
-        return !(alt_enter || code == Input::KeyCode(config.fullscreen_key));
+        const bool alt_enter = event.scancode == Scancode::Return && (event.mods & Mod::Alt);
+        return !(alt_enter || event.scancode == Input::KeyCode(config.fullscreen_key));
     }
-    case SDL_TEXTINPUT:
-    case SDL_TEXTEDITING:
-    case SDL_MOUSEMOTION:
-    case SDL_MOUSEBUTTONDOWN:
-    case SDL_MOUSEBUTTONUP:
-    case SDL_MOUSEWHEEL:
-    case SDL_FINGERDOWN:
-    case SDL_FINGERUP:
-    case SDL_FINGERMOTION:
-    case SDL_CONTROLLERBUTTONDOWN:
-    case SDL_CONTROLLERBUTTONUP:
-    case SDL_CONTROLLERAXISMOTION:
+    case Type::Text:
+    case Type::MouseMotion:
+    case Type::MouseButton:
+    case Type::Wheel:
+    case Type::Touch:
+    case Type::PadButton:
+    case Type::PadAxis:
         return true;
     default:
         return false; // the window's too: resizing, focus, controllers coming and going, quitting
@@ -385,7 +373,7 @@ void Layer::ToggleKeyGuides() {
 void Layer::Frame() {
     if (escape_at != 0) {
         constexpr u32 ECHO_MS = 150;
-        const u32 now = SDL_GetTicks();
+        const u32 now = Host::Ticks();
         const bool echo = pad_button_at != 0 && (pad_button_at >= escape_at ? pad_button_at - escape_at
                                                                               : escape_at - pad_button_at) < ECHO_MS;
         if (echo) {
@@ -439,18 +427,17 @@ void Layer::Frame() {
         io.ClearEventsQueue();
         io.ClearInputKeys();
         io.ClearInputMouse();
-        int x = 0, y = 0;
-        SDL_GetMouseState(&x, &y);
-        io.AddMousePosEvent(static_cast<float>(x), static_cast<float>(y));
+        const Point mouse = Host::MousePosition();
+        io.AddMousePosEvent(static_cast<float>(mouse.x), static_cast<float>(mouse.y));
         // and a controller's buttons held now (the backend reads them each frame) count as held,
         // not as pressed: a frame that takes them in and shows nothing (B held as the menu
         // opened would close it at once, A would choose its first button)
-        ImGui_ImplSDL2_NewFrame();
+        window.ImGuiNewFrame();
         ImGui::NewFrame();
         ImGui::EndFrame();
         fresh_input = false;
     }
-    ImGui_ImplSDL2_NewFrame();
+    window.ImGuiNewFrame();
     // pixels per window unit as the window counts them (the backend asks OpenGL, which a
     // Vulkan or software window doesn't have)
     const WindowSize points = window.SizeInPoints();
@@ -461,7 +448,7 @@ void Layer::Frame() {
     }
     UpdateScale(io.DisplaySize.y);
     if (capturing) {
-        SDL_ShowCursor(SDL_ENABLE);
+        Host::ShowCursor(true);
     }
 
     ImGui::NewFrame();
@@ -475,7 +462,7 @@ void Layer::Frame() {
         keyboard->DrawNotice();
     }
     if (!hint.Empty()) {
-        DrawHint(hint, Port::Hooks::SkipHint() == 2);
+        DrawHint(hint, hint.flash);
     }
     if (fps_counter) {
         DrawFpsCounter(config.fps_counter);
@@ -527,7 +514,7 @@ void Stop() {
     delete instance.exchange(nullptr);
 }
 
-bool OnEvent(const SDL_Event& event) {
+bool OnEvent(const InputEvent& event) {
     Layer* layer = Get();
     return layer && layer->OnEvent(event);
 }
