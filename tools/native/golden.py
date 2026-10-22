@@ -375,8 +375,9 @@ class RunSpec:
     session: Session
     sets: list[str]
     extra: list[str]
-    full: bool                 # the reference's whole option list (new-3ds, install, observable, unmapped, timing,
-                               # gpu, shots, shared page), or only the options both runners share
+    full: bool                 # the reference's whole option list (new-3ds, install, unmapped, timing, gpu, shots,
+                               # shared page), or only the options both runners share (--observable goes to both,
+                               # when `observable` is set)
     shot_every: int = DEFAULT_SHOT_EVERY_FRAMES      # frames between screenshots, 0: none
     observable: str | None = None
 
