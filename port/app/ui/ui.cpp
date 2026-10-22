@@ -318,6 +318,7 @@ bool Layer::OnEvent(const InputEvent& event) {
         return !(alt_enter || event.scancode == Input::KeyCode(config.fullscreen_key));
     }
     case Type::Text:
+    case Type::TextEditing:
     case Type::MouseMotion:
     case Type::MouseButton:
     case Type::Wheel:

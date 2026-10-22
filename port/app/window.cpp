@@ -168,6 +168,9 @@ InputEvent Window::Translate(const SDL_Event& event) {
         out.type = Type::Text;
         out.text = event.text.text;
         break;
+    case SDL_TEXTEDITING:
+        out.type = Type::TextEditing;
+        break;
     case SDL_MOUSEMOTION:
         out.type = Type::MouseMotion;
         out.x = event.motion.x;

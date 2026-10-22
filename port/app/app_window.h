@@ -70,6 +70,7 @@ struct InputEvent {
         KeyDown,        ///< scancode, repeat, mods
         KeyUp,          ///< scancode, repeat, mods
         Text,           ///< text (UTF-8)
+        TextEditing,    ///< an input method's composition in progress (nothing else is read of it)
         MouseMotion,    ///< x, y (window points), dx, dy (counts moved), from_touch
         MouseButton,    ///< button (MouseButton::*), down, x, y, from_touch
         Wheel,          ///< wheel_x, wheel_y (notches, up and right positive), from_touch
