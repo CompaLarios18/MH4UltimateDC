@@ -60,7 +60,7 @@ for that.
 | `--options FILE` | the host's own settings in the layout of `mh4u-app.ini` (`[Section]` lines, `key = value` lines) (N1-20). All keys are stored for the renderer (N2b); only `aspect_ratio` answers Get/SetOption. A bad line or value ends Boot with status 2 |
 
 A device name nothing has registered leaves that interface empty, with an Info line. Registered
-today: the `null` GPU (N1-17), the `script` input source (N1-16) and the `null` audio sink (N1-18);
+today: the `null` GPU (N1-17), the `script` (N1-16) and `live` (N2b-08) input sources and the `null` audio sink (N1-18);
 the capture player's GPUs come with N2 and the real audio sinks with N3.
 
 ## Paths on Windows (D45)
@@ -205,6 +205,7 @@ value (times, ticks) is not part of this table: a different timing model is the 
 | `--capture-hid FILE` | `same` MHID format and manifest (`FILE.json`; its `tool` is `mh4u_native_runner`): one type-1 record per change of the frame counter, a type-2 record once ir:USER has a shared memory block. `differs`: the HID memory is read from the service's own block, zeros until the game has mapped it; the reference reads it through the game's mapping | `mh4n_services_hid` (`hid_capture.cpp`) |
 | `--capture-dsp START:FRAMES:FILE` | `same` syntax (`START` may be `fN`; `FILE` may hold colons) and MDSP format and manifest. `differs`: type-1 (`REGIONS`) records only: the reference's type-2 (`PCM`) and type-3 (`SAMPLES`) records are not written, and `capfmt.py diff-dsp` compares the type-1 records only | `mh4n_services_dsp` (`dsp_capture.cpp`) |
 | `--log FILTER` | `differs`: the categories are the native modules' (`Kernel`, `Service.SRV`, ...), not Azahar's | `main.cpp` |
+| `--input-latch frame\|none`, `--record-input FILE` | native only (the reference has neither; golden.py does not pass them): they belong to `--input-source live` (N2b-08). A `--record-input` file is an `--input-file`: both runners read it, with the same presses at the same frames | `mh4n_input_live` |
 | `--init-time SECONDS` | native only; its default is the reference's fixed start date, so a run without it starts at the same date | `mh4n_runtime` |
 
 The reference's other options are not in this runner, and an unknown option ends the run with status 2:

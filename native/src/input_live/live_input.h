@@ -92,6 +92,7 @@ private:
 // The live source of `runtime` (made by the `devices` step for --input-source live), or null. The
 // runtime owns the source; the handle keeps the part Set and SetTouch use alive, so a call after
 // the runtime is gone changes nothing and is safe.
+// Call it once and keep the shared_ptr: it takes a mutex and does a map lookup.
 std::shared_ptr<LiveInput> Find(Runtime& runtime);
 
 }  // namespace mh4n::input_live

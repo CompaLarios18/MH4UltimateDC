@@ -344,6 +344,18 @@ TEST_CASE("input_live: a recording is lines in the grammar of the script") {
     CHECK(lines[3] == "f10:TOUCH:160:120:f4");
 }
 
+TEST_CASE("input_live: a frame counter that goes backwards writes a hold of one frame, not billions") {
+    ScriptRecorder recorder;
+    Stamp at;
+    at.have_frame = true;
+    at.frame = 100;
+    recorder.Update(Buttons(kPadA), at);
+    at.frame = 50;  // e.g. the game restarted its counter
+    recorder.Update(Buttons(0), at);
+    const std::string text = recorder.Finish(at);
+    CHECK(text.find("f100:A:f1\n") != std::string::npos);
+}
+
 TEST_CASE("input_live: a program without a frame counter is recorded in milliseconds") {
     LiveInput source(nullptr, kStart);
     source.StartRecording();

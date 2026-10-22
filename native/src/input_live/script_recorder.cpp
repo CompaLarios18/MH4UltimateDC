@@ -21,7 +21,8 @@ constexpr ButtonName kButtonNames[12] = {
     {kPadL, "L"},       {kPadR, "R"},       {kPadStart, "START"}, {kPadSelect, "SELECT"},
 };
 
-// script_input.cpp's constants: the circle pad's limit in raw units and the bottom screen's size.
+// script_input.cpp's constants: the circle pad's limit in raw units and the bottom screen's size
+// (see the header of script_input.cpp for the origin of 154 and 320x240).
 constexpr float kCirclePadLimit = 154.0f;  // 0x9A
 
 // The shortest plain decimal (no exponent) that reads back as the same float.
@@ -86,7 +87,8 @@ void ScriptRecorder::Close(Open& press, const std::string& head, const Stamp& at
     line.seq = press.seq;
     if (press.start.have_frame) {
         // At least one frame: a press the game saw is never written as nothing.
-        const u32 held = std::max<u32>(at.frame - press.start.frame, 1);
+        // (a frame counter that went backwards must not make a hold of ~4 billion frames)
+        const u32 held = at.frame >= press.start.frame ? std::max<u32>(at.frame - press.start.frame, 1) : 1;
         line.text = "f" + std::to_string(press.start.frame) + ":" + head;
         line.hold = "f" + std::to_string(held);
     } else {
