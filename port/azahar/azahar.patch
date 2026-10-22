@@ -29,6 +29,441 @@ index 70f8173..2b04b4c 100644
  if (ENABLE_QT)
      add_subdirectory(citra_qt)
  endif()
+diff --git a/src/android/app/build.gradle.kts b/src/android/app/build.gradle.kts
+index 1687de0..8482670 100644
+--- a/src/android/app/build.gradle.kts
++++ b/src/android/app/build.gradle.kts
+@@ -21,7 +21,10 @@ plugins {
+  * next 680 years.
+  */
+ val autoVersion = (((System.currentTimeMillis() / 1000) - 1451606400) / 10).toInt()
+-val abiFilter = listOf("arm64-v8a", "x86_64")
++// The port's Android backend switches fibers with AArch64 code and its recompiled library is
++// built for arm64; keep the APK to the ABI the port supports.
++val abiFilter = listOf("arm64-v8a")
++val mh4uPortDir = providers.gradleProperty("mh4uPortDir").orNull
+ 
+ val downloadedJniLibsPath = "${layout.buildDirectory.get().asFile.path}/downloadedJniLibs"
+ 
+@@ -84,6 +87,9 @@ android {
+                     // sizes
+                     "-DENABLE_GDBSTUB=OFF" // Disable GDB stub
+                 )
++                if (mh4uPortDir != null) {
++                    arguments("-DMH4U_PORT_DIR=$mh4uPortDir")
++                }
+             }
+         }
+ 
+@@ -195,6 +201,9 @@ android {
+         named("main") {
+             // Set up path for downloaded native libraries
+             jniLibs.srcDir(downloadedJniLibsPath)
++            // A code library built from the player's own dump, passed as
++            // -Pmh4uCodeLibs=<dir containing arm64-v8a/libmh4u_code.so>.
++            providers.gradleProperty("mh4uCodeLibs").orNull?.let { jniLibs.srcDir(it) }
+         }
+     }
+ }
+diff --git a/src/android/app/src/main/java/org/citra/citra_emu/fragments/EmulationFragment.kt b/src/android/app/src/main/java/org/citra/citra_emu/fragments/EmulationFragment.kt
+index 81404ca..99f764c 100644
+--- a/src/android/app/src/main/java/org/citra/citra_emu/fragments/EmulationFragment.kt
++++ b/src/android/app/src/main/java/org/citra/citra_emu/fragments/EmulationFragment.kt
+@@ -1788,10 +1788,13 @@ class EmulationFragment :
+             NativeLibrary.surfaceChanged(surface!!)
+             when (state) {
+                 State.STOPPED -> {
+-                    Thread({
++                    // The port's recompiled guest code runs on this thread's stack until a
++                    // guest thread switch. Android's default Java stack (~1 MB) is far too
++                    // small for it; use the desktop port's roomy native stack.
++                    Thread(null, Runnable {
+                         Log.debug("[EmulationFragment] Starting emulation thread.")
+                         NativeLibrary.run(gamePath)
+-                    }, "NativeEmulation").start()
++                    }, "NativeEmulation", 32L * 1024 * 1024).start()
+                 }
+ 
+                 State.PAUSED -> {
+diff --git a/src/android/app/src/main/jni/CMakeLists.txt b/src/android/app/src/main/jni/CMakeLists.txt
+index 251788e..62e14d7 100644
+--- a/src/android/app/src/main/jni/CMakeLists.txt
++++ b/src/android/app/src/main/jni/CMakeLists.txt
+@@ -33,6 +33,10 @@ add_library(citra-android SHARED
+ )
+ 
+ target_link_libraries(citra-android PRIVATE audio_core citra_common citra_core input_common network)
++if (TARGET mh4u_backend)
++    target_link_libraries(citra-android PRIVATE mh4u_backend)
++    target_compile_definitions(citra-android PRIVATE MH4U_BACKEND)
++endif()
+ target_link_libraries(citra-android PRIVATE android camera2ndk inih jnigraphics log mediandk yuv)
+ 
+ if (ENABLE_OPENGL)
+diff --git a/src/android/app/src/main/jni/applets/mii_selector.cpp b/src/android/app/src/main/jni/applets/mii_selector.cpp
+index d9f20e8..0cf437a 100644
+--- a/src/android/app/src/main/jni/applets/mii_selector.cpp
++++ b/src/android/app/src/main/jni/applets/mii_selector.cpp
+@@ -2,6 +2,7 @@
+ // Licensed under GPLv2 or any later version
+ // Refer to the misc/licenses/gplv2.txt file included.
+ 
++#include "common/android_utils.h"
+ #include "common/string_util.h"
+ #include "jni/android_common/android_common.h"
+ #include "jni/applets/mii_selector.h"
+@@ -17,51 +18,57 @@ namespace MiiSelector {
+ AndroidMiiSelector::~AndroidMiiSelector() = default;
+ 
+ void AndroidMiiSelector::Setup(const Frontend::MiiSelectorConfig& config) {
+-    JNIEnv* env = IDCache::GetEnvForThread();
+-    auto miis = Frontend::LoadMiis();
++    // JNI from the port's fiber stack looks like a stack overflow to ART: the picker and
++    // its JNI run on the JNI thread (AndroidUtils::RunOnJniThread), this caller waits.
++    AndroidUtils::RunOnJniThread([this, &config] {
++        JNIEnv* env = IDCache::GetEnvForThread();
++        auto miis = Frontend::LoadMiis();
+ 
+-    // Create the Java MiiSelectorConfig object
+-    jobject java_config = env->AllocObject(s_mii_selector_config_class);
+-    env->SetBooleanField(java_config,
+-                         env->GetFieldID(s_mii_selector_config_class, "enableCancelButton", "Z"),
+-                         static_cast<jboolean>(config.enable_cancel_button));
+-    env->SetObjectField(java_config,
+-                        env->GetFieldID(s_mii_selector_config_class, "title", "Ljava/lang/String;"),
+-                        ToJString(env, config.title));
+-    env->SetLongField(
+-        java_config, env->GetFieldID(s_mii_selector_config_class, "initiallySelectedMiiIndex", "J"),
+-        static_cast<jlong>(config.initially_selected_mii_index));
++        // Create the Java MiiSelectorConfig object
++        jobject java_config = env->AllocObject(s_mii_selector_config_class);
++        env->SetBooleanField(java_config,
++                             env->GetFieldID(s_mii_selector_config_class, "enableCancelButton", "Z"),
++                             static_cast<jboolean>(config.enable_cancel_button));
++        env->SetObjectField(
++            java_config,
++            env->GetFieldID(s_mii_selector_config_class, "title", "Ljava/lang/String;"),
++            ToJString(env, config.title));
++        env->SetLongField(
++            java_config,
++            env->GetFieldID(s_mii_selector_config_class, "initiallySelectedMiiIndex", "J"),
++            static_cast<jlong>(config.initially_selected_mii_index));
+ 
+-    // List mii names
+-    // The 'Standard Mii' is not included here as we need Java side to translate it
+-    const jclass string_class = reinterpret_cast<jclass>(env->FindClass("java/lang/String"));
+-    const jobjectArray array =
+-        env->NewObjectArray(static_cast<jsize>(miis.size()), string_class, nullptr);
+-    for (std::size_t i = 0; i < miis.size(); ++i) {
+-        const auto name = Common::UTF16BufferToUTF8(miis[i].mii_name);
+-        env->SetObjectArrayElement(array, static_cast<jsize>(i), ToJString(env, name));
+-    }
+-    env->SetObjectField(
+-        java_config,
+-        env->GetFieldID(s_mii_selector_config_class, "miiNames", "[Ljava/lang/String;"), array);
++        // List mii names
++        // The 'Standard Mii' is not included here as we need Java side to translate it
++        const jclass string_class = reinterpret_cast<jclass>(env->FindClass("java/lang/String"));
++        const jobjectArray array =
++            env->NewObjectArray(static_cast<jsize>(miis.size()), string_class, nullptr);
++        for (std::size_t i = 0; i < miis.size(); ++i) {
++            const auto name = Common::UTF16BufferToUTF8(miis[i].mii_name);
++            env->SetObjectArrayElement(array, static_cast<jsize>(i), ToJString(env, name));
++        }
++        env->SetObjectField(
++            java_config,
++            env->GetFieldID(s_mii_selector_config_class, "miiNames", "[Ljava/lang/String;"), array);
+ 
+-    // Invoke backend execute method
+-    jobject data =
+-        env->CallStaticObjectMethod(s_mii_selector_class, s_mii_selector_execute, java_config);
++        // Invoke backend execute method
++        jobject data =
++            env->CallStaticObjectMethod(s_mii_selector_class, s_mii_selector_execute, java_config);
+ 
+-    const u32 return_code = static_cast<u32>(
+-        env->GetLongField(data, env->GetFieldID(s_mii_selector_data_class, "returnCode", "J")));
+-    if (return_code == 1) {
+-        Finalize(return_code, Mii::MiiData{});
+-        return;
+-    }
++        const u32 return_code = static_cast<u32>(
++            env->GetLongField(data, env->GetFieldID(s_mii_selector_data_class, "returnCode", "J")));
++        if (return_code == 1) {
++            Finalize(return_code, Mii::MiiData{});
++            return;
++        }
+ 
+-    const int index = static_cast<int>(
+-        env->GetIntField(data, env->GetFieldID(s_mii_selector_data_class, "index", "I")));
+-    ASSERT_MSG(index >= 0 && index <= miis.size(), "Index returned is out of bound");
+-    Finalize(return_code, index == 0
+-                              ? HLE::Applets::MiiSelector::GetStandardMiiResult().selected_mii_data
+-                              : miis.at(static_cast<std::size_t>(index - 1)));
++        const int index = static_cast<int>(
++            env->GetIntField(data, env->GetFieldID(s_mii_selector_data_class, "index", "I")));
++        ASSERT_MSG(index >= 0 && index <= miis.size(), "Index returned is out of bound");
++        Finalize(return_code, index == 0
++                                  ? HLE::Applets::MiiSelector::GetStandardMiiResult().selected_mii_data
++                                  : miis.at(static_cast<std::size_t>(index - 1)));
++    });
+ }
+ 
+ void InitJNI(JNIEnv* env) {
+diff --git a/src/android/app/src/main/jni/applets/swkbd.cpp b/src/android/app/src/main/jni/applets/swkbd.cpp
+index b085a65..94436ea 100644
+--- a/src/android/app/src/main/jni/applets/swkbd.cpp
++++ b/src/android/app/src/main/jni/applets/swkbd.cpp
+@@ -6,6 +6,7 @@
+ 
+ #include <jni.h>
+ 
++#include "common/android_utils.h"
+ #include "core/core.h"
+ #include "jni/android_common/android_common.h"
+ #include "jni/applets/swkbd.h"
+@@ -61,16 +62,27 @@ static Frontend::KeyboardData ToFrontendKeyboardData(jobject object) {
+ AndroidKeyboard::~AndroidKeyboard() = default;
+ 
+ void AndroidKeyboard::Execute(const Frontend::KeyboardConfig& config) {
+-    SoftwareKeyboard::Execute(config);
+-
+-    const auto data = ToFrontendKeyboardData(IDCache::GetEnvForThread()->CallStaticObjectMethod(
+-        s_software_keyboard_class, s_swkbd_execute, ToJavaKeyboardConfig(config)));
+-    Finalize(data.text, data.button);
++    // The emulation thread runs the port's recompiled code on a fiber whose stack ART does
++    // not know: a JNI call from it makes ART throw StackOverflowError. The dialog and its
++    // JNI run on the JNI thread (see AndroidUtils::RunOnJniThread) and this caller waits
++    // for it, as it waited for the dialog before. The JNI callbacks the dialog makes
++    // (ValidateFilters/ValidateInput) then arrive from that thread on the same instance.
++    AndroidUtils::RunOnJniThread([this, &config] {
++        SoftwareKeyboard::Execute(config);
++
++        const auto data =
++            ToFrontendKeyboardData(IDCache::GetEnvForThread()->CallStaticObjectMethod(
++                s_software_keyboard_class, s_swkbd_execute, ToJavaKeyboardConfig(config)));
++        Finalize(data.text, data.button);
++    });
+ }
+ 
+ void AndroidKeyboard::ShowError(const std::string& error) {
+-    JNIEnv* env = IDCache::GetEnvForThread();
+-    env->CallStaticVoidMethod(s_software_keyboard_class, s_swkbd_show_error, ToJString(env, error));
++    AndroidUtils::RunOnJniThread([&error] {
++        JNIEnv* env = IDCache::GetEnvForThread();
++        env->CallStaticVoidMethod(s_software_keyboard_class, s_swkbd_show_error,
++                                  ToJString(env, error));
++    });
+ }
+ 
+ void InitJNI(JNIEnv* env) {
+diff --git a/src/android/app/src/main/jni/camera/still_image_camera.cpp b/src/android/app/src/main/jni/camera/still_image_camera.cpp
+index 9c35796..c144404 100644
+--- a/src/android/app/src/main/jni/camera/still_image_camera.cpp
++++ b/src/android/app/src/main/jni/camera/still_image_camera.cpp
+@@ -4,6 +4,7 @@
+ 
+ #include <android/bitmap.h>
+ #include <libyuv.h>
++#include "common/android_utils.h"
+ #include "common/logging/log.h"
+ #include "core/frontend/camera/blank_camera.h"
+ #include "jni/camera/still_image_camera.h"
+@@ -41,17 +42,21 @@ Interface::~Interface() {
+ }
+ 
+ void Interface::StartCapture() {
+-    JNIEnv* env = IDCache::GetEnvForThread();
+-    jobject bitmap =
+-        env->CallStaticObjectMethod(s_still_image_camera_helper_class, s_load_image_from_file,
+-                                    path.get(), resolution.width, resolution.height);
+-    if (bitmap == nullptr) {
+-        LOG_ERROR(Frontend, "Could not load image from file");
+-        opened = false;
+-        return;
+-    }
+-
+-    int ret;
++    // JNI from the port's fiber stack looks like a stack overflow to ART: this and the
++    // bitmap it loads run on the JNI thread (AndroidUtils::RunOnJniThread), this caller
++    // waits; the local reference stays on the thread that made it.
++    AndroidUtils::RunOnJniThread([this] {
++        JNIEnv* env = IDCache::GetEnvForThread();
++        jobject bitmap =
++            env->CallStaticObjectMethod(s_still_image_camera_helper_class, s_load_image_from_file,
++                                        path.get(), resolution.width, resolution.height);
++        if (bitmap == nullptr) {
++            LOG_ERROR(Frontend, "Could not load image from file");
++            opened = false;
++            return;
++        }
++
++        int ret;
+ 
+ #define BITMAP_CALL(func)                                                                          \
+     ret = AndroidBitmap_##func;                                                                    \
+@@ -61,38 +66,39 @@ void Interface::StartCapture() {
+         return;                                                                                    \
+     }
+ 
+-    AndroidBitmapInfo info;
+-    BITMAP_CALL(getInfo(env, bitmap, &info));
+-    ASSERT_MSG(info.format == AndroidBitmapFormat::ANDROID_BITMAP_FORMAT_RGBA_8888,
+-               "Bitmap format was incorrect");
+-    ASSERT_MSG(info.width == resolution.width && info.height == resolution.height,
+-               "Bitmap resolution was incorrect");
+-
+-    void* raw_data;
+-    BITMAP_CALL(lockPixels(env, bitmap, &raw_data));
+-    std::vector<u8> data(info.height * info.stride);
+-    libyuv::ABGRToARGB(reinterpret_cast<u8*>(raw_data), info.stride, data.data(), info.stride,
+-                       info.width, info.height);
+-    BITMAP_CALL(unlockPixels(env, bitmap));
+-
+-    if (mirror) {
+-        std::vector<u8> mirrored(data.size());
+-        libyuv::ARGBMirror(data.data(), info.stride, mirrored.data(), info.stride, info.width,
+-                           info.height);
+-        data.swap(mirrored);
+-    }
+-
+-    image.resize(info.height * info.width);
+-    if (format == Service::CAM::OutputFormat::RGB565) {
+-        libyuv::ARGBToRGB565(data.data(), info.stride, reinterpret_cast<u8*>(image.data()),
+-                             info.width * 2, info.width, invert ? -info.height : info.height);
+-    } else {
+-        libyuv::ARGBToYUY2(data.data(), info.stride, reinterpret_cast<u8*>(image.data()),
+-                           info.width * 2, info.width, invert ? -info.height : info.height);
+-    }
+-    opened = true;
++        AndroidBitmapInfo info;
++        BITMAP_CALL(getInfo(env, bitmap, &info));
++        ASSERT_MSG(info.format == AndroidBitmapFormat::ANDROID_BITMAP_FORMAT_RGBA_8888,
++                   "Bitmap format was incorrect");
++        ASSERT_MSG(info.width == resolution.width && info.height == resolution.height,
++                   "Bitmap resolution was incorrect");
++
++        void* raw_data;
++        BITMAP_CALL(lockPixels(env, bitmap, &raw_data));
++        std::vector<u8> data(info.height * info.stride);
++        libyuv::ABGRToARGB(reinterpret_cast<u8*>(raw_data), info.stride, data.data(), info.stride,
++                           info.width, info.height);
++        BITMAP_CALL(unlockPixels(env, bitmap));
++
++        if (mirror) {
++            std::vector<u8> mirrored(data.size());
++            libyuv::ARGBMirror(data.data(), info.stride, mirrored.data(), info.stride, info.width,
++                               info.height);
++            data.swap(mirrored);
++        }
++
++        image.resize(info.height * info.width);
++        if (format == Service::CAM::OutputFormat::RGB565) {
++            libyuv::ARGBToRGB565(data.data(), info.stride, reinterpret_cast<u8*>(image.data()),
++                                 info.width * 2, info.width, invert ? -info.height : info.height);
++        } else {
++            libyuv::ARGBToYUY2(data.data(), info.stride, reinterpret_cast<u8*>(image.data()),
++                               info.width * 2, info.width, invert ? -info.height : info.height);
++        }
++        opened = true;
+ 
+ #undef BITMAP_CALL
++    });
+ }
+ 
+ void Interface::SetResolution(const Service::CAM::Resolution& resolution_) {
+@@ -122,22 +128,28 @@ SharedGlobalRef<jstring> Factory::last_path{};
+ 
+ std::unique_ptr<CameraInterface> Factory::Create(const std::string& config,
+                                                  const Service::CAM::Flip& flip) {
+-
+-    JNIEnv* env = IDCache::GetEnvForThread();
+-    if (last_path != nullptr) {
+-        return std::make_unique<Interface>(last_path, flip);
+-    }
+-
+-    // Open file picker to get the string
+-    jstring path = reinterpret_cast<jstring>(
+-        env->CallStaticObjectMethod(s_still_image_camera_helper_class, s_open_file_picker));
+-    if (path == nullptr) {
+-        return std::make_unique<Camera::BlankCamera>();
+-    } else {
+-        auto shared_path = NewSharedGlobalRef(path);
+-        last_path = shared_path;
+-        return std::make_unique<Interface>(std::move(shared_path), flip);
+-    }
++    std::unique_ptr<CameraInterface> result;
++    // The file picker is JNI and this runs on the emulation fiber: run the whole thing on
++    // the JNI thread (AndroidUtils::RunOnJniThread) and wait for the interface.
++    AndroidUtils::RunOnJniThread([&] {
++        JNIEnv* env = IDCache::GetEnvForThread();
++        if (last_path != nullptr) {
++            result = std::make_unique<Interface>(last_path, flip);
++            return;
++        }
++
++        // Open file picker to get the string
++        jstring path = reinterpret_cast<jstring>(
++            env->CallStaticObjectMethod(s_still_image_camera_helper_class, s_open_file_picker));
++        if (path == nullptr) {
++            result = std::make_unique<Camera::BlankCamera>();
++        } else {
++            auto shared_path = NewSharedGlobalRef(path);
++            last_path = shared_path;
++            result = std::make_unique<Interface>(std::move(shared_path), flip);
++        }
++    });
++    return result;
+ }
+ 
+ } // namespace Camera::StillImage
+diff --git a/src/android/app/src/main/jni/native.cpp b/src/android/app/src/main/jni/native.cpp
+index b6fe5dd..40e4898 100644
+--- a/src/android/app/src/main/jni/native.cpp
++++ b/src/android/app/src/main/jni/native.cpp
+@@ -36,6 +36,9 @@
+ #include "common/settings.h"
+ #include "common/string_util.h"
+ #include "core/core.h"
++#ifdef MH4U_BACKEND
++#include "frontend.h"
++#endif
+ #include "core/frontend/applets/default_applets.h"
+ #include "core/frontend/camera/factory.h"
+ #include "core/hle/service/am/am.h"
+@@ -323,6 +326,17 @@ static Core::System::ResultStatus RunCitra(const std::string& filepath) {
+ 
+     window->MakeCurrent();
+ 
++#ifdef MH4U_BACKEND
++    // The port's `widescreen = match` takes the window's shape, and it has to be resolved
++    // before the game starts (the layout and the code's size tunables are fixed at install,
++    // and the renderer does not exist yet there), so pass the surface size the frontend
++    // already knows.
++    Port::SetWindowSize(window->GetFramebufferLayout().width,
++                        window->GetFramebufferLayout().height);
++    // Install the port's recompiled-code CPU backend before the loader picks a CPU. Falls
++    // back to Azahar's own emulation when no code library is packaged or it doesn't match.
++    LOG_INFO(Frontend, "{}", Port::PrepareBackendFor(system, filepath));
++#endif
+     const Core::System::ResultStatus load_result{
+         system.Load(*window, filepath, secondary_window.get())};
+ 
+@@ -1004,6 +1018,14 @@ void Java_org_citra_citra_1emu_NativeLibrary_logUserDirectory(JNIEnv* env,
+     std::string_view path = env->GetStringUTFChars(j_path, 0);
+     LOG_INFO(Frontend, "User directory path: {}", path);
+     env->ReleaseStringUTFChars(j_path, path.data());
++
++    // Prime the native side's user-directory cache while we are on a regular thread. The
++    // emulation core reads it from the port's recompiled-code fiber, where a JNI call would
++    // make ART throw StackOverflowError for the fiber's foreign stack.
++    if (auto native_path = AndroidUtils::GetUserDirectory(); native_path.has_value()) {
++        AndroidUtils::CacheUserDirectory(*native_path);
++        LOG_INFO(Frontend, "User directory native path: {}", *native_path);
++    }
+ }
+ 
+ void Java_org_citra_citra_1emu_NativeLibrary_reloadSettings([[maybe_unused]] JNIEnv* env,
 diff --git a/src/citra_qt/CMakeLists.txt b/src/citra_qt/CMakeLists.txt
 index 8723f05..88dceae 100644
 --- a/src/citra_qt/CMakeLists.txt
@@ -140,6 +575,191 @@ index bd98a3d..187713b 100644
      index = ui->game_list->findData(UISettings::values.game_id, GameListItemPath::ProgramIdRole);
      if (index != -1) {
          ui->game_list->setCurrentIndex(index);
+diff --git a/src/common/android_utils.cpp b/src/common/android_utils.cpp
+index a6622bd..efd93ae 100644
+--- a/src/common/android_utils.cpp
++++ b/src/common/android_utils.cpp
+@@ -6,11 +6,65 @@
+ #include <boost/algorithm/string/replace.hpp>
+ #include <boost/uuid/uuid_generators.hpp>
+ #include <boost/uuid/uuid_io.hpp>
++#include <condition_variable>
++#include <deque>
++#include <exception>
++#include <memory>
++#include <mutex>
++#include <thread>
+ #include "common/android_utils.h"
+ #include "common/file_util.h"
+ #include "common/logging/log.h"
+ 
+ namespace AndroidUtils {
++namespace {
++// Primed by InitJNI() (JNI_OnLoad) and CacheUserDirectory() (directory init). Reading
++// these from the emulation core avoids ART/JNI calls from the port's fiber stack.
++std::string g_cached_build_flavor;
++std::string g_cached_user_directory;
++
++// The JNI executor: applet callbacks run here instead of on the emulation fiber.
++struct JniTask {
++    std::function<void()> fn;
++    std::mutex mutex;
++    std::condition_variable cv;
++    bool done = false;
++    std::exception_ptr error;
++};
++
++std::thread g_jni_thread;
++std::thread::id g_jni_thread_id;
++std::mutex g_jni_mutex;
++std::condition_variable g_jni_cv;
++std::deque<std::shared_ptr<JniTask>> g_jni_tasks;
++bool g_jni_stopping = false;
++
++void JniThreadMain() {
++    for (;;) {
++        std::shared_ptr<JniTask> task;
++        {
++            std::unique_lock lock(g_jni_mutex);
++            g_jni_cv.wait(lock, [] { return g_jni_stopping || !g_jni_tasks.empty(); });
++            if (g_jni_tasks.empty()) {
++                break;
++            }
++            task = std::move(g_jni_tasks.front());
++            g_jni_tasks.pop_front();
++        }
++        try {
++            task->fn();
++        } catch (...) {
++            task->error = std::current_exception();
++        }
++        {
++            std::lock_guard lock(task->mutex);
++            task->done = true;
++        }
++        task->cv.notify_one();
++    }
++}
++} // namespace
++
+ JNIEnv* GetEnvForThread() {
+     thread_local static struct OwnedEnv {
+         OwnedEnv() {
+@@ -71,6 +125,14 @@ void InitJNI(JNIEnv* env, jclass clazz) {
+ #undef F
+ #undef FS
+ #undef FR
++
++    // Cache the constant build flavor now, while we are on a regular Java thread.
++    g_cached_build_flavor = GetBuildFlavor();
++
++    // The executor for JNI the emulation core needs (see RunOnJniThread).
++    g_jni_stopping = false;
++    g_jni_thread = std::thread(JniThreadMain);
++    g_jni_thread_id = g_jni_thread.get_id();
+ }
+ 
+ void CleanupJNI() {
+@@ -82,6 +144,16 @@ void CleanupJNI() {
+ #undef F
+ #undef FS
+ #undef FR
++
++    {
++        std::lock_guard lock(g_jni_mutex);
++        g_jni_stopping = true;
++    }
++    g_jni_cv.notify_all();
++    if (g_jni_thread.joinable()) {
++        g_jni_thread.join();
++    }
++    g_jni_thread_id = std::thread::id{};
+ }
+ 
+ bool CreateFile(const std::string& directory, const std::string& filename) {
+@@ -160,6 +232,10 @@ std::vector<std::string> GetFilesName(const std::string& filepath) {
+ }
+ 
+ std::optional<std::string> GetUserDirectory() {
++    if (!g_cached_user_directory.empty()) {
++        return g_cached_user_directory;
++    }
++
+     if (get_user_directory == nullptr) {
+         throw std::runtime_error(
+             "Unable to locate user directory: Function with ID 'get_user_directory' is missing");
+@@ -318,6 +394,30 @@ bool MoveAndRenameFile(const std::string& src_full_path, const std::string& dest
+     return result;
+ }
+ 
++void CacheUserDirectory(const std::string& path) {
++    g_cached_user_directory = path;
++}
++
++void RunOnJniThread(std::function<void()> task) {
++    if (!g_jni_thread.joinable() || std::this_thread::get_id() == g_jni_thread_id) {
++        task();
++        return;
++    }
++    auto queued = std::make_shared<JniTask>();
++    queued->fn = std::move(task);
++    {
++        std::lock_guard lock(g_jni_mutex);
++        g_jni_tasks.push_back(queued);
++    }
++    g_jni_cv.notify_one();
++
++    std::unique_lock lock(queued->mutex);
++    queued->cv.wait(lock, [&] { return queued->done; });
++    if (queued->error) {
++        std::rethrow_exception(queued->error);
++    }
++}
++
+ std::string TranslateFilePath(const std::string& filepath) {
+     // "!" at front of path indicates an already-native path.
+     // This is hacky, but I don't know how else we can do this without a lot of quite invasive
+@@ -336,6 +436,9 @@ std::string TranslateFilePath(const std::string& filepath) {
+ }
+ 
+ bool CanUseRawFS() {
++    if (!g_cached_build_flavor.empty()) {
++        return g_cached_build_flavor != AndroidBuildFlavors::GOOGLEPLAY;
++    }
+     return AndroidUtils::GetBuildFlavor() != AndroidBuildFlavors::GOOGLEPLAY;
+ }
+ 
+diff --git a/src/common/android_utils.h b/src/common/android_utils.h
+index 14231ef..9a52c97 100644
+--- a/src/common/android_utils.h
++++ b/src/common/android_utils.h
+@@ -5,6 +5,7 @@
+ #pragma once
+ 
+ #ifdef ANDROID
++#include <functional>
+ #include <string>
+ #include <vector>
+ #include <fcntl.h>
+@@ -61,6 +62,18 @@ ANDROID_JNI_FUNCTIONS(FS)
+ bool CanUseRawFS();
+ bool MoveAndRenameFile(const std::string& src_full_path, const std::string& dest_full_path);
+ std::string TranslateFilePath(const std::string& filepath);
++// The MH4U port's recompiled guest code runs on a fiber whose stack is unknown to ART, so
++// entering Java from there makes ART throw StackOverflowError (and any later JNI call with
++// the pending exception aborts the process). Cache the user directory here, on a regular
++// thread (JNI_OnLoad / directory init), so TranslateFilePath and CanUseRawFS never have to
++// call back into Java from a fiber.
++void CacheUserDirectory(const std::string& path);
++
++// The port's recompiled guest code runs on a fiber stack ART does not know, so a JNI call
++// from there makes ART throw StackOverflowError (and the next JNI call aborts). Applet
++// callbacks (software keyboard, Mii selector, camera) call through this so their Java side
++// runs on a regular, JVM-attached thread instead. Runs inline when already on that thread.
++void RunOnJniThread(std::function<void()> task);
+ // Reference:
+ // https://developer.android.com/reference/android/os/ParcelFileDescriptor#parseMode(java.lang.String)
+ enum class AndroidOpenMode {
 diff --git a/src/core/core.cpp b/src/core/core.cpp
 index dc1eb15..42f4890 100644
 --- a/src/core/core.cpp
@@ -210,6 +830,75 @@ index 5920595..bc107db 100644
      std::vector<std::shared_ptr<ARM_Interface>> cpu_cores;
      ARM_Interface* running_core = nullptr;
  
+diff --git a/src/core/file_sys/archive_source_sd_savedata.cpp b/src/core/file_sys/archive_source_sd_savedata.cpp
+index 173868f..756028c 100644
+--- a/src/core/file_sys/archive_source_sd_savedata.cpp
++++ b/src/core/file_sys/archive_source_sd_savedata.cpp
+@@ -4,8 +4,12 @@
+ 
+ #include <fmt/format.h>
+ #include "common/archives.h"
++#include "common/error.h"
+ #include "common/file_util.h"
+ #include "common/logging/log.h"
++#ifdef ANDROID
++#include "common/android_utils.h"
++#endif
+ #include "core/file_sys/archive_artic.h"
+ #include "core/file_sys/archive_source_sd_savedata.h"
+ #include "core/file_sys/errors.h"
+@@ -84,17 +88,46 @@ Result ArchiveSource_SDSaveData::Format(u64 program_id,
+         return ArticArchive::RespResult(resp);
+     } else {
+         std::string concrete_mount_point = GetSaveDataPath(mount_point, program_id);
++        std::string metadata_path = GetSaveDataMetadataPath(mount_point, program_id);
++#ifdef ANDROID
++        LOG_INFO(Service_FS, "FormatSaveData {:016X}: dir guest={} host={}", program_id,
++                 concrete_mount_point, AndroidUtils::TranslateFilePath(concrete_mount_point));
++        LOG_INFO(Service_FS, "FormatSaveData {:016X}: metadata guest={} host={}", program_id,
++                 metadata_path, AndroidUtils::TranslateFilePath(metadata_path));
++#else
++        LOG_INFO(Service_FS, "FormatSaveData {:016X}: dir={} metadata={}", program_id,
++                 concrete_mount_point, metadata_path);
++#endif
++
+         FileUtil::DeleteDirRecursively(concrete_mount_point);
+-        FileUtil::CreateFullPath(concrete_mount_point);
++        const bool dir_created = FileUtil::CreateFullPath(concrete_mount_point);
++        const bool dir_exists = FileUtil::Exists(concrete_mount_point);
++        if (!dir_created || !dir_exists) {
++            LOG_ERROR(Service_FS,
++                      "FormatSaveData {:016X}: could not create the save directory {} "
++                      "(created={}, exists={})",
++                      program_id, concrete_mount_point, dir_created, dir_exists);
++            return ResultUnknown;
++        }
+ 
+         // Write the format metadata
+-        std::string metadata_path = GetSaveDataMetadataPath(mount_point, program_id);
+         FileUtil::IOFile file(metadata_path, "wb");
++        if (!file.IsOpen()) {
++            LOG_ERROR(Service_FS, "FormatSaveData {:016X}: could not open metadata {}: {}",
++                      program_id, metadata_path, Common::GetLastErrorMsg());
++            return ResultUnknown;
++        }
+ 
+-        if (file.IsOpen()) {
+-            file.WriteBytes(&format_info, sizeof(format_info));
+-            return ResultSuccess;
++        const std::size_t written = file.WriteBytes(&format_info, sizeof(format_info));
++        if (written != sizeof(format_info) || !file.Flush()) {
++            LOG_ERROR(Service_FS,
++                      "FormatSaveData {:016X}: could not write metadata {} ({} of {} bytes): {}",
++                      program_id, metadata_path, written, sizeof(format_info),
++                      Common::GetLastErrorMsg());
++            return ResultUnknown;
+         }
++        LOG_INFO(Service_FS, "FormatSaveData {:016X}: wrote {} bytes to {}", program_id, written,
++                 metadata_path);
+         return ResultSuccess;
+     }
+ }
 diff --git a/src/core/file_sys/layered_fs.cpp b/src/core/file_sys/layered_fs.cpp
 index 7bcb6a4..34460df 100644
 --- a/src/core/file_sys/layered_fs.cpp
@@ -723,63 +1412,6 @@ index 1ecc56f..7397e87 100644
  /**
   * Method to create a rotated copy of a framebuffer layout, used to rotate to upright mode
   */
-diff --git a/src/core/frontend/top_screen.h b/src/core/frontend/top_screen.h
-new file mode 100644
-index 0000000..e9418e0
---- /dev/null
-+++ b/src/core/frontend/top_screen.h
-@@ -0,0 +1,51 @@
-+// Copyright 2026 Azahar Emulator Project
-+// Licensed under GPLv2 or any later version
-+// Refer to the misc/licenses/gplv2.txt file included.
-+
-+#pragma once
-+
-+#include <array>
-+#include <cstddef>
-+
-+#include "common/common_types.h"
-+
-+namespace Layout {
-+
-+/// The width the screen layouts give the top screen at its 240-pixel height: 400, as on a
-+/// 3DS, unless a port that shows the top screen wider sets another (427 for 16:9, say).
-+u32 TopScreenWidth();
-+void SetTopScreenWidth(u32 width);
-+
-+/// The custom layout as a port can set it up instead of fixed positions: the main screen
-+/// fills the window at its aspect ratio and the other one is drawn over it in a corner,
-+/// `height` times the window's height (0: off, the custom layout's own positions apply).
-+/// When the bottom screen is the one in the corner, it can show just a part of it: the crop
-+/// rectangle, in fractions of the bottom screen's width and height (touches map to that part).
-+struct ScreenOverlay {
-+    enum class Corner : u8 { TopLeft, TopRight, BottomLeft, BottomRight };
-+    float height = 0.0f;
-+    float opacity = 1.0f;
-+    Corner corner = Corner::BottomRight;
-+    float crop_left = 0.0f, crop_top = 0.0f, crop_right = 1.0f, crop_bottom = 1.0f;
-+    /// A place in the window instead of the corner, when both are 0..1 (negative: the corner):
-+    /// where the overlay's left and top edges go in the room the window leaves beside and above
-+    /// it, 0 at the window's left (top) edge, 1 with its right (bottom) edge at the window's. So
-+    /// it stays in the window at any size; (1, 0) is the top-right corner.
-+    float x = -1.0f, y = -1.0f;
-+
-+    /// Further parts of the bottom screen drawn on their own over the main screen, at the same
-+    /// opacity (the port's quest HUD: the target camera panel beside the map). Only while the
-+    /// bottom screen is the one in the corner, in landscape orientation. A touch on one maps to
-+    /// its part of the bottom screen.
-+    struct View {
-+        float height = 0.0f; ///< times the window's height; 0: off
-+        float x = 1.0f, y = 0.0f; ///< as ScreenOverlay::x, y (0..1)
-+        float crop_left = 0.0f, crop_top = 0.0f, crop_right = 1.0f, crop_bottom = 1.0f;
-+    };
-+    static constexpr std::size_t MAX_VIEWS = 2;
-+    std::array<View, MAX_VIEWS> views{};
-+};
-+ScreenOverlay GetScreenOverlay();
-+void SetScreenOverlay(const ScreenOverlay& overlay);
-+
-+} // namespace Layout
 diff --git a/src/core/hle/kernel/svc.cpp b/src/core/hle/kernel/svc.cpp
 index 87b2c5e..5ae478e 100644
 --- a/src/core/hle/kernel/svc.cpp
@@ -1088,7 +1720,7 @@ index 14ac286..8d345e0 100644
  
      explicit Impl(Core::System& system, Frontend::EmuWindow& emu_window,
 diff --git a/src/video_core/pica/pica_core.cpp b/src/video_core/pica/pica_core.cpp
-index 97a3a64..c394f6b 100644
+index 97a3a64..4237032 100644
 --- a/src/video_core/pica/pica_core.cpp
 +++ b/src/video_core/pica/pica_core.cpp
 @@ -13,6 +13,7 @@
@@ -1099,26 +1731,30 @@ index 97a3a64..c394f6b 100644
  #include "video_core/shader/shader.h"
  
  namespace Pica {
-@@ -1007,6 +1008,11 @@ void PicaCore::SubmitImmediate(u32 value) {
+@@ -1007,6 +1008,13 @@ void PicaCore::SubmitImmediate(u32 value) {
  }
  
  void PicaCore::DrawImmediate() {
++#ifdef ENABLE_SOFTWARE_RENDERER
 +    if (!SwRenderer::IsDrawingEnabled()) [[unlikely]] {
 +        immediate.current_attribute = 0;
 +        return;
 +    }
++#endif
 +
      // Compile the vertex shader.
      shader_engine->SetupBatch(vs_setup, regs.internal.vs.main_offset);
  
-@@ -1078,6 +1084,11 @@ void PicaCore::DrawArrays(bool is_indexed) {
+@@ -1078,6 +1086,13 @@ void PicaCore::DrawArrays(bool is_indexed) {
      delay_generator.AddVertices(regs.internal.pipeline.num_vertices,
                                  regs.internal.pipeline.triangle_topology);
  
 +    // Nothing is drawn: skip the vertex shaders too.
++#ifdef ENABLE_SOFTWARE_RENDERER
 +    if (!SwRenderer::IsDrawingEnabled()) [[unlikely]] {
 +        return;
 +    }
++#endif
 +
      // Attempt to use hardware vertex shaders if possible.
      if (accelerate_draw && rasterizer->AccelerateDrawBatch(is_indexed)) {
@@ -1332,56 +1968,3 @@ index 611e092..402c88d 100644
      scheduler.Record([](vk::CommandBuffer cmdbuf) { cmdbuf.endRenderPass(); });
  }
  
-diff --git a/src/video_core/renderer_vulkan/vk_overlay.h b/src/video_core/renderer_vulkan/vk_overlay.h
-new file mode 100644
-index 0000000..cf5c933
---- /dev/null
-+++ b/src/video_core/renderer_vulkan/vk_overlay.h
-@@ -0,0 +1,47 @@
-+// Copyright 2026 Azahar Emulator Project
-+// Licensed under GPLv2 or any later version
-+// Refer to the misc/licenses/gplv2.txt file included.
-+
-+// MH4U port: a frontend's own drawing over the screens, e.g. the port's app's in-game menu
-+// (Dear ImGui). Nothing is drawn unless a frontend registers an overlay.
-+
-+#pragma once
-+
-+#include <cstdint>
-+#include <functional>
-+#include <mutex>
-+#ifndef VK_NO_PROTOTYPES
-+#define VK_NO_PROTOTYPES
-+#endif
-+#include <vulkan/vulkan_core.h>
-+
-+namespace Vulkan {
-+
-+struct PresentOverlay {
-+    /// What a drawing library needs of the renderer.
-+    struct Context {
-+        PFN_vkGetInstanceProcAddr get_instance_proc_addr;
-+        VkInstance instance;
-+        VkPhysicalDevice physical_device;
-+        VkDevice device;
-+        std::uint32_t api_version;
-+        std::uint32_t queue_family;
-+        VkQueue queue;
-+        std::mutex* queue_mutex;   ///< held by whoever submits to `queue`
-+        VkRenderPass render_pass;  ///< the main window's present render pass (subpass 0)
-+        std::uint32_t image_count; ///< frames in flight
-+    };
-+    using Commands = std::function<void(VkCommandBuffer)>;
-+
-+    /// Called once a frame on the emulation thread while the main window's present render pass
-+    /// is being recorded, `width` x `height` pixels: the commands it returns are recorded in
-+    /// that render pass after the screens, on the scheduler's thread. Empty: nothing this frame.
-+    std::function<Commands(const Context&, std::uint32_t width, std::uint32_t height)> draw;
-+    /// The renderer is going away and its device is idle: release what `draw` made.
-+    std::function<void()> release;
-+};
-+
-+/// Registers the overlay (an empty one removes it).
-+void SetPresentOverlay(PresentOverlay overlay);
-+
-+} // namespace Vulkan

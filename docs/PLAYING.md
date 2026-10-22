@@ -71,7 +71,8 @@ fps = 60
 # emulated screen refresh rate in Hz: 0 = the 3DS's, or the fps when that is above 60 (the game
 # shows at most one frame per refresh, so more than 60 fps needs more refreshes)
 refresh_rate = 0
-# widen the 3D view to this aspect ratio (experimental, see below)
+# widen the 3D view to this aspect ratio (experimental, see below); match = the window's
+# shape (the Android app's screen) so nothing is left over
 widescreen = 16:9
 # render the wider image itself instead of stretching a 400x240 one (16:9 tried in gameplay)
 wide_render = 1

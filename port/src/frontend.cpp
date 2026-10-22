@@ -56,12 +56,16 @@ void ToggleQuestMap() {
     Hooks::ToggleQuestMap();
 }
 
+void SetWindowSize(u32 width, u32 height) {
+    Hooks::SetWindowSize(width, height);
+}
+
 std::string OptionsPath() {
     return FileUtil::GetUserPath(FileUtil::UserPath::UserDir) + "mh4u.ini";
 }
 
-std::string OptionsTemplate() {
-    return R"(# MH4U PC port options. Changes apply the next time the game starts.
+std::string OptionsTemplate(bool match_screen) {
+    std::string text = R"(# MH4U PC port options. Changes apply the next time the game starts.
 # One "key = value" per line; a line starting with # is ignored. All of them, and what was
 # tried: docs/PLAYING.md in the port's repository.
 
@@ -70,9 +74,11 @@ std::string OptionsTemplate() {
 # Clock Speed raised
 fps = 60
 
-# the top screen's shape: 16:9, 16:10, 21:9, 32:9, 4:3 or off. wide_render = 1 draws the
-# wider picture itself (0 stretches a 400x240 one); hud_edges = 1 moves the hunting HUD's
-# sides (health, stamina, party list; the item selection) out to the screen's edges
+# the top screen's shape: 16:9, 16:10, 21:9, 32:9, 4:3, match (the window's shape: the whole
+# screen on Android; callers pass their size to Port::SetWindowSize) or off.
+# wide_render = 1 draws the wider picture itself (0 stretches a 400x240 one); hud_edges = 1
+# moves the hunting HUD's sides (health, stamina, party list; the item selection) out to the
+# screen's edges
 widescreen = 16:9
 wide_render = 1
 hud_edges = 1
@@ -130,11 +136,28 @@ haze = on
 # dropping them (on, off; all = with every port player in the room)
 net_sync = on
 )";
+    if (match_screen) {
+        // the Android app's first file: fill the phone's screen instead of a fixed 16:9
+        if (const auto at = text.find("widescreen = 16:9"); at != std::string::npos) {
+            text.replace(at, std::string("widescreen = 16:9").size(), "widescreen = match");
+        }
+    }
+    return text;
 }
 
 std::string PrepareBackendFor(Core::System& system, const std::string& rom_path) {
     system.SetCPUFactory(nullptr);
     notice.clear();
+
+#if defined(__ANDROID__)
+    // The desktop packages write mh4u.ini on first run (60 fps, widescreen, the touch screen
+    // in a corner); do the same here, with widescreen matching the phone's screen. Written
+    // before Hooks::Install reads it, so the first boot already starts with them.
+    if (!FileUtil::Exists(OptionsPath())) {
+        FileUtil::WriteStringToFile(true, OptionsPath(), OptionsTemplate(true));
+        LOG_INFO(Frontend, "wrote the first mh4u.ini to {}", OptionsPath());
+    }
+#endif
 
     u64 program_id = 0;
     if (const auto loader = Loader::GetLoader(rom_path)) {
@@ -147,6 +170,11 @@ std::string PrepareBackendFor(Core::System& system, const std::string& rom_path)
     if (const char* env = std::getenv("MH4U_CODE"); env && *env) {
         library = env;
     } else if (program_id != 0) {
+#if defined(__ANDROID__)
+        // lib/arm64-v8a/libmh4u_code.so in the APK; dlopen finds it by soname in the app's
+        // native library directory (see android/app/build.gradle.kts).
+        library = "libmh4u_code.so";
+#else
 #if defined(_WIN32)
         constexpr const char* ext = "dll";
 #elif defined(__APPLE__)
@@ -165,6 +193,7 @@ std::string PrepareBackendFor(Core::System& system, const std::string& rom_path)
             }
             return fmt::format("no recompiled code for {:016X}, using the emulated CPU", program_id);
         }
+#endif
     } else {
         return "no recompiled code, using the emulated CPU";
     }
