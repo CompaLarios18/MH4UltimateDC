@@ -246,7 +246,7 @@ TEST_CASE("dsp_hle: the generators make the bytes the oracle script made") {
     for (const Case& c : cases) {
         for (const Fill& f : c.fills) {
             const std::vector<u8> data = Generate(f.kind, f.seed, f.size);
-            INFO("case " << c.name << ", block at " << f.address);
+            INFO("case " << std::string(c.name) << ", block at " << f.address);
             REQUIRE(data.size() == f.size);
             REQUIRE(Crc32(data.data(), data.size()) == f.crc);
             ++checked;
@@ -278,7 +278,7 @@ TEST_CASE("dsp_hle: every case of the table, every frame, equals Azahar's source
         }
         const char* what[4] = {"mix 0", "mix 1", "mix 2", "status"};
         if (differing_cases <= 10) {
-            FAIL_CHECK("case " << c.name << ": frame " << at / 32 << ", " << what[(at % 32) / 8]
+            FAIL_CHECK("case " << std::string(c.name) << ": frame " << at / 32 << ", " << std::string(what[(at % 32) / 8])
                                << " differs: got " << got.substr(at / 8 * 8, 8) << ", Azahar "
                                << std::string(c.crcs + at / 8 * 8, 8));
         }
@@ -519,7 +519,7 @@ namespace {
 
 // Eight frames of one source on random PCM16 data with the given interpolation mode and rate, mixed with
 // gain 1 into mix 0: a CRC-32 of each frame's mix.
-std::vector<u32> MixCrcs(u8 mode, float rate, LogCatcher& log) {
+std::vector<u32> MixCrcs(u8 mode, float rate) {
     CaseMemory memory;
     const std::vector<u8> data = Generate(1, 5, 20000);
     std::memcpy(memory.data.data(), data.data(), data.size());
@@ -546,7 +546,6 @@ std::vector<u32> MixCrcs(u8 mode, float rate, LogCatcher& log) {
         source.MixInto(mix, 0);
         crcs.push_back(CrcOf(mix));
     }
-    (void)log;
     return crcs;
 }
 
@@ -554,22 +553,22 @@ std::vector<u32> MixCrcs(u8 mode, float rate, LogCatcher& log) {
 
 TEST_CASE("dsp_hle: an interpolation mode of 3 plays as linear, and says so once") {
     LogCatcher log;
-    const std::vector<u32> linear = MixCrcs(1, 1.37f, log);
+    const std::vector<u32> linear = MixCrcs(1, 1.37f);
     CHECK(log.Count("not implemented") == 0);
-    const std::vector<u32> mode3 = MixCrcs(3, 1.37f, log);
+    const std::vector<u32> mode3 = MixCrcs(3, 1.37f);
     CHECK(mode3 == linear);
     CHECK(log.Count("interpolation mode 3 is not implemented") == 1);  // eight frames, one line
-    CHECK(MixCrcs(2, 1.37f, log) != linear);                          // the check can tell modes apart
+    CHECK(MixCrcs(2, 1.37f) != linear);                          // the check can tell modes apart
 }
 
 TEST_CASE("dsp_hle: a NaN rate multiplier is taken as 1.0, like a rate of 0") {
     LogCatcher log;
-    const std::vector<u32> one = MixCrcs(1, 1.0f, log);
-    const std::vector<u32> nan = MixCrcs(1, std::numeric_limits<float>::quiet_NaN(), log);
+    const std::vector<u32> one = MixCrcs(1, 1.0f);
+    const std::vector<u32> nan = MixCrcs(1, std::numeric_limits<float>::quiet_NaN());
     CHECK(nan == one);
     CHECK(log.Count("invalid rate multiplier") == 1);
-    CHECK(MixCrcs(1, 0.0f, log) == one);
-    CHECK(MixCrcs(1, 1.37f, log) != one);
+    CHECK(MixCrcs(1, 0.0f) == one);
+    CHECK(MixCrcs(1, 1.37f) != one);
 }
 
 // ---- the status sequences against N1-18's model ----------------------------------------------------------------
