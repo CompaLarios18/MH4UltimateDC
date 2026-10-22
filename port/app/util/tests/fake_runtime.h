@@ -22,10 +22,6 @@
 #include "runtime.h"
 #include "util/log.h"
 
-namespace Core {
-class System;
-}
-
 namespace fake {
 
 namespace fs = std::filesystem;
@@ -51,7 +47,7 @@ struct FakeRuntime final : IRuntime {
 
     std::string PrepareCode(const LoadRequest&) override { return ""; }
     std::string CodeNotice() override { return ""; }
-    LoadResult Load(const LoadRequest&, Window&, Window*) override { return LoadResult::Ok; }
+    LoadResult Load(const LoadRequest&, IWindow&, IWindow*) override { return LoadResult::Ok; }
     std::string StatusDetails() const override { return ""; }
     void Start() override {}
     RunState RunStep() override { return RunState::Running; }
@@ -244,6 +240,7 @@ struct FakeRuntime final : IRuntime {
     }
     RoomDetails RoomInformation() const override { return details; }
     std::vector<RoomMemberInfo> RoomMembers() const override { return members; }
+    std::vector<std::string> EndSkipPending() override { return {}; }
     bool HostingRoom() const override {
         std::scoped_lock lock{const_cast<std::mutex&>(room_mutex)};
         return hosting;
@@ -262,7 +259,6 @@ struct FakeRuntime final : IRuntime {
     std::mutex thread_mutex;
     void NewConsoleId() override {}
     void CommitOptions() override {}
-    Core::System* HostSystem() override { return nullptr; }
 
     std::string UserDir() const override { return user_dir; }
     void SetUserDir(const std::string& dir) override { user_dir = dir; }

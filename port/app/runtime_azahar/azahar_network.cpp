@@ -11,6 +11,7 @@
 #include "core/hle/kernel/kernel.h"
 #include "core/hle/kernel/shared_page.h"
 #include "core/hle/service/cfg/cfg.h"
+#include "netsync.h"
 #include "network/network.h"
 #include "network/room.h"
 #include "network/room_member.h"
@@ -322,6 +323,10 @@ RoomOpenResult AzaharRuntime::OpenRoom(const RoomOpenRequest& request) {
     }
 #endif
     return result;
+}
+
+std::vector<std::string> AzaharRuntime::EndSkipPending() {
+    return Port::NetSync::EndSkipPending();
 }
 
 void AzaharRuntime::CloseRoom() {

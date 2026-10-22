@@ -7,7 +7,6 @@
 #include "config.h"
 #include "hooks.h"
 #include "input.h"
-#include "netsync.h"
 #include "runtime.h"
 #include "ui/menu.h"
 #include "util/buttons.h"
@@ -87,7 +86,7 @@ Hint CurrentHint(const Config& config) {
         hint.hold = Port::Hooks::EndSkipHold();
         hint.requested = Port::Hooks::EndSkipRequested();
         if (hint.requested) {
-            hint.waiting_for = Port::NetSync::EndSkipPending();
+            hint.waiting_for = Runtime().EndSkipPending();
         }
     }
     return hint;

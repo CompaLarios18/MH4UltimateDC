@@ -17,7 +17,6 @@
 #include "ui/layer.h"
 #include "ui/menu.h"
 #include "util/log.h"
-#include "window.h"
 
 namespace App::Ui {
 
@@ -142,7 +141,7 @@ void DrawCopy::Clear() {
 
 // ── The layer ──
 
-Layer::Layer(Window& window_, Config& config_) : window{window_}, config{config_} {
+Layer::Layer(IWindow& window_, Config& config_) : window{window_}, config{config_} {
     IMGUI_CHECKVERSION();
     context = ImGui::CreateContext();
     ImGui::SetCurrentContext(context);
@@ -156,7 +155,7 @@ Layer::Layer(Window& window_, Config& config_) : window{window_}, config{config_
     io.Fonts->AddFontDefaultVector();
     SetStyle(ImGui::GetStyle());
     base_style = ImGui::GetStyle();
-    ImGui_ImplSDL2_InitForOther(window.GetSDLWindow());
+    ImGui_ImplSDL2_InitForOther(window.SdlWindow());
     ImGui_ImplSDL2_SetGamepadMode(ImGui_ImplSDL2_GamepadMode_AutoAll); // any controller, not the first
 
     menu = std::make_unique<Menu>(*this);
@@ -227,7 +226,7 @@ void Layer::SetCapture(bool on) {
     if (on) {
         // what the game had held is let go: the menu has the keys and the mouse now
         Runtime().ReleaseAllKeys();
-        window.TouchReleased();
+        window.ReleaseTouch();
         fresh_input = true;
         SDL_ShowCursor(SDL_ENABLE);
     }
@@ -454,11 +453,11 @@ void Layer::Frame() {
     ImGui_ImplSDL2_NewFrame();
     // pixels per window unit as the window counts them (the backend asks OpenGL, which a
     // Vulkan or software window doesn't have)
-    int w = 0, h = 0, pw = 0, ph = 0;
-    SDL_GetWindowSize(window.GetSDLWindow(), &w, &h);
-    SDL_GetWindowSizeInPixels(window.GetSDLWindow(), &pw, &ph);
-    if (w > 0 && h > 0 && pw > 0 && ph > 0) {
-        io.DisplayFramebufferScale = ImVec2(static_cast<float>(pw) / w, static_cast<float>(ph) / h);
+    const WindowSize points = window.SizeInPoints();
+    const WindowSize pixels = window.SizeInPixels();
+    if (points.w > 0 && points.h > 0 && pixels.w > 0 && pixels.h > 0) {
+        io.DisplayFramebufferScale = ImVec2(static_cast<float>(pixels.w) / points.w,
+                                            static_cast<float>(pixels.h) / points.h);
     }
     UpdateScale(io.DisplaySize.y);
     if (capturing) {
@@ -518,7 +517,7 @@ Layer* Get() {
 
 // ── ui.h ──
 
-void Start(Core::System&, Window& window, Config& config) {
+void Start(IWindow& window, Config& config) {
     if (!Get()) {
         instance.store(new Layer(window, config), std::memory_order_release);
     }

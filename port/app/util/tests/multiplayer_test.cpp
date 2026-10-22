@@ -23,9 +23,6 @@
 #include "multiplayer.h"
 #include "util/tests/fake_runtime.h"
 
-// multiplayer.h only declares the system, which Init does not use
-class Core::System {};
-
 namespace MP = App::Multiplayer;
 using namespace App;
 using fake::Env;
@@ -54,14 +51,13 @@ bool JobDone() {
 /// down for the next one.
 struct Room {
     Env env;
-    Core::System system;
     Config config = Defaults();
     Room() {
         config.nickname.clear();
         REQUIRE(MP::GetStatus().phase == MP::Phase::Off);
     }
     void Start() {
-        MP::Init(system, config);
+        MP::Init(config);
     }
     MP::JoinRequest Request() {
         MP::JoinRequest request;

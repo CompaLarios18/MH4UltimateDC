@@ -6,6 +6,7 @@
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <chrono>
 #include <filesystem>
 #include <string>
@@ -13,9 +14,11 @@
 #include <vector>
 
 #include <fmt/format.h>
+#include <INIReader.h>
 
 #include "config.h"
 #include "launcher/checks.h"
+#include "options_template.h"
 #include "runtime.h"
 #include "util/file.h"
 #include "util/log.h"
@@ -430,4 +433,45 @@ TEST_CASE("CodeFromCheck turns an exit status and the notice into a verdict") {
     CHECK(failed.state == Code::State::Failed);
     CHECK(failed.notice == "The check ended with status 9.");
     CHECK(CodeFromCheck(9, std::string(1000, 'x')).notice.size() == 400);
+}
+
+// ── options_template.cpp (port/src) ──
+
+TEST_CASE("the text of a new options file is a plain key = value file with the usual keys") {
+    const std::string text = Port::OptionsTemplateText();
+    CHECK(text.rfind("# MH4U PC port options.", 0) == 0);
+    CHECK(text.find('\r') == std::string::npos);
+    CHECK(text.ends_with("\n"));
+
+    // every line is empty, a comment, or "key = value"
+    std::vector<std::string> keys;
+    std::size_t start = 0;
+    while (start < text.size()) {
+        const std::size_t end = text.find('\n', start);
+        const std::string line = text.substr(start, end - start);
+        start = end + 1;
+        if (line.empty() || line[0] == '#') {
+            continue;
+        }
+        const std::size_t equals = line.find(" = ");
+        REQUIRE_MESSAGE(equals != std::string::npos, line);
+        keys.push_back(line.substr(0, equals));
+    }
+    for (const char* key : {"fps", "widescreen", "wide_render", "hud_edges", "touch_overlay", "quest_overlay",
+                            "target_overlay", "kick", "target", "skip", "skip_end", "skip_end_hold", "skip_hint",
+                            "dither", "stereo_3d", "antialiasing", "bloom", "depth_of_field", "motion_blur",
+                            "radial_blur", "haze", "net_sync"}) {
+        CHECK_MESSAGE(std::count(keys.begin(), keys.end(), std::string(key)) == 1, key);
+    }
+
+    // the same file read as the INI the menu and the hooks read
+    const TempDir dir;
+    const std::string path = (dir.path / "mh4u.ini").string();
+    REQUIRE(Util::WriteStringToFile(true, path, text) == text.size());
+    INIReader ini(path);
+    REQUIRE(ini.ParseError() == 0);
+    CHECK(ini.Get("", "fps", "") == "60");
+    CHECK(ini.Get("", "touch_overlay", "") == "top-right 30 85");
+    CHECK(ini.Get("", "net_sync", "") == "on");
+    CHECK(ini.Get("", "skip_end", "") == "ZL+ZR");
 }

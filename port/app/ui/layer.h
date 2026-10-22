@@ -16,6 +16,7 @@
 #include <vector>
 #include <imgui.h>
 
+#include "app_window.h"
 #include "util/types.h"
 
 union SDL_Event;
@@ -23,7 +24,6 @@ union SDL_Event;
 namespace App {
 
 struct Config;
-class Window;
 
 namespace Ui {
 
@@ -46,7 +46,7 @@ private:
 
 class Layer {
 public:
-    Layer(Window& window, Config& config);
+    Layer(IWindow& window, Config& config);
     ~Layer();
 
     Layer(const Layer&) = delete;
@@ -89,7 +89,7 @@ public:
     }
 
     // ── The menu and the keyboard, in a frame ──
-    Window& window;
+    IWindow& window;
     Config& config;
     /// Runs `action` after the frame, on the emulation thread, without the lock.
     void Post(std::function<void()> action);

@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 
+#include "app_window.h"
 #include "common/common_types.h"
 #include "core/frontend/emu_window.h"
 
@@ -22,7 +23,7 @@ namespace App {
 
 struct Config;
 
-class Window : public Frontend::EmuWindow {
+class Window : public Frontend::EmuWindow, public IWindow {
 public:
     enum class Api { OpenGL, Vulkan, Software };
 
@@ -44,15 +45,16 @@ public:
     /// until the window closes. Runs on a thread of its own.
     virtual void Present() {}
 
-    bool IsOpen() const {
+    // ── IWindow (app_window.h), which the in-game menu uses ──
+    bool IsOpen() const override {
         return is_open;
     }
-    void RequestClose() {
+    void RequestClose() override {
         is_open = false;
     }
 
-    void SetFullscreen(bool on);
-    bool IsFullscreen() const {
+    void SetFullscreen(bool on) override;
+    bool IsFullscreen() const override {
         return fullscreen;
     }
 
@@ -63,18 +65,24 @@ public:
     }
     /// The input profile built again as if a controller had come (the in-game menu changed the
     /// controls), and the window's own keys read again.
-    void RequestInputReload() {
+    void RequestInputReload() override {
         keys_changed = true;
         controllers_changed = true;
     }
 
     /// Whether the keyboard and mouse's way is on (input_mode, or in auto the device used last):
     /// the mouse turns the camera, and the key guides show.
-    bool KeyboardMouseActive() const {
+    bool KeyboardMouseActive() const override {
         return keyboard_mouse.load(std::memory_order_relaxed);
     }
 
-    SDL_Window* GetSDLWindow() const {
+    void ReleaseTouch() override {
+        TouchReleased();
+    }
+    WindowSize SizeInPoints() const override;
+    WindowSize SizeInPixels() const override;
+
+    SDL_Window* SdlWindow() const override {
         return render_window;
     }
 
