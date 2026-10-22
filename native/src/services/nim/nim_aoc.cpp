@@ -8,7 +8,8 @@
 // and no implemented command: every entry of its table is a nullptr, so the game's requests are
 // answered as an unknown command (logged once as `unimplemented nim:aoc <header>`; the command id,
 // one normal parameter, the result 0). The game sends 16 commands to it, 8 of them in Azahar's
-// table by name; the rest have no name in Azahar and are answered the same way.
+// table by name; the rest have no name in Azahar and are answered the same way. N1-21: Initialize,
+// the one command of G1 to G6, has a handler with that same reply (no error line for it).
 #include "mh4n/ipc.h"
 #include "mh4n/registry.h"
 #include "mh4n/service.h"
@@ -25,10 +26,17 @@ public:
         Register(0x0009, "ListContentSetsEx");
         Register(0x0018, "GetBalance");
         Register(0x001D, "GetCustomerSupportCode");
-        Register(0x0021, "Initialize");
+        Register(0x0021, "Initialize", &NimAoc::Initialize);
         Register(0x0024, "CalculateContentsRequiredSize");
         Register(0x0025, "RefreshServerTime");
     }
+
+private:
+    // Initialize (found by N1-21): Azahar leaves it unimplemented, so its answer is the one of an unknown
+    // command: the command id, one normal parameter, the result 0. The game sends it once in every
+    // session (G1 to G6), so it is answered here with that same reply and without an error line; the
+    // commands that stay unregistered are still logged once.
+    void Initialize(Request& request) { request.MakeReply(1, 0).Push(kResultSuccess); }
 };
 
 MH4N_REGISTER(ServiceFactory, "nim:aoc",

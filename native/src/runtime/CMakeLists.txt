@@ -17,6 +17,7 @@ set(mh4n_runtime_sources
     runtime.cpp
     state_trace.cpp
     svc_trace.cpp
+    timer_resolution.cpp
 )
 set(mh4n_runtime_have_schedule OFF)
 if (EXISTS "${MH4N_SCHEDULE_SOURCE}" AND EXISTS "${MH4N_SCHEDULE_HEADER}")

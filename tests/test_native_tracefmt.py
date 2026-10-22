@@ -534,3 +534,164 @@ def test_ipc_data_is_found_by_descriptor_index():
     assert tracefmt.ipc_data(call, 4) is None and tracefmt.ipc_data(write_call(), 5) is None
     with pytest.raises(ValueError):
         tracefmt.ipc_data(write_call(size=3, data="zz"), 5)
+
+
+# ── touching Reads and the CRC-32 of their concatenation (N0-33, D76) ────────────────────
+
+import random  # noqa: E402
+import zlib  # noqa: E402
+
+
+def test_crc32_combine_equals_zlib_on_random_splits():
+    rng = random.Random(33)
+    for _ in range(300):
+        total = rng.choice([0, 1, 2, 3, 7, 64, 4096, 6144, 28672]) + rng.randrange(0, 300)
+        data = bytes(rng.randrange(256) for _ in range(total))
+        cut = rng.randrange(0, total + 1)
+        a, b = data[:cut], data[cut:]
+        assert tracefmt.crc32_combine(zlib.crc32(a), zlib.crc32(b), len(b)) == zlib.crc32(data), (total, cut)
+
+
+def test_crc32_combine_edges_and_chains():
+    rng = random.Random(7)
+    data = bytes(rng.randrange(256) for _ in range(28672))
+    whole = zlib.crc32(data)
+    # nothing appended: the first CRC; nothing before: the second
+    assert tracefmt.crc32_combine(zlib.crc32(data), 0, 0) == whole
+    assert tracefmt.crc32_combine(0, whole, len(data)) == whole
+    # the pieces of a 28672-byte range: 4096-byte and 2048-byte reads, folded left to right
+    sizes, crc, at = [4096, 2048, 4096, 4096, 2048, 2048, 4096, 2048, 2048, 2048], 0, 0
+    assert sum(sizes) == len(data)
+    for n in sizes:
+        crc = tracefmt.crc32_combine(crc, zlib.crc32(data[at:at + n]), n)
+        at += n
+    assert crc == whole
+    # the combination is a function of the CRCs and the length only, and works for a CRC value of 0xFFFFFFFF too
+    assert tracefmt.crc32_combine(0xFFFFFFFF, 0xFFFFFFFF, 1) == tracefmt.crc32_combine(0xFFFFFFFF, 0xFFFFFFFF, 1)
+    big = tracefmt.crc32_combine(zlib.crc32(b"ab"), zlib.crc32(bytes(1 << 20)), 1 << 20)
+    assert big == zlib.crc32(b"ab" + bytes(1 << 20))
+
+
+def fs_read_call(seq, offset, data, session="fs:USER/file#3", result=0, bytes_read=None, crc=None, reply=True):
+    """A Read of `len(data)` bytes at `offset`; the reply wrote `data` (its CRC-32 is the token)."""
+    size = len(data)
+    crc = zlib.crc32(data) if crc is None else crc
+    words_in = (0x080200C2, offset & 0xFFFFFFFF, offset >> 32, size, (size << 4) | 0xC, 0x0FFFDAF8)
+    got = size if bytes_read is None else bytes_read
+    words_out = (0x08020082, result, got, (size << 4) | 0xC, 0x0FFFDAF8) if reply else None
+    token = "-" if crc is False else f"0x{crc:08x}"
+    return tracefmt.parse_ipc_lines([ipc_line(1, seq, session, words_in, words_out, desc=f"mapped-w:4:{size}:-",
+                                              outdesc=f"mapped-w:4:{size}:{token}" if reply else "-")]).calls[0]
+
+
+FILE_BYTES = bytes((i * 7 + i // 251) & 0xFF for i in range(40000))
+
+
+def piece(seq, offset, size, **kw):
+    return fs_read_call(seq, offset, FILE_BYTES[offset:offset + size], **kw)
+
+
+def test_touching_reads_of_one_file_form_a_run_whose_crc_is_that_of_the_whole_range():
+    calls = [piece(1, 0, 4096), piece(2, 4096, 2048), piece(3, 6144, 4096)]
+    runs = tracefmt.coalesce_fs_reads(calls)
+    assert [[c.seq for c in run] for run in runs] == [[1, 2, 3]]
+    assert tracefmt.merged_fs_read(runs[0]) == (0, 10240, f"0x{zlib.crc32(FILE_BYTES[:10240]):08x}")
+    # a run of one read is that read
+    one = tracefmt.coalesce_fs_reads([piece(1, 100, 64)])
+    assert tracefmt.merged_fs_read(one[0]) == (100, 64, f"0x{zlib.crc32(FILE_BYTES[100:164]):08x}")
+
+
+def test_a_read_that_touches_no_other_starts_a_run_of_its_own():
+    gap = [piece(1, 0, 4096), piece(2, 4097, 2048)]                    # one byte missing
+    overlap = [piece(1, 0, 4096), piece(2, 4095, 2048)]                # one byte read twice
+    again = [piece(1, 0, 4096), piece(2, 0, 4096)]                     # the same range twice
+    for calls in (gap, overlap, again):
+        runs = tracefmt.coalesce_fs_reads(calls)
+        assert [[c.seq for c in run] for run in runs] == [[1], [2]]
+    runs = tracefmt.coalesce_fs_reads([piece(1, 0, 4096), piece(2, 9000, 100), piece(3, 9100, 100), piece(4, 4096, 10)])
+    assert [[c.seq for c in run] for run in runs] == [[1, 4], [2, 3]]
+
+
+def test_the_order_in_which_the_reads_were_sent_does_not_matter():
+    # D52 ignores the order of the Reads: two readers that interleave differently send the same Reads in another order
+    in_order = [piece(1, 0, 4096), piece(2, 4096, 2048), piece(3, 6144, 4096), piece(4, 10240, 2048)]
+    for order in ([3, 0, 2, 1], [3, 2, 1, 0], [1, 0, 3, 2]):
+        calls = [in_order[i] for i in order]
+        runs = tracefmt.coalesce_fs_reads(calls)
+        assert len(runs) == 1
+        assert [c.seq for c in runs[0]] == [1, 2, 3, 4]                # a run is in offset order
+        assert tracefmt.merged_fs_read(runs[0]) == (0, 12288, f"0x{zlib.crc32(FILE_BYTES[:12288]):08x}")
+    # the same Reads sent twice give two runs, whichever way they are interleaved
+    twice = [piece(1, 0, 100), piece(2, 100, 100), piece(3, 0, 100), piece(4, 100, 100)]
+    for order in ([0, 1, 2, 3], [0, 2, 1, 3], [3, 2, 1, 0]):
+        sizes = sorted(len(r) for r in tracefmt.coalesce_fs_reads([twice[i] for i in order]))
+        assert sizes == [2, 2]
+    # one more Read of the first chunk: the second chunk joins the older run, and the run left over holds the odd Read
+    odd = [piece(1, 0, 100), piece(2, 0, 100), piece(3, 100, 100)]
+    runs = tracefmt.coalesce_fs_reads(odd)
+    assert sorted(len(r) for r in runs) == [1, 2]
+    again = tracefmt.coalesce_fs_reads([odd[2], odd[1], odd[0]])
+    assert sorted(len(r) for r in again) == [1, 2]
+    key = lambda rs: sorted(tracefmt.merged_fs_read(r) for r in rs)           # noqa: E731
+    assert key(runs) == key(again)                                             # the same units, whatever the order
+
+
+def test_runs_are_kept_per_file_session_and_other_requests_between_reads_do_not_break_them():
+    a, b = "fs:USER/file#1", "fs:USER/file#2"
+    calls = [piece(1, 0, 100, session=a), piece(2, 5000, 100, session=b), piece(3, 100, 100, session=a),
+             piece(4, 5100, 100, session=b), piece(5, 200, 100, session=a)]
+    runs = tracefmt.coalesce_fs_reads(calls)
+    assert sorted([c.seq for c in run] for run in runs) == [[1, 3, 5], [2, 4]]
+    # a file of another session name (not an fs:USER file), a Write and a Close are not Reads: they are left out
+    other = [piece(1, 0, 100), write_call(), piece(2, 100, 100, session="fs:USER/dir#1"), piece(3, 100, 100)]
+    runs = tracefmt.coalesce_fs_reads(other)
+    assert [[c.seq for c in run] for run in runs] == [[1, 3]]
+
+
+def test_a_read_that_cannot_be_merged_stands_alone():
+    cases = {
+        "a failed read": piece(2, 4096, 100, result=0xC8804464, bytes_read=0),
+        "a short read": piece(2, 4096, 100, bytes_read=60),
+        "a read that never got a reply": piece(2, 4096, 100, reply=False),
+        "a read without the CRC-32 of its data": piece(2, 4096, 100, crc=False),
+    }
+    for what, bad in cases.items():
+        runs = tracefmt.coalesce_fs_reads([piece(1, 0, 4096), bad, piece(3, 4196, 100)])
+        assert sorted([c.seq for c in run] for run in runs) == [[1], [2], [3]], what
+        # it is no part of any run, and it does not stop the Reads on either side of it from forming one
+        runs = tracefmt.coalesce_fs_reads([piece(1, 0, 4096), bad, piece(3, 4096, 100)])
+        assert sorted([c.seq for c in run] for run in runs) == [[1, 3], [2]], what
+    # a reply that does not say how many bytes it read cannot be trusted to have filled the buffer
+    words_out = (0x08020042, 0, (100 << 4) | 0xC, 0x0FFFDAF8)           # one normal parameter only
+    bare = tracefmt.parse_ipc_lines([ipc_line(1, 2, "fs:USER/file#3", (0x080200C2, 4096, 0, 100, 0x64C, 0x0FFFDAF8),
+                                              words_out, desc="mapped-w:4:100:-",
+                                              outdesc="mapped-w:4:100:0x00000001")]).calls[0]
+    runs = tracefmt.coalesce_fs_reads([piece(1, 0, 4096), bare])
+    assert sorted([c.seq for c in run] for run in runs) == [[1], [2]]
+    # nor does a Read of no bytes
+    runs = tracefmt.coalesce_fs_reads([piece(1, 0, 4096), fs_read_call(2, 4096, b""), piece(3, 4096, 100)])
+    assert sorted([c.seq for c in run] for run in runs) == [[1, 3], [2]]
+
+
+def test_a_64_bit_offset_touches_across_the_32_bit_boundary():
+    low = fs_read_call(1, 0xFFFFF000, FILE_BYTES[:4096])
+    high = fs_read_call(2, 0x1_0000_0000, FILE_BYTES[4096:6144])
+    assert [[c.seq for c in run] for run in tracefmt.coalesce_fs_reads([low, high])] == [[1, 2]]
+
+def test_the_prefixes_of_a_run_are_the_crc_of_the_bytes_so_far():
+    calls = [piece(1, 1000, 4096), piece(2, 5096, 2048), piece(3, 7144, 100)]
+    runs = tracefmt.coalesce_fs_reads(calls)
+    assert len(runs) == 1
+    prefixes = tracefmt.fs_run_prefixes(runs[0])
+    assert [(n, size) for n, size, _ in prefixes] == [(1, 4096), (2, 6144), (3, 6244)]
+    for n, size, token in prefixes:
+        assert token == f"0x{zlib.crc32(FILE_BYTES[1000:1000 + size]):08x}"
+    assert tracefmt.merged_fs_read(runs[0]) == (1000, 6244, prefixes[-1][2])
+    # a Read that cannot be merged has none, and cannot be in a run of several
+    bad = piece(4, 0, 100, bytes_read=50)
+    assert tracefmt.fs_run_prefixes([bad]) == []
+    with pytest.raises(ValueError):
+        tracefmt.fs_run_prefixes([piece(5, 0, 100), bad])
+    assert tracefmt.merged_fs_read([bad]) == (0, 100, tracefmt.fs_read_crc(bad))
+    with pytest.raises(ValueError):
+        tracefmt.merged_fs_read([tracefmt.parse_ipc_lines([ipc_line(1, 1, "fs:USER/file#1", (0x080200C2, 1), None)]).calls[0]])

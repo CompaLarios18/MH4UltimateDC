@@ -21,3 +21,4 @@
 # comparison is made on the unwrapped slot (tools/native/save_probe.py unwrap), which is a decision for D52.
 G2 81408 0   0 8     block 0 of the user slot (user1): the byte-sum checksum of the plaintext from offset 8; it changes with the fields of the next line
 G2 81408 0 280 16    blocks 35 and 36 of the user slot (user1): six 16-bit words, two of them the game's random generator stepped from the first clock reading's seed and four the low 16 bits of the Unix second at two clock readings (frame 2 to 3 and frame 2813)
+G2 81408 0 75672 8  block 9459 of the user slot (user1): bytes 4 to 7 of the hunter's 8-byte creation stamp (plaintext 75668 to 75675), built by the game from the third clock reading's calendar time (month and day, minute, the second) and from two bits plus the low byte of the control frame counter at the call (frames 4452 to 4453): N0-34, docs/research/g2-save-bytes.md section 9
