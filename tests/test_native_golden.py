@@ -36,7 +36,8 @@ def opt(name, default=None):
 
 
 with open(os.environ["FAKE_LOG"], "a") as f:
-    f.write(json.dumps({"argv": argv, "tz": os.environ.get("TZ"), "cwd": os.getcwd()}) + "\n")
+    f.write(json.dumps({"argv": argv, "tz": os.environ.get("TZ"), "cwd": os.getcwd(),
+                        "mh4u": {k: v for k, v in os.environ.items() if k.startswith("MH4U_")}}) + "\n")
 counter = os.environ["FAKE_LOG"] + ".count"
 n = int(open(counter).read()) if os.path.exists(counter) else 0
 open(counter, "w").write(str(n + 1))
@@ -119,6 +120,10 @@ if opt("--state-trace"):
     lines = ["# statetrace v1 2026-01-01 run %d" % n]
     for fr in range(1, frames + 1):
         scene = 0 if fr < change else (2 if fr < second else 4)
+        for after, value in sorted((int(x.split(":")[0]), int(x.split(":")[1]))     # FAKE_SCENES=frame:scene,...
+                                   for x in os.environ.get("FAKE_SCENES", "").split(",") if x):
+            if fr >= after:
+                scene = value
         lines.append("f=%d t=%d scene=0x%02x applet_state=0x00 frame_counter=0x%08x smain_delta=- quest_id=%s "
                      "stage_loader_state=-" % (fr, tick(fr), scene, fr, n if mode == "vary_state" else "-"))
     if mode != "no_state":
@@ -169,6 +174,9 @@ for flag, kind in (("--capture-dsp", "dsp"), ("--capture-gpu", "gpu")):
                     for i in range(count):
                         g.record(gcap.FRAME, struct.pack("<I", start + i + (1 if mode == "gpu_diff" else 0)),
                                  frame=start + i)
+                        if mode in ("gas", "fog_only") and i == 0:      # a command list that sets the fog mode
+                            g.submit_cmdlist(0x1000, 0x40, frame=start + i)
+                            g.pica_reg([(gcap.REG_FOG_MODE, 1, 7 if mode == "gas" else 5)], frame=start + i)
             os.makedirs(path + ".frames", exist_ok=True)
             open(os.path.join(path + ".frames", "%d_top.ppm" % start), "w").write("P3 1 1 255 0 0 0\n")
 if opt("--trace-timing"):
@@ -302,6 +310,34 @@ def test_hex_scene_and_draft(tmp_path):
     assert s.checkpoints[1] == (20, 0xE64D5C)
 
 
+def test_env_headers(tmp_path):
+    """`# env:` lines are environment variables of the runner, any number of them, in order (G3-perf)."""
+    s = golden.parse_session(write_session(tmp_path, SESSION))
+    assert s.env == []
+    text = SESSION.replace("# captures", "# env: MH4U_WIDESCREEN=3440:1440\n# env: MH4U_WIDE_RENDER=1\n# captures")
+    s = golden.parse_session(write_session(tmp_path, text))
+    assert s.env == ["MH4U_WIDESCREEN=3440:1440", "MH4U_WIDE_RENDER=1"]
+    assert s.events == 3                      # an env line is a header, not an input event
+
+
+@pytest.mark.parametrize("value,message", [("MH4U_WIDESCREEN", "bad env"), ("=1", "bad env"), ("1X=2", "bad env"),
+                                           ("MH4U_A=1 2", "bad env"), ("MH4U_A=", "bad env"), ("", "bad env"),
+                                           ("MH4U_A=1\x002", "bad env"),
+                                           ("TZ=PST8PDT", "TZ is fixed"), ("tz=PST8PDT", "TZ is fixed"),
+                                           ("PATH=C:/x", "only MH4U_"), ("PYTHONPATH=x", "only MH4U_"),
+                                           ("LD_PRELOAD=x", "only MH4U_"), ("mh4u_fps=1", "only MH4U_")])
+def test_bad_env_headers(tmp_path, value, message):
+    text = SESSION.replace("# captures", f"# env: {value}\n# captures")
+    with pytest.raises(golden.GoldenError, match=message):
+        golden.parse_session(write_session(tmp_path, text))
+
+
+def test_an_env_variable_given_twice_is_refused(tmp_path):
+    text = SESSION.replace("# captures", "# env: MH4U_FPS=60\n# env: MH4U_WIDE_RENDER=1\n# env: MH4U_FPS=120\n# captures")
+    with pytest.raises(golden.GoldenError, match="given twice"):
+        golden.parse_session(write_session(tmp_path, text))
+
+
 @pytest.mark.parametrize("old,new,message", [
     ("# name: S1", "# name: S2", "differs from the file name"),
     ("# needs: none", "# needs: maybe", "needs must be"),
@@ -328,13 +364,20 @@ def test_bad_sessions(tmp_path, old, new, message):
 
 
 A_DEMO, A_NEWGAME, A_VILLAGE, A_QUEST = 0x00E64D5C, 0x00E6C138, 0x00E6C170, 0x00E655C8
+A_CONTINUE, A_ARENA = 0x00E6C778, 0x00E650BC       # N0-10: the scenes the sessions with a save pass through
+NO_SAVE = ["G1", "G2", "G6"]
+WITH_SAVE = ["G3", "G3-perf", "G4"]
+DRAFTS = ["G7"]
 
 
 def test_shipped_sessions_parse():
     names = sorted(p.stem for p in golden.SESSIONS_DIR.glob("*.txt"))
-    assert names == ["G1", "G2", "G6"]
+    assert names == sorted(NO_SAVE + WITH_SAVE + DRAFTS)
     sessions = {n: golden.parse_session(golden.SESSIONS_DIR / f"{n}.txt") for n in names}
-    assert all(s.needs == "none" and not s.draft for s in sessions.values())
+    assert all(not sessions[n].draft for n in NO_SAVE + WITH_SAVE)
+    assert all(sessions[n].draft for n in DRAFTS)           # N0-10: G7 could not be made (golden.md, G7)
+    assert all(sessions[n].needs == "none" for n in NO_SAVE)
+    assert all(sessions[n].needs == "save" for n in WITH_SAVE + DRAFTS)
     g1, g2, g6 = sessions["G1"], sessions["G2"], sessions["G6"]
     assert [(c.kind, c.start, c.frames, c.silent) for c in g1.captures] == [("gpu", 1500, 3, False),
                                                                            ("dsp", 1240, 300, False)]
@@ -357,8 +400,82 @@ def test_shipped_g1_dsp_capture_is_inside_the_last_audio_stretch():
 
 def test_shipped_sessions_event_counts():
     # golden.py's own parser: the number of input events of each shipped session
-    counts = {n: golden.parse_session(golden.SESSIONS_DIR / f"{n}.txt").events for n in ("G1", "G2", "G6")}
-    assert counts == {"G1": 8, "G2": 52, "G6": 23}
+    counts = {n: golden.parse_session(golden.SESSIONS_DIR / f"{n}.txt").events
+              for n in NO_SAVE + WITH_SAVE + DRAFTS}
+    assert counts == {"G1": 8, "G2": 52, "G6": 23, "G3": 111, "G3-perf": 111, "G4": 9, "G7": 72}
+
+
+def events_of(name):
+    """The input events of a shipped session, as written (`f<frame>:KIND...`), in order."""
+    out = []
+    for line in (golden.SESSIONS_DIR / f"{name}.txt").read_text(encoding="utf-8").splitlines():
+        line = line.split("#", 1)[0].strip()
+        out += [x.strip() for x in line.split(",") if x.strip()]
+    return out
+
+
+def test_shipped_g3_is_the_arena_hunt_with_a_save():
+    g3 = golden.parse_session(golden.SESSIONS_DIR / "G3.txt")
+    assert g3.frames == 18000 and g3.env == []
+    # N0-10: a GPU capture of 10 frames in the fight (the Yian Kut-Ku is on screen from about f16740 to f17800),
+    # and 3891 frames (about 65 s) of hunt from the load at about f14109
+    assert [(c.kind, c.start, c.frames) for c in g3.captures] == [("gpu", 17400, 10)]
+    # a checkpoint in every scene that lasts more than 100 frames: the intro movies, the continue screen, the
+    # village (the arrival scene, the talk, the hall), the Arena's equipment screen and the hunt
+    assert {scene for _, scene in g3.checkpoints} == {A_DEMO, A_CONTINUE, A_VILLAGE, A_ARENA, A_QUEST}
+    assert g3.checkpoints[-1] == (18000, A_QUEST) and (13700, A_ARENA) in g3.checkpoints
+    events = events_of("G3")
+    # the traps of the spec: B is never pressed (B right after the quest is accepted leaves it unposted), and the
+    # Arena's "Use this equipment?" has No selected: LEFT, then A
+    assert not [e for e in events if e.split(":")[1].upper() == "B"]
+    left = events.index("f13850:LEFT:f6")
+    assert events[left + 1] == "f13910:A:f6"
+    # the quest counter's talk: Yes is selected at "Select this Quest?", so A posts it (f12044) and the next A closes
+    # the notice (f12119); a press after that would start the talk again
+    talk = [e for e in events if e.endswith(":A:f6") and 11444 <= int(e[1:].split(":")[0]) <= 12200]
+    assert [int(e[1:].split(":")[0]) for e in talk][-2:] == [12044, 12119]
+    # the village's talk ends with the press at f8460 and nothing presses A again until the counter's
+    assert "f8460:A:f6" in events and not [e for e in events if e.endswith(":A:f6") and 8460 < int(e[1:].split(":")[0]) < 11444]
+    # the save has the Circle Pad Pro option off, so the session never opens ir:USER and does not touch the options
+    assert not [e for e in events if ":TOUCH:" in e and e.split(":")[0] in ("f1070", "f1250", "f1850")]
+
+
+def test_shipped_g3_perf_is_g3_at_21_9():
+    g3, perf = (golden.parse_session(golden.SESSIONS_DIR / f"{n}.txt") for n in ("G3", "G3-perf"))
+    # the spec: G3 with the widening options and a GPU capture of 30 frames instead of 10, taken inside the fight
+    # (the port reads its options once at start-up: environment variables, which the runner's --set refuses)
+    assert perf.env[:2] == ["MH4U_WIDESCREEN=3440:1440", "MH4U_WIDE_RENDER=1"]
+    assert perf.env[2] == "MH4U_DEPTH_OF_FIELD=off"            # wide_render crashes the reference runner without it
+    assert len(perf.env) == 3
+    assert [(c.kind, c.frames) for c in perf.captures] == [("gpu", 30)]
+    assert 16740 <= perf.captures[0].start and perf.captures[0].start + 30 <= 17800
+    # the render width does not move the frame at which anything happens: the inputs and checkpoints are G3's
+    assert events_of("G3-perf") == events_of("G3")
+    assert perf.frames == g3.frames and perf.checkpoints == g3.checkpoints
+
+
+def test_shipped_g4_is_the_arrival_scene_with_gas():
+    g4 = golden.parse_session(golden.SESSIONS_DIR / "G4.txt")
+    assert g4.frames == 3000 and g4.env == []
+    assert [(c.kind, c.start, c.frames) for c in g4.captures] == [("gpu", 2400, 10)]
+    assert {scene for _, scene in g4.checkpoints} == {A_DEMO, A_CONTINUE, A_VILLAGE}
+    # nothing after the nine boot presses: the scene plays by itself
+    assert events_of("G4") == events_of("G3")[:9] and len(events_of("G4")) == 9
+    # the recording must show gas (golden.MINIMUMS): a G4 whose capture lost it fails `record`
+    assert golden.MINIMUMS["G4"] == {"gas_frames": 1}
+    assert golden.MINIMUMS["G3"] == golden.MINIMUMS["G3-perf"] == {"checkpoint_scenes": 5}
+
+
+def test_shipped_g7_is_a_draft_that_stops_at_the_empty_board():
+    """G7 (a downloaded quest) could not be made: the board that lists them says it has none (golden.md). The draft
+    keeps the route that gets there, so that the next attempt starts at the board; `record` refuses it."""
+    g7 = golden.parse_session(golden.SESSIONS_DIR / "G7.txt")
+    assert g7.draft and g7.needs == "save"
+    events = events_of("G7")
+    # the same village as G3's up to the counter, then the Event Quests touch of the quest board
+    assert events[:61] == events_of("G3")[:61]            # the boot, the talk, the map and the walk (to f10894)
+    assert "f12700:TOUCH:122:190:f6" in events
+    assert not [e for e in events if e.split(":")[1].upper() == "B"]
 
 
 @pytest.mark.skipif(not os.environ.get("MH4U_RUNNER"), reason="reference runner not set (MH4U_RUNNER)")
@@ -440,6 +557,11 @@ def test_record_refusals(env, capsys):
                                         .replace("# captures", "# draft: yes\n# captures"))
     assert golden.main(["record", "D", *env.common, *env.ref, "--user", str(env.user)]) == 2
     assert "draft" in capsys.readouterr().err
+    runs = len(env.calls())
+    assert not (env.out / "D").exists()                       # the refusal ran nothing and made nothing
+    assert golden.main(["record", "D", *env.common, *env.ref, "--user", str(env.user), "--allow-draft"]) == 0
+    assert len(env.calls()) == runs + 1                       # --allow-draft: the draft is recorded
+    assert env.manifest("D")["session"]["checkpoints"] == []
     (env.sessions / "N.txt").write_text(SESSION.replace("S1", "N").replace("none", "save"))
     assert golden.main(["record", "N", *env.common, *env.ref, "--user", str(env.user)]) == 2
     assert "needs a save" in capsys.readouterr().err
@@ -532,6 +654,112 @@ def test_a_g2_recording_needs_two_real_scene_changes_and_three_scenes(env, monke
     monkeypatch.setenv("FAKE_MODE", "one_change")
     (env.sessions / "S1.txt").write_text(SESSION.replace("5:0, 20:2", "5:0, 20:2, 28:2"))
     assert env.record() == 0
+
+
+def test_a_session_with_env_headers_runs_with_them_every_time(env, capsys, monkeypatch):
+    """N0-10, G3-perf: the start-up options of the session are part of it: `record` and `check` (the reference
+    again, and a candidate runner) give the runner its environment variables, whatever the shell has set."""
+    wide = {"MH4U_WIDESCREEN": "3440:1440", "MH4U_WIDE_RENDER": "1"}
+    (env.sessions / "S1.txt").write_text(SESSION.replace("# captures", "# env: MH4U_WIDESCREEN=3440:1440\n"
+                                                         "# env: MH4U_WIDE_RENDER=1\n# captures"))
+    monkeypatch.setenv("MH4U_WIDESCREEN", "16:9")            # the session's value wins over the shell's
+    monkeypatch.setenv("MH4U_FPS", "120")                     # and the rest of the environment is kept
+    assert env.record() == 0
+    assert env.calls()[0]["mh4u"] == {**wide, "MH4U_FPS": "120"} and env.calls()[0]["tz"] == "UTC0"
+    assert env.manifest()["session"]["env"] == ["MH4U_WIDESCREEN=3440:1440", "MH4U_WIDE_RENDER=1"]
+    capsys.readouterr()
+    assert env.check() == 0                          # the reference runner again: nothing on the command line
+    assert env.calls()[1]["mh4u"] == {**wide, "MH4U_FPS": "120"}
+    prog = env.tmp / "prog"
+    prog.mkdir()
+    env.check("--candidate-runner", str(env.script), "--candidate-program", str(prog))
+    assert env.calls()[2]["mh4u"] == {**wide, "MH4U_FPS": "120"}
+    # a session without the headers passes none of its own
+    (env.sessions / "S1.txt").write_text(SESSION)
+    assert env.record("--force") == 0
+    assert env.calls()[3]["mh4u"] == {"MH4U_WIDESCREEN": "16:9", "MH4U_FPS": "120"}
+    assert env.manifest()["session"]["env"] == []
+
+
+def test_a_check_refuses_a_session_whose_env_lines_changed_since_the_recording(env, capsys):
+    """The environment of a run is part of the recording: a session file edited after `record` is not checked
+    under other variables without a word (and an old manifest without the key was made with none)."""
+    with_env = SESSION.replace("# captures", "# env: MH4U_WIDE_RENDER=1\n# captures")
+    (env.sessions / "S1.txt").write_text(with_env)
+    assert env.record() == 0
+    assert env.check() == 0                                                     # unchanged: fine
+    capsys.readouterr()
+    runs = len(env.calls())
+    for other in (SESSION, with_env.replace("RENDER=1", "RENDER=0"),
+                  with_env.replace("# captures", "# env: MH4U_FPS=60\n# captures")):
+        (env.sessions / "S1.txt").write_text(other)
+        assert env.check() == 2
+        assert "differ from the ones the recording was made with" in capsys.readouterr().err
+    assert len(env.calls()) == runs                           # refused before any run
+    # the other way round: a recording without the lines, a session that gained one
+    (env.sessions / "S1.txt").write_text(SESSION)
+    assert env.record("--force") == 0
+    (env.sessions / "S1.txt").write_text(with_env)
+    assert env.check() == 2 and "differ" in capsys.readouterr().err
+    # a manifest from before the key existed has no variables
+    manifest = json.loads((env.out / "S1" / "manifest.json").read_text())
+    del manifest["session"]["env"]
+    (env.out / "S1" / "manifest.json").write_text(json.dumps(manifest))
+    (env.sessions / "S1.txt").write_text(SESSION)
+    assert env.check() == 0
+    (env.sessions / "S1.txt").write_text(with_env)
+    assert env.check() == 2
+
+
+@pytest.mark.parametrize("name", ["G3", "G3-perf"])
+def test_g3_needs_a_checkpoint_in_each_of_five_scenes(env, name, monkeypatch):
+    """N0-10: the Arena hunt passes through the intro, the continue screen, the village, the Arena's equipment
+    screen and the hunt, and a checkpoint is wanted in each: five distinct scene values pass, four do not."""
+    five = SESSION.replace("S1", name).replace("5:0, 20:2", "5:0, 11:2, 16:4, 21:6, 26:8")
+    monkeypatch.setenv("FAKE_SCENES", "10:2,15:4,20:6,25:8")      # the fake runner walks through five scene values
+    (env.sessions / f"{name}.txt").write_text(five)
+    assert env.record(s=name) == 0 and env.manifest(name)["capture_problems"] == []
+    assert len({c["scene"] for c in env.manifest(name)["checkpoint_results"]}) == 5
+    (env.sessions / f"{name}.txt").write_text(five.replace("11:2, 16:4, 21:6, 26:8", "11:2, 16:4, 21:6, 26:6"))
+    assert env.record("--force", s=name) == 1
+    assert env.manifest(name)["capture_problems"] == [
+        f"{name}'s checkpoints hold 4 distinct scene value(s), at least 5 wanted"]
+    monkeypatch.delenv("FAKE_SCENES")
+    (env.sessions / f"{name}.txt").write_text(SESSION.replace("S1", name))
+    assert env.record("--force", s=name) == 1
+    assert env.manifest(name)["capture_problems"] == [
+        f"{name}'s checkpoints hold 2 distinct scene value(s), at least 5 wanted"]
+    # the same session under another name has no such minimum
+    assert env.record() == 0
+
+
+def test_a_recording_that_opens_ir_user_still_needs_its_type_2_records(env, monkeypatch):
+    """D36 is a rule of every session: a game that opens ir:USER (a save with the Circle Pad Pro on, and a
+    reference runner whose HID capture lets it) must show it in the HID capture; the sessions of N0-10 are recorded
+    with the option off (golden.md, `ir:USER`), so none of them meets the rule, and a recording that does open it
+    without a type-2 record is a capture problem whatever its name."""
+    for name in ("G3", "G4", "S1"):
+        (env.sessions / f"{name}.txt").write_text(SESSION.replace("S1", name))
+    monkeypatch.setenv("FAKE_MODE", "ir_missing")
+    for name in ("S1", "G3", "G4"):
+        assert env.record("--force", s=name) == 1
+        assert any("ir:USER" in p and "type-2" in p for p in env.manifest(name)["capture_problems"])
+
+
+def test_g4_needs_a_gpu_capture_that_sets_fog_mode_7(env, monkeypatch):
+    """N0-10, G4: a cutscene whose capture `gcap.py summary` shows with fog mode 7 (gas)."""
+    (env.sessions / "G4.txt").write_text(SESSION.replace("S1", "G4"))
+    assert env.record(s="G4") == 1
+    assert any("never set fog mode 7" in p for p in env.manifest("G4")["capture_problems"])
+    monkeypatch.setenv("FAKE_MODE", "fog_only")           # plain fog (mode 5) is not gas
+    assert env.record("--force", s="G4") == 1
+    monkeypatch.setenv("FAKE_MODE", "gas")
+    assert env.record("--force", s="G4") == 0 and env.manifest("G4")["capture_problems"] == []
+    # a G4 without any GPU capture cannot show gas either
+    monkeypatch.delenv("FAKE_MODE")
+    (env.sessions / "G4.txt").write_text(SESSION.replace("S1", "G4").replace("gpu:10:2, ", ""))
+    assert env.record("--force", s="G4") == 1
+    assert any("never set fog mode 7" in p for p in env.manifest("G4")["capture_problems"])
 
 
 # ---- check, the same profile

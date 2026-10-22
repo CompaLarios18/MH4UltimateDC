@@ -13,12 +13,19 @@ repository.
 > captures, the screenshots and the shared-page dump are identical by SHA-256. So a difference between two runs of
 > the reference is a determinism regression (D30), not noise. See [Results](#results) for the numbers and
 > [History](#history-the-wip-recordings-before-n0-29) for the measurements that led to D30 to D36.
+>
+> **Status (N0-10).** The sessions that need the maintainer's save are G3 (the Arena hunt), G4 (a cutscene with gas) and
+> G3-perf (G3 at 21:9), recorded the same way from a user folder with the save merged in (`--save`); see
+> [The save](#the-save), [`ir:USER`](#iruser-d36) and the sessions [G3](#g3-the-arena-hunt), [G4](#g4-a-cutscene-with-gas),
+> [G3-perf](#g3-perf-g3-at-219) and [G7](#g7-a-downloaded-quest-not-made). **G7 could not be made** (the board that lists the
+> downloaded quests lists none), and **none of the sessions opens `ir:USER`**: the reference runner's HID capture kills
+> the game when the Circle Pad Pro option is on, so the sessions run from a copy of the save with it off.
 
 ## Files
 
 | Path | What |
 |---|---|
-| `tools/native/golden/<S>.txt` | the session: header lines and input events (the runner's `--input-file` format) |
+| `tools/native/golden/<S>.txt` | the session: header lines and input events (the runner's `--input-file` format): G1, G2, G6 (no save), G3, G3-perf, G4 (the save), G7 (a draft) |
 | `tools/native/golden.py` | `list`, `record`, `check` |
 | `build/golden/<S>/` | one recording (the shared checkout's `build/`, not a worktree's) |
 
@@ -30,6 +37,7 @@ repository.
 # frames: <total>               the run stops here (--frames)
 # checkpoints: <frame>:<scene>, ...     scene = the observable `scene` value (0x.. or decimal)
 # captures: gpu:<start>:<frames>, dsp:<start>:<frames>[:silent], ...    (gpu at most 30 frames)
+# env: NAME=VALUE               optional, any number: an environment variable of the runner (G3-perf)
 # draft: yes                    optional: placeholder numbers; `record` refuses the file
 f600:START                      events: f<frame>:BUTTON[:hold], f<frame>:TOUCH:x:y[:hold], f<frame>:CIRCLE:x:y[:hold]
 ```
@@ -39,6 +47,16 @@ backend and runtime. Several events may share a line, separated by commas. The s
 touches: they may be committed. A checkpoint `<frame>:<scene>` holds when the first state-trace record at or after that
 frame has that `scene`. `:silent` marks a DSP capture that is expected to be silent (a capture that is not marked must
 have sound, see [Capture problems](#capture-problems)).
+
+`# env:` lines (N0-10) are the start-up options of a session that the port reads from the environment (`MH4U_WIDESCREEN`,
+`MH4U_WIDE_RENDER`, ...: it reads them once at start-up, so the runner's `--set` cannot change them, it answers "not an
+option that can change while the game runs"). `record` and `check` give every run of the session those variables (over the
+shell's, with `TZ=UTC0` kept) whatever runner it is (the reference, or a candidate), and the manifest keeps them
+(`session.env`). `check` compares the session file's lines with the manifest's and stops with exit status 2 when they
+differ (a session edited since `record`, or a recording made without them: record again), so a recording and a check can
+never differ in them by an edited file or a forgotten command-line option; a manifest without the key counts as having
+none. Only `MH4U_*` names are accepted (a session file sets the port's options and nothing else: not `PATH`, not
+`PYTHONPATH`), each at most once, and `TZ` is refused.
 
 ### The scene
 
@@ -98,6 +116,14 @@ python tools/native/golden.py check <S> --repeat 2 --require svc,ipc,state,check
     --runner ... --game ... --update ... --code ... --out build/golden        # G1 also ,dsp
 ```
 
+The sessions that need the save (N0-10) were recorded and checked from the main checkout, with the worktree's `golden.py`
+and session files and `--out` pointing at the main checkout's `build/golden`, the same options and:
+
+```
+python tools/native/golden.py record G3 <the options above> --user build/userbase-cfg --save build/n0-10-save-cpp-off
+python tools/native/golden.py check G3 <the options above> --repeat 2 --require svc,ipc,state,checkpoints,hid   # no --save
+```
+
 - `RUN` and `LIB` are paths: `mh4u_runner.exe` and a `.dll` on Windows, `mh4u_runner` and a `.so` on Linux. A runner
   that is a `.py` script is started with the Python interpreter (the tests use that).
 - `record` copies the user folder (and the save, merged over it) to `user-before/`, runs the runner on a working copy
@@ -115,7 +141,10 @@ python tools/native/golden.py check <S> --repeat 2 --require svc,ipc,state,check
 - a DSP capture not marked `:silent` that has no non-silent PCM frame, or no type-3 (`SAMPLES`) record;
 - an IPC trace with an `ir:USER` request whose HID capture has no type-2 (`IR`) record from that request's frame on;
 - checkpoints that do not hold;
-- for G2: fewer than 2 real scene changes in `state.txt`, or checkpoints that hold fewer than 3 distinct scene values.
+- for G2: fewer than 2 real scene changes in `state.txt`, or checkpoints that hold fewer than 3 distinct scene values;
+- *(N0-10)* for G3 and G3-perf: checkpoints that hold fewer than 5 distinct scene values (the intro, the continue screen,
+  the village, the Arena's equipment screen, the hunt); for G4: no GPU capture that sets fog mode 7 (gas), the `fog modes
+  set` of `gcap.py summary`.
 
 ### Who runs, and what is compared
 
@@ -224,6 +253,68 @@ when it does not. `build/userbase-cfg` was made by one short run of the N0-29 ru
 check), and `golden.py check` from `userbase-cfg` passes (below). The comparison of user folders of the runner leaves
 `log/` out (D49).
 
+## The save
+
+The sessions that `needs: save` (G3, G4, G3-perf, G7) start from the same user folder with the maintainer's save merged
+over it (`record --save DIR`, copied into `user-before/` after the user folder, so a `check` of them needs no save
+option). The staged save is in the user-folder layout: the game's save slots
+(`sdmc/Nintendo 3DS/<id>/<id>/title/00040000/00126300/data/00000001/{system,user1}`) and its extdata
+(`.../extdata/00000000/00001263/user/{card1-3,cardbox,otomo1,quest1-5}`); `golden.py` never writes into it.
+
+**The recordings use a copy of it with the Circle Pad Pro option off** (`build/n0-10-save-cpp-off`), because the reference
+runner cannot record the game with the option on (see [`ir:USER`](#iruser-d36)). The copy differs from the staged save in
+one file, `system` (512 bytes: the settings slot; the game writes it again, so 508 of its bytes differ), and was made by the
+game itself, from the staged save, with a script of touches that switches the option off in the main menu's Options:
+
+```
+f300:A:f6,f450:A:f6,f600:A:f6,f750:A:f6,f900:A:f6     the first five presses of the sessions (the run reaches the main menu with these alone)
+f1070:TOUCH:103:100:f6        Options (the main menu's third button, bottom screen)
+f1250:TOUCH:200:73:f6         the Circle Pad Pro row
+f1450:A:f6                    "Use the Nintendo 3DS Circle Pad Pro attachment?" has No selected: A sets it to Off
+f1650:A:f6                    closes the notice
+f1850:TOUCH:290:222:f6        Back (to the main menu): the game has written `system`
+```
+
+To rebuild the copy (the script above in a file, `TZ=UTC0`, the N0-29 reference runner; about two minutes):
+
+1. `D` = a copy of `build/userbase-cfg` with the staged save merged over it (`build/n0-10-save/*` copied into `D`).
+2. `mh4u_runner <game>.cxi --new-3ds off --cpu recomp --code build/golden-lib/0004000000126300.dll --install
+   <update 1.3.0>.cia --user D --frames 2400 --input-file <the script>`: the options of `golden.py record` that matter,
+   and **no** `--capture-hid` (with the option on, a run with it dies in the Circle Pad Pro's IR service at boot,
+   see below, before the option can be switched; the other recorders and the screenshots do not change what the game writes).
+3. `D`'s `system` (it is at the same path as in the staged save, `sdmc/Nintendo 3DS/<id>/<id>/title/00040000/00126300/data/
+   00000001/system`) replaces the one of a copy of the staged save; every other file is the staged save's, untouched.
+
+That recipe was run again from scratch (measured, after the copy was made) and gives the same twelve files byte for byte
+as `build/n0-10-save-cpp-off`: the run changes none of the other eleven, and its `system` is identical to the copy's. Only
+`system` differs from the staged save (the 508 of 512 bytes noted above). Every later run starts from the copy, so the script is not
+part of any session. A recording's `user-before/` holds the copy, which is what a native replay of the session starts from.
+
+## `ir:USER` (D36)
+
+**None of G3, G4, G3-perf or G7 opens `ir:USER`, and none can with this reference runner.** D36 wanted one golden session
+whose HID capture has type-2 (IR) records; it cannot be had, for this reason:
+
+- The maintainer's save has the Circle Pad Pro option **on**. With it on the game opens `ir:USER` while it boots (about
+  frame 199: Initialize with a 0x1000-byte shared block at 0x08DF0000, Finalize, Initialize again, 8 requests then a second
+  `CreateMemoryBlock` of the same address and size), and keeps polling it (47,000 `ir:USER` requests in the first 11,400
+  frames).
+- With `--capture-hid` that second `CreateMemoryBlock` fails with `0xE0A01BF5` and the game dies with a fatal error
+  (`err:f`, status 17 of the runner, the SVC trace ends with that call): the runner's HID capture
+  (`HidIpcRecorded`, `port/src/runner.cpp`) keeps a reference to the first block it sees handed to `ir:USER`, so the
+  block the game freed is still mapped at 0x08DF0000 when the game asks for it again. The same run **without**
+  `--capture-hid` goes on (both calls succeed in its SVC trace). Switching the option on from inside the game (the village's
+  Options, page 3, "Circle Pad Pro") with the capture on gives the same fatal error at that moment, and with the option off
+  there is no `ir:USER` request at all (0 in more than 9,000 frames).
+- `golden.py record` always records the HID, so a session cannot open `ir:USER` without a runner fix; the recordings use the
+  save with the option off ([The save](#the-save)). The capture check of `golden.py` stays as N0-09 made it: a recording whose
+  IPC trace has an `ir:USER` request needs a type-2 record in its HID capture from that request on (a test covers it), so the
+  day the runner is fixed a session that opens it is checked.
+- To get D36's session: fix the capture (hold the block weakly, or copy what it needs on Initialize; a change of
+  `port/src/runner.cpp` and a new reference runner, which would have to be checked again against N0-29's exactness), then
+  record G3 again from the staged save as it is (the option on) and `golden.md` says so. Not done here: it is not in this
+  WP's files.
+
 ## The software keyboard
 
 The runner's keyboard is **not** answered by the runner: the game opens it, and it stays open until a touch presses its
@@ -297,6 +388,109 @@ Frames: 3700. Checkpoints: `1450:0x00e64d5c`, `2500:0x00e6c138`, `3700:0x00e6c13
 used for the first name (frames 1800 to 2400) and again for the second (3000 to 3550), and the run stops on the creation
 screen it was opened from. Recording: 306 s of host time, 590 MiB (the SVC trace is 533 MiB).
 
+### G3: the Arena hunt
+
+Needs the save ([The save](#the-save): the copy with the Circle Pad Pro option off). Frames: 18000. Save → village → the
+Arena counter's quest "Grudge Match: Yian Kut-Ku" → the Arena with a preset loadout → 3,891 frames (about 65 s) of the hunt, from the load at f14109 to the end.
+Checkpoints (one in each scene that lasts more than 100 frames, five distinct values): `600:0x00e64d5c` (`aDemo`, the
+intro movies), `1400:0x00e6c778` (`aContinue`, the continue screen), `2500`, `8000` and `13000:0x00e6c170` (`aVillage`),
+`13700:0x00e650bc` (`aArena`, the equipment screen), `15000`, `17000` and `18000:0x00e655c8` (`aQuest`, the hunt). Real
+scene changes: 10 (frames 2 `aGameSys`, 42 `aDemo`, 903 `aContinue`, 1576 `aDemo`, 1578 `aGameSys`, 1579 `aVillage`,
+13462 `aGameSys`, 13464 `aArena`, 14107 `aGameSys`, 14109 `aQuest`; the steps of 1 to 3 frames have no checkpoint).
+Capture: `gpu:17400:10`, 10 frames with the Yian Kut-Ku on screen (it is in view from about frame 16740 to 17800); fog mode
+5 (plain fog) is set 10 times and gas never. Recording: 3,363 s of host time (56 minutes), 3,114 MiB in 624 files (the SVC
+trace is 2,696 MiB, the GPU capture 166 MiB). The comments of `G3.txt` explain each stretch:
+
+| Frames | What |
+|---|---|
+| 300 to 1500 | nine `A`: the main menu and the character select |
+| 1579 to about 2900 | the village's arrival scene plays by itself (the cutscene G4 captures) |
+| 3300 to 8460 | `A` every 120 frames through the caravan leader's talk (about 5,000 frames); the press at 8460 ends it, control at about 8466 |
+| 8694 to 9044 | touches: the world map button, the Gathering Hall and its confirmation |
+| 9494 to 11244 | circle pad from the hall's door to the quest counter's desk |
+| 11444 to 12119 | `A` every 75 frames: the Arena counter's talk; "Select this Quest?" has *Yes* selected, the press at 12044 posts the quest and 12119 closes the notice |
+| 12250 to 13100 | circle pad to the Quest Gate |
+| 13300, 13650 | `A`: "Depart on Quest", then the Arena's equipment screen |
+| 13850, 13910 | `LEFT`, then `A`: "Use this equipment?" has *No* selected |
+| about 14109 | the quest has loaded |
+| 14350 | circle pad forward-right for 600 frames |
+| 15050 to 17840 | `A` every 90 frames: the caravan leader's explanation of the target camera, then the swings of the hunt |
+
+The two traps of the spec hold in it: the script never presses `B` (right after the quest is accepted it would leave the
+quest unposted), and the equipment prompt is answered with `LEFT`, then `A`. A press after f8460 would start the talk
+again (the leader's idle talk), and one after f12119 would start the counter's talk again ("you've already got a Quest?",
+then a "Cancel the current Quest?" step that the script does not want): both were seen in the exploration, so the
+sequence in the table is the one that works, and its frames cannot be moved by more than a press.
+
+### G4: a cutscene with gas
+
+Needs the save. Frames: 3000: the same nine `A` as G3, and nothing after them; the village's arrival scene plays by itself
+and is the cutscene (it runs from f1579, the start of the village, to about f2900; the GPU capture is inside it, and the
+mode-7 writes of `gcap.py summary` are what shows it uses gas). Checkpoints: `600:0x00e64d5c`, `1400:0x00e6c778`, `2500` and `3000:0x00e6c170`.
+Real scene changes: 6 (frames 2, 42, 903, 1576, 1578, 1579: as G3's first six). Capture: `gpu:2400:10`, ten frames inside the
+cutscene, **`gcap.py summary` shows fog mode 7 on every one of them**:
+
+```
+fog modes set:  fog: 30   gas: 10   none: 50
+```
+
+(per frame: one write of mode 7, three of plain fog and five with fog off), 59 `GX` commands (20 `SUBMIT_CMDLIST`, 20
+`DISPLAY_TRANSFER`, 19 `CACHE_FLUSH`), 20 `PICA_REG`, 40 `GPU_PAGES`, 60 `IRQ`; the `P3D` interrupts of the command lists
+were given delays of 51,145 to 5,123,392 ns (median 2,554,218), the heavy command lists of the gas scene. `golden.py record`
+fails ("never set fog mode 7") when no GPU capture of G4 sets mode 7, so a G4 that lost the gas is never kept; the same
+check is in the tests with a synthetic capture. In the exploration a capture at frame 3500, in the talk that follows
+the scene, set plain fog only (no mode 7), and the one in the scene itself, at frame 2400, is the one kept. Recording:
+369 s of host time, 570 MiB in 124 files (the SVC trace is 359 MiB, the GPU capture 165 MiB).
+
+### G3-perf: G3 at 21:9
+
+Needs the save. G3 with the top screen rendered at the monitor's aspect ratio, for the GPU budget (N2-19): the script is
+`G3.txt` with three `# env:` lines, `MH4U_WIDESCREEN=3440:1440` and `MH4U_WIDE_RENDER=1` (the spec's `--set
+0:widescreen=3440:1440 --set 0:wide_render=1` as the port reads them: at start-up, from the environment; the runner's `--set`
+refuses both) and `MH4U_DEPTH_OF_FIELD=off`, and a GPU capture of 30 frames in the fight, `gpu:17300:30`. Its inputs are G3's
+line for line, and so are its checkpoints and its scene changes: **the render width does not move the frame at which
+anything happens** (the recording's ten scene changes fall at the frames of G3's). The top screen's screenshots are 576
+pixels wide (3440/1440 of 240, rounded to whole 8-pixel tiles). Real scene changes: 10. Capture: `gpu:17300:30`, 30 frames
+with the Yian Kut-Ku in view (`gcap.py summary`: 179 `GX`, 60 `PICA_REG`, 239 `CPU_PAGES`, 120 `GPU_PAGES`, fog mode 5 on 30 draws
+and none on 60, no gas); the display transfer of the widened top screen was given **185,185 ns** (G3's: 92,592) and the
+`P3D` interrupts 203,049 to 16,068,479 ns (median 8,015,431). Recording: 4,287 s of host time (71 minutes), 3,330 MiB in 664
+files (the SVC trace is 2,781 MiB, the GPU capture 248 MiB).
+
+**Why the depth-of-field filter is off.** With `wide_render` on and the filter on (the default), the reference runner dies
+in the village's arrival scene, at about frame 1900, whatever the save and whether or not the screens are being drawn for
+screenshots: `HW.Memory <Error> GetPhysMemRegionInfo: Unknown GetPhysMemRegionInfo @ 0X000000 at PC 0X56D9F4`, then an
+access violation of the runner (status -1073741819). Three runs gave it (two saves, with and without the draw window); with
+`MH4U_DEPTH_OF_FIELD=off` (the port's own option for the cutscenes' blur, `docs/PLAYING.md`) the same script ran to its end.
+The cause is in the runner or the port (`port/src/`: the widened render targets against the filter's pass), not in the game
+or in this script; N2b's G3-perf (N2b-18, N2b-20) starts from this recording and runs with the filter off as recorded.
+
+### G7: a downloaded quest (not made)
+
+**Not recorded: `tools/native/golden/G7.txt` is a draft** (`# draft: yes`, which `record` refuses) that keeps the route to the
+board. The spec wants a downloaded quest from the maintainer's extdata (`quest1` to `quest5`) entered and 30 seconds of play
+on it; the board that lists downloaded quests, the **Event Quests** board of the quest counter (the Low Questatrix's desk:
+three boards on the touch screen, HR 1+, Guild Quests and Event Quests), answers **"(No Quests available.)"**:
+
+- The game does read the files for it: touching Event Quests makes it list the extdata folder and read four files whole
+  (`quest1`, `quest2`, `quest3` and `quest5` in the trace that has the file names; 328,704 bytes each: an `fs:USER`
+  `OpenFile` then a `Read` of the whole file, one after the other) within one second of emulated time, and then it prints
+  that line. The five files are also opened at boot, with the guild cards and the Palico file.
+- The same answer comes from the staged save with the Circle Pad Pro option on and from the copy with it off (two runs
+  that reach the board at different frames).
+- The "Guild Quests" board of the same counter is a different list (the pool of quests obtained through StreetPass and
+  expeditions), and the title screen's `DLC` button asks "Connect to the Internet to
+  access downloadable content?", not for the downloaded quests.
+- What stops the list is, most likely, the clock: event quests are distributed for a limited period, and the reference runner
+  starts every run at 2026-01-01 12:00 UTC (a constant of `port/src/runner.cpp`, D30). That is a reading of the game's
+  behaviour, not a measurement: nothing in this WP's files can change the runner's date (`--async-io` starts at the host's date,
+  which is 2026 as well and makes the run unrepeatable).
+
+So G7 needs a decision outside N0-10: a runner option for the start date (so that a session can start at a date in the
+distribution period of one of the five quests, which a run of the game with the files could find out), or the statement that
+downloaded quests are not part of what the native runtime is checked against. The draft's route
+(`f300` to `f10894` as G3, then `f11340` to `f11880` circle pad along the desk until the `A` prompt names the Low Questatrix
+and not Arena Bambina, `A` every 90 frames, `A` at `f12460`, touch at `f12700`) is what the next attempt starts from.
+
 ## Numbers from `gcap.py summary` of G1's capture
 
 `gcap.py summary build/golden/G1/gpu-1500.mgpu`, frames 1500 to 1502, 3 `FRAME` records:
@@ -362,6 +556,25 @@ Every `check` made three runs (the recording and the two repeats) and compared r
 and run 2 with run 1, in the `same` profile: `svc`, `ipc`, `state` and `unmapped` identical apart from the header line,
 `hid`, `dsp`, `gpu`, the screenshots and the shared-page dump identical by SHA-256, `timing` identical (information).
 Nothing was loosened to make it pass: the comparison of `same` has no tolerance and no list.
+
+### Results of N0-10 (the sessions with the save)
+
+`golden.py record <S> ... --save build/n0-10-save-cpp-off`, then `golden.py check <S> --repeat 2 --require
+svc,ipc,state,checkpoints,hid` (the `same` profile; `images`, `unmapped`, the GPU capture and the shared page are compared
+and gated too, as above), the same runner, library, clock and PC as the table above, the maintainer's PC with nothing else
+using the emulator (one process at a time) and some compiles and test runs going on beside it, which do not change what a run
+of this runner does (the clock of a run is emulated):
+
+| Session | `record` | Host time of one run | `check --repeat 2` (exit 0) |
+|---|---|---|---|
+| G4 | exit 0: 4/4 checkpoints, 6 real scene changes, gas in the capture, 0 capture problems | 368 s | 26 passed, 0 failed, 0 skipped, 3 info; 729 s for the check |
+| G3 | exit 0: 9/9 checkpoints (5 distinct scene values), 10 real scene changes, 0 capture problems | 3,363 s | 26 passed, 0 failed, 0 skipped, 3 info; 6,717 s for the check |
+| G3-perf | exit 0: 9/9 checkpoints (5 distinct scene values), 10 real scene changes, 0 capture problems | 4,287 s | 26 passed, 0 failed, 0 skipped, 3 info; 8,302 s for the check |
+| G7 | not made (a draft: [G7](#g7-a-downloaded-quest-not-made)) | | |
+
+The passes are the same nine comparisons per run as G2's (`svc`, `ipc`, `state`, `checkpoints`, `unmapped`, `hid`, `gpu-<start>`,
+`images`, `shared-page` against the recording, and the runs against each other without `checkpoints`), and the three `INFO`
+lines are the identical `timing` traces. Run 1 and run 2 were each identical to the recording and to each other.
 
 ## History: the WIP recordings (before N0-29)
 

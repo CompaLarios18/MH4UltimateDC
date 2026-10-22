@@ -1,0 +1,26 @@
+# name: G4
+# needs: save
+# frames: 3000
+# checkpoints: 600:0x00e64d5c, 1400:0x00e6c778, 2500:0x00e6c170, 3000:0x00e6c170
+# captures: gpu:2400:10
+#
+# G4: a cutscene that uses gas (the PICA fog mode 7): the village's arrival scene, which plays by
+# itself when the maintainer's save is continued (from f1579, the start of the village, to about
+# f2900). From a user folder with the update installed and the maintainer's
+# save merged in (golden.py record --save, with the Circle Pad Pro option off: see
+# docs/native/golden.md, "The save"): only button presses are written here.
+#
+# The GPU capture is 10 frames inside that scene, f2400 to f2409. `golden.py record` fails when no
+# GPU capture of G4 sets fog mode 7 (`gcap.py summary` lists the modes), so a recording that lost
+# the gas is never kept.
+#
+#   f300..f1500   nine A presses: the main menu and the character select (as G3)
+#   (nothing after f1500: the scene plays without input and the run stops at f3000, during the
+#   caravan leader's talk that follows it, which waits for A)
+#
+# Scenes (docs/research/scene-observable.md), one checkpoint in each that lasts more than 100 frames:
+#   0x00e64d5c  aDemo      the intro movies                       frames 42 to 902
+#   0x00e6c778  aContinue  the "continue" screen                  frames 903 to 1575
+#   0x00e6c170  aVillage   the village: the scene, then the talk  frames 1579 to the end
+f300:A:f6,f450:A:f6,f600:A:f6,f750:A:f6,f900:A:f6
+f1050:A:f6,f1200:A:f6,f1350:A:f6,f1500:A:f6
