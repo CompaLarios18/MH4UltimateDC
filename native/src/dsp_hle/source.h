@@ -33,8 +33,10 @@
 //    GetPhysMemRegionInfo: VRAM, DSP RAM, FCRAM of the New 3DS's size and the New 3DS's extra RAM, ends
 //    included). Inside such an area what the SampleMemory cannot supply (an empty or short span: memory
 //    that is not backed, the part of a New 3DS area an Old 3DS lacks) reads as zeros.
-//  - A buffer longer than kMaxBufferSamples is not decoded: it is dropped with an error as one at an
-//    invalid address is (Azahar allocates it, up to 16 GB for a length of 2^31 - 1).
+//  - A buffer whose bytes in memory (BufferByteExtent) are more than kMaxBufferBytes, 256 MiB, the New
+//    3DS's whole FCRAM, is not decoded: it is dropped with an error as one at an invalid address is. No
+//    memory area holds such a buffer, so Azahar can only read it by going out of bounds (it allocates up
+//    to 16 GB for a length of 2^31 - 1 and reads past its memory). Every buffer that fits is played.
 //  - The arithmetic that overflows in Azahar's C++ (the filters' and ADPCM's sums with extreme
 //    coefficients) wraps in 32 bits, as its compiled code does.
 // The queue is a std::priority_queue ordered by buffer id as Azahar's, so two buffers with one id play
@@ -70,9 +72,14 @@ struct AdpcmCoefficients {
 };
 static_assert(sizeof(AdpcmCoefficients) == 768);
 
-// The longest buffer that is decoded, in samples (the longest the 3DS's memory could hold, in PCM16
-// stereo, is 2^26).
-inline constexpr u32 kMaxBufferSamples = 1u << 25;
+// The bytes a buffer of `length` samples occupies in memory: PCM8 one or two bytes a sample, PCM16 two
+// or four, ADPCM 8 bytes for each 14 samples (mono_or_stereo is the field's value, 2 is stereo, the
+// others mono; a format of 3 has no bytes).
+u64 BufferByteExtent(u8 format, u8 mono_or_stereo, u32 length);
+
+// The largest buffer that is decoded, in bytes of memory: more than any memory area holds (the New
+// 3DS's FCRAM is the largest).
+inline constexpr u64 kMaxBufferBytes = 0x10000000;
 
 class Source final {
 public:
@@ -94,9 +101,6 @@ public:
     // intermediate mix (0 to 2). A mix of 3 or more adds nothing. The gain ramp's state advances, which
     // is why it is mutable: the declaration is const as N3-03's mixer holds the sources.
     void MixInto(QuadFrame32& dest, std::size_t mix) const;
-
-    // The output of the last Tick (what the filters left), for tests.
-    const StereoFrame16& CurrentFrame() const { return current_frame_; }
 
 private:
     enum Format : u8 { kPcm8 = 0, kPcm16 = 1, kAdpcm = 2 };
@@ -159,6 +163,7 @@ private:
         codec::AdpcmState adpcm_state = {};
 
         // Resampling state
+        bool mode_warned = false;  // the log says once that the interpolation mode is not one
         float rate_multiplier = 1.0f;
         u8 interpolation_mode = kPolyphase;
         interp::State interp_state = {};

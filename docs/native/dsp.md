@@ -59,7 +59,7 @@ void Reset(); void Sleep(); void Wakeup();
 ### Departures from Azahar
 
 All deliberate, all because the DSP memory belongs to a game that must keep running. The first four are
-N1-18's (`dsp_model.h` gives the details); the last three are new here.
+N1-18's (`dsp_model.h` gives the details); the interpolation mode 3 in the first one, and 5 to 7, are new here.
 
 1. Where Azahar asserts (a NaN rate multiplier, which passes its `<= 0` test; an interpolation mode of 3,
    for which it logs and then loops for ever), the source logs the error and goes on (a NaN becomes 1.0, mode
@@ -68,9 +68,13 @@ N1-18's (`dsp_model.h` gives the details); the last three are new here.
    error is logged (Azahar loops for ever on a looping buffer of length 0).
 3. A play position past the end of a buffer empties it (Azahar erases past the end).
 4. The address-validity rule above.
-5. A buffer longer than `kMaxBufferSamples` (2^25 samples, 128 MiB decoded) is dropped with an error, as a
-   buffer at an invalid address is. Azahar allocates it (up to 16 GB for a length of 2^31 - 1). A partial
-   update to such a length is ignored in the same way.
+5. A buffer whose bytes in memory (`BufferByteExtent`: PCM8 1 or 2 per sample, PCM16 2 or 4, ADPCM 8 per 14
+   samples) are more than `kMaxBufferBytes` (0x10000000, the New 3DS's whole FCRAM) is dropped with an error,
+   as a buffer at an invalid address is. No memory area holds it, so Azahar can only read it out of bounds
+   (it allocates up to 16 GB for a length of 2^31 - 1). Every buffer that fits in an area is played, a
+   PCM16 stereo buffer of 2^25 + 1 samples or 40 million PCM8 samples included. A partial update to such
+   a length is ignored in the same way. (N1-18's model has no such limit: the status sequences differ
+   only for these lengths.)
 6. The sums that overflow 32 bits in Azahar's C++ (the filters', and ADPCM's with extreme coefficients: signed
    overflow is undefined there) wrap, as the compiled code does; the harness is built with `-fwrapv`.
 7. `Source::MixInto` of a mix other than 0 to 2 adds nothing (Azahar's `.at()` throws).

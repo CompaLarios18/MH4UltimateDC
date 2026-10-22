@@ -29,6 +29,19 @@ unsigned NumChannels(u8 mono_or_stereo) {
 
 }  // namespace
 
+u64 BufferByteExtent(u8 format, u8 mono_or_stereo, u32 length) {
+    switch (format) {
+    case 0:  // PCM8
+        return codec::Pcm8Bytes(NumChannels(mono_or_stereo), length);
+    case 1:  // PCM16
+        return codec::Pcm16Bytes(NumChannels(mono_or_stereo), length);
+    case 2:  // ADPCM
+        return codec::AdpcmBytes(length);
+    default:
+        return 0;
+    }
+}
+
 audio::SourceStatus Source::Tick(audio::SourceConfiguration& config,
                                  const AdpcmCoefficients& coefficients, SampleMemory& memory,
                                  u32 source_id) {
@@ -225,7 +238,7 @@ void Source::ParseConfig(audio::SourceConfiguration& config, const AdpcmCoeffici
                          source_id);
                 break;
             case kPcm16:
-                if (length > kMaxBufferSamples) {
+                if (BufferByteExtent(kPcm16, s.mono_or_stereo, length) > kMaxBufferBytes) {
                     MH4N_LOG(Error, kLog, "source_id={}: a partial update of {} samples is too long",
                              source_id, length);
                     break;
@@ -412,8 +425,11 @@ void Source::GenerateFrame(SampleMemory& memory, u32 source_id) {
             break;
         default:
             // Azahar's UNIMPLEMENTED() logs and goes round again for ever; this plays as linear.
-            MH4N_LOG(Error, kLog, "source_id={}: interpolation mode {} is not implemented; linear",
-                     source_id, s.interpolation_mode);
+            if (!s.mode_warned) {
+                s.mode_warned = true;
+                MH4N_LOG(Error, kLog, "source_id={}: interpolation mode {} is not implemented; linear",
+                         source_id, s.interpolation_mode);
+            }
             interp::Linear(s.interp_state, s.current_buffer, s.rate_multiplier, current_frame_,
                            frame_position);
             break;
@@ -447,14 +463,16 @@ bool Source::DequeueBuffer(SampleMemory& memory, u32 source_id) {
     // This physical address masking occurs due to how the DSP DMA hardware is configured by the
     // firmware.
     const u32 address = buf.physical_address & kMaskAddress;
-    if (!audio::IsPhysicalAddressValid(address) || buf.length > kMaxBufferSamples) {
-        if (buf.length > kMaxBufferSamples) {
-            MH4N_LOG(Error, kLog, "source_id={} buffer_id={}: {} samples is too long", source_id,
-                     buf.buffer_id, buf.length);
-        } else {
+    const bool valid_address = audio::IsPhysicalAddressValid(address);
+    if (!valid_address ||
+        BufferByteExtent(buf.format, buf.mono_or_stereo, buf.length) > kMaxBufferBytes) {
+        if (!valid_address) {
             MH4N_LOG(Warning, kLog,
                      "source_id={} buffer_id={} length={}: Invalid physical address {:#010x}",
                      source_id, buf.buffer_id, buf.length, buf.physical_address);
+        } else {
+            MH4N_LOG(Error, kLog, "source_id={} buffer_id={}: {} samples is too long", source_id,
+                     buf.buffer_id, buf.length);
         }
         s.current_buffer.clear();
         return true;

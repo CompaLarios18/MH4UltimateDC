@@ -881,3 +881,70 @@ mem 0x20000000 walk16 seed=153 bytes=40000
 60 interp none
 80 interp poly
 100 interp linear
+
+# ---- extreme coefficients: the 32-bit sums overflow in Azahar's C++ and wrap in its compiled code ----
+case filter_extreme_simple
+mem 0x20000000 noise seed=161 bytes=20000
+0 format pcm16 stereo
+0 interp none
+0 rate 1.0
+0 gain 0 1.0 1.0 0 0
+0 embedded addr=0x20000000 len=5000 id=1 loop
+0 simple -32768 -32768
+0 filters 1 0
+0 enable 1
+40 simple 32767 32767
+80 simple -32768 32767
+120 simple 32767 -32768
+
+# a pattern that overflows the simple filter's sum (-32768 * -32768 twice): x alternates 32767, -32768
+case filter_extreme_simple_pattern
+mem 0x20000000 noise seed=165 bytes=64
+0 format pcm16 mono
+0 interp none
+0 rate 1.0
+0 gain 0 1.0 1.0 0 0
+0 embedded addr=0x20000000 len=2 id=1 loop
+0 poke 0x20000000 ff7f0080
+0 simple -32768 -32768
+0 filters 1 0
+0 enable 1
+
+case filter_extreme_biquad
+mem 0x20000000 noise seed=162 bytes=20000
+0 format pcm16 stereo
+0 interp none
+0 rate 1.0
+0 gain 0 1.0 1.0 0 0
+0 embedded addr=0x20000000 len=5000 id=1 loop
+0 biquad -32768 -32768 -32768 -32768 -32768
+0 filters 0 1
+0 enable 1
+40 biquad 32767 32767 32767 32767 32767
+80 biquad -32768 32767 -32768 32767 -32768
+120 biquad 32767 -32768 32767 -32768 32767
+
+case filter_extreme_both
+mem 0x20000000 noise seed=163 bytes=20000
+0 format pcm8 stereo
+0 interp linear
+0 rate 0.9
+0 gain 0 1.0 1.0 0 0
+0 embedded addr=0x20000000 len=9000 id=1 loop
+0 simple -32768 -32768
+0 biquad -32768 -32768 -32768 -32768 -32768
+0 filters 1 1
+0 enable 1
+
+# noise as ADPCM: scales up to 15 and every predictor, with coefficients at the ends of the range
+case adpcm_extreme_coefficients
+mem 0x20000000 noise seed=164 bytes=4000
+0 format adpcm mono
+0 interp none
+0 rate 1.0
+0 gain 0 1.0 1.0 0 0
+0 coeffs -32768 -32768 -32768 -32768 -32768 -32768 -32768 -32768 -32768 -32768 -32768 -32768 -32768 -32768 -32768 -32768
+0 embedded addr=0x20000000 len=2000 id=1 loop adirty yn1=-32768 yn2=-32768
+0 enable 1
+60 coeffs 32767 32767 32767 32767 32767 32767 32767 32767 32767 32767 32767 32767 32767 32767 32767 32767
+120 coeffs -32768 32767 -32768 32767 -32768 32767 -32768 32767 -32768 32767 -32768 32767 -32768 32767 -32768 32767

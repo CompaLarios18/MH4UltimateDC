@@ -17,6 +17,7 @@
 #include <array>
 #include <cstdio>
 #include <cstring>
+#include <limits>
 #include <set>
 #include <string>
 #include <vector>
@@ -421,22 +422,154 @@ TEST_CASE("dsp_hle: the first frame after a source is enabled only dequeues, and
     CHECK(config.dirty_raw == 0);
 }
 
-TEST_CASE("dsp_hle: a buffer longer than kMaxBufferSamples is dropped, as one at an invalid address is") {
+namespace {
+
+// An embedded buffer of `length` samples of the given format at kFcram, enabled, played for two frames
+// (the first only dequeues): the status of the second.
+SourceStatus PlayBuffer(Source& source, CaseMemory& memory, u8 format, u8 channels, u32 length) {
+    AdpcmCoefficients coefficients{};
+    SourceConfiguration config{};
+    config.flags1_raw = static_cast<u16>((format << 2) | channels);
+    config.physical_address = audio::SwapHalves(kFcram);
+    config.length = audio::SwapHalves(length);
+    config.enable = 1;
+    config.buffer_id = 7;
+    config.dirty_raw = audio::dirty::kFormat | audio::dirty::kMonoOrStereo | audio::dirty::kEmbeddedBuffer |
+                       audio::dirty::kEnable;
+    source.Tick(config, coefficients, memory, 0);
+    return source.Tick(config, coefficients, memory, 0);
+}
+
+}  // namespace
+
+TEST_CASE("dsp_hle: a buffer is dropped only when no memory area could hold its bytes") {
+    // the bytes a buffer occupies
+    CHECK(BufferByteExtent(0, 1, 100) == 100);
+    CHECK(BufferByteExtent(0, 2, 100) == 200);
+    CHECK(BufferByteExtent(1, 1, 100) == 200);
+    CHECK(BufferByteExtent(1, 2, 100) == 400);
+    CHECK(BufferByteExtent(1, 0, 100) == 200);  // a channel field of 0 or 3 is mono
+    CHECK(BufferByteExtent(2, 1, 14) == 8);
+    CHECK(BufferByteExtent(2, 1, 15) == 16);
+    CHECK(BufferByteExtent(3, 1, 100) == 0);
+    CHECK(BufferByteExtent(1, 2, 0xFFFFFFFFu) == 4ull * 0xFFFFFFFFull);
+    // the bound is the New 3DS's FCRAM: that many bytes still fit, one more does not
+    CHECK(BufferByteExtent(0, 1, 0x10000000) == kMaxBufferBytes);
+    CHECK(BufferByteExtent(0, 1, 0x10000001) > kMaxBufferBytes);
+    CHECK(BufferByteExtent(1, 2, 0x4000000) == kMaxBufferBytes);
+    CHECK(BufferByteExtent(1, 2, 0x4000001) > kMaxBufferBytes);
+}
+
+TEST_CASE("dsp_hle: a buffer bigger than every memory area is dropped, one that fits is played") {
+    LogCatcher log;
+    {
+        // 2^25 + 1 PCM16 stereo samples (128 MiB) and 40 million PCM8 mono samples fit the FCRAM
+        // and play, as in Azahar (a limit in samples would have dropped them)
+        CaseMemory memory;
+        Source source;
+        const SourceStatus status = PlayBuffer(source, memory, 1, 2, (1u << 25) + 1);
+        CHECK(audio::SwapHalves(status.buffer_position) > 0);
+        CHECK(log.Count("too long") == 0);
+    }
+    {
+        CaseMemory memory;
+        Source source;
+        const SourceStatus status = PlayBuffer(source, memory, 0, 1, 40000000);
+        CHECK(audio::SwapHalves(status.buffer_position) > 0);
+        CHECK(log.Count("too long") == 0);
+    }
+    // PCM8 mono 0x10000001 samples, PCM16 stereo 0x4000001, and a length no memory could hold: dropped
+    // with an error, and the source goes on (it plays nothing and runs out)
+    const u32 lengths[3] = {0x10000001u, 0x4000001u, 0x7FFFFFFFu};
+    const u8 formats[3] = {0, 1, 2};
+    const u8 channels[3] = {1, 2, 1};
+    for (int i = 0; i < 3; ++i) {
+        CaseMemory memory;
+        Source source;
+        const SourceStatus status = PlayBuffer(source, memory, formats[i], channels[i], lengths[i]);
+        CHECK(audio::SwapHalves(status.buffer_position) == 0);
+        CHECK(status.is_enabled == 0);  // nothing was left to play: the source ran out
+        CHECK(log.Count("too long") == i + 1);
+    }
+}
+
+TEST_CASE("dsp_hle: a partial update to a length no memory could hold is ignored") {
     LogCatcher log;
     CaseMemory memory;
     Source source;
     AdpcmCoefficients coefficients{};
     SourceConfiguration config{};
-    config.flags1_raw = (1u << 2) | 1;
+    config.flags1_raw = (1u << 2) | 1;  // PCM16 mono
     config.physical_address = audio::SwapHalves(kFcram);
-    config.length = audio::SwapHalves(kMaxBufferSamples + 1);
+    config.length = audio::SwapHalves(2000);
     config.enable = 1;
     config.buffer_id = 7;
     config.dirty_raw = audio::dirty::kFormat | audio::dirty::kMonoOrStereo | audio::dirty::kEmbeddedBuffer |
                        audio::dirty::kEnable;
+    source.Tick(config, coefficients, memory, 0);
+    source.Tick(config, coefficients, memory, 0);
+    config.length = audio::SwapHalves(0x7FFFFFFFu);
+    config.dirty_raw = audio::dirty::kPartialEmbeddedBuffer;
     const SourceStatus status = source.Tick(config, coefficients, memory, 0);
+    CHECK(log.Count("partial update of 2147483647 samples is too long") == 1);
     CHECK(status.is_enabled == 1);
-    CHECK(log.Count("too long") == 1);
+}
+
+namespace {
+
+// Eight frames of one source on random PCM16 data with the given interpolation mode and rate, mixed with
+// gain 1 into mix 0: a CRC-32 of each frame's mix.
+std::vector<u32> MixCrcs(u8 mode, float rate, LogCatcher& log) {
+    CaseMemory memory;
+    const std::vector<u8> data = Generate(1, 5, 20000);
+    std::memcpy(memory.data.data(), data.data(), data.size());
+    Source source;
+    AdpcmCoefficients coefficients{};
+    SourceConfiguration config{};
+    config.flags1_raw = (1u << 2) | 1;
+    config.interpolation_mode = mode;
+    config.rate_multiplier = rate;
+    config.physical_address = audio::SwapHalves(kFcram);
+    config.length = audio::SwapHalves(9000);
+    config.buffer_id = 1;
+    config.enable = 1;
+    for (std::size_t i = 0; i < 4; ++i) {
+        config.gain[0][i] = 1.0f;
+    }
+    config.dirty_raw = audio::dirty::kFormat | audio::dirty::kMonoOrStereo | audio::dirty::kEmbeddedBuffer |
+                       audio::dirty::kEnable | audio::dirty::kInterpolation | audio::dirty::kRateMultiplier |
+                       audio::dirty::kGain0;
+    std::vector<u32> crcs;
+    for (int frame = 0; frame < 8; ++frame) {
+        source.Tick(config, coefficients, memory, 0);
+        QuadFrame32 mix{};
+        source.MixInto(mix, 0);
+        crcs.push_back(CrcOf(mix));
+    }
+    (void)log;
+    return crcs;
+}
+
+}  // namespace
+
+TEST_CASE("dsp_hle: an interpolation mode of 3 plays as linear, and says so once") {
+    LogCatcher log;
+    const std::vector<u32> linear = MixCrcs(1, 1.37f, log);
+    CHECK(log.Count("not implemented") == 0);
+    const std::vector<u32> mode3 = MixCrcs(3, 1.37f, log);
+    CHECK(mode3 == linear);
+    CHECK(log.Count("interpolation mode 3 is not implemented") == 1);  // eight frames, one line
+    CHECK(MixCrcs(2, 1.37f, log) != linear);                          // the check can tell modes apart
+}
+
+TEST_CASE("dsp_hle: a NaN rate multiplier is taken as 1.0, like a rate of 0") {
+    LogCatcher log;
+    const std::vector<u32> one = MixCrcs(1, 1.0f, log);
+    const std::vector<u32> nan = MixCrcs(1, std::numeric_limits<float>::quiet_NaN(), log);
+    CHECK(nan == one);
+    CHECK(log.Count("invalid rate multiplier") == 1);
+    CHECK(MixCrcs(1, 0.0f, log) == one);
+    CHECK(MixCrcs(1, 1.37f, log) != one);
 }
 
 // ---- the status sequences against N1-18's model ----------------------------------------------------------------
