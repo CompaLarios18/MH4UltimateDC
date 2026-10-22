@@ -1,10 +1,12 @@
-# Derived in part from Azahar src/audio_core/hle/shared_memory.h at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-2.0-or-later: it says "Licensed under GPLv2 or any later version"): the byte offsets and bit positions of SourceConfiguration that the tests check the commands' writes against.
+# Derived in part from Azahar src/audio_core/hle/shared_memory.h at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-2.0-or-later: it says "Licensed under GPLv2 or any later version"): the byte offsets and bit positions of SourceConfiguration and DspConfiguration, and the offsets of the structures in a region, that the tests check the commands' writes against.
 # Copyright 2016-2025 Citra Emulator Project / Azahar Emulator Project (shared_memory.h)
-"""The oracle of the native HLE DSP sources (N3-02): tools/native/dsp_oracle/.
+"""The oracle of the native HLE DSP (N3-02 the sources, N3-03 the mixers, the effects and the frame):
+tools/native/dsp_oracle/.
 
-The case reader, the commands (the bytes they write into a source's configuration, with the
-middle-endian 32-bit values and the dirty bits), the data generators and the table writer are tested on
-synthetic cases and a synthetic driver answer; the last test runs the whole harness on Azahar's sources
+The case reader, the commands (the bytes they write into a source's configuration, or, in a frame case, into
+the region the DSP reads, with the middle-endian 32-bit values and the dirty bits), the data generators and
+the table writer are tested on synthetic cases and a synthetic driver answer; the last test runs the whole
+harness on Azahar's sources
 (MH4N_AZAHAR_DIR, at the pinned commit) and checks that it writes the committed
 native/tests/dsp_hle_expected.inc byte for byte, twice. That one needs Azahar's sources and clang++:
 without them it skips, or fails with MH4N_REQUIRE_TEST_DATA=1.
@@ -258,11 +260,26 @@ def test_the_committed_cases_file_parses_covers_the_wp_and_matches_the_table():
         assert wanted in names, wanted
     assert all(c.frames >= 100 for c in cases)
     assert sum(1 for c in cases if c.frames == 200) >= 100
+    # N3-03: the frame cases (gains, the aux buses read from and written to the shared memory, the delay
+    # effect, the master volume, each output format, 24 sources at once)
+    frame_names = {c.name for c in cases if c.mode == "frame"}
+    assert len(frame_names) >= 30
+    for wanted in ("frame_silent_until_master_volume", "frame_master_volume_0_5", "frame_routing_to_the_three_mixes",
+                   "frame_output_format_mono", "frame_output_format_stereo", "frame_output_format_surround",
+                   "frame_aux_bus_0", "frame_aux_bus_1", "frame_delay_on_mix_0_2_frames",
+                   "frame_delay_on_mix_1_5_frames", "frame_delay_edges", "frame_24_sources",
+                   "frame_counters_wrap", "frame_sleep_and_wakeup", "frame_reverb_does_nothing",
+                   "frame_dirty_bits_are_cleared", "frame_saturation_40_0"):
+        assert wanted in frame_names, wanted
+    twenty_four = next(c for c in cases if c.name == "frame_24_sources")
+    configs = {e.offset - oracle.SHM_SOURCE_CONFIGURATIONS for e in twenty_four.events if e.op == "r"}
+    assert {k for k in range(24) if any(oracle.CONFIG_SIZE * k <= o < oracle.CONFIG_SIZE * (k + 1) for o in configs)} == set(range(24))
     with open(TABLE, encoding="utf-8") as f:
         table = f.read()
     assert sum(1 for line in table.splitlines() if line.startswith('{"')) == len(cases)   # a case added without regenerating
     for case in cases:
-        assert f'{{"{case.name}", {case.frames}, {case.source}, ' in table
+        third = case.first_counter if case.mode == "frame" else case.source
+        assert f'{{"{case.name}", {case.frames}, {third}, ' in table
     # the cases file the table was made from
     import hashlib
     assert hashlib.sha256(text.encode("utf-8")).hexdigest() in table
@@ -278,7 +295,7 @@ def test_the_standins_say_what_they_replace():
             assert "DSP oracle" in head, name
             found.append(os.path.relpath(os.path.join(folder, name), standin).replace(os.sep, "/"))
     for needed in ("common/common_types.h", "common/swap.h", "common/assert.h", "common/common_funcs.h",
-                   "common/logging/log.h", "core/memory.h", "boost/serialization/access.hpp",
+                   "common/logging/log.h", "common/string_util.h", "core/memory.h", "boost/serialization/access.hpp",
                    "boost/serialization/array.hpp", "boost/serialization/deque.hpp",
                    "boost/serialization/priority_queue.hpp", "boost/serialization/vector.hpp"):
         assert needed in found
@@ -315,3 +332,145 @@ def test_the_crcs_are_written_in_lines_of_eight_frames():
     assert [len(line.rstrip("},")) - 3 for line in literals] == [256, 256, 128]
     assert "".join(line.strip().rstrip("},").strip('"') for line in literals) == results["c"]
     assert all(len(line) < 300 for line in body if not line.startswith("//") and "'c'" not in line)
+
+
+# ---- the frame cases (N3-03) -------------------------------------------------------------------------------------
+
+def frame_events(text: str):
+    [case] = oracle.parse_cases("case f mode=frame\n" + text)
+    return case.events
+
+
+def test_the_shared_memory_offsets_are_those_of_azahars_structures():
+    # shared_memory.h: SharedMemory lists the structures in this order, ASSERT_DSP_STRUCT gives the sizes
+    assert oracle.SHM_DSP_STATUS == 0x800 and oracle.SHM_FINAL_SAMPLES == 0xA80
+    assert oracle.SHM_SOURCE_STATUSES == 0xD00 and oracle.SHM_DSP_CONFIGURATION == 0x2860
+    assert oracle.SHM_INTERMEDIATE_MIX == 0x2924 and oracle.SHM_SOURCE_CONFIGURATIONS == 0x3D24
+    assert oracle.SHM_ADPCM_COEFFICIENTS == 0x4F24
+    assert oracle.SHM_ADPCM_COEFFICIENTS + 768 + 2 * (0x100 + 0xC0 + 0x180 + 0xA + 0x13A3) + 2 == oracle.REGION_SIZE
+    assert oracle.DC_AUX_BUS_ENABLE == 40 and oracle.DC_DELAY_EFFECT == 44 and oracle.DC_REVERB_EFFECT == 84
+
+
+def test_a_frame_case_has_a_mode_and_a_first_counter():
+    [case] = oracle.parse_cases("case f mode=frame fc=65500 frames=10\n")
+    assert (case.mode, case.first_counter, case.frames) == ("frame", 65500, 10)
+    [case] = oracle.parse_cases("case s\n")
+    assert (case.mode, case.first_counter) == ("source", 0)
+
+
+def test_a_source_command_in_a_frame_case_writes_into_that_sources_configuration_in_the_region():
+    ev = frame_events("0 s3 enable 1\n0 s3 queue 2 addr=0x20000010 len=20 id=3\n0 s3 coeffs rand:1\n")
+    base = oracle.SHM_SOURCE_CONFIGURATIONS + 3 * 192
+    writes = {e.offset: e.data for e in ev if e.op == "r"}
+    assert writes[base + 160] == b"\x01"
+    assert writes[base + 76 + 40] == oracle.dsp32(0x20000010)
+    assert writes[oracle.SHM_ADPCM_COEFFICIENTS + 3 * 32] == b"".join(
+        struct.pack("<h", v) for v in oracle.values(["rand:1"], 16, "x"))
+    assert [(e.op, e.offset, e.data) for e in ev if e.op == "p"] == [("p", base + 74, b"\x04\x00")]
+    ors = [(e.offset, struct.unpack("<I", e.data)[0]) for e in ev if e.op == "o"]
+    assert ors == [(base, 1 << 16), (base, 1 << 19), (base, 1 << 2)]
+
+
+def test_the_commands_of_the_mixers_write_the_dsp_configuration_and_its_dirty_bits():
+    ev = frame_events("0 master 0.5\n0 auxreturn 1 0.25\n0 outfmt surround\n0 auxbus 1 1\n0 headphones 1\n")
+    cfg = oracle.SHM_DSP_CONFIGURATION
+    writes = {e.offset - cfg: e.data for e in ev if e.op == "r"}
+    assert writes[4] == struct.pack("<f", 0.5) and writes[12] == struct.pack("<f", 0.25)
+    assert writes[22] == b"\x02\x00" and writes[42] == b"\x01\x00" and writes[26] == b"\x01\x00"
+    bits = 0
+    for e in ev:
+        assert e.op in "ro"
+        if e.op == "o":
+            assert e.offset == cfg
+            bits |= struct.unpack("<I", e.data)[0]
+    assert bits == (1 << 16) | (1 << 25) | (1 << 26) | (1 << 9) | (1 << 28)
+
+
+def test_the_delay_command_writes_the_block_and_the_main_dirty_bit():
+    ev = frame_events("0 delay 1 frames=7 g=-64 a=96 b=3 work=0x20100000 outputs=2\n")
+    block = next(e for e in ev if e.op == "r")
+    assert block.offset == oracle.SHM_DSP_CONFIGURATION + 44 + 20
+    assert block.data == (struct.pack("<HHHH", 1, 1, 0, 2) + oracle.dsp32(0x20100000) +
+                          struct.pack("<Hhhh", 7, -64, 96, 3))
+    assert [struct.unpack("<I", e.data)[0] for e in ev if e.op == "o"] == [1 << 11]
+    ev = frame_events("0 delay 0 enable=0 dirty=0 nomain\n")
+    assert [e.op for e in ev] == ["r"] and ev[0].data[:4] == struct.pack("<HH", 0, 0)
+
+
+def test_auxmix_is_a_generated_event_with_the_crc_of_its_samples():
+    ev = frame_events("0 auxmix 2 seed=9 amp=1000\n")
+    [e] = ev
+    assert (e.op, e.offset) == ("g", oracle.SHM_INTERMEDIATE_MIX + 2560)
+    seed, size, amp, crc = struct.unpack("<IIII", e.data)
+    assert (seed, size, amp) == (9, 2560, 1000)
+    data = oracle.generate_pcm32(9, 2560, 1000)
+    assert crc == zlib.crc32(data) and len(data) == 2560
+    samples = struct.unpack("<640i", data)
+    assert max(samples) <= 1000 and min(samples) >= -1000 and len(set(samples)) > 100
+    assert oracle.generate_pcm32(9, 2560, 1000) == data and oracle.generate_pcm32(10, 2560, 1000) != data
+    assert len(oracle.generate_pcm32(1, 7, 5)) == 7
+
+
+def test_sleep_wakeup_poke_dspwrite_and_dspdirty_in_a_frame_case():
+    ev = frame_events("1 sleep\n2 wakeup\n3 poke 0x20000010 aabb\n4 dspdirty 0x80\n5 dspwrite 4 0000803f\n")
+    assert [(e.frame, e.op) for e in ev] == [(1, "S"), (2, "W"), (3, "m"), (4, "o"), (5, "r")]
+    assert ev[3].offset == oracle.SHM_DSP_CONFIGURATION and struct.unpack("<I", ev[3].data)[0] == 0x80
+    assert ev[4].offset == oracle.SHM_DSP_CONFIGURATION + 4
+
+
+def test_reverb_is_noise_with_its_dirty_bit():
+    ev = frame_events("0 reverb 1 rand:4\n")
+    block = next(e for e in ev if e.op == "r")
+    assert block.offset == oracle.SHM_DSP_CONFIGURATION + 84 + 52 and len(block.data) == 52
+    assert len(set(block.data)) > 10
+    assert [struct.unpack("<I", e.data)[0] for e in ev if e.op == "o"] == [1 << 13]
+
+
+@pytest.mark.parametrize("text, message", [
+    ("case a mode=voice\n", "mode is source or frame"),
+    ("case a mode=frame source=2\n", "no source="),
+    ("case a fc=3\n", "fc= is for frame cases"),
+    ("case a mode=frame fc=70000\n", "fc 70000"),
+    ("case a mode=frame\n0 enable 1\n", "unknown command"),
+    ("case a mode=frame\n0 s24 enable 1\n", "s0 to s23"),
+    ("case a mode=frame\n0 s1\n", "s0 to s23"),
+    ("case a mode=frame\n0 s1 sleep\n", "whole DSP"),
+    ("case a mode=frame\n0 s1 poke 0x20000000 aa\n", "whole DSP"),
+    ("case a mode=frame\n0 master\n", "needs 1"),
+    ("case a mode=frame\n0 auxreturn 2 1.0\n", "index is 0 or 1"),
+    ("case a mode=frame\n0 auxmix 3 seed=1\n", "bus is 1 or 2"),
+    ("case a mode=frame\n0 auxmix 1\n", "needs seed="),
+    ("case a mode=frame\n0 auxmix 1 seed=1 amp=4000000000\n", "amp is"),
+    ("case a mode=frame\n0 dspwrite 0 00\n", "after its dirty word"),
+    ("case a mode=frame\n0 dspwrite 195 0000\n", "after its dirty word"),
+    ("case a mode=frame\n0 delay 0 colour=3\n", "unknown argument"),
+    ("case a mode=frame\n0 reverb 0 zero\n", "rand:"),
+])
+def test_bad_frame_cases_are_refused_with_the_line(text, message):
+    with pytest.raises(oracle.CaseError, match=message):
+        oracle.parse_cases(text)
+
+
+def test_the_driver_input_of_a_frame_case_names_the_offsets_for_the_driver_to_check():
+    [case] = oracle.parse_cases("case f mode=frame fc=5 frames=3\nmem 0x20000000 noise seed=1 bytes=4\n1 sleep\n")
+    lines = oracle.driver_input([case]).splitlines()
+    assert lines[0] == "fcase f 3 5 " + " ".join(str(v) for v in (
+        oracle.SHM_SOURCE_CONFIGURATIONS, oracle.SHM_ADPCM_COEFFICIENTS, oracle.SHM_DSP_CONFIGURATION,
+        oracle.SHM_INTERMEDIATE_MIX, oracle.SHM_SOURCE_STATUSES, oracle.SHM_FINAL_SAMPLES, oracle.SHM_DSP_STATUS))
+    assert lines[1].startswith("mem 20000000 ") and lines[2] == "ev 1 S 0 -" and lines[-1] == "end"
+
+
+def test_a_frame_case_in_the_table_ends_with_1_and_carries_its_first_counter():
+    cases = oracle.parse_cases("case s frames=1\ncase f mode=frame fc=65500 frames=1\n")
+    results = {c.name: "0000000a0000000b0000000c0000000d" for c in cases}
+    body = [l for l in oracle.render_inc(cases, results, "c" * 40, "d" * 64).splitlines() if not l.startswith("//")]
+    assert body[0].startswith('{"s", 1, 0, ')
+    frame_start = next(i for i, l in enumerate(body) if l.startswith('{"f"'))
+    assert body[frame_start].startswith('{"f", 1, 65500, ')
+    assert body[-1] == ' "0000000a0000000b0000000c0000000d", 1},'
+    assert body[frame_start - 1] == ' "0000000a0000000b0000000c0000000d"},'
+
+
+def test_the_frame_cases_of_a_sweep_name_themselves_by_their_values():
+    cases = oracle.parse_cases("case g_${v} mode=frame sweep v=0.5,-1.0\n0 master ${v}\n")
+    assert [c.name for c in cases] == ["g_0_5", "g__1_0"] and all(c.mode == "frame" for c in cases)
