@@ -181,8 +181,9 @@ python3 tools/native/state_diff.py reference.state native.state
 MS:KEY=VALUE` for each one given, and then `--trace-svc`, `--trace-ipc`, `--trace-ipc-full`, `--state-trace`,
 `--capture-hid` and a `--capture-dsp START:FRAMES:FILE` per DSP capture of the session, plus whatever
 `--candidate-args` adds (checked in N1-09b by reading both runners' sources and running a conformance program
-with the whole line; no game was involved). `--observable`, `--ms`, `--log` and `--init-time` are not passed by
-golden.py. `same`: the same syntax, and the same format where it writes one. `differs`: how. The status of a
+with the whole line; no game was involved). `--observable FILE` is passed too (to the candidate as well, since N1-21);
+`--ms`, `--log` and `--init-time` are not passed by golden.py. On Windows the runner asks for a 1 ms host timer
+tick and opts out of power throttling for the length of the run (N1-21; D56), whatever launches it. `same`: the same syntax, and the same format where it writes one. `differs`: how. The status of a
 value (times, ticks) is not part of this table: a different timing model is the `cross` profile's business, see
 "Differences from the reference that are on purpose".
 
