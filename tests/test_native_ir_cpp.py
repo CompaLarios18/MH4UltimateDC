@@ -1,3 +1,7 @@
+# Derived from Azahar src/core/hle/service/ir/extra_hid.cpp at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6
+# (GPL-2.0-or-later: it says "Licensed under GPLv2 or any later version"): the calibration data and the
+# calibration answers, restated from its code.
+# Copyright 2017-2024 Citra Emulator Project / Azahar Emulator Project
 """Our own ir:USER test program (port/tests/ir_cpp.c, N3-08) and its expected output, which is the
 reference runner's (Azahar's ExtraHID, the emulated Circle Pad Pro): see docs/native/circle-pad-pro.md.
 No game code, no game data.

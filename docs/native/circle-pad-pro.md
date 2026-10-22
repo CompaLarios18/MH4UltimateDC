@@ -39,8 +39,11 @@ With no input the stick is centred, not zero: x = y = 0x800, so the status packe
 `InputState::cstick_x/y` are in the units of `ir_rst.cpp` (radius `0x9C`: `static_cast<s16>(f * 0x9C)`).
 The device uses the expression of `extra_hid.cpp`'s artic branch, which takes the same raw units:
 `static_cast<u32>((raw / 156.0f) * 2047 + 2048)`, in float, so raw `+156` is `0xFFF`, `-156` is `0x001`,
-0 is `0x800`. Azahar's own branch for the local controller does the same with the analog device's
-`x` in [-1, 1] (`0x800 + 0x7FF * x`); the two agree for the values `ir_rst.cpp` produces. A raw value
+0 is `0x800`. Azahar's branch for the local controller does the same with the analog device's float `x` in
+[-1, 1] (`0x800 + 0x7FF * x`). This module only has the integer `cstick_x/y` (`ir_rst.cpp`'s
+`static_cast<s16>(x * 0x9C)`), a stick quantised to 1/156 steps, so its packets agree with that branch at
+the centre, at the extremes and at multiples of 1/156, and between them differ by up to one raw step
+(about 13 units of the 12-bit field). A raw value
 beyond +-156 (nothing produces one) is held to +-156, because the 12-bit field would wrap. `zl` and `zr`
 come from the same `InputState`; its other buttons do not reach the device (the Circle Pad Pro's R is
 never reported held, as in Azahar).
@@ -63,6 +66,9 @@ queue whose clock is past the event's due time should take the lateness off the 
 - Unknown requests and wrong request sizes are logged once per request id, not each time.
 - Connecting again after a disconnect does not restart the packets until the game configures the polling
   again: that is Azahar's behaviour too (`OnConnect` does nothing).
+- The stick comes from the integer `InputState::cstick_*`, not from Azahar's float `x`: the packets differ
+  from the local-controller branch by up to one raw step (about 13 units of the 12-bit field) between
+  multiples of 1/156 (see "From `InputState` to the stick").
 - Azahar reloads its input devices when the settings change; here the `InputState` is sampled for every
   packet.
 
