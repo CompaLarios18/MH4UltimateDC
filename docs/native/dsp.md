@@ -225,9 +225,9 @@ buses with delays, mono and stereo). Two cases pin the delay's limits: `frame_de
 (aux samples of +-2e9 through a delay of gain 156 give about 3e11 in both directions, and the output of the delay
 is clamped to the `s32` range: without the clamp the positive half flips sign) and `frame_delay_818_and_819_frames`
 (1000 frames: 818 frames, 130,880 samples, is below the 4-second limit of 130,912 samples, 819 is above it and
-plays as 130,912, so a longer limit moves its echo 128 samples; the case runs past both echoes). What the tests
-do not pin: the clamp's upper constant (2,147,483,520.0f, a float step below 2^31, below the resolution of the
-16-bit output). Cases are 200 frames (1000 for the 819-frame delay); the delay is otherwise kept stable
+plays as 130,912, so a longer limit moves its echo 128 samples; the case runs past both echoes). The clamp's
+upper constant (2,147,483,520.0f, a float step below 2^31) is pinned through the saturated case too: the two
+channels of the saturated output cancel to a residue that shows a difference of 128 in the constant. Cases are 200 frames (1000 for the 819-frame delay); the delay is otherwise kept stable
 (|b| < 1) and sums below 2^29, and the saturating case scales the downmix to stay below 2^31, so that no case
 goes through a float-to-`s32` conversion that is undefined in Azahar (departure 9).
 
