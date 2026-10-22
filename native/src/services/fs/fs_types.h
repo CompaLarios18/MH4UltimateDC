@@ -60,6 +60,8 @@ inline constexpr Result kResultCommandNotAllowed =
     MakeResult(630, kModuleFs, kSummaryWrongArgument, kLevelPermanent);
 inline constexpr Result kResultInvalidPath =
     MakeResult(702, kModuleFs, kSummaryInvalidArgument, kLevelUsage);
+inline constexpr Result kResultIncorrectExefsReadSize =
+    MakeResult(761, kModuleFs, kSummaryNotSupported, kLevelUsage);
 inline constexpr Result kResultWriteBeyondEnd =
     MakeResult(705, kModuleFs, kSummaryInvalidArgument, kLevelUsage);
 inline constexpr Result kResultUnsupportedOpenFlags =
@@ -245,6 +247,11 @@ public:
     // then cannot depend on how a host thread races a Write (Azahar reads a non-cached backend in the
     // request too, and only sleeps the client). The others (RomFS, memory) never change and read on an I/O thread.
     virtual bool ReadsOnSchedulerThread() const { return false; }
+
+    // True for a file that judges the length the game asked for (Azahar's ExeFSSectionFile answers a read whose
+    // length is not its size with an error). Its Read then gets that length as it was asked, not cut to what is
+    // left of the file or to the game's buffer; the bytes it reports are still cut to the buffer.
+    virtual bool ReadsRequestedLength() const { return false; }
 
     // How long the game waits for a read of `length` bytes (Azahar FileBackend::GetReadDelayNs).
     virtual u64 GetReadDelayNs(std::size_t length) { return RomFsReadDelayNs(length); }

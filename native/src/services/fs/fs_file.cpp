@@ -19,7 +19,8 @@
 //  - The data is read into a buffer on the I/O thread and copied into the client's buffer on the scheduler
 //    thread when the reply is written (Azahar does the same); the I/O thread never touches guest memory.
 //  - The count of a read is cut to the client's buffer and to what is left of the file before anything is
-//    allocated (Azahar allocates the length the client asked for).
+//    allocated (Azahar allocates the length the client asked for); a backend with ReadsRequestedLength()
+//    (the ExeFS icon) is given the length as asked, as Azahar does, and only its buffer and reply are cut.
 //  - The delay is counted from the request on the game clock. Azahar subtracts the host time the read took
 //    from the modelled delay, so the reply moves with the host.
 //  - OpenSubFile (0x0801) is not implemented: the game does not use it.
@@ -93,9 +94,15 @@ private:
         std::shared_ptr<FileBackend> backend = backend_;
         const u16 command_id = request.CommandId();
         const MappedBuffer buffer = *mapped;
-        std::function<void()> work = [data, backend, offset, count] {
-            data->bytes = std::make_unique_for_overwrite<u8[]>(count);
-            data->result = backend->Read(offset, count, data->bytes.get(), &data->read);
+        // A file that judges the asked length (ReadsRequestedLength) is given it as it was asked; its buffer is
+        // still no bigger than the file, which is all such a file ever writes.
+        const bool asked = backend_->ReadsRequestedLength();
+        const std::size_t backend_length = asked ? static_cast<std::size_t>(length) : count;
+        const std::size_t buffer_size =
+            asked ? static_cast<std::size_t>(std::min<u64>(length, file_size)) : count;
+        std::function<void()> work = [data, backend, offset, backend_length, buffer_size] {
+            data->bytes = std::make_unique_for_overwrite<u8[]>(buffer_size);
+            data->result = backend->Read(offset, backend_length, data->bytes.get(), &data->read);
         };
         const auto fill = [data, buffer, count](Reply& reply) {
             if (IsError(data->result)) {
