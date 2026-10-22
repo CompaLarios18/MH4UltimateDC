@@ -215,8 +215,12 @@ Azahar draws no gas at all (its shader generator logs "Unimplemented gas mode", 
   - **Render targets** in the PICA's colour formats (RGBA8, RGB8, RGB5A1, RGB565, RGBA4) and depth formats (D16, D24, D24S8 with its fallback).
   - **Readback:** a render target written back into guest memory in the PICA's Morton-tiled layout and format, bit-exact for what was drawn: what the capture player's draw checks compare. Only on demand (checks, and the CPU reads N0-14 found).
   - **Timestamps** per frame for the capture player's timing table.
+  - **What the app needs (N2b-05, N2b-06, N2b-11):**
+    - the instance enables `VK_KHR_surface`, the platform's surface extension and `VK_EXT_headless_surface` when the loader offers them, and the device `VK_KHR_swapchain`; `CreateBackend` takes an optional `VkSurfaceKHR`, and with one it selects a queue family that can present; with none (the capture player, the tests) nothing changes;
+    - submissions to a queue go through one submit lock, so the renderer thread and the present thread can share a queue;
+    - the Vulkan handles (instance, physical device, device, queue family index, queue) are readable from the backend, for ImGui's Vulkan backend.
   - Runs on lavapipe in the cloud.
-- **Done when:** ctest passes on lavapipe: clear-and-readback of every colour and depth format against bytes worked out from the formats; a timestamp query returns increasing values.
+- **Done when:** ctest passes on lavapipe: clear-and-readback of every colour and depth format against bytes worked out from the formats; a timestamp query returns increasing values; a backend made with no surface lists no surface extension as enabled, and one made with a headless surface (skipped with a message where the loader lacks `VK_EXT_headless_surface`) selects a queue that can present; two threads submitting through the lock complete without a validation error.
 - **Traps:** -
 - **Out of scope:** shaders and drawing state (N2-06, N2-08 onwards).
 
