@@ -51,7 +51,7 @@ struct FakeRuntime final : IRuntime {
 
     std::string PrepareCode(const LoadRequest&) override { return ""; }
     std::string CodeNotice() override { return ""; }
-    LoadResult Load(const LoadRequest&, Window&, Window*) override { return LoadResult::Ok; }
+    LoadResult Load(const LoadRequest&, IWindow&, IWindow*) override { return LoadResult::Ok; }
     std::string StatusDetails() const override { return ""; }
     void Start() override {}
     RunState RunStep() override { return RunState::Running; }
@@ -262,7 +262,6 @@ struct FakeRuntime final : IRuntime {
     std::mutex thread_mutex;
     void NewConsoleId() override {}
     void CommitOptions() override {}
-    Core::System* HostSystem() override { return nullptr; }
 
     std::string UserDir() const override { return user_dir; }
     void SetUserDir(const std::string& dir) override { user_dir = dir; }

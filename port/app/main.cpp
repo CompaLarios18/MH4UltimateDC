@@ -252,9 +252,7 @@ int Run(const std::vector<std::string>& argv) {
     }
     runtime->InitInput();
     runtime->InitNetwork();
-    // (the windows still take Azahar's system until N2b; Multiplayer::Init and Ui::Start ignore it)
-    Core::System& system = *runtime->HostSystem();
-    App::Multiplayer::Init(system, config);
+    App::Multiplayer::Init(config);
 
     // ── the launcher (launcher/): the home screen, setup, mods, the room and settings; it
     // leaves the game file and the room in `config`. Without a window of its own, as before.
@@ -339,7 +337,7 @@ int Run(const std::vector<std::string>& argv) {
     }
 
     App::Window::Api api = ApiFor(config.renderer);
-    auto window = MakeWindow(system, api, config, api);
+    auto window = MakeWindow(runtime->CoreSystem(), api, config, api);
     if (!window) {
         App::Dialog::Message(TITLE, "No renderer could open a window (see mh4u_log.txt).", true);
         App::Multiplayer::Shutdown();
@@ -348,7 +346,7 @@ int Run(const std::vector<std::string>& argv) {
     std::unique_ptr<App::Window> secondary;
     if (runtime->CurrentLayout() == App::ScreenLayout::SeparateWindows &&
         api != App::Window::Api::Software) {
-        secondary = App::Window::Create(system, api, config, true);
+        secondary = App::Window::Create(runtime->CoreSystem(), api, config, true);
         if (!secondary) {
             runtime->SetLayout(App::ScreenLayout::Overlay);
         }

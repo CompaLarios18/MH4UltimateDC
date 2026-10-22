@@ -1,7 +1,7 @@
 // IRuntime: what the app asks of the emulation runtime underneath it. The launcher, the in-game
 // menu and main() call these methods instead of the runtime's own headers; the Azahar build
-// implements them in runtime_azahar/. The window and renderer integration (EmuWindow, the
-// overlay renderers) is not behind it yet.
+// implements them in runtime_azahar/. The window comes in as an IWindow (app_window.h); the
+// renderer integration (the overlay renderers) is not behind it.
 //
 // Threads: the notes say which thread the app calls each method from. In this build the main
 // thread and the emulation thread are the same one (the thread that runs main(): it runs
@@ -20,14 +20,10 @@
 #include "util/room.h"
 #include "util/swkbd.h"
 
-namespace Core {
-class System;
-}
-
 namespace App {
 
 struct Config;
-class Window;
+class IWindow;
 
 /// The graphics API the game is drawn with.
 enum class Renderer { Vulkan, OpenGL, Software };
@@ -208,7 +204,7 @@ public:
     // ── Lifecycle ──
     // The order is PrepareCode, a window for Load, Load, Start, then RunStep until it says
     // ShutdownRequested or Failed, then Stop. The window and the renderer are still Azahar's:
-    // Load takes the app's windows (window.h).
+    // Load takes the windows the executable made (the Azahar runtime knows its own kind).
 
     /// Chooses the CPU backend for the game, before it loads: installs `request.update` when it
     /// has one, makes `request.code_library` the one to run when it has one, and returns a line
@@ -222,7 +218,7 @@ public:
 
     /// Loads the game, to be drawn in `window` (and its touch screen in `secondary`, if any).
     /// Main thread. On a result other than Ok, StatusDetails() says more.
-    virtual LoadResult Load(const LoadRequest& request, Window& window, Window* secondary) = 0;
+    virtual LoadResult Load(const LoadRequest& request, IWindow& window, IWindow* secondary) = 0;
 
     /// What the runtime says about the last load or run that went wrong. Any thread.
     virtual std::string StatusDetails() const = 0;
@@ -373,11 +369,6 @@ public:
     /// Puts what ApplyConfig set in force: the default applets, then the system's settings.
     /// Main thread, before the game loads.
     virtual void CommitOptions() = 0;
-
-    /// Transitional: the Azahar system that main() hands to the windows (window.h), which take
-    /// it. Ui::Start and Multiplayer::Init are still given it and don't use it. N2b takes it
-    /// away. Null in a runtime that isn't Azahar's.
-    virtual Core::System* HostSystem() = 0;
 
     // ── Paths ──
 
