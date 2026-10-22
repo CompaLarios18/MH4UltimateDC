@@ -516,6 +516,8 @@ def test_there_are_at_least_twenty_cases():
 
 @pytest.mark.parametrize("case", CASES, ids=[c.name for c in CASES])
 def test_the_native_image_is_byte_identical_to_azahars(driver, native, tmp_path, case):
+    if sys.platform == "win32" and "256 folders" in case.name:
+        pytest.skip("paths of 500 characters are beyond MAX_PATH on Windows")
     _check(driver, native, tmp_path, case)
 
 

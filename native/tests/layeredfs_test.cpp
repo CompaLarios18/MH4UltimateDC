@@ -27,6 +27,7 @@
 #include "../src/layeredfs/layeredfs.h"
 #include "../src/layeredfs/patch.h"
 #include "../src/layeredfs/tool.h"
+#include "../src/common/utf8.h"
 #include "mh4n/crc32.h"
 
 #if defined(_WIN32)
@@ -658,7 +659,6 @@ TEST_CASE("replacement and new files, in existing and new folders") {
     WriteFile(f.romfs() / "newdir" / "inner" / "f.bin", Pattern(16, 12));  // new folders
     WriteFile(f.romfs() / "newdir" / "g.bin", Pattern(15, 13));
     stdfs::create_directories(f.romfs() / "emptydir");
-    WriteFile(f.romfs() / "A.TXT", B("names are case sensitive"));
 
     Tree expected = f.base;
     expected.files["a.txt"] = Pattern(200, 9);
@@ -668,8 +668,34 @@ TEST_CASE("replacement and new files, in existing and new folders") {
     expected.files["data/sub/more.bin"] = Pattern(70, 11);
     expected.files["newdir/inner/f.bin"] = Pattern(16, 12);
     expected.files["newdir/g.bin"] = Pattern(15, 13);
-    expected.files["A.TXT"] = B("names are case sensitive");
     expected.dirs.insert("emptydir");
+    ExpectTree(f.Run(), expected);
+}
+
+namespace {
+
+// True if the temporary folder tells "p" and "P" apart (Linux; not NTFS or APFS by default).
+bool HostIsCaseSensitive(const stdfs::path& dir) {
+    WriteFile(dir / "case_probe_p", B("p"));
+    std::error_code ec;
+    const bool insensitive = stdfs::exists(dir / "CASE_PROBE_P", ec);
+    stdfs::remove(dir / "case_probe_p", ec);
+    return !insensitive;
+}
+
+}  // namespace
+
+TEST_CASE("names are case sensitive: A.TXT is a new file beside a.txt") {
+    Fixture f(SampleTree());
+    if (!HostIsCaseSensitive(f.dir.path)) {
+        MESSAGE("skipped: this host's folders ignore case, so romfs/a.txt and romfs/A.TXT cannot both exist");
+        return;
+    }
+    WriteFile(f.romfs() / "a.txt", Pattern(200, 9));
+    WriteFile(f.romfs() / "A.TXT", B("names are case sensitive"));
+    Tree expected = f.base;
+    expected.files["a.txt"] = Pattern(200, 9);
+    expected.files["A.TXT"] = B("names are case sensitive");
     ExpectTree(f.Run(), expected);
 }
 
@@ -790,9 +816,10 @@ TEST_CASE("names outside ASCII, a pair of surrogates among them") {
     t.files["\xF0\x9D\x84\x9E/clef.bin"] = Pattern(20, 2);                       // U+1D11E, outside the BMP
     t.files["plain.bin"] = Pattern(8, 3);
     Fixture f(t);
-    WriteFile(f.romfs() / "caf\xC3\xA9.txt", B("tea"));
-    WriteFile(f.romfs() / "\xF0\x9D\x84\x9E" / "new\xE2\x82\xAC.bin", Pattern(9, 4));   // new€.bin
-    WriteFile(f.ext() / "\xE6\x97\xA5\xE6\x9C\xAC" / "\xE8\xAA\x9E.bin.ips", Ips({{0, B("Z")}}));
+    // host paths from UTF-8 text (a narrow path would go through the ANSI code page on Windows)
+    WriteFile(f.romfs() / utf8::PathFromUtf8("caf\xC3\xA9.txt"), B("tea"));
+    WriteFile(f.romfs() / utf8::PathFromUtf8("\xF0\x9D\x84\x9E/new\xE2\x82\xAC.bin"), Pattern(9, 4));   // new€.bin
+    WriteFile(f.ext() / utf8::PathFromUtf8("\xE6\x97\xA5\xE6\x9C\xAC/\xE8\xAA\x9E.bin.ips"), Ips({{0, B("Z")}}));
     Tree expected = t;
     expected.files["caf\xC3\xA9.txt"] = B("tea");
     expected.files["\xF0\x9D\x84\x9E/new\xE2\x82\xAC.bin"] = Pattern(9, 4);
