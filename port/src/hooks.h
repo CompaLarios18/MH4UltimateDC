@@ -2,6 +2,7 @@
 // library was recompiled with (config/hooks.txt).
 #pragma once
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -22,6 +23,11 @@ void SetPlatform(Platform* platform);
 /// MH4U_TRACE_FRAMES). Returns lines for the log: options in effect and hooks the library
 /// has no hook point for (it was built with an older hooks.txt).
 std::vector<std::string> Install(const RCodeInfo& info);
+
+/// The frontend's surface shape, called before Install: the `widescreen = match` option
+/// takes it (the Android app passes its whole screen; the desktop app passes its window).
+/// Without it, match resolves to off and the log says so.
+void SetWindowSize(std::uint32_t width, std::uint32_t height);
 
 /// Changes one of the options above while the game runs (the runner's --set, for tests: one
 /// player of a session at another frame rate once everyone is in, say; the app's in-game

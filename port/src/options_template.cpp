@@ -12,9 +12,11 @@ std::string OptionsTemplateText() {
 # Clock Speed raised
 fps = 60
 
-# the top screen's shape: 16:9, 16:10, 21:9, 32:9, 4:3 or off. wide_render = 1 draws the
-# wider picture itself (0 stretches a 400x240 one); hud_edges = 1 moves the hunting HUD's
-# sides (health, stamina, party list; the item selection) out to the screen's edges
+# the top screen's shape: 16:9, 16:10, 21:9, 32:9, 4:3, match (the window's shape: the whole
+# screen on Android; callers pass their size to Port::SetWindowSize) or off.
+# wide_render = 1 draws the wider picture itself (0 stretches a 400x240 one); hud_edges = 1
+# moves the hunting HUD's sides (health, stamina, party list; the item selection) out to the
+# screen's edges
 widescreen = 16:9
 wide_render = 1
 hud_edges = 1

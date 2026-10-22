@@ -1,0 +1,159 @@
+"""Android port invariants that need no device or game data.
+
+Two things that are easy to lose in a rebase, a patch regeneration or a refactor:
+
+* the applet JNI callbacks (software keyboard, Mii selector, camera) must run on the JNI
+  thread, not on the emulation fiber (see ``docs/research/android-fiber-jni.md``), and
+* ``mh4u.ini`` must be read through ``FileUtil`` so Android can find it in the user folder
+  (``std::ifstream`` cannot follow the guest path). Since the hooks run on a platform
+  interface (``port/src/platform.h``), the hooks ask it for the lines (``ReadTextLines``) and
+  the Azahar platform (``port/src/platform_azahar.cpp``) does the ``FileUtil`` read.
+
+The Azahar side lives in ``port/azahar/azahar.patch``; the options read is in this
+repository. ``MH4U_AZAHAR_DIR`` (the Azahar tree the patch is applied to) additionally
+checks that the patch file matches the working tree, i.e. that it was regenerated.
+"""
+from __future__ import annotations
+
+import os
+import subprocess
+
+import pytest
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+PATCH = os.path.join(ROOT, "port", "azahar", "azahar.patch")
+HOOKS = os.path.join(ROOT, "port", "src", "hooks.cpp")
+PLATFORM_AZAHAR = os.path.join(ROOT, "port", "src", "platform_azahar.cpp")
+
+
+def code_only(text: str) -> str:
+    """The text without its // comments (they may mention what the code must not use)."""
+    return "\n".join(line.split("//", 1)[0] for line in text.splitlines())
+
+
+def added_lines() -> dict[str, str]:
+    """The added lines of the patch, joined, by the file they belong to."""
+    files: dict[str, list[str]] = {}
+    current = None
+    with open(PATCH, encoding="utf-8") as patch:
+        for line in patch:
+            line = line.rstrip("\n")
+            if line.startswith("diff --git "):
+                current = line.split(" b/", 1)[1] if " b/" in line else line
+                files[current] = []
+            elif current is not None and line.startswith("+") and not line.startswith("+++"):
+                files[current].append(line[1:])
+    return {path: "\n".join(lines) for path, lines in files.items()}
+
+
+def created_files() -> set[str]:
+    """The files the patch creates (`new file mode`)."""
+    created: set[str] = set()
+    current = None
+    with open(PATCH, encoding="utf-8") as patch:
+        for line in patch:
+            if line.startswith("diff --git "):
+                current = line.rstrip("\n").split(" b/", 1)[1]
+            elif line.startswith("new file mode ") and current is not None:
+                created.add(current)
+    return created
+
+
+def test_patch_defines_the_jni_executor():
+    utils = added_lines().get("src/common/android_utils.cpp", "")
+    assert "RunOnJniThread" in utils
+    assert "JniThreadMain" in utils
+    assert "std::thread" in utils and "condition_variable" in utils
+    # primed on a regular thread at load and at directory init, not from the fiber
+    assert "g_cached_build_flavor" in utils and "CacheUserDirectory" in utils
+
+
+def test_patch_runs_applet_jni_on_the_jni_thread():
+    files = added_lines()
+    # the software keyboard: the dialog (Execute) and the error dialog (ShowError)
+    swkbd = files.get("src/android/app/src/main/jni/applets/swkbd.cpp", "")
+    assert swkbd.count("AndroidUtils::RunOnJniThread") >= 2
+    # the Mii picker and the camera file picker/loader
+    for path in ("src/android/app/src/main/jni/applets/mii_selector.cpp",
+                 "src/android/app/src/main/jni/camera/still_image_camera.cpp"):
+        assert "AndroidUtils::RunOnJniThread" in files.get(path, ""), path
+
+
+def test_patch_formats_save_data_or_reports_failure():
+    savedata = added_lines().get("src/core/file_sys/archive_source_sd_savedata.cpp", "")
+    assert "ResultUnknown" in savedata  # no unconditional ResultSuccess
+    assert "Common::GetLastErrorMsg" in savedata
+
+
+def test_patch_creates_the_headers_the_port_includes():
+    """`git diff` leaves out files git does not track yet, so a patch regenerated without
+    ``git add -N`` on them loses the headers the port adds to Azahar, and every desktop build
+    (which applies this patch) stops compiling."""
+    created = created_files()
+    for path in ("src/core/frontend/top_screen.h",
+                 "src/video_core/renderer_vulkan/vk_overlay.h"):
+        assert path in created, path
+
+
+def test_options_read_uses_fileutil():
+    """mh4u.ini is opened through FileUtil, which translates the guest path: LoadOptions asks
+    the platform for the lines and the Azahar platform reads them with FileUtil::IOFile."""
+    with open(HOOKS, encoding="utf-8") as f:
+        text = f.read()
+    start = text.index("Options LoadOptions(")
+    end = text.index("const std::pair<const char*, const char*> env[]", start)
+    body = code_only(text[start:end])
+    assert "P().ReadTextLines(" in body
+    assert "std::ifstream" not in body
+
+    with open(PLATFORM_AZAHAR, encoding="utf-8") as f:
+        platform = f.read()
+    start = platform.index("bool ReadTextLines(")
+    end = platform.index("override {", platform.index("void SetRefreshRate(", start))
+    body = code_only(platform[start:end])
+    assert "FileUtil::IOFile" in body
+    assert "ReadLine" in body
+    assert "std::ifstream" not in body
+
+
+def test_android_screen_layout_goes_through_the_platform():
+    """The first-frame relayout needs the portrait flag read on the Java thread (Install) and
+    handed to the renderer on the guest fiber, which must not call JNI; hooks.cpp keeps no
+    Azahar header, the Azahar platform makes the calls."""
+    with open(HOOKS, encoding="utf-8") as f:
+        hooks = code_only(f.read())
+    assert "relayout_portrait = P().IsPortrait()" in hooks
+    assert "P().RefreshScreenLayoutFor(relayout_portrait)" in hooks
+    assert "AndroidUtils" not in hooks and "Core::System" not in hooks
+
+    with open(PLATFORM_AZAHAR, encoding="utf-8") as f:
+        platform = code_only(f.read())
+    assert "AndroidUtils::IsPortraitMode()" in platform
+    assert "UpdateCurrentFramebufferLayout(portrait)" in platform
+
+
+def test_widescreen_match_and_android_first_run():
+    """widescreen = match takes the frontend's window, and Android writes its first file."""
+    with open(HOOKS, encoding="utf-8") as f:
+        hooks = f.read()
+    assert "widescreen_match" in hooks
+    assert 'value == "match"' in hooks
+    assert "void SetWindowSize(" in hooks
+
+    with open(os.path.join(ROOT, "port", "src", "frontend.cpp"), encoding="utf-8") as f:
+        frontend = f.read()
+    assert "void SetWindowSize(" in frontend
+    # the Android first run: the template with match, written when mh4u.ini is missing
+    assert "OptionsTemplate(true)" in frontend
+    assert '"widescreen = match"' in frontend
+
+    # the Android frontend passes the surface it knows before the port installs
+    native = added_lines().get("src/android/app/src/main/jni/native.cpp", "")
+    assert "Port::SetWindowSize" in native
+
+
+@pytest.mark.skipif(not os.environ.get("MH4U_AZAHAR_DIR"),
+                    reason="set MH4U_AZAHAR_DIR to the patched Azahar tree")
+def test_patch_matches_the_azahar_tree():
+    subprocess.run(["git", "-C", os.environ["MH4U_AZAHAR_DIR"], "apply", "--check", "--reverse",
+                    PATCH], check=True)

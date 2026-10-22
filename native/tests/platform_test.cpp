@@ -1009,4 +1009,28 @@ TEST_CASE("platform: the hooks take the touch overlay and the top screen through
     CHECK(overlay.corner == Port::ScreenOverlay::Corner::BottomLeft);
 }
 
+TEST_CASE("platform: widescreen = match takes the window the frontend passed, and the first frame works the layout out again") {
+    TempDir dir;
+    dir.WriteText("mh4u.ini", "widescreen = match\ntouch_overlay = top-right 30 85\n");
+    Port::Hooks::SetWindowSize(2560, 1440);
+    HookRun run({"--user", dir.Path()});
+    CHECK(run.f.Logged("widescreen: match, the window's shape 1.7778 (2560x1440)"));
+    // an overlay or a widescreen read at boot has to be worked out again once the game draws
+    // (the Android host lays the screens out before the options exist): exactly once
+    const std::uint64_t installed = run.platform->LayoutRefreshes();
+    run.Frame();
+    CHECK(run.platform->LayoutRefreshes() == installed + 1);
+    run.Frame();
+    CHECK(run.platform->LayoutRefreshes() == installed + 1);
+    Port::Hooks::SetWindowSize(0, 0);
+}
+
+TEST_CASE("platform: widescreen = match without a window size is off, and says so") {
+    TempDir dir;
+    dir.WriteText("mh4u.ini", "widescreen = match\n");
+    Port::Hooks::SetWindowSize(0, 0);
+    HookRun run({"--user", dir.Path()});
+    CHECK(run.f.Logged("widescreen: match, but no landscape window size was passed; off"));
+}
+
 #endif  // recomp.h and hooks.h around native/

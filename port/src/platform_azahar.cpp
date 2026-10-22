@@ -8,6 +8,9 @@
 #include <vector>
 
 #include "common/common_types.h"
+#if defined(__ANDROID__)
+#include "common/android_utils.h"
+#endif
 #include "common/file_util.h"
 #include "common/logging/log.h"
 #include "common/settings.h"
@@ -96,6 +99,20 @@ public:
         return FileUtil::GetUserPath(FileUtil::UserPath::UserDir);
     }
 
+    bool ReadTextLines(const std::string& path, std::vector<std::string>& lines) override {
+        // FileUtil::IOFile, not std::ifstream: on Android the user folder is not the host's
+        // root, and only FileUtil translates the guest path to the file under it.
+        FileUtil::IOFile file(path, "r");
+        if (!file.IsOpen()) {
+            return false;
+        }
+        std::string line;
+        while (file.ReadLine(line)) {
+            lines.push_back(line);
+        }
+        return true;
+    }
+
     void SetRefreshRate(double hz) override {
         Core::System::GetInstance().GPU().SetRefreshRate(hz);
     }
@@ -113,8 +130,25 @@ public:
         return Core::System::GetInstance().IsPoweredOn();
     }
 
+    bool IsPortrait() override {
+#if defined(__ANDROID__)
+        return AndroidUtils::IsPortraitMode();
+#else
+        return false;
+#endif
+    }
+
     void RefreshScreenLayout() override {
         Core::System::GetInstance().GPU().Renderer().UpdateCurrentFramebufferLayout();
+    }
+
+    void RefreshScreenLayoutFor(bool portrait) override {
+#if defined(__ANDROID__)
+        Core::System::GetInstance().GPU().Renderer().UpdateCurrentFramebufferLayout(portrait);
+#else
+        static_cast<void>(portrait);
+        RefreshScreenLayout();
+#endif
     }
 
     void SetScreenOverlay(const ScreenOverlay& overlay) override {

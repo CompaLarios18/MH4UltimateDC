@@ -1098,7 +1098,9 @@ def test_patch_writes_zero_padding_in_the_format_metadata(path):
     when deterministic_async_operations is set, and the whole struct as before when it is not."""
     section = _patch_section(path)
     assert '+#include "common/settings.h"' in section and "+#include <cstring>" in section
-    flat = " ".join(line[1:].strip() for line in section.splitlines() if line.startswith("+"))
+    # the code as the patch leaves it (added and unchanged lines): where the writer's block moved
+    # when another change rewrote the lines around it, git's diff shows the unchanged ones as context
+    flat = " ".join(line[1:].strip() for line in section.splitlines() if line.startswith(("+", " ")))
     assert "if (Settings::values.deterministic_async_operations) {" in flat
     assert "std::array<u8, sizeof(format_info)> metadata{};" in flat
     assert ("std::memcpy(metadata.data(), &format_info, sizeof(format_info.total_size) + "
