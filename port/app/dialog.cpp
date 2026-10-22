@@ -1,8 +1,8 @@
 #include "dialog.h"
 
 #include <cstdio>
-#include <SDL.h>
 
+#include "app_window.h"
 #include "util/log.h"
 #include "util/strings.h"
 
@@ -109,8 +109,7 @@ void Message(const std::string& title, const std::string& text, bool error) {
     } else {
         APP_LOG_INFO("{}", text);
     }
-    SDL_ShowSimpleMessageBox(error ? SDL_MESSAGEBOX_ERROR : SDL_MESSAGEBOX_INFORMATION,
-                             title.c_str(), text.c_str(), nullptr);
+    Host::ShowMessageBox(title, text, error, nullptr);
 }
 
 } // namespace App::Dialog

@@ -8,10 +8,10 @@
 #include <mutex>
 #include <tuple>
 #include <vector>
-#include <SDL.h>
 #include <fmt/format.h>
 #include <imgui.h>
 
+#include "app_window.h"
 #include "config.h"
 #include "hooks.h"
 #include "input.h"
@@ -433,14 +433,14 @@ void Menu::OnCapturedKey(int code) {
             const auto codes = Input::KeyCodes(spec);
             return std::find(codes.begin(), codes.end(), c) != codes.end();
         };
-        return c == SDL_SCANCODE_ESCAPE || c == Input::KeyCode(config.fullscreen_key) ||
+        return c == Scancode::Escape || c == Input::KeyCode(config.fullscreen_key) ||
                c == Input::KeyCode(config.fps_counter_key) ||
                (binding.extra != Extra::TouchScreen && has(config.touch_screen_key)) ||
                (binding.extra != Extra::Guides && has(config.key_guides_key));
     };
-    if (code == SDL_SCANCODE_ESCAPE) {
+    if (code == Scancode::Escape) {
         // kept as it was
-    } else if (code == SDL_SCANCODE_DELETE) {
+    } else if (code == Scancode::Delete) {
         SetKey(config, binding, slot, "");
         ControlsChanged();
     } else if (const std::string key = Input::KeyName(code); key.empty()) {

@@ -192,4 +192,20 @@ void AzaharRuntime::SetLayoutEditing(bool on) {
     Port::Hooks::SetLayoutEditing(on);
 }
 
+SkipInfo AzaharRuntime::SkipState() const {
+    // the menu's frames are built on the hooks' thread in this build (ui.h), so the getters,
+    // which read mh4u.ini's options without atomics, are read where the hooks write them
+    SkipInfo info;
+    info.offered = Port::Hooks::SkipOffered();
+    info.hint = Port::Hooks::SkipHint();
+    if (!info.offered || info.hint == 0) {
+        return info;
+    }
+    info.skip_button = Port::Hooks::SkipButton();
+    info.end_buttons = Port::Hooks::SkipEndButtons();
+    info.end_hold = Port::Hooks::EndSkipHold();
+    info.end_requested = Port::Hooks::EndSkipRequested();
+    return info;
+}
+
 } // namespace App::Azahar

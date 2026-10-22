@@ -80,6 +80,11 @@ struct Status {
     bool public_checked = false;
 };
 
+/// Whether rooms work in this build: the network layer is up (IRuntime::RoomsAvailable). The
+/// in-game menu's Multiplayer tab says "Not available in this build" and offers nothing when it
+/// is not (mh4u-native has no rooms yet). Any thread.
+bool Available();
+
 /// Before anything else, after IRuntime::InitNetwork.
 void Init(Config& config);
 

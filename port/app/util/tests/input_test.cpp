@@ -1,83 +1,41 @@
-// The app's input (input.cpp) against a fake runtime and a fake SDL: which controller the input
-// profile is made for and how the log line names it, key names (with the mouse's and the lists of
-// alternatives), the mute that goes to the runtime, and the keyboard-and-mouse mode's calls to it
-// (the mouse's stick, the camera turn, the wheel's and the item bar's key presses). The SDL calls the file
-// makes are defined here, so no SDL library is linked; only its headers are needed. Synthetic data only.
-// Built with -DMH4U_APP_TESTS=ON (port/app/CMakeLists.txt) or by hand against doctest, {fmt}
-// and the SDL2 headers.
+// The app's input (input.cpp) against a fake runtime and a fake host (util/tests/fake_host.h):
+// which controller the input profile is made for and how the log line names it, a controller's
+// port among devices of its kind, key names (with the mouse's and the lists of alternatives), the
+// mute that goes to the runtime, and the keyboard-and-mouse mode's calls to it (the mouse's stick,
+// the camera turn, the wheel's and the item bar's key presses). The host's services are defined by
+// the test programs, so no SDL is involved at all. Synthetic data only.
+// Built with -DMH4U_APP_TESTS=ON (port/app/CMakeLists.txt) or by hand against doctest and {fmt}.
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include <doctest/doctest.h>
 
 #include <algorithm>
-#include <cstring>
 #include <string>
 #include <vector>
 
-#include <SDL.h>
-
+#include "app_window.h"
 #include "config.h"
 #include "input.h"
+#include "util/tests/fake_host.h"
 #include "util/tests/fake_runtime.h"
-
-namespace {
-
-struct FakePad {
-    bool is_controller = true;
-    const char* guid = "";
-    const char* name = nullptr;
-};
-std::vector<FakePad> pads;
-
-/// The fake SDL's guid: the text is kept in the bytes.
-SDL_JoystickGUID GuidOf(const char* text) {
-    SDL_JoystickGUID guid{};
-    std::strncpy(reinterpret_cast<char*>(guid.data), text, sizeof(guid.data) - 1);
-    return guid;
-}
-
-} // namespace
-
-extern "C" {
-int SDL_NumJoysticks(void) {
-    return static_cast<int>(pads.size());
-}
-SDL_bool SDL_IsGameController(int index) {
-    return pads.at(static_cast<std::size_t>(index)).is_controller ? SDL_TRUE : SDL_FALSE;
-}
-SDL_JoystickGUID SDL_JoystickGetDeviceGUID(int index) {
-    return GuidOf(pads.at(static_cast<std::size_t>(index)).guid);
-}
-void SDL_JoystickGetGUIDString(SDL_JoystickGUID guid, char* text, int size) {
-    std::strncpy(text, reinterpret_cast<const char*>(guid.data), static_cast<std::size_t>(size) - 1);
-    text[size - 1] = '\0';
-}
-const char* SDL_GameControllerNameForIndex(int index) {
-    return pads.at(static_cast<std::size_t>(index)).name;
-}
-SDL_Scancode SDL_GetScancodeFromName(const char* name) {
-    if (std::strcmp(name, "W") == 0) {
-        return SDL_SCANCODE_W;
-    }
-    if (std::strcmp(name, "F12") == 0) {
-        return SDL_SCANCODE_F12;
-    }
-    if (std::strcmp(name, "F") == 0) {
-        return SDL_SCANCODE_F;
-    }
-    return SDL_SCANCODE_UNKNOWN;
-}
-const char* SDL_GetScancodeName(SDL_Scancode code) {
-    return code == SDL_SCANCODE_W ? "W" : code == SDL_SCANCODE_F12 ? "F12" : "";
-}
-}
 
 using namespace App;
 using fake::Env;
 
-TEST_CASE("key names are SDL's, and an unknown one is 0 with a warning") {
+namespace {
+
+/// The controllers the fake host lists (the way the host numbers them is ControllerPort's).
+void Plug(std::vector<ControllerInfo> pads) {
+    fake::Host().Reset();
+    fake::Host().controllers = std::move(pads);
+}
+
+} // namespace
+
+TEST_CASE("key names are the host's, and an unknown one is 0 with a warning") {
     Env env;
-    CHECK(Input::KeyCode("W") == SDL_SCANCODE_W);
-    CHECK(Input::KeyCode("F12") == SDL_SCANCODE_F12);
+    fake::Host().Reset();
+    CHECK(Input::KeyCode("W") == fake::SCANCODE_W);
+    CHECK(Input::KeyCode("F12") == fake::SCANCODE_F12);
     CHECK(Input::KeyCode("") == 0);
     CHECK_FALSE(env.Logged("no key called"));
     CHECK(Input::KeyCode("Hyper") == 0);
@@ -86,7 +44,7 @@ TEST_CASE("key names are SDL's, and an unknown one is 0 with a warning") {
 
 TEST_CASE("without a controller the profile is made for the keys alone") {
     Env env;
-    pads.clear();
+    Plug({});
     const Config config = Defaults();
     Input::BuildProfile(config);
     CHECK(Input::ControllerDescription() == "no controller found");
@@ -94,9 +52,9 @@ TEST_CASE("without a controller the profile is made for the keys alone") {
     CHECK_FALSE(env.runtime.profiles[0].controller_given);
 }
 
-TEST_CASE("the first controller SDL knows is the profile's") {
+TEST_CASE("the first controller the host lists is the profile's") {
     Env env;
-    pads = {{false, "joystick-guid", "Wheel"}, {true, "pad-guid", "Pad A"}, {true, "other-guid", "Pad B"}};
+    Plug({{"pad-guid", 0, "Pad A"}, {"other-guid", 0, "Pad B"}});
     const Config config = Defaults();
     Input::BuildProfile(config);
     CHECK(Input::ControllerDescription() == "controller: Pad A (port 0)");
@@ -110,7 +68,15 @@ TEST_CASE("the first controller SDL knows is the profile's") {
 
 TEST_CASE("the port counts the devices with the same GUID before the controller") {
     Env env;
-    pads = {{false, "same", "Not a pad"}, {true, "same", "Twin 1"}, {true, "same", "Twin 2"}};
+    // the GUID of every joystick the host knows, controllers or not: {"same", "same", "same"} is
+    // a device that is not a controller and two twins
+    const std::vector<std::string> guids{"same", "other", "same", "same"};
+    CHECK(Input::ControllerPort(guids, 0) == 0);
+    CHECK(Input::ControllerPort(guids, 1) == 0);
+    CHECK(Input::ControllerPort(guids, 2) == 1);
+    CHECK(Input::ControllerPort(guids, 3) == 2);
+    CHECK(Input::ControllerPort(guids, 9) == 0);  // past the end: nothing to count
+    Plug({{"same", 1, "Twin 1"}, {"same", 2, "Twin 2"}});
     Input::BuildProfile(Defaults());
     REQUIRE(env.runtime.profiles.size() == 1);
     CHECK(env.runtime.profiles[0].controller.port == 1);
@@ -119,7 +85,7 @@ TEST_CASE("the port counts the devices with the same GUID before the controller"
 
 TEST_CASE("a controller without a name is called controller") {
     Env env;
-    pads = {{true, "g", nullptr}};
+    Plug({{"g", 0, ""}});
     Input::BuildProfile(Defaults());
     REQUIRE(env.runtime.profiles.size() == 1);
     CHECK(env.runtime.profiles[0].controller.name == "controller");
@@ -128,7 +94,7 @@ TEST_CASE("a controller without a name is called controller") {
 
 TEST_CASE("controller = off gives the profile no controller even when one is plugged in") {
     Env env;
-    pads = {{true, "g", "Pad A"}};
+    Plug({{"g", 0, "Pad A"}});
     Config config = Defaults();
     config.controller_auto = false;
     Input::BuildProfile(config);
@@ -147,15 +113,15 @@ TEST_CASE("the mute goes to the runtime as it comes") {
 
 TEST_CASE("the mouse's buttons and the wheel are keys with names of their own") {
     Env env;
-    CHECK(Input::KeyCode("Mouse Right") == Input::MOUSE_KEY + SDL_BUTTON_RIGHT);
-    CHECK(Input::KeyCode("mouse left") == Input::MOUSE_KEY + SDL_BUTTON_LEFT);
-    CHECK(Input::KeyCode("Mouse 4") == Input::MOUSE_KEY + SDL_BUTTON_X1);
+    CHECK(Input::KeyCode("Mouse Right") == Input::MOUSE_KEY + MouseButton::Right);
+    CHECK(Input::KeyCode("mouse left") == Input::MOUSE_KEY + MouseButton::Left);
+    CHECK(Input::KeyCode("Mouse 4") == Input::MOUSE_KEY + MouseButton::X1);
     CHECK(Input::KeyCode("Wheel Up") == Input::WHEEL_UP);
     CHECK_FALSE(env.Logged("no key called"));
     CHECK(Input::MouseCode("Wheel Down") == Input::WHEEL_DOWN);
     CHECK(Input::MouseCode("W") == 0);
-    CHECK(Input::KeyName(Input::MOUSE_KEY + SDL_BUTTON_MIDDLE) == "Mouse Middle");
-    CHECK(Input::KeyName(SDL_SCANCODE_W) == "W");
+    CHECK(Input::KeyName(Input::MOUSE_KEY + MouseButton::Middle) == "Mouse Middle");
+    CHECK(Input::KeyName(fake::SCANCODE_W) == "W");
     CHECK(Input::KeyName(0) == "");
 }
 
@@ -165,8 +131,8 @@ TEST_CASE("a 3DS button takes a list of keys separated by |") {
     CHECK(Input::KeyNames(" W |  | F12 ") == std::vector<std::string>{"W", "F12"});
     CHECK(Input::KeyNames("").empty());
     CHECK(Input::KeyCodes("F | Mouse Right") ==
-          std::vector<int>{SDL_SCANCODE_F, Input::MOUSE_KEY + SDL_BUTTON_RIGHT});
-    CHECK(Input::KeyCodes("Hyper | W") == std::vector<int>{SDL_SCANCODE_W});  // an unknown one is left out
+          std::vector<int>{fake::SCANCODE_F, Input::MOUSE_KEY + MouseButton::Right});
+    CHECK(Input::KeyCodes("Hyper | W") == std::vector<int>{fake::SCANCODE_W});  // an unknown one is left out
     CHECK(Input::FirstKey("Mouse Left | V") == "Mouse Left");
     CHECK(Input::FirstKey("") == "");
 }

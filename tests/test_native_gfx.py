@@ -12,6 +12,13 @@
 does (memory fills, display transfers, a texture copy with a gap, buffer swaps of both screens,
 VBlank waits), and this test checks every picture it holds against an image computed here.
 
+A synthetic PICA draw (N2b-16, the tests with "draw" in their names, at the end of the file):
+port/tests/gfx_draw.c draws four shapes with a PICA command list (a hand-encoded vertex shader,
+attribute buffers, TEV, the depth test and blending) and holds the picture; the test computes the
+expected image from the shapes' corners, colours and depths, exactly where a pixel is more than one
+pixel inside a shape's edges and to within 1/255 where the blend decides it, and leaves the pixels
+within one pixel of an edge out of the exact check.
+
 - Always: the program builds and recompiles; the model that computes the expected images agrees
   with numbers worked out by hand; the shot schedule is derived from printed lines as documented.
 - With MH4U_RUNNER (the reference runner, `--cpu jit --new-3ds off`): the program prints the lines
@@ -34,6 +41,7 @@ last step too (it lasts 120 VBlanks). That step alternates the top screen betwee
 VBlank, so the two shots in it show different buffers, which is what the expected images say."""
 from __future__ import annotations
 
+import math
 import os
 import re
 import shutil
@@ -420,15 +428,14 @@ def run_program(kind: str, runner: str, elf: str, lib: str | None, work: str, na
     return Run(debug_lines(r.stdout), shots)
 
 
-@pytest.fixture(scope="module")
-def built(tmp_path_factory):
+def build_program(tmp_path_factory, program: str):
     """The program's ELF, and (when the native runner needs it) the code library built from it."""
     if not have_toolchain():
         # nothing can run without the program: a failure when any runner is required
         skip_or_fail("any", "clang/lld toolchain not installed")
     import build_svc_test
-    out = str(tmp_path_factory.mktemp("gfx_gx"))
-    elf = build_svc_test.build(out, PROGRAM)
+    out = str(tmp_path_factory.mktemp(program))
+    elf = build_svc_test.build(out, program)
     libs: dict[str, str] = {}
 
     def native_library() -> str:
@@ -441,9 +448,15 @@ def built(tmp_path_factory):
     return elf, native_library, out
 
 
-def runs_of(kind: str, built, tmp_path_factory) -> list[Run]:
+@pytest.fixture(scope="module")
+def built(tmp_path_factory):
+    return build_program(tmp_path_factory, PROGRAM)
+
+
+def runs_of(kind: str, built, tmp_path_factory, schedule=None) -> list[Run]:
     """Three runs of the program on one runner: the first prints the lines the schedule is worked
-    out from, the other two take the shots (and must repeat each other exactly)."""
+    out from (schedule: the lines to (first shot ms, interval ms), shot_schedule's by default), the
+    other two take the shots (and must repeat each other exactly)."""
     elf, native_library, _ = built
     var = "MH4U_RUNNER" if kind == "reference" else "MH4N_RUNNER"
     runner = os.environ.get(var)
@@ -454,7 +467,7 @@ def runs_of(kind: str, built, tmp_path_factory) -> list[Run]:
     lib = native_library() if kind == "native" else None
     work = str(tmp_path_factory.mktemp(f"run_{kind}"))
     first = run_program(kind, runner, elf, lib, work, "1", None)
-    from_ms, every_ms, _ = shot_schedule(first.lines)
+    from_ms, every_ms = schedule(first.lines) if schedule else shot_schedule(first.lines)[:2]
     return [first] + [run_program(kind, runner, elf, lib, work, str(i), (from_ms, every_ms)) for i in (2, 3)]
 
 
@@ -477,10 +490,10 @@ def test_program_builds_and_recompiles(tmp_path):
     assert os.path.exists(build_svc_test.build(str(tmp_path), PROGRAM))
 
 
-def c_defines() -> dict[str, int]:
-    """The #defines of gfx_gx.c (a constant may name an earlier one: TOP_B is VRAM + 0x100000u)."""
+def c_defines(program: str = PROGRAM) -> dict[str, int]:
+    """The #defines of a program's source (a constant may name an earlier one: TOP_B is VRAM + 0x100000u)."""
     values: dict[str, int] = {}
-    with open(os.path.join(PORT_TESTS, PROGRAM + ".c"), encoding="utf-8") as f:
+    with open(os.path.join(PORT_TESTS, program + ".c"), encoding="utf-8") as f:
         for line in f:
             m = re.match(r"#define (\w+)\s+(.*?)\s*(?:/\*.*)?$", line.rstrip())
             if not m:
@@ -722,3 +735,417 @@ def test_the_runners_show_the_same_shots(reference, native):
     assert len(ref) == len(nat) == 2 * SHOT_COUNT
     for i, (a, b) in enumerate(zip(ref, nat)):
         assert a == b, f"shot {i // 2 + 1}, {'top' if i % 2 else 'bottom'} screen, differs between the runners"
+
+
+# ══ N2b-16: a synthetic PICA draw (port/tests/gfx_draw.c) ════════════════════════════════════════
+# The program draws four shapes into a 240x400 RGBA8 colour buffer with a PICA command list, untiles
+# the buffer into the top screen's buffer with a display transfer, swaps and holds the picture for 60
+# VBlanks. The expected image is built here in two steps: the scene in raster coordinates (the colour
+# of every pixel and how sure we are of it), then the colour buffer's memory, the display transfer and the
+# screen read-out of the GX model above, which move every pixel to where the screenshot shows it.
+DRAW_PROGRAM = "gfx_draw"
+DRAW_SHOT_FRAME = 31.5       # the shot, in frames after the VBlank count the program prints
+DRAW_HOLD_VBLANKS = 60
+VIEW_W, VIEW_H = 240, 400
+BUF_BYTES = VIEW_W * VIEW_H * 4
+BG = (0x18, 0x28, 0x38)      # the colour buffer's clear colour
+BG_FILL = 0x182838FF
+DEPTH_CLEAR = 0x00FFFFFF
+BLEND_ALPHA = 128            # the quad's alpha: TEV stage 0's constant, times the primary alpha (255)
+UNKNOWN, EXACT, BLENDED = 0, 1, 2     # how well a pixel's colour is known
+EDGE_BAND = 1.0              # pixels whose centre is this near (in pixels) to an edge are left out
+
+# (name, prefix in gfx_draw.c, corners in pixels, depth in eighths (nearer is smaller), colour, alpha),
+# in drawing order. A corner is a multiple of 15 in x and of 25 in y: an exact float of eighths in NDC.
+SHAPES = [
+    ("red", "RED", [(30, 50), (210, 50), (120, 300)], 4, (255, 0, 0), 255),
+    ("green", "GRN", [(90, 125), (225, 125), (165, 350)], 2, (0, 255, 0), 255),
+    ("yellow", "YEL", [(15, 150), (225, 150), (120, 275)], 6, (255, 255, 0), 255),
+    ("blue", "BLU", [(45, 100), (195, 100), (195, 325), (45, 325)], 1, (0, 0, 255), BLEND_ALPHA),
+]
+
+
+def edge_margin(corners: list[tuple[int, int]], x: float, y: float) -> float:
+    """The signed distance in pixels from (x, y) to the nearest edge of a convex polygon: positive
+    inside, negative outside (for a point outside, the distance to the nearest edge's line)."""
+    pairs = list(zip(corners, corners[1:] + corners[:1]))
+    area2 = sum(ax * by - bx * ay for (ax, ay), (bx, by) in pairs)
+    sign = 1 if area2 > 0 else -1
+    return min(sign * ((bx - ax) * (y - ay) - (by - ay) * (x - ax)) / math.hypot(bx - ax, by - ay)
+               for (ax, ay), (bx, by) in pairs)
+
+
+def blend(src: tuple[int, int, int], alpha: int, dst: tuple[int, int, int]) -> tuple[int, int, int]:
+    """SRC_ALPHA, ONE_MINUS_SRC_ALPHA, equation add: the spec's formula (s * a + d * (255 - a)) / 255 with
+    truncating integer arithmetic, the same arithmetic Azahar's software renderer uses."""
+    return tuple((s * alpha + d * (255 - alpha)) // 255 for s, d in zip(src, dst))
+
+
+_scene_cache: list = []
+
+
+def draw_scene() -> tuple[list[tuple[int, int, int]], list[int]]:
+    """The scene in raster coordinates (pixel (x, y) is index y * 240 + x; the pixel's centre is at
+    (x + 0.5, y + 0.5)): the colour of each pixel, and EXACT (it must match), BLENDED (within 1/255: the
+    blend rounds) or UNKNOWN (it is within a pixel of an edge of a shape that touches it, or depends on
+    a pixel that is). A shape is processed in drawing order against a depth buffer cleared to 1.0, with
+    the depth test LESS and depth writes on."""
+    if _scene_cache:
+        return _scene_cache[0]
+    colour = [BG] * (VIEW_W * VIEW_H)
+    kind = [EXACT] * (VIEW_W * VIEW_H)
+    depth = [8] * (VIEW_W * VIEW_H)          # in eighths: 8 is 1.0
+    for _, _, corners, z8, rgb, alpha in SHAPES:
+        xs, ys = [c[0] for c in corners], [c[1] for c in corners]
+        for y in range(max(0, min(ys) - 2), min(VIEW_H, max(ys) + 2)):
+            for x in range(max(0, min(xs) - 2), min(VIEW_W, max(xs) + 2)):
+                i = y * VIEW_W + x
+                if kind[i] == UNKNOWN:
+                    continue
+                d = edge_margin(corners, x + 0.5, y + 0.5)
+                if d < -EDGE_BAND:
+                    continue                  # surely outside
+                if d <= EDGE_BAND:
+                    kind[i] = UNKNOWN         # on the edge: it may or may not be covered
+                    continue
+                if z8 >= depth[i]:
+                    continue                  # LESS fails
+                depth[i] = z8
+                if alpha == 255:
+                    colour[i], kind[i] = rgb, EXACT
+                else:
+                    colour[i], kind[i] = blend(rgb, alpha, colour[i]), BLENDED
+    _scene_cache.append((colour, kind))
+    return colour, kind
+
+
+def transfer_flags(in_format: int, out_format: int, flags: int = 0) -> int:
+    return (in_format << 8) | (out_format << 12) | flags
+
+
+_draw_expected_cache: list = []
+
+
+def draw_expected() -> tuple[Image, Image, Image]:
+    """(the top screen's image, an image whose red, green and blue are 100 * how well each pixel is
+    known, the bottom screen's image), by running the program's memory operations on the model: the
+    colour buffer is 240x400 RGBA8 in 8x8 tiles with line 399 - y holding raster line y, and a display
+    transfer RGBA8 to RGB8 moves it to the top screen's buffer, which the screen read-out shows."""
+    if _draw_expected_cache:
+        return _draw_expected_cache[0]
+    colour, kind = draw_scene()
+    pixels, known = bytearray(BUF_BYTES), bytearray(BUF_BYTES)
+    for y in range(VIEW_H):
+        for x in range(VIEW_W):
+            i = y * VIEW_W + x
+            o = tiled_index(x, VIEW_H - 1 - y, VIEW_W) * 4
+            r, g, b = colour[i]
+            pixels[o:o + 4] = bytes((255, b, g, r))
+            known[o:o + 4] = bytes((255,) + (100 * kind[i],) * 3)
+    screens = []
+    for image in (pixels, known):
+        top = bytearray(TOP_SIZE)            # the program clears the display buffer first
+        display_transfer(image, top, VIEW_W, VIEW_H, VIEW_W, VIEW_H, transfer_flags(RGBA8, RGB8))
+        screens.append(show_screen(top, RGB8, VIEW_W * 3, VIEW_H))
+    bottom = show_screen(bytearray(BOT_SIZE), RGB565, 480, 320)       # cleared, nothing drawn
+    _draw_expected_cache.append((screens[0], screens[1], bottom))
+    return _draw_expected_cache[0]
+
+
+def check_draw_image(got: Image, label: str) -> None:
+    """Every EXACT pixel equal, every BLENDED one within 1 in each channel; the rest not looked at."""
+    want, known, _ = draw_expected()
+    assert (got.width, got.height) == (want.width, want.height), \
+        f"{label}: {got.width}x{got.height}, expected {want.width}x{want.height}"
+    wrong: list[tuple[int, int]] = []
+    for i in range(got.width * got.height):
+        k = known.rgb[3 * i] // 100
+        if k == UNKNOWN:
+            continue
+        a, b = got.rgb[3 * i:3 * i + 3], want.rgb[3 * i:3 * i + 3]
+        if (k == EXACT and a != b) or (k == BLENDED and any(abs(p - q) > 1 for p, q in zip(a, b))):
+            wrong.append((i % got.width, i // got.width))
+    if wrong:
+        x, y = wrong[0]
+        pytest.fail(f"{label}: {len(wrong)} pixels differ, the first at ({x}, {y}): got {got.pixel(x, y)}, "
+                    f"expected {want.pixel(x, y)} (known {known.pixel(x, y)[0] // 100})")
+
+
+def image_metrics(a: Image, b: Image) -> tuple[float, float]:
+    """(PSNR over R, G and B in dB, the worst mean |a - b| of a 16x16 block over R, G and B, out of 255),
+    as native/src/gpu_capture/image.cpp's CompareImages: blocks at the edges are smaller and their mean
+    is over the pixels they have. ROADMAP section 6 wants at least 40 dB and at most 8."""
+    assert (a.width, a.height) == (b.width, b.height)
+    squared, sums = 0, {}
+    for y in range(a.height):
+        for x in range(a.width):
+            i = 3 * (y * a.width + x)
+            diffs = [abs(p - q) for p, q in zip(a.rgb[i:i + 3], b.rgb[i:i + 3])]
+            squared += sum(d * d for d in diffs)
+            sums[(x // 16, y // 16)] = sums.get((x // 16, y // 16), 0) + sum(diffs)
+    mse = squared / (a.width * a.height * 3)
+    psnr = math.inf if mse == 0 else 10 * math.log10(255 * 255 / mse)
+    worst = 0.0
+    for (bx, by), total in sums.items():
+        w, h = min(16, a.width - bx * 16), min(16, a.height - by * 16)
+        worst = max(worst, total / (w * h * 3))
+    return psnr, worst
+
+
+# ── what the program prints, and when to take the shot ───────────────────────────────────────────
+DRAW_LINES = [r"gfx_draw: start", r"gfx_draw: ready", r"gfx_draw: list words ([0-9a-f]{8})",
+              r"gfx_draw: list done", r"gfx_draw: shown vblank ([0-9a-f]{8})",
+              r"gfx_draw: gsp error 00000000", r"gfx_draw: done"]
+
+
+def draw_lines_parse(lines: list[str]) -> tuple[int, int]:
+    """(the list's length in words, the VBlank count the program had when it swapped), after checking that
+    the printed lines are the program's, in order."""
+    assert len(lines) == len(DRAW_LINES), lines
+    found = [re.fullmatch(pattern, line) for pattern, line in zip(DRAW_LINES, lines)]
+    assert all(found), lines
+    return int(found[2].group(1), 16), int(found[4].group(1), 16)
+
+
+def draw_shot_schedule(lines: list[str]) -> tuple[int, int]:
+    """(the first shot, the interval) in ms. The program swaps once and holds for 60 VBlanks: the picture
+    is shown from the first VBlank after the swap (V + 1 at the latest, or V + 2 if one came between the
+    count and the swap) and for the 60 VBlanks after the count V it prints. The shot goes half a frame
+    from the VBlanks in the middle of that, V + 31.5 frames (the VBlank clock of the first test), and the
+    interval is long enough that the second shot would fall after the program's end."""
+    _, vblank = draw_lines_parse(lines)
+    return round((vblank + DRAW_SHOT_FRAME) * FRAME_MS), 1000
+
+
+# ── tests that need no runner ────────────────────────────────────────────────────────────────────
+def test_draw_program_builds_and_recompiles(tmp_path):
+    if not have_toolchain():
+        pytest.skip("clang/lld toolchain not installed")
+    import build_svc_test
+    assert DRAW_PROGRAM in build_svc_test.programs()
+    assert os.path.exists(build_svc_test.build(str(tmp_path), DRAW_PROGRAM))
+
+
+def test_draw_constants_match_the_program():
+    """The scene the model draws is the one gfx_draw.c's #defines describe."""
+    d = c_defines(DRAW_PROGRAM)
+    for name, prefix, corners, z8, _, _ in SHAPES:
+        for n, (x, y) in enumerate(corners):
+            assert (d[f"{prefix}_X{n}"], d[f"{prefix}_Y{n}"]) == (x, y), f"{name} corner {n}"
+        assert f"{prefix}_X{len(corners)}" not in d, f"{name} has more corners in the program"
+        assert d[f"{prefix}_Z"] == z8, name
+    assert (d["BG_R"], d["BG_G"], d["BG_B"]) == BG and d["BG_FILL"] == BG_FILL
+    assert d["DEPTH_CLEAR"] == DEPTH_CLEAR and d["ALPHA_BLEND"] == BLEND_ALPHA
+    assert (d["VIEW_W"], d["VIEW_H"], d["BUF_BYTES"]) == (VIEW_W, VIEW_H, BUF_BYTES)
+    assert (d["TOP_SIZE"], d["BOT_SIZE"], d["HOLD_VBLANKS"]) == (TOP_SIZE, BOT_SIZE, DRAW_HOLD_VBLANKS)
+    assert (d["TOP_A"], d["COLOR_BUF"], d["BOT_A"], d["DEPTH_BUF"]) == (
+        0x1F000000, 0x1F100000, 0x1F200000, 0x1F300000)
+    # the colour and depth buffers and the screens' buffers are inside VRAM and apart
+    assert all(d[n] + size <= 0x1F600000 and d[n] % 8 == 0 for n, size in (
+        ("TOP_A", TOP_SIZE), ("COLOR_BUF", BUF_BYTES), ("BOT_A", BOT_SIZE), ("DEPTH_BUF", BUF_BYTES)))
+    assert max(TOP_SIZE, BUF_BYTES) <= 0x100000
+    assert d["LIN_LIST"] >= d["LIN_VERTICES"] + 15 * 16 and d["LIN_LIST"] + d["LIST_BYTES"] <= d["LIN_SIZE"]
+    assert d["LIN_LIST"] % 8 == 0 and d["LIN_VERTICES"] % 16 == 0
+
+
+def test_draw_corners_are_exact_floats():
+    """x is a multiple of 15 and y of 25, so that NDC x = x / 120 - 1 and y = y / 200 - 1 are multiples of
+    1/8 (the program has a table of their float bits and does no floating-point arithmetic); the depth
+    is one to seven eighths; and the corners are all inside the viewport."""
+    for name, _, corners, z8, _, _ in SHAPES:
+        for x, y in corners:
+            assert x % 15 == 0 and 0 <= x <= VIEW_W and y % 25 == 0 and 0 <= y <= VIEW_H, (name, x, y)
+        assert 1 <= z8 <= 7, name
+    assert len({z8 for _, _, _, z8, _, _ in SHAPES}) == len(SHAPES)         # no two depths tie
+    assert SHAPES[0][3] > SHAPES[1][3] and SHAPES[2][3] > SHAPES[0][3] and SHAPES[3][3] < SHAPES[1][3]
+
+
+def test_draw_blend_arithmetic():
+    """(s * a + d * (255 - a)) / 255 with a truncating integer division, worked by hand."""
+    assert BLEND_ALPHA == 128
+    assert blend((0, 0, 255), 128, BG) == (3048 // 255, 5080 // 255, (32640 + 56 * 127) // 255) == (11, 19, 155)
+    assert blend((0, 0, 255), 128, (255, 0, 0)) == (127, 0, 128)
+    assert blend((0, 0, 255), 128, (0, 255, 0)) == (0, 127, 128)
+    assert blend((0, 0, 255), 128, (255, 255, 0)) == (127, 127, 128)
+    assert blend((10, 20, 30), 255, (200, 100, 50)) == (10, 20, 30)         # alpha 255 is the source
+    assert blend((10, 20, 30), 0, (200, 100, 50)) == (200, 100, 50)         # alpha 0 the destination
+
+
+def test_draw_edge_margin():
+    square = [(0, 0), (10, 0), (10, 10), (0, 10)]
+    assert edge_margin(square, 5, 5) == 5 and edge_margin(square, 0.5, 5) == 0.5
+    assert edge_margin(square, -2, 5) == -2 and edge_margin(square, 5, 12) == -2
+    assert edge_margin(list(reversed(square)), 5, 5) == 5                    # either winding
+    tri = [(0, 0), (4, 0), (0, 3)]                                           # the 3-4-5 triangle
+    assert edge_margin(tri, 1, 1) == pytest.approx(1.0)
+    assert edge_margin(tri, 2, 2) < 0 and edge_margin(tri, 2, 2) == pytest.approx(-0.4)
+
+
+def test_draw_known_pixels():
+    """Points of the scene worked out by hand from the corners, not by the model's other code. Each is
+    more than one pixel from every edge that matters, so it is exact (or blended) in the scene."""
+    colour, kind = draw_scene()
+
+    def at(x, y):
+        return colour[y * VIEW_W + x], kind[y * VIEW_W + x]
+    assert at(5, 5) == (BG, EXACT) and at(235, 395) == (BG, EXACT)           # background, corners
+    assert at(120, 75) == ((255, 0, 0), EXACT)           # the red triangle alone (y 50..300, x 39..201 at y 75)
+    assert at(215, 130) == ((0, 255, 0), EXACT)          # the green one, beyond the red one's right edge
+    assert at(30, 160) == ((255, 255, 0), EXACT)         # the yellow one on the background
+    assert at(120, 330) == (BG, EXACT) and at(20, 380) == (BG, EXACT)        # above the quad (it ends at y 325), left of green
+    # the blue quad over each of them: (s * 128 + d * 127) / 255
+    assert at(48, 105) == ((11, 19, 155), BLENDED)       # over the background
+    assert at(75, 120) == ((127, 0, 128), BLENDED)       # over red
+    assert at(160, 200) == ((0, 127, 128), BLENDED)      # over green, which is on top of red there
+    assert at(60, 160) == ((127, 127, 128), BLENDED)     # over yellow on the background
+    # the depth test: yellow is farther than red and green, so it does not show over them; seen
+    # through the blue quad, red is still red (127, 0, 128) and not yellow's (127, 127, 128)
+    assert at(85, 155) == ((127, 0, 128), BLENDED)
+    # the green triangle is nearer than the red one and wins where both cover: under the quad here
+    assert at(120, 200)[0] == (0, 127, 128)
+    # a pixel on the red triangle's base (y = 50 is its edge) is left out, and so is one on a quad corner
+    assert at(100, 50)[1] == UNKNOWN and at(45, 100)[1] == UNKNOWN and at(194, 324)[1] == UNKNOWN
+
+
+def test_draw_the_quad_diagonal_is_covered_once():
+    """The quad is two triangles; the pixels on their shared diagonal are inside the quad, far from its
+    four outer edges, so the model treats them as blended exactly once. Drawn by both triangles they
+    would be blended twice, (63, 0, 191) over red instead of (127, 0, 128), and not drawn at all they
+    would show red: either fails the exact check."""
+    colour, kind = draw_scene()
+    # the diagonal from (45, 100) to (195, 325): at y = 200 it is at x = 45 + 150 * 100 / 225 = 111.67,
+    # where the red triangle is alone under the quad (the green one starts at x = 115 there)
+    for x in (111, 112):
+        assert (colour[200 * VIEW_W + x], kind[200 * VIEW_W + x]) == ((127, 0, 128), BLENDED)
+    assert blend((0, 0, 255), 128, (127, 0, 128)) == (63, 0, 191)
+
+
+def test_draw_the_scene_is_mostly_known():
+    """A test that excludes too much proves nothing: only the pixels near an edge are left out."""
+    colour, kind = draw_scene()
+    total = VIEW_W * VIEW_H
+    unknown = kind.count(UNKNOWN)
+    assert 0 < unknown < 0.06 * total, unknown
+    shown = {c: sum(1 for v, k in zip(colour, kind) if k == EXACT and v == c)
+             for c in [(255, 0, 0), (0, 255, 0), (255, 255, 0), BG]}
+    # the red triangle is 180 x 250 / 2 = 22500 pixels, the green one 135 x 225 / 2, the yellow one 210 x 125 / 2
+    # and the quad hides most of the last two
+    assert shown[(255, 0, 0)] > 4000 and shown[(0, 255, 0)] > 1000 and shown[(255, 255, 0)] > 300
+    assert shown[BG] > 0.3 * total
+    assert kind.count(BLENDED) > 0.25 * total / 2          # the quad is 150 x 225 pixels
+    assert set(colour) >= {(255, 0, 0), (0, 255, 0), (255, 255, 0), BG, (11, 19, 155), (127, 0, 128),
+                           (0, 127, 128), (127, 127, 128)}
+
+
+def test_draw_expected_screens_follow_the_gx_model():
+    """The colour buffer's contents go through the display transfer and the screen read-out: each exact
+    colour of the scene appears on the top screen as many times as in the scene (within the pixels the
+    read-out shifts by one), the bottom screen is black, and no pixel of the top screen is unaccounted for."""
+    top, known, bottom = draw_expected()
+    assert (top.width, top.height, bottom.width, bottom.height) == (400, 240, 320, 240)
+    assert set(bottom.rgb) == {0}
+    colour, kind = draw_scene()
+    for c in [(255, 0, 0), (0, 255, 0), (255, 255, 0), BG]:
+        in_scene = sum(1 for k, v in zip(kind, colour) if k == EXACT and v == c)
+        on_screen = sum(1 for i in range(0, len(top.rgb), 3)
+                        if known.rgb[i] // 100 == EXACT and tuple(top.rgb[i:i + 3]) == c)
+        assert abs(in_scene - on_screen) <= 1000, (c, in_scene, on_screen)
+    # the screen shows raster pixel (x, y) at column 398 - y, row 240 - x (the one-pixel shift of the
+    # read-out included; the screen is the colour buffer rotated, as the hardware wants it)
+    for (x, y), want in {(120, 75): (255, 0, 0), (215, 130): (0, 255, 0), (30, 160): (255, 255, 0),
+                         (5, 5): BG, (48, 105): (11, 19, 155), (75, 120): (127, 0, 128)}.items():
+        assert top.pixel(398 - y, 240 - x) == want, (x, y)
+
+
+def test_draw_image_metrics():
+    flat = Image(32, 32, bytes((10, 20, 30)) * 1024)
+    assert image_metrics(flat, flat) == (math.inf, 0.0)
+    # one channel of one pixel off by 235: the mean square error is 235^2 / 3072
+    tweaked = bytearray(flat.rgb)
+    tweaked[0] = 10 ^ 0xFF
+    psnr, worst = image_metrics(flat, Image(32, 32, bytes(tweaked)))
+    assert psnr == pytest.approx(10 * math.log10(255 ** 2 * 3072 / 235 ** 2), abs=0.01) and worst == pytest.approx(235 / 768)
+    # a 16x16 block 9 higher in every channel: PSNR is high, but the block rule fails
+    block = bytearray(flat.rgb)
+    for y in range(16):
+        for x in range(16):
+            for c in range(3):
+                block[3 * (y * 32 + x) + c] += 9
+    psnr, worst = image_metrics(flat, Image(32, 32, bytes(block)))
+    assert worst == 9 and psnr == pytest.approx(10 * math.log10(255 * 255 * 4 / 81), abs=0.01) and psnr < 40 + 40
+    # blocks at the edge are smaller: a 20-wide image has a 4-wide last block, its mean over its own pixels
+    narrow = Image(20, 16, bytes((0, 0, 0)) * 320)
+    edge = bytearray(narrow.rgb)
+    for y in range(16):
+        for x in range(16, 20):
+            edge[3 * (y * 20 + x)] = 24
+    assert image_metrics(narrow, Image(20, 16, bytes(edge)))[1] == 8.0
+
+
+def test_draw_schedule_comes_from_the_printed_lines():
+    lines = ["gfx_draw: start", "gfx_draw: ready", "gfx_draw: list words 000000e0", "gfx_draw: list done",
+             "gfx_draw: shown vblank 00000005", "gfx_draw: gsp error 00000000", "gfx_draw: done"]
+    assert draw_lines_parse(lines) == (0xE0, 5)
+    first, every = draw_shot_schedule(lines)
+    assert first == round(36.5 * FRAME_MS) == 610 and every == 1000
+    # the picture is up from VBlank 6 or 7 to VBlank 65 (hold: V + 60); the shot is at 36.5 frames, so
+    # half a frame from VBlanks 36 and 37; the program ends at VBlank 66, and the second shot would be
+    # at 36.5 frames plus the interval, after it
+    assert 7 < 36.5 < 65 and first + every > 66 * FRAME_MS
+    with pytest.raises(AssertionError):
+        draw_lines_parse(lines[:4] + lines[5:])                  # the line with the VBlank count missing
+    with pytest.raises(AssertionError):
+        draw_lines_parse(lines[:5] + ["gfx_draw: gsp error 80000001", "gfx_draw: done"])   # a GSP error
+
+
+# ── tests that need a runner ─────────────────────────────────────────────────────────────────────
+@pytest.fixture(scope="module")
+def built_draw(tmp_path_factory):
+    return build_program(tmp_path_factory, DRAW_PROGRAM)
+
+
+@pytest.fixture(scope="module")
+def draw_reference(built_draw, tmp_path_factory):
+    return runs_of("reference", built_draw, tmp_path_factory, draw_shot_schedule)
+
+
+@pytest.fixture(scope="module")
+def draw_native(built_draw, tmp_path_factory):
+    return runs_of("native", built_draw, tmp_path_factory, draw_shot_schedule)
+
+
+def first_draw_shots(runs: list[Run]) -> tuple[Image, Image]:
+    """(top, bottom) of the first shot of the run that took them."""
+    shots = runs[1].shots
+    tops = [n for n in sorted(shots) if n.endswith("_top.ppm")]
+    bottoms = [n for n in sorted(shots) if n.endswith("_bottom.ppm")]
+    assert tops and bottoms, sorted(shots)
+    return parse_ppm(shots[tops[0]]), parse_ppm(shots[bottoms[0]])
+
+
+def check_draw_run(runs: list[Run]) -> None:
+    first, second, third = runs
+    words, _ = draw_lines_parse(first.lines)
+    assert 0 < words <= 0x800 and words % 2 == 0, words
+    assert second.lines == first.lines and third.lines == first.lines, "the printed lines differ between runs"
+    assert second.shots == third.shots, "the shots of two identical runs differ"
+    top, bottom = first_draw_shots(runs)
+    check_draw_image(top, "top screen")
+    _, _, want_bottom = draw_expected()
+    compare_images(bottom, want_bottom, "bottom screen")
+
+
+def test_reference_runner_draws_the_scene(draw_reference):
+    check_draw_run(draw_reference)
+
+
+def test_native_runner_draws_the_scene(draw_native):
+    check_draw_run(draw_native)
+
+
+def test_the_runners_draw_the_same_picture(draw_reference, draw_native):
+    """The whole top and bottom screens, not only the exact pixels: ROADMAP section 6's thresholds
+    (PSNR at least 40 dB, no 16x16 block with a mean error above 8/255)."""
+    for label, ref, nat in zip(("top", "bottom"), first_draw_shots(draw_reference), first_draw_shots(draw_native)):
+        psnr, worst = image_metrics(ref, nat)
+        assert psnr >= 40.0 and worst <= 8.0, f"{label} screen: PSNR {psnr:.2f} dB, worst block {worst:.2f}/255"

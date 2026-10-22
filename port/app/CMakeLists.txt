@@ -22,10 +22,13 @@ add_executable(mh4u
     config.h
     dialog.cpp
     dialog.h
+    # the host services the shared sources ask for (app_window.h, Host), on SDL2
+    host_sdl2.cpp
     icon.cpp
     icon.h
     input.cpp
     input.h
+    input_sdl2.cpp
     invite.cpp
     invite.h
     main.cpp
@@ -53,6 +56,8 @@ add_executable(mh4u
     ui/multiplayer_tab.h
     ui/options.cpp
     ui/options.h
+    # (what the windows call to draw the menu: the Azahar app's own)
+    ui/render.h
     ui/ui.cpp
     ui/ui.h
     # the app's own logging, file and string helpers (util/)
@@ -163,8 +168,9 @@ endif()
 #   mh4u_util_test        util/
 #   mh4u_app_test         the settings file and the launcher's checks, against a fake IRuntime
 #   mh4u_multiplayer_test the network room (multiplayer.cpp), against a scripted fake IRuntime
-#   mh4u_input_test       input.cpp, against a fake IRuntime and a fake SDL (no SDL library)
-#   mh4u_keyboard_test    ui/keyboard.cpp in a headless Dear ImGui context
+#   mh4u_input_test       input.cpp, against a fake IRuntime and a fake host (no SDL)
+#   mh4u_keyboard_test    ui/keyboard.cpp in a headless Dear ImGui context, against a fake host
+#   mh4u_hint_test        ui/hint.cpp: the hint after a quest from IRuntime::SkipState
 option(MH4U_APP_TESTS "Build the app's unit tests" OFF)
 if (MH4U_APP_TESTS)
     set(MH4U_APP_TEST_UTIL util/file.cpp util/log.cpp util/strings.cpp)
@@ -173,15 +179,23 @@ if (MH4U_APP_TESTS)
                    ../src/options_template.cpp ${MH4U_APP_TEST_UTIL})
     add_executable(mh4u_multiplayer_test util/tests/multiplayer_test.cpp multiplayer.cpp invite.cpp
                    launcher/lobby.cpp config.cpp ${MH4U_APP_TEST_UTIL})
-    add_executable(mh4u_input_test util/tests/input_test.cpp input.cpp kbm.cpp config.cpp
-                   ${MH4U_APP_TEST_UTIL})
-    add_executable(mh4u_keyboard_test util/tests/keyboard_test.cpp ui/keyboard.cpp config.cpp
-                   ${MH4U_APP_TEST_UTIL}
+    # (the host services of app_window.h, defined by tests: no SDL anywhere in them)
+    add_executable(mh4u_input_test util/tests/input_test.cpp util/tests/fake_host.cpp input.cpp kbm.cpp
+                   config.cpp ${MH4U_APP_TEST_UTIL})
+    add_executable(mh4u_keyboard_test util/tests/keyboard_test.cpp util/tests/fake_host.cpp ui/keyboard.cpp
+                   config.cpp ${MH4U_APP_TEST_UTIL}
                    ${MH4U_IMGUI_DIR}/imgui.cpp
                    ${MH4U_IMGUI_DIR}/imgui_draw.cpp
                    ${MH4U_IMGUI_DIR}/imgui_tables.cpp
                    ${MH4U_IMGUI_DIR}/imgui_widgets.cpp)
-    foreach(test mh4u_util_test mh4u_app_test mh4u_multiplayer_test mh4u_input_test mh4u_keyboard_test)
+    add_executable(mh4u_hint_test util/tests/hint_test.cpp util/tests/fake_host.cpp ui/hint.cpp input.cpp
+                   kbm.cpp config.cpp ${MH4U_APP_TEST_UTIL}
+                   ${MH4U_IMGUI_DIR}/imgui.cpp
+                   ${MH4U_IMGUI_DIR}/imgui_draw.cpp
+                   ${MH4U_IMGUI_DIR}/imgui_tables.cpp
+                   ${MH4U_IMGUI_DIR}/imgui_widgets.cpp)
+    foreach(test mh4u_util_test mh4u_app_test mh4u_multiplayer_test mh4u_input_test mh4u_keyboard_test
+                 mh4u_hint_test)
         target_include_directories(${test} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}
                                    ${CMAKE_CURRENT_SOURCE_DIR}/../../native/third_party/doctest)
         target_link_libraries(${test} PRIVATE fmt::fmt Threads::Threads)
@@ -191,16 +205,12 @@ if (MH4U_APP_TESTS)
     target_link_libraries(mh4u_multiplayer_test PRIVATE inih httplib json-headers)
     target_link_libraries(mh4u_input_test PRIVATE inih)
     target_link_libraries(mh4u_keyboard_test PRIVATE inih)
+    target_link_libraries(mh4u_hint_test PRIVATE inih)
     if (WIN32)
         target_link_libraries(mh4u_multiplayer_test PRIVATE crypt32 ws2_32)
     endif()
-    # input_test and keyboard_test define the few SDL functions the files under test call, so
-    # they use SDL's headers and not its library
-    foreach(test mh4u_input_test mh4u_keyboard_test)
-        target_include_directories(${test} PRIVATE
-                                   $<TARGET_PROPERTY:SDL2::SDL2,INTERFACE_INCLUDE_DIRECTORIES>)
-        target_compile_definitions(${test} PRIVATE SDL_MAIN_HANDLED)
+    foreach(test mh4u_keyboard_test mh4u_hint_test)
+        target_include_directories(${test} PRIVATE ${MH4U_IMGUI_DIR})
+        target_compile_definitions(${test} PRIVATE IMGUI_DISABLE_OBSOLETE_FUNCTIONS)
     endforeach()
-    target_include_directories(mh4u_keyboard_test PRIVATE ${MH4U_IMGUI_DIR})
-    target_compile_definitions(mh4u_keyboard_test PRIVATE IMGUI_DISABLE_OBSOLETE_FUNCTIONS)
 endif()

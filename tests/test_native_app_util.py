@@ -1,11 +1,14 @@
 """The app's unit tests (port/app/util/tests/): built by hand with a C++ compiler and run.
 
-The tests are doctest binaries (util_test, app_test, multiplayer_test, input_test, keyboard_test); the
-CMake option MH4U_APP_TESTS builds them inside Azahar's tree, which CI does not do for them. Here
-each is compiled against doctest and {fmt} from native/third_party, and inih, httplib, nlohmann's
-json, SDL2's headers and OpenSSL's headers from Azahar's externals (MH4N_AZAHAR_DIR, else
+The tests are doctest binaries (util_test, app_test, multiplayer_test, input_test, keyboard_test,
+hint_test); the CMake option MH4U_APP_TESTS builds them inside Azahar's tree, which CI does not do
+for them. Here each is compiled against doctest and {fmt} from native/third_party, and inih,
+httplib, nlohmann's json and OpenSSL's headers from Azahar's externals (MH4N_AZAHAR_DIR, else
 ~/azahar), and skipped when something is missing, or when clang is not the compiler available.
-The last two tests guard the shared UI and launcher sources against Azahar's headers (N2b-01).
+No test includes or links SDL: the host's services (app_window.h, Host) are defined by
+util/tests/fake_host.cpp, which the programs that need them link (N2b-02).
+The last two tests guard the shared UI and launcher sources against Azahar's headers (N2b-01);
+tests/test_native_app_portable.py guards the shared sources against SDL's (N2b-02).
 """
 from __future__ import annotations
 
@@ -27,6 +30,7 @@ CC = shutil.which("clang")
 pytestmark = pytest.mark.skipif(CXX is None or CC is None, reason="needs clang and clang++ (GCC does not build these tests)")
 
 UTIL = ["util/file.cpp", "util/log.cpp", "util/strings.cpp"]
+FAKE_HOST = "util/tests/fake_host.cpp"
 IMGUI_DIR = os.path.join(APP, "third_party", "imgui")
 
 
@@ -107,18 +111,23 @@ def test_multiplayer_tests(tmp_path, inih):
 
 
 def test_input_tests(tmp_path, inih):
-    need(os.path.join(EXT, "sdl2", "SDL", "include", "SDL.h"))
-    out = build_and_run(tmp_path, "input_test", ["util/tests/input_test.cpp", "input.cpp", "kbm.cpp", "config.cpp", *UTIL],
-                        ["-DSDL_MAIN_HANDLED", "-I" + os.path.join(EXT, "sdl2", "SDL", "include")], inih)
+    out = build_and_run(tmp_path, "input_test",
+                        ["util/tests/input_test.cpp", FAKE_HOST, "input.cpp", "kbm.cpp", "config.cpp", *UTIL], [], inih)
     assert "Status: SUCCESS!" in out
 
 
 def test_keyboard_tests(tmp_path, inih, imgui):
-    need(os.path.join(EXT, "sdl2", "SDL", "include", "SDL.h"))
     out = build_and_run(tmp_path, "keyboard_test",
-                        ["util/tests/keyboard_test.cpp", "ui/keyboard.cpp", "config.cpp", *UTIL],
-                        ["-DSDL_MAIN_HANDLED", "-DIMGUI_DISABLE_OBSOLETE_FUNCTIONS", "-I" + IMGUI_DIR,
-                         "-I" + os.path.join(EXT, "sdl2", "SDL", "include")], [*inih, *imgui])
+                        ["util/tests/keyboard_test.cpp", FAKE_HOST, "ui/keyboard.cpp", "config.cpp", *UTIL],
+                        ["-DIMGUI_DISABLE_OBSOLETE_FUNCTIONS", "-I" + IMGUI_DIR], [*inih, *imgui])
+    assert "Status: SUCCESS!" in out
+
+
+def test_hint_tests(tmp_path, inih, imgui):
+    """The hint after a quest reads IRuntime::SkipState, not the hooks (N2b-02)."""
+    out = build_and_run(tmp_path, "hint_test",
+                        ["util/tests/hint_test.cpp", FAKE_HOST, "ui/hint.cpp", "input.cpp", "kbm.cpp", "config.cpp", *UTIL],
+                        ["-DIMGUI_DISABLE_OBSOLETE_FUNCTIONS", "-I" + IMGUI_DIR], [*inih, *imgui])
     assert "Status: SUCCESS!" in out
 
 
@@ -149,13 +158,11 @@ def test_shared_ui_sources_include_no_azahar_header():
 
 
 def test_changed_shared_sources_compile(tmp_path):
-    """-fsyntax-only of the UI and launcher sources N2b-01 changed, with the test programs' flags."""
-    need(os.path.join(EXT, "sdl2", "SDL", "include", "SDL.h"))
-    flags = ["-std=c++20", "-fsyntax-only", "-Wall", "-Wextra", "-Werror", "-DFMT_HEADER_ONLY=1", "-DSDL_MAIN_HANDLED",
+    """-fsyntax-only of the UI and launcher sources N2b-01 changed, with the test programs' flags
+    and warnings as errors, and no SDL header on the include path (N2b-02)."""
+    flags = ["-std=c++20", "-fsyntax-only", "-Wall", "-Wextra", "-Werror", "-DFMT_HEADER_ONLY=1",
              "-DIMGUI_DISABLE_OBSOLETE_FUNCTIONS", "-I" + APP, "-I" + os.path.join(ROOT, "port", "src"),
-             "-I" + IMGUI_DIR, "-I" + os.path.join(IMGUI_DIR, "backends"),
-             "-I" + os.path.join(ROOT, "native", "third_party", "fmt", "include"),
-             "-I" + os.path.join(EXT, "inih", "inih"), "-I" + os.path.join(EXT, "inih", "inih", "cpp"),
-             "-I" + os.path.join(EXT, "sdl2", "SDL", "include")]
+             "-I" + IMGUI_DIR, "-I" + os.path.join(ROOT, "native", "third_party", "fmt", "include"),
+             "-I" + os.path.join(EXT, "inih", "inih"), "-I" + os.path.join(EXT, "inih", "inih", "cpp")]
     for rel in ("ui/ui.cpp", "ui/menu.cpp", "ui/hint.cpp", "launcher/screen_settings.cpp"):
         run([CXX, *flags, os.path.join(APP, rel)])

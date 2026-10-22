@@ -511,3 +511,119 @@ def test_the_checkout_itself_is_clean():
         pytest.skip("no native/ directory in this checkout")
     result = run(ROOT)
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+# ---- the app tree (native/app, N2b-03) ----
+
+APP_CMAKE = "mh4n_app_module(SOURCES main.cpp ../../../port/app/config.cpp)\n"
+
+
+@pytest.mark.parametrize("include", ["<SDL.h>", '"SDL.h"', "<SDL2/SDL.h>", "<SDL_vulkan.h>", '"SDL_syswm.h"',
+                                     "<httplib.h>", "<nlohmann/json.hpp>", '"json.hpp"'])
+def test_sdl2_httplib_and_json_includes_are_offences_in_the_app_tree(tree, include):
+    write(tree, "native/app/host/host.cpp", CLEAN_CPP + f"#include {include}\n")
+    result = run(tree)
+    assert result.returncode == 1
+    assert "native/app/host/host.cpp:5:" in result.stdout
+
+
+@pytest.mark.parametrize("include", ["<SDL3/SDL.h>", "<SDL3/SDL_main.h>", '"imgui.h"', "<imgui_impl_sdl3.h>",
+                                     "<INIReader.h>", "<ini.h>", '"app_window.h"'])
+def test_sdl3_imgui_and_inih_includes_are_fine_in_the_app_tree(tree, include):
+    write(tree, "native/app/host/host.cpp", CLEAN_CPP + f"#include {include}\n")
+    result = run(tree)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_azahar_include_is_an_offence_in_the_app_tree(tree):
+    write(tree, "native/app/host/host.cpp", CLEAN_CPP + '#include "core/core.h"\n')
+    assert run(tree).returncode == 1
+
+
+def test_the_rules_of_the_app_tree_do_not_reach_the_other_trees(tree):
+    # native/tests and the runner may include what they like of SDL2's names (they never will), and
+    # an SDL2 include outside native/app is not this tool's business, only SDL3 and ImGui under src
+    write(tree, "native/tests/x_test.cpp", CLEAN_CPP + "#include <httplib.h>\n")
+    assert run(tree).returncode == 0
+
+
+@pytest.mark.parametrize("include", ["<SDL3/SDL.h>", "<SDL.h>", '"SDL3/SDL_video.h"', '"imgui.h"',
+                                     "<imgui_impl_sdl3.h>", '"ImGui/imgui.h"'])
+def test_sdl_and_imgui_are_offences_under_native_src(tree, include):
+    write(tree, "native/src/kernel/kernel.cpp", CLEAN_CPP + f"#include {include}\n")
+    result = run(tree)
+    assert result.returncode == 1
+    assert "native/src/kernel/kernel.cpp:5:" in result.stdout
+
+
+def test_a_header_under_native_src_is_checked_too(tree):
+    write(tree, "native/src/kernel/kernel.h", "#pragma once\n#include <SDL3/SDL.h>\n")
+    result = run(tree)
+    assert result.returncode == 1 and "native/src/kernel/kernel.h:2:" in result.stdout
+
+
+def _app_port_tree(tree):
+    write(tree, "native/app/shared/CMakeLists.txt", APP_CMAKE)
+    write(tree, "native/app/shared/main.cpp", CLEAN_CPP)
+    write(tree, "port/app/config.cpp", '#include "config.h"\n#include "runtime.h"\n')
+    write(tree, "port/app/config.h", "#pragma once\n")
+    write(tree, "port/app/runtime.h", '#pragma once\n#include "app_window.h"\n')
+    write(tree, "port/app/app_window.h", "#pragma once\nstruct SDL_Window;\n")
+    write(tree, "port/app/window.cpp", "#include <SDL.h>\n#include \"core/core.h\"\n")   # the Azahar app's own
+    write(tree, "port/app/input.cpp", "#include <SDL.h>\n")
+    write(tree, "port/app/util/file.cpp", "#include <httplib.h>\n")
+
+
+def test_a_port_app_source_the_app_tree_names_is_checked_with_what_it_includes(tree):
+    _app_port_tree(tree)
+    assert run(tree).returncode == 0                        # clean, and window.cpp is not named
+    write(tree, "port/app/app_window.h", '#pragma once\n#include <SDL.h>\n')
+    result = run(tree)
+    assert result.returncode == 1
+    assert "port/app/app_window.h:2:" in result.stdout      # reached through config.cpp -> runtime.h
+
+
+def test_a_named_port_app_source_with_azahar_or_httplib_includes_is_an_offence(tree):
+    _app_port_tree(tree)
+    write(tree, "port/app/config.cpp", '#include "config.h"\n#include "core/core.h"\n#include "httplib.h"\n')
+    result = run(tree)
+    assert result.returncode == 1
+    assert "port/app/config.cpp:2:" in result.stdout and "port/app/config.cpp:3:" in result.stdout
+
+
+def test_a_port_app_header_named_checks_its_cpp(tree):
+    _app_port_tree(tree)
+    write(tree, "native/app/shared/CMakeLists.txt", "mh4n_app_module(SOURCES m.cpp ../../../port/app/input.h)\n")
+    write(tree, "port/app/input.h", "#pragma once\n")
+    result = run(tree)
+    assert result.returncode == 1 and "port/app/input.cpp:1:" in result.stdout
+
+
+def test_a_port_app_file_not_named_is_not_checked(tree):
+    _app_port_tree(tree)
+    write(tree, "native/app/shared/CMakeLists.txt", "mh4n_app_module(SOURCES m.cpp)\ntarget_include_directories(m PUBLIC ../../../port/app)\n")
+    assert run(tree).returncode == 0                        # only the directory, as an include path
+
+
+def test_a_glob_after_port_app_checks_every_shared_source(tree):
+    _app_port_tree(tree)
+    write(tree, "native/app/shared/CMakeLists.txt", "file(GLOB s ../../../port/app/*.cpp)\n")
+    write(tree, "port/app/ui/menu.cpp", "#include <SDL2/SDL.h>\n")
+    write(tree, "port/app/ui/render_vk.cpp", "#include <SDL.h>\n")    # the Azahar app's renderer
+    result = run(tree)
+    assert result.returncode == 1
+    checked = _checked(result)
+    assert {"port/app/input.cpp", "port/app/util/file.cpp", "port/app/ui/menu.cpp"} <= checked
+    assert "port/app/window.cpp" not in checked and "port/app/ui/render_vk.cpp" not in checked
+
+
+def test_a_port_app_mention_in_a_cmake_comment_is_ignored(tree):
+    _app_port_tree(tree)
+    write(tree, "native/app/shared/CMakeLists.txt", "# ../../../port/app/input.cpp\nmh4n_app_module(SOURCES m.cpp)\n")
+    assert run(tree).returncode == 0
+
+
+def test_the_third_party_files_of_the_app_tree_are_scanned_for_azahar_but_name_no_sources(tree):
+    write(tree, "native/app/third_party/imgui/backends/imgui_impl_sdl3.cpp", '#include "imgui.h"\n#include <SDL3/SDL.h>\n')
+    write(tree, "native/third_party/inih/inih/ini.h", "#pragma once\n")
+    assert run(tree).returncode == 0

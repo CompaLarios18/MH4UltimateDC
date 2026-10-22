@@ -5,30 +5,23 @@
 // Copyright 2018 Citra Emulator Project (swkbd.h, swkbd.cpp)
 //
 // The app's software keyboard (ui/keyboard.cpp) in a headless Dear ImGui context, against a fake
-// runtime and a fake SDL clock: what a request limits, which button finishes it, what the game's
+// runtime and a fake host clock (util/tests/fake_host.h): what a request limits, which button finishes it, what the game's
 // refusal does, and when a notice goes. Synthetic data only.
 // Built with -DMH4U_APP_TESTS=ON (port/app/CMakeLists.txt) or by hand against doctest, {fmt},
-// Dear ImGui's core files and the SDL2 headers (no SDL library: the clock is defined here).
+// Dear ImGui's core files (no SDL: the host's clock is defined by the test program).
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include <doctest/doctest.h>
 
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
 
-#include <SDL.h>
 #include <imgui.h>
 
 #include "ui/keyboard.h"
+#include "util/tests/fake_host.h"
 #include "util/tests/fake_runtime.h"
-
-namespace {
-Uint32 ticks = 1000;
-} // namespace
-
-extern "C" Uint32 SDL_GetTicks(void) {
-    return ticks;
-}
 
 using namespace App;
 using fake::Env;
@@ -234,18 +227,18 @@ TEST_CASE("an error with no keyboard up is a notice that goes after five seconds
     Env env;
     Imgui imgui;
     Ui::Keyboard keyboard;
-    ticks = 1000;
+    fake::Host().ticks = 1000;
     CHECK_FALSE(keyboard.HasNotice());
     keyboard.ShowError("Not allowed");
     CHECK(keyboard.HasNotice());
     CHECK_FALSE(keyboard.Active());
     imgui.Frame(keyboard);
-    ticks = 5999;
+    fake::Host().ticks = 5999;
     CHECK(keyboard.HasNotice());
-    ticks = 6000;
+    fake::Host().ticks = 6000;
     CHECK_FALSE(keyboard.HasNotice());
     // no reason given: the notice has words all the same
-    ticks = 10000;
+    fake::Host().ticks = 10000;
     keyboard.ShowError("");
     CHECK(keyboard.HasNotice());
 }

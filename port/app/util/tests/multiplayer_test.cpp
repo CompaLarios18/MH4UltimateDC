@@ -93,6 +93,13 @@ TEST_CASE("Init makes the console's data folder and binds the room's callbacks o
     CHECK_FALSE(MP::Leave(false));
 }
 
+TEST_CASE("rooms are available when the runtime's network layer is up") {
+    Room r;
+    CHECK(MP::Available());
+    r.env.runtime.rooms_available = false;
+    CHECK_FALSE(MP::Available());  // (the menu's tab says "Not available in this build")
+}
+
 TEST_CASE("without a network layer nothing is bound and a join says so") {
     Room r;
     r.env.runtime.rooms_available = false;
