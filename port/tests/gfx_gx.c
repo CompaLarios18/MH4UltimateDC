@@ -152,15 +152,14 @@ static void show_bottom_request(u32 address) {
     gsp_set_buffer_swap(&gsp, GSP_BOTTOM, &fb);
 }
 
-/* the bottom screen's framebuffer registers (0x1EF00500 + 0x68: left address 1 and 2, format;
- * + 0x78: the buffer shown; + 0x90: the stride in bytes) hold physical addresses */
+/* the bottom screen's framebuffer registers (gsp.h) hold physical addresses */
 static void show_bottom_registers(u32 address) {
     const u32 physical = address - VRAM + 0x18000000u;
     const u32 buffers[3] = {physical, physical, GSP_RGB565};
     const u32 shown = 0, stride = 240u * 2u;
-    gsp_write_regs(&gsp, 0x400568u, buffers, 3);
-    gsp_write_regs(&gsp, 0x400578u, &shown, 1);
-    gsp_write_regs(&gsp, 0x400590u, &stride, 1);
+    gsp_write_regs(&gsp, GSP_REGS_FB_BOTTOM + GSP_REG_FB_ADDRESS_LEFT1, buffers, 3);
+    gsp_write_regs(&gsp, GSP_REGS_FB_BOTTOM + GSP_REG_FB_ACTIVE, &shown, 1);
+    gsp_write_regs(&gsp, GSP_REGS_FB_BOTTOM + GSP_REG_FB_STRIDE, &stride, 1);
 }
 
 static u32 hold_until;                   /* the VBlank count at which the step ends */
@@ -271,6 +270,9 @@ static void step9_alternate(void) {
 void _start(void) __attribute__((section(".text.start")));
 void _start(void) {
     print("gfx_gx: start");
+    /* The three cards are drawn before the first VBlank wait. The relay queue drops PDC interrupts
+     * once 0x20 are pending (about 16 frames of PDC0 and PDC1), so a much longer setup, on a slower
+     * runner, would make the V counts undercount the real VBlanks; the reference needs about 5 frames. */
     if (gsp_open(&gsp) != 0) finish("gfx_gx: no gpu");
     lin = gsp_alloc_linear(LIN_SIZE);
     if (!lin) finish("gfx_gx: no linear memory");

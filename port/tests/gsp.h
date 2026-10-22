@@ -2,8 +2,8 @@
 // and src/video_core/pica/regs_external.h at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6
 // (GPL-2.0-or-later; each says "Licensed under GPLv2 or any later version"): the command ids, the
 // framebuffer info, the interrupt ids, the offsets of the relay queue, the framebuffer updates and the
-// command queue in the shared block, and the fill and transfer flag bits are the numbers and layouts of
-// those files (which 3dbrew documents too).
+// command queue in the shared block, the fill and transfer flag bits, and the positions of the framebuffer registers (FramebufferConfig)
+// are the numbers and layouts of those files (which 3dbrew documents too).
 // Copyright 2023-2024 Citra Emulator Project / Azahar Emulator Project (gsp_command.h)
 // Copyright 2014-2026 Citra Emulator Project / Azahar Emulator Project (gsp_gpu.h, gsp_gpu.cpp)
 // Copyright 2023-2026 Citra Emulator Project / Azahar Emulator Project (gsp_interrupt.h, regs_external.h)
@@ -60,6 +60,14 @@ enum { GX_REQUEST_DMA = 0, GX_SUBMIT_CMDLIST = 1, GX_MEMORY_FILL = 2, GX_DISPLAY
 #define GX_SCALE_X (1u << 24)            /* half the width, box filter */
 #define GX_SCALE_XY (2u << 24)           /* half the width and height */
 #define GX_DIM(w, h) (((u32)(h) << 16) | ((u32)(w) & 0xFFFFu))
+
+/* The screens' framebuffer registers (offsets for gsp_write_regs, from 0x1EB00000; FramebufferConfig
+ * of regs_external.h): the bottom screen's block, and in it the two left addresses (physical) and the
+ * format, the buffer shown, and the stride in bytes */
+#define GSP_REGS_FB_BOTTOM 0x400500u
+#define GSP_REG_FB_ADDRESS_LEFT1 0x68u
+#define GSP_REG_FB_ACTIVE 0x78u
+#define GSP_REG_FB_STRIDE 0x90u
 
 #define GSP_RELAY_SLOTS 0x34u
 #define GSP_QUEUE_SLOTS 15u

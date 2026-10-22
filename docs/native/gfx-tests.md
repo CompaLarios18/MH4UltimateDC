@@ -17,7 +17,7 @@ For bare test programs (C, freestanding, `svc.h`): `GspGpu` is the spec's `gsp::
 | `gsp_open` | `srv:` to `gsp::Gpu`, a one-shot event, `RegisterInterruptRelayQueue` (0x13), the shared block mapped at 0x10002000, `AcquireRight` (0x16) |
 | `gsp_alloc_linear` | `svcControlMemory` with the linear flag: memory the GPU can reach (the linear heap starts at 0x30000000 under Azahar's ELF loader) |
 | `gsp_drain`, `gsp_wait(id)`, `gsp_wait_vblank_count(n)` | take interrupts out of the relay queue in shared memory; wait for one of a kind (`PSC0`, `PPF`, `PDC0`...), or until the program has seen `n` VBlanks |
-| `gsp_queue` and `gsp_memory_fill`, `gsp_display_transfer`, `gsp_texture_copy` | write a command into the shared GX queue and, when the queue was empty, `TriggerCmdReqQueue` (0x0C); Azahar processes the queued commands during that call and signals the interrupts before it returns |
+| `gsp_queue` and `gsp_memory_fill`, `gsp_display_transfer`, `gsp_texture_copy` | write a command into the shared GX queue and, when the queue was empty, `TriggerCmdReqQueue` (0x0C); Azahar processes the queued commands during that call, and signals their interrupts then or, with its GPU timing simulation on, after a short delay (the program waits for them either way) |
 | `gsp_flush` | `FlushDataCache` (0x08) |
 | `gsp_swap_buffers` | the way libctru does it: write the framebuffer update into the shared block and set its dirty flag; the GSP applies it at the screen's next VBlank (PDC0 top, PDC1 bottom) |
 | `gsp_set_buffer_swap` | `SetBufferSwap` (0x05), applied at once |
@@ -96,9 +96,10 @@ enough for one in its middle.
    at `V_n = V_1 + 61 * (n - 1)`; the test fails if the printed `V` do not follow that. Its picture is
    on the screen from VBlank `V_n + 1` to `V_n + 61`.
 3. The first shot goes at `V_1 + 31.5` frames (the middle of the hold, half a frame from each VBlank,
-   which matters for step 9) and the others every 61 frames: with the usual `V_1 = 4`, 593.3 ms and
-   1019.53 ms. The options take whole milliseconds, so the test passes `--shots-from 591
-   --shot-every 1020` for that case (the interval rounded up, the start moved back by half the drift
+   which matters for step 9) and the others every 61 frames: with the reference runner's `V_1 = 5`, 610.0 ms and
+   1019.53 ms. The test rounds to whole milliseconds (a conservative choice: the reference runner's
+   `--shots-from` and `--shot-every` accept decimals, but a runner that takes only whole ms works too), so it passes
+   `--shots-from 608 --shot-every 1020` for that case (the interval rounded up, the start moved back by half the drift
    the rounding adds over the ten shots: each shot is within 2.5 ms of its ideal time). The first
    run's `V_1` comes from the run itself, so a runner whose start-up differs gets its own times.
 4. The tenth shot is 61 frames after the ninth, still in step 9 (120 VBlanks long): step 9's two

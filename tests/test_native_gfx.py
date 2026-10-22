@@ -71,8 +71,9 @@ STEP_LINE = re.compile(r"gfx_gx: step (\d) (\w+) vblank ([0-9a-f]{8})$")
 def shot_schedule(lines: list[str]) -> tuple[int, int, list[int]]:
     """(first shot in ms, interval in ms, the VBlank count V of each step) from a run's lines. The
     steps must start STEP_FRAMES apart, or the regular schedule of --shots-from and --shot-every
-    cannot hit the middle of each hold. The options take whole milliseconds, so the interval is
-    1020 ms for the 1019.53 of 61 frames, and the first shot is moved back by half of the drift the
+    cannot hit the middle of each hold. Whole milliseconds are a conservative choice (the reference
+    runner also takes decimals): the interval is 1020 ms for the 1019.53 of 61 frames (V_1 = 5 on the
+    reference runner gives a first shot at 610.0 ms, passed as 608), and the first shot is moved back by half of the drift the
     rounding adds over the shots: every shot is then within 2.5 ms of the middle of its hold's frame."""
     starts = []
     for line in lines:
@@ -278,10 +279,6 @@ def parse_ppm(data: bytes) -> Image:
 
 
 # ── the program's parameters (gfx_gx.c's defines are read back by test_constants_match_the_program) ─
-C_DEFINES = ("TOP_SIZE", "BOT_SIZE", "SRC_BYTES", "BOT_BYTES", "FILL32", "FILL24", "FILL16",
-             "TEX_PITCH", "TEX_ROW", "PAD_BYTE", "HOLD_VBLANKS", "FLIP_VBLANKS",
-             "TOP_A", "TOP_B", "BOT_A", "BOT_B", "LIN_SRC_A", "LIN_SRC_B", "LIN_SRC_C", "LIN_SRC_D",
-             "LIN_TEX", "LIN_SIZE")
 TOP_SIZE, BOT_SIZE = 0x48000, 0x28000
 SRC_BYTES = 240 * 400 * 4
 BOT_BYTES = 240 * 320 * 2
@@ -334,7 +331,7 @@ def draw_texture() -> bytearray:
 def expected_shots() -> list[tuple[Image, Image]]:
     """(top, bottom) for each of the SHOT_COUNT shots, by running the program's steps on the model."""
     top_a, top_b, bot_a, bot_b = (bytearray(n) for n in (TOP_SIZE, TOP_SIZE, BOT_SIZE, BOT_SIZE))
-    src_a, src_b, src_c = (bytearray(SRC_BYTES) for _ in range(3))
+    src_a, src_b = bytearray(SRC_BYTES), bytearray(SRC_BYTES)
     src_c = draw_card()
     src_d = draw_card_2x()
     tex = draw_texture()
