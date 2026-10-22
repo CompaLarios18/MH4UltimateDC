@@ -1,0 +1,72 @@
+ir_cpp: start
+ir_cpp: require_unknown_device: 00000000
+ir_cpp: require_rc: 00000000
+ir_cpp: connection_event: 00000000
+ir_cpp: header_status: 00020202
+ir_cpp: header_connected: 00000101
+ir_cpp: send_polling_rc: 00000000
+ir_cpp: send_calibration_rc: 00000000
+ir_cpp: send_unaligned_rc: 00000000
+ir_cpp: send_past_the_end_rc: 00000000
+ir_cpp: send_wrong_size_rc: 00000000
+ir_cpp: send_unknown_rc: 00000000
+ir_cpp: calibration 11000040000000088085eb113f85eb113ffffffff5ff00088085eb113f85eb113fffffff65ff00088085eb113f85eb113fffffff65ff00088085eb113f85eb113fffffff65
+ir_cpp: calibration_unaligned 1113001f00ff00088085eb113f85eb113fffffff65
+ir_cpp: pkt 01 10000880ff00
+ir_cpp: pkt 02 10000880ff00
+ir_cpp: pkt 03 10000880ff00
+ir_cpp: pkt 04 10000880ff00
+ir_cpp: pkt 05 10000880ff00
+ir_cpp: pkt 06 10000880ff00
+ir_cpp: pkt 07 10000880ff00
+ir_cpp: pkt 08 10000880ff00
+ir_cpp: pkt 09 10000880ff00
+ir_cpp: pkt 10 10000880ff00
+ir_cpp: pkt 11 10000880ff00
+ir_cpp: pkt 12 10000880ff00
+ir_cpp: pkt 13 10000880ff00
+ir_cpp: pkt 14 10000880ff00
+ir_cpp: pkt 15 10000880ff00
+ir_cpp: pkt 16 10000880ff00
+ir_cpp: pkt 17 10000880ff00
+ir_cpp: pkt 18 10000880ff00
+ir_cpp: pkt 19 10000880ff00
+ir_cpp: pkt 20 10000880ff00
+ir_cpp: pkt 21 10000880ff00
+ir_cpp: pkt 22 10000880ff00
+ir_cpp: pkt 23 10000880ff00
+ir_cpp: pkt 24 10000880ff00
+ir_cpp: pkt 25 10000880ff00
+ir_cpp: pkt 26 10000880ff00
+ir_cpp: pkt 27 10000880ff00
+ir_cpp: pkt 28 10000880ff00
+ir_cpp: pkt 29 10000880ff00
+ir_cpp: pkt 30 10000880ff00
+ir_cpp: pkt 31 10000880ff00
+ir_cpp: pkt 32 10000880ff00
+ir_cpp: pkt 33 10000880ff00
+ir_cpp: pkt 34 10000880ff00
+ir_cpp: pkt 35 10000880ff00
+ir_cpp: pkt 36 10000880ff00
+ir_cpp: pkt 37 10000880ff00
+ir_cpp: pkt 38 10000880ff00
+ir_cpp: pkt 39 10000880ff00
+ir_cpp: pkt 40 10000880ff00
+ir_cpp: pkt 41 10000880ff00
+ir_cpp: pkt 42 10000880ff00
+ir_cpp: pkt 43 10000880ff00
+ir_cpp: pkt 44 10000880ff00
+ir_cpp: pkt 45 10000880ff00
+ir_cpp: pkt 46 10000880ff00
+ir_cpp: pkt 47 10000880ff00
+ir_cpp: pkt 48 10000880ff00
+ir_cpp: pkt 49 10000880ff00
+ir_cpp: pkt 50 10000880ff00
+ir_cpp: statuses: 00000032
+ir_cpp: calibration_answers: 00000002
+ir_cpp: period_within_5_percent: 00000001
+ir_cpp: disconnect_rc: 00000000
+ir_cpp: quiet_after_disconnect: 00000001
+ir_cpp: send_after_disconnect_rc: c8a10c0d
+ir_cpp: finalize_rc: 00000000
+ir_cpp: done
