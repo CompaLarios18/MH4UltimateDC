@@ -27,14 +27,14 @@ The artifact is a zip of one folder with these files, all ours (no game data in 
 | `mh4u-native.exe` | the app (in this stage `--help` and `--version` only; the window comes with N2b-10) |
 | `SDL3.dll` | SDL3 3.4.18, built from its release tag with llvm-mingw |
 | `libc++.dll`, `libunwind.dll` | the two llvm-mingw runtime DLLs the programs import (the step "Package mh4u-native and its DLLs" prints each program's imports; Windows' own DLLs are not copied). With them the folder has six files, not five |
-| `mh4u_native_runner.exe` | the headless runner (the same as the one in `mh4n-runner-windows`) |
+| `mh4u_native_runner.exe` | the headless runner (the same program as the one in `mh4n-runner-windows`, from a different build) |
 | `mh4n_hdpack.exe` | the HD pack pre-processor, without debug information |
 
 ### Smoke test of the downloaded artifact (`pc`)
 
-About **10 minutes**. It checks that the files in the zip are enough on their own: unpacked in a folder that is not on `PATH`, on a PC without llvm-mingw, each program starts and no "missing DLL" dialog appears. Run it for the first artifact of every batch that gives you one, and whenever the orchestrator asks. Use PowerShell. The commands start from the repository folder; the scratch folder is outside it.
+About **10 minutes**. It checks that the files in the zip are enough on their own: unpacked in a folder that is not on `PATH`, on a PC without llvm-mingw, each program starts and no "missing DLL" dialog appears. Run it for the first artifact of every batch that gives you one, and whenever the orchestrator asks. Use PowerShell. It comes before *Setting up mh4u-native on the reference PC* (N2b-11, not written yet). Step 2's `Set-Location C:\NoJales\mh4pcport\repo` is only for commands that need the checkout; if no checkout exists yet, skip it and go on from the download (the scratch folder is outside the repository anyway).
 
-1. **Download the zip** (2 min). Open the run the orchestrator named, scroll to **Artifacts**, click `mh4u-native-windows`. *Expect:* a file `mh4u-native-windows.zip` in `Downloads` (about 10 to 60 MB: the executables keep their debug information). *Fails if:* the artifact is not listed (the run was a pull request, it is older than 30 days, or the Windows job failed): tell the orchestrator the run's link and stop.
+1. **Download the zip** (2 min). Open the run the orchestrator named, scroll to **Artifacts**, click `mh4u-native-windows`. *Expect:* a file `mh4u-native-windows.zip` in `Downloads` (tens of MB: `mh4u-native.exe` and `mh4u_native_runner.exe` keep their debug information; `mh4n_hdpack.exe` is stripped). *Fails if:* the artifact is not listed (the run was a pull request, it is older than 30 days, or the Windows job failed): tell the orchestrator the run's link and stop.
 2. **Unzip into a scratch folder** (1 min).
    ```
    Set-Location C:\NoJales\mh4pcport\repo
@@ -55,15 +55,15 @@ About **10 minutes**. It checks that the files in the zip are enough on their ow
    ```
    .\mh4u-native.exe --version; "exit $LASTEXITCODE"
    ```
-   *Expect:* one line `mh4u-native <revision>` (the first 10 characters of the commit the run was made from, which the run's page shows) and `exit 0`, and **no dialog** ("The code execution cannot proceed because ... .dll was not found", or "was not found" in the console, or an exit code such as `-1073741515`). *Fails if:* a dialog or any of these appears: write down the DLL name it gives and do the last section.
+   *Expect:* one line `mh4u-native <revision>` (the 10-character revision of the run's commit: a longer git hash starts with it, and a trailing `-dirty` is also fine; the orchestrator gives you the full hash with the run link) and `exit 0`, and **no dialog** ("The code execution cannot proceed because ... .dll was not found", or "was not found" in the console, or an exit code such as `-1073741515`). *Fails if:* a dialog or any of these appears: write down the DLL name it gives and do the last section.
 5. **`mh4u-native.exe --help`** (under 1 min).
    ```
-   .\mh4u-native.exe --help | Select-Object -First 4; "exit $LASTEXITCODE"
+   $o = & .\mh4u-native.exe --help 2>&1; "exit $LASTEXITCODE"; $o | Select-Object -First 4
    ```
    *Expect:* the first line is `usage: mh4u-native [options]`, then `options:` and the first option lines; `exit 0`.
 6. **`mh4u_native_runner.exe --help`** (under 1 min).
    ```
-   .\mh4u_native_runner.exe --help | Select-Object -First 3; "exit $LASTEXITCODE"
+   $o = & .\mh4u_native_runner.exe --help 2>&1; "exit $LASTEXITCODE"; $o | Select-Object -First 3
    ```
    *Expect:* the first line starts `usage: mh4u_native_runner`; `exit 0`.
 7. **`mh4n_hdpack.exe --help`** (under 1 min).

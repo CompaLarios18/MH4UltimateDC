@@ -52,9 +52,9 @@ jobs:
             libvulkan-dev mesa-vulkan-drivers glslang-tools spirv-tools
       # building the ARM test programs uses tools/difftest.py
       - run: pip install -r requirements.txt
-      - name: SDL3 cache
+      - name: SDL3 cache restore
         id: sdl3
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: build/sdl3
           key: sdl3-${{ env.SDL_TAG }}-linux-ubuntu24.04-clang
@@ -77,6 +77,13 @@ jobs:
             -DCMAKE_INSTALL_PREFIX="$PWD/build/sdl3"
           cmake --build build/sdl3-build
           cmake --install build/sdl3-build
+      # saved here, not by a post-job step: a red job would otherwise throw the SDL3 build away
+      - name: SDL3 cache save
+        if: ${{ steps.sdl3.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: build/sdl3
+          key: ${{ steps.sdl3.outputs.cache-primary-key }}
       - name: SDL3 is the one from the cache
         run: |
           set -eu
@@ -164,9 +171,9 @@ jobs:
           done
           clang --version
           cmake --version
-      - name: SDL3 cache
+      - name: SDL3 cache restore
         id: sdl3
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: build/sdl3
           # the tag, and the file that names the llvm-mingw release
@@ -184,6 +191,13 @@ jobs:
             "-DCMAKE_INSTALL_PREFIX=$prefix"
           cmake --build build/sdl3-build
           cmake --install build/sdl3-build
+      # saved here, not by a post-job step: a red job would otherwise throw the SDL3 build away
+      - name: SDL3 cache save
+        if: ${{ steps.sdl3.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: build/sdl3
+          key: ${{ steps.sdl3.outputs.cache-primary-key }}
       - name: SDL3 is the one from the cache
         run: |
           set -eu
@@ -333,9 +347,9 @@ jobs:
           clang --version
           cmake --version
           uname -m
-      - name: SDL3 cache
+      - name: SDL3 cache restore
         id: sdl3
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: build/sdl3
           key: sdl3-${{ env.SDL_TAG }}-macos-arm64-xcode-clang-13.3
@@ -351,6 +365,13 @@ jobs:
             -DCMAKE_INSTALL_PREFIX="$PWD/build/sdl3"
           cmake --build build/sdl3-build
           cmake --install build/sdl3-build
+      # saved here, not by a post-job step: a red job would otherwise throw the SDL3 build away
+      - name: SDL3 cache save
+        if: ${{ steps.sdl3.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: build/sdl3
+          key: ${{ steps.sdl3.outputs.cache-primary-key }}
       - name: SDL3 is the one from the cache
         run: |
           set -eu
