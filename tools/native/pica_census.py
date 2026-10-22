@@ -54,8 +54,14 @@ Interpretation notes (every decoding is by the Azahar field it cites in FIELDS /
     supports it (IsLightingSamplerSupported); SP when supported and a lit light has spot attenuation on; DA when
     a lit light has distance attenuation on.
   * a logic op is effective when blending is off (0x100 bit 8 clear), the op is not Copy, colour writes are on
-    (0x113 non-zero and a channel enabled in 0x107) and the fragment operation mode is Default.
-  * 24-bit depth is in use when the depth format is D24 or D24S8 and depth test, depth write or stencil test is on.
+    (0x113 non-zero and a channel enabled in 0x107), the fragment operation mode is not Shadow and the colour
+    buffer address (0x11D) is non-zero. Effective ops are split into those Azahar's SPIR-V path emulates (Clear,
+    Set, NoOp) and the rest.
+  * a capture's manifest `<capture>.json` may count `unrecorded_register_writes` (register-started command lists leave no
+    PICA_REG record): the tool warns, sums it per label in the JSON and says in the markdown that NO means "not seen".
+  * 24-bit depth is in use when the depth format is D24 or D24S8 and Azahar's using_depth_fb holds (vk_rasterizer.cpp):
+    not shadow rendering, depth buffer address (0x11C) non-zero, and depth write (0x107 bit 12 with 0x115), depth test,
+    or D24S8 with stencil test.
   * a border colour is in use when an enabled texture unit has ClampToBorder or ClampToBorder2 in a wrap mode.
   * a program hash covers the shader words from 0 to the end of the latest upload that started at offset 0
     (or INIT's biggest program size) plus the swizzle words likewise; the entry point (main_offset) is counted apart.
@@ -197,6 +203,8 @@ _fld("alpha_enable", 0x107, 11, 1, f"{_OM}.alpha_enable")
 _fld("depth_write_enable", 0x107, 12, 1, f"{_OM}.depth_write_enable")
 _fld("allow_color_write", 0x113, 0, 4, "framebuffer.framebuffer.allow_color_write")
 _fld("allow_depth_stencil_write", 0x115, 0, 2, "framebuffer.framebuffer.allow_depth_stencil_write")
+_fld("depth_buffer_address", 0x11C, 0, 28, "framebuffer.framebuffer.depth_buffer_address")
+_fld("color_buffer_address", 0x11D, 0, 28, "framebuffer.framebuffer.color_buffer_address")
 _fld("depth_format", 0x116, 0, 2, "framebuffer.framebuffer.depth_format")
 _fld("color_format", 0x117, 16, 3, "framebuffer.framebuffer.color_format")
 
@@ -215,6 +223,11 @@ for _n in range(8):
     _fld(f"light_slot{_n}", 0x1D9, 4 * _n, 3, f"lighting.light_enable.slot_{_n}")
 
 # Enumerations, by their Azahar names (the enumerator names are used verbatim in the outputs).
+# docs/research/metal.md: Azahar's SPIR-V fragment generator emulates Clear, Set, Copy and NoOp; the rest draw as Copy
+_LOGIC_SPIRV = ("Clear", "Set", "NoOp")
+LOGIC_EMULATED = "emulated by Azahar's SPIR-V path (Clear, Set, NoOp)"
+LOGIC_UNHANDLED = "not emulated: drawn as Copy (the other 11, and CopyInverted)"
+
 ENUMS: dict[str, dict[int, str]] = {
     "VertexAttributeFormat": {0: "BYTE", 1: "UBYTE", 2: "SHORT", 3: "FLOAT"},                    # regs_pipeline.h
     "UseGS": {0: "No", 2: "Yes"},
@@ -293,7 +306,8 @@ class Blob:
 
     SIZE = 4096
 
-    def __init__(self, words: list[int], span: int) -> None:
+    def __init__(self, words: list[int], span: int, limit: int = 4096) -> None:
+        self.limit = limit                      # Azahar ignores a write at or past it (vs program: 512)
         self.words = words
         self.span = span
         self.sess_end = 0
@@ -312,7 +326,7 @@ class Blob:
         self.sess_zero = offset == 0
 
     def put(self, offset: int, value: int) -> bool:
-        if offset >= self.SIZE:
+        if offset >= self.limit:
             return False                        # Azahar: "Invalid program offset", ignored
         self.words[offset] = value
         self.sess_end = max(self.sess_end, offset + 1)
@@ -321,12 +335,12 @@ class Blob:
 
 
 class ShaderUnit:
-    def __init__(self, setup: bytes) -> None:
+    def __init__(self, setup: bytes, code_limit: int = 4096) -> None:
         entry, biggest_prog, biggest_swz = struct.unpack_from("<3I", setup, 0)
         del entry
         code = list(struct.unpack_from(f"<{Blob.SIZE}I", setup, 12))
         swz = list(struct.unpack_from(f"<{Blob.SIZE}I", setup, 12 + 4 * Blob.SIZE))
-        self.code = Blob(code, Blob.initial_span(code, biggest_prog))
+        self.code = Blob(code, Blob.initial_span(code, biggest_prog), code_limit)
         self.swz = Blob(swz, Blob.initial_span(swz, biggest_swz))
         self._hash: str | None = None
 
@@ -355,7 +369,8 @@ class Replayer:
             if kind not in blocks:
                 raise gcap.GcapError(f"INIT: no {gcap.INIT_BLOCK_NAMES[kind]} block")
         self.regs: list[int] = list(struct.unpack(f"<{gcap.NUM_PICA_REGS}I", blocks[gcap.K_PICA_REGS]))
-        self.units = {"vs": ShaderUnit(blocks[gcap.K_VS_SETUP]), "gs": ShaderUnit(blocks[gcap.K_GS_SETUP])}
+        self.units = {"vs": ShaderUnit(blocks[gcap.K_VS_SETUP], 512),   # pica_core.cpp: "Invalid VS program offset" at >= 512
+                       "gs": ShaderUnit(blocks[gcap.K_GS_SETUP])}
         # ImmediateModeState: input_vertex 256 bytes, current_attribute, reset_geometry_pipeline, queue{buffer[4], index}
         imm = blocks[gcap.K_IMMEDIATE]
         self.imm_current = struct.unpack_from("<I", imm, 256)[0]
@@ -508,6 +523,12 @@ def decode_state(regs: Sequence[int], units: dict[str, ShaderUnit]) -> dict:
                                 ("stencil_fail", "stencil_depth_fail", "stencil_depth_pass")) if f("stencil_enable") else ""
     s["depth_test"] = enum_name("CompareFunc", f("depth_test_func")) if f("depth_test_enable") else "off"
     s["depth_write"] = f("depth_write_enable") == 1 and f("allow_depth_stencil_write") != 0
+    # Azahar's using_depth_fb (vk_rasterizer.cpp, gl_rasterizer.cpp): not shadow rendering, a depth buffer address,
+    # and (depth write, depth test, or stencil test with a D24S8 buffer)
+    s["depth_used"] = (s["frag_mode"] != "Shadow" and f("depth_buffer_address") != 0
+                       and (s["depth_write"] or f("depth_test_enable") == 1
+                            or (enum_name("DepthFormat", f("depth_format")) == "D24S8" and f("stencil_enable") == 1)))
+    s["color_buffer"] = f("color_buffer_address") != 0
     # textures: (unit, type, format, width, height, border colour or -1 when not in use)
     tex = []
     for u in range(3):
@@ -580,7 +601,7 @@ def draw_features(s: dict, kind: str) -> dict[str, set[str]]:
         add("stencil_ops", s["stencil_ops"])
     add("depth_test", s["depth_test"])
     add("depth_write", "on" if s["depth_write"] else "off")
-    depth_used = s["depth_test"] != "off" or s["depth_write"] or s["stencil"] != "off"
+    depth_used = s["depth_used"]
     add("depth_in_use", "yes" if depth_used else "no")
     add("color_format", s["color_format"])
     add("depth_format", s["depth_format"])
@@ -595,12 +616,14 @@ def draw_features(s: dict, kind: str) -> dict[str, set[str]]:
         if border != -1:
             add("border_colour", f"0x{border:08x}")
     # one flag per question of docs/research/metal.md
-    if s["frag_mode"] == "Default" and not s["blend"] and s["color_write"] and s["logic_op"] != "Copy":
+    if (s["frag_mode"] != "Shadow" and not s["blend"] and s["color_write"] and s["color_buffer"]
+            and s["logic_op"] != "Copy"):
         add("logic_op_effective", s["logic_op"])
+        add("logic_op_class", LOGIC_EMULATED if s["logic_op"] in _LOGIC_SPIRV else LOGIC_UNHANDLED)
         add("q_logic_ops", "yes")
     if s["topology"] == "Fan":
         add("q_fans", "yes")
-    if s["use_gs"] or s["topology"] == "Shader":
+    if s["use_gs"]:
         add("q_geometry_shaders", "yes")
     if s["frag_mode"] == "Shadow":
         add("q_shadow_passes", "yes")
@@ -667,6 +690,7 @@ class CaptureInfo(NamedTuple):
     frame_markers: int
     pica_reg_entries: int
     draw_triggers: int
+    unrecorded_register_writes: int = 0
 
 
 class LabelCensus:
@@ -680,6 +704,7 @@ class LabelCensus:
         self.frames_total = 0                       # FRAME records
         self.frames_with_draws: set[int] = set()
         self.draws = Counter()                      # per kind
+        self.manifest_notes: list[str] = []
 
     def add_draw(self, key: tuple, snap: dict, kind: str, frame_id: int, vertices: int) -> None:
         self.snaps.setdefault(key, snap)
@@ -699,6 +724,22 @@ class LabelCensus:
 
 class CaptureError(Exception):
     """A capture failed: unreadable, truncated, or its structure is wrong."""
+
+
+def read_manifest(path: str) -> tuple[int, list[str]]:
+    """(unrecorded_register_writes, notes) of the manifest `<capture>.json`: register-started command lists
+    leave no PICA_REG record (docs/native/wp/N0.md, N0-05 "As built"). A missing manifest is silent, a garbled one noted."""
+    mpath = path + ".json"
+    if not os.path.isfile(mpath):
+        return 0, []
+    try:
+        with open(mpath, encoding="utf-8") as f:
+            value = json.load(f)["unrecorded_register_writes"]
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ValueError("not a count")
+        return value, []
+    except (OSError, ValueError, KeyError, TypeError):
+        return 0, [f"{os.path.basename(mpath)}: manifest unreadable or without a valid unrecorded_register_writes"]
 
 
 def census_capture(path: str, census: LabelCensus) -> CaptureInfo:
@@ -756,8 +797,10 @@ def census_capture(path: str, census: LabelCensus) -> CaptureInfo:
         shown = "; ".join(problems[:5]) + (f"; ... {len(problems) - 5} more" if len(problems) > 5 else "")
         raise CaptureError(shown)
     census.frames_total += st["frames"]
+    unrecorded, note = read_manifest(path)
     info = CaptureInfo(os.path.basename(path), os.path.getsize(path), st["records"], st["frames"],
-                       st["entries"], st["draws"])
+                       st["entries"], st["draws"], unrecorded)
+    census.manifest_notes += note
     census.captures.append(info)
     return info
 
@@ -773,7 +816,7 @@ QUESTIONS = [
      "q_logic_ops",
      "framebuffer.output_merger: alphablend_enable (0x100 bit 8) clear means logic-op blending; logic_op is 0x102 bits 0-3 "
      "(LogicOp, Copy = 3 is the plain write); colour writes on = allow_color_write (0x113 bits 0-3) non-zero and a channel "
-     "enabled in 0x107 bits 8-11; effective only in fragment operation mode Default (0x100 bits 0-1)."),
+     "enabled in 0x107 bits 8-11; effective unless fragment operation mode (0x100 bits 0-1) is Shadow (Azahar skips the op only for shadow rendering and applies it in mode Gas), and only with a colour buffer address (0x11D) non-zero."),
     ("fans", "Triangle fans",
      "Does MH4U draw triangle fans? (Metal has no fan topology; Azahar falls back to CPU vertex shading for those draws.)",
      "q_fans",
@@ -781,9 +824,10 @@ QUESTIONS = [
     ("geometry_shaders", "Geometry shaders",
      "Does MH4U use PICA geometry shaders? (They are never accelerated; Metal has none.)",
      "q_geometry_shaders",
-     "pipeline.use_gs (0x229 bits 0-1) = Yes (2): the draw runs a geometry shader whose mode is pipeline.gs_config.mode "
-     "(0x252 bits 0-7: Point, VariablePrimitive, FixedPrimitive); or triangle_topology = Shader (3) (0x25E bits 8-9), "
-     "the programmable primitive assembly."),
+     "pipeline.use_gs (0x229 bits 0-1) = Yes (2): the draw runs a geometry shader (the only thing DrawArrays checks before it "
+     "refuses to accelerate a draw); its mode is pipeline.gs_config.mode (0x252 bits 0-7: Point, VariablePrimitive, "
+     "FixedPrimitive). Draws with triangle_topology = Shader (3) (0x25E bits 8-9, programmable primitive assembly) are "
+     "listed apart in the same row."),
     ("shadow_passes", "Shadow passes",
      "Does MH4U render shadow maps with the PICA shadow mode, and sample shadow textures? (Needs fragment-shader interlock "
      "or raster order groups on Metal.)",
@@ -802,8 +846,9 @@ QUESTIONS = [
     ("depth_formats", "Depth formats",
      "Does MH4U use 24-bit depth (D24, D24S8)? (Apple GPUs have none; Azahar falls back to D32F.)",
      "q_depth24",
-     "framebuffer.framebuffer.depth_format (0x116 bits 0-1: D16 = 0, D24 = 2, D24S8 = 3), counted when a depth or stencil "
-     "test or a depth write is on (0x107 bits 0 and 12, 0x105 bit 0, 0x115)."),
+     "framebuffer.framebuffer.depth_format (0x116 bits 0-1: D16 = 0, D24 = 2, D24S8 = 3), counted when the depth buffer is "
+     "used by Azahar's rule (using_depth_fb): not shadow rendering, depth_buffer_address (0x11C) non-zero, and depth write "
+     "(0x107 bit 12 with 0x115 non-zero), depth test (0x107 bit 0), or D24S8 with stencil test (0x105 bit 0)."),
     ("lighting", "Lighting and LUTs",
      "Which draws use fragment lighting, how many lights, which lookup tables? (The lighting fix-up and the bandwidth cost "
      "are the likely Metal costs.)",
@@ -887,10 +932,12 @@ def analyse(c: LabelCensus) -> Analysis:
         "command_buffer_triggers": c.command_buffer_triggers,
         "frames_with_draws": len(c.frames_with_draws),
         "frame_markers": c.frames_total,
+        "unrecorded_register_writes": sum(ci.unrecorded_register_writes for ci in c.captures),
     }
     answers: dict[str, dict] = {}
     for key, _title, _ask, flag, *_rest in QUESTIONS:
         answers[key] = _answer(features, flag, total)
+    answers["geometry_shaders"]["topology_shader_draws"] = features.get("topology", {}).get("Shader", (0, 0))[0]
     for key, _title, _desc, flag in EXTRA_QUESTIONS:
         answers[key] = _answer(features, flag, total)
     return Analysis(c.label, summary, features, unique, answers)
@@ -975,10 +1022,16 @@ def build_markdown(analyses: Sequence[Analysis]) -> str:
                          ci["draw_triggers"]])
     L += _table(["label", "file", "bytes", "records", "FRAME records", "PICA_REG entries", "draw triggers"], rows)
     L += _table(["label", "draws", "array", "indexed", "immediate batches", "immediate vertices", "frames with draws",
-                 "command buffer triggers"],
+                 "draws per frame", "command buffer triggers", "unrecorded register writes"],
                 [[a.label, a.summary["draws"]["total"], a.summary["draws"]["array"], a.summary["draws"]["indexed"],
                   a.summary["draws"]["immediate"], a.summary["immediate_vertices"], a.summary["frames_with_draws"],
-                  a.summary["command_buffer_triggers"]] for a in analyses])
+                  f"{a.summary['draws']['total'] / a.summary['frames_with_draws']:.2f}"
+                  if a.summary["frames_with_draws"] else "-",
+                  a.summary["command_buffer_triggers"], a.summary["unrecorded_register_writes"]] for a in analyses])
+    for a in analyses:
+        if a.summary["unrecorded_register_writes"]:
+            L += [f"{a.label}: {a.summary['unrecorded_register_writes']} register writes of register-started command "
+                  "lists are not in the capture; draws made by them are not counted, so NO means 'not seen'.", ""]
     empty = [a.label for a in analyses if a.summary["draws"]["total"] == 0]
     if empty:
         L += [f"**No draw trigger in: {', '.join(empty)}.** Their answers are `n/a`, not NO.", ""]
@@ -990,14 +1043,21 @@ def build_markdown(analyses: Sequence[Analysis]) -> str:
     for key, title, *_r in EXTRA_QUESTIONS:
         rows.append([title] + [_glance(a.answers[key]) for a in analyses])
     L += _table(["question"] + labels, rows)
+    L += ["Notes on counting: the unique-TEV count is an upper bound, because Azahar's Dot3_RGBA masking of unused stage "
+          "words (pica_fs_config.cpp) is not applied; the VS program hash ignores writes at offsets 512 and above, which "
+          "Azahar ignores too (pica_core.cpp), but covers the swizzle and code words uploaded before the capture as INIT "
+          "recorded them.", ""]
     L += ["YES (n) is n draws; NO means no draw of that label had the feature; `n/a` means the label has no draws.", ""]
 
     for i, (key, title, ask, flag, regs) in enumerate(QUESTIONS, 1):
         L += [f"## {i}. {title}", "", f"**Question** (docs/research/metal.md): {ask}", "", f"**Registers.** {regs}", ""]
-        L += _table(["label", "answer", "draws", "of all draws", "frames", "of frames with draws"],
+        extra = key == "geometry_shaders"
+        L += _table(["label", "answer", "draws", "of all draws", "frames", "of frames with draws"]
+                    + (["draws with topology Shader (3), apart"] if extra else []),
                     [[a.label, a.answers[key]["answer"], a.answers[key]["draws"],
                       _pct(a.answers[key]["draws"], a.summary["draws"]["total"]), a.answers[key]["frames"],
-                      _pct(a.answers[key]["frames"], a.summary["frames_with_draws"])] for a in analyses])
+                      _pct(a.answers[key]["frames"], a.summary["frames_with_draws"])]
+                     + ([a.answers[key]["topology_shader_draws"]] if extra else []) for a in analyses])
         L += _breakdown(key, analyses)
     L += ["## Other items from the census list of docs/research/metal.md", ""]
     L += _table(["item", "what it counts"] + labels,
@@ -1024,7 +1084,10 @@ def build_markdown(analyses: Sequence[Analysis]) -> str:
 
 
 def _glance(ans: dict) -> str:
-    return f"YES ({ans['draws']})" if ans["answer"] == "YES" else ans["answer"]
+    text = f"YES ({ans['draws']})" if ans["answer"] == "YES" else ans["answer"]
+    if ans.get("topology_shader_draws"):
+        text += f" + topology Shader ({ans['topology_shader_draws']})"
+    return text
 
 
 def _breakdown(key: str, analyses: Sequence[Analysis]) -> list[str]:
@@ -1032,6 +1095,9 @@ def _breakdown(key: str, analyses: Sequence[Analysis]) -> list[str]:
     if key == "logic_ops":
         L += ["Effective logic ops by op (draws, frames):", ""]
         L += _table(["op"] + [a.label for a in analyses], _feature_rows(analyses, "logic_op_effective")
+                    or [["(none)"] + ["0" for _ in analyses]])
+        L += ["Effective ops by class (Azahar's SPIR-V generator emulates Clear, Set, Copy and NoOp; the rest draw as Copy):", ""]
+        L += _table(["class"] + [a.label for a in analyses], _feature_rows(analyses, "logic_op_class")
                     or [["(none)"] + ["0" for _ in analyses]])
         L += ["Output merger state of all draws (blend, logic op, or colour writes off):", ""]
         L += _table(["output merger"] + [a.label for a in analyses], _feature_rows(analyses, "output_merger", 20))
@@ -1049,7 +1115,7 @@ def _breakdown(key: str, analyses: Sequence[Analysis]) -> list[str]:
     elif key == "shadow_passes":
         L += _table(["fragment operation mode"] + [a.label for a in analyses],
                     _feature_rows(analyses, "fragment_operation_mode"))
-        L += _table(["shadow textures (unit 0)", "draws"],
+        L += _table(["label", "shadow textures (unit 0)"],
                     [[a.label, _glance(a.answers["shadow_textures"])] for a in analyses])
         L += _table(["lighting shadow enable"] + [a.label for a in analyses],
                     _feature_rows(analyses, "light_shadow_enable"))
@@ -1061,6 +1127,10 @@ def _breakdown(key: str, analyses: Sequence[Analysis]) -> list[str]:
         L += _table(["procedural texture"] + [a.label for a in analyses], _feature_rows(analyses, "procedural_texture"))
     elif key == "depth_formats":
         L += _table(["depth format (all draws)"] + [a.label for a in analyses], _feature_rows(analyses, "depth_format"))
+        L += ["Depth \"in use\" follows Azahar's own `using_depth_fb` (vk_rasterizer.cpp, gl_rasterizer.cpp): not shadow "
+              "rendering, depth buffer address (0x11C) non-zero, and (depth write allowed with 0x115 non-zero, or depth test "
+              "enabled, or depth format D24S8 with stencil test enabled). This is the rule that decides whether a depth surface "
+              "is created, so it is the one that matters for the 24-bit question.", ""]
         L += _table(["depth in use"] + [a.label for a in analyses], _feature_rows(analyses, "depth_in_use"))
     elif key == "lighting":
         L += _table(["lighting"] + [a.label for a in analyses], _feature_rows(analyses, "lighting"))
@@ -1128,6 +1198,12 @@ def run(specs: Sequence[str], json_path: str | None, md_path: str | None, strict
                 continue
             print(f"{TOOL}: {label}: {info.file}: {info.records} records, {info.pica_reg_entries} register writes, "
                   f"{info.draw_triggers} draw triggers", file=out)
+            if info.unrecorded_register_writes:
+                print(f"{TOOL}: warning: {label}: {info.file}: {info.unrecorded_register_writes} register writes of "
+                      f"register-started command lists are not in the capture; draws made by them are not counted",
+                      file=err)
+        for note in c.manifest_notes:
+            print(f"{TOOL}: warning: {label}: {note}", file=err)
     if failed:
         print(f"{TOOL}: {failed} capture(s) failed their checks; nothing written", file=err)
         return EXIT_FAILED
@@ -1144,18 +1220,18 @@ def run(specs: Sequence[str], json_path: str | None, md_path: str | None, strict
         return EXIT_NOTHING
     if empty:
         print(f"{TOOL}: warning: no draw trigger in label(s) {', '.join(empty)}", file=err)
-    for path in (json_path, md_path):
-        if path:
-            os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-    if json_path:
-        with open(json_path, "w", encoding="utf-8") as f:
-            json.dump(build_json(analyses), f, indent=1, sort_keys=True)
-            f.write("\n")
-        print(f"{TOOL}: wrote {json_path}", file=out)
+    outputs = []
     if md_path:
-        with open(md_path, "w", encoding="utf-8") as f:
-            f.write(build_markdown(analyses))
-        print(f"{TOOL}: wrote {md_path}", file=out)
+        outputs.append((md_path, build_markdown(analyses)))
+    if json_path:
+        outputs.append((json_path, json.dumps(build_json(analyses), indent=1, sort_keys=True) + "\n"))
+    try:
+        write_all(outputs)
+    except OSError as e:
+        print(f"{TOOL}: cannot write {e.filename or '?'}: {e.strerror or e}", file=err)
+        return EXIT_FAILED
+    for path, _text in outputs:
+        print(f"{TOOL}: wrote {path}", file=out)
     for a in analyses:
         line = ", ".join(f"{k}={a.answers[k]['answer']}({a.answers[k]['draws']})" for k, *_r in QUESTIONS)
         print(f"{TOOL}: {a.label}: {line}", file=out)
@@ -1163,6 +1239,31 @@ def run(specs: Sequence[str], json_path: str | None, md_path: str | None, strict
         print(f"{TOOL}: --strict: no draw trigger in label(s) {', '.join(empty)}", file=err)
         return EXIT_NOTHING
     return EXIT_OK
+
+
+def write_all(outputs: Sequence[tuple[str, str]]) -> None:
+    """Write every output to a temporary name, then rename them in order (the JSON last): no half set is left."""
+    tmps = []
+    try:
+        for path, text in outputs:
+            tmp = path + ".tmp"
+            tmps.append(tmp)
+            try:
+                os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+                with open(tmp, "w", encoding="utf-8") as f:
+                    f.write(text)
+            except OSError as e:
+                e.filename = path
+                raise
+        for (path, _text), tmp in zip(outputs, tmps):
+            os.replace(tmp, path)
+    except OSError:
+        for tmp in tmps:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+        raise
 
 
 def main(argv: Sequence[str] | None = None) -> int:

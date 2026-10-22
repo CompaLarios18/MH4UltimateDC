@@ -126,7 +126,8 @@ def test_topology_geometry_shader_and_index_size(tmp_path):
     assert feat(a, "gs_mode") == {"VariablePrimitive": 1}
     assert feat(a, "index_size") == {"none": 7, "8-bit": 1, "16-bit": 1}
     assert a.answers["fans"] == {"answer": "YES", "draws": 2, "frames": 1}
-    assert a.answers["geometry_shaders"]["draws"] == 2          # use_gs, and topology Shader
+    assert a.answers["geometry_shaders"]["draws"] == 1          # use_gs only; topology Shader is listed apart
+    assert a.answers["geometry_shaders"]["topology_shader_draws"] == 1
     assert a.answers["index8"]["draws"] == 1
 
 
@@ -258,7 +259,7 @@ def test_logic_op_without_blending_and_which(tmp_path):
     rgba = W(0x107, 0xF00)
     on = W(0x113, 0xF)
     p = build(tmp_path / "a.mgpu", [
-        [rgba, on, W(0x100, 0), W(0x102, 3), DRAW],                  # Copy: the plain write
+        [W(0x11D, 1), rgba, on, W(0x100, 0), W(0x102, 3), DRAW],                  # Copy: the plain write
         [W(0x102, 11), DRAW],                                        # Xor
         [W(0x102, 11), DRAW],
         [W(0x102, 7), DRAW],                                         # Invert
@@ -268,11 +269,27 @@ def test_logic_op_without_blending_and_which(tmp_path):
         [W(0x107, 0xF00), W(0x100, 3), DRAW],                        # shadow pass: not effective
     ])
     a = analyse_one(p)
+    assert feat(a, "logic_op_class") == {pc.LOGIC_UNHANDLED: 3}
     assert feat(a, "logic_op_effective") == {"Xor": 2, "Invert": 1}
     assert a.answers["logic_ops"]["draws"] == 3
     om = feat(a, "output_merger")
     assert om["logic:Xor"] == 2 and om["blend"] == 1 and om["no colour write"] == 2
     assert om["logic:Copy"] == 1 and om["logic:Invert"] == 2
+
+
+def test_logic_op_applies_in_gas_mode_and_needs_a_colour_buffer_and_classes(tmp_path):
+    base = [W(0x113, 0xF), W(0x107, 0xF00), W(0x100, 0)]
+    p = build(tmp_path / "a.mgpu", [
+        base + [W(0x11D, 5), W(0x102, 0), DRAW],                    # Clear: emulated by the SPIR-V path
+        [W(0x102, 4), DRAW],                                        # Set
+        [W(0x102, 6), DRAW],                                        # NoOp
+        [W(0x102, 5), DRAW],                                        # CopyInverted: drawn as Copy
+        [W(0x100, 1), W(0x102, 11), DRAW],                          # Gas mode: the op is applied
+        [W(0x11D, 0), DRAW],                                        # no colour buffer: nothing is drawn
+    ])
+    a = analyse_one(p)
+    assert feat(a, "logic_op_effective") == {"Clear": 1, "Set": 1, "NoOp": 1, "CopyInverted": 1, "Xor": 1}
+    assert feat(a, "logic_op_class") == {pc.LOGIC_EMULATED: 3, pc.LOGIC_UNHANDLED: 2}
 
 
 def test_blend_equations_and_min_max(tmp_path):
@@ -289,7 +306,7 @@ def test_alpha_test_stencil_and_depth(tmp_path):
     p = build(tmp_path / "a.mgpu", [
         [W(0x104, 0), W(0x105, 0), W(0x107, 0), DRAW],
         [W(0x104, 1 | (6 << 4)), W(0x105, 1 | (2 << 4)), W(0x106, 2 | (1 << 4) | (3 << 8)),
-         W(0x107, 1 | (4 << 4) | (1 << 12)), W(0x115, 3), DRAW],
+         W(0x107, 1 | (4 << 4) | (1 << 12)), W(0x115, 3), W(0x11C, 1), DRAW],
     ])
     a = analyse_one(p)
     assert feat(a, "alpha_test") == {"off": 1, "GreaterThan": 1}
@@ -298,6 +315,19 @@ def test_alpha_test_stencil_and_depth(tmp_path):
     assert feat(a, "depth_test") == {"off": 1, "LessThan": 1}
     assert feat(a, "depth_write") == {"off": 1, "on": 1}
     assert feat(a, "depth_in_use") == {"no": 1, "yes": 1}
+
+
+def test_depth_use_rule_differences(tmp_path):
+    # Azahar's using_depth_fb: shadow rendering, plain D24 + stencil and a zero depth address do not use the depth buffer
+    p = build(tmp_path / "a.mgpu", [
+        [W(0x11C, 1), W(0x116, 2), W(0x107, 1), W(0x100, 3), DRAW],     # Shadow + depth test
+        [W(0x100, 0), W(0x105, 1), W(0x107, 0), DRAW],                  # D24 + stencil only
+        [W(0x107, 1), W(0x11C, 0), DRAW],                               # depth test, address 0
+        [W(0x11C, 1), DRAW],                                            # depth test, D24, address set: used
+    ])
+    a = analyse_one(p)
+    assert feat(a, "depth_in_use") == {"no": 3, "yes": 1}
+    assert a.answers["depth_formats"]["draws"] == 1
 
 
 def test_depth_write_needs_the_depth_stencil_write_permission(tmp_path):
@@ -352,7 +382,7 @@ def test_buffer_formats_and_24_bit_depth(tmp_path):
         [W(0x116, 2), W(0x117, 0), DRAW],                                       # D24 but depth not used
         [W(0x107, 1), DRAW],                                                    # D24, depth test on
         [W(0x116, 3), W(0x107, 0), W(0x105, 1), DRAW],                          # D24S8 with stencil
-    ])
+    ], init={0x11C: 1})
     a = analyse_one(p)
     assert feat(a, "depth_format") == {"D16": 1, "D24": 2, "D24S8": 1}
     assert feat(a, "color_format") == {"RGB5A1": 1, "RGBA8": 3}
@@ -755,3 +785,68 @@ def test_oracle_tables_cover_what_the_decoder_reads():
     src = open(pc.__file__, encoding="utf-8").read()
     for name in set(re.findall(r"\bf\(\"(\w+)\"\)", src)) | set(re.findall(r"fld\(regs, \"(\w+)\"\)", src)):
         assert name in pc.FIELDS, name
+
+
+# ---- manifests, output files ------------------------------------------------------------------------------
+
+def _manifest(path, text):
+    open(str(path) + ".json", "w").write(text)
+
+
+def test_manifest_unrecorded_register_writes(tmp_path):
+    p = build(tmp_path / "a.mgpu", [[DRAW]])
+    _manifest(p, json.dumps({"tool": "x", "unrecorded_register_writes": 7}))
+    q = build(tmp_path / "b.mgpu", [[DRAW]])
+    _manifest(q, json.dumps({"unrecorded_register_writes": 0}))
+    out, err = io.StringIO(), io.StringIO()
+    md = tmp_path / "c.md"
+    assert pc.run([f"G1={p}", f"G2={q}"], str(tmp_path / "c.json"), str(md), False, out=out, err=err) == 0
+    assert "warning: G1: a.mgpu: 7 register writes" in err.getvalue() and "b.mgpu" not in err.getvalue()
+    data = json.loads((tmp_path / "c.json").read_text())["per_label"]
+    assert data["G1"]["summary"]["unrecorded_register_writes"] == 7
+    assert data["G2"]["summary"]["unrecorded_register_writes"] == 0
+    text = md.read_text()
+    assert "G1: 7 register writes of register-started command lists are not in the capture" in text
+    assert "NO means 'not seen'" in text and "G2: 0 register" not in text
+
+
+def test_manifest_missing_is_silent_and_garbled_is_noted(tmp_path):
+    p = build(tmp_path / "a.mgpu", [[DRAW]])
+    err = io.StringIO()
+    assert pc.run([f"G1={p}"], str(tmp_path / "c.json"), str(tmp_path / "c.md"), False, out=io.StringIO(), err=err) == 0
+    assert err.getvalue() == ""
+    for text in ("{not json", "[]", '{"unrecorded_register_writes": "many"}', '{"unrecorded_register_writes": -1}', "{}"):
+        _manifest(p, text)
+        err = io.StringIO()
+        assert pc.run([f"G1={p}"], str(tmp_path / "c.json"), str(tmp_path / "c.md"), False, out=io.StringIO(), err=err) == 0
+        assert "manifest unreadable" in err.getvalue(), text
+        assert json.loads((tmp_path / "c.json").read_text())["per_label"]["G1"]["summary"]["unrecorded_register_writes"] == 0
+
+
+def test_unwritable_output_exits_1_without_traceback_and_leaves_nothing(tmp_path, capsys):
+    p = build(tmp_path / "a.mgpu", [[DRAW]])
+    blocker = tmp_path / "file"
+    blocker.write_text("x")
+    rc, out, err = run_cli([f"G1={p}", "--md", str(blocker / "x.md"), "--json", str(tmp_path / "j.json")], capsys)
+    assert rc == 1 and f"pica_census: cannot write {blocker / 'x.md'}:" in err and "Traceback" not in err
+    assert not (tmp_path / "j.json").exists() and not list(tmp_path.glob("*.tmp"))
+    rc, out, err = run_cli([f"G1={p}", "--md", str(tmp_path / "m.md"), "--json", str(blocker / "j.json")], capsys)
+    assert rc == 1 and "cannot write" in err
+    assert not (tmp_path / "m.md").exists() and not list(tmp_path.glob("*.tmp"))
+
+
+def test_vs_program_writes_at_512_or_more_are_ignored(tmp_path):
+    a = analyse_one(build(tmp_path / "a.mgpu", [_upload([1, 2]) + _upload([9], offset=512) + [DRAW]]))
+    b = analyse_one(build(tmp_path / "b.mgpu", [_upload([1, 2]) + [DRAW]]))
+    assert feat(a, "vs_program").keys() == feat(b, "vs_program").keys()
+
+
+def test_markdown_extras(tmp_path):
+    p = build(tmp_path / "a.mgpu", [[W(0x25E, 3 << 8), W(0x229, 2), DRAW, DRAW]])
+    md = tmp_path / "c.md"
+    assert pc.run([f"G1={p}"], str(tmp_path / "c.json"), str(md), False, out=io.StringIO(), err=io.StringIO()) == 0
+    text = md.read_text()
+    assert "| draws per frame |" in text and "| 2.00 |" in text
+    assert "| label | shadow textures (unit 0) |" in text
+    assert "upper bound" in text and "using_depth_fb" in text
+    assert "topology Shader (3), apart" in text
