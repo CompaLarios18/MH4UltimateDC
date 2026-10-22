@@ -375,8 +375,9 @@ class RunSpec:
     session: Session
     sets: list[str]
     extra: list[str]
-    full: bool                 # the reference's whole option list (new-3ds, install, observable, unmapped, timing,
-                               # gpu, shots, shared page), or only the options both runners share
+    full: bool                 # the reference's whole option list (new-3ds, install, unmapped, timing, gpu, shots,
+                               # shared page), or only the options both runners share (--observable goes to both,
+                               # when `observable` is set)
     shot_every: int = DEFAULT_SHOT_EVERY_FRAMES      # frames between screenshots, 0: none
     observable: str | None = None
 
@@ -400,7 +401,7 @@ def build_args(spec: RunSpec) -> list[str]:
         args += ["--set", item]
     args += ["--trace-svc", str(o / "svc.txt"), "--trace-ipc", str(o / "ipc.txt"), "--trace-ipc-full",
              "--state-trace", str(o / "state.txt"), "--capture-hid", str(o / "hid.mhid")]
-    if spec.full and spec.observable:
+    if spec.observable:       # both runners take it (the native runner's runner.md table): one list on both sides
         args += ["--observable", spec.observable]
     for cap in s.captures:
         if cap.kind == "dsp":
@@ -943,6 +944,10 @@ def check(session: Session, a: argparse.Namespace) -> int:
         raise GoldenError("--repeat must be at least 1")
     if (a.candidate_program or a.candidate_code) and not a.candidate_runner:
         raise GoldenError("--candidate-program and --candidate-code need --candidate-runner")
+    if not a.candidate_runner and not (a.runner and a.game):
+        raise GoldenError("--runner and --game are needed unless --candidate-runner runs the check")
+    if a.candidate_runner and not (a.candidate_program or a.game):
+        raise GoldenError("--candidate-runner needs --candidate-program (or --game, the program the reference ran)")
     cand_args = split_args(a.candidate_args)
     recording_cpu = manifest["runner"]["cpu"]
     args_cpu = option_value(cand_args, "--cpu")
@@ -1069,8 +1074,11 @@ def make_parser() -> argparse.ArgumentParser:
                         ("check", "run again and compare with the recording")):
         s = sub.add_parser(name, parents=[common], help=help_)
         s.add_argument("session")
-        s.add_argument("--runner", required=True, help="the reference runner (mh4u_runner, or a .py script)")
-        s.add_argument("--game", required=True, help="the CXI")
+        s.add_argument("--runner", required=(name == "record"),
+                       help="the reference runner (mh4u_runner, or a .py script); a check with "
+                            "--candidate-runner and --candidate-program does not need it")
+        s.add_argument("--game", required=(name == "record"),
+                       help="the CXI; a check with --candidate-runner and --candidate-program does not need it")
         s.add_argument("--update", action="append", help="the update CIA (repeatable)")
         s.add_argument("--user", required=(name == "record"), help="the user folder")
         s.add_argument("--code", help="the code library (.dll or .so) for --cpu recomp")

@@ -685,16 +685,38 @@ def test_candidate_gets_its_own_program_library_and_shared_options_only(env, cap
     assert a[-3:] == ["--native", "--extra", "1"]
     assert a[a.index("--set") + 1] == "5000:fps=60"
     for not_shared in ("--new-3ds", "--install", "--cpu", "--capture-gpu", "--count-unmapped", "--shots",
-                       "--shot-every", "--shots-from", "--dump", "--trace-timing", "--observable"):
+                       "--shot-every", "--shots-from", "--dump", "--trace-timing"):
         assert not_shared not in a
     for shared in ("--user", "--frames", "--input-file", "--trace-svc", "--trace-ipc", "--trace-ipc-full",
-                   "--state-trace", "--capture-hid", "--capture-dsp"):
+                   "--state-trace", "--capture-hid", "--capture-dsp", "--observable"):
         assert shared in a
+    # N1-21: the native runner reads the same list of observable values as the comparison does
+    assert a[a.index("--observable") + 1] == str(golden.OBSERVABLE)
     out = capsys.readouterr().out
     assert "(profile cross)" in out
     got = statuses(out)
     assert got["svc"] == "PASS" and got["state"] == "PASS" and got["hid"] == "PASS" and got["dsp-10"] == "PASS"
     assert "images" not in got and "unmapped" not in got          # not run in the cross profile
+
+
+def test_a_native_candidate_check_needs_neither_the_reference_runner_nor_the_game(env, capsys):
+    # N1-21: the reference is the recording; only the candidate's runner and program are needed
+    assert env.record() == 0
+    prog = env.tmp / "prog"
+    prog.mkdir()
+    capsys.readouterr()
+    common = ["--out", str(env.out), "--sessions-dir", str(env.sessions)]
+    assert golden.main(["check", "S1", *common, "--candidate-runner", str(env.script),
+                        "--candidate-program", str(prog)]) == 0
+    assert env.calls()[-1]["argv"][0] == str(prog)
+    # without the program there is nothing to start (usage error); without a candidate runner, the
+    # reference runner and the game are still required
+    assert golden.main(["check", "S1", *common, "--candidate-runner", str(env.script)]) == 2
+    assert "--candidate-program" in capsys.readouterr().err
+    assert golden.main(["check", "S1", *common]) == 2
+    assert "--runner and --game" in capsys.readouterr().err
+    # --candidate-program alone is still refused
+    assert golden.main(["check", "S1", *common, "--candidate-program", str(prog)]) == 2
 
 
 def test_a_candidate_program_or_library_needs_its_runner(env, capsys):

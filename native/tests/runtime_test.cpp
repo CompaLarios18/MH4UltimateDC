@@ -46,6 +46,7 @@ TEST_CASE("runtime_test needs recomp.h (the repository around native/)" * doctes
 #include "mh4n/options.h"
 #include "mh4n/registry.h"
 #include "mh4n/runtime.h"
+#include "../src/runtime/timer_resolution.h"
 #include "../src/cpu/recomp_c.h"  // last: it defines macros
 
 using namespace mh4n;
@@ -512,6 +513,189 @@ TEST_CASE("exit statuses: the process exits, svcBreak, a failing thread, a time 
         CHECK_FALSE(ran);
         CHECK(f.runtime.ExitStatus() == std::optional<int>(5));
     }
+}
+
+TEST_CASE("the segments and the stack are charged to the process and to its Commit limit (N1-21)") {
+    // Process::HeapAllocate does this for every segment in Azahar; the game sizes its heaps from the
+    // limit's current value, so without the charge it asked for more linear memory than the region has.
+    Fixture f;
+    TempDir dir;
+    std::string error;
+    const auto loader = Loader::OpenElf(dir.WriteElf(), &error);
+    REQUIRE_MESSAGE(loader, error);
+    s64 expected = 0;
+    for (const SegmentMapping& segment : loader->Image().segments) {
+        expected += segment.size;
+    }
+    REQUIRE(expected > 0);
+    s32 commit = -1;
+    u32 used = 0;
+    CHECK(BootWith(f, dir, {}, [&] {
+              const auto process = f.runtime.GetKernel().CurrentProcess();
+              commit = process->resource_limit->GetCurrentValue(ResourceLimitType::Commit);
+              used = process->memory_used;
+              ExitProcess(f.runtime);
+          }) == 0);
+    CHECK(commit == expected);
+    // The segments, plus the one TLS page the main thread gets (Azahar's Process::AllocateThreadLocalStorage
+    // adds a page to memory_used the same way).
+    CHECK(used == static_cast<u32>(expected) + kPageSize);
+}
+
+TEST_CASE("Run holds a TimerResolutionScope while the program runs (N1-21)") {
+    // A unit test cannot see the host's tick of the whole process from here, but it can see that the run
+    // holds a scope: removing the scope from Runtime::Run makes the count inside the program 0.
+    Fixture f;
+    TempDir dir;
+    const int before = detail::TimerResolutionScope::live_count();
+    int during = -1;
+    CHECK(BootWith(f, dir, {}, [&] {
+              during = detail::TimerResolutionScope::live_count();
+              ExitProcess(f.runtime);
+          }) == 0);
+    CHECK(during == before + 1);
+    CHECK(detail::TimerResolutionScope::live_count() == before);  // released when the run ends
+}
+
+#if defined(_WIN32)
+// What the test asks Windows directly (not through the code under test). The declarations are made here
+// and not by windows.h, whose macros break the headers above; kernel32 and ntdll are always loaded.
+extern "C" {
+void* GetModuleHandleW(const wchar_t* name);
+void* GetProcAddress(void* module, const char* name);
+void* GetCurrentProcess(void);
+}
+
+namespace win_probe {
+struct PowerThrottling {
+    unsigned long version;
+    unsigned long control_mask;
+    unsigned long state_mask;
+};
+constexpr unsigned long kExecutionSpeed = 0x1;
+constexpr unsigned long kIgnoreTimerResolution = 0x4;
+
+// GetProcessInformation(ProcessPowerThrottling = 4), resolved from kernel32 like SetProcessInformation
+// is by the code; nullopt when this Windows has no such call or it fails.
+std::optional<PowerThrottling> ReadPowerThrottling() {
+    using Fn = int (*)(void*, int, void*, unsigned long);
+    void* kernel = GetModuleHandleW(L"kernel32.dll");
+    void* address = kernel != nullptr ? GetProcAddress(kernel, "GetProcessInformation") : nullptr;
+    if (address == nullptr) {
+        return std::nullopt;
+    }
+    PowerThrottling state{1, 0, 0};
+    if (reinterpret_cast<Fn>(address)(GetCurrentProcess(), 4, &state, sizeof(state)) == 0) {
+        return std::nullopt;
+    }
+    return state;
+}
+
+// The system timer's current resolution in 100 ns units (NtQueryTimerResolution), nullopt when it
+// cannot be read.
+std::optional<unsigned long> CurrentTimerResolution() {
+    using Fn = long (*)(unsigned long*, unsigned long*, unsigned long*);
+    void* ntdll = GetModuleHandleW(L"ntdll.dll");
+    void* address = ntdll != nullptr ? GetProcAddress(ntdll, "NtQueryTimerResolution") : nullptr;
+    if (address == nullptr) {
+        return std::nullopt;
+    }
+    unsigned long minimum = 0, maximum = 0, current = 0;
+    if (reinterpret_cast<Fn>(address)(&minimum, &maximum, &current) < 0) {
+        return std::nullopt;
+    }
+    return current;
+}
+}  // namespace win_probe
+#endif
+
+TEST_CASE("TimerResolutionScope: the 1 ms tick, the power-throttling opt-out, nesting (N1-21)") {
+    // Without it, on Windows, every host wait with a deadline (the scheduler asleep, the preemption
+    // timer) ends at the next 15.6 ms tick, and the game's frames drift off the VBlank.
+    using detail::TimerResolutionScope;
+    REQUIRE(TimerResolutionScope::live_count() == 0);
+    CHECK(TimerResolutionScope::throttling_opt_out_flags() == 0);
+#if defined(_WIN32)
+    const auto throttling_before = win_probe::ReadPowerThrottling();
+#endif
+    {
+        TimerResolutionScope scope;
+        CHECK(TimerResolutionScope::live_count() == 1);
+#if defined(_WIN32)
+        CHECK(scope.active());
+
+        // The tick, read back from the system: at most 1 ms plus a tolerance (another process may hold
+        // a finer one, which only makes it smaller).
+        if (const auto tick = win_probe::CurrentTimerResolution()) {
+            INFO("the system timer's resolution: " << *tick << " x 100 ns");
+            CHECK(*tick <= 11000);
+        }
+
+        // The opt-out, read back: the flags are controlled (in the control mask) and not set (in the
+        // state mask). EXECUTION_SPEED is required on every Windows that has the call; a build that
+        // refused IGNORE_TIMER_RESOLUTION says so through throttling_opt_out_flags().
+        const unsigned flags = TimerResolutionScope::throttling_opt_out_flags();
+        CHECK((flags & win_probe::kExecutionSpeed) != 0);
+        if (const auto state = win_probe::ReadPowerThrottling()) {
+            INFO("opt-out flags " << flags << ", control mask " << state->control_mask << ", state mask "
+                                  << state->state_mask);
+            CHECK((state->control_mask & flags) == flags);
+            CHECK((state->state_mask & flags) == 0);
+            CHECK((state->control_mask & win_probe::kExecutionSpeed) != 0);
+            if (flags != (win_probe::kExecutionSpeed | win_probe::kIgnoreTimerResolution)) {
+                MESSAGE("this Windows refused IGNORE_TIMER_RESOLUTION: only EXECUTION_SPEED is checked");
+            } else {
+                CHECK((state->control_mask & win_probe::kIgnoreTimerResolution) != 0);
+            }
+        }
+
+        // The elapsed time proves the request only on a host whose tick is otherwise coarse: another
+        // process that keeps a fine tick makes the same loop fast without the code (40 waits of 1 ms
+        // took 210 ms here with no request and 41 ms with it), so the tick read back above is the
+        // check that holds everywhere; this one separates the two cases when the tick is coarse.
+        SteadyTimeSource source;
+        std::mutex mutex;
+        std::condition_variable cv;
+        const auto start = std::chrono::steady_clock::now();
+        constexpr int kWaits = 40;  // 40 ticks of 15.6 ms would take 624 ms
+        for (int i = 0; i < kWaits; ++i) {
+            std::unique_lock lock(mutex);
+            source.WaitUntil(cv, lock, source.NowNs() + 1000000, [] { return false; });
+        }
+        const auto elapsed = std::chrono::steady_clock::now() - start;
+        INFO("40 waits of 1 ms took " << std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count()
+                                      << " us");
+        CHECK(elapsed < std::chrono::milliseconds(150));
+#else
+        CHECK_FALSE(scope.active());  // nothing to ask on this host
+        CHECK(TimerResolutionScope::throttling_opt_out_flags() == 0);
+#endif
+        {
+            // a second scope nests: the host counts the requests, and the opt-out stays until the last
+            TimerResolutionScope second;
+            CHECK(second.active() == scope.active());
+            CHECK(TimerResolutionScope::live_count() == 2);
+        }
+        CHECK(TimerResolutionScope::live_count() == 1);
+#if defined(_WIN32)
+        const unsigned still = TimerResolutionScope::throttling_opt_out_flags();
+        CHECK((still & win_probe::kExecutionSpeed) != 0);
+        if (const auto state = win_probe::ReadPowerThrottling()) {
+            CHECK((state->control_mask & still) == still);  // the first scope still has it
+        }
+#endif
+    }
+    CHECK(TimerResolutionScope::live_count() == 0);
+    CHECK(TimerResolutionScope::throttling_opt_out_flags() == 0);
+#if defined(_WIN32)
+    // the last scope gave control back to the system, as it was before the first
+    const auto throttling_after = win_probe::ReadPowerThrottling();
+    CHECK(throttling_after.has_value() == throttling_before.has_value());
+    if (throttling_before && throttling_after) {
+        CHECK(throttling_after->control_mask == throttling_before->control_mask);
+        CHECK(throttling_after->state_mask == throttling_before->state_mask);
+    }
+#endif
 }
 
 TEST_CASE("Boot refuses what it cannot load, with status 2") {
