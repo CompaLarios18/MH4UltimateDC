@@ -169,9 +169,9 @@ Tables between the `wp-status` markers are generated: edit the specs or use `set
 | N3-05 | Audio output stream | M | native-worker-high | N1-18 | none | `done` | PR #29 merged; PR #29; batch 20261022; ci green (Native CI run 39727687810); audio_out_test has 22 cases, clean under ThreadSanitizer (g++ mini build); the consumer's rules for N3-06 are in docs/native/audio-out.md, How a consumer steers; the numbers are first guesses (D63) |
 | N3-06 | SDL3 audio in `mh4u-native` | S | native-worker-high | N3-05, N2b-03, N2b-27 | ci | `todo` |  |
 | N3-07 | Input in `mh4u-native`: controllers, keyboard and mouse, the mouse camera | M | native-worker-high | N2b-03, N2b-08, N2b-27 | ci | `todo` |  |
-| N3-08 | The Circle Pad Pro device | M | native-worker-high | N1-21, N1-16, N0-26 | none | `active` | session 20261022; base f4d9483 |
+| N3-08 | The Circle Pad Pro device | M | native-worker-high | N1-21, N1-16, N0-26 | none | `review` | batch 20261022-n2b-n3; reviewer approved after 2 fix rounds; the reference half passes (MH4U_RUNNER=<runner> MH4N_IR_REQUIRE=reference python3 -m pytest -rs tests/test_native_ir_cpp.py: 16 passed, 1 skipped, the native runner's test); the native half is N3-12's check; the stick comes from the integer InputState (1/156 steps), see circle-pad-pro.md |
 | N3-09 | Code patches and exheader overrides from the mods folder | S | native-worker | N1-21, N1-03, N3-10 | none | `todo` |  |
-| N3-10 | LayeredFS | M | native-worker-high | N1-21, N1-12, N2b-04 | none | `active` | session 20261022; base f4d9483 |
+| N3-10 | LayeredFS | M | native-worker-high | N1-21, N1-12, N2b-04 | none | `review` | batch 20261022-n2b-n3; reviewer approved after 1 fix round; layeredfs_test and MH4N_AZAHAR_DIR=~/azahar python3 -m pytest -rs tests/test_native_layeredfs.py (75 passed, 0 skipped) pass; Azahar's LayeredFS throws on a .stub of the first file of a folder, the native one does not (D78) |
 | N3-11 | The full DSP in the runtime | M | native-worker-high | N2b-21, N3-01, N3-04, N3-05 | dump-check | `todo` |  |
 | N3-12 | The Circle Pad Pro and the applets' frontends in the runtime | M | native-worker-high | N2b-21, N3-08, N1-14 | dump-check, save | `todo` |  |
 | N3-29 | Mods in the runtime: code patches in the loader, LayeredFS in fs | M | native-worker-high | N2b-21, N3-09, N3-10 | dump-check | `todo` |  |
