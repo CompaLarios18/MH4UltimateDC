@@ -4,7 +4,7 @@ N2c to N7, Track D and the renderer oracles N2o, outlined (N2b is detailed in [`
 
 ## N2b · Integration: runtime, renderer and app
 
-Detailed in [`N2b.md`](N2b.md) (24 work packages, N2b-01 to N2b-24; its *Order* section maps the provisional IDs that were here).
+Detailed in [`N2b.md`](N2b.md) (26 work packages, N2b-01 to N2b-26; its *Order* section maps the provisional IDs that were here).
 
 **Exit:** G1–G4 pass end to end; 120 fps in G3 on the reference PC within the budget of [`../ROADMAP.md`](../ROADMAP.md) §7.
 
@@ -14,7 +14,7 @@ Two references N2a can't produce from Azahar's software renderer. Neither is nee
 
 | ID | Work package | Notes |
 |---|---|---|
-| N2o-01 | Real-3DS capture player | A homebrew (`3ds`) that replays an `MGPU` capture on the console and dumps the framebuffers, for gas and for anything else Azahar draws wrong. **Needed before N3's alpha** (N3's exit has G4 end to end, gas frames included): the planner details it at the N3 boundary, or earlier if the orchestrator asks, since it depends only on N2-20 and N0-10's G4 capture. See the notes below |
+| N2o-01 | Real-3DS capture player | A homebrew (`3ds`) that replays an `MGPU` capture on the console and dumps the framebuffers, for gas and for anything else Azahar draws wrong. **Needed before N3's alpha** (the alpha should draw gas right, and G4's gas frames can be judged only against a console: N2b's image gate leaves them out): the planner details it at the N3 boundary, or earlier if the orchestrator asks, since it depends only on N2-20 and N0-10's G4 capture. See the notes below |
 | N2o-02 | HD-pack reference images | The Azahar build with the pack, on the maintainer's PC (`pc`): screenshots at the frames of the captures, as the reference N2-18 compares with by hand today. **Needed before N5-01** (the parity checklist): detailed at the N5 boundary. The reference runner in CI is built without Vulkan (`docs/native/CI.md`), so the references come from the Windows package's Vulkan renderer with custom textures, at the scale of the native run |
 
 **What the planner found about N2o-01 (2026-10-21), for whoever details it:**
@@ -35,7 +35,7 @@ Two references N2a can't produce from Azahar's software renderer. Neither is nee
 | ID | Work package | Notes |
 |---|---|---|
 | N3-01 | The full HLE DSP | Decoders, interpolation, mixing and effects replace N1-18's model behind the same service. Oracle: MDSP captures (bit-identical decoding, mix at SNR ≥ 60 dB) |
-| N3-02 | Audio output | SDL3 audio, resampling from 32,728 Hz to the device's rate, latency |
+| N3-02 | Audio output | SDL3 audio, resampling from 32,728 Hz to the device's rate, latency. The SDL3 side lives in `native/app/` (N2b's rule 2); the runtime's `AudioSink` it feeds stays SDL-free |
 | N3-03 | Real input | SDL3 controllers, keyboard and mouse with the app's mapping; touch with the mouse; the Circle Pad Pro protocol on `ir:USER` for the right stick and ZL/ZR (D10). Builds on N2b-08's live input source and N2b-09's `IRuntime` input methods, which in N2b map only the keyboard's keys and the mouse's touches |
 | N3-04 | Software keyboard and error applets with UI | The app's keyboard (`IRuntime::SetSoftwareKeyboard` and `FinishKeyboard` in `mh4u-native`, stubs in N2b-09); error messages |
 | N3-05 | Saves | Azahar's layout (from N1-13); import and export of real 3DS saves |
