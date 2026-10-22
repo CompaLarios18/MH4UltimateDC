@@ -123,10 +123,15 @@ def test_other_update_version_is_refused(tmp_path, versions):
                     "-o", str(tmp_path / "game"), "--versions", versions]) == 1
 
 
-def test_update_must_be_a_cia(tmp_path, versions):
+def test_update_must_be_a_cia_or_its_installed_content(tmp_path, versions):
     base, _, _ = write_inputs(tmp_path)
-    with pytest.raises(pg.PrepareError, match="not a CIA"):
+    # the base game's own NCCH is not the update's content (its title is the program's)
+    with pytest.raises(pg.PrepareError, match="is title 0004000000ABCD00, expected"):
         pg.prepare(base, base, str(tmp_path / "game"), versions)
+    ncsd = tmp_path / "game.3ds"
+    ncsd.write_bytes(tx.make_ncsd(tx.make_ncch()))
+    with pytest.raises(pg.PrepareError, match="not a CIA or an installed update"):
+        pg.prepare(base, str(ncsd), str(tmp_path / "game"), versions)
 
 
 def test_wrong_program_is_refused(tmp_path, versions):
@@ -319,3 +324,74 @@ def test_entry_name_ends_at_the_first_nul():
     icon = b"ICON" * 8
     exefs = _exefs([(b"icon\0xyz", 0, len(icon))], icon)
     assert pg.exefs_entry(exefs, "icon") == icon
+
+
+# ── the installed update (an NCCH under the virtual SD card) and info.txt's input lines ──────────
+
+def make_tmd(title_id: int, version: int) -> bytes:
+    th = 4 + 0x100 + 0x3C
+    tmd = bytearray(th + 0xC4 + 0x24 * 64)
+    struct.pack_into(">I", tmd, 0, 0x10004)
+    struct.pack_into(">Q", tmd, th + 0x4C, title_id)
+    struct.pack_into(">H", tmd, th + 0x9C, version)
+    return bytes(tmd)
+
+
+def write_installed(tmp_path, tmd=None, title_id=tx.PROGRAM_ID):
+    """The update as Azahar's setup leaves it: <content>/00000000.app (the NCCH of the title
+    `title_id`), with a TMD beside it when `tmd` (title, version) is given."""
+    code = code_image()
+    exh = make_exheader(program_id=PID, compressed=True, text=(0x100000, 2, len(TEXT)),
+                        ro=(0x200000, 1, len(RO)), data=(0x300000, 1, len(DATA)))
+    stored = blz_encoder.compress(code_image())
+    upd = make_cxi.make_cxi(exh, fake_exefs(stored), b"UPDROMFS" * 50, program_id=title_id)
+    content = tmp_path / "content"
+    content.mkdir(exist_ok=True)
+    (content / "00000000.app").write_bytes(upd)
+    if tmd:
+        (content / "00000000.tmd").write_bytes(make_tmd(*tmd))
+    return str(content / "00000000.app"), code
+
+
+def test_installed_content_is_an_update(tmp_path, versions):
+    base, _, _ = write_inputs(tmp_path)
+    app, code = write_installed(tmp_path, tmd=(tx.PROGRAM_ID, 1072))
+    info = pg.prepare(base, app, str(tmp_path / "game"), versions)
+    assert (tmp_path / "game" / "code.bin").read_bytes() == code
+    assert (tmp_path / "game" / "update_romfs.bin").read_bytes().startswith(b"UPDROMFS")
+    assert any("v1.3.0" in line for line in info if line.startswith("update "))
+
+
+def test_installed_content_without_a_tmd_is_checked_by_its_title(tmp_path, versions):
+    base, _, _ = write_inputs(tmp_path)
+    app, _ = write_installed(tmp_path)
+    info = pg.prepare(base, app, str(tmp_path / "game"), versions)
+    assert any("version not in it" in line for line in info)
+    (tmp_path / "x").mkdir()
+    other, _ = write_installed(tmp_path / "x", title_id=PID)       # the base game's own NCCH
+    with pytest.raises(pg.PrepareError, match="is title 0004000000ABCD00, expected 0004000000ABC000"):
+        pg.prepare(base, other, str(tmp_path / "game2"), versions)
+
+
+def test_installed_content_with_another_version_is_refused(tmp_path, versions):
+    base, _, _ = write_inputs(tmp_path)
+    app, _ = write_installed(tmp_path, tmd=(tx.PROGRAM_ID, (1 << 10) | (2 << 4)))
+    with pytest.raises(pg.PrepareError, match="v1.2.0"):
+        pg.prepare(base, app, str(tmp_path / "game"), versions)
+
+
+def test_a_tmd_of_another_title_beside_the_content_is_ignored(tmp_path, versions):
+    base, _, _ = write_inputs(tmp_path)
+    app, _ = write_installed(tmp_path, tmd=(PID, 5))
+    info = pg.prepare(base, app, str(tmp_path / "game"), versions)
+    assert any("version not in it" in line for line in info)
+
+
+def test_info_names_the_inputs(tmp_path, versions):
+    base, update, _ = write_inputs(tmp_path)
+    out = tmp_path / "game"
+    info = pg.prepare(base, update, str(out), versions)
+    want = [f"input base  : {base}, 0x{os.path.getsize(base):X} bytes",
+            f"input update: {update}, 0x{os.path.getsize(update):X} bytes"]
+    assert info[-2:] == want
+    assert (out / "info.txt").read_text().splitlines()[-2:] == want
