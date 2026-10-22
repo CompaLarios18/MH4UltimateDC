@@ -5,6 +5,7 @@
 #include <iosfwd>
 #include <map>
 #include <optional>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -84,7 +85,14 @@ struct PlayerResult {
     std::map<std::string, u32> skipped;       // commands sent to the Gpu but not judged, by kind
     std::vector<std::string> not_exercised;   // kinds in --judge the capture has no command of: nothing was verified for them
     u32 unjudged_pages = 0;                   // reference pages of command lists outside any colour buffer
-    u32 gsp_queue_pages = 0;                  // GPU_PAGES that are the GSP's interrupt relay queue (diagnostics.h): not the Gpu's, not judged
+    // The GSP's interrupt relay queue (diagnostics.h): not the Gpu's, never judged. Every command
+    // that signals an interrupt lists the same page of the GSP's shared memory in its GPU_PAGES, so
+    // the number is of listings, one per command and page (a command-list event counts as much as
+    // a transfer, whatever --judge says), and the distinct pages are the addresses.
+    u32 gsp_queue_pages = 0;                  // listings, all commands together
+    std::map<std::string, u32> gsp_queue_judged;  // ... by kind of the command, for commands judged ("other": not one of the kinds)
+    std::map<std::string, u32> gsp_queue_skipped; // ... for commands sent to the Gpu but not in --judge
+    std::set<u32> gsp_queue_addresses;        // the distinct pages (physical addresses)
     std::vector<std::string> check_columns;   // the columns checks declared, in order
 
     int ExitStatus() const {

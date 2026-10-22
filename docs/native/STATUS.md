@@ -42,7 +42,7 @@ Tables between the `wp-status` markers are generated: edit the specs or use `set
 | N0-34 | What the extra byte of G2's save is on the native runtime | M | native-worker-high | N0-31 | dump | `review` | batch 20261022-n1-boot; the extra byte of G2 save on the native runtime (plaintext 75674, and 75675 in a second native run) is not a defect: it belongs to the 8-byte creation stamp of the hunter slot at plaintext 75668 to 75675, built by the game from the third clock reading calendar time and from two bits and the low byte of the control frame counter at the call (frames 4452 to 4453), plus the cfg:u transferable id reply words; reproduced byte for byte on the recording, two native runs and the pre-N0-29 pair from their own clock readings; the native date starts 7.459 s before the reference date record (12:00:00.000 against 12:00:07.459), so its readings fall in other seconds; the whole cipher block 9459 is added to config/native/fs_write_masks.txt; two corrections to N0-31: the third reading is stored in the slot, and the 3 bytes at 75668 to 75670 of the pre-N0-29 pair were bits of the cfg:u reply (the console id that runner drew anew); see docs/research/g2-save-bytes.md section 9 |
 | N0-10 | Golden sessions G3, G4, G7 | M | native-worker | N0-09 | dump, save | `ready` |  |
 | N0-30 | Cross-model calibration on the quest sessions G3, G4, G7 | S | native-worker | N0-10, N0-28, N0-32 | dump, save | `todo` |  |
-| N0-11 | Golden session G5 (two players) | M | native-worker | N0-10 | dump, save | `todo` |  |
+| N0-11 | Golden session G5 (two players) | M | native-worker | N0-10, N2b-17 | dump, save | `todo` |  |
 | N0-12 | Kernel census | S | native-worker | N0-04, N0-21, N0-10 | dump, save | `todo` |  |
 | N0-13 | PICA census | M | native-worker | N0-05, N0-10 | dump, save | `todo` |  |
 | N0-14 | Flat-memory coherence check | M | native-worker-high | N0-15, N0-10 | ci, dump, save | `todo` |  |
@@ -85,7 +85,7 @@ Tables between the `wp-status` markers are generated: edit the specs or use `set
 | N1-20 | Hooks on the native platform | S | native-worker | N0-18, N1-04, N1-17 | none | `done` | PR #16 and PR #19 (N1-20b, D44: a refresh rate set from guest code, the hooks' path, applies at once; without --user the hooks get a placeholder folder and read no mh4u.ini); dump-check not needed; the game run with fps=120 is N1-21 (golden.py check G1 ... --candidate-args "--set 0:fps=120", always with --user); hooks.cpp is compiled with -Wno-unused-const-variable for its unused PANEL_TOUCH_ALLOWED; --set changes and calls from other threads still apply at the next safe point, in game ticks |
 | N1-21 | First game boot: G1 and G2 headless | M | native-worker-high | N1-09, N1-12, N1-13, N1-14, N1-15, N1-16, N1-17, N1-18, N1-19, N1-20, N1-22, N1-29, N0-09, N0-28, N0-32, N0-33, N0-34 | dump | `todo` | the code of the first round and its fix round is merged in batch 20261022-n1-boot (Commit charge, the 1 ms host timer tick and power-throttling opt-out with tests and logs, nim:aoc Initialize, golden.py for a native candidate); the game runs headless on the native runtime (G1 31 s, G2 about 2.5 minutes, same scenes in the same order; svc, hid and checkpoints match); the checks in the native profile (D55) are waiting for N0-33, which builds the profile, and N0-34 is done (the extra save byte is clock-derived and masked); then run golden.py check G1 and G2 with --candidate-runner in the native profile, plus capfmt.py diff-hid and the fps=120 run of the spec |
 | N1-26 | G3 headless: from the save to the Arena hunt | L | native-worker-high | N1-21, N1-13, N0-10, N0-30 | dump, save | `todo` |  |
-| N1-22 | Windows and macOS builds | M | native-worker | N1-09 | ci | `done` | PR #7; ci green (Native CI run 39047113161 on its branch: native-windows and native-macos jobs green, ctest 22/22 and conformance 51 passed on both, artifact mh4n-runner-windows uploaded) |
+| N1-22 | Windows and macOS builds | M | native-worker | N1-09 | ci | `done` | N1-22b in PR #27: mh4n-runner-windows also holds mh4n_ipc_replay.exe, mh4n_capture_player.exe and mh4n_vkprobe.exe (the three diagnostic tools stripped of debug info; 82 MB in all), one smoke step tries all four tools with no llvm-mingw on the PATH; N2-24 sets the macOS job's deployment target to 13.3; PR #7; ci green (Native CI run 39047113161 on its branch: native-windows and native-macos jobs green, ctest 22/22 and conformance 51 passed on both, artifact mh4n-runner-windows uploaded) |
 | N1-23 | CPU budget measurement | S | native-worker | N1-26, N1-22, N0-15 | ci, pc | `todo` |  |
 | N1-24 | Fallback interpreter: spike | S | native-worker-high | N1-04, N1-09, N1-22 | none | `done` | PR #7; ci green (Native CI run 39065116199 on the N1-28 branch ran the tools job with tests/test_recomp_interp_gen.py); the spike's verdict: generator feasible (20/20 spike forms, 28/29 extra) |
 | N1-28 | Fallback interpreter | L | native-worker-high | N1-24 | none | `done` | PR #7; ci green (Native CI run 39065116199 on its branch: native, native-windows, native-macos and runner jobs green) |
@@ -97,9 +97,10 @@ Tables between the `wp-status` markers are generated: edit the specs or use `set
 <!-- wp-status:begin N2a -->
 | ID | Title | Size | Agent | Depends on | Needs | Status | Note |
 |---|---|---|---|---|---|---|---|
-| N2-01 | RHI spike | M | native-worker-high | N0-13, N1-01 | ci, pc, mac | `todo` |  |
+| N2-24 | Vulkan probe (`mh4n_vkprobe`) | M | native-worker | N1-01 | ci | `review` | PR #27; ci green on the PR's runs (native: the lavapipe step and vkprobe_test; native-windows: build, ctest and the four-tool smoke with no llvm-mingw on the PATH; native-macos: arm64 start-check); maintainer run pending (mh4n_vkprobe on the PC and the Mac, docs/research/vkprobe.md; feeds N2-01 and D57's present-wait question) |
+| N2-01 | RHI spike | M | native-worker-high | N0-13, N1-01, N2-24 | pc, mac | `todo` | the probe half is N2-24 (PR #27); this WP waits for N0-13 and the maintainer's runs of mh4n_vkprobe |
 | N2-02 | Capture player and comparison harness | M | native-worker-high | N0-22, N1-01 | dump-check | `done` | PR #5; ci green (run 38926737594); dump-check passed 20261021 on the maintainer PC: mh4n_capture_player --gpu replay passes on the captures of G1 (frames 1500 to 1502) and G2 (2500 to 2502) made with the N0-29 runner (records 109, frames 3, cmdlist=6 and transfer=6 judged, result PASS) and the timing table prints; G3 and G4 need a save; N2-03b in PR #25: the player prints diagnostics for a failing fill, transfer, copy or DMA (decoded command, output region, pages, offsets of differing bytes per page, never bytes), lists the selected kinds the capture does not exercise, and does not judge the GSP's interrupt relay queue page as the Gpu's output when the capture's change of it is exactly the command's own interrupts pushed into one queue (docs/native/capture-player.md) |
-| N2-03 | GX engine | M | native-worker | N2-02 | dump-check, save | `done` | PR #5; ci green (run 38954207839); the dump-check of 20261021 failed on all 6 transfers of G1 and of G2 (1 page of N, 0x26c00000, byte 1) and N2-03b (PR #25) traced it to the capture, not the engine: the engine was compared with Azahar's sw_blitter, gpu.cpp and colour code line by line and nothing differs, and byte 1 of that page is number_interrupts of the GSP's interrupt relay queue, which the GSP service writes inside GPU::Execute (D25: at once) and the recorder puts in GPU_PAGES (in memory mode 0 physical 0x26C00000 is the start of the BASE region, where GSP:SharedMemory is allocated); the player now judges that page by an exact rule and prints diagnostics for a failing command. Fill, copy and DMA are not exercised by these captures (not verified); G3 and G4 need a save; N2-22 depends on it. dump-check passed 20261021 on the maintainer PC: mh4n_capture_player --gpu cpu-gx --isolated --judge fill,transfer,copy,dma on the captures of G1 (frames 1500 to 1502) and G2 (2500 to 2502) exits 0 with commands judged transfer=6, not exercised fill copy dma, result PASS; the line 'pages of the GSP's interrupt relay queue not judged' says 12 in both captures where PR #25 expected 6 (two pages per transfer or a counting difference: worth a look by the N2 side); fill, copy and DMA are not verified by these captures; G3 and G4 need a save; N2-22 depends on it |
+| N2-03 | GX engine | M | native-worker | N2-02 | dump-check, save | `done` | N2-03c in PR #27: dump-check pending (mh4n_capture_player --gpu cpu-gx --isolated --judge fill,transfer,copy,dma on the captures of G1, frames 1500 to 1502, and G2, frames 2500 to 2502: exit 0, commands judged transfer=6, skipped cmdlist=6, the relay queue line says 12 with 1 distinct page 0x26c00000, judged transfer=6, skipped cmdlist=6; a different split or more than 1 page means the explanation is wrong for that capture); PR #5; ci green (run 38954207839); the dump-check of 20261021 failed on all 6 transfers of G1 and of G2 (1 page of N, 0x26c00000, byte 1) and N2-03b (PR #25) traced it to the capture, not the engine: the engine was compared with Azahar's sw_blitter, gpu.cpp and colour code line by line and nothing differs, and byte 1 of that page is number_interrupts of the GSP's interrupt relay queue, which the GSP service writes inside GPU::Execute (D25: at once) and the recorder puts in GPU_PAGES (in memory mode 0 physical 0x26C00000 is the start of the BASE region, where GSP:SharedMemory is allocated); the player now judges that page by an exact rule and prints diagnostics for a failing command. Fill, copy and DMA are not exercised by these captures (not verified); G3 and G4 need a save; N2-22 depends on it. dump-check passed 20261021 on the maintainer PC: mh4n_capture_player --gpu cpu-gx --isolated --judge fill,transfer,copy,dma on the captures of G1 (frames 1500 to 1502) and G2 (2500 to 2502) exits 0 with commands judged transfer=6, not exercised fill copy dma, result PASS; the line 'pages of the GSP's interrupt relay queue not judged' says 12 in both captures where PR #25 expected 6 (N2-03c in PR #27 traced it by the code: not two pages per transfer; the old counter added up every event that pushed an interrupt into the relay queue page, command lists included, whatever --judge said, so 12 is expected to be 6 transfers + 6 command lists; the player now splits the total by kind and counts a page once per event); fill, copy and DMA are not verified by these captures; G3 and G4 need a save; N2-22 depends on it |
 | N2-04 | PICA command processor | M | native-worker-high | N2-02 | dump-check, save | `done` | PR #5; ci green (run 38954211634); dump-check passed 20261021 on the maintainer PC: mh4n_capture_player --gpu pica-only --isolated --judge none --check registers passes on every command list of the captures of G1 and G2 (result PASS; 54 and 47 register-check lines of frames 1501 and 1502 in G1, 349 and 96 in G2); G3 and G4 need a save |
 | N2-05 | Vertex loading | M | native-worker | N2-04, N2-01 | dump-check, save | `todo` |  |
 | N2-06 | Vertex shader translation | L | native-worker-high | N2-04, N2-21 | dump-check, save | `todo` |  |
@@ -122,6 +123,77 @@ Tables between the `wp-status` markers are generated: edit the specs or use `set
 | N2-19 | GPU budget measurement | S | native-worker | N2-15, N2-16, N2-18, N1-22, N1-23 | ci, pc, mac | `todo` |  |
 <!-- wp-status:end N2a -->
 
+## N2b
+
+<!-- wp-status:begin N2b -->
+| ID | Title | Size | Agent | Depends on | Needs | Status | Note |
+|---|---|---|---|---|---|---|---|
+| N2b-01 | The app's UI without Azahar's window and system | M | native-worker-high | N0-24 | ci, pc | `ready` |  |
+| N2b-02 | The app's UI without SDL2 | M | native-worker-high | N2b-01 | ci, pc | `todo` |  |
+| N2b-26 | The presentation contract (`mh4n/present.h`) | S | native-worker-high | N1-01 | none | `ready` |  |
+| N2b-03 | SDL3 and the app tree in the native build | M | native-worker | N1-22, N2b-02 | none | `todo` |  |
+| N2b-27 | CI and the Windows artifact of `mh4u-native` | S | native-worker | N2b-03, N2-24 | ci | `todo` |  |
+| N2b-04 | Screen layouts and touch mapping | M | native-worker | N1-20 | none | `ready` |  |
+| N2b-05 | Compositor | M | native-worker-high | N2-21, N2-06, N2b-04, N2b-26 | none | `todo` |  |
+| N2b-06 | Swapchain and the present thread | M | native-worker-high | N2b-05 | none | `todo` |  |
+| N2b-07 | Displayed screens from guest memory (`--gpu null-display`) | S | native-worker | N2b-26, N1-17 | none | `todo` |  |
+| N2b-08 | Live input, latched at frame boundaries | S | native-worker-high | N1-16, N1-09 | none | `ready` |  |
+| N2b-09 | `NativeRuntime`: load, run and present | M | native-worker-high | N2b-01, N2b-02, N2b-03, N2b-27, N2b-06, N2b-07, N2b-08, N1-21 | ci, dump-check | `todo` |  |
+| N2b-25 | `NativeRuntime`: options, input, paths and the method table | M | native-worker-high | N2b-09 | ci | `todo` |  |
+| N2b-10 | `mh4u-native`: window, events and the run loop | M | native-worker-high | N2b-25 | ci | `todo` |  |
+| N2b-11 | The app's UI in `mh4u-native` | M | native-worker-high | N2b-10 | ci, pc | `todo` |  |
+| N2b-12 | The renderer as the runtime's GPU | M | native-worker-high | N1-21, N2-15, N2-16, N2-18, N2-20, N2-22, N2b-18, N2b-26, N2b-14 | dump-check | `todo` |  |
+| N2b-13 | Displayed screens from the renderer | M | native-worker-high | N2b-12 | dump-check | `todo` |  |
+| N2b-14 | Screenshots in the native runner | S | native-worker-high | N2b-07, N2b-08 | none | `todo` |  |
+| N2b-15 | Synthetic GX programs | M | native-worker-high | N0-26 | none | `ready` |  |
+| N2b-16 | A synthetic PICA draw | M | native-worker-high | N2b-15 | none | `todo` |  |
+| N2b-17 | Image checks across timing models | M | native-worker | N1-21, N0-10, N0-30, N0-32 | dump-check, save | `todo` |  |
+| N2b-18 | G4 and G3-perf headless | M | native-worker-high | N1-26, N1-25, N0-10, N0-30 | dump, save | `todo` |  |
+| N2b-19 | G1 and G2 end to end | M | native-worker-high | N2b-13, N2b-14, N2b-16, N2b-17, N2b-18 | dump | `todo` |  |
+| N2b-20 | G3 and G3-perf end to end | M | native-worker-high | N2b-19 | dump, save | `todo` |  |
+| N2b-21 | G4 end to end | M | native-worker-high | N2b-20 | dump, save | `todo` |  |
+| N2b-22 | The hooks' visual features in `mh4u-native` | M | native-worker-high | N2b-11, N2b-13, N2b-20 | ci, pc | `todo` |  |
+| N2b-23 | Frame pacing at 120 fps on a 240 Hz display | M | native-worker-high | N2b-22, N2b-20 | ci, pc | `todo` |  |
+| N2b-24 | Exit: G1–G4 end to end and 120 fps in G3 | M | native-worker | N2b-21, N2b-23, N2-19, N1-23 | dump-check, save, pc | `todo` |  |
+<!-- wp-status:end N2b -->
+
+## N3
+
+<!-- wp-status:begin N3 -->
+| ID | Title | Size | Agent | Depends on | Needs | Status | Note |
+|---|---|---|---|---|---|---|---|
+| N3-01 | Our own DSP test programs | M | native-worker-high | N0-26, N1-18 | none | `ready` |  |
+| N3-02 | HLE DSP: sources, codecs, interpolation and filters | M | native-worker-high | N1-21, N1-18, N2b-04 | none | `todo` |  |
+| N3-03 | HLE DSP: mixers, effects and the frame | M | native-worker-high | N3-02 | none | `todo` |  |
+| N3-04 | DSP capture replay (`mh4n_dsp_replay`) | M | native-worker | N3-03, N0-09, N0-10 | dump-check, save | `todo` |  |
+| N3-05 | Audio output stream | M | native-worker-high | N1-18 | none | `ready` |  |
+| N3-06 | SDL3 audio in `mh4u-native` | S | native-worker-high | N3-05, N2b-03, N2b-27 | ci | `todo` |  |
+| N3-07 | Input in `mh4u-native`: controllers, keyboard and mouse, the mouse camera | M | native-worker-high | N2b-03, N2b-08, N2b-27 | ci | `todo` |  |
+| N3-08 | The Circle Pad Pro device | M | native-worker-high | N1-21, N1-16, N0-26 | none | `todo` |  |
+| N3-09 | Code patches and exheader overrides from the mods folder | S | native-worker | N1-21, N1-03, N3-10 | none | `todo` |  |
+| N3-10 | LayeredFS | M | native-worker-high | N1-21, N1-12, N2b-04 | none | `todo` |  |
+| N3-11 | The full DSP in the runtime | M | native-worker-high | N2b-21, N3-01, N3-04, N3-05 | dump-check | `todo` |  |
+| N3-12 | The Circle Pad Pro and the applets' frontends in the runtime | M | native-worker-high | N2b-21, N3-08, N1-14 | dump-check, save | `todo` |  |
+| N3-29 | Mods in the runtime: code patches in the loader, LayeredFS in fs | M | native-worker-high | N2b-21, N3-09, N3-10 | dump-check | `todo` |  |
+| N3-13 | Tester reports | M | native-worker-high | N2b-03, N2b-27 | ci | `todo` |  |
+| N3-14 | `mh4u-native`: sound and input wired in | M | native-worker-high | N2b-23, N3-06, N3-07, N3-11, N3-12 | ci, pc | `todo` |  |
+| N3-30 | `mh4u-native`: the keyboard, error notices and reports wired in | M | native-worker-high | N3-14, N3-13 | ci | `todo` |  |
+| N3-15 | Separate windows | M | native-worker-high | N3-30 | ci, pc | `todo` |  |
+| N3-16 | Save import and export | M | native-worker | N1-13, N0-10 | dump-check, save | `todo` |  |
+| N3-17 | The native setup tool | M | native-worker | N1-03, N2-17 | dump-check | `ready` |  |
+| N3-18 | Packages with `mh4u-native` | M | native-worker | N2b-10, N2b-27, N2-17 | ci, pc | `todo` |  |
+| N3-19 | The launcher: native setup, saves and the runtime choice | M | native-worker-high | N2b-02, N2b-11, N3-30, N3-16, N3-17, N3-18, N3-22 | ci, pc | `todo` |  |
+| N3-20 | All hooks exercised natively | M | native-worker-high | N2b-21, N2b-22 | dump-check, save, pc | `todo` |  |
+| N3-21 | Observables for the 60/120 audit | M | native-worker | N0-10, N0-27 | dump, save | `todo` |  |
+| N3-22 | The 60/120 fps audit | M | native-worker | N3-21, N2b-18 | dump, save | `todo` |  |
+| N3-23 | Capture trimmer (N2o-01, part 1) | M | native-worker-high | N2-20, N2-04, N0-22, N0-10 | dump-check, save | `todo` |  |
+| N3-24 | The real-3DS capture player (N2o-01, part 2) | M | native-worker-high | N3-23, N2b-16 | ci | `todo` |  |
+| N3-25 | Gas against the console (N2o-01, part 3) | S | native-worker | N3-24, N2b-17, N0-10 | dump, save, 3ds, pc | `todo` |  |
+| N3-26 | G6 and G7 end to end | L | native-worker-high | N3-11, N3-12, N3-29, N3-20, N3-22, N2b-21, N2b-17 | dump, save | `todo` |  |
+| N3-27 | Exit: every session end to end, and 120 fps with sound on the reference PC | M | native-worker | N3-26, N3-14, N3-15, N3-19, N2b-24 | ci, dump-check, save, pc | `todo` |  |
+| N3-28 | The alpha: release and triage | S | orchestrator | N3-27, N3-25 | ci | `todo` |  |
+<!-- wp-status:end N3 -->
+
 ## Later phases
 
 N2b to N7 and Track D are outlined in [`wp/LATER.md`](wp/LATER.md); the planner details each one before it starts.
@@ -138,4 +210,4 @@ N2b to N7 and Track D are outlined in [`wp/LATER.md`](wp/LATER.md); the planner 
 
 ## Open decisions
 
-D4 (the RHI; spike N2-01) and D5 (the fragment pipeline; N2-07). The full list is [`DECISIONS.md`](DECISIONS.md).
+D4 (the RHI; spike N2-01), D5 (the fragment pipeline; N2-07), and the ones the N2b and N3 plans propose: D57, D58, D60, D62 (N2b) and D64 to D71, D74, D75 (N3); D1, D2, D7, D11, D12, D19 and D27 are still Recommended. The full list is [`DECISIONS.md`](DECISIONS.md).

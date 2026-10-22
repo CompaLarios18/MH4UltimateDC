@@ -91,7 +91,7 @@ The runbooks agents follow are skills: `.claude/skills/native-orchestrate/` (the
 ## 4. Work packages
 
 **Where they are:**
-- Specs: [`wp/N0.md`](wp/N0.md), [`wp/N1.md`](wp/N1.md) and [`wp/N2a.md`](wp/N2a.md), detailed. Each file starts with rules shared by all its WPs (for `native/` code, the rules at the top of `wp/N1.md` apply in every phase).
+- Specs: [`wp/N0.md`](wp/N0.md), [`wp/N1.md`](wp/N1.md), [`wp/N2a.md`](wp/N2a.md), [`wp/N2b.md`](wp/N2b.md) and [`wp/N3.md`](wp/N3.md), detailed. Each file starts with rules shared by all its WPs (for `native/` code, the rules at the top of `wp/N1.md` apply in every phase).
 - [`wp/LATER.md`](wp/LATER.md): later phases, outlined; the planner details them at each phase boundary.
 - [`STATUS.md`](STATUS.md): live status. `tools/native/wp_status.py` reads the specs and keeps it consistent:
   - `check` (specs and table agree, dependencies exist, no cycles), `sync` (regenerate the tables);

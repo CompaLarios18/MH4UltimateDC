@@ -31,7 +31,7 @@ N-1 is the level the community already calls "native":
 
 **Already native:**
 - the game's code: 40,566 functions, 3.26 M instructions, every jump table resolved ([`../RECOMPILER.md`](../RECOMPILER.md));
-- 30 hook points and 3 tunables;
+- 31 hook points (`config/hooks.txt`; 30 when this plan was written, the camera's `turnByInput` came with 0.1.3) and 3 tunables;
 - the `mh4u` app (launcher, menu, touch overlay, multiplayer) and the mod catalog;
 - the lobby (`server/lobby`) and the scripts and Docker files for dedicated rooms (the room server itself is still `azahar-room`);
 - the map of how the game talks to the OS ([`../research/system-services.md`](../research/system-services.md)): 692 `svc` sites, 350 IPC request functions, 23 services.
@@ -175,15 +175,17 @@ Sizes are relative; there are no dates. Each phase starts with a pilot that meas
   - G1–G4 pass end to end;
   - translation and GPU fit their budgets at 3440×1440 with the HD pack on the RX 6700 XT.
 
-  Work packages: [`wp/N2a.md`](wp/N2a.md); N2b and N2c in [`wp/LATER.md`](wp/LATER.md).
+  Work packages: [`wp/N2a.md`](wp/N2a.md) and [`wp/N2b.md`](wp/N2b.md); N2c in [`wp/LATER.md`](wp/LATER.md).
 
 **N3 · Playable end to end at 120 fps (opt-in alpha).**
 - Our DSP, real input with the Circle Pad Pro protocol, the swkbd and error applets.
 - Saves in Azahar's layout, plus import/export of real 3DS saves.
 - A native setup that extracts with `tools/extract_ncch.py` and has the HD pack step preselected.
 - The A/B audit 60 vs 120 fps.
-- All 30 hooks on the platform interface.
+- All 31 hooks on the platform interface.
 - The native executable shipped next to the Azahar one.
+
+Work packages: [`wp/N3.md`](wp/N3.md).
 
 **N4 · Native multiplayer (beta).**
 - Our own `nwm::UDS`.
