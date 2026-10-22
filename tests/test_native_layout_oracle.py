@@ -1,0 +1,158 @@
+"""The oracle of the native screen layouts (N2b-04): tools/native/layout_oracle/.
+
+The case reader and the table writer are tested on synthetic cases and a synthetic driver answer;
+the last test runs the whole harness on Azahar's sources (MH4N_AZAHAR_DIR, at the pinned commit) and
+checks that it writes the committed native/tests/screen_layout_expected.inc byte for byte, twice.
+That one needs Azahar's sources and clang++: without them it skips, or fails with
+MH4N_REQUIRE_TEST_DATA=1.
+"""
+import importlib.util
+import os
+import shutil
+import subprocess
+import sys
+
+import pytest
+
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+ORACLE = os.path.join(ROOT, "tools", "native", "layout_oracle")
+TABLE = os.path.join(ROOT, "native", "tests", "screen_layout_expected.inc")
+
+spec = importlib.util.spec_from_file_location("layout_oracle", os.path.join(ORACLE, "layout_oracle.py"))
+oracle = importlib.util.module_from_spec(spec)
+sys.modules["layout_oracle"] = oracle      # dataclasses look their module up
+spec.loader.exec_module(oracle)
+
+
+def test_a_case_with_every_key():
+    [case] = oracle.parse_cases(
+        "case c mode=overlay window=1920x1080 top_width=573 aspect=16:9 corner=bl height=0.3 opacity=0.5 "
+        "crop=0.1,0.2,0.9,0.8 at=0.25,0.75 view=0.2,1,0,0,0,0.5,0.5 view=0.1,0,1,0.5,0.5,1,1 "
+        "ops=P:10,20/M:30,40/R\n")
+    assert case.name == "c" and case.mode == "overlay"
+    assert (case.width, case.height, case.top_width, case.aspect) == (1920, 1080, 573, "16:9")
+    assert case.corner == "bl" and case.overlay_height == pytest.approx(0.3)
+    assert case.crop == (0.1, 0.2, 0.9, 0.8) and case.at == (0.25, 0.75)
+    assert [v.height for v in case.views] == [0.2, 0.1] and case.views[1].crop == (0.5, 0.5, 1.0, 1.0)
+    assert case.ops == (("P", 10, 20), ("M", 30, 40), ("R", 0, 0))
+
+
+def test_defaults_and_comments():
+    cases = oracle.parse_cases("# nothing\n\ncase a  # a comment\ncase b window=800x480\n")
+    assert [c.name for c in cases] == ["a", "b"]
+    a = cases[0]
+    assert (a.mode, a.width, a.height, a.top_width, a.aspect) == ("stacked", 800, 480, 400, "default")
+    assert a.overlay_height == 0.0 and a.views == () and a.ops == ()
+
+
+def test_a_sweep_is_the_product_of_its_lists_and_keeps_the_other_keys():
+    cases = oracle.parse_cases(
+        "sweep s mode=single,side window=800x480,1920x1080 top_width=400 height=0.3 crop=0,0,0.5,1\n")
+    assert [c.name for c in cases] == ["s_single_800x480", "s_single_1920x1080", "s_side_800x480", "s_side_1920x1080"]
+    assert all(c.top_width == 400 and c.overlay_height == pytest.approx(0.3) and c.crop == (0, 0, 0.5, 1)
+               for c in cases)
+    assert [(c.mode, c.width) for c in cases] == [("single", 800), ("single", 1920), ("side", 800), ("side", 1920)]
+
+
+@pytest.mark.parametrize("line, message", [
+    ("case a mode=windows", "mode=windows"),
+    ("case a window=800", "window=800"),
+    ("case a aspect=5:4", "aspect=5:4"),
+    ("case a corner=middle", "corner=middle"),
+    ("case a crop=1,2,3", "crop= needs 4"),
+    ("case a ops=X:1,2", "bad touch op"),
+    ("case a view=1,2", "view= needs 7"),
+    ("case a view=0,0,0,0,0,1,1 view=0,0,0,0,0,1,1 view=0,0,0,0,0,1,1", "at most two views"),
+    ("case a zoom=2", "unknown key"),
+    ("case a mode", "key=value"),
+    ("case bad-name", "bad name"),
+    ("thing a", "expected"),
+])
+def test_bad_cases_are_refused_with_the_line(line, message):
+    with pytest.raises(oracle.CaseError, match=message):
+        oracle.parse_cases("\n" + line + "\n")
+    with pytest.raises(oracle.CaseError, match="line 2"):
+        oracle.parse_cases("\n" + line + "\n")
+
+
+def test_two_cases_with_one_name_are_refused():
+    with pytest.raises(oracle.CaseError, match="two cases named a"):
+        oracle.parse_cases("case a\ncase a\n")
+
+
+def test_floats_reach_the_driver_exactly_as_float32():
+    [case] = oracle.parse_cases("case a mode=overlay height=0.3 opacity=0.6 ops=P:5,6/M:7,8/R\n")
+    tokens = oracle.driver_line(case).split(" ")
+    assert tokens[:6] == ["case", "a", "overlay", "800", "480", "400"]
+    assert tokens[6] == "default" and tokens[7] == "3"
+    assert float.fromhex(tokens[8]) == oracle.f32(0.3) != 0.3
+    assert float.fromhex(tokens[9]) == oracle.f32(0.6)
+    assert tokens[-1] == "P,5,6;M,7,8;R"
+    assert len(tokens) == 6 + 2 + 2 + 4 + 2 + 14 + 1
+
+
+FAKE_ANSWER = """\
+layout a 800 480 1 1 0 0 800 480 608 336 800 480 0x1p+0 0x1.333334p-1 0x0p+0 0x0p+0 0x1p+0 0x1p+0 1 1 2 3 4 0x1p-1 0x0p+0 0x1p+0 0x1p+0
+step a 0 P 1 1 0x1p-1 0x1p-2 160 60
+step a 1 R -1 0 0x0p+0 0x0p+0 0 0
+"""
+
+
+def test_the_table_writer_copies_the_drivers_answers_and_echoes_the_cases():
+    [case] = oracle.parse_cases("case a mode=overlay height=0.3 view=0.2,1,0,0,0,0.5,0.5 ops=P:5,6/R\n")
+    results = oracle.parse_driver_output(FAKE_ANSWER, [case])
+    table = oracle.render_inc([case], results, "c" * 40, "d" * 64)
+    lines = table.splitlines()
+    assert lines[0].startswith("// Generated by") and "DO NOT EDIT" in lines[0]
+    assert "c" * 40 in lines[1] and "d" * 64 in lines[1]
+    body = "\n".join(l for l in lines if not l.startswith("//"))
+    assert body.startswith('MH4N_CASE("a", "overlay", 800, 480, 400, "default", 3, ')
+    assert "{800, 480, 1, 1, {0, 0, 800, 480}, {608, 336, 800, 480}, 0x1p+0, 0x1.333334p-1, " in body
+    assert "{{{1, 2, 3, 4}, {0x1p-1, 0x0p+0, 0x1p+0, 0x1p+0}}}}" in body
+    assert "{{'P', 5, 6, 1, 1, 0x1p-1, 0x1p-2, 160, 60}, {'R', 0, 0, -1, 0, 0x0p+0, 0x0p+0, 0, 0}})" in body
+    assert body.count("MH4N_CASE") == 1
+    assert oracle.render_inc([case], results, "c" * 40, "d" * 64) == table       # deterministic
+
+
+def test_a_driver_answer_that_does_not_fit_the_cases_is_refused():
+    [case] = oracle.parse_cases("case a ops=P:5,6/R\n")
+    with pytest.raises(oracle.CaseError, match="no answer"):
+        oracle.parse_driver_output("", [case])
+    with pytest.raises(oracle.CaseError, match="1 answers for 2 touches"):
+        oracle.parse_driver_output(FAKE_ANSWER.replace("step a 1 R -1 0 0x0p+0 0x0p+0 0 0\n", ""), [case])
+    with pytest.raises(oracle.CaseError, match="unexpected"):
+        oracle.parse_driver_output("what\n", [case])
+
+
+def test_the_committed_cases_file_parses_and_covers_the_wp():
+    with open(os.path.join(ORACLE, "cases.txt"), encoding="utf-8") as f:
+        cases = oracle.parse_cases(f.read())
+    assert len(cases) > 100
+    with open(TABLE, encoding="utf-8") as f:
+        table = f.read()
+    assert table.count("\nMH4N_CASE(") == len(cases)            # a case added without regenerating
+    for case in cases:
+        assert f'MH4N_CASE("{case.name}", "{case.mode}", {case.width}, {case.height}, ' in table
+
+
+def _azahar() -> str | None:
+    path = os.path.expanduser(os.environ.get("MH4N_AZAHAR_DIR", ""))
+    return path if path and os.path.isdir(os.path.join(path, "src", "core", "frontend")) else None
+
+
+def test_the_harness_on_azahars_sources_reproduces_the_committed_table(tmp_path):
+    azahar, cxx = _azahar(), shutil.which(os.environ.get("CXX", "clang++"))
+    if azahar is None or cxx is None:
+        message = "needs MH4N_AZAHAR_DIR (Azahar's sources at the pinned commit) and clang++"
+        if os.environ.get("MH4N_REQUIRE_TEST_DATA") == "1":
+            pytest.fail(message)
+        pytest.skip(message)
+    with open(TABLE, "rb") as f:
+        committed = f.read()
+    for run in (1, 2):                                              # twice: nothing depends on the run
+        out = tmp_path / f"table{run}.inc"
+        done = subprocess.run(
+            ["python3", os.path.join(ORACLE, "layout_oracle.py"), "--azahar", azahar, "--out", str(out),
+             "--cxx", cxx], capture_output=True, text=True, timeout=600)
+        assert done.returncode == 0, done.stderr
+        assert out.read_bytes() == committed, f"run {run} differs from native/tests/screen_layout_expected.inc"

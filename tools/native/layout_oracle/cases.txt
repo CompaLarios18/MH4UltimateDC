@@ -1,0 +1,71 @@
+# The cases of the screen layout oracle (see layout_oracle.py). native/tests/screen_layout_test.cpp
+# runs every case of the table generated from this file.
+
+# every mode at four window sizes with three top-screen widths (overlay: the port's corner overlay)
+sweep modes mode=overlay,stacked,single,side window=800x480,1920x1080,3440x1440,1280x1024 top_width=400,427,573 corner=br height=0.3
+
+# the aspect-ratio option, single mode (the only layout that reads it)
+sweep aspect mode=single aspect=default,stretch,4:3,16:9,16:10,21:9 window=800x480,1920x1080,3440x1440,1280x1024 top_width=400,573
+
+# the overlay: each corner, a placement, an opacity
+sweep corner mode=overlay corner=tl,tr,bl,br window=1920x1080,800x480 height=0.3 opacity=0.6
+case at_centre mode=overlay window=1920x1080 height=0.3 at=0.5,0.5
+case at_top_right mode=overlay window=1920x1080 height=0.3 at=1,0
+case at_bottom_left mode=overlay window=1920x1080 height=0.3 at=0,1
+case at_half mode=overlay window=3440x1440 top_width=573 height=0.25 at=0.25,0.75
+case at_one_negative mode=overlay window=1920x1080 height=0.3 corner=tl at=0.5,-1
+
+# the overlay's crop
+case crop_right_half mode=overlay window=1920x1080 height=0.3 crop=0.5,0,1,1
+case crop_middle mode=overlay window=3440x1440 top_width=573 height=0.4 corner=bl crop=0.25,0.1,0.75,0.9
+case crop_thin mode=overlay window=800x480 height=0.5 corner=tr crop=0,0.5,0.3,1
+
+# the clamps of SetScreenOverlay
+case clamp_height mode=overlay window=1920x1080 height=1.7
+case clamp_opacity mode=overlay window=1920x1080 height=0.3 opacity=-0.5
+case clamp_opacity_high mode=overlay window=1920x1080 height=0.3 opacity=3
+case clamp_crop_inverted mode=overlay window=1920x1080 height=0.3 crop=0.6,0.7,0.2,0.3
+case clamp_crop_out mode=overlay window=1920x1080 height=0.3 crop=-1,-1,2,2
+case clamp_crop_edge mode=overlay window=1920x1080 height=0.3 crop=1,1,1,1
+case clamp_at mode=overlay window=1920x1080 height=0.3 at=1.5,2
+
+# the overlay's two further views of the bottom screen
+case views_two mode=overlay window=1920x1080 height=0.3 corner=br crop=0,0,1,0.5 view=0.2,0,0,0,0.5,0.5,1 view=0.2,0.4,0,0.5,0.5,1,1
+case views_one mode=overlay window=3440x1440 top_width=573 height=0.3 corner=bl crop=0,0,0.6,1 view=0.25,1,1,0.6,0,1,0.5
+case views_off mode=overlay window=1920x1080 height=0.3 view=0,0.5,0.5,0,0,1,1
+case views_clamps mode=overlay window=800x480 height=0.3 view=1.4,-2,5,0.9,0.95,0.1,0.2 view=0.1,0.5,0.5,-1,-1,3,3
+case views_small_window mode=overlay window=300x200 height=0.3 view=0.3,1,0,0.5,0,1,1
+
+# the overlay off: the custom layout's own positions
+case overlay_off mode=overlay window=1920x1080
+case overlay_off_small mode=overlay window=300x200
+
+# windows below the layout's smallest size
+sweep small mode=overlay,stacked,single,side window=200x100,1x1,399x239 top_width=400,573 height=0.3
+
+# touches: P:x,y press, M:x,y move, R release, in window pixels (the cases above give the rectangles)
+case touch_stacked_basic mode=stacked window=1920x1080 ops=P:960,810/R/P:600,540/R/P:1319,1079/R/P:900,200/R/P:599,700/P:1320,700/P:960,539/P:960,1080/R
+case touch_stacked_drag mode=stacked window=1920x1080 ops=P:960,810/M:2000,2000/M:0,0/M:960,300/M:1500,810/M:700,900/M:1320,1080/R/M:100,100
+case touch_stacked_small mode=stacked window=800x480 ops=P:400,360/R/P:240,240/R/P:559,479/R/P:0,0
+case touch_stacked_wide mode=stacked window=3440x1440 top_width=573 ops=P:1720,1080/M:0,1439/M:3439,0/R
+case touch_move_unpressed mode=stacked window=1920x1080 ops=M:960,810/R/M:700,600
+case touch_single_none mode=single window=1920x1080 ops=P:960,540/M:960,540/R
+case touch_side_basic mode=side window=1920x1080 ops=P:1066,220/R/P:1500,500/R/P:1918,859/R/P:1065,500/P:1500,860/P:1500,219/R/P:1500,500/M:3000,3000/M:0,0/R
+case touch_overlay_basic mode=overlay window=1920x1080 height=0.3 ops=P:1500,800/R/P:1488,756/R/P:1919,1079/R/P:900,500/R/P:1487,900/R/P:1700,900/M:0,0/M:1900,100/M:1700,1079/R
+case touch_overlay_corner_tl mode=overlay window=800x480 height=0.3 corner=tl ops=P:0,0/R/P:191,143/R/P:192,100/P:96,72/R
+case touch_overlay_centre mode=overlay window=1920x1080 height=0.3 at=0.5,0.5 ops=P:960,540/R/P:744,378/R/P:1175,701/R/P:743,540/M:100,100/R
+case touch_crop_right_half mode=overlay window=1920x1080 height=0.3 crop=0.5,0,1,1 ops=P:1704,756/R/P:1919,1079/R/P:1812,918/R/P:1703,900/P:1812,918/M:0,0/M:3000,3000/R
+case touch_crop_middle mode=overlay window=3440x1440 top_width=573 height=0.4 corner=bl crop=0.25,0.1,0.75,0.9 ops=P:0,864/R/P:479,1439/R/P:240,1152/R/P:240,1152/M:5000,5000/M:0,0/R
+case touch_crop_thin mode=overlay window=800x480 height=0.5 corner=tr crop=0,0.5,0.3,1 ops=P:608,0/R/P:799,239/R/P:700,120/R
+case touch_views_two mode=overlay window=1920x1080 height=0.3 crop=0,0,1,0.5 view=0.2,0,0,0,0.5,0.5,1 view=0.2,0.4,0,0.5,0.5,1,1 ops=P:10,10/R/P:287,215/R/P:288,100/P:700,100/R/P:100,100/M:1500,900/M:3000,3000/M:0,0/M:200,200/R/P:1500,900/M:100,100/M:1500,800/M:700,100/R/P:700,100/M:100,100/R
+case touch_views_overlap mode=overlay window=1920x1080 height=0.3 view=0.2,1,1,0,0,0.5,0.5 ops=P:1700,900/M:1500,800/M:1919,1079/M:0,0/R/P:1500,800/M:1700,900/M:1633,865/R/P:1488,756/R/P:1632,864/R
+case touch_views_one mode=overlay window=3440x1440 top_width=573 height=0.3 corner=bl crop=0,0,0.6,1 view=0.25,1,1,0.6,0,1,0.5 ops=P:3056,1080/R/P:3439,1439/R/P:3250,1200/R/P:100,1200/M:3300,1300/R
+
+# a top width of 0 is 400 (every mode, and a touch)
+sweep width0 mode=overlay,stacked,single,side window=1920x1080 top_width=0 height=0.3
+case width0_touch mode=stacked window=1920x1080 top_width=0 ops=P:960,810/M:2000,2000/R
+case width0_touch_overlay mode=overlay window=800x480 top_width=0 height=0.3 view=0.2,0,0,0,0,0.5,0.5 ops=P:10,10/M:700,400/R/P:700,400/R
+
+# two views that overlap: the last drawn wins (views are 0.4 of 1080 high; both near the top left)
+case views_overlap_two mode=overlay window=1920x1080 height=0.3 view=0.4,0,0,0,0,0.5,0.5 view=0.4,0.02,0.02,0.5,0.5,1,1
+case touch_views_overlap_two mode=overlay window=1920x1080 height=0.3 view=0.4,0,0,0,0,0.5,0.5 view=0.4,0.02,0.02,0.5,0.5,1,1 ops=P:300,300/M:310,320/M:5,5/M:1000,1000/R/P:5,5/M:300,300/R
