@@ -1,0 +1,38 @@
+{
+  "mh4n_vkprobe": 1,
+  "source": "live",
+  "device": {
+    "name": "AMD Radeon RX 6700 XT",
+    "type": "discrete GPU",
+    "driver": "AMD proprietary driver 26.10.1 (AMD proprietary shader compiler)",
+    "api_version": "1.4.315",
+    "vendor_id": 4098,
+    "device_id": 29663
+  },
+  "features": [
+    {"id": "logicOp", "status": "yes", "title": "logic ops (logicOp)", "fallback": "emulate the ops in the fragment shader (partial: 4 of 16 ops on MoltenVK)"},
+    {"id": "fragmentShaderPixelInterlock", "status": "yes", "title": "fragment shader interlock, pixel", "fallback": "order overlapping draws with barriers between them"},
+    {"id": "fragmentShaderSampleInterlock", "status": "yes", "title": "fragment shader interlock, sample", "fallback": "order overlapping draws with barriers between them"},
+    {"id": "fragmentStoresAndAtomics", "status": "yes", "title": "storage image writes from fragment shaders", "fallback": "draw into an attachment instead of a storage image"},
+    {"id": "geometryShader", "status": "yes", "title": "geometry shaders", "fallback": "skip the per-triangle quaternion fix-up, or run it in a compute pass"},
+    {"id": "fragmentShaderBarycentric", "status": "yes", "title": "fragment shader barycentrics", "fallback": "geometry shaders for the quaternion fix-up, else skip it"},
+    {"id": "triangleFans", "status": "yes", "title": "triangle fans", "fallback": "rewrite fans as triangle lists on the CPU", "detail": "a full Vulkan device: fans are core"},
+    {"id": "indexTypeUint8", "status": "yes", "title": "8-bit indices (VK_EXT_index_type_uint8)", "fallback": "widen the indices to 16 bits on the CPU"},
+    {"id": "customBorderColors", "status": "yes", "title": "custom border colours (VK_EXT_custom_border_color)", "fallback": "emulate the border colour in the shader"},
+    {"id": "shaderClipDistance", "status": "yes", "title": "shaderClipDistance", "fallback": "clip in the fragment shader (discard)"},
+    {"id": "shaderStencilExport", "status": "yes", "title": "VK_EXT_shader_stencil_export", "fallback": "write the stencil in a second pass"},
+    {"id": "rasterizationOrderAttachmentAccess", "status": "no", "title": "VK_EXT_rasterization_order_attachment_access", "fallback": "fragment shader interlock, else a copy and a barrier per draw", "detail": "VK_EXT_rasterization_order_attachment_access is not on the device"},
+    {"id": "D24_UNORM_S8_UINT", "status": "no", "title": "depth-stencil D24_UNORM_S8_UINT", "fallback": "D32_SFLOAT_S8_UINT", "detail": "D32_SFLOAT_S8_UINT is available"},
+    {"id": "D32_SFLOAT_S8_UINT", "status": "yes", "title": "depth-stencil D32_SFLOAT_S8_UINT"},
+    {"id": "BC7", "status": "yes", "title": "BC7 textures (BC7_UNORM_BLOCK)", "fallback": "decode to RGBA8 at load (four times the memory)"},
+    {"id": "dynamicRendering", "status": "yes", "title": "dynamic rendering", "fallback": "render passes and framebuffers"},
+    {"id": "graphicsPipelineLibrary", "status": "yes", "title": "VK_EXT_graphics_pipeline_library", "fallback": "a pipeline cache and compilation on worker threads"},
+    {"id": "presentId", "status": "no", "title": "VK_KHR_present_id (presentId)", "fallback": "estimate when a frame is shown from the present call (not measured)", "detail": "VK_KHR_present_id is not on the device; device level: a swapchain's support needs a surface"},
+    {"id": "presentWait", "status": "no", "title": "VK_KHR_present_wait (presentWait)", "fallback": "estimate when a frame is shown from the present call (not measured)", "detail": "VK_KHR_present_wait is not on the device; device level: a swapchain's support needs a surface"},
+    {"id": "pushDescriptor", "status": "yes", "title": "push descriptors (VK_KHR_push_descriptor)", "fallback": "descriptor sets updated per draw"},
+    {"id": "timelineSemaphore", "status": "yes", "title": "timeline semaphores", "fallback": "binary semaphores and fences"},
+    {"id": "extendedDynamicState", "status": "yes", "title": "VK_EXT_extended_dynamic_state (1)", "fallback": "bake the state into pipelines (more pipeline variants)"},
+    {"id": "extendedDynamicState2", "status": "yes", "title": "VK_EXT_extended_dynamic_state2", "fallback": "bake the state into pipelines (more pipeline variants)"},
+    {"id": "extendedDynamicState3", "status": "yes", "title": "VK_EXT_extended_dynamic_state3", "fallback": "bake the state into pipelines (more pipeline variants)", "detail": "18 of 31 bits (see the device's extendedDynamicState3* features)"}
+  ]
+}

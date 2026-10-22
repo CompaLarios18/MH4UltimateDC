@@ -445,7 +445,10 @@ TEST_CASE("nim:aoc: two sessions at most, and every command is answered as an un
     CHECK(set_tin[0] == ipc::MakeHeader(0x0004, 1, 0));
     CHECK(other[0] == ipc::MakeHeader(0x0026, 1, 0));
     CHECK(third.reply[1] == 0xD0401834);  // the third session is refused
-    CHECK(f.LoggedCount("unimplemented nim:aoc") == 3);  // 0x00210000, 0x00040142, 0x00260000
+    // Initialize (0x0021) is answered by a handler with the unknown command's reply (N1-21: the game
+    // sends it in G1 to G6 and no error line is wanted); the other two are still reported once
+    CHECK(f.LoggedCount("unimplemented nim:aoc") == 2);  // 0x00040142, 0x00260000
+    CHECK_FALSE(f.Logged("unimplemented nim:aoc 0x00210000"));
 }
 
 // ---- act:u -------------------------------------------------------------------------------------------------

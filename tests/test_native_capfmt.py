@@ -480,24 +480,26 @@ def stream_status(t, buffer_id_at=None):
 def stream(path, start, t_first, count, tweak=None, source=0, sources=None, stretch_after=None):
     """`count` DSP frames; frame i has the DSP counter (start + i) and holds the audio stream at time t_first + i
     (from `stretch_after` on the stream falls one frame behind, and one more every three frames: no constant shift).
-    `tweak(i, region, number, block)` may change a status block."""
+    As on the console, the two regions swap with the counter: the region of the counter's parity (`counter & 1`) is the
+    one the DSP reads and holds the frame's status; the other holds the previous frame's, with the counter before.
+    `tweak(i, region, number, block)` may change a status block (`region` is the region's own number)."""
     with capfmt.Writer(str(path), "dsp", game=0x0004000000155400) as w:
         for i in range(count):
             counter = (start + i) & 0xFFFF
             t = t_first + i
             if stretch_after is not None and i >= stretch_after:
                 t -= 1 + (i - stretch_after) // 3
-            blocks = {}
+            regions = []
             for region in (0, 1):
+                age = 0 if region == (counter & 1) else 1                 # 0: the current frame's, 1: the previous one's
                 mine = {}
                 for number in ([source] if sources is None else sources):
-                    block = stream_status(t - region)
+                    block = stream_status(t - age)
                     if tweak is not None:
                         block = tweak(i, region, number, block)
                     mine[number] = block
-                blocks[region] = mine
-            w.dsp_regions(1200 + i // 2, i * TICKS, capfmt.make_region(counter, blocks[0]),
-                          capfmt.make_region((counter - 1) & 0xFFFF, blocks[1]))
+                regions.append(capfmt.make_region((counter - age) & 0xFFFF, mine))
+            w.dsp_regions(1200 + i // 2, i * TICKS, regions[0], regions[1])
             w.dsp_pcm(1200 + i // 2, i * TICKS, capfmt.make_pcm([(i + 1, 1)] * 160))
     return str(path)
 
@@ -677,3 +679,88 @@ def test_the_alignment_prints_no_samples(tmp_path, capsys):
     capfmt.main(["diff-dsp", ref, cand, "--align"])
     out = capsys.readouterr().out
     assert "PCM" not in out and "sample" not in out.lower()
+
+
+# ── diff-dsp --align, odd shifts and the larger bounds of the native profile (N0-33, D76) ──────────────
+
+def test_an_odd_shift_compares_the_region_the_shift_maps_to(tmp_path):
+    ref, cand = aligned_pair(tmp_path, 21)
+    result = capfmt.diff_dsp_aligned(ref, cand)
+    assert result.equal and result.shift == 21, result.problems
+    assert "the shift is odd" in result.summary and "region 1 - r" in result.summary
+    # compared region against the same region, the same frames differ: that is what the mapping is for
+    frames_ref, frames_cand = capfmt._dsp_frames(ref), capfmt._dsp_frames(cand)
+    by_cand = dict(frames_cand)
+    plain = mapped = 0
+    for counter, payload in frames_ref:
+        other = by_cand.get((counter + 21) & 0xFFFF)
+        if other is None:
+            continue
+        for region in (0, 1):
+            plain += capfmt.source_statuses(payload, region) != capfmt.source_statuses(other, region)
+            mapped += capfmt.source_statuses(payload, region) != capfmt.source_statuses(other, 1 - region)
+    assert plain > 0 and mapped == 0
+    # an even shift keeps the regions as they are
+    even = capfmt.diff_dsp_aligned(*aligned_pair(tmp_path, 22))
+    assert even.equal and "the shift is odd" not in even.summary
+
+
+@pytest.mark.parametrize("shift", [1, -1, 21, -7, -205, -209, 203, 299, -299])
+def test_odd_and_even_shifts_up_to_the_native_bound_pass(tmp_path, shift):
+    ref, cand = aligned_pair(tmp_path, shift)
+    result = capfmt.diff_dsp_aligned(ref, cand, max_shift=300)
+    assert result.equal and result.shift == shift, result.problems
+    assert capfmt.diff_dsp_aligned(ref, cand, max_shift=abs(shift)).equal
+    assert not capfmt.diff_dsp_aligned(ref, cand, max_shift=abs(shift) - 1).equal
+
+
+def test_the_native_bound_is_an_option_and_the_default_stays_d51s(tmp_path, capsys):
+    ref, cand = aligned_pair(tmp_path, -209)
+    assert capfmt.DEFAULT_MAX_SHIFT == 48
+    assert capfmt.main(["diff-dsp", ref, cand, "--align"]) == 1
+    assert "shift -209 DSP frames" in capsys.readouterr().out
+    assert capfmt.main(["diff-dsp", ref, cand, "--align", "--max-shift", "300"]) == 0
+    out = capsys.readouterr().out
+    assert "shift -209 DSP frames" in out and "the shift is odd" in out
+    assert capfmt.main(["diff-dsp", ref, cand, "--align", "--max-shift", "208"]) == 1
+
+
+def test_an_odd_shift_still_fails_a_status_block_that_differs_in_the_mapped_region(tmp_path):
+    def tweak(i, region, number, block):
+        if (i, region, number) == (22, 1, 5):
+            return capfmt.make_status(enabled=1, sync_count=3, buffer_position=7)
+        return block
+    ref = stream(tmp_path / "ref", 100, 100, 40, sources=[0, 5])
+    cand = stream(tmp_path / "cand", 111, 90, 40, sources=[0, 5], tweak=tweak)         # shift 21
+    result = capfmt.diff_dsp_aligned(ref, cand)
+    assert not result.equal and result.shift == 21
+    assert any("(candidate region 1) source 5" in p or "(candidate region 0) source 5" in p for p in result.problems)
+    # the block at the same index on the other region is not what the tweak changed
+    assert capfmt.diff_dsp_aligned(ref, stream(tmp_path / "ok", 111, 90, 40, sources=[0, 5])).equal
+
+
+def test_an_odd_shift_needs_regions_that_alternate_with_the_counter(tmp_path):
+    # a candidate that always keeps the frame the DSP reads in region 0 (no swap) cannot be the same stream at an odd shift
+    def fixed(path, start, t_first, count):
+        with capfmt.Writer(str(path), "dsp", game=0x0004000000155400) as w:
+            for i in range(count):
+                counter = (start + i) & 0xFFFF
+                t = t_first + i
+                w.dsp_regions(1200, i * TICKS, capfmt.make_region(counter, {0: stream_status(t)}),
+                              capfmt.make_region((counter - 1) & 0xFFFF, {0: stream_status(t - 1)}))
+                w.dsp_pcm(1200, i * TICKS, capfmt.make_pcm([(1, 1)] * 160))
+        return str(path)
+    ref = fixed(tmp_path / "ref", 100, 100, 40)
+    odd = fixed(tmp_path / "odd", 111, 90, 40)
+    even = fixed(tmp_path / "even", 112, 90, 40)
+    assert capfmt.diff_dsp_aligned(ref, even).equal
+    assert not capfmt.diff_dsp_aligned(ref, odd).equal
+
+
+def test_the_odd_shift_message_names_both_regions(tmp_path):
+    ref = stream(tmp_path / "ref", 100, 100, 40)
+    cand = stream(tmp_path / "cand", 111, 90, 40, tweak=lambda i, r, n, b: capfmt.make_status(enabled=1, sync_count=9)
+                  if i == 30 else b)
+    result = capfmt.diff_dsp_aligned(ref, cand)
+    assert not result.equal and any("region 0 (candidate region 1)" in p or "region 1 (candidate region 0)" in p
+                                    for p in result.problems)

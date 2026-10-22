@@ -691,6 +691,7 @@ def diff_dsp_aligned(ref: str, cand: str, max_shift: int = DEFAULT_MAX_SHIFT, li
     if abs(shift) > max_shift:
         return DspAlignment(shift, [f"{where}, more than the {max_shift} allowed (source {source}, buffer id "
                                     f"{anchor_id}: reference DSP frame {ca}, candidate {cb})"], where)
+    swap = shift & 1      # the two regions alternate with the DSP frame counter: an odd shift swaps them (D76)
     by_b = {k: p for k, p in b}
     position = {k: i for i, (k, _) in enumerate(a)}
     overlap = [i for i, (k, _) in enumerate(a) if (k + shift) & 0xFFFF in by_b]
@@ -726,17 +727,21 @@ def diff_dsp_aligned(ref: str, cand: str, max_shift: int = DEFAULT_MAX_SHIFT, li
         kb = (k + shift) & 0xFFFF
         pb = by_b[kb]
         for region in (0, 1):
-            for number, (x, y) in enumerate(zip(source_statuses(pa, region), source_statuses(pb, region))):
+            other = region ^ swap                    # the candidate's region that holds the same DSP frame
+            for number, (x, y) in enumerate(zip(source_statuses(pa, region), source_statuses(pb, other))):
                 compared += 1
                 if x != y:
-                    problems.append(f"DSP frame {k} (candidate {kb}) region {region} source {number}: "
-                                    f"ref {_describe_status(x)} cand {_describe_status(y)}")
+                    problems.append(f"DSP frame {k} (candidate {kb}) region {region}"
+                                    + (f" (candidate region {other})" if swap else "")
+                                    + f" source {number}: ref {_describe_status(x)} cand {_describe_status(y)}")
     total = len(problems)
     if total > limit:
         problems = problems[:limit] + [f"... and {total - limit} more differences"]
     summary = (f"aligned on source {source}, buffer id {anchor_id} (reference DSP frame {ca}, candidate {cb}): "
                f"{where}; {len(overlap)} DSP frames and {compared} status blocks compared, {matched} buffer "
-               f"changes at the shift (largest deviation {deviation} frames); "
+               f"changes at the shift (largest deviation {deviation} frames)"
+               + ("; the shift is odd, so the reference's region r is compared with the candidate's region 1 - r; "
+                  if swap else "; ") +
                f"{len(a) - len(overlap)} reference and {len(b) - len(overlap)} candidate DSP frames outside "
                f"the overlap")
     return DspAlignment(shift, problems, summary)

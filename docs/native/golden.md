@@ -81,11 +81,11 @@ the creation and the village) have no checkpoint. A change of scene is *real* wh
 golden.py list [--out DIR]
 golden.py record S --runner RUN --game CXI --update CIA --user DIR [--code LIB] [--cpu jit|recomp] [--save DIR]
                    [--shot-every-frames N]
-golden.py check  S --runner RUN --game CXI --update CIA [--code LIB]
+golden.py check  S [--runner RUN --game CXI] [--update CIA] [--code LIB]
                    [--candidate-runner RUN2] [--candidate-program PATH] [--candidate-code LIB]
-                   [--candidate-args "..."] [--repeat N] [--profile same|cross] [--fallback]
-                   [--require NAMES] [--ignore FILE]...
-                   [--tolerance N] [--min-margin N] [--max-surplus N] [--max-shift N]     # the cross profile's numbers
+                   [--candidate-args "..."] [--repeat N] [--profile same|cross|native] [--fallback]
+                   [--require NAMES] [--ignore FILE]... [--observable FILE]
+                   [--tolerance N] [--min-margin N] [--max-surplus N] [--max-shift N]     # the cross and native numbers
 ```
 
 The recordings of this document were made with (PowerShell, from the worktree; `TZ` is set by `golden.py`):
@@ -123,9 +123,18 @@ python tools/native/golden.py check <S> --repeat 2 --require svc,ipc,state,check
 |---|---|---|
 | nothing | RUN with the recording's arguments | `same` |
 | `--candidate-args "..."` only | RUN with the recording's whole argument list (`--new-3ds off`, `--install`, every recorder, `--count-unmapped`, `--trace-timing`, the screenshots and the shared-page dump) plus those options; `--code` only when the run's `--cpu` (the one in `--candidate-args`, else the recording's) is `recomp` | `same` unless `--candidate-args` changes `--cpu`, then `cross` |
-| `--candidate-runner RUN2` (with `--candidate-program PATH`, `--candidate-code LIB`) | RUN2 with its own program and library and only the options both runners share: `--user`, `--frames`, `--input-file`, `--set`, `--trace-svc`, `--trace-ipc`, `--trace-ipc-full`, `--state-trace`, `--capture-hid`, `--capture-dsp`, plus `--candidate-args` | `cross` |
+| `--candidate-runner RUN2` (with `--candidate-program PATH`, `--candidate-code LIB`) | RUN2 with its own program and library and only the options both runners share: `--user`, `--frames`, `--input-file`, `--set`, `--trace-svc`, `--trace-ipc`, `--trace-ipc-full`, `--state-trace`, `--observable`, `--capture-hid`, `--capture-dsp`, plus `--candidate-args` | `cross` (`native` with `--profile native`) |
 
-`--profile same|cross` forces one. `--candidate-program` and `--candidate-code` need `--candidate-runner` (usage error otherwise).
+`--profile same|cross|native` forces one (`native` is never the default, section **`native`** below). Three usage
+rules of `check` decide which of the options above are required (all of them a usage error, exit 2, when broken):
+
+- `--runner` and `--game` are required **unless** a candidate runner runs the check: with no `--candidate-runner` a
+  check needs both, because the reference runner runs again. (`--update` is needed too when the recording was made
+  with `--install`, and `--code` for `--cpu recomp`; neither is needed when `--candidate-runner` runs.)
+- `--candidate-runner` needs a program: `--candidate-program PATH`, or else `--game` (the program the reference ran).
+  With `--candidate-program` it needs no `--game` and no `--runner` at all (N1-21: the native runner is started with
+  its own game folder).
+- `--candidate-program` and `--candidate-code` need `--candidate-runner`.
 
 **`same`** (D31; two runs of one backend; exact, no tolerance):
 
@@ -156,13 +165,35 @@ python tools/native/golden.py check <S> --repeat 2 --require svc,ipc,state,check
 
 `comparators.md` (sections 7 to 9) describes each rule, what it still catches and what it cannot. The numbers of the
 cross profile (`--tolerance`, `--min-margin`, `--max-surplus`, `--max-shift`) default to those of D50, D51 and D52 and
-can be changed **in the cross profile only**; with the `same` profile they are a usage error, like `--ignore`, so a
-same-model check can never be loosened. `config/native/fs_write_masks.txt` must exist for a cross check (usage error
-otherwise); it is edited by the orchestrator, and a line of the recording's session that matches no Write of the two
-traces makes the `ipc` comparison fail (a stale mask never passes silently).
+can be changed **in the cross and native profiles only**; with the `same` profile they are a usage error, like
+`--ignore`, so a same-model check can never be loosened. `config/native/fs_write_masks.txt` must exist for a cross or
+native check (usage error otherwise); it is edited by the orchestrator, and a line of the recording's session that
+matches no Write of the two traces makes the `ipc` comparison fail (a stale mask never passes silently).
 
-`--ignore FILE` (repeatable) adds IPC ignore files to the `cross` profile only; with the `same` profile it is a usage
-error, so a same-model check can never be loosened by a list.
+`--ignore FILE` (repeatable) adds IPC ignore files to the `cross` and `native` profiles only; with the `same` profile
+it is a usage error, so a same-model check can never be loosened by a list.
+
+**`native`** (D76; N0-33; the native runtime in real time against the reference. Asked for with `--profile native`,
+never the default: `--candidate-runner` alone is `cross`). Its game clock follows the host while the reference charges
+the modelled 268 MHz, so the scenes change earlier, the DSP counter runs hundreds of frames apart and a streaming
+reader chunks its reads differently (`comparators.md`, section 10). It is the `cross` profile with these differences
+and nothing else loosened (the `golden.py` constants `NATIVE_TOLERANCE`, `NATIVE_MAX_SHIFT`, `NATIVE_FS_READS_COALESCE`
+and `NATIVE_FS_READS_PREFIX`, with D76 named in the comment):
+
+| Comparison | Rule, where it differs from `cross` |
+|---|---|
+| `state` | `--tolerance 24` (D76) instead of 4: a real scene change may fall up to **24 frames** apart, in the same order and to the same scene |
+| `state-margin` | unchanged: every input at least **60 frames** after the last real scene change on both sides (D50), so a 24-frame shift can never move an input into another scene |
+| `ipc` | `--fs-reads-coalesce --fs-reads-prefix` added: the `fs:USER/file` Reads of one thread and one file session whose byte ranges touch are merged into one Read (CRC-32 combined) before the multiset is built, and a run that goes on further than the other side's counts as contained when the other side's is its verified prefix; the surplus limit stays 16, the Writes and every other `fs:` request as in `cross` (D52's masks, `config/native/fs_write_masks.txt`) |
+| `dsp-<start>` | `--max-shift 300` (D76) instead of 48, and an **odd** shift compares the reference's region *r* with the candidate's region *1 − r* |
+| everything else | as `cross` (`svc` on the cross-model list, `hid`, `checkpoints`, `svc-full` and `images` as information) |
+
+The profile's number is printed in each result (`within 24 frames`, `largest scene-change shift 15 frames (at most
+24)`, `shift -205 DSP frames`, `after merging touching reads: 46 and 46`) and the last line names it
+(`(profile native)`). `--tolerance`, `--min-margin`, `--max-surplus` and `--max-shift` still apply to it. The native
+runtime is not repeatable from run to run (the host's timing), so a native check is run more than once and says how often
+it passes (`comparators.md`, section 10, lists what was measured); `--repeat` compares the runs with each other in the
+`same` profile, which a native runtime does not pass, so run the check several times instead.
 
 A comparison whose input the candidate did not write is **skipped**, not passed (a failure for the reference runner).
 `--repeat N` runs the candidate N times; each run is compared with the recording in the chosen profile, and runs 2 to N

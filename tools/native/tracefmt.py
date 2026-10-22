@@ -650,6 +650,161 @@ def ipc_data(call: IpcCall, index: int) -> bytes | None:
     return None
 
 
+# ── touching Reads and the CRC-32 of their concatenation (N0-33, D76) ───────────────────
+#
+# A streaming reader that works in a different clock reads the same bytes in other pieces (the native runner
+# one 28672-byte range where the reference reads 4096- and 2048-byte pieces of it).  The Reads of one thread and
+# one file session whose ranges touch are one run (in whatever order they were sent); the CRC-32 of a run is the
+# combination of the CRC-32s of its parts, so the trace never has to hold the bytes.
+
+_CRC_POLY = 0xEDB88320                      # CRC-32 (IEEE 802.3), reflected
+_ZEROS_OPERATORS: list[list[int]] = []      # _ZEROS_OPERATORS[k]: the 32x32 bit matrix that appends 2**k zero bytes
+
+
+def _gf2_times(matrix: list[int], vector: int) -> int:
+    """The product of a 32x32 matrix over GF(2) (one column per bit of the vector) and a 32-bit vector."""
+    out = 0
+    column = 0
+    while vector:
+        if vector & 1:
+            out ^= matrix[column]
+        vector >>= 1
+        column += 1
+    return out
+
+
+def _gf2_square(matrix: list[int]) -> list[int]:
+    return [_gf2_times(matrix, matrix[n]) for n in range(32)]
+
+
+def _zeros_operator(k: int) -> list[int]:
+    """The matrix that appends 2**k zero bytes to a CRC-32 register (zlib's crc32_combine, with the matrices of the
+    powers of two kept)."""
+    if not _ZEROS_OPERATORS:
+        bit = [_CRC_POLY] + [1 << n for n in range(31)]           # one zero bit
+        for _ in range(3):                                         # 2, 4, 8 bits: one byte
+            bit = _gf2_square(bit)
+        _ZEROS_OPERATORS.append(bit)
+    while len(_ZEROS_OPERATORS) <= k:
+        _ZEROS_OPERATORS.append(_gf2_square(_ZEROS_OPERATORS[-1]))
+    return _ZEROS_OPERATORS[k]
+
+
+def crc32_combine(crc1: int, crc2: int, len2: int) -> int:
+    """The CRC-32 of A + B from the CRC-32 of A (`crc1`), the CRC-32 of B (`crc2`) and the length of B in bytes
+    (`len2`): the algorithm of zlib's `crc32_combine` (Mark Adler, zlib licence; written out here from its
+    description, with the matrices of the powers of two kept), the same value as `zlib.crc32(A + B)`.
+    Neither A nor B is needed."""
+    if len2 <= 0:
+        return crc1
+    k = 0
+    while len2:
+        if len2 & 1:
+            crc1 = _gf2_times(_zeros_operator(k), crc1)
+        len2 >>= 1
+        k += 1
+    return crc1 ^ crc2
+
+
+def fs_read_bytes(call: IpcCall) -> int | None:
+    """The number of bytes a Read's reply says it read (its second normal parameter), None when the reply has no such
+    parameter."""
+    words = command_words(call.words_out)
+    if words is None or len(words) < 3:
+        return None
+    try:
+        return int(words[2], 16)
+    except ValueError:
+        return None
+
+
+def _mergeable_fs_read(call: IpcCall) -> tuple[int, int, int] | None:
+    """(offset, size, CRC-32) of a Read that filled its whole buffer and can take part in a run: it succeeded
+    (result 0), its reply says it read `size` bytes, and the reply holds the CRC-32 of its data.  Anything else
+    (a failed, a short, an unanswered Read, a CRC that is not there) is compared on its own."""
+    request = fs_file_request(call)
+    if request is None or call.result is None:
+        return None
+    try:
+        if int(call.result, 16) != 0:
+            return None
+    except ValueError:
+        return None
+    if fs_read_bytes(call) != request[1]:
+        return None
+    token = fs_read_crc(call)
+    if not token.startswith("0x"):
+        return None
+    try:
+        return request[0], request[1], int(token, 16)
+    except ValueError:
+        return None
+
+
+def coalesce_fs_reads(calls) -> list[list[IpcCall]]:
+    """The Reads of the file sessions of fs:USER among `calls` (one thread's requests), grouped into runs of touching
+    ranges.  A run is a chain of Reads of one file session (the full name, `fs:USER/file#3`) in which each Read
+    starts where the one before it ends (offset + size of one equals the offset of the next).  The order in which the
+    Reads were sent does not matter (D52 ignores it, and two readers that interleave differently send the same Reads
+    in another order): the Reads of a session are taken in the order of their offsets (then size, then CRC-32), and
+    each joins the oldest run that ends at its offset or, if none does, starts a new run.  A Read that
+    `_mergeable_fs_read` refuses is a run of its own and breaks nothing.  Each run is in offset order."""
+    runs: list[list[IpcCall]] = []
+    by_session: dict[str, list[tuple[tuple[int, int, int], IpcCall]]] = {}
+    for call in calls:
+        if fs_file_command(call) != "read":
+            continue
+        extent = _mergeable_fs_read(call)
+        if extent is None or extent[1] == 0:
+            runs.append([call])
+        else:
+            by_session.setdefault(call.session, []).append((extent, call))
+    for items in by_session.values():
+        items.sort(key=lambda item: item[0])
+        ends: dict[int, deque[list[IpcCall]]] = {}           # end offset -> the runs that end there, oldest first
+        for (offset, size, _), call in items:
+            waiting = ends.get(offset)
+            if waiting:
+                run = waiting.popleft()
+                run.append(call)
+            else:
+                run = [call]
+                runs.append(run)
+            ends.setdefault(offset + size, deque()).append(run)
+    return runs
+
+
+def fs_run_prefixes(run: list[IpcCall]) -> list[tuple[int, int, str]]:
+    """For a run of `coalesce_fs_reads`, after each of its Reads: (Reads so far, bytes so far, CRC-32 token of
+    those bytes), the CRC-32 combined from the parts' (`crc32_combine`).  A run of one Read that cannot be merged
+    has none (an empty list); a run of several holds only Reads that can."""
+    out: list[tuple[int, int, str]] = []
+    crc, size = 0, 0
+    for n, call in enumerate(run, 1):
+        extent = _mergeable_fs_read(call)
+        if extent is None:
+            if len(run) == 1:
+                return []
+            raise ValueError("a Read that cannot be merged is in a run of several")
+        crc = crc32_combine(crc, extent[2], extent[1]) if size else extent[2]
+        size += extent[1]
+        out.append((n, size, f"0x{crc:08x}"))
+    return out
+
+
+def merged_fs_read(run: list[IpcCall]) -> tuple[int, int, str]:
+    """(offset, size, CRC-32 token) of a run of `coalesce_fs_reads`: the first Read's offset, the sum of the sizes,
+    and the CRC-32 of the concatenated data, combined from the parts' (`crc32_combine`).  A run of one stand-alone
+    Read that cannot be merged gives that Read's own offset, size and token."""
+    first = fs_file_request(run[0])
+    if first is None:
+        raise ValueError("a Read without parameters cannot be merged")
+    if len(run) == 1:
+        return first[0], first[1], fs_read_crc(run[0])
+    _, size, token = fs_run_prefixes(run)[-1]
+    return first[0], size, token
+
+
 def join_items(items) -> str:
     items = list(items)
     return ",".join(str(i) for i in items) if items else "-"

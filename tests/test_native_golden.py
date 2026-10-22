@@ -48,8 +48,8 @@ with open(os.path.join(user, "ran.txt"), "a") as f:
     f.write("run\n")
 jit = opt("--cpu") == "jit"
 cpu = opt("--cpu", "native")
-change = {"late_scene": 12, "very_late": 15, "late4": 14, "shift1": 11}.get(mode, 10)
-second = 999 if mode == "one_change" else 25
+change = {"late_scene": 12, "very_late": 15, "late4": 14, "shift1": 11, "late15": 25, "late30": 40}.get(mode, 10)
+second = 999 if mode == "one_change" else {"late15": 40, "late30": 55}.get(mode, 25)
 if mode == "no_change":
     change = second = 999
 
@@ -83,17 +83,24 @@ if opt("--trace-ipc"):
            % ("0xC8804464" if (mode == "ipc_diff" or jit) else "0x00000000")]
     # D52: Reads of a file and a Write of 32 bytes.  Another timing model reads in another order and one read
     # fewer, and its Write holds other bytes in the range the mask file masks (4 to 7)
-    reads = [(0, 0x11), (16, 0x22), (32, 0x33)]
+    reads = [(0, 16, 0x11), (16, 16, 0x22), (32, 16, 0x33)]
     if jit:
-        reads = reads[::-1][:2]
+        reads = reads[:2][::-1]          # the last read is missing, the two others come in the other order
     if mode == "read_crc":
-        reads[0] = (reads[0][0], 0x99)
+        reads[0] = (reads[0][0], 16, 0x99)
     if mode == "reads_many":
-        reads += [(1000 + 16 * i, 0x100 + i) for i in range(17)]
-    for k, (off, crc) in enumerate(reads):
-        ipc.append("1 seq=%d session=fs:USER/file#0 cmd=0x080200c2 in=0x080200c2,0x%08x,0x00000000,0x00000010,0x0000010c,"
-                   "0x0fffdaf8 desc=mapped-w:4:16:- out=0x08020082,0x00000000,0x00000010,0x0000010c,0x0fffdaf8 "
-                   "outdesc=mapped-w:4:16:0x%08x t=%d" % (10 + k, off, crc, 10 + k))
+        reads += [(1000 + 16 * i, 16, 0x100 + i) for i in range(17)]
+    if mode == "reads_apart":                          # 17 more reads, none touching another: 17 more runs
+        reads += [(1000 + 32 * i, 16, 0x100 + i) for i in range(17)]
+    if mode == "pieces":
+        # D76: one reader reads 32 bytes of a file in two pieces, the other (jit) in one: the same bytes
+        blob = bytes((i * 5 + 1) & 255 for i in range(64))
+        reads = [(0, 32, zlib.crc32(blob[:32]))] if jit else [(0, 16, zlib.crc32(blob[:16])), (16, 16, zlib.crc32(blob[16:32]))]
+    for k, (off, size, crc) in enumerate(reads):
+        ipc.append("1 seq=%d session=fs:USER/file#0 cmd=0x080200c2 in=0x080200c2,0x%08x,0x00000000,0x%08x,0x%08x,"
+                   "0x0fffdaf8 desc=mapped-w:4:%d:- out=0x08020082,0x00000000,0x%08x,0x%08x,0x0fffdaf8 "
+                   "outdesc=mapped-w:4:%d:0x%08x t=%d" % (10 + k, off, size, (size << 4) | 0xC, size, size,
+                                                          (size << 4) | 0xC, size, crc, 10 + k))
     data = bytearray(range(32))
     if jit:
         data[4:8] = b"\xee" * 4
@@ -132,15 +139,20 @@ for flag, kind in (("--capture-dsp", "dsp"), ("--capture-gpu", "gpu")):
             with capfmt.Writer(path, "dsp") as w:
                 for i in range(count):
                     r = capfmt.make_region(i, {0: capfmt.make_status(enabled=1)} if mode == "dsp_diff" else None)
-                    if mode == "dsp_stream":
+                    if mode in ("dsp_stream", "dsp_far"):
                         # one audio stream; another timing model has it 7 DSP frames later (its counter at stream
-                        # time t is t + 7), a buffer id that advances every 4 frames
-                        t = 100 + i - (7 if jit else 0)
+                        # time t is t + 7), a buffer id that advances every 4 frames; "dsp_far": 205 frames later.
+                        # As on the console the two regions swap with the counter (the region of its parity is
+                        # the one the DSP reads), so an odd shift swaps them
+                        t = (400 if mode == "dsp_far" else 100) + i - ((205 if mode == "dsp_far" else 7) if jit else 0)
                         def blk(t):
                             return capfmt.make_status(enabled=1, sync_count=1 + t // 4, buffer_position=(t % 4) * 160,
                                                       current_buffer_id=1 + t // 4, last_buffer_id=t // 4)
-                        r = capfmt.make_region(100 + i, {0: blk(t)})
-                        w.dsp_regions(start + i, i, r, capfmt.make_region(99 + i, {0: blk(t - 1)}))
+                        now = (100 + i) & 1
+                        regions = [None, None]
+                        regions[now] = capfmt.make_region(100 + i, {0: blk(t)})
+                        regions[1 - now] = capfmt.make_region(99 + i, {0: blk(t - 1)})
+                        w.dsp_regions(start + i, i, regions[0], regions[1])
                     else:
                         w.dsp_regions(start + i, i, r, r)
                     sound = [] if mode == "silent_dsp" else [(i + 1, 0)] * 160
@@ -685,16 +697,38 @@ def test_candidate_gets_its_own_program_library_and_shared_options_only(env, cap
     assert a[-3:] == ["--native", "--extra", "1"]
     assert a[a.index("--set") + 1] == "5000:fps=60"
     for not_shared in ("--new-3ds", "--install", "--cpu", "--capture-gpu", "--count-unmapped", "--shots",
-                       "--shot-every", "--shots-from", "--dump", "--trace-timing", "--observable"):
+                       "--shot-every", "--shots-from", "--dump", "--trace-timing"):
         assert not_shared not in a
     for shared in ("--user", "--frames", "--input-file", "--trace-svc", "--trace-ipc", "--trace-ipc-full",
-                   "--state-trace", "--capture-hid", "--capture-dsp"):
+                   "--state-trace", "--capture-hid", "--capture-dsp", "--observable"):
         assert shared in a
+    # N1-21: the native runner reads the same list of observable values as the comparison does
+    assert a[a.index("--observable") + 1] == str(golden.OBSERVABLE)
     out = capsys.readouterr().out
     assert "(profile cross)" in out
     got = statuses(out)
     assert got["svc"] == "PASS" and got["state"] == "PASS" and got["hid"] == "PASS" and got["dsp-10"] == "PASS"
     assert "images" not in got and "unmapped" not in got          # not run in the cross profile
+
+
+def test_a_native_candidate_check_needs_neither_the_reference_runner_nor_the_game(env, capsys):
+    # N1-21: the reference is the recording; only the candidate's runner and program are needed
+    assert env.record() == 0
+    prog = env.tmp / "prog"
+    prog.mkdir()
+    capsys.readouterr()
+    common = ["--out", str(env.out), "--sessions-dir", str(env.sessions)]
+    assert golden.main(["check", "S1", *common, "--candidate-runner", str(env.script),
+                        "--candidate-program", str(prog)]) == 0
+    assert env.calls()[-1]["argv"][0] == str(prog)
+    # without the program there is nothing to start (usage error); without a candidate runner, the
+    # reference runner and the game are still required
+    assert golden.main(["check", "S1", *common, "--candidate-runner", str(env.script)]) == 2
+    assert "--candidate-program" in capsys.readouterr().err
+    assert golden.main(["check", "S1", *common]) == 2
+    assert "--runner and --game" in capsys.readouterr().err
+    # --candidate-program alone is still refused
+    assert golden.main(["check", "S1", *common, "--candidate-program", str(prog)]) == 2
 
 
 def test_a_candidate_program_or_library_needs_its_runner(env, capsys):
@@ -952,6 +986,220 @@ def test_cross_commands(env, monkeypatch):
     assert {r.name: r.status for r in results}["svc-full"] == "info"
     assert "state-margin" in {r.name for r in results}
 
+
+# ---- check, the native profile (D76)
+
+def native(env, *extra, s="S1"):
+    """A check of `--cpu jit` against the recording in the native profile, with the test list."""
+    return env.check("--candidate-args", "--cpu jit", "--profile", "native", "--ignore", str(env.ignore_file), *extra, s=s)
+
+
+SESSION_LATE = """\
+# name: S5
+# needs: none
+# frames: 80
+# checkpoints: 5:0, 60:4
+# captures:
+f70:A
+"""
+
+SESSION_LONG_DSP = """\
+# name: S4
+# needs: none
+# frames: 330
+# checkpoints: 5:0, 20:2, 60:4
+# captures: dsp:10:300
+f70:A
+"""
+
+
+def test_the_native_profile_numbers_are_d55s_and_the_cross_ones_are_unchanged():
+    assert golden.NATIVE_TOLERANCE == 24 and golden.NATIVE_MAX_SHIFT == 300                  # D76
+    assert golden.NATIVE_FS_READS_COALESCE is True                                           # D76
+    assert golden.PROFILES == ("same", "cross", "native")
+    assert golden.CROSS_TOLERANCE == 4 and golden.CROSS_MIN_MARGIN == 60 and golden.CROSS_MAX_SHIFT == 48
+    assert golden.CROSS_MAX_SURPLUS == 16
+    cross_ = golden.Compare("cross")
+    nat = golden.Compare("native")
+    assert [cross_.rule(n) for n in ("tolerance", "min_margin", "max_surplus", "max_shift")] == [4, 60, 16, 48]
+    assert [nat.rule(n) for n in ("tolerance", "min_margin", "max_surplus", "max_shift")] == [24, 60, 16, 300]
+    assert golden.Compare("native", tolerance=7).rule("tolerance") == 7                      # the options still apply
+
+
+def test_the_profile_names_itself_and_is_never_the_default(env, capsys):
+    assert env.record() == 0
+    capsys.readouterr()
+    assert native(env) == 0
+    assert "(profile native)" in capsys.readouterr().out
+    # only --profile native asks for it
+    assert golden.resolve_profile("native", None, None, "recomp") == "native"
+    assert golden.resolve_profile(None, "RUN2", None, "recomp") == "cross"
+    assert golden.resolve_profile(None, None, "jit", "recomp") == "cross"
+
+
+def test_native_profile_passes_what_cross_passes_and_gates_the_same_things(env, capsys, monkeypatch):
+    assert env.record() == 0
+    capsys.readouterr()
+    assert cross(env) == 0 and native(env) == 0
+    for mode, failing in (("svc_diff", "svc"), ("hid_diff", "hid"), ("write_outside", "ipc"), ("read_crc", "ipc")):
+        monkeypatch.setenv("FAKE_MODE", mode)
+        capsys.readouterr()
+        code = native(env)
+        got = statuses(capsys.readouterr().out)
+        assert code == 1 and got[failing] == "FAIL", mode
+    monkeypatch.setenv("FAKE_MODE", "dsp_diff")
+    capsys.readouterr()
+    assert native(env) == 1 and statuses(capsys.readouterr().out)["dsp-10"] == "FAIL"
+    # D52's masks and the surplus of reads are the cross profile's
+    monkeypatch.setenv("FAKE_MODE", "reads_many")           # 17 more reads that touch each other: one run more
+    assert native(env) == 0
+    monkeypatch.setenv("FAKE_MODE", "reads_apart")
+    capsys.readouterr()
+    assert native(env) == 1
+    assert "surplus 18" in capsys.readouterr().out      # 17 runs more, and the read the shorter stream stops before
+    assert native(env, "--max-surplus", "17") == 1
+    assert native(env, "--max-surplus", "18") == 0
+
+
+def test_native_profile_tolerates_a_scene_change_24_frames_late_and_no_more(env, capsys, monkeypatch):
+    (env.sessions / "S5.txt").write_text(SESSION_LATE)
+    env.masks.write_text(env.masks.read_text() + "S5 32 64 4 4   test: the fake clock\n")
+    assert env.record(s="S5") == 0
+    monkeypatch.setenv("FAKE_MODE", "late15")           # the scene changes 15 frames later than in the recording
+    capsys.readouterr()
+    assert cross(env, s="S5") == 1
+    assert statuses(capsys.readouterr().out, "S5")["state"] == "FAIL"
+    assert native(env, s="S5") == 0
+    out = capsys.readouterr().out
+    got = statuses(out, "S5")
+    assert got["state"] == "PASS" and got["state-margin"] == "PASS" and got["checkpoints"] == "PASS"
+    assert "largest scene-change shift 15 frames (at most 24)" in out
+    assert "(profile native)" in out
+    assert native(env, "--tolerance", "14", s="S5") == 1               # the option still applies
+    assert native(env, "--tolerance", "15", s="S5") == 0
+    monkeypatch.setenv("FAKE_MODE", "late30")                          # 30 frames: past D76's 24
+    capsys.readouterr()
+    assert native(env, s="S5") == 1
+    assert statuses(capsys.readouterr().out, "S5")["state"] == "FAIL"
+    assert native(env, "--tolerance", "30", s="S5") == 0
+    # the same profile is exact
+    assert env.check("--candidate-args", "--cpu jit", "--profile", "same", s="S5") == 1
+
+
+def test_native_profile_keeps_d50s_margin_guard(env, capsys, monkeypatch):
+    (env.sessions / "S5.txt").write_text(SESSION_LATE.replace("f70:A", "f45:A"))      # 5 frames after the late change at 40
+    env.masks.write_text(env.masks.read_text() + "S5 32 64 4 4   test: the fake clock\n")
+    assert env.record(s="S5") == 0
+    monkeypatch.setenv("FAKE_MODE", "late30")
+    capsys.readouterr()
+    assert native(env, "--tolerance", "30", s="S5") == 0
+    monkeypatch.setattr(golden, "CROSS_MIN_MARGIN", 60)                  # D50's own number, the same in every profile
+    capsys.readouterr()
+    assert native(env, "--tolerance", "30", s="S5") == 1
+    got = statuses(capsys.readouterr().out, "S5")
+    assert got["state"] == "PASS" and got["state-margin"] == "FAIL"
+
+
+def test_native_profile_aligns_the_dsp_capture_up_to_300_frames_with_odd_shifts(env, capsys, monkeypatch):
+    (env.sessions / "S4.txt").write_text(SESSION_LONG_DSP)
+    env.masks.write_text(env.masks.read_text() + "S4 32 64 4 4   test: the fake clock\n")
+    monkeypatch.setenv("FAKE_MODE", "dsp_far")          # one stream; jit has it 205 DSP frames later
+    assert env.record(s="S4") == 0
+    capsys.readouterr()
+    assert native(env, s="S4") == 0
+    out = capsys.readouterr().out
+    assert statuses(out, "S4")["dsp-10"] == "PASS" and "shift +205 DSP frames" in out
+    result = json.loads((env.out / "S4" / "check" / "result.json").read_text())
+    assert "the shift is odd" in next(r for r in result if r["name"] == "dsp-10")["note"]
+    # the cross profile's 48 and the exact profile do not take it
+    capsys.readouterr()
+    assert cross(env, s="S4") == 1
+    out = capsys.readouterr().out
+    assert statuses(out, "S4")["dsp-10"] == "FAIL" and "more than the 48 allowed" in out
+    assert env.check("--candidate-args", "--cpu jit", "--profile", "same", s="S4") == 1
+    # the bound is 300 by default and an option
+    assert native(env, "--max-shift", "205", s="S4") == 0
+    capsys.readouterr()
+    assert native(env, "--max-shift", "204", s="S4") == 1
+    assert "more than the 204 allowed" in capsys.readouterr().out
+
+
+def test_native_profile_merges_the_reads_that_touch_and_cross_does_not(env, capsys, monkeypatch):
+    monkeypatch.setenv("FAKE_MODE", "pieces")
+    assert env.record() == 0                      # the recording reads 32 bytes in two pieces
+    capsys.readouterr()
+    assert cross(env) == 1                        # the candidate (jit) reads them in one
+    assert statuses(capsys.readouterr().out)["ipc"] == "FAIL"
+    assert native(env) == 0
+    out = capsys.readouterr().out
+    assert statuses(out)["ipc"] == "PASS" and "after merging touching reads" in out
+    result = json.loads((env.out / "S1" / "check" / "result.json").read_text())
+    assert "after merging touching reads: 1 and 1" in next(r for r in result if r["name"] == "ipc")["note"]
+    assert env.check("--candidate-args", "--cpu jit", "--profile", "same") == 1
+
+
+def test_native_commands(env, monkeypatch):
+    """The comparators the native profile runs, and with what: the cross profile's, and D76's."""
+    assert env.record() == 0
+    calls = []
+
+    def fake_tool(script, *args):
+        calls.append((script.name, list(args)))
+        return 0, "ok"
+
+    monkeypatch.setattr(golden, "_tool", fake_tool)
+    ref = env.out / "S1"
+    session = golden.parse_session(env.sessions / "S1.txt")
+    results = {}
+    for profile in ("cross", "native"):
+        calls.clear()
+        cfg = golden.Compare(profile, ignore=[env.ignore_file], real_changes=2)
+        results[profile] = {r.name: r.status for r in golden.compare_outputs(session, ref, ref, cfg)}
+        ipc = next(a for n, a in calls if n == "compare_ipc_traces.py")
+        state = next(a for n, a in calls if n == "state_diff.py")
+        assert "--fs-reads-multiset" in ipc and ipc[ipc.index("--max-surplus") + 1] == "16"            # D52, both
+        assert ipc[ipc.index("--fs-write-mask") + 1] == str(env.masks)
+        assert ipc[ipc.index("--fs-write-mask-session") + 1] == "S1"
+        assert ("--fs-reads-coalesce" in ipc) is (profile == "native")
+        assert ("--fs-reads-prefix" in ipc) is (profile == "native")
+        assert state[state.index("--tolerance") + 1] == ("24" if profile == "native" else "4")
+        svc = [a for n, a in calls if n == "compare_svc_traces.py"]
+        assert svc[0][:4] == ["--normalize", "--outputs", "--cross-model", str(golden.SVC_CROSS_MODEL)]
+    assert results["native"] == results["cross"]            # the same comparisons, the same names
+    calls.clear()
+    golden.compare_outputs(session, ref, ref, golden.Compare("same", real_changes=2))
+    assert not [a for n, a in calls if n == "compare_ipc_traces.py" and "--fs-reads-coalesce" in a]
+
+
+def test_native_rules_are_options_of_the_cross_and_native_profiles_only(env, capsys, monkeypatch):
+    assert env.record() == 0
+    capsys.readouterr()
+    for flag in ("--tolerance", "--min-margin", "--max-surplus", "--max-shift"):
+        assert env.check(flag, "3") == 2, flag                                  # the same profile is exact
+        assert "never loosened" in capsys.readouterr().err
+        assert env.check("--profile", "native", flag, "-1") == 2, flag
+        assert "must not be negative" in capsys.readouterr().err
+    assert env.check("--ignore", str(env.ignore_file)) == 2
+    assert "cross and native profiles only" in capsys.readouterr().err
+    assert env.check("--fallback", "--profile", "native") == 2                  # D30's fallback is the same profile's
+    capsys.readouterr()
+    # the native profile needs the mask file and the cross-model SVC list, as the cross profile does
+    monkeypatch.setattr(golden, "FS_WRITE_MASKS", env.tmp / "no_masks.txt")
+    assert native(env) == 2
+    assert "write masks" in capsys.readouterr().err
+    monkeypatch.setattr(golden, "FS_WRITE_MASKS", env.masks)
+    monkeypatch.setattr(golden, "SVC_CROSS_MODEL", env.tmp / "no_list.txt")
+    assert native(env) == 2
+    assert "no_list.txt" in capsys.readouterr().err
+
+
+def test_the_native_profile_is_in_the_help_and_the_docstring():
+    help_text = golden.make_parser().format_help()
+    assert "native" in golden.__doc__ and "D76" in golden.__doc__
+    parser = golden.make_parser()
+    check = next(a for a in parser._subparsers._group_actions[0].choices["check"]._actions if a.dest == "profile")
+    assert tuple(check.choices) == ("same", "cross", "native")
+    assert help_text
 
 # ---- check, D30's fallback
 

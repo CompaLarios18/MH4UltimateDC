@@ -31,6 +31,22 @@ answers; never the bytes of a file.
       NUL-terminated string at address ADDR of the decompressed code file CODE (whose first byte is at
       0x00100000), or hex bytes, or a file. Exit 0 when the checksum matches, 1 when it does not.
 
+  stamp FILE --at OFFSET --id-low W --id-high W --unix-second N --frame N
+      Compares the 8 bytes at OFFSET of an unwrapped slot with the "creation stamp" that the game's
+      hunter-slot builder (function 0x00c22d9c) writes at slot offset 0x18c from its inputs: the reply
+      of cfg:u GetTransferableId (two words), the Unix second of the clock reading the builder makes
+      and the game's frame counter (control object +0x18) when it does (N0-34). Prints, for each of the
+      8 bytes, whether it matches (never the bytes). Exit 0 when all 8 match, 1 when not.
+
+  clock-second --date-ms D --update-tick U --tick T [--rate R]
+      The Unix second (and the UTC calendar time) that the game's clock function gets for a
+      GetSystemTick reading T, from the date record of the shared page (D milliseconds since 1900 at
+      the update tick U) as docs/research/g2-save-bytes.md section 4 does.
+
+  halfword-check FILE --at OFFSET (--equals V | --lcg-seed S --steps N)
+      Whether the little-endian halfword at OFFSET equals V, or the game's random generator
+      (x -> (x or 1) * 0xb0 mod 0xff53) stepped N times from S (N0-31, N0-34). Exit 0 / 1.
+
 Exit status: 0 ok, 1 a difference or a mismatch, 2 a usage problem or an unreadable input.
 Standard library only. The Blowfish tables are computed from the hexadecimal digits of pi (the
 tables the game carries are the standard ones: the first words of the code's tables are checked in
@@ -39,6 +55,7 @@ the document), so no game data is needed to run the tests.
 from __future__ import annotations
 
 import argparse
+import datetime
 import functools
 import struct
 import sys
@@ -51,6 +68,9 @@ HEADER = 8                  # the user slot's header: two little-endian words
 XOR_MODULUS = 0xFF53        # the keystream's modulus (0x0000ff53 in the game's literal pool)
 XOR_MULTIPLIER = 0xB0       # and its multiplier
 KEY_MAX = 4096
+TICKS_PER_SECOND = 268_111_856          # the 3DS's ARM11 clock, as the shared page's tick rate
+SECONDS_1900_TO_1970 = 2_208_988_800    # the date record of the shared page counts from 1900
+STAMP_YEAR_BIAS = 0x6C                  # 0x00c22e34: the stamp's year byte is (years since 1900) + 0x6c
 
 
 class UsageError(Exception):
@@ -167,6 +187,59 @@ def seal(plain: bytes, key: bytes, seed: int, version: int = 0x10) -> bytes:
     body = bytearray(plain)
     struct.pack_into("<II", body, 0, (version & 0xFFFF) | ((seed & 0xFFFF) << 16), byte_sum(bytes(body)))
     return Blowfish(key).encrypt_ecb(xor_scramble(bytes(body), seed))
+
+
+def lcg_step(x: int) -> int:
+    """One step of the game's 16-bit random generator (0x002b0310, 0x002b0f08, and the scramble above)."""
+    return ((x or 1) * XOR_MULTIPLIER) % XOR_MODULUS
+
+
+def lcg_steps(x: int, count: int) -> int:
+    for _ in range(count):
+        x = lcg_step(x)
+    return x
+
+
+def unix_second(date_ms_1900: int, update_tick: int, tick: int, rate: int = TICKS_PER_SECOND) -> int:
+    """The Unix second the game's clock function (0x0064e83c) gets for a GetSystemTick reading: the date
+    record of the shared page (milliseconds since 1900 at the update tick) plus the ticks since then."""
+    if tick < update_tick:
+        raise UsageError("the tick is before the update tick")
+    return (date_ms_1900 + (tick - update_tick) * 1000 // rate) // 1000 - SECONDS_1900_TO_1970
+
+
+def calendar(unix_sec: int) -> datetime.datetime:
+    try:
+        return datetime.datetime.fromtimestamp(unix_sec, tz=datetime.timezone.utc)
+    except (OverflowError, OSError, ValueError):
+        raise UsageError(f"{unix_sec} is not a usable Unix second") from None
+
+
+def hunter_stamp(id_low: int, id_high: int, unix_sec: int, frame: int) -> bytes:
+    """The 8 bytes that the hunter-slot builder (0x00c22d9c) writes at slot offset 0x18c (N0-34).
+
+    id_low, id_high: the two reply words of cfg:u GetTransferableId (SHA-256 of the console's unique ID
+    and the title's unique ID 0x1263, its last 8 bytes). unix_sec: the Unix second of the builder's own
+    clock reading (UTC). frame: the control object's counter at +0x18, which the builder reads just before.
+    Bytes 0 to 2 are bits 24 to 47 of the 64-bit id; then the year, the month and day, the minute and
+    day, the second with two bits of the frame, and the low byte of the frame."""
+    t = calendar(unix_sec)
+    return bytes([
+        (id_low >> 24) & 0xFF,
+        id_high & 0xFF,
+        (id_high >> 8) & 0xFF,
+        (t.year - 1900 + STAMP_YEAR_BIAS) & 0xFF,
+        ((t.month << 4) + ((t.day & 0x1E) >> 1)) & 0xFF,
+        ((t.minute & 0x1F) + (t.day << 5)) & 0xFF,
+        ((t.second & 0x3F) + ((frame & 0x300) >> 2)) & 0xFF,
+        frame & 0xFF,
+    ])
+
+
+STAMP_BYTE_NAMES = (
+    "bits 24 to 31 of the id", "bits 32 to 39 of the id", "bits 40 to 47 of the id", "year",
+    "month and day", "minute and day", "seconds and frame bits 8, 9", "frame bits 0 to 7",
+)
 
 
 def unwrap(data: bytes, key: bytes, xor: bool = True) -> tuple[bytes, int, int, int]:
@@ -353,6 +426,69 @@ def cmd_unwrap(args: argparse.Namespace) -> int:
     return 0 if ok else 1
 
 
+def word32(value: int | None, what: str) -> int:
+    if value is None:
+        raise UsageError(f"give {what}")
+    if not 0 <= value <= 0xFFFFFFFF:
+        raise UsageError(f"{what} is not a 32-bit word")
+    return value
+
+
+def inside(data: bytes, offset: int | None, size: int, what: str = "--at") -> int:
+    if offset is None:
+        raise UsageError(f"give {what}")
+    if offset < 0 or offset + size > len(data):
+        raise UsageError(f"{what} {offset}: {size} bytes do not fit in the file ({len(data)} bytes)")
+    return offset
+
+
+def cmd_stamp(args: argparse.Namespace) -> int:
+    data = read_file(args.file)
+    at = inside(data, args.at, 8)
+    low, high = word32(args.id_low, "--id-low"), word32(args.id_high, "--id-high")
+    if args.unix_second is None or args.frame is None:
+        raise UsageError("give --unix-second and --frame")
+    expected = hunter_stamp(low, high, args.unix_second, args.frame)
+    bad = 0
+    for i in range(8):
+        ok = data[at + i] == expected[i]
+        bad += not ok
+        print(f"byte {i} ({STAMP_BYTE_NAMES[i]}): {'match' if ok else 'no match'}")
+    print("all 8 bytes match" if not bad else f"{bad} of 8 bytes differ")
+    return 0 if not bad else 1
+
+
+def cmd_clock_second(args: argparse.Namespace) -> int:
+    for value, what in ((args.date_ms, "--date-ms"), (args.update_tick, "--update-tick"), (args.tick, "--tick")):
+        if value is None:
+            raise UsageError(f"give {what}")
+    if args.rate <= 0:
+        raise UsageError("--rate must be positive")
+    sec = unix_second(args.date_ms, args.update_tick, args.tick, args.rate)
+    t = calendar(sec)
+    print(f"unix second {sec}; {t:%Y-%m-%d %H:%M:%S} UTC; second of the minute {t.second}")
+    return 0
+
+
+def cmd_halfword_check(args: argparse.Namespace) -> int:
+    data = read_file(args.file)
+    at = inside(data, args.at, 2)
+    value = struct.unpack_from("<H", data, at)[0]
+    if args.equals is not None:
+        if not 0 <= args.equals <= 0xFFFF:
+            raise UsageError("--equals is not a halfword")
+        expected, what = args.equals, "the given value"
+    elif args.lcg_seed is not None and args.steps is not None:
+        if not 0 <= args.lcg_seed <= 0xFFFF or args.steps < 0:
+            raise UsageError("--lcg-seed is a halfword and --steps is not negative")
+        expected, what = lcg_steps(args.lcg_seed, args.steps), f"the generator {args.steps} steps from the seed"
+    else:
+        raise UsageError("give --equals, or --lcg-seed and --steps")
+    ok = value == expected
+    print(f"halfword at {at} vs {what}: {'match' if ok else 'no match'}")
+    return 0 if ok else 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = ap.add_subparsers(dest="command", required=True)
@@ -386,12 +522,39 @@ def build_parser() -> argparse.ArgumentParser:
     u.add_argument("--out")
     u.add_argument("--no-xor", action="store_true", help="skip the XOR layer (only Blowfish)")
     u.set_defaults(func=cmd_unwrap)
+
+    def num(what: str):
+        return lambda s: number(s, what)
+
+    s = sub.add_parser("stamp", help="check a hunter slot's creation stamp against its inputs (N0-34)")
+    s.add_argument("file")
+    s.add_argument("--at", type=num("--at"))
+    s.add_argument("--id-low", type=num("--id-low"))
+    s.add_argument("--id-high", type=num("--id-high"))
+    s.add_argument("--unix-second", type=num("--unix-second"))
+    s.add_argument("--frame", type=num("--frame"))
+    s.set_defaults(func=cmd_stamp)
+
+    k = sub.add_parser("clock-second", help="the Unix second of a GetSystemTick reading (N0-34)")
+    k.add_argument("--date-ms", type=num("--date-ms"))
+    k.add_argument("--update-tick", type=num("--update-tick"))
+    k.add_argument("--tick", type=num("--tick"))
+    k.add_argument("--rate", type=num("--rate"), default=TICKS_PER_SECOND)
+    k.set_defaults(func=cmd_clock_second)
+
+    h = sub.add_parser("halfword-check", help="a halfword against a value or the stepped random generator")
+    h.add_argument("file")
+    h.add_argument("--at", type=num("--at"))
+    h.add_argument("--equals", type=num("--equals"))
+    h.add_argument("--lcg-seed", type=num("--lcg-seed"))
+    h.add_argument("--steps", type=num("--steps"))
+    h.set_defaults(func=cmd_halfword_check)
     return ap
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
     try:
+        args = build_parser().parse_args(argv)
         return args.func(args)
     except UsageError as e:
         print(f"error: {e}", file=sys.stderr)

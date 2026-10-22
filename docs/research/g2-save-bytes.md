@@ -145,7 +145,9 @@ Every value is reproduced exactly:
   words hold the low 16 bits of the second reading's Unix second: 1767268857 on recomp and 1767268858 on jit,
   a difference of one, which is the +1 seen at offsets 290 and 292. The 50 between the two readings' values in
   both backends is the 50 seconds of emulated time between frames 3 and 2813.
-- **Reading 3** is the same second on both backends and is stored nowhere in this slot.
+- **Reading 3** is the same second on both backends. (N0-34, section 9: it is stored in this slot after
+  all, in the hunter's creation stamp at plaintext offsets 75668 to 75675, together with the frame counter
+  and part of the console's ID; equal on both backends here, so it caused no difference in this pair.)
 
 Therefore every plaintext byte that differs is a function of the Unix second at reading 1 or reading 2, and
 the checksum follows from those bytes. The differences between the backends are the emulated clocks: `jit`
@@ -174,7 +176,8 @@ byte of the checksum word (offset 4) and 3 bytes at offsets 75668 to 75670, in b
 explains it: 3 plaintext bytes of one field and the checksum block that follows from them. What the field is
 derived from was removed with N0-29's changes (the two runs of `it1` are byte equal, as are the recordings and
 the runs here) and this note does not show which of them it was; it shows only where in the slot it is and that
-the first 8 bytes are the checksum.
+the first 8 bytes are the checksum. (N0-34 answered it, section 9.4: the three bytes are part of the console's
+ID, which that runner drew anew in every run.)
 
 ## 7. Repeating it
 
@@ -227,3 +230,177 @@ Conditions the rule depends on (for N0-32 and the native runtime):
   that needs no mask.
 - Other users of this layer (the 512-byte `system` file and the other slots) were equal in the pair and are
   not masked.
+
+## 9. The byte that only the native runtime shows (N0-34)
+
+N1-21 ran G2 on the native runtime and compared its `user1` with the recording. Outside the two ranges of
+section 8 the slots differ in one more byte, plaintext offset 75674 (cipher block 9459, offsets 75672 to
+75679 of the written data). A second native run made for this work (same runner, same user-folder base,
+same session) differs there in two bytes, 75674 and 75675. This section says what they are. Nothing in
+it is a defect of the native runtime; the rule is the third line of the mask file, at the end.
+
+### 9.1 What the slot holds at 75668 to 75675
+
+The first fill after the 0x12600-byte block (section 2) is `0x00c1e794`: it copies the 0x1200-byte record
+of the save object at `[0x00fcf7ec] + 0x85a60 + slot * 0x1200` to buffer offset 0x12608 (75272). The slot
+is the byte at control object +0xa4; in G2 it is slot 0, so offset 75272 is the start of that record and
+the record's offset 0x18c is plaintext offset 75668. The 8 bytes at record offsets 0x18c to 0x193 (75668 to
+75675) are a **creation stamp** of the hunter: the record is cleared and filled by the builder at
+`0x00c22d9c` (called from `0x00b778ec`, when the character is created; besides the stamp it copies a name
+and sets a few header halfwords and flags). The record's offsets 0x184 to 0x18b hold another 8-byte field
+that no run changes (it is equal in every slot of this note, the pre-N0-29 pair included); a debug function
+of the game (`0x0020efb0`) prints the stamp as 16 hex digits.
+
+The builder gathers three inputs in this order, which is why they all belong to one moment:
+
+1. the clock function `0x0064e83c` (the third clock reading of section 4, the third `svc 0x28` at `pc`
+   `0x0010CA04`), converted to a calendar time (`0x0064e8d8`, UTC under `TZ=UTC0`);
+2. the control object's counter at +0x18 (the state trace's `c_sys_timer` of section 4's observable list;
+   it counts the same frames as the `frame_counter` at `0x010571d4` but is incremented a little before
+   that one, so the builder reads the number of the next frame record);
+3. the reply of `cfg:u` command 3 with the game's unique ID 0x1263 as parameter (`0x00483bd4`), 7,241
+   ticks after the clock reading in every run (an IPC the SVC trace and the IPC trace both show).
+   This is `GetTransferableId`: the last 8 bytes of SHA-256 over the console's unique ID (8 bytes) and
+   the 20-bit title salt (`Azahar src/core/hle/service/cfg/cfg.cpp`, line 526).
+
+| Stamp byte | Plaintext offset | Value |
+|---|---|---|
+| 0 | 75668 | bits 24 to 31 of the 64-bit reply (the top byte of its low word) |
+| 1 | 75669 | bits 32 to 39 (the low byte of its high word) |
+| 2 | 75670 | bits 40 to 47 |
+| 3 | 75671 | (calendar year - 1900 + 0x6c) and 0xff |
+| 4 | 75672 | (month number << 4) + ((day and 0x1e) >> 1) |
+| 5 | 75673 | (minute and 0x1f) + (day << 5), modulo 256 |
+| 6 | 75674 | (second and 0x3f) + ((frame and 0x300) >> 2), where frame is the counter of item 2 |
+| 7 | 75675 | frame and 0xff |
+
+`save_probe.py stamp` builds those 8 bytes from the three inputs and says, byte by byte, whether the slot
+holds them (it never prints a byte).
+
+### 9.2 The diffs, and the byte
+
+`save_probe.py unwrap` of the recording, of the saved native slot of N1-21 (`native 1`) and of the slot of
+the second native run (`native 2`), all three with the checksum matching, then `diff --align 8`:
+
+| Pair | Plaintext ranges (offset, count) | Written-data ranges (offset, count) |
+|---|---|---|
+| native 1 against the recording | 4, 2; 282, 5; 288, 1; 290, 1; 292, 1; **75674, 1** | 0, 8; 280, 16; **75672, 8** |
+| native 2 against the recording | 4, 2; 282, 5; 288, 1; 290, 1; 292, 1; **75674, 2** | 0, 8; 280, 16; **75672, 8** |
+| native 2 against native 1 | 4, 1; 75675, 1 | 0, 8; 75672, 8 |
+
+Inside the two ranges of section 8 (offsets 4 and 5, which are the checksum, and 282 to 293) the native
+slots differ for the reason of section 4, and the same model reproduces them: the system and game random
+words are the generator stepped 2816 times from the low 16 bits of the Unix second at reading 1, two more
+words are that seed, and two are the low 16 bits of the Unix second at reading 2 (`save_probe.py
+halfword-check`; the 2816 steps are the same in the native runs as in the recording). The native
+clock gives the readings 1 and 2 the seconds 1767268800 and 1767268849 against the recording's 1767268807
+and 1767268857, and everything follows. Outside those ranges, **byte 75674 is stamp byte 6: the second of
+the third clock reading, with two bits of the frame counter**, and 75675 is stamp byte 7, the low byte of
+that counter.
+
+### 9.3 Proof: every stamp is reproduced
+
+Inputs are the third clock reading's `GetSystemTick` result (the `out` words of the SVC trace at `pc`
+`0x0010CA04`), the shared page's date record of the run, the control counter (the state trace's next
+frame record after the reading, which is the value the builder reads), and the reply words of `cfg:u`
+command 3 from the IPC trace. The reply words are derived from the console's unique ID and stay in
+`build/`. Date record: the reference runner's is 3,976,257,607,459 ms since 1900 at update tick 2,000,000,000
+(section 4); the native runtime's is the `--init-time` default, 1767268800, at tick 0
+(`SystemPages::UpdateSharedPage`), i.e. 3,976,257,600,000 ms since 1900.
+
+| Run | Tick of reading 3 | Date record, update tick | Unix second | Calendar (UTC) | Counter | `stamp` |
+|---|---|---|---|---|---|---|
+| recording (and `recomp` repeat) | 22,954,454,494 | 3976257607459, 2e9 | 1767268885 | 2026-01-01 12:01:25 | 4453 | all 8 bytes match |
+| native 1 | 20,635,906,756 | 3976257600000, 0 | 1767268876 | 2026-01-01 12:01:16 | 4453 | all 8 bytes match |
+| native 2 | 20,636,227,444 | 3976257600000, 0 | 1767268876 | 2026-01-01 12:01:16 | 4452 | all 8 bytes match |
+| pre-N0-29 pair, run 1 and run 2 | 22,954,454,494 | as the recording | 1767268885 | as the recording | 4453 | all 8 bytes match, each with its own reply words |
+
+(The ticks are the SVC trace's first two `out` words, the low word first: the recording's are
+`0x58312DDE` and 5. The `recomp` repeat made for this work has the recording's state trace, and the dump of
+the slot at game frame 4453 holds the stamp; at frame 4452 it holds nothing.) `save_probe.py clock-second`
+gives the Unix second of each line from its tick and date record.
+
+The seconds differ by 9: 25 in the recording and 16 in the native runs, which is the whole difference of
+75674 (and the checksum). The 9 seconds are two things, both clock:
+
+- the date at the start. The reference runner starts at 12:00:07.459 (its fixed date record, section 4);
+  the native runtime starts at 12:00:00.000 (`--init-time`, whose text in `docs/native/runner.md` calls it
+  the fixed start of the reference runs, but the reference's date record is 7.459 s later). That is 7.459 s;
+- the time the game takes to reach the character's creation: 78.156 s of emulated time in the recording and
+  76.968 s in the native runs (the native runtime reaches the same game frame 1.19 s earlier; N1-21 measured
+  the scene changes at +8 and -3 frames).
+
+7.459 + 1.188 = 8.647 s, which moves the floor of the second from 76 to 85 (the recording's reading falls
+615 ms into its second, the native readings 968 and 969 ms into theirs).
+
+Byte 75675 differs only between the two native runs: the control counter at the call was 4453 in the
+recording and in native 1 and 4452 in native 2. The creation comes a few frames after the scripted A press
+at game frame 4450 (the likely trigger; not traced), and the native runs are not cycle-exact, so the
+call's phase against the frame boundary moves by milliseconds: the call fell 2.4 ms (recording) and 1.0 ms
+(native 1) after the record of frame 4452 and 3.8 ms before it in native 2 (the records are the state
+trace's `t=`). The call is within a few milliseconds of a boundary in all three, so one frame more or less
+is expected from run to run.
+
+### 9.4 The earlier pair (section 6)
+
+The 3 bytes at 75668 to 75670 that differed between the two runs of the previous reference runner are stamp
+bytes 0 to 2: bits 24 to 47 of the `cfg:u` reply, which that runner drew anew on every run (the console's
+unique ID of the config savegame it made; N0-29's runner fixes it). The two runs' replies differ in the IPC
+traces (`build/n029/it0/G2/run1` and `run2`), and each slot's stamp is reproduced from its own reply (the
+last row of the table above). The first 8 bytes of the slot (the checksum) differ only because of this. So
+section 6's open question is answered, and **section 4's last bullet is wrong**: reading 3 is stored in
+this slot, in the stamp. It is the same second in both backends of N0-28 (so it caused no difference there).
+
+### 9.5 The rule
+
+**The byte is derived from the clock and the frame counter; it is not a defect of the native runtime.** The
+range to add to `config/native/fs_write_masks.txt` (the orchestrator edits it) is one whole cipher block:
+
+```
+G2 81408 0 75672 8   block 9459 of the user slot (user1): stamp bytes 4 to 7 of the hunter's creation stamp (month and day, minute and day, the second with two bits of the frame counter, the low byte of the frame counter): functions of the third clock reading's calendar time and of the control counter at the call (frame 4452 to 4453)
+```
+
+With it, the written bytes of the native runs equal the recording's in all 81,408 bytes but the three
+masked ranges (`save_probe.py ranges --zero 0:8 280:16 75672:8` gives one and the same CRC-32 for the
+recording and the two native slots). The range hides at most those 8 bytes; stamp bytes 4 to 7 are the
+only ones of the block that the clock and the frame counter move, and the block's other 4 bytes were equal
+in every run.
+
+Conditions, as in section 8:
+
+- Stamp bytes 0 to 2 (block 9458, offsets 75664 to 75671) are equal only while the console's unique ID is
+  the same as the recording's. The golden check copies `build/userbase-cfg`, which holds a config savegame,
+  so it is; a native run with a user folder that has none makes a random ID (D37) and then block 9458 differs
+  too. That is a second range for such a run, not for the golden check, and it is not proposed.
+- The native readings fall 31 to 33 ms before the next second boundary (the recording's, 385 ms), so a
+  native run a little slower than these two shows the next second (two frames are enough), and the frame
+  counter moves by one as 9.3 shows. A narrower range than the block would not hold; the minute (stamp
+  byte 5) is 44 s away from changing. The cleaner alternative is the one of section 8, a deterministic
+  clock: it would need the reference's 7.459 s in the date record **and** the game reaching frame 4453 at
+  the same tick as the recording (the 1.19 s above, a timing-model question of the native runtime), so it is
+  not proposed here.
+- The stamp is written once, at the character's creation. If G2 changes so that the character is created
+  elsewhere, or a second hunter is created, the offsets move.
+
+### 9.6 Repeating it
+
+```
+python tools/native/save_probe.py unwrap native.bin --key-from-code build/native-game/code.bin:0x00e05e04 --out native.plain
+python tools/native/save_probe.py diff native.plain rec.plain --align 8          # the plaintext ranges of 9.2
+python tools/native/save_probe.py diff native.bin rec.bin --align 8              # the written-data ranges
+python tools/native/save_probe.py clock-second --date-ms D --update-tick U --tick T
+python tools/native/save_probe.py stamp native.plain --at 75668 --id-low W --id-high W --unix-second N --frame N
+python tools/native/save_probe.py halfword-check native.plain --at 282 --lcg-seed S --steps 2816
+python tools/native/save_probe.py ranges native.bin --zero 0:8 280:16 75672:8     # equal for the recording and both native slots
+```
+
+`native.bin` is `title/00040000/00126300/data/00000001/user1` of the user folder after a native run of G2
+(`mh4u_native_runner` on the native game folder with the code library, `--user` a copy of the user-folder
+base, `--input-file tools/native/golden/G2.txt`, `--frames 5000` is enough: the save is written at about
+frame 4917). The clock readings are the `svc 0x28` lines of its SVC trace (`--trace-svc`) whose `pc` is
+`0x0010CA04` (the third one; the tick is the `out` words, high word second in the line), `W` and `W` the two
+reply words of the `cfg:u` command 3 line with parameter 0x1263 in `--trace-ipc`, and the counter the
+`c_sys_timer` of the next frame record after the clock reading (`--state-trace` with an observable list
+that has `[[0x00fb6b7c]+0x18] 4 c_sys_timer ignore`). The `recomp` repeat is the run of section 1 with
+`--frames 4456`, a state trace of the slot's words (`[[0x00fcf7ec]+0x85be4]` for the first four) and `--dump`
+of the heap at frames 4452 and 4453. `D` and `U` are the shared page's date record and update tick (section 9.3).
