@@ -121,12 +121,8 @@ public:
 
 } // namespace
 
-// What a module does next to its GpuFactory.
+// What a module does next to its GpuFactory (the factory is left out: nothing here makes a GPU by name).
 MH4N_REGISTER(present::DisplayGpu, "present-test-display", {});
-MH4N_REGISTER(gpu::GpuFactory, "present-test-display",
-              [](gpu::Host&, const Options&) -> std::unique_ptr<gpu::Gpu> {
-                  return std::make_unique<TestDisplayGpu>();
-              });
 
 TEST_CASE("a Display is found with dynamic_cast on the Gpu") {
     std::unique_ptr<gpu::Gpu> gpu = std::make_unique<TestDisplayGpu>();
@@ -156,11 +152,6 @@ TEST_CASE("IsDisplayGpu is true for a registered name and false for another") {
     CHECK_FALSE(present::IsDisplayGpu("null"));
     CHECK_FALSE(present::IsDisplayGpu("present-test-display2"));
     CHECK_FALSE(present::IsDisplayGpu(""));
-    // A name is asked about without making a GPU: the factory exists, and the GPU it makes is one.
-    const gpu::GpuFactory* factory =
-        Registry<gpu::GpuFactory>::Instance().Find("present-test-display");
-    REQUIRE(factory != nullptr);
-    CHECK(present::IsDisplayGpu("present-test-display"));
 }
 
 TEST_CASE("a sink receives frames only between AddScreenSink and RemoveScreenSink") {

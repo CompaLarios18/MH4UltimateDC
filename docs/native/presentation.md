@@ -12,14 +12,14 @@ or `void*`; the producer and the consumer both link the backend and cast them ba
 
 ## Rule 4: one Vulkan device per process
 
-([`wp/N2b.md`](wp/N2b.md) rule 4, proposed D56.) The compositor samples the renderer's images
+([`wp/N2b.md`](wp/N2b.md) rule 4, proposed D56.) The compositor (N2b-05) will sample the renderer's images
 directly, so both must use the same device. The process holds the N2-21 backend object in a slot,
 `present::SetSharedBackend` / `present::SharedBackend`:
 
 | Who | Does |
 |---|---|
-| `mh4u-native` (N2b-09) | puts its backend in the slot before the GPU is made, and sets an empty pointer after the run |
-| the renderer's factory (N2b-12) | uses the slot's backend when it is set |
+| `mh4u-native` (N2b-09) | will put its backend in the slot before the GPU is made, and set an empty pointer after the run |
+| the renderer's factory (N2b-12) | will use the slot's backend when it is set |
 | the headless runner | leaves the slot empty; the renderer then makes its own backend |
 
 The slot is thread-safe and empty by default. The header never looks inside the pointee. The
@@ -43,7 +43,7 @@ set and the sizes agree):
 - **A backend image**: `image` (kept alive for as long as the frame, or any copy, is), the
   `region` of it that holds the screen, `scale` (image pixels per displayed pixel, the renderer's
   `--scale`), `orientation`, and `timeline_value`, the value of N2-21's timeline for the
-  submission that drew it. The compositor's submission waits on that value (0: nothing to wait for).
+  submission that drew it. The compositor's submission will wait on that value (0: nothing to wait for).
 - **CPU pixels**: `pixels`, RGBA8, top row first, upright, 1x.
 
 In both, `width` x `height` is the displayed size at 1x: the top screen is 400 x 240, or wider when
@@ -53,18 +53,24 @@ the hooks widen it (`NativePlatform::TopScreenWidth`); the bottom screen is 320 
 backend image can keep that layout (`Rotated90`) so the renderer needs no extra pass. Then the
 image is as wide as the screen is high and as high as it is wide (`region` is the stored size:
 `StoredWidth()` x `StoredHeight()`), image row `iy` holds displayed column `x = iy`, and image
-column `ix` holds displayed row `y = scaled height - 1 - ix`. `ToImagePixel` does that mapping. It
-is the layout of `DisplayShadow::BuildScreen`'s source (`native/src/gpu_capture/image.h`), whose
-output is the upright image; `Upright` means image pixel = displayed pixel. CPU pixels are always upright.
+column `ix` holds displayed row `y = scaled height - 1 - ix`. `ToImagePixel` does that mapping (its
+`x` and `y` are in scaled displayed pixels). `Upright` means image pixel = displayed pixel. CPU
+pixels are always upright. This convention is the hardware's. It is **not** byte-equal to the
+output of `DisplayShadow::BuildScreen` (`native/src/gpu_capture/image.h`), the upright image the
+capture player compares against: that image carries Azahar's one-pixel shift (it reads index
+`y * stride + stride - x`, so its row 0 comes from the next column), and a producer or a test must not
+take the two to be the same bytes.
 
 ## Producers and consumers
+
+None of the stages after `Publish` exists yet; the picture is the plan N2b-05, N2b-06 and N2b-23 build to.
 
 ```
 GPU (VBlank)                                         window
   |  DisplayFrame                                      ^
   v                                                    |
 ScreenSink::Publish ---> present thread's mailbox ---> compositor + UiLayer::Record ---> swapchain
-  (any thread, returns at once)  (newest only)           (waits on timeline_value)
+  (any thread, returns at once)  (will keep only the newest)           (will wait on timeline_value)
 ```
 
 - **`ScreenSink::Publish(const DisplayFrame&)`**: thread-safe and returns at once. It keeps the
@@ -79,7 +85,7 @@ ScreenSink::Publish ---> present thread's mailbox ---> compositor + UiLayer::Rec
     may run before `ReadScreen` returns (CPU pixels) or later on another thread (a backend image
     that must be read back). An invalid screen gives an empty image.
   - A GPU wrapper (`gpu::GpuWrapper`, such as `queue`) must implement `Display` as well and forward to the GPU it wraps, as it does `GpuDebug`.
-- **`UiLayer::Record(recorder, target_width, target_height)`**: called by the compositor after the
+- **`UiLayer::Record(recorder, target_width, target_height)`**: called by the compositor (N2b-05) after the
   screens, on the thread that composes, with the backend's command recorder (opaque here).
 
 ## Which GPUs show their screens
@@ -92,7 +98,7 @@ MH4N_REGISTER(present::DisplayGpu, "null-display", {});
 ```
 
 `present::IsDisplayGpu(name)` says whether such a registration exists, without making a GPU, so
-`mh4u-native` can pick its default `--gpu` (N2b-09). A GPU registered so must implement `Display`.
+`mh4u-native` will pick its default `--gpu` (N2b-09). A GPU registered so must implement `Display`.
 The registrations: `null-display` (N2b-07) and `renderer` (N2b-13).
 
 ## Parts the other packages add

@@ -2,8 +2,9 @@
 //
 // How a GPU hands the screens it displays to whoever shows them, and the process's slot for the
 // one shared Vulkan backend (N2b rule 4, proposed D56). The producers are the GPUs that can show
-// their screens (`null-display`, N2b-07; the renderer, N2b-13); the consumers are the compositor
-// (N2b-05), the present thread (N2b-06) and the screenshot/dump code (N2b-14).
+// their screens (`null-display`, N2b-07; the renderer, N2b-13); the consumers will be the
+// compositor (N2b-05), the present thread (N2b-06) and the screenshot/dump code (N2b-14). Those
+// packages are written against this header and do not exist yet.
 //
 // This header is self-contained on purpose: it includes only the standard library and mh4n/
 // headers, and no Vulkan or backend header. The backend's objects (N2-21) appear as opaque
@@ -61,8 +62,9 @@ inline constexpr u32 kBottomHeight = 240;
 // CPU pixels are always upright.
 enum class Orientation : u32 { Upright = 0, Rotated90 = 1 };
 
-// A pixel position in a rotated image, from a displayed one. `scaled_height`: the displayed
-// height in image pixels (the screen's height at 1x times the scale).
+// A pixel position in a rotated image, from a displayed one. `x` and `y` are in scaled displayed
+// pixels (displayed pixels times the scale, so 0..width*scale-1 and 0..height*scale-1), and
+// `scaled_height`: the displayed height in image pixels (the screen's height at 1x times the scale).
 struct PixelPos {
     u32 x;
     u32 y;
@@ -88,7 +90,7 @@ struct ImageRegion {
 //    value, or any copy of it, is), `region` the part of it that holds the screen, `scale` the
 //    image pixels per displayed pixel (the renderer's --scale), `orientation` its storage
 //    orientation, and `timeline_value` the value of N2-21's timeline for the submission that
-//    drew it: the compositor's submission waits on it (0: nothing to wait for);
+//    drew it: the compositor's submission will wait on it (0: nothing to wait for);
 //  - CPU pixels: `pixels` holds width * height RGBA8 pixels (4 bytes: R, G, B, A), top row
 //    first, upright, at 1x (`scale` 1, `region` the whole of it).
 // In both, `width` x `height` is the displayed size at 1x.
@@ -188,7 +190,7 @@ inline Display* FindDisplay(gpu::Gpu* gpu) {
 class UiLayer {
 public:
     virtual ~UiLayer() = default;
-    // Called by the compositor after the screens, on the thread that composes. `recorder` is the
+    // Called by the compositor (N2b-05) after the screens, on the thread that composes. `recorder` is the
     // backend's command recorder (N2-21), opaque here; the target is `target_width` x
     // `target_height` pixels.
     virtual void Record(void* recorder, u32 target_width, u32 target_height) = 0;
@@ -221,9 +223,9 @@ inline BackendSlot& Slot() {
 }
 } // namespace detail
 
-// The N2-21 backend object of the process (the one Vulkan device, N2b rule 4). `mh4u-native` sets
-// it before the GPU is made (N2b-09) and sets an empty pointer after the run; the renderer's
-// factory uses it when it is set (N2b-12) and makes its own when it is not (the headless runner).
+// The N2-21 backend object of the process (the one Vulkan device, N2b rule 4). `mh4u-native` will
+// set it before the GPU is made (N2b-09) and set an empty pointer after the run; the renderer's
+// factory will use it when it is set (N2b-12) and make its own when it is not (the headless runner).
 // Thread-safe. The pointee's real type is the backend's; this header never looks inside it.
 inline void SetSharedBackend(std::shared_ptr<void> backend) {
     auto& slot = detail::Slot();
