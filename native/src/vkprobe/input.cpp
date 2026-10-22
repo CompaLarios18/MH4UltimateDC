@@ -164,7 +164,7 @@ bool EndsWith(const std::string& s, std::string_view suffix) {
 
 // The optimalTilingFeatures of a format entry: a bit mask or a list of flag names. False when the
 // entry has none.
-bool ReadOptimalFeatures(const Json& format, FormatSupport* support) {
+bool ReadOptimalFeatures(const Json& format, FormatSupport* support, bool* invalid) {
     std::vector<std::pair<std::string_view, const Json*>> flat;
     // the value may be an array, which Flatten keeps as a member
     Flatten(format, 0, &flat);
@@ -175,7 +175,11 @@ bool ReadOptimalFeatures(const Json& format, FormatSupport* support) {
         if (name != "optimalTilingFeatures") {
             continue;
         }
-        if (value->IsNumber() && value->number >= 0) {
+        if (value->IsNumber() && !(value->number >= 0 && value->number < 18446744073709551616.0)) {
+            *invalid = true;  // negative, NaN or too big for a 64-bit flag mask: casting it would be undefined
+            return false;
+        }
+        if (value->IsNumber()) {
             const u64 bits = static_cast<u64>(value->number);
             found = true;
             sampled = sampled || (bits & kFeatureSampledImage) != 0;
@@ -198,24 +202,30 @@ bool ReadOptimalFeatures(const Json& format, FormatSupport* support) {
     return found;
 }
 
-void ReadFormats(const Json& formats, Facts* facts) {
+bool ReadFormats(const Json& formats, Facts* facts, std::string* error) {
     if (!formats.IsObject()) {
-        return;
+        return true;
     }
+    facts->formats_listed = true;
     for (const JsonMember& m : formats.object) {
         std::string name = m.key;
         if (name.compare(0, 10, "VK_FORMAT_") == 0) {
             name.erase(0, 10);
         }
         FormatSupport support;
-        if (ReadOptimalFeatures(m.value, &support)) {
+        bool invalid = false;
+        if (ReadOptimalFeatures(m.value, &support, &invalid)) {
             facts->formats[name] = support;
+        } else if (invalid) {
+            *error = "optimalTilingFeatures of " + m.key + " is not a valid flag mask (a number from 0 to 2^64 - 1, or a list of names)";
+            return false;
         }
     }
+    return true;
 }
 
 // One capability set of a vulkaninfo document into `facts`. False when it holds nothing we read.
-bool ReadCapabilitySet(const Json& set, Facts* facts) {
+bool ReadCapabilitySet(const Json& set, Facts* facts, std::string* error) {
     bool any = false;
     if (const Json* props = set.Find("properties"); props != nullptr && props->IsObject()) {
         std::vector<std::pair<std::string_view, const Json*>> flat;
@@ -238,7 +248,9 @@ bool ReadCapabilitySet(const Json& set, Facts* facts) {
         any = true;
     }
     if (const Json* formats = set.Find("formats"); formats != nullptr) {
-        ReadFormats(*formats, facts);
+        if (!ReadFormats(*formats, facts, error)) {
+            return false;
+        }
         any = any || formats->IsObject();
     }
     return any;
@@ -250,20 +262,21 @@ bool LooksLikeCapabilitySet(const Json& j) {
 }
 
 bool ReportFromVulkaninfo(const Json& doc, DeviceReport* report, std::string* error) {
+    error->clear();
     Facts facts;
     bool any = false;
     const Json* caps = doc.Find("capabilities");
     if (caps != nullptr && caps->IsObject()) {
         if (LooksLikeCapabilitySet(*caps)) {
-            any = ReadCapabilitySet(*caps, &facts);
+            any = ReadCapabilitySet(*caps, &facts, error);
         }
         for (const JsonMember& m : caps->object) {
             if (LooksLikeCapabilitySet(m.value)) {
-                any = ReadCapabilitySet(m.value, &facts) || any;
+                any = ReadCapabilitySet(m.value, &facts, error) || any;
             } else if (m.value.IsObject()) {  // capabilities: { name: { "device": {...} } }
                 for (const JsonMember& inner : m.value.object) {
                     if (LooksLikeCapabilitySet(inner.value)) {
-                        any = ReadCapabilitySet(inner.value, &facts) || any;
+                        any = ReadCapabilitySet(inner.value, &facts, error) || any;
                     }
                 }
             }
@@ -271,15 +284,18 @@ bool ReportFromVulkaninfo(const Json& doc, DeviceReport* report, std::string* er
     } else if (caps != nullptr && caps->IsArray()) {
         for (const Json& element : caps->array) {
             if (LooksLikeCapabilitySet(element)) {
-                any = ReadCapabilitySet(element, &facts) || any;
+                any = ReadCapabilitySet(element, &facts, error) || any;
             } else if (const Json* device = element.Find("device"); device != nullptr) {
-                any = ReadCapabilitySet(*device, &facts) || any;
+                any = ReadCapabilitySet(*device, &facts, error) || any;
             }
         }
     } else if (const Json* device = doc.Find("device"); device != nullptr && LooksLikeCapabilitySet(*device)) {
-        any = ReadCapabilitySet(*device, &facts);
+        any = ReadCapabilitySet(*device, &facts, error);
     } else if (LooksLikeCapabilitySet(doc)) {
-        any = ReadCapabilitySet(doc, &facts);
+        any = ReadCapabilitySet(doc, &facts, error);
+    }
+    if (!error->empty()) {
+        return false;
     }
     if (!any) {
         *error = "the document has no device: expected `vulkaninfo --json` output "

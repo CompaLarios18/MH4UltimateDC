@@ -1,8 +1,10 @@
 #include "vkprobe/tool.h"
 
+#include <exception>
+#include <filesystem>
 #include <fstream>
-#include <iterator>
 #include <ostream>
+#include <system_error>
 #include <sstream>
 
 #include "../common/utf8.h"
@@ -30,7 +32,7 @@ constexpr const char* kUsage =
 
 }  // namespace
 
-int RunVkProbe(const std::vector<std::string>& args, std::ostream& out, std::ostream& err) {
+int RunVkProbe(const std::vector<std::string>& args, std::ostream& out, std::ostream& err, size_t max_input_bytes) {
     const Options options = ParseOptions("vkprobe", args);
     if (!options.ok()) {
         err << "mh4n_vkprobe: " << options.error() << "\n" << kUsage << Usage("vkprobe");
@@ -52,15 +54,46 @@ int RunVkProbe(const std::vector<std::string>& args, std::ostream& out, std::ost
             err << "mh4n_vkprobe: --loader is for the live probe; it cannot be combined with --from-json\n";
             return 2;
         }
-        std::ifstream in(utf8::PathFromUtf8(*file), std::ios::binary);
-        if (!in) {
-            err << "mh4n_vkprobe: cannot open " << *file << "\n";
-            return 2;
-        }
-        const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-        std::string error;
-        if (!ParseReports(text, &reports, &error)) {
-            err << "mh4n_vkprobe: " << *file << ": " << error << "\n";
+        try {
+            const std::filesystem::path path = utf8::PathFromUtf8(*file);
+            std::error_code ec;
+            const auto status = std::filesystem::status(path, ec);
+            if (ec || !std::filesystem::exists(status)) {
+                err << "mh4n_vkprobe: cannot open " << *file << "\n";
+                return 2;
+            }
+            if (!std::filesystem::is_regular_file(status)) {
+                err << "mh4n_vkprobe: " << *file << " is not a file\n";
+                return 2;
+            }
+            const auto size = std::filesystem::file_size(path, ec);
+            if (ec) {
+                err << "mh4n_vkprobe: cannot read " << *file << ": " << ec.message() << "\n";
+                return 2;
+            }
+            if (size > max_input_bytes) {
+                err << "mh4n_vkprobe: " << *file << " is " << size << " bytes; the limit is " << max_input_bytes
+                    << " bytes (a `vulkaninfo --json` file is a few MB): is it the right file?\n";
+                return 2;
+            }
+            std::ifstream in(path, std::ios::binary);
+            if (!in) {
+                err << "mh4n_vkprobe: cannot open " << *file << "\n";
+                return 2;
+            }
+            std::string text(static_cast<size_t>(size), '\0');
+            in.read(text.data(), static_cast<std::streamsize>(text.size()));
+            if (static_cast<size_t>(in.gcount()) != text.size()) {
+                err << "mh4n_vkprobe: cannot read " << *file << " completely\n";
+                return 2;
+            }
+            std::string error;
+            if (!ParseReports(text, &reports, &error)) {
+                err << "mh4n_vkprobe: " << *file << ": " << error << "\n";
+                return 2;
+            }
+        } catch (const std::exception& e) {
+            err << "mh4n_vkprobe: " << *file << ": cannot be read or parsed (" << e.what() << ")\n";
             return 2;
         }
     } else {

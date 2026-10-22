@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <initializer_list>
 #include <string>
+#include <tuple>
 #include <utility>
 
 #include <fmt/format.h>
@@ -124,21 +125,19 @@ public:
         return r;
     }
 
-    Tri AnyFeaturePrefix(std::string_view prefix) const {
-        bool any_no = false;
+    // How many members that start with `prefix` are true, and whether any is reported at all.
+    Tri CountFeaturePrefix(std::string_view prefix, int* yes) const {
+        bool any = false;
+        *yes = 0;
         for (const auto& [name, value] : f_.features) {
-            if (name.compare(0, prefix.size(), prefix) != 0) {
+            if (name.compare(0, prefix.size(), prefix) != 0 || value == Tri::Unknown) {
                 continue;
             }
-            if (value == Tri::Yes) {
-                return Tri::Yes;
-            }
-            any_no = any_no || value == Tri::No;
+            any = true;
+            *yes += value == Tri::Yes ? 1 : 0;
         }
-        return any_no ? Tri::No : Tri::Unknown;
+        return !any ? Tri::Unknown : *yes > 0 ? Tri::Yes : Tri::No;
     }
-
-    const Facts& facts() const { return f_; }
 
 private:
     static FeatureResult Make(std::string id, std::string title, std::string fallback) {
@@ -192,25 +191,28 @@ DeviceReport Evaluate(const Facts& facts, const std::string& source) {
                                "geometry shaders for the quaternion fix-up, else skip it"));
 
     {
+        // An explicit triangleFans: false is a no whatever the extension list says; no portability
+        // subset extension on a device whose list is known means a full device, where fans are core.
         const Tri subset = j.Ext({"VK_KHR_portability_subset"});
         const Tri bit = j.Feature("triangleFans");
-        if (subset == Tri::No) {
-            out.push_back(j.Plain("triangleFans", "triangle fans", Tri::Yes, "",
-                                  "a full Vulkan device: fans are core"));
+        const char* fallback = "rewrite fans as triangle lists on the CPU";
+        Tri status = Tri::Unknown;
+        std::string detail;
+        if (bit == Tri::No) {
+            status = Tri::No;
+            detail = subset == Tri::Yes ? "portability subset: triangleFans is false" : "triangleFans is false";
+        } else if (subset == Tri::No) {
+            status = Tri::Yes;
+            detail = "a full Vulkan device: fans are core";
         } else if (subset == Tri::Yes) {
-            out.push_back(j.Plain("triangleFans", "triangle fans", bit,
-                                  "rewrite fans as triangle lists on the CPU",
-                                  bit == Tri::Unknown ? "VK_KHR_portability_subset is on the device but triangleFans "
-                                                        "was not reported"
-                                                      : "portability subset: triangleFans is " +
-                                                            std::string(bit == Tri::Yes ? "true" : "false")));
+            status = bit;
+            detail = bit == Tri::Unknown ? "VK_KHR_portability_subset is on the device but triangleFans was not reported"
+                                         : "portability subset: triangleFans is true";
         } else {
-            // no extension list: the bit, when the input has it (only the portability subset
-            // structure carries it), is what the device said
-            out.push_back(j.Plain("triangleFans", "triangle fans", bit,
-                                  "rewrite fans as triangle lists on the CPU",
-                                  bit == Tri::Unknown ? "the extension list was not reported" : ""));
+            status = bit;
+            detail = bit == Tri::Unknown ? "the extension list was not reported" : "";
         }
+        out.push_back(j.Plain("triangleFans", "triangle fans", status, fallback, detail));
     }
 
     out.push_back(j.ExtFeature("indexTypeUint8", "8-bit indices (VK_EXT_index_type_uint8)",
@@ -236,25 +238,32 @@ DeviceReport Evaluate(const Facts& facts, const std::string& source) {
                                "rasterizationOrderColorAttachmentAccess",
                                "fragment shader interlock, else a copy and a barrier per draw"));
 
+        // vulkaninfo leaves out a format the device has no feature for: absent from a file that has a
+        // formats section most likely means no, but only the live probe can say so
+        const std::string omitted =
+            "not listed in the file; vulkaninfo omits formats the device has no feature for, so this most likely "
+            "means no; the live probe settles it";
     {
+        const auto not_reported = [&]() { return facts.formats_listed ? omitted : std::string("the format was not reported"); };
         const Tri d24 = FormatTri(facts, "D24_UNORM_S8_UINT", &FormatSupport::depth_stencil_attachment);
         const Tri d32 = FormatTri(facts, "D32_SFLOAT_S8_UINT", &FormatSupport::depth_stencil_attachment);
         out.push_back(j.Plain("D24_UNORM_S8_UINT", "depth-stencil D24_UNORM_S8_UINT", d24, "D32_SFLOAT_S8_UINT",
-                              d24 == Tri::Unknown ? "the format was not reported"
+                              d24 == Tri::Unknown ? not_reported()
                               : d24 == Tri::No    ? std::string("D32_SFLOAT_S8_UINT is ") +
                                                        (d32 == Tri::Yes  ? "available"
                                                         : d32 == Tri::No ? "also missing"
                                                                          : "not reported")
                                                   : ""));
         out.push_back(j.Plain("D32_SFLOAT_S8_UINT", "depth-stencil D32_SFLOAT_S8_UINT", d32, "",
-                              d32 == Tri::Unknown ? "the format was not reported" : ""));
+                              d32 == Tri::Unknown ? not_reported() : std::string()));
     }
     {
         Tri bc7 = FormatTri(facts, "BC7_UNORM_BLOCK", &FormatSupport::sampled_image);
         std::string detail;
         if (bc7 == Tri::Unknown) {
             bc7 = j.Feature("textureCompressionBC");
-            detail = bc7 == Tri::Unknown ? "the format and textureCompressionBC were not reported"
+            detail = bc7 == Tri::Unknown ? (facts.formats_listed ? omitted + " (textureCompressionBC is not reported either)"
+                                                                : std::string("the format and textureCompressionBC were not reported"))
                                          : "from textureCompressionBC";
         }
         out.push_back(j.Plain("BC7", "BC7 textures (BC7_UNORM_BLOCK)", bc7,
@@ -266,6 +275,14 @@ DeviceReport Evaluate(const Facts& facts, const std::string& source) {
     out.push_back(j.ExtFeature("graphicsPipelineLibrary", "VK_EXT_graphics_pipeline_library",
                                {"VK_EXT_graphics_pipeline_library"}, "graphicsPipelineLibrary",
                                "a pipeline cache and compilation on worker threads"));
+    // The device's answer: a swapchain's support (surface dependent) cannot be told without a surface.
+    for (const auto& [id, ext_name, bit] : {std::tuple<const char*, const char*, const char*>{"presentId", "VK_KHR_present_id", "presentId"},
+                                            {"presentWait", "VK_KHR_present_wait", "presentWait"}}) {
+        FeatureResult r = j.ExtFeature(id, std::string(ext_name) + " (" + bit + ")", {ext_name}, bit,
+                                       "estimate when a frame is shown from the present call (not measured)");
+        r.detail += std::string(r.detail.empty() ? "" : "; ") + "device level: a swapchain's support needs a surface";
+        out.push_back(std::move(r));
+    }
     {
         const Tri ext = j.Ext({"VK_KHR_push_descriptor"});
         Tri status = ext;
@@ -302,7 +319,8 @@ DeviceReport Evaluate(const Facts& facts, const std::string& source) {
         }
         out.push_back(std::move(eds2));
         const Tri ext3 = j.Ext({"VK_EXT_extended_dynamic_state3"});
-        const Tri bits = j.AnyFeaturePrefix("extendedDynamicState3");
+        int yes_bits = 0;
+        const Tri bits = j.CountFeaturePrefix("extendedDynamicState3", &yes_bits);
         Tri status = Tri::Unknown;
         std::string detail;
         if (ext3 == Tri::No) {
@@ -313,7 +331,7 @@ DeviceReport Evaluate(const Facts& facts, const std::string& source) {
             detail = "every extendedDynamicState3* bit is false";
         } else if (ext3 == Tri::Yes && bits == Tri::Yes) {
             status = Tri::Yes;
-            detail = "some of its 31 state bits only (see the device's extendedDynamicState3* features)";
+            detail = std::to_string(yes_bits) + " of 31 bits (see the device's extendedDynamicState3* features)";
         } else {
             detail = ext3 == Tri::Unknown ? "the extension list was not reported"
                                           : "the extendedDynamicState3* bits were not reported";

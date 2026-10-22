@@ -308,6 +308,14 @@ jobs:
           probe=build/native/bin/mh4n_vkprobe
           file "$probe"
           lipo -archs "$probe"
+          # the macOS version it was built for (it may need macOS 26); a missing tool is not a failure
+          if command -v vtool >/dev/null 2>&1; then
+            vtool -show-build "$probe" || true
+          elif command -v otool >/dev/null 2>&1; then
+            otool -l "$probe" | grep -A4 -E 'LC_BUILD_VERSION|LC_VERSION_MIN' || true
+          else
+            echo "no vtool or otool: build version not printed"
+          fi
           [ "$(lipo -archs "$probe")" = "arm64" ] || { echo "::error::mh4n_vkprobe is not an arm64-only executable"; exit 1; }
           "$probe" --help | grep -q "usage: mh4n_vkprobe" || { echo "::error::mh4n_vkprobe --help did not print its usage"; exit 1; }
       - name: Upload the Vulkan probe

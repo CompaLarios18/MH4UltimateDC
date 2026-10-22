@@ -5,6 +5,8 @@
 #include <doctest/doctest.h>
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -95,7 +97,9 @@ Sample FullDevice() {
                     "VK_KHR_timeline_semaphore",
                     "VK_EXT_extended_dynamic_state",
                     "VK_EXT_extended_dynamic_state2",
-                    "VK_EXT_extended_dynamic_state3"};
+                    "VK_EXT_extended_dynamic_state3",
+                    "VK_KHR_present_id",
+                    "VK_KHR_present_wait"};
     s.features = {{"logicOp", true},
                   {"geometryShader", true},
                   {"fragmentStoresAndAtomics", true},
@@ -112,7 +116,9 @@ Sample FullDevice() {
                   {"timelineSemaphore", true},
                   {"extendedDynamicState", true},
                   {"extendedDynamicState2", true},
-                  {"extendedDynamicState3PolygonMode", true}};
+                  {"extendedDynamicState3PolygonMode", true},
+                  {"presentId", true},
+                  {"presentWait", true}};
     s.formats_numeric = {{"D24_UNORM_S8_UINT", 0x200 | 0x1}, {"D32_SFLOAT_S8_UINT", 0x200 | 0x1}, {"BC7_UNORM_BLOCK", 0x1 | 0x1000}};
     return s;
 }
@@ -130,16 +136,33 @@ std::string Status(const DeviceReport& r, const char* id) {
     return StatusText(*f);
 }
 
-std::filesystem::path TempFile(const std::string& name, const std::string& content) {
-    const std::filesystem::path path = std::filesystem::temp_directory_path() / ("mh4n_vkprobe_test_" + name);
-    std::ofstream(path, std::ios::binary) << content;
-    return path;
-}
+// A file in the temp folder with a name no other run or test shares, removed when it goes out of scope
+// (also when a REQUIRE throws).
+class TempFile {
+public:
+    TempFile(const std::string& name, const std::string& content) {
+        static std::atomic<unsigned> counter{0};
+        path_ = std::filesystem::temp_directory_path() /
+                ("mh4n_vkprobe_test_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + "_" +
+                 std::to_string(counter++) + "_" + name);
+        std::ofstream(path_, std::ios::binary) << content;
+    }
+    ~TempFile() {
+        std::error_code ec;
+        std::filesystem::remove(path_, ec);
+    }
+    TempFile(const TempFile&) = delete;
+    TempFile& operator=(const TempFile&) = delete;
+    std::string str() const { return path_.string(); }
 
-int Run(const std::vector<std::string>& args, std::string* out, std::string* err) {
+private:
+    std::filesystem::path path_;
+};
+
+int Run(const std::vector<std::string>& args, std::string* out, std::string* err, size_t limit = kMaxInputBytes) {
     std::ostringstream o;
     std::ostringstream e;
-    const int rc = RunVkProbe(args, o, e);
+    const int rc = RunVkProbe(args, o, e, limit);
     *out = o.str();
     *err = e.str();
     return rc;
@@ -155,7 +178,7 @@ TEST_CASE("a device with everything: every line is yes") {
     CHECK(r.device_type == "discrete GPU");
     CHECK(r.api_version == "1.3.280");
     CHECK(r.driver == "synthetic driver 1.0");
-    CHECK(r.features.size() >= 22);
+    CHECK(r.features.size() == 24);
     for (const FeatureResult& f : r.features) {
         INFO(f.id << ": " << StatusText(f) << " [" << f.detail << "]");
         CHECK(f.status == Tri::Yes);
@@ -443,7 +466,7 @@ TEST_CASE("the live probe, when this machine has a Vulkan device") {
         CHECK(facts.api_version != 0);
         CHECK(facts.extensions_known);
         const DeviceReport r = Evaluate(facts, "live");
-        CHECK(r.features.size() >= 22);
+        CHECK(r.features.size() == 24);
         // a live device reports every core bit, so none of these is unknown
         for (const char* id : {"logicOp", "geometryShader", "shaderClipDistance", "fragmentStoresAndAtomics",
                                "D24_UNORM_S8_UINT", "D32_SFLOAT_S8_UINT", "BC7", "shaderStencilExport", "pushDescriptor"}) {
@@ -467,37 +490,160 @@ TEST_CASE("the command line") {
     CHECK(Run({"--from-json", "/no/such/file.json"}, &out, &err) == 2);
     CHECK(err.find("cannot open") != std::string::npos);
 
-    const auto good = TempFile("good.json", Vulkaninfo(FullDevice()));
-    REQUIRE(Run({"--from-json", good.string()}, &out, &err) == 0);
+    const TempFile good("good.json", Vulkaninfo(FullDevice()));
+    REQUIRE(Run({"--from-json", good.str()}, &out, &err) == 0);
     CHECK(out.rfind("device: Synthetic Full GPU\n", 0) == 0);
     CHECK(out.find("yes") != std::string::npos);
     CHECK(out.find("unknown") == std::string::npos);
 
     // --json of a file is the report's own format, which reads back
     std::string json;
-    REQUIRE(Run({"--from-json", good.string(), "--json"}, &json, &err) == 0);
+    REQUIRE(Run({"--from-json", good.str(), "--json"}, &json, &err) == 0);
     CHECK(json.find("\"mh4n_vkprobe\": 1") != std::string::npos);
-    const auto own = TempFile("own.json", json);
+    const TempFile own("own.json", json);
     std::string again;
-    REQUIRE(Run({"--from-json", own.string()}, &again, &err) == 0);
+    REQUIRE(Run({"--from-json", own.str()}, &again, &err) == 0);
     CHECK(again == out);
 
     // a truncated file: exit 2 and the file name and reason on stderr, nothing on stdout
     const std::string whole = Vulkaninfo(FullDevice());
-    const auto cut = TempFile("cut.json", whole.substr(0, whole.size() - 20));
-    CHECK(Run({"--from-json", cut.string()}, &out, &err) == 2);
+    const TempFile cut("cut.json", whole.substr(0, whole.size() - 20));
+    CHECK(Run({"--from-json", cut.str()}, &out, &err) == 2);
     CHECK(out.empty());
     CHECK(err.find("truncated") != std::string::npos);
     CHECK(err.find("cut.json") != std::string::npos);
 
-    CHECK(Run({"--from-json", good.string(), "--loader", "x"}, &out, &err) == 2);
+    CHECK(Run({"--from-json", good.str(), "--loader", "x"}, &out, &err) == 2);
 
     // a loader that does not exist: exit 3, and --from-json is mentioned as the way out
     CHECK(Run({"--loader", "mh4n-no-such-vulkan-loader.so.1"}, &out, &err) == 3);
     CHECK(err.find("no Vulkan loader found") != std::string::npos);
     CHECK(err.find("--from-json") != std::string::npos);
+}
 
-    std::filesystem::remove(good);
-    std::filesystem::remove(own);
-    std::filesystem::remove(cut);
+TEST_CASE("--from-json refuses a folder, a missing file and an oversized file, with exit status 2") {
+    std::string out;
+    std::string err;
+    CHECK(Run({"--from-json", std::filesystem::temp_directory_path().string()}, &out, &err) == 2);
+    CHECK(err.find("is not a file") != std::string::npos);
+    CHECK(Run({"--from-json", (std::filesystem::temp_directory_path() / "mh4n_vkprobe_test_missing_file.json").string()}, &out, &err) == 2);
+    CHECK(err.find("cannot open") != std::string::npos);
+
+    const TempFile big("big.json", Vulkaninfo(FullDevice()));
+    CHECK(Run({"--from-json", big.str()}, &out, &err, 100) == 2);
+    CHECK(err.find("the limit is 100 bytes") != std::string::npos);
+    CHECK(out.empty());
+    // the same file under the real limit reads
+    CHECK(Run({"--from-json", big.str()}, &out, &err) == 0);
+
+    // a UTF-16 file (what PowerShell 5.1's > writes) gets its own message
+    const TempFile utf16("utf16.json", std::string("\xFF\xFE{\0\"\0a\0\"\0:\0" "1\0}\0", 14));
+    CHECK(Run({"--from-json", utf16.str()}, &out, &err) == 2);
+    CHECK(err.find("this file is UTF-16 (PowerShell's > does that); save it as UTF-8") != std::string::npos);
+}
+
+TEST_CASE("a flag mask that does not fit 64 bits is an error, not undefined behaviour") {
+    for (const char* value : {"1e308", "18446744073709551616", "-1"}) {
+        INFO(value);
+        const std::string doc = std::string(R"({"capabilities":{"device":{"formats":{"VK_FORMAT_D24_UNORM_S8_UINT":)") +
+                                R"({"VkFormatProperties":{"optimalTilingFeatures":)" + value + "}}}}}}";
+        std::vector<DeviceReport> reports;
+        std::string error;
+        CHECK_FALSE(ParseReports(doc, &reports, &error));
+        CHECK(error.find("not a valid flag mask") != std::string::npos);
+        CHECK(error.find("VK_FORMAT_D24_UNORM_S8_UINT") != std::string::npos);
+    }
+    // the largest value that fits is fine
+    std::vector<DeviceReport> reports;
+    std::string error;
+    CHECK(ParseReports(R"({"capabilities":{"device":{"formats":{"VK_FORMAT_D24_UNORM_S8_UINT":{"VkFormatProperties":{"optimalTilingFeatures":18446744073709549568}}}}}})", &reports, &error));
+}
+
+TEST_CASE("explicit triangleFans: false is no, whatever the extension list says") {
+    Sample s = FullDevice(); // a full list without VK_KHR_portability_subset
+    s.features.push_back({"triangleFans", false});
+    const auto r = MustParse(Vulkaninfo(s))[0];
+    CHECK(Status(r, "triangleFans") == "no (fallback: rewrite fans as triangle lists on the CPU)");
+    CHECK(r.Find("triangleFans")->detail == "triangleFans is false");
+    // and with no extension list at all
+    s.include_extensions = false;
+    CHECK(Status(MustParse(Vulkaninfo(s))[0], "triangleFans").rfind("no (fallback: ", 0) == 0);
+}
+
+TEST_CASE("formats that vulkaninfo left out stay unknown and say why") {
+    Sample s = FullDevice();
+    s.formats_numeric = {{"D32_SFLOAT_S8_UINT", 0x200 | 0x1}}; // a formats section without D24 and BC7
+    s.features.erase(std::remove_if(s.features.begin(), s.features.end(), [](const auto& f) { return f.first == "textureCompressionBC"; }),
+                     s.features.end());
+    const auto r = MustParse(Vulkaninfo(s))[0];
+    CHECK(Status(r, "D24_UNORM_S8_UINT") == "unknown");
+    CHECK(r.Find("D24_UNORM_S8_UINT")->detail.find("vulkaninfo omits formats the device has no feature for, so this most likely means no; the live probe settles it") != std::string::npos);
+    CHECK(Status(r, "BC7") == "unknown");
+    CHECK(r.Find("BC7")->detail.find("most likely means no") != std::string::npos);
+    CHECK(r.Find("BC7")->detail.find("textureCompressionBC") != std::string::npos);
+    CHECK(Status(r, "D32_SFLOAT_S8_UINT") == "yes");
+    // no formats section at all: the plain message
+    const auto none = MustParse(R"({"capabilities":{"device":{"features":{"A":{"logicOp":true}}}}})")[0];
+    CHECK(none.Find("D24_UNORM_S8_UINT")->detail == "the format was not reported");
+}
+
+TEST_CASE("VK_KHR_present_id and VK_KHR_present_wait, with and without") {
+    const auto with = MustParse(Vulkaninfo(FullDevice()))[0];
+    CHECK(Status(with, "presentId") == "yes");
+    CHECK(Status(with, "presentWait") == "yes");
+    CHECK(with.Find("presentId")->detail.find("a swapchain's support needs a surface") != std::string::npos);
+
+    Sample s = FullDevice();
+    s.extensions.erase(std::remove(s.extensions.begin(), s.extensions.end(), "VK_KHR_present_wait"), s.extensions.end());
+    s.features.erase(std::remove_if(s.features.begin(), s.features.end(), [](const auto& f) { return f.first == "presentId"; }), s.features.end());
+    const auto without = MustParse(Vulkaninfo(s))[0];
+    CHECK(Status(without, "presentWait").rfind("no (fallback: ", 0) == 0);
+    CHECK(Status(without, "presentId") == "unknown"); // extension listed, bit not reported
+    s.features.push_back({"presentId", false});
+    CHECK(Status(MustParse(Vulkaninfo(s))[0], "presentId").rfind("no (fallback: ", 0) == 0);
+    const std::string table = RenderTable(with);
+    CHECK(table.find("VK_KHR_present_id (presentId)") != std::string::npos);
+    CHECK(table.find("VK_KHR_present_wait (presentWait)") != std::string::npos);
+}
+
+TEST_CASE("error messages show non-printable bytes as 0x..") {
+    std::vector<Json> docs;
+    std::string error;
+    CHECK_FALSE(ParseJsonDocuments("{\"a\": \x01}", &docs, &error));
+    CHECK(error.find("unexpected byte 0x01") != std::string::npos);
+    CHECK_FALSE(ParseJsonDocuments("{\"a\": \xC3\xA9}", &docs, &error));
+    CHECK(error.find("unexpected byte 0xc3") != std::string::npos);
+    CHECK_FALSE(ParseJsonDocuments("{\"a\": @}", &docs, &error));
+    CHECK(error.find("unexpected '@'") != std::string::npos);
+    CHECK_FALSE(ParseJsonDocuments("\"\\\xFF\"", &docs, &error));
+    CHECK(error.find("0xff") != std::string::npos);
+}
+
+TEST_CASE("the probe's own report: every error branch") {
+    std::vector<DeviceReport> reports;
+    std::string error;
+    CHECK_FALSE(ParseReports(R"({"mh4n_vkprobe": 2, "features": []})", &reports, &error));
+    CHECK(error.find("unsupported report version") != std::string::npos);
+    CHECK_FALSE(ParseReports(R"({"mh4n_vkprobe": "1", "features": []})", &reports, &error));
+    CHECK(error.find("unsupported report version") != std::string::npos);
+    CHECK_FALSE(ParseReports(R"({"mh4n_vkprobe": 1, "source": "live"})", &reports, &error));
+    CHECK(error.find("no \"features\" list") != std::string::npos);
+    CHECK_FALSE(ParseReports(R"({"mh4n_vkprobe": 1, "features": {}})", &reports, &error));
+    CHECK(error.find("no \"features\" list") != std::string::npos);
+    CHECK_FALSE(ParseReports(R"({"mh4n_vkprobe": 1, "features": [{"id": "x", "status": "maybe"}]})", &reports, &error));
+    CHECK(error.find("status other than yes, no or unknown") != std::string::npos);
+    CHECK_FALSE(ParseReports(R"({"mh4n_vkprobe": 1, "features": [{"status": "yes"}]})", &reports, &error));
+    CHECK_FALSE(ParseReports(R"({"mh4n_vkprobe": 1, "features": [{"id": "x"}]})", &reports, &error));
+    CHECK(reports.empty());
+    // a minimal valid report: the title defaults to the id
+    REQUIRE(ParseReports(R"({"mh4n_vkprobe": 1, "features": [{"id": "x", "status": "no"}]})", &reports, &error));
+    CHECK(reports[0].features[0].title == "x");
+    CHECK(StatusText(reports[0].features[0]) == "no");
+    // a document that is not an object
+    CHECK_FALSE(ParseReports(R"("text")", &reports, &error));
+    CHECK(error.find("not a JSON object") != std::string::npos);
+    // a second bad document after a good one rejects the whole file
+    const std::string good = RenderJson(MustParse(Vulkaninfo(FullDevice()))[0]);
+    CHECK_FALSE(ParseReports(good + R"({"mh4n_vkprobe": 9})", &reports, &error));
+    CHECK(reports.empty());
 }

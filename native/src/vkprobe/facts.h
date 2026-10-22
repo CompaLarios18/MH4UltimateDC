@@ -41,6 +41,9 @@ struct Facts {
     // Formats by name without the "VK_FORMAT_" prefix ("D24_UNORM_S8_UINT"). A format that is not in
     // the map was not reported.
     std::map<std::string, FormatSupport, std::less<>> formats;
+    // The input had a formats section (`vulkaninfo --json` leaves out the formats a device has no
+    // feature for, so there an absent format most likely means "no"; a live probe asks for each one).
+    bool formats_listed = false;
 };
 
 // "major.minor.patch" of a Vulkan version number ("" for 0).

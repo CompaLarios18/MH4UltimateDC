@@ -1,6 +1,5 @@
 #include "vkprobe/json.h"
 
-#include <cmath>
 #include <cstdlib>
 #include <cstring>
 
@@ -19,6 +18,16 @@ const Json* Json::Find(std::string_view key) const {
 }
 
 namespace {
+
+// A byte for an error message: the character when it is printable ASCII, else 0x..
+std::string DescribeByte(char c) {
+    const unsigned char u = static_cast<unsigned char>(c);
+    if (u >= 0x20 && u < 0x7F) {
+        return std::string("'") + c + "'";
+    }
+    static const char* hex = "0123456789abcdef";
+    return std::string("byte 0x") + hex[u >> 4] + hex[u & 15];
+}
 
 class Parser {
 public:
@@ -92,7 +101,7 @@ private:
             if (c == '-' || (c >= '0' && c <= '9')) {
                 return ParseNumber(out);
             }
-            return Fail(std::string("unexpected character '") + c + "'");
+            return Fail("unexpected " + DescribeByte(c));
         }
     }
 
@@ -268,7 +277,7 @@ private:
             }
             default:
                 --pos_;
-                return Fail("invalid escape in a string");
+                return Fail("invalid escape \\" + DescribeByte(e) + " in a string");
             }
         }
     }
@@ -364,6 +373,11 @@ private:
 
 bool ParseJsonDocuments(std::string_view text, std::vector<Json>* documents, std::string* error) {
     documents->clear();
+    // PowerShell 5.1's `>` writes UTF-16 with a byte order mark; say so instead of "unexpected byte 0xff"
+    if (text.size() >= 2 && ((text[0] == '\xFF' && text[1] == '\xFE') || (text[0] == '\xFE' && text[1] == '\xFF'))) {
+        *error = "this file is UTF-16 (PowerShell's > does that); save it as UTF-8";
+        return false;
+    }
     // a UTF-8 byte order mark, which some Windows tools write
     if (text.size() >= 3 && text.substr(0, 3) == "\xEF\xBB\xBF") {
         text.remove_prefix(3);

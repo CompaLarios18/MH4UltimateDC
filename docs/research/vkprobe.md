@@ -23,6 +23,7 @@ For each device: name, type, driver, API version, then one line per feature, `ye
 | BC7 | `BC7_UNORM_BLOCK` sampled in optimal tiling, else `textureCompressionBC` | decode to RGBA8 at load |
 | dynamic rendering | `dynamicRendering` | render passes and framebuffers |
 | `VK_EXT_graphics_pipeline_library` | the extension, `graphicsPipelineLibrary` | a pipeline cache and worker threads |
+| `VK_KHR_present_id` (`presentId`), `VK_KHR_present_wait` (`presentWait`) | the extension and its bit; without them the time a frame is shown cannot be measured (D57, N2b-24). A swapchain's support depends on the surface, which the probe does not make: this is the device's answer only | estimate when a frame is shown from the present call (not measured) |
 | push descriptors | `VK_KHR_push_descriptor` (core in 1.4) | descriptor sets per draw |
 | timeline semaphores | `timelineSemaphore` | binary semaphores and fences |
 | extended dynamic state 1, 2, 3 | the extension and its bit; 1 and 2 are core in Vulkan 1.3; 3: the extension and at least one `extendedDynamicState3*` bit | bake state into pipelines |
@@ -30,19 +31,22 @@ For each device: name, type, driver, API version, then one line per feature, `ye
 The fallback column is what the spike will evaluate, not a decision. A line ends with `[why]` when the reason is not obvious (the extension that is missing, the bit that was not reported).
 
 - **`unknown` is not `no`.** A device or file that does not report something (no extension list in a `vulkaninfo` file, a feature structure that was not queried, a format that was left out) gives `unknown`. A `yes` needs both the extension in the device's list and the bit set; a name the device did not report is never a `yes`.
+- **Formats missing from a `vulkaninfo` file.** `vulkaninfo --json` leaves out a format the device has no feature for. When the file has a `formats` section and `D24_UNORM_S8_UINT`, `D32_SFLOAT_S8_UINT` or `BC7_UNORM_BLOCK` is not in it, the line stays `unknown` and its `[why]` says it is "not listed in the file ... most likely means no; the live probe settles it". (A live probe asks for each format and never has this case.)
 - `extendedDynamicState3` is `yes` when some of its 31 bits are; the exact bits are in `vulkaninfo`, not in this table (N2-01 asks for the ones it needs).
 
 ## Running it
 
 | Machine | Where the program is | Command |
 |---|---|---|
-| Windows PC | the CI artifact `mh4n-runner-windows` (a zip; `gh run download <run> -n mh4n-runner-windows`, or the run's page on GitHub): `mh4n_vkprobe.exe` beside its DLLs | `mh4n_vkprobe.exe --json > vkprobe-pc.json` |
+| Windows PC | the CI artifact `mh4n-runner-windows` (a zip; `gh run download <run> -n mh4n-runner-windows`, or the run's page on GitHub): `mh4n_vkprobe.exe` beside its DLLs | `cmd /c ".\mh4n_vkprobe.exe --json > vkprobe-pc.json"` (in PowerShell or cmd, in that folder) |
 | Mac (Apple silicon) | the CI artifact `mh4n-vkprobe-macos`: one file, `mh4n_vkprobe` | `./mh4n_vkprobe --json > vkprobe-mac.json` |
 | Linux | `build/native/bin/mh4n_vkprobe` after the build | `mh4n_vkprobe --json > vkprobe-linux.json` |
 
 Run `mh4n_vkprobe` without `--json` to read the table yourself; `--json` prints one JSON document per device (several devices: several documents in one file, which `--from-json` reads).
 
 Artifacts exist for pushes to `native` and `wp/**` branches and for manual dispatches, not for pull requests, and for 30 days.
+
+**The Windows file.** PowerShell does not run a program from the current folder without `.\`. Use the `cmd /c` form above for the file: in Windows PowerShell 5.1 a plain `>` writes UTF-16 with a byte order mark, which the reader refuses (it says "this file is UTF-16 (PowerShell's > does that); save it as UTF-8"); `cmd`'s `>` writes the bytes as they are, in 5.1 and in 7. The program is unsigned, and a file downloaded with a browser is marked as from the internet: Windows may show "Windows protected your PC". Choose "More info", then "Run anyway", or run `Get-ChildItem . | Unblock-File` in the folder before the first run.
 
 **The Mac file.** The zip of an artifact drops the executable bit, and a file downloaded with a browser is quarantined. In Terminal, in the folder with the file:
 
@@ -52,7 +56,7 @@ xattr -d com.apple.quarantine mh4n_vkprobe    # if macOS says it cannot verify t
 ./mh4n_vkprobe --json > vkprobe-mac.json
 ```
 
-The program is an unsigned arm64 executable. On macOS 15 or later, if the quarantine attribute is not the problem, System Settings > Privacy & Security shows the blocked program with an "Open Anyway" button. It loads a Vulkan loader or MoltenVK when it runs: it tries `libvulkan.1.dylib` and `libvulkan.dylib` (the LunarG SDK, Homebrew's `vulkan-loader`), then `libMoltenVK.dylib`, in the library path and under `/opt/homebrew/lib` and `/usr/local/lib`. Without any of them it says so and exits 3: `brew install molten-vk` provides one, or point at a copy with `--loader /path/to/libMoltenVK.dylib`. (Untested on a Mac: the first run is the test.)
+The program is an unsigned arm64 executable, built on macOS 26 with no deployment target set: it may need macOS 26 or later. If it does not start, run `vulkaninfo --json` from the Vulkan SDK and send that file: `mh4n_vkprobe --from-json` reads it on any machine. On macOS 15 or later, if the quarantine attribute is not the problem, System Settings > Privacy & Security shows the blocked program with an "Open Anyway" button. It loads a Vulkan loader or MoltenVK when it runs: it tries `libvulkan.1.dylib` and `libvulkan.dylib` (the LunarG SDK, Homebrew's `vulkan-loader`), then `libMoltenVK.dylib`, in the library path and under `/opt/homebrew/lib` and `/usr/local/lib`. Without any of them it says so and exits 3: `brew install molten-vk` provides one, or point at a copy with `--loader /path/to/libMoltenVK.dylib`. (Untested on a Mac: the first run is the test.)
 
 **Where it differs.** On a Mac it probes MoltenVK, which is the portability subset: expect `no` for triangle fans and probably for logic ops, geometry shaders and custom border colours, and `D24_UNORM_S8_UINT`. If the Mac has both the SDK's loader and MoltenVK, the loader picks the drivers; `--loader` forces one.
 
@@ -74,7 +78,7 @@ Nothing in these files is game data: they list a GPU's capabilities and the mach
 mh4n_vkprobe --from-json FILE [--json]
 ```
 
-Reads `vulkaninfo --json` output, or this program's own `--json`, instead of probing. It needs no Vulkan: the reader and the report are always built. A truncated or invalid file is exit status 2 with the position of the error; a file that holds no device is exit status 2 too. Layout assumed (the Vulkan Profiles device format):
+Reads `vulkaninfo --json` output, or this program's own `--json`, instead of probing. It needs no Vulkan: the reader and the report are always built. A truncated or invalid file is exit status 2 with the position of the error; so are a file that holds no device, a folder, a file over 64 MB, a UTF-16 file and a flag mask that is not a valid number. Layout assumed (the Vulkan Profiles device format):
 
 ```
 capabilities > device > properties   > VkPhysicalDeviceProperties (deviceName, apiVersion, deviceType, vendorID, deviceID)

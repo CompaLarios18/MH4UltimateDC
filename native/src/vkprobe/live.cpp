@@ -134,7 +134,6 @@ public:
         }
         tail_ = out;
     }
-    void* head() const { return head_; }
 
 private:
     VkBaseOutStructure* head_ = nullptr;
@@ -241,6 +240,13 @@ void ReadDevice(const Api& api, VkPhysicalDevice device, u32 instance_api, bool 
         const bool use_pipeline_library = has(VK_EXT_GRAPHICS_PIPELINE_LIBRARY_EXTENSION_NAME);
         if (use_pipeline_library) chain.Add(pipeline_library);
 
+        auto present_id = MakeStruct<VkPhysicalDevicePresentIdFeaturesKHR>(VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_FEATURES_KHR);
+        const bool use_present_id = has(VK_KHR_PRESENT_ID_EXTENSION_NAME);
+        if (use_present_id) chain.Add(present_id);
+        auto present_wait = MakeStruct<VkPhysicalDevicePresentWaitFeaturesKHR>(VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_WAIT_FEATURES_KHR);
+        const bool use_present_wait = has(VK_KHR_PRESENT_WAIT_EXTENSION_NAME);
+        if (use_present_wait) chain.Add(present_wait);
+
         auto eds1 = MakeStruct<VkPhysicalDeviceExtendedDynamicStateFeaturesEXT>(
             VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_FEATURES_EXT);
         const bool use_eds1 = has(VK_EXT_EXTENDED_DYNAMIC_STATE_EXTENSION_NAME);
@@ -281,6 +287,8 @@ void ReadDevice(const Api& api, VkPhysicalDevice device, u32 instance_api, bool 
             merge("rasterizationOrderColorAttachmentAccess", rasterization_order.rasterizationOrderColorAttachmentAccess);
         }
         if (use_pipeline_library) merge("graphicsPipelineLibrary", pipeline_library.graphicsPipelineLibrary);
+        if (use_present_id) merge("presentId", present_id.presentId);
+        if (use_present_wait) merge("presentWait", present_wait.presentWait);
         if (use_eds1) merge("extendedDynamicState", eds1.extendedDynamicState);
         if (use_eds2) merge("extendedDynamicState2", eds2.extendedDynamicState2);
         if (use_eds3) {
@@ -341,6 +349,7 @@ void ReadDevice(const Api& api, VkPhysicalDevice device, u32 instance_api, bool 
     } formats[] = {{"D24_UNORM_S8_UINT", VK_FORMAT_D24_UNORM_S8_UINT},
                    {"D32_SFLOAT_S8_UINT", VK_FORMAT_D32_SFLOAT_S8_UINT},
                    {"BC7_UNORM_BLOCK", VK_FORMAT_BC7_UNORM_BLOCK}};
+    facts->formats_listed = true;
     for (const auto& format : formats) {
         VkFormatProperties properties{};
         api.get_format_properties(device, format.format, &properties);
@@ -446,7 +455,11 @@ bool ProbeLive(const std::vector<std::string>& loader_names, std::vector<Facts>*
     VkInstance instance = nullptr;
     const VkResult created = api.create_instance(&info, nullptr, &instance);
     if (created != VK_SUCCESS || instance == nullptr) {
-        *error = fmt::format("vkCreateInstance failed (VkResult {})", static_cast<int>(created));
+        if (created == VK_ERROR_INCOMPATIBLE_DRIVER) {
+            *error = "vkCreateInstance failed: VK_ERROR_INCOMPATIBLE_DRIVER: no Vulkan driver installed";
+        } else {
+            *error = fmt::format("vkCreateInstance failed (VkResult {})", static_cast<int>(created));
+        }
         return false;
     }
 
