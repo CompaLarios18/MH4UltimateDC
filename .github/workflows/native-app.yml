@@ -77,13 +77,6 @@ jobs:
             -DCMAKE_INSTALL_PREFIX="$PWD/build/sdl3"
           cmake --build build/sdl3-build
           cmake --install build/sdl3-build
-      # saved here, not by a post-job step: a red job would otherwise throw the SDL3 build away
-      - name: SDL3 cache save
-        if: ${{ steps.sdl3.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@v4
-        with:
-          path: build/sdl3
-          key: ${{ steps.sdl3.outputs.cache-primary-key }}
       - name: SDL3 is the one from the cache
         run: |
           set -eu
@@ -91,6 +84,13 @@ jobs:
           find build/sdl3 -name 'SDL3Config*.cmake'
           echo "CMAKE_PREFIX_PATH=$PWD/build/sdl3" >> "$GITHUB_ENV"
           echo "LD_LIBRARY_PATH=$PWD/build/sdl3/lib:$PWD/build/sdl3/lib64" >> "$GITHUB_ENV"
+      # saved only after the install is verified (a broken entry would be pinned under its key), not by a post-job step: a red job would otherwise throw the SDL3 build away
+      - name: SDL3 cache save
+        if: ${{ steps.sdl3.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: build/sdl3
+          key: ${{ steps.sdl3.outputs.cache-primary-key }}
       - name: Configure
         run: |
           cmake -S native -B build/native-app -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
@@ -191,13 +191,6 @@ jobs:
             "-DCMAKE_INSTALL_PREFIX=$prefix"
           cmake --build build/sdl3-build
           cmake --install build/sdl3-build
-      # saved here, not by a post-job step: a red job would otherwise throw the SDL3 build away
-      - name: SDL3 cache save
-        if: ${{ steps.sdl3.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@v4
-        with:
-          path: build/sdl3
-          key: ${{ steps.sdl3.outputs.cache-primary-key }}
       - name: SDL3 is the one from the cache
         run: |
           set -eu
@@ -207,6 +200,13 @@ jobs:
           # the tests start mh4u-native.exe from the build folder: SDL3.dll is found through PATH
           # there (the packaged-start check below runs with a PATH that does not have it)
           cygpath -w "$PWD/build/sdl3/bin" >> "$GITHUB_PATH"
+      # saved only after the install is verified (a broken entry would be pinned under its key), not by a post-job step: a red job would otherwise throw the SDL3 build away
+      - name: SDL3 cache save
+        if: ${{ steps.sdl3.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: build/sdl3
+          key: ${{ steps.sdl3.outputs.cache-primary-key }}
       - name: Configure
         run: |
           cmake -S native -B build/native-app -G Ninja -DCMAKE_C_COMPILER=x86_64-w64-mingw32-clang \
@@ -365,13 +365,6 @@ jobs:
             -DCMAKE_INSTALL_PREFIX="$PWD/build/sdl3"
           cmake --build build/sdl3-build
           cmake --install build/sdl3-build
-      # saved here, not by a post-job step: a red job would otherwise throw the SDL3 build away
-      - name: SDL3 cache save
-        if: ${{ steps.sdl3.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@v4
-        with:
-          path: build/sdl3
-          key: ${{ steps.sdl3.outputs.cache-primary-key }}
       - name: SDL3 is the one from the cache
         run: |
           set -eu
@@ -379,6 +372,13 @@ jobs:
           find build/sdl3 -name 'SDL3Config*.cmake'
           echo "CMAKE_PREFIX_PATH=$PWD/build/sdl3" >> "$GITHUB_ENV"
           echo "DYLD_FALLBACK_LIBRARY_PATH=$PWD/build/sdl3/lib" >> "$GITHUB_ENV"
+      # saved only after the install is verified (a broken entry would be pinned under its key), not by a post-job step: a red job would otherwise throw the SDL3 build away
+      - name: SDL3 cache save
+        if: ${{ steps.sdl3.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: build/sdl3
+          key: ${{ steps.sdl3.outputs.cache-primary-key }}
       - name: Configure
         run: |
           cmake -S native -B build/native-app -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
