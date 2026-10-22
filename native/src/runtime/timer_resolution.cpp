@@ -20,7 +20,8 @@ namespace mh4n::detail {
 
 namespace {
 // The scopes alive (read without the lock by live_count) and, on Windows, the opt-out they hold.
-std::mutex g_mutex;
+// (The mutex is used on Windows only: elsewhere a scope just counts, and -Werror must not see it unused.)
+[[maybe_unused]] std::mutex g_mutex;
 std::atomic<int> g_live{0};
 }  // namespace
 
