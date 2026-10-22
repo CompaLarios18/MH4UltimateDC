@@ -184,6 +184,10 @@ def _cases() -> list[Case]:
     add("BPS a few bytes larger than its source, one bss page", {"code.bps": bps(src, src + b"\x22" * 4)}, pages=1)
     add("BPS for the code and its page that grows beyond them",
         {"exefs/code.bps": bps(with_bss(src, 1), with_bss(src, 1) + b"\x33" * 0x20)}, pages=1)
+    add("BPS with a shorter target, one bss page", {"code.bps": bps(src, src[:0x100])}, pages=1)
+    add("BPS with a shorter target, two bss pages", {"exefs/code.bps": bps(src, src[:0x100])}, pages=2)
+    add("replacement and a growing BPS, one bss page",
+        {"code.bin": REPLACEMENT, "exefs/code.bps": bps(REPLACEMENT, REPLACEMENT + b"\x44" * 0x30)}, pages=1)
     add("code.bin replacement", {"exefs/code.bin": REPLACEMENT}, pages=1)
     add("code.bin replacement in the folder and an IPS", {"code.bin": REPLACEMENT, "code.ips": ips([(0x10, b"mod")])})
     add("both code.bin, the exefs one wins", {"exefs/code.bin": REPLACEMENT, "code.bin": code_bytes(0x30, 5)}, pages=1)

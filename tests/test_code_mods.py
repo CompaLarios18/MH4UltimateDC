@@ -181,4 +181,5 @@ def test_bss_size_is_a_u32_and_is_limited(tmp_path):
     user = _mod_files(tmp_path, {"code.ips": ips((0, b"\x01"))})
     with pytest.raises(code_mods.ModError, match="0x10000001"):
         code_mods.apply_mods(b"\0", user, PID, 0x10000001)
-    assert code_mods.apply_mods(b"\0", user, PID, 0x10000000)[0] == b"\x01"
+    assert code_mods.bss_pages_size(0x10000000) == 0x10000000
+    assert code_mods.apply_mods(b"\0", user, PID, 0x1000)[0] == b"\x01"
