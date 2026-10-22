@@ -130,10 +130,11 @@ void FsState::Init(ServiceContext& context) {
     game.romfs = OpenGameFile(folder, "romfs.bin");
     game.update_romfs = OpenGameFile(folder, "update_romfs.bin");
     game.code = OpenGameFile(folder, "code.bin");
+    game.icon = OpenGameFile(folder, "icon.bin");
     game.program_id = ReadProgramId(folder);
-    MH4N_LOG(Info, kLog, "io latency {}; game folder {}: romfs {}, update romfs {}",
+    MH4N_LOG(Info, kLog, "io latency {}; game folder {}: romfs {}, update romfs {}, icon {}",
              latency == IoLatency::Azahar ? "azahar" : "none", folder.empty() ? "(none)" : "set",
-             game.romfs ? "yes" : "no", game.update_romfs ? "yes" : "no");
+             game.romfs ? "yes" : "no", game.update_romfs ? "yes" : "no", game.icon ? "yes" : "no");
 
     for (const auto& [name, provider] : Registry<ArchiveProvider>::Instance().All()) {
         if (!archives.Register(provider.id_code, provider.make(*this))) {

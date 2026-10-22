@@ -506,6 +506,8 @@ constexpr Result kInvalidArchiveHandle = 0xC8804465;
 constexpr Result kInvalidPath = 0xE0E046BE;
 constexpr Result kCommandNotAllowed = 0xD9004676;
 constexpr Result kExefsSectionNotFound = 0xC8804637;
+constexpr Result kUnsupportedOpenFlags = 0xE0C046F8;   // Azahar's ResultUnsupportedOpenFlags (760)
+constexpr Result kIncorrectExefsReadSize = 0xE0C046F9;  // Azahar's ResultIncorrectExefsReadSize (761)
 
 enum LowPath : u32 { kEmpty = 1, kBinary = 2 };
 
@@ -884,6 +886,124 @@ TEST_CASE("SelfNCCH: a game folder without RomFS files has no RomFS") {
     CHECK(status == 0);
     CHECK(base.result == kRomfsNotFound);
     CHECK(update.result == kRomfsNotFound);
+}
+
+// N1-12e: the ExeFS icon. prepare_game.py writes the base game's ExeFS 'icon' as icon.bin (0x36C0 bytes for
+// this game); Azahar's ExeFSSectionFile serves it once, whole, from offset 0. The synthetic icons here are
+// counter patterns (the scratch area of the guest holds 0x1800 bytes, so the one that is read back is smaller).
+TEST_CASE("SelfNCCH: the ExeFS icon is read from icon.bin like Azahar's ExeFSSectionFile") {
+    Fixture f;
+    TempDir dir;
+    GameFolder game;
+    game.Write(dir);
+    const std::vector<u8> icon = Pattern(0x1200, 7);
+    WriteFile(dir.GameDir() / "icon.bin", icon);
+    Opened opened, banner, logo, other;
+    u64 size = 0;
+    FsGuest::ReadResult whole, shorter, longer, offset, whole_again;
+    const int status = BootWith(f, dir, {"--ms", "100", "--io-latency", "none"}, [&] {
+        FsGuest g(f, dir);
+        g.Initialize();
+        opened = g.OpenFileDirectly(3, kEmpty, kEmptyPath, SelfNcchPath(2, "icon"));
+        banner = g.OpenFileDirectly(3, kEmpty, kEmptyPath, SelfNcchPath(2, "banner"));
+        logo = g.OpenFileDirectly(3, kEmpty, kEmptyPath, SelfNcchPath(2, "logo"));
+        other = g.OpenFileDirectly(3, kEmpty, kEmptyPath, SelfNcchPath(2, "other"));
+        size = g.GetSize(opened.file);
+        shorter = g.Read(opened.file, 0, 0x100);                   // not the file's size
+        longer = g.Read(opened.file, 0, 0x1201, 0x1300);           // not the file's size, bigger
+        offset = g.Read(opened.file, 4, 0x1200);                   // not from the start
+        whole = g.Read(opened.file, 0, 0x1200);
+        whole_again = g.Read(opened.file, 0, 0x1200);               // nothing is used up
+        ExitProcess(*f.runtime);
+    });
+    CHECK(status == 0);
+    CHECK(opened.reply[0] == ipc::MakeHeader(0x0803, 1, 2));
+    CHECK(opened.result == kResultSuccess);
+    CHECK(opened.reply[2] == ipc::MoveHandleDesc(1));
+    CHECK(opened.file != 0);
+    CHECK(size == icon.size());
+    CHECK(whole.result == kResultSuccess);
+    CHECK(whole.count == icon.size());
+    CHECK(whole.bytes == icon);
+    CHECK(whole_again.bytes == icon);
+    CHECK(shorter.result == kIncorrectExefsReadSize);
+    CHECK(shorter.count == 0);
+    CHECK(longer.result == kIncorrectExefsReadSize);
+    CHECK(offset.result == kUnsupportedOpenFlags);
+    CHECK(offset.count == 0);
+    // the banner and the logo: the game folder has none
+    CHECK(banner.result == kExefsSectionNotFound);
+    CHECK(banner.file == 0);
+    CHECK(logo.result == kExefsSectionNotFound);
+    CHECK(logo.file == 0);
+    CHECK(other.result == kInvalidPath);
+}
+
+TEST_CASE("SelfNCCH: an icon.bin of 0x36C0 bytes has that size, and the RomFS is still served") {
+    Fixture f;
+    TempDir dir;
+    GameFolder game;
+    game.Write(dir);
+    WriteFile(dir.GameDir() / "icon.bin", Pattern(0x36C0, 3));
+    Opened icon, romfs;
+    u64 size = 0;
+    FsGuest::ReadResult small, rom_header;
+    const int status = BootWith(f, dir, {"--ms", "100", "--io-latency", "none"}, [&] {
+        FsGuest g(f, dir);
+        g.Initialize();
+        icon = g.OpenFileDirectly(3, kEmpty, kEmptyPath, SelfNcchPath(2, "icon"));
+        size = g.GetSize(icon.file);
+        small = g.Read(icon.file, 0, 0x40);
+        romfs = g.OpenFileDirectly(3, kEmpty, kEmptyPath, SelfNcchPath(0));
+        rom_header = g.Read(romfs.file, 0, 0x28);
+        ExitProcess(*f.runtime);
+    });
+    CHECK(status == 0);
+    CHECK(icon.result == kResultSuccess);
+    CHECK(size == 0x36C0);
+    CHECK(small.result == kIncorrectExefsReadSize);
+    CHECK(romfs.result == kResultSuccess);
+    CHECK(rom_header.bytes == Slice(game.base_romfs, 0, 0x28));
+}
+
+TEST_CASE("SelfNCCH: an empty icon.bin is a section of no bytes, as Azahar's would be; a folder named icon.bin is no icon") {
+    Fixture f;
+    TempDir dir;
+    GameFolder game;
+    game.Write(dir);
+    WriteFile(dir.GameDir() / "icon.bin", {});
+    Opened opened;
+    u64 size = 1;
+    FsGuest::ReadResult nothing;
+    const int status = BootWith(f, dir, {"--ms", "100", "--io-latency", "none"}, [&] {
+        FsGuest g(f, dir);
+        g.Initialize();
+        opened = g.OpenFileDirectly(3, kEmpty, kEmptyPath, SelfNcchPath(2, "icon"));
+        size = g.GetSize(opened.file);
+        nothing = g.Read(opened.file, 0, 0, 0x10);
+        ExitProcess(*f.runtime);
+    });
+    CHECK(status == 0);
+    CHECK(opened.result == kResultSuccess);
+    CHECK(size == 0);
+    CHECK(nothing.result == kResultSuccess);
+    CHECK(nothing.count == 0);
+
+    // not a regular file: the game folder holds no icon, as far as the file system can tell
+    TempDir dir2;
+    GameFolder game2;
+    game2.Write(dir2);
+    std::filesystem::create_directory(dir2.GameDir() / "icon.bin");
+    Fixture f2;
+    Opened unreadable;
+    const int status2 = BootWith(f2, dir2, {"--ms", "100", "--io-latency", "none"}, [&] {
+        FsGuest g(f2, dir2);
+        g.Initialize();
+        unreadable = g.OpenFileDirectly(3, kEmpty, kEmptyPath, SelfNcchPath(2, "icon"));
+        ExitProcess(*f2.runtime);
+    });
+    CHECK(status2 == 0);
+    CHECK(unreadable.result == kExefsSectionNotFound);
 }
 
 // ---- NCCH --------------------------------------------------------------------------------------------------------------
