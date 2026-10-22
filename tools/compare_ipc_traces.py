@@ -102,9 +102,10 @@ checks use these two options, and nothing else is loosened for `fs:`; the `nativ
                trace is an error (exit 2), never a silent pass.
   --fs-write-mask-session S   the golden session the traces belong to (`G2`): the lines of other sessions
                are not looked at.
-With --fs-reads-multiset the report also ends with an `fs coverage:` line (N0-36, docs/native/comparators.md section 11):
-for each thread and file session, the union of the byte ranges the Reads returned (whatever the pieces) on each side,
-and how many bytes only one side covers. It is information and no rule looks at it: the jit and native pairs of the
+With --fs-reads-multiset the report also has an `fs coverage:` line, directly after the `fs reads:` line (N0-36,
+docs/native/comparators.md section 11; an `fs write masks:` line can follow it): for each thread and file session, the
+union of the byte ranges the Reads returned (whatever the pieces) on each side, and how many bytes (in how many
+separate ranges) only one side covers. It is information and no rule looks at it: the jit and native pairs of the
 sessions without a quest have at most 10 KB per thread that only one side reads (a stream cut at another place), the
 quest sessions G4 and G3 have 133 KB and 3 MB (the game loads other resources on the two models), and the number tells
 how far a pair is from the calibrated ones.
@@ -491,6 +492,7 @@ def compare_reads(a: list[IpcCall], b: list[IpcCall], max_surplus: int, coalesce
             "foreign": sorted(foreign, key=repr),
             "coalesced": coalesce, "ref_raw": len(a), "cand_raw": len(b), "prefix_tail": sum(tails)}
 
+
 class Coverage(NamedTuple):
     """The bytes the Reads of one thread and one file session cover on each side (N0-36): the union of the ranges
     the Reads returned, whatever the pieces, and how much of it only one side covers."""
@@ -506,8 +508,9 @@ class Coverage(NamedTuple):
 
 def fs_read_extent(call: IpcCall) -> tuple[int, int] | None:
     """[start, end) of the file bytes a Read of a file session returned: its offset and the number of bytes its reply
-    says it read (at most the size asked for). None for a Read that failed, read nothing or has no readable
-    parameters: it covers nothing."""
+    says it read, at most the size asked for. A successful Read (result 0) whose reply has no byte count covers the
+    whole size asked for. None for a Read that has no reply or no result, failed (result other than 0), read 0 bytes
+    or has no readable offset and size: it covers nothing."""
     request = tracefmt.fs_file_request(call)
     if request is None or call.result is None:
         return None
@@ -581,8 +584,9 @@ def coverage_line(rows: list[Coverage]) -> str:
     here_a = [r for r in rows if r.ref_only]
     here_b = [r for r in rows if r.cand_only]
     text = (f"fs coverage: {len(rows)} thread/file session(s) read; bytes only the reference covers: "
-            f"{sum(r.ref_only for r in rows)} (in {len(here_a)}), only the candidate covers: "
-            f"{sum(r.cand_only for r in rows)} (in {len(here_b)})")
+            f"{sum(r.ref_only for r in rows)} (in {len(here_a)}, {sum(r.ref_only_ranges for r in rows)} range(s)), "
+            f"only the candidate covers: {sum(r.cand_only for r in rows)} (in {len(here_b)}, "
+            f"{sum(r.cand_only_ranges for r in rows)} range(s))")
     worst = []
     for label, field, rs in (("reference", "ref_only", here_a), ("candidate", "cand_only", here_b)):
         if rs:
