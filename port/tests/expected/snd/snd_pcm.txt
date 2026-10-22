@@ -1,0 +1,670 @@
+snd_pcm: start
+f0: s0 en=1 pos=0 buf=1 last=0 sync=1
+f0: mix crc=4b7716da peak=0
+f1: s0 en=1 pos=159 buf=1 last=0 sync=1
+f1: mix crc=cca96dd0 peak=12099
+f2: s0 en=1 pos=319 buf=1 last=0 sync=1
+f2: mix crc=7d781c41 peak=12088
+f3: s0 en=1 pos=479 buf=1 last=0 sync=1
+f3: mix crc=b6d7e7f5 peak=12115
+f4: s0 en=1 pos=480 buf=1 last=0 sync=1
+f4: mix crc=4b7716da peak=0
+f5: s0 en=0 pos=480 buf=0 last=1 sync=1
+f5: mix crc=4b7716da peak=0
+f6: s0 en=1 pos=0 buf=2 last=0 sync=2
+f6: mix crc=4b7716da peak=0
+f7: s0 en=1 pos=159 buf=2 last=0 sync=2
+f7: mix crc=cca96dd0 peak=12099
+f8: s0 en=1 pos=319 buf=2 last=0 sync=2
+f8: mix crc=7d781c41 peak=12088
+f9: s0 en=1 pos=479 buf=2 last=0 sync=2
+f9: mix crc=b6d7e7f5 peak=12115
+f10: s0 en=1 pos=480 buf=2 last=0 sync=2
+f10: mix crc=4b7716da peak=0
+f11: s0 en=0 pos=480 buf=0 last=2 sync=2
+f11: mix crc=4b7716da peak=0
+f12: s0 en=1 pos=0 buf=3 last=0 sync=3
+f12: mix crc=4b7716da peak=0
+f13: s0 en=1 pos=159 buf=3 last=0 sync=3
+f13: mix crc=cca96dd0 peak=12099
+f14: s0 en=1 pos=319 buf=3 last=0 sync=3
+f14: mix crc=7d781c41 peak=12088
+f15: s0 en=1 pos=479 buf=3 last=0 sync=3
+f15: mix crc=b6d7e7f5 peak=12115
+f16: s0 en=1 pos=480 buf=3 last=0 sync=3
+f16: mix crc=4b7716da peak=0
+f17: s0 en=0 pos=480 buf=0 last=3 sync=3
+f17: mix crc=4b7716da peak=0
+f18: s0 en=1 pos=0 buf=4 last=0 sync=4
+f18: mix crc=4b7716da peak=0
+f19: s0 en=1 pos=79 buf=4 last=0 sync=4
+f19: mix crc=9da02a17 peak=12039
+f20: s0 en=1 pos=159 buf=4 last=0 sync=4
+f20: mix crc=32fbba25 peak=12099
+f21: s0 en=1 pos=239 buf=4 last=0 sync=4
+f21: mix crc=d539ca83 peak=12088
+f22: s0 en=1 pos=319 buf=4 last=0 sync=4
+f22: mix crc=8b54fb46 peak=12024
+f23: s0 en=1 pos=399 buf=4 last=0 sync=4
+f23: mix crc=0e396584 peak=12076
+f24: s0 en=1 pos=479 buf=4 last=0 sync=4
+f24: mix crc=e94a727a peak=12115
+f25: s0 en=1 pos=480 buf=4 last=0 sync=4
+f25: mix crc=4b7716da peak=0
+f26: s0 en=0 pos=480 buf=0 last=4 sync=4
+f26: mix crc=4b7716da peak=0
+f27: s0 en=1 pos=0 buf=5 last=0 sync=5
+f27: mix crc=4b7716da peak=0
+f28: s0 en=1 pos=79 buf=5 last=0 sync=5
+f28: mix crc=0dac3b8f peak=12039
+f29: s0 en=1 pos=159 buf=5 last=0 sync=5
+f29: mix crc=cecdb899 peak=12099
+f30: s0 en=1 pos=239 buf=5 last=0 sync=5
+f30: mix crc=888d6ab6 peak=12088
+f31: s0 en=1 pos=319 buf=5 last=0 sync=5
+f31: mix crc=8b570ab6 peak=12024
+f32: s0 en=1 pos=399 buf=5 last=0 sync=5
+f32: mix crc=b15e5635 peak=12076
+f33: s0 en=1 pos=479 buf=5 last=0 sync=5
+f33: mix crc=d49a8cf1 peak=12115
+f34: s0 en=1 pos=480 buf=5 last=0 sync=5
+f34: mix crc=4b7716da peak=0
+f35: s0 en=0 pos=480 buf=0 last=5 sync=5
+f35: mix crc=4b7716da peak=0
+f36: s0 en=1 pos=0 buf=6 last=0 sync=6
+f36: mix crc=4b7716da peak=0
+f37: s0 en=1 pos=79 buf=6 last=0 sync=6
+f37: mix crc=0dac3b8f peak=12039
+f38: s0 en=1 pos=159 buf=6 last=0 sync=6
+f38: mix crc=cecdb899 peak=12099
+f39: s0 en=1 pos=239 buf=6 last=0 sync=6
+f39: mix crc=888d6ab6 peak=12088
+f40: s0 en=1 pos=319 buf=6 last=0 sync=6
+f40: mix crc=8b570ab6 peak=12024
+f41: s0 en=1 pos=399 buf=6 last=0 sync=6
+f41: mix crc=b15e5635 peak=12076
+f42: s0 en=1 pos=479 buf=6 last=0 sync=6
+f42: mix crc=d49a8cf1 peak=12115
+f43: s0 en=1 pos=480 buf=6 last=0 sync=6
+f43: mix crc=4b7716da peak=0
+f44: s0 en=0 pos=480 buf=0 last=6 sync=6
+f44: mix crc=4b7716da peak=0
+f45: s0 en=1 pos=0 buf=7 last=0 sync=7
+f45: mix crc=4b7716da peak=0
+f46: s0 en=1 pos=217 buf=7 last=0 sync=7
+f46: mix crc=2fafad4d peak=12099
+f47: s0 en=1 pos=437 buf=7 last=0 sync=7
+f47: mix crc=0270bed0 peak=12115
+f48: s0 en=1 pos=480 buf=7 last=0 sync=7
+f48: mix crc=68250e1c peak=12063
+f49: s0 en=0 pos=480 buf=0 last=7 sync=7
+f49: mix crc=4b7716da peak=0
+f50: s0 en=1 pos=0 buf=8 last=0 sync=8
+f50: mix crc=4b7716da peak=0
+f51: s0 en=1 pos=217 buf=8 last=0 sync=8
+f51: mix crc=1125d8ab peak=12068
+f52: s0 en=1 pos=437 buf=8 last=0 sync=8
+f52: mix crc=3f3dceed peak=12110
+f53: s0 en=1 pos=480 buf=8 last=0 sync=8
+f53: mix crc=f1dc5a09 peak=12057
+f54: s0 en=0 pos=480 buf=0 last=8 sync=8
+f54: mix crc=4b7716da peak=0
+f55: s0 en=1 pos=0 buf=9 last=0 sync=9
+f55: mix crc=4b7716da peak=0
+f56: s0 en=1 pos=217 buf=9 last=0 sync=9
+f56: mix crc=1125d8ab peak=12068
+f57: s0 en=1 pos=437 buf=9 last=0 sync=9
+f57: mix crc=3f3dceed peak=12110
+f58: s0 en=1 pos=480 buf=9 last=0 sync=9
+f58: mix crc=f1dc5a09 peak=12057
+f59: s0 en=0 pos=480 buf=0 last=9 sync=9
+f59: mix crc=4b7716da peak=0
+f60: s0 en=1 pos=0 buf=10 last=0 sync=10
+f60: mix crc=4b7716da peak=0
+f61: s0 en=1 pos=461 buf=10 last=0 sync=10
+f61: mix crc=f39f6d8a peak=12115
+f62: s0 en=1 pos=480 buf=10 last=0 sync=10
+f62: mix crc=3eb883a1 peak=11753
+f63: s0 en=0 pos=480 buf=0 last=10 sync=10
+f63: mix crc=4b7716da peak=0
+f64: s0 en=1 pos=0 buf=11 last=0 sync=11
+f64: mix crc=4b7716da peak=0
+f65: s0 en=1 pos=461 buf=11 last=0 sync=11
+f65: mix crc=7b4132ab peak=11995
+f66: s0 en=1 pos=480 buf=11 last=0 sync=11
+f66: mix crc=9a8236f2 peak=11740
+f67: s0 en=0 pos=480 buf=0 last=11 sync=11
+f67: mix crc=4b7716da peak=0
+f68: s0 en=1 pos=0 buf=12 last=0 sync=12
+f68: mix crc=4b7716da peak=0
+f69: s0 en=1 pos=461 buf=12 last=0 sync=12
+f69: mix crc=7b4132ab peak=11995
+f70: s0 en=1 pos=480 buf=12 last=0 sync=12
+f70: mix crc=9a8236f2 peak=11740
+f71: s0 en=0 pos=480 buf=0 last=12 sync=12
+f71: mix crc=4b7716da peak=0
+f72: s0 en=1 pos=0 buf=13 last=0 sync=13
+f72: mix crc=4b7716da peak=0
+f73: s0 en=1 pos=159 buf=13 last=0 sync=13
+f73: mix crc=8838e502 peak=12097
+f74: s0 en=1 pos=319 buf=13 last=0 sync=13
+f74: mix crc=4418dae5 peak=12088
+f75: s0 en=1 pos=479 buf=13 last=0 sync=13
+f75: mix crc=8d90af39 peak=12080
+f76: s0 en=1 pos=480 buf=13 last=0 sync=13
+f76: mix crc=4b7716da peak=0
+f77: s0 en=0 pos=480 buf=0 last=13 sync=13
+f77: mix crc=4b7716da peak=0
+f78: s0 en=1 pos=0 buf=14 last=0 sync=14
+f78: mix crc=4b7716da peak=0
+f79: s0 en=1 pos=79 buf=14 last=0 sync=14
+f79: mix crc=f01ca6ad peak=12090
+f80: s0 en=1 pos=159 buf=14 last=0 sync=14
+f80: mix crc=f0d320e8 peak=12097
+f81: s0 en=1 pos=239 buf=14 last=0 sync=14
+f81: mix crc=7881a53c peak=12088
+f82: s0 en=1 pos=319 buf=14 last=0 sync=14
+f82: mix crc=106d8bfb peak=12084
+f83: s0 en=1 pos=399 buf=14 last=0 sync=14
+f83: mix crc=221e6ce0 peak=12060
+f84: s0 en=1 pos=479 buf=14 last=0 sync=14
+f84: mix crc=eab1c48b peak=12080
+f85: s0 en=1 pos=480 buf=14 last=0 sync=14
+f85: mix crc=4b7716da peak=0
+f86: s0 en=0 pos=480 buf=0 last=14 sync=14
+f86: mix crc=4b7716da peak=0
+f87: s0 en=1 pos=0 buf=15 last=0 sync=15
+f87: mix crc=4b7716da peak=0
+f88: s0 en=1 pos=217 buf=15 last=0 sync=15
+f88: mix crc=9c6d7303 peak=12068
+f89: s0 en=1 pos=437 buf=15 last=0 sync=15
+f89: mix crc=a9bef257 peak=12069
+f90: s0 en=1 pos=480 buf=15 last=0 sync=15
+f90: mix crc=cf1fe1b6 peak=12005
+f91: s0 en=0 pos=480 buf=0 last=15 sync=15
+f91: mix crc=4b7716da peak=0
+f92: s0 en=1 pos=0 buf=16 last=0 sync=16
+f92: mix crc=4b7716da peak=0
+f93: s0 en=1 pos=461 buf=16 last=0 sync=16
+f93: mix crc=b9280b24 peak=12045
+f94: s0 en=1 pos=480 buf=16 last=0 sync=16
+f94: mix crc=e2a4e411 peak=11803
+f95: s0 en=0 pos=480 buf=0 last=16 sync=16
+f95: mix crc=4b7716da peak=0
+f96: s0 en=1 pos=0 buf=17 last=0 sync=17
+f96: mix crc=4b7716da peak=0
+f97: s0 en=1 pos=217 buf=17 last=0 sync=17
+f97: mix crc=52e657da peak=12097
+f98: s0 en=1 pos=437 buf=17 last=0 sync=17
+f98: mix crc=39640f06 peak=12080
+f99: s0 en=1 pos=480 buf=17 last=0 sync=17
+f99: mix crc=36789403 peak=11973
+f100: s0 en=0 pos=480 buf=0 last=17 sync=17
+f100: mix crc=4b7716da peak=0
+f101: s0 en=1 pos=0 buf=18 last=0 sync=18
+f101: mix crc=4b7716da peak=0
+f102: s0 en=1 pos=217 buf=18 last=0 sync=18
+f102: mix crc=9c6d7303 peak=12068
+f103: s0 en=1 pos=437 buf=18 last=0 sync=18
+f103: mix crc=a9bef257 peak=12069
+f104: s0 en=1 pos=480 buf=18 last=0 sync=18
+f104: mix crc=cf1fe1b6 peak=12005
+f105: s0 en=0 pos=480 buf=0 last=18 sync=18
+f105: mix crc=4b7716da peak=0
+f106: s0 en=1 pos=0 buf=19 last=0 sync=19
+f106: mix crc=4b7716da peak=0
+f107: s0 en=1 pos=159 buf=19 last=0 sync=19
+f107: mix crc=05f325d1 peak=24320
+f108: s0 en=1 pos=319 buf=19 last=0 sync=19
+f108: mix crc=b2db63b6 peak=24320
+f109: s0 en=1 pos=479 buf=19 last=0 sync=19
+f109: mix crc=7ed91d40 peak=24320
+f110: s0 en=1 pos=480 buf=19 last=0 sync=19
+f110: mix crc=4b7716da peak=0
+f111: s0 en=0 pos=480 buf=0 last=19 sync=19
+f111: mix crc=4b7716da peak=0
+f112: s0 en=1 pos=0 buf=20 last=0 sync=20
+f112: mix crc=4b7716da peak=0
+f113: s0 en=1 pos=79 buf=20 last=0 sync=20
+f113: mix crc=446019be peak=24320
+f114: s0 en=1 pos=159 buf=20 last=0 sync=20
+f114: mix crc=e69a6a41 peak=24064
+f115: s0 en=1 pos=239 buf=20 last=0 sync=20
+f115: mix crc=b0e77221 peak=24064
+f116: s0 en=1 pos=319 buf=20 last=0 sync=20
+f116: mix crc=bafb13ab peak=24320
+f117: s0 en=1 pos=399 buf=20 last=0 sync=20
+f117: mix crc=c537acb7 peak=24320
+f118: s0 en=1 pos=479 buf=20 last=0 sync=20
+f118: mix crc=eb35bef5 peak=24320
+f119: s0 en=1 pos=480 buf=20 last=0 sync=20
+f119: mix crc=4b7716da peak=0
+f120: s0 en=0 pos=480 buf=0 last=20 sync=20
+f120: mix crc=4b7716da peak=0
+f121: s0 en=1 pos=0 buf=21 last=0 sync=21
+f121: mix crc=4b7716da peak=0
+f122: s0 en=1 pos=217 buf=21 last=0 sync=21
+f122: mix crc=5b1f017c peak=24090
+f123: s0 en=1 pos=437 buf=21 last=0 sync=21
+f123: mix crc=b077d8c0 peak=24320
+f124: s0 en=1 pos=480 buf=21 last=0 sync=21
+f124: mix crc=10e7e94a peak=24269
+f125: s0 en=0 pos=480 buf=0 last=21 sync=21
+f125: mix crc=4b7716da peak=0
+f126: s0 en=1 pos=0 buf=22 last=0 sync=22
+f126: mix crc=4b7716da peak=0
+f127: s0 en=1 pos=461 buf=22 last=0 sync=22
+f127: mix crc=f9b3a602 peak=24218
+f128: s0 en=1 pos=480 buf=22 last=0 sync=22
+f128: mix crc=16c4d447 peak=24090
+f129: s0 en=0 pos=480 buf=0 last=22 sync=22
+f129: mix crc=4b7716da peak=0
+f130: s0 en=1 pos=0 buf=23 last=0 sync=23
+f130: mix crc=4b7716da peak=0
+f131: s0 en=1 pos=217 buf=23 last=0 sync=23
+f131: mix crc=a0e36545 peak=24320
+f132: s0 en=1 pos=437 buf=23 last=0 sync=23
+f132: mix crc=a232b9df peak=24320
+f133: s0 en=1 pos=480 buf=23 last=0 sync=23
+f133: mix crc=c741f270 peak=24064
+f134: s0 en=0 pos=480 buf=0 last=23 sync=23
+f134: mix crc=4b7716da peak=0
+f135: s0 en=1 pos=0 buf=24 last=0 sync=24
+f135: mix crc=4b7716da peak=0
+f136: s0 en=1 pos=79 buf=24 last=0 sync=24
+f136: mix crc=446019be peak=24320
+f137: s0 en=1 pos=159 buf=24 last=0 sync=24
+f137: mix crc=e69a6a41 peak=24064
+f138: s0 en=1 pos=239 buf=24 last=0 sync=24
+f138: mix crc=b0e77221 peak=24064
+f139: s0 en=1 pos=319 buf=24 last=0 sync=24
+f139: mix crc=bafb13ab peak=24320
+f140: s0 en=1 pos=399 buf=24 last=0 sync=24
+f140: mix crc=c537acb7 peak=24320
+f141: s0 en=1 pos=479 buf=24 last=0 sync=24
+f141: mix crc=eb35bef5 peak=24320
+f142: s0 en=1 pos=480 buf=24 last=0 sync=24
+f142: mix crc=4b7716da peak=0
+f143: s0 en=0 pos=480 buf=0 last=24 sync=24
+f143: mix crc=4b7716da peak=0
+f144: s0 en=1 pos=0 buf=25 last=0 sync=25
+f144: mix crc=4b7716da peak=0
+f145: s0 en=1 pos=159 buf=25 last=0 sync=25
+f145: mix crc=cca96dd0 peak=12099
+f146: s0 en=1 pos=119 buf=25 last=0 sync=25
+f146: mix crc=4e2ee526 peak=12099
+f147: s0 en=1 pos=79 buf=25 last=0 sync=25
+f147: mix crc=619088f9 peak=12093
+f148: s0 en=1 pos=39 buf=25 last=0 sync=25
+f148: mix crc=0714fb26 peak=12099
+f149: s0 en=1 pos=199 buf=25 last=0 sync=25
+f149: mix crc=70184bcc peak=12099
+f150: s0 en=1 pos=159 buf=25 last=0 sync=25
+f150: mix crc=20131a15 peak=12099
+f151: s0 en=1 pos=119 buf=25 last=0 sync=25
+f151: mix crc=4e2ee526 peak=12099
+f152: s0 en=1 pos=79 buf=25 last=0 sync=25
+f152: mix crc=619088f9 peak=12093
+f153: s0 en=1 pos=39 buf=25 last=0 sync=25
+f153: mix crc=0714fb26 peak=12099
+f154: s0 en=1 pos=0 buf=26 last=0 sync=26
+f154: mix crc=4b7716da peak=0
+f155: s0 en=1 pos=67 buf=26 last=0 sync=26
+f155: mix crc=28c97b1e peak=12097
+f156: s0 en=1 pos=137 buf=26 last=0 sync=26
+f156: mix crc=a7350bca peak=12097
+f157: s0 en=1 pos=56 buf=26 last=0 sync=26
+f157: mix crc=49dbaf7d peak=12097
+f158: s0 en=1 pos=125 buf=26 last=0 sync=26
+f158: mix crc=a11b865c peak=12097
+f159: s0 en=1 pos=44 buf=26 last=0 sync=26
+f159: mix crc=26c70067 peak=12097
+f160: s0 en=1 pos=113 buf=26 last=0 sync=26
+f160: mix crc=dd677351 peak=12097
+f161: s0 en=1 pos=33 buf=26 last=0 sync=26
+f161: mix crc=c86ddadb peak=12097
+f162: s0 en=1 pos=102 buf=26 last=0 sync=26
+f162: mix crc=244cc867 peak=12097
+f163: s0 en=1 pos=21 buf=26 last=0 sync=26
+f163: mix crc=cdb2a5c6 peak=12097
+f164: s0 en=1 pos=0 buf=27 last=0 sync=27
+f164: mix crc=4b7716da peak=0
+f165: s0 en=1 pos=79 buf=27 last=0 sync=27
+f165: mix crc=446019be peak=24320
+f166: s0 en=1 pos=59 buf=27 last=0 sync=27
+f166: mix crc=294e4435 peak=24320
+f167: s0 en=1 pos=39 buf=27 last=0 sync=27
+f167: mix crc=78b2049c peak=24064
+f168: s0 en=1 pos=19 buf=27 last=0 sync=27
+f168: mix crc=eeb56e0d peak=24320
+f169: s0 en=1 pos=99 buf=27 last=0 sync=27
+f169: mix crc=e54a839c peak=24320
+f170: s0 en=1 pos=79 buf=27 last=0 sync=27
+f170: mix crc=75a2de77 peak=24320
+f171: s0 en=1 pos=59 buf=27 last=0 sync=27
+f171: mix crc=294e4435 peak=24320
+f172: s0 en=1 pos=39 buf=27 last=0 sync=27
+f172: mix crc=78b2049c peak=24064
+f173: s0 en=1 pos=19 buf=27 last=0 sync=27
+f173: mix crc=eeb56e0d peak=24320
+f174: s0 en=1 pos=0 buf=28 last=0 sync=28
+f174: mix crc=4b7716da peak=0
+f175: s0 en=1 pos=39 buf=28 last=0 sync=28
+f175: mix crc=fef334f9 peak=12099
+f176: s0 en=1 pos=79 buf=28 last=0 sync=28
+f176: mix crc=bf8d820d peak=12099
+f177: s0 en=1 pos=119 buf=28 last=0 sync=28
+f177: mix crc=e87a9ae5 peak=12099
+f178: s0 en=1 pos=79 buf=28 last=0 sync=28
+f178: mix crc=7fdcec4c peak=12099
+f179: s0 en=1 pos=119 buf=28 last=0 sync=28
+f179: mix crc=e87a9ae5 peak=12099
+f180: s0 en=1 pos=39 buf=28 last=0 sync=28
+f180: mix crc=7b3846c3 peak=12099
+f181: s0 en=1 pos=79 buf=28 last=0 sync=28
+f181: mix crc=bf8d820d peak=12099
+f182: s0 en=1 pos=119 buf=28 last=0 sync=28
+f182: mix crc=e87a9ae5 peak=12099
+f183: s0 en=1 pos=39 buf=28 last=0 sync=28
+f183: mix crc=7b3846c3 peak=12099
+f184: s0 en=1 pos=0 buf=2 last=0 sync=29
+f184: mix crc=4b7716da peak=0
+f185: s0 en=1 pos=159 buf=2 last=0 sync=29
+f185: mix crc=fa9980f7 peak=12099
+f186: s0 en=1 pos=159 buf=5 last=0 sync=29
+f186: mix crc=a6886378 peak=12099
+f187: s0 en=1 pos=159 buf=9 last=0 sync=29
+f187: mix crc=e2dbbfae peak=12099
+f188: s0 en=1 pos=160 buf=9 last=0 sync=29
+f188: mix crc=4b7716da peak=0
+f189: s0 en=0 pos=160 buf=0 last=9 sync=29
+f189: mix crc=4b7716da peak=0
+f190: s0 en=1 pos=0 buf=30 last=0 sync=30
+f190: mix crc=4b7716da peak=0
+f191: s0 en=1 pos=159 buf=30 last=0 sync=30
+f191: mix crc=cca96dd0 peak=12099
+f192: s0 en=1 pos=159 buf=4 last=0 sync=30
+f192: mix crc=946dec22 peak=12099
+f193: s0 en=1 pos=159 buf=8 last=0 sync=30
+f193: mix crc=e60eddd3 peak=12099
+f194: s0 en=1 pos=160 buf=8 last=0 sync=30
+f194: mix crc=4b7716da peak=0
+f195: s0 en=0 pos=160 buf=0 last=8 sync=30
+f195: mix crc=4b7716da peak=0
+f196: s0 en=1 pos=0 buf=1 last=0 sync=31
+f196: mix crc=4b7716da peak=0
+f197: s0 en=1 pos=159 buf=1 last=0 sync=31
+f197: mix crc=952c9185 peak=12099
+f198: s0 en=1 pos=119 buf=3 last=0 sync=31
+f198: mix crc=4c45f513 peak=12099
+f199: s0 en=1 pos=79 buf=7 last=0 sync=31
+f199: mix crc=b6a6947c peak=12088
+f200: s0 en=1 pos=39 buf=12 last=0 sync=31
+f200: mix crc=20ed3b9d peak=12099
+f201: s0 en=1 pos=199 buf=12 last=0 sync=31
+f201: mix crc=b7412ed3 peak=12099
+f202: s0 en=1 pos=200 buf=12 last=0 sync=31
+f202: mix crc=4b7716da peak=0
+f203: s0 en=0 pos=200 buf=0 last=12 sync=31
+f203: mix crc=4b7716da peak=0
+f204: s0 en=1 pos=0 buf=1 last=0 sync=32
+f204: mix crc=4b7716da peak=0
+f205: s0 en=1 pos=39 buf=12 last=0 sync=32
+f205: mix crc=f3f1ab54 peak=12099
+f206: s0 en=1 pos=40 buf=12 last=0 sync=32
+f206: mix crc=4b7716da peak=0
+f207: s0 en=0 pos=40 buf=0 last=12 sync=32
+f207: mix crc=4b7716da peak=0
+f208: s0 en=1 pos=0 buf=33 last=0 sync=33
+f208: mix crc=4b7716da peak=0
+f209: s0 en=1 pos=159 buf=33 last=0 sync=33
+f209: mix crc=cca96dd0 peak=12099
+f210: s0 en=1 pos=319 buf=33 last=0 sync=33
+f210: mix crc=7d781c41 peak=12088
+f211: s0 en=1 pos=479 buf=33 last=0 sync=33
+f211: mix crc=b6d7e7f5 peak=12115
+f212: s0 en=1 pos=639 buf=33 last=0 sync=33
+f212: mix crc=fe363131 peak=12060
+f213: s0 en=1 pos=799 buf=33 last=0 sync=33
+f213: mix crc=c121de44 peak=12129
+f214: s0 en=1 pos=159 buf=4 last=0 sync=33
+f214: mix crc=50977c37 peak=12099
+f215: s0 en=1 pos=200 buf=4 last=0 sync=33
+f215: mix crc=17c50e1e peak=12088
+f216: s0 en=0 pos=200 buf=0 last=4 sync=33
+f216: mix crc=4b7716da peak=0
+f217: s0 en=1 pos=200 buf=34 last=0 sync=34
+f217: mix crc=4b7716da peak=0
+f218: s0 en=1 pos=359 buf=34 last=0 sync=34
+f218: mix crc=9e687310 peak=12076
+f219: s0 en=1 pos=480 buf=34 last=0 sync=34
+f219: mix crc=06e99cdb peak=12115
+f220: s0 en=0 pos=480 buf=0 last=34 sync=34
+f220: mix crc=4b7716da peak=0
+f221: s0 en=1 pos=0 buf=35 last=0 sync=35
+f221: mix crc=4b7716da peak=0
+f222: s0 en=1 pos=159 buf=35 last=0 sync=35
+f222: mix crc=cca96dd0 peak=12099
+f223: s0 en=1 pos=239 buf=35 last=0 sync=35
+f223: mix crc=888d6ab6 peak=12088
+f224: s0 en=1 pos=319 buf=35 last=0 sync=35
+f224: mix crc=8b570ab6 peak=12024
+f225: s0 en=1 pos=781 buf=35 last=0 sync=35
+f225: mix crc=f4a17d6b peak=12032
+f226: s0 en=1 pos=1000 buf=35 last=0 sync=35
+f226: mix crc=4ff3b8ca peak=12094
+f227: s0 en=0 pos=1000 buf=0 last=35 sync=35
+f227: mix crc=4b7716da peak=0
+f228: s0 en=1 pos=0 buf=36 last=0 sync=36
+f228: mix crc=4b7716da peak=0
+f229: s0 en=1 pos=159 buf=36 last=0 sync=36
+f229: mix crc=cca96dd0 peak=12099
+f230: s0 en=1 pos=319 buf=36 last=0 sync=100
+f230: mix crc=7d781c41 peak=12088
+f231: s0 en=1 pos=479 buf=36 last=0 sync=101
+f231: mix crc=b6d7e7f5 peak=12115
+f232: s0 en=1 pos=639 buf=36 last=0 sync=101
+f232: mix crc=fe363131 peak=12060
+f233: s0 en=1 pos=640 buf=36 last=0 sync=101
+f233: mix crc=4b7716da peak=0
+f234: s0 en=0 pos=640 buf=0 last=36 sync=101
+f234: mix crc=4b7716da peak=0
+f235: s0 en=1 pos=0 buf=37 last=0 sync=37
+f235: mix crc=4b7716da peak=0
+f236: s0 en=1 pos=159 buf=37 last=0 sync=37
+f236: mix crc=cca96dd0 peak=12099
+f237: s0 en=0 pos=159 buf=37 last=0 sync=37
+f237: mix crc=4b7716da peak=0
+f238: s0 en=0 pos=159 buf=37 last=0 sync=37
+f238: mix crc=4b7716da peak=0
+f239: s0 en=1 pos=319 buf=37 last=0 sync=37
+f239: mix crc=7d781c41 peak=12088
+f240: s0 en=1 pos=479 buf=37 last=0 sync=37
+f240: mix crc=b6d7e7f5 peak=12115
+f241: s0 en=1 pos=639 buf=37 last=0 sync=37
+f241: mix crc=fe363131 peak=12060
+f242: s0 en=1 pos=640 buf=37 last=0 sync=37
+f242: mix crc=4b7716da peak=0
+f243: s0 en=0 pos=640 buf=0 last=37 sync=37
+f243: mix crc=4b7716da peak=0
+f244: s0 en=1 pos=0 buf=38 last=0 sync=38
+f244: mix crc=4b7716da peak=0
+f245: s0 en=1 pos=159 buf=38 last=0 sync=38
+f245: mix crc=cca96dd0 peak=12099
+f246: s0 en=1 pos=319 buf=38 last=0 sync=38
+f246: mix crc=068f90e5 peak=11983
+f247: s0 en=1 pos=479 buf=38 last=0 sync=38
+f247: mix crc=f5cacfce peak=6057
+f248: s0 en=1 pos=639 buf=38 last=0 sync=38
+f248: mix crc=057d26fe peak=11495
+f249: s0 en=1 pos=640 buf=38 last=0 sync=38
+f249: mix crc=4b7716da peak=0
+f250: s0 en=0 pos=640 buf=0 last=38 sync=38
+f250: mix crc=4b7716da peak=0
+f251: s0 en=1 pos=0 buf=39 last=0 sync=39
+f251: mix crc=4b7716da peak=0
+f252: s0 en=1 pos=159 buf=39 last=0 sync=39
+f252: mix crc=cca96dd0 peak=12099
+f253: s0 en=1 pos=319 buf=39 last=0 sync=39
+f253: mix crc=7d781c41 peak=12088
+f254: s0 en=1 pos=320 buf=39 last=0 sync=39
+f254: mix crc=4b7716da peak=0
+f255: s0 en=0 pos=320 buf=0 last=39 sync=39
+f255: mix crc=4b7716da peak=0
+f256: s0 en=1 pos=0 buf=0 last=0 sync=40
+f256: mix crc=4b7716da peak=0
+f257: s0 en=0 pos=0 buf=0 last=0 sync=40
+f257: mix crc=4b7716da peak=0
+f258: s0 en=1 pos=0 buf=41 last=0 sync=41
+f258: mix crc=4b7716da peak=0
+f259: s0 en=1 pos=159 buf=41 last=0 sync=41
+f259: mix crc=cca96dd0 peak=12099
+f260: s0 en=1 pos=319 buf=41 last=0 sync=41
+f260: mix crc=7d781c41 peak=12088
+f261: s0 en=1 pos=320 buf=41 last=0 sync=41
+f261: mix crc=4b7716da peak=0
+f262: s0 en=0 pos=320 buf=0 last=41 sync=41
+f262: mix crc=4b7716da peak=0
+f263: s0 en=1 pos=0 buf=42 last=0 sync=42
+f263: mix crc=4b7716da peak=0
+f264: s0 en=1 pos=1 buf=42 last=0 sync=42
+f264: mix crc=4b7716da peak=0
+f265: s0 en=0 pos=1 buf=0 last=42 sync=42
+f265: mix crc=4b7716da peak=0
+f266: s0 en=1 pos=0 buf=43 last=0 sync=43
+f266: mix crc=4b7716da peak=0
+f267: s0 en=1 pos=2 buf=43 last=0 sync=43
+f267: mix crc=4b7716da peak=0
+f268: s0 en=0 pos=2 buf=0 last=43 sync=43
+f268: mix crc=4b7716da peak=0
+f269: s0 en=1 pos=0 buf=44 last=0 sync=44
+f269: mix crc=4b7716da peak=0
+f270: s0 en=1 pos=3 buf=44 last=0 sync=44
+f270: mix crc=c6e726d6 peak=87
+f271: s0 en=0 pos=3 buf=0 last=44 sync=44
+f271: mix crc=4b7716da peak=0
+f272: s0 en=1 pos=0 buf=45 last=0 sync=45
+f272: mix crc=4b7716da peak=0
+f273: s0 en=1 pos=5 buf=45 last=0 sync=45
+f273: mix crc=e0c91ecc peak=3969
+f274: s0 en=0 pos=5 buf=0 last=45 sync=45
+f274: mix crc=4b7716da peak=0
+f275: s0 en=1 pos=0 buf=46 last=0 sync=46
+f275: mix crc=4b7716da peak=0
+f276: s0 en=1 pos=4 buf=46 last=0 sync=46
+f276: mix crc=41748286 peak=127
+f277: s0 en=0 pos=4 buf=0 last=46 sync=46
+f277: mix crc=4b7716da peak=0
+f278: s0 en=1 pos=0 buf=47 last=0 sync=47
+f278: mix crc=4b7716da peak=0
+f279: s0 en=0 pos=0 buf=0 last=47 sync=47
+f279: mix crc=4b7716da peak=0
+f280: s0 en=1 pos=0 buf=48 last=0 sync=48
+f280: mix crc=4b7716da peak=0
+f281: s0 en=1 pos=39 buf=48 last=0 sync=48
+f281: mix crc=79f7418d peak=12006
+f282: s0 en=1 pos=79 buf=48 last=0 sync=48
+f282: mix crc=8bd42219 peak=12039
+f283: s0 en=1 pos=119 buf=48 last=0 sync=48
+f283: mix crc=de166c1b peak=12099
+f284: s0 en=1 pos=159 buf=48 last=0 sync=48
+f284: mix crc=344cc7bf peak=12093
+f285: s0 en=1 pos=199 buf=48 last=0 sync=48
+f285: mix crc=9ff3445e peak=12088
+f286: s0 en=1 pos=239 buf=48 last=0 sync=48
+f286: mix crc=cc758309 peak=11988
+f287: s0 en=1 pos=279 buf=48 last=0 sync=48
+f287: mix crc=be9f0700 peak=11980
+f288: s0 en=1 pos=319 buf=48 last=0 sync=48
+f288: mix crc=fdc1259a peak=12024
+f289: s0 en=1 pos=359 buf=48 last=0 sync=48
+f289: mix crc=50328f4e peak=12076
+f290: s0 en=1 pos=399 buf=48 last=0 sync=48
+f290: mix crc=e6400220 peak=12051
+f291: s0 en=1 pos=439 buf=48 last=0 sync=48
+f291: mix crc=f25ac7f2 peak=12115
+f292: s0 en=1 pos=479 buf=48 last=0 sync=48
+f292: mix crc=89cab825 peak=12063
+f293: s0 en=1 pos=480 buf=48 last=0 sync=48
+f293: mix crc=4b7716da peak=0
+f294: s0 en=0 pos=480 buf=0 last=48 sync=48
+f294: mix crc=4b7716da peak=0
+f295: s0 en=1 pos=0 buf=49 last=0 sync=49
+f295: mix crc=4b7716da peak=0
+f296: s0 en=1 pos=39 buf=49 last=0 sync=49
+f296: mix crc=979f9140 peak=12090
+f297: s0 en=1 pos=79 buf=49 last=0 sync=49
+f297: mix crc=0c63b586 peak=12054
+f298: s0 en=1 pos=119 buf=49 last=0 sync=49
+f298: mix crc=ae597d86 peak=12080
+f299: s0 en=1 pos=159 buf=49 last=0 sync=49
+f299: mix crc=4dafcf07 peak=12097
+f300: s0 en=1 pos=199 buf=49 last=0 sync=49
+f300: mix crc=2e66e7a8 peak=12022
+f301: s0 en=1 pos=239 buf=49 last=0 sync=49
+f301: mix crc=c7e15fbc peak=12088
+f302: s0 en=1 pos=279 buf=49 last=0 sync=49
+f302: mix crc=4363e81f peak=12084
+f303: s0 en=1 pos=319 buf=49 last=0 sync=49
+f303: mix crc=8440bfef peak=12022
+f304: s0 en=1 pos=359 buf=49 last=0 sync=49
+f304: mix crc=8ab4081b peak=12034
+f305: s0 en=1 pos=399 buf=49 last=0 sync=49
+f305: mix crc=2ea68f19 peak=12060
+f306: s0 en=1 pos=439 buf=49 last=0 sync=49
+f306: mix crc=2cdf5c1a peak=12080
+f307: s0 en=1 pos=479 buf=49 last=0 sync=49
+f307: mix crc=9c4d172e peak=12053
+f308: s0 en=1 pos=480 buf=49 last=0 sync=49
+f308: mix crc=4b7716da peak=0
+f309: s0 en=0 pos=480 buf=0 last=49 sync=49
+f309: mix crc=4b7716da peak=0
+f310: s0 en=1 pos=0 buf=50 last=0 sync=50
+f310: mix crc=4b7716da peak=0
+f311: s0 en=1 pos=318 buf=50 last=0 sync=50
+f311: mix crc=bf1dabe0 peak=12099
+f312: s0 en=1 pos=480 buf=50 last=0 sync=50
+f312: mix crc=8f1b1f74 peak=12076
+f313: s0 en=0 pos=480 buf=0 last=50 sync=50
+f313: mix crc=4b7716da peak=0
+f314: s0 en=1 pos=0 buf=51 last=0 sync=51
+f314: mix crc=4b7716da peak=0
+f315: s0 en=1 pos=159 buf=51 last=0 sync=51
+f315: mix crc=a828ac8c peak=24320
+f316: s0 en=1 pos=319 buf=51 last=0 sync=51
+f316: mix crc=cbba6278 peak=24320
+f317: s0 en=1 pos=479 buf=51 last=0 sync=51
+f317: mix crc=d3da86ea peak=24320
+f318: s0 en=1 pos=480 buf=51 last=0 sync=51
+f318: mix crc=4b7716da peak=0
+f319: s0 en=0 pos=480 buf=0 last=51 sync=51
+f319: mix crc=4b7716da peak=0
+f320: s0 en=1 pos=0 buf=52 last=0 sync=52
+f320: mix crc=4b7716da peak=0
+f321: s0 en=1 pos=217 buf=52 last=0 sync=52
+f321: mix crc=3f10a657 peak=24320
+f322: s0 en=1 pos=437 buf=52 last=0 sync=52
+f322: mix crc=37eeae99 peak=24320
+f323: s0 en=1 pos=480 buf=52 last=0 sync=52
+f323: mix crc=762d1dce peak=24320
+f324: s0 en=0 pos=480 buf=0 last=52 sync=52
+f324: mix crc=4b7716da peak=0
+f325: s0 en=1 pos=0 buf=53 last=0 sync=53
+f325: mix crc=4b7716da peak=0
+f326: s0 en=1 pos=79 buf=53 last=0 sync=53
+f326: mix crc=57b59efa peak=24320
+f327: s0 en=1 pos=159 buf=53 last=0 sync=53
+f327: mix crc=6741882b peak=24320
+f328: s0 en=1 pos=239 buf=53 last=0 sync=53
+f328: mix crc=81135e90 peak=24320
+f329: s0 en=1 pos=319 buf=53 last=0 sync=53
+f329: mix crc=bbf9474d peak=24320
+f330: s0 en=1 pos=399 buf=53 last=0 sync=53
+f330: mix crc=9b897618 peak=24320
+f331: s0 en=1 pos=479 buf=53 last=0 sync=53
+f331: mix crc=d5df85e4 peak=24320
+f332: s0 en=1 pos=480 buf=53 last=0 sync=53
+f332: mix crc=4b7716da peak=0
+f333: s0 en=0 pos=480 buf=0 last=53 sync=53
+f333: mix crc=4b7716da peak=0
+snd_pcm: done
