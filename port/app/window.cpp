@@ -186,6 +186,18 @@ void Window::OnMinimalClientAreaChangeRequest(std::pair<u32, u32> minimal_size) 
                              static_cast<int>(minimal_size.second / 2));
 }
 
+WindowSize Window::SizeInPoints() const {
+    WindowSize size;
+    SDL_GetWindowSize(render_window, &size.w, &size.h);
+    return size;
+}
+
+WindowSize Window::SizeInPixels() const {
+    WindowSize size;
+    SDL_GetWindowSizeInPixels(render_window, &size.w, &size.h);
+    return size;
+}
+
 std::pair<unsigned, unsigned> Window::ToPixels(s32 x, s32 y) const {
     int w = 1, h = 1, pw = 1, ph = 1;
     SDL_GetWindowSize(render_window, &w, &h);

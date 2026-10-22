@@ -81,6 +81,7 @@ struct GameFiles {
     std::shared_ptr<PositionedFile> romfs;         // romfs.bin: the base game's RomFS section
     std::shared_ptr<PositionedFile> update_romfs;  // update_romfs.bin: the update's
     std::shared_ptr<PositionedFile> code;          // code.bin: the update's decompressed .code
+    std::shared_ptr<PositionedFile> icon;          // icon.bin: the base game's ExeFS 'icon' file (N1-12e)
     u64 program_id = 0;                            // the base title's id (exheader.bin), 0 if unknown
 };
 

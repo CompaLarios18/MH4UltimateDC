@@ -92,9 +92,11 @@ std::string AzaharRuntime::CodeNotice() {
     return backend.empty() ? impl->update_notice : impl->update_notice + " " + backend;
 }
 
-LoadResult AzaharRuntime::Load(const LoadRequest& request, Window& window, Window* secondary) {
+LoadResult AzaharRuntime::Load(const LoadRequest& request, IWindow& window, IWindow* secondary) {
     using Status = Core::System::ResultStatus;
-    const Status status = Core::System::GetInstance().Load(window, request.game, secondary);
+    // (the windows are the ones main() made with Window::Create: this runtime's own kind)
+    const Status status = Core::System::GetInstance().Load(static_cast<Window&>(window), request.game,
+                                                           static_cast<Window*>(secondary));
     switch (status) {
     case Status::Success:
         return LoadResult::Ok;
@@ -174,8 +176,8 @@ void AzaharRuntime::CommitOptions() {
     system.ApplySettings();
 }
 
-Core::System* AzaharRuntime::HostSystem() {
-    return &Core::System::GetInstance();
+Core::System& AzaharRuntime::CoreSystem() {
+    return Core::System::GetInstance();
 }
 
 std::string AzaharRuntime::UserDir() const {

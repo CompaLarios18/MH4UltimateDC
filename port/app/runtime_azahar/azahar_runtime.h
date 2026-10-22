@@ -6,6 +6,10 @@
 
 #include "runtime.h"
 
+namespace Core {
+class System;
+}
+
 namespace App::Azahar {
 
 class AzaharRuntime final : public IRuntime {
@@ -15,7 +19,8 @@ public:
 
     std::string PrepareCode(const LoadRequest& request) override;
     std::string CodeNotice() override;
-    LoadResult Load(const LoadRequest& request, Window& window, Window* secondary) override;
+    /// `window` and `secondary` are App::Window (window.h), which main() made.
+    LoadResult Load(const LoadRequest& request, IWindow& window, IWindow* secondary) override;
     std::string StatusDetails() const override;
     void Start() override;
     RunState RunStep() override;
@@ -56,12 +61,12 @@ public:
     std::string RoomNickname() const override;
     RoomDetails RoomInformation() const override;
     std::vector<RoomMemberInfo> RoomMembers() const override;
+    std::vector<std::string> EndSkipPending() override;
     bool HostingRoom() const override;
     RoomOpenResult OpenRoom(const RoomOpenRequest& request) override;
     void CloseRoom() override;
     void NewConsoleId() override;
     void CommitOptions() override;
-    Core::System* HostSystem() override;
 
     std::string UserDir() const override;
     void SetUserDir(const std::string& dir) override;
@@ -98,6 +103,10 @@ public:
     CiaResult CheckCia(const std::string& path, std::optional<CiaInfo>& info) const override;
     CiaResult InstallCia(const std::string& path,
                          const std::function<void(std::size_t, std::size_t)>& progress) override;
+
+    /// The Azahar system the windows are made for (Window::Create). Not part of IRuntime: only
+    /// the Azahar app's main() knows this runtime's kind.
+    Core::System& CoreSystem();
 
 private:
     struct Impl;

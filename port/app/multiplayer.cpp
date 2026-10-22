@@ -536,7 +536,7 @@ std::string Nickname() {
     return Runtime().ConsoleUsername();
 }
 
-void Init(Core::System&, Config& config) {
+void Init(Config& config) {
     auto& s = S();
     s.active = true;
     s.config = &config;

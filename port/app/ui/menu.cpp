@@ -24,7 +24,6 @@
 #include "util/file.h"
 #include "util/log.h"
 #include "util/strings.h"
-#include "window.h"
 
 namespace App::Ui {
 

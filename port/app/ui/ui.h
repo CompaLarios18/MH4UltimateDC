@@ -10,19 +10,15 @@
 // video_core/renderer_vulkan/vk_overlay.h in azahar.patch) or the software window's thread.
 #pragma once
 
+#include "app_window.h"
 #include "util/types.h"
 
 union SDL_Event;
 struct SDL_Surface;
 
-namespace Core {
-class System;
-}
-
 namespace App {
 
 struct Config;
-class Window;
 
 namespace Ui {
 
@@ -30,8 +26,7 @@ namespace Ui {
 /// menu's software keyboard in place of the runtime's default one. `config` is the app's
 /// settings as the app runs with them; the menu changes them in place (input profile and
 /// display settings follow) and saves its changes to mh4u-app.ini without the command line's.
-/// The system argument is not used: main() still passes it (N0-24 left that call as it was).
-void Start(Core::System& system, Window& window, Config& config);
+void Start(IWindow& window, Config& config);
 
 /// After the renderer has gone (System::Shutdown) and before SDL quits.
 void Stop();

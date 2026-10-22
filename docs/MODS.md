@@ -145,7 +145,7 @@ The port runs the game's code recompiled for your PC (the code library, [PLAYING
 | `unknown` | it was built without a record of its code mods (by an older `build_game.py`, or the record is from another build) |
 | `missing` | no code library: [PLAYING.md](PLAYING.md) step 1 |
 
-The record is `recomp/0004000000126300.build.json` next to the library, written by `build_game.py --install` (with `code_size`, how much of the code segment it recompiled). `status` also notices Luma's code patch (`sdmc/luma/titles/0004000E00126300/code.ips`), which Azahar applies when the mods folder has none but `build_game.py` doesn't: move it into a mod instead.
+The record is `recomp/0004000000126300.build.json` next to the library, written by `build_game.py --install` (with `code_size`, how much of the code segment it recompiled). `status` also notices Luma's code patch (`sdmc/luma/titles/0004000E00126300/code.ips`), which Azahar applies when the mods folder has none but `build_game.py` doesn't: move it into a mod instead. A library built for the native runtime (`build_game.py --native --install`) keeps its own record next to it, `recomp/0004000000126300_native.build.json` (`_native_det` with `--deterministic`), and `mods.py status --native` reads that one; the two builds never share a record. A native library built before this change wrote its record to `0004000000126300.build.json` (over the Azahar library's): `status --native` reports it as `unknown`, so the native setup rebuilds it.
 
 ## For mod authors
 
