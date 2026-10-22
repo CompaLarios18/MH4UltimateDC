@@ -556,7 +556,7 @@ of this runner does (the clock of a run is emulated):
 |---|---|---|---|
 | G4 | exit 0: 4/4 checkpoints, 6 real scene changes, gas in the capture, 0 capture problems | 368 s | 26 passed, 0 failed, 0 skipped, 3 info; 729 s for the check |
 | G3 | exit 0: 9/9 checkpoints (5 distinct scene values), 10 real scene changes, 0 capture problems | 3,363 s | 26 passed, 0 failed, 0 skipped, 3 info; 6,717 s for the check |
-| G3-perf | exit 0: 9/9 checkpoints (5 distinct scene values), 10 real scene changes, 0 capture problems | 4,287 s | G3PERFCHECK |
+| G3-perf | exit 0: 9/9 checkpoints (5 distinct scene values), 10 real scene changes, 0 capture problems | 4,287 s | 26 passed, 0 failed, 0 skipped, 3 info; 8,302 s for the check |
 | G7 | not made (a draft: [G7](#g7-a-downloaded-quest-not-made)) | | |
 
 The passes are the same nine comparisons per run as G2's (`svc`, `ipc`, `state`, `checkpoints`, `unmapped`, `hid`, `gpu-<start>`,
