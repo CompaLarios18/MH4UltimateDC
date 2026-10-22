@@ -40,7 +40,7 @@ Tables between the `wp-status` markers are generated: edit the specs or use `set
 | N0-32 | Cross-profile rules for the DSP capture and `fs:` requests | M | native-worker | N0-28, N0-31, N0-09 | dump | `review` | PR #26; batch 20261021-n0-rules; the cross profile of golden.py check (jit against recomp) exits 0 on G1 (with checkpoints, ipc, svc, hid, state and dsp required), G6 and G2 with the rules of D50 to D52 built in (capfmt.py diff-dsp aligned, compare_ipc_traces.py fs reads as multisets and the write masks, tolerance 4 and margin 60), the same command with the same profile still exits 1 on G1, and the check of G1 against its own recording exits 0; run on the maintainer PC 20261021; see docs/native/comparators.md and golden.md |
 | N0-10 | Golden sessions G3, G4, G7 | M | native-worker | N0-09 | dump, save | `ready` |  |
 | N0-30 | Cross-model calibration on the quest sessions G3, G4, G7 | S | native-worker | N0-10, N0-28, N0-32 | dump, save | `todo` |  |
-| N0-11 | Golden session G5 (two players) | M | native-worker | N0-10 | dump, save | `todo` |  |
+| N0-11 | Golden session G5 (two players) | M | native-worker | N0-10, N2b-17 | dump, save | `todo` |  |
 | N0-12 | Kernel census | S | native-worker | N0-04, N0-21, N0-10 | dump, save | `todo` |  |
 | N0-13 | PICA census | M | native-worker | N0-05, N0-10 | dump, save | `todo` |  |
 | N0-14 | Flat-memory coherence check | M | native-worker-high | N0-15, N0-10 | ci, dump, save | `todo` |  |
@@ -120,6 +120,39 @@ Tables between the `wp-status` markers are generated: edit the specs or use `set
 | N2-18 | HD texture streaming and the VRAM budget | M | native-worker-high | N2-17, N2-15 | dump-check, save, pc | `todo` |  |
 | N2-19 | GPU budget measurement | S | native-worker | N2-15, N2-16, N2-18, N1-22, N1-23 | ci, pc, mac | `todo` |  |
 <!-- wp-status:end N2a -->
+
+## N2b
+
+<!-- wp-status:begin N2b -->
+| ID | Title | Size | Agent | Depends on | Needs | Status | Note |
+|---|---|---|---|---|---|---|---|
+| N2b-01 | The app's UI without Azahar's window and system | M | native-worker-high | N0-24 | ci, pc | `ready` |  |
+| N2b-02 | The app's UI without SDL2 | M | native-worker-high | N2b-01 | ci, pc | `todo` |  |
+| N2b-26 | The presentation contract (`mh4n/present.h`) | S | native-worker-high | N1-01 | none | `ready` |  |
+| N2b-03 | SDL3 and the app tree in the native build | M | native-worker | N1-22, N2-24, N2b-02 | ci | `todo` |  |
+| N2b-04 | Screen layouts and touch mapping | M | native-worker | N1-20 | none | `ready` |  |
+| N2b-05 | Compositor | M | native-worker-high | N2-21, N2-06, N2b-04, N2b-26 | none | `todo` |  |
+| N2b-06 | Swapchain and the present thread | M | native-worker-high | N2b-05 | none | `todo` |  |
+| N2b-07 | Displayed screens from guest memory (`--gpu null-display`) | S | native-worker | N2b-26, N1-17 | none | `todo` |  |
+| N2b-08 | Live input, latched at frame boundaries | S | native-worker-high | N1-16, N1-09 | none | `ready` |  |
+| N2b-09 | `NativeRuntime`: load, run and present | M | native-worker-high | N2b-01, N2b-02, N2b-03, N2b-06, N2b-07, N2b-08, N1-21 | ci, dump-check | `todo` |  |
+| N2b-25 | `NativeRuntime`: options, input, paths and the method table | M | native-worker-high | N2b-09 | ci | `todo` |  |
+| N2b-10 | `mh4u-native`: window, events and the run loop | M | native-worker-high | N2b-25 | ci | `todo` |  |
+| N2b-11 | The app's UI in `mh4u-native` | M | native-worker-high | N2b-10 | ci, pc | `todo` |  |
+| N2b-12 | The renderer as the runtime's GPU | M | native-worker-high | N1-21, N2-15, N2-16, N2-18, N2-20, N2-22, N2b-18, N2b-26 | dump-check | `todo` |  |
+| N2b-13 | Displayed screens from the renderer | M | native-worker-high | N2b-12 | dump-check | `todo` |  |
+| N2b-14 | Screenshots in the native runner | S | native-worker-high | N2b-07 | none | `todo` |  |
+| N2b-15 | Synthetic GX programs | M | native-worker-high | N0-26 | none | `ready` |  |
+| N2b-16 | A synthetic PICA draw | M | native-worker-high | N2b-15 | none | `todo` |  |
+| N2b-17 | Image checks across timing models | M | native-worker | N1-21, N0-10, N0-30, N0-32 | dump-check, save | `todo` |  |
+| N2b-18 | G4 and G3-perf headless | M | native-worker-high | N1-26, N1-25, N0-10, N0-30 | dump, save | `todo` |  |
+| N2b-19 | G1 and G2 end to end | M | native-worker-high | N2b-13, N2b-14, N2b-16, N2b-17, N2b-18 | dump | `todo` |  |
+| N2b-20 | G3 and G3-perf end to end | M | native-worker-high | N2b-19 | dump, save | `todo` |  |
+| N2b-21 | G4 end to end | M | native-worker-high | N2b-20 | dump, save | `todo` |  |
+| N2b-22 | The hooks' visual features in `mh4u-native` | M | native-worker-high | N2b-11, N2b-13, N2b-20 | ci, pc | `todo` |  |
+| N2b-23 | Frame pacing at 120 fps on a 240 Hz display | M | native-worker-high | N2b-22, N2b-20 | ci, pc | `todo` |  |
+| N2b-24 | Exit: G1–G4 end to end and 120 fps in G3 | M | native-worker | N2b-21, N2b-23, N2-19, N1-23 | dump-check, save, pc | `todo` |  |
+<!-- wp-status:end N2b -->
 
 ## Later phases
 
