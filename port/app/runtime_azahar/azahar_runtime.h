@@ -61,6 +61,7 @@ public:
     std::string RoomNickname() const override;
     RoomDetails RoomInformation() const override;
     std::vector<RoomMemberInfo> RoomMembers() const override;
+    std::vector<std::string> EndSkipPending() override;
     bool HostingRoom() const override;
     RoomOpenResult OpenRoom(const RoomOpenRequest& request) override;
     void CloseRoom() override;

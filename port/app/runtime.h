@@ -352,6 +352,11 @@ public:
     virtual RoomDetails RoomInformation() const = 0;
     virtual std::vector<RoomMemberInfo> RoomMembers() const = 0;
 
+    /// The nicknames (a MAC address when a member's is unknown) of the port consoles in the room
+    /// that haven't asked yet to end the wait after a quest, for the hint that says who is
+    /// waited for. Empty without a room or peers. Any thread.
+    virtual std::vector<std::string> EndSkipPending() = 0;
+
     /// Whether this PC runs a room that is open.
     virtual bool HostingRoom() const = 0;
 

@@ -244,6 +244,7 @@ struct FakeRuntime final : IRuntime {
     }
     RoomDetails RoomInformation() const override { return details; }
     std::vector<RoomMemberInfo> RoomMembers() const override { return members; }
+    std::vector<std::string> EndSkipPending() override { return {}; }
     bool HostingRoom() const override {
         std::scoped_lock lock{const_cast<std::mutex&>(room_mutex)};
         return hosting;
