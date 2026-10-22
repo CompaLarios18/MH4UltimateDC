@@ -220,7 +220,15 @@ void ARM_Recomp::Execute(s64 budget) {
     if (!slot) {
         // first time this thread runs
         slot = std::make_unique<GuestThread>();
-        slot->fiber = Fiber::Create([this] { GuestMain(); });
+#if defined(__ANDROID__)
+        // The game's start-up call chain is too deep for the desktop port's 8 MiB fiber on
+        // Android, where ART attributes the fiber-stack fault to the Java thread. Give guest
+        // fibers more room; it is reserved lazily, so untouched pages cost nothing.
+        constexpr std::size_t guest_stack = 32u << 20;
+#else
+        constexpr std::size_t guest_stack = 8u << 20;
+#endif
+        slot->fiber = Fiber::Create([this] { GuestMain(); }, guest_stack);
     }
     // Other cores may have written memory since this core last ran: a reservation taken
     // before then must not let a STREX succeed.

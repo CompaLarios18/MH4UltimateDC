@@ -40,9 +40,16 @@ set_source_files_properties(src/hooks.cpp PROPERTIES COMPILE_DEFINITIONS RC_PAGE
 target_include_directories(mh4u_backend PUBLIC src PRIVATE "${MH4U_RUNTIME_DIR}")
 target_link_libraries(mh4u_backend PUBLIC citra_core citra_common network)
 
-add_executable(mh4u_runner src/runner.cpp src/schedule.cpp src/schedule.h)
-target_include_directories(mh4u_runner PRIVATE "${MH4U_RUNTIME_DIR}")
-target_link_libraries(mh4u_runner PRIVATE mh4u_backend network)
+if(ANDROID)
+    # bionic has no ucontext, so Android switches fibers with this AArch64 routine instead.
+    target_sources(mh4u_backend PRIVATE src/fiber_arm64.S)
+endif()
+
+if(NOT ANDROID)
+    add_executable(mh4u_runner src/runner.cpp src/schedule.cpp src/schedule.h)
+    target_include_directories(mh4u_runner PRIVATE "${MH4U_RUNTIME_DIR}")
+    target_link_libraries(mh4u_runner PRIVATE mh4u_backend network)
+endif()
 
 # The port's own app (app/): a window of its own (SDL2) instead of Azahar's Qt interface.
 option(MH4U_APP "Build the port's own app (needs SDL2)" ON)

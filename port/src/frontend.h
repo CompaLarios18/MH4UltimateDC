@@ -3,11 +3,18 @@
 
 #include <string>
 
+#include "common/common_types.h"
+
 namespace Core {
 class System;
 }
 
 namespace Port {
+
+/// The frontend's surface shape, before PrepareBackendFor: the `widescreen = match` option
+/// takes it (the Android app passes its whole screen). The desktop app resolves match with
+/// its own window instead; a frontend that never calls this leaves match off.
+void SetWindowSize(u32 width, u32 height);
 
 /// Call before Core::System::Load(). If a recompiled code library matches the program in
 /// `rom_path`, installs the recompiled CPU backend; otherwise leaves the emulator's own
@@ -31,6 +38,7 @@ void ToggleQuestMap();
 std::string OptionsPath();
 
 /// What a new options file says: the recommended settings, each with what it does.
-std::string OptionsTemplate();
+/// `match_screen`: the Android app's first file, where widescreen matches the screen's shape.
+std::string OptionsTemplate(bool match_screen = false);
 
 } // namespace Port
