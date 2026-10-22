@@ -133,14 +133,19 @@ def mods_folder(user_dir: str) -> str:
     return code_mods.mod_dir(user_dir, PROGRAM_ID)
 
 
-def code_library(user_dir: str) -> str:
-    """Where tools/build_game.py --install puts the code library on this platform."""
+def code_library(user_dir: str, native: bool = False) -> str:
+    """Where tools/build_game.py --install puts the code library on this platform; native: the
+    one for the native runtime, <program id>_native.<ext> (D61)."""
     ext = "dll" if sys.platform.startswith("win") else "dylib" if sys.platform == "darwin" else "so"
-    return os.path.join(user_dir, "recomp", f"{PROGRAM_ID:016X}.{ext}")
+    return os.path.join(user_dir, "recomp", f"{PROGRAM_ID:016X}{'_native' if native else ''}.{ext}")
 
 
 def build_record_path(library: str, program_id: int = PROGRAM_ID) -> str:
-    return os.path.join(os.path.dirname(library), f"{program_id:016X}.build.json")
+    """Next to the library: <program id>.build.json, and for a native library (its name goes on
+    with _native, _native_det) <its name>.build.json, so the two builds keep their own record."""
+    stem = os.path.splitext(os.path.basename(library))[0]
+    name = f"{program_id:016X}" if not stem.startswith(f"{program_id:016X}_") else stem
+    return os.path.join(os.path.dirname(library), f"{name}.build.json")
 
 
 def ignored(name: str) -> bool:
@@ -1464,9 +1469,11 @@ def cmd_deploy(ctx: Context, args) -> dict:
 def cmd_status(ctx: Context, args) -> dict:
     mods, warnings = ctx.library.mods()
     an = analyze(ctx.library, ctx.folder, mods)
+    native = bool(getattr(args, "native", False))
+    library = ctx.code_library or (code_library(ctx.user_dir, True) if native else None)
     return {"library": ctx.library.path, "mods_folder": ctx.folder, "deploy": an.summary(),
-            "conflict_count": len(an.conflicts), "code_library": code_library_state(ctx.user_dir, ctx.code_library),
-            "warnings": warnings + an.warnings}
+            "conflict_count": len(an.conflicts), "code_library": code_library_state(ctx.user_dir, library),
+            "native": native, "warnings": warnings + an.warnings}
 
 
 # ── progress, for the launcher ──────────────────────────────────────────────
@@ -2574,7 +2581,7 @@ def print_text(command: str, r: dict) -> None:
             print(f"problem: {p}")
     if "code_library" in r:
         c = r["code_library"]
-        print(f"code library: {c['state']}: {c['reason']}")
+        print(f"{'native code library' if r.get('native') else 'code library'}: {c['state']}: {c['reason']}")
         for w in c.get("warnings", []):
             print(f"  warning: {w}")
     for w in r.get("warnings", []):
@@ -2638,6 +2645,8 @@ def build_parser(json_errors: bool) -> argparse.ArgumentParser:
     p.add_argument("--dry-run", action="store_true", help="only say what would change")
     common(p, s)
     p = sub.add_parser("status", help="whether Azahar's mods folder and the code library are up to date")
+    p.add_argument("--native", action="store_true",
+                   help="the code library of the native runtime (<program id>_native.<ext>) instead of Azahar's")
     common(p, s)
 
     def catalog_args(p: argparse.ArgumentParser) -> None:

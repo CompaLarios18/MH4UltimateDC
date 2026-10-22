@@ -659,6 +659,58 @@ def test_build_record(tmp_path):
     assert record["fingerprint"] == mods.code_fingerprint([str(write(tmp_path / "elsewhere.ips", ips((1, b"x"))))])
 
 
+def test_native_library_status(user, tmp_path):
+    """status --native: the native library's own state, from its own build record (D61)."""
+    native = user / "recomp" / os.path.basename(mods.code_library(str(user), native=True))
+    assert os.path.basename(native) == f"0004000000126300_native.{native.suffix[1:]}"
+    state = run(user, "status", "--native")
+    assert state["native"] is True and state["code_library"]["library"] == str(native)
+    assert state["code_library"]["state"] == "missing"
+    write(native, b"native library")
+    assert run(user, "status", "--native")["code_library"]["state"] == "unknown"
+    mods.write_build_record(str(native), [], 0x100, False)
+    assert run(user, "status", "--native")["code_library"]["state"] == "ok"
+    # the record is its own: Azahar's library next to it has none, and building one doesn't touch the other
+    assert mods.build_record_path(str(native)) == str(user / "recomp" / "0004000000126300_native.build.json")
+    assert run(user, "status")["native"] is False and run(user, "status")["code_library"]["state"] == "missing"
+    azahar = write(user / "recomp" / os.path.basename(mods.code_library(str(user))), b"azahar library")
+    mods.write_build_record(str(azahar), [], 0x100, False)
+    assert mods.build_record_path(str(azahar)) == str(user / "recomp" / "0004000000126300.build.json")
+    assert run(user, "status", "--native")["code_library"]["state"] == "ok"
+    assert run(user, "status")["code_library"]["state"] == "ok"
+    # the words of status: a code mod that changes the code is a rebuild, for this library too
+    run(user, "add", str(make(tmp_path / "Code", {"exefs/code.ips": ips((0x10, b"\1"))})))
+    run(user, "deploy")
+    state = run(user, "status", "--native")["code_library"]
+    assert state["state"] == "rebuild" and state["changes_code"] is True
+    code_ips = folder(user) / "exefs" / "code.ips"
+    mods.write_build_record(str(native), [str(code_ips)], 0x100, True)
+    assert run(user, "status", "--native")["code_library"]["state"] == "ok"
+    assert run(user, "status")["code_library"]["state"] == "rebuild"      # Azahar's was built without it
+    # a library that is not the one its record describes
+    write(native, b"another native library")
+    assert "another build" in run(user, "status", "--native")["code_library"]["reason"]
+    # --code-library still names any file
+    assert run(user, "--code-library", str(native), "status", "--native")["code_library"]["library"] == str(native)
+
+
+def test_native_status_in_text(user, capsys):
+    assert mods.main(["--user-dir", str(user), "status", "--native"]) == 0
+    assert "native code library: missing" in capsys.readouterr().out
+    assert mods.main(["--user-dir", str(user), "status"]) == 0
+    assert capsys.readouterr().out.count("code library: missing") == 1
+
+
+def test_build_record_path_keeps_the_azahar_name():
+    assert mods.build_record_path("/x/recomp/0004000000126300.so") == "/x/recomp/0004000000126300.build.json"
+    assert mods.build_record_path("/x/recomp/0004000000126300.dll") == "/x/recomp/0004000000126300.build.json"
+    assert mods.build_record_path("/x/recomp/0004000000126300_native.dll") == \
+        "/x/recomp/0004000000126300_native.build.json"
+    assert mods.build_record_path("/x/recomp/0004000000126300_native_det.so") == \
+        "/x/recomp/0004000000126300_native_det.build.json"
+    assert mods.build_record_path("/x/recomp/Any.so", 5) == "/x/recomp/0000000000000005.build.json"
+
+
 # ── the command line ────────────────────────────────────────────────────────
 
 def test_json_for_every_command(user, tmp_path):

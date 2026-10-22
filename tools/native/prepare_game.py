@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Make the native runtime's game folder from the player's own dump (N1-03).
 
-usage: prepare_game.py --base GAME --update UPDATE.cia [-o DIR]
+usage: prepare_game.py --base GAME --update UPDATE [-o DIR]
 
-GAME is the base game (.3ds, .cci or .cxi) and UPDATE.cia the v1.3.0 update title, both
-decrypted (see tools/extract_ncch.py). DIR defaults to build/native-game (build/game is
+GAME is the base game (.3ds, .cci or .cxi) and UPDATE the v1.3.0 update title (a .cia) or
+its installed content (the .app that Azahar's setup put under the virtual SD card's
+title/0004000e/00126300/content/), both decrypted (see tools/extract_ncch.py). DIR defaults to build/native-game (build/game is
 tools/build_game.py's). The folder holds:
 
     exheader.bin       the update's exheader
@@ -13,7 +14,9 @@ tools/build_game.py's). The folder holds:
                        service reads its region lockout for --region auto (D38)
     romfs.bin          the base game's RomFS section
     update_romfs.bin   the update's RomFS section
-    info.txt           titles, versions, sizes, CRC-32 of code.bin
+    info.txt           titles, versions, sizes, CRC-32 of code.bin, and the two input files
+                       (path and size) the folder was made from (tools/native/setup_native.py
+                       skips this step while they and code.bin are unchanged)
 
 The folder contains game data: it stays in build/ (git-ignored), never commit or share it. The
 RomFS sections are gigabytes and are streamed, never read into memory.
@@ -27,6 +30,7 @@ import shutil
 import struct
 import sys
 import zlib
+from dataclasses import dataclass
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
@@ -58,25 +62,79 @@ def load_target(versions_path: str) -> dict:
     raise PrepareError(f"{versions_path} has no target version")
 
 
-def check_update(update_path: str, target: dict) -> extract_ncch.CiaContent0:
-    """The update must be a CIA of the target title and version (v1.3.0)."""
+@dataclass(frozen=True)
+class UpdateInfo:
+    """What the update says about itself: its title and, when it can be read, its version."""
+    title_id: int
+    title_version: int | None       # None: an installed NCCH with no TMD beside it
+    source: str                     # "cia", or "ncch"
+
+
+def tmd_beside(path: str, title_id: int) -> int | None:
+    """The title version of the TMD file beside an installed content (the .tmd next to the .app
+    of the virtual SD card), None when there is none for that title. The highest wins."""
+    best = None
+    folder = os.path.dirname(os.path.abspath(path))
     try:
-        with open(update_path, "rb") as f:
-            if extract_ncch.detect(f) != "cia":
-                raise PrepareError(f"{update_path} is not a CIA: --update takes the v1.3.0 update "
-                                   "title (a .cia)")
-            content = extract_ncch.cia_content0(f)
-    except extract_ncch.DumpError as e:
-        raise PrepareError(str(e)) from e
+        names = sorted(os.listdir(folder))
+    except OSError:
+        return None
+    for name in names:
+        if not name.lower().endswith(".tmd"):
+            continue
+        try:
+            with open(os.path.join(folder, name), "rb") as f:
+                tmd = f.read(0x1000)
+        except OSError:
+            continue
+        if len(tmd) < 4:
+            continue
+        sig_len = {0x10000: 0x200 + 0x3C, 0x10001: 0x100 + 0x3C, 0x10002: 0x3C + 0x40,
+                   0x10003: 0x200 + 0x3C, 0x10004: 0x100 + 0x3C, 0x10005: 0x3C + 0x40}.get(
+            struct.unpack_from(">I", tmd, 0)[0])
+        if sig_len is None or len(tmd) < 4 + sig_len + 0x9E:
+            continue
+        th = 4 + sig_len
+        if struct.unpack_from(">Q", tmd, th + 0x4C)[0] != title_id:
+            continue
+        version = struct.unpack_from(">H", tmd, th + 0x9C)[0]
+        best = version if best is None else max(best, version)
+    return best
+
+
+def check_update(update_path: str, target: dict) -> UpdateInfo:
+    """The update must be a CIA of the target title and version (v1.3.0), or the content an
+    installation of that CIA left on the virtual SD card (an NCCH: its title is checked, and its
+    version too when the TMD that sits beside it can be read)."""
     want_id = int(target["update_title_id"], 16)
     want_version = int(target["title_version"])
-    if content.title_id != want_id:
-        raise PrepareError(f"the update is title {content.title_id:016X}, expected {want_id:016X}")
-    if content.title_version != want_version:
-        v = content.title_version
+    try:
+        with open(update_path, "rb") as f:
+            kind = extract_ncch.detect(f)
+            if kind == "cia":
+                content = extract_ncch.cia_content0(f)
+                found = UpdateInfo(content.title_id, content.title_version, "cia")
+            elif kind == "ncch":
+                found = UpdateInfo(extract_ncch.parse_ncch(f, 0).program_id, None, "ncch")
+            else:
+                raise PrepareError(f"{update_path} is not a CIA or an installed update: --update takes "
+                                   "the v1.3.0 update title (a .cia) or its installed content (a .app)")
+    except extract_ncch.DumpError as e:
+        raise PrepareError(str(e)) from e
+    if found.source == "ncch":
+        # an installed content is the update title's: the base game's own NCCH is not it
+        if found.title_id != want_id:
+            raise PrepareError(f"the update is title {found.title_id:016X}, expected {want_id:016X}")
+        found = UpdateInfo(want_id, tmd_beside(update_path, want_id), "ncch")
+        if found.title_version is None:
+            return found
+    elif found.title_id != want_id:
+        raise PrepareError(f"the update is title {found.title_id:016X}, expected {want_id:016X}")
+    if found.title_version != want_version:
+        v = found.title_version
         raise PrepareError(f"the update is v{v >> 10}.{(v >> 4) & 0x3F}.{v & 0xF}, but only "
                            f"{target['name'].split(' (')[0]} is supported")
-    return content
+    return found
 
 
 def crc32_of_file(path: str) -> int:
@@ -202,10 +260,11 @@ def prepare(base: str, update: str, outdir: str, versions: str = DEFAULT_VERSION
         os.replace(os.path.join(upd_dir, "romfs.bin"), os.path.join(outdir, "update_romfs.bin"))
 
         v = content.title_version
+        version = (f"v{v >> 10}.{(v >> 4) & 0x3F}.{v & 0xF} (title version {v})" if v is not None
+                   else "installed content, version not in it")
         info = [
             f"base game     : {base_hdr.title}, program {base_hdr.program_id:016X}",
-            f"update        : {upd_hdr.title}, title {content.title_id:016X}, "
-            f"v{v >> 10}.{(v >> 4) & 0x3F}.{v & 0xF} (title version {v})",
+            f"update        : {upd_hdr.title}, title {content.title_id:016X}, {version}",
             f"exheader.bin  : 0x{os.path.getsize(os.path.join(outdir, 'exheader.bin')):X} bytes",
             f"code.bin      : 0x{have:X} bytes (was compressed: "
             f"{upd_hdr.code_compressed}), CRC-32 {crc32_of_file(os.path.join(outdir, 'code.bin')):08X}",
@@ -214,8 +273,10 @@ def prepare(base: str, update: str, outdir: str, versions: str = DEFAULT_VERSION
              if icon is not None else "icon          : none"),
             f"romfs.bin     : 0x{os.path.getsize(os.path.join(outdir, 'romfs.bin')):X} bytes",
             f"update_romfs.bin: 0x{os.path.getsize(os.path.join(outdir, 'update_romfs.bin')):X} bytes",
+            f"input base  : {base}, 0x{os.path.getsize(base):X} bytes",
+            f"input update: {update}, 0x{os.path.getsize(update):X} bytes",
         ]
-        with open(os.path.join(outdir, "info.txt"), "w") as f:
+        with open(os.path.join(outdir, "info.txt"), "w", encoding="utf-8") as f:
             f.write("\n".join(info) + "\n")
         return info
     finally:
@@ -225,7 +286,8 @@ def prepare(base: str, update: str, outdir: str, versions: str = DEFAULT_VERSION
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--base", required=True, help="base game: .3ds, .cci or .cxi")
-    ap.add_argument("--update", required=True, help="the v1.3.0 update title (.cia)")
+    ap.add_argument("--update", required=True,
+                    help="the v1.3.0 update title (.cia) or its installed content (.app)")
     ap.add_argument("-o", "--outdir", default=DEFAULT_OUT)
     ap.add_argument("--versions", default=DEFAULT_VERSIONS, help=argparse.SUPPRESS)
     args = ap.parse_args(argv)
