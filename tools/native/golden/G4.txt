@@ -5,8 +5,8 @@
 # captures: gpu:2400:10
 #
 # G4: a cutscene that uses gas (the PICA fog mode 7): the village's arrival scene, which plays by
-# itself when the maintainer's save is continued, from about f1750 to f2900 (the flames and steam
-# of a cooking scene are in it). From a user folder with the update installed and the maintainer's
+# itself when the maintainer's save is continued (from f1579, the start of the village, to about
+# f2900). From a user folder with the update installed and the maintainer's
 # save merged in (golden.py record --save, with the Circle Pad Pro option off: see
 # docs/native/golden.md, "The save"): only button presses are written here.
 #

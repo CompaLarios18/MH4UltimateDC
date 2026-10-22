@@ -161,7 +161,9 @@ class Session:
 
 _TIME = re.compile(r"^(?:f\d+|\d+)$")
 # `# env: NAME=VALUE`: an environment variable of the runner (the port's start-up options, MH4U_WIDESCREEN ...).
-_ENV = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=\S+$")
+# Only the port's own MH4U_* variables: a session file cannot set PATH, PYTHONPATH, LD_PRELOAD or the like.
+_ENV = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=[^\s\x00]+$")
+ENV_PREFIX = "MH4U_"
 
 
 def _frame_of(token: str) -> int | None:
@@ -210,7 +212,7 @@ def parse_session(path: str | Path) -> Session:
     `record` refuses it) and any number of `env: NAME=VALUE` lines (an environment variable that `record` and
     `check` give the runner on every run of the session, so that the session does not depend on what the
     command line says: G3-perf's MH4U_WIDESCREEN and MH4U_WIDE_RENDER, which the port reads once at start-up
-    and the runner's --set cannot change).  Every other line is an input event line for the runner's
+    and the runner's --set cannot change; only MH4U_* names, each once, and never TZ).  Every other line is an input event line for the runner's
     --input-file (comma separated `f<frame>:BUTTON[:hold]`, `f<frame>:TOUCH:x:y[:hold]`,
     `f<frame>:CIRCLE:x:y[:hold]`).
     """
@@ -232,8 +234,14 @@ def parse_session(path: str | Path) -> Session:
                 value = m.group(2).strip()
                 if not _ENV.match(value):
                     raise GoldenError(f"{path.name}:{number}: bad env {value!r} (want NAME=VALUE)")
-                if value.split("=", 1)[0].upper() == "TZ":
+                var = value.split("=", 1)[0]
+                if var.upper() == "TZ":
                     raise GoldenError(f"{path.name}:{number}: TZ is fixed by golden.py (UTC0)")
+                if not var.startswith(ENV_PREFIX):
+                    raise GoldenError(f"{path.name}:{number}: env {var!r}: only {ENV_PREFIX}* variables (the port's "
+                                      f"options) can be set by a session")
+                if var in (x.split("=", 1)[0] for x in env):
+                    raise GoldenError(f"{path.name}:{number}: env {var!r} given twice")
                 env.append(value)
             elif m:
                 if m.group(1) in headers:
@@ -1042,6 +1050,13 @@ def check(session: Session, a: argparse.Namespace) -> int:
               if not (ref / rel).is_file() or sha256_file(ref / rel) != meta["sha256"]]
     if broken:
         raise GoldenError(f"the recording was changed since it was made: {', '.join(broken[:5])}")
+    # the environment of the recording's run (the `# env:` lines of the session, N0-10) is part of what is checked:
+    # a session file edited since `record` would run the candidate under other variables.  A manifest made before
+    # the key existed was recorded without any.
+    recorded_env = list(manifest.get("session", {}).get("env", []))
+    if recorded_env != session.env:
+        raise GoldenError(f"the '# env:' lines of {session.name} ({session.env or 'none'}) differ from the ones the "
+                          f"recording was made with ({recorded_env or 'none'}): record it again")
 
     foreign = bool(a.candidate_runner)
     if not foreign and manifest.get("updates") and not a.update:

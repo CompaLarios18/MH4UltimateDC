@@ -51,9 +51,12 @@ have sound, see [Capture problems](#capture-problems)).
 `# env:` lines (N0-10) are the start-up options of a session that the port reads from the environment (`MH4U_WIDESCREEN`,
 `MH4U_WIDE_RENDER`, ...: it reads them once at start-up, so the runner's `--set` cannot change them, it answers "not an
 option that can change while the game runs"). `record` and `check` give every run of the session those variables (over the
-shell's, with `TZ=UTC0` kept) whatever runner it is (the reference, or a candidate), the manifest keeps them
-(`session.env`), and the session's SHA-256 covers them, so a recording and a check can never differ in them by a
-forgotten command-line option. `TZ` is refused.
+shell's, with `TZ=UTC0` kept) whatever runner it is (the reference, or a candidate), and the manifest keeps them
+(`session.env`). `check` compares the session file's lines with the manifest's and stops with exit status 2 when they
+differ (a session edited since `record`, or a recording made without them: record again), so a recording and a check can
+never differ in them by an edited file or a forgotten command-line option; a manifest without the key counts as having
+none. Only `MH4U_*` names are accepted (a session file sets the port's options and nothing else: not `PATH`, not
+`PYTHONPATH`), each at most once, and `TZ` is refused.
 
 ### The scene
 
@@ -264,7 +267,7 @@ one file, `system` (512 bytes: the settings slot; the game writes it again, so 5
 game itself, from the staged save, with a script of touches that switches the option off in the main menu's Options:
 
 ```
-f300:A:f6,f450:A:f6,f600:A:f6,f750:A:f6,f900:A:f6     the first presses of every session
+f300:A:f6,f450:A:f6,f600:A:f6,f750:A:f6,f900:A:f6     the first five presses of the sessions (the run reaches the main menu with these alone)
 f1070:TOUCH:103:100:f6        Options (the main menu's third button, bottom screen)
 f1250:TOUCH:200:73:f6         the Circle Pad Pro row
 f1450:A:f6                    "Use the Nintendo 3DS Circle Pad Pro attachment?" has No selected: A sets it to Off
@@ -272,9 +275,19 @@ f1650:A:f6                    closes the notice
 f1850:TOUCH:290:222:f6        Back (to the main menu): the game has written `system`
 ```
 
-run for 2400 frames by the reference runner on a copy of `build/userbase-cfg` with the staged save merged in, **without**
-`--capture-hid` (the other recorders do not matter, only that one): then `system` of that run's user folder replaces the
-one of a copy of the staged save. It is one run of a minute; every later run starts from the copy, so the script is not
+To rebuild the copy (the script above in a file, `TZ=UTC0`, the N0-29 reference runner; about two minutes):
+
+1. `D` = a copy of `build/userbase-cfg` with the staged save merged over it (`build/n0-10-save/*` copied into `D`).
+2. `mh4u_runner <game>.cxi --new-3ds off --cpu recomp --code build/golden-lib/0004000000126300.dll --install
+   <update 1.3.0>.cia --user D --frames 2400 --input-file <the script>`: the options of `golden.py record` that matter,
+   and **no** `--capture-hid` (with the option on, a run with it dies in the Circle Pad Pro's IR service at boot,
+   see below, before the option can be switched; the other recorders and the screenshots do not change what the game writes).
+3. `D`'s `system` (it is at the same path as in the staged save, `sdmc/Nintendo 3DS/<id>/<id>/title/00040000/00126300/data/
+   00000001/system`) replaces the one of a copy of the staged save; every other file is the staged save's, untouched.
+
+That recipe was run again from scratch (measured, after the copy was made) and gives the same twelve files byte for byte
+as `build/n0-10-save-cpp-off`: the run changes none of the other eleven, and its `system` is identical to the copy's. Only
+`system` differs from the staged save (the 508 of 512 bytes noted above). Every later run starts from the copy, so the script is not
 part of any session. A recording's `user-before/` holds the copy, which is what a native replay of the session starts from.
 
 ## `ir:USER` (D36)
@@ -378,7 +391,7 @@ screen it was opened from. Recording: 306 s of host time, 590 MiB (the SVC trace
 ### G3: the Arena hunt
 
 Needs the save ([The save](#the-save): the copy with the Circle Pad Pro option off). Frames: 18000. Save → village → the
-Arena counter's quest "Grudge Match: Yian Kut-Ku" → the Arena with a preset loadout → 3,892 frames (75 s) of the hunt.
+Arena counter's quest "Grudge Match: Yian Kut-Ku" → the Arena with a preset loadout → 3,891 frames (about 65 s) of the hunt, from the load at f14109 to the end.
 Checkpoints (one in each scene that lasts more than 100 frames, five distinct values): `600:0x00e64d5c` (`aDemo`, the
 intro movies), `1400:0x00e6c778` (`aContinue`, the continue screen), `2500`, `8000` and `13000:0x00e6c170` (`aVillage`),
 `13700:0x00e650bc` (`aArena`, the equipment screen), `15000`, `17000` and `18000:0x00e655c8` (`aQuest`, the hunt). Real
@@ -412,8 +425,8 @@ sequence in the table is the one that works, and its frames cannot be moved by m
 ### G4: a cutscene with gas
 
 Needs the save. Frames: 3000: the same nine `A` as G3, and nothing after them; the village's arrival scene plays by itself
-and is the cutscene: a cooking scene whose flames and steam run from about frame 2100 to 2650 (the screenshots of frames 2220 to
-2580 show it, the touch screen black). Checkpoints: `600:0x00e64d5c`, `1400:0x00e6c778`, `2500` and `3000:0x00e6c170`.
+and is the cutscene (it runs from f1579, the start of the village, to about f2900; the GPU capture is inside it, and the
+mode-7 writes of `gcap.py summary` are what shows it uses gas). Checkpoints: `600:0x00e64d5c`, `1400:0x00e6c778`, `2500` and `3000:0x00e6c170`.
 Real scene changes: 6 (frames 2, 42, 903, 1576, 1578, 1579: as G3's first six). Capture: `gpu:2400:10`, ten frames inside the
 cutscene, **`gcap.py summary` shows fog mode 7 on every one of them**:
 
@@ -465,7 +478,7 @@ three boards on the touch screen, HR 1+, Guild Quests and Event Quests), answers
 - The same answer comes from the staged save with the Circle Pad Pro option on and from the copy with it off (two runs
   that reach the board at different frames).
 - The "Guild Quests" board of the same counter is a different list (the pool of quests obtained through StreetPass and
-  expeditions, with one quest in it in this save), and the title screen's `DLC` button asks "Connect to the Internet to
+  expeditions), and the title screen's `DLC` button asks "Connect to the Internet to
   access downloadable content?", not for the downloaded quests.
 - What stops the list is, most likely, the clock: event quests are distributed for a limited period, and the reference runner
   starts every run at 2026-01-01 12:00 UTC (a constant of `port/src/runner.cpp`, D30). That is a reading of the game's

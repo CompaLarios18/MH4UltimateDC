@@ -120,8 +120,10 @@ if opt("--state-trace"):
     lines = ["# statetrace v1 2026-01-01 run %d" % n]
     for fr in range(1, frames + 1):
         scene = 0 if fr < change else (2 if fr < second else 4)
-        if os.environ.get("FAKE_SCENE4") and fr >= 28:      # a fourth scene value, for the sessions that want four
-            scene = 6
+        for after, value in sorted((int(x.split(":")[0]), int(x.split(":")[1]))     # FAKE_SCENES=frame:scene,...
+                                   for x in os.environ.get("FAKE_SCENES", "").split(",") if x):
+            if fr >= after:
+                scene = value
         lines.append("f=%d t=%d scene=0x%02x applet_state=0x00 frame_counter=0x%08x smain_delta=- quest_id=%s "
                      "stage_loader_state=-" % (fr, tick(fr), scene, fr, n if mode == "vary_state" else "-"))
     if mode != "no_state":
@@ -318,12 +320,21 @@ def test_env_headers(tmp_path):
     assert s.events == 3                      # an env line is a header, not an input event
 
 
-@pytest.mark.parametrize("value,message", [("WIDESCREEN", "bad env"), ("=1", "bad env"), ("1X=2", "bad env"),
-                                           ("A=1 2", "bad env"), ("A=", "bad env"), ("", "bad env"),
-                                           ("TZ=PST8PDT", "TZ is fixed")])
+@pytest.mark.parametrize("value,message", [("MH4U_WIDESCREEN", "bad env"), ("=1", "bad env"), ("1X=2", "bad env"),
+                                           ("MH4U_A=1 2", "bad env"), ("MH4U_A=", "bad env"), ("", "bad env"),
+                                           ("MH4U_A=1\x002", "bad env"),
+                                           ("TZ=PST8PDT", "TZ is fixed"), ("tz=PST8PDT", "TZ is fixed"),
+                                           ("PATH=C:/x", "only MH4U_"), ("PYTHONPATH=x", "only MH4U_"),
+                                           ("LD_PRELOAD=x", "only MH4U_"), ("mh4u_fps=1", "only MH4U_")])
 def test_bad_env_headers(tmp_path, value, message):
     text = SESSION.replace("# captures", f"# env: {value}\n# captures")
     with pytest.raises(golden.GoldenError, match=message):
+        golden.parse_session(write_session(tmp_path, text))
+
+
+def test_an_env_variable_given_twice_is_refused(tmp_path):
+    text = SESSION.replace("# captures", "# env: MH4U_FPS=60\n# env: MH4U_WIDE_RENDER=1\n# env: MH4U_FPS=120\n# captures")
+    with pytest.raises(golden.GoldenError, match="given twice"):
         golden.parse_session(write_session(tmp_path, text))
 
 
@@ -407,7 +418,7 @@ def test_shipped_g3_is_the_arena_hunt_with_a_save():
     g3 = golden.parse_session(golden.SESSIONS_DIR / "G3.txt")
     assert g3.frames == 18000 and g3.env == []
     # N0-10: a GPU capture of 10 frames in the fight (the Yian Kut-Ku is on screen from about f16740 to f17800),
-    # and 3900 frames (75 s) of hunt from the load at about f14109
+    # and 3891 frames (about 65 s) of hunt from the load at about f14109
     assert [(c.kind, c.start, c.frames) for c in g3.captures] == [("gpu", 17400, 10)]
     # a checkpoint in every scene that lasts more than 100 frames: the intro movies, the continue screen, the
     # village (the arrival scene, the talk, the hall), the Arena's equipment screen and the hunt
@@ -465,6 +476,7 @@ def test_shipped_g7_is_a_draft_that_stops_at_the_empty_board():
     assert events[:61] == events_of("G3")[:61]            # the boot, the talk, the map and the walk (to f10894)
     assert "f12700:TOUCH:122:190:f6" in events
     assert not [e for e in events if e.split(":")[1].upper() == "B"]
+
 
 @pytest.mark.skipif(not os.environ.get("MH4U_RUNNER"), reason="reference runner not set (MH4U_RUNNER)")
 @pytest.mark.parametrize("name", ["G1", "G2", "G6"])
@@ -545,6 +557,11 @@ def test_record_refusals(env, capsys):
                                         .replace("# captures", "# draft: yes\n# captures"))
     assert golden.main(["record", "D", *env.common, *env.ref, "--user", str(env.user)]) == 2
     assert "draft" in capsys.readouterr().err
+    runs = len(env.calls())
+    assert not (env.out / "D").exists()                       # the refusal ran nothing and made nothing
+    assert golden.main(["record", "D", *env.common, *env.ref, "--user", str(env.user), "--allow-draft"]) == 0
+    assert len(env.calls()) == runs + 1                       # --allow-draft: the draft is recorded
+    assert env.manifest("D")["session"]["checkpoints"] == []
     (env.sessions / "N.txt").write_text(SESSION.replace("S1", "N").replace("none", "save"))
     assert golden.main(["record", "N", *env.common, *env.ref, "--user", str(env.user)]) == 2
     assert "needs a save" in capsys.readouterr().err
@@ -664,13 +681,52 @@ def test_a_session_with_env_headers_runs_with_them_every_time(env, capsys, monke
     assert env.manifest()["session"]["env"] == []
 
 
+def test_a_check_refuses_a_session_whose_env_lines_changed_since_the_recording(env, capsys):
+    """The environment of a run is part of the recording: a session file edited after `record` is not checked
+    under other variables without a word (and an old manifest without the key was made with none)."""
+    with_env = SESSION.replace("# captures", "# env: MH4U_WIDE_RENDER=1\n# captures")
+    (env.sessions / "S1.txt").write_text(with_env)
+    assert env.record() == 0
+    assert env.check() == 0                                                     # unchanged: fine
+    capsys.readouterr()
+    runs = len(env.calls())
+    for other in (SESSION, with_env.replace("RENDER=1", "RENDER=0"),
+                  with_env.replace("# captures", "# env: MH4U_FPS=60\n# captures")):
+        (env.sessions / "S1.txt").write_text(other)
+        assert env.check() == 2
+        assert "differ from the ones the recording was made with" in capsys.readouterr().err
+    assert len(env.calls()) == runs                           # refused before any run
+    # the other way round: a recording without the lines, a session that gained one
+    (env.sessions / "S1.txt").write_text(SESSION)
+    assert env.record("--force") == 0
+    (env.sessions / "S1.txt").write_text(with_env)
+    assert env.check() == 2 and "differ" in capsys.readouterr().err
+    # a manifest from before the key existed has no variables
+    manifest = json.loads((env.out / "S1" / "manifest.json").read_text())
+    del manifest["session"]["env"]
+    (env.out / "S1" / "manifest.json").write_text(json.dumps(manifest))
+    (env.sessions / "S1.txt").write_text(SESSION)
+    assert env.check() == 0
+    (env.sessions / "S1.txt").write_text(with_env)
+    assert env.check() == 2
+
+
 @pytest.mark.parametrize("name", ["G3", "G3-perf"])
-def test_g3_needs_a_checkpoint_in_each_of_five_scenes(env, name):
+def test_g3_needs_a_checkpoint_in_each_of_five_scenes(env, name, monkeypatch):
     """N0-10: the Arena hunt passes through the intro, the continue screen, the village, the Arena's equipment
-    screen and the hunt, and a checkpoint is wanted in each (the fake runner has four scene values at most, so the
-    session with five checkpoint values is the one it cannot hold: the problem names the checkpoints, not the run)."""
+    screen and the hunt, and a checkpoint is wanted in each: five distinct scene values pass, four do not."""
+    five = SESSION.replace("S1", name).replace("5:0, 20:2", "5:0, 11:2, 16:4, 21:6, 26:8")
+    monkeypatch.setenv("FAKE_SCENES", "10:2,15:4,20:6,25:8")      # the fake runner walks through five scene values
+    (env.sessions / f"{name}.txt").write_text(five)
+    assert env.record(s=name) == 0 and env.manifest(name)["capture_problems"] == []
+    assert len({c["scene"] for c in env.manifest(name)["checkpoint_results"]}) == 5
+    (env.sessions / f"{name}.txt").write_text(five.replace("11:2, 16:4, 21:6, 26:8", "11:2, 16:4, 21:6, 26:6"))
+    assert env.record("--force", s=name) == 1
+    assert env.manifest(name)["capture_problems"] == [
+        f"{name}'s checkpoints hold 4 distinct scene value(s), at least 5 wanted"]
+    monkeypatch.delenv("FAKE_SCENES")
     (env.sessions / f"{name}.txt").write_text(SESSION.replace("S1", name))
-    assert env.record(s=name) == 1
+    assert env.record("--force", s=name) == 1
     assert env.manifest(name)["capture_problems"] == [
         f"{name}'s checkpoints hold 2 distinct scene value(s), at least 5 wanted"]
     # the same session under another name has no such minimum
@@ -683,7 +739,7 @@ def test_a_recording_that_opens_ir_user_still_needs_its_type_2_records(env, monk
     with the option off (golden.md, `ir:USER`), so none of them meets the rule, and a recording that does open it
     without a type-2 record is a capture problem whatever its name."""
     for name in ("G3", "G4", "S1"):
-        (env.sessions / f"{name}.txt").write_text(SESSION.replace("S1", name).replace("gpu:10:2, ", "gpu:10:2, "))
+        (env.sessions / f"{name}.txt").write_text(SESSION.replace("S1", name))
     monkeypatch.setenv("FAKE_MODE", "ir_missing")
     for name in ("S1", "G3", "G4"):
         assert env.record("--force", s=name) == 1

@@ -17,7 +17,7 @@
 # not with the filter off (docs/native/golden.md, G3-perf). The rest of G3's comment follows.
 #
 # G3: save -> village -> the Arena counter's quest "Grudge Match: Yian Kut-Ku" -> the Arena with a
-# preset loadout -> 3900 frames (75 s) of the hunt. From a user folder with the update installed and
+# preset loadout -> 3891 frames (about 65 s) of the hunt. From a user folder with the update installed and
 # the maintainer's save merged in (golden.py record --save, with the Circle Pad Pro option off: see
 # docs/native/golden.md, "The save"): only button presses and touches are written here.
 #
