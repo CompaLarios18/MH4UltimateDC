@@ -1,7 +1,8 @@
-// Derived from Azahar src/core/frontend/framebuffer_layout.cpp, src/core/frontend/framebuffer_layout.h, src/core/frontend/emu_window.cpp and src/core/frontend/top_screen.h at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-2.0-or-later): the layout functions (DefaultFrameLayout, LargeFrameLayout, SingleFrameLayout, CustomFrameLayout), the port's patch for them (TopScreenWidth, OverlayFrameLayout, SetScreenOverlay's clamps), GetMinimumSizeFromLayout, and the layout dispatch of EmuWindow::UpdateCurrentFramebufferLayout, for the four layouts of the app.
+// Derived from Azahar src/core/frontend/framebuffer_layout.cpp, src/core/frontend/framebuffer_layout.h, src/core/frontend/emu_window.cpp and src/core/frontend/top_screen.h and src/core/3ds.h (the screen sizes) at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-2.0-or-later): the layout functions (DefaultFrameLayout, LargeFrameLayout, SingleFrameLayout, CustomFrameLayout), the port's patch for them (TopScreenWidth, OverlayFrameLayout, SetScreenOverlay's clamps), GetMinimumSizeFromLayout, and the layout dispatch of EmuWindow::UpdateCurrentFramebufferLayout, for the four layouts of the app.
 // Copyright 2016-2026 Citra Emulator Project / Azahar Emulator Project (framebuffer_layout.cpp, framebuffer_layout.h)
 // Copyright 2014-2026 Citra Emulator Project / Azahar Emulator Project (emu_window.cpp)
 // Copyright 2026 Azahar Emulator Project (top_screen.h, the port's patch)
+// Copyright 2017 Citra Emulator Project (3ds.h)
 //
 // The same arithmetic in the same types and the same order (u32 and float, std::round and
 // std::lround), so that the rectangles are Azahar's to the pixel: native/tests/screen_layout_test.cpp
@@ -14,7 +15,6 @@
 #include <algorithm>
 #include <cmath>
 
-#pragma STDC FP_CONTRACT OFF
 
 namespace mh4n::screen_layout {
 namespace {

@@ -349,7 +349,7 @@ def prepare_tree(azahar: str, tree: str) -> None:
 def compile_driver(tree: str, cxx: str) -> str:
     exe = os.path.join(tree, "layout_driver")
     src = os.path.join(tree, "src")
-    cmd = [cxx, "-std=c++20", "-O1", "-Wall", "-Wno-unused", "-I", src, "-I", os.path.join(src, "common"),
+    cmd = [cxx, "-std=c++20", "-O1", "-ffp-contract=off", "-Wall", "-Wno-unused", "-I", src, "-I", os.path.join(src, "common"),
            os.path.join(src, "core", "frontend", "framebuffer_layout.cpp"),
            os.path.join(src, "core", "frontend", "emu_window.cpp"),
            os.path.join(HERE, "driver.cpp"), "-o", exe]

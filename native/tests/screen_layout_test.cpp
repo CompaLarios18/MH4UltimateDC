@@ -148,7 +148,8 @@ std::string CompareLayout(const Layout& got, const LayoutOut& want) {
 TEST_CASE("the table is the generated one, and covers the cases the WP asks for") {
     REQUIRE(kCases.size() > 100);
     std::set<std::tuple<std::string, u32, u32, u32>> modes;
-    std::set<std::string> aspects;
+    std::set<std::string> aspects, zero_width_modes;
+    std::size_t overlapping_views = 0;
     std::set<int> corners;
     std::size_t placed = 0, cropped = 0, two_views = 0, touches = 0, releases = 0, view_presses = 0,
                 clipped_moves = 0, outside_presses = 0;
@@ -162,6 +163,14 @@ TEST_CASE("the table is the generated one, and covers the cases the WP asks for"
             placed += c.at[0] >= 0.0f && c.at[1] >= 0.0f;
             cropped += c.crop != std::array<float, 4>{0.0f, 0.0f, 1.0f, 1.0f};
             two_views += c.views.size() == 2;
+        }
+        if (c.top_width == 0) {
+            zero_width_modes.insert(c.mode);
+        }
+        if (c.expected.views.size() == 2) {
+            const auto& a = c.expected.views[0].rect;
+            const auto& b = c.expected.views[1].rect;
+            overlapping_views += a[0] < b[2] && b[0] < a[2] && a[1] < b[3] && b[1] < a[3];
         }
         touches += !c.steps.empty();
         for (const auto& s : c.steps) {
@@ -184,6 +193,8 @@ TEST_CASE("the table is the generated one, and covers the cases the WP asks for"
     CHECK(placed >= 3);
     CHECK(cropped >= 3);
     CHECK(two_views >= 1);
+    CHECK(zero_width_modes == std::set<std::string>{"overlay", "stacked", "single", "side"});  // 0 means 400
+    CHECK(overlapping_views >= 1);
     CHECK(touches >= 10);
     CHECK(releases >= 10);
     CHECK(outside_presses >= 5);
@@ -271,6 +282,49 @@ TEST_CASE("a touch tracker holds nothing before a press and after a release") {
     tracker.Release();
     CHECK_FALSE(tracker.Point().has_value());
     CHECK_FALSE(tracker.Press(layout, 960, 100));  // the top screen is not the touch screen
+}
+
+TEST_CASE("the touch point never passes the last pixel, whatever float the crop makes") {
+    Inputs in;
+    in.window_w = 800;
+    in.window_h = 480;
+    in.mode = Mode::Overlay;
+    in.overlay.height = 0.5f;
+    Layout layout = Compute(in);
+    // a crop reaching past the screen, which no clamped overlay makes: the fraction is above 1
+    layout.bottom_crop = {0.5f, 0.5f, 1.5f, 1.5f};
+    TouchTracker tracker;
+    REQUIRE(tracker.Press(layout, layout.bottom.right - 1, layout.bottom.bottom - 1));
+    REQUIRE(tracker.Point().has_value());
+    CHECK(tracker.Point()->fx > 1.0f);
+    CHECK(tracker.Point()->x == 319);
+    CHECK(tracker.Point()->y == 239);
+}
+
+TEST_CASE("a touch on a view when the layout changes under it") {
+    Inputs in;
+    in.window_w = 1920;
+    in.window_h = 1080;
+    in.mode = Mode::Overlay;
+    in.overlay.height = 0.3f;
+    in.overlay.views[0] = {0.2f, 0.0f, 0.0f, 0.0f, 0.0f, 0.5f, 0.5f};
+    const Layout with_view = Compute(in);
+    REQUIRE(with_view.view_count == 1);
+    TouchTracker tracker;
+    REQUIRE(tracker.Press(with_view, 10, 10));
+    const auto before = tracker.Point();
+    REQUIRE(before.has_value());
+
+    // the view is gone from the new layout: the touch is held and does not move (Azahar's rule)
+    in.overlay.views[0] = {};
+    const Layout without_view = Compute(in);
+    REQUIRE(without_view.view_count == 0);
+    tracker.Move(without_view, 1700, 900);
+    REQUIRE(tracker.Point().has_value());
+    CHECK(tracker.Point()->fx == before->fx);
+    CHECK(tracker.Point()->fy == before->fy);
+    tracker.Release();
+    CHECK_FALSE(tracker.Point().has_value());
 }
 
 #endif

@@ -60,3 +60,12 @@ case touch_crop_thin mode=overlay window=800x480 height=0.5 corner=tr crop=0,0.5
 case touch_views_two mode=overlay window=1920x1080 height=0.3 crop=0,0,1,0.5 view=0.2,0,0,0,0.5,0.5,1 view=0.2,0.4,0,0.5,0.5,1,1 ops=P:10,10/R/P:287,215/R/P:288,100/P:700,100/R/P:100,100/M:1500,900/M:3000,3000/M:0,0/M:200,200/R/P:1500,900/M:100,100/M:1500,800/M:700,100/R/P:700,100/M:100,100/R
 case touch_views_overlap mode=overlay window=1920x1080 height=0.3 view=0.2,1,1,0,0,0.5,0.5 ops=P:1700,900/M:1500,800/M:1919,1079/M:0,0/R/P:1500,800/M:1700,900/M:1633,865/R/P:1488,756/R/P:1632,864/R
 case touch_views_one mode=overlay window=3440x1440 top_width=573 height=0.3 corner=bl crop=0,0,0.6,1 view=0.25,1,1,0.6,0,1,0.5 ops=P:3056,1080/R/P:3439,1439/R/P:3250,1200/R/P:100,1200/M:3300,1300/R
+
+# a top width of 0 is 400 (every mode, and a touch)
+sweep width0 mode=overlay,stacked,single,side window=1920x1080 top_width=0 height=0.3
+case width0_touch mode=stacked window=1920x1080 top_width=0 ops=P:960,810/M:2000,2000/R
+case width0_touch_overlay mode=overlay window=800x480 top_width=0 height=0.3 view=0.2,0,0,0,0,0.5,0.5 ops=P:10,10/M:700,400/R/P:700,400/R
+
+# two views that overlap: the last drawn wins (views are 0.4 of 1080 high; both near the top left)
+case views_overlap_two mode=overlay window=1920x1080 height=0.3 view=0.4,0,0,0,0,0.5,0.5 view=0.4,0.02,0.02,0.5,0.5,1,1
+case touch_views_overlap_two mode=overlay window=1920x1080 height=0.3 view=0.4,0,0,0,0,0.5,0.5 view=0.4,0.02,0.02,0.5,0.5,1,1 ops=P:300,300/M:310,320/M:5,5/M:1000,1000/R/P:5,5/M:300,300/R

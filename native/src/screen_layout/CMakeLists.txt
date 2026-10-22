@@ -17,6 +17,12 @@ endif()
 
 mh4n_module(SOURCES ${mh4n_screen_layout_sources})
 
+# No fused multiply-add: the rectangles and touch points are Azahar's floats (the oracle is built the
+# same way), whatever the host. Precedent: native/src/cpu/interp/CMakeLists.txt.
+if (mh4n_screen_layout_available AND NOT MSVC)
+    set_source_files_properties(screen_layout.cpp touch.cpp PROPERTIES COMPILE_OPTIONS -ffp-contract=off)
+endif()
+
 if (mh4n_screen_layout_available)
     # platform.h is included as "platform.h"; the module's own header as "screen_layout/screen_layout.h".
     get_filename_component(MH4N_PORT_HEADERS_DIR "${MH4N_PLATFORM_HEADER}" DIRECTORY)

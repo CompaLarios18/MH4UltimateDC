@@ -1,3 +1,8 @@
+// Derived from Azahar src/core/frontend/framebuffer_layout.h, src/core/frontend/top_screen.h (the port's port/azahar/azahar.patch) and src/core/3ds.h at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-2.0-or-later): the shape of the layout (the screens' rectangles, opacities, bottom_crop, the further views with their screen and crop, IsWithinTouchscreen) and the overlay's clamps.
+// Copyright 2016-2026 Citra Emulator Project / Azahar Emulator Project (framebuffer_layout.h)
+// Copyright 2026 Azahar Emulator Project (top_screen.h, the port's patch)
+// Copyright 2017 Citra Emulator Project (3ds.h)
+//
 // screen_layout.h - N2b-04.
 //
 // Where the top and bottom screens go in a window of any size, and which pixel of the bottom screen
@@ -86,6 +91,10 @@ struct Layout {
 
 /// The layout of `in`: Azahar's layout function for the mode, with the port's changes, and the clamp
 /// the window gets to the layout's smallest size.
+///
+/// Overlay mode with an overlay height of 0 is Azahar's plain custom layout: top {0,0,800,480} and
+/// bottom {80,500,720,980} in any window, so those rectangles lie outside Layout::width/height (the
+/// window raised only to 400x480). The app always sets a height when its overlay is on.
 Layout Compute(const Inputs& in);
 
 /// The layout's smallest size (width, height).

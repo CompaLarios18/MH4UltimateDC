@@ -5,12 +5,11 @@
 //
 // The touch state of one window. Same types and order of operations as Azahar's, so that the
 // points are the ones its code makes (native/tests/screen_layout_test.cpp compares them); no
-// contraction of multiply and add, which a host with fused operations could otherwise make.
+// contraction of multiply and add (the module is built with -ffp-contract=off, see CMakeLists.txt).
 #include "screen_layout/screen_layout.h"
 
 #include <algorithm>
 
-#pragma STDC FP_CONTRACT OFF
 
 namespace mh4n::screen_layout {
 
