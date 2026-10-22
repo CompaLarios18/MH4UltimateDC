@@ -155,6 +155,43 @@ Tables between the `wp-status` markers are generated: edit the specs or use `set
 | N2b-24 | Exit: G1–G4 end to end and 120 fps in G3 | M | native-worker | N2b-21, N2b-23, N2-19, N1-23 | dump-check, save, pc | `todo` |  |
 <!-- wp-status:end N2b -->
 
+## N3
+
+<!-- wp-status:begin N3 -->
+| ID | Title | Size | Agent | Depends on | Needs | Status | Note |
+|---|---|---|---|---|---|---|---|
+| N3-01 | Our own DSP test programs | M | native-worker-high | N0-26, N1-18 | none | `ready` |  |
+| N3-02 | HLE DSP: sources, codecs, interpolation and filters | M | native-worker-high | N1-21, N1-18, N2b-04 | none | `todo` |  |
+| N3-03 | HLE DSP: mixers, effects and the frame | M | native-worker-high | N3-02 | none | `todo` |  |
+| N3-04 | DSP capture replay (`mh4n_dsp_replay`) | M | native-worker | N3-03, N0-09, N0-10 | dump-check, save | `todo` |  |
+| N3-05 | Audio output stream | M | native-worker-high | N1-18 | none | `ready` |  |
+| N3-06 | SDL3 audio in `mh4u-native` | S | native-worker-high | N3-05, N2b-03, N2b-27 | ci | `todo` |  |
+| N3-07 | Input in `mh4u-native`: controllers, keyboard and mouse, the mouse camera | M | native-worker-high | N2b-03, N2b-08, N2b-27 | ci | `todo` |  |
+| N3-08 | The Circle Pad Pro device | M | native-worker-high | N1-21, N1-16, N0-26 | none | `todo` |  |
+| N3-09 | Code patches and exheader overrides from the mods folder | S | native-worker | N1-21, N1-03, N3-10 | none | `todo` |  |
+| N3-10 | LayeredFS | M | native-worker-high | N1-21, N1-12, N2b-04 | none | `todo` |  |
+| N3-11 | The full DSP in the runtime | M | native-worker-high | N2b-21, N3-01, N3-04, N3-05 | dump-check | `todo` |  |
+| N3-12 | The Circle Pad Pro and the applets' frontends in the runtime | M | native-worker-high | N2b-21, N3-08, N1-14 | dump-check, save | `todo` |  |
+| N3-29 | Mods in the runtime: code patches in the loader, LayeredFS in fs | M | native-worker-high | N2b-21, N3-09, N3-10 | dump-check | `todo` |  |
+| N3-13 | Tester reports | M | native-worker-high | N2b-03, N2b-27 | ci | `todo` |  |
+| N3-14 | `mh4u-native`: sound and input wired in | M | native-worker-high | N2b-23, N3-06, N3-07, N3-11, N3-12 | ci, pc | `todo` |  |
+| N3-30 | `mh4u-native`: the keyboard, error notices and reports wired in | M | native-worker-high | N3-14, N3-13 | ci | `todo` |  |
+| N3-15 | Separate windows | M | native-worker-high | N3-30 | ci, pc | `todo` |  |
+| N3-16 | Save import and export | M | native-worker | N1-13, N0-10 | dump-check, save | `todo` |  |
+| N3-17 | The native setup tool | M | native-worker | N1-03, N2-17 | dump-check | `ready` |  |
+| N3-18 | Packages with `mh4u-native` | M | native-worker | N2b-10, N2b-27, N2-17 | ci, pc | `todo` |  |
+| N3-19 | The launcher: native setup, saves and the runtime choice | M | native-worker-high | N2b-02, N2b-11, N3-30, N3-16, N3-17, N3-18, N3-22 | ci, pc | `todo` |  |
+| N3-20 | All hooks exercised natively | M | native-worker-high | N2b-21, N2b-22 | dump-check, save, pc | `todo` |  |
+| N3-21 | Observables for the 60/120 audit | M | native-worker | N0-10, N0-27 | dump, save | `todo` |  |
+| N3-22 | The 60/120 fps audit | M | native-worker | N3-21, N2b-18 | dump, save | `todo` |  |
+| N3-23 | Capture trimmer (N2o-01, part 1) | M | native-worker-high | N2-20, N2-04, N0-22, N0-10 | dump-check, save | `todo` |  |
+| N3-24 | The real-3DS capture player (N2o-01, part 2) | M | native-worker-high | N3-23, N2b-16 | ci | `todo` |  |
+| N3-25 | Gas against the console (N2o-01, part 3) | S | native-worker | N3-24, N2b-17, N0-10 | dump, save, 3ds, pc | `todo` |  |
+| N3-26 | G6 and G7 end to end | M | native-worker-high | N3-11, N3-12, N3-29, N3-20, N3-22, N2b-21, N2b-17 | dump, save | `todo` |  |
+| N3-27 | Exit: every session end to end, and 120 fps with sound on the reference PC | M | native-worker | N3-26, N3-14, N3-15, N3-19, N2b-24 | ci, dump-check, save, pc | `todo` |  |
+| N3-28 | The alpha: release and triage | S | orchestrator | N3-27, N3-25 | ci | `todo` |  |
+<!-- wp-status:end N3 -->
+
 ## Later phases
 
 N2b to N7 and Track D are outlined in [`wp/LATER.md`](wp/LATER.md); the planner details each one before it starts.
