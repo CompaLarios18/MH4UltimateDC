@@ -84,6 +84,9 @@ About **10 minutes**. It checks that the files in the zip are enough on their ow
 | `native/app/CMakeLists.txt` | the app tree's build: `mh4n_app_module`, the targets `mh4n_imgui` and `mh4n_inih`, and `mh4n::app` (every app module, every native module, SDL3, ImGui, inih) |
 | `native/app/<path>/` | an app module: a `CMakeLists.txt` with `mh4n_app_module(SOURCES … [DEPENDS mh4n_app_x …] [THIRD_PARTY …])`, found at any depth except under `program/`, `tests/` and `third_party/`; its library is `mh4n_app_<path with _ for />` and is linked whole, so options and registrations in it work without being named |
 | `native/app/shared/` | the one module that compiles the non-UI shared sources of `port/app/` (`config.cpp`, `input.cpp`, `kbm.cpp`, `invite.cpp`, `util/*.cpp`) and `native_rooms.cpp`, the stubs of `App::Multiplayer` and `Launcher::Lobby` (rooms are N4's: `Available()` is false and no rooms are listed). Later work packages add their own files in other modules and never compile these sources again |
+| `native/app/audio/` | the SDL3 audio device: the `sdl` audio sink, `--volume`, `--audio-log`, `app_audio::SetVolume` (N3-06; `docs/native/audio-out.md`) |
+| `native/app/input/` | `InputMapper`: keys, the mouse, controllers and the mouse camera as one `InputState` for the live source (N3-07; `docs/native/input.md`) |
+| `native/app/report/` | crash files and tester reports: `report::Install`, `SetGameState`, `Make`, `Redact`, `Pending`, `CollectNames` (N3-13; `docs/native/alpha.md`) |
 | `native/app/host/` | `App::Host` (`port/app/app_window.h`) on SDL3: ticks, clipboard, cursor, mouse position, key names, message boxes, controllers, the window icon |
 | `native/app/program/` | `mh4u-native`'s `main` |
 | `native/app/tests/` | one doctest binary per `<name>_test.cpp`, linked against `mh4n::app`; `app_shared_test` reads a synthetic `mh4u-app.ini`, runs `App::Host` through SDL3's `dummy` video driver (no display) and checks the rooms stubs |
