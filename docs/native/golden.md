@@ -73,9 +73,9 @@ start (the recording, the `--repeat` runs, the `--candidate-args` runs and the n
 edited, added or removed since `record`; a manifest without the key counts as none). A `--init-time` in `--candidate-args` (or
 `--runner-args`) that disagrees with the header is a usage error (exit 2), an equal one is harmless. A session without the
 header gets no `--init-time` from golden.py and runs exactly as before (a `--init-time` in its `--candidate-args` passes
-through untouched); G1, G2 and G6 keep their whole-second date. G4 has the header (`1767268800.5`, recorded again in N0-35
-Part B step 2: [Results of N0-35 Part B](#results-of-n0-35-part-b-steps-1-and-2)); G1, G2, G6 and G7 have none; G3, G3-perf
-and G8 get theirs when they are recorded (N0-35 Part B, after the decision on step 2).
+through untouched); G1, G2 and G6 keep their whole-second date. G4, G3 and G3-perf have the header (`1767268800.5`,
+recorded again in N0-35 Part B steps 2 and 3: [Results of N0-35 Part B](#results-of-n0-35-part-b-steps-1-and-2) and
+[step 3](#results-of-n0-35-part-b-step-3-g3-and-g3-perf)); G1, G2, G6 and G7 have none; G8 gets its own when it is recorded.
 
 ### The scene
 
@@ -429,8 +429,15 @@ intro movies), `1400:0x00e6c778` (`aContinue`, the continue screen), `2500`, `80
 scene changes: 10 (frames 2 `aGameSys`, 42 `aDemo`, 903 `aContinue`, 1576 `aDemo`, 1578 `aGameSys`, 1579 `aVillage`,
 13462 `aGameSys`, 13464 `aArena`, 14107 `aGameSys`, 14109 `aQuest`; the steps of 1 to 3 frames have no checkpoint).
 Capture: `gpu:17400:10`, 10 frames with the Yian Kut-Ku on screen (it is in view from about frame 16740 to 17800); fog mode
-5 (plain fog) is set 10 times and gas never. Recording: 3,363 s of host time (56 minutes), 3,114 MiB in 624 files (the SVC
-trace is 2,696 MiB, the GPU capture 166 MiB). The comments of `G3.txt` explain each stretch:
+5 (plain fog) is set 10 times and gas never. Recording: 3,713 s of host time (62 minutes), 3,193 MiB in 624 files (the SVC
+trace is 2,778 MiB, the GPU capture 163 MiB). The comments of `G3.txt` explain each stretch.
+
+*(N0-35 Part B, step 3, D83)* The numbers above are the recording made with `# init-time: 1767268800.5` (the header is in
+`G3.txt` now), into `build/golden-n035/G3`; the recording of N0-10 (3,363 s, 3,114 MiB, SVC trace 2,696 MiB, GPU capture
+166 MiB) stays in `build/golden/G3` until the orchestrator moves the new one in. Same frames, inputs, checkpoints (9/9, the
+same scene values) and capture (`gpu:17400:10`, still 10 frames with fog mode 5 ten times and no gas); the same ten real scene
+changes at the same frames. The ticks of the state trace are the old recording's up to frame 1743 and first differ at frame 1744
+(16,257 of the 18,001 records differ in all), which is where the date starts to matter, as in G4. The stretches in the table:
 
 | Frames | What |
 |---|---|
@@ -492,8 +499,15 @@ anything happens** (the recording's ten scene changes fall at the frames of G3's
 pixels wide (3440/1440 of 240, rounded to whole 8-pixel tiles). Real scene changes: 10. Capture: `gpu:17300:30`, 30 frames
 with the Yian Kut-Ku in view (`gcap.py summary`: 179 `GX`, 60 `PICA_REG`, 239 `CPU_PAGES`, 120 `GPU_PAGES`, fog mode 5 on 30 draws
 and none on 60, no gas); the display transfer of the widened top screen was given **185,185 ns** (G3's: 92,592) and the
-`P3D` interrupts 203,049 to 16,068,479 ns (median 8,015,431). Recording: 4,287 s of host time (71 minutes), 3,330 MiB in 664
-files (the SVC trace is 2,781 MiB, the GPU capture 248 MiB).
+`P3D` interrupts 203,049 to 15,624,482 ns (median 7,861,095.5). Recording: 4,241 s of host time (71 minutes), 3,353 MiB in 664
+files (the SVC trace is 2,814 MiB, the GPU capture 237 MiB).
+
+*(N0-35 Part B, step 3, D83)* The numbers in this section are the recording made with `# init-time: 1767268800.5` (the header
+is in `G3-perf.txt` now, after the three `# env:` lines), into `build/golden-n035/G3-perf`; the recording of N0-10 (4,287 s,
+3,330 MiB, SVC trace 2,781 MiB, GPU capture 248 MiB, `P3D` delays 203,049 to 16,068,479 ns, median 8,015,431) stays in
+`build/golden/G3-perf`. Same frames, inputs, checkpoints (9/9) and capture (the same record counts, and the same fog writes:
+mode 5 set 30 times, none 60, gas never), and the same ten real scene changes at the same frames as G3's; the state trace's ticks first differ
+from the old recording's at frame 1744 (16,099 of the 18,001 records differ in all).
 
 **Why the depth-of-field filter is off.** With `wide_render` on and the filter on (the default), the reference runner dies
 in the village's arrival scene, at about frame 1900, whatever the save and whether or not the screens are being drawn for
@@ -602,8 +616,8 @@ Nothing was loosened to make it pass: the comparison of `same` has no tolerance 
 svc,ipc,state,checkpoints,hid` (the `same` profile; `images`, `unmapped`, the GPU capture and the shared page are compared
 and gated too, as above), the same runner, library, clock and PC as the table above, the maintainer's PC with nothing else
 using the emulator (one process at a time) and some compiles and test runs going on beside it, which do not change what a run
-of this runner does (the clock of a run is emulated). *(G4's row is the recording made with the whole-second date; N0-35
-Part B records it again at `1767268800.5`, see the section after this one.)*
+of this runner does (the clock of a run is emulated). *(The rows of G4, G3 and G3-perf are the recordings made with the
+whole-second date; N0-35 Part B records them again at `1767268800.5`, see the two sections after this one.)*
 
 | Session | `record` | Host time of one run | `check --repeat 2` (exit 0) |
 |---|---|---|---|
@@ -678,6 +692,66 @@ time it is kept open, section 11 item 2). Rules applied: D85's 16,384 bytes per 
 thread #17; with the bound at 20,480 the same two traces give `all threads match`, exit 0 (an offline run of
 `compare_ipc_traces.py`, not a check). The old recordings' other `ipc` differences (the two `nwm::UDS` commands and
 `ControlArchive`) are in `ipc_time_dependent.txt` and nothing else differs.
+
+### Results of N0-35 Part B (step 3: G3 and G3-perf)
+
+Step 2 confirmed D83 on G4, so `G3.txt` and `G3-perf.txt` got `# init-time: 1767268800.5` and were recorded again, into
+`build/golden-n035` (the recordings of N0-10 stay in `build/golden`). The same runner (SHA-256 `d2f3705a...`), library and
+PC as step 2, `--cpu recomp`, `TZ=UTC0`, one emulator process at a time. `golden.py record <S> --user build/userbase-cfg --save
+build/n0-10-save-cpp-off --cpu recomp --out build/golden-n035` (with `--runner`, `--game`, `--update` and `--code` as in
+N0-10), then `golden.py check <S> --repeat 2 --require svc,ipc,state,checkpoints,hid` (the `same` profile; the runs were
+started through a small wrapper that only held the emulator lock around each runner run, with the same arguments).
+
+| Session | `record` | Host time of one run | `check --repeat 2` (exit 0) |
+|---|---|---|---|
+| G3 | exit 0: 9/9 checkpoints (5 distinct scene values), 10 real scene changes, 0 capture problems | 3,713 s | 26 passed, 0 failed, 0 skipped, 3 info; 6,726 s for the check |
+| G3-perf | exit 0: 9/9 checkpoints (5 distinct scene values), 10 real scene changes, 0 capture problems | 4,241 s | 26 passed, 0 failed, 0 skipped, 3 info; 9,548 s for the check |
+
+The nine comparisons per run are those of the N0-10 table; each run is identical to the recording and to the other run. What
+the new date changed and what it did not: the checkpoints (the nine frames and their scene values), the ten real scene
+changes and the frames they fall at are the old recordings' to the frame; the ticks of the state trace first differ from them
+at frame 1744 (the village's arrival scene, as in G4); the captures hold the same record counts. Sizes and numbers that
+moved are in the G3 and G3-perf sections above. The shared-page dump of frame 300 is
+byte for byte the same in the new G3, G3-perf and G4 (SHA-256) and differs from the old G3's in 2 bytes, at offsets 0x40 and
+0x41: the date record, moved by the fraction and nothing else; the state traces of the three agree on the tick of frame 4, so the
+first clock reading falls 0.5 s into a second here as in G4.
+
+**More scenes for the census: not done, on purpose.** `golden.py` accepts several `gpu:` entries in `# captures:` (the
+parser, the manifest and `check` handle a list), but the reference runner takes **one** `--capture-gpu START:FRAMES:FILE`: a
+second flag replaces the first (`port/src/runner.cpp` keeps the three values in single variables, and `BeginGpuCapture` runs
+once), so a G3 header with four `gpu:` entries would pass `golden.py`'s checks of the header and then record the last capture
+only, and `record` would report the others as "not written". The header was not changed and G3 and G3-perf keep their hunt
+capture (`gpu:17400:10` and `gpu:17300:30`, the frame counts unchanged). The three scenes (the village after the caravan
+leader's talk, about f8000; the Arena's equipment screen, about f13500; the quest's first frames, about f14150) need either a
+runner that takes repeated `--capture-gpu` (a change of `port/src/runner.cpp`, in N0-35's allowlist, and a new reference runner
+and exactness gate) or three short sessions of the same route that stop just after each capture (a G9 family: about 8003, 13503 and
+14153 frames, so roughly 15, 50 and 58 minutes of host time per recording).
+
+**The census with the new recordings.** `pica_census.py` on `G1` and `G2` (`build/golden`) and `G3` and `G4`
+(`build/golden-n035`): one capture each, as before. Counts that changed against `docs/research/pica-census.md` (every YES and
+NO of the *Answers at a glance* table stays the same): G3's draws 3,676 to 3,650 (indexed 896 to 870; array 2,780 as before),
+depth formats 866 to 840, lighting 1,316 to 1,290, fog 826 to 800; G4's draws 1,386 to 1,390 (indexed 571 to 575), geometry
+shaders 541 to 542, depth formats 581 to 585. G1 and G2 are unchanged. The new document is `build/n0-35/pica-census.md`
+(outside the repository files; the orchestrator commits the real one).
+
+**A jit probe of G3 at the new date (not a calibration).** `golden.py check G3 --candidate-args "--cpu jit" --profile cross
+--ignore config/native/ipc_time_dependent.txt --require state,checkpoints,ipc,svc,hid` against the new recording (one run, 10,620
+s with the comparisons): **it fails, and the reason is not the loaders.** `hid` passes, `state-margin` passes (largest scene
+shift 1 frame, smallest input margin 147 and 148 frames); `svc`, `ipc`, `state` and `checkpoints` fail because the jit run
+**never leaves the village**: its state trace has the first six scene changes of the reference (each within 1 frame of
+the reference's) and no more, so checkpoints 13700, 15000, 17000 and 18000 mismatch and the Arena and the quest never load.
+Screenshots show that both runs post the quest at the counter and are identical in kind up to f12060, and that at f12300 the
+reference is already walking to the Quest Gate while the jit run is still showing the counter's quest notice (the talk looks
+one press behind, which is a reading of the screenshots and not a measurement; the circle pad route that follows then starts
+from the desk and does not reach the gate). The `fs coverage:` line,
+then, mostly measures the quest load that the jit run never made: 30 thread/file sessions read; bytes only the reference
+covers 17,819,262 (4 threads, 83 ranges), only the candidate covers 5,511,552 (1 thread, 3 ranges); the most per thread: reference
+8,930,613 (thread #5), candidate 5,511,552 (thread #12); per thread, reference and candidate: #12 5,748,404 and 5,511,552, #3
+3,121,813 and 0, #5 8,930,613 and 0, #17 (the movie stream) 18,432 and 0. `ipc`: thread main first differs at request 554 (the number of a `srv:` session handle, #87 against #90),
+the main thread has 607 requests on the reference against 593, #3 584 against 360, #5 213 against 129, #12 2,304 against 2,577.
+So this probe cannot say whether D83 holds on the long session: the jit candidate has to be run through a route it does not
+lose first (the counter's talk has a script that "cannot be moved by more than a press", see [G3](#g3-the-arena-hunt)). Nothing was
+tried to change that here.
 
 ## History: the WIP recordings (before N0-29)
 
