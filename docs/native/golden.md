@@ -59,10 +59,10 @@ none. Only `MH4U_*` names are accepted (a session file sets the port's options a
 `PYTHONPATH`), each at most once, and `TZ` is refused.
 
 `# init-time: SECONDS[.FRACTION]` (N0-35, D83; none by default, at most once) is the start date of the runners' clock, seconds
-since the Unix epoch, UTC. The game seeds its random generator from the Unix second of its first clock reading, so the
-runtimes must agree on that second: the runners' whole-second default (1767268800) puts the first reading a few
-milliseconds from a second boundary, where each runtime falls on a different side, and a start date with a sub-second part
-(for example `1767268800.5`) puts it in the middle of a second on all of them, so the same seed is drawn. Grammar: SECONDS is
+since the Unix epoch, UTC. D83 infers (from N0-36) that the game seeds its random generator from the Unix second of its first clock
+reading, and that the runners' whole-second default (1767268800) puts that reading a few milliseconds from a second
+boundary, where each runtime falls on a different side. A start date with a sub-second part (for example `1767268800.5`) is
+meant to put it in the middle of a second on all of them, so that the same seed is drawn, which N0-35 Part B checks on G4 first. Grammar: SECONDS is
 1 to 10 digits, FRACTION a dot and 1 to 6 digits, nothing else (no sign, space, exponent, hex, `.5` or `5.`); range
 946684800 (2000-01-01 00:00:00 UTC) to 4102444799.999999 (2099-12-31 23:59:59.999999 UTC), both included; anything else is a
 session-file error, as a bad `# env:` line is. The canonical form (seconds without leading zeros, fraction without trailing
@@ -72,7 +72,9 @@ start (the recording, the `--repeat` runs, the `--candidate-args` runs and the n
 (`session.init_time`) and `check` stops with exit status 2 when the session file's value differs from the manifest's (a header
 edited, added or removed since `record`; a manifest without the key counts as none). A `--init-time` in `--candidate-args` (or
 `--runner-args`) that disagrees with the header is a usage error (exit 2), an equal one is harmless. A session without the
-header gets no `--init-time` and runs exactly as before; G1, G2 and G6 keep their whole-second date.
+header gets no `--init-time` from golden.py and runs exactly as before (a `--init-time` in its `--candidate-args` passes
+through untouched); G1, G2 and G6 keep their whole-second date. No session has this header yet (G1 to G7 have none; G3,
+G3-perf, G4, G7 and G8 get theirs when they are recorded again in N0-35 Part B).
 
 ### The scene
 

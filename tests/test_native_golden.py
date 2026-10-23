@@ -436,6 +436,15 @@ def test_candidate_init_time_conflict(env, capsys):
     assert len(env.calls()) == runs                                       # nothing ran
 
 
+def test_record_runner_args_init_time(env, capsys):
+    (env.sessions / "S1.txt").write_text(with_init_time("1767268800.5"), encoding="utf-8")
+    assert env.record("--runner-args=--init-time 1767268801") == 2
+    assert "--runner-args" in capsys.readouterr().err
+    assert not env.log.exists()                                          # no runner was started
+    assert env.record("--force", "--runner-args=--init-time 1767268800.500000") == 0
+    assert [init_values(c["argv"]) for c in env.calls()] == [["1767268800.5"]]
+
+
 def test_candidate_init_time_untouched_without_header(env):
     assert env.record() == 0
     env.check("--candidate-args", "--init-time 1767268801 --cpu jit", "--profile", "cross")

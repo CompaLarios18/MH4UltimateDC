@@ -262,7 +262,8 @@ def parse_session(path: str | Path) -> Session:
     `check` give the runner on every run of the session, so that the session does not depend on what the
     command line says: G3-perf's MH4U_WIDESCREEN and MH4U_WIDE_RENDER, which the port reads once at start-up
     and the runner's --set cannot change; only MH4U_* names, each once, and never TZ) and at most one
-    `init-time: SECONDS[.FRACTION]` (the start date the runners' clock begins at, `--init-time`, N0-35).  Every other line is an input event line for the runner's
+    `init-time: SECONDS[.FRACTION]` (the start date the runners' clock begins at, `--init-time`, N0-35).
+    Every other line is an input event line for the runner's
     --input-file (comma separated `f<frame>:BUTTON[:hold]`, `f<frame>:TOUCH:x:y[:hold]`,
     `f<frame>:CIRCLE:x:y[:hold]`).
     """
@@ -694,7 +695,8 @@ def record(session: Session, a: argparse.Namespace) -> int:
               f"00000000/config): a native replay would draw its own console ID (docs/native/golden.md)")
     copy_tree(before, work)
     spec = RunSpec(a.runner, a.game, a.code if cpu == "recomp" else None, cpu, a.update or [], work, out, session,
-                   a.set or [], init_time_args(session, split_args(a.runner_args), "--runner-args"), True, a.shot_every_frames, str(OBSERVABLE))
+                   a.set or [], init_time_args(session, split_args(a.runner_args), "--runner-args"), True,
+                   a.shot_every_frames, str(OBSERVABLE))
     started = time.time()
     status, args = run_runner(spec, a.timeout)
     seconds = round(time.time() - started, 1)
