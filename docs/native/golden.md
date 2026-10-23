@@ -20,12 +20,18 @@ repository.
 > [G3-perf](#g3-perf-g3-at-219) and [G7](#g7-a-downloaded-quest-not-made). **G7 could not be made** (the board that lists the
 > downloaded quests lists none), and **none of the sessions opens `ir:USER`**: the reference runner's HID capture kills
 > the game when the Circle Pad Pro option is on, so the sessions run from a copy of the save with it off.
+>
+> **Status (N0-35 Part B, steps 4 and 5).** With the N0-35 reference runner (the HID capture no longer keeps the block) the
+> game runs with `--capture-hid` and the option on: **G8**, the staged save as it is, is recorded and `check G8 --repeat 2`
+> exits 0, so D36's session exists ([G8](#g8-the-save-as-it-is-with-iruser)). **G7 stays a draft, and the cause is not the
+> date**: the five downloaded-quest files of the maintainer's extdata hold no quest (read locally, without the emulator:
+> [G7](#g7-a-downloaded-quest-not-made)).
 
 ## Files
 
 | Path | What |
 |---|---|
-| `tools/native/golden/<S>.txt` | the session: header lines and input events (the runner's `--input-file` format): G1, G2, G6 (no save), G3, G3-perf, G4 (the save), G7 (a draft) |
+| `tools/native/golden/<S>.txt` | the session: header lines and input events (the runner's `--input-file` format): G1, G2, G6 (no save), G3, G3-perf, G4, G8 (the save), G7 (a draft) |
 | `tools/native/golden.py` | `list`, `record`, `check` |
 | `build/golden/<S>/` | one recording (the shared checkout's `build/`, not a worktree's) |
 
@@ -75,7 +81,7 @@ edited, added or removed since `record`; a manifest without the key counts as no
 header gets no `--init-time` from golden.py and runs exactly as before (a `--init-time` in its `--candidate-args` passes
 through untouched); G1, G2 and G6 keep their whole-second date. G4, G3 and G3-perf have the header (`1767268800.5`,
 recorded again in N0-35 Part B steps 2 and 3: [Results of N0-35 Part B](#results-of-n0-35-part-b-steps-1-and-2) and
-[step 3](#results-of-n0-35-part-b-step-3-g3-and-g3-perf)); G1, G2, G6 and G7 have none; G8 gets its own when it is recorded.
+[step 3](#results-of-n0-35-part-b-step-3-g3-and-g3-perf)), and so has G8 (step 4); G1, G2, G6 and G7 have none.
 
 ### The scene
 
@@ -284,14 +290,15 @@ check), and `golden.py check` from `userbase-cfg` passes (below). The comparison
 
 ## The save
 
-The sessions that `needs: save` (G3, G4, G3-perf, G7) start from the same user folder with the maintainer's save merged
+The sessions that `needs: save` (G3, G4, G3-perf, G8, and the G7 draft) start from the same user folder with the maintainer's save merged
 over it (`record --save DIR`, copied into `user-before/` after the user folder, so a `check` of them needs no save
 option). The staged save is in the user-folder layout: the game's save slots
 (`sdmc/Nintendo 3DS/<id>/<id>/title/00040000/00126300/data/00000001/{system,user1}`) and its extdata
 (`.../extdata/00000000/00001263/user/{card1-3,cardbox,otomo1,quest1-5}`); `golden.py` never writes into it.
 
-**The recordings use a copy of it with the Circle Pad Pro option off** (`build/n0-10-save-cpp-off`), because the reference
-runner cannot record the game with the option on (see [`ir:USER`](#iruser-d36)). The copy differs from the staged save in
+**The recordings of G3, G3-perf and G4 use a copy of it with the Circle Pad Pro option off** (`build/n0-10-save-cpp-off`, D81),
+because the N0-29 reference runner could not record the game with the option on (see [`ir:USER`](#iruser-d36)); **G8 is
+recorded from the staged save as it is** (`--save build/n0-10-save`, the option on), now that the runner can (N0-35). The copy differs from the staged save in
 one file, `system` (512 bytes: the settings slot; the game writes it again, so 508 of its bytes differ), and was made by the
 game itself, from the staged save, with a script of touches that switches the option off in the main menu's Options:
 
@@ -321,8 +328,17 @@ part of any session. A recording's `user-before/` holds the copy, which is what 
 
 ## `ir:USER` (D36)
 
-**None of G3, G4, G3-perf or G7 opens `ir:USER`, and none can with this reference runner.** D36 wanted one golden session
-whose HID capture has type-2 (IR) records; it cannot be had, for this reason:
+*(N0-35 Part B, step 4, D80: **fixed.** The reference runner of N0-35 lets go of the first block, and the game runs with
+`--capture-hid` and the option on: **G8** is D36's session, recorded from the staged save as it is. Its IPC trace has 13,460
+`ir:USER` requests, the first at frame 199 (an `Initialize`, command `0x00180182`, with the 0x1000-byte block) and the last at
+frame 3300, and its HID capture has 3,102 type-2 (IR) records, one per frame from frame 199 to 3300, next to the 3,301 type-1
+(shared-block) records; the game did not die and `golden.py record` found no capture problem. The measurement that the cause
+was the capture is therefore also done: the same save, option and capture that killed the N0-29 runner at frame 199 run to the
+end with the new one. Details: [G8](#g8-the-save-as-it-is-with-iruser). The text below is what was found with the N0-29
+runner, kept as the history; G3, G3-perf and G4 still use the copy with the option off, D81.)*
+
+**None of G3, G4, G3-perf or G7 opens `ir:USER`, and none could with the N0-29 reference runner.** D36 wanted one golden session
+whose HID capture has type-2 (IR) records; it could not be had, for this reason:
 
 - The maintainer's save has the Circle Pad Pro option **on**. With it on the game opens `ir:USER` while it boots (about
   frame 199: Initialize with a 0x1000-byte shared block at 0x08DF0000, Finalize, Initialize again, 8 requests then a second
@@ -517,7 +533,56 @@ access violation of the runner (status -1073741819). Three runs gave it (two sav
 The cause is in the runner or the port (`port/src/`; a hypothesis from these three runs: the widened render targets
 against the filter's pass), not in the game or in this script; N2b's G3-perf (N2b-18, N2b-20) starts from this recording and runs with the filter off as recorded.
 
+### G8: the save as it is, with `ir:USER`
+
+Needs the save, **the staged one as it is** (`--save build/n0-10-save`: the Circle Pad Pro option on). D36's session (D80): the game
+opens `ir:USER` at frame 199 and keeps polling it, and the HID capture of the recording has type-2 (IR) records from that
+request on. It needs the N0-35 reference runner, whose HID capture lets go of the shared block the game frees (with the
+N0-29 runner this save and `--capture-hid` killed the game at that frame, [`ir:USER`](#iruser-d36)). Header: `# init-time:
+1767268800.5` (as G3 and G4), no GPU or DSP capture (`golden.py` asks for none of this session; the step that reads the
+HID capture is [`_ir_problems`](#iruser-d36)). Frames: 3300. Input: G4's: the nine `A` presses of the main menu and the character
+select (frames 300 to 1500) and nothing after them.
+
+*The timeline with the option on.* The boot is **150 frames longer** than with it off: measured with a first run of the
+session (G4's inputs and checkpoints, 3300 frames; it held 4/4 and had the same scene changes as the recording) and then the
+recording itself, the scene changes are at
+frames 2 `aGameSys`, 42 `aDemo`, 1053 `aContinue`, 1726 `aDemo`, 1728 `aGameSys` and 1729 `aVillage` (G4's, option off: 2, 42,
+903, 1576, 1578, 1579). All nine presses land (the village is reached without any other input), the arrival scene plays from
+f1729 to about f3050 and the run stops at f3300, in the talk that follows. Checkpoints, one in each scene that lasts more than
+100 frames: `600:0x00e64d5c` (`aDemo`, frames 42 to 1052), `1400:0x00e6c778` (`aContinue`, 1053 to 1725), `2500` and
+`3300:0x00e6c170` (`aVillage`, 1729 to the end); 4/4 hold. Real scene changes: 6.
+
+*The `ir:USER` facts of the recording* (the rule of D36, checked by `record` and by the exploration run before it):
+
+| What | Number |
+|---|---|
+| `ir:USER` requests in `ipc.txt` | 13,460, from frame 199 to frame 3300 (the first is the `Initialize` with the 0x1000-byte block, header `0x00180182`; then two commands polled together, headers `0x000d0042` (6,725 times) and `0x00190040` (6,724), and 11 others once or twice, the second `Initialize` among them) |
+| HID capture, type-1 (shared block) records | 3,301 |
+| HID capture, type-2 (IR) records | 3,102: one per frame, frames 199 to 3300 |
+| Capture problems found by `record` | 0 |
+
+Recording: `golden.py record G8 ... --save build/n0-10-save` (exit 0: 4/4 checkpoints, 6 real scene changes, 0 capture problems,
+408 s of host time, 785 MiB in 235 files: the SVC trace is 374 MiB); then `golden.py check G8 --repeat 2 --require
+svc,ipc,state,checkpoints,hid` (exit 0: **23 passed, 0 failed, 0 skipped, 3 info**, profile `same`; 795 s). The 23 are the
+nine comparisons of each of the two runs against the recording (`svc`, `ipc`, `state`, `checkpoints`, `unmapped`, `hid`,
+`images`, `shared-page`; no `gpu-` or `dsp-` entry, there is no such capture) and run 2 against run 1 (the same without
+`checkpoints`), and the 3 `INFO` lines are the `timing` traces, identical apart from the header line. The recording is in
+`build/golden/G8`. Commands (PowerShell, from the worktree; the reference runner of N0-35, `--cpu recomp`):
+
+```
+python tools/native/golden.py record G8 --runner build/runner-win-n035/mh4u-port-windows/mh4u_runner.exe `
+    --game baserom/juego.cxi --update baserom/update_v130.cia --user build/userbase-cfg --save build/n0-10-save `
+    --code build/golden-lib/0004000000126300.dll --cpu recomp --out build/golden
+python tools/native/golden.py check G8 <the same options, without --user and --save> --repeat 2 --require svc,ipc,state,checkpoints,hid
+```
+
+A candidate runtime is checked on this session the way it is on the others (`golden.py check G8 --candidate-...`); what is new
+is that the `hid` comparison now has type-2 records to compare, and that the game polls `ir:USER` in every frame from 199 on.
+
 ### G7: a downloaded quest (not made)
+
+*(N0-35 Part B, step 4: the five files hold no quest, so no start date can make the board list one. The finding is at the end of
+this section; the text before it is what N0-10 knew.)*
 
 **Not recorded: `tools/native/golden/G7.txt` is a draft** (`# draft: yes`, which `record` refuses) that keeps the route to the
 board. The spec wants a downloaded quest from the maintainer's extdata (`quest1` to `quest5`) entered and 30 seconds of play
@@ -543,6 +608,31 @@ distribution period of one of the five quests, which a run of the game with the 
 downloaded quests are not part of what the native runtime is checked against. The draft's route
 (`f300` to `f10894` as G3, then `f11340` to `f11880` circle pad along the desk until the `A` prompt names the Low Questatrix
 and not Arena Bambina, `A` every 90 frames, `A` at `f12460`, touch at `f12700`) is what the next attempt starts from.
+
+**N0-35 Part B, step 4: the clock was not the reason.** The runner now takes `--init-time`, so the next attempt was to find the
+distribution period of the five files and start a run inside it. The period was looked for first in the files themselves, locally
+and without the emulator, and **the files hold no quest at all**, so there is no period:
+
+- Each of `quest1` to `quest5` is 328,704 bytes: 328,448 bytes of the game's save cipher followed by **256 zero bytes that lie
+  outside it** (the last 256 bytes of every file are zero in the file as it is, so they are not ciphertext). The 328,448 are
+  41,056 blocks of 8 bytes, and the three layers of a user slot (Blowfish ECB with the key string of the game's own cipher,
+  the 16-bit scramble, the byte-sum checksum in word 1: `docs/research/g2-save-bytes.md`, section 2) undo on them with
+  `tools/native/save_probe.py unwrap <the file without its last 256 bytes> --key-from-code <code.bin>:0x00e05e04`. **The stored
+  checksum equals the computed one in all five** (both 0), which is the check that the layers are the right ones, and the unwrapped
+  body is **empty: exactly 1 non-zero byte in 328,448** in each file, the low byte of the first word (the format version, 0x10). No date, no count, no quest.
+- The method reads real data of this extdata: `otomo1` and `cardbox` (8,704 and 270,336 bytes, no trailer) unwrap with a matching
+  checksum to the same empty state (1 non-zero byte each), and `card1` and `card2` do not unwrap with these layers (the checksum
+  does not match and 99.6% of the bytes are non-zero: another layout, not examined). Nothing but a file that decrypts
+  to a quest could have a start and an end date; a search of the unwrapped bodies for 32-bit values that read as Unix times
+  between 2013 and 2018 has nothing to find in a body of zeros.
+- The five files are byte for byte the same in the maintainer's own folder, in the staged save and in the copy with the option
+  off (SHA-256 compared, all 15 files), so the board's answer is not an effect of a copy: the game reads empty quest areas and
+  says there is no quest, at the runner's date and at any other.
+
+So **no start date lists a quest** and no run of the route was made (the spec's rule, "no date lists a quest, G7 is dropped",
+is met without a run, by the files). Quests to record G7 with would have to come from files that hold one: the maintainer
+downloading an event quest with the game (the files then change) and staging the new extdata. `G7.txt` stays a draft, with this
+note in its header; the route is unchanged.
 
 ## Numbers from `gcap.py summary` of G1's capture
 
@@ -752,6 +842,20 @@ the main thread has 607 requests on the reference against 593, #3 584 against 36
 So this probe cannot say whether D83 holds on the long session: the jit candidate has to be run through a route it does not
 lose first (the counter's talk has a script that "cannot be moved by more than a press", see [G3](#g3-the-arena-hunt)). Nothing was
 tried to change that here.
+
+### Results of N0-35 Part B (steps 4 and 5: G8 and G7)
+
+The N0-35 reference runner (SHA-256 `d2f3705a...`), the same code library, `--cpu recomp`, `TZ=UTC0`, the same PC, one emulator
+process at a time (the emulator lock held around each run).
+
+| Session | `record` | Host time of one run | `check --repeat 2` (exit 0) |
+|---|---|---|---|
+| G8 | exit 0: 4/4 checkpoints (3 distinct scene values), 6 real scene changes, 0 capture problems; `ir:USER` requests 13,460, type-2 records 3,102 (frames 199 to 3300) | 408 s | 23 passed, 0 failed, 0 skipped, 3 info; 795 s for the check |
+| G7 | not made: the five files hold no quest ([G7](#g7-a-downloaded-quest-not-made)); 0 runs | | |
+
+The runs of G8 in all: one exploration run (G4's inputs and checkpoints, 3300 frames, 406 s) to measure the timeline with the
+option on, the recording (408 s) and the check's two repeats (about 6 minutes each). The `check` is in the `same` profile and
+the comparisons are those of the other sessions with the save, less the capture ones (no GPU or DSP capture in G8).
 
 ## History: the WIP recordings (before N0-29)
 

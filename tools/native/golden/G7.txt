@@ -9,8 +9,12 @@
 # 30+ seconds of play. NOT MADE: this is a DRAFT (`golden.py record` refuses it). The board that lists
 # downloaded quests, the Event Quests board of the quest counter, answers "(No Quests available.)" in
 # every run of the reference runner, while the game reads the extdata files at that moment (docs/native/golden.md,
-# "G7"). This draft is the route that gets to that board, for the next attempt: it is G3's walk to
-# the quest counter, then the Low Questatrix's talk, then a touch on "Event Quests".
+# "G7"). N0-35 Part B step 4 read the five files locally (without the emulator): once the game's
+# save cipher is undone each holds an empty quest area (its checksum matches, its only non-zero byte
+# is the format version), so there is no distribution period to find and no start date can make the
+# board list a quest; the draft stays as the route to the board, for a day when a file with a quest
+# exists. It is G3's walk to the quest counter, then the Low Questatrix's talk, then a touch on
+# "Event Quests".
 #
 # From a user folder with the update installed and the maintainer's save merged in (golden.py record
 # --save, with the Circle Pad Pro option off: see golden.md, "The save"): only button presses and
