@@ -738,7 +738,7 @@ const std::vector<std::string> kInvalidInitTimes = {
     "",           "abc",          "yesterday",         "-1",         "+1767268800",      "1767268800.",
     ".5",         "1767268800.1234567", "1767268800.5.5", "1767268800,5", " 1767268800", "1767268800 ",
     "1e9",        "0x6553F100",   "1767268800.5x",     "946684799.999999", "946684799", "4102444800",
-    "99999999999",
+    "99999999999", "00946684800", "01767268800",
 };
 
 TEST_CASE("--init-time: a bad value ends Boot with status 2 and names the option and the text") {
@@ -751,6 +751,14 @@ TEST_CASE("--init-time: a bad value ends Boot with status 2 and names the option
         CHECK(f.Logged("--init-time '" + text + "'"));
         CHECK(f.runtime.Pages() == nullptr);  // refused before anything was booted
     }
+}
+
+TEST_CASE("--init-time is read before the program is loaded") {
+    TempDir dir;
+    Fixture f;
+    CHECK(f.runtime.Boot(Parse({dir.File("missing.elf"), "--init-time", "yesterday"})) == 2);
+    CHECK(f.Logged("--init-time 'yesterday'"));
+    CHECK_FALSE(f.Logged("cannot load"));
 }
 
 TEST_CASE("--init-time: Prepare refuses a bad value the same way, and takes the valid ones") {

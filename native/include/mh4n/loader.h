@@ -281,7 +281,7 @@ inline constexpr u32 kDtTickOffset = 0x18;     // u64
 }  // namespace shared_page
 
 // The two pages, mapped read-only (state Shared) into the process. The shared page's date starts
-// at `init_time` (seconds since the Unix epoch, UTC, with microseconds) and advances with game time: the timer queue
+// at `init_time` (seconds since the Unix epoch, UTC, microseconds) and advances with game time: the timer queue
 // (N1-06) calls UpdateSharedPage(now_ticks) at tick 0, which Map does, and then every
 // kSharedPageUpdateIntervalTicks. Azahar measures from 2000-01-01 in the host's time zone; this
 // uses UTC, which is what it computes on the UTC hosts where golden sessions are recorded.
