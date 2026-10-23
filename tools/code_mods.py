@@ -128,8 +128,29 @@ def find_mods(user_dir: str, program_id: int) -> tuple[str | None, str | None]:
     return replacement, patch
 
 
-def apply_mods(code: bytes, user_dir: str, program_id: int) -> tuple[bytes, list[str]]:
-    """The code as Azahar will run it with this user folder's mods, and the files used."""
+MAX_BSS_SIZE = 0x10000000      # the New 3DS FCRAM size
+
+
+def bss_pages_size(bss_size: int) -> int:
+    """The bytes Azahar appends to the code for an exheader's bss size: (bss_size + 0xFFF) & ~0xFFF.
+    The size is a u32 as in Azahar; one above 0x10000000 (the New 3DS FCRAM) is a ModError."""
+    bss_size &= 0xFFFFFFFF
+    if bss_size > MAX_BSS_SIZE:
+        raise ModError(f"the exheader's bss size 0x{bss_size:X} is larger than the console's memory")
+    return (bss_size + 0xFFF) & ~0xFFF
+
+
+def apply_mods(code: bytes, user_dir: str, program_id: int, bss_size: int = 0) -> tuple[bytes, list[str]]:
+    """The code as Azahar will run it with this user folder's mods, and the files used.
+
+    `bss_size` is the exheader's bss size (after any exheader override); the default 0 keeps the old
+    behaviour (no bss pages) for callers that don't pass it. As in Azahar's AppLoader_NCCH::LoadExec (D79)
+    a replacement code.bin is loaded first, then the pages (bss_size + 0xFFF) & ~0xFFF of zeros are
+    appended, then the first patch is applied, so a patch may read and write the pages. The code returned
+    is without the pages (the code library is built from the code only): the first len(code) bytes of the
+    patched buffer (code = the game's, or the replacement's), zero-padded if the buffer came out shorter
+    (a BPS can resize it); what the patch wrote into the pages is dropped. Without pages the patched
+    buffer is returned whole, as before, and a mod that doesn't touch the pages gives the bytes it always gave."""
     replacement, patch = find_mods(user_dir, program_id)
     used = []
     if replacement:
@@ -137,9 +158,12 @@ def apply_mods(code: bytes, user_dir: str, program_id: int) -> tuple[bytes, list
             code = f.read()
         used.append(replacement)
     if patch:
+        pages = bss_pages_size(bss_size)
         with open(patch, "rb") as f:
             data = f.read()
-        code = apply_ips(code, data) if patch.endswith(".ips") else apply_bps(code, data)
+        buffer = code + bytes(pages)
+        buffer = apply_ips(buffer, data) if patch.endswith(".ips") else apply_bps(buffer, data)
+        code = buffer if pages == 0 else buffer[:len(code)].ljust(len(code), b"\0")
         used.append(patch)
     return code, used
 

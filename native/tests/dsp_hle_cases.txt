@@ -948,3 +948,686 @@ mem 0x20000000 noise seed=164 bytes=4000
 0 enable 1
 60 coeffs 32767 32767 32767 32767 32767 32767 32767 32767 32767 32767 32767 32767 32767 32767 32767 32767
 120 coeffs -32768 32767 -32768 32767 -32768 32767 -32768 32767 -32768 32767 -32768 32767 -32768 32767 -32768 32767
+
+# ======================================================================================================
+# Frame cases (N3-03): `mode=frame` drives all 24 sources, the mixers and the effects through Azahar's
+# GenerateCurrentFrame. `s<k> <command>` is a source command for source k; the other commands are the
+# mixers' (see the script's docstring). Each frame, the commands go into the region the DSP reads. The
+# master volume starts at 0 (silence) until a case sets it. Samples that two sources or the aux buses add
+# stay below 2^29, so that no float-to-s32 conversion of the downmix is out of range (Azahar's result there
+# depends on the host: D78, dsp.md); the delay cases keep |b| below 1 so that the filter stays finite.
+
+# ---- the master volume, the gains and the aux return volumes ----
+case frame_silent_until_master_volume mode=frame
+mem 0x20000000 walk16 seed=201 bytes=16000
+0 s0 format pcm16 stereo
+0 s0 interp linear
+0 s0 gain 0 1.0 1.0 0.5 0.5
+0 s0 embedded addr=0x20000000 len=4000 id=1 loop
+0 s0 enable 1
+0 s0 sync 1
+100 master 1.0
+150 master 0.0
+
+case frame_master_volume_${vol} mode=frame sweep vol=1.0,0.5,0.25,2.5,-1.0
+mem 0x20000000 walk16 seed=202 bytes=16000
+0 s0 format pcm16 stereo
+0 s0 interp linear
+0 s0 rate 1.37
+0 s0 gain 0 1.0 0.8 0.6 0.4
+0 s0 embedded addr=0x20000000 len=4000 id=1 loop
+0 s0 enable 1
+0 master ${vol}
+50 master 0.125
+51 master ${vol}
+120 master 0.0
+121 master ${vol}
+
+case frame_routing_to_the_three_mixes mode=frame
+mem 0x20000000 walk16 seed=203 bytes=16000
+mem 0x20004000 walk16 seed=204 bytes=16000
+mem 0x20008000 walk16 seed=205 bytes=16000
+0 master 1.0
+0 auxreturn 0 0.5
+0 auxreturn 1 0.25
+0 s0 format pcm16 stereo
+0 s0 gain 0 1.0 1.0 0 0
+0 s0 embedded addr=0x20000000 len=4000 id=1 loop
+0 s0 enable 1
+0 s1 format pcm16 stereo
+0 s1 gain 1 1.0 1.0 0.5 0.5
+0 s1 embedded addr=0x20004000 len=4000 id=1 loop
+0 s1 enable 1
+0 s2 format pcm16 stereo
+0 s2 gain 2 0.75 0.25 0.75 0.25
+0 s2 embedded addr=0x20008000 len=4000 id=1 loop
+0 s2 enable 1
+100 auxreturn 0 1.0
+140 auxreturn 1 0.0
+
+case frame_gain_changes_ramp mode=frame
+mem 0x20000000 walk16 seed=206 bytes=16000
+0 master 1.0
+0 s0 format pcm16 stereo
+0 s0 gain 0 0 0 0 0
+0 s0 embedded addr=0x20000000 len=4000 id=1 loop
+0 s0 enable 1
+10 s0 gain 0 1.0 1.0 1.0 1.0
+30 s0 gain 0 0.0 0.5 0.5 0.0
+31 s0 gain 0 1.0 0.0 0.0 1.0
+60 s0 gain 2 1.0 1.0 1.0 1.0
+
+# ---- the output format: mono, stereo and surround (plays as stereo) ----
+case frame_output_format_${fmt} mode=frame sweep fmt=mono,stereo,surround
+mem 0x20000000 walk16 seed=207 bytes=16000
+mem 0x20004000 walk16 seed=208 bytes=16000
+0 master 0.75
+0 outfmt ${fmt}
+0 s0 format pcm16 stereo
+0 s0 gain 0 1.0 0.5 0.25 0.75
+0 s0 embedded addr=0x20000000 len=4000 id=1 loop
+0 s0 enable 1
+0 s1 format pcm16 mono
+0 s1 gain 0 0.1 0.9 0.3 0.7
+0 s1 embedded addr=0x20004000 len=8000 id=1 loop
+0 s1 enable 1
+80 outfmt stereo
+120 outfmt mono
+160 outfmt surround
+
+# ---- saturation: 24 loud sources, a master volume above 1 ----
+case frame_saturation_${volume} mode=frame sweep volume=1.0,40.0
+mem 0x20000000 noise seed=211 bytes=16000
+mem 0x20004000 noise seed=212 bytes=16000
+0 master ${volume}
+0 s0 format pcm16 stereo
+0 s0 gain 0 1.0 1.0 1.0 1.0
+0 s0 embedded addr=0x20000000 len=4000 id=1 loop
+0 s0 enable 1
+0 s1 format pcm16 stereo
+0 s1 gain 0 1.0 1.0 1.0 1.0
+0 s1 embedded addr=0x20004000 len=4000 id=1 loop
+0 s1 enable 1
+0 s2 format pcm16 mono
+0 s2 gain 0 1.0 1.0 1.0 1.0
+0 s2 embedded addr=0x20000000 len=8000 id=1 loop
+0 s2 enable 1
+
+# ---- the aux buses: the sources' mixes go out to the application and its samples come back, a frame late ----
+case frame_aux_bus_${bus} mode=frame sweep bus=0,1
+mem 0x20000000 walk16 seed=221 bytes=16000
+mem 0x20004000 walk16 seed=222 bytes=16000
+0 master 1.0
+0 auxreturn 0 1.0
+0 auxreturn 1 1.0
+0 auxbus ${bus} 1
+0 s0 format pcm16 stereo
+0 s0 gain 1 1.0 1.0 0.5 0.5
+0 s0 gain 2 0.5 0.5 1.0 1.0
+0 s0 embedded addr=0x20000000 len=4000 id=1 loop
+0 s0 enable 1
+0 s1 format pcm16 stereo
+0 s1 gain 0 0.5 0.5 0.5 0.5
+0 s1 embedded addr=0x20004000 len=4000 id=1 loop
+0 s1 enable 1
+0 auxmix 1 seed=1 amp=5000
+0 auxmix 2 seed=2 amp=5000
+1 auxmix 1 seed=3 amp=5000
+1 auxmix 2 seed=4 amp=5000
+2 auxmix 1 seed=5 amp=5000
+2 auxmix 2 seed=6 amp=5000
+3 auxmix 1 seed=7 amp=5000
+3 auxmix 2 seed=8 amp=5000
+60 auxbus ${bus} 0
+61 auxbus ${bus} 1
+62 auxmix 1 seed=9 amp=5000
+62 auxmix 2 seed=10 amp=5000
+63 auxmix 1 seed=11 amp=5000
+63 auxmix 2 seed=12 amp=5000
+120 auxbus 0 1
+120 auxbus 1 1
+121 auxmix 1 seed=13 amp=500000000
+121 auxmix 2 seed=14 amp=500000000
+122 auxmix 1 seed=15 amp=0
+122 auxmix 2 seed=16 amp=0
+160 auxbus 0 0
+160 auxbus 1 0
+
+case frame_aux_bus_without_dirty_bit_is_not_read mode=frame
+mem 0x20000000 walk16 seed=223 bytes=16000
+0 master 1.0
+0 auxreturn 0 1.0
+0 s0 format pcm16 stereo
+0 s0 gain 1 1.0 1.0 1.0 1.0
+0 s0 embedded addr=0x20000000 len=4000 id=1 loop
+0 s0 enable 1
+0 dspwrite 40 0100
+0 auxmix 1 seed=21 amp=5000
+50 auxbus 0 1
+50 auxmix 1 seed=22 amp=5000
+51 auxmix 1 seed=23 amp=5000
+
+
+# ---- the delay effect, on the first and on the second aux mix ----
+case frame_delay_on_mix_${fx}_${n}_frames mode=frame sweep fx=0,1 n=1,2,5
+mem 0x20000000 walk16 seed=231 bytes=16000
+0 master 1.0
+0 auxreturn 0 1.0
+0 auxreturn 1 1.0
+0 s0 format pcm16 stereo
+0 s0 gain 1 1.0 1.0 1.0 1.0
+0 s0 gain 2 0.5 1.0 0.25 0.5
+0 s0 embedded addr=0x20000000 len=4000 id=1 loop
+0 s0 enable 1
+0 delay ${fx} frames=${n} g=64 a=64 b=0
+40 delay ${fx} frames=${n} g=0 a=128 b=64
+80 delay ${fx} frames=${n} g=-64 a=96 b=-32
+120 delay ${fx} enable=0
+140 delay ${fx} frames=3 g=32 a=100 b=90
+
+case frame_delay_both_buses_and_aux_enabled mode=frame
+mem 0x20000000 walk16 seed=232 bytes=16000
+mem 0x20004000 walk16 seed=233 bytes=16000
+0 master 1.0
+0 auxreturn 0 0.5
+0 auxreturn 1 0.5
+0 auxbus 0 1
+0 auxbus 1 1
+0 s0 format pcm16 stereo
+0 s0 gain 1 1.0 1.0 1.0 1.0
+0 s0 embedded addr=0x20000000 len=4000 id=1 loop
+0 s0 enable 1
+0 s1 format pcm16 stereo
+0 s1 gain 2 1.0 1.0 1.0 1.0
+0 s1 embedded addr=0x20004000 len=4000 id=1 loop
+0 s1 enable 1
+0 delay 0 frames=2 g=64 a=64 b=32
+0 delay 1 frames=4 g=64 a=96 b=16
+0 auxmix 1 seed=31 amp=8000
+0 auxmix 2 seed=32 amp=8000
+1 auxmix 1 seed=33 amp=8000
+1 auxmix 2 seed=34 amp=8000
+
+# The edges of the delay's configuration: frame_count 0 bypasses it, a long delay is clamped to 4 seconds,
+# a disabled one is reset (the clamp itself is pinned by frame_delay_818_and_819_frames, at the end of the
+# file), a new configuration of the same length keeps the buffers, an effect whose own
+# dirty word is 0 or whose main dirty bit is not set is not read.
+case frame_delay_edges mode=frame
+mem 0x20000000 walk16 seed=234 bytes=16000
+0 master 1.0
+0 auxreturn 0 1.0
+0 auxreturn 1 1.0
+0 s0 format pcm16 stereo
+0 s0 gain 1 1.0 1.0 1.0 1.0
+0 s0 gain 2 1.0 1.0 1.0 1.0
+0 s0 embedded addr=0x20000000 len=4000 id=1 loop
+0 s0 enable 1
+2 delay 0 frames=0 g=64 a=64 b=32
+2 delay 1 frames=1000 g=64 a=64 b=32
+30 delay 0 frames=3 g=64 a=64 b=32
+31 delay 0 frames=3 g=96 a=32 b=64
+40 delay 0 frames=3 g=96 a=32 b=-64 dirty=0
+41 delay 0 frames=2 g=96 a=32 b=-64 nomain
+60 delay 0 enable=0
+61 delay 0 enable=0
+80 delay 0 frames=2 g=0 a=0 b=0
+100 delay 0 frames=65535 g=16 a=16 b=16
+101 delay 0 frames=818 g=16 a=16 b=16
+102 delay 0 frames=819 g=16 a=16 b=16
+140 delay 0 frames=1 g=127 a=-128 b=0 work=0x20100000 outputs=3
+
+# A gain of 256 on full-scale noise: the delay's output is about 8.4e6, well inside the s32 range, so nothing is
+# clamped here (frame_delay_saturates_to_the_s32_range does that).
+case frame_delay_large_values mode=frame
+mem 0x20000000 noise seed=235 bytes=16000
+0 master 0.0001
+0 auxreturn 0 0.0001
+0 s0 format pcm16 stereo
+0 s0 gain 1 1.0 1.0 1.0 1.0
+0 s0 embedded addr=0x20000000 len=4000 id=1 loop
+0 s0 enable 1
+0 delay 0 frames=1 g=0 a=32767 b=0
+
+# ---- the reverb is not implemented in Azahar: its blocks and dirty bits change nothing ----
+case frame_reverb_does_nothing mode=frame
+mem 0x20000000 walk16 seed=236 bytes=16000
+0 master 1.0
+0 auxreturn 0 1.0
+0 auxreturn 1 1.0
+0 s0 format pcm16 stereo
+0 s0 gain 1 1.0 1.0 1.0 1.0
+0 s0 gain 2 1.0 1.0 1.0 1.0
+0 s0 embedded addr=0x20000000 len=4000 id=1 loop
+0 s0 enable 1
+10 reverb 0 rand:1
+11 reverb 1 rand:2
+12 reverb 0 rand:3
+
+# ---- the other bits of the DSP configuration: cleared when read, nothing else happens ----
+case frame_dirty_bits_are_cleared mode=frame
+mem 0x20000000 walk16 seed=237 bytes=16000
+0 master 1.0
+0 s0 format pcm16 stereo
+0 s0 gain 0 1.0 1.0 1.0 1.0
+0 s0 embedded addr=0x20000000 len=4000 id=1 loop
+0 s0 enable 1
+5 headphones 1
+6 dspdirty 0xFFFFFFFF
+7 dspdirty 0x000080C0
+8 dspdirty 0xE8000000
+9 dspwrite 4 0000803f
+9 dspwrite 22 0000
+20 dspdirty 0x00010000
+21 dspwrite 4 0000003f
+22 dspwrite 4 0000803f
+
+# ---- the frame counters wrap around ----
+case frame_counters_wrap mode=frame fc=65500
+mem 0x20000000 walk16 seed=238 bytes=16000
+0 master 1.0
+0 s0 format pcm16 stereo
+0 s0 gain 0 1.0 1.0 1.0 1.0
+0 s0 embedded addr=0x20000000 len=4000 id=1 loop
+0 s0 enable 1
+40 master 0.5
+
+case frame_counters_start_at_one mode=frame fc=1
+mem 0x20000000 walk16 seed=239 bytes=16000
+0 master 1.0
+0 s0 format pcm16 stereo
+0 s0 gain 0 1.0 1.0 1.0 1.0
+0 s0 embedded addr=0x20000000 len=4000 id=1 loop
+0 s0 enable 1
+
+# ---- sleep and wakeup: the whole memory and the state of the mixers and of the effects come back ----
+case frame_sleep_and_wakeup mode=frame
+mem 0x20000000 walk16 seed=241 bytes=16000
+0 master 1.0
+0 auxreturn 0 0.5
+0 auxbus 0 1
+0 s0 format pcm16 stereo
+0 s0 gain 0 1.0 1.0 0.5 0.5
+0 s0 gain 1 1.0 1.0 0.5 0.5
+0 s0 embedded addr=0x20000000 len=4000 id=1 loop
+0 s0 enable 1
+0 delay 0 frames=2 g=64 a=64 b=32
+0 auxmix 1 seed=41 amp=3000
+1 auxmix 1 seed=42 amp=3000
+60 sleep
+70 master 0.25
+90 wakeup
+91 master 0.75
+130 sleep
+131 wakeup
+
+# ---- the sources of the sample memory: pokes and buffers that change under the DSP ----
+case frame_source_statuses_and_stops mode=frame
+mem 0x20000000 walk16 seed=243 bytes=3000
+mem 0x20004000 adpcm seed=244 bytes=2000
+0 master 1.0
+0 s0 format pcm16 mono
+0 s0 gain 0 1.0 1.0 1.0 1.0
+0 s0 queue 0 addr=0x20000000 len=1000 id=3
+0 s0 queue 1 addr=0x20000000 len=500 id=2
+0 s0 enable 1
+0 s0 sync 1
+0 s3 format adpcm mono
+0 s3 gain 0 1.0 1.0 1.0 1.0
+0 s3 coeffs rand:5:3000
+0 s3 queue 0 addr=0x20004000 len=3000 id=1 adirty ps=0x10 yn1=100 yn2=-100
+0 s3 enable 1
+0 s3 sync 2
+0 s23 format pcm16 mono
+0 s23 gain 0 1.0 1.0 1.0 1.0
+0 s23 queue 0 addr=0x40000000 len=1000 id=1
+0 s23 enable 1
+50 s3 enable 0
+50 s0 sync 5
+51 s3 enable 1
+51 s0 queue 2 addr=0x20000000 len=800 id=9
+80 s23 reset
+
+# ---- all 24 sources at once: every format, rate and interpolation mode, filters, the three mixes, both
+# aux buses with the delay on them, and a master volume ----
+case frame_24_sources mode=frame
+mem 0x20000000 walk16 seed=300 bytes=16000
+mem 0x20004000 walk16 seed=301 bytes=16000
+mem 0x20008000 walk8 seed=302 bytes=16000
+mem 0x2000c000 walk8 seed=303 bytes=16000
+mem 0x20010000 adpcm seed=304 bytes=16000
+mem 0x20014000 walk16 seed=305 bytes=16000
+mem 0x20018000 walk16 seed=306 bytes=16000
+mem 0x2001c000 walk8 seed=307 bytes=16000
+mem 0x20020000 walk8 seed=308 bytes=16000
+mem 0x20024000 adpcm seed=309 bytes=16000
+mem 0x20028000 walk16 seed=310 bytes=16000
+mem 0x2002c000 walk16 seed=311 bytes=16000
+mem 0x20030000 walk8 seed=312 bytes=16000
+mem 0x20034000 walk8 seed=313 bytes=16000
+mem 0x20038000 adpcm seed=314 bytes=16000
+mem 0x2003c000 walk16 seed=315 bytes=16000
+mem 0x20040000 walk16 seed=316 bytes=16000
+mem 0x20044000 walk8 seed=317 bytes=16000
+mem 0x20048000 walk8 seed=318 bytes=16000
+mem 0x2004c000 adpcm seed=319 bytes=16000
+mem 0x20050000 walk16 seed=320 bytes=16000
+mem 0x20054000 walk16 seed=321 bytes=16000
+mem 0x20058000 walk8 seed=322 bytes=16000
+mem 0x2005c000 walk8 seed=323 bytes=16000
+0 master 0.5
+0 auxreturn 0 0.5
+0 auxreturn 1 0.25
+0 auxbus 0 1
+0 auxbus 1 1
+0 delay 0 frames=2 g=48 a=64 b=32
+0 delay 1 frames=3 g=32 a=80 b=16
+1 auxmix 1 seed=51 amp=20000
+1 auxmix 2 seed=61 amp=20000
+2 auxmix 1 seed=52 amp=20000
+2 auxmix 2 seed=62 amp=20000
+3 auxmix 1 seed=53 amp=20000
+3 auxmix 2 seed=63 amp=20000
+4 auxmix 1 seed=54 amp=20000
+4 auxmix 2 seed=64 amp=20000
+0 auxmix 1 seed=50 amp=20000
+0 auxmix 2 seed=60 amp=20000
+0 s0 format pcm16 mono
+0 s0 interp linear
+0 s0 rate 1.0
+0 s0 gain 0 0.0 0.125 0.375 0.375
+0 s0 gain 1 0.5 0.0 0.0625 0.375
+0 s0 gain 2 0.375 0.375 0.25 0.375
+0 s0 embedded addr=0x20000000 len=8000 id=1 loop
+0 s0 enable 1
+0 s0 sync 1
+0 s1 format pcm16 stereo
+0 s1 interp none
+0 s1 rate 0.5
+0 s1 gain 0 0.375 0.5 0.25 0.375
+0 s1 gain 1 0 0 0 0
+0 s1 gain 2 0.0 0.0 0.125 0.0
+0 s1 embedded addr=0x20004000 len=4000 id=2 loop
+0 s1 filters 1 0
+0 s1 simple rand:1:16000
+1 s1 enable 1
+1 s1 sync 2
+0 s2 format pcm8 mono
+0 s2 interp poly
+0 s2 rate 1.37
+0 s2 gain 0 0.25 0.0 0.5 0.25
+0 s2 gain 1 0.5 0.125 0.0625 0.25
+0 s2 gain 2 0.125 0.125 0.125 0.25
+0 s2 embedded addr=0x20008000 len=16000 id=3 loop
+2 s2 enable 1
+2 s2 sync 3
+0 s3 format pcm8 stereo
+0 s3 interp linear
+0 s3 rate 2.0
+0 s3 gain 0 0.5 0.375 0.5 0.0
+0 s3 gain 1 0.5 0.125 0.0 0.375
+0 s3 gain 2 0 0 0 0
+0 s3 embedded addr=0x2000c000 len=8000 id=4 loop
+0 s3 filters 0 1
+0 s3 biquad rand:103:12000
+3 s3 enable 1
+3 s3 sync 4
+0 s4 format adpcm mono
+0 s4 interp none
+0 s4 rate 0.75
+0 s4 gain 0 0.0625 0.5 0.5 0.5
+0 s4 gain 1 0.375 0.125 0.0 0.5
+0 s4 gain 2 0.125 0.125 0.25 0.25
+0 s4 coeffs rand:4:3000
+0 s4 embedded addr=0x20010000 len=28000 id=5 loop adirty ps=0x10
+4 s4 enable 1
+4 s4 sync 5
+0 s5 format pcm16 mono
+0 s5 interp poly
+0 s5 rate 1.0
+0 s5 gain 0 0.0 0.25 0.375 0.375
+0 s5 gain 1 0 0 0 0
+0 s5 gain 2 0 0 0 0
+0 s5 embedded addr=0x20014000 len=8000 id=6 loop
+0 s5 filters 1 0
+0 s5 simple rand:5:16000
+5 s5 enable 1
+5 s5 sync 6
+0 s6 format pcm16 stereo
+0 s6 interp linear
+0 s6 rate 2.9
+0 s6 gain 0 0.125 0.25 0.375 0.25
+0 s6 gain 1 0.375 0.375 0.0 0.375
+0 s6 gain 2 0.0625 0.0625 0.0 0.5
+0 s6 embedded addr=0x20018000 len=4000 id=7 loop
+6 s6 enable 1
+6 s6 sync 7
+0 s7 format pcm8 mono
+0 s7 interp none
+0 s7 rate 0.25
+0 s7 gain 0 0.375 0.5 0.0 0.5
+0 s7 gain 1 0 0 0 0
+0 s7 gain 2 0.25 0.0625 0.0 0.5
+0 s7 embedded addr=0x2001c000 len=16000 id=8 loop
+0 s7 filters 0 1
+0 s7 biquad rand:107:12000
+7 s7 enable 1
+7 s7 sync 8
+0 s8 format pcm8 stereo
+0 s8 interp poly
+0 s8 rate 1.0
+0 s8 gain 0 0.5 0.25 0.5 0.25
+0 s8 gain 1 0.5 0.375 0.125 0.375
+0 s8 gain 2 0.25 0.5 0.125 0.375
+0 s8 embedded addr=0x20020000 len=8000 id=9 loop
+8 s8 enable 1
+8 s8 sync 9
+0 s9 format adpcm mono
+0 s9 interp linear
+0 s9 rate 0.5
+0 s9 gain 0 0.5 0.375 0.5 0.25
+0 s9 gain 1 0.25 0.25 0.0625 0.125
+0 s9 gain 2 0 0 0 0
+0 s9 coeffs rand:9:3000
+0 s9 embedded addr=0x20024000 len=28000 id=10 loop adirty ps=0x10
+0 s9 filters 1 0
+0 s9 simple rand:9:16000
+9 s9 enable 1
+9 s9 sync 10
+0 s10 format pcm16 mono
+0 s10 interp none
+0 s10 rate 1.37
+0 s10 gain 0 0.5 0.375 0.25 0.375
+0 s10 gain 1 0.25 0.125 0.0625 0.125
+0 s10 gain 2 0.5 0.25 0.25 0.375
+0 s10 embedded addr=0x20028000 len=8000 id=11 loop
+10 s10 enable 1
+10 s10 sync 11
+0 s11 format pcm16 stereo
+0 s11 interp poly
+0 s11 rate 2.0
+0 s11 gain 0 0.25 0.25 0.375 0.5
+0 s11 gain 1 0 0 0 0
+0 s11 gain 2 0 0 0 0
+0 s11 embedded addr=0x2002c000 len=4000 id=12 loop
+0 s11 filters 0 1
+0 s11 biquad rand:111:12000
+11 s11 enable 1
+11 s11 sync 12
+0 s12 format pcm8 mono
+0 s12 interp linear
+0 s12 rate 0.75
+0 s12 gain 0 0.375 0.125 0.25 0.0625
+0 s12 gain 1 0.25 0.5 0.25 0.0
+0 s12 gain 2 0.5 0.125 0.25 0.125
+0 s12 embedded addr=0x20030000 len=16000 id=13 loop
+12 s12 enable 1
+12 s12 sync 13
+0 s13 format pcm8 stereo
+0 s13 interp none
+0 s13 rate 1.0
+0 s13 gain 0 0.0 0.0625 0.5 0.25
+0 s13 gain 1 0 0 0 0
+0 s13 gain 2 0.0 0.25 0.375 0.375
+0 s13 embedded addr=0x20034000 len=8000 id=14 loop
+0 s13 filters 1 0
+0 s13 simple rand:13:16000
+13 s13 enable 1
+13 s13 sync 14
+0 s14 format adpcm mono
+0 s14 interp poly
+0 s14 rate 2.9
+0 s14 gain 0 0.0 0.375 0.0625 0.0625
+0 s14 gain 1 0.0 0.375 0.0 0.375
+0 s14 gain 2 0.125 0.5 0.5 0.125
+0 s14 coeffs rand:14:3000
+0 s14 embedded addr=0x20038000 len=28000 id=15 loop adirty ps=0x10
+14 s14 enable 1
+14 s14 sync 15
+0 s15 format pcm16 mono
+0 s15 interp linear
+0 s15 rate 0.25
+0 s15 gain 0 0.0625 0.0 0.125 0.5
+0 s15 gain 1 0.375 0.375 0.25 0.5
+0 s15 gain 2 0 0 0 0
+0 s15 embedded addr=0x2003c000 len=8000 id=16 loop
+0 s15 filters 0 1
+0 s15 biquad rand:115:12000
+15 s15 enable 1
+15 s15 sync 16
+0 s16 format pcm16 stereo
+0 s16 interp none
+0 s16 rate 1.0
+0 s16 gain 0 0.25 0.375 0.0625 0.375
+0 s16 gain 1 0.5 0.375 0.125 0.0
+0 s16 gain 2 0.25 0.5 0.0625 0.0625
+0 s16 embedded addr=0x20040000 len=4000 id=17 loop
+16 s16 enable 1
+16 s16 sync 17
+0 s17 format pcm8 mono
+0 s17 interp poly
+0 s17 rate 0.5
+0 s17 gain 0 0.375 0.125 0.375 0.25
+0 s17 gain 1 0 0 0 0
+0 s17 gain 2 0 0 0 0
+0 s17 embedded addr=0x20044000 len=16000 id=18 loop
+0 s17 filters 1 0
+0 s17 simple rand:17:16000
+17 s17 enable 1
+17 s17 sync 18
+0 s18 format pcm8 stereo
+0 s18 interp linear
+0 s18 rate 1.37
+0 s18 gain 0 0.0 0.0 0.125 0.5
+0 s18 gain 1 0.125 0.0 0.0 0.375
+0 s18 gain 2 0.25 0.125 0.5 0.125
+0 s18 embedded addr=0x20048000 len=8000 id=19 loop
+18 s18 enable 1
+18 s18 sync 19
+0 s19 format adpcm mono
+0 s19 interp none
+0 s19 rate 2.0
+0 s19 gain 0 0.25 0.125 0.0 0.25
+0 s19 gain 1 0 0 0 0
+0 s19 gain 2 0.0625 0.375 0.375 0.0625
+0 s19 coeffs rand:19:3000
+0 s19 embedded addr=0x2004c000 len=28000 id=20 loop adirty ps=0x10
+0 s19 filters 0 1
+0 s19 biquad rand:119:12000
+19 s19 enable 1
+19 s19 sync 20
+0 s20 format pcm16 mono
+0 s20 interp poly
+0 s20 rate 0.75
+0 s20 gain 0 0.25 0.375 0.125 0.25
+0 s20 gain 1 0.375 0.0625 0.5 0.5
+0 s20 gain 2 0.0 0.375 0.25 0.0
+0 s20 embedded addr=0x20050000 len=8000 id=21 loop
+20 s20 enable 1
+20 s20 sync 21
+0 s21 format pcm16 stereo
+0 s21 interp linear
+0 s21 rate 1.0
+0 s21 gain 0 0.0625 0.5 0.0625 0.0
+0 s21 gain 1 0.5 0.375 0.0 0.25
+0 s21 gain 2 0 0 0 0
+0 s21 embedded addr=0x20054000 len=4000 id=22 loop
+0 s21 filters 1 0
+0 s21 simple rand:21:16000
+21 s21 enable 1
+21 s21 sync 22
+0 s22 format pcm8 mono
+0 s22 interp none
+0 s22 rate 2.9
+0 s22 gain 0 0.5 0.0 0.0625 0.5
+0 s22 gain 1 0.375 0.0625 0.375 0.0625
+0 s22 gain 2 0.0625 0.5 0.0625 0.25
+0 s22 embedded addr=0x20058000 len=16000 id=23 loop
+22 s22 enable 1
+22 s22 sync 23
+0 s23 format pcm8 stereo
+0 s23 interp poly
+0 s23 rate 0.25
+0 s23 gain 0 0.125 0.25 0.375 0.25
+0 s23 gain 1 0 0 0 0
+0 s23 gain 2 0 0 0 0
+0 s23 embedded addr=0x2005c000 len=8000 id=24 loop
+0 s23 filters 0 1
+0 s23 biquad rand:123:12000
+23 s23 enable 1
+23 s23 sync 24
+100 master 1.0
+100 outfmt mono
+150 outfmt stereo
+120 s5 enable 0
+130 s5 embedded addr=0x20014000 len=2000 id=77
+131 s5 enable 1
+
+# ---- the delay's limits (N3-03, fix round 1), appended so that the rows above keep their place ----
+
+# The delay's output is clamped to the s32 range before it is converted: the aux buses carry the application's
+# samples at +-2e9, the delay (a = 156) multiplies them to about 3e11 in both directions, and the aux return
+# volume is small enough that the converted values (about 2e8) stay inside the s32 range in the downmix. Without
+# the clamp the conversion gives INT32_MIN for every one of them and the positive half flips sign.
+case frame_delay_saturates_to_the_s32_range mode=frame
+mem 0x20000000 walk16 seed=253 bytes=16000
+0 s0 format pcm16 mono
+0 s0 embedded addr=0x20000000 len=8000 id=1 loop
+0 s0 enable 1
+0 master 0.1
+0 auxreturn 0 0.1
+0 auxreturn 1 0.1
+0 auxbus 0 1
+0 auxbus 1 1
+0 delay 0 frames=1 g=0 a=20000 b=0
+0 delay 1 frames=2 g=0 a=-20000 b=0
+0 auxmix 1 seed=71 amp=2000000000
+0 auxmix 2 seed=72 amp=2000000000
+1 auxmix 1 seed=73 amp=2000000000
+1 auxmix 2 seed=74 amp=2000000000
+2 auxmix 1 seed=75 amp=2000000000
+2 auxmix 2 seed=76 amp=2000000000
+3 auxmix 1 seed=77 amp=2000000000
+3 auxmix 2 seed=78 amp=2000000000
+60 delay 0 frames=1 g=0 a=20000 b=0
+61 auxmix 1 seed=79 amp=2000000000
+62 auxmix 1 seed=80 amp=2000000000
+
+# The 4-second limit of the delay: 818 frames (130,880 samples) is below it and 819 (131,040) is above it, so it
+# becomes 130,912. The echo of the source returns after that many samples, and the case runs past it
+# (1000 frames), so a longer limit puts the echo of the 819-frame delay 128 samples later and changes the table.
+case frame_delay_818_and_819_frames mode=frame frames=1000
+mem 0x20000000 walk16 seed=251 bytes=16000
+mem 0x20004000 noise seed=252 bytes=16000
+0 master 1.0
+0 auxreturn 0 1.0
+0 auxreturn 1 1.0
+0 s0 format pcm16 stereo
+0 s0 gain 1 1.0 1.0 1.0 1.0
+0 s0 embedded addr=0x20000000 len=4000 id=1 loop
+0 s0 enable 1
+0 s1 format pcm16 stereo
+0 s1 gain 2 1.0 1.0 1.0 1.0
+0 s1 embedded addr=0x20004000 len=4000 id=1 loop
+0 s1 enable 1
+0 delay 0 frames=818 g=0 a=64 b=0
+0 delay 1 frames=819 g=0 a=64 b=0
