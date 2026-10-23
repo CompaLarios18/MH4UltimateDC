@@ -73,8 +73,9 @@ start (the recording, the `--repeat` runs, the `--candidate-args` runs and the n
 edited, added or removed since `record`; a manifest without the key counts as none). A `--init-time` in `--candidate-args` (or
 `--runner-args`) that disagrees with the header is a usage error (exit 2), an equal one is harmless. A session without the
 header gets no `--init-time` from golden.py and runs exactly as before (a `--init-time` in its `--candidate-args` passes
-through untouched); G1, G2 and G6 keep their whole-second date. No session has this header yet (G1 to G7 have none; G3,
-G3-perf, G4, G7 and G8 get theirs when they are recorded again in N0-35 Part B).
+through untouched); G1, G2 and G6 keep their whole-second date. G4 has the header (`1767268800.5`, recorded again in N0-35
+Part B step 2: [Results of N0-35 Part B](#results-of-n0-35-part-b-steps-1-and-2)); G1, G2, G6 and G7 have none; G3, G3-perf
+and G8 get theirs when they are recorded (N0-35 Part B, after the decision on step 2).
 
 ### The scene
 
@@ -472,6 +473,14 @@ check is in the tests with a synthetic capture. In the exploration a capture at 
 the scene, set plain fog only (no mode 7), and the one in the scene itself, at frame 2400, is the one kept. Recording:
 369 s of host time, 570 MiB in 124 files (the SVC trace is 359 MiB, the GPU capture 165 MiB).
 
+*(N0-35 Part B, step 2, D83)* The session file now has the header `# init-time: 1767268800.5` and is recorded again, into
+`build/golden-n035/G4` (the recording above stays in `build/golden/G4` until the orchestrator moves the new one in). Same
+frames, inputs, checkpoints and capture; the same six real scene changes at the same frames; gas in all ten frames of the GPU
+capture (`fog: 30  gas: 10  none: 50`); 373 s of host time, 558 MiB in 124 files (the SVC trace is 348 MiB, the GPU capture
+165 MiB). The ticks of the state trace are the old recording's up to frame 1743 and first differ at frame 1744 (420 of the 3001
+records differ in all, inside the village's arrival scene), which is where the game's choices start to depend on the date. What the experiment
+showed is in [Results of N0-35 Part B](#results-of-n0-35-part-b-steps-1-and-2).
+
 ### G3-perf: G3 at 21:9
 
 Needs the save. G3 with the top screen rendered at the monitor's aspect ratio, for the GPU budget (N2-19): the script is
@@ -593,7 +602,8 @@ Nothing was loosened to make it pass: the comparison of `same` has no tolerance 
 svc,ipc,state,checkpoints,hid` (the `same` profile; `images`, `unmapped`, the GPU capture and the shared page are compared
 and gated too, as above), the same runner, library, clock and PC as the table above, the maintainer's PC with nothing else
 using the emulator (one process at a time) and some compiles and test runs going on beside it, which do not change what a run
-of this runner does (the clock of a run is emulated):
+of this runner does (the clock of a run is emulated). *(G4's row is the recording made with the whole-second date; N0-35
+Part B records it again at `1767268800.5`, see the section after this one.)*
 
 | Session | `record` | Host time of one run | `check --repeat 2` (exit 0) |
 |---|---|---|---|
@@ -605,6 +615,69 @@ of this runner does (the clock of a run is emulated):
 The passes are the same nine comparisons per run as G2's (`svc`, `ipc`, `state`, `checkpoints`, `unmapped`, `hid`, `gpu-<start>`,
 `images`, `shared-page` against the recording, and the runs against each other without `checkpoints`), and the three `INFO`
 lines are the identical `timing` traces. Run 1 and run 2 were each identical to the recording and to each other.
+
+### Results of N0-35 Part B (steps 1 and 2)
+
+Part A's reference runner (the `windows.yml` build of PR #34, run 39883766427, SHA-256 `d2f3705a...`; the N0-29 runner is
+`fdd639f5...`), the same code library (`0004000000126300.dll`), `--cpu recomp`, `TZ=UTC0`, the same PC, one emulator process at a time.
+
+**Step 1: nothing changed for a run without a fraction (D80).** `golden.py check <S> --repeat 2 --require
+svc,ipc,state,checkpoints,hid,images,unmapped` (G1 also `dsp`), `--out build/golden`, against the recordings the N0-29 runner
+made, with the new runner and the whole-second date (no header):
+
+| Session | `check --repeat 2` | Host time of the check |
+|---|---|---|
+| G1 | exit 0: 29 passed, 0 failed, 0 skipped, 3 info (profile `same`) | 123 s |
+| G2 | exit 0: 26 passed, 0 failed, 0 skipped, 3 info | 2,362 s |
+| G6 | exit 0: 23 passed, 0 failed, 0 skipped, 3 info | 627 s |
+
+The same nine comparisons per run as in the tables above, each run against the recording (made by the other runner) and run 2
+against run 1; the 3 `INFO` lines (`timing`) are identical apart from the header line. The `check` folders of these three
+recordings (`build/golden/<S>/check/`) now hold these runs, not the N0-29 ones.
+
+**Step 2: G4 at `# init-time: 1767268800.5` (D83's experiment).** `golden.py record G4 --user build/userbase-cfg --save
+build/n0-10-save-cpp-off --cpu recomp --out build/golden-n035` (exit 0: 4/4 checkpoints, 6 real scene changes, 0 capture
+problems, 373 s), then `check G4 --repeat 2 --require svc,ipc,state,checkpoints,hid` (exit 0: 26 passed, 0 failed, 0 skipped, 3
+info, `same`; 13 minutes), then the jit candidate: `check G4 --candidate-args "--cpu jit" --profile cross --ignore
+config/native/ipc_time_dependent.txt --require state,checkpoints,ipc,svc,hid` against the new recording.
+
+*The first clock reading is mid-second on both backends.* The first `GetSystemTick` of the game's clock function (`pc`
+`0x0010CA04`, between game frames 2 and 3; `docs/research/g2-save-bytes.md` section 4), from the SVC trace, the shared page's
+date record in the shared-page dump (3,976,257,607,959 ms since 1900 with the header, 3,976,257,607,459 without it, at update
+tick 2,000,000,000) and the arithmetic of that document:
+
+| Recording | Tick of reading 1 (less 2e9) | Unix second | Into the second | Frame 3's tick (`state.txt`) |
+|---|---|---|---|---|
+| old G4, recomp (no fraction) | 143,863,509 | 1767268807 | 995.6 ms (4.4 ms before the boundary) | 147,895,257 |
+| old G4, jit | 154,706,875 | 1767268808 | 36.0 ms | 156,857,711 |
+| new G4, recomp | 143,863,509 | 1767268808 | **495.6 ms** | 147,895,257 |
+| new G4, jit | 154,706,875 | 1767268808 | **536.0 ms** | 156,857,711 |
+
+The fraction moved the date and nothing else, as D84 says: the ticks (the reading's, the frame's) are the old recording's, and
+the seconds of the two backends are now the same, half a second from either boundary. The second reading (the one that
+G2's save holds) is also one second on both now (61.7 ms and 70.8 ms into 1767268837).
+
+*What the jit check says.* `ipc` is the only comparison that fails; `svc`, `state` (8 scene changes within 4 frames, largest
+shift 1, smallest input margin 147 and 148 frames), `checkpoints` and `hid` pass (5 passed, 1 failed, 2 info, `cross`;
+11 minutes). `fs coverage:` of the report: 30 thread/file sessions read; bytes only the reference covers 26,624 (2 ranges),
+only the candidate covers **0**; the most is 18,432 on one thread. By thread (counts and bytes), against the old recording's
+jit pair of N0-30/N0-36 (section 11 of `comparators.md`):
+
+| Thread | Reads (ref / cand), old | Reads (ref / cand), new | One-sided bytes (ref / cand), old | One-sided bytes (ref / cand), new |
+|---|---|---|---|---|
+| #3 (loader) | 275 / 276 | 276 / 276 | 133,257 / 84,658 | **0 / 0** |
+| #5 (loader, big resources) | 115 / 114 | 114 / 114 | 124,610 / 0 | **0 / 0** |
+| #12 (streaming reader) | 264 / 261 | 263 / 262 | 24,576 / 0 | 8,192 / 0 |
+| #17 (movie stream) | 580 / 571 | 580 / 571 | 18,432 / 0 | 18,432 / 0 |
+
+On threads #3 and #5 every Read of the two backends is equal (offset, size, result and CRC-32), in the same order, in both file
+sessions: the loaders choose the same resources now (the 6 and 7 Reads without an equal of
+thread #3 are gone). Thread #17's 18,432 bytes are one range, 9 Reads of 2,048 bytes at the end of the movie stream that the
+reference reads and the jit does not, the same count, sizes and totals as in the old recording (not a seed effect; the stream's length is the
+time it is kept open, section 11 item 2). Rules applied: D85's 16,384 bytes per thread, so `ipc` fails by 2,048 bytes on
+thread #17; with the bound at 20,480 the same two traces give `all threads match`, exit 0 (an offline run of
+`compare_ipc_traces.py`, not a check). The old recordings' other `ipc` differences (the two `nwm::UDS` commands and
+`ControlArchive`) are in `ipc_time_dependent.txt` and nothing else differs.
 
 ## History: the WIP recordings (before N0-29)
 
