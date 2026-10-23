@@ -212,6 +212,79 @@ With the two entries and the 18, the offline comparison of the cross profile sti
 
 D50's numbers (4 frames, 60 frames) need no change. `golden.py check G3`/`G4 ... --require state,checkpoints,ipc,svc,hid` exits 0 only after 1 and 2 are settled.
 
+## 10. The quest sessions G4 and G8 on the recordings at the fractional date (N0-30, second pass)
+
+Written by N0-30 (2026-10-23). **Status: G4 passes, G8 does not: `needs-decision`.** G3 is not part of this pass (D90) and G7 was dropped (D91). The reference runner of N0-35 with `--cpu jit` was checked against the recordings of N0-35 (`# init-time: 1767268800.5`, recomp, `user-before/` already holding the save copy), once per session: `golden.py check <S> --candidate-args "--cpu jit" --profile cross --ignore config/native/ipc_time_dependent.txt --require state,checkpoints,ipc,svc,hid`. The recordings were copied to `build/cross-model/rec2/<S>/` so that the `check/` folders of `build/golden` stay as they are. The existing ignore file holds the 18 entries of N0-28, the three of D82 and the two of D86; no new entry was added for G4.
+
+| Comparison | G4 | G8 |
+|---|---|---|
+| `svc` (cross-model list) | pass (115 compared calls per side) | pass (115 per side) |
+| `state` | pass: 6 real scene changes | pass: 6 real scene changes |
+| `state-margin` (D50: 4 frames, 60 frames) | pass: largest shift 1 frame, smallest input margin 147 (reference) and 148 (candidate) | pass: largest shift 1 frame, smallest input margin 147 and 147 |
+| `checkpoints` | pass | pass |
+| `hid` | pass | pass |
+| `ipc` | **pass** with the existing ignore file | **fail** (two differences, 10.3) |
+| `svc-full`, `images` | info, never gated: 50 of 92 screenshots differ | info: 55 of 102 differ |
+| exit status | **0** | 1 |
+
+### 10.1 Scene changes and input margins (D50): the rule holds
+
+Real scene changes (frames on the reference and the candidate, difference candidate minus reference):
+
+| # | G4 reference | G4 candidate | G4 diff | G8 reference | G8 candidate | G8 diff |
+|---|---|---|---|---|---|---|
+| 1 | 2 | 2 | +0 | 2 | 2 | +0 |
+| 2 | 42 | 43 | +1 | 42 | 43 | +1 |
+| 3 | 903 | 902 | -1 | 1053 | 1053 | +0 |
+| 4 | 1576 | 1575 | -1 | 1726 | 1725 | -1 |
+| 5 | 1578 | 1577 | -1 | 1728 | 1727 | -1 |
+| 6 | 1579 | 1578 | -1 | 1729 | 1728 | -1 |
+
+The scene values are the same on both sides in every row. The largest shift is **1 frame** in both sessions (D50 allows 4). Both sessions have 9 scripted inputs (frames 300, 450, 600, 750, 900, 1050, 1200, 1350, 1500). G4: the last real change before the inputs at 1050 to 1500 is at frame 903 (reference) and 902 (candidate), margins 147 to 597 and 148 to 598. G8: the last real change before 1200 to 1500 is at 1053 on both sides, margins 147 to 447 on both. Every input is at least **147 frames** after the last real scene change on both sides (D50's minimum is 60). D50's numbers need no change.
+
+### 10.2 fs coverage (D83, D85)
+
+| | G4 | G8 |
+|---|---|---|
+| `fs:USER/file` Reads, reference / candidate | 1277 / 1267 | 1294 / 1289 |
+| largest difference of one thread's Read count | 9 on the movie stream's thread (at most 16) | 4 on thread `#18` |
+| bytes only the reference covers | 26,624 in 2 ranges | 274,251 in 5 ranges |
+| bytes only the candidate covers | 0 | 84,658 in 3 ranges |
+| most one-sided bytes of one thread and file session | 18,432 (reference, the movie stream's thread; the bound of D85 is 20,480) | reference 133,257 and candidate 84,658, both on the loader thread `#3`; thread `#5`: reference 124,610 |
+| result | **pass**: the loader threads match exactly, nothing but the movie stream differs | **fail**: loader threads `#3` and `#5` differ |
+
+G4 is the calibrated kind that D83 expected: the first pass's differences in the main thread's ControlArchive byte, the loader `#3` and the streaming reader `#12` are gone, and the one-sided bytes are the 18,432 of the movie stream's skip. G8 does not reach it.
+
+### 10.3 G8: what differs in the IPC
+
+With the 26 entries of the ignore file, the offline comparison of the two traces (cross profile options, every thread listed) shows these differences and no other:
+
+| # | Where | G8 | Class |
+|---|---|---|---|
+| 1 | the `ir:USER` poll thread (`#17` in `golden.py`'s naming), commands `0x000d0042` and `0x00190040` | the thread alternates the two commands; both runs agree request for request up to request 13,448 (header, result, descriptor); the reference stops there and the candidate makes 6 more (3 of each). Totals over the session: 6725 and 6724 on recomp, 6728 and 6727 on jit; every other `ir:USER` command (`Initialize`, the event and shared-memory set-up, 2 or 1 requests each) is equal | not `fs:`: a poll whose count at the end of the run follows the clock, the same kind as D86's `cfg:u 0x00010082` (97 to 99 requests). Proposed as two entries below |
+| 2 | loader thread `#3` (`fs:USER/file` Reads), around request 205 | 275 against 276 Reads (surplus 1); 5 Reads of the reference have no equal on the candidate (offset 1,019,089,312 sizes 12 and 131,072; offset 1,019,089,324 size 3,280; offset 811,370,608 sizes 12 and 2,185); reference-only 133,257 bytes, candidate-only 84,658 | `fs:`: the same two resources as the first pass's row 3, loaded in other pieces (3,280 and 131,072 against the candidate's pieces at the same positions). With `--fs-reads-coalesce --fs-reads-prefix` (the native profile's options, tried offline only) the multiset still differs on 4 runs (131,072 and 3,292 at offset 1,019,089,312; 2,185 and 92 at 811,370,608), and the one-sided bytes do not change |
+| 3 | thread `#5` (`fs:USER/file` Reads) | 115 against 114 Reads; one 124,610-byte Read of the reference has no equal on the candidate | `fs:`: as the first pass's row 6, but there it was inside the rule (surplus 1) and here the one-sided bytes (124,610 against 20,480) fail N0-37's coverage bound |
+
+The main thread matches request for request (528 against 528), as do the other threads; thread `#12` (285 against 284 Reads) and thread `#18` (575 against 571) pass. The `ir:USER` calls are the first of this session class to be compared: **the jit and recomp runs agree on every `ir:USER` request that both make** (the sequence of commands, results and descriptors, including the 6725 polls), and the only difference is the 3 extra poll pairs at the tail.
+
+### 10.4 Entries proposed (`build/cross-model/ipc_time_dependent-quests2.txt`)
+
+Two entries, for commands that are not `fs:`:
+
+| Entry | What the pair shows | Why it depends on time |
+|---|---|---|
+| `ir:USER 0x000d0042` | 6725 requests on recomp, 6728 on jit, one thread; all requests before the tail equal | the game's poll loop on the `ir:USER` shared block runs once per period of emulated time and the number of passes before the scripted end of the run follows the clock; the reply is a result code only |
+| `ir:USER 0x00190040` | 6724 and 6727 requests, the command that alternates with the one above | the same loop, the same cause; the reply is a result code only |
+
+With these two entries added, the offline comparison of G8 still exits 1: only threads `#3` and `#5` fail, both on `fs:` Reads (10.3 rows 2 and 3). G4 needs no entry.
+
+### 10.5 Conclusion, and what needs a decision
+
+- **D50 holds** on both sessions: largest shift 1 frame, smallest margin 147 frames; no change to the tolerance or the minimum margin.
+- **G4 meets Done-when** (`golden.py check G4 ... --require state,checkpoints,ipc,svc,hid` exits 0 with `config/native/ipc_time_dependent.txt` as it is). D83's remedy worked on it: the loader and streaming differences of the first pass are gone, and the largest one-sided figure, 18,432 bytes, is the movie stream's, under D85's bound of 20,480.
+- **D52 and D85 on G8:** the check does not exit 0. The two `ir:USER` entries fix row 1, but the loader thread `#3` and thread `#5` of G8 read other pieces or other resources on the two backends at the fractional date, 133,257 and 124,610 bytes one-sided against the bound of 20,480. An `fs:` difference is never an entry, and the fractional date does not remove it here. The decision is the orchestrator's: whether G8 is judged with the native-profile options (offline they do not absorb it), whether the cause on G8 (the staged save with the Circle Pad Pro option on, a different start-up from G4's) needs an N0-36-style investigation, or whether G8's cross calibration is dropped as G3's was (D90) and G8 is judged by the native mode (N1-25, N1-26) and D86's rule.
+- Neither session needed a change to `config/**` beyond the two `ir:USER` entries above, and the orchestrator decides whether to merge them.
+
 ## Appendix: the report tool on G1, G6 and G2
 
 The tool's output on the saved runs of the first round, with its defaults of D50 (tolerance 4, minimum margin 60); the SVC and IPC counts are those of the first round and do not depend on the two limits.
