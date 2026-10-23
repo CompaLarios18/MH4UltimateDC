@@ -186,7 +186,7 @@ rules of `check` decide which of the options above are required (all of them a u
 | `state` | `state_diff.py --tolerance 4 --min-changes <the recording's real scene changes>`: the real scene changes in the same order, to the same scene, up to **4 frames** apart (D50; D33 said 2); skipped when the recording has none: nothing to align. The result prints the tolerance |
 | `state-margin` | D50's guard, with `cross_model_report.py`'s logic: every input event of the session script that follows a real scene change comes at least **60 frames** after the last real scene change **on both sides**. Runs with `state` (`--require state` covers it) and prints the largest scene-change shift and the smallest margin of each side |
 | `checkpoints` | as in `same` |
-| `ipc` | `compare_ipc_traces.py --ignore config/native/ipc_time_dependent.txt` (plus every `--ignore FILE`) `--fs-reads-multiset --max-surplus 16 --fs-write-mask config/native/fs_write_masks.txt --fs-write-mask-session <S>` (D52): per thread the `fs:USER/file` Reads as a multiset of (offset, size, result, CRC of the data read) with at most 16 reads more on one side; every other `fs:` request in order and in full; a Write by the CRC of its data with the byte ranges of the session's mask lines zeroed. The result prints the reads and the masks used |
+| `ipc` | `compare_ipc_traces.py --ignore config/native/ipc_time_dependent.txt` (plus every `--ignore FILE`) `--fs-reads-multiset --max-surplus 16 --fs-write-mask config/native/fs_write_masks.txt --fs-write-mask-session <S>` (D52): per thread the `fs:USER/file` Reads as a multiset of (offset, size, result, CRC of the data read) with at most 16 reads more on one side; every other `fs:` request in order and in full; a Write by the CRC of its data with the byte ranges of the session's mask lines zeroed. The result prints the reads, the bytes that only one side covers (`fs coverage:`, N0-36: information, not a rule) and the masks used |
 | `svc` | `compare_svc_traces.py --normalize --outputs --cross-model config/native/svc_cross_model.txt` (N0-25) |
 | `svc-full`, `images` | run and printed as `INFO`, never gated (the image threshold comes in N2b) |
 | `hid` | `capfmt.py diff-hid` |
@@ -201,6 +201,16 @@ matches no Write of the two traces makes the `ipc` comparison fail (a stale mask
 
 `--ignore FILE` (repeatable) adds IPC ignore files to the `cross` and `native` profiles only; with the `same` profile
 it is a usage error, so a same-model check can never be loosened by a list.
+
+**The quest sessions G3 and G4 do not pass the `ipc` comparison of `cross` or `native` between `jit` and `recomp`**
+(N0-30, D82; N0-36 ended `needs-decision`, `comparators.md` section 11). Their `fs:USER/file` Reads differ in what the
+loaders ask for (the other side loads the next resource of the archive) and in where the streams end (G3's hunt also
+has a stream of 2,637,824 bytes that is another file on each side): up to 133,257 bytes per thread that only one side
+reads in G4 and 3,072,964 in G3, against 10,240 in the sessions without a quest. The most likely cause is the game's
+random generator, seeded one second apart on the two backends, which is not a defect of either. No rule of
+`compare_ipc_traces.py` absorbs this yet and none of the profiles was changed: `--require ipc` fails for these two
+sessions, and the `fs coverage:` line of the result gives the number to compare with section 11. The Reads are not the only reason: `cross-model.md` section 9.3 rows 1 and 2 (the main thread's ControlArchive input byte; the `nwm::UDS` commands) are separate open items. Nor does the `ipc` check protect loads of up to the allowance: a thread of up to 16 Reads (up to 16 runs under `native`) can vanish from the candidate, and one extra read passes (under `native` always, under `cross` when the candidate is the larger side) (`comparators.md`, section 11). The other comparisons
+(`svc`, `state`, `state-margin`, `checkpoints`, `hid`) pass on both sessions (`cross-model.md`, section 9).
 
 **`native`** (D76; N0-33; the native runtime in real time against the reference. Asked for with `--profile native`,
 never the default: `--candidate-runner` alone is `cross`). Its game clock follows the host while the reference charges

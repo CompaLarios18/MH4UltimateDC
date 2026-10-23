@@ -938,3 +938,204 @@ def test_each_run_serves_one_prefix_only(tmp_path):
 def test_the_docstring_documents_the_prefix_option():
     for word in ("--fs-reads-prefix", "part boundary", "prefix"):
         assert word in cmp.__doc__
+
+# ── the bytes only one side covers: information, never a rule (N0-36) ─────────────────────────────
+
+
+def coverage(ref_lines, cand_lines, tmp_path):
+    """read_coverage on two synthetic traces, by (thread, session)."""
+    ref = cmp.load(write(tmp_path, "cref.txt", ref_lines), set())
+    cand = cmp.load(write(tmp_path, "ccand.txt", cand_lines), set())
+    return {(r.thread, r.session): r for r in cmp.read_coverage(ref, cand)}
+
+
+def test_the_coverage_is_the_union_of_the_ranges_whatever_the_pieces(tmp_path):
+    rows = coverage(trace(*spans(5, 1, WHOLE)), trace(*spans(5, 1, PIECES)), tmp_path)
+    (row,) = rows.values()
+    assert (row.ref_bytes, row.cand_bytes, row.ref_only, row.cand_only) == (28672, 28672, 0, 0)
+    # the same range read twice covers it once
+    twice = coverage(trace(*spans(5, 1, [(0, 4096), (0, 4096), (4096, 4096)])), trace(*spans(5, 1, [(0, 8192)])),
+                     tmp_path)
+    assert [(r.ref_bytes, r.cand_bytes, r.ref_only, r.cand_only) for r in twice.values()] == [(8192, 8192, 0, 0)]
+
+
+def test_the_bytes_only_one_side_covers_are_counted_in_bytes_and_ranges(tmp_path):
+    ref = trace(*spans(5, 1, [(0, 8192), (8192, 8192), (40000, 4096), (50000, 100)]))
+    cand = trace(*spans(5, 1, [(0, 8192), (60000, 1000)]))
+    (row,) = coverage(ref, cand, tmp_path).values()
+    assert row.ref_bytes == 8192 + 8192 + 4096 + 100 and row.cand_bytes == 8192 + 1000
+    assert (row.ref_only, row.ref_only_ranges) == (8192 + 4096 + 100, 3)
+    assert (row.cand_only, row.cand_only_ranges) == (1000, 1)
+    # a range that overlaps the other side's only partly counts for the part outside it
+    (part,) = coverage(trace(*spans(5, 1, [(0, 10000)])), trace(*spans(5, 1, [(4000, 10000)])), tmp_path).values()
+    assert (part.ref_only, part.cand_only) == (4000, 4000)
+
+
+def test_a_failed_or_short_read_covers_only_the_bytes_it_returned(tmp_path):
+    ref = trace(fs_read(5, 1, 0, 4096, 0x11), fs_read(5, 2, 4096, 4096, 0x22, result=0xC8804464, reply=True),
+                fs_read(5, 3, 8192, 4096, 0x33, bytes_read=100), fs_read(5, 4, 20000, 4096, 0x44, reply=False))
+    (row,) = coverage(ref, trace(fs_read(5, 1, 0, 4096, 0x11)), tmp_path).values()
+    assert (row.ref_bytes, row.ref_only, row.cand_only) == (4096 + 100, 100, 0)
+
+
+def test_a_thread_or_a_file_session_that_one_side_never_reads_is_all_one_sided(tmp_path):
+    ref = trace(*spans(5, 1, [(0, 4096), (4096, 4096)]), *spans(1, 1, [(0, 2048)], session="fs:USER/file#3"))
+    cand = trace(*spans(5, 1, [(0, 4096), (4096, 4096)]))
+    rows = coverage(ref, cand, tmp_path)
+    assert len(rows) == 2
+    other = [r for r in rows.values() if r.session == "fs:USER/file#3"][0]
+    assert (other.ref_bytes, other.cand_bytes, other.ref_only, other.cand_only) == (2048, 0, 2048, 0)
+
+
+def test_the_report_has_a_coverage_line_with_the_multiset_option_only(tmp_path, capsys):
+    a, b = trace(*reads(5, *STREAM)), trace(*reads(5, *STREAM[:-5]))
+    capsys.readouterr()
+    assert run(tmp_path, a, b, *MULTISET) == 0
+    out = capsys.readouterr().out
+    line = [ln for ln in out.splitlines() if ln.startswith("fs coverage:")]
+    assert len(line) == 1 and out.splitlines().index(line[0]) > out.splitlines().index(
+        next(ln for ln in out.splitlines() if ln.startswith("fs reads:")))
+    assert ("1 thread/file session(s) read; bytes only the reference covers: 10240 (in 1, 1 range(s)), only the "
+            "candidate covers: 0 (in 0, 0 range(s)); the most per thread and file session: reference 10240 on thread"
+            ) in line[0]
+    assert "(information, not a rule)" in line[0]
+    assert run(tmp_path, a, a, *MULTISET) == 0
+    assert ("only the reference covers: 0 (in 0, 0 range(s)), only the candidate covers: 0 (in 0, 0 range(s)) "
+            "(information") in capsys.readouterr().out
+    assert run(tmp_path, a, b, "--prefix") in (0, 1)
+    assert "fs coverage:" not in capsys.readouterr().out
+
+
+def test_the_coverage_is_information_it_changes_no_result(tmp_path, capsys):
+    base = trace(*reads(5, *STREAM))
+    # 4 MiB that only the candidate reads, in one read: the multiset rule accepts one read more, as it did before
+    big = trace(*reads(5, *STREAM), fs_read(5, 99, 10_000_000, 4 << 20, 0xABCD))
+    capsys.readouterr()
+    assert run(tmp_path, base, big, *MULTISET) == 0
+    assert "only the candidate covers: 4194304 (in 1, 1 range(s))" in capsys.readouterr().out
+    # a CRC that differs on an identical (offset, size) fails, with or without a coverage difference
+    changed = list(STREAM)
+    changed[3] = (changed[3][0], changed[3][1], 0xDEAD)
+    assert run(tmp_path, base, trace(*reads(5, *changed)), *MULTISET) == 1
+    out = capsys.readouterr().out
+    assert "only the reference covers: 0 (in 0, 0 range(s)), only the candidate covers: 0 (in 0, 0 range(s))" in out
+
+
+def test_merge_ranges_is_the_union_of_unsorted_contained_and_touching_ranges():
+    assert cmp.merge_ranges([]) == []
+    assert cmp.merge_ranges([(100, 200), (0, 50)]) == [(0, 50), (100, 200)]                  # any order
+    assert cmp.merge_ranges([(0, 8192), (100, 200)]) == [(0, 8192)]                           # one inside an earlier, longer one
+    assert cmp.merge_ranges([(0, 8192), (100, 200), (8000, 9000)]) == [(0, 9000)]
+    assert cmp.merge_ranges([(0, 10), (10, 20)]) == [(0, 20)]                                 # touching ranges are one
+    assert cmp.merge_ranges([(0, 10), (11, 20)]) == [(0, 10), (11, 20)]                       # one byte apart are two
+    assert cmp.merge_ranges([(5, 15), (0, 10)]) == [(0, 15)]
+
+
+def test_subtract_ranges_keeps_what_the_other_side_does_not_cover():
+    sub = cmp.subtract_ranges
+    assert sub([], [(0, 10)]) == [] and sub([(0, 10)], []) == [(0, 10)]
+    assert sub([(0, 100)], [(0, 100)]) == []
+    assert sub([(0, 100)], [(0, 50)]) == [(50, 100)] and sub([(0, 100)], [(50, 100)]) == [(0, 50)]
+    assert sub([(0, 100)], [(40, 60)]) == [(0, 40), (60, 100)]
+    assert sub([(0, 100)], [(0, 1)]) == [(1, 100)] and sub([(0, 100)], [(99, 100)]) == [(0, 99)]
+    assert sub([(0, 50)], [(10, 20), (30, 40)]) == [(0, 10), (20, 30), (40, 50)]
+    # ranges that only touch cover nothing of the other
+    assert sub([(100, 200)], [(0, 100)]) == [(100, 200)] and sub([(100, 200)], [(200, 300)]) == [(100, 200)]
+    assert sub([(0, 10), (20, 30)], [(5, 25)]) == [(0, 5), (25, 30)]
+    assert sub([(0, 100)], [(-50, 200)]) == []
+
+
+def read_extent(tmp_path, line):
+    (calls,) = cmp.load(write(tmp_path, "extent.txt", trace(line)), set()).values()
+    return cmp.fs_read_extent(calls[0])
+
+
+def test_the_extent_of_a_read_is_what_its_reply_says_it_read(tmp_path):
+    assert read_extent(tmp_path, fs_read(5, 1, 1000, 4096, 0x11)) == (1000, 5096)
+    assert read_extent(tmp_path, fs_read(5, 1, 1000, 4096, 0x11, bytes_read=100)) == (1000, 1100)
+    assert read_extent(tmp_path, fs_read(5, 1, 1000, 4096, 0x11, bytes_read=9999)) == (1000, 5096)      # at most the size asked
+    assert read_extent(tmp_path, fs_read(5, 1, 1000, 4096, 0x11, bytes_read=0)) is None                # read nothing
+    assert read_extent(tmp_path, fs_read(5, 1, 1000, 4096, 0x11, reply=False)) is None                 # no reply
+    assert read_extent(tmp_path, fs_read(5, 1, 1000, 4096, 0x11, result=0xC8804464)) is None            # failed
+    assert read_extent(tmp_path, fs_read(5, 1, 1000, 0, 0x11)) is None                                  # asked for nothing
+    high = (1 << 32) + 100
+    assert read_extent(tmp_path, fs_read(5, 1, high, 4096, 0x11)) == (high, high + 4096)               # the high word counts
+    # a successful Read whose reply has no byte count covers the whole size asked for
+    no_count = req(5, 1, FILE, 0x08020000, params=(1000, 0, 4096), in_extra=((4096 << 4) | 0xC, 0x0FFFDAF8),
+                   out_extra=((4096 << 4) | 0xC, 0x0FFFDAF8), desc=("mapped-w:4:4096:-",),
+                   outdesc=("mapped-w:4:4096:0x00000011",))
+    assert read_extent(tmp_path, no_count) == (1000, 5096)
+
+
+def test_only_reads_cover_bytes(tmp_path):
+    # a Write and another request of the same file session on the same thread add no bytes to either side
+    other = req(5, 3, FILE, 0x08040000)
+    ref = trace(*spans(5, 1, [(0, 4096)]), fs_write(5, 2, 100000, bytes(range(256)) * 16, session=FILE), other)
+    cand = trace(*spans(5, 1, [(0, 4096)]))
+    (row,) = coverage(ref, cand, tmp_path).values()
+    assert (row.ref_bytes, row.cand_bytes, row.ref_only, row.cand_only) == (4096, 4096, 0, 0)
+    # a file session the thread only writes is no row at all
+    (only,) = coverage(trace(*spans(5, 1, [(0, 4096)]), fs_write(5, 2, 0, b"abcd" * 100, session="fs:USER/file#2")),
+                       cand, tmp_path).values()
+    assert only.session == FILE
+
+
+def test_a_thread_or_file_session_that_only_the_candidate_reads_is_all_one_sided(tmp_path):
+    ref = trace(*spans(5, 1, [(0, 4096)]))
+    cand = trace(*spans(5, 1, [(0, 4096)]), *spans(1, 1, [(0, 2048)], session="fs:USER/file#3"),
+                 *spans(1, 3, [(0, 100)], session=FILE))
+    rows = coverage(ref, cand, tmp_path)
+    assert len(rows) == 3
+    new = sorted((r.ref_bytes, r.cand_bytes, r.ref_only, r.cand_only, r.ref_only_ranges, r.cand_only_ranges)
+                 for r in rows.values() if r.thread == "main")
+    assert new == [(0, 100, 0, 100, 0, 1), (0, 2048, 0, 2048, 0, 1)]
+    assert len({r.thread for r in rows.values()}) == 2
+    # a thread that the reference has no request on at all
+    (alone,) = coverage(trace(req(1, 1, "srv:", 0x00050100)), trace(*spans(5, 1, [(0, 4096)])), tmp_path).values()
+    assert (alone.ref_bytes, alone.cand_bytes, alone.ref_only, alone.cand_only) == (0, 4096, 0, 4096)
+
+
+def test_a_file_session_whose_reads_all_failed_is_still_a_row(tmp_path):
+    failed = trace(fs_read(5, 1, 0, 4096, 0, result=0xC8804464))
+    (row,) = coverage(failed, trace(*spans(5, 1, [(0, 4096)])), tmp_path).values()
+    assert (row.ref_bytes, row.cand_bytes, row.ref_only, row.cand_only) == (0, 4096, 0, 4096)
+    (both,) = coverage(failed, failed, tmp_path).values()
+    assert (both.ref_bytes, both.cand_bytes, both.ref_only_ranges, both.cand_only_ranges) == (0, 0, 0, 0)
+
+
+def test_the_ranges_are_the_number_of_separate_pieces(tmp_path):
+    ref = trace(*spans(5, 1, [(0, 100), (200, 100), (400, 100)]))
+    cand = trace(*spans(5, 1, [(250, 300)]))
+    (row,) = coverage(ref, cand, tmp_path).values()
+    # the reference covers [0,100) [200,300) [400,500), the candidate [250,550): only the reference [0,100) and
+    # [200,250); only the candidate [300,400) and [500,550)
+    assert (row.ref_only, row.ref_only_ranges) == (100 + 50, 2)
+    assert (row.cand_only, row.cand_only_ranges) == (100 + 50, 2)
+
+
+def test_the_coverage_line_names_the_largest_one_sided_row_of_each_side():
+    C = cmp.Coverage
+    rows = [C("#3", FILE, 100, 50, 60, 10, 1, 1), C("#5", FILE, 100, 50, 70, 30, 2, 1), C("#12", FILE, 10, 15, 0, 5, 0, 1)]
+    assert cmp.coverage_line(rows) == (
+        "fs coverage: 3 thread/file session(s) read; bytes only the reference covers: 130 (in 2, 3 range(s)), only the "
+        "candidate covers: 45 (in 3, 3 range(s)); the most per thread and file session: reference 70 on thread #5, "
+        "candidate 30 on thread #5 (information, not a rule)")
+    # the largest per side, not the smallest, and a tie goes to the later thread
+    rows = [C("#3", FILE, 0, 0, 40, 5, 1, 1), C("#5", FILE, 0, 0, 40, 9, 1, 1), C("#7", FILE, 0, 0, 10, 2, 1, 1)]
+    assert "reference 40 on thread #5, candidate 9 on thread #5 (information" in cmp.coverage_line(rows)
+    # a side with nothing one-sided has no part in the line
+    only_candidate = cmp.coverage_line([C("#5", FILE, 0, 30, 0, 30, 0, 1)])
+    assert only_candidate == ("fs coverage: 1 thread/file session(s) read; bytes only the reference covers: 0 (in 0, 0 "
+                              "range(s)), only the candidate covers: 30 (in 1, 1 range(s)); the most per thread and "
+                              "file session: candidate 30 on thread #5 (information, not a rule)")
+    only_reference = cmp.coverage_line([C("#5", FILE, 30, 0, 30, 0, 1, 0)])
+    assert "the most per thread and file session: reference 30 on thread #5 (information" in only_reference
+    assert "candidate 30" not in only_reference
+    assert cmp.coverage_line([]) == ("fs coverage: 0 thread/file session(s) read; bytes only the reference covers: 0 "
+                                     "(in 0, 0 range(s)), only the candidate covers: 0 (in 0, 0 range(s)) "
+                                     "(information, not a rule)")
+
+
+def test_the_docstring_documents_the_coverage_line():
+    for word in ("fs coverage:", "N0-36", "comparators.md section 11", "information"):
+        assert word in cmp.__doc__
