@@ -298,33 +298,37 @@ N3-06 can say. This is the procedure for the maintainer (`pc`, N3.md rule 6, N2b
 expect and about how long it takes; what he sends back; what to do when a step fails.
 
 **What can be run today and what cannot.** `mh4u-native` answers only `--help` and `--version` until N2b-10 and N3-14
-(`docs/native/app.md`), so the packaged exe cannot play anything yet. What can be played today is `app_audio_test`, the test
+(`docs/native/app.md`), so the packaged exe cannot play anything yet. What can be played today, once built on the PC (next paragraph), is `app_audio_test`, the test
 program of this package, which has an opt-in listening case: with `MH4N_AUDIO_LISTEN=1` it plays the 1 kHz tone through the real path
 (the runtime's `--audio sdl` sink, the stream, the drift controller, SDL's resampler, the player's default Windows output device),
 at volume 100, 50, 25 and 0, then keeps playing while he switches and unplugs devices, and writes the audio log. Without the variable
 the case is skipped, so `ctest` never plays a sound. Its steps are 1 to 10 below. The steps that need the game's own sound and the
 app's controls need N3-14's wiring and are written as "N3-14 fills in the command" (steps 11 to 13): they are not runnable now.
 
-**`app_audio_test.exe` is not in the artifact yet.** The Windows job of `native-app.yml` builds and runs `app_audio_test` but publishes only
-the six files of `docs/native/app.md`. Until the orchestrator adds `app_audio_test.exe` to the folder the job zips (a one-line change in
-the step "Package mh4u-native and its DLLs", proposed in the report of N3-06), the alternative is to build it on the PC with the
-toolchain of N2b-11 (`cmake --build build\native-app --target app_audio_test`, the configure line of `docs/native/app.md`). If
-neither exists, **the listening test waits for N3-14**, which will have `mh4u-native.exe` play for itself.
+**`app_audio_test.exe` is not in the Windows artifact, and this package does not add it.** The Windows job of `native-app.yml` builds and runs
+`app_audio_test` but publishes only the six files of `docs/native/app.md`, and Windows artifacts are produced only when the maintainer asks.
+So steps 1 to 10 can run today only if the maintainer builds `app_audio_test.exe` on the PC, with the toolchain of *Setting up mh4u-native on
+the reference PC* (N2b-11, `docs/native/app.md`; that section must exist first: llvm-mingw, Ninja, CMake and SDL3 3.4.18 found through
+`CMAKE_PREFIX_PATH`, as the job `app-windows` of `native-app.yml` sets them up). Step 1 has the commands, which are the configure line of
+`docs/native/app.md` (*Building it*) with the target `app_audio_test`. If that toolchain is not there, **the whole listening test waits
+for N3-14** and `mh4u-native.exe`; it is then part of N3-14's maintainer procedure.
 
 Needed: Windows 10 or 11, two audio output devices that can both be the default (the speakers or headphones on the PC, and a second
 one: HDMI, USB, Bluetooth or the other jack), and about 40 minutes. Start with the system volume low (about 20 %): the tone is at half
 of full scale.
 
-1. **Get the program** (3 min). From the Windows artifact of the run the orchestrator names (`docs/native/app.md`, *Getting
-   `mh4u-native.exe`*), unzip it into `C:\NoJales\mh4pcport\audio-listen`:
+1. **Build the program** (10 to 20 minutes the first time; needs the toolchain above). Nothing is downloaded: the zip of the Windows artifact is not used.
    ```
    Set-Location C:\NoJales\mh4pcport\repo
+   cmake -S native -B build\native-app -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_BUILD_TYPE=RelWithDebInfo -DMH4N_WERROR=ON -DMH4N_APP=ON
+   cmake --build build\native-app --target app_audio_test
    New-Item -ItemType Directory -Force C:\NoJales\mh4pcport\audio-listen, C:\NoJales\mh4pcport\perf\n3\audio-listen | Out-Null
-   Expand-Archive -Force -Path "$HOME\Downloads\mh4u-native-windows.zip" -DestinationPath C:\NoJales\mh4pcport\audio-listen
+   Copy-Item build\native-app\bin\app_audio_test.exe, (Get-ChildItem -Recurse -Filter SDL3.dll -Path build\native-app, $env:CMAKE_PREFIX_PATH -ErrorAction SilentlyContinue | Select-Object -First 1).FullName C:\NoJales\mh4pcport\audio-listen
    Get-ChildItem C:\NoJales\mh4pcport\audio-listen | Select-Object Name, Length
    ```
-   *Expect:* `app_audio_test.exe` and `SDL3.dll` in the list, with the files of `app.md`'s table. *Fails if:* `app_audio_test.exe` is
-   missing: stop and tell the orchestrator (the artifact was made before the change above): the test waits.
+   *Expect:* the build ends without errors, and the list shows `app_audio_test.exe` and `SDL3.dll` (the libc++ and libunwind DLLs of `app.md`'s table too, if the
+   build prints that it needs them: copy them the same way). *Fails if:* the configure or the build stops: send the step's number and the last 50 lines of its
+   output; if the toolchain is missing, stop: the listening test waits for N3-14.
 2. **The program starts and skips** (1 min).
    ```
    Set-Location C:\NoJales\mh4pcport\repo
@@ -332,7 +336,7 @@ of full scale.
    Remove-Item Env:MH4N_AUDIO_LISTEN -ErrorAction SilentlyContinue
    .\app_audio_test.exe -tc="listen*"; "exit $LASTEXITCODE"
    ```
-   *Expect:* `test cases: 1 | 0 passed | 0 failed | 1 skipped` (or `0 passed ... 1 skipped`), `Status: SUCCESS!`, `exit 0`, and **no sound**.
+   *Expect:* `[doctest] test cases: 0 | 0 passed | 0 failed | 20 skipped`, then `[doctest] Status: SUCCESS!`, `exit 0`, and **no sound**.
    *Fails if:* a dialog about a missing DLL (send its name), or a sound plays.
 3. **Set up the output** (2 min). In Windows' sound settings choose output device A (speakers or headphones) as the default output, set its
    volume to about 20 %, close every program that makes sound, and keep device B ready. Wait until the Windows volume meter is still.
@@ -363,11 +367,18 @@ of full scale.
    `added` lines at the start are normal; no line is also fine). `underruns` may go up by one
    or two at a switch and must not go up between switches. *Fails if:* the tone stays silent after either switch for more than 5 s, a loud
    noise, a crash, or the program exits.
-6. **Unplug the device in use** (3 min). Repeat step 4 with `$env:MH4N_AUDIO_LISTEN_MINUTES = '2'` and the log `unplug.csv` (a name of its own,
-   and `unplug.txt` for the console). In the free run make device B (USB, Bluetooth or HDMI: one you can unplug or switch off) the default and wait
+6. **Unplug the device in use** (3 min).
+   ```
+   Set-Location C:\NoJales\mh4pcport\repo
+   Set-Location C:\NoJales\mh4pcport\audio-listen
+   $env:MH4N_AUDIO_LISTEN = '1'; $env:MH4N_AUDIO_LISTEN_STEP_S = '10'; $env:MH4N_AUDIO_LISTEN_MINUTES = '2'
+   $env:MH4N_AUDIO_LISTEN_LOG = 'C:\NoJales\mh4pcport\perf\n3\audio-listen\unplug.csv'
+   .\app_audio_test.exe -tc="listen*" 2>&1 | Tee-Object -FilePath C:\NoJales\mh4pcport\perf\n3\audio-listen\unplug.txt
+   ```
+   In the free run (from 50 s) make device B (USB, Bluetooth or HDMI: one you can unplug or switch off) the default and wait
    until the tone plays on it, then unplug or switch it off. *Expect:* a line `[Warning] AudioSdl: an audio output device was removed`
-   in the console (the program must be running its event loop for SDL to say so, and it is); the tone moves to the next default device or
-   stops, without a crash and without the program exiting; the game-side counters go on (`dropped` may grow while nothing plays). Plug
+   in the console (the program pumps SDL's events in this mode, so SDL can say so); the tone moves to the next default device or
+   stops, without a crash and without the program exiting; the counters go on (`dropped` may grow while nothing plays). Plug
    the device in and make it the default again: the tone returns on it within about 3 s. *Fails if:* the program exits or hangs, no Warning line
    appears at all, or the tone does not come back after the device is back and made the default (note whether it comes back after you
    make another device the default and back again).
@@ -396,8 +407,15 @@ of full scale.
    (the target is 1309 frames, 40 ms; the fill swings by half a device block around it: 180 frames for a 10 ms block, 380 for SDL's 21 to 23 ms); `ratio` between 0.995 and 1.0051 (in practice within 0.2 %
    of 1.000015); the two averages (the first 60 rows after 10 s, the last 60) within 330 frames of each other (25 % of the target): that is "no
    drift". *Fails if:* any of these is outside: send the numbers.
-9. **Quality at the other device** (3 min). Repeat step 4 once more with device B as the default from the start (no switching), log `deviceb.csv`.
-   *Expect:* the same as step 4. The `device_rate` in the log's first line (`# audiolog v1 ... device_rate=<Hz>`) is the rate of B's format in
+9. **Quality at the other device** (3 min). Make device B the default output before starting and do not switch during the run.
+   ```
+   Set-Location C:\NoJales\mh4pcport\repo
+   Set-Location C:\NoJales\mh4pcport\audio-listen
+   $env:MH4N_AUDIO_LISTEN = '1'; $env:MH4N_AUDIO_LISTEN_STEP_S = '10'; $env:MH4N_AUDIO_LISTEN_MINUTES = '1'
+   $env:MH4N_AUDIO_LISTEN_LOG = 'C:\NoJales\mh4pcport\perf\n3\audio-listen\deviceb.csv'
+   .\app_audio_test.exe -tc="listen*" 2>&1 | Tee-Object -FilePath C:\NoJales\mh4pcport\perf\n3\audio-listen\deviceb.txt
+   ```
+   *Expect:* the same as step 4, on B. The `device_rate` in the log's first line (`# audiolog v1 ... device_rate=<Hz>`) is the rate of B's format in
    Windows' sound settings (44100 or 48000 for most devices; send it).
 10. **Notes** (2 min). Write one line each: the Windows version, the two devices (kind, not the serial numbers), the `device_rate` of A and of B, and
     for each of steps 4 to 9 "ok" or what you heard and when.
@@ -410,9 +428,9 @@ of full scale.
     app pumps SDL's events in its window loop; the game's `--audio-log` is `perf_report.py --audio-log`'s input, N3-27).
 
 **What you send back** (in the batch PR or the chat; text only, never screenshots or captures): the lines of step 10, the files `short.txt`, `short.csv`,
-`unplug.txt`, `unplug.csv`, `long.txt`, `long.csv`, `deviceb.csv` (timings and counters only: they hold no game data), and the output of step 8.
+`unplug.txt`, `unplug.csv`, `long.txt`, `long.csv`, `deviceb.txt`, `deviceb.csv` (timings and counters only: they hold no game data), and the output of step 8.
 
 **When a step fails:** stop there. Send the step's number and the last 50 lines of the console log the step names (`short.txt`, `unplug.txt` or `long.txt`;
-for step 2 the console text), and say what you heard and at about which second. Do not retry with other settings: the orchestrator reads the log first.
+for step 2 the console text), and say what you heard and at about which second. Do not retry with other settings: the log is read first.
 Whatever step 8's numbers say, none of the limits of this procedure is a pass or fail threshold of N3-06 (N3.md rule 7: the 40 ms target, the 0.5 % bound,
 the 200 ms mark and the 64-sample fade are first guesses): a result outside them is reported as a `needs-decision` table, and nobody retunes the numbers.
