@@ -725,11 +725,54 @@ TEST_CASE("Boot refuses what it cannot load, with status 2") {
         CHECK(f.runtime.Boot(Parse({dir.WriteElf(), "--ms", "soon"})) == 2);
         CHECK(f.Logged("bad --ms"));
     }
-    {
+}
+
+// N0-35: the vectors every implementation of --init-time covers.
+const std::vector<std::pair<std::string, u64>> kValidInitTimes = {
+    {"1767268800", 1767268800000000ull},         {"1767268800.5", 1767268800500000ull},
+    {"1767268800.500000", 1767268800500000ull},  {"1767268800.000001", 1767268800000001ull},
+    {"946684800", 946684800000000ull},           {"4102444799.999999", 4102444799999999ull},
+    {"0946684800", 946684800000000ull},
+};
+const std::vector<std::string> kInvalidInitTimes = {
+    "",           "abc",          "yesterday",         "-1",         "+1767268800",      "1767268800.",
+    ".5",         "1767268800.1234567", "1767268800.5.5", "1767268800,5", " 1767268800", "1767268800 ",
+    "1e9",        "0x6553F100",   "1767268800.5x",     "946684799.999999", "946684799", "4102444800",
+    "99999999999",
+};
+
+TEST_CASE("--init-time: a bad value ends Boot with status 2 and names the option and the text") {
+    TempDir dir;
+    for (const std::string& text : kInvalidInitTimes) {
+        CAPTURE(text);
         Fixture f;
         f.runtime.SetMainThreadEntry([](GuestThread&) {});
-        CHECK(f.runtime.Boot(Parse({dir.WriteElf(), "--init-time", "yesterday"})) == 2);
+        CHECK(f.runtime.Boot(Parse({dir.WriteElf(), "--init-time", text})) == 2);
+        CHECK(f.Logged("--init-time '" + text + "'"));
+        CHECK(f.runtime.Pages() == nullptr);  // refused before anything was booted
     }
+}
+
+TEST_CASE("--init-time: Prepare refuses a bad value the same way, and takes the valid ones") {
+    for (const std::string& text : kInvalidInitTimes) {
+        CAPTURE(text);
+        Fixture f;
+        std::string error;
+        CHECK_FALSE(f.runtime.Prepare(Parse({"--init-time", text}), {}, &error));
+        CHECK(error.find("--init-time '" + text + "'") != std::string::npos);
+    }
+    for (const auto& [text, micros] : kValidInitTimes) {
+        CAPTURE(text);
+        Fixture f;
+        std::string error;
+        CHECK_MESSAGE(f.runtime.Prepare(Parse({"--init-time", text}), {}, &error), error);
+        CHECK(f.runtime.InitTimeMicros() == micros);
+        CHECK(f.runtime.InitTime() == micros / 1000000);
+    }
+    Fixture none;
+    std::string error;
+    REQUIRE(none.runtime.Prepare(Parse({}), {}, &error));
+    CHECK(none.runtime.InitTimeMicros() == 1767268800000000ull);
 }
 
 // ---- the system pages ------------------------------------------------------------------------------
@@ -759,6 +802,46 @@ TEST_CASE("the shared page starts at --init-time and advances with game time") {
     CHECK(seconds_at_start == 1700000000);
     CHECK(counter_after == 2);
     CHECK(seconds_after == 1700000000 + 3600);  // the update ran at one hour of game time
+}
+
+TEST_CASE("the shared page starts at --init-time with a fraction, and the default is unchanged") {
+    // the date record in milliseconds since 1900 after one hour of game time, for a start text
+    auto date_after_an_hour = [&](const std::vector<std::string>& extra) {
+        Fixture f;
+        TempDir dir;
+        u64 ms_at_start = 0, ms_after = 0;
+        auto read = [&](GuestMemory& memory) {
+            const u32 counter = *memory.Read<u32>(kSharedPageVaddr + shared_page::kDateTimeCounter);
+            const u32 block =
+                kSharedPageVaddr + (counter % 2 ? shared_page::kDateTime1 : shared_page::kDateTime0);
+            return *memory.Read<u64>(block + shared_page::kDtDateTime);
+        };
+        std::vector<std::string> args = extra;
+        args.insert(args.end(), {"--frames", "99999"});
+        const int status = BootWith(f, dir, args, [&] {
+            ms_at_start = read(f.runtime.Memory());
+            SleepNs(f.runtime, 3601ull * kNanosecondsPerSecond);
+            ms_after = read(f.runtime.Memory());
+            ExitProcess(f.runtime);
+        });
+        CHECK(status == 0);
+        return std::pair{ms_at_start, ms_after};
+    };
+    const u64 base_ms = kMillisecondsFrom1900To2000 + (1767268800ull - kUnixTimeOf2000) * 1000;
+    const auto none = date_after_an_hour({});
+    CHECK(none.first == base_ms);
+    CHECK(none.second == base_ms + 3600000);
+    // an absent option, the integer and an all-zero fraction give the same page
+    CHECK(date_after_an_hour({"--init-time", "1767268800"}) == none);
+    CHECK(date_after_an_hour({"--init-time", "1767268800.000000"}) == none);
+    // a half second start: the date is init_time plus the elapsed time, to the millisecond
+    const auto half = date_after_an_hour({"--init-time", "1767268800.5"});
+    CHECK(half.first == base_ms + 500);
+    CHECK(half.second == base_ms + 3600000 + 500);
+    // a sub-millisecond start rounds down: .000999 s is 0 ms, and one hour on it is still 0 ms
+    const auto sub = date_after_an_hour({"--init-time", "1767268800.000999"});
+    CHECK(sub.first == base_ms);
+    CHECK(sub.second == base_ms + 3600000);
 }
 
 // ---- the traces ----------------------------------------------------------------------------------

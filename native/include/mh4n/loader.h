@@ -32,6 +32,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "mh4n/memory.h"
@@ -238,6 +239,22 @@ inline constexpr u64 kSharedPageUpdateIntervalTicks = kBaseClockRateArm11 * 3600
 // 2026-01-01 12:00:00 UTC: the fixed start date of the reference runs (the reference runner), since the game
 // seeds its random numbers from the clock.
 inline constexpr u64 kDefaultInitTime = 1767268800;
+// The range of --init-time, both ends included, in microseconds since the Unix epoch: 2000-01-01
+// 00:00:00 UTC to 2099-12-31 23:59:59.999999 UTC (the 3DS clock's range).
+inline constexpr u64 kMinInitTimeMicros = 946684800ull * 1000000;
+inline constexpr u64 kMaxInitTimeMicros = 4102444799ull * 1000000 + 999999;
+
+// The result of ParseInitTime: the start date in microseconds, or why the text is not one.
+struct InitTimeParse {
+    bool ok = false;
+    u64 micros = 0;      // valid when ok
+    std::string error;   // valid when !ok: the reason, without the option's name or the text
+};
+// The grammar of --init-time, nothing else accepted: SECONDS = 1 to 10 ASCII digits, optionally
+// followed by '.' and FRACTION = 1 to 6 ASCII digits (no sign, spaces, exponent, hex or second dot).
+// The value is SECONDS * 1000000 + FRACTION padded on the right with zeros to six digits, and it
+// must lie in [kMinInitTimeMicros, kMaxInitTimeMicros].
+InitTimeParse ParseInitTime(std::string_view text);
 inline constexpr u64 kUnixTimeOf2000 = 946684800;
 inline constexpr u64 kMillisecondsFrom1900To2000 = 3155673600000ull;
 
@@ -264,13 +281,20 @@ inline constexpr u32 kDtTickOffset = 0x18;     // u64
 }  // namespace shared_page
 
 // The two pages, mapped read-only (state Shared) into the process. The shared page's date starts
-// at `init_time` (seconds since the Unix epoch, UTC) and advances with game time: the timer queue
+// at `init_time` (seconds since the Unix epoch, UTC, with microseconds) and advances with game time: the timer queue
 // (N1-06) calls UpdateSharedPage(now_ticks) at tick 0, which Map does, and then every
 // kSharedPageUpdateIntervalTicks. Azahar measures from 2000-01-01 in the host's time zone; this
 // uses UTC, which is what it computes on the UTC hosts where golden sessions are recorded.
 class SystemPages {
 public:
-    explicit SystemPages(u64 init_time = kDefaultInitTime) : init_time_(init_time) {}
+    // `init_time` in whole seconds.
+    explicit SystemPages(u64 init_time = kDefaultInitTime) : init_time_us_(init_time * 1000000) {}
+    // The start in microseconds (see ParseInitTime).
+    static SystemPages FromMicroseconds(u64 init_time_us) {
+        SystemPages pages;
+        pages.init_time_us_ = init_time_us;
+        return pages;
+    }
 
     // Maps both pages and fills them (the date as of tick 0). Errors as GuestMemory::Map.
     Result Map(GuestMemory& memory, const FcramRegions& regions);
@@ -283,7 +307,10 @@ public:
     u64 SystemTimeSince2000(u64 ticks) const;
     u64 SystemTimeSince1900(u64 ticks) const;
 
-    u64 InitTime() const { return init_time_; }
+    // The start: the whole seconds, the microseconds below the second, and all of it in microseconds.
+    u64 InitTime() const { return init_time_us_ / 1000000; }
+    u32 InitTimeFraction() const { return static_cast<u32>(init_time_us_ % 1000000); }
+    u64 InitTimeMicros() const { return init_time_us_; }
     // The 3D slider (0.0 to 1.0).
     void Set3DSlider(float value);
     // Azahar's Handler::SetMacAddress / GetMacAddress: the Wi-Fi MAC at offset 0x60 of the shared
@@ -294,7 +321,7 @@ public:
 
 private:
     GuestMemory* memory_ = nullptr;
-    u64 init_time_;
+    u64 init_time_us_;
 };
 
 // The page contents without a GuestMemory, for tests and tools: fills `page` (kSharedPageSize

@@ -21,6 +21,23 @@ constexpr const char* kLog = "Runtime";
 constexpr u32 kDefaultSliceUs = 1000;
 constexpr double kDefaultStopMs = 10000.0;
 
+// --init-time in microseconds (the default without the option); false and a message that names the
+// option and the text when it is malformed or out of range (the caller ends the run with status 2).
+bool ReadInitTime(const Options& options, u64* micros, std::string* error) {
+    const std::optional<std::string> text = options.Get("--init-time");
+    if (!text) {
+        *micros = kDefaultInitTime * 1000000;
+        return true;
+    }
+    const InitTimeParse parsed = ParseInitTime(*text);
+    if (!parsed.ok) {
+        *error = "bad --init-time '" + *text + "': " + parsed.error;
+        return false;
+    }
+    *micros = parsed.micros;
+    return true;
+}
+
 // The run's limits: --ms (milliseconds, or f<N> for a frame) and --frames. As mh4u_runner: without
 // --ms but with --frames there is no time limit, and without either the run stops after 10 s.
 struct Limits {
@@ -187,7 +204,9 @@ bool Runtime::Prepare(const Options& options, const std::vector<Phase>& phases, 
     try {
         options_ = options;
         user_folder_ = options_.GetString("--user");
-        init_time_ = options_.GetUInt("--init-time", kDefaultInitTime);
+        if (!ReadInitTime(options_, &init_time_us_, &message)) {
+            return false;
+        }
         if (!CreateWorld(memory_mode, &message)) {
             return false;
         }
@@ -240,9 +259,12 @@ int Runtime::Run(const Options& options) {
     }
     program_path_ = options_.positional()[0];
     user_folder_ = options_.GetString("--user");
-    init_time_ = options_.GetUInt("--init-time", kDefaultInitTime);
     Limits limits;
     std::string error;
+    if (!ReadInitTime(options_, &init_time_us_, &error)) {
+        MH4N_LOG(Error, kLog, "{}", error);
+        return 2;
+    }
     if (!ParseLimits(options_, &limits, &error)) {
         MH4N_LOG(Error, kLog, "{}", error);
         return 2;
@@ -284,7 +306,7 @@ int Runtime::Run(const Options& options) {
         process->memory_used += segment.size;
         process->resource_limit->Reserve(ResourceLimitType::Commit, static_cast<s32>(segment.size));
     }
-    pages_ = std::make_unique<SystemPages>(init_time_);
+    pages_ = std::make_unique<SystemPages>(SystemPages::FromMicroseconds(init_time_us_));
     if (const Result result = pages_->Map(*memory_, kernel_->Regions()); IsError(result)) {
         MH4N_LOG(Error, kLog, "cannot map the configuration memory and the shared page: {:08X}", result);
         return 2;

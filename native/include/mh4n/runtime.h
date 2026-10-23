@@ -149,8 +149,10 @@ public:
     const std::string& ProgramPath() const { return program_path_; }
     const std::string& GameFolder() const { return game_folder_; }
     const std::string& UserFolder() const { return user_folder_; }
-    // --init-time (default kDefaultInitTime), seconds since the Unix epoch.
-    u64 InitTime() const { return init_time_; }
+    // --init-time (default kDefaultInitTime), seconds since the Unix epoch: the whole seconds, and the
+    // start in microseconds.
+    u64 InitTime() const { return init_time_us_ / 1000000; }
+    u64 InitTimeMicros() const { return init_time_us_; }
 
     // ---- the host interfaces ---------------------------------------------------------------------
 
@@ -214,7 +216,7 @@ private:
     std::unique_ptr<PreemptionSource> preemption_;
     Options options_;
     std::string program_path_, game_folder_, user_folder_;
-    u64 init_time_ = kDefaultInitTime;
+    u64 init_time_us_ = kDefaultInitTime * 1000000;
     GuestThread::Entry main_entry_;
 
     std::unique_ptr<Loader> loader_;
