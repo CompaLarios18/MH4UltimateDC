@@ -660,10 +660,9 @@ def draw_features(s: dict, kind: str) -> dict[str, set[str]]:
 
 def group_keys(s: dict) -> dict[str, str]:
     """Configuration groups whose unique values are counted."""
-    return {
+    keys = {
         "vertex_layout": f"{','.join(s['attrs'])};strides={','.join(map(str, s['strides']))};topology={s['topology']}",
         "vs_program": s["vs"],
-        "gs_program": s["gs"] or "-",
         "tev_config": s["tev"],
         "lighting_config": (f"on;n={s['light_n']};{s['light_config']};luts={'+'.join(s['light_luts']) or 'none'};"
                             f"bump={s['light_bump']}" if s["light_on"] else "off"),
@@ -673,6 +672,9 @@ def group_keys(s: dict) -> dict[str, str]:
         "texture_config": ";".join(f"u{u}:{t}:{fm}:{w}x{h}" for (u, t, fm, w, h, _b) in s["tex"]) or "none",
         "render_target": f"{s['color_format']}+{s['depth_format']}",
     }
+    if s["gs"]:             # a geometry shader program exists only for draws that run one; "no program" is not a program
+        keys["gs_program"] = s["gs"]
+    return keys
 
 
 # --------------------------------------------------------------------------
@@ -828,7 +830,7 @@ QUESTIONS = [
     ("geometry_shaders", "Geometry shaders",
      "Does MH4U use PICA geometry shaders? (They are never accelerated; Metal has none.)",
      "q_geometry_shaders",
-     "pipeline.use_gs (0x229 bits 0-1) = Yes (2): the draw runs a geometry shader (the only thing DrawArrays checks before it "
+     "pipeline.use_gs (0x229 bits 0-1) = Yes (2): the draw runs a geometry shader (the first thing DrawArrays checks before it "
      "refuses to accelerate a draw); its mode is pipeline.gs_config.mode (0x252 bits 0-7: Point, VariablePrimitive, "
      "FixedPrimitive). Draws with triangle_topology = Shader (3) (0x25E bits 8-9, programmable primitive assembly) are "
      "listed apart in the same row."),
@@ -858,8 +860,10 @@ QUESTIONS = [
      "are the likely Metal costs.)",
      "q_lighting",
      "lighting.disable (0x1C6 bit 0) clear; lights = max_light_index + 1 (0x1C2 bits 0-2); configuration 0x1C3 bits 4-7; "
-     "LUT disables 0x1C4 bits 16-22; per-light spot and distance attenuation disables 0x1C4 bits 8-15 and 24-31; "
-     "light slots 0x1D9."),
+     "LUT disables 0x1C4 bits 16-22 (a LUT is listed as enabled only when its disable bit is clear and the lighting "
+     "configuration uses that sampler, Azahar's IsLightingSamplerSupported in regs_lighting.h, so the lists below can hold "
+     "fewer LUTs than the clear bits of 0x1C4 do); per-light spot and distance attenuation disables 0x1C4 bits 8-15 and "
+     "24-31; light slots 0x1D9. The lights, configuration, bump mode, LUT and shadow-enable tables count lit draws only."),
     ("fog", "Fog",
      "Does MH4U use fog? (Fog needs the fog LUT.)",
      "q_fog",
@@ -1121,6 +1125,7 @@ def _breakdown(key: str, analyses: Sequence[Analysis]) -> list[str]:
                     _feature_rows(analyses, "fragment_operation_mode"))
         L += _table(["label", "shadow textures (unit 0)"],
                     [[a.label, _glance(a.answers["shadow_textures"])] for a in analyses])
+        L += ["Lighting shadow (0x1C3 bit 0) is counted over draws with lighting on only:", ""]
         L += _table(["lighting shadow enable"] + [a.label for a in analyses],
                     _feature_rows(analyses, "light_shadow_enable"))
     elif key == "gas":
@@ -1254,7 +1259,7 @@ def write_all(outputs: Sequence[tuple[str, str]]) -> None:
             tmps.append(tmp)
             try:
                 os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-                with open(tmp, "w", encoding="utf-8") as f:
+                with open(tmp, "w", encoding="utf-8", newline="\n") as f:
                     f.write(text)
             except OSError as e:
                 e.filename = path

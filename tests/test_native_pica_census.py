@@ -446,6 +446,27 @@ def test_json_and_markdown_outputs(tmp_path):
     assert js2.read_text() == js.read_text() and md2.read_text() == text
 
 
+def test_outputs_use_lf_line_endings_on_every_platform(tmp_path):
+    p = build(tmp_path / "gpu-0.mgpu", [[DRAW, DRAW_INDEXED]])
+    js, md = tmp_path / "a.json", tmp_path / "a.md"
+    assert pc.run([f"G1={p}"], str(js), str(md), False, out=io.StringIO(), err=io.StringIO()) == 0
+    for f in (js, md):
+        raw = f.read_bytes()          # bytes: read_text() would hide a CRLF on Windows
+        assert raw.count(b"\n") > 10 and b"\r" not in raw, f.name
+
+
+def test_unique_gs_programs_do_not_count_draws_without_a_geometry_shader(tmp_path):
+    gs = [W(0x229, 2)] + _upload([9], base=0x280)
+    p = build(tmp_path / "a.mgpu", [[DRAW], gs + [DRAW], [W(0x229, 0), DRAW]])
+    a = analyse_one(p)
+    assert a.unique["gs_program"]["count"] == 1
+    assert [t["draws"] for t in a.unique["gs_program"]["top"]] == [1]
+    assert a.unique["vs_program"]["count"] >= 1
+    # no geometry shader anywhere: no gs_program group at all, so the table prints 0
+    b = analyse_one(build(tmp_path / "b.mgpu", [[DRAW, DRAW]]))
+    assert "gs_program" not in b.unique
+
+
 def test_stdout_has_counts_only(tmp_path):
     p = build(tmp_path / "gpu-0.mgpu", [[DRAW, DRAW_INDEXED]])
     out = io.StringIO()
