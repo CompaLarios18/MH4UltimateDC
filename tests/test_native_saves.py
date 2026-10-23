@@ -389,6 +389,10 @@ def test_case_only_difference_does_not_delete_the_new_file(user, tmp_path, monke
 
 
 def test_source_names_that_collide_by_case_are_refused(user, tmp_path, monkeypatch, capsys):
+    probe = tmp_path / "CaseProbe"
+    probe.write_bytes(b"")
+    if (tmp_path / "caseprobe").exists():
+        pytest.skip("this filesystem ignores case: two names that differ only by case cannot exist side by side")
     monkeypatch.setattr(saves, "_norm", lambda n: n.casefold())
     src = make_folder(tmp_path / "src", {"System": b"a", "system": b"b"})
     code, r = jrun(capsys, "import-save", src, "--user", user, "--format-info", FMT)
