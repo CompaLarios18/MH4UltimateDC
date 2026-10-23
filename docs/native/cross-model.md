@@ -257,7 +257,7 @@ G4 is the calibrated kind that D83 expected: the first pass's differences in the
 
 ### 10.3 G8: what differs in the IPC
 
-With the 26 entries of the ignore file, the offline comparison of the two traces (cross profile options, every thread listed) shows these differences and no other:
+With the 23 entries of the ignore file, the offline comparison of the two traces (cross profile options, every thread listed) shows these differences and no other:
 
 | # | Where | G8 | Class |
 |---|---|---|---|
@@ -265,7 +265,7 @@ With the 26 entries of the ignore file, the offline comparison of the two traces
 | 2 | loader thread `#3` (`fs:USER/file` Reads), around request 205 | 275 against 276 Reads (surplus 1); 5 Reads of the reference have no equal on the candidate (offset 1,019,089,312 sizes 12 and 131,072; offset 1,019,089,324 size 3,280; offset 811,370,608 sizes 12 and 2,185); reference-only 133,257 bytes, candidate-only 84,658 | `fs:`: the same two resources as the first pass's row 3, loaded in other pieces (3,280 and 131,072 against the candidate's pieces at the same positions). With `--fs-reads-coalesce --fs-reads-prefix` (the native profile's options, tried offline only) the multiset still differs on 4 runs (131,072 and 3,292 at offset 1,019,089,312; 2,185 and 92 at 811,370,608), and the one-sided bytes do not change |
 | 3 | thread `#5` (`fs:USER/file` Reads) | 115 against 114 Reads; one 124,610-byte Read of the reference has no equal on the candidate | `fs:`: as the first pass's row 6, but there it was inside the rule (surplus 1) and here the one-sided bytes (124,610 against 20,480) fail N0-37's coverage bound |
 
-The main thread matches request for request (528 against 528), as do the other threads; thread `#12` (285 against 284 Reads) and thread `#18` (575 against 571) pass. The `ir:USER` calls are the first of this session class to be compared: **the jit and recomp runs agree on every `ir:USER` request that both make** (the sequence of commands, results and descriptors, including the 6725 polls), and the only difference is the 3 extra poll pairs at the tail.
+The main thread matches request for request (528 against 528), as do the other threads; thread `#12` (285 against 284 Reads) and thread `#18` (575 against 571) pass. G8 is the first session with `ir:USER` open: **the jit and recomp runs agree on every `ir:USER` request that both make** (the sequence of commands, results and descriptors, including the 6725 polls), and the only difference is the 3 extra poll pairs at the tail.
 
 ### 10.4 Entries proposed (`build/cross-model/ipc_time_dependent-quests2.txt`)
 
