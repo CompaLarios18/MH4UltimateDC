@@ -24,7 +24,7 @@ Each point says where it comes from: **code** (read at the commits above), **sou
   - The first use of each pipeline pays for SPIR-V→MSL conversion and the Metal compile.
 
   **code, source**
-- **For MH4U**, the lighting fix-up and the bandwidth cost are the likely ones: the engine uses per-fragment lighting, normal maps, self-shadowing and full-screen filters. Whether MH4U uses logic ops or triangle fans is unknown. A census of the PICA state with the runner answers that without a Mac.
+- **For MH4U**, the lighting fix-up and the bandwidth cost are the likely ones: the engine uses per-fragment lighting, normal maps, self-shadowing and full-screen filters. Whether MH4U uses logic ops or triangle fans was unknown; N0-13's census (`docs/research/pica-census.md`, 2026-10-23) saw neither in four scenes (the title, character creation, one Arena fight and one gas cutscene: 3, 3, 10 and 10 frames), but it did see geometry shaders in 39 to 90 percent of the draws (Point mode), which MoltenVK does not have.
 - **Gas (the cutscene smoke) is not a Metal question.** No Azahar renderer draws it, so a Metal backend changes nothing there.
 - **Shadows should work** (fragment-shader interlock maps to Metal raster order groups), but they need a look.
 - **Speed: nobody has measured this.** I found no measurement for Azahar or MH4U on Apple silicon. Other emulators:
@@ -364,7 +364,7 @@ If none holds, MoltenVK is enough. Re-run the checklist when Azahar, MoltenVK or
 
 ## Unknowns
 
-- MH4U's PICA usage: logic ops, fans, lit draws, accurate multiplication (the census answers it).
+- MH4U's PICA usage: logic ops, fans, lit draws, accurate multiplication (the census of `docs/research/pica-census.md` answers it for four scenes: no logic ops, no fans, lit draws in three of them; accurate multiplication is not one of its questions).
 - Every speed number on the M2: frame rate at 1x, 3x and 5x, GPU against CPU limits, stutter (the checklist answers it).
 - How MoltenVK maps Azahar's usage flags to Metal (pixel-format views), whether its release binaries enable the private API, and which 16-bit formats it reports as usable. The log and Xcode's GPU capture can show these.
 - KosmicKrisp's support for logic ops and geometry shaders, and its speed on this renderer.
