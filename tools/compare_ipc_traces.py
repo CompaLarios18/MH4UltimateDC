@@ -820,7 +820,7 @@ def main(argv: list[str] | None = None) -> int:
               f"{sum(v[1] for v in sizes.values())} on the candidate" + merged
               + (f"; the largest difference is {abs(worst[1][0] - worst[1][1])} on thread {worst[0]} "
                  f"(at most {max_surplus})" if worst else ""))
-        print(coverage_line(read_coverage(ref, cand)))                  # N0-36: information, never a rule
+        print(coverage_line(read_coverage(ref, cand)))                  # the line is information; the rules are coverage_problems (N0-37)
     if args.fs_write_mask:
         print(f"fs write masks: {len(masks)} line(s) of session {args.fs_write_mask_session}, applied to "
               f"{used_ref.writes} Write(s) of the reference and {used_cand.writes} of the candidate")

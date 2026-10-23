@@ -1202,7 +1202,6 @@ def test_a_file_session_that_only_one_side_reads_is_a_difference_whatever_its_si
 def test_a_thread_whose_reads_all_vanish_from_one_side_is_a_difference_even_when_the_runs_are_few(tmp_path, profile):
     opts = PROFILES[profile]
     stream = split(0, [2048] * 200)                                  # one run of 200 reads: surplus 1 when merged
-    full = trace(*spans(5, 1, stream))
     gone = trace(req(1, 1, "srv:", 0x00010000))
     full = trace(req(1, 1, "srv:", 0x00010000), *spans(5, 1, stream))
     assert both_ways(tmp_path, full, gone, *opts) == (1, 1)
@@ -1226,7 +1225,7 @@ def test_no_reads_at_all_and_equal_reads_match(tmp_path, capsys):
         assert run(tmp_path, none, none, *opts) == 0
         assert run(tmp_path, trace(*reads(5, *STREAM)), trace(*reads(5, *STREAM)), *opts) == 0
     assert "cover different bytes" not in capsys.readouterr().out
-    assert run(tmp_path, [HEADER, thread_line(1, 0, 0x100000)], [HEADER, thread_line(1, 0, 0x100000)], *MULTISET) in (0, 2)
+    assert run(tmp_path, [HEADER, thread_line(1, 0, 0x100000)], [HEADER, thread_line(1, 0, 0x100000)], *MULTISET) == 2   # a trace with no request at all is a usage error
 
 
 @pytest.mark.parametrize("profile", sorted(PROFILES))
