@@ -250,6 +250,7 @@ dsp-replay: 300 frames judged of 300, 0 bit-exact, snr 0.00, worst window 0.00 a
   *Diagnosis*); the first status block differs at frame 4434.
 - Per D75, a judged frame that is not bit-exact ends the package `needs-decision`; nothing was retuned and no code
   changed.
+
 ### Step 2: the G3 hunt capture (`--capture-dsp 14109:3000`, reference runner of N0-29)
 
 The runner ran G3 to frame 18000 and exited 0 (about 56 minutes). `capfmt.py summary`: 3000 DSP frames (counters 48745
@@ -404,8 +405,9 @@ starts after the DSP was configured must carry, or be given, that configuration.
 2. **Give the replay the state the capture lacks.** Either a record of the mixers' and sources' state at the first
    captured frame (a hook into Azahar's `Mixers` and `Source` state in `port/azahar/azahar.patch` and a new record
    type in the capture format: N0-06 and N0-29's files), or, cheaper, replay-side priming of the **mixers only**:
-   apply the first read region's DSP configuration as if its mixer dirty bits (aux enables, master volume, aux
-   returns, output format) were set. The evidence above is that this alone makes the G3 hunt capture replay
+   apply the DSP configuration of the first captured frame's read region that holds the non-zero master volume (G3's
+   is the first one; G1's first record holds 0.0 there and its 1.0 in the other region, so the rule has to look at
+   both: D92) as if its mixer dirty bits (aux enables, master volume, aux returns, output format) were set. The evidence above is that this alone makes the G3 hunt capture replay
    bit-exact; it cannot make G1's playing source exact (the phase, the history and the unseen bytes), so G1 needs
    option 1 or a capture that starts before its source does.
 3. D75's settling rule and D88 describe sources only. If option 2 is taken, the verdict needs one more sentence: the
