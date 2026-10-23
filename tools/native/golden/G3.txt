@@ -3,6 +3,11 @@
 # frames: 18000
 # checkpoints: 600:0x00e64d5c, 1400:0x00e6c778, 2500:0x00e6c170, 8000:0x00e6c170, 13000:0x00e6c170, 13700:0x00e650bc, 15000:0x00e655c8, 17000:0x00e655c8, 18000:0x00e655c8
 # captures: gpu:17400:10
+# init-time: 1767268800.5
+#
+# The start date of the runners' clock has a sub-second part (half a second): the first clock reading
+# of the game falls in the middle of a second on every runtime (docs/native/golden.md, D83, D84).
+# The inputs, the frames and the checkpoints below are the ones G3 had before the header.
 #
 # G3: save -> village -> the Arena counter's quest "Grudge Match: Yian Kut-Ku" -> the Arena with a
 # preset loadout -> 3891 frames (about 65 s) of the hunt. From a user folder with the update installed and
