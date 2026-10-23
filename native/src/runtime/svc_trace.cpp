@@ -27,7 +27,8 @@ constexpr const char* kLog = "Runtime";
 
 class SvcTracer {
 public:
-    SvcTracer(Runtime& rt, const std::string& path) : rt_(rt), file_(path) {}
+    SvcTracer(Runtime& rt, const std::string& path)
+        : rt_(rt), file_(path), epoch_(detail::TraceEpoch(rt.GetOptions())) {}
     bool ok() const { return file_.ok(); }
 
     void WriteHeader() {
@@ -62,11 +63,12 @@ public:
     }
 
 private:
-    static std::string Head(const SvcCall& call) {
+    std::string Head(const SvcCall& call) const {
         return fmt::format("{} {:02X} pc={:08X} lr={:08X} {:08X} {:08X} {:08X} {:08X} t={} "
                            "in4={:08X},{:08X},{:08X}",
                            call.thread_id, call.number, call.pc, call.lr, call.regs[0], call.regs[1],
-                           call.regs[2], call.regs[3], call.ticks, call.regs[4], call.regs[5], call.regs[6]);
+                           call.regs[2], call.regs[3], detail::TraceTick(call.ticks, epoch_), call.regs[4],
+                           call.regs[5], call.regs[6]);
     }
 
     void WriteMainThread() {
@@ -86,6 +88,7 @@ private:
 
     Runtime& rt_;
     detail::TraceFile file_;
+    u64 epoch_;
     bool main_written_ = false;
 };
 

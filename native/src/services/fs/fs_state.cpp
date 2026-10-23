@@ -120,6 +120,7 @@ void FsState::Init(ServiceContext& context) {
         MH4N_LOG(Error, kLog, "--io-latency {} is not azahar or none; using azahar", text);
         latency = IoLatency::Azahar;
     }
+    synchronous = context.GetOptions().Has("--deterministic");
     MakeIoPool(*this, context.GetKernel());
     user_folder = context.UserFolder();
     if (!user_folder.empty() && !host::IsSeparator(user_folder.back())) {
@@ -132,8 +133,9 @@ void FsState::Init(ServiceContext& context) {
     game.code = OpenGameFile(folder, "code.bin");
     game.icon = OpenGameFile(folder, "icon.bin");
     game.program_id = ReadProgramId(folder);
-    MH4N_LOG(Info, kLog, "io latency {}; game folder {}: romfs {}, update romfs {}, icon {}",
-             latency == IoLatency::Azahar ? "azahar" : "none", folder.empty() ? "(none)" : "set",
+    MH4N_LOG(Info, kLog, "io latency {}{}; game folder {}: romfs {}, update romfs {}, icon {}",
+             latency == IoLatency::Azahar ? "azahar" : "none", synchronous ? " (synchronous)" : "",
+             folder.empty() ? "(none)" : "set",
              game.romfs ? "yes" : "no", game.update_romfs ? "yes" : "no", game.icon ? "yes" : "no");
 
     for (const auto& [name, provider] : Registry<ArchiveProvider>::Instance().All()) {

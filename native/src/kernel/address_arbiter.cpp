@@ -4,6 +4,7 @@
 // Copyright 2014-2024 Citra Emulator Project / Azahar Emulator Project
 #include <algorithm>
 
+#include "deterministic.h"
 #include "mh4n/assert.h"
 #include "mh4n/kernel.h"
 #include "mh4n/log.h"
@@ -109,15 +110,22 @@ Result AddressArbiter::ArbitrateAddress(std::shared_ptr<Thread> thread, Arbitrat
     };
 
     switch (type) {
-    case ArbitrationType::Signal:
+    case ArbitrationType::Signal: {
+        u64 woken = 0;
         if (value < 0) {
-            ResumeAllThreads(address);
+            woken = ResumeAllThreads(address);
         } else {
             for (s32 i = 0; i < value; i++) {
-                ResumeHighestPriorityThread(address);
+                woken += ResumeHighestPriorityThread(address) ? 1 : 0;
             }
         }
+        // Azahar (the deterministic mode charges it; real time ignores it): a low-priority thread that
+        // spams Signal and wakes nobody pays 1614 ticks, so that it cannot starve the game's FMV threads.
+        if (woken == 0 && thread->current_priority >= kArbiterIdleSignalMinPriority) {
+            kernel_detail::ChargeCycles(kArbiterIdleSignalCycles);
+        }
         break;
+    }
     case ArbitrationType::WaitIfLessThan:
         if (read_word() < value) {
             WaitThread(std::move(thread), address, kResultSuccess, std::nullopt);
