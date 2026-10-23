@@ -1,0 +1,11 @@
+cmake_minimum_required(VERSION 3.20)
+project(plume_val CXX C)
+set(CMAKE_CXX_STANDARD 17)
+# plume's own CMakeLists (unmodified for the pristine tree), built out of tree.
+add_subdirectory(${PLUME_SRC} plume_build)
+add_executable(plume_val main.cpp)
+target_include_directories(plume_val PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(plume_val PRIVATE plume X11 dl pthread)
+if(PLUME_PATCHED)
+  target_compile_definitions(plume_val PRIVATE PLUME_VAL_PATCHED=1 PLUME_VAL_HAS_MUTABLE_FORMAT=1 PLUME_VAL_HAS_FB_SIZE=1 PLUME_VAL_HAS_INTERLOCK=1 PLUME_VAL_HAS_WAIT_STAGES=1 PLUME_VAL_HAS_GENERAL_ATTACHMENT=1 PLUME_VAL_HAS_TIMELINE=1 PLUME_VAL_HAS_PIPELINE_CACHE=1 PLUME_VAL_HAS_BLEND_CONSTANTS=1)
+endif()
