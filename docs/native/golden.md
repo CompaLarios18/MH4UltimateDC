@@ -31,7 +31,7 @@ repository.
 
 | Path | What |
 |---|---|
-| `tools/native/golden/<S>.txt` | the session: header lines and input events (the runner's `--input-file` format): G1, G2, G6 (no save), G3, G3-perf, G4, G8 (the save), G7 (a draft) |
+| `tools/native/golden/<S>.txt` | the session: header lines and input events (the runner's `--input-file` format): G1, G2, G6 (no save), G3, G3-perf, G4, G8, G9a, G9b, G9c (the save), G7 (a draft) |
 | `tools/native/golden.py` | `list`, `record`, `check` |
 | `build/golden/<S>/` | one recording (the shared checkout's `build/`, not a worktree's) |
 
@@ -578,6 +578,40 @@ python tools/native/golden.py check G8 <the same options, without --user and --s
 
 A candidate runtime is checked on this session the way it is on the others (`golden.py check G8 --candidate-...`); what is new
 is that the `hid` comparison now has type-2 records to compare, and that the game polls `ir:USER` in every frame from 199 on.
+
+### G9a, G9b, G9c: G3's route cut for a census capture
+
+*(N0-35, D90.)* The reference runner takes one `--capture-gpu`, and G3's capture is in the fight (frame 17400). Three short
+sessions are G3's route cut just after a 3-frame GPU capture each, so the PICA census sees three more scenes. Each is a file of
+`tools/native/golden/`: the header lines of G3 (`# needs: save`, `# init-time: 1767268800.5`), the events of `G3.txt` up to the
+cut and none after it, and checkpoints that are G3's own up to the cut, one more in G9b and G9c at the capture's frame (the
+scene value of the stretch G3's comments name: G9b `13500:0x00e650bc`, G9c `14150:0x00e655c8`). The save is the one of G3's
+recordings (`build/n0-10-save-cpp-off`), so none of them opens `ir:USER`. `golden.py` accepts them as they are: no entry in
+`MINIMUMS` (the five-scene minimum is G3's and G3-perf's), and none is a gate: they are census captures, so `check --repeat 2`
+was not run on them (a repeat is hours).
+
+| Session | frames | capture | what the capture shows | checkpoints | `record` | host time |
+|---|---|---|---|---|---|---|
+| G9a | 8003 | `gpu:8000:3` | the village, frames 8000 to 8002 (the caravan leader's talk is on, G3 ends it with the press of f8460) | 4 | exit 0: 4/4 ok, 6 real scene changes, 0 capture problems, 275 files | 1,434 s |
+| G9b | 13503 | `gpu:13500:3` | the Arena's equipment screen (G3: frames 13464 to 14106), frames 13500 to 13502 | 6 | exit 0: 6/6 ok, 8 real scene changes, 0 capture problems, 459 files | 2,484 s |
+| G9c | 14153 | `gpu:14150:3` | the first frames of the quest (G3: loaded at about f14109), frames 14150 to 14152 | 7 | exit 0: 7/7 ok, 10 real scene changes, 0 capture problems, 479 files | 2,546 s |
+
+Capture facts (`gcap.py summary`): G9a 112 records in the capture file, 1,572 draw triggers; G9b 138 records, 1,025 draws; G9c 109
+records, 1,059 draws; each has 3 frames, 6 `SUBMIT_CMDLIST` and 6 `DISPLAY_TRANSFER` commands. The recordings are in
+`build/golden/G9a`, `G9b` and `G9c` (1,551, 2,537 and 2,637 MiB with their screenshots and user folders). Command (PowerShell,
+from the worktree, the reference runner of N0-35, `--cpu recomp`, the emulator lock held around each run):
+
+```
+python tools/native/golden.py record G9a --runner build/runner-win-n035/mh4u-port-windows/mh4u_runner.exe `
+    --game baserom/juego.cxi --update baserom/update_v130.cia --user build/userbase-cfg --save build/n0-10-save-cpp-off `
+    --code build/golden-lib/0004000000126300.dll --cpu recomp --out build/golden
+```
+
+The census on G1 to G4 and the three new captures (seven labels) found no feature that is NO in the four old captures and YES in
+the new ones: logic ops, fans, min/max blending, 8-bit indices, odd strides, cube and projection textures stay NO. Custom border
+colours and shadow textures are YES in G9a (21 draws each, as in G3, 90); lighting, fog and shadow passes are YES in G9a (455,
+336, 24 draws) and NO in G9b and G9c, whose draws are all array draws (no indexed ones) with geometry-shader draws (1,007 and
+1,041) and depth formats (9 and 6).
 
 ### G7: a downloaded quest (not made)
 

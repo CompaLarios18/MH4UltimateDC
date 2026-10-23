@@ -519,7 +519,7 @@ def test_bad_sessions(tmp_path, old, new, message):
 A_DEMO, A_NEWGAME, A_VILLAGE, A_QUEST = 0x00E64D5C, 0x00E6C138, 0x00E6C170, 0x00E655C8
 A_CONTINUE, A_ARENA = 0x00E6C778, 0x00E650BC       # N0-10: the scenes the sessions with a save pass through
 NO_SAVE = ["G1", "G2", "G6"]
-WITH_SAVE = ["G3", "G3-perf", "G4", "G8"]
+WITH_SAVE = ["G3", "G3-perf", "G4", "G8", "G9a", "G9b", "G9c"]
 DRAFTS = ["G7"]
 
 
@@ -556,7 +556,7 @@ def test_shipped_sessions_event_counts():
     counts = {n: golden.parse_session(golden.SESSIONS_DIR / f"{n}.txt").events
               for n in NO_SAVE + WITH_SAVE + DRAFTS}
     assert counts == {"G1": 8, "G2": 52, "G6": 23, "G3": 111, "G3-perf": 111, "G4": 9, "G7": 72,
-                      "G8": 9}
+                      "G8": 9, "G9a": 49, "G9b": 75, "G9c": 78}
 
 
 def events_of(name):
@@ -632,6 +632,27 @@ def test_shipped_g8_is_g4s_boot_from_the_save_as_it_is():
     assert events_of("G8") == events_of("G4") and len(events_of("G8")) == 9
     # the recording's own rule (D36) is in `_ir_problems`: no gas, no scene minimum for this session
     assert "G8" not in golden.MINIMUMS
+
+
+def test_shipped_g9_are_g3s_route_cut_for_a_census_capture():
+    """N0-35 (D90): G9a, G9b and G9c are G3's route cut just after a 3-frame GPU capture each (the reference runner has
+    one --capture-gpu). Their events, start date and checkpoints are G3's own up to the cut."""
+    g3 = golden.parse_session(golden.SESSIONS_DIR / "G3.txt")
+    g3_events = events_of("G3")
+    want = {"G9a": (8003, 8000, {A_DEMO, A_CONTINUE, A_VILLAGE}),
+            "G9b": (13503, 13500, {A_DEMO, A_CONTINUE, A_VILLAGE, A_ARENA}),
+            "G9c": (14153, 14150, {A_DEMO, A_CONTINUE, A_VILLAGE, A_ARENA, A_QUEST})}
+    for name, (frames, start, scenes) in want.items():
+        s = golden.parse_session(golden.SESSIONS_DIR / f"{name}.txt")
+        assert not s.draft and s.needs == "save" and s.env == [] and s.init_time == g3.init_time
+        assert s.frames == frames and [(c.kind, c.start, c.frames) for c in s.captures] == [("gpu", start, 3)]
+        assert {scene for _, scene in s.checkpoints} == scenes
+        # the events are G3's up to the cut, none after it
+        cut = [e for e in g3_events if int(e[1:].split(":")[0]) <= frames]
+        assert events_of(name) == cut
+        # a checkpoint of G3's own where G3 has one at that frame
+        assert all(c in g3.checkpoints for c in s.checkpoints if c[0] in dict(g3.checkpoints))
+        assert name not in golden.MINIMUMS
 
 
 def test_shipped_g7_is_a_draft_that_stops_at_the_empty_board():
