@@ -159,6 +159,7 @@ class Session:
     path: Path
     events: int                              # number of input events
     env: list[str] = dataclasses.field(default_factory=list)     # NAME=VALUE for the runner (`# env:` headers)
+    init_time: str | None = None             # canonical `# init-time:` (the runners' --init-time), None: the runner's default
 
     def sha256(self) -> str:
         return sha256_file(self.path)
@@ -169,6 +170,54 @@ _TIME = re.compile(r"^(?:f\d+|\d+)$")
 # Only the port's own MH4U_* variables: a session file cannot set PATH, PYTHONPATH, LD_PRELOAD or the like.
 _ENV = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=[^\s\x00]+$")
 ENV_PREFIX = "MH4U_"
+
+# `# init-time: SECONDS[.FRACTION]` (N0-35, D83): the start date of the runners' clock, seconds since the Unix epoch, UTC.
+# The grammar and the range are the runners' --init-time (the same on the reference and the native runner).
+_INIT_TIME = re.compile(r"([0-9]{1,10})(?:\.([0-9]{1,6}))?", re.ASCII)
+INIT_TIME_MIN_US = 946684800 * 1000000                  # 2000-01-01 00:00:00 UTC
+INIT_TIME_MAX_US = 4102444799 * 1000000 + 999999        # 2099-12-31 23:59:59.999999 UTC
+
+
+def parse_init_time(text: str) -> tuple[str, int]:
+    """(canonical text, microseconds) of an init time; GoldenError when it is malformed or out of range.
+    Canonical: the seconds without leading zeros, the fraction without trailing zeros, no dot for a zero fraction."""
+    m = _INIT_TIME.fullmatch(text)
+    if not m:
+        raise GoldenError(f"bad init time {text!r} (want SECONDS[.FRACTION]: 1 to 10 digits, then a dot and 1 to 6 "
+                          f"digits, nothing else)")
+    micros = int(m.group(1)) * 1000000 + int((m.group(2) or "").ljust(6, "0"))
+    if not INIT_TIME_MIN_US <= micros <= INIT_TIME_MAX_US:
+        raise GoldenError(f"init time {text!r} is outside 946684800 to 4102444799.999999 (2000-01-01 to 2099-12-31 UTC)")
+    seconds, fraction = divmod(micros, 1000000)
+    return (str(seconds) + (f".{fraction:06d}".rstrip("0") if fraction else "")), micros
+
+
+def init_time_args(session: Session, args: Sequence[str], what: str) -> list[str]:
+    """`args` (the user's --runner-args or --candidate-args) for a session with an init time: a `--init-time` that
+    disagrees with the session's header is a usage error; an equal one is dropped (build_args gives it once).
+    Without a header the args are returned untouched."""
+    out = list(args)
+    if session.init_time is None:
+        return out
+    i = 0
+    while i < len(out):
+        token = out[i]
+        if token == "--init-time" or token.startswith("--init-time="):
+            inline = token.startswith("--init-time=")
+            if not inline and i + 1 >= len(out):
+                raise GoldenError(f"{what}: --init-time without a value")
+            value = token.split("=", 1)[1] if inline else out[i + 1]
+            try:
+                same = parse_init_time(value)[0] == session.init_time
+            except GoldenError:
+                same = False
+            if not same:
+                raise GoldenError(f"{what} has --init-time {value}, but {session.name} says '# init-time: "
+                                  f"{session.init_time}': the session decides its date")
+            del out[i:i + (1 if inline else 2)]
+            continue
+        i += 1
+    return out
 
 
 def _frame_of(token: str) -> int | None:
@@ -217,7 +266,9 @@ def parse_session(path: str | Path) -> Session:
     `record` refuses it) and any number of `env: NAME=VALUE` lines (an environment variable that `record` and
     `check` give the runner on every run of the session, so that the session does not depend on what the
     command line says: G3-perf's MH4U_WIDESCREEN and MH4U_WIDE_RENDER, which the port reads once at start-up
-    and the runner's --set cannot change; only MH4U_* names, each once, and never TZ).  Every other line is an input event line for the runner's
+    and the runner's --set cannot change; only MH4U_* names, each once, and never TZ) and at most one
+    `init-time: SECONDS[.FRACTION]` (the start date the runners' clock begins at, `--init-time`, N0-35).
+    Every other line is an input event line for the runner's
     --input-file (comma separated `f<frame>:BUTTON[:hold]`, `f<frame>:TOUCH:x:y[:hold]`,
     `f<frame>:CIRCLE:x:y[:hold]`).
     """
@@ -228,13 +279,14 @@ def parse_session(path: str | Path) -> Session:
         raise GoldenError(f"cannot read session file {path}: {e}") from None
     headers: dict[str, str] = {}
     env: list[str] = []
+    init_time: str | None = None
     events: list[tuple[int, str]] = []
     for number, raw in enumerate(text.splitlines(), 1):
         line = raw.strip()
         if not line:
             continue
         if line.startswith("#"):
-            m = re.match(r"^#\s*(name|needs|frames|checkpoints|captures|draft|env)\s*:\s*(.*)$", line)
+            m = re.match(r"^#\s*(name|needs|frames|checkpoints|captures|draft|env|init-time)\s*:\s*(.*)$", line)
             if m and m.group(1) == "env":
                 value = m.group(2).strip()
                 if not _ENV.match(value):
@@ -248,6 +300,13 @@ def parse_session(path: str | Path) -> Session:
                 if var in (x.split("=", 1)[0] for x in env):
                     raise GoldenError(f"{path.name}:{number}: env {var!r} given twice")
                 env.append(value)
+            elif m and m.group(1) == "init-time":
+                if init_time is not None:
+                    raise GoldenError(f"{path.name}:{number}: header 'init-time' given twice")
+                try:
+                    init_time = parse_init_time(m.group(2).strip())[0]
+                except GoldenError as e:
+                    raise GoldenError(f"{path.name}:{number}: {e}") from None
             elif m:
                 if m.group(1) in headers:
                     raise GoldenError(f"{path.name}:{number}: header {m.group(1)!r} given twice")
@@ -300,7 +359,7 @@ def parse_session(path: str | Path) -> Session:
         captures.append(cap)
     for number, item in events:
         _check_event(item, frames, f"{where}:{number}")
-    return Session(name, headers["needs"], frames, checkpoints, captures, draft, path, len(events), env)
+    return Session(name, headers["needs"], frames, checkpoints, captures, draft, path, len(events), env, init_time)
 
 
 def session_path(name: str, sessions_dir: Path = SESSIONS_DIR) -> Path:
@@ -448,6 +507,8 @@ def build_args(spec: RunSpec) -> list[str]:
         for u in spec.updates:
             args += ["--install", u]
     args += ["--user", str(spec.user), "--frames", str(s.frames), "--input-file", str(s.path)]
+    if s.init_time is not None:       # every runner, the reference and the candidate (N0-35); none: the runner's default
+        args += ["--init-time", s.init_time]
     for item in spec.sets:
         args += ["--set", item]
     args += ["--trace-svc", str(o / "svc.txt"), "--trace-ipc", str(o / "ipc.txt"), "--trace-ipc-full",
@@ -639,7 +700,8 @@ def record(session: Session, a: argparse.Namespace) -> int:
               f"00000000/config): a native replay would draw its own console ID (docs/native/golden.md)")
     copy_tree(before, work)
     spec = RunSpec(a.runner, a.game, a.code if cpu == "recomp" else None, cpu, a.update or [], work, out, session,
-                   a.set or [], split_args(a.runner_args), True, a.shot_every_frames, str(OBSERVABLE))
+                   a.set or [], init_time_args(session, split_args(a.runner_args), "--runner-args"), True,
+                   a.shot_every_frames, str(OBSERVABLE))
     started = time.time()
     status, args = run_runner(spec, a.timeout)
     seconds = round(time.time() - started, 1)
@@ -657,7 +719,7 @@ def record(session: Session, a: argparse.Namespace) -> int:
         "session": {"name": session.name, "needs": session.needs, "frames": session.frames,
                     "checkpoints": [list(c) for c in session.checkpoints],
                     "captures": [dataclasses.asdict(c) for c in session.captures],
-                    "env": list(session.env),
+                    "env": list(session.env), "init_time": session.init_time,
                     "events": session.events, "sha256": session.sha256()},
         "runner": {"path": str(a.runner), "sha256": sha256_file(Path(a.runner)), "cpu": cpu,
                    "new_3ds": "off", "exit": status, "seconds": seconds},
@@ -1030,7 +1092,7 @@ def check(session: Session, a: argparse.Namespace) -> int:
         raise GoldenError("--runner and --game are needed unless --candidate-runner runs the check")
     if a.candidate_runner and not (a.candidate_program or a.game):
         raise GoldenError("--candidate-runner needs --candidate-program (or --game, the program the reference ran)")
-    cand_args = split_args(a.candidate_args)
+    cand_args = init_time_args(session, split_args(a.candidate_args), "--candidate-args")
     recording_cpu = manifest["runner"]["cpu"]
     args_cpu = option_value(cand_args, "--cpu")
     profile = resolve_profile(a.profile, a.candidate_runner, args_cpu, recording_cpu)
@@ -1063,6 +1125,11 @@ def check(session: Session, a: argparse.Namespace) -> int:
     if recorded_env != session.env:
         raise GoldenError(f"the '# env:' lines of {session.name} ({session.env or 'none'}) differ from the ones the "
                           f"recording was made with ({recorded_env or 'none'}): record it again")
+    # the start date of the recording's run (`# init-time:`, N0-35) is checked the same way; no key counts as none
+    recorded_init = manifest.get("session", {}).get("init_time")
+    if recorded_init != session.init_time:
+        raise GoldenError(f"the '# init-time:' of {session.name} ({session.init_time or 'none'}) differs from the one "
+                          f"the recording was made with ({recorded_init or 'none'}): record it again")
 
     foreign = bool(a.candidate_runner)
     if not foreign and manifest.get("updates") and not a.update:
@@ -1073,7 +1140,7 @@ def check(session: Session, a: argparse.Namespace) -> int:
         extra = cand_args
     else:
         runner, program, full = a.runner, a.game, True
-        extra = split_args(a.runner_args) + cand_args
+        extra = init_time_args(session, split_args(a.runner_args), "--runner-args") + cand_args
         cpu_value = args_cpu or a.cpu or recording_cpu
         cpu = None if "--cpu" in extra else cpu_value
         code = None

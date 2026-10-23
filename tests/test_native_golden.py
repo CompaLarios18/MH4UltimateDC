@@ -342,6 +342,155 @@ def test_an_env_variable_given_twice_is_refused(tmp_path):
         golden.parse_session(write_session(tmp_path, text))
 
 
+INIT_VALID = [("1767268800", 1767268800000000), ("1767268800.5", 1767268800500000),
+              ("1767268800.500000", 1767268800500000), ("1767268800.000001", 1767268800000001),
+              ("946684800", 946684800000000), ("4102444799.999999", 4102444799999999),
+              ("0946684800", 946684800000000)]
+INIT_INVALID = ["", "abc", "yesterday", "-1", "+1767268800", "1767268800.", ".5", "1767268800.1234567",
+                "1767268800.5.5", "1767268800,5", " 1767268800", "1767268800 ", "1767268800\n", "1e9", "0x6553F100",
+                "1767268800.5x", "946684799.999999", "946684799", "4102444800", "99999999999", "\u0661\u0667\u0666\u0667\u0032\u0036\u0038\u0038\u0030\u0030"]
+
+
+@pytest.mark.parametrize("text,micros", INIT_VALID)
+def test_parse_init_time(text, micros):
+    canonical, got = golden.parse_init_time(text)
+    assert got == micros
+    assert canonical == golden.parse_init_time(canonical)[0]
+
+
+@pytest.mark.parametrize("text,canonical", [("0946684800", "946684800"), ("1767268800.500000", "1767268800.5"),
+                                            ("1767268800.000000", "1767268800"), ("1767268800.000001", "1767268800.000001"),
+                                            ("1767268800.050", "1767268800.05"), ("4102444799.999999", "4102444799.999999")])
+def test_init_time_canonical_form(text, canonical):
+    assert golden.parse_init_time(text)[0] == canonical
+
+
+@pytest.mark.parametrize("text", INIT_INVALID)
+def test_parse_init_time_refuses(text):
+    with pytest.raises(golden.GoldenError):
+        golden.parse_init_time(text)
+
+
+def with_init_time(value):
+    return SESSION.replace("# captures", f"# init-time: {value}\n# captures")
+
+
+def test_init_time_header(tmp_path):
+    assert golden.parse_session(write_session(tmp_path, SESSION)).init_time is None
+    s = golden.parse_session(write_session(tmp_path, with_init_time("0946684800.500000")))
+    assert s.init_time == "946684800.5" and s.events == 3          # canonical; a header, not an input event
+    s = golden.parse_session(write_session(tmp_path, with_init_time("1767268800.000000")))
+    assert s.init_time == "1767268800"
+
+
+@pytest.mark.parametrize("value", ["", "abc", "-1", "1767268800.", ".5", "1e9", "946684799", "4102444800",
+                                   "1767268800.1234567"])
+def test_bad_init_time_headers(tmp_path, value):
+    with pytest.raises(golden.GoldenError, match=r"S1.txt:\d+: .*init time"):
+        golden.parse_session(write_session(tmp_path, with_init_time(value)))
+
+
+def test_init_time_given_twice_is_refused(tmp_path):
+    text = SESSION.replace("# captures", "# init-time: 1767268800.5\n# init-time: 1767268800.5\n# captures")
+    with pytest.raises(golden.GoldenError, match="'init-time' given twice"):
+        golden.parse_session(write_session(tmp_path, text))
+
+
+def init_values(argv):
+    return [argv[i + 1] for i, t in enumerate(argv) if t == "--init-time"]
+
+
+def test_no_header_no_init_time_anywhere(env):
+    assert env.record() == 0
+    assert env.check("--repeat", "2") == 0
+    env.check("--candidate-args", "--cpu jit", "--profile", "cross")       # only the command lines matter here
+    env.check("--candidate-runner", str(env.launcher), "--candidate-program", str(env.game))
+    assert all("--init-time" not in c["argv"] for c in env.calls())
+    assert env.manifest()["session"]["init_time"] is None
+
+
+def test_init_time_reaches_every_runner(env):
+    (env.sessions / "S1.txt").write_text(with_init_time("1767268800.500000"), encoding="utf-8")
+    assert env.record() == 0
+    assert env.manifest()["session"]["init_time"] == "1767268800.5"
+    assert env.check("--repeat", "2") == 0
+    env.check("--candidate-args", "--cpu jit", "--profile", "cross")       # only the command lines matter here
+    env.check("--candidate-runner", str(env.launcher), "--candidate-program", str(env.game))
+    calls = env.calls()
+    assert len(calls) == 1 + 2 + 1 + 1
+    assert [init_values(c["argv"]) for c in calls] == [["1767268800.5"]] * len(calls)
+
+
+def test_equal_candidate_init_time_is_harmless(env):
+    (env.sessions / "S1.txt").write_text(with_init_time("1767268800.5"), encoding="utf-8")
+    assert env.record() == 0
+    env.check("--candidate-args", "--cpu jit --init-time 1767268800.500000", "--profile", "cross")
+    assert init_values(env.calls()[-1]["argv"]) == ["1767268800.5"]       # given once
+
+
+def test_candidate_init_time_conflict(env, capsys):
+    (env.sessions / "S1.txt").write_text(with_init_time("1767268800.5"), encoding="utf-8")
+    assert env.record() == 0
+    runs = len(env.calls())
+    for bad in ("--init-time 1767268800", "--init-time=1767268801.5", "--init-time nonsense"):
+        assert env.check(f"--candidate-args={bad}") == 2
+        assert "--candidate-args" in capsys.readouterr().err
+    assert env.check("--candidate-args", "--init-time ") == 2                  # no value
+    assert env.check("--runner-args", "--init-time 1767268800") == 2          # the session decides, whoever's option
+    assert len(env.calls()) == runs                                       # nothing ran
+
+
+def test_record_runner_args_init_time(env, capsys):
+    (env.sessions / "S1.txt").write_text(with_init_time("1767268800.5"), encoding="utf-8")
+    assert env.record("--runner-args=--init-time 1767268801") == 2
+    assert "--runner-args" in capsys.readouterr().err
+    assert not env.log.exists()                                          # no runner was started
+    assert env.record("--force", "--runner-args=--init-time 1767268800.500000") == 0
+    assert [init_values(c["argv"]) for c in env.calls()] == [["1767268800.5"]]
+
+
+def test_candidate_init_time_untouched_without_header(env):
+    assert env.record() == 0
+    env.check("--candidate-args", "--init-time 1767268801 --cpu jit", "--profile", "cross")
+    assert init_values(env.calls()[-1]["argv"]) == ["1767268801"]
+
+
+def test_init_time_read_back_mismatch(env, capsys):
+    path = env.sessions / "S1.txt"
+    # header edited after record
+    path.write_text(with_init_time("1767268800.5"), encoding="utf-8")
+    assert env.record() == 0
+    path.write_text(with_init_time("1767268800.25"), encoding="utf-8")
+    assert env.check() == 2
+    err = capsys.readouterr().err
+    assert "1767268800.25" in err and "1767268800.5" in err
+    # header added after a recording without one
+    path.write_text(SESSION, encoding="utf-8")
+    assert env.record("--force") == 0
+    path.write_text(with_init_time("1767268800.5"), encoding="utf-8")
+    assert env.check() == 2
+    err = capsys.readouterr().err
+    assert "1767268800.5" in err and "none" in err
+    # header removed after a recording with one
+    path.write_text(with_init_time("1767268800.5"), encoding="utf-8")
+    assert env.record("--force") == 0
+    path.write_text(SESSION, encoding="utf-8")
+    assert env.check() == 2
+    err = capsys.readouterr().err
+    assert "none" in err and "1767268800.5" in err
+    # another spelling of the same date is the same date
+    path.write_text(with_init_time("1767268800.500000"), encoding="utf-8")
+    assert env.check() == 0
+
+
+def test_manifest_without_the_init_time_key(env):
+    assert env.record() == 0
+    m = env.manifest()
+    del m["session"]["init_time"]                      # a manifest from before N0-35
+    (env.out / "S1" / "manifest.json").write_text(json.dumps(m), encoding="utf-8")
+    assert env.check() == 0
+
+
 @pytest.mark.parametrize("old,new,message", [
     ("# name: S1", "# name: S2", "differs from the file name"),
     ("# needs: none", "# needs: maybe", "needs must be"),

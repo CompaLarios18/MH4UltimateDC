@@ -80,6 +80,10 @@ constexpr double TICKS_PER_MS = 268111.856; // ARM11 clock
 // The values the default mode (without --async-io) fixes, which Azahar would otherwise draw anew
 // in every run (N0-26; port/README.md, section Determinism lists what the game sees).
 constexpr s64 kFixedStartTicks = 2000000000; // the emulated clock's base: 0x77359400, about 7.5 s
+constexpr s64 kDefaultInitTimeUs = 1767268800LL * 1000000; // the start date: 2026-01-01 12:00:00 UTC
+// The 3DS clock's range (the console does not allow a date outside 2000 to 2099), the range of --init-time
+constexpr s64 kInitTimeMinUs = 946684800LL * 1000000;        // 2000-01-01 00:00:00 UTC
+constexpr s64 kInitTimeMaxUs = 4102444799LL * 1000000 + 999999; // 2099-12-31 23:59:59.999999 UTC
 constexpr const char* kFixedConsoleMac = "02:00:00:00:00:01"; // locally administered; outside a room
 // The console unique ID a new config savegame gets (N0-29), in the shape Azahar makes: the
 // friend code seed 0x1A2B3C4D5 (34 bits) in bits 0 to 33, zero in bits 34 to 47, the random
@@ -108,6 +112,13 @@ const char* const USAGE = R"(usage: mh4u_runner <file> [options]
                     frames can come out incomplete
   --speed PERCENT   emulation speed limit (default 0 = as fast as possible; 100 = real time)
   --cpu-clock PERCENT  emulated CPU clock (default 100; Azahar's CPU Clock Speed setting)
+  --init-time SECONDS[.FRACTION]  the start date of the emulated clock: seconds since the Unix
+                    epoch (UTC), 1 to 10 digits, then optionally '.' and 1 to 6 digits
+                    (microseconds); from 946684800 (2000-01-01) to 4102444799.999999
+                    (2099-12-31), default 1767268800 (2026-01-01 12:00 UTC). The fraction
+                    moves the date the game reads (the shared page's date records) and
+                    nothing else: not GetSystemTick, nor those records' update ticks. A bad
+                    value, or --init-time with --async-io, is a usage error (exit status 2)
   --async-io        let file reads finish on host threads and start the clock at the
                     host's time, as Azahar does by default; the runner otherwise does reads in
                     place and starts at a fixed date, so that a run repeats exactly (an
@@ -1681,6 +1692,47 @@ bool ParseCaptureDsp(const std::string& arg, u32& start, u32& frames, std::strin
     return frames > 0;
 }
 
+/// --init-time SECONDS[.FRACTION] (N0-35): SECONDS is 1 to 10 ASCII digits, FRACTION a '.' and 1 to 6
+/// digits; no sign, space, exponent, hex or other text. `microseconds` is SECONDS * 1000000 plus the
+/// fraction padded on the right to 6 digits. False for anything else, and for a date outside
+/// kInitTimeMinUs to kInitTimeMaxUs (both ends included).
+bool ParseInitTime(const std::string& text, s64& microseconds) {
+    const auto dot = text.find('.');
+    const std::string whole = text.substr(0, dot);
+    std::string fraction = dot == std::string::npos ? std::string() : text.substr(dot + 1);
+    const auto digits = [](const std::string& s, std::size_t most) {
+        return !s.empty() && s.size() <= most &&
+               std::all_of(s.begin(), s.end(), [](char ch) { return ch >= '0' && ch <= '9'; });
+    };
+    if (!digits(whole, 10) || (dot != std::string::npos && !digits(fraction, 6))) {
+        return false;
+    }
+    fraction.resize(6, '0');
+    s64 seconds = 0;
+    for (const char ch : whole) {
+        seconds = seconds * 10 + (ch - '0');
+    }
+    s64 micros = 0;
+    for (const char ch : fraction) {
+        micros = micros * 10 + (ch - '0');
+    }
+    const s64 value = seconds * 1000000 + micros;
+    if (value < kInitTimeMinUs || value > kInitTimeMaxUs) {
+        return false;
+    }
+    microseconds = value;
+    return true;
+}
+
+/// The start date of the emulated clock. Azahar's Settings::values.init_time has whole seconds; the
+/// microseconds go to the shared page's handler (the patch's SharedPage::SetInitTimeFraction), which
+/// adds them to the date it writes into the date records. The clock's starting tick (kFixedStartTicks)
+/// is not touched: GetSystemTick and the records' update ticks stay what they are without a fraction.
+void ApplyInitTime(s64 microseconds) {
+    Settings::values.init_time.SetValue(static_cast<u64>(microseconds / 1000000));
+    SharedPage::SetInitTimeFraction(std::chrono::microseconds(microseconds % 1000000));
+}
+
 bool BeginDspCapture(const std::string& path, u32 start, u32 frames) {
     auto& c = g_dsp_capture;
     c.start_frame = start;
@@ -1709,14 +1761,18 @@ struct HidCapture {
     CaptureFile cap;
     bool have_frame = false;
     u32 last_frame = 0;
-    std::shared_ptr<Kernel::SharedMemory> ir_memory;
+    // Held weakly (N0-35): the capture must not keep the block alive. A strong reference kept the block
+    // mapped at its address after the game's Finalize and the game's CloseHandle, so the game's next
+    // CreateMemoryBlock at that address failed with 0xE0A01BF5 (and the game died at boot).
+    std::weak_ptr<Kernel::SharedMemory> ir_memory;
     IPCDebugger::CallbackHandle callback;
 } g_hid_capture;
 
-/// ir:USER's Initialize requests carry the shared memory block as a handle: keep the first block.
+/// ir:USER's Initialize requests carry the shared memory block as a handle: keep the first block, and
+/// the block of a later Initialize once the first is gone (the game finalizes and opens ir:USER again).
 void HidIpcRecorded(const IPCDebugger::RequestRecord& r) {
     auto& c = g_hid_capture;
-    if (c.ir_memory || r.status == IPCDebugger::RequestStatus::Sent || !r.translated_reply_cmdbuf.empty() ||
+    if (!c.ir_memory.expired() || r.status == IPCDebugger::RequestStatus::Sent || !r.translated_reply_cmdbuf.empty() ||
         r.untranslated_request_cmdbuf.empty() || r.client_port.name.rfind("ir:USER", 0) != 0) {
         return;
     }
@@ -1725,17 +1781,19 @@ void HidIpcRecorded(const IPCDebugger::RequestRecord& r) {
         return;
     }
     const std::vector<u32>& words = r.untranslated_request_cmdbuf;
+    std::shared_ptr<Kernel::SharedMemory> block;
     for (const IpcPart& part : ParseIpcCommand(words)) {
         if (part.type != IpcPart::Type::Handles) {
             continue;
         }
-        for (u32 j = 0; j < part.size && !c.ir_memory; ++j) {
+        for (u32 j = 0; j < part.size && !block; ++j) {
             const std::size_t at = part.index + 1 + j;
             if (at < words.size() && words[at] != 0) {
-                c.ir_memory = Kernel::DynamicObjectCast<Kernel::SharedMemory>(process->handle_table.GetGeneric(words[at]));
+                block = Kernel::DynamicObjectCast<Kernel::SharedMemory>(process->handle_table.GetGeneric(words[at]));
             }
         }
     }
+    c.ir_memory = block;
 }
 
 bool BeginHidCapture(Core::System& system, const std::string& path) {
@@ -1766,10 +1824,10 @@ void WriteHidCapture(Core::System& system) {
         ReadGuestBytes(system, mapped, kHidSize, hid.data());
     }
     CaptureRecord(system, c.cap, 1, frame, hid.data(), kHidSize);
-    if (c.ir_memory) {
-        const u32 size = static_cast<u32>(std::min<u64>(c.ir_memory->GetSize(), kIrMaxBytes));
+    if (const auto ir_memory = c.ir_memory.lock()) { // none once the game has let its block go
+        const u32 size = static_cast<u32>(std::min<u64>(ir_memory->GetSize(), kIrMaxBytes));
         if (size >= 16) {
-            CaptureRecord(system, c.cap, 2, frame, c.ir_memory->GetPointer(), size);
+            CaptureRecord(system, c.cap, 2, frame, ir_memory->GetPointer(), size);
         }
     }
     ++c.cap.frames;
@@ -2853,6 +2911,8 @@ int main(int argc, char** argv) {
     double stall_ms = 0.0;     // > 0: report emulation steps that take longer
     int cpu_clock = 100;
     bool async_io = false;
+    s64 init_time_us = kDefaultInitTimeUs; // --init-time
+    bool init_time_given = false;
     int room_host = 0;
     std::string room_join;
     std::string nickname = "runner";
@@ -2965,6 +3025,21 @@ int main(int argc, char** argv) {
             }
         } else if (arg == "--cpu-clock" && i + 1 < argc) {
             cpu_clock = std::clamp(std::atoi(argv[++i]), 5, 400);
+        } else if (arg == "--init-time") {
+            // a missing or malformed value is a usage error of its own: status 2 (Usage() and the other bad
+            // options exit with 1, and 2 is "failed to load" elsewhere; the specification says 2)
+            if (i + 1 >= argc) {
+                std::fprintf(stderr, "--init-time needs a value (SECONDS[.FRACTION])\n");
+                return 2;
+            }
+            if (!ParseInitTime(argv[++i], init_time_us)) {
+                std::fprintf(stderr,
+                             "bad --init-time '%s' (want SECONDS[.FRACTION]: seconds since the Unix epoch, 1 to 10 "
+                             "digits, then optionally '.' and 1 to 6 digits, from 946684800 to 4102444799.999999)\n",
+                             argv[i]);
+                return 2;
+            }
+            init_time_given = true;
         } else if (arg == "--async-io") {
             async_io = true;
         } else if (arg == "--draw-window" && i + 1 < argc) {
@@ -3010,8 +3085,16 @@ int main(int argc, char** argv) {
             return Usage();
         }
     }
+    if (init_time_given && async_io) {
+        std::fprintf(stderr, "--init-time cannot be used with --async-io: that mode starts the clock at the host's "
+                             "time and would ignore the date\n");
+        return 2;
+    }
     if (print_schedule) {
         std::fputs(Schedule::Describe(g_plan).c_str(), stdout);
+        if (init_time_given) { // only with the option: a default run's output is what it always was
+            std::printf("init time: %lld us since the Unix epoch\n", static_cast<long long>(init_time_us));
+        }
         return 0;
     }
     if (ipc_trace_full && ipc_trace.empty()) {
@@ -3062,7 +3145,7 @@ int main(int argc, char** argv) {
         // the game seeds its random numbers from the clock: a fixed start date makes two runs
         // the same down to the monster's moves (2026-01-01 12:00 UTC)
         Settings::values.init_clock.SetValue(Settings::InitClock::FixedTime);
-        Settings::values.init_time.SetValue(1767268800ULL);
+        ApplyInitTime(init_time_us); // 1767268800 s unless --init-time says otherwise
         // and the clock does not start at a number drawn per run (a random 32-bit value in
         // Azahar): the game's GetSystemTick, and the shared page's date and its update tick,
         // carry it
