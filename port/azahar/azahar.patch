@@ -3002,3 +3002,60 @@ index 33511b3..3e57674 100644
  /**
   * Interface implemented by HLE Session handlers.
   * This can be provided to a ServerSession in order to hook into several relevant events
+diff --git a/src/core/hle/kernel/shared_page.cpp b/src/core/hle/kernel/shared_page.cpp
+index a20dc3c..15fce52 100644
+--- a/src/core/hle/kernel/shared_page.cpp
++++ b/src/core/hle/kernel/shared_page.cpp
+@@ -2,6 +2,7 @@
+ // Licensed under GPLv2 or any later version
+ // Refer to the misc/licenses/gplv2.txt file included.
+ 
++#include <atomic>
+ #include <chrono>
+ #include <cstring>
+ #include <boost/serialization/base_object.hpp>
+@@ -31,6 +32,14 @@ template void load_construct_data<iarchive>(iarchive& ar, SharedPage::Handler* t
+ 
+ namespace SharedPage {
+ 
++// The part of the start date below one second, in microseconds (set by the port's runner, see
++// SetInitTimeFraction). Process-wide, not serialized: the runner does not use save states.
++static std::atomic<s64> init_time_fraction_us{0};
++
++void SetInitTimeFraction(std::chrono::microseconds fraction) {
++    init_time_fraction_us.store(fraction.count(), std::memory_order_relaxed);
++}
++
+ static std::chrono::seconds GetInitTime(u64 override_init_time) {
+     if (override_init_time != 0) {
+         // Override the clock init time with the one in the movie
+@@ -96,8 +105,11 @@ Handler::Handler(Core::Timing& timing, u64 override_init_time) : timing(timing)
+ }
+ 
+ u64 Handler::GetSystemTimeSince2000() const {
+-    std::chrono::milliseconds now =
+-        init_time + std::chrono::duration_cast<std::chrono::milliseconds>(timing.GetGlobalTimeUs());
++    // The fraction joins the sum before the cut to milliseconds. With the fraction 0 (the default) this is
++    // init_time + the milliseconds of the global time, as before: init_time has whole seconds.
++    std::chrono::milliseconds now = std::chrono::duration_cast<std::chrono::milliseconds>(
++        init_time + std::chrono::microseconds(init_time_fraction_us.load(std::memory_order_relaxed)) +
++        timing.GetGlobalTimeUs());
+ 
+     // 3DS system does't allow user to set a time before Jan 1 2000,
+     // so we use it as an auxiliary epoch to calculate the console time.
+diff --git a/src/core/hle/kernel/shared_page.h b/src/core/hle/kernel/shared_page.h
+index ac88a2d..44996c5 100644
+--- a/src/core/hle/kernel/shared_page.h
++++ b/src/core/hle/kernel/shared_page.h
+@@ -89,6 +89,11 @@ struct SharedPageDef {
+ static_assert(sizeof(SharedPageDef) == Memory::SHARED_PAGE_SIZE,
+               "Shared page structure size is wrong");
+ 
++/// Sets the part of the start date below one second (Settings::values.init_time has whole seconds):
++/// the date records (GetSystemTimeSince2000 and GetSystemTimeSince1900) are that much later. The
++/// emulated clock's ticks are not touched. 0 by default. Used only by the port's runner.
++void SetInitTimeFraction(std::chrono::microseconds fraction);
++
+ class Handler : public BackingMem {
+ public:
+     Handler(Core::Timing& timing, u64 override_init_time);

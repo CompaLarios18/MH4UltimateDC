@@ -34,10 +34,27 @@ SECTIONS {{
   .rodata : {{ *(.rodata .rodata.*) }} :rodata
   . = ALIGN(0x1000);
   .data : {{ *(.data .data.*) }} :data
-  .bss : {{ *(.bss .bss.* COMMON) }} :data
+@EXTRA@  .bss : {{ *(.bss .bss.* COMMON) }} :data
   /DISCARD/ : {{ *(.ARM.exidx*) *(.ARM.attributes) *(.comment) }}
 }}
 """
+
+
+# The game's frame counter lives at this address, and the runner's captures (--capture-hid) are written
+# once per change of the u32 there. A program listed in FRAME_COUNTER_PROGRAMS keeps a variable in
+# the section .bss.gamecounter, which the linker script puts exactly there (a zero-filled gap of about
+# 16 MB, in the data segment, before the program's own .bss).
+GAME_FRAME_COUNTER = 0x010571D4
+FRAME_COUNTER_PROGRAMS = {"ir_reopen"}
+
+
+def linker_script(program: str) -> str:
+    extra = ""
+    if program in FRAME_COUNTER_PROGRAMS:
+        # (the loader wants the segment page aligned: the section starts on the page, the variable follows)
+        page, offset = GAME_FRAME_COUNTER & ~0xFFF, GAME_FRAME_COUNTER & 0xFFF
+        extra = (f"  .gamecounter 0x{page:08x} (NOLOAD) : {{ . += 0x{offset:x}; *(.bss.gamecounter) }} :data\n")
+    return LINKER_SCRIPT.replace("@EXTRA@", extra)
 
 
 def programs() -> list[str]:
@@ -65,7 +82,7 @@ def build(out: str, program: str = "svc_test") -> str:
         objs.append(obj)
     script = os.path.join(out, f"{program}.ld")
     with open(script, "w") as f:
-        f.write(LINKER_SCRIPT)
+        f.write(linker_script(program))
     elf = os.path.join(out, f"{program}.elf")
     subprocess.run([lld, "-T", script, *objs, "-o", elf], check=True)
     image = os.path.join(out, f"{program}.bin")
