@@ -5,7 +5,9 @@
 // Copyright 2014 Citra Emulator Project (config_mem.cpp)
 // Copyright 2015 Citra Emulator Project (shared_page.cpp)
 // Copyright 2014-2025 Citra Emulator Project / Azahar Emulator Project (memory.cpp)
+#include <algorithm>
 #include <cstring>
+#include <string_view>
 
 #include "mh4n/loader.h"
 
@@ -64,6 +66,42 @@ void FillSharedPage(u8* page) {
     // 3D slider at 0.0: all-zero bytes
 }
 
+InitTimeParse ParseInitTime(std::string_view text) {
+    InitTimeParse result;
+    const auto is_digit = [](char c) { return c >= '0' && c <= '9'; };
+    const size_t dot = text.find('.');
+    const std::string_view seconds = text.substr(0, dot);
+    const std::string_view fraction = dot == std::string_view::npos ? std::string_view{} : text.substr(dot + 1);
+    if (seconds.empty() || seconds.size() > 10 ||
+        !std::all_of(seconds.begin(), seconds.end(), is_digit)) {
+        result.error = "expected SECONDS[.FRACTION]: 1 to 10 digits, then optionally '.' and 1 to 6 digits";
+        return result;
+    }
+    if (dot != std::string_view::npos &&
+        (fraction.empty() || fraction.size() > 6 || !std::all_of(fraction.begin(), fraction.end(), is_digit))) {
+        result.error = "expected SECONDS[.FRACTION]: 1 to 10 digits, then optionally '.' and 1 to 6 digits";
+        return result;
+    }
+    u64 micros = 0;
+    for (const char c : seconds) {
+        micros = micros * 10 + static_cast<u64>(c - '0');
+    }
+    micros *= 1000000;
+    u64 below = 0;
+    for (size_t i = 0; i < 6; ++i) {
+        below = below * 10 + (i < fraction.size() ? static_cast<u64>(fraction[i] - '0') : 0);
+    }
+    micros += below;
+    if (micros < kMinInitTimeMicros || micros > kMaxInitTimeMicros) {
+        result.error = "out of range: 946684800 (2000-01-01 00:00:00 UTC) to 4102444799.999999 "
+                       "(2099-12-31 23:59:59.999999 UTC)";
+        return result;
+    }
+    result.ok = true;
+    result.micros = micros;
+    return result;
+}
+
 Result SystemPages::Map(GuestMemory& memory, const FcramRegions& regions) {
     // Azahar backs the two pages with two separate objects, so Query sees two blocks, not one:
     // give them backings that are not contiguous (opaque tokens, not physical addresses).
@@ -94,7 +132,9 @@ u64 SystemPages::SystemTimeSince2000(u64 ticks) const {
     // GetGlobalTimeUs: ticks * 1000000 / clock, without overflowing for long runs
     const u64 us = (ticks / kBaseClockRateArm11) * 1000000 +
                    (ticks % kBaseClockRateArm11) * 1000000 / kBaseClockRateArm11;
-    const u64 now_ms = init_time_ * 1000 + us / 1000;
+    // floor((start + elapsed) in microseconds / 1000); for a whole-second start this is
+    // init_time * 1000 + us / 1000
+    const u64 now_ms = (init_time_us_ + us) / 1000;
     const u64 epoch_ms = kUnixTimeOf2000 * 1000;
     // Only when the time is after 2000 is it the 3DS time
     return now_ms > epoch_ms ? now_ms - epoch_ms : 0;
