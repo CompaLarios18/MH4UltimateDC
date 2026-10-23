@@ -1164,3 +1164,404 @@ def test_readme_documents_the_sources_n0_29_found():
     assert "log/" in intro
     assert "ObsoletedCreateExtSaveData` (command 0x0830)" in determinism and "`GetFormatInfo`" in determinism
     assert "bytes 2 and 3 after a `u16`" in determinism and "G6 has none" in determinism
+
+
+# ── N0-35: --init-time (the start date with a fraction) and the HID capture of ir:USER ──
+
+INIT_TIME_VALID = [        # text -> microseconds since the Unix epoch
+    ("1767268800", 1767268800000000), ("1767268800.5", 1767268800500000),
+    ("1767268800.500000", 1767268800500000), ("1767268800.000001", 1767268800000001),
+    ("946684800", 946684800000000), ("4102444799.999999", 4102444799999999),
+    ("0946684800", 946684800000000), ("1767268800.000000", 1767268800000000),
+]
+INIT_TIME_INVALID = [
+    "", "abc", "yesterday", "-1", "+1767268800", "1767268800.", ".5", "1767268800.1234567", "1767268800.5.5",
+    "1767268800,5", " 1767268800", "1767268800 ", "1e9", "0x6553F100", "1767268800.5x",
+    "946684799.999999", "946684799", "4102444800", "99999999999",
+]
+DEFAULT_INIT_TIME_US = 1767268800000000
+IR_REOPEN_EXPECTED = os.path.join(ROOT, "port", "tests", "expected", "hid", "ir_reopen.txt")
+
+
+def _cxx():
+    return next((c for c in (shutil.which("clang++"), shutil.which("g++"), shutil.which("c++")) if c), None)
+
+
+@source_only
+def test_runners_init_time_parser_takes_exactly_the_contract_grammar(tmp_path):
+    """ParseInitTime (runner.cpp) is compiled on its own, with the constants it uses, and fed the vectors of
+    the --init-time contract: the valid ones give their microseconds, every invalid one is refused. Needs a
+    C++ compiler, not the runner."""
+    cxx = _cxx()
+    if cxx is None:
+        pytest.skip("no C++ compiler")
+    runner = _text("port", "src", "runner.cpp")
+    constants = re.findall(r"^constexpr s64 kInitTime(?:Min|Max)Us = [^;]+;(?= *//)", runner, re.M)
+    assert len(constants) == 2, constants
+    start = runner.index("bool ParseInitTime(const std::string& text, s64& microseconds) {")
+    function = runner[start:runner.index("\n}\n", start) + 3]
+    program = ('#include <algorithm>\n#include <cstdio>\n#include <string>\ntypedef long long s64;\n'
+               + "\n".join(constants) + "\n" + function +
+               'int main(int argc, char** argv) {\n  for (int i = 1; i < argc; ++i) {\n    s64 us = -1;\n'
+               '    if (ParseInitTime(argv[i], us)) std::printf("%lld\\n", us); else std::printf("bad\\n");\n  }\n}\n')
+    src = tmp_path / "parse_init_time.cpp"
+    src.write_text(program)
+    exe = tmp_path / "parse_init_time"
+    r = subprocess.run([cxx, "-std=c++17", "-Wall", "-Werror", str(src), "-o", str(exe)], capture_output=True,
+                       text=True, timeout=300)
+    assert r.returncode == 0, r.stderr[-2000:]
+    texts = [t for t, _ in INIT_TIME_VALID] + INIT_TIME_INVALID
+    out = subprocess.run([str(exe), *texts], capture_output=True, text=True, timeout=60).stdout.split("\n")[:-1]
+    assert out == [str(us) for _, us in INIT_TIME_VALID] + ["bad"] * len(INIT_TIME_INVALID)
+    # the ends of the range, both included, and one microsecond outside each
+    edge = subprocess.run([str(exe), "946684800.000000", "946684799.999999", "4102444799.999999", "4102444800.000000"],
+                          capture_output=True, text=True, timeout=60).stdout.split()
+    assert edge == ["946684800000000", "bad", "4102444799999999", "bad"]
+
+
+def _cli(binary, *args):
+    return subprocess.run([binary, *args], capture_output=True, text=True, timeout=120)
+
+
+@source_only        # (no toolchain is needed: the runner is run without a program)
+@pytest.mark.skipif(not os.environ.get("MH4U_RUNNER"), reason="port not built (set MH4U_RUNNER)")
+@pytest.mark.parametrize("text", INIT_TIME_INVALID)
+def test_init_time_refuses_a_malformed_or_out_of_range_value(text):
+    """--init-time, a bad value: a message on stderr that names the option and the text, exit status 2
+    (the other bad options of the runner exit with 1; 2 is also 'failed to load': the specification says 2)."""
+    r = _cli(os.environ["MH4U_RUNNER"], "--print-schedule", "--init-time", text)
+    assert r.returncode == 2, (text, r.returncode, r.stdout, r.stderr)
+    assert "--init-time" in r.stderr and f"'{text}'" in r.stderr, r.stderr
+    assert r.stdout == ""            # nothing was printed or started
+
+
+@source_only
+@pytest.mark.skipif(not os.environ.get("MH4U_RUNNER"), reason="port not built (set MH4U_RUNNER)")
+@pytest.mark.parametrize("text, microseconds", INIT_TIME_VALID)
+def test_init_time_accepts_the_valid_values(text, microseconds):
+    """--print-schedule shows the parsed start date (a line only when the option is given)."""
+    r = _cli(os.environ["MH4U_RUNNER"], "--print-schedule", "--init-time", text)
+    assert r.returncode == 0, (text, r.stderr)
+    assert f"init time: {microseconds} us since the Unix epoch" in r.stdout.splitlines(), r.stdout
+
+
+@source_only
+@pytest.mark.skipif(not os.environ.get("MH4U_RUNNER"), reason="port not built (set MH4U_RUNNER)")
+def test_init_time_usage_errors_and_the_default_schedule():
+    binary = os.environ["MH4U_RUNNER"]
+    # no value
+    r = _cli(binary, "--print-schedule", "--init-time")
+    assert r.returncode == 2 and "--init-time" in r.stderr
+    # with --async-io (which starts at the host's time): a usage error in either order, never ignored
+    for args in (["--init-time", "1767268800", "--async-io"], ["--async-io", "--init-time", "1767268800.5"]):
+        r = _cli(binary, "--print-schedule", *args)
+        assert r.returncode == 2, (args, r.stdout, r.stderr)
+        assert "--init-time" in r.stderr and "--async-io" in r.stderr
+        assert r.stdout == ""
+    # a bad value is refused before anything else is looked at
+    assert _cli(binary, "--print-schedule", "--async-io", "--init-time", "abc").returncode == 2
+    # a run without the option prints what it printed before: no init time line
+    plain = _cli(binary, "--print-schedule")
+    assert plain.returncode == 0 and "init time" not in plain.stdout
+    # the usage text names the option, its grammar and range
+    usage = _cli(binary, "--help")
+    assert usage.returncode == 1
+    assert "--init-time SECONDS[.FRACTION]" in usage.stderr and "946684800" in usage.stderr
+    assert "4102444799.999999" in usage.stderr and "1767268800" in usage.stderr
+
+
+@pytest.fixture(scope="module")
+def probe_build(tmp_path_factory):
+    """time_probe built once: (elf, code library)."""
+    if _TOOLCHAIN_MISSING:
+        pytest.skip("clang/lld toolchain not installed")
+    import build_svc_test
+    from recomp import build as rbuild
+    out = str(tmp_path_factory.mktemp("time_probe"))
+    elf = build_svc_test.build(out, "time_probe")
+    code = rbuild.build(out, 2, "O1", ["RC_PAGED"], "code.so", [rbuild.DLL_GLUE], extra_flags=["-fvisibility=hidden"])
+    return elf, code
+
+
+@pytest.fixture(scope="module")
+def io_build(tmp_path_factory):
+    """io_test built once (its shared page dump is how the tests read the whole page): (elf, code library)."""
+    if _TOOLCHAIN_MISSING:
+        pytest.skip("clang/lld toolchain not installed")
+    import build_svc_test
+    from recomp import build as rbuild
+    out = str(tmp_path_factory.mktemp("io_test"))
+    elf = build_svc_test.build(out, "io_test")
+    code = rbuild.build(out, 2, "O1", ["RC_PAGED"], "code.so", [rbuild.DLL_GLUE], extra_flags=["-fvisibility=hidden"])
+    return elf, code
+
+
+_LOG_LINE = re.compile(r"\[\s*\d+\.\d+\] ")
+
+
+def _stable_output(text: str) -> list[str]:
+    """The program's own lines, then the runner's own (process exited, emulated time), without Azahar's log
+    (its lines carry the host's time)."""
+    program, runner = [], []
+    for line in text.splitlines():
+        m = re.search(r"OutputDebugString:\d+: (.*)$", line)
+        if m:
+            program.append(m.group(1))
+        elif not _LOG_LINE.search(line) and not line.startswith("\x1b"):
+            runner.append(line)
+    return program + runner
+
+
+def _probe(binary, build, tmp_path, name, *extra):
+    elf, code = build
+    r = subprocess.run([binary, elf, "--code", code, "--ms", "3000", "--user", str(tmp_path / f"user_{name}"), *extra],
+                       capture_output=True, text=True, timeout=600)
+    assert r.returncode == 0, (name, r.stdout[-2000:], r.stderr[-2000:])
+    return _stable_output(r.stdout + r.stderr)
+
+
+def _words(lines, prefix):
+    """The 64-bit value of the <prefix>_hi / <prefix>_lo pair of check lines."""
+    value = {}
+    for ln in lines:
+        m = re.fullmatch(rf"time_probe: {prefix}_(hi|lo): ([0-9a-f]{{8}})", ln)
+        if m:
+            value[m.group(1)] = int(m.group(2), 16)
+    return (value["hi"] << 32) | value["lo"]
+
+
+@pytest.mark.skipif(not os.environ.get("MH4U_RUNNER"), reason="port not built (set MH4U_RUNNER)")
+def test_init_time_without_a_fraction_is_the_default_run(tmp_path, probe_build, io_build):
+    """No option, --init-time 1767268800 and --init-time 1767268800.000000 are one and the same run: the same
+    lines on stdout (the program's tick reading and date records included), the same shared page byte for
+    byte. And the date is the one N0-29 measured: 2026-01-01 12:00 UTC plus the clock's fixed starting tick."""
+    binary = os.environ["MH4U_RUNNER"]
+    base = _probe(binary, probe_build, tmp_path, "default")
+    assert base[0] == "time_probe: start" and "time_probe: done" in base and "process exited" in base
+    assert _probe(binary, probe_build, tmp_path, "int", "--init-time", "1767268800") == base
+    assert _probe(binary, probe_build, tmp_path, "zeros", "--init-time", "1767268800.000000") == base
+    assert _probe(binary, probe_build, tmp_path, "short-zero", "--init-time", "1767268800.0") == base
+    # the date record is 1900-based milliseconds: 2026-01-01 12:00 UTC + the starting tick's milliseconds
+    records = [(_words(base, f"record{i}_date"), _words(base, f"record{i}_update_tick")) for i in (0, 1)]
+    written = [r for r in records if r[1]]
+    assert len(written) == 1 and written[0][1] == FIXED_START_TICKS
+    start_ms = FIXED_START_TICKS * 1000 // 268111856
+    assert written[0][0] == 3155673600000 + (1767268800 - 946684800) * 1000 + start_ms
+    assert _words(base, "tick") >= FIXED_START_TICKS
+    first = _shared_page_after(binary, io_build[0], io_build[1], tmp_path, "d0")
+    assert _shared_page_after(binary, io_build[0], io_build[1], tmp_path, "d1", "--init-time", "1767268800") == first
+    assert _shared_page_after(binary, io_build[0], io_build[1], tmp_path, "d2",
+                              "--init-time", "1767268800.000000") == first
+
+
+@pytest.mark.skipif(not os.environ.get("MH4U_RUNNER"), reason="port not built (set MH4U_RUNNER)")
+@pytest.mark.parametrize("fraction, shift_ms", [("5", 500), ("500000", 500), ("999", 999), ("25", 250)])
+def test_init_time_fraction_moves_the_date_and_nothing_else(tmp_path, probe_build, io_build, fraction, shift_ms):
+    """With a fraction the date records are that much later, to the millisecond; the game's tick reading,
+    the records' update ticks and every other byte of the shared page are what they are without it."""
+    binary = os.environ["MH4U_RUNNER"]
+    base = _probe(binary, probe_build, tmp_path, "base")
+    moved = _probe(binary, probe_build, tmp_path, "moved", "--init-time", f"1767268800.{fraction}")
+    assert len(moved) == len(base)
+    changed = [(a, b) for a, b in zip(base, moved) if a != b]
+    # the only lines that differ are the written record's date words
+    assert changed and all("_date_" in a for a, _ in changed), changed
+    for i in (0, 1):
+        assert _words(base, f"record{i}_update_tick") == _words(moved, f"record{i}_update_tick")
+        assert _words(base, f"record{i}_ticks_per_second") == _words(moved, f"record{i}_ticks_per_second")
+        assert _words(base, f"record{i}_tick_offset") == _words(moved, f"record{i}_tick_offset")
+    assert _words(base, "tick") == _words(moved, "tick")                       # GetSystemTick
+    assert "time_probe: date_time_counter: 00000001" in base and "time_probe: date_time_counter: 00000001" in moved
+    which = [i for i in (0, 1) if _words(base, f"record{i}_update_tick")]
+    assert len(which) == 1
+    assert _words(moved, f"record{which[0]}_date") - _words(base, f"record{which[0]}_date") == shift_ms
+    other = 1 - which[0]
+    assert _words(moved, f"record{other}_date") == _words(base, f"record{other}_date") == 0
+    # the whole page (io_test's dump at 1000 ms): only the date of the written record differs
+    a = _shared_page_after(binary, io_build[0], io_build[1], tmp_path, "p0")
+    b = _shared_page_after(binary, io_build[0], io_build[1], tmp_path, "p1", "--init-time", f"1767268800.{fraction}")
+    offset = 0x20 + 0x20 * [i for i in (0, 1) if int.from_bytes(a[0x20 + 0x20 * i + 8:0x20 + 0x20 * i + 16], "little")][0]
+    differing = [i for i in range(0x1000) if a[i] != b[i]]
+    assert differing and all(offset <= i < offset + 8 for i in differing), (offset, differing[:20])
+    assert int.from_bytes(b[offset:offset + 8], "little") - int.from_bytes(a[offset:offset + 8], "little") == shift_ms
+
+
+@pytest.mark.skipif(not os.environ.get("MH4U_RUNNER"), reason="port not built (set MH4U_RUNNER)")
+def test_init_time_fraction_below_a_millisecond_is_cut_with_the_sum(tmp_path, probe_build):
+    """The fraction joins the clock's microseconds before the cut to milliseconds: 500 microseconds move the
+    date by 0 or 1 ms (1 when the clock's own microseconds in the millisecond reach 500), never more, and
+    a microsecond (.000001) by 0 or 1 as well; the ticks stay the same."""
+    binary = os.environ["MH4U_RUNNER"]
+    base = _probe(binary, probe_build, tmp_path, "base")
+    which = [i for i in (0, 1) if _words(base, f"record{i}_update_tick")][0]
+    for fraction in ("000500", "000001", "999999"):
+        moved = _probe(binary, probe_build, tmp_path, f"f{fraction}", "--init-time", f"1767268800.{fraction}")
+        shift = _words(moved, f"record{which}_date") - _words(base, f"record{which}_date")
+        assert shift in ((0, 1) if fraction != "999999" else (999, 1000)), (fraction, shift)
+        assert _words(moved, f"record{which}_update_tick") == _words(base, f"record{which}_update_tick")
+        assert _words(moved, "tick") == _words(base, "tick")
+
+
+@pytest.fixture(scope="module")
+def ir_reopen_build(tmp_path_factory):
+    if _TOOLCHAIN_MISSING:
+        pytest.skip("clang/lld toolchain not installed")
+    import build_svc_test
+    from recomp import build as rbuild
+    out = str(tmp_path_factory.mktemp("ir_reopen"))
+    elf = build_svc_test.build(out, "ir_reopen")
+    code = rbuild.build(out, 2, "O1", ["RC_PAGED"], "code.so", [rbuild.DLL_GLUE], extra_flags=["-fvisibility=hidden"])
+    return elf, code
+
+
+def _ir_reopen(binary, build, tmp_path, name, *extra):
+    elf, code = build
+    r = subprocess.run([binary, elf, "--code", code, "--ms", "5000", "--user", str(tmp_path / f"user_{name}"), *extra],
+                       capture_output=True, text=True, timeout=600)
+    assert r.returncode == 0, (name, r.returncode, r.stdout[-2000:], r.stderr[-2000:])
+    assert "process exited" in r.stdout, r.stdout[-1000:]        # it ended by itself, not at the time limit
+    return [m.group(1) for ln in (r.stdout + r.stderr).splitlines()
+            if (m := re.search(r"OutputDebugString:\d+: (.*)$", ln))]
+
+
+def _expected_ir_reopen():
+    with open(IR_REOPEN_EXPECTED, encoding="utf-8") as f:
+        return f.read().splitlines()
+
+
+@pytest.mark.skipif(not os.environ.get("MH4U_RUNNER"), reason="port not built (set MH4U_RUNNER)")
+@pytest.mark.parametrize("cpu", ["recomp", "jit"])
+def test_ir_user_can_be_opened_again_without_the_capture(tmp_path, ir_reopen_build, cpu):
+    """The behaviour the capture must match: ir:USER initialized, finalized (the handles closed) and
+    initialized again with a new block at the same address; both succeed, the program ends by itself."""
+    lines = _ir_reopen(os.environ["MH4U_RUNNER"], ir_reopen_build, tmp_path, cpu, "--cpu", cpu, "--new-3ds", "off")
+    assert lines == _expected_ir_reopen()
+    assert "ir_reopen: second_block_rc: 00000000" in lines and "ir_reopen: second_initialize_rc: 00000000" in lines
+
+
+@pytest.mark.skipif(not os.environ.get("MH4U_RUNNER"), reason="port not built (set MH4U_RUNNER)")
+@pytest.mark.parametrize("cpu", ["recomp", "jit"])
+def test_hid_capture_does_not_keep_the_ir_user_block_alive(tmp_path, ir_reopen_build, cpu):
+    """--capture-hid with a program that opens ir:USER, finalizes it and opens it again at the same address
+    (the game does, with the Circle Pad Pro option on): the second CreateMemoryBlock and Initialize succeed
+    as they do without the capture (the capture used to hold the first block: 0xE0A01BF5), the program ends
+    normally, and the capture has type-2 (IR) records exactly while a block is alive: the first block's
+    frames, none between, the second block's frames, none after."""
+    sys.path.insert(0, os.path.join(ROOT, "tools", "native"))
+    import capfmt
+    capture = tmp_path / f"hid_{cpu}.bin"
+    lines = _ir_reopen(os.environ["MH4U_RUNNER"], ir_reopen_build, tmp_path, cpu, "--cpu", cpu, "--new-3ds", "off",
+                       "--capture-hid", str(capture))
+    assert "ir_reopen: second_block_rc: 00000000" in lines, lines
+    assert "ir_reopen: second_initialize_rc: 00000000" in lines, lines
+    assert lines == _expected_ir_reopen()                          # the same output as without the capture
+    records = capfmt.read_all(str(capture))
+    hid = [r for r in records if r.type == capfmt.HID_SHARED]
+    ir = [r for r in records if r.type == capfmt.HID_IR]
+    assert capfmt.summarize(str(capture))["ir_records"] == len(ir) > 0
+    # one type-1 record per frame of the program's counter (10..14, 20..24, 30..34, 40..44, and 0 before it)
+    frames = {r.frame for r in hid}
+    assert frames >= {f + i for f in (10, 20, 30, 40) for i in range(5)}, sorted(frames)
+    # type 2: the first block's frames (marker 'AAAA' at offset 0x1F0), then the second's ('BBBB')
+    seen = [(r.frame, r.payload[0x1F0:0x1F4]) for r in ir]
+    assert seen == [(10 + i, b"AAAA") for i in range(5)] + [(30 + i, b"BBBB") for i in range(5)], seen
+    assert all(len(r.payload) == 0x200 for r in ir)
+
+
+@source_only
+def test_the_runner_still_sets_the_n0_29_values_and_takes_the_start_date_from_init_time():
+    """runner.cpp: the default mode still fixes the clock's starting tick, the time zone and the zeroed
+    replies; the start date is the default 1767268800 unless --init-time says otherwise, applied in the same
+    block, and the fraction never reaches the starting tick."""
+    runner = _text("port", "src", "runner.cpp")
+    block = runner[runner.index("    if (!async_io) {\n        // the game seeds"):]
+    block = block[:block.index("    // the console's Wi-Fi MAC address")]
+    assert "Settings::values.init_clock.SetValue(Settings::InitClock::FixedTime);" in block
+    assert "ApplyInitTime(init_time_us);" in block
+    assert "Settings::values.init_ticks_type.SetValue(Settings::InitTicks::Fixed);" in block
+    assert "Settings::values.init_ticks_override.SetValue(kFixedStartTicks);" in block
+    assert '_putenv_s("TZ", "UTC0");' in block and 'setenv("TZ", "UTC0", 1);' in block
+    assert "Kernel::SetZeroedIpcReplies(true);" in block
+    assert "constexpr s64 kFixedStartTicks = 2000000000;" in runner
+    assert "constexpr s64 kDefaultInitTimeUs = 1767268800LL * 1000000;" in runner
+    assert "s64 init_time_us = kDefaultInitTimeUs;" in runner
+    # the start date: whole seconds to Azahar's setting, the fraction to the shared page's handler, nothing else
+    apply = runner[runner.index("void ApplyInitTime(s64 microseconds) {"):]
+    apply = apply[:apply.index("\n}\n")]
+    assert "Settings::values.init_time.SetValue(static_cast<u64>(microseconds / 1000000));" in apply
+    assert "SharedPage::SetInitTimeFraction(std::chrono::microseconds(microseconds % 1000000));" in apply
+    assert "init_ticks" not in apply and "kFixedStartTicks" not in apply
+    assert runner.count("ApplyInitTime(") == 2            # the definition and the one call
+    # --async-io: the option is refused, not ignored; a bad value exits with 2
+    assert "if (init_time_given && async_io) {" in runner
+    assert runner.index("if (init_time_given && async_io) {") < runner.index("    if (print_schedule) {")
+    option = runner[runner.index('} else if (arg == "--init-time") {'):]
+    option = option[:option.index('} else if (arg == "--async-io") {')]
+    assert option.count("return 2;") == 2 and "return 1;" not in option and "return Usage();" not in option
+    # the usage text: the option, its grammar, its range, its default, what the fraction moves and what not
+    usage = runner[runner.index('const char* const USAGE = R"('):]
+    usage = usage[:usage.index(')";')]
+    for text in ("--init-time SECONDS[.FRACTION]", "946684800", "4102444799.999999", "1767268800",
+                 "not GetSystemTick, nor those records' update ticks", "usage error (exit status 2)"):
+        assert text in usage, text
+
+
+@source_only
+def test_patch_adds_the_init_time_fraction_to_the_shared_page():
+    """shared_page.h/.cpp: SharedPage::SetInitTimeFraction (a process-wide atomic, default 0) is added to the
+    clock before the cut to milliseconds; the ticks (update_tick, the timers) are not touched. The base
+    patch does not touch these two files, so each has one section, after the others."""
+    patch = _text("port", "azahar", "azahar.patch")
+    for path in ("src/core/hle/kernel/shared_page.h", "src/core/hle/kernel/shared_page.cpp"):
+        assert patch.count(f"diff --git a/{path} b/{path}\n") == 1, path
+    h = _patch_section("src/core/hle/kernel/shared_page.h")
+    assert "+void SetInitTimeFraction(std::chrono::microseconds fraction);" in h
+    assert not any(line.startswith("-") for line in h.splitlines()[4:])           # nothing of Azahar's removed
+    cpp = _patch_section("src/core/hle/kernel/shared_page.cpp")
+    flat = " ".join(line[1:].strip() for line in cpp.splitlines() if line.startswith("+") and not line.startswith("+++"))
+    assert "#include <atomic>" in flat
+    assert "static std::atomic<s64> init_time_fraction_us{0};" in flat           # default 0
+    assert ("void SetInitTimeFraction(std::chrono::microseconds fraction) { "
+            "init_time_fraction_us.store(fraction.count(), std::memory_order_relaxed); }") in flat
+    assert ("std::chrono::milliseconds now = std::chrono::duration_cast<std::chrono::milliseconds>( "
+            "init_time + std::chrono::microseconds(init_time_fraction_us.load(std::memory_order_relaxed)) + "
+            "timing.GetGlobalTimeUs());") in flat
+    removed = [line[1:].strip() for line in cpp.splitlines() if line.startswith("-") and not line.startswith("---")]
+    assert removed == ["std::chrono::milliseconds now =",
+                       "init_time + std::chrono::duration_cast<std::chrono::milliseconds>(timing.GetGlobalTimeUs());"]
+    assert "update_tick" not in cpp and "GetTicks" not in cpp.replace("GetGlobalTimeUs", "")
+    # the hunk is the last of the file (appended after the earlier packages' hunks)
+    assert patch.rindex("diff --git ") == patch.index("diff --git a/src/core/hle/kernel/shared_page.h ")
+
+
+@source_only
+def test_the_hid_capture_holds_the_ir_user_block_weakly():
+    """runner.cpp: HidCapture::ir_memory is a weak_ptr, the callback takes the next block once the held one
+    has expired, and the writer takes a strong reference only for the record it writes."""
+    runner = _text("port", "src", "runner.cpp")
+    capture = runner[runner.index("struct HidCapture {"):runner.index("bool BeginHidCapture(")]
+    assert "std::weak_ptr<Kernel::SharedMemory> ir_memory;" in capture
+    assert "std::shared_ptr<Kernel::SharedMemory> ir_memory" not in capture
+    assert "if (!c.ir_memory.expired() || " in capture            # the first block is kept while it lives
+    assert "c.ir_memory = block;" in capture
+    write = runner[runner.index("void WriteHidCapture("):runner.index("void EndHidCapture(")]
+    assert "if (const auto ir_memory = c.ir_memory.lock()) {" in write
+    assert "CaptureRecord(system, c.cap, 2, frame, ir_memory->GetPointer(), size);" in write
+
+
+@source_only
+def test_readme_documents_init_time_and_the_hid_capture():
+    readme = _text("port", "README.md")
+    determinism = readme[readme.index("## Determinism"):readme.index("## With Azahar's normal interface")]
+    row = next(line for line in determinism.splitlines() if line.startswith("| Start date |"))
+    for text in ("--init-time SECONDS[.FRACTION]", "SharedPage::SetInitTimeFraction", "exactly the integer",
+                 "`ptm`'s console time", "the news database", "**Not** `svcGetSystemTick`", "update ticks",
+                 "`kFixedStartTicks`", "`TZ=UTC0`"):
+        assert text in row, text
+    section = determinism[determinism.index("### The start date with a fraction"):]
+    section = section[:section.index("### Finding what is left")]
+    for text in ("946684800", "4102444799.999999", "exit status 2", "`--async-io`", "usage error",
+                 "starting tick", "would also move `svcGetSystemTick`", "floor((init_time * 10^6",
+                 "The other bad options of the runner exit with 1"):
+        assert text in section, text
+    assert "weakly (N0-35)" in readme and "0xE0A01BF5" in readme and "ir_reopen.c" in readme

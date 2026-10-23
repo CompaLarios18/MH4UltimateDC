@@ -167,7 +167,7 @@ while it plays; the (address, size, CRC) rule stores bytes only when they change
 on every change of the frame counter, type 1 the 0x2b0 bytes of HID shared memory as the game has
 it mapped (zeros until it does) and, once a game has handed a shared-memory block to `ir:USER`
 (the runner turns Azahar's IPC recorder on to see it), type 2 the first 0x200 bytes of that block
-(the Circle Pad Pro header and receive-buffer info). Captures are game data: keep them in
+(the Circle Pad Pro header and receive-buffer info). The capture holds the block weakly (N0-35): it never keeps it alive, so a game that finalizes `ir:USER`, closes its handle and opens it again at the same address (the game does, with the Circle Pad Pro option on) gets its second `CreateMemoryBlock` as it does without `--capture-hid` (the capture used to hold the first block, and that call failed with `0xE0A01BF5`); type-2 records are written only while a block is alive, none between a block's release and the next `Initialize`, and from that `Initialize` on the new block's (the first block is kept while it lives, so a game that opens `ir:USER` once records what it did before). `port/tests/ir_reopen.c` is the program that shows it. Captures are game data: keep them in
 `build/`, never commit or paste them. `tools/native/capfmt.py` has `summary FILE`, `check FILE`,
 `pcm-to-wav FILE OUT.wav`, `diff-hid REF CAND` (buttons, circle pad and touch per game frame,
 ticks ignored) and `diff-dsp REF CAND [--frames N]` (every source's status block and the DSP's
@@ -245,7 +245,7 @@ Azahar's CPU Clock Speed setting. The runner reads files in place, so a run repe
 exactly: with Azahar's default (`--async-io`) a read finishes on a host thread and wakes
 the game at an emulated time that depends on how fast the host was, which moved loading
 screens by seconds between identical runs and let time-based input scripts land on other
-screens. It also sends sound nowhere, so it needs no sound card. `--room-host PORT` makes
+screens. `--init-time SECONDS[.FRACTION]` (N0-35) sets the start date of the emulated clock (seconds since the Unix epoch, UTC; default 1767268800, 2026-01-01 12:00 UTC; see *The start date with a fraction* in the Determinism section). It also sends sound nowhere, so it needs no sound card. `--room-host PORT` makes
 a network room inside the runner (Azahar's multiplayer) and joins it, `--room-join HOST:PORT`
 joins one, so two runners play the game's local wireless modes together (a copy of a user
 folder needs `--new-console-id`: a room turns away a console it already has, and every folder
@@ -315,7 +315,7 @@ setting where it has one.
 
 | Value | Azahar | Default mode of the runner | Where the game sees it |
 |---|---|---|---|
-| Start date | the host's date (`init_clock` SystemTime) | `init_clock` FixedTime, `init_time` 1767268800 (2026-01-01 12:00:00 UTC; the runner sets `TZ=UTC0` itself, because the shared page converts it through the host's time zone: see the time zone row) | the shared page's date records (0x20, 0x40) |
+| Start date | the host's date (`init_clock` SystemTime) | `init_clock` FixedTime, `init_time` 1767268800 (2026-01-01 12:00:00 UTC) unless `--init-time SECONDS[.FRACTION]` gives another date, up to microseconds (N0-35: the whole seconds go to `init_time`, the fraction to the shared page's handler through the patch's `SharedPage::SetInitTimeFraction`; a value without a fraction, or with an all-zero one, is exactly the integer); the runner sets `TZ=UTC0` itself, because the shared page converts it through the host's time zone: see the time zone row | the shared page's date records (0x20, 0x40), and what derives from them: `ptm`'s console time, the news database, what the game reads through the records. **Not** `svcGetSystemTick`, the records' update ticks (0x28, 0x48), `kFixedStartTicks` or the time zone handling, which a fraction leaves as they are |
 | Starting tick of the emulated clock | a random 32-bit number drawn per run (`Timing::GenerateBaseTicks`: `std::mt19937` seeded from `std::random_device`, so any value from 0 to 2^32 - 1) | `init_ticks_type` Fixed, `init_ticks_override` **2,000,000,000** (0x77359400, 7.4596 s of the 268,111,856 Hz clock); every core's timer starts there | `svcGetSystemTick` (the running core's timer: this plus the ticks emulated so far); the update ticks in the shared page's date records (0x28 and 0x48); the date in those records, which Azahar computes as `init_time` plus the whole clock, starting tick included, so at the first update the date is `init_time` + 7459 ms |
 | Console Wi-Fi MAC address | the folder's `mac.txt`, or a random address from a list of 16 Nintendo-like ranges, written to `mac.txt`, when there is none | **02:00:00:00:00:01** (locally administered), not read from or written to `mac.txt` | the shared page's bytes 0x60 to 0x65 (the local wireless service puts it there when it starts, and the runner sets the page once the game has loaded, so the page has it either way), `cfg`, and what the local wireless service and `nwm::SOC` take from it |
 | Reads of files | on host threads, finishing at a host-dependent emulated time | `deterministic_async_operations`; the patch keeps host time out of the delay of a read | when a read wakes the game |
@@ -347,6 +347,49 @@ Notes for the mirror:
   both carried the random starting tick and nothing else of the host (the update is an event scheduled at tick 0 of
   core 0, and then once an hour). Read from the sources; the measurements below find the page identical in two runs
   (N0-26: the dumps at frames 100 and 800; the gates: the dump at frame 300, in every pair).
+
+### The start date with a fraction: `--init-time` (N0-35)
+
+`--init-time SECONDS[.FRACTION]` is the start date of the emulated clock: seconds since the Unix epoch, UTC. The
+grammar is exactly this and nothing else: SECONDS is 1 to 10 ASCII digits, FRACTION a `.` followed by 1 to 6 ASCII
+digits (microseconds); no sign, no space, no exponent, no hex, no `.5`, no `5.`, no second dot, no trailing text. The
+value in microseconds is SECONDS * 1000000 plus the fraction padded on the right with zeros to 6 digits, and it must
+lie in the 3DS clock's range, both ends included: 946684800 (2000-01-01 00:00:00 UTC) to 4102444799.999999
+(2099-12-31 23:59:59.999999 UTC). The default is 1767268800, and a value without a fraction, or with an all-zero one
+(`1767268800.000000`), behaves exactly like the integer, and the integer 1767268800 exactly like no option: the
+shared page, every trace and every output are byte for byte what N0-29 measured, and no line is added to a trace
+header or to an output unless the option is given (`--print-schedule` then ends with an `init time:` line).
+`--init-time` together with `--async-io` (which starts at the host's time and would ignore the date) is a usage error.
+
+Exit status: a bad value (or a missing one, or the combination with `--async-io`) is a message on stderr that names
+`--init-time` and the offending text, and **exit status 2**. The other bad options of the runner exit with 1 (usage
+text) and 2 is also what a program that failed to load gives; the specification of the option says 2 for the
+reference runner and the native runner alike, so this follows the specification.
+
+What the fraction moves, and why it needs a hunk of the patch. Azahar's shared page writes its date in
+`SharedPage::Handler::UpdateTimeCallback` (once at tick 0 and then hourly) from `GetSystemTimeSince1900()`, which
+is `init_time` (a whole number of seconds: `Settings::values.init_time`) plus the milliseconds of the global time
+(`Timing::GetGlobalTimeUs()`, the timers' ticks from `kFixedStartTicks`), together with `update_tick =
+timing.GetTicks()`; the game reads the date record plus (its tick minus `update_tick`) over the rate. The only
+other way to move the date is the starting tick, and that would also move `svcGetSystemTick` and the records'
+update ticks (and with them everything the game derives from its own tick); `init_time` cannot carry a fraction. So
+the whole seconds go to `Settings::values.init_time` and the fraction, in microseconds, to a process-wide setter
+that the patch adds to `shared_page.h`/`.cpp` (`SharedPage::SetInitTimeFraction`, default 0, not serialized: the
+runner does not use save states), which `GetSystemTimeSince2000` adds to the global time before it cuts the sum
+to milliseconds: date = floor((init_time * 10^6 + fraction + global time) / 1000) ms. With fraction 0 that is
+`init_time` plus the milliseconds of the global time, the unpatched sum (integer arithmetic, `init_time` has whole
+seconds), so a run without a fraction is Azahar's and N0-29's.
+
+| | moved by the fraction | left alone |
+|---|---|---|
+| the date | the shared page's date records (0x20 and 0x40), hence what derives from them: what the game reads through the records, `ptm`'s console time, the news database | |
+| the ticks | | `svcGetSystemTick`, the records' update ticks (0x28 and 0x48), `kFixedStartTicks` (2,000,000,000) |
+| the host | | the `TZ=UTC0` handling |
+
+The date shifts by exactly the fraction in whole milliseconds (`.5` is 500 ms later than the integer), and a fraction below
+a millisecond by 0 or 1 ms, depending on the clock's microseconds at the update. The tests (`tests/test_port.py`,
+`port/tests/time_probe.c`) read the records and the tick with a program and check this without the game. The
+goldens use it to put the game's first clock reading in the middle of a second (D83).
 
 ### Finding what is left
 
