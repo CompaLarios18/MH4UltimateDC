@@ -167,12 +167,14 @@ while it plays; the (address, size, CRC) rule stores bytes only when they change
 on every change of the frame counter, type 1 the 0x2b0 bytes of HID shared memory as the game has
 it mapped (zeros until it does) and, once a game has handed a shared-memory block to `ir:USER`
 (the runner turns Azahar's IPC recorder on to see it), type 2 the first 0x200 bytes of that block
-(the Circle Pad Pro header and receive-buffer info). The capture holds the block weakly (N0-35): it never keeps it alive, so a game that finalizes `ir:USER`, closes its handle and opens it again at the same address (the game does, with the Circle Pad Pro option on) gets its second `CreateMemoryBlock` as it does without `--capture-hid` (the capture used to hold the first block, and that call failed with `0xE0A01BF5`); type-2 records are written only while a block is alive, none between a block's release and the next `Initialize`, and from that `Initialize` on the new block's (the first block is kept while it lives, so a game that opens `ir:USER` once records what it did before). `port/tests/ir_reopen.c` is the program that shows it. Captures are game data: keep them in
+(the Circle Pad Pro header and receive-buffer info). Captures are game data: keep them in
 `build/`, never commit or paste them. `tools/native/capfmt.py` has `summary FILE`, `check FILE`,
 `pcm-to-wav FILE OUT.wav`, `diff-hid REF CAND` (buttons, circle pad and touch per game frame,
 ticks ignored) and `diff-dsp REF CAND [--frames N]` (every source's status block and the DSP's
 own frame counter, keyed on that counter rather than on game frames); they print counts, frame
 numbers and statuses, never samples. The native runtime's captures (N1-16, N1-18) use the same format.
+
+The capture holds the block weakly (N0-35): it never keeps it alive, so a game that finalizes `ir:USER`, closes its handle and opens it again at the same address (the game does, with the Circle Pad Pro option on) gets its second `CreateMemoryBlock` as it does without `--capture-hid` (the capture used to hold the first block, and that call failed with `0xE0A01BF5`); type-2 records are written only while a block is alive, none between a block's release and the next `Initialize`, and from that `Initialize` on the new block's (the first block is kept while it lives, so a game that opens `ir:USER` once records what it did before). `port/tests/ir_reopen.c` is the program that shows it.
 
 `--capture-gpu START:FRAMES:FILE` writes an `MGPU` capture (format: `docs/native/mgpu-format.md`; `tools/native/gcap.py`
 has `summary` and `check`) of everything that crosses Azahar's `VideoCore::GPU` interface for FRAMES game frames
@@ -245,7 +247,7 @@ Azahar's CPU Clock Speed setting. The runner reads files in place, so a run repe
 exactly: with Azahar's default (`--async-io`) a read finishes on a host thread and wakes
 the game at an emulated time that depends on how fast the host was, which moved loading
 screens by seconds between identical runs and let time-based input scripts land on other
-screens. `--init-time SECONDS[.FRACTION]` (N0-35) sets the start date of the emulated clock (seconds since the Unix epoch, UTC; default 1767268800, 2026-01-01 12:00 UTC; see *The start date with a fraction* in the Determinism section). It also sends sound nowhere, so it needs no sound card. `--room-host PORT` makes
+screens. It also sends sound nowhere, so it needs no sound card. `--init-time SECONDS[.FRACTION]` (N0-35) sets the start date of the emulated clock (seconds since the Unix epoch, UTC; default 1767268800, 2026-01-01 12:00 UTC; see *The start date with a fraction* in the Determinism section). `--room-host PORT` makes
 a network room inside the runner (Azahar's multiplayer) and joins it, `--room-join HOST:PORT`
 joins one, so two runners play the game's local wireless modes together (a copy of a user
 folder needs `--new-console-id`: a room turns away a console it already has, and every folder
@@ -357,9 +359,10 @@ value in microseconds is SECONDS * 1000000 plus the fraction padded on the right
 lie in the 3DS clock's range, both ends included: 946684800 (2000-01-01 00:00:00 UTC) to 4102444799.999999
 (2099-12-31 23:59:59.999999 UTC). The default is 1767268800, and a value without a fraction, or with an all-zero one
 (`1767268800.000000`), behaves exactly like the integer, and the integer 1767268800 exactly like no option: the
-shared page, every trace and every output are byte for byte what N0-29 measured, and no line is added to a trace
+shared page, every trace and the program's and the runner's output are byte for byte what N0-29 measured, and no line is added to a trace
 header or to an output unless the option is given (`--print-schedule` then ends with an `init time:` line).
 `--init-time` together with `--async-io` (which starts at the host's time and would ignore the date) is a usage error.
+A repeated `--init-time` takes the last value, and a bad value in either occurrence is an error. `--print-schedule` is the one output that differs when the option is given (even `--init-time 1767268800` prints the extra `init time:` line): "byte for byte" is about runs, the shared page, the program's output and the runner's stdout.
 
 Exit status: a bad value (or a missing one, or the combination with `--async-io`) is a message on stderr that names
 `--init-time` and the offending text, and **exit status 2**. The other bad options of the runner exit with 1 (usage
@@ -387,7 +390,7 @@ seconds), so a run without a fraction is Azahar's and N0-29's.
 | the host | | the `TZ=UTC0` handling |
 
 The date shifts by exactly the fraction in whole milliseconds (`.5` is 500 ms later than the integer), and a fraction below
-a millisecond by 0 or 1 ms, depending on the clock's microseconds at the update. The tests (`tests/test_port.py`,
+a millisecond by 0 or 1 ms, depending on the clock's microseconds at the update. The option does not move the other host-clock stamps either (file times of the file system services, the runner's log, `err_f`), which the integer `init_time` never moved. The tests (`tests/test_port.py`,
 `port/tests/time_probe.c`) read the records and the tick with a program and check this without the game. The
 goldens use it to put the game's first clock reading in the middle of a second (D83).
 
