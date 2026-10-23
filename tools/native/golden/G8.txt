@@ -1,0 +1,32 @@
+# name: G8
+# needs: save
+# frames: 3300
+# checkpoints: 600:0x00e64d5c, 1400:0x00e6c778, 2500:0x00e6c170, 3300:0x00e6c170
+# captures:
+# init-time: 1767268800.5
+#
+# G8: the maintainer's save AS IT IS, with the Circle Pad Pro option ON: the game opens `ir:USER` at
+# about frame 199 (Initialize, Finalize, Initialize again, then a second shared block at the same
+# address) and keeps polling it. D36's session: the HID capture of the recording has type-2 (IR)
+# records from that first request on, which `golden.py record` checks (the IPC trace has an `ir:USER`
+# request) and which only a reference runner whose HID capture lets go of the first block can
+# record (N0-35, D80). From a user folder with the update installed and the staged save merged in
+# (golden.py record --save build/n0-10-save, NOT the copy with the option off of G3, G3-perf, G4
+# and G7: docs/native/golden.md, "The save"): only button presses are written here.
+#
+# The start date has a sub-second part, as G3 and G4 (docs/native/golden.md, D83, D84).
+#
+# The inputs are G4's: the nine A presses of the main menu and the character select, and nothing
+# after f1500. With the option on the boot is 150 frames longer than with it off (the continue screen
+# starts at f1053, not f903), so the village starts at f1729 and the arrival scene plays by itself
+# to about f3050; the run stops at f3300, in the talk that follows it (which waits for A). No GPU
+# capture: the session is about the IR service, and golden.py does not ask for one.
+#
+#   f300..f1500   nine A presses (the first five are for prompts this save does not show; harmless)
+#
+# Scenes (docs/research/scene-observable.md), one checkpoint in each that lasts more than 100 frames:
+#   0x00e64d5c  aDemo      the intro movies                       frames 42 to 1052
+#   0x00e6c778  aContinue  the "continue" screen                  frames 1053 to 1725
+#   0x00e6c170  aVillage   the village: the scene, then the talk  frames 1729 to the end
+f300:A:f6,f450:A:f6,f600:A:f6,f750:A:f6,f900:A:f6
+f1050:A:f6,f1200:A:f6,f1350:A:f6,f1500:A:f6

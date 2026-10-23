@@ -519,7 +519,7 @@ def test_bad_sessions(tmp_path, old, new, message):
 A_DEMO, A_NEWGAME, A_VILLAGE, A_QUEST = 0x00E64D5C, 0x00E6C138, 0x00E6C170, 0x00E655C8
 A_CONTINUE, A_ARENA = 0x00E6C778, 0x00E650BC       # N0-10: the scenes the sessions with a save pass through
 NO_SAVE = ["G1", "G2", "G6"]
-WITH_SAVE = ["G3", "G3-perf", "G4"]
+WITH_SAVE = ["G3", "G3-perf", "G4", "G8"]
 DRAFTS = ["G7"]
 
 
@@ -555,7 +555,8 @@ def test_shipped_sessions_event_counts():
     # golden.py's own parser: the number of input events of each shipped session
     counts = {n: golden.parse_session(golden.SESSIONS_DIR / f"{n}.txt").events
               for n in NO_SAVE + WITH_SAVE + DRAFTS}
-    assert counts == {"G1": 8, "G2": 52, "G6": 23, "G3": 111, "G3-perf": 111, "G4": 9, "G7": 72}
+    assert counts == {"G1": 8, "G2": 52, "G6": 23, "G3": 111, "G3-perf": 111, "G4": 9, "G7": 72,
+                      "G8": 9}
 
 
 def events_of(name):
@@ -617,6 +618,20 @@ def test_shipped_g4_is_the_arrival_scene_with_gas():
     # the recording must show gas (golden.MINIMUMS): a G4 whose capture lost it fails `record`
     assert golden.MINIMUMS["G4"] == {"gas_frames": 1}
     assert golden.MINIMUMS["G3"] == golden.MINIMUMS["G3-perf"] == {"checkpoint_scenes": 5}
+
+
+def test_shipped_g8_is_g4s_boot_from_the_save_as_it_is():
+    """N0-35 Part B, D36/D80: G8 is the session in which the game opens `ir:USER` (the maintainer's save with the
+    Circle Pad Pro option on). It is the nine boot presses of G4 and the same start date; it needs no capture."""
+    g8 = golden.parse_session(golden.SESSIONS_DIR / "G8.txt")
+    assert not g8.draft and g8.needs == "save" and g8.env == []
+    assert g8.init_time == "1767268800.5" == golden.parse_session(golden.SESSIONS_DIR / "G4.txt").init_time
+    assert g8.captures == [] and 3000 <= g8.frames <= 3500
+    # the intro movies, the continue screen and the village: the scenes that last more than 100 frames
+    assert {scene for _, scene in g8.checkpoints} == {A_DEMO, A_CONTINUE, A_VILLAGE}
+    assert events_of("G8") == events_of("G4") and len(events_of("G8")) == 9
+    # the recording's own rule (D36) is in `_ir_problems`: no gas, no scene minimum for this session
+    assert "G8" not in golden.MINIMUMS
 
 
 def test_shipped_g7_is_a_draft_that_stops_at_the_empty_board():
