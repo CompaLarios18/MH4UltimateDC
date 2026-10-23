@@ -1,0 +1,33 @@
+# name: G9b
+# needs: save
+# frames: 13503
+# checkpoints: 600:0x00e64d5c, 1400:0x00e6c778, 2500:0x00e6c170, 8000:0x00e6c170, 13000:0x00e6c170, 13500:0x00e650bc
+# captures: gpu:13500:3
+# init-time: 1767268800.5
+#
+# G9b: G3's route cut at frame 13503, for a census capture (docs/native/golden.md, "G9a, G9b, G9c", D90). Frames
+# 13500 to 13502 are the Arena's equipment screen (G3: frames 13464 to 14106). The events, the start date and the
+# checkpoints up to f13000 are G3's own; the checkpoint at f13500 is in the stretch where G3 has its f13700 one
+# (the Arena's equipment screen). This session ends before G3's presses of f13650 and f13850.
+# See G3.txt for what each stretch of the route does. The save is the one of G3's recording (Circle Pad Pro
+# option off), so the session never opens ir:USER.
+#
+# Scenes (docs/research/scene-observable.md), as in G3:
+#   0x00e64d5c  aDemo      the intro movies                       frames 42 to 902
+#   0x00e6c778  aContinue  the "continue" screen                  frames 903 to 1575
+#   0x00e6c170  aVillage   the village and the Gathering Hall     frames 1579 to 13461
+#   0x00e650bc  aArena     the Arena's equipment screen           frames 13464 to the end
+f300:A:f6,f450:A:f6,f600:A:f6,f750:A:f6,f900:A:f6
+f1050:A:f6,f1200:A:f6,f1350:A:f6,f1500:A:f6
+f3300:A:f6,f3420:A:f6,f3540:A:f6,f3660:A:f6,f3780:A:f6,f3900:A:f6,f4020:A:f6,f4140:A:f6
+f4260:A:f6,f4380:A:f6,f4500:A:f6,f4620:A:f6,f4740:A:f6,f4860:A:f6,f4980:A:f6,f5100:A:f6
+f5220:A:f6,f5340:A:f6,f5460:A:f6,f5580:A:f6,f5700:A:f6,f5820:A:f6,f5940:A:f6,f6060:A:f6
+f6180:A:f6,f6300:A:f6,f6420:A:f6,f6540:A:f6,f6660:A:f6,f6780:A:f6,f6900:A:f6,f7020:A:f6
+f7140:A:f6,f7260:A:f6,f7380:A:f6,f7500:A:f6,f7620:A:f6,f7740:A:f6,f7860:A:f6,f7980:A:f6
+f8100:A:f6,f8220:A:f6,f8340:A:f6,f8460:A:f6
+f8694:TOUCH:290:195:f6,f8894:TOUCH:182:110:f6,f9044:TOUCH:158:100:f6
+f9494:CIRCLE:-1:0.3:f400,f9914:CIRCLE:-0.4:-1:f350,f10294:CIRCLE:0.74:0.67:f300
+f10604:CIRCLE:-0.7:0.7:f250,f10894:CIRCLE:-0.7:0.7:f350
+f11444:A:f6,f11519:A:f6,f11594:A:f6,f11669:A:f6,f11744:A:f6,f11819:A:f6,f11894:A:f6,f11969:A:f6,f12044:A:f6,f12119:A:f6
+f12250:CIRCLE:0.7:-0.7:f250,f12510:CIRCLE:1:0:f300,f12850:CIRCLE:0:1:f250
+f13300:A:f6
