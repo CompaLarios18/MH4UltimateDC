@@ -58,6 +58,22 @@ never differ in them by an edited file or a forgotten command-line option; a man
 none. Only `MH4U_*` names are accepted (a session file sets the port's options and nothing else: not `PATH`, not
 `PYTHONPATH`), each at most once, and `TZ` is refused.
 
+`# init-time: SECONDS[.FRACTION]` (N0-35, D83; none by default, at most once) is the start date of the runners' clock, seconds
+since the Unix epoch, UTC. The game seeds its random generator from the Unix second of its first clock reading, so the
+runtimes must agree on that second: the runners' whole-second default (1767268800) puts the first reading a few
+milliseconds from a second boundary, where each runtime falls on a different side, and a start date with a sub-second part
+(for example `1767268800.5`) puts it in the middle of a second on all of them, so the same seed is drawn. Grammar: SECONDS is
+1 to 10 digits, FRACTION a dot and 1 to 6 digits, nothing else (no sign, space, exponent, hex, `.5` or `5.`); range
+946684800 (2000-01-01 00:00:00 UTC) to 4102444799.999999 (2099-12-31 23:59:59.999999 UTC), both included; anything else is a
+session-file error, as a bad `# env:` line is. The canonical form (seconds without leading zeros, fraction without trailing
+zeros, no dot for a zero fraction: `0946684800` is `946684800`, `1767268800.500000` is `1767268800.5`) is what the session
+stores, so two spellings of one date are one date. `record` and `check` give `--init-time <canonical>` to every runner they
+start (the recording, the `--repeat` runs, the `--candidate-args` runs and the native runner); the manifest keeps it
+(`session.init_time`) and `check` stops with exit status 2 when the session file's value differs from the manifest's (a header
+edited, added or removed since `record`; a manifest without the key counts as none). A `--init-time` in `--candidate-args` (or
+`--runner-args`) that disagrees with the header is a usage error (exit 2), an equal one is harmless. A session without the
+header gets no `--init-time` and runs exactly as before; G1, G2 and G6 keep their whole-second date.
+
 ### The scene
 
 `scene` (`config/native/observable.txt`, `docs/research/scene-observable.md`, N0-27, D32) is **the class of the topmost
