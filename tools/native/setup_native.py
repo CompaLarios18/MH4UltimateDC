@@ -255,6 +255,14 @@ def game_state(user: str, game: str, update: str) -> tuple[str, str]:
             return "stale", f"it was made from another {label} file"
         if os.path.getsize(path) != size:
             return "stale", f"the {label} file has changed size"
+    # N1-30: icon.bin is the update's. A folder made before says nothing of its icon's source (its
+    # icon.bin is the base game's), and one that says "base game" was made without an update.
+    source = next((line[len(prepare_game.ICON_SOURCE_KEY):].strip() for line in info
+                   if line.startswith(prepare_game.ICON_SOURCE_KEY)), None)
+    if source is None:
+        return "stale", "it was made by an earlier version whose icon.bin was the base game's"
+    if source == "base game":
+        return "stale", "its icon.bin is the base game's, not the update's"
     for name in GAME_FILES:
         path = os.path.join(folder, name)
         if not os.path.isfile(path):
@@ -263,6 +271,8 @@ def game_state(user: str, game: str, update: str) -> tuple[str, str]:
             return "stale", f"{name} is not the size info.txt says"
     if "icon.bin" in sizes and not os.path.isfile(os.path.join(folder, "icon.bin")):
         return "stale", "icon.bin is missing"
+    if source == "none" and os.path.isfile(os.path.join(folder, "icon.bin")):
+        return "stale", "icon.bin is there but info.txt says the update has none"
     if crc is None or prepare_game.crc32_of_file(os.path.join(folder, "code.bin")) != crc:
         return "stale", "code.bin is not the one info.txt describes"
     return "done", "made from the same files"
