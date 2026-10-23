@@ -1,0 +1,199 @@
+diff --git a/plume_render_interface.h b/plume_render_interface.h
+index 54d346f..8e2c4a9 100644
+--- a/plume_render_interface.h
++++ b/plume_render_interface.h
+@@ -204,8 +204,9 @@ namespace plume {
+         virtual void executeCommandLists(const RenderCommandList **commandLists, uint32_t commandListCount, RenderCommandSemaphore **waitSemaphores = nullptr, uint32_t waitSemaphoreCount = 0, RenderCommandSemaphore **signalSemaphores = nullptr, uint32_t signalSemaphoreCount = 0, RenderCommandFence *signalFence = nullptr) = 0;
+         virtual void waitForCommandFence(RenderCommandFence *fence) = 0;
+ 
+-        // Like executeCommandLists, with the stages at which each wait semaphore blocks (one entry per wait semaphore; nullptr keeps the backend default).
+-        virtual void executeCommandListsEx(const RenderCommandList **commandLists, uint32_t commandListCount, RenderCommandSemaphore **waitSemaphores, uint32_t waitSemaphoreCount, const RenderBarrierStages *waitStages, RenderCommandSemaphore **signalSemaphores, uint32_t signalSemaphoreCount, RenderCommandFence *signalFence) {
++        // Like executeCommandLists, with the stages at which each wait semaphore blocks (one entry per wait semaphore; nullptr keeps the backend default)
++        // and the values for timeline semaphores (one entry per semaphore, ignored for binary ones; nullptr = 0).
++        virtual void executeCommandListsEx(const RenderCommandList **commandLists, uint32_t commandListCount, RenderCommandSemaphore **waitSemaphores, uint32_t waitSemaphoreCount, const RenderBarrierStages *waitStages, const uint64_t *waitValues, RenderCommandSemaphore **signalSemaphores, uint32_t signalSemaphoreCount, const uint64_t *signalValues, RenderCommandFence *signalFence) {
+             executeCommandLists(commandLists, commandListCount, waitSemaphores, waitSemaphoreCount, signalSemaphores, signalSemaphoreCount, signalFence);
+         }
+ 
+@@ -244,6 +245,7 @@ namespace plume {
+         virtual std::unique_ptr<RenderPipelineLayout> createPipelineLayout(const RenderPipelineLayoutDesc &desc) = 0;
+         virtual std::unique_ptr<RenderCommandFence> createCommandFence() = 0;
+         virtual std::unique_ptr<RenderCommandSemaphore> createCommandSemaphore() = 0;
++        virtual std::unique_ptr<RenderCommandSemaphore> createTimelineSemaphore(uint64_t initialValue) { return nullptr; } // capabilities.timelineSemaphore
+         virtual std::unique_ptr<RenderFramebuffer> createFramebuffer(const RenderFramebufferDesc &desc) = 0;
+         virtual std::unique_ptr<RenderQueryPool> createQueryPool(uint32_t queryCount) = 0;
+         virtual void setBottomLevelASBuildInfo(RenderBottomLevelASBuildInfo &buildInfo, const RenderBottomLevelASMesh *meshes, uint32_t meshCount, bool preferFastBuild = true, bool preferFastTrace = false) = 0;
+diff --git a/plume_render_interface_types.h b/plume_render_interface_types.h
+index f0c6580..22196e3 100644
+--- a/plume_render_interface_types.h
++++ b/plume_render_interface_types.h
+@@ -1790,6 +1790,9 @@ namespace plume {
+         bool resolveRegion = false;
+         bool resolveModes = false;
+ 
++        // Timeline semaphores (createTimelineSemaphore, values in executeCommandListsEx).
++        bool timelineSemaphore = false;
++
+         // Fragment shader interlock (pixel, ordered).
+         bool fragmentShaderInterlock = false;
+ 
+diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
+index b65264c..0212546 100644
+--- a/plume_vulkan.cpp
++++ b/plume_vulkan.cpp
+@@ -3560,13 +3560,20 @@ namespace plume {
+ 
+     // VulkanCommandSemaphore
+ 
+-    VulkanCommandSemaphore::VulkanCommandSemaphore(VulkanDevice *device) {
++    VulkanCommandSemaphore::VulkanCommandSemaphore(VulkanDevice *device, bool timeline, uint64_t initialValue) {
+         assert(device != nullptr);
+ 
+         this->device = device;
++        this->timeline = timeline;
++
++        VkSemaphoreTypeCreateInfo typeInfo = {};
++        typeInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO;
++        typeInfo.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
++        typeInfo.initialValue = initialValue;
+ 
+         VkSemaphoreCreateInfo semaphoreInfo = {};
+         semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
++        semaphoreInfo.pNext = timeline ? &typeInfo : nullptr;
+ 
+         VkResult res = vkCreateSemaphore(device->vk, &semaphoreInfo, nullptr, &vk);
+         if (res != VK_SUCCESS) {
+@@ -3607,10 +3614,10 @@ namespace plume {
+     }
+ 
+     void VulkanCommandQueue::executeCommandLists(const RenderCommandList **commandLists, uint32_t commandListCount, RenderCommandSemaphore **waitSemaphores, uint32_t waitSemaphoreCount, RenderCommandSemaphore **signalSemaphores, uint32_t signalSemaphoreCount, RenderCommandFence *signalFence) {
+-        executeCommandListsEx(commandLists, commandListCount, waitSemaphores, waitSemaphoreCount, nullptr, signalSemaphores, signalSemaphoreCount, signalFence);
++        executeCommandListsEx(commandLists, commandListCount, waitSemaphores, waitSemaphoreCount, nullptr, nullptr, signalSemaphores, signalSemaphoreCount, nullptr, signalFence);
+     }
+ 
+-    void VulkanCommandQueue::executeCommandListsEx(const RenderCommandList **commandLists, uint32_t commandListCount, RenderCommandSemaphore **waitSemaphores, uint32_t waitSemaphoreCount, const RenderBarrierStages *waitStages, RenderCommandSemaphore **signalSemaphores, uint32_t signalSemaphoreCount, RenderCommandFence *signalFence) {
++    void VulkanCommandQueue::executeCommandListsEx(const RenderCommandList **commandLists, uint32_t commandListCount, RenderCommandSemaphore **waitSemaphores, uint32_t waitSemaphoreCount, const RenderBarrierStages *waitStages, const uint64_t *waitValues, RenderCommandSemaphore **signalSemaphores, uint32_t signalSemaphoreCount, const uint64_t *signalValues, RenderCommandFence *signalFence) {
+         assert(commandLists != nullptr);
+         assert(commandListCount > 0);
+ 
+@@ -3618,6 +3625,10 @@ namespace plume {
+         thread_local std::vector<VkSemaphore> signalSemaphoreVector;
+         thread_local std::vector<VkCommandBuffer> commandBuffers;
+         thread_local std::vector<VkPipelineStageFlags> waitStageVector;
++        thread_local std::vector<uint64_t> waitValueVector, signalValueVector;
++        bool anyTimeline = false;
++        waitValueVector.clear();
++        signalValueVector.clear();
+         waitStageVector.clear();
+         waitSemaphoreVector.clear();
+         signalSemaphoreVector.clear();
+@@ -3626,6 +3637,8 @@ namespace plume {
+         for (uint32_t i = 0; i < waitSemaphoreCount; i++) {
+             VulkanCommandSemaphore *interfaceSemaphore = static_cast<VulkanCommandSemaphore *>(waitSemaphores[i]);
+             waitSemaphoreVector.emplace_back(interfaceSemaphore->vk);
++            waitValueVector.emplace_back(waitValues ? waitValues[i] : 0);
++            anyTimeline |= interfaceSemaphore->timeline;
+             const VkPipelineStageFlags stageFlags = waitStages ? toStageFlags(waitStages[i], device->capabilities.geometryShader, device->capabilities.raytracing) : 0;
+             waitStageVector.emplace_back(stageFlags ? stageFlags : VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
+         }
+@@ -3633,6 +3646,8 @@ namespace plume {
+         for (uint32_t i = 0; i < signalSemaphoreCount; i++) {
+             VulkanCommandSemaphore *interfaceSemaphore = static_cast<VulkanCommandSemaphore *>(signalSemaphores[i]);
+             signalSemaphoreVector.emplace_back(interfaceSemaphore->vk);
++            signalValueVector.emplace_back(signalValues ? signalValues[i] : 0);
++            anyTimeline |= interfaceSemaphore->timeline;
+         }
+ 
+         for (uint32_t i = 0; i < commandListCount; i++) {
+@@ -3658,6 +3673,16 @@ namespace plume {
+             submitInfo.signalSemaphoreCount = uint32_t(signalSemaphoreVector.size());
+         }
+ 
++        VkTimelineSemaphoreSubmitInfo timelineInfo = {};
++        if (anyTimeline) {
++            timelineInfo.sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO;
++            timelineInfo.waitSemaphoreValueCount = uint32_t(waitValueVector.size());
++            timelineInfo.pWaitSemaphoreValues = waitValueVector.data();
++            timelineInfo.signalSemaphoreValueCount = uint32_t(signalValueVector.size());
++            timelineInfo.pSignalSemaphoreValues = signalValueVector.data();
++            submitInfo.pNext = &timelineInfo;
++        }
++
+         VkFence submitFence = VK_NULL_HANDLE;
+         if (signalFence != nullptr) {
+             VulkanCommandFence *interfaceFence = static_cast<VulkanCommandFence *>(signalFence);
+@@ -3920,6 +3945,11 @@ namespace plume {
+             featuresChain = &bufferDeviceAddressFeatures;
+         }
+ 
++        VkPhysicalDeviceTimelineSemaphoreFeatures timelineFeatures = {};
++        timelineFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES;
++        timelineFeatures.pNext = featuresChain;
++        featuresChain = &timelineFeatures;
++
+         VkPhysicalDeviceFragmentShaderInterlockFeaturesEXT interlockFeatures = {};
+         const bool interlockFound = supportedOptionalExtensions.find(VK_EXT_FRAGMENT_SHADER_INTERLOCK_EXTENSION_NAME) != supportedOptionalExtensions.end();
+         if (interlockFound) {
+@@ -4018,6 +4048,12 @@ namespace plume {
+             createDeviceChain = &bufferDeviceAddressFeatures;
+         }
+         
++        const bool timelineSupported = timelineFeatures.timelineSemaphore;
++        if (timelineSupported) {
++            timelineFeatures.pNext = createDeviceChain;
++            createDeviceChain = &timelineFeatures;
++        }
++
+         const bool interlockSupported = interlockFeatures.fragmentShaderPixelInterlock;
+         if (interlockSupported) {
+             interlockFeatures.pNext = createDeviceChain;
+@@ -4185,6 +4221,7 @@ namespace plume {
+         capabilities.sampleLocations = (sampleLocationProperties.sampleLocationSampleCounts != 0);
+         capabilities.resolveRegion = true;
+         capabilities.resolveModes = false;
++        capabilities.timelineSemaphore = timelineSupported;
+         capabilities.fragmentShaderInterlock = interlockSupported;
+         capabilities.descriptorIndexing = descriptorIndexingSupported;
+         capabilities.scalarBlockLayout = scalarBlockLayoutSupported;
+@@ -4276,6 +4313,10 @@ namespace plume {
+         return std::make_unique<VulkanCommandSemaphore>(this);
+     }
+ 
++    std::unique_ptr<RenderCommandSemaphore> VulkanDevice::createTimelineSemaphore(uint64_t initialValue) {
++        return capabilities.timelineSemaphore ? std::make_unique<VulkanCommandSemaphore>(this, true, initialValue) : nullptr;
++    }
++
+     std::unique_ptr<RenderFramebuffer> VulkanDevice::createFramebuffer(const RenderFramebufferDesc &desc) {
+         return std::make_unique<VulkanFramebuffer>(this, desc);
+     }
+diff --git a/plume_vulkan.h b/plume_vulkan.h
+index cc2d57b..02725fd 100644
+--- a/plume_vulkan.h
++++ b/plume_vulkan.h
+@@ -359,7 +359,9 @@ namespace plume {
+         VkSemaphore vk = VK_NULL_HANDLE;
+         VulkanDevice *device = nullptr;
+ 
+-        VulkanCommandSemaphore(VulkanDevice *device);
++        bool timeline = false;
++
++        VulkanCommandSemaphore(VulkanDevice *device, bool timeline = false, uint64_t initialValue = 0);
+         ~VulkanCommandSemaphore() override;
+     };
+ 
+@@ -376,7 +378,7 @@ namespace plume {
+         std::unique_ptr<RenderCommandList> createCommandList() override;
+         std::unique_ptr<RenderSwapChain> createSwapChain(const RenderSwapChainDesc &desc) override;
+         void executeCommandLists(const RenderCommandList **commandLists, uint32_t commandListCount, RenderCommandSemaphore **waitSemaphores, uint32_t waitSemaphoreCount, RenderCommandSemaphore **signalSemaphores, uint32_t signalSemaphoreCount, RenderCommandFence *signalFence) override;
+-        void executeCommandListsEx(const RenderCommandList **commandLists, uint32_t commandListCount, RenderCommandSemaphore **waitSemaphores, uint32_t waitSemaphoreCount, const RenderBarrierStages *waitStages, RenderCommandSemaphore **signalSemaphores, uint32_t signalSemaphoreCount, RenderCommandFence *signalFence) override;
++        void executeCommandListsEx(const RenderCommandList **commandLists, uint32_t commandListCount, RenderCommandSemaphore **waitSemaphores, uint32_t waitSemaphoreCount, const RenderBarrierStages *waitStages, const uint64_t *waitValues, RenderCommandSemaphore **signalSemaphores, uint32_t signalSemaphoreCount, const uint64_t *signalValues, RenderCommandFence *signalFence) override;
+         void waitForCommandFence(RenderCommandFence *fence) override;
+     };
+ 
+@@ -435,6 +437,7 @@ namespace plume {
+         std::unique_ptr<RenderPipelineLayout> createPipelineLayout(const RenderPipelineLayoutDesc &desc) override;
+         std::unique_ptr<RenderCommandFence> createCommandFence() override;
+         std::unique_ptr<RenderCommandSemaphore> createCommandSemaphore() override;
++        std::unique_ptr<RenderCommandSemaphore> createTimelineSemaphore(uint64_t initialValue) override;
+         std::unique_ptr<RenderFramebuffer> createFramebuffer(const RenderFramebufferDesc &desc) override;
+         std::unique_ptr<RenderQueryPool> createQueryPool(uint32_t queryCount) override;
+         void setBottomLevelASBuildInfo(RenderBottomLevelASBuildInfo &buildInfo, const RenderBottomLevelASMesh *meshes, uint32_t meshCount, bool preferFastBuild, bool preferFastTrace) override;
