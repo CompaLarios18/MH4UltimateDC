@@ -34,6 +34,10 @@ mh4u-native alpha report v1
 | Room invites and online settings | `mh4u://...` becomes `<invite>`; `[Multiplayer]` and `[Mods]` of `mh4u-app.ini` are never read: no nickname, join, password, host, lobby, token, room or last room, no catalog address |
 | Trace dumps | of the log lines that look like service or syscall traces (`svc=0x`, `cmd=0x`, ...) only the newest 50 stay; the older ones become one line `<n> trace-like lines left out` |
 
+When the other sections of a report are long, the log is cut below 500 lines so that the whole report stays within the checker's 650 lines (the newest lines stay). The `param_*` keys of `[Controls]` can hold your controllers' GUIDs; the settings allowlist includes them, so read that part before you attach the report.
+
+What a crash file can and cannot catch: a fault of the process (a bad memory access, an illegal instruction, a division by zero) and, on Linux and macOS, `abort()`. On Windows, `abort()` and `std::terminate` (the UCRT's) end the process without calling the exception filter, so they leave no crash file.
+
 Two limits you should know. A four-part number such as `1.2.3.4` looks like an IPv4 address and is hidden even when it is a driver version. A path whose last part has a space in its name (`C:\Games\My Game.cxi`) keeps what follows the space; the folders before it, with their spaces, are hidden. This is why you read the report before you send it.
 
 ## Reading and checking a report
@@ -61,7 +65,7 @@ N3-28 runs the alpha's two-week window and fills the table below; the routine it
 
 1. Search the issues for the marker `mh4u-native alpha report v1`.
 2. Run `tools/native/report_check.py` on each attached report. A report the checker refuses is not read further: the issue gets a comment saying which rule, and asking for the attachment to be removed.
-3. Read the crash frames: `module+offset` is the offset from the module's load address, so `llvm-symbolizer --obj=<the module of the same build> 0x<offset>` names the function when the build has debug information (the Windows artifact does).
+3. Read the crash frames: `module+offset` is the offset from the module's load address, so `llvm-symbolizer --obj=<the module of the same build> 0x<offset>` names the function when the build has debug information (the Windows artifact does: `docs/native/app.md` says `mh4u-native.exe` and `mh4u_native_runner.exe` keep their debug information).
 4. Group reports by the first frame, the game frame's scene and the platform; one fix work package per group, linked from the issue.
 5. Answer in the issue: whether it is a known problem, what the fix is, which build has it.
 

@@ -5,6 +5,12 @@
 // last. This file cannot be compiled in the cloud (there is no llvm-mingw there): only the
 // app-windows job of .github/workflows/native-app.yml builds and runs it, together with the
 // crash test of native/app/tests/app_report_test.cpp.
+//
+// Two limits, both accepted: (a) GetModuleHandleExA and GetModuleFileNameA take the loader lock
+// inside the filter, as other crash reporters' filters do (a crash while another thread holds the
+// lock can leave the file without its frames; the header lines are written first). (b) abort() and
+// std::terminate on Windows (UCRT) end the process without calling the unhandled-exception filter,
+// so they leave no crash file.
 #if defined(_WIN32)
 
 #define WIN32_LEAN_AND_MEAN

@@ -351,6 +351,10 @@ void Chain(int signo, siginfo_t* info, void* context) {
     }
 }
 
+// If a handler installed before ours recovers (returns without ending the process), g_entered and
+// g_written stay set: a later crash is not written, and the exit hook keeps the stale file. That
+// cannot happen with the memory module (it ends the process on a guest fault), so it is only
+// documented here.
 void Handler(int signo, siginfo_t* info, void* context) {
     // a second thread's crash, or one inside this handler, only chains on
     if (!g_entered.test_and_set(std::memory_order_acq_rel)) {

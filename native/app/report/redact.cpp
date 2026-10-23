@@ -155,15 +155,32 @@ std::size_t ConsumeSegments(const std::string& s, std::size_t pos, bool both_sep
     const std::size_t n = s.size();
     auto separator = [&](char c) { return both_separators ? IsSep(c) : c == '/'; };
     std::size_t end = pos;
+    // brackets opened inside the path and not closed yet: a ')' or ']' with none open ends the path
+    // ("see (/a/b) and [/c/d]" is two paths), one that closes a bracket of the path stays in it
+    int parens = 0;
+    int brackets = 0;
     for (;;) {
         std::size_t j = pos;
         int spaces = 0;
+        int segment_parens = parens;
+        int segment_brackets = brackets;
         bool too_many = false;
         while (j < n && !separator(s[j])) {
             const char c = s[j];
             if (c == '"' || c == '\'' || c == '<' || c == '>' || c == '|' || c == '*' || c == '?' ||
                 static_cast<unsigned char>(c) < 0x20 || (colon_ends && c == ':')) {
                 break;
+            }
+            if (c == '(') {
+                ++segment_parens;
+            } else if (c == '[') {
+                ++segment_brackets;
+            } else if (c == ')' || c == ']') {
+                int& open = c == ')' ? segment_parens : segment_brackets;
+                if (open == 0) {
+                    break;  // unmatched: the path ended before it
+                }
+                --open;
             }
             if (c == ' ' && ++spaces > 2) {
                 too_many = true;
@@ -174,11 +191,25 @@ std::size_t ConsumeSegments(const std::string& s, std::size_t pos, bool both_sep
         if (!too_many && j < n && separator(s[j])) {
             pos = j + 1;  // a middle segment
             end = pos;
+            parens = segment_parens;
+            brackets = segment_brackets;
             continue;
         }
         std::size_t f = pos;  // the last segment
-        while (f < j && !IsSpace(s[f]) && s[f] != ',' && s[f] != ';' && s[f] != ')' && s[f] != ']' &&
-               s[f] != '}' && !(colon_ends && s[f] == ':')) {
+        while (f < j && !IsSpace(s[f]) && s[f] != ',' && s[f] != ';' && s[f] != '}' &&
+               !(colon_ends && s[f] == ':')) {
+            const char c = s[f];
+            if (c == '(') {
+                ++parens;
+            } else if (c == '[') {
+                ++brackets;
+            } else if (c == ')' || c == ']') {
+                int& open = c == ')' ? parens : brackets;
+                if (open == 0) {
+                    break;
+                }
+                --open;
+            }
             ++f;
         }
         return f > pos ? f : end;
@@ -186,7 +217,7 @@ std::size_t ConsumeSegments(const std::string& s, std::size_t pos, bool both_sep
 }
 
 // The length of the absolute path that starts at s[i], 0 when none does.
-std::size_t PathAt(const std::string& s, std::size_t i) {
+std::size_t PathAtUnquoted(const std::string& s, std::size_t i) {
     const std::size_t n = s.size();
     const char c = s[i];
     const char p = i > 0 ? s[i - 1] : '\0';
@@ -238,6 +269,21 @@ std::size_t PathAt(const std::string& s, std::size_t i) {
         }
     }
     return 0;
+}
+
+// The same, but a path that starts right after a quote ends at the matching quote on its line, so a
+// space in its last segment ('/var/lib/a b/c d.txt') does not leave the rest of the name behind.
+std::size_t PathAt(const std::string& s, std::size_t i) {
+    const std::size_t length = PathAtUnquoted(s, i);
+    if (length == 0 || i == 0 || (s[i - 1] != '"' && s[i - 1] != '\'')) {
+        return length;
+    }
+    for (std::size_t k = i; k < s.size() && s[k] != '\n'; ++k) {
+        if (s[k] == s[i - 1]) {
+            return k - i >= length ? k - i : length;
+        }
+    }
+    return length;
 }
 
 std::string Paths(const std::string& s) {

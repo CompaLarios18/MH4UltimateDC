@@ -392,6 +392,18 @@ TEST_CASE("Redact: absolute paths") {
     CHECK(R("frame 12:/opt/fake/x") == "frame 12:<path>");
     CHECK(R("/tmp//opt/fake/lib.so") == "<path>");  // a doubled slash
     CHECK(R("path:\\\\fake-server\\share\\f") == "path:<path>");
+    // a path right after a quote ends at the closing quote, spaces in its last part included
+    CHECK(R("'/var/lib/a b/c d.txt' done") == "'<path>' done");
+    CHECK(R("open \"/var/lib/a b/c d.txt\" ok") == "open \"<path>\" ok");
+    CHECK(R("open \"C:\\Users\\Alice Smith\\x\\a b.txt\" ok") == "open \"<path>\" ok");
+    CHECK(R("open 'D:/Alice Smith/a b.txt' ok") == "open '<path>' ok");
+    CHECK(R("open \"/var/lib/a b/c d.txt") == "open \"<path> d.txt");  // no closing quote: the usual rule
+    // an unmatched closing bracket ends a path; one that closes a bracket of the path stays in it
+    CHECK(R("see (/home/bob/x/y) and [/usr/lib/x.so]") == "see (<path>) and [<path>]");
+    CHECK(R("see (C:\\a\\b) and [D:\\c\\d]") == "see (<path>) and [<path>]");
+    CHECK(R("/a/b[1]/c") == "<path>");
+    CHECK(R("/a/b[1] x") == "<path> x");
+    CHECK(R("(see /a/b(1) now)") == "(see <path> now)");
     CHECK(R("/tmp alone") == "/tmp alone");
     CHECK(R("a/b/c and 1/2/3 and n/a") == "a/b/c and 1/2/3 and n/a");
     CHECK(R("https://example.invalid/x/y") == "https://example.invalid/x/y");

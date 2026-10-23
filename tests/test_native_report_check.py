@@ -89,6 +89,8 @@ def test_binary_data_is_refused() -> None:
     r"path:\\fake-server\share\f",
     "see ->/opt/fake/x",
     "--user=/opt/fake/x",
+    "see (/home/bob/x/y) and [/usr/lib/x.so]",
+    "open '/var/lib/a b/c d.txt' done",
 ])
 def test_absolute_paths_are_refused(line: str) -> None:
     assert rules(report(line)) == ["path"]
