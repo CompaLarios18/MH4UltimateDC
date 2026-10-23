@@ -223,3 +223,29 @@ capture starts in the middle of it), **not a DSP bug**. The local session report
 (the verdict line, the source numbers, the count of listed frames) and retunes nothing.
 
 Put in the notes only the three result lines, the counts of `capfmt.py summary`, and the list if there is one.
+
+## Results (dump-check of 2026-10-23)
+
+Numbers only. The tool is `mh4n_dsp_replay` built from the N3-04 branch (RelWithDebInfo, `MH4N_WERROR=ON`, Windows,
+llvm-mingw clang). The captures stay under `build/` and are not committed.
+
+### Step 1: G1's `dsp-1240` (no emulator)
+
+`capfmt.py summary`: 300 DSP frames (counters 4434 to 4733), 300 type-1 and type-2 records, 88 type-3 records
+(88 unique, 0 without bytes), `pcm_non_silent_frames` 300 of 300, `sources_enabled_max` 1.
+
+```
+exit 1
+dsp-replay: settled at frame 4434 (record 0): 0 frames reported, not judged; 299 judged frames had a next frame to compare the status blocks with
+dsp-replay: sources enabled in the first captured status that our DSP never started: 0
+dsp-replay: why: snr, window, status
+dsp-replay: window 0: 300 frames, snr 0.00 (largest difference 6067), BELOW THE LIMIT
+dsp-replay: 300 frames judged of 300, 0 bit-exact, snr 0.00, worst window 0.00 at 4434, status first difference at frame 4434, FAIL
+```
+
+- Frames listed as `not bit-exact`: 300 of 300 (frame 4434 with largest difference 2486, up to 5611 at frame 4438;
+  frame 4733 with 4657).
+- The line naming sources our DSP never started prints the source count 0 (the shape in
+  *The likely outcome on a real recording* named a non-empty list); the first status block differs at frame 4434.
+- Per D75, a judged frame that is not bit-exact ends the package `needs-decision`; nothing was retuned and no code
+  changed.
