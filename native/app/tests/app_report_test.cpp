@@ -99,7 +99,10 @@ ChildResult RunSelf(const std::string& arguments) {
     ChildResult result;
     const std::string command = "\"" + g_self_path + "\" " + arguments + " 2>&1";
 #if defined(_WIN32)
-    FILE* pipe = _popen(command.c_str(), "r");
+    // _popen runs `cmd /c <command>`, and cmd strips the first and the last quote of a command that starts with a
+    // quote and has more of them ("path" --crash-test null "dir" is that): wrapped in one more pair it runs as written
+    const std::string shell_command = "\"" + command + "\"";
+    FILE* pipe = _popen(shell_command.c_str(), "r");
 #else
     FILE* pipe = popen(command.c_str(), "r");
 #endif
