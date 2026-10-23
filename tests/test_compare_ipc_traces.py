@@ -366,6 +366,10 @@ import pytest  # noqa: E402
 
 FILE = "fs:USER/file#1"
 MULTISET = ("--fs-reads-multiset",)
+# the tests of the surplus rule (D52) add reads at made-up offsets; the limits on the bytes one side covers (N0-37,
+# tested in their own section) are lifted there so that the tests keep testing the count of reads only
+NO_BYTE_LIMITS = ("--max-one-sided", "1000000000", "--max-detached", "1000000000")
+SURPLUS_ONLY = (*MULTISET, *NO_BYTE_LIMITS)
 
 
 def fs_read(thread, seq, offset, size, crc, session=FILE, result=0, reply=True, bytes_read=None):
@@ -420,17 +424,17 @@ def test_two_reads_in_another_order_pass_the_multiset_rule_and_fail_the_plain_on
 def test_the_surplus_is_bounded_by_max_surplus(tmp_path, capsys):
     full = trace(*reads(5, *STREAM + [(99999 + i, 2048, 7000 + i) for i in range(3)]))
     base = trace(*reads(5, *STREAM))
-    assert run(tmp_path, full[:-1], base, *MULTISET) == 0                          # 2 reads more
+    assert run(tmp_path, full[:-1], base, *SURPLUS_ONLY) == 0                          # 2 reads more
     sixteen = trace(*reads(5, *STREAM + [(70000 + i, 8, i) for i in range(16)]))
-    assert run(tmp_path, sixteen, base, *MULTISET) == 0                            # exactly 16: allowed (the default)
+    assert run(tmp_path, sixteen, base, *SURPLUS_ONLY) == 0                            # exactly 16: allowed (the default)
     seventeen = trace(*reads(5, *STREAM + [(70000 + i, 8, i) for i in range(17)]))
     capsys.readouterr()
-    assert run(tmp_path, seventeen, base, *MULTISET) == 1                          # 17: fails
+    assert run(tmp_path, seventeen, base, *SURPLUS_ONLY) == 1                          # 17: fails
     out = capsys.readouterr().out
     assert "surplus 17" in out and "at most 16" in out
-    assert run(tmp_path, seventeen, base, *MULTISET, "--max-surplus", "17") == 0
-    assert run(tmp_path, sixteen, base, *MULTISET, "--max-surplus", "15") == 1
-    assert run(tmp_path, seventeen, base, *MULTISET, "--max-surplus", "0") == 1
+    assert run(tmp_path, seventeen, base, *SURPLUS_ONLY, "--max-surplus", "17") == 0
+    assert run(tmp_path, sixteen, base, *SURPLUS_ONLY, "--max-surplus", "15") == 1
+    assert run(tmp_path, seventeen, base, *SURPLUS_ONLY, "--max-surplus", "0") == 1
 
 
 @pytest.mark.parametrize("what,changed", [
@@ -492,10 +496,17 @@ def test_reads_of_other_sessions_and_commands_are_compared_in_order(tmp_path):
     assert run(tmp_path, c, d, *MULTISET) == 1
 
 
-def test_the_file_session_number_does_not_matter_for_a_read(tmp_path):
+def test_the_file_session_number_is_not_in_the_multiset_but_a_session_one_side_never_reads_is_a_difference(tmp_path,
+                                                                                                          capsys):
     a = trace(fs_read(5, 1, 0, 8, 1, session="fs:USER/file#1"))
     b = trace(fs_read(5, 1, 0, 8, 1, session="fs:USER/file#9"))
-    assert run(tmp_path, a, b, *MULTISET) == 0
+    # the multiset of D52 ignores the session (its key has none), but since N0-37 a file session that one side reads
+    # from and the other does not is a difference: the same read under another number is two sessions read by one side
+    capsys.readouterr()
+    assert run(tmp_path, a, b, *MULTISET) == 1
+    out = capsys.readouterr().out
+    assert "only the reference reads from: fs:USER/file#1" in out and "only the candidate reads from: fs:USER/file#9" in out
+    assert "differ as multisets" not in out
 
 
 def fs_request(thread, seq, session, cmd, params=(), **kw):
@@ -696,6 +707,7 @@ def test_the_docstring_documents_the_cross_model_options():
 # ── touching Reads merged before the multiset is built (N0-33, D76) ───────────────────────────────
 
 COALESCE = (*MULTISET, "--fs-reads-coalesce")
+COALESCE_SURPLUS_ONLY = (*COALESCE, *NO_BYTE_LIMITS)
 FILE_DATA = bytes((i * 13 + i // 97) & 0xFF for i in range(70000))
 
 
@@ -782,16 +794,16 @@ def test_the_surplus_counts_runs_after_the_merge(tmp_path, capsys):
     def isolated(n):
         return spans(5, 10, [(10000 + 10 * i, 5) for i in range(n)])        # n reads that touch nothing
     ref = trace(*base)
-    assert run(tmp_path, trace(*base, *isolated(16)), ref, *COALESCE) == 0
+    assert run(tmp_path, trace(*base, *isolated(16)), ref, *COALESCE_SURPLUS_ONLY) == 0
     capsys.readouterr()
-    assert run(tmp_path, trace(*base, *isolated(17)), ref, *COALESCE) == 1
+    assert run(tmp_path, trace(*base, *isolated(17)), ref, *COALESCE_SURPLUS_ONLY) == 1
     out = capsys.readouterr().out
     assert "surplus 17" in out and "at most 16" in out
-    assert run(tmp_path, trace(*base, *isolated(17)), ref, *COALESCE, "--max-surplus", "17") == 0
+    assert run(tmp_path, trace(*base, *isolated(17)), ref, *COALESCE_SURPLUS_ONLY, "--max-surplus", "17") == 0
     # 40 extra reads that run on from the last one are one run: the surplus is 0 runs
     on = spans(5, 10, split(2100, [50] * 40))
     assert run(tmp_path, trace(*base[:2], *spans(5, 3, [(2000, 100)]), *on),
-               trace(*base[:2], *spans(5, 3, [(2000, 2100)])), *COALESCE) == 0
+               trace(*base[:2], *spans(5, 3, [(2000, 2100)])), *COALESCE_SURPLUS_ONLY) == 0
 
 
 def test_runs_are_per_thread_and_per_file_session(tmp_path):
@@ -805,8 +817,8 @@ def test_runs_are_per_thread_and_per_file_session(tmp_path):
     mixed = [(0, 4096, "fs:USER/file#1"), (9000, 100, "fs:USER/file#2"), (4096, 2048, "fs:USER/file#1"),
              (9100, 100, "fs:USER/file#2")]
     lines = [spans(5, 1 + i, [(off, n)], session=s)[0] for i, (off, n, s) in enumerate(mixed)]
-    merged = [spans(5, 1, [(0, 6144)], session="fs:USER/file#7")[0],
-              spans(5, 2, [(9000, 200)], session="fs:USER/file#8")[0]]
+    merged = [spans(5, 1, [(0, 6144)], session="fs:USER/file#1")[0],
+              spans(5, 2, [(9000, 200)], session="fs:USER/file#2")[0]]
     assert run(tmp_path, trace(*lines), trace(*merged), *COALESCE) == 0
 
 
@@ -858,6 +870,7 @@ def test_the_docstring_documents_the_coalesce_option():
 # ── a stream that ends further on one side: the shorter run is a verified prefix of the longer (N0-33) ───────────
 
 PREFIX = (*COALESCE, "--fs-reads-prefix")
+PREFIX_SURPLUS_ONLY = (*PREFIX, *NO_BYTE_LIMITS)
 TWO_K = split(0, [2048] * 20)                                  # 40960 bytes in 2048-byte pieces
 BIG_THEN_TWO_K = split(0, [28672] + [2048] * 10)               # 49152 bytes: a boundary at 40960, 8192 bytes further on
 
@@ -897,11 +910,11 @@ def test_the_reads_beyond_the_prefix_count_toward_the_surplus(tmp_path, capsys):
     for tail, code in ((16, 0), (17, 1)):
         cand = trace(*spans(5, 1, split(0, [40960] + [2048] * tail)))
         capsys.readouterr()
-        assert run(tmp_path, ref, cand, *PREFIX) == code, tail
+        assert run(tmp_path, ref, cand, *PREFIX_SURPLUS_ONLY) == code, tail
     out = capsys.readouterr().out
     assert "surplus 17" in out and "at most 16" in out
     cand = trace(*spans(5, 1, split(0, [40960] + [2048] * 17)))
-    assert run(tmp_path, ref, cand, *PREFIX, "--max-surplus", "17") == 0
+    assert run(tmp_path, ref, cand, *PREFIX_SURPLUS_ONLY, "--max-surplus", "17") == 0
 
 
 def test_the_prefix_rule_needs_the_coalesce_rule_and_leaves_exact_matches_alone(tmp_path, capsys):
@@ -998,21 +1011,24 @@ def test_the_report_has_a_coverage_line_with_the_multiset_option_only(tmp_path, 
     assert ("1 thread/file session(s) read; bytes only the reference covers: 10240 (in 1, 1 range(s)), only the "
             "candidate covers: 0 (in 0, 0 range(s)); the most per thread and file session: reference 10240 on thread"
             ) in line[0]
-    assert "(information, not a rule)" in line[0]
+    assert "(the limits of N0-37 are applied per thread)" in line[0]
     assert run(tmp_path, a, a, *MULTISET) == 0
     assert ("only the reference covers: 0 (in 0, 0 range(s)), only the candidate covers: 0 (in 0, 0 range(s)) "
-            "(information") in capsys.readouterr().out
+            "(the limits") in capsys.readouterr().out
     assert run(tmp_path, a, b, "--prefix") in (0, 1)
     assert "fs coverage:" not in capsys.readouterr().out
 
 
-def test_the_coverage_is_information_it_changes_no_result(tmp_path, capsys):
+def test_the_coverage_line_counts_what_the_limits_judge(tmp_path, capsys):
     base = trace(*reads(5, *STREAM))
-    # 4 MiB that only the candidate reads, in one read: the multiset rule accepts one read more, as it did before
+    # 4 MiB that only the candidate reads, in one read: one read more is inside the surplus of D52 (the multiset rule
+    # alone accepted it, N0-36), the limits of N0-37 do not
     big = trace(*reads(5, *STREAM), fs_read(5, 99, 10_000_000, 4 << 20, 0xABCD))
     capsys.readouterr()
-    assert run(tmp_path, base, big, *MULTISET) == 0
+    assert run(tmp_path, base, big, *MULTISET) == 1
     assert "only the candidate covers: 4194304 (in 1, 1 range(s))" in capsys.readouterr().out
+    assert run(tmp_path, base, big, *MULTISET, "--max-one-sided", str(4 << 20), "--max-detached", str(4 << 20)) == 0
+    capsys.readouterr()
     # a CRC that differs on an identical (offset, size) fails, with or without a coverage difference
     changed = list(STREAM)
     changed[3] = (changed[3][0], changed[3][1], 0xDEAD)
@@ -1119,23 +1135,211 @@ def test_the_coverage_line_names_the_largest_one_sided_row_of_each_side():
     assert cmp.coverage_line(rows) == (
         "fs coverage: 3 thread/file session(s) read; bytes only the reference covers: 130 (in 2, 3 range(s)), only the "
         "candidate covers: 45 (in 3, 3 range(s)); the most per thread and file session: reference 70 on thread #5, "
-        "candidate 30 on thread #5 (information, not a rule)")
+        "candidate 30 on thread #5 (the limits of N0-37 are applied per thread)")
     # the largest per side, not the smallest, and a tie goes to the later thread
     rows = [C("#3", FILE, 0, 0, 40, 5, 1, 1), C("#5", FILE, 0, 0, 40, 9, 1, 1), C("#7", FILE, 0, 0, 10, 2, 1, 1)]
-    assert "reference 40 on thread #5, candidate 9 on thread #5 (information" in cmp.coverage_line(rows)
+    assert "reference 40 on thread #5, candidate 9 on thread #5 (the limits" in cmp.coverage_line(rows)
     # a side with nothing one-sided has no part in the line
     only_candidate = cmp.coverage_line([C("#5", FILE, 0, 30, 0, 30, 0, 1)])
     assert only_candidate == ("fs coverage: 1 thread/file session(s) read; bytes only the reference covers: 0 (in 0, 0 "
                               "range(s)), only the candidate covers: 30 (in 1, 1 range(s)); the most per thread and "
-                              "file session: candidate 30 on thread #5 (information, not a rule)")
+                              "file session: candidate 30 on thread #5 (the limits of N0-37 are applied per thread)")
     only_reference = cmp.coverage_line([C("#5", FILE, 30, 0, 30, 0, 1, 0)])
-    assert "the most per thread and file session: reference 30 on thread #5 (information" in only_reference
+    assert "the most per thread and file session: reference 30 on thread #5 (the limits" in only_reference
     assert "candidate 30" not in only_reference
     assert cmp.coverage_line([]) == ("fs coverage: 0 thread/file session(s) read; bytes only the reference covers: 0 "
                                      "(in 0, 0 range(s)), only the candidate covers: 0 (in 0, 0 range(s)) "
-                                     "(information, not a rule)")
+                                     "(the limits of N0-37 are applied per thread)")
 
 
 def test_the_docstring_documents_the_coverage_line():
     for word in ("fs coverage:", "N0-36", "comparators.md section 11", "information"):
+        assert word in cmp.__doc__
+
+
+# ── what a thread's Reads cover: the file sessions and the bytes (N0-37, docs/native/comparators.md section 12) ──
+
+NATIVE = (*COALESCE, "--fs-reads-prefix")
+PROFILES = {"cross": MULTISET, "native": NATIVE}
+LIMIT = cmp.DEFAULT_MAX_ONE_SIDED
+
+
+def stream_with_tail(tail_offset: int, tail_size: int, thread: int = 5, session: str = FILE):
+    """Reads of the first 4096 bytes and of one more piece [tail_offset, tail_offset + tail_size)."""
+    return spans(thread, 1, [(0, 4096), (tail_offset, tail_size)], session=session)
+
+
+def both_ways(tmp_path, a, b, *args):
+    """The exit codes of (a against b, b against a)."""
+    return run(tmp_path, a, b, *args), run(tmp_path, b, a, *args)
+
+
+def test_the_defaults_are_the_numbers_of_the_saved_pairs():
+    assert cmp.DEFAULT_MAX_ONE_SIDED == 16384 and cmp.DEFAULT_MAX_DETACHED == 0
+    assert cmp.DEFAULT_MAX_ONE_SIDED > 10240          # the most that the calibrated pairs show, per thread
+
+
+@pytest.mark.parametrize("profile", sorted(PROFILES))
+def test_a_file_session_that_only_one_side_reads_is_a_difference_whatever_its_size(tmp_path, capsys, profile):
+    opts = PROFILES[profile]
+    two = trace(*spans(5, 1, [(0, 4096)]), *spans(5, 2, [(0, 8)], session="fs:USER/file#3"))
+    one = trace(*spans(5, 1, [(0, 4096)]))
+    capsys.readouterr()
+    assert both_ways(tmp_path, two, one, *opts) == (1, 1)
+    out = capsys.readouterr().out
+    assert "only the reference reads from: fs:USER/file#3" in out and "only the candidate reads from: fs:USER/file#3" in out
+    # 8 bytes and one read: no byte limit or surplus is what fails it
+    huge = (*opts, "--max-surplus", "1000", *NO_BYTE_LIMITS)
+    assert both_ways(tmp_path, two, one, *huge) == (1, 1)
+    # the equal case
+    assert run(tmp_path, two, two, *opts) == 0
+    # the same session on another thread is another thread's session
+    other = trace(*spans(5, 1, [(0, 4096)]), *spans(1, 2, [(0, 8)], session="fs:USER/file#3"))
+    assert both_ways(tmp_path, two, other, *opts) == (1, 1)
+
+
+@pytest.mark.parametrize("profile", sorted(PROFILES))
+def test_a_thread_whose_reads_all_vanish_from_one_side_is_a_difference_even_when_the_runs_are_few(tmp_path, profile):
+    opts = PROFILES[profile]
+    stream = split(0, [2048] * 200)                                  # one run of 200 reads: surplus 1 when merged
+    full = trace(*spans(5, 1, stream))
+    gone = trace(req(1, 1, "srv:", 0x00010000))
+    full = trace(req(1, 1, "srv:", 0x00010000), *spans(5, 1, stream))
+    assert both_ways(tmp_path, full, gone, *opts) == (1, 1)
+    few = trace(req(1, 1, "srv:", 0x00010000), *spans(5, 1, [(0, 4096), (8192, 4096)]))              # two reads: far inside the surplus of 16
+    assert both_ways(tmp_path, few, gone, *opts) == (1, 1)
+    assert both_ways(tmp_path, few, gone, *opts, *NO_BYTE_LIMITS) == (1, 1)
+    # without the multiset rule none of it applies: a shorter candidate is what --prefix accepts
+    assert run(tmp_path, full, gone, "--prefix") == 0
+
+
+def test_the_other_reads_of_the_thread_do_not_hide_a_session_that_went_missing(tmp_path):
+    a = trace(*spans(5, 1, [(0, 4096)]), *spans(5, 2, [(0, 4096)], session="fs:USER/file#2"))
+    b = trace(*spans(5, 1, [(0, 4096)]), *spans(5, 2, [(0, 4096)], session="fs:USER/file#3"))
+    assert both_ways(tmp_path, a, b, *MULTISET) == (1, 1)             # the same bytes, another session each side
+
+
+def test_no_reads_at_all_and_equal_reads_match(tmp_path, capsys):
+    none = trace(req(5, 1, "srv:", 0x00010000))
+    capsys.readouterr()
+    for opts in (MULTISET, NATIVE):
+        assert run(tmp_path, none, none, *opts) == 0
+        assert run(tmp_path, trace(*reads(5, *STREAM)), trace(*reads(5, *STREAM)), *opts) == 0
+    assert "cover different bytes" not in capsys.readouterr().out
+    assert run(tmp_path, [HEADER, thread_line(1, 0, 0x100000)], [HEADER, thread_line(1, 0, 0x100000)], *MULTISET) in (0, 2)
+
+
+@pytest.mark.parametrize("profile", sorted(PROFILES))
+def test_the_bytes_that_only_one_side_covers_are_bounded_at_the_limit_on_each_side(tmp_path, capsys, profile):
+    opts = PROFILES[profile]
+    at = trace(*stream_with_tail(4096, LIMIT))                         # a tail of exactly the limit
+    over = trace(*stream_with_tail(4096, LIMIT + 1))
+    under = trace(*stream_with_tail(4096, LIMIT - 1))
+    base = trace(*spans(5, 1, [(0, 4096)]))
+    assert both_ways(tmp_path, at, base, *opts) == (0, 0)
+    assert both_ways(tmp_path, under, base, *opts) == (0, 0)
+    capsys.readouterr()
+    assert run(tmp_path, over, base, *opts) == 1                         # the reference covers more
+    out = capsys.readouterr().out
+    assert f"bytes only the reference covers: {LIMIT + 1} (at most {LIMIT})" in out
+    assert "covers in ranges that touch nothing" not in out              # the tail touches the other side's range
+    assert run(tmp_path, base, over, *opts) == 1                         # the candidate covers more
+    assert f"bytes only the candidate covers: {LIMIT + 1} (at most {LIMIT})" in capsys.readouterr().out
+    # the option moves the bound, both ways
+    assert both_ways(tmp_path, over, base, *opts, "--max-one-sided", str(LIMIT + 1)) == (0, 0)
+    assert both_ways(tmp_path, at, base, *opts, "--max-one-sided", str(LIMIT - 1)) == (1, 1)
+    assert both_ways(tmp_path, base, base, *opts, "--max-one-sided", "0") == (0, 0)
+
+
+def test_the_bytes_are_summed_over_the_file_sessions_of_a_thread_not_taken_one_by_one(tmp_path, capsys):
+    half = 10240                                                          # each below the limit, together above it
+    mk = lambda tail: trace(*stream_with_tail(4096, tail, session="fs:USER/file#1"),
+                            *[fs_read(5, 10 + i, o, n, zlib.crc32(FILE_DATA[o:o + n]), session="fs:USER/file#2")
+                              for i, (o, n) in enumerate([(0, 4096), (4096, tail)])])
+    base = trace(*spans(5, 1, [(0, 4096)]), *spans(5, 10, [(0, 4096)], session="fs:USER/file#2"))
+    capsys.readouterr()
+    assert run(tmp_path, mk(half), base, *MULTISET) == 1
+    assert f"bytes only the reference covers: {2 * half} (at most {LIMIT})" in capsys.readouterr().out
+    assert run(tmp_path, mk(LIMIT // 2), base, *MULTISET) == 0            # 2 x 8192 = the limit
+    # a thread of its own has a bound of its own
+    other = trace(*stream_with_tail(4096, half, thread=1), *stream_with_tail(4096, half, thread=5))
+    base2 = trace(*spans(1, 1, [(0, 4096)]), *spans(5, 1, [(0, 4096)]))
+    assert run(tmp_path, other, base2, *MULTISET) == 0
+
+
+@pytest.mark.parametrize("profile", sorted(PROFILES))
+def test_a_range_next_to_nothing_the_other_side_covers_is_a_difference_whatever_its_size(tmp_path, capsys, profile):
+    opts = PROFILES[profile]
+    base = trace(*spans(5, 1, [(0, 4096)]))
+    for size in (1, 2048, 8192):
+        far = trace(*spans(5, 1, [(0, 4096), (9000, size)]))
+        assert both_ways(tmp_path, far, base, *opts) == (1, 1), size       # the extra read of N0-36's control
+    capsys.readouterr()
+    assert run(tmp_path, trace(*spans(5, 1, [(0, 4096), (9000, 2048)])), base, *opts) == 1
+    out = capsys.readouterr().out
+    assert "bytes only the reference covers in ranges that touch nothing the other side covers: 2048 (at most 0)" in out
+    assert "(at most 16384)" not in out                                    # inside the byte limit; only the detached rule fails
+    assert "0x" not in out.split("cover different bytes", 1)[1].split("fs reads:")[0]      # numbers, no values
+    far = trace(*spans(5, 1, [(0, 4096), (9000, 2)]))
+    assert both_ways(tmp_path, far, base, *opts, "--max-detached", "2") == (0, 0)
+    assert both_ways(tmp_path, far, base, *opts, "--max-detached", "1") == (1, 1)
+    # the detached bytes are summed over the thread's ranges: two ranges of one byte are two bytes
+    two = trace(*spans(5, 1, [(0, 4096), (9000, 1), (9500, 1)]))
+    assert both_ways(tmp_path, two, base, *opts, "--max-detached", "1") == (1, 1)
+    assert both_ways(tmp_path, two, base, *opts, "--max-detached", "2") == (0, 0)
+
+
+def test_the_gap_between_a_range_and_the_other_sides_is_one_byte_wide_at_least(tmp_path):
+    base = trace(*spans(5, 1, [(100, 4096)]))                              # covers [100, 4196)
+    touching_after = trace(*spans(5, 1, [(100, 4096), (4196, 64)]))
+    touching_before = trace(*spans(5, 1, [(100, 4096), (36, 64)]))         # [36, 100)
+    one_byte_after = trace(*spans(5, 1, [(100, 4096), (4197, 64)]))
+    one_byte_before = trace(*spans(5, 1, [(100, 4096), (35, 64)]))         # [35, 99)
+    assert both_ways(tmp_path, touching_after, base, *MULTISET) == (0, 0)
+    assert both_ways(tmp_path, touching_before, base, *MULTISET) == (0, 0)
+    assert both_ways(tmp_path, one_byte_after, base, *MULTISET) == (1, 1)
+    assert both_ways(tmp_path, one_byte_before, base, *MULTISET) == (1, 1)
+    # a piece read in the middle of what the other side covers is not a range of its own
+    inner = trace(*spans(5, 1, [(100, 4096)]))
+    assert run(tmp_path, inner, trace(*spans(5, 1, [(100, 4096), (200, 64)])), *MULTISET) == 0
+
+
+def test_the_extra_read_and_the_vanished_thread_of_the_what_if_controls_fail_in_both_profiles(tmp_path):
+    # the shape of N0-36's controls on a stream of 100 reads of 2048 bytes: one 2048-byte read added far away, and
+    # the whole thread removed
+    stream = split(0, [2048] * 100)
+    ref = trace(*spans(5, 1, stream))
+    added = trace(*spans(5, 1, stream), fs_read(5, 200, 300000, 2048, 0x1234))
+    for opts in (MULTISET, NATIVE):
+        assert run(tmp_path, ref, added, *opts) == 1
+        assert run(tmp_path, added, ref, *opts) == 1
+        assert run(tmp_path, ref, trace(req(5, 1, "srv:", 0x00010000)), *opts) == 1
+    # before N0-37 both of them passed the native profile (the surplus is 1 run); the byte limits are what stops the
+    # extra read, and no option lifts the rule on the thread that vanished
+    assert run(tmp_path, ref, added, *NATIVE, *NO_BYTE_LIMITS) == 0
+    assert run(tmp_path, ref, trace(req(5, 1, "srv:", 0x00010000)), *NATIVE, *NO_BYTE_LIMITS) == 1
+
+
+def test_a_stream_cut_at_another_place_still_passes_in_both_profiles(tmp_path):
+    # the calibrated case: the same stream, one side reads 10240 bytes (5 chunks) further
+    short = trace(*spans(5, 1, split(0, [2048] * 20)))
+    long_ = trace(*spans(5, 1, split(0, [2048] * 20 + [2048] * 5)))
+    for opts in (MULTISET, NATIVE):
+        assert both_ways(tmp_path, short, long_, *opts) == (0, 0)
+
+
+def test_the_new_options_have_their_usage_errors_too(tmp_path, capsys):
+    a = trace(*spans(5, 1, [(0, 4096)]))
+    for extra in (["--max-one-sided", "5"], ["--max-detached", "5"], ["--fs-reads-multiset", "--max-one-sided", "-1"],
+                  ["--fs-reads-multiset", "--max-detached", "-1"], ["--fs-reads-multiset", "--max-one-sided", "x"]):
+        with pytest.raises(SystemExit) as stop:
+            run(tmp_path, a, a, *extra)
+        assert stop.value.code == 2, extra
+    err = capsys.readouterr().err
+    assert "--max-one-sided is a rule of --fs-reads-multiset" in err and "--max-detached is a rule of" in err
+    assert "--max-one-sided must not be negative" in err and "--max-detached must not be negative" in err
+
+
+def test_the_docstring_documents_the_coverage_rules():
+    for word in ("--max-one-sided", "--max-detached", "N0-37", "16384", "10240", "file session"):
         assert word in cmp.__doc__

@@ -37,7 +37,8 @@ This tool prints only session names, headers, result codes, descriptor indices, 
 counts; with --strict it names the words that differ, never their values.
 
 usage: compare_ipc_traces.py REF CAND [--strict] [--ignore FILE]... [--prefix] [--context N]
-                             [--fs-reads-multiset [--max-surplus N] [--fs-reads-coalesce [--fs-reads-prefix]]]
+                             [--fs-reads-multiset [--max-surplus N] [--max-one-sided BYTES] [--max-detached BYTES]
+                                                  [--fs-reads-coalesce [--fs-reads-prefix]]]
                              [--fs-write-mask FILE --fs-write-mask-session S]
   --strict     also compare every word of every command (with handles as names). Not
                reproducible on the oracle itself: a service that pushes a sub-word reply value can
@@ -68,6 +69,15 @@ checks use these two options, and nothing else is loosened for `fs:`; the `nativ
                the --ignore files.
   --max-surplus N       reads the larger multiset may hold beyond the smaller (default 16; with
                --fs-reads-multiset only)
+  --max-one-sided BYTES, --max-detached BYTES   (N0-37, docs/native/comparators.md section 12; with --fs-reads-multiset
+               only) what the Reads of one thread cover, by byte ranges whatever the pieces. A file session that one
+               side reads from and the other does not is a difference whatever its size (a thread that one side never
+               reads from is the same case). The bytes that one side covers and the other does not, summed over the
+               thread's file sessions, are at most --max-one-sided on each side (default 16384: the saved pairs of
+               G1, G2, G6 and the native runs have at most 10240); and those of them in ranges that touch nothing the
+               other side covers (the byte before or after) are at most --max-detached (default 0: in those pairs every
+               one-sided range continues a range the other side reads, a stream cut at another place). The multiset
+               and these rules are both applied; the CRC-32 of bytes that only one side read is not compared.
   --fs-reads-coalesce   (D76, the `native` profile of tools/native/golden.py; needs --fs-reads-multiset) before the
                multiset is built, the Reads of one thread and one file session (`fs:USER/file#3`) whose byte ranges
                touch (offset + size of one is the offset of the next) are merged into one Read, whatever order
@@ -105,10 +115,10 @@ checks use these two options, and nothing else is loosened for `fs:`; the `nativ
 With --fs-reads-multiset the report also has an `fs coverage:` line, directly after the `fs reads:` line (N0-36,
 docs/native/comparators.md section 11; an `fs write masks:` line can follow it): for each thread and file session, the
 union of the byte ranges the Reads returned (whatever the pieces) on each side, and how many bytes (in how many
-separate ranges) only one side covers. It is information and no rule looks at it: the jit and native pairs of the
-sessions without a quest have at most 10 KB per thread that only one side reads (a stream cut at another place), the
-quest sessions G4 and G3 have 133 KB and 3 MB (the game loads other resources on the two models), and the number tells
-how far a pair is from the calibrated ones.
+separate ranges) only one side covers. The line is information; the rules on those bytes are --max-one-sided and
+--max-detached above (N0-37): the jit and native pairs of the sessions without a quest have at most 10 KB per thread
+that only one side reads (a stream cut at another place), the quest sessions G4 and G3 have 133 KB and 3 MB (the game
+loads other resources on the two models), and the number tells how far a pair is from the calibrated ones.
 Exit status 0 when every thread matches (up to the candidate's end with --prefix), 1 when
 something differs, 2 for unreadable input: a file that is missing, has no `# ipctrace` header (an
 SVC trace, an empty file, a runner that ignored --trace-ipc), is not UTF-8 text, holds no request
@@ -131,6 +141,11 @@ import tracefmt  # noqa: E402
 
 IpcCall = tracefmt.IpcCall
 DEFAULT_MAX_SURPLUS = 16        # D52: reads one side's multiset may hold beyond the other's
+# N0-37 (docs/native/comparators.md section 12): the 12 saved pairs of G1, G2, G6 and the native runs have at most
+# 10,240 bytes per thread that only one side reads (a stream cut at another place), all of them next to bytes that the
+# other side reads too; 16,384 is two 8,192-byte stream chunks.  Bytes in a range with no such neighbour: none.
+DEFAULT_MAX_ONE_SIDED = 16384   # bytes per thread that one side covers and the other does not
+DEFAULT_MAX_DETACHED = 0        # of them, bytes in ranges that touch nothing the other side covers
 
 
 class IgnoreError(ValueError):
@@ -553,19 +568,56 @@ def subtract_ranges(a: list[tuple[int, int]], b: list[tuple[int, int]]) -> list[
     return out
 
 
+def read_extents(calls: list[IpcCall]) -> dict[str, list[tuple[int, int]]]:
+    """For each file session that the Reads among `calls` were sent to: the byte ranges they returned (a session whose
+    Reads all failed is in the result with no range)."""
+    out: dict[str, list[tuple[int, int]]] = {}
+    for c in calls:
+        if is_fs_read(c):
+            e = fs_read_extent(c)
+            out.setdefault(c.session, [])
+            if e is not None:
+                out[c.session].append(e)
+    return out
+
+
+def touches(ranges: list[tuple[int, int]], start: int, end: int) -> bool:
+    """Whether one of the merged `ranges` ends where [start, end) starts or starts where it ends (the byte before or
+    the byte after is covered)."""
+    return any(lo <= start <= hi or lo <= end <= hi for lo, hi in ranges)
+
+
+def coverage_problems(a: list[IpcCall], b: list[IpcCall], max_one_sided: int, max_detached: int) -> dict | None:
+    """N0-37: the rules on what a thread's Reads cover, on top of the multiset (D52): a file session that one side
+    reads and the other does not is a difference whatever its size; the bytes that only one side covers (summed over
+    the thread's file sessions) are at most `max_one_sided` on each side; and the part of them that is in ranges
+    with no neighbour the other side covers (a range read by itself, no stream cut at another place) is at most
+    `max_detached`. None when none is broken; else what is."""
+    ea, eb = read_extents(a), read_extents(b)
+    sessions_only_ref = sorted(set(ea) - set(eb))
+    sessions_only_cand = sorted(set(eb) - set(ea))
+    one = {"ref": 0, "cand": 0}
+    detached = {"ref": 0, "cand": 0}
+    for session in sorted(set(ea) & set(eb)):
+        ua, ub = merge_ranges(ea[session]), merge_ranges(eb[session])
+        for side, mine, other in (("ref", ua, ub), ("cand", ub, ua)):
+            for lo, hi in subtract_ranges(mine, other):
+                one[side] += hi - lo
+                if not touches(other, lo, hi):
+                    detached[side] += hi - lo
+    broken = bool(sessions_only_ref or sessions_only_cand or any(v > max_one_sided for v in one.values())
+                  or any(v > max_detached for v in detached.values()))
+    if not broken:
+        return None
+    return {"sessions_only_ref": sessions_only_ref, "sessions_only_cand": sessions_only_cand,
+            "one_sided": one, "detached": detached, "max_one_sided": max_one_sided, "max_detached": max_detached}
+
+
 def read_coverage(ref: dict[str, list[IpcCall]], cand: dict[str, list[IpcCall]]) -> list[Coverage]:
     """For each thread and file session that either side read from: what each side covers and what only one covers.
-    Information only (N0-36): no rule of this tool looks at it. Two threads that read the same bytes are two rows."""
-    def extents(calls: list[IpcCall]) -> dict[str, list[tuple[int, int]]]:
-        out: dict[str, list[tuple[int, int]]] = {}
-        for c in calls:
-            if is_fs_read(c):
-                e = fs_read_extent(c)
-                out.setdefault(c.session, [])
-                if e is not None:
-                    out[c.session].append(e)
-        return out
-
+    Information (N0-36); `coverage_problems` (N0-37) applies the limits. Two threads that read the same bytes are two
+    rows."""
+    extents = read_extents
     rows = []
     for tid in sorted(set(ref) | set(cand), key=_thread_order):
         ea, eb = extents(ref.get(tid, [])), extents(cand.get(tid, []))
@@ -594,12 +646,13 @@ def coverage_line(rows: list[Coverage]) -> str:
             worst.append(f"{label} {getattr(top, field)} on thread {top.thread}")
     if worst:
         text += "; the most per thread and file session: " + ", ".join(worst)
-    return text + " (information, not a rule)"
+    return text + " (the limits of N0-37 are applied per thread)"
 
 
 def compare(ref: dict[str, list[IpcCall]], cand: dict[str, list[IpcCall]], strict: bool = False,
             prefix: bool = False, fs_reads: bool = False, max_surplus: int = DEFAULT_MAX_SURPLUS,
-            coalesce: bool = False, read_prefix: bool = False, stats: Counter | None = None) -> list[dict]:
+            coalesce: bool = False, read_prefix: bool = False, stats: Counter | None = None,
+            max_one_sided: int = DEFAULT_MAX_ONE_SIDED, max_detached: int = DEFAULT_MAX_DETACHED) -> list[dict]:
     """One report per thread that differs: thread, index of the first difference, the two requests
     (None past the end of a trace), and the lengths. With `fs_reads` (D52) a thread's Reads of the file
     sessions of fs:USER are taken out and compared as multisets (a report of kind `reads`), and its other
@@ -616,6 +669,9 @@ def compare(ref: dict[str, list[IpcCall]], cand: dict[str, list[IpcCall]], stric
             problem = compare_reads(ra, rb, max_surplus, coalesce, read_prefix, stats) if ra or rb else None
             if problem:
                 out.append({"kind": "reads", "thread": tid, **problem})
+            covered = coverage_problems(ra, rb, max_one_sided, max_detached) if ra or rb else None
+            if covered:
+                out.append({"kind": "coverage", "thread": tid, **covered})
         n = min(len(a), len(b))
         first = next((i for i in range(n) if kf(a[i], strict) != kf(b[i], strict)), None)
         if first is None and (len(a) == len(b) or (prefix and len(b) <= len(a))):
@@ -643,6 +699,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--max-surplus", type=int, default=None, metavar="N",
                     help=f"reads the larger multiset may hold beyond the smaller (default {DEFAULT_MAX_SURPLUS}; "
                          f"needs --fs-reads-multiset)")
+    ap.add_argument("--max-one-sided", type=int, default=None, metavar="BYTES",
+                    help=f"bytes per thread that one side's Reads cover and the other's do not (default "
+                         f"{DEFAULT_MAX_ONE_SIDED}; needs --fs-reads-multiset; N0-37)")
+    ap.add_argument("--max-detached", type=int, default=None, metavar="BYTES",
+                    help=f"of them, the bytes in ranges that touch nothing the other side covers (default "
+                         f"{DEFAULT_MAX_DETACHED}; needs --fs-reads-multiset; N0-37)")
     ap.add_argument("--fs-reads-coalesce", action="store_true",
                     help="before the multiset is built, merge the consecutive Reads of one thread and one file "
                          "session whose byte ranges touch into one Read (summed size, CRC-32 combined); needs "
@@ -666,6 +728,14 @@ def main(argv: list[str] | None = None) -> int:
         ap.error("--fs-reads-prefix is a rule of --fs-reads-coalesce")
     if args.max_surplus is not None and args.max_surplus < 0:
         ap.error("--max-surplus must not be negative")
+    for opt in ("max_one_sided", "max_detached"):
+        value = getattr(args, opt)
+        if value is not None and not args.fs_reads_multiset:
+            ap.error(f"--{opt.replace('_', '-')} is a rule of --fs-reads-multiset")
+        if value is not None and value < 0:
+            ap.error(f"--{opt.replace('_', '-')} must not be negative")
+    max_one_sided = DEFAULT_MAX_ONE_SIDED if args.max_one_sided is None else args.max_one_sided
+    max_detached = DEFAULT_MAX_DETACHED if args.max_detached is None else args.max_detached
     if bool(args.fs_write_mask) != bool(args.fs_write_mask_session):
         ap.error("--fs-write-mask and --fs-write-mask-session go together")
     max_surplus = DEFAULT_MAX_SURPLUS if args.max_surplus is None else args.max_surplus
@@ -686,7 +756,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     stats: Counter = Counter()
     diffs = compare(ref, cand, args.strict, args.prefix, args.fs_reads_multiset, max_surplus, args.fs_reads_coalesce,
-                    args.fs_reads_prefix, stats)
+                    args.fs_reads_prefix, stats, max_one_sided, max_detached)
     for tid in sorted(set(ref) | set(cand), key=_thread_order):
         print(f"thread {tid}: {len(ref.get(tid, []))} vs {len(cand.get(tid, []))} requests")
     if args.prefix:
@@ -706,6 +776,19 @@ def main(argv: list[str] | None = None) -> int:
                       f"side (offset, size, result, CRC-32 of the data):")
                 for item in d["foreign"][:5]:
                     print(f"    {', '.join(str(x) for x in item)}")
+            continue
+        if d["kind"] == "coverage":
+            why = []                    # one line: golden.py shows the first line of a failed comparison
+            for label, key_ in (("reference", "sessions_only_ref"), ("candidate", "sessions_only_cand")):
+                if d[key_]:
+                    why.append(f"file session(s) only the {label} reads from: {', '.join(d[key_])}")
+            for label, side in (("reference", "ref"), ("candidate", "cand")):
+                if d["one_sided"][side] > d["max_one_sided"]:
+                    why.append(f"bytes only the {label} covers: {d['one_sided'][side]} (at most {d['max_one_sided']})")
+                if d["detached"][side] > d["max_detached"]:
+                    why.append(f"bytes only the {label} covers in ranges that touch nothing the other side covers: "
+                               f"{d['detached'][side]} (at most {d['max_detached']})")
+            print(f"\nthread {d['thread']}: fs:USER/file Reads cover different bytes: " + "; ".join(why))
             continue
         i, a = d["index"], d["series"]
         print(f"\nthread {d['thread']} differs at request {i}:")

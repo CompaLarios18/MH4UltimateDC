@@ -91,6 +91,10 @@ if opt("--trace-ipc"):
         reads[0] = (reads[0][0], 16, 0x99)
     if mode == "reads_many":
         reads += [(1000 + 16 * i, 16, 0x100 + i) for i in range(17)]
+    if mode == "read_far":                             # N0-37: one 8-byte read next to nothing the recording reads
+        reads += [(900000, 8, 0x777)]
+    if mode == "read_near":                            # N0-37: one 16-byte read that goes on where the stream ends
+        reads += [(48, 16, 0x778)]
     if mode == "reads_apart":                          # 17 more reads, none touching another: 17 more runs
         reads += [(1000 + 32 * i, 16, 0x100 + i) for i in range(17)]
     if mode == "pieces":
@@ -1058,6 +1062,45 @@ f12:A
 """
 
 
+def test_the_byte_limits_of_the_fs_reads_are_the_tools_defaults_in_one_place():
+    # N0-37: the cross and the native profile pass these to compare_ipc_traces.py; the tool's own defaults are the same
+    sys.path.insert(0, str(ROOT / "tools"))
+    import compare_ipc_traces
+    assert golden.CROSS_MAX_ONE_SIDED == compare_ipc_traces.DEFAULT_MAX_ONE_SIDED == 16384
+    assert golden.CROSS_MAX_DETACHED == compare_ipc_traces.DEFAULT_MAX_DETACHED == 0
+
+
+@pytest.mark.parametrize("profile", ["cross", "native"])
+def test_the_byte_limits_stop_a_read_next_to_nothing_and_let_a_stream_go_on(env, capsys, monkeypatch, profile):
+    assert env.record() == 0
+    check = lambda *extra: env.check("--profile", profile, "--ignore", str(env.ignore_file), *extra)   # the same backend
+    capsys.readouterr()
+    assert check() == 0
+    monkeypatch.setenv("FAKE_MODE", "read_far")
+    assert check() == 1
+    out = capsys.readouterr().out
+    assert statuses(out)["ipc"] == "FAIL" and "touch nothing the other side covers: 8 (at most 0)" in out
+    monkeypatch.setattr(golden, "CROSS_MAX_DETACHED", 8)                     # the constant is the only place of the number
+    assert check() == 0
+    monkeypatch.setattr(golden, "CROSS_MAX_DETACHED", 7)
+    assert check() == 1
+    monkeypatch.setattr(golden, "CROSS_MAX_DETACHED", 0)
+    monkeypatch.setenv("FAKE_MODE", "read_near")                             # 16 bytes that continue what the stream read
+    assert check() == 0
+    monkeypatch.setattr(golden, "CROSS_MAX_ONE_SIDED", 15)
+    capsys.readouterr()
+    assert check() == 1
+    assert "bytes only the candidate covers: 16 (at most 15)" in capsys.readouterr().out
+
+
+def test_the_same_profile_does_not_get_the_byte_limits(env, capsys, monkeypatch):
+    assert env.record() == 0
+    monkeypatch.setenv("FAKE_MODE", "read_far")
+    capsys.readouterr()
+    assert env.check("--profile", "same") == 1                               # it fails, as the exact comparison, not by a limit
+    assert "touch nothing" not in capsys.readouterr().out
+
+
 def test_the_cross_profile_numbers_are_the_decisions():
     assert golden.CROSS_TOLERANCE == 4 and golden.CROSS_MIN_MARGIN == 60       # D50
     assert golden.CROSS_MAX_SHIFT == 48                                        # D51
@@ -1092,6 +1135,10 @@ def test_cross_profile_fails_an_fs_difference_the_rules_do_not_cover(env, capsys
 
 
 def test_cross_profile_bounds_the_surplus_of_reads(env, capsys, monkeypatch):
+    # the 17 reads are at made-up offsets: the limits on the bytes one side covers (N0-37) are lifted here, they have
+    # their own tests below
+    monkeypatch.setattr(golden, "CROSS_MAX_ONE_SIDED", 10**9)
+    monkeypatch.setattr(golden, "CROSS_MAX_DETACHED", 10**9)
     assert env.record() == 0
     monkeypatch.setenv("FAKE_MODE", "reads_many")          # 17 more reads than the recording (the same backend)
     capsys.readouterr()
@@ -1278,7 +1325,9 @@ def test_native_profile_passes_what_cross_passes_and_gates_the_same_things(env, 
     monkeypatch.setenv("FAKE_MODE", "dsp_diff")
     capsys.readouterr()
     assert native(env) == 1 and statuses(capsys.readouterr().out)["dsp-10"] == "FAIL"
-    # D52's masks and the surplus of reads are the cross profile's
+    # D52's masks and the surplus of reads are the cross profile's (the byte limits of N0-37 lifted: made-up offsets)
+    monkeypatch.setattr(golden, "CROSS_MAX_ONE_SIDED", 10**9)
+    monkeypatch.setattr(golden, "CROSS_MAX_DETACHED", 10**9)
     monkeypatch.setenv("FAKE_MODE", "reads_many")           # 17 more reads that touch each other: one run more
     assert native(env) == 0
     monkeypatch.setenv("FAKE_MODE", "reads_apart")
