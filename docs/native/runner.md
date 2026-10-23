@@ -43,9 +43,11 @@ for that.
 | `--init-time SECONDS[.FRACTION]` | the date the console starts at, seconds since the Unix epoch, UTC (N0-35, D83). Grammar, nothing else accepted: `SECONDS` is 1 to 10 ASCII digits, `FRACTION` is `.` and 1 to 6 ASCII digits (microseconds); no sign, spaces, exponent, hex, `.5`, `5.` or second dot. The range, both ends included, is 946684800 (2000-01-01 00:00:00 UTC) to 4102444799.999999 (2099-12-31 23:59:59.999999 UTC); a malformed or out-of-range value ends the run with status 2 and a message naming `--init-time` and the text, before anything is booted (`Runtime::Run` and `Runtime::Prepare` alike). The default, 1767268800 (2026-01-01 12:00 UTC), is the fixed start of the reference runs: the game seeds its random numbers from the clock; a value without a fraction, or with an all-zero one, is exactly the integer, and a run without the option is what it was before the fraction existed. It moves the shared page's start date only (the date records are `floor((start + elapsed) / 1000)` milliseconds, the start in microseconds): the game's tick values and everything else are as they were |
 | `--gpu NAME` | the GPU (default `null`) |
 | `--input-source NAME` | where the buttons, circle pad and touch screen come from (default `script`, the presses of `--input` and `--input-file`). `live` (N2b-08, D59): the app feeds it from its own thread (`input_live::Find(runtime)->Set(...)`, `SetTouch(...)`) and the game sees a change only at its next frame, see `--input-latch` and `--record-input` |
-| `--audio NAME` | where the DSP's output goes (default `null`). `stream` (N3-05, D63): a ring of 8192 stereo frames the app's audio device pulls from, with `audio_out::Find(rt)`; `wav`: every queued frame into the 16-bit stereo WAV given by `--audio-file`, at 32,728 Hz, its header finished at the end of the run (`docs/native/audio-out.md`) |
+| `--audio NAME` | where the DSP's output goes (default `null`). `stream` (N3-05, D63): a ring of 8192 stereo frames the app's audio device pulls from, with `audio_out::Find(rt)`; `wav`: every queued frame into the 16-bit stereo WAV given by `--audio-file`, at 32,728 Hz, its header finished at the end of the run; `sdl` (N3-06, `mh4u-native` only): the `stream` played on the default audio device through SDL3 (`docs/native/audio-out.md`) |
 | `--audio-latency MS` | with `--audio stream`: the target fill of the ring, 10 to 200 ms (default 40; a first guess, D63); anything else ends the run with status 2 |
 | `--audio-file FILE` | with `--audio wav`: the WAV file; missing or unwritable ends the run with status 2 |
+| `--volume N` | with `--audio sdl` (`mh4u-native` only, N3-06): the volume, 0 to 100 (default 100); the gain is (N/100)³ through `SDL_SetAudioStreamGain`, Azahar's curve; anything else ends the run with status 2 (`docs/native/audio-out.md`) |
+| `--audio-log FILE` | with `--audio sdl` (`mh4u-native` only, N3-06): a CSV `# audiolog v1 <date> device_rate=<Hz>`, a column line, then a row per second of host time and a last row at the end of the run: `t_ms,frame,fill_frames,ratio,underruns,overflows,dropped`; a file that cannot be created ends the run with status 2 |
 | `--missing-entries FILE` | append the entry of each function the fallback interpreter had to run, in the format of `config/extra_entries.txt` (default `build/missing_entries.txt`; `""` for none), deduplicated against the file (N1-28) |
 | `--trace-ipc FILE` | every IPC request with its reply, in the format of `tools/native/tracefmt.py` and `tools/compare_ipc_traces.py` (N0-21): session names (`srv:`, `<service>/<kind>#k`), `t=` in game ticks (N1-10) |
 | `--trace-ipc-full` | with `--trace-ipc`: also the bytes of the input buffers as `data=<index>:<hex>`; alone it is refused with exit status 2 |
@@ -64,7 +66,7 @@ for that.
 
 A device name nothing has registered leaves that interface empty, with an Info line. Registered
 today: the `null` GPU (N1-17), the `script` (N1-16) and `live` (N2b-08) input sources and the `null` (N1-18), `stream` and `wav` (N3-05) audio sinks;
-the capture player's GPUs come with N2 and the SDL3 audio device with N3-06.
+the capture player's GPUs come with N2; the `sdl` audio sink (N3-06) is registered by the app module `native/app/audio/`, so only `mh4u-native` has it.
 
 ## Paths on Windows (D45)
 
