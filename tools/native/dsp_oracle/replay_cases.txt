@@ -1,0 +1,110 @@
+# The scenario of N3-04's second oracle (tools/native/dsp_oracle/replay_capture.py): one frame case in the
+# language of dsp_oracle.py (docs: the top of that file), played on Azahar's own DSP code and written as an MDSP
+# capture. Synthetic data only: every byte of sample memory comes from the seeded generators.
+#
+# Extra lines the capture writer reads (and removes before the case goes to the oracle's parser):
+#     read <frame> <address> <bytes> [every]
+# the sample data the DSP reads at that frame (a type-3 record of the capture: the address, the size, the
+# CRC-32 of the bytes in memory at that frame, and the bytes the first time the key appears); `every` repeats
+# the read in every later frame, as the reference does for a looping PCM16 buffer. Azahar's source.cpp
+# cannot report its reads (its memory is a stand-in), so the script names them: one read per buffer, at the
+# frame its queue is written.
+#
+# Two sources of each codec, a looping and a queued buffer of each kind, a source that starts later, a
+# game rewriting a looping buffer, the delay effect on the first aux mix, and 200 frames. The gains keep the
+# mix a few hundred RMS, well away from clipping.
+case replay_two_of_each_codec mode=frame frames=200
+mem 0x20000000 walk16 seed=401 bytes=4000
+mem 0x20010000 walk8 seed=402 bytes=4000
+mem 0x20020000 adpcm seed=403 bytes=2000
+mem 0x20030000 walk16 seed=404 bytes=16000
+mem 0x20040000 walk8 seed=405 bytes=2000
+mem 0x20050000 adpcm seed=406 bytes=800
+mem 0x20060000 walk16 seed=407 bytes=8000
+
+0 master 1.0
+0 auxreturn 0 0.5
+0 auxreturn 1 0.5
+0 auxbus 0 1
+0 delay 0 frames=3 g=64 a=64 b=32
+
+# s0: PCM16 mono, one looping buffer of 800 samples (5 frames a loop); a game rewrites part of it at frame 100
+0 s0 format pcm16 mono
+0 s0 rate 1.0
+0 s0 interp linear
+0 s0 gain 0 0.2 0.2 0 0
+0 s0 queue 0 addr=0x20000000 len=800 id=1 loop
+0 s0 enable 1
+read 0 0x20000000 1600 every
+100 poke 0x20000100 00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff
+
+# s1: PCM8 mono, three buffers queued, faster than the output rate, linear interpolation
+0 s1 format pcm8 mono
+0 s1 rate 1.5
+0 s1 interp linear
+0 s1 gain 0 0.5 0.5 0 0
+0 s1 queue 0 addr=0x20010000 len=1000 id=11
+0 s1 queue 1 addr=0x20010400 len=1000 id=12
+0 s1 queue 2 addr=0x20010800 len=1000 id=13
+0 s1 enable 1
+read 0 0x20010000 1000
+read 0 0x20010400 1000
+read 0 0x20010800 1000
+
+# s2: ADPCM mono, two buffers, with a filter on it
+0 s2 format adpcm mono
+0 s2 rate 1.0
+0 s2 interp linear
+0 s2 coeffs rand:7:3000
+0 s2 gain 0 0.25 0.25 0 0
+0 s2 queue 0 addr=0x20020000 len=700 id=21 adirty ps=0x20
+0 s2 queue 1 addr=0x20020190 len=700 id=22
+0 s2 filters 1 0
+0 s2 simple 20000 12000
+0 s2 enable 1
+read 0 0x20020000 400
+read 0 0x20020190 400
+
+# s3: PCM16 stereo, two buffers queued at frame 20, a different rate, also fed to the second mix (the effect's input
+# is the first aux mix: gain 1)
+20 s3 format pcm16 stereo
+20 s3 rate 0.75
+20 s3 interp none
+20 s3 gain 0 0.2 0.2 0 0
+20 s3 gain 1 0.3 0.3 0.3 0.3
+20 s3 queue 0 addr=0x20030000 len=1500 id=31
+20 s3 queue 1 addr=0x20031800 len=1500 id=32
+20 s3 enable 1
+read 20 0x20030000 6000
+read 20 0x20031800 6000
+
+# s4: PCM8 stereo, looping (PCM8 is not refreshed from memory), biquad filter
+0 s4 format pcm8 stereo
+0 s4 rate 1.25
+0 s4 interp linear
+0 s4 gain 0 0.4 0.4 0 0
+0 s4 queue 0 addr=0x20040000 len=700 id=41 loop
+0 s4 filters 0 1
+0 s4 biquad rand:9:4000
+0 s4 enable 1
+read 0 0x20040000 1400
+
+# s5: ADPCM mono, looping, started at frame 40
+40 s5 format adpcm mono
+40 s5 rate 1.0
+40 s5 interp linear
+40 s5 coeffs rand:11:3000
+40 s5 gain 0 0.3 0.3 0 0
+40 s5 queue 0 addr=0x20050000 len=700 id=51 loop
+40 s5 enable 1
+read 40 0x20050000 400
+
+# s6: PCM16 mono, embedded buffer (not the queue), loops, stops at frame 150
+10 s6 format pcm16 mono
+10 s6 rate 1.0
+10 s6 interp linear
+10 s6 gain 0 0.2 0.2 0 0
+10 s6 embedded addr=0x20060000 len=2000 id=61 loop
+10 s6 enable 1
+read 10 0x20060000 4000 every
+150 s6 enable 0

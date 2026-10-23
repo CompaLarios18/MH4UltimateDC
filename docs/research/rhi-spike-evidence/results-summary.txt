@@ -1,0 +1,53 @@
+# summarize.py output (one line per pattern: exit code, distinct layer message ids with counts, result line)
+# layer 1.3.275 on lavapipe (Mesa 25.2.8); the unpatched and patched builds of plume@0ce184b; D2 counts vary per run
+
+## label: pristine
+A1  rc=  0 msgs=  0 distinct= 0 |  | A1 pixels RIGHT
+A2  rc=  0 msgs=  0 distinct= 0 |  | A2 pixels RIGHT
+B1  rc=  1 msgs=  6 distinct= 6 | VUID-VkFramebufferCreateInfo-height-00887 ERROR x1; VUID-VkFramebufferCreateInfo-width-00885 ERROR x1; VUID-VkImageViewCreateInfo-image-01762 ERROR x1; VUID-VkPipelineViewportStateCreateInfo-scissorCount-04136 ERROR x1; VUID-VkPipelineViewportStateCreateInfo-viewportCount-04135 ERROR x1; VUID-VkRenderPassBeginInfo-None-08996 ERROR x1 | B1 store/no-interlock: 256 of 256 texels != 3 (texel0 = 0) -> pixels WRONG
+B2  rc=  1 msgs=  8 distinct= 8 | VUID-VkFramebufferCreateInfo-height-00887 ERROR x1; VUID-VkFramebufferCreateInfo-width-00885 ERROR x1; VUID-VkImageViewCreateInfo-image-01762 ERROR x1; VUID-VkPipelineViewportStateCreateInfo-scissorCount-04136 ERROR x1; VUID-VkPipelineViewportStateCreateInfo-viewportCount-04135 ERROR x1; VUID-VkRenderPassBeginInfo-None-08996 ERROR x1; VUID-VkShaderModuleCreateInfo-pCode-08740 ERROR x1; VUID-VkShaderModuleCreateInfo-pCode-08742 ERROR x1 | B2 store/interlock: 256 of 256 texels != 3 (texel0 = 0) -> pixels WRONG
+B3  rc=  1 msgs=  6 distinct= 6 | VUID-VkFramebufferCreateInfo-height-00887 ERROR x1; VUID-VkFramebufferCreateInfo-width-00885 ERROR x1; VUID-VkImageViewCreateInfo-image-01762 ERROR x1; VUID-VkPipelineViewportStateCreateInfo-scissorCount-04136 ERROR x1; VUID-VkPipelineViewportStateCreateInfo-viewportCount-04135 ERROR x1; VUID-VkRenderPassBeginInfo-None-08996 ERROR x1 | B3 cas/no-interlock: 256 of 256 texels != 3 (texel0 = 0) -> pixels WRONG
+B4  rc=  1 msgs=  8 distinct= 8 | VUID-VkFramebufferCreateInfo-height-00887 ERROR x1; VUID-VkFramebufferCreateInfo-width-00885 ERROR x1; VUID-VkImageViewCreateInfo-image-01762 ERROR x1; VUID-VkPipelineViewportStateCreateInfo-scissorCount-04136 ERROR x1; VUID-VkPipelineViewportStateCreateInfo-viewportCount-04135 ERROR x1; VUID-VkRenderPassBeginInfo-None-08996 ERROR x1; VUID-VkShaderModuleCreateInfo-pCode-08740 ERROR x1; VUID-VkShaderModuleCreateInfo-pCode-08742 ERROR x1 | B4 cas/interlock: 256 of 256 texels != 3 (texel0 = 0) -> pixels WRONG
+B5  rc=  1 msgs=  8 distinct= 6 | VUID-VkFramebufferCreateInfo-height-00887 ERROR x1; VUID-VkFramebufferCreateInfo-width-00885 ERROR x1; VUID-VkImageViewCreateInfo-image-01762 ERROR x1; VUID-VkPipelineViewportStateCreateInfo-scissorCount-04136 ERROR x1; VUID-VkPipelineViewportStateCreateInfo-viewportCount-04135 ERROR x1; VUID-VkRenderPassBeginInfo-None-08996 ERROR x3 | B5 store/no-interlock/barrier-between-draws: 256 of 256 texels != 3 (texel0 = 0) -> pixels WRONG
+B6  rc=  1 msgs=  8 distinct= 6 | VUID-VkFramebufferCreateInfo-height-00887 ERROR x1; VUID-VkFramebufferCreateInfo-width-00885 ERROR x1; VUID-VkImageViewCreateInfo-image-01762 ERROR x1; VUID-VkPipelineViewportStateCreateInfo-scissorCount-04136 ERROR x1; VUID-VkPipelineViewportStateCreateInfo-viewportCount-04135 ERROR x1; VUID-VkRenderPassBeginInfo-None-08996 ERROR x3 | B6 store/no-interlock/pass-restart-WITHOUT-barrier (control): 256 of 256 texels != 3 (texel0 = 0) -> pixels WR
+B7  rc=  1 msgs=  9 distinct= 7 | SYNC-HAZARD-WRITE-AFTER-WRITE ERROR x1; VUID-VkFramebufferCreateInfo-height-00887 ERROR x1; VUID-VkFramebufferCreateInfo-width-00885 ERROR x1; VUID-VkImageViewCreateInfo-image-01762 ERROR x1; VUID-VkPipelineViewportStateCreateInfo-scissorCount-04136 ERROR x1; VUID-VkPipelineViewportStateCreateInfo-viewportCount-04135 ERROR x1; VUID-VkRenderPassBeginInfo-None-08996 ERROR x3 | B7 store/no-interlock/draws-in-separate-lists-WITHOUT-barrier (control): 256 of 256 texels != 5 (texel0 = 0) -
+B8  rc=  0 msgs=  2 distinct= 2 | UNASSIGNED-CoreValidation-DrawState-InvalidImageLayout ERROR x1; VUID-vkCmdBeginRenderPass-initialLayout-00900 ERROR x1 | B8 pixels RIGHT
+C1  rc=  0 msgs=  0 distinct= 0 |  | C1 pixels RIGHT
+C2  rc=  0 msgs=  1 distinct= 1 | SYNC-HAZARD-READ-AFTER-WRITE ERROR x1 | C2 pixels RIGHT
+C3  rc=  0 msgs=  0 distinct= 0 |  | C3 pixels RIGHT
+D1  rc=  0 msgs=  0 distinct= 0 |  | D1 pixels RIGHT
+D4  rc=  0 msgs=  1 distinct= 1 | UNASSIGNED-CoreValidation-DrawState-InvalidImageLayout ERROR x1 | 
+E   rc=  0 msgs=  0 distinct= 0 |  | 
+F   rc=  0 msgs=  0 distinct= 0 |  | 
+
+## label: patched
+A1  rc=  0 msgs=  0 distinct= 0 |  | A1 pixels RIGHT
+A2  rc=  0 msgs=  0 distinct= 0 |  | A2 pixels RIGHT
+B1  rc=  0 msgs=  0 distinct= 0 |  | B1 store/no-interlock: 0 of 256 texels != 3 (texel0 = 3) -> pixels RIGHT
+B2  rc=  0 msgs=  0 distinct= 0 |  | B2 store/interlock: 0 of 256 texels != 3 (texel0 = 3) -> pixels RIGHT
+B3  rc=  0 msgs=  0 distinct= 0 |  | B3 cas/no-interlock: 0 of 256 texels != 3 (texel0 = 3) -> pixels RIGHT
+B4  rc=  0 msgs=  0 distinct= 0 |  | B4 cas/interlock: 0 of 256 texels != 3 (texel0 = 3) -> pixels RIGHT
+B5  rc=  0 msgs=  0 distinct= 0 |  | B5 store/no-interlock/barrier-between-draws: 0 of 256 texels != 3 (texel0 = 3) -> pixels RIGHT
+B6  rc=  0 msgs=  0 distinct= 0 |  | B6 store/no-interlock/pass-restart-WITHOUT-barrier (control): 0 of 256 texels != 3 (texel0 = 3) -> pixels RIGH
+B7  rc=  0 msgs=  1 distinct= 1 | SYNC-HAZARD-WRITE-AFTER-WRITE ERROR x1 | B7 store/no-interlock/draws-in-separate-lists-WITHOUT-barrier (control): 0 of 256 texels != 5 (texel0 = 5) -> 
+B8  rc=  0 msgs=  0 distinct= 0 |  | B8 pixels RIGHT
+C1  rc=  0 msgs=  0 distinct= 0 |  | C1 pixels RIGHT
+C2  rc=  0 msgs=  0 distinct= 0 |  | C2 pixels RIGHT
+C3  rc=  0 msgs=  0 distinct= 0 |  | C3 pixels RIGHT
+C4  rc=  0 msgs=  0 distinct= 0 |  | C4 pixels RIGHT
+C5  rc=  0 msgs=  1 distinct= 1 | SYNC-HAZARD-READ-AFTER-WRITE ERROR x1 | C5 pixels RIGHT
+D1  rc=  0 msgs=  0 distinct= 0 |  | D1 pixels RIGHT
+D4  rc=  0 msgs=  1 distinct= 1 | UNASSIGNED-CoreValidation-DrawState-InvalidImageLayout ERROR x1 | 
+E   rc=  0 msgs=  0 distinct= 0 |  | 
+F   rc=  0 msgs=  0 distinct= 0 |  | 
+
+## label: pristine-all
+D3  rc=  0 msgs=  0 distinct= 0 |  | 
+
+## label: patched-all
+D3  rc=  0 msgs=  0 distinct= 0 |  | 
+
+## D2 (two threads record barriers for one texture; logs are gzipped in the original run; env-all counts every message)
+pristine-all D2 rc=0: 22168 'Validation Error' lines; distinct ids:   60705 VUID-VkImageMemoryBarrier-oldLayout-01197;   3866 UNASSIGNED-CoreValidation-DrawState-InvalidImageLayout;
+patched-all D2 rc=0: 23718 'Validation Error' lines; distinct ids:   65283 VUID-VkImageMemoryBarrier-oldLayout-01197;   3914 UNASSIGNED-CoreValidation-DrawState-InvalidImageLayout;
+TSan (tsan-D2.txt): 7 reports; (tsan-D3.txt, owner rule): 0 reports
