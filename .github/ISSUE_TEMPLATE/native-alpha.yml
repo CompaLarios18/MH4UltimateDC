@@ -1,0 +1,79 @@
+name: Native alpha report
+description: A problem with mh4u-native, the native alpha (the report file attached)
+title: "[native alpha] "
+labels:
+  - native-alpha
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for trying the native alpha. This form is for `mh4u-native` only; a problem with `mh4u` (the Azahar-based build) goes in the bug report form.
+
+        **Read your report before you attach it.** It is a plain text file that `mh4u-native` wrote on your PC (`<user folder>\log\report-<number>.txt`, made after a crash or with `mh4u-native --make-report`); nothing was sent anywhere. Open it in a text editor, and delete any line you do not want to share.
+
+        A report never holds: memory contents, screenshots, captures, saves, game files or game text; file paths of your PC or of the game; your PC's user name or your console's user name; console ids; MAC or IP addresses; room invites (`mh4u://...`), nicknames, passwords, tokens or lobby settings; and your multiplayer and mods settings. If you find any of these in it, do not attach it: tell us in this form which line, without copying it.
+
+        Do not attach or describe the game's files (ROM, `code.bin`, RomFS) here, and do not ask where to get them.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: The `app commit` line of the report, or the output of `mh4u-native --version`.
+      placeholder: "mh4u-native 3e9b152a10"
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - Windows
+        - Linux
+        - macOS
+    validations:
+      required: true
+  - type: dropdown
+    id: kind
+    attributes:
+      label: What happened
+      options:
+        - It crashed (a crash file is in the report)
+        - It hung or froze
+        - Wrong picture
+        - Wrong or missing sound
+        - Wrong input or controls
+        - Slow, or the frame rate was not steady
+        - A save problem
+        - Something else
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, in your words
+      description: What you saw and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: The steps just before it
+      description: Where in the game you were, and what you did. About how long into the session it happened.
+    validations:
+      required: true
+  - type: textarea
+    id: report
+    attributes:
+      label: The report file
+      description: "Drag the report file here (report-<number>.txt) after you have read it. Nothing else of the game or of your PC."
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I read the report and it holds none of the things listed above.
+          required: true
+        - label: I play from my own dump (USA version with the v1.3.0 update).
+          required: true
