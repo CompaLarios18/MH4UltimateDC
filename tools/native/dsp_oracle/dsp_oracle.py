@@ -1,20 +1,24 @@
 #!/usr/bin/env python3
-# Derived from Azahar src/audio_core/hle/shared_memory.h at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-2.0-or-later: it says "Licensed under GPLv2 or any later version"): the byte offsets and bit positions of SourceConfiguration (and its u32_dsp middle-endian values), which the commands write.
+# Derived from Azahar src/audio_core/hle/shared_memory.h at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-2.0-or-later: it says "Licensed under GPLv2 or any later version"): the byte offsets and bit positions of SourceConfiguration (and its u32_dsp middle-endian values), of DspConfiguration (its dirty bits 6 to 31, the master and aux return volumes, the output format, the aux bus enables, the DelayEffect and ReverbEffect blocks with their dirty word, enable, frame count and g, a, b fields at offsets 22, 26, 40 and 44) and of the structures within a region of the shared memory (SharedMemory: the statuses, final samples, intermediate mix samples, configurations and ADPCM coefficients), which the commands write.
 # Copyright 2016-2025 Citra Emulator Project / Azahar Emulator Project (shared_memory.h)
-"""The oracle of the native HLE DSP sources (N3-02): what Azahar's own code does to a source.
+"""The oracle of the native HLE DSP (N3-02 the sources, N3-03 the mixers, the effects and the frame):
+what Azahar's own code does.
 
     dsp_oracle.py --azahar ~/azahar --cases native/tests/dsp_hle_cases.txt --out native/tests/dsp_hle_expected.inc
 
-copies Azahar's codec.cpp, interpolate.cpp, filter.cpp and source.cpp (with their headers) into a
-temporary folder, compiles them with clang against the stand-ins of standin/ (our own headers, each
-saying what it replaces; bit_field.h is copied as it is), plays every case of the cases file against
-one Azahar Source through driver.cpp and writes, per case and frame, the CRC-32 of each of the three
-quad mixes and of the status block, as the C++ table native/tests/dsp_hle_expected.inc. Nothing in the
-table is computed or written by hand: native/src/dsp_hle/ and its test are compared with it.
+copies Azahar's codec.cpp, interpolate.cpp, filter.cpp, source.cpp, mixers.cpp and effects.cpp (with their
+headers) into a temporary folder, compiles them with clang against the stand-ins of standin/ (our own
+headers, each saying what it replaces; bit_field.h is copied as it is), plays every case of the cases file
+through driver.cpp and driver_frame.cpp and writes, per case and frame, four CRC-32, as the C++ table
+native/tests/dsp_hle_expected.inc. A source case (the default) plays one Azahar Source: the three quad
+mixes and the status block. A frame case (`mode=frame`) plays Azahar's whole frame (GenerateCurrentFrame,
+copied into driver_frame.cpp): the final samples, the statuses, the aux buses' samples and the
+configuration (see driver_frame.cpp). Nothing in the table is computed or written by hand:
+native/src/dsp_hle/ and its test are compared with it.
 
 Cases file (one case after another; `#` starts a comment, blank lines are free):
 
-    case <name> [source=<n>] [frames=<n>] [sweep <var>=<a>,<b>... <var>=...]
+    case <name> [source=<n>] [frames=<n>] [mode=frame] [fc=<n>] [sweep <var>=<a>,<b>... <var>=...]
     mem <address> <kind> seed=<n> bytes=<n>
     <frame> <command> <arguments>
 
@@ -42,6 +46,24 @@ frame, as the shared memory does; the Source clears the dirty bits):
 A number is decimal or 0x hex; `rand:<seed>[:<max>]` in place of the values of `simple`, `biquad` and
 `coeffs` (all of them) gives random ones in -max..max (the default max is 32767).
 
+A frame case (`mode=frame`, N3-03) drives all 24 sources and the mixers. Its commands are the source
+commands above for a source (`<frame> s<k> <source command>`: the byte writes go into source k's
+configuration in the region the DSP reads in that frame) and those of the mixers:
+
+    master <vol>              auxreturn <0|1> <vol>        outfmt <mono|stereo|surround|n>
+    auxbus <0|1> <0|1>        headphones <0|1>             dspdirty <bits>      dspwrite <offset> <hex>
+    delay <0|1> [enable=<0|1>] [frames=<n>] [g=<s16>] [a=<s16>] [b=<s16>] [work=<a>] [outputs=<n>]
+                              [dirty=<0|1>] [nomain]       (g, a, b in Q7; `dirty` is the effect's own dirty
+                              word, `nomain` leaves the main dirty bit unset)
+    reverb <0|1> rand:<seed>  (52 bytes of noise, and its dirty bit)
+    auxmix <1|2> seed=<n> [amp=<n>]     the application's processed samples of an aux bus, from a generator
+    sleep    wakeup           the whole DSP (the pipe's Sleep and Wakeup)    poke <address> <hex bytes>
+
+The driver plays the application: before the frame k it writes the commands of that frame into the region
+the DSP reads next, which is the one it wrote in the frame before (region (k + 1) % 2), and sets that
+region's frame counter to `fc + k + 1` (`fc` is the case's `fc=`, 0 by default; the counters wrap, which
+is how the region rule is exercised). A frame in which the DSP is asleep prints zeros.
+
 Driver input, one case after another:
     case <name> <frames> <source>
     mem <address hex> <data hex>
@@ -51,8 +73,15 @@ Driver input, one case after another:
                                                              memory at the address `offset`, S: Source::Sleep,
                                                              W: Source::Wakeup)
     end
+  or a frame case (events: r bytes at an offset of the region the frame reads, o OR a u32 there, p OR a u16
+  there, g `s32` samples from the generator there (seed, byte size, amplitude and the CRC-32 of the output,
+  4 bytes each), m, S and W as above for the whole DSP):
+    fcase <name> <frames> <fc> <the offsets in a region of: source configurations, ADPCM coefficients, DSP
+          configuration, intermediate mix samples, source statuses, final samples, DSP status>
+    mem ... / ev <frame> <r|o|p|g|m|S|W> <offset> <hex bytes or -> / end
 Driver output, per frame:
     frame <name> <k> <crc mix 0> <crc mix 1> <crc mix 2> <crc status>      (8 hex digits each)
+    frame <name> <k> <crc final samples> <crc statuses> <crc mix buses> <crc configuration>   (a frame case)
 """
 from __future__ import annotations
 
@@ -87,8 +116,12 @@ COPIED = (
     "audio_core/interpolate.cpp",
     "audio_core/interpolate.h",
     "audio_core/hle/common.h",
+    "audio_core/hle/effects.cpp",
+    "audio_core/hle/effects.h",
     "audio_core/hle/filter.cpp",
     "audio_core/hle/filter.h",
+    "audio_core/hle/mixers.cpp",
+    "audio_core/hle/mixers.h",
     "audio_core/hle/shared_memory.h",
     "audio_core/hle/source.cpp",
     "audio_core/hle/source.h",
@@ -97,9 +130,12 @@ COPIED = (
 SOURCES = (
     "audio_core/codec.cpp",
     "audio_core/interpolate.cpp",
+    "audio_core/hle/effects.cpp",
     "audio_core/hle/filter.cpp",
+    "audio_core/hle/mixers.cpp",
     "audio_core/hle/source.cpp",
 )
+DRIVERS = ("driver.cpp", "driver_frame.cpp")
 
 KINDS = {"noise": 0, "walk16": 1, "walk8": 2, "adpcm": 3}
 
@@ -123,6 +159,39 @@ OFF_EMB_YN = 184
 OFF_FLAGS2 = 188
 OFF_EMB_ID = 190
 CONFIG_SIZE = 192
+
+# The shared memory of one region (shared_memory.h; native/src/audio/dsp_layout.h): the offsets of the
+# structures the frame cases address. The frame driver checks them against Azahar's own offsetof.
+REGION_SIZE = 0x8000
+SHM_DSP_STATUS = 0x400 * 2
+SHM_DSP_DEBUG = SHM_DSP_STATUS + 32
+SHM_FINAL_SAMPLES = SHM_DSP_DEBUG + 0x130 * 2
+SHM_SOURCE_STATUSES = SHM_FINAL_SAMPLES + 640
+SHM_COMPRESSOR = SHM_SOURCE_STATUSES + 24 * 12
+SHM_DSP_CONFIGURATION = SHM_COMPRESSOR + 0xD20 * 2
+SHM_INTERMEDIATE_MIX = SHM_DSP_CONFIGURATION + 196
+SHM_SOURCE_CONFIGURATIONS = SHM_INTERMEDIATE_MIX + 5120
+SHM_ADPCM_COEFFICIENTS = SHM_SOURCE_CONFIGURATIONS + 24 * CONFIG_SIZE
+MIX_BUS_SIZE = 2560                  # one aux bus: 4 channels * 160 * s32
+OFF_BUFFERS_DIRTY = 74
+
+# DspConfiguration (196 bytes): the offsets and the dirty bits
+DC_MASTER_VOLUME = 4
+DC_AUX_RETURN_VOLUME = 8             # float[2]
+DC_OUTPUT_FORMAT = 22                # u16
+DC_HEADPHONES = 26                   # u16
+DC_AUX_BUS_ENABLE = 40               # u16[2]
+DC_DELAY_EFFECT = 44                 # 2 * 20 bytes: dirty, enable, pad, outputs, work address (u32_dsp),
+DC_DELAY_SIZE = 20                   # frame count, g, a, b
+DC_REVERB_EFFECT = 84                # 2 * 52 bytes
+DC_REVERB_SIZE = 52
+DC_AUX_BUS_DIRTY = (1 << 8, 1 << 9)
+DC_DELAY_DIRTY = (1 << 10, 1 << 11)
+DC_REVERB_DIRTY = (1 << 12, 1 << 13)
+DC_MASTER_VOLUME_DIRTY = 1 << 16
+DC_AUX_RETURN_DIRTY = (1 << 24, 1 << 25)
+DC_OUTPUT_FORMAT_DIRTY = 1 << 26
+DC_HEADPHONES_DIRTY = 1 << 28
 
 D_FORMAT = 1 << 0
 D_MONO_OR_STEREO = 1 << 1
@@ -190,6 +259,19 @@ def generate(kind: str, seed: int, size: int) -> bytes:
     return bytes(out)
 
 
+def generate_pcm32(seed: int, size: int, amplitude: int) -> bytes:
+    """The samples an application leaves in an aux bus (the frame driver repeats it): `s32` little-endian
+    in -amplitude..amplitude, each from two draws of the LCG; a size that is not a multiple of 4 ends in
+    zero bytes."""
+    rng = Lcg(seed)
+    out = bytearray()
+    for _ in range(size // 4):
+        raw = (rng.next() << 16) | rng.next()
+        out += struct.pack("<i", raw % (2 * amplitude + 1) - amplitude)
+    out += bytes(size - len(out))
+    return bytes(out)
+
+
 @dataclasses.dataclass(frozen=True)
 class Fill:
     address: int
@@ -216,6 +298,8 @@ class Case:
     frames: int = DEFAULT_FRAMES
     fills: list[Fill] = dataclasses.field(default_factory=list)
     events: list[Event] = dataclasses.field(default_factory=list)
+    mode: str = "source"             # "source" (one Source) or "frame" (the whole frame)
+    first_counter: int = 0           # a frame case: the frame counter before frame 0
 
 
 # ---- numbers --------------------------------------------------------------------------------------------------
@@ -289,12 +373,25 @@ class Writer:
         self.source = source
         self.events: list[Event] = []
 
-    def write(self, frame: int, offset: int, data: bytes) -> None:
-        self.shadow[offset:offset + len(data)] = data
+    # Where the writes go: the single source's configuration here; RegionWriter puts them in a region.
+    def put_bytes(self, frame: int, offset: int, data: bytes) -> None:
         self.events.append(Event(frame, "c", offset, data))
 
-    def dirty(self, frame: int, bits: int) -> None:
+    def put_dirty(self, frame: int, bits: int) -> None:
         self.events.append(Event(frame, "d", 0, struct.pack("<I", bits)))
+
+    def put_buffers_dirty(self, frame: int, bits: int) -> None:
+        self.events.append(Event(frame, "b", 0, u16(bits)))
+
+    def put_coefficients(self, frame: int, data: bytes) -> None:
+        self.events.append(Event(frame, "a", 32 * self.source, data))
+
+    def write(self, frame: int, offset: int, data: bytes) -> None:
+        self.shadow[offset:offset + len(data)] = data
+        self.put_bytes(frame, offset, data)
+
+    def dirty(self, frame: int, bits: int) -> None:
+        self.put_dirty(frame, bits)
 
     def read16(self, offset: int) -> int:
         return struct.unpack_from("<H", self.shadow, offset)[0]
@@ -393,7 +490,7 @@ class Writer:
         self.write(frame, base + 14, bytes([kw.get("adirty", 0)]))
         self.write(frame, base + 15, bytes([kw.get("loop", 0)]))
         self.write(frame, base + 16, u16(kw["id"]))
-        self.events.append(Event(frame, "b", 0, u16(1 << slot)))
+        self.put_buffers_dirty(frame, 1 << slot)
         self.dirty(frame, D_BUFFER_QUEUE)
 
     def cmd_partial(self, frame: int, args: list[str]) -> None:
@@ -427,7 +524,7 @@ class Writer:
 
     def cmd_coeffs(self, frame: int, args: list[str]) -> None:
         data = b"".join(u16(v) for v in values(args, 16, "coeffs"))
-        self.events.append(Event(frame, "a", 32 * self.source, data))
+        self.put_coefficients(frame, data)
         self.dirty(frame, D_ADPCM_COEFFICIENTS)
 
     def cmd_reset(self, frame: int, args: list[str]) -> None:
@@ -452,6 +549,156 @@ class Writer:
     def cmd_wakeup(self, frame: int, args: list[str]) -> None:
         self.need(args, 0, "wakeup")
         self.events.append(Event(frame, "W", 0, b""))
+
+
+class RegionWriter(Writer):
+    """The commands of one source in a frame case: the same byte writes, but into that source's
+    configuration (and ADPCM coefficient row) in the region the DSP reads."""
+
+    def __init__(self, source: int, events: list[Event]):
+        super().__init__(source)
+        self.events = events
+        self.base = SHM_SOURCE_CONFIGURATIONS + CONFIG_SIZE * source
+
+    def put_bytes(self, frame: int, offset: int, data: bytes) -> None:
+        self.events.append(Event(frame, "r", self.base + offset, data))
+
+    def put_dirty(self, frame: int, bits: int) -> None:
+        self.events.append(Event(frame, "o", self.base, struct.pack("<I", bits)))
+
+    def put_buffers_dirty(self, frame: int, bits: int) -> None:
+        self.events.append(Event(frame, "p", self.base + OFF_BUFFERS_DIRTY, u16(bits)))
+
+    def put_coefficients(self, frame: int, data: bytes) -> None:
+        self.events.append(Event(frame, "r", SHM_ADPCM_COEFFICIENTS + 32 * self.source, data))
+
+
+class FrameWriter:
+    """The commands of a frame case: a source's (`s<k> <command>`) and the mixers'."""
+
+    FORMATS = {"mono": 0, "stereo": 1, "surround": 2}
+
+    def __init__(self):
+        self.events: list[Event] = []
+        self.sources = [RegionWriter(k, self.events) for k in range(24)]
+
+    def command(self, frame: int, words: list[str]) -> None:
+        name, args = words[0], words[1:]
+        match = re.fullmatch(r"s(\d+)", name)
+        if match:
+            index = int(match.group(1))
+            if index >= 24 or not args:
+                raise CaseError(f"{name}: a source is s0 to s23, followed by a command")
+            if args[0] in ("sleep", "wakeup", "poke"):
+                raise CaseError(f"{args[0]} is the whole DSP's: write it without {name}")
+            self.sources[index].command(frame, args)
+            return
+        handler = getattr(self, "cmd_" + name, None)
+        if handler is None:
+            raise CaseError(f"unknown command {name!r}")
+        handler(frame, args)
+
+    def need(self, args: list[str], count: int, name: str) -> None:
+        if len(args) != count:
+            raise CaseError(f"{name} needs {count} argument(s), got {len(args)}")
+
+    def config(self, frame: int, offset: int, data: bytes, dirty: int) -> None:
+        if data:
+            self.events.append(Event(frame, "r", SHM_DSP_CONFIGURATION + offset, data))
+        if dirty:
+            self.events.append(Event(frame, "o", SHM_DSP_CONFIGURATION, struct.pack("<I", dirty)))
+
+    def index(self, text: str, name: str) -> int:
+        value = integer(text)
+        if value not in (0, 1):
+            raise CaseError(f"{name}: the index is 0 or 1")
+        return value
+
+    def cmd_master(self, frame: int, args: list[str]) -> None:
+        self.need(args, 1, "master")
+        self.config(frame, DC_MASTER_VOLUME, struct.pack("<f", real(args[0])), DC_MASTER_VOLUME_DIRTY)
+
+    def cmd_auxreturn(self, frame: int, args: list[str]) -> None:
+        self.need(args, 2, "auxreturn")
+        i = self.index(args[0], "auxreturn")
+        self.config(frame, DC_AUX_RETURN_VOLUME + 4 * i, struct.pack("<f", real(args[1])), DC_AUX_RETURN_DIRTY[i])
+
+    def cmd_outfmt(self, frame: int, args: list[str]) -> None:
+        self.need(args, 1, "outfmt")
+        value = self.FORMATS[args[0]] if args[0] in self.FORMATS else integer(args[0])
+        self.config(frame, DC_OUTPUT_FORMAT, u16(value), DC_OUTPUT_FORMAT_DIRTY)
+
+    def cmd_auxbus(self, frame: int, args: list[str]) -> None:
+        self.need(args, 2, "auxbus")
+        i = self.index(args[0], "auxbus")
+        self.config(frame, DC_AUX_BUS_ENABLE + 2 * i, u16(integer(args[1])), DC_AUX_BUS_DIRTY[i])
+
+    def cmd_headphones(self, frame: int, args: list[str]) -> None:
+        self.need(args, 1, "headphones")
+        self.config(frame, DC_HEADPHONES, u16(integer(args[0])), DC_HEADPHONES_DIRTY)
+
+    def cmd_dspdirty(self, frame: int, args: list[str]) -> None:
+        self.need(args, 1, "dspdirty")
+        self.config(frame, 0, b"", integer(args[0]) & 0xFFFFFFFF)
+
+    def cmd_dspwrite(self, frame: int, args: list[str]) -> None:
+        self.need(args, 2, "dspwrite")
+        offset, data = integer(args[0]), bytes.fromhex(args[1])
+        if not data or offset < 4 or offset + len(data) > 196:
+            raise CaseError("dspwrite: bytes inside the DSP configuration, after its dirty word")
+        self.config(frame, offset, data, 0)
+
+    def cmd_delay(self, frame: int, args: list[str]) -> None:
+        if not args:
+            raise CaseError("delay needs an effect (0 or 1)")
+        i = self.index(args[0], "delay")
+        kw = keyword_arguments(args[1:], {"enable", "frames", "g", "a", "b", "work", "outputs", "dirty"},
+                               {"nomain"}, "delay")
+        base = DC_DELAY_EFFECT + DC_DELAY_SIZE * i
+        block = (u16(kw.get("dirty", 1)) + u16(kw.get("enable", 1)) + u16(0) + u16(kw.get("outputs", 0)) +
+                 dsp32(kw.get("work", 0)) + u16(kw.get("frames", 1)) + u16(kw.get("g", 0)) +
+                 u16(kw.get("a", 0)) + u16(kw.get("b", 0)))
+        self.config(frame, base, block, 0 if "nomain" in kw else DC_DELAY_DIRTY[i])
+
+    def cmd_reverb(self, frame: int, args: list[str]) -> None:
+        self.need(args, 2, "reverb")
+        i = self.index(args[0], "reverb")
+        if not args[1].startswith("rand:"):
+            raise CaseError("reverb <0|1> rand:<seed>")
+        rng = Lcg(integer(args[1].split(":")[1]))
+        block = b"".join(u16(rng.next()) for _ in range(DC_REVERB_SIZE // 2))
+        self.config(frame, DC_REVERB_EFFECT + DC_REVERB_SIZE * i, block, DC_REVERB_DIRTY[i])
+
+    def cmd_auxmix(self, frame: int, args: list[str]) -> None:
+        if not args:
+            raise CaseError("auxmix needs a bus (1 or 2)")
+        bus = integer(args[0])
+        if bus not in (1, 2):
+            raise CaseError("auxmix: the bus is 1 or 2")
+        kw = keyword_arguments(args[1:], {"seed", "amp"}, set(), "auxmix")
+        if "seed" not in kw:
+            raise CaseError("auxmix needs seed=")
+        amplitude = kw.get("amp", 1000)
+        if not 0 <= amplitude <= 0x7FFFFFFF:
+            raise CaseError("auxmix: amp is 0 to 2^31-1")
+        data = struct.pack("<IIII", kw["seed"] & 0xFFFFFFFF, MIX_BUS_SIZE, amplitude,
+                           zlib.crc32(generate_pcm32(kw["seed"] & 0xFFFFFFFF, MIX_BUS_SIZE, amplitude)))
+        self.events.append(Event(frame, "g", SHM_INTERMEDIATE_MIX + MIX_BUS_SIZE * (bus - 1), data))
+
+    def cmd_sleep(self, frame: int, args: list[str]) -> None:
+        self.need(args, 0, "sleep")
+        self.events.append(Event(frame, "S", 0, b""))
+
+    def cmd_wakeup(self, frame: int, args: list[str]) -> None:
+        self.need(args, 0, "wakeup")
+        self.events.append(Event(frame, "W", 0, b""))
+
+    def cmd_poke(self, frame: int, args: list[str]) -> None:
+        self.need(args, 2, "poke")
+        address, data = integer(args[0]), bytes.fromhex(args[1])
+        if not data or not FCRAM <= address or address + len(data) > FCRAM + WINDOW:
+            raise CaseError("poke: bytes in the first 4 MiB of FCRAM")
+        self.events.append(Event(frame, "m", address, data))
 
 
 # ---- the cases file -------------------------------------------------------------------------------------------
@@ -485,6 +732,7 @@ def parse_cases(text: str) -> list[Case]:
         if not re.fullmatch(r"[A-Za-z0-9_${}]+", name_template):
             raise CaseError(f"line {number}: bad name {name_template!r}")
         source, frames = 0, DEFAULT_FRAMES
+        mode, first_counter = "source", 0
         axes: list[tuple[str, list[str]]] = []
         sweeping = False
         for word in words[2:]:
@@ -500,12 +748,24 @@ def parse_cases(text: str) -> list[Case]:
                     source = integer(value)
                 elif key == "frames":
                     frames = integer(value)
+                elif key == "mode":
+                    if value not in ("source", "frame"):
+                        raise CaseError(f"line {number}: mode is source or frame")
+                    mode = value
+                elif key == "fc":
+                    first_counter = integer(value)
                 else:
                     raise CaseError(f"line {number}: unknown key {key}=")
         if not 0 <= source < 24:
             raise CaseError(f"line {number}: source {source} (0 to 23)")
         if not 1 <= frames <= MAX_FRAMES:
             raise CaseError(f"line {number}: frames {frames} (1 to {MAX_FRAMES})")
+        if mode == "frame" and source != 0:
+            raise CaseError(f"line {number}: a frame case has no source=")
+        if mode == "source" and first_counter:
+            raise CaseError(f"line {number}: fc= is for frame cases")
+        if not 0 <= first_counter <= 0xFFFF:
+            raise CaseError(f"line {number}: fc {first_counter} (0 to 65535)")
         combos = list(itertools.product(*(vals for _, vals in axes))) if axes else [()]
         for combo in combos:
             subst = {key: v for (key, _), v in zip(axes, combo)}
@@ -519,8 +779,8 @@ def parse_cases(text: str) -> list[Case]:
             if name in seen:
                 raise CaseError(f"line {number}: two cases named {name}")
             seen.add(name)
-            case = Case(name, source, frames)
-            writer = Writer(source)
+            case = Case(name, source, frames, mode=mode, first_counter=first_counter)
+            writer = FrameWriter() if mode == "frame" else Writer(source)
             for line_number, line in lines:
                 try:
                     parse_line(case, writer, apply(line))
@@ -531,7 +791,7 @@ def parse_cases(text: str) -> list[Case]:
     return cases
 
 
-def parse_line(case: Case, writer: Writer, line: str) -> None:
+def parse_line(case: Case, writer: "Writer | FrameWriter", line: str) -> None:
     words = line.split()
     if words[0] == "mem":
         if len(words) != 5:
@@ -569,7 +829,12 @@ def hexbytes(data: bytes) -> str:
 def driver_input(cases: list[Case]) -> str:
     out = []
     for case in cases:
-        out.append(f"case {case.name} {case.frames} {case.source}")
+        if case.mode == "frame":
+            offsets = (SHM_SOURCE_CONFIGURATIONS, SHM_ADPCM_COEFFICIENTS, SHM_DSP_CONFIGURATION,
+                       SHM_INTERMEDIATE_MIX, SHM_SOURCE_STATUSES, SHM_FINAL_SAMPLES, SHM_DSP_STATUS)
+            out.append(f"fcase {case.name} {case.frames} {case.first_counter} " + " ".join(map(str, offsets)))
+        else:
+            out.append(f"case {case.name} {case.frames} {case.source}")
         for fill in case.fills:
             out.append(f"mem {fill.address:x} {fill.data().hex()}")
         for e in case.events:
@@ -602,6 +867,7 @@ def render_inc(cases: list[Case], results: dict[str, str], commit: str, cases_sh
         f"// Azahar {commit}; cases file sha256 {cases_sha}.",
         "// {name, frames, source, fills{{address, bytes, kind (0 noise, 1 walk16, 2 walk8, 3 adpcm), seed, crc32 of the bytes}...},",
         "//  events{{frame, op, offset, \"hex\"}...}, \"per frame, 8 hex digits each: crc32 of mix 0, mix 1, mix 2, the status\" (in lines of 8 frames)}",
+        "// A frame case ends with `, 1`, its third number is the first frame counter, and its four CRCs are of the final samples, the statuses, the aux buses' samples and the configuration.",
     ]
     for case in cases:
         fills = ", ".join(
@@ -610,9 +876,10 @@ def render_inc(cases: list[Case], results: dict[str, str], commit: str, cases_sh
         # the CRCs in lines of 8 frames (adjacent string literals), so that no line is a dense blob
         crcs = results[case.name]
         chunks = "\n".join(f' "{crcs[i:i + 256]}"' for i in range(0, len(crcs), 256))
-        out.append(f'{{"{case.name}", {case.frames}, {case.source}, {{{fills}}},\n'
+        third = case.first_counter if case.mode == "frame" else case.source
+        out.append(f'{{"{case.name}", {case.frames}, {third}, {{{fills}}},\n'
                    f' {{{events}}},\n'
-                   f'{chunks}}},')
+                   f'{chunks}{", 1" if case.mode == "frame" else ""}}},')
     return "\n".join(out) + "\n"
 
 
@@ -645,10 +912,11 @@ def compile_driver(tree: str, cxx: str) -> str:
     src = os.path.join(tree, "src")
     # -fwrapv: the 32-bit sums of the filters and of ADPCM overflow in Azahar's C++ with extreme
     # coefficients, which is undefined there; the compiled code wraps, and so does the native code.
-    # -ffp-contract=off: the gain ramp is floating point, and the native code is built the same way.
+    # -ffp-contract=off: the gain ramp, the downmix and the delay are floating point, and the native code is
+    # built the same way.
     cmd = [cxx, "-std=c++20", "-O1", "-ffp-contract=off", "-fwrapv", "-Wall", "-Wno-unused", "-I", src,
-           "-I", os.path.join(src, "common"), *(os.path.join(src, s) for s in SOURCES),
-           os.path.join(HERE, "driver.cpp"), "-o", exe]
+           "-I", os.path.join(src, "common"), "-I", HERE, *(os.path.join(src, s) for s in SOURCES),
+           *(os.path.join(HERE, d) for d in DRIVERS), "-o", exe]
     done = subprocess.run(cmd, capture_output=True, text=True)
     if done.returncode != 0:
         raise RuntimeError("compiling Azahar's source code failed:\n" + done.stderr[-4000:])

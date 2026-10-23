@@ -39,6 +39,10 @@
 //    to 16 GB for a length of 2^31 - 1 and reads past its memory). Every buffer that fits is played.
 //  - The arithmetic that overflows in Azahar's C++ (the filters' and ADPCM's sums with extreme
 //    coefficients) wraps in 32 bits, as its compiled code does.
+//  - MixInto: the product of a gain and a sample is converted with FloatToS32 (types.h), and the sum into
+//    the mix wraps. Azahar's static_cast<s32> of a value outside the s32 range or a NaN is undefined and
+//    differs between hosts (the gain is a float from guest memory); here it is INT32_MIN, as on x86. In
+//    range, and while the sum does not overflow, nothing changes.
 // The queue is a std::priority_queue ordered by buffer id as Azahar's, so two buffers with one id play
 // in the order the standard library's heap gives (as in Azahar; the oracle cases do not depend on it).
 #pragma once
