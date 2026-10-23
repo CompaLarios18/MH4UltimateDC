@@ -184,8 +184,8 @@ private:
         const std::size_t write_region = read_region == 0 ? 1 : 0;
         const u32 counter = Counter(memory_.data() + audio::kRegionOffset[read_region]);
 
-        // E0: the sources enabled in the first frame, by the captured statuses of the region the DSP
-        // reads and by our own first output.
+        // The captured statuses of the region the DSP reads: with our own first output they say which
+        // sources are enabled in the first frame.
         const u8* captured_status =
             pending_.regions.data() + read_region * audio::kRegionSize + audio::shm::kSourceStatuses;
         output_.clear();
@@ -218,10 +218,8 @@ private:
         if (next_regions != nullptr) {
             const u32 next_counter = NextCounter(next_regions);
             if (next_counter == ((counter + 1) & 0xFFFF)) {
-                status = std::memcmp(ours, next_regions + write_region * audio::kRegionSize + audio::shm::kSourceStatuses,
-                                     audio::kNumSources * 12) == 0
-                             ? 0
-                             : 1;
+                const u8* theirs = next_regions + write_region * audio::kRegionSize + audio::shm::kSourceStatuses;
+                status = std::memcmp(ours, theirs, audio::kNumSources * 12) == 0 ? 0 : 1;
             }
         }
         status_.push_back(status);
@@ -257,7 +255,9 @@ private:
             const bool enabled = block[0] != 0;
             if (first) {
                 tracked_[s] = enabled || captured_status[s * 12] != 0;
+                captured_enabled_[s] = captured_status[s * 12] != 0;
             }
+            ever_enabled_[s] = ever_enabled_[s] || enabled;
             Source& src = sources_[s];
             const u32 position = SwapHalves([&] {
                 u32 v;
@@ -295,6 +295,9 @@ private:
         r.settled = true;
         u32 start = 0;
         for (u32 s = 0; s < audio::kNumSources; ++s) {
+            if (captured_enabled_[s] && !ever_enabled_[s]) {
+                r.never_started.push_back(s);
+            }
             if (!tracked_[s]) {
                 continue;
             }
@@ -398,6 +401,8 @@ private:
     std::vector<u32> counters_;
     std::vector<u8> status_;  // 0 equal, 1 different, 2 not compared
     std::array<bool, audio::kNumSources> tracked_{};
+    std::array<bool, audio::kNumSources> captured_enabled_{};
+    std::array<bool, audio::kNumSources> ever_enabled_{};
     std::array<Source, audio::kNumSources> sources_{};
 };
 
@@ -444,6 +449,13 @@ void WriteDetails(const Verdict& r, std::ostream& out) {
             out << " " << s;
         }
         out << " never settled\n";
+    }
+    if (!r.never_started.empty()) {
+        out << "dsp-replay: sources enabled in the first captured status that our DSP never started:";
+        for (u32 s : r.never_started) {
+            out << " " << s;
+        }
+        out << "\n";
     }
     if (!r.pass) {
         out << "dsp-replay: why: " << r.fail_reason << "\n";

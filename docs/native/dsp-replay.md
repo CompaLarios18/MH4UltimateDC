@@ -19,7 +19,7 @@ mh4n_dsp_replay CAPTURE.mdsp [--report FILE]
 | | |
 |---|---|
 | `CAPTURE.mdsp` | the capture |
-| `--report FILE` | also write the result lines (settling, every window, every judged frame that is not bit-exact, the verdict line) to FILE |
+| `--report FILE` | also write the result lines (settling, every window, every judged frame that is not bit-exact, the verdict line) to FILE; the folder it is in is created when missing |
 | `--help` | the usage |
 
 Exit status: **0** `PASS`, **1** `FAIL`, **2** a usage error or a capture that cannot be read (not a capture, a
@@ -36,6 +36,7 @@ matters (the list below) it is given as `record <n>`, counted from 0. The lines 
 
 ```
 dsp-replay: settled at frame <counter> (record <i>): <i> frames reported, not judged; <k> judged frames had a next frame to compare the status blocks with
+dsp-replay: sources enabled in the first captured status that our DSP never started: <source numbers>   (when there are any)
 dsp-replay: why: <not settled|snr|window|status, ...>               (only on FAIL)
 dsp-replay: window <w>: <frames> frames, snr <dB> (largest difference <d>), ok|BELOW THE LIMIT
 dsp-replay: not bit-exact: frame <counter> (record <i>), largest difference <d>     (one line per judged frame that is not)
@@ -91,7 +92,8 @@ its enable frame (it does not hold judging back).
   flag of the status: a buffer taken from the queue), after **one full loop** of a looping buffer (the position
   falls back with the same buffer id and no dequeue), or when it **stops** (our status says disabled: the source
   was disabled or has no buffer left). A source the capture shows playing that our DSP, starting empty, never
-  starts counts as stopped at once; the frames that then differ from the reference are judged and listed, not hidden.
+  starts counts as stopped at once; the frames that then differ from the reference are judged and listed, not hidden, and the sources are named in the
+  details (`sources enabled in the first captured status that our DSP never started`).
 - **Judging starts at the first frame by which every one of them is settled** (the frame at which the last became
   settled is judged). The frames before are reported, not judged.
 - **Fewer than 80 % of the capture's frames judged** (first guess, N3.md rule 7) is a `FAIL` with `not settled`
@@ -104,8 +106,12 @@ its enable frame (it does not hold judging back).
   frames** (32,800 samples, about one second), tumbling from the first judged frame; a last window of fewer than
   103 frames joins the one before; a capture judged for fewer than 205 frames is one window. (205 and 103, and
   the 60 dB, are D75's; the share of 80 % is a first guess.)
+- With `not settled` and no judged frame the verdict line prints `snr n/a, worst window n/a at -`: there is no
+  number to print (the tests pin this form).
 - A window (or the whole stream) whose **reference RMS is below 1** (Σ ref² under the number of samples) is judged
-  by its **largest absolute difference, at most 1**, not by the SNR.
+  by its **largest absolute difference, at most 1**, not by the SNR. D75 states the rule for a window; applying it to
+  the whole stream too (a silent capture would otherwise have an SNR of -inf from one LSB) is the worker's reading of
+  D75, which the orchestrator will record as a decision.
 - **Every source status block equal** over the judged frames: the first difference is printed as `first difference at frame <counter>`.
 - **Every judged frame that is not bit-exact is listed**, with its frame and its largest difference. **More than 0
   of them ends the package `needs-decision` with the list** (D75), even when the SNR line says `PASS`: the line
@@ -172,7 +178,7 @@ cmake --build build/native --target mh4n_dsp_replay_tool
    ```
    build/native/bin/mh4n_dsp_replay build/golden/G1/dsp-1240.mdsp --report build/audio/G1-dsp-1240.report.txt
    ```
-   Expected: exit 0, `dsp-replay: <n> frames judged of 300, <n> bit-exact, snr inf, worst window inf at <frame>, status equal, PASS`
+   Expected (but see *The likely outcome on a real recording* below): exit 0, `dsp-replay: <n> frames judged of 300, <n> bit-exact, snr inf, worst window inf at <frame>, status equal, PASS`
    with `<n>` at least 240, and no `not bit-exact` line (the capture has 300 type-1 and 300 type-2 records and 88
    type-3 records, at most one source enabled; `python3 tools/native/capfmt.py summary build/golden/G1/dsp-1240.mdsp`
    confirms it). On a failure: exit 2 with `truncated`/`not a DSP capture`: the file is damaged, `golden.py check G1`
@@ -192,10 +198,10 @@ cmake --build build/native --target mh4n_dsp_replay_tool
    python3 tools/native/capfmt.py summary build/audio/G3-hunt.mdsp
    build/native/bin/mh4n_dsp_replay build/audio/G3-hunt.mdsp --report build/audio/G3-hunt.report.txt
    ```
-   (the runner and the library are the ones of `build/golden/G3/manifest.json`: `runner` and `code`; on Linux `export TZ=UTC0`
+   (the runner and the library are the ones of `build/golden/G3/manifest.json`: `runner.path` and `code_library.path`; on Linux `export TZ=UTC0`
    and `cp -r`). Expected: `capfmt.py summary` says 3000 `dsp_frames`, `pcm_non_silent_frames` most of them and
    `sources_enabled_max` several; then exit 0 and `dsp-replay: <n> frames judged of 3000, <n> bit-exact, snr inf, worst window inf at <frame>, status equal, PASS`
-   with `<n>` at least 2400 and no `not bit-exact` line. If `capfmt.py summary` shows a silent capture (the hunt's audio
+   with `<n>` at least 2400 and no `not bit-exact` line. The same likely outcome as for G1 applies (*The likely outcome on a real recording*): sources already playing at frame 14109 give record 0, 0 bit-exact, FAIL, and `needs-decision`. If `capfmt.py summary` shows a silent capture (the hunt's audio
    starts later than 14109), record again with a later start (G3's hunt is in view from about 16740) and say which.
    On a failure: as for G1; `not settled` with many sources is the likely first finding (a looping source with a very
    long buffer, or one that is only ever played once, never reaches its second dequeue): send the `why` and `settled`
@@ -203,5 +209,17 @@ cmake --build build/native --target mh4n_dsp_replay_tool
 3. **Every other golden session with a DSP capture:** none (checked in the headers of `tools/native/golden/*.txt` and
    in `golden.md`; G2, G3, G3-perf, G4, G6, G7 record no DSP capture, and G3-perf and G4 only the GPU). A session
    recorded later with `# captures: dsp:...` is replayed the same way with its `build/golden/<S>/dsp-<start>.mdsp`.
+
+### The likely outcome on a real recording
+
+A source that was already playing when the capture starts has no enable or dirty flags in the captured
+configuration (the game set them long before): our DSP, starting empty, never plays it, it counts as stopped at once
+(above), judging starts at record 0 and every frame that has such a source differs. The output is then
+`settled at frame <n> (record 0)`, `0 bit-exact`, every frame listed, `FAIL`, and the line `sources enabled in the
+first captured status that our DSP never started: <numbers>`. G1's `dsp-1240` begins about 6 game frames after its
+sound starts, so this may well be what it does. That outcome means **"our DSP never started a source the capture
+shows playing"**: it is a design question of D75 for the maintainer (how a replay is to get a source's state when the
+capture starts in the middle of it), **not a DSP bug**. The local session reports `needs-decision` with the numbers
+(the verdict line, the source numbers, the count of listed frames) and retunes nothing.
 
 Put in the notes only the three result lines, the counts of `capfmt.py summary`, and the list if there is one.

@@ -1,5 +1,5 @@
 // Derived from Azahar src/audio_core/hle/hle.cpp, src/audio_core/hle/shared_memory.h, src/audio_core/hle/mixers.h
-// and src/audio_core/hle/source.h at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-2.0-or-later: each of them says "Licensed under GPLv2 or any later version"): DspHle::Impl::GenerateCurrentFrame and the region rule, which this driver gets by including driver_frame.cpp (the oracle's own copy of them, N3-03) and then plays a frame case as the application would, writing what Azahar's own DSP code did instead of CRC-32s.
+// and src/audio_core/hle/source.h at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-2.0-or-later: each of them says "Licensed under GPLv2 or any later version"): DspHle::Impl::GenerateCurrentFrame and the region rule, which this driver gets by including the oracle's own copy of the frame code (N3-03) and then plays a frame case as the application would, writing what Azahar's own DSP code did instead of CRC-32s.
 // Copyright 2017-2026 Citra Emulator Project / Azahar Emulator Project (hle.cpp)
 // Copyright 2016-2025 Citra Emulator Project / Azahar Emulator Project (shared_memory.h)
 // Copyright 2016-2026 Citra Emulator Project / Azahar Emulator Project (mixers.h, source.h)

@@ -646,6 +646,38 @@ TEST_CASE("dsp_replay: the first frame's enabled sources are those of the captur
     REQUIRE(r.not_exact.size() == 1);
     CHECK(r.not_exact[0].index == 0);
     CHECK(!r.pass);
+    // the source the capture shows playing and our DSP never started is named (its number only)
+    CHECK(r.never_started == std::vector<u32>{5});
+    std::ostringstream details;
+    WriteDetails(r, details);
+    CHECK(details.str().find("never started: 5\n") != std::string::npos);
+}
+
+TEST_CASE("dsp_replay: a silent stream (reference RMS below 1) is judged by its largest difference") {
+    Rig rig;
+    FillScenario(rig.Data());
+    const std::vector<Rec> silent = rig.Run(30);  // no source: every sample is 0
+    REQUIRE(ReplayOf(Serialize(silent)).pass);
+    auto with_diff = [&](s16 diff) {
+        std::vector<Rec> recs = silent;
+        int seen = 0;
+        for (Rec& rec : recs) {
+            if (rec.type == 2 && seen++ == 10) {
+                std::memcpy(rec.payload.data() + 20, &diff, 2);
+            }
+        }
+        return ReplayOf(Serialize(recs));
+    };
+    const Verdict one = with_diff(1);  // the SNR is -inf, the largest difference 1 passes
+    CHECK(one.pass);
+    CHECK(one.whole.low_rms);
+    REQUIRE(one.not_exact.size() == 1);  // still listed
+    CHECK(one.not_exact[0].max_diff == 1);
+    const Verdict two = with_diff(2);
+    CHECK(!two.pass);
+    CHECK(two.fail_reason.find("snr") != std::string::npos);
+    CHECK(two.not_exact.size() == 1);
+    CHECK(with_diff(-2).pass == false);
 }
 
 TEST_CASE("dsp_replay: captures that cannot be read") {
@@ -718,7 +750,7 @@ TEST_CASE("dsp_replay: the program") {
     std::filesystem::create_directories(dir);
     const std::string good_path = (dir / "good.mdsp").string();
     const std::string bad_path = (dir / "bad.mdsp").string();
-    const std::string report_path = (dir / "report.txt").string();
+    const std::string report_path = (dir / "new_folder" / "deeper" / "report.txt").string();  // not there yet
     std::vector<Rec> recs = Scenario();
     {
         std::ofstream out(good_path, std::ios::binary);

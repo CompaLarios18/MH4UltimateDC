@@ -77,7 +77,8 @@ bool CaptureReader::Next(Record& record) {
         if (size < kSampleHeadBytes) {
             throw CaptureError("a SAMPLES record has " + std::to_string(size) + " bytes");
         }
-        if (size != kSampleHeadBytes && size != kSampleHeadBytes + static_cast<u64>(LoadU32(record.payload.data() + 4))) {
+        if (size != kSampleHeadBytes &&
+            size != kSampleHeadBytes + static_cast<u64>(LoadU32(record.payload.data() + 4))) {
             throw CaptureError("a SAMPLES record's size does not match its read");
         }
         break;

@@ -105,7 +105,7 @@ def run(tool, path, *extra):
     return subprocess.run([tool, path, *extra], capture_output=True, text=True, timeout=300)
 
 
-LINE = re.compile(r"^dsp-replay: (\d+) frames judged of (\d+), (\d+) bit-exact, snr (\S+), worst window (\S+) at (\d+), "
+LINE = re.compile(r"^dsp-replay: (\d+) frames judged of (\d+), (\d+) bit-exact, snr (\S+), worst window (\S+) at (\d+|-), "
                   r"status (equal|first difference at frame \d+), (PASS|FAIL)$")
 
 
@@ -191,7 +191,7 @@ def test_one_corrupted_sample_fails_and_is_listed(tool, azahar_capture, tmp_path
     assert int(exact) == int(judged) - 1
     assert float(worst) < 60.0
     listed = re.findall(r"not bit-exact: frame (\d+) \(record (\d+)\), largest difference (\d+)", done.stdout)
-    assert listed == [("101", "100", "16384")] or (len(listed) == 1 and listed[0][1] == "100"), listed
+    assert listed == [("101", "100", "16384")], listed
 
 
 def test_a_difference_of_one_is_listed_but_the_snr_still_passes(tool, azahar_capture, tmp_path):
@@ -218,3 +218,24 @@ def test_a_capture_cut_short_or_not_a_capture_exits_2(tool, azahar_capture, tmp_
     junk.write_bytes(b"MHID\x01\x00\x00\x00")
     assert run(tool, str(junk)).returncode == 2
     assert run(tool, str(tmp_path / "nothing.mdsp")).returncode == 2
+
+
+def test_not_settled_prints_n_a_for_the_numbers_it_does_not_have(tool, azahar_capture, tmp_path):
+    path, _ = azahar_capture
+    records = capfmt.read_all(path)
+    kept, pcm = [], 0
+    for r in records:
+        kept.append(r)
+        pcm += r.type == capfmt.DSP_PCM
+        if pcm == 5 and r.type == capfmt.DSP_PCM:
+            break
+    short = str(tmp_path / "short.mdsp")
+    with capfmt.Writer(short, "dsp", manifest=False) as w:
+        for r in kept:
+            w.add(r.type, r.frame, r.ticks, r.payload)
+    done = run(tool, short)
+    assert done.returncode == 1, done.stdout
+    last = done.stdout.splitlines()[-1]
+    assert last == ("dsp-replay: 0 frames judged of 5, 0 bit-exact, snr n/a, worst window n/a at -, "
+                    "status equal, FAIL"), last
+    assert summary(done)[3:5] == ("n/a", "n/a") and "not settled" in done.stdout

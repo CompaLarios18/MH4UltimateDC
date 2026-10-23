@@ -1,5 +1,6 @@
 #include "dsp_replay/tool.h"
 
+#include <filesystem>
 #include <fstream>
 #include <ostream>
 
@@ -70,6 +71,11 @@ int RunDspReplay(const std::vector<std::string>& args, std::ostream& out, std::o
     WriteDetails(result, out);
     out << SummaryLine(result) << "\n";
     if (!report.empty()) {
+        std::error_code ignored;
+        const std::filesystem::path parent = std::filesystem::path(report).parent_path();
+        if (!parent.empty()) {
+            std::filesystem::create_directories(parent, ignored);  // the open below reports a failure
+        }
         std::ofstream rep(report);
         if (!rep) {
             err << "dsp-replay: cannot write " << report << "\n";

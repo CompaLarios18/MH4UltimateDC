@@ -25,6 +25,8 @@ struct Verdict {
     u32 first_judged_index = 0;            // meaningful when settled
     u32 first_judged_counter = 0;
     std::vector<u32> unsettled_sources;    // when not settled
+    // Sources the first captured status shows enabled that our DSP never enabled (it starts empty)
+    std::vector<u32> never_started;
     // What was judged
     u32 judged = 0;
     u32 bit_exact = 0;

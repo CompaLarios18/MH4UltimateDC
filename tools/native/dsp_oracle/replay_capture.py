@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Derived in part from Azahar src/audio_core/hle/shared_memory.h and src/audio_core/hle/hle.cpp at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-2.0-or-later: both say "Licensed under GPLv2 or any later version"): it uses dsp_oracle.py's reading of the offsets in the shared memory, and compiles Azahar's own DSP code through replay_driver.cpp (which includes the oracle's copy of GenerateCurrentFrame).
+# Derived in part from Azahar src/audio_core/hle/shared_memory.h and src/audio_core/hle/hle.cpp at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-2.0-or-later: both say "Licensed under GPLv2 or any later version"): it uses dsp_oracle.py's reading of the offsets in the shared memory, and compiles Azahar's own DSP code through the replay driver (which includes the oracle's own copy of the frame code).
 # Copyright 2016-2025 Citra Emulator Project / Azahar Emulator Project (shared_memory.h)
 # Copyright 2017-2026 Citra Emulator Project / Azahar Emulator Project (hle.cpp)
 """A DSP capture made by Azahar's own DSP code (N3-04's second oracle).
