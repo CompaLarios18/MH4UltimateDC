@@ -1,0 +1,39 @@
+# name: G7
+# needs: save
+# frames: 13400
+# draft: yes
+# checkpoints:
+# captures:
+#
+# G7: a downloaded quest from the maintainer's extdata (quest1 to quest5): to be recorded entering it and
+# 30+ seconds of play. NOT MADE: this is a DRAFT (`golden.py record` refuses it). The board that lists
+# downloaded quests, the Event Quests board of the quest counter, answers "(No Quests available.)" in
+# every run of the reference runner, while the game reads the extdata files at that moment (docs/native/golden.md,
+# "G7"). This draft is the route that gets to that board, for the next attempt: it is G3's walk to
+# the quest counter, then the Low Questatrix's talk, then a touch on "Event Quests".
+#
+# From a user folder with the update installed and the maintainer's save merged in (golden.py record
+# --save, with the Circle Pad Pro option off: see golden.md, "The save"): only button presses and
+# touches are written here.
+#
+#   f300..f10894   as G3 (boot, the village's talk, the world map, the walk to the quest counter's desk)
+#   f11340..f11880 circle pad: along the desk, until the A prompt (top left of the top screen) is the
+#                  Low Questatrix's and not Arena Bambina's (the two stand side by side)
+#   f12010..f12370 A every 90 frames: her talk; f12460 A: "let's have a peek at those Quests", and the
+#                  quest boards (HR 1+, Guild Quests, Event Quests) come up on the touch screen
+#   f12700         touch Event Quests: the game opens the extdata files and says there is none
+f300:A:f6,f450:A:f6,f600:A:f6,f750:A:f6,f900:A:f6
+f1050:A:f6,f1200:A:f6,f1350:A:f6,f1500:A:f6
+f3300:A:f6,f3420:A:f6,f3540:A:f6,f3660:A:f6,f3780:A:f6,f3900:A:f6,f4020:A:f6,f4140:A:f6
+f4260:A:f6,f4380:A:f6,f4500:A:f6,f4620:A:f6,f4740:A:f6,f4860:A:f6,f4980:A:f6,f5100:A:f6
+f5220:A:f6,f5340:A:f6,f5460:A:f6,f5580:A:f6,f5700:A:f6,f5820:A:f6,f5940:A:f6,f6060:A:f6
+f6180:A:f6,f6300:A:f6,f6420:A:f6,f6540:A:f6,f6660:A:f6,f6780:A:f6,f6900:A:f6,f7020:A:f6
+f7140:A:f6,f7260:A:f6,f7380:A:f6,f7500:A:f6,f7620:A:f6,f7740:A:f6,f7860:A:f6,f7980:A:f6
+f8100:A:f6,f8220:A:f6,f8340:A:f6,f8460:A:f6
+f8694:TOUCH:290:195:f6,f8894:TOUCH:182:110:f6,f9044:TOUCH:158:100:f6
+f9494:CIRCLE:-1:0.3:f400,f9914:CIRCLE:-0.4:-1:f350,f10294:CIRCLE:0.74:0.67:f300
+f10604:CIRCLE:-0.7:0.7:f250,f10894:CIRCLE:-0.7:0.7:f350
+f11340:CIRCLE:-1:0:f50,f11520:CIRCLE:0:1:f40,f11700:CIRCLE:0:-1:f40,f11880:CIRCLE:-1:-1:f40
+f12010:A:f6,f12100:A:f6,f12190:A:f6,f12280:A:f6,f12370:A:f6
+f12460:A:f6
+f12700:TOUCH:122:190:f6

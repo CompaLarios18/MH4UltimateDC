@@ -479,12 +479,12 @@ Documents: `docs/native/app-smoke.md` (N2b-01), `app.md` (N2b-03; its CI part N2
 ### N2b-18 · G4 and G3-perf headless
 - **Size / agent:** M · native-worker-high (build-heavy)
 - **Depends on:** N1-26, N1-25, N0-10, N0-30 · **Needs:** dump, save
-- **Goal:** the two sessions N1 does not run pass headless with the null GPU before the renderer meets them: G4 (a cutscene that uses gas) and G3-perf (G3 with the top screen widened to 21:9: `--set 0:widescreen=3440:1440 --set 0:wide_render=1`), so that N2b-21 and N2b-20 only meet renderer problems.
+- **Goal:** the two sessions N1 does not run pass headless with the null GPU before the renderer meets them: G4 (a cutscene that uses gas) and G3-perf (G3 with the top screen widened to 21:9: the three `# env:` lines of `tools/native/golden/G3-perf.txt`, `MH4U_WIDESCREEN=3440:1440`, `MH4U_WIDE_RENDER=1` and `MH4U_DEPTH_OF_FIELD=off`; the runners refuse these keys in `--set`), so that N2b-21 and N2b-20 only meet renderer problems.
 - **Read first:** N1-26's spec and report; `docs/native/golden.md` (G4, G3-perf); `docs/native/cross-model.md` (N0-30's tables for G4).
 - **Files (allowlist):** `native/src/{memory,loader,kernel,runtime,ipc,services,applets,input_script,gpu_null,audio,platform}/**`, `native/src/cpu/*` (the code host, not `interp/`), `native/runner/**`, `native/tests/{memory,loader,cpu,kernel_objects,scheduler,threads,svc,runtime,ipc,srv,fs_romfs,fs_save,apt,cfg,hid,gsp,dsp,other_services,nwm,platform,ptm_gamecoin,determinism,options,common}_test.cpp` (fixes; list each one in the report).
 - **Spec:** as N1-26, for G4 and G3-perf, on copies of the save (`golden.py` makes them), with the default `--io-latency azahar`. A difference that depends on time is proposed for `ipc_time_dependent.txt` with its reason. If more than three modules need fixes, stop after listing them, `blocked`.
 - **Done when:** the native check of G4 with no extra ARGS (`--candidate-args ""`), requiring `state,checkpoints,ipc,svc,hid` (rule 7), passes, and the same for G3-perf.
-- **Traps:** never write into the staged save. G3-perf's options come from its recording's `--set`; `golden.py` passes them to the candidate.
+- **Traps:** never write into the staged save. *(2026-10-22, N0-10, D81)* G3-perf's options are the `# env:` lines of its session, not `--set`: `golden.py` puts them in the environment of every runner it starts, the candidate included, and the port's hooks read them there (`port/src/hooks.cpp`, `LoadOptions`; the native runner installs those hooks in its `platform.hooks` boot step). Nothing native has run G3-perf yet and no native test sets these variables, so check the 576-pixel top-screen width of the native run's screenshots (the reference's G3-perf shots are 576 wide, G3's 400) instead of assuming the options took effect. A command started outside `golden.py` (N2b-13's `--display-check` on its own) must export the three variables itself. G3-perf was recorded with the depth-of-field filter **off**, because the reference runner dies in the village's arrival scene (about frame 1900) with `wide_render` and the filter on: the native renderer meeting the filter on widened targets is a separate case that no golden session covers. The recordings' `user-before/` holds the maintainer's save with the Circle Pad Pro option off (D81), so `check` needs no `--save`.
 - **Out of scope:** rendering.
 
 ### N2b-19 · G1 and G2 end to end
@@ -512,7 +512,7 @@ Documents: `docs/native/app-smoke.md` (N2b-01), `app.md` (N2b-03; its CI part N2
   - the native check of G3 with `--gpu renderer --scale 1`, requiring `state,checkpoints,ipc,svc,hid,images` (rule 7), passes;
   - the native check of G3-perf with `--gpu renderer --scale 1`, requiring `state,checkpoints,ipc,svc,hid` (no `images`: rule 9), passes;
   - the 120-fps native runs of G3 and of G3-perf each have the scene order of the 60-fps native run of the same session (`state_diff.py --order-only` exits 0 for each), and G3-perf's covers the 60 s of hunt above;
-  - N2b-13's `--display-check 60` command on G3 and on G3-perf (each with its script, its user-before copy and its `# frames:` total; G3-perf's with its widening options `--set 0:widescreen=3440:1440 --set 0:wide_render=1`) logs `0 differ`.
+  - N2b-13's `--display-check 60` command on G3 and on G3-perf (each with its script, its user-before copy and its `# frames:` total; G3-perf's with its widening options in the environment, `MH4U_WIDESCREEN=3440:1440 MH4U_WIDE_RENDER=1 MH4U_DEPTH_OF_FIELD=off` (N2b-18's trap: they are not `--set` keys)) logs `0 differ`.
 - **Traps:** pressing B right after the quest is accepted leaves it unposted (`golden.md`); never write into the staged save.
 - **Out of scope:** G4 (N2b-21).
 
