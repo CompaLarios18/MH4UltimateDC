@@ -1,8 +1,18 @@
+# Derived from Azahar src/core/file_sys/ncch_container.h, src/core/file_sys/archive_backend.h,
+# src/core/file_sys/archive_source_sd_savedata.cpp and src/core/file_sys/archive_extsavedata.cpp at
+# 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-3.0-or-later: ncch_container.h says "Licensed under GPLv3
+# or any later version"; the others say GPLv2 or any later version): the expected results restate the
+# exheader storage info layout, the ArchiveFormatInfo layout and the folder and metadata file names.
+# Copyright 2014-2026 Citra Emulator Project / Azahar Emulator Project (ncch_container.h, archive_backend.h)
+# Copyright 2014-2024 Citra Emulator Project / Azahar Emulator Project (archive_source_sd_savedata.cpp)
+# Copyright 2014-2025 Citra Emulator Project / Azahar Emulator Project (archive_extsavedata.cpp)
 """tools/native/saves.py on synthetic files only: made-up bytes, never a player's save. Includes
 non-ASCII user folders (D45)."""
+import io
 import json
 import os
 import struct
+import subprocess
 import sys
 
 import pytest
@@ -15,7 +25,7 @@ import saves  # noqa: E402
 FMT = "4096,3,7,1"
 FMT_BYTES = struct.pack("<IIIB3x", 4096, 3, 7, 1)
 SAVE_FILES = {"system": b"S" * 40, "user1": bytes(range(256)) * 9}
-EXT_FILES = {"card1": b"c1" * 30, "card2": b"", "quest1": os.urandom(300)}
+EXT_FILES = {"card1": b"c1" * 30, "card2": b"", "quest1": bytes((i * 37 + 11) % 256 for i in range(300))}
 
 
 def make_folder(path, files):
@@ -264,6 +274,9 @@ def test_import_json_shape(user, tmp_path, capsys):
     src = make_folder(tmp_path / "src", SAVE_FILES)
     r = jrun(capsys, "import-save", src, "--user", user, "--format-info", FMT)[1]
     assert set(r) == {"ok", "command", "kind", "files", "bytes", "destination", "metadata", "backup", "removed"}
+    out = str(tmp_path / "out")
+    e = jrun(capsys, "export-save", "--user", user, out)[1]
+    assert set(e) == {"ok", "command", "kind", "files", "bytes", "destination", "left"} and e["left"] == []
     assert r["command"] == "import-save" and r["bytes"] == sum(map(len, SAVE_FILES.values()))
 
 
@@ -294,3 +307,171 @@ def test_text_output_and_bad_format_info(user, tmp_path, capsys):
     assert run(capsys, "export-save", "--user", user, str(tmp_path / "o"))[0] == 0
     code, _, err = run(capsys, "import-save", src, "--user", user, "--format-info", "1,2")
     assert code == 2 and "four numbers" in err
+
+
+TOOLS = os.path.join(HERE, "..", "tools", "native")
+
+
+def test_json_output_survives_an_ascii_stdout(user, tmp_path, monkeypatch):
+    """D45: a pipe on Windows uses the ANSI code page; the JSON must not need more than ASCII."""
+    src = make_folder(tmp_path / "src", SAVE_FILES)
+    raw = io.BytesIO()
+    monkeypatch.setattr(sys, "stdout", io.TextIOWrapper(raw, encoding="ascii"))
+    code = saves.main(["import-save", src, "--user", user, "--format-info", FMT, "--json"])
+    sys.stdout.flush()
+    assert code == 0
+    r = json.loads(raw.getvalue().decode("ascii"))
+    assert r["ok"] and r["destination"] == saves.save_dir(user)
+
+
+def test_text_output_survives_an_ascii_stdout(user, monkeypatch):
+    raw = io.BytesIO()
+    monkeypatch.setattr(sys, "stdout", io.TextIOWrapper(raw, encoding="ascii"))
+    assert saves.main(["list", "--user", user]) == 0
+
+
+def failing_nth_read(monkeypatch, n, under):
+    """Fail the n-th read of a file under `under` (the source), not the backup's reads."""
+    real, calls = saves._read_chunks, []
+
+    def read(path):
+        if path.startswith(under):
+            calls.append(path)
+        if len(calls) == n and path.startswith(under):
+            raise OSError(13, "Permission denied", path)
+        return real(path)
+    monkeypatch.setattr(saves, "_read_chunks", read)
+
+
+def test_failure_while_staging_leaves_the_archive_untouched(user, tmp_path, monkeypatch, capsys):
+    old = {"system": b"old-system", "user1": b"old-user1", "extra": b"old-extra"}
+    make_folder(saves.save_dir(user), old)
+    meta = struct.pack("<IIIB3x", 1, 2, 3, 0)
+    open(saves.save_metadata(user), "wb").write(meta)
+    src = make_folder(tmp_path / "src", dict(SAVE_FILES, third=b"3"))
+    failing_nth_read(monkeypatch, 2, src)
+    code, r = jrun(capsys, "import-save", src, "--user", user)
+    assert code == 1 and r["error"]["code"] == "write_failed" and r["error"]["changed"] is False
+    assert r["error"]["backup"] and os.path.isdir(r["error"]["backup"])
+    assert r["error"]["backup"] in r["error"]["message"] and "not changed" in r["error"]["message"]
+    assert snapshot(saves.save_dir(user)) == old
+    assert open(saves.save_metadata(user), "rb").read() == meta
+
+
+def test_failure_while_committing_names_the_backup(user, tmp_path, monkeypatch, capsys):
+    old = {"system": b"old-system", "user1": b"old-user1"}
+    make_folder(saves.save_dir(user), old)
+    src = make_folder(tmp_path / "src", SAVE_FILES)
+    calls = []
+    real = os.replace
+
+    def replace(a, b):
+        if b.startswith(saves.save_dir(user)):
+            calls.append(a)                  # the commit's renames, not the backup's
+        if len(calls) == 2 and b.startswith(saves.save_dir(user)):
+            raise OSError(13, "Permission denied", b)
+        return real(a, b)
+    monkeypatch.setattr(saves.os, "replace", replace)
+    code, r = jrun(capsys, "import-save", src, "--user", user, "--format-info", FMT)
+    assert code == 1 and r["error"]["changed"] is True and "partly imported" in r["error"]["message"]
+    assert r["error"]["backup"] in r["error"]["message"]
+    assert not [n for n in os.listdir(saves.save_dir(user)) if n.endswith(saves.TMP_SUFFIX)]
+    rel = os.path.relpath(saves.save_dir(user), user)
+    assert snapshot(os.path.join(r["error"]["backup"], rel)) == old
+
+
+def test_case_only_difference_does_not_delete_the_new_file(user, tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(saves, "_norm", lambda n: n.casefold())     # what Windows and macOS do
+    make_folder(saves.save_dir(user), {"system": b"old", "user1": b"old1"})
+    src = make_folder(tmp_path / "src", {"System": b"new", "user1": b"new1"})
+    code, r = jrun(capsys, "import-save", src, "--user", user, "--format-info", FMT)
+    assert code == 0 and r["removed"] == []
+
+
+def test_source_names_that_collide_by_case_are_refused(user, tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(saves, "_norm", lambda n: n.casefold())
+    src = make_folder(tmp_path / "src", {"System": b"a", "system": b"b"})
+    code, r = jrun(capsys, "import-save", src, "--user", user, "--format-info", FMT)
+    assert code == 1 and r["error"]["code"] == "case_collision"
+    assert not os.path.exists(os.path.join(user, "sdmc"))
+
+
+def test_replace_failure_keeps_old_content_and_propagates(tmp_path, monkeypatch):
+    p = str(tmp_path / "f")
+    saves.atomic_write(p, [b"old"])
+
+    def boom(a, b):
+        raise OSError(13, "Permission denied", b)
+    monkeypatch.setattr(saves.os, "replace", boom)
+    with pytest.raises(OSError):
+        saves.atomic_write(p, [b"new"])
+    assert open(p, "rb").read() == b"old" and os.listdir(tmp_path) == ["f"]
+
+
+def test_crash_before_the_rename_leaves_a_tmp_that_everything_ignores(user, tmp_path, capsys):
+    make_folder(saves.save_dir(user), {"system": b"old", "user1": b"old1"})
+    open(saves.save_metadata(user), "wb").write(FMT_BYTES)
+    target = os.path.join(saves.save_dir(user), "system")
+    code = ("import os, sys; sys.path.insert(0, sys.argv[1]); import saves; "
+            "saves.os.replace = lambda a, b: os._exit(3); saves.atomic_write(sys.argv[2], [b'new'])")
+    proc = subprocess.run([sys.executable, "-c", code, TOOLS, target])
+    assert proc.returncode == 3
+    assert open(target, "rb").read() == b"old"
+    leftover = target + saves.TMP_SUFFIX
+    assert os.path.exists(leftover)
+    assert [n for n, _ in saves.list_files(saves.save_dir(user), "x")] == ["system", "user1"]
+    r = jrun(capsys, "list", "--user", user)[1]
+    assert [f["name"] for f in r["save"]["files"]] == ["system", "user1"]
+    out = str(tmp_path / "out")
+    assert jrun(capsys, "export-save", "--user", user, out)[0] == 0
+    assert sorted(os.listdir(out)) == ["system", "user1"]
+    src = make_folder(tmp_path / "src", SAVE_FILES)
+    assert jrun(capsys, "import-save", src, "--user", user)[0] == 0
+    assert snapshot(saves.save_dir(user)) == SAVE_FILES      # no leftover either
+
+
+def test_stale_tmp_of_another_name_is_cleaned_by_an_import(user, tmp_path, capsys):
+    make_folder(saves.save_dir(user), {"zzz" + saves.TMP_SUFFIX: b"x", "system": b"o"})
+    src = make_folder(tmp_path / "src", SAVE_FILES)
+    assert jrun(capsys, "import-save", src, "--user", user, "--format-info", FMT)[0] == 0
+    assert sorted(os.listdir(saves.save_dir(user))) == ["system", "user1"]
+
+
+def test_list_reports_an_archive_folder_with_a_subfolder(user, capsys):
+    make_folder(saves.save_dir(user), SAVE_FILES)
+    os.makedirs(os.path.join(saves.save_dir(user), "sub"))
+    make_folder(os.path.join(saves.extdata_root(user, 0x1263), "user"), EXT_FILES)
+    code, r = jrun(capsys, "list", "--user", user)
+    assert code == 0 and "sub" in r["save"]["error"] and r["save"]["files"] == []
+    assert len(r["extdata"]["files"]) == 3
+    code, out, _ = run(capsys, "list", "--user", user)
+    assert code == 0 and "sub" in out
+
+
+def test_native_deleted_leftovers_are_not_archive_files(user, tmp_path, capsys):
+    make_folder(saves.save_dir(user), dict(SAVE_FILES, **{"user1.deleted.123.4": b"x"}))
+    assert [n for n, _ in saves.list_files(saves.save_dir(user), "x")] == ["system", "user1"]
+    out = str(tmp_path / "out")
+    assert jrun(capsys, "export-save", "--user", user, out)[0] == 0
+    assert sorted(os.listdir(out)) == ["system", "user1"]
+
+
+def test_force_export_reports_what_it_left(user, tmp_path, capsys):
+    make_folder(saves.save_dir(user), SAVE_FILES)
+    dest = make_folder(tmp_path / "dest", {"keep": b"k", "system": b"mine"})
+    r = jrun(capsys, "export-save", "--user", user, dest, "--force")[1]
+    assert r["left"] == ["keep"]
+
+
+def test_short_exheader_message_names_the_option(user, tmp_path, capsys):
+    game = os.path.join(user, "native", "game")
+    os.makedirs(game)
+    open(os.path.join(game, "exheader.bin"), "wb").write(b"short")
+    src = make_folder(tmp_path / "ext", EXT_FILES)
+    code, r = jrun(capsys, "import-extdata", src, "--user", user, "--format-info", "1,1,1,0")
+    assert code == 1 and "--extdata-id" in r["error"]["message"]
+
+
+def test_extdata_id_option_usage_error_is_readable(user, capsys):
+    code, r = jrun(capsys, "list", "--user", user, "--extdata-id", "zz")
+    assert code == 2 and "lambda" not in r["error"]["message"] and "not a number" in r["error"]["message"]

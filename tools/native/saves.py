@@ -1,4 +1,18 @@
 #!/usr/bin/env python3
+# Derived from Azahar src/core/file_sys/ncch_container.cpp, src/core/file_sys/ncch_container.h,
+# src/core/file_sys/archive_backend.h, src/core/file_sys/archive_source_sd_savedata.cpp,
+# src/core/file_sys/archive_extsavedata.cpp, src/core/hle/service/fs/archive.h and
+# src/common/common_paths.h at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-3.0-or-later:
+# ncch_container.cpp, ncch_container.h and archive.h say "Licensed under GPLv3 or any later version";
+# archive_backend.h, archive_source_sd_savedata.cpp, archive_extsavedata.cpp and common_paths.h say
+# GPLv2 or any later version): NCCHContainer::ReadExtdataId and the exheader storage info layout, the
+# ArchiveFormatInfo layout, the SD card folders and metadata file names of the save data and extdata
+# archives, SYSTEM_ID, SDCARD_ID and SDMC_DIR.
+# Copyright 2017-2026 Citra Emulator Project / Azahar Emulator Project (ncch_container.cpp)
+# Copyright 2014-2026 Citra Emulator Project / Azahar Emulator Project (ncch_container.h, archive_backend.h, archive.h)
+# Copyright 2014-2024 Citra Emulator Project / Azahar Emulator Project (archive_source_sd_savedata.cpp)
+# Copyright 2014-2025 Citra Emulator Project / Azahar Emulator Project (archive_extsavedata.cpp, common_paths.h)
+# Copyright 2013 Dolphin Emulator Project (common_paths.h, second notice)
 """Save and extdata import and export for the native runtime (N3-16, D65).
 
 The player's 3DS save and extdata, as Checkpoint, JKSM and GodMode9 write them (a folder of the
@@ -31,6 +45,7 @@ import datetime
 import json
 import ntpath
 import os
+import re
 import struct
 import sys
 from typing import Optional
@@ -73,6 +88,12 @@ FORMAT_INFO: dict[str, Optional[tuple[int, int, int, int]]] = {
 BACKUPS = "mh4u-save-backups"
 TMP_SUFFIX = ".mh4n-tmp"
 KINDS = ("save", "extdata")
+DELETED_RE = re.compile(r"^.+\.deleted\.\d+\.\d+$")
+
+
+def _norm(name: str) -> str:
+    """The key under which two file names are the same file: Windows and macOS file systems ignore case."""
+    return name.casefold() if os.name == "nt" or sys.platform == "darwin" else name
 
 
 class Error(Exception):
@@ -127,7 +148,8 @@ def read_exheader_extdata_id(path: str) -> Optional[int]:
         data = f.read(0x300)
     base = 0x230
     if len(data) < base + 0x20:
-        raise Error("bad_exheader", f"{os.path.basename(path)} is too short to be an exheader")
+        raise Error("bad_exheader", f"{os.path.basename(path)} is too short to be an exheader: run the native "
+                        "setup again, or give --extdata-id")
     ext_save = int.from_bytes(data[base:base + 8], "little")
     unique = int.from_bytes(data[base + 0x10:base + 0x18], "little")
     other = data[base + 0x1F]
@@ -211,6 +233,37 @@ def atomic_write(path: str, chunks) -> int:
     return size
 
 
+def _remove(path: str) -> None:
+    try:
+        os.remove(_long(path))
+    except OSError:
+        pass
+
+
+def _stage(src: str, tmp: str) -> None:
+    """Copy `src` to the temporary name `tmp`, flushed and fsynced; no rename."""
+    try:
+        with open(_long(tmp), "wb") as f:
+            for chunk in _read_chunks(src):
+                f.write(chunk)
+            f.flush()
+            os.fsync(f.fileno())
+    except BaseException:
+        _remove(tmp)
+        raise
+
+
+def _stage_bytes(data: bytes, tmp: str) -> None:
+    try:
+        with open(_long(tmp), "wb") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+    except BaseException:
+        _remove(tmp)
+        raise
+
+
 def _read_chunks(path: str):
     with open(_long(path), "rb") as f:
         while True:
@@ -233,8 +286,8 @@ def list_files(folder: str, what: str) -> list[tuple[str, int]]:
         raise Error("source", f"cannot read {what} folder {folder}: {e.strerror or e}") from e
     for name in names:
         full = os.path.join(folder, name)
-        if name.endswith(TMP_SUFFIX):
-            continue
+        if name.endswith(TMP_SUFFIX) or DELETED_RE.match(name):
+            continue                             # leftovers of a crash: ours, and the native fs's .deleted.<pid>.<n>
         if os.path.islink(_long(full)) or not os.path.isfile(_long(full)):
             raise Error("not_flat", f"{what} folder {folder} holds {name!r}, which is not a plain file: a save "
                         "archive's folder holds files only (no sub-folders)", name=name)
@@ -316,27 +369,55 @@ def do_import(kind: str, src: str, user: str, extdata_id: Optional[int], format_
             raise Error("no_format_info", f"the {kind} archive has no metadata file here and its format information "
                         "is not known to this tool yet: give --format-info TOTAL_SIZE,DIRECTORIES,FILES,DUPLICATE_DATA "
                         "(the numbers of an existing metadata file; `saves.py format-info FILE` prints them)")
+    keys = [_norm(n) for n, _ in files]
+    if len(set(keys)) != len(keys):
+        raise Error("case_collision", f"{src} holds two files whose names differ only in capital letters, which "
+                    "this computer's file system cannot keep apart")
     # Nothing has been touched until here.
     backup = _backup(user, [os.path.join(arc.files, n) for n, _ in old] + ([arc.metadata] if have_metadata else []))
+    partly = f"; the {kind} may be partly imported, and the old files are in the backup {backup}" if backup else ""
     os.makedirs(_long(arc.files), exist_ok=True)
     if kind == "extdata":
         os.makedirs(_long(arc.boss), exist_ok=True)
-    written = 0
-    for name, _ in files:
-        written += copy_file(os.path.join(src, name), os.path.join(arc.files, name))
-    wrote_metadata = False
-    if not have_metadata:
-        atomic_write(arc.metadata, [FORMAT_INFO_STRUCT.pack(*info)])
-        wrote_metadata = True
-    keep = {n for n, _ in files}
+    for name in os.listdir(_long(arc.files)):    # temporary files of an earlier crash
+        if name.endswith(TMP_SUFFIX):
+            _remove(os.path.join(arc.files, name))
+    # Stage: every new file complete on disk under a temporary name. A failure here leaves the archive as it was.
+    staged: list[tuple[str, str]] = []           # (temporary path, final path)
+    try:
+        for name, _ in files:
+            final = os.path.join(arc.files, name)
+            staged.append((final + TMP_SUFFIX, final))
+            _stage(os.path.join(src, name), final + TMP_SUFFIX)
+        if not have_metadata:
+            final = arc.metadata
+            staged.append((final + TMP_SUFFIX, final))
+            _stage_bytes(FORMAT_INFO_STRUCT.pack(*info), final + TMP_SUFFIX)
+    except OSError as e:
+        for tmp, _ in staged:
+            _remove(tmp)
+        raise Error("write_failed", f"could not write {e.filename or 'a file'}: {e.strerror or e}; the {kind} "
+                    "was not changed" + (f" (the old files are also in the backup {backup})" if backup else ""),
+                    backup=backup, changed=False) from e
+    # Commit: renames, then the files the source lacks.
     removed = []
-    for name, _ in old:
-        if name not in keep:
-            os.remove(_long(os.path.join(arc.files, name)))
-            removed.append(name)
-    if removed:
+    try:
+        for tmp, final in staged:
+            os.replace(_long(tmp), _long(final))
+        keep = set(keys)
+        for name, _ in old:
+            if _norm(name) not in keep:
+                os.remove(_long(os.path.join(arc.files, name)))
+                removed.append(name)
         _fsync_dir(arc.files)
-    result = {"kind": kind, "files": [{"name": n, "size": s} for n, s in files], "bytes": written,
+    except OSError as e:
+        for tmp, _ in staged:
+            _remove(tmp)
+        raise Error("write_failed", f"could not finish the import ({e.filename or 'a file'}: {e.strerror or e})"
+                    + partly, backup=backup, changed=True) from e
+    written = sum(size for _, size in files)
+    wrote_metadata = not have_metadata
+    result = {"kind": kind, "files": [{"name": n, "size": sz} for n, sz in files], "bytes": written,
               "destination": arc.files, "metadata": "written" if wrote_metadata else "kept",
               "backup": backup, "removed": removed}
     if ext_id is not None:
@@ -361,28 +442,36 @@ def do_export(kind: str, user: str, dest: str, force: bool, extdata_id: Optional
     written = 0
     for name, _ in files:
         written += copy_file(os.path.join(arc.files, name), os.path.join(dest, name))
+    exported = {_norm(n) for n, _ in files}
+    left = sorted(n for n in os.listdir(_long(dest)) if _norm(n) not in exported)   # --force leaves these alone
     result = {"kind": kind, "files": [{"name": n, "size": s} for n, s in files], "bytes": written,
-              "destination": dest}
+              "destination": dest, "left": left}
     if ext_id is not None:
         result["extdata_id"] = f"{ext_id:016x}"
         result["extdata_id_source"] = id_source
     return result
 
 
+def _archive_summary(arc: "Archive") -> dict:
+    """What an archive holds; a folder `list` cannot read as an archive's is reported, not raised."""
+    meta = os.path.isfile(_long(arc.metadata))
+    try:
+        files = [{"name": n, "size": sz} for n, sz in arc.existing()]
+    except Error as e:
+        return {"path": arc.files, "error": e.message, "files": [], "metadata": meta}
+    return {"path": arc.files, "files": files, "metadata": meta}
+
+
 def do_list(user: str, extdata_id: Optional[int]) -> dict:
     out: dict = {"user": user, "program_id": f"{PROGRAM_ID:016x}", "backups": []}
-    save = Archive("save", user)
-    out["save"] = {"path": save.files, "files": [{"name": n, "size": s} for n, s in save.existing()],
-                   "metadata": os.path.isfile(_long(save.metadata))}
+    out["save"] = _archive_summary(Archive("save", user))
     try:
         ext_id, source = resolve_extdata_id(user, extdata_id)
     except Error as e:
         out["extdata"] = {"error": e.message, "files": [], "metadata": False}
     else:
-        ext = Archive("extdata", user, ext_id, source)
-        out["extdata"] = {"path": ext.files, "extdata_id": f"{ext_id:016x}", "extdata_id_source": source,
-                          "files": [{"name": n, "size": s} for n, s in ext.existing()],
-                          "metadata": os.path.isfile(_long(ext.metadata))}
+        out["extdata"] = dict(_archive_summary(Archive("extdata", user, ext_id, source)),
+                              extdata_id=f"{ext_id:016x}", extdata_id_source=source)
     base = os.path.join(user, BACKUPS)
     if os.path.isdir(_long(base)):
         out["backups"] = sorted(n for n in os.listdir(_long(base)) if os.path.isdir(_long(os.path.join(base, n))))
@@ -401,10 +490,13 @@ def print_text(command: str, r: dict) -> None:
     if command == "list":
         for kind in KINDS:
             a = r[kind]
-            if "error" in a:
+            if "path" not in a:
                 print(f"{kind}: {a['error']}")
                 continue
             print(f"{kind}: {a['path']}")
+            if "error" in a:
+                print(f"  {a['error']}")
+                continue
             print(f"  {len(a['files'])} file(s)" + (", metadata present" if a["metadata"] else ", no metadata"))
             for f in a["files"]:
                 print(f"  {f['name']}  {f['size']} bytes")
@@ -417,6 +509,15 @@ def print_text(command: str, r: dict) -> None:
         print(f"backup: {r['backup']}" if r["backup"] else "nothing was there to back up")
     else:
         print(f"exported {len(r['files'])} file(s), {r['bytes']} bytes, to {r['destination']}")
+        if r["left"]:
+            print(f"left alone in the folder: {', '.join(r['left'])}")
+
+
+def parse_id(text: str) -> int:
+    try:
+        return int(text, 0)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{text!r} is not a number (decimal or 0x hex)") from None
 
 
 def build_parser(json_errors: bool) -> argparse.ArgumentParser:
@@ -430,7 +531,7 @@ def build_parser(json_errors: bool) -> argparse.ArgumentParser:
         p.add_argument("--json", action="store_true", help="print one JSON object (for the launcher)")
         if user:
             p.add_argument("--user", required=True, metavar="DIR", help="the user folder both executables share (D61)")
-            p.add_argument("--extdata-id", type=lambda s: int(s, 0), default=None,
+            p.add_argument("--extdata-id", type=parse_id, default=None,
                            help="the extdata id (default: native/game/exheader.bin's, else the built-in one)")
 
     ap = Parser(prog="saves.py", description=__doc__.splitlines()[0])
@@ -481,7 +582,7 @@ def main(argv=None) -> int:
                     result = do_export(command.split("-")[1], user, os.path.abspath(ns.dest), ns.force,
                                        ns.extdata_id)
         except OSError as e:
-            raise Error("io", str(e)) from e
+            raise Error("io", f"{e.strerror or e}" + (f": {e.filename}" if e.filename else "")) from e
     except Error as e:
         if as_json:
             print(json.dumps({"ok": False, "command": command,
@@ -490,7 +591,7 @@ def main(argv=None) -> int:
             print(f"saves.py: {e.message}", file=sys.stderr)
         return 2 if e.code == "usage" else 1
     if as_json:
-        print(json.dumps(dict(result, ok=True, command=command), indent=1, ensure_ascii=False))
+        print(json.dumps(dict(result, ok=True, command=command), indent=1))
     else:
         print_text(command, result)
     return 0
