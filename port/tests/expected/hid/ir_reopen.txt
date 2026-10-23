@@ -1,0 +1,16 @@
+ir_reopen: start
+ir_reopen: heap_rc: 00000000
+ir_reopen: frame_counter_address: 010571d4
+ir_reopen: first_open_rc: 00000000
+ir_reopen: first_block_rc: 00000000
+ir_reopen: first_initialize_rc: 00000000
+ir_reopen: first_finalize_rc: 00000000
+ir_reopen: first_close_block_rc: 00000000
+ir_reopen: first_close_session_rc: 00000000
+ir_reopen: second_open_rc: 00000000
+ir_reopen: second_block_rc: 00000000
+ir_reopen: second_initialize_rc: 00000000
+ir_reopen: second_finalize_rc: 00000000
+ir_reopen: second_close_block_rc: 00000000
+ir_reopen: second_close_session_rc: 00000000
+ir_reopen: done

@@ -23,9 +23,11 @@ MH4N_OPTION("runner", "--observable", "FILE",
 MH4N_OPTION("runner", "--slice-us", "N",
             "length of a scheduling slice in microseconds when both virtual cores have work (default 1000)");
 MH4N_OPTION("runner", "--user", "DIR", "the user directory (NAND, SD card, saves) for the services that need one");
-MH4N_OPTION("runner", "--init-time", "SECONDS",
-            "the date the console starts at, seconds since the Unix epoch, UTC (default 1767268800, "
-            "2026-01-01 12:00 UTC: the game seeds its random numbers from the clock)");
+MH4N_OPTION("runner", "--init-time", "SECONDS[.FRACTION]",
+            "the date the console starts at, seconds since the Unix epoch, UTC, with up to six decimals "
+            "(microseconds); 946684800 to 4102444799.999999 (2000-01-01 to 2099-12-31), anything else "
+            "ends the run with status 2 (default 1767268800, 2026-01-01 12:00 UTC: the game seeds its "
+            "random numbers from the clock)");
 MH4N_OPTION("runner", "--gpu", "NAME", "the GPU (default null)");
 MH4N_OPTION("runner", "--input-source", "NAME", "where the buttons, the circle pad and the touch screen come from (default script)");
 MH4N_OPTION("runner", "--audio", "NAME", "where the DSP's output goes (default null)");
