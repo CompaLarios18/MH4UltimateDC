@@ -59,11 +59,18 @@ public:
     /// stays held, and the mode the player is in stays.
     void Configure(const App::Config& config);
 
-    /// One event of the window (the ones the in-game menu did not take). True: the event belongs
-    /// to input (a key or a controller's, a mouse event while the mouse is the camera) and the
-    /// shell does not use it; false: the shell's (the app's hotkeys, the window's events, and the
-    /// mouse's while it is the stylus: those are touches). Press and release of the mouse's
-    /// buttons, the wheel and its motion count only while the mouse is the camera.
+    /// Every event of the window goes here first, before the in-game menu and before the shell's
+    /// other uses (the mapper tracks held keys, buttons and axes from the events, so one it never
+    /// saw, a release the menu took, would leave a key held; it is muted while the menu is up,
+    /// which makes seeing everything safe). The return value only says whether the event is a
+    /// touch: `true`: it is not one (a key, a controller's event, a mouse event while the mouse is
+    /// the camera, FocusLost); `false`: the shell may use it as one (the mouse's events while it
+    /// is the stylus, and the events that are no input: the window's own, the app's hotkeys). The
+    /// shell and the menu still get every event they used to: the hotkeys (fullscreen, the frame
+    /// counter, the quest map, the key guides), the right stick's click (the touch-screen switch,
+    /// window.cpp) and FocusLost are the shell's to handle whatever this returns. Press and
+    /// release of the mouse's buttons, the wheel and its motion count only while the mouse is the
+    /// camera.
     bool OnEvent(const App::InputEvent& event);
 
     /// Once per loop, after the events, with a clock that only goes forward (seconds): the mouse
@@ -82,6 +89,10 @@ public:
     /// The mouse is the touch screen's stylus (the shell reads its events as touches): it is not
     /// the camera. Refreshed by Tick.
     bool MouseIsStylus() const;
+    /// The keyboard and mouse mode is on (input_mode, or in auto the device used last): what
+    /// window.cpp calls `active`, for the key guides. Unlike WantsRelativeMouse it does not
+    /// depend on the focus, the stylus key or the menu, so it does not flicker with them.
+    bool KeyboardMouseActive() const;
     /// The window should be in relative mouse mode: the mouse is the camera (the keyboard and
     /// mouse mode is on, the window has the focus, the stylus key is not held, the menu is not
     /// up). Refreshed by Tick; the shell lets go of a touch when it turns on.

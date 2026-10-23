@@ -14,11 +14,12 @@ The wiring (the window's events, the shell's loop, `input_live::Find(rt)->Set`, 
 |---|---|
 | `InputMapper(IGamepadLayer*)` | the controllers come through `IGamepadLayer::List()` (`PadInfo`: the instance id the window's events carry, the SDL GUID string, the port among controllers of that GUID, the name). `MakeSdlGamepads()` is the SDL3 layer (it opens every gamepad it lists: SDL3 sends a gamepad's events only to the program that opened it). A test brings a fake |
 | `Configure(const App::Config&)` | reads the settings, asks the layer, picks the controller, logs the controller line, builds the bindings. Call again when the settings change: what is held stays held, and so does the mode the player is in |
-| `bool OnEvent(const App::InputEvent&)` | one event of the window that the in-game menu did not take. `true`: it belongs to input (keys, controller events, a mouse event while the mouse is the camera) and the shell does not use it; `false`: the shell's (the app's hotkeys, the window's own events, and the mouse's events while it is the stylus: those are touches) |
+| `bool OnEvent(const App::InputEvent&)` | every event of the window goes here **first**, before the in-game menu and before the shell's other uses: the mapper tracks held keys, buttons and axes from the events, so one it never saw (a release the menu took while it was up) would leave a key held and the held-over rule would keep the button released after the menu is gone. It is muted while the menu is up, which makes seeing everything safe. The return value only says whether the event is a touch: `true`: it is not one (keys, controller events, a mouse event while the mouse is the camera, `FocusLost`); `false`: the shell may use it as one (the mouse's events while it is the stylus, the events that are no input, the app's hotkeys). The shell and the menu get the events as before: the hotkeys, the right stick's click (the touch-screen switch of `window.cpp`) and `FocusLost` are the shell's to handle whatever `OnEvent` returns |
 | `void Tick(double now_s)` | once per loop, after the events, on a clock that only goes forward |
 | `InputState State() const`, `on_state` | what the game reads; `on_state(const InputState&)` is called when it changed (after an event, `Tick`, `SetMuted` or `Configure`) |
 | `SetMuted(bool)` | the menu is up |
 | `bool MouseIsStylus() const`, `bool WantsRelativeMouse() const` | the mouse is the touch screen's stylus / the camera. The complement of each other; refreshed by `Tick` and `SetMuted` |
+| `bool KeyboardMouseActive() const` | the mode alone (`window.cpp`'s `active`, for the key guides): `input_mode`, or in auto the device used last. Unlike `WantsRelativeMouse()` it does not follow the focus, the stylus key or the menu, so it does not flicker with them |
 | `SetCameraTurnActive(bool)`, `on_camera_turn(yaw, pitch)` | whether the port's camera hook runs is the runtime's to say (N3-14; this class never asks `Port::Hooks`); while it does, the mouse's motion goes to `on_camera_turn` and pushes no stick |
 
 `InputState`'s touch fields are never set here: the shell's touch tracker owns them (`LiveInput::Set` ignores them). There are no motion sensors (as `mh4u`) and no runner options, so nothing is proposed for `runner.md`.
@@ -64,7 +65,7 @@ Azahar's `xinput_to_3ds_mapping` (the layout for an Xbox style pad; Azahar's Nin
 | C-stick | `AXIS_RIGHTX`, `AXIS_RIGHTY` | `..._RIGHTX`, `..._RIGHTY` | axes 2, 3 |
 | (HOME) | `SDL_CONTROLLER_BUTTON_GUIDE` | `SDL_GAMEPAD_BUTTON_GUIDE` | 5: **not bound**, the Guide button opens the app's menu |
 
-The stick clicks, the paddles and the touchpad have no bind (the right stick's click is the shell's touch-screen switch, `window.cpp`).
+The stick clicks, the paddles and the touchpad have no bind (the right stick's click is the shell's touch-screen switch, `window.cpp`: `OnEvent` returns `true` for it, which only means it is not a touch, and the shell still handles it).
 
 ## Sticks
 
@@ -114,4 +115,10 @@ The test restates the bind table and compares it with `sdl_impl.cpp`'s text, and
 
 ## What N3-14 does with it
 
-Creates an `InputMapper` over `MakeSdlGamepads()` (SDL's gamepad subsystem initialised), calls `Configure`, hands it every event the menu did not take, calls `Tick` once per loop and `SetMuted` as the menu shows and hides, sets `on_state` to `input_live::Find(rt)->Set` and `on_camera_turn` to the hooks' `AddCameraTurn`, and `SetCameraTurnActive` from the hooks' `CameraTurnActive`. Windows and macOS compile the same files (CI: `native-app.yml`).
+Creates an `InputMapper` over `MakeSdlGamepads()` (SDL's gamepad subsystem initialised), calls `Configure`, gives it **every** `InputEvent` first (before the menu and the shell's other uses; the shell still handles the hotkeys, the right stick's click and `FocusLost` itself), calls `Tick` once per loop and `SetMuted` as the menu shows and hides (the mapper is muted while the menu is up), sets `on_state` to `input_live::Find(rt)->Set` and `on_camera_turn` to the hooks' `AddCameraTurn`, and `SetCameraTurnActive` from the hooks' `CameraTurnActive`. Windows and macOS compile the same files (CI: `native-app.yml`).
+
+Three things the mapper leaves to it:
+
+- **`ClearCameraTurn`.** `input.cpp`'s `MouseReset` also calls `Runtime().ClearCameraTurn()` when the mouse stops being the camera, and the mapper has no callback for it: N3-14 calls it (the hooks' `ClearCameraTurn`) on the falling edge of `WantsRelativeMouse()`, checked after `Tick` and after `SetMuted`.
+- **Shutdown order.** Destroy the gamepad layer (it closes the gamepads it opened) before `SDL_Quit`.
+- **Proposal, not done here:** an `InputEvent::Type::FocusGained` in `port/app/app_window.h` (a shared contract, N2b's). Today the mapper takes the focus back at the next key or mouse button pressed, so after an alt-tab the camera comes back only then; with the event it would come back at once.

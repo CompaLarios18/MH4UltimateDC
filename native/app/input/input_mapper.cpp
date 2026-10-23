@@ -573,7 +573,8 @@ struct InputMapper::Impl {
         }
     }
 
-    /// input.cpp's MouseMotion.
+    /// input.cpp's MouseMotion (reimplemented here on the loop's clock and without Runtime(): keep in
+    /// step with port/app/input.cpp).
     void MouseMotion(int dx, int dy) {
         if (camera_turn_active) {
             // the game's camera turns by the mouse itself: degrees a count
@@ -589,7 +590,8 @@ struct InputMapper::Impl {
         mouse.Motion(dx, dy);
     }
 
-    /// input.cpp's Wheel: the item bar's scroll, or a key pressed for a moment.
+    /// input.cpp's Wheel: the item bar's scroll, or a key pressed for a moment (keep in step with
+    /// port/app/input.cpp).
     void Wheel(int code) {
         if (Contains(item_prev_keys, code)) {
             item_scroll.Queue(-1);
@@ -718,7 +720,7 @@ struct InputMapper::Impl {
         }
     }
 
-    /// input.cpp's Tick, on the loop's clock.
+    /// input.cpp's Tick, on the loop's clock (keep in step with port/app/input.cpp).
     void Tick(double now_s) {
         now = now_s;
         UpdateCamera();
@@ -789,6 +791,10 @@ void InputMapper::SetMuted(bool muted) {
 
 bool InputMapper::MouseIsStylus() const {
     return !impl_->camera;
+}
+
+bool InputMapper::KeyboardMouseActive() const {
+    return impl_->KeyboardMouseActive();
 }
 
 bool InputMapper::WantsRelativeMouse() const {

@@ -737,8 +737,10 @@ TEST_CASE("mute: nothing is pressed, and what is held when it ends stays release
 
 TEST_CASE("modes: auto follows the last device used, the pad against the keyboard") {
     Rig rig;  // no controller: auto starts with the keyboard and mouse
+    CHECK(rig.mapper->KeyboardMouseActive());  // (the mode is known at once, the camera after a Tick)
     rig.Tick();
     CHECK(rig.mapper->WantsRelativeMouse());
+    CHECK(rig.mapper->KeyboardMouseActive());
     CHECK_FALSE(rig.mapper->MouseIsStylus());
 
     // a controller comes and its button is pressed: the controller's way, the mouse the stylus again
@@ -749,6 +751,7 @@ TEST_CASE("modes: auto follows the last device used, the pad against the keyboar
     CHECK(rig.PadButton(kPad1, az::PadButtonId::South, true));
     rig.Tick();
     CHECK_FALSE(rig.mapper->WantsRelativeMouse());
+    CHECK_FALSE(rig.mapper->KeyboardMouseActive());
     CHECK(rig.mapper->MouseIsStylus());
     // the mouse's events are the shell's now: touches
     CHECK_FALSE(rig.Motion(5, 5));
@@ -774,6 +777,7 @@ TEST_CASE("modes: auto follows the last device used, the pad against the keyboar
     rig.Down(Key("W"));
     rig.Tick();
     CHECK(rig.mapper->WantsRelativeMouse());
+    CHECK(rig.mapper->KeyboardMouseActive());
     rig.Up(Key("W"));
 
     // the app's own keys and the stylus key do not make the mouse the camera
@@ -786,6 +790,7 @@ TEST_CASE("modes: auto follows the last device used, the pad against the keyboar
         rig.Down(Key(name));
         rig.Tick();
         CHECK_FALSE(rig.mapper->WantsRelativeMouse());
+        CHECK_FALSE(rig.mapper->KeyboardMouseActive());
         rig.Up(Key(name));
     }
 
@@ -802,6 +807,7 @@ TEST_CASE("modes: auto follows the last device used, the pad against the keyboar
     rig.PadAxis(kPad1, az::PadAxisId::LeftX, 16500);
     rig.Tick();
     CHECK_FALSE(rig.mapper->WantsRelativeMouse());
+    CHECK_FALSE(rig.mapper->KeyboardMouseActive());
 
     // the settings read again in the middle of play keep the mode the player is in
     rig.mapper->Configure(rig.config);
@@ -813,10 +819,12 @@ TEST_CASE("modes: auto starts with the controller's way when there is a controll
     Rig rig(OnePad());
     rig.Tick();
     CHECK_FALSE(rig.mapper->WantsRelativeMouse());
+    CHECK_FALSE(rig.mapper->KeyboardMouseActive());
     rig.Tick(0.2);
     rig.Down(Key("W"));
     rig.Tick();
     CHECK(rig.mapper->WantsRelativeMouse());
+    CHECK(rig.mapper->KeyboardMouseActive());
 }
 
 TEST_CASE("modes: controller never gives the camera, keyboard_mouse always") {
@@ -826,17 +834,20 @@ TEST_CASE("modes: controller never gives the camera, keyboard_mouse always") {
         rig.Mouse(App::MouseButton::Left, true);
         rig.Tick();
         CHECK_FALSE(rig.mapper->WantsRelativeMouse());
+        CHECK_FALSE(rig.mapper->KeyboardMouseActive());
         CHECK(rig.mapper->MouseIsStylus());
         CHECK_FALSE(rig.Motion(10, 10));
     }
     {
         Rig rig(OnePad(), [](App::Config& c) { c.input_mode = "keyboard_mouse"; });
+        CHECK(rig.mapper->KeyboardMouseActive());
         rig.Tick();
         CHECK(rig.mapper->WantsRelativeMouse());
         rig.PadButton(kPad1, az::PadButtonId::South, true);  // (the controller still plays)
         rig.PadAxis(kPad1, az::PadAxisId::LeftX, 32767);
         rig.Tick();
         CHECK(rig.mapper->WantsRelativeMouse());
+        CHECK(rig.mapper->KeyboardMouseActive());
         CHECK(rig.Buttons() == mh4n::kPadB);
         CHECK(rig.State().circle_x == 154);
     }
@@ -848,10 +859,12 @@ TEST_CASE("the stylus key, the menu and the focus take the mouse from the camera
     REQUIRE(rig.mapper->WantsRelativeMouse());
     rig.Mouse(App::MouseButton::Left, true);  // "Mouse Left | V": X
     REQUIRE(rig.Buttons() == mh4n::kPadX);
+    CHECK(rig.mapper->KeyboardMouseActive());
     const int alt = Key("Left Alt");
     rig.Down(alt);
     rig.Tick();
     CHECK_FALSE(rig.mapper->WantsRelativeMouse());
+    CHECK(rig.mapper->KeyboardMouseActive());  // the mode stays on: the key guides do not flicker
     CHECK(rig.mapper->MouseIsStylus());
     CHECK(rig.Buttons() == 0);  // the mouse's buttons are let go as it stops being the camera
     CHECK_FALSE(rig.Motion(3, 3));
@@ -866,9 +879,11 @@ TEST_CASE("the stylus key, the menu and the focus take the mouse from the camera
     // the menu: the mouse is its own at once, and the camera comes back when it is gone
     rig.mapper->SetMuted(true);
     CHECK_FALSE(rig.mapper->WantsRelativeMouse());
+    CHECK(rig.mapper->KeyboardMouseActive());
     rig.mapper->SetMuted(false);
     rig.Tick();
     CHECK(rig.mapper->WantsRelativeMouse());
+    CHECK(rig.mapper->KeyboardMouseActive());
 
     // the window loses the focus: keys let go, the mouse is free until the player acts in it again
     rig.Down(Key("W"));
@@ -877,12 +892,14 @@ TEST_CASE("the stylus key, the menu and the focus take the mouse from the camera
     CHECK(rig.State() == InputState{});
     rig.Tick();
     CHECK_FALSE(rig.mapper->WantsRelativeMouse());
+    CHECK(rig.mapper->KeyboardMouseActive());  // (lost focus is not a change of mode)
     CHECK_FALSE(rig.Motion(30, 0));
     rig.Tick();
     CHECK(rig.State().cstick_x == 0);
     rig.Down(Key("W"));
     rig.Tick();
     CHECK(rig.mapper->WantsRelativeMouse());
+    CHECK(rig.mapper->KeyboardMouseActive());
 }
 
 TEST_CASE("touch-screen mouse events are no mouse; the app's hotkeys are the shell's") {
