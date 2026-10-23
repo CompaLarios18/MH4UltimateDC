@@ -249,3 +249,23 @@ dsp-replay: 300 frames judged of 300, 0 bit-exact, snr 0.00, worst window 0.00 a
   *The likely outcome on a real recording* named a non-empty list); the first status block differs at frame 4434.
 - Per D75, a judged frame that is not bit-exact ends the package `needs-decision`; nothing was retuned and no code
   changed.
+### Step 2: the G3 hunt capture (`--capture-dsp 14109:3000`, reference runner of N0-29)
+
+The runner ran G3 to frame 18000 and exited 0 (about 56 minutes). `capfmt.py summary`: 3000 DSP frames (counters 48745
+to 51744, game frames 14109 to 14966), 3000 type-1 and type-2 records, 316 type-3 records (233 unique, 83 without
+bytes), `pcm_non_silent_frames` 2454 of 3000, `sources_enabled_max` 20.
+
+```
+exit 1
+dsp-replay: settled at frame 48745 (record 0): 0 frames reported, not judged; 2999 judged frames had a next frame to compare the status blocks with
+dsp-replay: why: snr, window
+dsp-replay: window 0: 205 frames, snr inf (reference RMS below 1: judged by the largest difference 0), ok
+dsp-replay: window 1: 205 frames, snr inf (reference RMS below 1: judged by the largest difference 0), ok
+dsp-replay: windows 2 to 14: snr between -0.02 and 0.07 (largest differences 9964 to 23330), BELOW THE LIMIT
+dsp-replay: 3000 frames judged of 3000, 546 bit-exact, snr 0.01, worst window -0.02 at 49770, status equal, FAIL
+```
+
+- Frames listed as `not bit-exact`: 2454 of 3000 (the same count as the non-silent frames); the 546 bit-exact
+  frames are the silent ones.
+- The line naming sources our DSP never started is not printed; the status blocks are equal over all judged frames.
+- Per D75 the package ends `needs-decision`; nothing was retuned and no code changed.
