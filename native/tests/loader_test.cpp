@@ -653,6 +653,88 @@ TEST_CASE("the shared page: the clock before 2000 and another init_time") {
     CHECK(*memory->Read<float>(0x1FF81080) == 0.5f);
 }
 
+TEST_CASE("ParseInitTime: the grammar, the microseconds and the range") {
+    const std::vector<std::pair<std::string, u64>> valid = {
+        {"1767268800", 1767268800000000ull},        {"1767268800.5", 1767268800500000ull},
+        {"1767268800.500000", 1767268800500000ull}, {"1767268800.000001", 1767268800000001ull},
+        {"946684800", 946684800000000ull},          {"4102444799.999999", 4102444799999999ull},
+        {"0946684800", 946684800000000ull},         {"1767268800.000000", 1767268800000000ull},
+        {"1767268800.0", 1767268800000000ull},      {"1767268800.000999", 1767268800000999ull},
+    };
+    for (const auto& [text, micros] : valid) {
+        CAPTURE(text);
+        const InitTimeParse parsed = ParseInitTime(text);
+        CHECK(parsed.ok);
+        CHECK(parsed.micros == micros);
+    }
+    const char* invalid[] = {
+        "",           "abc",        "yesterday",    "-1",          "+1767268800",       "1767268800.",
+        ".5",         "1767268800.1234567", "1767268800.5.5", "1767268800,5", " 1767268800", "1767268800 ",
+        "1e9",        "0x6553F100", "1767268800.5x", "946684799.999999", "946684799", "4102444800",
+        "99999999999", "00946684800", "01767268800", "4102444800.0", "0", ".", "1767268800\n",
+    };
+    for (const char* text : invalid) {
+        CAPTURE(text);
+        const InitTimeParse parsed = ParseInitTime(text);
+        CHECK_FALSE(parsed.ok);
+        CHECK_FALSE(parsed.error.empty());
+    }
+    CHECK(kDefaultInitTime * 1000000 == 1767268800000000ull);
+    CHECK(ParseInitTime("1767268800").micros == SystemPages().InitTimeMicros());
+}
+
+TEST_CASE("the shared page: the start with microseconds, and the date after N game milliseconds") {
+    // N milliseconds of game time are N * 268111856 / 1000 ticks; multiples of 125 ms are whole ticks
+    auto ticks_of_ms = [](u64 ms) { return ms * kBaseClockRateArm11 / 1000; };
+    for (const u64 ms : {125ull, 1000ull, 3600000ull, 86400000ull * 30}) {
+        CHECK(ticks_of_ms(ms) * 1000 == ms * kBaseClockRateArm11);  // whole ticks, no rounding by the test
+    }
+    const u64 base_ms = 820584000000ull;  // 2026-01-01 12:00:00 UTC since 2000
+    const SystemPages whole;
+    const SystemPages same_as_integer = SystemPages::FromMicroseconds(1767268800000000ull);
+    const SystemPages half = SystemPages::FromMicroseconds(1767268800500000ull);
+    CHECK(whole.InitTime() == 1767268800);
+    CHECK(whole.InitTimeFraction() == 0);
+    CHECK(half.InitTime() == 1767268800);
+    CHECK(half.InitTimeFraction() == 500000);
+    CHECK(half.InitTimeMicros() == 1767268800500000ull);
+    for (const u64 ms : {0ull, 125ull, 1000ull, 3600000ull, 86400000ull * 30}) {
+        CAPTURE(ms);
+        CHECK(whole.SystemTimeSince2000(ticks_of_ms(ms)) == base_ms + ms);
+        CHECK(same_as_integer.SystemTimeSince2000(ticks_of_ms(ms)) == base_ms + ms);
+        CHECK(half.SystemTimeSince2000(ticks_of_ms(ms)) == base_ms + 500 + ms);
+        CHECK(half.SystemTimeSince1900(ticks_of_ms(ms)) == base_ms + 500 + ms + kMillisecondsFrom1900To2000);
+    }
+    // the sub-millisecond case: floor((start + elapsed) / 1000) in microseconds
+    const SystemPages sub = SystemPages::FromMicroseconds(1767268800000999ull);
+    CHECK(sub.SystemTimeSince2000(0) == base_ms);                       // .000999 s is 0 ms
+    CHECK(sub.SystemTimeSince2000(ticks_of_ms(125)) == base_ms + 125);  // 125.999 ms rounds down
+    // 268112 ticks are 1000.0005 us, taken as 1000 us: .000999 + .001000 is 1.999 ms, so 1 ms
+    CHECK(sub.SystemTimeSince2000(268112) == base_ms + 1);
+    // .999999 s + 1 us would carry into the next millisecond only at 1000 us
+    const SystemPages late = SystemPages::FromMicroseconds(1767268800999999ull);
+    CHECK(late.SystemTimeSince2000(0) == base_ms + 999);
+    CHECK(late.SystemTimeSince2000(269) == base_ms + 1000);  // 269 ticks are 1 us
+}
+
+TEST_CASE("the shared page: no option, the integer default and .000000 give the same bytes") {
+    auto page_bytes = [](SystemPages pages) {
+        auto memory = NewMemory();
+        FcramRegions regions(2);
+        REQUIRE(IsSuccess(pages.Map(*memory, regions)));
+        pages.UpdateSharedPage(kSharedPageUpdateIntervalTicks);
+        std::vector<u8> bytes(0x1000 + 0x1000);
+        memory->ReadBlock(bytes.data(), 0x1FF80000, 0x1000);
+        memory->ReadBlock(bytes.data() + 0x1000, 0x1FF81000, 0x1000);
+        return bytes;
+    };
+    const auto none = page_bytes(SystemPages());
+    CHECK(page_bytes(SystemPages(kDefaultInitTime)) == none);
+    CHECK(page_bytes(SystemPages::FromMicroseconds(ParseInitTime("1767268800.000000").micros)) == none);
+    CHECK(page_bytes(SystemPages::FromMicroseconds(ParseInitTime("1767268800").micros)) == none);
+    CHECK(page_bytes(SystemPages::FromMicroseconds(ParseInitTime("1767268800.5").micros)) != none);
+}
+
 TEST_CASE("the shared page: the MAC address at 0x60 round-trips and touches nothing else") {
     SystemPages unmapped;
     unmapped.SetMacAddress({1, 2, 3, 4, 5, 6});  // before Map: nothing to write, no crash
