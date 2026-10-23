@@ -1019,7 +1019,6 @@ def test_the_coverage_is_information_it_changes_no_result(tmp_path, capsys):
     assert run(tmp_path, base, trace(*reads(5, *changed)), *MULTISET) == 1
     out = capsys.readouterr().out
     assert "only the reference covers: 0 (in 0, 0 range(s)), only the candidate covers: 0 (in 0, 0 range(s))" in out
-    # (same ranges, other data)
 
 
 def test_merge_ranges_is_the_union_of_unsorted_contained_and_touching_ranges():

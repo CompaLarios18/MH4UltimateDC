@@ -209,7 +209,7 @@ has a stream of 2,637,824 bytes that is another file on each side): up to 133,25
 reads in G4 and 3,072,964 in G3, against 10,240 in the sessions without a quest. The most likely cause is the game's
 random generator, seeded one second apart on the two backends, which is not a defect of either. No rule of
 `compare_ipc_traces.py` absorbs this yet and none of the profiles was changed: `--require ipc` fails for these two
-sessions, and the `fs coverage:` line of the result gives the number to compare with section 11. The other comparisons
+sessions, and the `fs coverage:` line of the result gives the number to compare with section 11. The Reads are not the only reason: `cross-model.md` section 9.3 rows 1 and 2 (the main thread's ControlArchive input byte; the `nwm::UDS` commands) are separate open items. Nor does the `ipc` check protect loads of up to the allowance: a thread of up to 16 Reads (up to 16 runs under `native`) can vanish from the candidate, and one extra read passes (under `native` always, under `cross` when the candidate is the larger side) (`comparators.md`, section 11). The other comparisons
 (`svc`, `state`, `state-margin`, `checkpoints`, `hid`) pass on both sessions (`cross-model.md`, section 9).
 
 **`native`** (D76; N0-33; the native runtime in real time against the reference. Asked for with `--profile native`,
