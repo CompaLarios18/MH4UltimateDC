@@ -1175,8 +1175,8 @@ def both_ways(tmp_path, a, b, *args):
 
 
 def test_the_defaults_are_the_numbers_of_the_saved_pairs():
-    assert cmp.DEFAULT_MAX_ONE_SIDED == 16384 and cmp.DEFAULT_MAX_DETACHED == 0
-    assert cmp.DEFAULT_MAX_ONE_SIDED > 10240          # the most that the calibrated pairs show, per thread
+    assert cmp.DEFAULT_MAX_ONE_SIDED == 20480 and cmp.DEFAULT_MAX_DETACHED == 0
+    assert cmp.DEFAULT_MAX_ONE_SIDED > 18432          # the most that the pairs show, per thread (G4's movie stream)
 
 
 @pytest.mark.parametrize("profile", sorted(PROFILES))
@@ -1251,7 +1251,7 @@ def test_the_bytes_that_only_one_side_covers_are_bounded_at_the_limit_on_each_si
 
 
 def test_the_bytes_are_summed_over_the_file_sessions_of_a_thread_not_taken_one_by_one(tmp_path, capsys):
-    half = 10240                                                          # each below the limit, together above it
+    half = LIMIT // 2 + 2048                                              # each below the limit, together above it
     mk = lambda tail: trace(*stream_with_tail(4096, tail, session="fs:USER/file#1"),
                             *[fs_read(5, 10 + i, o, n, zlib.crc32(FILE_DATA[o:o + n]), session="fs:USER/file#2")
                               for i, (o, n) in enumerate([(0, 4096), (4096, tail)])])
@@ -1259,7 +1259,7 @@ def test_the_bytes_are_summed_over_the_file_sessions_of_a_thread_not_taken_one_b
     capsys.readouterr()
     assert run(tmp_path, mk(half), base, *MULTISET) == 1
     assert f"bytes only the reference covers: {2 * half} (at most {LIMIT})" in capsys.readouterr().out
-    assert run(tmp_path, mk(LIMIT // 2), base, *MULTISET) == 0            # 2 x 8192 = the limit
+    assert run(tmp_path, mk(LIMIT // 2), base, *MULTISET) == 0            # 2 x half the limit = the limit
     # a thread of its own has a bound of its own
     other = trace(*stream_with_tail(4096, half, thread=1), *stream_with_tail(4096, half, thread=5))
     base2 = trace(*spans(1, 1, [(0, 4096)]), *spans(5, 1, [(0, 4096)]))
@@ -1277,7 +1277,7 @@ def test_a_range_next_to_nothing_the_other_side_covers_is_a_difference_whatever_
     assert run(tmp_path, trace(*spans(5, 1, [(0, 4096), (9000, 2048)])), base, *opts) == 1
     out = capsys.readouterr().out
     assert "bytes only the reference covers in ranges that touch nothing the other side covers: 2048 (at most 0)" in out
-    assert "(at most 16384)" not in out                                    # inside the byte limit; only the detached rule fails
+    assert "(at most 20480)" not in out                                    # inside the byte limit; only the detached rule fails
     assert "0x" not in out.split("cover different bytes", 1)[1].split("fs reads:")[0]      # numbers, no values
     far = trace(*spans(5, 1, [(0, 4096), (9000, 2)]))
     assert both_ways(tmp_path, far, base, *opts, "--max-detached", "2") == (0, 0)
@@ -1340,5 +1340,5 @@ def test_the_new_options_have_their_usage_errors_too(tmp_path, capsys):
 
 
 def test_the_docstring_documents_the_coverage_rules():
-    for word in ("--max-one-sided", "--max-detached", "N0-37", "16384", "10240", "file session"):
+    for word in ("--max-one-sided", "--max-detached", "N0-37", "20480", "10240", "file session"):
         assert word in cmp.__doc__

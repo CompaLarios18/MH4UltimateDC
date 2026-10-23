@@ -73,8 +73,8 @@ checks use these two options, and nothing else is loosened for `fs:`; the `nativ
                only) what the Reads of one thread cover, by byte ranges whatever the pieces. A file session that one
                side reads from and the other does not is a difference whatever its size (a thread that one side never
                reads from is the same case). The bytes that one side covers and the other does not, summed over the
-               thread's file sessions, are at most --max-one-sided on each side (default 16384: the saved pairs of
-               G1, G2, G6 and the native runs have at most 10240); and those of them in ranges that touch nothing the
+               thread's file sessions, are at most --max-one-sided on each side (default 20480: the saved pairs of
+               G1, G2, G6 and the native runs have at most 10240, G4's movie stream 18432); and those of them in ranges that touch nothing the
                other side covers (the byte before or after) are at most --max-detached (default 0: in those pairs every
                one-sided range continues a range the other side reads, a stream cut at another place). The multiset
                and these rules are both applied; the CRC-32 of bytes that only one side read is not compared.
@@ -143,8 +143,10 @@ IpcCall = tracefmt.IpcCall
 DEFAULT_MAX_SURPLUS = 16        # D52: reads one side's multiset may hold beyond the other's
 # N0-37 (docs/native/comparators.md section 12): the 12 saved pairs of G1, G2, G6 and the native runs have at most
 # 10,240 bytes per thread that only one side reads (a stream cut at another place), all of them next to bytes that the
-# other side reads too; 16,384 is two 8,192-byte stream chunks.  Bytes in a range with no such neighbour: none.
-DEFAULT_MAX_ONE_SIDED = 16384   # bytes per thread that one side covers and the other does not
+# other side reads too.  N0-35 part B (G4 at a start date with a fraction, D83): the movie stream's thread (#17) shows
+# 18,432 bytes (nine 2,048-byte chunks, the same as in the recording of N0-10, so not a matter of the seed); the margin
+# is 20,480 = ten chunks (D85 amended).  Bytes in a range with no such neighbour: none.
+DEFAULT_MAX_ONE_SIDED = 20480   # bytes per thread that one side covers and the other does not
 DEFAULT_MAX_DETACHED = 0        # of them, bytes in ranges that touch nothing the other side covers
 
 

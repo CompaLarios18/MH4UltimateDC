@@ -69,8 +69,9 @@ CROSS_MAX_SHIFT = capfmt.DEFAULT_MAX_SHIFT                  # DSP frames the can
 CROSS_MAX_SURPLUS = 16                                      # fs:USER/file reads a thread may make beyond the other (D52)
 # N0-37: the bytes of a thread's fs:USER/file Reads that only one side covers (the same numbers in the cross and the
 # native profile; the single place of these defaults, equal to those of compare_ipc_traces.py, which a test checks).
-# Calibrated on the saved pairs of G1, G2, G6 and the native runs: at most 10,240; docs/native/comparators.md section 12.
-CROSS_MAX_ONE_SIDED = 16384                                 # bytes per thread that one side covers and the other not
+# Calibrated on the saved pairs of G1, G2, G6 and the native runs (at most 10,240) and on G4 recorded again at a start
+# date with a fraction (the movie stream: 18,432); docs/native/comparators.md section 12, D85 amended by N0-35 part B.
+CROSS_MAX_ONE_SIDED = 20480                                 # bytes per thread that one side covers and the other not
 CROSS_MAX_DETACHED = 0                                      # of them, in ranges next to nothing the other side covers
 # The native profile (D76): the cross profile for the native runtime in real time, whose game clock follows the host
 # while the reference charges the modelled 268 MHz.  Only these differ from the cross profile's numbers; the margin

@@ -1215,7 +1215,7 @@ def test_the_byte_limits_of_the_fs_reads_are_the_tools_defaults_in_one_place():
     # N0-37: the cross and the native profile pass these to compare_ipc_traces.py; the tool's own defaults are the same
     sys.path.insert(0, str(ROOT / "tools"))
     import compare_ipc_traces
-    assert golden.CROSS_MAX_ONE_SIDED == compare_ipc_traces.DEFAULT_MAX_ONE_SIDED == 16384
+    assert golden.CROSS_MAX_ONE_SIDED == compare_ipc_traces.DEFAULT_MAX_ONE_SIDED == 20480
     assert golden.CROSS_MAX_DETACHED == compare_ipc_traces.DEFAULT_MAX_DETACHED == 0
 
 
