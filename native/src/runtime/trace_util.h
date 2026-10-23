@@ -5,10 +5,23 @@
 #include <ctime>
 #include <string>
 
+#include "../kernel/deterministic.h"
 #include "mh4n/loader.h"
+#include "mh4n/options.h"
 #include "mh4n/types.h"
 
 namespace mh4n::detail {
+
+// The tick a trace counts from. The reference's traces count from the load of the program, and its
+// clock does not start at 0; the deterministic mode starts its clock at the same tick
+// (kDeterministicStartTicks), so subtracting it gives the reference's `t=` values. Real time counts from
+// the start of the clock, which is near 0.
+inline u64 TraceEpoch(const Options& options) {
+    return options.Has("--deterministic") ? kDeterministicStartTicks : 0;
+}
+inline u64 TraceTick(u64 tick, u64 epoch) {
+    return tick > epoch ? tick - epoch : 0;
+}
 
 // `# <tool> v1 <ISO date> game=0x<title id> cpu=native new3ds=off`: the header of N0-04's and
 // N0-07's formats (tools/native/tracefmt.py). The date is today's, UTC.

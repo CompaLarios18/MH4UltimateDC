@@ -167,7 +167,7 @@ bool EvalAddress(const GuestMemory& memory, const std::string& text, u32& addres
 class StateTracer {
 public:
     StateTracer(Runtime& rt, const std::string& path, std::vector<StateValue> values)
-        : rt_(rt), file_(path), values_(std::move(values)) {}
+        : rt_(rt), file_(path), values_(std::move(values)), epoch_(detail::TraceEpoch(rt.GetOptions())) {}
     bool ok() const { return file_.ok(); }
 
     void WriteHeader() {
@@ -176,7 +176,7 @@ public:
     }
 
     void OnFrame(u32 frame, u64 tick) {
-        std::string line = fmt::format("f={} t={}", frame, tick);
+        std::string line = fmt::format("f={} t={}", frame, detail::TraceTick(tick, epoch_));
         for (const StateValue& v : values_) {
             u32 address = 0, value = 0;
             if (EvalAddress(rt_.Memory(), v.expr, address) && ReadGuest(rt_.Memory(), address, v.size, value)) {
@@ -195,6 +195,7 @@ private:
     Runtime& rt_;
     detail::TraceFile file_;
     std::vector<StateValue> values_;
+    u64 epoch_;
 };
 
 void StartStateTrace(Runtime& rt) {

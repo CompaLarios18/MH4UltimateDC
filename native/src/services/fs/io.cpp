@@ -153,6 +153,18 @@ void StartIo(FsState& fs, ServiceContext& context, u64 delay_ns, std::function<v
              std::function<void()> finish) {
     Kernel& kernel = context.GetKernel();
     const bool waits_for_clock = NeedsDelay(fs, delay_ns);
+    if (work && fs.synchronous) {
+        // The deterministic mode (N1-25): the host's reading speed must not matter, so the work is done
+        // here and now, on the scheduler thread; the gate then only waits for the modelled tick.
+        try {
+            work();
+        } catch (const std::exception& e) {
+            MH4N_LOG(Error, kLog, "an I/O operation threw: {}", e.what());
+        } catch (...) {
+            MH4N_LOG(Error, kLog, "an I/O operation threw");
+        }
+        work = nullptr;
+    }
     auto gate = std::make_shared<Gate>(std::move(finish), !waits_for_clock, !work);
     if (waits_for_clock) {
         // The deadline is an exact tick of the game clock: the request's time plus the delay.

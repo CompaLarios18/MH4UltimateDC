@@ -22,6 +22,7 @@
 #include <bit>
 #include <cstring>
 
+#include "deterministic.h"
 #include "mh4n/assert.h"
 #include "mh4n/log.h"
 #include "svc_internal.h"
@@ -226,6 +227,10 @@ void SvcTable::Impl::Call(RCtx& ctx, u32 imm, u32 next_pc) {
     call.lr = ctx.r[14];
     std::copy_n(ctx.r, call.regs.size(), call.regs.begin());
     call.ticks = sched.NowTicks();
+    // The deterministic mode (N1-25) charges the call's cycles from Azahar's table here: after the time
+    // the trace records (the reference's trace shows the tick before the cost, as its `t=` does) and
+    // before the call runs, so that a call that reads the clock sees its own cost. Nothing otherwise.
+    kernel_detail::ChargeCycles(SvcCycles(imm));
     pending[call.thread_id] = call;
     if (hooks.before) {
         hooks.before(call);

@@ -105,6 +105,10 @@ struct FsState {
 
     bool initialized = false;
     IoLatency latency = IoLatency::Azahar;
+    // --deterministic (N1-25): `StartIo` runs the `work` of an operation on the scheduler thread, at once,
+    // instead of on an I/O thread, so that the run does not depend on how fast the host reads. The reply
+    // still comes at its modelled tick (or at once with --io-latency none).
+    bool synchronous = false;
     u32 priority = 0xFFFFFFFFu;  // SetPriority / GetPriority (Azahar's FS_USER::priority is -1 at first)
     // The operations whose `work` has not finished on its I/O thread (it counts down after the completion
     // has been posted). A clock that skips idle time, as ManualTimeSource does, must not skip it while this
@@ -144,9 +148,10 @@ void MakeIoPool(FsState& state, Kernel& kernel);
 // ---- running I/O ----------------------------------------------------------------------------------------------------
 
 // Starts an operation on behalf of a request that returns Handled::Deferred. `work` runs on an I/O thread
-// (it may be empty); `finish` runs once on the scheduler thread, after `work` is done and, with
-// IoLatency::Azahar, not before `delay_ns` of game time have passed since this call. The data `work`
-// leaves for `finish` travels in what both lambdas capture. Scheduler thread.
+// (it may be empty; on the scheduler thread, inside this call, in the deterministic mode); `finish` runs
+// once on the scheduler thread, after `work` is done and, with IoLatency::Azahar, not before `delay_ns`
+// of game time have passed since this call. The data `work` leaves for `finish` travels in what both
+// lambdas capture. Scheduler thread.
 void StartIo(FsState& fs, ServiceContext& context, u64 delay_ns, std::function<void()> work,
              std::function<void()> finish);
 

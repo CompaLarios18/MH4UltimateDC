@@ -2,8 +2,10 @@
 
 #include <algorithm>
 #include <filesystem>
+#include <fstream>
 
 #include "../common/utf8.h"
+#include "../kernel/deterministic.h"
 #include "gpu_host.h"
 #include "mh4n/assert.h"
 #include "mh4n/log.h"
@@ -116,6 +118,58 @@ bool ParseLimits(const Options& options, Limits* out, std::string* error) {
 }
 #endif
 
+// --deterministic (N1-25): the runtime's default clock and timer thread give way to the virtual clock
+// and its preemption source (kernel/deterministic.h). A clock the caller made (a test's) is kept if it
+// already is the virtual one; any other cannot run the mode.
+bool UseVirtualTime(std::unique_ptr<TimeSource>& time, std::unique_ptr<PreemptionSource>& preemption,
+                    VirtualTimeSource** virtual_time, DeterministicPreemption** virtual_preemption,
+                    std::string* error) {
+    if (auto* existing = dynamic_cast<VirtualTimeSource*>(time.get())) {
+        auto* source = dynamic_cast<DeterministicPreemption*>(preemption.get());
+        if (source == nullptr) {
+            *error = "--deterministic: the virtual clock needs a DeterministicPreemption";
+            return false;
+        }
+        *virtual_time = existing;
+        *virtual_preemption = source;
+        return true;
+    }
+    if (dynamic_cast<SteadyTimeSource*>(time.get()) == nullptr) {
+        *error = "--deterministic needs the runtime's own clock, not another one";
+        return false;
+    }
+    auto source = std::make_unique<VirtualTimeSource>();
+    auto stepping = std::make_unique<DeterministicPreemption>(*source);
+    *virtual_time = source.get();
+    *virtual_preemption = stepping.get();
+    preemption.reset();  // the timer thread (never started) refers to the clock below
+    time = std::move(source);
+    preemption = std::move(stepping);
+    return true;
+}
+
+// --deterministic (N1-25): the reference runner's default mode gives the console the Wi-Fi MAC
+// 02:00:00:00:00:01 (port/README.md, the determinism table), where the cfg service would draw a random one
+// and keep it in the user folder. So that two runs from the same folder see the same MAC, a folder that
+// exists and has none gets that address in sysdata/mac.txt first (the file cfg reads; a folder that
+// already has one keeps it, as does a run with no folder).
+void SeedMacAddress(const std::string& user_folder) {
+    if (user_folder.empty()) {
+        return;
+    }
+    std::error_code ec;
+    const std::filesystem::path folder = utf8::PathFromUtf8(user_folder);
+    if (!std::filesystem::is_directory(folder, ec)) {
+        return;
+    }
+    const std::filesystem::path path = folder / "sysdata" / "mac.txt";
+    if (std::filesystem::exists(path, ec)) {
+        return;
+    }
+    std::filesystem::create_directories(path.parent_path(), ec);
+    std::ofstream(path, std::ios::binary) << "02:00:00:00:00:01";
+}
+
 }  // namespace
 
 const char* PhaseName(Phase phase) {
@@ -175,21 +229,54 @@ bool Runtime::CreateWorld(u32 memory_mode, std::string* error) {
         *error = "invalid memory mode " + std::to_string(memory_mode);
         return false;
     }
+    // --deterministic (N1-25): the clock is virtual and counts the cycles the code library charges.
+    VirtualTimeSource* virtual_time = nullptr;
+    DeterministicPreemption* virtual_preemption = nullptr;
+    if (options_.Has("--seed") && !options_.Has("--deterministic")) {
+        *error = "--seed needs --deterministic";
+        return false;
+    }
+    if (options_.Has("--deterministic") &&
+        !UseVirtualTime(time_, preemption_, &virtual_time, &virtual_preemption, error)) {
+        return false;
+    }
     memory_ = GuestMemory::Create();
     if (!memory_) {
         *error = "cannot reserve the guest address space";
         return false;
     }
     clock_ = std::make_unique<GameClock>(*time_);
+    if (virtual_time != nullptr) {
+        // The reference runner's emulated clock does not start at 0 (port/README.md): the game sees the
+        // same ticks, and the shared page the same date, as in its recordings.
+        virtual_time->AdvanceTicks(kDeterministicStartTicks);
+    }
     code_host_ = std::make_unique<CodeHost>(*memory_);
     kernel_ = std::make_unique<Kernel>(*memory_, memory_mode);
     GuestScheduler::Options scheduler_options;
-    scheduler_options.slice_us = static_cast<u32>(options_.GetUInt("--slice-us", kDefaultSliceUs));
+    scheduler_options.slice_us = static_cast<u32>(
+        options_.GetUInt("--slice-us", virtual_time != nullptr ? kDeterministicSliceUs : kDefaultSliceUs));
     scheduler_ = std::make_unique<GuestScheduler>(*kernel_, *code_host_, *clock_, *time_,
                                                   preemption_.get(), scheduler_options);
     threads_ = std::make_unique<ThreadManager>(*kernel_, *scheduler_);
     svc_ = std::make_unique<SvcTable>(*kernel_, *scheduler_, *threads_);
     svc_->Install(*code_host_);
+    if (virtual_time != nullptr) {
+        CycleDriverOptions driver_options;
+        driver_options.seeded = options_.Has("--seed");
+        driver_options.seed = options_.GetUInt("--seed", 0);
+        driver_options.slice_us = scheduler_options.slice_us;
+        auto driver = std::make_shared<CycleDriver>(*code_host_, *scheduler_, *svc_, *virtual_time,
+                                                    *virtual_preemption, driver_options);
+        driver->Install();
+        Own(driver);
+        if (driver_options.seeded) {
+            MH4N_LOG(Info, kLog, "deterministic mode: seed {}, slices of {} us on average",
+                     driver_options.seed, driver_options.slice_us);
+        } else {
+            MH4N_LOG(Info, kLog, "deterministic mode: no seed, slices of {} us", driver_options.slice_us);
+        }
+    }
     gpu_host_ = std::make_unique<detail::RuntimeGpuHost>(*memory_, *kernel_);
     scheduler_->OnSafePoint([this] { PollFrame(); });
     InstallSvcHooks();
@@ -290,7 +377,10 @@ int Runtime::Run(const Options& options) {
         MH4N_LOG(Error, kLog, "{}", error);
         return 2;
     }
-    clock_->Pause();
+    const bool deterministic = options_.Has("--deterministic");
+    if (!deterministic) {
+        clock_->Pause();  // (a virtual clock does not move during the setup: nothing to hold)
+    }
     kernel_->NewProcess(image.name);
 
     // 3. the segments and the two system pages
@@ -311,10 +401,15 @@ int Runtime::Run(const Options& options) {
         MH4N_LOG(Error, kLog, "cannot map the configuration memory and the shared page: {:08X}", result);
         return 2;
     }
+    if (deterministic) {
+        // Azahar's first update of the shared page is an event at tick 0 of a timer that starts at the
+        // fixed starting tick, so it runs at that tick and writes the date for it (port/README.md).
+        pages_->UpdateSharedPage(clock_->Now());
+    }
 
     // 4. the code library, and the check that it was made from this program
     if (const auto path = options_.Get("--code")) {
-        auto library = CodeLibrary::Load(*path, /*deterministic=*/false, scheduler_->PreemptFlag(), &error);
+        auto library = CodeLibrary::Load(*path, deterministic, scheduler_->PreemptFlag(), &error);
         if (!library) {
             MH4N_LOG(Error, kLog, "{}", error);
             return 2;
@@ -327,6 +422,10 @@ int Runtime::Run(const Options& options) {
     } else if (!main_entry_) {
         MH4N_LOG(Error, kLog, "the program needs its recompiled code: --code LIB");
         return 2;
+    }
+
+    if (deterministic) {
+        SeedMacAddress(user_folder_);
     }
 
     // 5. devices, services, tracing
