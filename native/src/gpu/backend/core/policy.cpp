@@ -225,6 +225,10 @@ bool IsAppleDriver(u32 driver_id, std::string_view driver_name, u32 vendor_id) {
            vendor_id == kVendorIdApple;
 }
 
+bool PresentWaitAvailable(bool has_surface, bool present_wait_bit, bool features_enabled) {
+    return has_surface && present_wait_bit && features_enabled;
+}
+
 bool PresentWaitMeasuresDisplay(bool present_wait_available, u32 driver_id, std::string_view driver_name) {
     if (!present_wait_available) {
         return false;

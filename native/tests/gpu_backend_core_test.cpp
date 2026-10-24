@@ -364,6 +364,17 @@ TEST_CASE("choice/override_tells_two_devices_with_one_name_apart") {
     CHECK(refused.error.find("fragmentStoresAndAtomics") != std::string::npos);
 }
 
+TEST_CASE("choice/present_wait_is_available_only_with_a_surface_the_bit_and_both_features") {
+    using core::PresentWaitAvailable;
+    for (bool surface : {false, true}) {
+        for (bool bit : {false, true}) {
+            for (bool features : {false, true}) {
+                CHECK(PresentWaitAvailable(surface, bit, features) == (surface && bit && features));
+            }
+        }
+    }
+}
+
 TEST_CASE("choice/present_wait_measures_display_rule") {
     using core::PresentWaitMeasuresDisplay;
     CHECK_FALSE(PresentWaitMeasuresDisplay(false, 3, "radv"));  // never when the wait is not available

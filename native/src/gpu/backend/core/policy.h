@@ -53,6 +53,10 @@ DeviceChoice ChooseDevice(std::span<const DeviceCandidate> candidates, std::stri
 // the driver's name is tested too) or Apple's vendor id (0x106B).
 bool IsAppleDriver(u32 driver_id, std::string_view driver_name, u32 vendor_id);
 
+// PresentWaitAvailable(): only with a surface, the present_wait bit on (after the mask) and both features
+// enabled on the device (the presentation id and the wait; plume's capability is independent of a surface).
+bool PresentWaitAvailable(bool has_surface, bool present_wait_bit, bool features_enabled);
+
 // PresentWaitAvailable() and a driver whose wait is released at display time: false for MoltenVK
 // (7.3) and for KosmicKrisp (unverified); the other drivers are taken to measure display (inference).
 bool PresentWaitMeasuresDisplay(bool present_wait_available, u32 driver_id, std::string_view driver_name);

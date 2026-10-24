@@ -395,7 +395,7 @@ Result<std::shared_ptr<Backend>> CreateBackend(std::shared_ptr<Instance> instanc
     caps.logic_op = caps.logic_op && device->enabledCoreFeatures.logicOp;
     caps.bc7 = caps.bc7 && device->enabledCoreFeatures.textureCompressionBC;
     caps.geometry_shader = device->enabledCoreFeatures.geometryShader != VK_FALSE;
-    impl->present_wait_available = surface != VK_NULL_HANDLE && caps.present_wait && enabled.presentWait;
+    impl->present_wait_available = core::PresentWaitAvailable(surface != VK_NULL_HANDLE, caps.present_wait, enabled.presentWait);
     impl->display_timing_available = surface != VK_NULL_HANDLE && enabled.displayTiming;
     impl->present_wait_measures_display =
         core::PresentWaitMeasuresDisplay(impl->present_wait_available, caps.driver_id, caps.driver_name);
