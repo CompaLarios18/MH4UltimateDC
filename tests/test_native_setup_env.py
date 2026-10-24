@@ -47,3 +47,26 @@ def test_failing_apt_step_exits_nonzero(tmp_path):
     assert r.returncode != 0
     assert "setup_env: done" not in r.stdout
     assert "setup_env: done" not in r.stderr
+
+
+def test_apt_step_installs_the_validation_layer(tmp_path):
+    """N2-25: the RHI tests run under VK_LAYER_KHRONOS_validation, so the apt step must ask for it (and for the
+    shader compiler spirv_inc.py uses). A fake dpkg says nothing is installed; a fake apt-get records its arguments."""
+    fake = tmp_path / "bin"
+    fake.mkdir()
+    log = tmp_path / "apt.log"
+    (fake / "dpkg").write_text("#!/bin/sh\nexit 1\n")
+    # `update` succeeds so that the script reaches `install`, which fails and ends the script before pip and SDL
+    (fake / "apt-get").write_text(f"#!/bin/sh\necho \"$@\" >> {log}\ncase \"$*\" in *update*) exit 0;; esac\nexit 1\n")
+    for name in ("dpkg", "apt-get"):
+        p = fake / name
+        p.chmod(p.stat().st_mode | stat.S_IEXEC)
+    home = tmp_path / "home"
+    home.mkdir()
+    r = _run(["--no-sdl"], path_prefix=str(fake), home=home)
+    assert r.returncode != 0
+    installs = [line.split() for line in log.read_text().splitlines() if " install " in f" {line} "]
+    assert installs, "setup_env.sh never ran apt-get install"
+    packages = installs[0]
+    for package in ("vulkan-validationlayers", "glslang-tools", "mesa-vulkan-drivers", "libvulkan-dev"):
+        assert package in packages, f"{package} is missing from the apt install line"

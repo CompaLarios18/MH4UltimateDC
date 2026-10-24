@@ -11,7 +11,7 @@ AZAHAR_URL="https://github.com/azahar-emu/azahar.git"
 
 APT_PACKAGES=(
   clang lld llvm cmake ninja-build pkg-config ccache
-  libvulkan-dev vulkan-tools mesa-vulkan-drivers glslang-tools spirv-tools python3-pip
+  libvulkan-dev vulkan-tools mesa-vulkan-drivers vulkan-validationlayers glslang-tools spirv-tools python3-pip
   libx11-dev libxext-dev libwayland-dev libxkbcommon-dev libasound2-dev libpulse-dev
   libxcursor-dev libxi-dev libxrandr-dev libxfixes-dev libxss-dev libxtst-dev
 )

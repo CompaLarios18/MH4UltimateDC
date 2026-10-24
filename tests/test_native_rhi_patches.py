@@ -1,0 +1,280 @@
+"""tools/native/rhi_patches.py and the vendored plume tree (N2-25): the applier on synthetic diffs, and the real
+tree against the queue, the blob ids and the evidence's checksums."""
+import hashlib
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+HERE = Path(__file__).resolve().parent
+ROOT = HERE.parent
+TOOL = ROOT / "tools" / "native" / "rhi_patches.py"
+PLUME = ROOT / "native" / "third_party" / "rhi" / "plume"
+EVIDENCE = ROOT / "docs" / "research" / "rhi-spike-evidence"
+sys.path.insert(0, str(ROOT / "tools" / "native"))
+
+import rhi_patches as rp  # noqa: E402
+
+ORIGINAL = b"alpha\nbeta\ngamma\ndelta\nepsilon\n"
+
+GOOD_PATCH = b"""diff --git a/f.txt b/f.txt
+index 1111111..2222222 100644
+--- a/f.txt
++++ b/f.txt
+@@ -1,3 +1,4 @@
+ alpha
+-beta
++BETA
++beta2
+ gamma
+@@ -5,1 +6,1 @@
+-epsilon
++EPSILON
+"""
+
+
+def make_root(tmp_path: Path, patches: dict, files: dict | None = None, commit: str = "a" * 40) -> Path:
+    root = tmp_path / "plume"
+    (root / "pristine").mkdir(parents=True)
+    (root / "patches").mkdir()
+    for name, data in (files or {"f.txt": ORIGINAL}).items():
+        (root / "pristine" / name).write_bytes(data)
+    for name, data in patches.items():
+        (root / "patches" / name).write_bytes(data)
+    (root / "README.md").write_text(f"Pinned commit: `{commit}`\n", encoding="utf-8")
+    return root
+
+
+def run_tool(command: str, root: Path):
+    return subprocess.run([sys.executable, str(TOOL), command, "--root", str(root)], capture_output=True, text=True)
+
+
+# ---- the applier on synthetic diffs ---------------------------------------------------------------------------------
+
+def test_clean_apply_two_hunks():
+    (fp,) = rp.parse_patch(GOOD_PATCH, "good")
+    assert rp.apply_file_patch(ORIGINAL, fp, "good") == b"alpha\nBETA\nbeta2\ngamma\ndelta\nEPSILON\n"
+
+
+def test_hunk_that_does_not_apply_is_refused():
+    changed = ORIGINAL.replace(b"gamma", b"GAMMA")
+    (fp,) = rp.parse_patch(GOOD_PATCH, "good")
+    with pytest.raises(rp.PatchError, match="does not apply"):
+        rp.apply_file_patch(changed, fp, "good")
+
+
+def test_hunk_at_the_wrong_line_is_refused():
+    shifted = b"zero\n" + ORIGINAL  # the context still exists, one line lower: no fuzz, no offset
+    (fp,) = rp.parse_patch(GOOD_PATCH, "good")
+    with pytest.raises(rp.PatchError):
+        rp.apply_file_patch(shifted, fp, "good")
+
+
+def test_removed_line_must_match():
+    patch = GOOD_PATCH.replace(b"-beta\n", b"-BETAX\n")
+    (fp,) = rp.parse_patch(patch, "p")
+    with pytest.raises(rp.PatchError, match="does not apply"):
+        rp.apply_file_patch(ORIGINAL, fp, "p")
+
+
+def test_short_hunk_is_a_parse_error():
+    with pytest.raises(rp.PatchError, match="shorter than its header"):
+        rp.parse_patch(b"--- a/f\n+++ b/f\n@@ -1,3 +1,3 @@\n a\n b\n", "short")
+
+
+def test_no_newline_at_end_of_file():
+    original = b"one\ntwo"
+    patch = b"--- a/f\n+++ b/f\n@@ -1,2 +1,2 @@\n one\n-two\n\\ No newline at end of file\n+three\n\\ No newline at end of file\n"
+    (fp,) = rp.parse_patch(patch, "nonl")
+    assert rp.apply_file_patch(original, fp, "nonl") == b"one\nthree"
+
+
+def test_created_and_deleted_files():
+    create = b"--- /dev/null\n+++ b/new.txt\n@@ -0,0 +1,2 @@\n+x\n+y\n"
+    (fp,) = rp.parse_patch(create, "c")
+    assert rp.apply_file_patch(None, fp, "c") == b"x\ny\n"
+    with pytest.raises(rp.PatchError):
+        rp.apply_file_patch(b"x\n", fp, "c")  # it already exists
+    delete = b"--- a/old.txt\n+++ /dev/null\n@@ -1,2 +0,0 @@\n-x\n-y\n"
+    (fp,) = rp.parse_patch(delete, "d")
+    assert rp.apply_file_patch(b"x\ny\n", fp, "d") is None
+
+
+def test_renames_are_not_supported():
+    with pytest.raises(rp.PatchError, match="not supported"):
+        rp.parse_patch(b"diff --git a/a b/b\nrename from a\nrename to b\n", "r")
+
+
+def test_patch_numbers_must_run_without_a_gap(tmp_path):
+    root = make_root(tmp_path, {"01-a.diff": GOOD_PATCH, "03-c.diff": GOOD_PATCH})
+    with pytest.raises(rp.PatchError, match="expected patch number 02"):
+        rp.list_patches(root / "patches")
+    root2 = make_root(tmp_path / "x", {"1-a.diff": GOOD_PATCH})
+    with pytest.raises(rp.PatchError, match="NN-"):
+        rp.list_patches(root2 / "patches")
+
+
+# ---- apply and check on a synthetic tree ----------------------------------------------------------------------------
+
+def test_apply_then_check(tmp_path):
+    second = b"--- a/f.txt\n+++ b/f.txt\n@@ -1,1 +1,1 @@\n-alpha\n+ALPHA\n"
+    root = make_root(tmp_path, {"01-first.diff": GOOD_PATCH, "02-second.diff": second}, {"f.txt": ORIGINAL, "untouched.txt": b"u\n"})
+    assert run_tool("check", root).returncode == 1  # no patched/ yet
+    r = run_tool("apply", root)
+    assert r.returncode == 0, r.stderr
+    assert (root / "patched" / "f.txt").read_bytes() == b"ALPHA\nBETA\nbeta2\ngamma\ndelta\nEPSILON\n"
+    assert (root / "patched" / "untouched.txt").read_bytes() == b"u\n"
+    header = (root / "patched" / "mh4n_patch_list.h").read_text()
+    assert "a" * 40 in header
+    assert '"01-first.diff"' in header and '"02-second.diff"' in header and "kPatchCount = 2" in header
+    assert run_tool("check", root).returncode == 0
+
+
+def test_check_names_the_first_file_that_differs(tmp_path):
+    root = make_root(tmp_path, {"01-first.diff": GOOD_PATCH}, {"f.txt": ORIGINAL, "g.txt": b"g\n"})
+    assert run_tool("apply", root).returncode == 0
+    (root / "patched" / "g.txt").write_bytes(b"edited by hand\n")
+    r = run_tool("check", root)
+    assert r.returncode == 1
+    assert "patched/g.txt" in r.stdout
+    (root / "patched" / "g.txt").write_bytes(b"g\n")
+    (root / "patched" / "extra.txt").write_bytes(b"x")
+    r = run_tool("check", root)
+    assert r.returncode == 1 and "patched/extra.txt" in r.stdout
+
+
+def test_apply_refuses_a_patch_that_does_not_apply(tmp_path):
+    root = make_root(tmp_path, {"01-bad.diff": GOOD_PATCH}, {"f.txt": b"something else\n" * 6})
+    r = run_tool("apply", root)
+    assert r.returncode == 2
+    assert "01-bad.diff" in r.stderr and "does not apply" in r.stderr
+    assert not (root / "patched").exists()
+
+
+def test_apply_removes_stale_files(tmp_path):
+    root = make_root(tmp_path, {"01-first.diff": GOOD_PATCH})
+    (root / "patched").mkdir()
+    (root / "patched" / "stale.txt").write_bytes(b"old")
+    assert run_tool("apply", root).returncode == 0
+    assert not (root / "patched" / "stale.txt").exists()
+
+
+def test_blobs_on_a_synthetic_tree(tmp_path):
+    root = make_root(tmp_path, {"01-first.diff": GOOD_PATCH})
+    blob = hashlib.sha1(b"blob %d\0" % len(ORIGINAL) + ORIGINAL).hexdigest()
+    readme = root / "README.md"
+    readme.write_text(f"Pinned commit: `{'a' * 40}`\n\n| File | Blob id |\n|---|---|\n| `f.txt` | `{blob}` |\n")
+    assert run_tool("blobs", root).returncode == 0
+    (root / "pristine" / "f.txt").write_bytes(ORIGINAL + b"x\n")
+    r = run_tool("blobs", root)
+    assert r.returncode == 1 and "f.txt" in r.stdout
+    (root / "pristine" / "f.txt").write_bytes(ORIGINAL)
+    (root / "pristine" / "unlisted.txt").write_bytes(b"u")
+    r = run_tool("blobs", root)
+    assert r.returncode == 1 and "unlisted.txt" in r.stdout
+
+
+def test_git_blob_id_known_value():
+    # `printf 'hello\n' | git hash-object --stdin`
+    assert rp.git_blob_id(b"hello\n") == "ce013625030ba8dba906f756967f9e9ca394464a"
+
+
+# ---- the real tree --------------------------------------------------------------------------------------------------
+
+def test_tree_check_passes():
+    r = subprocess.run([sys.executable, str(TOOL), "check"], capture_output=True, text=True)
+    assert r.returncode == 0, r.stdout + r.stderr
+
+
+def test_tree_blobs_pass():
+    r = subprocess.run([sys.executable, str(TOOL), "blobs"], capture_output=True, text=True)
+    assert r.returncode == 0, r.stdout + r.stderr
+
+
+def test_patches_01_to_07_are_the_evidence_files():
+    sums = {}
+    for line in (EVIDENCE / "SHA256SUMS").read_text().splitlines():
+        digest, _, name = line.partition("  ")
+        sums[name] = digest
+    queue = sorted(p for p in (PLUME / "patches").iterdir() if p.suffix == ".diff")
+    checked = 0
+    for patch in queue[:7]:
+        key = f"./patches/{patch.name}"
+        assert key in sums, f"{patch.name} is not in SHA256SUMS"
+        assert hashlib.sha256(patch.read_bytes()).hexdigest() == sums[key], patch.name
+        checked += 1
+    assert checked == 7
+    # the evidence folder keeps its own copies, which are the same bytes
+    for patch in queue[:7]:
+        assert (EVIDENCE / "patches" / patch.name).read_bytes() == patch.read_bytes()
+
+
+def test_queue_is_numbered_from_one():
+    names = [p.name for p in rp.list_patches(PLUME / "patches")]
+    assert len(names) >= 11
+    assert [int(n[:2]) for n in names] == list(range(1, len(names) + 1))
+
+
+def test_every_patch_is_listed_in_the_readme():
+    readme = (PLUME / "README.md").read_text(encoding="utf-8")
+    for patch in rp.list_patches(PLUME / "patches"):
+        assert f"`{patch.name}`" in readme, patch.name
+
+
+def test_pinned_commit():
+    assert rp.pinned_commit(PLUME) == "0ce184b19270e49236afbb74052a6b267494b86b"
+
+
+def test_pristine_files_are_the_trimmed_vulkan_set():
+    names = sorted(rp.read_tree(PLUME / "pristine"))
+    assert names == [
+        "LICENSE",
+        "plume_render_interface.h",
+        "plume_render_interface_builders.h",
+        "plume_render_interface_types.h",
+        "plume_vulkan.cpp",
+        "plume_vulkan.h",
+    ]
+
+
+# ---- one volk, one VMA, no window-system header ---------------------------------------------------------------------
+
+def _translation_units():
+    """C, C++ and Objective-C++ sources and headers under native/ that a build compiles or includes: not plume's pristine copy (never built)."""
+    skip = PLUME / "pristine"
+    for path in (ROOT / "native").rglob("*"):
+        if path.suffix in (".c", ".cc", ".cpp", ".cxx", ".h", ".hpp", ".inc", ".mm") and skip not in path.parents:
+            yield path
+
+
+def test_exactly_one_volk_and_one_vma_translation_unit():
+    volk, vma = [], []
+    vendored = {PLUME.parent / "volk", PLUME.parent / "vma"}  # the libraries' own headers mention the macros
+    for path in _translation_units():
+        if vendored & set(path.parents):
+            continue
+        text = path.read_text(encoding="utf-8", errors="replace")
+        if re.search(r"^\s*#\s*define\s+VOLK_IMPLEMENTATION\b", text, re.MULTILINE):
+            volk.append(path.relative_to(ROOT).as_posix())
+        if re.search(r"^\s*#\s*define\s+VMA_IMPLEMENTATION\b", text, re.MULTILINE):
+            vma.append(path.relative_to(ROOT).as_posix())
+    assert volk == ["native/third_party/rhi/plume/patched/plume_vulkan.cpp"]
+    assert vma == ["native/third_party/rhi/plume/patched/plume_vulkan.cpp"]
+
+
+def test_patched_copy_has_no_window_system_include_when_external_surface_only():
+    # patch 08: the only window-system headers sit in branches that PLUME_EXTERNAL_SURFACE_ONLY skips
+    types = (PLUME / "patched" / "plume_render_interface_types.h").read_text()
+    assert "#if defined(PLUME_EXTERNAL_SURFACE_ONLY)" in types
+    assert types.index("PLUME_EXTERNAL_SURFACE_ONLY") < types.index("#include <Windows.h>")
+    header = (PLUME / "patched" / "plume_vulkan.h").read_text()
+    assert header.index("PLUME_EXTERNAL_SURFACE_ONLY") < header.index("VK_USE_PLATFORM_WIN32_KHR")
+
+
+def test_gitattributes_keep_the_compared_files_byte_exact():
+    text = (ROOT / ".gitattributes").read_text()
+    assert "native/third_party/rhi/** -text" in text.splitlines()
+    assert "docs/research/rhi-spike-evidence/patches/*.diff -text" in text.splitlines()
