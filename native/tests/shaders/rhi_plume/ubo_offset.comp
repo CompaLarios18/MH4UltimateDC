@@ -1,0 +1,6 @@
+#version 450
+// Copies a uniform buffer block to a storage buffer: the uniform buffer is bound at a byte offset (descriptors/buffer_offset).
+layout(local_size_x = 1) in;
+layout(set = 0, binding = 0, std140) uniform Block { uvec4 value; } u;
+layout(set = 0, binding = 1, std430) buffer Out { uvec4 value; } o;
+void main() { o.value = u.value; }

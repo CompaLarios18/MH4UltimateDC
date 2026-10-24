@@ -1,0 +1,63 @@
+diff --git a/plume_render_interface.h b/plume_render_interface.h
+index 7f70556..f0f3af5 100644
+--- a/plume_render_interface.h
++++ b/plume_render_interface.h
+@@ -137,6 +137,8 @@ namespace plume {
+         virtual void setScissors(const RenderRect *scissorRects, uint32_t count) = 0;
+         virtual void setFramebuffer(const RenderFramebuffer *framebuffer) = 0;
+         virtual void setDepthBias(float depthBias, float depthBiasClamp, float slopeScaledDepthBias) = 0;
++        // Only for pipelines created with dynamicBlendConstantsEnabled. Default: unsupported (no-op).
++        virtual void setBlendConstants(const float constants[4]) { }
+         virtual void clearColor(uint32_t attachmentIndex = 0, RenderColor colorValue = RenderColor(), const RenderRect *clearRects = nullptr, uint32_t clearRectsCount = 0) = 0;
+         virtual void clearDepthStencil(bool clearDepth = true, bool clearStencil = true, float depthValue = 1.0f, uint32_t stencilValue = 0, const RenderRect *clearRects = nullptr, uint32_t clearRectsCount = 0) = 0;
+         virtual void copyBufferRegion(RenderBufferReference dstBuffer, RenderBufferReference srcBuffer, uint64_t size) = 0;
+diff --git a/plume_render_interface_types.h b/plume_render_interface_types.h
+index 22196e3..c7238b9 100644
+--- a/plume_render_interface_types.h
++++ b/plume_render_interface_types.h
+@@ -1287,6 +1287,7 @@ namespace plume {
+         float depthBiasClamp = 0.0f;
+         float slopeScaledDepthBias = 0.0f;
+         bool dynamicDepthBiasEnabled = false;
++        bool dynamicBlendConstantsEnabled = false;
+         bool depthEnabled = false;
+         bool depthWriteEnabled = false;
+         bool stencilEnabled = false;
+diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
+index b71be67..955310c 100644
+--- a/plume_vulkan.cpp
++++ b/plume_vulkan.cpp
+@@ -1622,6 +1622,10 @@ namespace plume {
+             dynamicStates.emplace_back(VK_DYNAMIC_STATE_DEPTH_BIAS);
+         }
+ 
++        if (desc.dynamicBlendConstantsEnabled) {
++            dynamicStates.emplace_back(VK_DYNAMIC_STATE_BLEND_CONSTANTS);
++        }
++
+         VkPipelineDynamicStateCreateInfo dynamicState = {};
+         dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+         dynamicState.pDynamicStates = dynamicStates.data();
+@@ -3122,6 +3126,10 @@ namespace plume {
+         vkCmdSetDepthBias(vk, depthBias, depthBiasClamp, slopeScaledDepthBias);
+     }
+ 
++    void VulkanCommandList::setBlendConstants(const float constants[4]) {
++        vkCmdSetBlendConstants(vk, constants);
++    }
++
+     static void clearCommonRectVector(uint32_t width, uint32_t height, const RenderRect *clearRects, uint32_t clearRectsCount, std::vector<VkClearRect> &rectVector) {
+         rectVector.clear();
+ 
+diff --git a/plume_vulkan.h b/plume_vulkan.h
+index 84f41dd..639b234 100644
+--- a/plume_vulkan.h
++++ b/plume_vulkan.h
+@@ -329,6 +329,7 @@ namespace plume {
+         void setScissors(const RenderRect *scissorRects, uint32_t count) override;
+         void setFramebuffer(const RenderFramebuffer *framebuffer) override;
+         void setDepthBias(float depthBias, float depthBiasClamp, float slopeScaledDepthBias) override;
++        void setBlendConstants(const float constants[4]) override;
+         void clearColor(uint32_t attachmentIndex, RenderColor colorValue, const RenderRect *clearRects, uint32_t clearRectsCount) override;
+         void clearDepthStencil(bool clearDepth, bool clearStencil, float depthValue, uint32_t stencilValue, const RenderRect *clearRects, uint32_t clearRectsCount) override;
+         void copyBufferRegion(RenderBufferReference dstBuffer, RenderBufferReference srcBuffer, uint64_t size) override;

@@ -1,0 +1,158 @@
+diff --git a/plume_render_interface.h b/plume_render_interface.h
+index 8e2c4a9..7f70556 100644
+--- a/plume_render_interface.h
++++ b/plume_render_interface.h
+@@ -254,6 +254,9 @@ namespace plume {
+         virtual const RenderDeviceCapabilities &getCapabilities() const = 0;
+         virtual const RenderDeviceDescription &getDescription() const = 0;
+         virtual RenderSampleCounts getSampleCountsSupported(RenderFormat format) const = 0;
++        // Pipeline cache blob (Vulkan: VkPipelineCache data). Load before creating pipelines; save any time. Default: unsupported.
++        virtual bool loadPipelineCache(const void *data, size_t size) { return false; }
++        virtual bool savePipelineCache(std::vector<uint8_t> &out) { return false; }
+         virtual bool beginCapture() = 0;
+         virtual bool endCapture() = 0;
+     };
+diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
+index 0212546..b71be67 100644
+--- a/plume_vulkan.cpp
++++ b/plume_vulkan.cpp
+@@ -1395,7 +1395,7 @@ namespace plume {
+         pipelineInfo.layout = pipelineLayout->vk;
+         pipelineInfo.stage = stageInfo;
+ 
+-        VkResult res = vkCreateComputePipelines(device->vk, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &vk);
++        VkResult res = vkCreateComputePipelines(device->vk, device->pipelineCache, 1, &pipelineInfo, nullptr, &vk);
+         if (res != VK_SUCCESS) {
+             fprintf(stderr, "vkCreateComputePipelines failed with error code 0x%X.\n", res);
+             return;
+@@ -1633,7 +1633,7 @@ namespace plume {
+             renderTargetFormats[i] = toVk(desc.renderTargetFormat[i]);
+         }
+ 
+-        renderPass = createRenderPass(device, renderTargetFormats.data(), desc.renderTargetCount, toVk(desc.depthTargetFormat), VkSampleCountFlagBits(desc.multisampling.sampleCount));
++        renderPass = device->getRenderPass(renderTargetFormats.data(), desc.renderTargetCount, toVk(desc.depthTargetFormat), VkSampleCountFlagBits(desc.multisampling.sampleCount));
+         if (renderPass == VK_NULL_HANDLE) {
+             return;
+         }
+@@ -1654,7 +1654,7 @@ namespace plume {
+         pipelineInfo.layout = pipelineLayout->vk;
+         pipelineInfo.renderPass = renderPass;
+ 
+-        VkResult res = vkCreateGraphicsPipelines(device->vk, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &vk);
++        VkResult res = vkCreateGraphicsPipelines(device->vk, device->pipelineCache, 1, &pipelineInfo, nullptr, &vk);
+         if (res != VK_SUCCESS) {
+             fprintf(stderr, "vkCreateGraphicsPipelines failed with error code 0x%X.\n", res);
+             return;
+@@ -1666,9 +1666,6 @@ namespace plume {
+             vkDestroyPipeline(device->vk, vk, nullptr);
+         }
+ 
+-        if (renderPass != VK_NULL_HANDLE) {
+-            vkDestroyRenderPass(device->vk, renderPass, nullptr);
+-        }
+     }
+ 
+     void VulkanGraphicsPipeline::setName(const std::string &name) {
+@@ -4192,6 +4189,8 @@ namespace plume {
+             return;
+         }
+ 
++        loadPipelineCache(nullptr, 0);
++
+         // Find the biggest device local memory available on the device.
+         VkDeviceSize memoryHeapSize = 0;
+         const VkPhysicalDeviceMemoryProperties *memoryProps = nullptr;
+@@ -4313,6 +4312,52 @@ namespace plume {
+         return std::make_unique<VulkanCommandSemaphore>(this);
+     }
+ 
++    VkRenderPass VulkanDevice::getRenderPass(const VkFormat *renderTargetFormat, uint32_t renderTargetCount, VkFormat depthTargetFormat, VkSampleCountFlagBits sampleCount) {
++        std::string key(reinterpret_cast<const char *>(renderTargetFormat), renderTargetCount * sizeof(VkFormat));
++        key.append(reinterpret_cast<const char *>(&depthTargetFormat), sizeof(depthTargetFormat));
++        key.append(reinterpret_cast<const char *>(&sampleCount), sizeof(sampleCount));
++        const std::scoped_lock lock(renderPassMutex);
++        auto it = renderPassCache.find(key);
++        if (it != renderPassCache.end()) {
++            return it->second;
++        }
++
++        VkRenderPass renderPass = VulkanGraphicsPipeline::createRenderPass(this, renderTargetFormat, renderTargetCount, depthTargetFormat, sampleCount);
++        if (renderPass != VK_NULL_HANDLE) {
++            renderPassCache[key] = renderPass;
++        }
++
++        return renderPass;
++    }
++
++    bool VulkanDevice::loadPipelineCache(const void *data, size_t size) {
++        VkPipelineCacheCreateInfo cacheInfo = {};
++        cacheInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
++        cacheInfo.initialDataSize = size;
++        cacheInfo.pInitialData = data;
++        VkPipelineCache cache = VK_NULL_HANDLE;
++        if (vkCreatePipelineCache(vk, &cacheInfo, nullptr, &cache) != VK_SUCCESS) {
++            return false;
++        }
++
++        if (pipelineCache != VK_NULL_HANDLE) {
++            vkDestroyPipelineCache(vk, pipelineCache, nullptr);
++        }
++
++        pipelineCache = cache;
++        return true;
++    }
++
++    bool VulkanDevice::savePipelineCache(std::vector<uint8_t> &out) {
++        size_t size = 0;
++        if (vkGetPipelineCacheData(vk, pipelineCache, &size, nullptr) != VK_SUCCESS) {
++            return false;
++        }
++
++        out.resize(size);
++        return vkGetPipelineCacheData(vk, pipelineCache, &size, out.data()) == VK_SUCCESS;
++    }
++
+     std::unique_ptr<RenderCommandSemaphore> VulkanDevice::createTimelineSemaphore(uint64_t initialValue) {
+         return capabilities.timelineSemaphore ? std::make_unique<VulkanCommandSemaphore>(this, true, initialValue) : nullptr;
+     }
+@@ -4538,6 +4583,16 @@ namespace plume {
+             allocator = VK_NULL_HANDLE;
+         }
+ 
++        for (auto &entry : renderPassCache) {
++            vkDestroyRenderPass(vk, entry.second, nullptr);
++        }
++        renderPassCache.clear();
++
++        if (pipelineCache != VK_NULL_HANDLE) {
++            vkDestroyPipelineCache(vk, pipelineCache, nullptr);
++            pipelineCache = VK_NULL_HANDLE;
++        }
++
+         if (vk != VK_NULL_HANDLE) {
+             vkDestroyDevice(vk, nullptr);
+             vk = VK_NULL_HANDLE;
+diff --git a/plume_vulkan.h b/plume_vulkan.h
+index 02725fd..84f41dd 100644
+--- a/plume_vulkan.h
++++ b/plume_vulkan.h
+@@ -420,6 +420,9 @@ namespace plume {
+         std::unique_ptr<RenderBuffer> nullBuffer;
+         bool loadStoreOpNoneSupported = false;
+         bool nullDescriptorSupported = false;
++        VkPipelineCache pipelineCache = VK_NULL_HANDLE;
++        std::mutex renderPassMutex;
++        std::unordered_map<std::string, VkRenderPass> renderPassCache;
+ 
+         VulkanDevice(VulkanInterface *renderInterface, const std::string &preferredDeviceName);
+         ~VulkanDevice() override;
+@@ -438,6 +441,9 @@ namespace plume {
+         std::unique_ptr<RenderCommandFence> createCommandFence() override;
+         std::unique_ptr<RenderCommandSemaphore> createCommandSemaphore() override;
+         std::unique_ptr<RenderCommandSemaphore> createTimelineSemaphore(uint64_t initialValue) override;
++        bool loadPipelineCache(const void *data, size_t size) override;
++        bool savePipelineCache(std::vector<uint8_t> &out) override;
++        VkRenderPass getRenderPass(const VkFormat *renderTargetFormat, uint32_t renderTargetCount, VkFormat depthTargetFormat, VkSampleCountFlagBits sampleCount);
+         std::unique_ptr<RenderFramebuffer> createFramebuffer(const RenderFramebufferDesc &desc) override;
+         std::unique_ptr<RenderQueryPool> createQueryPool(uint32_t queryCount) override;
+         void setBottomLevelASBuildInfo(RenderBottomLevelASBuildInfo &buildInfo, const RenderBottomLevelASMesh *meshes, uint32_t meshCount, bool preferFastBuild, bool preferFastTrace) override;

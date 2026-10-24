@@ -1,0 +1,318 @@
+diff --git a/plume_render_interface_types.h b/plume_render_interface_types.h
+index 9941518..1e3c45e 100644
+--- a/plume_render_interface_types.h
++++ b/plume_render_interface_types.h
+@@ -1805,6 +1805,12 @@ namespace plume {
+         // Fragment shader interlock (pixel, ordered).
+         bool fragmentShaderInterlock = false;
+ 
++        // Index buffers of 8-bit indices (VK_EXT_index_type_uint8, RenderIndexFormat::R8_UINT).
++        bool indexTypeUint8 = false;
++
++        // Samplers with a custom border colour (VK_EXT_custom_border_color).
++        bool customBorderColor = false;
++
+         // Bindless resources.
+         bool descriptorIndexing = false;
+         bool scalarBlockLayout = false;
+diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
+index fd4238b..e5afd1c 100644
+--- a/plume_vulkan.cpp
++++ b/plume_vulkan.cpp
+@@ -76,6 +76,9 @@ namespace plume {
+     static const std::unordered_set<std::string> RequiredDeviceExtensions = {
+     };
+     
++    // mh4n (patch 09): every optional device extension plume knows how to enable. A caller can name any
++    // of them in VulkanDeviceExtras::optionalExtensions; the ones plume takes with no request are
++    // DefaultOptionalDeviceExtensions below.
+     static const std::unordered_set<std::string> OptionalDeviceExtensions = {
+         VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME,
+         VK_EXT_SCALAR_BLOCK_LAYOUT_EXTENSION_NAME,
+@@ -89,6 +92,8 @@ namespace plume {
+         VK_EXT_SAMPLE_LOCATIONS_EXTENSION_NAME,
+         VK_EXT_LOAD_STORE_OP_NONE_EXTENSION_NAME,
+         VK_EXT_FRAGMENT_SHADER_INTERLOCK_EXTENSION_NAME,
++        VK_EXT_INDEX_TYPE_UINT8_EXTENSION_NAME,
++        VK_EXT_CUSTOM_BORDER_COLOR_EXTENSION_NAME,
+         VK_KHR_PRESENT_ID_EXTENSION_NAME,
+         VK_KHR_PRESENT_WAIT_EXTENSION_NAME,
+         VK_GOOGLE_DISPLAY_TIMING_EXTENSION_NAME,
+@@ -96,6 +101,29 @@ namespace plume {
+         VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME,
+     };
+ 
++    // mh4n (patch 09): what plume takes when offered and the caller names no list: the names above
++    // without ray tracing, acceleration structures, pipeline libraries, deferred host operations and
++    // the three presentation extensions (those are added only when a surface is given).
++    static const std::unordered_set<std::string> DefaultOptionalDeviceExtensions = {
++        VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME,
++        VK_EXT_SCALAR_BLOCK_LAYOUT_EXTENSION_NAME,
++        VK_EXT_ROBUSTNESS_2_EXTENSION_NAME,
++        VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME,
++        VK_KHR_SAMPLER_MIRROR_CLAMP_TO_EDGE_EXTENSION_NAME,
++        VK_EXT_SAMPLE_LOCATIONS_EXTENSION_NAME,
++        VK_EXT_LOAD_STORE_OP_NONE_EXTENSION_NAME,
++        VK_EXT_FRAGMENT_SHADER_INTERLOCK_EXTENSION_NAME,
++        VK_EXT_INDEX_TYPE_UINT8_EXTENSION_NAME,
++        VK_EXT_CUSTOM_BORDER_COLOR_EXTENSION_NAME,
++        VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME,
++    };
++
++    static const std::unordered_set<std::string> PresentationDeviceExtensions = {
++        VK_KHR_PRESENT_ID_EXTENSION_NAME,
++        VK_KHR_PRESENT_WAIT_EXTENSION_NAME,
++        VK_GOOGLE_DISPLAY_TIMING_EXTENSION_NAME,
++    };
++
+     // Common functions.
+ 
+     static uint32_t roundUp(uint32_t value, uint32_t powerOf2Alignment) {
+@@ -3871,7 +3899,18 @@ namespace plume {
+             1   // VK_PHYSICAL_DEVICE_TYPE_CPU
+         };
+ 
++        // mh4n (patch 09): a device given by its index is the only candidate.
++        if (extras.physicalDeviceIndex >= int32_t(deviceCount)) {
++            reportFailure(extras.error, "Physical device %d does not exist: the instance has %u.", int(extras.physicalDeviceIndex), deviceCount);
++            return;
++        }
++
+         for (uint32_t i = 0; i < deviceCount; i++) {
++            const bool preferIndex = (extras.physicalDeviceIndex >= 0) && (i == uint32_t(extras.physicalDeviceIndex));
++            if ((extras.physicalDeviceIndex >= 0) && !preferIndex) {
++                continue;
++            }
++
+             VkPhysicalDeviceProperties deviceProperties;
+             vkGetPhysicalDeviceProperties(physicalDevices[i], &deviceProperties);
+ 
+@@ -3884,7 +3923,7 @@ namespace plume {
+             uint32_t deviceTypeScore = deviceTypeScoreTable[deviceTypeIndex];
+             bool preferDeviceTypeScore = (deviceTypeScore > currentDeviceTypeScore);
+             bool preferUserChoice = preferredDeviceName == deviceName;
+-            bool preferOption = preferDeviceTypeScore || preferUserChoice;
++            bool preferOption = preferDeviceTypeScore || preferUserChoice || preferIndex;
+             if (preferOption) {
+                 physicalDevice = physicalDevices[i];
+                 description.name = deviceName;
+@@ -3893,7 +3932,7 @@ namespace plume {
+                 description.vendor = RenderDeviceVendor(deviceProperties.vendorID);
+                 currentDeviceTypeScore = deviceTypeScore;
+ 
+-                if (preferUserChoice) {
++                if (preferUserChoice || preferIndex) {
+                     break;
+                 }
+             }
+@@ -3916,6 +3955,31 @@ namespace plume {
+             requiredDeviceExtensions.insert(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
+         }
+ 
++        // mh4n (patch 09): which of the optional extensions to take when offered.
++        std::unordered_set<std::string> wantedOptionalExtensions;
++        if (extras.optionalExtensions.has_value()) {
++            for (const std::string &extension : extras.optionalExtensions.value()) {
++                if (OptionalDeviceExtensions.find(extension) != OptionalDeviceExtensions.end()) {
++                    wantedOptionalExtensions.insert(extension);
++                }
++            }
++        }
++        else {
++            wantedOptionalExtensions = DefaultOptionalDeviceExtensions;
++            if (extras.surface != VK_NULL_HANDLE) {
++                wantedOptionalExtensions.insert(PresentationDeviceExtensions.begin(), PresentationDeviceExtensions.end());
++            }
++        }
++
++        if (extras.surface == VK_NULL_HANDLE) {
++            for (const std::string &extension : PresentationDeviceExtensions) {
++                wantedOptionalExtensions.erase(extension);
++            }
++        }
++
++        // The specification requires this one to be enabled whenever the driver offers it.
++        wantedOptionalExtensions.insert(VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME);
++
+         std::unordered_set<std::string> missingRequiredExtensions = requiredDeviceExtensions;
+         std::unordered_set<std::string> supportedOptionalExtensions;
+ #   if DLSS_ENABLED
+@@ -3929,7 +3993,7 @@ namespace plume {
+                 continue;
+             }
+ 
+-            if (OptionalDeviceExtensions.find(extensionName) != OptionalDeviceExtensions.end()) {
++            if (wantedOptionalExtensions.find(extensionName) != wantedOptionalExtensions.end()) {
+                 supportedOptionalExtensions.insert(extensionName);
+             }
+ #       if DLSS_ENABLED
+@@ -3998,9 +4062,11 @@ namespace plume {
+         }
+ 
+         VkPhysicalDeviceTimelineSemaphoreFeatures timelineFeatures = {};
+-        timelineFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES;
+-        timelineFeatures.pNext = featuresChain;
+-        featuresChain = &timelineFeatures;
++        if (extras.timelineSemaphore) {
++            timelineFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES;
++            timelineFeatures.pNext = featuresChain;
++            featuresChain = &timelineFeatures;
++        }
+ 
+         VkPhysicalDeviceFragmentShaderInterlockFeaturesEXT interlockFeatures = {};
+         const bool interlockFound = supportedOptionalExtensions.find(VK_EXT_FRAGMENT_SHADER_INTERLOCK_EXTENSION_NAME) != supportedOptionalExtensions.end();
+@@ -4010,6 +4076,22 @@ namespace plume {
+             featuresChain = &interlockFeatures;
+         }
+ 
++        VkPhysicalDeviceIndexTypeUint8FeaturesEXT indexUint8Features = {};
++        const bool indexUint8Found = supportedOptionalExtensions.find(VK_EXT_INDEX_TYPE_UINT8_EXTENSION_NAME) != supportedOptionalExtensions.end();
++        if (indexUint8Found) {
++            indexUint8Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_INDEX_TYPE_UINT8_FEATURES_EXT;
++            indexUint8Features.pNext = featuresChain;
++            featuresChain = &indexUint8Features;
++        }
++
++        VkPhysicalDeviceCustomBorderColorFeaturesEXT customBorderColorFeatures = {};
++        const bool customBorderColorFound = supportedOptionalExtensions.find(VK_EXT_CUSTOM_BORDER_COLOR_EXTENSION_NAME) != supportedOptionalExtensions.end();
++        if (customBorderColorFound) {
++            customBorderColorFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CUSTOM_BORDER_COLOR_FEATURES_EXT;
++            customBorderColorFeatures.pNext = featuresChain;
++            featuresChain = &customBorderColorFeatures;
++        }
++
+         VkPhysicalDevicePortabilitySubsetFeaturesKHR portabilityFeatures = {};
+         const bool portabilityFound = supportedOptionalExtensions.find(VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME) != supportedOptionalExtensions.end();
+         if (portabilityFound) {
+@@ -4100,7 +4182,7 @@ namespace plume {
+             createDeviceChain = &bufferDeviceAddressFeatures;
+         }
+         
+-        const bool timelineSupported = timelineFeatures.timelineSemaphore;
++        const bool timelineSupported = extras.timelineSemaphore && timelineFeatures.timelineSemaphore;
+         if (timelineSupported) {
+             timelineFeatures.pNext = createDeviceChain;
+             createDeviceChain = &timelineFeatures;
+@@ -4112,11 +4194,41 @@ namespace plume {
+             createDeviceChain = &interlockFeatures;
+         }
+ 
++        const bool indexTypeUint8Supported = indexUint8Features.indexTypeUint8;
++        if (indexTypeUint8Supported) {
++            indexUint8Features.pNext = createDeviceChain;
++            createDeviceChain = &indexUint8Features;
++        }
++
++        const bool customBorderColorSupported = customBorderColorFeatures.customBorderColors;
++        if (customBorderColorSupported) {
++            customBorderColorFeatures.pNext = createDeviceChain;
++            createDeviceChain = &customBorderColorFeatures;
++        }
++
+         if (portabilityFound) {
+             portabilityFeatures.pNext = createDeviceChain;
+             createDeviceChain = &portabilityFeatures;
+         }
+ 
++        // The core features to enable: the ones the caller listed that the device offers, or all the
++        // ones the device offers (patch 09).
++        enabledCoreFeatures = deviceFeatures.features;
++        if (extras.coreFeatures.has_value()) {
++            const VkBool32 *requested = reinterpret_cast<const VkBool32 *>(&extras.coreFeatures.value());
++            VkBool32 *enabled = reinterpret_cast<VkBool32 *>(&enabledCoreFeatures);
++            for (size_t i = 0; i < sizeof(VkPhysicalDeviceFeatures) / sizeof(VkBool32); i++) {
++                enabled[i] = enabled[i] && requested[i];
++            }
++        }
++
++        // VUID-VkPhysicalDeviceRobustness2FeaturesEXT-robustBufferAccess2-04000: robustBufferAccess2 (enabled with
++        // the robustness2 structure whenever it is in the device chain) needs robustBufferAccess, so it is enabled
++        // whatever the caller listed.
++        if (nullDescriptorSupported && robustnessFeatures.robustBufferAccess2) {
++            enabledCoreFeatures.robustBufferAccess = VK_TRUE;
++        }
++
+         // Retrieve the information for the queue families.
+         uint32_t queueFamilyCount = 0;
+         vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &queueFamilyCount, nullptr);
+@@ -4214,7 +4326,7 @@ namespace plume {
+         createInfo.queueCreateInfoCount = uint32_t(queueCreateInfos.size());
+         createInfo.ppEnabledExtensionNames = enabledExtensions.data();
+         createInfo.enabledExtensionCount = uint32_t(enabledExtensions.size());
+-        createInfo.pEnabledFeatures = &deviceFeatures.features;
++        createInfo.pEnabledFeatures = &enabledCoreFeatures;
+ 
+         VkResult res = vkCreateDevice(physicalDevice, &createInfo, nullptr, &vk);
+         if (res != VK_SUCCESS) {
+@@ -4289,7 +4401,7 @@ namespace plume {
+         description.dedicatedVideoMemory = memoryHeapSize;
+ 
+         // Fill capabilities.
+-        capabilities.geometryShader = deviceFeatures.features.geometryShader;
++        capabilities.geometryShader = enabledCoreFeatures.geometryShader;
+         capabilities.raytracing = rayTracingSupported;
+         capabilities.raytracingStateUpdate = false;
+         capabilities.sampleLocations = (sampleLocationProperties.sampleLocationSampleCounts != 0);
+@@ -4297,6 +4409,8 @@ namespace plume {
+         capabilities.resolveModes = false;
+         capabilities.timelineSemaphore = timelineSupported;
+         capabilities.fragmentShaderInterlock = interlockSupported;
++        capabilities.indexTypeUint8 = indexTypeUint8Supported;
++        capabilities.customBorderColor = customBorderColorSupported;
+         capabilities.descriptorIndexing = descriptorIndexingSupported;
+         capabilities.scalarBlockLayout = scalarBlockLayoutSupported;
+         capabilities.bufferDeviceAddress = bufferDeviceAddressSupported;
+diff --git a/plume_vulkan.h b/plume_vulkan.h
+index b0d75c9..a60cf1c 100644
+--- a/plume_vulkan.h
++++ b/plume_vulkan.h
+@@ -10,6 +10,7 @@
+ #include "plume_render_interface.h"
+ 
+ #include <mutex>
++#include <optional>
+ #include <set>
+ #include <unordered_map>
+ #include <unordered_set>
+@@ -77,6 +78,31 @@ namespace plume {
+         // a surface no surface or swapchain extension is enabled.
+         VkSurfaceKHR surface = VK_NULL_HANDLE;
+ 
++        // The physical device to use, as its index in the order of vkEnumeratePhysicalDevices on the
++        // interface's instance (patch 09). -1 keeps plume's own choice (by type, or by the exact
++        // name given to createDevice). A device that does not exist fails the creation.
++        int32_t physicalDeviceIndex = -1;
++
++        // The core features to enable (patch 09): each one that is set here and that the device
++        // offers. Unset, plume enables every core feature the device offers, as it always did.
++        // robustBufferAccess is enabled whatever this says whenever the device enabled robustness2's
++        // robustBufferAccess2, which the specification makes depend on it.
++        std::optional<VkPhysicalDeviceFeatures> coreFeatures;
++
++        // The optional extensions to enable when the device offers them (patch 09), by name; names
++        // plume does not know are ignored, and the three presentation extensions (VK_KHR_present_id,
++        // VK_KHR_present_wait, VK_GOOGLE_display_timing) are dropped when there is no surface.
++        // VK_KHR_portability_subset is enabled whenever it is offered, as the specification requires.
++        // Unset, plume takes its default list: descriptor indexing, scalar block layout, robustness2,
++        // buffer device address, sampler mirror clamp, sample locations, load/store op none, fragment
++        // shader interlock, 8-bit indices and custom border colours, and with a surface the three
++        // presentation extensions. It does not take ray tracing, acceleration structures, pipeline
++        // libraries or deferred host operations unless they are named here.
++        std::optional<std::vector<std::string>> optionalExtensions;
++
++        // Enable the timeline semaphore feature when the device offers it (patch 09).
++        bool timelineSemaphore = true;
++
+         // Receives the text of the failure when the creation fails (also printed to stderr as before).
+         std::string *error = nullptr;
+     };
+@@ -461,6 +487,9 @@ namespace plume {
+         // mh4n (patch 08): the device extensions that were enabled, by name.
+         std::vector<std::string> enabledExtensionNames;
+ 
++        // mh4n (patch 09): the core features that were enabled.
++        VkPhysicalDeviceFeatures enabledCoreFeatures = {};
++
+         VulkanDevice(VulkanInterface *renderInterface, const std::string &preferredDeviceName, const VulkanDeviceExtras &extras = VulkanDeviceExtras());
+         ~VulkanDevice() override;
+         std::unique_ptr<RenderDescriptorSet> createDescriptorSet(const RenderDescriptorSetDesc &desc) override;

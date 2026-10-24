@@ -656,6 +656,89 @@ TEST_CASE("nwm::UDS in the deterministic mode the connection status event comes 
     SetLogFilter(LogFilter(LogLevel::Info));
 }
 
+TEST_CASE("nwm::UDS the asynchronous signals queue runs first in, first out") {
+    // SignalEventAsync queues the event and schedules one handler per call on core 1; each handler signals the event at
+    // the front of the queue (pending_async_event_signals is a queue). BeginHostingNetwork queues the connection status
+    // event; 1.8 million ticks later, still before that signal has run (it comes 2.29 million ticks after the call),
+    // DestroyNetwork queues the connection status event again and then the event of the channel the game bound. The
+    // first handler to run therefore signals the connection status event, and the bound channel's event is the last.
+    SetLogFilter(LogFilter(LogLevel::Error));
+    TempDir dir;
+    Runtime runtime;
+    std::vector<char> seen;  // 'S' (connection status) or 'B' (the bound channel's), in the order they were seen
+    runtime.SetMainThreadEntry([&](GuestThread&) {
+        Guest g(runtime);
+        Session s{g, OpenUds(g, ConnectSrv(g))};
+        const std::vector<u32> init = Initialize(s, MakeBlock(g));
+        const Handle status_event = init[3];
+        const std::vector<u32> bound = Bind(s, 7, 0x5F4, 4);
+        const Handle channel_event = bound[3];
+        BeginHosting(g, s, 8, 0);
+        CallSvc(runtime, 0x0A, {6700000, 0});  // 6.7 ms = 1.8 million ticks
+        s.CallResult({ipc::MakeHeader(0x0008, 0, 0)});  // DestroyNetwork
+        bool channel_seen = false;
+        for (int step = 0; step < 400 && !channel_seen; ++step) {
+            CallSvc(runtime, 0x0A, {100000, 0});  // 100 us
+            const bool status = Signaled(g, status_event);
+            const bool channel = Signaled(g, channel_event);
+            if (status) {
+                seen.push_back('S');
+            }
+            if (channel) {
+                seen.push_back('B');
+                channel_seen = true;
+            }
+        }
+        ExitProcess(runtime);
+    });
+    CHECK(runtime.Boot(Parse({dir.WriteElf(), "--deterministic", "--ms", "500"})) == 0);
+    REQUIRE(seen.size() >= 2);
+    CHECK(seen.front() == 'S');  // the first handler to run signals what was queued first
+    CHECK(seen.back() == 'B');   // and the channel's event comes with the last
+    CHECK(std::count(seen.begin(), seen.end(), 'B') == 1);
+    SetLogFilter(LogFilter(LogLevel::Info));
+}
+
+TEST_CASE("nwm::UDS the beacon chain stops when the network is not hosting any more") {
+    // The beacon event runs, finds the status is not "host" (Initialize reset it: nothing cancelled the event) and does
+    // not schedule the next one. While hosting, the chain goes on (the test above).
+    SetLogFilter(LogFilter(LogLevel::Error));
+    TempDir dir;
+    Runtime runtime;
+    u64 first_due = 0;
+    bool pending_before = false;
+    bool first_gone = false;
+    bool second_pending = true;
+    runtime.SetMainThreadEntry([&](GuestThread&) {
+        VirtualTimeSource& time = static_cast<VirtualTimeSource&>(runtime.Clock().Source());
+        const auto due_at = [&](u64 tick) {
+            for (const auto& entry : time.Lockstep().events[0]) {
+                if (std::get<0>(entry) == tick) {
+                    return true;
+                }
+            }
+            return false;
+        };
+        Guest g(runtime);
+        Session s{g, OpenUds(g, ConnectSrv(g))};
+        Initialize(s, MakeBlock(g));
+        const u64 begun_at = Now(g);
+        BeginHosting(g, s, 8, 0);
+        first_due = begun_at + SvcCycles(0x32) + 27454654;
+        pending_before = due_at(first_due);
+        Initialize(s, MakeBlock(g));  // the status is NotConnected again; the beacon event is still queued
+        CallSvc(runtime, 0x0A, {120000000, 0});  // 120 ms: the first beacon has run
+        first_gone = !due_at(first_due);
+        second_pending = due_at(first_due + 27454654);
+        ExitProcess(runtime);
+    });
+    CHECK(runtime.Boot(Parse({dir.WriteElf(), "--deterministic", "--ms", "500"})) == 0);
+    CHECK(pending_before);
+    CHECK(first_gone);
+    CHECK_FALSE(second_pending);
+    SetLogFilter(LogFilter(LogLevel::Info));
+}
+
 TEST_CASE("nwm::UDS without the deterministic clock signals the connection status event at once") {
     // Azahar's SignalEventAsync on the emulation thread of a frontend: the kernel's ScheduleThreadSafe does nothing
     // and says so when there is no deterministic clock, and the service signals the event itself, in the call.

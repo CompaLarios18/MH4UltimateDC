@@ -1,2 +1,6 @@
 # Windows batch files need CRLF line endings
 *.bat text eol=crlf
+# The vendored plume copies are compared byte for byte (tools/native/rhi_patches.py check and blobs, git blob ids,
+# sha256): a Windows checkout with core.autocrlf=true must not rewrite them (N2-25).
+native/third_party/rhi/** -text
+docs/research/rhi-spike-evidence/patches/*.diff -text

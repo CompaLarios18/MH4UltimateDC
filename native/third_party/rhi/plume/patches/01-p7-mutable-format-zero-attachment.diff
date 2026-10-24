@@ -1,0 +1,58 @@
+diff --git a/plume_render_interface_types.h b/plume_render_interface_types.h
+index ad63e0e..4b582e6 100644
+--- a/plume_render_interface_types.h
++++ b/plume_render_interface_types.h
+@@ -441,7 +441,8 @@ namespace plume {
+             DEPTH_TARGET = 1U << 1,
+             STORAGE = 1U << 2,
+             UNORDERED_ACCESS = 1U << 3,
+-            CUBE = 1U << 4
++            CUBE = 1U << 4,
++            MUTABLE_FORMAT = 1U << 5
+         };
+     };
+ 
+@@ -1628,6 +1629,10 @@ namespace plume {
+         const RenderTextureView *depthAttachmentView = nullptr;
+         bool depthAttachmentReadOnly = false;
+ 
++        // Size of a framebuffer with no attachments (taken from the attachments otherwise).
++        uint32_t width = 0;
++        uint32_t height = 0;
++
+         RenderFramebufferDesc() = default;
+ 
+         RenderFramebufferDesc(const RenderTexture **colorAttachments, uint32_t colorAttachmentsCount, const RenderTexture *depthAttachment = nullptr, bool depthAttachmentReadOnly = false) {
+diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
+index 4fdc4bf..9b15186 100644
+--- a/plume_vulkan.cpp
++++ b/plume_vulkan.cpp
+@@ -997,6 +997,10 @@ namespace plume {
+             imageInfo.flags |= VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
+         }
+ 
++        if (desc.flags & RenderTextureFlag::MUTABLE_FORMAT) {
++            imageInfo.flags |= VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
++        }
++
+         imageFormat = imageInfo.format;
+         fillSubresourceRange();
+ 
+@@ -1498,7 +1502,7 @@ namespace plume {
+         }
+ 
+         uint32_t renderTargetCount = desc.renderTargetCount;
+-        if (renderTargetCount == 0 && desc.depthTargetFormat != RenderFormat::UNKNOWN) {
++        if (renderTargetCount == 0) {
+             renderTargetCount = 1;
+         }
+ 
+@@ -2523,6 +2527,8 @@ namespace plume {
+ 
+         this->device = device;
+         depthAttachmentReadOnly = desc.depthAttachmentReadOnly;
++        width = desc.width;
++        height = desc.height;
+ 
+         VkResult res;
+         std::vector<VkAttachmentDescription> attachments;
