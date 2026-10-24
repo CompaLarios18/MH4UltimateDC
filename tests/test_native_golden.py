@@ -2135,6 +2135,135 @@ def test_the_listed_frames_of_the_repository_file_are_used_by_default(env, capsy
     assert statuses(capsys.readouterr().out)["images"] == "PASS"
 
 
+# ---- the images gate in the deterministic mode (N2b-28, D58 (3))
+
+def det_check(env, args="--deterministic", *extra):
+    return env.check("--profile", "cross", f"--candidate-args={args}", "--ignore", str(env.ignore_file), *extra)
+
+
+def test_the_deterministic_flag_judges_every_common_frame(env, capsys, monkeypatch):
+    assert env.record() == 0
+    capsys.readouterr()
+    assert det_check(env, "--deterministic", "--require", "images,svc,state") == 0
+    out = capsys.readouterr().out
+    assert statuses(out)["images"] == "PASS"
+    assert result_of(env, "images")["detail"] == "3 frame(s) judged, 0 skipped (gas), 0 failed"
+    assert env.calls()[-1]["argv"].count("--deterministic") == 1
+    # a frame the calibrated list would never name fails the gate (frame 20 is not in S1's list, 10 and 30 are)
+    monkeypatch.setenv("FAKE_PIXELS", "20:200")
+    assert det_check(env) == 1
+    out = capsys.readouterr().out
+    assert statuses(out)["images"] == "FAIL" and "frame 20 top" in out
+    assert "1 failed" in result_of(env, "images")["note"] and "2 of 6 screenshots fail" in result_of(env, "images")["note"]
+
+
+def test_one_failing_frame_fails_and_a_small_difference_passes(env, capsys, monkeypatch):
+    assert env.record() == 0
+    monkeypatch.setenv("FAKE_MODE", "pixels")           # every pixel 1/255 off: inside imgdiff's rule
+    capsys.readouterr()
+    assert det_check(env) == 0 and statuses(capsys.readouterr().out)["images"] == "PASS"
+    monkeypatch.setenv("FAKE_MODE", "")
+    monkeypatch.setenv("FAKE_PIXELS", "30:200")
+    assert det_check(env) == 1
+
+
+def test_only_the_frames_both_sides_have_are_judged(env, capsys, monkeypatch):
+    assert env.record() == 0
+    monkeypatch.setenv("FAKE_SKIP_SHOT", "20_top,20_bottom")      # the run took no shot at frame 20 at all
+    capsys.readouterr()
+    assert det_check(env, "--deterministic", "--require", "images") == 0
+    assert result_of(env, "images")["detail"] == "2 frame(s) judged, 0 skipped (gas), 0 failed"
+    monkeypatch.setenv("FAKE_SKIP_SHOT", "20_bottom")             # one screen of a common frame missing: a failure
+    assert det_check(env) == 1
+    assert "frame 20 bottom: the run wrote no screenshot" in capsys.readouterr().out
+
+
+def test_a_gas_frame_is_skipped_in_the_deterministic_mode(env, capsys, monkeypatch):
+    assert env.record() == 0
+    monkeypatch.setenv("FAKE_PIXELS", "20:200")
+    monkeypatch.setenv("FAKE_GAS", "20")
+    capsys.readouterr()
+    assert det_check(env, "--deterministic", "--require", "images") == 0
+    out = capsys.readouterr().out
+    assert result_of(env, "images")["detail"] == "2 frame(s) judged, 1 skipped (gas), 0 failed"
+    assert "1 frame(s) skipped (gas): 20" in out
+    monkeypatch.setenv("FAKE_GAS", "10,20,30")           # everything in gas: nothing judged
+    assert det_check(env, "--deterministic", "--require", "images") == 3
+    assert statuses(capsys.readouterr().out)["images"] == "SKIPPED"
+
+
+def test_an_explicit_image_frames_file_wins_over_the_deterministic_flag(env, capsys, monkeypatch):
+    assert env.record() == 0
+    monkeypatch.setenv("FAKE_PIXELS", "20:200")
+    capsys.readouterr()
+    assert det_check(env, "--deterministic", "--image-frames", frames_file(env)) == 0      # frame 20 is not listed
+    assert result_of(env, "images")["detail"] == "2 listed frame(s) pass"
+    assert det_check(env) == 1                                                             # without the file: all
+
+
+def test_without_the_flag_the_calibrated_list_applies(env, capsys, monkeypatch):
+    listed = env.tmp / "default_frames.txt"
+    listed.write_text("S1 10\n", encoding="utf-8")
+    monkeypatch.setattr(golden, "IMAGE_FRAMES", listed)
+    assert env.record() == 0
+    monkeypatch.setenv("FAKE_PIXELS", "20:200")
+    capsys.readouterr()
+    assert det_check(env, "--cpu recomp") == 0                       # frame 20 is far off but not listed
+    assert result_of(env, "images")["detail"] == "1 listed frame(s) pass"
+    assert jit_check(env, "--require", "images") == 0
+    assert result_of(env, "images")["detail"] == "1 listed frame(s) pass"
+
+
+def test_a_jit_candidate_keeps_the_calibrated_list_even_with_the_flag(env, capsys, monkeypatch):
+    listed = env.tmp / "default_frames.txt"
+    listed.write_text("S1 10\n", encoding="utf-8")
+    monkeypatch.setattr(golden, "IMAGE_FRAMES", listed)
+    assert env.record() == 0
+    monkeypatch.setenv("FAKE_PIXELS", "20:200")
+    capsys.readouterr()
+    assert det_check(env, "--cpu jit --deterministic") == 0
+    assert result_of(env, "images")["detail"] == "1 listed frame(s) pass"
+
+
+def test_the_flag_is_found_by_shell_splitting_and_look_alikes_are_not(env, capsys, monkeypatch):
+    listed = env.tmp / "default_frames.txt"
+    listed.write_text("S1 10\n", encoding="utf-8")
+    monkeypatch.setattr(golden, "IMAGE_FRAMES", listed)
+    assert env.record() == 0
+    monkeypatch.setenv("FAKE_PIXELS", "20:200")
+    capsys.readouterr()
+    assert det_check(env, "--set a=1  --deterministic --cpu recomp") == 1                  # inside a longer string
+    assert det_check(env, '"--deterministic"') == 1                                       # quoted: still the token
+    for look_alike in ("--deterministic-x", "--not--deterministic", "--set x=--deterministic", "--deterministic=1"):
+        assert det_check(env, look_alike) == 0, look_alike
+        assert result_of(env, "images")["detail"] == "1 listed frame(s) pass"
+    assert golden.wants_all_images(["--deterministic"]) and not golden.wants_all_images(["--deterministic-x"])
+    assert not golden.wants_all_images(["--cpu", "jit", "--deterministic"]) and not golden.wants_all_images([])
+
+
+def test_the_deterministic_mode_skips_when_there_are_no_screenshots(env, capsys, monkeypatch):
+    assert env.record() == 0
+    prog = env.tmp / "prog"
+    prog.mkdir()
+    monkeypatch.setenv("FAKE_NO_SHOTS", "1")                  # a candidate runner that cannot take shots
+    capsys.readouterr()
+    cand = ["--candidate-runner", str(env.script), "--candidate-program", str(prog)]
+    assert env.check(*cand, "--candidate-args=--deterministic", "--ignore", str(env.ignore_file),
+                     "--require", "images") == 3
+    assert statuses(capsys.readouterr().out)["images"] == "SKIPPED"
+
+
+def test_the_same_and_native_profiles_ignore_the_deterministic_flag(env, capsys, monkeypatch):
+    assert env.record() == 0
+    monkeypatch.setenv("FAKE_PIXELS", "20:200")
+    capsys.readouterr()
+    assert env.check("--candidate-args=--deterministic") == 1                  # same: SHA-256
+    assert statuses(capsys.readouterr().out)["images"] == "FAIL"
+    assert env.check("--profile", "native", "--candidate-args=--deterministic",
+                     "--ignore", str(env.ignore_file)) == 0                    # native: information
+    assert statuses(capsys.readouterr().out)["images"] == "INFO"
+
+
 def test_shot_options_go_only_to_a_candidate_that_lists_them(env, capsys, monkeypatch):
     assert env.record() == 0
     prog = env.tmp / "prog"
