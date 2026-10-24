@@ -941,7 +941,10 @@ in the run examined, 267,448 bytes covered by the reference only and 259,072 by 
 request 547. The count that meets N1-26's bar (8 of 10 pass) is therefore 0 of 10 on the required list. In the three runs
 looked at (1, 2 and 10) the same first stretches differ on threads #12 and #3 (other resources of the same file at the same
 point of the route), so this is not noise of one run: with the host's clock the game asks for other pieces of the file than in
-the reference's recording. No limit was changed.
+the reference's recording. No limit was changed. The 10 runs used the runner built before the last commit of the package (the
+review fixes: an assertion, comments and tests); one run on the final binary, in the review, has the same result (state,
+checkpoints and `hid` pass; `ipc` fails on thread #12 with a surplus of 243 reads). D94 amends the bar of N1-26 after this
+data.
 
 The pattern of the failing `ipc` is that of the clock-paced streams of N0-36 (section 11 of its report): thread #12 reads its
 file in 8,192-byte chunks at the pace of the clock, so the number of chunks follows the time a stream stays open (the 10 runs'
