@@ -1,0 +1,84 @@
+diff --git a/plume_render_interface_types.h b/plume_render_interface_types.h
+index c5f4ef8..58629fa 100644
+--- a/plume_render_interface_types.h
++++ b/plume_render_interface_types.h
+@@ -355,7 +355,10 @@ namespace plume {
+         UNKNOWN,
+         TRANSPARENT_BLACK,
+         OPAQUE_BLACK,
+-        OPAQUE_WHITE
++        OPAQUE_WHITE,
++        // The colour in RenderSamplerDesc::customBorderColor (VK_EXT_custom_border_color). Only on a device whose
++        // capabilities.customBorderColor is set; creating the sampler fails (with a message) otherwise.
++        CUSTOM
+     };
+ 
+     enum class RenderShaderVisibility {
+@@ -1447,6 +1450,8 @@ namespace plume {
+         RenderComparisonFunction comparisonFunc = RenderComparisonFunction::NEVER;
+         bool comparisonEnabled = false;
+         RenderBorderColor borderColor = RenderBorderColor::OPAQUE_BLACK;
++        // Red, green, blue, alpha (floats, as the sampler returns them); read only when borderColor is CUSTOM.
++        float customBorderColor[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+         float minLOD = 0.0f;
+         float maxLOD = FLT_MAX;
+         RenderShaderVisibility shaderVisibility = RenderShaderVisibility::ALL;
+@@ -1846,7 +1851,8 @@ namespace plume {
+         // Index buffers of 8-bit indices (VK_EXT_index_type_uint8, RenderIndexFormat::R8_UINT).
+         bool indexTypeUint8 = false;
+ 
+-        // Samplers with a custom border colour (VK_EXT_custom_border_color).
++        // Samplers with a custom border colour (VK_EXT_custom_border_color, with customBorderColors and
++        // customBorderColorWithoutFormat: the colour is not tied to an image format).
+         bool customBorderColor = false;
+ 
+         // Bindless resources.
+diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
+index 1172b74..e6be1e7 100644
+--- a/plume_vulkan.cpp
++++ b/plume_vulkan.cpp
+@@ -650,6 +650,8 @@ namespace plume {
+             return VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK;
+         case RenderBorderColor::OPAQUE_WHITE:
+             return VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE;
++        case RenderBorderColor::CUSTOM:
++            return VK_BORDER_COLOR_FLOAT_CUSTOM_EXT;
+         default:
+             assert(false && "Unknown border color.");
+             return VK_BORDER_COLOR_MAX_ENUM;
+@@ -1414,6 +1416,11 @@ namespace plume {
+ 
+         this->device = device;
+ 
++        if (desc.borderColor == RenderBorderColor::CUSTOM && !device->capabilities.customBorderColor) {
++            fprintf(stderr, "vkCreateSampler: a custom border colour needs VK_EXT_custom_border_color (customBorderColors and customBorderColorWithoutFormat) enabled on the device.\n");
++            return;
++        }
++
+         VkSamplerCreateInfo samplerInfo = {};
+         samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+         samplerInfo.minFilter = toVk(desc.minFilter);
+@@ -1432,6 +1439,14 @@ namespace plume {
+         samplerInfo.borderColor = toVk(desc.borderColor);
+         samplerInfo.unnormalizedCoordinates = VK_FALSE;
+ 
++        VkSamplerCustomBorderColorCreateInfoEXT customBorderColorInfo = {};
++        if (desc.borderColor == RenderBorderColor::CUSTOM) {
++            customBorderColorInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CUSTOM_BORDER_COLOR_CREATE_INFO_EXT;
++            std::copy(desc.customBorderColor, desc.customBorderColor + 4, customBorderColorInfo.customBorderColor.float32);
++            customBorderColorInfo.format = VK_FORMAT_UNDEFINED;
++            samplerInfo.pNext = &customBorderColorInfo;
++        }
++
+         VkResult res = vkCreateSampler(device->vk, &samplerInfo, nullptr, &vk);
+         if (res != VK_SUCCESS) {
+             fprintf(stderr, "vkCreateSampler failed with error code 0x%X.\n", res);
+@@ -4466,7 +4481,7 @@ namespace plume {
+         capabilities.timelineSemaphore = timelineSupported;
+         capabilities.fragmentShaderInterlock = interlockSupported;
+         capabilities.indexTypeUint8 = indexTypeUint8Supported;
+-        capabilities.customBorderColor = customBorderColorSupported;
++        capabilities.customBorderColor = customBorderColorSupported && customBorderColorFeatures.customBorderColorWithoutFormat;
+         capabilities.descriptorIndexing = descriptorIndexingSupported;
+         capabilities.scalarBlockLayout = scalarBlockLayoutSupported;
+         capabilities.bufferDeviceAddress = bufferDeviceAddressSupported;

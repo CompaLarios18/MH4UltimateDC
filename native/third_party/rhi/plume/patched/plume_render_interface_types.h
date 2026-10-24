@@ -355,7 +355,10 @@ namespace plume {
         UNKNOWN,
         TRANSPARENT_BLACK,
         OPAQUE_BLACK,
-        OPAQUE_WHITE
+        OPAQUE_WHITE,
+        // The colour in RenderSamplerDesc::customBorderColor (VK_EXT_custom_border_color). Only on a device whose
+        // capabilities.customBorderColor is set; creating the sampler fails (with a message) otherwise.
+        CUSTOM
     };
 
     enum class RenderShaderVisibility {
@@ -1447,6 +1450,8 @@ namespace plume {
         RenderComparisonFunction comparisonFunc = RenderComparisonFunction::NEVER;
         bool comparisonEnabled = false;
         RenderBorderColor borderColor = RenderBorderColor::OPAQUE_BLACK;
+        // Red, green, blue, alpha (floats, as the sampler returns them); read only when borderColor is CUSTOM.
+        float customBorderColor[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
         float minLOD = 0.0f;
         float maxLOD = FLT_MAX;
         RenderShaderVisibility shaderVisibility = RenderShaderVisibility::ALL;
@@ -1846,7 +1851,8 @@ namespace plume {
         // Index buffers of 8-bit indices (VK_EXT_index_type_uint8, RenderIndexFormat::R8_UINT).
         bool indexTypeUint8 = false;
 
-        // Samplers with a custom border colour (VK_EXT_custom_border_color).
+        // Samplers with a custom border colour (VK_EXT_custom_border_color, with customBorderColors and
+        // customBorderColorWithoutFormat: the colour is not tied to an image format).
         bool customBorderColor = false;
 
         // Bindless resources.
