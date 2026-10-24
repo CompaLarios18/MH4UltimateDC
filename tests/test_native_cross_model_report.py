@@ -1,6 +1,7 @@
 """tools/native/cross_model_report.py (N0-28): synthetic runs only, with made-up frames, threads and counts."""
 from __future__ import annotations
 
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -418,3 +419,125 @@ def test_the_report_holds_no_value_of_the_traces(tmp_path: Path) -> None:
     done = run_tool("--session", str(session), "--reference", str(ref), "--candidate", str(cand))
     assert done.returncode == 0, done.stderr
     assert secret not in done.stdout + done.stderr
+
+
+# ── images (N2b-17) ──────────────────────────────────────────────────────────
+
+def _ppm(width: int = 32, height: int = 32, base: int = 10, edits: dict | None = None) -> bytes:
+    body = bytearray()
+    for y in range(height):
+        for x in range(width):
+            v = (edits or {}).get((x, y), base)
+            body += bytes((v, v, v))
+    return f"P6\n{width} {height}\n255\n".encode() + bytes(body)
+
+
+def _block(x0: int, y0: int, value: int) -> dict:
+    return {(x, y): value for x in range(x0, x0 + 16) for y in range(y0, y0 + 16)}
+
+
+def _shots(folder: Path, frames: list[int], bad: dict[tuple[int, str], dict] | None = None,
+           size: int = 32, missing: tuple = ()) -> None:
+    """Screenshots at `frames`: a flat grey, or the edits of `bad[(frame, screen)]`."""
+    shots = folder / "shots"
+    shots.mkdir(parents=True, exist_ok=True)
+    for frame in frames:
+        for screen in ("top", "bottom"):
+            if (frame, screen) not in missing:
+                (shots / f"f{frame:07d}_{screen}.ppm").write_bytes(
+                    _ppm(size, size, edits=(bad or {}).get((frame, screen))))
+
+
+FRAMES = list(range(300, 1000, 60))           # 300, 360, ... 960: 12 screenshots
+IMG_CHANGES = [(2, SCENE_A), (700, SCENE_B)]    # scene 1: frames 0 to 699, scene 2: 700 to 1000
+
+
+def _image_runs(tmp_path: Path, bad=None, missing=(), gas: str | None = None) -> tuple[Path, Path, Path]:
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    session = tmp_path / "G9.txt"
+    session.write_text("# name: G9\nf400:A\n", encoding="utf-8")
+    ref = write_run(tmp_path / "ref", state_trace(IMG_CHANGES, 1000, "recomp"))
+    cand = write_run(tmp_path / "cand", state_trace(IMG_CHANGES, 1000, "jit"))
+    _shots(ref, FRAMES)
+    _shots(cand, FRAMES, bad, missing=missing)
+    if gas is not None:
+        (cand / "shots" / "gas.txt").write_text(gas, encoding="utf-8")
+    return session, ref, cand
+
+
+def _images(session: Path, ref: Path, cand: Path, *extra: str) -> subprocess.CompletedProcess:
+    return run_tool("--images", "--session", str(session), "--reference", str(ref), "--candidate", str(cand), *extra)
+
+
+def test_images_lists_every_frame_and_proposes_those_where_both_screens_pass(tmp_path: Path) -> None:
+    bad = {(420, "top"): _block(0, 0, 40),           # a block off by 30: fails the block rule
+           (780, "bottom"): _block(16, 16, 30)}      # the other screen, in the second scene
+    session, ref, cand = _image_runs(tmp_path, bad)
+    proposal = tmp_path / "frames.txt"
+    done = _images(session, ref, cand, "--proposal", str(proposal))
+    assert done.returncode == 0, done.stderr
+    expected = [f for f in FRAMES if f not in (420, 780)]
+    assert proposal.read_text(encoding="utf-8").splitlines() == [f"G9 {f}" for f in expected]
+    out = done.stdout
+    assert "10 of 12 frames pass" in out and "| 420 | 1 |" in out and "| 780 | 2 |" in out
+    assert "### Frames that do not pass (2)" in out and "420, 780" in out
+    assert "| 1 | 0x00aa0100 | 0 to 699 | 700 |" in out         # the scenes with their lengths
+    assert "met" in out and "inf | 0.0" in out
+
+
+def test_images_proposal_replaces_only_the_sessions_own_lines(tmp_path: Path) -> None:
+    session, ref, cand = _image_runs(tmp_path)
+    proposal = tmp_path / "frames.txt"
+    proposal.write_text("G1 300\nG9 999\nG2 360\n", encoding="utf-8")
+    assert _images(session, ref, cand, "--proposal", str(proposal)).returncode == 0
+    lines = proposal.read_text(encoding="utf-8").splitlines()
+    assert lines[:2] == ["G1 300", "G2 360"] and "G9 999" not in lines and lines[2:] == [f"G9 {f}" for f in FRAMES]
+
+
+def test_images_a_long_scene_without_a_frame_is_a_shortfall(tmp_path: Path) -> None:
+    # every screenshot of the second scene (700 to 1000, 301 frames) is wrong on the top screen
+    bad = {(f, "top"): _block(0, 0, 90) for f in FRAMES if f >= 700}
+    session, ref, cand = _image_runs(tmp_path, bad)
+    proposal = tmp_path / "frames.txt"
+    done = _images(session, ref, cand, "--proposal", str(proposal))
+    assert done.returncode == 1 and "scene #2" in done.stderr and "no image frame" in done.stderr
+    assert proposal.read_text(encoding="utf-8").splitlines() == [f"G9 {f}" for f in FRAMES if f < 700]   # still written
+    assert "scene #2" in done.stdout
+    assert _images(session, ref, cand, "--long-scene", "400").returncode == 0     # the scene is no longer "long"
+
+
+def test_images_fewer_than_three_frames_is_a_shortfall(tmp_path: Path) -> None:
+    bad = {(f, "bottom"): _block(0, 0, 90) for f in FRAMES if f not in (300, 360)}
+    session, ref, cand = _image_runs(tmp_path, bad)
+    done = _images(session, ref, cand, "--long-scene", "10000")
+    assert done.returncode == 1 and "only 2 image frames, at least 3 needed" in done.stderr
+    assert _images(session, ref, cand, "--long-scene", "10000", "--min-frames", "2").returncode == 0
+
+
+def test_images_a_frame_in_gas_txt_or_missing_is_never_proposed(tmp_path: Path) -> None:
+    session, ref, cand = _image_runs(tmp_path, missing=((540, "bottom"),), gas="360\n")
+    proposal = tmp_path / "frames.txt"
+    done = _images(session, ref, cand, "--proposal", str(proposal))
+    assert done.returncode == 0, done.stderr
+    assert proposal.read_text(encoding="utf-8").splitlines() == [f"G9 {f}" for f in FRAMES if f not in (360, 540)]
+    assert "| gas |" in done.stdout and "the bottom screenshot is missing on the candidate" in done.stdout
+
+
+def test_images_screens_of_another_size_are_a_problem_of_the_frame(tmp_path: Path) -> None:
+    session, ref, cand = _image_runs(tmp_path)
+    (cand / "shots" / "f0000300_top.ppm").write_bytes(_ppm(48, 32))
+    done = _images(session, ref, cand, "--proposal", str(tmp_path / "p.txt"))
+    assert done.returncode == 0 and "different sizes" in done.stdout
+    assert "G9 300" not in (tmp_path / "p.txt").read_text(encoding="utf-8")
+
+
+def test_images_bad_input_is_exit_status_2(tmp_path: Path) -> None:
+    session, ref, cand = _image_runs(tmp_path)
+    shutil.rmtree(cand / "shots")
+    assert _images(session, ref, cand).returncode == 2
+    session, ref, cand = _image_runs(tmp_path / "b")
+    (cand / "shots" / "gas.txt").write_text("three\n", encoding="utf-8")
+    assert _images(session, ref, cand).returncode == 2
+    session, ref, cand = _image_runs(tmp_path / "c")
+    assert _images(session, ref, cand, "--min-frames", "-1").returncode == 2
+    assert _images(session, tmp_path / "nowhere", cand).returncode == 2

@@ -9,7 +9,7 @@
                                       [--candidate-code LIB] [--candidate-args "..."] [--repeat N]
                                       [--profile same|cross|native] [--fallback] [--require NAMES] [--ignore FILE]...
                                       [--tolerance N] [--min-margin N] [--max-surplus N] [--max-shift N]
-                                      [--observable FILE]
+                                      [--observable FILE] [--image-frames FILE]
 
 A session is a frame-keyed input script (tools/native/golden/<S>.txt, the runner's --input-file
 format) with header comment lines, see parse_session.  `record` runs the reference runner on a
@@ -55,9 +55,12 @@ if str(HERE) not in sys.path:
 import capfmt  # noqa: E402
 import cross_model_report  # noqa: E402
 import gcap  # noqa: E402
+import imgdiff  # noqa: E402
 import state_diff  # noqa: E402
 
 SESSIONS_DIR = HERE / "golden"
+# N2b-17 (D58): the frames the cross profile holds the screenshots to, `<session> <frame>` per line.
+IMAGE_FRAMES = ROOT / "config" / "native" / "image_frames.txt"
 DEFAULT_OUT = ROOT / "build" / "golden"
 OBSERVABLE = ROOT / "config" / "native" / "observable.txt"
 IPC_TIME_DEPENDENT = ROOT / "config" / "native" / "ipc_time_dependent.txt"
@@ -491,6 +494,7 @@ class RunSpec:
                                # when `observable` is set)
     shot_every: int = DEFAULT_SHOT_EVERY_FRAMES      # frames between screenshots, 0: none
     observable: str | None = None
+    shots: bool = False        # a candidate runner whose --help lists --shots (N2b-14): it gets the screenshot options
 
 
 def build_args(spec: RunSpec) -> list[str]:
@@ -523,16 +527,29 @@ def build_args(spec: RunSpec) -> list[str]:
             args += ["--capture-gpu", f"{cap.start}:{cap.frames}:{o / cap.filename}"]
     if spec.full:
         args += ["--trace-timing", str(o / "timing.txt"), "--count-unmapped", str(o / "unmapped.txt")]
-        if spec.shot_every > 0:
-            args += ["--shots", str(o / "shots"), "--shots-from", f"f{SHOTS_FROM_FRAME}",
-                     "--shot-every", f"f{spec.shot_every}", "--dump", shared_page_dump()]
+    if (spec.full or spec.shots) and spec.shot_every > 0:     # the frame-keyed form, as the recording's (N2b-17)
+        args += ["--shots", str(o / "shots"), "--shots-from", f"f{SHOTS_FROM_FRAME}", "--shot-every",
+                 f"f{spec.shot_every}"]
+        if spec.full:
+            args += ["--dump", shared_page_dump()]
     return args + spec.extra
+
+
+def runner_has_shots(runner: str | Path) -> bool:
+    """Whether the runner's `--help` lists `--shots` (the native runner, N2b-14: a candidate that can write the
+    screenshots the `images` comparison needs).  A runner that cannot be asked, or that fails, has none."""
+    try:
+        done = subprocess.run(runner_argv(runner) + ["--help"], cwd=ROOT, capture_output=True, text=True,
+                              timeout=60, check=False)
+    except (OSError, subprocess.SubprocessError, GoldenError):
+        return False
+    return "--shots" in (done.stdout + done.stderr)
 
 
 def run_runner(spec: RunSpec, timeout: float | None) -> tuple[int, list[str]]:
     """Start the runner (no shell), log to <outdir>/runner.log; returns (exit status, arguments)."""
     spec.outdir.mkdir(parents=True, exist_ok=True)
-    if spec.full and spec.shot_every > 0:
+    if (spec.full or spec.shots) and spec.shot_every > 0:
         (spec.outdir / "shots").mkdir(exist_ok=True)
     args = build_args(spec)
     cmd = runner_argv(spec.runner) + args
@@ -790,6 +807,7 @@ class Compare:
     max_surplus: int | None = None      # reads a thread may make beyond the other (CROSS_MAX_SURPLUS)
     max_shift: int | None = None        # DSP frames of shift (CROSS_MAX_SHIFT)
     fs_write_masks: Path | None = None  # the write-mask file (default FS_WRITE_MASKS)
+    image_frames: Sequence[int] = ()    # the frames this session's screenshots are held to in `cross` (N2b-17, D58)
 
     def rule(self, name: str) -> int:
         """The value of one of the cross profile's numbers: the option, else the profile's own (D50 to D52; the
@@ -800,6 +818,87 @@ class Compare:
         native = self.profile == "native"
         return {"tolerance": NATIVE_TOLERANCE if native else CROSS_TOLERANCE, "min_margin": CROSS_MIN_MARGIN,
                 "max_surplus": CROSS_MAX_SURPLUS, "max_shift": NATIVE_MAX_SHIFT if native else CROSS_MAX_SHIFT}[name]
+
+
+def parse_image_frames(text: str, where: str = "image frames") -> dict[str, list[int]]:
+    """`<session> <frame>` per line, `#` starts a comment; the frames of each session, sorted, without repeats."""
+    frames: dict[str, set[int]] = {}
+    for number, raw in enumerate(text.splitlines(), 1):
+        line = raw.split("#", 1)[0].strip()
+        if not line:
+            continue
+        parts = line.split()
+        if len(parts) != 2 or not parts[1].isdigit():
+            raise GoldenError(f"{where}, line {number}: expected '<session> <frame>', got {raw.strip()!r}")
+        frames.setdefault(parts[0], set()).add(int(parts[1]))
+    return {k: sorted(v) for k, v in frames.items()}
+
+
+def load_image_frames(path: Path | None, session: str) -> list[int]:
+    """The frames listed for `session` in `path` (default `config/native/image_frames.txt`); a missing default file
+    lists none, a missing file that was asked for is a usage problem."""
+    explicit = path is not None
+    path = path or IMAGE_FRAMES
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        if explicit:
+            raise GoldenError(f"--image-frames: {path} does not exist") from None
+        return []
+    except (OSError, UnicodeError) as e:
+        raise GoldenError(f"cannot read {path}: {getattr(e, 'strerror', None) or e}") from None
+    return parse_image_frames(text, str(path)).get(session, [])
+
+
+def read_gas_frames(shots: Path) -> set[int]:
+    """The shot numbers of `shots/gas.txt` (N2b-14), or none when the runner wrote no such file."""
+    try:
+        return cross_model_report.read_gas(shots.parent)
+    except cross_model_report.ReportError as e:
+        raise GoldenError(str(e)) from None
+
+
+def images_result(ref: Path, cand: Path, frames: Sequence[int]) -> tuple[str, str, str]:
+    """(status, detail, note) of the cross profile's `images` comparison at the listed frames (N2b-17): the top and
+    bottom screenshots of the candidate against the recording's with imgdiff's rule; a frame in the candidate's
+    `shots/gas.txt` is `skipped (gas)` and not judged."""
+    if not frames:
+        return "skipped", "no image frames are listed for this session", ""
+    if not (cand / "shots").is_dir() or not any((cand / "shots").glob("*.ppm")):
+        return "skipped", "the run wrote no screenshots", ""
+    gas = read_gas_frames(cand / "shots")
+    failed: list[str] = []
+    judged = 0
+    skipped_gas: list[int] = []
+    worst_psnr, worst_block = float("inf"), 0.0
+    for frame in frames:
+        if frame in gas:
+            skipped_gas.append(frame)
+            continue
+        judged += 1
+        for screen in ("top", "bottom"):
+            name = f"shots/f{frame:07d}_{screen}.ppm"
+            if not (ref / name).is_file():
+                failed.append(f"frame {frame} {screen}: the recording has no screenshot")
+                continue
+            if not (cand / name).is_file():
+                failed.append(f"frame {frame} {screen}: the run wrote no screenshot")
+                continue
+            try:
+                m = imgdiff.compare_files(ref / name, cand / name)
+            except imgdiff.ImageError as e:
+                failed.append(f"frame {frame} {screen}: {e}")
+                continue
+            worst_psnr, worst_block = min(worst_psnr, m.psnr), max(worst_block, m.worst_block)
+            if not m.passes:
+                failed.append(f"frame {frame} {screen}: {m.text()}")
+    gas_note = f"; {len(skipped_gas)} frame(s) skipped (gas): {', '.join(map(str, skipped_gas))}" if skipped_gas else ""
+    if failed:
+        return "fail", "\n".join(failed[:8]), f"{len(failed)} of {2 * judged} screenshots fail" + gas_note
+    if not judged:
+        return "skipped", f"every listed frame is skipped (gas): {', '.join(map(str, skipped_gas))}", ""
+    psnr = "inf" if worst_psnr == float("inf") else f"{worst_psnr:.1f}"
+    return "pass", f"{judged} listed frame(s) pass", f"lowest PSNR {psnr} dB, worst block {worst_block:.1f}/255" + gas_note
 
 
 def _tool(script: Path, *args: str) -> tuple[int, str]:
@@ -1026,19 +1125,31 @@ def compare_outputs(session: Session, ref: Path, cand: Path, cfg: Compare) -> li
             if cap.kind == "gpu" and need(f"gpu-{cap.start}", cap.filename):
                 ok, detail = _files_equal(ref, cand, _group(ref, cap.filename))
                 add(f"gpu-{cap.start}", "pass" if ok else "fail", detail)
-    # -- screenshots: gated in the same profile, information in cross
+    # -- screenshots: identical in the same profile; in cross (N2b-17, D58) judged with imgdiff's rule at the frames
+    # the image-frames file lists for the session, the others information; in native information only
     shots = sorted(p.relative_to(ref).as_posix() for p in (ref / "shots").rglob("*.ppm")) \
         if (ref / "shots").is_dir() else []
     cand_shots = [p for p in (cand / "shots").rglob("*.ppm")] if (cand / "shots").is_dir() else []
     if not shots:
         if same:
             add("images", "skipped", "there are no screenshots to compare with")
+        elif cfg.profile == "cross":
+            add("images", "skipped", "there are no screenshots to compare with")
     elif not cand_shots:
         if same:
             add("images", "fail" if cfg.strict else "skipped", "the run wrote no screenshots")
+        elif cfg.profile == "cross":
+            add("images", "skipped", "the run wrote no screenshots")
     else:
         ok, detail = _files_equal(ref, cand, shots)
-        add("images", ("pass" if ok else "fail") if same else "info", detail)
+        if same:
+            add("images", "pass" if ok else "fail", detail)
+        elif cfg.profile == "cross":
+            status, detail2, note = images_result(ref, cand, cfg.image_frames)
+            add("images", status, detail2, note)
+            add("images-all", "info", detail + " (the listed frames are judged above; the others are information)")
+        else:
+            add("images", "info", detail)
     # -- the shared page and the timing trace of the reference runner
     if same and (ref / shared_page_file()).is_file() and (cfg.strict or (cand / shared_page_file()).is_file()):
         if need("shared-page", shared_page_file()):
@@ -1110,6 +1221,9 @@ def check(session: Session, a: argparse.Namespace) -> int:
     for flag, value in rules.items():
         if value is not None and value < 0:
             raise GoldenError(f"--{flag.replace('_', '-')} must not be negative")
+    if a.image_frames and profile != "cross":
+        raise GoldenError("--image-frames sets the frames the cross profile holds the screenshots to (N2b-17, D58): "
+                          "the same profile compares them all exactly and the native profile reports them as information")
     across = profile in ("cross", "native")
     if (across or a.fallback) and not Path(SVC_CROSS_MODEL if across else SVC_POLLING).is_file():
         raise GoldenError(f"missing {SVC_CROSS_MODEL if across else SVC_POLLING}")
@@ -1135,7 +1249,8 @@ def check(session: Session, a: argparse.Namespace) -> int:
     foreign = bool(a.candidate_runner)
     if not foreign and manifest.get("updates") and not a.update:
         raise GoldenError("the recording was made with --install: pass --update CIA so the run starts the same way")
-    shot_every =int(manifest.get("shots", {}).get("every_frames", DEFAULT_SHOT_EVERY_FRAMES))
+    shot_every = int(manifest.get("shots", {}).get("every_frames", DEFAULT_SHOT_EVERY_FRAMES))
+    shots = foreign and runner_has_shots(a.candidate_runner)     # N2b-17: only a candidate that lists --shots gets them
     if foreign:
         runner, program, code, cpu, full = a.candidate_runner, a.candidate_program or a.game, a.candidate_code, None, False
         extra = cand_args
@@ -1151,8 +1266,10 @@ def check(session: Session, a: argparse.Namespace) -> int:
                 raise GoldenError("--cpu recomp needs --code LIB")
     ignore = ([IPC_TIME_DEPENDENT] if IPC_TIME_DEPENDENT.is_file() else []) + [Path(p) for p in a.ignore or []]
     real = int(manifest.get("real_scene_changes", real_scene_changes(ref / "state.txt")))
+    image_frames = load_image_frames(Path(a.image_frames) if a.image_frames else None, session.name) \
+        if profile == "cross" else []
     cfg = Compare(profile, a.fallback, strict=not foreign, ignore=ignore, observable=Path(a.observable),
-                  real_changes=real, **rules)
+                  real_changes=real, image_frames=image_frames, **rules)
     pair = Compare("same", a.fallback, strict=not foreign, ref_is_recording=False, observable=Path(a.observable),
                    real_changes=real, checkpoints=False)
     checks_dir = ref / "check"
@@ -1164,7 +1281,7 @@ def check(session: Session, a: argparse.Namespace) -> int:
         work = checks_dir / f"work{n}"
         copy_tree(ref / "user-before", work)
         spec = RunSpec(runner, program, code, cpu, a.update or [], work, outdir, session, a.set or [], extra, full,
-                       shot_every, str(a.observable))
+                       shot_every, str(a.observable), shots)
         status, _ = run_runner(spec, a.timeout)
         shutil.rmtree(work, ignore_errors=True)
         prefix = f"run{n}: " if a.repeat > 1 else ""
@@ -1281,6 +1398,10 @@ def make_parser() -> argparse.ArgumentParser:
                            help=f"cross and native profiles only: DSP frames the candidate's audio may be shifted by "
                                 f"(default {CROSS_MAX_SHIFT} in cross, D51; {NATIVE_MAX_SHIFT} in native, D76)")
             s.add_argument("--observable", default=str(OBSERVABLE))
+            s.add_argument("--image-frames", metavar="FILE",
+                           help="cross profile only: the file of `<session> <frame>` lines that says which "
+                                "screenshots are judged with imgdiff's rule (default config/native/image_frames.txt; "
+                                "no listed frame for the session: `images` is skipped)")
         s.set_defaults(func=record if name == "record" else check)
     return p
 
