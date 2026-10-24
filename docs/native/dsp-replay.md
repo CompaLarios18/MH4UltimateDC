@@ -223,3 +223,197 @@ capture starts in the middle of it), **not a DSP bug**. The local session report
 (the verdict line, the source numbers, the count of listed frames) and retunes nothing.
 
 Put in the notes only the three result lines, the counts of `capfmt.py summary`, and the list if there is one.
+
+## Results (dump-check of 2026-10-23)
+
+Numbers only. The tool is `mh4n_dsp_replay` built from the N3-04 branch (RelWithDebInfo, `MH4N_WERROR=ON`, Windows,
+llvm-mingw clang). The captures stay under `build/` and are not committed.
+
+### Step 1: G1's `dsp-1240` (no emulator)
+
+`capfmt.py summary`: 300 DSP frames (counters 4434 to 4733), 300 type-1 and type-2 records, 88 type-3 records
+(88 unique, 0 without bytes), `pcm_non_silent_frames` 300 of 300, `sources_enabled_max` 1.
+
+```
+exit 1
+dsp-replay: settled at frame 4434 (record 0): 0 frames reported, not judged; 299 judged frames had a next frame to compare the status blocks with
+dsp-replay: sources enabled in the first captured status that our DSP never started: 0
+dsp-replay: why: snr, window, status
+dsp-replay: window 0: 300 frames, snr 0.00 (largest difference 6067), BELOW THE LIMIT
+dsp-replay: 300 frames judged of 300, 0 bit-exact, snr 0.00, worst window 0.00 at 4434, status first difference at frame 4434, FAIL
+```
+
+- Frames listed as `not bit-exact`: 300 of 300 (frame 4434 with largest difference 2486, up to 5611 at frame 4438;
+  frame 4733 with 4657).
+- The line naming sources our DSP never started names source number 0 (a source number, not a count; the
+  shape in *The likely outcome on a real recording*, a non-empty list, is what the run printed; see
+  *Diagnosis*); the first status block differs at frame 4434.
+- Per D75, a judged frame that is not bit-exact ends the package `needs-decision`; nothing was retuned and no code
+  changed.
+
+### Step 2: the G3 hunt capture (`--capture-dsp 14109:3000`, reference runner of N0-29)
+
+The runner ran G3 to frame 18000 and exited 0 (about 56 minutes). `capfmt.py summary`: 3000 DSP frames (counters 48745
+to 51744, game frames 14109 to 14966), 3000 type-1 and type-2 records, 316 type-3 records (233 unique, 83 without
+bytes), `pcm_non_silent_frames` 2454 of 3000, `sources_enabled_max` 20.
+
+```
+exit 1
+dsp-replay: settled at frame 48745 (record 0): 0 frames reported, not judged; 2999 judged frames had a next frame to compare the status blocks with
+dsp-replay: why: snr, window
+dsp-replay: window 0: 205 frames, snr inf (reference RMS below 1: judged by the largest difference 0), ok
+dsp-replay: window 1: 205 frames, snr inf (reference RMS below 1: judged by the largest difference 0), ok
+dsp-replay: windows 2 to 14: snr between -0.02 and 0.07 (largest differences 9964 to 23330), BELOW THE LIMIT
+dsp-replay: 3000 frames judged of 3000, 546 bit-exact, snr 0.01, worst window -0.02 at 49770, status equal, FAIL
+```
+
+- Frames listed as `not bit-exact`: 2454 of 3000 (the same count as the non-silent frames); the 546 bit-exact
+  frames are the silent ones.
+- The line naming sources our DSP never started is not printed; the status blocks are equal over all judged frames.
+- Per D75 the package ends `needs-decision`; nothing was retuned and no code changed.
+
+## Diagnosis (2026-10-23)
+
+Numbers and neutral words only; the captures and the scratch programs stay under `build/` (git-ignored) and are
+not committed. Question: why the real recordings do not replay (G1: 0 of 300 frames bit-exact, 0.00 dB; the G3
+hunt capture: 546 of 3000, 0.01 dB), when N3-02 and N3-03 reproduce Azahar's code on 121 + 155 synthetic cases and
+a capture written from Azahar's code replays bit-exact.
+
+**Answer.** Neither our DSP nor the replay harness is at fault. The captures do not hold the DSP's state from
+before they start, and Azahar's own code, given the captured inputs the same way, fails against the recordings
+exactly as ours does. For the G3 hunt capture the missing input is one value, the master volume of the mixers: with
+its dirty bit set in the first captured frame the replay of the recording is bit-exact over all 3000 frames. G1's
+capture starts with a source already playing; that state cannot be rebuilt from the capture, but a capture of G1
+that starts at the first DSP frame replays bit-exact (4900 of 4900 frames, the tool unchanged).
+
+### What was run
+
+The second oracle, inverted (scratch programs in `build/n3-04`):
+
+- `mk_frames.py` turns a capture into one input file (per frame: both regions, the reference PCM, the sample
+  reads with their bytes, the bytes of a read without bytes taken from its earlier (address, size, CRC) key as the
+  replay does; no key was missing).
+- `real_driver` is Azahar's own frame code at the pinned commit `5f3306d` (`source.cpp`, `mixers.cpp`, `effects.cpp`,
+  `filter.cpp`, `codec.cpp`, `interpolate.cpp` through the oracle's `driver_frame.cpp` and stand-ins, `-O1
+  -ffp-contract=off -fwrapv`; the stand-in memory widened from 4 MiB to the New 3DS's whole 256 MiB of FCRAM, since
+  the recordings read at 24.6 MiB (G1) and 29.9 MiB (G3) above the start of FCRAM) playing that file: both captured
+  regions copied over its DSP memory before each frame, the sample bytes placed at their addresses,
+  `GenerateCurrentFrame`.
+- `ours_driver` is our `dsp_hle` library (the build of `mh4n_dsp_replay`) fed the same file the same way.
+- `cmp.py` compares, per frame, the reference PCM, Azahar's, ours, both DSPs' status blocks and intermediate mix
+  samples, and each DSP's statuses against the next captured frame's.
+
+### Numbers
+
+| | G1 `dsp-1240` (300 frames) | G3 hunt (3000 frames) |
+|---|---|---|
+| reference vs Azahar's code | 0 bit-exact, 0.00 dB | 546 bit-exact (all silent), 0.01 dB |
+| reference vs our DSP | 0 bit-exact, 0.00 dB | 546 bit-exact, 0.01 dB |
+| Azahar's code vs our DSP: PCM / statuses / intermediate mix equal | 300 / 300 / 300 | 3000 / 3000 / 3000 |
+| statuses vs the reference's next frame, Azahar's code and ours | 0 of 299 equal | 2999 of 2999 equal |
+| `mh4n_dsp_replay` on the capture | 0 bit-exact, 0.00 dB | 546 bit-exact, 0.01 dB |
+
+So Azahar's code does not reproduce the recordings from the captured inputs either, and our DSP agrees with it to
+the bit on every frame of both captures (PCM, statuses, mix buffers), with or without the change below. The replay
+tool's numbers are the same as the independent feed's, so it feeds the DSP as the game does (no harness bug).
+
+### G3: the master volume
+
+- In Azahar's mixers the master volume is state: `intermediate_mixer_volume` starts at 0 and takes the
+  configuration's value only in a frame whose `master_volume_dirty` bit is set. The captured DSP configuration
+  holds the value (1.0 in one region of the pair, 0.0 in the other, 1500 frames each) but the dirty bit is set in
+  **0 of 3000** captured frames (G1: 0 of 300): the game set it when it started the DSP, long before the capture.
+  The configuration's dirty word in the captured frames holds the headphones bit (bit 28) in every frame and the
+  aux front bypass, aux bus enable and aux return bits (6, 8, 24) in 2, 1 and 2 frames of G3. A DSP that starts
+  empty at the first captured frame therefore mixes at volume 0: its output is silent where the reference's is not.
+- The first frame whose reference output is not silent is record 546 (counter 49291; sources 0 and 1 are enabled,
+  with their dirty bits, in record 544); both DSPs make 0 there and in every later frame. The 546 bit-exact frames
+  are the ones before it.
+- The test: the same capture with the master-volume dirty bit (bit 16 of the configuration's dirty word) set in the
+  first record, in the region the DSP reads, and nothing else changed. Azahar's code: **3000 of 3000** bit-exact,
+  SNR inf. Our DSP: 3000 of 3000. `mh4n_dsp_replay` on that copy: `3000 frames judged of 3000, 3000 bit-exact, snr
+  inf, worst window inf at 49155, status equal, PASS`, exit 0, no listed frame. With the output-format bit alone: 546
+  bit-exact (as unchanged); with the master volume alone: 3000; master volume with the output format, and with
+  all the mixer bits (aux enables, aux returns, output format): 3000.
+- The sample inputs of G3 are complete: 316 sample reads, 83 without bytes, every one of the 83 repeats a key given
+  by an earlier record (233 unique), and with the master volume applied the whole stream is bit-exact, so no frame
+  depends on bytes the capture lacks. No source is enabled in the first captured status; the sources start inside
+  the capture and their statuses already matched in every frame without the change.
+
+### G1: a source that was already playing
+
+- The line `sources enabled in the first captured status that our DSP never started: 0` names **source number 0**
+  (the Results above read it as a count). That source is enabled and playing in the first captured status (second DSP
+  frame of a queued buffer, status dirty flag clear); the capture's first sample read is at record 1, so the buffer
+  playing at record 0 was started before the capture and its bytes are not in it. Our DSP, starting empty, leaves the
+  source disabled: its status block differs from the reference's in record 0 (frame 4434) and in 299 of 299
+  compared frames. This is the case D88 describes; the mixers' master volume is missing in G1 as in G3.
+- Best effort to feed that state in (scratch only, not a method): the mixer bits of G3, the source's configuration
+  from the region with the enable flag, its current buffer as the embedded buffer at the status position (bytes
+  unknown: zeros), the queued ids above it in the four slots, and one synthetic frame before record 0 so that the
+  frame in which a source dequeues (it makes no output) falls outside the judged ones. Result: still 0 of 300
+  bit-exact; the median per-frame SNR over records 10 to 299 is 12.9 dB (3.3 to 21.1); the start position moved by +2
+  samples gives 32.0 dB (21.7 to 39.9), by -3 gives 9.2 dB. Our DSP and Azahar's code agree on all 300 frames in
+  every variant. What is lost is the interpolation phase and history (the status gives only whole samples), the bytes
+  of the buffer playing at the start, and the gain and filter state; none of it is in a capture that starts
+  mid-play.
+
+### Confirmed: a capture from the first DSP frame replays bit-exact, with nothing changed
+
+G1 run again with the reference runner of N0-29 (the manifest's runner and code library, `TZ=UTC0`, the same input
+file, `--frames 1450`; 42 s of runner time, started after a wait of about 13 minutes for the emulator lock) with
+`--capture-dsp 0:4900:FILE`, so that the capture starts at the first DSP frame. `capfmt.py summary`: 4900 DSP frames
+(counters 0 to 4903, game frames 0 to 1308; the only gap in the counters is between the first two records, 0 and 5,
+and that pair is not compared for statuses), 151 sample reads (148 unique, 3 without bytes), `pcm_non_silent_frames` 909 (records 1033 to
+4899), `sources_enabled_max` 1, 325 MB. The 300 frames of `dsp-1240` are in it (found by counter): all 300 PCM
+records are identical to the old capture's, so the reference run is deterministic. `mh4n_dsp_replay` on it,
+unmodified, no priming, no copy:
+
+```
+dsp-replay: settled at frame 0 (record 0): 0 frames reported, not judged; 4898 judged frames had a next frame to compare the status blocks with
+dsp-replay: 4900 frames judged of 4900, 4900 bit-exact, snr inf, worst window inf at 1029, status equal, PASS
+```
+
+exit 0, no listed frame. This is the first real recording that replays: our DSP, started the way the application
+starts it, reproduces the reference runner's mix and its source statuses to the bit over 4900 frames, 909 of them
+with sound. The capture is under `build/n3-04/` (game data, not committed).
+
+### The quick suspicions, in the order given
+
+1. *Order of judging.* G3 has no source enabled in the first status, so no source holds judging back: judging starts
+   at record 0 and the silent windows 0 and 1 pass; correct under D88. Not a cause.
+2. *First frame mid-play.* G1: yes, source 0 (above). G3: no source is playing, but the mixers are already
+   configured (the master volume above). The settling rule only knows sources; the mixers' state is the part it
+   misses.
+3. *Sample rate and tick alignment.* The frame counters of both captures are consecutive (0 gaps); the tick field
+   is 1,310,720 plus a few ticks of jitter and plays no part in a replay. The statuses of G3 match in 2999 of 2999 frames,
+   which they could not if a frame were skipped or doubled. Not a cause.
+4. *Status blocks.* G3's are equal throughout (both DSPs, 2999 of 2999). G1's differ from record 0 (frame 4434) because
+   source 0 is disabled in ours (not started) and enabled, playing, in the reference's.
+
+### Recommended next step
+
+Not a DSP change (`native/src/dsp_hle` agrees with Azahar's code on all 3300 captured frames, on the real inputs
+as on the synthetic ones) and not a threshold change. D75 asks the DSP to reproduce a recording; a recording that
+starts after the DSP was configured must carry, or be given, that configuration. In order of cost:
+
+1. **Record from the first DSP frame** (`--capture-dsp 0:N:FILE`, which starts at the first frame at or after game
+   frame 0): every dirty flag the game ever sets is then in the capture and the replay needs no priming. For G1,
+   `dsp-1240` could be replaced by a capture of the first 4750 DSP frames or so (the last 300 are today's; about 310
+   MB at 64.6 KiB a frame). **Done for G1 above: 4900 of 4900 bit-exact, PASS.** For the G3 hunt it would be
+   51,744 frames, about 3.4 GB and the 56 minutes of the run: the next option is cheaper.
+2. **Give the replay the state the capture lacks.** Either a record of the mixers' and sources' state at the first
+   captured frame (a hook into Azahar's `Mixers` and `Source` state in `port/azahar/azahar.patch` and a new record
+   type in the capture format: N0-06 and N0-29's files), or, cheaper, replay-side priming of the **mixers only**:
+   apply the DSP configuration of the first captured frame's read region that holds the non-zero master volume (G3's
+   is the first one; G1's first record holds 0.0 there and its 1.0 in the other region, so the rule has to look at
+   both: D92) as if its mixer dirty bits (aux enables, master volume, aux returns, output format) were set. The evidence above is that this alone makes the G3 hunt capture replay
+   bit-exact; it cannot make G1's playing source exact (the phase, the history and the unseen bytes), so G1 needs
+   option 1 or a capture that starts before its source does.
+3. D75's settling rule and D88 describe sources only. If option 2 is taken, the verdict needs one more sentence: the
+   first captured frame's mixer configuration is applied as written (it is the game's own value, not a tuned one),
+   and which region holds it must be decided (here the master volume is in one region of the pair and 0.0 in the
+   other, in every frame).
+
+Which of them is a decision for the orchestrator and the maintainer: option 1 changes how recordings are made,
+option 2 changes what the replay may assume about the DSP before its first frame.

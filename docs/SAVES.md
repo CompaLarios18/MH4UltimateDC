@@ -8,14 +8,6 @@ The extdata holds your guild cards, Palico and downloaded quests, so move it tog
 
 **Close the game (and the emulator) first.** An import into a save that a running game has open is not safe.
 
-**Status:** the very first import into a user folder that has no save yet needs one more number set that this tool
-does not have built in yet (the archive's size and counts; they arrive with the maintainer's check on the real files).
-Until then that first import stops with the message `no_format_info` and changes nothing. You can give the numbers
-yourself with `--format-info TOTAL,DIRS,FILES,DUP` (the four numbers `saves.py format-info FILE` prints for a
-`metadata` file of an existing save), or start the game once so it makes its own save and import over that. Once the
-numbers are built in, an import into a user folder with no save writes the `metadata` file by itself; when one already
-exists it is kept.
-
 ## From your 3DS to the PC
 
 1. On the 3DS, open **Checkpoint** (cartridge or digital copy of Monster Hunter 4 Ultimate). Back up the **save**,

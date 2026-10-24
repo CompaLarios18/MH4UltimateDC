@@ -69,9 +69,11 @@ def versions(tmp_path):
     return str(p)
 
 
-def write_inputs(tmp_path, compressed=True, base_pid=PID, update_pid=PID, icon=None, base_exefs=None):
+def write_inputs(tmp_path, compressed=True, base_pid=PID, update_pid=PID, icon=None, base_exefs=None,
+                 update_icon=None, update_exefs=None):
+    """icon is the base game's, update_icon the update's (N1-30: the update's is the one staged)."""
     base, _ = make_ncch(False, b"BASEROMFS" * 100, base_pid, icon, base_exefs)
-    upd, code = make_ncch(compressed, b"UPDROMFS" * 50, update_pid)
+    upd, code = make_ncch(compressed, b"UPDROMFS" * 50, update_pid, update_icon, update_exefs)
     (tmp_path / "game.cxi").write_bytes(base)
     (tmp_path / "update.cia").write_bytes(tx.make_cia(upd))
     return str(tmp_path / "game.cxi"), str(tmp_path / "update.cia"), code
@@ -175,7 +177,7 @@ LOCKOUTS = [0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x7F, 0x06, 0x00, 0x800000
 @pytest.mark.parametrize("lockout", LOCKOUTS)
 def test_icon_is_written_as_is(tmp_path, versions, lockout):
     icon = make_icon(lockout)
-    base, update, _ = write_inputs(tmp_path, icon=icon)
+    base, update, _ = write_inputs(tmp_path, update_icon=icon)
     out = tmp_path / "game"
     pg.prepare(base, update, str(out), versions)
     assert (out / "icon.bin").read_bytes() == icon
@@ -185,19 +187,22 @@ def test_icon_is_written_as_is(tmp_path, versions, lockout):
     text = (out / "info.txt").read_text()
     assert f"icon.bin      : 0x36C0 bytes, CRC-32 {zlib.crc32(icon):08X}" in text
     assert "icon          : none" not in text
+    assert "icon source   : update" in text.splitlines()
 
 
-def test_no_icon_is_not_an_error(tmp_path, versions):
+def test_no_icon_is_not_an_error(tmp_path, versions, capsys):
     base, update, _ = write_inputs(tmp_path)
     out = tmp_path / "game"
     pg.prepare(base, update, str(out), versions)
     assert not (out / "icon.bin").exists()
-    assert "icon          : none" in (out / "info.txt").read_text()
+    text = (out / "info.txt").read_text()
+    assert "icon          : none" in text and "icon source   : none" in text.splitlines()
+    assert "update has no ExeFS icon" in capsys.readouterr().err
 
 
 def test_stale_icon_of_an_earlier_run_is_removed(tmp_path, versions):
     out = tmp_path / "game"
-    base, update, _ = write_inputs(tmp_path, icon=make_icon(0x02))
+    base, update, _ = write_inputs(tmp_path, update_icon=make_icon(0x02))
     pg.prepare(base, update, str(out), versions)
     assert (out / "icon.bin").exists()
     base, update, _ = write_inputs(tmp_path)
@@ -205,17 +210,48 @@ def test_stale_icon_of_an_earlier_run_is_removed(tmp_path, versions):
     assert not (out / "icon.bin").exists()
 
 
-def test_icon_comes_from_the_base_not_the_update(tmp_path, versions):
+def test_icon_comes_from_the_update_not_the_base(tmp_path, versions):
     base_icon, upd_icon = make_icon(0x04), make_icon(0x02)
-    upd, _ = make_ncch(True, b"UPDROMFS" * 50, icon=upd_icon)
-    base, _, _ = write_inputs(tmp_path, icon=base_icon)
-    (tmp_path / "update.cia").write_bytes(tx.make_cia(upd))
-    pg.prepare(base, str(tmp_path / "update.cia"), str(tmp_path / "game"), versions)
-    assert (tmp_path / "game" / "icon.bin").read_bytes() == base_icon
+    base, update, _ = write_inputs(tmp_path, icon=base_icon, update_icon=upd_icon)
+    pg.prepare(base, update, str(tmp_path / "game"), versions)
+    got = (tmp_path / "game" / "icon.bin").read_bytes()
+    assert got == upd_icon and got != base_icon
+    assert "icon source   : update" in (tmp_path / "game" / "info.txt").read_text().splitlines()
+
+
+def test_update_without_an_icon_does_not_fall_back_to_the_base_game(tmp_path, versions, capsys):
+    # Azahar's ReadIcon reads the update's ExeFS and gets ErrorNotUsed: it does not try the base
+    base, update, _ = write_inputs(tmp_path, icon=make_icon(0x04))
+    out = tmp_path / "game"
+    pg.prepare(base, update, str(out), versions)
+    assert not (out / "icon.bin").exists()
+    assert "icon source   : none" in (out / "info.txt").read_text().splitlines()
+    assert "Azahar" in capsys.readouterr().err
+
+
+def test_without_an_update_the_base_games_icon_is_used(tmp_path):
+    base_icon = make_icon(0x04)
+    for name, icon, want in (("with", base_icon, (base_icon, "base game")), ("without", None, (None, "none"))):
+        d = tmp_path / name
+        d.mkdir()
+        (d / "exefs.bin").write_bytes(exefs_with_icon(code_image(), icon) if icon else fake_exefs(code_image()))
+        assert pg.choose_icon(str(d), None) == want
+
+
+def test_choose_icon_prefers_the_update_and_checks_only_it(tmp_path):
+    for name, icon in (("base", make_icon(0x04)), ("upd", make_icon(0x02))):
+        (tmp_path / name).mkdir()
+        (tmp_path / name / "exefs.bin").write_bytes(exefs_with_icon(code_image(), icon))
+    assert pg.choose_icon(str(tmp_path / "base"), str(tmp_path / "upd")) == (make_icon(0x02), "update")
+    # a base game whose icon is damaged does not matter: its icon is never read
+    (tmp_path / "base" / "exefs.bin").write_bytes(b"\0" * 0x10)
+    assert pg.choose_icon(str(tmp_path / "base"), str(tmp_path / "upd"))[1] == "update"
+    with pytest.raises(pg.PrepareError, match="base game's ExeFS is damaged"):
+        pg.choose_icon(str(tmp_path / "base"), None)
 
 
 def test_icon_through_the_command_line(tmp_path, versions, capsys):
-    base, update, _ = write_inputs(tmp_path, icon=make_icon(0x02))
+    base, update, _ = write_inputs(tmp_path, update_icon=make_icon(0x02))
     assert pg.main(["--base", base, "--update", update, "-o", str(tmp_path / "g"),
                     "--versions", versions]) == 0
     assert "icon.bin" in capsys.readouterr().out
@@ -239,12 +275,21 @@ def damaged_exefs(kind: str) -> bytes:
 @pytest.mark.parametrize("kind", ["icon_past_end", "code_past_end", "later_entry_past_end",
                                   "icon_size0_past_end"])
 def test_damaged_exefs_header_is_an_error(tmp_path, versions, kind):
-    base, update, _ = write_inputs(tmp_path, base_exefs=damaged_exefs(kind))
-    with pytest.raises(pg.PrepareError, match="base game.*(runs past|damaged)"):
+    # the update's ExeFS is the one whose icon is read (N1-30); the base game's is damaged the same
+    # way in test_damaged_base_exefs_is_still_refused
+    base, update, _ = write_inputs(tmp_path, compressed=False, update_exefs=damaged_exefs(kind))
+    with pytest.raises(pg.PrepareError, match="update.*(runs past|damaged)"):
         pg.prepare(base, update, str(tmp_path / "game"), versions)
     assert pg.main(["--base", base, "--update", update, "-o", str(tmp_path / "g"),
                     "--versions", versions]) == 1
     assert not (tmp_path / "g" / ".prepare-tmp").exists()
+
+
+@pytest.mark.parametrize("kind", ["icon_past_end", "code_past_end", "later_entry_past_end"])
+def test_damaged_base_exefs_is_still_refused(tmp_path, versions, kind):
+    base, update, _ = write_inputs(tmp_path, base_exefs=damaged_exefs(kind))
+    with pytest.raises(pg.PrepareError, match="base game.*(runs past|damaged)"):
+        pg.prepare(base, update, str(tmp_path / "game"), versions)
 
 
 def test_exefs_entry_rejects_a_short_exefs():
@@ -253,14 +298,17 @@ def test_exefs_entry_rejects_a_short_exefs():
 
 
 def test_truncated_icon_is_an_error(tmp_path, versions):
-    base, update, _ = write_inputs(tmp_path, icon=make_icon(0x02)[:0x1000])
-    with pytest.raises(pg.PrepareError, match="icon is damaged"):
+    base, update, _ = write_inputs(tmp_path, update_icon=make_icon(0x02)[:0x1000])
+    with pytest.raises(pg.PrepareError, match="update's icon is damaged"):
         pg.prepare(base, update, str(tmp_path / "game"), versions)
+    # the base game's icon is not read when there is an update: its damage is no error
+    base, update, _ = write_inputs(tmp_path, icon=make_icon(0x02)[:0x1000], update_icon=make_icon(0x02))
+    pg.prepare(base, update, str(tmp_path / "game2"), versions)
 
 
 def test_icon_without_magic_is_a_warning_not_an_error(tmp_path, versions, capsys):
     icon = b"XXXX" + make_icon(0x02)[4:]
-    base, update, _ = write_inputs(tmp_path, icon=icon)
+    base, update, _ = write_inputs(tmp_path, update_icon=icon)
     out = tmp_path / "game"
     info = pg.prepare(base, update, str(out), versions)
     assert (out / "icon.bin").read_bytes() == icon
@@ -272,7 +320,7 @@ def test_icon_without_magic_is_a_warning_not_an_error(tmp_path, versions, capsys
 
 
 def test_good_icon_has_no_warning(tmp_path, versions, capsys):
-    base, update, _ = write_inputs(tmp_path, icon=make_icon(0x02))
+    base, update, _ = write_inputs(tmp_path, update_icon=make_icon(0x02))
     pg.prepare(base, update, str(tmp_path / "game"), versions)
     assert "warning" not in capsys.readouterr().err
     assert "WARNING" not in (tmp_path / "game" / "info.txt").read_text()

@@ -6,6 +6,11 @@
 # env: MH4U_WIDE_RENDER=1
 # env: MH4U_DEPTH_OF_FIELD=off
 # captures: gpu:17300:30
+# init-time: 1767268800.5
+#
+# The start date of the runners' clock has a sub-second part (half a second): the first clock reading
+# of the game falls in the middle of a second on every runtime (docs/native/golden.md, D83, D84).
+# The inputs, the frames and the checkpoints below are the ones G3-perf had before the header.
 #
 # G3-perf: G3 with the top screen rendered at the monitor's 21:9 (the env lines above: the port reads
 # its widescreen options once, at start-up, from these variables; the runner's --set refuses them), for

@@ -27,7 +27,7 @@ Detailed in [`N2b.md`](N2b.md) (27 work packages, N2b-01 to N2b-27; its *Order* 
 
 Detailed in [`N3.md`](N3.md) (30 work packages, N3-01 to N3-30; its *Order* section maps the provisional IDs that were here, and lists what was left out of N3).
 
-**Exit:** G1–G4, G6 and G7 pass end to end natively; alpha builds in the packages; testers' reports triaged.
+**Exit:** G1–G4, G6 and G8 pass end to end natively; alpha builds in the packages; testers' reports triaged.
 
 ## N4 · Native multiplayer (beta)
 

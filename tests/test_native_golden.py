@@ -91,6 +91,10 @@ if opt("--trace-ipc"):
         reads[0] = (reads[0][0], 16, 0x99)
     if mode == "reads_many":
         reads += [(1000 + 16 * i, 16, 0x100 + i) for i in range(17)]
+    if mode == "read_far":                             # N0-37: one 8-byte read next to nothing the recording reads
+        reads += [(900000, 8, 0x777)]
+    if mode == "read_near":                            # N0-37: one 16-byte read that goes on where the stream ends
+        reads += [(48, 16, 0x778)]
     if mode == "reads_apart":                          # 17 more reads, none touching another: 17 more runs
         reads += [(1000 + 32 * i, 16, 0x100 + i) for i in range(17)]
     if mode == "pieces":
@@ -515,7 +519,7 @@ def test_bad_sessions(tmp_path, old, new, message):
 A_DEMO, A_NEWGAME, A_VILLAGE, A_QUEST = 0x00E64D5C, 0x00E6C138, 0x00E6C170, 0x00E655C8
 A_CONTINUE, A_ARENA = 0x00E6C778, 0x00E650BC       # N0-10: the scenes the sessions with a save pass through
 NO_SAVE = ["G1", "G2", "G6"]
-WITH_SAVE = ["G3", "G3-perf", "G4"]
+WITH_SAVE = ["G3", "G3-perf", "G4", "G8", "G9a", "G9b", "G9c"]
 DRAFTS = ["G7"]
 
 
@@ -551,7 +555,8 @@ def test_shipped_sessions_event_counts():
     # golden.py's own parser: the number of input events of each shipped session
     counts = {n: golden.parse_session(golden.SESSIONS_DIR / f"{n}.txt").events
               for n in NO_SAVE + WITH_SAVE + DRAFTS}
-    assert counts == {"G1": 8, "G2": 52, "G6": 23, "G3": 111, "G3-perf": 111, "G4": 9, "G7": 72}
+    assert counts == {"G1": 8, "G2": 52, "G6": 23, "G3": 111, "G3-perf": 111, "G4": 9, "G7": 72,
+                      "G8": 9, "G9a": 49, "G9b": 75, "G9c": 78}
 
 
 def events_of(name):
@@ -613,6 +618,41 @@ def test_shipped_g4_is_the_arrival_scene_with_gas():
     # the recording must show gas (golden.MINIMUMS): a G4 whose capture lost it fails `record`
     assert golden.MINIMUMS["G4"] == {"gas_frames": 1}
     assert golden.MINIMUMS["G3"] == golden.MINIMUMS["G3-perf"] == {"checkpoint_scenes": 5}
+
+
+def test_shipped_g8_is_g4s_boot_from_the_save_as_it_is():
+    """N0-35 Part B, D36/D80: G8 is the session in which the game opens `ir:USER` (the maintainer's save with the
+    Circle Pad Pro option on). It is the nine boot presses of G4 and the same start date; it needs no capture."""
+    g8 = golden.parse_session(golden.SESSIONS_DIR / "G8.txt")
+    assert not g8.draft and g8.needs == "save" and g8.env == []
+    assert g8.init_time == "1767268800.5" == golden.parse_session(golden.SESSIONS_DIR / "G4.txt").init_time
+    assert g8.captures == [] and 3000 <= g8.frames <= 3500
+    # the intro movies, the continue screen and the village: the scenes that last more than 100 frames
+    assert {scene for _, scene in g8.checkpoints} == {A_DEMO, A_CONTINUE, A_VILLAGE}
+    assert events_of("G8") == events_of("G4") and len(events_of("G8")) == 9
+    # the recording's own rule (D36) is in `_ir_problems`: no gas, no scene minimum for this session
+    assert "G8" not in golden.MINIMUMS
+
+
+def test_shipped_g9_are_g3s_route_cut_for_a_census_capture():
+    """N0-35 (D90): G9a, G9b and G9c are G3's route cut just after a 3-frame GPU capture each (the reference runner has
+    one --capture-gpu). Their events, start date and checkpoints are G3's own up to the cut."""
+    g3 = golden.parse_session(golden.SESSIONS_DIR / "G3.txt")
+    g3_events = events_of("G3")
+    want = {"G9a": (8003, 8000, {A_DEMO, A_CONTINUE, A_VILLAGE}),
+            "G9b": (13503, 13500, {A_DEMO, A_CONTINUE, A_VILLAGE, A_ARENA}),
+            "G9c": (14153, 14150, {A_DEMO, A_CONTINUE, A_VILLAGE, A_ARENA, A_QUEST})}
+    for name, (frames, start, scenes) in want.items():
+        s = golden.parse_session(golden.SESSIONS_DIR / f"{name}.txt")
+        assert not s.draft and s.needs == "save" and s.env == [] and s.init_time == g3.init_time
+        assert s.frames == frames and [(c.kind, c.start, c.frames) for c in s.captures] == [("gpu", start, 3)]
+        assert {scene for _, scene in s.checkpoints} == scenes
+        # the events are G3's up to the cut, none after it
+        cut = [e for e in g3_events if int(e[1:].split(":")[0]) <= frames]
+        assert events_of(name) == cut
+        # a checkpoint of G3's own where G3 has one at that frame
+        assert all(c in g3.checkpoints for c in s.checkpoints if c[0] in dict(g3.checkpoints))
+        assert name not in golden.MINIMUMS
 
 
 def test_shipped_g7_is_a_draft_that_stops_at_the_empty_board():
@@ -1207,6 +1247,45 @@ f12:A
 """
 
 
+def test_the_byte_limits_of_the_fs_reads_are_the_tools_defaults_in_one_place():
+    # N0-37: the cross and the native profile pass these to compare_ipc_traces.py; the tool's own defaults are the same
+    sys.path.insert(0, str(ROOT / "tools"))
+    import compare_ipc_traces
+    assert golden.CROSS_MAX_ONE_SIDED == compare_ipc_traces.DEFAULT_MAX_ONE_SIDED == 20480
+    assert golden.CROSS_MAX_DETACHED == compare_ipc_traces.DEFAULT_MAX_DETACHED == 0
+
+
+@pytest.mark.parametrize("profile", ["cross", "native"])
+def test_the_byte_limits_stop_a_read_next_to_nothing_and_let_a_stream_go_on(env, capsys, monkeypatch, profile):
+    assert env.record() == 0
+    check = lambda *extra: env.check("--profile", profile, "--ignore", str(env.ignore_file), *extra)   # the same backend
+    capsys.readouterr()
+    assert check() == 0
+    monkeypatch.setenv("FAKE_MODE", "read_far")
+    assert check() == 1
+    out = capsys.readouterr().out
+    assert statuses(out)["ipc"] == "FAIL" and "touch nothing the other side covers: 8 (at most 0)" in out
+    monkeypatch.setattr(golden, "CROSS_MAX_DETACHED", 8)                     # the constant is the only place of the number
+    assert check() == 0
+    monkeypatch.setattr(golden, "CROSS_MAX_DETACHED", 7)
+    assert check() == 1
+    monkeypatch.setattr(golden, "CROSS_MAX_DETACHED", 0)
+    monkeypatch.setenv("FAKE_MODE", "read_near")                             # 16 bytes that continue what the stream read
+    assert check() == 0
+    monkeypatch.setattr(golden, "CROSS_MAX_ONE_SIDED", 15)
+    capsys.readouterr()
+    assert check() == 1
+    assert "bytes only the candidate covers: 16 (at most 15)" in capsys.readouterr().out
+
+
+def test_the_same_profile_does_not_get_the_byte_limits(env, capsys, monkeypatch):
+    assert env.record() == 0
+    monkeypatch.setenv("FAKE_MODE", "read_far")
+    capsys.readouterr()
+    assert env.check("--profile", "same") == 1                               # it fails, as the exact comparison, not by a limit
+    assert "touch nothing" not in capsys.readouterr().out
+
+
 def test_the_cross_profile_numbers_are_the_decisions():
     assert golden.CROSS_TOLERANCE == 4 and golden.CROSS_MIN_MARGIN == 60       # D50
     assert golden.CROSS_MAX_SHIFT == 48                                        # D51
@@ -1241,6 +1320,10 @@ def test_cross_profile_fails_an_fs_difference_the_rules_do_not_cover(env, capsys
 
 
 def test_cross_profile_bounds_the_surplus_of_reads(env, capsys, monkeypatch):
+    # the 17 reads are at made-up offsets: the limits on the bytes one side covers (N0-37) are lifted here, they have
+    # their own tests below
+    monkeypatch.setattr(golden, "CROSS_MAX_ONE_SIDED", 10**9)
+    monkeypatch.setattr(golden, "CROSS_MAX_DETACHED", 10**9)
     assert env.record() == 0
     monkeypatch.setenv("FAKE_MODE", "reads_many")          # 17 more reads than the recording (the same backend)
     capsys.readouterr()
@@ -1427,7 +1510,9 @@ def test_native_profile_passes_what_cross_passes_and_gates_the_same_things(env, 
     monkeypatch.setenv("FAKE_MODE", "dsp_diff")
     capsys.readouterr()
     assert native(env) == 1 and statuses(capsys.readouterr().out)["dsp-10"] == "FAIL"
-    # D52's masks and the surplus of reads are the cross profile's
+    # D52's masks and the surplus of reads are the cross profile's (the byte limits of N0-37 lifted: made-up offsets)
+    monkeypatch.setattr(golden, "CROSS_MAX_ONE_SIDED", 10**9)
+    monkeypatch.setattr(golden, "CROSS_MAX_DETACHED", 10**9)
     monkeypatch.setenv("FAKE_MODE", "reads_many")           # 17 more reads that touch each other: one run more
     assert native(env) == 0
     monkeypatch.setenv("FAKE_MODE", "reads_apart")

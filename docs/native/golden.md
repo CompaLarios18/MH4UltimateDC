@@ -20,12 +20,18 @@ repository.
 > [G3-perf](#g3-perf-g3-at-219) and [G7](#g7-a-downloaded-quest-not-made). **G7 could not be made** (the board that lists the
 > downloaded quests lists none), and **none of the sessions opens `ir:USER`**: the reference runner's HID capture kills
 > the game when the Circle Pad Pro option is on, so the sessions run from a copy of the save with it off.
+>
+> **Status (N0-35 Part B, steps 4 and 5).** With the N0-35 reference runner (the HID capture no longer keeps the block) the
+> game runs with `--capture-hid` and the option on: **G8**, the staged save as it is, is recorded and `check G8 --repeat 2`
+> exits 0, so D36's session exists ([G8](#g8-the-save-as-it-is-with-iruser)). **G7 stays a draft, and the cause is not the
+> date**: the five downloaded-quest files of the maintainer's extdata hold no quest (read locally, without the emulator:
+> [G7](#g7-a-downloaded-quest-not-made)).
 
 ## Files
 
 | Path | What |
 |---|---|
-| `tools/native/golden/<S>.txt` | the session: header lines and input events (the runner's `--input-file` format): G1, G2, G6 (no save), G3, G3-perf, G4 (the save), G7 (a draft) |
+| `tools/native/golden/<S>.txt` | the session: header lines and input events (the runner's `--input-file` format): G1, G2, G6 (no save), G3, G3-perf, G4, G8, G9a, G9b, G9c (the save), G7 (a draft) |
 | `tools/native/golden.py` | `list`, `record`, `check` |
 | `build/golden/<S>/` | one recording (the shared checkout's `build/`, not a worktree's) |
 
@@ -73,8 +79,9 @@ start (the recording, the `--repeat` runs, the `--candidate-args` runs and the n
 edited, added or removed since `record`; a manifest without the key counts as none). A `--init-time` in `--candidate-args` (or
 `--runner-args`) that disagrees with the header is a usage error (exit 2), an equal one is harmless. A session without the
 header gets no `--init-time` from golden.py and runs exactly as before (a `--init-time` in its `--candidate-args` passes
-through untouched); G1, G2 and G6 keep their whole-second date. No session has this header yet (G1 to G7 have none; G3,
-G3-perf, G4, G7 and G8 get theirs when they are recorded again in N0-35 Part B).
+through untouched); G1, G2 and G6 keep their whole-second date. G4, G3 and G3-perf have the header (`1767268800.5`,
+recorded again in N0-35 Part B steps 2 and 3: [Results of N0-35 Part B](#results-of-n0-35-part-b-steps-1-and-2) and
+[step 3](#results-of-n0-35-part-b-step-3-g3-and-g3-perf)), and so has G8 (step 4); G1, G2, G6 and G7 have none.
 
 ### The scene
 
@@ -204,7 +211,7 @@ rules of `check` decide which of the options above are required (all of them a u
 | `state` | `state_diff.py --tolerance 4 --min-changes <the recording's real scene changes>`: the real scene changes in the same order, to the same scene, up to **4 frames** apart (D50; D33 said 2); skipped when the recording has none: nothing to align. The result prints the tolerance |
 | `state-margin` | D50's guard, with `cross_model_report.py`'s logic: every input event of the session script that follows a real scene change comes at least **60 frames** after the last real scene change **on both sides**. Runs with `state` (`--require state` covers it) and prints the largest scene-change shift and the smallest margin of each side |
 | `checkpoints` | as in `same` |
-| `ipc` | `compare_ipc_traces.py --ignore config/native/ipc_time_dependent.txt` (plus every `--ignore FILE`) `--fs-reads-multiset --max-surplus 16 --fs-write-mask config/native/fs_write_masks.txt --fs-write-mask-session <S>` (D52): per thread the `fs:USER/file` Reads as a multiset of (offset, size, result, CRC of the data read) with at most 16 reads more on one side; every other `fs:` request in order and in full; a Write by the CRC of its data with the byte ranges of the session's mask lines zeroed. The result prints the reads and the masks used |
+| `ipc` | `compare_ipc_traces.py --ignore config/native/ipc_time_dependent.txt` (plus every `--ignore FILE`) `--fs-reads-multiset --max-surplus 16 --fs-write-mask config/native/fs_write_masks.txt --fs-write-mask-session <S>` (D52): per thread the `fs:USER/file` Reads as a multiset of (offset, size, result, CRC of the data read) with at most 16 reads more on one side; every other `fs:` request in order and in full; a Write by the CRC of its data with the byte ranges of the session's mask lines zeroed. The result prints the reads, the bytes that only one side covers (`fs coverage:`, N0-36: information, not a rule) and the masks used |
 | `svc` | `compare_svc_traces.py --normalize --outputs --cross-model config/native/svc_cross_model.txt` (N0-25) |
 | `svc-full`, `images` | run and printed as `INFO`, never gated (the image threshold comes in N2b) |
 | `hid` | `capfmt.py diff-hid` |
@@ -219,6 +226,16 @@ matches no Write of the two traces makes the `ipc` comparison fail (a stale mask
 
 `--ignore FILE` (repeatable) adds IPC ignore files to the `cross` and `native` profiles only; with the `same` profile
 it is a usage error, so a same-model check can never be loosened by a list.
+
+**The quest sessions G3 and G4 do not pass the `ipc` comparison of `cross` or `native` between `jit` and `recomp`**
+(N0-30, D82; N0-36 ended `needs-decision`, `comparators.md` section 11). Their `fs:USER/file` Reads differ in what the
+loaders ask for (the other side loads the next resource of the archive) and in where the streams end (G3's hunt also
+has a stream of 2,637,824 bytes that is another file on each side): up to 133,257 bytes per thread that only one side
+reads in G4 and 3,072,964 in G3, against 10,240 in the sessions without a quest. The most likely cause is the game's
+random generator, seeded one second apart on the two backends, which is not a defect of either. No rule of
+`compare_ipc_traces.py` absorbs this yet and none of the profiles was changed: `--require ipc` fails for these two
+sessions, and the `fs coverage:` line of the result gives the number to compare with section 11. The Reads are not the only reason: `cross-model.md` section 9.3 rows 1 and 2 (the main thread's ControlArchive input byte; the `nwm::UDS` commands) are separate open items. Nor does the `ipc` check protect loads of up to the allowance: a thread of up to 16 Reads (up to 16 runs under `native`) can vanish from the candidate, and one extra read passes (under `native` always, under `cross` when the candidate is the larger side) (`comparators.md`, section 11). The other comparisons
+(`svc`, `state`, `state-margin`, `checkpoints`, `hid`) pass on both sessions (`cross-model.md`, section 9).
 
 **`native`** (D76; N0-33; the native runtime in real time against the reference. Asked for with `--profile native`,
 never the default: `--candidate-runner` alone is `cross`). Its game clock follows the host while the reference charges
@@ -273,14 +290,15 @@ check), and `golden.py check` from `userbase-cfg` passes (below). The comparison
 
 ## The save
 
-The sessions that `needs: save` (G3, G4, G3-perf, G7) start from the same user folder with the maintainer's save merged
+The sessions that `needs: save` (G3, G4, G3-perf, G8, and the G7 draft) start from the same user folder with the maintainer's save merged
 over it (`record --save DIR`, copied into `user-before/` after the user folder, so a `check` of them needs no save
 option). The staged save is in the user-folder layout: the game's save slots
 (`sdmc/Nintendo 3DS/<id>/<id>/title/00040000/00126300/data/00000001/{system,user1}`) and its extdata
 (`.../extdata/00000000/00001263/user/{card1-3,cardbox,otomo1,quest1-5}`); `golden.py` never writes into it.
 
-**The recordings use a copy of it with the Circle Pad Pro option off** (`build/n0-10-save-cpp-off`), because the reference
-runner cannot record the game with the option on (see [`ir:USER`](#iruser-d36)). The copy differs from the staged save in
+**The recordings of G3, G3-perf and G4 use a copy of it with the Circle Pad Pro option off** (`build/n0-10-save-cpp-off`, D81),
+because the N0-29 reference runner could not record the game with the option on (see [`ir:USER`](#iruser-d36)); **G8 is
+recorded from the staged save as it is** (`--save build/n0-10-save`, the option on), now that the runner can (N0-35). The copy differs from the staged save in
 one file, `system` (512 bytes: the settings slot; the game writes it again, so 508 of its bytes differ), and was made by the
 game itself, from the staged save, with a script of touches that switches the option off in the main menu's Options:
 
@@ -310,8 +328,17 @@ part of any session. A recording's `user-before/` holds the copy, which is what 
 
 ## `ir:USER` (D36)
 
-**None of G3, G4, G3-perf or G7 opens `ir:USER`, and none can with this reference runner.** D36 wanted one golden session
-whose HID capture has type-2 (IR) records; it cannot be had, for this reason:
+*(N0-35 Part B, step 4, D80: **fixed.** The reference runner of N0-35 lets go of the first block, and the game runs with
+`--capture-hid` and the option on: **G8** is D36's session, recorded from the staged save as it is. Its IPC trace has 13,460
+`ir:USER` requests, the first at frame 199 (an `Initialize`, command `0x00180182`, with the 0x1000-byte block) and the last at
+frame 3300, and its HID capture has 3,102 type-2 (IR) records, one per frame from frame 199 to 3300, next to the 3,301 type-1
+(shared-block) records; the game did not die and `golden.py record` found no capture problem. The measurement that the cause
+was the capture is therefore also done: the same save, option and capture that killed the N0-29 runner at frame 199 run to the
+end with the new one. Details: [G8](#g8-the-save-as-it-is-with-iruser). The text below is what was found with the N0-29
+runner, kept as the history; G3, G3-perf and G4 still use the copy with the option off, D81.)*
+
+**None of G3, G4, G3-perf or G7 opens `ir:USER`, and none could with the N0-29 reference runner.** D36 wanted one golden session
+whose HID capture has type-2 (IR) records; it could not be had, for this reason:
 
 - The maintainer's save has the Circle Pad Pro option **on**. With it on the game opens `ir:USER` while it boots (about
   frame 199: Initialize with a 0x1000-byte shared block at 0x08DF0000, Finalize, Initialize again, 8 requests then a second
@@ -418,8 +445,15 @@ intro movies), `1400:0x00e6c778` (`aContinue`, the continue screen), `2500`, `80
 scene changes: 10 (frames 2 `aGameSys`, 42 `aDemo`, 903 `aContinue`, 1576 `aDemo`, 1578 `aGameSys`, 1579 `aVillage`,
 13462 `aGameSys`, 13464 `aArena`, 14107 `aGameSys`, 14109 `aQuest`; the steps of 1 to 3 frames have no checkpoint).
 Capture: `gpu:17400:10`, 10 frames with the Yian Kut-Ku on screen (it is in view from about frame 16740 to 17800); fog mode
-5 (plain fog) is set 10 times and gas never. Recording: 3,363 s of host time (56 minutes), 3,114 MiB in 624 files (the SVC
-trace is 2,696 MiB, the GPU capture 166 MiB). The comments of `G3.txt` explain each stretch:
+5 (plain fog) is set 10 times and gas never. Recording: 3,713 s of host time (62 minutes), 3,193 MiB in 624 files (the SVC
+trace is 2,778 MiB, the GPU capture 163 MiB). The comments of `G3.txt` explain each stretch.
+
+*(N0-35 Part B, step 3, D83)* The numbers above are the recording made with `# init-time: 1767268800.5` (the header is in
+`G3.txt` now), into `build/golden-n035/G3`; the recording of N0-10 (3,363 s, 3,114 MiB, SVC trace 2,696 MiB, GPU capture
+166 MiB) stays in `build/golden/G3` until the orchestrator moves the new one in. Same frames, inputs, checkpoints (9/9, the
+same scene values) and capture (`gpu:17400:10`, still 10 frames with fog mode 5 ten times and no gas); the same ten real scene
+changes at the same frames. The ticks of the state trace are the old recording's up to frame 1743 and first differ at frame 1744
+(16,257 of the 18,001 records differ in all), which is where the date starts to matter, as in G4. The stretches in the table:
 
 | Frames | What |
 |---|---|
@@ -462,6 +496,14 @@ check is in the tests with a synthetic capture. In the exploration a capture at 
 the scene, set plain fog only (no mode 7), and the one in the scene itself, at frame 2400, is the one kept. Recording:
 369 s of host time, 570 MiB in 124 files (the SVC trace is 359 MiB, the GPU capture 165 MiB).
 
+*(N0-35 Part B, step 2, D83)* The session file now has the header `# init-time: 1767268800.5` and is recorded again, into
+`build/golden-n035/G4` (the recording above stays in `build/golden/G4` until the orchestrator moves the new one in). Same
+frames, inputs, checkpoints and capture; the same six real scene changes at the same frames; gas in all ten frames of the GPU
+capture (`fog: 30  gas: 10  none: 50`); 373 s of host time, 558 MiB in 124 files (the SVC trace is 348 MiB, the GPU capture
+165 MiB). The ticks of the state trace are the old recording's up to frame 1743 and first differ at frame 1744 (420 of the 3001
+records differ in all, inside the village's arrival scene), which is where the game's choices start to depend on the date. What the experiment
+showed is in [Results of N0-35 Part B](#results-of-n0-35-part-b-steps-1-and-2).
+
 ### G3-perf: G3 at 21:9
 
 Needs the save. G3 with the top screen rendered at the monitor's aspect ratio, for the GPU budget (N2-19): the script is
@@ -473,8 +515,15 @@ anything happens** (the recording's ten scene changes fall at the frames of G3's
 pixels wide (3440/1440 of 240, rounded to whole 8-pixel tiles). Real scene changes: 10. Capture: `gpu:17300:30`, 30 frames
 with the Yian Kut-Ku in view (`gcap.py summary`: 179 `GX`, 60 `PICA_REG`, 239 `CPU_PAGES`, 120 `GPU_PAGES`, fog mode 5 on 30 draws
 and none on 60, no gas); the display transfer of the widened top screen was given **185,185 ns** (G3's: 92,592) and the
-`P3D` interrupts 203,049 to 16,068,479 ns (median 8,015,431). Recording: 4,287 s of host time (71 minutes), 3,330 MiB in 664
-files (the SVC trace is 2,781 MiB, the GPU capture 248 MiB).
+`P3D` interrupts 203,049 to 15,624,482 ns (median 7,861,095.5). Recording: 4,241 s of host time (71 minutes), 3,353 MiB in 664
+files (the SVC trace is 2,814 MiB, the GPU capture 237 MiB).
+
+*(N0-35 Part B, step 3, D83)* The numbers in this section are the recording made with `# init-time: 1767268800.5` (the header
+is in `G3-perf.txt` now, after the three `# env:` lines), into `build/golden-n035/G3-perf`; the recording of N0-10 (4,287 s,
+3,330 MiB, SVC trace 2,781 MiB, GPU capture 248 MiB, `P3D` delays 203,049 to 16,068,479 ns, median 8,015,431) stays in
+`build/golden/G3-perf`. Same frames, inputs, checkpoints (9/9) and capture (the same record counts, and the same fog writes:
+mode 5 set 30 times, none 60, gas never), and the same ten real scene changes at the same frames as G3's; the state trace's ticks first differ
+from the old recording's at frame 1744 (16,099 of the 18,001 records differ in all).
 
 **Why the depth-of-field filter is off.** With `wide_render` on and the filter on (the default), the reference runner dies
 in the village's arrival scene, at about frame 1900, whatever the save and whether or not the screens are being drawn for
@@ -484,7 +533,90 @@ access violation of the runner (status -1073741819). Three runs gave it (two sav
 The cause is in the runner or the port (`port/src/`; a hypothesis from these three runs: the widened render targets
 against the filter's pass), not in the game or in this script; N2b's G3-perf (N2b-18, N2b-20) starts from this recording and runs with the filter off as recorded.
 
+### G8: the save as it is, with `ir:USER`
+
+Needs the save, **the staged one as it is** (`--save build/n0-10-save`: the Circle Pad Pro option on). D36's session (D80): the game
+opens `ir:USER` at frame 199 and keeps polling it, and the HID capture of the recording has type-2 (IR) records from that
+request on. It needs the N0-35 reference runner, whose HID capture lets go of the shared block the game frees (with the
+N0-29 runner this save and `--capture-hid` killed the game at that frame, [`ir:USER`](#iruser-d36)). Header: `# init-time:
+1767268800.5` (as G3 and G4), no GPU or DSP capture (`golden.py` asks for none of this session; the step that reads the
+HID capture is [`_ir_problems`](#iruser-d36)). Frames: 3300. Input: G4's: the nine `A` presses of the main menu and the character
+select (frames 300 to 1500) and nothing after them.
+
+*The timeline with the option on.* The boot is **150 frames longer** than with it off: measured with a first run of the
+session (G4's inputs and checkpoints, 3300 frames; it held 4/4 and had the same scene changes as the recording) and then the
+recording itself, the scene changes are at
+frames 2 `aGameSys`, 42 `aDemo`, 1053 `aContinue`, 1726 `aDemo`, 1728 `aGameSys` and 1729 `aVillage` (G4's, option off: 2, 42,
+903, 1576, 1578, 1579). All nine presses land (the village is reached without any other input), the arrival scene plays from
+f1729 to about f3050 and the run stops at f3300, in the talk that follows. Checkpoints, one in each scene that lasts more than
+100 frames: `600:0x00e64d5c` (`aDemo`, frames 42 to 1052), `1400:0x00e6c778` (`aContinue`, 1053 to 1725), `2500` and
+`3300:0x00e6c170` (`aVillage`, 1729 to the end); 4/4 hold. Real scene changes: 6.
+
+*The `ir:USER` facts of the recording* (the rule of D36, checked by `record` and by the exploration run before it):
+
+| What | Number |
+|---|---|
+| `ir:USER` requests in `ipc.txt` | 13,460, from frame 199 to frame 3300 (the first is the `Initialize` with the 0x1000-byte block, header `0x00180182`; then two commands polled together, headers `0x000d0042` (6,725 times) and `0x00190040` (6,724), and 11 others once or twice, the second `Initialize` among them) |
+| HID capture, type-1 (shared block) records | 3,301 |
+| HID capture, type-2 (IR) records | 3,102: one per frame, frames 199 to 3300 |
+| Capture problems found by `record` | 0 |
+
+Recording: `golden.py record G8 ... --save build/n0-10-save` (exit 0: 4/4 checkpoints, 6 real scene changes, 0 capture problems,
+408 s of host time, 785 MiB in 235 files: the SVC trace is 374 MiB); then `golden.py check G8 --repeat 2 --require
+svc,ipc,state,checkpoints,hid` (exit 0: **23 passed, 0 failed, 0 skipped, 3 info**, profile `same`; 795 s). The 23 are the
+nine comparisons of each of the two runs against the recording (`svc`, `ipc`, `state`, `checkpoints`, `unmapped`, `hid`,
+`images`, `shared-page`; no `gpu-` or `dsp-` entry, there is no such capture) and run 2 against run 1 (the same without
+`checkpoints`), and the 3 `INFO` lines are the `timing` traces, identical apart from the header line. The recording is in
+`build/golden/G8`. Commands (PowerShell, from the worktree; the reference runner of N0-35, `--cpu recomp`):
+
+```
+python tools/native/golden.py record G8 --runner build/runner-win-n035/mh4u-port-windows/mh4u_runner.exe `
+    --game baserom/juego.cxi --update baserom/update_v130.cia --user build/userbase-cfg --save build/n0-10-save `
+    --code build/golden-lib/0004000000126300.dll --cpu recomp --out build/golden
+python tools/native/golden.py check G8 <the same options, without --user and --save> --repeat 2 --require svc,ipc,state,checkpoints,hid
+```
+
+A candidate runtime is checked on this session the way it is on the others (`golden.py check G8 --candidate-...`); what is new
+is that the `hid` comparison now has type-2 records to compare, and that the game polls `ir:USER` in every frame from 199 on.
+
+### G9a, G9b, G9c: G3's route cut for a census capture
+
+*(N0-35, D90.)* The reference runner takes one `--capture-gpu`, and G3's capture is in the fight (frame 17400). Three short
+sessions are G3's route cut just after a 3-frame GPU capture each, so the PICA census sees three more scenes. Each is a file of
+`tools/native/golden/`: the header lines of G3 (`# needs: save`, `# init-time: 1767268800.5`), the events of `G3.txt` up to the
+cut and none after it, and checkpoints that are G3's own up to the cut, one more in G9b and G9c at the capture's frame (the
+scene value of the stretch G3's comments name: G9b `13500:0x00e650bc`, G9c `14150:0x00e655c8`). The save is the one of G3's
+recordings (`build/n0-10-save-cpp-off`), so none of them opens `ir:USER`. `golden.py` accepts them as they are: no entry in
+`MINIMUMS` (the five-scene minimum is G3's and G3-perf's), and none is a gate: they are census captures, so `check --repeat 2`
+was not run on them (a repeat is hours).
+
+| Session | frames | capture | what the capture shows | checkpoints | `record` | host time |
+|---|---|---|---|---|---|---|
+| G9a | 8003 | `gpu:8000:3` | the village, frames 8000 to 8002 (the caravan leader's talk is on, G3 ends it with the press of f8460) | 4 | exit 0: 4/4 ok, 6 real scene changes, 0 capture problems, 275 files | 1,434 s |
+| G9b | 13503 | `gpu:13500:3` | the Arena's equipment screen (G3: frames 13464 to 14106), frames 13500 to 13502 | 6 | exit 0: 6/6 ok, 8 real scene changes, 0 capture problems, 459 files | 2,484 s |
+| G9c | 14153 | `gpu:14150:3` | the first frames of the quest (G3: loaded at about f14109), frames 14150 to 14152 | 7 | exit 0: 7/7 ok, 10 real scene changes, 0 capture problems, 479 files | 2,546 s |
+
+Capture facts (`gcap.py summary`): G9a 112 records in the capture file, 1,572 draw triggers; G9b 138 records, 1,025 draws; G9c 109
+records, 1,059 draws; each has 3 frames, 6 `SUBMIT_CMDLIST` and 6 `DISPLAY_TRANSFER` commands. The recordings are in
+`build/golden/G9a`, `G9b` and `G9c` (1,551, 2,537 and 2,637 MiB with their screenshots and user folders). Command (PowerShell,
+from the worktree, the reference runner of N0-35, `--cpu recomp`, the emulator lock held around each run):
+
+```
+python tools/native/golden.py record G9a --runner build/runner-win-n035/mh4u-port-windows/mh4u_runner.exe `
+    --game baserom/juego.cxi --update baserom/update_v130.cia --user build/userbase-cfg --save build/n0-10-save-cpp-off `
+    --code build/golden-lib/0004000000126300.dll --cpu recomp --out build/golden
+```
+
+The census on G1 to G4 and the three new captures (seven labels) found no feature that is NO in the four old captures and YES in
+the new ones: logic ops, fans, min/max blending, 8-bit indices, odd strides, cube and projection textures stay NO. Custom border
+colours and shadow textures are YES in G9a (21 draws each, as in G3, 90); lighting, fog and shadow passes are YES in G9a (455,
+336, 24 draws) and NO in G9b and G9c, whose draws are all array draws (no indexed ones) with geometry-shader draws (1,007 and
+1,041) and depth formats (9 and 6).
+
 ### G7: a downloaded quest (not made)
+
+*(N0-35 Part B, step 4: the five files hold no quest, so no start date can make the board list one. The finding is at the end of
+this section; the text before it is what N0-10 knew.)*
 
 **Not recorded: `tools/native/golden/G7.txt` is a draft** (`# draft: yes`, which `record` refuses) that keeps the route to the
 board. The spec wants a downloaded quest from the maintainer's extdata (`quest1` to `quest5`) entered and 30 seconds of play
@@ -510,6 +642,31 @@ distribution period of one of the five quests, which a run of the game with the 
 downloaded quests are not part of what the native runtime is checked against. The draft's route
 (`f300` to `f10894` as G3, then `f11340` to `f11880` circle pad along the desk until the `A` prompt names the Low Questatrix
 and not Arena Bambina, `A` every 90 frames, `A` at `f12460`, touch at `f12700`) is what the next attempt starts from.
+
+**N0-35 Part B, step 4: the clock was not the reason.** The runner now takes `--init-time`, so the next attempt was to find the
+distribution period of the five files and start a run inside it. The period was looked for first in the files themselves, locally
+and without the emulator, and **the files hold no quest at all**, so there is no period:
+
+- Each of `quest1` to `quest5` is 328,704 bytes: 328,448 bytes of the game's save cipher followed by **256 zero bytes that lie
+  outside it** (the last 256 bytes of every file are zero in the file as it is, so they are not ciphertext). The 328,448 are
+  41,056 blocks of 8 bytes, and the three layers of a user slot (Blowfish ECB with the key string of the game's own cipher,
+  the 16-bit scramble, the byte-sum checksum in word 1: `docs/research/g2-save-bytes.md`, section 2) undo on them with
+  `tools/native/save_probe.py unwrap <the file without its last 256 bytes> --key-from-code <code.bin>:0x00e05e04`. **The stored
+  checksum equals the computed one in all five** (both 0), which is the check that the layers are the right ones, and the unwrapped
+  body is **empty: exactly 1 non-zero byte in 328,448** in each file, the low byte of the first word (the format version, 0x10). No date, no count, no quest.
+- The method reads real data of this extdata: `otomo1` and `cardbox` (8,704 and 270,336 bytes, no trailer) unwrap with a matching
+  checksum to the same empty state (1 non-zero byte each), and `card1` and `card2` do not unwrap with these layers (the checksum
+  does not match and 99.6% of the bytes are non-zero: another layout, not examined). Nothing but a file that decrypts
+  to a quest could have a start and an end date; a search of the unwrapped bodies for 32-bit values that read as Unix times
+  between 2013 and 2018 has nothing to find in a body of zeros.
+- The five files are byte for byte the same in the maintainer's own folder, in the staged save and in the copy with the option
+  off (SHA-256 compared, all 15 files), so the board's answer is not an effect of a copy: the game reads empty quest areas and
+  says there is no quest, at the runner's date and at any other.
+
+So **no start date lists a quest** and no run of the route was made (the spec's rule, "no date lists a quest, G7 is dropped",
+is met without a run, by the files). Quests to record G7 with would have to come from files that hold one: the maintainer
+downloading an event quest with the game (the files then change) and staging the new extdata. `G7.txt` stays a draft, with this
+note in its header; the route is unchanged.
 
 ## Numbers from `gcap.py summary` of G1's capture
 
@@ -583,7 +740,8 @@ Nothing was loosened to make it pass: the comparison of `same` has no tolerance 
 svc,ipc,state,checkpoints,hid` (the `same` profile; `images`, `unmapped`, the GPU capture and the shared page are compared
 and gated too, as above), the same runner, library, clock and PC as the table above, the maintainer's PC with nothing else
 using the emulator (one process at a time) and some compiles and test runs going on beside it, which do not change what a run
-of this runner does (the clock of a run is emulated):
+of this runner does (the clock of a run is emulated). *(The rows of G4, G3 and G3-perf are the recordings made with the
+whole-second date; N0-35 Part B records them again at `1767268800.5`, see the two sections after this one.)*
 
 | Session | `record` | Host time of one run | `check --repeat 2` (exit 0) |
 |---|---|---|---|
@@ -595,6 +753,143 @@ of this runner does (the clock of a run is emulated):
 The passes are the same nine comparisons per run as G2's (`svc`, `ipc`, `state`, `checkpoints`, `unmapped`, `hid`, `gpu-<start>`,
 `images`, `shared-page` against the recording, and the runs against each other without `checkpoints`), and the three `INFO`
 lines are the identical `timing` traces. Run 1 and run 2 were each identical to the recording and to each other.
+
+### Results of N0-35 Part B (steps 1 and 2)
+
+Part A's reference runner (the `windows.yml` build of PR #34, run 39883766427, SHA-256 `d2f3705a...`; the N0-29 runner is
+`fdd639f5...`), the same code library (`0004000000126300.dll`), `--cpu recomp`, `TZ=UTC0`, the same PC, one emulator process at a time.
+
+**Step 1: nothing changed for a run without a fraction (D80).** `golden.py check <S> --repeat 2 --require
+svc,ipc,state,checkpoints,hid,images,unmapped` (G1 also `dsp`), `--out build/golden`, against the recordings the N0-29 runner
+made, with the new runner and the whole-second date (no header):
+
+| Session | `check --repeat 2` | Host time of the check |
+|---|---|---|
+| G1 | exit 0: 29 passed, 0 failed, 0 skipped, 3 info (profile `same`) | 123 s |
+| G2 | exit 0: 26 passed, 0 failed, 0 skipped, 3 info | 2,362 s |
+| G6 | exit 0: 23 passed, 0 failed, 0 skipped, 3 info | 627 s |
+
+The same nine comparisons per run as in the tables above, each run against the recording (made by the other runner) and run 2
+against run 1; the 3 `INFO` lines (`timing`) are identical apart from the header line. The `check` folders of these three
+recordings (`build/golden/<S>/check/`) now hold these runs, not the N0-29 ones.
+
+**Step 2: G4 at `# init-time: 1767268800.5` (D83's experiment).** `golden.py record G4 --user build/userbase-cfg --save
+build/n0-10-save-cpp-off --cpu recomp --out build/golden-n035` (exit 0: 4/4 checkpoints, 6 real scene changes, 0 capture
+problems, 373 s), then `check G4 --repeat 2 --require svc,ipc,state,checkpoints,hid` (exit 0: 26 passed, 0 failed, 0 skipped, 3
+info, `same`; 13 minutes), then the jit candidate: `check G4 --candidate-args "--cpu jit" --profile cross --ignore
+config/native/ipc_time_dependent.txt --require state,checkpoints,ipc,svc,hid` against the new recording.
+
+*The first clock reading is mid-second on both backends.* The first `GetSystemTick` of the game's clock function (`pc`
+`0x0010CA04`, between game frames 2 and 3; `docs/research/g2-save-bytes.md` section 4), from the SVC trace, the shared page's
+date record in the shared-page dump (3,976,257,607,959 ms since 1900 with the header, 3,976,257,607,459 without it, at update
+tick 2,000,000,000) and the arithmetic of that document:
+
+| Recording | Tick of reading 1 (less 2e9) | Unix second | Into the second | Frame 3's tick (`state.txt`) |
+|---|---|---|---|---|
+| old G4, recomp (no fraction) | 143,863,509 | 1767268807 | 995.6 ms (4.4 ms before the boundary) | 147,895,257 |
+| old G4, jit | 154,706,875 | 1767268808 | 36.0 ms | 156,857,711 |
+| new G4, recomp | 143,863,509 | 1767268808 | **495.6 ms** | 147,895,257 |
+| new G4, jit | 154,706,875 | 1767268808 | **536.0 ms** | 156,857,711 |
+
+The fraction moved the date and nothing else, as D84 says: the ticks (the reading's, the frame's) are the old recording's, and
+the seconds of the two backends are now the same, half a second from either boundary. The second reading (the one that
+G2's save holds) is also one second on both now (61.7 ms and 70.8 ms into 1767268837).
+
+*What the jit check says.* `ipc` is the only comparison that fails; `svc`, `state` (8 scene changes within 4 frames, largest
+shift 1, smallest input margin 147 and 148 frames), `checkpoints` and `hid` pass (5 passed, 1 failed, 2 info, `cross`;
+11 minutes). `fs coverage:` of the report: 30 thread/file sessions read; bytes only the reference covers 26,624 (2 ranges),
+only the candidate covers **0**; the most is 18,432 on one thread. By thread (counts and bytes), against the old recording's
+jit pair of N0-30/N0-36 (section 11 of `comparators.md`):
+
+| Thread | Reads (ref / cand), old | Reads (ref / cand), new | One-sided bytes (ref / cand), old | One-sided bytes (ref / cand), new |
+|---|---|---|---|---|
+| #3 (loader) | 275 / 276 | 276 / 276 | 133,257 / 84,658 | **0 / 0** |
+| #5 (loader, big resources) | 115 / 114 | 114 / 114 | 124,610 / 0 | **0 / 0** |
+| #12 (streaming reader) | 264 / 261 | 263 / 262 | 24,576 / 0 | 8,192 / 0 |
+| #17 (movie stream) | 580 / 571 | 580 / 571 | 18,432 / 0 | 18,432 / 0 |
+
+On threads #3 and #5 every Read of the two backends is equal (offset, size, result and CRC-32), in the same order, in both file
+sessions: the loaders choose the same resources now (the 6 and 7 Reads without an equal of
+thread #3 are gone). Thread #17's 18,432 bytes are one range, 9 Reads of 2,048 bytes at the end of the movie stream that the
+reference reads and the jit does not, the same count, sizes and totals as in the old recording (not a seed effect; the stream's length is the
+time it is kept open, section 11 item 2). Rules applied: D85's 16,384 bytes per thread, so `ipc` fails by 2,048 bytes on
+thread #17; with the bound at 20,480 the same two traces give `all threads match`, exit 0 (an offline run of
+`compare_ipc_traces.py`, not a check). The old recordings' other `ipc` differences (the two `nwm::UDS` commands and
+`ControlArchive`) are in `ipc_time_dependent.txt` and nothing else differs.
+
+### Results of N0-35 Part B (step 3: G3 and G3-perf)
+
+Step 2 confirmed D83 on G4, so `G3.txt` and `G3-perf.txt` got `# init-time: 1767268800.5` and were recorded again, into
+`build/golden-n035` (the recordings of N0-10 stay in `build/golden`). The same runner (SHA-256 `d2f3705a...`), library and
+PC as step 2, `--cpu recomp`, `TZ=UTC0`, one emulator process at a time. `golden.py record <S> --user build/userbase-cfg --save
+build/n0-10-save-cpp-off --cpu recomp --out build/golden-n035` (with `--runner`, `--game`, `--update` and `--code` as in
+N0-10), then `golden.py check <S> --repeat 2 --require svc,ipc,state,checkpoints,hid` (the `same` profile; the runs were
+started through a small wrapper that only held the emulator lock around each runner run, with the same arguments).
+
+| Session | `record` | Host time of one run | `check --repeat 2` (exit 0) |
+|---|---|---|---|
+| G3 | exit 0: 9/9 checkpoints (5 distinct scene values), 10 real scene changes, 0 capture problems | 3,713 s | 26 passed, 0 failed, 0 skipped, 3 info; 6,726 s for the check |
+| G3-perf | exit 0: 9/9 checkpoints (5 distinct scene values), 10 real scene changes, 0 capture problems | 4,241 s | 26 passed, 0 failed, 0 skipped, 3 info; 9,548 s for the check |
+
+The nine comparisons per run are those of the N0-10 table; each run is identical to the recording and to the other run. What
+the new date changed and what it did not: the checkpoints (the nine frames and their scene values), the ten real scene
+changes and the frames they fall at are the old recordings' to the frame; the ticks of the state trace first differ from them
+at frame 1744 (the village's arrival scene, as in G4); the captures hold the same record counts. Sizes and numbers that
+moved are in the G3 and G3-perf sections above. The shared-page dump of frame 300 is
+byte for byte the same in the new G3, G3-perf and G4 (SHA-256) and differs from the old G3's in 2 bytes, at offsets 0x40 and
+0x41: the date record, moved by the fraction and nothing else; the state traces of the three agree on the tick of frame 4, so the
+first clock reading falls 0.5 s into a second here as in G4.
+
+**More scenes for the census: not done, on purpose.** `golden.py` accepts several `gpu:` entries in `# captures:` (the
+parser, the manifest and `check` handle a list), but the reference runner takes **one** `--capture-gpu START:FRAMES:FILE`: a
+second flag replaces the first (`port/src/runner.cpp` keeps the three values in single variables, and `BeginGpuCapture` runs
+once), so a G3 header with four `gpu:` entries would pass `golden.py`'s checks of the header and then record the last capture
+only, and `record` would report the others as "not written". The header was not changed and G3 and G3-perf keep their hunt
+capture (`gpu:17400:10` and `gpu:17300:30`, the frame counts unchanged). The three scenes (the village after the caravan
+leader's talk, about f8000; the Arena's equipment screen, about f13500; the quest's first frames, about f14150) need either a
+runner that takes repeated `--capture-gpu` (a change of `port/src/runner.cpp`, in N0-35's allowlist, and a new reference runner
+and exactness gate) or three short sessions of the same route that stop just after each capture (a G9 family: about 8003, 13503 and
+14153 frames, so roughly 15, 50 and 58 minutes of host time per recording).
+
+**The census with the new recordings.** `pica_census.py` on `G1` and `G2` (`build/golden`) and `G3` and `G4`
+(`build/golden-n035`): one capture each, as before. Counts that changed against `docs/research/pica-census.md` (every YES and
+NO of the *Answers at a glance* table stays the same): G3's draws 3,676 to 3,650 (indexed 896 to 870; array 2,780 as before),
+depth formats 866 to 840, lighting 1,316 to 1,290, fog 826 to 800; G4's draws 1,386 to 1,390 (indexed 571 to 575), geometry
+shaders 541 to 542, depth formats 581 to 585. G1 and G2 are unchanged. The new document is `build/n0-35/pica-census.md`
+(outside the repository files; the orchestrator commits the real one).
+
+**A jit probe of G3 at the new date (not a calibration).** `golden.py check G3 --candidate-args "--cpu jit" --profile cross
+--ignore config/native/ipc_time_dependent.txt --require state,checkpoints,ipc,svc,hid` against the new recording (one run, 10,620
+s with the comparisons): **it fails, and the reason is not the loaders.** `hid` passes, `state-margin` passes (largest scene
+shift 1 frame, smallest input margin 147 and 148 frames); `svc`, `ipc`, `state` and `checkpoints` fail because the jit run
+**never leaves the village**: its state trace has the first six scene changes of the reference (each within 1 frame of
+the reference's) and no more, so checkpoints 13700, 15000, 17000 and 18000 mismatch and the Arena and the quest never load.
+Screenshots show that both runs post the quest at the counter and are identical in kind up to f12060, and that at f12300 the
+reference is already walking to the Quest Gate while the jit run is still showing the counter's quest notice (the talk looks
+one press behind, which is a reading of the screenshots and not a measurement; the circle pad route that follows then starts
+from the desk and does not reach the gate). The `fs coverage:` line,
+then, mostly measures the quest load that the jit run never made: 30 thread/file sessions read; bytes only the reference
+covers 17,819,262 (4 threads, 83 ranges), only the candidate covers 5,511,552 (1 thread, 3 ranges); the most per thread: reference
+8,930,613 (thread #5), candidate 5,511,552 (thread #12); per thread, reference and candidate: #12 5,748,404 and 5,511,552, #3
+3,121,813 and 0, #5 8,930,613 and 0, #17 (the movie stream) 18,432 and 0. `ipc`: thread main first differs at request 554 (the number of a `srv:` session handle, #87 against #90),
+the main thread has 607 requests on the reference against 593, #3 584 against 360, #5 213 against 129, #12 2,304 against 2,577.
+So this probe cannot say whether D83 holds on the long session: the jit candidate has to be run through a route it does not
+lose first (the counter's talk has a script that "cannot be moved by more than a press", see [G3](#g3-the-arena-hunt)). Nothing was
+tried to change that here.
+
+### Results of N0-35 Part B (steps 4 and 5: G8 and G7)
+
+The N0-35 reference runner (SHA-256 `d2f3705a...`), the same code library, `--cpu recomp`, `TZ=UTC0`, the same PC, one emulator
+process at a time (the emulator lock held around each run).
+
+| Session | `record` | Host time of one run | `check --repeat 2` (exit 0) |
+|---|---|---|---|
+| G8 | exit 0: 4/4 checkpoints (3 distinct scene values), 6 real scene changes, 0 capture problems; `ir:USER` requests 13,460, type-2 records 3,102 (frames 199 to 3300) | 408 s | 23 passed, 0 failed, 0 skipped, 3 info; 795 s for the check |
+| G7 | not made: the five files hold no quest ([G7](#g7-a-downloaded-quest-not-made)); 0 runs | | |
+
+The runs of G8 in all: one exploration run (G4's inputs and checkpoints, 3300 frames, 406 s) to measure the timeline with the
+option on, the recording (408 s) and the check's two repeats (about 6 minutes each). The `check` is in the `same` profile and
+the comparisons are those of the other sessions with the save, less the capture ones (no GPU or DSP capture in G8).
 
 ## History: the WIP recordings (before N0-29)
 

@@ -74,15 +74,13 @@ EXTDATA_ID_DEFAULT = 0x0000000000001263
 FORMAT_INFO_STRUCT = struct.Struct("<IIIB3x")
 
 # What the metadata files hold when the destination has none, per kind: (total_size, number_directories,
-# number_files, duplicate_data), or None until read from the maintainer's build/golden/G3/user-before. They are
-# game data constants (the game's own FormatSaveData / CreateExtSaveData arguments), not public facts, so none is
-# invented here. Fill them from: the 16 bytes of the file
-#   save:    <user-before>/sdmc/Nintendo 3DS/<zeros>/<zeros>/title/00040000/00126300/data/00000001.metadata
-#   extdata: <user-before>/sdmc/Nintendo 3DS/<zeros>/<zeros>/extdata/00000000/00001263/metadata
-# (`python3 tools/native/saves.py format-info FILE` prints the four numbers). Until then --format-info is needed.
+# number_files, duplicate_data). The numbers were read with `format-info` from the two metadata files of the
+# user-after folders of the G1, G2 and G6 recordings, which agree with each other; they are constants of the
+# archive formats Azahar writes for this game, the same for every run. (`python3 tools/native/saves.py format-info
+# FILE` prints the four numbers of a metadata file.) --format-info still overrides them.
 FORMAT_INFO: dict[str, Optional[tuple[int, int, int, int]]] = {
-    "save": None,
-    "extdata": None,
+    "save": (262144, 0, 4, 1),
+    "extdata": (4294967295, 64, 64, 0),
 }
 
 BACKUPS = "mh4u-save-backups"

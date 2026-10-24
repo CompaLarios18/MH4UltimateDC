@@ -67,6 +67,12 @@ CROSS_TOLERANCE = cross_model_report.DEFAULT_TOLERANCE      # frames a real scen
 CROSS_MIN_MARGIN = cross_model_report.DEFAULT_MIN_MARGIN    # frames an input must follow the last scene change by (D50)
 CROSS_MAX_SHIFT = capfmt.DEFAULT_MAX_SHIFT                  # DSP frames the candidate's audio may be shifted by (D51)
 CROSS_MAX_SURPLUS = 16                                      # fs:USER/file reads a thread may make beyond the other (D52)
+# N0-37: the bytes of a thread's fs:USER/file Reads that only one side covers (the same numbers in the cross and the
+# native profile; the single place of these defaults, equal to those of compare_ipc_traces.py, which a test checks).
+# Calibrated on the saved pairs of G1, G2, G6 and the native runs (at most 10,240) and on G4 recorded again at a start
+# date with a fraction (the movie stream: 18,432); docs/native/comparators.md section 12, D85 amended by N0-35 part B.
+CROSS_MAX_ONE_SIDED = 20480                                 # bytes per thread that one side covers and the other not
+CROSS_MAX_DETACHED = 0                                      # of them, in ranges next to nothing the other side covers
 # The native profile (D76): the cross profile for the native runtime in real time, whose game clock follows the host
 # while the reference charges the modelled 268 MHz.  Only these differ from the cross profile's numbers; the margin
 # guard (CROSS_MIN_MARGIN), the surplus of reads (CROSS_MAX_SURPLUS), the write masks (D52) and every other rule are
@@ -945,6 +951,7 @@ def compare_outputs(session: Session, ref: Path, cand: Path, cfg: Compare) -> li
                 # D52: the Reads of fs:USER/file as a multiset per thread, the Writes in full except the byte
                 # ranges proved to depend on the clock (this session's lines of the mask file)
                 extra += ["--fs-reads-multiset", "--max-surplus", str(cfg.rule("max_surplus")),
+                          "--max-one-sided", str(CROSS_MAX_ONE_SIDED), "--max-detached", str(CROSS_MAX_DETACHED),
                           "--fs-write-mask", str(cfg.fs_write_masks or FS_WRITE_MASKS),
                           "--fs-write-mask-session", session.name]
                 if cfg.profile == "native":      # D76: the Reads that touch are merged before the multiset is built

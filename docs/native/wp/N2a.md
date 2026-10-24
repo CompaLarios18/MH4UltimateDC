@@ -175,7 +175,7 @@ Azahar draws no gas at all (its shader generator logs "Unimplemented gas mode", 
 ### N2-06 · Vertex shader translation
 - **Size / agent:** L · native-worker-high
 - **Depends on:** N2-04, N2-21 · **Needs:** dump-check, save
-- **Goal:** PICA vertex shaders (and geometry shaders, if the census shows any) translated to SPIR-V with the PICA's float rules, compiled when first used and cached by program hash.
+- **Goal:** PICA vertex shaders (and geometry shaders: the census of N0-13 shows them, in Point mode, in 39 to 90 percent of the draws of its four scenes and about 1 percent of the vertices) translated to SPIR-V with the PICA's float rules, compiled when first used and cached by program hash.
 - **Read first:** D27; in Azahar: `src/video_core/shader/generator/glsl_shader_decompiler.cpp` (the PICA → GLSL decompiler; `sanitize_mul` near line 828) and `glsl_shader_gen.cpp`, `src/video_core/shader/shader_interpreter.cpp` (the reference semantics; MAX and MIN near line 265), `src/video_core/pica_types.h` (f24, and the multiply rule near line 93); 3dbrew *Shader Instruction Set*; `docs/research/pica-census.md` (geometry shaders).
 - **Files (allowlist):** `native/src/gpu/shader/**`, `native/third_party/glslang/**`, `native/tests/gpu_shader_test.cpp`.
 - **Spec:**

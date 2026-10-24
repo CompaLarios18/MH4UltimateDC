@@ -139,7 +139,7 @@ Sizes are relative; there are no dates. Each phase starts with a pilot that meas
 
 **N0 · Foundations, oracles, baseline.** All inside the current build; it also helps v0.x.
 - Recorders in `mh4u_runner` (IPC, GPU, DSP, HID, game state, unmapped accesses) and frame-keyed input.
-- Golden sessions G1–G7.
+- Golden sessions G1–G6 and G8 (G7, a downloaded quest, was dropped: D91).
 - Censuses: PICA features, flush coverage, threads.
 - A performance baseline on the reference PC and the M2.
 - The seams: an inventory of Azahar dependencies, `IRuntime`, a platform interface for the hooks, `RC_NATIVE`.

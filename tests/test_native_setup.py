@@ -16,7 +16,9 @@ sys.path.insert(0, os.path.join(HERE, "..", "tools", "native"))
 import mods  # noqa: E402
 import setup_native as sn  # noqa: E402
 import test_extract_ncch as tx  # noqa: E402
-from test_native_prepare_game import PID, make_ncch, write_inputs  # noqa: E402,F401
+from test_native_prepare_game import PID, make_icon, make_ncch, write_inputs  # noqa: E402,F401
+
+make_icon_bytes = make_icon
 
 PY = shlex.quote(sys.executable)
 
@@ -313,6 +315,52 @@ def test_game_folder_stale_when_a_file_is_not_what_info_says(env, capsys, damage
     events, result = run(capsys, env.args())
     assert states(result)["game"] == "done"
     assert game_check(env, capsys)[0] == "done"
+
+
+def test_game_folder_of_the_earlier_version_is_stale_and_a_run_remakes_it(env, capsys):
+    # N1-30: before, icon.bin was the base game's and info.txt said nothing of its source
+    (env.tmp / "inputs2").mkdir()
+    base, update, _ = write_inputs(env.tmp / "inputs2", icon=make_icon_bytes(0x04),
+                                   update_icon=make_icon_bytes(0x02))
+    args = env.args()
+    args[args.index("--game") + 1] = base
+    args[args.index("--update") + 1] = update
+    run(capsys, args)
+    game = env.user / "native" / "game"
+    assert (game / "icon.bin").read_bytes() == make_icon_bytes(0x02)
+    # make it what the earlier version wrote: the base game's icon, no "icon source" line
+    (game / "icon.bin").write_bytes(make_icon_bytes(0x04))
+    lines = (game / "info.txt").read_text().splitlines()
+    (game / "info.txt").write_text("\n".join(l for l in lines if not l.startswith("icon source")) + "\n")
+    _, result = run(capsys, args + ["--check"])
+    step = next(s for s in result["steps"] if s["step"] == "game")
+    assert step["state"] == "stale" and "earlier version" in step["reason"]
+    events, result = run(capsys, args)
+    assert states(result)["game"] == "done"
+    assert (game / "icon.bin").read_bytes() == make_icon_bytes(0x02)
+    assert "icon source   : update" in (game / "info.txt").read_text().splitlines()
+    _, result = run(capsys, args + ["--check"])
+    assert states(result)["game"] == "done"
+
+
+@pytest.mark.parametrize("claim, why", [("base game", "not the update's"), ("none", "says the update has none")])
+def test_game_folder_whose_icon_source_does_not_fit_is_stale(env, capsys, claim, why):
+    (env.tmp / "inputs2").mkdir()
+    base, update, _ = write_inputs(env.tmp / "inputs2", update_icon=make_icon_bytes(0x02))
+    args = env.args()
+    args[args.index("--game") + 1] = base
+    args[args.index("--update") + 1] = update
+    run(capsys, args)
+    info = env.user / "native" / "game" / "info.txt"
+    info.write_text(info.read_text().replace("icon source   : update", f"icon source   : {claim}"))
+    state, reason = game_check_with(env, capsys, args)
+    assert state == "stale" and why in reason
+
+
+def game_check_with(env, capsys, args):
+    _, result = run(capsys, args + ["--check"])
+    step = next(s for s in result["steps"] if s["step"] == "game")
+    return step["state"], step["reason"]
 
 
 def test_game_folder_without_info_txt_is_missing_even_with_files(env, capsys):

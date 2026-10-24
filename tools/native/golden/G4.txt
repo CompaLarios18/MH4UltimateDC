@@ -3,6 +3,11 @@
 # frames: 3000
 # checkpoints: 600:0x00e64d5c, 1400:0x00e6c778, 2500:0x00e6c170, 3000:0x00e6c170
 # captures: gpu:2400:10
+# init-time: 1767268800.5
+#
+# The start date of the runners' clock has a sub-second part (half a second): the first clock reading
+# of the game falls in the middle of a second on every runtime (docs/native/golden.md, D83, D84).
+# The inputs, the frames and the checkpoints below are the ones G4 had before the header.
 #
 # G4: a cutscene that uses gas (the PICA fog mode 7): the village's arrival scene, which plays by
 # itself when the maintainer's save is continued (from f1579, the start of the village, to about
