@@ -163,9 +163,10 @@ enum class IndexType : u8 { None, U8, U16, U32 };
 
 enum class LoadStatus : u8 {
     Ok,
-    NoVertices, // an indexed draw with no indices
+    NoVertices, // a draw with no vertices (zero indices or zero Arrays vertices)
     Unmapped,   // the vertex or index data is (partly) outside guest memory: nothing to draw
-    TooLarge,   // an Arrays draw of over 16 million vertices: not a draw
+    TooLarge,   // an Arrays draw of over 16 million vertices: not a draw (counted in draws_dropped,
+                // like every status other than Ok)
 };
 const char* ToString(LoadStatus status);
 

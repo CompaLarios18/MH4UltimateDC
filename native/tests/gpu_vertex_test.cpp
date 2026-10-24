@@ -1253,6 +1253,30 @@ TEST_CASE("a long fan gets 32-bit indices; a fan whose last index is 0xFFFF is w
     }
 }
 
+TEST_CASE("an Arrays draw over 1<<24 vertices is TooLarge; exactly 1<<24 is loaded") {
+    // No loader data and a list topology: only the constant buffer is built (a few dozen bytes), so
+    // the boundary costs nothing.
+    VertexLoader loader(VertexCaps{});
+    Scene at_cap;
+    at_cap.Arrays(0, 1u << 24);
+    const LoadedDraw ok = loader.Load(at_cap.host, at_cap.draw);
+    CHECK(ok.status == LoadStatus::Ok);
+    CHECK(ok.count == (1u << 24));
+    CHECK(ok.buffers.size() == 1);
+    CHECK(ok.buffers[0].data.size() < 64);
+    CHECK(loader.counters().draws_dropped == 0);
+    Scene over;
+    over.Arrays(0, (1u << 24) + 1);
+    const LoadedDraw big = loader.Load(over.host, over.draw);
+    CHECK(big.status == LoadStatus::TooLarge);
+    CHECK(big.buffers.empty());
+    CHECK(big.count == 0);
+    CHECK(std::string(ToString(LoadStatus::TooLarge)) == "more vertices than any draw has");
+    CHECK(std::string(ToString(LoadStatus::TooLarge)) != ToString(LoadStatus::Unmapped));
+    CHECK(loader.counters().draws_dropped == 1);
+    CHECK(loader.counters().draws_loaded == 1);
+}
+
 TEST_CASE("draws that cannot be loaded are reported, not drawn") {
     VertexLoader loader(VertexCaps{});
     {
