@@ -716,6 +716,7 @@ TEST_CASE("dummy driver: the controller keeps the fill within 25 % of the target
     audio_out::PublishFrame(1234);
     std::vector<double> steered;
     DeviceStatus last;
+    double host_seconds = 0.0;  // what the 12 s of device time took on the host's clock
     {
         Runtime rt;
         REQUIRE(rt.Prepare(Parse({"--audio", "sdl", "--audio-latency", "100", "--audio-log", log_path.string()}),
@@ -765,6 +766,7 @@ TEST_CASE("dummy driver: the controller keeps the fill within 25 % of the target
         CHECK(last.factor <= audio_out::DriftController::kMaxFactor);
         MESSAGE("dummy driver: " << last.callbacks << " blocks of 40 ms took " << wall_s << " s of the host's clock ("
                                  << (last.callbacks * kBlockSeconds / wall_s - 1.0) * 100.0 << " % off)");
+        host_seconds = wall_s;
     }
     // The producer samples the fill once per iteration, and an iteration sleeps 1 ms plus the host's timer
     // slack (about 9 ms on a loaded macOS runner: 746 samples in these 7 s of device time, where an idle
@@ -810,7 +812,10 @@ TEST_CASE("dummy driver: the controller keeps the fill within 25 % of the target
         CHECK(gap >= 500);
         CHECK(gap <= 1500);
     }
-    CHECK(rows.size() <= 14);
+    // t = 0, one a second of the host's clock, and the row written when the run ended: the count follows the
+    // host seconds the run took (13.1 s on a loaded macOS runner for the 12 s of device time, 15 rows), not
+    // the device's 12 s
+    CHECK(rows.size() <= static_cast<std::size_t>(host_seconds) + 4);
     for (const Row& r : rows) {
         CHECK(r.frame == 1234);  // audio_out::LastFrame(), the game's frame counter
         CHECK(r.ratio >= Feeder::RatioFor(audio_out::DriftController::kMinFactor));
