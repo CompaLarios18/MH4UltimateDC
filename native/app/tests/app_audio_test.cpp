@@ -766,7 +766,11 @@ TEST_CASE("dummy driver: the controller keeps the fill within 25 % of the target
         MESSAGE("dummy driver: " << last.callbacks << " blocks of 40 ms took " << wall_s << " s of the host's clock ("
                                  << (last.callbacks * kBlockSeconds / wall_s - 1.0) * 100.0 << " % off)");
     }
-    REQUIRE(steered.size() > 1000);
+    // The producer samples the fill once per iteration, and an iteration sleeps 1 ms plus the host's timer
+    // slack (about 9 ms on a loaded macOS runner: 746 samples in these 7 s of device time, where an idle
+    // host gives about 7,000). So the guard that the window was sampled is counted in device time, at
+    // least one sample for every second block of the 7 s, not in iterations of the host's loop.
+    REQUIRE(static_cast<double>(steered.size()) > 0.5 * (12.0 - 5.0) / kBlockSeconds);
     const double target = static_cast<double>(audio_out::MsToFrames(100));
     const double lo = *std::min_element(steered.begin(), steered.end());
     const double hi = *std::max_element(steered.begin(), steered.end());
