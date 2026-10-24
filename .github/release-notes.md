@@ -2,6 +2,13 @@
 
 🇲🇽 *Port de MH4U para PC: 60/120 fps, pantalla ancha, la pantalla táctil encima del juego y multijugador por internet. Necesitas tu propia copia del juego y su actualización v1.3.0.*
 
+## What's new in 0.1.4
+
+- **Pause and fast forward**, playing alone: **P** stops the game where it is (the picture and the menu stay), **Tab** runs it at 2x for the walks and the gathering. The speed (1.5x to 4x, or as fast as your PC can) and whether Tab is held or pressed once are in Esc → Game; the keys in Esc → Controls. In a room they're off (the others' games run on with yours), and the keys say so. Save states still aren't possible with the recompiled code: save in the game.
+- **Rooms on your own network, with no address.** On one Wi-Fi or router (laptops, PC handhelds, a laptop's hotspot), the host hosts a room and the others find it under **On this network** (Esc → Multiplayer → Join a room, or the launcher's Online screen) and press *Join*: nothing to copy, nothing to forward. If a room doesn't show up, allow the app in the host's firewall (it answers on UDP port 24873). `lan_discovery = off` in `mh4u-app.ini` keeps a hosted room out of the search.
+- **Cheats no longer slow the game to a crawl**: with code cheats enabled on a New 3DS, the game could fall back to the slow interpreter (0-8 fps in the intro). The code is now checked once, at boot. Code cheats don't apply to recompiled code; data cheats work.
+- **Android, from source** (thanks to james2doyle): the port's recompiled code and hooks now run inside Azahar's Android app on arm64 devices, built from source. There's no Android package in this release yet.
+
 ## What's new in 0.1.3
 
 - **Keyboard and mouse like Monster Hunter Rise on PC.** The mouse turns the camera itself, like a PC game's mouse look (not by pushing a stick: no speed cap, no acceleration), with sensitivity, up/down sensitivity and invert in Esc → Controls. Left click attacks (X), right click or F is A (attack, gather, carve, talk), Space evades, E uses an item or sheathes, Shift dashes, the side button guards, Ctrl or the wheel's click resets the camera, Q targets a monster, C kicks / skips, the **wheel scrolls the item bar**. Every button takes two keys or mouse buttons. Hold **Alt** to use the mouse on the touch screen. **Rebuild the code library once** (the launcher asks): the mouse camera is a new hook.

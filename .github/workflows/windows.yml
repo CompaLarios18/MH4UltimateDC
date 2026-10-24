@@ -118,8 +118,9 @@ jobs:
           its own, like MH3U on a Wii U). F11 or Alt+Enter: full screen or a
           window. F12, or the right stick's click: in quests, the touch screen's map or the whole
           touch screen.
+          Playing alone, P pauses and Tab fast-forwards (2x; the speed in the menu's Game tab).
           The launcher's other screens: Mods (several mods, in an order, conflicts shown; a catalog of recommended mods and texture packs, the HD pack among them, installed with one click), Online
-          (a lobby's rooms, joining by address, hosting) and Settings. Its settings are in
+          (a lobby's rooms, rooms on your own network, joining by address, hosting) and Settings. Its settings are in
           %APPDATA%\Azahar\mh4u-app.ini, written with explanations the first time it runs: the game file, the renderer (vulkan, opengl or software), full screen, the
           screens, sound, the keys and the controller, and a multiplayer room to join or host
           before the game starts. The game's options (frame rate, widescreen, the touch screen's
