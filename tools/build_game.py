@@ -13,6 +13,12 @@
 6. optionally copies it to <Azahar user dir>/recomp/<program id>.<so|dll|dylib>, where the
    port's Azahar build picks it up (--install alone: Azahar's usual user directory).
 
+--android builds the library for the port's Android app (arm64) instead, in
+<out>/recomp/android/<program id>.so: copy it to the device, into Azahar's user folder as
+recomp/<program id>.so (or give --install that folder, synced or mounted). It is built with the
+same compilers, without the Android NDK: clang with lld, Zig's (--fetch-compiler on Linux and
+macOS) or llvm-mingw's (Windows).
+
 On Windows it needs llvm-mingw's clang; --fetch-compiler downloads it (from the
 llvm-mingw project on GitHub) into the output directory. On Linux and macOS it uses clang
 when it's installed; otherwise --fetch-compiler downloads Zig's C compiler (the `ziglang`
@@ -197,6 +203,21 @@ def fetch_compiler(toolchain_dir: str, source: str = LLVM_MINGW_URL, sha256: str
     return found[0]
 
 
+def find_android_compiler(requested: str | None, toolchain_dir: str, fetch: bool) -> str:
+    """A compiler that builds the Android library: one that was asked for, llvm-mingw's clang on
+    Windows (it has lld), a clang with ld.lld next to it, or Zig's (which brings its own lld)."""
+    if requested:
+        return requested
+    if sys.platform.startswith("win"):
+        return find_compiler(None, toolchain_dir, fetch)
+    if shutil.which("clang") and shutil.which("ld.lld"):
+        return "clang"
+    if zig_wrapper(toolchain_dir) or fetch:
+        return fetch_zig(toolchain_dir)
+    raise SystemExit("no compiler for Android found: install clang and lld (LLVM), or run again with "
+                     "--fetch-compiler to download Zig's C compiler")
+
+
 def find_compiler(requested: str | None, toolchain_dir: str, fetch: bool) -> str:
     if requested:
         return requested
@@ -242,6 +263,8 @@ def main(argv=None) -> int:
                     help="no compiler installed: download llvm-mingw (Windows), or Zig's C compiler "
                          "(Linux, macOS; used only without clang), into the output directory")
     ap.add_argument("--compiler-zip", default=LLVM_MINGW_URL, help=argparse.SUPPRESS)
+    ap.add_argument("--android", action="store_true",
+                    help="build the library for the port's Android app (arm64) instead of this PC")
     ap.add_argument("--any-version", action="store_true", help="don't insist on a known code.bin")
     ap.add_argument("--mods", metavar="AZAHAR_USER_DIR",
                     help="apply the code mods in AZAHAR_USER_DIR/load/mods/<program id>/ (default: the "
@@ -253,6 +276,9 @@ def main(argv=None) -> int:
     ap.add_argument("--tunables", default=os.path.join(ROOT, "config", "tunables.txt"), help=argparse.SUPPRESS)
     args = ap.parse_args(argv)
 
+    if args.android and args.install == default_user_dir():
+        raise SystemExit("with --android, --install takes the device's Azahar folder (synced or mounted): "
+                         "this PC's Azahar can't use an Android library")
     dump_dir = os.path.join(args.out, "dump")
     print(f"extracting {args.dump}")
     extract_ncch.extract(args.dump, dump_dir)
@@ -308,13 +334,19 @@ def main(argv=None) -> int:
     toolchain_dir = os.path.join(args.out, "toolchain")
     if args.fetch_compiler and not args.cc and sys.platform.startswith("win"):
         cc = fetch_compiler(toolchain_dir, args.compiler_zip)
+    elif args.android:
+        cc = find_android_compiler(args.cc, toolchain_dir, args.fetch_compiler)
     else:
         cc = find_compiler(args.cc, toolchain_dir, args.fetch_compiler)
-    name = library_name(program_id)
-    print(f"compiling with {cc} -{args.opt} ({args.jobs} jobs; -O1 takes a while)")
-    lib = rbuild.build(out, args.jobs, args.opt, ["RC_PAGED"], name, [rbuild.DLL_GLUE], cc=cc,
-                       extra_flags=["-fvisibility=hidden"])
+    name = f"{program_id:016X}.so" if args.android else library_name(program_id)
+    print(f"compiling with {cc} -{args.opt}{' for Android' if args.android else ''} ({args.jobs} jobs; "
+          "-O1 takes a while)")
+    lib = rbuild.build(out, args.jobs, args.opt, ["RC_PAGED"], os.path.join("android", name) if args.android else name,
+                       [rbuild.DLL_GLUE], cc=cc, extra_flags=["-fvisibility=hidden"], android=args.android)
     print(f"code library: {lib}")
+    if args.android and not args.install:
+        print(f"next: copy it to your device, into Azahar's user folder as recomp/{name} "
+              "(docs/PLAYING.md, Android)")
     if args.install:
         dest_dir = os.path.join(args.install, "recomp")
         os.makedirs(dest_dir, exist_ok=True)

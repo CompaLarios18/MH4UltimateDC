@@ -310,3 +310,69 @@ def test_build_game_recompiles_a_code_cave(tmp_path, capsys):
     assert {p.name: p.read_text() for p in src.iterdir()} == plain
     record = json.loads((install / "recomp" / f"{mods.PROGRAM_ID:016X}.build.json").read_text())
     assert record["code_size"] == text_size
+
+
+def synthetic_cxi(tmp_path):
+    import make_cxi
+    text = struct.pack("<4I", 0xE3A0002A, 0xE12FFF1E, 0xE0800001, 0xE12FFF1E).ljust(0x1000, b"\0")
+    exheader = bytearray(0x800)
+    exheader[0:8] = b"SYNTH\0\0\0"
+    struct.pack_into("<III", exheader, 0x10, 0x00100000, 1, len(text))
+    struct.pack_into("<III", exheader, 0x20, 0x00101000, 1, 0x1000)
+    struct.pack_into("<III", exheader, 0x30, 0x00102000, 1, 0x1000)
+    struct.pack_into("<Q", exheader, 0x200, 0x0004000000ABCD00)
+    cxi = tmp_path / "synthetic.cxi"
+    cxi.write_bytes(make_cxi.make_cxi(bytes(exheader), fake_exefs(text + bytes(0x2000))))
+    functions = tmp_path / "functions.tsv"
+    functions.write_text("address\tsize\tmode\tkind\tname\tstatus\towner\tnotes\n"
+                         "0x00100000\t0x8\tarm\tunknown\t\ttodo\t\t\n0x00100008\t0x8\tarm\tunknown\t\ttodo\t\t\n")
+    return cxi, functions
+
+
+@pytest.mark.skipif(shutil.which("ld.lld") is None, reason="lld not installed")
+def test_build_game_for_android(tmp_path):
+    """--android: an arm64 library Android's linker takes (libc.so and libm.so needed, 16 KB
+    pages, its soname, no text relocations, nothing from outside the C library), built with
+    clang and lld without the NDK, and copied to a device folder given to --install."""
+    import build_game
+    from recomp import build as rbuild
+    cxi, functions = synthetic_cxi(tmp_path)
+    device = tmp_path / "device-azahar"
+    rc = build_game.main(["--dump", str(cxi), "--out", str(tmp_path / "out"), "--opt", "O1", "--any-version",
+                          "--functions", str(functions), "--extra", "", "--hooks", "", "--android",
+                          "--install", str(device), "-j", "2"])
+    assert rc == 0
+    lib = tmp_path / "out" / "recomp" / "android" / "0004000000ABCD00.so"
+    assert lib.exists()
+    assert rbuild.android_library_problems(str(lib)) == []
+    assert (device / "recomp" / "0004000000ABCD00.so").read_bytes() == lib.read_bytes()
+    if shutil.which("llvm-nm"):
+        syms = subprocess.run(["llvm-nm", "-D", "--defined-only", str(lib)], capture_output=True, text=True).stdout
+        assert "rc_code_init" in syms
+
+
+def test_android_install_needs_the_device_folder(tmp_path):
+    import build_game
+    cxi, functions = synthetic_cxi(tmp_path)
+    with pytest.raises(SystemExit, match="device's Azahar folder"):
+        build_game.main(["--dump", str(cxi), "--out", str(tmp_path / "out"), "--any-version", "--android",
+                         "--install"])
+
+
+@pytest.mark.skipif(shutil.which("ld.lld") is None, reason="lld not installed")
+def test_android_check_turns_away_other_libraries(tmp_path):
+    """A library for this PC, or one that calls more of the C library than the code library does."""
+    from recomp import build as rbuild
+    src = tmp_path / "a.c"
+    src.write_text("int puts(const char *); int f(void) { return puts(\"x\"); }\n")
+    pc = tmp_path / "pc.so"
+    subprocess.run(["clang", "-shared", "-fPIC", str(src), "-o", str(pc)], check=True)
+    problems = rbuild.android_library_problems(str(pc))
+    assert any("not AArch64" in p for p in problems)
+    assert any("libm.so" in p for p in problems)
+    stub_flags = rbuild.android_link_flags("clang", str(tmp_path))
+    arm = tmp_path / "arm.so"
+    subprocess.run(["clang", *stub_flags, f"--target={rbuild.ANDROID_TARGET}", "-fPIC", "-nostdlibinc",
+                    str(src), "-o", str(arm)], check=True)
+    assert rbuild.android_library_problems(str(arm)) == [
+        "it calls functions from outside the few the port takes from Android's C library: puts"]

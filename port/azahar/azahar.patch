@@ -30,7 +30,7 @@ index 70f8173..2b04b4c 100644
      add_subdirectory(citra_qt)
  endif()
 diff --git a/src/android/app/build.gradle.kts b/src/android/app/build.gradle.kts
-index 1687de0..8482670 100644
+index 1687de0..cd0406b 100644
 --- a/src/android/app/build.gradle.kts
 +++ b/src/android/app/build.gradle.kts
 @@ -21,7 +21,10 @@ plugins {
@@ -45,7 +45,19 @@ index 1687de0..8482670 100644
  
  val downloadedJniLibsPath = "${layout.buildDirectory.get().asFile.path}/downloadedJniLibs"
  
-@@ -84,6 +87,9 @@ android {
+@@ -64,6 +67,11 @@ android {
+         // The application ID refers to Lime3DS to allow for
+         // the Play Store listing, which was originally set up for Lime3DS, to still be used.
+         applicationId = "org.azahar_emu.azahar"
++        // The MH4U port's own APK (its android.yml) installs next to Azahar: an id and a name
++        // of its own, from -Pmh4uApplicationId and -Pmh4uAppLabel.
++        providers.gradleProperty("mh4uApplicationId").orNull?.let { applicationId = it }
++        manifestPlaceholders["appLabel"] =
++            providers.gradleProperty("mh4uAppLabel").orNull ?: "@string/app_name"
+         minSdk = 29
+         targetSdk = 37
+         versionCode = autoVersion
+@@ -84,6 +92,9 @@ android {
                      // sizes
                      "-DENABLE_GDBSTUB=OFF" // Disable GDB stub
                  )
@@ -55,7 +67,7 @@ index 1687de0..8482670 100644
              }
          }
  
-@@ -195,6 +201,9 @@ android {
+@@ -195,6 +206,9 @@ android {
          named("main") {
              // Set up path for downloaded native libraries
              jniLibs.srcDir(downloadedJniLibsPath)
@@ -65,6 +77,19 @@ index 1687de0..8482670 100644
          }
      }
  }
+diff --git a/src/android/app/src/main/AndroidManifest.xml b/src/android/app/src/main/AndroidManifest.xml
+index 022a4f6..42096fc 100644
+--- a/src/android/app/src/main/AndroidManifest.xml
++++ b/src/android/app/src/main/AndroidManifest.xml
+@@ -35,7 +35,7 @@
+ 
+     <application
+         android:name="org.citra.citra_emu.CitraApplication"
+-        android:label="@string/app_name"
++        android:label="${appLabel}"
+         android:icon="@mipmap/ic_launcher"
+         android:appCategory="game"
+         android:allowBackup="false"
 diff --git a/src/android/app/src/main/java/org/citra/citra_emu/fragments/EmulationFragment.kt b/src/android/app/src/main/java/org/citra/citra_emu/fragments/EmulationFragment.kt
 index 81404ca..99f764c 100644
 --- a/src/android/app/src/main/java/org/citra/citra_emu/fragments/EmulationFragment.kt

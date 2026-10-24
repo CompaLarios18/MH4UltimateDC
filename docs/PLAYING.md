@@ -213,6 +213,25 @@ Mods go where Azahar looks for them (right-click the game → *Open Mods Locatio
 - **Code mods** (`exefs/code.ips`, `exefs/code.bps` or a whole `exefs/code.bin`, made for the USA v1.3.0 update): Azahar patches the game's code with them when it starts. One that only changes the game's data works as it is. For example, the crafting patch of [anco's MH4U quality-of-life project](https://codeberg.org/anco/mh4u_qol) (every combination succeeds) changes 136 bytes of data in v1.3.0; tried in the cloud. One that changes the game's code needs the code library built again with the mod in place (step 1 again: `build_game.py --install` and `generar_codigo.ps1` apply the mods they find in that folder and say whether a mod changes code). Otherwise the port sees code it didn't recompile and runs everything in Azahar's interpreter, which is far too slow to play. Build again whenever you add, change or remove such a mod.
 - **Cheats** that write data work (*Cheats* in the game's right-click menu). Ones that rewrite code don't take effect in recompiled functions.
 
+## 7. Android (experimental)
+
+The port also runs inside Azahar's Android app on arm64 phones and handhelds (thanks to james2doyle; [research/android-fiber-jni.md](research/android-fiber-jni.md)). The release's `mh4u-port-android.apk` (or the `mh4u-port-android` download of the [*Android build* workflow](../../../actions/workflows/android.yml)) is that app with the port in it, named **MH4U**: it installs next to Azahar without replacing it. As on a PC, the game's code library is made from your own update on your PC:
+
+```bash
+# Linux and macOS: --fetch-compiler downloads Zig's C compiler if there's no clang with lld
+python3 tools/build_game.py --dump "path/to/MH4U v1.3.0 update.cia" --android --fetch-compiler
+# Windows: llvm-mingw, as for the PC library
+py tools\build_game.py --dump "path\to\MH4U v1.3.0 update.cia" --android --fetch-compiler
+```
+
+It builds `build/game/recomp/android/0004000000126300.so` with the same compilers as the PC library (no Android NDK needed) and checks that Android can load it. Then, on the device:
+
+1. Install the APK and open it; choose its user folder when it asks (as Azahar does).
+2. Copy `0004000000126300.so` into that folder's `recomp/` folder (create it), by USB or any file sync; or give `build_game.py` that folder with `--install` if your PC sees it.
+3. In the app, install your v1.3.0 update `.cia` and add your game, as in Azahar.
+
+The app copies the library into its own storage (Android doesn't run code from shared storage) and the log says `running recompiled code from …`; without it the game runs on Azahar's own CPU emulation and says how to build it. The first `mh4u.ini` fills the screen (`widescreen = match`). Not tried yet with the release's APK on a device: reports are welcome in an issue.
+
 ## Troubleshooting
 
 | Symptom | Cause |

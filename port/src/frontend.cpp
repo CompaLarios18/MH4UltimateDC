@@ -1,9 +1,14 @@
 #include "frontend.h"
 
+#include <cstdio>
 #include <cstdlib>
 #include <memory>
 #include <vector>
 #include <fmt/format.h>
+#if defined(__ANDROID__)
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
 
 #include "arm_recomp.h"
 #include "hooks.h"
@@ -21,9 +26,88 @@ namespace {
 constexpr u64 MH4U_USA = 0x0004000000126300;
 std::string notice;
 
+#if defined(__ANDROID__)
+constexpr const char* BUILD_HINT =
+    "Build it on your PC from your own copy of the v1.3.0 update with tools/build_game.py "
+    "--android, then copy it into Azahar's user folder on the device as recomp/0004000000126300.so "
+    "(docs/PLAYING.md in the port's repository).";
+#else
 constexpr const char* BUILD_HINT =
     "Build it from your own copy of the v1.3.0 update with \"Build code library\" next to "
     "azahar.exe on Windows, or tools/build_game.py (docs/PLAYING.md in the port's repository).";
+#endif
+
+#if defined(__ANDROID__)
+/// The app's own files folder (/data/user/<user>/<package>/files/): the system's linker loads
+/// code from there, not from shared storage, where the player puts the library.
+std::string PrivateDir() {
+    std::string package;
+    if (std::FILE* cmdline = std::fopen("/proc/self/cmdline", "rb")) {
+        for (int c; (c = std::fgetc(cmdline)) != EOF && c != '\0' && c != ':';) {
+            package += static_cast<char>(c);
+        }
+        std::fclose(cmdline);
+    }
+    if (package.empty()) {
+        return "";
+    }
+    return fmt::format("/data/user/{}/{}/files/", getuid() / 100000, package);
+}
+
+/// The code library the player put in Azahar's user folder (recomp/<title>.so, as on a PC),
+/// copied into the app's own folder where it can be loaded: its path there, or "" when there is
+/// none (an APK built with -Pmh4uCodeLibs carries one of its own) or it couldn't be copied.
+std::string InstallUserLibrary(u64 program_id, std::string& error) {
+    const std::string source =
+        fmt::format("{}recomp/{:016X}.so", FileUtil::GetUserPath(FileUtil::UserPath::UserDir), program_id);
+    if (!FileUtil::Exists(source)) {
+        return "";
+    }
+    std::string bytes;
+    if (FileUtil::ReadFileToString(false, source, bytes) == 0 || bytes.empty()) {
+        error = fmt::format("couldn't read {}", source);
+        return "";
+    }
+    const std::string dir = PrivateDir();
+    if (dir.empty()) {
+        error = "couldn't find the app's own folder";
+        return "";
+    }
+    const std::string target = dir + "mh4u_code.so";
+    // the same library as last time: kept (it is tens of megabytes)
+    std::string current;
+    if (std::FILE* f = std::fopen(target.c_str(), "rb")) {
+        current.resize(bytes.size() + 1);
+        current.resize(std::fread(current.data(), 1, current.size(), f));
+        std::fclose(f);
+        if (current == bytes) {
+            return target;
+        }
+    }
+    const std::string temporary = target + ".new";
+    std::remove(temporary.c_str());
+    std::FILE* out = std::fopen(temporary.c_str(), "wb");
+    if (!out) {
+        error = fmt::format("couldn't write {}", temporary);
+        return "";
+    }
+    const bool written = std::fwrite(bytes.data(), 1, bytes.size(), out) == bytes.size();
+    if (std::fclose(out) != 0 || !written) {
+        std::remove(temporary.c_str());
+        error = fmt::format("couldn't write {}", temporary);
+        return "";
+    }
+    // read-only, as Android 14 wants code loaded at run time to be
+    chmod(temporary.c_str(), 0400);
+    std::remove(target.c_str());
+    if (std::rename(temporary.c_str(), target.c_str()) != 0) {
+        error = fmt::format("couldn't put the library in place at {}", target);
+        return "";
+    }
+    LOG_INFO(Frontend, "copied {} to {}", source, target);
+    return target;
+}
+#endif
 
 /// The code Azahar's loader will put in memory for the game at `rom_path`: the installed
 /// update's when there is one, else the game's own, with the code mods in Azahar's mods folder
@@ -171,9 +255,17 @@ std::string PrepareBackendFor(Core::System& system, const std::string& rom_path)
         library = env;
     } else if (program_id != 0) {
 #if defined(__ANDROID__)
-        // lib/arm64-v8a/libmh4u_code.so in the APK; dlopen finds it by soname in the app's
-        // native library directory (see android/app/build.gradle.kts).
-        library = "libmh4u_code.so";
+        // the player's own library from Azahar's user folder (build_game.py --android), else
+        // lib/arm64-v8a/libmh4u_code.so in the APK, which dlopen finds by soname in the app's
+        // native library directory (-Pmh4uCodeLibs, see android/app/build.gradle.kts)
+        std::string copy_error;
+        library = InstallUserLibrary(program_id, copy_error);
+        if (!copy_error.empty()) {
+            LOG_ERROR(Frontend, "the code library in the user folder: {}", copy_error);
+        }
+        if (library.empty()) {
+            library = "libmh4u_code.so";
+        }
 #else
 #if defined(_WIN32)
         constexpr const char* ext = "dll";
@@ -200,6 +292,14 @@ std::string PrepareBackendFor(Core::System& system, const std::string& rom_path)
 
     std::string error;
     if (!ARM_Recomp::LoadCode(library, error)) {
+#if defined(__ANDROID__)
+        if (program_id == MH4U_USA && library == "libmh4u_code.so") {
+            notice = fmt::format("The MH4U port's code library isn't on this device, so the game runs on "
+                                 "Azahar's own CPU emulation, without the port's options.\n\n{}",
+                                 BUILD_HINT);
+            return fmt::format("no recompiled code for {:016X} ({}), using the emulated CPU", program_id, error);
+        }
+#endif
         if (program_id == MH4U_USA) {
             notice = fmt::format("The MH4U PC port's code library couldn't be used ({}), so the game "
                                  "runs on Azahar's own CPU emulation, without the port's options. A "

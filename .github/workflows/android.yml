@@ -1,0 +1,102 @@
+name: Android build
+
+# Azahar's Android app at the commit in port/azahar/COMMIT, with port/azahar/azahar.patch and the
+# port's CPU backend and hooks (-Pmh4uPortDir), built for arm64 as Azahar's own CI builds it, under
+# an id and a name of its own (it installs next to Azahar). It contains no game code: the game's
+# code library is built on the player's PC from their own dump (tools/build_game.py --android) and
+# copied into Azahar's user folder on the device, where the app loads it from (port/src/frontend.cpp).
+# Published under the repository's licence (GPL-3.0-or-later, like Azahar) with the matching source.
+#
+# Signing: with the repository secrets ANDROID_KEYSTORE_B64 (the keystore, base64),
+# ANDROID_KEY_ALIAS and ANDROID_KEYSTORE_PASS the APK is signed with that key, so that each release
+# installs over the last; without them, with the runner's own debug key (a new one each build:
+# installing a newer APK then means uninstalling the old one first).
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "port/**"
+      - ".github/workflows/android.yml"
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_COMPILERCHECK: content
+      CCACHE_SLOPPINESS: time_macros
+      NDK_VERSION: "27.3.13750724"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: mh4u
+      - name: Azahar at the pinned commit, with the port's patch
+        run: |
+          git clone https://github.com/azahar-emu/azahar.git azahar
+          cd azahar
+          git checkout "$(cat ../mh4u/port/azahar/COMMIT)"
+          git submodule update --init --recursive --depth 1
+          git apply ../mh4u/port/azahar/azahar.patch
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Tools
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y ccache
+          # (yes ends on a closed pipe: not a failure)
+          (yes || true) | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" "cmake;3.30.3" "ndk;$NDK_VERSION" >/dev/null
+      - name: Compiler and Gradle caches
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+            ${{ env.CCACHE_DIR }}
+          key: android-${{ hashFiles('mh4u/port/azahar/COMMIT') }}-${{ github.sha }}
+          restore-keys: android-${{ hashFiles('mh4u/port/azahar/COMMIT') }}-
+      - name: Build
+        env:
+          ANDROID_KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEYSTORE_PASS: ${{ secrets.ANDROID_KEYSTORE_PASS }}
+        run: |
+          export NDK_CCACHE="$(which ccache)"
+          if [ -n "$ANDROID_KEYSTORE_B64" ]; then
+            export ANDROID_KEYSTORE_FILE="$RUNNER_TEMP/mh4u.jks"
+            base64 --decode <<< "$ANDROID_KEYSTORE_B64" > "$ANDROID_KEYSTORE_FILE"
+          else
+            echo "::warning::no ANDROID_KEYSTORE_B64 secret: the APK is signed with this runner's debug key"
+          fi
+          cd azahar/src/android
+          chmod +x ./gradlew
+          ./gradlew assembleVanillaRelease --no-daemon --console=plain \
+            -Pmh4uPortDir="$GITHUB_WORKSPACE/mh4u/port" \
+            -Pmh4uApplicationId=io.github.compalarios18.mh4u \
+            -Pmh4uAppLabel=MH4U
+          rm -f "${ANDROID_KEYSTORE_FILE:-/nonexistent}"
+          ccache -s
+      - name: Check the package
+        run: |
+          apk=$(ls azahar/src/android/app/build/outputs/apk/vanilla/release/*.apk | head -n 1)
+          echo "built $apk"
+          # the port's backend is in the core library, for arm64 only
+          unzip -Z1 "$apk" | grep -x "lib/arm64-v8a/libcitra-android.so" >/dev/null ||
+            { echo "::error::no lib/arm64-v8a/libcitra-android.so in $apk"; exit 1; }
+          if unzip -Z1 "$apk" | grep -q "libmh4u_code.so"; then
+            echo "::error::$apk carries a code library (game code): it must never"; exit 1
+          fi
+          unzip -p "$apk" lib/arm64-v8a/libcitra-android.so > "$RUNNER_TEMP/core.so"
+          grep -aq "running recompiled code from" "$RUNNER_TEMP/core.so" ||
+            { echo "::error::the core library hasn't the port's backend"; exit 1; }
+          mkdir -p artifacts
+          cp "$apk" artifacts/mh4u-port-android.apk
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: mh4u-port-android
+          path: artifacts/
+          retention-days: 14

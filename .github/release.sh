@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Publishes a GitHub release of the Windows, Linux and macOS packages that the build workflows
-# made from one commit (the Release workflow runs it; Actions -> Release -> Run workflow).
+# made from one commit (the Release workflow runs it; Actions -> Release -> Run workflow), and
+# the Android APK when android.yml built that commit too (it isn't waited for).
 #
 # usage: release.sh TAG [COMMIT] [--prerelease] [--dry-run]
 #   COMMIT: default, the newest commit on the default branch that all three build workflows
@@ -74,6 +75,14 @@ sed -e "s|@COMMIT@|$commit|g" -e "s|@AZAHAR@|$azahar|g" -e "s|@REPO@|https://git
     .github/release-notes.md >"$out/notes.md"
 
 assets=("$out/mh4u-port-windows.zip" "$out/mh4u-port-linux.tar.gz" "$out/mh4u-port-macos.zip")
+# Android: the APK, when android.yml built this commit (port changes start it)
+if id=$(run_for android.yml "$commit") && [ -n "$id" ]; then
+    gh run download "$id" -R "$repo" -n mh4u-port-android -D "$out/dl/android"
+    cp "$out/dl/android/mh4u-port-android.apk" "$out/"
+    assets+=("$out/mh4u-port-android.apk")
+else
+    echo "no Android build of $commit: the release has no APK"
+fi
 ls -l "${assets[@]}"
 if [ -n "$dry_run" ]; then
     echo "dry run: not publishing $tag"
