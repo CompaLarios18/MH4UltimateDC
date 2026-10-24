@@ -202,14 +202,12 @@ Probe ProbePhysicalDevice(VkPhysicalDevice device, u32 index, VkSurfaceKHR surfa
     vkGetPhysicalDeviceQueueFamilyProperties(device, &probe.queue_family_count, nullptr);
     std::vector<VkQueueFamilyProperties> families(probe.queue_family_count);
     vkGetPhysicalDeviceQueueFamilyProperties(device, &probe.queue_family_count, families.data());
-    // The family the vendored backend wants has graphics, compute and transfer; a graphics or compute
-    // family supports transfer whether or not it reports the bit (the vendored backend's own family
-    // choice still asks for the bit and falls back to family 0 without it: its limit, not ours).
-    constexpr VkQueueFlags kWanted = VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT;
+    // The family the vendored backend picks has graphics, compute and transfer: the policy must agree with that
+    // pick, so it asks for the same three bits (relaxing it is a patch of the vendored queue).
     bool graphics = false;
     probe.can_present = (surface == VK_NULL_HANDLE);
     for (u32 i = 0; i < families.size(); ++i) {
-        if ((families[i].queueFlags & kWanted) != kWanted) {
+        if (!core::IsDirectQueueFamily(families[i].queueFlags)) {
             continue;
         }
         graphics = true;
@@ -425,6 +423,17 @@ Result<std::shared_ptr<Backend>> CreateBackend(std::shared_ptr<Instance> instanc
     impl->queue_mutex = impl->queue->queue->mutex.get();
     impl->vk_queue = impl->queue->queue->vk;
     impl->queue_family = impl->queue->familyIndex;
+    {
+        // The vendored backend leaves the family at 0 when none matches its pick: check what it really chose.
+        u32 family_count = 0;
+        vkGetPhysicalDeviceQueueFamilyProperties(impl->physical_device, &family_count, nullptr);
+        std::vector<VkQueueFamilyProperties> families(family_count);
+        vkGetPhysicalDeviceQueueFamilyProperties(impl->physical_device, &family_count, families.data());
+        if (impl->queue_family >= family_count || !core::IsDirectQueueFamily(families[impl->queue_family].queueFlags)) {
+            return Error{fmt::format("the queue family {} that the device was given is not a graphics and compute family",
+                                     impl->queue_family)};
+        }
+    }
     if (impl->caps.timeline) {
         impl->timeline_owner = impl->device_owner->createTimelineSemaphore(0);
         if (impl->timeline_owner == nullptr) {

@@ -365,6 +365,18 @@ TEST_CASE("choice/override_tells_two_devices_with_one_name_apart") {
     CHECK(refused.error.find("fragmentStoresAndAtomics") != std::string::npos);
 }
 
+TEST_CASE("choice/the_direct_queue_family_needs_graphics_compute_and_transfer") {
+    constexpr u32 G = core::kQueueGraphicsBit, C = core::kQueueComputeBit, T = core::kQueueTransferBit;
+    CHECK(core::IsDirectQueueFamily(G | C | T));
+    CHECK(core::IsDirectQueueFamily(G | C | T | 0x10));  // sparse binding etc. do not matter
+    CHECK_FALSE(core::IsDirectQueueFamily(G | T));        // graphics without compute
+    CHECK_FALSE(core::IsDirectQueueFamily(G));
+    CHECK_FALSE(core::IsDirectQueueFamily(C | T));        // compute only
+    CHECK_FALSE(core::IsDirectQueueFamily(T));
+    CHECK_FALSE(core::IsDirectQueueFamily(G | C));        // the vendored pick asks for the transfer bit too
+    CHECK_FALSE(core::IsDirectQueueFamily(0));
+}
+
 TEST_CASE("choice/present_wait_is_available_only_with_a_surface_the_bit_and_both_features") {
     using core::PresentWaitAvailable;
     for (bool surface : {false, true}) {
@@ -492,7 +504,6 @@ TEST_CASE("to_plume/constant_alpha_cannot_be_expressed") {
         const Result<void> result = core::ToPlume(state, true, &desc);
         CHECK_FALSE(result.ok());
         CHECK(result.error().find("constant-alpha") != std::string::npos);
-        // not an error while blending is off: the factor is not used
         // not an error while blending is off: the factor is not used, and the backend is given neutral ones
         // (it converts all four factors whether or not blending is on)
         state.blend_enabled = false;
@@ -1872,6 +1883,8 @@ TEST_CASE("loading/no_driver_gives_an_error_with_a_message_and_the_process_goes_
     fs::remove_all(empty);
     CHECK_MESSAGE((status != -1 && WIFEXITED(status) && WEXITSTATUS(status) == 0), "the child's output: " << text.str());
     CHECK(text.str().find("child: error: ") != std::string::npos);
+    // the message says what is wrong, not only a code
+    CHECK_MESSAGE(text.str().find("no Vulkan driver found") != std::string::npos, "the child's output: " << text.str());
     CHECK(text.str().find("error: \n") == std::string::npos);  // the message is not empty
 #else
     WARN_MESSAGE(false, "skipped: the subprocess check runs on Linux");

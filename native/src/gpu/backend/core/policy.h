@@ -64,6 +64,15 @@ bool PresentWaitMeasuresDisplay(bool present_wait_available, u32 driver_id, std:
 // The mask from MH4N_RHI_MASK's text (null or empty: none) and the option's mask, as one.
 Result<CapabilityMask> CombineMasks(const char* environment_text, CapabilityMask option_mask);
 
+// Whether a queue family with these VkQueueFlags can be the direct family: graphics, compute and transfer, the
+// three bits the vendored backend's own pick asks for (the policy must agree with that pick; relaxing it is a
+// patch of the vendored queue). The bit values are Vulkan's: graphics 1, compute 2, transfer 4.
+inline constexpr u32 kQueueGraphicsBit = 1, kQueueComputeBit = 2, kQueueTransferBit = 4;
+constexpr bool IsDirectQueueFamily(u32 queue_flags) {
+    constexpr u32 wanted = kQueueGraphicsBit | kQueueComputeBit | kQueueTransferBit;
+    return (queue_flags & wanted) == wanted;
+}
+
 // "a, b, c"
 std::string JoinNames(const std::vector<std::string>& names);
 

@@ -187,7 +187,8 @@ struct Capabilities {
 
     // ---- values ----
     bool geometry_shader = false;
-    u32 stride_alignment = 1;               // vertex strides must be multiples of it (the portability subset's value; 1 otherwise)
+    // Vertex strides must be multiples of it (the portability subset's value; 1 otherwise).
+    u32 stride_alignment = 1;
     // MoltenVK's or KosmicKrisp's driver id, or Apple's vendor id. On such devices fans are rewritten as
     // lists and 8-bit indices widened whatever the two bits say (9.4 item 11).
     bool apple = false;
@@ -240,7 +241,8 @@ enum class OwnerRule : u8 {
     SubmissionOrder,  // clause 3: a recorder was submitted after a later one of the same thread
     RequiredWait,     // clause 2: a submission lacks the wait that covers an image handed over to the thread
     ForeignThread,    // clause 1: a thread recorded on an image it does not own
-    HandOver,         // clause 2: an image was handed over that cannot be (an attachment of an open pass, a depth-stencil target)
+    // clause 2: an image was handed over that cannot be (an attachment of an open pass, a depth-stencil target)
+    HandOver,
     WrongThread,      // a wrapper's call that must run on one thread ran on another (the renderer or present thread)
 };
 
@@ -592,7 +594,8 @@ enum class BlendFactor : u8 {
 };
 enum class BlendOp : u8 { Add, Subtract, ReverseSubtract, Min, Max };
 enum class LogicOp : u8 {
-    Clear, Set, Copy, CopyInverted, NoOp, Invert, And, Nand, Or, Nor, Xor, Equiv, AndReverse, AndInverted, OrReverse, OrInverted,
+    Clear, Set, Copy, CopyInverted, NoOp, Invert, And, Nand, Or, Nor, Xor, Equiv,
+    AndReverse, AndInverted, OrReverse, OrInverted,
 };
 enum class CompareOp : u8 { Never, Less, Equal, LessEqual, Greater, NotEqual, GreaterEqual, Always };
 enum class StencilOp : u8 { Keep, Zero, Replace, IncrementClamp, DecrementClamp, Invert, IncrementWrap, DecrementWrap };
@@ -613,9 +616,10 @@ struct StencilFaceState {
 // SetStencilMasks, SetViewport, SetScissor), so a different value never makes another pipeline.
 //
 // TRAP: dynamic state that nothing set is a validation error at the draw (the draw-time dynamic-state
-// VUIDs, None-07835 to 07839). A draw whose pipeline blends with a constant-colour factor, or has the stencil test on, must be
-// preceded in its recorder by SetBlendConstants, or SetStencilReference and SetStencilMasks. The core sets
-// no defaults, not even at SetPipeline: the caller of the setters (N2-13) runs them first, every pass.
+// VUIDs, None-07835 to 07839). A draw whose pipeline blends with a constant-colour factor, or has the stencil
+// test on, must be preceded in its recorder by SetBlendConstants, or SetStencilReference and SetStencilMasks.
+// Vulkan needs the state set once per command buffer, before the first draw that uses it (not once per pass).
+// The core sets no defaults, not even at SetPipeline: the caller of the setters (N2-13) runs them first.
 struct FixedFunctionState {
     bool blend_enabled = false;
     BlendFactor src_color = BlendFactor::One;
@@ -729,7 +733,8 @@ enum class Conversion : u8 {
     None,
     Rgb8ToRgba8,     // Rgb8 is stored as Rgba8: add an opaque alpha
     UnpackToRgba8,   // a 16-bit colour format the device cannot use: the caller stores Rgba8
-    DecodeBc,        // the bc7 bit is off: decode the block-compressed data (BC1, BC3, BC5 or BC7) on the CPU and store Rgba8
+    // the bc7 bit is off: decode the block-compressed data (BC1, BC3, BC5 or BC7) on the CPU and store Rgba8
+    DecodeBc,
     DepthStencilTo32,  // D24S8 is stored as D32S8: convert the depth
 };
 struct ChosenFormat {
@@ -867,7 +872,8 @@ public:
     void SetViewport(const Viewport& viewport);
     void SetScissor(const Rect& scissor);
     void Draw(u32 vertex_count, u32 instance_count = 1, u32 first_vertex = 0, u32 first_instance = 0);
-    void DrawIndexed(u32 index_count, u32 instance_count = 1, u32 first_index = 0, s32 vertex_offset = 0, u32 first_instance = 0);
+    void DrawIndexed(u32 index_count, u32 instance_count = 1, u32 first_index = 0, s32 vertex_offset = 0,
+                     u32 first_instance = 0);
     void Dispatch(u32 x, u32 y, u32 z);
     // Outside a pass. Both buffers need BufferUsage::Transfer; the destination is not in the Upload heap
     // and the source not in the Readback heap.
@@ -985,8 +991,8 @@ public:
     FormatSupport QueryFormat(Format format) const;
     // The format to store `format` in and the conversion the caller owes (9.4 item 3): D24S8 when the d24s8
     // bit is on, else D32S8; Rgb8 always as Rgba8; Rgb565, Rgb5A1 and Rgba4 in whichever component order
-    // the query says is an attachment, else Rgba8 with a conversion; a block-compressed format (BC1, BC3, BC5, BC7) only when the bc7 bit is on, else
-    // decode on the CPU; the other formats as they are.
+    // the query says is an attachment, else Rgba8 with a conversion; a block-compressed format (BC1, BC3, BC5,
+    // BC7) only when the bc7 bit is on, else decode on the CPU; the other formats as they are.
     ChosenFormat ChooseFormat(Format format, FormatUse use) const;
     Result<std::shared_ptr<Image>> CreateImage(const ImageDesc& desc);
     Result<std::shared_ptr<Sampler>> CreateSampler(const SamplerDesc& desc);
