@@ -34,6 +34,7 @@
 #include <array>
 #include <atomic>
 #include <bit>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -1030,7 +1031,6 @@ rhi::BindingSetDesc TestSetDesc() {
 struct Rig {
     std::shared_ptr<rhi::Backend> backend;
     std::map<std::string, std::shared_ptr<rhi::Pipeline>> pipelines;
-
     Rig() : backend(test::RequireBackend()) {}
     bool ok() const { return backend != nullptr; }
 
@@ -1046,7 +1046,12 @@ struct Rig {
     }
 
     static std::string LayoutKey(const shader::TranslatedVertexShader& t, const vertex::LoadedDraw& d) {
-        std::string key = std::to_string(reinterpret_cast<uintptr_t>(&t)) + ":";
+        // keyed by the SPIR-V itself (an address can be reused by the next shader)
+        u64 h = 1469598103934665603ull;
+        for (u32 w : t.spirv) {
+            h = (h ^ w) * 1099511628211ull;
+        }
+        std::string key = std::to_string(h) + "/" + std::to_string(t.spirv.size()) + ":";
         for (const vertex::VertexBuffer& b : d.buffers) {
             key += "b" + std::to_string(b.stride) + (b.per_instance ? "i" : "v");
         }
@@ -1099,16 +1104,17 @@ struct Rig {
         const u64 capture_bytes = static_cast<u64>(slots) * shader::kCaptureVec4PerVertex * 16;
         auto uniforms = Make(sizeof(shader::PicaUniformData), rhi::Heap::Upload, rhi::BufferUsage::Uniform, "pica uniforms");
         auto vdata = Make(sizeof(shader::VertexUniformData), rhi::Heap::Upload, rhi::BufferUsage::Uniform, "vertex data");
-        auto capture = Make(capture_bytes, rhi::Heap::Device, rhi::BufferUsage::Storage | rhi::BufferUsage::Transfer, "capture");
-        auto zeros = Make(capture_bytes, rhi::Heap::Upload, rhi::BufferUsage::Transfer, "zeros");
+        // host-visible, so that the shader writes where the host reads and nothing is copied (a copy through a
+        // staging buffer the backend frees would read as a hazard when the layer sees its memory reused)
+        auto capture = Make(capture_bytes, rhi::Heap::Readback, rhi::BufferUsage::Storage, "capture");
         const shader::PicaUniformData pu = shader::MakePicaUniformData(setup);
         const shader::VertexUniformData vu = shader::MakeVertexUniformData(state, flip);
         std::memcpy(uniforms->Mapped().data(), &pu, sizeof(pu));
         uniforms->Flush(0, sizeof(pu));
         std::memcpy(vdata->Mapped().data(), &vu, sizeof(vu));
         vdata->Flush(0, sizeof(vu));
-        std::memset(zeros->Mapped().data(), 0, capture_bytes);
-        zeros->Flush(0, capture_bytes);
+        std::memset(capture->Mapped().data(), 0, capture_bytes);
+        capture->Flush(0, capture_bytes);
 
         std::vector<std::shared_ptr<rhi::Buffer>> vbuffers;
         std::vector<rhi::VertexBufferBinding> bindings;
@@ -1133,8 +1139,6 @@ struct Rig {
         REQUIRE((*set)->SetStorageBuffer(shader::kBindingCapture, *capture, 0, capture_bytes).ok());
 
         rhi::Recorder rec = backend->BeginRecording();
-        rec.CopyBuffer(*capture, 0, *zeros, 0, capture_bytes);
-        rec.Barrier(rhi::Stage::Transfer, rhi::Stage::VertexShader);
         rec.BeginPass({8, 8});
         rec.SetPipeline(*pipeline);
         rec.Bind(**set, 0);
@@ -1154,6 +1158,11 @@ struct Rig {
         rhi::Result<void> read = backend->ReadBuffer(
             *capture, 0, std::span<u8>(reinterpret_cast<u8*>(out.data()), out.size() * 4), value);
         REQUIRE_MESSAGE(read.ok(), read.error());
+        if (test::ValidationEnabled()) {
+            for (auto& b : vbuffers) kept.push_back(b);
+            kept.insert(kept.end(), {uniforms, vdata, capture, *set});
+            if (ib) kept.push_back(ib);
+        }
         return out;
     }
 };
@@ -1329,16 +1338,17 @@ void CompareFloat(Report& r, float gpu, float cpu, const std::string& what) {
 
 // Compares the capture of the GPU with the oracle for the vertex ids in `ids`. `varyings`: also the
 // seven varyings and the position.
-Report CompareWithOracle(const Draw& d, const shader::TranslatedVertexShader& t, const std::vector<float>& cap,
+Report CompareWithOracle(const pica::ShaderSetup& setup, const pica::PicaState& state, const vertex::LoadedDraw& loaded,
+                         bool flip, const shader::TranslatedVertexShader& t, const std::vector<float>& cap,
                          const std::vector<u32>& ids, bool varyings, bool clip = false) {
     Report report;
-    const oracle::Memory mem = OracleMemory(d.setup);
-    const oracle::Uniforms uniforms = OracleUniforms(d.setup);
-    const u32 mask = d.state->regs[pica::reg::kVs + pica::reg::kShaderOutputMask] & 0xFFFF;
-    const u32 entry = d.state->regs[pica::reg::kVs + pica::reg::kShaderMainOffset] & 0xFFFF;
+    const oracle::Memory mem = OracleMemory(setup);
+    const oracle::Uniforms uniforms = OracleUniforms(setup);
+    const u32 mask = state.regs[pica::reg::kVs + pica::reg::kShaderOutputMask] & 0xFFFF;
+    const u32 entry = state.regs[pica::reg::kVs + pica::reg::kShaderMainOffset] & 0xFFFF;
     for (u32 id : ids) {
         oracle::Unit u;
-        FetchInput(d.loaded, id, u.input);
+        FetchInput(loaded, id, u.input);
         const oracle::Status status = oracle::Run(mem, uniforms, u, entry);
         report.not_terminating |= status == oracle::Status::NotTerminating;
         report.unhandled |= status == oracle::Status::Unhandled;
@@ -1363,7 +1373,7 @@ Report CompareWithOracle(const Draw& d, const shader::TranslatedVertexShader& t,
             }
         }
         if (varyings) {
-            const Varyings e = ExpectedVaryings(u, *d.state, d.flip_viewport);
+            const Varyings e = ExpectedVaryings(u, state, flip);
             const auto cmp = [&](u32 slot, u32 lane, float want, const char* name) {
                 CompareFloat(report, g[slot * 4 + lane], want, "vertex " + std::to_string(id) + " " + name);
             };
@@ -1389,6 +1399,11 @@ Report CompareWithOracle(const Draw& d, const shader::TranslatedVertexShader& t,
         }
     }
     return report;
+}
+
+Report CompareWithOracle(const Draw& d, const shader::TranslatedVertexShader& t, const std::vector<float>& cap,
+                         const std::vector<u32>& ids, bool varyings, bool clip = false) {
+    return CompareWithOracle(d.setup, *d.state, d.loaded, d.flip_viewport, t, cap, ids, varyings, clip);
 }
 
 std::vector<u32> Iota(u32 n) {
@@ -2122,6 +2137,995 @@ TEST_CASE("JMPC and JMPU: forward, backward loops, jumps over a region, NOP and 
 }
 
 // ================================================================================================
+// The cache
+// ================================================================================================
+
+TEST_CASE("the cache: a hit does not compile; another program, swizzle, output map, conversion or option is another key") {
+    using namespace asmb;
+    Asm a;
+    a.Op(kAdd, O(0), V(0), V(1));
+    a.Op1(kMov, O(1), V(2), {.mask = "xy__"});
+    a.Nop();
+    a.End();
+    Draw d = MakeProgram(a, RandomInputs(3, 4, 40), 0x3);
+    SetOutmap(*d.state, StandardOutmap());
+    shader::ConfigOptions opt;
+    shader::VertexShaderCache cache;
+    const auto key = [&] {
+        d.state->vs = d.setup;
+        return shader::MakeVertexShaderConfig(*d.state, &d.loaded, opt);
+    };
+    const shader::VertexShaderConfig base = key();
+    shader::TranslateResult first = cache.Get(d.setup, base);
+    REQUIRE_MESSAGE(first.ok(), first.error);
+    CHECK(cache.stats().lookups == 1);
+    CHECK(cache.stats().compiles == 1);
+    CHECK(cache.stats().hits == 0);
+    CHECK(cache.size() == 1);
+    // the same key built again from the same state: a hit, the same object
+    shader::TranslateResult again = cache.Get(d.setup, key());
+    CHECK(again.shader == first.shader);
+    CHECK(cache.stats().hits == 1);
+    CHECK(cache.stats().compiles == 1);
+    CHECK(key() == base);
+    CHECK(key().Hash() == base.Hash());
+    // another state with the same program, swizzle, output map and conversions (a different object
+    // built independently) is the same key
+    Draw twin = MakeProgram(a, RandomInputs(3, 7, 41), 0x3);
+    SetOutmap(*twin.state, StandardOutmap());
+    twin.state->vs = twin.setup;
+    CHECK(shader::MakeVertexShaderConfig(*twin.state, &twin.loaded, opt) == base);
+    // uniforms and the vertices are not part of the key
+    SetRandomUniforms(d, 8, 42);
+    d.setup.uniform_b[3] = true;
+    d.setup.uniform_i[1] = {1, 2, 3, 4};
+    CHECK(key() == base);
+    CHECK(cache.Get(d.setup, key()).shader == first.shader);
+    CHECK(cache.stats().compiles == 1);
+
+    u64 expected_compiles = 1;
+    const auto differs = [&](const char* what, const auto& change, const auto& restore) {
+        change();
+        const shader::VertexShaderConfig k = key();
+        CHECK_MESSAGE(!(k == base), what);
+        shader::TranslateResult r = cache.Get(d.setup, k);
+        CHECK_MESSAGE(r.ok(), what << ": " << r.error);
+        CHECK_MESSAGE(r.shader != first.shader, what);
+        ++expected_compiles;
+        CHECK_MESSAGE(cache.stats().compiles == expected_compiles, what);
+        restore();
+        CHECK_MESSAGE(key() == base, what);
+        CHECK(cache.Get(d.setup, key()).shader == first.shader);
+    };
+    const u32 nop_word = d.setup.program_code[2];
+    differs("a program word", [&] { d.setup.UpdateProgramCode(2, nop_word | 1u); },
+            [&] { d.setup.UpdateProgramCode(2, nop_word); });
+    const u32 swz = d.setup.swizzle_data[0];
+    differs("a swizzle word", [&] { d.setup.UpdateSwizzleData(0, swz ^ 0x10u); },
+            [&] { d.setup.UpdateSwizzleData(0, swz); });
+    differs("the output mask", [&] { SetShaderRegs(*d.state, 0, 0x7); }, [&] { SetShaderRegs(*d.state, 0, 0x3); });
+    differs("the entry point", [&] { SetShaderRegs(*d.state, 2, 0x3); }, [&] { SetShaderRegs(*d.state, 0, 0x3); });
+    const u32 outmap0 = d.state->regs[shader::reg::kVsOutputAttributes];
+    differs("an OUTMAP register", [&] { d.state->regs[shader::reg::kVsOutputAttributes] = outmap0 ^ 0x01; },
+            [&] { d.state->regs[shader::reg::kVsOutputAttributes] = outmap0; });
+    differs("the OUTMAP count", [&] { d.state->regs[shader::reg::kVsOutputTotal] = 5; },
+            [&] { d.state->regs[shader::reg::kVsOutputTotal] = 6; });
+    differs("an input's conversion", [&] { d.loaded.attributes[1].conversion = vertex::Conversion::FromSint; },
+            [&] { d.loaded.attributes[1].conversion = vertex::Conversion::None; });
+    differs("an input's conversion (unsigned)", [&] { d.loaded.attributes[1].conversion = vertex::Conversion::FromUint; },
+            [&] { d.loaded.attributes[1].conversion = vertex::Conversion::None; });
+    differs("an input's w alias", [&] { d.loaded.attributes[5].alias_w = true; },
+            [&] { d.loaded.attributes[5].alias_w = false; });
+    differs("the clip-plane option", [&] { opt.use_clip_planes = !opt.use_clip_planes; },
+            [&] { opt.use_clip_planes = !opt.use_clip_planes; });
+    differs("the geometry-stage option", [&] { opt.geometry_stage = true; }, [&] { opt.geometry_stage = false; });
+    differs("the test hook", [&] { opt.capture_outputs = true; }, [&] { opt.capture_outputs = false; });
+    CHECK(cache.size() == expected_compiles);
+    CHECK(cache.stats().failures == 0);
+    cache.Clear();
+    CHECK(cache.size() == 0);
+}
+
+TEST_CASE("the cache remembers a program that is not translated") {
+    using namespace asmb;
+    Asm a;
+    a.Jmpu(0, 3000); // outside the loaded program
+    a.End();
+    Draw d = MakeProgram(a, RandomInputs(1, 2, 43), 0x1);
+    d.state->vs = d.setup;
+    const shader::VertexShaderConfig cfg = shader::MakeVertexShaderConfig(*d.state, &d.loaded);
+    shader::VertexShaderCache cache;
+    shader::TranslateResult r1 = cache.Get(d.setup, cfg);
+    CHECK_FALSE(r1.ok());
+    CHECK(r1.error.find("loaded") != std::string::npos);
+    shader::TranslateResult r2 = cache.Get(d.setup, cfg);
+    CHECK_FALSE(r2.ok());
+    CHECK(r2.error == r1.error);
+    CHECK(cache.stats().compiles == 1);
+    CHECK(cache.stats().failures == 1);
+    CHECK(cache.stats().hits == 1);
+}
+
+TEST_CASE("the cache from several threads: one key, one result") {
+    using namespace asmb;
+    Asm a;
+    a.Op(kMul, O(0), V(0), V(1));
+    a.End();
+    Draw d = MakeProgram(a, RandomInputs(2, 2, 44), 0x1);
+    d.state->vs = d.setup;
+    const shader::VertexShaderConfig cfg = shader::MakeVertexShaderConfig(*d.state, &d.loaded);
+    shader::VertexShaderCache cache;
+    std::vector<std::shared_ptr<const shader::TranslatedVertexShader>> got(4);
+    std::vector<std::thread> threads;
+    for (size_t i = 0; i < got.size(); ++i) {
+        threads.emplace_back([&, i] { got[i] = cache.Get(d.setup, cfg).shader; });
+    }
+    for (std::thread& t : threads) {
+        t.join();
+    }
+    for (const auto& g : got) {
+        REQUIRE(g != nullptr);
+        CHECK(g == got[0]); // a second translation of the key is dropped
+    }
+    CHECK(cache.size() == 1);
+    CHECK(cache.stats().lookups == 4);
+}
+
+// ================================================================================================
+// Programs that are not programs
+// ================================================================================================
+
+namespace {
+
+shader::TranslateResult TranslateRaw(const Asm& a, u32 main_offset = 0) {
+    Draw d;
+    a.Install(d.setup);
+    SetShaderRegs(*d.state, main_offset, 0x1);
+    d.state->vs = d.setup;
+    d.loaded = MakeDraw(RandomInputs(1, 2, 1));
+    const shader::VertexShaderConfig cfg = shader::MakeVertexShaderConfig(*d.state, &d.loaded);
+    return shader::TranslateVertexShader(d.setup, cfg);
+}
+
+} // namespace
+
+TEST_CASE("malformed programs are rejected with a message, never run") {
+    using namespace asmb;
+    {   // a jump outside the loaded code
+        Asm a;
+        a.Jmpu(0, 3000);
+        a.End();
+        const auto r = TranslateRaw(a);
+        CHECK_FALSE(r.ok());
+        CHECK(r.error.find("loaded") != std::string::npos);
+    }
+    {   // a call outside the loaded code
+        Asm a;
+        a.Raw(Asm::Flow(kCall, 1000, 4, 0));
+        a.End();
+        const auto r = TranslateRaw(a);
+        CHECK_FALSE(r.ok());
+        CHECK(r.error.find("loaded") != std::string::npos);
+    }
+    {   // no END: the code runs off the loaded words
+        Asm a;
+        a.Op1(kMov, O(0), V(0));
+        a.Op1(kMov, O(0), V(0));
+        const auto r = TranslateRaw(a);
+        CHECK_FALSE(r.ok());
+        CHECK(r.error.find("loaded") != std::string::npos);
+    }
+    {   // recursion
+        Asm a;
+        a.Call("loop");
+        a.End();
+        a.Sub("loop");
+        a.Nop();
+        a.Call("loop");
+        a.Nop();
+        a.EndSub();
+        a.Done();
+        const auto r = TranslateRaw(a);
+        CHECK_FALSE(r.ok());
+        CHECK(r.error.find("Recursive") != std::string::npos);
+    }
+    {   // an instruction that is not one
+        Asm a;
+        a.Raw(0x10u << 26);
+        a.End();
+        const auto r = TranslateRaw(a);
+        CHECK_FALSE(r.ok());
+        CHECK(r.error.find("Unhandled instruction") != std::string::npos);
+    }
+    {   // an empty program, and an entry point outside the memory
+        Asm a;
+        const auto r = TranslateRaw(a);
+        CHECK_FALSE(r.ok());
+        Asm b;
+        b.End();
+        const auto far = TranslateRaw(b, 5000);
+        CHECK_FALSE(far.ok());
+        CHECK(far.error.find("entry point") != std::string::npos);
+        const auto beyond = TranslateRaw(b, 100); // inside the memory, outside the loaded words
+        CHECK_FALSE(beyond.ok());
+    }
+    {   // a forever-true backward jump is accepted, bounded, and says so
+        Asm a;
+        a.Op1(kMov, O(0), C(0));
+        a.Jmpu(0, 0);
+        a.End();
+        const auto r = TranslateRaw(a);
+        REQUIRE_MESSAGE(r.ok(), r.error);
+        REQUIRE(!r.shader->notes.empty());
+        CHECK(r.shader->notes[0].find("backwards") != std::string::npos);
+        CHECK(r.shader->glsl.find("jmp_guard < 65536u") != std::string::npos);
+    }
+    {   // a program of thousands of instructions is translated or refused, in bounded time
+        Asm a;
+        for (u32 i = 0; i < 3000; ++i) {
+            a.Op(kAdd, R(i % 16), V(i % 4), V((i + 1) % 4));
+        }
+        a.Op1(kMov, O(0), R(0));
+        a.End();
+        const auto start = std::chrono::steady_clock::now();
+        const auto r = TranslateRaw(a);
+        const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+        CHECK(seconds < 60.0);
+        MESSAGE("3000 instructions: " << (r.ok() ? "translated" : "refused: " + r.error) << " in " << seconds << " s");
+    }
+}
+
+TEST_CASE("random words never crash the translator, hang it or give GLSL that does not compile") {
+    using namespace asmb;
+    Rng rng(45);
+    u32 accepted = 0, rejected = 0, compile_failures = 0, compiled = 0;
+    std::string first_failure;
+    const auto start = std::chrono::steady_clock::now();
+    for (u32 p = 0; p < 500; ++p) {
+        Asm a;
+        const u32 length = 4 + rng.Next() % 40;
+        for (u32 i = 0; i + 1 < length; ++i) {
+            u32 word = rng.Next();
+            const u32 kind = rng.Next() % 10;
+            if (kind < 5) { // an arithmetic or mad instruction, any fields
+                static const u32 kOps[] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 0x12, 0x13, 0x18, 0x19,
+                                           0x1A, 0x1B, 0x2E, 0x30, 0x38};
+                word = (word & 0x03FFFFFFu) | (kOps[rng.Next() % 25] << 26);
+            } else { // flow control
+                static const u32 kFlow[] = {0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x29, 0x2A, 0x2B, 0x2C, 0x2D};
+                const u32 op = kFlow[rng.Next() % 14];
+                const u32 dest = rng.Next() % (length + 3);
+                const u32 num = rng.Next() % 6;
+                word = (op << 26) | (dest << 10) | num | (word & (0xFu << 22));
+            }
+            a.Raw(word);
+        }
+        a.End();
+        Draw d;
+        a.Install(d.setup);
+        for (u32 i = 0; i < 128; ++i) {
+            d.setup.UpdateSwizzleData(i, rng.Next());
+        }
+        SetShaderRegs(*d.state, rng.Next() % 8 == 0 ? rng.Next() % length : 0, 0xFFFF);
+        d.state->vs = d.setup;
+        d.loaded = MakeDraw(RandomInputs(4, 2, 1));
+        const shader::VertexShaderConfig cfg = shader::MakeVertexShaderConfig(*d.state, &d.loaded);
+        shader::TranslateResult g = shader::GenerateVertexGlsl(d.setup, cfg);
+        if (!g.ok()) {
+            ++rejected;
+            CHECK_FALSE(g.error.empty());
+            continue;
+        }
+        ++accepted;
+        if (accepted % 5 == 0) { // compile every fifth accepted program
+            std::vector<u32> spirv;
+            std::string error;
+            ++compiled;
+            if (!shader::CompileGlslToSpirv(g.shader->glsl, spirv, error)) {
+                ++compile_failures;
+                if (first_failure.empty()) {
+                    first_failure = error.substr(0, 300);
+                }
+            }
+        }
+    }
+    const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+    MESSAGE("random programs: " << accepted << " translated, " << rejected << " rejected, " << compiled
+                                << " compiled, " << compile_failures << " did not compile, " << seconds << " s");
+    CHECK(accepted > 0);
+    CHECK(rejected > 0);
+    CHECK_MESSAGE(compile_failures == 0, first_failure);
+}
+
+TEST_CASE("a backward jump that never ends ends the shader on the device") {
+    Rig rig;
+    if (!rig.ok()) return;
+    using namespace asmb;
+    Asm a;
+    a.Op1(kMov, O(0), C(0));
+    a.Jmpu(0, 0); // b0 is set: forever
+    a.Op1(kMov, O(1), C(0));
+    a.End();
+    Draw d = MakeProgram(a, RandomInputs(1, 8, 46), 0x3);
+    SetUniform(d, 0, 7, 8, 9, 10);
+    d.setup.uniform_b[0] = true;
+    std::string error;
+    auto t = Translate(d, false, false, &error);
+    REQUIRE_MESSAGE(t != nullptr, error);
+    CheckSpirvValid(t->spirv, "the endless loop");
+    const auto start = std::chrono::steady_clock::now();
+    const std::vector<float> cap = rig.Run(t, d.loaded, d.setup, *d.state, 8, 8, false, &error);
+    const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+    REQUIRE_MESSAGE(!cap.empty(), error);
+    MESSAGE("the endless loop ran 8 vertices in " << seconds << " s");
+    CHECK(seconds < 120.0);
+    for (u32 v = 0; v < 8; ++v) {
+        CHECK(At(cap, v, 0, 0) == 7.f); // the first instruction ran, the one after the jump never did
+        CHECK(At(cap, v, 1, 0) == 0.f);
+    }
+    // the interpreter has no bound: the oracle gives up (its instruction budget)
+    oracle::Unit u;
+    CHECK(oracle::Run(OracleMemory(d.setup), OracleUniforms(d.setup), u, 0, 100000) == oracle::Status::NotTerminating);
+    // with the bool clear the same program ends normally
+    d.setup.uniform_b[0] = false;
+    const std::vector<float> cap2 = rig.Run(t, d.loaded, d.setup, *d.state, 8, 8, false, &error);
+    REQUIRE(!cap2.empty());
+    CHECK(At(cap2, 0, 1, 0) == 7.f);
+}
+
+// ================================================================================================
+// From the PICA's registers: a command list, the processor, the vertex loader, the translation
+// ================================================================================================
+
+namespace {
+
+constexpr u32 kFcram = 0x20000000;
+constexpr u32 kBase = kFcram + 0x100000; // the vertex arrays' base address (a multiple of 16)
+constexpr u32 kListAt = kFcram + 0x1000;
+
+// A command list: [value, header, ...] commands (pica_core.cpp's loop), mask 0xF.
+class CmdList {
+public:
+    CmdList& Write(u32 id, u32 value) {
+        if (words_.size() % 2 != 0) {
+            words_.push_back(0xDEADBEEF);
+        }
+        words_.push_back(value);
+        words_.push_back(id | (0xFu << 16));
+        return *this;
+    }
+    CmdList& Vs(u32 rel, u32 value) { return Write(0x2B0 + rel, value); }
+    std::vector<u8> Bytes() const {
+        std::vector<u32> w = words_;
+        if (w.size() % 2 != 0) {
+            w.push_back(0);
+        }
+        std::vector<u8> b(w.size() * 4);
+        std::memcpy(b.data(), w.data(), b.size());
+        return b;
+    }
+
+    // The vertex shader unit's program, swizzle table, float uniforms (float32 format), bools and ints.
+    CmdList& Program(const Asm& a) {
+        Vs(0x1B, 0);
+        for (u32 w : a.code) {
+            Vs(0x1C, w);
+        }
+        Vs(0x25, 0);
+        for (u32 w : a.descs) {
+            Vs(0x26, w);
+        }
+        return *this;
+    }
+    CmdList& FloatUniform(u32 index, float x, float y, float z, float w) {
+        Vs(0x10, (1u << 31) | index);
+        for (float f : {w, z, y, x}) { // float32 mode: the first word is w
+            u32 bits;
+            std::memcpy(&bits, &f, 4);
+            Vs(0x11, bits);
+        }
+        return *this;
+    }
+
+private:
+    std::vector<u32> words_;
+};
+
+// The vertex layout of the e2e program: attribute 0 = FLOAT x4, attribute 1 = UBYTE x3, attribute 2 =
+// SHORT x2, all in one loader of 24 bytes per vertex.
+void SetupAttributes(CmdList& list) {
+    list.Write(0x200, (kBase >> 4) << 1);
+    list.Write(0x201, (3u | (3u << 2)) | ((1u | (2u << 2)) << 4) | ((2u | (1u << 2)) << 8));
+    list.Write(0x202, 2u << 28); // 3 attributes, none default
+    list.Write(0x203, 0);
+    list.Write(0x204, 0u | (1u << 4) | (2u << 8));
+    list.Write(0x205, (24u << 16) | (3u << 28));
+    list.Vs(9, 2);                                   // the last input attribute
+    list.Vs(0xB, 0u | (1u << 4) | (2u << 8));        // attribute n -> register n
+}
+
+void SetupOutputs(CmdList& list, u32 mask, const std::vector<std::array<u32, 4>>& outmap) {
+    list.Vs(0x0A, 0); // main offset
+    list.Vs(0x0D, mask);
+    list.Write(shader::reg::kVsOutputTotal, static_cast<u32>(outmap.size()));
+    for (u32 a = 0; a < outmap.size(); ++a) {
+        list.Write(shader::reg::kVsOutputAttributes + a,
+                   outmap[a][0] | (outmap[a][1] << 8) | (outmap[a][2] << 16) | (outmap[a][3] << 24));
+    }
+}
+
+// 24 bytes a vertex: float4, ubyte3 (+1 pad), short2 (+0), as the PICA loader lays them out.
+std::vector<u8> VertexBytes(u32 count, u64 seed) {
+    std::vector<u8> bytes(static_cast<size_t>(count) * 24, 0);
+    Rng rng(seed);
+    for (u32 v = 0; v < count; ++v) {
+        u8* p = bytes.data() + static_cast<size_t>(v) * 24;
+        for (u32 c = 0; c < 4; ++c) {
+            const float f = rng.Uniform(-3.f, 3.f);
+            std::memcpy(p + 4 * c, &f, 4);
+        }
+        for (u32 c = 0; c < 3; ++c) {
+            p[16 + c] = static_cast<u8>(rng.Next());
+        }
+        p[19] = 0x7F; // the byte after the three is not data
+        for (u32 c = 0; c < 2; ++c) {
+            const int16_t s = static_cast<int16_t>(rng.Next());
+            std::memcpy(p + 20 + 2 * c, &s, 2);
+        }
+    }
+    return bytes;
+}
+
+Asm EndToEndProgram() {
+    using namespace asmb;
+    Asm a;
+    a.Op1(kMov, O(0), V(0));                                   // float4 as it is
+    a.Op1(kMov, O(1), V(1));                                   // ubyte3: w = 1.0
+    a.Op1(kMov, O(2), V(2));                                   // short2: (x, y, 0, 1)
+    a.Op(kMul, O(3), C(0), V(0));                              // a uniform
+    a.Mad(O(4), V(0), C(1), V(1));
+    a.BeginIfu(0);                                             // a bool
+    a.Op(kAdd, O(5), V(0), V(1));
+    a.Else();
+    a.Op(kAdd, O(5), V(1), V(2));
+    a.EndIf();
+    a.Op1(kMov, R(0), V(2));
+    a.BeginLoop(0);                                            // an integer vector
+    a.Op(kAdd, R(0), C(2), R(0), {}, 3);
+    a.EndLoop();
+    a.Op1(kMov, O(6), R(0));
+    a.End();
+    return a;
+}
+
+void SetupEndToEnd(CmdList& list, const Asm& program, u32 vertices, bool bool0, float scale) {
+    SetupAttributes(list);
+    list.Program(program);
+    list.FloatUniform(0, scale, scale * 2, -scale, 0.5f);
+    list.FloatUniform(1, 1.f, 0.f, 2.f, 1.f);
+    list.FloatUniform(2, 0.25f, 0.5f, 0.75f, 1.f);
+    list.FloatUniform(3, 0.f, 1.f, 2.f, 3.f);
+    list.FloatUniform(4, 10.f, 20.f, 30.f, 40.f);
+    list.FloatUniform(5, 100.f, 200.f, 300.f, 400.f);
+    list.Vs(0x00, bool0 ? 1u : 0u);                 // bool uniforms
+    list.Vs(0x01, 2u | (1u << 8) | (1u << 16));     // int uniform 0: x = 2, y = 1, z = 1
+    SetupOutputs(list, 0x7F, StandardOutmap());
+    list.Write(0x25E, 0);                           // list topology
+    list.Write(0x228, vertices);
+    list.Write(0x22A, 0);
+    list.Write(0x22E, 1);                           // draw arrays
+}
+
+} // namespace
+
+TEST_CASE("from PICA registers: the processor's state, the vertex loader's description, the translated shader") {
+    Rig rig;
+    if (!rig.ok()) return;
+    CaptureHost host;
+    constexpr u32 kVertices = 20;
+    const std::vector<u8> vertices = VertexBytes(kVertices, 47);
+    REQUIRE(host.WriteBoth(kBase, vertices.data(), static_cast<u32>(vertices.size())));
+    CmdList list;
+    SetupEndToEnd(list, EndToEndProgram(), kVertices, true, 1.5f);
+    const std::vector<u8> bytes = list.Bytes();
+    REQUIRE(host.WriteBoth(kListAt, bytes.data(), static_cast<u32>(bytes.size())));
+
+    pica::RecordingBackend recorder;
+    pica::CommandProcessor processor(host, recorder);
+    processor.ProcessCmdList(kListAt, static_cast<u32>(bytes.size()));
+    REQUIRE(recorder.draws.size() == 1);
+    const pica::RecordedDraw& recorded = recorder.draws[0];
+    const pica::PicaState& state = *recorded.state;
+    CHECK(state.vs.biggest_program_size > 10);
+    CHECK(state.vs.uniform_b[0]);
+    CHECK(state.vs.uniform_i[0][0] == 2);
+
+    vertex::VertexLoader loader{vertex::VertexCaps{}};
+    const vertex::LoadedDraw ld = loader.Load(host, recorded.call);
+    REQUIRE(ld.status == vertex::LoadStatus::Ok);
+    CHECK(ld.attributes[0].conversion == vertex::Conversion::None);
+    CHECK(ld.attributes[1].conversion == vertex::Conversion::FromUint);
+    CHECK(ld.attributes[1].alias_w);
+    CHECK(ld.attributes[2].conversion == vertex::Conversion::FromSint);
+    CHECK_FALSE(ld.attributes[2].alias_w);
+
+    shader::ConfigOptions opt;
+    opt.capture_outputs = true;
+    opt.use_clip_planes = false;
+    const shader::VertexShaderConfig cfg = shader::MakeVertexShaderConfig(state, &ld, opt);
+    CHECK(cfg.output_mask == 0x7F);
+    CHECK(cfg.outmap_total == 6);
+    CHECK(cfg.main_offset == 0);
+    CHECK(cfg.inputs[1].conversion == vertex::Conversion::FromUint);
+    CHECK(cfg.inputs[1].alias_w);
+    shader::VertexShaderCache cache;
+    shader::TranslateResult t = cache.Get(state.vs, cfg);
+    REQUIRE_MESSAGE(t.ok(), t.error);
+    CheckSpirvValid(t.shader->spirv, "the end-to-end shader");
+    std::string error;
+    const std::vector<float> cap = rig.Run(t.shader, ld, state.vs, state, kVertices, kVertices, false, &error);
+    REQUIRE_MESSAGE(!cap.empty(), error);
+
+    // the oracle, on the loader's description
+    const Report report = CompareWithOracle(state.vs, state, ld, false, *t.shader, cap, Iota(kVertices), true);
+    CHECK_MESSAGE(report.mismatches == 0, report.first);
+    CHECK(report.values > 0);
+    // and by value from the bytes in memory
+    for (u32 v = 0; v < kVertices; ++v) {
+        const u8* p = vertices.data() + static_cast<size_t>(v) * 24;
+        float f[4];
+        std::memcpy(f, p, 16);
+        for (u32 c = 0; c < 4; ++c) {
+            CHECK(At(cap, v, 0, c) == f[c]);             // o0 = v0
+        }
+        for (u32 c = 0; c < 3; ++c) {
+            CHECK(At(cap, v, 1, c) == static_cast<float>(p[16 + c])); // o1 = ubyte3, not normalised
+        }
+        CHECK(At(cap, v, 1, 3) == 1.0f);                 // w of the aliased attribute
+        int16_t s[2];
+        std::memcpy(s, p + 20, 4);
+        CHECK(At(cap, v, 2, 0) == static_cast<float>(s[0]));
+        CHECK(At(cap, v, 2, 1) == static_cast<float>(s[1]));
+        CHECK(At(cap, v, 2, 2) == 0.0f);
+        CHECK(At(cap, v, 2, 3) == 1.0f);
+        CHECK(Near(At(cap, v, 3, 0), 1.5f * f[0]));      // o3 = c0 * v0
+        CHECK(Near(At(cap, v, 3, 1), 3.0f * f[1]));
+        // the loop (x = 2, y = 1, z = 1): r0 = v2 + c[aL + 2] for aL = 1, 2, 3 = c3.x + c4.x + c5.x = 0 + 10 + 100
+        CHECK(Near(At(cap, v, 6, 0), static_cast<float>(s[0]) + 110.f));
+        CHECK(Near(At(cap, v, 6, 1), static_cast<float>(s[1]) + 1.f + 20.f + 200.f));
+    }
+}
+
+// ================================================================================================
+// The dump check: capture replay through the PICA processor and the translation
+// ================================================================================================
+
+namespace {
+
+void Put32(std::vector<u8>& b, u32 v) {
+    for (int i = 0; i < 4; ++i) {
+        b.push_back(static_cast<u8>(v >> (8 * i)));
+    }
+}
+
+// The smallest capture that draws: an all-zero INIT, the memory, one command list in a GX command.
+struct CaptureFile {
+    std::vector<u8> out;
+    u64 ticks = 0;
+    u32 frame = 0;
+
+    CaptureFile() {
+        out = {'M', 'G', 'P', 'U'};
+        Put32(out, 1);
+    }
+    void Record(u32 type, const std::vector<u8>& payload) {
+        Put32(out, type);
+        Put32(out, frame);
+        Put32(out, static_cast<u32>(ticks += 1000));
+        Put32(out, static_cast<u32>(ticks >> 32));
+        Put32(out, static_cast<u32>(payload.size()));
+        out.insert(out.end(), payload.begin(), payload.end());
+    }
+    void Init() {
+        std::vector<u8> payload;
+        Put32(payload, 11);
+        for (u32 kind = 1; kind <= 11; ++kind) {
+            const u32 size = mh4n::gpu_capture::InitBlockSize(kind);
+            Put32(payload, kind);
+            Put32(payload, size);
+            payload.resize(payload.size() + size, 0);
+        }
+        Record(mh4n::gpu_capture::kInit, payload);
+    }
+    void Mem(u32 addr, const std::vector<u8>& data) {
+        std::vector<u8> payload;
+        Put32(payload, addr);
+        Put32(payload, static_cast<u32>(data.size()));
+        payload.insert(payload.end(), data.begin(), data.end());
+        Record(mh4n::gpu_capture::kMem, payload);
+    }
+    void SubmitCmdList(u32 vaddr, u32 size) {
+        std::vector<u8> payload;
+        for (u32 w : {1u, vaddr, size, 0u, 0u, 0u, 0u, 0u}) {
+            Put32(payload, w);
+        }
+        Record(mh4n::gpu_capture::kGx, payload);
+    }
+    void NoRegisterWrites() {
+        std::vector<u8> payload;
+        Put32(payload, 0);
+        Record(mh4n::gpu_capture::kPicaReg, payload);
+    }
+    void Frame(u32 n) {
+        frame = n;
+        std::vector<u8> payload;
+        Put32(payload, n);
+        Record(mh4n::gpu_capture::kFrame, payload);
+    }
+    std::string Save(const std::string& name) const {
+        const auto path = fs::temp_directory_path() /
+                          ("mh4n_gpu_shader_test_" + std::to_string(MH4N_GETPID()) + "_" + name + ".mgpu");
+        std::ofstream f(path, std::ios::binary);
+        f.write(reinterpret_cast<const char*>(out.data()), static_cast<std::streamsize>(out.size()));
+        return path.string();
+    }
+};
+
+// Two programs and three draws: the end-to-end program with the bool set and clear and another
+// uniform, then a second program (no loop), a draw of 70 vertices (only the first 64 are checked).
+std::string SyntheticCapture(const std::string& name) {
+    using namespace asmb;
+    CmdList list;
+    SetupEndToEnd(list, EndToEndProgram(), 70, true, 1.5f);
+    SetupEndToEnd(list, EndToEndProgram(), 12, false, -2.0f);
+    // a second program: different code, same registers
+    Asm b;
+    b.Op(kDp3, O(0), V(0), V(1));
+    b.Op1(kMov, O(1), V(1));
+    b.Op(kMax, O(2), V(0), V(2));
+    b.Op1(kRcp, O(3), V(0));
+    b.Op1(kMov, O(4), V(0));
+    b.Op1(kMov, O(5), V(0));
+    b.Op1(kMov, O(6), V(0));
+    b.End();
+    SetupEndToEnd(list, b, 9, false, 1.0f);
+    const std::vector<u8> bytes = list.Bytes();
+    CaptureFile capture;
+    capture.Init();
+    capture.Mem(kListAt, bytes);
+    capture.Mem(kBase, VertexBytes(70, 48));
+    capture.SubmitCmdList(0x14001000, static_cast<u32>(bytes.size()));
+    capture.NoRegisterWrites();
+    capture.Frame(1);
+    return capture.Save(name);
+}
+
+std::vector<std::string> CapturePathsFromEnvironment(const char* value) {
+#if defined(_WIN32)
+    const char separator = ';';
+#else
+    const char separator = ':';
+#endif
+    std::vector<std::string> paths;
+    std::string text = value;
+    size_t at = 0;
+    while (at <= text.size()) {
+        size_t end = text.find(separator, at);
+        if (end == std::string::npos) {
+            end = text.size();
+        }
+        const std::string entry = text.substr(at, end - at);
+        at = end + 1;
+        if (entry.empty()) {
+            continue;
+        }
+        std::error_code ec;
+        if (fs::is_directory(entry, ec)) {
+            std::vector<std::string> found;
+            for (const auto& item : fs::recursive_directory_iterator(entry, ec)) {
+                if (item.is_regular_file() && item.path().extension() == ".mgpu") {
+                    found.push_back(item.path().string());
+                }
+            }
+            std::sort(found.begin(), found.end());
+            paths.insert(paths.end(), found.begin(), found.end());
+        } else {
+            paths.push_back(entry);
+        }
+    }
+    return paths;
+}
+
+constexpr u32 kFirstVertices = 64;
+
+// The counts of one dump check.
+struct Totals {
+    size_t captures = 0;
+    u64 draws_seen = 0;
+    u64 draws_skipped = 0;          // the loader returned no vertices (counted, not checked)
+    u64 program_runs = 0;           // draws whose program was run on the device and the oracle
+    u64 vertices = 0;
+    u64 mismatches = 0;
+    u64 translation_failures = 0;
+    u64 oracle_problems = 0;        // the oracle did not end, or met an instruction it does not know
+    u64 pipeline_failures = 0;      // the device refused the pipeline
+    std::set<std::pair<u64, u64>> distinct;      // (program hash, swizzle hash) seen
+    std::set<std::pair<u64, u64>> checked;       // ... run at least once
+    std::set<std::pair<u64, u64>> unverified;    // ... that use DST, DSTI or LIT
+    std::string first_problem;
+};
+
+// The state of the replay: the device, the cache and the totals.
+struct DumpState {
+    Rig* rig = nullptr;
+    shader::VertexShaderCache cache;
+    vertex::VertexLoader loader{vertex::VertexCaps{}};
+    Totals totals;
+
+    void Reset(Rig* r) {
+        rig = r;
+        cache.Clear();
+        totals = Totals{};
+    }
+};
+DumpState g_dump;
+
+void CheckDraw(mh4n::gpu::Host& host, const pica::DrawCall& draw) {
+    Totals& t = g_dump.totals;
+    ++t.draws_seen;
+    const vertex::LoadedDraw ld = g_dump.loader.Load(host, draw);
+    if (ld.status != vertex::LoadStatus::Ok || ld.count == 0) {
+        ++t.draws_skipped;
+        return;
+    }
+    const pica::PicaState& state = *draw.state;
+    shader::ConfigOptions opt;
+    opt.capture_outputs = true;
+    opt.use_clip_planes = false;
+    const shader::VertexShaderConfig cfg = shader::MakeVertexShaderConfig(state, &ld, opt);
+    const std::pair<u64, u64> key{cfg.program_hash, cfg.swizzle_hash};
+    t.distinct.insert(key);
+    shader::TranslateResult translated = g_dump.cache.Get(state.vs, cfg);
+    if (!translated.ok()) {
+        ++t.translation_failures;
+        if (t.first_problem.empty()) {
+            t.first_problem = translated.error;
+        }
+        return;
+    }
+    if (translated.shader->uses_unverified_instructions) {
+        t.unverified.insert(key);
+    }
+    const u32 n = std::min(ld.count, kFirstVertices);
+    const bool indexed = ld.index_type != vertex::IndexType::None;
+    std::vector<u32> ids(n);
+    u32 slots = n;
+    for (u32 i = 0; i < n; ++i) {
+        u32 id = i;
+        if (indexed) {
+            const size_t width = ld.index_type == vertex::IndexType::U8 ? 1 : ld.index_type == vertex::IndexType::U16 ? 2 : 4;
+            u32 index = 0;
+            std::memcpy(&index, ld.index_data.data() + i * width, width);
+            id = static_cast<u32>(static_cast<s32>(index) + ld.base_vertex);
+        }
+        ids[i] = id;
+        slots = std::max(slots, id + 1);
+    }
+    if (slots > (1u << 20)) {
+        ++t.draws_skipped;
+        return;
+    }
+    std::string error;
+    const std::vector<float> cap = g_dump.rig->Run(translated.shader, ld, state.vs, state, n, slots, indexed, &error);
+    if (cap.empty()) {
+        ++t.pipeline_failures;
+        if (t.first_problem.empty()) {
+            t.first_problem = error;
+        }
+        return;
+    }
+    const Report report = CompareWithOracle(state.vs, state, ld, false, *translated.shader, cap, ids, false);
+    ++t.program_runs;
+    t.checked.insert(key);
+    t.vertices += report.vertices;
+    t.mismatches += report.mismatches;
+    if (report.not_terminating || report.unhandled) {
+        ++t.oracle_problems;
+    }
+    if (report.mismatches != 0 && t.first_problem.empty()) {
+        t.first_problem = report.first;
+    }
+}
+
+class CheckingBackend final : public pica::Backend {
+public:
+    explicit CheckingBackend(mh4n::gpu::Host& host) : host_(host) {}
+    void Draw(const pica::DrawCall& draw) override { CheckDraw(host_, draw); }
+
+private:
+    mh4n::gpu::Host& host_;
+};
+
+class ShaderCheckGpu final : public mh4n::gpu::Gpu, public mh4n::gpu::GpuDebug {
+public:
+    explicit ShaderCheckGpu(mh4n::gpu::Host& host) : host_(host), backend_(host), processor_(host, backend_) {}
+
+    void Execute(const mh4n::gpu::GxCommand& command) override {
+        if ((command.words[0] & 0xFF) != 1) {
+            return;
+        }
+        const u32 vaddr = command.words[1];
+        const u32 paddr = vaddr == 0 ? 0 : host_.VirtualToPhysical(vaddr).value_or(vaddr);
+        processor_.SubmitGxCmdList(paddr, command.words[2]);
+    }
+    void WriteReg(u32 addr, u32 value) override {
+        const u32 window = addr & 0xFFFFF000;
+        if (window == pica::kGpuMmioBase || window == pica::kGpuMmioBase + 0x1000) {
+            const u32 index = (addr - pica::kGpuMmioBase) / 4;
+            if (index >= pica::kExternalRegs && index - pica::kExternalRegs < pica::kNumRegs) {
+                processor_.WriteHardwareRegister(index - pica::kExternalRegs, value);
+            }
+        }
+    }
+    u32 ReadReg(u32) override { return 0; }
+    void SetBufferSwap(u32, const mh4n::gpu::FrameBufferInfo&) override {}
+    void SetColorFill(u32) override {}
+    void FlushRegion(u32, u32) override {}
+    void InvalidateRegion(u32, u32) override {}
+    void VBlank(u32) override {}
+    void LoadInitState(const mh4n::gpu::InitState& init) override { processor_.LoadInitState(init); }
+
+private:
+    mh4n::gpu::Host& host_;
+    CheckingBackend backend_;
+    pica::CommandProcessor processor_;
+};
+
+} // namespace
+
+MH4N_REGISTER(mh4n::gpu::GpuFactory, "shader-check",
+              [](mh4n::gpu::Host& host, const mh4n::Options&) -> std::unique_ptr<mh4n::gpu::Gpu> {
+                  return std::make_unique<ShaderCheckGpu>(host);
+              });
+
+namespace {
+
+mh4n::gpu_capture::PlayerResult Replay(const std::string& capture) {
+    const mh4n::Options options = mh4n::ParseOptions(
+        "capture-player", std::vector<std::string>{"--gpu", "shader-check", "--judge", "none", capture});
+    REQUIRE_MESSAGE(options.ok(), options.error());
+    mh4n::gpu_capture::PlayerConfig config;
+    std::string error;
+    REQUIRE_MESSAGE(mh4n::gpu_capture::ConfigFromOptions(options, config, &error), error);
+    return mh4n::gpu_capture::RunPlayer(config, options);
+}
+
+// Replays every capture the list names once, checking every draw's vertex program on the device
+// against the oracle, and prints counts (never any content) when `print` is set. nullopt: no device.
+std::optional<Totals> DumpCheck(const char* value, bool print) {
+    Rig rig;
+    if (!rig.ok()) {
+        return std::nullopt;
+    }
+    const std::vector<std::string> paths = CapturePathsFromEnvironment(value);
+    REQUIRE_MESSAGE(!paths.empty(), "the capture list names no capture");
+    g_dump.Reset(&rig);
+    g_dump.totals.captures = paths.size();
+    for (const std::string& path : paths) {
+        const mh4n::gpu_capture::PlayerResult result = Replay(path);
+        CHECK_MESSAGE(result.error.empty(), "a capture could not be replayed: " << result.error);
+    }
+    Totals t = g_dump.totals;
+    g_dump.rig = nullptr;
+    if (print) {
+        std::printf("shader dump check: %zu captures; draws seen %llu, distinct programs %zu, programs checked %zu, "
+                    "vertices compared %llu, mismatches %llu, translation failures %llu\n",
+                    t.captures, static_cast<unsigned long long>(t.draws_seen), t.distinct.size(), t.checked.size(),
+                    static_cast<unsigned long long>(t.vertices), static_cast<unsigned long long>(t.mismatches),
+                    static_cast<unsigned long long>(t.translation_failures));
+        std::printf("shader dump check: program runs %llu, draws without vertices %llu, programs with DST/DSTI/LIT %zu, "
+                    "device refused a pipeline %llu, oracle problems %llu\n",
+                    static_cast<unsigned long long>(t.program_runs), static_cast<unsigned long long>(t.draws_skipped),
+                    t.unverified.size(), static_cast<unsigned long long>(t.pipeline_failures),
+                    static_cast<unsigned long long>(t.oracle_problems));
+        std::fflush(stdout);
+    }
+    return t;
+}
+
+} // namespace
+
+TEST_CASE("the replay path: a synthetic capture goes through the processor, the loader, the translation and the device") {
+    const std::string path = SyntheticCapture("replay");
+    const auto totals = DumpCheck(path.c_str(), true); // prints the line the real check prints
+    fs::remove(path);
+    if (!totals) return;
+    CHECK(totals->captures == 1);
+    CHECK(totals->draws_seen == 3);
+    CHECK(totals->distinct.size() == 2);
+    CHECK(totals->checked.size() == 2);
+    CHECK(totals->program_runs == 3);
+    CHECK(totals->vertices == 64 + 12 + 9);
+    CHECK_MESSAGE(totals->mismatches == 0, totals->first_problem);
+    CHECK(totals->translation_failures == 0);
+    CHECK(totals->pipeline_failures == 0);
+    CHECK(totals->oracle_problems == 0);
+    CHECK(totals->unverified.empty());
+}
+
+TEST_CASE("the capture list of the dump check: a directory, a file, and the counts") {
+    const fs::path dir = fs::temp_directory_path() / ("mh4n_gpu_shader_test_dir_" + std::to_string(MH4N_GETPID()));
+    fs::create_directories(dir / "sub");
+    const std::string made = SyntheticCapture("listed");
+    fs::rename(made, dir / "sub" / "one.mgpu");
+    std::ofstream(dir / "readme.txt") << "not a capture";
+    const auto totals = DumpCheck(dir.string().c_str(), false);
+    if (totals) {
+        CHECK(totals->captures == 1);
+        CHECK(totals->draws_seen == 3);
+        CHECK(totals->checked.size() == 2);
+        CHECK(totals->mismatches == 0);
+    }
+    const std::vector<std::string> listed = CapturePathsFromEnvironment(
+        (dir.string() + std::string(1,
+#if defined(_WIN32)
+                                    ';'
+#else
+                                    ':'
+#endif
+                                    ) + (dir / "sub" / "one.mgpu").string()).c_str());
+    CHECK(listed.size() == 2);
+    fs::remove_all(dir);
+}
+
+TEST_CASE("a program the translation refuses is a counted failure of the dump check") {
+    using namespace asmb;
+    CmdList list;
+    Asm bad;
+    bad.Jmpu(0, 3000);
+    bad.End();
+    SetupEndToEnd(list, bad, 4, false, 1.0f);
+    const std::vector<u8> bytes = list.Bytes();
+    CaptureFile capture;
+    capture.Init();
+    capture.Mem(kListAt, bytes);
+    capture.Mem(kBase, VertexBytes(4, 49));
+    capture.SubmitCmdList(0x14001000, static_cast<u32>(bytes.size()));
+    capture.NoRegisterWrites();
+    capture.Frame(1);
+    const std::string path = capture.Save("refused");
+    const auto totals = DumpCheck(path.c_str(), false);
+    fs::remove(path);
+    if (!totals) return;
+    CHECK(totals->draws_seen == 1);
+    CHECK(totals->translation_failures == 1);
+    CHECK(totals->checked.empty());
+    CHECK(totals->distinct.size() == 1);
+}
+
+// ================================================================================================
+// The dump check
+// ================================================================================================
+
+TEST_CASE("(with the dump) every vertex program of the captured draws passes the oracle") {
+    const char* value = std::getenv("MH4N_SHADER_CAPTURES");
+    if (value == nullptr || *value == '\0') {
+        WARN_MESSAGE(false, "skipped: set MH4N_SHADER_CAPTURES to .mgpu capture files or directories "
+                            "(separated by the platform's path-list separator) to run the dump check");
+        return;
+    }
+    const auto totals = DumpCheck(value, true);
+    if (!totals) return;
+    CHECK(totals->program_runs > 0);
+    CHECK(totals->vertices > 0);
+    CHECK_MESSAGE(totals->mismatches == 0, totals->first_problem);
+    CHECK_MESSAGE(totals->translation_failures == 0, totals->first_problem);
+    CHECK(totals->pipeline_failures == 0);
+    CHECK(totals->oracle_problems == 0);
+    CHECK(totals->checked.size() == totals->distinct.size());
+}
+
+// ================================================================================================
 // The inputs: the conversions of the integer-formatted attributes
 // ================================================================================================
 
@@ -2438,4 +3442,246 @@ TEST_CASE("clip planes are optional, and the SPIR-V validates with them and with
         }
         CHECK(capability == clip);
     }
+}
+
+// ================================================================================================
+// Random straight-line programs (every instruction, random swizzles, masks and negations)
+// ================================================================================================
+
+namespace {
+
+Desc RandomDesc(Rng& rng) {
+    static const char* const kSwz[] = {"xyzw", "wzyx", "xxxx", "yyyy", "zzzz", "wwww", "yxwz", "zwxy", "xyxy", "wzwz", "yzwx", "xzyw"};
+    static const char* const kMask[] = {"xyzw", "x___", "_y__", "__z_", "___w", "xy__", "__zw", "x_z_", "_y_w", "xyz_", "_yzw", "x__w"};
+    Desc d;
+    d.mask = kMask[rng.Next() % 12];
+    d.s1 = kSwz[rng.Next() % 12];
+    d.s2 = kSwz[rng.Next() % 12];
+    d.s3 = kSwz[rng.Next() % 12];
+    d.n1 = rng.Next() % 3 == 0;
+    d.n2 = rng.Next() % 3 == 0;
+    d.n3 = rng.Next() % 3 == 0;
+    return d;
+}
+
+} // namespace
+
+TEST_CASE("random programs: every arithmetic instruction with random swizzles, masks and negations") {
+    Rig rig;
+    if (!rig.ok()) return;
+    using namespace asmb;
+    Rng rng(29);
+    const u32 two_source[] = {kAdd, kMul, kDp3, kDp4, kDph, kMax, kMin, kSlt, kSge, kDst};
+    const u32 inverted[] = {kDphi, kDsti, kSgei, kSlti};
+    const u32 one_source[] = {kFlr, kRcp, kRsq, kEx2, kLg2, kMov, kLit};
+    u64 values = 0;
+    double compile_ms = 0;
+    for (u32 program = 0; program < 10; ++program) {
+        Asm a;
+        for (u32 out = 0; out < 16; ++out) {
+            const Desc d = RandomDesc(rng);
+            const u32 pick = rng.Next() % 20;
+            const u32 any_src = (rng.Next() % 2) ? C(rng.Next() % 8) : V(rng.Next() % 4); // 7 bits
+            const u32 narrow_src = V(rng.Next() % 4);                                      // 5 bits
+            const u32 addr = (rng.Next() % 4 == 0) ? 1 + rng.Next() % 2 : 0;               // a0.x / a0.y on a uniform
+            if (pick < 8) {
+                a.Op(two_source[rng.Next() % 10], O(out), any_src, narrow_src, d, any_src >= C(0) ? addr : 0);
+            } else if (pick < 12) {
+                a.Op(inverted[rng.Next() % 4], O(out), narrow_src, any_src, d, any_src >= C(0) ? addr : 0);
+            } else if (pick < 16) {
+                a.Op1(one_source[rng.Next() % 7], O(out), any_src, d, any_src >= C(0) ? addr : 0);
+            } else if (pick < 18) {
+                a.Mad(O(out), narrow_src, any_src, V(rng.Next() % 4), d, any_src >= C(0) ? addr : 0);
+            } else {
+                a.Madi(O(out), narrow_src, V(rng.Next() % 4), any_src, d, any_src >= C(0) ? addr : 0);
+            }
+        }
+        a.End();
+        // the address registers are set by the first instructions: a program that uses a0 needs them
+        Asm prog;
+        prog.Op1(kMova, 0, V(3), {.mask = "xy__", .s1 = "xyzw"});
+        for (u32 w : a.code) {
+            prog.Raw(w);
+        }
+        prog.descs = a.descs;
+        // the MOVA's descriptor must be in the table: rebuild through D()
+        const u32 mova_desc = prog.D(Desc{.mask = "xy__", .s1 = "xyzw"});
+        prog.code[0] = (kMova << 26) | (V(3) << 12) | mova_desc;
+        FloatInputs in = RandomInputs(4, 64, 100 + program, -2.f, 2.f);
+        for (u32 v = 0; v < 64; ++v) { // v3.xy: small integers for the address registers
+            in.At(v, 3, 0) = static_cast<float>(static_cast<int>(rng.Next() % 12) - 3);
+            in.At(v, 3, 1) = static_cast<float>(static_cast<int>(rng.Next() % 12) - 3);
+        }
+        Draw d = MakeProgram(prog, in);
+        SetRandomUniforms(d, 24, 200 + program, -2.f, 2.f);
+        Outcome o = RunCase(rig, d, 64);
+        INFO("random program " << program);
+        CHECK_OUTCOME(o);
+        values += o.report.values;
+        compile_ms += o.shader->compile_ms;
+    }
+    CHECK(values > 0);
+    MESSAGE("glslang: " << compile_ms / 10 << " ms per random program of 17 instructions (GLSL to SPIR-V, RelWithDebInfo)");
+}
+
+TEST_CASE("the comparison sees a difference (a changed uniform, a changed input)") {
+    Rig rig;
+    if (!rig.ok()) return;
+    using namespace asmb;
+    Asm a;
+    a.Op(kMul, O(0), C(0), V(0));
+    a.Op(kAdd, O(1), V(0), V(1));
+    a.End();
+    Draw d = MakeProgram(a, RandomInputs(2, 16, 30), 0x3);
+    SetRandomUniforms(d, 1, 31);
+    Outcome o = RunCase(rig, d, 16);
+    CHECK_OUTCOME(o);
+    // the same capture, the oracle with another uniform
+    d.setup.uniform_f[0].c[2] += 0.5f;
+    Report r = CompareWithOracle(d, *o.shader, o.capture, Iota(16), false);
+    CHECK(r.mismatches > 0);
+    d.setup.uniform_f[0].c[2] -= 0.5f;
+    // and with another input
+    d.loaded.buffers[0].data[11] ^= 0x01; // the exponent of v0.z of vertex 0
+    r = CompareWithOracle(d, *o.shader, o.capture, Iota(16), false);
+    CHECK(r.mismatches > 0);
+    // the tolerance: 2^-16 * max(1, |a|, |b|), NaN equals NaN, infinities are equal to themselves only
+    CHECK(Near(1.0f, 1.0f + 1.0f / 100000.0f));
+    CHECK_FALSE(Near(1.0f, 1.0f + 1.0f / 30000.0f));
+    CHECK(Near(1000.0f, 1000.0f + 1000.0f / 100000.0f));
+    CHECK_FALSE(Near(1000.0f, 1000.0f + 1000.0f / 30000.0f));
+    CHECK(Near(kNaN, -kNaN));
+    CHECK(Near(kInf, kInf));
+    CHECK_FALSE(Near(kInf, -kInf));
+    CHECK_FALSE(Near(kInf, 1e38f));
+    CHECK_FALSE(Near(kNaN, 0.f));
+}
+
+// ================================================================================================
+// The encoding, the uniform blocks
+// ================================================================================================
+
+TEST_CASE("the instruction encoding: the assembler and the decoder agree on every field") {
+    using namespace asmb;
+    Asm a;
+    // arithmetic: dest r5 (0x15), src1 c70 (0x66 = 70 + 32 ... 7 bits), src2 v9, relative a0.y, descriptor 3
+    a.D(Desc{}.Word());
+    a.D(Desc{.mask = "x___"}.Word());
+    a.D(Desc{.mask = "_y__"}.Word());
+    a.D(Desc{.mask = "__z_", .n1 = true}.Word());
+    a.Op(kMul, R(5), 0x66, V(9), {.mask = "__z_", .n1 = true}, 2);
+    const isa::Instruction mul{a.code[0]};
+    CHECK(mul.Effective() == isa::Opcode::MUL);
+    CHECK(mul.info().format == isa::Format::Arithmetic);
+    CHECK_FALSE(mul.info().src_inversed);
+    CHECK(mul.dest().value == R(5));
+    CHECK(mul.dest().is_temporary());
+    CHECK(mul.dest().index() == 5);
+    CHECK(mul.src1(false).value == 0x66);
+    CHECK(mul.src1(false).kind() == isa::SourceKind::FloatUniform);
+    CHECK(mul.src1(false).index() == 0x46);
+    CHECK(mul.src2(false).value == V(9));
+    CHECK(mul.src2(false).kind() == isa::SourceKind::Input);
+    CHECK(mul.address_register_index() == 2);
+    CHECK(mul.operand_desc_id() == 3);
+    const isa::Swizzle sw{a.descs[3]};
+    CHECK_FALSE(sw.DestEnabled(0));
+    CHECK(sw.DestEnabled(2));
+    CHECK(sw.negate(1));
+    CHECK_FALSE(sw.negate(2));
+    for (u32 c = 0; c < 4; ++c) {
+        CHECK(sw.selector(1, c) == c);
+    }
+    // the inverted form
+    a.Op(kSlti, O(3), V(7), C(40), {}, 1);
+    const isa::Instruction slti{a.code[1]};
+    CHECK(slti.info().src_inversed);
+    CHECK(slti.src1(true).value == V(7));
+    CHECK(slti.src2(true).value == C(40));
+    CHECK(slti.address_register_index() == 1);
+    // mad
+    a.Mad(O(2), V(3), C(33), V(4), {}, 3);
+    const isa::Instruction mad{a.code[2]};
+    CHECK(mad.Effective() == isa::Opcode::MAD);
+    CHECK(mad.mad_dest().value == O(2));
+    CHECK(mad.mad_src1(false).value == V(3));
+    CHECK(mad.mad_src2(false).value == C(33));
+    CHECK(mad.mad_src3(false).value == V(4));
+    CHECK(mad.mad_address_register_index() == 3);
+    a.Madi(O(2), V(3), V(5), C(34), {}, 2);
+    const isa::Instruction madi{a.code[3]};
+    CHECK(madi.Effective() == isa::Opcode::MADI);
+    CHECK(madi.mad_src2(true).value == V(5));
+    CHECK(madi.mad_src3(true).value == C(34));
+    // compare and flow control
+    a.Cmp(Gt, Le, V(1), V(2));
+    const isa::Instruction cmp{a.code[4]};
+    CHECK(cmp.Effective() == isa::Opcode::CMP);
+    CHECK(cmp.compare_x() == isa::CompareOp::GreaterThan);
+    CHECK(cmp.compare_y() == isa::CompareOp::LessEqual);
+    a.Raw(Asm::Flow(kIfc, 321, 17, Cond{.op = And, .refx = true, .refy = false}.Bits()));
+    const isa::Instruction ifc{a.code[5]};
+    CHECK(ifc.Effective() == isa::Opcode::IFC);
+    CHECK(ifc.dest_offset() == 321);
+    CHECK(ifc.num_instructions() == 17);
+    CHECK(ifc.condition_op() == isa::ConditionOp::And);
+    CHECK(ifc.refx());
+    CHECK_FALSE(ifc.refy());
+    a.Raw(Asm::Flow(kLoop, 99, 0, 3u << 22));
+    const isa::Instruction loop{a.code[6]};
+    CHECK(loop.Effective() == isa::Opcode::LOOP);
+    CHECK(loop.int_uniform_id() == 3);
+    CHECK(loop.dest_offset() == 99);
+    a.Raw(Asm::Flow(kJmpu, 7, 1, 13u << 22));
+    const isa::Instruction jmpu{a.code[7]};
+    CHECK(jmpu.bool_uniform_id() == 13);
+    CHECK(jmpu.num_instructions() == 1);
+    // the table
+    CHECK(std::string(isa::GetOpInfo(0x00).name) == "add");
+    CHECK(std::string(isa::GetOpInfo(0x2F).name) == "cmp");
+    CHECK(std::string(isa::GetOpInfo(0x33).name) == "madi");
+    CHECK(std::string(isa::GetOpInfo(0x3F).name) == "mad");
+    CHECK(isa::GetOpInfo(0x10).format == isa::Format::Unknown);
+    CHECK(isa::GetOpInfo(0x22).format == isa::Format::Trivial);
+}
+
+TEST_CASE("the uniform blocks are std140: bool bits, integer vectors, float vectors, clip state") {
+    static_assert(offsetof(shader::PicaUniformData, b) == 0);
+    static_assert(offsetof(shader::PicaUniformData, i) == 16);
+    static_assert(offsetof(shader::PicaUniformData, f) == 80);
+    static_assert(offsetof(shader::VertexUniformData, enable_clip1) == 0);
+    static_assert(offsetof(shader::VertexUniformData, flip_viewport) == 4);
+    static_assert(offsetof(shader::VertexUniformData, clip_coef) == 16);
+    pica::ShaderSetup setup;
+    setup.uniform_b[0] = true;
+    setup.uniform_b[3] = true;
+    setup.uniform_b[15] = true;
+    setup.uniform_i[2] = {1, 2, 3, 255};
+    setup.uniform_f[95] = pica::Vec4f{{1.5f, -2.5f, 3.5f, kInf}};
+    const shader::PicaUniformData u = shader::MakePicaUniformData(setup);
+    CHECK(u.b == ((1u << 0) | (1u << 3) | (1u << 15)));
+    CHECK(u.i[2][0] == 1);
+    CHECK(u.i[2][1] == 2);
+    CHECK(u.i[2][2] == 3);
+    CHECK(u.i[2][3] == 255);
+    CHECK(u.f[95][0] == 1.5f);
+    CHECK(u.f[95][1] == -2.5f);
+    CHECK(u.f[95][3] == kInf);
+    CHECK(u.f[0][0] == 0.f);
+
+    pica::PicaState state;
+    state.regs[shader::reg::kClipEnable] = 1;
+    // float24: sign 0, exponent 0x7F (bias 63 -> 2^64?) use the decoder for the expectation
+    state.regs[shader::reg::kClipCoef + 0] = 0x3F8000;
+    state.regs[shader::reg::kClipCoef + 2] = 0xBF8000;
+    const shader::VertexUniformData vu = shader::MakeVertexUniformData(state, true);
+    CHECK(vu.enable_clip1 == 1);
+    CHECK(vu.flip_viewport == 1);
+    CHECK(vu.clip_coef[0] == pica::Float24ToFloat(0x3F8000));
+    CHECK(vu.clip_coef[2] == pica::Float24ToFloat(0xBF8000));
+    CHECK(vu.clip_coef[2] == -vu.clip_coef[0]);
+    CHECK(vu.clip_coef[1] == 0.f);
+    state.regs[shader::reg::kClipEnable] = 0;
+    CHECK(shader::MakeVertexUniformData(state, false).enable_clip1 == 0);
+    CHECK(shader::MakeVertexUniformData(state, false).flip_viewport == 0);
 }

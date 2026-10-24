@@ -349,7 +349,12 @@ TranslateResult GenerateVertexGlsl(const pica::ShaderSetup& setup, const VertexS
     for (u32 i = 0; i < shader->num_outputs; ++i) {
         out += fmt::format("    vs_out_attr{} = vec4(0.0, 0.0, 0.0, 1.0);\n", i);
     }
-    out += "\n    exec_shader();\n    EmitVtx();\n}\n\n";
+    out += "\n    exec_shader();\n    EmitVtx();\n";
+    if (config.capture_outputs) {
+        // the tests draw points (every vertex is shaded and no primitive is needed): Vulkan wants the size
+        out += "    gl_PointSize = 1.0;\n";
+    }
+    out += "}\n\n";
 
     out += program.source;
 
