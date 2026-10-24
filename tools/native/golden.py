@@ -808,6 +808,7 @@ class Compare:
     max_shift: int | None = None        # DSP frames of shift (CROSS_MAX_SHIFT)
     fs_write_masks: Path | None = None  # the write-mask file (default FS_WRITE_MASKS)
     image_frames: Sequence[int] = ()    # the frames this session's screenshots are held to in `cross` (N2b-17, D58)
+    all_images: bool = False            # cross, a candidate on the recording's clock: every common frame (N2b-28, D58)
 
     def rule(self, name: str) -> int:
         """The value of one of the cross profile's numbers: the option, else the profile's own (D50 to D52; the
@@ -858,16 +859,47 @@ def read_gas_frames(shots: Path) -> set[int]:
         raise GoldenError(str(e)) from None
 
 
-def images_result(ref: Path, cand: Path, frames: Sequence[int]) -> tuple[str, str, str]:
+SHOT_NAME = re.compile(r"f(\d+)_(?:top|bottom)\.ppm")
+
+
+def shot_frames(folder: Path) -> set[int]:
+    """The frame numbers of the screenshots (`f<NNNNNNN>_top|bottom.ppm`) in a `shots` folder."""
+    found: set[int] = set()
+    if folder.is_dir():
+        for p in folder.iterdir():
+            m = SHOT_NAME.fullmatch(p.name)
+            if m:
+                found.add(int(m.group(1)))
+    return found
+
+
+def wants_all_images(candidate_args: Sequence[str]) -> bool:
+    """N2b-28 (D58 (3)): the candidate runs on the recording's own clock, `--deterministic` being one of its
+    (already shell-split) arguments, and not on the jit's (`--cpu jit`)."""
+    return "--deterministic" in candidate_args and option_value(candidate_args, "--cpu") != "jit"
+
+
+def all_images_result(ref: Path, cand: Path) -> tuple[str, str, str]:
+    """(status, detail, note) of the `images` comparison of a candidate on the recording's clock (N2b-28): every
+    frame the recording and the candidate both have, judged as `images_result` does, minus the gas frames."""
+    common = sorted(shot_frames(ref / "shots") & shot_frames(cand / "shots"))
+    if not common:
+        return "skipped", "the recording and the run have no screenshot frame in common", ""
+    return images_result(ref, cand, common, summary=True)
+
+
+def images_result(ref: Path, cand: Path, frames: Sequence[int], summary: bool = False) -> tuple[str, str, str]:
     """(status, detail, note) of the cross profile's `images` comparison at the listed frames (N2b-17): the top and
     bottom screenshots of the candidate against the recording's with imgdiff's rule; a frame in the candidate's
-    `shots/gas.txt` is `skipped (gas)` and not judged."""
+    `shots/gas.txt` is `skipped (gas)` and not judged.  `summary` (N2b-28) words the result as the number of frames
+    judged, skipped and failed."""
     if not frames:
         return "skipped", "no image frames are listed for this session", ""
     if not (cand / "shots").is_dir() or not any((cand / "shots").glob("*.ppm")):
         return "skipped", "the run wrote no screenshots", ""
     gas = read_gas_frames(cand / "shots")
     failed: list[str] = []
+    failed_frames: set[int] = set()
     judged = 0
     skipped_gas: list[int] = []
     worst_psnr, worst_block = float("inf"), 0.0
@@ -880,25 +912,34 @@ def images_result(ref: Path, cand: Path, frames: Sequence[int]) -> tuple[str, st
             name = f"shots/f{frame:07d}_{screen}.ppm"
             if not (ref / name).is_file():
                 failed.append(f"frame {frame} {screen}: the recording has no screenshot")
+                failed_frames.add(frame)
                 continue
             if not (cand / name).is_file():
                 failed.append(f"frame {frame} {screen}: the run wrote no screenshot")
+                failed_frames.add(frame)
                 continue
             try:
                 m = imgdiff.compare_files(ref / name, cand / name)
             except imgdiff.ImageError as e:
                 failed.append(f"frame {frame} {screen}: {e}")
+                failed_frames.add(frame)
                 continue
             worst_psnr, worst_block = min(worst_psnr, m.psnr), max(worst_block, m.worst_block)
             if not m.passes:
                 failed.append(f"frame {frame} {screen}: {m.text()}")
+                failed_frames.add(frame)
     gas_note = f"; {len(skipped_gas)} frame(s) skipped (gas): {', '.join(map(str, skipped_gas))}" if skipped_gas else ""
+    counts = f"{judged} frame(s) judged, {len(skipped_gas)} skipped (gas), {len(failed_frames)} failed"
     if failed:
-        return "fail", "\n".join(failed[:8]), f"{len(failed)} of {2 * judged} screenshots fail" + gas_note
+        note = f"{len(failed)} of {2 * judged} screenshots fail" + gas_note
+        return "fail", "\n".join(failed[:8]), f"{counts}; {note}" if summary else note
     if not judged:
         return "skipped", f"every listed frame is skipped (gas): {', '.join(map(str, skipped_gas))}", ""
     psnr = "inf" if worst_psnr == float("inf") else f"{worst_psnr:.1f}"
-    return "pass", f"{judged} listed frame(s) pass", f"lowest PSNR {psnr} dB, worst block {worst_block:.1f}/255" + gas_note
+    note = f"lowest PSNR {psnr} dB, worst block {worst_block:.1f}/255" + gas_note
+    if summary:
+        return "pass", counts, note
+    return "pass", f"{judged} listed frame(s) pass", note
 
 
 def _tool(script: Path, *args: str) -> tuple[int, str]:
@@ -1145,9 +1186,14 @@ def compare_outputs(session: Session, ref: Path, cand: Path, cfg: Compare) -> li
         if same:
             add("images", "pass" if ok else "fail", detail)
         elif cfg.profile == "cross":
-            status, detail2, note = images_result(ref, cand, cfg.image_frames)
-            add("images", status, detail2, note)
-            add("images-all", "info", detail + " (the listed frames are judged above; the others are information)")
+            if cfg.all_images:
+                status, detail2, note = all_images_result(ref, cand)
+                add("images", status, detail2, note)
+                add("images-all", "info", detail + " (every frame both sides have is judged above)")
+            else:
+                status, detail2, note = images_result(ref, cand, cfg.image_frames)
+                add("images", status, detail2, note)
+                add("images-all", "info", detail + " (the listed frames are judged above; the others are information)")
         else:
             add("images", "info", detail)
     # -- the shared page and the timing trace of the reference runner
@@ -1266,10 +1312,13 @@ def check(session: Session, a: argparse.Namespace) -> int:
                 raise GoldenError("--cpu recomp needs --code LIB")
     ignore = ([IPC_TIME_DEPENDENT] if IPC_TIME_DEPENDENT.is_file() else []) + [Path(p) for p in a.ignore or []]
     real = int(manifest.get("real_scene_changes", real_scene_changes(ref / "state.txt")))
+    # N2b-28: a candidate on the recording's clock (--deterministic) is judged at every common screenshot, unless
+    # an explicit --image-frames FILE says otherwise
+    all_images = profile == "cross" and not a.image_frames and wants_all_images(cand_args)
     image_frames = load_image_frames(Path(a.image_frames) if a.image_frames else None, session.name) \
-        if profile == "cross" else []
+        if profile == "cross" and not all_images else []
     cfg = Compare(profile, a.fallback, strict=not foreign, ignore=ignore, observable=Path(a.observable),
-                  real_changes=real, image_frames=image_frames, **rules)
+                  real_changes=real, image_frames=image_frames, all_images=all_images, **rules)
     pair = Compare("same", a.fallback, strict=not foreign, ref_is_recording=False, observable=Path(a.observable),
                    real_changes=real, checkpoints=False)
     checks_dir = ref / "check"
