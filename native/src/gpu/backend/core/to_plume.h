@@ -42,8 +42,9 @@ Result<void> ToPlume(const FixedFunctionState& state, bool color_attachment, ::p
 
 // The whole description: ToPlume(state), the topology, the attachment formats and the vertex layout
 // (slots and elements, filled into `out`). The shaders and the pipeline layout are the caller's.
-Result<void> ToPlume(const GraphicsPipelineDesc& desc, const ::plume::RenderShader* vertex, const ::plume::RenderShader* fragment,
-                     const ::plume::RenderShader* geometry, const ::plume::RenderPipelineLayout* layout, PlumeGraphicsDesc* out);
+Result<void> ToPlume(const GraphicsPipelineDesc& desc, const ::plume::RenderShader* vertex,
+                     const ::plume::RenderShader* fragment, const ::plume::RenderShader* geometry,
+                     const ::plume::RenderPipelineLayout* layout, PlumeGraphicsDesc* out);
 
 // One of the interface's enumerations into the vendored backend's.
 ::plume::RenderComparisonFunction ToPlume(CompareOp op);
@@ -55,4 +56,4 @@ Result<void> ToPlume(const GraphicsPipelineDesc& desc, const ::plume::RenderShad
 ::plume::RenderCullMode ToPlume(CullMode mode);
 ::plume::RenderFrontFace ToPlume(FrontFace face);
 
-}  // namespace mh4n::gpu::rhi::core
+} // namespace mh4n::gpu::rhi::core

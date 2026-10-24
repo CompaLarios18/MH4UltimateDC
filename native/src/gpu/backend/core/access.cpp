@@ -24,13 +24,14 @@ VkInstance NativeInstance(const Instance& instance) {
 VkCommandBuffer CommandBuffer(Recorder& recorder) {
     Recorder::Impl& impl = recorder.impl();
     if (impl.in_pass) {
-        impl.vulkan_list()->checkActiveRenderPass();  // begins the pass the first draw would begin
+        impl.vulkan_list()->checkActiveRenderPass(); // begins the pass the first draw would begin
     }
     return impl.vulkan_list()->vk;
 }
 
 // A VkSurfaceKHR is a pointer on the 64-bit targets of the port (no 32-bit target is built).
-static_assert(std::is_pointer_v<VkSurfaceKHR> && sizeof(VkSurfaceKHR) == sizeof(u64), "non-dispatchable handles are 64-bit pointers");
+static_assert(std::is_pointer_v<VkSurfaceKHR> && sizeof(VkSurfaceKHR) == sizeof(u64),
+              "non-dispatchable handles are 64-bit pointers");
 
 SurfaceHandle SurfaceFrom(VkSurfaceKHR surface) {
     SurfaceHandle handle;
@@ -45,4 +46,4 @@ VkSurfaceKHR VulkanSurface(SurfaceHandle surface) {
 QueueLock::QueueLock(Backend& backend) : lock_(*backend.impl().queue_mutex) {}
 QueueLock::~QueueLock() = default;
 
-}  // namespace mh4n::gpu::rhi
+} // namespace mh4n::gpu::rhi

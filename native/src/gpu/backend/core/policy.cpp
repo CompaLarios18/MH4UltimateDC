@@ -11,9 +11,9 @@ namespace mh4n::gpu::rhi {
 namespace {
 
 constexpr std::array<std::string_view, kCapCount> kCapNames = {
-    "d24s8",         "interlock",        "index_uint8",      "custom_border_color", "triangle_fans",
-    "logic_op",      "dynamic_rendering", "pipeline_library", "eds3_blend",          "bc7",
-    "timeline",      "present_wait",     "direct_upload",
+    "d24s8",    "interlock",         "index_uint8",      "custom_border_color", "triangle_fans",
+    "logic_op", "dynamic_rendering", "pipeline_library", "eds3_blend",          "bc7",
+    "timeline", "present_wait",      "direct_upload",
 };
 
 std::string Lower(std::string_view text) {
@@ -43,7 +43,7 @@ std::string ValidNames() {
     return out + ", all";
 }
 
-}  // namespace
+} // namespace
 
 std::string_view CapName(Cap cap) {
     return kCapNames[static_cast<size_t>(cap)];
@@ -89,7 +89,7 @@ std::string CapabilityMask::ToString() const {
     return out;
 }
 
-}  // namespace mh4n::gpu::rhi
+} // namespace mh4n::gpu::rhi
 
 namespace mh4n::gpu::rhi::core {
 
@@ -131,7 +131,7 @@ std::string ListDevices(std::span<const DeviceCandidate> candidates) {
     return out;
 }
 
-}  // namespace
+} // namespace
 
 DeviceChoice ChooseDevice(std::span<const DeviceCandidate> candidates, std::string_view override_text, bool surface) {
     DeviceChoice choice;
@@ -155,8 +155,8 @@ DeviceChoice ChooseDevice(std::span<const DeviceCandidate> candidates, std::stri
             return choice;
         }
         if (const std::string reason = chosen->Ineligible(surface); !reason.empty()) {
-            choice.error = fmt::format("device {} ({}) matches \"{}\" but cannot be used: {}; devices:{}", chosen->index,
-                                       chosen->Label(), override_text, reason, ListDevices(candidates));
+            choice.error = fmt::format("device {} ({}) matches \"{}\" but cannot be used: {}; devices:{}",
+                                       chosen->index, chosen->Label(), override_text, reason, ListDevices(candidates));
             return choice;
         }
         why = fmt::format("chosen: its label contains \"{}\"", override_text);
@@ -168,7 +168,7 @@ DeviceChoice ChooseDevice(std::span<const DeviceCandidate> candidates, std::stri
             const bool better = chosen == nullptr || c.type > chosen->type ||
                                 (c.type == chosen->type && c.capability_bits > chosen->capability_bits);
             if (better) {
-                chosen = &c;  // candidates are in index order, so the lowest index wins a full tie
+                chosen = &c; // candidates are in index order, so the lowest index wins a full tie
             }
         }
         if (chosen == nullptr) {
@@ -179,26 +179,31 @@ DeviceChoice ChooseDevice(std::span<const DeviceCandidate> candidates, std::stri
             choice.error = "no device can be used:" + reasons;
             return choice;
         }
-        why = fmt::format("chosen: {} device with {} capability bits", DeviceTypeName(chosen->type), chosen->capability_bits);
+        why = fmt::format("chosen: {} device with {} capability bits", DeviceTypeName(chosen->type),
+                          chosen->capability_bits);
     }
 
     for (const DeviceCandidate& c : candidates) {
         if (&c == chosen) {
-            choice.log.push_back(fmt::format("device {}: {} [{}]: {}", c.index, c.Label(), DeviceTypeName(c.type), why));
+            choice.log.push_back(
+                fmt::format("device {}: {} [{}]: {}", c.index, c.Label(), DeviceTypeName(c.type), why));
         } else if (const std::string reason = c.Ineligible(surface); !reason.empty()) {
-            choice.log.push_back(fmt::format("device {}: {} [{}]: not chosen: {}", c.index, c.Label(), DeviceTypeName(c.type), reason));
+            choice.log.push_back(
+                fmt::format("device {}: {} [{}]: not chosen: {}", c.index, c.Label(), DeviceTypeName(c.type), reason));
         } else if (!override_text.empty()) {
-            choice.log.push_back(fmt::format("device {}: {} [{}]: not chosen: the override picked another", c.index, c.Label(),
-                                             DeviceTypeName(c.type)));
+            choice.log.push_back(fmt::format("device {}: {} [{}]: not chosen: the override picked another", c.index,
+                                             c.Label(), DeviceTypeName(c.type)));
         } else if (c.type != chosen->type) {
-            choice.log.push_back(fmt::format("device {}: {} [{}]: not chosen: a {} device is preferred to a {} one", c.index,
-                                             c.Label(), DeviceTypeName(c.type), DeviceTypeName(chosen->type), DeviceTypeName(c.type)));
-        } else if (c.capability_bits != chosen->capability_bits) {
-            choice.log.push_back(fmt::format("device {}: {} [{}]: not chosen: {} capability bits against {}", c.index, c.Label(),
-                                             DeviceTypeName(c.type), c.capability_bits, chosen->capability_bits));
-        } else {
-            choice.log.push_back(fmt::format("device {}: {} [{}]: not chosen: the lower index wins a tie", c.index, c.Label(),
+            choice.log.push_back(fmt::format("device {}: {} [{}]: not chosen: a {} device is preferred to a {} one",
+                                             c.index, c.Label(), DeviceTypeName(c.type), DeviceTypeName(chosen->type),
                                              DeviceTypeName(c.type)));
+        } else if (c.capability_bits != chosen->capability_bits) {
+            choice.log.push_back(fmt::format("device {}: {} [{}]: not chosen: {} capability bits against {}", c.index,
+                                             c.Label(), DeviceTypeName(c.type), c.capability_bits,
+                                             chosen->capability_bits));
+        } else {
+            choice.log.push_back(fmt::format("device {}: {} [{}]: not chosen: the lower index wins a tie", c.index,
+                                             c.Label(), DeviceTypeName(c.type)));
         }
     }
     choice.ok = true;
@@ -250,4 +255,4 @@ Result<CapabilityMask> CombineMasks(const char* environment_text, CapabilityMask
     return mask;
 }
 
-}  // namespace mh4n::gpu::rhi::core
+} // namespace mh4n::gpu::rhi::core

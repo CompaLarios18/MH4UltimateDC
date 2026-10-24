@@ -37,7 +37,7 @@ const char* RuleName(OwnerRule rule) {
     return "?";
 }
 
-}  // namespace
+} // namespace
 
 OwnerRuleHandler SetOwnerRuleHandler(OwnerRuleHandler handler) {
     HandlerSlot& slot = TheHandler();
@@ -77,7 +77,8 @@ TimelineValue Backend::Impl::Completed() {
     std::lock_guard lock(fence_mutex);
     while (!pending_fences.empty()) {
         PendingFence& front = pending_fences.front();
-        if (vkGetFenceStatus(device->vk, static_cast<::plume::VulkanCommandFence*>(front.fence.get())->vk) != VK_SUCCESS) {
+        if (vkGetFenceStatus(device->vk, static_cast<::plume::VulkanCommandFence*>(front.fence.get())->vk) !=
+            VK_SUCCESS) {
             break;
         }
         fence_completed = front.value;
@@ -157,7 +158,8 @@ Recorder MakeRecorder(const std::shared_ptr<Backend::Impl>& backend, bool intern
     }
     if (impl->list == nullptr) {
         impl->list = backend->queue_owner->createCommandList();
-        MH4N_ASSERT(impl->list != nullptr && impl->vulkan_list()->vk != VK_NULL_HANDLE, "the command list could not be made");
+        MH4N_ASSERT(impl->list != nullptr && impl->vulkan_list()->vk != VK_NULL_HANDLE,
+                    "the command list could not be made");
     }
     impl->vulkan_list()->begin();
 
@@ -173,7 +175,8 @@ Recorder MakeRecorder(const std::shared_ptr<Backend::Impl>& backend, bool intern
     }
 #if MH4N_RHI_CHECKS
     if (second_open) {
-        ReportOwnerRuleBreach(OwnerRule::OneOpenRecorder, "a thread began a recorder while it had another one open: submit or drop the first");
+        ReportOwnerRuleBreach(OwnerRule::OneOpenRecorder,
+                              "a thread began a recorder while it had another one open: submit or drop the first");
     }
 #else
     (void)second_open;
@@ -202,7 +205,8 @@ TimelineValue SubmitRecorder(Backend::Impl& backend, Recorder&& recorder, std::s
     }
 #if MH4N_RHI_CHECKS
     if (out_of_order) {
-        ReportOwnerRuleBreach(OwnerRule::SubmissionOrder, fmt::format("recorder {} of a thread was submitted after a later one", r.sequence));
+        ReportOwnerRuleBreach(OwnerRule::SubmissionOrder,
+                              fmt::format("recorder {} of a thread was submitted after a later one", r.sequence));
     }
     for (const Wait& required : r.required_waits) {
         const bool covered = std::any_of(waits.begin(), waits.end(), [&](const Wait& wait) {
@@ -210,7 +214,8 @@ TimelineValue SubmitRecorder(Backend::Impl& backend, Recorder&& recorder, std::s
         });
         if (!covered) {
             ReportOwnerRuleBreach(OwnerRule::RequiredWait,
-                                  fmt::format("a submission lacks the wait for value {} at stage {} that covers an image handed over to its thread",
+                                  fmt::format("a submission lacks the wait for value {} at stage {} that covers an "
+                                              "image handed over to its thread",
                                               required.value, static_cast<int>(required.stage)));
         }
     }
@@ -235,7 +240,8 @@ TimelineValue SubmitRecorder(Backend::Impl& backend, Recorder&& recorder, std::s
                 wait_values.push_back(wait.value);
             }
             ::plume::RenderCommandSemaphore* signal = backend.timeline_owner.get();
-            backend.queue->executeCommandListsEx(&list, 1, wait_semaphores.data(), static_cast<uint32_t>(wait_semaphores.size()), wait_stages.data(),
+            backend.queue->executeCommandListsEx(&list, 1, wait_semaphores.data(),
+                                                 static_cast<uint32_t>(wait_semaphores.size()), wait_stages.data(),
                                                  wait_values.data(), &signal, 1, &value, nullptr);
         } else {
             std::unique_ptr<::plume::RenderCommandFence> fence;
@@ -267,10 +273,12 @@ TimelineValue SubmitRecorder(Backend::Impl& backend, Recorder&& recorder, std::s
     for (auto& hook : hooks) {
         hook(value);
     }
+    r.targets.reset(); // the per-recorder state of the other modules ends with the recorder's use
+    r.state.reset();
     return value;
 }
 
-}  // namespace core
+} // namespace core
 
 Recorder Backend::BeginRecording() {
     return core::MakeRecorder(impl_, false);
@@ -284,7 +292,12 @@ TimelineValue Backend::Submit(Recorder&& recorder) {
 
 Result<void> Backend::ReadBuffer(const Buffer& buffer, u64 offset, std::span<u8> out, TimelineValue after) {
     if (offset + out.size() > buffer.Size()) {
-        return Error{fmt::format("ReadBuffer: [{}, {}) is outside the buffer of {} bytes", offset, offset + out.size(), buffer.Size())};
+        return Error{fmt::format("ReadBuffer: [{}, {}) is outside the buffer of {} bytes", offset, offset + out.size(),
+                                 buffer.Size())};
+    }
+    if (after > impl_->last_submitted.load()) {
+        return Error{fmt::format("ReadBuffer: it was asked to wait for value {}, but only {} has been issued", after,
+                                 impl_->last_submitted.load())};
     }
     if (out.empty()) {
         return Result<void>{};
@@ -292,7 +305,7 @@ Result<void> Backend::ReadBuffer(const Buffer& buffer, u64 offset, std::span<u8>
     impl_->WaitFor(after);
 
     if (buffer.GetHeap() != Heap::Device) {
-        const_cast<Buffer&>(buffer).Invalidate(offset, out.size());
+        buffer.Invalidate(offset, out.size());
         std::memcpy(out.data(), buffer.Mapped().data() + offset, out.size());
         return Result<void>{};
     }
@@ -316,15 +329,18 @@ Result<void> Backend::ReadBuffer(const Buffer& buffer, u64 offset, std::span<u8>
     VkMemoryBarrier before = {};
     before.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
     before.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
-    before.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;  // the staging memory may be reused
-    vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &before, 0, nullptr, 0, nullptr);
+    before.dstAccessMask =
+        VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT; // the staging memory may be reused
+    vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &before, 0,
+                         nullptr, 0, nullptr);
     recorder.CopyBuffer(**staging, 0, buffer, offset, out.size());
     // ... and the copy's writes are visible to the host once the submission has completed.
     VkMemoryBarrier after_copy = {};
     after_copy.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
     after_copy.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
     after_copy.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
-    vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &after_copy, 0, nullptr, 0, nullptr);
+    vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &after_copy, 0,
+                         nullptr, 0, nullptr);
     const TimelineValue value = core::SubmitRecorder(*impl_, std::move(recorder), {});
     impl_->WaitFor(value);
     (*staging)->Invalidate(0, out.size());
@@ -332,4 +348,4 @@ Result<void> Backend::ReadBuffer(const Buffer& buffer, u64 offset, std::span<u8>
     return Result<void>{};
 }
 
-}  // namespace mh4n::gpu::rhi
+} // namespace mh4n::gpu::rhi

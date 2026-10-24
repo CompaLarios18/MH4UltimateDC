@@ -20,14 +20,14 @@ const char* DeviceTypeName(DeviceType type);
 
 // What the choice needs to know about one physical device.
 struct DeviceCandidate {
-    u32 index = 0;  // in the order of vkEnumeratePhysicalDevices on the instance
+    u32 index = 0; // in the order of vkEnumeratePhysicalDevices on the instance
     std::string name;
     std::string driver_name;
     DeviceType type = DeviceType::Other;
     bool has_graphics_queue = false;
-    bool fragment_stores_and_atomics = false;  // the shadow write has no fallback without it (5.1)
-    bool can_present = true;                   // some graphics queue family can present to the surface (true when there is none)
-    u32 capability_bits = 0;                   // how many capability bits the device has after the mask
+    bool fragment_stores_and_atomics = false; // the shadow write has no fallback without it (5.1)
+    bool can_present = true; // some graphics queue family can present to the surface (true when there is none)
+    u32 capability_bits = 0; // how many capability bits the device has after the mask
 
     // "<device name> (<driver name>)": the text MH4N_VULKAN_DEVICE and BackendOptions::device match.
     std::string Label() const;
@@ -37,9 +37,9 @@ struct DeviceCandidate {
 
 struct DeviceChoice {
     bool ok = false;
-    u32 index = 0;                 // the chosen candidate's `index`
-    std::string error;             // when !ok
-    std::vector<std::string> log;  // one line per candidate: chosen or not, and why
+    u32 index = 0;                // the chosen candidate's `index`
+    std::string error;            // when !ok
+    std::vector<std::string> log; // one line per candidate: chosen or not, and why
 };
 
 // Among the devices with a graphics queue and fragmentStoresAndAtomics (and, with a surface, a queue that
@@ -71,4 +71,4 @@ inline constexpr u32 kDriverIdMoltenVk = 14;
 inline constexpr u32 kDriverIdKosmicKrispUnverified = 28;
 inline constexpr u32 kVendorIdApple = 0x106B;
 
-}  // namespace mh4n::gpu::rhi::core
+} // namespace mh4n::gpu::rhi::core

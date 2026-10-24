@@ -1,7 +1,6 @@
 // The device: probing every physical device, choosing one by capability, enabling only what the
 // capabilities use, applying the mask, and the Backend's read-only accessors (N2-26).
 #include <algorithm>
-#include <bit>
 #include <cstdlib>
 #include <set>
 
@@ -21,7 +20,7 @@ constexpr u32 MakeApi(u32 major, u32 minor) {
 // Everything the choice and the capabilities need to know about one physical device.
 struct Probe {
     core::DeviceCandidate candidate;
-    Capabilities caps;  // before the mask
+    Capabilities caps; // before the mask
     std::set<std::string> extensions;
     VkPhysicalDeviceFeatures features = {};
     VkPhysicalDeviceLimits limits = {};
@@ -43,8 +42,7 @@ core::DeviceType ToDeviceType(VkPhysicalDeviceType type) {
 
 struct Chain {
     void* head = nullptr;
-    template <typename T>
-    void Add(T& structure, VkStructureType type) {
+    template <typename T> void Add(T& structure, VkStructureType type) {
         structure.sType = type;
         structure.pNext = head;
         head = &structure;
@@ -74,6 +72,10 @@ Probe ProbePhysicalDevice(VkPhysicalDevice device, u32 index, VkSurfaceKHR surfa
     caps.vendor_id = props.vendorID;
     caps.timestamp_period = props.limits.timestampPeriod;
     caps.max_texel_buffer_elements = props.limits.maxTexelBufferElements;
+    caps.uniform_buffer_offset_alignment = static_cast<u32>(props.limits.minUniformBufferOffsetAlignment);
+    caps.storage_buffer_offset_alignment = static_cast<u32>(props.limits.minStorageBufferOffsetAlignment);
+    caps.max_uniform_buffer_range = props.limits.maxUniformBufferRange;
+    caps.max_storage_buffer_range = props.limits.maxStorageBufferRange;
     caps.geometry_shader = probe.features.geometryShader != VK_FALSE;
 
     u32 count = 0;
@@ -109,7 +111,7 @@ Probe ProbePhysicalDevice(VkPhysicalDevice device, u32 index, VkSurfaceKHR surfa
                                 ? subset_props.minVertexInputBindingStrideAlignment
                                 : 1;
     caps.apple = core::IsAppleDriver(caps.driver_id, caps.driver_name, caps.vendor_id);
-    caps.primitive_restart_always_on = caps.apple;  // inference (MoltenVK always restarts; KosmicKrisp: unknown)
+    caps.primitive_restart_always_on = caps.apple; // inference (MoltenVK always restarts; KosmicKrisp: unknown)
 
     // Features: only the structures the device can answer are chained.
     VkPhysicalDeviceTimelineSemaphoreFeatures timeline = {};
@@ -128,13 +130,20 @@ Probe ProbePhysicalDevice(VkPhysicalDevice device, u32 index, VkSurfaceKHR surfa
     if (api >= MakeApi(1, 1)) {
         Chain chain;
         if (have_timeline) chain.Add(timeline, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES);
-        if (has(VK_EXT_FRAGMENT_SHADER_INTERLOCK_EXTENSION_NAME)) chain.Add(interlock, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADER_INTERLOCK_FEATURES_EXT);
-        if (has(VK_EXT_INDEX_TYPE_UINT8_EXTENSION_NAME)) chain.Add(uint8, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_INDEX_TYPE_UINT8_FEATURES_EXT);
-        if (has(VK_EXT_CUSTOM_BORDER_COLOR_EXTENSION_NAME)) chain.Add(border, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CUSTOM_BORDER_COLOR_FEATURES_EXT);
-        if (caps.portability_subset) chain.Add(subset, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PORTABILITY_SUBSET_FEATURES_KHR);
-        if (have_dynamic_rendering) chain.Add(dynamic_rendering, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES);
-        if (has(VK_EXT_GRAPHICS_PIPELINE_LIBRARY_EXTENSION_NAME)) chain.Add(library, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_GRAPHICS_PIPELINE_LIBRARY_FEATURES_EXT);
-        if (has(VK_EXT_EXTENDED_DYNAMIC_STATE_3_EXTENSION_NAME)) chain.Add(eds3, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_3_FEATURES_EXT);
+        if (has(VK_EXT_FRAGMENT_SHADER_INTERLOCK_EXTENSION_NAME))
+            chain.Add(interlock, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADER_INTERLOCK_FEATURES_EXT);
+        if (has(VK_EXT_INDEX_TYPE_UINT8_EXTENSION_NAME))
+            chain.Add(uint8, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_INDEX_TYPE_UINT8_FEATURES_EXT);
+        if (has(VK_EXT_CUSTOM_BORDER_COLOR_EXTENSION_NAME))
+            chain.Add(border, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CUSTOM_BORDER_COLOR_FEATURES_EXT);
+        if (caps.portability_subset)
+            chain.Add(subset, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PORTABILITY_SUBSET_FEATURES_KHR);
+        if (have_dynamic_rendering)
+            chain.Add(dynamic_rendering, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES);
+        if (has(VK_EXT_GRAPHICS_PIPELINE_LIBRARY_EXTENSION_NAME))
+            chain.Add(library, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_GRAPHICS_PIPELINE_LIBRARY_FEATURES_EXT);
+        if (has(VK_EXT_EXTENDED_DYNAMIC_STATE_3_EXTENSION_NAME))
+            chain.Add(eds3, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_3_FEATURES_EXT);
         if (have_present) {
             chain.Add(present_id, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_FEATURES_KHR);
             chain.Add(present_wait, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_WAIT_FEATURES_KHR);
@@ -166,8 +175,10 @@ Probe ProbePhysicalDevice(VkPhysicalDevice device, u32 index, VkSurfaceKHR surfa
         vkGetPhysicalDeviceFormatProperties(device, format, &format_props);
         return (format_props.optimalTilingFeatures & needed) == needed;
     };
-    caps.d24s8 = format_has(VK_FORMAT_D24_UNORM_S8_UINT, VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT);
-    caps.bc7 = probe.features.textureCompressionBC != VK_FALSE && format_has(VK_FORMAT_BC7_UNORM_BLOCK, VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT);
+    caps.d24s8 = format_has(VK_FORMAT_D24_UNORM_S8_UINT,
+                            VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT);
+    caps.bc7 = probe.features.textureCompressionBC != VK_FALSE &&
+               format_has(VK_FORMAT_BC7_UNORM_BLOCK, VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT);
 
     // Memory: the host can write device memory directly when a host-visible, device-local type sits in
     // a heap as large as the biggest device-local heap (unified memory, resizable BAR).
@@ -191,7 +202,10 @@ Probe ProbePhysicalDevice(VkPhysicalDevice device, u32 index, VkSurfaceKHR surfa
     vkGetPhysicalDeviceQueueFamilyProperties(device, &probe.queue_family_count, nullptr);
     std::vector<VkQueueFamilyProperties> families(probe.queue_family_count);
     vkGetPhysicalDeviceQueueFamilyProperties(device, &probe.queue_family_count, families.data());
-    constexpr VkQueueFlags kWanted = VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT;
+    // The family the vendored backend wants has graphics, compute and transfer; a graphics or compute
+    // family supports transfer whether or not it reports the bit (the vendored backend's own family
+    // choice still asks for the bit and falls back to family 0 without it: its limit, not ours).
+    constexpr VkQueueFlags kWanted = VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT;
     bool graphics = false;
     probe.can_present = (surface == VK_NULL_HANDLE);
     for (u32 i = 0; i < families.size(); ++i) {
@@ -208,7 +222,7 @@ Probe ProbePhysicalDevice(VkPhysicalDevice device, u32 index, VkSurfaceKHR surfa
     }
 
     if (surface != VK_NULL_HANDLE && !has(VK_KHR_SWAPCHAIN_EXTENSION_NAME)) {
-        probe.can_present = false;  // a surface needs the swapchain extension
+        probe.can_present = false; // a surface needs the swapchain extension
     }
 
     core::DeviceCandidate& candidate = probe.candidate;
@@ -240,7 +254,7 @@ void ApplyMask(Capabilities& caps, CapabilityMask mask) {
     caps.masked = mask;
 }
 
-}  // namespace
+} // namespace
 
 // ---- Backend::Impl -------------------------------------------------------------------------------
 
@@ -395,7 +409,8 @@ Result<std::shared_ptr<Backend>> CreateBackend(std::shared_ptr<Instance> instanc
     caps.logic_op = caps.logic_op && device->enabledCoreFeatures.logicOp;
     caps.bc7 = caps.bc7 && device->enabledCoreFeatures.textureCompressionBC;
     caps.geometry_shader = device->enabledCoreFeatures.geometryShader != VK_FALSE;
-    impl->present_wait_available = core::PresentWaitAvailable(surface != VK_NULL_HANDLE, caps.present_wait, enabled.presentWait);
+    impl->present_wait_available =
+        core::PresentWaitAvailable(surface != VK_NULL_HANDLE, caps.present_wait, enabled.presentWait);
     impl->display_timing_available = surface != VK_NULL_HANDLE && enabled.displayTiming;
     impl->present_wait_measures_display =
         core::PresentWaitMeasuresDisplay(impl->present_wait_available, caps.driver_id, caps.driver_name);
@@ -429,17 +444,19 @@ Result<std::shared_ptr<Backend>> CreateBackend(std::shared_ptr<Instance> instanc
 
     const Capabilities& c = impl->caps;
     MH4N_LOG(Info, "RHI", "rhi: mask {}", mask.bits != 0 ? mask.ToString() : std::string("none"));
-    MH4N_LOG(Info, "RHI", "rhi: device {} \"{}\" driver \"{}\" (id {}) api {}.{}.{}, queue family {}, {}", c.device_index, c.device_name,
-             c.driver_name, c.driver_id, (c.api_version >> 22) & 0x7F, (c.api_version >> 12) & 0x3FF, c.api_version & 0xFFF,
-             impl->queue_family, surface != VK_NULL_HANDLE ? "with a surface" : "no surface");
+    MH4N_LOG(Info, "RHI", "rhi: device {} \"{}\" driver \"{}\" (id {}) api {}.{}.{}, queue family {}, {}",
+             c.device_index, c.device_name, c.driver_name, c.driver_id, (c.api_version >> 22) & 0x7F,
+             (c.api_version >> 12) & 0x3FF, c.api_version & 0xFFF, impl->queue_family,
+             surface != VK_NULL_HANDLE ? "with a surface" : "no surface");
     MH4N_LOG(Info, "RHI",
-             "rhi: caps d24s8={} interlock={} index_uint8={} custom_border_color={} triangle_fans={} logic_op={} dynamic_rendering={} "
+             "rhi: caps d24s8={} interlock={} index_uint8={} custom_border_color={} triangle_fans={} logic_op={} "
+             "dynamic_rendering={} "
              "pipeline_library={} eds3_blend={} bc7={} timeline={} present_wait={} direct_upload={}",
-             c.d24s8, c.interlock, c.index_uint8, c.custom_border_color, c.triangle_fans, c.logic_op, c.dynamic_rendering, c.pipeline_library,
-             c.eds3_blend, c.bc7, c.timeline, c.present_wait, c.direct_upload);
+             c.d24s8, c.interlock, c.index_uint8, c.custom_border_color, c.triangle_fans, c.logic_op,
+             c.dynamic_rendering, c.pipeline_library, c.eds3_blend, c.bc7, c.timeline, c.present_wait, c.direct_upload);
     MH4N_LOG(Info, "RHI", "rhi: device extensions enabled: {}", core::JoinNames(impl->enabled_extensions));
 
     return std::make_shared<Backend>(std::move(impl));
 }
 
-}  // namespace mh4n::gpu::rhi
+} // namespace mh4n::gpu::rhi

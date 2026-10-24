@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -492,8 +493,15 @@ TEST_CASE("to_plume/constant_alpha_cannot_be_expressed") {
         CHECK_FALSE(result.ok());
         CHECK(result.error().find("constant-alpha") != std::string::npos);
         // not an error while blending is off: the factor is not used
+        // not an error while blending is off: the factor is not used, and the backend is given neutral ones
+        // (it converts all four factors whether or not blending is on)
         state.blend_enabled = false;
-        CHECK(core::ToPlume(state, true, &desc).ok());
+        state.src_color = state.dst_color = state.src_alpha = factor;
+        REQUIRE(core::ToPlume(state, true, &desc).ok());
+        CHECK(desc.renderTargetBlend[0].srcBlend == RenderBlend::ONE);
+        CHECK(desc.renderTargetBlend[0].srcBlendAlpha == RenderBlend::ONE);
+        CHECK(desc.renderTargetBlend[0].dstBlend == RenderBlend::ZERO);
+        CHECK(desc.renderTargetBlend[0].dstBlendAlpha == RenderBlend::ZERO);
     }
 }
 
@@ -617,11 +625,10 @@ TEST_CASE("to_plume/depth_stencil_cull_and_bias") {
     FixedFunctionState bias;
     bias.depth_bias_enabled = true;
     bias.depth_bias_constant = -3.0f;
-    bias.depth_bias_clamp = 0.5f;
     bias.depth_bias_slope = 1.25f;
     RenderGraphicsPipelineDesc desc = Translate(bias);
     CHECK(desc.depthBias == -3);
-    CHECK(desc.depthBiasClamp == 0.5f);
+    CHECK(desc.depthBiasClamp == 0.0f);  // the device does not enable depthBiasClamp
     CHECK(desc.slopeScaledDepthBias == 1.25f);
     CHECK_FALSE(desc.dynamicDepthBiasEnabled);
     bias.depth_bias_constant = 1.5f;
@@ -697,6 +704,15 @@ TEST_CASE("to_plume/every_format_has_its_own_plume_format") {
     CHECK(core::ToPlumeFormat(Format::B5G6R5) == ::plume::RenderFormat::B5G6R5_UNORM);
     CHECK(core::ToPlumeFormat(Format::A1R5G5B5) == ::plume::RenderFormat::A1R5G5B5_UNORM);
     CHECK(core::ToPlumeFormat(Format::Rgb8) == ::plume::RenderFormat::R8G8B8A8_UNORM);  // RGB8 is always RGBA8
+    CHECK(core::ToPlumeFormat(Format::Bc1Unorm) == ::plume::RenderFormat::BC1_UNORM);
+    CHECK(core::ToPlumeFormat(Format::Bc3Unorm) == ::plume::RenderFormat::BC3_UNORM);
+    CHECK(core::ToPlumeFormat(Format::Bc5Unorm) == ::plume::RenderFormat::BC5_UNORM);
+    CHECK(core::ToPlumeFormat(Format::Bc7Unorm) == ::plume::RenderFormat::BC7_UNORM);
+    // the packed 16-bit formats: the first letter is in the highest bits, as in Vulkan
+    CHECK(core::ToPlumeFormat(Format::R5G6B5) == ::plume::RenderFormat::R5G6B5_UNORM);
+    CHECK(core::ToPlumeFormat(Format::R5G5B5A1) == ::plume::RenderFormat::R5G5B5A1_UNORM);
+    CHECK(core::ToPlumeFormat(Format::R4G4B4A4) == ::plume::RenderFormat::R4G4B4A4_UNORM);
+    CHECK(core::ToPlumeFormat(Format::Rgb565) == ::plume::RenderFormat::R5G6B5_UNORM);  // the PICA names default to the R-first ones
     for (u32 i = 1; i <= static_cast<u32>(Format::Rgba16Sint); ++i) {
         CHECK_MESSAGE(core::ToPlumeFormat(static_cast<Format>(i)) != ::plume::RenderFormat::UNKNOWN, "format " << i);
     }
@@ -917,6 +933,7 @@ TEST_CASE("device/override_that_matches_nothing_fails_with_the_list") {
 // ---- the capabilities and the mask -------------------------------------------------------------------------------
 
 TEST_CASE("caps/agree_with_the_probes_live_lines") {
+    ScopedEnv no_mask("MH4N_RHI_MASK", nullptr);  // this case compares the unmasked device
     std::shared_ptr<Backend> backend = test::RequireBackend();
     if (!backend) return;
     const Capabilities& caps = backend->Caps();
@@ -969,6 +986,7 @@ TEST_CASE("caps/agree_with_the_probes_live_lines") {
 }
 
 TEST_CASE("mask/each_bit_a_list_and_all") {
+    ScopedEnv no_ambient_mask("MH4N_RHI_MASK", nullptr);  // the case sets the variable itself
     LogCapture log;
     std::vector<std::string> unmasked_extensions;
     const std::optional<Capabilities> base = CapsWith({}, &unmasked_extensions);
@@ -1207,6 +1225,18 @@ TEST_CASE("buffer/heaps_mapping_and_readback") {
         CHECK(from_device[i] == 0xC0DE0000u + i);
         CHECK(from_readback[i] == 0xC0DE0000u + i);
     }
+    // at an offset that is not 0, from both heaps
+    u32 four[4] = {};
+    for (const std::shared_ptr<Buffer>& source : {device, readback}) {
+        REQUIRE(backend->ReadBuffer(*source, 20, std::span<u8>(reinterpret_cast<u8*>(four), sizeof(four)), value).ok());
+        for (u32 i = 0; i < 4; ++i) {
+            CHECK(four[i] == 0xC0DE0000u + 5 + i);
+        }
+    }
+    // a value that was never issued is an error, not an old read
+    CHECK_FALSE(backend->ReadBuffer(*device, 0, std::span<u8>(reinterpret_cast<u8*>(four), sizeof(four)), value + 1000).ok());
+    CHECK(backend->ReadBuffer(*readback, 0, std::span<u8>(reinterpret_cast<u8*>(four), sizeof(four)), value + 1000).error().find("issued") !=
+          std::string::npos);
     // a read outside the buffer is an error, not a crash
     std::vector<u8> big(128);
     CHECK_FALSE(backend->ReadBuffer(*device, 0, big).ok());
@@ -1228,7 +1258,12 @@ TEST_CASE("bindings/checks") {
     CHECK_FALSE(s.SetStorageBuffer(0, *plain, 0, 16).ok());     // made without Storage usage
     CHECK_FALSE(s.SetUniformBuffer(1, *uniform, 0, 4096).ok());  // out of the buffer
     CHECK_FALSE(s.SetUniformBuffer(1, *uniform, 1, 16).ok());    // not a multiple of the offset alignment
-    const u64 alignment = std::max<u64>(backend->impl().limits.minUniformBufferOffsetAlignment, 1);
+    const Capabilities& caps = backend->Caps();
+    CHECK(caps.uniform_buffer_offset_alignment >= 1);
+    CHECK(caps.storage_buffer_offset_alignment >= 1);
+    CHECK(caps.max_uniform_buffer_range >= 16384);
+    CHECK(caps.max_storage_buffer_range >= 1u << 27);
+    const u64 alignment = std::max<u64>(caps.uniform_buffer_offset_alignment, 1);
     CHECK(s.SetUniformBuffer(1, *uniform, alignment, 16).ok());  // an offset that is
     // shapes with images are the targets module's
     BindingSetDesc with_image;
@@ -1243,7 +1278,9 @@ TEST_CASE("pipelines/state_variants_are_created_on_the_device") {
     std::shared_ptr<Backend> backend = test::RequireBackend();
     if (!backend) return;
     int made = 0;
+    int attempted = 0;
     const auto create = [&](const FixedFunctionState& state, const char* what) {
+        ++attempted;
         GraphicsPipelineDesc desc;
         desc.vertex.spirv = tri_vert;
         desc.fragment.spirv = color_frag;
@@ -1317,7 +1354,8 @@ TEST_CASE("pipelines/state_variants_are_created_on_the_device") {
         s.depth_bias_slope = 1.5f;
         create(s, "depth bias");
     }
-    CHECK(made >= 50);
+    CHECK(made == attempted);  // every state variant is made (the logic ops only where the device has them)
+    CHECK(attempted >= 46);
 }
 
 TEST_CASE("pipelines/refused_before_the_driver_sees_them") {
@@ -1540,8 +1578,11 @@ TEST_CASE("submit/two_threads_each_recording_and_submitting_through_the_lock") {
     if (!backend) return;
     BreachCapture breaches;
     const std::shared_ptr<Pipeline> pipeline = ComputeWrite(*backend);
-    constexpr int kThreads = 2;
-    constexpr int kRounds = 25;
+    // Four threads, fifty rounds each. Removing the submit mutex would break the order of the values only
+    // now and then, so a mutation of the lock is caught reliably only by the layer run (synchronisation
+    // validation) and by ThreadSanitizer, which run this case.
+    constexpr int kThreads = 4;
+    constexpr int kRounds = 50;
     std::atomic<int> wrong{0};
     std::atomic<int> unordered{0};
     std::vector<Scene> scenes;
@@ -1674,6 +1715,124 @@ TEST_CASE("owner_rule/the_default_handler_is_replaceable_and_restored") {
     CHECK(seen == 1);
     const OwnerRuleHandler mine = SetOwnerRuleHandler(previous);
     CHECK(static_cast<bool>(mine));  // the call returned the handler it replaced
+}
+
+// ---- more checks on names, reads, the queue lock and pipelines ---------------------------------------------------
+
+TEST_CASE("mask/the_name_of_each_bit_is_a_literal") {
+    // Written out, not derived from the table under test: a swapped pair of names shows.
+    const struct {
+        const char* name;
+        Cap cap;
+    } table[] = {{"d24s8", Cap::D24S8},
+                 {"interlock", Cap::Interlock},
+                 {"index_uint8", Cap::IndexUint8},
+                 {"custom_border_color", Cap::CustomBorderColor},
+                 {"triangle_fans", Cap::TriangleFans},
+                 {"logic_op", Cap::LogicOp},
+                 {"dynamic_rendering", Cap::DynamicRendering},
+                 {"pipeline_library", Cap::PipelineLibrary},
+                 {"eds3_blend", Cap::Eds3Blend},
+                 {"bc7", Cap::Bc7},
+                 {"timeline", Cap::Timeline},
+                 {"present_wait", Cap::PresentWait},
+                 {"direct_upload", Cap::DirectUpload}};
+    CHECK(sizeof(table) / sizeof(table[0]) == kCapCount);
+    for (const auto& row : table) {
+        CHECK(CapName(row.cap) == row.name);
+        const Result<CapabilityMask> parsed = CapabilityMask::Parse(row.name);
+        REQUIRE(parsed.ok());
+        CHECK(parsed->bits == (1u << static_cast<u32>(row.cap)));
+        CHECK(CapabilityMask{}.With(row.cap).ToString() == row.name);
+    }
+    // and Capabilities::Has reads the field of the same name
+    Capabilities caps;
+    caps.dynamic_rendering = true;
+    for (const auto& row : table) {
+        CHECK(caps.Has(row.cap) == (row.cap == Cap::DynamicRendering));
+    }
+}
+
+TEST_CASE("buffer/a_read_right_after_a_submission_waits_for_it") {
+    std::shared_ptr<Backend> backend = test::RequireBackend();
+    if (!backend) return;
+    // Big copies so that the GPU is not done when Submit returns: the read must wait for `after`.
+    constexpr u64 kSize = 48ull << 20;
+    std::shared_ptr<Buffer> upload = Make(*backend, kSize, Heap::Upload, BufferUsage::Transfer);
+    std::shared_ptr<Buffer> device = Make(*backend, kSize, Heap::Device, BufferUsage::Transfer);
+    std::shared_ptr<Buffer> readback = Make(*backend, kSize, Heap::Readback, BufferUsage::Transfer);
+    std::memset(upload->Mapped().data(), 0xA5, kSize);
+    std::memset(readback->Mapped().data(), 0, kSize);
+    upload->Flush(0, kSize);
+    readback->Flush(0, kSize);
+    Recorder rec = backend->BeginRecording();
+    rec.CopyBuffer(*device, 0, *upload, 0, kSize);
+    rec.Barrier(Stage::Transfer, Stage::Transfer);
+    rec.CopyBuffer(*readback, 0, *device, 0, kSize);
+    const TimelineValue value = backend->Submit(std::move(rec));
+    u8 bytes[16] = {};
+    REQUIRE(backend->ReadBuffer(*readback, kSize - 1000, bytes, value).ok());  // no other wait
+    for (u8 byte : bytes) {
+        CHECK(byte == 0xA5);
+    }
+    backend->WaitIdle();
+}
+
+TEST_CASE("submit/the_queue_lock_holds_back_a_submission") {
+    std::shared_ptr<Backend> backend = test::RequireBackend();
+    if (!backend) return;
+    std::atomic<bool> submitted{false};
+    std::thread other;
+    {
+        QueueLock lock(*backend);
+        other = std::thread([&] {
+            backend->Submit(backend->BeginRecording());
+            submitted = true;
+        });
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        CHECK_FALSE(submitted.load());  // Submit takes the same lock
+    }
+    other.join();
+    CHECK(submitted.load());
+    // the lock is released: it can be taken again, by another thread too
+    std::thread again([&] { QueueLock lock(*backend); });
+    again.join();
+}
+
+TEST_CASE("pipelines/constant_alpha_and_fractional_bias_at_the_device") {
+    std::shared_ptr<Backend> backend = test::RequireBackend();
+    if (!backend) return;
+    GraphicsPipelineDesc desc;
+    desc.vertex.spirv = tri_vert;
+    desc.fragment.spirv = color_frag;
+    desc.color_format = Format::Rgba8Unorm;
+    // blending off: the factors are not used, and the driver is given valid ones (clean under the layer)
+    desc.state.blend_enabled = false;
+    desc.state.src_color = BlendFactor::ConstantAlpha;
+    desc.state.dst_color = BlendFactor::OneMinusConstantAlpha;
+    desc.state.src_alpha = BlendFactor::ConstantAlpha;
+    desc.state.dst_alpha = BlendFactor::OneMinusConstantAlpha;
+    const Result<std::shared_ptr<Pipeline>> off = backend->CreateGraphicsPipeline(desc);
+    CHECK_MESSAGE(off.ok(), off.error());
+    // blending on: refused with a message
+    desc.state.blend_enabled = true;
+    const Result<std::shared_ptr<Pipeline>> on = backend->CreateGraphicsPipeline(desc);
+    REQUIRE_FALSE(on.ok());
+    CHECK(on.error().find("constant-alpha") != std::string::npos);
+    // a fractional constant depth bias is refused by CreateGraphicsPipeline, a whole one is made
+    GraphicsPipelineDesc bias;
+    bias.vertex.spirv = tri_vert;
+    bias.fragment.spirv = color_frag;
+    bias.color_format = Format::Rgba8Unorm;
+    bias.state.depth_bias_enabled = true;
+    bias.state.depth_bias_constant = 0.5f;
+    const Result<std::shared_ptr<Pipeline>> fractional = backend->CreateGraphicsPipeline(bias);
+    REQUIRE_FALSE(fractional.ok());
+    CHECK(fractional.error().find("whole number") != std::string::npos);
+    bias.state.depth_bias_constant = 4.0f;
+    bias.state.depth_bias_slope = 0.25f;
+    const Result<std::shared_ptr<Pipeline>> whole = backend->CreateGraphicsPipeline(bias);
+    CHECK_MESSAGE(whole.ok(), whole.error());
 }
 
 // ---- loading ----------------------------------------------------------------------------------------------------

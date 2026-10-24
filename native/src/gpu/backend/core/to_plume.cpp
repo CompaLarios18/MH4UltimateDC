@@ -29,6 +29,9 @@ RenderFormat ToPlumeFormat(Format format) {
     case Format::B4G4R4A4: return RenderFormat::B4G4R4A4_UNORM;
     case Format::R32Uint: return RenderFormat::R32_UINT;
     case Format::Rgba16Float: return RenderFormat::R16G16B16A16_FLOAT;
+    case Format::Bc1Unorm: return RenderFormat::BC1_UNORM;
+    case Format::Bc3Unorm: return RenderFormat::BC3_UNORM;
+    case Format::Bc5Unorm: return RenderFormat::BC5_UNORM;
     case Format::Bc7Unorm: return RenderFormat::BC7_UNORM;
     case Format::D16Unorm: return RenderFormat::D16_UNORM;
     case Format::D24S8: return RenderFormat::D24_UNORM_S8_UINT;
@@ -53,7 +56,8 @@ RenderFormat ToPlumeFormat(Format format) {
 }
 
 bool IsDepthFormat(Format format) {
-    return format == Format::D16Unorm || format == Format::D24S8 || format == Format::D32Float || format == Format::D32S8;
+    return format == Format::D16Unorm || format == Format::D24S8 || format == Format::D32Float ||
+           format == Format::D32S8;
 }
 
 bool IsVertexFormat(Format format) {
@@ -76,10 +80,8 @@ bool IsVertexFormat(Format format) {
     case Format::R16Uint:
     case Format::R16Sint:
     case Format::Rg16Sint:
-    case Format::Rgba16Sint:
-        return true;
-    default:
-        return false;
+    case Format::Rgba16Sint: return true;
+    default: return false;
     }
 }
 
@@ -131,8 +133,7 @@ bool IsVertexFormat(Format format) {
     case BlendFactor::OneMinusConstantColor: return B::INV_BLEND_FACTOR;
     case BlendFactor::SrcAlphaSaturate: return B::SRC_ALPHA_SAT;
     case BlendFactor::ConstantAlpha:
-    case BlendFactor::OneMinusConstantAlpha:
-        break;
+    case BlendFactor::OneMinusConstantAlpha: break;
     }
     *expressible = false;
     return B::UNKNOWN;
@@ -197,10 +198,12 @@ bool IsVertexFormat(Format format) {
 }
 
 ::plume::RenderFrontFace ToPlume(FrontFace face) {
-    return face == FrontFace::Clockwise ? ::plume::RenderFrontFace::CLOCKWISE : ::plume::RenderFrontFace::COUNTER_CLOCKWISE;
+    return face == FrontFace::Clockwise ? ::plume::RenderFrontFace::CLOCKWISE
+                                        : ::plume::RenderFrontFace::COUNTER_CLOCKWISE;
 }
 
-Result<void> ToPlume(const FixedFunctionState& state, bool color_attachment, ::plume::RenderGraphicsPipelineDesc* desc) {
+Result<void> ToPlume(const FixedFunctionState& state, bool color_attachment,
+                     ::plume::RenderGraphicsPipelineDesc* desc) {
     // The blend equation.
     ::plume::RenderBlendDesc blend;
     blend.blendEnabled = state.blend_enabled;
@@ -210,12 +213,19 @@ Result<void> ToPlume(const FixedFunctionState& state, bool color_attachment, ::p
     blend.srcBlendAlpha = ToPlume(state.src_alpha, &ok_src_alpha);
     blend.dstBlendAlpha = ToPlume(state.dst_alpha, &ok_dst_alpha);
     if (state.blend_enabled && !(ok_src_color && ok_dst_color && ok_src_alpha && ok_dst_alpha)) {
-        return Error{"a constant-alpha blend factor cannot be expressed by the vendored backend (it maps only the constant-colour pair); "
+        return Error{"a constant-alpha blend factor cannot be expressed by the vendored backend (it maps only the "
+                     "constant-colour pair); "
                      "a patch of the queue is needed"};
     }
     blend.blendOp = ToPlume(state.color_op);
     blend.blendOpAlpha = ToPlume(state.alpha_op);
     blend.renderTargetWriteMask = state.color_write_mask & kWriteAll;
+    if (!state.blend_enabled) {
+        // Plume converts all four factors whether or not blending is on: leave none unset (or one the
+        // backend cannot express) for the driver to see.
+        blend.srcBlend = blend.srcBlendAlpha = ::plume::RenderBlend::ONE;
+        blend.dstBlend = blend.dstBlendAlpha = ::plume::RenderBlend::ZERO;
+    }
     if (color_attachment) {
         desc->renderTargetBlend[0] = blend;
     }
@@ -247,15 +257,16 @@ Result<void> ToPlume(const FixedFunctionState& state, bool color_attachment, ::p
 
     // Depth bias: baked. The vendored backend's constant factor is an integer.
     desc->depthBias = 0;
-    desc->depthBiasClamp = 0.0f;
+    desc->depthBiasClamp = 0.0f; // the device does not enable depthBiasClamp, and the PICA has no clamp
     desc->slopeScaledDepthBias = 0.0f;
     if (state.depth_bias_enabled) {
-        if (state.depth_bias_constant != std::floor(state.depth_bias_constant) || std::fabs(state.depth_bias_constant) > 2147483000.0f) {
-            return Error{fmt::format("depth_bias_constant {} is not a whole number (the vendored backend's constant factor is an integer)",
-                                     state.depth_bias_constant)};
+        if (state.depth_bias_constant != std::floor(state.depth_bias_constant) ||
+            std::fabs(state.depth_bias_constant) > 2147483000.0f) {
+            return Error{fmt::format(
+                "depth_bias_constant {} is not a whole number (the vendored backend's constant factor is an integer)",
+                state.depth_bias_constant)};
         }
         desc->depthBias = static_cast<int32_t>(state.depth_bias_constant);
-        desc->depthBiasClamp = state.depth_bias_clamp;
         desc->slopeScaledDepthBias = state.depth_bias_slope;
     }
 
@@ -267,8 +278,9 @@ Result<void> ToPlume(const FixedFunctionState& state, bool color_attachment, ::p
     return Result<void>{};
 }
 
-Result<void> ToPlume(const GraphicsPipelineDesc& pipeline, const ::plume::RenderShader* vertex, const ::plume::RenderShader* fragment,
-                     const ::plume::RenderShader* geometry, const ::plume::RenderPipelineLayout* layout, PlumeGraphicsDesc* out) {
+Result<void> ToPlume(const GraphicsPipelineDesc& pipeline, const ::plume::RenderShader* vertex,
+                     const ::plume::RenderShader* fragment, const ::plume::RenderShader* geometry,
+                     const ::plume::RenderPipelineLayout* layout, PlumeGraphicsDesc* out) {
     ::plume::RenderGraphicsPipelineDesc& desc = out->desc;
     desc = ::plume::RenderGraphicsPipelineDesc();
     desc.pipelineLayout = layout;
@@ -297,10 +309,11 @@ Result<void> ToPlume(const GraphicsPipelineDesc& pipeline, const ::plume::Render
     }
     for (const VertexAttribute& attribute : pipeline.vertex_layout.attributes) {
         if (!IsVertexFormat(attribute.format)) {
-            return Error{fmt::format("vertex attribute at location {} has a format that is not a vertex format", attribute.location)};
+            return Error{fmt::format("vertex attribute at location {} has a format that is not a vertex format",
+                                     attribute.location)};
         }
-        out->elements.emplace_back("ATTRIBUTE", attribute.location, attribute.location, ToPlumeFormat(attribute.format), attribute.binding,
-                                   attribute.offset);
+        out->elements.emplace_back("ATTRIBUTE", attribute.location, attribute.location, ToPlumeFormat(attribute.format),
+                                   attribute.binding, attribute.offset);
     }
     desc.inputSlots = out->slots.empty() ? nullptr : out->slots.data();
     desc.inputSlotsCount = static_cast<uint32_t>(out->slots.size());
@@ -309,4 +322,4 @@ Result<void> ToPlume(const GraphicsPipelineDesc& pipeline, const ::plume::Render
     return Result<void>{};
 }
 
-}  // namespace mh4n::gpu::rhi::core
+} // namespace mh4n::gpu::rhi::core

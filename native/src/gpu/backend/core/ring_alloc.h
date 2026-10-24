@@ -14,14 +14,14 @@ public:
     explicit RingAllocator(u64 capacity) : capacity_(capacity) {}
 
     enum class Status : u8 {
-        Ok,        // reserved at `offset`
-        MustWait,  // free again once the timeline has passed `wait_for`; call TryMap again afterwards
-        Failed,    // cannot be satisfied: see `error`
+        Ok,       // reserved at `offset`
+        MustWait, // free again once the timeline has passed `wait_for`; call TryMap again afterwards
+        Failed,   // cannot be satisfied: see `error`
     };
     struct Reservation {
         Status status = Status::Failed;
         u64 offset = 0;
-        bool wrapped = false;  // the allocation starts below the previous write position
+        bool wrapped = false; // the allocation starts below the previous write position
         TimelineValue wait_for = 0;
         std::string error;
     };
@@ -52,11 +52,11 @@ private:
     u64 capacity_;
     u64 head_ = 0;
     u64 next_id_ = 1;
-    std::deque<Span> spans_;  // in the order they were written; the front is the oldest
-    bool wrapped_pending_ = false;  // the head has been moved to the start since the last reservation
+    std::deque<Span> spans_;       // in the order they were written; the front is the oldest
+    bool wrapped_pending_ = false; // the head has been moved to the start since the last reservation
     bool open_ = false;
     u64 open_offset_ = 0;
     u64 open_size_ = 0;
 };
 
-}  // namespace mh4n::gpu::rhi::core
+} // namespace mh4n::gpu::rhi::core

@@ -11,8 +11,8 @@
 #if MH4N_RHI_CHECKS
 #define RHI_REQUIRE(cond, ...) MH4N_ASSERT(cond, __VA_ARGS__)
 #else
-#define RHI_REQUIRE(cond, ...) \
-    do {                       \
+#define RHI_REQUIRE(cond, ...)                                                                                         \
+    do {                                                                                                               \
     } while (0)
 #endif
 
@@ -39,7 +39,8 @@ namespace core {
         desc.width = width;
         desc.height = height;
         std::unique_ptr<::plume::RenderFramebuffer> framebuffer = backend.device_owner->createFramebuffer(desc);
-        if (framebuffer == nullptr || static_cast<::plume::VulkanFramebuffer*>(framebuffer.get())->vk == VK_NULL_HANDLE) {
+        if (framebuffer == nullptr ||
+            static_cast<::plume::VulkanFramebuffer*>(framebuffer.get())->vk == VK_NULL_HANDLE) {
             return nullptr;
         }
         it = backend.framebuffers.emplace(std::make_pair(width, height), std::move(framebuffer)).first;
@@ -47,7 +48,7 @@ namespace core {
     return it->second.get();
 }
 
-}  // namespace core
+} // namespace core
 
 namespace {
 
@@ -84,15 +85,17 @@ StageMasks MasksOf(Stage stage) {
         break;
     case Stage::AllGraphics:
         masks.stages = VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT;
-        masks.writes = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-        masks.reads = kShaderRead | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT | VK_ACCESS_INDEX_READ_BIT |
-                      VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
+        masks.writes = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+                       VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+        masks.reads = kShaderRead | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT |
+                      VK_ACCESS_INDEX_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
+                      VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
         break;
     }
     return masks;
 }
 
-}  // namespace
+} // namespace
 
 // ---- The class -----------------------------------------------------------------------------------
 
@@ -114,6 +117,8 @@ Recorder::Impl::~Impl() {
         hook(0);
     }
     on_submit.clear();
+    targets.reset();
+    state.reset();
     if (counted) {
         std::lock_guard lock(backend->thread_mutex);
         ThreadState& state = backend->threads[thread];
@@ -125,7 +130,7 @@ Recorder::Impl::~Impl() {
         }
     }
     if (list != nullptr) {
-        vulkan_list()->end();  // ends a pass the recorder left open; the list can be begun again
+        vulkan_list()->end(); // ends a pass the recorder left open; the list can be begun again
         std::lock_guard lock(backend->list_mutex);
         backend->free_lists.push_back(std::move(list));
     }
@@ -167,22 +172,27 @@ void Recorder::SetVertexBuffers(u32 first_binding, std::span<const VertexBufferB
     slots.clear();
     for (size_t i = 0; i < buffers.size(); ++i) {
         const VertexBufferBinding& binding = buffers[i];
-        RHI_REQUIRE(binding.buffer != nullptr && HasUsage(binding.buffer->Usage(), BufferUsage::Vertex), "a vertex buffer needs Vertex usage");
+        RHI_REQUIRE(binding.buffer != nullptr && HasUsage(binding.buffer->Usage(), BufferUsage::Vertex),
+                    "a vertex buffer needs Vertex usage");
         const u64 size = binding.buffer->Size() - std::min(binding.offset, binding.buffer->Size());
-        views.emplace_back(::plume::RenderBufferReference(binding.buffer->impl().buffer.get(), binding.offset), static_cast<uint32_t>(size));
+        views.emplace_back(::plume::RenderBufferReference(binding.buffer->impl().buffer.get(), binding.offset),
+                           static_cast<uint32_t>(size));
         slots.emplace_back(static_cast<uint32_t>(first_binding + i), 0u);
     }
-    impl_->vulkan_list()->setVertexBuffers(first_binding, views.data(), static_cast<uint32_t>(views.size()), slots.data());
+    impl_->vulkan_list()->setVertexBuffers(first_binding, views.data(), static_cast<uint32_t>(views.size()),
+                                           slots.data());
 }
 
 void Recorder::SetIndexBuffer(const Buffer& buffer, u64 offset, IndexType type) {
     RHI_REQUIRE(HasUsage(buffer.Usage(), BufferUsage::Index), "an index buffer needs Index usage");
-    RHI_REQUIRE(type != IndexType::U8 || impl_->backend->caps.index_uint8, "8-bit indices need Capabilities::index_uint8: widen them");
+    RHI_REQUIRE(type != IndexType::U8 || impl_->backend->caps.index_uint8,
+                "8-bit indices need Capabilities::index_uint8: widen them");
     ::plume::RenderFormat format = ::plume::RenderFormat::R16_UINT;
     if (type == IndexType::U8) format = ::plume::RenderFormat::R8_UINT;
     if (type == IndexType::U32) format = ::plume::RenderFormat::R32_UINT;
     const ::plume::RenderIndexBufferView view(::plume::RenderBufferReference(buffer.impl().buffer.get(), offset),
-                                              static_cast<uint32_t>(buffer.Size() - std::min(offset, buffer.Size())), format);
+                                              static_cast<uint32_t>(buffer.Size() - std::min(offset, buffer.Size())),
+                                              format);
     impl_->vulkan_list()->setIndexBuffer(&view);
 }
 
@@ -201,7 +211,8 @@ void Recorder::Draw(u32 vertex_count, u32 instance_count, u32 first_vertex, u32 
     impl_->vulkan_list()->drawInstanced(vertex_count, instance_count, first_vertex, first_instance);
 }
 
-void Recorder::DrawIndexed(u32 index_count, u32 instance_count, u32 first_index, s32 vertex_offset, u32 first_instance) {
+void Recorder::DrawIndexed(u32 index_count, u32 instance_count, u32 first_index, s32 vertex_offset,
+                           u32 first_instance) {
     RHI_REQUIRE(impl_->in_pass, "DrawIndexed outside a pass");
     impl_->vulkan_list()->drawIndexedInstanced(index_count, instance_count, first_index, vertex_offset, first_instance);
 }
@@ -213,8 +224,10 @@ void Recorder::Dispatch(u32 x, u32 y, u32 z) {
 
 void Recorder::CopyBuffer(const Buffer& dst, u64 dst_offset, const Buffer& src, u64 src_offset, u64 size) {
     RHI_REQUIRE(!impl_->in_pass, "CopyBuffer inside a pass");
-    RHI_REQUIRE(HasUsage(dst.Usage(), BufferUsage::Transfer) && HasUsage(src.Usage(), BufferUsage::Transfer), "CopyBuffer needs Transfer usage on both buffers");
-    RHI_REQUIRE(dst.GetHeap() != Heap::Upload && src.GetHeap() != Heap::Readback, "a copy cannot write the Upload heap or read the Readback heap");
+    RHI_REQUIRE(HasUsage(dst.Usage(), BufferUsage::Transfer) && HasUsage(src.Usage(), BufferUsage::Transfer),
+                "CopyBuffer needs Transfer usage on both buffers");
+    RHI_REQUIRE(dst.GetHeap() != Heap::Upload && src.GetHeap() != Heap::Readback,
+                "a copy cannot write the Upload heap or read the Readback heap");
     RHI_REQUIRE(dst_offset + size <= dst.Size() && src_offset + size <= src.Size(), "CopyBuffer out of range");
     impl_->vulkan_list()->copyBufferRegion(dst.impl().buffer->at(dst_offset), src.impl().buffer->at(src_offset), size);
 }
@@ -227,7 +240,8 @@ void Recorder::Barrier(Stage from, Stage to) {
     barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
     barrier.srcAccessMask = source.writes;
     barrier.dstAccessMask = target.reads | target.writes;
-    vkCmdPipelineBarrier(impl_->vulkan_list()->vk, source.stages, target.stages, 0, 1, &barrier, 0, nullptr, 0, nullptr);
+    vkCmdPipelineBarrier(impl_->vulkan_list()->vk, source.stages, target.stages, 0, 1, &barrier, 0, nullptr, 0,
+                         nullptr);
 }
 
 void Recorder::BeginPass(const PassDesc& pass) {
@@ -235,22 +249,21 @@ void Recorder::BeginPass(const PassDesc& pass) {
     RHI_REQUIRE(!r.in_pass, "BeginPass inside a pass");
     RHI_REQUIRE(pass.width > 0 && pass.height > 0, "a pass needs a size");
     ::plume::RenderFramebuffer* framebuffer = core::ZeroAttachmentFramebuffer(*r.backend, pass.width, pass.height);
-    MH4N_ASSERT(framebuffer != nullptr, "the framebuffer of a {}x{} pass with no attachments could not be made", pass.width, pass.height);
+    MH4N_ASSERT(framebuffer != nullptr, "the framebuffer of a {}x{} pass with no attachments could not be made",
+                pass.width, pass.height);
     r.vulkan_list()->setFramebuffer(framebuffer);
     const ::plume::RenderViewport viewport(0.0f, 0.0f, static_cast<float>(pass.width), static_cast<float>(pass.height));
     const ::plume::RenderRect scissor(0, 0, static_cast<s32>(pass.width), static_cast<s32>(pass.height));
     r.vulkan_list()->setViewports(&viewport, 1);
     r.vulkan_list()->setScissors(&scissor, 1);
-    r.framebuffer = framebuffer;
     r.in_pass = true;
 }
 
 void Recorder::EndPass() {
     Impl& r = *impl_;
     RHI_REQUIRE(r.in_pass, "EndPass outside a pass");
-    r.vulkan_list()->setFramebuffer(nullptr);  // ends the pass the first draw began
-    r.framebuffer = nullptr;
+    r.vulkan_list()->setFramebuffer(nullptr); // ends the pass the first draw began
     r.in_pass = false;
 }
 
-}  // namespace mh4n::gpu::rhi
+} // namespace mh4n::gpu::rhi

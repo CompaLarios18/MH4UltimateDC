@@ -71,9 +71,9 @@ RingAllocator::Reservation RingAllocator::TryMap(u64 size, u64 alignment, Timeli
         // The space is held by the oldest span: wait for it, unless no submission is known to cover it.
         const Span& front = spans_.front();
         if (!front.stamped) {
-            result.error = fmt::format(
-                "the ring is full of space committed in a recorder that has not been submitted (the oldest span is [{}, {})): submit it first",
-                front.begin, front.end);
+            result.error = fmt::format("the ring is full of space committed in a recorder that has not been submitted "
+                                       "(the oldest span is [{}, {})): submit it first",
+                                       front.begin, front.end);
             return result;
         }
         result.status = Status::MustWait;
@@ -118,7 +118,7 @@ void RingAllocator::Retire(TimelineValue completed) {
     }
 }
 
-}  // namespace core
+} // namespace core
 
 // ---- Buffer --------------------------------------------------------------------------------------
 
@@ -144,17 +144,19 @@ std::span<u8> Buffer::Mapped() const {
     return impl_->mapped != nullptr ? std::span<u8>(impl_->mapped, impl_->desc.size) : std::span<u8>();
 }
 
-void Buffer::Flush(u64 offset, u64 size) {
+void Buffer::Flush(u64 offset, u64 size) const {
     if (impl_->mapped != nullptr && offset < impl_->desc.size) {
         Backend::Impl& backend = *impl_->backend;
-        vmaFlushAllocation(backend.device->allocator, impl_->vulkan()->allocation, offset, std::min(size, impl_->desc.size - offset));
+        vmaFlushAllocation(backend.device->allocator, impl_->vulkan()->allocation, offset,
+                           std::min(size, impl_->desc.size - offset));
     }
 }
 
-void Buffer::Invalidate(u64 offset, u64 size) {
+void Buffer::Invalidate(u64 offset, u64 size) const {
     if (impl_->mapped != nullptr && offset < impl_->desc.size) {
         Backend::Impl& backend = *impl_->backend;
-        vmaInvalidateAllocation(backend.device->allocator, impl_->vulkan()->allocation, offset, std::min(size, impl_->desc.size - offset));
+        vmaInvalidateAllocation(backend.device->allocator, impl_->vulkan()->allocation, offset,
+                                std::min(size, impl_->desc.size - offset));
     }
 }
 
@@ -207,12 +209,12 @@ struct RingState {
         : backend(std::move(b)), buffer(std::move(buf)), allocator(size) {}
 };
 
-}  // namespace
+} // namespace
 
 struct Ring::Impl {
     std::shared_ptr<RingState> state;
-    u64 last_size = 0;    // the last Map's size
-    u64 last_offset = 0;  // and offset
+    u64 last_size = 0;   // the last Map's size
+    u64 last_offset = 0; // and offset
 };
 
 Ring::Ring(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
@@ -272,7 +274,7 @@ Result<void> Ring::Commit(u64 size) {
     if (id == 0) {
         return Result<void>{};
     }
-    state.buffer->Flush(impl_->last_offset, size);  // a no-op on coherent memory
+    state.buffer->Flush(impl_->last_offset, size); // a no-op on coherent memory
     recorder->on_submit.push_back([weak = std::weak_ptr<RingState>(impl_->state), id](TimelineValue value) {
         if (std::shared_ptr<RingState> state = weak.lock()) {
             std::lock_guard lock(state->mutex);
@@ -297,4 +299,4 @@ Result<std::unique_ptr<Ring>> Backend::CreateRing(u64 size, BufferUsage usage, s
     return std::make_unique<Ring>(std::move(impl));
 }
 
-}  // namespace mh4n::gpu::rhi
+} // namespace mh4n::gpu::rhi

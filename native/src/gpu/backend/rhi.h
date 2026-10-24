@@ -46,6 +46,9 @@ namespace mh4n::gpu::rhi {
 // ================================================================================================
 
 // An error message. `Result<T>` is a value or an error; an error is never thrown.
+//
+// Naming: mh4n/types.h has a `mh4n::Result` (the 3DS result code). The two names clash only when `using
+// namespace mh4n` and `using namespace mh4n::gpu::rhi` are in force at one scope: write `rhi::Result<T>`.
 struct Error {
     std::string message;
 };
@@ -131,7 +134,7 @@ enum class Cap : u8 {
     DynamicRendering,   // "dynamic_rendering"
     PipelineLibrary,    // "pipeline_library"
     Eds3Blend,          // "eds3_blend": blend enable, equation, write mask and logic-op enable as dynamic state
-    Bc7,                // "bc7": BC7 textures
+    Bc7,                // "bc7": block-compressed textures (BC1, BC3, BC5 and BC7: one device feature gates them all)
     Timeline,           // "timeline": timeline semaphores (without them every submission uses a fence)
     PresentWait,        // "present_wait": a presentation id and a wait for it
     DirectUpload,       // "direct_upload": the host can write device memory directly (else uploads are staged)
@@ -177,7 +180,10 @@ struct Capabilities {
     bool bc7 = false;
     bool timeline = false;
     bool present_wait = false;
-    bool direct_upload = false;   // some host-visible, device-local memory lives in a heap as large as the biggest device-local one
+    // Some host-visible, device-local memory lives in a heap as large as the biggest device-local one.
+    // Reported, but no path acts on it: the Device heap is not mapped and the vendored backend's images are
+    // never host-writable, so images are always filled through a staging buffer.
+    bool direct_upload = false;
 
     // ---- values ----
     bool geometry_shader = false;
@@ -185,7 +191,10 @@ struct Capabilities {
     // MoltenVK's or KosmicKrisp's driver id, or Apple's vendor id. On such devices fans are rewritten as
     // lists and 8-bit indices widened whatever the two bits say (9.4 item 11).
     bool apple = false;
-    bool primitive_restart_always_on = false;  // true wherever `apple` is (9.4 item 10; MoltenVK always restarts)
+    // True wherever `apple` is (9.4 item 10; MoltenVK always restarts). The vendored backend sets primitive
+    // restart for every strip topology on every device, so strips restart everywhere; an index of all ones
+    // in a non-strip draw reads as a restart only where this is true.
+    bool primitive_restart_always_on = false;
     bool portability_subset = false;        // the device lists the portability subset extension
     u32 driver_id = 0;
     std::string driver_name;
@@ -193,6 +202,12 @@ struct Capabilities {
     u32 api_version = 0;
     float timestamp_period = 0.0f;          // nanoseconds per timestamp tick
     u32 max_texel_buffer_elements = 0;
+    // From the device's limits: a uniform or storage buffer binding's offset is a multiple of the first, and
+    // its range is at most the second (BindingSet::SetUniformBuffer and SetStorageBuffer check them).
+    u32 uniform_buffer_offset_alignment = 256;
+    u32 storage_buffer_offset_alignment = 256;
+    u32 max_uniform_buffer_range = 0;
+    u32 max_storage_buffer_range = 0;
     u32 vendor_id = 0;
     u32 device_index = 0;                   // the device's index in the instance's enumeration order
     CapabilityMask masked;                  // the bits that were turned off (BackendOptions::mask plus MH4N_RHI_MASK)
@@ -333,7 +348,11 @@ enum class Format : u8 {
     Rgba8Unorm,
     Rgba8Snorm,
     Bgra8Unorm,
-    R5G6B5,  // the 16-bit formats in both component orders (the first letter is the lowest bits)
+    // The 16-bit packed formats in both component orders. As in Vulkan's packed formats the FIRST letter is in
+    // the HIGHEST bits (R5G6B5: red in bits 11 to 15). The PICA's RGB565, RGB5A1 and RGBA4 all keep red in
+    // the high bits (and alpha in the low ones), so the R-first members R5G6B5, R5G5B5A1 and R4G4B4A4 are the
+    // ones whose bits equal the PICA's; B5G6R5, B5G5R5A1, A1R5G5B5 and B4G4R4A4 need the components swapped.
+    R5G6B5,
     B5G6R5,
     R5G5B5A1,
     B5G5R5A1,
@@ -342,6 +361,9 @@ enum class Format : u8 {
     B4G4R4A4,
     R32Uint,  // the shadow write's storage view
     Rgba16Float,
+    Bc1Unorm,  // the block-compressed formats: the bc7 bit gates all of them (QueryFormat answers per format)
+    Bc3Unorm,
+    Bc5Unorm,
     Bc7Unorm,
     // depth and stencil
     D16Unorm,
@@ -416,8 +438,8 @@ public:
     std::span<u8> Mapped() const;
     // Make host writes to [offset, offset + size) visible to the GPU / GPU writes visible to the host.
     // No-ops on coherent memory; call them anyway.
-    void Flush(u64 offset, u64 size);
-    void Invalidate(u64 offset, u64 size);
+    void Flush(u64 offset, u64 size) const;
+    void Invalidate(u64 offset, u64 size) const;
 
     Impl& impl() const { return *impl_; }
 
@@ -589,6 +611,11 @@ struct StencilFaceState {
 // The state the pipeline bakes in. The blend constants, the stencil reference, compare mask and write
 // mask, the viewport and the scissor are always dynamic (Recorder::SetBlendConstants, SetStencilReference,
 // SetStencilMasks, SetViewport, SetScissor), so a different value never makes another pipeline.
+//
+// TRAP: dynamic state that nothing set is a validation error at the draw (VUID-vkCmdDraw-None-07835 to
+// 07839). A draw whose pipeline blends with a constant-colour factor, or has the stencil test on, must be
+// preceded in its recorder by SetBlendConstants, or SetStencilReference and SetStencilMasks. The core sets
+// no defaults, not even at SetPipeline: the caller of the setters (N2-13) runs them first, every pass.
 struct FixedFunctionState {
     bool blend_enabled = false;
     BlendFactor src_color = BlendFactor::One;
@@ -615,7 +642,6 @@ struct FixedFunctionState {
 
     bool depth_bias_enabled = false;
     float depth_bias_constant = 0.0f;
-    float depth_bias_clamp = 0.0f;
     float depth_bias_slope = 0.0f;
 };
 
@@ -658,6 +684,9 @@ private:
 
 // ---- Recording -----------------------------------------------------------------------------------
 
+// Vulkan's conventions, unchanged: the backend does not flip y, depth runs from min_depth to max_depth, and
+// the viewport's y axis points down in framebuffer space. A viewport and a scissor are dynamic: set them
+// after SetPipeline and before the first draw (BeginPass and BeginTargetPass start them as the whole area).
 struct Viewport {
     float x = 0, y = 0, width = 0, height = 0;
     float min_depth = 0.0f, max_depth = 1.0f;
@@ -700,7 +729,7 @@ enum class Conversion : u8 {
     None,
     Rgb8ToRgba8,     // Rgb8 is stored as Rgba8: add an opaque alpha
     UnpackToRgba8,   // a 16-bit colour format the device cannot use: the caller stores Rgba8
-    DecodeBc7,       // BC7 is off: decode on the CPU and store Rgba8
+    DecodeBc,        // the bc7 bit is off: decode the block-compressed data (BC1, BC3, BC5 or BC7) on the CPU and store Rgba8
     DepthStencilTo32,  // D24S8 is stored as D32S8: convert the depth
 };
 struct ChosenFormat {
@@ -752,12 +781,15 @@ struct SamplerDesc {
     Filter mip_filter = Filter::Linear;
     AddressMode address_u = AddressMode::ClampToEdge;
     AddressMode address_v = AddressMode::ClampToEdge;
+    AddressMode address_w = AddressMode::ClampToEdge;  // cube and 3D lookups
     // The border colour of ClampToBorder. Unset: transparent black. Any value needs
     // Capabilities::custom_border_color; without it CreateSampler fails with a message and the caller
     // emulates the colour in the shader. There is no compare sampler: shadow lookups compare in the shader.
     std::optional<std::array<float, 4>> custom_border_color;
     float min_lod = 0.0f;
     float max_lod = 1000.0f;
+    float mip_lod_bias = 0.0f;  // added to the level of detail (the PICA's LOD bias)
+    float max_anisotropy = 1.0f;  // 1: anisotropic filtering off; the PICA has none, the HD pack may use it
 };
 
 class Sampler {
@@ -855,7 +887,8 @@ public:
     void CopyImageToBuffer(const Image& src, Buffer& dst, std::span<const BufferImageRegion> regions);
     void BeginTargetPass(const TargetPassDesc& pass);
     // Ends the open pass, copies every mip of the whole target into a twin (made once per target and
-    // kept) and returns the twin for sampling; the next draw begins a new pass that loads (X6).
+    // kept; the twin has the target's format, size and mips and inherits `shadow_source`) and returns
+    // the twin for sampling; the next draw begins a new pass that loads (X6).
     Image& FeedbackCopy(Image& target);
     // For a wrapped swapchain image only: ends the open pass and moves the image to what presentation
     // needs (the last command of a frame's recorder, before the queue present of the caller).
@@ -924,7 +957,9 @@ public:
     // (RequiredWait): use the overload with waits.
     TimelineValue Submit(Recorder&& recorder);
     // Blocks the calling thread until the timeline has reached `value`. WaitIdle() waits for everything
-    // submitted so far.
+    // submitted so far. Known limitation: a failed queue submission inside the vendored backend only
+    // prints a message, so Submit can return a value that never signals (the frozen shape has no error
+    // channel); a wait for it blocks. Waiting for a value that was never issued does nothing.
     void WaitIdle(TimelineValue value);
     void WaitIdle();
     TimelineValue CompletedValue() const;      // the highest value the GPU has passed
@@ -950,7 +985,7 @@ public:
     FormatSupport QueryFormat(Format format) const;
     // The format to store `format` in and the conversion the caller owes (9.4 item 3): D24S8 when the d24s8
     // bit is on, else D32S8; Rgb8 always as Rgba8; Rgb565, Rgb5A1 and Rgba4 in whichever component order
-    // the query says is an attachment, else Rgba8 with a conversion; Bc7 only when the bc7 bit is on, else
+    // the query says is an attachment, else Rgba8 with a conversion; a block-compressed format (BC1, BC3, BC5, BC7) only when the bc7 bit is on, else
     // decode on the CPU; the other formats as they are.
     ChosenFormat ChooseFormat(Format format, FormatUse use) const;
     Result<std::shared_ptr<Image>> CreateImage(const ImageDesc& desc);
