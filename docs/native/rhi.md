@@ -284,6 +284,36 @@ byte offset, and with what range? Read in the pristine copy, `plume_vulkan.cpp` 
 
 **Smallest patch, if a cleaner call is wanted (not written; a later patch is a new numbered file added by a WP the orchestrator names):** a `setBufferRange(descriptorIndex, buffer, offset, range)` on `RenderDescriptorSet` with a default that does nothing, implemented in `VulkanDescriptorSet` by the same eight lines of `setBuffer` with the two values passed in (about 12 lines, no behaviour change for existing callers). A true dynamic offset needs a `_DYNAMIC` descriptor type in `toVk` and the layout (`:508`, `:1175`), an offset array argument through `setGraphicsDescriptorSet`/`setComputeDescriptorSet` into `vkCmdBindDescriptorSets` (`:3528`), and the same on the other backends: about 80 to 120 lines (`rhi-spike.md` X5, `inference`). Neither is needed for N2-27 to start: the structured-view form above works today.
 
+## The backend core (N2-26)
+
+The renderer-facing backend lives in `native/src/gpu/backend/`, namespace `mh4n::gpu::rhi`: `rhi.h` and `vulkan_access.h` at its root, then one module per
+directory with one owner each: `plume/` (N2-25), `core/` (N2-26), `targets/` (N2-27), `sync/` and `readback/` (N2-28), `state/` (N2-13). **The two headers are
+frozen:** after N2-26 they change only through the orchestrator (a later package that needs a change stops with `needs-decision`). The interface is
+documented in `rhi.h`'s own comments, which also carry the traps for the owners of the later slices (the dynamic-state rule, the packed-format bit order,
+resources that do not defer their own destruction, the limit of a failed `vkQueueSubmit`).
+
+- **Read from the environment by the core:** `MH4N_RHI_MASK` (a comma list of capability bit names, or `all`; it only turns bits off, a masked feature is not
+  enabled on the device so its fallback really runs, an unknown name fails creation with the list of valid names, and the result is logged once) and
+  `MH4N_VULKAN_DEVICE` (a text matched, as a case-insensitive substring, against `<device name> (<driver name>)`; no match fails with the list of devices).
+  Running a test as the PC's paths would: `MH4N_RHI_MASK=d24s8,interlock ctest --test-dir build/native -R '^gpu_backend_core_test$'`. The core's own test passes
+  under each of the 13 bit names and under `all`.
+- **`MH4N_RHI_CHECKS`** is a CMake option of `native/src/gpu/backend/core/CMakeLists.txt`, `ON` by default in every build type and `OFF` only for a shipping
+  build; it is exported as the public compile definition `MH4N_RHI_CHECKS=1` or `0` of `mh4n_gpu_backend_core`, so the modules that link it put their owner-rule
+  checks under the same switch. With it off the two owner-rule test cases skip themselves with a message.
+- **Test helpers** (`native/tests/support/vulkan_device.h`): `RequireInstance`, `RequireBackend` and `MakeHeadlessSurface` skip the test with a message when there is
+  no loader, device or headless-surface extension, and fail instead under `MH4N_REQUIRE_VULKAN=1`. When the validation layer is enabled (`VK_INSTANCE_LAYERS`, or
+  `MH4N_RHI_VALIDATION=1` for a run without the harness) they install a `VK_EXT_debug_utils` messenger that fails the running test on any warning or error message.
+  The loading test runs a child process of the test binary with `VK_DRIVER_FILES` pointing at an empty folder (the case `loading/child` is the child's body and
+  skips by itself).
+- **Without the `timeline` bit** (absent or masked) the core already runs the fence fallback: `core::SubmitRecorder` and `Backend::Impl::WaitFor`/`Completed`, a fence per
+  submission and a CPU wait; N2-28 extends them (see its spec) and does not build a second mechanism.
+- **Known limits, on purpose:** the constant-alpha blend factors are in the `BlendFactor` enum but refused with a message when blending is on, because the vendored
+  backend maps only the constant-colour pair (a later numbered plume patch adds them); a fractional `depth_bias_constant` is refused (plume's is an integer); the device
+  policy asks for a graphics, compute and transfer queue family because the vendored backend's own pick does (relaxing it is a plume patch). The core's
+  `custom_border_color` bit is the device query ANDed with what plume really enabled (`getCapabilities().customBorderColor`, `core/device.cpp`), and with patch 12
+  that capability also needs `customBorderColorWithoutFormat` (both are on for lavapipe): a true bit means a custom-border sampler can be created, and N2-27's
+  `CreateSampler` checks the bit before it makes one.
+
 ## Not checked on this machine
 
 `readelf -d` for `libX11` is meaningful on `build/native/bin/rhi_plume_test` (no `NEEDED` entry besides libstdc++, libm, libgcc_s, libc and the loader's), not on `mh4u_native_runner`, which does not link plume yet.
