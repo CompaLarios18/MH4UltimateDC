@@ -828,7 +828,7 @@ def parse_image_frames(text: str, where: str = "image frames") -> dict[str, list
         if not line:
             continue
         parts = line.split()
-        if len(parts) != 2 or not parts[1].isdigit():
+        if len(parts) != 2 or not (parts[1].isascii() and parts[1].isdigit()):
             raise GoldenError(f"{where}, line {number}: expected '<session> <frame>', got {raw.strip()!r}")
         frames.setdefault(parts[0], set()).add(int(parts[1]))
     return {k: sorted(v) for k, v in frames.items()}

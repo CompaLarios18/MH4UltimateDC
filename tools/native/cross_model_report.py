@@ -26,15 +26,21 @@ needs nothing but the standard library:
 usage: cross_model_report.py --session FILE --reference DIR --candidate DIR [--observable FILE] [--tolerance N]
                              [--min-margin N] [--no-svc] [--no-ipc]
        cross_model_report.py --images --session FILE --reference DIR --candidate DIR [--proposal FILE]
-                             [--min-frames N] [--long-scene N] [--no-per-frame]
+                             [--min-frames N] [--long-scene N] [--margin-db DB] [--margin-block N]
+                             [--not-judged FIRST-LAST]... [--no-per-frame]
 
 `--images` (N2b-17) reads the screenshots of the two folders (`shots/f<frame>_top.ppm` and `_bottom.ppm`, every 60
 frames from frame 300) and the reference's state trace, lists per frame and screen the PSNR and the worst 16x16 block
-(`imgdiff.py`'s rule, ROADMAP section 6) and per scene the frames where both screens pass, and proposes those frames
-as the image frames of the session (`--proposal FILE`: lines `<session> <frame>`; the session's lines are replaced).
-Frames in the candidate's `shots/gas.txt` are never proposed.  Exit status: 0 when the proposal has at least
-`--min-frames` frames (3) and one in every scene longer than `--long-scene` frames (300); 1 when it falls short (each
-shortfall is named on stderr; the report and the proposal are still written); 2 bad input.
+(`imgdiff.py`'s rule, ROADMAP section 6) and per scene the frames proposed, and proposes the frames where both
+screens pass with a margin (D58: `--margin-db` 2.0 and `--margin-block` 1.0, so PSNR at least 42 dB and block at most
+7.0 out of 255 on both screens; 0 and 0 give the plain rule; the gate itself keeps 40 dB and 8/255).  The proposal is
+the image frames of the session (`--proposal FILE`: lines `<session> <frame>`; the session's lines are replaced).
+Frames that pass the plain rule but not the margin are listed as narrow.  Frames in the candidate's `shots/gas.txt`
+are never proposed.  Exit status: 0 when the proposal has at least `--min-frames` frames (3) and one in every scene
+longer than `--long-scene` frames (300), except the scenes that start inside a `--not-judged FIRST-LAST` range (D58
+names G4 903-1575 and G2 5086-9000, which the jit-calibrated gate does not judge; without the option those two
+scenes exit 1); 1 when it falls short (each shortfall is named on stderr; the report and the proposal are still
+written); 2 bad input (a negative number included).
 exit status: 0 the report was written, every real scene change falls on the same scene within --tolerance
 frames (default 4, D50) and every input event is at least --min-margin frames (default 60, D50) after the
 last real scene change on both sides; 1 a real scene change is more than --tolerance frames apart, goes to
@@ -391,6 +397,8 @@ def build_report(session_text: str, ref_dir: Path, cand_dir: Path, session_name:
 
 IMAGE_MIN_FRAMES = 3        # image frames every calibrated session needs (N2b-17's first guess, rule 8)
 IMAGE_LONG_SCENE = 300      # a scene longer than this (frames) needs an image frame of its own
+IMAGE_MARGIN_DB = 2.0       # D58: a frame is proposed with this many dB over the PSNR threshold ...
+IMAGE_MARGIN_BLOCK = 1.0    # ... and this much (of 255) under the block threshold
 _SHOT = re.compile(r"^f?(\d+)_(top|bottom)\.ppm$")
 
 
@@ -415,8 +423,16 @@ class ShotRow:
 
     @property
     def passes(self) -> bool:
+        """The plain rule (ROADMAP section 6) on both screens."""
         return not self.problem and not self.gas and bool(self.top and self.top.passes
                                                           and self.bottom and self.bottom.passes)
+
+    def proposed(self, margin_db: float = 0.0, margin_block: float = 0.0) -> bool:
+        """Both screens pass with `margin_db` dB and `margin_block` (of 255) to spare (D58)."""
+        if self.problem or self.gas or not (self.top and self.bottom):
+            return False
+        return all(m.psnr >= imgdiff.MIN_PSNR_DB + margin_db and m.worst_block <= imgdiff.MAX_BLOCK_ERROR - margin_block
+                   for m in (self.top, self.bottom))
 
 
 def shot_files(folder: Path) -> dict[int, dict[str, Path]]:
@@ -446,7 +462,7 @@ def read_gas(folder: Path) -> set[int]:
         line = raw.split("#", 1)[0].strip()
         if not line:
             continue
-        if not line.isdigit():
+        if not (line.isascii() and line.isdigit()):
             raise ReportError(f"{path}: line {number}: {line!r} is not a shot number")
         frames.add(int(line))
     return frames
@@ -504,15 +520,23 @@ def scene_of(scenes: Sequence[Scene], frame: int) -> int:
     return len(scenes) - 1
 
 
+def not_judged(scene: Scene, ranges: Sequence[tuple[int, int]]) -> bool:
+    """A scene that starts inside one of the `--not-judged` ranges (first, last; both inclusive)."""
+    return any(a <= scene.start <= b for a, b in ranges)
+
+
 def image_coverage(rows: Sequence[ShotRow], scenes: Sequence[Scene], min_frames: int,
-                   long_scene: int) -> list[str]:
-    """The ways the proposed frames fall short of the rule: fewer than `min_frames`, or a scene longer than
-    `long_scene` frames with none."""
-    good = [r.frame for r in rows if r.passes]
+                   long_scene: int, margin_db: float = 0.0, margin_block: float = 0.0,
+                   exempt: Sequence[tuple[int, int]] = ()) -> list[str]:
+    """The ways the proposed frames (the margin set) fall short of the rule: fewer than `min_frames`, or a scene
+    longer than `long_scene` frames with none, except the scenes named in `exempt` (D58)."""
+    good = [r.frame for r in rows if r.proposed(margin_db, margin_block)]
     problems: list[str] = []
     if len(good) < min_frames:
         problems.append(f"only {len(good)} image frame{'' if len(good) == 1 else 's'}, at least {min_frames} needed")
     for i, s in enumerate(scenes):
+        if not_judged(s, exempt):
+            continue
         if s.length > long_scene and not any(s.start <= f < s.end for f in good):
             problems.append(f"scene #{i + 1} (frames {s.start} to {s.end - 1}, {s.length} frames) has no image frame")
     return problems
@@ -539,43 +563,58 @@ def _ranges(frames: Sequence[int], step: int) -> str:
 
 def image_report(ref_dir: Path, cand_dir: Path, session_name: str = "",
                  min_frames: int = IMAGE_MIN_FRAMES, long_scene: int = IMAGE_LONG_SCENE,
-                 per_frame: bool = True) -> tuple[str, list[int], list[str]]:
-    """(markdown, proposed frames, problems of coverage)."""
+                 per_frame: bool = True, margin_db: float = IMAGE_MARGIN_DB,
+                 margin_block: float = IMAGE_MARGIN_BLOCK,
+                 exempt: Sequence[tuple[int, int]] = ()) -> tuple[str, list[int], list[str]]:
+    """(markdown, proposed frames, problems of coverage).  A frame is proposed when both screens pass with the
+    margins to spare (D58); the gate itself judges with ROADMAP section 6's thresholds."""
     rows = image_rows(ref_dir, cand_dir)
     scenes = scene_intervals(ref_dir / "state.txt")
-    proposed = [r.frame for r in rows if r.passes]
-    problems = image_coverage(rows, scenes, min_frames, long_scene)
+    proposed = [r.frame for r in rows if r.proposed(margin_db, margin_block)]
+    narrow = [r.frame for r in rows if r.passes and not r.proposed(margin_db, margin_block)]
+    problems = image_coverage(rows, scenes, min_frames, long_scene, margin_db, margin_block, exempt)
     step = min((b.frame - a.frame for a, b in zip(rows, rows[1:])), default=1) or 1
     thr = f"PSNR at least {imgdiff.MIN_PSNR_DB:g} dB and no {imgdiff.BLOCK_SIZE}x{imgdiff.BLOCK_SIZE} block above " \
           f"{imgdiff.MAX_BLOCK_ERROR:g}/255"
+    plain = sum(1 for r in rows if r.passes)
+    rule = (f"a frame is proposed when both screens pass with {margin_db:g} dB and {margin_block:g}/255 to spare "
+            f"(PSNR at least {imgdiff.MIN_PSNR_DB + margin_db:g} dB and no block above "
+            f"{imgdiff.MAX_BLOCK_ERROR - margin_block:g}/255)")
     out = [f"## {session_name or 'session'}: screenshots, {trace_cpu(cand_dir / 'state.txt')} (candidate) against "
            f"{trace_cpu(ref_dir / 'state.txt')} (reference)", "",
-           f"{len(rows)} screenshot frames ({rows[0].frame} to {rows[-1].frame}, every {step}); a frame passes when both "
-           f"screens pass ({thr}). **{len(proposed)} of {len(rows)} frames pass.**", "",
+           f"{len(rows)} screenshot frames ({rows[0].frame} to {rows[-1].frame}, every {step}); the gate's rule is {thr}; "
+           f"{rule}. **{len(proposed)} of {len(rows)} frames are proposed** ({plain} pass the plain rule).", "",
            f"### Scenes ({len(scenes)}; the reference's real scene changes)", "",
            "| # | scene | frames | length | screenshot frames | pass | proposed frames |", "|---|---|---|---|---|---|---|"]
     for i, s in enumerate(scenes):
         inside = [r for r in rows if scene_of(scenes, r.frame) == i]
-        good = [r.frame for r in inside if r.passes]
+        good = [r.frame for r in inside if r.proposed(margin_db, margin_block)]
+        note = " (not judged by the jit-calibrated gate)" if not_judged(s, exempt) else ""
         out.append(f"| {i + 1} | {'-' if s.scene is None else _scene(s.scene)} | {s.start} to {s.end - 1} | {s.length} | "
-                   f"{len(inside)} | {len(good)} | {_ranges(good, step)} |")
+                   f"{len(inside)} | {len(good)} | {_ranges(good, step)}{note} |")
     bad = [r for r in rows if not r.passes]
-    out += ["", f"### Frames that do not pass ({len(bad)})", ""]
+    out += ["", f"### Frames that do not pass the plain rule ({len(bad)})", ""]
     if bad:
         out += [", ".join(str(r.frame) for r in bad)]
     else:
         out += ["none"]
+    out += ["", f"### Frames that pass the plain rule but are not proposed: narrow ({len(narrow)})", "",
+            ", ".join(str(f) for f in narrow) or "none"]
     if per_frame:
         out += ["", "### Per frame", "",
-                "| frame | scene # | top PSNR (dB) | top worst block | bottom PSNR (dB) | bottom worst block | passes |",
+                "| frame | scene # | top PSNR (dB) | top worst block | bottom PSNR (dB) | bottom worst block | proposed |",
                 "|---|---|---|---|---|---|---|"]
         for r in rows:
-            verdict = ("gas" if r.gas else r.problem) if (r.gas or r.problem) else ("yes" if r.passes else "no")
+            verdict = ("gas" if r.gas else r.problem) if (r.gas or r.problem) else (
+                "yes" if r.proposed(margin_db, margin_block) else ("narrow" if r.passes else "no"))
             out.append(f"| {r.frame} | {scene_of(scenes, r.frame) + 1} | {_cell(r.top)} | {_cell(r.bottom)} | "
                        f"{verdict} |")
     out += ["", "### Coverage", ""]
     out += [f"- {p}" for p in problems] or [f"- at least {min_frames} image frames, and one in every scene longer than "
                                            f"{long_scene} frames: met"]
+    skipped = [f"#{i + 1} (frames {s.start} to {s.end - 1})" for i, s in enumerate(scenes) if not_judged(s, exempt)]
+    if skipped:
+        out += [f"- not judged by the jit-calibrated gate, as named with --not-judged: scene {', '.join(skipped)}"]
     return "\n".join(out) + "\n", proposed, problems
 
 
@@ -592,10 +631,19 @@ def write_proposal(path: Path, session: str, frames: Sequence[int]) -> None:
 def images_main(args: argparse.Namespace, ap: argparse.ArgumentParser) -> int:
     if args.min_frames < 0 or args.long_scene < 0:
         ap.error("--min-frames and --long-scene must not be negative")
+    if args.margin_db < 0 or args.margin_block < 0:
+        ap.error("--margin-db and --margin-block must not be negative")
+    exempt: list[tuple[int, int]] = []
+    for spec in args.not_judged:
+        m = re.fullmatch(r"([0-9]+)-([0-9]+)", spec)
+        if not (m and int(m.group(1)) <= int(m.group(2))):
+            ap.error(f"--not-judged {spec!r}: expected FIRST-LAST frames")
+        exempt.append((int(m.group(1)), int(m.group(2))))
     session = Path(args.session)
     try:
         report, proposed, problems = image_report(Path(args.reference), Path(args.candidate), session.stem,
-                                                  args.min_frames, args.long_scene, not args.no_per_frame)
+                                                  args.min_frames, args.long_scene, not args.no_per_frame,
+                                                  args.margin_db, args.margin_block, exempt)
         if args.proposal:
             write_proposal(Path(args.proposal), session.stem, proposed)
     except (ReportError, OSError) as error:
@@ -618,6 +666,15 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
                     help=f"with --images: image frames a session needs (default {IMAGE_MIN_FRAMES})")
     ap.add_argument("--long-scene", type=int, default=IMAGE_LONG_SCENE, metavar="N",
                     help=f"with --images: a scene longer than N frames needs an image frame (default {IMAGE_LONG_SCENE})")
+    ap.add_argument("--margin-db", type=float, default=IMAGE_MARGIN_DB, metavar="DB",
+                    help=f"with --images: propose a frame only when both screens have a PSNR of at least "
+                         f"{imgdiff.MIN_PSNR_DB:g} + DB (default {IMAGE_MARGIN_DB:g}, D58; 0 is the plain rule)")
+    ap.add_argument("--margin-block", type=float, default=IMAGE_MARGIN_BLOCK, metavar="N",
+                    help=f"with --images: ... and no 16x16 block above {imgdiff.MAX_BLOCK_ERROR:g} - N out of 255 "
+                         f"(default {IMAGE_MARGIN_BLOCK:g}, D58; 0 is the plain rule)")
+    ap.add_argument("--not-judged", action="append", default=[], metavar="FIRST-LAST",
+                    help="with --images: a scene that starts in frames FIRST to LAST is not judged by the jit-calibrated "
+                         "gate and needs no image frame (repeatable; D58: G4 903-1575, G2 5086-9000)")
     ap.add_argument("--no-per-frame", action="store_true", help="with --images: leave out the per-frame table")
     ap.add_argument("--session", required=True, metavar="FILE", help="the session script (tools/native/golden/<S>.txt)")
     ap.add_argument("--reference", required=True, metavar="DIR", help="the reference run (a golden recording)")

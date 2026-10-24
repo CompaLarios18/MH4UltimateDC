@@ -1937,7 +1937,7 @@ def result_of(env, name):
 def test_image_frames_file_format(tmp_path):
     parsed = golden.parse_image_frames("# frames\nG1 360\nG1 300  # first\n\nG2 420\nG1 360\n")
     assert parsed == {"G1": [300, 360], "G2": [420]}
-    for bad in ("G1\n", "G1 abc\n", "G1 300 301\n", "G1 -5\n"):
+    for bad in ("G1\n", "G1 abc\n", "G1 300 301\n", "G1 -5\n", "G1 3²\n", "G1 ٣٠٠\n"):
         with pytest.raises(golden.GoldenError):
             golden.parse_image_frames(bad)
     path = tmp_path / "f.txt"
@@ -2024,6 +2024,36 @@ def test_a_listed_screenshot_the_run_did_not_write_fails(env, capsys, monkeypatc
     assert jit_check(env, "--image-frames", frames_file(env, "S1 10\nS1 20\n")) == 1
     out = capsys.readouterr().out
     assert statuses(out)["images"] == "FAIL" and "frame 20 bottom: the run wrote no screenshot" in out
+
+
+def _tiny_ppm(width: int, height: int = 1) -> bytes:
+    return f"P6\n{width} {height}\n255\n".encode() + bytes(width * height * 3)
+
+
+def test_images_result_fails_a_listed_frame_the_recording_lacks(tmp_path):
+    ref, cand = tmp_path / "ref", tmp_path / "cand"
+    for folder in (ref, cand):
+        (folder / "shots").mkdir(parents=True)
+    for screen in ("top", "bottom"):
+        (cand / "shots" / f"f0000020_{screen}.ppm").write_bytes(_tiny_ppm(1))
+    (ref / "shots" / "f0000020_bottom.ppm").write_bytes(_tiny_ppm(1))        # the top one is missing
+    status, detail, note = golden.images_result(ref, cand, [20])
+    assert status == "fail" and "frame 20 top: the recording has no screenshot" in detail
+    assert "bottom" not in detail and note == "1 of 2 screenshots fail"
+
+
+def test_images_result_fails_a_listed_frame_of_another_size(tmp_path):
+    ref, cand = tmp_path / "ref", tmp_path / "cand"
+    for folder in (ref, cand):
+        (folder / "shots").mkdir(parents=True)
+    for screen in ("top", "bottom"):
+        (ref / "shots" / f"f0000020_{screen}.ppm").write_bytes(_tiny_ppm(1))
+        (cand / "shots" / f"f0000020_{screen}.ppm").write_bytes(_tiny_ppm(2))
+    status, detail, note = golden.images_result(ref, cand, [20])
+    assert status == "fail" and "frame 20 top: different sizes: 1x1 and 2x1" in detail
+    assert "frame 20 bottom: different sizes" in detail and note == "2 of 2 screenshots fail"
+    (cand / "shots" / "f0000020_top.ppm").write_bytes(_tiny_ppm(1))           # only the bottom stays wrong
+    assert golden.images_result(ref, cand, [20])[2] == "1 of 2 screenshots fail"
 
 
 def test_the_same_and_native_profiles_do_not_take_image_frames(env, capsys, monkeypatch):
