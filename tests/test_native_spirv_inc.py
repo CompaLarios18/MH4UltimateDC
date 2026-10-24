@@ -99,9 +99,11 @@ def test_missing_file_in_the_list_is_named(tmp_path):
 def test_committed_include_has_the_evidences_arrays(tmp_path):
     # the committed rhi_plume_shaders.inc has the arrays the evidence's build.sh makes
     text = (ROOT / "native" / "tests" / "rhi_plume_shaders.inc").read_text()
+    # the nine arrays of the evidence's build.sh, and the compute shader of descriptors/buffer_offset
     assert sorted(arrays(text)) == sorted([
         "spv_fs_vert", "spv_tri_vert", "spv_tri_frag", "spv_sample_frag", "spv_blend_frag",
         "spv_shadow_store_nil", "spv_shadow_store_il", "spv_shadow_cas_nil", "spv_shadow_cas_il",
+        "spv_ubo_offset_comp",
     ])
     out = tmp_path / "again.inc"
     assert run(ROOT / "native" / "tests" / "shaders" / "rhi_plume", out).returncode == 0
