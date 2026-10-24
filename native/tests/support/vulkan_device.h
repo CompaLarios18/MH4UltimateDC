@@ -4,7 +4,10 @@
 //     if (!backend) return;   // no Vulkan device: the case has been skipped with a message
 //
 // Without a Vulkan loader or a device RequireBackend skips the test with a message; under
-// MH4N_REQUIRE_VULKAN=1 (set by CI's Linux job) it fails the test instead. It logs the device's name.
+// MH4N_REQUIRE_VULKAN=1 (set by CI's Linux job) it fails the test instead: that variable means only "a Vulkan device must
+// exist". A case that needs VK_EXT_headless_surface skips with a message where the loader lacks it (a real GPU's driver stack
+// may not list it) and fails for that reason only under MH4N_REQUIRE_HEADLESS_SURFACE=1 (CI's Linux job, where the extension is
+// the lavapipe stack's and its absence means the setup broke). It logs the device's name.
 // When the validation layer is enabled (VK_INSTANCE_LAYERS names it, or MH4N_RHI_VALIDATION=1) it
 // installs a debug messenger that fails the running test on any warning or error message.
 //
@@ -30,6 +33,11 @@ inline bool VulkanRequired() {
     return value != nullptr && std::string(value) == "1";
 }
 
+inline bool HeadlessSurfaceRequired() {
+    const char* value = std::getenv("MH4N_REQUIRE_HEADLESS_SURFACE");
+    return value != nullptr && std::string(value) == "1";
+}
+
 inline bool ValidationEnabled() {
     const char* layers = std::getenv("VK_INSTANCE_LAYERS");
     const char* force = std::getenv("MH4N_RHI_VALIDATION");
@@ -41,6 +49,15 @@ inline bool ValidationEnabled() {
 inline void SkipOrFail(const std::string& why) {
     if (VulkanRequired()) {
         FAIL("MH4N_REQUIRE_VULKAN=1 and there is no usable Vulkan device: " << why);
+    }
+    WARN_MESSAGE(false, "skipped: " << why);
+}
+
+// Skips the running case with a message because the loader lacks VK_EXT_headless_surface, or fails it under
+// MH4N_REQUIRE_HEADLESS_SURFACE=1 (and only under that variable). Returns normally only when skipping; the caller then returns.
+inline void SkipOrFailHeadless(const std::string& why) {
+    if (HeadlessSurfaceRequired()) {
+        FAIL("MH4N_REQUIRE_HEADLESS_SURFACE=1 and VK_EXT_headless_surface is missing: " << why);
     }
     WARN_MESSAGE(false, "skipped: " << why);
 }
@@ -97,14 +114,14 @@ struct HeadlessSurface {
     rhi::SurfaceHandle Handle() const { return rhi::SurfaceFrom(surface); }
 };
 
-// nullptr after SkipOrFail where the loader lacks VK_EXT_headless_surface.
+// nullptr after SkipOrFailHeadless where the loader lacks VK_EXT_headless_surface (after SkipOrFail if the surface cannot be made).
 inline std::unique_ptr<HeadlessSurface> MakeHeadlessSurface(std::shared_ptr<rhi::Instance> instance) {
     bool has = false;
     for (const std::string& name : instance->EnabledExtensions()) {
         has = has || name == VK_EXT_HEADLESS_SURFACE_EXTENSION_NAME;
     }
     if (!has || vkCreateHeadlessSurfaceEXT == nullptr) {
-        SkipOrFail("the Vulkan loader lacks VK_EXT_headless_surface (or the instance was made without InstanceOptions::headless_surface)");
+        SkipOrFailHeadless("the Vulkan loader lacks VK_EXT_headless_surface (or the instance was made without InstanceOptions::headless_surface)");
         return nullptr;
     }
     auto result = std::make_unique<HeadlessSurface>();

@@ -37,6 +37,11 @@ bool VulkanRequired() {
     return value != nullptr && std::string(value) == "1";
 }
 
+bool HeadlessSurfaceRequired() {
+    const char* value = std::getenv("MH4N_REQUIRE_HEADLESS_SURFACE");
+    return value != nullptr && std::string(value) == "1";
+}
+
 // A plume instance and device, or a reason there is none.
 struct Rig {
     std::unique_ptr<RenderInterface> iface;
@@ -347,8 +352,8 @@ TEST_CASE("device/headless_surface") {
         return;
     }
     if (!Has(probe.vi->enabledExtensionNames, VK_EXT_HEADLESS_SURFACE_EXTENSION_NAME)) {
-        if (VulkanRequired()) {
-            FAIL("the loader does not offer VK_EXT_headless_surface and MH4N_REQUIRE_VULKAN=1");
+        if (HeadlessSurfaceRequired()) {
+            FAIL("the loader does not offer VK_EXT_headless_surface and MH4N_REQUIRE_HEADLESS_SURFACE=1");
         }
         WARN_MESSAGE(false, "skipped: the loader does not offer VK_EXT_headless_surface");
         return;

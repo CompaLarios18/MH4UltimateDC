@@ -830,11 +830,17 @@ TEST_CASE("instance/the_headless_surface_and_the_debug_messenger_come_when_asked
     const std::vector<std::string>& names = instance->EnabledExtensions();
     // each only if the loader offers it; the loader of the cloud image and of Linux CI offers all three
     if (test::VulkanRequired()) {
-        CHECK(Has(names, "VK_KHR_surface"));
-        CHECK(Has(names, "VK_EXT_headless_surface"));
         CHECK(Has(names, "VK_EXT_debug_utils"));
     }
     CHECK((Has(names, "VK_EXT_headless_surface") == Has(names, "VK_KHR_surface")));
+    if (!Has(names, "VK_EXT_headless_surface")) {
+        // a real GPU's stack may not list it: skip with a message; fails only under MH4N_REQUIRE_HEADLESS_SURFACE=1
+        test::SkipOrFailHeadless("the Vulkan loader lacks VK_EXT_headless_surface");
+        return;
+    }
+    if (test::VulkanRequired()) {
+        CHECK(Has(names, "VK_KHR_surface"));
+    }
 }
 
 TEST_CASE("instance/an_extension_the_loader_lacks_fails_with_its_name") {
@@ -1864,7 +1870,16 @@ TEST_CASE("loading/child" * doctest::skip()) {
     std::fflush(stdout);
 }
 
-TEST_CASE("loading/no_driver_gives_an_error_with_a_message_and_the_process_goes_on") {
+// The subprocess check is written for Linux only (/proc/self/exe, `env -u`, a shell redirect). Elsewhere (Windows, macOS) the case is
+// registered as skipped (doctest::skip, which a run's summary counts as skipped, not passed): nothing here builds for Windows, so no
+// untested Windows variant is written. `--no-skip` runs it anyway and then it only prints the message of the #else branch.
+#if defined(__linux__)
+constexpr bool kNoDriverCheckSkipped = false;
+#else
+constexpr bool kNoDriverCheckSkipped = true;
+#endif
+
+TEST_CASE("loading/no_driver_gives_an_error_with_a_message_and_the_process_goes_on" * doctest::skip(kNoDriverCheckSkipped)) {
 #if defined(__linux__)
     namespace fs = std::filesystem;
     char exe[4096] = {};
@@ -1887,6 +1902,6 @@ TEST_CASE("loading/no_driver_gives_an_error_with_a_message_and_the_process_goes_
     CHECK_MESSAGE(text.str().find("no Vulkan driver found") != std::string::npos, "the child's output: " << text.str());
     CHECK(text.str().find("error: \n") == std::string::npos);  // the message is not empty
 #else
-    WARN_MESSAGE(false, "skipped: the subprocess check runs on Linux");
+    WARN_MESSAGE(false, "skipped: the subprocess check runs on Linux only (this case is registered as skipped elsewhere)");
 #endif
 }
