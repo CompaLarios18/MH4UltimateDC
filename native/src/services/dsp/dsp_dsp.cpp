@@ -87,7 +87,7 @@ DspShared::~DspShared() {
     }
 }
 
-void DspShared::Start(ServiceContext& context) {
+void DspShared::Start(ServiceContext& context, bool at_boot) {
     if (model_ != nullptr) {
         return;
     }
@@ -105,7 +105,8 @@ void DspShared::Start(ServiceContext& context) {
 
     // The frames are on a grid from tick 0, as Azahar's are (its first tick is one frame after the
     // start of the core timing): a DSP that is first used later runs on the same grid.
-    deadline_ = context.GetKernel().NowTicks() / audio::kAudioFrameTicks * audio::kAudioFrameTicks;
+    deadline_ = at_boot ? context.GetKernel().NowTicks()
+                        : context.GetKernel().NowTicks() / audio::kAudioFrameTicks * audio::kAudioFrameTicks;
     ScheduleNext();
 }
 
@@ -516,6 +517,28 @@ private:
 MH4N_REGISTER(ServiceFactory, "dsp::DSP",
               ServiceFactory([](ServiceContext& context) { return std::make_unique<DspDsp>(context); },
                              kDefaultMaxSessions));
+
+// Azahar's HLE DSP is made with the system and its frame event runs from the first tick of the core
+// timing, whether or not the game ever opens dsp::DSP: the frames are on the grid from tick 0 and each is
+// an event of the timeline (a slice of the deterministic mode ends at it, the reference's trace shows it).
+// So the model starts here, at boot, and the service finds it going. The name sorts after "services.ipc",
+// which makes the service manager the state lives in.
+//
+// This is so in every mode, real time included, as it is in Azahar: the frame event runs from boot. Until the
+// game turns the DSP on (the model starts Off, and Tick() then does nothing and queues nothing) it is one timer
+// event per frame that does nothing; after that the frames go to the audio sink as they did when the service was
+// first opened. What changes in real time is where the grid of frames starts: at the clock's first reading, which
+// is not a multiple of the frame (in the deterministic mode that reading is the reference's starting tick).
+void StartDsp(Runtime& rt) {
+    ServiceManager* manager = FindServiceManager(rt);
+    if (manager == nullptr) {
+        MH4N_LOG(Error, kLog, "the DSP needs the service manager");
+        return;
+    }
+    manager->Context().State<DspShared>("dsp::DSP")->Start(manager->Context(), /*at_boot=*/true);
+}
+
+MH4N_REGISTER(BootStep, "services.ipc.dsp", BootStep{Phase::Services, StartDsp});
 
 }  // namespace
 

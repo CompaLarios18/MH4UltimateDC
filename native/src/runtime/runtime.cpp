@@ -249,7 +249,7 @@ bool Runtime::CreateWorld(u32 memory_mode, std::string* error) {
     if (virtual_time != nullptr) {
         // The reference runner's emulated clock does not start at 0 (port/README.md): the game sees the
         // same ticks, and the shared page the same date, as in its recordings.
-        virtual_time->AdvanceTicks(kDeterministicStartTicks);
+        virtual_time->SetStartTicks(kDeterministicStartTicks);  // both cores' clocks, as Azahar's two timers
     }
     code_host_ = std::make_unique<CodeHost>(*memory_);
     kernel_ = std::make_unique<Kernel>(*memory_, memory_mode);

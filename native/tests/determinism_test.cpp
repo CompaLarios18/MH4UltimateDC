@@ -35,6 +35,7 @@ TEST_CASE("determinism_test needs recomp.h (the repository around native/)" * do
 #include <map>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -82,9 +83,14 @@ public:
             cycles -= n;
             if ((ctx.budget -= n) < 0) {
                 CodeHostCallbacks::Budget(&ctx);
+                if (after_budget) {
+                    after_budget();  // the thread has been given a new stretch (its clock is synced, nothing used)
+                }
             }
         }
     }
+    // Called by Burn each time the budget ran out and the thread has its next stretch.
+    std::function<void()> after_budget;
     // One system call through the code host, as the recompiled code makes it: r0 and r1 in, r0 out.
     u32 Svc(u32 imm, u32 r0 = 0, u32 r1 = 0) {
         RCtx& ctx = thread_.Context();
@@ -125,6 +131,10 @@ struct Sim {
     GuestScheduler& Sched() { return runtime.Scheduler(); }
     Kernel& GetKernel() { return runtime.GetKernel(); }
     u64 Now() { return runtime.Clock().Now(); }
+    // The two cores' clocks (the one a thread reads is its own core's), and the later of them.
+    VirtualTimeSource& Time() { return static_cast<VirtualTimeSource&>(runtime.Clock().Source()); }
+    u64 CoreNow(int core) { return Time().CoreTicks(core); }
+    u64 Global() { return Time().GlobalTicks(); }
 
     // A thread that runs `body` and then exits through svcExitThread (so its last cycles are counted).
     std::shared_ptr<Thread> Spawn(u32 priority, int core, std::function<void(Guest&)> body,
@@ -205,6 +215,21 @@ TEST_CASE("waiting for a deadline skips the idle time; waiting for nothing waits
     // A deadline in the past does not move it back.
     CHECK_FALSE(source.WaitUntil(cv, lock, 10, [] { return false; }));
     CHECK(source.Ticks() == there);
+}
+
+TEST_CASE("with the lockstep scheduler an idle wait takes both cores' clocks to the deadline") {
+    // Every core is idle: Azahar's RunLoop idles each core for the slice, so both clocks are at the next event.
+    VirtualTimeSource source(1000);
+    source.Lockstep().enabled = true;
+    std::mutex mutex;
+    std::condition_variable cv;
+    std::unique_lock lock(mutex);
+    const s64 deadline = source.NowNs() + 5000000;
+    CHECK_FALSE(source.WaitUntil(cv, lock, deadline, [] { return false; }));
+    const u64 tick = VirtualTimeSource::TicksAtOrAfterNs(deadline);
+    CHECK(source.CoreTicks(0) == tick);
+    CHECK(source.CoreTicks(1) == tick);
+    CHECK(source.GlobalTicks() == tick);
 }
 
 TEST_CASE("the preemption source keeps the deadline until a check has run, and raises for a past one") {
@@ -319,6 +344,7 @@ TEST_CASE("the time is the cycles charged, the SVC costs and nothing else") {
     u64 first = 0;
     u64 second = 0;
     u64 third = 0;
+    u64 after_exit = 0;
     sim.Spawn(0x30, 0, [&](Guest& g) {
         first = g.Tick();      // 340 cycles of GetSystemTick, charged before the call returns the time
         g.Burn(1000000);       // 4000 blocks of 250
@@ -326,12 +352,15 @@ TEST_CASE("the time is the cycles charged, the SVC costs and nothing else") {
         g.Burn(12345);         // the last block is short: 95 cycles
         third = g.Tick();
     });
+    // A thread of a worse priority on the same core: it starts when the first one has gone, so what it reads is the
+    // core's clock at that moment (after the exit's own cost, and nothing else: the clocks do not run on in between).
+    sim.Spawn(0x31, 0, [&](Guest& g) { after_exit = g.Tick(); });
     REQUIRE(sim.Run() == RunStatus::Stopped);
     CHECK(first == kStart + 340);
     CHECK(second == first + 1000000 + 340);
     CHECK(third == second + 12345 + 340);
-    // ExitThread costs its 1000 cycles too; the clock is the sum of everything the thread charged.
-    CHECK(sim.Now() == third + 1000);
+    CHECK(after_exit == third + 1000 + 340);  // ExitThread's 1000 (Azahar's guess for it), then GetSystemTick's 340
+    CHECK(SvcCycles(0x09) == 1000);
 }
 
 TEST_CASE("a timer fires at its tick, at the block that crosses it") {
@@ -401,14 +430,387 @@ TEST_CASE("an arbiter Signal that wakes nobody costs 1614 ticks from priority 49
     CHECK(high == 0);
 }
 
+// ---- the two cores of Azahar's RunLoop -----------------------------------------------------------------------
+
+TEST_CASE("a thread on core 1 does not make the thread on core 0 wait for it: each core has its own clock") {
+    Sim sim;
+    u64 before = 0;
+    u64 after = 0;
+    sim.Spawn(
+        0x30, 0,
+        [&](Guest& g) {
+            before = g.Tick();
+            g.Burn(1000000);
+            after = g.Tick();
+        },
+        /*block=*/20);
+    sim.Spawn(0x30, 1, [&](Guest& g) { g.Burn(1000000); }, /*block=*/20);
+    REQUIRE(sim.Run() == RunStatus::Stopped);
+    // exactly its own cycles and the two calls, as if it were alone (one clock for both cores: twice that)
+    CHECK(after - before == 1000000 + 340);
+}
+
+TEST_CASE("a call that costs more than what is left of its core's slice puts that core ahead of the other") {
+    Sim sim;
+    u64 traced = 0;
+    u64 core0 = 0;
+    u64 core1 = 0;
+    u64 seen_by_thread = 0;
+    sim.Spawn(0x30, 0, [&](Guest& g) { g.SleepNs(1000000); });  // 946 cycles, then it waits
+    sim.Spawn(0x30, 1, [&](Guest& g) {
+        // Core 0 ran for 946 ticks, so this stretch is 946 ticks long; SetThreadPriority's 1812 go over it (the
+        // handle is no handle: the call fails before it asks for a reschedule, which is of no interest here: the
+        // cost is charged before the call runs).
+        g.Svc(0x0C, 0x1234, 0x30);
+        core0 = sim.CoreNow(0);
+        core1 = sim.CoreNow(1);
+        seen_by_thread = sim.Now();
+        traced = kernel_detail::TraceTicks(seen_by_thread);
+    });
+    REQUIRE(sim.Run() == RunStatus::Stopped);
+    CHECK(core0 == kStart + 946);
+    CHECK(core1 == kStart + 1812);
+    CHECK(seen_by_thread == core1);  // the thread reads its own core's clock...
+    CHECK(traced == core1);          // ...and the trace the later one: Azahar's GetGlobalTicks
+}
+
+TEST_CASE("the core that is behind runs alone until it has caught up, without a thread: the idle time") {
+    Sim sim;
+    u64 woke_at = 0;
+    sim.Spawn(0x30, 0, [&](Guest& g) {
+        g.SleepNs(1000000);  // core 0: 946 cycles, then it waits for 268,111 ticks
+        woke_at = g.Tick();
+    });
+    sim.Spawn(0x30, 1, [&](Guest& g) { g.Svc(0x0C, 0x1234, 0x30); });  // core 1 is 866 ticks ahead
+    REQUIRE(sim.Run() == RunStatus::Stopped);
+    // Core 0 sleeps from its own clock (946 ticks in), whatever core 1 did: the wake-up is 268,111 ticks after it
+    // asked, and GetSystemTick's 340 are after that.
+    CHECK(woke_at == kStart + 946 + 268111 + 340);
+}
+
+TEST_CASE("an event scheduled for the other core waits in that core's queue until its next Advance") {
+    Sim sim;
+    u64 due = 0;
+    u64 fired_at = 0;
+    int fired_core = -1;
+    sim.Spawn(
+        0x30, 0,
+        [&](Guest& g) {
+            g.Tick();
+            due = sim.CoreNow(1) + 5000;
+            kernel_detail::ScheduleOnCore(1);
+            sim.GetKernel().ScheduleAt(due, [&] {
+                fired_at = sim.Now();
+                fired_core = sim.Time().Core();
+            });
+            g.Burn(300000);
+            g.Tick();
+        },
+        /*block=*/20);
+    REQUIRE(sim.Sched().Run([&] { return fired_core >= 0; }) == RunStatus::Stopped);
+    CHECK(fired_core == 1);
+    // It did not run at its tick inside the stretch of core 0 (it is not in core 1's queue yet, and does not limit
+    // the stretch): core 1 got to it when its own clock moved, after that stretch.
+    CHECK(fired_at >= due);
+    CHECK(fired_at - due > 100000);
+}
+
+TEST_CASE("the thread-safe event of ScheduleEvent runs on its core two slices later, and exactly then") {
+    Sim sim;
+    u64 asked = 0;
+    u64 fired_at = 0;
+    int fired_core = -1;
+    sim.Spawn(0x30, 0, [&](Guest& g) {
+        g.Tick();
+        asked = sim.CoreNow(1);
+        REQUIRE(kernel_detail::ScheduleThreadSafe(1, [&] {
+            fired_at = sim.Now();
+            fired_core = sim.Time().Core();
+        }));
+        g.SleepNs(20000000);  // the clocks run on with nothing to do: 20 ms, far past the event
+    });
+    REQUIRE(sim.Run() == RunStatus::Stopped);
+    CHECK(fired_core == 1);
+    CHECK(fired_at == asked + 2 * 1145774);  // MAX_SLICE_LENGTH * 2 after core 1's clock, to the tick
+}
+
+TEST_CASE("an event due inside the stretch that is running ends the stretch at that tick (ForceExceptionCheck)") {
+    Sim sim;
+    u64 fired_at = 0;
+    u64 due = 0;
+    sim.Spawn(
+        0x30, 0,
+        [&](Guest& g) {
+            g.Tick();
+            due = sim.Now() + 123456;
+            sim.GetKernel().ScheduleAt(due, [&] { fired_at = sim.Now(); });
+            g.Tick();         // a system call: its end gives the thread what is left of the (cut) stretch
+            g.Burn(2000000);  // without the cut the stretch would run on to the end of its slice
+        },
+        /*block=*/20);
+    REQUIRE(sim.Run() == RunStatus::Stopped);
+    CHECK(fired_at >= due);
+    CHECK(fired_at - due < 20);  // the block that crossed it, not a slice later
+}
+
 namespace {
 
-// Two threads of the same priority, one on each core, that never block: they take turns in slices.
-// Each iteration costs 100,000 cycles and is logged when it is done.
+// What the thread of core 0 sees when it is given its next stretch after core 1 has gone ahead of it.
+struct Behind {
+    bool seen = false;
+    u64 c0 = 0;           // the two cores' clocks at that moment
+    u64 c1 = 0;
+    u64 stretch_end = 0;  // the end of the stretch it was given
+    u64 traced = 0;       // `t` of the system call (svcGetSystemTick) it makes at once
+};
+
+// Core 0's stretch is cut short by an event, 980 ticks into it (320 ticks of calls, 620 to the event, and the 20 of
+// the block that crosses it), so core 1's is 980 ticks long too. Core 1's thread makes the system call `imm` there,
+// which costs more than that and puts core 1 ahead. Core 0's thread is then run again by the next RunLoop call
+// (RunLoop's catch-up branch if core 1 is more than 100 ticks ahead), and reads what it was given.
+Behind CoreBehind(u32 imm, u32 r0, u32 r1) {
+    Sim sim;
+    Behind result;
+    u64 traced = 0;
+    SvcHooks hooks;
+    hooks.before = [&](const SvcCall& call) {
+        if (call.number == 0x28) {
+            traced = call.ticks;
+        }
+    };
+    sim.runtime.AddSvcHooks(std::move(hooks));
+    sim.Spawn(
+        0x30, 0,
+        [&](Guest& g) {
+            g.after_budget = [&] {
+                if (result.seen) {
+                    return;
+                }
+                result.seen = true;
+                result.c0 = sim.CoreNow(0);
+                result.c1 = sim.CoreNow(1);
+                result.stretch_end = sim.Time().Lockstep().stretch_end;
+                g.Tick();
+                result.traced = traced;
+            };
+            g.Tick();
+            sim.GetKernel().ScheduleAt(sim.Now() + 620, [] {});
+            g.Tick();  // (a system call: its end gives the thread what is left of the cut stretch)
+            g.Burn(20000);
+        },
+        /*block=*/20);
+    sim.Spawn(
+        0x30, 1,
+        [&](Guest& g) {
+            g.Svc(imm, r0, r1);
+            g.Burn(1);  // the stretch is over (the call went past it): the thread yields at its next block
+        },
+        /*block=*/20);
+    REQUIRE(sim.Run() == RunStatus::Stopped);
+    REQUIRE(result.seen);
+    return result;
+}
+
+}  // namespace
+
+TEST_CASE("a core that is more than 100 ticks behind catches up first, for exactly the difference") {
+    // SetThreadPriority's 1812 go well past core 1's stretch of 980: it is ahead by 833 ticks. RunLoop then runs
+    // the core that is behind alone, for the difference (SetNextSlice(delay)), before the cores go on together.
+    const Behind b = CoreBehind(0x0C, 0x1234, 0x30);
+    CHECK(b.c1 == kStart + 1813);
+    CHECK(b.c0 == kStart + 980);
+    CHECK(b.stretch_end == b.c1);  // the stretch it was given ends where core 1 is: the other core is not waited for
+}
+
+TEST_CASE("a core that is no more than 100 ticks behind is not waited for: both go on at once, for a whole slice") {
+    // ControlMemory's 1000 put core 1 21 ticks ahead, below RunLoop's tolerance (the jit overshoots by a few ticks):
+    // the cores go on side by side and core 0 gets the longest stretch.
+    const Behind b = CoreBehind(0x35, 0, 0x1234);
+    CHECK(b.c0 == kStart + 980);
+    CHECK(b.c1 == kStart + 1001);
+    CHECK(b.stretch_end == b.c0 + 1145774);
+}
+
+TEST_CASE("the trace's t is the later of the two clocks, also for a thread on the core that is behind") {
+    const Behind b = CoreBehind(0x0C, 0x1234, 0x30);
+    REQUIRE(b.c0 + 100 < b.c1);
+    CHECK(b.traced == b.c1);  // not core 0's own clock, the one the thread reads, which is behind
+    CHECK(b.traced != b.c0);
+}
+
+TEST_CASE("thread-safe events enter their core's queue after what it holds, in the order they were made") {
+    // Azahar's ts_queue is moved into the event queue at the core's next Advance, each taking the next fifo number then:
+    // three events of the same tick on the running core, two thread-safe ones made first and a direct one after them,
+    // run as the direct one, then the other two in order.
+    Sim sim;
+    std::vector<int> order;
+    sim.Spawn(0x30, 0, [&](Guest& g) {
+        g.Tick();
+        const u64 due = sim.CoreNow(0) + 2 * 1145774;
+        REQUIRE(kernel_detail::ScheduleThreadSafe(0, [&] { order.push_back(1); }));
+        REQUIRE(kernel_detail::ScheduleThreadSafe(0, [&] { order.push_back(2); }));
+        sim.GetKernel().ScheduleAt(due, [&] { order.push_back(3); });
+        g.SleepNs(20000000);  // far past all three
+    });
+    REQUIRE(sim.Run() == RunStatus::Stopped);
+    CHECK(order == std::vector<int>{3, 1, 2});
+}
+
+TEST_CASE("an event that has been taken into the queue of the other core is cancelled there") {
+    Sim sim;
+    u64 id = 0;
+    std::size_t queued = 0;
+    std::size_t after = 99;
+    bool cancelled = false;
+    bool fired = false;
+    sim.Spawn(
+        0x30, 0,
+        [&](Guest& g) {
+            g.Tick();
+            kernel_detail::ScheduleOnCore(1);
+            id = sim.GetKernel().ScheduleAt(sim.CoreNow(1) + 50000000, [&] { fired = true; });
+            g.Burn(1500000);  // a slice has gone by: core 1 has taken its ts_queue into its own queue
+            queued = sim.Time().Lockstep().events[1].size();
+            cancelled = sim.GetKernel().Cancel(id);
+            after = sim.Time().Lockstep().events[1].size();
+        },
+        /*block=*/250);
+    REQUIRE(sim.Run() == RunStatus::Stopped);
+    CHECK(queued == 1);
+    CHECK(cancelled);
+    CHECK(after == 0);  // gone from core 1's queue (the id says whose it is), not left there to end slices
+    CHECK_FALSE(fired);
+}
+
+TEST_CASE("the next event of the other core ends the stretch of this one at its tick (max_slice is the shortest)") {
+    // RunLoop gives both cores the shortest of their times to the next event (GetMaxSliceLength of each), so that
+    // neither runs past the other's event. An event of core 1's, due half a slice after the first stretch, makes the
+    // second stretch of core 0 end there, though core 0 has nothing of its own due.
+    Sim sim;
+    std::set<u64> ends;
+    u64 due = 0;
+    sim.Spawn(
+        0x30, 0,
+        [&](Guest& g) {
+            g.after_budget = [&] { ends.insert(sim.Time().Lockstep().stretch_end); };
+            g.Tick();
+            kernel_detail::ScheduleOnCore(1);
+            due = sim.CoreNow(1) + 1145774 + 1145774 / 2;
+            sim.GetKernel().ScheduleAt(due, [] {});
+            g.Burn(3 * 1145774);
+        },
+        /*block=*/20);
+    REQUIRE(sim.Run() == RunStatus::Stopped);
+    CHECK(ends.count(due) == 1);
+}
+
+TEST_CASE("the longest stretch is Azahar's 1,145,774 ticks when both cores have an event far off") {
+    // Timer::GetMaxSliceLength is the time to the core's next event, MAX_SLICE_LENGTH when it has none; the cap of the
+    // stretch is the shortest of both cores' and the slice. With an event on each core, far off, it is the slice itself
+    // (with none on one of them, that core's own MAX_SLICE_LENGTH is the cap, which hides the value of the slice).
+    Sim sim;
+    kernel_detail::ScheduleOnCore(1);
+    sim.GetKernel().ScheduleAt(sim.CoreNow(1) + 1000000000, [] {});
+    u64 first_end = 0;
+    sim.Spawn(0x30, 0, [&](Guest& g) {
+        first_end = sim.Time().Lockstep().stretch_end;
+        g.Tick();
+    });
+    REQUIRE(sim.Run() == RunStatus::Stopped);
+    CHECK(first_end == kStart + 1145774);
+}
+
+TEST_CASE("the limiter's tick is an event of core 1, due on core 1's own clock, whichever core asks") {
+    // Azahar: ScheduleEvent(next_timer, tick_event, 0, 1) from UpdateAppCpuLimit, which runs in a system call of a
+    // thread of either core. Core 0's thread asks when core 0 is 340 ticks into the run and core 1 has not run: the
+    // first phase is the system one (375,357 ticks of a 30 % share of 536,223), counted from core 1's clock.
+    Sim sim;
+    bool pending_on_core1 = false;
+    bool queued_on_core0 = false;
+    u64 core0_clock = 0;
+    sim.Spawn(0x30, 0, [&](Guest& g) {
+        g.Tick();
+        core0_clock = sim.CoreNow(0);
+        ThreadManager& threads = sim.runtime.Threads();
+        threads.ApplyAppMaxCpuSetting(0x0004000000123400ull, 1, 80);  // Multi, limit 80, share 0
+        REQUIRE(threads.SetAppCpuTimeLimit(30) == kResultSuccess);
+        for (const LockstepState::Pending& pending : sim.Time().Lockstep().pending[1]) {
+            pending_on_core1 = pending_on_core1 || pending.tick == kStart + 375357;
+        }
+        for (const auto& entry : sim.Time().Lockstep().events[0]) {
+            queued_on_core0 = queued_on_core0 || std::get<0>(entry) == kStart + 375357 ||
+                              std::get<0>(entry) == core0_clock + 375357;
+        }
+    });
+    REQUIRE(sim.Run() == RunStatus::Stopped);
+    CHECK(core0_clock == kStart + 340);
+    CHECK(pending_on_core1);
+    CHECK_FALSE(queued_on_core0);
+}
+
+TEST_CASE("the deterministic timeline has the periodic events of Azahar's, each ending a slice at its tick") {
+    // A run with the services of the console (the HID, the GSP's VBlank, the APT module's button update, the DSP
+    // and the rest, as booted) and one thread that burns cycles: every stretch of it ends at the next event or
+    // after a slice, so the ends of the stretches are the ticks of the events (the numbers are the first of each
+    // in the reference runner's --trace-timing of a recording: the first frame of the DSP at 1,310,720 after the
+    // start, the second pad update at 2,291,554 (the first, at 1,145,777, falls three ticks after the end of the
+    // first slice and so runs late), the button update at 4,468,352, the VBlank at 4,481,136 and the cheat engine's
+    // run at 50,000,000). Each of those recurs one period after the tick it was due at, not after the tick it ran at:
+    // the second ones are at the multiples (the DSP's frame 1,310,720, the button update 4,468,352 and the cheat
+    // engine's 50,000,000), and the shared page's date update, which is at the start, is due again an hour later.
+    SetLogFilter(LogFilter(LogLevel::Error));
+    Runtime runtime;
+    std::string error;
+    REQUIRE_MESSAGE(runtime.Prepare(Parse({"--deterministic"}), {Phase::Devices, Phase::Services}, &error), error);
+    VirtualTimeSource& time = static_cast<VirtualTimeSource&>(runtime.Clock().Source());
+    std::set<u64> ends;
+    bool hourly_queued = false;
+    bool cheat_queued = false;
+    std::atomic<int> finished{0};
+    Kernel& kernel = runtime.GetKernel();
+    auto thread = kernel.NewThread("burner", 0x30, 0, kernel.CurrentProcess());
+    runtime.Scheduler().Attach(thread, [&](GuestThread& g) {
+        RCtx& ctx = g.Context();
+        ends.insert(time.Lockstep().stretch_end - kStart);  // the end of the first stretch
+        for (const auto& entry : time.Lockstep().events[0]) {
+            hourly_queued = hourly_queued || std::get<0>(entry) == kStart + 268111856ull * 3600;
+            cheat_queued = cheat_queued || std::get<0>(entry) == kStart + 50000000;
+        }
+        for (s64 left = 101000000; left > 0; left -= 1000) {
+            if ((ctx.budget -= 1000) < 0) {
+                CodeHostCallbacks::Budget(&ctx);
+                ends.insert(time.Lockstep().stretch_end - kStart);  // the end of the stretch that just began
+            }
+        }
+        ++finished;
+        CodeHostCallbacks::Svc(&ctx, 0x09, kText + 0x11);
+    });
+    runtime.Scheduler().Start(thread);
+    REQUIRE(runtime.Scheduler().Run([&] { return finished.load() == 1; }) == RunStatus::Stopped);
+    CHECK(kDeterministicSliceTicks == 1145774);
+    CHECK(ends.count(1145774) == 1);  // the first slice: Azahar's MAX_SLICE_LENGTH
+    CHECK(hourly_queued);
+    CHECK(cheat_queued);
+    for (const u64 tick : {u64{1310720}, u64{2291554}, u64{4468352}, u64{4481136}, u64{50000000}}) {
+        INFO("an event at " << tick);
+        CHECK(ends.count(tick) == 1);
+    }
+    for (const u64 tick : {u64{2 * 1310720}, u64{2 * 4468352}, u64{2 * 50000000}}) {
+        INFO("the next occurrence, at " << tick);
+        CHECK(ends.count(tick) == 1);
+    }
+    SetLogFilter(LogFilter(LogLevel::Info));
+}
+
+namespace {
+
+// Two threads of the same priority, one on each core, that never block: they run side by side, each in
+// stretches of one slice. Each iteration costs 100,000 cycles and is logged when it is done. The blocks are
+// 20 cycles, so that what a stretch overshoots its slice by stays far below the 100 ticks RunLoop puts up with
+// between the cores (with blocks of 250 the cores would chase each other's overshoot, as the reference's would).
 struct TakingTurns {
     std::vector<std::string> log;
-    u64 end_tick = 0;
-    std::vector<u32> slice_lengths_us;
+    std::array<u64, 2> finish{};  // what each thread reads from svcGetSystemTick when it is done
 };
 
 TakingTurns RunTakingTurns(std::vector<std::string> args) {
@@ -416,15 +818,19 @@ TakingTurns RunTakingTurns(std::vector<std::string> args) {
     TakingTurns result;
     constexpr int kIterations = 60;
     for (const char* name : {"a", "b"}) {
-        sim.Spawn(0x30, name[0] == 'a' ? 0 : 1, [&, name](Guest& g) {
-            for (int i = 0; i < kIterations; ++i) {
-                g.Burn(100000);
-                result.log.push_back(std::string(name) + std::to_string(i));
-            }
-        });
+        const int core = name[0] == 'a' ? 0 : 1;
+        sim.Spawn(
+            0x30, core,
+            [&, name, core](Guest& g) {
+                for (int i = 0; i < kIterations; ++i) {
+                    g.Burn(100000);
+                    result.log.push_back(std::string(name) + std::to_string(i));
+                }
+                result.finish[core] = g.Tick();
+            },
+            /*block=*/20);
     }
     REQUIRE(sim.Run() == RunStatus::Stopped);
-    result.end_tick = sim.Now();
     return result;
 }
 
@@ -449,19 +855,20 @@ std::string Runs(const std::vector<std::string>& log) {
 
 }  // namespace
 
-TEST_CASE("two runs give the same log and the same end tick; the virtual cores take turns in slices") {
+TEST_CASE("two runs give the same log; the two cores run side by side, each for the time its own thread takes") {
     const TakingTurns one = RunTakingTurns({});
     const TakingTurns two = RunTakingTurns({});
     CHECK(one.log == two.log);
-    CHECK(one.end_tick == two.end_tick);
+    CHECK(one.finish == two.finish);
     REQUIRE(one.log.size() == 120);
-    // 120 iterations of 100,000 cycles and the two ExitThread calls: the clock counted all of them.
-    CHECK(one.end_tick == kStart + 120 * 100000 + 2 * 1000);
-    // The slice is 4274 us = about 1.146 million cycles, so about 11 iterations in a row, not 60.
+    // Each core's clock counts what its own thread charged: 60 iterations of 100,000 cycles, and GetSystemTick's
+    // 340. Both finish there, not 6 million cycles apart: one clock for both cores would say 12 million.
+    CHECK(one.finish[0] == kStart + 60 * 100000 + 340);
+    CHECK(one.finish[1] == kStart + 60 * 100000 + 340);
+    // A stretch is a slice, 1,145,774 cycles, so about 11 iterations in a row, not 60; core 0 first.
     const std::string runs = Runs(one.log);
     CAPTURE(runs);
-    CHECK(runs.find("a:11") != std::string::npos);
-    CHECK(runs.find("b:11") != std::string::npos);
+    CHECK(runs.rfind("a:11 b:11 ", 0) == 0);
     CHECK(std::count(runs.begin(), runs.end(), ' ') >= 8);
 }
 
@@ -475,7 +882,7 @@ TEST_CASE("a seed moves the interleaving, repeatably, and changes nothing else")
     shapes.push_back(Runs(plain.log));
     for (const auto& [seed, run] : seeded) {
         INFO("seed " << seed);
-        // the results: every thread ran its 60 iterations in order, and the clock counted the same cycles
+        // the results: every thread ran its 60 iterations in order, and each core's clock counted the same cycles
         REQUIRE(run.log.size() == plain.log.size());
         for (const char* name : {"a", "b"}) {
             std::vector<std::string> own;
@@ -489,12 +896,12 @@ TEST_CASE("a seed moves the interleaving, repeatably, and changes nothing else")
                 CHECK(own[i] == std::string(name) + std::to_string(i));
             }
         }
-        CHECK(run.end_tick == plain.end_tick);
+        CHECK(run.finish == plain.finish);
         shapes.push_back(Runs(run.log));
         // the same seed again: the same run, to the entry
         const TakingTurns again = RunTakingTurns({"--seed", std::to_string(seed)});
         CHECK(again.log == run.log);
-        CHECK(again.end_tick == run.end_tick);
+        CHECK(again.finish == run.finish);
     }
     // ...but the points where the cores take turns are not the unseeded ones, and the seeds differ.
     std::sort(shapes.begin(), shapes.end());

@@ -891,6 +891,99 @@ The runs of G8 in all: one exploration run (G4's inputs and checkpoints, 3300 fr
 option on, the recording (408 s) and the check's two repeats (about 6 minutes each). The `check` is in the `same` profile and
 the comparisons are those of the other sessions with the save, less the capture ones (no GPU or DSP capture in G8).
 
+### Results of N1-26 (the deterministic mode against G4, G3 and G1; real time against G3)
+
+The native runner with `--deterministic` now has one clock per core, as the reference runner's `System::RunLoop`: a core runs
+a stretch up to the next event of the timeline or the slice cap, the other core runs a stretch bounded by the time the first
+one ran, events fire when their own core's clock reaches them, an event for the other core waits for that core's next
+`Advance()`, and the cross-thread signal of `nwm:UDS` (the reference's async route) is delivered two slices later on core 1.
+The events the reference's timeline has and the native one lacked were added to the model: the DSP's 1,310,720-tick grid
+(from the clock's start), the applet manager's 4,468,352-tick update, the system's hourly and 50,000,000-tick events and the
+`nwm` beacon (27,454,654 ticks while hosting). Numbers below: same PC, one emulator process at a time, `golden.py check`
+with `--candidate-code` the `_native_det` library for the deterministic runs and the `--native` library for the real-time
+ones, `--profile cross` and `--profile native` as named, no rule or limit changed.
+
+**What runs in real time.** The scheduler, clock and cycle accounting of this change are gated on the deterministic clock
+(every hunk goes through `LockstepOf`, which needs the virtual time source with a cycle driver installed): a real-time run
+does not take them. Three events of the console's timeline are not gated, because Azahar has them in every mode: the applet
+manager's button update (one no-op timer event every 16.666 ms from the module's creation), the DSP model's frame event, which
+now starts with the system and not at the first `dsp::DSP` session (the model starts off: a frame does nothing until the
+game turns the DSP on; what changes is that the grid of frames starts at the clock's first reading and not at a multiple of
+the frame), and the `nwm` beacon timer while hosting (one no-op event every 102.4 ms; there is no room to hear it). In real
+time the cross-thread signal of `nwm` is delivered at once, as before. No run at the base on the fractional recordings was
+made for the real-time numbers below, so "real time is not changed" is argued from these gates and not shown by a
+before-and-after.
+
+**`MH4N_TRACE_EVENTS`.** A development aid of the deterministic mode: with the environment variable set to a file name, the
+native runner writes one line for every timer event that runs, `tick=<ticks since the clock's start> core=<core>
+late=<ticks>` (the reference runner's `--trace-timing` lines of a recording's `timing.txt`, without the event's name, so the
+two files can be compared line by line), a `stretch core=… thread=… start=… slice=… t0=… t1=…` line when a thread starts to
+run and an `ended core=… ran=… end=…` line when its stretch stops. Nothing is written, and nothing but a pointer test is
+done, when it is not set. On the G4 recording the native timeline equals the reference's on 143,290 of its 143,294 timer
+events, in tick, core and lateness; the four that differ are the three `nwm` asynchronous events (core 1, 6 ticks early) and
+the wake-up of core 0 that follows the first of them (late by 4 ticks against 2, at the same tick).
+
+| Run | Options | Result |
+|---|---|---|
+| G4 | `--deterministic --profile cross --require state,checkpoints,ipc,svc,hid` | 6 passed, 0 failed, 0 skipped, 1 info; 102 s with the first runner of this series, 101 s with the final one. `ipc`: 1,277 fs reads on both sides, no byte covered by one side only |
+| G3 | the same | 6 passed, 0 failed, 0 skipped, 1 info; 3,633 s with the first runner of this series, 3,595 s with the second, 4,214 s with the final one (the same checks on the same recording; slower because mutation builds ran beside it). `ipc`: 3,725 fs reads on both sides, largest difference 0, coverage differences 0, main thread 607 requests on both; `svc`: main thread 197 compared calls on both sides, 18,465,532 calls in all on both; `state`: 12 scene changes, shift 0 frames; checkpoints and hid pass |
+| G1 | the same, unseeded, `--repeat 2` | 19 passed, 0 failed, 3 skipped, 2 info (each run equal to the reference's and the two equal to each other; `ipc` 674 fs reads on both sides); 92 s |
+| G1 | the same, `--seed 1` to `--seed 5`, one run each | 7 passed, 0 failed, 0 skipped, 1 info each; 46 s each |
+| G1 | the same, `--seed 3`, `--repeat 2` | 19 passed, 0 failed, 3 skipped, 2 info; 93 s |
+| G8 (information) | the same | 1 passed, 6 failed, 1 info. The game ends at game time 4,454.6 ms (frame about 233) with `err:f` (result 0xE0A01BF5), after four `ir:USER` `RequireConnection` calls with device id 1; the native has no Circle Pad Pro device yet (D10, N3-12), answers `RequireConnection` as Azahar does for an unknown device id and leaves the receive buffer empty, so the reference's file session and its scene change #4 have no counterpart. Not changed here |
+
+**Real time, G3, native profile** (`--profile native --require state,checkpoints,ipc,hid`; `svc` is reported and not
+required, D86): 10 consecutive runs of about 5 min 12 s each. All 10 reach the hunt (12 scene changes, 10 real ones, largest
+shift 15 frames of 24, smallest input margin 147 frames) and `state`, `state-margin`, `checkpoints` and `hid` pass in all 10.
+`ipc` fails in all 10: 9 on the `fs:USER/file` reads of thread #12 (the multiset surplus 27 to 183 reads against at most 16;
+in the run examined, 267,448 bytes covered by the reference only and 259,072 by the candidate only against at most 20,480,
+155,832 of them in ranges the other side does not touch against at most 0), 1 on the first difference of the main thread at
+request 547. The count that meets N1-26's bar (8 of 10 pass) is therefore 0 of 10 on the required list. In the three runs
+looked at (1, 2 and 10) the same first stretches differ on threads #12 and #3 (other resources of the same file at the same
+point of the route), so this is not noise of one run: with the host's clock the game asks for other pieces of the file than in
+the reference's recording. No limit was changed. The 10 runs used the runner built before the last commit of the package (the
+review fixes: an assertion, comments and tests); one run on the final binary, in the review, has the same result (state,
+checkpoints and `hid` pass; `ipc` fails on thread #12 with a surplus of 243 reads). D94 amends the bar of N1-26 after this
+data.
+
+The pattern of the failing `ipc` is that of the clock-paced streams of N0-36 (section 11 of its report): thread #12 reads its
+file in 8,192-byte chunks at the pace of the clock, so the number of chunks follows the time a stream stays open (the 10 runs'
+raw read counts on #12 are 2,298 to 2,336 against the reference's 2,304, above and below it), and which resource the loader asks
+for next depends on the frame count. An offline replay of the 10 traces with the native profile's comparator flags (in the
+review of this package) found, in 9 of the runs, no difference but the `fs:USER/file` read multiset and the byte coverage of
+threads #12 and #3; the tenth (the main-thread failure at request 547) also differs in `srv` `GetServiceHandle` (session #85
+where the reference has #82), in thread #14 and in the short-lived threads #75 and #81 that the reference has, which is the
+game's wireless cycle (trap 4 of the specification), not the streams. The same code in the deterministic mode, where the clock
+is the cycle count, gives equal `ipc` on G4 (1,277 reads), G3 (3,725) and G1 (674): the services answer alike when the time is
+alike. So what fails in real time is the host clock's effect on the game's own reads (and, once, the wireless cycle), not a
+difference in how the native services answer; `ipc` is still run and printed in every real-time check, so that a difference
+of another kind would show.
+
+**120 fps** (`--set 0:fps=120`, real time, native profile): the script is the fresh `G3-ms.txt` made with the recipe from
+the state trace of the final G3 deterministic run at 60 fps (19 lines; the milliseconds are that trace's own), run until game
+time 304,100 ms. At 60 fps the same script reaches all 12 scene changes at the deterministic run's own times (to the
+millisecond). At 120 fps 2 of 5 runs reach the quest (`state_diff.py --order-only --min-changes 10`: "traces agree: 12 scene
+changes; 10 real scene changes"); the other 3 stay in the village from the arrival (game time about 26.4 s) to the end and
+never load the quest (scene change #8 missing). All five runs reach the scene of frame 903 of the 60 fps run at 15.1 s of game
+time instead of 17.7 s, and the village 2.6 s earlier (26.4 s against 29.1 s): the game's own waits, counted in frames, are
+shorter in game time at 120 fps, so the presses of a script keyed in milliseconds fall on other screens. Why the other 3 stay
+in the village was not found.
+
+**What is not covered.** `ctest` runs 51 of 51 in this tree; the tests that run the compiled test programs (`svc_test`-based
+determinism tests, which need `capstone` and `pyelftools`) are pending CI. The core 1 clock of the deterministic mode lags the
+reference's by 6 ticks at the three `nwm` asynchronous events of G4 (and the wake-up of core 0 that follows the first of them
+is 2 ticks later than the reference's, at the same tick); everything else of the timeline is equal, tick for tick (143,290 of
+143,294 events). The lag is below RunLoop's own tolerance between the cores (100 ticks) and below every gated comparison (the
+`svc` trace compares sequence and registers, `state` tolerates 4 frames, `ipc` compares by order); it could matter only if
+another event lay within 6 ticks of one of these, or if a thread on core 1 stored a tick it read in that window, and neither
+happens in G1, G3 or G4. The rules of the scheduler are pinned by `determinism_test` (the catch-up of the core that is behind
+and its 100-tick tolerance, the later clock in the trace, the order of thread-safe events, the periods of the recurring events,
+the limiter's tick on core 1, the other core's next event limiting a stretch); two mutations of that test's subject survive on
+purpose, `PrepareReschedule` or `NeedReschedule` not raising the system flag: the flag only brings the choice of the next
+thread forward, from the start of the core's next stretch to the end of the last one, with the core's clock not moving in
+between and the choice made again before the next stretch starts. What is left is the place in the ready queue of a thread
+that an event wakes in between, which no test found a way to show and which G1, G3 and G4 do not depend on.
+
 ## History: the WIP recordings (before N0-29)
 
 The first recordings (the WIP branch `origin/wp/N0-09-golden-sessions`, head `d6e2871`, CI run 39075253705, native

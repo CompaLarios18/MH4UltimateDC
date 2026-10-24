@@ -35,9 +35,13 @@
 //    Disconnect. PullPacket finds an empty queue.
 //
 // Departures from Azahar:
-//  - The beacon broadcast timer (every 102.4 ms of game time while hosting) is not run: with no room its
-//    callback only builds a frame and hands it to a SendPacket that sends nothing, so nothing the game or
-//    a trace can see depends on it. N4 adds it with the room.
+//  - The beacon broadcast timer (every 102.4 ms of game time while hosting) runs, but its callback builds no
+//    frame: with no room it would only hand it to a SendPacket that sends nothing, so nothing the game or
+//    a trace can see depends on it. It is there because it is an event of the console's timeline (the
+//    deterministic mode ends a slice at each, as Azahar does). It runs in every mode, real time included, as it
+//    does in Azahar (a timer event every 102.4 ms, only while hosting). N4 adds the frame with the room.
+//  - SignalEventAsync: with the deterministic clock the signal is queued and runs on core 1 two slices later, the
+//    way the reference runner's Azahar does it (see Signal below); in real time at once, as in a frontend.
 //  - DecryptBeaconData (0x0E and 0x1F) is answered as an unknown command: it decrypts the beacon data of a
 //    scanned network (AES-CTR with the NWM beacon key), and without a room there is no scan result to
 //    give it. N4 implements it.
@@ -64,11 +68,15 @@
 #include <array>
 #include <cstddef>
 #include <cstring>
+#include <deque>
+#include <functional>
 #include <map>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
+#include "../../kernel/deterministic.h"  // kernel_detail::ScheduleThreadSafe (the runtime module reaches it the same way)
 #include "mh4n/cfg.h"
 #include "mh4n/clock.h"
 #include "mh4n/ipc.h"
@@ -205,6 +213,12 @@ struct BeaconDataReplyHeader {
 };
 static_assert(sizeof(BeaconDataReplyHeader) == 12, "BeaconDataReplyHeader has incorrect size.");
 
+// The beacon interval: Azahar's `msToCycles(DefaultBeaconInterval * MillisecondsPerTU)`, 100 time units of
+// 1.024 ms, through the double overload (truncated).
+constexpr u64 kBeaconIntervalTicks =
+    static_cast<u64>(static_cast<double>(268111856) * 0.001 * (100 * 1.024));
+static_assert(kBeaconIntervalTicks == 27454654, "102.4 ms in ticks, as the reference's timeline has it");
+
 // ---- what all the sessions share --------------------------------------------------------------------------
 
 struct BindNodeData {
@@ -224,7 +238,35 @@ struct UdsState {
     std::map<u32, BindNodeData> channel_data;  // by data channel
     u8 network_channel = kDefaultNetworkChannel;
     NetworkInfo network_info{};
+    // The events queued for the deterministic mode's asynchronous signal (Azahar's pending_async_event_signals).
+    std::deque<std::shared_ptr<Event>> pending_async;
+    // The beacon timer's events that are waiting (DestroyNetwork takes them back).
+    std::set<u64> beacon_events;
 };
+
+// Azahar's beacon_broadcast_event: while this console hosts a network its callback builds a beacon frame and
+// hands it to SendPacket (nothing here sends it: with no room there is nobody to hear it), then schedules
+// itself one interval after the tick it was due at (`interval - cycles_late` from the tick it ran at); the
+// chain ends when the status is not "host" any more, and DestroyNetwork takes the pending event back
+// (UnscheduleEvent). The frame is not built here: N4 adds it with the room. The event is still one of the
+// console's timeline: a slice of the deterministic mode ends at each one, and the reference's trace shows them.
+// A function of the state, not of a service object: it must outlive the sessions.
+void ScheduleBeacon(Kernel& kernel, const std::shared_ptr<UdsState>& state, u64 due_tick) {
+    auto id = std::make_shared<u64>(0);
+    const std::weak_ptr<UdsState> weak = state;
+    *id = kernel.ScheduleAt(due_tick, [weak, id, due_tick, &kernel] {
+        const std::shared_ptr<UdsState> locked = weak.lock();
+        if (locked == nullptr) {
+            return;
+        }
+        locked->beacon_events.erase(*id);
+        if (locked->connection_status.status != static_cast<u32>(NetworkStatus::ConnectedAsHost)) {
+            return;
+        }
+        ScheduleBeacon(kernel, locked, due_tick + kBeaconIntervalTicks);
+    });
+    state->beacon_events.insert(*id);
+}
 
 // How long the two commands that sleep the client take, in game time.
 constexpr s64 kBeaconScanNs = 300000000;      // UDSBeaconScanInterval
@@ -272,12 +314,37 @@ public:
 private:
     UdsState& S() { return *state_; }
 
-    // Azahar's SignalEventAsync on the emulation thread: signal at once. Everything here runs on the
-    // scheduler thread.
-    static void Signal(const std::shared_ptr<Event>& event) {
-        if (event) {
-            event->Signal();
+    // Azahar's SignalEventAsync. On the emulation thread of a frontend it signals at once, and so does this,
+    // everything here running on the scheduler thread. The reference runner never registers its thread as the
+    // core loop (`System::RegisterCoreLoopThreadId` is called by the frontends only), so there it goes the other
+    // way: the event is queued, and `ScheduleEvent(0, handle_async_event_signals_event, 0, 1, true)` signals
+    // it on core 1 two slices of time later (MAX_SLICE_LENGTH * 2), one event per call, in order. The
+    // deterministic mode follows that, because it is the mode that is compared with the reference's traces,
+    // tick for tick (the connection status event wakes a thread of the game's, whose first request is then
+    // 2.29 million ticks later than it would be). Which of the two is decided by the kernel: ScheduleThreadSafe
+    // does nothing and says so when there is no deterministic clock.
+    //
+    // This runs on the scheduler thread, and ScheduleThreadSafe asserts so: the kernel's timer queue is not locked.
+    // When N4's room signals from a network thread, that thread must Post the call to the scheduler first.
+    void Signal(const std::shared_ptr<Event>& event) {
+        if (!event) {
+            return;
         }
+        const std::weak_ptr<UdsState> weak = state_;
+        const bool scheduled = kernel_detail::ScheduleThreadSafe(1, [weak] {
+            const std::shared_ptr<UdsState> state = weak.lock();
+            if (state == nullptr || state->pending_async.empty()) {
+                return;
+            }
+            const std::shared_ptr<Event> next = std::move(state->pending_async.front());
+            state->pending_async.pop_front();
+            next->Signal();
+        });
+        if (!scheduled) {
+            event->Signal();  // the real-time clock: at once
+            return;
+        }
+        S().pending_async.push_back(event);
     }
 
     // The client sleeps `ns` of game time, then gets `reply`. Azahar puts the client thread in
@@ -553,6 +620,9 @@ private:
         }
 
         Signal(s.connection_status_event);
+
+        // Start broadcasting the network, send a beacon frame every 102.4 ms.
+        ScheduleBeacon(Context().GetKernel(), state_, Context().GetKernel().NowTicks() + kBeaconIntervalTicks);
         return kResultSuccess;
     }
 
@@ -585,6 +655,11 @@ private:
     // Outputs: 1: result
     void DestroyNetwork(Request& request) {
         UdsState& s = S();
+        // Unschedule the beacon broadcast event (before the check, as Azahar does).
+        for (const u64 id : s.beacon_events) {
+            Context().GetKernel().Cancel(id);
+        }
+        s.beacon_events.clear();
         // Only a host can destroy.
         if (s.connection_status.status != static_cast<u32>(NetworkStatus::ConnectedAsHost)) {
             MH4N_LOG(Warning, kLog, "DestroyNetwork called with status {}", s.connection_status.status);

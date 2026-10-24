@@ -33,8 +33,26 @@ bool IsApplicationAppletId(AppletId applet_id) {
 
 }  // namespace
 
+namespace {
+
+// Azahar's `APT Button Update Event`: every 16,666 us from the time the module is made, it looks at the
+// HOME and power buttons (and only when the HOME menu is registered, which it never is here: nothing
+// happens), then schedules itself one period after the tick it was due at. It does nothing the game can
+// see, but it is an event of the console's timeline, and a slice of the deterministic mode ends at each
+// one: the reference's trace shows them, so the timeline here has them. (The buttons come with N2b.)
+// It runs in every mode, real time included, as it does in Azahar (the module makes it in real time too): one
+// timer event every 16.666 ms of game time that does nothing.
+void ScheduleButtonUpdate(Kernel& kernel, u64 due_tick) {
+    kernel.ScheduleAt(due_tick, [&kernel, due_tick] {
+        ScheduleButtonUpdate(kernel, due_tick + kAppletUpdateIntervalTicks);
+    });
+}
+
+}  // namespace
+
 AppletManager::AppletManager(ServiceContext& context) : context_(context) {
     Kernel& kernel = context_.GetKernel();
+    ScheduleButtonUpdate(kernel, kernel.NowTicks() + kAppletUpdateIntervalTicks);
     lock_ = kernel.NewMutex(false, "APT_U:Lock");
     for (std::size_t slot = 0; slot < applet_slots_.size(); ++slot) {
         AppletSlotData& slot_data = applet_slots_[slot];
