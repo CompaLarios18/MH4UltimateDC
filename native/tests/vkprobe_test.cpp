@@ -7,6 +7,9 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstdlib>
+#include <map>
+#include <memory>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -15,7 +18,9 @@
 
 #include "vkprobe/json.h"
 #include "vkprobe/live.h"
+#include "gpu/backend/rhi.h"
 #include "vkprobe/report.h"
+#include "vkprobe/rhi_report.h"
 #include "vkprobe/tool.h"
 
 using namespace mh4n::vkprobe;
@@ -647,3 +652,228 @@ TEST_CASE("the probe's own report: every error branch") {
     CHECK_FALSE(ParseReports(good + R"({"mh4n_vkprobe": 9})", &reports, &error));
     CHECK(reports.empty());
 }
+
+// ---- --rhi (N2-30) ----------------------------------------------------------------------------------
+
+namespace {
+
+namespace rhi = mh4n::gpu::rhi;
+
+// Sets an environment variable for one scope (null: unset) and restores the old value.
+class ScopedEnv {
+public:
+    ScopedEnv(const char* name, const char* value) : name_(name) {
+        if (const char* old = std::getenv(name)) {
+            had_ = true;
+            old_ = old;
+        }
+        Set(value);
+    }
+    ~ScopedEnv() { Set(had_ ? old_.c_str() : nullptr); }
+    ScopedEnv(const ScopedEnv&) = delete;
+    ScopedEnv& operator=(const ScopedEnv&) = delete;
+
+private:
+    void Set(const char* value) {
+#if defined(_WIN32)
+        _putenv_s(name_.c_str(), value != nullptr ? value : "");
+#else
+        if (value != nullptr) {
+            setenv(name_.c_str(), value, 1);
+        } else {
+            unsetenv(name_.c_str());
+        }
+#endif
+    }
+    std::string name_;
+    std::string old_;
+    bool had_ = false;
+};
+
+bool VulkanRequired() {
+    const char* value = std::getenv("MH4N_REQUIRE_VULKAN");
+    return value != nullptr && std::string(value) == "1";
+}
+
+// The backend on this machine's first device, or null with the reason (a skip, or a failure under
+// MH4N_REQUIRE_VULKAN=1).
+std::shared_ptr<rhi::Backend> MakeBackend() {
+    auto instance = rhi::CreateInstance();
+    if (!instance) {
+        if (VulkanRequired()) {
+            FAIL("no Vulkan and MH4N_REQUIRE_VULKAN=1: " << instance.error());
+        }
+        WARN_MESSAGE(false, "skipped: no Vulkan (" << instance.error() << ")");
+        return nullptr;
+    }
+    auto backend = rhi::CreateBackend(*instance);
+    if (!backend) {
+        if (VulkanRequired()) {
+            FAIL("no Vulkan device and MH4N_REQUIRE_VULKAN=1: " << backend.error());
+        }
+        WARN_MESSAGE(false, "skipped: no Vulkan device (" << backend.error() << ")");
+        return nullptr;
+    }
+    return *backend;
+}
+
+// "rhi <name>: <value>" lines of a report, name -> value (the first of a repeated name).
+std::map<std::string, std::string> RhiLines(const std::string& text) {
+    std::map<std::string, std::string> lines;
+    std::istringstream in(text);
+    std::string line;
+    while (std::getline(in, line)) {
+        if (line.rfind("rhi ", 0) != 0) {
+            continue;
+        }
+        const size_t colon = line.find(": ");
+        if (colon == std::string::npos) {
+            continue;
+        }
+        lines.emplace(line.substr(4, colon - 4), line.substr(colon + 2));
+    }
+    return lines;
+}
+
+std::string B(bool v) { return v ? "true" : "false"; }
+
+}  // namespace
+
+TEST_CASE("--rhi: the field list is every Capabilities field, in order, and prints what it holds") {
+    rhi::Capabilities caps;  // synthetic: every field set to something recognisable
+    caps.d24s8 = caps.bc7 = caps.present_wait = true;
+    caps.stride_alignment = 4;
+    caps.driver_id = 7;
+    caps.driver_name = "synthetic driver";
+    caps.device_name = "Synthetic RHI";
+    caps.api_version = 4206808;
+    caps.timestamp_period = 2.5f;
+    caps.max_uniform_buffer_range = 65536;
+    caps.masked = rhi::CapabilityMask{}.With(rhi::Cap::Interlock).With(rhi::Cap::Bc7);
+    const std::vector<RhiField> fields = RhiFields(caps);
+    // the 13 bits (Cap order) and 18 values of Capabilities
+    CHECK(fields.size() == rhi::kCapCount + 18);
+    for (uint32_t i = 0; i < rhi::kCapCount; ++i) {
+        CHECK(fields[i].name == rhi::CapName(static_cast<rhi::Cap>(i)));
+        CHECK(fields[i].value == B(caps.Has(static_cast<rhi::Cap>(i))));
+    }
+    std::map<std::string, std::string> by_name;
+    for (const RhiField& f : fields) {
+        CHECK(by_name.emplace(f.name, f.value).second);  // no name twice
+    }
+    CHECK(by_name["stride_alignment"] == "4");
+    CHECK(by_name["driver_name"] == "synthetic driver");
+    CHECK(by_name["timestamp_period"] == "2.5");
+    CHECK(by_name["max_uniform_buffer_range"] == "65536");
+    CHECK(by_name["masked"] == "interlock,bc7");
+    CHECK(RhiFields(rhi::Capabilities{}).back().value == "none");
+}
+
+TEST_CASE("--rhi: the report prints every Capabilities field, each equal to Caps()") {
+    ScopedEnv no_mask("MH4N_RHI_MASK", nullptr);
+    const auto backend = MakeBackend();
+    if (!backend) {
+        return;
+    }
+    const rhi::Capabilities& caps = backend->Caps();
+    auto lines = RhiLines(RenderRhiReport(*backend));
+    // every field of Capabilities, checked against the structure itself (not against RhiFields)
+    const std::vector<std::pair<std::string, std::string>> expected = {
+        {"d24s8", B(caps.d24s8)}, {"interlock", B(caps.interlock)}, {"index_uint8", B(caps.index_uint8)},
+        {"custom_border_color", B(caps.custom_border_color)}, {"triangle_fans", B(caps.triangle_fans)},
+        {"logic_op", B(caps.logic_op)}, {"dynamic_rendering", B(caps.dynamic_rendering)},
+        {"pipeline_library", B(caps.pipeline_library)}, {"eds3_blend", B(caps.eds3_blend)}, {"bc7", B(caps.bc7)},
+        {"timeline", B(caps.timeline)}, {"present_wait", B(caps.present_wait)},
+        {"direct_upload", B(caps.direct_upload)}, {"geometry_shader", B(caps.geometry_shader)},
+        {"stride_alignment", std::to_string(caps.stride_alignment)}, {"apple", B(caps.apple)},
+        {"primitive_restart_always_on", B(caps.primitive_restart_always_on)},
+        {"portability_subset", B(caps.portability_subset)}, {"driver_id", std::to_string(caps.driver_id)},
+        {"driver_name", caps.driver_name}, {"device_name", caps.device_name},
+        {"api_version", std::to_string(caps.api_version)},
+        {"max_texel_buffer_elements", std::to_string(caps.max_texel_buffer_elements)},
+        {"uniform_buffer_offset_alignment", std::to_string(caps.uniform_buffer_offset_alignment)},
+        {"storage_buffer_offset_alignment", std::to_string(caps.storage_buffer_offset_alignment)},
+        {"max_uniform_buffer_range", std::to_string(caps.max_uniform_buffer_range)},
+        {"max_storage_buffer_range", std::to_string(caps.max_storage_buffer_range)},
+        {"vendor_id", std::to_string(caps.vendor_id)}, {"device_index", std::to_string(caps.device_index)},
+        {"masked", "none"},
+    };
+    for (const auto& [name, value] : expected) {
+        const auto it = lines.find(name);
+        REQUIRE_MESSAGE(it != lines.end(), "no line for " << name);
+        CHECK_MESSAGE(it->second == value, name);
+    }
+    CHECK(caps.masked.bits == 0);
+    // timestamp_period: a number that reads back to the float
+    REQUIRE(lines.count("timestamp_period") == 1);
+    CHECK(std::strtof(lines["timestamp_period"].c_str(), nullptr) == doctest::Approx(caps.timestamp_period));
+    // the present-wait answer of the backend itself (no surface here, so false)
+    CHECK(lines["present_wait_available"] == B(backend->PresentWaitAvailable()));
+    CHECK(lines["surface"] == "false");
+    CHECK(lines["device"] == caps.device_name + " (" + caps.driver_name + ")");
+    // and the same structure is what the field list prints
+    for (const RhiField& f : RhiFields(caps)) {
+        CHECK_MESSAGE(lines[f.name] == f.value, f.name);
+    }
+    MESSAGE("device: " << lines["device"]);
+}
+
+TEST_CASE("--rhi: MH4N_RHI_MASK=interlock prints rhi interlock: false and the mask") {
+    ScopedEnv mask("MH4N_RHI_MASK", "interlock");
+    const auto backend = MakeBackend();
+    if (!backend) {
+        return;
+    }
+    const std::string report = RenderRhiReport(*backend);
+    CHECK(report.find("rhi interlock: false\n") != std::string::npos);
+    CHECK(report.find("rhi masked: interlock\n") != std::string::npos);
+    CHECK_FALSE(backend->Caps().interlock);
+}
+
+TEST_CASE("--rhi: the command, end to end") {
+    ScopedEnv no_mask("MH4N_RHI_MASK", nullptr);
+    std::string out;
+    std::string err;
+    const int rc = Run({"--rhi"}, &out, &err);
+    if (rc == 3) {
+        if (VulkanRequired()) {
+            FAIL("no Vulkan device and MH4N_REQUIRE_VULKAN=1: " << err);
+        }
+        WARN_MESSAGE(false, "skipped: no Vulkan device (" << err << ")");
+        return;
+    }
+    REQUIRE(rc == 0);
+    CHECK(out.rfind("rhi device: ", 0) == 0);
+    CHECK(out.find("rhi present_wait: ") != std::string::npos);
+    CHECK(err.empty());
+
+    // --rhi is for the live device only
+    CHECK(Run({"--rhi", "--json"}, &out, &err) == 2);
+    CHECK(Run({"--rhi", "--from-json", "x"}, &out, &err) == 2);
+    CHECK(Run({"--rhi", "--loader", "x"}, &out, &err) == 2);
+}
+
+TEST_CASE("--rhi: an unknown name in MH4N_RHI_MASK is exit 2 and lists the valid names") {
+    ScopedEnv mask("MH4N_RHI_MASK", "interlock,flux_capacitor");
+    std::string out;
+    std::string err;
+    CHECK(Run({"--rhi"}, &out, &err) == 2);
+    CHECK(err.find("MH4N_RHI_MASK") != std::string::npos);
+    CHECK(out.empty());
+}
+
+#if !defined(_WIN32)
+TEST_CASE("--rhi: no usable driver is exit 3 with a message, nothing on stdout") {
+    // A loader with an empty driver list: the instance cannot be made. (Without any loader the answer is the
+    // same: exit 3.)
+    ScopedEnv a("VK_ICD_FILENAMES", (std::filesystem::temp_directory_path() / "mh4n_no_such_icd.json").string().c_str());
+    ScopedEnv b("VK_DRIVER_FILES", (std::filesystem::temp_directory_path() / "mh4n_no_such_icd.json").string().c_str());
+    ScopedEnv c("MH4N_RHI_MASK", nullptr);
+    std::string out;
+    std::string err;
+    CHECK(Run({"--rhi"}, &out, &err) == 3);
+    CHECK(out.empty());
+    CHECK(err.find("--rhi") != std::string::npos);
+    CHECK(err.find("nothing to report") != std::string::npos);
+}
+#endif
