@@ -107,6 +107,49 @@ jobs:
           diff build/vkprobe-a.txt build/vkprobe-b.txt \
             || { echo "::error::the probe's --json does not read back to the same table"; exit 1; }
 
+  # The multi-thread RHI tests under ThreadSanitizer (N2-29; docs/native/rhi.md, "The ThreadSanitizer job"). A second
+  # tree, build/tsan, configured with -fsanitize=thread in the C, C++ and linker flags (clang 18 needs the runtime of
+  # libclang-rt-18-dev), builds only the test binaries the regex below names (names that do not exist yet match
+  # nothing) and runs them with MH4N_REQUIRE_VULKAN=1 on lavapipe. halt_on_error=1: the first report fails the job.
+  # tools/native/tsan.supp names only the Vulkan loader and lavapipe's driver library, never a frame of plume or of
+  # ours. The control D2 of rhi_plume_patterns_test (a race on purpose) is skipped by default and is not run here.
+  # The compiler is named clang-18 (the runner images carry several clangs) so that it and libclang-rt-18-dev, which holds
+  # its ThreadSanitizer runtime, are the same major version.
+  native-tsan:
+    runs-on: ubuntu-24.04
+    env:
+      TSAN_TESTS: "^(rhi_.*|gpu_backend_.*|gpu_queue_test|present_test|swapchain_test)$"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Toolchain, ThreadSanitizer runtime and Vulkan packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-18 lld llvm cmake ninja-build libclang-rt-18-dev \
+            libvulkan-dev mesa-vulkan-drivers
+      - name: Configure
+        run: |
+          cmake -S native -B build/tsan -G Ninja -DCMAKE_C_COMPILER=clang-18 -DCMAKE_CXX_COMPILER=clang++-18 \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo -DMH4N_WERROR=ON \
+            -DCMAKE_C_FLAGS=-fsanitize=thread -DCMAKE_CXX_FLAGS=-fsanitize=thread \
+            -DCMAKE_EXE_LINKER_FLAGS=-fsanitize=thread -DCMAKE_SHARED_LINKER_FLAGS=-fsanitize=thread
+      - name: Build the RHI test binaries
+        run: |
+          set -eu
+          ctest --test-dir build/tsan -N -R "$TSAN_TESTS"
+          targets="$(ctest --test-dir build/tsan -N -R "$TSAN_TESTS" | sed -n 's/^ *Test *#[0-9]*: //p')"
+          test -n "$targets" || { echo "::error::no test matches $TSAN_TESTS"; exit 1; }
+          cmake --build build/tsan --target $targets
+      - name: Test under ThreadSanitizer
+        env:
+          MH4N_REQUIRE_VULKAN: "1"
+          TSAN_OPTIONS: "halt_on_error=1:suppressions=${{ github.workspace }}/tools/native/tsan.supp"
+        run: ctest --test-dir build/tsan --no-tests=error -R "$TSAN_TESTS" --output-on-failure -V
+
   # The native runner on Windows (N1-22): x86-64, clang from llvm-mingw (the archive
   # tools/build_game.py fetches). Same steps as `native` (there are no Vulkan-device tests yet).
   # The ARM test programs and the code libraries are built with the same llvm-mingw.

@@ -19,7 +19,7 @@ All under `native/third_party/rhi/` ([`README.md`](../../native/third_party/rhi/
 | Path | What |
 |---|---|
 | `plume/pristine/` | plume at **`0ce184b19270e49236afbb74052a6b267494b86b`**, unmodified, at upstream paths: `plume_vulkan.cpp`, `plume_vulkan.h`, the three shared headers (`plume_render_interface.h`, `_builders.h`, `_types.h`) and `LICENSE` (MIT, "Copyright (c) 2024 renderbag and contributors"). The trim is by file: the D3D12 and Metal sources, `plume_apple.*`, `metal-cpp`, D3D12MA, the examples and plume's `contrib/Vulkan-Headers` are not vendored. |
-| `plume/patches/` | `NN-<name>.diff`, 01 to 11: [the list with one line each](../../native/third_party/rhi/plume/README.md#the-patches). 01 to 07 are the files of `docs/research/rhi-spike-evidence/patches/` byte for byte; 08 to 11 were written in N2-25. |
+| `plume/patches/` | `NN-<name>.diff`, 01 to 12: [the list with one line each](../../native/third_party/rhi/plume/README.md#the-patches). 01 to 07 are the files of `docs/research/rhi-spike-evidence/patches/` byte for byte; 08 to 11 were written in N2-25 and 12 in N2-29. |
 | `plume/patched/` | `pristine/` with every patch applied: what the build compiles. Committed, so a build needs no `git` or `patch`. Includes `mh4n_patch_list.h` (the pinned commit and the patch names). |
 | `volk/`, `vma/` | volk (`be3dbd49bf77052665e96b6c7484af855e7e5f67`) and VulkanMemoryAllocator (`29b35ea4232688c0f42cdff0c10848290760a417`), the commits plume's `contrib/` submodules name. |
 
@@ -58,7 +58,7 @@ Windows or macOS build failure is fixed by a new numbered patch, never by editin
 `native/third_party/rhi/**` and the evidence's `patches/*.diff` as `-text`, so a Windows checkout with `core.autocrlf=true`
 cannot rewrite files that are compared byte for byte (sha256, blob ids).
 
-## What patches 08 to 11 add to plume's API
+## What patches 08 to 12 add to plume's API
 
 (Vulkan-only types are declared in `plume_vulkan.h`, so the shared headers gain no Vulkan type.)
 
@@ -96,9 +96,20 @@ cannot rewrite files that are compared byte for byte (sha256, blob ids).
   `RenderDevice::getFormatSupport(format)` (attachment, sampled, storage, blit source and destination, optimal tiling); a
   buffer copy of a depth-stencil image is two regions, one aspect each: the depth plane at the footprint's offset (4 bytes per
   texel, D24 in the low 24 bits), then the stencil plane (1 byte per texel) right after it.
+- **Custom border colour** (12, N2-29): `RenderBorderColor::CUSTOM` and `RenderSamplerDesc::customBorderColor` (red, green, blue,
+  alpha as floats, read only with `CUSTOM`). `VulkanSampler` then creates the sampler with `VK_BORDER_COLOR_FLOAT_CUSTOM_EXT` and a
+  `VkSamplerCustomBorderColorCreateInfoEXT` whose format is `VK_FORMAT_UNDEFINED` (one sampler works with every image format),
+  and **only when `capabilities.customBorderColor` is set**; on a device without it `createSampler` prints one line to stderr
+  (as plume does for a failed `vkCreateSampler`) and returns a sampler object whose `VulkanSampler::vk` is `VK_NULL_HANDLE`: the
+  caller (N2-27's `CreateSampler`) asks the capability first and reports the failure itself. The capability bit, which patch 09
+  sets from `customBorderColors`, now also needs `customBorderColorWithoutFormat` (both are on for lavapipe, measured; a driver
+  with only the first is treated as having none, because a sampler with a format would work with images of that format only). A set `VulkanDeviceExtras::optionalExtensions` that does not name `VK_EXT_custom_border_color` leaves the
+  bit off (case `patch12/custom_border_colour_refused_without_the_extension`). `maxCustomBorderColorSamplers` (at least 32,768 on
+  lavapipe) is not checked: the caller makes few of them.
 
 ## The tests
 
+- `native/tests/rhi_plume_patterns_test.cpp` (ctest name `rhi_plume_patterns_test`, N2-29): [the patterns](#the-validation-patterns).
 - `native/tests/rhi_plume_test.cpp` (ctest name `rhi_plume_test`): `device/no_surface`, `device/headless_surface`,
   `device/chosen`, `sync/A1_render_then_sample`, `sync/C3_two_waits_each_with_a_stage` (the two stage masks are read from the
   `vkQueueSubmit` call through volk's function pointer, as `rhi-spike.md` 6.9 traced them), `descriptors/buffer_offset`, `device/core_features`, and
@@ -143,6 +154,112 @@ instead of skipping if lavapipe disappears), and a step runs the harness over
 Silence is weak evidence for hazards between draws inside one command buffer: the layer misses storage-image hazards there
 (`rhi-spike.md` 6.9, B6).
 
+## The validation patterns
+
+`native/tests/rhi_plume_patterns_test.cpp` ports the patterns of `rhi-spike-evidence/test/main.cpp` that
+`rhi_plume_test.cpp` does not hold (A1, C3 and C5 are there) to the patched copy's public API, one doctest case each, with the
+result `results-summary.txt` gives for the **patched** build; a pattern whose result differed would be reported with its log, not
+adjusted. The shaders are `rhi_plume_shaders.inc` (N2-25's, included); the one shader N2-29 added, `border.frag`, is an array in
+the test file with its GLSL in the comment above it (N2-29's allowlist has no shader folder). Each case prints
+`rhi_plume_patterns_test: <case>: device: <name>` (llvmpipe in the cloud and in Linux CI). All of them also pass under the layer
+(`vk_layer_run.py`, above) with no message, which is the check lavapipe cannot do for itself.
+
+| Case | What it does | Result it pins |
+|---|---|---|
+| `A2_render_then_sample_in_two_lists` | render X and move it to `SHADER_READ` in list 1, sample it into Y in list 2, two submits on one queue | X is the triangle image, Y equals X |
+| `B1`, `B2`, `B3`, `B4`, `B5` (`B<n>_shadow_*`) | zero-attachment pass (patch 01) writing an `R32_UINT` view of an `RGBA8` image (`MUTABLE_FORMAT`) with three overlapping full-screen draws that each add 1: load/store, with interlock (patch 02), compare-and-swap, both, and with a `GENERAL` barrier between the draws | every texel is 3 (0 of 256 differ). B2 and B4 need `fragmentShaderInterlock`: a device without it skips them with a message, except lavapipe under `MH4N_REQUIRE_VULKAN=1`, where it fails |
+| `B8_colour_attachment_in_general_layout` | draw into a colour attachment that stays in `GENERAL` (patch 04) | the triangle image |
+| `C1_binary_semaphore_graphics_barrier`, `C2_binary_semaphore_none_barrier_per_wait_stage` | producer on queue 1 ends with a `GRAPHICS` / `NONE` barrier and signals a binary semaphore; the consumer on queue 2 waits for it with the stage `GRAPHICS` (patch 03) | the triangle image; unpatched, C2 gave `SYNC-HAZARD-READ-AFTER-WRITE` |
+| `C4_timeline_semaphore_with_stage` | the same with a timeline semaphore (patch 05), producer ends `NONE`, the wait at `GRAPHICS` | the triangle image; the semaphore's counter is 1 |
+| `D1_draw_on_one_thread_sample_on_another` | thread 1 records and submits the draw, thread 2 waits for its fence, then records the sampling draw | the triangle image; no ThreadSanitizer report |
+| `D3_owner_rule_two_threads_one_texture` | two threads record 20 barriers each on one texture, 2,000 rounds; the harness's owner rule: one mutex around recording, thread 2 records after thread 1, lists submitted 1, 2 | 0 record-time overwrites, 0 broken layout chains; no ThreadSanitizer report |
+| `D3b_owner_rule_mutex_and_ticket_order` | D3 with each half of the rule load-bearing (below), 19 barriers per list | the same: 0 and 0 |
+| `E_pipeline_cache_and_render_pass_cache` | 42 graphics pipelines (2 in the scene, 40 more identical ones) and 2 framebuffers, counted at `vkCreateRenderPass` and `vkCreateGraphicsPipelines` through volk's function pointers; the blob of `savePipelineCache` loaded by a second device | 3 render passes (unpatched: 44), 42 pipelines, none created without the device's pipeline cache, the 40 identical ones share one render pass, the second device accepts the blob (lavapipe: 32 bytes of header) |
+| `F_blend_constant_half` | `BLEND_FACTOR` blend, source (1,1,1,1), `setBlendConstants(0.5)` (patch 07) | 128 in every channel (the pipeline's own constant gives 0) |
+| `patch09/optional_extension_lists` | the default list has no ray-tracing, acceleration-structure or presentation extension; an empty `optionalExtensions` enables only `VK_KHR_portability_subset` (when offered) and sets none of the optional capabilities; naming `VK_EXT_custom_border_color` enables just that one | as described |
+| `patch10/dynamic_stencil_state_d24s8`, `..._d32s8` | a stencil target cleared to 5; four 8x8 quadrants, each with its own reference, compare mask and write mask set on the command list (patch 10): reference 5 (white), reference 6 (black), reference 0x35 under compare mask 0x0F (white: only the dynamic compare mask makes it equal 5), and a draw with no colour that REPLACEs the stencil with reference 0xAB under write mask 0x0F followed by a test against 0x0B (white: only the dynamic write mask leaves 0x0B and not 0xAB). A list whose setters did nothing leaves the pipeline's own reference 0 and fails quadrant 0 | white, black, white, white |
+| `patch11/depth_stencil_copy_as_two_regions` | a D24S8 image (and D32S8, the PC's format) cleared to depth 1.0 / stencil 0xAB, then 0.0 / 0x3C, and copied to a buffer: depth plane at the offset, stencil plane right after it | 0xFFFFFF (D24) or 0x3F800000 (D32) and 0xAB, then 0 and 0x3C |
+| `patch11/16_bit_colour_formats_where_the_query_says_attachment` | each 16-bit colour format whose `getFormatSupport(...).attachment` is set is created as a target, cleared red / alpha 1, blue / alpha 0 and green / alpha 1, and copied out | the word has each component in the bits Vulkan's `*_PACK16` layout names; lavapipe: `R4G4B4A4` is not an attachment and is skipped, the other six are |
+| `patch12/custom_border_colour_out_of_range`, `patch12/custom_border_colour_refused_without_the_extension` | a green 16x16 target sampled with border addressing over `uv * 3 - 1` (`border.frag`): the pixels out of range return the sampler's colour (0.25, 0.5, 0.75, 0.5) = (64, 128, 191, 128), the middle ones return green; an `OPAQUE_BLACK` sampler is the reference; on a device whose `optionalExtensions` leaves the extension out, the custom sampler has a null handle and an ordinary one works | as described |
+| `vendor/border_colour_patch_is_listed` | the build's patch list names a `NN-custom-border-colour.diff` with NN at least 12 and equal to its place in the list | the number is read, not written in the test |
+
+**D3, and what a missing mutex shows.** In the harness's form (D3) thread 2 starts recording only after thread 1 has finished, so
+the mutex and the wait each serialise the threads alone: removing the mutex, or the wait, from D3 shows nothing (measured:
+0 overwrites, 0 broken chains either way). D3b is the same rule with both halves needed: either thread may go first (thread 2 first
+in one round of four, thread 1 in one, together in two), the lists take a ticket under the mutex, and they are submitted in ticket
+order. Measured on lavapipe, 2,000 rounds: the rule as written gives 0 overwrites and 0 broken chains of 2,000; **without the
+mutex** 3,700 to 6,600 record-time overwrites per thread and about 1,400 broken chains (two runs); **without the ticket order**
+(lists submitted 1, 2 whatever the recording order) 0 overwrites and about 1,000 broken chains. "Overwrite": after each of its own barriers a thread reads
+the texture's layout field (`VulkanTexture::textureLayout`) and it is not the layout it asked for, because the other thread's
+record-time store landed in between. "Broken chain": the (old, new) layouts the recorded `vkCmdPipelineBarrier` calls carry, taken
+through volk's function pointer, must in submission order form one chain, each old layout the one before it left. Both counts need
+no validation layer, so they fail on a driver that accepts everything; the layer's `oldLayout-01197` and `InvalidImageLayout` (control
+D2) are a second witness. N2-27's owner-rule checks (`MH4N_RHI_CHECKS`) are the product code for this rule; these cases only show that
+the rule is sufficient and what its absence costs.
+
+**The controls** are cases named `control/<pattern>`, skipped unless named (`--test-case=control/B7 --no-skip`, which
+`vk_layer_run.py --test-case` does):
+
+| Control | Must produce (under the layer, `vk_layer_run.py --test-case <name>`) |
+|---|---|
+| `control/B7` | `SYNC-HAZARD-WRITE-AFTER-WRITE` (draws 4 and 5 in command lists of their own, no barrier); exit 1 |
+| `control/D4` | `UNASSIGNED-CoreValidation-DrawState-InvalidImageLayout` (lists recorded 1, 2, submitted 2, 1); exit 1 |
+| `control/D2` | `VUID-VkImageMemoryBarrier-oldLayout-01197` and `UNASSIGNED-CoreValidation-DrawState-InvalidImageLayout`, in counts that vary per run (the layer's settings print three duplicates each), the cases' own counts of overwrites and broken chains, and a ThreadSanitizer report on the layout store; exit 1. **Not run by the `native-tsan` job** |
+| `control/B6` | nothing: the example of a hazard the layer misses (storage-image writes between draws, a new pass for each, no barrier, in one command buffer: no message, `rhi-spike.md` 6.9). Nothing asserts on it; B1, B3 and B5 passing under the layer say nothing about their ordering |
+
+Lavapipe has one queue family with one queue: the legs of the patterns that need two queues (the cross-queue consequence of the
+stage mask, C2 on a second queue; an owner-rule hand-over across queues) are the PC's, and `unverified` here (C1 to C4 use two
+`RenderCommandQueue` objects, which plume maps onto the family's queues, of which lavapipe has one).
+
+## The ThreadSanitizer job
+
+`native-tsan` (`.github/workflows/native.yml`) builds the multi-thread RHI tests with `-fsanitize=thread` and runs them with
+no report allowed (`rhi-spike.md` 9.4 item 16; 6.9 ran D2 and D3 under it with g++ 13).
+
+- **Compiler and runtime.** clang 18.1.3 (on Ubuntu 24.04 `clang` is clang 18; the workflow job names `clang-18` and `clang++-18` because
+  the runner images carry several clangs, so that the compiler and the runtime package are the same major version; `setup_env.sh` and
+  the cloud machine use plain `clang`, which is 18 there) with the apt package **`libclang-rt-18-dev`**
+  (`1:18.1.3-1ubuntu1`), which holds `libclang_rt.tsan-x86_64.a`; the cloud image had clang but not this package, so
+  `clang -fsanitize=thread` failed to link until it was installed. `tools/native/setup_env.sh` installs it and prints whether the
+  sanitizer links; `docs/native/ENV.md` lists it; the workflow job installs it. The same package name carries the compiler's
+  version: another clang needs `libclang-rt-<N>-dev`.
+- **Tree.** `build/tsan`, separate from `build/native` (the sanitizer changes the ABI of every object):
+  ```
+  cmake -S native -B build/tsan -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+        -DMH4N_WERROR=ON -DCMAKE_C_FLAGS=-fsanitize=thread -DCMAKE_CXX_FLAGS=-fsanitize=thread \
+        -DCMAKE_EXE_LINKER_FLAGS=-fsanitize=thread -DCMAKE_SHARED_LINKER_FLAGS=-fsanitize=thread
+  RE='^(rhi_.*|gpu_backend_.*|gpu_queue_test|present_test|swapchain_test)$'
+  cmake --build build/tsan -j2 --target $(ctest --test-dir build/tsan -N -R "$RE" | sed -n 's/^ *Test *#[0-9]*: //p')
+  MH4N_REQUIRE_VULKAN=1 TSAN_OPTIONS=halt_on_error=1:suppressions=$PWD/tools/native/tsan.supp \
+        ctest --test-dir build/tsan --no-tests=error -R "$RE" --output-on-failure -V
+  ```
+  The regex is the one of the validation-layer step (names that do not exist yet match nothing). It runs every case of those test
+  binaries, `rhi_plume_patterns_test`'s D1, D3 and D3b among them; the control D2 is skipped by default and must not be run there
+  (it races on purpose and would fail the job).
+- **Suppressions** (`tools/native/tsan.supp`): `race:` and `mutex:` entries on the file names of the Vulkan loader
+  (`libvulkan.so`) and lavapipe's driver library (`libvulkan_lvp.so`), for a driver build whose uninstrumented locking
+  ThreadSanitizer cannot see. **They are needed when the machine is busy**: lavapipe's worker threads, whose synchronisation
+  ThreadSanitizer cannot see, then give allocator and mutex reports (a data race whose first frame is `free`, `malloc` or
+  `pthread_mutex_destroy` called from `libvulkan_lvp.so`). On a quiet machine (loader 1.3.275, Mesa 25.2.8) the two test binaries
+  happened to pass with an empty file, which is timing-dependent. Reproduced: with an empty file the patterns test failed (exit 66) in 6 of 8 runs on a loaded machine
+  and in 6 of 6 with four busy-loop processes; with the committed file it passed 8 of 8 and 6 of 6. They are not the `called_from_lib:` entries the spec of N2-29 had: `called_from_lib:` entries made
+  ThreadSanitizer worse: with the driver entry it stopped the process with "library ... is unloaded" in one run (the loader
+  `dlclose`s the driver whenever an instance is destroyed), and across runs and entries it also reported a data race with both
+  accesses inside `libLLVM.so`, a lock-order inversion, and "unlock of an unlocked mutex" (with the loader entry, in
+  `vkDestroyDevice`), in code that is clean without the entry. **What they cost:** a report with a frame in the loader or in
+  lavapipe's driver is hidden, so the job does not catch an unlocked Vulkan call that races inside the driver (a queue used from
+  two threads without its lock, say); the guards for that are the validation layer's synchronization validation, the owner-rule
+  checks and `MH4N_RHI_CHECKS`. Never a frame of plume or of ours: a report in plume's code outside D2 stops the work package with
+  `needs-decision` naming it. That the entries do not hide plume's own races is shown by the control:
+  `build/tsan/bin/rhi_plume_patterns_test --test-case=control/D2 --no-skip` with the same options reports `data race` in
+  `plume::VulkanCommandList::barriers` (`plume_vulkan.cpp`, the layout store, as in `rhi-spike.md` 6.9).
+- **Seen on this machine** (the cloud container: clang 18.1.3, `libclang-rt-18-dev` 1:18.1.3-1ubuntu1, loader 1.3.275, lavapipe from
+  Mesa 25.2.8, four cores): the `build/tsan` tree built; `ctest -R "$RE"` matched two tests, `rhi_plume_patterns_test` (23 cases, 3.4 s)
+  and `rhi_plume_test`, and both passed with `halt_on_error=1` and the suppressions file, five runs of the first in a row, no report.
+  The control D2 under the same options exits 66 with `data race` at `plume_vulkan.cpp:3007` in `VulkanCommandList::barriers`. The
+  job itself on GitHub (`ubuntu-24.04`, its own Mesa and loader) has not run: *(CI)*, `pending`. If it reports something in
+  lavapipe that this machine did not, the entries of `tsan.supp` are where it is added, naming the library and nothing of plume's.
+
 ## Binding a buffer at an offset (read for N2-27)
 
 **Question** (`rhi-spike.md` X5 only inferred the answer): can plume's public API bind a buffer to a descriptor at a non-zero
@@ -171,4 +288,4 @@ byte offset, and with what range? Read in the pristine copy, `plume_vulkan.cpp` 
 
 `readelf -d` for `libX11` is meaningful on `build/native/bin/rhi_plume_test` (no `NEEDED` entry besides libstdc++, libm, libgcc_s, libc and the loader's), not on `mh4u_native_runner`, which does not link plume yet.
 
-The Windows llvm-mingw build, the macOS build and the three CI jobs are `pending (ci)`: the macOS branch of `plume_vulkan.cpp` (`VK_KHR_portability_enumeration`, the portability-subset features, `triangleFan` forced false) and the Windows branch (`NOMINMAX`) were not compiled here.
+The Windows llvm-mingw build, the macOS build, the three CI jobs and the `native-tsan` job on GitHub are `pending (ci)`; the patterns on the RX 6700 XT, MoltenVK and a second queue are the PC's legs (`rhi-spike.md` 9.2) and were not run: the macOS branch of `plume_vulkan.cpp` (`VK_KHR_portability_enumeration`, the portability-subset features, `triangleFan` forced false) and the Windows branch (`NOMINMAX`) were not compiled here.

@@ -240,6 +240,60 @@ def test_pristine_files_are_the_trimmed_vulkan_set():
     ]
 
 
+def _border_colour_patch():
+    """The patch that adds the custom border colour: found by its name, so a renumbering does not break the tests."""
+    found = [p for p in rp.list_patches(PLUME / "patches") if p.name[2:] == "-custom-border-colour.diff"]
+    assert len(found) == 1
+    return found[0]
+
+
+def test_custom_border_colour_patch_is_a_new_file_after_the_earlier_ones():
+    """N2-29: patch 12 is a file of its own after N2-25's patches 01 to 11 (never an edit of one of them), touches only the
+    two plume files it must, and the patched copy has the create-info chained behind the device's capability."""
+    patch = _border_colour_patch()
+    queue = rp.list_patches(PLUME / "patches")
+    assert int(patch.name[:2]) >= 12 and queue.index(patch) >= 11
+    touched = sorted(fp.new_path for fp in rp.parse_patch(patch.read_bytes(), patch.name))
+    assert touched == ["plume_render_interface_types.h", "plume_vulkan.cpp"]
+    assert f"`{patch.name}`" in (PLUME / "README.md").read_text(encoding="utf-8")
+    assert f'"{patch.name}"' in (PLUME / "patched" / "mh4n_patch_list.h").read_text(encoding="utf-8")
+
+    cpp = (PLUME / "patched" / "plume_vulkan.cpp").read_text(encoding="utf-8")
+    ctor = cpp[cpp.index("VulkanSampler::VulkanSampler("):]
+    ctor = ctor[:ctor.index("VulkanSampler::~VulkanSampler")]
+    gate = ctor.index("!device->capabilities.customBorderColor")
+    chain = ctor.index("VK_STRUCTURE_TYPE_SAMPLER_CUSTOM_BORDER_COLOR_CREATE_INFO_EXT")
+    create = ctor.index("vkCreateSampler(")
+    assert gate < chain < create  # the create-info is chained only after the capability check, before the call
+    assert "return;" in ctor[gate:chain]  # a device without the extension gets a message and a null sampler
+    assert "VK_BORDER_COLOR_FLOAT_CUSTOM_EXT" in cpp
+    assert "customBorderColorFeatures.customBorderColorWithoutFormat" in cpp
+    header = (PLUME / "patched" / "plume_render_interface_types.h").read_text(encoding="utf-8")
+    assert "float customBorderColor[4]" in header and "CUSTOM" in header
+
+
+def test_custom_border_colour_patch_changes_only_what_it_says(tmp_path):
+    """Without the patch the queue still applies (11 patches) and the border-colour code is absent; with it the patched
+    copy differs from that tree in the two plume files and the patch list only."""
+    patch = _border_colour_patch()
+    root = tmp_path / "plume"
+    (root / "patches").mkdir(parents=True)
+    for source in (PLUME / "patches").iterdir():
+        if source != patch:
+            (root / "patches" / source.name).write_bytes(source.read_bytes())
+    (root / "pristine").mkdir()
+    for name, data in rp.read_tree(PLUME / "pristine").items():
+        (root / "pristine" / name).write_bytes(data)
+    (root / "README.md").write_bytes((PLUME / "README.md").read_bytes())
+    without = rp.build_patched(root)
+    with_patch = rp.read_tree(PLUME / "patched")
+    differing = sorted(name for name in with_patch if with_patch[name] != without.get(name))
+    assert differing == ["mh4n_patch_list.h", "plume_render_interface_types.h", "plume_vulkan.cpp"]
+    assert b"VK_BORDER_COLOR_FLOAT_CUSTOM_EXT" not in without["plume_vulkan.cpp"]
+    assert b"SAMPLER_CUSTOM_BORDER_COLOR_CREATE_INFO_EXT" not in without["plume_vulkan.cpp"]
+    assert b"customBorderColor[4]" not in without["plume_render_interface_types.h"]
+
+
 # ---- one volk, one VMA, no window-system header ---------------------------------------------------------------------
 
 def _translation_units():
