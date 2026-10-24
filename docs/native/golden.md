@@ -130,6 +130,7 @@ golden.py check  S [--runner RUN --game CXI] [--update CIA] [--code LIB]
                    [--require NAMES] [--ignore FILE]... [--observable FILE]
                    [--tolerance N] [--min-margin N] [--max-surplus N] [--max-shift N]     # the cross and native numbers
                    [--image-frames FILE]                                                  # cross only (N2b-17, D58)
+                   [--timeline [--timeline-allow FILE]]                                   # the native deterministic mode (N0-39)
 ```
 
 The recordings of this document were made with (PowerShell, from the worktree; `TZ` is set by `golden.py`):
@@ -988,6 +989,39 @@ purpose, `PrepareReschedule` or `NeedReschedule` not raising the system flag: th
 thread forward, from the start of the core's next stretch to the end of the last one, with the core's clock not moving in
 between and the choice made again before the next stretch starts. What is left is the place in the ready queue of a thread
 that an event wakes in between, which no test found a way to show and which G1, G3 and G4 do not depend on.
+
+### `check --timeline`: the scheduler's timeline (N0-39)
+
+`golden.py check S --candidate-runner ... --candidate-args=--deterministic --timeline` (off by default; a usage error
+without a candidate runner and `--deterministic`) sets `MH4N_TRACE_EVENTS=<run folder>/events.txt` for the candidate and
+runs `tools/native/timeline_check.py` on that file and the recording's `timing.txt` (streamed: G4 has 143,294 events and
+the comparison takes under a second). The step is the result `timeline` (`--require timeline` names it): `pass` when every
+difference is in the allow file, `fail` when one is not, when the run wrote no events file or an input is malformed, and
+`skipped` (with the message) when the recording has no `timing.txt`. The full report, with each difference and its two
+neighbours, is `<run folder>/timeline.txt`. The allow file is `config/native/timeline_allow.txt` when it exists, else
+none, or `--timeline-allow FILE`; its line format and the rule that pairs the events are in the tool's docstring and in
+[`comparators.md`](comparators.md) section 14. The native runner of this tree needs a GPU that shows its screens for the
+screenshots `check` asks of it, so the candidate's arguments on this PC are `--deterministic --gpu null-display`.
+
+**Results (2026-10-24, G4, the runner of the merged tree, the `_native_det` library, one emulator at a time).**
+
+| Run | Result |
+|---|---|
+| `--candidate-args="--deterministic --gpu null-display" --profile cross --require state,checkpoints,ipc,svc,hid --timeline` | `svc`, `ipc`, `state`, `state-margin`, `checkpoints`, `hid` and `timeline` pass (143,290 of 143,294 equal; 4 differences, 4 allowed); `images` fails (frame 300 and 42 more of 45 judged: `null-display` draws no pictures, the renderer is N2b-12 to N2b-14), so the exit is 1; 1 min 53 s |
+| the same with `--profile native` (`images` information) | 7 passed, 0 failed, exit 0; 1 min 48 s |
+| `--slice-us 4275`, `4273` or `3000` added (cross and native) | `timeline` still passes (143,290 of 143,294): see below |
+| `--slice-us 1000` added (native) | `timeline` fails: 15,514 differences, 15,512 not allowed, first at event 21,349; exit 1 |
+
+**What the timeline pins and what it does not.** The events of the reference's timeline sit at fixed ticks (the timers'
+due times) and their lateness is the overrun of the stretch that was running; on G4 the events come so close that a cap on
+the stretches (`--slice-us`) only binds in a few places. `--slice-us 4275` changes nothing in the runner's stretches (the
+scheduler takes the smaller of the cap and `until_event`, which is the constant 1,145,774 ticks for a core with no event
+queued, so a larger value does not take effect), and `4273` and `3000` (stretch caps of 1,145,641 and about 804,000
+ticks) leave all 143,294 events as they were, in
+tick, core and lateness; only the cap of 1000 µs moves them. So this step catches a wrong event period, a missing or extra
+timer event, a wrong core, an event that fires late (a stretch that overruns) and a cap far from Azahar's; it does not
+catch a cap that is a few percent off. The `stretch` and `ended` lines of the candidate's file have no counterpart in the
+reference's `timing.txt`, so the stretch lengths themselves are not compared.
 
 ## History: the WIP recordings (before N0-29)
 

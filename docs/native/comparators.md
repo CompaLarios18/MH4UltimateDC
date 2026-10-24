@@ -222,3 +222,41 @@ The defaults of the tool and the profiles' are one pair of numbers: `tools/nativ
 **What this does not catch.** The CRC-32 of bytes that only one side read is not compared (nothing to compare it with): a stream cut at another place, or an extra Read next to a range both read, up to 20,480 bytes per thread, is accepted on faith in its data; the same-offset-and-size equality of the multiset is what protects the rest. A runtime that does not load a resource of up to 20,480 bytes that the reference loads next to something it also reads passes; one that does not read from a whole file session, or a Read of any size away from everything the other side reads, does not. The order of the Reads is still not compared (D52). The quest sessions' variance is section 11's and N0-35's, not this rule's.
 
 **Tests.** `tests/test_compare_ipc_traces.py` (synthetic traces: both directions, the equal case, no reads, the boundary of each bound at the limit, one below and one above, the option moving it, the sum over sessions and over ranges, a gap of one byte before and after, a file session of the other thread, the vanished thread and the extra Read in both profiles, a stream cut at another place, the usage errors) and `tests/test_native_golden.py` (the constants equal the tool's defaults, a far Read and a continuing Read in both profiles, the `same` profile). 22 mutations of the new code were applied one at a time; the first run left one alive (the detached bytes taken as a maximum over ranges, not a sum), a test now kills it, and a second run kills all 22. The tests of the surplus rule add Reads at made-up offsets; they lift the byte limits (`NO_BYTE_LIMITS`; in `test_native_golden.py` by patching the two constants of `golden.py`) so that they keep testing the count of Reads.
+
+## 14. `timeline_check.py`: the scheduler's timeline against `timing.txt` (N0-39)
+
+(Section 13 is on the parked branch of N0-38, D98.) **What it compares.** The reference runner's `timing.txt` (one
+`tick= event= core= late= from=` line per CoreTiming event of a run, after a `#` header) and the native runner's
+`MH4N_TRACE_EVENTS` file (`--deterministic`: one `tick= core= late=` line per timer event, and `stretch` and `ended`
+lines that are not events and are skipped). The two are streamed (a look-ahead of four events on each side) and the events
+are paired in order; a pair is equal when tick, core and lateness are equal. The candidate's lines carry no event name:
+the name is the reference's, and is the *kind* the allow file names.
+
+**Differences.** When a pair is not equal, the next three events of both sides decide what it is: if they pair up equal
+as they stand it is one event that differs (`differs`); else if they pair up after skipping one reference event it is
+`missing`; after skipping one candidate event, `extra`; else `differs`. So one late event is one difference and not a
+shifted tail of 143,000. The output is `N of M equal` (M the reference's events), a summary of the differences, and for
+each one (the first 20, `--show N`) the events before, at and after it on both sides with their line numbers.
+
+**Exit status.** 0 when every difference is listed in the allow file (or there is none); 1 otherwise; 2 for a malformed
+input: a line that is not an event, an unreadable file, a file with no events, an allow file that does not parse.
+
+**The allow file** (`config/native/timeline_allow.txt`, made by the orchestrator): one allowed difference per line,
+`ref=<tick>:<core>:<late>:<event> cand=<tick>:<core>:<late>  # reason`, with `-` for the side that has no event (`cand=-`
+a missing event, `ref=-` an extra one). A line allows exactly the difference it names, **once**: a difference that occurs
+twice needs two lines, and a line whose numbers are one tick off allows nothing. The reason after the `#` is required.
+Lines that match no difference are printed as a note and are not an error (the day the residual is fixed, the lines are
+to be removed). The four differences of G4 (N1-26) are four lines: the three `UDS::handle_async_event_signals_event`
+events, 6 ticks early on core 1 (two of them at the same tick, so two identical lines), and the
+`ThreadWakeupCallback_0` of core 0 that follows the first, late by 4 ticks and not 2.
+
+**On G4** (the recording of 2026-10-23, the native deterministic runner of the merged tree): 143,290 of 143,294 equal,
+4 differences, exit 1 without the allow file and 0 with the four lines; 0.8 s for the comparison. **What it cannot see**:
+see `golden.md`, *`check --timeline`*, on the slice caps `--slice-us 4275`, `4273` and `3000`, which leave G4's events
+untouched, and `1000`, which does not.
+
+**Tests.** `tests/test_native_timeline_check.py` (synthetic files: equal, an event late, missing, extra, at the start and
+at the end, an allowed difference, the exactness of an allow line, a line used once, a cascade of three that is three
+differences, the unused note, a malformed line in each file and in the allow file, empty and missing files, the streaming)
+and `tests/test_native_golden.py` (`check --timeline`: off by default, pass, fail, the allow file, no events file, no
+`timing.txt`, the usage errors, `--repeat`).

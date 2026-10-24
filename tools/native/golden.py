@@ -9,7 +9,7 @@
                                       [--candidate-code LIB] [--candidate-args "..."] [--repeat N]
                                       [--profile same|cross|native] [--fallback] [--require NAMES] [--ignore FILE]...
                                       [--tolerance N] [--min-margin N] [--max-surplus N] [--max-shift N]
-                                      [--observable FILE] [--image-frames FILE]
+                                      [--observable FILE] [--image-frames FILE] [--timeline [--timeline-allow FILE]]
 
 A session is a frame-keyed input script (tools/native/golden/<S>.txt, the runner's --input-file
 format) with header comment lines, see parse_session.  `record` runs the reference runner on a
@@ -57,6 +57,7 @@ import cross_model_report  # noqa: E402
 import gcap  # noqa: E402
 import imgdiff  # noqa: E402
 import state_diff  # noqa: E402
+import timeline_check  # noqa: E402
 
 SESSIONS_DIR = HERE / "golden"
 # N2b-17 (D58): the frames the cross profile holds the screenshots to, `<session> <frame>` per line.
@@ -65,6 +66,8 @@ DEFAULT_OUT = ROOT / "build" / "golden"
 OBSERVABLE = ROOT / "config" / "native" / "observable.txt"
 IPC_TIME_DEPENDENT = ROOT / "config" / "native" / "ipc_time_dependent.txt"
 FS_WRITE_MASKS = ROOT / "config" / "native" / "fs_write_masks.txt"
+# N0-39: the differences of the scheduler's timeline that are known and allowed (timeline_check.py's allow format)
+TIMELINE_ALLOW = ROOT / "config" / "native" / "timeline_allow.txt"
 # The cross profile's numbers (D50, D51, D52); `check` takes them as options in the cross and native profiles only.
 CROSS_TOLERANCE = cross_model_report.DEFAULT_TOLERANCE      # frames a real scene change may move by (D50)
 CROSS_MIN_MARGIN = cross_model_report.DEFAULT_MIN_MARGIN    # frames an input must follow the last scene change by (D50)
@@ -106,7 +109,7 @@ MINIMUMS = {
     "G4": {"gas_frames": 1},
 }
 # The comparisons `--require` can name (D34).
-REQUIRABLE = ("svc", "ipc", "state", "checkpoints", "hid", "dsp", "images", "unmapped")
+REQUIRABLE = ("svc", "ipc", "state", "checkpoints", "hid", "dsp", "images", "unmapped", "timeline")
 PROFILES = ("same", "cross", "native")
 # The config savegame one default-mode reference run makes (docs/native/golden.md, "The user folder").
 CONFIG_SAVEGAME = re.compile(r"^nand/data/[^/]+/sysdata/00010017/00000000/config$")
@@ -495,6 +498,7 @@ class RunSpec:
     shot_every: int = DEFAULT_SHOT_EVERY_FRAMES      # frames between screenshots, 0: none
     observable: str | None = None
     shots: bool = False        # a candidate runner whose --help lists --shots (N2b-14): it gets the screenshot options
+    trace_events: Path | None = None    # N0-39: MH4N_TRACE_EVENTS for the run (the native timeline, --timeline)
 
 
 def build_args(spec: RunSpec) -> list[str]:
@@ -553,9 +557,12 @@ def run_runner(spec: RunSpec, timeout: float | None) -> tuple[int, list[str]]:
         (spec.outdir / "shots").mkdir(exist_ok=True)
     args = build_args(spec)
     cmd = runner_argv(spec.runner) + args
+    env = child_env(spec.session.env)
+    if spec.trace_events:
+        env["MH4N_TRACE_EVENTS"] = str(spec.trace_events)
     with open(spec.outdir / "runner.log", "wb") as log:
         try:
-            done = subprocess.run(cmd, cwd=ROOT, env=child_env(spec.session.env), stdout=log, stderr=subprocess.STDOUT,
+            done = subprocess.run(cmd, cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT,
                                   timeout=timeout, check=False)
             status = done.returncode
         except subprocess.TimeoutExpired:
@@ -1207,6 +1214,31 @@ def compare_outputs(session: Session, ref: Path, cand: Path, cfg: Compare) -> li
     return results
 
 
+def timeline_result(ref: Path, events: Path, allow: Path | None) -> Result:
+    """N0-39: the native timeline (the candidate's MH4N_TRACE_EVENTS file) against the recording's `timing.txt`,
+    event by event (timeline_check.py).  Skipped when the recording has no `timing.txt`; a failure when the run wrote
+    no events file or the files are malformed or differ in a way the allow file does not list.  The full report is
+    written next to the events file as `timeline.txt`."""
+    if not (ref / "timing.txt").is_file():
+        return Result("timeline", "skipped", "the recording has no timing.txt (record it again to get one)")
+    if not events.is_file():
+        return Result("timeline", "fail", f"the candidate wrote no {events.name} (MH4N_TRACE_EVENTS needs "
+                                          f"--deterministic)")
+    try:
+        report = timeline_check.compare(ref / "timing.txt", events, timeline_check.load_allow(allow))
+    except timeline_check.TimelineError as e:
+        return Result("timeline", "fail", f"malformed input: {e}")
+    text = timeline_check.format_report(report)
+    (events.parent / "timeline.txt").write_text(text + "\n", encoding="utf-8")
+    note = timeline_check.summary(report)
+    if report.differences != report.allowed:
+        first = next((d for d in report.shown if not d.allowed), None)
+        where = f"first not allowed: {first.kind} at event {first.index}" if first else "see timeline.txt"
+        return Result("timeline", "fail", f"{report.differences - report.allowed} difference(s) not allowed "
+                                          f"({where}; the report is {events.parent / 'timeline.txt'})", note=note)
+    return Result("timeline", "pass", note=note)
+
+
 def exit_status(results: Sequence[Result], require: Sequence[str]) -> int:
     """D34: 1 a failure; 3 nothing gated ran or a required comparison was skipped (or did not run); else 0."""
     gated = [r for r in results if r.status != "info"]
@@ -1270,6 +1302,12 @@ def check(session: Session, a: argparse.Namespace) -> int:
     if a.image_frames and profile != "cross":
         raise GoldenError("--image-frames sets the frames the cross profile holds the screenshots to (N2b-17, D58): "
                           "the same profile compares them all exactly and the native profile reports them as information")
+    if a.timeline and not (a.candidate_runner and "--deterministic" in cand_args):
+        raise GoldenError("--timeline compares the native runner's MH4N_TRACE_EVENTS file with the recording's "
+                          "timing.txt: it needs --candidate-runner and --candidate-args=--deterministic")
+    if a.timeline_allow and not a.timeline:
+        raise GoldenError("--timeline-allow needs --timeline")
+    timeline_allow = Path(a.timeline_allow) if a.timeline_allow else (TIMELINE_ALLOW if TIMELINE_ALLOW.is_file() else None)
     across = profile in ("cross", "native")
     if (across or a.fallback) and not Path(SVC_CROSS_MODEL if across else SVC_POLLING).is_file():
         raise GoldenError(f"missing {SVC_CROSS_MODEL if across else SVC_POLLING}")
@@ -1330,13 +1368,16 @@ def check(session: Session, a: argparse.Namespace) -> int:
         work = checks_dir / f"work{n}"
         copy_tree(ref / "user-before", work)
         spec = RunSpec(runner, program, code, cpu, a.update or [], work, outdir, session, a.set or [], extra, full,
-                       shot_every, str(a.observable), shots)
+                       shot_every, str(a.observable), shots, outdir / "events.txt" if a.timeline else None)
         status, _ = run_runner(spec, a.timeout)
         shutil.rmtree(work, ignore_errors=True)
         prefix = f"run{n}: " if a.repeat > 1 else ""
         if status != 0:
             results.append(Result("runner", "fail", f"exit status {status}", prefix))
-        for r in compare_outputs(session, ref, outdir, cfg):
+        run_results = compare_outputs(session, ref, outdir, cfg)
+        if a.timeline:
+            run_results.append(timeline_result(ref, outdir / "events.txt", timeline_allow))
+        for r in run_results:
             r.run = prefix
             results.append(r)
     for n in range(2, a.repeat + 1):          # the runs against each other, in the same profile
@@ -1447,6 +1488,13 @@ def make_parser() -> argparse.ArgumentParser:
                            help=f"cross and native profiles only: DSP frames the candidate's audio may be shifted by "
                                 f"(default {CROSS_MAX_SHIFT} in cross, D51; {NATIVE_MAX_SHIFT} in native, D76)")
             s.add_argument("--observable", default=str(OBSERVABLE))
+            s.add_argument("--timeline", action="store_true",
+                           help="N0-39: also compare the native runner's scheduler timeline (MH4N_TRACE_EVENTS, set "
+                                "for the candidate) with the recording's timing.txt, event by event; needs "
+                                "--candidate-runner and --candidate-args=--deterministic; off by default")
+            s.add_argument("--timeline-allow", metavar="FILE",
+                           help=f"the timeline's allowed differences (timeline_check.py's format; default "
+                                f"config/native/timeline_allow.txt when it exists)")
             s.add_argument("--image-frames", metavar="FILE",
                            help="cross profile only: the file of `<session> <frame>` lines that says which "
                                 "screenshots are judged with imgdiff's rule (default config/native/image_frames.txt; "

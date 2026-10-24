@@ -42,7 +42,8 @@ if argv == ["--help"]:      # golden.py asks a candidate runner what it can do (
     sys.exit(0)
 with open(os.environ["FAKE_LOG"], "a") as f:
     f.write(json.dumps({"argv": argv, "tz": os.environ.get("TZ"), "cwd": os.getcwd(),
-                        "mh4u": {k: v for k, v in os.environ.items() if k.startswith("MH4U_")}}) + "\n")
+                        "mh4u": {k: v for k, v in os.environ.items() if k.startswith("MH4U_")},
+                        "trace_events": os.environ.get("MH4N_TRACE_EVENTS")}) + "\n")
 counter = os.environ["FAKE_LOG"] + ".count"
 n = int(open(counter).read()) if os.path.exists(counter) else 0
 open(counter, "w").write(str(n + 1))
@@ -188,11 +189,17 @@ for flag, kind in (("--capture-dsp", "dsp"), ("--capture-gpu", "gpu")):
                             g.pica_reg([(gcap.REG_FOG_MODE, 1, 7 if mode == "gas" else 5)], frame=start + i)
             os.makedirs(path + ".frames", exist_ok=True)
             open(os.path.join(path + ".frames", "%d_top.ppm" % start), "w").write("P3 1 1 255 0 0 0\n")
-if opt("--trace-timing"):
-    t = [head("timingtrace"), "tick=0 event=SharedPage::UpdateTimeCallback core=0 late=0 from=emu"]
+if opt("--trace-timing") and not os.environ.get("FAKE_NO_TIMING"):
+    t = [head("timingtrace"), "tick=0 event=SharedPage::UpdateTimeCallback core=0 late=0 from=emu",
+         "tick=1000 event=ThreadWakeupCallback_0 core=1 late=2 from=emu"]
     if mode == "timing_diff":
         t.append("tick=5 event=ThreadWakeupCallback_0 core=0 late=0 from=emu")
     open(opt("--trace-timing"), "w").write("\n".join(t) + "\n")
+if os.environ.get("MH4N_TRACE_EVENTS") and "--deterministic" in argv and mode != "no_events":     # N0-39
+    late = 5 if mode == "events_late" else 2
+    open(os.environ["MH4N_TRACE_EVENTS"], "w").write(
+        "tick=0 core=0 late=0\nstretch core=0 thread=1 start=0 slice=9 t0=0 t1=0\nended core=0 ran=9 end=9\n"
+        "tick=1000 core=1 late=%d\n" % late)
 if opt("--count-unmapped"):
     open(opt("--count-unmapped"), "w").write(
         head("unmapped") + "\ncount=%d addr=00000000 size=4 rw=read lr=00000000\n" % (2 if mode == "unmapped_diff" else 1))
@@ -1937,7 +1944,7 @@ def result_of(env, name):
 def test_image_frames_file_format(tmp_path):
     parsed = golden.parse_image_frames("# frames\nG1 360\nG1 300  # first\n\nG2 420\nG1 360\n")
     assert parsed == {"G1": [300, 360], "G2": [420]}
-    for bad in ("G1\n", "G1 abc\n", "G1 300 301\n", "G1 -5\n", "G1 3²\n", "G1 ٣٠٠\n"):
+    for bad in ("G1\n", "G1 abc\n", "G1 300 301\n", "G1 -5\n", "G1 3Â²\n", "G1 Ù£Ù Ù \n"):
         with pytest.raises(golden.GoldenError):
             golden.parse_image_frames(bad)
     path = tmp_path / "f.txt"
@@ -2300,3 +2307,93 @@ def test_shot_options_go_only_to_a_candidate_that_lists_them(env, capsys, monkey
     assert golden.runner_has_shots(env.script) is False                                # (FAKE_NO_SHOTS is still set)
     monkeypatch.delenv("FAKE_NO_SHOTS")
     assert golden.runner_has_shots(env.script) is True
+
+
+# ---- check --timeline (N0-39)
+
+def timeline(env, *extra, s="S1", args="--deterministic"):
+    prog = env.tmp / "prog"
+    prog.mkdir(exist_ok=True)
+    (env.tmp / "no_allow.txt").write_text("", encoding="utf-8")
+    return env.check("--candidate-runner", str(env.script), "--candidate-program", str(prog),
+                     f"--candidate-args={args}", "--timeline", "--timeline-allow", str(env.tmp / "no_allow.txt"), *extra, s=s)
+
+
+def test_timeline_is_off_by_default_and_a_step_when_asked(env, capsys):
+    assert env.record() == 0
+    prog = env.tmp / "prog"
+    prog.mkdir()
+    capsys.readouterr()
+    assert env.check("--candidate-runner", str(env.script), "--candidate-program", str(prog),
+                     "--candidate-args=--deterministic") == 0
+    assert "timeline" not in statuses(capsys.readouterr().out)
+    assert env.calls()[-1]["trace_events"] is None                         # the variable is not set
+    assert timeline(env, "--require", "timeline") == 0
+    call = env.calls()[-1]
+    assert call["trace_events"] == str(env.out / "S1" / "check" / "run1" / "events.txt")
+    out = capsys.readouterr().out
+    assert statuses(out)["timeline"] == "PASS" and "2 of 2 equal" in out
+    assert (env.out / "S1" / "check" / "run1" / "timeline.txt").is_file()
+
+
+def test_timeline_fails_on_a_difference_and_the_allow_file_lists_it(env, capsys, monkeypatch):
+    assert env.record() == 0
+    monkeypatch.setenv("FAKE_MODE", "events_late")
+    capsys.readouterr()
+    assert timeline(env) == 1
+    out = capsys.readouterr().out
+    assert statuses(out)["timeline"] == "FAIL" and "1 difference(s) not allowed" in out
+    assert "tick=1000 core=1 late=5" in (env.out / "S1" / "check" / "run1" / "timeline.txt").read_text()
+    allow = env.tmp / "allow.txt"
+    allow.write_text("ref=1000:1:2:ThreadWakeupCallback_0 cand=1000:1:5   # the test's residual\n", encoding="utf-8")
+    assert timeline(env, "--timeline-allow", str(allow)) == 0       # the later option wins
+    assert statuses(capsys.readouterr().out)["timeline"] == "PASS"
+    # the repository's list is the default when it exists
+    monkeypatch.setattr(golden, "TIMELINE_ALLOW", allow)
+    prog = env.tmp / "prog"
+    assert env.check("--candidate-runner", str(env.script), "--candidate-program", str(prog),
+                     "--candidate-args=--deterministic", "--timeline") == 0
+
+
+def test_timeline_fails_when_the_run_writes_no_events_or_a_bad_allow_file(env, capsys, monkeypatch):
+    assert env.record() == 0
+    monkeypatch.setenv("FAKE_MODE", "no_events")
+    capsys.readouterr()
+    assert timeline(env) == 1
+    assert "wrote no events.txt" in capsys.readouterr().out
+    monkeypatch.delenv("FAKE_MODE")
+    bad = env.tmp / "bad.txt"
+    bad.write_text("ref=1:0:0:x cand=2:0:0\n", encoding="utf-8")        # no reason
+    assert timeline(env, "--timeline-allow", str(bad)) == 1
+    assert "a reason after a '#' is required" in capsys.readouterr().out
+
+
+def test_timeline_is_skipped_for_a_recording_without_timing_txt(env, capsys, monkeypatch):
+    monkeypatch.setenv("FAKE_NO_TIMING", "1")
+    assert env.record() == 0
+    monkeypatch.delenv("FAKE_NO_TIMING")
+    capsys.readouterr()
+    assert timeline(env) == 0
+    out = capsys.readouterr().out
+    assert statuses(out)["timeline"] == "SKIPPED" and "no timing.txt" in out
+    assert timeline(env, "--require", "timeline") == 3                  # a required step that was skipped
+
+
+def test_timeline_needs_a_deterministic_native_candidate(env, capsys):
+    assert env.record() == 0
+    prog = env.tmp / "prog"
+    prog.mkdir()
+    capsys.readouterr()
+    assert env.check("--timeline") == 2                                  # the reference runner has no such file
+    assert "--candidate-runner and --candidate-args=--deterministic" in capsys.readouterr().err
+    assert timeline(env, args="--native") == 2
+    assert env.check("--timeline-allow", str(env.tmp / "a.txt")) == 2
+    assert "needs --timeline" in capsys.readouterr().err
+
+
+def test_timeline_runs_once_per_repeat(env, capsys):
+    assert env.record() == 0
+    capsys.readouterr()
+    assert timeline(env, "--repeat", "2") == 0
+    got = statuses(capsys.readouterr().out)
+    assert got["run1: timeline"] == "PASS" and got["run2: timeline"] == "PASS"
