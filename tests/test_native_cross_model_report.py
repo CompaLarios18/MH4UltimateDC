@@ -624,6 +624,23 @@ def test_each_margin_is_a_dimension_of_its_own(tmp_path: Path) -> None:
     assert _proposed(tmp_path / "d", _blocky(26), *only_db, size=64) is False
 
 
+def test_the_margin_bounds_are_inclusive() -> None:
+    import imgdiff
+    def row(top, bottom=None):
+        return cmr.ShotRow(1, top=top, bottom=bottom or imgdiff.Metrics(50.0, 1.0, 0, 0))
+    ok = imgdiff.Metrics(42.0, 7.0, 0, 0)
+    assert row(ok).proposed(2.0, 1.0) is True
+    assert row(imgdiff.Metrics(50.0, 1.0, 0, 0), ok).proposed(2.0, 1.0) is True      # the bottom screen too
+    assert row(imgdiff.Metrics(41.99, 7.0, 0, 0)).proposed(2.0, 1.0) is False
+    assert row(imgdiff.Metrics(42.0, 7.01, 0, 0)).proposed(2.0, 1.0) is False
+    assert row(imgdiff.Metrics(50.0, 1.0, 0, 0), imgdiff.Metrics(41.99, 7.0, 0, 0)).proposed(2.0, 1.0) is False
+    assert row(imgdiff.Metrics(50.0, 1.0, 0, 0), imgdiff.Metrics(42.0, 7.01, 0, 0)).proposed(2.0, 1.0) is False
+    # with no margin the plain rule's own bounds are inclusive: 40 dB and 8/255 pass
+    assert row(imgdiff.Metrics(40.0, 8.0, 0, 0)).proposed(0.0, 0.0) is True
+    assert row(imgdiff.Metrics(39.99, 8.0, 0, 0)).proposed(0.0, 0.0) is False
+    assert row(imgdiff.Metrics(40.0, 8.01, 0, 0)).proposed(0.0, 0.0) is False
+
+
 def test_a_negative_margin_is_exit_status_2(tmp_path: Path) -> None:
     session, ref, cand = _image_runs(tmp_path)
     assert _images(session, ref, cand, "--margin-db", "-0.5").returncode == 2
@@ -641,6 +658,15 @@ def test_a_narrow_frame_is_reported_as_not_proposed(tmp_path: Path) -> None:
     assert "### Frames that do not pass the plain rule (0)" in out
     plain = _images(session, ref, cand, "--margin-db", "0", "--margin-block", "0").stdout
     assert "12 of 12 frames are proposed" in plain and "narrow (0)" in plain
+
+
+def test_a_scene_is_long_only_when_longer_than_long_scene(tmp_path: Path) -> None:
+    # the second scene (700 to 1000) is 301 frames and has no usable top screen
+    bad = {(f, "top"): _block(0, 0, 90) for f in FRAMES if f >= 700}
+    session, ref, cand = _image_runs(tmp_path, bad)
+    assert _images(session, ref, cand, "--long-scene", "300").returncode == 1      # 301 > 300: long
+    assert _images(session, ref, cand, "--long-scene", "301").returncode == 0      # exactly 301: not long
+    assert _images(session, ref, cand, "--long-scene", "302").returncode == 0
 
 
 def test_coverage_is_computed_on_the_margin_set(tmp_path: Path) -> None:
@@ -661,6 +687,10 @@ def test_a_scene_named_not_judged_needs_no_frame(tmp_path: Path) -> None:
     # the range names the scene by where it starts; another range, or another shortfall, is still a shortfall
     assert _images(session, ref, cand, "--not-judged", "701-1000").returncode == 1
     assert _images(session, ref, cand, "--not-judged", "0-1").returncode == 1
+    # both ends are inclusive: the scene that starts exactly at LAST (700) is named by 600-700
+    assert _images(session, ref, cand, "--not-judged", "600-700").returncode == 0
+    assert _images(session, ref, cand, "--not-judged", "700-700").returncode == 0
+    assert _images(session, ref, cand, "--not-judged", "600-699").returncode == 1
     two = {(f, "top"): _noisy(22) for f in FRAMES}                      # no frame anywhere: fewer than --min-frames
     session, ref, cand = _image_runs(tmp_path / "b", two)
     done = _images(session, ref, cand, "--not-judged", "0-1000")

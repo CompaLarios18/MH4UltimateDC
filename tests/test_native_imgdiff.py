@@ -72,6 +72,14 @@ def test_one_wrong_pixel_passes_both_rules() -> None:
     assert (m.x, m.y) == (192, 96)              # the block that holds the pixel
 
 
+def test_a_psnr_of_exactly_40_db_passes() -> None:
+    # 100x100, one pixel 0 against 255 on every channel: mse = 255^2 * 3 / 30000 = 6.5025, PSNR = 40 dB
+    a = imgdiff.parse_ppm(ppm(100, 100, pixel=(0, 0, 0)))
+    b = imgdiff.parse_ppm(ppm(100, 100, pixel=(0, 0, 0), edits={(5, 5): (255, 255, 255)}))
+    m = imgdiff.compare(a, b)
+    assert m.psnr == 40.0 and m.worst_block <= 8.0 and m.passes
+
+
 def test_a_block_off_by_10_fails_the_block_rule_with_psnr_above_40() -> None:
     a = imgdiff.parse_ppm(ppm(400, 240))
     b = imgdiff.parse_ppm(ppm(400, 240, edits=block_edit(64, 48, 10)))
