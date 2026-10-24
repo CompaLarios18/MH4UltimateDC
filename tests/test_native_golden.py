@@ -1944,7 +1944,7 @@ def result_of(env, name):
 def test_image_frames_file_format(tmp_path):
     parsed = golden.parse_image_frames("# frames\nG1 360\nG1 300  # first\n\nG2 420\nG1 360\n")
     assert parsed == {"G1": [300, 360], "G2": [420]}
-    for bad in ("G1\n", "G1 abc\n", "G1 300 301\n", "G1 -5\n", "G1 3Â²\n", "G1 Ù£Ù Ù \n"):
+    for bad in ("G1\n", "G1 abc\n", "G1 300 301\n", "G1 -5\n", "G1 3\u00b2\n", "G1 \u0663\u0660\u0660\n"):
         with pytest.raises(golden.GoldenError):
             golden.parse_image_frames(bad)
     path = tmp_path / "f.txt"
@@ -2379,6 +2379,11 @@ def test_timeline_fails_when_the_run_writes_no_events_or_a_bad_allow_file(env, c
     bad.write_text("ref=1:0:0:x cand=2:0:0\n", encoding="utf-8")        # no reason
     assert timeline(env, "--timeline-allow", str(bad)) == 1
     assert "a reason after a '#' is required" in capsys.readouterr().out
+    # an allow file that does not exist is a usage problem found before the run
+    before = len(env.calls())
+    assert timeline(env, "--timeline-allow", str(env.tmp / "nothing.txt")) == 2
+    assert "is not a file" in capsys.readouterr().err
+    assert len(env.calls()) == before
 
 
 def test_timeline_is_skipped_for_a_recording_without_timing_txt(env, capsys, monkeypatch):

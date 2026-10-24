@@ -1000,17 +1000,17 @@ difference is in the allow file, `fail` when one is not, when the run wrote no e
 `skipped` (with the message) when the recording has no `timing.txt`. The full report, with each difference and its two
 neighbours, is `<run folder>/timeline.txt`. The allow file is `config/native/timeline_allow.txt` when it exists, else
 none, or `--timeline-allow FILE`; its line format and the rule that pairs the events are in the tool's docstring and in
-[`comparators.md`](comparators.md) section 14. The native runner of this tree needs a GPU that shows its screens for the
-screenshots `check` asks of it, so the candidate's arguments on this PC are `--deterministic --gpu null-display`.
+[`comparators.md`](comparators.md) section 14. A missing `--timeline-allow` file is a usage error (exit 2) before the run starts. The candidate's
+arguments are `--deterministic` alone: without `--gpu null-display` or `--gpu renderer` the run writes no screenshots and
+`images` is skipped (the shot options are passed to a native candidate only when its arguments choose one of those GPUs).
 
 **Results (2026-10-24, G4, the runner of the merged tree, the `_native_det` library, one emulator at a time).**
 
 | Run | Result |
 |---|---|
-| `--candidate-args="--deterministic --gpu null-display" --profile cross --require state,checkpoints,ipc,svc,hid --timeline` | `svc`, `ipc`, `state`, `state-margin`, `checkpoints`, `hid` and `timeline` pass (143,290 of 143,294 equal; 4 differences, 4 allowed); `images` fails (frame 300 and 42 more of 45 judged: `null-display` draws no pictures, the renderer is N2b-12 to N2b-14), so the exit is 1; 1 min 53 s |
-| the same with `--profile native` (`images` information) | 7 passed, 0 failed, exit 0; 1 min 48 s |
-| `--slice-us 4275`, `4273` or `3000` added (cross and native) | `timeline` still passes (143,290 of 143,294): see below |
-| `--slice-us 1000` added (native) | `timeline` fails: 15,514 differences, 15,512 not allowed, first at event 21,349; exit 1 |
+| `--candidate-args=--deterministic --profile cross --require state,checkpoints,ipc,svc,hid --timeline` with the four allow lines | `svc`, `ipc`, `state`, `state-margin`, `checkpoints`, `hid` and `timeline` pass (143,290 of 143,294 equal; 4 differences, 4 allowed); `images` is skipped (the run wrote no screenshots); 7 passed, 0 failed, 1 skipped, 1 info; exit 0; 1 min 46 s |
+| `--slice-us 4275`, `4273` or `3000` added | `timeline` still passes (143,290 of 143,294): see below |
+| `--candidate-args="--deterministic --slice-us 1000"` | `timeline` fails: the candidate has 143,296 events, 127,852 of 143,294 equal, 15,514 differences, 2 allowed, 15,512 not allowed, first at event 21,349; the other steps still pass, so only the timeline catches it; 6 passed, 1 failed, 1 skipped; exit 1; 1 min 44 s |
 
 **What the timeline pins and what it does not.** The events of the reference's timeline sit at fixed ticks (the timers'
 due times) and their lateness is the overrun of the stretch that was running; on G4 the events come so close that a cap on

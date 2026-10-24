@@ -1319,6 +1319,8 @@ def check(session: Session, a: argparse.Namespace) -> int:
     if a.timeline_allow and not a.timeline:
         raise GoldenError("--timeline-allow needs --timeline")
     timeline_allow = Path(a.timeline_allow) if a.timeline_allow else (TIMELINE_ALLOW if TIMELINE_ALLOW.is_file() else None)
+    if a.timeline_allow and not timeline_allow.is_file():
+        raise GoldenError(f"--timeline-allow: {timeline_allow} is not a file")
     across = profile in ("cross", "native")
     if (across or a.fallback) and not Path(SVC_CROSS_MODEL if across else SVC_POLLING).is_file():
         raise GoldenError(f"missing {SVC_CROSS_MODEL if across else SVC_POLLING}")

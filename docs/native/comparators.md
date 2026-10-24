@@ -256,7 +256,7 @@ see `golden.md`, *`check --timeline`*, on the slice caps `--slice-us 4275`, `427
 untouched, and `1000`, which does not.
 
 **Tests.** `tests/test_native_timeline_check.py` (synthetic files: equal, an event late, missing, extra, at the start and
-at the end, an allowed difference, the exactness of an allow line, a line used once, a cascade of three that is three
+at the end, an allowed difference, the exactness of an allow line on both sides, a negative lateness, a line used once, one differing event told from a missing one, a cascade of three that is three
 differences, the unused note, a malformed line in each file and in the allow file, empty and missing files, the streaming)
 and `tests/test_native_golden.py` (`check --timeline`: off by default, pass, fail, the allow file, no events file, no
 `timing.txt`, the usage errors, `--repeat`).

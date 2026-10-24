@@ -134,10 +134,58 @@ def test_an_allow_line_names_the_difference_exactly(tmp_path, capsys):
             "ref=536762:1:0:UDS::handle_async_event_signals_event cand=536757:1:0   # one tick off\n",
             "ref=536762:1:0:Other cand=536756:1:0   # another event kind\n",
             "ref=536762:1:1:UDS::handle_async_event_signals_event cand=536756:1:0   # another lateness\n",
-            "ref=536762:0:0:UDS::handle_async_event_signals_event cand=536756:1:0   # another core\n"):
+            "ref=536762:0:0:UDS::handle_async_event_signals_event cand=536756:1:0   # another core\n",
+            "ref=536762:1:0:UDS::handle_async_event_signals_event cand=536756:1:1   # the candidate's lateness\n",
+            "ref=536762:1:0:UDS::handle_async_event_signals_event cand=536756:0:0   # the candidate's core\n"):
         code, out, _ = run(tmp_path, capsys, cand=cand_text(events), allow=allow)
         assert code == 1, allow
         assert "matched no difference" in out
+
+
+def test_an_allow_line_names_the_lateness_of_both_sides(tmp_path, capsys):
+    # a difference that is only in the lateness (the shape of the real residual: ref late 2, cand late 4)
+    ref = [(0, 0, 0, "a"), (100, 1, 2, "u"), (200, 0, 0, "b")]
+    cand = [(0, 0, 0, "a"), (100, 1, 4, "u"), (200, 0, 0, "b")]
+    ok = "ref=100:1:2:u cand=100:1:4   # late by two more ticks\n"
+    code, out, _ = run(tmp_path, capsys, ref=ref_text(ref), cand=cand_text(cand), allow=ok)
+    assert code == 0 and "1 difference(s), 1 allowed" in out
+    for wrong in ("ref=100:1:2:u cand=100:1:3   # x\n", "ref=100:1:3:u cand=100:1:4   # x\n"):
+        code, _, _ = run(tmp_path, capsys, ref=ref_text(ref), cand=cand_text(cand), allow=wrong)
+        assert code == 1, wrong
+
+
+def test_a_negative_lateness_is_an_event_and_can_be_allowed(tmp_path, capsys):
+    ref = [(0, 0, 0, "a"), (100, 1, -1, "u"), (200, 0, 0, "b")]
+    code, out, _ = run(tmp_path, capsys, ref=ref_text(ref), cand=cand_text(ref))
+    assert code == 0 and out.splitlines()[0] == "3 of 3 equal"
+    cand = [(0, 0, 0, "a"), (100, 1, -2, "u"), (200, 0, 0, "b")]
+    code, out, _ = run(tmp_path, capsys, ref=ref_text(ref), cand=cand_text(cand))
+    assert code == 1 and "1 difference(s), 0 allowed" in out
+    code, out, _ = run(tmp_path, capsys, ref=ref_text(ref), cand=cand_text(cand),
+                       allow="ref=100:1:-1:u cand=100:1:-2   # earlier than due\n")
+    assert code == 0 and "1 difference(s), 1 allowed" in out
+
+
+def test_one_differing_event_is_not_split_into_a_missing_and_an_extra_one(tmp_path, capsys):
+    # every event after the first equals the one before it, so skipping a reference event would also pair up
+    # (missing, then an extra event at the end): a paired event that differs is `differs`, once
+    ref = [(10, 0, 0, "e")] + [(20, 0, 0, "e")] * 4
+    cand = [(20, 0, 0, "e")] * 5
+    code, out, _ = run(tmp_path, capsys, ref=ref_text(ref), cand=cand_text(cand))
+    assert code == 1
+    assert out.splitlines()[0] == "4 of 5 equal; 1 difference(s), 0 allowed, 1 not allowed"
+    assert "(differs, NOT ALLOWED) at event 0" in out
+
+
+def test_a_missing_event_is_told_from_a_differing_one_by_three_events(tmp_path, capsys):
+    # the event after the missing one happens to be equal on both sides, but the next ones are not: still missing
+    ref = [(10, 0, 0, "e"), (20, 0, 0, "e"), (20, 0, 0, "e"), (30, 0, 0, "e"), (40, 0, 0, "e")]
+    cand = [(20, 0, 0, "e"), (20, 0, 0, "e"), (30, 0, 0, "e"), (40, 0, 0, "e")]
+    code, out, _ = run(tmp_path, capsys, ref=ref_text(ref), cand=cand_text(cand))
+    assert code == 1
+    assert out.splitlines()[0] == ("4 of 5 equal (the candidate has 4 events); "
+                                   "1 difference(s), 0 allowed, 1 not allowed")
+    assert "(missing, NOT ALLOWED) at event 0" in out
 
 
 def test_an_allow_line_covers_one_occurrence(tmp_path, capsys):
