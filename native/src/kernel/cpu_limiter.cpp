@@ -2,9 +2,9 @@
 // 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-3.0-or-later: thread.h, kernel.h and kernel.cpp say
 // so; thread.cpp says GPL-2.0-or-later): CpuLimiterMulti (Start, End, UpdateAppCpuLimit,
 // DoTimeLimit, OnTick, ChangeState, WakeupSleepingThreads) and KernelSystem::SetCore1ScheduleMode /
-// UpdateCore1AppCpuLimit. The timing (a single game clock instead of per-core timers) and the way
-// the scheduler consults the limiter (a selection filter instead of ThreadManager::
-// PopNextReadyThread) are ours.
+// UpdateCore1AppCpuLimit. The timing (the one game clock of real time, or the deterministic mode's two
+// clocks, one per core, where the tick event is core 1's) and the way the scheduler consults the limiter
+// (a selection filter instead of ThreadManager::PopNextReadyThread) are ours.
 // Copyright 2014-2026 Citra Emulator Project / Azahar Emulator Project (thread.cpp, thread.h,
 //   kernel.cpp, kernel.h)
 // PPSSPP Project (thread.h, kernel.h, second notice: Licensed under GPLv2 or any later version)
@@ -27,6 +27,7 @@
 // each core before every slice.
 #include "cpu_limiter.h"
 
+#include "deterministic.h"
 #include "mh4n/assert.h"
 #include "mh4n/log.h"
 
@@ -139,7 +140,11 @@ void Core1Limiter::ChangeState(s64 cycles_late) {
         next_timer -= cycles_late;
     }
 
-    tick_due_ = kernel_.NowTicks() + (next_timer > 0 ? static_cast<u64>(next_timer) : 0);
+    // Azahar: `ScheduleEvent(next_timer, tick_event, 0, 1)`, the event is core 1's, whichever core the call
+    // comes from (UpdateAppCpuLimit runs in a system call of a thread of either), and it is due that long after
+    // core 1's own clock (the deterministic mode keeps one clock per core; elsewhere there is one).
+    tick_due_ = kernel_detail::CoreTicksOr(1, kernel_.NowTicks()) + (next_timer > 0 ? static_cast<u64>(next_timer) : 0);
+    kernel_detail::ScheduleOnCore(1);
     tick_event_ = kernel_.ScheduleAt(tick_due_, [this] { OnTick(); });
 }
 

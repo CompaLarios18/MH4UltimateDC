@@ -29,8 +29,10 @@ TEST_CASE("nwm_test needs recomp.h (the repository around native/)" * doctest::s
 #include <functional>
 #include <memory>
 #include <string>
+#include <tuple>
 #include <vector>
 
+#include "../src/kernel/deterministic.h"
 #include "mh4n/cfg.h"
 #include "mh4n/clock.h"
 #include "mh4n/ipc.h"
@@ -586,6 +588,96 @@ TEST_CASE("nwm::UDS hosting a network and destroying it") {
     CHECK(channel_after[2] == 0);
     CHECK(destroy_again == kWrongStatus);
     CHECK_FALSE(event_after_status);  // a failed DestroyNetwork signals nothing
+}
+
+TEST_CASE("nwm::UDS in the deterministic mode the connection status event comes two slices later, as in the reference") {
+    // Azahar's SignalEventAsync signals at once on the emulation thread of a frontend; the reference runner never
+    // registers its thread as the core loop, so there the signal is queued and `ScheduleEvent(0, ..., core 1,
+    // thread_safe_mode)` runs it MAX_SLICE_LENGTH * 2 (2,291,548 ticks) after core 1's clock. The deterministic mode,
+    // which is compared with the reference's traces tick for tick, does the same. And the beacon timer runs while
+    // the console hosts: 102.4 ms (27,454,654 ticks, msToCycles of a double) from the call, until DestroyNetwork.
+    SetLogFilter(LogFilter(LogLevel::Error));
+    TempDir dir;
+    Runtime runtime;
+    u64 begun_at = 0;
+    bool at_once = true;
+    Result waited = 0;
+    u64 woke = 0;
+    bool async_pending = false;
+    bool beacon_pending = false;
+    bool first_beacon_gone = false;
+    bool second_beacon_pending = false;
+    bool beacon_pending_after_destroy = true;
+    runtime.SetMainThreadEntry([&](GuestThread&) {
+        VirtualTimeSource& time = static_cast<VirtualTimeSource&>(runtime.Clock().Source());
+        // Is an event of core `core`'s queue due at `tick`?
+        const auto due_at = [&](int core, u64 tick) {
+            for (const auto& entry : time.Lockstep().events[static_cast<std::size_t>(core)]) {
+                if (std::get<0>(entry) == tick) {
+                    return true;
+                }
+            }
+            return false;
+        };
+        Guest g(runtime);
+        Session s{g, OpenUds(g, ConnectSrv(g))};
+        const std::vector<u32> init = Initialize(s, MakeBlock(g));
+        const Handle event = init[3];
+        begun_at = Now(g);  // both cores' clocks, before the call
+        BeginHosting(g, s, 8, 0);
+        // The call costs its 5825 on core 0 (the request is made at that time: the beacon is due 102.4 ms after it);
+        // core 1's clock has not moved: the thread-safe event is two slices after it.
+        async_pending = due_at(1, begun_at + 2 * 1145774);
+        beacon_pending = due_at(0, begun_at + SvcCycles(0x32) + 27454654);
+        at_once = Signaled(g, event);
+        // (svcWaitSynchronization1: the timeout is in r2 and r3)
+        waited = CallSvc(runtime, 0x24, {event, 0, 20000000, 0}).r[0];
+        woke = Now(g);
+        // The first beacon has run (a sleep of 120 ms is 32.2 million ticks) and the next is due one interval after
+        // the tick the first was due at, not after the one it ran at.
+        const u64 first_due = begun_at + SvcCycles(0x32) + 27454654;
+        CallSvc(runtime, 0x0A, {120000000, 0});
+        first_beacon_gone = !due_at(0, first_due);
+        second_beacon_pending = due_at(0, first_due + 27454654);
+        // DestroyNetwork takes the pending beacon event back
+        s.CallResult({ipc::MakeHeader(0x0008, 0, 0)});
+        beacon_pending_after_destroy = due_at(0, first_due + 27454654);
+        ExitProcess(runtime);
+    });
+    CHECK(runtime.Boot(Parse({dir.WriteElf(), "--deterministic", "--ms", "500"})) == 0);
+    CHECK_FALSE(at_once);
+    CHECK(async_pending);
+    CHECK(waited == kResultSuccess);
+    CHECK(woke >= begun_at + 2 * 1145774);  // not before the event; core 0 sees it at its next iteration
+    CHECK(beacon_pending);
+    CHECK(first_beacon_gone);
+    CHECK(second_beacon_pending);
+    CHECK_FALSE(beacon_pending_after_destroy);
+    SetLogFilter(LogFilter(LogLevel::Info));
+}
+
+TEST_CASE("nwm::UDS without the deterministic clock signals the connection status event at once") {
+    // Azahar's SignalEventAsync on the emulation thread of a frontend: the kernel's ScheduleThreadSafe does nothing
+    // and says so when there is no deterministic clock, and the service signals the event itself, in the call.
+    SetLogFilter(LogFilter(LogLevel::Error));
+    TempDir dir;
+    Runtime runtime;
+    bool at_once = false;
+    bool refused = false;
+    runtime.SetMainThreadEntry([&](GuestThread&) {
+        Guest g(runtime);
+        Session s{g, OpenUds(g, ConnectSrv(g))};
+        const std::vector<u32> init = Initialize(s, MakeBlock(g));
+        const Handle event = init[3];
+        BeginHosting(g, s, 8, 0);
+        at_once = Signaled(g, event);
+        refused = !kernel_detail::ScheduleThreadSafe(1, [] {});
+        ExitProcess(runtime);
+    });
+    CHECK(runtime.Boot(Parse({dir.WriteElf(), "--ms", "100"})) == 0);
+    CHECK(at_once);
+    CHECK(refused);
+    SetLogFilter(LogFilter(LogLevel::Info));
 }
 
 TEST_CASE("nwm::UDS hosting on the game's channel, and with application data") {

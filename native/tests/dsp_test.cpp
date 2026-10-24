@@ -1660,6 +1660,30 @@ TEST_CASE("dsp::DSP: frames that were late are all run, from the deadlines, not 
     CHECK(g_audio.ticks.size() >= 8);
 }
 
+TEST_CASE("dsp::DSP: the model starts with the system, as Azahar's HLE DSP does, on a grid that starts at the clock") {
+    // Azahar makes its DSP when it makes the system and its first frame is one frame after the first tick of the
+    // core timing, whether or not the game ever opens the service: the reference runner's timeline has the frame
+    // event from the start, and in the deterministic mode, whose clock starts at the reference's starting tick (not a
+    // multiple of the frame), the grid starts there.
+    SetLogFilter(LogFilter(LogLevel::Error));
+    Runtime runtime;
+    std::string error;
+    REQUIRE_MESSAGE(runtime.Prepare(Parse({"--deterministic"}), {Phase::Devices, Phase::Services}, &error), error);
+    ServiceManager* const manager = FindServiceManager(runtime);
+    REQUIRE(manager != nullptr);
+    const std::shared_ptr<DspShared> shared = manager->Context().State<DspShared>("dsp::DSP");
+    const u64 start = runtime.Clock().Now();
+    CHECK(start == 2000000000);
+    CHECK(start % kAudioFrameTicks != 0);
+    CHECK(shared->NextDeadline() == start + kAudioFrameTicks);
+    // time goes by with nothing running, and the frames run, though nobody opened dsp::DSP
+    CHECK(runtime.Scheduler().Run([&] { return runtime.Clock().Now() >= start + 6 * kAudioFrameTicks; }) ==
+          RunStatus::Stopped);
+    CHECK(shared->FramesRun() >= 5);
+    CHECK(shared->NextDeadline() == start + (shared->FramesRun() + 1) * kAudioFrameTicks);
+    SetLogFilter(LogFilter(LogLevel::Info));
+}
+
 TEST_CASE("dsp::DSP: the DSP memory the game sees is the one the model works on") {
     Fixture f;
     TempDir dir;
