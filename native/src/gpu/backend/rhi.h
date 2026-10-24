@@ -25,7 +25,6 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
-#include <mutex>
 #include <optional>
 #include <span>
 #include <string>
@@ -96,9 +95,10 @@ private:
 // in submission order across all threads. 0 means "nothing": it has always passed.
 using TimelineValue = u64;
 
-// The pipeline stage a wait blocks at (a wait carries its own stage, 9.4 item 7). The backend maps
-// these to the coarser groups it can express: the three shader stages of the graphics pipeline to the
-// graphics group, so VertexShader and FragmentShader are never narrower than AllGraphics.
+// The pipeline stage a wait or a barrier applies at (a wait carries its own stage, 9.4 item 7). A barrier
+// uses the exact stage. A wait is expressed in the coarser groups the vendored queue knows (graphics,
+// compute, transfer): VertexShader, FragmentShader and AllGraphics are the same group there, so naming the
+// stage that reads costs nothing and stays correct if a finer mapping is added.
 enum class Stage : u8 {
     VertexShader,
     FragmentShader,

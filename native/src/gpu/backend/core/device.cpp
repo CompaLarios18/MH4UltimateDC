@@ -207,6 +207,10 @@ Probe ProbePhysicalDevice(VkPhysicalDevice device, u32 index, VkSurfaceKHR surfa
         }
     }
 
+    if (surface != VK_NULL_HANDLE && !has(VK_KHR_SWAPCHAIN_EXTENSION_NAME)) {
+        probe.can_present = false;  // a surface needs the swapchain extension
+    }
+
     core::DeviceCandidate& candidate = probe.candidate;
     candidate.index = index;
     candidate.name = caps.device_name;
