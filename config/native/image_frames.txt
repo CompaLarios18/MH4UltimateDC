@@ -1,0 +1,92 @@
+# The screenshot frames that the cross profile of golden.py holds a candidate to (`images`, D58, N2b-17).
+#
+# One line per frame: `<session> <frame>`. A frame is listed when, in the calibration run of the reference
+# runner with `--cpu jit` against the recording (`cross_model_report.py --images`, docs/native/cross-model.md
+# section 11), both screens pass with a margin: PSNR at least 42 dB (2 dB over ROADMAP section 6's 40) and a
+# worst 16x16 block at most 7/255 (1 under 8). The gate itself judges a listed frame with 40 dB and 8/255.
+# G3, G8 and G3-perf have no frames (D90, D93, rule 9): `images` is skipped for them. G4 frames 903 to 1575 and
+# G2 frames 5086 to 9000 have none because the top screens of jit and recomp never agree there; the native
+# deterministic mode will judge every screenshot of the recording (D58, N2b-28).
+# Made again with `cross_model_report.py --images --proposal` whenever a session is recorded again. Only the
+# orchestrator edits this file.
+G1 300
+G1 360
+G1 420
+G1 480
+G1 540
+G1 600
+G1 660
+G1 720
+G1 780
+G1 840
+G1 900
+G1 960
+G1 1020
+G1 1080
+G1 1140
+G1 1200
+G1 1380
+G1 1440
+G1 1500
+G1 1560
+G1 1620
+G1 1680
+G6 300
+G6 360
+G6 420
+G6 480
+G6 540
+G6 600
+G6 660
+G6 720
+G6 780
+G6 840
+G6 900
+G6 960
+G6 1020
+G6 1080
+G6 1140
+G6 1200
+G6 1380
+G6 1440
+G6 1500
+G6 1560
+G6 3060
+G4 300
+G4 360
+G4 420
+G4 480
+G4 660
+G4 720
+G4 780
+G4 840
+G4 900
+G4 1800
+G2 300
+G2 360
+G2 420
+G2 480
+G2 540
+G2 600
+G2 660
+G2 720
+G2 780
+G2 840
+G2 900
+G2 960
+G2 1020
+G2 1080
+G2 1140
+G2 1200
+G2 1380
+G2 1440
+G2 1500
+G2 1560
+G2 3060
+G2 4020
+G2 4080
+G2 4140
+G2 4200
+G2 4260
+G2 4980
+G2 5040
