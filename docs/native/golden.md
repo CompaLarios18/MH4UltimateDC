@@ -891,6 +891,50 @@ The runs of G8 in all: one exploration run (G4's inputs and checkpoints, 3300 fr
 option on, the recording (408 s) and the check's two repeats (about 6 minutes each). The `check` is in the `same` profile and
 the comparisons are those of the other sessions with the save, less the capture ones (no GPU or DSP capture in G8).
 
+### Results of N1-26 (the deterministic mode against G4, G3 and G1; real time against G3)
+
+The native runner with `--deterministic` now has one clock per core, as the reference runner's `System::RunLoop`: a core runs
+a stretch up to the next event of the timeline or the slice cap, the other core runs a stretch bounded by the time the first
+one ran, events fire when their own core's clock reaches them, an event for the other core waits for that core's next
+`Advance()`, and the cross-thread signal of `nwm:UDS` (the reference's async route) is delivered two slices later on core 1.
+The events the reference's timeline has and the native one lacked were added to the model: the DSP's 1,310,720-tick grid
+(from the clock's start), the applet manager's 4,468,352-tick update, the system's hourly and 50,000,000-tick events and the
+`nwm` beacon (27,454,654 ticks while hosting). Numbers below: same PC, one emulator process at a time, `golden.py check`
+with `--candidate-code` the `_native_det` library for the deterministic runs and the `--native` library for the real-time
+ones, `--profile cross` and `--profile native` as named, no rule or limit changed.
+
+| Run | Options | Result |
+|---|---|---|
+| G4 | `--deterministic --profile cross --require state,checkpoints,ipc,svc,hid` | 6 passed, 0 failed, 0 skipped, 1 info; 102 s. `ipc`: 1,277 fs reads on both sides, no byte covered by one side only |
+| G3 | the same | 6 passed, 0 failed, 0 skipped, 1 info; 3,633 s with the first runner of this series, 3,595 s with the final one. `ipc`: 3,725 fs reads on both sides, largest difference 0, coverage differences 0; `state`: 12 scene changes, shift 0 frames; svc, checkpoints and hid pass |
+| G1 | the same, seeds 1 to 5, repeated | 7 passed, 0 failed, 0 skipped, 1 info each |
+| G8 (information) | the same | 1 passed, 6 failed, 1 info. The game ends at game time 4,454.6 ms (frame about 233) with `err:f` (result 0xE0A01BF5), after four `ir:USER` `RequireConnection` calls with device id 1; the native has no Circle Pad Pro device yet (D10, N3-12), answers `RequireConnection` as Azahar does for an unknown device id and leaves the receive buffer empty, so the reference's file session and its scene change #4 have no counterpart. Not changed here |
+
+**Real time, G3, native profile** (`--profile native --require state,checkpoints,ipc,hid`; `svc` is reported and not
+required, D86): 10 consecutive runs of about 5 min 12 s each. All 10 reach the hunt (12 scene changes, 10 real ones, largest
+shift 15 frames of 24, smallest input margin 147 frames) and `state`, `state-margin`, `checkpoints` and `hid` pass in all 10.
+`ipc` fails in all 10: 9 on the `fs:USER/file` reads of thread #12 (the multiset surplus 27 to 183 reads against at most 16;
+in the run examined, 267,448 bytes covered by the reference only and 259,072 by the candidate only against at most 20,480,
+155,832 of them in ranges the other side does not touch against at most 0), 1 on the first difference of the main thread at
+request 547. The count that meets N1-26's bar (8 of 10 pass) is therefore 0 of 10 on the required list. In the three runs
+looked at (1, 2 and 10) the same first stretches differ on threads #12 and #3 (other resources of the same file at the same
+point of the route), so this is not noise of one run: with the host's clock the game asks for other pieces of the file than in
+the reference's recording. No limit was changed.
+
+**120 fps** (`--set 0:fps=120`, real time, native profile): the script is the fresh `G3-ms.txt` made with the recipe from
+the state trace of the final G3 deterministic run at 60 fps (19 lines; the milliseconds are that trace's own), run until game
+time 304,100 ms. At 60 fps the same script reaches all 12 scene changes at the deterministic run's own times (to the
+millisecond). At 120 fps 2 of 5 runs reach the quest (`state_diff.py --order-only --min-changes 10`: "traces agree: 12 scene
+changes; 10 real scene changes"); the other 3 stay in the village from the arrival (game time about 26.4 s) to the end and
+never load the quest (scene change #8 missing). All five runs reach the scene of frame 903 of the 60 fps run at 15.1 s of game
+time instead of 17.7 s, and the village 2.6 s earlier (26.4 s against 29.1 s): the game's own waits, counted in frames, are
+shorter in game time at 120 fps, so the presses of a script keyed in milliseconds fall on other screens. Why the other 3 stay
+in the village was not found.
+
+**What is not covered.** `ctest` runs 51 of 51 in this tree; the tests that run the compiled test programs (`svc_test`-based
+determinism tests, which need `capstone` and `pyelftools`) are pending CI. The core 1 clock of the deterministic mode lags the
+reference's by 6 ticks at the three `nwm` asynchronous events; it has no effect on any gated comparison.
+
 ## History: the WIP recordings (before N0-29)
 
 The first recordings (the WIP branch `origin/wp/N0-09-golden-sessions`, head `d6e2871`, CI run 39075253705, native

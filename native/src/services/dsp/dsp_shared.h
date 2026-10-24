@@ -46,7 +46,10 @@ public:
 
     // The first session makes the model on the DSP RAM, the events and the frame timer; later calls
     // do nothing.
-    void Start(ServiceContext& context);
+    // `at_boot`: called when the module is made with the system, the way Azahar makes its DSP: the frames are
+    // then on a grid that starts at the clock's first reading (its first tick one frame after it), which in
+    // the deterministic mode is the reference's starting tick, not a multiple of the frame.
+    void Start(ServiceContext& context, bool at_boot = false);
 
     audio::DspModel& Model() { return *model_; }
     ServiceContext& Context() { return *context_; }

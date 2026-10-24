@@ -18,11 +18,49 @@
 
 #include <algorithm>
 #include <bit>
+#include <cstdio>
+#include <cstdlib>
 
+#include "deterministic.h"
 #include "mh4n/assert.h"
 #include "mh4n/log.h"
 
 namespace mh4n {
+
+namespace {
+
+// A development aid of the deterministic mode: MH4N_TRACE_EVENTS=FILE writes one line for every timer event
+// that runs, `tick=<ticks since the clock's start> core=<core> late=<ticks>`, the way the reference runner's
+// --trace-timing does (without the event's name), so that the two timelines can be laid side by side; and a
+// `stretch` line when a thread starts to run (its core, the slice it was given, both cores' clocks) and an `ended`
+// line when it stops. Nothing but a pointer test when the variable is not set.
+struct EventTrace {
+    std::FILE* file = nullptr;
+    EventTrace() {
+        if (const char* path = std::getenv("MH4N_TRACE_EVENTS"); path != nullptr && *path != 0) {
+            file = std::fopen(path, "w");
+        }
+    }
+    ~EventTrace() {
+        if (file != nullptr) {
+            std::fclose(file);
+        }
+    }
+};
+
+EventTrace& Trace() {
+    static EventTrace trace;
+    return trace;
+}
+
+constexpr int kCoreOfIdShift = 62;
+
+// The core an event id belongs to (the lockstep scheduler puts it in the id's top bits).
+int CoreOfId(u64 id) {
+    return static_cast<int>((id >> kCoreOfIdShift) & 1);
+}
+
+}  // namespace
 
 struct GuestScheduler::SchedThread {
     struct Category {
@@ -85,6 +123,14 @@ void GuestScheduler::Shutdown() {
     }
     timers_.clear();
     timer_ticks_.clear();
+    if (LockstepState* const ls = kernel_detail::LockstepOf(time_)) {
+        for (int c = 0; c < 2; ++c) {
+            ls->events[c].clear();
+            ls->pending[c].clear();
+        }
+        ls->fifo_of.clear();
+        ls->in_stretch = false;
+    }
     graveyard_.clear();
     threads_.clear();
     acct_ = nullptr;
@@ -237,7 +283,248 @@ void GuestScheduler::ChooseCore(s64 now_ns) {
     slice_active_ = true;
 }
 
+// The deterministic mode's scheduler: Azahar's System::RunLoop (core.cpp), tick for tick. See LockstepState
+// (deterministic.h) for the shape of it; the comments below say which part of RunLoop each block is.
+//
+// Dispatch is called when a stretch (what one core runs in a row: ExecuteCore of RunLoop) has ended, by the
+// fiber that ran it (a block that ran the budget out, or a system call that asked for a reschedule), and by
+// the host loop when no thread is running. It goes on with RunLoop where it left off, running what is due, and
+// returns the thread whose stretch starts next (its budget is set), or nullptr when only idle time has gone
+// by (the host loop gets a turn) or nothing can ever happen.
 Thread* GuestScheduler::Dispatch() {
+    if (LockstepState* const lockstep = kernel_detail::LockstepOf(time_)) {
+        LockstepState& ls = *lockstep;
+        VirtualTimeSource& vt = static_cast<VirtualTimeSource&>(time_);
+        constexpr u64 kMinDelay = 100;  // RunLoop does not sync delays below this (jit overshoots a few ticks)
+
+        // What a service posted to the scheduler thread (the GPU's interrupts reach the GSP this way) is done
+        // here and now, on the clock of the core that posted it: Azahar does it inside the call that caused it,
+        // and the thread that was woken must be on its core's ready queue when the stretch is ended.
+        ProcessPending(/*until_quiet=*/true);
+
+        // KernelSystem's ThreadManager::Reschedule of core `c`: the next thread to run on it.
+        const auto select = [&](int c) {
+            vt.SetCore(c);
+            active_ = c;
+            Core& core = cores_[c];
+            Normalize(core);
+            Thread* const previous = core.current;
+            Thread* const next = PopNextReady(core);
+            if (next != core.current) {
+                if (previous != nullptr && core.current == previous) {
+                    previous->status = ThreadStatus::Ready;
+                    previous->last_running_ticks = clock_.Now();
+                    Enqueue(*previous, /*front=*/true);
+                    ++counters_.preemptions;
+                }
+                if (next != nullptr) {
+                    next->status = ThreadStatus::Running;
+                }
+                core.current = next;
+            }
+        };
+        // Timing::Timer::Advance of core `c`, after the events that came from the other core entered its queue
+        // (MoveEvents): what is due on its clock runs, in order, and what those events schedule for now too.
+        const auto advance = [&](int c) {
+            vt.SetCore(c);
+            active_ = c;
+            for (const LockstepState::Pending& pending : ls.pending[c]) {
+                const u64 fifo = ls.next_fifo[c]++;
+                ls.events[c].emplace(pending.tick, fifo, pending.id);
+                ls.fifo_of[pending.id] = fifo;
+            }
+            ls.pending[c].clear();
+            in_pending_ = true;
+            for (;;) {
+                auto& queue = ls.events[c];
+                const u64 now = vt.CoreTicks(c);
+                if (queue.empty() || std::get<0>(*queue.begin()) > now) {
+                    break;
+                }
+                const auto [tick, fifo, id] = *queue.begin();
+                queue.erase(queue.begin());
+                ls.fifo_of.erase(id);
+                auto node = timers_.extract({tick, id});
+                timer_ticks_.erase(id);
+                if (node.empty()) {
+                    continue;
+                }
+                if (std::FILE* trace = Trace().file) {
+                    std::fprintf(trace, "tick=%llu core=%d late=%lld\n",
+                                 static_cast<unsigned long long>(now - kDeterministicStartTicks), c,
+                                 static_cast<long long>(now - tick));
+                }
+                node.mapped()();
+            }
+            in_pending_ = false;
+            ProcessPending(/*until_quiet=*/true);  // what the events posted
+        };
+        // Timer::GetMaxSliceLength: the time to the core's next event, or the longest slice.
+        const auto until_event = [&](int c) -> u64 {
+            const auto& queue = ls.events[c];
+            if (queue.empty()) {
+                return kDeterministicSliceTicks;
+            }
+            const u64 due = std::get<0>(*queue.begin());
+            const u64 now = vt.CoreTicks(c);
+            return due > now ? due - now : 0;
+        };
+        // Timer::SetNextSlice(limit): the stretch is at most `limit` long, and ends at the core's next event.
+        const auto slice_of = [&](int c, u64 limit) -> u64 {
+            const auto& queue = ls.events[c];
+            if (queue.empty()) {
+                return limit;
+            }
+            const u64 due = std::get<0>(*queue.begin());
+            const u64 now = vt.CoreTicks(c);
+            return std::min(limit, due > now ? due - now : u64{0});
+        };
+        // The core runs `thread` for a stretch of `slice` ticks (ExecuteCore), or, with no thread, is idle for it.
+        // Returns the thread to enter, nullptr when it was idle.
+        const auto begin_stretch = [&](int c, u64 slice, LockstepState::Stage after) -> Thread* {
+            vt.SetCore(c);
+            active_ = c;
+            Thread* const thread = cores_[c].current;
+            const u64 start = vt.CoreTicks(c);
+            if (thread == nullptr) {
+                // Idle(): the slice is spent, then PrepareReschedule() and Reschedule().
+                vt.AdvanceCoreTicks(c, slice);
+                if (after == LockstepState::Stage::Core1) {
+                    ls.max_slice = vt.CoreTicks(c) - start;
+                }
+                select(c);
+                reschedule_pending_ = false;
+                ls.system_pending = false;
+                ls.stage = after;
+                return nullptr;
+            }
+            if (std::FILE* trace = Trace().file) {
+                std::fprintf(trace, "stretch core=%d thread=%u start=%llu slice=%llu t0=%llu t1=%llu\n", c,
+                             thread->thread_id, static_cast<unsigned long long>(start - kDeterministicStartTicks),
+                             static_cast<unsigned long long>(slice),
+                             static_cast<unsigned long long>(vt.CoreTicks(0) - kDeterministicStartTicks),
+                             static_cast<unsigned long long>(vt.CoreTicks(1) - kDeterministicStartTicks));
+            }
+            ls.in_stretch = true;
+            ls.stretch_core = c;
+            ls.stretch_start = start;
+            ls.stretch_end = start + slice;
+            ls.after_stretch = after;
+            ls.ran_thread = true;
+            guest_running_ = true;
+            reschedule_pending_ = false;  // ARM_Recomp::Execute: `reschedule = false`
+            SchedThread& sd = Sd(*thread);
+            MH4N_ASSERT(sd.guest != nullptr, "thread {} is ready but has no fiber", thread->thread_id);
+            kernel_detail::BeginStretch(*sd.guest, static_cast<s64>(slice));
+            return thread;
+        };
+
+        // The stretch that has just ended.
+        if (ls.in_stretch) {
+            ls.in_stretch = false;
+            guest_running_ = false;
+            const int c = ls.stretch_core;
+            vt.SetCore(c);
+            active_ = c;
+            if (std::FILE* trace = Trace().file) {
+                std::fprintf(trace, "ended core=%d ran=%llu end=%llu\n", c,
+                             static_cast<unsigned long long>(vt.CoreTicks(c) - ls.stretch_start),
+                             static_cast<unsigned long long>(vt.CoreTicks(c) - kDeterministicStartTicks));
+            }
+            if (ls.after_stretch == LockstepState::Stage::Core1) {
+                ls.max_slice = vt.CoreTicks(c) - ls.stretch_start;  // core 1 runs as long as core 0 did
+            }
+            // System::Reschedule(): when something asked for it (or the thread cannot go on).
+            const Core& core = cores_[c];
+            if (ls.system_pending || core.current == nullptr ||
+                core.current->status != ThreadStatus::Running) {
+                select(c);
+            }
+            ls.system_pending = false;
+            reschedule_pending_ = false;
+            ls.stage = ls.after_stretch;
+            if (ls.stage == LockstepState::Stage::IterStart) {
+                ls.ran_thread = false;  // this RunLoop call ran a thread
+            }
+        }
+
+        for (;;) {
+            switch (ls.stage) {
+            case LockstepState::Stage::IterStart: {
+                // The top of RunLoop. Nothing at all to do, ever: the host waits for work from other threads.
+                Normalize(cores_[0]);
+                Normalize(cores_[1]);
+                if (!Runnable(0) && !Runnable(1) && ls.events[0].empty() && ls.events[1].empty() &&
+                    ls.pending[0].empty() && ls.pending[1].empty()) {
+                    ls.progressed = false;
+                    return nullptr;
+                }
+                ls.slice_cap = kernel_detail::DrawSliceTicks();
+                ++ls.iterations;
+                // The cores that are behind the later clock catch up first.
+                const u64 global = vt.GlobalTicks();
+                u64 max_delay = 0;
+                int catch_up = -1;
+                for (int c = 0; c < 2; ++c) {
+                    const u64 now = vt.CoreTicks(c);
+                    if (now >= global) {
+                        continue;
+                    }
+                    const u64 delay = global - now;
+                    advance(c);
+                    select(c);
+                    ls.delayed_slice[c] = slice_of(c, delay);
+                    if (max_delay < delay) {
+                        max_delay = delay;
+                        catch_up = c;
+                    }
+                }
+                if (max_delay > kMinDelay) {
+                    if (begin_stretch(catch_up, ls.delayed_slice[catch_up], LockstepState::Stage::IterStart) != nullptr) {
+                        return cores_[catch_up].current;
+                    }
+                    // idle for the difference: RunLoop returns; no thread ran in this call
+                    ls.progressed = true;
+                    return nullptr;
+                }
+                ls.stage = LockstepState::Stage::Sync;
+                continue;
+            }
+            case LockstepState::Stage::Sync: {
+                // The cores are at the same time: run them one after the other with the shortest of the slices.
+                ls.max_slice = ls.slice_cap;
+                for (int c = 0; c < 2; ++c) {
+                    advance(c);
+                    select(c);
+                    ls.max_slice = std::min(ls.max_slice, until_event(c));
+                }
+                ls.stage = LockstepState::Stage::Core0;
+                continue;
+            }
+            case LockstepState::Stage::Core0:
+            case LockstepState::Stage::Core1: {
+                const bool first = ls.stage == LockstepState::Stage::Core0;
+                const int c = first ? 0 : 1;
+                const LockstepState::Stage after =
+                    first ? LockstepState::Stage::Core1 : LockstepState::Stage::IterStart;
+                vt.SetCore(c);
+                if (Thread* thread = begin_stretch(c, slice_of(c, ls.max_slice), after)) {
+                    return thread;
+                }
+                if (!first) {
+                    // The end of a RunLoop call with only idle time in it: the host loop gets a turn.
+                    if (!ls.ran_thread) {
+                        ls.progressed = true;
+                        return nullptr;
+                    }
+                    ls.ran_thread = false;
+                }
+                continue;
+            }
+            }
+        }
+    }
+
     ChooseCore(time_.NowNs());
     Core& core = cores_[active_];
     Normalize(core);
@@ -299,10 +586,20 @@ void GuestScheduler::OnPriorityChanged(Thread& thread, u32) {
 
 void GuestScheduler::PrepareReschedule() {
     reschedule_pending_ = true;
+    if (LockstepState* const ls = kernel_detail::LockstepOf(time_)) {
+        ls->system_pending = true;
+    }
 }
 
 void GuestScheduler::NeedReschedule(int core) {
     reschedule_pending_ = true;
+    if (LockstepState* const ls = kernel_detail::LockstepOf(time_)) {
+        // Azahar's PrepareReschedule: the running stretch ends at the end of the system call that did this (the
+        // flag above) and the core is rescheduled; nothing interrupts a thread at another point, and no other
+        // core's thread is looked at before its own core's turn.
+        ls->system_pending = true;
+        return;
+    }
     if (CodeHost::CurrentThread() == nullptr || in_pending_) {
         return;  // the host loop, or the Preempt that runs this, dispatches next
     }
@@ -352,7 +649,33 @@ std::size_t GuestScheduler::ReadyCount(int core) const {
 // ---- the timer queue and host work -------------------------------------------------------------------
 
 u64 GuestScheduler::ScheduleAt(u64 tick, std::function<void()> fn) {
-    const u64 id = next_timer_id_++;
+    u64 id = next_timer_id_++;
+    if (LockstepState* const ls = kernel_detail::LockstepOf(time_)) {
+        // Azahar's Timing::ScheduleEvent: the event belongs to the core that is running, or to the one the
+        // caller named (then `tick` is on that core's clock). Its own core queues it at once; the other one gets
+        // it in its ts_queue, which its next Advance() takes in.
+        VirtualTimeSource& vt = static_cast<VirtualTimeSource&>(time_);
+        const int core = ls->schedule_core >= 0 ? ls->schedule_core : vt.Core();
+        const bool via_ts_queue = ls->schedule_pending;
+        ls->schedule_core = -1;
+        ls->schedule_pending = false;
+        id |= static_cast<u64>(core) << kCoreOfIdShift;
+        timers_.emplace(std::make_pair(tick, id), std::move(fn));
+        timer_ticks_.emplace(id, tick);
+        if (core != vt.Core() || via_ts_queue) {
+            ls->pending[core].push_back({tick, id});
+        } else {
+            const u64 fifo = ls->next_fifo[core]++;
+            ls->events[core].emplace(tick, fifo, id);
+            ls->fifo_of[id] = fifo;
+            if (ls->in_stretch && core == ls->stretch_core) {
+                // Timer::ForceExceptionCheck: an event due inside the running stretch ends it there (at once if
+                // it is due now or was due already).
+                ls->stretch_end = std::min(ls->stretch_end, std::max(tick, vt.CoreTicks(core)));
+            }
+        }
+        return id;
+    }
     const auto front_before = timers_.empty() ? std::pair<u64, u64>{~u64{0}, 0} : timers_.begin()->first;
     timers_.emplace(std::make_pair(tick, id), std::move(fn));
     timer_ticks_.emplace(id, tick);
@@ -369,6 +692,19 @@ bool GuestScheduler::Cancel(u64 id) {
     const auto it = timer_ticks_.find(id);
     if (it == timer_ticks_.end()) {
         return false;
+    }
+    if (LockstepState* const ls = kernel_detail::LockstepOf(time_)) {
+        const int core = CoreOfId(id);
+        const u64 tick = it->second;
+        if (const auto fifo = ls->fifo_of.find(id); fifo != ls->fifo_of.end()) {
+            ls->events[core].erase({tick, fifo->second, id});
+            ls->fifo_of.erase(fifo);
+        }
+        // (An event still on its way to the other core's queue is not taken back, as in Azahar's
+        // UnscheduleEvent, which only looks at the queues: it enters its queue and runs as nothing.)
+        timers_.erase({tick, id});
+        timer_ticks_.erase(it);
+        return true;
     }
     const bool was_front = timers_.begin()->first == std::make_pair(it->second, id);
     timers_.erase({it->second, id});
@@ -408,6 +744,9 @@ void GuestScheduler::RequestStop() {
 }
 
 bool GuestScheduler::RunDueTimers() {
+    if (kernel_detail::LockstepOf(time_) != nullptr) {
+        return false;  // the events run in Dispatch, each on its own core's clock
+    }
     const u64 now = clock_.Now();
     bool ran = false;
     while (!timers_.empty() && timers_.begin()->first.first <= now) {
@@ -442,7 +781,8 @@ bool GuestScheduler::ProcessPending(bool until_quiet) {
         }
         std::lock_guard lock(mutex_);
         const bool more = !posted_.empty() ||
-                          (!timers_.empty() && timers_.begin()->first.first <= clock_.Now());
+                          (!timers_.empty() && timers_.begin()->first.first <= clock_.Now() &&
+                           kernel_detail::LockstepOf(time_) == nullptr);
         if (!more) {
             break;
         }
@@ -482,8 +822,8 @@ void GuestScheduler::SetSelectionFilter(int core, SelectionFilter filter) {
 // The asynchronous source is asked for the earliest thing that needs a preemption check while a
 // guest runs: the next timer, and the end of the slice if the other core has work or hooks wait.
 void GuestScheduler::UpdateArm() {
-    if (preemption_ == nullptr) {
-        return;
+    if (preemption_ == nullptr || kernel_detail::LockstepOf(time_) != nullptr) {
+        return;  // (the lockstep scheduler's stretches end on their own budget: Dispatch)
     }
     std::optional<s64> deadline;
     if (!timers_.empty()) {
@@ -633,7 +973,7 @@ void GuestScheduler::Terminate(const std::shared_ptr<Thread>& thread) {
         graveyard_.push_back(thread);
     }
     thread->Stop();
-    reschedule_pending_ = true;
+    PrepareReschedule();
 }
 
 void GuestScheduler::Reap() {
@@ -699,6 +1039,10 @@ void GuestScheduler::Preempt() {
         AccountTo(nullptr);
         self->Yield();
         Reap();
+        if (kernel_detail::LockstepOf(time_) != nullptr) {
+            // The stretch this thread was in ended in Run's next Dispatch, which gave it a new one.
+            return;
+        }
     }
     SwitchFromSelf(self);
 }
@@ -824,6 +1168,11 @@ RunStatus GuestScheduler::Run(const std::function<bool()>& until, bool return_wh
         }
         Thread* const next = Dispatch();
         if (next == nullptr) {
+            if (LockstepState* const ls = kernel_detail::LockstepOf(time_); ls != nullptr && ls->progressed) {
+                // Idle time went by inside Dispatch (it keeps the clocks itself): back to the top.
+                ls->progressed = false;
+                continue;
+            }
             if (return_when_idle) {
                 std::lock_guard lock(mutex_);
                 if (posted_.empty() && timers_.empty()) {

@@ -73,9 +73,10 @@ u64 VirtualTimeSource::TicksAtOrAfterNs(s64 ns) {
     return NsToTicks(static_cast<u64>(ns) - 1) + 1;
 }
 
-void VirtualTimeSource::AdvanceToTick(u64 tick) {
-    u64 now = ticks_.load(std::memory_order_acquire);
-    while (now < tick && !ticks_.compare_exchange_weak(now, tick, std::memory_order_acq_rel)) {
+void VirtualTimeSource::AdvanceCoreToTick(int core, u64 tick) {
+    std::atomic<u64>& clock = ticks_[core];
+    u64 now = clock.load(std::memory_order_acquire);
+    while (now < tick && !clock.compare_exchange_weak(now, tick, std::memory_order_acq_rel)) {
     }
 }
 
@@ -97,6 +98,13 @@ bool VirtualTimeSource::WaitUntil(std::condition_variable& cv, std::unique_lock<
             }
         }
         return true;
+    }
+    if (lockstep_.enabled) {
+        // Every core is idle: both clocks go there.
+        const u64 tick = TicksAtOrAfterNs(*deadline_ns);
+        AdvanceCoreToTick(0, tick);
+        AdvanceCoreToTick(1, tick);
+        return pred();
     }
     AdvanceToNs(*deadline_ns);
     return pred();
@@ -160,6 +168,12 @@ u64 SplitMix64(u64& state) {
     return z ^ (z >> 31);
 }
 
+// An event that does nothing and comes again one period after the tick it was due at (Azahar schedules
+// `period - cycles_late` from the tick it ran at: the same).
+void ScheduleRecurring(GuestScheduler& scheduler, u64 due, u64 period) {
+    scheduler.ScheduleAt(due, [&scheduler, due, period] { ScheduleRecurring(scheduler, due + period, period); });
+}
+
 }  // namespace
 
 CycleDriver::CycleDriver(CodeHost& host, GuestScheduler& scheduler, SvcTable& svc, VirtualTimeSource& time,
@@ -191,6 +205,33 @@ void CycleDriver::Install() {
     host_.SetSvcHandler([this](RCtx& ctx, u32 imm, u32 next_pc) { OnSvc(ctx, imm, next_pc); });
     g_active_driver.store(this);
     scheduler_.SetSliceUs(options_.slice_us);
+    // The scheduler follows Azahar's RunLoop from now on (scheduler.cpp, Dispatch).
+    LockstepState& ls = time_.Lockstep();
+    ls.enabled = true;
+    ls.slice_cap = ls.max_slice = DrawSliceTicks();
+    // Two events of the reference's timeline that nothing the game can see depends on, but each of which ends
+    // a slice: the shared page's date update (at the start, then hourly) and the cheat engine's run (every
+    // 50,000,000 ticks, Azahar's `run_interval_ticks`, which is there whether or not a cheat is).
+    const u64 start = time_.CoreTicks(0);
+    ScheduleRecurring(scheduler_, start, 268111856ull * 3600);
+    ScheduleRecurring(scheduler_, start + 50000000, 50000000);
+}
+
+u64 CycleDriver::DrawSliceTicks() {
+    if (options_.seeded) {
+        // The last draw (DrawSlice, one at each entry into the host, as before the lockstep scheduler): whole
+        // microseconds from half to one and a half times the default.
+        return std::max<u64>(NsToTicks(static_cast<u64>(last_slice_us_) * 1000), 1);
+    }
+    // The default slice is Azahar's 1,145,774 cycles, which is not a whole number of microseconds.
+    return options_.slice_us == kDeterministicSliceUs
+               ? kDeterministicSliceTicks
+               : std::max<u64>(NsToTicks(static_cast<u64>(options_.slice_us) * 1000), 1);
+}
+
+void CycleDriver::BeginStretch(GuestThread& thread, s64 budget) {
+    thread.Context().budget = budget;
+    given_[thread.Id()] = budget;
 }
 
 u32 CycleDriver::KeyOf(const RCtx& ctx) {
@@ -238,7 +279,15 @@ s64 CycleDriver::NextBudget() const {
 }
 
 void CycleDriver::Refill(RCtx& ctx) {
-    const s64 budget = NextBudget();
+    const LockstepState& ls = time_.Lockstep();
+    s64 budget;
+    if (ls.enabled && ls.in_stretch) {
+        // What is left of the stretch (Azahar's downcount after the cost of the call was added to it): it can be
+        // zero or below, and the next block then yields at once, as there.
+        budget = static_cast<s64>(ls.stretch_end) - static_cast<s64>(time_.CoreTicks(ls.stretch_core));
+    } else {
+        budget = NextBudget();
+    }
     ctx.budget = budget;
     given_[KeyOf(ctx)] = budget;
 }
@@ -264,6 +313,51 @@ void ChargeCycles(u64 ticks) {
     if (CycleDriver* driver = g_active_driver.load(std::memory_order_acquire)) {
         driver->Charge(ticks);
     }
+}
+
+u64 TraceTicks(u64 running_core_ticks) {
+    if (CycleDriver* driver = g_active_driver.load(std::memory_order_acquire)) {
+        return driver->GlobalTicks();
+    }
+    return running_core_ticks;
+}
+
+u64 CoreTicksOr(int core, u64 fallback) {
+    if (CycleDriver* driver = g_active_driver.load(std::memory_order_acquire)) {
+        return driver->Time().CoreTicks(core);
+    }
+    return fallback;
+}
+
+void ScheduleOnCore(int core) {
+    if (CycleDriver* driver = g_active_driver.load(std::memory_order_acquire)) {
+        driver->Time().Lockstep().schedule_core = core;
+    }
+}
+
+void BeginStretch(GuestThread& thread, s64 budget) {
+    if (CycleDriver* driver = g_active_driver.load(std::memory_order_acquire)) {
+        driver->BeginStretch(thread, budget);
+    }
+}
+
+u64 DrawSliceTicks() {
+    if (CycleDriver* driver = g_active_driver.load(std::memory_order_acquire)) {
+        return driver->DrawSliceTicks();
+    }
+    return kDeterministicSliceTicks;
+}
+
+bool ScheduleThreadSafe(int core, std::function<void()> fn) {
+    CycleDriver* const driver = g_active_driver.load(std::memory_order_acquire);
+    if (driver == nullptr) {
+        return false;
+    }
+    LockstepState& ls = driver->Time().Lockstep();
+    ls.schedule_core = core;
+    ls.schedule_pending = true;
+    driver->Scheduler().ScheduleAt(driver->Time().CoreTicks(core) + 2 * kDeterministicSliceTicks, std::move(fn));
+    return true;
 }
 
 }  // namespace kernel_detail
