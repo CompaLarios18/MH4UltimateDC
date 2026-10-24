@@ -2056,6 +2056,61 @@ def test_images_result_fails_a_listed_frame_of_another_size(tmp_path):
     assert golden.images_result(ref, cand, [20])[2] == "1 of 2 screenshots fail"
 
 
+def _grey_ppm(size: int, edits: dict | None = None, base: int = 10) -> bytes:
+    body = bytearray()
+    for y in range(size):
+        for x in range(size):
+            v = (edits or {}).get((x, y), base)
+            body += bytes((v, v, v))
+    return f"P6\n{size} {size}\n255\n".encode() + bytes(body)
+
+
+def _gate(tmp_path: Path, edits: dict, size: int) -> tuple[str, str, str]:
+    """images_result at one listed frame, the candidate's top screen differing from the recording's by `edits`."""
+    ref, cand = tmp_path / "ref", tmp_path / "cand"
+    for folder, changed in ((ref, None), (cand, edits)):
+        (folder / "shots").mkdir(parents=True)
+        for screen in ("top", "bottom"):
+            (folder / "shots" / f"f0000020_{screen}.ppm").write_bytes(
+                _grey_ppm(size, changed if screen == "top" else None))
+    return golden.images_result(ref, cand, [20])
+
+
+def test_the_gate_judges_with_the_roadmap_thresholds_not_the_calibration_margin(tmp_path):
+    # The calibration lists the frames where jit and recomp pass with 2 dB and 1/255 to spare (D58); the gate
+    # itself still judges a listed frame with ROADMAP section 6's 40 dB and 8/255.
+    import imgdiff
+    ref32 = imgdiff.parse_ppm(_grey_ppm(32))
+    ref64 = imgdiff.parse_ppm(_grey_ppm(64))
+
+    def noisy(k: int) -> dict:                  # the first k pixels of a 32x32 screen off by 3 on every channel
+        return {(i % 32, i // 32): 13 for i in range(k)}
+
+    def block(extra: int, diff: int) -> dict:   # the 16x16 block at 0,0 off by `diff`, `extra` of its pixels one more
+        edits = {(x, y): 10 + diff for x in range(16) for y in range(16)}
+        for i in range(extra):
+            edits[(i % 16, i // 16)] = 10 + diff + 1
+        return edits
+
+    # premises of the synthetic screens
+    low = imgdiff.compare(ref32, imgdiff.parse_ppm(_grey_ppm(32, noisy(588))))
+    under = imgdiff.compare(ref32, imgdiff.parse_ppm(_grey_ppm(32, noisy(757))))
+    assert 40.0 < low.psnr < 42.0 and low.worst_block < 8.0           # between the threshold and the margin
+    assert under.psnr < 40.0 and under.worst_block < 8.0              # under the threshold
+    near = imgdiff.compare(ref32, imgdiff.parse_ppm(_grey_ppm(32, noisy(705))))
+    assert 40.0 < near.psnr < 40.5 and near.worst_block < 8.0         # just over the threshold
+    mid = imgdiff.compare(ref64, imgdiff.parse_ppm(_grey_ppm(64, block(128, 7))))
+    over = imgdiff.compare(ref64, imgdiff.parse_ppm(_grey_ppm(64, block(128, 8))))
+    assert mid.psnr > 42.0 and 7.0 < mid.worst_block <= 8.0           # a block between 7/255 and 8/255
+    assert over.psnr > 40.0 and over.worst_block > 8.0                # a block over 8/255
+
+    assert _gate(tmp_path / "a", noisy(588), 32)[0] == "pass"         # about 41 dB: judged by 40 dB, not 42
+    assert _gate(tmp_path / "e", noisy(705), 32)[0] == "pass"         # about 40.2 dB
+    assert _gate(tmp_path / "b", noisy(757), 32)[0] == "fail"         # about 39.9 dB
+    assert _gate(tmp_path / "c", block(128, 7), 64)[0] == "pass"      # a block of 7.5/255: judged by 8, not 7
+    assert _gate(tmp_path / "d", block(128, 8), 64)[0] == "fail"      # a block of 8.5/255
+
+
 def test_the_same_and_native_profiles_do_not_take_image_frames(env, capsys, monkeypatch):
     assert env.record() == 0
     capsys.readouterr()
