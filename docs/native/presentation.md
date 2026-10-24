@@ -7,13 +7,13 @@ tested by `native/tests/present_contract_test.cpp`. It has no implementation: th
 (N2b-07, N2b-13) and the consumers (N2b-05, N2b-06, N2b-14) are built against it in parallel.
 
 The header includes only the standard library and `mh4n/` headers, no Vulkan and no backend
-header. The backend's objects (N2-21) appear as `std::shared_ptr<const void>`, `std::shared_ptr<void>`
+header. The backend's objects (N2-26, N2-27) appear as `std::shared_ptr<const void>`, `std::shared_ptr<void>`
 or `void*`; the producer and the consumer both link the backend and cast them back.
 
 ## Rule 4: one Vulkan device per process
 
 ([`wp/N2b.md`](wp/N2b.md) rule 4, proposed D56.) The compositor (N2b-05) will sample the renderer's images
-directly, so both must use the same device. The process holds the N2-21 backend object in a slot,
+directly, so both must use the same device. The process holds the N2-26 backend object in a slot,
 `present::SetSharedBackend` / `present::SharedBackend`:
 
 | Who | Does |
@@ -42,7 +42,7 @@ set and the sizes agree):
 
 - **A backend image**: `image` (kept alive for as long as the frame, or any copy, is), the
   `region` of it that holds the screen, `scale` (image pixels per displayed pixel, the renderer's
-  `--scale`), `orientation`, and `timeline_value`, the value of N2-21's timeline for the
+  `--scale`), `orientation`, and `timeline_value`, the value of N2-26's timeline for the
   submission that drew it. The compositor's submission will wait on that value (0: nothing to wait for).
 - **CPU pixels**: `pixels`, RGBA8, top row first, upright, 1x.
 

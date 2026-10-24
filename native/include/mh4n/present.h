@@ -7,7 +7,7 @@
 // packages are written against this header and do not exist yet.
 //
 // This header is self-contained on purpose: it includes only the standard library and mh4n/
-// headers, and no Vulkan or backend header. The backend's objects (N2-21) appear as opaque
+// headers, and no Vulkan or backend header. The backend's objects (N2-26, N2-27) appear as opaque
 // pointers; the producer and the consumer both link the backend and cast them back.
 //
 // Threads: a GPU calls ScreenSink::Publish from the thread that handles the VBlank (the game
@@ -89,7 +89,7 @@ struct ImageRegion {
 //  - a backend image: `image` is the backend's image object (kept alive for as long as this
 //    value, or any copy of it, is), `region` the part of it that holds the screen, `scale` the
 //    image pixels per displayed pixel (the renderer's --scale), `orientation` its storage
-//    orientation, and `timeline_value` the value of N2-21's timeline for the submission that
+//    orientation, and `timeline_value` the value of N2-26's timeline for the submission that
 //    drew it: the compositor's submission will wait on it (0: nothing to wait for);
 //  - CPU pixels: `pixels` holds width * height RGBA8 pixels (4 bytes: R, G, B, A), top row
 //    first, upright, at 1x (`scale` 1, `region` the whole of it).
@@ -191,7 +191,7 @@ class UiLayer {
 public:
     virtual ~UiLayer() = default;
     // Called by the compositor (N2b-05) after the screens, on the thread that composes. `recorder` is the
-    // backend's command recorder (N2-21), opaque here; the target is `target_width` x
+    // backend's command recorder (N2-26), opaque here; the target is `target_width` x
     // `target_height` pixels.
     virtual void Record(void* recorder, u32 target_width, u32 target_height) = 0;
 };
@@ -223,7 +223,7 @@ inline BackendSlot& Slot() {
 }
 } // namespace detail
 
-// The N2-21 backend object of the process (the one Vulkan device, N2b rule 4). `mh4u-native` will
+// The N2-26 backend object of the process (the one Vulkan device, N2b rule 4). `mh4u-native` will
 // set it before the GPU is made (N2b-09) and set an empty pointer after the run; the renderer's
 // factory will use it when it is set (N2b-12) and make its own when it is not (the headless runner).
 // Thread-safe. The pointee's real type is the backend's; this header never looks inside it.

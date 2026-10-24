@@ -12,7 +12,7 @@
 // every cached texture as possibly changed, so a game that forgets or mis-sizes a flush cannot
 // leave stale pixels behind for more than one lookup.
 //
-// This is the CPU side. The GPU-side copy of a texture (an image on the backend) is N2-21's and
+// This is the CPU side. The GPU-side copy of a texture (an image on the backend) is N2-27's and
 // N2-15's; they use `generation` to know when to upload again.
 #pragma once
 
