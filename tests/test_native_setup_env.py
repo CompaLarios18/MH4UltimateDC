@@ -123,12 +123,12 @@ def test_tsan_job_builds_with_the_sanitizer_in_every_flag_and_installs_the_runti
 
 
 def test_tsan_suppressions_name_only_the_loader_and_the_software_driver():
-    """The suppressions name the Vulkan loader, lavapipe's driver library and the LLVM library its JIT is, and nothing of
-    plume or of ours. They are race:/mutex: entries: a called_from_lib entry for a library the loader dlcloses (the driver,
+    """The suppressions name the Vulkan loader and lavapipe's driver library, and nothing else (no LLVM library, nothing of
+    plume or of ours). They are race:/mutex: entries: a called_from_lib entry for a library the loader dlcloses (the driver,
     when an instance is destroyed) makes ThreadSanitizer stop the process with "library ... is unloaded"."""
     lines = [ln.strip() for ln in SUPPRESSIONS.read_text(encoding="utf-8").splitlines() if ln.strip() and not ln.lstrip().startswith("#")]
     assert lines, "tsan.supp has no suppression"
-    allowed_libraries = {"libvulkan.so", "libvulkan_lvp.so", "libLLVM.so"}
+    allowed_libraries = {"libvulkan.so", "libvulkan_lvp.so"}
     for line in lines:
         kind, _, pattern = line.partition(":")
         assert kind in ("race", "mutex"), line

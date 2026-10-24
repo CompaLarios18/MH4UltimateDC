@@ -1,25 +1,28 @@
 # ThreadSanitizer suppressions for the `native-tsan` job (N2-29; docs/native/rhi.md, "The ThreadSanitizer job").
 #
 # Used as TSAN_OPTIONS=halt_on_error=1:suppressions=<repo>/tools/native/tsan.supp. The Vulkan loader and the software
-# driver the job runs on (lavapipe, from mesa-vulkan-drivers, with the LLVM library its JIT compiler is) are not built
-# with ThreadSanitizer, so it cannot see the synchronization inside them (their own locks, futexes and thread pool) and
-# could report accesses that are in fact ordered, with stacks that end in the library.
+# driver the job runs on (lavapipe, from mesa-vulkan-drivers) are not built with ThreadSanitizer, so it cannot see the
+# synchronization inside them (their own locks, futexes and thread pool) and could report accesses that are in fact
+# ordered, with stacks that end in the library.
 #
 # On the machine N2-29 was written on (loader 1.3.275, Mesa 25.2.8) these entries never fire: the tests report nothing
-# with an empty file too. They are there for a driver build that differs, and they name only those libraries. Never add
-# a frame of plume (native/third_party/rhi/plume/patched) or of our code here: a report that has one is a race in the
-# code under test (the control D2 of native/tests/rhi_plume_patterns_test.cpp makes one on purpose and is not run by the
-# job), and the fix is the code.
+# with an empty file too. They are there for a driver build that differs, and they name only those two libraries. Never
+# add a frame of plume (native/third_party/rhi/plume/patched) or of our code here: a report that has one is a race in
+# the code under test (the control D2 of native/tests/rhi_plume_patterns_test.cpp makes one on purpose and is not run by
+# the job), and the fix is the code.
 #
-# They are `race:` and `mutex:` entries, not `called_from_lib:`: a called_from_lib entry for any of these libraries made
+# What they cost: a report with a frame in the loader or in lavapipe's driver is hidden, so the job does not catch an
+# unlocked Vulkan call that races inside the driver (a queue used from two threads without its lock, say). The guards
+# for that are the validation layer's synchronization validation, the owner-rule checks and MH4N_RHI_CHECKS.
+#
+# They are `race:` and `mutex:` entries, not `called_from_lib:`: a called_from_lib entry for either library made
 # ThreadSanitizer worse here (it stops the process with "library ... is unloaded" when the loader dlcloses the driver,
-# which every instance destruction does, and with an entry for the loader or the JIT library it reported "unlock of an
-# unlocked mutex" and data races in operator delete in code that is clean without it).
+# which every instance destruction does, and with an entry for the loader it reported "unlock of an unlocked mutex"
+# in code that is clean without it).
 
-# the Vulkan loader, lavapipe's driver library and the LLVM library its JIT compiler is, as a frame of a report
+# the Vulkan loader and lavapipe's driver library, as a frame of a report
 race:libvulkan.so
 race:libvulkan_lvp.so
-race:libLLVM.so
 
 # the loader's own mutexes
 mutex:libvulkan.so

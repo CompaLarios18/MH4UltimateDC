@@ -235,18 +235,19 @@ no report allowed (`rhi-spike.md` 9.4 item 16; 6.9 ran D2 and D3 under it with g
   binaries, `rhi_plume_patterns_test`'s D1, D3 and D3b among them; the control D2 is skipped by default and must not be run there
   (it races on purpose and would fail the job).
 - **Suppressions** (`tools/native/tsan.supp`): `race:` and `mutex:` entries on the file names of the Vulkan loader
-  (`libvulkan.so`), lavapipe's driver library (`libvulkan_lvp.so`) and the LLVM library its JIT compiler is (`libLLVM.so`), for a
-  driver build whose uninstrumented locking ThreadSanitizer cannot see. **They never fire on this machine** (loader 1.3.275, Mesa
-  25.2.8): `rhi_plume_patterns_test` and `rhi_plume_test` report nothing with an empty file too (also with
-  `MESA_SHADER_CACHE_DISABLE=true`, which forces lavapipe's JIT to compile). They are not the `called_from_lib:` entries the
-  spec of N2-29 had: any `called_from_lib` entry made ThreadSanitizer worse, measured with each of the three libraries alone: for
-  the driver it stops the process ("library ... is unloaded") because the loader `dlclose`s the driver whenever an instance is
-  destroyed, and for the loader or the JIT library it reported "unlock of an unlocked mutex" in `vkDestroyDevice` and, with the
-  driver, data races in `operator delete` and a lock-order inversion, in code that is clean without the entry. Never a frame of
-  plume or of ours: a report in plume's code outside D2 stops the work package with `needs-decision` naming it. That the entries
-  do not hide plume's own races is shown by the control: `build/tsan/bin/rhi_plume_patterns_test --test-case=control/D2 --no-skip`
-  with the same options reports `data race` in `plume::VulkanCommandList::barriers` (`plume_vulkan.cpp`, the layout store, as in
-  `rhi-spike.md` 6.9).
+  (`libvulkan.so`) and lavapipe's driver library (`libvulkan_lvp.so`), for a driver build whose uninstrumented locking
+  ThreadSanitizer cannot see. **They never fire on this machine** (loader 1.3.275, Mesa 25.2.8): `rhi_plume_patterns_test` and
+  `rhi_plume_test` report nothing with an empty file too (also with `MESA_SHADER_CACHE_DISABLE=true`, which forces lavapipe's JIT to
+  compile). They are not the `called_from_lib:` entries the spec of N2-29 had: any `called_from_lib` entry made ThreadSanitizer
+  worse, measured with each library alone: for the driver it stops the process ("library ... is unloaded") because the loader
+  `dlclose`s the driver whenever an instance is destroyed, and for the loader it reported "unlock of an unlocked mutex" in
+  `vkDestroyDevice`, in code that is clean without the entry. **What they cost:** a report with a frame in the loader or in
+  lavapipe's driver is hidden, so the job does not catch an unlocked Vulkan call that races inside the driver (a queue used from
+  two threads without its lock, say); the guards for that are the validation layer's synchronization validation, the owner-rule
+  checks and `MH4N_RHI_CHECKS`. Never a frame of plume or of ours: a report in plume's code outside D2 stops the work package with
+  `needs-decision` naming it. That the entries do not hide plume's own races is shown by the control:
+  `build/tsan/bin/rhi_plume_patterns_test --test-case=control/D2 --no-skip` with the same options reports `data race` in
+  `plume::VulkanCommandList::barriers` (`plume_vulkan.cpp`, the layout store, as in `rhi-spike.md` 6.9).
 - **Seen on this machine** (the cloud container: clang 18.1.3, `libclang-rt-18-dev` 1:18.1.3-1ubuntu1, loader 1.3.275, lavapipe from
   Mesa 25.2.8, four cores): the `build/tsan` tree built; `ctest -R "$RE"` matched two tests, `rhi_plume_patterns_test` (23 cases, 3.4 s)
   and `rhi_plume_test`, and both passed with `halt_on_error=1` and the suppressions file, five runs of the first in a row, no report.
