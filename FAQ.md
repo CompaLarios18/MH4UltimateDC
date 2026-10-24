@@ -42,6 +42,9 @@ That's measured emulation speed, not a setting: your PC isn't keeping up with th
 **Do save states work?**
 No. The game's code runs natively, and its call stacks live on your PC's own stacks, which a save state can't capture. Save in the game. Cheats that change data work; cheats that rewrite code don't.
 
+**Pause and fast forward?**
+In the port's app, playing alone: **P** pauses, **Tab** runs the game at 2x (the speed and the keys are in the menu, Esc). In a room they're off, since the others' games run on with yours.
+
 **Steam Deck?**
 There's a Linux build, not tried on a Deck yet. If you try it, open an issue and tell us how it went.
 
@@ -54,7 +57,7 @@ There's a build for Apple silicon (Vulkan through MoltenVK), not tried on a Mac 
 Yes. Rooms are compatible with official Azahar (2125 or later), and players don't need the same frame rate. Everyone needs the v1.3.0 update. Join a Gathering Hall one at a time: official Azahar gives two consoles that join in the same instant the same id, and the game drops one of them.
 
 **Do I need to open ports?**
-Only to host. Either forward UDP port 24872 on your router to your PC, or put everyone in one virtual network (Tailscale, ZeroTier, Radmin VPN), which needs no forwarding. Joining needs nothing. UPnP is planned. Details: [Multiplayer](docs/PLAYING.md#4-multiplayer).
+Only to host for friends over the internet. Either forward UDP port 24872 on your router to your PC, or put everyone in one virtual network (Tailscale, ZeroTier, Radmin VPN), which needs no forwarding. Joining needs nothing, and neither does playing on one network (the same Wi-Fi): the others find the host's room under *On this network*. UPnP is planned. Details: [Multiplayer](docs/PLAYING.md#4-multiplayer).
 
 ## Mods
 

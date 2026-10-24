@@ -35,6 +35,7 @@
 #include "core/hle/kernel/shared_page.h"
 #include "core/hle/service/cfg/cfg.h"
 #include "invite.h"
+#include "lan.h"
 #include "launcher/lobby.h"
 #include "network/network.h"
 #include "network/room.h"
@@ -82,6 +83,9 @@ struct State {
     std::thread job;
     std::thread lookup;  // the host's addresses after a start in a hosted room
     bool job_running = false;
+    // answers searches from this network while this PC hosts a room (started and stopped by the
+    // room jobs, one at a time, and by Shutdown after them)
+    Lan::Responder lan;
     std::vector<std::function<void()>> for_main;  // run by Tick
     std::map<MacAddress, Traffic> traffic;          // local-play packets per sender
     Clock::time_point traffic_logged{};
@@ -244,6 +248,11 @@ void LeaveNow(bool close) {
     const auto room = Network::GetRoom().lock();
     if (close && room && room->GetState() == Network::Room::State::Open) {
         StopAnnounce();
+        S().lan.Stop();
+        {
+            std::scoped_lock lock{S().mutex};
+            S().status.lan_note.clear();
+        }
         room->Destroy();
         LOG_INFO(Network, "closed the room");
     }
@@ -252,6 +261,46 @@ void LeaveNow(bool close) {
 bool Hosting() {
     const auto room = Network::GetRoom().lock();
     return room && room->GetState() == Network::Room::State::Open;
+}
+
+/// Players on this network find the room this PC hosts in their search (lan.h), unless
+/// mh4u-app.ini's lan_discovery is off. `owner`: the host's nickname.
+void AnswerOnLan(const std::string& owner) {
+    auto& s = S();
+    bool wanted;
+    {
+        std::scoped_lock lock{s.mutex};
+        wanted = s.config->lan_discovery;
+        s.status.lan_note.clear();
+    }
+    if (!wanted || s.lan.Running()) {
+        return;
+    }
+    std::string error;
+    const bool ok = s.lan.Start(
+        [owner](Lan::RoomInfo& info) {
+            const auto room = Network::GetRoom().lock();
+            if (!room || room->GetState() != Network::Room::State::Open) {
+                return false;
+            }
+            const auto& about = room->GetRoomInformation();
+            info.name = about.name;
+            info.owner = owner;
+            info.port = about.port;
+            info.players = static_cast<int>(room->GetRoomMemberList().size());
+            info.slots = static_cast<int>(about.member_slots);
+            info.password = room->HasPassword();
+            return true;
+        },
+        error);
+    if (ok) {
+        LOG_INFO(Network, "players on this network find the room in their search (UDP port {})",
+                 Lan::DISCOVERY_PORT);
+    } else {
+        LOG_WARNING(Network, "this network's search: {}", error);
+    }
+    std::scoped_lock lock{s.mutex};
+    s.status.lan_note = ok ? "Players on your network see it under Join a room > On this network." : error;
 }
 
 /// Joins and waits for the room's answer. The console's own MAC address first (the one the
@@ -376,6 +425,7 @@ bool HostNow(const Identity& me, const HostRequest& request, std::string& error,
         room->Destroy();
         return false;
     }
+    AnswerOnLan(me.nickname);
     return true;
 }
 
@@ -982,6 +1032,12 @@ Status GetStatus() {
         }
     }
     return status;
+}
+
+bool InRoom() {
+    auto& s = S();
+    std::scoped_lock lock{s.mutex};
+    return s.status.phase != Phase::Off;
 }
 
 } // namespace App::Multiplayer

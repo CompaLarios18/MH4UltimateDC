@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include <iterator>
 #include <mutex>
+#include <string>
 #include <tuple>
 #include <vector>
 #include <SDL.h>
@@ -23,6 +24,7 @@
 #include "frontend.h"
 #include "hooks.h"
 #include "input.h"
+#include "speed.h"
 #include "ui/fps_counter.h"
 #include "ui/key_guides.h"
 #include "ui/layer.h"
@@ -165,7 +167,7 @@ bool ChooseValue(const char* id, std::string& value, std::vector<std::string> va
 // ── Controls ──
 
 /// The app's settings with a binding that aren't a 3DS button or stick.
-enum class Extra { None, ItemPrev, ItemNext, Stylus, TouchScreen, Guides };
+enum class Extra { None, ItemPrev, ItemNext, Stylus, TouchScreen, Guides, Pause, FastForward };
 
 struct Binding {
     const char* name;
@@ -204,6 +206,8 @@ constexpr Binding BINDINGS[] = {
     {"Mouse on the touch screen (hold)", -1, -1, 0, Extra::Stylus},
     {"Map / touch screen", -1, -1, 0, Extra::TouchScreen},
     {"Show / hide the key guides", -1, -1, 0, Extra::Guides},
+    {"Pause (playing alone)", -1, -1, 0, Extra::Pause},
+    {"Fast forward (playing alone)", -1, -1, 0, Extra::FastForward},
 };
 constexpr int BINDING_COUNT = static_cast<int>(std::size(BINDINGS));
 constexpr int SLOTS = 2;  ///< keys a binding takes in the menu (mh4u-app.ini takes more)
@@ -242,6 +246,10 @@ std::string* SpecOf(Config& config, const Binding& b) {
         return &config.touch_screen_key;
     case Extra::Guides:
         return &config.key_guides_key;
+    case Extra::Pause:
+        return &config.pause_key;
+    case Extra::FastForward:
+        return &config.fast_forward_key;
     default:
         return nullptr;
     }
@@ -466,6 +474,10 @@ void Menu::Closed() {
             case AppSetting::CpuClock:
                 file.cpu_clock = now.cpu_clock;
                 break;
+            case AppSetting::FastForward:
+                file.fast_forward_speed = now.fast_forward_speed;
+                file.fast_forward_hold = now.fast_forward_hold;
+                break;
             case AppSetting::Renderer:
                 file.renderer = now.renderer;
                 break;
@@ -496,6 +508,9 @@ void Menu::Closed() {
                 file.touch_screen_key = now.touch_screen_key;
                 file.key_guides = now.key_guides;
                 file.key_guides_key = now.key_guides_key;
+                file.pause_key = now.pause_key;
+                file.fast_forward_key = now.fast_forward_key;
+                file.fast_forward_hold = now.fast_forward_hold;
                 break;
             }
         }
@@ -555,7 +570,9 @@ void Menu::OnCapturedKey(int code) {
         return c == SDL_SCANCODE_ESCAPE || c == Input::KeyCode(config.fullscreen_key) ||
                c == Input::KeyCode(config.fps_counter_key) ||
                (binding.extra != Extra::TouchScreen && has(config.touch_screen_key)) ||
-               (binding.extra != Extra::Guides && has(config.key_guides_key));
+               (binding.extra != Extra::Guides && has(config.key_guides_key)) ||
+               (binding.extra != Extra::Pause && has(config.pause_key)) ||
+               (binding.extra != Extra::FastForward && has(config.fast_forward_key));
     };
     if (code == SDL_SCANCODE_ESCAPE) {
         // kept as it was
@@ -722,6 +739,24 @@ void Menu::DrawGame() {
         }
         layer.Help("The emulated CPU's speed, in % of a 3DS's (Azahar's CPU Clock Speed). More keeps a high "
                    "frame rate in busy scenes, if your PC can take it; too much makes some games misbehave.");
+        Row("Fast forward");
+        std::string fast = std::to_string(config.fast_forward_speed);
+        if (ChooseValue("##fast_forward", fast, {"150", "200", "300", "400", "0"},
+                        {"1.5x", "2x", "3x", "4x", "As fast as the PC can"})) {
+            config.fast_forward_speed = std::atoi(fast.c_str());
+            Changed(AppSetting::FastForward);
+            Speed::Get().Configure(config.fast_forward_speed, config.fast_forward_hold);
+        }
+        layer.Help("How fast the fast forward key (Controls; Tab as it comes) runs the game while you play "
+                   "alone, not in a room. The pause key (P) stops it where it is.");
+        Row("Fast forward while held");
+        bool hold = config.fast_forward_hold;
+        if (ImGui::Checkbox("##fast_forward_hold", &hold)) {
+            config.fast_forward_hold = hold;
+            Changed(AppSetting::FastForward);
+            Speed::Get().Configure(config.fast_forward_speed, config.fast_forward_hold);
+        }
+        layer.Help("On: fast only while the key is held. Off: pressed once to start, once to stop.");
         Row("Screen refresh rate");
         std::string hz = Game("refresh_rate");
         if (std::atof(hz.c_str()) <= 0.0) {
@@ -1506,13 +1541,17 @@ void Menu::DrawControls() {
         config.stylus_key = defaults.stylus_key;
         config.touch_screen_key = defaults.touch_screen_key;
         config.key_guides_key = defaults.key_guides_key;
+        config.pause_key = defaults.pause_key;
+        config.fast_forward_key = defaults.fast_forward_key;
+        config.fast_forward_hold = defaults.fast_forward_hold;
         capture = -1;
         layer.SetKeyCapture(false);
         ControlsChanged();
     }
     layer.Help("The keys as they come, after Monster Hunter Rise on PC (W A S D, the mouse, F, E, Space, "
                "Shift, ...), and the controller mapped on its own. The mouse settings stay.");
-    ImGui::TextDisabled("The app's own keys: Esc menu, F11 full screen, F3 frame rate.");
+    ImGui::TextDisabled("The app's own keys: Esc menu, F11 full screen, F3 frame rate. Pause and fast forward "
+                        "work while you play alone.");
 }
 
 // ── Multiplayer ──

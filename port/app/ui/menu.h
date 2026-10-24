@@ -35,7 +35,7 @@ public:
     /// while a binding waits for one (Esc keeps the old one, Delete clears it).
     void OnCapturedKey(int code);
 
-    enum class AppSetting { Fullscreen, Screens, Resolution, LinearFilter, Vsync, Renderer, Volume, Output, Controls, FpsCounter, CpuClock };
+    enum class AppSetting { Fullscreen, Screens, Resolution, LinearFilter, Vsync, Renderer, Volume, Output, Controls, FpsCounter, CpuClock, FastForward };
 
     /// The layout editor is up in place of the menu's window: frames over the game for the
     /// quest's map and target camera views, moved and resized with the mouse.

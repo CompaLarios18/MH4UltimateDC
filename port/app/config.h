@@ -21,6 +21,9 @@ struct Config {
     /// Azahar's CPU clock speed, in % of the 3DS's (100): more lets a busy scene keep a high
     /// frame rate, as Emulation > Configure > Debug > CPU Clock Speed does
     int cpu_clock = 100;
+    /// How fast fast_forward_key runs the game, in % of the 3DS's (110-1000; 0: as fast as the PC
+    /// can). Playing alone only (speed.h)
+    int fast_forward_speed = 200;
 
     // [Display]
     std::string renderer = "vulkan";  ///< vulkan, opengl or software
@@ -59,6 +62,11 @@ struct Config {
     std::string touch_screen_key = "F12 | M";  ///< in quests: the map / the whole touch screen
     std::string fullscreen_key = "F11";
     std::string fps_counter_key = "F3";  ///< shows and hides the frame-rate counter
+    /// Playing alone (not in a room): stops the game where it is, and runs it at
+    /// fast_forward_speed (speed.h). A key a settings file already uses elsewhere isn't taken.
+    std::string pause_key = "P";
+    std::string fast_forward_key = "Tab";
+    bool fast_forward_hold = false;  ///< fast only while the key is held (off: press to start and stop)
     /// auto: the keyboard and mouse's way (the mouse turns the camera, the key guides show) while
     /// they were used last, the controller's otherwise (the mouse is the stylus); controller;
     /// keyboard_mouse
@@ -87,6 +95,8 @@ struct Config {
     std::string lobby;                ///< a lobby server (server/lobby): the hosted room is listed
     std::string token;                ///< the token for that lobby
     bool room_public = true;          ///< list the hosted room in the lobby (with lobby and token)
+    /// a hosted room answers searches from this network (lan.h: Join a room > On this network)
+    bool lan_discovery = true;
     /// the last room joined (its invite code, mh4u://HOST:PORT?password=...) or "host" (hosted
     /// on room_port with the settings above), for the menu's Rejoin
     std::string last_room;

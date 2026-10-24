@@ -13,6 +13,7 @@
 #include "common/logging/log.h"
 #include "config.h"
 #include "invite.h"
+#include "lan.h"
 #include "launcher/lobby.h"
 #include "multiplayer.h"
 #include "ui/layer.h"
@@ -45,6 +46,11 @@ struct TabState {
     bool fetched = false;
     std::string fetched_from;
     Launcher::Lobby::List rooms;
+    // the rooms on this network (lan.h)
+    std::future<Lan::Search> lan_search;
+    bool lan_searching = false;
+    bool lan_searched = false;
+    Lan::Search lan_rooms;
     // a listed room with a password: asked for in a popup
     bool ask_password = false;
     std::string ask_host, ask_label, ask_password_text;
@@ -251,6 +257,9 @@ void DrawHostNotes(const MP::Status& st) {
         ImGui::TextDisabled("Over the internet, forward UDP port %d on your router to this PC and allow the app "
                             "in the firewall.%s",
                             st.port, st.lobby_note.empty() ? "" : (" " + st.lobby_note).c_str());
+        if (!st.lan_note.empty()) {
+            ImGui::TextDisabled("On your network: %s", st.lan_note.c_str());
+        }
         ImGui::PopTextWrapPos();
     }
 }
@@ -342,6 +351,15 @@ void DrawRoom(Layer& layer, TabState& tab, const MP::Status& st) {
 
 // ── Join ──
 
+/// A listed or found room with a password: asked for before joining.
+void AskPassword(TabState& tab, const std::string& host, int port, const std::string& label) {
+    tab.ask_password = true;
+    tab.ask_host = host;
+    tab.ask_port = port;
+    tab.ask_label = label;
+    tab.ask_password_text.clear();
+}
+
 void DrawLobby(Layer& layer, TabState& tab, const Config& config) {
     if (config.lobby.empty()) {
         ImGui::PushTextWrapPos(0.0f);
@@ -408,11 +426,7 @@ void DrawLobby(Layer& layer, TabState& tab, const Config& config) {
             ImGui::BeginDisabled(full);
             if (ImGui::SmallButton(full ? "Full" : "Join")) {
                 if (room.password) {
-                    tab.ask_password = true;
-                    tab.ask_host = room.address;
-                    tab.ask_port = room.port;
-                    tab.ask_label = room.name;
-                    tab.ask_password_text.clear();
+                    AskPassword(tab, room.address, room.port, room.name);
                 } else {
                     Join(layer, room.address, room.port, "", room.name);
                 }
@@ -422,6 +436,9 @@ void DrawLobby(Layer& layer, TabState& tab, const Config& config) {
         }
         ImGui::EndTable();
     }
+}
+
+void DrawPasswordPopup(Layer& layer, TabState& tab) {
     if (tab.ask_password) {
         ImGui::OpenPopup("The room's password");
         tab.ask_password = false;
@@ -445,6 +462,87 @@ void DrawLobby(Layer& layer, TabState& tab, const Config& config) {
             ImGui::CloseCurrentPopup();
         }
         ImGui::EndPopup();
+    }
+}
+
+// ── This network's rooms ──
+
+void StartLanSearch(TabState& tab) {
+    if (tab.lan_searching) {
+        return;
+    }
+    tab.lan_searching = true;
+    tab.lan_search = std::async(std::launch::async, [] { return Lan::Find(); });
+}
+
+void DrawLan(Layer& layer, TabState& tab) {
+    if (tab.lan_searching && tab.lan_search.valid() &&
+        tab.lan_search.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+        tab.lan_rooms = tab.lan_search.get();
+        tab.lan_searching = false;
+        tab.lan_searched = true;
+    }
+    if (!tab.lan_searched && !tab.lan_searching) {
+        StartLanSearch(tab);
+    }
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextDisabled("Rooms hosted on your network (the same Wi-Fi or router)");
+    ImGui::SameLine();
+    ImGui::BeginDisabled(tab.lan_searching);
+    if (ImGui::SmallButton(tab.lan_searching ? "Searching..." : "Search again")) {
+        StartLanSearch(tab);
+    }
+    ImGui::EndDisabled();
+    layer.Help("Asks your network for rooms that players there host with this app: no address to type.");
+    if (!tab.lan_searched) {
+        return;
+    }
+    if (!tab.lan_rooms.ok) {
+        ImGui::PushTextWrapPos(0.0f);
+        ImGui::TextColored(WARN, "%s", tab.lan_rooms.error.c_str());
+        ImGui::PopTextWrapPos();
+        return;
+    }
+    if (tab.lan_rooms.rooms.empty()) {
+        ImGui::PushTextWrapPos(0.0f);
+        ImGui::TextDisabled("None found. One of you hosts a room (Host a room), the others search again. A "
+                            "firewall that blocks the app (UDP port 24873) hides the room.");
+        ImGui::PopTextWrapPos();
+        return;
+    }
+    if (ImGui::BeginTable("##lan", 4, ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_RowBg)) {
+        ImGui::TableSetupColumn("Room", ImGuiTableColumnFlags_WidthStretch, 0.40f);
+        ImGui::TableSetupColumn("Host", ImGuiTableColumnFlags_WidthStretch, 0.30f);
+        ImGui::TableSetupColumn("Players", ImGuiTableColumnFlags_WidthStretch, 0.14f);
+        ImGui::TableSetupColumn("##join", ImGuiTableColumnFlags_WidthStretch, 0.16f);
+        int i = 0;
+        for (const auto& room : tab.lan_rooms.rooms) {
+            ImGui::PushID(i++);
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0);
+            ImGui::AlignTextToFramePadding();
+            ImGui::Text("%s%s", room.name.c_str(), room.password ? " (password)" : "");
+            ImGui::TableSetColumnIndex(1);
+            ImGui::AlignTextToFramePadding();
+            ImGui::TextDisabled("%s", room.owner.empty() ? room.address.c_str()
+                                                         : (room.owner + " at " + room.address).c_str());
+            ImGui::TableSetColumnIndex(2);
+            ImGui::AlignTextToFramePadding();
+            ImGui::Text("%d/%d", room.players, room.slots);
+            ImGui::TableSetColumnIndex(3);
+            const bool full = room.slots > 0 && room.players >= room.slots;
+            ImGui::BeginDisabled(full);
+            if (ImGui::SmallButton(full ? "Full" : "Join")) {
+                if (room.password) {
+                    AskPassword(tab, room.address, room.port, room.name);
+                } else {
+                    Join(layer, room.address, room.port, "", room.name);
+                }
+            }
+            ImGui::EndDisabled();
+            ImGui::PopID();
+        }
+        ImGui::EndTable();
     }
 }
 
@@ -519,16 +617,22 @@ void DrawJoin(Layer& layer, TabState& tab, const Config& config, bool busy) {
     ImGui::EndDisabled();
     layer.Help("Joins while the game runs; the next start joins it again.");
     ImGui::Spacing();
+    ImGui::SeparatorText("On this network");
+    DrawLan(layer, tab);
+    ImGui::Spacing();
     ImGui::SeparatorText("Lobby");
     DrawLobby(layer, tab, config);
+    DrawPasswordPopup(layer, tab);
 }
 
 // ── Host ──
 
 void DrawHost(Layer& layer, TabState& tab, const Config& config, bool busy) {
     ImGui::PushTextWrapPos(0.0f);
-    ImGui::TextDisabled("This PC runs the room and plays in it; you get an invite to send. Friends over the "
-                        "internet need the port forwarded on your router to this PC (or one virtual network).");
+    ImGui::TextDisabled("This PC runs the room and plays in it; you get an invite to send. Players on your "
+                        "network (the same Wi-Fi or router) find it in their search, with nothing to set up. "
+                        "Friends over the internet need the port forwarded on your router to this PC (or one "
+                        "virtual network).");
     ImGui::PopTextWrapPos();
     if (BeginForm("##host")) {
         FormRow("Room name");

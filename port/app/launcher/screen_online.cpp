@@ -9,6 +9,7 @@
 #include <SDL.h>
 
 #include "invite.h"
+#include "lan.h"
 #include "launcher/state.h"
 #include "launcher/ui.h"
 
@@ -67,6 +68,94 @@ void Field(State& s, const char* label, const char* hint, std::string& value, bo
     if (ImGui::IsItemDeactivatedAfterEdit()) {
         const std::string v = value;
         s.Change([&](App::Config& c) { save(c, v); });
+    }
+}
+
+/// Join, or ask for the password first.
+void JoinOrAsk(State& s, const std::string& address, const std::string& name, bool password) {
+    if (!password) {
+        JoinRoom(s, address, "", name);
+        return;
+    }
+    Dialog d;
+    d.title = "Join " + name;
+    d.text = "This room has a password.";
+    d.input = true;
+    d.password = true;
+    d.input_hint = "the room's password";
+    d.on_input = [&s, address, name](const std::string& pw) { JoinRoom(s, address, pw, name); };
+    d.buttons = {{"Join", nullptr, true}, {"Cancel", nullptr, false}};
+    s.Show(std::move(d));
+}
+
+/// The rooms players host on this network (lan.h), found with no address typed.
+void DrawLan(State& s) {
+    const float scale = Ui::Scale();
+    Ui::PushFont(0.85f, true);
+    ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(Ui::Color::Dim), "ON THIS NETWORK");
+    Ui::PopFont();
+    ImGui::SameLine();
+    ImGui::BeginDisabled(s.lan_searching);
+    if (ImGui::Button("Search##lan")) {
+        s.SearchLan();
+    }
+    ImGui::EndDisabled();
+    if (s.lan_searching) {
+        ImGui::SameLine();
+        Ui::Spinner();
+    }
+    if (!s.lan_searched && !s.lan_searching) {
+        s.SearchLan();
+    }
+    if (!s.lan_searched) {
+        return;
+    }
+    if (!s.lan_rooms.ok) {
+        Ui::StatusLine(Ui::Status::Error, "No search", s.lan_rooms.error);
+        return;
+    }
+    if (s.lan_rooms.rooms.empty()) {
+        Ui::TextDim("No rooms on your network (the same Wi-Fi or router) right now. One of you hosts a room "
+                    "(Host a room, then Play); the others search again here or in the game (Esc > "
+                    "Multiplayer).");
+        return;
+    }
+    if (ImGui::BeginTable("##lan", 5, ImGuiTableFlags_RowBg | ImGuiTableFlags_PadOuterX)) {
+        ImGui::TableSetupColumn("##lock", ImGuiTableColumnFlags_WidthFixed, ImGui::GetTextLineHeight());
+        ImGui::TableSetupColumn("Room", ImGuiTableColumnFlags_WidthStretch);
+        ImGui::TableSetupColumn("Host", ImGuiTableColumnFlags_WidthFixed, 220.0f * scale);
+        ImGui::TableSetupColumn("Players", ImGuiTableColumnFlags_WidthFixed, 90.0f * scale);
+        ImGui::TableSetupColumn("##join", ImGuiTableColumnFlags_WidthFixed);
+        Ui::TableHeaders({"", "ROOM", "HOST", "PLAYERS", ""});
+        for (std::size_t i = 0; i < s.lan_rooms.rooms.size(); ++i) {
+            const auto& room = s.lan_rooms.rooms[i];
+            ImGui::PushID(static_cast<int>(i));
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            ImGui::AlignTextToFramePadding();
+            if (room.password) {
+                Ui::Lock(Ui::Color::Warn);
+            }
+            ImGui::TableNextColumn();
+            ImGui::AlignTextToFramePadding();
+            ImGui::TextUnformatted(room.name.c_str());
+            ImGui::TableNextColumn();
+            ImGui::AlignTextToFramePadding();
+            Ui::TextDim(room.owner.empty() ? room.address : room.owner + " at " + room.address);
+            ImGui::TableNextColumn();
+            ImGui::AlignTextToFramePadding();
+            const bool full = room.slots > 0 && room.players >= room.slots;
+            ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(full ? Ui::Color::Error : Ui::Color::Text), "%d / %d",
+                               room.players, room.slots);
+            ImGui::TableNextColumn();
+            const std::string address = App::Invite::Address(room.address, room.port);
+            const bool chosen = s.config.join == address && s.config.host == 0;
+            if (chosen ? Ui::AccentButton("Joining") : ImGui::Button("Join")) {
+                JoinOrAsk(s, address, room.name, room.password);
+            }
+            ImGui::PopID();
+        }
+        ImGui::EndTable();
     }
 }
 
@@ -155,22 +244,7 @@ void DrawJoin(State& s) {
                     const std::string address = fmt::format("{}:{}", room.address, room.port);
                     const bool chosen = s.config.join == address && s.config.host == 0;
                     if (chosen ? Ui::AccentButton("Joining") : ImGui::Button("Join")) {
-                        const std::string name = room.name;
-                        if (room.password) {
-                            Dialog d;
-                            d.title = "Join " + room.name;
-                            d.text = "This room has a password.";
-                            d.input = true;
-                            d.password = true;
-                            d.input_hint = "the room's password";
-                            d.on_input = [&s, address, name](const std::string& password) {
-                                JoinRoom(s, address, password, name);
-                            };
-                            d.buttons = {{"Join", nullptr, true}, {"Cancel", nullptr, false}};
-                            s.Show(std::move(d));
-                        } else {
-                            JoinRoom(s, address, "", name);
-                        }
+                        JoinOrAsk(s, address, room.name, room.password);
                     }
                     ImGui::PopID();
                 }
@@ -178,6 +252,8 @@ void DrawJoin(State& s) {
             }
         }
     }
+    ImGui::Spacing();
+    DrawLan(s);
     ImGui::Spacing();
     // a room by its address
     Ui::PushFont(0.85f, true);
@@ -228,7 +304,8 @@ void DrawJoin(State& s) {
 void DrawHost(State& s) {
     auto& f = s.online;
     const float scale = Ui::Scale();
-    Ui::TextDim("Your PC hosts the room and plays in it. The others reach it at your address: forward "
+    Ui::TextDim("Your PC hosts the room and plays in it. Players on your network (the same Wi-Fi or router) "
+                "find it in their search. Over the internet the others reach it at your address: forward "
                 "UDP port 24872 (or the one below) on your router to this PC, or play in one virtual "
                 "network (Tailscale, ZeroTier, Radmin VPN).");
     if (ImGui::BeginTable("##host", 2, ImGuiTableFlags_SizingStretchProp)) {
@@ -344,15 +421,24 @@ void State::FetchRooms() {
     rooms_future = std::async(std::launch::async, [url = config.lobby] { return Lobby::Fetch(url); });
 }
 
+void State::SearchLan() {
+    if (lan_searching) {
+        return;
+    }
+    lan_searching = true;
+    lan_future = std::async(std::launch::async, [] { return App::Lan::Find(); });
+}
+
 void DrawOnline(State& s) {
     if (!s.online.loaded) {
         LoadForm(s);
     }
     ImGui::BeginChild("##online", ImVec2(0, 0), ImGuiChildFlags_NavFlattened);
     Ui::Heading("Online");
-    Ui::TextDim("MH4U's local play, the Gathering Hall, over the internet through a room. The room chosen "
-                "here is entered as the game starts; then go to the Gathering Hall's Local Play. In the game, "
-                "Esc > Multiplayer joins, hosts and leaves rooms too, and has the invite to send friends.");
+    Ui::TextDim("MH4U's local play, the Gathering Hall, over the internet or your own network through a room. "
+                "The room chosen here is entered as the game starts; then go to the Gathering Hall's Local "
+                "Play. In the game, Esc > Multiplayer joins, hosts and leaves rooms too, and has the invite to "
+                "send friends.");
     ImGui::Spacing();
     Ui::BeginCard("##now", ImVec2(0, 0), s.config.host > 0 || !s.config.join.empty());
     ImGui::AlignTextToFramePadding();

@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "config.h"
+#include "lan.h"
 #include "launcher/checks.h"
 #include "launcher/launcher.h"
 #include "launcher/lobby.h"
@@ -252,6 +253,11 @@ struct State {
     Lobby::List rooms;
     bool rooms_fetched = false;
     std::string room_label;  ///< the joined room's name, when it came from the lobby's list
+    // the rooms hosted on this network (lan.h)
+    std::future<App::Lan::Search> lan_future;
+    bool lan_searching = false;
+    App::Lan::Search lan_rooms;
+    bool lan_searched = false;
     /// The Online screen's fields while they are edited (the settings change on Join / Host,
     /// or when a field of your name and lobby is left)
     struct OnlineForm {
@@ -266,6 +272,7 @@ struct State {
         std::string nickname, lobby, token;
     } online;
     void FetchRooms();
+    void SearchLan();
 
     /// Applies a change to the settings the game starts with and to mh4u-app.ini.
     void Change(const std::function<void(App::Config&)>& edit);

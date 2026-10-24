@@ -78,6 +78,7 @@ struct Status {
     std::vector<Member> members;
     bool joined_in_game = false; ///< joined while the game ran: the player needs to know where to go
     std::string lobby_note;      ///< hosting: listed in the lobby, or why not
+    std::string lan_note;        ///< hosting: found by this network's search, or why not
     // hosting: where friends reach this PC
     std::vector<Address> addresses;
     std::string public_address;  ///< as the lobby sees this PC ("" unknown)
@@ -113,6 +114,10 @@ void Tick();
 void JoinLater(const JoinRequest& request, double seconds);
 
 Status GetStatus();
+
+/// In a room, or joining or hosting one (cheap: once a main-loop iteration). Pause and fast
+/// forward are off then (speed.h).
+bool InRoom();
 
 /// The player's name in rooms: mh4u-app.ini's nickname, or the console's user name.
 std::string Nickname();

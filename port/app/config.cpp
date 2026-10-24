@@ -1,6 +1,8 @@
 #include "config.h"
 
 #include <algorithm>
+#include <utility>
+#include <vector>
 #include <fmt/format.h>
 #include <INIReader.h>
 
@@ -8,6 +10,7 @@
 #include "common/logging/log.h"
 #include "core/hle/service/service.h"
 #include "input.h"
+#include "speed.h"
 
 namespace App {
 
@@ -81,6 +84,31 @@ std::string ButtonKeyName(int button) {
     return NativeButton::mapping[button];
 }
 
+/// Whether a key of `spec` is already bound to a 3DS button, a stick or another of the app's keys.
+bool KeyTaken(const Config& c, const std::string& spec) {
+    std::vector<int> used;
+    const auto add = [&used](std::string bindings) {
+        // (a stick's keys are separated by commas)
+        std::replace(bindings.begin(), bindings.end(), ',', '|');
+        for (const int code : Input::KeyCodes(bindings)) {
+            used.push_back(code);
+        }
+    };
+    for (const auto& keys : c.keys) {
+        add(keys);
+    }
+    for (const auto& keys : c.stick_keys) {
+        add(keys);
+    }
+    for (const auto* keys : {&c.item_prev, &c.item_next, &c.stylus_key, &c.touch_screen_key, &c.key_guides_key,
+                             &c.fullscreen_key, &c.fps_counter_key}) {
+        add(*keys);
+    }
+    const auto codes = Input::KeyCodes(spec);
+    return std::any_of(codes.begin(), codes.end(),
+                       [&used](int code) { return std::find(used.begin(), used.end(), code) != used.end(); });
+}
+
 } // namespace
 
 std::string ConfigPath() {
@@ -119,6 +147,7 @@ Config Load() {
     c.check_updates = flag("Game", "check_updates", c.check_updates);
     c.new_3ds = str("Game", "new_3ds", c.new_3ds);
     c.cpu_clock = num("Game", "cpu_clock", c.cpu_clock, 5, 400);
+    c.fast_forward_speed = num("Game", "fast_forward_speed", c.fast_forward_speed, 0, 1000);
 
     c.renderer = str("Display", "renderer", c.renderer);
     c.fullscreen = flag("Display", "fullscreen", c.fullscreen);
@@ -171,6 +200,17 @@ Config Load() {
     c.key_guides_key = str("Controls", "key_guides_key", c.key_guides_key);
     c.fullscreen_key = str("Controls", "fullscreen_key", c.fullscreen_key);
     c.fps_counter_key = str("Controls", "fps_counter_key", c.fps_counter_key);
+    c.pause_key = str("Controls", "pause_key", c.pause_key);
+    c.fast_forward_key = str("Controls", "fast_forward_key", c.fast_forward_key);
+    c.fast_forward_hold = flag("Controls", "fast_forward_hold", c.fast_forward_hold);
+    // keys new to this file don't take one the player already uses (the old layout had ZL on Tab)
+    for (const auto& [key, value] : {std::pair{"pause_key", &c.pause_key},
+                                     std::pair{"fast_forward_key", &c.fast_forward_key}}) {
+        if (!ini.HasValue("Controls", key) && KeyTaken(c, *value)) {
+            LOG_INFO(Frontend, "{} = {} is taken by another binding: no key for it", key, *value);
+            value->clear();
+        }
+    }
 
     c.nickname = str("Multiplayer", "nickname", c.nickname);
     c.join = str("Multiplayer", "join", c.join);
@@ -182,6 +222,7 @@ Config Load() {
     c.lobby = str("Multiplayer", "lobby", c.lobby);
     c.token = str("Multiplayer", "token", c.token);
     c.room_public = flag("Multiplayer", "room_public", c.room_public);
+    c.lan_discovery = flag("Multiplayer", "lan_discovery", c.lan_discovery);
     c.last_room = str("Multiplayer", "last_room", c.last_room);
 
     c.catalog_url = str("Mods", "catalog_url", c.catalog_url);
@@ -236,6 +277,9 @@ new_3ds = {}
 # the CPU's clock speed in % of the 3DS's (5-400): above 100 a busy scene keeps a high frame
 # rate (fps in mh4u.ini) at the cost of more work for your PC; the same as Azahar's CPU Clock Speed
 cpu_clock = {}
+# fast_forward_key runs the game this fast while you play alone, in % of the 3DS's speed
+# (110-1000; 0 = as fast as your PC can)
+fast_forward_speed = {}
 
 [Display]
 # vulkan, opengl or software (opengl isn't available on macOS; vulkan runs on Metal there)
@@ -307,6 +351,12 @@ controller = {}
 {}touch_screen_key = {}
 fullscreen_key = {}
 fps_counter_key = {}
+# playing alone (not in a room): pause_key stops the game where it is and starts it again, and
+# fast_forward_key runs it at fast_forward_speed, pressed once to start and once to stop (or only
+# while held: fast_forward_hold = on). Empty: no key
+pause_key = {}
+fast_forward_key = {}
+fast_forward_hold = {}
 
 [Multiplayer]
 # MH4U's local play over the internet, through a room (Azahar's network rooms; docs/SERVER.md).
@@ -331,6 +381,9 @@ lobby = {}
 token = {}
 # room_public = off keeps a hosted room out of the lobby's list (players join it by address)
 room_public = {}
+# a hosted room answers players on your network who look for rooms (Join a room > On this
+# network; UDP port 24873). off: they join it by address or invite
+lan_discovery = {}
 # the last room joined (its invite code) or hosted ("host"), for the menu's Rejoin last room
 last_room = {}
 
@@ -339,14 +392,16 @@ last_room = {}
 # from here when the launcher starts (empty: never; the copy that came with the app is used)
 catalog_url = {}
 )",
-                       c.game, OnOff(c.launcher), OnOff(c.check_updates), c.new_3ds, c.cpu_clock, c.renderer, OnOff(c.fullscreen), c.resolution,
+                       c.game, OnOff(c.launcher), OnOff(c.check_updates), c.new_3ds, c.cpu_clock,
+                       c.fast_forward_speed, c.renderer, OnOff(c.fullscreen), c.resolution,
                        OnOff(c.vsync), c.screens, OnOff(c.linear_filter), OnOff(c.custom_textures),
                        c.shader, c.fps_counter, c.volume, c.audio_output, c.input_mode, c.mouse_sensitivity,
                        c.mouse_vertical, OnOff(c.mouse_invert_y), OnOff(c.mouse_invert_x), c.mouse_deadzone, c.item_prev, c.item_next,
                        c.stylus_key, c.key_guides, c.key_guides_key, c.controller_auto ? "auto" : "off", keys,
-                       params, c.touch_screen_key, c.fullscreen_key, c.fps_counter_key, c.nickname, c.join, c.password,
+                       params, c.touch_screen_key, c.fullscreen_key, c.fps_counter_key, c.pause_key,
+                       c.fast_forward_key, OnOff(c.fast_forward_hold), c.nickname, c.join, c.password,
                        c.host, c.room_port, c.room_name, c.room_members, c.lobby, c.token,
-                       OnOff(c.room_public), c.last_room, c.catalog_url);
+                       OnOff(c.room_public), OnOff(c.lan_discovery), c.last_room, c.catalog_url);
 }
 
 void Apply(const Config& c) {
@@ -395,6 +450,7 @@ void Apply(const Config& c) {
         v.output_type = AudioCore::SinkType::Auto;
     }
     v.frame_limit = 100;
+    Speed::Get().Configure(c.fast_forward_speed, c.fast_forward_hold);
     // every system module high-level emulated, as Azahar's other frontends set it (Service::Init
     // looks each one up and throws on one that isn't there)
     for (const auto& module : Service::service_module_map) {

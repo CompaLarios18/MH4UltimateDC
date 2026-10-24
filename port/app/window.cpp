@@ -15,6 +15,7 @@
 #include "input.h"
 #include "input_common/keyboard.h"
 #include "input_common/main.h"
+#include "speed.h"
 #include "ui/fps_counter.h"
 #include "ui/ui.h"
 
@@ -92,6 +93,15 @@ void Window::ReadKeys() {
     fullscreen_key = Input::KeyCode(config.fullscreen_key);
     fps_counter_key = Input::KeyCode(config.fps_counter_key);
     key_guides_key = Input::KeyCode(config.key_guides_key);
+    pause_keys = Input::KeyCodes(config.pause_key);
+    fast_forward_keys = Input::KeyCodes(config.fast_forward_key);
+}
+
+bool Window::IsSpeedKey(int scancode) const {
+    const auto has = [scancode](const std::vector<int>& keys) {
+        return std::find(keys.begin(), keys.end(), scancode) != keys.end();
+    };
+    return has(pause_keys) || has(fast_forward_keys);
 }
 
 bool Window::EchoOfController() const {
@@ -232,6 +242,15 @@ void Window::OnKey(int scancode, bool down, u16 modifiers) {
         }
         return;
     }
+    // pause and fast forward (speed.h): the main loop does what they ask
+    if (std::find(pause_keys.begin(), pause_keys.end(), scancode) != pause_keys.end()) {
+        Speed::Get().PauseKey(down, SDL_GetTicks());
+        return;
+    }
+    if (std::find(fast_forward_keys.begin(), fast_forward_keys.end(), scancode) != fast_forward_keys.end()) {
+        Speed::Get().FastForwardKey(down, SDL_GetTicks());
+        return;
+    }
     if (down) {
         InputCommon::GetKeyboard()->PressKey(scancode);
     } else {
@@ -259,7 +278,7 @@ void Window::PollEvents() {
             const auto code = event.key.keysym.scancode;
             // (the app's own keys don't count: F11 doesn't make a controller player's mouse the camera)
             if (code != SDL_SCANCODE_ESCAPE && code != fullscreen_key && code != fps_counter_key &&
-                code != key_guides_key &&
+                code != key_guides_key && !IsSpeedKey(code) &&
                 std::find(stylus_keys.begin(), stylus_keys.end(), code) == stylus_keys.end()) {
                 last_used_keyboard = true;
             }
@@ -289,6 +308,8 @@ void Window::PollEvents() {
             case SDL_WINDOWEVENT_FOCUS_LOST:
                 // keys held while switching away would stay down
                 InputCommon::GetKeyboard()->ReleaseAllKeys();
+                Speed::Get().PauseKey(false, SDL_GetTicks());
+                Speed::Get().FastForwardKey(false, SDL_GetTicks());
                 break;
             }
             break;

@@ -50,6 +50,7 @@
 #include "launcher/process.h"
 #include "multiplayer.h"
 #include "network/network.h"
+#include "speed.h"
 #include "ui/ui.h"
 #include "video_core/gpu.h"
 #include "video_core/rasterizer_interface.h"
@@ -228,6 +229,24 @@ void NewConsoleId(Core::System& system) {
     cfg->SetConsoleUniqueId(random_number, console_id);
     cfg->UpdateConfigNANDSavegame();
     LOG_INFO(Frontend, "the console has a new ID: {:016x}", console_id);
+}
+
+/// Pause and fast forward (speed.h) as Azahar's settings: its temporary frame limit (as the Qt
+/// frontend's turbo sets it), and vsync off while fast (a vsynced swapchain would hold the game to
+/// the monitor's rate). Once a main-loop iteration; changes only what differs.
+void ApplySpeed(const App::Config& config) {
+    const int limit = App::Speed::Get().Limit();
+    const bool temporary = limit >= 0;
+    if (Settings::is_temporary_frame_limit != temporary ||
+        (temporary && Settings::temporary_frame_limit != static_cast<double>(limit))) {
+        Settings::temporary_frame_limit = temporary ? static_cast<double>(limit) : 0.0;
+        Settings::is_temporary_frame_limit = temporary;
+        LOG_INFO(Frontend, "speed: {}", temporary ? fmt::format("{}%", limit) : std::string("as usual"));
+    }
+    const bool vsync = config.vsync && !temporary;
+    if (Settings::values.use_vsync.GetValue() != vsync) {
+        Settings::values.use_vsync = vsync;
+    }
 }
 
 std::string LoadError(Core::System::ResultStatus status, Core::System& system) {
@@ -442,7 +461,30 @@ int Run(const std::vector<std::string>& argv) {
             }
         });
 
+    auto& speed = App::Speed::Get();
+    auto last_paused_frame = std::chrono::steady_clock::now();
     while (window->IsOpen() && (!secondary || secondary->IsOpen())) {
+        // pause and fast forward are for playing alone (a room's others would wait or drop this PC)
+        speed.SetInRoom(App::Multiplayer::InRoom(), SDL_GetTicks());
+        ApplySpeed(config);
+        if (speed.Paused()) {
+            // the game stands still: its last picture drawn again, with the menu over it, and the
+            // windows' events, which the renderer's frame end polls, about 60 times a second
+            constexpr auto FRAME = std::chrono::microseconds(16667);
+            const auto next = last_paused_frame + FRAME;
+            if (const auto now = std::chrono::steady_clock::now(); now < next) {
+                std::this_thread::sleep_for(next - now);
+            }
+            last_paused_frame = std::chrono::steady_clock::now();
+            system.GPU().Renderer().SwapBuffers();
+            App::Multiplayer::Tick();
+            if (window->TakeControllersChanged()) {
+                App::Input::BuildProfile(config);
+                ReloadInput(system);
+                LOG_INFO(Frontend, "{}", App::Input::ControllerDescription());
+            }
+            continue;
+        }
         const auto result = system.RunLoop();
         if (result == Core::System::ResultStatus::ShutdownRequested) {
             break;

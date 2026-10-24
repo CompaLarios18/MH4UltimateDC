@@ -194,6 +194,11 @@ void PumpProbe(State& s) {
 }
 
 void PumpRooms(State& s) {
+    if (s.lan_searching && s.lan_future.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+        s.lan_rooms = s.lan_future.get();
+        s.lan_searching = false;
+        s.lan_searched = true;
+    }
     if (!s.rooms_loading ||
         s.rooms_future.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
         return;
@@ -296,6 +301,8 @@ void Footer(State& s) {
         busy = s.runner.What().empty() ? "Working" : s.runner.What();
     } else if (s.rooms_loading) {
         busy = "Asking the lobby";
+    } else if (s.lan_searching) {
+        busy = "Searching your network";
     }
     if (!busy.empty()) {
         Ui::PushFont(0.85f);
@@ -1145,7 +1152,7 @@ Result Run(App::Config& config, bool show) {
         // the spinners and the Play button's glow need few, and the launcher shouldn't take the
         // processor from the build (or draw at all while minimised).
         const bool working = (s.job.Active() && !s.job.finished) || s.runner.Busy() || s.probing ||
-                             s.rooms_loading || s.play_waiting > 0 || s.picking.has_value();
+                             s.rooms_loading || s.lan_searching || s.play_waiting > 0 || s.picking.has_value();
         const bool hidden = (SDL_GetWindowFlags(window) & (SDL_WINDOW_MINIMIZED | SDL_WINDOW_HIDDEN)) != 0;
         int wait_ms = 0;
         if (hidden) {

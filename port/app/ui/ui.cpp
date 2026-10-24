@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <string>
 #include <SDL.h>
 #include <imgui.h>
 #include <imgui_impl_sdl2.h>
@@ -13,6 +14,7 @@
 #include "input.h"
 #include "input_common/keyboard.h"
 #include "input_common/main.h"
+#include "speed.h"
 #include "ui/fps_counter.h"
 #include "ui/hint.h"
 #include "ui/key_guides.h"
@@ -28,6 +30,25 @@ namespace {
 std::atomic<Layer*> instance{nullptr};
 
 constexpr u32 BACK_HELD = 1, START_HELD = 2;
+
+/// Pause and fast forward (speed.h) at the top middle of the screen, small; it takes no input.
+void DrawSpeedBadge(const std::string& text, bool paused) {
+    const ImGuiIO& io = ImGui::GetIO();
+    const float margin = std::round(ImGui::GetFontSize() * 0.5f);
+    ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, margin), ImGuiCond_Always, ImVec2(0.5f, 0.0f));
+    ImGui::SetNextWindowBgAlpha(0.55f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(margin * 1.2f, margin * 0.5f));
+    constexpr ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoInputs |
+                                       ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoFocusOnAppearing |
+                                       ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_AlwaysAutoResize;
+    if (ImGui::Begin("##speed", nullptr, flags)) {
+        ImGui::TextColored(paused ? ImVec4(1.0f, 0.75f, 0.45f, 1.0f) : ImVec4(0.55f, 0.90f, 0.55f, 1.0f), "%s",
+                           text.c_str());
+    }
+    ImGui::End();
+    ImGui::PopStyleVar(2);
+}
 
 /// The menu's look: dark, translucent, an amber accent; sizes for a 13-pixel font, scaled with
 /// the font (UpdateScale).
@@ -425,7 +446,9 @@ void Layer::Frame() {
     const bool fps_counter = FpsCounterOn(config.fps_counter);
     // the key guides while the keyboard and mouse are in use, under nothing else of the menu's
     const bool guides = !capturing && window.KeyboardMouseActive() && FpsCounterOn(config.key_guides);
-    const bool draw = capturing || keyboard->HasNotice() || !hint.Empty() || fps_counter || guides;
+    // pause and fast forward, under nothing of the menu's
+    const std::string speed = capturing ? std::string() : Speed::Get().Badge(SDL_GetTicks());
+    const bool draw = capturing || keyboard->HasNotice() || !hint.Empty() || fps_counter || guides || !speed.empty();
     if (!draw || !renderer_ready.load(std::memory_order_acquire)) {
         if (visible.load(std::memory_order_relaxed)) {
             std::scoped_lock lock{mutex};
@@ -486,6 +509,9 @@ void Layer::Frame() {
     }
     if (guides) {
         DrawKeyGuides(config, config.key_guides);
+    }
+    if (!speed.empty()) {
+        DrawSpeedBadge(speed, Speed::Get().Paused());
     }
     was_busy = ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopup) || ImGui::IsAnyItemActive();
     ImGui::Render();

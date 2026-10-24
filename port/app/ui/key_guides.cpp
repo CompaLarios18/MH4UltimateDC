@@ -221,6 +221,8 @@ std::vector<GuideRow> Rows(const Config& c) {
         {"START", key(NativeButton::Start), "Game menu"},
         {"", Keys(c.touch_screen_key), "Map / touch screen"},
         {"", Keys(c.stylus_key), "Hold: mouse on the touch screen"},
+        {"", Keys(c.pause_key), "Pause"},
+        {"", Keys(c.fast_forward_key), c.fast_forward_hold ? "Hold: fast forward" : "Fast forward"},
         {"", {"Escape"}, "Port menu"},
         {"", Keys(c.key_guides_key), "Hide these keys"},
     };

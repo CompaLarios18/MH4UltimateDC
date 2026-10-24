@@ -107,6 +107,8 @@ private:
     /// The mouse as the camera (SDL's relative mode) or as the stylus, as the mode, the focus,
     /// the menu and the stylus key say; and the input mode in auto.
     void UpdateMouseMode();
+    /// One of pause_key's or fast_forward_key's keys.
+    bool IsSpeedKey(int scancode) const;
     /// A key event that came with a controller's button (Steam Input sends keys for a
     /// controller's buttons in some layouts): not the keyboard's.
     bool EchoOfController() const;
@@ -114,7 +116,7 @@ private:
     std::atomic<bool> is_open{true};
     bool fullscreen = false;
     const Config& config;
-    std::vector<int> touch_keys, stylus_keys;
+    std::vector<int> touch_keys, stylus_keys, pause_keys, fast_forward_keys;
     int fullscreen_key = 0, fps_counter_key = 0, key_guides_key = 0;
     std::atomic<bool> controllers_changed{false};
     std::atomic<bool> keys_changed{false};

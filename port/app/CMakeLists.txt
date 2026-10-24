@@ -27,9 +27,15 @@ add_executable(mh4u
     invite.cpp
     invite.h
     main.cpp
+    # rooms on this network, found with no address typed
+    lan.cpp
+    lan.h
     # the network room: join, host, leave, before the game and while it runs
     multiplayer.cpp
     multiplayer.h
+    # pause and fast forward, playing alone
+    speed.cpp
+    speed.h
     # the keyboard-and-mouse mode's arithmetic (the mouse as the camera, the item bar's scroll)
     kbm.cpp
     kbm.h
