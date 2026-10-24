@@ -1,0 +1,11 @@
+# The known differences of G4's scheduler timeline (N0-39, N1-26): the native deterministic mode's
+# MH4N_TRACE_EVENTS file against the recording's timing.txt; `golden.py check --timeline` reads this file by default.
+# Format: ref=<tick>:<core>:<late>:<event> cand=<tick>:<core>:<late>  # reason (`-` for a missing or extra side);
+# each line is used for one difference, so the twin at the same tick needs its own line.
+# The three nwm::UDS asynchronous events come 6 ticks early on core 1 and the wake-up of core 0 that follows the
+# first is late by 4 ticks instead of 2: the residual of N1-26 (docs/native/golden.md), its root cause not found.
+# 143,290 of G4's 143,294 events are equal. Only the orchestrator edits this file.
+ref=8942018657:1:0:UDS::handle_async_event_signals_event cand=8942018651:1:0   # nwm async event, 6 ticks early (N1-26)
+ref=8942034990:0:2:ThreadWakeupCallback_0 cand=8942034990:0:4                  # the wake-up that follows the first one (N1-26)
+ref=13564434202:1:0:UDS::handle_async_event_signals_event cand=13564434196:1:0 # nwm async event, 6 ticks early (N1-26)
+ref=13564434202:1:0:UDS::handle_async_event_signals_event cand=13564434196:1:0 # its twin at the same tick (N1-26)
