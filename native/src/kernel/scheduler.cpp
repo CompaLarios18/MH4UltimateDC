@@ -294,6 +294,7 @@ void GuestScheduler::ChooseCore(s64 now_ns) {
 Thread* GuestScheduler::Dispatch() {
     if (LockstepState* const lockstep = kernel_detail::LockstepOf(time_)) {
         LockstepState& ls = *lockstep;
+        ls.scheduler_thread = std::this_thread::get_id();
         VirtualTimeSource& vt = static_cast<VirtualTimeSource&>(time_);
         constexpr u64 kMinDelay = 100;  // RunLoop does not sync delays below this (jit overshoots a few ticks)
 

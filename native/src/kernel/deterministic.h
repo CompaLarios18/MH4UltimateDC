@@ -42,6 +42,7 @@
 #include <mutex>
 #include <optional>
 #include <set>
+#include <thread>
 #include <tuple>
 #include <unordered_map>
 
@@ -138,6 +139,9 @@ struct LockstepState {
     bool schedule_pending = false;
     // How many iterations and idle stretches have gone by, for the tests.
     u64 iterations = 0;
+    // The host thread that runs the scheduler (the last one to call Dispatch). The timer queue above has no lock:
+    // everything that schedules or cancels an event does it on this thread (ScheduleThreadSafe asserts so).
+    std::thread::id scheduler_thread{};
 };
 
 // Host time that moves only when told: game ticks, shown to the rest of the runtime as nanoseconds
@@ -314,6 +318,10 @@ u64 DrawSliceTicks();
 // Azahar's `ScheduleEvent(0, event, 0, core, thread_safe_mode = true)`: `fn` runs on core `core` in two slices'
 // time (MAX_SLICE_LENGTH * 2 on that core's clock), and gets in the core's queue at its next Advance. Returns
 // false, doing nothing, outside the deterministic mode.
+//
+// "Thread-safe" is Azahar's delay semantics (the event is handed over through the core's ts_queue), not a lock: the
+// timer queue is not locked, so this must be called on the scheduler thread, as every service does here, and it
+// asserts so. A host thread of a service (the room's network thread, N4) has to Post the call to the scheduler.
 bool ScheduleThreadSafe(int core, std::function<void()> fn);
 }  // namespace kernel_detail
 

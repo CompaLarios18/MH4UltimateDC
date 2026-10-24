@@ -38,9 +38,10 @@
 //  - The beacon broadcast timer (every 102.4 ms of game time while hosting) runs, but its callback builds no
 //    frame: with no room it would only hand it to a SendPacket that sends nothing, so nothing the game or
 //    a trace can see depends on it. It is there because it is an event of the console's timeline (the
-//    deterministic mode ends a slice at each, as Azahar does). N4 adds the frame with the room.
-//  - SignalEventAsync: with --deterministic the signal is queued and runs on core 1 two slices later, the
-//    way the reference runner's Azahar does it (see Signal below); otherwise at once, as in a frontend.
+//    deterministic mode ends a slice at each, as Azahar does). It runs in every mode, real time included, as it
+//    does in Azahar (a timer event every 102.4 ms, only while hosting). N4 adds the frame with the room.
+//  - SignalEventAsync: with the deterministic clock the signal is queued and runs on core 1 two slices later, the
+//    way the reference runner's Azahar does it (see Signal below); in real time at once, as in a frontend.
 //  - DecryptBeaconData (0x0E and 0x1F) is answered as an unknown command: it decrypts the beacon data of a
 //    scanned network (AES-CTR with the NWM beacon key), and without a room there is no scan result to
 //    give it. N4 implements it.
@@ -75,6 +76,7 @@
 #include <string>
 #include <vector>
 
+#include "../../kernel/deterministic.h"  // kernel_detail::ScheduleThreadSafe (the runtime module reaches it the same way)
 #include "mh4n/cfg.h"
 #include "mh4n/clock.h"
 #include "mh4n/ipc.h"
@@ -84,12 +86,6 @@
 #include "mh4n/registry.h"
 #include "mh4n/runtime.h"
 #include "mh4n/service.h"
-
-// Defined by the kernel module's deterministic mode (kernel/deterministic.cpp): ScheduleEvent's
-// thread-safe mode on a core. False, doing nothing, without the mode.
-namespace mh4n::kernel_detail {
-bool ScheduleThreadSafe(int core, std::function<void()> fn);
-}  // namespace mh4n::kernel_detail
 
 namespace mh4n {
 
@@ -325,16 +321,15 @@ private:
     // it on core 1 two slices of time later (MAX_SLICE_LENGTH * 2), one event per call, in order. The
     // deterministic mode follows that, because it is the mode that is compared with the reference's traces,
     // tick for tick (the connection status event wakes a thread of the game's, whose first request is then
-    // 2.29 million ticks later than it would be).
+    // 2.29 million ticks later than it would be). Which of the two is decided by the kernel: ScheduleThreadSafe
+    // does nothing and says so when there is no deterministic clock.
+    //
+    // This runs on the scheduler thread, and ScheduleThreadSafe asserts so: the kernel's timer queue is not locked.
+    // When N4's room signals from a network thread, that thread must Post the call to the scheduler first.
     void Signal(const std::shared_ptr<Event>& event) {
         if (!event) {
             return;
         }
-        if (!Context().GetOptions().Has("--deterministic")) {
-            event->Signal();
-            return;
-        }
-        S().pending_async.push_back(event);
         const std::weak_ptr<UdsState> weak = state_;
         const bool scheduled = kernel_detail::ScheduleThreadSafe(1, [weak] {
             const std::shared_ptr<UdsState> state = weak.lock();
@@ -346,10 +341,10 @@ private:
             next->Signal();
         });
         if (!scheduled) {
-            // No deterministic clock (a test that asks for the option without it): at once.
-            S().pending_async.pop_back();
-            event->Signal();
+            event->Signal();  // the real-time clock: at once
+            return;
         }
+        S().pending_async.push_back(event);
     }
 
     // The client sleeps `ns` of game time, then gets `reply`. Azahar puts the client thread in

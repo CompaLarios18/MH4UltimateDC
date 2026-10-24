@@ -354,6 +354,11 @@ bool ScheduleThreadSafe(int core, std::function<void()> fn) {
         return false;
     }
     LockstepState& ls = driver->Time().Lockstep();
+    // The queues and the event table are not locked (Azahar's ts_queue is, which is what makes its flag thread-safe;
+    // here the hand-over is `schedule_pending`, a plain field the next ScheduleAt reads): another host thread would
+    // race on them. It has to Post the call to the scheduler instead.
+    MH4N_ASSERT(ls.scheduler_thread == std::thread::id{} || ls.scheduler_thread == std::this_thread::get_id(),
+                "ScheduleThreadSafe called from a host thread other than the scheduler's: Post it");
     ls.schedule_core = core;
     ls.schedule_pending = true;
     driver->Scheduler().ScheduleAt(driver->Time().CoreTicks(core) + 2 * kDeterministicSliceTicks, std::move(fn));

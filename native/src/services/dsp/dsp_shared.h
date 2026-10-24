@@ -48,7 +48,8 @@ public:
     // do nothing.
     // `at_boot`: called when the module is made with the system, the way Azahar makes its DSP: the frames are
     // then on a grid that starts at the clock's first reading (its first tick one frame after it), which in
-    // the deterministic mode is the reference's starting tick, not a multiple of the frame.
+    // the deterministic mode is the reference's starting tick, not a multiple of the frame (in real time, the
+    // first reading of the host-driven clock: the boot step calls this in every mode).
     void Start(ServiceContext& context, bool at_boot = false);
 
     audio::DspModel& Model() { return *model_; }

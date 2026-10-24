@@ -523,6 +523,12 @@ MH4N_REGISTER(ServiceFactory, "dsp::DSP",
 // an event of the timeline (a slice of the deterministic mode ends at it, the reference's trace shows it).
 // So the model starts here, at boot, and the service finds it going. The name sorts after "services.ipc",
 // which makes the service manager the state lives in.
+//
+// This is so in every mode, real time included, as it is in Azahar: the frame event runs from boot. Until the
+// game turns the DSP on (the model starts Off, and Tick() then does nothing and queues nothing) it is one timer
+// event per frame that does nothing; after that the frames go to the audio sink as they did when the service was
+// first opened. What changes in real time is where the grid of frames starts: at the clock's first reading, which
+// is not a multiple of the frame (in the deterministic mode that reading is the reference's starting tick).
 void StartDsp(Runtime& rt) {
     ServiceManager* manager = FindServiceManager(rt);
     if (manager == nullptr) {

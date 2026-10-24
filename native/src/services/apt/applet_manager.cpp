@@ -40,6 +40,8 @@ namespace {
 // happens), then schedules itself one period after the tick it was due at. It does nothing the game can
 // see, but it is an event of the console's timeline, and a slice of the deterministic mode ends at each
 // one: the reference's trace shows them, so the timeline here has them. (The buttons come with N2b.)
+// It runs in every mode, real time included, as it does in Azahar (the module makes it in real time too): one
+// timer event every 16.666 ms of game time that does nothing.
 void ScheduleButtonUpdate(Kernel& kernel, u64 due_tick) {
     kernel.ScheduleAt(due_tick, [&kernel, due_tick] {
         ScheduleButtonUpdate(kernel, due_tick + kAppletUpdateIntervalTicks);
