@@ -2289,16 +2289,29 @@ def test_shot_options_go_only_to_a_candidate_that_lists_them(env, capsys, monkey
     prog = env.tmp / "prog"
     prog.mkdir()
     cand = ["--candidate-runner", str(env.script), "--candidate-program", str(prog)]
-    # a runner whose --help lists --shots gets them, in the recording's frame-keyed form, and no shared-page dump
-    assert env.check(*cand, "--image-frames", frames_file(env), "--ignore", str(env.ignore_file)) == 0
+    shows = "--candidate-args=--gpu null-display"
+    # a runner whose --help lists --shots, run with a GPU that shows its screens, gets them, in the recording's
+    # frame-keyed form, and no shared-page dump
+    assert env.check(*cand, shows, "--image-frames", frames_file(env), "--ignore", str(env.ignore_file)) == 0
     a = env.calls()[-1]["argv"]
     assert a[a.index("--shots") + 1] == str(env.out / "S1" / "check" / "run1" / "shots")
     assert a[a.index("--shots-from") + 1] == "f10" and a[a.index("--shot-every") + 1] == "f10"
     assert "--dump" not in a and "--trace-timing" not in a
     assert statuses(capsys.readouterr().out)["images"] == "PASS"
-    # one that does not, gets none, and `images` is skipped
+    assert env.check(*cand, "--candidate-args=--gpu renderer", "--image-frames", frames_file(env),
+                     "--ignore", str(env.ignore_file)) == 0
+    assert "--shots" in env.calls()[-1]["argv"]
+    # the native runner ends a run that has --shots and the default `null` GPU with status 2: without a GPU that
+    # shows its screens (none chosen, or `--gpu null`) the candidate gets no shot option and `images` is skipped
+    for args in ("--candidate-args=--deterministic", "--candidate-args=--gpu null", "--candidate-args=--gpu-x null-display"):
+        capsys.readouterr()
+        assert env.check(*cand, args, "--image-frames", frames_file(env), "--ignore", str(env.ignore_file)) == 0, args
+        a = env.calls()[-1]["argv"]
+        assert not {"--shots", "--shots-from", "--shot-every", "--dump"} & set(a), args
+        assert statuses(capsys.readouterr().out)["images"] == "SKIPPED", args
+    # one that does not list --shots gets none either, and `images` is skipped
     monkeypatch.setenv("FAKE_NO_SHOTS", "1")
-    assert env.check(*cand, "--image-frames", frames_file(env), "--ignore", str(env.ignore_file)) == 0
+    assert env.check(*cand, shows, "--image-frames", frames_file(env), "--ignore", str(env.ignore_file)) == 0
     a = env.calls()[-1]["argv"]
     assert not {"--shots", "--shots-from", "--shot-every", "--dump"} & set(a)
     assert statuses(capsys.readouterr().out)["images"] == "SKIPPED"

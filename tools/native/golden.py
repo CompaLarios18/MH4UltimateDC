@@ -886,6 +886,17 @@ def wants_all_images(candidate_args: Sequence[str]) -> bool:
     return "--deterministic" in candidate_args and option_value(candidate_args, "--cpu") != "jit"
 
 
+SCREEN_GPUS = ("null-display", "renderer")
+
+
+def candidate_shows_screens(candidate_args: Sequence[str]) -> bool:
+    """Whether the candidate's (already shell-split) arguments choose a GPU that shows its screens (`--gpu
+    null-display` or `--gpu renderer`).  The native runner ends a run that has `--shots` and the default `null`
+    GPU with status 2 (shots.cpp), so a candidate gets the shot options only when it can write them; without,
+    the run is as it was before N2b-17 and `images` is skipped."""
+    return option_value(candidate_args, "--gpu") in SCREEN_GPUS
+
+
 def all_images_result(ref: Path, cand: Path) -> tuple[str, str, str]:
     """(status, detail, note) of the `images` comparison of a candidate on the recording's clock (N2b-28): every
     frame the recording and the candidate both have, judged as `images_result` does, minus the gas frames."""
@@ -1334,7 +1345,8 @@ def check(session: Session, a: argparse.Namespace) -> int:
     if not foreign and manifest.get("updates") and not a.update:
         raise GoldenError("the recording was made with --install: pass --update CIA so the run starts the same way")
     shot_every = int(manifest.get("shots", {}).get("every_frames", DEFAULT_SHOT_EVERY_FRAMES))
-    shots = foreign and runner_has_shots(a.candidate_runner)     # N2b-17: only a candidate that lists --shots gets them
+    # N2b-17: only a candidate that lists --shots, and whose arguments choose a GPU that shows its screens, gets them
+    shots = foreign and candidate_shows_screens(cand_args) and runner_has_shots(a.candidate_runner)
     if foreign:
         runner, program, code, cpu, full = a.candidate_runner, a.candidate_program or a.game, a.candidate_code, None, False
         extra = cand_args
