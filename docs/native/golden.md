@@ -984,6 +984,20 @@ thread forward, from the start of the core's next stretch to the end of the last
 between and the choice made again before the next stretch starts. What is left is the place in the ready queue of a thread
 that an event wakes in between, which no test found a way to show and which G1, G3 and G4 do not depend on.
 
+*(2026-10-24, N1-31)* The survivors of the two mutation reviews are pinned now, and the claim above that the system flag cannot
+be shown was wrong for all three of its callers. For `NeedReschedule`, core 1's stretch runs between the end of core 0's
+stretch and core 0's next select, and a thread of core 1 changes the priority of the thread the flag had chosen. For
+`PrepareReschedule` and `Terminate`'s call of it, a thread readied on core 1 is not looked at until core 1's next select; at
+the end of core 1's stretch the flag is the only thing that makes the select happen at once, and in between core 0 can run a
+catch-up stretch (core 1 more than 100 ticks ahead) that changes core 1's queue. Two cases in `determinism_test` use these:
+one for `NeedReschedule` (a wake-up during a stretch is acted on at its end) and one for `PrepareReschedule` (a call that only
+asks for a reschedule, as Azahar's `ArbitrateAddress` does) with `Terminate`'s call of it (a native design choice: Azahar has no
+`TerminateThread` call; the only native caller outside the tests is `mh4n_ipc_replay`). Each fails when its flag is not
+raised. The other rules are pinned too (a displaced thread goes back to the front of its queue, the `nwm`
+asynchronous signals run first in, first out, the refill of a core's budget and `slice_of` are exact to the tick, the beacon
+chain stops when the network is not hosting, the catch-up starts above 100 ticks and not at 100); the mutation of each was
+applied by the worker and again by the reviewer on a clone, and every one fails a test (`wp/N1.md`, N1-31).
+
 ## History: the WIP recordings (before N0-29)
 
 The first recordings (the WIP branch `origin/wp/N0-09-golden-sessions`, head `d6e2871`, CI run 39075253705, native
