@@ -479,6 +479,20 @@ Documents: `docs/native/app-smoke.md` (N2b-01), `app.md` (N2b-03; its CI part N2
 - **Traps:** calibrate on the recordings made with the N0-29 runner (N0-09, N0-10). N0-11 (G5) changes `golden.py` after this WP (it depends on it). *As built (N2b-14, batch 20261022-n2b-n3):* `DIR/gas.txt` has one line per shot that follows a published frame with `gas` set since the previous shot: the shot's number, unpadded and without the `f` (`300` for `f0000300_*.ppm`, `1500` for `0001500_*.ppm`); the file is written empty when there is no gas, so a missing file means a runner that does not report gas (the reference). The native shots are named by the scheduled frame or time, as the reference's, and are byte-identical to the reference's for `io_test` on `null-display` (five schedules checked by the reviewer).
 - **Out of scope:** native runs (N2b-19 on); editing `config/**` (the orchestrator does it).
 
+### N2b-28 · The images gate in the deterministic mode
+- **Size / agent:** S · native-worker (Python only)
+- **Depends on:** N2b-17 · **Needs:** none
+- **Goal:** D58 (3): a candidate that runs on the recording's own clock (the native runner with `--deterministic`, N1-25/N1-26) is judged at **every** screenshot of the recording except gas frames, by the thresholds of ROADMAP section 6; the jit-calibrated list of N2b-17 is for candidates whose clock differs. Build it into `golden.py` now, with a fake runner, so that N2b-19 to N2b-21 meet only renderer problems.
+- **Read first:** D58, D94, D97; `docs/native/golden.md` (the `cross` profile's `images` gate, N2b-17, and the candidate shots paragraph); `tools/native/golden.py` and `tools/native/imgdiff.py`.
+- **Files (allowlist):** `tools/native/golden.py`, `tests/test_native_golden.py`, `docs/native/golden.md`.
+- **Spec:**
+  - Under `--profile cross`, when the candidate's argument list contains `--deterministic` (it comes as `--candidate-args=--deterministic` or inside a longer string: split it as the shell would, do not match substrings) and no `--image-frames FILE` is given, `images` judges every screenshot frame that the recording and the candidate both have, top and bottom, with `imgdiff`'s rule; a frame in the candidate's `shots/gas.txt` is `skipped (gas)`; the line says how many frames were judged, skipped and failed. A recording or a candidate with no screenshots: `images` skipped (exit 3 under `--require images`, D34).
+  - An explicit `--image-frames FILE` wins over this. A `--cpu jit` candidate, the `native` profile (information only) and the `same` profile (SHA-256) are unchanged.
+  - Tests with the fake runner and synthetic PPMs of N2b-17's tests: the deterministic flag judges all frames; one failing frame fails; a gas frame is skipped; an explicit list wins; without the flag the calibrated list applies; the flag inside a longer `--candidate-args` string is found and a look-alike (`--deterministic-x`) is not.
+- **Done when:** `python3 -m pytest -rs tests/test_native_golden.py` passes with 0 skipped that were not skipped at the base; `golden.md` documents the rule.
+- **Traps:** `golden.py` and its test are also edited by N0-39 (and by N0-11 later): do not run this package while N0-39 is in flight.
+- **Out of scope:** the renderer; native runs (N2b-19).
+
 ### N2b-18 · G4 and G3-perf headless
 - **Size / agent:** M · native-worker-high (build-heavy)
 - **Depends on:** N1-26, N1-25, N0-10, N0-30 · **Needs:** dump, save
@@ -492,14 +506,14 @@ Documents: `docs/native/app-smoke.md` (N2b-01), `app.md` (N2b-03; its CI part N2
 
 ### N2b-19 · G1 and G2 end to end
 - **Size / agent:** M · native-worker-high (build-heavy)
-- **Depends on:** N2b-13, N2b-14, N2b-16, N2b-17, N2b-18 · **Needs:** dump
+- **Depends on:** N2b-13, N2b-14, N2b-16, N2b-17, N2b-18, N2b-28 · **Needs:** dump
 - **Goal:** with the renderer in the runtime, G1 and G2 pass every check N1-21 passed with the null GPU, and their screenshots pass at the calibrated frames: the first two sessions end to end.
 - **Read first:** N1-21's spec and report; `docs/native/renderer-runtime.md`; `docs/native/golden.md` (the image gate, N2b-17); `docs/native/gfx-tests.md`.
 - **Files (allowlist):** `native/src/{memory,loader,kernel,runtime,ipc,services,applets,input_script,gpu_null,audio,platform,gpu,shots}/**`, `native/src/cpu/*` (the code host), `native/runner/**`, `native/tests/{memory,loader,cpu,kernel_objects,scheduler,threads,svc,runtime,ipc,srv,fs_romfs,fs_save,apt,cfg,hid,gsp,dsp,other_services,nwm,platform,ptm_gamecoin,determinism,options,common,shots,gpu_runtime,gpu_display,gpu_gx,gpu_pica,gpu_vertex,gpu_shader,gpu_backend,gpu_fbops,gpu_texture,gpu_tev,gpu_sampling,gpu_lighting,gpu_fog,gpu_proctex,gpu_shadow,gpu_surface,gpu_pipeline,gpu_hd,gpu_queue}_test.cpp` (fixes; list each one in the report), `docs/native/e2e.md` (new).
 - **Spec:** first our own programs (`tests/test_native_gfx.py` with `MH4N_GFX_GPU=renderer`), then G1, then G2, each with `--gpu renderer --scale 1`; fix what fails, smallest fix first, each with a unit test in its module's test file; if more than three modules need fixes, stop after listing them, `blocked`. `e2e.md` gets, per session, the checks run, the image frames judged and skipped, their PSNR and worst block (numbers only), the `display-check` line, and the run's wall time on lavapipe.
 - **Done when:**
   - `MH4U_RUNNER=<the reference runner> MH4N_RUNNER=build/native/bin/mh4u_native_runner MH4N_GFX_GPU=renderer MH4N_GFX_REQUIRE=both python3 -m pytest -rs tests/test_native_gfx.py` passes (both runners, so the shots are also compared with each other);
-  - the native check of G1 with `--gpu renderer --scale 1`, requiring `checkpoints,ipc,svc,hid,state,dsp,images` (rule 7; D50 to D52 and D58 apply), passes, and the same for G2 without `dsp`;
+  - the native check of G1 with `--gpu renderer --scale 1`, requiring `checkpoints,ipc,svc,hid,state,dsp,images` (rule 7; D50 to D52 and D58 apply), passes, and the same for G2 without `dsp`; *(2026-10-24, D94, D58)* "the native check" of this package, of N2b-20 and of N2b-21 is the one in the deterministic mode (`--candidate-args=--deterministic`, `--profile cross`): it is where `ipc` is exact and where `images` judges every screenshot but the gas frames (N2b-28); the real-time `native` profile keeps `images` as information and `ipc` reported;
   - N2b-13's `--display-check 60` command, run on its own for G1 (`--frames 1700`) and G2 (`--frames 9000`), logs `display-check: <n> checked, 0 differ` for both.
 - **Traps:** with the renderer, interrupts arrive when the work completes instead of at once (the null GPU), so waits on P3D and PPF take real time: a scene shift within D50's 4 frames is expected; beyond it, `needs-decision` with the table, never a wider tolerance. Don't touch `golden.py` here: a comparator problem goes back to N2b-17's owner through the orchestrator.
 - **Out of scope:** G3, G4 (N2b-20, N2b-21); timing on real hardware (N2b-24).
