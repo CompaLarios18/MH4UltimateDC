@@ -19,9 +19,9 @@
 # for that are the validation layer's synchronization validation, the owner-rule checks and MH4N_RHI_CHECKS.
 #
 # They are `race:` and `mutex:` entries, not `called_from_lib:`: a called_from_lib entry for either library made
-# ThreadSanitizer worse here (it stops the process with "library ... is unloaded" when the loader dlcloses the driver,
-# which every instance destruction does, and with an entry for the loader it reported "unlock of an unlocked mutex"
-# in code that is clean without it).
+# ThreadSanitizer worse here (in one run it stopped the process with "library ... is unloaded" because the loader dlcloses
+# the driver; in others it reported a data race inside libLLVM.so, a lock-order inversion, or "unlock of an unlocked
+# mutex", in code that is clean without the entry).
 
 # the Vulkan loader and lavapipe's driver library, as a frame of a report
 race:libvulkan.so

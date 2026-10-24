@@ -129,9 +129,9 @@ bool DeviceOk(bool ok, const std::string& error, const char* what) {
         return true;
     }
     if (VulkanRequired()) {
-        FAIL(what << ": no Vulkan device and MH4N_REQUIRE_VULKAN=1: " << error);
+        FAIL(std::string(what) << ": no Vulkan device and MH4N_REQUIRE_VULKAN=1: " << error);
     }
-    WARN_MESSAGE(false, "skipped: " << what << ": no Vulkan device (" << error << ")");
+    WARN_MESSAGE(false, "skipped: " << std::string(what) << ": no Vulkan device (" << error << ")");
     return false;
 }
 
@@ -148,9 +148,9 @@ bool CapabilityOk(const Rig& rig, bool has, const char* capability, const char* 
         return true;
     }
     if (VulkanRequired() && rig.IsLavapipe()) {
-        FAIL(what << ": lavapipe does not report " << capability << " and MH4N_REQUIRE_VULKAN=1");
+        FAIL(std::string(what) << ": lavapipe does not report " << std::string(capability) << " and MH4N_REQUIRE_VULKAN=1");
     }
-    WARN_MESSAGE(false, "skipped: " << what << ": the device has no " << capability);
+    WARN_MESSAGE(false, "skipped: " << std::string(what) << ": the device has no " << std::string(capability));
     return false;
 }
 
@@ -1064,7 +1064,7 @@ void RunStencil(Rig& rig, RenderFormat stencilFormat, const char* name) {
                 }
             }
         }
-        INFO(name << " quadrant " << quadrant);
+        INFO(std::string(name) << " quadrant " << quadrant);
         CHECK(wrong == 0);
     }
 }
@@ -1116,7 +1116,7 @@ void RunDepthStencilCopy(Rig& rig, RenderFormat format, const char* name) {
             wrongStencil += (bytes[planeBytes * 4 + i] != clear.stencil) ? 1 : 0;
         }
         rb->unmap();
-        INFO(name << " depth " << clear.depth << " stencil " << clear.stencil);
+        INFO(std::string(name) << " depth " << clear.depth << " stencil " << clear.stencil);
         CHECK(wrongDepth == 0);
         CHECK(wrongStencil == 0);
     }
@@ -1181,7 +1181,7 @@ void RunPackedFormats(Rig& rig) {
                 std::memcpy(&word, &bytes[i * 2], 2);
                 wrong += (word != expected) ? 1 : 0;
             }
-            INFO(f.name << " clear (" << c.r << "," << c.g << "," << c.b << "," << c.a << ") expected word 0x" << std::hex << expected);
+            INFO(std::string(f.name) << " clear (" << c.r << "," << c.g << "," << c.b << "," << c.a << ") expected word 0x" << std::hex << expected);
             CHECK(wrong == 0);
         }
     }
@@ -1263,7 +1263,7 @@ void RunCustomBorder(Rig& rig) {
                 }
             }
         }
-        INFO(what);
+        INFO(std::string(what));
         CHECK(wrongInside == 0);
         CHECK(wrongBorder == 0);
     };

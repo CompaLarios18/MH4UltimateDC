@@ -241,12 +241,12 @@ no report allowed (`rhi-spike.md` 9.4 item 16; 6.9 ran D2 and D3 under it with g
   ThreadSanitizer cannot see. **They are needed when the machine is busy**: lavapipe's worker threads, whose synchronisation
   ThreadSanitizer cannot see, then give allocator and mutex reports (a data race whose first frame is `free`, `malloc` or
   `pthread_mutex_destroy` called from `libvulkan_lvp.so`). On a quiet machine (loader 1.3.275, Mesa 25.2.8) the two test binaries
-  happened to pass with an empty file, which is timing-dependent; the reviewer reproduced it: with an empty file the patterns test
-  failed (exit 66) in 6 of 8 runs on a loaded machine and 6 of 6 with four busy-loop processes, while with the committed file it
-  passed 8 of 8 loaded and 6 of 6 with busy loops. They are not the `called_from_lib:` entries the spec of N2-29 had: any `called_from_lib` entry made ThreadSanitizer
-  worse, measured with each library alone: for the driver it stops the process ("library ... is unloaded") because the loader
-  `dlclose`s the driver whenever an instance is destroyed, and for the loader it reported "unlock of an unlocked mutex" in
-  `vkDestroyDevice`, in code that is clean without the entry. **What they cost:** a report with a frame in the loader or in
+  happened to pass with an empty file, which is timing-dependent. Reproduced: with an empty file the patterns test failed (exit 66) in 6 of 8 runs on a loaded machine
+  and in 6 of 6 with four busy-loop processes; with the committed file it passed 8 of 8 and 6 of 6. They are not the `called_from_lib:` entries the spec of N2-29 had: `called_from_lib:` entries made
+  ThreadSanitizer worse: with the driver entry it stopped the process with "library ... is unloaded" in one run (the loader
+  `dlclose`s the driver whenever an instance is destroyed), and across runs and entries it also reported a data race with both
+  accesses inside `libLLVM.so`, a lock-order inversion, and "unlock of an unlocked mutex" (with the loader entry, in
+  `vkDestroyDevice`), in code that is clean without the entry. **What they cost:** a report with a frame in the loader or in
   lavapipe's driver is hidden, so the job does not catch an unlocked Vulkan call that races inside the driver (a queue used from
   two threads without its lock, say); the guards for that are the validation layer's synchronization validation, the owner-rule
   checks and `MH4N_RHI_CHECKS`. Never a frame of plume or of ours: a report in plume's code outside D2 stops the work package with
