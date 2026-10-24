@@ -343,6 +343,20 @@ Azahar draws no gas at all (its shader generator logs "Unimplemented gas mode", 
 - **Traps:** the default device choice may pick another adapter if the PC has one: pick the discrete GPU explicitly (`MH4N_VULKAN_DEVICE="RX 6700"`, see `rhi.md`); the layer-run harness is Python and calls the test binary; never write into `build/golden` or the staged game folders (this package needs no game data).
 - **Out of scope:** MoltenVK and the Mac (the maintainer's run of `mh4n_vkprobe` is D95's input); a second queue; fixing what fails.
 
+### N2-32 · The RHI tests on a machine with a real GPU
+- **Size / agent:** S · native-worker
+- **Depends on:** N2-31 · **Needs:** ci, pc
+- **Goal:** N2-31 ran the RHI tests on the RX 6700 XT: 75 of the 80 cases that ran pass, and the 5 failures are assumptions of the tests about lavapipe, not defects (`docs/native/rhi.md`, *On the RX 6700 XT*). Make the tests say what they mean on any machine, so that the PC can run them with `MH4N_REQUIRE_VULKAN=1` and get a clean result.
+- **Read first:** `docs/native/rhi.md` (*On the RX 6700 XT*, the four failure classes); `native/tests/support/vulkan_device.h`; the three test files; `.github/workflows/native.yml` (the Linux job sets `MH4N_REQUIRE_VULKAN`); `docs/research/rhi-spike.md` 6.9 (the patterns B1 to B5).
+- **Files (allowlist):** `native/tests/gpu_backend_core_test.cpp`, `native/tests/rhi_plume_test.cpp`, `native/tests/rhi_plume_patterns_test.cpp`, `native/tests/support/vulkan_device.h`, `.github/workflows/native.yml` (the Linux job's environment only), `docs/native/rhi.md`, `docs/native/CI.md` (the variable).
+- **Spec:**
+  - **The headless-surface cases** (`device/headless_surface` in two binaries, `instance/the_headless_surface_and_the_debug_messenger_come_when_asked`, `presentation/with_a_headless_surface_agrees_with_the_probe`): when the loader does not list `VK_EXT_headless_surface` they skip with a message, as they do without `MH4N_REQUIRE_VULKAN`; they fail for that reason only under a new `MH4N_REQUIRE_HEADLESS_SURFACE=1`, which the Linux job of `native.yml` sets beside `MH4N_REQUIRE_VULKAN` (there the extension is the lavapipe stack's, and its absence means the setup broke). `MH4N_REQUIRE_VULKAN=1` goes back to meaning only "a device must exist". Document both in `rhi.md` and `CI.md`. The swapchain's surface on Windows (a real window, `VK_KHR_win32_surface`) is N2-27's and N2b-06's design, not this package's.
+  - **`B1_shadow_store_no_interlock`:** the shader does not guarantee the order of the three overlapping read-modify-writes, so the case asserts what it does guarantee (every texel holds a value from 1 to 3) and logs how many hold 3; the ordered patterns (B2 to B5) keep their exact assertions.
+  - **The two D24S8 cases** (`patch10/dynamic_stencil_state_d24s8`, `patch11/depth_stencil_copy_as_two_regions`) and `loading/no_driver_gives_an_error_with_a_message_and_the_process_goes_on` on Windows: a case that has nothing to assert on this device is reported **skipped**, not passed (the framework's skip, or the test's own helper if it has one), so that a run's counts say what ran. For the last one, either implement the subprocess check on Windows or skip it with a visible message.
+- **Done when:** on lavapipe (CI Linux and the cloud) `ctest` passes with the same cases as before and none of them newly skipped; (the maintainer's PC, `pc`) the three binaries run on the RX 6700 XT with `MH4N_REQUIRE_VULKAN=1 MH4N_VULKAN_DEVICE="RX 6700"` give 0 failed, and the skipped cases are the ones named above; `rhi.md`'s section on the RX 6700 XT is brought up to date with the new counts.
+- **Traps:** do not weaken an assertion that lavapipe makes meaningful: B2 to B5, the owner-rule cases (D1, D3, D3b) and the layer-run controls keep their exact checks.
+- **Out of scope:** the swapchain on Windows; MoltenVK.
+
 ### N2-27 · Backend targets: formats, images, passes, layouts and bindings
 - **Size / agent:** M · native-worker-high
 - **Depends on:** N2-26, N2-29 · **Needs:** ci
