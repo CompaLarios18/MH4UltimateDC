@@ -985,8 +985,7 @@ constexpr uint32_t kQuadrant = kW / 2;
 // write mask 0xFFFFFFFF: Q0 would fail (0 != 5).
 void RunStencil(Rig& rig, RenderFormat stencilFormat, const char* name) {
     RenderDevice& dev = *rig.dev;
-    if (!dev.getFormatSupport(stencilFormat).attachment) {
-        std::printf("rhi_plume_patterns_test: %s: the device has no depth-stencil attachment in this format, skipped\n", name);
+    if (!CapabilityOk(rig, dev.getFormatSupport(stencilFormat).attachment, "depth-stencil attachment in this format", name)) {
         return;
     }
     auto color = MakeTarget(dev);
@@ -1076,8 +1075,7 @@ void RunStencil(Rig& rig, RenderFormat stencilFormat, const char* name) {
 // the footprint's offset (4 bytes per texel, D24 in the low 24 bits, D32 the float), then the stencil plane right after it.
 void RunDepthStencilCopy(Rig& rig, RenderFormat format, const char* name) {
     RenderDevice& dev = *rig.dev;
-    if (!dev.getFormatSupport(format).attachment) {
-        std::printf("rhi_plume_patterns_test: %s: the device has no depth-stencil attachment in this format, skipped\n", name);
+    if (!CapabilityOk(rig, dev.getFormatSupport(format).attachment, "depth-stencil attachment in this format", name)) {
         return;
     }
     auto color = MakeTarget(dev);
@@ -1294,8 +1292,6 @@ void RunCustomBorderRefused(Rig& rig) {
     REQUIRE(accepted != nullptr);
     CHECK(static_cast<VulkanSampler*>(accepted.get())->vk != VK_NULL_HANDLE);
 }
-
-// ---- the controls (deliberate misuse, run by tools/native/vk_layer_run.py --test-case) --------------------------------------------------------
 
 }  // namespace
 
@@ -1575,8 +1571,7 @@ TEST_CASE("control/D4" * doctest::skip()) {
         return;
     }
     LogDevice(rig, "control/D4");
-    RunD4(rig);
-    CHECK(true);
+    RunD4(rig);  // nothing asserts here: the layer's message is the result
 }
 
 // D3 without the owner rule: the layer must report VUID-VkImageMemoryBarrier-oldLayout-01197 and InvalidImageLayout (counts

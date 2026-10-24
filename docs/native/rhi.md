@@ -216,7 +216,9 @@ stage mask, C2 on a second queue; an owner-rule hand-over across queues) are the
 `native-tsan` (`.github/workflows/native.yml`) builds the multi-thread RHI tests with `-fsanitize=thread` and runs them with
 no report allowed (`rhi-spike.md` 9.4 item 16; 6.9 ran D2 and D3 under it with g++ 13).
 
-- **Compiler and runtime.** clang 18.1.3 (the `clang` of Ubuntu 24.04) with the apt package **`libclang-rt-18-dev`**
+- **Compiler and runtime.** clang 18.1.3 (on Ubuntu 24.04 `clang` is clang 18; the workflow job names `clang-18` and `clang++-18` because
+  the runner images carry several clangs, so that the compiler and the runtime package are the same major version; `setup_env.sh` and
+  the cloud machine use plain `clang`, which is 18 there) with the apt package **`libclang-rt-18-dev`**
   (`1:18.1.3-1ubuntu1`), which holds `libclang_rt.tsan-x86_64.a`; the cloud image had clang but not this package, so
   `clang -fsanitize=thread` failed to link until it was installed. `tools/native/setup_env.sh` installs it and prints whether the
   sanitizer links; `docs/native/ENV.md` lists it; the workflow job installs it. The same package name carries the compiler's
@@ -236,9 +238,12 @@ no report allowed (`rhi-spike.md` 9.4 item 16; 6.9 ran D2 and D3 under it with g
   (it races on purpose and would fail the job).
 - **Suppressions** (`tools/native/tsan.supp`): `race:` and `mutex:` entries on the file names of the Vulkan loader
   (`libvulkan.so`) and lavapipe's driver library (`libvulkan_lvp.so`), for a driver build whose uninstrumented locking
-  ThreadSanitizer cannot see. **They never fire on this machine** (loader 1.3.275, Mesa 25.2.8): `rhi_plume_patterns_test` and
-  `rhi_plume_test` report nothing with an empty file too (also with `MESA_SHADER_CACHE_DISABLE=true`, which forces lavapipe's JIT to
-  compile). They are not the `called_from_lib:` entries the spec of N2-29 had: any `called_from_lib` entry made ThreadSanitizer
+  ThreadSanitizer cannot see. **They are needed when the machine is busy**: lavapipe's worker threads, whose synchronisation
+  ThreadSanitizer cannot see, then give allocator and mutex reports (a data race whose first frame is `free`, `malloc` or
+  `pthread_mutex_destroy` called from `libvulkan_lvp.so`). On a quiet machine (loader 1.3.275, Mesa 25.2.8) the two test binaries
+  happened to pass with an empty file, which is timing-dependent; the reviewer reproduced it: with an empty file the patterns test
+  failed (exit 66) in 6 of 8 runs on a loaded machine and 6 of 6 with four busy-loop processes, while with the committed file it
+  passed 8 of 8 loaded and 6 of 6 with busy loops. They are not the `called_from_lib:` entries the spec of N2-29 had: any `called_from_lib` entry made ThreadSanitizer
   worse, measured with each library alone: for the driver it stops the process ("library ... is unloaded") because the loader
   `dlclose`s the driver whenever an instance is destroyed, and for the loader it reported "unlock of an unlocked mutex" in
   `vkDestroyDevice`, in code that is clean without the entry. **What they cost:** a report with a frame in the loader or in

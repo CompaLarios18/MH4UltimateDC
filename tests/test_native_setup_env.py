@@ -111,10 +111,14 @@ def test_tsan_job_builds_with_the_sanitizer_in_every_flag_and_installs_the_runti
     for variable in ("CMAKE_C_FLAGS", "CMAKE_CXX_FLAGS", "CMAKE_EXE_LINKER_FLAGS", "CMAKE_SHARED_LINKER_FLAGS"):
         assert f"-D{variable}=-fsanitize=thread" in job, variable
     assert "-B build/tsan" in job and "build/native" not in job  # a tree of its own
+    # one compiler version for the compiler and the runtime package, named because the runner has several clangs
+    assert "clang-18" in job and "-DCMAKE_C_COMPILER=clang-18" in job and "-DCMAKE_CXX_COMPILER=clang++-18" in job
     # the runtime package is the one setup_env.sh installs
     assert "libclang-rt-18-dev" in job and "libclang-rt-18-dev" in SCRIPT.read_text()
     # the targets come from ctest -N over the RHI regex (names that do not exist yet match nothing)
-    assert "rhi_.*|gpu_backend_.*|gpu_queue_test|present_test|swapchain_test" in job
+    regex = "^(rhi_.*|gpu_backend_.*|gpu_queue_test|present_test|swapchain_test)$"
+    assert job.count(regex) == 1  # written once, in the job's env
+    assert f'  TSAN_TESTS: "{regex}"' in job and f"-R '{regex}'" in WORKFLOW.read_text(encoding="utf-8")  # the layer step of `native` has the same
     assert "ctest --test-dir build/tsan -N -R" in job
     assert 'MH4N_REQUIRE_VULKAN: "1"' in job
     assert "halt_on_error=1" in job and "tools/native/tsan.supp" in job
