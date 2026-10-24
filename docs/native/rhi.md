@@ -334,9 +334,9 @@ Environment of every run: `MH4N_REQUIRE_VULKAN=1`, `MH4N_VULKAN_DEVICE="RX 6700"
 
 | Binary | Cases passed | Failed | Skipped | Failed or skipped cases |
 |---|---|---|---|---|
-| `gpu_backend_core_test` | 46 of 49 | 3 | 1 | failed: `instance/the_headless_surface_and_the_debug_messenger_come_when_asked`, `device/headless_surface`, `presentation/with_a_headless_surface_agrees_with_the_probe`; skipped: `loading/no_driver_gives_an_error_with_a_message_and_the_process_goes_on` (its own message: "the subprocess check runs on Linux") |
+| `gpu_backend_core_test` | 46 of 49 | 3 | 1 | failed: `instance/the_headless_surface_and_the_debug_messenger_come_when_asked`, `device/headless_surface`, `presentation/with_a_headless_surface_agrees_with_the_probe`; skipped: `loading/child` (the subprocess helper, marked `doctest::skip()`); `loading/no_driver_gives_an_error_with_a_message_and_the_process_goes_on` is counted among the 46 passed but is vacuous here: it ends in a `WARN_MESSAGE` "skipped: the subprocess check runs on Linux" |
 | `rhi_plume_test` | 7 of 8 | 1 | 1 | failed: `device/headless_surface`; skipped: the control `control/C5` (controls are skipped by default) |
-| `rhi_plume_patterns_test` | 22 of 23 | 1 | 4 | failed: `B1_shadow_store_no_interlock`; skipped: `patch10/dynamic_stencil_state_d24s8` and `patch11/depth_stencil_copy_as_two_regions` (message: "D24S8: the device has no depth-stencil attachment in this format"), and two controls |
+| `rhi_plume_patterns_test` | 22 of 23 | 1 | 4 | failed: `B1_shadow_store_no_interlock`; skipped: the four controls `control/B7`, `control/B6`, `control/D4` and `control/D2` (all `doctest::skip()`); `patch10/dynamic_stencil_state_d24s8` and `patch11/depth_stencil_copy_as_two_regions` are counted among the 22 passed but make no assertion (message: "skipped: D24S8: the device has no depth-stencil attachment in this format"), so 20 of the 22 exercised the driver |
 
 Assertions: 1,751 of 1,755 (core), 46 of 47 (plume), 1,211 of 1,212 (patterns).
 
@@ -370,15 +370,16 @@ registry key and no `VK_SDK_PATH`. `VK_LAYER_KHRONOS_validation` is not listed, 
    surface the swapchain cases (N2-27, N2b-06) need must on this PC come from a real window (`VK_KHR_win32_surface`); that is a design question for the
    orchestrator, not a driver defect. The cases that need a surface did not run here (the presentation half of `device/chosen`, the present-capable family
    filter): they are still the PC's legs.
-2. **`B1_shadow_store_no_interlock`: test assumption (it relies on lavapipe running the draws one after another).** Assertion `CHECK( bad == 0 )` at
+2. **`B1_shadow_store_no_interlock`: test assumption (a result the shader does not guarantee).** Assertion `CHECK( bad == 0 )` at
    `rhi_plume_patterns_test.cpp:574`, first message `B1: 256 of 256 texels != 3 (texel0 = 1)`. B1 is the shadow write with `imageLoad` plus `imageStore` and no
    interlock, three overlapping draws that each add 1, with no barrier; without the interlock the order of the read-modify-write between overlapping fragments
-   is undefined, and the GPU ran the draws overlapped (every texel 1, not 3), where lavapipe's serial execution gives 3. The same pattern with the interlock
-   (`B2`) gives 0 of 256 wrong on the RX 6700 XT, and so do `B3`, `B4` and `B5`. `rhi-spike.md` 6.9 lists B1 as the case that is clean and right on
-   lavapipe only by serial execution. Not a trigger of D4: the interlock the plan uses is `yes` here and `B2` passes. (The case asserts a result the shader
+   is undefined. This run's inference (not something 6.9 states): the GPU ran the overlapping draws without ordering their read-modify-writes (every
+   texel 1, not 3), where lavapipe's serial execution gives 3; the evidence is B1 = 1 per texel against B5, which has a barrier, = 3. `rhi-spike.md` 6.9 lists
+   the patched B1 as "clean; right" on lavapipe and says silence on B1, B3 and B5 says nothing about their ordering; it called the ordering of the interlock
+   variants on a real GPU unverified, and B2 and B4 now give 0 of 256 wrong on the RX 6700 XT (so do B3 and B5). Not a trigger of D4: the interlock the plan uses is `yes` here and `B2` passes. (The case asserts a result the shader
    does not guarantee; whether it should assert the opposite on a real GPU, or skip, is the orchestrator's.)
-3. **The two D24S8 skips are not failures** and are not the trigger: the device has no `D24_UNORM_S8_UINT` attachment, as the probe says; the D32S8 path
-   (`d24s8` masked) is the PC's path and these two cases only run where the device has D24S8 (lavapipe). Under `MH4N_REQUIRE_VULKAN=1` they skip by their own message instead of failing.
+3. **The two D24S8 cases are not failures** and are not the trigger: the device has no `D24_UNORM_S8_UINT` attachment, as the probe says; the D32S8 path
+   (`d24s8` masked) is the PC's path and these two cases only assert where the device has D24S8 (lavapipe). Under `MH4N_REQUIRE_VULKAN=1` they log "skipped" by their own message and are counted as passed (no assertion), instead of failing.
 
 **Verdict:** 75 of the 80 cases that ran pass on the RX 6700 XT; the 5 failures (3 + 1 + 1 over the three binaries, 2 distinct causes: the missing `VK_EXT_headless_surface` and B1) are all of the class "test assumption" about lavapipe, none a backend or patch defect and none a driver difference that the patches and the owner rule cannot repair, so this run does not fire D4's second trigger. `D1`, `D3`, `D3b` (the owner-rule
 threading cases of the patterns: 0 layout overwrites and 0 broken chains over 2,000 rounds, both) pass on the AMD driver.
