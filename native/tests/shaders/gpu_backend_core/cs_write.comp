@@ -1,0 +1,9 @@
+#version 450
+// data[i] = i * scale + bias, for the invocations 0 .. n-1 (same bindings as vs_write.vert).
+layout(local_size_x = 4) in;
+layout(std430, set = 0, binding = 0) buffer Out { uint data[]; } out_buf;
+layout(std140, set = 0, binding = 1) uniform U { uint scale; uint bias; } u;
+
+void main() {
+    out_buf.data[gl_GlobalInvocationID.x] = gl_GlobalInvocationID.x * u.scale + u.bias;
+}

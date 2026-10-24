@@ -1,0 +1,11 @@
+# <array name> <file> [glslang options]: the lines of docs/research/rhi-spike-evidence/shaders/build.sh
+spv_fs_vert fs.vert
+spv_tri_vert tri.vert
+spv_tri_frag tri.frag
+spv_sample_frag sample.frag
+spv_blend_frag blend.frag
+spv_shadow_store_nil shadow.frag -DMODE=0
+spv_shadow_store_il shadow.frag -DMODE=0 -DINTERLOCK
+spv_shadow_cas_nil shadow.frag -DMODE=1
+spv_shadow_cas_il shadow.frag -DMODE=1 -DINTERLOCK
+spv_ubo_offset_comp ubo_offset.comp

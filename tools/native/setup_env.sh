@@ -9,9 +9,12 @@ SDL_VERSION="3.4.18"
 SDL_URL="https://github.com/libsdl-org/SDL"
 AZAHAR_URL="https://github.com/azahar-emu/azahar.git"
 
+# libclang-rt-18-dev (1:18.1.3-1ubuntu1 on Ubuntu 24.04) holds the ThreadSanitizer runtime of clang 18, the `clang` this
+# image and the ubuntu-24.04 runners install; without it `clang -fsanitize=thread` does not link (N2-29, build/tsan).
 APT_PACKAGES=(
   clang lld llvm cmake ninja-build pkg-config ccache
-  libvulkan-dev vulkan-tools mesa-vulkan-drivers glslang-tools spirv-tools python3-pip
+  libvulkan-dev vulkan-tools mesa-vulkan-drivers vulkan-validationlayers glslang-tools spirv-tools python3-pip
+  libclang-rt-18-dev
   libx11-dev libxext-dev libwayland-dev libxkbcommon-dev libasound2-dev libpulse-dev
   libxcursor-dev libxi-dev libxrandr-dev libxfixes-dev libxss-dev libxtst-dev
 )
@@ -139,6 +142,15 @@ report() {
   v="$(cmake --version | head -n1)"; echo "  cmake: $v"
   v="$(ninja --version)"; echo "  ninja: $v"
   v="$(glslangValidator --version 2>&1 | head -n1 || true)"; echo "  glslangValidator: $v"
+  local probe
+  probe="$(mktemp -d)"
+  if echo 'int main(void) { return 0; }' | clang -x c -fsanitize=thread -o "$probe/tsan_probe" - >/dev/null 2>&1; then
+    v="links (clang -fsanitize=thread)"
+  else
+    v="missing: clang -fsanitize=thread does not link (apt libclang-rt-18-dev)"
+  fi
+  rm -rf "$probe"
+  echo "  ThreadSanitizer runtime: $v"
   v="$(pkg-config --modversion sdl3 2>/dev/null || echo 'not installed (--no-sdl?)')"; echo "  SDL3: $v"
   v="$(python3 -m pip list 2>/dev/null | grep -i -E '^(pyelftools|pytest|unicorn|capstone) ' | tr -s ' ' '=' | tr '\n' ' ')"
   echo "  python packages: $v"
