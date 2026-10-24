@@ -2146,7 +2146,7 @@ def test_the_deterministic_flag_judges_every_common_frame(env, capsys, monkeypat
     capsys.readouterr()
     assert det_check(env, "--deterministic", "--require", "images,svc,state") == 0
     out = capsys.readouterr().out
-    assert statuses(out)["images"] == "PASS"
+    assert statuses(out)["images"] == "PASS" and statuses(out)["images-all"] == "INFO"
     assert result_of(env, "images")["detail"] == "3 frame(s) judged, 0 skipped (gas), 0 failed"
     assert env.calls()[-1]["argv"].count("--deterministic") == 1
     # a frame the calibrated list would never name fails the gate (frame 20 is not in S1's list, 10 and 30 are)
@@ -2176,6 +2176,19 @@ def test_only_the_frames_both_sides_have_are_judged(env, capsys, monkeypatch):
     monkeypatch.setenv("FAKE_SKIP_SHOT", "20_bottom")             # one screen of a common frame missing: a failure
     assert det_check(env) == 1
     assert "frame 20 bottom: the run wrote no screenshot" in capsys.readouterr().out
+    monkeypatch.setenv("FAKE_SKIP_SHOT", "20_top")                # the other screen of the same frame
+    assert det_check(env) == 1
+    assert "frame 20 top: the run wrote no screenshot" in capsys.readouterr().out
+
+
+def test_a_frame_only_the_candidate_has_is_not_judged(env, capsys, monkeypatch):
+    monkeypatch.setenv("FAKE_SKIP_SHOT", "20_top,20_bottom")      # the recording has no shot at frame 20
+    assert env.record() == 0
+    monkeypatch.delenv("FAKE_SKIP_SHOT")
+    monkeypatch.setenv("FAKE_PIXELS", "20:200")                   # the candidate's frame 20 is far off: nothing to compare
+    capsys.readouterr()
+    assert det_check(env, "--deterministic", "--require", "images") == 0
+    assert result_of(env, "images")["detail"] == "2 frame(s) judged, 0 skipped (gas), 0 failed"
 
 
 def test_a_gas_frame_is_skipped_in_the_deterministic_mode(env, capsys, monkeypatch):
