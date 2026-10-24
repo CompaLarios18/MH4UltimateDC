@@ -1,0 +1,580 @@
+diff --git a/plume_render_interface_types.h b/plume_render_interface_types.h
+index c7238b9..9941518 100644
+--- a/plume_render_interface_types.h
++++ b/plume_render_interface_types.h
+@@ -19,7 +19,9 @@
+ #define PLUME_SDL_VULKAN_ENABLED
+ #endif
+ 
+-#if defined(_WIN32)
++#if defined(PLUME_EXTERNAL_SURFACE_ONLY)
++// mh4n: no window-system header; surfaces come from the caller as a VkSurfaceKHR (patch 08).
++#elif defined(_WIN32)
+ #include <Windows.h>
+ #elif defined(__ANDROID__)
+ #include "android/native_window.h"
+@@ -40,7 +42,13 @@
+ #endif
+ 
+ namespace plume {
+-#if defined(_WIN32)
++#if defined(PLUME_EXTERNAL_SURFACE_ONLY)
++    // mh4n: plume's own window surfaces are compiled out (patch 08), so there is no window type.
++    struct RenderWindow {
++        bool operator==(const struct RenderWindow &) const { return true; }
++        bool operator!=(const struct RenderWindow &) const { return false; }
++    };
++#elif defined(_WIN32)
+     // Native HWND handle to the target window.
+     typedef HWND RenderWindow;
+ #elif defined(__ANDROID__)
+diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
+index 955310c..fd4238b 100644
+--- a/plume_vulkan.cpp
++++ b/plume_vulkan.cpp
+@@ -13,16 +13,18 @@
+ #include <algorithm>
+ #include <cmath>
+ #include <climits>
++#include <cstdarg>
++#include <cstdio>
+ #include <unordered_map>
+ 
+ #if DLSS_ENABLED
+ #   include "render/plume_dlss.h"
+ #endif
+ 
+-#ifndef NDEBUG
+-#   define VULKAN_VALIDATION_LAYER_ENABLED
+-#   define VULKAN_OBJECT_NAMES_ENABLED
+-#endif
++// mh4n (patch 08): the validation layer and VK_EXT_debug_utils are no longer switched on by the
++// build type: the caller asks for them (VulkanInterfaceOptions), so these are always compiled.
++#define VULKAN_VALIDATION_LAYER_ENABLED
++#define VULKAN_OBJECT_NAMES_ENABLED
+ 
+ // TODO:
+ // - Fix resource pools.
+@@ -43,11 +45,15 @@ namespace plume {
+ 
+     // Required extensions.
+ 
++    // mh4n (patch 08): nothing is required of the instance beyond the loader. The surface extensions
++    // are optional (and absent altogether when the window-surface code is compiled out), and
++    // VK_EXT_debug_utils is enabled only when the caller asks (VulkanInterfaceOptions).
+     static const std::unordered_set<std::string> RequiredInstanceExtensions = {
++    };
++
++    static const std::unordered_set<std::string> OptionalInstanceExtensions = {
++#   if !defined(PLUME_EXTERNAL_SURFACE_ONLY)
+         VK_KHR_SURFACE_EXTENSION_NAME,
+-#   ifdef VULKAN_OBJECT_NAMES_ENABLED
+-        VK_EXT_DEBUG_UTILS_EXTENSION_NAME,
+-#   endif
+ #   if defined(_WIN32)
+         VK_KHR_WIN32_SURFACE_EXTENSION_NAME,
+ #   elif defined(__ANDROID__)
+@@ -59,17 +65,15 @@ namespace plume {
+ #   elif defined(__APPLE__)
+         VK_EXT_METAL_SURFACE_EXTENSION_NAME,
+ #   endif
+-    };
+-
+-    static const std::unordered_set<std::string> OptionalInstanceExtensions = {
++#   endif
+ #   if defined(__APPLE__)
+         // Tells the system Vulkan loader to enumerate portability drivers, if supported.
+         VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME,
+ #   endif
+     };
+     
++    // mh4n (patch 08): VK_KHR_swapchain is required only when the caller gives a surface (VulkanDeviceExtras).
+     static const std::unordered_set<std::string> RequiredDeviceExtensions = {
+-        VK_KHR_SWAPCHAIN_EXTENSION_NAME,
+     };
+     
+     static const std::unordered_set<std::string> OptionalDeviceExtensions = {
+@@ -102,6 +106,23 @@ namespace plume {
+         return (value + powerOf2Alignment - 1) & ~(powerOf2Alignment - 1);
+     }
+ 
++    // mh4n (patch 08): prints a failure to stderr as plume always did and also hands its text to the caller.
++    static void reportFailure(std::string *out, const char *format, ...) {
++        char buffer[512];
++        va_list args;
++        va_start(args, format);
++        vsnprintf(buffer, sizeof(buffer), format, args);
++        va_end(args);
++        fprintf(stderr, "%s\n", buffer);
++        if (out != nullptr) {
++            if (!out->empty()) {
++                out->push_back('\n');
++            }
++
++            out->append(buffer);
++        }
++    }
++
+     VkFormat toVk(RenderFormat format) {
+         switch (format) {
+         case RenderFormat::UNKNOWN:
+@@ -773,6 +794,11 @@ namespace plume {
+ 
+     static void setObjectName(VkDevice device, VkObjectType objectType, uint64_t object, const std::string &name) {
+ #   ifdef VULKAN_OBJECT_NAMES_ENABLED
++        // mh4n (patch 08): the pointer is null unless the instance enabled VK_EXT_debug_utils.
++        if (vkSetDebugUtilsObjectNameEXT == nullptr) {
++            return;
++        }
++
+         VkDebugUtilsObjectNameInfoEXT nameInfo = {};
+         nameInfo.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT;
+         nameInfo.objectType = objectType;
+@@ -2088,7 +2114,11 @@ namespace plume {
+ 
+         VkResult res;
+ 
+-#   if defined(_WIN32)
++#   if defined(PLUME_EXTERNAL_SURFACE_ONLY)
++        // mh4n (patch 08): plume's window surfaces are compiled out; the caller builds its own swap chain.
++        fprintf(stderr, "plume's swap chain is not available: PLUME_EXTERNAL_SURFACE_ONLY is defined.\n");
++        return;
++#   elif defined(_WIN32)
+         assert(desc.renderWindow != 0);
+         VkWin32SurfaceCreateInfoKHR surfaceCreateInfo = {};
+         surfaceCreateInfo.sType = VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR;
+@@ -2470,7 +2500,10 @@ namespace plume {
+     }
+ 
+     void VulkanSwapChain::getWindowSize(uint32_t &dstWidth, uint32_t &dstHeight) const {
+-#   if defined(_WIN32)
++#   if defined(PLUME_EXTERNAL_SURFACE_ONLY)
++        dstWidth = 0;
++        dstHeight = 0;
++#   elif defined(_WIN32)
+         RECT rect;
+         GetClientRect(desc.renderWindow, &rect);
+         dstWidth = rect.right - rect.left;
+@@ -3615,7 +3648,12 @@ namespace plume {
+     }
+ 
+     std::unique_ptr<RenderSwapChain> VulkanCommandQueue::createSwapChain(const RenderSwapChainDesc &desc) {
++#   if defined(PLUME_EXTERNAL_SURFACE_ONLY)
++        // mh4n (patch 08): see the VulkanSwapChain constructor.
++        return nullptr;
++#   else
+         return std::make_unique<VulkanSwapChain>(this, desc);
++#   endif
+     }
+ 
+     void VulkanCommandQueue::executeCommandLists(const RenderCommandList **commandLists, uint32_t commandListCount, RenderCommandSemaphore **waitSemaphores, uint32_t waitSemaphoreCount, RenderCommandSemaphore **signalSemaphores, uint32_t signalSemaphoreCount, RenderCommandFence *signalFence) {
+@@ -3809,7 +3847,7 @@ namespace plume {
+ 
+     // VulkanDevice
+     
+-    VulkanDevice::VulkanDevice(VulkanInterface *renderInterface, const std::string &preferredDeviceName) {
++    VulkanDevice::VulkanDevice(VulkanInterface *renderInterface, const std::string &preferredDeviceName, const VulkanDeviceExtras &extras) {
+         assert(renderInterface != nullptr);
+ 
+         this->renderInterface = renderInterface;
+@@ -3817,7 +3855,7 @@ namespace plume {
+         uint32_t deviceCount = 0;
+         vkEnumeratePhysicalDevices(renderInterface->instance, &deviceCount, nullptr);
+         if (deviceCount == 0) {
+-            fprintf(stderr, "Unable to find devices that support Vulkan.\n");
++            reportFailure(extras.error, "Unable to find devices that support Vulkan.");
+             return;
+         }
+         
+@@ -3862,7 +3900,7 @@ namespace plume {
+         }
+ 
+         if (physicalDevice == VK_NULL_HANDLE) {
+-            fprintf(stderr, "Unable to find a device with the required features.\n");
++            reportFailure(extras.error, "Unable to find a device with the required features.");
+             return;
+         }
+ 
+@@ -3873,7 +3911,12 @@ namespace plume {
+         std::vector<VkExtensionProperties> availableExtensions(extensionCount);
+         vkEnumerateDeviceExtensionProperties(physicalDevice, nullptr, &extensionCount, availableExtensions.data());
+ 
+-        std::unordered_set<std::string> missingRequiredExtensions = RequiredDeviceExtensions;
++        std::unordered_set<std::string> requiredDeviceExtensions = RequiredDeviceExtensions;
++        if (extras.surface != VK_NULL_HANDLE) {
++            requiredDeviceExtensions.insert(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
++        }
++
++        std::unordered_set<std::string> missingRequiredExtensions = requiredDeviceExtensions;
+         std::unordered_set<std::string> supportedOptionalExtensions;
+ #   if DLSS_ENABLED
+         const std::unordered_set<std::string> dlssExtensions = DLSS::getRequiredDeviceExtensionsVulkan(this);
+@@ -3882,6 +3925,10 @@ namespace plume {
+             const std::string extensionName(availableExtensions[i].extensionName);
+             missingRequiredExtensions.erase(extensionName);
+ 
++            if (requiredDeviceExtensions.find(extensionName) != requiredDeviceExtensions.end()) {
++                continue;
++            }
++
+             if (OptionalDeviceExtensions.find(extensionName) != OptionalDeviceExtensions.end()) {
+                 supportedOptionalExtensions.insert(extensionName);
+             }
+@@ -3894,10 +3941,10 @@ namespace plume {
+         
+         if (!missingRequiredExtensions.empty()) {
+             for (const std::string &extension : missingRequiredExtensions) {
+-                fprintf(stderr, "Missing required extension: %s.\n", extension.c_str());
++                reportFailure(extras.error, "Missing required extension: %s.", extension.c_str());
+             }
+ 
+-            fprintf(stderr, "Unable to create device. Required extensions are missing.\n");
++            reportFailure(extras.error, "Unable to create device. Required extensions are missing.");
+             return;
+         }
+ 
+@@ -4078,11 +4125,14 @@ namespace plume {
+         std::vector<bool> queueFamilyUsed(queueFamilyCount, false);
+         vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &queueFamilyCount, queueFamilyProperties.data());
+ 
+-        auto pickFamilyQueue = [&](RenderCommandListType type, VkQueueFlags flags) {
++        // mh4n (patch 08): with a presentSurface, only the families that can present to it are candidates.
++        // Returns false when no family fits (the family index then stays 0 as it always did).
++        auto pickFamilyQueue = [&](RenderCommandListType type, VkQueueFlags flags, VkSurfaceKHR presentSurface = VK_NULL_HANDLE) {
+             uint32_t familyIndex = 0;
+             uint32_t familySetBits = sizeof(uint32_t) * 8;
+             uint32_t familyQueueCount = 0;
+             bool familyUsed = false;
++            bool familyFound = false;
+             for (uint32_t i = 0; i < queueFamilyCount; i++) {
+                 const VkQueueFamilyProperties &props = queueFamilyProperties[i];
+ 
+@@ -4091,6 +4141,13 @@ namespace plume {
+                     continue;
+                 }
+ 
++                if (presentSurface != VK_NULL_HANDLE) {
++                    VkBool32 presentSupported = VK_FALSE;
++                    if ((vkGetPhysicalDeviceSurfaceSupportKHR(physicalDevice, i, presentSurface, &presentSupported) != VK_SUCCESS) || !presentSupported) {
++                        continue;
++                    }
++                }
++
+                 // Prefer picking the queues with the least amount of bits set that match the mask we're looking for.
+                 // If the queue families have matching capabilities but one is already used, prefer the unused one.
+                 uint32_t setBits = numberOfSetBits(props.queueFlags);
+@@ -4100,15 +4157,21 @@ namespace plume {
+                     familySetBits = setBits;
+                     familyQueueCount = props.queueCount;
+                     familyUsed = used;
++                    familyFound = true;
+                 }
+             }
+ 
+             queueFamilyIndices[toFamilyIndex(type)] = familyIndex;
+             queueFamilyUsed[familyIndex] = true;
++            return familyFound;
+         };
+ 
+         // Pick the family queues for each type of command list.
+-        pickFamilyQueue(RenderCommandListType::DIRECT, VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT);
++        if (!pickFamilyQueue(RenderCommandListType::DIRECT, VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT, extras.surface) && (extras.surface != VK_NULL_HANDLE)) {
++            reportFailure(extras.error, "No queue family of the device can present to the surface.");
++            return;
++        }
++
+         pickFamilyQueue(RenderCommandListType::COMPUTE, VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT);
+         pickFamilyQueue(RenderCommandListType::COPY, VK_QUEUE_TRANSFER_BIT);
+ 
+@@ -4132,7 +4195,7 @@ namespace plume {
+         }
+ 
+         std::vector<const char *> enabledExtensions;
+-        for (const std::string &extension : RequiredDeviceExtensions) {
++        for (const std::string &extension : requiredDeviceExtensions) {
+             enabledExtensions.push_back(extension.c_str());
+         }
+ 
+@@ -4140,6 +4203,10 @@ namespace plume {
+             enabledExtensions.push_back(extension.c_str());
+         }
+ 
++        for (const char *extension : enabledExtensions) {
++            enabledExtensionNames.emplace_back(extension);
++        }
++
+         VkDeviceCreateInfo createInfo = {};
+         createInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
+         createInfo.pNext = createDeviceChain;
+@@ -4151,7 +4218,7 @@ namespace plume {
+ 
+         VkResult res = vkCreateDevice(physicalDevice, &createInfo, nullptr, &vk);
+         if (res != VK_SUCCESS) {
+-            fprintf(stderr, "vkCreateDevice failed with error code 0x%X.\n", res);
++            reportFailure(extras.error, "vkCreateDevice failed with error code 0x%X.", res);
+             return;
+         }
+ 
+@@ -4192,7 +4259,7 @@ namespace plume {
+ 
+         res = vmaCreateAllocator(&allocatorInfo, &allocator);
+         if (res != VK_SUCCESS) {
+-            fprintf(stderr, "vmaCreateAllocator failed with error code 0x%X.\n", res);
++            reportFailure(extras.error, "vmaCreateAllocator failed with error code 0x%X.", res);
+             release();
+             return;
+         }
+@@ -4624,13 +4691,13 @@ namespace plume {
+     // VulkanInterface
+ 
+ #if defined(PLUME_SDL2_VULKAN_ENABLED)
+-    VulkanInterface::VulkanInterface(RenderWindow sdlWindow) {
++    VulkanInterface::VulkanInterface(RenderWindow sdlWindow, const VulkanInterfaceOptions &options) {
+ #else
+-    VulkanInterface::VulkanInterface() {
++    VulkanInterface::VulkanInterface(const VulkanInterfaceOptions &options) {
+ #endif
+         VkResult res = volkInitialize();
+         if (res != VK_SUCCESS) {
+-            fprintf(stderr, "volkInitialize failed with error code 0x%X.\n", res);
++            reportFailure(options.error, "volkInitialize failed with error code 0x%X. The Vulkan loader could not be loaded.", res);
+             return;
+         }
+ 
+@@ -4660,6 +4727,21 @@ namespace plume {
+ 
+         std::unordered_set<std::string> requiredExtensions = RequiredInstanceExtensions;
+         std::unordered_set<std::string> supportedOptionalExtensions;
++        for (const std::string &extension : options.extraInstanceExtensions) {
++            requiredExtensions.insert(extension);
++        }
++
++        // The optional ones: plume's own, and the ones the caller's options ask for "when offered".
++        std::unordered_set<std::string> optionalExtensions = OptionalInstanceExtensions;
++        if (options.headlessSurface) {
++            optionalExtensions.insert(VK_KHR_SURFACE_EXTENSION_NAME);
++            optionalExtensions.insert(VK_EXT_HEADLESS_SURFACE_EXTENSION_NAME);
++        }
++
++        if (options.debugUtils) {
++            optionalExtensions.insert(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
++        }
++
+ #   if DLSS_ENABLED
+         const std::unordered_set<std::string> dlssExtensions = DLSS::getRequiredInstanceExtensionsVulkan();
+ #   endif
+@@ -4697,7 +4779,11 @@ namespace plume {
+             const std::string extensionName(availableExtensions[i].extensionName);
+             missingRequiredExtensions.erase(extensionName);
+ 
+-            if (OptionalInstanceExtensions.find(extensionName) != OptionalInstanceExtensions.end()) {
++            if (requiredExtensions.find(extensionName) != requiredExtensions.end()) {
++                continue;
++            }
++
++            if (optionalExtensions.find(extensionName) != optionalExtensions.end()) {
+                 supportedOptionalExtensions.insert(extensionName);
+             }
+ #       if DLSS_ENABLED
+@@ -4709,10 +4795,10 @@ namespace plume {
+ 
+         if (!missingRequiredExtensions.empty()) {
+             for (const std::string &extension : missingRequiredExtensions) {
+-                fprintf(stderr, "Missing required extension: %s.\n", extension.c_str());
++                reportFailure(options.error, "Missing required extension: %s.", extension.c_str());
+             }
+ 
+-            fprintf(stderr, "Unable to create instance. Required extensions are missing.\n");
++            reportFailure(options.error, "Unable to create instance. Required extensions are missing.");
+             return;
+         }
+ 
+@@ -4728,13 +4814,21 @@ namespace plume {
+         createInfo.ppEnabledExtensionNames = enabledExtensions.data();
+         createInfo.enabledExtensionCount = uint32_t(enabledExtensions.size());
+ 
++        for (const char *extension : enabledExtensions) {
++            enabledExtensionNames.emplace_back(extension);
++        }
++
+ #   ifdef VULKAN_VALIDATION_LAYER_ENABLED
+-        // Search for validation layer and enabled it.
+-        uint32_t layerCount;
+-        vkEnumerateInstanceLayerProperties(&layerCount, nullptr);
++        // Search for validation layer and enabled it, when the caller asked for it.
++        uint32_t layerCount = 0;
++        if (options.validationLayer) {
++            vkEnumerateInstanceLayerProperties(&layerCount, nullptr);
++        }
+ 
+         std::vector<VkLayerProperties> availableLayers(layerCount);
+-        vkEnumerateInstanceLayerProperties(&layerCount, availableLayers.data());
++        if (layerCount > 0) {
++            vkEnumerateInstanceLayerProperties(&layerCount, availableLayers.data());
++        }
+         
+         const char validationLayerName[] = "VK_LAYER_KHRONOS_validation";
+         const char *enabledLayerNames[] = { validationLayerName };
+@@ -4749,12 +4843,17 @@ namespace plume {
+         
+         res = vkCreateInstance(&createInfo, nullptr, &instance);
+         if (res != VK_SUCCESS) {
+-            fprintf(stderr, "vkCreateInstance failed with error code 0x%X.\n", res);
++            reportFailure(options.error, "vkCreateInstance failed with error code 0x%X.", res);
+             return;
+         }
+ 
+         volkLoadInstance(instance);
+ 
++        // The object-name function exists only if the instance enabled VK_EXT_debug_utils (setObjectName checks it).
++        if (std::find(enabledExtensionNames.begin(), enabledExtensionNames.end(), std::string(VK_EXT_DEBUG_UTILS_EXTENSION_NAME)) == enabledExtensionNames.end()) {
++            vkSetDebugUtilsObjectNameEXT = nullptr;
++        }
++
+         // Fill capabilities.
+         capabilities.shaderFormat = RenderShaderFormat::SPIRV;
+ 
+@@ -4783,7 +4882,11 @@ namespace plume {
+     }
+ 
+     std::unique_ptr<RenderDevice> VulkanInterface::createDevice(const std::string &preferredDeviceName) {
+-        std::unique_ptr<VulkanDevice> createdDevice = std::make_unique<VulkanDevice>(this, preferredDeviceName);
++        return createDeviceEx(preferredDeviceName, VulkanDeviceExtras());
++    }
++
++    std::unique_ptr<RenderDevice> VulkanInterface::createDeviceEx(const std::string &preferredDeviceName, const VulkanDeviceExtras &extras) {
++        std::unique_ptr<VulkanDevice> createdDevice = std::make_unique<VulkanDevice>(this, preferredDeviceName, extras);
+         return createdDevice->isValid() ? std::move(createdDevice) : nullptr;
+     }
+ 
+@@ -4802,14 +4905,22 @@ namespace plume {
+     // Global creation function.
+ 
+ #if defined(PLUME_SDL2_VULKAN_ENABLED)
+-    std::unique_ptr<RenderInterface> CreateVulkanInterface(RenderWindow sdlWindow) {
+-        std::unique_ptr<VulkanInterface> createdInterface = std::make_unique<VulkanInterface>(sdlWindow);
++    std::unique_ptr<RenderInterface> CreateVulkanInterface(RenderWindow sdlWindow, const VulkanInterfaceOptions &options) {
++        std::unique_ptr<VulkanInterface> createdInterface = std::make_unique<VulkanInterface>(sdlWindow, options);
+         return createdInterface->isValid() ? std::move(createdInterface) : nullptr;
+     }
++
++    std::unique_ptr<RenderInterface> CreateVulkanInterface(RenderWindow sdlWindow) {
++        return CreateVulkanInterface(sdlWindow, VulkanInterfaceOptions());
++    }
+ #else
+-    std::unique_ptr<RenderInterface> CreateVulkanInterface() {
+-        std::unique_ptr<VulkanInterface> createdInterface = std::make_unique<VulkanInterface>();
++    std::unique_ptr<RenderInterface> CreateVulkanInterface(const VulkanInterfaceOptions &options) {
++        std::unique_ptr<VulkanInterface> createdInterface = std::make_unique<VulkanInterface>(options);
+         return createdInterface->isValid() ? std::move(createdInterface) : nullptr;
+     }
++
++    std::unique_ptr<RenderInterface> CreateVulkanInterface() {
++        return CreateVulkanInterface(VulkanInterfaceOptions());
++    }
+ #endif
+ };
+diff --git a/plume_vulkan.h b/plume_vulkan.h
+index 639b234..b0d75c9 100644
+--- a/plume_vulkan.h
++++ b/plume_vulkan.h
+@@ -14,7 +14,9 @@
+ #include <unordered_map>
+ #include <unordered_set>
+ 
+-#if defined(_WIN32)
++#if defined(PLUME_EXTERNAL_SURFACE_ONLY)
++// mh4n: no VK_USE_PLATFORM_* define and no window-system header; surfaces come from the caller (patch 08).
++#elif defined(_WIN32)
+ #define VK_USE_PLATFORM_WIN32_KHR
+ #elif defined(__ANDROID__)
+ #define VK_USE_PLATFORM_ANDROID_KHR
+@@ -48,6 +50,37 @@ namespace plume {
+     struct VulkanPool;
+     struct VulkanQueue;
+ 
++    // mh4n (patch 08): what a caller can ask of the instance. Without it plume's own choices stay,
++    // except that nothing is required beyond the Vulkan loader.
++    struct VulkanInterfaceOptions {
++        // Instance extensions to enable besides plume's own (for example the ones SDL3 lists for a
++        // window). One the loader does not offer fails the creation.
++        std::vector<std::string> extraInstanceExtensions;
++
++        // Enable VK_KHR_surface and VK_EXT_headless_surface, each when the loader offers it.
++        bool headlessSurface = false;
++
++        // Enable VK_EXT_debug_utils (object names, debug messengers) when the loader offers it.
++        bool debugUtils = false;
++
++        // Enable VK_LAYER_KHRONOS_validation when it is installed.
++        bool validationLayer = false;
++
++        // Receives the text of the failure when the creation fails (also printed to stderr as before).
++        std::string *error = nullptr;
++    };
++
++    // mh4n (patch 08): what a caller can ask of the device, passed to VulkanInterface::createDeviceEx.
++    struct VulkanDeviceExtras {
++        // A surface the device must be able to present to: VK_KHR_swapchain is required and enabled,
++        // and the direct queue family is chosen among the families that can present to it. Without
++        // a surface no surface or swapchain extension is enabled.
++        VkSurfaceKHR surface = VK_NULL_HANDLE;
++
++        // Receives the text of the failure when the creation fails (also printed to stderr as before).
++        std::string *error = nullptr;
++    };
++
+     struct VulkanBuffer : RenderBuffer {
+         VkBuffer vk = VK_NULL_HANDLE;
+         VulkanDevice *device = nullptr;
+@@ -226,7 +259,7 @@ namespace plume {
+         VkSwapchainKHR vk = VK_NULL_HANDLE;
+         VulkanCommandQueue *commandQueue = nullptr;
+         VkSurfaceKHR surface = VK_NULL_HANDLE;
+-#if defined(__APPLE__)
++#if defined(__APPLE__) && !defined(PLUME_EXTERNAL_SURFACE_ONLY)
+         std::unique_ptr<CocoaWindow> windowWrapper;
+ #endif
+         uint64_t presentCount = 0;
+@@ -425,7 +458,10 @@ namespace plume {
+         std::mutex renderPassMutex;
+         std::unordered_map<std::string, VkRenderPass> renderPassCache;
+ 
+-        VulkanDevice(VulkanInterface *renderInterface, const std::string &preferredDeviceName);
++        // mh4n (patch 08): the device extensions that were enabled, by name.
++        std::vector<std::string> enabledExtensionNames;
++
++        VulkanDevice(VulkanInterface *renderInterface, const std::string &preferredDeviceName, const VulkanDeviceExtras &extras = VulkanDeviceExtras());
+         ~VulkanDevice() override;
+         std::unique_ptr<RenderDescriptorSet> createDescriptorSet(const RenderDescriptorSetDesc &desc) override;
+         std::unique_ptr<RenderShader> createShader(const void *data, uint64_t size, const char *entryPointName, RenderShaderFormat format) override;
+@@ -465,16 +501,27 @@ namespace plume {
+         RenderInterfaceCapabilities capabilities;
+         std::vector<std::string> deviceNames;
+ 
++        // mh4n (patch 08): the instance extensions that were enabled, by name.
++        std::vector<std::string> enabledExtensionNames;
++
+ #   if defined(PLUME_SDL2_VULKAN_ENABLED)
+-        VulkanInterface(RenderWindow sdlWindow);
++        VulkanInterface(RenderWindow sdlWindow, const VulkanInterfaceOptions &options = VulkanInterfaceOptions());
+ #   else
+-        VulkanInterface();
++        VulkanInterface(const VulkanInterfaceOptions &options = VulkanInterfaceOptions());
+ #   endif
+ 
+         ~VulkanInterface() override;
+         std::unique_ptr<RenderDevice> createDevice(const std::string &preferredDeviceName) override;
++        std::unique_ptr<RenderDevice> createDeviceEx(const std::string &preferredDeviceName, const VulkanDeviceExtras &extras);
+         const RenderInterfaceCapabilities &getCapabilities() const override;
+         const std::vector<std::string> &getDeviceNames() const override;
+         bool isValid() const;
+     };
++
++    // mh4n (patch 08): creates the Vulkan interface (the instance) with the caller's options; nullptr on failure.
++#   if defined(PLUME_SDL2_VULKAN_ENABLED)
++    std::unique_ptr<RenderInterface> CreateVulkanInterface(RenderWindow sdlWindow, const VulkanInterfaceOptions &options);
++#   else
++    std::unique_ptr<RenderInterface> CreateVulkanInterface(const VulkanInterfaceOptions &options);
++#   endif
+ };

@@ -61,7 +61,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y clang lld llvm cmake ninja-build \
-            libvulkan-dev mesa-vulkan-drivers glslang-tools spirv-tools
+            libvulkan-dev mesa-vulkan-drivers vulkan-validationlayers glslang-tools spirv-tools
       # building the ARM test programs uses tools/difftest.py
       - run: pip install -r requirements.txt
       - name: Configure
@@ -73,7 +73,13 @@ jobs:
       - name: Test
         env:
           MH4N_REQUIRE_TEST_DATA: "1"   # a test that needs the built ARM programs fails instead of skipping
+          MH4N_REQUIRE_VULKAN: "1"      # a test that needs a Vulkan device (lavapipe here) fails instead of skipping
         run: ctest --test-dir build/native --output-on-failure
+      # The RHI tests (N2-25; N2-26 to N2-29, N2-22, N2b-05 and N2b-06 as they arrive) again under the Khronos
+      # validation layer with synchronization validation: lavapipe accepts every invalid call, so only the
+      # layer sees them. Fails on any layer message. Names that do not exist yet match nothing.
+      - name: RHI tests under the validation layer
+        run: python3 tools/native/vk_layer_run.py --build build/native -R '^(rhi_.*|gpu_backend_.*|gpu_queue_test|present_test|swapchain_test)$'
       # our own 3DS programs (port/tests): the native runner's output must equal Azahar's, which is
       # committed as port/tests/expected. Needs clang, ld.lld, llvm-objcopy and llvm-readelf
       # (installed above) to build the programs and their code libraries; no game data.

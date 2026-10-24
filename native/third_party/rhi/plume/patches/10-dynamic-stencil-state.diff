@@ -1,0 +1,78 @@
+diff --git a/plume_render_interface.h b/plume_render_interface.h
+index f0f3af5..1eec454 100644
+--- a/plume_render_interface.h
++++ b/plume_render_interface.h
+@@ -139,6 +139,10 @@ namespace plume {
+         virtual void setDepthBias(float depthBias, float depthBiasClamp, float slopeScaledDepthBias) = 0;
+         // Only for pipelines created with dynamicBlendConstantsEnabled. Default: unsupported (no-op).
+         virtual void setBlendConstants(const float constants[4]) { }
++        // Only for pipelines created with dynamicStencilEnabled. Default: unsupported (no-op). They apply to both faces.
++        virtual void setStencilReference(uint32_t reference) { }
++        virtual void setStencilCompareMask(uint32_t compareMask) { }
++        virtual void setStencilWriteMask(uint32_t writeMask) { }
+         virtual void clearColor(uint32_t attachmentIndex = 0, RenderColor colorValue = RenderColor(), const RenderRect *clearRects = nullptr, uint32_t clearRectsCount = 0) = 0;
+         virtual void clearDepthStencil(bool clearDepth = true, bool clearStencil = true, float depthValue = 1.0f, uint32_t stencilValue = 0, const RenderRect *clearRects = nullptr, uint32_t clearRectsCount = 0) = 0;
+         virtual void copyBufferRegion(RenderBufferReference dstBuffer, RenderBufferReference srcBuffer, uint64_t size) = 0;
+diff --git a/plume_render_interface_types.h b/plume_render_interface_types.h
+index 1e3c45e..4d33f8e 100644
+--- a/plume_render_interface_types.h
++++ b/plume_render_interface_types.h
+@@ -1296,6 +1296,8 @@ namespace plume {
+         float slopeScaledDepthBias = 0.0f;
+         bool dynamicDepthBiasEnabled = false;
+         bool dynamicBlendConstantsEnabled = false;
++        // The stencil reference, compare mask and write mask are set on the command list instead of read from this description.
++        bool dynamicStencilEnabled = false;
+         bool depthEnabled = false;
+         bool depthWriteEnabled = false;
+         bool stencilEnabled = false;
+diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
+index 9e407e4..6d2c034 100644
+--- a/plume_vulkan.cpp
++++ b/plume_vulkan.cpp
+@@ -1680,6 +1680,12 @@ namespace plume {
+             dynamicStates.emplace_back(VK_DYNAMIC_STATE_BLEND_CONSTANTS);
+         }
+ 
++        if (desc.dynamicStencilEnabled) {
++            dynamicStates.emplace_back(VK_DYNAMIC_STATE_STENCIL_REFERENCE);
++            dynamicStates.emplace_back(VK_DYNAMIC_STATE_STENCIL_COMPARE_MASK);
++            dynamicStates.emplace_back(VK_DYNAMIC_STATE_STENCIL_WRITE_MASK);
++        }
++
+         VkPipelineDynamicStateCreateInfo dynamicState = {};
+         dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+         dynamicState.pDynamicStates = dynamicStates.data();
+@@ -3191,6 +3197,18 @@ namespace plume {
+         vkCmdSetBlendConstants(vk, constants);
+     }
+ 
++    void VulkanCommandList::setStencilReference(uint32_t reference) {
++        vkCmdSetStencilReference(vk, VK_STENCIL_FACE_FRONT_AND_BACK, reference);
++    }
++
++    void VulkanCommandList::setStencilCompareMask(uint32_t compareMask) {
++        vkCmdSetStencilCompareMask(vk, VK_STENCIL_FACE_FRONT_AND_BACK, compareMask);
++    }
++
++    void VulkanCommandList::setStencilWriteMask(uint32_t writeMask) {
++        vkCmdSetStencilWriteMask(vk, VK_STENCIL_FACE_FRONT_AND_BACK, writeMask);
++    }
++
+     static void clearCommonRectVector(uint32_t width, uint32_t height, const RenderRect *clearRects, uint32_t clearRectsCount, std::vector<VkClearRect> &rectVector) {
+         rectVector.clear();
+ 
+diff --git a/plume_vulkan.h b/plume_vulkan.h
+index 16e5c93..de1166b 100644
+--- a/plume_vulkan.h
++++ b/plume_vulkan.h
+@@ -387,6 +387,9 @@ namespace plume {
+         void setFramebuffer(const RenderFramebuffer *framebuffer) override;
+         void setDepthBias(float depthBias, float depthBiasClamp, float slopeScaledDepthBias) override;
+         void setBlendConstants(const float constants[4]) override;
++        void setStencilReference(uint32_t reference) override;
++        void setStencilCompareMask(uint32_t compareMask) override;
++        void setStencilWriteMask(uint32_t writeMask) override;
+         void clearColor(uint32_t attachmentIndex, RenderColor colorValue, const RenderRect *clearRects, uint32_t clearRectsCount) override;
+         void clearDepthStencil(bool clearDepth, bool clearStencil, float depthValue, uint32_t stencilValue, const RenderRect *clearRects, uint32_t clearRectsCount) override;
+         void copyBufferRegion(RenderBufferReference dstBuffer, RenderBufferReference srcBuffer, uint64_t size) override;

@@ -1,0 +1,220 @@
+diff --git a/plume_render_interface.h b/plume_render_interface.h
+index 1eec454..ae66be4 100644
+--- a/plume_render_interface.h
++++ b/plume_render_interface.h
+@@ -260,6 +260,8 @@ namespace plume {
+         virtual const RenderDeviceCapabilities &getCapabilities() const = 0;
+         virtual const RenderDeviceDescription &getDescription() const = 0;
+         virtual RenderSampleCounts getSampleCountsSupported(RenderFormat format) const = 0;
++        // What the device can do with a format (optimal tiling). Default: nothing.
++        virtual RenderFormatSupport getFormatSupport(RenderFormat format) const { return RenderFormatSupport(); }
+         // Pipeline cache blob (Vulkan: VkPipelineCache data). Load before creating pipelines; save any time. Default: unsupported.
+         virtual bool loadPipelineCache(const void *data, size_t size) { return false; }
+         virtual bool savePipelineCache(std::vector<uint8_t> &out) { return false; }
+diff --git a/plume_render_interface_types.h b/plume_render_interface_types.h
+index 4d33f8e..c5f4ef8 100644
+--- a/plume_render_interface_types.h
++++ b/plume_render_interface_types.h
+@@ -78,6 +78,16 @@ namespace plume {
+     static_assert(false, "RenderWindow was not defined for this platform.");
+ #endif
+ 
++    // What a device can do with a format when the image uses optimal tiling (patch 11).
++    struct RenderFormatSupport {
++        // Colour attachment (colour formats) or depth-stencil attachment (depth formats).
++        bool attachment = false;
++        bool sampled = false;
++        bool storage = false;
++        bool blitSource = false;
++        bool blitDestination = false;
++    };
++
+     struct RenderBuffer;
+     struct RenderDescriptorSet;
+     struct RenderPipeline;
+@@ -174,6 +184,15 @@ namespace plume {
+         BC7_TYPELESS,
+         BC7_UNORM,
+         BC7_UNORM_SRGB,
++        // mh4n (patch 11): the 24-bit depth with 8-bit stencil, and the 16-bit colour formats in both component orders.
++        D24_UNORM_S8_UINT,
++        R5G6B5_UNORM,
++        B5G6R5_UNORM,
++        R5G5B5A1_UNORM,
++        B5G5R5A1_UNORM,
++        A1R5G5B5_UNORM,
++        R4G4B4A4_UNORM,
++        B4G4R4A4_UNORM,
+         MAX
+     };
+ 
+@@ -566,6 +585,7 @@ namespace plume {
+         case RenderFormat::R32_FLOAT:
+         case RenderFormat::R32_UINT:
+         case RenderFormat::R32_SINT:
++        case RenderFormat::D24_UNORM_S8_UINT:
+             return 4;
+         case RenderFormat::R8G8_TYPELESS:
+         case RenderFormat::R8G8_UNORM:
+@@ -579,6 +599,13 @@ namespace plume {
+         case RenderFormat::R16_UINT:
+         case RenderFormat::R16_SNORM:
+         case RenderFormat::R16_SINT:
++        case RenderFormat::R5G6B5_UNORM:
++        case RenderFormat::B5G6R5_UNORM:
++        case RenderFormat::R5G5B5A1_UNORM:
++        case RenderFormat::B5G5R5A1_UNORM:
++        case RenderFormat::A1R5G5B5_UNORM:
++        case RenderFormat::R4G4B4A4_UNORM:
++        case RenderFormat::B4G4R4A4_UNORM:
+             return 2;
+         case RenderFormat::R8_TYPELESS:
+         case RenderFormat::R8_UNORM:
+@@ -667,6 +694,14 @@ namespace plume {
+         case RenderFormat::R8_UINT:
+         case RenderFormat::R8_SNORM:
+         case RenderFormat::R8_SINT:
++        case RenderFormat::D24_UNORM_S8_UINT:
++        case RenderFormat::R5G6B5_UNORM:
++        case RenderFormat::B5G6R5_UNORM:
++        case RenderFormat::R5G5B5A1_UNORM:
++        case RenderFormat::B5G5R5A1_UNORM:
++        case RenderFormat::A1R5G5B5_UNORM:
++        case RenderFormat::R4G4B4A4_UNORM:
++        case RenderFormat::B4G4R4A4_UNORM:
+             return 1;
+         case RenderFormat::BC1_TYPELESS:
+         case RenderFormat::BC1_UNORM:
+@@ -701,6 +736,7 @@ namespace plume {
+         case RenderFormat::D16_UNORM:
+         case RenderFormat::D32_FLOAT:
+         case RenderFormat::D32_FLOAT_S8_UINT:
++        case RenderFormat::D24_UNORM_S8_UINT:
+             return true;
+         default:
+             return false;
+@@ -708,7 +744,7 @@ namespace plume {
+     }
+ 
+     constexpr bool RenderFormatIsStencil(RenderFormat format) {
+-        return format == RenderFormat::D32_FLOAT_S8_UINT;
++        return (format == RenderFormat::D32_FLOAT_S8_UINT) || (format == RenderFormat::D24_UNORM_S8_UINT);
+     }
+ 
+     constexpr RenderTextureViewDimension RenderTextureDimensionToView(const RenderTextureDimension dimension) {
+diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
+index 6d2c034..23f48b4 100644
+--- a/plume_vulkan.cpp
++++ b/plume_vulkan.cpp
+@@ -299,6 +299,22 @@ namespace plume {
+             return VK_FORMAT_BC7_UNORM_BLOCK;
+         case RenderFormat::BC7_UNORM_SRGB:
+             return VK_FORMAT_BC7_SRGB_BLOCK;
++        case RenderFormat::D24_UNORM_S8_UINT:
++            return VK_FORMAT_D24_UNORM_S8_UINT;
++        case RenderFormat::R5G6B5_UNORM:
++            return VK_FORMAT_R5G6B5_UNORM_PACK16;
++        case RenderFormat::B5G6R5_UNORM:
++            return VK_FORMAT_B5G6R5_UNORM_PACK16;
++        case RenderFormat::R5G5B5A1_UNORM:
++            return VK_FORMAT_R5G5B5A1_UNORM_PACK16;
++        case RenderFormat::B5G5R5A1_UNORM:
++            return VK_FORMAT_B5G5R5A1_UNORM_PACK16;
++        case RenderFormat::A1R5G5B5_UNORM:
++            return VK_FORMAT_A1R5G5B5_UNORM_PACK16;
++        case RenderFormat::R4G4B4A4_UNORM:
++            return VK_FORMAT_R4G4B4A4_UNORM_PACK16;
++        case RenderFormat::B4G4R4A4_UNORM:
++            return VK_FORMAT_B4G4R4A4_UNORM_PACK16;
+         default:
+             assert(false && "Unknown format.");
+             return VK_FORMAT_UNDEFINED;
+@@ -783,6 +799,24 @@ namespace plume {
+         return aspect;
+     }
+ 
++    // mh4n (patch 11): Vulkan allows one aspect per region of a buffer <-> image copy. A copy of a depth-stencil
++    // image therefore becomes two regions: the depth plane at the footprint's offset (4 bytes per texel, for
++    // both D32 and D24: D24 sits in the low 24 bits), then the stencil plane (1 byte per texel) right after it.
++    // Returns the number of regions written to out (1 or 2).
++    static uint32_t splitDepthStencilCopy(const VkBufferImageCopy &copy, VkBufferImageCopy *out) {
++        const VkImageAspectFlags depthStencil = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
++        out[0] = copy;
++        if (copy.imageSubresource.aspectMask != depthStencil) {
++            return 1;
++        }
++
++        out[0].imageSubresource.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
++        out[1] = copy;
++        out[1].imageSubresource.aspectMask = VK_IMAGE_ASPECT_STENCIL_BIT;
++        out[1].bufferOffset += uint64_t(copy.bufferRowLength) * uint64_t(copy.bufferImageHeight) * uint64_t(copy.imageExtent.depth) * 4;
++        return 2;
++    }
++
+     static VkComponentSwizzle toVk(RenderSwizzle swizzle) {
+         switch (swizzle) {
+         case RenderSwizzle::IDENTITY:
+@@ -3324,7 +3358,9 @@ namespace plume {
+             imageCopy.imageExtent.width = srcLocation.placedFootprint.width;
+             imageCopy.imageExtent.height = srcLocation.placedFootprint.height;
+             imageCopy.imageExtent.depth = srcLocation.placedFootprint.depth;
+-            vkCmdCopyBufferToImage(vk, srcBuffer->vk, dstTexture->vk, toImageLayout(dstTexture->textureLayout), 1, &imageCopy);
++            VkBufferImageCopy imageCopies[2];
++            const uint32_t imageCopyCount = splitDepthStencilCopy(imageCopy, imageCopies);
++            vkCmdCopyBufferToImage(vk, srcBuffer->vk, dstTexture->vk, toImageLayout(dstTexture->textureLayout), imageCopyCount, imageCopies);
+         }
+         else if ((dstLocation.type == RenderTextureCopyType::PLACED_FOOTPRINT) && (srcLocation.type == RenderTextureCopyType::SUBRESOURCE)) {
+             assert(dstBuffer != nullptr);
+@@ -3349,7 +3385,9 @@ namespace plume {
+             imageCopy.imageExtent.width = srcBox != nullptr ? uint32_t(srcBox->right - srcBox->left) : std::max(srcTexture->desc.width >> mipLevel, 1U);
+             imageCopy.imageExtent.height = srcBox != nullptr ? uint32_t(srcBox->bottom - srcBox->top) : std::max(srcTexture->desc.height >> mipLevel, 1U);
+             imageCopy.imageExtent.depth = srcBox != nullptr ? uint32_t(srcBox->back - srcBox->front) : std::max(srcTexture->desc.depth >> mipLevel, 1U);
+-            vkCmdCopyImageToBuffer(vk, srcTexture->vk, toImageLayout(srcTexture->textureLayout), dstBuffer->vk, 1, &imageCopy);
++            VkBufferImageCopy imageCopies[2];
++            const uint32_t imageCopyCount = splitDepthStencilCopy(imageCopy, imageCopies);
++            vkCmdCopyImageToBuffer(vk, srcTexture->vk, toImageLayout(srcTexture->textureLayout), dstBuffer->vk, imageCopyCount, imageCopies);
+         }
+         else {
+             VkImageCopy imageCopy = {};
+@@ -4775,6 +4813,29 @@ namespace plume {
+         }
+     }
+ 
++    RenderFormatSupport VulkanDevice::getFormatSupport(RenderFormat format) const {
++        RenderFormatSupport support;
++        if ((format == RenderFormat::UNKNOWN) || (format >= RenderFormat::MAX)) {
++            return support;
++        }
++
++        const VkFormat vkFormat = toVk(format);
++        if (vkFormat == VK_FORMAT_UNDEFINED) {
++            return support;
++        }
++
++        VkFormatProperties properties = {};
++        vkGetPhysicalDeviceFormatProperties(physicalDevice, vkFormat, &properties);
++        const VkFormatFeatureFlags features = properties.optimalTilingFeatures;
++        const VkFormatFeatureFlags attachmentFeature = RenderFormatIsDepth(format) ? VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT : VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT;
++        support.attachment = (features & attachmentFeature) != 0;
++        support.sampled = (features & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT) != 0;
++        support.storage = (features & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT) != 0;
++        support.blitSource = (features & VK_FORMAT_FEATURE_BLIT_SRC_BIT) != 0;
++        support.blitDestination = (features & VK_FORMAT_FEATURE_BLIT_DST_BIT) != 0;
++        return support;
++    }
++
+     void VulkanDevice::release() {
+         nullBuffer = nullptr; // force destruction before destroying allocator
+ 
+diff --git a/plume_vulkan.h b/plume_vulkan.h
+index de1166b..a1773c1 100644
+--- a/plume_vulkan.h
++++ b/plume_vulkan.h
+@@ -519,6 +519,7 @@ namespace plume {
+         const RenderDeviceCapabilities &getCapabilities() const override;
+         const RenderDeviceDescription &getDescription() const override;
+         RenderSampleCounts getSampleCountsSupported(RenderFormat format) const override;
++        RenderFormatSupport getFormatSupport(RenderFormat format) const override;
+         void release();
+         bool isValid() const;
+         bool beginCapture() override;

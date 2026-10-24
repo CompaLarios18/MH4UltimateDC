@@ -1,0 +1,9 @@
+# Settings of the Khronos validation layer for the RHI tests (tools/native/vk_layer_run.py points
+# VK_LAYER_SETTINGS_PATH at this folder). They are the file of docs/research/rhi-spike-evidence/env/
+# without best practices and without `perf`: best practices flags plume's whole-resource barriers
+# (ImageBarrierAccessLayout, rhi-spike.md 6.9) and the performance messages are not defects. The
+# synchronization validation is also switched on by VK_LAYER_ENABLES, as the evidence's run.sh did.
+khronos_validation.debug_action = VK_DBG_LAYER_ACTION_LOG_MSG
+khronos_validation.report_flags = error,warn
+khronos_validation.enables = VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT
+khronos_validation.duplicate_message_limit = 3

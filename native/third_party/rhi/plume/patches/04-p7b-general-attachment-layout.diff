@@ -1,0 +1,38 @@
+diff --git a/plume_render_interface_types.h b/plume_render_interface_types.h
+index 9a210b7..f0c6580 100644
+--- a/plume_render_interface_types.h
++++ b/plume_render_interface_types.h
+@@ -1629,6 +1629,9 @@ namespace plume {
+         const RenderTextureView *depthAttachmentView = nullptr;
+         bool depthAttachmentReadOnly = false;
+ 
++        // Colour attachments stay in the GENERAL layout (render pass initial, reference and final layout) instead of COLOR_ATTACHMENT_OPTIMAL.
++        bool colorAttachmentsGeneralLayout = false;
++
+         // Size of a framebuffer with no attachments (taken from the attachments otherwise).
+         uint32_t width = 0;
+         uint32_t height = 0;
+diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
+index 487a682..b65264c 100644
+--- a/plume_vulkan.cpp
++++ b/plume_vulkan.cpp
+@@ -2561,7 +2561,7 @@ namespace plume {
+ 
+             VkAttachmentReference reference = {};
+             reference.attachment = uint32_t(attachments.size());
+-            reference.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
++            reference.layout = desc.colorAttachmentsGeneralLayout ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+             colorReferences.emplace_back(reference);
+ 
+             VkAttachmentDescription attachment = {};
+@@ -2571,8 +2571,8 @@ namespace plume {
+             attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+             attachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+             attachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+-            attachment.initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+-            attachment.finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
++            attachment.initialLayout = reference.layout;
++            attachment.finalLayout = reference.layout;
+             attachments.emplace_back(attachment);
+         }
+ 

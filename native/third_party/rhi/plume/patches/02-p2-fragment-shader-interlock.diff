@@ -1,0 +1,62 @@
+diff --git a/plume_render_interface_types.h b/plume_render_interface_types.h
+index 4b582e6..9a210b7 100644
+--- a/plume_render_interface_types.h
++++ b/plume_render_interface_types.h
+@@ -1787,6 +1787,9 @@ namespace plume {
+         bool resolveRegion = false;
+         bool resolveModes = false;
+ 
++        // Fragment shader interlock (pixel, ordered).
++        bool fragmentShaderInterlock = false;
++
+         // Bindless resources.
+         bool descriptorIndexing = false;
+         bool scalarBlockLayout = false;
+diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
+index 9b15186..240357f 100644
+--- a/plume_vulkan.cpp
++++ b/plume_vulkan.cpp
+@@ -84,6 +84,7 @@ namespace plume {
+         VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME,
+         VK_EXT_SAMPLE_LOCATIONS_EXTENSION_NAME,
+         VK_EXT_LOAD_STORE_OP_NONE_EXTENSION_NAME,
++        VK_EXT_FRAGMENT_SHADER_INTERLOCK_EXTENSION_NAME,
+         VK_KHR_PRESENT_ID_EXTENSION_NAME,
+         VK_KHR_PRESENT_WAIT_EXTENSION_NAME,
+         VK_GOOGLE_DISPLAY_TIMING_EXTENSION_NAME,
+@@ -3912,6 +3913,14 @@ namespace plume {
+             featuresChain = &bufferDeviceAddressFeatures;
+         }
+ 
++        VkPhysicalDeviceFragmentShaderInterlockFeaturesEXT interlockFeatures = {};
++        const bool interlockFound = supportedOptionalExtensions.find(VK_EXT_FRAGMENT_SHADER_INTERLOCK_EXTENSION_NAME) != supportedOptionalExtensions.end();
++        if (interlockFound) {
++            interlockFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADER_INTERLOCK_FEATURES_EXT;
++            interlockFeatures.pNext = featuresChain;
++            featuresChain = &interlockFeatures;
++        }
++
+         VkPhysicalDevicePortabilitySubsetFeaturesKHR portabilityFeatures = {};
+         const bool portabilityFound = supportedOptionalExtensions.find(VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME) != supportedOptionalExtensions.end();
+         if (portabilityFound) {
+@@ -4002,6 +4011,12 @@ namespace plume {
+             createDeviceChain = &bufferDeviceAddressFeatures;
+         }
+         
++        const bool interlockSupported = interlockFeatures.fragmentShaderPixelInterlock;
++        if (interlockSupported) {
++            interlockFeatures.pNext = createDeviceChain;
++            createDeviceChain = &interlockFeatures;
++        }
++
+         if (portabilityFound) {
+             portabilityFeatures.pNext = createDeviceChain;
+             createDeviceChain = &portabilityFeatures;
+@@ -4163,6 +4178,7 @@ namespace plume {
+         capabilities.sampleLocations = (sampleLocationProperties.sampleLocationSampleCounts != 0);
+         capabilities.resolveRegion = true;
+         capabilities.resolveModes = false;
++        capabilities.fragmentShaderInterlock = interlockSupported;
+         capabilities.descriptorIndexing = descriptorIndexingSupported;
+         capabilities.scalarBlockLayout = scalarBlockLayoutSupported;
+         capabilities.bufferDeviceAddress = bufferDeviceAddressSupported;
