@@ -1027,8 +1027,17 @@ TEST_CASE("mask/a_masked_feature_is_not_enabled_on_the_device") {
                       {Cap::CustomBorderColor, "VK_EXT_custom_border_color"}};
     for (const auto& row : extensions) {
         std::vector<std::string> off;
-        const std::optional<Capabilities> masked = CapsWith(CapabilityMask{}.With(row.cap), &off);
-        REQUIRE(masked.has_value());
+        BackendOptions options;
+        options.mask = CapabilityMask{}.With(row.cap);
+        std::shared_ptr<Backend> masked_backend = test::RequireBackend(options);
+        if (!masked_backend) return;
+        off = masked_backend->EnabledExtensions();
+        const std::optional<Capabilities> masked = masked_backend->Caps();
+        // the features the device was created with, as the vendored queue reports them
+        const ::plume::RenderDeviceCapabilities& device_caps = masked_backend->impl().device->getCapabilities();
+        if (row.cap == Cap::Interlock) CHECK_FALSE(device_caps.fragmentShaderInterlock);
+        if (row.cap == Cap::IndexUint8) CHECK_FALSE(device_caps.indexTypeUint8);
+        if (row.cap == Cap::CustomBorderColor) CHECK_FALSE(device_caps.customBorderColor);
         if (base->Has(row.cap)) {
             CHECK_MESSAGE(Has(on, row.extension), row.extension << " is enabled when the bit is on (unmasked)");
         }
@@ -1100,6 +1109,7 @@ TEST_CASE("mask/the_fence_fallback_runs_without_the_timeline") {
     if (!backend) return;
     CHECK_FALSE(backend->Caps().timeline);
     CHECK(backend->impl().timeline == VK_NULL_HANDLE);
+    CHECK_FALSE(backend->impl().device->getCapabilities().timelineSemaphore);  // not enabled on the device either
     // submissions still return rising values, and waiting for them works
     const Scene scene = MakeScene(*backend, 2, 9);
     const std::shared_ptr<Pipeline> pipeline = ComputeWrite(*backend);
