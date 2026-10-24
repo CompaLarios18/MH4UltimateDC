@@ -11,5 +11,6 @@ MH4N_OPTION("runner", "--deterministic", "",
 MH4N_OPTION("runner", "--seed", "N",
             "with --deterministic: draw the length of each scheduling slice from a generator seeded with N, "
             "from one half to one times the default (4274 us, or --slice-us; the draw goes up to one and a "
-            "half times, but a core with no event due never runs longer than the default), which moves the "
+            "half times, but a core with an empty event queue is capped at the default, so the stretches "
+            "usually run one half to one times), which moves the "
             "points where the two virtual cores take turns; the same seed gives the same run");

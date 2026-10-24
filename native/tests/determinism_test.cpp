@@ -1,10 +1,13 @@
-// Derived from Azahar src/core/hle/kernel/svc.cpp, src/core/hle/kernel/address_arbiter.cpp and
-// src/core/core_timing.h at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-3.0-or-later: svc.cpp says
-// "GPLv3 or any later version"; address_arbiter.cpp and core_timing.h say "GPLv2 or any later version"):
-// the cycles each system call costs (SVC_Table), the 1614 ticks of a Signal that wakes nobody and the
+// Derived from Azahar src/core/hle/kernel/svc.cpp, src/core/hle/kernel/address_arbiter.cpp,
+// src/core/hle/kernel/thread.cpp, src/core/core_timing.h and src/core/core.cpp at
+// 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-3.0-or-later: svc.cpp and core.cpp say "GPLv3 or any later
+// version"; address_arbiter.cpp, thread.cpp and core_timing.h say "GPLv2 or any later version"):
+// the cycles each system call costs (SVC_Table), the 1614 ticks of a Signal that wakes nobody, the
 // length of Azahar's slice (BASE_CLOCK_RATE_ARM11 / 234), written out here as numbers, not computed from
-// the code under test.
-// Copyright 2014-2026 Citra Emulator Project / Azahar Emulator Project (svc.cpp)
+// the code under test; and the rules of RunLoop (the 100-tick tolerance between the cores, the reschedule
+// after a stretch, the catch-up of the core that is behind) and of SwitchContext (a displaced thread goes
+// back to the front of its queue).
+// Copyright 2014-2026 Citra Emulator Project / Azahar Emulator Project (svc.cpp, core.cpp, thread.cpp)
 // Copyright 2014-2024 Citra Emulator Project / Azahar Emulator Project (address_arbiter.cpp)
 // Copyright 2008 Dolphin Emulator Project / 2017 Citra Emulator Project (core_timing.h)
 //
@@ -881,6 +884,91 @@ TEST_CASE("a wake-up during a stretch is acted on at its end: the other core's s
     CHECK(log == std::vector<std::string>{"P", "A"});
 }
 
+namespace {
+
+// What a call that asks for a reschedule and readies nothing (PrepareReschedule, or Terminate of a thread that is
+// not on a ready queue) does on the other core: P (0x20, core 1) is readied by core 0's stretch, after core 1's
+// select of this RunLoop call, so core 1's Q (0x30) runs the next stretch with a better thread waiting. Q makes the call
+// and a system call past core 0's clock by more than 100 ticks, so core 0 catches up alone before core 1's next
+// select, and its thread gives P the priority of Q. With the flag, core 1 is rescheduled at the end of its stretch: P
+// is running when its priority changes and stays. Without it, P is still on the queue, behind Q after the change.
+enum class Ask { Nothing, PrepareReschedule, TerminateOther };
+
+std::vector<std::string> RescheduleAsked(Ask ask, u64* gap) {
+    Sim sim;
+    std::vector<std::string> log;
+    auto event = sim.GetKernel().NewEvent(ResetType::OneShot);
+    auto other_event = sim.GetKernel().NewEvent(ResetType::OneShot);
+    bool p_blocked = false;
+    bool armed = false;
+    bool asked = false;
+    std::shared_ptr<Thread> other;
+    std::shared_ptr<Thread> p = sim.Spawn(0x20, 1, [&](Guest&) {
+        p_blocked = true;
+        sim.Sched().Block(*sim.Sched().CurrentThreadPtr(), {event}, false, -1);
+        log.push_back("P");
+    });
+    other = sim.Spawn(0x3F, 0, [&](Guest&) {
+        sim.Sched().Block(*sim.Sched().CurrentThreadPtr(), {other_event}, false, -1);
+    });
+    sim.Spawn(
+        0x30, 0,
+        [&](Guest& g) {
+            while (!p_blocked) {
+                g.Burn(20);
+            }
+            armed = true;
+            event->Signal();  // P is ready on core 1
+            g.Tick();         // the stretch of core 0 ends here
+            *gap = sim.CoreNow(1) - sim.CoreNow(0);
+            p->SetPriority(0x30);
+            g.Burn(3000000);
+        },
+        /*block=*/20);
+    sim.Spawn(
+        0x30, 1,
+        [&](Guest& g) {
+            g.after_budget = [&] {
+                if (armed && !asked) {
+                    asked = true;
+                    if (ask == Ask::PrepareReschedule) {
+                        sim.Sched().PrepareReschedule();
+                    } else if (ask == Ask::TerminateOther) {
+                        sim.Sched().Terminate(other);
+                        ++sim.finished;
+                    }
+                    g.Svc(0x35, 0, 0x1234);
+                }
+            };
+            g.Burn(6000000);
+            log.push_back("Q");
+            if (ask != Ask::TerminateOther) {
+                other_event->Signal();
+            }
+        },
+        /*block=*/20);
+    REQUIRE(sim.Run() == RunStatus::Stopped);
+    return log;
+}
+
+}  // namespace
+
+TEST_CASE("a call that only asks for a reschedule brings the choice of core 1 forward to the end of its stretch") {
+    // Control: with no call, Q goes on. Then PrepareReschedule, the whole of Azahar's SVC::ArbitrateAddress and
+    // SendSyncRequest when they wake nobody (svc.cpp calls it unconditionally), and Terminate of a thread that is
+    // waiting. (Azahar has no TerminateThread system call: that case pins the native design, which raises the flag
+    // as KernelSystem::PrepareReschedule would; the PrepareReschedule one pins Azahar's rule.) The orders follow
+    // Azahar's: one System::Reschedule per core guarded by curr_core_reschedule_pending, PopNextReadyThread
+    // taking only a strictly better thread, Thread::SetPriority moving only a Ready thread.
+    u64 gap = 0;
+    CHECK(RescheduleAsked(Ask::Nothing, &gap) == std::vector<std::string>{"Q", "P"});
+    CHECK(gap > 100);
+    CHECK(RescheduleAsked(Ask::PrepareReschedule, &gap) == std::vector<std::string>{"P", "Q"});
+    CHECK(gap > 100);
+    CHECK(RescheduleAsked(Ask::TerminateOther, &gap) == std::vector<std::string>{"P", "Q"});
+    CHECK(gap > 100);
+}
+
 TEST_CASE("the limiter's tick is an event of core 1, due on core 1's own clock, whichever core asks") {
     // Azahar: ScheduleEvent(next_timer, tick_event, 0, 1) from UpdateAppCpuLimit, which runs in a system call of a
     // thread of either core. Core 0's thread asks when core 0 is 340 ticks into the run and core 1 has not run: the
@@ -1071,9 +1159,10 @@ TEST_CASE("a seed moves the interleaving, repeatably, and changes nothing else")
 }
 
 TEST_CASE("a seeded stretch runs from one half to one times the default slice") {
-    // The draw itself goes from half to one and a half times the default, but a core with no event due never runs
-    // longer than the default slice (Timer::GetMaxSliceLength is MAX_SLICE_LENGTH then), so the stretches that run are
-    // capped at it: from one half to one times.
+    // The draw itself goes from half to one and a half times the default, but a core with an empty event queue is
+    // capped at the default slice (Timer::GetMaxSliceLength is MAX_SLICE_LENGTH then), so here, where the only events
+    // are far off, the stretches that run are from one half to one times. (With events on both cores far off, a drawn
+    // stretch can run up to one and a half times, as in Azahar.)
     {
         Sim sim({"--seed", "9"});
         std::vector<u64> lengths;
@@ -1095,7 +1184,9 @@ TEST_CASE("a seeded stretch runs from one half to one times the default slice") 
         CHECK(shortest >= 1145774 / 2 - 140);
         CHECK(shortest < 1145774 * 3 / 4);
     }
-    // The drawn value (SliceUs): half to one and a half times, both ends reachable.
+}
+
+TEST_CASE("a seeded slice is drawn between half and one and a half times the default (the value drawn, not the stretch)") {
     // CycleDriver draws from splitmix64; the bounds hold for every draw and both ends are reachable.
     Sim sim({"--seed", "7", "--slice-us", "1000"});
     std::vector<u32> lengths;

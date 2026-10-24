@@ -22,9 +22,10 @@
 //     call's own cost from Azahar's table (SvcCycles) through kernel_detail::ChargeCycles, once it has
 //     noted the time for its trace (the later of the two clocks, as the reference's `t`).
 //   - With a seed, the cap of each stretch (RunLoop's max_slice, 1,145,774 ticks) is drawn from a seeded
-//     generator between half and one and a half times the default; a core with no event due never runs longer
-//     than the default slice (Timer::GetMaxSliceLength), so the stretches that are drawn run from one half to
-//     one times the default. That moves the points where the two virtual cores take turns; the same seed gives
+//     generator between half and one and a half times the default; a core with an empty event queue is capped
+//     at the default slice (Timer::GetMaxSliceLength), so in the usual case the stretches that are drawn run
+//     from one half to one times the default (with events on both cores far off, up to one and a half times,
+//     as in Azahar). That moves the points where the two virtual cores take turns; the same seed gives
 //     the same run, another seed another interleaving.
 //
 // Services that used host threads answer on the scheduler thread in this mode (services/fs: the I/O
@@ -230,8 +231,8 @@ struct CycleDriverOptions {
     bool seeded = false;
     u64 seed = 0;
     // The default slice, in microseconds; a seeded run draws each slice from half to one and a half
-    // times this, of which a stretch runs one half to one times (a core with no event due is capped at the
-    // default slice).
+    // times this, of which a stretch usually runs one half to one times (a core with an empty event queue
+    // is capped at the default slice).
     u32 slice_us = kDeterministicSliceUs;
 };
 
