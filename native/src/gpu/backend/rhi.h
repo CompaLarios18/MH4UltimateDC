@@ -612,8 +612,8 @@ struct StencilFaceState {
 // mask, the viewport and the scissor are always dynamic (Recorder::SetBlendConstants, SetStencilReference,
 // SetStencilMasks, SetViewport, SetScissor), so a different value never makes another pipeline.
 //
-// TRAP: dynamic state that nothing set is a validation error at the draw (VUID-vkCmdDraw-None-07835 to
-// 07839). A draw whose pipeline blends with a constant-colour factor, or has the stencil test on, must be
+// TRAP: dynamic state that nothing set is a validation error at the draw (the draw-time dynamic-state
+// VUIDs, None-07835 to 07839). A draw whose pipeline blends with a constant-colour factor, or has the stencil test on, must be
 // preceded in its recorder by SetBlendConstants, or SetStencilReference and SetStencilMasks. The core sets
 // no defaults, not even at SetPipeline: the caller of the setters (N2-13) runs them first, every pass.
 struct FixedFunctionState {
