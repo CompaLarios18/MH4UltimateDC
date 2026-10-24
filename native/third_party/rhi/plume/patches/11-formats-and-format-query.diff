@@ -103,7 +103,7 @@ index 4d33f8e..c5f4ef8 100644
  
      constexpr RenderTextureViewDimension RenderTextureDimensionToView(const RenderTextureDimension dimension) {
 diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
-index 6d2c034..23f48b4 100644
+index 6be046a..1172b74 100644
 --- a/plume_vulkan.cpp
 +++ b/plume_vulkan.cpp
 @@ -299,6 +299,22 @@ namespace plume {
@@ -176,7 +176,7 @@ index 6d2c034..23f48b4 100644
          }
          else {
              VkImageCopy imageCopy = {};
-@@ -4775,6 +4813,29 @@ namespace plume {
+@@ -4782,6 +4820,29 @@ namespace plume {
          }
      }
  
@@ -207,10 +207,10 @@ index 6d2c034..23f48b4 100644
          nullBuffer = nullptr; // force destruction before destroying allocator
  
 diff --git a/plume_vulkan.h b/plume_vulkan.h
-index de1166b..a1773c1 100644
+index 62f85d9..cf95643 100644
 --- a/plume_vulkan.h
 +++ b/plume_vulkan.h
-@@ -519,6 +519,7 @@ namespace plume {
+@@ -521,6 +521,7 @@ namespace plume {
          const RenderDeviceCapabilities &getCapabilities() const override;
          const RenderDeviceDescription &getDescription() const override;
          RenderSampleCounts getSampleCountsSupported(RenderFormat format) const override;

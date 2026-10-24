@@ -4278,6 +4278,13 @@ namespace plume {
             }
         }
 
+        // VUID-VkPhysicalDeviceRobustness2FeaturesEXT-robustBufferAccess2-04000: robustBufferAccess2 (enabled with
+        // the robustness2 structure whenever it is in the device chain) needs robustBufferAccess, so it is enabled
+        // whatever the caller listed.
+        if (nullDescriptorSupported && robustnessFeatures.robustBufferAccess2) {
+            enabledCoreFeatures.robustBufferAccess = VK_TRUE;
+        }
+
         // Retrieve the information for the queue families.
         uint32_t queueFamilyCount = 0;
         vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &queueFamilyCount, nullptr);

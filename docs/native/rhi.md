@@ -74,9 +74,11 @@ cannot rewrite files that are compared byte for byte (sha256, blob ids).
   and enabled only with it, and the direct queue family is chosen among those that can present to it, failing when none can),
   `physicalDeviceIndex` (the index in `vkEnumeratePhysicalDevices`' order on plume's instance; -1 keeps plume's choice by type or
   exact name), `coreFeatures` (the core features to enable, ANDed with what the device offers; unset keeps plume's "every
-  queried feature"), `optionalExtensions` (the optional extensions to take when offered; unset: the default list),
+  queried feature"; `robustBufferAccess` is turned on whatever it lists whenever robustness2's `robustBufferAccess2` is enabled,
+  because the specification requires it, VUID `...Robustness2FeaturesEXT-robustBufferAccess2-04000`; case `device/core_features`), `optionalExtensions` (the optional extensions to take when offered; unset: the default list),
   `timelineSemaphore`, `error`. `VulkanInterface::enabledExtensionNames`, `VulkanDevice::enabledExtensionNames` and
   `VulkanDevice::enabledCoreFeatures` say what was enabled.
+- **Things to know when calling it.** A set `optionalExtensions` *replaces* the default list: a caller that sets it must name the kept extensions (descriptor indexing, robustness2, ...) itself; only `VK_KHR_portability_subset` is always added. A `physicalDeviceIndex` below -1 is treated as -1. Patch 08 sets volk's process-global `vkSetDebugUtilsObjectNameEXT` to null when an instance did not enable `VK_EXT_debug_utils`, so a second instance in the same process changes it for the first (the first loses object names; nothing else).
 - **The default optional list** is plume's 15 names minus acceleration structure, ray-tracing pipeline, pipeline library and
   deferred host operations, minus `VK_KHR_present_id`, `VK_KHR_present_wait` and `VK_GOOGLE_display_timing` unless there is a
   surface, plus fragment shader interlock (patch 02), `VK_EXT_index_type_uint8` and `VK_EXT_custom_border_color` (patch 09,
@@ -99,8 +101,8 @@ cannot rewrite files that are compared byte for byte (sha256, blob ids).
 
 - `native/tests/rhi_plume_test.cpp` (ctest name `rhi_plume_test`): `device/no_surface`, `device/headless_surface`,
   `device/chosen`, `sync/A1_render_then_sample`, `sync/C3_two_waits_each_with_a_stage` (the two stage masks are read from the
-  `vkQueueSubmit` call through volk's function pointer, as `rhi-spike.md` 6.9 traced them), `descriptors/buffer_offset`, and
-  the control `control/C5`. A case skips with a message when there is no Vulkan device and fails instead under
+  `vkQueueSubmit` call through volk's function pointer, as `rhi-spike.md` 6.9 traced them), `descriptors/buffer_offset`, `device/core_features`, and
+  the control `control/C5`. On lavapipe (one queue family, one physical device) `device/headless_surface` cannot fail on the present-capable family filter and `device/chosen` cannot tell the index from plume's own choice: those halves are for a PC or a second device (the reviewer showed `device/chosen` with two lavapipe copies through `VK_ICD_FILENAMES`). A case skips with a message when there is no Vulkan device and fails instead under
   `MH4N_REQUIRE_VULKAN=1`. Controls are skipped by default; run one with `--test-case=control/C5 --no-skip`.
 - Pure-Python tests: `tests/test_native_rhi_patches.py` (the applier on synthetic diffs; `check` and `blobs` on the tree; the
   evidence's sha256 for patches 01 to 07; one volk and one VMA translation unit), `tests/test_native_vk_layer_run.py`,
@@ -166,5 +168,7 @@ byte offset, and with what range? Read in the pristine copy, `plume_vulkan.cpp` 
 **Smallest patch, if a cleaner call is wanted (not written; a later patch is a new numbered file added by a WP the orchestrator names):** a `setBufferRange(descriptorIndex, buffer, offset, range)` on `RenderDescriptorSet` with a default that does nothing, implemented in `VulkanDescriptorSet` by the same eight lines of `setBuffer` with the two values passed in (about 12 lines, no behaviour change for existing callers). A true dynamic offset needs a `_DYNAMIC` descriptor type in `toVk` and the layout (`:508`, `:1175`), an offset array argument through `setGraphicsDescriptorSet`/`setComputeDescriptorSet` into `vkCmdBindDescriptorSets` (`:3528`), and the same on the other backends: about 80 to 120 lines (`rhi-spike.md` X5, `inference`). Neither is needed for N2-27 to start: the structured-view form above works today.
 
 ## Not checked on this machine
+
+`readelf -d` for `libX11` is meaningful on `build/native/bin/rhi_plume_test` (no `NEEDED` entry besides libstdc++, libm, libgcc_s, libc and the loader's), not on `mh4u_native_runner`, which does not link plume yet.
 
 The Windows llvm-mingw build, the macOS build and the three CI jobs are `pending (ci)`: the macOS branch of `plume_vulkan.cpp` (`VK_KHR_portability_enumeration`, the portability-subset features, `triangleFan` forced false) and the Windows branch (`NOMINMAX`) were not compiled here.

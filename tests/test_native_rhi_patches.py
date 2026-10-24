@@ -243,16 +243,19 @@ def test_pristine_files_are_the_trimmed_vulkan_set():
 # ---- one volk, one VMA, no window-system header ---------------------------------------------------------------------
 
 def _translation_units():
-    """C and C++ sources under native/ that a build compiles: not plume's pristine copy (never built)."""
+    """C, C++ and Objective-C++ sources and headers under native/ that a build compiles or includes: not plume's pristine copy (never built)."""
     skip = PLUME / "pristine"
     for path in (ROOT / "native").rglob("*"):
-        if path.suffix in (".c", ".cc", ".cpp", ".cxx") and skip not in path.parents:
+        if path.suffix in (".c", ".cc", ".cpp", ".cxx", ".h", ".hpp", ".inc", ".mm") and skip not in path.parents:
             yield path
 
 
 def test_exactly_one_volk_and_one_vma_translation_unit():
     volk, vma = [], []
+    vendored = {PLUME.parent / "volk", PLUME.parent / "vma"}  # the libraries' own headers mention the macros
     for path in _translation_units():
+        if vendored & set(path.parents):
+            continue
         text = path.read_text(encoding="utf-8", errors="replace")
         if re.search(r"^\s*#\s*define\s+VOLK_IMPLEMENTATION\b", text, re.MULTILINE):
             volk.append(path.relative_to(ROOT).as_posix())

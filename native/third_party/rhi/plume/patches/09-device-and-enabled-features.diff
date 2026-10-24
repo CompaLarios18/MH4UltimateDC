@@ -16,7 +16,7 @@ index 9941518..1e3c45e 100644
          bool descriptorIndexing = false;
          bool scalarBlockLayout = false;
 diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
-index fd4238b..9e407e4 100644
+index fd4238b..e5afd1c 100644
 --- a/plume_vulkan.cpp
 +++ b/plume_vulkan.cpp
 @@ -76,6 +76,9 @@ namespace plume {
@@ -193,7 +193,7 @@ index fd4238b..9e407e4 100644
          if (timelineSupported) {
              timelineFeatures.pNext = createDeviceChain;
              createDeviceChain = &timelineFeatures;
-@@ -4112,11 +4194,34 @@ namespace plume {
+@@ -4112,11 +4194,41 @@ namespace plume {
              createDeviceChain = &interlockFeatures;
          }
  
@@ -225,10 +225,17 @@ index fd4238b..9e407e4 100644
 +            }
 +        }
 +
++        // VUID-VkPhysicalDeviceRobustness2FeaturesEXT-robustBufferAccess2-04000: robustBufferAccess2 (enabled with
++        // the robustness2 structure whenever it is in the device chain) needs robustBufferAccess, so it is enabled
++        // whatever the caller listed.
++        if (nullDescriptorSupported && robustnessFeatures.robustBufferAccess2) {
++            enabledCoreFeatures.robustBufferAccess = VK_TRUE;
++        }
++
          // Retrieve the information for the queue families.
          uint32_t queueFamilyCount = 0;
          vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &queueFamilyCount, nullptr);
-@@ -4214,7 +4319,7 @@ namespace plume {
+@@ -4214,7 +4326,7 @@ namespace plume {
          createInfo.queueCreateInfoCount = uint32_t(queueCreateInfos.size());
          createInfo.ppEnabledExtensionNames = enabledExtensions.data();
          createInfo.enabledExtensionCount = uint32_t(enabledExtensions.size());
@@ -237,7 +244,7 @@ index fd4238b..9e407e4 100644
  
          VkResult res = vkCreateDevice(physicalDevice, &createInfo, nullptr, &vk);
          if (res != VK_SUCCESS) {
-@@ -4289,7 +4394,7 @@ namespace plume {
+@@ -4289,7 +4401,7 @@ namespace plume {
          description.dedicatedVideoMemory = memoryHeapSize;
  
          // Fill capabilities.
@@ -246,7 +253,7 @@ index fd4238b..9e407e4 100644
          capabilities.raytracing = rayTracingSupported;
          capabilities.raytracingStateUpdate = false;
          capabilities.sampleLocations = (sampleLocationProperties.sampleLocationSampleCounts != 0);
-@@ -4297,6 +4402,8 @@ namespace plume {
+@@ -4297,6 +4409,8 @@ namespace plume {
          capabilities.resolveModes = false;
          capabilities.timelineSemaphore = timelineSupported;
          capabilities.fragmentShaderInterlock = interlockSupported;
@@ -256,7 +263,7 @@ index fd4238b..9e407e4 100644
          capabilities.scalarBlockLayout = scalarBlockLayoutSupported;
          capabilities.bufferDeviceAddress = bufferDeviceAddressSupported;
 diff --git a/plume_vulkan.h b/plume_vulkan.h
-index b0d75c9..16e5c93 100644
+index b0d75c9..a60cf1c 100644
 --- a/plume_vulkan.h
 +++ b/plume_vulkan.h
 @@ -10,6 +10,7 @@
@@ -267,7 +274,7 @@ index b0d75c9..16e5c93 100644
  #include <set>
  #include <unordered_map>
  #include <unordered_set>
-@@ -77,6 +78,29 @@ namespace plume {
+@@ -77,6 +78,31 @@ namespace plume {
          // a surface no surface or swapchain extension is enabled.
          VkSurfaceKHR surface = VK_NULL_HANDLE;
  
@@ -278,6 +285,8 @@ index b0d75c9..16e5c93 100644
 +
 +        // The core features to enable (patch 09): each one that is set here and that the device
 +        // offers. Unset, plume enables every core feature the device offers, as it always did.
++        // robustBufferAccess is enabled whatever this says whenever the device enabled robustness2's
++        // robustBufferAccess2, which the specification makes depend on it.
 +        std::optional<VkPhysicalDeviceFeatures> coreFeatures;
 +
 +        // The optional extensions to enable when the device offers them (patch 09), by name; names
@@ -297,7 +306,7 @@ index b0d75c9..16e5c93 100644
          // Receives the text of the failure when the creation fails (also printed to stderr as before).
          std::string *error = nullptr;
      };
-@@ -461,6 +485,9 @@ namespace plume {
+@@ -461,6 +487,9 @@ namespace plume {
          // mh4n (patch 08): the device extensions that were enabled, by name.
          std::vector<std::string> enabledExtensionNames;
  

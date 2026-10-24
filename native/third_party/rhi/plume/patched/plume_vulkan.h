@@ -85,6 +85,8 @@ namespace plume {
 
         // The core features to enable (patch 09): each one that is set here and that the device
         // offers. Unset, plume enables every core feature the device offers, as it always did.
+        // robustBufferAccess is enabled whatever this says whenever the device enabled robustness2's
+        // robustBufferAccess2, which the specification makes depend on it.
         std::optional<VkPhysicalDeviceFeatures> coreFeatures;
 
         // The optional extensions to enable when the device offers them (patch 09), by name; names

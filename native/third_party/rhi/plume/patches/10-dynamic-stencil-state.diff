@@ -27,7 +27,7 @@ index 1e3c45e..4d33f8e 100644
          bool depthWriteEnabled = false;
          bool stencilEnabled = false;
 diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
-index 9e407e4..6d2c034 100644
+index e5afd1c..6be046a 100644
 --- a/plume_vulkan.cpp
 +++ b/plume_vulkan.cpp
 @@ -1680,6 +1680,12 @@ namespace plume {
@@ -63,10 +63,10 @@ index 9e407e4..6d2c034 100644
          rectVector.clear();
  
 diff --git a/plume_vulkan.h b/plume_vulkan.h
-index 16e5c93..de1166b 100644
+index a60cf1c..62f85d9 100644
 --- a/plume_vulkan.h
 +++ b/plume_vulkan.h
-@@ -387,6 +387,9 @@ namespace plume {
+@@ -389,6 +389,9 @@ namespace plume {
          void setFramebuffer(const RenderFramebuffer *framebuffer) override;
          void setDepthBias(float depthBias, float depthBiasClamp, float slopeScaledDepthBias) override;
          void setBlendConstants(const float constants[4]) override;

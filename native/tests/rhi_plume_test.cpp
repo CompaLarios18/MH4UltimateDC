@@ -316,6 +316,28 @@ TEST_CASE("device/no_surface") {
     CHECK_FALSE(rig.vd->capabilities.presentWait);
 }
 
+TEST_CASE("device/core_features") {
+    // An empty core-feature list enables nothing but robustBufferAccess, which robustness2's robustBufferAccess2
+    // needs (VUID-VkPhysicalDeviceRobustness2FeaturesEXT-robustBufferAccess2-04000): the validation layer
+    // (tools/native/vk_layer_run.py) reports it when the device is created without it.
+    VulkanDeviceExtras extras;
+    extras.coreFeatures = VkPhysicalDeviceFeatures{};
+    Rig rig;
+    if (!DeviceOk(rig.Open({}, extras), rig.error, "device/core_features")) {
+        return;
+    }
+    LogDevice(rig);
+    VkPhysicalDeviceFeatures expected = {};
+    VkPhysicalDeviceFeatures got = rig.vd->enabledCoreFeatures;
+    const bool robust = got.robustBufferAccess == VK_TRUE;
+    got.robustBufferAccess = VK_FALSE;
+    CHECK(std::memcmp(&got, &expected, sizeof(got)) == 0);  // nothing else is on
+    CHECK_FALSE(rig.vd->capabilities.geometryShader);
+    if (Has(rig.vd->enabledExtensionNames, VK_EXT_ROBUSTNESS_2_EXTENSION_NAME) && rig.vd->nullDescriptorSupported) {
+        CHECK(robust);
+    }
+}
+
 TEST_CASE("device/headless_surface") {
     VulkanInterfaceOptions options;
     options.headlessSurface = true;
