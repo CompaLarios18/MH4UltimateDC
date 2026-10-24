@@ -1648,7 +1648,7 @@ TEST_CASE("submit/two_threads_each_recording_and_submitting_through_the_lock") {
 
 TEST_CASE("owner_rule/a_second_open_recorder_on_one_thread_calls_the_handler") {
     if (!kRhiChecks) {
-        WARN_MESSAGE(false, "skipped: the owner-rule checks are compiled out (MH4N_RHI_CHECKS=OFF)");
+        test::SkipCase("the owner-rule checks are compiled out (MH4N_RHI_CHECKS=OFF)");
         return;
     }
     std::shared_ptr<Backend> backend = test::RequireBackend();
@@ -1685,7 +1685,7 @@ TEST_CASE("owner_rule/a_second_open_recorder_on_one_thread_calls_the_handler") {
 
 TEST_CASE("owner_rule/a_recorder_with_a_required_wait_needs_a_wait_that_covers_it") {
     if (!kRhiChecks) {
-        WARN_MESSAGE(false, "skipped: the owner-rule checks are compiled out (MH4N_RHI_CHECKS=OFF)");
+        test::SkipCase("the owner-rule checks are compiled out (MH4N_RHI_CHECKS=OFF)");
         return;
     }
     std::shared_ptr<Backend> backend = test::RequireBackend();
@@ -1902,6 +1902,6 @@ TEST_CASE("loading/no_driver_gives_an_error_with_a_message_and_the_process_goes_
     CHECK_MESSAGE(text.str().find("no Vulkan driver found") != std::string::npos, "the child's output: " << text.str());
     CHECK(text.str().find("error: \n") == std::string::npos);  // the message is not empty
 #else
-    WARN_MESSAGE(false, "skipped: the subprocess check runs on Linux only (this case is registered as skipped elsewhere)");
+    test::SkipCase("the subprocess check runs on Linux only (this case is registered as skipped elsewhere)");
 #endif
 }

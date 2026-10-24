@@ -38,6 +38,7 @@
 
 #include "gpu/backend/plume/vendor_info.h"
 #include "plume_vulkan.h"
+#include "support/vulkan_device.h"
 
 #include "rhi_plume_shaders.inc"
 
@@ -131,7 +132,7 @@ bool DeviceOk(bool ok, const std::string& error, const char* what) {
     if (VulkanRequired()) {
         FAIL(std::string(what) << ": no Vulkan device and MH4N_REQUIRE_VULKAN=1: " << error);
     }
-    WARN_MESSAGE(false, "skipped: " << std::string(what) << ": no Vulkan device (" << error << ")");
+    mh4n::test::SkipCase(std::string(what) + ": no Vulkan device (" + error + ")");
     return false;
 }
 
@@ -150,7 +151,7 @@ bool CapabilityOk(const Rig& rig, bool has, const char* capability, const char* 
     if (VulkanRequired() && rig.IsLavapipe()) {
         FAIL(std::string(what) << ": lavapipe does not report " << std::string(capability) << " and MH4N_REQUIRE_VULKAN=1");
     }
-    WARN_MESSAGE(false, "skipped: " << std::string(what) << ": the device has no " << std::string(capability));
+    mh4n::test::SkipCase(std::string(what) + ": the device has no " + std::string(capability));
     return false;
 }
 

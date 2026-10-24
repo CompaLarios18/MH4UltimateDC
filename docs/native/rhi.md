@@ -306,7 +306,12 @@ resources that do not defer their own destruction, the limit of a failed `vkQueu
   (`device/headless_surface` in `gpu_backend_core_test` and `rhi_plume_test`, `instance/the_headless_surface_and_the_debug_messenger_come_when_asked`,
   `presentation/with_a_headless_surface_agrees_with_the_probe`) skip with a message when the loader lacks `VK_EXT_headless_surface` (`MakeHeadlessSurface` and
   `SkipOrFailHeadless`; `rhi_plume_test` has its own copy of the check) and fail for that reason only under `MH4N_REQUIRE_HEADLESS_SURFACE=1`, which the `native` job
-  of `native.yml` sets beside `MH4N_REQUIRE_VULKAN` (on the lavapipe stack the extension is there, and its absence means the setup broke). When the validation layer is enabled (`VK_INSTANCE_LAYERS`, or
+  of `native.yml` sets beside `MH4N_REQUIRE_VULKAN` (on the lavapipe stack the extension is there, and its absence means the setup broke). doctest 2.4.11 cannot
+  mark a case skipped at run time, so every run-time skip (no device, no headless surface, a capability or format the device lacks, such as the two D24S8 cases)
+  goes through `SkipCase` in the same header, which records `{test case, why}`; a doctest listener (`REGISTER_LISTENER` in the header, which the three plume-level
+  binaries include too) prints at the end of the run `skipped at run time: N` and one line `  <test case>: <why>` per entry, and `skipped by decorator: <case>`
+  for each case registered with `doctest::skip`. A case that has nothing to assert on this device is listed under "skipped at run time" in the run's output;
+  doctest's own summary still counts it as passed. On lavapipe the block prints `skipped at run time: 0`. When the validation layer is enabled (`VK_INSTANCE_LAYERS`, or
   `MH4N_RHI_VALIDATION=1` for a run without the harness) they install a `VK_EXT_debug_utils` messenger that fails the running test on any warning or error message.
   The loading test runs a child process of the test binary with `VK_DRIVER_FILES` pointing at an empty folder (the case `loading/child` is the child's body and
   skips by itself).
@@ -331,14 +336,17 @@ The Windows llvm-mingw build, the macOS build, the three CI jobs and the `native
 new run is `pending (pc)`; no count after N2-32 has been measured. What the section says about the device, the masks and the probe still stands.
 
 **After N2-32 (to be measured on the PC, not seen yet).** The command, for each of `gpu_backend_core_test`, `rhi_plume_test` and `rhi_plume_patterns_test`:
-`MH4N_REQUIRE_VULKAN=1 MH4N_VULKAN_DEVICE="RX 6700" <binary>` (without `MH4N_REQUIRE_HEADLESS_SURFACE`). Expected, from reading the code and not from a run: 0 failed;
-the three headless-surface cases skip with a message (doctest counts that as passed, see below); `B1_shadow_store_no_interlock` passes and logs how many texels hold
-3 (the run before N2-32 gave 0 of 256); the skipped (doctest) cases are `loading/child` (the helper body), the controls (`control/C5`, `control/B7`, `control/B6`,
-`control/D4`, `control/D2`) and, on Windows, `loading/no_driver_gives_an_error_with_a_message_and_the_process_goes_on` (N2-32 registers it as skipped there). The
-expected counts are then core 49 passed, 0 failed, 2 skipped (1 on Linux); plume 8 passed, 0 failed, 1 skipped; patterns 23 passed, 0 failed, 4 skipped. Still counted
-as passed although they assert nothing on this device: the three headless-surface cases (a message) and the two D24S8 cases `patch10/dynamic_stencil_state_d24s8` and
-`patch11/depth_stencil_copy_as_two_regions` (a message). doctest 2.4.11 has no runtime skip (only the `doctest::skip` decorator, fixed at registration), so reporting
-those as skipped needs a reporter or a shared test main outside N2-32's allowlist: it is a `needs-decision` of N2-32. Each count above is to be replaced by the one the PC sees.
+`MH4N_REQUIRE_VULKAN=1 MH4N_VULKAN_DEVICE="RX 6700" <binary>` (without `MH4N_REQUIRE_HEADLESS_SURFACE`). Expected, from reading the code and not from a run: 0 failed
+in all three, and `B1_shadow_store_no_interlock` passes and logs how many texels hold 3 (the run before N2-32 gave 0 of 256). Each run ends with the block
+`skipped at run time: <n>` and one line `  <test case>: <why>` per case (see the helpers paragraph); that block is what says what ran. Expected in it: both
+`patch10/dynamic_stencil_state_d24s8` and `patch11/depth_stencil_copy_as_two_regions` (the RX 6700 XT has no D24S8 attachment; the D32S8 half of patch11 still ran),
+and the headless-surface cases only if the Windows loader still lacks `VK_EXT_headless_surface` (N2-31 saw it lacking: 4 cases, `device/headless_surface` in two
+binaries, `instance/the_headless_surface_and_the_debug_messenger_come_when_asked` and `presentation/with_a_headless_surface_agrees_with_the_probe`). Also printed:
+`skipped by decorator: <case>` for `loading/child`, the controls (`control/C5`, `control/B7`, `control/B6`, `control/D4`, `control/D2`) and, on a host that is not
+Linux, `loading/no_driver_gives_an_error_with_a_message_and_the_process_goes_on` (N2-32 registers it with `doctest::skip` there). doctest's own summary is unchanged
+and still counts a run-time skip as passed: a case that has nothing to assert on this device is listed under "skipped at run time" in the run's output; doctest's own
+summary still counts it as passed. So the expected doctest lines are 0 failed with passed counts equal to the cases run (core 49, plume 8, patterns 23) and the
+doctest-skipped counts as before (core 1, plume 1, patterns 4; core 2 on Windows); these are to be replaced by what the PC sees.
 
 Run on the maintainer's PC on 2026-10-24, base `6c8f6cd`, no source changed. Build: llvm-mingw 20241217 (`x86_64-w64-mingw32-clang`), Ninja,
 `RelWithDebInfo`, `MH4N_WERROR=ON`, the targets `gpu_backend_core_test`, `rhi_plume_test`, `rhi_plume_patterns_test` and `mh4n_vkprobe_tool`

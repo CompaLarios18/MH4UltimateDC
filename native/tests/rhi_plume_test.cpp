@@ -20,6 +20,7 @@
 
 #include "gpu/backend/plume/vendor_info.h"
 #include "plume_vulkan.h"
+#include "support/vulkan_device.h"
 
 #include "rhi_plume_shaders.inc"
 
@@ -78,7 +79,7 @@ bool DeviceOk(bool ok, const std::string& error, const char* what) {
     if (VulkanRequired()) {
         FAIL(what << ": no Vulkan device and MH4N_REQUIRE_VULKAN=1: " << error);
     }
-    WARN_MESSAGE(false, "skipped: " << what << ": no Vulkan device (" << error << ")");
+    mh4n::test::SkipCase(std::string(what) + ": no Vulkan device (" + error + ")");
     return false;
 }
 
@@ -355,7 +356,7 @@ TEST_CASE("device/headless_surface") {
         if (HeadlessSurfaceRequired()) {
             FAIL("the loader does not offer VK_EXT_headless_surface and MH4N_REQUIRE_HEADLESS_SURFACE=1");
         }
-        WARN_MESSAGE(false, "skipped: the loader does not offer VK_EXT_headless_surface");
+        mh4n::test::SkipCase("the loader does not offer VK_EXT_headless_surface");
         return;
     }
     CHECK(Has(probe.vi->enabledExtensionNames, VK_KHR_SURFACE_EXTENSION_NAME));
@@ -571,7 +572,7 @@ TEST_CASE("control/C5" * doctest::skip()) {
         return;
     }
     if (!rig.vd->capabilities.timelineSemaphore) {
-        WARN_MESSAGE(false, "skipped: no timeline semaphores");
+        mh4n::test::SkipCase("no timeline semaphores");
         return;
     }
     LogDevice(rig);
