@@ -1273,7 +1273,9 @@ TEST_CASE("owner_rule/after_a_hand_over_the_receiver_records_when_its_submission
                 mine.Draw(3);
             }
             // the receiver's first use added the hand-over's wait (the value and the stage it was given) to the recorder
-            REQUIRE(mine.impl().required_waits.size() == 1);
+            const bool one_wait = mine.impl().required_waits.size() == 1;
+            CHECK(one_wait);  // (no REQUIRE on a thread of its own: it would end the process)
+            if (!one_wait) return;
             CHECK(mine.impl().required_waits[0].value == produced);
             CHECK(mine.impl().required_waits[0].stage == Stage::FragmentShader);
             if (kind == Receiver::RecordsOn) {
