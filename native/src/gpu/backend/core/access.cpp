@@ -1,5 +1,7 @@
 // The Vulkan side (vulkan_access.h) that the core defines (N2-26). NativeImage and WrapExternalImage are
 // the targets module's.
+#include <type_traits>
+
 #include "gpu/backend/core/impl.h"
 
 namespace mh4n::gpu::rhi {
@@ -26,6 +28,9 @@ VkCommandBuffer CommandBuffer(Recorder& recorder) {
     }
     return impl.vulkan_list()->vk;
 }
+
+// A VkSurfaceKHR is a pointer on the 64-bit targets of the port (no 32-bit target is built).
+static_assert(std::is_pointer_v<VkSurfaceKHR> && sizeof(VkSurfaceKHR) == sizeof(u64), "non-dispatchable handles are 64-bit pointers");
 
 SurfaceHandle SurfaceFrom(VkSurfaceKHR surface) {
     SurfaceHandle handle;

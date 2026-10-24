@@ -11,6 +11,9 @@
 // boundary leaves out (the raw handles, the recording command buffer, the queue lock, wrapped swapchain
 // images) is vulkan_access.h. Only the standard library and mh4n/ headers are included here.
 //
+// Every class below has an impl() accessor for the modules of native/src/gpu/backend/ (their private state is
+// core/impl.h); nothing else uses it.
+//
 // Threads. One device is shared by several threads (D56). Every image has one owning thread, images
 // move between threads only by a timeline value with its own wait stage, and recorders are submitted in
 // the order they were begun on each thread (the owner rule, 9.4 item 5, OwnerRule below). Everything
@@ -174,12 +177,14 @@ struct Capabilities {
     bool bc7 = false;
     bool timeline = false;
     bool present_wait = false;
-    bool direct_upload = false;
+    bool direct_upload = false;   // some host-visible, device-local memory lives in a heap as large as the biggest device-local one
 
     // ---- values ----
     bool geometry_shader = false;
     u32 stride_alignment = 1;               // vertex strides must be multiples of it (the portability subset's value; 1 otherwise)
-    bool apple = false;                     // MoltenVK's or KosmicKrisp's driver id, or Apple's vendor id
+    // MoltenVK's or KosmicKrisp's driver id, or Apple's vendor id. On such devices fans are rewritten as
+    // lists and 8-bit indices widened whatever the two bits say (9.4 item 11).
+    bool apple = false;
     bool primitive_restart_always_on = false;  // true wherever `apple` is (9.4 item 10; MoltenVK always restarts)
     bool portability_subset = false;        // the device lists the portability subset extension
     u32 driver_id = 0;
@@ -941,7 +946,12 @@ public:
     std::vector<u8> SavePipelineCache();
 
     // ---- targets (N2-27) ----
+    // Attachment, sampled, storage and blit support of a format, asked of the device (optimal tiling).
     FormatSupport QueryFormat(Format format) const;
+    // The format to store `format` in and the conversion the caller owes (9.4 item 3): D24S8 when the d24s8
+    // bit is on, else D32S8; Rgb8 always as Rgba8; Rgb565, Rgb5A1 and Rgba4 in whichever component order
+    // the query says is an attachment, else Rgba8 with a conversion; Bc7 only when the bc7 bit is on, else
+    // decode on the CPU; the other formats as they are.
     ChosenFormat ChooseFormat(Format format, FormatUse use) const;
     Result<std::shared_ptr<Image>> CreateImage(const ImageDesc& desc);
     Result<std::shared_ptr<Sampler>> CreateSampler(const SamplerDesc& desc);
