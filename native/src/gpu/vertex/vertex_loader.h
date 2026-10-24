@@ -45,9 +45,17 @@
 //               are always aliased to the 4-component format of the same type, as Azahar's
 //               vk_instance.cpp does when a device lacks the 3-component format; float 3 is
 //               native). Lane 3 is then the first bytes of whatever follows in the vertex, not
-//               data: the shader must overwrite w. The value the interpreter's loader gives is
-//               1.0 (Azahar's generator writes 0.0 there instead: N2-06 decides which, see the
-//               WP report).
+//               data: the shader must overwrite w with 1.0. That is what Azahar's interpreter
+//               does (ShaderUnit::LoadInput / VertexLoader fill lane 3 with One), and the
+//               interpreter is N2-06's oracle. Azahar's GLSL generator writes 0 there (ZeroW):
+//               a divergence between Azahar's own renderers that N2-06 must not copy.
+//
+// Note for N2-26's ToPlume: an aliased attribute that is the last one in its vertex can have
+// offset + size_bytes > stride (3 shorts in a 6-byte vertex are read as 8 bytes). The buffer
+// carries 16 zero tail bytes, so the fetch never leaves the buffer, but the 'apple' case (and any
+// portability-subset device with `vertexAttributeAccessBeyondStride` false) must not rely on
+// that: the backend has to pad the stride itself or take another route for such an attribute.
+// The loader does not change its behaviour for this.
 //
 // Lanes the PICA attribute does not have (components < 4, no alias) are the fetch's defaults
 // (0, 0, 0, 1) in float and in integer formats alike, as the PICA fills them (0 for x/y/z lanes
@@ -156,8 +164,8 @@ enum class IndexType : u8 { None, U8, U16, U32 };
 enum class LoadStatus : u8 {
     Ok,
     NoVertices, // an indexed draw with no indices
-    Unmapped,   // the vertex or index data is (partly) outside guest memory, or an Arrays draw is
-                // implausibly large (over 16 million vertices): nothing to draw
+    Unmapped,   // the vertex or index data is (partly) outside guest memory: nothing to draw
+    TooLarge,   // an Arrays draw of over 16 million vertices: not a draw
 };
 const char* ToString(LoadStatus status);
 

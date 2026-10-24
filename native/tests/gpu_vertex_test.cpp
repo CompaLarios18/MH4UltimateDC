@@ -368,6 +368,22 @@ struct Stats {
     u64 registers = 0;
     u64 mismatches = 0;
     u64 index_mismatches = 0;
+    // Divergences that make the dump check fail, counted apart from the skips:
+    u64 dropped_readable = 0;       // the module dropped a draw the reference can read
+    u64 reference_unreadable = 0;   // the module loaded a vertex the reference cannot read
+
+    void Merge(const Stats& o) {
+        draws_checked += o.draws_checked;
+        vertices += o.vertices;
+        registers += o.registers;
+        mismatches += o.mismatches;
+        index_mismatches += o.index_mismatches;
+        dropped_readable += o.dropped_readable;
+        reference_unreadable += o.reference_unreadable;
+        for (const auto& [reason, n] : o.skipped) {
+            skipped[reason] += n;
+        }
+    }
 };
 
 bool SameBits(const Vec4& a, const Vec4& b) {
@@ -376,13 +392,53 @@ bool SameBits(const Vec4& a, const Vec4& b) {
 
 constexpr u32 kFirstVertices = 64;
 
+// Whether the reference can read the first `limit` source vertices of the draw (and, for an
+// indexed draw, their indices). A draw with no vertices has nothing to read.
+bool ReferenceCanRead(gpu::Host& host, const pica::DrawCall& draw, const RefLoader& ref, u32 limit) {
+    if (draw.kind == pica::DrawKind::Immediate) {
+        return true;
+    }
+    if (draw.num_vertices == 0) {
+        return false;
+    }
+    const u32 n = std::min(draw.num_vertices, limit);
+    std::vector<u32> source;
+    if (draw.kind == pica::DrawKind::Arrays) {
+        for (u32 i = 0; i < n; ++i) {
+            source.push_back(draw.vertex_offset + i);
+        }
+    } else {
+        const u32 size = draw.index_u16 ? 2 : 1;
+        const u8* p = host.PhysicalPointer(draw.vertex_base_address + draw.index_offset, n * size);
+        if (p == nullptr) {
+            return false;
+        }
+        for (u32 i = 0; i < n; ++i) {
+            source.push_back(draw.index_u16 ? (p[2 * i] | (p[2 * i + 1] << 8)) : p[i]);
+        }
+    }
+    for (u32 v : source) {
+        bool ok = true;
+        ref.Load(host, draw.vertex_base_address, v, ok);
+        if (!ok) {
+            return false;
+        }
+    }
+    return true;
+}
+
 // Compares the description's vertices with the reference's. `limit` caps the vertices compared.
 void CompareDraw(gpu::Host& host, const pica::DrawCall& draw, const LoadedDraw& ld, u32 limit,
                  Stats& stats) {
     const pica::PicaState& s = *draw.state;
     const RefLoader ref(s);
     if (ld.status != LoadStatus::Ok) {
-        ++stats.skipped[std::string("not loaded: ") + ToString(ld.status)];
+        if (ReferenceCanRead(host, draw, ref, limit)) {
+            ++stats.dropped_readable; // the module dropped a draw the reference can read
+        } else {
+            ++stats.skipped[std::string("not loaded, the reference cannot read it either: ") +
+                            ToString(ld.status)];
+        }
         return;
     }
     if (ref.stride_zero_loader() && draw.kind != pica::DrawKind::Immediate) {
@@ -446,7 +502,7 @@ void CompareDraw(gpu::Host& host, const pica::DrawCall& draw, const LoadedDraw& 
             bool ok = true;
             want = ref.Load(host, draw.vertex_base_address, source[i], ok);
             if (!ok) {
-                ++stats.skipped["reference could not read the vertex"];
+                ++stats.reference_unreadable; // the module loaded what the reference cannot read
                 continue;
             }
         }
@@ -1000,6 +1056,203 @@ TEST_CASE("a 16-bit index list with 0xFFFF is widened to 32-bit where a restart 
     }
 }
 
+TEST_CASE("only the attributes up to the vertex shader's last input are mapped") {
+    // 4 attributes (FLOAT x1, 4 bytes each), but the shader's input map has 2 entries: attr 0 ->
+    // register 1, attr 1 -> register 0. A loop up to the number of attributes would send attr 2 and
+    // attr 3 (nibble 0 of the unset map) to register 0 and overwrite attr 1's.
+    Scene sc;
+    for (u32 a = 0; a < 4; ++a) {
+        sc.SetAttr(a, kPicaFloat, 1);
+    }
+    sc.SetNumAttributes(4, 0);
+    sc.SetLoader(0, 0, {0, 1, 2, 3}, 16);
+    sc.Put(0, Random(16 * 3, 41));
+    sc.Map({1, 0});
+    sc.Arrays(0, 3);
+    LoadedDraw ld;
+    const Stats stats = LoadAndCompare(sc, VertexCaps{}, &ld);
+    CHECK(stats.mismatches == 0);
+    CHECK(stats.registers == 2 * 3);
+    CHECK(ld.attributes[0].binding == 0);
+    CHECK(ld.attributes[0].offset == 4); // attr 1, not attr 3 (offset 12)
+    CHECK(ld.attributes[1].offset == 0);
+    CHECK(ld.attributes[2].binding == 1);
+    CHECK(ld.attributes[3].binding == 1);
+}
+
+TEST_CASE("a loader of 12 components uses the third word's low bits; counts above 12 are cut") {
+    for (u32 count_field : {12u, 13u, 15u}) {
+        CAPTURE(count_field);
+        // 12 UBYTE x1 attributes in one loader, 12 bytes: attribute i at offset i. Components 8 to
+        // 11 are in the third word (bits 0-15), under byte_count (16-23) and the count (28-31).
+        Scene sc;
+        sc.SetNumAttributes(12, 0);
+        std::vector<u32> comps;
+        for (u32 a = 0; a < 12; ++a) {
+            sc.SetAttr(a, 1, 1);
+            comps.push_back(a);
+        }
+        sc.SetLoader(0, 0, comps, 12);
+        sc.R(0x203 + 2) = WithField(sc.R(0x203 + 2), 28, 4, count_field);
+        sc.MapIdentity(12);
+        sc.Put(0, Random(12 * 4, 50));
+        sc.Arrays(0, 4);
+        LoadedDraw ld;
+        const Stats stats = LoadAndCompare(sc, VertexCaps{}, &ld);
+        CHECK(stats.mismatches == 0);
+        CHECK(stats.registers == 12 * 4);
+        REQUIRE(ld.buffers.size() == 2);
+        for (u32 a = 0; a < 12; ++a) {
+            CHECK(ld.attributes[a].binding == 0);
+            CHECK(ld.attributes[a].offset == a);
+            CHECK(ld.attributes[a].format == VertexFormat::R8_UINT);
+        }
+        CHECK(ld.buffers[0].stride == 12);
+    }
+}
+
+TEST_CASE("padding ids 12 to 15 skip 4, 8, 12 and 16 bytes after aligning to 4") {
+    // Components: attr0 (UBYTE x1), pad 13, attr1, pad 14, attr2, pad 15, attr3, pad 12, attr4.
+    // attr0 at 0, ends 1. Pad 13 (8 bytes): align 4 -> 4, +8 -> 12; attr1 at 12, ends 13.
+    // Pad 14 (12 bytes): align -> 16, +12 -> 28; attr2 at 28, ends 29. Pad 15 (16 bytes): align ->
+    // 32, +16 -> 48; attr3 at 48, ends 49. Pad 12 (4 bytes): align -> 52, +4 -> 56; attr4 at 56,
+    // ends 57. The loader's stride is 57.
+    Scene sc;
+    sc.SetNumAttributes(5, 0);
+    for (u32 a = 0; a < 5; ++a) {
+        sc.SetAttr(a, 1, 1);
+    }
+    sc.SetLoader(0, 0, {0, 13, 1, 14, 2, 15, 3, 12, 4}, 57);
+    sc.MapIdentity(5);
+    sc.Put(0, Random(57 * 3, 51));
+    sc.Arrays(0, 3);
+    LoadedDraw ld;
+    const Stats stats = LoadAndCompare(sc, VertexCaps{}, &ld);
+    CHECK(stats.mismatches == 0);
+    CHECK(stats.registers == 5 * 3);
+    CHECK(ld.attributes[0].offset == 0);
+    CHECK(ld.attributes[1].offset == 12);
+    CHECK(ld.attributes[2].offset == 28);
+    CHECK(ld.attributes[3].offset == 48);
+    CHECK(ld.attributes[4].offset == 56);
+}
+
+TEST_CASE("the default flag covers attributes 8 to 11 (mask bits 8-11) and ids 12 to 15") {
+    // 16 attributes; 8..11 flagged in the mask, 12..15 default always. A loader covers attr 8 too:
+    // the default wins. Attributes 0..7 have nothing: the constant (0, 0, 0, 1).
+    Scene sc;
+    sc.SetAttr(8, kPicaFloat, 2);
+    sc.SetNumAttributes(16, 0xF00);
+    sc.SetLoader(0, 0, {8}, 8);
+    sc.MapIdentity(16);
+    for (u32 a = 8; a < 16; ++a) {
+        sc.state->default_attributes[a] = {{float(a), float(a) + 0.5f, -float(a), 7.0f}};
+    }
+    sc.Put(0, Random(8 * 3, 52));
+    sc.Arrays(0, 2);
+    LoadedDraw ld;
+    const Stats stats = LoadAndCompare(sc, VertexCaps{}, &ld);
+    CHECK(stats.mismatches == 0);
+    CHECK(stats.registers == 8 * 2);
+    REQUIRE(ld.buffers.size() == 1);
+    for (u32 a = 8; a < 16; ++a) {
+        Vec4 v;
+        REQUIRE(Fetch(ld, a, 0, v));
+        CHECK(v == Vec4{float(a), float(a) + 0.5f, -float(a), 7.0f});
+    }
+    Vec4 v;
+    REQUIRE(Fetch(ld, 4, 0, v));
+    CHECK(v == Vec4{0.0f, 0.0f, 0.0f, 1.0f});
+    // Without the mask bits, attributes 8..11 are not default: 8 is loaded, 9..11 have no source.
+    Scene sc2;
+    sc2.SetAttr(8, kPicaFloat, 2);
+    sc2.SetNumAttributes(12, 0);
+    sc2.SetLoader(0, 0, {8}, 8);
+    sc2.MapIdentity(12);
+    sc2.Put(0, Random(8 * 3, 52));
+    sc2.Arrays(0, 2);
+    LoadedDraw ld2;
+    LoadAndCompare(sc2, VertexCaps{}, &ld2);
+    CHECK(ld2.attributes[8].binding == 0);
+    CHECK(ld2.attributes[9].binding == 1);
+}
+
+TEST_CASE("a loader without a stride provides nothing; the later of two loaders wins") {
+    {
+        Scene sc;
+        sc.SetAttr(0, kPicaFloat, 1);
+        sc.SetLoader(0, 0, {0}, 0); // byte_count 0
+        sc.Put(0, Random(64, 60));
+        sc.Arrays(0, 3);
+        VertexLoader loader(VertexCaps{});
+        const LoadedDraw ld = loader.Load(sc.host, sc.draw);
+        CHECK(ld.status == LoadStatus::Ok);
+        REQUIRE(ld.buffers.size() == 1); // only the constant buffer
+        CHECK(ld.attributes[0].binding == 0);
+        CHECK(ld.attributes[0].offset == 0);
+        CHECK(ld.attributes[0].format == VertexFormat::R32G32B32A32_FLOAT);
+    }
+    {
+        Scene sc;
+        sc.SetAttr(0, kPicaFloat, 1);
+        sc.SetLoader(0, 0x00, {0}, 4);
+        sc.SetLoader(1, 0x100, {0}, 4);
+        const std::vector<u8> first = Random(4 * 3, 61);
+        const std::vector<u8> second = Random(4 * 3, 62);
+        sc.Put(0x00, first);
+        sc.Put(0x100, second);
+        sc.Arrays(0, 3);
+        LoadedDraw ld;
+        const Stats stats = LoadAndCompare(sc, VertexCaps{}, &ld);
+        CHECK(stats.mismatches == 0);
+        REQUIRE(ld.buffers.size() == 2); // loader 0 provides nothing in the end
+        CHECK(ld.attributes[0].binding == 0);
+        CHECK(std::memcmp(ld.buffers[0].data.data(), second.data(), 12) == 0);
+    }
+}
+
+TEST_CASE("a long fan gets 32-bit indices; a fan whose last index is 0xFFFF is widened under restart") {
+    VertexCaps nofan;
+    nofan.triangle_fans = false;
+    {
+        Scene sc;
+        SimpleScene(sc);
+        sc.SetTopology(pica::kTopologyFan);
+        sc.Arrays(0, 70000);
+        LoadedDraw ld;
+        const Stats stats = LoadAndCompare(sc, nofan, &ld);
+        CHECK(stats.index_mismatches == 0);
+        CHECK(ld.index_type == IndexType::U32);
+        CHECK(ld.count == 69998 * 3);
+        const std::vector<u32> idx = ReadIndices(ld);
+        CHECK(idx[0] == 0);
+        CHECK(idx[1] == 1);
+        CHECK(idx[2] == 2);
+        CHECK(idx[idx.size() - 2] == 69998);
+        CHECK(idx.back() == 69999);
+    }
+    {
+        // 65536 vertices: the largest index is 0xFFFF.
+        Scene sc;
+        SimpleScene(sc);
+        sc.SetTopology(pica::kTopologyFan);
+        sc.Arrays(0, 65536);
+        LoadedDraw plain;
+        LoadAndCompare(sc, nofan, &plain);
+        CHECK(plain.index_type == IndexType::U16);
+        CHECK_FALSE(plain.restart_widened);
+        VertexCaps restart = nofan;
+        restart.primitive_restart_always_on = true;
+        LoadedDraw widened;
+        VertexLoader loader(restart);
+        const Stats stats = LoadAndCompare(sc, restart, &widened, &loader);
+        CHECK(stats.index_mismatches == 0);
+        CHECK(widened.index_type == IndexType::U32);
+        CHECK(widened.restart_widened);
+        CHECK(loader.counters().restart_widened == 1);
+    }
+}
+
 TEST_CASE("draws that cannot be loaded are reported, not drawn") {
     VertexLoader loader(VertexCaps{});
     {
@@ -1060,10 +1313,24 @@ namespace {
 
 // ---- a Gpu for the capture player that loads and compares at every draw ------------------------------
 
-struct ReplayState {
-    VertexCaps caps;
+std::vector<std::pair<std::string, VertexCaps>> Profiles();
+
+// One replay loads and compares every draw with every device profile.
+struct ProfileRun {
+    std::string name;
+    VertexLoader loader;
     Stats stats;
     u64 draws_seen = 0;
+};
+struct ReplayState {
+    std::vector<ProfileRun> runs;
+
+    void Reset() {
+        runs.clear();
+        for (const auto& [name, caps] : Profiles()) {
+            runs.push_back(ProfileRun{name, VertexLoader(caps), {}, 0});
+        }
+    }
 };
 ReplayState g_replay;
 
@@ -1072,10 +1339,11 @@ public:
     explicit CheckingBackend(gpu::Host& host) : host_(host) {}
 
     void Draw(const pica::DrawCall& draw) override {
-        VertexLoader loader(g_replay.caps);
-        const LoadedDraw ld = loader.Load(host_, draw);
-        ++g_replay.draws_seen;
-        CompareDraw(host_, draw, ld, kFirstVertices, g_replay.stats);
+        for (ProfileRun& run : g_replay.runs) {
+            const LoadedDraw ld = run.loader.Load(host_, draw);
+            ++run.draws_seen;
+            CompareDraw(host_, draw, ld, kFirstVertices, run.stats);
+        }
     }
 
 private:
@@ -1260,9 +1528,9 @@ struct CaptureFile {
 // A capture whose one command list sets up two attributes (a UBYTE x3 position-like attribute and
 // a FLOAT x2 one in a second loader), a default attribute and the vertex shader's map, then draws
 // arrays as a list and as a fan, and indexed (as a fan) with 8-bit and with 16-bit indices.
-std::string SyntheticCapture(const std::string& name) {
+std::string SyntheticCapture(const std::string& name, u32 base = kBase) {
     List list;
-    list.Write(0x200, (kBase >> 4) << 1);
+    list.Write(0x200, (base >> 4) << 1);
     // attr 0: UBYTE x3 (format 1, size-1 2), attr 1: FLOAT x2 (format 3, size-1 1), attr 2: SHORT x4
     list.Write(0x201, (1u | (2u << 2)) | ((3u | (1u << 2)) << 4) | ((2u | (3u << 2)) << 8));
     list.Write(0x202, (2u << 28) | (0u << 16)); // 3 attributes, none default
@@ -1355,33 +1623,26 @@ DumpTotals DumpCheck(const char* value, bool print) {
     DumpTotals totals;
     totals.captures = paths.size();
     for (const std::string& path : paths) {
-        for (const auto& [profile, caps] : Profiles()) {
-            g_replay = ReplayState{};
-            g_replay.caps = caps;
-            const gpu_capture::PlayerResult result = Replay(path);
-            CHECK_MESSAGE(result.error.empty(), "a capture could not be replayed: " << result.error);
-            const Stats& one = g_replay.stats;
-            Stats& total = totals.stats;
-            totals.draws_seen += g_replay.draws_seen;
-            total.draws_checked += one.draws_checked;
-            total.vertices += one.vertices;
-            total.registers += one.registers;
-            total.mismatches += one.mismatches;
-            total.index_mismatches += one.index_mismatches;
-            for (const auto& [reason, n] : one.skipped) {
-                total.skipped[reason] += n;
-            }
+        g_replay.Reset();
+        const gpu_capture::PlayerResult result = Replay(path); // once, for all the profiles
+        CHECK_MESSAGE(result.error.empty(), "a capture could not be replayed: " << result.error);
+        for (const ProfileRun& run : g_replay.runs) {
+            totals.draws_seen += run.draws_seen;
+            totals.stats.Merge(run.stats);
         }
     }
     if (print) {
         const Stats& t = totals.stats;
         std::printf("vertex dump check: %zu captures x %zu device profiles; draws seen %llu, draws checked %u, "
-                    "vertices compared %llu, registers compared %llu, mismatches %llu, index mismatches %llu\n",
+                    "vertices compared %llu, registers compared %llu, mismatches %llu, index mismatches %llu, "
+                    "module dropped a draw the reference can read %llu, reference could not read a vertex the module loaded %llu\n",
                     paths.size(), Profiles().size(), static_cast<unsigned long long>(totals.draws_seen),
                     t.draws_checked, static_cast<unsigned long long>(t.vertices),
                     static_cast<unsigned long long>(t.registers),
                     static_cast<unsigned long long>(t.mismatches),
-                    static_cast<unsigned long long>(t.index_mismatches));
+                    static_cast<unsigned long long>(t.index_mismatches),
+                    static_cast<unsigned long long>(t.dropped_readable),
+                    static_cast<unsigned long long>(t.reference_unreadable));
         for (const auto& [reason, n] : t.skipped) {
             std::printf("vertex dump check: skipped %u draws: %s\n", n, reason.c_str());
         }
@@ -1394,21 +1655,100 @@ DumpTotals DumpCheck(const char* value, bool print) {
 
 TEST_CASE("the replay path: a synthetic capture goes through the processor and the loader") {
     const std::string path = SyntheticCapture("replay");
-    for (const auto& [profile, caps] : Profiles()) {
-        CAPTURE(profile);
-        g_replay = ReplayState{};
-        g_replay.caps = caps;
-        const gpu_capture::PlayerResult result = Replay(path);
-        CHECK_MESSAGE(result.ExitStatus() == 0, gpu_capture::FormatReport(result));
-        CHECK(g_replay.draws_seen == 4);
-        CHECK(g_replay.stats.draws_checked == 4);
-        CHECK(g_replay.stats.vertices == 6 + 6 + 5 + 5);
-        CHECK(g_replay.stats.registers == 3 * (6 + 6 + 5 + 5));
-        CHECK(g_replay.stats.mismatches == 0);
-        CHECK(g_replay.stats.index_mismatches == 0);
-        CHECK(g_replay.stats.skipped.empty());
+    g_replay.Reset();
+    const gpu_capture::PlayerResult result = Replay(path); // one replay, four profiles
+    CHECK_MESSAGE(result.ExitStatus() == 0, gpu_capture::FormatReport(result));
+    REQUIRE(g_replay.runs.size() == 4);
+    for (const ProfileRun& run : g_replay.runs) {
+        CAPTURE(run.name);
+        CHECK(run.draws_seen == 4);
+        CHECK(run.stats.draws_checked == 4);
+        CHECK(run.stats.vertices == 6 + 6 + 5 + 5);
+        CHECK(run.stats.registers == 3 * (6 + 6 + 5 + 5));
+        CHECK(run.stats.mismatches == 0);
+        CHECK(run.stats.index_mismatches == 0);
+        CHECK(run.stats.dropped_readable == 0);
+        CHECK(run.stats.reference_unreadable == 0);
+        CHECK(run.stats.skipped.empty());
     }
     fs::remove(path);
+}
+
+TEST_CASE("a draw both the module and the reference cannot read is a counted skip, not a failure") {
+    const std::string path = SyntheticCapture("badbase", 0x70000000);
+    g_replay.Reset();
+    const gpu_capture::PlayerResult result = Replay(path);
+    CHECK_MESSAGE(result.ExitStatus() == 0, gpu_capture::FormatReport(result));
+    for (const ProfileRun& run : g_replay.runs) {
+        CHECK(run.draws_seen == 4);
+        CHECK(run.stats.draws_checked == 0);
+        CHECK(run.stats.dropped_readable == 0);
+        CHECK(run.stats.mismatches == 0);
+        u32 skipped = 0;
+        for (const auto& [reason, n] : run.stats.skipped) {
+            skipped += n;
+        }
+        CHECK(skipped == 4);
+    }
+    fs::remove(path);
+}
+
+namespace {
+// A host whose guest memory has nothing in it.
+class NoMemoryHost final : public gpu::Host {
+public:
+    u8* PhysicalPointer(u32, u32) override { return nullptr; }
+    std::optional<u32> VirtualToPhysical(u32) override { return std::nullopt; }
+    void SignalInterrupt(gpu::Interrupt, u64) override {}
+    void Post(std::function<void()> work) override { work(); }
+};
+} // namespace
+
+TEST_CASE("the dump check fails on a dropped draw the reference can read and on an unreadable vertex") {
+    Scene sc;
+    SimpleScene(sc);
+    sc.Arrays(0, 10);
+    VertexLoader loader(VertexCaps{});
+    LoadedDraw ld = loader.Load(sc.host, sc.draw);
+    // A module that wrongly drops this draw: the reference reads it, so it is a divergence.
+    LoadedDraw dropped;
+    dropped.status = LoadStatus::Unmapped;
+    Stats stats;
+    CompareDraw(sc.host, sc.draw, dropped, 64, stats);
+    CHECK(stats.dropped_readable == 1);
+    CHECK(stats.skipped.empty());
+    dropped.status = LoadStatus::NoVertices;
+    CompareDraw(sc.host, sc.draw, dropped, 64, stats);
+    CHECK(stats.dropped_readable == 2);
+    // The same for an indexed draw whose indices and vertices are readable.
+    Scene si;
+    SimpleScene(si);
+    si.Indexed(Indices8({1, 2, 3}), false, 3);
+    CompareDraw(si.host, si.draw, dropped, 64, stats);
+    CHECK(stats.dropped_readable == 3);
+    // Both cannot read it: a skip.
+    Scene bad;
+    SimpleScene(bad);
+    bad.draw.vertex_base_address = 0x70000000;
+    bad.Arrays(0, 3);
+    LoadedDraw both = loader.Load(bad.host, bad.draw);
+    CHECK(both.status == LoadStatus::Unmapped);
+    Stats skip;
+    CompareDraw(bad.host, bad.draw, both, 64, skip);
+    CHECK(skip.dropped_readable == 0);
+    CHECK(skip.skipped.size() == 1);
+    // A draw with no vertices has nothing to read: a skip too.
+    Scene none;
+    SimpleScene(none);
+    none.Arrays(0, 0);
+    CompareDraw(none.host, none.draw, loader.Load(none.host, none.draw), 64, skip);
+    CHECK(skip.dropped_readable == 0);
+    // The module loaded the draw but the reference's memory lacks it (a host with no memory).
+    NoMemoryHost empty;
+    Stats unreadable;
+    CompareDraw(empty, sc.draw, ld, 64, unreadable);
+    CHECK(unreadable.reference_unreadable == 10);
+    CHECK(unreadable.mismatches == 0);
 }
 
 TEST_CASE("the capture list of the dump check: a directory, a file, and the counts") {
@@ -1423,6 +1763,8 @@ TEST_CASE("the capture list of the dump check: a directory, a file, and the coun
     CHECK(totals.captures == 1);
     CHECK(totals.draws_seen == 4 * Profiles().size());
     CHECK(totals.stats.draws_checked == 4 * Profiles().size());
+    CHECK(totals.stats.dropped_readable == 0);
+    CHECK(totals.stats.reference_unreadable == 0);
     CHECK(totals.stats.mismatches == 0);
     CHECK(totals.stats.index_mismatches == 0);
     const std::string both = dir.string() + std::string(1,
@@ -1453,4 +1795,6 @@ TEST_CASE("(with the dump) the first 64 vertices of every captured draw equal th
     CHECK(totals.stats.draws_checked > 0);
     CHECK(totals.stats.mismatches == 0);
     CHECK(totals.stats.index_mismatches == 0);
+    CHECK(totals.stats.dropped_readable == 0);
+    CHECK(totals.stats.reference_unreadable == 0);
 }

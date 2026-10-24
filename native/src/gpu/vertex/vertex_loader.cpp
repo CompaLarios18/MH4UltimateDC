@@ -76,14 +76,14 @@ VertexFormat MakeFormat(u32 pica_format, u32 count, bool& alias_w) {
         alias_w = true;
         count = 4;
     }
-    const u32 lanes = count == 4 ? 2 : count - 1; // 1, 2, 4 -> 0, 1, 2
+    const u32 count_index = count == 4 ? 2 : count - 1; // 1, 2, 4 -> 0, 1, 2
     switch (pica_format) {
     case kFmtByte:
-        return static_cast<VertexFormat>(static_cast<u32>(VertexFormat::R8_SINT) + lanes);
+        return static_cast<VertexFormat>(static_cast<u32>(VertexFormat::R8_SINT) + count_index);
     case kFmtUByte:
-        return static_cast<VertexFormat>(static_cast<u32>(VertexFormat::R8_UINT) + lanes);
+        return static_cast<VertexFormat>(static_cast<u32>(VertexFormat::R8_UINT) + count_index);
     default:
-        return static_cast<VertexFormat>(static_cast<u32>(VertexFormat::R16_SINT) + lanes);
+        return static_cast<VertexFormat>(static_cast<u32>(VertexFormat::R16_SINT) + count_index);
     }
 }
 
@@ -173,6 +173,7 @@ const char* ToString(LoadStatus status) {
     case LoadStatus::Ok: return "ok";
     case LoadStatus::NoVertices: return "no vertices";
     case LoadStatus::Unmapped: return "vertex or index data outside guest memory";
+    case LoadStatus::TooLarge: return "more vertices than any draw has";
     }
     return "?";
 }
@@ -281,7 +282,7 @@ LoadedDraw VertexLoader::Load(gpu::Host& host, const pica::DrawCall& draw) {
             out.status = LoadStatus::NoVertices;
         } else if (vertex_num > kMaxArraysVertices) {
             MH4N_LOG(Warning, kLog, "an Arrays draw of {} vertices is dropped", vertex_num);
-            out.status = LoadStatus::Unmapped;
+            out.status = LoadStatus::TooLarge;
         }
     } else if (draw.kind == pica::DrawKind::Indexed) {
         source_u16 = draw.index_u16;
