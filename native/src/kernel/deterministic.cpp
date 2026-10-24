@@ -220,7 +220,8 @@ void CycleDriver::Install() {
 u64 CycleDriver::DrawSliceTicks() {
     if (options_.seeded) {
         // The last draw (DrawSlice, one at each entry into the host, as before the lockstep scheduler): whole
-        // microseconds from half to one and a half times the default.
+        // microseconds from half to one and a half times the default (the stretch that is run is capped at the
+        // default by until_event, so the effective range is one half to one times).
         return std::max<u64>(NsToTicks(static_cast<u64>(last_slice_us_) * 1000), 1);
     }
     // The default slice is Azahar's 1,145,774 cycles, which is not a whole number of microseconds.

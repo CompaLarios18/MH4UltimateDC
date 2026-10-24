@@ -567,8 +567,10 @@ struct Behind {
 // Core 0's stretch is cut short by an event, 980 ticks into it (320 ticks of calls, 620 to the event, and the 20 of
 // the block that crosses it), so core 1's is 980 ticks long too. Core 1's thread makes the system call `imm` there,
 // which costs more than that and puts core 1 ahead. Core 0's thread is then run again by the next RunLoop call
-// (RunLoop's catch-up branch if core 1 is more than 100 ticks ahead), and reads what it was given.
-Behind CoreBehind(u32 imm, u32 r0, u32 r1) {
+// (RunLoop's catch-up branch if core 1 is more than 100 ticks ahead), and reads what it was given. After the call,
+// core 1's thread charges `extra` more ticks in one block (the block that yields), so core 1 is `20 + extra` ticks
+// ahead for a call of 1000 ticks.
+Behind CoreBehind(u32 imm, u32 r0, u32 r1, s64 extra = 1) {
     Sim sim;
     Behind result;
     u64 traced = 0;
@@ -603,9 +605,9 @@ Behind CoreBehind(u32 imm, u32 r0, u32 r1) {
         0x30, 1,
         [&](Guest& g) {
             g.Svc(imm, r0, r1);
-            g.Burn(1);  // the stretch is over (the call went past it): the thread yields at its next block
+            g.Burn(extra);  // the stretch is over (the call went past it): the thread yields at its next block
         },
-        /*block=*/20);
+        /*block=*/extra);
     REQUIRE(sim.Run() == RunStatus::Stopped);
     REQUIRE(result.seen);
     return result;
@@ -629,6 +631,24 @@ TEST_CASE("a core that is no more than 100 ticks behind is not waited for: both 
     CHECK(b.c0 == kStart + 980);
     CHECK(b.c1 == kStart + 1001);
     CHECK(b.stretch_end == b.c0 + 1145774);
+}
+
+TEST_CASE("RunLoop's tolerance is exact: 100 ticks behind is not waited for, 101 is") {
+    // ControlMemory's 1000 ticks put core 1 at 1000 + extra, core 0 is at 980: the difference is 20 + extra. The
+    // test of Azahar's core.cpp is `max_delay > min_delay` with min_delay = 100.
+    const Behind at_100 = CoreBehind(0x35, 0, 0x1234, 80);
+    REQUIRE(at_100.c1 - at_100.c0 == 100);
+    CHECK(at_100.stretch_end == at_100.c0 + 1145774);  // both cores go on side by side, for a whole slice
+    const Behind at_101 = CoreBehind(0x35, 0, 0x1234, 81);
+    REQUIRE(at_101.c1 - at_101.c0 == 101);
+    CHECK(at_101.stretch_end == at_101.c1);  // core 0 runs alone for the 101 ticks of the difference
+    // (and the cases of 99 and 102 sit on the same sides)
+    const Behind at_99 = CoreBehind(0x35, 0, 0x1234, 79);
+    REQUIRE(at_99.c1 - at_99.c0 == 99);
+    CHECK(at_99.stretch_end == at_99.c0 + 1145774);
+    const Behind at_102 = CoreBehind(0x35, 0, 0x1234, 82);
+    REQUIRE(at_102.c1 - at_102.c0 == 102);
+    CHECK(at_102.stretch_end == at_102.c1);
 }
 
 TEST_CASE("the trace's t is the later of the two clocks, also for a thread on the core that is behind") {
@@ -718,6 +738,147 @@ TEST_CASE("the longest stretch is Azahar's 1,145,774 ticks when both cores have 
     });
     REQUIRE(sim.Run() == RunStatus::Stopped);
     CHECK(first_end == kStart + 1145774);
+}
+
+TEST_CASE("a thread that a better one displaces goes back to the front of its queue, ahead of its peer") {
+    // The lockstep select() puts the displaced thread at the front of its priority queue (Azahar's SwitchContext), not
+    // at the back: A and B have the same priority, A runs, a better thread P wakes up in the middle of A's burn and
+    // runs for a moment, and then A goes on before B gets its turn.
+    Sim sim;
+    std::vector<std::string> log;
+    sim.Spawn(0x20, 0, [&](Guest& g) {
+        g.SleepNs(1000000);  // 268,111 ticks, inside A's burn
+        log.push_back("P");
+    });
+    sim.Spawn(0x30, 0, [&](Guest& g) {
+        g.Burn(1000000);
+        log.push_back("A");
+    });
+    sim.Spawn(0x30, 0, [&](Guest&) { log.push_back("B"); });
+    REQUIRE(sim.Run() == RunStatus::Stopped);
+    CHECK(log == std::vector<std::string>{"P", "A", "B"});
+    CHECK(sim.Sched().Counters().preemptions >= 1);
+}
+
+TEST_CASE("the refill of a core's budget is exact to the tick: a stretch runs one block past its end, no more") {
+    // Blocks of one cycle: the block that runs the budget out is charged, so a stretch ends one tick after its
+    // stretch_end, and the next one begins there with a whole slice. A refill one tick too long or too short (after a
+    // system call, or at the start of a stretch) moves every one of those clocks. (With blocks of 250 cycles, the
+    // overshoot of a stretch hides such an error.)
+    Sim sim;
+    std::vector<u64> starts_after_end;  // the clock at the start of each stretch, less the previous one's stretch_end
+    std::vector<u64> lengths;           // stretch_end - stretch_start of each stretch
+    u64 previous_end = 0;
+    sim.Spawn(
+        0x30, 0,
+        [&](Guest& g) {
+            g.Tick();  // a system call: the thread is given what is left of the stretch (the refill after the call)
+            LockstepState& ls = sim.Time().Lockstep();
+            previous_end = ls.stretch_end;
+            lengths.push_back(ls.stretch_end - ls.stretch_start);
+            g.after_budget = [&] {
+                starts_after_end.push_back(sim.CoreNow(0) - previous_end);
+                lengths.push_back(ls.stretch_end - ls.stretch_start);
+                previous_end = ls.stretch_end;
+            };
+            g.Burn(4000000);
+        },
+        /*block=*/1);
+    REQUIRE(sim.Run() == RunStatus::Stopped);
+    REQUIRE(starts_after_end.size() >= 3);
+    for (std::size_t i = 0; i < starts_after_end.size(); ++i) {
+        INFO("stretch " << i);
+        CHECK(starts_after_end[i] == 1);  // the block that ran the budget out, charged once
+    }
+    for (const u64 length : lengths) {
+        CHECK(length == 1145774);
+    }
+}
+
+TEST_CASE("the stretch of a core is cut at its next event to the tick, also when the other core ran past it (slice_of)") {
+    // Core 0's thread puts an event on core 1's queue (its own, far enough off); the event limits both cores' next
+    // stretch (max_slice is the shortest time to an event), core 0 overshoots its stretch by the one tick of its
+    // block, and core 1 is then given min(what core 0 ran, the time to its event) = the time to the event: its
+    // stretch ends at the event's tick, not one tick after it (as it would if the limit alone decided).
+    Sim sim;
+    u64 due = 0;
+    int callbacks = 0;
+    std::set<u64> ends1;
+    u64 fired_at = 0;
+    int fired_core = -1;
+    sim.Spawn(
+        0x30, 0,
+        [&](Guest& g) {
+            g.Tick();
+            g.after_budget = [&] {
+                if (++callbacks != 1) {
+                    return;
+                }
+                // Two stretches from now both cores are about 1,145,775 ticks on; the event is 5000 after that.
+                kernel_detail::ScheduleOnCore(1);
+                due = sim.CoreNow(1) + 1145774 + 2 + 5000;
+                sim.GetKernel().ScheduleAt(due, [&] {
+                    fired_at = sim.Now();
+                    fired_core = sim.Time().Core();
+                });
+            };
+            g.Burn(6000000);
+        },
+        /*block=*/1);
+    sim.Spawn(
+        0x30, 1,
+        [&](Guest& g) {
+            g.after_budget = [&] { ends1.insert(sim.Time().Lockstep().stretch_end); };
+            g.Burn(6000000);
+        },
+        /*block=*/1);
+    REQUIRE(sim.Run() == RunStatus::Stopped);
+    REQUIRE(due != 0);
+    CHECK(ends1.count(due) == 1);      // a stretch of core 1 ends exactly at the event
+    CHECK(ends1.count(due - 1) == 0);
+    CHECK(ends1.count(due + 1) == 0);
+    CHECK(fired_core == 1);
+    CHECK(fired_at == due + 1);        // core 1 runs it one tick late: the block that crossed the tick
+}
+
+TEST_CASE("a wake-up during a stretch is acted on at its end: the other core's stretch in between finds the better thread running") {
+    // The system flag of RunLoop (PrepareReschedule, NeedReschedule): P (better) waits on an event on core 0; thread A
+    // of the same core signals it and makes a system call. A's stretch ends there and, because something asked for a
+    // reschedule, core 0 is rescheduled at once: P runs, A goes to the front of its queue. Core 1's stretch comes
+    // before core 0's next select, and its thread gives P A's priority (SetThreadPriority): P is the running thread
+    // then, so it stays one (nothing is *better* than it); without the reschedule at the end of A's stretch, P would
+    // still be in the ready queue then, would be moved behind A, and A would go on first.
+    Sim sim;
+    std::vector<std::string> log;
+    auto event = sim.GetKernel().NewEvent(ResetType::OneShot);
+    bool signalled = false;
+    bool changed = false;
+    std::shared_ptr<Thread> p = sim.Spawn(0x20, 0, [&](Guest&) {
+        sim.Sched().Block(*sim.Sched().CurrentThreadPtr(), {event}, false, -1);
+        log.push_back("P");
+    });
+    sim.Spawn(0x30, 0, [&](Guest& g) {
+        g.Tick();
+        signalled = true;
+        event->Signal();
+        g.Tick();  // the system call that ends the stretch
+        log.push_back("A");
+    });
+    sim.Spawn(
+        0x30, 1,
+        [&](Guest& g) {
+            g.after_budget = [&] {
+                if (signalled && !changed) {
+                    changed = true;
+                    p->SetPriority(0x30);
+                }
+            };
+            g.Burn(3000000);
+        },
+        /*block=*/20);
+    REQUIRE(sim.Run() == RunStatus::Stopped);
+    CHECK(changed);
+    CHECK(log == std::vector<std::string>{"P", "A"});
 }
 
 TEST_CASE("the limiter's tick is an event of core 1, due on core 1's own clock, whichever core asks") {
@@ -909,7 +1070,32 @@ TEST_CASE("a seed moves the interleaving, repeatably, and changes nothing else")
     CHECK(shapes.size() >= 5);  // the unseeded run and five seeds: at most one pair may coincide
 }
 
-TEST_CASE("a seeded slice is drawn between half and one and a half times the default") {
+TEST_CASE("a seeded stretch runs from one half to one times the default slice") {
+    // The draw itself goes from half to one and a half times the default, but a core with no event due never runs
+    // longer than the default slice (Timer::GetMaxSliceLength is MAX_SLICE_LENGTH then), so the stretches that run are
+    // capped at it: from one half to one times.
+    {
+        Sim sim({"--seed", "9"});
+        std::vector<u64> lengths;
+        sim.Spawn(
+            0x30, 0,
+            [&](Guest& g) {
+                g.Tick();
+                g.after_budget = [&] {
+                    lengths.push_back(sim.Time().Lockstep().stretch_end - sim.Time().Lockstep().stretch_start);
+                };
+                g.Burn(30000000);
+            },
+            /*block=*/20);
+        REQUIRE(sim.Run() == RunStatus::Stopped);
+        REQUIRE(lengths.size() > 20);
+        const u64 shortest = *std::min_element(lengths.begin(), lengths.end());
+        const u64 longest = *std::max_element(lengths.begin(), lengths.end());
+        CHECK(longest == 1145774);  // the draws above the default are cut to it, and half of them are above
+        CHECK(shortest >= 1145774 / 2 - 140);
+        CHECK(shortest < 1145774 * 3 / 4);
+    }
+    // The drawn value (SliceUs): half to one and a half times, both ends reachable.
     // CycleDriver draws from splitmix64; the bounds hold for every draw and both ends are reachable.
     Sim sim({"--seed", "7", "--slice-us", "1000"});
     std::vector<u32> lengths;

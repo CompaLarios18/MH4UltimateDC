@@ -10,5 +10,6 @@ MH4N_OPTION("runner", "--deterministic", "",
             "than real time. A real-time run is not made repeatable by it");
 MH4N_OPTION("runner", "--seed", "N",
             "with --deterministic: draw the length of each scheduling slice from a generator seeded with N, "
-            "between half and one and a half times the default (4274 us, or --slice-us), which moves the "
+            "from one half to one times the default (4274 us, or --slice-us; the draw goes up to one and a "
+            "half times, but a core with no event due never runs longer than the default), which moves the "
             "points where the two virtual cores take turns; the same seed gives the same run");
