@@ -129,6 +129,7 @@ golden.py check  S [--runner RUN --game CXI] [--update CIA] [--code LIB]
                    [--candidate-args "..."] [--repeat N] [--profile same|cross|native] [--fallback]
                    [--require NAMES] [--ignore FILE]... [--observable FILE]
                    [--tolerance N] [--min-margin N] [--max-surplus N] [--max-shift N]     # the cross and native numbers
+                   [--image-frames FILE]                                                  # cross only (N2b-17, D58)
 ```
 
 The recordings of this document were made with (PowerShell, from the worktree; `TZ` is set by `golden.py`):
@@ -213,7 +214,8 @@ rules of `check` decide which of the options above are required (all of them a u
 | `checkpoints` | as in `same` |
 | `ipc` | `compare_ipc_traces.py --ignore config/native/ipc_time_dependent.txt` (plus every `--ignore FILE`) `--fs-reads-multiset --max-surplus 16 --fs-write-mask config/native/fs_write_masks.txt --fs-write-mask-session <S>` (D52): per thread the `fs:USER/file` Reads as a multiset of (offset, size, result, CRC of the data read) with at most 16 reads more on one side; every other `fs:` request in order and in full; a Write by the CRC of its data with the byte ranges of the session's mask lines zeroed. The result prints the reads, the bytes that only one side covers (`fs coverage:`, N0-36: information, not a rule) and the masks used |
 | `svc` | `compare_svc_traces.py --normalize --outputs --cross-model config/native/svc_cross_model.txt` (N0-25) |
-| `svc-full`, `images` | run and printed as `INFO`, never gated (the image threshold comes in N2b) |
+| `svc-full` | run and printed as `INFO`, never gated |
+| `images` | **N2b-17 (D58)**: at each frame `config/native/image_frames.txt` (`--image-frames FILE`) lists for the session, the candidate's top and bottom screenshots against the recording's with `tools/native/imgdiff.py`'s rule (ROADMAP section 6: PSNR over R, G and B at least 40 dB, and no 16x16 block with a mean error above 8/255; `image.h`'s constants). A frame in the candidate's `shots/gas.txt` is reported `skipped (gas)` and not judged (every listed frame in gas: `images` is skipped). A listed screenshot the run did not write, or of another size, fails. No frame listed for the session, or no screenshots from the candidate (a runner without `--shots`): `images` is **skipped** (exit 3 under `--require images`, D34). The other screenshots stay information, `images-all`, with the count of those that differ. Two timing models show different pictures wherever something moves (jit against recomp: 19 of 48, 57 of 114, 140 of 292 differ, N0-28), so only the frames where they already agree are listed, and only those that agree **with a margin** (the calibration, `cross_model_report.py --images`, lists the frames whose two screens have a PSNR of at least 42 dB and a worst block of at most 7.0/255, that is 2.0 dB and 1.0 to spare; the gate itself judges the listed frames with ROADMAP section 6's 40 dB and 8/255): 81 frames for G1, G6, G4 and G2 ([`cross-model.md`](cross-model.md) section 11). Two long scenes have no listed frame because the top screens never agree there between jit and recomp (G4 903 to 1575, G2 5086 to 9000): the jit-calibrated gate does not judge them. The plan, not built: the native deterministic mode, which shares the recording's clock, will judge every screenshot of the recording (minus the gas frames) by the same rule when the renderer exists (N2b-19 to N2b-21) |
 | `hid` | `capfmt.py diff-hid` |
 | `dsp-<start>` | `capfmt.py diff-dsp --align --max-shift 48` (D51): the candidate aligned on the first buffer change of the first enabled source, the shift constant and at most **48** DSP frames, every source status block equal after it; the PCM samples are not compared. The result prints the shift |
 
@@ -250,7 +252,8 @@ and `NATIVE_FS_READS_PREFIX`, with D76 named in the comment):
 | `state-margin` | unchanged: every input at least **60 frames** after the last real scene change on both sides (D50), so a 24-frame shift can never move an input into another scene |
 | `ipc` | `--fs-reads-coalesce --fs-reads-prefix` added: the `fs:USER/file` Reads of one thread and one file session whose byte ranges touch are merged into one Read (CRC-32 combined) before the multiset is built, and a run that goes on further than the other side's counts as contained when the other side's is its verified prefix; the surplus limit stays 16, the Writes and every other `fs:` request as in `cross` (D52's masks, `config/native/fs_write_masks.txt`) |
 | `dsp-<start>` | `--max-shift 300` (D76) instead of 48, and an **odd** shift compares the reference's region *r* with the candidate's region *1 − r* |
-| everything else | as `cross` (`svc` on the cross-model list, `hid`, `checkpoints`, `svc-full` and `images` as information) |
+| `images` | information only (`images` is reported as `INFO`, `--image-frames` is a usage error): the listed frames of `cross` were calibrated with the shifts of two models of the reference (up to 3 frames), (with a margin of 2.0 dB and 1.0 of 255, [`cross-model.md`](cross-model.md) section 11.6), and the native runtime's scenes may move by 24; the native deterministic mode of N2b-19 to N2b-21, which shares the recording's clock, is where images get judged (plan) |
+| everything else | as `cross` (`svc` on the cross-model list, `hid`, `checkpoints` and `svc-full` as information) |
 
 The profile's number is printed in each result (`within 24 frames`, `largest scene-change shift 15 frames (at most
 24)`, `shift -205 DSP frames`, `after merging touching reads: 46 and 46`) and the last line names it
@@ -258,6 +261,8 @@ The profile's number is printed in each result (`within 24 frames`, `largest sce
 runtime is not repeatable from run to run (the host's timing), so a native check is run more than once and says how often
 it passes (`comparators.md`, section 10, lists what was measured); `--repeat` compares the runs with each other in the
 `same` profile, which a native runtime does not pass, so run the check several times instead.
+
+**Screenshots of a candidate runner (N2b-17).** `check` asks a `--candidate-runner` for its `--help` once; when that lists `--shots` (the native runner, N2b-14), the candidate gets `--shots <run>/shots --shots-from f300 --shot-every f<N>` (`N` is the recording's: 60 by default; the same frame-keyed form the reference is given, never the shared-page `--dump`). A runner whose `--help` lacks it, or cannot be asked, gets none of the three. `shots/gas.txt` of the candidate's folder has one line per shot that follows a published frame with `gas` set since the previous shot (the shot's number, unpadded: `300` for `f0000300_*.ppm`); the file is written empty when there is no gas, and the reference writes none.
 
 A comparison whose input the candidate did not write is **skipped**, not passed (a failure for the reference runner).
 `--repeat N` runs the candidate N times; each run is compared with the recording in the chosen profile, and runs 2 to N

@@ -35,6 +35,11 @@ def opt(name, default=None):
     return argv[argv.index(name) + 1] if name in argv else default
 
 
+if argv == ["--help"]:      # golden.py asks a candidate runner what it can do (N2b-17); not a run, not logged
+    print("usage: fake_runner PROGRAM [options]\n  --frames N\n  --user DIR")
+    if not os.environ.get("FAKE_NO_SHOTS"):
+        print("  --shots DIR  --shots-from fN  --shot-every fN")
+    sys.exit(0)
 with open(os.environ["FAKE_LOG"], "a") as f:
     f.write(json.dumps({"argv": argv, "tz": os.environ.get("TZ"), "cwd": os.getcwd(),
                         "mh4u": {k: v for k, v in os.environ.items() if k.startswith("MH4U_")}}) + "\n")
@@ -193,12 +198,21 @@ if opt("--count-unmapped"):
         head("unmapped") + "\ncount=%d addr=00000000 size=4 rw=read lr=00000000\n" % (2 if mode == "unmapped_diff" else 1))
 if opt("--shots"):
     os.makedirs(opt("--shots"), exist_ok=True)
-    px = "1 1 1" if mode == "pixels" else "0 0 0"
+    # P6 files of one pixel: "pixels" is 1/255 off, "pixels_far" 200/255; FAKE_PIXELS="frame:value,..." sets
+    # single frames; FAKE_SKIP_SHOT="frame_screen,..." leaves screenshots out; FAKE_GAS="frame,..." writes gas.txt
+    value = {"pixels": 1, "pixels_far": 200}.get(mode, 0)
+    per_frame = dict((int(x.split(":")[0]), int(x.split(":")[1])) for x in os.environ.get("FAKE_PIXELS", "").split(",") if x)
+    skip = os.environ.get("FAKE_SKIP_SHOT", "").split(",")
     first = int(opt("--shots-from", "f1")[1:])
     every = int(opt("--shot-every", "f1")[1:])
     for fr in range(first, frames + 1, every):
         for screen in ("top", "bottom"):
-            open(os.path.join(opt("--shots"), "f%07d_%s.ppm" % (fr, screen)), "w").write("P3 1 1 255 " + px + "\n")
+            if "%d_%s" % (fr, screen) in skip:
+                continue
+            v = per_frame.get(fr, value)
+            open(os.path.join(opt("--shots"), "f%07d_%s.ppm" % (fr, screen)), "wb").write(b"P6\n1 1\n255\n" + bytes((v, v, v)))
+    if "FAKE_GAS" in os.environ:
+        open(os.path.join(opt("--shots"), "gas.txt"), "w").write("".join(x + "\n" for x in os.environ["FAKE_GAS"].split(",") if x))
     if "--dump" in argv:
         at, addr, size = opt("--dump").split(":")
         open(os.path.join(opt("--shots"), "mem_f%07d_%s.bin" % (int(at[1:]), addr.lower())), "w").write(
@@ -1099,7 +1113,8 @@ def test_candidate_args_recomp_needs_a_library(env, capsys):
     assert "needs --code" in capsys.readouterr().err
 
 
-def test_candidate_gets_its_own_program_library_and_shared_options_only(env, capsys):
+def test_candidate_gets_its_own_program_library_and_shared_options_only(env, capsys, monkeypatch):
+    monkeypatch.setenv("FAKE_NO_SHOTS", "1")        # a candidate whose --help does not list --shots (N2b-17)
     assert env.record() == 0
     prog, lib2 = env.tmp / "prog", env.tmp / "native.so"
     prog.mkdir()
@@ -1125,7 +1140,7 @@ def test_candidate_gets_its_own_program_library_and_shared_options_only(env, cap
     assert "(profile cross)" in out
     got = statuses(out)
     assert got["svc"] == "PASS" and got["state"] == "PASS" and got["hid"] == "PASS" and got["dsp-10"] == "PASS"
-    assert "images" not in got and "unmapped" not in got          # not run in the cross profile
+    assert got["images"] == "SKIPPED" and "unmapped" not in got   # no screenshots, no listed frames; unmapped: same only
 
 
 def test_a_native_candidate_check_needs_neither_the_reference_runner_nor_the_game(env, capsys):
@@ -1186,7 +1201,7 @@ def test_cross_profile_tolerates_a_clock_but_not_a_difference(env, capsys, monke
     assert got["ipc"] == "FAIL"                                   # only the time-dependent list could hide it
     assert got["state"] == "PASS" and got["checkpoints"] == "PASS" and got["svc"] == "PASS"
     assert got["hid"] == "PASS" and got["dsp-10"] == "PASS"
-    assert got["svc-full"] == "INFO" and got["images"] == "INFO"
+    assert got["svc-full"] == "INFO" and got["images"] == "SKIPPED" and got["images-all"] == "INFO"   # no frames listed
     assert "gpu-10" not in got and "unmapped" not in got and "timing" not in got
     # --ignore gives the list
     assert env.check("--candidate-args", "--cpu jit", "--ignore", str(env.ignore_file)) == 0
@@ -1627,7 +1642,9 @@ def test_native_commands(env, monkeypatch):
         assert state[state.index("--tolerance") + 1] == ("24" if profile == "native" else "4")
         svc = [a for n, a in calls if n == "compare_svc_traces.py"]
         assert svc[0][:4] == ["--normalize", "--outputs", "--cross-model", str(golden.SVC_CROSS_MODEL)]
-    assert results["native"] == results["cross"]            # the same comparisons, the same names
+    # the same comparisons, the same names; the screenshots: judged at listed frames in cross, information in native
+    assert results["native"].pop("images") == "info" and results["native"] == {
+        k: v for k, v in results["cross"].items() if not k.startswith("images")}
     calls.clear()
     golden.compare_outputs(session, ref, ref, golden.Compare("same", real_changes=2))
     assert not [a for n, a in calls if n == "compare_ipc_traces.py" and "--fs-reads-coalesce" in a]
@@ -1739,7 +1756,8 @@ def test_a_candidate_that_writes_nothing_exits_3(env, capsys):
     assert env.check("--runner", str(broken)) == 1
 
 
-def test_a_skipped_required_comparison_exits_3(env, capsys):
+def test_a_skipped_required_comparison_exits_3(env, capsys, monkeypatch):
+    monkeypatch.setenv("FAKE_NO_SHOTS", "1")
     assert env.record() == 0
     capsys.readouterr()
     # a foreign candidate in the same profile writes no screenshots, no unmapped report and no GPU capture
@@ -1760,6 +1778,7 @@ def test_a_skipped_required_comparison_exits_3(env, capsys):
 
 
 def test_a_failure_together_with_skips_exits_1(env, capsys, monkeypatch):
+    monkeypatch.setenv("FAKE_NO_SHOTS", "1")
     assert env.record() == 0
     monkeypatch.setenv("FAKE_MODE", "svc_diff")
     capsys.readouterr()
@@ -1841,7 +1860,8 @@ def test_repeat_in_the_cross_profile_compares_the_runs_exactly(env, capsys):
     assert got["run1: svc-full"] == "INFO"
 
 
-def test_repeat_skips_for_a_candidate_that_writes_less(env, capsys):
+def test_repeat_skips_for_a_candidate_that_writes_less(env, capsys, monkeypatch):
+    monkeypatch.setenv("FAKE_NO_SHOTS", "1")
     assert env.record() == 0
     capsys.readouterr()
     assert env.check("--candidate-runner", str(env.script), "--repeat", "2") == 0
@@ -1895,3 +1915,246 @@ def test_option_value():
 def test_the_shared_page_dump_matches_the_file_the_runner_writes():
     assert golden.shared_page_dump() == "f300:1FF81000:0x1000"
     assert golden.shared_page_file() == "shots/mem_f0000300_1ff81000.bin"
+
+
+# ---- the image gate of the cross profile (N2b-17, D58)
+
+def frames_file(env, text="S1 10\nS1 30\n"):
+    p = env.tmp / "image_frames.txt"
+    p.write_text(text, encoding="utf-8")
+    return str(p)
+
+
+def jit_check(env, *extra):
+    return env.check("--candidate-args", "--cpu jit", "--ignore", str(env.ignore_file), *extra)
+
+
+def result_of(env, name):
+    result = json.loads((env.out / "S1" / "check" / "result.json").read_text())
+    return next(r for r in result if r["name"] == name)
+
+
+def test_image_frames_file_format(tmp_path):
+    parsed = golden.parse_image_frames("# frames\nG1 360\nG1 300  # first\n\nG2 420\nG1 360\n")
+    assert parsed == {"G1": [300, 360], "G2": [420]}
+    for bad in ("G1\n", "G1 abc\n", "G1 300 301\n", "G1 -5\n", "G1 3²\n", "G1 ٣٠٠\n"):
+        with pytest.raises(golden.GoldenError):
+            golden.parse_image_frames(bad)
+    path = tmp_path / "f.txt"
+    path.write_text("G1 300\nG2 420\n", encoding="utf-8")
+    assert golden.load_image_frames(path, "G2") == [420] and golden.load_image_frames(path, "G3") == []
+    with pytest.raises(golden.GoldenError):
+        golden.load_image_frames(tmp_path / "missing.txt", "G1")           # asked for, not there
+
+
+def test_the_default_image_frames_file_is_the_repository_one(env, monkeypatch):
+    assert golden.IMAGE_FRAMES == ROOT / "config" / "native" / "image_frames.txt"
+    monkeypatch.setattr(golden, "IMAGE_FRAMES", env.tmp / "no_such_file.txt")
+    assert golden.load_image_frames(None, "S1") == []                      # a missing default file lists nothing
+    listed = env.tmp / "listed.txt"
+    listed.write_text("S1 10\n", encoding="utf-8")
+    monkeypatch.setattr(golden, "IMAGE_FRAMES", listed)
+    assert golden.load_image_frames(None, "S1") == [10]
+
+
+def test_images_are_judged_at_the_listed_frames_only(env, capsys, monkeypatch):
+    assert env.record() == 0
+    monkeypatch.setenv("FAKE_PIXELS", "20:200")             # frame 20 of the candidate is far off, the others equal
+    capsys.readouterr()
+    assert jit_check(env, "--image-frames", frames_file(env), "--require", "images,svc,state") == 0
+    out = capsys.readouterr().out
+    got = statuses(out)
+    assert got["images"] == "PASS" and got["images-all"] == "INFO"
+    assert "lowest PSNR inf dB" in out and "differ" in result_of(env, "images-all")["detail"]
+    # listing frame 20 fails it, and the failure names the frame and the screen
+    assert jit_check(env, "--image-frames", frames_file(env, "S1 10\nS1 20\n")) == 1
+    out = capsys.readouterr().out
+    assert statuses(out)["images"] == "FAIL" and "frame 20 top" in out
+    assert "psnr=" in result_of(env, "images")["detail"] and "2 of 4 screenshots fail" in result_of(env, "images")["note"]
+
+
+def test_a_small_difference_passes_imgdiffs_rule(env, capsys, monkeypatch):
+    assert env.record() == 0
+    capsys.readouterr()
+    # "pixels": every candidate pixel is 1/255 off, a PSNR of 48 dB and a block error of 1; byte for byte different
+    monkeypatch.setenv("FAKE_MODE", "pixels")
+    assert jit_check(env, "--image-frames", frames_file(env)) == 0
+    assert statuses(capsys.readouterr().out)["images"] == "PASS"
+    assert result_of(env, "images")["note"].startswith("lowest PSNR 48.1 dB, worst block 1.0/255")
+    assert "6 of 6 differ" in result_of(env, "images-all")["detail"]
+
+def test_a_far_difference_fails_at_a_listed_frame(env, capsys, monkeypatch):
+    assert env.record() == 0
+    monkeypatch.setenv("FAKE_PIXELS", "10:200,30:200")
+    capsys.readouterr()
+    assert jit_check(env, "--image-frames", frames_file(env)) == 1
+    assert statuses(capsys.readouterr().out)["images"] == "FAIL"
+
+
+def test_no_listed_frame_skips_images_and_a_requirement_of_it_exits_3(env, capsys):
+    assert env.record() == 0
+    capsys.readouterr()
+    assert jit_check(env, "--image-frames", frames_file(env, "S2 10\n")) == 0     # another session's frames
+    assert statuses(capsys.readouterr().out)["images"] == "SKIPPED"
+    assert jit_check(env, "--image-frames", frames_file(env, "# none\n"), "--require", "images") == 3
+    assert "--require images: skipped or not run (exit 3)" in capsys.readouterr().out
+
+
+def test_a_frame_in_gas_txt_is_skipped_and_not_judged(env, capsys, monkeypatch):
+    assert env.record() == 0
+    monkeypatch.setenv("FAKE_PIXELS", "20:200")
+    monkeypatch.setenv("FAKE_GAS", "20")
+    capsys.readouterr()
+    assert jit_check(env, "--image-frames", frames_file(env, "S1 10\nS1 20\nS1 30\n"), "--require", "images") == 0
+    out = capsys.readouterr().out
+    assert statuses(out)["images"] == "PASS" and "1 frame(s) skipped (gas): 20" in out
+    # all listed frames in gas: nothing judged, so skipped (exit 3 when required)
+    assert jit_check(env, "--image-frames", frames_file(env, "S1 20\n"), "--require", "images") == 3
+    out = capsys.readouterr().out
+    assert statuses(out)["images"] == "SKIPPED" and "skipped (gas)" in out
+    # no gas.txt at all (the reference runner): the same frame is judged
+    monkeypatch.delenv("FAKE_GAS")
+    assert jit_check(env, "--image-frames", frames_file(env, "S1 20\n")) == 1
+
+
+def test_a_listed_screenshot_the_run_did_not_write_fails(env, capsys, monkeypatch):
+    assert env.record() == 0
+    monkeypatch.setenv("FAKE_SKIP_SHOT", "20_bottom")
+    capsys.readouterr()
+    assert jit_check(env, "--image-frames", frames_file(env, "S1 10\nS1 20\n")) == 1
+    out = capsys.readouterr().out
+    assert statuses(out)["images"] == "FAIL" and "frame 20 bottom: the run wrote no screenshot" in out
+
+
+def _tiny_ppm(width: int, height: int = 1) -> bytes:
+    return f"P6\n{width} {height}\n255\n".encode() + bytes(width * height * 3)
+
+
+def test_images_result_fails_a_listed_frame_the_recording_lacks(tmp_path):
+    ref, cand = tmp_path / "ref", tmp_path / "cand"
+    for folder in (ref, cand):
+        (folder / "shots").mkdir(parents=True)
+    for screen in ("top", "bottom"):
+        (cand / "shots" / f"f0000020_{screen}.ppm").write_bytes(_tiny_ppm(1))
+    (ref / "shots" / "f0000020_bottom.ppm").write_bytes(_tiny_ppm(1))        # the top one is missing
+    status, detail, note = golden.images_result(ref, cand, [20])
+    assert status == "fail" and "frame 20 top: the recording has no screenshot" in detail
+    assert "bottom" not in detail and note == "1 of 2 screenshots fail"
+
+
+def test_images_result_fails_a_listed_frame_of_another_size(tmp_path):
+    ref, cand = tmp_path / "ref", tmp_path / "cand"
+    for folder in (ref, cand):
+        (folder / "shots").mkdir(parents=True)
+    for screen in ("top", "bottom"):
+        (ref / "shots" / f"f0000020_{screen}.ppm").write_bytes(_tiny_ppm(1))
+        (cand / "shots" / f"f0000020_{screen}.ppm").write_bytes(_tiny_ppm(2))
+    status, detail, note = golden.images_result(ref, cand, [20])
+    assert status == "fail" and "frame 20 top: different sizes: 1x1 and 2x1" in detail
+    assert "frame 20 bottom: different sizes" in detail and note == "2 of 2 screenshots fail"
+    (cand / "shots" / "f0000020_top.ppm").write_bytes(_tiny_ppm(1))           # only the bottom stays wrong
+    assert golden.images_result(ref, cand, [20])[2] == "1 of 2 screenshots fail"
+
+
+def _grey_ppm(size: int, edits: dict | None = None, base: int = 10) -> bytes:
+    body = bytearray()
+    for y in range(size):
+        for x in range(size):
+            v = (edits or {}).get((x, y), base)
+            body += bytes((v, v, v))
+    return f"P6\n{size} {size}\n255\n".encode() + bytes(body)
+
+
+def _gate(tmp_path: Path, edits: dict, size: int) -> tuple[str, str, str]:
+    """images_result at one listed frame, the candidate's top screen differing from the recording's by `edits`."""
+    ref, cand = tmp_path / "ref", tmp_path / "cand"
+    for folder, changed in ((ref, None), (cand, edits)):
+        (folder / "shots").mkdir(parents=True)
+        for screen in ("top", "bottom"):
+            (folder / "shots" / f"f0000020_{screen}.ppm").write_bytes(
+                _grey_ppm(size, changed if screen == "top" else None))
+    return golden.images_result(ref, cand, [20])
+
+
+def test_the_gate_judges_with_the_roadmap_thresholds_not_the_calibration_margin(tmp_path):
+    # The calibration lists the frames where jit and recomp pass with 2 dB and 1/255 to spare (D58); the gate
+    # itself still judges a listed frame with ROADMAP section 6's 40 dB and 8/255.
+    import imgdiff
+    ref32 = imgdiff.parse_ppm(_grey_ppm(32))
+    ref64 = imgdiff.parse_ppm(_grey_ppm(64))
+
+    def noisy(k: int) -> dict:                  # the first k pixels of a 32x32 screen off by 3 on every channel
+        return {(i % 32, i // 32): 13 for i in range(k)}
+
+    def block(extra: int, diff: int) -> dict:   # the 16x16 block at 0,0 off by `diff`, `extra` of its pixels one more
+        edits = {(x, y): 10 + diff for x in range(16) for y in range(16)}
+        for i in range(extra):
+            edits[(i % 16, i // 16)] = 10 + diff + 1
+        return edits
+
+    # premises of the synthetic screens
+    low = imgdiff.compare(ref32, imgdiff.parse_ppm(_grey_ppm(32, noisy(588))))
+    under = imgdiff.compare(ref32, imgdiff.parse_ppm(_grey_ppm(32, noisy(757))))
+    assert 40.0 < low.psnr < 42.0 and low.worst_block < 8.0           # between the threshold and the margin
+    assert under.psnr < 40.0 and under.worst_block < 8.0              # under the threshold
+    near = imgdiff.compare(ref32, imgdiff.parse_ppm(_grey_ppm(32, noisy(705))))
+    assert 40.0 < near.psnr < 40.5 and near.worst_block < 8.0         # just over the threshold
+    mid = imgdiff.compare(ref64, imgdiff.parse_ppm(_grey_ppm(64, block(128, 7))))
+    over = imgdiff.compare(ref64, imgdiff.parse_ppm(_grey_ppm(64, block(128, 8))))
+    assert mid.psnr > 42.0 and 7.0 < mid.worst_block <= 8.0           # a block between 7/255 and 8/255
+    assert over.psnr > 40.0 and over.worst_block > 8.0                # a block over 8/255
+
+    assert _gate(tmp_path / "a", noisy(588), 32)[0] == "pass"         # about 41 dB: judged by 40 dB, not 42
+    assert _gate(tmp_path / "e", noisy(705), 32)[0] == "pass"         # about 40.2 dB
+    assert _gate(tmp_path / "b", noisy(757), 32)[0] == "fail"         # about 39.9 dB
+    assert _gate(tmp_path / "c", block(128, 7), 64)[0] == "pass"      # a block of 7.5/255: judged by 8, not 7
+    assert _gate(tmp_path / "d", block(128, 8), 64)[0] == "fail"      # a block of 8.5/255
+
+
+def test_the_same_and_native_profiles_do_not_take_image_frames(env, capsys, monkeypatch):
+    assert env.record() == 0
+    capsys.readouterr()
+    assert env.check("--image-frames", frames_file(env)) == 2                        # same: exact
+    assert "cross profile" in capsys.readouterr().err
+    assert jit_check(env, "--profile", "native", "--image-frames", frames_file(env)) == 2
+    monkeypatch.setenv("FAKE_PIXELS", "20:200")
+    capsys.readouterr()
+    assert jit_check(env, "--profile", "native") == 0
+    assert statuses(capsys.readouterr().out)["images"] == "INFO"                     # native: information
+    monkeypatch.delenv("FAKE_PIXELS")
+    assert env.check() == 0 and statuses(capsys.readouterr().out)["images"] == "PASS"   # same: still SHA-256
+
+
+def test_the_listed_frames_of_the_repository_file_are_used_by_default(env, capsys, monkeypatch):
+    listed = env.tmp / "default_frames.txt"
+    listed.write_text("S1 10\n", encoding="utf-8")
+    monkeypatch.setattr(golden, "IMAGE_FRAMES", listed)
+    assert env.record() == 0
+    capsys.readouterr()
+    assert jit_check(env, "--require", "images") == 0
+    assert statuses(capsys.readouterr().out)["images"] == "PASS"
+
+
+def test_shot_options_go_only_to_a_candidate_that_lists_them(env, capsys, monkeypatch):
+    assert env.record() == 0
+    prog = env.tmp / "prog"
+    prog.mkdir()
+    cand = ["--candidate-runner", str(env.script), "--candidate-program", str(prog)]
+    # a runner whose --help lists --shots gets them, in the recording's frame-keyed form, and no shared-page dump
+    assert env.check(*cand, "--image-frames", frames_file(env), "--ignore", str(env.ignore_file)) == 0
+    a = env.calls()[-1]["argv"]
+    assert a[a.index("--shots") + 1] == str(env.out / "S1" / "check" / "run1" / "shots")
+    assert a[a.index("--shots-from") + 1] == "f10" and a[a.index("--shot-every") + 1] == "f10"
+    assert "--dump" not in a and "--trace-timing" not in a
+    assert statuses(capsys.readouterr().out)["images"] == "PASS"
+    # one that does not, gets none, and `images` is skipped
+    monkeypatch.setenv("FAKE_NO_SHOTS", "1")
+    assert env.check(*cand, "--image-frames", frames_file(env), "--ignore", str(env.ignore_file)) == 0
+    a = env.calls()[-1]["argv"]
+    assert not {"--shots", "--shots-from", "--shot-every", "--dump"} & set(a)
+    assert statuses(capsys.readouterr().out)["images"] == "SKIPPED"
+    # a runner that cannot be asked has none either
+    assert golden.runner_has_shots(env.tmp / "no_such_runner") is False
+    assert golden.runner_has_shots(env.script) is False                                # (FAKE_NO_SHOTS is still set)
+    monkeypatch.delenv("FAKE_NO_SHOTS")
+    assert golden.runner_has_shots(env.script) is True

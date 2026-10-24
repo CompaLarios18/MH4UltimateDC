@@ -1,6 +1,6 @@
 # Cross-model calibration: jit against recomp
 
-Written by N0-28 (D31, D33, D35), and brought up to date in a fix round after the orchestrator settled the first round's findings in D50, D51 and D52 (2026-10-21). The tool is `tools/native/cross_model_report.py`; the runs are `golden.py check <S> --candidate-args "--cpu jit" --profile cross` on G1, G2 and G6. This document keeps frames, counts, service names and request headers only: the traces, screenshots and user folders it was made from are game data and stay in `build/`.
+Written by N0-28 (D31, D33, D35), and brought up to date in a fix round after the orchestrator settled the first round's findings in D50, D51 and D52 (2026-10-21). The tool is `tools/native/cross_model_report.py`; the runs are `golden.py check <S> --candidate-args "--cpu jit" --profile cross` on G1, G2 and G6. This document keeps frames, counts, service names and request headers only: the traces, screenshots and user folders it was made from are game data and stay in `build/`. Section 11 (N2b-17, 2026-10-24) calibrates the screenshots: which frames two timing models show alike.
 
 ## Summary
 
@@ -284,6 +284,85 @@ With these two entries added, the offline comparison of G8 still exits 1: only t
 - **G4 meets Done-when** (`golden.py check G4 ... --require state,checkpoints,ipc,svc,hid` exits 0 with `config/native/ipc_time_dependent.txt` as it is). D83's remedy worked on it: the loader and streaming differences of the first pass are gone, and the largest one-sided figure, 18,432 bytes, is the movie stream's, under D85's bound of 20,480.
 - **D52 and D85 on G8:** the check does not exit 0. The two `ir:USER` entries fix row 1, but the loader thread `#3` and thread `#5` of G8 read other pieces or other resources on the two backends at the fractional date, 133,257 and 124,610 bytes one-sided against the bound of 20,480. An `fs:` difference is never an entry, and the fractional date does not remove it here. The decision is the orchestrator's: whether G8 is judged with the native-profile options (offline they do not absorb it), whether the cause on G8 (the staged save with the Circle Pad Pro option on, a different start-up from G4's) needs an N0-36-style investigation, or whether G8's cross calibration is dropped as G3's was (D90) and G8 is judged by the native mode (N1-25, N1-26) and D86's rule.
 - Neither session needed a change to `config/**` beyond the two `ir:USER` entries above, and the orchestrator decides whether to merge them.
+
+## 11. The screenshots across timing models (N2b-17)
+
+Written by N2b-17 (2026-10-24). **Status: decided (D58, settled by the orchestrator).** The gate is built and calibrated on G1, G2, G6 and G4: the `cross` profile holds a candidate's screenshots to the frames at which jit and recomp already agree with a margin (PSNR at least 42 dB and no 16x16 block above 7.0/255 on both screens), 81 frames. Two long scenes (G4 903 to 1575, G2 5086 to 9000) have no such frame and are not judged by the jit-calibrated gate. No threshold of ROADMAP section 6 was changed. [Section 11.6](#116-the-decision-d58) has the rule.
+
+### 11.1 What was run
+
+`golden.py check <S> --candidate-args "--cpu jit" --profile cross --ignore config/native/ipc_time_dependent.txt` for G1, G6, G4 and G2, one at a time under the emulator lock, with the reference runner of the fractional-date work (N0-35) and its recomp library, on hard links of the recordings (`build/cross-model/images/rec/<S>/`, so that `check/` did not land in `build/golden/`). The recordings of G1, G2 and G6 are N0-09's (the N0-29 runner, no start date), G4's is N0-35's (`# init-time: 1767268800.5`). Host time of a whole `check`: 118 s (G1), 514 s (G6), 683 s (G4) and 1969 s (G2). Then `python tools/native/cross_model_report.py --images --session tools/native/golden/<S>.txt --reference <recording> --candidate <recording>/check/run1 --proposal build/cross-model/image_frames.txt` (with `--not-judged 903-1575` for G4 and `--not-judged 5086-9000` for G2, see 11.6), which compares the top and bottom screenshot of every frame (every 60 frames from frame 300) with `imgdiff.py`'s rule and writes the frames where both screens pass with the margin of D58 (`--margin-db 2.0` and `--margin-block 1.0` are the defaults; `0` and `0` give the plain rule). The count of screenshot files that differ is N0-28's (G1: 19 of 48 files), so the n035 runner's jit run shows the same pictures as N0-28's n029 run. The tables in `build/cross-model/images/images-<S>.md` are the tool's output; this section keeps frames and numbers.
+
+The rule is ROADMAP section 6's, as `CompareImages` (`native/src/gpu_capture/image.h`): PSNR over R, G and B at least **40 dB**, and no 16x16 block with a mean error above **8/255** (blocks at the edges over the pixels they have). `tools/native/imgdiff.py` is the same arithmetic in Python and a test reads the three constants from `image.h`. The gate (`golden.py check --profile cross`) judges the listed frames with these thresholds. The calibration lists only the frames that pass with **2.0 dB and 1.0 (of 255) to spare**, that is PSNR at least **42 dB** and a worst block of at most **7.0** on both screens (both inclusive): the margin selects the calibrated frames, it does not change the thresholds.
+
+### 11.2 The numbers
+
+| Session | Screenshot frames | Frames proposed (margin: 42 dB, block 7.0) | Of them, both screens identical | Lowest PSNR / highest block among them | Pass the plain rule (40 dB, 8/255) | Narrow, dropped by the margin | Frames that fail the plain rule |
+|---|---|---|---|---|---|---|---|
+| G1 | 24 (300 to 1680) | **22** | 11 | 42.2 dB / 6.6 | 23 | 1260 | 1 (frame 1320: 39.4 dB, block 6.5, top screen) |
+| G6 | 57 (300 to 3660) | **21** | 11 | 42.2 dB / 6.6 | 24 | 1260, 1620, 3360 | 33 (the worst 18.3 dB; 28 of them have a block above 16) |
+| G4 | 46 (300 to 3000) | **10** | 5 | 46.0 dB / 3.3 | 10 | none | 36 (the worst 11.8 dB; 32 have a block above 16) |
+| G2 | 146 (300 to 9000) | **28** | 17 | 42.2 dB / 6.6 | 31 | 1260, 1620, 3360 | 115 (the worst 14.1 dB; 73 have a block above 16) |
+
+81 frames in all. The bottom screen (menus) is the same on both models in most frames; the top screen (the 3D scene) is what moves. The first scene of G1, G6 and G2 is the same session start and gives the same numbers in all three. The frames that passed narrowly are the ones the margin drops: 1260 in G1 (40.2 dB), and 1260, 1620 (bottom screen: 41.7 dB, block 7.2) and 3360 (top screen: 41.7 dB) in G6 and G2; none lies within 0.15 dB or 0.1 of the margin's boundary, so rounding does not decide any frame. Frame 1320 of G1, G6 and G2 fails the plain rule by 0.6 dB. The thresholds are the plan's and were not touched.
+
+### 11.3 Per scene
+
+A scene is the interval between two real scene changes of the recording's state trace (the same definition as section 3; the first two, frames 0 to 1 and 2 to 35 or 41, are the start-up and have no screenshot). Image frames are the screenshot frames proposed (both screens pass with the margin of 11.1); a range `a-b (n)` is n frames 60 apart.
+
+**G1**
+
+| # | scene | frames | length | screenshot frames | proposed | image frames |
+|---|---|---|---|---|---|---|
+| 3 | 0x00e64d5c | 36 to 1700 | 1665 | 24 | 22 | 300-1200 (16), 1380-1680 (6) |
+
+**G6**
+
+| # | scene | frames | length | screenshot frames | proposed | image frames |
+|---|---|---|---|---|---|---|
+| 3 | 0x00e64d5c | 36 to 1651 | 1616 | 23 | 20 | 300-1200 (16), 1380-1560 (4) |
+| 4 | 0x00e6c138 | 1652 to 3700 | 2049 | 34 | 1 | 3060 |
+
+**G4**
+
+| # | scene | frames | length | screenshot frames | proposed | image frames |
+|---|---|---|---|---|---|---|
+| 3 | 0x00e64d5c | 42 to 902 | 861 | 11 | 9 | 300-480 (4), 660-900 (5) |
+| 4 | 0x00e6c778 | 903 to 1575 | 673 | 11 | **0** | none (not judged by the jit-calibrated gate) |
+| 7 | 0x00e6c170 | 1579 to 3000 | 1422 | 24 | 1 | 1800 |
+
+(G4's scenes 5 and 6, frames 1576 to 1578, are the three consecutive real scene changes of section 10.1.)
+
+**G2**
+
+| # | scene | frames | length | screenshot frames | proposed | image frames |
+|---|---|---|---|---|---|---|
+| 3 | 0x00e64d5c | 36 to 1651 | 1616 | 23 | 20 | 300-1200 (16), 1380-1560 (4) |
+| 4 | 0x00e6c138 | 1652 to 4954 | 3303 | 55 | 6 | 3060, 4020-4260 (5) |
+| 7 | 0x00e6c170 | 4958 to 5083 | 126 | 2 | 2 | 4980-5040 (2) |
+| 9 | 0x00e655c8 | 5086 to 9000 | 3915 | 66 | **0** | none (not judged by the jit-calibrated gate) |
+
+(G2's scenes 1, 2, 5, 6 and 8 last 1 to 34 frames and have no screenshot.)
+
+### 11.4 The two scenes without an image frame
+
+| Scene | Top screen: PSNR median (min to max), block median | Bottom screen | Screens that pass alone |
+|---|---|---|---|
+| G4 #4 (frames 903 to 1575, 11 screenshots) | 29.9 dB (23.4 to 35.8), 22.2 | identical in all 11 | top 0, bottom 11 |
+| G2 #9 (frames 5086 to 9000, 66 screenshots) | 28.2 dB (14.1 to identical), 12.7 | passes in 63 of 66 (lowest 24.9 dB) | top 3, bottom 63 |
+
+In both scenes the top screen is far from passing at every frame (G4: the closest is 35.8 dB with a block of 12.9; the 3 frames of G2 at which the top screen is identical are 5100, 5160 and 5220, where the bottom screen fails). The scenes are the cutscene of G4 and the quest part of G2 (the area system left the village at frame 5084), so both are moving 3D scenes in which the same game frame is a different moment on the two clocks (section 3: jit is up to 3 frames behind, and every frame of motion is a different picture).
+
+### 11.5 G3, G8 and G3-perf: no image frames
+
+**G3 and G8 get no image frames from this work package.** Their jit runs are not calibration runs: D90 and D93 record that the jit run chooses other resources than recomp and never leaves the village, so the pictures are of other scenes (G3: 491 of 592 files differ in the first pass of section 9; G4's jit run does pass, D93). The image gate of G3 and G8 will come from the native deterministic mode when a renderer exists (N2b-19 to N2b-21). **G3-perf** has no image gate (rule 9): its widened top screen exists only where the port's hooks run, and they run only on the recomp backend. `config/native/image_frames.txt` therefore lists no frame for G3, G8 or G3-perf, and `images` is skipped for them (exit 3 under `--require images`).
+
+### 11.6 The decision (D58)
+
+1. **The rule.** The `cross` profile holds a candidate's screenshots to **the frames at which jit and recomp already agree, with a margin**: the frames at which the calibration run's top and bottom screenshots both have a PSNR of at least **42 dB** and no 16x16 block above **7.0/255** (2.0 dB and 1.0 over ROADMAP section 6's 40 dB and 8/255; both bounds inclusive). They are listed per session in `config/native/image_frames.txt` (81 frames: G1 22, G6 21, G4 10, G2 28; the orchestrator writes the file from `build/cross-model/image_frames.txt`, which `cross_model_report.py --images` produced with its defaults). At those frames the candidate's pictures are compared with the recording's with ROADMAP section 6's thresholds (`golden.py check`, comparison `images`); the margin only selects the calibrated frames. A frame in the candidate's `shots/gas.txt` is skipped; every other screenshot is information; the `same` profile keeps SHA-256 and the `native` profile keeps images as information (`--image-frames` outside the cross profile is a usage error). A session with no calibration (G3, G8, G3-perf, section 11.5) has no frames and `images` is skipped. The list is made again with `cross_model_report.py --images` whenever a session is recorded again (a new recording moves the frames).
+2. **The coverage rule is "at least 3 image frames and one in every scene longer than 300 frames", amended for two scenes.** G4 scene 4 (frames 903 to 1575) and G2 scene 9 (frames 5086 to 9000) are not judged by the jit-calibrated gate: the top screens never agree there between jit and recomp (11.4). `cross_model_report.py --images` is told so with `--not-judged 903-1575` (G4) and `--not-judged 5086-9000` (G2); with that option its exit status is 0 and the output names the scene as not judged, and any other shortfall still exits 1. Without it those two scenes exit 1.
+3. **The plan for those two scenes (not built here).** The native deterministic mode shares the recording's clock, so it will judge every screenshot of the recording (minus the gas frames) by the same rule when the renderer exists (N2b-19 to N2b-21).
+4. **Not adopted.** Gating each screen on its own (listing `<session> <frame> top|bottom`, option (b) of the first proposal).
 
 ## Appendix: the report tool on G1, G6 and G2
 

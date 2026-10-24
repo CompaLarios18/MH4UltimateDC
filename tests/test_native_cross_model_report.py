@@ -1,6 +1,7 @@
 """tools/native/cross_model_report.py (N0-28): synthetic runs only, with made-up frames, threads and counts."""
 from __future__ import annotations
 
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -418,3 +419,289 @@ def test_the_report_holds_no_value_of_the_traces(tmp_path: Path) -> None:
     done = run_tool("--session", str(session), "--reference", str(ref), "--candidate", str(cand))
     assert done.returncode == 0, done.stderr
     assert secret not in done.stdout + done.stderr
+
+
+# ── images (N2b-17) ──────────────────────────────────────────────────────────
+
+def _ppm(width: int = 32, height: int = 32, base: int = 10, edits: dict | None = None) -> bytes:
+    body = bytearray()
+    for y in range(height):
+        for x in range(width):
+            v = (edits or {}).get((x, y), base)
+            body += bytes((v, v, v))
+    return f"P6\n{width} {height}\n255\n".encode() + bytes(body)
+
+
+def _block(x0: int, y0: int, value: int) -> dict:
+    return {(x, y): value for x in range(x0, x0 + 16) for y in range(y0, y0 + 16)}
+
+
+def _shots(folder: Path, frames: list[int], bad: dict[tuple[int, str], dict] | None = None,
+           size: int = 32, missing: tuple = ()) -> None:
+    """Screenshots at `frames`: a flat grey, or the edits of `bad[(frame, screen)]`."""
+    shots = folder / "shots"
+    shots.mkdir(parents=True, exist_ok=True)
+    for frame in frames:
+        for screen in ("top", "bottom"):
+            if (frame, screen) not in missing:
+                (shots / f"f{frame:07d}_{screen}.ppm").write_bytes(
+                    _ppm(size, size, edits=(bad or {}).get((frame, screen))))
+
+
+FRAMES = list(range(300, 1000, 60))           # 300, 360, ... 960: 12 screenshots
+IMG_CHANGES = [(2, SCENE_A), (700, SCENE_B)]    # scene 1: frames 0 to 699, scene 2: 700 to 1000
+
+
+def _image_runs(tmp_path: Path, bad=None, missing=(), gas: str | None = None,
+                size: int = 32) -> tuple[Path, Path, Path]:
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    session = tmp_path / "G9.txt"
+    session.write_text("# name: G9\nf400:A\n", encoding="utf-8")
+    ref = write_run(tmp_path / "ref", state_trace(IMG_CHANGES, 1000, "recomp"))
+    cand = write_run(tmp_path / "cand", state_trace(IMG_CHANGES, 1000, "jit"))
+    _shots(ref, FRAMES, size=size)
+    _shots(cand, FRAMES, bad, size=size, missing=missing)
+    if gas is not None:
+        (cand / "shots" / "gas.txt").write_text(gas, encoding="utf-8")
+    return session, ref, cand
+
+
+def _images(session: Path, ref: Path, cand: Path, *extra: str) -> subprocess.CompletedProcess:
+    return run_tool("--images", "--session", str(session), "--reference", str(ref), "--candidate", str(cand), *extra)
+
+
+def test_images_lists_every_frame_and_proposes_those_where_both_screens_pass(tmp_path: Path) -> None:
+    bad = {(420, "top"): _block(0, 0, 40),           # a block off by 30: fails the block rule
+           (780, "bottom"): _block(16, 16, 30)}      # the other screen, in the second scene
+    session, ref, cand = _image_runs(tmp_path, bad)
+    proposal = tmp_path / "frames.txt"
+    done = _images(session, ref, cand, "--proposal", str(proposal))
+    assert done.returncode == 0, done.stderr
+    expected = [f for f in FRAMES if f not in (420, 780)]
+    assert proposal.read_text(encoding="utf-8").splitlines() == [f"G9 {f}" for f in expected]
+    out = done.stdout
+    assert "10 of 12 frames are proposed** (10 pass the plain rule)" in out
+    assert "| 420 | 1 |" in out and "| 780 | 2 |" in out
+    assert "### Frames that do not pass the plain rule (2)" in out and "420, 780" in out
+    assert "| 1 | 0x00aa0100 | 0 to 699 | 700 |" in out         # the scenes with their lengths
+    assert "met" in out and "inf | 0.0" in out
+
+
+def test_images_proposal_replaces_only_the_sessions_own_lines(tmp_path: Path) -> None:
+    session, ref, cand = _image_runs(tmp_path)
+    proposal = tmp_path / "frames.txt"
+    proposal.write_text("G1 300\nG9 999\nG2 360\n", encoding="utf-8")
+    assert _images(session, ref, cand, "--proposal", str(proposal)).returncode == 0
+    lines = proposal.read_text(encoding="utf-8").splitlines()
+    assert lines[:2] == ["G1 300", "G2 360"] and "G9 999" not in lines and lines[2:] == [f"G9 {f}" for f in FRAMES]
+
+
+def test_images_a_long_scene_without_a_frame_is_a_shortfall(tmp_path: Path) -> None:
+    # every screenshot of the second scene (700 to 1000, 301 frames) is wrong on the top screen
+    bad = {(f, "top"): _block(0, 0, 90) for f in FRAMES if f >= 700}
+    session, ref, cand = _image_runs(tmp_path, bad)
+    proposal = tmp_path / "frames.txt"
+    done = _images(session, ref, cand, "--proposal", str(proposal))
+    assert done.returncode == 1 and "scene #2" in done.stderr and "no image frame" in done.stderr
+    assert proposal.read_text(encoding="utf-8").splitlines() == [f"G9 {f}" for f in FRAMES if f < 700]   # still written
+    assert "scene #2" in done.stdout
+    assert _images(session, ref, cand, "--long-scene", "400").returncode == 0     # the scene is no longer "long"
+
+
+def test_images_fewer_than_three_frames_is_a_shortfall(tmp_path: Path) -> None:
+    bad = {(f, "bottom"): _block(0, 0, 90) for f in FRAMES if f not in (300, 360)}
+    session, ref, cand = _image_runs(tmp_path, bad)
+    done = _images(session, ref, cand, "--long-scene", "10000")
+    assert done.returncode == 1 and "only 2 image frames, at least 3 needed" in done.stderr
+    assert _images(session, ref, cand, "--long-scene", "10000", "--min-frames", "2").returncode == 0
+
+
+def test_images_a_frame_in_gas_txt_or_missing_is_never_proposed(tmp_path: Path) -> None:
+    session, ref, cand = _image_runs(tmp_path, missing=((540, "bottom"),), gas="360\n")
+    proposal = tmp_path / "frames.txt"
+    done = _images(session, ref, cand, "--proposal", str(proposal))
+    assert done.returncode == 0, done.stderr
+    assert proposal.read_text(encoding="utf-8").splitlines() == [f"G9 {f}" for f in FRAMES if f not in (360, 540)]
+    assert "| gas |" in done.stdout and "the bottom screenshot is missing on the candidate" in done.stdout
+
+
+def test_images_screens_of_another_size_are_a_problem_of_the_frame(tmp_path: Path) -> None:
+    session, ref, cand = _image_runs(tmp_path)
+    (cand / "shots" / "f0000300_top.ppm").write_bytes(_ppm(48, 32))
+    done = _images(session, ref, cand, "--proposal", str(tmp_path / "p.txt"))
+    assert done.returncode == 0 and "different sizes" in done.stdout
+    assert "G9 300" not in (tmp_path / "p.txt").read_text(encoding="utf-8")
+
+
+def test_images_bad_input_is_exit_status_2(tmp_path: Path) -> None:
+    session, ref, cand = _image_runs(tmp_path)
+    shutil.rmtree(cand / "shots")
+    assert _images(session, ref, cand).returncode == 2
+    session, ref, cand = _image_runs(tmp_path / "b")
+    (cand / "shots" / "gas.txt").write_text("three\n", encoding="utf-8")
+    assert _images(session, ref, cand).returncode == 2
+    session, ref, cand = _image_runs(tmp_path / "c")
+    assert _images(session, ref, cand, "--min-frames", "-1").returncode == 2
+    assert _images(session, tmp_path / "nowhere", cand).returncode == 2
+
+
+# ── the margin of D58 ────────────────────────────────────────────────────────
+
+def _noisy(k: int) -> dict:
+    """A 32x32 screen whose pixels are all 2 off (base 10 -> 12), the first `k` pixels 3 off: k=21 is a PSNR of
+    42.0004 dB, k=22 one of 41.995 dB; the block error stays near 2."""
+    return {(x, y): 13 if y * 32 + x < k else 12 for y in range(32) for x in range(32)}
+
+
+def _blocky(extra_pixels: int = 0, diff: int = 7, size: int = 64) -> dict:
+    """The 16x16 block at 0,0 off by `diff` (base 10), `extra_pixels` of its pixels one more: a block error of
+    exactly `diff` when there are none; the PSNR stays above 43 dB on a 64x64 screen."""
+    edits = _block(0, 0, 10 + diff)
+    for i in range(extra_pixels):
+        edits[(i % 16, i // 16)] = 10 + diff + 1
+    return edits
+
+
+def _proposed(tmp_path: Path, edits: dict, *extra: str, size: int = 32, frame: int = 420) -> bool:
+    session, ref, cand = _image_runs(tmp_path, {(frame, "top"): edits}, size=size)
+    proposal = tmp_path / "p.txt"
+    done = _images(session, ref, cand, "--proposal", str(proposal), *extra)
+    assert done.returncode == 0, done.stderr
+    return f"G9 {frame}" in proposal.read_text(encoding="utf-8").splitlines()
+
+
+def test_the_margin_premises_of_the_synthetic_frames() -> None:
+    import imgdiff
+    ref = imgdiff.parse_ppm(_ppm(32, 32))
+    over = imgdiff.compare(ref, imgdiff.parse_ppm(_ppm(32, 32, edits=_noisy(21))))
+    under = imgdiff.compare(ref, imgdiff.parse_ppm(_ppm(32, 32, edits=_noisy(22))))
+    assert 42.0 <= over.psnr < 42.01 and 41.9 < under.psnr < 42.0 and over.worst_block < 3 and under.worst_block < 3
+    ref64 = imgdiff.parse_ppm(_ppm(64, 64))
+    for extra, expect in ((0, 7.0), (26, 7.1016)):
+        m = imgdiff.compare(ref64, imgdiff.parse_ppm(_ppm(64, 64, edits=_blocky(extra))))
+        assert m.psnr > 43 and abs(m.worst_block - expect) < 1e-3
+
+
+def test_the_defaults_of_the_margin_are_2_db_and_1_of_255() -> None:
+    assert cmr.IMAGE_MARGIN_DB == 2.0 and cmr.IMAGE_MARGIN_BLOCK == 1.0
+    help_text = run_tool("--help").stdout
+    assert "default 2" in help_text and "default 1" in help_text
+
+
+def test_a_frame_just_under_42_db_is_not_proposed_and_one_just_over_is(tmp_path: Path) -> None:
+    assert _proposed(tmp_path / "over", _noisy(21)) is True
+    assert _proposed(tmp_path / "under", _noisy(22)) is False
+
+
+def test_a_block_of_7_1_is_not_proposed_and_one_of_exactly_7_is(tmp_path: Path) -> None:
+    assert _proposed(tmp_path / "seven", _blocky(0), size=64) is True
+    assert _proposed(tmp_path / "over", _blocky(26), size=64) is False
+
+
+def test_margins_of_zero_give_the_plain_rule(tmp_path: Path) -> None:
+    plain = ("--margin-db", "0", "--margin-block", "0")
+    # 40.5 dB: passes the gate's 40 dB, not the 42 dB of the margin
+    edits = _noisy(368)
+    assert _proposed(tmp_path / "a", edits) is False
+    assert _proposed(tmp_path / "b", edits, *plain) is True
+    # a block of 7.5: passes 8/255, not 7.0
+    block = _blocky(128, 7)
+    assert _proposed(tmp_path / "c", block, size=64) is False
+    assert _proposed(tmp_path / "d", block, *plain, size=64) is True
+    # the plain rule still refuses a PSNR under 40 dB (all pixels 4 off: 36 dB) and a block above 8
+    assert _proposed(tmp_path / "e", _blocky(0, 9), *plain, size=64) is False
+    assert _proposed(tmp_path / "f", {(x, y): 14 for x in range(32) for y in range(32)}, *plain) is False
+
+
+def test_each_margin_is_a_dimension_of_its_own(tmp_path: Path) -> None:
+    only_db = ("--margin-db", "0")
+    only_block = ("--margin-block", "0")
+    # 41.99 dB: the block margin alone does not drop it, the dB margin does
+    assert _proposed(tmp_path / "a", _noisy(22), *only_db) is True
+    assert _proposed(tmp_path / "b", _noisy(22), *only_block) is False
+    # a block of 7.1: the dB margin alone does not drop it, the block margin does
+    assert _proposed(tmp_path / "c", _blocky(26), *only_block, size=64) is True
+    assert _proposed(tmp_path / "d", _blocky(26), *only_db, size=64) is False
+
+
+def test_the_margin_bounds_are_inclusive() -> None:
+    import imgdiff
+    def row(top, bottom=None):
+        return cmr.ShotRow(1, top=top, bottom=bottom or imgdiff.Metrics(50.0, 1.0, 0, 0))
+    ok = imgdiff.Metrics(42.0, 7.0, 0, 0)
+    assert row(ok).proposed(2.0, 1.0) is True
+    assert row(imgdiff.Metrics(50.0, 1.0, 0, 0), ok).proposed(2.0, 1.0) is True      # the bottom screen too
+    assert row(imgdiff.Metrics(41.99, 7.0, 0, 0)).proposed(2.0, 1.0) is False
+    assert row(imgdiff.Metrics(42.0, 7.01, 0, 0)).proposed(2.0, 1.0) is False
+    assert row(imgdiff.Metrics(50.0, 1.0, 0, 0), imgdiff.Metrics(41.99, 7.0, 0, 0)).proposed(2.0, 1.0) is False
+    assert row(imgdiff.Metrics(50.0, 1.0, 0, 0), imgdiff.Metrics(42.0, 7.01, 0, 0)).proposed(2.0, 1.0) is False
+    # with no margin the plain rule's own bounds are inclusive: 40 dB and 8/255 pass
+    assert row(imgdiff.Metrics(40.0, 8.0, 0, 0)).proposed(0.0, 0.0) is True
+    assert row(imgdiff.Metrics(39.99, 8.0, 0, 0)).proposed(0.0, 0.0) is False
+    assert row(imgdiff.Metrics(40.0, 8.01, 0, 0)).proposed(0.0, 0.0) is False
+
+
+def test_a_negative_margin_is_exit_status_2(tmp_path: Path) -> None:
+    session, ref, cand = _image_runs(tmp_path)
+    assert _images(session, ref, cand, "--margin-db", "-0.5").returncode == 2
+    assert _images(session, ref, cand, "--margin-block", "-1").returncode == 2
+
+
+def test_a_narrow_frame_is_reported_as_not_proposed(tmp_path: Path) -> None:
+    session, ref, cand = _image_runs(tmp_path, {(420, "top"): _noisy(22), (480, "bottom"): _noisy(21)})
+    done = _images(session, ref, cand)
+    assert done.returncode == 0, done.stderr
+    out = done.stdout
+    assert "| 420 | 1 |" in out and "narrow |" in out and out.count("narrow |") == 1
+    assert "### Frames that pass the plain rule but are not proposed: narrow (1)" in out
+    assert "11 of 12 frames are proposed** (12 pass the plain rule)" in out
+    assert "### Frames that do not pass the plain rule (0)" in out
+    plain = _images(session, ref, cand, "--margin-db", "0", "--margin-block", "0").stdout
+    assert "12 of 12 frames are proposed" in plain and "narrow (0)" in plain
+
+
+def test_a_scene_is_long_only_when_longer_than_long_scene(tmp_path: Path) -> None:
+    # the second scene (700 to 1000) is 301 frames and has no usable top screen
+    bad = {(f, "top"): _block(0, 0, 90) for f in FRAMES if f >= 700}
+    session, ref, cand = _image_runs(tmp_path, bad)
+    assert _images(session, ref, cand, "--long-scene", "300").returncode == 1      # 301 > 300: long
+    assert _images(session, ref, cand, "--long-scene", "301").returncode == 0      # exactly 301: not long
+    assert _images(session, ref, cand, "--long-scene", "302").returncode == 0
+
+
+def test_coverage_is_computed_on_the_margin_set(tmp_path: Path) -> None:
+    # every top screen of the second scene (700 to 1000) is narrow: it passes 40 dB, not 42 dB
+    bad = {(f, "top"): _noisy(22) for f in FRAMES if f >= 700}
+    session, ref, cand = _image_runs(tmp_path, bad)
+    done = _images(session, ref, cand)
+    assert done.returncode == 1 and "scene #2" in done.stderr and "no image frame" in done.stderr
+    assert _images(session, ref, cand, "--margin-db", "0", "--margin-block", "0").returncode == 0
+
+
+def test_a_scene_named_not_judged_needs_no_frame(tmp_path: Path) -> None:
+    bad = {(f, "top"): _noisy(22) for f in FRAMES if f >= 700}
+    session, ref, cand = _image_runs(tmp_path, bad)
+    done = _images(session, ref, cand, "--not-judged", "700-1000")
+    assert done.returncode == 0, done.stderr
+    assert "not judged by the jit-calibrated gate" in done.stdout
+    # the range names the scene by where it starts; another range, or another shortfall, is still a shortfall
+    assert _images(session, ref, cand, "--not-judged", "701-1000").returncode == 1
+    assert _images(session, ref, cand, "--not-judged", "0-1").returncode == 1
+    # both ends are inclusive: the scene that starts exactly at LAST (700) is named by 600-700
+    assert _images(session, ref, cand, "--not-judged", "600-700").returncode == 0
+    assert _images(session, ref, cand, "--not-judged", "700-700").returncode == 0
+    assert _images(session, ref, cand, "--not-judged", "600-699").returncode == 1
+    two = {(f, "top"): _noisy(22) for f in FRAMES}                      # no frame anywhere: fewer than --min-frames
+    session, ref, cand = _image_runs(tmp_path / "b", two)
+    done = _images(session, ref, cand, "--not-judged", "0-1000")
+    assert done.returncode == 1 and "only 0 image frames" in done.stderr
+    # repeatable, and bad specs are bad input
+    assert _images(session, ref, cand, "--not-judged", "0-1", "--not-judged", "700-1000").returncode == 1
+    for spec in ("700", "a-b", "900-800", "700-", "\u0667-\u0668"):
+        assert _images(session, ref, cand, "--not-judged", spec).returncode == 2, spec
+
+
+def test_a_shot_number_in_gas_txt_with_a_non_ascii_digit_is_bad_input(tmp_path: Path) -> None:
+    session, ref, cand = _image_runs(tmp_path)
+    (cand / "shots" / "gas.txt").write_text("3\u00b2\n", encoding="utf-8")
+    assert _images(session, ref, cand).returncode == 2
