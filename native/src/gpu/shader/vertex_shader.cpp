@@ -6,9 +6,8 @@
 // map and semantic map of PicaVSConfigState / PicaGSConfigState), the contents of the two uniform
 // blocks, and the primary colour clamp of OutputVertex.
 // Copyright 2023-2026 Citra Emulator Project / Azahar Emulator Project (glsl_shader_gen.cpp,
-//   shader_gen.cpp, shader_gen.h, rasterizer_accelerated.cpp, shader_setup.cpp)
+//   glsl_shader_gen.h, shader_gen.cpp, shader_gen.h, rasterizer_accelerated.cpp, shader_setup.cpp)
 // Copyright 2023-2025 Citra Emulator Project / Azahar Emulator Project (shader_uniforms.cpp)
-// Copyright 2015 Citra Emulator Project (glsl_shader_gen.h)
 // Copyright 2023 Citra Emulator Project (output_vertex.cpp)
 //
 // See vertex_shader.h for the interface this file generates.

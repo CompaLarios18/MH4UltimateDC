@@ -6,13 +6,12 @@
 // locations and uniform blocks of its interface, the semantic names of the output attributes, and the
 // output map.
 // Copyright 2023-2026 Citra Emulator Project / Azahar Emulator Project (glsl_shader_gen.cpp,
-//   shader_gen.cpp, shader_gen.h, shader_setup.cpp, shader_setup.h)
+//   glsl_shader_gen.h, shader_gen.cpp, shader_gen.h, shader_setup.cpp, shader_setup.h)
 // Copyright 2023-2025 Citra Emulator Project / Azahar Emulator Project (shader_uniforms.h,
 //   shader_uniforms.cpp)
 // Copyright 2023 Citra Emulator Project (output_vertex.cpp)
 // Copyright 2017-2026 Citra Emulator Project / Azahar Emulator Project (regs_rasterizer.h)
 // Copyright 2017-2025 Citra Emulator Project / Azahar Emulator Project (regs_shader.h)
-// Copyright 2015 Citra Emulator Project (glsl_shader_gen.h)
 //
 // The PICA vertex shader as SPIR-V (N2-06). `TranslateVertexShader` turns a vertex program (the
 // ShaderSetup of the processor's state), the registers that say how its outputs are used and the

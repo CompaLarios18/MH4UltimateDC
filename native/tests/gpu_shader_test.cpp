@@ -1,16 +1,17 @@
 // Derived from Azahar src/video_core/shader/shader_interpreter.cpp, src/video_core/pica_types.h,
-// src/video_core/pica/shader_unit.cpp, shader_unit.h, output_vertex.cpp, regs_shader.h, regs_rasterizer.h
-// and src/video_core/shader/generator/glsl_shader_gen.cpp at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6
-// (GPL-2.0-or-later; each of those files says "Licensed under GPLv2 or any later version"): the CPU
-// interpreter below (namespace oracle) is a port of RunInterpreter with the float rules of
-// Pica::Float's operator*, ShaderUnit::LoadInput / WriteOutput and the OutputVertex semantic fill; the
-// register positions the tests write are those of ShaderRegs, RasterizerRegs and PipelineRegs.
+// src/video_core/pica/shader_unit.cpp, shader_unit.h, output_vertex.cpp, regs_shader.h, regs_rasterizer.h,
+// regs_pipeline.h, pica_core.cpp and src/video_core/shader/generator/glsl_shader_gen.cpp at
+// 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-2.0-or-later; each of those files says "Licensed under
+// GPLv2 or any later version"): the CPU interpreter below (namespace oracle) is a port of RunInterpreter
+// with the float rules of Pica::Float's operator*, ShaderUnit::LoadInput / WriteOutput and the OutputVertex
+// semantic fill; the register positions the tests write are those of ShaderRegs, RasterizerRegs and
+// PipelineRegs, and the command list writer follows the loop of PicaCore::ProcessCmdList.
 // Copyright 2014-2026 Citra Emulator Project / Azahar Emulator Project (shader_interpreter.cpp)
 // Copyright 2015-2026 Citra Emulator Project / Azahar Emulator Project (pica_types.h)
-// Copyright 2023-2026 Citra Emulator Project / Azahar Emulator Project (shader_unit.cpp, glsl_shader_gen.cpp)
-// Copyright 2023-2024 Citra Emulator Project / Azahar Emulator Project (shader_unit.h)
+// Copyright 2023-2026 Citra Emulator Project / Azahar Emulator Project (shader_unit.cpp, shader_unit.h,
+//   pica_core.cpp, glsl_shader_gen.cpp)
 // Copyright 2023 Citra Emulator Project (output_vertex.cpp)
-// Copyright 2017-2025 Citra Emulator Project / Azahar Emulator Project (regs_shader.h)
+// Copyright 2017-2025 Citra Emulator Project / Azahar Emulator Project (regs_shader.h, regs_pipeline.h)
 // Copyright 2017-2026 Citra Emulator Project / Azahar Emulator Project (regs_rasterizer.h)
 //
 // mh4n_gpu_shader (N2-06): the PICA vertex shader as SPIR-V.
@@ -1031,6 +1032,10 @@ rhi::BindingSetDesc TestSetDesc() {
 struct Rig {
     std::shared_ptr<rhi::Backend> backend;
     std::map<std::string, std::shared_ptr<rhi::Pipeline>> pipelines;
+    // Under the validation layer the buffers of a run are kept: the layer's synchronisation tracking does
+    // not see the host wait on the timeline, so memory reused for another buffer reads as a hazard.
+    std::vector<std::shared_ptr<void>> kept;
+
     Rig() : backend(test::RequireBackend()) {}
     bool ok() const { return backend != nullptr; }
 
@@ -2435,6 +2440,25 @@ TEST_CASE("random words never crash the translator, hang it or give GLSL that do
     CHECK(accepted > 0);
     CHECK(rejected > 0);
     CHECK_MESSAGE(compile_failures == 0, first_failure);
+}
+
+TEST_CASE("EMIT and SETEMIT in a vertex program do nothing (as Azahar's decompiler and a vertex unit)") {
+    Rig rig;
+    if (!rig.ok()) return;
+    using namespace asmb;
+    Asm a;
+    a.Op(kAdd, O(0), V(0), V(1));
+    a.Setemit(1, true, false);
+    a.Emit();
+    a.Op(kMul, O(1), V(0), V(1));
+    a.Setemit(2, false, true);
+    a.End();
+    Draw d = MakeProgram(a, RandomInputs(2, 16, 50), 0x3);
+    Outcome o = RunCase(rig, d, 16);
+    CHECK_OUTCOME(o);
+    REQUIRE(o.shader != nullptr);
+    REQUIRE(!o.shader->notes.empty());
+    CHECK(o.shader->notes[0].find("EMIT") != std::string::npos);
 }
 
 TEST_CASE("a backward jump that never ends ends the shader on the device") {

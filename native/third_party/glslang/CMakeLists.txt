@@ -49,17 +49,20 @@ add_library(mh4n_glslang STATIC
     SPIRV/SpvTools.cpp
     SPIRV/disassemble.cpp
     SPIRV/doc.cpp
-    $<IF:$<BOOL:${WIN32}>,glslang/OSDependent/Windows/ossource.cpp,glslang/OSDependent/Unix/ossource.cpp>
 )
+if (WIN32)
+    target_sources(mh4n_glslang PRIVATE glslang/OSDependent/Windows/ossource.cpp)
+    target_compile_definitions(mh4n_glslang PRIVATE GLSLANG_OSINCLUDE_WIN32 NOMINMAX)
+else()
+    target_sources(mh4n_glslang PRIVATE glslang/OSDependent/Unix/ossource.cpp)
+    target_compile_definitions(mh4n_glslang PRIVATE GLSLANG_OSINCLUDE_UNIX)
+endif()
 set_target_properties(mh4n_glslang PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF
                       POSITION_INDEPENDENT_CODE ON)
 # The include root is this directory: "glslang/Public/ShaderLang.h", "SPIRV/GlslangToSpv.h",
 # "glslang/build_info.h". SYSTEM, so that our headers' warnings (mh4n_warnings) do not apply to them.
 target_include_directories(mh4n_glslang SYSTEM PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
-target_compile_definitions(mh4n_glslang PRIVATE
-    ENABLE_OPT=0
-    $<IF:$<BOOL:${WIN32}>,GLSLANG_OSINCLUDE_WIN32,GLSLANG_OSINCLUDE_UNIX>
-    $<$<BOOL:${WIN32}>:NOMINMAX>)
+target_compile_definitions(mh4n_glslang PRIVATE ENABLE_OPT=0)
 # Third-party code: no warnings of ours (mh4n_warnings is not linked).
 target_compile_options(mh4n_glslang PRIVATE $<IF:$<BOOL:${MSVC}>,/w,-w>)
 find_package(Threads REQUIRED)

@@ -1,6 +1,6 @@
 // Derived from Azahar externals/nihstro/include/nihstro/shader_bytecode.h at
 // 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (BSD 3-clause licence of externals/nihstro/license.txt,
-// reproduced in pica_isa.h; not GPL): the instruction info table (OpCode::GetInfo).
+// reproduced at the top of the header next to this file; not GPL): the instruction info table (OpCode::GetInfo).
 // Copyright 2014 Tony Wasserka
 #include "gpu/shader/pica_isa.h"
 
