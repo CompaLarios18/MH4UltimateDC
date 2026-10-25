@@ -425,9 +425,10 @@ TEST_CASE("depth/d24s8_and_the_masked_d32s8_give_the_same_bytes_for_every_depth_
 TEST_CASE("depth/d16_and_d32_float") {
     std::shared_ptr<Backend> backend = MakeBackend();
     if (!backend) return;
-    // D16: 1/3 * 65535 = 21845 = 0x5555 exactly, 1.0 is 0xFFFF, 0 is 0
+    // D16: 1/3 * 65535 = 21845 = 0x5555 exactly, 1.0 is 0xFFFF, 0 is 0. 2/3 * 65535 = 43690 = 0xAAAA exactly (bytes AA AA): a value in the
+    // upper half, where the scale 65535 matters: read at scale 65536 it is 43690 * 65536 / 65535 = 43690.67, which rounds to 43691.
     std::shared_ptr<Image> d16 = MakeImage(*backend, Format::D16Unorm, 8, 8);
-    for (const auto& [clear, word] : {std::pair{0.0f, 0x0000u}, std::pair{1.0f / 3.0f, 0x5555u}, std::pair{1.0f, 0xFFFFu}}) {
+    for (const auto& [clear, word] : {std::pair{0.0f, 0x0000u}, std::pair{1.0f / 3.0f, 0x5555u}, std::pair{2.0f / 3.0f, 0xAAAAu}, std::pair{1.0f, 0xFFFFu}}) {
         ClearAndWait(*backend, *d16, Depth(clear, 0));
         CHECK(Readback(*backend, *d16, 8, 8, PicaFormat::D16, 2) == Repeat(Le16(word), 64));
     }
@@ -452,7 +453,9 @@ TEST_CASE("depth/an_image_left_in_the_attachment_layout_by_a_pass_open_at_submit
             state.depth_test = true;
             state.depth_write = true;
             state.depth_compare = CompareOp::Always;
-            const std::shared_ptr<Pipeline> draw = MakePipeline(*backend, Spv(spv_fs_vert_z25), Spv(spv_red_frag), Format::Rgba8Unorm, depth->GetFormat(), state);
+            // D24S8 draws at depth 0.25; D16 at 2/3 (0.6666667f), whose stored value 43690 = 0xAAAA is in the upper half where the D16 scale shows
+            const bool is_d16 = depth_name == Format::D16Unorm;
+            const std::shared_ptr<Pipeline> draw = MakePipeline(*backend, is_d16 ? Spv(spv_fs_vert_z667) : Spv(spv_fs_vert_z25), Spv(spv_red_frag), Format::Rgba8Unorm, depth->GetFormat(), state);
             Recorder rec = backend->BeginRecording();
             TargetPassDesc pass;
             pass.color = color.get();
@@ -474,8 +477,9 @@ TEST_CASE("depth/an_image_left_in_the_attachment_layout_by_a_pass_open_at_submit
                 CHECK(Readback(*backend, *depth, 8, 8, PicaFormat::D24S8, 4) ==
                       Repeat(D24S8Bytes(QuarterD24(depth->GetFormat()), 0x5A), 64));
             } else {
-                // D16: 0.25 * 65535 = 16383.75 -> 16384 = 0x4000
-                CHECK(Readback(*backend, *depth, 8, 8, PicaFormat::D16, 2) == Repeat(Le16(0x4000), 64));
+                // D16: 0.6666667f * 65535 = 43690.0013 -> the target stores 43690 = 0xAAAA (a D16 target rounds to nearest); read at scale
+                // 65536 it would be 43690.67 -> 43691
+                CHECK(Readback(*backend, *depth, 8, 8, PicaFormat::D16, 2) == Repeat(Le16(0xAAAA), 64));
             }
             // the first use moved it to GENERAL; the colour image drew red where the depth test passed (all of it)
             CHECK(depth->impl().vulkan()->textureLayout == ::plume::RenderTextureLayout::GENERAL);
