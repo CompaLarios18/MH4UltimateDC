@@ -501,7 +501,7 @@ Azahar draws no gas at all (its shader generator logs "Unimplemented gas mode", 
   - **Feature directories** `fragment/{sampling,lighting,fog,proctex,shadow}/`, each with a stub that implements the design's feature interface with the feature off, and reports a draw that needed it (a `stubbed:<feature>` counter, `TakeFrameCounters`).
   - **`--gpu native`** (registered from `native/src/gpu/native/`): N2-03's GX engine, N2-04's command processor, N2-05's vertex loading, N2-06's shaders, this fragment pipeline, N2-13's framebuffer operations and N2-14's textures, on the backend (N2-25 to N2-29); it fills N2-05's `VertexCaps` from the backend's `Capabilities` and reports N2-05's `vertex_restart_widened` as a frame counter.
 - **Done when:** ctest passes: synthetic untextured draws per TEV operation, source and scale, and per alpha-test function, rendered on lavapipe, against expected pixels from the software renderer's formulas; a draw that needs a stubbed feature is counted.
-- **Traps:** -
+- **Traps:** *(2026-10-24, N2-22's review)* under the capture player's `--queue` the wrapped GPU is constructed on the player's thread, not on the renderer thread, so a native GPU that creates images in its constructor breaks the owner rule (`rhi-spike.md` 9.4 item 5) on that path: create images on first use, or on the thread that calls `Execute`; with `QueueGpu(host, make_inner)` (N2b-12) the GPU is made on the renderer thread.
 - **Out of scope:** the features (N2-23, N2-09 to N2-12).
 
 ### N2-23 · Texture sampling and the first captured frames
@@ -514,7 +514,7 @@ Azahar draws no gas at all (its shader generator logs "Unimplemented gas mode", 
 - **Done when:**
   - ctest passes: synthetic draws per texture type, wrap mode, filter and LOD setting on lavapipe, against expected pixels from the software renderer's formulas;
   - (with the dump) on G1's capture with `--gpu native`, the frames with no draw counted as `stubbed:*` pass the image thresholds; at least one frame qualifies (if none does, report which features block them).
-- **Traps:** -
+- **Traps:** *(2026-10-24, N2-22's review)* under the capture player's `--queue` the wrapped GPU is constructed on the player's thread (see N2-08's Traps): make GPU images on the thread that calls `Execute`, not in a constructor.
 - **Out of scope:** lighting, fog, procedural textures, shadows (N2-09 to N2-12).
 
 ### N2-09 · Fragment lighting
