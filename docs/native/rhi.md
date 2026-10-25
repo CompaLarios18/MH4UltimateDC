@@ -319,3 +319,67 @@ resources that do not defer their own destruction, the limit of a failed `vkQueu
 `readelf -d` for `libX11` is meaningful on `build/native/bin/rhi_plume_test` (no `NEEDED` entry besides libstdc++, libm, libgcc_s, libc and the loader's), not on `mh4u_native_runner`, which does not link plume yet.
 
 The Windows llvm-mingw build, the macOS build, the three CI jobs and the `native-tsan` job on GitHub are `pending (ci)`; the patterns on the RX 6700 XT, MoltenVK and a second queue are the PC's legs (`rhi-spike.md` 9.2) and were not run: the macOS branch of `plume_vulkan.cpp` (`VK_KHR_portability_enumeration`, the portability-subset features, `triangleFan` forced false) and the Windows branch (`NOMINMAX`) were not compiled here.
+
+## On the RX 6700 XT (N2-31)
+
+Run on the maintainer's PC on 2026-10-24, base `6c8f6cd`, no source changed. Build: llvm-mingw 20241217 (`x86_64-w64-mingw32-clang`), Ninja,
+`RelWithDebInfo`, `MH4N_WERROR=ON`, the targets `gpu_backend_core_test`, `rhi_plume_test`, `rhi_plume_patterns_test` and `mh4n_vkprobe_tool`
+(the executable `mh4n_vkprobe`; the target named `mh4n_vkprobe` is its library). All four build and link on Windows without a warning.
+Environment of every run: `MH4N_REQUIRE_VULKAN=1`, `MH4N_VULKAN_DEVICE="RX 6700"`.
+
+- **Device line** (every test log): `device 0 "AMD Radeon RX 6700 XT" driver "AMD proprietary driver" (id 1) api 1.4.315, queue family 0`, chosen because
+  its label contains `RX 6700`; discrete, vendor 0x1002, device 0x73df; the probe names driver 26.10.1. It is not llvmpipe (no software device is on the PC).
+  The loader is the system's `C:\Windows\System32\vulkan-1.dll`, file version 1.4.309.0.
+- **Caps the core logs** (no mask): `d24s8=false interlock=true index_uint8=true custom_border_color=true triangle_fans=true`.
+
+| Binary | Cases passed | Failed | Skipped | Failed or skipped cases |
+|---|---|---|---|---|
+| `gpu_backend_core_test` | 46 of 49 | 3 | 1 | failed: `instance/the_headless_surface_and_the_debug_messenger_come_when_asked`, `device/headless_surface`, `presentation/with_a_headless_surface_agrees_with_the_probe`; skipped: `loading/child` (the subprocess helper, marked `doctest::skip()`); `loading/no_driver_gives_an_error_with_a_message_and_the_process_goes_on` is counted among the 46 passed but is vacuous here: it ends in a `WARN_MESSAGE` "skipped: the subprocess check runs on Linux" |
+| `rhi_plume_test` | 7 of 8 | 1 | 1 | failed: `device/headless_surface`; skipped: the control `control/C5` (controls are skipped by default) |
+| `rhi_plume_patterns_test` | 22 of 23 | 1 | 4 | failed: `B1_shadow_store_no_interlock`; skipped: the four controls `control/B7`, `control/B6`, `control/D4` and `control/D2` (all `doctest::skip()`); `patch10/dynamic_stencil_state_d24s8` and `patch11/depth_stencil_copy_as_two_regions` are counted among the 22 passed but make no assertion (message: "skipped: D24S8: the device has no depth-stencil attachment in this format"), so 20 of the 22 exercised the driver |
+
+Assertions: 1,751 of 1,755 (core), 46 of 47 (plume), 1,211 of 1,212 (patterns).
+
+**Masked runs.** Each binary was run under each of the 13 `MH4N_RHI_MASK` bit names (`d24s8`, `interlock`, `index_uint8`, `custom_border_color`,
+`triangle_fans`, `logic_op`, `dynamic_rendering`, `pipeline_library`, `eds3_blend`, `bc7`, `timeline`, `present_wait`, `direct_upload`) and under `all`: 42 runs.
+
+| Binary | Result under each of the 14 masks |
+|---|---|
+| `gpu_backend_core_test` | the same 46 passed, 3 failed, 1 skipped in all 14, the same three failed cases |
+| `rhi_plume_test` | the same 7 passed, 1 failed, 1 skipped in all 14 (the core's mask is not read by this binary) |
+| `rhi_plume_patterns_test` | the same 22 passed, 1 failed, 4 skipped in all 14 (the core's mask is not read by this binary) |
+
+So no case depends on a masked feature on this device, and none fails because of one: the failures below are the same with and without a mask.
+
+**`mh4n_vkprobe`** (live, exit 0) agrees with `docs/research/vkprobe-results.md` line by line: fragment shader interlock (pixel and sample) `yes`,
+`D24_UNORM_S8_UINT` `no` (fallback `D32_SFLOAT_S8_UINT`, `yes`), BC7 `yes`, custom border colours `yes`, timeline semaphores `yes`, dynamic rendering `yes`,
+`VK_KHR_present_id` and `VK_KHR_present_wait` `no`, extended dynamic state 3 `yes` (18 of 31 bits), triangle fans `yes`. On lavapipe `d24s8` is true and the
+core's `present_wait` is absent as here; the one difference that reaches the tests is `d24s8`.
+
+**The Khronos validation layer is not on this PC.** The loader's layer search (`VK_LOADER_DEBUG=layer`) finds only the implicit layers
+`SteamOverlayVulkanLayer64.json` and `SteamFossilizeVulkanLayer64.json` (registry `HKLM\SOFTWARE\Khronos\Vulkan\ImplicitLayers`); there is no explicit-layer
+registry key and no `VK_SDK_PATH`. `VK_LAYER_KHRONOS_validation` is not listed, so `tools/native/vk_layer_run.py` was not run (nothing was downloaded).
+
+### Failures and their classes
+
+1. **`device/headless_surface` (both binaries), `instance/the_headless_surface_and_the_debug_messenger_come_when_asked` and
+   `presentation/with_a_headless_surface_agrees_with_the_probe`: test assumption.** First messages: `FATAL ERROR: MH4N_REQUIRE_VULKAN=1 and there is no
+   usable Vulkan device: the Vulkan loader lacks VK_EXT_headless_surface` (`support/vulkan_device.h:43`; `rhi_plume_test.cpp:351`: "the loader does not offer
+   VK_EXT_headless_surface"), and `CHECK( Has(names, "VK_EXT_headless_surface") )` false at `gpu_backend_core_test.cpp:834`, then line 837. The cases assume the
+   loader lists `VK_EXT_headless_surface`, which lavapipe's stack does; this PC's loader with AMD's driver does not list it. No Vulkan call is invalid. The
+   surface the swapchain cases (N2-27, N2b-06) need must on this PC come from a real window (`VK_KHR_win32_surface`); that is a design question for the
+   orchestrator, not a driver defect. The cases that need a surface did not run here (the presentation half of `device/chosen`, the present-capable family
+   filter): they are still the PC's legs.
+2. **`B1_shadow_store_no_interlock`: test assumption (a result the shader does not guarantee).** Assertion `CHECK( bad == 0 )` at
+   `rhi_plume_patterns_test.cpp:574`, first message `B1: 256 of 256 texels != 3 (texel0 = 1)`. B1 is the shadow write with `imageLoad` plus `imageStore` and no
+   interlock, three overlapping draws that each add 1, with no barrier; without the interlock the order of the read-modify-write between overlapping fragments
+   is undefined. This run's inference (not something 6.9 states): the GPU ran the overlapping draws without ordering their read-modify-writes (every
+   texel 1, not 3), where lavapipe's serial execution gives 3; the evidence is B1 = 1 per texel against B5, which has a barrier, = 3. `rhi-spike.md` 6.9 lists
+   the patched B1 as "clean; right" on lavapipe and says silence on B1, B3 and B5 says nothing about their ordering; it called the ordering of the interlock
+   variants on a real GPU unverified, and B2 and B4 now give 0 of 256 wrong on the RX 6700 XT (so do B3 and B5). Not a trigger of D4: the interlock the plan uses is `yes` here and `B2` passes. (The case asserts a result the shader
+   does not guarantee; whether it should assert the opposite on a real GPU, or skip, is the orchestrator's.)
+3. **The two D24S8 cases are not failures** and are not the trigger: the device has no `D24_UNORM_S8_UINT` attachment, as the probe says; the D32S8 path
+   (`d24s8` masked) is the PC's path and these two cases only assert where the device has D24S8 (lavapipe). Under `MH4N_REQUIRE_VULKAN=1` they log "skipped" by their own message and are counted as passed (no assertion), instead of failing.
+
+**Verdict:** 75 of the 80 cases that ran pass on the RX 6700 XT; the 5 failures (3 + 1 + 1 over the three binaries, 2 distinct causes: the missing `VK_EXT_headless_surface` and B1) are all of the class "test assumption" about lavapipe, none a backend or patch defect and none a driver difference that the patches and the owner rule cannot repair, so this run does not fire D4's second trigger. `D1`, `D3`, `D3b` (the owner-rule
+threading cases of the patterns: 0 layout overwrites and 0 broken chains over 2,000 rounds, both) pass on the AMD driver.

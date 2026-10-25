@@ -129,6 +129,8 @@ golden.py check  S [--runner RUN --game CXI] [--update CIA] [--code LIB]
                    [--candidate-args "..."] [--repeat N] [--profile same|cross|native] [--fallback]
                    [--require NAMES] [--ignore FILE]... [--observable FILE]
                    [--tolerance N] [--min-margin N] [--max-surplus N] [--max-shift N]     # the cross and native numbers
+                   [--image-frames FILE]                                                  # cross only (N2b-17, D58)
+                   [--timeline [--timeline-allow FILE]]                                   # the native deterministic mode (N0-39)
 ```
 
 The recordings of this document were made with (PowerShell, from the worktree; `TZ` is set by `golden.py`):
@@ -213,7 +215,8 @@ rules of `check` decide which of the options above are required (all of them a u
 | `checkpoints` | as in `same` |
 | `ipc` | `compare_ipc_traces.py --ignore config/native/ipc_time_dependent.txt` (plus every `--ignore FILE`) `--fs-reads-multiset --max-surplus 16 --fs-write-mask config/native/fs_write_masks.txt --fs-write-mask-session <S>` (D52): per thread the `fs:USER/file` Reads as a multiset of (offset, size, result, CRC of the data read) with at most 16 reads more on one side; every other `fs:` request in order and in full; a Write by the CRC of its data with the byte ranges of the session's mask lines zeroed. The result prints the reads, the bytes that only one side covers (`fs coverage:`, N0-36: information, not a rule) and the masks used |
 | `svc` | `compare_svc_traces.py --normalize --outputs --cross-model config/native/svc_cross_model.txt` (N0-25) |
-| `svc-full`, `images` | run and printed as `INFO`, never gated (the image threshold comes in N2b) |
+| `svc-full` | run and printed as `INFO`, never gated |
+| `images` | **N2b-17 (D58)**: at each frame `config/native/image_frames.txt` (`--image-frames FILE`) lists for the session, the candidate's top and bottom screenshots against the recording's with `tools/native/imgdiff.py`'s rule (ROADMAP section 6: PSNR over R, G and B at least 40 dB, and no 16x16 block with a mean error above 8/255; `image.h`'s constants). A frame in the candidate's `shots/gas.txt` is reported `skipped (gas)` and not judged (every listed frame in gas: `images` is skipped). A listed screenshot the run did not write, or of another size, fails. No frame listed for the session, or no screenshots from the candidate (a runner without `--shots`): `images` is **skipped** (exit 3 under `--require images`, D34). The other screenshots stay information, `images-all`, with the count of those that differ. Two timing models show different pictures wherever something moves (jit against recomp: 19 of 48, 57 of 114, 140 of 292 differ, N0-28), so only the frames where they already agree are listed, and only those that agree **with a margin** (the calibration, `cross_model_report.py --images`, lists the frames whose two screens have a PSNR of at least 42 dB and a worst block of at most 7.0/255, that is 2.0 dB and 1.0 to spare; the gate itself judges the listed frames with ROADMAP section 6's 40 dB and 8/255): 81 frames for G1, G6, G4 and G2 ([`cross-model.md`](cross-model.md) section 11). Two long scenes have no listed frame because the top screens never agree there between jit and recomp (G4 903 to 1575, G2 5086 to 9000): the jit-calibrated gate does not judge them. **N2b-28 (D58 (3))**: when the candidate's argument list (split as the shell would: `--candidate-args=--deterministic`, or the flag inside a longer string; `--deterministic-x` and `--deterministic=1` are not it) contains `--deterministic`, it runs on the recording's own clock, and with no `--image-frames FILE` and no `--cpu jit` in it, `images` judges **every** screenshot frame that the recording and the candidate both have, top and bottom, by the same rule (a frame in the candidate's `shots/gas.txt` is `skipped (gas)`); the result line says `N frame(s) judged, M skipped (gas), K failed` (the failing screens are in the detail). No frame in common, or no screenshots from the candidate: `images` is skipped (exit 3 under `--require images`). An explicit `--image-frames FILE` wins; a `--cpu jit` candidate, the `native` profile and the `same` profile are unchanged |
 | `hid` | `capfmt.py diff-hid` |
 | `dsp-<start>` | `capfmt.py diff-dsp --align --max-shift 48` (D51): the candidate aligned on the first buffer change of the first enabled source, the shift constant and at most **48** DSP frames, every source status block equal after it; the PCM samples are not compared. The result prints the shift |
 
@@ -250,7 +253,8 @@ and `NATIVE_FS_READS_PREFIX`, with D76 named in the comment):
 | `state-margin` | unchanged: every input at least **60 frames** after the last real scene change on both sides (D50), so a 24-frame shift can never move an input into another scene |
 | `ipc` | `--fs-reads-coalesce --fs-reads-prefix` added: the `fs:USER/file` Reads of one thread and one file session whose byte ranges touch are merged into one Read (CRC-32 combined) before the multiset is built, and a run that goes on further than the other side's counts as contained when the other side's is its verified prefix; the surplus limit stays 16, the Writes and every other `fs:` request as in `cross` (D52's masks, `config/native/fs_write_masks.txt`) |
 | `dsp-<start>` | `--max-shift 300` (D76) instead of 48, and an **odd** shift compares the reference's region *r* with the candidate's region *1 − r* |
-| everything else | as `cross` (`svc` on the cross-model list, `hid`, `checkpoints`, `svc-full` and `images` as information) |
+| `images` | information only (`images` is reported as `INFO`, `--image-frames` is a usage error): the listed frames of `cross` were calibrated with the shifts of two models of the reference (up to 3 frames), (with a margin of 2.0 dB and 1.0 of 255, [`cross-model.md`](cross-model.md) section 11.6), and the native runtime's scenes may move by 24; the native deterministic mode of N2b-19 to N2b-21, which shares the recording's clock, is where images get judged (plan) |
+| everything else | as `cross` (`svc` on the cross-model list, `hid`, `checkpoints` and `svc-full` as information) |
 
 The profile's number is printed in each result (`within 24 frames`, `largest scene-change shift 15 frames (at most
 24)`, `shift -205 DSP frames`, `after merging touching reads: 46 and 46`) and the last line names it
@@ -258,6 +262,8 @@ The profile's number is printed in each result (`within 24 frames`, `largest sce
 runtime is not repeatable from run to run (the host's timing), so a native check is run more than once and says how often
 it passes (`comparators.md`, section 10, lists what was measured); `--repeat` compares the runs with each other in the
 `same` profile, which a native runtime does not pass, so run the check several times instead.
+
+**Screenshots of a candidate runner (N2b-17).** `check` asks a `--candidate-runner` for its `--help` once; when that lists `--shots` (the native runner, N2b-14), the candidate gets `--shots <run>/shots --shots-from f300 --shot-every f<N>` (`N` is the recording's: 60 by default; the same frame-keyed form the reference is given, never the shared-page `--dump`). A runner whose `--help` lacks it, or cannot be asked, gets none of the three. **Only a candidate whose arguments choose a GPU that shows its screens (`--candidate-args "--gpu null-display"` or `--gpu renderer`) gets them**: the native runner ends a run that has `--shots` and its default `null` GPU with status 2, so without the choice the run is as it was before N2b-17 and `images` is skipped (`the run wrote no screenshots`). `null-display` shows the screens the game's own code draws into guest memory, not a rendered picture, so `images` on it fails against a recording of real pictures: the renderer (N2b-12 to N2b-14) is what makes the check meaningful. `shots/gas.txt` of the candidate's folder has one line per shot that follows a published frame with `gas` set since the previous shot (the shot's number, unpadded: `300` for `f0000300_*.ppm`); the file is written empty when there is no gas, and the reference writes none.
 
 A comparison whose input the candidate did not write is **skipped**, not passed (a failure for the reference runner).
 `--repeat N` runs the candidate N times; each run is compared with the recording in the chosen profile, and runs 2 to N
@@ -997,6 +1003,39 @@ raised. The other rules are pinned too (a displaced thread goes back to the fron
 asynchronous signals run first in, first out, the refill of a core's budget and `slice_of` are exact to the tick, the beacon
 chain stops when the network is not hosting, the catch-up starts above 100 ticks and not at 100); the mutation of each was
 applied by the worker and again by the reviewer on a clone, and every one fails a test (`wp/N1.md`, N1-31).
+
+### `check --timeline`: the scheduler's timeline (N0-39)
+
+`golden.py check S --candidate-runner ... --candidate-args=--deterministic --timeline` (off by default; a usage error
+without a candidate runner and `--deterministic`) sets `MH4N_TRACE_EVENTS=<run folder>/events.txt` for the candidate and
+runs `tools/native/timeline_check.py` on that file and the recording's `timing.txt` (streamed: G4 has 143,294 events and
+the comparison takes under a second). The step is the result `timeline` (`--require timeline` names it): `pass` when every
+difference is in the allow file, `fail` when one is not, when the run wrote no events file or an input is malformed, and
+`skipped` (with the message) when the recording has no `timing.txt`. The full report, with each difference and its two
+neighbours, is `<run folder>/timeline.txt`. The allow file is `config/native/timeline_allow.txt` when it exists, else
+none, or `--timeline-allow FILE`; its line format and the rule that pairs the events are in the tool's docstring and in
+[`comparators.md`](comparators.md) section 14. A missing `--timeline-allow` file is a usage error (exit 2) before the run starts. The candidate's
+arguments are `--deterministic` alone: without `--gpu null-display` or `--gpu renderer` the run writes no screenshots and
+`images` is skipped (the shot options are passed to a native candidate only when its arguments choose one of those GPUs).
+
+**Results (2026-10-24, G4, the runner of the merged tree, the `_native_det` library, one emulator at a time).**
+
+| Run | Result |
+|---|---|
+| `--candidate-args=--deterministic --profile cross --require state,checkpoints,ipc,svc,hid --timeline` with the four allow lines | `svc`, `ipc`, `state`, `state-margin`, `checkpoints`, `hid` and `timeline` pass (143,290 of 143,294 equal; 4 differences, 4 allowed); `images` is skipped (the run wrote no screenshots); 7 passed, 0 failed, 1 skipped, 1 info; exit 0; 1 min 46 s |
+| `--slice-us 4275`, `4273` or `3000` added | `timeline` still passes (143,290 of 143,294): see below |
+| `--candidate-args="--deterministic --slice-us 1000"` | `timeline` fails: the candidate has 143,296 events, 127,852 of 143,294 equal, 15,514 differences, 2 allowed, 15,512 not allowed, first at event 21,349; the other steps still pass, so only the timeline catches it; 6 passed, 1 failed, 1 skipped; exit 1; 1 min 44 s |
+
+**What the timeline pins and what it does not.** The events of the reference's timeline sit at fixed ticks (the timers'
+due times) and their lateness is the overrun of the stretch that was running; on G4 the events come so close that a cap on
+the stretches (`--slice-us`) only binds in a few places. `--slice-us 4275` changes nothing in the runner's stretches (the
+scheduler takes the smaller of the cap and `until_event`, which is the constant 1,145,774 ticks for a core with no event
+queued, so a larger value does not take effect), and `4273` and `3000` (stretch caps of 1,145,641 and about 804,000
+ticks) leave all 143,294 events as they were, in
+tick, core and lateness; only the cap of 1000 µs moves them. So this step catches a wrong event period, a missing or extra
+timer event, a wrong core, an event that fires late (a stretch that overruns) and a cap far from Azahar's; it does not
+catch a cap that is a few percent off. The `stretch` and `ended` lines of the candidate's file have no counterpart in the
+reference's `timing.txt`, so the stretch lengths themselves are not compared.
 
 ## History: the WIP recordings (before N0-29)
 
