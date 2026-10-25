@@ -1081,6 +1081,9 @@ private:
         // residuals are exact floats and nothing underflows (2^-80 .. 2^80); outside it, and for zero,
         // infinity and NaN, the plain device operations are used (the interpreter's results for those are
         // the IEEE ones, which the device gives: 1/0 is inf, 1/inf is 0, a negative root is NaN).
+        // Assumptions: fma is fused (true of real devices; Vulkan only guarantees the precision of a multiply
+        // followed by an add), and the device's start value is within 4 ulp of the rounded result (the loops
+        // take at most four steps; true of real devices, Vulkan's minimum for sqrt is looser).
         shader.AddLine("float pica_next(float v) {{ return uintBitsToFloat(floatBitsToUint(v) + 1u); }}");
         shader.AddLine("float pica_prev(float v) {{ return uintBitsToFloat(floatBitsToUint(v) - 1u); }}\n");
         shader.AddLine("float pica_round_rcp(float s, float q) {{");

@@ -1601,7 +1601,13 @@ TEST_CASE("RCP and RSQ round as the interpreter does, to the last bit") {
     }
     // the values that are not ordinary: zeros, infinities, NaN (rsq of a negative is NaN, and so is the
     // interpreter's 1.0f / sqrtf)
-    const float special[] = {0.f, -0.f, kInf, -kInf, kNaN, 1.f, -1.f, 4.f, 0.25f, 3.f, 1e-5f, 1e5f};
+    // and the ends of the range where the translation corrects the device's value (2^-80 .. 2^80, with the
+    // exact powers of two at and next to both ends) and the plain device operation just outside it
+    const float special[] = {0.f,        -0.f,         kInf,        -kInf,        kNaN,         1.f,
+                             -1.f,       4.f,          0.25f,       3.f,          1e-5f,        1e5f,
+                             0x1p80f,    0x1p79f,      0x1p-80f,    0x1p-79f,     -0x1p80f,     -0x1p-80f,
+                             1.2e24f,    8.27e-25f,    1.21e24f,    8.26e-25f,    0x1p81f,      0x1p-81f,
+                             0x1p100f,   0x1p-100f,    1e30f,       1e-30f,       -0x1p100f,    -0x1p-100f};
     for (u32 i = 0; i < sizeof(special) / sizeof(special[0]); ++i) {
         in.At(i, 0, 0) = special[i];
         in.At(i, 0, 1) = special[(i + 1) % (sizeof(special) / sizeof(special[0]))];
