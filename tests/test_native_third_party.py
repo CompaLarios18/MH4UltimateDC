@@ -81,7 +81,7 @@ def test_rows_are_well_formed_and_use_the_pinned_commit():
         assert len(cells) == 6, (path, len(cells))
         assert line.count("`") % 2 == 0, f"unbalanced backticks in the row of {path}"
         assert f"`{pinned}`" in cells[2], f"{path}: the commit is not the pinned one"
-        assert re.search(r"GPL-[23]\.0-or-later|\bMIT\b", cells[3]), f"{path}: no licence"
+        assert re.search(r"GPL-[23]\.0-or-later|\bMIT\b|\bBSD-3-Clause\b", cells[3]), f"{path}: no licence"
 
 
 def header_blocks(path: str) -> tuple[str, str]:
