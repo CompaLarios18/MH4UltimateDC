@@ -209,7 +209,7 @@ One `APT:A` request with header `0x004f0080` (`SetAppCpuTimeLimit`, function `0x
 
 Request headers (`command id << 16 | normal words << 6 | translate words`) with their counts in G1 / G2 / G3, and the result codes other than success that a reply carried in any of the three. Service names are the ones the traces give (a session of `fs:USER` that is a file or a directory is `fs:USER/file` or `fs:USER/dir`). `docs/research/service-commands.md` names the commands from the game's code; here only headers are listed.
 
-15 services in G1 to G3 (18,932, 97,068 and 187,806 requests); `ir:USER` appears only in G8 (13,449 requests).
+15 services in G1 to G3 (18,932, 97,068 and 187,806 requests); `ir:USER` appears only in G8 (13,460 requests).
 
 | service | headers | header: G1 / G2 / G3 | other result codes |
 |---|---|---|---|
