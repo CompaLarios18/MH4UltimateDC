@@ -74,6 +74,7 @@ jobs:
         env:
           MH4N_REQUIRE_TEST_DATA: "1"   # a test that needs the built ARM programs fails instead of skipping
           MH4N_REQUIRE_VULKAN: "1"      # a test that needs a Vulkan device (lavapipe here) fails instead of skipping
+          MH4N_REQUIRE_HEADLESS_SURFACE: "1"  # a test that needs VK_EXT_headless_surface fails instead of skipping (the lavapipe stack has it)
         run: ctest --test-dir build/native --output-on-failure
       # The RHI tests (N2-25; N2-26 to N2-29, N2-22, N2b-05 and N2b-06 as they arrive) again under the Khronos
       # validation layer with synchronization validation: lavapipe accepts every invalid call, so only the

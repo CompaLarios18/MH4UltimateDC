@@ -149,7 +149,8 @@ names a `VUID-`, `SYNC-HAZARD-` or `UNASSIGNED-` ID or is a `Validation Error` o
 ID (the settings were not applied), prints each ID with its count, and **fails, never skips, when the layer is not installed**:
 `apt install vulkan-validationlayers` (1.3.275 on the cloud image; `tools/native/setup_env.sh` installs it). In `native.yml`
 the `native` job installs the package, its `Test` step sets `MH4N_REQUIRE_VULKAN: "1"` (every Vulkan test of the suite fails
-instead of skipping if lavapipe disappears), and a step runs the harness over
+instead of skipping if lavapipe disappears) and `MH4N_REQUIRE_HEADLESS_SURFACE: "1"` (N2-32: the four cases that need
+`VK_EXT_headless_surface` fail instead of skipping when the loader lacks it; see the test helpers below), and a step runs the harness over
 `'^(rhi_.*|gpu_backend_.*|gpu_queue_test|present_test|swapchain_test)$'` (names that do not exist yet match nothing).
 Silence is weak evidence for hazards between draws inside one command buffer: the layer misses storage-image hazards there
 (`rhi-spike.md` 6.9, B6).
@@ -167,7 +168,7 @@ the test file with its GLSL in the comment above it (N2-29's allowlist has no sh
 | Case | What it does | Result it pins |
 |---|---|---|
 | `A2_render_then_sample_in_two_lists` | render X and move it to `SHADER_READ` in list 1, sample it into Y in list 2, two submits on one queue | X is the triangle image, Y equals X |
-| `B1`, `B2`, `B3`, `B4`, `B5` (`B<n>_shadow_*`) | zero-attachment pass (patch 01) writing an `R32_UINT` view of an `RGBA8` image (`MUTABLE_FORMAT`) with three overlapping full-screen draws that each add 1: load/store, with interlock (patch 02), compare-and-swap, both, and with a `GENERAL` barrier between the draws | every texel is 3 (0 of 256 differ). B2 and B4 need `fragmentShaderInterlock`: a device without it skips them with a message, except lavapipe under `MH4N_REQUIRE_VULKAN=1`, where it fails |
+| `B1`, `B2`, `B3`, `B4`, `B5` (`B<n>_shadow_*`) | zero-attachment pass (patch 01) writing an `R32_UINT` view of an `RGBA8` image (`MUTABLE_FORMAT`) with three overlapping full-screen draws that each add 1: load/store, with interlock (patch 02), compare-and-swap, both, and with a `GENERAL` barrier between the draws | B2 to B5: every texel is 3 (0 of 256 differ). B1 (N2-32): no interlock and no barrier, so the order of the three read-modify-writes is the device's: the case asserts what the shader guarantees (every texel holds 1 to 3: the pass ran and wrote every texel) and logs how many hold 3 (all 256 on lavapipe, whose execution is serial). B2 and B4 need `fragmentShaderInterlock`: a device without it skips them with a message, except lavapipe under `MH4N_REQUIRE_VULKAN=1`, where it fails |
 | `B8_colour_attachment_in_general_layout` | draw into a colour attachment that stays in `GENERAL` (patch 04) | the triangle image |
 | `C1_binary_semaphore_graphics_barrier`, `C2_binary_semaphore_none_barrier_per_wait_stage` | producer on queue 1 ends with a `GRAPHICS` / `NONE` barrier and signals a binary semaphore; the consumer on queue 2 waits for it with the stage `GRAPHICS` (patch 03) | the triangle image; unpatched, C2 gave `SYNC-HAZARD-READ-AFTER-WRITE` |
 | `C4_timeline_semaphore_with_stage` | the same with a timeline semaphore (patch 05), producer ends `NONE`, the wait at `GRAPHICS` | the triangle image; the semaphore's counter is 1 |
@@ -301,7 +302,16 @@ resources that do not defer their own destruction, the limit of a failed `vkQueu
   build; it is exported as the public compile definition `MH4N_RHI_CHECKS=1` or `0` of `mh4n_gpu_backend_core`, so the modules that link it put their owner-rule
   checks under the same switch. With it off the two owner-rule test cases skip themselves with a message.
 - **Test helpers** (`native/tests/support/vulkan_device.h`): `RequireInstance`, `RequireBackend` and `MakeHeadlessSurface` skip the test with a message when there is
-  no loader, device or headless-surface extension, and fail instead under `MH4N_REQUIRE_VULKAN=1`. When the validation layer is enabled (`VK_INSTANCE_LAYERS`, or
+  no loader or device, and fail instead under `MH4N_REQUIRE_VULKAN=1`, which means only "a Vulkan device must exist" (N2-32). The headless-surface cases
+  (`device/headless_surface` in `gpu_backend_core_test` and `rhi_plume_test`, `instance/the_headless_surface_and_the_debug_messenger_come_when_asked`,
+  `presentation/with_a_headless_surface_agrees_with_the_probe`) skip with a message when the loader lacks `VK_EXT_headless_surface` (`MakeHeadlessSurface` and
+  `SkipOrFailHeadless`; `rhi_plume_test` has its own copy of the check) and fail for that reason only under `MH4N_REQUIRE_HEADLESS_SURFACE=1`, which the `native` job
+  of `native.yml` sets beside `MH4N_REQUIRE_VULKAN` (on the lavapipe stack the extension is there, and its absence means the setup broke). doctest 2.4.11 cannot
+  mark a case skipped at run time, so every run-time skip (no device, no headless surface, a capability or format the device lacks, such as the two D24S8 cases)
+  goes through `SkipCase` in the same header, which records `{test case, why}`; a doctest listener (`REGISTER_LISTENER` in the header, which the three plume-level
+  binaries include too) prints at the end of the run `skipped at run time: N` and one line `  <test case>: <why>` per entry, and `skipped by decorator: <case>`
+  for each case registered with `doctest::skip`. A case that has nothing to assert on this device is listed under "skipped at run time" in the run's output;
+  doctest's own summary still counts it as passed. On lavapipe the block prints `skipped at run time: 0`. When the validation layer is enabled (`VK_INSTANCE_LAYERS`, or
   `MH4N_RHI_VALIDATION=1` for a run without the harness) they install a `VK_EXT_debug_utils` messenger that fails the running test on any warning or error message.
   The loading test runs a child process of the test binary with `VK_DRIVER_FILES` pointing at an empty folder (the case `loading/child` is the child's body and
   skips by itself).
@@ -321,6 +331,21 @@ resources that do not defer their own destruction, the limit of a failed `vkQueu
 The Windows llvm-mingw build, the macOS build, the three CI jobs and the `native-tsan` job on GitHub are `pending (ci)`; the patterns on the RX 6700 XT, MoltenVK and a second queue are the PC's legs (`rhi-spike.md` 9.2) and were not run: the macOS branch of `plume_vulkan.cpp` (`VK_KHR_portability_enumeration`, the portability-subset features, `triangleFan` forced false) and the Windows branch (`NOMINMAX`) were not compiled here.
 
 ## On the RX 6700 XT (N2-31)
+
+**This section is the run before N2-32** (base `6c8f6cd`): its counts and its five failures are of the tests as they were. N2-32 changed the tests (below) and the
+new run is `pending (pc)`; no count after N2-32 has been measured. What the section says about the device, the masks and the probe still stands.
+
+**After N2-32 (to be measured on the PC, not seen yet).** The command, for each of `gpu_backend_core_test`, `rhi_plume_test` and `rhi_plume_patterns_test`:
+`MH4N_REQUIRE_VULKAN=1 MH4N_VULKAN_DEVICE="RX 6700" <binary>` (without `MH4N_REQUIRE_HEADLESS_SURFACE`). Expected, from reading the code and not from a run: 0 failed
+in all three, and `B1_shadow_store_no_interlock` passes and logs how many texels hold 3 (the run before N2-32 gave 0 of 256). Each run prints the block
+`skipped at run time: <n>` with one line `  <test case>: <why>` per case just before doctest's three summary lines (see the helpers paragraph); that block is what says
+what ran. Expected in it: `patch10/dynamic_stencil_state_d24s8` and `patch11/depth_stencil_copy_as_two_regions` (the RX 6700 XT has no D24S8 attachment; the D32S8
+half of patch11 still ran), and the headless-surface cases only if the Windows loader still lacks `VK_EXT_headless_surface` (N2-31 saw it lacking: 4 cases,
+`device/headless_surface` in two binaries, `instance/the_headless_surface_and_the_debug_messenger_come_when_asked` and
+`presentation/with_a_headless_surface_agrees_with_the_probe`). Also printed: `skipped by decorator: <case>` for `loading/child`, the controls (`control/C5`,
+`control/B7`, `control/B6`, `control/D4`, `control/D2`) and, on a host that is not Linux, `loading/no_driver_gives_an_error_with_a_message_and_the_process_goes_on`
+(registered with `doctest::skip` there). doctest's own summary counts a run-time skip as passed. The doctest counts on lavapipe are core 49 passed and 1 skipped, plume
+8 and 1, patterns 23 and 4 (seen); the PC's counts are to be measured (the no-driver case is doctest-skipped on Windows, so core runs one case fewer there).
 
 Run on the maintainer's PC on 2026-10-24, base `6c8f6cd`, no source changed. Build: llvm-mingw 20241217 (`x86_64-w64-mingw32-clang`), Ninja,
 `RelWithDebInfo`, `MH4N_WERROR=ON`, the targets `gpu_backend_core_test`, `rhi_plume_test`, `rhi_plume_patterns_test` and `mh4n_vkprobe_tool`
