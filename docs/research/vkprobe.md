@@ -86,7 +86,13 @@ Makes the GPU backend (`native/src/gpu/backend/rhi.h`) with no surface, as the r
 cmd /c ".\mh4n_vkprobe.exe --rhi > rhi-pc.txt"
 ```
 
-Expected line: `rhi present_wait: false` (as `mh4n_vkprobe.exe` prints `VK_KHR_present_wait: no` for the device; no surface also makes `rhi present_wait_available: false`). Send back `rhi-pc.txt` whole, and the `VK_KHR_present_wait` line of the plain run. A `rhi present_wait: true` stops there: it goes to D57, not on with N2b-24.
+Then, for the plain probe's answer in the same folder:
+
+```
+cmd /c ".\mh4n_vkprobe.exe > vkprobe-pc.txt"
+```
+
+Expected lines: `rhi present_wait: false` in `rhi-pc.txt`, and in `vkprobe-pc.txt` the line that starts `VK_KHR_present_wait (presentWait)` and reads `no (fallback: estimate when a frame is shown from the present call (not measured))` (a `yes` there is a different answer from the one D57 expects). With no surface, `rhi present_wait_available: false` as well. The backend's own `[Info] RHI:` log lines go to stderr (the console), not into `rhi-pc.txt`: the file holds only the `rhi ...` lines, which is the whole report. Send back `rhi-pc.txt` whole and the `VK_KHR_present_wait` line of `vkprobe-pc.txt`. A `rhi present_wait: true` stops there: it goes to D57, not on with N2b-24.
 
 ## `--from-json`
 

@@ -7,18 +7,19 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstdio>
 #include <cstdlib>
-#include <map>
-#include <memory>
 #include <filesystem>
 #include <fstream>
+#include <map>
+#include <memory>
 #include <sstream>
 #include <string>
 #include <vector>
 
+#include "gpu/backend/rhi.h"
 #include "vkprobe/json.h"
 #include "vkprobe/live.h"
-#include "gpu/backend/rhi.h"
 #include "vkprobe/report.h"
 #include "vkprobe/rhi_report.h"
 #include "vkprobe/tool.h"
@@ -737,36 +738,136 @@ std::map<std::string, std::string> RhiLines(const std::string& text) {
 
 std::string B(bool v) { return v ? "true" : "false"; }
 
+std::string G(float v) {
+    char buf[32];
+    std::snprintf(buf, sizeof(buf), "%g", static_cast<double>(v));
+    return buf;
+}
+
+// What the report must print for `caps`, written out member by member. The structured binding names ALL
+// members of Capabilities, in declaration order: a member added to the structure is a compile error here, so
+// whoever adds one must add it to the report (rhi_report.cpp) and to this list.
+std::vector<std::pair<std::string, std::string>> ExpectedFields(const rhi::Capabilities& caps) {
+    const auto& [d24s8, interlock, index_uint8, custom_border_color, triangle_fans, logic_op, dynamic_rendering,
+                 pipeline_library, eds3_blend, bc7, timeline, present_wait, direct_upload, geometry_shader,
+                 stride_alignment, apple, primitive_restart_always_on, portability_subset, driver_id, driver_name,
+                 device_name, api_version, timestamp_period, max_texel_buffer_elements,
+                 uniform_buffer_offset_alignment, storage_buffer_offset_alignment, max_uniform_buffer_range,
+                 max_storage_buffer_range, vendor_id, device_index, masked] = caps;
+    const std::string masked_text = masked.ToString();
+    return {
+        {"d24s8", B(d24s8)},
+        {"interlock", B(interlock)},
+        {"index_uint8", B(index_uint8)},
+        {"custom_border_color", B(custom_border_color)},
+        {"triangle_fans", B(triangle_fans)},
+        {"logic_op", B(logic_op)},
+        {"dynamic_rendering", B(dynamic_rendering)},
+        {"pipeline_library", B(pipeline_library)},
+        {"eds3_blend", B(eds3_blend)},
+        {"bc7", B(bc7)},
+        {"timeline", B(timeline)},
+        {"present_wait", B(present_wait)},
+        {"direct_upload", B(direct_upload)},
+        {"geometry_shader", B(geometry_shader)},
+        {"stride_alignment", std::to_string(stride_alignment)},
+        {"apple", B(apple)},
+        {"primitive_restart_always_on", B(primitive_restart_always_on)},
+        {"portability_subset", B(portability_subset)},
+        {"driver_id", std::to_string(driver_id)},
+        {"driver_name", driver_name},
+        {"device_name", device_name},
+        {"api_version", std::to_string(api_version)},
+        {"timestamp_period", G(timestamp_period)},
+        {"max_texel_buffer_elements", std::to_string(max_texel_buffer_elements)},
+        {"uniform_buffer_offset_alignment", std::to_string(uniform_buffer_offset_alignment)},
+        {"storage_buffer_offset_alignment", std::to_string(storage_buffer_offset_alignment)},
+        {"max_uniform_buffer_range", std::to_string(max_uniform_buffer_range)},
+        {"max_storage_buffer_range", std::to_string(max_storage_buffer_range)},
+        {"vendor_id", std::to_string(vendor_id)},
+        {"device_index", std::to_string(device_index)},
+        {"masked", masked_text.empty() ? "none" : masked_text},
+    };
+}
+
 }  // namespace
 
 TEST_CASE("--rhi: the field list is every Capabilities field, in order, and prints what it holds") {
-    rhi::Capabilities caps;  // synthetic: every field set to something recognisable
-    caps.d24s8 = caps.bc7 = caps.present_wait = true;
-    caps.stride_alignment = 4;
-    caps.driver_id = 7;
-    caps.driver_name = "synthetic driver";
-    caps.device_name = "Synthetic RHI";
-    caps.api_version = 4206808;
-    caps.timestamp_period = 2.5f;
-    caps.max_uniform_buffer_range = 65536;
-    caps.masked = rhi::CapabilityMask{}.With(rhi::Cap::Interlock).With(rhi::Cap::Bc7);
-    const std::vector<RhiField> fields = RhiFields(caps);
-    // the 13 bits (Cap order) and 18 values of Capabilities
-    CHECK(fields.size() == rhi::kCapCount + 18);
+    // Two synthetic structures. The 13 bits of the first follow an irregular pattern, the second holds the
+    // complement, so a report that swaps or copies two bits shows in at least one of the two. The values are
+    // all different from each other (and between the two) for the same reason.
+    constexpr uint32_t kPattern = 0b1011001101010;
+    rhi::Capabilities a;
+    rhi::Capabilities b;
+    bool* bits_a[] = {&a.d24s8, &a.interlock, &a.index_uint8, &a.custom_border_color, &a.triangle_fans,
+                      &a.logic_op, &a.dynamic_rendering, &a.pipeline_library, &a.eds3_blend, &a.bc7, &a.timeline,
+                      &a.present_wait, &a.direct_upload};
+    bool* bits_b[] = {&b.d24s8, &b.interlock, &b.index_uint8, &b.custom_border_color, &b.triangle_fans,
+                      &b.logic_op, &b.dynamic_rendering, &b.pipeline_library, &b.eds3_blend, &b.bc7, &b.timeline,
+                      &b.present_wait, &b.direct_upload};
+    static_assert(sizeof(bits_a) / sizeof(bits_a[0]) == rhi::kCapCount);
     for (uint32_t i = 0; i < rhi::kCapCount; ++i) {
-        CHECK(fields[i].name == rhi::CapName(static_cast<rhi::Cap>(i)));
-        CHECK(fields[i].value == B(caps.Has(static_cast<rhi::Cap>(i))));
+        *bits_a[i] = ((kPattern >> i) & 1u) != 0;
+        *bits_b[i] = !*bits_a[i];
     }
-    std::map<std::string, std::string> by_name;
-    for (const RhiField& f : fields) {
-        CHECK(by_name.emplace(f.name, f.value).second);  // no name twice
+    a.geometry_shader = true;
+    a.stride_alignment = 4;
+    a.apple = true;
+    a.primitive_restart_always_on = false;
+    a.portability_subset = true;
+    a.driver_id = 7;
+    a.driver_name = "synthetic driver";
+    a.device_name = "Synthetic RHI";
+    a.api_version = 4206808;
+    a.timestamp_period = 2.5f;
+    a.max_texel_buffer_elements = 134217;
+    a.uniform_buffer_offset_alignment = 64;
+    a.storage_buffer_offset_alignment = 32;
+    a.max_uniform_buffer_range = 65536;
+    a.max_storage_buffer_range = 1048576;
+    a.vendor_id = 4318;
+    a.device_index = 2;
+    a.masked = rhi::CapabilityMask{}.With(rhi::Cap::Interlock).With(rhi::Cap::Bc7);
+
+    b.geometry_shader = false;
+    b.stride_alignment = 16;
+    b.apple = false;
+    b.primitive_restart_always_on = true;
+    b.portability_subset = false;
+    b.driver_id = 19;
+    b.driver_name = "other driver";
+    b.device_name = "Other RHI";
+    b.api_version = 4194304;
+    b.timestamp_period = 0.125f;
+    b.max_texel_buffer_elements = 16384;
+    b.uniform_buffer_offset_alignment = 256;
+    b.storage_buffer_offset_alignment = 128;
+    b.max_uniform_buffer_range = 16384;
+    b.max_storage_buffer_range = 2097152;
+    b.vendor_id = 4098;
+    b.device_index = 5;
+    // b.masked stays empty
+
+    for (const rhi::Capabilities* caps : {&a, &b}) {
+        const auto expected = ExpectedFields(*caps);
+        const std::vector<RhiField> fields = RhiFields(*caps);
+        REQUIRE(fields.size() == expected.size());
+        for (size_t i = 0; i < expected.size(); ++i) {  // same names, same order, same values
+            CHECK_MESSAGE(fields[i].name == expected[i].first, "field " << i);
+            CHECK_MESSAGE(fields[i].value == expected[i].second, expected[i].first);
+        }
+        // the first 13 are the bits, named as the mask names them
+        for (uint32_t i = 0; i < rhi::kCapCount; ++i) {
+            CHECK(fields[i].name == rhi::CapName(static_cast<rhi::Cap>(i)));
+            CHECK(fields[i].value == B(caps->Has(static_cast<rhi::Cap>(i))));
+        }
+        std::map<std::string, std::string> by_name;
+        for (const RhiField& f : fields) {
+            CHECK(by_name.emplace(f.name, f.value).second);  // no name twice
+        }
     }
-    CHECK(by_name["stride_alignment"] == "4");
-    CHECK(by_name["driver_name"] == "synthetic driver");
-    CHECK(by_name["timestamp_period"] == "2.5");
-    CHECK(by_name["max_uniform_buffer_range"] == "65536");
-    CHECK(by_name["masked"] == "interlock,bc7");
-    CHECK(RhiFields(rhi::Capabilities{}).back().value == "none");
+    CHECK(RhiFields(a)[0].value != RhiFields(b)[0].value);  // the two runs really differ
+    CHECK(RhiFields(b).back().value == "none");
 }
 
 TEST_CASE("--rhi: the report prints every Capabilities field, each equal to Caps()") {
@@ -778,35 +879,14 @@ TEST_CASE("--rhi: the report prints every Capabilities field, each equal to Caps
     const rhi::Capabilities& caps = backend->Caps();
     auto lines = RhiLines(RenderRhiReport(*backend));
     // every field of Capabilities, checked against the structure itself (not against RhiFields)
-    const std::vector<std::pair<std::string, std::string>> expected = {
-        {"d24s8", B(caps.d24s8)}, {"interlock", B(caps.interlock)}, {"index_uint8", B(caps.index_uint8)},
-        {"custom_border_color", B(caps.custom_border_color)}, {"triangle_fans", B(caps.triangle_fans)},
-        {"logic_op", B(caps.logic_op)}, {"dynamic_rendering", B(caps.dynamic_rendering)},
-        {"pipeline_library", B(caps.pipeline_library)}, {"eds3_blend", B(caps.eds3_blend)}, {"bc7", B(caps.bc7)},
-        {"timeline", B(caps.timeline)}, {"present_wait", B(caps.present_wait)},
-        {"direct_upload", B(caps.direct_upload)}, {"geometry_shader", B(caps.geometry_shader)},
-        {"stride_alignment", std::to_string(caps.stride_alignment)}, {"apple", B(caps.apple)},
-        {"primitive_restart_always_on", B(caps.primitive_restart_always_on)},
-        {"portability_subset", B(caps.portability_subset)}, {"driver_id", std::to_string(caps.driver_id)},
-        {"driver_name", caps.driver_name}, {"device_name", caps.device_name},
-        {"api_version", std::to_string(caps.api_version)},
-        {"max_texel_buffer_elements", std::to_string(caps.max_texel_buffer_elements)},
-        {"uniform_buffer_offset_alignment", std::to_string(caps.uniform_buffer_offset_alignment)},
-        {"storage_buffer_offset_alignment", std::to_string(caps.storage_buffer_offset_alignment)},
-        {"max_uniform_buffer_range", std::to_string(caps.max_uniform_buffer_range)},
-        {"max_storage_buffer_range", std::to_string(caps.max_storage_buffer_range)},
-        {"vendor_id", std::to_string(caps.vendor_id)}, {"device_index", std::to_string(caps.device_index)},
-        {"masked", "none"},
-    };
+    const auto expected = ExpectedFields(caps);
+    REQUIRE(expected.size() == rhi::kCapCount + 18);
     for (const auto& [name, value] : expected) {
         const auto it = lines.find(name);
         REQUIRE_MESSAGE(it != lines.end(), "no line for " << name);
         CHECK_MESSAGE(it->second == value, name);
     }
     CHECK(caps.masked.bits == 0);
-    // timestamp_period: a number that reads back to the float
-    REQUIRE(lines.count("timestamp_period") == 1);
-    CHECK(std::strtof(lines["timestamp_period"].c_str(), nullptr) == doctest::Approx(caps.timestamp_period));
     // the present-wait answer of the backend itself (no surface here, so false)
     CHECK(lines["present_wait_available"] == B(backend->PresentWaitAvailable()));
     CHECK(lines["surface"] == "false");
