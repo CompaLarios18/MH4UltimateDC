@@ -1,0 +1,4 @@
+# <array name> <file> [glslang options]
+readback_color_comp readback.comp -DKIND=0
+readback_depth_comp readback.comp -DKIND=1
+readback_depth_stencil_comp readback.comp -DKIND=2
