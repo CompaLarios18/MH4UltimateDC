@@ -337,16 +337,15 @@ new run is `pending (pc)`; no count after N2-32 has been measured. What the sect
 
 **After N2-32 (to be measured on the PC, not seen yet).** The command, for each of `gpu_backend_core_test`, `rhi_plume_test` and `rhi_plume_patterns_test`:
 `MH4N_REQUIRE_VULKAN=1 MH4N_VULKAN_DEVICE="RX 6700" <binary>` (without `MH4N_REQUIRE_HEADLESS_SURFACE`). Expected, from reading the code and not from a run: 0 failed
-in all three, and `B1_shadow_store_no_interlock` passes and logs how many texels hold 3 (the run before N2-32 gave 0 of 256). Each run ends with the block
-`skipped at run time: <n>` and one line `  <test case>: <why>` per case (see the helpers paragraph); that block is what says what ran. Expected in it: both
-`patch10/dynamic_stencil_state_d24s8` and `patch11/depth_stencil_copy_as_two_regions` (the RX 6700 XT has no D24S8 attachment; the D32S8 half of patch11 still ran),
-and the headless-surface cases only if the Windows loader still lacks `VK_EXT_headless_surface` (N2-31 saw it lacking: 4 cases, `device/headless_surface` in two
-binaries, `instance/the_headless_surface_and_the_debug_messenger_come_when_asked` and `presentation/with_a_headless_surface_agrees_with_the_probe`). Also printed:
-`skipped by decorator: <case>` for `loading/child`, the controls (`control/C5`, `control/B7`, `control/B6`, `control/D4`, `control/D2`) and, on a host that is not
-Linux, `loading/no_driver_gives_an_error_with_a_message_and_the_process_goes_on` (N2-32 registers it with `doctest::skip` there). doctest's own summary is unchanged
-and still counts a run-time skip as passed: a case that has nothing to assert on this device is listed under "skipped at run time" in the run's output; doctest's own
-summary still counts it as passed. So the expected doctest lines are 0 failed with passed counts equal to the cases run (core 49, plume 8, patterns 23) and the
-doctest-skipped counts as before (core 1, plume 1, patterns 4; core 2 on Windows); these are to be replaced by what the PC sees.
+in all three, and `B1_shadow_store_no_interlock` passes and logs how many texels hold 3 (the run before N2-32 gave 0 of 256). Each run prints the block
+`skipped at run time: <n>` with one line `  <test case>: <why>` per case just before doctest's three summary lines (see the helpers paragraph); that block is what says
+what ran. Expected in it: `patch10/dynamic_stencil_state_d24s8` and `patch11/depth_stencil_copy_as_two_regions` (the RX 6700 XT has no D24S8 attachment; the D32S8
+half of patch11 still ran), and the headless-surface cases only if the Windows loader still lacks `VK_EXT_headless_surface` (N2-31 saw it lacking: 4 cases,
+`device/headless_surface` in two binaries, `instance/the_headless_surface_and_the_debug_messenger_come_when_asked` and
+`presentation/with_a_headless_surface_agrees_with_the_probe`). Also printed: `skipped by decorator: <case>` for `loading/child`, the controls (`control/C5`,
+`control/B7`, `control/B6`, `control/D4`, `control/D2`) and, on a host that is not Linux, `loading/no_driver_gives_an_error_with_a_message_and_the_process_goes_on`
+(registered with `doctest::skip` there). doctest's own summary counts a run-time skip as passed. The doctest counts on lavapipe are core 49 passed and 1 skipped, plume
+8 and 1, patterns 23 and 4 (seen); the PC's counts are to be measured (the no-driver case is doctest-skipped on Windows, so core runs one case fewer there).
 
 Run on the maintainer's PC on 2026-10-24, base `6c8f6cd`, no source changed. Build: llvm-mingw 20241217 (`x86_64-w64-mingw32-clang`), Ninja,
 `RelWithDebInfo`, `MH4N_WERROR=ON`, the targets `gpu_backend_core_test`, `rhi_plume_test`, `rhi_plume_patterns_test` and `mh4n_vkprobe_tool`

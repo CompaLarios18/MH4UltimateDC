@@ -13,7 +13,7 @@
 // at run time: doctest 2.4.11 has no such call, and its own summary counts the case as passed. So every run-time skip goes through
 // SkipCase / SkipOrFail / SkipOrFailHeadless, which records {test case, why}, and a doctest listener registered by this header prints,
 // at the end of the run, "skipped at run time: N" and one line "  <test case>: <why>" per entry (N = 0 prints one line), and a line
-// "skipped by decorator: <test case>" for every case registered with doctest::skip. Read that block to know what ran: doctest's own
+// "skipped by decorator: <test case>" for every case registered with doctest::skip (doctest also calls the listener for a decorated case that a --test-case filter excluded, so such a case is printed too). Read that block to know what ran: doctest's own
 // summary still counts a run-time skip as passed.
 //
 // The three plume test binaries include this header too (for the listener and SkipCase).
@@ -98,7 +98,7 @@ public:
     void log_assert(const doctest::AssertData&) override {}
     void log_message(const doctest::MessageData&) override {}
     void test_case_skipped(const doctest::TestCaseData& data) override {
-        if (data.m_skip) {  // not the cases a --test-case filter left out
+        if (data.m_skip) {  // a decorated case; also printed when a --test-case filter excluded it
             std::printf("skipped by decorator: %s\n", data.m_name);
             std::fflush(stdout);
         }

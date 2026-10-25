@@ -832,15 +832,14 @@ TEST_CASE("instance/the_headless_surface_and_the_debug_messenger_come_when_asked
     if (test::VulkanRequired()) {
         CHECK(Has(names, "VK_EXT_debug_utils"));
     }
-    CHECK((Has(names, "VK_EXT_headless_surface") == Has(names, "VK_KHR_surface")));
     if (!Has(names, "VK_EXT_headless_surface")) {
-        // a real GPU's stack may not list it: skip with a message; fails only under MH4N_REQUIRE_HEADLESS_SURFACE=1
+        // a real GPU's stack may not list it (and may list VK_KHR_surface without it): skip with a message; fails only under
+        // MH4N_REQUIRE_HEADLESS_SURFACE=1
         test::SkipOrFailHeadless("the Vulkan loader lacks VK_EXT_headless_surface");
         return;
     }
-    if (test::VulkanRequired()) {
-        CHECK(Has(names, "VK_KHR_surface"));
-    }
+    // the headless surface is there: the surface extension it needs came with it (the old equality, in the direction that matters)
+    CHECK(Has(names, "VK_KHR_surface"));
 }
 
 TEST_CASE("instance/an_extension_the_loader_lacks_fails_with_its_name") {
@@ -1871,8 +1870,8 @@ TEST_CASE("loading/child" * doctest::skip()) {
 }
 
 // The subprocess check is written for Linux only (/proc/self/exe, `env -u`, a shell redirect). Elsewhere (Windows, macOS) the case is
-// registered as skipped (doctest::skip, which a run's summary counts as skipped, not passed): nothing here builds for Windows, so no
-// untested Windows variant is written. `--no-skip` runs it anyway and then it only prints the message of the #else branch.
+// registered as skipped (doctest::skip, which a run's summary counts as skipped, not passed): no Windows variant is written, to avoid
+// an untested one. `--no-skip` runs it anyway and then it only prints the message of the #else branch.
 #if defined(__linux__)
 constexpr bool kNoDriverCheckSkipped = false;
 #else
