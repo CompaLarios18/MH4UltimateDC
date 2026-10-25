@@ -412,9 +412,11 @@ Checked with `MH4N_RHI_CHECKS` (the core's switch), through the owner-rule handl
 |---|---|---|
 | 1. one owning thread, the one that made the image, records on it | `targets::Acquire`, called by every operation, by `BeginTargetPass`, `FeedbackCopy`, `PrepareForPresent` and by the binding setters of the owning thread | `ForeignThread` |
 | 1. another thread samples an image only while it is not an attachment of an open pass, and when its owner has settled it in `GENERAL` | `PrepareUse` in `SetSampledImage` and `SetStorageImage` (the wait on the producing value is not checked: the layer's synchronization validation sees a missing one on one queue, 6.9 C2) | `ForeignThread` |
-| 2. `HandOver(image, thread, wait)` by the owner; an attachment of an open pass and any depth-stencil target cannot be handed over | `HandOver` (images.cpp) | `HandOver` (and the hand-over does not happen); `ForeignThread` when the caller does not own the image |
+| 2. `HandOver(image, thread, wait)` by the owner; an attachment of an open pass and any depth-stencil target cannot be handed over | `HandOver` (images.cpp) | `HandOver` (and the hand-over does not happen); `ForeignThread` when the caller does not own the image (case `owner_rule/a_hand_over_by_a_thread_that_does_not_own_the_image_is_a_breach_and_does_nothing`) |
 | 2. the receiver's first record or sample takes the image over and adds `wait` to its recorder's `required_waits` | `targets::Acquire` | `RequiredWait`, from core's submit path, when the submission does not carry a wait of that stage and at least that value |
 | 3. recorders are submitted in the order they were begun, one open recorder per thread | core (`SubmitRecorder`, `MakeRecorder`) | `SubmissionOrder`, `OneOpenRecorder` |
+
+**The feedback twin follows its target.** `HandOver` of a target that has a twin hands the twin over too, to the same thread with the same `Wait`: the receiver's `FeedbackCopy` takes over the target and the twin (so the twin is not a `ForeignThread` breach), and its recorder carries the hand-over's wait once (it is the same entry for both). A twin made after the hand-over is made by the receiver, which owns it.
 
 **How a hand-over is expressed.** The sender (the owner, after the submission that produced the image returned `v`) calls
 `HandOver(image, receiver_thread_id, Wait{v, stage})` with the stage that will read the image in the receiver's first submission
@@ -492,7 +494,7 @@ changed for it.
 The swapchain frames are one case of their own, `swapchain/frames_over_a_headless_surface_more_than_it_has_images`; it uses `MakeHeadlessSurface`
 unchanged, which fails the test under `MH4N_REQUIRE_VULKAN=1` and skips otherwise on a loader without the headless extension. There is
 no Windows or window-system branch in the test. **On the RX 6700 XT that case cannot run** (its surface needs a real window); the
-other 26 cases of the file need no surface and are the PC's leg of this package (formats and the chooser with `d24s8` masked, which is the PC's
+other 34 cases of the file need no surface and are the PC's leg of this package (formats and the chooser with `d24s8` masked, which is the PC's
 path, images, passes, layouts, the owner rule, bindings), alongside `external/a_wrapped_image_is_cleared_copied_and_not_destroyed_with_its_wrapper`
 (a `VkImage` the test made, no surface).
 
@@ -508,21 +510,21 @@ comment from the formats. A case skips with a message without a Vulkan device an
 | `formats/the_chooser_follows_the_support_table_on_devices_this_machine_is_not` | every rule of `ChooseFormatWith` on synthetic tables (MoltenVK, swapped orders only, none, texture-only, D24S8 off, BC off) |
 | `formats/the_chooser_at_the_device_and_under_the_masks` | `ChooseFormat` on the device; `d24s8` masked takes `D32S8`, `bc7` masked says decode on the CPU |
 | `images/each_colour_format_cleared_and_copied_to_a_buffer`, `.../each_depth_format_cleared_and_copied_as_two_regions` | RGBA8, RGB8 as RGBA8, RGB5A1, RGB565, RGBA4 (the words of the stored order: `0xAD4A` or `0x5555`, `0x9A8B`/`0x2AA7`/`0xCD45`, `0xA5CF`/`0xC5AF`) and D16, D24S8, D24S8 masked to D32S8 (depth `0xFFFFFF`/`0x3F800000`/`0xFFFF` and stencil `0xAB`, then 0 and `0x3C`) |
-| `images/an_upload_goes_through_a_staging_buffer_with_direct_upload_on_or_masked` | the staging count (one per upload) and the same image with the bit on and masked off |
+| `images/an_upload_goes_through_a_staging_buffer_with_direct_upload_on_or_masked` | the staging count (one per upload) and the same bytes with the bit on and masked off: it pins that no direct path exists yet |
 | `images/storage_usage_only_on_shadow_sources`, `images/copies_blits_and_mip_generation_within_one_image` | the recorded creation flags; copies within one image, nearest and linear blits, mip generation |
 | `passes/...` | render then sample in one recorder and in two (6.9 A1, A2); the pass kept open (counted at `vkCmdBeginRenderPass` through volk) and ended by a copy; the render area; the feedback copy (a draw samples the previous contents: `(255, 102, 0, 255)`), every mip; blended (`(51, 0, 204, 51)`) and depth-tested draws on D24S8 and on the masked D32S8 |
 | `layouts/...` | the exact `(old, new)` layouts of the image barriers (read from `vkCmdPipelineBarrier` through volk) for a clear and a copy, for a pass, for a pass left open at `Submit`, and for a dropped recorder |
 | `shadow/imageStore_into_the_r32_uint_view_with_the_interlock_shader_and_without_it` | three overlapping draws in a pass with no attachments: every texel 3, with the interlock shader and (under the `interlock` bit masked in the case's own backend) the compare-and-swap shader |
 | `samplers/...`, `bindings/...` | the custom border colour returned out of range `(51, 102, 153, 204)` and refused with the bit off; a texel buffer; 1,000 frames with a fresh texture binding each (the `vkAllocateDescriptorSets` count after frame 10 equals the count after frame 1,000, at most 5) and each draw's uniform offset reaching its shader |
-| `owner_rule/...`, `threads/...` | the foreign-thread copy, the two refused hand-overs, the receiver with and without the wait; two threads each rendering into their own images |
-| `external/...`, `swapchain/...` | a wrapped `VkImage` cleared, copied, not destroyed by its wrapper; three headless-swapchain frames acquired, wrapped, cleared, `PrepareForPresent`ed and presented under `QueueLock` |
+| `owner_rule/...`, `threads/...` | the foreign-thread copy, the two refused hand-overs, a hand-over by a non-owner, the receiver with and without the wait, the feedback twin following its target; two threads each rendering into their own images |
+| `external/...`, `swapchain/...` | a wrapped `VkImage` cleared, copied, not destroyed by its wrapper; six headless-swapchain frames (more than the swapchain has images, so the held `PRESENT` is read as `UNDEFINED` on every reused image) acquired, wrapped, cleared, `PrepareForPresent`ed and presented under `QueueLock` |
 
 The masks to run it under (the cases that build their own masked backend run that leg whatever the environment says):
 `MH4N_RHI_MASK=<name>` for each of `d24s8 interlock index_uint8 custom_border_color triangle_fans logic_op dynamic_rendering
 pipeline_library eds3_blend bc7 timeline present_wait direct_upload`, and `all` (`MH4N_RHI_MASK=d24s8,bc7 ctest ... -R '^gpu_backend_targets_test$'`).
-With `MH4N_RHI_CHECKS` off the three owner-rule cases skip themselves with a message.
+With `MH4N_RHI_CHECKS` off the owner-rule cases skip themselves with a message.
 
-**Run here** (clang 18, lavapipe/llvmpipe, validation layer 1.3.275): `MH4N_REQUIRE_VULKAN=1 ctest --test-dir build/native -R '^gpu_backend_targets_test$'` passes (27 cases, 7,799 assertions, about a second; the log names the
+**Run here** (clang 18, lavapipe/llvmpipe, validation layer 1.3.275): `MH4N_REQUIRE_VULKAN=1 ctest --test-dir build/native -R '^gpu_backend_targets_test$'` passes (35 cases, 8,046 assertions, about a second; the log names the
 llvmpipe device); the whole binary passes under each of the 13 `MH4N_RHI_MASK` names and under `all`; `python3 tools/native/vk_layer_run.py --build
 build/native -R '^gpu_backend_targets_test$'` reports no layer message, the swapchain frames included (the first run of it found
 two defects of ours, a reused readback buffer's write-after-write and `PrepareForPresent` on a device without a swapchain, and
@@ -531,7 +533,7 @@ targets only) ran this test three times and `gpu_backend_core_test` once with `h
 report. Mutants tried (one rule broken at a time, the test seen to fail, the rule restored): the foreign-thread breach removed
 (2 cases fail), the hand-over wait not added to the recorder (1), `CopyImageToBuffer` not returning the image to `GENERAL` (the layout case),
 a pass end that does not move the depth image back (the layout case), the arena never reusing a set (the 1,000-frame case) and the
-feedback copy not copying (2 cases). `native-tsan` on GitHub is *(CI)*, `pending`.
+feedback copy not copying (2 cases); after review: the preferred order of `Rgba4` and of `Rgb5A1` swapped, a linear blit made nearest, the integer clear branch removed, the arena handing out a set still pending for the recorder, the stencil view made with the depth aspect, `HandOver` by a non-owner not checked, `Acquire` of the twin removed from `FeedbackCopy` (and `HandOver` not handing the twin over), the clear of a kept-open pass removed, and the layer-count test loosened: each fails a case. `native-tsan` on GitHub is *(CI)*, `pending`.
 
 **`unverified` / pending, not claimed:** the RX 6700 XT (no D24S8, a real-window surface, its format query and descriptor
 alignment), MoltenVK and KosmicKrisp (the R-first-only 16-bit formats, the depth layout), a second queue family (a hand-over across
