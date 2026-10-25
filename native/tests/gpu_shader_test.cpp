@@ -2351,6 +2351,197 @@ TEST_CASE("known difference: a loop whose body ends with an if/else does not ite
     CHECK_FALSE(o.shader->differs_from_interpreter);
 }
 
+namespace {
+
+// One shape of the family in which the interpreter and the structured readings disagree: the program, and
+// what each side must compute for o0.x from the two bools (worked out from the interpreter's code and from the
+// structure; the constants are c1 = 1, c2 = 10, c3 = 100, c4 = 1000).
+struct Shape {
+    const char* name;
+    Asm program;
+    float (*structured)(bool b0, bool b1);
+    float (*interpreter)(bool b0, bool b1);
+    bool flagged;
+};
+
+Asm AddTo(Asm& a, u32 c) {
+    a.Op(asmb::kAdd, asmb::R(0), asmb::C(c), asmb::R(0));
+    return a;
+}
+
+void Finish(Asm& a) {
+    a.Op1(asmb::kMov, asmb::O(0), asmb::R(0));
+    a.End();
+}
+
+} // namespace
+
+TEST_CASE("known differences, flagged: an if at the end of a loop, call or outer then-branch; and shapes that must stay unflagged") {
+    Rig rig;
+    if (!rig.ok()) return;
+    using namespace asmb;
+    std::vector<Shape> shapes;
+    {   // F2: LOOP { r0 += c1; IFU b1 { r0 += c2 } }: an if without else ends the loop body
+        Asm a;
+        a.Op1(kMov, R(0), C(0));
+        a.BeginLoop(0);
+        AddTo(a, 1);
+        a.BeginIfu(1);
+        AddTo(a, 2);
+        a.EndIf();
+        a.EndLoop();
+        Finish(a);
+        shapes.push_back({"F2 loop body ends with an if without else", a,
+                          [](bool, bool b1) { return 4.f * (b1 ? 11.f : 1.f); },
+                          // the false IF jumps to the loop's end, where the loop test (against the IF's address + 1) does not fire
+                          [](bool, bool b1) { return b1 ? 44.f : 1.f; }, true});
+    }
+    {   // F8: call s; s = { r0 += c1; IFU b1 { r0 += c2 } }
+        Asm a;
+        a.Op1(kMov, R(0), C(0));
+        a.Call("s");
+        Finish(a);
+        a.Sub("s");
+        AddTo(a, 1);
+        a.BeginIfu(1);
+        AddTo(a, 2);
+        a.EndIf();
+        a.EndSub();
+        a.Done();
+        shapes.push_back({"F8 call body ends with an if without else", a,
+                          [](bool, bool b1) { return b1 ? 11.f : 1.f; },
+                          // the call never returns: the program runs on into the empty words after the subroutine and the
+                          // mov to o0 is never reached (o0.x keeps its initial 0)
+                          [](bool, bool) { return 0.f; }, true});
+    }
+    {   // F3: IFU b0 { IFU b1 { r0 += c1 } ELSE { r0 += c2 } } ELSE { r0 += c3 }
+        Asm a;
+        a.Op1(kMov, R(0), C(0));
+        a.BeginIfu(0);
+        a.BeginIfu(1);
+        AddTo(a, 1);
+        a.Else();
+        AddTo(a, 2);
+        a.EndIf();
+        a.Else();
+        AddTo(a, 3);
+        a.EndIf();
+        Finish(a);
+        shapes.push_back({"F3 if/else at the tail of an outer then-branch", a,
+                          [](bool b0, bool b1) { return b0 ? (b1 ? 1.f : 10.f) : 100.f; },
+                          // b0 and b1: the inner pop leaves the outer entry, the outer else branch runs too
+                          [](bool b0, bool b1) { return b0 ? (b1 ? 101.f : 10.f) : 100.f; }, true});
+    }
+    {   // F4: IFU b0 { r0 += c1; IFU b1 { r0 += c2 } } ELSE { r0 += c3 }
+        Asm a;
+        a.Op1(kMov, R(0), C(0));
+        a.BeginIfu(0);
+        AddTo(a, 1);
+        a.BeginIfu(1);
+        AddTo(a, 2);
+        a.EndIf();
+        a.Else();
+        AddTo(a, 3);
+        a.EndIf();
+        Finish(a);
+        shapes.push_back({"F4 if without else at the tail of an outer then-branch", a,
+                          [](bool b0, bool b1) { return b0 ? (b1 ? 11.f : 1.f) : 100.f; },
+                          [](bool b0, bool b1) { return b0 ? (b1 ? 111.f : 101.f) : 100.f; }, true});
+    }
+    {   // F1: LOOP { r0 += c1; IFU b1 { r0 += c2 } ELSE { r0 += c3 }; r0 += c4 }: the if/else is in the middle
+        Asm a;
+        a.Op1(kMov, R(0), C(0));
+        a.BeginLoop(0);
+        AddTo(a, 1);
+        a.BeginIfu(1);
+        AddTo(a, 2);
+        a.Else();
+        AddTo(a, 3);
+        a.EndIf();
+        AddTo(a, 4);
+        a.EndLoop();
+        Finish(a);
+        shapes.push_back({"F1 if/else in the middle of a loop body", a,
+                          [](bool, bool b1) { return 4.f * (1.f + (b1 ? 10.f : 100.f) + 1000.f); },
+                          [](bool, bool b1) { return 4.f * (1.f + (b1 ? 10.f : 100.f) + 1000.f); }, false});
+    }
+    {   // F9: IFU b0 { r0 += c1 } ELSE { r0 += c2; IFU b1 { r0 += c3 } ELSE { r0 += c4 } }: the tail of an outer ELSE
+        Asm a;
+        a.Op1(kMov, R(0), C(0));
+        a.BeginIfu(0);
+        AddTo(a, 1);
+        a.Else();
+        AddTo(a, 2);
+        a.BeginIfu(1);
+        AddTo(a, 3);
+        a.Else();
+        AddTo(a, 4);
+        a.EndIf();
+        a.EndIf();
+        Finish(a);
+        auto f = [](bool b0, bool b1) { return b0 ? 1.f : 10.f + (b1 ? 100.f : 1000.f); };
+        shapes.push_back({"F9 if/else at the tail of an outer else-branch", a, f, f, false});
+    }
+    {   // F10: LOOP { r0 += c1; IFU b1 { r0 += c2 }; r0 += c3 }: an if without else in the middle
+        Asm a;
+        a.Op1(kMov, R(0), C(0));
+        a.BeginLoop(0);
+        AddTo(a, 1);
+        a.BeginIfu(1);
+        AddTo(a, 2);
+        a.EndIf();
+        AddTo(a, 3);
+        a.EndLoop();
+        Finish(a);
+        auto f = [](bool, bool b1) { return 4.f * (1.f + (b1 ? 10.f : 0.f) + 100.f); };
+        shapes.push_back({"F10 if without else in the middle of a loop body", a, f, f, false});
+    }
+    {   // F12: LOOP outer (2) { LOOP inner (4) { r0 += c1 }; r0 += c2 }: the inner loop is not the last statement
+        Asm a;
+        a.Op1(kMov, R(0), C(0));
+        a.BeginLoop(1);
+        a.BeginLoop(0);
+        AddTo(a, 1);
+        a.EndLoop();
+        AddTo(a, 2);
+        a.EndLoop();
+        Finish(a);
+        auto f = [](bool, bool) { return 2.f * (4.f + 10.f); };
+        shapes.push_back({"F12 nested loops, the inner not last", a, f, f, false});
+    }
+
+    for (Shape& shape : shapes) {
+        for (int bits = 0; bits < 4; ++bits) {
+            const bool b0 = (bits & 1) != 0, b1 = (bits & 2) != 0;
+            Draw d = MakeProgram(shape.program, RandomInputs(1, 8, 80), 0x1);
+            SetUniform(d, 0, 0, 0, 0, 0);
+            SetUniform(d, 1, 1, 0, 0, 0);
+            SetUniform(d, 2, 10, 0, 0, 0);
+            SetUniform(d, 3, 100, 0, 0, 0);
+            SetUniform(d, 4, 1000, 0, 0, 0);
+            d.setup.uniform_i[0] = {3, 0, 0, 0}; // 4 iterations
+            d.setup.uniform_i[1] = {1, 0, 0, 0}; // 2 iterations
+            d.setup.uniform_b[0] = b0;
+            d.setup.uniform_b[1] = b1;
+            INFO(shape.name << ", b0 " << b0 << ", b1 " << b1);
+            Outcome o = RunCase(rig, d, 8);
+            REQUIRE(o.shader != nullptr);
+            REQUIRE(!o.capture.empty());
+            CHECK(o.shader->differs_from_interpreter == shape.flagged);
+            const float structured = shape.structured(b0, b1);
+            const float interpreted = shape.interpreter(b0, b1);
+            CHECK(At(o.capture, 0, 0, 0) == structured); // the translation: the structured reading
+            oracle::Unit u;
+            oracle::Run(OracleMemory(d.setup), OracleUniforms(d.setup), u, 0);
+            CHECK(u.output[0][0].c[0] == interpreted);   // the interpreter: its own code
+            CHECK((o.report.mismatches > 0) == (structured != interpreted));
+            if (!shape.flagged) {
+                CHECK(o.report.mismatches == 0); // the over-flagging guard: unflagged shapes agree
+            }
+        }
+    }
+}
+
 // ================================================================================================
 // The cache
 // ================================================================================================
@@ -3095,8 +3286,10 @@ struct Totals {
 
 // Printed after a failed dump check (no data).
 constexpr const char* kQuirkHint =
-    "a mismatch in a program that ends a loop body with an if/else, or a call or jump as the last instruction of "
-    "an if or call, may be the interpreter's quirk, see As built (N2-06)";
+    "differs_from_interpreter is a hint: a mismatch in a program with a loop or call body that ends in an if "
+    "(with or without else), an if at the tail of an outer then-branch, two loops that end together, or a call "
+    "or jump as the last instruction of a scope may be the interpreter's quirk (read it first as that), a "
+    "mismatch in any other program is a translator bug until shown otherwise; see As built (N2-06)";
 
 // The pass of the dump check: every program seen was run, and nothing went wrong on the way.
 bool DumpPassed(const Totals& t) {

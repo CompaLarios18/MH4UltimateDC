@@ -31,21 +31,30 @@
 //  * DST, DSTI and LIT are translated (vs_3_0 definitions, nihstro's comment on DST says it is the
 //    same as vs_3_0's). Azahar implements none of them: its decompiler rejects the program and its
 //    interpreter and JIT skip the instruction. Not verified on hardware: DecompileResult says so.
-//  * Where the interpreter and the structured readings disagree (DecompileResult::differs_from_interpreter).
+//  * Where the interpreter and the structured readings disagree (DecompileResult::differs_from_interpreter,
+//    a HINT: it flags the shapes known to differ, with an over-approximation, so it may flag a program on
+//    which the two agree; a mismatch with the interpreter in a flagged program is first read as the
+//    interpreter's quirk, a mismatch in an unflagged program is a translator bug until shown otherwise).
 //    The interpreter ends a scope by comparing the program counter with `old_program_counter + 1` after
 //    each instruction (shader_interpreter.cpp: the call-stack check against next_program_counter, then the
-//    if-stack check, which overwrites the program counter, then the loop-stack check against
-//    old_program_counter + 1). (1) A LOOP (or CALL) body that ends with an IF/ELSE: the then-branch's last
-//    instruction is followed by the else branch, so the if-stack jump to the IF's end (the loop's
-//    end_address) happens and the loop check, which compares old_program_counter + 1 with end_address, does
-//    not fire: the loop does not iterate again (the loop stack keeps a stale entry); the else-branch
-//    ends the loop normally. Azahar's x64 JIT (Compile_LOOP: the structure) and its decompiler iterate, and
-//    so does this translation. (2) A CALL or a jump that is the last instruction of an IF, CALL or LOOP scope:
-//    the scope-end handling overwrites the program counter it set, so it is never taken; the structured
-//    readings take it. The port of the interpreter in the tests is the same code as Azahar's here, so the
-//    oracle shows the interpreter's behaviour; gpu_shader_test.cpp pins both sides. (3) Two loops that end
-//    on the same instruction (an inner loop that ends its outer loop's body): the interpreter repeats or
-//    pops one loop per instruction, so the outer loop does not iterate.
+//    if-stack check, which pops ONE entry and overwrites the program counter, then the loop-stack check
+//    against old_program_counter + 1, again one entry). A jump over the else branch, or over the rest of a
+//    scope, therefore lands where the next scope's test does not fire. The shapes: (1) a LOOP or CALL body
+//    that ends with an IF/ELSE: after the then-branch the interpreter jumps to the IF's end (the scope's
+//    end) without testing the loop, so the loop does not iterate again (the loop stack keeps a stale entry);
+//    the else branch ends at the loop end and iterates; (2) a LOOP or CALL body that ends with an IF WITHOUT
+//    else: when the condition is false the jump goes to the scope's end and the end test (against the IF's
+//    own address + 1) does not fire: the loop does not iterate, the call does not return; (3) an IF, with or
+//    without else, at the tail of the THEN-branch of an IF that has an else: the inner pop leaves the outer
+//    entry, the program counter lands on the outer else address and the else branch runs as well; (4) two
+//    loops that end on the same instruction: one loop is repeated or popped per instruction, so the outer
+//    loop does not iterate; (5) a CALL or a jump that is the last instruction of an IF, CALL or LOOP scope: the
+//    scope-end handling overwrites the program counter it set, so it is never taken. Azahar's x64 JIT
+//    (Compile_LOOP and the structural IF/CALL) and its decompiler follow the structure and so does this
+//    translation; the port of the interpreter in the tests is the same code as Azahar's here, so the oracle
+//    shows the interpreter's behaviour, and gpu_shader_test.cpp pins both sides. Which one the hardware
+//    does is not known. Not flagged on purpose: an IF or IF/ELSE in the middle of a body, an IF/ELSE at the
+//    tail of the ELSE branch of an outer IF, nested loops whose inner loop is not the last statement.
 //  * EMIT and SETEMIT generate nothing, as in Azahar's decompiler (it logs "Geometry shader operation
 //    detected in vertex shader"): the vertex program of a draw with a geometry shader is an ordinary
 //    vertex program; a program that does use them as a geometry shader would is not translated by this
@@ -148,6 +157,7 @@ struct ScopeEnds {
     std::set<u32> any;
     std::set<u32> call_loop;
     std::map<u32, std::set<u32>> loops_by_end; // LOOP instructions by the end address of their scope
+    std::set<u32> else_addresses;              // the else address of every IF that has an else branch
 };
 
 /// Analyzes shader code and produces a set of subroutines.
@@ -340,6 +350,9 @@ private:
             case static_cast<u32>(Opcode::IFC): {
                 NoteScope(instr.dest_offset(), false);
                 NoteScope(instr.dest_offset() + instr.num_instructions(), false);
+                if (instr.num_instructions() != 0) {
+                    scope_ends.else_addresses.insert(instr.dest_offset());
+                }
                 auto& if_sub = AddSubroutine(offset + 1, instr.dest_offset());
                 ExitMethod else_method;
                 if (instr.num_instructions() != 0) {
@@ -890,8 +903,11 @@ private:
                 const u32 if_offset = offset + 1;
                 const u32 else_offset = instr.dest_offset();
                 const u32 endif_offset = instr.dest_offset() + instr.num_instructions();
-                if (instr.num_instructions() != 0 && scope_ends.call_loop.count(endif_offset) != 0) {
-                    // the then-branch jumps to the end of the IF, which is the end of a loop or call scope: see below
+                // An IF (with or without else) that is the last statement of a loop or call body, or of the
+                // THEN-branch of an IF that has an else: its end is the end of that scope. The interpreter
+                // tests one scope end per instruction (see the header comment), and the jump of the IF
+                // lands where the other scope's test does not fire.
+                if (scope_ends.call_loop.count(endif_offset) != 0 || scope_ends.else_addresses.count(endif_offset) != 0) {
                     differs_from_interpreter = true;
                 }
 
@@ -1155,9 +1171,10 @@ private:
         if (differs_from_interpreter) {
             result.differs_from_interpreter = true;
             result.notes.push_back(
-                "a loop body ends with an if/else, or a call or jump is the last instruction of a scope: the "
-                "interpreter and the structured readings (this translation, Azahar's decompiler and JIT) "
-                "disagree on this shape (see the header comment of glsl_decompiler.cpp)");
+                "a loop or call body ends with an if (with or without else), an if is the last statement of an "
+                "outer then-branch, two loops end together, or a call or jump is the last instruction of a "
+                "scope: the interpreter and the structured readings (this translation, Azahar's decompiler and "
+                "JIT) may disagree on this shape (a hint; see the header comment of glsl_decompiler.cpp)");
         }
         if (has_emit) {
             result.notes.push_back(
