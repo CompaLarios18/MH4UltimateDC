@@ -337,7 +337,7 @@ new run is `pending (pc)`; no count after N2-32 has been measured. What the sect
 
 **After N2-32 (to be measured on the PC, not seen yet).** The command, for each of `gpu_backend_core_test`, `rhi_plume_test` and `rhi_plume_patterns_test`:
 `MH4N_REQUIRE_VULKAN=1 MH4N_VULKAN_DEVICE="RX 6700" <binary>` (without `MH4N_REQUIRE_HEADLESS_SURFACE`). Expected, from reading the code and not from a run: 0 failed
-in all three, and `B1_shadow_store_no_interlock` passes and logs how many texels hold 3 (the run before N2-32 gave 0 of 256). Each run prints the block
+in all three, and `B1_shadow_store_no_interlock` passes and logs how many texels hold 3 (the run before N2-32 saw every texel at 1: none held 3). Each run prints the block
 `skipped at run time: <n>` with one line `  <test case>: <why>` per case just before doctest's three summary lines (see the helpers paragraph); that block is what says
 what ran. Expected in it: `patch10/dynamic_stencil_state_d24s8` and `patch11/depth_stencil_copy_as_two_regions` (the RX 6700 XT has no D24S8 attachment; the D32S8
 half of patch11 still ran), and the headless-surface cases only if the Windows loader still lacks `VK_EXT_headless_surface` (N2-31 saw it lacking: 4 cases,
