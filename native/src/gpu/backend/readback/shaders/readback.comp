@@ -1,12 +1,14 @@
-// Derived from Azahar src/video_core/host_shaders/vulkan_depth_to_buffer.comp at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-2.0-or-later, as the file says: "Licensed under GPLv2 or any later version")
-// Copyright 2023 Citra Emulator Project
+// Derived from Azahar src/video_core/host_shaders/vulkan_depth_to_buffer.comp, src/video_core/rasterizer_cache/texture_codec.h and src/common/color.h at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-2.0-or-later, as the files say: "Licensed under GPLv2 or any later version")
+// Copyright 2023 Citra Emulator Project (vulkan_depth_to_buffer.comp)
+// Copyright 2022-2026 Citra Emulator Project / Azahar Emulator Project (texture_codec.h)
+// Copyright 2014 Citra Emulator Project (color.h)
 //
 // Readback of a render target into the PICA's guest layout (N2-28, rhi-spike.md 9.4 item 15). One invocation writes
 // one 32-bit word of the output; the word's four bytes are located in the tiled layout, mapped back to the pixel
-// they belong to and fetched from the image (texelFetch, no filtering). The pattern of the depth pass is Azahar's
-// (a depth view and a stencil view read in a compute shader and written to a storage buffer, as
-// vulkan_depth_to_buffer.comp); what is ours: the Morton tiling and the row direction (Azahar's MortonCopy,
-// texture_codec.h), the byte order of every PICA format (Azahar's color.h Encode*), and the 24-bit depth rule.
+// they belong to and fetched from the image (texelFetch, no filtering). From Azahar: the depth pass (a depth view and
+// a stencil view read in a compute shader and written to a storage buffer, vulkan_depth_to_buffer.comp), the Morton
+// tiling and the row direction (MortonCopy in texture_codec.h, and its D24S8 rotation), the bit positions and byte
+// order of every PICA format (Encode* in color.h). Read, nothing copied: texture_decode.cpp.
 //
 // Variants (spirv_inc.txt): KIND 0 colour, KIND 1 depth only (D16, D24), KIND 2 depth and stencil (D24S8).
 //
@@ -20,10 +22,11 @@
 // 16-bit value; D24 the 24-bit value in 3 bytes; D24S8 the 24-bit depth in the low 24 bits and the stencil in the top
 // byte. A component of fewer bits than the image has is cut from the top (Azahar's Convert8To5 and kin: v >> (n - m)).
 //
-// Depth: the 24-bit value is roundEven(depth * 16777215.0), the scale of Azahar's shader (2^24 - 1); Azahar
-// truncates (uint(depth * (exp2(24.0) - 1.0))). Rounding is what a D24 attachment does when it stores a float, so a
-// D24S8 image and the D32S8 that stands in for it give the same bytes for every depth, not only for the exactly
-// representable ones (docs/native/rhi.md "Readback").
+// Depth: the 24-bit value is uint(depth * (exp2(24.0) - 1.0)), Azahar's rule (vulkan_depth_to_buffer.comp and
+// EncodeD24 of texture_codec.h): scale 2^24 - 1, truncated. For a depth that is an exact unorm decode c / 16777215 the
+// product is the integer c, so D24S8 and the D32S8 that stands in for it give the same bytes (a float depth between
+// two 24-bit values can differ by one from what a D24 attachment stores: docs/native/rhi.md). D16 is rounded
+// (roundEven(depth * 65535.0)): Azahar copies D16 raw, so rounding here only recovers the stored integer.
 #version 450
 #extension GL_EXT_samplerless_texture_functions : require
 
@@ -64,7 +67,6 @@ const uint kBytesPerPixel[8] = uint[8](4u, 3u, 2u, 2u, 2u, 2u, 3u, 4u);
 uint Component(vec4 texel, uint c, uint dst_bits) {
     if (dst_bits == 0u) return 0u;
     uint src = params.src_bits[c];
-    if (src == 0u) return (1u << dst_bits) - 1u;  // not stored (alpha of RGB565): opaque
     uint v = uint(roundEven(texel[c] * float((1u << src) - 1u)));
     return src > dst_bits ? (v >> (src - dst_bits)) : v;
 }
@@ -90,7 +92,7 @@ uint PixelValue(ivec2 p) {
     if (mode == 5u) {
         return min(uint(roundEven(depth * 65535.0)), 0xFFFFu);
     }
-    uint d24 = min(uint(roundEven(depth * 16777215.0)), 0xFFFFFFu);
+    uint d24 = min(uint(depth * (exp2(24.0) - 1.0)), 0xFFFFFFu);
 #if KIND == 2
     if (mode == 7u) {
         return d24 | (texelFetch(stencil_img, p, 0).r << 24);

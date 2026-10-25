@@ -1,3 +1,9 @@
+// Derived from Azahar src/video_core/rasterizer_cache/texture_codec.h and src/common/color.h at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-2.0-or-later, as the files say: "Licensed under GPLv2 or any later version")
+// Copyright 2022-2026 Citra Emulator Project / Azahar Emulator Project (texture_codec.h)
+// Copyright 2014 Citra Emulator Project (color.h)
+//
+// The tables below restate texture_codec.h's MORTON_ROW and MORTON_X and the byte orders and bit positions of color.h's Encode*.
+//
 // The backend's readback module (N2-28): ReadbackToGuest (render targets into guest memory in the PICA's Morton-tiled
 // layouts and formats, bit-exact), ReadImage and the GPU timestamps of a frame with a readback in it. Run on whatever
 // Vulkan device the machine has (lavapipe in the cloud and in Linux CI); a case that needs a device skips with a message
@@ -362,9 +368,12 @@ TEST_CASE("colour/a_taller_image_orders_tile_rows_from_the_last_image_row_up") {
 
 namespace {
 
-// The 24-bit depth values the cases clear to, and the floats that give them: 0, 0x800000 (the float nearest to
-// 0x800000 / 16777215 is 0x3F000001, 0.5 + 2^-24), 0xFFFFFF, and 0.25: 0.25 * 16777215 = 4194303.75, which a D24
-// target stores as the nearest value, 4194304 = 0x400000 (truncation, Azahar's rule, would give 0x3FFFFF).
+// The depths the cases compare across formats: exact 24-bit values c, cleared as the float c / 16777215 (the nearest float; for 0x800000
+// that is 0x3F000001, 0.5 + 2^-24, since 0x800000 / 16777215 = 0.5 + 2.98e-8 lies above the midpoint 0.5 + 2^-25 of 0.5 and 0.5 + 2^-24).
+// The pass reads a depth as uint(depth * 16777215.0), Azahar's rule: for these floats the product is the integer c (all 2^24 values
+// checked once in single precision), so a D24S8 image and the D32S8 that stands in for it give the same bytes. A float between two
+// 24-bit values is not in this list on purpose: 0.25 * 16777215 = 4194303.75 truncates to 0x3FFFFF on D32S8, while a D24 target stores
+// the nearest value, 4194304 = 0x400000 (see `kQuarter`).
 struct DepthCase {
     float clear;
     u32 d24;
@@ -373,8 +382,12 @@ const DepthCase kDepths[] = {
     {0.0f, 0x000000},
     {float(0x800000) / 16777215.0f, 0x800000},
     {1.0f, 0xFFFFFF},
-    {0.25f, 0x400000},
 };
+// 0.25: what each format gives, worked out by hand. D32S8 holds 0.25 exactly: 4194303.75 truncated is 0x3FFFFF. A D24S8 target
+// converts the float it is given to 24 bits itself, and lavapipe's rounds to nearest (4194304 = 0x400000, measured here; a driver
+// that truncates would give 0x3FFFFF: the PC's D24 path is the D32S8 one, so this value is lavapipe's, `unverified` elsewhere).
+constexpr float kQuarter = 0.25f;
+u32 QuarterD24(Format stored) { return stored == Format::D32S8 || stored == Format::D32Float ? 0x3FFFFF : 0x400000; }
 
 std::vector<u8> D24S8Bytes(u32 d24, u32 stencil) {
     return {static_cast<u8>(d24 & 0xFF), static_cast<u8>((d24 >> 8) & 0xFF), static_cast<u8>((d24 >> 16) & 0xFF), static_cast<u8>(stencil)};
@@ -401,6 +414,11 @@ TEST_CASE("depth/d24s8_and_the_masked_d32s8_give_the_same_bytes_for_every_depth_
                       Repeat({static_cast<u8>(depth.d24 & 0xFF), static_cast<u8>((depth.d24 >> 8) & 0xFF), static_cast<u8>(depth.d24 >> 16)}, 128));
             }
         }
+        // 0.25: pinned per format, not compared (see kQuarter): 0x3FFFFF on D32S8, 0x400000 on lavapipe's D24S8
+        ClearAndWait(*backend, *image, Depth(kQuarter, 0x5A));
+        const u32 quarter = QuarterD24(image->GetFormat());
+        CHECK(Readback(*backend, *image, 16, 8, PicaFormat::D24S8, 4) == Repeat(D24S8Bytes(quarter, 0x5A), 128));
+        if (masked) CHECK(quarter == 0x3FFFFF);  // a D32S8 image truncates: the unmasked mutant "rounds to nearest" gives 0x400000
     }
 }
 
@@ -413,10 +431,11 @@ TEST_CASE("depth/d16_and_d32_float") {
         ClearAndWait(*backend, *d16, Depth(clear, 0));
         CHECK(Readback(*backend, *d16, 8, 8, PicaFormat::D16, 2) == Repeat(Le16(word), 64));
     }
-    // D32 float read as D24 (the depth without a stencil): 0.25 -> 0x400000, 1.0 -> 0xFFFFFF
+    // D32 float read as D24 (the depth without a stencil), truncated as Azahar's EncodeD24 does: 0.25 * 16777215 = 4194303.75 -> 0x3FFFFF,
+    // 1.0 -> 0xFFFFFF
     std::shared_ptr<Image> d32 = MakeImage(*backend, Format::D32Float, 8, 8);
     ClearAndWait(*backend, *d32, Depth(0.25f, 0));
-    CHECK(Readback(*backend, *d32, 8, 8, PicaFormat::D24, 3) == Repeat({0x00, 0x00, 0x40}, 64));
+    CHECK(Readback(*backend, *d32, 8, 8, PicaFormat::D24, 3) == Repeat({0xFF, 0xFF, 0x3F}, 64));
     ClearAndWait(*backend, *d32, Depth(1.0f, 0));
     CHECK(Readback(*backend, *d32, 8, 8, PicaFormat::D24, 3) == Repeat({0xFF, 0xFF, 0xFF}, 64));
 }
@@ -450,8 +469,10 @@ TEST_CASE("depth/an_image_left_in_the_attachment_layout_by_a_pass_open_at_submit
             // the depth image is still in plume's attachment layout, and the layout plume holds says so
             CHECK(depth->impl().vulkan()->textureLayout == ::plume::RenderTextureLayout::DEPTH_WRITE);
             if (depth_name == Format::D24S8) {
-                // 0.25 stored as the nearest 24-bit value, 0x400000; the stencil is the clear's 0x5A
-                CHECK(Readback(*backend, *depth, 8, 8, PicaFormat::D24S8, 4) == Repeat(D24S8Bytes(0x400000, 0x5A), 64));
+                // 0.25 (the draw's depth): 0x3FFFFF truncated from the D32S8 image's float, 0x400000 as lavapipe's D24S8 stores it
+                // (kQuarter); the stencil is the clear's 0x5A
+                CHECK(Readback(*backend, *depth, 8, 8, PicaFormat::D24S8, 4) ==
+                      Repeat(D24S8Bytes(QuarterD24(depth->GetFormat()), 0x5A), 64));
             } else {
                 // D16: 0.25 * 65535 = 16383.75 -> 16384 = 0x4000
                 CHECK(Readback(*backend, *depth, 8, 8, PicaFormat::D16, 2) == Repeat(Le16(0x4000), 64));
@@ -652,14 +673,18 @@ TEST_CASE("timestamps/a_frame_with_a_clear_and_a_readback_has_a_time_and_the_nex
     CHECK(backend->FrameGpuTimeNs() == 0);  // nothing has been timed
     sync::FrameTimestamps previous;
     for (int frame = 0; frame < 3; ++frame) {
+        // The frame spans two recorders: Begin and the clear in the first, the readback between them (its own internal
+        // submission, inside the frame), the End in a recorder submitted after the readback.
         Recorder rec = backend->BeginRecording();
         rec.MarkFrame(FrameMark::Begin);
         rec.ClearImage(*image, Color(1, 0, 0, 1));
-        rec.MarkFrame(FrameMark::End);
-        const TimelineValue value = backend->Submit(std::move(rec));
-        // the readback of the frame (a compute pass and a CPU wait), after the frame's own submission
+        const TimelineValue first = backend->Submit(std::move(rec));
         CHECK(Readback(*backend, *image, 16, 16, PicaFormat::Rgba8, 4) == Repeat({0xFF, 0x00, 0x00, 0xFF}, 256));
-        backend->WaitIdle(value);
+        Recorder end = backend->BeginRecording();
+        end.MarkFrame(FrameMark::End);
+        const TimelineValue last = backend->Submit(std::move(end));
+        REQUIRE(last > first + 1);  // the readback's submission is between the two
+        backend->WaitIdle(last);
         const u64 ns = backend->FrameGpuTimeNs();
         CHECK(ns > 0);
         const sync::FrameTimestamps stamps = sync::LastFrameTimestamps(*backend);
@@ -669,4 +694,51 @@ TEST_CASE("timestamps/a_frame_with_a_clear_and_a_readback_has_a_time_and_the_nex
         CHECK(stamps.begin_ns >= previous.end_ns);
         previous = stamps;
     }
+}
+
+TEST_CASE("readback/two_threads_reading_back_different_images_at_once_get_their_own_bytes") {
+    std::shared_ptr<Backend> backend = MakeBackend();
+    if (!backend) return;
+    // One readback runs at a time per backend (a mutex around the pass, the buffers and the binding set): two threads, one reading
+    // a colour image and one a depth image (different kinds of pass, the same output buffer), 25 times each. ThreadSanitizer covers the race.
+    constexpr int kRounds = 25;
+    std::atomic<int> colour_right{0}, depth_right{0};
+    std::thread colour([&] {
+        ImageDesc desc;
+        desc.format = Format::Rgba8Unorm;
+        desc.width = desc.height = 16;
+        Result<std::shared_ptr<Image>> image = backend->CreateImage(desc);
+        if (!image.ok()) return;
+        Recorder rec = backend->BeginRecording();
+        rec.ClearImage(**image, Color(1.0f, 0.0f, 0.2f, 0.6f));
+        backend->WaitIdle(backend->Submit(std::move(rec)));
+        const std::vector<u8> expected = Repeat({0x99, 0x33, 0x00, 0xFF}, 256);
+        for (int i = 0; i < kRounds; ++i) {
+            std::vector<u8> bytes(16 * 16 * 4);
+            if (backend->ReadbackToGuest(**image, Rect{0, 0, 16, 16}, PicaFormat::Rgba8, bytes).ok() && bytes == expected) {
+                colour_right.fetch_add(1);
+            }
+        }
+    });
+    std::thread depth([&] {
+        ImageDesc desc;
+        desc.format = Format::D24S8;
+        desc.width = desc.height = 16;
+        Result<std::shared_ptr<Image>> image = backend->CreateImage(desc);
+        if (!image.ok()) return;
+        Recorder rec = backend->BeginRecording();
+        rec.ClearImage(**image, Depth(1.0f, 0x7E));
+        backend->WaitIdle(backend->Submit(std::move(rec)));
+        const std::vector<u8> expected = Repeat({0xFF, 0xFF, 0xFF, 0x7E}, 256);
+        for (int i = 0; i < kRounds; ++i) {
+            std::vector<u8> bytes(16 * 16 * 4);
+            if (backend->ReadbackToGuest(**image, Rect{0, 0, 16, 16}, PicaFormat::D24S8, bytes).ok() && bytes == expected) {
+                depth_right.fetch_add(1);
+            }
+        }
+    });
+    colour.join();
+    depth.join();
+    CHECK(colour_right.load() == kRounds);
+    CHECK(depth_right.load() == kRounds);
 }

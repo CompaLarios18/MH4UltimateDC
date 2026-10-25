@@ -1,13 +1,15 @@
-// Derived from Azahar src/video_core/renderer_vulkan/vk_blit_helper.cpp at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-2.0-or-later, as the file says: "Licensed under GPLv2 or any later version")
-// Copyright 2022-2026 Citra Emulator Project / Azahar Emulator Project
+// Derived from Azahar src/video_core/renderer_vulkan/vk_blit_helper.cpp, src/video_core/rasterizer_cache/texture_codec.h and src/common/color.h at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-2.0-or-later, as the files say: "Licensed under GPLv2 or any later version")
+// Copyright 2022-2026 Citra Emulator Project / Azahar Emulator Project (vk_blit_helper.cpp, texture_codec.h)
+// Copyright 2014 Citra Emulator Project (color.h)
 //
-// ReadbackToGuest (N2-28, rhi-spike.md 9.4 item 15, R5). The pattern of BlitHelper::DepthToBuffer
-// (vk_blit_helper.cpp:513-580): the depth and stencil views of the image are bound to a compute pass that writes a
-// storage buffer, the pass is dispatched over the region and the buffer is read on the CPU. Read besides: Azahar's
-// vulkan_depth_to_buffer.comp, rasterizer_cache/texture_codec.h (MortonCopy, the row direction) and common/color.h
-// (the byte order of the PICA formats), which readback.comp (derived from the first) cites; texture_decode.cpp (the
-// tiled layouts, which the framebuffer shares). What is ours: one pass for every format (a word of the output
-// finds its pixel), the compatibility table, the first-use path through the targets module and the CPU wait.
+// ReadbackToGuest (N2-28, rhi-spike.md 9.4 item 15, R5). From Azahar: the pattern of BlitHelper::DepthToBuffer
+// (vk_blit_helper.cpp:513-580: the depth and stencil views of the image are bound to a compute pass that writes a
+// storage buffer, the pass is dispatched over the region and the buffer is read on the CPU), the Morton tiling, the
+// row direction and the D24S8 layout (MortonCopy and EncodePixel in texture_codec.h) and the byte order of the PICA
+// formats (Encode* in color.h), which readback.comp implements (it is derived from the same files and from
+// vulkan_depth_to_buffer.comp). Read, nothing copied: texture_decode.cpp (the tiled layouts, which the framebuffer
+// shares). What is ours: one pass for every format (a word of the output finds its pixel), the compatibility table,
+// the first-use path through the targets module and the CPU wait.
 //
 // The framebuffer layout in guest memory is the texture layout of texture_codec.h: the PICA writes its colour and depth
 // buffers with the same 8x8 Morton tiles as it reads textures (Azahar's rasterizer cache uses one MortonCopy for

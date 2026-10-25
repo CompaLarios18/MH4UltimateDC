@@ -956,3 +956,22 @@ TEST_CASE("timestamps/a_frame_with_no_end_a_dropped_recorder_and_an_end_with_no_
     backend->WaitIdle(backend->Submit(std::move(end)));
     CHECK(backend->FrameGpuTimeNs() > 0);
 }
+
+TEST_CASE("timestamps/a_begin_inside_a_pass_is_refused_with_a_message_and_costs_nothing") {
+    std::shared_ptr<Backend> backend = MakeBackend();
+    if (!backend) return;
+    LogCapture log;
+    std::shared_ptr<Image> image = MakeImage(*backend, Format::Rgba8Unorm, 8, 8);
+    Recorder rec = backend->BeginRecording();
+    rec.BeginTargetPass(Pass(image.get()));
+    rec.MarkFrame(FrameMark::Begin);  // vkCmdResetQueryPool is not allowed inside a render pass
+    const std::vector<LogCapture::Line> lines = log.With("MarkFrame(Begin) inside a pass");
+    REQUIRE(lines.size() == 1);
+    CHECK(lines[0].level == mh4n::LogLevel::Error);
+    CHECK(lines[0].category == "RHI");
+    CHECK(sync::FramesInFlight(*backend) == 0);  // no pool was taken, no frame is open
+    rec.MarkFrame(FrameMark::End);               // so there is no frame to end
+    CHECK(log.With("MarkFrame(End) with no frame begun").size() == 1);
+    backend->WaitIdle(backend->Submit(std::move(rec)));
+    CHECK(backend->FrameGpuTimeNs() == 0);
+}
