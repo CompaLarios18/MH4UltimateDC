@@ -11,6 +11,7 @@
 #include "mh4n/options.h"
 #include "vkprobe/live.h"
 #include "vkprobe/report.h"
+#include "vkprobe/rhi_report.h"
 
 namespace mh4n::vkprobe {
 
@@ -18,12 +19,14 @@ MH4N_OPTION("vkprobe", "--help", "", "print this help and exit");
 MH4N_OPTION("vkprobe", "--json", "", "print one JSON document per device instead of the table");
 MH4N_OPTION("vkprobe", "--from-json", "FILE",
             "read `vulkaninfo --json` output (or this program's --json) instead of probing a device");
+MH4N_OPTION("vkprobe", "--rhi", "",
+            "make the GPU backend with no surface and print its capabilities after MH4N_RHI_MASK (rhi <field>: <value>)");
 MH4N_OPTION("vkprobe", "--loader", "PATH", "load this Vulkan loader (or MoltenVK) library instead of the default ones");
 
 namespace {
 
 constexpr const char* kUsage =
-    "usage: mh4n_vkprobe [--json] [--from-json FILE] [--loader PATH]\n"
+    "usage: mh4n_vkprobe [--json] [--from-json FILE] [--loader PATH] [--rhi]\n"
     "Reports which of the Vulkan features MH4U's rendering needs each device offers, and the\n"
     "fallback for each one that is missing: from the Vulkan devices of this machine, or (--from-json)\n"
     "from the output of `vulkaninfo --json`. Exit status: 0 done, 2 bad arguments or file, 3 no Vulkan\n"
@@ -47,6 +50,15 @@ int RunVkProbe(const std::vector<std::string>& args, std::ostream& out, std::ost
         return 2;
     }
     const bool as_json = options.Has("--json");
+
+    if (options.Has("--rhi")) {
+        if (options.Has("--from-json") || options.Has("--loader") || as_json) {
+            err << "mh4n_vkprobe: --rhi prints the backend's capabilities from the live device; it cannot be "
+                   "combined with --from-json, --loader or --json\n";
+            return 2;
+        }
+        return RunRhiProbe(out, err);
+    }
 
     std::vector<DeviceReport> reports;
     if (const auto file = options.Get("--from-json")) {

@@ -72,6 +72,28 @@ Nothing in these files is game data: they list a GPU's capabilities and the mach
 
 [vulkan.gpuinfo.org](https://vulkan.gpuinfo.org) (Sascha Willems' database of Vulkan device reports) has a report for most GPUs. Until the maintainer's files come, take the report for **the same GPU, the same OS and a recent driver** (the newest driver version listed for that OS, or the one the maintainer has installed), and read the features, extensions and formats pages off it by hand: a feature is a `yes` only when that report lists the extension and the bit. Quote the report's page and driver version next to every number taken from it. The site's own JSON export has a layout of its own, which `--from-json` does not read. A report for a different driver version can differ in exactly the extensions this tool looks at (`VK_EXT_fragment_shader_interlock`, `VK_EXT_graphics_pipeline_library`, the `extendedDynamicState3` bits, MoltenVK's portability subset), so say which version was used.
 
+## `--rhi` (N2-30): what the backend reports on this machine
+
+```
+mh4n_vkprobe --rhi
+```
+
+Makes the GPU backend (`native/src/gpu/backend/rhi.h`) with no surface, as the renderer will, and prints the device and driver it chose and one line per `Capabilities` field after `MH4N_RHI_MASK` (`rhi <field>: <value>`), then the backend's own present-wait answers (`rhi present_wait_available`, `rhi present_wait_measures_display`), `rhi display_timing_available`, `rhi surface` and the enabled device extensions. It gates nothing and cannot be combined with `--json`, `--from-json` or `--loader`. Without `--rhi` the probe makes no backend and still needs no Vulkan. Exit status: 3 for no loader or no device (the message says which), 2 for an unknown name in `MH4N_RHI_MASK`.
+
+**For the reference PC (RX 6700 XT, driver 26.10.1), from the Windows artifact folder:**
+
+```
+cmd /c ".\mh4n_vkprobe.exe --rhi > rhi-pc.txt"
+```
+
+Then, for the plain probe's answer in the same folder:
+
+```
+cmd /c ".\mh4n_vkprobe.exe > vkprobe-pc.txt"
+```
+
+Expected lines: `rhi present_wait: false` in `rhi-pc.txt`, and in `vkprobe-pc.txt` the line that starts `VK_KHR_present_wait (presentWait)` and reads `no (fallback: estimate when a frame is shown from the present call (not measured))` (a `yes` there is a different answer from the one D57 expects). With no surface, `rhi present_wait_available: false` as well. The backend's own `[Info] RHI:` log lines go to stderr (the console), not into `rhi-pc.txt`: the file holds only the `rhi ...` lines, which is the whole report. Send back `rhi-pc.txt` whole and the `VK_KHR_present_wait` line of `vkprobe-pc.txt`. A `rhi present_wait: true` stops there: it goes to D57, not on with N2b-24.
+
 ## `--from-json`
 
 ```
@@ -92,7 +114,7 @@ Keys are read by name, a structure's nesting does not matter, and anything absen
 
 ## Exit status
 
-0 done; 2 a bad option, or a file that is missing, truncated or not JSON; 3 the live probe found no Vulkan loader or no device (the message says which; `--from-json` still works).
+0 done; 2 a bad option, an unknown name in `MH4N_RHI_MASK` (`--rhi`), or a file that is missing, truncated or not JSON; 3 the live probe (or `--rhi`) found no Vulkan loader or no device (the message says which; `--from-json` still works).
 
 ## How it works
 
