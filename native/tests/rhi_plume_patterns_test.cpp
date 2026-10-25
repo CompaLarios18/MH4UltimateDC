@@ -38,6 +38,7 @@
 
 #include "gpu/backend/plume/vendor_info.h"
 #include "plume_vulkan.h"
+#include "support/vulkan_device.h"
 
 #include "rhi_plume_shaders.inc"
 
@@ -131,7 +132,7 @@ bool DeviceOk(bool ok, const std::string& error, const char* what) {
     if (VulkanRequired()) {
         FAIL(std::string(what) << ": no Vulkan device and MH4N_REQUIRE_VULKAN=1: " << error);
     }
-    WARN_MESSAGE(false, "skipped: " << std::string(what) << ": no Vulkan device (" << error << ")");
+    mh4n::test::SkipCase(std::string(what) + ": no Vulkan device (" + error + ")");
     return false;
 }
 
@@ -150,7 +151,7 @@ bool CapabilityOk(const Rig& rig, bool has, const char* capability, const char* 
     if (VulkanRequired() && rig.IsLavapipe()) {
         FAIL(std::string(what) << ": lavapipe does not report " << std::string(capability) << " and MH4N_REQUIRE_VULKAN=1");
     }
-    WARN_MESSAGE(false, "skipped: " << std::string(what) << ": the device has no " << std::string(capability));
+    mh4n::test::SkipCase(std::string(what) + ": the device has no " + std::string(capability));
     return false;
 }
 
@@ -468,9 +469,13 @@ struct ShadowVariant {
     bool barrierBetween = false;    // B5: a GENERAL barrier between the draws (ends the pass)
     bool restartNoBarrier = false;  // B6 (control): a new pass for each draw, no barrier
     bool twoLists = false;          // B7 (control): the last two draws in lists of their own, no barrier
+    // B1: nothing orders the three read-modify-writes, so the shader guarantees only that every texel was written by 1 to 3 of
+    // the draws (it started at 0); the count that reached 3 is logged, not asserted (lavapipe's serial execution gives all 256)
+    bool unordered = false;
 };
 
-// Returns the number of texels that differ from the expected value (3, or 5 for B7), or -1 when the case was skipped.
+// Returns the number of texels that differ from the expected value (3, or 5 for B7; for `unordered`: the number outside 1 to 3),
+// or -1 when the case was skipped.
 int RunShadow(Rig& rig, const ShadowVariant& v, const char* name) {
     RenderDevice& dev = *rig.dev;
     if (v.interlock && !CapabilityOk(rig, dev.getCapabilities().fragmentShaderInterlock, "fragmentShaderInterlock", name)) {
@@ -549,16 +554,23 @@ int RunShadow(Rig& rig, const ShadowVariant& v, const char* name) {
     }
     const auto out = ReadTexture(dev, q.get(), img.get());
     int bad = 0;
+    int atExpected = 0;
     for (uint32_t i = 0; i < kW * kH; i++) {
         uint32_t value;
         std::memcpy(&value, &out[i * 4], 4);
-        if (value != expected) {
+        atExpected += value == expected ? 1 : 0;
+        if (v.unordered ? (value < 1 || value > expected) : value != expected) {
             bad++;
         }
     }
     uint32_t texel0;
     std::memcpy(&texel0, &out[0], 4);
-    std::printf("rhi_plume_patterns_test: %s: %d of %u texels != %u (texel0 = %u)\n", name, bad, kW * kH, expected, texel0);
+    if (v.unordered) {
+        std::printf("rhi_plume_patterns_test: %s: %d of %u texels outside 1 to %u; %d of them hold %u (texel0 = %u)\n", name, bad, kW * kH,
+                    expected, atExpected, expected, texel0);
+    } else {
+        std::printf("rhi_plume_patterns_test: %s: %d of %u texels != %u (texel0 = %u)\n", name, bad, kW * kH, expected, texel0);
+    }
     std::fflush(stdout);
     return bad;
 }
@@ -1321,7 +1333,11 @@ TEST_CASE("A2_render_then_sample_in_two_lists") {
     RunA2(rig);
 }
 
-TEST_CASE("B1_shadow_store_no_interlock") { RunShadowCase("B1", ShadowVariant{}); }
+TEST_CASE("B1_shadow_store_no_interlock") {
+    ShadowVariant v;
+    v.unordered = true;  // see ShadowVariant: asserts what the shader guarantees (1 to 3 per texel), logs how many hold 3
+    RunShadowCase("B1", v);
+}
 TEST_CASE("B2_shadow_store_interlock") {
     ShadowVariant v;
     v.interlock = true;
