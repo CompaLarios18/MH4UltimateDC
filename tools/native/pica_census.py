@@ -11,6 +11,12 @@
 # which fields of the lighting, texturing and framebuffer state decide a draw's configuration (pica_fs_config.cpp), and
 # when the depth buffer is used (using_depth_fb in vk_rasterizer.cpp and gl_rasterizer.cpp), and which logic ops the SPIR-V
 # fragment generator emulates (the logic-op switch of spv_fs_shader_gen.cpp: Clear, Set, Copy, NoOp).
+# N0-40 adds, from the same pica_fs_config.cpp (the constructors of FramebufferConfig, TextureConfig, LightConfig and
+# ProcTexConfig) and the same regs_*.h, the fields of FSConfig that the census did not decode, and from
+# src/video_core/renderer_vulkan/pica_to_vk.h (CullMode, FrontFace: GPL-2.0-or-later) and vk_graphics_pipeline.cpp and
+# vk_rasterizer.cpp (the pipeline state that holds the cull mode, front face, colour write mask, blend and logic op:
+# GPL-3.0-or-later) the fixed-function state of the pipeline key.
+# Copyright 2023-2026 Citra Emulator Project / Azahar Emulator Project (pica_to_vk.h, vk_graphics_pipeline.cpp)
 # Copyright 2017-2025 Citra Emulator Project / Azahar Emulator Project (regs_internal.h, regs_pipeline.h, regs_framebuffer.h, regs_shader.h)
 # Copyright 2017-2026 Citra Emulator Project / Azahar Emulator Project (regs_rasterizer.h)
 # Copyright 2017-2024 Citra Emulator Project / Azahar Emulator Project (regs_texturing.h)
@@ -31,6 +37,26 @@ replayed from its own INIT; a pattern with * is expanded by the tool, in natural
         'G1=build/golden/G1/gpu-*.mgpu' 'G2=build/golden/G2/gpu-*.mgpu' \\
         'G3=build/golden/G3/gpu-*.mgpu' 'G4=build/golden/G4/gpu-*.mgpu' \\
         --json build/pica-census.json --md docs/research/pica-census.md
+
+WARNING: --md defaults to docs/research/pica-census.md, the GENERATED census document, and --json to build/pica-census.json.
+The command above, run as written, overwrites the document. For any other run pass --json and --md explicitly.
+
+N0-40, the pipeline-key groups and the union across captures (nothing changes without --union: the JSON and the markdown
+are then byte-identical to the N0-13 tool's). The command, which writes to separate files (labels G9a-G9c are the census
+scenes; docs/native/gpu-fragment-design.md section 7):
+
+    python3 tools/native/pica_census.py \\
+        'G1=build/golden/G1/gpu-*.mgpu' 'G2=build/golden/G2/gpu-*.mgpu' \\
+        'G3=build/golden/G3/gpu-*.mgpu' 'G4=build/golden/G4/gpu-*.mgpu' \\
+        'G9a=build/golden/G9a/gpu-*.mgpu' 'G9b=build/golden/G9b/gpu-*.mgpu' 'G9c=build/golden/G9c/gpu-*.mgpu' \\
+        --union --json build/pica-census-union.json --md build/pica-census-union.md
+
+With --union the markdown gets sections appended and the JSON a "union" key: per label and over all labels (a configuration
+seen in several captures counts once) the distinct fs_key (the canonical fragment key of design 4.3), fixed_function
+(blend equations and factors or the logic op, colour write mask, depth, stencil, cull mode, front face), vertex_stage
+(vertex program hash, vertex layout, topology), proctex_config, and the joint tuple (fs_key, fixed_function, vertex_stage,
+pass kind, logical colour and depth formats), the blend factors, rasterizer and texture fields (decode_ext), and the lit
+draws with and without a geometry shader.
 
 Outputs: the JSON (counts per feature, unique configurations, the answers) and the markdown summary
 (one section per question of docs/research/metal.md, answered YES/NO per label with draw and frame counts and
@@ -226,6 +252,48 @@ _fld("light_disable", 0x1C6, 0, 1, "lighting.disable")
 for _n in range(8):
     _fld(f"light_slot{_n}", 0x1D9, 4 * _n, 3, f"lighting.light_enable.slot_{_n}")
 
+# N0-40: the fields FSConfig::FSConfig(regs) reads that the census did not decode (pica_fs_config.cpp, the constructors of
+# FramebufferConfig, TextureConfig, LightConfig and ProcTexConfig), and the fixed-function state of the pipeline key.
+# They are used by decode_ext() only, so the census's own groups and tables are unchanged.
+# regs_framebuffer.h: output_merger.alpha_blending (factors); regs_rasterizer.h: cull_mode, scissor_test.mode, depthmap_enable
+# (their use as pipeline state: vk_rasterizer.cpp, vk_graphics_pipeline.cpp, pica_to_vk.h FrontFace/CullMode).
+for _name, _azahar, _pos in (("src_rgb", "factor_source_rgb", 16), ("dst_rgb", "factor_dest_rgb", 20),
+                             ("src_a", "factor_source_a", 24), ("dst_a", "factor_dest_a", 28)):
+    _fld(f"blend_factor_{_name}", 0x101, _pos, 4, f"{_OM}.alpha_blending.{_azahar}")
+_fld("cull_mode", 0x40, 0, 2, "rasterizer.cull_mode")
+_fld("scissor_mode", 0x65, 0, 2, "rasterizer.scissor_test.mode")
+_fld("depthmap_enable", 0x6D, 0, 1, "rasterizer.depthmap_enable")
+# regs_texturing.h: main_config, shadow, fog_flip, the Operation of each TEV stage (Dot3_RGBA masking), proctex*
+_fld("tex2_use_coord1", 0x80, 13, 1, "texturing.main_config.texture2_use_coord1")
+_fld("proctex_coord", 0x80, 8, 2, "texturing.main_config.texture3_coordinates")
+_fld("shadow_orthographic", 0x8B, 0, 1, "texturing.shadow.orthographic")
+_fld("fog_flip", 0xE0, 16, 1, "texturing.fog_flip")
+for _n in range(6):
+    _fld(f"tev{_n}_color_op", TEV_BASE[_n] + 2, 0, 4, f"texturing.tev_stage{_n}.color_op")
+for _name, _pos, _bits in (("u_clamp", 0, 3), ("v_clamp", 3, 3), ("color_combiner", 6, 4), ("alpha_combiner", 10, 4),
+                           ("separate_alpha", 14, 1), ("noise_enable", 15, 1), ("u_shift", 16, 2), ("v_shift", 18, 2)):
+    _fld(f"proctex_{_name}", 0xA8, _pos, _bits, f"texturing.proctex.{_name}")
+for _name, _pos, _bits in (("filter", 0, 3), ("lod_min", 3, 4), ("lod_max", 7, 4), ("width", 11, 8)):
+    _fld(f"proctex_lut_{_name}", 0xAC, _pos, _bits, f"texturing.proctex_lut.{_name}")
+for _n in range(4):
+    _fld(f"proctex_lut_offset{_n}", 0xAD, 8 * _n, 8, f"texturing.proctex_lut_offset.level{_n}")
+# regs_lighting.h: config0 flags, config1.disable_shadow, abs_lut_input, lut_input, lut_scale, LightSrc.config of each light
+for _name, _pos, _bits in (("enable_primary_alpha", 2, 1), ("enable_secondary_alpha", 3, 1), ("shadow_primary", 16, 1),
+                           ("shadow_secondary", 17, 1), ("shadow_invert", 18, 1), ("shadow_alpha", 19, 1),
+                           ("bump_selector", 22, 2), ("shadow_selector", 24, 2), ("clamp_highlights", 27, 1),
+                           ("disable_bump_renorm", 30, 1)):
+    _fld(f"light_{_name}", 0x1C3, _pos, _bits, f"lighting.config0.{_name}")
+_fld("light_disable_shadow", 0x1C4, 0, 8, "lighting.config1.disable_shadow")
+LUT_NAMES = ("d0", "d1", "sp", "fr", "rr", "rg", "rb")
+for _name, _pos in (("d0", 0), ("d1", 4), ("sp", 8), ("fr", 12), ("rb", 16), ("rg", 20), ("rr", 24)):
+    _fld(f"light_lut_input_{_name}", 0x1D1, _pos, 3, f"lighting.lut_input.{_name}")
+    _fld(f"light_lut_scale_{_name}", 0x1D2, _pos, 3, f"lighting.lut_scale.{_name}")
+for _name, _pos in (("d0", 1), ("d1", 5), ("sp", 9), ("fr", 13), ("rb", 17), ("rg", 21), ("rr", 25)):
+    _fld(f"light_abs_disable_{_name}", 0x1D0, _pos, 1, f"lighting.abs_lut_input.disable_{_name}")
+for _n in range(8):
+    for _name, _pos in (("directional", 0), ("two_sided_diffuse", 1), ("geometric_factor_0", 2), ("geometric_factor_1", 3)):
+        _fld(f"light{_n}_{_name}", 0x149 + 0x10 * _n, _pos, 1, f"lighting.light[{_n}].config.{_name}")
+
 # Enumerations, by their Azahar names (the enumerator names are used verbatim in the outputs).
 # docs/research/metal.md: Azahar's SPIR-V fragment generator emulates Clear, Set, Copy and NoOp; the rest draw as Copy
 _LOGIC_SPIRV = ("Clear", "Set", "NoOp")
@@ -259,7 +327,25 @@ ENUMS: dict[str, dict[int, str]] = {
     "LightingConfig": {0: "Config0", 1: "Config1", 2: "Config2", 3: "Config3", 4: "Config4", 5: "Config5",   # regs_lighting.h
                        6: "Config6", 8: "Config7"},
     "LightingBumpMode": {0: "None", 1: "NormalMap", 2: "TangentMap"},
+    # N0-40 (the same headers): blend factors, rasterizer state, procedural texture, lighting LUT inputs and scales
+    "BlendFactor": {0: "Zero", 1: "One", 2: "SourceColor", 3: "OneMinusSourceColor", 4: "DestColor",
+                    5: "OneMinusDestColor", 6: "SourceAlpha", 7: "OneMinusSourceAlpha", 8: "DestAlpha",
+                    9: "OneMinusDestAlpha", 10: "ConstantColor", 11: "OneMinusConstantColor", 12: "ConstantAlpha",
+                    13: "OneMinusConstantAlpha", 14: "SourceAlphaSaturate"},
+    "CullMode": {0: "KeepAll", 1: "KeepClockWise", 2: "KeepCounterClockWise", 3: "KeepAll2"},          # regs_rasterizer.h
+    "ScissorMode": {0: "Disabled", 1: "Exclude", 3: "Include"},
+    "DepthBuffering": {0: "WBuffering", 1: "ZBuffering"},
+    "ProcTexClamp": {0: "ToZero", 1: "ToEdge", 2: "SymmetricalRepeat", 3: "MirroredRepeat", 4: "Pulse"},  # regs_texturing.h
+    "ProcTexCombiner": {0: "U", 1: "U2", 2: "V", 3: "V2", 4: "Add", 5: "Add2", 6: "SqrtAdd2", 7: "Min", 8: "Max",
+                        9: "RMax"},
+    "ProcTexShift": {0: "None", 1: "Odd", 2: "Even"},
+    "ProcTexFilter": {0: "Nearest", 1: "Linear", 2: "NearestMipmapNearest", 3: "LinearMipmapNearest",
+                      4: "NearestMipmapLinear", 5: "LinearMipmapLinear"},
+    "LightingLutInput": {0: "NH", 1: "VH", 2: "NV", 3: "LN", 4: "SP", 5: "CP"},                        # regs_lighting.h
+    "LightingScale": {0: "Scale1", 1: "Scale2", 2: "Scale4", 3: "Scale8", 6: "Scale1_4", 7: "Scale1_2"},
 }
+# TevStageConfig::Operation (regs_texturing.h): pica_fs_config.cpp masks the stage words of a Dot3_RGBA colour operation
+TEV_DOT3_RGBA = 7
 
 # IsLightingSamplerSupported (regs_lighting.h): the lighting configurations that do NOT use a sampler.
 _LUT_UNSUPPORTED = {
@@ -546,7 +632,92 @@ def decode_state(regs: Sequence[int], units: dict[str, ShaderUnit]) -> dict:
     s["tex"] = tuple(tex)
     s["color_format"] = enum_name("ColorFormat", f("color_format"))
     s["depth_format"] = enum_name("DepthFormat", f("depth_format"))
+    s["ext"] = decode_ext(regs)
     return s
+
+
+def decode_ext(regs: Sequence[int]) -> tuple:
+    """N0-40: the fields of FSConfig::FSConfig(regs) and of the fixed-function state that decode_state does not hold,
+    as a hashable tuple of (name, value) pairs; read with dict(s["ext"]).  Kept apart (and out of `full_state`) so that
+    the census's own groups are unchanged."""
+    f = lambda name: fld(regs, name)                                    # noqa: E731
+    x: dict = {}
+    # FramebufferConfig: scissor_test_mode, depthmap_enable, the requested blend of each half (only with blending on)
+    blend = f("alphablend_enable") == 1
+    for half, eq in (("rgb", "blend_equation_rgb"), ("a", "blend_equation_a")):
+        x[f"blend_{half}"] = (enum_name("BlendEquation", f(eq)), enum_name("BlendFactor", f(f"blend_factor_src_{half}")),
+                              enum_name("BlendFactor", f(f"blend_factor_dst_{half}"))) if blend else ()
+    # vk_rasterizer.cpp: the colour write mask is the four enables, or none when allow_color_write is 0
+    x["color_mask"] = ("".join(c for c, n in zip("RGBA", ("red_enable", "green_enable", "blue_enable", "alpha_enable"))
+                               if f(n)) or "none") if f("allow_color_write") else "none"
+    cull = f("cull_mode")
+    x["cull_mode"] = enum_name("CullMode", cull)
+    # PicaToVK::FrontFace (pica_to_vk.h): derived from the cull mode alone
+    x["front_face"] = "Clockwise" if cull == 2 else "CounterClockwise"
+    x["scissor_mode"] = enum_name("ScissorMode", f("scissor_mode"))
+    x["depthmap_enable"] = enum_name("DepthBuffering", f("depthmap_enable"))
+    # TextureConfig
+    x["tex0_type_raw"] = enum_name("TextureType", f("tex0_type"))      # read whether or not unit 0 is enabled
+    x["tex2_use_coord1"] = f("tex2_use_coord1") == 1
+    x["fog_flip"] = f("fog_flip") == 1
+    x["shadow_orthographic"] = f("shadow_orthographic") == 1
+    x["combiner_buffer_input"] = f("tev_update_rgb") | f("tev_update_a") << 4
+    x["wrap"] = tuple((enum_name("WrapMode", f(f"tex{u}_wrap_s")), enum_name("WrapMode", f(f"tex{u}_wrap_t")))
+                      for u in range(3))                                # requested_wrap: all three units, as Azahar reads
+    h = hashlib.blake2b(digest_size=6)
+    for n in range(6):
+        src, mod, ops, scl = (regs[REGS[f"tev{n}_{k}"].index] for k in ("sources", "modifiers", "ops", "scales"))
+        if f(f"tev{n}_color_op") == TEV_DOT3_RGBA:                       # the masking of TextureConfig::TextureConfig
+            src, mod, ops = src & 0xFFF, mod & 0xFFF, ops & 0xF
+        h.update(struct.pack("<4I", src, mod, ops, scl))
+    h.update(struct.pack("<B", x["combiner_buffer_input"]))
+    x["tev_masked"] = h.hexdigest()
+    # LightConfig (only when lighting is not disabled)
+    if f("light_disable") == 0:
+        x["light_flags"] = tuple((n, f(f"light_{n}")) for n in (
+            "enable_primary_alpha", "enable_secondary_alpha", "bump_selector", "clamp_highlights",
+            "disable_bump_renorm", "enable_shadow"))
+        x["light_shadow"] = tuple((n, f(f"light_{n}")) for n in (
+            "shadow_primary", "shadow_secondary", "shadow_invert", "shadow_alpha", "shadow_selector")
+        ) if f("light_enable_shadow") else ()
+        lights = []
+        for k in range(f("light_max_index") + 1):
+            num = f(f"light_slot{k}")
+            lights.append((num,) + tuple(f(f"light{num}_{n}") for n in (
+                "directional", "two_sided_diffuse", "geometric_factor_0", "geometric_factor_1")) + (
+                int(not f("light_disable_dist_atten") >> num & 1), int(not f("light_disable_spot_atten") >> num & 1),
+                int(not f("light_disable_shadow") >> num & 1)))
+        x["lights"] = tuple(lights)
+        luts = []
+        for lut in LUT_NAMES:
+            # lut_sp has no enable bit: "a dummy field due to lack of the corresponding register" (pica_fs_config.cpp)
+            on = lut == "sp" or f(f"light_disable_lut_{lut}") == 0
+            luts.append((lut, on, f(f"light_abs_disable_{lut}") == 0 if on else "",
+                         enum_name("LightingLutInput", f(f"light_lut_input_{lut}")) if on else "",
+                         enum_name("LightingScale", f(f"light_lut_scale_{lut}")) if on else ""))
+        x["luts"] = tuple(luts)
+    else:
+        x["light_flags"] = x["light_shadow"] = x["lights"] = x["luts"] = ()
+    # ProcTexConfig (only when texture3 is enabled)
+    if f("proctex_enable"):
+        x["proctex"] = (
+            ("coord", f("proctex_coord")),
+            ("u_clamp", enum_name("ProcTexClamp", f("proctex_u_clamp"))),
+            ("v_clamp", enum_name("ProcTexClamp", f("proctex_v_clamp"))),
+            ("color_combiner", enum_name("ProcTexCombiner", f("proctex_color_combiner"))),
+            ("alpha_combiner", enum_name("ProcTexCombiner", f("proctex_alpha_combiner"))),
+            ("separate_alpha", f("proctex_separate_alpha")),
+            ("noise_enable", f("proctex_noise_enable")),
+            ("u_shift", enum_name("ProcTexShift", f("proctex_u_shift"))),
+            ("v_shift", enum_name("ProcTexShift", f("proctex_v_shift"))),
+            ("lut_width", f("proctex_lut_width")),
+            ("lut_offsets", tuple(f(f"proctex_lut_offset{n}") for n in range(4))),
+            ("lod_min", f("proctex_lut_lod_min")),
+            ("lod_max", f("proctex_lut_lod_max")),
+            ("lut_filter", enum_name("ProcTexFilter", f("proctex_lut_filter"))))
+    else:
+        x["proctex"] = ()
+    return tuple(x.items())
 
 
 # --------------------------------------------------------------------------
@@ -923,7 +1094,8 @@ def analyse(c: LabelCensus) -> Analysis:
             table = groups.setdefault(gname, {})
             table[gkey] = table.get(gkey, 0) + agg.draws
         table = groups.setdefault("full_state", {})
-        table[repr(key)] = table.get(repr(key), 0) + agg.draws
+        base_key = repr(tuple(v for k, v in snap.items() if k != "ext"))     # the N0-13 state: "ext" (N0-40) is not in it
+        table[base_key] = table.get(base_key, 0) + agg.draws
     features = {f: {v: (n, len(fr)) for v, (n, fr) in sorted(t.items())} for f, t in sorted(feats.items())}
     unique = {}
     for gname, t in sorted(groups.items()):
@@ -958,6 +1130,246 @@ def _answer(features: dict, flag: str, total: int) -> dict:
     else:
         answer = "YES" if draws else "NO"
     return {"answer": answer, "draws": draws, "frames": frames}
+
+
+# --------------------------------------------------------------------------
+# N0-40: the pipeline-key groups, the extra features and the union across labels (--union only)
+
+def _h6(text: str) -> str:
+    return hashlib.blake2b(text.encode(), digest_size=6).hexdigest()
+
+
+def _blend_half(x: dict, half: str) -> str:
+    eq, src, dst = x[f"blend_{half}"]
+    return f"{eq}({src}/{dst})"
+
+
+def pipeline_groups(s: dict) -> dict[str, str]:
+    """The groups of the design's 4.3 (docs/native/gpu-fragment-design.md): fs_key, fixed_function, vertex_stage,
+    proctex_config (only for draws that sample the procedural texture), the parts fs_key is made of, and the joint
+    pipeline tuples.  Values are hashes for what is long (fs_key and its parts), readable register values otherwise."""
+    x = dict(s["ext"])
+    blend = s["blend"]
+    # the canonical fragment key (design 4.3): FramebufferConfig as pica_fs_config.cpp builds it, with requested_logic_op
+    # zero while blending is on and a half's requested blend zero unless its equation is Min or Max
+    half = {h: (_blend_half(x, h) if blend and x[f"blend_{h}"][0] in ("Min", "Max") else "-") for h in ("rgb", "a")}
+    framebuffer = (f"scissor={x['scissor_mode']};depthmap={x['depthmap_enable']};shadow={s['frag_mode'] == 'Shadow'};"
+                   f"alpha_test={s['alpha_test'] if s['alpha_test'] != 'off' else 'Always'};blend={blend};"
+                   f"logic_op={'-' if blend else s['logic_op']};rgb={half['rgb']};a={half['a']}")
+    texture = (f"tex0_type={x['tex0_type_raw']};tex2_coord1={x['tex2_use_coord1']};cbi={x['combiner_buffer_input']};"
+               f"fog={s['fog']};fog_flip={x['fog_flip']};shadow_ortho={x['shadow_orthographic']};wrap={x['wrap']};"
+               f"tev={x['tev_masked']}")
+    lighting = repr((s["light_n"], s["light_config"], x["light_flags"], x["light_shadow"], x["lights"], x["luts"],
+                     s["light_bump"])) if s["light_on"] else "off"
+    proctex = repr(x["proctex"]) if x["proctex"] else "off"
+    fs_key = _h6("|".join((framebuffer, texture, lighting, proctex)))
+    if blend:
+        ff_out = f"blend:{_blend_half(x, 'rgb')},{_blend_half(x, 'a')}"
+    else:
+        ff_out = f"logic:{s['logic_op']}"
+    fixed_function = (f"{ff_out};mask={x['color_mask']};depth={s['depth_test']}/{'w' if s['depth_write'] else '-'};"
+                      f"stencil={s['stencil']}[{s['stencil_ops']}];cull={x['cull_mode']};front={x['front_face']}")
+    layout = f"{','.join(s['attrs'])};strides={','.join(map(str, s['strides']))};topology={s['topology']}"
+    vertex_stage = f"vs={s['vs']};{layout}"
+    pass_kind = "ShadowWrite" if s["frag_mode"] == "Shadow" else "Normal"
+    formats = f"{s['color_format']}+{s['depth_format']}"
+    tup = f"{fs_key}|{fixed_function}|{vertex_stage}|{pass_kind}|{formats}"
+    fixup = s["light_on"] and s["use_gs"]       # design 4.3: the fixed geometry shader of lit draws that set the gs bit
+    out = {"fs_key": fs_key, "fixed_function": fixed_function, "vertex_stage": vertex_stage,
+           "fs_key.framebuffer": _h6(framebuffer), "fs_key.texture": _h6(texture), "fs_key.lighting": _h6(lighting),
+           "fs_key.proctex": _h6(proctex),
+           "pipeline_tuple": _h6(tup), "pipeline_tuple+fixup": _h6(f"{tup}|fixup={fixup}")}
+    if x["proctex"]:
+        out["proctex_config"] = ";".join(f"{k}={'/'.join(map(str, v)) if isinstance(v, tuple) else v}"
+                                         for k, v in x["proctex"])
+    return out
+
+
+def ext_features(s: dict) -> dict[str, set[str]]:
+    """The features of the fields decode_ext reads (a draw counts once per value, as draw_features does)."""
+    x = dict(s["ext"])
+    out: dict[str, set[str]] = {}
+
+    def add(feature: str, value: object) -> None:
+        out.setdefault(feature, set()).add(str(value))
+
+    if s["blend"]:
+        for h in ("rgb", "a"):
+            eq, src, dst = x[f"blend_{h}"]
+            add(f"blend_factors_{h}", f"{eq} {src}/{dst}")
+            add("blend_factor_pair", f"{src}/{dst}")
+            add("blend_factor", src)
+            add("blend_factor", dst)
+        add("blend_state", f"rgb {_blend_half(x, 'rgb')}; a {_blend_half(x, 'a')}")
+    add("colour_write_mask", x["color_mask"])
+    add("cull_mode", x["cull_mode"])
+    add("front_face", x["front_face"])
+    add("scissor_mode", x["scissor_mode"])
+    add("depthmap_enable", x["depthmap_enable"])
+    add("texture0_type_register", x["tex0_type_raw"])
+    add("texture2_use_coord1", x["tex2_use_coord1"])
+    add("fog_flip", x["fog_flip"])
+    add("shadow_orthographic", x["shadow_orthographic"])
+    add("combiner_buffer_input", x["combiner_buffer_input"])
+    for (u, *_r) in s["tex"]:
+        ws, wt = x["wrap"][u]
+        add("wrap_mode_unit", f"unit{u}:s={ws}/t={wt}")
+        for axis, w in (("s", ws), ("t", wt)):
+            if w in ("ClampToBorder", "ClampToBorder2"):
+                add("border_wrap_kind", w)
+    for k, v in x["proctex"]:
+        add(f"proctex_{k}", "/".join(map(str, v)) if isinstance(v, tuple) else v)
+    if s["light_on"]:
+        for k, v in x["light_flags"]:
+            if k == "bump_selector":
+                add("light_bump_selector", f"texture {v}")
+            elif v:
+                add("light_config0_flag", k)
+        for k, v in x["light_shadow"]:
+            if v:
+                add("light_shadow_flag", k)
+        for (num, directional, two_sided, gf0, gf1, dist, spot, shadow) in x["lights"]:
+            for name, v in (("directional", directional), ("two_sided_diffuse", two_sided), ("geometric_factor_0", gf0),
+                            ("geometric_factor_1", gf1), ("dist_atten_enable", dist), ("spot_atten_enable", spot),
+                            ("shadow_enable", shadow)):
+                if v:
+                    add("light_flag", name)
+        for (lut, on, absolute, typ, scale) in x["luts"]:
+            if on:
+                add("light_lut_input", f"{lut}:{typ}")
+                add("light_lut_abs_input", f"{lut}:{'abs' if absolute else 'signed'}")
+                add("light_lut_scale", f"{lut}:{scale}")
+    add("lighting_x_geometry_shader",
+        f"lighting {'on' if s['light_on'] else 'off'} + geometry shader {'yes' if s['use_gs'] else 'no'}")
+    return out
+
+
+class ExtAnalysis(NamedTuple):
+    label: str
+    features: dict[str, dict[str, tuple[int, int]]]       # feature -> value -> (draws, frames)
+    groups: dict[str, dict[str, int]]                     # group -> value -> draws
+    draws: int
+
+
+def ext_analyse(c: LabelCensus) -> ExtAnalysis:
+    feats: dict[str, dict[str, list]] = {}
+    groups: dict[str, dict[str, int]] = {}
+    for (key, kind), agg in c.aggs.items():
+        snap = c.snaps[key]
+        for feature, values in ext_features(snap).items():
+            table = feats.setdefault(feature, {})
+            for v in values:
+                slot = table.get(v)
+                if slot is None:
+                    slot = table[v] = [0, set()]
+                slot[0] += agg.draws
+                slot[1].update(agg.frames)
+        for gname, gkey in pipeline_groups(snap).items():
+            table = groups.setdefault(gname, {})
+            table[gkey] = table.get(gkey, 0) + agg.draws
+    features = {f: {v: (n, len(fr)) for v, (n, fr) in sorted(t.items())} for f, t in sorted(feats.items())}
+    return ExtAnalysis(c.label, features, dict(sorted(groups.items())), c.total_draws)
+
+
+def union_groups(exts: Sequence[ExtAnalysis]) -> dict[str, dict]:
+    """group -> {"union": distinct values over all labels, "values": {value: {label: draws}}, "per_label": {...}}:
+    the same value in two captures counts once in the union (and once in each label's own count)."""
+    names = sorted({g for e in exts for g in e.groups})
+    out: dict[str, dict] = {}
+    for g in names:
+        values: dict[str, dict[str, int]] = {}
+        for e in exts:
+            for v, n in e.groups.get(g, {}).items():
+                values.setdefault(v, {})[e.label] = n
+        per_label = {}
+        for e in exts:
+            mine = e.groups.get(g, {})
+            per_label[e.label] = {"distinct": len(mine), "only_here": sum(1 for v in mine if len(values[v]) == 1),
+                                  "draws": sum(mine.values())}
+        out[g] = {"union": len(values), "in_every_label": sum(1 for v in values.values() if len(v) == len(exts)),
+                  "values": values, "per_label": per_label}
+    return out
+
+
+UNION_TOP = 20
+UNION_ALL_BELOW = 40        # groups with at most this many distinct values are listed in full in the markdown
+
+
+def _top_values(info: dict, limit: int) -> list[tuple[str, dict[str, int]]]:
+    return sorted(info["values"].items(), key=lambda kv: (-sum(kv[1].values()), kv[0]))[:limit]
+
+
+def build_union_json(exts: Sequence[ExtAnalysis]) -> dict:
+    ug = union_groups(exts)
+    return {
+        "labels": [e.label for e in exts],
+        "groups": {g: {"union": info["union"], "in_every_label": info["in_every_label"],
+                       "per_label": info["per_label"],
+                       "top": [{"value": v, "draws": per} for v, per in _top_values(info, UNION_TOP)]}
+                   for g, info in ug.items()},
+        "features": {e.label: {f: {v: {"draws": n, "frames": fr} for v, (n, fr) in t.items()}
+                               for f, t in e.features.items()} for e in exts},
+    }
+
+
+EXT_TABLES = [
+    ("Blend", ["blend_factors_rgb", "blend_factors_a", "blend_factor_pair", "blend_factor", "blend_state"]),
+    ("Fixed-function and rasterizer state", ["colour_write_mask", "cull_mode", "front_face", "scissor_mode", "depthmap_enable"]),
+    ("Texture and fog fields of FSConfig", ["texture0_type_register", "texture2_use_coord1", "fog_flip",
+                                            "shadow_orthographic", "combiner_buffer_input", "wrap_mode_unit",
+                                            "border_wrap_kind"]),
+    ("Procedural texture (ProcTexConfig), draws with texture3 enabled",
+     ["proctex_coord", "proctex_u_clamp", "proctex_v_clamp", "proctex_color_combiner", "proctex_alpha_combiner",
+      "proctex_separate_alpha", "proctex_noise_enable", "proctex_u_shift", "proctex_v_shift", "proctex_lut_width",
+      "proctex_lut_offsets", "proctex_lod_min", "proctex_lod_max", "proctex_lut_filter"]),
+    ("Lighting (LightConfig), lit draws", ["light_config0_flag", "light_bump_selector", "light_shadow_flag", "light_flag",
+                                           "light_lut_input", "light_lut_abs_input", "light_lut_scale"]),
+]
+
+
+def build_union_markdown(exts: Sequence[ExtAnalysis]) -> str:
+    labels = [e.label for e in exts]
+    ug = union_groups(exts)
+    L: list[str] = ["", "# Pipeline-key groups and the union across captures (N0-40)", "",
+                    "Written by `tools/native/pica_census.py --union`. The groups follow `docs/native/gpu-fragment-design.md` "
+                    "4.3: `fs_key` is the canonical fragment key (Azahar's `FSConfig::FSConfig(regs)` fields, "
+                    "`requested_logic_op` zero while blending is on, a half's requested blend zero unless its equation is "
+                    "Min or Max, the Dot3_RGBA stage masking applied, the wrap modes of all three units as Azahar reads "
+                    "them; the user word and the gas word are not registers and are not in it); `fixed_function` holds the "
+                    "blend equations and factors (or the logic op when blending is off), the colour write mask, depth, "
+                    "stencil, cull mode and front face; `vertex_stage` holds the vertex program hash, the vertex layout and "
+                    "the topology; `proctex_config` the `ProcTexConfig` fields of the draws that sample texture 3. The joint "
+                    "`pipeline_tuple` is (`fs_key`, `fixed_function`, `vertex_stage`, pass kind, logical colour and depth "
+                    "formats); `pipeline_tuple+fixup` adds the fixup stage (lighting on and geometry shader bit set). "
+                    "A value seen in several captures counts once in the union. Hashes are 6-byte BLAKE2b digests.", ""]
+    L += ["## Distinct values per group", "",
+          "Cells are \"distinct values (of them only in this capture's label)\"; the draws are all draws of the label "
+          "that have the group (every draw for all groups but `proctex_config`).", ""]
+    rows = []
+    for g, info in ug.items():
+        rows.append([g] + [f"{info['per_label'][l]['distinct']} ({info['per_label'][l]['only_here']})" for l in labels]
+                    + [info["union"], info["in_every_label"]])
+    L += _table(["group"] + labels + ["union", "in every label"], rows)
+    L += _table(["draws with the group"] + labels,
+                [[g] + [info["per_label"][l]["draws"] for l in labels] for g, info in ug.items()])
+    L += ["## Lit draws against geometry shader", ""]
+    L += ["Cells are \"draws (frames)\".", ""]
+    L += _table(["lighting + geometry shader"] + labels, _feature_rows(exts, "lighting_x_geometry_shader"))
+    for title, feats in EXT_TABLES:
+        L += [f"## {title}", ""]
+        for feature in feats:
+            rows = _feature_rows(exts, feature, limit=30)
+            if rows:
+                L += _table([feature] + labels, rows)
+    for g in ("fixed_function", "proctex_config", "vertex_stage"):
+        info = ug.get(g)
+        if not info:
+            continue
+        shown = _top_values(info, UNION_ALL_BELOW)
+        L += [f"## `{g}` values" + ("" if len(info["values"]) <= UNION_ALL_BELOW else f" (top {UNION_ALL_BELOW} of {len(info['values'])})"),
+              "", "Cells are draws.", ""]
+        L += _table(["value"] + labels, [[v] + [per.get(l, 0) for l in labels] for v, per in shown])
+    return "\n".join(L).rstrip() + "\n"
 
 
 # --------------------------------------------------------------------------
@@ -1185,7 +1597,7 @@ def parse_specs(specs: Sequence[str]) -> list[tuple[str, list[str]]]:
 
 
 def run(specs: Sequence[str], json_path: str | None, md_path: str | None, strict: bool,
-        out=None, err=None) -> int:
+        out=None, err=None, union: bool = False) -> int:
     out = out or sys.stdout
     err = err or sys.stderr
     try:
@@ -1230,10 +1642,14 @@ def run(specs: Sequence[str], json_path: str | None, md_path: str | None, strict
     if empty:
         print(f"{TOOL}: warning: no draw trigger in label(s) {', '.join(empty)}", file=err)
     outputs = []
+    exts = [ext_analyse(c) for c in censuses] if union else []
     if md_path:
-        outputs.append((md_path, build_markdown(analyses)))
+        outputs.append((md_path, build_markdown(analyses) + (build_union_markdown(exts) if union else "")))
     if json_path:
-        outputs.append((json_path, json.dumps(build_json(analyses), indent=1, sort_keys=True) + "\n"))
+        doc = build_json(analyses)
+        if union:
+            doc["union"] = build_union_json(exts)
+        outputs.append((json_path, json.dumps(doc, indent=1, sort_keys=True) + "\n"))
     try:
         write_all(outputs)
     except OSError as e:
@@ -1284,7 +1700,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "  python3 tools/native/pica_census.py \\\n"
                 "      'G1=build/golden/G1/gpu-*.mgpu' 'G2=build/golden/G2/gpu-*.mgpu' \\\n"
                 "      'G3=build/golden/G3/gpu-*.mgpu' 'G4=build/golden/G4/gpu-*.mgpu' \\\n"
-                "      --json build/pica-census.json --md docs/research/pica-census.md\n\n"
+                "      --json build/pica-census.json --md docs/research/pica-census.md\n"
+                "  (run as written, this OVERWRITES docs/research/pica-census.md: pass --json and --md for other runs)\n\n"
+                "N0-40: add the G9a, G9b, G9c labels, --union, and --json build/pica-census-union.json "
+                "--md build/pica-census-union.md\n\n"
                 "exit codes: 0 ok; 1 a capture failed its checks (nothing written); 2 usage; "
                 "3 nothing censused (no draw trigger in any capture, or in any label with --strict)"))
     ap.add_argument("captures", nargs="+", metavar="LABEL=PATH",
@@ -1293,8 +1712,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument("--md", metavar="FILE", default="docs/research/pica-census.md",
                     help="markdown output (default %(default)s)")
     ap.add_argument("--strict", action="store_true", help="exit 3 when any label has no draw trigger")
+    ap.add_argument("--union", action="store_true",
+                    help="N0-40: also count the pipeline-key groups (fs_key, fixed_function, vertex_stage, proctex_config, "
+                         "the joint tuple) per label and over all labels together; the sections are appended to the markdown "
+                         "and the JSON gets a \"union\" key")
     args = ap.parse_args(argv)
-    return run(args.captures, args.json, args.md, args.strict)
+    return run(args.captures, args.json, args.md, args.strict, union=args.union)
 
 
 if __name__ == "__main__":
