@@ -1,4 +1,5 @@
-# Derived from Azahar src/video_core/pica/regs_internal.h, regs_pipeline.h, regs_rasterizer.h, regs_texturing.h,
+# Derived from Azahar src/video_core/pica/pica_fs_config.cpp (Dot3_RGBA masking, the canonical key inputs),
+# src/video_core/renderer_vulkan/pica_to_vk.h (FrontFace), src/video_core/pica/regs_internal.h, regs_pipeline.h, regs_rasterizer.h, regs_texturing.h,
 # regs_framebuffer.h, regs_lighting.h, regs_shader.h, pica_core.cpp, src/video_core/renderer_vulkan/vk_rasterizer.cpp
 # src/video_core/renderer_opengl/gl_rasterizer.cpp and src/video_core/shader/generator/spv_fs_shader_gen.cpp at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-3.0-or-later:
 # vk_rasterizer.cpp says "Licensed under GPLv3 or any later version"; the other files say "Licensed under GPLv2 or
@@ -1133,12 +1134,13 @@ def test_fs_key_fields_each_split_the_key(tmp_path):
         "light flag": [W(0x1C6, 0), W(0x1D9, 0), W(0x149, 1)],
         "proctex": PROCTEX,
         "tex0 type register": [W(0x83, 1 << 28)],
+        "shadow rendering": [W(0x100, 3)],                           # Shadow fragment operation mode
     }
     lists = [base + [DRAW]]
     for ws in changes.values():
         lists.append(base + ws + [DRAW])
         lists.append([W(0x80, 0b001), W(0x9B, 0), W(0xE0, 0), W(0x8B, 0), W(0x65, 0), W(0x6D, 0), W(0x104, 0), W(0x1C6, 1),
-                      W(0x83, 0), W(0x149, 0), DRAW])                  # back to the base state
+                      W(0x83, 0), W(0x149, 0), W(0x100, 0), DRAW])     # back to the base state
     e = ext_one(build(tmp_path / "a.mgpu", lists))
     # the base state and one new key per change: every field of `changes` splits the key
     assert len(egroup(e, "fs_key")) == 1 + len(changes)
@@ -1151,7 +1153,16 @@ def test_lighting_fields_each_split_the_key_only_while_lighting_is_on(tmp_path):
         "LUT absolute flag": [W(0x1D0, 1 << 1)],
         "LUT scale": [W(0x1D2, 1)],
         "config0 flag": [W(0x1C3, 1 << 2)],
-        "shadow selector": [W(0x1C3, 2 << 22)],
+        "bump selector": [W(0x1C3, 2 << 22)],                        # config0.bump_selector, bits 22-23
+        "bump mode": [W(0x1C3, 1 << 28)],                            # config0.bump_mode, bits 28-29
+        "disable bump renorm": [W(0x1C3, 1 << 30)],
+        "enable shadow": [W(0x1C3, 1)],                              # config0.enable_shadow, bit 0
+    }
+    # the shadow fields are read only while enable_shadow is set: changed against a base that has it set
+    shadow_on = 1
+    shadow_changes = {
+        "shadow primary": 1 << 16, "shadow secondary": 1 << 17, "shadow invert": 1 << 18, "shadow alpha": 1 << 19,
+        "shadow selector": 2 << 24,
     }
     lit = [W(0x1C6, 0), W(0x1C2, 1), W(0x1D9, 6 | (2 << 4)), W(0x1C3, 0), W(0x149 + 0x10 * 6, 0), W(0x1D0, 0),
            W(0x1D1, 0), W(0x1D2, 0)]
@@ -1159,10 +1170,13 @@ def test_lighting_fields_each_split_the_key_only_while_lighting_is_on(tmp_path):
         lists = [lit + [light_reg, DRAW]]
         for ws in changes.values():
             lists.append(lit + ws + [light_reg, DRAW])
+        for bits in shadow_changes.values():
+            lists.append(lit + [W(0x1C3, shadow_on | bits), light_reg, DRAW])
         e = ext_one(build(tmp_path / f"{state}.mgpu", lists))
         distinct = len(egroup(e, "fs_key"))
         # one key for the base and one more for each change while lighting is on; none while it is off
-        assert distinct == (1 + len(changes) if state == "on" else 1), (state, distinct)
+        expected = 1 + len(changes) + len(shadow_changes)
+        assert distinct == (expected if state == "on" else 1), (state, distinct)
 
 
 def test_tev_masking_of_dot3_rgba_merges_keys_but_census_tev_hash_does_not(tmp_path):
@@ -1193,15 +1207,20 @@ def test_vertex_stage_is_program_layout_and_topology(tmp_path):
 
 
 def test_fixed_function_holds_depth_stencil_cull_and_mask(tmp_path):
-    p = build(tmp_path / "a.mgpu", [
-        [DRAW],
-        [W(0x107, 1 | (5 << 4) | (1 << 12)), DRAW],                  # depth test LessThanOrEqual with write
+    depth = 1 | (5 << 4) | (1 << 12)                                 # depth test LessThanOrEqual with write
+    lists = [
+        [W(0x113, 1), DRAW],                                         # allow_color_write: the mask is "none" without it
+        [W(0x107, depth), DRAW],
         [W(0x105, 1), DRAW],                                         # stencil
         [W(0x40, 2), DRAW],                                          # cull
-        [W(0x107, 0xB00), DRAW],                                     # colour mask
-    ])
-    e = ext_one(p)
-    assert len(egroup(e, "fixed_function")) == 5
+    ]
+    e = ext_one(build(tmp_path / "a.mgpu", lists))
+    assert len(egroup(e, "fixed_function")) == 4
+    # only the colour write mask (bits 8-11 of 0x107, the depth bits kept) changes in the last draw
+    f = ext_one(build(tmp_path / "b.mgpu", lists + [[W(0x107, depth | 0xB00), DRAW]]))
+    values = egroup(f, "fixed_function")
+    assert len(values) == 5
+    assert sum("mask=RGA;" in v for v in values) == 1 and all("mask=none;" in v for v in egroup(e, "fixed_function"))
 
 
 def test_joint_tuple_includes_pass_kind_and_formats(tmp_path):

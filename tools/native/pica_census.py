@@ -1147,7 +1147,8 @@ def _blend_half(x: dict, half: str) -> str:
 def needs_fixup(s: dict) -> bool:
     """The fixup stage of the design's 4.3 and 5.5: the fixed geometry shader applies to lit draws shaded by the
     translated (hardware) vertex shader, that is lighting on and the game's geometry shader not in use (use_gs clear,
-    the draws Azahar's AccelerateDraw accepts).  Draws that set use_gs are CPU draws and take no fix-up."""
+    the draws Azahar's AccelerateDraw accepts).  Draws that set use_gs are CPU draws and take no fix-up.
+    Azahar refuses any use_gs other than No (the raw values 1 and 3 too); use_gs here is true only for the value 2, which differs only for raw values these captures do not contain."""
     return bool(s["light_on"] and not s["use_gs"])
 
 
@@ -1347,7 +1348,7 @@ def build_union_markdown(exts: Sequence[ExtAnalysis]) -> str:
                     "stencil, cull mode and front face; `vertex_stage` holds the vertex program hash, the vertex layout and "
                     "the topology; `proctex_config` the `ProcTexConfig` fields of the draws that sample texture 3. The joint "
                     "`pipeline_tuple` is (`fs_key`, `fixed_function`, `vertex_stage`, pass kind, logical colour and depth "
-                    "formats); `pipeline_tuple+fixup` adds the fixup stage (lighting on and the vertex stage is the hardware one, geometry shader bit clear). "
+                    "formats); `pipeline_tuple+fixup` adds the fixup stage (lighting on and the vertex stage is the hardware one, that is the game does not use its geometry shader: pipeline.use_gs clear). "
                     "A value seen in several captures counts once in the union. Hashes are 6-byte BLAKE2b digests.", ""]
     L += ["## Distinct values per group", "",
           "Cells are \"distinct values (of them only in this capture's label)\"; the draws are all draws of the label "
