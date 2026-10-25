@@ -16,13 +16,12 @@ namespace {
 using ::plume::RenderTextureLayout;
 using namespace targets;
 
-VkImageAspectFlags AspectFor(const Image::Impl& image, ImageAspect aspect) {
+VkImageAspectFlags AspectFor(ImageAspect aspect) {
     switch (aspect) {
     case ImageAspect::Color: return VK_IMAGE_ASPECT_COLOR_BIT;
     case ImageAspect::Depth: return VK_IMAGE_ASPECT_DEPTH_BIT;
     case ImageAspect::Stencil: return VK_IMAGE_ASPECT_STENCIL_BIT;
     }
-    (void)image;
     return VK_IMAGE_ASPECT_COLOR_BIT;
 }
 
@@ -155,7 +154,7 @@ void Recorder::CopyBufferToImage(const Buffer& src, Image& dst, std::span<const 
         CheckMip(img, region.mip_level, region.layer);
         VkBufferImageCopy copy = {};
         copy.bufferOffset = region.buffer_offset;  // rows and slices tightly packed
-        copy.imageSubresource = {AspectFor(img, region.aspect), region.mip_level, region.layer, 1};
+        copy.imageSubresource = {AspectFor(region.aspect), region.mip_level, region.layer, 1};
         copy.imageOffset = {region.image_rect.x, region.image_rect.y, 0};
         copy.imageExtent = {region.image_rect.width, region.image_rect.height, 1};
         copies.push_back(copy);
@@ -180,7 +179,7 @@ void Recorder::CopyImageToBuffer(const Image& src, Buffer& dst, std::span<const 
         CheckMip(img, region.mip_level, region.layer);
         VkBufferImageCopy copy = {};
         copy.bufferOffset = region.buffer_offset;
-        copy.imageSubresource = {AspectFor(img, region.aspect), region.mip_level, region.layer, 1};
+        copy.imageSubresource = {AspectFor(region.aspect), region.mip_level, region.layer, 1};
         copy.imageOffset = {region.image_rect.x, region.image_rect.y, 0};
         copy.imageExtent = {region.image_rect.width, region.image_rect.height, 1};
         copies.push_back(copy);

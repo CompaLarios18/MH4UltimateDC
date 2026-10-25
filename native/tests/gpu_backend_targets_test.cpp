@@ -11,7 +11,7 @@
 // Run it as the PC's paths would: MH4N_RHI_MASK=d24s8,interlock,bc7,direct_upload,custom_border_color,timeline
 // ctest --test-dir build/native -R '^gpu_backend_targets_test$' (docs/native/rhi.md lists the masks).
 //
-// The swapchain frames are the one case that needs a surface (`swapchain/three_frames_over_a_headless_surface`); no
+// The swapchain frames are the one case that needs a surface (`swapchain/frames_over_a_headless_surface_more_than_it_has_images`); no
 // other case does, so on a machine whose loader lacks VK_EXT_headless_surface (the RX 6700 XT's Windows loader) the
 // rest of the file runs and that case fails under MH4N_REQUIRE_VULKAN=1 or skips.
 #include <doctest/doctest.h>
@@ -294,6 +294,9 @@ TEST_CASE("formats/the_chooser_follows_the_support_table_on_devices_this_machine
     CHECK(ChooseFormatWith(Format::Rgb5A1, FormatUse::ColorTarget, caps, table({Format::A1R5G5B5})).format == Format::A1R5G5B5);
     // Both orders usable: the PICA's own bits win.
     CHECK(ChooseFormatWith(Format::Rgb565, FormatUse::ColorTarget, caps, table({Format::B5G6R5, Format::R5G6B5})).format == Format::R5G6B5);
+    CHECK(ChooseFormatWith(Format::Rgb5A1, FormatUse::ColorTarget, caps, table({Format::A1R5G5B5, Format::B5G5R5A1, Format::R5G5B5A1})).format == Format::R5G5B5A1);
+    CHECK(ChooseFormatWith(Format::Rgb5A1, FormatUse::ColorTarget, caps, table({Format::A1R5G5B5, Format::B5G5R5A1})).format == Format::B5G5R5A1);  // the second order beats the third
+    CHECK(ChooseFormatWith(Format::Rgba4, FormatUse::ColorTarget, caps, table({Format::B4G4R4A4, Format::R4G4B4A4})).format == Format::R4G4B4A4);
     // Nothing usable: Rgba8 and the conversion the caller owes.
     for (Format f : {Format::Rgb565, Format::Rgb5A1, Format::Rgba4}) {
         const ChosenFormat none = ChooseFormatWith(f, FormatUse::ColorTarget, caps, table({}));
@@ -480,22 +483,31 @@ TEST_CASE("images/each_depth_format_cleared_and_copied_as_two_regions") {
     }
 }
 
+// This pins "no direct path exists yet": the module never acts on Capabilities::direct_upload (an image made here is
+// never host-writable, so every upload is staged), and the case says so by showing that the unmasked run and the run with
+// the bit masked off count the same staging copies and give the same bytes. A direct path would change the first count.
 TEST_CASE("images/an_upload_goes_through_a_staging_buffer_with_direct_upload_on_or_masked") {
+    const std::vector<u8> data = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16};
+    u64 staged[2] = {0, 0};
+    std::vector<u8> read[2];
     for (const bool masked : {false, true}) {
         std::shared_ptr<Backend> backend = masked ? MakeBackend({Cap::DirectUpload}) : MakeBackend();
         if (!backend) return;
-        CHECK(backend->Caps().direct_upload == (masked ? false : backend->Caps().direct_upload));
+        if (masked) CHECK_FALSE(backend->Caps().direct_upload);
         std::shared_ptr<Image> image = MakeImage(*backend, Format::Rgba8Unorm, 2, 2);
-        const std::vector<u8> data = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16};
         const u64 before = StagingUploadCount(*backend);
         Recorder rec = backend->BeginRecording();
         BufferImageRegion region;
         region.image_rect = Rect{0, 0, 2, 2};
         REQUIRE(UploadToImage(*backend, rec, *image, region, data).ok());
         Run(*backend, std::move(rec));
-        CHECK(StagingUploadCount(*backend) == before + 1);  // counted: one staging buffer
-        CHECK(ReadBack(*backend, *image, 2, 2, 4) == data);
+        staged[masked] = StagingUploadCount(*backend) - before;
+        read[masked] = ReadBack(*backend, *image, 2, 2, 4);
+        CHECK(staged[masked] == 1);  // one staging buffer, counted
+        CHECK(read[masked] == data);
     }
+    CHECK(staged[0] == staged[1]);
+    CHECK(read[0] == read[1]);
 }
 
 TEST_CASE("images/storage_usage_only_on_shadow_sources") {
@@ -1425,7 +1437,7 @@ TEST_CASE("external/a_wrapped_image_is_cleared_copied_and_not_destroyed_with_its
 // The case that needs a surface. On the RX 6700 XT the Windows loader lists no VK_EXT_headless_surface, so the
 // surface there comes from a real window (docs/native/rhi.md "A surface from the caller"): this case cannot run
 // there, and every other case of this file does not need a surface.
-TEST_CASE("swapchain/three_frames_over_a_headless_surface") {
+TEST_CASE("swapchain/frames_over_a_headless_surface_more_than_it_has_images") {
     InstanceOptions options;
     options.headless_surface = true;
     std::shared_ptr<Instance> instance = test::RequireInstance(options);
@@ -1502,7 +1514,9 @@ TEST_CASE("swapchain/three_frames_over_a_headless_surface") {
     REQUIRE(vkCreateSemaphore(handles.device, &semaphore_info, nullptr, &rendered) == VK_SUCCESS);
     TraceBarriers trace;
     std::vector<u32> frames_of_image(image_count, 0);
-    for (int frame = 0; frame < 3; ++frame) {
+    int reused = 0;  // acquisitions of an image that was presented before: the held PRESENT is read as UNDEFINED
+    constexpr int kFrames = 6;
+    for (int frame = 0; frame < kFrames; ++frame) {
         u32 index = 0;
         REQUIRE(vkAcquireNextImageKHR(handles.device, swapchain, UINT64_MAX, VK_NULL_HANDLE, acquired, &index) == VK_SUCCESS);
         REQUIRE(vkWaitForFences(handles.device, 1, &acquired, VK_TRUE, UINT64_MAX) == VK_SUCCESS);
@@ -1512,6 +1526,7 @@ TEST_CASE("swapchain/three_frames_over_a_headless_surface") {
         rec.PrepareForPresent(*wrapped[index]);  // before every present
         backend->Submit(std::move(rec));
         CHECK(wrapped[index]->impl().vulkan()->textureLayout == ::plume::RenderTextureLayout::PRESENT);
+        if (frames_of_image[index] > 0) ++reused;
         ++frames_of_image[index];
         // The test's stand-in for what N2b-06 supplies (docs/native/rhi.md): the frame is rendered by a submission
         // that has no binary semaphore, so an empty batch submitted after it on the queue signals one (its first
@@ -1538,6 +1553,9 @@ TEST_CASE("swapchain/three_frames_over_a_headless_surface") {
     }
     // The held layout after a present is PRESENT_SRC_KHR; the first operation after the next acquire leaves it as
     // UNDEFINED (contents not kept), so no barrier ever names PRESENT_SRC_KHR as its old layout.
+    CHECK(image_count < static_cast<u32>(kFrames));
+    CHECK(reused >= kFrames - static_cast<int>(image_count));  // more frames than images: every image comes back
+    CHECK(reused > 0);
     for (u32 i = 0; i < image_count; ++i) {
         const Layouts chain = trace.Of(images[i]);
         if (frames_of_image[i] == 0) continue;
@@ -1555,4 +1573,224 @@ TEST_CASE("swapchain/three_frames_over_a_headless_surface") {
     vkDestroySemaphore(handles.device, rendered, nullptr);
     vkDestroyFence(handles.device, acquired, nullptr);
     vkDestroySwapchainKHR(handles.device, swapchain, nullptr);
+}
+
+// ---- review round 1: the cases that were missing --------------------------------------------------------------------
+
+TEST_CASE("images/a_non_cube_image_has_one_or_six_layers") {
+    std::shared_ptr<Backend> backend = MakeBackend();
+    if (!backend) return;
+    ImageDesc desc;
+    desc.format = Format::Rgba8Unorm;
+    desc.width = desc.height = 4;
+    desc.layers = 2;
+    Result<std::shared_ptr<Image>> two = backend->CreateImage(desc);
+    REQUIRE_FALSE(two.ok());
+    CHECK(two.error().find("1 or 6 layers") != std::string::npos);
+    desc.layers = 3;
+    CHECK_FALSE(backend->CreateImage(desc).ok());
+    desc.layers = 6;
+    CHECK(backend->CreateImage(desc).ok());  // an array of six
+    desc.cube = true;
+    CHECK(backend->CreateImage(desc).ok());   // a cube
+    desc.layers = 1;
+    CHECK_FALSE(backend->CreateImage(desc).ok());  // a cube has six
+}
+
+TEST_CASE("passes/a_clear_in_a_pass_kept_open_is_done_inside_it") {
+    std::shared_ptr<Backend> backend = MakeBackend();
+    if (!backend) return;
+    const std::shared_ptr<Pipeline> red = MakePipeline(*backend, Spv(spv_fs_vert), Spv(spv_red_frag), Format::Rgba8Unorm, Format::Undefined);
+    std::shared_ptr<Image> x = MakeImage(*backend, Format::Rgba8Unorm, 4, 4);
+    CountRenderPasses counter;
+    Recorder rec = backend->BeginRecording();
+    rec.BeginTargetPass(Pass(x.get(), nullptr, {0, 0, 0, 1}));
+    rec.SetPipeline(*red);
+    rec.Draw(3);                                                // red everywhere
+    rec.BeginTargetPass(Pass(x.get(), nullptr, {0, 1, 0, 1}));  // same attachments and area: kept open, cleared green
+    CHECK(counter.Count() == 1);
+    Run(*backend, std::move(rec));                              // no draw after the clear
+    const std::vector<u8> pixels = ReadBack(*backend, *x, 4, 4, 4);
+    for (u32 i = 0; i < 16; ++i) CHECK(Texel(pixels, 4, i % 4, i / 4) == std::array<u8, 4>{0, 255, 0, 255});
+}
+
+TEST_CASE("images/a_linear_blit_averages_and_a_nearest_blit_picks_a_texel") {
+    std::shared_ptr<Backend> backend = MakeBackend();
+    if (!backend) return;
+    // 2x2: the left column has red 0, the right column red 200 (blue 0, alpha 255 everywhere); the middle of the
+    // image is where the 1x1 destination samples, equally far from the four texels: (0 + 200 + 0 + 200) / 4 = 100.
+    const std::vector<u8> data = {0, 0, 0, 255, 200, 0, 0, 255, 0, 0, 0, 255, 200, 0, 0, 255};
+    for (const bool linear : {true, false}) {
+        std::shared_ptr<Image> src = MakeImage(*backend, Format::Rgba8Unorm, 2, 2);
+        std::shared_ptr<Image> dst = MakeImage(*backend, Format::Rgba8Unorm, 1, 1);
+        Recorder rec = backend->BeginRecording();
+        BufferImageRegion upload;
+        upload.image_rect = Rect{0, 0, 2, 2};
+        REQUIRE(UploadToImage(*backend, rec, *src, upload, data).ok());
+        ImageBlitRegion region;
+        region.src = Rect{0, 0, 2, 2};
+        region.dst = Rect{0, 0, 1, 1};
+        rec.Blit(*src, *dst, std::span<const ImageBlitRegion>(&region, 1), linear);
+        Run(*backend, std::move(rec));
+        const std::array<u8, 4> texel = Texel(ReadBack(*backend, *dst, 1, 1, 4), 1, 0, 0);
+        if (linear) {
+            CHECK(texel == std::array<u8, 4>{100, 0, 0, 255});
+        } else {
+            CHECK((texel[0] == 0 || texel[0] == 200));  // a texel of the source, never the average
+            CHECK(texel[3] == 255);
+        }
+    }
+}
+
+TEST_CASE("images/an_integer_image_is_cleared_with_integers") {
+    std::shared_ptr<Backend> backend = MakeBackend();
+    if (!backend) return;
+    {
+        std::shared_ptr<Image> image = MakeImage(*backend, Format::R32Uint, 2, 2);
+        Recorder rec = backend->BeginRecording();
+        rec.ClearImage(*image, Color(123456.0f, 0, 0, 0));  // an integer image takes the value as an integer, not as float bits
+        Run(*backend, std::move(rec));
+        const std::vector<u8> bytes = ReadBack(*backend, *image, 2, 2, 4);
+        for (u32 i = 0; i < 4; ++i) CHECK(Word(bytes, i, 4) == 123456u);
+    }
+    {
+        std::shared_ptr<Image> image = MakeImage(*backend, Format::Rgba8Uint, 2, 2);
+        Recorder rec = backend->BeginRecording();
+        rec.ClearImage(*image, Color(1, 2, 3, 4));
+        Run(*backend, std::move(rec));
+        const std::vector<u8> bytes = ReadBack(*backend, *image, 2, 2, 4);
+        for (u32 i = 0; i < 4; ++i) CHECK(Texel(bytes, 2, i % 2, i / 2) == std::array<u8, 4>{1, 2, 3, 4});
+    }
+}
+
+TEST_CASE("bindings/two_sets_acquired_in_one_recorder_are_two_sets") {
+    std::shared_ptr<Backend> backend = MakeBackend();
+    if (!backend) return;
+    const std::shared_ptr<Pipeline> fetch = MakePipeline(*backend, Spv(spv_fs_vert), Spv(spv_fetch_frag), Format::Rgba8Unorm,
+                                                          Format::Undefined, {}, {kSampledAndSampler});
+    const std::shared_ptr<Sampler> sampler = NearestSampler(*backend);
+    BindingArena arena(backend);
+    std::shared_ptr<Image> a = MakeImage(*backend, Format::Rgba8Unorm, 4, 4);
+    std::shared_ptr<Image> b = MakeImage(*backend, Format::Rgba8Unorm, 4, 4);
+    std::shared_ptr<Image> target = MakeImage(*backend, Format::Rgba8Unorm, 4, 4);
+    Recorder rec = backend->BeginRecording();
+    rec.ClearImage(*a, Color(1, 0, 0, 1));
+    rec.ClearImage(*b, Color(0, 1, 0, 1));
+    rec.BeginTargetPass(Pass(target.get()));
+    BindingSet* first = SampleSet(arena, *a, *sampler);
+    BindingSet* second = SampleSet(arena, *b, *sampler);  // the first is still pending for this recorder
+    CHECK(first != second);
+    rec.SetPipeline(*fetch);
+    rec.SetScissor(Rect{0, 0, 2, 4});
+    rec.Bind(*first, 0);
+    rec.Draw(3);
+    rec.SetScissor(Rect{2, 0, 2, 4});
+    rec.Bind(*second, 0);
+    rec.Draw(3);
+    Run(*backend, std::move(rec));
+    const std::vector<u8> pixels = ReadBack(*backend, *target, 4, 4, 4);
+    for (u32 i = 0; i < 16; ++i) {
+        CHECK(Texel(pixels, 4, i % 4, i / 4) == (i % 4 < 2 ? std::array<u8, 4>{255, 0, 0, 255} : std::array<u8, 4>{0, 255, 0, 255}));
+    }
+}
+
+TEST_CASE("owner_rule/a_hand_over_by_a_thread_that_does_not_own_the_image_is_a_breach_and_does_nothing") {
+    REQUIRE_CHECKS_COMPILED_IN();
+    std::shared_ptr<Backend> backend = MakeBackend();
+    if (!backend) return;
+    BreachCapture breaches;
+    std::shared_ptr<Image> image = MakeImage(*backend, Format::Rgba8Unorm, 4, 4);  // this thread owns it
+    std::thread other([&] { HandOver(*image, std::this_thread::get_id(), Wait{1, Stage::FragmentShader}); });
+    other.join();
+    CHECK(breaches.Count(OwnerRule::ForeignThread) == 1);
+    CHECK(breaches.Total() == 1);
+    CHECK_FALSE(image->impl().handover_pending);  // nothing was handed over
+    Recorder rec = backend->BeginRecording();     // so the owner still records without a call
+    rec.ClearImage(*image, Color(1, 0, 0, 1));
+    CHECK(rec.impl().required_waits.empty());
+    backend->WaitIdle(backend->Submit(std::move(rec)));
+    CHECK(breaches.Total() == 1);
+}
+
+TEST_CASE("images/the_depth_and_stencil_views_are_their_aspects") {
+    for (const bool masked : {false, true}) {
+        std::shared_ptr<Backend> backend = masked ? MakeBackend({Cap::D24S8}) : MakeBackend();
+        if (!backend) return;
+        std::shared_ptr<Image> colour = MakeImage(*backend, Format::Rgba8Unorm, 4, 4);
+        std::shared_ptr<Image> d16 = MakeImage(*backend, Format::D16Unorm, 4, 4);
+        std::shared_ptr<Image> ds = MakeImage(*backend, Format::D24S8, 4, 4);  // D24S8, or D32S8 when masked
+        CHECK(targets::GetView(colour->impl(), ImageView::Depth) == VK_NULL_HANDLE);
+        CHECK(targets::GetView(colour->impl(), ImageView::Stencil) == VK_NULL_HANDLE);
+        CHECK(targets::GetView(colour->impl(), ImageView::Sampled) != VK_NULL_HANDLE);
+        CHECK(targets::GetView(d16->impl(), ImageView::Depth) != VK_NULL_HANDLE);
+        CHECK(targets::GetView(d16->impl(), ImageView::Stencil) == VK_NULL_HANDLE);  // no stencil plane
+        CHECK(targets::GetView(ds->impl(), ImageView::Depth) != VK_NULL_HANDLE);
+        CHECK(targets::GetView(ds->impl(), ImageView::Stencil) != VK_NULL_HANDLE);
+        CHECK(targets::GetView(ds->impl(), ImageView::Depth) != targets::GetView(ds->impl(), ImageView::Stencil));
+
+        // Sample both planes: depth 0.2 (51 of 255 in green; the float 0.2 and the 24-bit 3355443 of 16777215 both round to it)
+        // and stencil 0x3C = 60 (red).
+        const BindingSetDesc one{{BindingSlot{0, BindingType::SampledImage}}};
+        const auto stencil = MakePipeline(*backend, Spv(spv_fs_vert), Spv(spv_stencil_frag), Format::Rgba8Unorm, Format::Undefined, {}, {one});
+        const auto depth = MakePipeline(*backend, Spv(spv_fs_vert), Spv(spv_depth_frag), Format::Rgba8Unorm, Format::Undefined, {}, {one});
+        std::shared_ptr<Image> target = MakeImage(*backend, Format::Rgba8Unorm, 4, 4);
+        BindingArena arena(backend);
+        for (const ImageView view : {ImageView::Stencil, ImageView::Depth}) {
+            Recorder rec = backend->BeginRecording();
+            ClearValue clear;
+            clear.depth = 0.2f;
+            clear.stencil = 0x3C;
+            rec.ClearImage(*ds, clear);
+            rec.BeginTargetPass(Pass(target.get()));
+            Result<BindingSet*> set = arena.Acquire(one);
+            REQUIRE_MESSAGE(set.ok(), set.error());
+            Result<void> bound = (*set)->SetSampledImage(0, *ds, view);
+            REQUIRE_MESSAGE(bound.ok(), bound.error());
+            rec.SetPipeline(view == ImageView::Stencil ? *stencil : *depth);
+            rec.Bind(**set, 0);
+            rec.Draw(3);
+            Run(*backend, std::move(rec));
+            const std::vector<u8> pixels = ReadBack(*backend, *target, 4, 4, 4);
+            const std::array<u8, 4> want = view == ImageView::Stencil ? std::array<u8, 4>{60, 0, 0, 255} : std::array<u8, 4>{0, 51, 0, 255};
+            for (u32 i = 0; i < 16; ++i) CHECK(Texel(pixels, 4, i % 4, i / 4) == want);
+        }
+    }
+}
+
+TEST_CASE("owner_rule/the_feedback_twin_follows_its_target_in_a_hand_over") {
+    REQUIRE_CHECKS_COMPILED_IN();
+    std::shared_ptr<Backend> backend = MakeBackend();
+    if (!backend) return;
+    BreachCapture breaches;
+    std::shared_ptr<Image> target = MakeImage(*backend, Format::Rgba8Unorm, 4, 4);
+    Recorder rec = backend->BeginRecording();
+    rec.ClearImage(*target, Color(1, 0, 0, 1));
+    Image& twin = rec.FeedbackCopy(*target);  // made by this thread, which owns both
+    const TimelineValue produced = backend->Submit(std::move(rec));
+    std::promise<std::thread::id> id;
+    std::promise<void> handed;
+    std::thread receiver([&] {
+        id.set_value(std::this_thread::get_id());
+        handed.get_future().wait();
+        Recorder mine = backend->BeginRecording();
+        Image& same = mine.FeedbackCopy(*target);
+        CHECK(&same == &twin);
+        // the recorder carries the hand-over's wait, once, for the target and the twin
+        const bool one_wait = mine.impl().required_waits.size() == 1;
+        CHECK(one_wait);
+        if (one_wait) {
+            CHECK(mine.impl().required_waits[0].value == produced);
+            CHECK(mine.impl().required_waits[0].stage == Stage::FragmentShader);
+        }
+        // and the twin is the receiver's now, not pending
+        CHECK(twin.impl().owner == std::this_thread::get_id());
+        CHECK_FALSE(twin.impl().handover_pending);
+        CHECK(target->impl().owner == std::this_thread::get_id());
+        const Wait wait{produced, Stage::FragmentShader};
+        backend->WaitIdle(core::SubmitRecorder(backend->impl(), std::move(mine), std::span<const Wait>(&wait, 1)));
+    });
+    HandOver(*target, id.get_future().get(), Wait{produced, Stage::FragmentShader});
+    handed.set_value();
+    receiver.join();
+    CHECK(breaches.Total() == 0);
 }

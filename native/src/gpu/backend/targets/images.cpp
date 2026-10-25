@@ -151,7 +151,7 @@ Result<std::shared_ptr<Image>> MakeImage(const std::shared_ptr<Backend::Impl>& b
     if (desc.width == 0 || desc.height == 0) return Error{where + "an image needs a size"};
     if (desc.layers == 0 || desc.mip_levels == 0) return Error{where + "an image needs a level and a layer"};
     if (desc.cube && desc.layers != 6) return Error{where + "a cube has 6 layers"};
-    if (!desc.cube && desc.layers != 1 && desc.layers > 6) return Error{where + "1 or 6 layers"};
+    if (desc.layers != 1 && desc.layers != 6) return Error{where + "1 or 6 layers"};
     const u32 max_dim = std::max(desc.width, desc.height);
     if (desc.mip_levels > static_cast<u32>(std::bit_width(max_dim))) {
         return Error{where + fmt::format("{} levels do not fit a {}x{} image", desc.mip_levels, desc.width, desc.height)};
@@ -366,6 +366,15 @@ void HandOver(Image& image, std::thread::id thread, Wait wait) {
     impl.handover_pending = true;
     impl.handover_thread = thread;
     impl.handover_wait = wait;
+    // The feedback twin follows its target (clause 2): the receiver's FeedbackCopy takes the twin over too, and its
+    // recorder then carries the same wait for the twin as for the target.
+    if (impl.feedback_twin != nullptr) {
+        Image::Impl& twin = impl.feedback_twin->impl();
+        std::lock_guard twin_lock(twin.owner_mutex);
+        twin.handover_pending = true;
+        twin.handover_thread = thread;
+        twin.handover_wait = wait;
+    }
 }
 
 } // namespace mh4n::gpu::rhi

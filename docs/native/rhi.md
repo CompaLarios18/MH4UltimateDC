@@ -489,7 +489,7 @@ presents with that semaphore as the wait. This is what the test does and the lay
 claim for the RX 6700 XT, MoltenVK, a second queue family or a present thread that is not the renderer's), and no frozen header was
 changed for it.
 
-The swapchain frames are one case of their own, `swapchain/three_frames_over_a_headless_surface`; it uses `MakeHeadlessSurface`
+The swapchain frames are one case of their own, `swapchain/frames_over_a_headless_surface_more_than_it_has_images`; it uses `MakeHeadlessSurface`
 unchanged, which fails the test under `MH4N_REQUIRE_VULKAN=1` and skips otherwise on a loader without the headless extension. There is
 no Windows or window-system branch in the test. **On the RX 6700 XT that case cannot run** (its surface needs a real window); the
 other 26 cases of the file need no surface and are the PC's leg of this package (formats and the chooser with `d24s8` masked, which is the PC's

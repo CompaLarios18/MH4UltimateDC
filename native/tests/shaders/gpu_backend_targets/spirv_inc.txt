@@ -15,3 +15,5 @@ spv_bind_frag bind.frag
 spv_texel_frag texel.frag
 spv_shadow_interlock_frag shadow.frag -DINTERLOCK
 spv_shadow_cas_frag shadow.frag
+spv_stencil_frag stencil.frag
+spv_depth_frag depth.frag
