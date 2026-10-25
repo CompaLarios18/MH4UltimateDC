@@ -159,6 +159,36 @@ def test_tick_runs_are_per_thread_and_split_by_other_calls():
     assert r["threads"][1]["get_system_tick"]["longest_run"] == 1
 
 
+def test_get_thread_id_handle_classes_and_call_sites():
+    r = census([
+        thread_line(1, 0, "00100000", 48, "0/0"),
+        call(1, "27", ("0", "FFFF8000", "0", "0"), out=("0", "10006", "0", "0")),        # pseudo -> real handle
+        call(1, "08", ("18", "10D8D4", "0", "0"), out=("0", "28009", "0", "0")),
+        call(1, "37", ("0", "FFFF8000", "0", "0"), lr="00BFA858"),
+        call(1, "37", ("0", "FFFF8000", "0", "0"), lr="00BFA858"),
+        call(1, "37", ("0", "10006", "0", "0"), lr="00BFA858"),
+        call(1, "37", ("0", "28009", "0", "0"), lr="00BFA874"),
+        call(1, "37", ("0", "7777", "0", "0"), lr="00BFA874"),
+        call(1, "23", ("10006", "0", "0", "0")),                                          # closed: no longer a duplicate
+        call(1, "37", ("0", "10006", "0", "0"), lr="00BFA874"),
+    ])
+    assert r["get_thread_id_handles"] == {"pseudo handle FFFF8000": 2, "other handle": 2,
+                                          "handle made by DuplicateHandle": 1, "handle made by CreateThread": 1}
+    assert r["duplicate_handle_sources"] == {"pseudo handle FFFF8000": 1}
+    top = r["top_call_sites"]["GetThreadId (37)"]
+    assert top["calls"] == 6 and top["callers_distinct"] == 2 and top["top_share"] == 1.0
+    assert top["top"] == [{"lr": "00BFA858", "calls": 3}, {"lr": "00BFA874", "calls": 3}]
+
+
+def test_finite_waits_counted_by_thread_priority():
+    ms5 = ("50001", "0", "4C4B3E", "0")           # 4,999,998 ns
+    lines = [thread_line(1, 0, "00100000", 48, "0/0"), thread_line(2, 1, "0010D8D4", 42, "-2/0"),
+             thread_line(3, 1, "0010D8D4", 42, "-2/0"), thread_line(4, 1, "0010D8D4", 26, "-2/0"),
+             call(2, "24", ms5), call(2, "24", ms5), call(3, "24", ms5), call(4, "24", ("50001", "0", "FFFFFFFF", "FFFFFFFF"))]
+    r = census(lines)
+    assert r["finite_wait_threads"] == {"4999998": {"threads": 2, "calls": 3, "by_priority": {"42": 2}}}
+
+
 def test_unfinished_calls_and_exit():
     r = census([thread_line(1, 0, "00100000", 48, "0/0"), call(1, "24", out=None), call(1, "09")])
     t = r["threads"][0]

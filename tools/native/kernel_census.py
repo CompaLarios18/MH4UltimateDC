@@ -68,7 +68,9 @@ SVC_CONTROL_MEMORY, SVC_EXIT_THREAD, SVC_SLEEP = "01", "09", "0A"
 SVC_SET_THREAD_PRIORITY, SVC_CREATE_MUTEX, SVC_CREATE_SEMAPHORE, SVC_CREATE_EVENT = "0C", "13", "15", "17"
 SVC_CREATE_TIMER, SVC_ARBITRATE, SVC_CLOSE, SVC_WAIT1, SVC_WAITN = "1A", "22", "23", "24", "25"
 SVC_TICK, SVC_DUP, SVC_SYSTEM_INFO, SVC_PROCESS_INFO, SVC_THREAD_INFO = "28", "27", "2A", "2B", "2C"
-SVC_SEND, SVC_REPLY_RECEIVE, SVC_HANDLE_INFO = "32", "4F", "29"
+SVC_SEND, SVC_REPLY_RECEIVE, SVC_HANDLE_INFO, SVC_GET_THREAD_ID = "32", "4F", "29", "37"
+PSEUDO_CURRENT_THREAD = "FFFF8000"
+TOP_SITES = 3
 HANDLE_KIND = {"13": "mutex", "15": "semaphore", "17": "event", "1A": "timer", "1E": "memblock",
                "21": "arbiter", "08": "thread", "2D": "port"}
 HEX_TIMEOUT_INFINITE = 1 << 62        # a signed timeout at or above this is "infinite" (the console treats -1 as such)
@@ -225,6 +227,11 @@ class SvcCensus:
                            "GetHandleInfo": Counter()}
         self.results: Counter = Counter()            # result codes of the waits that timed out or failed
         self.timed_out = 0
+        self.sites: dict[str, Counter] = {}          # svc -> caller (lr) -> calls
+        self.thread_id_handles: Counter = Counter()  # GetThreadId by the class of the handle it is given
+        self.dup_sources: Counter = Counter()        # DuplicateHandle: source handle class
+        self.handle_origin: dict[str, str] = {}      # handle -> "DuplicateHandle" | "CreateThread"
+        self.finite_by_thread: dict[str, Counter] = {}   # thread id -> finite wait timeout ns -> calls
         self.ipc_by_thread: dict[str, deque] = {}
         if ipc is not None:
             for c in sorted(ipc.calls, key=lambda x: x.seq):
@@ -283,6 +290,7 @@ class SvcCensus:
         th.calls += 1
         th.svcs[svc] += 1
         self.svcs[svc] += 1
+        self.sites.setdefault(svc, Counter())[parts[3][3:].upper()] += 1
         if th.first_call is None:
             th.first_call = self.total
         th.last_call = self.total
@@ -339,6 +347,7 @@ class SvcCensus:
             self.wait1[cls] += 1
             if cls == "finite":
                 self.finite_timeouts[_s64(a[2], a[3])] += 1
+                self.finite_by_thread.setdefault(th.id, Counter())[_s64(a[2], a[3])] += 1
             self._wait_result(out)
         elif svc == SVC_WAITN:
             ns = _s64(a[0], r4)
@@ -348,6 +357,7 @@ class SvcCensus:
             self.waitn[key] += 1
             if cls == "finite":
                 self.finite_timeouts[ns] += 1
+                self.finite_by_thread.setdefault(th.id, Counter())[ns] += 1
             self._wait_result(out)
         elif svc == SVC_REPLY_RECEIVE:
             th.waits[f"ReplyAndReceive handles={a[2]} reply={'yes' if a[3] else 'no'}"] += 1
@@ -408,15 +418,29 @@ class SvcCensus:
             th.priorities[a[1]] += 1
         elif svc == SVC_EXIT_THREAD:
             th.exited = True
+        elif svc == SVC_GET_THREAD_ID:
+            self.thread_id_handles[self._handle_class(parts[5].upper())] += 1
         elif svc == SVC_CLOSE:
             if ok:
                 self.handle_kind.pop(parts[4].upper(), None)
+                self.handle_origin.pop(parts[4].upper(), None)
         elif svc in HANDLE_KIND:
             self._created(svc, out)
-        elif svc == SVC_DUP and ok:
-            kind = self.handle_kind.get(parts[5].upper())
-            if kind:
-                self.handle_kind[out[1]] = kind
+            if svc == "08" and ok and len(out) > 1:
+                self.handle_origin[out[1]] = "CreateThread"
+        elif svc == SVC_DUP:
+            self.dup_sources[self._handle_class(parts[5].upper())] += 1
+            if ok and len(out) > 1:
+                self.handle_origin[out[1]] = "DuplicateHandle"
+                kind = self.handle_kind.get(parts[5].upper())
+                if kind:
+                    self.handle_kind[out[1]] = kind
+
+    def _handle_class(self, handle: str) -> str:
+        if handle == PSEUDO_CURRENT_THREAD:
+            return f"pseudo handle {PSEUDO_CURRENT_THREAD}"
+        origin = self.handle_origin.get(handle)
+        return f"handle made by {origin}" if origin else "other handle"
 
     def _created(self, svc: str, out) -> None:
         if out is not None and out[0] == tracefmt.OK and len(out) > 1:
@@ -513,7 +537,31 @@ class SvcCensus:
             "sleep_thread": {"classes": dict(self.sleeps),
                              "values_ns_top": {str(k): v for k, v in self.sleep_values.most_common(8)}},
             "info_types": {k: dict(v.most_common()) for k, v in self.info_types.items()},
+            "get_thread_id_handles": dict(self.thread_id_handles.most_common()),
+            "duplicate_handle_sources": dict(self.dup_sources.most_common()),
+            "finite_wait_threads": self._finite_threads(),
+            "top_call_sites": {
+                f"{svc_name(k)} ({k})": {
+                    "calls": self.svcs[k],
+                    "callers_distinct": len(c),
+                    "top": [{"lr": lr, "calls": n} for lr, n in c.most_common(TOP_SITES)],
+                    "top_share": round(sum(n for _, n in c.most_common(TOP_SITES)) / self.svcs[k], 6),
+                } for k, c in sorted(self.sites.items(), key=lambda kv: -self.svcs[kv[0]])[:8]},
         }
+
+    def _finite_threads(self) -> dict:
+        """Finite wait timeout (ns) -> {threads, calls, by_priority: {prio: threads}}."""
+        out: dict[int, dict] = {}
+        for tid, hist in self.finite_by_thread.items():
+            th = self.threads[tid]
+            prio = th.info.prio if th.info else None
+            for ns, n in hist.items():
+                e = out.setdefault(ns, {"threads": 0, "calls": 0, "by_priority": Counter()})
+                e["threads"] += 1
+                e["calls"] += n
+                e["by_priority"][str(prio)] += 1
+        return {str(ns): {"threads": e["threads"], "calls": e["calls"], "by_priority": dict(sorted(e["by_priority"].items()))}
+                for ns, e in sorted(out.items(), key=lambda kv: -kv[1]["calls"])[:8]}
 
 
 def scan_svc(path: str, symbols: dict[str, str] | None = None, ipc: "tracefmt.IpcTrace | None" = None,
@@ -595,7 +643,14 @@ def render_markdown(report: dict) -> str:
         out += _table([[k, v] for k, v in r["arbitrate_address"].items()], ["ArbitrateAddress", "calls"])
         out += [f"WaitSynchronization1 timeouts: {r['wait_synchronization1_timeouts']}. "
                 f"WaitSynchronizationN: {r['wait_synchronization_n']}. Waits that timed out: {r['waits_timed_out']}.", "",
-                f"SleepThread: {r['sleep_thread']['classes']}. Info types: {r['info_types']}.", ""]
+                f"SleepThread: {r['sleep_thread']['classes']}. Info types: {r['info_types']}.", "",
+                f"GetThreadId by handle: {r['get_thread_id_handles']}. DuplicateHandle sources: {r['duplicate_handle_sources']}.", ""]
+        out += _table([[k, v["calls"], v["callers_distinct"], f"{v['top_share'] * 100:.1f}%",
+                        ", ".join(f"0x{s['lr']} x{s['calls']:,}" for s in v["top"])]
+                       for k, v in r["top_call_sites"].items()],
+                      ["busiest SVCs", "calls", "callers (lr)", "top 3 share", "top callers (lr)"])
+        out += _table([[ns, v["threads"], v["calls"], v["by_priority"]] for ns, v in r["finite_wait_threads"].items()],
+                      ["finite wait (ns)", "threads", "calls", "threads by priority"])
         out += ["### GetSystemTick", ""]
         out += _table([[t["name"], g["calls"], g["per_frame_median"], g["per_frame_max"], g["longest_run"],
                         g["calls_in_runs_of_at_least"]["8"]]

@@ -91,11 +91,11 @@ Totals over all threads, by call:
 | G6 | 25,018 / 0 / 0 | 0 | 15,442 / 15,443 | 37,997 | 2 |
 | G8 | 22,207 / 11,581 / 6,725 | 4,853 | 14,471 / 14,464 | 19,304 | 2 |
 
-- **WaitSynchronization1** waits on events, with a few timers, mutexes and threads (G1: event 11,894, timer 116, mutex 31, thread 3, semaphore 1; G2: event 59,025, timer 116, mutex 38, thread 7, semaphore 1; G3: event 179,732, timer 117, mutex 68, thread 63, semaphore 1). 93 to 100% of them have an infinite timeout. The finite ones are all in G3, G4 and G8: **4,999,998 ns** (two priority-42 threads polling an event every 5 ms; 63,106 of 63,128 in G3 time out), **12,000,000 ns** (6,724 calls, one priority-32 thread in G8, next to 6,725 polls with timeout 0) and a few of 14 and 20 ms.
+- **WaitSynchronization1** waits on events, with a few timers, mutexes and threads (G1: event 11,894, timer 116, mutex 31, thread 3, semaphore 1; G2: event 59,025, timer 116, mutex 38, thread 7, semaphore 1; G3: event 179,732, timer 117, mutex 68, thread 63, semaphore 1). The infinite share is 100% in G1, G2 and G6, but 64.9% in G3 (116,853 of 179,981), 74.8% in G4 (20,292 of 27,140) and 54.8% in G8 (22,207 of 40,513; the rest of G8 are 6,725 polls and 11,581 finite). The finite ones are all in G3, G4 and G8: **4,999,998 ns** (priority-42 threads polling an event every 5 ms: 2 threads in G4 and G8, **22 threads in G3** (11 pairs created among its extra 66 threads), 63,128 calls in G3, of which 63,106 time out), **12,000,000 ns** (6,724 calls, one priority-32 thread in G8, next to 6,725 polls with timeout 0) and a few of 14 and 20 ms.
 - **WaitSynchronizationN:** 2 calls per trace, both on 3 handles with `wait_all` false and an infinite timeout, by one early thread (`#1`).
 - **ReplyAndReceive:** never called (the game is a client only).
 - **ArbitrateAddress:** only types 0 (Signal) and 1 (WaitIfLess) are used, in equal numbers (G3: 72,642 signals, 72,598 waits), and **no call has a timeout** (types 3 and 4 never occur). In G3 the waits come from the main thread (34,644), the core-1 thread (18,002) and the priority-26 thread (18,000).
-- **SleepThread:** durations are exact multiples of a millisecond (top values in nanoseconds in G3: 16,000,000 x56,565; 8,000,000 x20,849; 1,000,000 x20,624; 50,000,000; 100,000,000; 3,000,000; 7,000,000). Under 1 ms: 62 calls in G3 (one thread), 6 in G4, 6 in G8. Zero (a yield): 10 in G3, 1 in G4, 1 in G8, none in G1, G2, G6.
+- **SleepThread:** the long sleeps are whole milliseconds (top values in nanoseconds in G3: 16,000,000 x56,565; 8,000,000 x20,849; 1,000,000 x20,624; 50,000,000; 100,000,000; 3,000,000; 7,000,000). There are also sleeps under 1 ms, of 9,999 ns: 62 calls in G3, 6 in G4, 6 in G8 (none in G1, G2, G6), and zero-length sleeps (a yield): 10 in G3, 1 in G4, 1 in G8 (none in G1, G2, G6). The scheduler's sub-millisecond wake-up path matters for these.
 - **SendSyncRequest** is the most common blocking call (G3: 187,806; 92% to `gsp::Gpu`). The reply comes from a service, so for the native runtime it is a call into the HLE service, a switch only when the service blocks.
 
 ## 3. System calls
@@ -140,7 +140,7 @@ Totals over all threads, by call:
 | 0x3A | GetResourceLimitCurrentValues | 1 | 1 | 1 | 1 | 1 | 1 | 1 |
 | 0x3C | Break | 2 | - | - | - | - | - | - |
 
-Two calls make up most of the traffic. **GetThreadId** (`0x37`, always on the current-thread pseudo handle; in G1, 96% of the calls come from two callers, `0x00bfa858` and `0x00bfa874`) is 14.1% of G1's calls, 61.6% of G2's and **75.3% of G3's** (14,532,777 of 19,298,714); **GetSystemTick** (`0x28`) is 79% of G1's and 20% of G3's. Everything else together is under 6% of G3.
+Two calls make up most of the traffic. **GetThreadId** (`0x37`; one call site, the stub at `0x001091fc`, and two hot callers (lr) `0x00bfa858` and `0x00bfa874` that make 151,158 of G1's 152,931 calls (98.8%), 14,513,712 of G3's 14,532,777 (99.9%) and 99.2 to 99.8% in G2, G4, G6 and G8, each alternating the two handle forms below) is 14.1% of G1's calls, 61.6% of G2's and **75.3% of G3's** (14,532,777 of 19,298,714); **GetSystemTick** (`0x28`) is 79% of G1's and 20% of G3's. Everything else together is under 6% of G3.
 
 ### 3.2 Argument patterns
 
@@ -149,10 +149,22 @@ Two calls make up most of the traffic. **GetThreadId** (`0x37`, always on the cu
 - **CreateEvent:** reset type oneshot in 4 (G1, G2, G6), 8 (G4), 13 (G8) or 48 (G3) calls, **sticky** in 1, **pulse** never. **CreateTimer:** 1 call, oneshot. **CreateMutex:** 1 call, not initially locked. **CreateSemaphore:** never. **CreateAddressArbiter:** 1 call.
 - **ArbitrateAddress:** types and timeouts as in 2.3 (types 0 and 1, no timeouts).
 - **WaitSynchronization timeouts:** infinite, 0 and finite as in 2.3. Finite values: 4,999,998 ns, 12,000,000 ns, 14,000,000 ns and 20,000,000 ns.
-- **SleepThread:** 0, under 1 ms and longer, as in 2.3. Whole milliseconds, from 1 to 100.
+- **SleepThread:** 0, under 1 ms (9,999 ns) and longer, as in 2.3. The longer sleeps are whole milliseconds, from 1 to 100.
+- **GetThreadId handles** (measured by the tool, `get_thread_id_handles`): about half the calls pass the current-thread pseudo handle `0xFFFF8000` and about half pass a real thread handle, the one the single DuplicateHandle call returned; a few pass the handle CreateThread returned.
+
+  | trace | pseudo `0xFFFF8000` | handle from DuplicateHandle | handle from CreateThread |
+  |---|---|---|---|
+  | G1 | 77,336 | 75,594 | 1 |
+  | G2 | 2,164,633 | 2,153,697 | 1 |
+  | G3 | 7,275,852 | 7,256,880 | 45 |
+  | G4 | 607,106 | 597,231 | 5 |
+  | G6 | 964,735 | 960,774 | 1 |
+  | G8 | 686,648 | 676,719 | 5 |
+
+  Calls with the duplicate come from other threads too. Every call of every trace uses one of these three forms.
 - **GetProcessInfo:** 1 call per trace, **type 0x14** (the linear-memory base offset). **GetHandleInfo:** type 0, 11 calls in G3, 1 in G4 and in G8. **GetSystemInfo and GetThreadInfo:** never.
 - **SetTimer:** 116 or 117 calls in every trace; **CancelTimer, ClearTimer, ReleaseSemaphore, CreateSemaphore, SignalAndWait, ReplyAndReceive:** never.
-- **Other kernel objects:** `ConnectToPort`, `GetResourceLimit` and `GetResourceLimitCurrentValues`: 1 call each, at start-up. `DuplicateHandle`: 1 call.
+- **Other kernel objects:** `ConnectToPort`, `GetResourceLimit` and `GetResourceLimitCurrentValues`: 1 call each, at start-up. `DuplicateHandle`: 1 call in every trace, at start-up; its source handle is the current-thread pseudo handle `0xFFFF8000` (measured, `duplicate_handle_sources`), so it turns the pseudo handle into a real thread handle for the thread that called it (the main thread), which GetThreadId then receives in about half of its calls (GetThreadId handles, above).
 
 ### 3.3 GetSystemTick polling
 
@@ -227,7 +239,7 @@ Request headers (`command id << 16 | normal words << 6 | translate words`) with 
 - **Cores.** One thread of 21 to 87 is on core 1, and it spends its calls in `SleepThread` and `ArbitrateAddress` waits (0.5 to 0.9% of all SVCs). Core 0 holds everything else, at up to eight priorities between 24 and 56, with `main` and most threads at 48. No thread needs to run in parallel with another to make progress; the scheduler needs two virtual cores, and only core 0 carries load.
 - **Switch rate.** The calls that can block are 28.7 to 30.8 per frame in G1 to G3 (table 1). Most return at once; even if all switched, that is about 1,800 fiber switches per second at 60 fps, which is nothing for fibers.
 - **What the scheduler must do, from the numbers:**
-  1. Timed waits and sleeps with a virtual-time wake-up: finite `WaitSynchronization1` timeouts (4,999,998 ns, 12 ms, 14 ms, 20 ms; 99.9% of the 5 ms ones expire), timeout-0 polls (6,725 in G8), `SleepThread` of whole milliseconds from 1 to 100 ms, zero-duration yields, and a few sub-millisecond sleeps (G3, G4, G8).
+  1. Timed waits and sleeps with a virtual-time wake-up: finite `WaitSynchronization1` timeouts (4,999,998 ns, 12 ms, 14 ms, 20 ms; 99.9% of the 5 ms ones expire, from 2 priority-42 threads in G4 and G8 and 22 in G3), timeout-0 polls (6,725 in G8), `SleepThread` of whole milliseconds from 1 to 100 ms, zero-duration yields, and a few sleeps of 9,999 ns (G3, G4, G8).
   2. Re-queuing on `SetThreadPriority` (a thousand-odd calls per 18,000 frames, values 34 to 49).
   3. **The main thread spins on `GetSystemTick`**: up to about 1,150 consecutive calls with nothing else in between, up to 2,539 per frame, and 98.7 to 99.4% of its calls are in such runs. It never blocks inside the loop. Under strict priority with one host thread the spin ends only if virtual time advances inside `GetSystemTick`, and a thread of better priority (26, 32, 42, 46 or 47) that becomes ready during the spin must run before the spin ends. N1 has a virtual clock (`clock.cpp`) and a preemption path (`scheduler.cpp`, `preemption_timer.cpp`); N1-23 and the first boot (N1-21) must confirm that a spin of this length lets time advance and lets better-priority threads in, and should treat the single call site `0x001118ec` / `0x006447b8` (and its 1,150-call runs) as the frame limiter's spin, as the table in 3.3 shows.
   4. Thread identity by creation order, priority and core, because all threads but `main` share one entry; and a thread table that survives 87 creations and 63 exits (G3).
@@ -240,8 +252,8 @@ Request headers (`command id << 16 | normal words << 6 | translate words`) with 
 
 - **SVCs (33 numbers in the code):** `0x01` ControlMemory, `0x03` ExitProcess, `0x08` CreateThread, `0x09` ExitThread, `0x0a` SleepThread, `0x0b` GetThreadPriority, `0x0c` SetThreadPriority, `0x13` CreateMutex, `0x14` ReleaseMutex, `0x17` CreateEvent, `0x18` SignalEvent, `0x19` ClearEvent, `0x1a` CreateTimer, `0x1b` SetTimer, `0x1e` CreateMemoryBlock, `0x1f` MapMemoryBlock, `0x20` UnmapMemoryBlock, `0x21` CreateAddressArbiter, `0x22` ArbitrateAddress, `0x23` CloseHandle, `0x24` WaitSynchronization1, `0x25` WaitSynchronizationN, `0x27` DuplicateHandle, `0x28` GetSystemTick, `0x29` GetHandleInfo, `0x2b` GetProcessInfo, `0x2d` ConnectToPort, `0x32` SendSyncRequest, `0x35` GetProcessId, `0x37` GetThreadId, `0x38` GetResourceLimit, `0x3a` GetResourceLimitCurrentValues, `0x3c` Break. `native/src/kernel/svc.cpp` has a case for every one of them; nothing is missing.
 - **Used in the traces (29):** all of the above except `0x03`, `0x20`, `0x35` and `0x3c`, which are only reached on paths the sessions do not take (exit, unmapping, process id, break). Implement them anyway; they are cheap.
-- **Argument forms that matter:** ControlMemory only allocates (operation 3, permissions read/write, one linear and one non-linear block); events oneshot and sticky; ArbitrateAddress types 0 and 1 without a timeout; WaitSynchronization1 with infinite, finite and zero timeouts; WaitSynchronizationN with three handles, `wait_all` false, infinite; SleepThread in nanoseconds, from 0 up to 100 ms; GetThreadId always for the current thread.
+- **Argument forms that matter:** ControlMemory only allocates (operation 3, permissions read/write, one linear and one non-linear block); events oneshot and sticky; ArbitrateAddress types 0 and 1 without a timeout; WaitSynchronization1 with infinite, finite and zero timeouts; WaitSynchronizationN with three handles, `wait_all` false, infinite; SleepThread in nanoseconds, from 0 (a yield) and 9,999 ns up to 100 ms; **GetThreadId must accept both the pseudo handle `0xFFFF8000` and a real thread handle** (the duplicate resolves to the thread that called DuplicateHandle, and a handle CreateThread returned), and **DuplicateHandle must accept the pseudo handle `0xFFFF8000` as its source and return a real thread handle**.
 - **Info types:** GetProcessInfo **type 0x14** (the linear-heap base offset, once, in every trace); GetHandleInfo **type 0** (process elapsed ticks, 11 calls in G3). GetSystemInfo and GetThreadInfo have no call site in the game, so the game requires no type of them (the table in `svc.cpp` has them anyway).
-- **Cost.** The kernel call to make fast is GetThreadId (14.5 million calls in G3, about 800 per frame), then GetSystemTick (3.96 million, mostly the spin). No other SVC reaches 190,000 calls in G3 (the largest is SendSyncRequest, 187,806).
+- **Cost.** The kernel call to make fast is GetThreadId (14.5 million calls in G3, about 800 per frame, two callers, both handle forms), then GetSystemTick (3.96 million, mostly the spin). No other SVC reaches 190,000 calls in G3 (the largest is SendSyncRequest, 187,806).
 - **If the numbers disagreed:** a different limit value would change nothing in code (the limiter takes it from APT); a thread on core 1 that was busy would make the limit visible in the frame rate and would have to be checked against G1 to G3 first. Neither is the case.
 
