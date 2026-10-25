@@ -1144,6 +1144,13 @@ def _blend_half(x: dict, half: str) -> str:
     return f"{eq}({src}/{dst})"
 
 
+def needs_fixup(s: dict) -> bool:
+    """The fixup stage of the design's 4.3 and 5.5: the fixed geometry shader applies to lit draws shaded by the
+    translated (hardware) vertex shader, that is lighting on and the game's geometry shader not in use (use_gs clear,
+    the draws Azahar's AccelerateDraw accepts).  Draws that set use_gs are CPU draws and take no fix-up."""
+    return bool(s["light_on"] and not s["use_gs"])
+
+
 def pipeline_groups(s: dict) -> dict[str, str]:
     """The groups of the design's 4.3 (docs/native/gpu-fragment-design.md): fs_key, fixed_function, vertex_stage,
     proctex_config (only for draws that sample the procedural texture), the parts fs_key is made of, and the joint
@@ -1174,7 +1181,7 @@ def pipeline_groups(s: dict) -> dict[str, str]:
     pass_kind = "ShadowWrite" if s["frag_mode"] == "Shadow" else "Normal"
     formats = f"{s['color_format']}+{s['depth_format']}"
     tup = f"{fs_key}|{fixed_function}|{vertex_stage}|{pass_kind}|{formats}"
-    fixup = s["light_on"] and s["use_gs"]       # design 4.3: the fixed geometry shader of lit draws that set the gs bit
+    fixup = needs_fixup(s)
     out = {"fs_key": fs_key, "fixed_function": fixed_function, "vertex_stage": vertex_stage,
            "fs_key.framebuffer": _h6(framebuffer), "fs_key.texture": _h6(texture), "fs_key.lighting": _h6(lighting),
            "fs_key.proctex": _h6(proctex),
@@ -1340,7 +1347,7 @@ def build_union_markdown(exts: Sequence[ExtAnalysis]) -> str:
                     "stencil, cull mode and front face; `vertex_stage` holds the vertex program hash, the vertex layout and "
                     "the topology; `proctex_config` the `ProcTexConfig` fields of the draws that sample texture 3. The joint "
                     "`pipeline_tuple` is (`fs_key`, `fixed_function`, `vertex_stage`, pass kind, logical colour and depth "
-                    "formats); `pipeline_tuple+fixup` adds the fixup stage (lighting on and geometry shader bit set). "
+                    "formats); `pipeline_tuple+fixup` adds the fixup stage (lighting on and the vertex stage is the hardware one, geometry shader bit clear). "
                     "A value seen in several captures counts once in the union. Hashes are 6-byte BLAKE2b digests.", ""]
     L += ["## Distinct values per group", "",
           "Cells are \"distinct values (of them only in this capture's label)\"; the draws are all draws of the label "

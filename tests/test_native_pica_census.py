@@ -1033,7 +1033,7 @@ LIGHT_ON = [W(0x1C6, 0), W(0x1C2, 1), W(0x1D9, 6 | (2 << 4))]
 
 def test_lighting_fields_follow_lightconfig(tmp_path):
     flags = (1 << 2) | (1 << 3) | (1 << 27) | (2 << 22) | (1 << 0) | (1 << 17)       # alphas, clamp, selector 2, shadow, secondary
-    p = build(tmp_path / "a.mgpu", LIGHT_ON and [
+    p = build(tmp_path / "a.mgpu", [
         LIGHT_ON + [W(0x1C3, (4 << 4) | flags), W(0x1C4, 0), W(0x149 + 0x10 * 6, 0b0101), W(0x149 + 0x10 * 2, 0b1010),
                     W(0x1D0, 1 << 5), W(0x1D1, 3 | (2 << 8)), W(0x1D2, 7 | (6 << 24)), DRAW],
     ])
@@ -1069,7 +1069,29 @@ def test_lit_draws_against_geometry_shader(tmp_path):
     assert efeat(e, "lighting_x_geometry_shader") == {
         "lighting off + geometry shader no": 1, "lighting off + geometry shader yes": 2,
         "lighting on + geometry shader no": 3, "lighting on + geometry shader yes": 1}
-    assert egroup(ext_one(p), "pipeline_tuple+fixup") != egroup(ext_one(p), "pipeline_tuple")
+
+
+def test_fixup_is_lighting_on_with_the_geometry_shader_bit_clear():
+    # design 4.3 and 5.5: the fixed geometry shader serves lit draws shaded by the translated (hardware) vertex shader;
+    # the draws that set use_gs are CPU draws and take no fix-up
+    for light_on, use_gs, expected in ((False, False, False), (False, True, False), (True, False, True), (True, True, False)):
+        assert pc.needs_fixup({"light_on": light_on, "use_gs": use_gs}) is expected
+
+
+def test_pipeline_groups_apply_the_fixup_to_the_lit_draws_without_the_geometry_shader(tmp_path, monkeypatch):
+    seen = {}
+    real = pc.needs_fixup
+
+    def spy(s):
+        r = real(s)
+        seen[(s["light_on"], s["use_gs"])] = r
+        return r
+
+    monkeypatch.setattr(pc, "needs_fixup", spy)
+    ext_one(build(tmp_path / "a.mgpu", [
+        [W(0x1C6, 1), W(0x229, 0), DRAW], [W(0x1C6, 1), W(0x229, 2), DRAW],
+        [W(0x1C6, 0), W(0x229, 0), DRAW], [W(0x1C6, 0), W(0x229, 2), DRAW]]))
+    assert seen == {(False, False): False, (False, True): False, (True, False): True, (True, True): False}
 
 
 def test_fs_key_ignores_what_the_canonical_form_zeroes(tmp_path):
@@ -1120,6 +1142,27 @@ def test_fs_key_fields_each_split_the_key(tmp_path):
     e = ext_one(build(tmp_path / "a.mgpu", lists))
     # the base state and one new key per change: every field of `changes` splits the key
     assert len(egroup(e, "fs_key")) == 1 + len(changes)
+
+
+def test_lighting_fields_each_split_the_key_only_while_lighting_is_on(tmp_path):
+    changes = {
+        "per-light flag": [W(0x149 + 0x10 * 6, 1)],
+        "LUT input": [W(0x1D1, 1)],
+        "LUT absolute flag": [W(0x1D0, 1 << 1)],
+        "LUT scale": [W(0x1D2, 1)],
+        "config0 flag": [W(0x1C3, 1 << 2)],
+        "shadow selector": [W(0x1C3, 2 << 22)],
+    }
+    lit = [W(0x1C6, 0), W(0x1C2, 1), W(0x1D9, 6 | (2 << 4)), W(0x1C3, 0), W(0x149 + 0x10 * 6, 0), W(0x1D0, 0),
+           W(0x1D1, 0), W(0x1D2, 0)]
+    for state, light_reg in (("on", W(0x1C6, 0)), ("off", W(0x1C6, 1))):
+        lists = [lit + [light_reg, DRAW]]
+        for ws in changes.values():
+            lists.append(lit + ws + [light_reg, DRAW])
+        e = ext_one(build(tmp_path / f"{state}.mgpu", lists))
+        distinct = len(egroup(e, "fs_key"))
+        # one key for the base and one more for each change while lighting is on; none while it is off
+        assert distinct == (1 + len(changes) if state == "on" else 1), (state, distinct)
 
 
 def test_tev_masking_of_dot3_rgba_merges_keys_but_census_tev_hash_does_not(tmp_path):
@@ -1203,7 +1246,7 @@ def test_union_run_writes_the_extension_and_leaves_the_census_part_unchanged(tmp
         assert needle in text, needle
     assert union["labels"] == ["G1", "G2"]
     assert union["groups"]["fs_key"]["union"] == len(
-        {v for l in ("G1", "G2") for v in ()} | set(pc.union_groups([ext_one(p, "G1"), ext_one(q, "G2")])["fs_key"]["values"]))
+        set(pc.union_groups([ext_one(p, "G1"), ext_one(q, "G2")])["fs_key"]["values"]))
     assert "G1" in union["features"] and "blend_factors_rgb" in union["features"]["G1"]
     assert all(c in "0123456789abcdef" for g in ("fs_key", "pipeline_tuple") for t in union["groups"][g]["top"]
                for c in t["value"])                                   # long keys are printed as hashes
