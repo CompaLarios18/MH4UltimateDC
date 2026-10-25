@@ -280,6 +280,14 @@ Result<void> Backend::ReadbackToGuest(const Image& image, Rect rect, PicaFormat 
     // a pass left attached at Submit is in plume's attachment layout until this barrier.
     targets::Acquire(recorder.impl(), img);
     targets::Normalize(recorder.impl(), img);
+    // The output buffer is reused: what an earlier readback's pass wrote to it is ordered before this pass's writes (the layer
+    // sees the host read of the earlier one only as a barrier on that submission, not as a dependency for this one).
+    VkMemoryBarrier reuse = {};
+    reuse.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+    reuse.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
+    reuse.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+    vkCmdPipelineBarrier(recorder.impl().vulkan_list()->vk, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1,
+                         &reuse, 0, nullptr, 0, nullptr);
     recorder.SetPipeline(*kind.pipeline);
     recorder.Bind(*kind.set, 0);
     recorder.Dispatch(groups_x, groups_y, 1);
