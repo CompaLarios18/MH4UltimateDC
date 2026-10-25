@@ -9,7 +9,7 @@
                                       [--candidate-code LIB] [--candidate-args "..."] [--repeat N]
                                       [--profile same|cross|native] [--fallback] [--require NAMES] [--ignore FILE]...
                                       [--tolerance N] [--min-margin N] [--max-surplus N] [--max-shift N]
-                                      [--observable FILE]
+                                      [--observable FILE] [--image-frames FILE] [--timeline [--timeline-allow FILE]]
 
 A session is a frame-keyed input script (tools/native/golden/<S>.txt, the runner's --input-file
 format) with header comment lines, see parse_session.  `record` runs the reference runner on a
@@ -55,13 +55,19 @@ if str(HERE) not in sys.path:
 import capfmt  # noqa: E402
 import cross_model_report  # noqa: E402
 import gcap  # noqa: E402
+import imgdiff  # noqa: E402
 import state_diff  # noqa: E402
+import timeline_check  # noqa: E402
 
 SESSIONS_DIR = HERE / "golden"
+# N2b-17 (D58): the frames the cross profile holds the screenshots to, `<session> <frame>` per line.
+IMAGE_FRAMES = ROOT / "config" / "native" / "image_frames.txt"
 DEFAULT_OUT = ROOT / "build" / "golden"
 OBSERVABLE = ROOT / "config" / "native" / "observable.txt"
 IPC_TIME_DEPENDENT = ROOT / "config" / "native" / "ipc_time_dependent.txt"
 FS_WRITE_MASKS = ROOT / "config" / "native" / "fs_write_masks.txt"
+# N0-39: the differences of the scheduler's timeline that are known and allowed (timeline_check.py's allow format)
+TIMELINE_ALLOW = ROOT / "config" / "native" / "timeline_allow.txt"
 # The cross profile's numbers (D50, D51, D52); `check` takes them as options in the cross and native profiles only.
 CROSS_TOLERANCE = cross_model_report.DEFAULT_TOLERANCE      # frames a real scene change may move by (D50)
 CROSS_MIN_MARGIN = cross_model_report.DEFAULT_MIN_MARGIN    # frames an input must follow the last scene change by (D50)
@@ -103,7 +109,7 @@ MINIMUMS = {
     "G4": {"gas_frames": 1},
 }
 # The comparisons `--require` can name (D34).
-REQUIRABLE = ("svc", "ipc", "state", "checkpoints", "hid", "dsp", "images", "unmapped")
+REQUIRABLE = ("svc", "ipc", "state", "checkpoints", "hid", "dsp", "images", "unmapped", "timeline")
 PROFILES = ("same", "cross", "native")
 # The config savegame one default-mode reference run makes (docs/native/golden.md, "The user folder").
 CONFIG_SAVEGAME = re.compile(r"^nand/data/[^/]+/sysdata/00010017/00000000/config$")
@@ -491,6 +497,8 @@ class RunSpec:
                                # when `observable` is set)
     shot_every: int = DEFAULT_SHOT_EVERY_FRAMES      # frames between screenshots, 0: none
     observable: str | None = None
+    shots: bool = False        # a candidate runner whose --help lists --shots (N2b-14): it gets the screenshot options
+    trace_events: Path | None = None    # N0-39: MH4N_TRACE_EVENTS for the run (the native timeline, --timeline)
 
 
 def build_args(spec: RunSpec) -> list[str]:
@@ -523,22 +531,38 @@ def build_args(spec: RunSpec) -> list[str]:
             args += ["--capture-gpu", f"{cap.start}:{cap.frames}:{o / cap.filename}"]
     if spec.full:
         args += ["--trace-timing", str(o / "timing.txt"), "--count-unmapped", str(o / "unmapped.txt")]
-        if spec.shot_every > 0:
-            args += ["--shots", str(o / "shots"), "--shots-from", f"f{SHOTS_FROM_FRAME}",
-                     "--shot-every", f"f{spec.shot_every}", "--dump", shared_page_dump()]
+    if (spec.full or spec.shots) and spec.shot_every > 0:     # the frame-keyed form, as the recording's (N2b-17)
+        args += ["--shots", str(o / "shots"), "--shots-from", f"f{SHOTS_FROM_FRAME}", "--shot-every",
+                 f"f{spec.shot_every}"]
+        if spec.full:
+            args += ["--dump", shared_page_dump()]
     return args + spec.extra
+
+
+def runner_has_shots(runner: str | Path) -> bool:
+    """Whether the runner's `--help` lists `--shots` (the native runner, N2b-14: a candidate that can write the
+    screenshots the `images` comparison needs).  A runner that cannot be asked, or that fails, has none."""
+    try:
+        done = subprocess.run(runner_argv(runner) + ["--help"], cwd=ROOT, capture_output=True, text=True,
+                              timeout=60, check=False)
+    except (OSError, subprocess.SubprocessError, GoldenError):
+        return False
+    return "--shots" in (done.stdout + done.stderr)
 
 
 def run_runner(spec: RunSpec, timeout: float | None) -> tuple[int, list[str]]:
     """Start the runner (no shell), log to <outdir>/runner.log; returns (exit status, arguments)."""
     spec.outdir.mkdir(parents=True, exist_ok=True)
-    if spec.full and spec.shot_every > 0:
+    if (spec.full or spec.shots) and spec.shot_every > 0:
         (spec.outdir / "shots").mkdir(exist_ok=True)
     args = build_args(spec)
     cmd = runner_argv(spec.runner) + args
+    env = child_env(spec.session.env)
+    if spec.trace_events:
+        env["MH4N_TRACE_EVENTS"] = str(spec.trace_events)
     with open(spec.outdir / "runner.log", "wb") as log:
         try:
-            done = subprocess.run(cmd, cwd=ROOT, env=child_env(spec.session.env), stdout=log, stderr=subprocess.STDOUT,
+            done = subprocess.run(cmd, cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT,
                                   timeout=timeout, check=False)
             status = done.returncode
         except subprocess.TimeoutExpired:
@@ -790,6 +814,8 @@ class Compare:
     max_surplus: int | None = None      # reads a thread may make beyond the other (CROSS_MAX_SURPLUS)
     max_shift: int | None = None        # DSP frames of shift (CROSS_MAX_SHIFT)
     fs_write_masks: Path | None = None  # the write-mask file (default FS_WRITE_MASKS)
+    image_frames: Sequence[int] = ()    # the frames this session's screenshots are held to in `cross` (N2b-17, D58)
+    all_images: bool = False            # cross, a candidate on the recording's clock: every common frame (N2b-28, D58)
 
     def rule(self, name: str) -> int:
         """The value of one of the cross profile's numbers: the option, else the profile's own (D50 to D52; the
@@ -800,6 +826,138 @@ class Compare:
         native = self.profile == "native"
         return {"tolerance": NATIVE_TOLERANCE if native else CROSS_TOLERANCE, "min_margin": CROSS_MIN_MARGIN,
                 "max_surplus": CROSS_MAX_SURPLUS, "max_shift": NATIVE_MAX_SHIFT if native else CROSS_MAX_SHIFT}[name]
+
+
+def parse_image_frames(text: str, where: str = "image frames") -> dict[str, list[int]]:
+    """`<session> <frame>` per line, `#` starts a comment; the frames of each session, sorted, without repeats."""
+    frames: dict[str, set[int]] = {}
+    for number, raw in enumerate(text.splitlines(), 1):
+        line = raw.split("#", 1)[0].strip()
+        if not line:
+            continue
+        parts = line.split()
+        if len(parts) != 2 or not (parts[1].isascii() and parts[1].isdigit()):
+            raise GoldenError(f"{where}, line {number}: expected '<session> <frame>', got {raw.strip()!r}")
+        frames.setdefault(parts[0], set()).add(int(parts[1]))
+    return {k: sorted(v) for k, v in frames.items()}
+
+
+def load_image_frames(path: Path | None, session: str) -> list[int]:
+    """The frames listed for `session` in `path` (default `config/native/image_frames.txt`); a missing default file
+    lists none, a missing file that was asked for is a usage problem."""
+    explicit = path is not None
+    path = path or IMAGE_FRAMES
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        if explicit:
+            raise GoldenError(f"--image-frames: {path} does not exist") from None
+        return []
+    except (OSError, UnicodeError) as e:
+        raise GoldenError(f"cannot read {path}: {getattr(e, 'strerror', None) or e}") from None
+    return parse_image_frames(text, str(path)).get(session, [])
+
+
+def read_gas_frames(shots: Path) -> set[int]:
+    """The shot numbers of `shots/gas.txt` (N2b-14), or none when the runner wrote no such file."""
+    try:
+        return cross_model_report.read_gas(shots.parent)
+    except cross_model_report.ReportError as e:
+        raise GoldenError(str(e)) from None
+
+
+SHOT_NAME = re.compile(r"f(\d+)_(?:top|bottom)\.ppm")
+
+
+def shot_frames(folder: Path) -> set[int]:
+    """The frame numbers of the screenshots (`f<NNNNNNN>_top|bottom.ppm`) in a `shots` folder."""
+    found: set[int] = set()
+    if folder.is_dir():
+        for p in folder.iterdir():
+            m = SHOT_NAME.fullmatch(p.name)
+            if m:
+                found.add(int(m.group(1)))
+    return found
+
+
+def wants_all_images(candidate_args: Sequence[str]) -> bool:
+    """N2b-28 (D58 (3)): the candidate runs on the recording's own clock, `--deterministic` being one of its
+    (already shell-split) arguments, and not on the jit's (`--cpu jit`)."""
+    return "--deterministic" in candidate_args and option_value(candidate_args, "--cpu") != "jit"
+
+
+SCREEN_GPUS = ("null-display", "renderer")
+
+
+def candidate_shows_screens(candidate_args: Sequence[str]) -> bool:
+    """Whether the candidate's (already shell-split) arguments choose a GPU that shows its screens (`--gpu
+    null-display` or `--gpu renderer`).  The native runner ends a run that has `--shots` and the default `null`
+    GPU with status 2 (shots.cpp), so a candidate gets the shot options only when it can write them; without,
+    the run is as it was before N2b-17 and `images` is skipped."""
+    return option_value(candidate_args, "--gpu") in SCREEN_GPUS
+
+
+def all_images_result(ref: Path, cand: Path) -> tuple[str, str, str]:
+    """(status, detail, note) of the `images` comparison of a candidate on the recording's clock (N2b-28): every
+    frame the recording and the candidate both have, judged as `images_result` does, minus the gas frames."""
+    common = sorted(shot_frames(ref / "shots") & shot_frames(cand / "shots"))
+    if not common:
+        return "skipped", "the recording and the run have no screenshot frame in common", ""
+    return images_result(ref, cand, common, summary=True)
+
+
+def images_result(ref: Path, cand: Path, frames: Sequence[int], summary: bool = False) -> tuple[str, str, str]:
+    """(status, detail, note) of the cross profile's `images` comparison at the listed frames (N2b-17): the top and
+    bottom screenshots of the candidate against the recording's with imgdiff's rule; a frame in the candidate's
+    `shots/gas.txt` is `skipped (gas)` and not judged.  `summary` (N2b-28) words the result as the number of frames
+    judged, skipped and failed."""
+    if not frames:
+        return "skipped", "no image frames are listed for this session", ""
+    if not (cand / "shots").is_dir() or not any((cand / "shots").glob("*.ppm")):
+        return "skipped", "the run wrote no screenshots", ""
+    gas = read_gas_frames(cand / "shots")
+    failed: list[str] = []
+    failed_frames: set[int] = set()
+    judged = 0
+    skipped_gas: list[int] = []
+    worst_psnr, worst_block = float("inf"), 0.0
+    for frame in frames:
+        if frame in gas:
+            skipped_gas.append(frame)
+            continue
+        judged += 1
+        for screen in ("top", "bottom"):
+            name = f"shots/f{frame:07d}_{screen}.ppm"
+            if not (ref / name).is_file():
+                failed.append(f"frame {frame} {screen}: the recording has no screenshot")
+                failed_frames.add(frame)
+                continue
+            if not (cand / name).is_file():
+                failed.append(f"frame {frame} {screen}: the run wrote no screenshot")
+                failed_frames.add(frame)
+                continue
+            try:
+                m = imgdiff.compare_files(ref / name, cand / name)
+            except imgdiff.ImageError as e:
+                failed.append(f"frame {frame} {screen}: {e}")
+                failed_frames.add(frame)
+                continue
+            worst_psnr, worst_block = min(worst_psnr, m.psnr), max(worst_block, m.worst_block)
+            if not m.passes:
+                failed.append(f"frame {frame} {screen}: {m.text()}")
+                failed_frames.add(frame)
+    gas_note = f"; {len(skipped_gas)} frame(s) skipped (gas): {', '.join(map(str, skipped_gas))}" if skipped_gas else ""
+    counts = f"{judged} frame(s) judged, {len(skipped_gas)} skipped (gas), {len(failed_frames)} failed"
+    if failed:
+        note = f"{len(failed)} of {2 * judged} screenshots fail" + gas_note
+        return "fail", "\n".join(failed[:8]), f"{counts}; {note}" if summary else note
+    if not judged:
+        return "skipped", f"every listed frame is skipped (gas): {', '.join(map(str, skipped_gas))}", ""
+    psnr = "inf" if worst_psnr == float("inf") else f"{worst_psnr:.1f}"
+    note = f"lowest PSNR {psnr} dB, worst block {worst_block:.1f}/255" + gas_note
+    if summary:
+        return "pass", counts, note
+    return "pass", f"{judged} listed frame(s) pass", note
 
 
 def _tool(script: Path, *args: str) -> tuple[int, str]:
@@ -1026,19 +1184,36 @@ def compare_outputs(session: Session, ref: Path, cand: Path, cfg: Compare) -> li
             if cap.kind == "gpu" and need(f"gpu-{cap.start}", cap.filename):
                 ok, detail = _files_equal(ref, cand, _group(ref, cap.filename))
                 add(f"gpu-{cap.start}", "pass" if ok else "fail", detail)
-    # -- screenshots: gated in the same profile, information in cross
+    # -- screenshots: identical in the same profile; in cross (N2b-17, D58) judged with imgdiff's rule at the frames
+    # the image-frames file lists for the session, the others information; in native information only
     shots = sorted(p.relative_to(ref).as_posix() for p in (ref / "shots").rglob("*.ppm")) \
         if (ref / "shots").is_dir() else []
     cand_shots = [p for p in (cand / "shots").rglob("*.ppm")] if (cand / "shots").is_dir() else []
     if not shots:
         if same:
             add("images", "skipped", "there are no screenshots to compare with")
+        elif cfg.profile == "cross":
+            add("images", "skipped", "there are no screenshots to compare with")
     elif not cand_shots:
         if same:
             add("images", "fail" if cfg.strict else "skipped", "the run wrote no screenshots")
+        elif cfg.profile == "cross":
+            add("images", "skipped", "the run wrote no screenshots")
     else:
         ok, detail = _files_equal(ref, cand, shots)
-        add("images", ("pass" if ok else "fail") if same else "info", detail)
+        if same:
+            add("images", "pass" if ok else "fail", detail)
+        elif cfg.profile == "cross":
+            if cfg.all_images:
+                status, detail2, note = all_images_result(ref, cand)
+                add("images", status, detail2, note)
+                add("images-all", "info", detail + " (every frame both sides have is judged above)")
+            else:
+                status, detail2, note = images_result(ref, cand, cfg.image_frames)
+                add("images", status, detail2, note)
+                add("images-all", "info", detail + " (the listed frames are judged above; the others are information)")
+        else:
+            add("images", "info", detail)
     # -- the shared page and the timing trace of the reference runner
     if same and (ref / shared_page_file()).is_file() and (cfg.strict or (cand / shared_page_file()).is_file()):
         if need("shared-page", shared_page_file()):
@@ -1048,6 +1223,31 @@ def compare_outputs(session: Session, ref: Path, cand: Path, cfg: Compare) -> li
         ok, detail = compare_after_header(ref / "timing.txt", cand / "timing.txt")
         add("timing", "info", ("identical apart from the header" if ok else detail) + " (not gated)")
     return results
+
+
+def timeline_result(ref: Path, events: Path, allow: Path | None) -> Result:
+    """N0-39: the native timeline (the candidate's MH4N_TRACE_EVENTS file) against the recording's `timing.txt`,
+    event by event (timeline_check.py).  Skipped when the recording has no `timing.txt`; a failure when the run wrote
+    no events file or the files are malformed or differ in a way the allow file does not list.  The full report is
+    written next to the events file as `timeline.txt`."""
+    if not (ref / "timing.txt").is_file():
+        return Result("timeline", "skipped", "the recording has no timing.txt (record it again to get one)")
+    if not events.is_file():
+        return Result("timeline", "fail", f"the candidate wrote no {events.name} (MH4N_TRACE_EVENTS needs "
+                                          f"--deterministic)")
+    try:
+        report = timeline_check.compare(ref / "timing.txt", events, timeline_check.load_allow(allow))
+    except timeline_check.TimelineError as e:
+        return Result("timeline", "fail", f"malformed input: {e}")
+    text = timeline_check.format_report(report)
+    (events.parent / "timeline.txt").write_text(text + "\n", encoding="utf-8")
+    note = timeline_check.summary(report)
+    if report.differences != report.allowed:
+        first = next((d for d in report.shown if not d.allowed), None)
+        where = f"first not allowed: {first.kind} at event {first.index}" if first else "see timeline.txt"
+        return Result("timeline", "fail", f"{report.differences - report.allowed} difference(s) not allowed "
+                                          f"({where}; the report is {events.parent / 'timeline.txt'})", note=note)
+    return Result("timeline", "pass", note=note)
 
 
 def exit_status(results: Sequence[Result], require: Sequence[str]) -> int:
@@ -1110,6 +1310,17 @@ def check(session: Session, a: argparse.Namespace) -> int:
     for flag, value in rules.items():
         if value is not None and value < 0:
             raise GoldenError(f"--{flag.replace('_', '-')} must not be negative")
+    if a.image_frames and profile != "cross":
+        raise GoldenError("--image-frames sets the frames the cross profile holds the screenshots to (N2b-17, D58): "
+                          "the same profile compares them all exactly and the native profile reports them as information")
+    if a.timeline and not (a.candidate_runner and "--deterministic" in cand_args):
+        raise GoldenError("--timeline compares the native runner's MH4N_TRACE_EVENTS file with the recording's "
+                          "timing.txt: it needs --candidate-runner and --candidate-args=--deterministic")
+    if a.timeline_allow and not a.timeline:
+        raise GoldenError("--timeline-allow needs --timeline")
+    timeline_allow = Path(a.timeline_allow) if a.timeline_allow else (TIMELINE_ALLOW if TIMELINE_ALLOW.is_file() else None)
+    if a.timeline_allow and not timeline_allow.is_file():
+        raise GoldenError(f"--timeline-allow: {timeline_allow} is not a file")
     across = profile in ("cross", "native")
     if (across or a.fallback) and not Path(SVC_CROSS_MODEL if across else SVC_POLLING).is_file():
         raise GoldenError(f"missing {SVC_CROSS_MODEL if across else SVC_POLLING}")
@@ -1135,7 +1346,9 @@ def check(session: Session, a: argparse.Namespace) -> int:
     foreign = bool(a.candidate_runner)
     if not foreign and manifest.get("updates") and not a.update:
         raise GoldenError("the recording was made with --install: pass --update CIA so the run starts the same way")
-    shot_every =int(manifest.get("shots", {}).get("every_frames", DEFAULT_SHOT_EVERY_FRAMES))
+    shot_every = int(manifest.get("shots", {}).get("every_frames", DEFAULT_SHOT_EVERY_FRAMES))
+    # N2b-17: only a candidate that lists --shots, and whose arguments choose a GPU that shows its screens, gets them
+    shots = foreign and candidate_shows_screens(cand_args) and runner_has_shots(a.candidate_runner)
     if foreign:
         runner, program, code, cpu, full = a.candidate_runner, a.candidate_program or a.game, a.candidate_code, None, False
         extra = cand_args
@@ -1151,8 +1364,13 @@ def check(session: Session, a: argparse.Namespace) -> int:
                 raise GoldenError("--cpu recomp needs --code LIB")
     ignore = ([IPC_TIME_DEPENDENT] if IPC_TIME_DEPENDENT.is_file() else []) + [Path(p) for p in a.ignore or []]
     real = int(manifest.get("real_scene_changes", real_scene_changes(ref / "state.txt")))
+    # N2b-28: a candidate on the recording's clock (--deterministic) is judged at every common screenshot, unless
+    # an explicit --image-frames FILE says otherwise
+    all_images = profile == "cross" and not a.image_frames and wants_all_images(cand_args)
+    image_frames = load_image_frames(Path(a.image_frames) if a.image_frames else None, session.name) \
+        if profile == "cross" and not all_images else []
     cfg = Compare(profile, a.fallback, strict=not foreign, ignore=ignore, observable=Path(a.observable),
-                  real_changes=real, **rules)
+                  real_changes=real, image_frames=image_frames, all_images=all_images, **rules)
     pair = Compare("same", a.fallback, strict=not foreign, ref_is_recording=False, observable=Path(a.observable),
                    real_changes=real, checkpoints=False)
     checks_dir = ref / "check"
@@ -1164,13 +1382,16 @@ def check(session: Session, a: argparse.Namespace) -> int:
         work = checks_dir / f"work{n}"
         copy_tree(ref / "user-before", work)
         spec = RunSpec(runner, program, code, cpu, a.update or [], work, outdir, session, a.set or [], extra, full,
-                       shot_every, str(a.observable))
+                       shot_every, str(a.observable), shots, outdir / "events.txt" if a.timeline else None)
         status, _ = run_runner(spec, a.timeout)
         shutil.rmtree(work, ignore_errors=True)
         prefix = f"run{n}: " if a.repeat > 1 else ""
         if status != 0:
             results.append(Result("runner", "fail", f"exit status {status}", prefix))
-        for r in compare_outputs(session, ref, outdir, cfg):
+        run_results = compare_outputs(session, ref, outdir, cfg)
+        if a.timeline:
+            run_results.append(timeline_result(ref, outdir / "events.txt", timeline_allow))
+        for r in run_results:
             r.run = prefix
             results.append(r)
     for n in range(2, a.repeat + 1):          # the runs against each other, in the same profile
@@ -1281,6 +1502,17 @@ def make_parser() -> argparse.ArgumentParser:
                            help=f"cross and native profiles only: DSP frames the candidate's audio may be shifted by "
                                 f"(default {CROSS_MAX_SHIFT} in cross, D51; {NATIVE_MAX_SHIFT} in native, D76)")
             s.add_argument("--observable", default=str(OBSERVABLE))
+            s.add_argument("--timeline", action="store_true",
+                           help="N0-39: also compare the native runner's scheduler timeline (MH4N_TRACE_EVENTS, set "
+                                "for the candidate) with the recording's timing.txt, event by event; needs "
+                                "--candidate-runner and --candidate-args=--deterministic; off by default")
+            s.add_argument("--timeline-allow", metavar="FILE",
+                           help=f"the timeline's allowed differences (timeline_check.py's format; default "
+                                f"config/native/timeline_allow.txt when it exists)")
+            s.add_argument("--image-frames", metavar="FILE",
+                           help="cross profile only: the file of `<session> <frame>` lines that says which "
+                                "screenshots are judged with imgdiff's rule (default config/native/image_frames.txt; "
+                                "no listed frame for the session: `images` is skipped)")
         s.set_defaults(func=record if name == "record" else check)
     return p
 

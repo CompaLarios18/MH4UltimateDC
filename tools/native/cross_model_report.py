@@ -25,6 +25,22 @@ needs nothing but the standard library:
 
 usage: cross_model_report.py --session FILE --reference DIR --candidate DIR [--observable FILE] [--tolerance N]
                              [--min-margin N] [--no-svc] [--no-ipc]
+       cross_model_report.py --images --session FILE --reference DIR --candidate DIR [--proposal FILE]
+                             [--min-frames N] [--long-scene N] [--margin-db DB] [--margin-block N]
+                             [--not-judged FIRST-LAST]... [--no-per-frame]
+
+`--images` (N2b-17) reads the screenshots of the two folders (`shots/f<frame>_top.ppm` and `_bottom.ppm`, every 60
+frames from frame 300) and the reference's state trace, lists per frame and screen the PSNR and the worst 16x16 block
+(`imgdiff.py`'s rule, ROADMAP section 6) and per scene the frames proposed, and proposes the frames where both
+screens pass with a margin (D58: `--margin-db` 2.0 and `--margin-block` 1.0, so PSNR at least 42 dB and block at most
+7.0 out of 255 on both screens; 0 and 0 give the plain rule; the gate itself keeps 40 dB and 8/255).  The proposal is
+the image frames of the session (`--proposal FILE`: lines `<session> <frame>`; the session's lines are replaced).
+Frames that pass the plain rule but not the margin are listed as narrow.  Frames in the candidate's `shots/gas.txt`
+are never proposed.  Exit status: 0 when the proposal has at least `--min-frames` frames (3) and one in every scene
+longer than `--long-scene` frames (300), except the scenes that start inside a `--not-judged FIRST-LAST` range (D58
+names G4 903-1575 and G2 5086-9000, which the jit-calibrated gate does not judge; without the option those two
+scenes exit 1); 1 when it falls short (each shortfall is named on stderr; the report and the proposal are still
+written); 2 bad input (a negative number included).
 exit status: 0 the report was written, every real scene change falls on the same scene within --tolerance
 frames (default 4, D50) and every input event is at least --min-margin frames (default 60, D50) after the
 last real scene change on both sides; 1 a real scene change is more than --tolerance frames apart, goes to
@@ -47,6 +63,7 @@ HERE = Path(__file__).resolve().parent
 if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
+import imgdiff  # noqa: E402
 import state_diff  # noqa: E402
 import tracefmt  # noqa: E402
 
@@ -376,8 +393,289 @@ def build_report(session_text: str, ref_dir: Path, cand_dir: Path, session_name:
     return "\n".join(out) + "\n", problems
 
 
+# ── images (N2b-17) ─────────────────────────────────────────────────────────────────
+
+IMAGE_MIN_FRAMES = 3        # image frames every calibrated session needs (N2b-17's first guess, rule 8)
+IMAGE_LONG_SCENE = 300      # a scene longer than this (frames) needs an image frame of its own
+IMAGE_MARGIN_DB = 2.0       # D58: a frame is proposed with this many dB over the PSNR threshold ...
+IMAGE_MARGIN_BLOCK = 1.0    # ... and this much (of 255) under the block threshold
+_SHOT = re.compile(r"^f?(\d+)_(top|bottom)\.ppm$")
+
+
+@dataclass(frozen=True)
+class Scene:
+    scene: Optional[int]
+    start: int
+    end: int            # exclusive
+
+    @property
+    def length(self) -> int:
+        return self.end - self.start
+
+
+@dataclass
+class ShotRow:
+    frame: int
+    top: Optional[imgdiff.Metrics] = None
+    bottom: Optional[imgdiff.Metrics] = None
+    problem: str = ""   # a screenshot missing on one side, or sizes that differ
+    gas: bool = False
+
+    @property
+    def passes(self) -> bool:
+        """The plain rule (ROADMAP section 6) on both screens."""
+        return not self.problem and not self.gas and bool(self.top and self.top.passes
+                                                          and self.bottom and self.bottom.passes)
+
+    def proposed(self, margin_db: float = 0.0, margin_block: float = 0.0) -> bool:
+        """Both screens pass with `margin_db` dB and `margin_block` (of 255) to spare (D58)."""
+        if self.problem or self.gas or not (self.top and self.bottom):
+            return False
+        return all(m.psnr >= imgdiff.MIN_PSNR_DB + margin_db and m.worst_block <= imgdiff.MAX_BLOCK_ERROR - margin_block
+                   for m in (self.top, self.bottom))
+
+
+def shot_files(folder: Path) -> dict[int, dict[str, Path]]:
+    """`<folder>/shots/f<frame>_top.ppm` and `_bottom.ppm`, by frame."""
+    found: dict[int, dict[str, Path]] = {}
+    shots = folder / "shots"
+    if shots.is_dir():
+        for p in shots.iterdir():
+            m = _SHOT.match(p.name)
+            if m:
+                found.setdefault(int(m.group(1)), {})[m.group(2)] = p
+    return found
+
+
+def read_gas(folder: Path) -> set[int]:
+    """The shot numbers of `<folder>/shots/gas.txt` (N2b-14: one per line, unpadded); empty when the file is
+    missing, which is a runner that does not report gas."""
+    path = folder / "shots" / "gas.txt"
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return set()
+    except (OSError, UnicodeError) as error:
+        raise ReportError(f"cannot read {path}: {getattr(error, 'strerror', None) or error}") from None
+    frames: set[int] = set()
+    for number, raw in enumerate(text.splitlines(), 1):
+        line = raw.split("#", 1)[0].strip()
+        if not line:
+            continue
+        if not (line.isascii() and line.isdigit()):
+            raise ReportError(f"{path}: line {number}: {line!r} is not a shot number")
+        frames.add(int(line))
+    return frames
+
+
+def scene_intervals(state_path: Path) -> list[Scene]:
+    """The scenes of a state trace between its real scene changes: from frame 0 to the first change, and so on up to
+    the last record."""
+    try:
+        records = state_diff.parse_trace(state_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError) as error:
+        raise ReportError(f"cannot read {state_path}: {getattr(error, 'strerror', None) or error}") from None
+    except state_diff.FormatError as error:
+        raise ReportError(f"{state_path}: {error}") from None
+    if not records:
+        raise ReportError(f"{state_path}: the state trace has no records")
+    changes = state_diff.real_scene_changes(records)
+    starts = [0] + [r.frame for r in changes]
+    ends = starts[1:] + [records[-1].frame + 1]
+    values = [next((r.values.get(state_diff.SCENE) for r in records if r.frame >= s and
+                    r.values.get(state_diff.SCENE) is not None), None) for s in starts]
+    return [Scene(v, s, e) for v, s, e in zip(values, starts, ends)]
+
+
+def image_rows(ref_dir: Path, cand_dir: Path) -> list[ShotRow]:
+    """One row per screenshot frame of the reference, compared with the candidate's at that frame."""
+    ref, cand = shot_files(ref_dir), shot_files(cand_dir)
+    gas = read_gas(cand_dir)
+    rows: list[ShotRow] = []
+    for frame in sorted(ref):
+        row = ShotRow(frame, gas=frame in gas)
+        for screen in ("top", "bottom"):
+            a, b = ref[frame].get(screen), cand.get(frame, {}).get(screen)
+            if a is None or b is None:
+                row.problem = f"the {screen} screenshot is missing on the {'reference' if a is None else 'candidate'}"
+                break
+            try:
+                setattr(row, screen, imgdiff.compare_files(a, b))
+            except imgdiff.ImageError as error:
+                row.problem = f"{screen}: {error}"
+                break
+        rows.append(row)
+    if not rows:
+        raise ReportError(f"{ref_dir}: the reference has no screenshots (shots/f<frame>_top.ppm)")
+    if not cand:
+        raise ReportError(f"{cand_dir}: the candidate has no screenshots")
+    return rows
+
+
+def scene_of(scenes: Sequence[Scene], frame: int) -> int:
+    """The index of the scene a frame falls in."""
+    for i, s in enumerate(scenes):
+        if s.start <= frame < s.end:
+            return i
+    return len(scenes) - 1
+
+
+def not_judged(scene: Scene, ranges: Sequence[tuple[int, int]]) -> bool:
+    """A scene that starts inside one of the `--not-judged` ranges (first, last; both inclusive)."""
+    return any(a <= scene.start <= b for a, b in ranges)
+
+
+def image_coverage(rows: Sequence[ShotRow], scenes: Sequence[Scene], min_frames: int,
+                   long_scene: int, margin_db: float = 0.0, margin_block: float = 0.0,
+                   exempt: Sequence[tuple[int, int]] = ()) -> list[str]:
+    """The ways the proposed frames (the margin set) fall short of the rule: fewer than `min_frames`, or a scene
+    longer than `long_scene` frames with none, except the scenes named in `exempt` (D58)."""
+    good = [r.frame for r in rows if r.proposed(margin_db, margin_block)]
+    problems: list[str] = []
+    if len(good) < min_frames:
+        problems.append(f"only {len(good)} image frame{'' if len(good) == 1 else 's'}, at least {min_frames} needed")
+    for i, s in enumerate(scenes):
+        if not_judged(s, exempt):
+            continue
+        if s.length > long_scene and not any(s.start <= f < s.end for f in good):
+            problems.append(f"scene #{i + 1} (frames {s.start} to {s.end - 1}, {s.length} frames) has no image frame")
+    return problems
+
+
+def _cell(m: Optional[imgdiff.Metrics]) -> str:
+    if m is None:
+        return "- | -"
+    return f"{'inf' if m.psnr == float('inf') else format(m.psnr, '.1f')} | {m.worst_block:.1f}"
+
+
+def _ranges(frames: Sequence[int], step: int) -> str:
+    """`300-420 (3), 600` style: runs of frames `step` apart."""
+    out: list[str] = []
+    i = 0
+    while i < len(frames):
+        j = i
+        while j + 1 < len(frames) and frames[j + 1] - frames[j] == step:
+            j += 1
+        out.append(str(frames[i]) if i == j else f"{frames[i]}-{frames[j]} ({j - i + 1})")
+        i = j + 1
+    return ", ".join(out) or "none"
+
+
+def image_report(ref_dir: Path, cand_dir: Path, session_name: str = "",
+                 min_frames: int = IMAGE_MIN_FRAMES, long_scene: int = IMAGE_LONG_SCENE,
+                 per_frame: bool = True, margin_db: float = IMAGE_MARGIN_DB,
+                 margin_block: float = IMAGE_MARGIN_BLOCK,
+                 exempt: Sequence[tuple[int, int]] = ()) -> tuple[str, list[int], list[str]]:
+    """(markdown, proposed frames, problems of coverage).  A frame is proposed when both screens pass with the
+    margins to spare (D58); the gate itself judges with ROADMAP section 6's thresholds."""
+    rows = image_rows(ref_dir, cand_dir)
+    scenes = scene_intervals(ref_dir / "state.txt")
+    proposed = [r.frame for r in rows if r.proposed(margin_db, margin_block)]
+    narrow = [r.frame for r in rows if r.passes and not r.proposed(margin_db, margin_block)]
+    problems = image_coverage(rows, scenes, min_frames, long_scene, margin_db, margin_block, exempt)
+    step = min((b.frame - a.frame for a, b in zip(rows, rows[1:])), default=1) or 1
+    thr = f"PSNR at least {imgdiff.MIN_PSNR_DB:g} dB and no {imgdiff.BLOCK_SIZE}x{imgdiff.BLOCK_SIZE} block above " \
+          f"{imgdiff.MAX_BLOCK_ERROR:g}/255"
+    plain = sum(1 for r in rows if r.passes)
+    rule = (f"a frame is proposed when both screens pass with {margin_db:g} dB and {margin_block:g}/255 to spare "
+            f"(PSNR at least {imgdiff.MIN_PSNR_DB + margin_db:g} dB and no block above "
+            f"{imgdiff.MAX_BLOCK_ERROR - margin_block:g}/255)")
+    out = [f"## {session_name or 'session'}: screenshots, {trace_cpu(cand_dir / 'state.txt')} (candidate) against "
+           f"{trace_cpu(ref_dir / 'state.txt')} (reference)", "",
+           f"{len(rows)} screenshot frames ({rows[0].frame} to {rows[-1].frame}, every {step}); the gate's rule is {thr}; "
+           f"{rule}. **{len(proposed)} of {len(rows)} frames are proposed** ({plain} pass the plain rule).", "",
+           f"### Scenes ({len(scenes)}; the reference's real scene changes)", "",
+           "| # | scene | frames | length | screenshot frames | pass | proposed frames |", "|---|---|---|---|---|---|---|"]
+    for i, s in enumerate(scenes):
+        inside = [r for r in rows if scene_of(scenes, r.frame) == i]
+        good = [r.frame for r in inside if r.proposed(margin_db, margin_block)]
+        note = " (not judged by the jit-calibrated gate)" if not_judged(s, exempt) else ""
+        out.append(f"| {i + 1} | {'-' if s.scene is None else _scene(s.scene)} | {s.start} to {s.end - 1} | {s.length} | "
+                   f"{len(inside)} | {len(good)} | {_ranges(good, step)}{note} |")
+    bad = [r for r in rows if not r.passes]
+    out += ["", f"### Frames that do not pass the plain rule ({len(bad)})", ""]
+    if bad:
+        out += [", ".join(str(r.frame) for r in bad)]
+    else:
+        out += ["none"]
+    out += ["", f"### Frames that pass the plain rule but are not proposed: narrow ({len(narrow)})", "",
+            ", ".join(str(f) for f in narrow) or "none"]
+    if per_frame:
+        out += ["", "### Per frame", "",
+                "| frame | scene # | top PSNR (dB) | top worst block | bottom PSNR (dB) | bottom worst block | proposed |",
+                "|---|---|---|---|---|---|---|"]
+        for r in rows:
+            verdict = ("gas" if r.gas else r.problem) if (r.gas or r.problem) else (
+                "yes" if r.proposed(margin_db, margin_block) else ("narrow" if r.passes else "no"))
+            out.append(f"| {r.frame} | {scene_of(scenes, r.frame) + 1} | {_cell(r.top)} | {_cell(r.bottom)} | "
+                       f"{verdict} |")
+    out += ["", "### Coverage", ""]
+    out += [f"- {p}" for p in problems] or [f"- at least {min_frames} image frames, and one in every scene longer than "
+                                           f"{long_scene} frames: met"]
+    skipped = [f"#{i + 1} (frames {s.start} to {s.end - 1})" for i, s in enumerate(scenes) if not_judged(s, exempt)]
+    if skipped:
+        out += [f"- not judged by the jit-calibrated gate, as named with --not-judged: scene {', '.join(skipped)}"]
+    return "\n".join(out) + "\n", proposed, problems
+
+
+def write_proposal(path: Path, session: str, frames: Sequence[int]) -> None:
+    """Replace the lines of `session` in the proposal file (`<session> <frame>` per line); other sessions' lines stay."""
+    keep: list[str] = []
+    if path.is_file():
+        keep = [ln for ln in path.read_text(encoding="utf-8").splitlines()
+                if ln.strip() and ln.split()[0] != session]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(keep + [f"{session} {f}" for f in frames]) + "\n", encoding="utf-8", newline="\n")
+
+
+def images_main(args: argparse.Namespace, ap: argparse.ArgumentParser) -> int:
+    if args.min_frames < 0 or args.long_scene < 0:
+        ap.error("--min-frames and --long-scene must not be negative")
+    if args.margin_db < 0 or args.margin_block < 0:
+        ap.error("--margin-db and --margin-block must not be negative")
+    exempt: list[tuple[int, int]] = []
+    for spec in args.not_judged:
+        m = re.fullmatch(r"([0-9]+)-([0-9]+)", spec)
+        if not (m and int(m.group(1)) <= int(m.group(2))):
+            ap.error(f"--not-judged {spec!r}: expected FIRST-LAST frames")
+        exempt.append((int(m.group(1)), int(m.group(2))))
+    session = Path(args.session)
+    try:
+        report, proposed, problems = image_report(Path(args.reference), Path(args.candidate), session.stem,
+                                                  args.min_frames, args.long_scene, not args.no_per_frame,
+                                                  args.margin_db, args.margin_block, exempt)
+        if args.proposal:
+            write_proposal(Path(args.proposal), session.stem, proposed)
+    except (ReportError, OSError) as error:
+        print(f"cross_model_report: {error}", file=sys.stderr)
+        return 2
+    sys.stdout.write(report)
+    for problem in problems:
+        print(f"cross_model_report: {problem}", file=sys.stderr)
+    return 1 if problems else 0
+
+
 def main(argv: Optional[Iterable[str]] = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("--images", action="store_true",
+                    help="compare the two runs' screenshots with imgdiff's rule per frame and screen and propose the "
+                         "image frames (N2b-17); the other options of the report do not apply")
+    ap.add_argument("--proposal", metavar="FILE",
+                    help="with --images: write (replace) this session's lines `<session> <frame>` in FILE")
+    ap.add_argument("--min-frames", type=int, default=IMAGE_MIN_FRAMES, metavar="N",
+                    help=f"with --images: image frames a session needs (default {IMAGE_MIN_FRAMES})")
+    ap.add_argument("--long-scene", type=int, default=IMAGE_LONG_SCENE, metavar="N",
+                    help=f"with --images: a scene longer than N frames needs an image frame (default {IMAGE_LONG_SCENE})")
+    ap.add_argument("--margin-db", type=float, default=IMAGE_MARGIN_DB, metavar="DB",
+                    help=f"with --images: propose a frame only when both screens have a PSNR of at least "
+                         f"{imgdiff.MIN_PSNR_DB:g} + DB (default {IMAGE_MARGIN_DB:g}, D58; 0 is the plain rule)")
+    ap.add_argument("--margin-block", type=float, default=IMAGE_MARGIN_BLOCK, metavar="N",
+                    help=f"with --images: ... and no 16x16 block above {imgdiff.MAX_BLOCK_ERROR:g} - N out of 255 "
+                         f"(default {IMAGE_MARGIN_BLOCK:g}, D58; 0 is the plain rule)")
+    ap.add_argument("--not-judged", action="append", default=[], metavar="FIRST-LAST",
+                    help="with --images: a scene that starts in frames FIRST to LAST is not judged by the jit-calibrated "
+                         "gate and needs no image frame (repeatable; D58: G4 903-1575, G2 5086-9000)")
+    ap.add_argument("--no-per-frame", action="store_true", help="with --images: leave out the per-frame table")
     ap.add_argument("--session", required=True, metavar="FILE", help="the session script (tools/native/golden/<S>.txt)")
     ap.add_argument("--reference", required=True, metavar="DIR", help="the reference run (a golden recording)")
     ap.add_argument("--candidate", required=True, metavar="DIR", help="the other run (a check's run folder)")
@@ -391,6 +689,8 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     ap.add_argument("--no-svc", action="store_true", help="leave out the SVC counts (a large trace)")
     ap.add_argument("--no-ipc", action="store_true", help="leave out the IPC counts")
     args = ap.parse_args(list(argv) if argv is not None else None)
+    if args.images:
+        return images_main(args, ap)
     if args.tolerance < 0:
         ap.error("--tolerance must not be negative")
     if args.min_margin < 0:
