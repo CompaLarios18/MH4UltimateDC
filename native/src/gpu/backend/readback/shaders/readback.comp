@@ -1,0 +1,125 @@
+// Derived from Azahar src/video_core/host_shaders/vulkan_depth_to_buffer.comp, src/video_core/rasterizer_cache/texture_codec.h and src/common/color.h at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-2.0-or-later, as the files say: "Licensed under GPLv2 or any later version")
+// Copyright 2023 Citra Emulator Project (vulkan_depth_to_buffer.comp)
+// Copyright 2022-2026 Citra Emulator Project / Azahar Emulator Project (texture_codec.h)
+// Copyright 2014 Citra Emulator Project (color.h)
+//
+// Readback of a render target into the PICA's guest layout (N2-28, rhi-spike.md 9.4 item 15). One invocation writes
+// one 32-bit word of the output; the word's four bytes are located in the tiled layout, mapped back to the pixel
+// they belong to and fetched from the image (texelFetch, no filtering). From Azahar: the depth pass (a depth view and
+// a stencil view read in a compute shader and written to a storage buffer, vulkan_depth_to_buffer.comp), the Morton
+// tiling and the row direction (MortonCopy in texture_codec.h, and its D24S8 rotation), the bit positions and byte
+// order of every PICA format (Encode* in color.h). Read, nothing copied: texture_decode.cpp.
+//
+// Variants (spirv_inc.txt): KIND 0 colour, KIND 1 depth only (D16, D24), KIND 2 depth and stencil (D24S8).
+//
+// Layout. The PICA stores a framebuffer as 8x8 tiles, left to right, then the next tile row; inside a tile the
+// pixel (x, y) is at the Morton index with x in the even bits and y in the odd ones (x0 y0 x1 y1 x2 y2 from the
+// lowest bit). Guest row 0 is the LAST row of the rect in the image (Azahar reads and writes the linear buffer
+// "bottom up"): guest row g is image row rect.y + rect.height - 1 - g.
+//
+// Bytes (little endian words, as Azahar's Encode*): RGBA8 A,B,G,R; RGB8 B,G,R; RGB565 R in bits 11 to 15, G 5 to 10,
+// B 0 to 4; RGB5A1 R 11 to 15, G 6 to 10, B 1 to 5, A 0; RGBA4 R 12 to 15, G 8 to 11, B 4 to 7, A 0 to 3; D16 the
+// 16-bit value; D24 the 24-bit value in 3 bytes; D24S8 the 24-bit depth in the low 24 bits and the stencil in the top
+// byte. A component of fewer bits than the image has is cut from the top (Azahar's Convert8To5 and kin: v >> (n - m)).
+//
+// Depth: the 24-bit value is uint(depth * (exp2(24.0) - 1.0)), Azahar's rule (vulkan_depth_to_buffer.comp and
+// EncodeD24 of texture_codec.h): scale 2^24 - 1, truncated. For a depth that is an exact unorm decode c / 16777215 the
+// product is the integer c, so D24S8 and the D32S8 that stands in for it give the same bytes (a float depth between
+// two 24-bit values can differ by one from what a D24 attachment stores: docs/native/rhi.md). D16 is rounded
+// (roundEven(depth * 65535.0)): Azahar copies D16 raw, so rounding here only recovers the stored integer.
+#version 450
+#extension GL_EXT_samplerless_texture_functions : require
+
+#ifndef KIND
+#define KIND 0
+#endif
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+#if KIND == 0
+layout(set = 0, binding = 0) uniform texture2D color_img;
+#define OUT_BINDING 1
+#define PARAM_BINDING 2
+#elif KIND == 1
+layout(set = 0, binding = 0) uniform texture2D depth_img;
+#define OUT_BINDING 1
+#define PARAM_BINDING 2
+#else
+layout(set = 0, binding = 0) uniform texture2D depth_img;
+layout(set = 0, binding = 1) uniform utexture2D stencil_img;
+#define OUT_BINDING 2
+#define PARAM_BINDING 3
+#endif
+
+layout(std430, set = 0, binding = OUT_BINDING) writeonly buffer Out { uint data[]; } out_buf;
+
+layout(std140, set = 0, binding = PARAM_BINDING) uniform Params {
+    ivec4 rect;       // x, y, width, height in the image
+    uvec4 info;       // x: PicaFormat (Rgba8 0, Rgb8 1, Rgb5A1 2, Rgb565 3, Rgba4 4, D16 5, D24 6, D24S8 7),
+                      // y: words to write, z: invocations per row of the dispatch
+    uvec4 src_bits;   // bits of r, g, b, a the image stores (8 for Rgba8; 0 for a component it does not have)
+} params;
+
+const uint kBytesPerPixel[8] = uint[8](4u, 3u, 2u, 2u, 2u, 2u, 3u, 4u);
+
+#if KIND == 0
+// The component c (0 r, 1 g, 2 b, 3 a) as an integer of `dst_bits` bits.
+uint Component(vec4 texel, uint c, uint dst_bits) {
+    if (dst_bits == 0u) return 0u;
+    uint src = params.src_bits[c];
+    uint v = uint(roundEven(texel[c] * float((1u << src) - 1u)));
+    return src > dst_bits ? (v >> (src - dst_bits)) : v;
+}
+
+uint PixelValue(ivec2 p) {
+    vec4 t = texelFetch(color_img, p, 0);
+    uint mode = params.info.x;
+    if (mode == 0u) {
+        return Component(t, 3u, 8u) | (Component(t, 2u, 8u) << 8) | (Component(t, 1u, 8u) << 16) | (Component(t, 0u, 8u) << 24);
+    } else if (mode == 1u) {
+        return Component(t, 2u, 8u) | (Component(t, 1u, 8u) << 8) | (Component(t, 0u, 8u) << 16);
+    } else if (mode == 2u) {
+        return (Component(t, 0u, 5u) << 11) | (Component(t, 1u, 5u) << 6) | (Component(t, 2u, 5u) << 1) | Component(t, 3u, 1u);
+    } else if (mode == 3u) {
+        return (Component(t, 0u, 5u) << 11) | (Component(t, 1u, 6u) << 5) | Component(t, 2u, 5u);
+    }
+    return (Component(t, 0u, 4u) << 12) | (Component(t, 1u, 4u) << 8) | (Component(t, 2u, 4u) << 4) | Component(t, 3u, 4u);
+}
+#else
+uint PixelValue(ivec2 p) {
+    float depth = texelFetch(depth_img, p, 0).r;
+    uint mode = params.info.x;
+    if (mode == 5u) {
+        return min(uint(roundEven(depth * 65535.0)), 0xFFFFu);
+    }
+    uint d24 = min(uint(depth * (exp2(24.0) - 1.0)), 0xFFFFFFu);
+#if KIND == 2
+    if (mode == 7u) {
+        return d24 | (texelFetch(stencil_img, p, 0).r << 24);
+    }
+#endif
+    return d24;
+}
+#endif
+
+void main() {
+    uint word = gl_GlobalInvocationID.y * params.info.z + gl_GlobalInvocationID.x;
+    if (word >= params.info.y) return;
+    uint bpp = kBytesPerPixel[params.info.x];
+    uint tiles_x = uint(params.rect.z) >> 3;
+    uint result = 0u;
+    for (uint k = 0u; k < 4u; ++k) {
+        uint byte_index = word * 4u + k;
+        uint pixel = byte_index / bpp;
+        uint within = byte_index - pixel * bpp;
+        uint tile = pixel >> 6;
+        uint m = pixel & 63u;
+        uint lx = (m & 1u) | (((m >> 2) & 1u) << 1) | (((m >> 4) & 1u) << 2);
+        uint ly = ((m >> 1) & 1u) | (((m >> 3) & 1u) << 1) | (((m >> 5) & 1u) << 2);
+        uint gx = (tile % tiles_x) * 8u + lx;
+        uint gy = (tile / tiles_x) * 8u + ly;
+        ivec2 p = ivec2(params.rect.x + int(gx), params.rect.y + params.rect.w - 1 - int(gy));
+        result |= ((PixelValue(p) >> (8u * within)) & 0xFFu) << (8u * k);
+    }
+    out_buf.data[word] = result;
+}

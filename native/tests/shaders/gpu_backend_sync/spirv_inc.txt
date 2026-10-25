@@ -1,0 +1,8 @@
+# <array name> <file> [glslang options]
+spv_fs_vert fs.vert
+spv_fs_vert_z25 fs.vert -DZ=0.25
+spv_red_frag solid.frag "-DCOLOR=vec4(1.0,0.0,0.0,1.0)"
+spv_green_frag solid.frag "-DCOLOR=vec4(0.0,1.0,0.0,1.0)"
+spv_blue_frag solid.frag "-DCOLOR=vec4(0.0,0.0,1.0,1.0)"
+spv_fetch_frag fetch.frag
+spv_fs_vert_z667 fs.vert -DZ=0.6666667
