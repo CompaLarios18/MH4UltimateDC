@@ -1,0 +1,19 @@
+# <array name> <file> [glslang options]
+spv_fs_vert fs.vert
+spv_fs_vert_z10 fs.vert -DZ=0.1
+spv_fs_vert_z25 fs.vert -DZ=0.25
+spv_fs_vert_z75 fs.vert -DZ=0.75
+spv_red_frag solid.frag "-DCOLOR=vec4(1.0,0.0,0.0,1.0)"
+spv_green_frag solid.frag "-DCOLOR=vec4(0.0,1.0,0.0,1.0)"
+spv_blue_frag solid.frag "-DCOLOR=vec4(0.0,0.0,1.0,1.0)"
+spv_white_frag solid.frag "-DCOLOR=vec4(1.0,1.0,1.0,1.0)"
+spv_translucent_red_frag solid.frag "-DCOLOR=vec4(1.0,0.0,0.0,0.2)"
+spv_fetch_frag fetch.frag
+spv_feedback_frag fetch.frag "-DADD=vec4(0.0,0.4,0.0,0.0)"
+spv_border_frag border.frag
+spv_bind_frag bind.frag
+spv_texel_frag texel.frag
+spv_shadow_interlock_frag shadow.frag -DINTERLOCK
+spv_shadow_cas_frag shadow.frag
+spv_stencil_frag stencil.frag
+spv_depth_frag depth.frag
