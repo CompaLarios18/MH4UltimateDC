@@ -35,9 +35,17 @@ void MergeCounters(std::vector<Counter>& into, std::vector<Counter> more) {
     }
 }
 
+// The limits make sense: at least one frame of lag, and a cap above it.
+QueueConfig Clamped(QueueConfig config) {
+    config.max_frames_in_flight = std::max<u32>(config.max_frames_in_flight, 1);
+    config.max_frames_queued = std::max(config.max_frames_queued, config.max_frames_in_flight + 1);
+    return config;
+}
+
 } // namespace
 
-// ---- QueueHost -------------------------------------------------------------------------------------
+// ---- QueueHost
+// -------------------------------------------------------------------------------------
 
 void QueueHost::Run(Task& task) {
     if (!task.taken.exchange(true, std::memory_order_acq_rel)) {
@@ -54,16 +62,30 @@ void QueueHost::Post(std::function<void()> work) {
     task->work = std::move(work);
     {
         std::lock_guard lock(mutex_);
-        // Forget what has run (the real host's safe point runs a task without telling us).
-        while (!pending_.empty() && pending_.front()->taken.load(std::memory_order_acquire)) {
-            pending_.pop_front();
-            ++base_;
-        }
+        Trim();
         pending_.push_back(task);
         ++posted_;
     }
     // The closure holds the task, not this object: the real host may run it after we are gone.
     real_.Post([task] { Run(*task); });
+}
+
+u8* QueueHost::GuestPointer(u32 vaddr, u32 size) {
+    (void)vaddr;
+    (void)size;
+    // The wrapped GPU calls this on the renderer thread, and guest memory belongs to the scheduler
+    // thread (principle 6): no pointer goes out.
+#if MH4N_RHI_CHECKS
+    rhi::ReportOwnerRuleBreach(rhi::OwnerRule::WrongThread,
+                               "the wrapped GPU asked the host for GuestPointer on the renderer "
+                               "thread (guest memory is the scheduler thread's)");
+#endif
+    return nullptr;
+}
+
+size_t QueueHost::PendingCount() const {
+    std::lock_guard lock(mutex_);
+    return pending_.size();
 }
 
 u64 QueueHost::PostedMark() const {
@@ -83,16 +105,27 @@ void QueueHost::RunPostedUpTo(u64 mark) {
     for (const auto& task : due) {
         Run(*task);
     }
+    std::lock_guard lock(mutex_);
+    Trim();
 }
 
-// ---- QueueGpu: life cycle --------------------------------------------------------------------------
+// Forgets what has run: the real host's safe point runs a task without telling us. Under mutex_.
+void QueueHost::Trim() {
+    while (!pending_.empty() && pending_.front()->taken.load(std::memory_order_acquire)) {
+        pending_.pop_front();
+        ++base_;
+    }
+}
+
+// ---- QueueGpu: life cycle
+// --------------------------------------------------------------------------
 
 QueueGpu::QueueGpu(Host& host, const InnerMaker& make_inner, QueueConfig config)
-    : config_(config), proxy_(std::make_unique<QueueHost>(host)) {
+    : config_(Clamped(config)), proxy_(std::make_unique<QueueHost>(host)) {
     Start([this, &make_inner] { inner_ = make_inner(*proxy_); });
 }
 
-QueueGpu::QueueGpu(std::unique_ptr<Gpu> inner, QueueConfig config) : config_(config) {
+QueueGpu::QueueGpu(std::unique_ptr<Gpu> inner, QueueConfig config) : config_(Clamped(config)) {
     Start([this, &inner] { inner_ = std::move(inner); });
 }
 
@@ -157,7 +190,8 @@ void QueueGpu::RendererMain() {
         } catch (const std::exception& e) {
             MH4N_LOG(Error, "GPU", "queue: a call of the wrapped GPU threw: {}", e.what());
         } catch (...) {
-            MH4N_LOG(Error, "GPU", "queue: a call of the wrapped GPU threw something that is not an exception");
+            MH4N_LOG(Error, "GPU",
+                     "queue: a call of the wrapped GPU threw something that is not an exception");
         }
         busy_ns_.fetch_add(ElapsedNs(begin), std::memory_order_relaxed);
         {
@@ -171,21 +205,24 @@ void QueueGpu::RendererMain() {
     inner_.reset();
 }
 
-// ---- QueueGpu: the queue ---------------------------------------------------------------------------
+// ---- QueueGpu: the queue
+// ---------------------------------------------------------------------------
 
 u64 QueueGpu::Enqueue(std::function<void()> item, bool frame_end) {
     std::unique_lock lock(mutex_);
-    if (frame_end && frames_in_flight_ >= std::max<u32>(config_.max_frames_in_flight, 1)) {
-        const Clock::time_point begin = Clock::now();
-        ++blocked_;
-        done_cv_.wait(lock, [this] {
-            return frames_in_flight_ < std::max<u32>(config_.max_frames_in_flight, 1);
-        });
-        --blocked_;
-        frame_waits_.fetch_add(1, std::memory_order_relaxed);
-        wait_ns_.fetch_add(ElapsedNs(begin), std::memory_order_relaxed);
-    }
     if (frame_end) {
+        // Beyond the engine's lag: counted, never blocked.
+        if (frames_in_flight_ >= config_.max_frames_in_flight) {
+            frame_waits_.fetch_add(1, std::memory_order_relaxed);
+        }
+        // The safety cap: the one place where the frame count blocks the caller.
+        if (frames_in_flight_ >= config_.max_frames_queued) {
+            const Clock::time_point begin = Clock::now();
+            ++blocked_;
+            done_cv_.wait(lock, [this] { return frames_in_flight_ < config_.max_frames_queued; });
+            --blocked_;
+            wait_ns_.fetch_add(ElapsedNs(begin), std::memory_order_relaxed);
+        }
         ++frames_in_flight_;
     }
     queue_.push_back(std::move(item));
@@ -249,9 +286,10 @@ Gpu& QueueGpu::ForwardTarget(const char* call) {
     if (std::this_thread::get_id() != renderer_id_) {
         rhi::ReportOwnerRuleBreach(
             rhi::OwnerRule::WrongThread,
-            fmt::format("QueueGpu::{} was forwarded to the wrapped GPU on a thread other than the "
-                        "renderer thread (the renderer thread owns every image the wrapped GPU makes)",
-                        call));
+            fmt::format(
+                "QueueGpu::{} was forwarded to the wrapped GPU on a thread other than the "
+                "renderer thread (the renderer thread owns every image the wrapped GPU makes)",
+                call));
     }
 #else
     (void)call;
@@ -259,7 +297,8 @@ Gpu& QueueGpu::ForwardTarget(const char* call) {
     return *inner_;
 }
 
-// ---- gpu::Gpu ----------------------------------------------------------------------------------------
+// ---- gpu::Gpu
+// ----------------------------------------------------------------------------------------
 
 void QueueGpu::Execute(const GxCommand& command) {
     Finished(Enqueue([this, command] { ForwardTarget("Execute").Execute(command); }));
@@ -288,7 +327,8 @@ u32 QueueGpu::ReadReg(u32 addr) {
 }
 
 void QueueGpu::SetBufferSwap(u32 screen, const FrameBufferInfo& info) {
-    Finished(Enqueue([this, screen, info] { ForwardTarget("SetBufferSwap").SetBufferSwap(screen, info); }));
+    Finished(Enqueue(
+        [this, screen, info] { ForwardTarget("SetBufferSwap").SetBufferSwap(screen, info); }));
 }
 
 void QueueGpu::SetColorFill(u32 fill) {
@@ -297,12 +337,13 @@ void QueueGpu::SetColorFill(u32 fill) {
 
 void QueueGpu::FlushRegion(u32 vaddr, u32 size) {
     // In order with the commands: the region is stale before any later command runs.
-    Finished(Enqueue([this, vaddr, size] { ForwardTarget("FlushRegion").FlushRegion(vaddr, size); }));
+    Finished(
+        Enqueue([this, vaddr, size] { ForwardTarget("FlushRegion").FlushRegion(vaddr, size); }));
 }
 
 void QueueGpu::InvalidateRegion(u32 vaddr, u32 size) {
-    // The renderer thread forwards it after every earlier command; the posted work of those commands
-    // (and of the wrapped GPU's own write-back for this call) is what the mark counts.
+    // The renderer thread forwards it after every earlier command; the posted work of those
+    // commands (and of the wrapped GPU's own write-back for this call) is what the mark counts.
     auto mark = std::make_shared<u64>(0);
     const u64 seq = Enqueue([this, vaddr, size, mark] {
         ForwardTarget("InvalidateRegion").InvalidateRegion(vaddr, size);
@@ -321,7 +362,8 @@ void QueueGpu::VBlank(u32 screen) {
     const bool frame_end = screen == 0;
     Finished(Enqueue(
         [this, screen, frame_end] {
-            // The frame leaves the queue even if the wrapped GPU throws, or the limit would block for ever.
+            // The frame leaves the queue even if the wrapped GPU throws, or the limit would block
+            // for ever.
             struct FrameDone {
                 QueueGpu* gpu;
                 bool active;
@@ -344,10 +386,11 @@ void QueueGpu::VBlank(u32 screen) {
         frame_end));
 }
 
-// ---- gpu::GpuDebug -----------------------------------------------------------------------------------
+// ---- gpu::GpuDebug
+// -----------------------------------------------------------------------------------
 
-// The counters of the wrapped GPU for the frame that just ended, taken on the renderer thread at its
-// VBlank(0) so that the runtime can read them without waiting for the queue.
+// The counters of the wrapped GPU for the frame that just ended, taken on the renderer thread at
+// its VBlank(0) so that the runtime can read them without waiting for the queue.
 void QueueGpu::CollectFrameStats() {
     if (config_.lockstep || Debug() == nullptr) {
         return;

@@ -1,22 +1,28 @@
-// mh4n_gpu_queue (N2-22): the renderer thread and its queue, with a fake host and a fake wrapped GPU.
+// mh4n_gpu_queue (N2-22): the renderer thread and its queue, with a fake host and a fake wrapped
+// GPU.
 //
-// Nothing here uses a device or a timer for ordering: the fake GPU's commands wait on gates and latches
-// that the test opens, so each case has one possible interleaving of what it asserts. The only sleeps
-// make a measured duration non-zero (they never order anything). The cases that need threads use real
-// ones: the owner rule is about threads.
+// Nothing here uses a device or a timer for ordering: the fake GPU's commands wait on gates and
+// latches that the test opens, so each case has one possible interleaving of what it asserts. The
+// only sleeps make a measured duration non-zero (they never order anything). The cases that need
+// threads use real ones: the owner rule is about threads. A regression that makes a call hang is a
+// failure, not a hang: every case runs under a watchdog (below) that ends the process with status 1
+// when it takes too long, since a hung thread cannot be joined.
 #include <doctest/doctest.h>
 
 #include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <map>
 #include <memory>
-#include <random>
 #include <mutex>
+#include <random>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -26,9 +32,9 @@
 #include <fmt/format.h>
 
 #include "gpu/backend/rhi.h"
+#include "gpu/queue/queue_gpu.h"
 #include "gpu_capture/mgpu.h"
 #include "gpu_capture/player.h"
-#include "gpu/queue/queue_gpu.h"
 #include "mh4n/gpu.h"
 #include "mh4n/gpu_debug.h"
 #include "mh4n/options.h"
@@ -44,7 +50,8 @@ constexpr bool kRhiChecks = MH4N_RHI_CHECKS != 0;
 constexpr u32 kMemBase = 0x20000000;
 constexpr u32 kMemSize = 0x1000;
 
-// ---- synchronisation helpers ---------------------------------------------------------------------
+// ---- synchronisation helpers
+// ---------------------------------------------------------------------
 
 struct Gate {
     std::mutex mutex;
@@ -81,17 +88,58 @@ struct Latch {
     }
 };
 
-// Spins (yielding) until `n` callers are blocked inside the queue. The deadline is only a guard that
-// turns a bug into a failure; it orders nothing.
+// Ends the process, with the name of the case, when the case does not finish in time. It only turns
+// a hang into a failure; it orders nothing.
+class Watchdog {
+public:
+    Watchdog(const char* file, int line, int seconds = 30) : file_(file), line_(line) {
+        thread_ = std::thread([this, seconds] {
+            std::unique_lock lock(mutex_);
+            if (!cv_.wait_for(lock, std::chrono::seconds(seconds), [this] { return done_; })) {
+                std::fprintf(stderr,
+                             "FAIL: the case at %s:%d did not finish in %d s (a call hangs)\n",
+                             file_, line_, seconds);
+                std::fflush(stderr);
+                std::_Exit(1);
+            }
+        });
+    }
+    ~Watchdog() {
+        {
+            std::lock_guard lock(mutex_);
+            done_ = true;
+        }
+        cv_.notify_all();
+        thread_.join();
+    }
+
+private:
+    const char* file_;
+    int line_;
+    std::mutex mutex_;
+    std::condition_variable cv_;
+    bool done_ = false;
+    std::thread thread_;
+};
+
+#define WATCHDOG() const Watchdog watchdog_for_this_case(__FILE__, __LINE__)
+
+// Spins (yielding) until `n` callers are blocked inside the queue; a caller that never blocks ends
+// the process (it orders nothing).
 void WaitUntilBlocked(QueueGpu& q, u32 n) {
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(120);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
     while (q.BlockedCallers() < n) {
-        REQUIRE_MESSAGE(std::chrono::steady_clock::now() < deadline, "no caller blocked in the queue");
+        if (std::chrono::steady_clock::now() >= deadline) {
+            std::fprintf(stderr, "FAIL: no caller blocked in the queue (expected %u)\n", n);
+            std::fflush(stderr);
+            std::_Exit(1);
+        }
         std::this_thread::yield();
     }
 }
 
-// ---- the fake host -------------------------------------------------------------------------------
+// ---- the fake host
+// -------------------------------------------------------------------------------
 
 struct Signalled {
     Interrupt id;
@@ -109,9 +157,9 @@ public:
         }
         return memory.data() + (paddr - kMemBase);
     }
-    std::optional<u32> VirtualToPhysical(u32 vaddr) override {
-        return vaddr;
-    }
+    std::optional<u32> VirtualToPhysical(u32 vaddr) override { return vaddr; }
+    // This host would serve guest memory: the queue must not hand it to the renderer thread.
+    u8* GuestPointer(u32, u32) override { return memory.data(); }
     void SignalInterrupt(Interrupt id, u64 delay_ns) override {
         std::lock_guard lock(mutex_);
         signalled_.push_back({id, delay_ns, std::this_thread::get_id()});
@@ -148,7 +196,8 @@ private:
     std::vector<std::function<void()>> posted_;
 };
 
-// ---- the fake wrapped GPU ------------------------------------------------------------------------
+// ---- the fake wrapped GPU
+// ------------------------------------------------------------------------
 
 // What the test and the fake GPU share.
 struct Script {
@@ -161,6 +210,13 @@ struct Script {
     Gate gate;
     Latch entered;
     std::atomic<u64> draws{0};
+    // What the fake GPU does on request.
+    std::atomic<bool> throw_vblank{false};
+    std::atomic<bool> throw_init{false};
+    std::atomic<bool> invalidate_posts{
+        false}; // InvalidateRegion posts a write of 0xCD at offset 100
+    std::mutex guest_mutex;
+    std::vector<const void*> guest_pointers; // what GuestPointer gave to Execute(kGuest)
 
     void Add(std::string event) {
         std::lock_guard lock(mutex);
@@ -182,7 +238,7 @@ struct Script {
     }
 };
 
-enum : u32 { kPlain = 0, kGated = 1, kSignal = 2, kPost = 3, kSlow = 4 };
+enum : u32 { kPlain = 0, kGated = 1, kSignal = 2, kPost = 3, kSlow = 4, kThrow = 5, kGuest = 6 };
 
 GxCommand Cmd(u32 kind, u32 a, u32 b, u32 tag) {
     GxCommand c{};
@@ -196,9 +252,7 @@ GxCommand Cmd(u32 kind, u32 a, u32 b, u32 tag) {
 class FakeGpu final : public Gpu, public GpuDebug {
 public:
     FakeGpu(Host& host, Script& script) : host_(host), s_(script) {}
-    ~FakeGpu() override {
-        s_.Add("~FakeGpu");
-    }
+    ~FakeGpu() override { s_.Add("~FakeGpu"); }
 
     void Execute(const GxCommand& c) override {
         s_.Add(fmt::format("Execute {}", c.words[7]));
@@ -212,7 +266,8 @@ public:
             host_.SignalInterrupt(static_cast<Interrupt>(c.words[1]), c.words[2]);
             break;
         case kPost: {
-            // A write into guest memory: the data is made here, the store is handed to the scheduler.
+            // A write into guest memory: the data is made here, the store is handed to the
+            // scheduler.
             const u32 offset = c.words[1];
             const u8 value = static_cast<u8>(c.words[2]);
             Script* s = &s_;
@@ -225,8 +280,17 @@ public:
             break;
         }
         case kSlow:
-            std::this_thread::sleep_for(std::chrono::milliseconds(2)); // work to measure, not ordering
+            std::this_thread::sleep_for(
+                std::chrono::milliseconds(2)); // work to measure, not ordering
             break;
+        case kThrow:
+            throw std::runtime_error("the wrapped GPU failed");
+        case kGuest: {
+            const void* pointer = host_.GuestPointer(0x14000000, 16);
+            std::lock_guard lock(s_.guest_mutex);
+            s_.guest_pointers.push_back(pointer);
+            break;
+        }
         default:
             break;
         }
@@ -241,31 +305,45 @@ public:
         return it != regs_.end() ? it->second : (0xC0DE0000u | (addr & 0xFFFFu));
     }
     void SetBufferSwap(u32 screen, const FrameBufferInfo& info) override {
-        s_.Add(fmt::format("SetBufferSwap {} {:08x} {}", screen, info.address_left, info.active_fb));
+        s_.Add(
+            fmt::format("SetBufferSwap {} {:08x} {}", screen, info.address_left, info.active_fb));
     }
-    void SetColorFill(u32 fill) override {
-        s_.Add(fmt::format("SetColorFill {:08x}", fill));
-    }
+    void SetColorFill(u32 fill) override { s_.Add(fmt::format("SetColorFill {:08x}", fill)); }
     void FlushRegion(u32 vaddr, u32 size) override {
         s_.Add(fmt::format("FlushRegion {:08x}+{:x}", vaddr, size));
     }
     void InvalidateRegion(u32 vaddr, u32 size) override {
         s_.Add(fmt::format("InvalidateRegion {:08x}+{:x}", vaddr, size));
+        if (s_.invalidate_posts.load()) {
+            // the wrapped GPU's own write-back for this invalidate
+            Script* s = &s_;
+            host_.Post([s] {
+                s->host->memory[100] = 0xCD;
+                std::lock_guard lock(s->mutex);
+                s->write_threads.push_back(std::this_thread::get_id());
+                ++s->writes;
+            });
+        }
     }
     void VBlank(u32 screen) override {
         s_.Add(fmt::format("VBlank {}", screen));
+        if (s_.throw_vblank.load()) {
+            throw std::runtime_error("VBlank failed");
+        }
     }
 
     void LoadInitState(const InitState& state) override {
         s_.Add(fmt::format("LoadInitState {}", state.Block(InitBlock::GpuRegs).size()));
+        regs_.clear(); // the capture's register file replaces the one the game wrote
+        if (s_.throw_init.load()) {
+            throw std::runtime_error("LoadInitState failed");
+        }
     }
     std::optional<std::vector<RegisterWrite>> TakeRegisterWrites() override {
         s_.Add("TakeRegisterWrites");
         return std::vector<RegisterWrite>{{0x10, 0xF, 0x1234}};
     }
-    void WriteBackColorBuffers() override {
-        s_.Add("WriteBackColorBuffers");
-    }
+    void WriteBackColorBuffers() override { s_.Add("WriteBackColorBuffers"); }
     std::vector<Counter> TakeFrameCounters() override {
         s_.NoteThread();
         return {{"draws", s_.draws.exchange(0)}};
@@ -311,7 +389,8 @@ struct Rig {
             config);
     }
     QueueGpu& q() { return *queue; }
-    // Closes the wrapper's own thread and the queue's gate, so a failing check cannot hang the exit.
+    // Closes the wrapper's own thread and the queue's gate, so a failing check cannot hang the
+    // exit.
     ~Rig() { script.gate.Open(); }
 };
 
@@ -355,12 +434,15 @@ Counter Find(const std::vector<Counter>& counters, const std::string& name) {
 
 } // namespace
 
-// ---- command order -------------------------------------------------------------------------------
+// ---- command order
+// -------------------------------------------------------------------------------
 
 TEST_CASE("queue/calls_return_at_once_and_reach_the_wrapped_gpu_in_order_on_the_renderer_thread") {
+    WATCHDOG();
     Rig rig;
     QueueGpu& q = rig.q();
-    // the first command holds the renderer thread: nothing after it can have run when the calls return
+    // the first command holds the renderer thread: nothing after it can have run when the calls
+    // return
     q.Execute(Cmd(kGated, 0, 0, 0));
     rig.script.entered.Wait();
     q.WriteReg(0x1EF00010, 1);
@@ -395,6 +477,7 @@ TEST_CASE("queue/calls_return_at_once_and_reach_the_wrapped_gpu_in_order_on_the_
 }
 
 TEST_CASE("queue/a_buffer_swap_and_the_vblank_after_it_arrive_in_the_order_the_game_made_them") {
+    WATCHDOG();
     Rig rig;
     QueueGpu& q = rig.q();
     q.Execute(Cmd(kGated, 0, 0, 0));
@@ -406,12 +489,14 @@ TEST_CASE("queue/a_buffer_swap_and_the_vblank_after_it_arrive_in_the_order_the_g
     q.VBlank(1);
     rig.script.gate.Open();
     q.WaitIdle();
-    const std::vector<std::string> expected = {"Execute 0", "SetBufferSwap 0 18000000 1", "SetBufferSwap 1 18100000 1",
-                                               "VBlank 0", "VBlank 1"};
+    const std::vector<std::string> expected = {"Execute 0", "SetBufferSwap 0 18000000 1",
+                                               "SetBufferSwap 1 18100000 1", "VBlank 0",
+                                               "VBlank 1"};
     CHECK(rig.script.Events() == expected);
 }
 
 TEST_CASE("queue/interrupts_go_back_in_the_order_the_commands_complete") {
+    WATCHDOG();
     Rig rig;
     QueueGpu& q = rig.q();
     constexpr int kCommands = 40;
@@ -435,23 +520,29 @@ TEST_CASE("queue/interrupts_go_back_in_the_order_the_commands_complete") {
     }
 }
 
-// ---- invalidate and flush ------------------------------------------------------------------------
+// ---- invalidate and flush
+// ------------------------------------------------------------------------
 
 TEST_CASE("queue/an_invalidate_waits_for_an_earlier_transfer_and_for_what_it_wrote_back") {
+    WATCHDOG();
     Rig rig;
     QueueGpu& q = rig.q();
-    q.Execute(Cmd(kGated, 0, 0, 0)); // the renderer is inside this command
+    rig.script.invalidate_posts = true; // the wrapped GPU's own invalidate also writes back
+    q.Execute(Cmd(kGated, 0, 0, 0));    // the renderer is inside this command
     rig.script.entered.Wait();
-    q.Execute(Cmd(kPost, 16, 0xAB, 1)); // an earlier "transfer": its write into guest memory is posted
+    q.Execute(
+        Cmd(kPost, 16, 0xAB, 1)); // an earlier "transfer": its write into guest memory is posted
     CHECK(rig.host.memory[16] == 0);
 
     std::atomic<bool> returned{false};
     std::atomic<int> seen{-1};
+    std::atomic<int> seen_write_back{-1};
     std::thread::id scheduler;
     std::thread thread([&] {
         scheduler = std::this_thread::get_id(); // the scheduler thread of this case
         q.InvalidateRegion(0x14000000, 0x100);
         seen = rig.host.memory[16];
+        seen_write_back = rig.host.memory[100];
         returned = true;
     });
     WaitUntilBlocked(q, 1);
@@ -463,16 +554,22 @@ TEST_CASE("queue/an_invalidate_waits_for_an_earlier_transfer_and_for_what_it_wro
     thread.join();
     CHECK(returned.load());
     CHECK(seen.load() == 0xAB); // written back before the invalidate returned
-    const std::vector<std::string> expected = {"Execute 0", "Execute 1", "InvalidateRegion 14000000+100"};
+    // so is the write the wrapped GPU's own InvalidateRegion posted (it ran after the mark was
+    // taken)
+    CHECK(seen_write_back.load() == 0xCD);
+    const std::vector<std::string> expected = {"Execute 0", "Execute 1",
+                                               "InvalidateRegion 14000000+100"};
     CHECK(rig.script.Events() == expected);
-    // the write ran on the thread that asked (the scheduler's), once
-    REQUIRE(rig.script.write_threads.size() == 1);
+    // both writes ran on the thread that asked (the scheduler's), once each
+    REQUIRE(rig.script.write_threads.size() == 2);
     CHECK(rig.script.write_threads[0] == scheduler);
-    CHECK(rig.host.RunPosted() == 1); // the host's own safe point finds the work already done
-    CHECK(rig.script.writes.load() == 1);
+    CHECK(rig.script.write_threads[1] == scheduler);
+    CHECK(rig.host.RunPosted() == 2); // the host's own safe point finds the work already done
+    CHECK(rig.script.writes.load() == 2);
 }
 
 TEST_CASE("queue/writes_into_guest_memory_arrive_only_through_post") {
+    WATCHDOG();
     Rig rig;
     QueueGpu& q = rig.q();
     q.Execute(Cmd(kPost, 0, 0x11, 0));
@@ -490,7 +587,9 @@ TEST_CASE("queue/writes_into_guest_memory_arrive_only_through_post") {
     CHECK(rig.script.write_threads[1] == std::this_thread::get_id());
 }
 
-TEST_CASE("queue/a_wrapped_gpu_built_with_the_plain_host_still_posts_and_the_invalidate_still_waits") {
+TEST_CASE(
+    "queue/a_wrapped_gpu_built_with_the_plain_host_still_posts_and_the_invalidate_still_waits") {
+    WATCHDOG();
     Script script;
     FakeHost host;
     script.host = &host;
@@ -506,6 +605,7 @@ TEST_CASE("queue/a_wrapped_gpu_built_with_the_plain_host_still_posts_and_the_inv
 }
 
 TEST_CASE("queue/an_invalidate_runs_only_the_writes_posted_before_it_reached_the_wrapped_gpu") {
+    WATCHDOG();
     FakeHost host;
     int ran = 0;
     QueueHost proxy(host);
@@ -518,12 +618,14 @@ TEST_CASE("queue/an_invalidate_runs_only_the_writes_posted_before_it_reached_the
     CHECK(ran == 11);
     proxy.RunPostedUpTo(mark); // nothing runs twice
     CHECK(ran == 11);
-    CHECK(host.RunPosted() == 3); // the host's safe point runs the third, and finds the first two done
+    CHECK(host.RunPosted() ==
+          3); // the host's safe point runs the third, and finds the first two done
     CHECK(ran == 111);
     CHECK(proxy.PostedMark() == 3);
 }
 
 TEST_CASE("queue/a_flush_is_queued_in_order_with_the_commands_around_it") {
+    WATCHDOG();
     Rig rig;
     QueueGpu& q = rig.q();
     q.Execute(Cmd(kGated, 0, 0, 0));
@@ -534,26 +636,56 @@ TEST_CASE("queue/a_flush_is_queued_in_order_with_the_commands_around_it") {
     CHECK(rig.script.Events().size() == 1); // returned at once
     rig.script.gate.Open();
     q.WaitIdle();
-    const std::vector<std::string> expected = {"Execute 0", "Execute 1", "FlushRegion 14000000+200", "Execute 2"};
+    const std::vector<std::string> expected = {"Execute 0", "Execute 1", "FlushRegion 14000000+200",
+                                               "Execute 2"};
     CHECK(rig.script.Events() == expected);
 }
 
-// ---- frames in flight ----------------------------------------------------------------------------
+// ---- frames in flight
+// ----------------------------------------------------------------------------
 
-TEST_CASE("queue/more_than_one_frame_in_flight_blocks_the_vblank_that_would_make_it_and_is_counted") {
-    Rig rig;
+TEST_CASE("queue/frames_beyond_the_engines_lag_are_counted_and_never_block_the_caller") {
+    WATCHDOG();
+    Rig rig; // max_frames_in_flight 1, max_frames_queued 4
     QueueGpu& q = rig.q();
     q.Execute(Cmd(kGated, 0, 0, 0)); // frame 1 is being rendered, and the renderer is held in it
     rig.script.entered.Wait();
-    q.VBlank(0);                      // frame 1 ended: one frame in flight, returns at once
-    q.VBlank(1);                      // the bottom screen's VBlank does not end a frame
-    q.Execute(Cmd(kPlain, 0, 0, 1));  // frame 2 is being built
+    q.VBlank(0);                     // frame 1 ended: one frame in flight, not beyond the lag
+    q.VBlank(1);                     // the bottom screen's VBlank does not end a frame
+    q.Execute(Cmd(kPlain, 0, 0, 1)); // frame 2 is being built
+    q.VBlank(0);                     // a second frame queued: counted, returns at once
+    q.Execute(Cmd(kPlain, 0, 0, 2));
+    q.VBlank(0); // a third: counted, returns at once
+    CHECK(q.BlockedCallers() == 0);
+    CHECK(rig.script.Events() == std::vector<std::string>{"Execute 0"});
 
+    rig.script.gate.Open();
+    q.WaitIdle();
+    const std::vector<std::string> expected = {"Execute 0", "VBlank 0",  "VBlank 1", "Execute 1",
+                                               "VBlank 0",  "Execute 2", "VBlank 0"};
+    CHECK(rig.script.Events() == expected);
+    std::vector<Counter> counters = q.TakeFrameCounters();
+    CHECK(Find(counters, "queue_frame_waits").value == 2);
+    CHECK(Find(counters, "queue_wait_us").value == 0); // nobody was blocked
+    // reading resets
+    CHECK(Find(q.TakeFrameCounters(), "queue_frame_waits").value == 0);
+}
+
+TEST_CASE("queue/the_safety_cap_blocks_the_vblank_that_would_pass_it_until_a_frame_is_rendered") {
+    WATCHDOG();
+    Rig rig; // the cap is 4 frames queued
+    QueueGpu& q = rig.q();
+    q.Execute(Cmd(kGated, 0, 0, 0));
+    rig.script.entered.Wait();
+    for (int frame = 0; frame < 4; ++frame) {
+        q.VBlank(0); // four frames fit under the cap: none blocks
+    }
+    CHECK(q.BlockedCallers() == 0);
     std::atomic<int> progress{0};
     std::thread thread([&] {
-        q.VBlank(0); // would make two frames in flight: waits
+        q.VBlank(0); // the fifth would pass the cap: it waits
         progress = 1;
-        q.Execute(Cmd(kPlain, 0, 0, 2));
+        q.Execute(Cmd(kPlain, 0, 0, 1));
         progress = 2;
     });
     WaitUntilBlocked(q, 1);
@@ -565,39 +697,64 @@ TEST_CASE("queue/more_than_one_frame_in_flight_blocks_the_vblank_that_would_make
     thread.join();
     q.WaitIdle();
     CHECK(progress.load() == 2);
-    const std::vector<std::string> expected = {"Execute 0", "VBlank 0", "VBlank 1", "Execute 1", "VBlank 0", "Execute 2"};
-    CHECK(rig.script.Events() == expected);
-
+    CHECK(rig.script.Events().size() == 1 + 5 + 1);
     const std::vector<Counter> counters = q.TakeFrameCounters();
-    CHECK(Find(counters, "queue_frame_waits").value == 1);
-    CHECK(Find(counters, "queue_wait_us").value >= 2000);
-    // reading resets
-    CHECK(Find(q.TakeFrameCounters(), "queue_frame_waits").value == 0);
+    CHECK(Find(counters, "queue_wait_us").value >= 2000);  // the blocked caller's time
+    CHECK(Find(counters, "queue_frame_waits").value == 4); // the 2nd to the 5th VBlank(0)
 }
 
-TEST_CASE("queue/the_frame_limit_is_a_setting_and_a_renderer_that_keeps_up_never_waits") {
+TEST_CASE("queue/the_frame_limits_are_settings_and_are_clamped") {
+    WATCHDOG();
     {
+        // a lag of 2: the second frame is within it, the third is counted
         QueueConfig config;
         config.max_frames_in_flight = 2;
         Rig rig(config);
         QueueGpu& q = rig.q();
+        CHECK(q.Config().max_frames_queued == 4);
         q.Execute(Cmd(kGated, 0, 0, 0));
         rig.script.entered.Wait();
         q.VBlank(0);
-        q.VBlank(0); // two in flight: both return at once
-        std::atomic<bool> returned{false};
-        std::thread thread([&] {
-            q.VBlank(0);
-            returned = true;
-        });
-        WaitUntilBlocked(q, 1);
-        CHECK_FALSE(returned.load());
+        q.VBlank(0);
+        q.VBlank(0);
         rig.script.gate.Open();
-        thread.join();
         q.WaitIdle();
         CHECK(Find(q.TakeFrameCounters(), "queue_frame_waits").value == 1);
     }
     {
+        // a lag of 0 is a lag of 1; a cap below lag + 1 is lag + 1
+        QueueConfig config;
+        config.max_frames_in_flight = 0;
+        config.max_frames_queued = 0;
+        Rig rig(config);
+        CHECK(rig.q().Config().max_frames_in_flight == 1);
+        CHECK(rig.q().Config().max_frames_queued == 2);
+        QueueGpu& q = rig.q();
+        q.Execute(Cmd(kGated, 0, 0, 0));
+        rig.script.entered.Wait();
+        q.VBlank(0);
+        q.VBlank(0); // two frames fit under the clamped cap
+        CHECK(q.BlockedCallers() == 0);
+        std::thread thread([&] { q.VBlank(0); }); // the third would pass it
+        WaitUntilBlocked(q, 1);
+        rig.script.gate.Open();
+        thread.join();
+        q.WaitIdle();
+        CHECK(Find(q.TakeFrameCounters(), "queue_frame_waits").value == 2);
+    }
+    {
+        // a cap that is given and valid is kept; one equal to the lag is raised
+        QueueConfig config;
+        config.max_frames_in_flight = 3;
+        config.max_frames_queued = 3;
+        Rig rig(config);
+        CHECK(rig.q().Config().max_frames_queued == 4);
+        config.max_frames_queued = 9;
+        Rig other(config);
+        CHECK(other.q().Config().max_frames_queued == 9);
+    }
+    {
+        // a renderer that keeps up never counts a wait
         Rig rig;
         QueueGpu& q = rig.q();
         for (int frame = 0; frame < 20; ++frame) {
@@ -609,9 +766,11 @@ TEST_CASE("queue/the_frame_limit_is_a_setting_and_a_renderer_that_keeps_up_never
     }
 }
 
-// ---- registers -----------------------------------------------------------------------------------
+// ---- registers
+// -----------------------------------------------------------------------------------
 
 TEST_CASE("queue/read_reg_is_answered_at_once_from_what_was_written_through_the_wrapper") {
+    WATCHDOG();
     Rig rig;
     QueueGpu& q = rig.q();
     q.Execute(Cmd(kGated, 0, 0, 0));
@@ -622,20 +781,26 @@ TEST_CASE("queue/read_reg_is_answered_at_once_from_what_was_written_through_the_
     CHECK(q.ReadReg(0x1EF00010) == 9);
     CHECK(rig.script.Events() == std::vector<std::string>{"Execute 0"});
 
-    // a register never written through the wrapper is the wrapped GPU's to answer, after what is queued
+    // a register never written through the wrapper is the wrapped GPU's to answer, after what is
+    // queued
     std::atomic<u32> value{0};
     std::thread thread([&] { value = q.ReadReg(0x1EF00020); });
     WaitUntilBlocked(q, 1);
     rig.script.gate.Open();
     thread.join();
     CHECK(value.load() == (0xC0DE0000u | 0x0020u));
-    const std::vector<std::string> expected = {"Execute 0", "WriteReg 1ef00010=5", "WriteReg 1ef00010=9", "ReadReg 1ef00020"};
+    const std::vector<std::string> expected = {"Execute 0", "WriteReg 1ef00010=5",
+                                               "WriteReg 1ef00010=9", "ReadReg 1ef00020"};
     CHECK(rig.script.Events() == expected);
 }
 
-// ---- counters and the debug interface --------------------------------------------------------------
+// ---- counters and the debug interface
+// --------------------------------------------------------------
 
-TEST_CASE("queue/counters_report_the_renderers_busy_time_and_the_wrapped_gpus_own_counters_summed_per_frame") {
+TEST_CASE(
+    "queue/"
+    "counters_report_the_renderers_busy_time_and_the_wrapped_gpus_own_counters_summed_per_frame") {
+    WATCHDOG();
     Rig rig;
     QueueGpu& q = rig.q();
     q.Execute(Cmd(kPlain, 0, 0, 0));
@@ -663,10 +828,12 @@ TEST_CASE("queue/counters_report_the_renderers_busy_time_and_the_wrapped_gpus_ow
 }
 
 TEST_CASE("queue/the_debug_calls_run_on_the_renderer_thread_and_see_what_was_queued_before_them") {
+    WATCHDOG();
     Rig rig;
     QueueGpu& q = rig.q();
     q.Execute(Cmd(kPlain, 0, 0, 0));
     q.WriteReg(0x1EF00040, 3);
+    CHECK(q.ReadReg(0x1EF00040) == 3); // from the mirror
     InitState state;
     q.LoadInitState(state);
     const auto writes = q.TakeRegisterWrites();
@@ -675,15 +842,18 @@ TEST_CASE("queue/the_debug_calls_run_on_the_renderer_thread_and_see_what_was_que
     CHECK((*writes)[0].reg == 0x10);
     CHECK((*writes)[0].value == 0x1234);
     q.WriteBackColorBuffers();
-    const std::vector<std::string> expected = {"Execute 0", "WriteReg 1ef00040=3", "LoadInitState 0", "TakeRegisterWrites",
+    const std::vector<std::string> expected = {"Execute 0", "WriteReg 1ef00040=3",
+                                               "LoadInitState 0", "TakeRegisterWrites",
                                                "WriteBackColorBuffers"};
     CHECK(rig.script.Events() == expected);
     CHECK(rig.script.Threads() == std::set<std::thread::id>{q.RendererThread()});
-    // the capture's init state replaces the register file the mirror was following
-    CHECK(q.ReadReg(0x1EF00040) == 3); // forwarded now, and the wrapped GPU's own file has the write
+    // the capture's init state replaced the register file the mirror was following: the wrapped GPU
+    // forgot the write, so the read must go to it and not be answered from the old mirror
+    CHECK(q.ReadReg(0x1EF00040) == (0xC0DE0000u | 0x0040u));
 }
 
 TEST_CASE("queue/a_wrapped_gpu_without_the_debug_interface_gives_the_defaults") {
+    WATCHDOG();
     Script script;
     QueueGpu q(std::make_unique<PlainGpu>(script));
     q.Execute(Cmd(kPlain, 0, 0, 0));
@@ -698,9 +868,11 @@ TEST_CASE("queue/a_wrapped_gpu_without_the_debug_interface_gives_the_defaults") 
     CHECK_FALSE(q.TakeFrameGpuTimeNs().has_value());
 }
 
-// ---- lockstep and the registered wrapper -----------------------------------------------------------
+// ---- lockstep and the registered wrapper
+// -----------------------------------------------------------
 
 TEST_CASE("queue/in_lockstep_every_call_is_done_when_it_returns") {
+    WATCHDOG();
     QueueConfig config;
     config.lockstep = true;
     Rig rig(config);
@@ -723,6 +895,7 @@ TEST_CASE("queue/in_lockstep_every_call_is_done_when_it_returns") {
 }
 
 TEST_CASE("queue/the_wrapper_and_its_option_are_registered_for_the_capture_player") {
+    WATCHDOG();
     const GpuWrapper* wrapper = Registry<GpuWrapper>::Instance().Find("queue");
     REQUIRE(wrapper != nullptr);
     const Options parsed = ParseOptions("capture-player", std::vector<std::string>{"--queue"});
@@ -750,15 +923,21 @@ TEST_CASE("queue/the_wrapper_and_its_option_are_registered_for_the_capture_playe
     CHECK(script.Events().back() == "~FakeGpu");
 }
 
-// ---- life cycle ----------------------------------------------------------------------------------
+// ---- life cycle
+// ----------------------------------------------------------------------------------
 
-TEST_CASE("queue/the_destructor_finishes_the_queued_work_and_destroys_the_wrapped_gpu_on_the_renderer_thread") {
+TEST_CASE(
+    "queue/"
+    "the_destructor_finishes_the_queued_work_and_destroys_the_wrapped_gpu_on_the_renderer_thread") {
+    WATCHDOG();
     Script script;
     FakeHost host;
     script.host = &host;
     std::thread::id renderer;
     {
-        QueueGpu q(host, [&](Host& h) { return std::unique_ptr<Gpu>(std::make_unique<FakeGpu>(h, script)); });
+        QueueGpu q(host, [&](Host& h) {
+            return std::unique_ptr<Gpu>(std::make_unique<FakeGpu>(h, script));
+        });
         renderer = q.RendererThread();
         q.Execute(Cmd(kGated, 0, 0, 0));
         script.entered.Wait();
@@ -776,18 +955,23 @@ TEST_CASE("queue/the_destructor_finishes_the_queued_work_and_destroys_the_wrappe
 }
 
 TEST_CASE("queue/a_wrapped_gpu_that_cannot_be_made_is_an_error_of_the_constructor") {
+    WATCHDOG();
     FakeHost host;
     CHECK_THROWS(QueueGpu(host, [](Host&) { return std::unique_ptr<Gpu>(); }));
-    CHECK_THROWS_AS(QueueGpu(host, [](Host&) -> std::unique_ptr<Gpu> { throw std::invalid_argument("no"); }),
-                    std::invalid_argument);
+    CHECK_THROWS_AS(
+        QueueGpu(host, [](Host&) -> std::unique_ptr<Gpu> { throw std::invalid_argument("no"); }),
+        std::invalid_argument);
     CHECK_THROWS(QueueGpu(std::unique_ptr<Gpu>()));
 }
 
-// ---- the owner rule --------------------------------------------------------------------------------
+// ---- the owner rule
+// --------------------------------------------------------------------------------
 
 TEST_CASE("owner_rule/a_forwarded_call_from_another_thread_calls_the_handler") {
+    WATCHDOG();
     if (!kRhiChecks) {
-        WARN_MESSAGE(false, "skipped: the owner-rule checks are compiled out (MH4N_RHI_CHECKS=OFF)");
+        WARN_MESSAGE(false,
+                     "skipped: the owner-rule checks are compiled out (MH4N_RHI_CHECKS=OFF)");
         return;
     }
     Rig rig;
@@ -831,12 +1015,14 @@ TEST_CASE("owner_rule/a_forwarded_call_from_another_thread_calls_the_handler") {
 }
 
 TEST_CASE("owner_rule/calls_from_many_threads_are_all_forwarded_by_the_renderer_thread") {
+    WATCHDOG();
     if (!kRhiChecks) {
-        WARN_MESSAGE(false, "skipped: the owner-rule checks are compiled out (MH4N_RHI_CHECKS=OFF)");
+        WARN_MESSAGE(false,
+                     "skipped: the owner-rule checks are compiled out (MH4N_RHI_CHECKS=OFF)");
         return;
     }
-    // calls made by several threads through the public interface are still forwarded by the renderer
-    // thread alone
+    // calls made by several threads through the public interface are still forwarded by the
+    // renderer thread alone
     Rig rig;
     QueueGpu& q = rig.q();
     BreachCapture breaches;
@@ -876,9 +1062,186 @@ TEST_CASE("owner_rule/calls_from_many_threads_are_all_forwarded_by_the_renderer_
     }
 }
 
-// ---- a long mixed run --------------------------------------------------------------------------------
+// ---- failures, waits and the host's pointers
+// -------------------------------------------------------
+
+TEST_CASE("queue/an_exception_of_the_wrapped_gpu_is_logged_and_the_queue_goes_on") {
+    WATCHDOG();
+    Rig rig;
+    QueueGpu& q = rig.q();
+    q.Execute(Cmd(kThrow, 0, 0, 0));
+    q.Execute(Cmd(kPlain, 0, 0, 1)); // still runs
+    // a VBlank(0) that throws still releases its frame: more of them than the safety cap would
+    // block for ever otherwise
+    rig.script.throw_vblank = true;
+    for (int i = 0; i < 12; ++i) {
+        q.VBlank(0);
+    }
+    q.WaitIdle(); // every call is counted as completed
+    std::vector<std::string> expected = {"Execute 0", "Execute 1"};
+    expected.insert(expected.end(), 12, "VBlank 0");
+    CHECK(rig.script.Events() == expected);
+
+    // a call that waits for its result rethrows to its caller, and the queue goes on after it
+    rig.script.throw_vblank = false;
+    rig.script.throw_init = true;
+    CHECK_THROWS_AS(q.LoadInitState(InitState{}), std::runtime_error);
+    rig.script.throw_init = false;
+    q.Execute(Cmd(kPlain, 0, 0, 2));
+    q.VBlank(0);
+    q.WaitIdle();
+    const std::vector<std::string> events = rig.script.Events();
+    REQUIRE(events.size() == expected.size() + 3);
+    CHECK(events[expected.size()] == "LoadInitState 0");
+    CHECK(events[expected.size() + 1] == "Execute 2");
+    CHECK(events.back() == "VBlank 0");
+    CHECK(rig.script.Threads() == std::set<std::thread::id>{q.RendererThread()});
+}
+
+namespace {
+
+// Holds the renderer, makes `call` block in the queue, lets 2 ms pass, releases it, and returns
+// what queue_wait_us then says. The sleep orders nothing: the caller is blocked until the gate
+// opens.
+u64 WaitCountedFor(Rig& rig, const std::function<void(QueueGpu&)>& call) {
+    QueueGpu& q = rig.q();
+    q.Execute(Cmd(kGated, 0, 0, 0));
+    rig.script.entered.Wait();
+    q.TakeFrameCounters(); // forget the waits so far
+    std::thread thread([&] { call(q); });
+    WaitUntilBlocked(q, 1);
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    rig.script.gate.Open();
+    thread.join();
+    q.WaitIdle();
+    return Find(q.TakeFrameCounters(), "queue_wait_us").value;
+}
+
+} // namespace
+
+TEST_CASE("queue/the_time_a_caller_is_blocked_goes_to_queue_wait_us") {
+    WATCHDOG();
+    {
+        Rig rig;
+        CHECK(WaitCountedFor(rig, [](QueueGpu& q) { q.InvalidateRegion(0x14000000, 0x10); }) >=
+              2000);
+    }
+    {
+        Rig rig;
+        CHECK(WaitCountedFor(rig, [](QueueGpu& q) { q.ReadReg(0x1EF00020); }) >=
+              2000); // never written
+    }
+    {
+        // in lockstep the call that runs the held command is itself the blocked one
+        QueueConfig config;
+        config.lockstep = true;
+        Rig rig(config);
+        QueueGpu& q = rig.q();
+        std::thread thread([&] { q.Execute(Cmd(kGated, 0, 0, 0)); });
+        WaitUntilBlocked(q, 1);
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        rig.script.gate.Open();
+        thread.join();
+        CHECK(Find(q.TakeFrameCounters(), "queue_wait_us").value >= 2000);
+    }
+}
+
+TEST_CASE("queue/guest_pointer_is_withheld_from_the_renderer_thread") {
+    WATCHDOG();
+    Rig rig;
+    QueueGpu& q = rig.q();
+    BreachCapture breaches;
+    q.Execute(Cmd(kGuest, 0, 0, 0));
+    q.WaitIdle();
+    {
+        std::lock_guard lock(rig.script.guest_mutex);
+        REQUIRE(rig.script.guest_pointers.size() == 1);
+        CHECK(rig.script.guest_pointers[0] == nullptr); // the real host would have served it
+    }
+    if (kRhiChecks) {
+        REQUIRE(breaches.Total() == 1);
+        CHECK(breaches.All()[0].rule == rhi::OwnerRule::WrongThread);
+        CHECK(breaches.All()[0].message.find("GuestPointer") != std::string::npos);
+    } else {
+        WARN_MESSAGE(false,
+                     "the breach itself is not checked: the owner-rule checks are compiled out");
+    }
+    // the same from any other thread: nothing is ever handed out
+    REQUIRE(q.Proxy() != nullptr);
+    CHECK(q.Proxy()->GuestPointer(0x14000000, 4) == nullptr);
+    // what the host forwards unchanged is still forwarded
+    CHECK(q.Proxy()->PhysicalPointer(kMemBase, 4) == rig.host.memory.data());
+    CHECK(q.Proxy()->VirtualToPhysical(0x1234) == std::optional<u32>(0x1234));
+}
+
+TEST_CASE("queue/the_list_of_posted_work_does_not_grow") {
+    WATCHDOG();
+    FakeHost host;
+    QueueHost proxy(host);
+    for (int i = 0; i < 100; ++i) {
+        proxy.Post([] {});
+    }
+    CHECK(proxy.PendingCount() == 100);
+    CHECK(host.RunPosted() == 100); // the host's safe point runs them
+    proxy.Post([] {});              // what has run is dropped
+    CHECK(proxy.PendingCount() == 1);
+    // the invalidate's way of running them drops them too
+    for (int i = 0; i < 10; ++i) {
+        proxy.Post([] {});
+    }
+    proxy.RunPostedUpTo(proxy.PostedMark());
+    CHECK(proxy.PendingCount() == 0);
+    // a long run of posts and safe points keeps it at one
+    size_t most = 0;
+    for (int i = 0; i < 1000; ++i) {
+        proxy.Post([] {});
+        most = std::max(most, proxy.PendingCount());
+        host.RunPosted();
+    }
+    CHECK(most <= 1);
+}
+
+TEST_CASE("queue/posted_work_runs_once_when_threads_race_for_it") {
+    WATCHDOG();
+    // the real host's safe point and an invalidate may both reach a piece of work: it runs once
+    FakeHost host;
+    QueueHost proxy(host);
+    constexpr int kWork = 2000;
+    std::vector<std::atomic<int>> runs(kWork);
+    for (int i = 0; i < kWork; ++i) {
+        runs[i] = 0;
+        proxy.Post([&runs, i] { ++runs[i]; });
+    }
+    const u64 mark = proxy.PostedMark();
+    Latch ready;
+    Gate start;
+    std::vector<std::thread> threads;
+    for (int t = 0; t < 3; ++t) {
+        threads.emplace_back([&, t] {
+            ready.Signal();
+            start.Wait();
+            if (t == 0) {
+                host.RunPosted();
+            } else {
+                proxy.RunPostedUpTo(mark);
+            }
+        });
+    }
+    ready.Wait(3);
+    start.Open();
+    for (auto& thread : threads) {
+        thread.join();
+    }
+    for (int i = 0; i < kWork; ++i) {
+        CHECK(runs[i].load() == 1);
+    }
+}
+
+// ---- a long mixed run
+// --------------------------------------------------------------------------------
 
 TEST_CASE("queue/a_long_mixed_sequence_keeps_its_order_and_its_interrupts") {
+    WATCHDOG();
     Rig rig;
     QueueGpu& q = rig.q();
     u32 state = 12345;
@@ -890,6 +1253,8 @@ TEST_CASE("queue/a_long_mixed_sequence_keeps_its_order_and_its_interrupts") {
     std::vector<Interrupt> expected_interrupts;
     std::map<u32, u32> mirror;
     int writes_posted = 0;
+    rig.script.invalidate_posts =
+        true; // every InvalidateRegion of the wrapped GPU also posts a write
     constexpr int kOps = 3000;
     for (int i = 0; i < kOps; ++i) {
         switch (next() % 9) {
@@ -931,7 +1296,8 @@ TEST_CASE("queue/a_long_mixed_sequence_keeps_its_order_and_its_interrupts") {
         case 7:
             q.InvalidateRegion(0x14000000 + i, 4);
             expected.push_back(fmt::format("InvalidateRegion {:08x}+4", 0x14000000 + i));
-            // everything before it is done, and so are the writes it posted
+            // everything before it is done, and so are the writes it posted, its own among them
+            ++writes_posted;
             CHECK(rig.script.Events().size() == expected.size());
             CHECK(rig.script.writes.load() == writes_posted);
             break;
@@ -958,7 +1324,8 @@ TEST_CASE("queue/a_long_mixed_sequence_keeps_its_order_and_its_interrupts") {
     CHECK(rig.script.Threads() == std::set<std::thread::id>{q.RendererThread()});
 }
 
-// ---- the capture player, with and without --queue --------------------------------------------------------
+// ---- the capture player, with and without --queue
+// --------------------------------------------------------
 
 namespace {
 
@@ -966,7 +1333,8 @@ using Bytes = std::vector<u8>;
 namespace fs = std::filesystem;
 
 void Put32(Bytes& b, u32 v) {
-    for (int i = 0; i < 4; ++i) b.push_back(static_cast<u8>(v >> (8 * i)));
+    for (int i = 0; i < 4; ++i)
+        b.push_back(static_cast<u8>(v >> (8 * i)));
 }
 void Put64(Bytes& b, u64 v) {
     Put32(b, static_cast<u32>(v));
@@ -1014,11 +1382,16 @@ public:
         }
         return p;
     }
-    void CpuPages(const std::vector<std::pair<u32, Bytes>>& pages) { Rec(gpu_capture::kCpuPages, Pages(pages)); }
-    void GpuPages(const std::vector<std::pair<u32, Bytes>>& pages) { Rec(gpu_capture::kGpuPages, Pages(pages)); }
+    void CpuPages(const std::vector<std::pair<u32, Bytes>>& pages) {
+        Rec(gpu_capture::kCpuPages, Pages(pages));
+    }
+    void GpuPages(const std::vector<std::pair<u32, Bytes>>& pages) {
+        Rec(gpu_capture::kGpuPages, Pages(pages));
+    }
     void Gx(const std::array<u32, 8>& words) {
         Bytes p;
-        for (u32 w : words) Put32(p, w);
+        for (u32 w : words)
+            Put32(p, w);
         Rec(gpu_capture::kGx, p);
     }
     void Irq(u32 id) {
@@ -1042,7 +1415,8 @@ public:
     }
     bool Save(const fs::path& path) const {
         std::ofstream f(path, std::ios::binary);
-        f.write(reinterpret_cast<const char*>(out.data()), static_cast<std::streamsize>(out.size()));
+        f.write(reinterpret_cast<const char*>(out.data()),
+                static_cast<std::streamsize>(out.size()));
         return static_cast<bool>(f);
     }
     Bytes out;
@@ -1050,18 +1424,27 @@ public:
     u64 ticks = 0;
 };
 
-// A fill, a DMA, a flush and an invalidate of the pages the DMA wrote, two VBlanks and a frame. With
-// `wrong_fill` the capture's pages for the fill say 0xAC, so a Gpu that fills with 0xAB fails.
+// A fill, a DMA, a flush and an invalidate of the pages the DMA wrote, two VBlanks and a frame.
+// With `wrong_fill` the capture's pages for the fill say 0xAC, so a Gpu that fills with 0xAB fails.
 std::string WriteScene(bool wrong_fill) {
     using namespace gpu_capture;
-    const fs::path dir = fs::temp_directory_path() / fmt::format("mh4n_gpu_queue_test_{}_{:08x}", wrong_fill ? "bad" : "good", std::random_device{}());
+    // MH4N_QUEUE_TEST_KEEP=DIR keeps the two synthetic captures in DIR/good and DIR/bad, to run the
+    // capture player on them by hand.
+    const char* keep = std::getenv("MH4N_QUEUE_TEST_KEEP");
+    const fs::path dir =
+        keep != nullptr
+            ? fs::path(keep) / (wrong_fill ? "bad" : "good")
+            : fs::temp_directory_path() / fmt::format("mh4n_gpu_queue_test_{}_{:08x}",
+                                                      wrong_fill ? "bad" : "good",
+                                                      std::random_device{}());
     fs::create_directories(dir);
     const fs::path path = dir / "scene.mgpu";
     CaptureWriter w;
     w.Init();
     w.Mem(0x20000000, Bytes(0x200000, 0));
     Bytes pattern(3 * kPageSize);
-    for (size_t i = 0; i < pattern.size(); ++i) pattern[i] = static_cast<u8>((i * 7 + (i >> 8)) % 200);
+    for (size_t i = 0; i < pattern.size(); ++i)
+        pattern[i] = static_cast<u8>((i * 7 + (i >> 8)) % 200);
     w.CpuPages({{0x20010000, Bytes(pattern.begin(), pattern.begin() + kPageSize)},
                 {0x20011000, Bytes(pattern.begin() + kPageSize, pattern.begin() + 2 * kPageSize)},
                 {0x20012000, Bytes(pattern.begin() + 2 * kPageSize, pattern.end())}});
@@ -1094,24 +1477,31 @@ gpu_capture::PlayerResult RunPlayerWith(const std::string& capture, std::vector<
 
 // What a run says about the Gpu, without the timings.
 std::string Summary(const gpu_capture::PlayerResult& r) {
-    std::string text = fmt::format("error={} records={} failures={} frames={} unjudged={} gsp={}", r.error, r.records,
-                                   r.failures.size(), r.frames.size(), r.unjudged_pages, r.gsp_queue_pages);
-    for (const auto& [kind, count] : r.judged) text += fmt::format(" judged[{}]={}", kind, count);
-    for (const auto& [kind, count] : r.skipped) text += fmt::format(" skipped[{}]={}", kind, count);
-    for (const auto& f : r.failures) text += fmt::format(" | #{} {} {}", f.record, f.record_name, f.message);
-    for (const auto& frame : r.frames) text += fmt::format(" | frame {} passed={}", frame.frame, frame.passed);
+    std::string text = fmt::format("error={} records={} failures={} frames={} unjudged={} gsp={}",
+                                   r.error, r.records, r.failures.size(), r.frames.size(),
+                                   r.unjudged_pages, r.gsp_queue_pages);
+    for (const auto& [kind, count] : r.judged)
+        text += fmt::format(" judged[{}]={}", kind, count);
+    for (const auto& [kind, count] : r.skipped)
+        text += fmt::format(" skipped[{}]={}", kind, count);
+    for (const auto& f : r.failures)
+        text += fmt::format(" | #{} {} {}", f.record, f.record_name, f.message);
+    for (const auto& frame : r.frames)
+        text += fmt::format(" | frame {} passed={}", frame.frame, frame.passed);
     return text;
 }
 
 } // namespace
 
 TEST_CASE("queue/the_capture_player_in_chained_mode_gives_the_same_results_with_queue_as_without") {
+    WATCHDOG();
     for (const bool wrong : {false, true}) {
         const std::string capture = WriteScene(wrong);
         for (const char* gpu_name : {"cpu-gx", "replay"}) {
             CAPTURE(gpu_name);
             CAPTURE(wrong);
-            const std::vector<std::string> base = {"--gpu", gpu_name, "--chained", "--judge", "fill,transfer,copy,dma"};
+            const std::vector<std::string> base = {"--gpu", gpu_name, "--chained", "--judge",
+                                                   "fill,transfer,copy,dma"};
             const gpu_capture::PlayerResult without = RunPlayerWith(capture, base);
             std::vector<std::string> with_queue = base;
             with_queue.push_back("--queue");
@@ -1121,16 +1511,20 @@ TEST_CASE("queue/the_capture_player_in_chained_mode_gives_the_same_results_with_
             CHECK(Summary(with) == Summary(without));
             CHECK(with.ExitStatus() == without.ExitStatus());
             if (std::string(gpu_name) == "cpu-gx") {
-                // the fill and the DMA are real work there: the clean capture passes, the wrong one fails
+                // the fill and the DMA are real work there: the clean capture passes, the wrong one
+                // fails
                 CHECK(without.ExitStatus() == (wrong ? 1 : 0));
             }
             // the queue's own counters are in the frame table next to the Gpu's
             REQUIRE(with.frames.size() == 1);
             bool has_busy = false;
-            for (const gpu::Counter& c : with.frames[0].counters) has_busy = has_busy || c.name == "translate_us";
+            for (const gpu::Counter& c : with.frames[0].counters)
+                has_busy = has_busy || c.name == "translate_us";
             CHECK(has_busy);
         }
         std::error_code ec;
-        fs::remove_all(fs::path(capture).parent_path(), ec);
+        if (std::getenv("MH4N_QUEUE_TEST_KEEP") == nullptr) {
+            fs::remove_all(fs::path(capture).parent_path(), ec);
+        }
     }
 }
