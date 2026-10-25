@@ -207,6 +207,7 @@ TranslateResult GenerateVertexGlsl(const pica::ShaderSetup& setup, const VertexS
     }
     shader->notes = std::move(program.notes);
     shader->uses_unverified_instructions = program.uses_unverified_instructions;
+    shader->differs_from_interpreter = program.differs_from_interpreter;
     for (u32 r = 0; r < 16; ++r) {
         if (used_regs[r]) {
             shader->used_inputs = static_cast<u16>(shader->used_inputs | (1u << r));

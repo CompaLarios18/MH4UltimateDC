@@ -218,6 +218,7 @@ struct TranslatedVertexShader {
     // Informational.
     std::vector<std::string> notes;
     bool uses_unverified_instructions = false;             // DST, DSTI or LIT (see glsl_decompiler.cpp)
+    bool differs_from_interpreter = false;                 // a shape the interpreter runs differently (see glsl_decompiler.cpp)
     std::string glsl;                                      // the source (kept: the shaders are small)
     double compile_ms = 0.0;                               // the glslang time
 };

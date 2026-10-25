@@ -50,6 +50,10 @@ struct DecompileResult {
     // instruction" in its interpreter and rejects the program in its decompiler): DST, DSTI, LIT. They
     // are translated after the vs_3_0 definitions (see glsl_decompiler.cpp) and this says so.
     bool uses_unverified_instructions = false;
+    // The program has a shape in which the interpreter and the structured readings disagree (a loop or
+    // call body that ends with an if/else, a call or jump that is the last instruction of a scope): a
+    // mismatch with the interpreter in such a program may be the interpreter's quirk.
+    bool differs_from_interpreter = false;
 };
 
 // `input_reg(i)` names the GLSL expression of input register i (and marks it used), `output_reg(i)`

@@ -31,6 +31,21 @@
 //  * DST, DSTI and LIT are translated (vs_3_0 definitions, nihstro's comment on DST says it is the
 //    same as vs_3_0's). Azahar implements none of them: its decompiler rejects the program and its
 //    interpreter and JIT skip the instruction. Not verified on hardware: DecompileResult says so.
+//  * Where the interpreter and the structured readings disagree (DecompileResult::differs_from_interpreter).
+//    The interpreter ends a scope by comparing the program counter with `old_program_counter + 1` after
+//    each instruction (shader_interpreter.cpp: the call-stack check against next_program_counter, then the
+//    if-stack check, which overwrites the program counter, then the loop-stack check against
+//    old_program_counter + 1). (1) A LOOP (or CALL) body that ends with an IF/ELSE: the then-branch's last
+//    instruction is followed by the else branch, so the if-stack jump to the IF's end (the loop's
+//    end_address) happens and the loop check, which compares old_program_counter + 1 with end_address, does
+//    not fire: the loop does not iterate again (the loop stack keeps a stale entry); the else-branch
+//    ends the loop normally. Azahar's x64 JIT (Compile_LOOP: the structure) and its decompiler iterate, and
+//    so does this translation. (2) A CALL or a jump that is the last instruction of an IF, CALL or LOOP scope:
+//    the scope-end handling overwrites the program counter it set, so it is never taken; the structured
+//    readings take it. The port of the interpreter in the tests is the same code as Azahar's here, so the
+//    oracle shows the interpreter's behaviour; gpu_shader_test.cpp pins both sides. (3) Two loops that end
+//    on the same instruction (an inner loop that ends its outer loop's body): the interpreter repeats or
+//    pops one loop per instruction, so the outer loop does not iterate.
 //  * EMIT and SETEMIT generate nothing, as in Azahar's decompiler (it logs "Geometry shader operation
 //    detected in vertex shader"): the vertex program of a draw with a geometry shader is an ordinary
 //    vertex program; a program that does use them as a geometry shader would is not translated by this
@@ -125,6 +140,16 @@ private:
     const DecompileInput& in_;
 };
 
+// The addresses at which a scope of the program ends: for the shapes in which the interpreter and the
+// structured readings (this translation, Azahar's decompiler and x64 JIT) disagree. `any` holds the end
+// of every CALL, LOOP and IF scope and the else address of every IF; `call_loop` the ends of CALL and LOOP
+// scopes only.
+struct ScopeEnds {
+    std::set<u32> any;
+    std::set<u32> call_loop;
+    std::map<u32, std::set<u32>> loops_by_end; // LOOP instructions by the end address of their scope
+};
+
 /// Analyzes shader code and produces a set of subroutines.
 class ControlFlowAnalyzer {
 public:
@@ -138,10 +163,14 @@ public:
     std::set<Subroutine> MoveSubroutines() {
         return std::move(subroutines);
     }
+    const ScopeEnds& Scopes() const {
+        return scope_ends;
+    }
 
 private:
     const Program& program_;
     std::set<Subroutine> subroutines;
+    ScopeEnds scope_ends;
     std::map<std::pair<u32, u32>, ExitMethod> exit_method_map;
     std::map<std::pair<u32, u32>, bool> break_map;
     std::set<std::pair<u32, u32>> break_visiting;
@@ -220,6 +249,13 @@ private:
         return result;
     }
 
+    void NoteScope(u32 end, bool call_or_loop) {
+        scope_ends.any.insert(end);
+        if (call_or_loop) {
+            scope_ends.call_loop.insert(end);
+        }
+    }
+
     /// Merges exit method of two parallel branches.
     static ExitMethod ParallelExit(ExitMethod a, ExitMethod b) {
         if (a == ExitMethod::Undetermined) {
@@ -274,6 +310,7 @@ private:
                 return exit_method = ParallelExit(no_jmp, jmp);
             }
             case static_cast<u32>(Opcode::CALL): {
+                NoteScope(instr.dest_offset() + instr.num_instructions(), true);
                 auto& call = AddSubroutine(instr.dest_offset(),
                                            instr.dest_offset() + instr.num_instructions());
                 if (call.exit_method == ExitMethod::AlwaysEnd)
@@ -282,6 +319,8 @@ private:
                 return exit_method = SeriesExit(call.exit_method, after_call);
             }
             case static_cast<u32>(Opcode::LOOP): {
+                NoteScope(instr.dest_offset() + 1, true);
+                scope_ends.loops_by_end[instr.dest_offset() + 1].insert(offset);
                 auto& loop = AddSubroutine(offset + 1, instr.dest_offset() + 1);
                 if (loop.exit_method == ExitMethod::AlwaysEnd)
                     return exit_method = ExitMethod::AlwaysEnd;
@@ -290,6 +329,7 @@ private:
             }
             case static_cast<u32>(Opcode::CALLC):
             case static_cast<u32>(Opcode::CALLU): {
+                NoteScope(instr.dest_offset() + instr.num_instructions(), true);
                 auto& call = AddSubroutine(instr.dest_offset(),
                                            instr.dest_offset() + instr.num_instructions());
                 ExitMethod after_call = Scan(offset + 1, end, labels);
@@ -298,6 +338,8 @@ private:
             }
             case static_cast<u32>(Opcode::IFU):
             case static_cast<u32>(Opcode::IFC): {
+                NoteScope(instr.dest_offset(), false);
+                NoteScope(instr.dest_offset() + instr.num_instructions(), false);
                 auto& if_sub = AddSubroutine(offset + 1, instr.dest_offset());
                 ExitMethod else_method;
                 if (instr.num_instructions() != 0) {
@@ -368,10 +410,10 @@ std::string GetSelectorSrc(const Swizzle& pattern, u32 source) {
 
 class GLSLGenerator {
 public:
-    GLSLGenerator(const std::set<Subroutine>& subroutines, const Program& program, u32 main_offset,
-                  const RegGetter& inputreg_getter, const RegGetter& outputreg_getter,
+    GLSLGenerator(const std::set<Subroutine>& subroutines, const ScopeEnds& scope_ends, const Program& program,
+                  u32 main_offset, const RegGetter& inputreg_getter, const RegGetter& outputreg_getter,
                   DecompileResult& result)
-        : subroutines(subroutines), program(program), main_offset(main_offset),
+        : subroutines(subroutines), scope_ends(scope_ends), program(program), main_offset(main_offset),
           inputreg_getter(inputreg_getter), outputreg_getter(outputreg_getter), result(result) {
 
         Generate();
@@ -513,6 +555,14 @@ private:
         }
 
         shader.AddLine("{} = {};", dest, src);
+    }
+
+    // A CALL or a jump that is the last instruction of a scope: the interpreter lets the end of the scope
+    // override the program counter that the instruction set, so it is never taken there.
+    void NoteIfLastOfScope(u32 offset) {
+        if (scope_ends.any.count(offset + 1) != 0) {
+            differs_from_interpreter = true;
+        }
     }
 
     /// The comparison operator of a CMP half, or "" for the two undefined ones.
@@ -771,6 +821,7 @@ private:
 
             case Opcode::JMPC:
             case Opcode::JMPU: {
+                NoteIfLastOfScope(offset);
                 std::string condition;
                 if (static_cast<Opcode>(instr.opcode()) == Opcode::JMPC) {
                     condition = EvaluateCondition(instr);
@@ -794,6 +845,7 @@ private:
             case Opcode::CALL:
             case Opcode::CALLC:
             case Opcode::CALLU: {
+                NoteIfLastOfScope(offset);
                 const Opcode opcode = static_cast<Opcode>(instr.opcode());
                 std::string condition;
                 if (opcode == Opcode::CALLC) {
@@ -838,6 +890,10 @@ private:
                 const u32 if_offset = offset + 1;
                 const u32 else_offset = instr.dest_offset();
                 const u32 endif_offset = instr.dest_offset() + instr.num_instructions();
+                if (instr.num_instructions() != 0 && scope_ends.call_loop.count(endif_offset) != 0) {
+                    // the then-branch jumps to the end of the IF, which is the end of a loop or call scope: see below
+                    differs_from_interpreter = true;
+                }
 
                 shader.AddLine("if ({}) {{", condition);
                 ++shader.scope;
@@ -1092,6 +1148,17 @@ private:
                 "subroutine at most {} times",
                 *backward_jump_offset, kMaxJumpIterations));
         }
+        for (const auto& [end, loops] : scope_ends.loops_by_end) {
+            // two loops that end on the same instruction: the interpreter repeats or pops one loop per instruction
+            differs_from_interpreter = differs_from_interpreter || loops.size() > 1;
+        }
+        if (differs_from_interpreter) {
+            result.differs_from_interpreter = true;
+            result.notes.push_back(
+                "a loop body ends with an if/else, or a call or jump is the last instruction of a scope: the "
+                "interpreter and the structured readings (this translation, Azahar's decompiler and JIT) "
+                "disagree on this shape (see the header comment of glsl_decompiler.cpp)");
+        }
         if (has_emit) {
             result.notes.push_back(
                 "EMIT / SETEMIT are ignored (the program is translated as a vertex program, as Azahar's "
@@ -1101,6 +1168,7 @@ private:
 
 private:
     const std::set<Subroutine>& subroutines;
+    const ScopeEnds& scope_ends;
     const Program& program;
     const u32 main_offset;
     const RegGetter& inputreg_getter;
@@ -1111,6 +1179,7 @@ private:
     std::map<std::string, std::set<std::string>> calls;
     std::optional<u32> backward_jump_offset;
     bool has_emit = false;
+    bool differs_from_interpreter = false;
 
     ShaderWriter shader;
 };
@@ -1125,8 +1194,10 @@ DecompileResult DecompileProgram(const DecompileInput& input, const RegGetter& i
             throw DecompileFail("The entry point is outside the program memory", "entry-point");
         }
         const Program program(input);
-        auto subroutines = ControlFlowAnalyzer(program, input.main_offset).MoveSubroutines();
-        GLSLGenerator generator(subroutines, program, input.main_offset, input_reg, output_reg, result);
+        ControlFlowAnalyzer analyzer(program, input.main_offset);
+        const ScopeEnds scope_ends = analyzer.Scopes();
+        auto subroutines = analyzer.MoveSubroutines();
+        GLSLGenerator generator(subroutines, scope_ends, program, input.main_offset, input_reg, output_reg, result);
         result.source = generator.MoveShaderCode();
         result.ok = true;
     } catch (const DecompileFail& exception) {

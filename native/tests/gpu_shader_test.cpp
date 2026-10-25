@@ -2239,9 +2239,116 @@ TEST_CASE("known difference: a CALL that is the last instruction of an IF is nev
     // relies on either is not a valid program (the hardware's behaviour is not known); this documents the gap.
     CHECK(At(o.capture, 0, 0, 0) == 5.f);
     CHECK(o.report.mismatches > 0);
+    CHECK(o.shader->differs_from_interpreter); // the translation says so
     oracle::Unit u;
     oracle::Run(OracleMemory(d.setup), OracleUniforms(d.setup), u, 0);
     CHECK(u.output[0][0].c[0] == 1.f);
+}
+
+TEST_CASE("known difference: a loop whose body ends with an if/else does not iterate after the then-branch in the interpreter, it does in the translation") {
+    // shader_interpreter.cpp, after each instruction: the call-stack pop is tested against
+    // old_program_counter + 1, then the if-stack (`else_address == old_program_counter + 1`: the then-branch's
+    // last instruction) sets the program counter to the IF's end_address, which is the loop's end_address, and
+    // only then the loop-stack is tested with `end_address == old_program_counter + 1`: that is the else
+    // address, not the loop's end, so the loop does not iterate and the stale loop entry stays. The else
+    // branch ends exactly at the loop's end and iterates. Azahar's x64 JIT (Compile_LOOP, structural) and its
+    // GLSL decompiler iterate in both cases, and so does this translation. The oracle in this file is the same
+    // code as Azahar's interpreter here (a faithful port), so it shows the interpreter's behaviour.
+    // If either side changes, this case fails: re-read As built (N2-06) before changing the expectation.
+    Rig rig;
+    if (!rig.ok()) return;
+    using namespace asmb;
+    // r0 = c0, r1 = r2 = 0; LOOP i0 (4 iterations) { r0 += c1; IFU b1 { r1 += c2 } ELSE { r2 += c3 } }
+    Asm plain;
+    plain.Op1(kMov, R(0), C(0));
+    plain.BeginLoop(0);
+    plain.Op(kAdd, R(0), C(1), R(0));
+    plain.BeginIfu(1);
+    plain.Op(kAdd, R(1), C(2), R(1));
+    plain.Else();
+    plain.Op(kAdd, R(2), C(3), R(2));
+    plain.EndIf();
+    plain.EndLoop();
+    plain.Op1(kMov, O(0), R(0));
+    plain.Op1(kMov, O(1), R(1));
+    plain.Op1(kMov, O(2), R(2));
+    plain.End();
+    // the nested form: the inner loop's body ends with the if/else and the inner loop ends the outer body
+    Asm nested;
+    nested.Op1(kMov, R(0), C(0));
+    nested.BeginLoop(1); // outer: 2 iterations
+    nested.BeginLoop(0); // inner: 4 iterations
+    nested.Op(kAdd, R(0), C(1), R(0));
+    nested.BeginIfu(1);
+    nested.Op(kAdd, R(1), C(2), R(1));
+    nested.Else();
+    nested.Op(kAdd, R(2), C(3), R(2));
+    nested.EndIf();
+    nested.EndLoop();
+    nested.EndLoop();
+    nested.Op1(kMov, O(0), R(0));
+    nested.Op1(kMov, O(1), R(1));
+    nested.Op1(kMov, O(2), R(2));
+    nested.End();
+
+    // What the interpreter does, worked out from its code (the iterations of the innermost add, r0 += c1):
+    //   plain loop, b1 clear:   4 (the else branch ends the loop: it iterates)         = the translation
+    //   plain loop, b1 set:     1 (the then-branch jumps over the loop-end test)
+    //   nested loops, b1 clear: 4 (the inner loop ends on the outer loop's last instruction and only one
+    //                              loop is popped or repeated per instruction: the outer never iterates)
+    //   nested loops, b1 set:   1
+    // The translation iterates 4 (plain) and 2 x 4 = 8 (nested) times in every case.
+    const float interpreter_iterations[2][2] = {{4.f, 1.f}, {4.f, 1.f}}; // [shape][b1]
+    for (int shape = 0; shape < 2; ++shape) {
+        for (int b1 = 0; b1 < 2; ++b1) {
+            Draw d = MakeProgram(shape == 0 ? plain : nested, RandomInputs(1, 8, 70), 0x7);
+            SetUniform(d, 0, 100, 0, 0, 0);
+            SetUniform(d, 1, 1, 0, 0, 0);
+            SetUniform(d, 2, 10, 0, 0, 0);
+            SetUniform(d, 3, 1000, 0, 0, 0);
+            d.setup.uniform_i[0] = {3, 0, 0, 0};
+            d.setup.uniform_i[1] = {1, 0, 0, 0};
+            d.setup.uniform_b[1] = b1 != 0;
+            const float translated = shape == 0 ? 4.f : 8.f;
+            const float interpreted = interpreter_iterations[shape][b1];
+            INFO("shape " << shape << " (0 plain loop, 1 nested loops), b1 " << b1);
+            Outcome o = RunCase(rig, d, 8);
+            REQUIRE(o.shader != nullptr);
+            REQUIRE(!o.capture.empty());
+            CHECK(o.shader->differs_from_interpreter); // detected from the shape, not from the values
+            // the translation iterates as the structured reading says ...
+            CHECK(At(o.capture, 0, 0, 0) == 100.f + translated);
+            CHECK(At(o.capture, 0, b1 != 0 ? 1 : 2, 0) == translated * (b1 != 0 ? 10.f : 1000.f));
+            // ... the interpreter as its code does
+            oracle::Unit u;
+            oracle::Run(OracleMemory(d.setup), OracleUniforms(d.setup), u, 0);
+            CHECK(u.output[0][0].c[0] == 100.f + interpreted);
+            CHECK(u.output[0][b1 != 0 ? 1 : 2].c[0] == interpreted * (b1 != 0 ? 10.f : 1000.f));
+            // so the comparison with the oracle sees a difference exactly where the counts differ
+            CHECK((o.report.mismatches > 0) == (translated != interpreted));
+        }
+    }
+    // the ordinary loop of the other cases is not flagged
+    Asm ordinary;
+    ordinary.Op1(kMov, R(0), C(0));
+    ordinary.BeginLoop(0);
+    ordinary.Op(kAdd, R(0), C(1), R(0));
+    ordinary.BeginIfu(1);
+    ordinary.Op(kAdd, R(1), C(2), R(1));
+    ordinary.Else();
+    ordinary.Op(kAdd, R(2), C(3), R(2));
+    ordinary.EndIf();
+    ordinary.Nop(); // something after the if/else: the shape is gone
+    ordinary.EndLoop();
+    ordinary.Op1(kMov, O(0), R(0));
+    ordinary.End();
+    Draw d = MakeProgram(ordinary, RandomInputs(1, 4, 71), 0x1);
+    SetUniform(d, 1, 1, 0, 0, 0);
+    d.setup.uniform_i[0] = {3, 0, 0, 0};
+    d.setup.uniform_b[1] = true;
+    Outcome o = RunCase(rig, d, 4);
+    CHECK_OUTCOME(o);
+    CHECK_FALSE(o.shader->differs_from_interpreter);
 }
 
 // ================================================================================================
@@ -2525,7 +2632,7 @@ TEST_CASE("random words never crash the translator, hang it or give GLSL that do
             continue;
         }
         ++accepted;
-        if (accepted % 5 == 0) { // compile every fifth accepted program
+        { // compile every accepted program
             std::vector<u32> spirv;
             std::string error;
             ++compiled;
@@ -2981,13 +3088,20 @@ struct Totals {
     std::set<std::pair<u64, u64>> distinct;      // (program hash, swizzle hash) of EVERY draw, whatever happened to it
     std::set<std::pair<u64, u64>> checked;       // ... run at least once
     std::set<std::pair<u64, u64>> unverified;    // ... that use DST, DSTI or LIT
+    std::set<std::pair<u64, u64>> differing;     // ... with a shape the interpreter runs differently
+    u64 mismatching_draws_in_differing = 0;      // draws with mismatches in such a program
     std::string first_problem;
 };
 
+// Printed after a failed dump check (no data).
+constexpr const char* kQuirkHint =
+    "a mismatch in a program that ends a loop body with an if/else, or a call or jump as the last instruction of "
+    "an if or call, may be the interpreter's quirk, see As built (N2-06)";
+
 // The pass of the dump check: every program seen was run, and nothing went wrong on the way.
 bool DumpPassed(const Totals& t) {
-    return t.program_runs > 0 && t.vertices > 0 && t.mismatches == 0 && t.translation_failures == 0 &&
-           t.loader_errors == 0 && t.pipeline_failures == 0 && t.oracle_problems == 0 &&
+    return t.program_runs > 0 && t.vertices > 0 && t.mismatches == 0 && t.translation_failures == 0 && t.loader_errors == 0 &&
+           t.pipeline_failures == 0 && t.oracle_problems == 0 &&
            t.checked.size() == t.distinct.size();
 }
 
@@ -3095,6 +3209,9 @@ void CheckDraw(mh4n::gpu::Host& host, const pica::DrawCall& draw) {
     if (translated.shader->uses_unverified_instructions) {
         t.unverified.insert(key);
     }
+    if (translated.shader->differs_from_interpreter) {
+        t.differing.insert(key);
+    }
     const u32 n = std::min(ld.count, kFirstVertices);
     const bool indexed = ld.index_type != vertex::IndexType::None;
     std::vector<u32> ids(n);
@@ -3133,6 +3250,9 @@ void CheckDraw(mh4n::gpu::Host& host, const pica::DrawCall& draw) {
     t.checked.insert(key);
     t.vertices += report.vertices;
     t.mismatches += report.mismatches;
+    if (report.mismatches != 0 && translated.shader->differs_from_interpreter) {
+        ++t.mismatching_draws_in_differing;
+    }
     if (report.not_terminating || report.unhandled) {
         ++t.oracle_problems;
         Problem(t, where + "the oracle did not end or met an instruction it does not know");
@@ -3230,12 +3350,14 @@ std::optional<Totals> DumpCheck(const char* value, bool print, bool perturb_orac
                     static_cast<unsigned long long>(t.vertices), static_cast<unsigned long long>(t.mismatches),
                     static_cast<unsigned long long>(t.translation_failures));
         std::printf("shader dump check: program runs %llu, draws without vertices %llu, loader errors %llu, "
-                    "programs with DST/DSTI/LIT %zu, device refused a pipeline %llu, oracle problems %llu\n",
+                    "programs with DST/DSTI/LIT %zu, programs with an interpreter-differing shape %zu (draws with mismatches in them %llu), "
+                    "device refused a pipeline %llu, oracle problems %llu\n",
                     static_cast<unsigned long long>(t.program_runs), static_cast<unsigned long long>(t.no_vertices),
-                    static_cast<unsigned long long>(t.loader_errors), t.unverified.size(),
+                    static_cast<unsigned long long>(t.loader_errors), t.unverified.size(), t.differing.size(),
+                    static_cast<unsigned long long>(t.mismatching_draws_in_differing),
                     static_cast<unsigned long long>(t.pipeline_failures), static_cast<unsigned long long>(t.oracle_problems));
         if (!DumpPassed(t)) {
-            std::printf("shader dump check: NOT PASSED: %s\n", DumpSummary(t).c_str());
+            std::printf("shader dump check: NOT PASSED: %s; hint: %s\n", DumpSummary(t).c_str(), kQuirkHint);
         }
         std::fflush(stdout);
     }
@@ -3321,7 +3443,7 @@ namespace {
 
 // A capture of the end-to-end program A (a good draw) and the program B of the replay capture, whose
 // draws are given by the caller; `bad_base` puts B's vertices outside the guest memory.
-std::string TwoProgramCapture(const std::string& name, const std::vector<u32>& b_vertices, u32 b_base) {
+std::string TwoProgramCapture(const std::string& name, const std::vector<std::pair<u32, u32>>& b_draws) {
     using namespace asmb;
     CmdList list;
     SetupEndToEnd(list, EndToEndProgram(), 10, true, 1.5f);
@@ -3329,8 +3451,8 @@ std::string TwoProgramCapture(const std::string& name, const std::vector<u32>& b
     b.Op(kDp3, O(0), V(0), V(1));
     b.Op1(kMov, O(1), V(1));
     b.End();
-    for (u32 vertices : b_vertices) {
-        SetupEndToEnd(list, b, vertices, false, 1.0f, b_base);
+    for (const auto& [vertices, base] : b_draws) {
+        SetupEndToEnd(list, b, vertices, false, 1.0f, base);
     }
     const std::vector<u8> bytes = list.Bytes();
     CaptureFile capture;
@@ -3354,7 +3476,7 @@ bool HasValueLeak(const std::string& text) {
 } // namespace
 
 TEST_CASE("a program none of whose draws loads is not checked: the dump check fails and names the category") {
-    const std::string path = TwoProgramCapture("unmapped", {8}, 0x70000000); // B's vertices are outside the memory
+    const std::string path = TwoProgramCapture("unmapped", {{8, 0x70000000}}); // B's vertices are outside the memory
     const auto totals = DumpCheck(path.c_str(), false);
     fs::remove(path);
     if (!totals) return;
@@ -3369,9 +3491,58 @@ TEST_CASE("a program none of whose draws loads is not checked: the dump check fa
     CHECK_FALSE(HasValueLeak(DumpSummary(*totals)));
 }
 
+TEST_CASE("a mismatch in a program with a shape the interpreter runs differently is counted as such") {
+    using namespace asmb;
+    Asm a; // LOOP { r0 += c1; IFU b0 { r1 += c2 } ELSE { r2 += c3 } }: the then-branch ends the loop body
+    a.Op1(kMov, R(0), V(0));
+    a.BeginLoop(0);
+    a.Op(kAdd, R(0), C(1), R(0));
+    a.BeginIfu(0);
+    a.Op(kAdd, R(1), C(2), R(1));
+    a.Else();
+    a.Op(kAdd, R(2), C(3), R(2));
+    a.EndIf();
+    a.EndLoop();
+    a.Op1(kMov, O(0), R(0));
+    a.Op1(kMov, O(1), R(1));
+    a.End();
+    CmdList list;
+    SetupEndToEnd(list, a, 6, true, 1.0f);
+    const std::vector<u8> bytes = list.Bytes();
+    CaptureFile capture;
+    capture.Init();
+    capture.Mem(kListAt, bytes);
+    capture.Mem(kBase, VertexBytes(6, 51));
+    capture.SubmitCmdList(0x14001000, static_cast<u32>(bytes.size()));
+    capture.NoRegisterWrites();
+    capture.Frame(1);
+    const std::string path = capture.Save("quirk");
+    const auto totals = DumpCheck(path.c_str(), true);
+    fs::remove(path);
+    if (!totals) return;
+    CHECK(totals->mismatches > 0);
+    CHECK_FALSE(DumpPassed(*totals));
+    CHECK(totals->differing.size() == 1);
+    CHECK(totals->mismatching_draws_in_differing == 1);
+    CHECK_FALSE(HasValueLeak(kQuirkHint));
+    CHECK(std::string(kQuirkHint).find("As built (N2-06)") != std::string::npos);
+}
+
+TEST_CASE("one draw of a program that another draw runs can still fail to load: the check fails") {
+    const std::string path = TwoProgramCapture("oneunmapped", {{6, kBase}, {8, 0x70000000}});
+    const auto totals = DumpCheck(path.c_str(), false);
+    fs::remove(path);
+    if (!totals) return;
+    CHECK(totals->distinct.size() == 2);
+    CHECK(totals->checked.size() == 2); // every program was run by a draw
+    CHECK(totals->loader_errors == 1);
+    CHECK_FALSE(DumpPassed(*totals));
+    CHECK(totals->first_problem.find("Unmapped") != std::string::npos);
+}
+
 TEST_CASE("a draw without vertices is counted; its program must still be run by another draw") {
     {   // B is only drawn with no vertices: seen 2, checked 1
-        const std::string path = TwoProgramCapture("novertices", {0}, kBase);
+        const std::string path = TwoProgramCapture("novertices", {{0, kBase}});
         const auto totals = DumpCheck(path.c_str(), false);
         fs::remove(path);
         if (!totals) return;
@@ -3382,7 +3553,7 @@ TEST_CASE("a draw without vertices is counted; its program must still be run by 
         CHECK_FALSE(DumpPassed(*totals));
     }
     {   // ... and drawn again with vertices: it passes
-        const std::string path = TwoProgramCapture("novertices2", {0, 6}, kBase);
+        const std::string path = TwoProgramCapture("novertices2", {{0, kBase}, {6, kBase}});
         const auto totals = DumpCheck(path.c_str(), false);
         fs::remove(path);
         if (!totals) return;
