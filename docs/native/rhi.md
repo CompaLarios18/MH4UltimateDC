@@ -553,9 +553,9 @@ not do. Both modules keep their state in the slots `core/impl.h` reserves (`Back
 | `sync/pipeline_cache.cpp` | `LoadPipelineCache`, `SavePipelineCache`, the header check. Derived from Azahar's `vk_pipeline_cache.cpp` (GPL-3.0-or-later; provenance header in the file) |
 | `sync/timestamps.cpp` | `Recorder::MarkFrame`, `Backend::FrameGpuTimeNs` |
 | `sync/sync.h` | the module's own header (not the frozen interface): `RetiredCount`, `DrainRetired`, `ReleaseRetired`, `LastFrameTimestamps`, `FramesInFlight`, `CheckPipelineCacheBlob` |
-| `readback/readback.cpp` | `Backend::ReadbackToGuest`; derived from the pattern of Azahar's `BlitHelper::DepthToBuffer` (`vk_blit_helper.cpp`, GPL-2.0-or-later) |
+| `readback/readback.cpp` | `Backend::ReadbackToGuest`; derived from Azahar's `BlitHelper::DepthToBuffer` (`vk_blit_helper.cpp`), `MortonCopy`/`EncodePixel` (`texture_codec.h`) and `Encode*` (`color.h`), all GPL-2.0-or-later (provenance header in the file) |
 | `readback/image.cpp` | `Backend::ReadImage` |
-| `readback/shaders/readback.comp`, `readback_shaders.inc` | the compute pass (three variants, `spirv_inc.txt`), its SPIR-V committed; `python3 tools/native/spirv_inc.py native/src/gpu/backend/readback/shaders native/src/gpu/backend/readback/readback_shaders.inc` regenerates it byte for byte. Derived from Azahar's `vulkan_depth_to_buffer.comp` |
+| `readback/shaders/readback.comp`, `readback_shaders.inc` | the compute pass (three variants, `spirv_inc.txt`), its SPIR-V committed; `python3 tools/native/spirv_inc.py native/src/gpu/backend/readback/shaders native/src/gpu/backend/readback/readback_shaders.inc` regenerates it byte for byte. Derived from Azahar's `vulkan_depth_to_buffer.comp`, `texture_codec.h` and `color.h` (provenance header in the file); the test file `gpu_backend_readback_test.cpp` restates the Morton tables and byte orders of the last two and carries the header too |
 
 ### Waits and the fence fallback
 
@@ -654,14 +654,15 @@ component is cut from the top, Azahar's `Convert8To5` and kin: `v >> (8 - n)`); 
 `R4G4B4A4`/`B4G4R4A4` give `Rgba4`, all with the PICA's bits whatever order the device stores (the pass reads logical components, so the swapped orders need no
 special case: the test stores each order and gets the same word); `D16Unorm` gives `D16`; `D24S8` and `D32S8` give `D24` and `D24S8`; `D32Float` gives `D24`.
 
-**D24S8 from `D32S8`, and the rounding rule.** On a device without `D24S8` (the PC) or with the `d24s8` bit masked, the depth image stores a float and the pass converts
-it as Azahar's `vulkan_depth_to_buffer.comp` does (scale `2^24 - 1 = 16777215`, the stencil read from the stencil view and placed in the top byte), with one
-**deliberate difference: the value is rounded to nearest (`roundEven(depth * 16777215.0)`), Azahar truncates** (`uint(depth * (exp2(24.0) - 1.0))`). A D24 attachment rounds
-the float it stores, so rounding makes a `D24S8` image and the `D32S8` image that stands in for it give the same bytes for every depth the renderer can write, not only for the
-exactly representable ones: 0.25 is `4194303.75` of 24 bits, `0x400000` rounded and `0x3FFFFF` truncated, and the test pins `0x400000` on both formats (and fails with
-truncation). For a depth that was already a 24-bit value `c / 16777215` the two rules agree: in single precision the product is exactly the integer `c` for all 16,777,216 values (checked once with a
-numpy float32 script, not part of the tests; `0x800000`'s nearest float is `0x3F000001`, `0.5 + 2^-24`). The same pass reads `D16` as `roundEven(depth * 65535.0)`. `unverified`: what the PICA itself does with a depth
-between two 24-bit values (no capture compared; Azahar's truncation is a choice of an emulator, not a measurement of the hardware).
+**D24S8 from `D32S8`, and the rule that converts the depth.** On a device without `D24S8` (the PC) or with the `d24s8` bit masked, the depth image stores a float and the pass converts
+it as Azahar does (`vulkan_depth_to_buffer.comp`: `uint(texture(depth, ...).x * (exp2(24.0) - 1.0))`; `EncodeD24` of `texture_codec.h`: `static_cast<u32>(d32 * 0xFFFFFF)`): scale `2^24 - 1 = 16777215`,
+**truncated**, the stencil read from the stencil view and placed in the top byte. (An earlier draft of this WP rounded to nearest; the spec says "as Azahar does", so it truncates.) For a depth that is an exact
+unorm decode `c / 16777215` the product is the integer `c` in single precision (all 16,777,216 values checked once with a numpy float32 script, not part of the tests), so a `D24S8` image and the `D32S8`
+image that stands in for it give the same bytes for depths 0, `0x800000` (nearest float `0x3F000001`, `0.5 + 2^-24`) and `0xFFFFFF`, with stencils 0 and `0xFF`: that is what the cross-format test
+compares. **It does not hold for every float.** 0.25 is `4194303.75` of 24 bits: the `D32S8` path truncates it to `0x3FFFFF`, while lavapipe's `D24S8` clear stores the nearest value and reads back `0x400000`;
+the test pins each format separately (and the pass-open case too) and does not compare them. `D16` is read as `roundEven(depth * 65535.0)`: Azahar copies D16 raw, so rounding there only recovers the stored integer.
+`unverified`: truncation gives the exact integer back for an exact unorm decode, but a driver whose unorm decode is `c * (1 / 16777215)` could make truncation off by one; whether a real GPU (the RX 6700 XT's
+`D32S8` path, MoltenVK) does is not measured, and the question goes to the maintainer. Also `unverified`: what the PICA itself does with a depth between two 24-bit values (no capture compared).
 
 **Which thread, and what the checks do.** `ReadbackToGuest` and `ReadImage` record on an internal recorder, through the targets module's first-use path
 (`Acquire`, then `Normalize` for the readback; `CopyImageToBuffer` for `ReadImage`): they obey the owner rule as any operation on the image does. **The thread that owns the image
@@ -696,8 +697,8 @@ unwrapped (`unverified`: no device met here has fewer).
 
 ### Tests (N2-28)
 
-`native/tests/gpu_backend_sync_test.cpp` (11 cases; shaders `native/tests/shaders/gpu_backend_sync/`, `gpu_backend_sync_shaders.inc` by `spirv_inc.py`, also used by the readback test) and
-`native/tests/gpu_backend_readback_test.cpp` (12 cases). Every expected pixel and byte is worked out in a comment from the formats. A case skips with a message without a Vulkan device and fails under
+`native/tests/gpu_backend_sync_test.cpp` (12 cases; shaders `native/tests/shaders/gpu_backend_sync/`, `gpu_backend_sync_shaders.inc` by `spirv_inc.py`, also used by the readback test) and
+`native/tests/gpu_backend_readback_test.cpp` (13 cases). Every expected pixel and byte is worked out in a comment from the formats. A case skips with a message without a Vulkan device and fails under
 `MH4N_REQUIRE_VULKAN=1`.
 
 | Case | What it pins |
@@ -710,16 +711,17 @@ unwrapped (`unverified`: no device met here has fewer).
 | `retire/an_object_retired_while_in_flight_is_destroyed_only_after_its_value`, `retire/release_retired_waits_for_the_gpu_and_empties_the_list` | a probe object and an image retired while the gated submission is unfinished are alive after `Retire` and `DrainRetired`, and are released (weak pointer expired) by the first drain point after the value passed; a passed value is released inside `Retire`; `ReleaseRetired` blocks until the gate opens |
 | `pipeline_cache/a_saved_blob_is_accepted_by_a_second_backend_and_a_foreign_one_is_refused_with_an_info_line` | the header fields against the test's own `vkGetPhysicalDeviceProperties`; a second backend on the same instance and device accepts the blob; eight corruptions (a UUID byte, the last UUID byte, vendor, device, version, header length, 31 bytes, empty) are each refused with exactly one Info line of category `RHI`; the pure check with hand-written numbers |
 | `pipeline_cache/pipelines_made_from_four_threads_at_once_are_all_usable` | 4 threads x 6 pipelines, started together, each thread draws with one into its image: 24 made, 4 draws right |
-| `timestamps/...` (2 cases) | not read while the gated frame is in flight (`FrameGpuTimeNs() == 0`), positive after, `end > begin`, the next frame's begin not before the last's end; a Begin with no End, a dropped recorder, an End with no Begin |
+| `timestamps/...` (3 cases) | not read while the gated frame is in flight (`FrameGpuTimeNs() == 0`), positive after, `end > begin`, the next frame's begin not before the last's end; a Begin with no End, a dropped recorder, an End with no Begin; a Begin inside a pass is refused with the `Error` line and takes no pool |
 | `colour/clear_and_readback_of_every_colour_format_into_guest_memory` | RGBA8 `99 33 00 FF`, RGB8 `33 00 FF`, `0xAD4A` (RGB565), `0xAA8B` (RGB5A1), `0xA5C3` (RGBA4), from the PICA names and from an RGBA8 image |
 | `colour/every_stored_component_order_of_the_16_bit_formats_gives_the_pica_word` | each stored order the device can sample (`R5G6B5`, `B5G6R5`, `R5G5B5A1`, `B5G5R5A1`, `A1R5G5B5`, `B4G4R4A4`; `R4G4B4A4` is not sampleable on lavapipe and is skipped with a message) uploaded as its own word, read back as the PICA's |
 | `colour/the_tiles_are_8x8_morton_with_the_last_row_first`, `colour/a_taller_image_orders_tile_rows_from_the_last_image_row_up` | a pattern image: nine literal pixels (indices 0, 1, 2, 3, 4, 8, 16, 32, 63 and the second tile's first) by hand, then the whole buffer against a model written from Azahar's tables for RGBA8, RGB8, RGB565, RGB5A1, RGBA4; a tile-aligned sub-rect; a 8x16 image |
-| `depth/d24s8_and_the_masked_d32s8_give_the_same_bytes_for_every_depth_and_stencil` | depths 0, `0x800000`, `0xFFFFFF` and 0.25 (`0x400000`) x stencils 0 and `0xFF`, read as `D24S8` and `D24`, on `D24S8` and on `D32S8` (`Cap::D24S8` masked in the case's own backend) |
-| `depth/d16_and_d32_float` | `0`, `0x5555` (1/3), `0xFFFF`; `D32Float` as `D24` |
-| `depth/an_image_left_in_the_attachment_layout_by_a_pass_open_at_submit_is_read_back_right` | a draw at depth 0.25 and stencil clear `0x5A` on `D24S8` (both formats) and `D16Unorm`, the pass open at `Submit`; the held layout is `DEPTH_WRITE` before the readback, the bytes `00 00 40 5A` (`00 40` for D16), `GENERAL` after; the colour image is red |
+| `depth/d24s8_and_the_masked_d32s8_give_the_same_bytes_for_every_depth_and_stencil` | depths 0, `0x800000`, `0xFFFFFF` x stencils 0 and `0xFF`, read as `D24S8` and `D24`, on `D24S8` and on `D32S8` (`Cap::D24S8` masked in the case's own backend): the same bytes; then 0.25 pinned per format, not compared: `0x3FFFFF` on `D32S8` (truncated), `0x400000` on lavapipe's `D24S8` |
+| `depth/d16_and_d32_float` | `0`, `0x5555` (1/3), `0xFFFF`; `D32Float` as `D24`: 0.25 -> `FF FF 3F` (truncated), 1.0 -> `FF FF FF` |
+| `depth/an_image_left_in_the_attachment_layout_by_a_pass_open_at_submit_is_read_back_right` | a draw at depth 0.25 and stencil clear `0x5A` on `D24S8` (both formats) and `D16Unorm`, the pass open at `Submit`; the held layout is `DEPTH_WRITE` before the readback, the bytes `FF FF 3F 5A` on `D32S8`, `00 00 40 5A` on lavapipe's `D24S8` (`00 40` for D16), `GENERAL` after; the colour image is red |
 | `read_image/...` (2 cases) | the clear colour in `Rgba8Unorm`, `R8Unorm`, `R5G6B5`, `Rgba16Float`, `D16Unorm`, the two planes of `D24S8`/`D32S8`; a sub-region row by row, errors |
 | `errors/...`, `owner_rule/...` | bad rects, destinations and formats; an image the open recorder has recorded on; a foreign thread: one `ForeignThread` breach per call, none for the owner or after a hand-over (both with and without the `timeline` bit), no `RequiredWait` |
-| `timestamps/a_frame_with_a_clear_and_a_readback_has_a_time_and_the_next_frame_follows_it` | three frames, each with a clear and a readback: `FrameGpuTimeNs() > 0`, increasing |
+| `timestamps/a_frame_with_a_clear_and_a_readback_has_a_time_and_the_next_frame_follows_it` | three frames; Begin and a clear in one recorder, the readback (its own submission) between, the End in a recorder submitted after it: `FrameGpuTimeNs() > 0`, increasing |
+| `readback/two_threads_reading_back_different_images_at_once_get_their_own_bytes` | a colour image and a depth image read back 25 times each from two threads at once: every result right (TSAN covers the race) |
 
 Lavapipe's queue thread holds the device while it waits for an event, and creating an image view, a framebuffer or a command list then waits for it too: the gated case therefore makes all of them in a first run
 with the gate open (a lavapipe property, `unverified` elsewhere; nothing in the product depends on it).
@@ -733,16 +735,15 @@ present_wait direct_upload`, and `all`, and `d24s8,timeline` (the PC's pair). Th
 reports the `UNASSIGNED-Threading-MultipleThreads-Read` of core's fence branch described above, the same message `gpu_backend_targets_test` gives under that mask). The first layer run found one
 defect of ours: a reused readback buffer's `SYNC-HAZARD-WRITE-AFTER-WRITE` between two readbacks' passes, now ordered by a memory barrier at the start of each (the finding N2-27 made for its own copies).
 The `build/tsan` tree (the commands of "The ThreadSanitizer job" above, with the four targets `gpu_backend_sync_test`, `gpu_backend_readback_test`, `gpu_backend_core_test` and
-`gpu_backend_targets_test`; `halt_on_error=1`, `tools/native/tsan.supp`) ran the first two twice each and once more under `MH4N_RHI_MASK=timeline`, and the other two twice: no report. `native-tsan` on GitHub is *(CI)*, `pending`.
+`gpu_backend_targets_test`; `halt_on_error=1`, `tools/native/tsan.supp`) ran the first two twice each and once more under `MH4N_RHI_MASK=timeline` (after the review changes too), and the other two twice: no report. `native-tsan` on GitHub is *(CI)*, `pending`.
 **Mutants** (one rule broken at a time in a copy restored from the commit, the test seen to fail, the rule restored; the build checked to have succeeded, because a mutant that does not compile leaves the old binary running):
 - sync: the CPU wait of the fallback removed (`waits/the_second_submission...` fails, in the masked leg and under `MH4N_RHI_MASK=timeline`); `Retire` releasing at once whatever the value (the retire case crashes: the image
   was destroyed in flight); the drain releasing entries whose value has not passed (the same case crashes); the header check skipped (the pipeline-cache case fails); only the UUID comparison skipped (the same case fails);
   every wait kept at `Stage::AllGraphics` (the two-waits case and both hand-over cases fail); the timestamps read before the value passed (the timestamps case hangs on a read and is stopped by `timeout`); the End's
   value not recorded (both timestamps cases fail).
-- readback: x and y bits of the Morton index swapped (the three tile cases fail); guest rows not reversed (the same three); the D24 depth truncated (Azahar's rule: the 0.25 case of the depth tests, the pass-open case and `d16_and_d32_float` fail);
-  the D24 scale `2^24` instead of `2^24 - 1` (the depth case fails); the stencil in the low byte (the depth and pass-open cases fail); the RGB8 bytes in R, G, B order (the colour and tile cases fail); narrower components
+- readback: x and y bits of the Morton index swapped (the three tile cases fail); guest rows not reversed (the same three); the D24 depth **rounded to nearest** instead of truncated, the first draft's rule (the 0.25 line of the depth case, the pass-open case and `d16_and_d32_float` fail, on the `D32S8` leg), and truncation with a +0.75 bias (the same three); the D24 scale `2^24` instead of `2^24 - 1` (the same three: 0.25 comes out `0x400000`); the stencil in the low byte (the depth and pass-open cases fail); the RGB8 bytes in R, G, B order (the colour and tile cases fail); narrower components
   cut from the bottom bits instead of the top (the colour cases fail); `Normalize` skipped (the pass-open depth case fails: the held layout is not `GENERAL`); `Acquire` skipped (the owner-rule case fails);
-  the hand-over's waits not carried by the readback (the owner-rule case fails: a `RequiredWait` breach); the open-recorder check removed (the errors case fails). The case `colour/every_stored_component_order...` also appears in the list
+  the hand-over's waits not carried by the readback (the owner-rule case fails: a `RequiredWait` breach); the open-recorder check removed (the errors case fails); the mutex of `ReadbackToGuest` removed (the two-threads case fails by itself, without ThreadSanitizer); the End mark accepted only in the recorder of its Begin (the timestamps case whose End is in a later recorder fails); `MarkFrame(Begin)` not refused inside a pass (the new Begin-in-pass case fails). The case `colour/every_stored_component_order...` also appears in the list
   of every failing readback run only because its skip message (`R4G4B4A4` is not sampleable on lavapipe) prints the case's name; it is not the cause.
 
 **`unverified` / pending, not claimed:** the RX 6700 XT (no `D24S8`, so the `D32S8` path is the one it runs: the legs above stand in for it on lavapipe; its timestamp period and valid bits), MoltenVK and KosmicKrisp,
