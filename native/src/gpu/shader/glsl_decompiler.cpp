@@ -18,6 +18,10 @@
 //    MAX and MIN order as the hardware (`src1 > src2 ? src1 : src2`, `src1 < src2 ? src1 : src2`). The
 //    NaN tests and the selections are done on the bits (see the prelude), because a compiler that
 //    assumes there is no NaN is allowed to fold `isnan` and to turn `a > b ? a : b` into a fmax.
+//  * RCP and RSQ are rounded as the interpreter computes them (1.0f / x and 1.0f / sqrtf(x), each step to
+//    nearest), whatever the device's own reciprocal and inverse square root give (see the prelude): the
+//    RX 6700 XT's are off by one ulp in about one input in nine, and a program that subtracts nearly equal
+//    numbers after a normalization turns that into more than the 2^-16 of the comparison.
 //  * BREAK and BREAKC are translated (Azahar's decompiler rejects the program): the loop body is a
 //    function, so a break sets a flag that the callers return through, and the loop checks it.
 //  * LOOP follows the interpreter where Azahar's decompiler differs: a loop also adds its increment to aL
@@ -710,12 +714,12 @@ private:
             }
 
             case Opcode::RCP: {
-                SetDest(swizzle, dest_reg, fmt::format("(1.0 / {}.x)", src1), 4, 1);
+                SetDest(swizzle, dest_reg, fmt::format("pica_rcp({}.x)", src1), 4, 1);
                 break;
             }
 
             case Opcode::RSQ: {
-                SetDest(swizzle, dest_reg, fmt::format("inversesqrt({}.x)", src1), 4, 1);
+                SetDest(swizzle, dest_reg, fmt::format("pica_rsq({}.x)", src1), 4, 1);
                 break;
             }
 
@@ -1061,6 +1065,76 @@ private:
         shader.AddLine("vec4 pica_min(vec4 a, vec4 b) {{");
         ++shader.scope;
         shader.AddLine("return uintBitsToFloat(mix(floatBitsToUint(b), floatBitsToUint(a), lessThan(a, b)));");
+        --shader.scope;
+        shader.AddLine("}}\n");
+
+        // RCP and RSQ as the interpreter computes them (1.0f / x and 1.0f / sqrtf(x), every step rounded to
+        // nearest), on any device. A device's reciprocal, square root and inverse square root are within a
+        // unit in the last place of the true value but not always the rounded one (the RX 6700 XT's differ
+        // from the CPU's in a sizeable share of the inputs), and one ulp is more than the comparison of the
+        // dump check allows once a program subtracts nearly equal numbers afterwards (one plus the z of a
+        // unit vector, z near -1). The start value is the device's own; the loops move it to the rounded
+        // value by an exact test with fma: q is the nearest float to 1/s when 1 - q*s lies within half an
+        // ulp of q times s, and c is the nearest float to sqrt(x) when x - c*c lies in (-c*ulp_below(c),
+        // c*ulp_above(c)] (c is a multiple of its ulp, so those bounds are exact products and the strict
+        // side of the lower bound is the half-ulp-squared term). The range is the one where those
+        // residuals are exact floats and nothing underflows (2^-80 .. 2^80); outside it, and for zero,
+        // infinity and NaN, the plain device operations are used (the interpreter's results for those are
+        // the IEEE ones, which the device gives: 1/0 is inf, 1/inf is 0, a negative root is NaN).
+        // Assumptions: fma is fused (true of real devices; Vulkan only guarantees the precision of a multiply
+        // followed by an add), and the device's start value is within 4 ulp of the rounded result (the loops
+        // take at most four steps; true of real devices, Vulkan's minimum for sqrt is looser).
+        shader.AddLine("float pica_next(float v) {{ return uintBitsToFloat(floatBitsToUint(v) + 1u); }}");
+        shader.AddLine("float pica_prev(float v) {{ return uintBitsToFloat(floatBitsToUint(v) - 1u); }}\n");
+        shader.AddLine("float pica_round_rcp(float s, float q) {{");
+        ++shader.scope;
+        shader.AddLine("for (int i = 0; i < 4; ++i) {{");
+        ++shader.scope;
+        shader.AddLine("float above = pica_next(q) - q;");
+        shader.AddLine("float below = q - pica_prev(q);");
+        shader.AddLine("float residual = fma(-q, s, 1.0);");
+        shader.AddLine("if (residual > above * s * 0.5) {{ q = pica_next(q); }}");
+        shader.AddLine("else if (residual < -(below * s * 0.5)) {{ q = pica_prev(q); }}");
+        --shader.scope;
+        shader.AddLine("}}");
+        shader.AddLine("return q;");
+        --shader.scope;
+        shader.AddLine("}}\n");
+        shader.AddLine("float pica_round_sqrt(float x, float c) {{");
+        ++shader.scope;
+        shader.AddLine("for (int i = 0; i < 4; ++i) {{");
+        ++shader.scope;
+        shader.AddLine("float above = pica_next(c) - c;");
+        shader.AddLine("float below = c - pica_prev(c);");
+        shader.AddLine("float residual = fma(-c, c, x);");
+        shader.AddLine("if (residual > c * above) {{ c = pica_next(c); }}");
+        shader.AddLine("else if (residual <= -(c * below)) {{ c = pica_prev(c); }}");
+        --shader.scope;
+        shader.AddLine("}}");
+        shader.AddLine("return c;");
+        --shader.scope;
+        shader.AddLine("}}\n");
+        shader.AddLine("float pica_rcp(float x) {{");
+        ++shader.scope;
+        shader.AddLine("float magnitude = abs(x);");
+        shader.AddLine("if (magnitude >= 8.27e-25 && magnitude <= 1.2e24) {{");
+        ++shader.scope;
+        shader.AddLine("float q = pica_round_rcp(magnitude, 1.0 / magnitude);");
+        shader.AddLine("return x < 0.0 ? -q : q;");
+        --shader.scope;
+        shader.AddLine("}}");
+        shader.AddLine("return 1.0 / x;");
+        --shader.scope;
+        shader.AddLine("}}\n");
+        shader.AddLine("float pica_rsq(float x) {{");
+        ++shader.scope;
+        shader.AddLine("if (x >= 8.27e-25 && x <= 1.2e24) {{");
+        ++shader.scope;
+        shader.AddLine("float root = pica_round_sqrt(x, sqrt(x));");
+        shader.AddLine("return pica_round_rcp(root, 1.0 / root);");
+        --shader.scope;
+        shader.AddLine("}}");
+        shader.AddLine("return 1.0 / sqrt(x);");
         --shader.scope;
         shader.AddLine("}}\n");
 
