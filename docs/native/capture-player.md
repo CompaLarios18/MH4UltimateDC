@@ -233,6 +233,61 @@ MH4N_REGISTER(gpu_capture::CheckFactory, "my-check",
   host (`dynamic_cast<CaptureHost*>(&host)`).
 - `none` does nothing. It must fail at the first fill, copy or draw, and passes with `--judge none`.
 
+## Running behind the `queue` wrapper (N2-22)
+
+`--queue` wraps the chosen GPU in the `queue` wrapper (`native/src/gpu/queue/`). The registered wrapper is **lockstep**: the renderer
+thread makes every call to the wrapped GPU, but each call returns when it is done, because the player judges memory, interrupts and
+registers right after each call. A run with `--queue` therefore shows that the wrapped GPU works when every call comes from one thread
+that is not the player's, that the debug calls and the interrupts pass through, and that the GPU is destroyed on that thread. It does
+**not** show asynchronous ordering on real work: the fake-GPU cases of `gpu_queue_test` cover that (calls held behind a gate, interrupt
+order, the invalidate's wait, the frame counting and its cap).
+
+The check the dump-check of N2-22 asks for is that three argument lines give the same result with and without `--queue` on every capture
+of G1 to G4. The script below (needs `bash`: Git Bash or WSL on the PC) runs them, compares the exit status, stderr and stdout, and
+leaves out the timing and counter columns by name (`cpu_ms`, `gpu_ms`, `translate_us`, `queue_wait_us`, `queue_frame_waits`; with
+`--queue` three columns more appear). Save it as `build/logs/queue_compare.sh`, run it from the repository root (`P=` names another
+player, for example the Windows artifact's), and read the verdicts:
+
+```bash
+#!/bin/bash
+# Runs the capture player with and without --queue for three argument lines and compares the exit
+# status, stderr and stdout; the timing and counter columns are left out by name.
+P=${P:-build/native/bin/mh4n_capture_player}
+cmp_table() { awk '
+  /^ *frame +record +result/ { n=split($0,h); for(i=1;i<=n;i++) skip[i]=(h[i]~/^(cpu_ms|gpu_ms|translate_us|queue_wait_us|queue_frame_waits)$/); intable=1; next }
+  intable && NF>0 && $1 ~ /^[0-9]+$/ { out=""; for(i=1;i<=NF;i++) if(!skip[i]) out=out" "h[i]"="$i; print out; next }
+  { intable=0; print }' "$1"; }
+c=$1; o=$2; t=$3; mkdir -p "$o"; i=0
+while IFS= read -r args; do
+  i=$((i+1))
+  $P $args "$c" > "$o/$t.$i.off.txt" 2>&1; e0=$?
+  $P $args --queue "$c" > "$o/$t.$i.on.txt" 2>&1; e1=$?
+  if [ $e0 -ge 2 ] || [ $e1 -ge 2 ]; then echo "ERROR off=$e0 on=$e1  $args (see $o/$t.$i.off.txt)"; continue; fi
+  if [ $e0 = $e1 ] && diff <(cmp_table "$o/$t.$i.off.txt") <(cmp_table "$o/$t.$i.on.txt") > "$o/$t.$i.diff"; then
+    echo "SAME  exit=$e0  $args"
+  else
+    echo "DIFFERENT off=$e0 on=$e1  $args (see $o/$t.$i.diff)"
+  fi
+done <<'LIST'
+--gpu cpu-gx --chained --judge fill,transfer,copy,dma --skip-gas-frames
+--gpu pica-only --isolated --judge none --check registers
+--gpu replay --chained --skip-gas-frames
+LIST
+```
+
+```
+for g in G1 G2 G3 G4; do for c in build/golden/$g/gpu-*.mgpu; do
+  build/logs/queue_compare.sh "$c" build/logs/qcmp $g-$(basename "$c" .mgpu); done; done
+```
+
+Every line must say `SAME`. `ERROR` means the player could not run (a bad path, a glob that matched nothing: both runs exit 2 with the same
+error), not a pass. `SAME exit=1` means both runs failed alike: on the real captures `cpu-gx` and `pica-only` are expected to exit 0, and
+`replay` with its default judge needs the reference frames next to the capture (`<capture>.frames/`, `golden.md`), without which it exits 1 on
+both sides. `DIFFERENT` names a file whose diff shows the line. The script was run on the synthetic captures `gpu_queue_test` writes
+(`MH4N_QUEUE_TEST_KEEP=<dir> build/native/bin/gpu_queue_test -tc="*capture_player*"` keeps `good/scene.mgpu` and `bad/scene.mgpu`): `SAME` on
+both, `ERROR` on a missing capture, and a reviewer proved it says `DIFFERENT` for a changed compared column, a different exit status and
+an extra stderr line, and `SAME` for a change in a skipped column only.
+
 ## Limits of the checks
 
 - What a run judges is what its capture contains. A capture without fills, copies or DMA says

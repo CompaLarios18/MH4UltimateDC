@@ -5,13 +5,17 @@
 # The live probe loads the Vulkan loader at run time and takes its declarations from the vendored
 # vulkan_core.h (native/third_party/vulkan, VK_NO_PROTOTYPES): nothing links against Vulkan, so
 # every job builds it with no Vulkan package. The reader and the report need no Vulkan at all.
+# --rhi (N2-30, rhi_report.cpp) alone uses the backend core, which loads the loader at run time too.
 mh4n_module(
     SOURCES
         input.cpp
         json.cpp
         live.cpp
         report.cpp
+        rhi_report.cpp
         tool.cpp
+    DEPENDS
+        mh4n_gpu_backend_core
     THIRD_PARTY
         mh4n_fmt
         ${CMAKE_DL_LIBS}
