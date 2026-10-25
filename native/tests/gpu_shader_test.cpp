@@ -1569,6 +1569,117 @@ TEST_CASE("the scalar instructions, mov, flr and the compare-and-set family") {
     CHECK_OUTCOME(o);
 }
 
+// The last bit of RCP and RSQ. The interpreter computes 1.0f / x and 1.0f / sqrtf(x), each step rounded to
+// nearest. A device's own reciprocal and inverse square root are within a unit in the last place of the
+// true value but not always the rounded one (the RX 6700 XT's differ from the CPU's in a sizeable share of
+// the inputs), and a program that subtracts nearly equal numbers afterwards (one plus the z of a unit
+// vector, with z near -1) makes 1 ulp of difference more than the 2^-16 of the comparison: the dump check
+// of N2-06 met exactly that. So the translation rounds as the CPU does, on any device.
+TEST_CASE("RCP and RSQ round as the interpreter does, to the last bit") {
+    Rig rig;
+    if (!rig.ok()) return;
+    using namespace asmb;
+    Asm a;
+    // o0 = rsq of each lane of v0, o1 = rcp of each lane of v0
+    const char* lanes[4] = {"xxxx", "yyyy", "zzzz", "wwww"};
+    const char* masks[4] = {"x___", "_y__", "__z_", "___w"};
+    for (u32 l = 0; l < 4; ++l) {
+        a.Op1(kRsq, O(0), V(0), {.mask = masks[l], .s1 = lanes[l]});
+        a.Op1(kRcp, O(1), V(0), {.mask = masks[l], .s1 = lanes[l]});
+    }
+    a.End();
+    constexpr u32 kVertices = 4096;
+    FloatInputs in = RandomInputs(1, kVertices, 41);
+    Rng rng(42);
+    for (u32 v = 0; v < kVertices; ++v) {
+        for (u32 l = 0; l < 4; ++l) {
+            // log-uniform magnitudes over 2^-40 .. 2^40 with random mantissas, any sign
+            const u32 exponent = 127 - 40 + rng.Next() % 81;
+            const u32 bits = (exponent << 23) | (rng.Next() & 0x7FFFFF) | ((rng.Next() & 1) ? 0x80000000u : 0u);
+            std::memcpy(&in.At(v, 0, l), &bits, 4);
+        }
+    }
+    // the values that are not ordinary: zeros, infinities, NaN (rsq of a negative is NaN, and so is the
+    // interpreter's 1.0f / sqrtf)
+    const float special[] = {0.f, -0.f, kInf, -kInf, kNaN, 1.f, -1.f, 4.f, 0.25f, 3.f, 1e-5f, 1e5f};
+    for (u32 i = 0; i < sizeof(special) / sizeof(special[0]); ++i) {
+        in.At(i, 0, 0) = special[i];
+        in.At(i, 0, 1) = special[(i + 1) % (sizeof(special) / sizeof(special[0]))];
+    }
+    Draw d = MakeProgram(a, in, 0x3);
+    Outcome o = RunCase(rig, d, kVertices);
+    REQUIRE_MESSAGE(o.shader != nullptr, o.error);
+    REQUIRE_MESSAGE(!o.capture.empty(), o.error);
+    const oracle::Memory mem = OracleMemory(d.setup);
+    const oracle::Uniforms uniforms = OracleUniforms(d.setup);
+    u64 different = 0, compared = 0, different_rsq = 0;
+    std::string first;
+    for (u32 id = 0; id < kVertices; ++id) {
+        oracle::Unit u;
+        FetchInput(d.loaded, id, u.input);
+        oracle::Run(mem, uniforms, u, 0);
+        const float* g = &o.capture[static_cast<size_t>(id) * shader::kCaptureVec4PerVertex * 4];
+        for (u32 r = 0; r < 2; ++r) {
+            for (u32 c = 0; c < 4; ++c) {
+                const float want = u.output[u.output_bank][r].c[c];
+                const float got = g[o.shader->output_map[r] * 4 + c];
+                ++compared;
+                u32 wb, gb;
+                std::memcpy(&wb, &want, 4);
+                std::memcpy(&gb, &got, 4);
+                const bool same = wb == gb || (std::isnan(want) && std::isnan(got));
+                if (!same) {
+                    ++different;
+                    different_rsq += r == 0 ? 1 : 0;
+                    if (first.empty()) {
+                        first = std::string(r == 0 ? "rsq" : "rcp") + " of vertex " + std::to_string(id) + " lane " +
+                                std::to_string(c) + " differs in the last bits";
+                    }
+                }
+            }
+        }
+    }
+    CHECK_MESSAGE(different == 0, different << " of " << compared << " results differ from the interpreter's (" << different_rsq
+                                              << " of them rsq); first: " << first);
+}
+
+// The shape of the program the dump check of N2-06 failed on, with synthetic numbers: a vector is
+// normalized (dp3, rsq, mul), one is added to its z, and the root of half of that scales the vector. With z
+// near -1 the sum is small, so the last bit of the first rsq is amplified by about 1 / (1 + z) in the
+// result: the result agrees with the interpreter's to 2^-16 only if both round the same way.
+TEST_CASE("a normalization followed by the root of 1 + z (z near -1) agrees with the interpreter") {
+    Rig rig;
+    if (!rig.ok()) return;
+    using namespace asmb;
+    Asm a;
+    a.Op(kDp3, R(0), V(0), V(0), {.mask = "x___"});
+    a.Op1(kRsq, R(0), R(0), {.mask = "x___", .s1 = "xxxx"});
+    a.Op(kMul, R(1), V(0), R(0), {.s2 = "xxxx"});
+    a.Op(kAdd, R(2), C(0), R(1), {.s2 = "zzzz"});
+    a.Op(kMul, R(2), C(1), R(2));
+    a.Op1(kRsq, R(3), R(2), {.s1 = "xxxx"});
+    a.Op(kMul, O(0), R(1), R(3));
+    a.End();
+    constexpr u32 kVertices = 4096;
+    FloatInputs in = RandomInputs(1, kVertices, 51);
+    Rng rng(52);
+    for (u32 v = 0; v < kVertices; ++v) {
+        // a vector of length 2^(-8..16) whose z is within 0.001 .. 0.05 of -1 (as a unit vector)
+        const double tilt = rng.Uniform(0.0447f, 0.3162f); // sqrt(1 - z^2) for z from -0.999 to -0.95
+        const double angle = rng.Uniform(0.f, 6.2831853f);
+        const double scale = std::ldexp(1.0, static_cast<int>(rng.Next() % 25) - 8);
+        in.At(v, 0, 0) = static_cast<float>(tilt * std::cos(angle) * scale);
+        in.At(v, 0, 1) = static_cast<float>(tilt * std::sin(angle) * scale);
+        in.At(v, 0, 2) = static_cast<float>(-std::sqrt(1.0 - tilt * tilt) * scale);
+        in.At(v, 0, 3) = 1.f;
+    }
+    Draw d = MakeProgram(a, in, 0x1);
+    SetUniform(d, 0, 1.f, 1.f, 1.f, 1.f);
+    SetUniform(d, 1, 0.5f, 0.5f, 0.5f, 0.5f);
+    Outcome o = RunCase(rig, d, kVertices);
+    CHECK_OUTCOME(o);
+}
+
 TEST_CASE("DST and LIT (vs_3_0 definitions; Azahar implements neither) are translated and flagged") {
     Rig rig;
     if (!rig.ok()) return;
@@ -3324,6 +3435,7 @@ struct DumpState {
     }
 };
 DumpState g_dump;
+int g_capture_index = 0; // the place of the capture being replayed in the list
 
 // The first n vertices of a loaded draw as a plain stream: row k holds vertex ids[k] of every per-vertex
 // buffer (the shader is run on the same bytes, in draw order, so no slot cap is needed). False when an
@@ -3451,7 +3563,9 @@ void CheckDraw(mh4n::gpu::Host& host, const pica::DrawCall& draw) {
         Problem(t, where + "the oracle did not end or met an instruction it does not know");
     }
     if (report.mismatches != 0) {
-        Problem(t, where + report.first);
+        // the program is named by its hashes and the capture by its place in the list (never by content)
+        Problem(t, where + report.first + " (capture " + std::to_string(g_capture_index) + " of the list, program hash " +
+                       std::to_string(key.first) + ", swizzle hash " + std::to_string(key.second) + ")");
     }
 }
 
@@ -3531,6 +3645,7 @@ std::optional<Totals> DumpCheck(const char* value, bool print, bool perturb_orac
     g_dump.perturb_oracle = perturb_oracle;
     g_dump.totals.captures = paths.size();
     for (const std::string& path : paths) {
+        g_capture_index = static_cast<int>(&path - paths.data());
         const mh4n::gpu_capture::PlayerResult result = Replay(path);
         CHECK_MESSAGE(result.error.empty(), "a capture could not be replayed: " << result.error);
     }
