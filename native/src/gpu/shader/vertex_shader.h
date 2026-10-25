@@ -186,7 +186,7 @@ struct VertexShaderConfig {
     u64 Hash() const;
 };
 
-// The words of a program or of the swizzle table hashed the way the key does (XXH3, 64 bits).
+// The words of a program or of the swizzle table hashed the way the key does (a 64-bit splitmix-style mix of the words and their count, not cryptographic).
 u64 HashWords(const u32* words, size_t count);
 
 struct ConfigOptions {
@@ -225,6 +225,8 @@ struct TranslatedVertexShader {
 struct TranslateResult {
     std::shared_ptr<const TranslatedVertexShader> shader; // null when the program is not translated
     std::string error;                                    // then: why
+    std::string error_category;                           // ... the cause in a word: no part of the program, no GLSL
+    int error_word = -1;                                  // ... the offset of the word at fault, -1 when none
     bool ok() const {
         return shader != nullptr;
     }

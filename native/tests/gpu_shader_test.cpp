@@ -47,6 +47,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <regex>
 #include <set>
 #include <string>
 #include <thread>
@@ -1324,6 +1325,7 @@ struct Report {
     u64 mismatches = 0;
     bool not_terminating = false;
     bool unhandled = false;
+    bool redact = false; // the dump path: no value of a shader output in any text
     std::string first;
 
     void Note(const std::string& what) {
@@ -1337,7 +1339,7 @@ struct Report {
 void CompareFloat(Report& r, float gpu, float cpu, const std::string& what) {
     ++r.values;
     if (!Near(gpu, cpu)) {
-        r.Note(what + ": gpu " + std::to_string(gpu) + " cpu " + std::to_string(cpu));
+        r.Note(r.redact ? what + " differs" : what + ": gpu " + std::to_string(gpu) + " cpu " + std::to_string(cpu));
     }
 }
 
@@ -1345,8 +1347,9 @@ void CompareFloat(Report& r, float gpu, float cpu, const std::string& what) {
 // seven varyings and the position.
 Report CompareWithOracle(const pica::ShaderSetup& setup, const pica::PicaState& state, const vertex::LoadedDraw& loaded,
                          bool flip, const shader::TranslatedVertexShader& t, const std::vector<float>& cap,
-                         const std::vector<u32>& ids, bool varyings, bool clip = false) {
+                         const std::vector<u32>& ids, bool varyings, bool clip = false, bool redact = false) {
     Report report;
+    report.redact = redact;
     const oracle::Memory mem = OracleMemory(setup);
     const oracle::Uniforms uniforms = OracleUniforms(setup);
     const u32 mask = state.regs[pica::reg::kVs + pica::reg::kShaderOutputMask] & 0xFFFF;
@@ -2141,6 +2144,106 @@ TEST_CASE("JMPC and JMPU: forward, backward loops, jumps over a region, NOP and 
     }
 }
 
+TEST_CASE("a subroutine whose paths all end but one breaks out of its loop first: the code after the loop runs") {
+    Rig rig;
+    if (!rig.ok()) return;
+    using namespace asmb;
+    // (1) the loop body: add; IFU b0 { BREAK; END } ELSE { END }
+    const auto body = [](Asm& a) {
+        a.Op(kAdd, R(0), C(1), R(0));
+        a.BeginIfu(0);
+        a.Break();
+        a.End();
+        a.Else();
+        a.End();
+        a.EndIf();
+    };
+    Asm one;
+    one.Op1(kMov, R(0), C(0));
+    one.BeginLoop(0);
+    body(one);
+    one.EndLoop();
+    one.Op1(kMov, O(0), R(0));
+    one.Op1(kMov, O(1), C(2));
+    one.End();
+    // (2) the mirror: END inside a called subroutine that has its own loop with that body
+    Asm two;
+    two.Op1(kMov, R(0), C(0));
+    two.Call("s");
+    two.Op1(kMov, O(2), C(3)); // never reached: the subroutine ends the program
+    two.End();
+    two.Sub("s");
+    two.BeginLoop(0);
+    body(two);
+    two.EndLoop();
+    two.Op1(kMov, O(0), R(0));
+    two.Op1(kMov, O(1), C(2));
+    two.End();
+    two.EndSub();
+    two.Done();
+    // (3) the loop body calls a subroutine that has the BREAK and the ENDs
+    Asm three;
+    three.Op1(kMov, R(0), C(0));
+    three.BeginLoop(0);
+    three.Call("t");
+    three.Nop();
+    three.EndLoop();
+    three.Op1(kMov, O(0), R(0));
+    three.Op1(kMov, O(1), C(2));
+    three.End();
+    three.Sub("t");
+    body(three);
+    three.EndSub();
+    three.Done();
+
+    const Asm* programs[] = {&one, &two, &three};
+    for (u32 p = 0; p < 3; ++p) {
+        Draw d = MakeProgram(*programs[p], RandomInputs(1, 8, 60 + p), 0x7);
+        SetRandomUniforms(d, 8, 61 + p, 0.5f, 2.f);
+        d.setup.uniform_i[0] = {3, 0, 1, 0};
+        for (u32 b0 = 0; b0 < 2; ++b0) {
+            d.setup.uniform_b[0] = b0 != 0;
+            Outcome o = RunCase(rig, d, 8);
+            INFO("program " << p << ", b0 = " << b0);
+            CHECK_OUTCOME(o);
+            if (b0 != 0) { // the break happened, the code after the loop wrote o1
+                REQUIRE(!o.capture.empty());
+                CHECK(At(o.capture, 0, 1, 0) == d.setup.uniform_f[2].c[0]);
+            }
+        }
+    }
+}
+
+TEST_CASE("known difference: a CALL that is the last instruction of an IF is never taken by the interpreter, the translation takes it") {
+    Rig rig;
+    if (!rig.ok()) return;
+    using namespace asmb;
+    Asm a;
+    a.Op1(kMov, O(0), C(0));
+    a.BeginIfu(0);
+    a.Call("s"); // the IF's end overrides the program counter of the CALL in the interpreter (shader_interpreter.cpp)
+    a.EndIf();
+    a.End();
+    a.Sub("s");
+    a.Op1(kMov, O(0), C(1));
+    a.EndSub();
+    a.Done();
+    Draw d = MakeProgram(a, RandomInputs(1, 4, 62), 0x1);
+    SetUniform(d, 0, 1, 2, 3, 4);
+    SetUniform(d, 1, 5, 6, 7, 8);
+    d.setup.uniform_b[0] = true;
+    Outcome o = RunCase(rig, d, 4);
+    REQUIRE(o.shader != nullptr);
+    REQUIRE(!o.capture.empty());
+    // pinned as it is: the generated code calls the subroutine, the interpreter skips it. A program that
+    // relies on either is not a valid program (the hardware's behaviour is not known); this documents the gap.
+    CHECK(At(o.capture, 0, 0, 0) == 5.f);
+    CHECK(o.report.mismatches > 0);
+    oracle::Unit u;
+    oracle::Run(OracleMemory(d.setup), OracleUniforms(d.setup), u, 0);
+    CHECK(u.output[0][0].c[0] == 1.f);
+}
+
 // ================================================================================================
 // The cache
 // ================================================================================================
@@ -2557,8 +2660,8 @@ private:
 
 // The vertex layout of the e2e program: attribute 0 = FLOAT x4, attribute 1 = UBYTE x3, attribute 2 =
 // SHORT x2, all in one loader of 24 bytes per vertex.
-void SetupAttributes(CmdList& list) {
-    list.Write(0x200, (kBase >> 4) << 1);
+void SetupAttributes(CmdList& list, u32 base = kBase) {
+    list.Write(0x200, (base >> 4) << 1);
     list.Write(0x201, (3u | (3u << 2)) | ((1u | (2u << 2)) << 4) | ((2u | (1u << 2)) << 8));
     list.Write(0x202, 2u << 28); // 3 attributes, none default
     list.Write(0x203, 0);
@@ -2622,8 +2725,8 @@ Asm EndToEndProgram() {
     return a;
 }
 
-void SetupEndToEnd(CmdList& list, const Asm& program, u32 vertices, bool bool0, float scale) {
-    SetupAttributes(list);
+void SetupEndToEnd(CmdList& list, const Asm& program, u32 vertices, bool bool0, float scale, u32 base = kBase) {
+    SetupAttributes(list, base);
     list.Program(program);
     list.FloatUniform(0, scale, scale * 2, -scale, 0.5f);
     list.FloatUniform(1, 1.f, 0.f, 2.f, 1.f);
@@ -2862,22 +2965,41 @@ std::vector<std::string> CapturePathsFromEnvironment(const char* value) {
 
 constexpr u32 kFirstVertices = 64;
 
-// The counts of one dump check.
+// The counts of one dump check. Nothing in it, and no text built from it, holds a value of the game: the
+// problems are named by draw number, vertex, register, lane, category and word offset only.
 struct Totals {
     size_t captures = 0;
     u64 draws_seen = 0;
-    u64 draws_skipped = 0;          // the loader returned no vertices (counted, not checked)
+    u64 no_vertices = 0;            // the draw has no vertices (legitimate; its program must be run by another draw)
+    u64 loader_errors = 0;          // the loader could not read the draw's vertices (cannot happen in a replay)
     u64 program_runs = 0;           // draws whose program was run on the device and the oracle
     u64 vertices = 0;
     u64 mismatches = 0;
     u64 translation_failures = 0;
     u64 oracle_problems = 0;        // the oracle did not end, or met an instruction it does not know
     u64 pipeline_failures = 0;      // the device refused the pipeline
-    std::set<std::pair<u64, u64>> distinct;      // (program hash, swizzle hash) seen
+    std::set<std::pair<u64, u64>> distinct;      // (program hash, swizzle hash) of EVERY draw, whatever happened to it
     std::set<std::pair<u64, u64>> checked;       // ... run at least once
     std::set<std::pair<u64, u64>> unverified;    // ... that use DST, DSTI or LIT
     std::string first_problem;
 };
+
+// The pass of the dump check: every program seen was run, and nothing went wrong on the way.
+bool DumpPassed(const Totals& t) {
+    return t.program_runs > 0 && t.vertices > 0 && t.mismatches == 0 && t.translation_failures == 0 &&
+           t.loader_errors == 0 && t.pipeline_failures == 0 && t.oracle_problems == 0 &&
+           t.checked.size() == t.distinct.size();
+}
+
+// Why it did not pass, in counts and the first problem (never content).
+std::string DumpSummary(const Totals& t) {
+    return "programs seen " + std::to_string(t.distinct.size()) + ", checked " + std::to_string(t.checked.size()) +
+           ", draws without vertices " + std::to_string(t.no_vertices) + ", loader errors " +
+           std::to_string(t.loader_errors) + ", mismatches " + std::to_string(t.mismatches) +
+           ", translation failures " + std::to_string(t.translation_failures) + ", pipeline failures " +
+           std::to_string(t.pipeline_failures) + ", oracle problems " + std::to_string(t.oracle_problems) +
+           (t.first_problem.empty() ? "" : "; first problem: " + t.first_problem);
+}
 
 // The state of the replay: the device, the cache and the totals.
 struct DumpState {
@@ -2885,36 +3007,89 @@ struct DumpState {
     shader::VertexShaderCache cache;
     vertex::VertexLoader loader{vertex::VertexCaps{}};
     Totals totals;
+    bool perturb_oracle = false; // a test hook: the oracle sees another uniform, so every draw mismatches
 
     void Reset(Rig* r) {
         rig = r;
         cache.Clear();
         totals = Totals{};
+        perturb_oracle = false;
     }
 };
 DumpState g_dump;
 
+// The first n vertices of a loaded draw as a plain stream: row k holds vertex ids[k] of every per-vertex
+// buffer (the shader is run on the same bytes, in draw order, so no slot cap is needed). False when an
+// id is outside the loaded vertices.
+bool CompactDraw(const vertex::LoadedDraw& ld, const std::vector<u32>& ids, vertex::LoadedDraw& out) {
+    out = ld;
+    out.index_type = vertex::IndexType::None;
+    out.index_data.clear();
+    out.base_vertex = 0;
+    out.first_vertex = 0;
+    out.count = static_cast<u32>(ids.size());
+    for (vertex::VertexBuffer& b : out.buffers) {
+        if (b.per_instance) {
+            continue;
+        }
+        const vertex::VertexBuffer& source = ld.buffers[&b - out.buffers.data()];
+        b.data.assign(static_cast<size_t>(b.stride) * ids.size() + 16, 0);
+        for (size_t k = 0; k < ids.size(); ++k) {
+            if (ids[k] >= source.vertex_count || (static_cast<size_t>(ids[k]) + 1) * b.stride > source.data.size()) {
+                return false;
+            }
+            std::memcpy(b.data.data() + k * b.stride, source.data.data() + static_cast<size_t>(ids[k]) * b.stride, b.stride);
+        }
+        b.vertex_count = static_cast<u32>(ids.size());
+    }
+    return true;
+}
+
+const char* LoadStatusName(vertex::LoadStatus status) {
+    switch (status) {
+    case vertex::LoadStatus::Ok: return "Ok";
+    case vertex::LoadStatus::NoVertices: return "NoVertices";
+    case vertex::LoadStatus::Unmapped: return "Unmapped";
+    case vertex::LoadStatus::TooLarge: return "TooLarge";
+    }
+    return "Unknown";
+}
+
+void Problem(Totals& t, const std::string& text) {
+    if (t.first_problem.empty()) {
+        t.first_problem = text;
+    }
+}
+
 void CheckDraw(mh4n::gpu::Host& host, const pica::DrawCall& draw) {
     Totals& t = g_dump.totals;
     ++t.draws_seen;
-    const vertex::LoadedDraw ld = g_dump.loader.Load(host, draw);
-    if (ld.status != vertex::LoadStatus::Ok || ld.count == 0) {
-        ++t.draws_skipped;
-        return;
-    }
+    const std::string where = "draw " + std::to_string(draw.sequence) + ": ";
     const pica::PicaState& state = *draw.state;
     shader::ConfigOptions opt;
     opt.capture_outputs = true;
     opt.use_clip_planes = false;
-    const shader::VertexShaderConfig cfg = shader::MakeVertexShaderConfig(state, &ld, opt);
-    const std::pair<u64, u64> key{cfg.program_hash, cfg.swizzle_hash};
+    // the program is counted whatever happens to the draw: a program none of whose draws loads is not checked
+    const shader::VertexShaderConfig plain = shader::MakeVertexShaderConfig(state, nullptr, opt);
+    const std::pair<u64, u64> key{plain.program_hash, plain.swizzle_hash};
     t.distinct.insert(key);
+
+    const vertex::LoadedDraw ld = g_dump.loader.Load(host, draw);
+    if (ld.status == vertex::LoadStatus::NoVertices || (ld.status == vertex::LoadStatus::Ok && ld.count == 0)) {
+        ++t.no_vertices;
+        return;
+    }
+    if (ld.status != vertex::LoadStatus::Ok) {
+        ++t.loader_errors;
+        Problem(t, where + "the vertex loader returned " + LoadStatusName(ld.status));
+        return;
+    }
+    const shader::VertexShaderConfig cfg = shader::MakeVertexShaderConfig(state, &ld, opt);
     shader::TranslateResult translated = g_dump.cache.Get(state.vs, cfg);
     if (!translated.ok()) {
         ++t.translation_failures;
-        if (t.first_problem.empty()) {
-            t.first_problem = translated.error;
-        }
+        Problem(t, where + "translation refused: " + translated.error_category +
+                       (translated.error_word >= 0 ? " at word " + std::to_string(translated.error_word) : ""));
         return;
     }
     if (translated.shader->uses_unverified_instructions) {
@@ -2923,41 +3098,47 @@ void CheckDraw(mh4n::gpu::Host& host, const pica::DrawCall& draw) {
     const u32 n = std::min(ld.count, kFirstVertices);
     const bool indexed = ld.index_type != vertex::IndexType::None;
     std::vector<u32> ids(n);
-    u32 slots = n;
+    bool readable = true;
     for (u32 i = 0; i < n; ++i) {
-        u32 id = i;
+        int64_t id = i;
         if (indexed) {
             const size_t width = ld.index_type == vertex::IndexType::U8 ? 1 : ld.index_type == vertex::IndexType::U16 ? 2 : 4;
             u32 index = 0;
             std::memcpy(&index, ld.index_data.data() + i * width, width);
-            id = static_cast<u32>(static_cast<s32>(index) + ld.base_vertex);
+            id = static_cast<int64_t>(index) + ld.base_vertex;
         }
-        ids[i] = id;
-        slots = std::max(slots, id + 1);
+        readable = readable && id >= 0;
+        ids[i] = static_cast<u32>(id);
     }
-    if (slots > (1u << 20)) {
-        ++t.draws_skipped;
+    vertex::LoadedDraw stream;
+    if (!readable || !CompactDraw(ld, ids, stream)) {
+        ++t.loader_errors;
+        Problem(t, where + "an index names a vertex the loader did not load");
         return;
     }
     std::string error;
-    const std::vector<float> cap = g_dump.rig->Run(translated.shader, ld, state.vs, state, n, slots, indexed, &error);
+    const std::vector<float> cap = g_dump.rig->Run(translated.shader, stream, state.vs, state, n, n, false, &error);
     if (cap.empty()) {
         ++t.pipeline_failures;
-        if (t.first_problem.empty()) {
-            t.first_problem = error;
-        }
+        Problem(t, where + "the device refused the pipeline");
         return;
     }
-    const Report report = CompareWithOracle(state.vs, state, ld, false, *translated.shader, cap, ids, false);
+    pica::ShaderSetup oracle_setup = state.vs;
+    if (g_dump.perturb_oracle) {
+        oracle_setup.uniform_f[0].c[0] += 1.5f;
+    }
+    const Report report = CompareWithOracle(oracle_setup, state, stream, false, *translated.shader, cap, Iota(n), false,
+                                            false, /*redact=*/true);
     ++t.program_runs;
     t.checked.insert(key);
     t.vertices += report.vertices;
     t.mismatches += report.mismatches;
     if (report.not_terminating || report.unhandled) {
         ++t.oracle_problems;
+        Problem(t, where + "the oracle did not end or met an instruction it does not know");
     }
-    if (report.mismatches != 0 && t.first_problem.empty()) {
-        t.first_problem = report.first;
+    if (report.mismatches != 0) {
+        Problem(t, where + report.first);
     }
 }
 
@@ -3026,7 +3207,7 @@ mh4n::gpu_capture::PlayerResult Replay(const std::string& capture) {
 
 // Replays every capture the list names once, checking every draw's vertex program on the device
 // against the oracle, and prints counts (never any content) when `print` is set. nullopt: no device.
-std::optional<Totals> DumpCheck(const char* value, bool print) {
+std::optional<Totals> DumpCheck(const char* value, bool print, bool perturb_oracle = false) {
     Rig rig;
     if (!rig.ok()) {
         return std::nullopt;
@@ -3034,6 +3215,7 @@ std::optional<Totals> DumpCheck(const char* value, bool print) {
     const std::vector<std::string> paths = CapturePathsFromEnvironment(value);
     REQUIRE_MESSAGE(!paths.empty(), "the capture list names no capture");
     g_dump.Reset(&rig);
+    g_dump.perturb_oracle = perturb_oracle;
     g_dump.totals.captures = paths.size();
     for (const std::string& path : paths) {
         const mh4n::gpu_capture::PlayerResult result = Replay(path);
@@ -3047,11 +3229,14 @@ std::optional<Totals> DumpCheck(const char* value, bool print) {
                     t.captures, static_cast<unsigned long long>(t.draws_seen), t.distinct.size(), t.checked.size(),
                     static_cast<unsigned long long>(t.vertices), static_cast<unsigned long long>(t.mismatches),
                     static_cast<unsigned long long>(t.translation_failures));
-        std::printf("shader dump check: program runs %llu, draws without vertices %llu, programs with DST/DSTI/LIT %zu, "
-                    "device refused a pipeline %llu, oracle problems %llu\n",
-                    static_cast<unsigned long long>(t.program_runs), static_cast<unsigned long long>(t.draws_skipped),
-                    t.unverified.size(), static_cast<unsigned long long>(t.pipeline_failures),
-                    static_cast<unsigned long long>(t.oracle_problems));
+        std::printf("shader dump check: program runs %llu, draws without vertices %llu, loader errors %llu, "
+                    "programs with DST/DSTI/LIT %zu, device refused a pipeline %llu, oracle problems %llu\n",
+                    static_cast<unsigned long long>(t.program_runs), static_cast<unsigned long long>(t.no_vertices),
+                    static_cast<unsigned long long>(t.loader_errors), t.unverified.size(),
+                    static_cast<unsigned long long>(t.pipeline_failures), static_cast<unsigned long long>(t.oracle_problems));
+        if (!DumpPassed(t)) {
+            std::printf("shader dump check: NOT PASSED: %s\n", DumpSummary(t).c_str());
+        }
         std::fflush(stdout);
     }
     return t;
@@ -3074,7 +3259,10 @@ TEST_CASE("the replay path: a synthetic capture goes through the processor, the 
     CHECK(totals->translation_failures == 0);
     CHECK(totals->pipeline_failures == 0);
     CHECK(totals->oracle_problems == 0);
+    CHECK(totals->loader_errors == 0);
+    CHECK(totals->no_vertices == 0);
     CHECK(totals->unverified.empty());
+    CHECK_MESSAGE(DumpPassed(*totals), DumpSummary(*totals));
 }
 
 TEST_CASE("the capture list of the dump check: a directory, a file, and the counts") {
@@ -3125,6 +3313,132 @@ TEST_CASE("a program the translation refuses is a counted failure of the dump ch
     CHECK(totals->translation_failures == 1);
     CHECK(totals->checked.empty());
     CHECK(totals->distinct.size() == 1);
+    CHECK_FALSE(DumpPassed(*totals));
+}
+
+
+namespace {
+
+// A capture of the end-to-end program A (a good draw) and the program B of the replay capture, whose
+// draws are given by the caller; `bad_base` puts B's vertices outside the guest memory.
+std::string TwoProgramCapture(const std::string& name, const std::vector<u32>& b_vertices, u32 b_base) {
+    using namespace asmb;
+    CmdList list;
+    SetupEndToEnd(list, EndToEndProgram(), 10, true, 1.5f);
+    Asm b;
+    b.Op(kDp3, O(0), V(0), V(1));
+    b.Op1(kMov, O(1), V(1));
+    b.End();
+    for (u32 vertices : b_vertices) {
+        SetupEndToEnd(list, b, vertices, false, 1.0f, b_base);
+    }
+    const std::vector<u8> bytes = list.Bytes();
+    CaptureFile capture;
+    capture.Init();
+    capture.Mem(kListAt, bytes);
+    capture.Mem(kBase, VertexBytes(70, 48));
+    capture.SubmitCmdList(0x14001000, static_cast<u32>(bytes.size()));
+    capture.NoRegisterWrites();
+    capture.Frame(1);
+    return capture.Save(name);
+}
+
+// Scans a text that the dump path prints for what must never be in it: a float literal, a hex word,
+// an exponent, nan or inf.
+bool HasValueLeak(const std::string& text) {
+    static const std::regex float_literal("[0-9]+\\.[0-9]+|[0-9][eE][+-]?[0-9]|0x[0-9a-fA-F]|\\b(nan|inf)\\b",
+                                          std::regex::icase);
+    return std::regex_search(text, float_literal);
+}
+
+} // namespace
+
+TEST_CASE("a program none of whose draws loads is not checked: the dump check fails and names the category") {
+    const std::string path = TwoProgramCapture("unmapped", {8}, 0x70000000); // B's vertices are outside the memory
+    const auto totals = DumpCheck(path.c_str(), false);
+    fs::remove(path);
+    if (!totals) return;
+    CHECK(totals->draws_seen == 2);
+    CHECK(totals->distinct.size() == 2);
+    CHECK(totals->checked.size() == 1);
+    CHECK(totals->loader_errors == 1);
+    CHECK(totals->program_runs == 1);
+    CHECK_FALSE(DumpPassed(*totals));
+    CHECK(totals->first_problem.find("draw 1") != std::string::npos);
+    CHECK(totals->first_problem.find("Unmapped") != std::string::npos);
+    CHECK_FALSE(HasValueLeak(DumpSummary(*totals)));
+}
+
+TEST_CASE("a draw without vertices is counted; its program must still be run by another draw") {
+    {   // B is only drawn with no vertices: seen 2, checked 1
+        const std::string path = TwoProgramCapture("novertices", {0}, kBase);
+        const auto totals = DumpCheck(path.c_str(), false);
+        fs::remove(path);
+        if (!totals) return;
+        CHECK(totals->no_vertices == 1);
+        CHECK(totals->loader_errors == 0);
+        CHECK(totals->distinct.size() == 2);
+        CHECK(totals->checked.size() == 1);
+        CHECK_FALSE(DumpPassed(*totals));
+    }
+    {   // ... and drawn again with vertices: it passes
+        const std::string path = TwoProgramCapture("novertices2", {0, 6}, kBase);
+        const auto totals = DumpCheck(path.c_str(), false);
+        fs::remove(path);
+        if (!totals) return;
+        CHECK(totals->no_vertices == 1);
+        CHECK(totals->checked.size() == 2);
+        CHECK_MESSAGE(DumpPassed(*totals), DumpSummary(*totals));
+    }
+}
+
+TEST_CASE("the dump path reports without any value of the game: no float, no instruction word, no GLSL") {
+    // a mismatch (the oracle is shown another uniform) on a good draw
+    {
+        const std::string path = SyntheticCapture("leak_mismatch");
+        const auto totals = DumpCheck(path.c_str(), false, /*perturb_oracle=*/true);
+        fs::remove(path);
+        if (!totals) return;
+        CHECK(totals->mismatches > 0);
+        CHECK_FALSE(DumpPassed(*totals));
+        CHECK_FALSE(totals->first_problem.empty());
+        CHECK(totals->first_problem.find("differs") != std::string::npos);
+        CHECK_FALSE(HasValueLeak(DumpSummary(*totals)));
+        CHECK_FALSE(HasValueLeak(totals->first_problem));
+    }
+    // a program the translation refuses for an instruction it does not know (the message of the
+    // translator names the word, the dump path only its offset)
+    {
+        using namespace asmb;
+        CmdList list;
+        Asm bad;
+        bad.Op1(kMov, O(0), V(0));
+        bad.Raw(0x10u << 26 | 0x2345u); // an unknown opcode with fields in it
+        bad.End();
+        SetupEndToEnd(list, bad, 4, false, 1.0f);
+        const std::vector<u8> bytes = list.Bytes();
+        CaptureFile capture;
+        capture.Init();
+        capture.Mem(kListAt, bytes);
+        capture.Mem(kBase, VertexBytes(4, 49));
+        capture.SubmitCmdList(0x14001000, static_cast<u32>(bytes.size()));
+        capture.NoRegisterWrites();
+        capture.Frame(1);
+        const std::string path = capture.Save("leak_refused");
+        const auto totals = DumpCheck(path.c_str(), false);
+        fs::remove(path);
+        if (!totals) return;
+        CHECK(totals->translation_failures == 1);
+        CHECK(totals->first_problem.find("unhandled-instruction at word 1") != std::string::npos);
+        CHECK_FALSE(HasValueLeak(totals->first_problem));
+        CHECK_FALSE(HasValueLeak(DumpSummary(*totals)));
+    }
+    // the scanner itself sees what it must
+    CHECK(HasValueLeak("vertex 3 o2.x: gpu 0.500000 cpu 1.000000"));
+    CHECK(HasValueLeak("Unhandled instruction: 0x40000000"));
+    CHECK(HasValueLeak("value 1e+30"));
+    CHECK(HasValueLeak("gpu nan"));
+    CHECK_FALSE(HasValueLeak("draw 1: vertex 3 o12.x differs; translation refused: recursion at word 4"));
 }
 
 // ================================================================================================
@@ -3140,13 +3454,7 @@ TEST_CASE("(with the dump) every vertex program of the captured draws passes the
     }
     const auto totals = DumpCheck(value, true);
     if (!totals) return;
-    CHECK(totals->program_runs > 0);
-    CHECK(totals->vertices > 0);
-    CHECK_MESSAGE(totals->mismatches == 0, totals->first_problem);
-    CHECK_MESSAGE(totals->translation_failures == 0, totals->first_problem);
-    CHECK(totals->pipeline_failures == 0);
-    CHECK(totals->oracle_problems == 0);
-    CHECK(totals->checked.size() == totals->distinct.size());
+    CHECK_MESSAGE(DumpPassed(*totals), DumpSummary(*totals));
 }
 
 // ================================================================================================

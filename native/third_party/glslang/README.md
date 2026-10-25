@@ -8,7 +8,7 @@ what GLSL to SPIR-V needs is here.
 |---|---|
 | Release | `16.6.0` (CHANGES.md: 2026-09-10), github.com/KhronosGroup/glslang |
 | Commit | `e1b562a8bed273a02f30b59b66a5d499793cede5` (committed 2026-09-11) |
-| Licences | `LICENSE.txt` and `LICENSES/` are upstream's. Per `LICENSE.txt`: the core is 3-clause BSD, the preprocessor 2-clause BSD, some Khronos headers MIT, and the Bison-generated `glslang/MachineIndependent/glslang_tab.cpp` GPL-3.0-or-later with the Bison special exception (upstream notes the parser can be built from its grammar with other tools; the generated file is vendored as upstream ships it) |
+| Licences | `LICENSE.txt` and `LICENSES/` are upstream's; `LICENSE.txt` lists these, and a file can carry more than one of them: **3-clause BSD** (the core: every file of `glslang/` and `SPIRV/` not named below; `LICENSES/BSD-3-Clause.txt`); **the NVIDIA licence** (`LICENSES/AML-glslang.txt`) and the **Khronos 2014-2016 MIT-style licence** on top of the 3-clause BSD one for the preprocessor, `glslang/MachineIndependent/preprocessor/{Pp.cpp,PpAtom.cpp,PpContext.cpp,PpContext.h,PpScanner.cpp,PpTokens.cpp,PpTokens.h}`; **2-clause BSD** (Khronos 2020, `LICENSES/BSD-2-Clause.txt`) for `glslang/Include/{glslang_c_interface.h,glslang_c_shader_types.h}`; **MIT** (the Khronos "Materials" licence of `LICENSE.txt`, `LICENSES/MIT.txt`, `LICENSES/MIT-Khronos-old.txt`) for `SPIRV/{GLSL.std.450.h,GLSL.ext.AMD.h,GLSL.ext.ARM.h,GLSL.ext.EXT.h,GLSL.ext.KHR.h,GLSL.ext.NV.h,GLSL.ext.QCOM.h,NonSemanticDebugPrintf.h,NonSemanticShaderDebugInfo.h,spirv.hpp11}` and, under its own licence that `LICENSE.txt` points to, `glslang/MachineIndependent/gl_types.h`; **Apache-2.0** (`LICENSES/Apache-2.0.txt`) for `SPIRV/{hex_float.h,bitutils.h}`; **GPL-3.0-or-later WITH Bison-exception-2.2** (`LICENSES/GPL-3.0-or-later.txt`, `LICENSES/Bison-exception-2.2.txt`) for the Bison-generated `glslang/MachineIndependent/{glslang_tab.cpp,glslang_tab.cpp.h}` (upstream says the parser can be built from the grammar with other tools; the generated files are vendored as upstream ships them) |
 
 What is vendored: `glslang/{GenericCodeGen,Include,MachineIndependent (with preprocessor),OSDependent,Public,ResourceLimits}`
 (the OS-dependent file of Unix and of Windows, `GLSLANG_OSINCLUDE_UNIX` / `GLSLANG_OSINCLUDE_WIN32` choose one) and
@@ -16,9 +16,9 @@ What is vendored: `glslang/{GenericCodeGen,Include,MachineIndependent (with prep
 deprecates it), the C interfaces, `StandAlone`, the tests, `External/`, the grammar `glslang.y`, spirv-tools (so there is
 no `spirv-opt`; `ENABLE_OPT` is 0) and upstream's CMake machinery.
 
-Two files are ours: `CMakeLists.txt` (the static library `mh4n_glslang`; `native/src/gpu/shader/CMakeLists.txt` adds
-this directory) and `glslang/build_info.h` (upstream generates it from `build_info.h.tmpl` with `build_info.py`; the
-version is 16.6.0). Every other file is byte-identical to upstream at the commit above.
+Three files are ours: `CMakeLists.txt` (the static library `mh4n_glslang`; `native/src/gpu/shader/CMakeLists.txt` adds
+this directory), `glslang/build_info.h` (upstream generates it from `build_info.h.tmpl` with `build_info.py`; the
+version is 16.6.0) and this `README.md`. Every other file is byte-identical to upstream at the commit above.
 
 The blob ids are what `git rev-parse <commit>:<path>` gives in the upstream repository (`git hash-object <file>` gives the
 same for the vendored file):

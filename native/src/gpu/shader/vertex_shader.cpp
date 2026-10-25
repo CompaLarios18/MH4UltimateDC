@@ -201,6 +201,8 @@ TranslateResult GenerateVertexGlsl(const pica::ShaderSetup& setup, const VertexS
     DecompileResult program = DecompileProgram(input, get_input_reg, get_output_reg);
     if (!program.ok) {
         result.error = "vertex program not translated: " + program.error;
+        result.error_category = program.error_category;
+        result.error_word = program.error_word;
         return result;
     }
     shader->notes = std::move(program.notes);
@@ -373,6 +375,7 @@ TranslateResult TranslateVertexShader(const pica::ShaderSetup& setup, const Vert
     if (!CompileGlslToSpirv(shader->glsl, shader->spirv, error, &shader->compile_ms)) {
         TranslateResult failed;
         failed.error = "vertex shader does not compile: " + error;
+        failed.error_category = "glsl-does-not-compile";
         return failed;
     }
     return generated;

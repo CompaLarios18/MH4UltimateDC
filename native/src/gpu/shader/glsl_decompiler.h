@@ -43,6 +43,8 @@ struct DecompileResult {
     bool ok = false;
     std::string source;              // GLSL, see glsl_decompiler.cpp
     std::string error;               // when !ok: why the program is not translated
+    std::string error_category;      // ... and the cause in a word, with no part of the program in it
+    int error_word = -1;             // ... and the offset of the word at fault, -1 when none
     std::vector<std::string> notes;  // things the translation does that the caller may want to know
     // The program contains instructions Azahar does not implement (it logs "Unhandled arithmetic
     // instruction" in its interpreter and rejects the program in its decompiler): DST, DSTI, LIT. They

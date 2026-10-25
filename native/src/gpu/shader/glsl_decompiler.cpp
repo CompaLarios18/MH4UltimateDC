@@ -64,9 +64,14 @@ using isa::Swizzle;
 
 constexpr u32 PROGRAM_END = kMaxProgramWords;
 
+// A rejection: the message for people, and a category and a word offset that name the cause without
+// quoting the program (the dump check prints only those two for a real program).
 class DecompileFail : public std::runtime_error {
 public:
-    using std::runtime_error::runtime_error;
+    explicit DecompileFail(const std::string& message, std::string category_ = "other", int word_ = -1)
+        : std::runtime_error(message), category(std::move(category_)), word(word_) {}
+    std::string category;
+    int word;
 };
 
 /// Describes the behaviour of code path of a given entry point and a return point.
@@ -107,7 +112,8 @@ public:
             throw DecompileFail(fmt::format(
                 "the code runs to word {} but only {} words are loaded (a jump, call or the end of the "
                 "program leaves the loaded code)",
-                offset, in_.program.size()));
+                offset, in_.program.size()),
+                "code-outside-loaded-words", static_cast<int>(offset));
         }
         return Instruction{in_.program[offset]};
     }
@@ -124,9 +130,9 @@ class ControlFlowAnalyzer {
 public:
     ControlFlowAnalyzer(const Program& program, u32 main_offset) : program_(program) {
         // Recursively finds all subroutines.
-        const Subroutine& program_main = AddSubroutine(main_offset, PROGRAM_END);
+        const Subroutine& program_main = AddSubroutine(main_offset, PROGRAM_END, true);
         if (program_main.exit_method != ExitMethod::AlwaysEnd)
-            throw DecompileFail("Program does not always end");
+            throw DecompileFail("Program does not always end", "program-does-not-end");
     }
 
     std::set<Subroutine> MoveSubroutines() {
@@ -141,19 +147,24 @@ private:
     std::set<std::pair<u32, u32>> break_visiting;
 
     /// Adds and analyzes a new subroutine if it is not added yet.
-    const Subroutine& AddSubroutine(u32 begin, u32 end) {
+    const Subroutine& AddSubroutine(u32 begin, u32 end, bool is_main = false) {
         auto iter = subroutines.find(Subroutine(begin, end));
         if (iter != subroutines.end())
             return *iter;
 
         if (subroutines.size() >= 4096) {
-            throw DecompileFail("Too many subroutines");
+            throw DecompileFail("Too many subroutines", "too-large");
         }
         Subroutine subroutine(begin, end);
         subroutine.exit_method = Scan(begin, end, subroutine.labels);
         if (subroutine.exit_method == ExitMethod::Undetermined)
-            throw DecompileFail("Recursive function detected");
+            throw DecompileFail("Recursive function detected", "recursion");
         subroutine.has_break = HasBreak(begin, end);
+        if (!is_main && subroutine.has_break && subroutine.exit_method == ExitMethod::AlwaysEnd) {
+            // Every path ends, but one of them breaks out of the enclosing loop first (the break returns
+            // from the function): the caller must go on after the loop, so the exit is conditional.
+            subroutine.exit_method = ExitMethod::Conditional;
+        }
         return *subroutines.insert(std::move(subroutine)).first;
     }
 
@@ -450,6 +461,7 @@ private:
      * @param subroutine the subroutine to call.
      */
     void CallSubroutine(const Subroutine& subroutine, bool propagate_break = true) {
+        calls[current_sub].insert(subroutine.GetName());
         if (subroutine.exit_method == ExitMethod::AlwaysEnd) {
             shader.AddLine("{}();", subroutine.GetName());
             shader.AddLine("return true;");
@@ -532,7 +544,7 @@ private:
      */
     u32 CompileInstr(u32 offset) {
         if (++compiled_instructions > kMaxCompiledInstructions) {
-            throw DecompileFail("The program is too large to translate");
+            throw DecompileFail("The program is too large to translate", "too-large");
         }
         const Instruction instr = program.Fetch(offset);
         const isa::OpInfo& info = instr.info();
@@ -697,8 +709,8 @@ private:
             }
 
             default: {
-                throw DecompileFail(fmt::format("Unhandled arithmetic instruction at word {}: 0x{:08x} ({})",
-                                                offset, instr.hex, info.name));
+                throw DecompileFail(fmt::format("Unhandled instruction at word {} (arithmetic format)", offset),
+                                    "unhandled-instruction", static_cast<int>(offset));
             }
             }
 
@@ -728,8 +740,8 @@ private:
                 SetDest(swizzle, dest_reg, fmt::format("sanitize_mul({}, {}) + {}", src1, src2, src3), 4,
                         4);
             } else {
-                throw DecompileFail(fmt::format("Unhandled multiply-add instruction at word {}: 0x{:08x}",
-                                                offset, instr.hex));
+                throw DecompileFail(fmt::format("Unhandled instruction at word {} (multiply-add format)", offset),
+                                    "unhandled-instruction", static_cast<int>(offset));
             }
             break;
         }
@@ -901,8 +913,8 @@ private:
                 break;
 
             default: {
-                throw DecompileFail(fmt::format("Unhandled instruction at word {}: 0x{:08x} ({})", offset,
-                                                instr.hex, info.name));
+                throw DecompileFail(fmt::format("Unhandled instruction at word {}", offset), "unhandled-instruction",
+                                    static_cast<int>(offset));
             }
             }
 
@@ -924,6 +936,30 @@ private:
             program_counter = CompileInstr(program_counter);
         }
         return program_counter;
+    }
+
+    // The analysis follows the program's structure, the generator also compiles code a jump leads into
+    // from another range: GLSL has no recursion, so a cycle in the calls that were generated is refused.
+    void CheckNoRecursion() const {
+        std::map<std::string, int> state; // 1 on the path, 2 done
+        std::vector<std::string> stack;
+        const auto visit = [&](const auto& self, const std::string& name) -> void {
+            int& st = state[name];
+            if (st == 2) {
+                return;
+            }
+            if (st == 1) {
+                throw DecompileFail("Recursive function detected", "recursion");
+            }
+            st = 1;
+            if (auto it = calls.find(name); it != calls.end()) {
+                for (const std::string& callee : it->second) {
+                    self(self, callee);
+                }
+            }
+            state[name] = 2;
+        };
+        visit(visit, "exec_shader");
     }
 
     void Generate() {
@@ -990,6 +1026,7 @@ private:
         shader.AddNewLine();
 
         // Add the main entry point
+        current_sub = "exec_shader";
         shader.AddLine("bool exec_shader() {{");
         ++shader.scope;
         CallSubroutine(GetSubroutine(main_offset, PROGRAM_END));
@@ -999,6 +1036,7 @@ private:
         // Add definitions for all subroutines
         for (const auto& subroutine : subroutines) {
             std::set<u32> labels = subroutine.labels;
+            current_sub = subroutine.GetName();
 
             shader.AddLine("bool {}() {{", subroutine.GetName());
             ++shader.scope;
@@ -1047,6 +1085,7 @@ private:
             shader.AddLine("}}\n");
         }
 
+        CheckNoRecursion();
         if (backward_jump_offset) {
             result.notes.push_back(fmt::format(
                 "the jump at word {} goes backwards: the translated shader dispatches the labels of a "
@@ -1068,6 +1107,8 @@ private:
     const RegGetter& outputreg_getter;
     DecompileResult& result;
     u32 compiled_instructions = 0;
+    std::string current_sub;
+    std::map<std::string, std::set<std::string>> calls;
     std::optional<u32> backward_jump_offset;
     bool has_emit = false;
 
@@ -1081,7 +1122,7 @@ DecompileResult DecompileProgram(const DecompileInput& input, const RegGetter& i
     DecompileResult result;
     try {
         if (input.main_offset >= kMaxProgramWords) {
-            throw DecompileFail("The entry point is outside the program memory");
+            throw DecompileFail("The entry point is outside the program memory", "entry-point");
         }
         const Program program(input);
         auto subroutines = ControlFlowAnalyzer(program, input.main_offset).MoveSubroutines();
@@ -1092,6 +1133,8 @@ DecompileResult DecompileProgram(const DecompileInput& input, const RegGetter& i
         result.ok = false;
         result.source.clear();
         result.error = exception.what();
+        result.error_category = exception.category;
+        result.error_word = exception.word;
     }
     return result;
 }
