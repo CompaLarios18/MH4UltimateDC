@@ -4,7 +4,8 @@
     python3 tools/build_game.py --dump "MH4U v1.3.0 update.cia" [--opt O1] [--install DIR]
 
 1. extracts exheader + ExeFS code from your decrypted dump (.cia update, .3ds/.cci, .cxi),
-2. checks it is the version this project targets (config/versions.json),
+2. checks it is a version the port runs (config/versions.json): USA v1.3.0, whose addresses
+   the tables in config/ hold, or EUR v1.1.0, through its shifts (config/shifts/),
 3. applies the code mods Azahar would apply from its user folder (load/mods/<program id>/:
    a code.bin, code.ips or code.bps; tools/code_mods.py), so that the library is the code
    that will run,
@@ -49,6 +50,7 @@ import exheader as exh  # noqa: E402
 import extract_ncch  # noqa: E402
 import mods  # noqa: E402
 import recompile  # noqa: E402
+import version_map  # noqa: E402
 from recomp import build as rbuild  # noqa: E402
 from recomp.analysis import Image  # noqa: E402
 
@@ -284,6 +286,31 @@ def label_note(dump: str, version: dict) -> str | None:
             f"as v{extract_ncch.version_text(want)}")
 
 
+def buildable(version: dict) -> bool:
+    """The tables are for the target version; another one needs its shifts (tools/version_map.py)."""
+    return bool(version.get("target") or version.get("shifts"))
+
+
+def translate_tables(version: dict, entries: dict, hooks: dict, tunables: dict) -> tuple[dict, dict, dict]:
+    """The target version's entry points, hooks and tunables at this version's addresses.
+    Entry points that have none are left out (functions this version changed: the recompiler
+    finds them through their callers); a hook or tunable without one is an error."""
+    if version.get("target") or not version.get("shifts"):
+        return entries, hooks, tunables
+    shifts = version_map.Shifts.load(os.path.join(ROOT, version["shifts"]))
+    entries, dropped = shifts.translate_keys(entries)
+    hooks, missing_hooks = shifts.translate_keys(hooks)
+    tunables, missing_tunables = shifts.translate_keys(tunables)
+    print(f"addresses from {version['shifts']}: {len(entries)} entry points "
+          f"({len(dropped)} in code this version changed, left to the analysis)")
+    if missing_hooks or missing_tunables:
+        raise SystemExit("no address in this version for "
+                         + ", ".join([f"hook 0x{a:08x}" for a in missing_hooks]
+                                     + [f"tunable 0x{a:08x}" for a in missing_tunables])
+                         + f" ({version['shifts']}; rebuild it with tools/version_map.py)")
+    return entries, hooks, tunables
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--dump", required=True, help="decrypted .cia / .3ds / .cci / .cxi of your own copy")
@@ -329,9 +356,12 @@ def main(argv=None) -> int:
         note = label_note(args.dump, version)
         if note:
             print(f"  {note}")
+        if not buildable(version) and not args.any_version:
+            raise SystemExit(f"{version['name']} isn't one the port runs: use the USA v1.3.0 or the "
+                             "EUR v1.1.0 update .cia")
     elif not args.any_version:
         raise SystemExit("this code.bin isn't a version the project knows (config/versions.json); "
-                         "the function lists are for USA v1.3.0 (use the v1.3.0 update .cia)")
+                         "use the USA v1.3.0 or the EUR v1.1.0 update .cia")
     program_id = struct.unpack_from("<Q", exheader_bytes, 0x200)[0]
 
     mods_dir = None if args.no_mods else (args.mods or args.install)
@@ -361,11 +391,12 @@ def main(argv=None) -> int:
         print(f"  the code mod puts new code after the game's own: recompiling 0x{size:X} bytes "
               f"(to the end of the code's last page) instead of 0x{header.text.size:X}")
     img = Image(code, header.text.address, size)
-    entries = recompile.load_entries(args.functions, [args.extra] if args.extra else [])
+    entries, hooks, tunables = translate_tables(
+        version or {}, recompile.load_entries(args.functions, [args.extra] if args.extra else []),
+        recompile.load_hooks(args.hooks), recompile.load_tunables(args.tunables))
     segs = [(header.ro.address, header.ro.size), (header.data.address, header.data.size)]
     res = recompile.recompile(img, entries, out, data_segments=segs, title_id=program_id,
-                              hooks=recompile.load_hooks(args.hooks),
-                              tunables=recompile.load_tunables(args.tunables), log=lambda m: print(m, flush=True))
+                              hooks=hooks, tunables=tunables, log=lambda m: print(m, flush=True))
     print(f"{res['report']['functions']} functions, {res['report']['hook_points']} hook points")
     for p in res["problems"]:
         print(f"  warning: {p}")
