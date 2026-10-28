@@ -15,8 +15,6 @@ namespace Launcher::Lobby {
 
 namespace {
 
-constexpr u64 MH4U_USA = 0x0004000000126300;
-
 std::string Text(const nlohmann::json& object, const char* key) {
     const auto it = object.find(key);
     return it != object.end() && it->is_string() ? it->get<std::string>() : std::string();
@@ -45,7 +43,7 @@ std::string NormalizeUrl(const std::string& typed) {
     return url;
 }
 
-List Parse(const std::string& body) {
+List Parse(const std::string& body, u64 game) {
     List list;
     const auto json = nlohmann::json::parse(body, nullptr, false);
     if (json.is_discarded() || !json.is_object() || !json.contains("rooms") ||
@@ -75,7 +73,10 @@ List Parse(const std::string& body) {
                 }
             }
         }
-        room.mh4u = room.game_id == MH4U_USA;
+        room.mh4u = room.game_id == game;
+        if (!room.mh4u && (room.game_id == MH4U_USA || room.game_id == MH4U_EUROPE)) {
+            room.game = fmt::format("Monster Hunter 4 Ultimate ({})", room.game_id == MH4U_USA ? "USA" : "Europe");
+        }
         if (room.address.empty() || room.port == 0) {
             continue;  // nowhere to join
         }
@@ -91,7 +92,7 @@ List Parse(const std::string& body) {
     return list;
 }
 
-List Fetch(const std::string& lobby_url) {
+List Fetch(const std::string& lobby_url, u64 game) {
     List list;
     const std::string url = NormalizeUrl(lobby_url);
     if (url.empty()) {
@@ -137,7 +138,7 @@ List Fetch(const std::string& lobby_url) {
         APP_LOG_WARNING("{}", list.error);
         return list;
     }
-    list = Parse(result->body);
+    list = Parse(result->body, game);
     APP_LOG_INFO("{} rooms in the lobby at {}", list.rooms.size(), url);
     return list;
 }
