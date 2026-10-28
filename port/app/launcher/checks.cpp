@@ -128,6 +128,17 @@ Game CheckGame(const std::string& path) {
     return game;
 }
 
+u64 ProgramId(const std::string& path) {
+    if (path.empty() || !FileUtil::Exists(path) || FileUtil::IsDirectory(path)) {
+        return 0;
+    }
+    FileSys::NCCHContainer ncch(path);
+    const auto status = ncch.LoadHeader();
+    return status == Loader::ResultStatus::Success || status == Loader::ResultStatus::ErrorEncrypted
+               ? ncch.ncch_header.program_id
+               : 0;
+}
+
 std::string Describe(const Game& game) {
     using State = Game::State;
     switch (game.state) {

@@ -418,7 +418,8 @@ void State::FetchRooms() {
         return;
     }
     rooms_loading = true;
-    rooms_future = std::async(std::launch::async, [url = config.lobby] { return Lobby::Fetch(url); });
+    const u64 mine = Checks::RegionOf(game.program_id).program_id;
+    rooms_future = std::async(std::launch::async, [url = config.lobby, mine] { return Lobby::Fetch(url, mine); });
 }
 
 void State::SearchLan() {

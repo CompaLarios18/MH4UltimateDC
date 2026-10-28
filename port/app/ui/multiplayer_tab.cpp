@@ -14,6 +14,7 @@
 #include "config.h"
 #include "invite.h"
 #include "lan.h"
+#include "launcher/checks.h"
 #include "launcher/lobby.h"
 #include "multiplayer.h"
 #include "ui/layer.h"
@@ -117,13 +118,15 @@ void LoadForms(TabState& tab, const Config& c) {
     tab.page = c.host > 0 ? 1 : 0;
 }
 
-void StartFetch(TabState& tab, const std::string& lobby) {
+void StartFetch(TabState& tab, const std::string& lobby, const std::string& game) {
     if (tab.fetching || lobby.empty()) {
         return;
     }
     tab.fetching = true;
     tab.fetched_from = lobby;
-    tab.fetch = std::async(std::launch::async, [lobby] { return Launcher::Lobby::Fetch(lobby); });
+    // the player's MH4U (USA or Europe): its rooms first, the other region's among other games'
+    const u64 mine = Launcher::Lobby::RoomGame(game.empty() ? 0 : Launcher::Checks::ProgramId(game));
+    tab.fetch = std::async(std::launch::async, [lobby, mine] { return Launcher::Lobby::Fetch(lobby, mine); });
 }
 
 void Copy(TabState& tab, const std::string& text) {
@@ -379,14 +382,14 @@ void DrawLobby(Layer& layer, TabState& tab, const Config& config) {
     }
     if ((!tab.fetched && !tab.fetching) || tab.fetched_from != config.lobby) {
         tab.fetched = false;
-        StartFetch(tab, config.lobby);
+        StartFetch(tab, config.lobby, config.game);
     }
     ImGui::AlignTextToFramePadding();
     ImGui::TextDisabled("Rooms in the lobby at %s", Launcher::Lobby::NormalizeUrl(config.lobby).c_str());
     ImGui::SameLine();
     ImGui::BeginDisabled(tab.fetching);
     if (ImGui::SmallButton(tab.fetching ? "Loading..." : "Refresh")) {
-        StartFetch(tab, config.lobby);
+        StartFetch(tab, config.lobby, config.game);
     }
     ImGui::EndDisabled();
     if (!tab.fetched) {

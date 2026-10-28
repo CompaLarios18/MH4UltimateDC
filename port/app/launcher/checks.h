@@ -58,6 +58,10 @@ struct Game {
 /// then, for MH4U, the start of its RomFS (launcher/game_file.h).
 Game CheckGame(const std::string& path);
 
+/// The program id in a game file's NCCH header, 0 when it can't be read (no RomFS check: for a
+/// room's game, which only needs the region).
+u64 ProgramId(const std::string& path);
+
 /// A sentence for the player about the game file.
 std::string Describe(const Game& game);
 
