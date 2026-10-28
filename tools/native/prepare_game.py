@@ -3,9 +3,12 @@
 
 usage: prepare_game.py --base GAME --update UPDATE [-o DIR]
 
-GAME is the base game (.3ds, .cci or .cxi) and UPDATE the v1.3.0 update title (a .cia) or
-its installed content (the .app that Azahar's setup put under the virtual SD card's
-title/0004000e/00126300/content/), both decrypted (see tools/extract_ncch.py). DIR defaults
+GAME is the base game (.3ds, .cci or .cxi) and UPDATE its update title (USA v1.3.0, Europe
+v1.1.0: the versions config/versions.json lists as buildable) as a .cia, or its installed content
+(the .app that Azahar's setup put under the virtual SD card's title/0004000e/00126300/content/,
+or .../00126100/ for Europe), both decrypted (see tools/extract_ncch.py). A .cia decrypted on a
+PC often says v1.0.0 whatever it holds: then the update's code decides (its SHA-1 in
+versions.json). DIR defaults
 to build/native-game (build/game is tools/build_game.py's). The folder holds:
 
     exheader.bin       the update's exheader
@@ -27,6 +30,7 @@ RomFS sections are gigabytes and are streamed, never read into memory.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import shutil
@@ -64,6 +68,17 @@ def load_target(versions_path: str) -> dict:
         if entry.get("target"):
             return entry
     raise PrepareError(f"{versions_path} has no target version")
+
+
+def load_buildable(versions_path: str) -> list[dict]:
+    """The versions the port runs: the target (USA v1.3.0) and those with shifts (Europe v1.1.0),
+    the target first."""
+    with open(versions_path) as f:
+        data = json.load(f)
+    found = [e for e in data["versions"] if e.get("update_title_id") and (e.get("target") or e.get("shifts"))]
+    if not found:
+        raise PrepareError(f"{versions_path} has no target version")
+    return sorted(found, key=lambda e: not e.get("target"))
 
 
 @dataclass(frozen=True)
@@ -110,8 +125,22 @@ def check_update(update_path: str, target: dict) -> UpdateInfo:
     """The update must be a CIA of the target title and version (v1.3.0), or the content an
     installation of that CIA left on the virtual SD card (an NCCH: its title is checked, and its
     version too when the TMD that sits beside it can be read)."""
-    want_id = int(target["update_title_id"], 16)
-    want_version = int(target["title_version"])
+    found, entry, version_ok = check_update_of([target], update_path)
+    if not version_ok:
+        raise PrepareError(version_problem(found, entry))
+    return found
+
+
+def version_problem(found: UpdateInfo, entry: dict) -> str:
+    v = found.title_version
+    return (f"the update is v{v >> 10}.{(v >> 4) & 0x3F}.{v & 0xF}, but only "
+            f"{entry['name'].split(' (')[0]} is supported")
+
+
+def check_update_of(entries: list[dict], update_path: str) -> tuple[UpdateInfo, dict, bool]:
+    """check_update against every version the port runs: the update, the version it is the
+    update of, and whether its version number is that version's (prepare then checks the code
+    when it isn't)."""
     try:
         with open(update_path, "rb") as f:
             kind = extract_ncch.detect(f)
@@ -122,23 +151,23 @@ def check_update(update_path: str, target: dict) -> UpdateInfo:
                 found = UpdateInfo(extract_ncch.parse_ncch(f, 0).program_id, None, "ncch")
             else:
                 raise PrepareError(f"{update_path} is not a CIA or an installed update: --update takes "
-                                   "the v1.3.0 update title (a .cia) or its installed content (a .app)")
+                                   "the update title (a .cia) or its installed content (a .app)")
     except extract_ncch.DumpError as e:
         raise PrepareError(str(e)) from e
+    target = next((e for e in entries if int(e["update_title_id"], 16) == found.title_id), entries[0])
+    want_id = int(target["update_title_id"], 16)
+    want_version = int(target["title_version"])
+    expected = " or ".join(e["update_title_id"].upper() for e in entries)
     if found.source == "ncch":
         # an installed content is the update title's: the base game's own NCCH is not it
         if found.title_id != want_id:
-            raise PrepareError(f"the update is title {found.title_id:016X}, expected {want_id:016X}")
+            raise PrepareError(f"the update is title {found.title_id:016X}, expected {expected}")
         found = UpdateInfo(want_id, tmd_beside(update_path, want_id), "ncch")
         if found.title_version is None:
-            return found
+            return found, target, True
     elif found.title_id != want_id:
-        raise PrepareError(f"the update is title {found.title_id:016X}, expected {want_id:016X}")
-    if found.title_version != want_version:
-        v = found.title_version
-        raise PrepareError(f"the update is v{v >> 10}.{(v >> 4) & 0x3F}.{v & 0xF}, but only "
-                           f"{target['name'].split(' (')[0]} is supported")
-    return found
+        raise PrepareError(f"the update is title {found.title_id:016X}, expected {expected}")
+    return found, target, found.title_version == want_version
 
 
 def crc32_of_file(path: str) -> int:
@@ -223,8 +252,9 @@ def read_exheader(path: str) -> exheader.ExHeader:
 
 
 def prepare(base: str, update: str, outdir: str, versions: str = DEFAULT_VERSIONS) -> list[str]:
-    target = load_target(versions)
-    content = check_update(update, target)
+    content, target, version_ok = check_update_of(load_buildable(versions), update)
+    if not version_ok and not target.get("code_sha1"):
+        raise PrepareError(version_problem(content, target))
     want_pid = int(target["program_id"], 16)
 
     os.makedirs(outdir, exist_ok=True)
@@ -253,6 +283,14 @@ def prepare(base: str, update: str, outdir: str, versions: str = DEFAULT_VERSION
                 code = blz.decompress(code)
             except blz.BLZError as e:
                 raise PrepareError(f"update code.bin: {e}") from e
+        if not version_ok:
+            # the version number isn't the one this update has: its code says whether it is
+            if hashlib.sha1(code).hexdigest() != target["code_sha1"]:
+                raise PrepareError(version_problem(content, target))
+            v = content.title_version
+            print(f"note: the update says v{v >> 10}.{(v >> 4) & 0x3F}.{v & 0xF}, but its code is "
+                  f"{target['name'].split(' (')[0]}'s (a .cia decrypted on a PC often says v1.0.0)",
+                  file=sys.stderr)
         # The text, ro and data segments must fit in the decompressed code.
         have = len(code)
         if have < upd_hdr.text.size + upd_hdr.ro.size + upd_hdr.data.size:

@@ -50,7 +50,11 @@ import struct
 import sys
 from typing import Optional
 
-PROGRAM_ID = 0x0004000000126300      # MH4U USA (config/versions.json)
+# The versions the port runs (config/versions.json) and their extdata ids (each exheader's storage info:
+# the game's unique id). PROGRAM_ID is the game this run is for (set_game; main chooses it).
+EXTDATA_IDS = {0x0004000000126300: 0x1263,      # USA
+               0x0004000000126100: 0x1261}      # Europe
+PROGRAM_ID = 0x0004000000126300
 
 # ── constants ───────────────────────────────────────────────────────────────
 
@@ -65,7 +69,7 @@ SDMC_DIR = "sdmc"
 # game's unique id 0x1263 (docs/research/g2-save-bytes.md: the cfg:u parameter) and the extdata folder
 # `extdata/00000000/00001263/` of docs/native/golden.md, "The save". The dump-check confirms it against
 # build/golden/G3/user-before (see docs/SAVES.md and the N3-16 report).
-EXTDATA_ID_DEFAULT = 0x0000000000001263
+EXTDATA_ID_DEFAULT = 0x0000000000001263   # USA's; set_game makes it the chosen game's
 
 # Azahar src/core/file_sys/archive_backend.h, ArchiveFormatInfo (little endian, 16 bytes):
 # u32 total_size, u32 number_directories, u32 number_files, u8 duplicate_data, 3 padding bytes. Azahar writes
@@ -122,6 +126,31 @@ def _long(path: str, nt: Optional[bool] = None) -> str:
 
 def _sd_root(user: str) -> str:
     return os.path.join(user, SDMC_DIR, "Nintendo 3DS", SYSTEM_ID, SDCARD_ID)
+
+
+def set_game(program_id: int) -> None:
+    """The game whose save and extdata this run reads and writes: MH4U for the USA or for Europe."""
+    global PROGRAM_ID, EXTDATA_ID_DEFAULT
+    if program_id not in EXTDATA_IDS:
+        raise Error("usage", f"{program_id:016X} isn't a version of MH4U the port runs "
+                             f"({', '.join(f'{p:016X}' for p in EXTDATA_IDS)})")
+    PROGRAM_ID, EXTDATA_ID_DEFAULT = program_id, EXTDATA_IDS[program_id]
+
+
+def detect_game(user: str) -> tuple[int, str]:
+    """(program id, where it came from): native/game/exheader.bin's, else the one region with a save
+    in the user folder, else USA's (--program-id wins over all of them)."""
+    exheader = os.path.join(user, "native", "game", "exheader.bin")
+    if os.path.isfile(_long(exheader)):
+        with open(_long(exheader), "rb") as f:
+            data = f.read(0x208)
+        if len(data) == 0x208 and int.from_bytes(data[0x200:0x208], "little") in EXTDATA_IDS:
+            return int.from_bytes(data[0x200:0x208], "little"), "exheader"
+    found = [p for p in EXTDATA_IDS
+             if os.path.isdir(_long(os.path.join(_sd_root(user), "title", f"{p >> 32:08x}", f"{p & 0xFFFFFFFF:08x}")))]
+    if len(found) == 1:
+        return found[0], "save"
+    return next(iter(EXTDATA_IDS)), "default"
 
 
 def save_dir(user: str) -> str:
@@ -511,6 +540,14 @@ def print_text(command: str, r: dict) -> None:
             print(f"left alone in the folder: {', '.join(r['left'])}")
 
 
+def parse_title_id(text: str) -> int:
+    """A title id as 3DS tools write it: 16 hexadecimal digits (0x optional)."""
+    try:
+        return int(text, 16)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{text!r} is not a title id (hexadecimal)") from None
+
+
 def parse_id(text: str) -> int:
     try:
         return int(text, 0)
@@ -530,7 +567,10 @@ def build_parser(json_errors: bool) -> argparse.ArgumentParser:
         if user:
             p.add_argument("--user", required=True, metavar="DIR", help="the user folder both executables share (D61)")
             p.add_argument("--extdata-id", type=parse_id, default=None,
-                           help="the extdata id (default: native/game/exheader.bin's, else the built-in one)")
+                           help="the extdata id (default: native/game/exheader.bin's, else the game's)")
+            p.add_argument("--program-id", type=parse_title_id, default=None,
+                           help="the game: 0004000000126300 (USA) or 0004000000126100 (Europe); default: "
+                                "native/game/exheader.bin's, else the one region with a save there, else USA")
 
     ap = Parser(prog="saves.py", description=__doc__.splitlines()[0])
     sub = ap.add_subparsers(dest="command", required=True, parser_class=Parser)
@@ -571,6 +611,7 @@ def main(argv=None) -> int:
                 result = do_format_info(ns.file)
             else:
                 user = os.path.abspath(ns.user)
+                set_game(ns.program_id if ns.program_id is not None else detect_game(user)[0])
                 if command == "list":
                     result = do_list(user, ns.extdata_id)
                 elif command.startswith("import"):
