@@ -12,7 +12,8 @@ std::string Stopped(unsigned status, const std::string& details, double seconds,
                "- If mods are on, turn them off in the launcher's Mods and try again.\n"
                "- Dump the game again with GodMode9 on your 3DS, and choose the new .3ds, .cci or .cxi in "
                "Setup.\n"
-               "- Install the v1.3.0 update again from a .cia that GodMode9 made (Setup, step 2).\n"
+               "- Install the update again (USA v1.3.0, Europe v1.1.0) from a .cia that GodMode9 made "
+               "(Setup, step 2).\n"
                "With launcher = off in mh4u-app.ini, start the app with --launcher to reach Mods and Setup.\n"
                "\n"
                "If it still stops, please report it with the log, which has the error's numbers (its \"Fatal "
@@ -50,7 +51,8 @@ std::string DidntStart(unsigned status, const std::string& details, const std::s
 
 std::string CodeModDoesntFit(const std::string& log) {
     return "The game didn't start: a code mod (code.ips or code.bps) doesn't fit its code.\n"
-           "It's made for another version of the game (is the v1.3.0 update installed?), or it's damaged.\n"
+           "It's made for another version of the game (is the v1.3.0 update, or Europe's v1.1.0,\n"
+           "installed?), or it's damaged.\n"
            "Turn it off in the launcher's Mods (with launcher = off in mh4u-app.ini, start the app with "
            "--launcher).\n"
            "The log may say which one it is:\n" +

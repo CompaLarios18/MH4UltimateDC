@@ -1,4 +1,4 @@
-// Setup, also the first-run wizard: the game file, the v1.3.0 update (installed from the
+// Setup, also the first-run wizard: the game file, its update (installed from the
 // player's .cia here) and the code library (built here by tools/build_game.py).
 #include <fmt/format.h>
 #include <imgui.h>
@@ -22,21 +22,23 @@ SetupRow GameRow(const State& s) {
 
 SetupRow UpdateRow(const State& s) {
     using State_ = Checks::Update::State;
+    // v1.3.0, or Europe's v1.1.0
+    const std::string name = Checks::UpdateName(s.game.program_id);
     switch (s.update.state) {
     case State_::Ok:
-        // (a note when its version label isn't v1.3.0's: its code is)
-        return {Ui::Status::Ok, "Update v1.3.0",
+        // (a note when its version label isn't the update's: its code is)
+        return {Ui::Status::Ok, "Update " + name,
                 s.update.note.empty() ? "Installed in Azahar's virtual SD card" : s.update.note};
     case State_::OtherVersion:
         // (which version, by its label and its code)
-        return {Ui::Status::Error, "Update v1.3.0",
-                s.update.note.empty() ? fmt::format("v{} is installed; the port is made for v1.3.0",
-                                                    Checks::VersionText(s.update.version))
+        return {Ui::Status::Error, "Update " + name,
+                s.update.note.empty() ? fmt::format("v{} is installed; the port is made for {}",
+                                                    Checks::VersionText(s.update.version), name)
                                       : s.update.note};
     case State_::Missing:
         break;
     }
-    return {Ui::Status::Error, "Update v1.3.0", "Not installed"};
+    return {Ui::Status::Error, "Update " + name, "Not installed"};
 }
 
 SetupRow CodeRow(const State& s) {
@@ -101,16 +103,19 @@ void DrawSetup(State& s) {
 
     ImGui::BeginChild("##setup_scroll", ImVec2(0, 0), ImGuiChildFlags_NavFlattened);
     Ui::Heading(s.wizard ? "Welcome: three steps, once" : "Setup");
-    Ui::TextDim("The port plays your own copy of Monster Hunter 4 Ultimate (USA) with the game's code "
-                "recompiled for this computer. It needs your decrypted game, its v1.3.0 update and the "
-                "code library, built here from your update. Nothing of the game leaves this computer.");
+    Ui::TextDim("The port plays your own copy of Monster Hunter 4 Ultimate (USA or Europe) with the "
+                "game's code recompiled for this computer. It needs your decrypted game, its update "
+                "(USA v1.3.0, Europe v1.1.0) and the code library, built here from your update. "
+                "Nothing of the game leaves this computer.");
     ImGui::Spacing();
 
     // 1. the game
     Ui::BeginCard("##step1", ImVec2(0, 0), current == 1);
     StepTitle(1, "Your game", game_ok);
     const auto game = GameRow(s);
-    Ui::StatusLine(game.status, game_ok ? "Monster Hunter 4 Ultimate (USA)" : "No game yet",
+    const std::string game_name =
+        fmt::format("Monster Hunter 4 Ultimate ({})", Checks::RegionOf(s.game.program_id).name);
+    Ui::StatusLine(game.status, game_ok ? game_name : std::string("No game yet"),
                    game_ok ? s.config.game : game.detail);
     Ui::TextDim("A decrypted dump of your cartridge or digital copy: .3ds, .cci or .cxi (GodMode9 makes "
                 "one on your 3DS).");
@@ -129,7 +134,7 @@ void DrawSetup(State& s) {
 
     // 2. the update
     Ui::BeginCard("##step2", ImVec2(0, 0), current == 2);
-    StepTitle(2, "The v1.3.0 update", update_ok);
+    StepTitle(2, ("The " + Checks::UpdateName(s.game.program_id) + " update").c_str(), update_ok);
     const auto update = UpdateRow(s);
     Ui::StatusLine(update.status, update.label, update.detail);
     Ui::TextDim("The port runs the update's code. Install it from your decrypted update (.cia; GodMode9 "

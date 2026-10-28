@@ -19,6 +19,9 @@ namespace Launcher::UpdateCode {
 /// v1.3.0, the update the port is made for (config/versions.json: title_version, code_sha1).
 constexpr std::uint16_t TARGET_VERSION = 1072;
 constexpr const char* TARGET_CODE_SHA1 = "c9225f87ca3f65e8537484d029b08b8b04c3717d";
+/// Europe's v1.1.0, built from the same tables (config/versions.json, config/shifts/eur_v110.txt).
+constexpr std::uint16_t EUR_VERSION = 1040;
+constexpr const char* EUR_CODE_SHA1 = "0a927cb1a59d90c8c806fed091b3755cd518b3f8";
 
 /// Reads `size` bytes at `offset` of a file into `out`; false when they aren't all there.
 using Read = std::function<bool(std::uint64_t offset, void* out, std::size_t size)>;
@@ -60,10 +63,11 @@ Code ReadCode(const Read& read, std::uint64_t base);
 /// The code of a CIA's content 0.
 Code ReadCiaCode(const Read& read);
 
-/// An update by its version label and, when that isn't v1.3.0's, by its code.
+/// An update by its version label and, when that isn't the target's (v1.3.0, or Europe's v1.1.0
+/// for its game), by its code.
 enum class Verdict {
-    Target,        ///< labelled v1.3.0 (its code isn't read, as before)
-    Relabeled,     ///< labelled otherwise, with v1.3.0's code: the label was reset
+    Target,        ///< labelled as the target (its code isn't read, as before)
+    Relabeled,     ///< labelled otherwise, with the target's code: the label was reset
     OtherVersion,  ///< labelled otherwise, with other code
     Unchecked,     ///< labelled otherwise, and the code couldn't be read
 };
@@ -78,9 +82,11 @@ struct CiaCheck {
 };
 
 /// A .cia whose title metadata says `label`; `read_code` reads its code, and is called only
-/// when the label isn't v1.3.0's (a v1.3.0 label is taken as it is, as before this check).
+/// when the label isn't the target's (a v1.3.0 label is taken as it is, as before this check).
+/// The target is v1.3.0 unless given (Europe's: EUR_CODE_SHA1, EUR_VERSION).
 CiaCheck CheckCia(std::uint16_t label, const std::function<Code()>& read_code,
-                  const std::string& target_sha1 = TARGET_CODE_SHA1);
+                  const std::string& target_sha1 = TARGET_CODE_SHA1,
+                  std::uint16_t target_version = TARGET_VERSION);
 
 /// What the setup says of the update installed in Azahar's virtual SD card: `ok` when it is
 /// used as v1.3.0, `note` the setup's line about it ("" for a v1.3.0 label).
@@ -91,8 +97,9 @@ struct InstalledCheck {
 };
 
 /// The installed update, whose title metadata (Azahar's copy of the .cia's) says `label`;
-/// `read_code` reads the installed program's code, only when the label isn't v1.3.0's.
+/// `read_code` reads the installed program's code, only when the label isn't the target's.
 InstalledCheck CheckInstalled(std::uint16_t label, const std::function<Code()>& read_code,
-                              const std::string& target_sha1 = TARGET_CODE_SHA1);
+                              const std::string& target_sha1 = TARGET_CODE_SHA1,
+                              std::uint16_t target_version = TARGET_VERSION);
 
 } // namespace Launcher::UpdateCode

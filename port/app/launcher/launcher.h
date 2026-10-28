@@ -1,6 +1,6 @@
 // The launcher: the app's home screen before the game, in a window of its own (an SDL_Renderer
 // with Dear ImGui, so it needs none of Azahar's renderers and looks the same everywhere). Play,
-// the setup (the game file, the v1.3.0 update, the code library), the mod library, the room to
+// the setup (the game file, its update, the code library), the mod library, the room to
 // play in and the app's settings, with the mouse, the keyboard or a controller. It hands a
 // ready App::Config back to main.cpp and closes before the game's window opens.
 #pragma once

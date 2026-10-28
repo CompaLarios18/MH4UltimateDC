@@ -39,6 +39,7 @@ from test_make_cxi import fake_exefs  # noqa: E402
 UPDATE_ID = 0x0004000E00126300
 V130 = (1 << 10) | (3 << 4)                 # 1072
 V120 = (1 << 10) | (2 << 4)
+V110 = (1 << 10) | (1 << 4)                 # 1040, Europe's
 RESET = {1: "v0.0.1", 1 << 10: "v1.0.0"}    # the labels such tools were seen to write
 CODE_SIZE = 0x3400                          # text (2 pages), read-only data (1 page), data (0x400)
 
@@ -82,14 +83,15 @@ const char* Name(Verdict verdict) {
 
 } // namespace
 
-// constants | version N | sha1 FILE... | blz IN OUT | code CIA | cia CIA TARGET_SHA1 |
-// installed PROGRAM LABEL TARGET_SHA1: the answer on one line (sha1: a line for each file),
+// constants | version N | sha1 FILE... | blz IN OUT | code CIA | cia CIA TARGET_SHA1 [TARGET_VERSION] |
+// installed PROGRAM LABEL TARGET_SHA1 [TARGET_VERSION]: the answer on one line (sha1: a line for each file),
 // tab-separated (cia: the verdict, the title id, whether the code was read, the refusal's title
 // and text, the note; installed: the verdict, whether the code was read, ok or not, the note)
 int main(int argc, char** argv) {
     const std::string command = argc > 1 ? argv[1] : "";
     if (command == "constants") {
-        std::printf("%u\t%s\n", static_cast<unsigned>(TARGET_VERSION), TARGET_CODE_SHA1);
+        std::printf("%u\t%s\t%u\t%s\n", static_cast<unsigned>(TARGET_VERSION), TARGET_CODE_SHA1,
+                    static_cast<unsigned>(EUR_VERSION), EUR_CODE_SHA1);
         return 0;
     }
     if (command == "version" && argc == 3) {
@@ -130,7 +132,11 @@ int main(int argc, char** argv) {
         return 0;
     }
     bool code_read = false;
-    if (command == "cia" && argc == 4) {
+    // the target's version: v1.3.0's unless given (Europe's v1.1.0)
+    const auto target_version = [&](int at) {
+        return argc > at ? static_cast<std::uint16_t>(std::atoi(argv[at])) : TARGET_VERSION;
+    };
+    if (command == "cia" && (argc == 4 || argc == 5)) {
         // as launcher/checks.cpp's CheckUpdateCia calls it (the title metadata read here, where
         // it asks Azahar)
         const Cia cia = ReadCia(read);
@@ -144,13 +150,13 @@ int main(int argc, char** argv) {
                 code_read = true;
                 return ReadCiaCode(read);
             },
-            argv[3]);
+            argv[3], target_version(4));
         std::printf("%s\t%016llX\t%s\t%s\t%s\t%s\n", Name(check.verdict),
                     static_cast<unsigned long long>(cia.title_id), code_read ? "read" : "unread",
                     check.title.c_str(), check.problem.c_str(), check.note.c_str());
         return 0;
     }
-    if (command == "installed" && argc == 5) {
+    if (command == "installed" && (argc == 5 || argc == 6)) {
         // as CheckUpdate calls it, LABEL being the installed title metadata's
         const auto label = static_cast<std::uint16_t>(std::atoi(argv[3]));
         const InstalledCheck check = CheckInstalled(
@@ -159,7 +165,7 @@ int main(int argc, char** argv) {
                 code_read = true;
                 return ReadCode(read, 0);
             },
-            argv[4]);
+            argv[4], target_version(5));
         std::printf("%s\t%s\t%s\t%s\n", Name(check.verdict), code_read ? "read" : "unread",
                     check.ok ? "ok" : "not ok", check.note.c_str());
         return 0;
@@ -237,8 +243,8 @@ class CiaCheck(NamedTuple):
     note: str = ""       # said once it is installed
 
 
-def check_cia(driver, cia, target_sha1: str) -> CiaCheck:
-    verdict, title_id, *rest = run(driver, "cia", cia, target_sha1)
+def check_cia(driver, cia, target_sha1: str, *target_version: int) -> CiaCheck:
+    verdict, title_id, *rest = run(driver, "cia", cia, target_sha1, *target_version)
     assert title_id == f"{UPDATE_ID:016X}"
     return CiaCheck(verdict, *rest)
 
@@ -252,8 +258,8 @@ class InstalledCheck(NamedTuple):
     note: str = ""
 
 
-def check_installed(driver, program, label: int, target_sha1: str) -> InstalledCheck:
-    verdict, code, ok, note = run(driver, "installed", program, label, target_sha1)
+def check_installed(driver, program, label: int, target_sha1: str, *target_version: int) -> InstalledCheck:
+    verdict, code, ok, note = run(driver, "installed", program, label, target_sha1, *target_version)
     return InstalledCheck(verdict, code, ok == "ok", note)
 
 
@@ -262,8 +268,11 @@ def check_installed(driver, program, label: int, target_sha1: str) -> InstalledC
 @needs_cxx
 def test_the_target_is_config_versions_json(driver):
     with open(os.path.join(ROOT, "config", "versions.json")) as f:
-        target = next(v for v in json.load(f)["versions"] if v.get("target"))
-    assert run(driver, "constants") == [str(target["title_version"]), target["code_sha1"]]
+        versions = json.load(f)["versions"]
+    target = next(v for v in versions if v.get("target"))
+    eur = next(v for v in versions if v.get("update_title_id") == "0004000E00126100")
+    assert run(driver, "constants") == [str(target["title_version"]), target["code_sha1"],
+                                        str(eur["title_version"]), eur["code_sha1"]]
     assert [run(driver, "version", v) for v in (V130, V120, *RESET)] == [["1.3.0"], ["1.2.0"], ["0.0.1"],
                                                                           ["1.0.0"]]
 
@@ -412,6 +421,29 @@ def test_the_installed_update_is_judged_by_its_code(driver, tmp_path):
         "extended header can't be read)"))
     assert check_installed(driver, broken, V130, v130) == InstalledCheck("target", "unread", True)
 
+
+
+@needs_cxx
+def test_europe_is_judged_by_its_own_update(driver, tmp_path):
+    """Europe's game: its update is v1.1.0, taken by its label, else by its code; a USA v1.3.0
+    label is no reason to take it, and code other than v1.1.0's is refused as for USA."""
+    code = program(3)
+    eur = sha1(code)
+    assert check_cia(driver, write(tmp_path / "a.cia", update_cia(code, V110)), eur, V110) == \
+        CiaCheck("target", code="unread")
+    assert check_cia(driver, write(tmp_path / "b.cia", update_cia(code, 1 << 10)), eur, V110) == CiaCheck(
+        "relabeled", note=("The .cia's version label says v1.0.0, but its code is v1.1.0's (some decryption tools "
+                           "reset the label), so it's used as v1.1.0."))
+    assert check_cia(driver, write(tmp_path / "c.cia", update_cia(program(4), V130)), eur, V110) == CiaCheck(
+        "other", title="This isn't the update", problem=(
+            "The .cia's version label says v1.3.0, and its code isn't v1.1.0's either: it holds another update, or "
+            "a changed one. The port is made for v1.1.0: its code library is recompiled from that update's code."))
+    app = write(tmp_path / "00000000.app", update_program(code))
+    assert check_installed(driver, app, V110, eur, V110) == InstalledCheck("target", "unread", True)
+    assert check_installed(driver, app, 1, eur, V110).ok
+    assert check_installed(driver, app, V130, sha1(program(4)), V110) == InstalledCheck("other", "read", False, (
+        "The installed update's version label says v1.3.0, and its code isn't v1.1.0's either; the port is made "
+        "for v1.1.0"))
 
 # ── tools/build_game.py ──
 
