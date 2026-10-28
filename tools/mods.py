@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import glob
 import hashlib
 import json
 import os
@@ -63,8 +64,13 @@ sys.path.insert(0, HERE)
 import code_mods  # noqa: E402
 import sevenzip  # noqa: E402
 
-PROGRAM_ID = 0x0004000000126300      # MH4U USA (config/versions.json): names Azahar's mods folder
-UPDATE_ID = 0x0004000E00126300       # its v1.3.0 update, whose code the port runs
+# The versions the port runs (config/versions.json): program id -> (its update, the region's name).
+REGIONS = {0x0004000000126300: (0x0004000E00126300, "USA"),      # update v1.3.0
+           0x0004000000126100: (0x0004000E00126100, "Europe")}   # update v1.1.0
+MH4U_TITLES = set(REGIONS) | {update for update, _ in REGIONS.values()}
+# The game this run is for (set_game; main chooses it): names Azahar's mods and texture folders
+PROGRAM_ID = 0x0004000000126300
+UPDATE_ID = 0x0004000E00126300
 LIBRARY = "mh4u-mods"                # the mod library, in Azahar's user folder
 STATE = "library.json"               # in the library: the order, and which mods are on
 MANIFEST = "mod.json"                # in a mod: what it is
@@ -129,6 +135,38 @@ def default_user_dir() -> str:
     return os.path.join(data, "azahar-emu")
 
 
+def set_game(program_id: int) -> None:
+    """The game whose folders this run uses: MH4U for the USA or for Europe."""
+    global PROGRAM_ID, UPDATE_ID
+    if program_id not in REGIONS:
+        raise Error("usage", f"{program_id:016X} isn't a version of MH4U the port runs "
+                             f"({', '.join(f'{p:016X}' for p in REGIONS)})")
+    PROGRAM_ID, UPDATE_ID = program_id, REGIONS[program_id][0]
+
+
+def detect_game(user_dir: str) -> int:
+    """The game whose update is installed in Azahar's virtual SD card: Europe's when only it is
+    there, else USA's (the launcher passes --program-id, which wins)."""
+    installed = set()
+    for title in glob.glob(os.path.join(glob.escape(user_dir), "sdmc", "Nintendo 3DS", "*", "*", "title", "0004000e", "*")):
+        try:
+            installed.add(0x0004000E00000000 | int(os.path.basename(title), 16))
+        except ValueError:
+            pass
+    found = [p for p, (update, _) in REGIONS.items() if update in installed]
+    return found[0] if len(found) == 1 else next(iter(REGIONS))
+
+
+def region_name(program_id: int | None = None) -> str:
+    return REGIONS[PROGRAM_ID if program_id is None else program_id][1]
+
+
+def _other_region(titles) -> list[int]:
+    """Of these title ids, MH4U's of the other region (a USA mod or texture pack for a European
+    game): most of its files are the same, so it is used, with a note."""
+    return [t for t in titles if t in MH4U_TITLES and t not in (PROGRAM_ID, UPDATE_ID)]
+
+
 def mods_folder(user_dir: str) -> str:
     return code_mods.mod_dir(user_dir, PROGRAM_ID)
 
@@ -139,7 +177,8 @@ def code_library(user_dir: str) -> str:
     return os.path.join(user_dir, "recomp", f"{PROGRAM_ID:016X}.{ext}")
 
 
-def build_record_path(library: str, program_id: int = PROGRAM_ID) -> str:
+def build_record_path(library: str, program_id: int | None = None) -> str:
+    program_id = PROGRAM_ID if program_id is None else program_id
     return os.path.join(os.path.dirname(library), f"{program_id:016X}.build.json")
 
 
@@ -346,11 +385,12 @@ def detect(base: str) -> tuple[str, str, list[str], list[str]]:
                 tdir = os.path.join(luma, sub["titles"])
                 titles += [(int(d, 16), os.path.join(tdir, d)) for d in _listing(tdir)[0] if _TITLE.fullmatch(d)]
         if titles:
+            # only this region's folders: a code patch made for the other region's code would break it
             mine = sorted((tid != PROGRAM_ID, path) for tid, path in titles if tid in (PROGRAM_ID, UPDATE_ID))
             others = sorted({f"{tid:016X}" for tid, _ in titles if tid not in (PROGRAM_ID, UPDATE_ID)})
             if not mine:
                 raise Error("other_title", f"made for another game or region (title {', '.join(others)}); "
-                                           f"the port plays MH4U USA ({PROGRAM_ID:016X})")
+                                           f"the port plays MH4U {region_name()} ({PROGRAM_ID:016X})")
             if others:
                 notes.append(f"folders for other titles not used: {', '.join(others)}")
             return "title", mine[0][1], chain, notes
@@ -615,28 +655,35 @@ def adds_code(paths: list[str], text_size: int | None) -> bool:
     return False
 
 
+def game_version(versions_path: str | None = None) -> dict | None:
+    """The config/versions.json entry of the update this run's game plays (set_game): by its
+    program id and update id, so Europe's game gets Europe's v1.1.0."""
+    try:
+        with open(versions_path or os.path.join(ROOT, "config", "versions.json")) as f:
+            versions = json.load(f)["versions"]
+        return next(v for v in versions if int(v["program_id"], 16) == PROGRAM_ID
+                    and int(v.get("update_title_id", "0"), 16) == UPDATE_ID)
+    except (OSError, ValueError, KeyError, StopIteration, TypeError):
+        return None
+
+
 def code_segment_end(text: int | None) -> int | None:
     """Where the read-only data starts, from the code's start (the code segment's last page
-    ends there), for the version the port targets; None for code of another size."""
+    ends there), for the update this run's game plays; None for code of another size."""
     try:
-        with open(os.path.join(ROOT, "config", "versions.json")) as f:
-            versions = json.load(f)["versions"]
-        seg = next(v for v in versions if v.get("target"))["segments"]
+        seg = game_version()["segments"]
         if int(seg["text"][1], 16) != text:
             return None
         return int(seg["rodata"][0], 16) - int(seg["text"][0], 16)
-    except (OSError, ValueError, KeyError, StopIteration, TypeError, IndexError):
+    except (ValueError, KeyError, TypeError, IndexError):
         return None
 
 
 def text_size() -> int | None:
-    """The size of the code segment of the version the port targets (config/versions.json)."""
+    """The size of the code segment of the update this run's game plays (config/versions.json)."""
     try:
-        with open(os.path.join(ROOT, "config", "versions.json")) as f:
-            versions = json.load(f)["versions"]
-        target = next(v for v in versions if v.get("target"))
-        return int(target["segments"]["text"][1], 16)
-    except (OSError, ValueError, KeyError, StopIteration, TypeError, IndexError):
+        return int(game_version()["segments"]["text"][1], 16)
+    except (ValueError, KeyError, TypeError, IndexError):
         return None
 
 
@@ -660,11 +707,12 @@ def code_fingerprint(paths: list[str]) -> str:
 
 
 def write_build_record(library: str, used: list[str], text: int, changed: bool,
-                       program_id: int = PROGRAM_ID, code_size: int | None = None) -> str:
+                       program_id: int | None = None, code_size: int | None = None) -> str:
     """Next to an installed code library, what it was built from (for status): called by
     tools/build_game.py with the code mods it applied, whether they change the code, and how
     much of the code segment it recompiled (code_size: text, or up to the end of its last
     page when a code mod put new code there)."""
+    program_id = PROGRAM_ID if program_id is None else program_id
     st = os.stat(library)
     record = {"format": FORMAT, "program_id": f"{program_id:016X}", "library": os.path.basename(library),
               "library_size": st.st_size, "library_mtime_ns": st.st_mtime_ns, "text_size": text,
@@ -1958,9 +2006,11 @@ def _texture_root(staging: str) -> str:
         titles = [d for d in dirs if _TITLE.fullmatch(d)]
         if titles and not [f for f in files if not doc_file(f)]:
             mine = [d for d in titles if int(d, 16) in (PROGRAM_ID, UPDATE_ID)]
+            if not mine:   # the other region's MH4U: the same textures, but for text in a language folder
+                mine = [d for d in titles if _other_region([int(d, 16)])]
             if not mine:
                 raise Error("other_title", f"a texture pack for another game or region (title {', '.join(titles)}); "
-                                           f"the port plays MH4U USA ({PROGRAM_ID:016X})")
+                                           f"the port plays MH4U {region_name()} ({PROGRAM_ID:016X})")
             level = os.path.join(level, mine[0])
             continue
         if len(dirs) == 1 and all(doc_file(f) for f in files):
@@ -2603,6 +2653,9 @@ def build_parser(json_errors: bool) -> argparse.ArgumentParser:
         p.add_argument("--user-dir", default=default, help=f"Azahar's user folder (default: {default_user_dir()})")
         p.add_argument("--library", default=default, help=f"the mod library (default: <user dir>/{LIBRARY})")
         p.add_argument("--code-library", default=default, help=argparse.SUPPRESS)
+        p.add_argument("--program-id", default=default,
+                       help="the game: 0004000000126300 (USA) or 0004000000126100 (Europe); default: the one "
+                            "whose update is installed")
 
     ap = Parser(prog="mods.py", description=__doc__.splitlines()[0])
     common(ap, None)
@@ -2689,6 +2742,10 @@ def main(argv=None) -> int:
         if command == "undeploy":
             ns.undeploy = True
         user_dir = os.path.abspath(ns.user_dir or default_user_dir())
+        try:
+            set_game(int(ns.program_id, 16) if ns.program_id else detect_game(user_dir))
+        except ValueError:
+            raise Error("usage", f"--program-id: {ns.program_id} isn't a hexadecimal title id")
         library = Library(os.path.abspath(ns.library or os.path.join(user_dir, LIBRARY)))
         ctx = Context(user_dir, library, mods_folder(user_dir),
                       os.path.abspath(ns.code_library) if ns.code_library else None,

@@ -151,8 +151,8 @@ void DrawSettings(State& s) {
         ImGui::EndCombo();
     }
 
-    Label("Texture packs", "Texture packs in load/textures/0004000000126300/ (the Mods screen's catalog "
-                           "installs them there).");
+    Label("Texture packs", "Texture packs in load/textures/<the game's program id>/ (0004000000126300 for "
+                           "the USA, 0004000000126100 for Europe; the Mods screen's catalog installs them there).");
     bool textures = c.custom_textures;
     if (Ui::Toggle(textures ? "On##custom_textures" : "Off##custom_textures", &textures)) {
         s.Change([&](App::Config& cfg) { cfg.custom_textures = textures; });

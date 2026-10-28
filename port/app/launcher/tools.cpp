@@ -214,9 +214,12 @@ std::vector<std::string> BuildCommand(const Python& python, const std::string& t
 }
 
 std::vector<std::string> ModsCommand(const Python& python, const std::string& tools,
-                                     const std::vector<std::string>& extra) {
+                                     const std::vector<std::string>& extra, u64 program_id) {
     std::vector<std::string> args = python.command;
     args.insert(args.end(), {"-u", tools + "/mods.py", "--json", "--user-dir", UserDir()});
+    if (program_id != 0) {
+        args.insert(args.end(), {"--program-id", fmt::format("{:016X}", program_id)});
+    }
     args.insert(args.end(), extra.begin(), extra.end());
     return args;
 }
