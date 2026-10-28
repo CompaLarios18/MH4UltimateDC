@@ -6,6 +6,8 @@
 #include <string>
 #include <vector>
 
+#include "util/types.h"
+
 namespace Launcher::Tools {
 
 /// The folder with build_game.py and mods.py, empty if there is none. Looked for in
@@ -37,9 +39,10 @@ std::string UserDir();
 std::vector<std::string> BuildCommand(const Python& python, const std::string& tools,
                                       const std::string& dump);
 
-/// mods.py --json --user-dir <user folder> ARGS...
+/// mods.py --json --user-dir <user folder> [--program-id <the game>] ARGS... (program_id 0: no
+/// game chosen yet, mods.py goes by the update installed)
 std::vector<std::string> ModsCommand(const Python& python, const std::string& tools,
-                                     const std::vector<std::string>& args);
+                                     const std::vector<std::string>& args, u64 program_id = 0);
 
 /// update.py --json ARGS... (the launcher's Update button)
 std::vector<std::string> UpdateCommand(const Python& python, const std::string& tools,
