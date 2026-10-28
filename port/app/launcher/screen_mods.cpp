@@ -1063,7 +1063,7 @@ void DrawMods(State& s) {
         }
         if (s.mods.code_state == "rebuild") {
             Ui::StatusLine(Ui::Status::Warn, "The code library needs building again", REBUILD_TEXT);
-            ImGui::BeginDisabled(busy || s.update.state != Checks::Update::State::Ok);
+            ImGui::BeginDisabled(busy || !s.update.Installed());
             if (Ui::AccentButton("Build the code library again")) {
                 s.StartBuild();
             }

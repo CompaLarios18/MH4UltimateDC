@@ -10,6 +10,20 @@
 
 namespace Launcher::Checks {
 
+const Region* FindRegion(u64 program_id) {
+    for (const Region& region : REGIONS) {
+        if (region.program_id == program_id) {
+            return &region;
+        }
+    }
+    return nullptr;
+}
+
+const Region& RegionOf(u64 program_id) {
+    const Region* region = FindRegion(program_id);
+    return region ? *region : REGIONS[0];
+}
+
 Game CheckGame(const std::string& path) {
     Game game;
     if (path.empty()) {
@@ -23,7 +37,7 @@ Game CheckGame(const std::string& path) {
     switch (header.state) {
     case App::GameHeader::State::Ok:
         game.program_id = header.program_id;
-        game.state = game.program_id == MH4U_USA ? Game::State::Ok : Game::State::OtherGame;
+        game.state = FindRegion(game.program_id) ? Game::State::Ok : Game::State::OtherGame;
         break;
     case App::GameHeader::State::Encrypted:
         // the header itself is readable: it says which game it is
@@ -50,21 +64,23 @@ std::string Describe(const Game& game) {
     case State::Encrypted:
         return fmt::format("This {} is encrypted. The port needs a decrypted dump of your own copy "
                            "(GodMode9 on your 3DS can make one).",
-                           game.program_id == MH4U_USA ? "copy of Monster Hunter 4 Ultimate"
+                           FindRegion(game.program_id) ? "copy of Monster Hunter 4 Ultimate"
                                                        : "game file");
     case State::OtherGame:
         return fmt::format("This is another 3DS game (program id {:016X}), not Monster Hunter 4 "
-                           "Ultimate for the USA ({:016X}), the version the port is made for.",
-                           game.program_id, MH4U_USA);
+                           "Ultimate for the USA ({:016X}) or Europe ({:016X}), the versions the "
+                           "port is made for.",
+                           game.program_id, REGIONS[0].program_id, REGIONS[1].program_id);
     case State::Ok:
-        return "Monster Hunter 4 Ultimate (USA), decrypted.";
+        return fmt::format("Monster Hunter 4 Ultimate ({}), decrypted.", RegionOf(game.program_id).name);
     }
     return "";
 }
 
-Update CheckUpdate() {
+Update CheckUpdate(u64 program_id) {
+    const Region& region = RegionOf(program_id);
     Update update;
-    const App::InstalledTitle title = App::Runtime().FindInstalledTitle(MH4U_UPDATE);
+    const App::InstalledTitle title = App::Runtime().FindInstalledTitle(region.update_id);
     if (!title.found) {
         return update;
     }
@@ -74,7 +90,7 @@ Update CheckUpdate() {
         update.content.clear();
         return update;
     }
-    update.state = update.version == UPDATE_VERSION ? Update::State::Ok : Update::State::OtherVersion;
+    update.state = update.version == region.update_version ? Update::State::Ok : Update::State::OtherVersion;
     return update;
 }
 
@@ -83,7 +99,12 @@ std::string VersionText(u16 version) {
     return fmt::format("{}.{}.{}", version >> 10, (version >> 4) & 0x3F, version & 0xF);
 }
 
-std::string CheckUpdateCia(const std::string& path) {
+std::string UpdateName(u64 program_id) {
+    return "v" + VersionText(RegionOf(program_id).update_version);
+}
+
+std::string CheckUpdateCia(const std::string& path, u64 program_id) {
+    const Region& region = RegionOf(program_id);
     std::optional<App::CiaInfo> info;
     switch (App::Runtime().CheckCia(path, info)) {
     case App::CiaResult::Ok:
@@ -97,21 +118,25 @@ std::string CheckUpdateCia(const std::string& path) {
         return "This file isn't a CIA the app can read.";
     }
     if (info) {
-        if (info->title_id != MH4U_UPDATE) {
+        if (info->title_id != region.update_id) {
+            for (const Region& other : REGIONS) {
+                if (info->title_id == other.update_id) {
+                    return fmt::format("This .cia is the update for {}, but your game is the {} one: "
+                                       "choose the update of the same region.",
+                                       other.name, region.name);
+                }
+            }
             return fmt::format("This .cia is title {:016X}, not Monster Hunter 4 Ultimate's update "
                                "({:016X}).",
-                               info->title_id, MH4U_UPDATE);
+                               info->title_id, region.update_id);
         }
-        if (info->version != UPDATE_VERSION) {
-            return fmt::format("This is Monster Hunter 4 Ultimate's update v{}; the port is made for "
-                               "v{}.",
-                               VersionText(info->version), VersionText(UPDATE_VERSION));
-        }
+        // another version number is no reason to refuse it: a decrypted .cia often says v1.0.0
+        // (see Update::Installed); building the code library checks the code itself
     }
     return "";
 }
 
-std::string LibraryPath() {
+std::string LibraryPath(u64 program_id) {
 #if defined(_WIN32)
     constexpr const char* ext = "dll";
 #elif defined(__APPLE__)
@@ -120,7 +145,7 @@ std::string LibraryPath() {
     constexpr const char* ext = "so";
 #endif
     return fmt::format("{}recomp/{:016X}.{}", App::Runtime().UserDir(),
-                       MH4U_USA, ext);
+                       RegionOf(program_id).program_id, ext);
 }
 
 Code CodeFromCheck(int exit_code, const std::string& output) {
