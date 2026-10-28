@@ -106,7 +106,7 @@ enum { RC_TRAP_UNDEF = 1, RC_TRAP_UNSUPPORTED = 2, RC_TRAP_BKPT = 3, RC_TRAP_BAD
 
 /* Recompiled code can also be built as a shared library (runtime/rc_dll.c) and loaded by
  * the host at run time; it then gets the callbacks above from this table. */
-#define RC_HOST_VERSION 5
+#define RC_HOST_VERSION 6
 typedef struct RHost {
     u32 version;            /* RC_HOST_VERSION */
     u32 ctx_size;           /* sizeof(RCtx) as the host sees it */
@@ -138,6 +138,8 @@ typedef struct RCodeInfo {
     u32 text_base, text_size, text_crc32;   /* the code this was recompiled from */
     u64 title_id;              /* its program id (0 if unknown) */
     const u32 *hook_addrs;     /* hook points, sorted */
+    const char *const *hook_names;   /* their names in config/hooks.txt, in the same order: a host
+                                        finds a hook by name in any version of the game */
     u32 hook_count;
     int (*set_hook)(u32 addr, RHookFn hook);   /* 0 if addr isn't a hook point; NULL removes */
     u32 *tunables;             /* tunables (rc_tunables): current values, the host may write */
