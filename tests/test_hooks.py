@@ -75,6 +75,9 @@ def test_hook_points(tmp_path):
     table = (out / "src" / "table.c").read_text()
     assert "rc_hook_count = 2;" in table
     add1, thumb_sub = names["add1"] & ~1, names["thumb_sub"] & ~1
+    # the names come in the order of the addresses, for a host that finds them by name (another version)
+    first, second = sorted([(add1, "add1"), (thumb_sub, "thumb_sub")])
+    assert f'rc_hook_names[] = {{"{first[1]}", "{second[1]}"}};' in table
     assert f"static void fb_{add1:08x}(RCtx *ctx)" in "".join(p.read_text() for p in (out / "src").glob("f*.c"))
 
     size = (len(code) + 0x10000 + 0xFFF) & ~0xFFF
