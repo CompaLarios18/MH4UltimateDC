@@ -32,6 +32,9 @@ import mt_dti  # noqa: E402
 
 COLUMNS = ["address", "size", "mode", "category", "name", "status", "batch", "notes"]
 KEEP_FROM_EXISTING = ("status", "batch", "notes")
+# The statuses the tool itself gives (by category): recomputed on a rebuild, so that a function a
+# rebuild newly classifies sdk becomes replace. Any other status was set by someone and is kept.
+DEFAULT_STATUSES = frozenset({"todo", "replace"})
 
 # Names (config/symbols.txt) of C runtime and C library functions, matched exactly: a prefix
 # such as "free" or "exit" would also take game functions (freeList, exitQuest).
@@ -114,7 +117,7 @@ def build(code: bytes, header: exh.ExHeader, functions: list[dict], symbols: dic
         old = existing.get(addr)
         if old:
             for k in KEEP_FROM_EXISTING:
-                if old.get(k):
+                if old.get(k) and not (k == "status" and old[k] in DEFAULT_STATUSES):
                     row[k] = old[k]
         rows.append(row)
     if propagate_sdk:
@@ -126,7 +129,8 @@ def build(code: bytes, header: exh.ExHeader, functions: list[dict], symbols: dic
 def propagate(code: bytes, base: int, functions: list[dict], rows: list[dict], existing: dict[int, dict]) -> None:
     """Marks sdk an unknown ARM function that makes at least one direct call and calls only sdk
     functions, until nothing changes (an SDK wrapper of an SDK wrapper). Thumb functions are left
-    alone: calls_target and this decode ARM BLs only. A status the existing table set is kept."""
+    alone: calls_target and this decode ARM BLs only. A status someone set in the existing table
+    is kept."""
     by_addr = {int(r["address"], 16): r for r in rows}
     calls = {int(f["address"], 16): arm_call_targets(code, base, int(f["address"], 16), int(f["size"], 16))
              for f in functions if f["mode"] == "arm"}
@@ -139,7 +143,7 @@ def propagate(code: bytes, base: int, functions: list[dict], rows: list[dict], e
                 continue
             if all(t in by_addr and by_addr[t]["category"] == "sdk" for t in targets):
                 row["category"] = "sdk"
-                if not (existing.get(addr) or {}).get("status"):
+                if (existing.get(addr) or {}).get("status", "todo") in DEFAULT_STATUSES:
                     row["status"] = "replace"
                 changed = True
 

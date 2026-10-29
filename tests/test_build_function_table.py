@@ -56,6 +56,18 @@ def test_existing_status_is_preserved(tmp_path):
     assert bft.read_tsv(str(out))[2]["batch"] == "pilot-1"
 
 
+def test_default_status_follows_a_new_category():
+    # a rebuild that newly finds a function sdk makes it replace, even though the old table's
+    # status was the default todo; a status someone set stays
+    code, header, funcs = setup()
+    existing = {BASE: {"status": "todo"}, BASE + 0x60: {"status": "blocked"}, BASE + 0x40: {"status": "replace"}}
+    rows = bft.build(code, header, funcs, {}, CTOR, existing)
+    by = {int(r["address"], 16): r for r in rows}
+    assert by[BASE]["status"] == "replace"
+    assert by[BASE + 0x60]["status"] == "blocked"
+    assert by[BASE + 0x40]["category"] == "unknown" and by[BASE + 0x40]["status"] == "todo"
+
+
 def test_load_symbols(tmp_path):
     p = tmp_path / "symbols.txt"
     p.write_text("# comment\n0x00100000 entry   # note\n\n0x005bfa94 MtDTI::MtDTI\n")
