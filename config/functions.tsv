@@ -148,7 +148,7 @@ address	size	mode	category	name	status	batch	notes
 0x001045ee	0x8	thumb	unknown		todo		
 0x001045f6	0xc	thumb	unknown		todo		
 0x00104604	0x10c	arm	sdk		replace		
-0x001046d0	0x44	arm	unknown		todo		
+0x001046d0	0x44	arm	unknown	mtMain	todo		
 0x00104718	0x2c	arm	unknown		todo		
 0x0010474c	0x4c	arm	unknown		todo		
 0x001047a0	0x20	arm	unknown		todo		
@@ -162,7 +162,7 @@ address	size	mode	category	name	status	batch	notes
 0x001059a8	0xd8	arm	unknown		todo		
 0x00105a88	0xc	arm	unknown		todo		
 0x00105a98	0x34	arm	unknown		todo		
-0x00105acc	0x74	arm	unknown		todo		
+0x00105acc	0x74	arm	unknown	mtMainLoop	todo		
 0x00105b48	0x100	arm	unknown		todo		
 0x00105c74	0x158	arm	unknown		todo		
 0x00105ddc	0x8	arm	unknown		todo		
@@ -179,7 +179,7 @@ address	size	mode	category	name	status	batch	notes
 0x0010635c	0x1b4	arm	unknown		todo		
 0x00106518	0x34	arm	unknown		todo		
 0x00106550	0x100	arm	unknown		todo		
-0x0010665c	0xac	arm	unknown		todo		
+0x0010665c	0xac	arm	unknown	fs_Initialize	todo		
 0x00106718	0x50	arm	unknown		todo		
 0x0010676c	0x38	arm	unknown		todo		
 0x001067a8	0x2c	arm	unknown		todo		
@@ -224,7 +224,7 @@ address	size	mode	category	name	status	batch	notes
 0x0010772c	0x34	arm	unknown		todo		
 0x00107760	0x48	arm	unknown		todo		
 0x001077b0	0x48	arm	unknown		todo		
-0x00107800	0x24	arm	unknown		todo		
+0x00107800	0x24	arm	unknown	fs_SetSession	todo		
 0x0010782c	0x2c	arm	sdk		replace		
 0x0010785c	0xc	arm	unknown		todo		
 0x0010786c	0x18	arm	unknown		todo		
@@ -236,7 +236,7 @@ address	size	mode	category	name	status	batch	notes
 0x00107b14	0x74	arm	unknown		todo		
 0x00107b8c	0x6c	arm	unknown		todo		
 0x00107bfc	0x64	arm	sdk		replace		
-0x00107c6c	0x118	arm	unknown		todo		
+0x00107c6c	0x118	arm	unknown	hid_Initialize	todo		
 0x00107d94	0xb0	arm	sdk		replace		
 0x00107e50	0x7c	arm	unknown		todo		
 0x00107edc	0x8c	arm	unknown		todo		
@@ -268,10 +268,10 @@ address	size	mode	category	name	status	batch	notes
 0x00109080	0x48	arm	unknown		todo		
 0x001090c8	0x44	arm	unknown		todo		
 0x00109118	0x64	arm	unknown		todo		
-0x0010919c	0x18	arm	sdk		replace		
-0x001091b4	0x24	arm	sdk		replace		
+0x0010919c	0x18	arm	sdk	svcCreateEvent	replace		
+0x001091b4	0x24	arm	sdk	svcCreateThread	replace		
 0x001091d8	0x1c	arm	sdk		replace		
-0x001091f4	0x18	arm	sdk		replace		
+0x001091f4	0x18	arm	sdk	svcGetThreadId	replace		
 0x0010920c	0xc	arm	unknown		todo		
 0x00109218	0x68	arm	unknown		todo		
 0x00109284	0x74	arm	unknown		todo		
@@ -306,12 +306,12 @@ address	size	mode	category	name	status	batch	notes
 0x00109f4c	0x28	arm	unknown		todo		
 0x00109f7c	0x34	arm	unknown		todo		
 0x00109fb0	0x58	arm	unknown		todo		
-0x0010a010	0x74	arm	sdk		replace		
+0x0010a010	0x74	arm	sdk	hidUser_GetIPCHandles	replace		
 0x0010a08c	0x30	arm	sdk		replace		
 0x0010a0c4	0x34	arm	sdk		replace		
 0x0010a100	0x10	arm	unknown		todo		
-0x0010a110	0x108	arm	unknown		todo		
-0x0010a234	0x28	arm	unknown		todo		
+0x0010a110	0x108	arm	unknown	srv_Initialize	todo		
+0x0010a234	0x28	arm	unknown	srv_GetServiceHandleChecked	todo		
 0x0010a268	0x38	arm	sdk		replace		
 0x0010a2a4	0x30	arm	sdk		replace		
 0x0010a2dc	0x10	arm	unknown		todo		
@@ -346,8 +346,8 @@ address	size	mode	category	name	status	batch	notes
 0x0010b878	0x14	arm	unknown		todo		
 0x0010b88c	0xc	arm	unknown		todo		
 0x0010b898	0x20	arm	unknown		todo		
-0x0010b8c0	0x18	arm	sdk		replace		
-0x0010b8d8	0x24	arm	sdk		replace		
+0x0010b8c0	0x18	arm	sdk	svcConnectToPort	replace		
+0x0010b8d8	0x24	arm	sdk	svcWaitSynchronizationN	replace		
 0x0010b8fc	0x20	arm	unknown		todo		
 0x0010b91c	0x40	arm	unknown		todo		
 0x0010b95c	0x18	arm	unknown		todo		
@@ -388,7 +388,7 @@ address	size	mode	category	name	status	batch	notes
 0x0010c8d8	0x29c	arm	sdk		replace		
 0x0010cb94	0x44	arm	sdk		replace		
 0x0010cbe0	0x38	arm	sdk		replace		
-0x0010cc1c	0x54	arm	sdk		replace		
+0x0010cc1c	0x54	arm	sdk	srv_GetServiceHandle	replace		
 0x0010cc84	0xc	arm	unknown		todo		
 0x0010cc94	0x20	arm	unknown		todo		
 0x0010cca4	0xc	arm	unknown		todo		
@@ -440,13 +440,13 @@ address	size	mode	category	name	status	batch	notes
 0x0010d880	0x40	arm	unknown		todo		
 0x0010d8d4	0x48	arm	sdk		replace		
 0x0010d91c	0x18	arm	sdk		replace		
-0x0010d934	0xc	arm	sdk		replace		
+0x0010d934	0xc	arm	sdk	svcSleepThread	replace		
 0x0010d940	0x50	arm	unknown		todo		
 0x0010d990	0x1c	arm	unknown		todo		
 0x0010d9ac	0x158	arm	unknown		todo		
-0x0010db0c	0x5c	arm	sdk		replace		
+0x0010db0c	0x5c	arm	sdk	fsUser_OpenArchive	replace		
 0x0010db6c	0x2c	arm	sdk		replace		
-0x0010db9c	0x9c	arm	sdk		replace		
+0x0010db9c	0x9c	arm	sdk	fsUser_OpenFileDirectly	replace		
 0x0010dc3c	0x28	arm	unknown		todo		
 0x0010dc70	0xa4	arm	unknown		todo		
 0x0010dd18	0x1b0	arm	unknown		todo		
@@ -479,7 +479,7 @@ address	size	mode	category	name	status	batch	notes
 0x0010e810	0xa0	arm	unknown		todo		
 0x0010e8b0	0xc8	arm	unknown		todo		
 0x0010e97c	0x2b0	arm	unknown		todo		
-0x0010ec6c	0x28	arm	runtime	__aeabi_lasr	done	pilot-1	src/unsorted/func_0010ec6c.c; difftest 1000/1000; runtime helper __aeabi_lasr
+0x0010ec6c	0x28	arm	sdk	__aeabi_lasr	done	pilot-1	src/unsorted/func_0010ec6c.c; difftest 1000/1000; runtime helper __aeabi_lasr
 0x0010ec94	0xd4	arm	unknown		todo		
 0x0010ed68	0x74	arm	unknown		todo		
 0x0010eddc	0xf4	arm	unknown		todo		
@@ -516,7 +516,7 @@ address	size	mode	category	name	status	batch	notes
 0x0010fba8	0x34	arm	sdk		replace		
 0x0010fbe4	0xc	arm	unknown		todo		
 0x0010fbf0	0x64	arm	unknown		todo		
-0x0010fc54	0x18	arm	sdk		replace		
+0x0010fc54	0x18	arm	sdk	svcArbitrateAddress	replace		
 0x0010fcd4	0x2c8	arm	unknown		todo		
 0x0011001c	0xdc	arm	unknown		todo		
 0x001100f8	0x264	arm	unknown		todo		
@@ -542,15 +542,15 @@ address	size	mode	category	name	status	batch	notes
 0x00111128	0x10	arm	unknown		todo		
 0x00111138	0x388	arm	unknown		todo		
 0x001114c0	0x39c	arm	unknown		todo		
-0x00111864	0x1c	arm	sdk		replace		
-0x00111880	0x18	arm	sdk		replace		
-0x00111898	0x18	arm	sdk		replace		
-0x001118b0	0x18	arm	sdk		replace		
+0x00111864	0x1c	arm	sdk	svcCreateMemoryBlock	replace		
+0x00111880	0x18	arm	sdk	svcCreateMutex	replace		
+0x00111898	0x18	arm	sdk	svcCreateTimer	replace		
+0x001118b0	0x18	arm	sdk	svcDuplicateHandle	replace		
 0x001118c8	0x1c	arm	sdk		replace		
-0x001118e4	0x4	arm	unknown		todo		
+0x001118e4	0x4	arm	unknown	svcGetSystemTick	todo		
 0x001118e8	0x8	arm	sdk		replace		
 0x001118f0	0x18	arm	sdk		replace		
-0x00111908	0x18	arm	sdk		replace		
+0x00111908	0x18	arm	sdk	svcSetTimer	replace		
 0x00111920	0xd4	arm	sdk		replace		
 0x001119f4	0x28	arm	unknown		todo		
 0x00111a1c	0xec	arm	unknown		todo		
@@ -967,7 +967,7 @@ address	size	mode	category	name	status	batch	notes
 0x001281b8	0x2f8	arm	unknown		todo		
 0x001284b4	0x228	arm	unknown		todo		
 0x001286dc	0xc8	arm	unknown		todo		
-0x001287a4	0x8	arm	unknown		todo		
+0x001287a4	0x8	arm	unknown	getQuestPanels	todo		
 0x001287b0	0xe4	arm	unknown		todo		
 0x00128898	0x128	arm	unknown		todo		
 0x001289c4	0x14	arm	unknown		todo		
@@ -1077,7 +1077,7 @@ address	size	mode	category	name	status	batch	notes
 0x0013ee48	0x14c	arm	unknown		todo		
 0x0013ef98	0x10c	arm	unknown		todo		
 0x0013f0a8	0x17c	arm	unknown		todo		
-0x0013f230	0x8	arm	unknown		todo		
+0x0013f230	0x8	arm	unknown	getQuestHud	todo		
 0x0013f23c	0x2c0	arm	unknown		todo		
 0x0013f4fc	0x60	arm	unknown		todo		
 0x0013f55c	0x110	arm	unknown		todo		
@@ -1924,7 +1924,7 @@ address	size	mode	category	name	status	batch	notes
 0x001a41d8	0xd0	arm	unknown		todo		
 0x001a42b0	0x10c	arm	unknown		todo		
 0x001a4450	0x188	arm	unknown		todo		
-0x001a45e4	0x11c	arm	unknown		todo		
+0x001a45e4	0x11c	arm	unknown	sVibration::sVibration	todo		
 0x001a4724	0x9c	arm	unknown		todo		
 0x001a4814	0xc	arm	unknown		todo		
 0x001a4828	0x94	arm	unknown		todo		
@@ -3797,7 +3797,7 @@ address	size	mode	category	name	status	batch	notes
 0x00285de0	0x44	arm	unknown		todo		
 0x00285eb4	0x30	arm	unknown		todo		
 0x00285f14	0x1a8	arm	unknown		todo		
-0x002860c0	0x2d4	arm	unknown		todo		
+0x002860c0	0x2d4	arm	unknown	cGUIInstance::createProperty	todo		
 0x00286410	0x4c	arm	unknown		todo		
 0x00286478	0x44	arm	unknown		todo		
 0x002864c0	0x44	arm	unknown		todo		
@@ -3841,7 +3841,7 @@ address	size	mode	category	name	status	batch	notes
 0x00288ba4	0x1e8	arm	unknown		todo		
 0x00288d94	0xe8	arm	unknown		todo		
 0x00288e80	0x9c	arm	unknown		todo		
-0x00288f4c	0x4c	arm	unknown		todo		
+0x00288f4c	0x4c	arm	unknown	PanelManager::isTapped	todo		
 0x00288f9c	0x10	arm	unknown		todo		
 0x00288fac	0x584	arm	unknown		todo		
 0x00289544	0x54	arm	unknown		todo		
@@ -3898,7 +3898,7 @@ address	size	mode	category	name	status	batch	notes
 0x0028e780	0x244	arm	unknown		todo		
 0x0028e9ec	0x838	arm	unknown		todo		
 0x0028f264	0x88	arm	unknown		todo		
-0x0028f2f0	0x130	arm	unknown		todo		
+0x0028f2f0	0x130	arm	unknown	PanelManager::touchAllowed	todo		
 0x0028f440	0x58	arm	unknown		todo		
 0x0028f4a0	0xd8	arm	unknown		todo		
 0x0028f588	0x164	arm	unknown		todo		
@@ -3937,7 +3937,7 @@ address	size	mode	category	name	status	batch	notes
 0x00294d50	0x1d4	arm	unknown		todo		
 0x00294f2c	0xfc	arm	unknown		todo		
 0x00295038	0x1b0	arm	unknown		todo		
-0x002951fc	0xf7c	arm	unknown		todo		
+0x002951fc	0xf7c	arm	unknown	PanelManager::processTouch	todo		
 0x00296248	0x54	arm	unknown		todo		
 0x0029629c	0xb8	arm	unknown		todo		
 0x00296358	0x2c4	arm	unknown		todo		
@@ -4078,7 +4078,7 @@ address	size	mode	category	name	status	batch	notes
 0x002a4314	0x80	arm	unknown		todo		
 0x002a4394	0x10	arm	unknown		todo		
 0x002a43a8	0xa4	arm	unknown		todo		
-0x002a4468	0x4f8	arm	unknown		todo		
+0x002a4468	0x4f8	arm	unknown	PanelManager::update	todo		
 0x002a49c4	0x88	arm	unknown		todo		
 0x002a4a68	0x18	arm	unknown		todo		
 0x002a4a84	0x30c	arm	unknown		todo		
@@ -4255,7 +4255,7 @@ address	size	mode	category	name	status	batch	notes
 0x002b0350	0x74	arm	unknown		todo		
 0x002b03cc	0x268	arm	unknown		todo		
 0x002b063c	0x1c	arm	unknown		todo		
-0x002b0658	0x6f0	arm	unknown		todo		
+0x002b0658	0x6f0	arm	unknown	sGameControl::createProperty	todo		
 0x002b0eac	0x5c	arm	unknown		todo		
 0x002b0f08	0xa0	arm	unknown		todo		
 0x002b0fc4	0x60	arm	unknown		todo		
@@ -4357,7 +4357,7 @@ address	size	mode	category	name	status	batch	notes
 0x002b5e28	0x68	arm	unknown		todo		
 0x002b5e84	0x90	arm	unknown		todo		
 0x002b5f28	0x118	arm	unknown		todo		
-0x002b6048	0x4c0	arm	unknown		todo		
+0x002b6048	0x4c0	arm	unknown	sGameControl::sGameControl	todo		
 0x002b6530	0xa4	arm	unknown		todo		
 0x002b65e0	0x34	arm	unknown		todo		
 0x002b67d0	0x474	arm	unknown		todo		
@@ -5267,7 +5267,7 @@ address	size	mode	category	name	status	batch	notes
 0x00300d60	0x118	arm	unknown		todo		
 0x00300e98	0x10	thumb	unknown		todo		
 0x00300eac	0x58	thumb	unknown		todo		
-0x00300f04	0x5c	arm	unknown		todo		
+0x00300f04	0x5c	arm	sdk	strlen	replace		
 0x00300f64	0x14	thumb	unknown		todo		
 0x00300f78	0x3c	thumb	unknown		todo		
 0x00300fb4	0xc	thumb	unknown		todo		
@@ -5715,11 +5715,11 @@ address	size	mode	category	name	status	batch	notes
 0x0032dfc0	0x8c	arm	unknown		todo		
 0x0032e1dc	0x114	arm	unknown		todo		
 0x0032e30c	0x28	arm	unknown		todo		
-0x0032e338	0x88	arm	unknown		todo		
+0x0032e338	0x88	arm	unknown	uMotionCamera::getProjMatrix	todo		
 0x0032e3d4	0x74c	arm	unknown		todo		
 0x0032eb34	0x44	arm	unknown		todo		
 0x0032eb84	0x3c	arm	unknown		todo		
-0x0032ebc0	0x71c	arm	unknown		todo		
+0x0032ebc0	0x71c	arm	unknown	uMotionCamera::createProperty	todo		
 0x0032f3d4	0x294	arm	unknown		todo		
 0x0032f67c	0xcc	arm	unknown		todo		
 0x0032f758	0x50	arm	unknown		todo		
@@ -11701,7 +11701,7 @@ address	size	mode	category	name	status	batch	notes
 0x00564784	0xb0	arm	unknown		todo		
 0x00564850	0xec	arm	sdk		replace		
 0x00564950	0x44	arm	unknown		todo		
-0x00564998	0x214	arm	sdk		replace		
+0x00564998	0x214	arm	sdk	uds_Initialize	replace		
 0x00564bd4	0x120	arm	sdk		replace		
 0x00564d0c	0x60	arm	unknown		todo		
 0x00564d78	0x6c	arm	unknown		todo		
@@ -11932,7 +11932,7 @@ address	size	mode	category	name	status	batch	notes
 0x0056c790	0x130	arm	unknown		todo		
 0x0056c8c4	0x68	arm	unknown		todo		
 0x0056c97c	0xf0	arm	unknown		todo		
-0x0056ca84	0xf0	arm	unknown		todo		
+0x0056ca84	0xf0	arm	unknown	gsp_Initialize	todo		
 0x0056cb8c	0x7c	arm	unknown		todo		
 0x0056cc0c	0x10	arm	unknown		todo		
 0x0056cc20	0x60	arm	unknown		todo		
@@ -11950,15 +11950,15 @@ address	size	mode	category	name	status	batch	notes
 0x0056d14c	0xac	arm	unknown		todo		
 0x0056d1f8	0x24	arm	unknown		todo		
 0x0056d220	0x24	arm	unknown		todo		
-0x0056d24c	0x1d8	arm	unknown		todo		
-0x0056d43c	0x148	arm	sdk		replace		
+0x0056d24c	0x1d8	arm	unknown	gsp_SetupInterrupts	todo		
+0x0056d43c	0x148	arm	sdk	gsp_InterruptThread	replace		
 0x0056d594	0x48	arm	unknown		todo		
 0x0056d5dc	0xec	arm	sdk		replace		
 0x0056d6c8	0x68	arm	unknown		todo		
 0x0056d734	0x34	arm	unknown		todo		
 0x0056d768	0x14	arm	unknown		todo		
 0x0056d780	0x74	arm	unknown		todo		
-0x0056d7f4	0x48	arm	unknown		todo		
+0x0056d7f4	0x48	arm	unknown	gsp_SetInterruptCallback	todo		
 0x0056d840	0x10	arm	unknown		todo		
 0x0056d854	0x28	arm	unknown		todo		
 0x0056d87c	0x50	arm	sdk		replace		
@@ -11971,7 +11971,7 @@ address	size	mode	category	name	status	batch	notes
 0x0056da1c	0x2c	arm	sdk		replace		
 0x0056da4c	0x5c	arm	sdk		replace		
 0x0056daac	0x50	arm	sdk		replace		
-0x0056dafc	0x4c	arm	sdk		replace		
+0x0056dafc	0x4c	arm	sdk	gspGpu_RegisterInterruptRelayQueue	replace		
 0x0056db4c	0x28	arm	sdk		replace		
 0x0056db74	0xc	arm	unknown		todo		
 0x0056db84	0xc	arm	unknown		todo		
@@ -13203,7 +13203,7 @@ address	size	mode	category	name	status	batch	notes
 0x005b5738	0xcc	arm	unknown		todo		
 0x005b580c	0x1c	arm	unknown		todo		
 0x005b5840	0x48	arm	unknown		todo		
-0x005b5888	0x614	arm	unknown		todo		
+0x005b5888	0x614	arm	unknown	sGUI::createProperty	todo		
 0x005b5fe4	0x28	arm	unknown		todo		
 0x005b600c	0xd8	arm	unknown		todo		
 0x005b610c	0x114	arm	unknown		todo		
@@ -13212,13 +13212,13 @@ address	size	mode	category	name	status	batch	notes
 0x005b63d4	0x14	arm	unknown		todo		
 0x005b63e8	0x24	arm	unknown		todo		
 0x005b6418	0x3c	arm	unknown		todo		
-0x005b6454	0x400	arm	unknown		todo		
+0x005b6454	0x400	arm	unknown	sGUI::sGUI	todo		
 0x005b6878	0x28	arm	unknown		todo		
 0x005b68a4	0x1a8	arm	unknown		todo		
 0x005b6a58	0x34	arm	unknown		todo		
 0x005b6a98	0x24	arm	unknown		todo		
 0x005b6ac8	0x4e4	arm	unknown		todo		
-0x005b70b0	0x160	arm	unknown		todo		
+0x005b70b0	0x160	arm	unknown	sPad::readDevices	todo		
 0x005b7214	0x98	arm	unknown		todo		
 0x005b72ac	0x40	arm	unknown		todo		
 0x005b72ec	0x140	arm	unknown		todo		
@@ -13227,10 +13227,10 @@ address	size	mode	category	name	status	batch	notes
 0x005b75a0	0x9b4	arm	unknown		todo		
 0x005b8108	0x94	arm	unknown		todo		
 0x005b81a4	0x64	arm	unknown		todo		
-0x005b825c	0xe4	arm	unknown		todo		
+0x005b825c	0xe4	arm	unknown	sPad::update	todo		
 0x005b8348	0xe8	arm	unknown		todo		
-0x005b8438	0x364	arm	unknown		todo		
-0x005b87b0	0x1b8	arm	unknown		todo		
+0x005b8438	0x364	arm	unknown	sPad::processInput	todo		
+0x005b87b0	0x1b8	arm	unknown	sPad::sPad	todo		
 0x005b8990	0x28	arm	unknown		todo		
 0x005b89bc	0x15c	arm	unknown		todo		
 0x005b8b2c	0x78	arm	unknown		todo		
@@ -13271,14 +13271,14 @@ address	size	mode	category	name	status	batch	notes
 0x005bb1c8	0x6b8	arm	unknown		todo		
 0x005bb890	0x70	arm	unknown		todo		
 0x005bb908	0x20	arm	unknown		todo		
-0x005bb940	0x350	arm	unknown		todo		
+0x005bb940	0x350	arm	unknown	uGUI::createProperty	todo		
 0x005bbd1c	0xd0	arm	unknown		todo		
 0x005bbdec	0x240	arm	unknown		todo		
 0x005bc048	0x78	arm	unknown		todo		
 0x005bc0c4	0x18c	arm	unknown		todo		
 0x005bc26c	0x5c	arm	unknown		todo		
 0x005bc308	0x3c	arm	unknown		todo		
-0x005bc350	0x1e8	arm	unknown		todo		
+0x005bc350	0x1e8	arm	unknown	uGUI::draw	todo		
 0x005bc54c	0x20c	arm	unknown		todo		
 0x005bc780	0x30	arm	unknown		todo		
 0x005bc7b0	0x180	arm	unknown		todo		
@@ -13558,14 +13558,14 @@ address	size	mode	category	name	status	batch	notes
 0x005deb68	0x44	arm	unknown		todo		
 0x005debb0	0x1510	arm	unknown		todo		
 0x005e0214	0x1e8	arm	unknown		todo		
-0x005e040c	0x1dc0	arm	unknown		todo		
+0x005e040c	0x1dc0	arm	unknown	cDraw::setScene	todo		
 0x005e220c	0x50	arm	unknown		todo		
 0x005e2260	0x300	arm	unknown		todo		
 0x005e2564	0x40	arm	unknown		todo		
 0x005e25a4	0x110	arm	unknown		todo		
 0x005e26c8	0x1c8	arm	unknown		todo		
 0x005e2894	0xb8	arm	unknown		todo		
-0x005e294c	0x68	arm	unknown		todo		
+0x005e294c	0x68	arm	unknown	cDraw::setViewport	todo		
 0x005e29b4	0x40c	arm	unknown		todo		
 0x005e2dc0	0xb4	arm	unknown		todo		
 0x005e2e78	0xb4	arm	unknown		todo		
@@ -13578,7 +13578,7 @@ address	size	mode	category	name	status	batch	notes
 0x005e3368	0x64	arm	unknown		todo		
 0x005e33cc	0x1c8	arm	unknown		todo		
 0x005e35a4	0x154	arm	unknown		todo		
-0x005e3708	0xf8	arm	unknown		todo		
+0x005e3708	0xf8	arm	unknown	cDraw::cullAABB	todo		
 0x005e380c	0x108	arm	unknown		todo		
 0x005e3920	0x44	arm	unknown		todo		
 0x005e3964	0x718	arm	unknown		todo		
@@ -13587,7 +13587,7 @@ address	size	mode	category	name	status	batch	notes
 0x005e4358	0x17c	arm	unknown		todo		
 0x005e44f4	0xc	arm	unknown		todo		
 0x005e4500	0x58	arm	unknown		todo		
-0x005e4558	0x90	arm	unknown		todo		
+0x005e4558	0x90	arm	unknown	cDraw::cullSphere	todo		
 0x005e45ec	0xb0	arm	unknown		todo		
 0x005e46a0	0xe0	arm	unknown		todo		
 0x005e478c	0x1cc	arm	unknown		todo		
@@ -13678,7 +13678,7 @@ address	size	mode	category	name	status	batch	notes
 0x005ebc54	0x1284	arm	unknown		todo		
 0x005ecf38	0x4fc	arm	unknown		todo		
 0x005ed4c0	0x154	arm	unknown		todo		
-0x005ed628	0x24	arm	unknown		todo		
+0x005ed628	0x24	arm	unknown	makeNameKey	todo		
 0x005ed64c	0x8c	arm	unknown		todo		
 0x005ed6dc	0x4a0	arm	unknown		todo		
 0x005edb9c	0xac	arm	unknown		todo		
@@ -14249,7 +14249,7 @@ address	size	mode	category	name	status	batch	notes
 0x0062e06c	0x98	arm	unknown		todo		
 0x0062e110	0x34	arm	unknown		todo		
 0x0062e14c	0x34	arm	unknown		todo		
-0x0062e184	0xa0	arm	unknown		todo		
+0x0062e184	0xa0	arm	unknown	nDraw::DisplayBuffer::init	todo		
 0x0062e23c	0x1c	arm	unknown		todo		
 0x0062e260	0x5c	arm	unknown		todo		
 0x0062e2c8	0x48	arm	unknown		todo		
@@ -14313,7 +14313,7 @@ address	size	mode	category	name	status	batch	notes
 0x00632cbc	0x94	arm	unknown		todo		
 0x00632d54	0x24	arm	unknown		todo		
 0x00632d78	0x308	arm	unknown		todo		
-0x00633188	0x46c	arm	unknown		todo		
+0x00633188	0x46c	arm	unknown	nDraw::Scene::Scene	todo		
 0x00633660	0x28	arm	unknown		todo		
 0x0063368c	0x15c	arm	unknown		todo		
 0x006337ec	0x34	arm	unknown		todo		
@@ -14488,10 +14488,10 @@ address	size	mode	category	name	status	batch	notes
 0x006438d0	0xe8	arm	unknown		todo		
 0x006439c0	0x760	arm	unknown		todo		
 0x006442a4	0x38	arm	unknown		todo		
-0x006442f8	0x61c	arm	unknown		todo		
+0x006442f8	0x61c	arm	unknown	sMain::updateFrameTiming	todo		
 0x00644940	0x14	arm	unknown		todo		
 0x00644954	0x10	arm	unknown		todo		
-0x00644968	0x338	arm	unknown		todo		
+0x00644968	0x338	arm	unknown	sMain::sMain	todo		
 0x00644cec	0x50	arm	unknown		todo		
 0x00644d8c	0x28	arm	unknown		todo		
 0x00644de8	0x80	arm	unknown		todo		
@@ -14801,7 +14801,7 @@ address	size	mode	category	name	status	batch	notes
 0x00659c4c	0x34	arm	unknown		todo		
 0x00659c84	0x5b4	arm	unknown		todo		
 0x0065a2ac	0xc8	arm	unknown		todo		
-0x0065a378	0x58c	arm	unknown		todo		
+0x0065a378	0x58c	arm	unknown	aQuest::endSequence	todo		
 0x0065a974	0x1f8	arm	unknown		todo		
 0x0065aba4	0x138	arm	unknown		todo		
 0x0065acfc	0xc4	arm	unknown		todo		
@@ -14811,7 +14811,7 @@ address	size	mode	category	name	status	batch	notes
 0x0065b25c	0x388	arm	unknown		todo		
 0x0065b62c	0x66c	arm	unknown		todo		
 0x0065bcd0	0x464	arm	unknown		todo		
-0x0065c18c	0x3d0	arm	unknown		todo		
+0x0065c18c	0x3d0	arm	unknown	aQuest::playing	todo		
 0x0065c590	0x5ac	arm	unknown		todo		
 0x0065cbb8	0x270	arm	unknown		todo		
 0x0065ce60	0x1f0	arm	unknown		todo		
@@ -15690,12 +15690,12 @@ address	size	mode	category	name	status	batch	notes
 0x00694910	0x24	arm	unknown		todo		
 0x0069493c	0x28	arm	unknown		todo		
 0x00694968	0x34	arm	unknown		todo		
-0x006949a0	0x2a4	arm	unknown		todo		
+0x006949a0	0x2a4	arm	unknown	sMhPad::updateMenuInput	todo		
 0x00694c50	0x18	arm	unknown		todo		
 0x00694c68	0x18	arm	unknown		todo		
 0x00694c80	0x18	arm	unknown		todo		
-0x00694c98	0x55c	arm	unknown		todo		
-0x0069522c	0xa8	arm	unknown		todo		
+0x00694c98	0x55c	arm	unknown	sMhPad::update	todo		
+0x0069522c	0xa8	arm	unknown	sMhPad::sMhPad	todo		
 0x006952e0	0x38	arm	unknown		todo		
 0x00695320	0x34	arm	unknown		todo		
 0x00695358	0x1d0	arm	unknown		todo		
@@ -15845,7 +15845,7 @@ address	size	mode	category	name	status	batch	notes
 0x006a008c	0x8c	arm	unknown		todo		
 0x006a0120	0x84	arm	unknown		todo		
 0x006a01ac	0xa8	arm	unknown		todo		
-0x006a025c	0x10	arm	unknown		todo		
+0x006a025c	0x10	arm	unknown	QuestHolder::waitUnits	todo		
 0x006a026c	0x14	arm	unknown		todo		
 0x006a0280	0x20	arm	unknown		todo		
 0x006a02a0	0xd94	arm	unknown		todo		
@@ -15887,7 +15887,7 @@ address	size	mode	category	name	status	batch	notes
 0x006a3360	0x2c5c	arm	unknown		todo		
 0x006a61fc	0x50	arm	unknown		todo		
 0x006a6250	0x78	arm	unknown		todo		
-0x006a62c8	0x40	arm	unknown		todo		
+0x006a62c8	0x40	arm	unknown	QuestHolder::outcome	todo		
 0x006a6308	0x14	arm	unknown		todo		
 0x006a631c	0x78	arm	unknown		todo		
 0x006a63a4	0x94	arm	unknown		todo		
@@ -23141,7 +23141,7 @@ address	size	mode	category	name	status	batch	notes
 0x00ae5234	0x88	arm	unknown		todo		
 0x00ae52cc	0x68	arm	unknown		todo		
 0x00ae5334	0x58	arm	unknown		todo		
-0x00ae538c	0x134	arm	unknown		todo		
+0x00ae538c	0x134	arm	unknown	LayoutObject::setVisible	todo		
 0x00ae54c0	0x190	arm	unknown		todo		
 0x00ae5650	0x328	arm	unknown		todo		
 0x00ae5978	0x118	arm	unknown		todo		
@@ -23232,22 +23232,22 @@ address	size	mode	category	name	status	batch	notes
 0x00aedbf8	0x2c	arm	unknown		todo		
 0x00aedc28	0x1e0	arm	unknown		todo		
 0x00aede1c	0x54	arm	unknown		todo		
-0x00aede74	0xc4	arm	unknown		todo		
+0x00aede74	0xc4	arm	unknown	sApplet::sApplet	todo		
 0x00aedf44	0x28	arm	unknown		todo		
 0x00aedf70	0xa8	arm	unknown		todo		
 0x00aee024	0x34	arm	unknown		todo		
 0x00aee05c	0x44	arm	unknown		todo		
 0x00aee0a0	0xcc	arm	unknown		todo		
-0x00aee170	0x394	arm	unknown		todo		
-0x00aee5d4	0x814	arm	unknown		todo		
-0x00aeee2c	0xe10	arm	unknown		todo		
+0x00aee170	0x394	arm	unknown	sCamera::createProperty	todo		
+0x00aee5d4	0x814	arm	unknown	sCamera::draw	todo		
+0x00aeee2c	0xe10	arm	unknown	sCamera::update	todo		
 0x00aefc74	0x70	arm	unknown		todo		
-0x00aefd44	0x244	arm	unknown		todo		
-0x00af0038	0x6f0	arm	unknown		todo		
-0x00af084c	0x1560	arm	unknown		todo		
+0x00aefd44	0x244	arm	unknown	sCamera::Viewport::updateRegion	todo		
+0x00af0038	0x6f0	arm	unknown	sCamera::Viewport::createProperty	todo		
+0x00af084c	0x1560	arm	unknown	sCamera::Viewport::setupDraw	todo		
 0x00af1e84	0x44	arm	unknown		todo		
 0x00af1ed0	0x30	arm	unknown		todo		
-0x00af1f04	0x154	arm	unknown		todo		
+0x00af1f04	0x154	arm	unknown	sCamera::sCamera	todo		
 0x00af2078	0x68	arm	unknown		todo		
 0x00af20f0	0x50	arm	unknown		todo		
 0x00af2150	0xb0	arm	unknown		todo		
@@ -23268,17 +23268,17 @@ address	size	mode	category	name	status	batch	notes
 0x00af3850	0x20	arm	unknown		todo		
 0x00af3874	0x48	arm	unknown		todo		
 0x00af38c8	0x1c	arm	unknown		todo		
-0x00af38e4	0x260	arm	unknown		todo		
+0x00af38e4	0x260	arm	unknown	sEffect::sEffect	todo		
 0x00af3bbc	0x7c	arm	unknown		todo		
 0x00af3c44	0x5c	arm	unknown		todo		
 0x00af3cac	0xc	arm	unknown		todo		
 0x00af3cb8	0x44	arm	unknown		todo		
-0x00af3cfc	0x20	arm	unknown		todo		
+0x00af3cfc	0x20	arm	unknown	sLayout::screenToLayout	todo		
 0x00af3d30	0x10	arm	unknown		todo		
 0x00af3d40	0x10	arm	unknown		todo		
 0x00af3d54	0xc	arm	unknown		todo		
-0x00af3d60	0x43c	arm	unknown		todo		
-0x00af41b8	0x74	arm	unknown		todo		
+0x00af3d60	0x43c	arm	unknown	sLayout::beginViewport	todo		
+0x00af41b8	0x74	arm	unknown	sLayout::sLayout	todo		
 0x00af4240	0x80	arm	unknown		todo		
 0x00af42cc	0x64	arm	unknown		todo		
 0x00af433c	0x44	arm	unknown		todo		
@@ -23286,15 +23286,15 @@ address	size	mode	category	name	status	batch	notes
 0x00af4398	0x28	arm	unknown		todo		
 0x00af43c4	0x34	arm	unknown		todo		
 0x00af43fc	0x290	arm	unknown		todo		
-0x00af46c8	0x598	arm	unknown		todo		
+0x00af46c8	0x598	arm	unknown	sMhMain::createProperty	todo		
 0x00af4df8	0x218	arm	unknown		todo		
 0x00af5060	0x3c	arm	unknown		todo		
 0x00af50e0	0x40	arm	unknown		todo		
 0x00af5124	0x44	arm	unknown		todo		
 0x00af516c	0x44	arm	unknown		todo		
 0x00af51b4	0x4c	arm	unknown		todo		
-0x00af5250	0x348	arm	unknown		todo		
-0x00af55a4	0x6d0	arm	unknown		todo		
+0x00af5250	0x348	arm	unknown	sMhMain::frame	todo		
+0x00af55a4	0x6d0	arm	unknown	sMhMain::sMhMain	todo		
 0x00af5d24	0x28	arm	unknown		todo		
 0x00af5d50	0x398	arm	unknown		todo		
 0x00af60e4	0x28	arm	unknown		todo		
@@ -23338,12 +23338,12 @@ address	size	mode	category	name	status	batch	notes
 0x00af99fc	0x5c	arm	unknown		todo		
 0x00af9a60	0x2c	arm	unknown		todo		
 0x00af9a90	0xb4	arm	unknown		todo		
-0x00af9b48	0x5c	arm	unknown		todo		
+0x00af9b48	0x5c	arm	unknown	sPlayer::sPlayer	todo		
 0x00af9bac	0x40	arm	unknown		todo		
 0x00af9bf4	0x34	arm	unknown		todo		
-0x00af9c2c	0x310	arm	unknown		todo		
+0x00af9c2c	0x310	arm	unknown	uCamera::createProperty	todo		
 0x00af9f98	0x29c	arm	unknown		todo		
-0x00afa244	0x80	arm	unknown		todo		
+0x00afa244	0x80	arm	unknown	uCamera::uCamera	todo		
 0x00afa2e4	0x28	arm	unknown		todo		
 0x00afa310	0x60	arm	unknown		todo		
 0x00afa3d0	0x58	arm	unknown		todo		
@@ -23415,13 +23415,13 @@ address	size	mode	category	name	status	batch	notes
 0x00b042c0	0x1e4	arm	unknown		todo		
 0x00b044a4	0x70	arm	unknown		todo		
 0x00b04514	0x44	arm	unknown		todo		
-0x00b04558	0x50	arm	unknown		todo		
+0x00b04558	0x50	arm	unknown	uLayout::findIndex	todo		
 0x00b045ac	0x4	arm	unknown		todo		
 0x00b045b0	0x1c0	arm	unknown		todo		
-0x00b04774	0x94	arm	unknown		todo		
+0x00b04774	0x94	arm	unknown	uLayout::draw	todo		
 0x00b0480c	0x84	arm	unknown		todo		
 0x00b04898	0x8	arm	unknown		todo		
-0x00b048a0	0x18	arm	unknown		todo		
+0x00b048a0	0x18	arm	unknown	uLayout::getObject	todo		
 0x00b048b8	0x14c	arm	unknown		todo		
 0x00b04a10	0x258	arm	unknown		todo		
 0x00b04c6c	0x198	arm	unknown		todo		
@@ -23590,7 +23590,7 @@ address	size	mode	category	name	status	batch	notes
 0x00b0cd44	0x124	arm	unknown		todo		
 0x00b0ce70	0x48	arm	unknown		todo		
 0x00b0cebc	0x820	arm	unknown		todo		
-0x00b0d718	0x1c	arm	unknown		todo		
+0x00b0d718	0x1c	arm	unknown	Player::cameraDirectionHeld	todo		
 0x00b0d734	0x2cc0	arm	unknown		todo		
 0x00b1077c	0x3c	arm	unknown		todo		
 0x00b107bc	0x1c	arm	unknown		todo		
@@ -24315,10 +24315,10 @@ address	size	mode	category	name	status	batch	notes
 0x00b70e94	0x60	arm	unknown		todo		
 0x00b70efc	0x70	arm	unknown		todo		
 0x00b70f70	0x64	arm	unknown		todo		
-0x00b70ff0	0x16c	arm	unknown		todo		
+0x00b70ff0	0x16c	arm	unknown	MtMatrix::lookAt	todo		
 0x00b71164	0xfc	arm	unknown		todo		
 0x00b71268	0x4ac	arm	unknown		todo		
-0x00b7171c	0xf4	arm	unknown		todo		
+0x00b7171c	0xf4	arm	unknown	MtMatrix::perspective	todo		
 0x00b71828	0x18	arm	unknown		todo		
 0x00b71840	0xf8	arm	unknown		todo		
 0x00b7194c	0x58	arm	unknown		todo		
@@ -24544,11 +24544,11 @@ address	size	mode	category	name	status	batch	notes
 0x00b925c4	0x4c8	arm	unknown		todo		
 0x00b92adc	0x48	arm	unknown		todo		
 0x00b92b28	0x2e0	arm	unknown		todo		
-0x00b92e24	0x86c	arm	unknown		todo		
+0x00b92e24	0x86c	arm	unknown	QuestHud::updatePanels	todo		
 0x00b93738	0x1070	arm	unknown		todo		
 0x00b94804	0xdc	arm	unknown		todo		
 0x00b948f0	0x188	arm	unknown		todo		
-0x00b94a80	0x418	arm	unknown		todo		
+0x00b94a80	0x418	arm	unknown	QuestHud::panelTapped	todo		
 0x00b94ec8	0x238	arm	unknown		todo		
 0x00b9510c	0xa0	arm	unknown		todo		
 0x00b951b0	0x1c0	arm	unknown		todo		
@@ -24606,7 +24606,7 @@ address	size	mode	category	name	status	batch	notes
 0x00b9b340	0x21c	arm	unknown		todo		
 0x00b9b590	0x38	arm	unknown		todo		
 0x00b9b5cc	0x404	arm	unknown		todo		
-0x00b9ba38	0x5c	arm	unknown		todo		
+0x00b9ba38	0x5c	arm	unknown	QuestHud::updatePanelState	todo		
 0x00b9ba94	0x1a0	arm	unknown		todo		
 0x00b9bc98	0x25c	arm	unknown		todo		
 0x00b9bf04	0x2ec	arm	unknown		todo		
@@ -24638,7 +24638,7 @@ address	size	mode	category	name	status	batch	notes
 0x00b9ed30	0x628	arm	unknown		todo		
 0x00b9f3d4	0xac	arm	unknown		todo		
 0x00b9f484	0x3c	arm	unknown		todo		
-0x00b9f4c8	0x5c	arm	unknown		todo		
+0x00b9f4c8	0x5c	arm	unknown	panelSizeClass	todo		
 0x00b9f528	0x98	arm	unknown		todo		
 0x00b9f5c8	0xf4	arm	unknown		todo		
 0x00b9f6c0	0xf4	arm	unknown		todo		
@@ -25745,9 +25745,9 @@ address	size	mode	category	name	status	batch	notes
 0x00bf5748	0x34	arm	unknown		todo		
 0x00bf5780	0x1d0	arm	unknown		todo		
 0x00bf5964	0xe0	arm	unknown		todo		
-0x00bf5a4c	0x3fc	arm	unknown		todo		
+0x00bf5a4c	0x3fc	arm	unknown	sLtRender::buildFrame	todo		
 0x00bf5e74	0x11c	arm	unknown		todo		
-0x00bf5f9c	0x108	arm	unknown		todo		
+0x00bf5f9c	0x108	arm	unknown	sLtRender::flip	todo		
 0x00bf60b8	0x1f4	arm	unknown		todo		
 0x00bf62c4	0x20c	arm	unknown		todo		
 0x00bf64e8	0x6c	arm	unknown		todo		
@@ -25755,15 +25755,15 @@ address	size	mode	category	name	status	batch	notes
 0x00bf65b0	0x2c	arm	unknown		todo		
 0x00bf65e0	0x70	arm	unknown		todo		
 0x00bf6658	0x68	arm	unknown		todo		
-0x00bf672c	0x120	arm	unknown		todo		
-0x00bf685c	0x518	arm	unknown		todo		
+0x00bf672c	0x120	arm	unknown	sLtRender::submit	todo		
+0x00bf685c	0x518	arm	unknown	sLtRender::createProperty	todo		
 0x00bf6e6c	0xb0	arm	unknown		todo		
 0x00bf6f20	0xf0	arm	unknown		todo		
 0x00bf701c	0x25c	arm	unknown		todo		
 0x00bf72b0	0x1094	arm	unknown		todo		
-0x00bf83b0	0x4d8	arm	unknown		todo		
+0x00bf83b0	0x4d8	arm	unknown	sLtRender::bindRenderTarget	todo		
 0x00bf88c4	0x88	arm	unknown		todo		
-0x00bf894c	0x1ec	arm	unknown		todo		
+0x00bf894c	0x1ec	arm	unknown	sLtRender::present	todo		
 0x00bf8b20	0xfc	arm	unknown		todo		
 0x00bf8c28	0x34	arm	unknown		todo		
 0x00bf8c60	0x88	arm	unknown		todo		
@@ -25784,12 +25784,12 @@ address	size	mode	category	name	status	batch	notes
 0x00bfa31c	0xac	arm	unknown		todo		
 0x00bfa3c8	0x24	arm	unknown		todo		
 0x00bfa3ec	0x20	arm	unknown		todo		
-0x00bfa42c	0x21c	arm	unknown		todo		
+0x00bfa42c	0x21c	arm	unknown	sLtRender::initGraphics	todo		
 0x00bfa670	0x78	arm	unknown		todo		
-0x00bfa6f0	0xcc	arm	unknown		todo		
-0x00bfa7ec	0x102c	arm	unknown		todo		
+0x00bfa6f0	0xcc	arm	unknown	sLtRender::updateDisplaySkip	todo		
+0x00bfa7ec	0x102c	arm	unknown	sLtRender::execute	todo		
 0x00bfb95c	0x158	arm	unknown		todo		
-0x00bfbabc	0x65c	arm	unknown		todo		
+0x00bfbabc	0x65c	arm	unknown	sLtRender::sLtRender	todo		
 0x00bfc188	0x28	arm	unknown		todo		
 0x00bfc1b4	0x404	arm	unknown		todo		
 0x00bfc5ec	0x34	arm	unknown		todo		
@@ -25807,7 +25807,7 @@ address	size	mode	category	name	status	batch	notes
 0x00bfce24	0xac	arm	unknown		todo		
 0x00bfced0	0xf0	arm	unknown		todo		
 0x00bfcfc4	0x20	arm	unknown		todo		
-0x00bfcfd8	0x310	arm	unknown		todo		
+0x00bfcfd8	0x310	arm	unknown	sMhCamera::turnByInput	todo		
 0x00bfd2f8	0x54	arm	unknown		todo		
 0x00bfd34c	0x54	arm	unknown		todo		
 0x00bfd3a0	0xc8	arm	unknown		todo		
@@ -25817,7 +25817,7 @@ address	size	mode	category	name	status	batch	notes
 0x00bfd5a4	0x150	arm	unknown		todo		
 0x00bfd6f4	0x2c	arm	unknown		todo		
 0x00bfd724	0x27c	arm	unknown		todo		
-0x00bfd9b0	0xbc	arm	unknown		todo		
+0x00bfd9b0	0xbc	arm	unknown	sMhCamera::setupViewports	todo		
 0x00bfda74	0x1d8	arm	unknown		todo		
 0x00bfdc54	0x200	arm	unknown		todo		
 0x00bfde80	0x34	arm	unknown		todo		
@@ -25834,7 +25834,7 @@ address	size	mode	category	name	status	batch	notes
 0x00bfefc8	0x74	arm	unknown		todo		
 0x00bff03c	0x1d8	arm	unknown		todo		
 0x00bff23c	0x434	arm	unknown		todo		
-0x00bff694	0x1d0	arm	unknown		todo		
+0x00bff694	0x1d0	arm	unknown	sMhCamera::resetBehindPlayer	todo		
 0x00bff874	0x394	arm	unknown		todo		
 0x00bffc18	0x50	arm	unknown		todo		
 0x00bffc68	0x1dc	arm	unknown		todo		
@@ -25845,7 +25845,7 @@ address	size	mode	category	name	status	batch	notes
 0x00c00028	0x1b0	arm	unknown		todo		
 0x00c001f8	0x470	arm	unknown		todo		
 0x00c006a4	0x2ac	arm	unknown		todo		
-0x00c0095c	0x43c	arm	unknown		todo		
+0x00c0095c	0x43c	arm	unknown	sMhCamera::updatePlayerCamera	todo		
 0x00c00da8	0x14	arm	unknown		todo		
 0x00c00dbc	0xb8	arm	unknown		todo		
 0x00c00e78	0x24	arm	unknown		todo		
@@ -25906,15 +25906,15 @@ address	size	mode	category	name	status	batch	notes
 0x00c05a58	0x17c	arm	unknown		todo		
 0x00c05aec	0x1b0	arm	unknown		todo		
 0x00c05ca0	0x40	arm	unknown		todo		
-0x00c05ce4	0x2c4	arm	unknown		todo		
+0x00c05ce4	0x2c4	arm	unknown	sMhCamera::update	todo		
 0x00c05fbc	0x38c	arm	unknown		todo		
 0x00c06368	0x1bc	arm	unknown		todo		
 0x00c06524	0x304	arm	unknown		todo		
 0x00c06854	0x168	arm	unknown		todo		
 0x00c069c4	0x3c0	arm	unknown		todo		
 0x00c06da0	0x64	arm	unknown		todo		
-0x00c06e04	0x268	arm	unknown		todo		
-0x00c07070	0x248	arm	unknown		todo		
+0x00c06e04	0x268	arm	unknown	sMhCamera::updateQuestCamera	todo		
+0x00c07070	0x248	arm	unknown	sMhCamera::sMhCamera	todo		
 0x00c072cc	0x40	arm	unknown		todo		
 0x00c07314	0x34	arm	unknown		todo		
 0x00c07354	0x1c	arm	unknown		todo		
@@ -26076,11 +26076,11 @@ address	size	mode	category	name	status	batch	notes
 0x00c0f0a4	0x1c	arm	unknown		todo		
 0x00c0f0c0	0x2f4	arm	unknown		todo		
 0x00c0f3d4	0x4c	arm	unknown		todo		
-0x00c0f424	0xf0	arm	unknown		todo		
+0x00c0f424	0xf0	arm	unknown	sMhLayout::registerLayout	todo		
 0x00c0f518	0x18	arm	unknown		todo		
 0x00c0f538	0x24	arm	unknown		todo		
 0x00c0f55c	0x3c	arm	unknown		todo		
-0x00c0f598	0x20	arm	unknown		todo		
+0x00c0f598	0x20	arm	unknown	sMhLayout::findObject	todo		
 0x00c0f5b8	0x1c8	arm	unknown		todo		
 0x00c0f7a8	0x4c	arm	unknown		todo		
 0x00c0f7f4	0x90	arm	unknown		todo		
@@ -26091,9 +26091,9 @@ address	size	mode	category	name	status	batch	notes
 0x00c0fc14	0x110	arm	unknown		todo		
 0x00c0fd4c	0x1c8	arm	unknown		todo		
 0x00c0ff3c	0x1c8	arm	unknown		todo		
-0x00c1012c	0x3ac	arm	unknown		todo		
+0x00c1012c	0x3ac	arm	unknown	sMhLayout::loadQuestLayouts	todo		
 0x00c10518	0x84	arm	unknown		todo		
-0x00c105a4	0xd8	arm	unknown		todo		
+0x00c105a4	0xd8	arm	unknown	sMhLayout::loadQuestSubLayout	todo		
 0x00c10698	0x58	arm	unknown		todo		
 0x00c106f0	0x1c0	arm	unknown		todo		
 0x00c108d8	0x18c	arm	unknown		todo		
@@ -26113,7 +26113,7 @@ address	size	mode	category	name	status	batch	notes
 0x00c11788	0x8c	arm	unknown		todo		
 0x00c11820	0x84	arm	unknown		todo		
 0x00c118a4	0x80	arm	unknown		todo		
-0x00c11930	0x190	arm	unknown		todo		
+0x00c11930	0x190	arm	unknown	sMhLayout::sMhLayout	todo		
 0x00c11b00	0x80	arm	unknown		todo		
 0x00c11b88	0x34	arm	unknown		todo		
 0x00c11bc0	0x78	arm	unknown		todo		
@@ -26785,8 +26785,8 @@ address	size	mode	category	name	status	batch	notes
 0x00c461f8	0xb0	arm	unknown		todo		
 0x00c462b4	0x8c	arm	unknown		todo		
 0x00c46348	0x34	arm	unknown		todo		
-0x00c46380	0x58	arm	unknown		todo		
-0x00c463dc	0xfc	arm	unknown		todo		
+0x00c46380	0x58	arm	unknown	uMhCamera::getProjMatrix	todo		
+0x00c463dc	0xfc	arm	unknown	uMhCamera::createProperty	todo		
 0x00c464f0	0x50	arm	unknown		todo		
 0x00c46544	0x70	arm	unknown		todo		
 0x00c465b8	0x10c	arm	unknown		todo		
@@ -28857,7 +28857,7 @@ address	size	mode	category	name	status	batch	notes
 0x00cf916c	0x44	arm	unknown		todo		
 0x00cf91c0	0x48	arm	unknown		todo		
 0x00cf92d4	0x4c	arm	unknown		todo		
-0x00cf9340	0x20	arm	unknown		todo		
+0x00cf9340	0x20	arm	unknown	sPad::TouchStatus::getSample	todo		
 0x00cf9360	0x6c	arm	unknown		todo		
 0x00cf93fc	0x88	arm	unknown		todo		
 0x00cf94dc	0xc4	arm	unknown		todo		
@@ -29172,7 +29172,7 @@ address	size	mode	category	name	status	batch	notes
 0x00d037d0	0x54	arm	unknown		todo		
 0x00d03824	0xcc	arm	unknown		todo		
 0x00d038f0	0x48	arm	unknown		todo		
-0x00d03938	0x88	arm	unknown		todo		
+0x00d03938	0x88	arm	unknown	LayoutHit::contains	todo		
 0x00d039c0	0xb8	arm	unknown		todo		
 0x00d03a84	0x2c	arm	unknown		todo		
 0x00d03ab0	0x78	arm	unknown		todo		
@@ -29408,7 +29408,7 @@ address	size	mode	category	name	status	batch	notes
 0x00d0cba4	0x14	arm	unknown		todo		
 0x00d0cbbc	0x10	arm	unknown		todo		
 0x00d0cbcc	0x34	arm	unknown		todo		
-0x00d0cc00	0x60	arm	unknown		todo		
+0x00d0cc00	0x60	arm	unknown	sMhCamera::easeAngle	todo		
 0x00d0cc64	0x84	arm	unknown		todo		
 0x00d0ccf0	0xcc	arm	unknown		todo		
 0x00d0cdc0	0x20	arm	unknown		todo		
@@ -29612,7 +29612,7 @@ address	size	mode	category	name	status	batch	notes
 0x00d13de8	0x6dc	arm	unknown		todo		
 0x00d1455c	0x188	arm	unknown		todo		
 0x00d14728	0x2c	arm	unknown		todo		
-0x00d14760	0x170	arm	unknown		todo		
+0x00d14760	0x170	arm	unknown	tanf	todo		
 0x00d14910	0x90	arm	unknown		todo		
 0x00d149a0	0xc	arm	unknown		todo		
 0x00d149b8	0xc	arm	unknown		todo		
@@ -30612,7 +30612,7 @@ address	size	mode	category	name	status	batch	notes
 0x00d805b8	0x20c	arm	unknown		todo		
 0x00d807d0	0x108	arm	unknown		todo		
 0x00d808dc	0xd8	arm	unknown		todo		
-0x00d809bc	0x48	arm	unknown		todo		
+0x00d809bc	0x48	arm	unknown	gx_AddB2LTransferCommand	todo		
 0x00d80a08	0x70	arm	unknown		todo		
 0x00d80a7c	0x158	arm	unknown		todo		
 0x00d80be4	0x100	arm	unknown		todo		
@@ -30625,7 +30625,7 @@ address	size	mode	category	name	status	batch	notes
 0x00d8132c	0x12c	arm	unknown		todo		
 0x00d81460	0x174	arm	unknown		todo		
 0x00d81638	0x34	arm	unknown		todo		
-0x00d81674	0xb20	arm	unknown		todo		
+0x00d81674	0xb20	arm	unknown	gx_Initialize	todo		
 0x00d82318	0x30	arm	unknown		todo		
 0x00d82350	0x14	arm	unknown		todo		
 0x00d82368	0x5c	arm	unknown		todo		
@@ -30633,7 +30633,7 @@ address	size	mode	category	name	status	batch	notes
 0x00d823e0	0x3c	arm	unknown		todo		
 0x00d82420	0x44	arm	unknown		todo		
 0x00d82468	0x40	arm	unknown		todo		
-0x00d824ac	0x30	arm	unknown		todo		
+0x00d824ac	0x30	arm	unknown	gx_SetVSyncCallback	todo		
 0x00d824e0	0x178	arm	unknown		todo		
 0x00d82678	0x7c	arm	unknown		todo		
 0x00d82704	0x54	arm	unknown		todo		
@@ -30642,7 +30642,7 @@ address	size	mode	category	name	status	batch	notes
 0x00d82930	0x148	arm	unknown		todo		
 0x00d82a80	0x1d4	arm	unknown		todo		
 0x00d82c64	0x98	arm	unknown		todo		
-0x00d82d00	0x84	arm	unknown		todo		
+0x00d82d00	0x84	arm	unknown	gx_WaitVSync	todo		
 0x00d82d88	0x4	arm	unknown		todo		
 0x00d82d8c	0x4	arm	unknown		todo		
 0x00d82d90	0x4	arm	unknown		todo		
@@ -30686,7 +30686,7 @@ address	size	mode	category	name	status	batch	notes
 0x00d890a0	0x1ac	arm	unknown		todo		
 0x00d89254	0x19c	arm	unknown		todo		
 0x00d893f8	0x4c	arm	unknown		todo		
-0x00d89448	0x2a0	arm	unknown		todo		
+0x00d89448	0x2a0	arm	unknown	gx_CmdlistAddB2LTransfer	todo		
 0x00d896f0	0x118	arm	unknown		todo		
 0x00d89850	0x40	arm	unknown		todo		
 0x00d89894	0x40	arm	unknown		todo		
