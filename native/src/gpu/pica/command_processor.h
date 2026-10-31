@@ -70,6 +70,11 @@ public:
     u32 command_lists_processed() const {
         return lists_;
     }
+    // The words written to GPUREG_GAS_LUT_DATA by command lists since the processor was made
+    // (a count: the table itself is state().gas).
+    u64 gas_lut_writes() const {
+        return gas_lut_writes_;
+    }
 
 private:
     struct CommandList {
@@ -111,6 +116,7 @@ private:
     std::vector<gpu::RegisterWrite> writes_;
     u32 sequence_ = 0;
     u32 lists_ = 0;
+    u64 gas_lut_writes_ = 0;
 };
 
 } // namespace mh4n::gpu::pica

@@ -1,0 +1,4 @@
+# <array name> <file> [glslang options]
+# Compiled into ../trivial_vertex_spv.inc by: python3 tools/native/spirv_inc.py native/src/gpu/cpuvertex/shaders native/src/gpu/cpuvertex/trivial_vertex_spv.inc
+spv_trivial_vertex_clip trivial.vert -DUSE_CLIP_PLANES
+spv_trivial_vertex_noclip trivial.vert
