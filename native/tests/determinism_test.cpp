@@ -162,6 +162,10 @@ struct Sim {
 
 constexpr u64 kStart = kDeterministicStartTicks;
 
+// Azahar's MAX_SLICE_LENGTH (core_timing.h): BASE_CLOCK_RATE_ARM11 / 234, an int, so 268,111,856 / 234 rounded
+// down. Written out, not taken from the code under test (N3-32: the code had 1,145,774).
+constexpr u64 kAzaharSlice = 1145777;
+
 }  // namespace
 
 // ---- the pieces ----------------------------------------------------------------------------------------------
@@ -172,7 +176,7 @@ TEST_CASE("the virtual clock is the tick count, and a GameClock over it reads ex
     CHECK(clock.Now() == 0);
     // Steps of any size, among them ones whose nanoseconds are not whole: no tick is ever lost.
     u64 total = 0;
-    for (const u64 step : std::initializer_list<u64>{1, 2, 3, 7, 340, 946, 1614, 5825, 268111, 1145774,
+    for (const u64 step : std::initializer_list<u64>{1, 2, 3, 7, 340, 946, 1614, 5825, 268111, kAzaharSlice,
                                                      kStart, 1, 99999999}) {
         source.AdvanceTicks(step);
         total += step;
@@ -181,7 +185,7 @@ TEST_CASE("the virtual clock is the tick count, and a GameClock over it reads ex
     }
     // The nanoseconds the scheduler hands to the preemption source map back to the tick they came
     // from: the first tick at which the source reads them.
-    for (const u64 ahead : std::initializer_list<u64>{1, 2, 3, 100, 1145774, kStart + 5, total}) {
+    for (const u64 ahead : std::initializer_list<u64>{1, 2, 3, 100, kAzaharSlice, kStart + 5, total}) {
         const std::optional<s64> ns = clock.HostNsFor(total + ahead);
         REQUIRE(ns.has_value());
         CHECK(VirtualTimeSource::TicksAtOrAfterNs(*ns) == total + ahead);
@@ -293,10 +297,11 @@ TEST_CASE("Azahar's cycle costs of the system calls the game makes, and 0 for wh
     CHECK(SvcCycles(0x26) == 0);      // SignalAndWait: nullptr
     CHECK(SvcCycles(0x00) == 0);
     CHECK(SvcCycles(0xFF) == 0);
-    // Azahar's slice is 1,145,774 cycles; ours is the same to the microsecond.
-    CHECK(kMaxQuantumTicks > 1145774);
-    CHECK(NsToTicks(static_cast<u64>(kDeterministicSliceUs) * 1000) >= 1145774);
-    CHECK(NsToTicks(static_cast<u64>(kDeterministicSliceUs - 1) * 1000) < 1145774);
+    // Azahar's slice is 1,145,777 cycles; ours is the same, and the same to the microsecond in `--slice-us`.
+    CHECK(kDeterministicSliceTicks == kAzaharSlice);
+    CHECK(kMaxQuantumTicks > kAzaharSlice);
+    CHECK(NsToTicks(static_cast<u64>(kDeterministicSliceUs) * 1000) >= kAzaharSlice);
+    CHECK(NsToTicks(static_cast<u64>(kDeterministicSliceUs - 1) * 1000) < kAzaharSlice);
 }
 
 // ---- the options ----------------------------------------------------------------------------------------------
@@ -534,7 +539,35 @@ TEST_CASE("the thread-safe event of ScheduleEvent runs on its core two slices la
     });
     REQUIRE(sim.Run() == RunStatus::Stopped);
     CHECK(fired_core == 1);
-    CHECK(fired_at == asked + 2 * 1145774);  // MAX_SLICE_LENGTH * 2 after core 1's clock, to the tick
+    CHECK(fired_at == asked + 2 * kAzaharSlice);  // MAX_SLICE_LENGTH * 2 after core 1's clock, to the tick
+}
+
+TEST_CASE("a thread-safe event asked for from core 0 is due 2,291,554 ticks after core 1's clock, as the reference's (N3-32)") {
+    // The `nwm` asynchronous signal of the reference runner: a thread of core 0 makes the request, and
+    // ScheduleEvent(0, ..., core 1, thread_safe_mode) puts the event at core 1's GetTicks() + MAX_SLICE_LENGTH * 2.
+    // With a slice 3 ticks short the event came 6 ticks early, and at 120 fps in G3 the stretch it ends then moved
+    // core 0's timeline for good. The tick it is due at is looked up in core 1's queue once it is there.
+    Sim sim;
+    u64 asked = 0;
+    u64 queued_at = 0;
+    bool fired = false;
+    sim.Spawn(
+        0x30, 0,
+        [&](Guest& g) {
+            g.Tick();
+            asked = sim.CoreNow(1);
+            REQUIRE(kernel_detail::ScheduleThreadSafe(1, [&] { fired = true; }));
+            g.after_budget = [&] {
+                for (const auto& entry : sim.Time().Lockstep().events[1]) {
+                    queued_at = std::max(queued_at, std::get<0>(entry));
+                }
+            };
+            g.Burn(3 * kAzaharSlice);  // core 1 takes the event into its queue at its next Advance, then runs it
+        },
+        /*block=*/20);
+    REQUIRE(sim.Run() == RunStatus::Stopped);
+    CHECK(queued_at == asked + 2291554);
+    CHECK(fired);
 }
 
 TEST_CASE("an event due inside the stretch that is running ends the stretch at that tick (ForceExceptionCheck)") {
@@ -633,7 +666,7 @@ TEST_CASE("a core that is no more than 100 ticks behind is not waited for: both 
     const Behind b = CoreBehind(0x35, 0, 0x1234);
     CHECK(b.c0 == kStart + 980);
     CHECK(b.c1 == kStart + 1001);
-    CHECK(b.stretch_end == b.c0 + 1145774);
+    CHECK(b.stretch_end == b.c0 + kAzaharSlice);
 }
 
 TEST_CASE("RunLoop's tolerance is exact: 100 ticks behind is not waited for, 101 is") {
@@ -641,14 +674,14 @@ TEST_CASE("RunLoop's tolerance is exact: 100 ticks behind is not waited for, 101
     // test of Azahar's core.cpp is `max_delay > min_delay` with min_delay = 100.
     const Behind at_100 = CoreBehind(0x35, 0, 0x1234, 80);
     REQUIRE(at_100.c1 - at_100.c0 == 100);
-    CHECK(at_100.stretch_end == at_100.c0 + 1145774);  // both cores go on side by side, for a whole slice
+    CHECK(at_100.stretch_end == at_100.c0 + kAzaharSlice);  // both cores go on side by side, for a whole slice
     const Behind at_101 = CoreBehind(0x35, 0, 0x1234, 81);
     REQUIRE(at_101.c1 - at_101.c0 == 101);
     CHECK(at_101.stretch_end == at_101.c1);  // core 0 runs alone for the 101 ticks of the difference
     // (and the cases of 99 and 102 sit on the same sides)
     const Behind at_99 = CoreBehind(0x35, 0, 0x1234, 79);
     REQUIRE(at_99.c1 - at_99.c0 == 99);
-    CHECK(at_99.stretch_end == at_99.c0 + 1145774);
+    CHECK(at_99.stretch_end == at_99.c0 + kAzaharSlice);
     const Behind at_102 = CoreBehind(0x35, 0, 0x1234, 82);
     REQUIRE(at_102.c1 - at_102.c0 == 102);
     CHECK(at_102.stretch_end == at_102.c1);
@@ -669,7 +702,7 @@ TEST_CASE("thread-safe events enter their core's queue after what it holds, in t
     std::vector<int> order;
     sim.Spawn(0x30, 0, [&](Guest& g) {
         g.Tick();
-        const u64 due = sim.CoreNow(0) + 2 * 1145774;
+        const u64 due = sim.CoreNow(0) + 2 * kAzaharSlice;
         REQUIRE(kernel_detail::ScheduleThreadSafe(0, [&] { order.push_back(1); }));
         REQUIRE(kernel_detail::ScheduleThreadSafe(0, [&] { order.push_back(2); }));
         sim.GetKernel().ScheduleAt(due, [&] { order.push_back(3); });
@@ -718,16 +751,16 @@ TEST_CASE("the next event of the other core ends the stretch of this one at its 
             g.after_budget = [&] { ends.insert(sim.Time().Lockstep().stretch_end); };
             g.Tick();
             kernel_detail::ScheduleOnCore(1);
-            due = sim.CoreNow(1) + 1145774 + 1145774 / 2;
+            due = sim.CoreNow(1) + kAzaharSlice + kAzaharSlice / 2;
             sim.GetKernel().ScheduleAt(due, [] {});
-            g.Burn(3 * 1145774);
+            g.Burn(3 * kAzaharSlice);
         },
         /*block=*/20);
     REQUIRE(sim.Run() == RunStatus::Stopped);
     CHECK(ends.count(due) == 1);
 }
 
-TEST_CASE("the longest stretch is Azahar's 1,145,774 ticks when both cores have an event far off") {
+TEST_CASE("the longest stretch is Azahar's 1,145,777 ticks when both cores have an event far off") {
     // Timer::GetMaxSliceLength is the time to the core's next event, MAX_SLICE_LENGTH when it has none; the cap of the
     // stretch is the shortest of both cores' and the slice. With an event on each core, far off, it is the slice itself
     // (with none on one of them, that core's own MAX_SLICE_LENGTH is the cap, which hides the value of the slice).
@@ -740,7 +773,7 @@ TEST_CASE("the longest stretch is Azahar's 1,145,774 ticks when both cores have 
         g.Tick();
     });
     REQUIRE(sim.Run() == RunStatus::Stopped);
-    CHECK(first_end == kStart + 1145774);
+    CHECK(first_end == kStart + kAzaharSlice);
 }
 
 TEST_CASE("a thread that a better one displaces goes back to the front of its queue, ahead of its peer") {
@@ -794,7 +827,7 @@ TEST_CASE("the refill of a core's budget is exact to the tick: a stretch runs on
         CHECK(starts_after_end[i] == 1);  // the block that ran the budget out, charged once
     }
     for (const u64 length : lengths) {
-        CHECK(length == 1145774);
+        CHECK(length == kAzaharSlice);
     }
 }
 
@@ -817,9 +850,9 @@ TEST_CASE("the stretch of a core is cut at its next event to the tick, also when
                 if (++callbacks != 1) {
                     return;
                 }
-                // Two stretches from now both cores are about 1,145,775 ticks on; the event is 5000 after that.
+                // Two stretches from now both cores are about 1,145,778 ticks on; the event is 5000 after that.
                 kernel_detail::ScheduleOnCore(1);
-                due = sim.CoreNow(1) + 1145774 + 2 + 5000;
+                due = sim.CoreNow(1) + kAzaharSlice + 2 + 5000;
                 sim.GetKernel().ScheduleAt(due, [&] {
                     fired_at = sim.Now();
                     fired_core = sim.Time().Core();
@@ -1036,8 +1069,8 @@ TEST_CASE("the deterministic timeline has the periodic events of Azahar's, each 
     });
     runtime.Scheduler().Start(thread);
     REQUIRE(runtime.Scheduler().Run([&] { return finished.load() == 1; }) == RunStatus::Stopped);
-    CHECK(kDeterministicSliceTicks == 1145774);
-    CHECK(ends.count(1145774) == 1);  // the first slice: Azahar's MAX_SLICE_LENGTH
+    CHECK(kDeterministicSliceTicks == kAzaharSlice);
+    CHECK(ends.count(kAzaharSlice) == 1);  // the first slice: Azahar's MAX_SLICE_LENGTH
     CHECK(hourly_queued);
     CHECK(cheat_queued);
     for (const u64 tick : {u64{1310720}, u64{2291554}, u64{4468352}, u64{4481136}, u64{50000000}}) {
@@ -1114,7 +1147,7 @@ TEST_CASE("two runs give the same log; the two cores run side by side, each for 
     // 340. Both finish there, not 6 million cycles apart: one clock for both cores would say 12 million.
     CHECK(one.finish[0] == kStart + 60 * 100000 + 340);
     CHECK(one.finish[1] == kStart + 60 * 100000 + 340);
-    // A stretch is a slice, 1,145,774 cycles, so about 11 iterations in a row, not 60; core 0 first.
+    // A stretch is a slice, 1,145,777 cycles, so about 11 iterations in a row, not 60; core 0 first.
     const std::string runs = Runs(one.log);
     CAPTURE(runs);
     CHECK(runs.rfind("a:11 b:11 ", 0) == 0);
@@ -1180,9 +1213,9 @@ TEST_CASE("a seeded stretch runs from one half to one times the default slice") 
         REQUIRE(lengths.size() > 20);
         const u64 shortest = *std::min_element(lengths.begin(), lengths.end());
         const u64 longest = *std::max_element(lengths.begin(), lengths.end());
-        CHECK(longest == 1145774);  // the draws above the default are cut to it, and half of them are above
-        CHECK(shortest >= 1145774 / 2 - 140);
-        CHECK(shortest < 1145774 * 3 / 4);
+        CHECK(longest == kAzaharSlice);  // the draws above the default are cut to it, and half of them are above
+        CHECK(shortest >= kAzaharSlice / 2 - 140);
+        CHECK(shortest < kAzaharSlice * 3 / 4);
     }
 }
 
