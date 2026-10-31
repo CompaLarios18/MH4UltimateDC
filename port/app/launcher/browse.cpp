@@ -33,11 +33,13 @@ std::string Count(std::size_t n, const char* one, const char* many) {
     return n == 1 ? fmt::format("1 {}", one) : fmt::format("{} {}", n, many);
 }
 
-/// The extensions to read: ".3ds, .cci or .cxi".
-std::string ExtensionList(const std::vector<std::string>& extensions) {
+/// The extensions to read: ".3ds, .cci or .cxi" (those the request names).
+std::string ExtensionList(const Pick::Request& request) {
+    const std::size_t all = request.extensions.size();
+    const std::size_t count = request.named < 0 ? all : std::min(all, static_cast<std::size_t>(request.named));
     std::string out;
-    for (std::size_t i = 0; i < extensions.size(); ++i) {
-        out += (i == 0 ? "" : i + 1 == extensions.size() ? " or " : ", ") + std::string(".") + extensions[i];
+    for (std::size_t i = 0; i < count; ++i) {
+        out += (i == 0 ? "" : i + 1 == count ? " or " : ", ") + std::string(".") + request.extensions[i];
     }
     return out;
 }
@@ -224,7 +226,7 @@ std::string Browser::Summary() const {
     if (Files()) {
         text += ", " + Count(files, "file", "files");
         if (!request.extensions.empty()) {
-            text += " (" + ExtensionList(request.extensions) + ")";
+            text += " (" + ExtensionList(request) + ")";
         }
     }
     if (listing.left_out > 0) {
@@ -353,7 +355,7 @@ void Browser::DrawEntries(bool pad, Outcome& outcome) {
         } else if (request.extensions.empty()) {
             Ui::TextDim("Nothing in here.");
         } else {
-            Ui::TextDim(fmt::format("No folders in here, and no {} files.", ExtensionList(request.extensions)));
+            Ui::TextDim(fmt::format("No folders in here, and no {} files.", ExtensionList(request)));
         }
     }
     // (after the list: a folder opened replaces the entries it was drawn from)

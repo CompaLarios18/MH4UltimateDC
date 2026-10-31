@@ -17,6 +17,9 @@ struct Request {
     std::string title;
     std::string kind;                     ///< the files' kind, for a dialog's filter ("CIA files")
     std::vector<std::string> extensions;  ///< the files that will do ("cia", "3ds", ...)
+    /// How many of `extensions` the launcher's browser names (the others it takes without saying
+    /// so); -1: all
+    int named = -1;
     /// A folder; the launcher's own browser then also takes a file with one of `extensions`
     bool folder = false;
     std::string start;   ///< the folder it opens in ("": the dialog's own choice)

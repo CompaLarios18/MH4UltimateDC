@@ -522,8 +522,8 @@ void InstallFromCatalog(State& s, const CatalogEntry& e, bool force) {
             Dialog d;
             d.title = entry.name + " is installed";
             if (Has(entry.needs, "custom_textures") && !s.config.custom_textures) {
-                d.text = text + " Texture packs show only with custom textures on (Settings). Turn them on now?";
-                d.buttons = {{"Turn them on", [&s] { TurnOnTextures(s); }, true}, {"Not now", nullptr, false}};
+                d.text = text + " Texture packs show only with Texture packs on in Settings. Turn it on now?";
+                d.buttons = {{"Turn it on", [&s] { TurnOnTextures(s); }, true}, {"Not now", nullptr, false}};
             } else {
                 d.text = text;
                 if (Has(entry.needs, "cpu_emulation")) {
@@ -676,9 +676,9 @@ void CatalogDetails(State& s, const CatalogEntry& e, bool busy) {
                        SizeText(e.downloaded) + " so far: installing goes on from there");
     }
     if (textures_off) {
-        Ui::StatusLine(Ui::Status::Warn, "Custom textures are off", "Texture packs show only with them on.");
+        Ui::StatusLine(Ui::Status::Warn, "Texture packs are off", "Packs show only with that setting on (Settings).");
         ImGui::BeginDisabled(busy);
-        if (ImGui::Button("Turn on custom textures")) {
+        if (ImGui::Button("Turn on Texture packs")) {
             TurnOnTextures(s);
         }
         ImGui::EndDisabled();
@@ -734,8 +734,8 @@ void DrawCatalog(State& s, bool busy) {
                 if (!s.config.custom_textures) {
                     Dialog d;
                     d.title = "The texture pack is installed";
-                    d.text = "Texture packs show only with custom textures on. Turn them on now?";
-                    d.buttons = {{"Turn them on", [&s] { TurnOnTextures(s); }, true}, {"Not now", nullptr, false}};
+                    d.text = "Texture packs show only with Texture packs on in Settings. Turn it on now?";
+                    d.buttons = {{"Turn it on", [&s] { TurnOnTextures(s); }, true}, {"Not now", nullptr, false}};
                     s.Show(std::move(d));
                 }
             },

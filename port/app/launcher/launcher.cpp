@@ -1130,6 +1130,7 @@ void State::ChooseGame(bool browse) {
     request.title = "Your decrypted Monster Hunter 4 Ultimate (.3ds, .cci or .cxi)";
     request.kind = "Monster Hunter 4 Ultimate";
     request.extensions = {"3ds", "cci", "cxi", "app"};
+    request.named = 3; // (.app, the game's content as a CIA keeps it, is taken but not named: a Mac's apps)
     if (!config.game.empty()) {
         // the game chosen before, shown first in its folder
         OpenAt(config.game, request);

@@ -61,8 +61,8 @@ const std::set<std::string> GAME_LIVE = {"fps",           "refresh_rate", "hud_e
 /// The footer before the cursor or the mouse first moves, and for an item without help.
 /// TODO(0.1.8, two releases after the tabs moved): "Saved when the menu closes; settings marked
 /// (next start) apply the next time the game starts."
-constexpr const char* DEFAULT_FOOTER = "Saved when the menu closes. Moved: Game's settings to Display, Graphics, "
-                                       "Touch screen, Gameplay; Multiplayer is Online.";
+constexpr const char* DEFAULT_FOOTER = "Saved when the menu closes. The old Game tab's settings are now in Display, "
+                                       "Graphics, Touch screen and Gameplay; Multiplayer is now Online.";
 
 /// `help` with its {key:...} placeholder replaced by `key`.
 std::string WithKey(const char* help, const std::string& key) {

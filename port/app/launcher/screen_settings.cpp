@@ -1,7 +1,8 @@
 // Settings: the app's main settings, in the groups of the in-game menu's tabs (Display: the
 // renderer, full screen, vsync; Graphics: the internal resolution, texture packs; Touch screen: the
 // screens; Audio: the volume) and the launcher's own (whether it shows, updates), saved in
-// mh4u-app.ini as they change (App::Save). The game's menu has all of them and the rest.
+// mh4u-app.ini as they change (App::Save). The game's menu has all of them but the updates, and the
+// rest.
 #include <string>
 #include <fmt/format.h>
 #include <imgui.h>
@@ -81,8 +82,9 @@ void DrawSettings(State& s) {
     ImGui::BeginChild("##settings", ImVec2(0, 0), ImGuiChildFlags_NavFlattened);
     Ui::Heading("Settings");
     Ui::TextDim(fmt::format("Saved as they change, in {}. The game's menu (Esc while you play, or Back and Start "
-                            "on a controller) has these and all the rest: the frame rate, widescreen, the touch "
-                            "screen, the effects, the keys. The game's own options are kept in {}.",
+                            "on a controller) has these but the updates, and all the rest: the frame rate, "
+                            "widescreen, the touch screen, the effects, the keys. The game's own options are kept "
+                            "in {}.",
                             App::ConfigPath(), Port::OptionsPath()));
     ImGui::Spacing();
     if (!ImGui::BeginTable("##settings_table", 2, ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_PadOuterX)) {
@@ -188,8 +190,9 @@ void DrawSettings(State& s) {
 
     // ── This launcher ──
     Group("THIS LAUNCHER");
-    Label("This launcher", "Off: the app starts the game straight away (the launcher still opens while "
-                           "something in the setup is missing). --launcher shows it once.");
+    // (named as in the game's menu, Display > Window and renderer)
+    Label("Launcher before the game", "Off: the app starts the game straight away (the launcher still opens "
+                                      "while something in the setup is missing). --launcher shows it once.");
     bool launcher = c.launcher;
     if (Ui::Toggle(launcher ? "Shown when the app starts##launcher" : "Not shown##launcher", &launcher)) {
         s.Change([&](App::Config& cfg) { cfg.launcher = launcher; });
@@ -202,8 +205,8 @@ void DrawSettings(State& s) {
     ImGui::Spacing();
     Ui::TextDim("More in the game's menu: the frame rate and widescreen in Display, the effects in Graphics, the "
                 "touch screen's corner and the quest map in Touch screen, every key in Keys, the kick, the end of "
-                "quests, fast forward and touch taps in Gameplay. Ctrl+F (or Y on a controller) there finds any "
-                "setting.");
+                "quests, fast forward and touch taps in Gameplay. Ctrl+F there (Cmd+F on a Mac, Y on a controller) "
+                "finds any setting.");
     ImGui::EndChild();
 }
 

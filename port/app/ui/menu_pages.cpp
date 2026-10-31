@@ -231,7 +231,7 @@ void Menu::DrawDisplay() {
             }
             EndRow(R::DisplayHudEdges);
         }
-        LinkRow("The screens and the touch screen's corner", Tab::TouchScreen,
+        LinkRow("Screens and the touch screen's corner", Tab::TouchScreen,
                 "Opens Touch screen: where the 3DS's two screens go, the touch screen's corner and the quest map.",
                 "display_touch");
         EndSettings();
@@ -428,7 +428,7 @@ void Menu::DrawTouchScreen() {
         }
         DrawPanelViewRows("target_overlay", R::TouchTargetSize, R::TouchTargetWhere, R::TouchTargetX,
                           R::TouchTargetY);
-        LinkRow("Buttons for the kick and target camera, and touch taps", Tab::Gameplay,
+        LinkRow("Kick, target camera and touch taps", Tab::Gameplay,
                 "Opens Gameplay: the kick and the target camera on buttons, the end of quests, fast forward and "
                 "touch taps.",
                 "touch_gameplay");
@@ -471,8 +471,7 @@ void Menu::DrawPanelViewRows(const char* key, RowId size_row, RowId where_row, R
     if (BeginRow(where_row)) {
         int where = view.placed ? 1 : 0;
         if (Choose((id + "_where").c_str(), where,
-                   {IsMapKey(key) ? "In the touch screen's corner" : "Under the map (over it at the bottom)",
-                    "Where you put it"})) {
+                   {IsMapKey(key) ? "In the touch screen's corner" : "Under the map", "Where you put it"})) {
             view.placed = where == 1;
             view.x = now.x; // from where it is now
             view.y = now.y;

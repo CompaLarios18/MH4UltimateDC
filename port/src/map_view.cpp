@@ -76,9 +76,8 @@ std::string MapNote(const State& state) {
                      "the map view shows the map panel, which is two slots tall, so without it the corner shows the "
                      "whole touch screen and these settings change nothing.";
     case Block::Switched:
-        return "Quests show the whole touch screen for now, so these settings change nothing there: the Map / whole "
-               "touch screen key (F12 or M as it comes, or a controller's right-stick click) switched to it. Press "
-               "it again for the map.";
+        return "Quests show the whole touch screen for now, so these settings change nothing there: the map key (F12 "
+               "or M as it comes, or a controller's right-stick click) switched to it. Press it again for the map.";
     case Block::None:
         break;
     }

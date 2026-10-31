@@ -151,11 +151,11 @@ def test_swapped_or_upright_screens_show_the_touch_screen_whole(driver):
 
 
 def test_the_menu_places_named_are_the_menus():
-    # the sentences name the in-game menu's tab, its settings and the Keys row as the menu draws them
+    # the sentences name the in-game menu's tab and its settings as the menu draws them, and the map
+    # key as In quests names it (its Map key row)
     with open(os.path.join(ROOT, "port", "app", "ui", "settings_index.cpp"), encoding="utf-8") as f:
         index = f.read()
-    for name in ("Touch screen", "Screens", "Touch screen over the game", "Only the map in quests",
-                 "Map / whole touch screen"):
+    for name in ("Touch screen", "Screens", "Touch screen over the game", "Only the map in quests", "Map key"):
         assert f'"{name}"' in index, name
 
 
@@ -170,7 +170,7 @@ def test_the_first_reason_is_the_one_told(driver):
 def test_switched_to_the_whole_touch_screen(driver):
     block, map_note, target_note, key_note = view(driver, **IN_QUEST, switched=1)
     assert block == SWITCHED
-    assert "the Map / whole touch screen key" in map_note and "Press it again for the map." in map_note
+    assert "the map key" in map_note and "Press it again for the map." in map_note
     assert "beside the map's only" in target_note
     # the key switches back: nothing to say on the screen
     assert key_note == ""

@@ -14,7 +14,7 @@ constexpr const char* TAB_NAMES[] = {"Display", "Graphics", "Touch screen", "Con
 
 // the Keys tab's buttons (every key row shares one of these)
 constexpr const char* KEY_HELP = "Choose, then press the new key or mouse button. Esc keeps the old one, Delete leaves "
-                                 "none. A key another action had leaves it.";
+                                 "none. If another action had that key, it loses it.";
 constexpr const char* STICK_HELP = "Choose, then press the new key (a stick's direction takes a key, not the mouse). Esc "
                                    "keeps the old one, Delete leaves none.";
 
@@ -45,8 +45,9 @@ const Section SECTIONS[] = {
     {"gameplay.speed", Tab::Gameplay, "Speed"},
     {"gameplay.touch_taps", Tab::Gameplay, "Touch taps"},
     {"audio.sound", Tab::Audio, "Sound"},
-    {"online.net_sync", Tab::Online, "Net sync"},
-    {"online.rooms", Tab::Online, "Rooms"},
+    // (no titles: Online's page has headings of its own, the search names the tab)
+    {"online.net_sync", Tab::Online, ""},
+    {"online.rooms", Tab::Online, ""},
     {"header", Tab::Header, ""},
 };
 static_assert(std::size(SECTIONS) == SECTION_COUNT, "SectionId and SECTIONS[] differ");
@@ -363,7 +364,7 @@ const Row ROWS[] = {
      false, "mh4u.ini skip_end"},
     {"gameplay.skip_end_hold", "gameplay.after_quest", S, "Hold for", nullptr,
      "How long they are held before the quest ends, so that it doesn't end by accident.",
-     "hold for hold time seconds end quest", "gameplay.skip_end", "End the quest has buttons", false, false,
+     "hold for hold time seconds end quest", "gameplay.skip_end", "End the quest isn't None", false, false,
      "mh4u.ini skip_end_hold"},
     {"gameplay.skip_hint", "gameplay.after_quest", S, "Skip hint", nullptr,
      "Lines at the bottom of the screen once a quest is complete: the keys that skip and end it, the hold, and "

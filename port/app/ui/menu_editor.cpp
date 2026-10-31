@@ -231,12 +231,15 @@ void Menu::DrawLayoutEditor() {
         ImGui::TextWrapped("%s", note.c_str());
         ImGui::PopStyleColor();
     }
-    if (layer.PadLast()) {
-        ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
-        ImGui::TextWrapped("LB/RB: map or target camera   D-pad: move   LT/RT: size   Y: show   X: reset   A: done   "
-                           "B: cancel");
-        ImGui::PopStyleColor();
-    }
+    // the keys of the controller or the keyboard, whichever was used last (EditorKeys)
+    const char* keys =
+        layer.PadLast()
+            ? "LB/RB: map or target camera   D-pad: move   LT/RT: size   Y: show/hide   X: reset   A: done   B: cancel"
+            : "Tab: map or target camera   arrows: move   -/+: size   Space: show/hide   Backspace: reset   Enter: done"
+              "   Esc: cancel";
+    ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+    ImGui::TextWrapped("%s", keys);
+    ImGui::PopStyleColor();
     PanelView views[2] = {Port::Hooks::ParseQuestOverlay(Game("quest_overlay")),
                           Port::Hooks::ParseTargetOverlay(Game("target_overlay"))};
     for (int i = 0; i < 2; ++i) {

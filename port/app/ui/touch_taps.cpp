@@ -81,10 +81,11 @@ bool DrawTouchTaps(Layer& layer) {
         const float remove_width = ImGui::CalcTextSize("Remove").x + ImGui::GetStyle().FramePadding.x * 2.0f;
         ImGui::TableSetupColumn("Tap", ImGuiTableColumnFlags_WidthStretch, 0.08f);
         ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthStretch, 0.24f);
-        ImGui::TableSetupColumn("Key or mouse", ImGuiTableColumnFlags_WidthStretch, 0.19f);
-        ImGui::TableSetupColumn("Another", ImGuiTableColumnFlags_WidthStretch, 0.19f);
-        ImGui::TableSetupColumn("X", ImGuiTableColumnFlags_WidthStretch, 0.15f);
-        ImGui::TableSetupColumn("Y", ImGuiTableColumnFlags_WidthStretch, 0.15f);
+        // (named as Keys names its columns, and the map's position its sliders)
+        ImGui::TableSetupColumn("Key", ImGuiTableColumnFlags_WidthStretch, 0.19f);
+        ImGui::TableSetupColumn("Second key", ImGuiTableColumnFlags_WidthStretch, 0.19f);
+        ImGui::TableSetupColumn("Across", ImGuiTableColumnFlags_WidthStretch, 0.15f);
+        ImGui::TableSetupColumn("Down", ImGuiTableColumnFlags_WidthStretch, 0.15f);
         ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, remove_width);
         HeaderRow();
         for (int i = 0; i < static_cast<int>(taps.size()); ++i) {

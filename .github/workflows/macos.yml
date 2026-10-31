@@ -210,7 +210,7 @@ jobs:
           3. Play: PLAY on the launcher (Return, or A on a controller). In the game, Esc (or the
              controller's Home/Guide button, or Back and Start together) opens the menu:
              display, graphics, the touch screen, controls, keys, gameplay, sound and online
-             rooms, with a search at the top (Ctrl+F, or Y on a controller) and Quit game.
+             rooms, with a search at the top (Cmd+F, or Y on a controller) and Quit game.
 
           MH4U opens the game full screen, with the keyboard and mouse (like Monster Hunter Rise on
           PC: the mouse turns the camera, hold Option to use it on the touch screen, F1 shows or
