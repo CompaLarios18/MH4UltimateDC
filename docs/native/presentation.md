@@ -101,7 +101,83 @@ MH4N_REGISTER(present::DisplayGpu, "null-display", {});
 `mh4u-native` will pick its default `--gpu` (N2b-09). A GPU registered so must implement `Display`.
 The registrations: `null-display` (N2b-07) and `renderer` (N2b-13).
 
+## The compositor (N2b-05)
+
+`native/src/present/` (module `mh4n_present`, header `present/compositor.h`, namespace `mh4n::present`),
+tested by `native/tests/present_test.cpp`. It draws one `DisplayFrame` into a backend image with a
+`screen_layout::Layout` (N2b-04). It goes through `rhi.h` only: it includes no Vulkan header and
+uses neither `vulkan_access.h` nor anything under `native/src/gpu/backend/` besides the public
+headers (`rhi.h`, and `targets/upload.h` for `UploadToImage`). Written for the present thread
+(N2b-06); the swapchain, the mailbox and the frame sources are other packages.
+
+```cpp
+auto compositor = present::Compositor::Create(backend);            // rhi::Result<unique_ptr<Compositor>>
+rhi::Recorder rec = backend->BeginRecording();
+present::ComposeResult done = (*compositor)->Compose(rec, *target, frame, layout, options);
+// a swapchain image: rec.PrepareForPresent(*target) goes here, after Compose
+rhi::TimelineValue value = (*compositor)->Submit(std::move(rec), std::move(done));
+```
+
+| | |
+|---|---|
+| `Create(backend)` | compiles the two shaders (GLSL, N2-06's glslang, `present/shader_compile.h`: a vertex and a fragment stage), makes the pipelines for `Rgba8Unorm` and `Bgra8Unorm` targets, the nearest and the linear sampler, and a 256 KiB vertex ring. A pipeline for another target format is made on first use; a format that cannot be a colour attachment gives `ComposeResult::drawn == false` and leaves the recorder untouched. The app's own UI and blits are not in N2-16's pipeline cache; these pipelines are made here, at start-up |
+| `Compose(recorder, target, frame, layout, options)` | on an open recorder of the calling thread: uploads the CPU-pixel screens (`UploadToImage`, into a small pool of `Rgba8Unorm` textures reused once their submission has passed), then `BeginTargetPass` on the target with a clear to opaque black, one draw per shown screen, and `options.ui->Record(&recorder, target_w, target_h)` last, after resetting the viewport and the scissor to the whole target (the pipeline, bindings and vertex buffers are still the compositor's last: the layer binds its own). The target's pass is still open when `Compose` returns, so a `UiLayer`'s raw Vulkan commands (`CommandBuffer(recorder)`, as Dear ImGui's backend records them) are valid inside it |
+| `Submit(recorder, result)` | required: `Backend::Submit` with `result.waits`, then keeps the frame's images alive (`Backend::Retire`) and marks the upload textures busy until the submission's value. A submission that skips it can see a pooled texture reused, or a frame image freed, while the GPU still reads it; `ComposeResult::waits` is exposed for inspection and tests |
+| `ComposeOptions` | `linear_filter` (the app's `linear_filter`: bilinear, else nearest) and `ui` (the `UiLayer`, or null) |
+
+**What is drawn.** Order: the top screen (`top_shown`, `top` rectangle, `top_opacity`), then, when `bottom_shown`,
+the bottom screen (`bottom` rectangle, `bottom_crop`, `bottom_opacity`), then each of the layout's further views
+(`views[0..view_count)`, the last on top) with its own crop, at the bottom screen's opacity (`platform.h`:
+"at the same opacity"). A screen that is `nullopt`, or not `Valid()`, or whose `region` reaches outside its image,
+is left black (the invalid ones log a warning once). A layer is a quad of a triangle strip: the destination
+rectangle in the target's pixels converted to the target's normalised coordinates, the source coordinate at each
+corner from the crop, the screen's size in image pixels, its orientation and its `region`; the sampler does the
+rest, so `Rotated90` costs nothing (`present.h`'s mapping: image column = scaled height minus the displayed row,
+image row = the displayed column). The sample is clamped to the centres of the region's edge texels, so linear
+filtering never reads the neighbours outside the region. The screen is opaque whatever its alpha channel says;
+the pipeline blends `src * a + dst * (1 - a)` on the colour with `a` the layer's opacity (1 replaces exactly) and
+keeps the target's alpha at what the clear made it (1).
+
+**Clipping.** Every draw's scissor is its rectangle clipped to the target, and a draw with nothing left is skipped,
+so a layout whose rectangles lie outside `Layout::width` and `height` is safe: an Overlay layout with an overlay
+height of 0 (`screen_layout.h`: top `{0,0,800,480}` and bottom `{80,500,720,980}` in any window) draws the part that
+is inside the target, and rectangles of billions of pixels draw nothing out of bounds. `Layout::width/height` are
+not used for anything: the target's own size is the window.
+
+**The owner rule and the layout** (`rhi-spike.md` 9.4 item 5, `rhi.md`). The compositor records only on images its
+thread owns (the target it is given, its own upload textures) and only *samples* the frame's images
+(`BindingSet::SetSampledImage`): it records no barrier, copy or layout change on them. A renderer's image is
+sampled in `GENERAL`, the backend's one layout. The submission must wait for the value of the submission that drew
+the screen at the stage that reads it: `ComposeResult::waits` is one `Wait{value, Stage::FragmentShader}` (the
+highest `timeline_value` of the frame's backend images; none for CPU pixels or a value of 0), and `Submit` passes it
+(a wait at the default stage reproduced the hazard, `rhi-spike.md` 6.9 C2 and C5). A frame image produced on
+another thread is the producer's to hand over (`rhi::HandOver(image, composing_thread, Wait{value,
+Stage::FragmentShader})`, or settle in `GENERAL`): the compositor's first sample takes it over and the backend's
+check (`MH4N_RHI_CHECKS`) wants the hand-over's wait in the submission, which `Submit` supplies. A `Compositor` and
+its recorders and results belong to one thread; submit each result before the next `Compose`.
+
+**Tests** (`present_test`, 23 cases on lavapipe; the log names the llvmpipe device). The expected pixels are not
+the compositor's: the rectangles are the layout table's (`screen_layout_expected.inc`, Azahar's own output); the
+sources are a function of the screen and the displayed pixel; the rule is nearest sampling at the destination
+pixel's centre, worked out from the definition (a pixel whose sample point is within 2% of a texel boundary
+accepts either neighbour; a blended one there is not compared). Every pixel of every target is compared. The four corners and the centre of every shown screen (top,
+bottom, each view) are also checked on their own, with the exact colour: for the 48 table cases times the four
+ways of giving the screens that is 1548 strict points and 84 ambiguous ones (sample point on a texel edge, either
+neighbour accepted; 48 more are hidden, blended or outside and not counted). At least 90% strict is asserted and
+the numbers are printed. Five 1920x1080 and 1280x1024 cases with non-integer ratios have every point strict. The
+cases: all 48 mode and size combinations of N2b-04's table with each screen as CPU pixels or a backend image at
+scale 1 or 3, upright or rotated; a widened top screen (573x240) at 1:1 with exact corners and centre; opacity
+0.25 to 1 within 1/255; a crop; two views, at the bottom screen's opacity; an Overlay with height 0 (rectangles
+outside the target) and the small windows of the table; a missing, an invalid or a region-outside screen;
+nearest against linear; a region with garbage around it under linear filtering; a `UiLayer` that draws with the
+`Recorder`, one that records raw Vulkan commands, and one that sets no viewport or scissor and lands in the corner farthest from the last screen; a target that cannot be a colour attachment (`drawn == false`); a BGRA target; the waits; the upload pool; and a frame
+produced on another thread, handed over and waited for at the fragment stage with the backend's owner-rule
+handler counting zero breaches (with a control that drops the waits and sees `RequiredWait`, not run under the
+validation layer). Run under the layer with
+`python3 tools/native/vk_layer_run.py --build build/native -R '^present_test$'`: no message. After every readback
+the test calls `vkDeviceWaitIdle`, because the layer 1.3.275 does not count a host wait on a timeline semaphore
+as ordering (a readback buffer's memory reused as the next upload's staging buffer shows as a hazard otherwise).
+
 ## Parts the other packages add
 
-N2b-05 (the compositor), N2b-06 (the swapchain and the present thread) and N2b-23 (frame pacing)
-add their sections here.
+N2b-06 (the swapchain and the present thread) and N2b-23 (frame pacing) add their sections here.

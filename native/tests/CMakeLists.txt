@@ -11,6 +11,14 @@ add_library(mh4n_test_main STATIC support/test_main.cpp)
 target_link_libraries(mh4n_test_main PUBLIC mh4n_test_doctest)
 target_compile_options(mh4n_test_main PRIVATE $<IF:$<BOOL:${MSVC}>,/w,-w>)
 
+# Under ThreadSanitizer (the native-tsan job) a test runs many times slower: present_test's draws on lavapipe take
+# 20 s in the plain build and passed 300 s there, so that build gets 1800 s.
+if (CMAKE_CXX_FLAGS MATCHES "-fsanitize=thread")
+    set(mh4n_test_timeout 1800)
+else()
+    set(mh4n_test_timeout 300)
+endif()
+
 file(GLOB test_sources CONFIGURE_DEPENDS LIST_DIRECTORIES false "${CMAKE_CURRENT_SOURCE_DIR}/*_test.cpp")
 list(SORT test_sources)
 foreach (source IN LISTS test_sources)
@@ -24,5 +32,5 @@ foreach (source IN LISTS test_sources)
         target_link_libraries(${test_name} PRIVATE mh4n_test_main)
     endif()
     add_test(NAME ${test_name} COMMAND ${test_name})
-    set_tests_properties(${test_name} PROPERTIES TIMEOUT 300)
+    set_tests_properties(${test_name} PROPERTIES TIMEOUT ${mh4n_test_timeout})
 endforeach()
