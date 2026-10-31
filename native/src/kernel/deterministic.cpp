@@ -225,7 +225,7 @@ u64 CycleDriver::DrawSliceTicks() {
         // one times).
         return std::max<u64>(NsToTicks(static_cast<u64>(last_slice_us_) * 1000), 1);
     }
-    // The default slice is Azahar's 1,145,774 cycles, which is not a whole number of microseconds.
+    // The default slice is Azahar's 1,145,777 cycles, which is not a whole number of microseconds.
     return options_.slice_us == kDeterministicSliceUs
                ? kDeterministicSliceTicks
                : std::max<u64>(NsToTicks(static_cast<u64>(options_.slice_us) * 1000), 1);

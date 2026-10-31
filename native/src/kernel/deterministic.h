@@ -21,7 +21,7 @@
 //     the thread a new budget when it runs again: what is left of its stretch. The SVC layer charges a
 //     call's own cost from Azahar's table (SvcCycles) through kernel_detail::ChargeCycles, once it has
 //     noted the time for its trace (the later of the two clocks, as the reference's `t`).
-//   - With a seed, the cap of each stretch (RunLoop's max_slice, 1,145,774 ticks) is drawn from a seeded
+//   - With a seed, the cap of each stretch (RunLoop's max_slice, 1,145,777 ticks) is drawn from a seeded
 //     generator between half and one and a half times the default; a core with an empty event queue is capped
 //     at the default slice (Timer::GetMaxSliceLength), so in the usual case the stretches that are drawn run
 //     from one half to one times the default (with events on both cores far off, up to one and a half times,
@@ -63,11 +63,14 @@ namespace mh4n {
 // `init_ticks_override`), so that the game sees the same ticks and the same date.
 inline constexpr u64 kDeterministicStartTicks = 2000000000;
 
-// Azahar's MAX_SLICE_LENGTH: BASE_CLOCK_RATE_ARM11 / 234 = 1,145,774 cycles (4.2735 ms), the longest a core
-// runs before RunLoop starts over.
-inline constexpr u64 kDeterministicSliceTicks = 1145774;
+// Azahar's MAX_SLICE_LENGTH: BASE_CLOCK_RATE_ARM11 / 234 in integer arithmetic, 1,145,777 cycles (4.2735 ms),
+// the longest a core runs before RunLoop starts over. It is also the delay of a thread-safe event (twice
+// this, ScheduleThreadSafe), so a value a few ticks off moves every such event by twice as much (N3-32: the
+// 1,145,774 used before put the `nwm` asynchronous signals 6 ticks early, which at 120 fps moved the game).
+inline constexpr u64 kDeterministicSliceTicks = kTicksPerSecond / 234;
+static_assert(kDeterministicSliceTicks == 1145777);
 
-// The same slice in whole microseconds, the unit of `--slice-us` and of the seeded draws (it is 136 ticks
+// The same slice in whole microseconds, the unit of `--slice-us` and of the seeded draws (it is 133 ticks
 // over; the lockstep scheduler uses kDeterministicSliceTicks when the option has this default).
 inline constexpr u32 kDeterministicSliceUs = 4274;
 
