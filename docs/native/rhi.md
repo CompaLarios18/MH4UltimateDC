@@ -790,6 +790,101 @@ The one sanctioned change to the frozen header (D5; additions only, existing agg
   stage writes the same words as the route without it, so a stage dropped silently would pass; N2-09's fixed geometry shader needs a
   test that tells them apart).
 
+## Framebuffer operations and the state module (N2-13)
+
+Two modules, both talking `rhi.h` types only: `native/src/gpu/backend/state/` (module `mh4n_gpu_backend_state`, namespace `mh4n::gpu::rhi::state`, depends on `core/`) and
+`native/src/gpu/fbops/` (module `mh4n_gpu_fbops`, namespace `mh4n::gpu::fbops`, depends on `gpu/pica` and the state module). `state/` keeps no per-backend or per-recorder
+state, so it uses none of the slots `core/impl.h` reserves (`Backend::Impl::state`, `Recorder::Impl::state` stay empty), and it edits nothing in `core/`.
+
+| File | What |
+|---|---|
+| `state/dynamic.cpp` | `Recorder::SetBlendConstants`, `SetStencilReference`, `SetStencilMasks` (the vendored command list's setters; patches 07 and 10). The core's pipelines declare all of them dynamic, so a different value never makes another pipeline |
+| `state/state.h`, `plan.cpp` | `state::PlanPipeline(requested, caps)`: the device profile applied to a requested `FixedFunctionState`, and what the shader must do for the rest (below); `LogicOpNeedsDestination`; `EffectiveBlendConstants` |
+| `fbops/fixed_function.h`, `.cpp` | `fbops::MakeFixedFunctionState(const pica::PicaState&)` (the requested form), `MakeDynamicState` (the blend constants as 0..1 floats, the stencil reference, compare mask and write mask), `ApplyDynamicState(recorder, dynamic, constants_from_alpha)` |
+| `fbops/output_stage.glsl`, `output_stage.h` | the GLSL text of the output-stage functions and `fbops::OutputStageGlsl()`, which returns it as a `std::string_view` |
+
+**How `state/` picks the path.** `PlanPipeline` takes the *requested* state (the form `MakeFixedFunctionState` gives) and the device's `Capabilities` after the mask, and returns a
+`PipelinePlan`: `built` (for `GraphicsPipelineDesc::state`), `shader_logic_op`, `rgb_in_shader`, `alpha_in_shader`, `needs_destination_copy`, `constants_from_alpha`. It is a pure function,
+so the key tests of later packages need no device. Blend state stays pipeline state on every device (X8).
+
+- **Logic ops.** Requested only with blending off and an op other than Copy. With the `logic_op` bit on, `built.logic_op_enabled` carries the op (all 16 in hardware). With it off
+  (MoltenVK; lavapipe under `MH4N_RHI_MASK=logic_op`) `built` has blending and the logic op off and `shader_logic_op` is set: the fragment shader applies the op with `mh4n_logic_op`.
+  Five ops (Clear, Copy, Set, CopyInverted, NoOp) never read the destination; the other eleven do, so `needs_destination_copy` is set and the caller does `Recorder::FeedbackCopy(target)`
+  before the draw and binds the twin (N2-27) for the shader to `texelFetch`. NoOp is not in the shader at all: `built.color_write_mask` is 0 (the colour is discarded, the depth write
+  stays; Azahar's `GetFinalColorWriteMask`), and `shader_logic_op` stays false. A request for both a logic op and blending is an `Error`.
+- **Min/max blending.** A half (colour or alpha) whose equation is Min or Max goes to hardware only when both its factors are One; otherwise `built` blends that half ONE, ZERO, ADD
+  and the shader computes it from the feedback copy (`mh4n_minmax_blend`), whatever the capability bits say (Vulkan's MIN and MAX ignore the factors on every device). One more case
+  goes to the shader, which Azahar does not handle: when the alpha half is the shader's and the colour half's factors read the *source alpha* (SrcAlpha, OneMinusSrcAlpha,
+  SrcAlphaSaturate), the blender would read the alpha the shader replaced, so the colour half is computed in the shader too, with its own equation (`rgb_in_shader`; the function
+  computes the clamped sum and differences as well). The test with that hazard fails when the rule is removed (a mutant below).
+- **Constant-alpha factors.** `core::ToPlume` refuses ConstantAlpha and OneMinusConstantAlpha (the vendored backend maps only the constant-colour pair; "Known limits" above). `PlanPipeline`
+  rewrites them where the pair is equivalent: in the alpha half both pairs read the constant's alpha; in the colour half the alpha pair becomes the colour pair when no colour-pair factor is
+  there too, and the constants are then `(a, a, a, a)` (`constants_from_alpha`: pass it to `ApplyDynamicState`, or the constants through `EffectiveBlendConstants`). A colour half that
+  has one factor of each pair (for example ConstantColor and OneMinusConstantAlpha) cannot be expressed with one constant colour: `PlanPipeline` returns an `Error` that says so.
+  That case needs a plume patch (the constant-alpha pair) or a shader blend, and is a `needs-decision`.
+
+**`MakeFixedFunctionState`'s requested form.** From the registers (output merger 0x100 to 0x107, framebuffer 0x113 to 0x11E, cull 0x40), as Azahar's `SyncDrawState` and `pica_to_vk.h`
+do: blending on with the two equations and four factors as the registers have them (Min, Max and the constant-alpha factors included); with blending off the equations and factors are the
+defaults and the logic op is on unless it is Copy (so draws that differ only in dead registers share a key); the colour write mask is the four bits, 0 when the framebuffer's colour
+write is off; the depth test is on when the test or the write is, comparing with the register's function or Always when only the write is on, and the write needs the framebuffer's
+depth/stencil write; the stencil test is on only with the register and a D24S8 depth format, the same function and actions for both faces (Increment and Decrement clamp); cull and
+front face as `pica_to_vk.h` (the framebuffer's flip bit CLEAR is Azahar's `flip_viewport`, which swaps the culled face); no depth bias (the PICA has none). A draw in shadow mode
+(`fragment_operation_mode` 3) gets an inert state (no blend, logic op, depth or stencil; the cull state stays): its pass has no attachments. The blend constants and the stencil
+reference, compare mask and write mask are not in it: `MakeDynamicState` makes them and `ApplyDynamicState` calls the three setters (call it once per recorder before the first draw
+that blends with a constant or tests the stencil, as `rhi.h` says, and again when a value changes; the write mask is 0 when the framebuffer's depth/stencil write is off).
+
+**The two GLSL functions and how a consumer embeds them.** `fbops::OutputStageGlsl()` is the text of `output_stage.glsl`, exactly: it has no `#version`, declares nothing outside the
+functions, and every name starts with `mh4n_`. The generator (N2-08) pastes it after its `#version 450` line and calls `vec4 mh4n_logic_op(uint op, vec4 src, vec4 dst)` and
+`vec4 mh4n_minmax_blend(uint eq_rgb, uint src_rgb, uint dst_rgb, uint eq_a, uint src_a, uint dst_a, vec4 src, vec4 dst, vec4 blend_color)` at the output point, with Azahar's enumerator values
+as `uint` (the register fields as they are): literals in the specialised mode, config fields in the ubershader. `dst` is the texel of the feedback twin under `gl_FragCoord`; `op` is
+`LogicOp`; for `mh4n_minmax_blend` pass the requested equation for a half the plan moved (`rgb_in_shader`, `alpha_in_shader`) and `0xFFFFFFFFu` for the other (it is returned as the
+source). Both round `src` and `dst` to 8 bits first; the logic ops work on the bytes. `mh4n_blend_factor` and `mh4n_blend_half` are their helpers. SourceAlphaSaturate is
+min(source alpha, 1 - destination alpha) for the colour and 1 for the alpha, as the software renderer has it (Azahar's GLSL treats it as One). The depth the fragment writes
+(`z_over_w * depth_scale + depth_offset`, `WriteDepth`) is the generator's, not these functions'.
+
+**Why the product and the test SPIR-V share one text.** `output_stage.glsl` is the one source. `embed_glsl.cmake` turns it into a C++ raw string at build time (no generated source is kept
+in the repository); the test shaders `#include` it and `spirv_inc.txt` builds them with `-g -Inative/src/gpu/fbops`, and glslang's `-g` copies the text of every included file into the
+module (`OpSource`). The test `glsl/the_text_the_product_embeds_is_the_text_of_the_file_and_of_the_test_spirv` checks that the embedded text equals the file byte for byte and that the
+committed arrays contain it, so editing the file without running `tools/native/spirv_inc.py native/tests/shaders/gpu_fbops native/tests/gpu_fbops_shaders.inc` (from the repository root) fails
+it; a changed text is not found in the arrays (the check can fail).
+
+**Tests** (`native/tests/gpu_fbops_test.cpp`, ctest name `gpu_fbops_test`, 21 cases; shaders in `native/tests/shaders/gpu_fbops/`, `gpu_fbops_shaders.inc` generated). A draw is described as the
+PICA does (a `Merger`: the output merger's registers), turned into registers, into the requested state, into the plan and the pipeline, drawn into one pixel of a 32 by 32 target through the real
+backend (the scissor picks the pixel), and the expected pixel is computed by the CPU model, which is the software renderer's code (`PixelColor`, `EvaluateBlendEquation`, `LogicOp`,
+`DoDepthStencilTest`, `PerformStencilAction`). Blending is float on the GPU and truncating integer in the software renderer, so a blended channel is checked within 1; everything else
+(logic ops, masks, depth and stencil outcomes, stencil values) is exact, depth within 1 (the software renderer truncates to 24 bits and the device rounds).
+
+| Group | What it pins |
+|---|---|
+| `registers/...`, `plan/...` (no device) | every equation, factor, logic op, compare function, stencil action, colour mask, cull mode and the dynamic state from the registers; the plan on synthetic capabilities for all 16 ops with and without the bit, every min/max factor pair, the constant-alpha rewrite and its refusal, the source-alpha rule |
+| `glsl/...` | the text check above |
+| `blend/...` | the 25 equation pairs, each with factors that keep Min and Max in hardware and factors that send them to the shader; all 15 factors in each of the four slots (the constant-alpha ones included); the constant colour through `SetBlendConstants` (four constants, one pipeline); the 16 colour write masks with blending and with the emulated Xor; 126 min/max cases (hardware and shader halves, in the plain run and with `logic_op` and `d24s8` masked) |
+| `logic_ops/...` | all 16 ops, in hardware and, on a backend built with `logic_op` masked, through the shader (the eleven over the feedback copy, the five without one, NoOp as mask 0); NoOp keeps the colour and still writes the depth |
+| `depth/...` | every compare function at three depths below, at and above the buffer with two different ranges and offsets, with the write on and off; the write without the test (Always); the framebuffer's depth write off; the clamp of a depth above 1 and below 0; on D24S8 and, with `d24s8` masked, on D32S8 |
+| `stencil/...` | every compare function with seven (old value, reference, compare mask, write mask) triples; every action in each of the three outcomes (stencil fails, depth fails, both pass) at old values 0, 0x7F and 0xFF (saturation and wrap); stencil off, the framebuffer's write off and a zero write mask leave the buffer; one pipeline with several references |
+| `controls/...` | the model gives different pixels for a hardware MIN than for the PICA's min, for ConstantAlpha than for ConstantColor, for 16 different logic ops |
+
+The cases that depend on a capability build their own masked backends, so each path runs whatever `MH4N_RHI_MASK` says; the runs to make are the plain one and `MH4N_RHI_MASK=logic_op`,
+`d24s8` and `logic_op,d24s8` (all four pass; the count is higher with `logic_op` masked because the shader branch of the logic-op case checks more).
+
+**Run here** (clang 18, lavapipe, validation layer 1.3.275): `MH4N_REQUIRE_VULKAN=1 ctest --test-dir build/native -R '^gpu_fbops_test$'` and the same under the three masks pass (21 cases, 8,583
+or 8,605 assertions, about 10 seconds); `python3 tools/native/vk_layer_run.py --build build/native -R '^gpu_fbops_test$'` reports no layer message. Mutants tried (one change at a time, the
+suite seen to fail, the change reverted): min/max never moved to the shader (4 cases fail), the factor table with SrcAlpha and DstAlpha swapped (6), the blend constants not set (4), the
+stencil compare mask not set (3), the source-alpha rule off (2), NoOp keeping the colour write mask (3), the constant-alpha rewrite not asking for `(a, a, a, a)` (2), depth write not gated by
+the framebuffer's write (2), depth test not turned on by the write alone (2), the stencil write mask not zeroed by the framebuffer's write (2), DecrementClamp mapped to wrap (2), the GLSL
+text edited and the SPIR-V not regenerated (the text check), the GLSL AndReverse and AndInverted swapped with the SPIR-V regenerated (the logic-op case), and the GLSL Max made Min with the
+SPIR-V regenerated (2).
+
+**Named risks and what is not covered.** Only lavapipe ran: the RX 6700 XT, MoltenVK and KosmicKrisp did not, and `MH4N_RHI_MASK=logic_op` is MoltenVK's path, not MoltenVK. Real GPUs blend in
+fixed point and may differ from lavapipe's float blend by more than the 1 the tests allow (`unverified`). The depth test compares at the device's precision, the software renderer's at 24
+bits truncated: two depths that differ by less than 1/2^24 compare differently on the D32S8 the PC uses; the tests use depths far apart. A depth the shader writes outside 0..1 is stored
+clamped by lavapipe on both D24S8 and D32S8 (the case reads the raw float back); whether the RX 6700 XT clamps a float depth attachment is not known, and if it does not the generator
+must clamp `gl_FragDepth`. The cull mode copies Azahar's `flip_viewport` rule and assumes the draw's viewport is flipped as Azahar flips it (N2-08 and N2-16 decide the viewport). The
+shadow-mode state is inert by this module's choice (N2-12 may want its own). The destination copy is one pass break and one full copy per draw that reads it (`rhi-spike` 5.6); with none in
+the captures its cost is unmeasured. The gas mode, the alpha test, fog and the depth range register decoding (`depth_scale` and `depth_offset` are N2-33's uniforms) are not here. The
+ConstantColor-with-ConstantAlpha colour half is refused (above). A pipeline whose draws never set the three dynamic states before a draw that needs them is a validation error the tests
+cannot show (they would trip the layer); the setters are called at every draw.
+
 ## Not checked on this machine
 
 `readelf -d` for `libX11` is meaningful on `build/native/bin/rhi_plume_test` (no `NEEDED` entry besides libstdc++, libm, libgcc_s, libc and the loader's), not on `mh4u_native_runner`, which does not link plume yet.

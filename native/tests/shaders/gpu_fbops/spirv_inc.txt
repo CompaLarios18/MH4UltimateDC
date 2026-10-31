@@ -1,0 +1,9 @@
+# <array name> <file> [glslang options]
+# Run from the repository root: python3 tools/native/spirv_inc.py native/tests/shaders/gpu_fbops native/tests/gpu_fbops_shaders.inc
+# The shaders that include the output stage are built with -g, which puts the text of every included file into the
+# SPIR-V (OpSource), so the test can check that the product's embedded GLSL is the text they were built from.
+spv_fs_vert fs.vert
+spv_draw_frag draw.frag
+spv_logic_frag logic.frag -g -Inative/src/gpu/fbops
+spv_logic_nodst_frag logic.frag -DNO_DST -g -Inative/src/gpu/fbops
+spv_minmax_frag minmax.frag -g -Inative/src/gpu/fbops
