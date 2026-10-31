@@ -294,11 +294,11 @@ another block and B never takes A's block's mutex while its scans read that bloc
 A's block per round keep VMA's mapping hysteresis from leaving the block mapped (after which an unmap writes nothing); and A waits, mapped, for
 B to finish two buffers. **Measured on the RX 6700 XT** (2026-10-31, without ThreadSanitizer, Forza Horizon 6 running on the same GPU) with a
 throw-away copy of `vma/patched/vk_mem_alloc.h` that counts (built in a scratch tree, not committed): in the case's 100 rounds, 200
-`vkMapMemory` calls and 200 unmaps that wrote `m_pMappedData` (every one of A's), the extra mapping never switched on, and of B's 103,034
-reads of a block's mapped state in `AllocatePage` 44,810 were of A's block while A had it mapped; 3 blocks were made in all. Without the
-three unmapped buffers the same copy counted 4 `vkMapMemory` calls and 3 writing unmaps, after which the extra mapping stayed on. Without the
-buffer that holds B's block, VMA made 172 blocks (counting copy) and the case took 2,969 ms; as committed it took 120 ms (113 ms in the
-counting copy). **This PC cannot
+`vkMapMemory` calls and 200 unmaps that wrote `m_pMappedData` (every one of A's), the extra mapping never switched on, and of the 103,034
+reads of a block's mapped state in `AllocatePage` (most of them B's; the count includes A's own) 44,810 were of A's block while A had it
+mapped; 3 blocks were made in all. Without the three unmapped buffers the same copy counted 4 `vkMapMemory` calls and 3 writing unmaps, after
+which the extra mapping stayed on. Without the buffer that holds B's block, VMA made 172 blocks and the case took 4,637 ms in the counting copy,
+against 113 ms as committed (120 ms in the plain build). **This PC cannot
 build with ThreadSanitizer:** it runs Windows, its llvm-mingw 20241217 has no TSan runtime (`lib/clang/19/lib/windows` holds the ASan, UBSan,
 fuzzer, profile and stats runtimes, no `clang_rt.tsan`), and there is no WSL. So that the case makes ThreadSanitizer report the race without
 patch 01, and none with it, is `inference` (from the code: no lock or acquire links B's read to A's later unmap) until the `native-tsan` job

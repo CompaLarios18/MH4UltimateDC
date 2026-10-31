@@ -1322,7 +1322,8 @@ void RunCustomBorderRefused(Rig& rig) {
 //    and destroys kDrains unmapped buffers in P per round, which keeps the block far from that, so each of A's unmaps writes
 //    the pointer;
 //  - while its buffer is mapped, A waits for B to finish two more buffers, so at least one of B's scans falls between A's map
-//    and A's unmap. The counter is read relaxed on purpose: an acquire would order B's scan before A's unmap and hide the race.
+//    and A's unmap. The counter is only ever read and written relaxed, so nothing orders B's scan before A's unmap: a release
+//    in B paired with an acquire in A would, and would hide the race.
 constexpr uint64_t kSlot = 256 * 1024;
 constexpr int kVmaRounds = 100;
 constexpr int kDrains = 3;
@@ -1342,7 +1343,7 @@ void RunVmaMapWhileAllocating(Rig& rig) {
     // Fill a block with kSlot buffers until one does not fit: the ones before it are in the full block P. Freeing that one and
     // the last buffer of P leaves the slot A uses. A buffer of B's size then holds a block of its own for the whole case, the
     // one B allocates from: VMA frees an empty block when another buffer is freed, and a new block for nearly every one of
-    // B's buffers made the case 25 times slower on the RX 6700 XT.
+    // B's buffers made the case about 40 times slower on the RX 6700 XT (measured with a counting copy of VMA).
     std::vector<std::unique_ptr<RenderBuffer>> fillers;
     std::unique_ptr<RenderBuffer> overflow;
     while (fillers.size() < 4096) {
@@ -1382,6 +1383,9 @@ void RunVmaMapWhileAllocating(Rig& rig) {
     });
     int timeouts = 0;
     const auto waitForB = [&] {
+        if (timeouts != 0) {
+            return;  // one timeout fails the case: do not wait 10 s again in each of the remaining rounds
+        }
         const uint64_t from = madeByB.load(std::memory_order_relaxed);
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
         while (madeByB.load(std::memory_order_relaxed) < from + 2) {

@@ -44,3 +44,8 @@ an edit of an earlier file or of `patched/`; list it in the table above; `python
 then `check` and `blobs`; build and run the RHI tests. An upstream fix is cherry-picked by us as a new numbered patch,
 not by changing the pinned commit; text before the patch's first `diff --git` line (the upstream commit, the issue and
 the licence) is ignored by the applier and by `git apply`.
+
+`rhi_plume_patterns_test`'s `vma01/...` case relies on VMA internals at the pinned commit (the mapping hysteresis,
+blocks sorted by free space, the mapped-first scan of `AllocatePage`): a patch that touches mapping, the hysteresis or
+block choice measures again that every unmap of the case's thread A still writes the block's mapped pointer
+(`docs/native/rhi.md`, "The ThreadSanitizer job", says how it was measured).
