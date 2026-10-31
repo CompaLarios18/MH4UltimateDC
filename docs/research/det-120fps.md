@@ -120,8 +120,15 @@ not from the code under test) in every case that used 1,145,774, and a new case,
 core 0 is due 2,291,554 ticks after core 1's clock*, reproduces the mechanism. Against the base the file fails 10 of its
 45 cases (the new one, the thread-safe event's exact tick, the order of thread-safe events, the stretch lengths, the
 first slice of the periodic-events case, the seeded stretch's longest); with the fix all pass.
-`native/tests/nwm_test.cpp` (not this package's) checks the old tick of the connection status event and fails with the
-fix until its literal is changed (proposed in the package's report).
+`native/tests/nwm_test.cpp` (not in this package's allowlist) checks the old tick of the connection status event, so
+`nwm_test` fails with the fix (case *the connection status event comes two slices later*, `CHECK(async_pending)`) until
+its literal is changed; the branch must not be merged without that change. The change, proposed in the package's report
+for the orchestrator (who either widens the allowlist or applies it in the merge): the comment's `(2,291,548 ticks)`
+becomes `(2,291,554 ticks)`, and both `2 * 1145774` (the expected tick of the event, and the lower bound of the wake-up)
+become `2 * kDeterministicSliceTicks`. With that change applied for one build, `nwm_test` passes; it is not committed
+here. Two shared texts still name the old slice and are proposed too: the `core_timing.h` row of
+`native/THIRD_PARTY.md` (*the 1,145,774-cycle slice (N1-25)*, to become 1,145,777) and the `--slice-us` row of
+`docs/native/runner.md`.
 
 ## The runs after the fix
 
