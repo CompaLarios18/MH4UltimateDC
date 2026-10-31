@@ -52,9 +52,12 @@ struct PipelinePlan {
 //     colour half too when the alpha half is the shader's and its factors read the source alpha);
 //   - ConstantAlpha and OneMinusConstantAlpha, which core/ refuses, are rewritten as ConstantColor and
 //     OneMinusConstantColor in the alpha half (where both read the constant's alpha) and in the colour half when no
-//     ConstantColor factor is there too (then the constants are (a, a, a, a)).
-// Errors: a logic op with blending on (they are exclusive); ConstantColor and ConstantAlpha factors in the colour
-// half together (one constant colour cannot be both; it needs a patch to the vendored backend). The blend state stays
+//     ConstantColor factor is there too (then the constants are (a, a, a, a)); with both pairs in the colour half it
+//     goes to the shader (constants_from_alpha stays false).
+// Errors: a logic op with blending on (they are exclusive). A colour half with a factor of each constant pair
+// (ConstantColor and ConstantAlpha) is computed by the shader like a Min/Max half (rgb_in_shader, with the real blend
+// colour), since one constant colour cannot be both. A plume patch for the constant-alpha pair would make both this
+// route and the rewrite unnecessary; until then the mixed half pays the destination copy. The blend state stays
 // pipeline state on every device.
 Result<PipelinePlan> PlanPipeline(const FixedFunctionState& requested, const Capabilities& caps);
 

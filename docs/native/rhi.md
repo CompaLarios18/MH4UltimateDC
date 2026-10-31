@@ -820,8 +820,10 @@ so the key tests of later packages need no device. Blend state stays pipeline st
 - **Constant-alpha factors.** `core::ToPlume` refuses ConstantAlpha and OneMinusConstantAlpha (the vendored backend maps only the constant-colour pair; "Known limits" above). `PlanPipeline`
   rewrites them where the pair is equivalent: in the alpha half both pairs read the constant's alpha; in the colour half the alpha pair becomes the colour pair when no colour-pair factor is
   there too, and the constants are then `(a, a, a, a)` (`constants_from_alpha`: pass it to `ApplyDynamicState`, or the constants through `EffectiveBlendConstants`). A colour half that
-  has one factor of each pair (for example ConstantColor and OneMinusConstantAlpha) cannot be expressed with one constant colour: `PlanPipeline` returns an `Error` that says so.
-  That case needs a plume patch (the constant-alpha pair) or a shader blend, and is a `needs-decision`.
+  has one factor of each pair (for example ConstantColor and OneMinusConstantAlpha) cannot be expressed with one constant colour: it is moved into the shader like a Min/Max half
+  (`rgb_in_shader`, built ONE, ZERO, ADD, `constants_from_alpha` false), and `mh4n_minmax_blend` computes it with the real blend colour, where ConstantAlpha is `blend_color.a`. The plume
+  patch for the constant-alpha pair (the defect recorded in D4's notes) would make both the rewrite and this route unnecessary; until then the mixed half pays the destination copy.
+  The only `Error` `PlanPipeline` returns is a logic op with blending on.
 
 **`MakeFixedFunctionState`'s requested form.** From the registers (output merger 0x100 to 0x107, framebuffer 0x113 to 0x11E, cull 0x40), as Azahar's `SyncDrawState` and `pica_to_vk.h`
 do: blending on with the two equations and four factors as the registers have them (Min, Max and the constant-alpha factors included); with blending off the equations and factors are the
@@ -882,7 +884,7 @@ clamped by lavapipe on both D24S8 and D32S8 (the case reads the raw float back);
 must clamp `gl_FragDepth`. The cull mode copies Azahar's `flip_viewport` rule and assumes the draw's viewport is flipped as Azahar flips it (N2-08 and N2-16 decide the viewport). The
 shadow-mode state is inert by this module's choice (N2-12 may want its own). The destination copy is one pass break and one full copy per draw that reads it (`rhi-spike` 5.6); with none in
 the captures its cost is unmeasured. The gas mode, the alpha test, fog and the depth range register decoding (`depth_scale` and `depth_offset` are N2-33's uniforms) are not here. The
-ConstantColor-with-ConstantAlpha colour half is refused (above). A pipeline whose draws never set the three dynamic states before a draw that needs them is a validation error the tests
+A pipeline whose draws never set the three dynamic states before a draw that needs them is a validation error the tests
 cannot show (they would trip the layer); the setters are called at every draw.
 
 ## Not checked on this machine

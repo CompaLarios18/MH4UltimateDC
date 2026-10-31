@@ -104,10 +104,12 @@ Result<PipelinePlan> PlanPipeline(const FixedFunctionState& requested, const Cap
         const bool colors = IsColorPair(built.src_color) || IsColorPair(built.dst_color);
         const bool alphas = IsAlphaPair(built.src_color) || IsAlphaPair(built.dst_color);
         if (colors && alphas) {
-            return Error{"the colour half uses ConstantColor and ConstantAlpha factors together: the vendored backend "
-                         "expresses only the constant-colour pair, which cannot be both"};
-        }
-        if (alphas) {
+            // One constant colour cannot be both pairs: the shader computes the colour half with the real blend colour.
+            plan.rgb_in_shader = true;
+            built.color_op = BlendOp::Add;
+            built.src_color = BlendFactor::One;
+            built.dst_color = BlendFactor::Zero;
+        } else if (alphas) {
             built.src_color = AsColorPair(built.src_color);
             built.dst_color = AsColorPair(built.dst_color);
             plan.constants_from_alpha = true;

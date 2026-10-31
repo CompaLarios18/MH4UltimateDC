@@ -827,7 +827,8 @@ TEST_CASE("plan/a_min_or_max_half_goes_to_the_shader_unless_both_factors_are_one
             add.eq_rgb = add.eq_a = eq::Add;
             plan = state::PlanPipeline(Requested(add), CapsWith(true));
             if (src == fac::ConstColor && dst == fac::OneMinusConstAlpha) {
-                CHECK_FALSE(plan.ok());  // one of each constant pair in the colour half (the next case)
+                REQUIRE(plan.ok());  // one of each constant pair in the colour half: the shader's (the next case)
+                CHECK(plan->rgb_in_shader);
                 continue;
             }
             REQUIRE_MESSAGE(plan.ok(), plan.error());
@@ -899,15 +900,33 @@ TEST_CASE("plan/constant_alpha_factors_are_rewritten_where_the_vendored_backend_
     CHECK(plan->built.dst_color == BlendFactor::OneMinusConstantColor);
     CHECK(plan->constants_from_alpha);
     CHECK(state::EffectiveBlendConstants(*plan, constants) == std::array<float, 4>{0.4f, 0.4f, 0.4f, 0.4f});
-    // one slot of each pair in the colour half cannot be expressed: refused, with a message
+    // one slot of each pair in the colour half cannot be expressed with one constant colour: the shader computes the
+    // half, ONE, ZERO, ADD in the pipeline, the constants as requested
+    for (const u32 color_pair : {fac::ConstColor, fac::OneMinusConstColor}) {
+        for (const u32 alpha_pair : {fac::ConstAlpha, fac::OneMinusConstAlpha}) {
+            for (const bool color_first : {true, false}) {
+                m.eq_rgb = eq::Subtract;
+                m.src_rgb = color_first ? color_pair : alpha_pair;
+                m.dst_rgb = color_first ? alpha_pair : color_pair;
+                plan = state::PlanPipeline(Requested(m), CapsWith(true));
+                REQUIRE_MESSAGE(plan.ok(), plan.error());
+                CHECK(plan->rgb_in_shader);
+                CHECK_FALSE(plan->alpha_in_shader);
+                CHECK(plan->needs_destination_copy);
+                CHECK_FALSE(plan->constants_from_alpha);
+                CHECK(plan->built.color_op == BlendOp::Add);
+                CHECK(plan->built.src_color == BlendFactor::One);
+                CHECK(plan->built.dst_color == BlendFactor::Zero);
+                CHECK(state::EffectiveBlendConstants(*plan, constants) == constants);
+            }
+        }
+    }
+    m.eq_rgb = eq::Add;
     m.src_rgb = fac::ConstColor;
     m.dst_rgb = fac::OneMinusConstAlpha;
-    plan = state::PlanPipeline(Requested(m), CapsWith(true));
-    CHECK_FALSE(plan.ok());
-    CHECK(plan.error().find("ConstantColor and ConstantAlpha") != std::string::npos);
-    // but not when blending is off, and not when the half that held one is the shader's min/max
+    // blending off: nothing to plan; a Min half that held one is the shader's anyway
     m.blend = false;
-    CHECK(state::PlanPipeline(Requested(m), CapsWith(true)).ok());
+    CHECK_FALSE(state::PlanPipeline(Requested(m), CapsWith(true))->rgb_in_shader);
     m.blend = true;
     m.eq_rgb = eq::Min;
     plan = state::PlanPipeline(Requested(m), CapsWith(true));
@@ -1046,6 +1065,44 @@ TEST_CASE("blend/every_factor_in_every_slot") {
         seen.insert({px[0], px[1], px[2], px[3]});
     }
     CHECK(seen.size() >= 13);
+}
+
+TEST_CASE("blend/a_colour_half_with_both_constant_pairs_is_the_shaders") {
+    for (const bool masked : {false, true}) {
+        std::shared_ptr<Backend> backend = masked ? MakeBackend({Cap::LogicOp, Cap::D24S8}) : MakeBackend();
+        if (!backend) return;
+        Harness h(backend, false);
+        std::vector<DrawCase> cases;
+        const std::array<std::array<u8, 4>, 3> constants = {{{200, 100, 50, 150}, {10, 240, 128, 64}, {255, 30, 90, 220}}};
+        u32 index = 0;
+        for (const u32 equation : {eq::Add, eq::Subtract, eq::ReverseSubtract}) {
+            for (const u32 color_pair : {fac::ConstColor, fac::OneMinusConstColor}) {
+                for (const u32 alpha_pair : {fac::ConstAlpha, fac::OneMinusConstAlpha}) {
+                    for (const bool color_first : {true, false}) {
+                        for (const auto& constant : constants) {
+                            DrawCase c = BlendCase(equation, eq::Add, color_first ? color_pair : alpha_pair,
+                                                   color_first ? alpha_pair : color_pair, fac::ConstAlpha, fac::OneMinusConstColor, "mixed");
+                            c.m.constant = constant;
+                            cases.push_back(At(c, index++));
+                        }
+                    }
+                }
+            }
+        }
+        REQUIRE(cases.size() == 72);
+        RunCases(h, cases, kDestination, 1.0f, 0, 1);
+        for (const state::PipelinePlan& plan : h.plans) {
+            CHECK(plan.rgb_in_shader);
+            CHECK_FALSE(plan.alpha_in_shader);
+            CHECK_FALSE(plan.constants_from_alpha);
+            CHECK(plan.needs_destination_copy);
+        }
+        // the constants matter and the pairs differ: the model gives several different pixels for one combination
+        std::set<std::array<int, 4>> seen;
+        for (u32 i = 0; i < 3; ++i) seen.insert(h.model[i].color);
+        CHECK(seen.size() == 3);
+        CHECK(h.model[0].color != h.model[6].color);
+    }
 }
 
 TEST_CASE("blend/the_constant_colour_comes_from_set_blend_constants_and_changes_without_a_new_pipeline") {
