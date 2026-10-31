@@ -917,8 +917,9 @@ void State::ChooseAndInstallUpdate() {
     }
     PickPath(*this, false, "Your decrypted MH4U v1.3.0 update (.cia)", "CIA files", {"cia"},
              [this](const std::string& path) {
-                 if (const auto problem = Checks::CheckUpdateCia(path); !problem.empty()) {
-                     Message("This isn't the update", problem);
+                 const auto checked = Checks::CheckUpdateCia(path);
+                 if (!checked.problem.empty()) {
+                     Message("This isn't the update", checked.problem);
                      return;
                  }
                  LOG_INFO(Frontend, "launcher: installing {}", path);
@@ -927,9 +928,13 @@ void State::ChooseAndInstallUpdate() {
                  job.title = "Installing the v1.3.0 update";
                  job.install = std::make_unique<Checks::Install>();
                  job.install->Start(path);
-                 job.on_done = [this](int exit_code, const std::string&) {
+                 // (a note: the .cia's version label isn't v1.3.0's, its code is)
+                 job.on_done = [this, note = checked.note](int exit_code, const std::string&) {
                      if (exit_code == 0) {
                          job.summary = "The update is in Azahar's virtual SD card.";
+                         if (!note.empty()) {
+                             job.summary += " " + note;
+                         }
                      }
                      Recheck();
                      CheckCode();

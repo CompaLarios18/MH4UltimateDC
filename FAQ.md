@@ -25,6 +25,9 @@ The downloads are on the [releases page](https://github.com/CompaLarios18/MH4Ult
 **Does it work with the European or Japanese version?**
 Not yet. Only the USA version with the v1.3.0 update (title `0004000000126300`) is supported.
 
+**The setup says my update is v0.0.1 (or v1.0.0), not v1.3.0**
+Some tools that decrypt or rebuild a `.cia` reset the version label in it and leave the update itself as it was. Releases after 0.1.5 go by the update's code, as the code library's build always did: such a v1.3.0 `.cia` is installed as v1.3.0, and the setup says what it found. If it still names another version, the `.cia` holds another update.
+
 **Why does the first start take a while?**
 The setup recompiles the game's code from your update and then compiles it for your PC: a couple of minutes to recompile, several more to compile. It happens once, and again only after you add, change or remove a code mod.
 

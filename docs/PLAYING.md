@@ -8,7 +8,7 @@ How to run Monster Hunter 4 Ultimate on a PC with this project: the game's own c
 
 - Your cartridge or digital copy of MH4U (USA) and a 3DS with [GodMode9](https://github.com/d0k3/GodMode9), to dump:
   - the **game** as a decrypted `.3ds` (or `.cci`/`.cxi`);
-  - the **v1.3.0 update** as a `.cia` (GodMode9 can build one from the installed title). The port's code is made from this update.
+  - the **v1.3.0 update** as a `.cia` (GodMode9 can build one from the installed title). The port's code is made from this update. Some tools that decrypt or rebuild a `.cia` reset its version label (to v0.0.1 or v1.0.0) and leave the update itself as it was: the launcher's setup and `build_game.py` tell the update by its code, so such a v1.3.0 `.cia` is used as v1.3.0, and they say so.
 - A PC: Windows 10/11 x64, Linux x64, or a Mac with Apple silicon (the macOS app is not tried yet). On Windows 11, **Smart App Control** must be off: it blocks the unsigned programs and libraries involved (Azahar's DLLs, the compiler, the code library) with "Bad Image ... 0xc0e90002". *Windows Security → App & browser control → Smart App Control settings → Off*; since the April 2026 update (KB5083769) it can be turned back on later without reinstalling Windows.
 - [Python](https://www.python.org/downloads/) 3.10 or newer (nothing else to install with it).
 - This repository (`git clone`, or *Code → Download ZIP* on GitHub).
@@ -241,5 +241,6 @@ The app copies the library into its own storage (Android doesn't run code from s
 | At start: *The game's code isn't the code the MH4U PC port's library was built from* | the v1.3.0 update isn't installed in Azahar (*File → Install CIA...*), or a code mod was added, changed or removed since the library was built (build it again). The game runs on Azahar's own CPU emulation meanwhile |
 | At start: *... is older than this Azahar: N of the port's hook points are missing* (in the log: `no hook point for ...`) | the library was built before this Azahar's version: build it again so all of the port's options work |
 | `this code.bin isn't a version the project knows` | the dump isn't the USA v1.3.0 update |
+| Setup: *This is Monster Hunter 4 Ultimate's update vX, and its code isn't v1.3.0's either* | the `.cia` holds another update, by its code as well as its version label; with *... couldn't be read to tell* instead, its label isn't v1.3.0's and its code couldn't be checked: build the `.cia` again with GodMode9 |
 | Windows: `azahar.exe - Bad Image ... Error status 0xc0e90002` | Smart App Control blocks unsigned files: turn it off (see *What you need*) |
 | After a loading screen the hunter falls through a dark void, then *Quest Failed* | a loading race in the game, which more than 60 fps brings out: the quest's file is left out of the list it is copied from ([research](research/system-services.md#above-60-fps-what-the-game-does-at-120-hz-runtime-october-2026)). The port works around it since October 2026 (a code library and Azahar build from before that don't). If it still happens, turn on *Emulation → Configure → Debug → Force deterministic async operations* and report it |

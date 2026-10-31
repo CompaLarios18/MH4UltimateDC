@@ -1,7 +1,9 @@
 #include "launcher/checks.h"
 
+#include <memory>
 #include <fmt/format.h>
 
+#include "common/file_derived.h"
 #include "common/file_util.h"
 #include "common/logging/log.h"
 #include "core/file_sys/ncch_container.h"
@@ -11,6 +13,45 @@
 #include "core/loader/loader.h"
 
 namespace Launcher::Checks {
+
+namespace {
+
+/// UpdateCode's reads, from one of Azahar's files.
+UpdateCode::Read Reader(FileUtil::IOFileBase& file) {
+    return [&file](u64 offset, void* out, std::size_t size) {
+        return file.ReadAtBytes(static_cast<u8*>(out), size, static_cast<std::size_t>(offset)) == size;
+    };
+}
+
+UpdateCode::Code Unreadable() {
+    UpdateCode::Code code;
+    code.error = "it can't be opened";
+    return code;
+}
+
+/// The code in a .cia, the file read as Azahar's installer reads it (also compressed).
+UpdateCode::Code CiaCode(const std::string& path, bool compressed) {
+    std::unique_ptr<FileUtil::IOFileBase> file = std::make_unique<FileUtil::IOFile>(path, "rb");
+    if (compressed) {
+        file = std::make_unique<FileUtil::Z3DSReadIOFile>(std::move(file));
+    }
+    if (!file->IsOpen()) {
+        return Unreadable();
+    }
+    return UpdateCode::ReadCiaCode(Reader(*file));
+}
+
+/// The installed update's own code: its program as Azahar's loader opens it, but not a code.bin
+/// from Azahar's mods folder (which NCCHContainer::LoadSectionExeFS would read instead).
+UpdateCode::Code InstalledCode(const std::string& path) {
+    const auto file = FileSys::NCCHContainer::AutoOpenNCCHNCSD(path);
+    if (!file || !file->IsOpen()) {
+        return Unreadable();
+    }
+    return UpdateCode::ReadCode(Reader(*file), 0);
+}
+
+} // namespace
 
 Game CheckGame(const std::string& path) {
     Game game;
@@ -79,43 +120,61 @@ Update CheckUpdate() {
         update.content.clear();
         return update;
     }
-    update.state = update.version == UPDATE_VERSION ? Update::State::Ok : Update::State::OtherVersion;
+    if (update.version == UPDATE_VERSION) {
+        update.state = Update::State::Ok;
+        return update;
+    }
+    // another label (Azahar's installer keeps the .cia's, and some decryption tools reset it on a
+    // v1.3.0 update): the installed code says which update it is
+    const auto code = InstalledCode(update.content);
+    const auto verdict = UpdateCode::Judge(update.version, code);
+    update.state = verdict == UpdateCode::Verdict::Relabeled ? Update::State::Ok : Update::State::OtherVersion;
+    update.note = UpdateCode::InstalledText(verdict, update.version, code.error);
+    LOG_INFO(Frontend, "launcher: the update: {}", update.note);
     return update;
 }
 
 std::string VersionText(u16 version) {
-    // the 3DS's title versions: major in bits 10-15, minor in 4-9, micro in 0-3
-    return fmt::format("{}.{}.{}", version >> 10, (version >> 4) & 0x3F, version & 0xF);
+    return UpdateCode::VersionText(version);
 }
 
-std::string CheckUpdateCia(const std::string& path) {
+UpdateCia CheckUpdateCia(const std::string& path) {
+    UpdateCia result;
     bool compressed = false;
     switch (Service::AM::CheckCIAToInstall(path, compressed, true)) {
     case Service::AM::InstallStatus::Success:
         break;
     case Service::AM::InstallStatus::ErrorEncrypted:
-        return "This .cia is encrypted. The port needs a decrypted one (GodMode9 can build one from "
-               "the update installed on your 3DS).";
+        result.problem = "This .cia is encrypted. The port needs a decrypted one (GodMode9 can build one "
+                         "from the update installed on your 3DS).";
+        return result;
     case Service::AM::InstallStatus::ErrorFileNotFound:
     case Service::AM::InstallStatus::ErrorFailedToOpenFile:
-        return "The file can't be read.";
+        result.problem = "The file can't be read.";
+        return result;
     default:
-        return "This file isn't a CIA the app can read.";
+        result.problem = "This file isn't a CIA the app can read.";
+        return result;
     }
     if (const auto infos = Service::AM::GetCIAInfos(path)) {
         const auto& info = infos->first;
         if (info.tid != MH4U_UPDATE) {
-            return fmt::format("This .cia is title {:016X}, not Monster Hunter 4 Ultimate's update "
-                               "({:016X}).",
-                               info.tid, MH4U_UPDATE);
+            result.problem = fmt::format("This .cia is title {:016X}, not Monster Hunter 4 Ultimate's "
+                                         "update ({:016X}).",
+                                         info.tid, MH4U_UPDATE);
+            return result;
         }
         if (info.version != UPDATE_VERSION) {
-            return fmt::format("This is Monster Hunter 4 Ultimate's update v{}; the port is made for "
-                               "v{}.",
-                               VersionText(info.version), VersionText(UPDATE_VERSION));
+            // another label: some decryption tools reset it on a v1.3.0 update, so the code says
+            // which update it is
+            const auto code = CiaCode(path, compressed);
+            const auto verdict = UpdateCode::Judge(info.version, code);
+            auto& text = verdict == UpdateCode::Verdict::Relabeled ? result.note : result.problem;
+            text = UpdateCode::CiaText(verdict, info.version, code.error);
+            LOG_INFO(Frontend, "launcher: {}: {}", path, text);
         }
     }
-    return "";
+    return result;
 }
 
 std::string LibraryPath() {
