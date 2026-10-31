@@ -109,8 +109,9 @@ jobs:
              C compiler, about 180 MB; the build takes several minutes). "Build code library.bat"
              does the same from a console window, if you prefer.
           3. Play: PLAY on the launcher (Enter, or A on a controller). In the game, Esc (or the
-             controller's Guide button, or Back and Start together) opens the menu: the game's
-             options, the display, sound, controls, the room you're in, quit.
+             controller's Guide button, or Back and Start together) opens the menu: display,
+             graphics, the touch screen, controls, keys, gameplay, sound and online rooms, with a
+             search at the top (Ctrl+F, or Y on a controller) and Quit game.
 
           mh4u.exe opens the game full screen, with the keyboard and mouse (like Monster Hunter
           Rise on PC: the mouse turns the camera, the wheel scrolls the items, hold Alt to use the
@@ -118,14 +119,15 @@ jobs:
           its own, like MH3U on a Wii U). F11 or Alt+Enter: full screen or a
           window. F12, or the right stick's click: in quests, the touch screen's map or the whole
           touch screen.
-          Playing alone, P pauses and Tab fast-forwards (2x; the speed in the menu's Game tab).
+          Playing alone, P pauses and Tab fast-forwards (2x; the speed in the menu's Gameplay tab).
           The launcher's other screens: Mods (several mods, in an order, conflicts shown; a catalog of recommended mods and texture packs, the HD pack among them, installed with one click), Online
           (a lobby's rooms, rooms on your own network, joining by address, hosting) and Settings. Its settings are in
           %APPDATA%\Azahar\mh4u-app.ini, written with explanations the first time it runs: the game file, the renderer (vulkan, opengl or software), full screen, the
           screens, sound, the keys and the controller, and a multiplayer room to join or host
           before the game starts. The game's options (frame rate, widescreen, the touch screen's
-          corner, ...) are in mh4u.ini next to it; docs/PLAYING.md in the repository has them
-          all. If the app doesn't start, %APPDATA%\Azahar\log\mh4u_log.txt says why.
+          corner, ...) are in the game's menu and in mh4u.ini next to it; docs/PLAYING.md in the
+          repository has them all. If the app doesn't start, %APPDATA%\Azahar\log\mh4u_log.txt
+          says why.
 
           azahar.exe stays for what the app can't do yet: installing other CIAs (File > Install
           CIA...) and Azahar's own settings (Emulation > Configure...: system files, the

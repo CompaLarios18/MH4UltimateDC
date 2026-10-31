@@ -32,5 +32,10 @@ Hint CurrentHint(const Config& config);
 /// context): small and translucent, it takes no input. `flash`: its frame pulses.
 void DrawHint(const Hint& hint, bool flash);
 
+/// What presses mh4u.ini's 3DS buttons `buttons` ("ZR", "ZL+ZR"): "C / RT", "Q+C / LT+RT"; the
+/// keys or the controller's buttons alone when only they have them all; "" when one of the
+/// buttons has neither (the in-game menu's lists of 3DS buttons, and its note that says so).
+std::string ButtonInputs(const Config& config, const std::string& buttons);
+
 } // namespace Ui
 } // namespace App

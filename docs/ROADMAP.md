@@ -82,6 +82,7 @@ The game's code is native already; what remains of the 3DS is Azahar's core (sys
 - [ ] Rooms on one network found with no address (`port/app/lan.*`): a hosted room answers broadcast searches on UDP 24873, listed under *On this network* in the menu and the launcher's Online screen; checked over loopback in tests, waiting to be tried between two PCs
 - [ ] The second screen gone: the touch screen only when the game needs it (`touch_screen = map/hidden`), the bottom pass skipped while hidden, item shortcuts on buttons, a controller cursor for touch menus
 - [x] CPU clock speed (Azahar's) in the app's settings, live; the game's anti-aliasing switchable (`antialiasing`), for frame rate at high resolutions
+- [ ] The in-game menu reorganized: tabs by task, a search, a reason on every setting that can't apply, D-pad steppers and section jumps, the HUD layout editor with a controller, a Steam Deck's touchscreen
 - [ ] Measure on Apple silicon (checklist in research/metal.md); native Metal only if MoltenVK can't hold the frame rate
 
 ## Prior art to study

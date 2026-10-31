@@ -83,7 +83,7 @@ constexpr const char* USAGE =
     "with --join-after that many seconds after it started (as the menu's Join does).\n"
     "--new-console-id: give this console a new ID first (a room lets in one player per console\n"
     "ID, and copies of one Azahar user folder have the same one).\n"
-    "Rooms can also be joined, hosted and left in the game: Esc > Multiplayer.\n";
+    "Rooms can also be joined, hosted and left in the game: Esc > Online.\n";
 
 struct Args {
     std::string game, renderer, join, nickname, password, user, log;
@@ -401,7 +401,7 @@ int Run(const std::vector<std::string>& argv) {
         config.join.clear();
     }
     if (std::string error; !App::Multiplayer::StartAtBoot(error)) {
-        App::Dialog::Message(TITLE, error + " The game starts without the room (Esc > Multiplayer joins "
+        App::Dialog::Message(TITLE, error + " The game starts without the room (Esc > Online joins "
                              "one while it runs).", true);
     }
 

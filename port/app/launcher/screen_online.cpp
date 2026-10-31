@@ -117,7 +117,7 @@ void DrawLan(State& s) {
     if (s.lan_rooms.rooms.empty()) {
         Ui::TextDim("No rooms on your network (the same Wi-Fi or router) right now. One of you hosts a room "
                     "(Host a room, then Play); the others search again here or in the game (Esc > "
-                    "Multiplayer).");
+                    "Online).");
         return;
     }
     if (ImGui::BeginTable("##lan", 5, ImGuiTableFlags_RowBg | ImGuiTableFlags_PadOuterX)) {
@@ -296,7 +296,7 @@ void DrawJoin(State& s) {
     } else if (f.address.find_first_not_of(" ") != std::string::npos && !room.ok) {
         Ui::TextColored(Ui::Color::Warn, room.error);
     } else {
-        Ui::TextDim("A host's invite (their menu's Multiplayer tab has one to copy) carries the address and "
+        Ui::TextDim("A host's invite (their menu's Online tab has one to copy) carries the address and "
                     "the password.");
     }
 }
@@ -437,7 +437,7 @@ void DrawOnline(State& s) {
     Ui::Heading("Online");
     Ui::TextDim("MH4U's local play, the Gathering Hall, over the internet or your own network through a room. "
                 "The room chosen here is entered as the game starts; then go to the Gathering Hall's Local "
-                "Play. In the game, Esc > Multiplayer joins, hosts and leaves rooms too, and has the invite to "
+                "Play. In the game, Esc > Online joins, hosts and leaves rooms too, and has the invite to "
                 "send friends.");
     ImGui::Spacing();
     Ui::BeginCard("##now", ImVec2(0, 0), s.config.host > 0 || !s.config.join.empty());
