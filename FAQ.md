@@ -46,7 +46,7 @@ No. The game's code runs natively, and its call stacks live on your PC's own sta
 In the port's app, playing alone: **P** pauses, **Tab** runs the game at 2x (the speed and the keys are in the menu, Esc). In a room they're off, since the others' games run on with yours.
 
 **Steam Deck?**
-There's a Linux build, not tried on a Deck yet. If you try it, open an issue and tell us how it went.
+There's a Linux build (`mh4u.AppImage`), not tried much on a Deck yet. In Game Mode a desktop's file dialog may not show, or fails (a "Service crash"), so the launcher chooses files in its own browser there: the D-pad, A and B, with your SD card under *Drives*. Elsewhere *Browse in the launcher* opens it. If you try the port on a Deck, open an issue and tell us how it went.
 
 **Mac?**
 There's a build for Apple silicon (Vulkan through MoltenVK), not tried on a Mac yet. Reports are welcome in an issue.
