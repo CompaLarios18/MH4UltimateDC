@@ -5,7 +5,9 @@
 // resumes). Each file is written to <addr>.c.tmp and then renamed, so a stopped run never leaves
 // a half-written <addr>.c; leftover .tmp files are deleted on the next run. A file that holds
 // this script's "decompile failed" comment counts as not done, so failures and timeouts are
-// retried. Run it on a program that is already analysed and saved:
+// retried. An error on one function is logged and its thread goes on; if any function is left
+// without a file (and the run was not cancelled), the script ends with an error.
+// Run it on a program that is already analysed and saved:
 //   analyzeHeadless <proj_dir> <proj_name> -process <program> -noanalysis -readOnly \
 //     -scriptPath <dir> -postScript ExportPseudoCParallel.java <out_dir> [threads]
 // Keep <out_dir> OUTSIDE any git repo: it is derived from game code.
@@ -22,9 +24,10 @@ import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import ghidra.app.decompiler.DecompInterface;
@@ -64,54 +67,89 @@ public class ExportPseudoCParallel extends GhidraScript {
         }
         println(String.format("%d functions to decompile on %d threads", targets.size(), threads));
 
-        AtomicInteger next = new AtomicInteger(), done = new AtomicInteger(), ok = new AtomicInteger();
+        AtomicInteger next = new AtomicInteger(), done = new AtomicInteger();
+        AtomicInteger ok = new AtomicInteger(), failed = new AtomicInteger();
         ExecutorService pool = Executors.newFixedThreadPool(threads);
-        for (int t = 0; t < threads; t++) {
-            pool.submit(() -> {
-                DecompInterface di = new DecompInterface();
-                di.toggleCCode(true);
-                di.toggleSyntaxTree(false);
-                di.setSimplificationStyle("decompile");
-                if (!di.openProgram(currentProgram)) {
-                    printerr("decompiler failed to start: " + di.getLastMessage());
-                    return;
-                }
+        int threadErrors = 0;
+        try {
+            List<Future<?>> workers = new ArrayList<>();
+            for (int t = 0; t < threads; t++) {
+                workers.add(pool.submit(() -> decompileShare(dir, targets, next, done, ok, failed)));
+            }
+            for (Future<?> w : workers) {
                 try {
-                    for (int i = next.getAndIncrement(); i < targets.size() && !monitor.isCancelled();
-                         i = next.getAndIncrement()) {
-                        Function f = targets.get(i);
-                        DecompileResults r = di.decompileFunction(f, DECOMPILE_TIMEOUT_SECONDS, TaskMonitor.DUMMY);
-                        String body;
-                        if (r != null && r.decompileCompleted() && r.getDecompiledFunction() != null) {
-                            body = r.getDecompiledFunction().getC();
-                            ok.incrementAndGet();
-                        } else {
-                            body = FAILED_PREFIX + (r == null ? "no result" : r.getErrorMessage()) + " */\n";
-                        }
-                        String name = fileName(f);
-                        File tmp = new File(dir, name + ".tmp");
-                        Files.write(tmp.toPath(), body.getBytes(StandardCharsets.UTF_8));
-                        Files.move(tmp.toPath(), new File(dir, name).toPath(),
-                            StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
-                        int n = done.incrementAndGet();
-                        if (n % 1000 == 0) {
-                            println(String.format("%d / %d", n, targets.size()));
-                        }
+                    w.get();
+                } catch (ExecutionException e) {
+                    threadErrors++;
+                    printerr("decompile thread: " + e.getCause());
+                }
+            }
+        } finally {
+            pool.shutdownNow();
+        }
+
+        if (monitor.isCancelled()) {
+            println(String.format("cancelled after %d of %d; run again to resume", done.get(), targets.size()));
+            return;
+        }
+        println(String.format("decompiled %d of %d (%d failed: written as failure comments, retried on the next run)",
+            ok.get(), targets.size(), failed.get()));
+        if (done.get() < targets.size()) {
+            String msg = String.format("%d of %d functions got no file (%d decompile threads stopped with an error);"
+                + " see the errors above, then run again to resume", targets.size() - done.get(), targets.size(),
+                threadErrors);
+            printerr(msg);
+            throw new IllegalStateException(msg);
+        }
+    }
+
+    // One thread: takes the next function from targets until none is left or the run is cancelled.
+    // An error on one function is logged and the thread goes on; that function gets no file.
+    private void decompileShare(File dir, List<Function> targets, AtomicInteger next, AtomicInteger done,
+                                AtomicInteger ok, AtomicInteger failed) {
+        DecompInterface di = new DecompInterface();
+        try {
+            // The same settings as ExportForAgents.java.
+            di.toggleCCode(true);
+            di.toggleSyntaxTree(false);
+            di.setSimplificationStyle("decompile");
+            if (!di.openProgram(currentProgram)) {
+                throw new IllegalStateException("decompiler failed to start: " + di.getLastMessage());
+            }
+            for (int i = next.getAndIncrement(); i < targets.size() && !monitor.isCancelled();
+                 i = next.getAndIncrement()) {
+                Function f = targets.get(i);
+                String name = fileName(f);
+                File tmp = new File(dir, name + ".tmp");
+                try {
+                    // TaskMonitor.DUMMY: a decompile that is already running when the run is cancelled
+                    // cannot be aborted (a known limit); it ends within DECOMPILE_TIMEOUT_SECONDS and
+                    // the thread then stops before the next function.
+                    DecompileResults r = di.decompileFunction(f, DECOMPILE_TIMEOUT_SECONDS, TaskMonitor.DUMMY);
+                    boolean completed = r != null && r.decompileCompleted() && r.getDecompiledFunction() != null;
+                    String body = completed
+                        ? r.getDecompiledFunction().getC()
+                        : FAILED_PREFIX + (r == null ? "no result" : r.getErrorMessage()) + " */\n";
+                    Files.write(tmp.toPath(), body.getBytes(StandardCharsets.UTF_8));
+                    Files.move(tmp.toPath(), new File(dir, name).toPath(),
+                        StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+                    (completed ? ok : failed).incrementAndGet();
+                    int n = done.incrementAndGet();
+                    if (n % 1000 == 0) {
+                        println(String.format("%d / %d", n, targets.size()));
                     }
                 } catch (Exception e) {
-                    printerr("decompile thread: " + e);
-                } finally {
-                    di.dispose();
+                    printerr("decompile " + name + ": " + e);
+                    try {
+                        Files.deleteIfExists(tmp.toPath());
+                    } catch (IOException ignored) {
+                        // Deleted on the next run.
+                    }
                 }
-            });
-        }
-        pool.shutdown();
-        while (!pool.awaitTermination(10, TimeUnit.SECONDS)) {
-            if (monitor.isCancelled()) {
-                pool.shutdownNow();
             }
+        } finally {
+            di.dispose();
         }
-        println(String.format("decompiled %d of %d", ok.get(), targets.size()));
     }
 
     private static String fileName(Function f) {
