@@ -1,10 +1,22 @@
-// The skeleton of uber_color and its two forms (see shaders.h). The GLSL below is written for this spike from the
-// PICA hardware description (the TEV enumerators of key.h, the lighting inputs and LUT roles of the census) and
-// from glslang's public API; no file of Azahar was opened (its sources are not on this machine), so the structure
-// is the design document's, not a copy. N2-08 will copy Azahar's real constructs with D6's header.
+// Derived from Azahar src/video_core/shader/generator/glsl_fs_shader_gen.cpp at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-3.0-or-later: the file says "Licensed under GPLv3 or any later version"); the TEV stage constructs (IsPassThroughTevStage, WriteTevStage, AppendColorModifier, AppendAlphaModifier, AppendColorCombiner, AppendAlphaCombiner, GetSource), the alpha test (WriteAlphaTestCondition) and the lighting constructs (WriteLighting) are taken in simplified form, with the spike's own names for the uniforms and the sources
+// Copyright 2023-2026 Citra Emulator Project / Azahar Emulator Project
+//
+// The skeleton of uber_color and its two forms (see shaders.h) for the N2-35 spike. The emitter of option 1
+// (LiteralSource and the Emit* functions) follows Azahar's FragmentModule: the pass-through test of a TEV stage,
+// the copy "combiner_buffer = next_combiner_buffer" and the update bits of the combiner buffer (the copy sits
+// before the stage here and after it in Azahar: the spike measures compile cost, not agreement with the 3DS), the
+// colour and alpha operation expressions (Dot3_RGBA takes its alpha from the colour result), and the lighting
+// steps (light vector from the position and the view, half vector, one- or two-sided dot product, clamp of the
+// highlights, the geometric factor, the LUT inputs and the attenuations). It simplifies them (no byte rounding
+// per stage, no force_source3 rule for stage 0, no shadow, no custom normal, no tangent map, Lerp written as an
+// expansion) and is not a copy of the whole file. The variable names combiner_buffer and next_combiner_buffer are
+// Azahar's; the other names of the emitted GLSL are the spike's. The ubershader form (kUberBody) is the spike's own: the same
+// expressions behind switches on key fields. The textures, the LUT fetch, the quaternion helper and the uniform
+// layout are the spike's, from the PICA hardware description and glslang's public API.
 #include "shaders.h"
 
 #include <chrono>
+#include <cstddef>
 #include <cstring>
 #include <mutex>
 #include <string>
@@ -416,7 +428,7 @@ void EmitStage(string& o, const Key& key, uint32_t k) {
     const uint32_t cw = key.w[f_tev_scale_0 + k];
     const uint32_t cop = ow & 15u;
     const uint32_t aop = (ow >> 4u) & 15u;
-    // Azahar's IsPassThroughTevStage: Previous, Replace and scale 1 in both halves emit nothing.
+    // As Azahar's IsPassThroughTevStage: Previous, Replace and scale 1 in both halves emit nothing.
     const bool pass_through = (sw & 15u) == kSrcPrevious && (mw & 15u) == 0 && cop == kOpReplace &&
                               ((sw >> 12u) & 15u) == kSrcPrevious && ((mw >> 12u) & 15u) == 0 &&
                               aop == kOpReplace && (cw & 3u) == 0 && ((cw >> 2u) & 3u) == 0;

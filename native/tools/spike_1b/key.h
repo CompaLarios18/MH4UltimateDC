@@ -1,7 +1,11 @@
+// Derived from Azahar src/video_core/pica/regs_texturing.h, src/video_core/pica/regs_lighting.h at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-2.0-or-later: both files say "Licensed under GPLv2 or any later version"); only the names and values of the enumerations (TevStageConfig::Source, ColorModifier, AlphaModifier and Operation; LightingLutInput) are taken
+// Copyright 2017-2024 Citra Emulator Project / Azahar Emulator Project (regs_texturing.h)
+// Copyright 2017 Citra Emulator Project (regs_lighting.h)
+//
 // The spike's synthetic fragment key (N2-35): the fields the skeleton of uber_color reads, as 32-bit words.
-// Nothing here is game data. The word layouts follow the PICA register fields the design calls "raw words"
-// (docs/native/gpu-fragment-design.md 4.2: the six TEV stages as raw words); the values are hardware enumerators
-// (3dbrew's GPU registers), not text from Azahar.
+// Nothing here is game data. The word layouts are the spike's own (the design calls the six TEV stages "raw
+// words", docs/native/gpu-fragment-design.md 4.2; the bit positions below are not Azahar's registers); the
+// enumerator values are the hardware's (3dbrew's GPU registers).
 #pragma once
 
 #include <array>
