@@ -760,6 +760,31 @@ The `build/tsan` tree (the commands of "The ThreadSanitizer job" above, with the
 a second queue family (a wait or a hand-over across queues; lavapipe has one), the row direction against a capture (above), the PICA's own depth rounding, the `native-tsan` job on GitHub *(CI)*, and any
 claim about the cost of the CPU wait on a real present thread.
 
+## rhi.h additions: the geometry_shader bit and specialisation constants (N2-34)
+
+The one sanctioned change to the frozen header (D5; additions only, existing aggregates compile unchanged).
+
+- **`Cap::GeometryShader`** is the 14th mask bit (`kCapCount` is 14), named `geometry_shader`; `Capabilities::geometry_shader`
+  keeps its name and now moves from the values to the bits. The device passes plume's `geometryShader` core feature only
+  when the physical device has it and the mask leaves it on, so under `MH4N_RHI_MASK=geometry_shader` (or `all`, or
+  `BackendOptions::mask`) the feature is really off and a `GraphicsPipelineDesc` with a geometry stage fails with the existing
+  message ("geometry shaders are not available on this device"). That is the M2's route with no quaternion fix-up on lavapipe.
+- **`SpecConstant { u32 id, value }`** and `GraphicsPipelineDesc::specialization` (last member, empty by default), handed to plume
+  as its `specConstants` pairs. **One list per pipeline, applied to every stage**: plume fills one specialisation info and gives
+  it to the vertex, geometry and fragment stages alike (`plume_vulkan.cpp`, the stages of `VulkanGraphicsPipeline`), so a list per
+  stage needs a plume patch (not written here). This is safe because of the Vulkan rule for specialisation map entries: "If a
+  constantID value is not a specialization constant ID used in the shader, that map entry does not affect the behavior of the
+  pipeline." A duplicate id fails creation with a message ("specialisation constant N is given twice"). Compute pipelines take none.
+- **Tests** (`gpu_backend_core_test`, all on lavapipe, the fragment stage of an attachment-less 8x8 pass writing a storage buffer):
+  `mask/geometry_shader_is_a_bit_the_mask_turns_off` (name, parser, `all`; unmasked a pass-through geometry stage draws the same
+  64 words as the route without it; masked by the environment, by the options and by `all`: the bit and the device feature are
+  off, the geometry pipeline is refused, the plain one draws), `pipelines/specialisation_constants_set_what_the_shader_draws` (no
+  list gives the default, 1 and 2 give two results, 32 bits survive, two ids, order irrelevant, an undeclared id changes nothing, also
+  through a geometry stage), `pipelines/duplicate_specialisation_ids_fail_with_a_message`,
+  `pipelines/specialisation_list_reaches_the_vendored_description` (no device) and the name table of
+  `mask/the_name_of_each_bit_is_a_literal`. `vkprobe_test` follows the 14 bits; `--rhi` still prints `rhi geometry_shader:` once.
+  Not covered: whether a driver folds the constants (a measurement, not a test).
+
 ## Not checked on this machine
 
 `readelf -d` for `libX11` is meaningful on `build/native/bin/rhi_plume_test` (no `NEEDED` entry besides libstdc++, libm, libgcc_s, libc and the loader's), not on `mh4u_native_runner`, which does not link plume yet.

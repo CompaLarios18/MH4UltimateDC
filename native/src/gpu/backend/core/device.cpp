@@ -249,6 +249,7 @@ void ApplyMask(Capabilities& caps, CapabilityMask mask) {
     if (mask.Has(Cap::Timeline)) caps.timeline = false;
     if (mask.Has(Cap::PresentWait)) caps.present_wait = false;
     if (mask.Has(Cap::DirectUpload)) caps.direct_upload = false;
+    if (mask.Has(Cap::GeometryShader)) caps.geometry_shader = false;
     caps.masked = mask;
 }
 
@@ -350,7 +351,7 @@ Result<std::shared_ptr<Backend>> CreateBackend(std::shared_ptr<Instance> instanc
     VkPhysicalDeviceFeatures wanted_features = {};
     wanted_features.fragmentStoresAndAtomics = VK_TRUE;
     wanted_features.vertexPipelineStoresAndAtomics = VK_TRUE;
-    wanted_features.geometryShader = VK_TRUE;
+    wanted_features.geometryShader = mask.Has(Cap::GeometryShader) ? VK_FALSE : VK_TRUE;
     wanted_features.shaderClipDistance = VK_TRUE;
     wanted_features.samplerAnisotropy = VK_TRUE;
     wanted_features.imageCubeArray = VK_TRUE;
@@ -406,7 +407,7 @@ Result<std::shared_ptr<Backend>> CreateBackend(std::shared_ptr<Instance> instanc
     caps.timeline = caps.timeline && enabled.timelineSemaphore;
     caps.logic_op = caps.logic_op && device->enabledCoreFeatures.logicOp;
     caps.bc7 = caps.bc7 && device->enabledCoreFeatures.textureCompressionBC;
-    caps.geometry_shader = device->enabledCoreFeatures.geometryShader != VK_FALSE;
+    caps.geometry_shader = caps.geometry_shader && device->enabledCoreFeatures.geometryShader != VK_FALSE;
     impl->present_wait_available =
         core::PresentWaitAvailable(surface != VK_NULL_HANDLE, caps.present_wait, enabled.presentWait);
     impl->display_timing_available = surface != VK_NULL_HANDLE && enabled.displayTiming;
@@ -460,9 +461,10 @@ Result<std::shared_ptr<Backend>> CreateBackend(std::shared_ptr<Instance> instanc
     MH4N_LOG(Info, "RHI",
              "rhi: caps d24s8={} interlock={} index_uint8={} custom_border_color={} triangle_fans={} logic_op={} "
              "dynamic_rendering={} "
-             "pipeline_library={} eds3_blend={} bc7={} timeline={} present_wait={} direct_upload={}",
+             "pipeline_library={} eds3_blend={} bc7={} timeline={} present_wait={} direct_upload={} geometry_shader={}",
              c.d24s8, c.interlock, c.index_uint8, c.custom_border_color, c.triangle_fans, c.logic_op,
-             c.dynamic_rendering, c.pipeline_library, c.eds3_blend, c.bc7, c.timeline, c.present_wait, c.direct_upload);
+             c.dynamic_rendering, c.pipeline_library, c.eds3_blend, c.bc7, c.timeline, c.present_wait, c.direct_upload,
+             c.geometry_shader);
     MH4N_LOG(Info, "RHI", "rhi: device extensions enabled: {}", core::JoinNames(impl->enabled_extensions));
 
     return std::make_shared<Backend>(std::move(impl));

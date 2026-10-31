@@ -793,24 +793,23 @@ std::vector<std::pair<std::string, std::string>> ExpectedFields(const rhi::Capab
 }  // namespace
 
 TEST_CASE("--rhi: the field list is every Capabilities field, in order, and prints what it holds") {
-    // Two synthetic structures. The 13 bits of the first follow an irregular pattern, the second holds the
+    // Two synthetic structures. The 14 bits of the first follow an irregular pattern, the second holds the
     // complement, so a report that swaps or copies two bits shows in at least one of the two. The values are
     // all different from each other (and between the two) for the same reason.
-    constexpr uint32_t kPattern = 0b1011001101010;
+    constexpr uint32_t kPattern = 0b11011001101010;
     rhi::Capabilities a;
     rhi::Capabilities b;
     bool* bits_a[] = {&a.d24s8, &a.interlock, &a.index_uint8, &a.custom_border_color, &a.triangle_fans,
                       &a.logic_op, &a.dynamic_rendering, &a.pipeline_library, &a.eds3_blend, &a.bc7, &a.timeline,
-                      &a.present_wait, &a.direct_upload};
+                      &a.present_wait, &a.direct_upload, &a.geometry_shader};
     bool* bits_b[] = {&b.d24s8, &b.interlock, &b.index_uint8, &b.custom_border_color, &b.triangle_fans,
                       &b.logic_op, &b.dynamic_rendering, &b.pipeline_library, &b.eds3_blend, &b.bc7, &b.timeline,
-                      &b.present_wait, &b.direct_upload};
+                      &b.present_wait, &b.direct_upload, &b.geometry_shader};
     static_assert(sizeof(bits_a) / sizeof(bits_a[0]) == rhi::kCapCount);
     for (uint32_t i = 0; i < rhi::kCapCount; ++i) {
         *bits_a[i] = ((kPattern >> i) & 1u) != 0;
         *bits_b[i] = !*bits_a[i];
     }
-    a.geometry_shader = true;
     a.stride_alignment = 4;
     a.apple = true;
     a.primitive_restart_always_on = false;
@@ -829,7 +828,6 @@ TEST_CASE("--rhi: the field list is every Capabilities field, in order, and prin
     a.device_index = 2;
     a.masked = rhi::CapabilityMask{}.With(rhi::Cap::Interlock).With(rhi::Cap::Bc7);
 
-    b.geometry_shader = false;
     b.stride_alignment = 16;
     b.apple = false;
     b.primitive_restart_always_on = true;
@@ -856,7 +854,7 @@ TEST_CASE("--rhi: the field list is every Capabilities field, in order, and prin
             CHECK_MESSAGE(fields[i].name == expected[i].first, "field " << i);
             CHECK_MESSAGE(fields[i].value == expected[i].second, expected[i].first);
         }
-        // the first 13 are the bits, named as the mask names them
+        // the first 14 are the bits (geometry_shader among them since N2-34), named as the mask names them
         for (uint32_t i = 0; i < rhi::kCapCount; ++i) {
             CHECK(fields[i].name == rhi::CapName(static_cast<rhi::Cap>(i)));
             CHECK(fields[i].value == B(caps->Has(static_cast<rhi::Cap>(i))));
@@ -877,10 +875,21 @@ TEST_CASE("--rhi: the report prints every Capabilities field, each equal to Caps
         return;
     }
     const rhi::Capabilities& caps = backend->Caps();
-    auto lines = RhiLines(RenderRhiReport(*backend));
+    const std::string report = RenderRhiReport(*backend);
+    auto lines = RhiLines(report);
+    // geometry_shader is a mask bit since N2-34 and still a field of its own: its line is printed once, not
+    // once as a bit and once as a value
+    {
+        size_t count = 0;
+        for (size_t at = report.find("rhi geometry_shader: "); at != std::string::npos;
+             at = report.find("rhi geometry_shader: ", at + 1)) {
+            ++count;
+        }
+        CHECK(count == 1);
+    }
     // every field of Capabilities, checked against the structure itself (not against RhiFields)
     const auto expected = ExpectedFields(caps);
-    REQUIRE(expected.size() == rhi::kCapCount + 18);
+    REQUIRE(expected.size() == rhi::kCapCount + 17);
     for (const auto& [name, value] : expected) {
         const auto it = lines.find(name);
         REQUIRE_MESSAGE(it != lines.end(), "no line for " << name);
