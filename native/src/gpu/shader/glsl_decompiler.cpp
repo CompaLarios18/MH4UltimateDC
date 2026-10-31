@@ -1071,44 +1071,164 @@ private:
         // RCP and RSQ as the interpreter computes them (1.0f / x and 1.0f / sqrtf(x), every step rounded to
         // nearest), on any device. A device's reciprocal, square root and inverse square root are within a
         // unit in the last place of the true value but not always the rounded one (the RX 6700 XT's differ
-        // from the CPU's in a sizeable share of the inputs), and one ulp is more than the comparison of the
-        // dump check allows once a program subtracts nearly equal numbers afterwards (one plus the z of a
-        // unit vector, z near -1). The start value is the device's own; the loops move it to the rounded
-        // value by an exact test with fma: q is the nearest float to 1/s when 1 - q*s lies within half an
-        // ulp of q times s, and c is the nearest float to sqrt(x) when x - c*c lies in (-c*ulp_below(c),
-        // c*ulp_above(c)] (c is a multiple of its ulp, so those bounds are exact products and the strict
-        // side of the lower bound is the half-ulp-squared term). The range is the one where those
-        // residuals are exact floats and nothing underflows (2^-80 .. 2^80); outside it, and for zero,
-        // infinity and NaN, the plain device operations are used (the interpreter's results for those are
-        // the IEEE ones, which the device gives: 1/0 is inf, 1/inf is 0, a negative root is NaN).
-        // Assumptions: fma is fused (true of real devices; Vulkan only guarantees the precision of a multiply
-        // followed by an add), and the device's start value is within 4 ulp of the rounded result (the loops
-        // take at most four steps; true of real devices, Vulkan's minimum for sqrt is looser).
-        shader.AddLine("float pica_next(float v) {{ return uintBitsToFloat(floatBitsToUint(v) + 1u); }}");
-        shader.AddLine("float pica_prev(float v) {{ return uintBitsToFloat(floatBitsToUint(v) - 1u); }}\n");
-        shader.AddLine("float pica_round_rcp(float s, float q) {{");
+        // from the CPU's in a sizeable share of the inputs, lavapipe's in about one input in ten), and one ulp
+        // is more than the comparison of the dump check allows once a program subtracts nearly equal numbers
+        // afterwards (one plus the z of a unit vector, z near -1). So the rounded value is computed in
+        // integers, and the float operations that remain only produce estimates that the integer arithmetic
+        // checks and repairs. Nothing here uses fma, and nothing depends on a float operation being
+        // correctly rounded: the result is exact whatever the estimates are, only the number of repair steps
+        // depends on how good they are. Only umulExtended, usubBorrow, shifts, comparisons and the exact
+        // conversion of integers below 2^24 are relied on (core GLSL 4.00; OpUMulExtended, OpISubBorrow).
+        //
+        // The range is every normal number whose result is normal as well, tested on the bits so that nothing
+        // depends on a float comparison: RCP for the biased exponent field 1 .. 252 (|x| from 2^-126 up to
+        // below 2^126), RSQ for a positive x with the field 1 .. 254. Outside it (zero, denormals, the two
+        // largest exponents of RCP, infinity, NaN, a negative RSQ operand) the plain device operations are
+        // used: the interpreter's results for those are the IEEE ones, which the device gives (1/0 is inf, 1/inf
+        // is 0, a negative root is NaN) or which a device may flush (denormals) in a way this code cannot
+        // repair.
+        //
+        // RCP. A positive normal s is m * 2^(e-23) with m the 24-bit integer significand, 2^23 <= m < 2^24
+        // and e the unbiased exponent. 1/s = (2^47 / m) * 2^(-24-e) and 2^23 < 2^47 / m <= 2^24, so the float
+        // nearest to 1/s is Q * 2^(-24-e) with Q the integer nearest to 2^47 / m, 2^23 <= Q <= 2^24 (Q = 2^24
+        // only for m = 2^23, and Q * 2^(-24-e) is then exact as well). Q is the nearest integer
+        // iff |2^47 / m - Q| < 1/2, that is iff 2 |d| < m with d = 2^47 - Q * m. A tie 2 |d| = m cannot
+        // happen: it would make 2^48 / m an odd integer, so m would be 2^48 divided by an odd number, and the
+        // only such m is 2^48, which is not a significand. So the nearest Q is unique and no round-to-even
+        // rule is needed. d is computed exactly: Q * m < 2^48 is the pair (ph, pl) of umulExtended and 2^47 is
+        // (0x8000, 0), so d is the pair (dh, dl) of a subtraction with borrow, in sign and magnitude (`low`:
+        // Q * m <= 2^47, d >= 0, Q is too small or exact). 2 |d| > m is decided on 64 bits: twice the
+        // magnitude has the high word (dh << 1) | (dl >> 31) and the low word dl << 1. The start is the
+        // float quotient 2^47 / m (both operands exact floats, so within a few ulp of Q on any device), then
+        // two jumps Q += round(d / m) with d converted to float (an estimate: after a jump the error of Q is
+        // below about 2^-21 of what it was, plus one half, so two jumps bring any start in [2^23, 2^24] to
+        // within 1), then three steps of Q +- 1 while 2 |d| > m (each step brings Q strictly nearer, as
+        // |d -+ m| < |d| when 2 |d| > m; one is enough after the jumps, the third is slack).
+        //
+        // RSQ is 1.0f / sqrtf(x): the square root is rounded, then the reciprocal of the rounded root is.
+        // x = m * 2^(e-23); N = m * 2^23 when e is even and m * 2^24 when e is odd is an integer in
+        // [2^46, 2^48) and x = N * 2^(e-23-s) with e-23-s even (s = 23 or 24), so sqrt(x) = sqrt(N) * 2^k,
+        // k = (e >> 1) - 23 (arithmetic shift), and sqrt(N) is in [2^23, 2^24). The float nearest to it is
+        // C * 2^k with C the integer nearest to sqrt(N), 2^23 <= C <= 2^24 - 1 (sqrt of the largest N is
+        // 2^24 - 1/2 - 2^-27 and below). C is nearest iff (2C-1)^2 < 4N < (2C+1)^2, both strict: the squares
+        // are odd and 4N is even, so sqrt(N) is never exactly C +- 1/2 and there is no tie. With R = N - C^2
+        // the right inequality is 4R < 4C + 1, i.e. R <= C, and the left one is 4R > 1 - 4C, i.e. R > -C. So
+        // C is the rounded root iff -C < R <= C, and when R > C the next integer is nearer, when R <= -C the
+        // previous one. R is computed exactly as the pair of a subtraction with borrow of N (nh, nl) and
+        // C^2 (umulExtended), in sign and magnitude. The start is the device's sqrt of the exact float
+        // m * 2^23 or m * 2^24, then three Newton steps C += round(R / (2C)) (an estimate: the error of C
+        // goes from D to about D^2 / 2^24 plus one half, so a start within 2^-4 of the root, or 2^20 units,
+        // arrives within 1; real devices are within a few units), then three steps of C +- 1 on the exact
+        // test. The reciprocal of the root is the RCP above with the root's own significand C and exponent
+        // e >> 1 (the root is C * 2^(k) = C * 2^((e >> 1) - 23)).
+        //
+        // The result is assembled in integers: Q * 2^(-24-e) has the biased exponent 126 - e and the
+        // fraction Q - 2^23, and for Q = 2^24 the addition carries into the exponent (127 - e, fraction 0).
+        shader.AddLine("void pica_rcp_residual(uint q, uint m, out bool low, out uint dh, out uint dl) {{");
         ++shader.scope;
-        shader.AddLine("for (int i = 0; i < 4; ++i) {{");
+        shader.AddLine("uint ph;");
+        shader.AddLine("uint pl;");
+        shader.AddLine("umulExtended(q, m, ph, pl);");
+        shader.AddLine("low = ph < 0x8000u || (ph == 0x8000u && pl == 0u);");
+        shader.AddLine("if (low) {{");
         ++shader.scope;
-        shader.AddLine("float above = pica_next(q) - q;");
-        shader.AddLine("float below = q - pica_prev(q);");
-        shader.AddLine("float residual = fma(-q, s, 1.0);");
-        shader.AddLine("if (residual > above * s * 0.5) {{ q = pica_next(q); }}");
-        shader.AddLine("else if (residual < -(below * s * 0.5)) {{ q = pica_prev(q); }}");
+        shader.AddLine("uint borrow;");
+        shader.AddLine("dl = usubBorrow(0u, pl, borrow);");
+        shader.AddLine("dh = 0x8000u - ph - borrow;");
+        --shader.scope;
+        shader.AddLine("}} else {{");
+        ++shader.scope;
+        shader.AddLine("dl = pl;");
+        shader.AddLine("dh = ph - 0x8000u;");
+        --shader.scope;
+        shader.AddLine("}}");
+        --shader.scope;
+        shader.AddLine("}}\n");
+        shader.AddLine("float pica_magnitude(uint dh, uint dl) {{ return float(dh) * 4294967296.0 + float(dl); }}\n");
+        shader.AddLine("uint pica_rcp_significand(uint m) {{");
+        ++shader.scope;
+        shader.AddLine("float mf = float(m);");
+        shader.AddLine("uint q = clamp(uint(floor(140737488355328.0 / mf + 0.5)), 0x800000u, 0x1000000u);");
+        shader.AddLine("for (int i = 0; i < 2; ++i) {{");
+        ++shader.scope;
+        shader.AddLine("bool low;");
+        shader.AddLine("uint dh;");
+        shader.AddLine("uint dl;");
+        shader.AddLine("pica_rcp_residual(q, m, low, dh, dl);");
+        shader.AddLine("uint jump = uint(floor(pica_magnitude(dh, dl) / mf + 0.5));");
+        shader.AddLine("q = clamp(low ? q + jump : q - min(jump, q), 0x800000u, 0x1000000u);");
+        --shader.scope;
+        shader.AddLine("}}");
+        shader.AddLine("for (int i = 0; i < 3; ++i) {{");
+        ++shader.scope;
+        shader.AddLine("bool low;");
+        shader.AddLine("uint dh;");
+        shader.AddLine("uint dl;");
+        shader.AddLine("pica_rcp_residual(q, m, low, dh, dl);");
+        shader.AddLine("uint twice_high = (dh << 1) | (dl >> 31);");
+        shader.AddLine("uint twice_low = dl << 1;");
+        shader.AddLine("if (twice_high != 0u || twice_low > m) {{ q = low ? q + 1u : q - 1u; }}");
         --shader.scope;
         shader.AddLine("}}");
         shader.AddLine("return q;");
         --shader.scope;
         shader.AddLine("}}\n");
-        shader.AddLine("float pica_round_sqrt(float x, float c) {{");
+        shader.AddLine("float pica_rcp_normal(uint m, int e) {{");
         ++shader.scope;
-        shader.AddLine("for (int i = 0; i < 4; ++i) {{");
+        shader.AddLine("return uintBitsToFloat((uint(126 - e) << 23) + (pica_rcp_significand(m) - 0x800000u));");
+        --shader.scope;
+        shader.AddLine("}}\n");
+        shader.AddLine("void pica_sqrt_residual(uint c, uint nh, uint nl, out bool pos, out uint dh, out uint dl) {{");
         ++shader.scope;
-        shader.AddLine("float above = pica_next(c) - c;");
-        shader.AddLine("float below = c - pica_prev(c);");
-        shader.AddLine("float residual = fma(-c, c, x);");
-        shader.AddLine("if (residual > c * above) {{ c = pica_next(c); }}");
-        shader.AddLine("else if (residual <= -(c * below)) {{ c = pica_prev(c); }}");
+        shader.AddLine("uint ph;");
+        shader.AddLine("uint pl;");
+        shader.AddLine("umulExtended(c, c, ph, pl);");
+        shader.AddLine("pos = nh > ph || (nh == ph && nl >= pl);");
+        shader.AddLine("uint borrow;");
+        shader.AddLine("if (pos) {{");
+        ++shader.scope;
+        shader.AddLine("dl = usubBorrow(nl, pl, borrow);");
+        shader.AddLine("dh = nh - ph - borrow;");
+        --shader.scope;
+        shader.AddLine("}} else {{");
+        ++shader.scope;
+        shader.AddLine("dl = usubBorrow(pl, nl, borrow);");
+        shader.AddLine("dh = ph - nh - borrow;");
+        --shader.scope;
+        shader.AddLine("}}");
+        --shader.scope;
+        shader.AddLine("}}\n");
+        shader.AddLine("uint pica_sqrt_significand(uint m, bool odd) {{");
+        ++shader.scope;
+        shader.AddLine("uint nh = odd ? (m >> 8) : (m >> 9);");
+        shader.AddLine("uint nl = odd ? (m << 24) : (m << 23);");
+        shader.AddLine("float nf = float(m) * (odd ? 16777216.0 : 8388608.0);");
+        shader.AddLine("uint c = clamp(uint(sqrt(nf)), 0x800000u, 0xFFFFFFu);");
+        shader.AddLine("for (int i = 0; i < 3; ++i) {{");
+        ++shader.scope;
+        shader.AddLine("bool pos;");
+        shader.AddLine("uint dh;");
+        shader.AddLine("uint dl;");
+        shader.AddLine("pica_sqrt_residual(c, nh, nl, pos, dh, dl);");
+        shader.AddLine("uint jump = uint(floor(pica_magnitude(dh, dl) / (2.0 * float(c)) + 0.5));");
+        shader.AddLine("c = clamp(pos ? c + jump : c - min(jump, c), 0x800000u, 0xFFFFFFu);");
+        --shader.scope;
+        shader.AddLine("}}");
+        shader.AddLine("for (int i = 0; i < 3; ++i) {{");
+        ++shader.scope;
+        shader.AddLine("bool pos;");
+        shader.AddLine("uint dh;");
+        shader.AddLine("uint dl;");
+        shader.AddLine("pica_sqrt_residual(c, nh, nl, pos, dh, dl);");
+        shader.AddLine("if (pos) {{");
+        ++shader.scope;
+        shader.AddLine("if (dh != 0u || dl > c) {{ c += 1u; }}");
+        --shader.scope;
+        shader.AddLine("}} else if (dh != 0u || dl >= c) {{");
+        ++shader.scope;
+        shader.AddLine("c -= 1u;");
+        --shader.scope;
+        shader.AddLine("}}");
         --shader.scope;
         shader.AddLine("}}");
         shader.AddLine("return c;");
@@ -1116,10 +1236,10 @@ private:
         shader.AddLine("}}\n");
         shader.AddLine("float pica_rcp(float x) {{");
         ++shader.scope;
-        shader.AddLine("float magnitude = abs(x);");
-        shader.AddLine("if (magnitude >= 8.27e-25 && magnitude <= 1.2e24) {{");
+        shader.AddLine("uint bits = floatBitsToUint(x) & 0x7FFFFFFFu;");
+        shader.AddLine("if (bits >= 0x00800000u && bits < 0x7E800000u) {{");
         ++shader.scope;
-        shader.AddLine("float q = pica_round_rcp(magnitude, 1.0 / magnitude);");
+        shader.AddLine("float q = pica_rcp_normal((bits & 0x7FFFFFu) | 0x800000u, int(bits >> 23) - 127);");
         shader.AddLine("return x < 0.0 ? -q : q;");
         --shader.scope;
         shader.AddLine("}}");
@@ -1128,10 +1248,12 @@ private:
         shader.AddLine("}}\n");
         shader.AddLine("float pica_rsq(float x) {{");
         ++shader.scope;
-        shader.AddLine("if (x >= 8.27e-25 && x <= 1.2e24) {{");
+        shader.AddLine("uint bits = floatBitsToUint(x);");
+        shader.AddLine("if (bits >= 0x00800000u && bits < 0x7F800000u) {{");
         ++shader.scope;
-        shader.AddLine("float root = pica_round_sqrt(x, sqrt(x));");
-        shader.AddLine("return pica_round_rcp(root, 1.0 / root);");
+        shader.AddLine("int e = int(bits >> 23) - 127;");
+        shader.AddLine("uint root = pica_sqrt_significand((bits & 0x7FFFFFu) | 0x800000u, (e & 1) != 0);");
+        shader.AddLine("return pica_rcp_normal(root, e >> 1);");
         --shader.scope;
         shader.AddLine("}}");
         shader.AddLine("return 1.0 / sqrt(x);");

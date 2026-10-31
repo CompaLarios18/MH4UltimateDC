@@ -289,6 +289,28 @@ bool Backend::HasSurface() const {
 
 // ---- CreateBackend -------------------------------------------------------------------------------
 
+namespace {
+
+// The last handle CreateBackend returned is going away. What the modules keep for the life of a backend (the readback
+// module's pipelines, binding sets and buffers, the targets module's staging buffers, the sync module's retired objects)
+// holds Backend::Impl through a strong reference (every Buffer, BindingSet and Pipeline does), and Impl holds the slots that
+// hold them: a cycle that would keep the device and the instance alive until the process ends (on the RX 6700 XT, nine
+// such devices alive when the tenth was lost). So the slots are released here, once the GPU is idle, in the order the
+// destructor of Impl would have used; a slot made again later (an object that outlives the handle) is made empty on first use.
+void ReleaseWithLastHandle(Backend* backend) {
+    Backend::Impl& impl = backend->impl();
+    if (impl.device != nullptr && impl.device->vk != VK_NULL_HANDLE) {
+        vkDeviceWaitIdle(impl.device->vk);
+    }
+    impl.state.reset();
+    impl.readback.reset();
+    impl.sync.reset();
+    impl.targets.reset();
+    delete backend;
+}
+
+} // namespace
+
 Result<std::shared_ptr<Backend>> CreateBackend(std::shared_ptr<Instance> instance, const BackendOptions& options) {
     if (instance == nullptr) {
         return Error{"CreateBackend: no instance"};
@@ -467,7 +489,7 @@ Result<std::shared_ptr<Backend>> CreateBackend(std::shared_ptr<Instance> instanc
              c.geometry_shader);
     MH4N_LOG(Info, "RHI", "rhi: device extensions enabled: {}", core::JoinNames(impl->enabled_extensions));
 
-    return std::make_shared<Backend>(std::move(impl));
+    return std::shared_ptr<Backend>(new Backend(std::move(impl)), ReleaseWithLastHandle);
 }
 
 } // namespace mh4n::gpu::rhi
