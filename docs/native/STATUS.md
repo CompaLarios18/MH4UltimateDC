@@ -216,7 +216,7 @@ Tables between the `wp-status` markers are generated: edit the specs or use `set
 | N3-26 | G6 and G8 end to end | L | native-worker-high | N3-11, N3-12, N3-29, N3-20, N3-22, N2b-21, N2b-17, N0-35 | dump, save | `todo` |  |
 | N3-27 | Exit: every session end to end, and 120 fps with sound on the reference PC | M | native-worker | N3-26, N3-14, N3-15, N3-19, N2b-24 | ci, dump-check, save, pc | `todo` |  |
 | N3-28 | The alpha: release and triage | S | orchestrator | N3-27, N3-25 | ci | `todo` |  |
-| N3-33 | `--io-latency none` must not hang the deterministic mode | S | native-worker | N1-25, N2b-18 | dump, pc | `ready` |  |
+| N3-33 | `--io-latency none` must not hang the deterministic mode | S | native-worker | N1-25, N2b-18 | dump, save, pc | `ready` |  |
 | N3-32 | The native runtime at 120 fps: G3 in the deterministic mode leaves the village as the reference does | M | native-worker-high | N3-33, N3-21, N1-26, N0-39 | dump, save, pc | `todo` |  |
 <!-- wp-status:end N3 -->
 
