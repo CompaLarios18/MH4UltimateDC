@@ -288,6 +288,56 @@ both sides. `DIFFERENT` names a file whose diff shows the line. The script was r
 both, `ERROR` on a missing capture, and a reviewer proved it says `DIFFERENT` for a changed compared column, a different exit status and
 an extra stderr line, and `SAME` for a change in a skipped column only.
 
+## The gas table's dump check (N2-38)
+
+`--gpu pica-only` reports the frame counter `pica_gas_lut_writes` (N2-38): the number of words written to `GPUREG_GAS_LUT_DATA`
+(0x124) in that frame, a count only. The counter and the table (`PicaState.gas`) never print the table's values. N2-38's last
+*Done when* line, over the real captures, needs the game files, so its row says `dump-check pending`. This is what to run
+on a machine that has the recordings (a worktree has none: use the main checkout, where `build/golden` lives), in bash (Git Bash or WSL on
+Windows), with a player built from the N2-38 commit or later (`cmake --build build/native --target mh4n_capture_player`, or the
+Windows artifact built from it; point `P=` at it):
+
+1. Run, from the main checkout's root:
+   ```
+   mkdir -p build/logs
+   P=${P:-build/native/bin/mh4n_capture_player}
+   for d in build/golden build/golden-n010 build/golden-n035; do
+     for g in G1 G2 G3 G4; do
+       found=0
+       for c in $d/$g/gpu-*.mgpu; do
+         [ -e "$c" ] || continue
+         found=1
+         $P --gpu pica-only --isolated --judge none --check registers "$c" 2>&1 \
+           | tee "build/logs/gas-$(basename $d)-$g-$(basename "$c" .mgpu).txt"
+         echo "$c exit=${PIPESTATUS[0]}" | tee -a build/logs/gas-exit-codes.txt
+       done
+       [ $found = 1 ] || echo "MISSING $d/$g" | tee -a build/logs/gas-exit-codes.txt
+     done
+   done
+   ```
+   The `echo` must stay directly after the `tee` pipeline (`PIPESTATUS` is the player's exit status only there). Do not add
+   `--skip-gas-frames` (`--judge none` judges no frame) or `--queue`. The time is not measured (`unverified`); the captures are 3 to 10
+   frames each.
+2. **Required:** `build/golden/G1` to `G4` (the current recordings, `STATUS.md` N0-35: G1 `gpu-1500.mgpu`, G2 `gpu-2500.mgpu`,
+   G3 `gpu-17400.mgpu`, G4 `gpu-2400.mgpu`; G3-perf is not part of G1 to G4). A `MISSING build/golden/G<n>` line is a failure of
+   the procedure. **Extra, if present:** `build/golden-n010` (the first, older G3 and G4) and `build/golden-n035` (the interim folder of
+   N0-35, which `STATUS.md` says was moved into `build/golden`): `MISSING` lines for these are expected.
+3. **Pass:** `build/logs/gas-exit-codes.txt` has `exit=0` for every capture found, and each log ends with `result: PASS`. N2-04's
+   dump check passed G1 and G2; G3 and G4 have not run with `pica-only` before. Any `exit=1` (a register mismatch) or `exit=2` (the run could not
+   complete) is reported as blocked, with the capture path and the exit code: no retry with other flags.
+4. **The count:** the G4 answer is the `pica_gas_lut_writes` column of the table in `build/logs/gas-golden-G4-gpu-2400.txt` (one row per
+   frame, ten rows). To read it without printing anything else of the log:
+   ```
+   awk '/^ *frame +record +result/ {col=0; for(i=1;i<=NF;i++) if($i=="pica_gas_lut_writes") col=i; intable=1; next}
+        intable && col && $1 ~ /^[0-9]+$/ {print "frame " $1 ": pica_gas_lut_writes=" $col; next}
+        intable && NF==0 {intable=0}' build/logs/gas-golden-G4-gpu-2400.txt
+   ```
+   Any non-zero frame means the command lists inside the ten frames write the table (16 in a frame is a full rewrite). All
+   zeros means the table was written before the capture started, or by a path the player does not decode: the `INIT` record carries no gas
+   table, so the table stays zero for the draws and N2-10 must be told. On G1 to G3 a non-zero value is information, not a failure.
+5. **Send back:** the lines of `build/logs/gas-exit-codes.txt` and, for G4, the ten numbers of step 4 (per directory found). Counts
+   only: never paste or commit the logs, because a `--check registers` failure quotes register numbers and values taken from the capture.
+
 ## Limits of the checks
 
 - What a run judges is what its capture contains. A capture without fills, copies or DMA says

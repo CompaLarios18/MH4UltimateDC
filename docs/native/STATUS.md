@@ -132,7 +132,7 @@ Tables between the `wp-status` markers are generated: edit the specs or use `set
 | N2-08 | Fragment generator, ubershader, TEV and alpha test | L | native-worker-high | N2-33, N2-03, N2-06, N2-13, N2-14, N2-28, N2-34, N2-35, N2-37 | none | `todo` |  |
 | N2-23 | Texture sampling and the first captured frames | M | native-worker-high | N2-08 | dump-check | `todo` |  |
 | N2-09 | Fragment lighting | L | native-worker-high | N2-08, N2-23 | none | `todo` |  |
-| N2-38 | The gas table in the command processor | S | native-worker | N2-04 | dump-check, save | `active` | session 20261031; base 634cad7 |
+| N2-38 | The gas table in the command processor | S | native-worker | N2-04 | dump-check, save | `review` | batch 20261031-n2-gas-comp; reviewer approved after 3 rounds (0xE0 named as 3dbrew's TEXENV_UPDATE_BUFFER, wrapped lines, tests for 0xE0 and a masked data write); ctest -R '^gpu_pica_test$' passes (49 cases); 3dbrew gives GPUREG_GAS_LUT_DATA as one register, 0x124, and does not say how the index advances (one entry per data word, wrapping at 16: unverified); dump-check pending (G1 to G4: mh4n_capture_player --gpu pica-only --isolated --judge none --check registers must exit 0 on every capture, and the pica_gas_lut_writes count of G4's ten frames is reported, counts only; the loop and how to read it are in docs/native/capture-player.md, The gas table's dump check (N2-38)) |
 | N2-10 | Fog and gas | M | native-worker-high | N2-08, N2-38 | none | `todo` |  |
 | N2-11 | Procedural textures | M | native-worker | N2-08, N2-23 | none | `todo` |  |
 | N2-12 | Shadows | M | native-worker-high | N2-08, N2-13, N2-23 | none | `todo` |  |
