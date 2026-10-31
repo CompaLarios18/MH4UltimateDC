@@ -80,6 +80,8 @@ endif()
 target_sources(mh4u PRIVATE
     launcher/checks.cpp
     launcher/checks.h
+    launcher/game_file.cpp
+    launcher/game_file.h
     launcher/launcher.cpp
     launcher/launcher.h
     launcher/lobby.cpp
