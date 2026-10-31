@@ -231,12 +231,13 @@ void Menu::DrawLayoutEditor() {
         ImGui::TextWrapped("%s", note.c_str());
         ImGui::PopStyleColor();
     }
-    // the keys of the controller or the keyboard, whichever was used last (EditorKeys)
+    // the keys of the controller or the keyboard, whichever was used last (EditorKeys), in lines
+    // that keep each key next to what it does
     const char* keys =
         layer.PadLast()
-            ? "LB/RB: map or target camera   D-pad: move   LT/RT: size   Y: show/hide   X: reset   A: done   B: cancel"
-            : "Tab: map or target camera   arrows: move   -/+: size   Space: show/hide   Backspace: reset   Enter: done"
-              "   Esc: cancel";
+            ? "LB/RB: map or target camera   D-pad: move\nLT/RT: size   Y: show/hide\nX: reset   A: done   B: cancel"
+            : "Tab: map or target camera   arrows: move\n-/+: size   Space: show/hide\n"
+              "Backspace: reset   Enter: done   Esc: cancel";
     ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
     ImGui::TextWrapped("%s", keys);
     ImGui::PopStyleColor();
