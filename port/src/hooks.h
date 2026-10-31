@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "core/frontend/top_screen.h"
+#include "map_view.h"
 
 struct RCodeInfo;
 
@@ -57,8 +58,32 @@ int SkipHint();
 
 /// In quests, switches the touch overlay between the map alone (quest_overlay) and the whole
 /// touch screen (for the chat or the item shortcuts), until switched back. Safe to call from
-/// any thread; it takes effect a moment later.
+/// any thread; it takes effect a moment later. (Azahar's hotkey; the app's key is
+/// PressQuestMapKey.)
 void ToggleQuestMap();
+
+/// The app's touch-screen key (and a controller's right-stick click): ToggleQuestMap, unless
+/// the map view can't show (MapView::KeyNote: the screens, the touch overlay or quest_overlay
+/// off, a code library too old, a panel layout without the map panel). Then the press asks for
+/// the map, for when it can show, and returns why nothing changes, a short line for the screen;
+/// "" when it switched. Call it on the emulation thread.
+std::string PressQuestMapKey();
+
+/// What the quest's small touch panels had the last time they ran: whether a quest's panels
+/// have run since the game started, whether that quest is still on, the map panel's slot (-1:
+/// none the map view can show, so the corner keeps the whole touch screen) and the target
+/// camera panel's (-1: none). Call it on the emulation thread.
+MapView::Panels LastQuestPanels();
+
+/// The sentence for the in-game menu's map settings and its HUD layout editor when the map
+/// view can't show (MapView::MapNote: why, and that those settings change nothing until it
+/// can), or "" when it can, and while the hooks don't run (the game on Azahar's own CPU
+/// emulation: Port::BackendNotice says why). Call it on the emulation thread.
+std::string MapViewNote();
+
+/// The same for the target camera's view (target_overlay): it shows beside the map's only, and
+/// only with the target camera panel in the panels. Call it on the emulation thread.
+std::string TargetViewNote();
 
 /// The app's mouse camera: a turn to add, in degrees (to the right, up), taken by the camera's
 /// input hook the next time the game turns the camera by its buttons. Safe from any thread.

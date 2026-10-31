@@ -942,6 +942,8 @@ void MhPadUpdate(RCtx* ctx, RFunc original) {
     skip_held = skip_now;
 }
 
+double quest_playing_at = -1e9;  // when QuestPlaying last ran, emulated seconds (LastQuestPanels)
+
 /// aQuest's playing state (this, state block), once a frame during a quest. Once the quest is
 /// complete, state +0x24 is 1 while the wait before the return runs (the carving time): +0x40
 /// of the quest area accumulates the frame's delta (sMain+0x5c) and takes one off the counter
@@ -952,6 +954,7 @@ void MhPadUpdate(RCtx* ctx, RFunc original) {
 void QuestPlaying(RCtx* ctx, RFunc original) {
     const u32 quest = ctx->r[0];
     const u32 state = ctx->r[1];
+    quest_playing_at = EmulatedSeconds();
     if (end_requested.load(std::memory_order_relaxed) && !end_cut && NetSync::EndSkipAgreed()) {
         const s32 left = static_cast<s32>(rd32(ctx, quest + AQUEST_WAIT_LEFT));
         if (rd8(ctx, state + QUEST_STATE_PHASE) == QUEST_PHASE_WAITING &&
@@ -1053,6 +1056,7 @@ void CallGame(RCtx* ctx, u32 function, u32 arg) {
 }
 
 u32 quest_start_held = 0;
+bool quest_no_map_logged = false;  // this quest: its touch panels' lack of a map panel was logged
 
 /// QuestFlow::startQuest(this).
 void StartQuest(RCtx* ctx, RFunc original) {
@@ -1072,6 +1076,7 @@ void StartQuest(RCtx* ctx, RFunc original) {
                  quest_start_held >= QUEST_HOLD_MAX_FRAMES ? " (gave up)" : "");
         quest_start_held = 0;
     }
+    quest_no_map_logged = false;  // a new quest's panels are logged again (QuestPanels)
     original(ctx);
 }
 
@@ -1149,6 +1154,9 @@ constexpr u32 PANEL_TYPE_TARGET = 13;     // one slot only
 constexpr int SLOT_WIDTH = PANEL_SLOT_WIDTH, SLOT_HEIGHT = PANEL_SLOT_HEIGHT;  // touch-screen pixels
 constexpr int SLOTS_TOP = PANEL_SLOTS_TOP;
 bool quest_panels_ran = false;  // this frame
+bool quest_panels_seen = false; // since the game started (LastQuestPanels)
+double quest_panels_at = 0;     // when they last ran, emulated seconds
+bool panels_hooked = false;     // the code library has QuestPanels's hook point
 int quest_map_slot = -1;        // the map's slot the last time the panels ran, -1 none
 int quest_target_slot = -1;     // the target camera's then, -1 none
 int map_slot_seen = -1;         // the last slot a quest had the map in (the layout editor's)
@@ -1183,14 +1191,18 @@ void NoteTouchScreenObject(float x, float y) {
 void QuestPanels(RCtx* ctx, RFunc original) {
     original(ctx);
     quest_panels_ran = true;
+    quest_panels_seen = true;
+    quest_panels_at = EmulatedSeconds();
     quest_map_slot = -1;
     quest_target_slot = -1;
     const u32 hidden = rd8(ctx, QUEST_PANELS + PANEL_HIDDEN);
+    u32 types[PANEL_SLOTS];
     for (u32 slot = 0; slot < PANEL_SLOTS; ++slot) {
+        types[slot] = rd16(ctx, QUEST_PANELS + PANEL_TYPES + 2 * slot);
         if (hidden >> slot & 1) {
             continue;
         }
-        const u32 type = rd16(ctx, QUEST_PANELS + PANEL_TYPES + 2 * slot);
+        const u32 type = types[slot];
         if (type == PANEL_TYPE_MAP && slot % 3 < 2 && quest_map_slot < 0) {
             quest_map_slot = static_cast<int>(slot);
         } else if (type == PANEL_TYPE_TARGET && quest_target_slot < 0) {
@@ -1200,6 +1212,15 @@ void QuestPanels(RCtx* ctx, RFunc original) {
     if (quest_map_slot >= 0) {
         map_slot_seen = quest_map_slot;
         target_slot_seen = quest_target_slot;
+        quest_no_map_logged = false;
+    } else if (!quest_no_map_logged && options.quest_overlay.on && options.touch_overlay.height > 0) {
+        // once a quest: the map view shows the map panel, so without one the corner keeps the
+        // whole touch screen, and the map's options, the layout editor and the key change nothing
+        quest_no_map_logged = true;
+        LOG_INFO(Frontend,
+                 "touch overlay: the quest's touch panels have no map panel (types {} {} {} {} {} {}, covered "
+                 "slots {:02X}): the corner shows the whole touch screen",
+                 types[0], types[1], types[2], types[3], types[4], types[5], hidden);
     }
 }
 
@@ -1286,16 +1307,17 @@ void UpdateQuestOverlay(RCtx* ctx) {
             last_panel_states = states;
         }
     }
-    if (!options.quest_overlay.on || options.touch_overlay.height <= 0) {
-        return;
-    }
     const bool touch_ui = hud == HUD_MENU_OPENING || hud == HUD_MENU ||
                           (hud == HUD_HUNTING && panel_state == PANELS_BIG);
     const int forced = quest_map_off                     ? -1
                        : options.quest_overlay_test >= 0 ? options.quest_overlay_test
                                                          : QuestOverlayChoice::FREE;
+    // followed with the options off too: turned on again (the menu), the corner shows what the
+    // quest has now at once, not for a moment the map of a quest that is over
     quest_choice.Update(EmulatedSeconds(), panels, quest_map_slot, map_drawn, touch_ui, forced);
-    ApplyQuestOverlay(false);
+    if (options.quest_overlay.on && options.touch_overlay.height > 0) {
+        ApplyQuestOverlay(false);
+    }
 }
 
 // ── Screen filters (docs/research/screen-filters.md). The engine's post-processing passes are
@@ -1523,7 +1545,13 @@ std::vector<std::string> Install(const RCodeInfo& info) {
     end_cut = false;
     last_panel_touch = 0xFFFFFFFF;
     quest_panels_ran = false;
+    quest_panels_seen = false;
+    quest_panels_at = 0;
+    quest_playing_at = -1e9;
+    quest_no_map_logged = false;
+    panels_hooked = false;
     quest_map_slot = -1;
+    quest_target_slot = -1;
     quest_map_drawn = false;
     quest_choice = {};
     last_panel_states = 0xFFFFFFFF;
@@ -1645,7 +1673,11 @@ std::vector<std::string> Install(const RCodeInfo& info) {
     }
     missing_hook_points = 0;
     for (const Hook& hook : HOOKS) {
-        if (!info.set_hook(hook.addr, hook.fn)) {
+        const bool set = info.set_hook(hook.addr, hook.fn) != 0;
+        if (hook.fn == QuestPanels) {
+            panels_hooked = set; // the map view sees the quest's panels through it
+        }
+        if (!set) {
             log.push_back(fmt::format("no hook point for {} at {:08X} (rebuild the code library)",
                                       hook.name, hook.addr));
             ++missing_hook_points;
@@ -1681,6 +1713,61 @@ void ToggleQuestMap() {
     const bool off = !quest_map_off.load();
     quest_map_off = off;
     LOG_INFO(Frontend, "touch overlay: {} in quests", off ? "the whole touch screen" : "the map");
+}
+
+MapView::Panels LastQuestPanels() {
+    MapView::Panels panels;
+    panels.seen = quest_panels_seen;
+    if (panels.seen) {
+        // a quest is on while its playing state runs (or, with a code library without that hook
+        // point, while its panels ran a moment ago)
+        const double now = EmulatedSeconds();
+        panels.in_quest = now - quest_playing_at < 1.0 || now - quest_panels_at < QuestOverlayChoice::HOLD;
+        panels.map_slot = quest_map_slot;
+        panels.target_slot = quest_target_slot;
+    }
+    return panels;
+}
+
+namespace {
+
+/// What the map view needs, as the options, the screen layout and the quest's panels say now.
+MapView::State MapViewState() {
+    MapView::State state;
+    // the corner shows a part of the touch screen only in the custom layout, with the touch
+    // screen in the corner and in landscape (Layout::CustomFrameLayout)
+    const auto& settings = Settings::values;
+    state.custom_layout = settings.layout_option.GetValue() == Settings::LayoutOption::CustomLayout &&
+                          !settings.swap_screen.GetValue() && !settings.upright_screen.GetValue();
+    state.touch_overlay = options.touch_overlay.height > 0;
+    state.quest_overlay = options.quest_overlay.on;
+    state.panels_hook = panels_hooked;
+    state.switched = quest_map_off.load();
+    state.panels = LastQuestPanels();
+    return state;
+}
+
+} // namespace
+
+std::string PressQuestMapKey() {
+    // (while the hooks don't run nothing is known of the quest: the switch, as before)
+    const std::string why = frames > 0 ? MapView::KeyNote(MapViewState()) : std::string();
+    if (why.empty()) {
+        ToggleQuestMap();
+        return why;
+    }
+    // nothing to switch: the press asks for the map, which shows once it can
+    quest_map_off = false;
+    LOG_INFO(Frontend, "touch overlay: nothing to switch, the screen says \"{}\"", why);
+    return why;
+}
+
+std::string MapViewNote() {
+    return frames > 0 ? MapView::MapNote(MapViewState()) : std::string();
+}
+
+std::string TargetViewNote() {
+    return frames > 0 ? MapView::TargetNote(MapViewState(), options.target_overlay.on) : std::string();
 }
 
 bool SkipOffered() {
