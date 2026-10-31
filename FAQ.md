@@ -45,6 +45,9 @@ No. The game's code runs natively, and its call stacks live on your PC's own sta
 **Pause and fast forward?**
 In the port's app, playing alone: **P** pauses, **Tab** runs the game at 2x (the speed and the keys are in the menu, Esc). In a room they're off, since the others' games run on with yours.
 
+**Keys for the touch screen (an item shortcut, the target camera)?**
+In the port's app: touch taps. *Esc → Controls → Touch taps* gives a key a point on the touch screen, touched while the key is held (up to 8; `touch_tap_1 = Z @ 52 220` in `mh4u-app.ini`). Details: [Or play with the port's app](docs/PLAYING.md#2b-or-play-with-the-ports-app).
+
 **Steam Deck?**
 There's a Linux build, not tried on a Deck yet. If you try it, open an issue and tell us how it went.
 
