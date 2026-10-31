@@ -134,6 +134,57 @@ struct Fog {
     bool lut_dirty = true;
 };
 
+// The gas look-up table (3dbrew, GPU/Internal Registers, GPUREG_GAS_LUT_DATA and "Gas Look-Up
+// Table"): 16 entries written one word at a time through the data port. Azahar keeps no state for
+// it (the registers are padding in its regs_framebuffer.h). What an entry holds, per 3dbrew: the
+// first 8 entries are bits 0-7 signed red, 8-15 signed green, 16-23 signed blue; the last 8 are
+// the same fields unsigned; bits 24-31 are not described. The words are kept raw (the decoding
+// is N2-10's), and the INIT record carries no gas table, so it starts at zero.
+struct Gas {
+    static constexpr u32 kEntries = 16;
+    std::array<u32, kEntries> lut{};
+    // The entry the next data word goes to. GPUREG_GAS_LUT_INDEX holds a 16-bit index; 3dbrew
+    // does not say how it advances after a data write, nor what an index of 16 or more means.
+    // unverified (the planner's assumption): it advances by one entry per data word and wraps at
+    // 16, and an index written past 15 is taken modulo 16. The register itself
+    // (PicaState.regs) keeps the word that was written.
+    u32 index = 0;
+    // A data word was written since the previous draw returned. Set by every data write, equal to
+    // the old word or not (unlike the fog table's flag, which compares).
+    bool table_dirty = true;
+};
+
+// The gas registers that have no side effect, by their 3dbrew names (GPU/Internal Registers):
+// the last word written is in PicaState.regs. The fields are 3dbrew's; "raw" means 3dbrew leaves
+// the meaning open or this module does not decode it. GPUREG_GAS_LUT_INDEX and
+// GPUREG_GAS_LUT_DATA are reg::kGasLutIndex and reg::kGasLutData (regs.h).
+namespace gas_reg {
+// GPUREG_GAS_FOG_MODE (shared with GPUREG_TEXENV_UPDATE_BUFFER): fog mode 7 is gas, 5 fog, 1
+// linear fog, 0 disabled (3dbrew, the fog mode values). Other fields: see 3dbrew.
+inline constexpr u32 kFogMode = 0x0E0;
+// GPUREG_GAS_ATTENUATION: bits 0-15 float1.5.10, gas density attenuation.
+inline constexpr u32 kAttenuation = 0x0E4;
+// GPUREG_GAS_ACCMAX: bits 0-15 float1.5.10, gas maximum density accumulation.
+inline constexpr u32 kAccMax = 0x0E5;
+// GPUREG_GAS_LIGHT_XY: bits 0-7 planar shading minimum intensity, 8-15 maximum intensity, 16-23
+// density attenuation (all unsigned).
+inline constexpr u32 kLightXY = 0x120;
+// GPUREG_GAS_LIGHT_Z: bits 0-7 view shading minimum intensity, 8-15 maximum intensity, 16-23
+// density attenuation (all unsigned).
+inline constexpr u32 kLightZ = 0x121;
+// GPUREG_GAS_LIGHT_Z_COLOR: bits 0-7 view shading effect in the line-of-sight direction
+// (unsigned), bit 8 the gas colour LUT input (0 gas density, 1 light factor).
+inline constexpr u32 kLightZColor = 0x122;
+// GPUREG_GAS_ACCMAX_FEEDBACK: bits 0-15 float1.5.10 initial maximum density, bits 16-31 float1.5.10
+// maximum density (read-only on hardware: written by gas density rendering). The command
+// processor does not render; the word is the last one a command list wrote.
+inline constexpr u32 kAccMaxFeedback = 0x125;
+// GPUREG_GAS_DELTAZ_DEPTH: bits 0-23 fixed0.16.8 depth direction attenuation proportion, bits
+// 24-25 the depth function (0 never, 1 always, 2 greater / greater or equal, 3 less / less or
+// equal / equal / not equal).
+inline constexpr u32 kDeltaZDepth = 0x126;
+} // namespace gas_reg
+
 struct ProcTex {
     static constexpr u8 kAllDirty = 0xFF;
     std::array<u32, 128> noise_table{};
@@ -215,6 +266,7 @@ struct PicaState {
     ShaderSetup gs;
     Lighting lighting;
     Fog fog;
+    Gas gas;
     ProcTex proctex;
     std::array<Vec4f, 16> default_attributes{};
     ImmediateState immediate;

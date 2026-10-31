@@ -118,10 +118,13 @@ public:
             {"pica_draws", backend_.draws - reported_draws_},
             {"pica_immediate_draws", backend_.immediate_draws - reported_immediate_},
             {"pica_cmdlists", processor_.command_lists_processed() - reported_lists_},
+            // The words the command lists wrote to the gas table's data port (a count only).
+            {"pica_gas_lut_writes", processor_.gas_lut_writes() - reported_gas_writes_},
         };
         reported_draws_ = backend_.draws;
         reported_immediate_ = backend_.immediate_draws;
         reported_lists_ = processor_.command_lists_processed();
+        reported_gas_writes_ = processor_.gas_lut_writes();
         return counters;
     }
 
@@ -134,6 +137,7 @@ private:
     u64 reported_draws_ = 0;
     u64 reported_immediate_ = 0;
     u64 reported_lists_ = 0;
+    u64 reported_gas_writes_ = 0;
 };
 
 } // namespace

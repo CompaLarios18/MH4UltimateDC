@@ -693,6 +693,114 @@ TEST_CASE("fog look-up table uploads") {
     CHECK_FALSE(rig.LastDraw().state->fog.lut_dirty);
 }
 
+TEST_CASE("gas look-up table uploads") {
+    // gas_lut_index (0x123, bits 0-15) and gas_lut_data (0x124), 16 entries (3dbrew,
+    // GPUREG_GAS_LUT_INDEX, GPUREG_GAS_LUT_DATA). Synthetic words only.
+    Rig rig;
+    CHECK(rig.cp.state().gas.table_dirty); // everything is dirty at the start, like the other tables
+    for (const u32 word : rig.cp.state().gas.lut) {
+        CHECK(word == 0); // the INIT record carries no gas table: it starts at zero
+    }
+    rig.Draw();
+    CHECK(rig.LastDraw().state->gas.table_dirty); // set for the first draw
+    rig.Draw();
+    CHECK_FALSE(rig.LastDraw().state->gas.table_dirty); // cleared after the previous draw returned
+
+    // The index and 16 data words, as separate commands and as one repeated-register command.
+    List single;
+    single.Write(0x123, 0);
+    for (u32 i = 0; i < 7; ++i) {
+        single.Write(0x124, 0x100 + i);
+    }
+    rig.Run(single);
+    // (Nine values: an even number of words, so the list does not end on an odd word.)
+    rig.Run(List().Multi(0x124, {0x107, 0x108, 0x109, 0x10A, 0x10B, 0x10C, 0x10D, 0x10E, 0x10F},
+                         false),
+            kFcram + 0x2000);
+    const auto& g = rig.cp.state().gas;
+    for (u32 i = 0; i < 16; ++i) {
+        CHECK(g.lut[i] == 0x100 + i);
+    }
+    CHECK(g.index == 0); // 16 words from 0 wrapped back to 0
+    CHECK(g.table_dirty);
+    rig.Draw();
+    CHECK(rig.LastDraw().state->gas.table_dirty);
+    rig.Draw();
+    CHECK_FALSE(rig.LastDraw().state->gas.table_dirty);
+
+    // The index alone does not touch the table or the flag.
+    rig.Run(List().Write(0x123, 5));
+    CHECK(rig.cp.state().gas.index == 5);
+    CHECK_FALSE(rig.cp.state().gas.table_dirty);
+
+    // A data word equal to the old one still sets the flag (the spec: a data write sets it).
+    rig.Run(List().Write(0x124, 0x105));
+    CHECK(rig.cp.state().gas.table_dirty);
+    CHECK(rig.cp.state().gas.index == 6);
+}
+
+TEST_CASE("gas look-up table: the index wraps at 16 entries (unverified rule)") {
+    // 3dbrew does not say how the index advances: one entry per data word, wrapping at 16, is
+    // the planner's assumption. 19 words (0x200 to 0x212) from index 14 go to entries 14, 15, 0,
+    // 1, ... 15, 14, 15, 0: entry 0 ends with the last word, entries 1 to 13 with words 3 to 15,
+    // entries 14 and 15 with words 16 and 17; the cursor ends at (14 + 19) % 16 = 1.
+    Rig rig;
+    std::vector<u32> words;
+    for (u32 i = 0; i < 19; ++i) {
+        words.push_back(0x200 + i);
+    }
+    rig.Run(List().Write(0x123, 14).Multi(0x124, words, false));
+    const auto& g = rig.cp.state().gas;
+    CHECK(g.lut[0] == 0x212);
+    for (u32 i = 1; i < 14; ++i) {
+        CHECK(g.lut[i] == 0x202 + i);
+    }
+    CHECK(g.lut[14] == 0x210);
+    CHECK(g.lut[15] == 0x211);
+    CHECK(g.index == 1);
+
+    // An index of 16 or more (the register has 16 bits): taken modulo 16 (unverified).
+    Rig rig2;
+    rig2.Run(List().Write(0x123, 0x12).Multi(0x124, {1, 2}, false));
+    CHECK(rig2.cp.state().gas.lut[2] == 1);
+    CHECK(rig2.cp.state().gas.lut[3] == 2);
+    CHECK(rig2.cp.state().gas.index == 4);
+    CHECK(rig2.Reg(0x123) == 0x12); // the register keeps the word that was written
+}
+
+TEST_CASE("the other gas registers are plain registers") {
+    Rig rig;
+    rig.Draw();
+    // GAS_FOG_MODE 0x0E0, GAS_ATTENUATION 0x0E4, GAS_ACCMAX 0x0E5, GAS_LIGHT_XY 0x120, GAS_LIGHT_Z
+    // 0x121, GAS_LIGHT_Z_COLOR 0x122, GAS_ACCMAX_FEEDBACK 0x125, GAS_DELTAZ_DEPTH 0x126.
+    rig.Run(List()
+                .Write(0x0E4, 0x11)
+                .Write(0x0E5, 0x22)
+                .Write(0x120, 0x33)
+                .Write(0x121, 0x44)
+                .Write(0x122, 0x55)
+                .Write(0x125, 0x66)
+                .Write(0x126, 0x77));
+    CHECK(rig.Reg(0x0E4) == 0x11);
+    CHECK(rig.Reg(0x0E5) == 0x22);
+    CHECK(rig.Reg(0x120) == 0x33);
+    CHECK(rig.Reg(0x121) == 0x44);
+    CHECK(rig.Reg(0x122) == 0x55);
+    CHECK(rig.Reg(0x125) == 0x66);
+    CHECK(rig.Reg(0x126) == 0x77);
+    CHECK_FALSE(rig.cp.state().gas.table_dirty);
+    CHECK(rig.cp.state().gas.index == 0);
+    CHECK(rig.cp.gas_lut_writes() == 0);
+}
+
+TEST_CASE("a data port's words are reported one per word, the gas port included") {
+    Rig rig;
+    rig.Run(List().Write(0x123, 2).Multi(0x124, {7, 8, 9}, false).Write(0x124, 10, 0b0011));
+    CHECK(rig.cp.TakeRegisterWrites() ==
+          W({{0x123, 0xF, 2}, {0x124, 0xF, 7}, {0x124, 0xF, 8}, {0x124, 0xF, 9}, {0x124, 0x3, 10}}));
+    CHECK(rig.cp.gas_lut_writes() == 4);
+}
+
 TEST_CASE("procedural texture look-up table uploads") {
     // proctex_lut_config (0x0AF): index bits 0-7, table bits 8-11; data 0x0B0 to 0x0B7.
     // Tables: 0 noise (128 entries), 2 colour map (128), 3 alpha map (128), 4 colour (256), 5
@@ -1218,6 +1326,20 @@ TEST_CASE("LoadInitState fills the register file, the shader setups, the tables 
     CHECK(rig.LastDraw().state->lighting.lut_dirty == 0xFFFFFF);
 }
 
+TEST_CASE("LoadInitState leaves the gas table at zero: the INIT record carries none") {
+    Rig rig;
+    rig.Run(List().Write(0x123, 3).Write(0x124, 0xABC));
+    CHECK(rig.cp.state().gas.lut[3] == 0xABC);
+    InitBlocks init;
+    rig.cp.LoadInitState(init.State());
+    for (const u32 word : rig.cp.state().gas.lut) {
+        CHECK(word == 0);
+    }
+    CHECK(rig.cp.state().gas.index == 0);
+    CHECK(rig.cp.state().gas.table_dirty);
+    CHECK(rig.cp.state().regs[0x124] == 0); // the registers come from the INIT record, too
+}
+
 TEST_CASE("LoadInitState ignores a block of the wrong size") {
     InitBlocks init;
     init[InitBlock::FogLut].assign(100, 0xFF);
@@ -1301,6 +1423,37 @@ TEST_CASE("pica-only decodes the command lists of GX commands and reports the re
         }
     }
     CHECK(found);
+}
+
+TEST_CASE("pica-only counts the words written to the gas table per frame") {
+    CaptureHost host;
+    auto gpu = MakePicaOnly(host);
+    auto* debug = dynamic_cast<GpuDebug*>(gpu.get());
+    REQUIRE(debug != nullptr);
+    const auto gas_writes = [&] {
+        for (const auto& c : debug->TakeFrameCounters()) {
+            if (c.name == "pica_gas_lut_writes") {
+                return static_cast<int64_t>(c.value);
+            }
+        }
+        return int64_t{-1}; // not reported
+    };
+    const auto submit = [&](const List& list) {
+        const std::vector<u32> words = list.Words();
+        REQUIRE(host.WriteBoth(kFcram + 0x1000, reinterpret_cast<const u8*>(words.data()),
+                               static_cast<u32>(words.size() * 4)));
+        GxCommand command{};
+        command.words[0] = 1; // SubmitCmdList
+        command.words[1] = 0x14001000;
+        command.words[2] = static_cast<u32>(words.size() * 4);
+        gpu->Execute(command);
+    };
+    CHECK(gas_writes() == 0); // reported even when nothing was written
+    submit(List().Write(0x123, 0).Multi(0x124, {1, 2, 3, 4, 5}, false));
+    CHECK(gas_writes() == 5); // the index write is not a data word
+    CHECK(gas_writes() == 0); // a per-frame count: taken
+    submit(List().Write(0x124, 6));
+    CHECK(gas_writes() == 1);
 }
 
 TEST_CASE("pica-only starts from the INIT state") {
@@ -1427,6 +1580,22 @@ std::string CaptureWithList(const std::string& name, std::vector<RegisterWrite> 
     return capture.Save(name);
 }
 
+std::string CaptureWithGasList(const std::string& name, std::vector<RegisterWrite> expected) {
+    List list;
+    list.Write(0x123, 0).Multi(0x124, {11, 12, 13, 14}, false).Write(0x125, 1);
+    const std::vector<u32> words = list.Words();
+    Bytes list_bytes(words.size() * 4);
+    std::memcpy(list_bytes.data(), words.data(), list_bytes.size());
+
+    CaptureFile capture;
+    capture.Init();
+    capture.Mem(kFcram + 0x1000, list_bytes);
+    capture.SubmitCmdList(0x14001000, static_cast<u32>(list_bytes.size()));
+    capture.PicaReg(expected);
+    capture.Frame(1);
+    return capture.Save(name);
+}
+
 } // namespace
 
 TEST_CASE("the capture player checks the register writes of pica-only") {
@@ -1455,4 +1624,22 @@ TEST_CASE("the capture player checks the register writes of pica-only") {
     result = RunPlayerOn(bad2, {"--gpu", "pica-only", "--judge", "none", "--check", "registers"});
     CHECK(result.ExitStatus() == 1);
     std::filesystem::remove(bad2);
+}
+
+TEST_CASE("the capture player's register check sees one entry per gas data word") {
+    const std::vector<RegisterWrite> right = {{0x123, 0xF, 0}, {0x124, 0xF, 11}, {0x124, 0xF, 12},
+                                              {0x124, 0xF, 13}, {0x124, 0xF, 14}, {0x125, 0xF, 1}};
+    const std::string good = CaptureWithGasList("gas-good", right);
+    auto result = RunPlayerOn(good, {"--gpu", "pica-only", "--isolated", "--judge", "none",
+                                     "--check", "registers"});
+    CHECK_MESSAGE(result.ExitStatus() == 0, gpu_capture::FormatReport(result));
+    std::filesystem::remove(good);
+
+    // The words folded into one entry would not match the capture's.
+    std::vector<RegisterWrite> folded = right;
+    folded.erase(folded.begin() + 2, folded.begin() + 4);
+    const std::string bad = CaptureWithGasList("gas-folded", folded);
+    result = RunPlayerOn(bad, {"--gpu", "pica-only", "--judge", "none", "--check", "registers"});
+    CHECK(result.ExitStatus() == 1);
+    std::filesystem::remove(bad);
 }
