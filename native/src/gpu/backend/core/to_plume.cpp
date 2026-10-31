@@ -278,6 +278,17 @@ Result<void> ToPlume(const FixedFunctionState& state, bool color_attachment,
     return Result<void>{};
 }
 
+Result<void> CheckSpecialization(const std::vector<SpecConstant>& list) {
+    for (size_t i = 0; i < list.size(); ++i) {
+        for (size_t j = 0; j < i; ++j) {
+            if (list[i].id == list[j].id) {
+                return Error{fmt::format("specialisation constant {} is given twice (entries {} and {})", list[i].id, j, i)};
+            }
+        }
+    }
+    return Result<void>{};
+}
+
 Result<void> ToPlume(const GraphicsPipelineDesc& pipeline, const ::plume::RenderShader* vertex,
                      const ::plume::RenderShader* fragment, const ::plume::RenderShader* geometry,
                      const ::plume::RenderPipelineLayout* layout, PlumeGraphicsDesc* out) {
@@ -319,6 +330,16 @@ Result<void> ToPlume(const GraphicsPipelineDesc& pipeline, const ::plume::Render
     desc.inputSlotsCount = static_cast<uint32_t>(out->slots.size());
     desc.inputElements = out->elements.empty() ? nullptr : out->elements.data();
     desc.inputElementsCount = static_cast<uint32_t>(out->elements.size());
+
+    if (Result<void> checked = CheckSpecialization(pipeline.specialization); !checked.ok()) {
+        return checked;
+    }
+    out->spec_constants.clear();
+    for (const SpecConstant& constant : pipeline.specialization) {
+        out->spec_constants.emplace_back(constant.id, constant.value);
+    }
+    desc.specConstants = out->spec_constants.empty() ? nullptr : out->spec_constants.data();
+    desc.specConstantsCount = static_cast<uint32_t>(out->spec_constants.size());
     return Result<void>{};
 }
 
