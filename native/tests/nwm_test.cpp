@@ -593,7 +593,7 @@ TEST_CASE("nwm::UDS hosting a network and destroying it") {
 TEST_CASE("nwm::UDS in the deterministic mode the connection status event comes two slices later, as in the reference") {
     // Azahar's SignalEventAsync signals at once on the emulation thread of a frontend; the reference runner never
     // registers its thread as the core loop, so there the signal is queued and `ScheduleEvent(0, ..., core 1,
-    // thread_safe_mode)` runs it MAX_SLICE_LENGTH * 2 (2,291,548 ticks) after core 1's clock. The deterministic mode,
+    // thread_safe_mode)` runs it MAX_SLICE_LENGTH * 2 (2,291,554 ticks) after core 1's clock. The deterministic mode,
     // which is compared with the reference's traces tick for tick, does the same. And the beacon timer runs while
     // the console hosts: 102.4 ms (27,454,654 ticks, msToCycles of a double) from the call, until DestroyNetwork.
     SetLogFilter(LogFilter(LogLevel::Error));
@@ -627,7 +627,7 @@ TEST_CASE("nwm::UDS in the deterministic mode the connection status event comes 
         BeginHosting(g, s, 8, 0);
         // The call costs its 5825 on core 0 (the request is made at that time: the beacon is due 102.4 ms after it);
         // core 1's clock has not moved: the thread-safe event is two slices after it.
-        async_pending = due_at(1, begun_at + 2 * 1145774);
+        async_pending = due_at(1, begun_at + 2 * kDeterministicSliceTicks);
         beacon_pending = due_at(0, begun_at + SvcCycles(0x32) + 27454654);
         at_once = Signaled(g, event);
         // (svcWaitSynchronization1: the timeout is in r2 and r3)
@@ -648,7 +648,7 @@ TEST_CASE("nwm::UDS in the deterministic mode the connection status event comes 
     CHECK_FALSE(at_once);
     CHECK(async_pending);
     CHECK(waited == kResultSuccess);
-    CHECK(woke >= begun_at + 2 * 1145774);  // not before the event; core 0 sees it at its next iteration
+    CHECK(woke >= begun_at + 2 * kDeterministicSliceTicks);  // not before the event; core 0 sees it at its next iteration
     CHECK(beacon_pending);
     CHECK(first_beacon_gone);
     CHECK(second_beacon_pending);
