@@ -324,6 +324,442 @@ resources that do not defer their own destruction, the limit of a failed `vkQueu
   that capability also needs `customBorderColorWithoutFormat` (both are on for lavapipe): a true bit means a custom-border sampler can be created, and N2-27's
   `CreateSampler` checks the bit before it makes one.
 
+## Targets, layouts and bindings (N2-27)
+
+The images and render targets of the backend: `native/src/gpu/backend/targets/` (module `mh4n_gpu_backend_targets`, namespace
+`mh4n::gpu::rhi`). **The interface is documented in `native/src/gpu/backend/rhi.h`** (the "Images, samplers and passes with
+attachments" and "Targets, per-draw bindings and hand-over" sections, and the comments on `Format`, `Recorder` and `Backend`);
+this section says how the module is built, what it checks and what it leaves to others. The module implements what `rhi.h`
+declares for it (`QueryFormat`, `ChooseFormat`, `CreateImage`, `CreateSampler`, the image calls of `Recorder`, `HandOver`,
+`BindingArena`, the image, sampler and texel-buffer setters of `BindingSet`) and `NativeImage` and `WrapExternalImage` of
+`vulkan_access.h`. It keeps its state in the slots `core/impl.h` reserves (`Backend::Impl::targets`, `Recorder::Impl::targets`)
+and never edits `core/`, `rhi.h`, `vulkan_access.h` or `native/third_party/rhi/`. Two headers of its own are not part of the
+frozen interface: `targets/upload.h` (`UploadToImage`, `StagingUploadCount`: filling an image from host bytes) and
+`targets/formats.h` (the chooser as a pure function over a support table, `ChooseFormatWith`, and `ToVkFormat`).
+
+| File | What |
+|---|---|
+| `formats.cpp` | `QueryFormat` (patch 11's query), `ChooseFormat`, the `Format` to `VkFormat` table. Derived from Azahar's `CreateFormatTable` (provenance header in the file) |
+| `images.cpp` | `CreateImage`, the views, `CreateSampler`, the framebuffer cache, `NativeImage`, `WrapExternalImage`, `HandOver` |
+| `layouts.cpp` | the layout policy and the owner rule: `Transition`, `Acquire`, `Settle`, `Normalize` |
+| `ops.cpp` | `CopyImage`, `Blit`, `ClearImage`, `CopyBufferToImage`, `CopyImageToBuffer`, `BeginTargetPass`, `FeedbackCopy`, `PrepareForPresent` |
+| `bindings.cpp` | image, sampler and texel-buffer slots of a binding set, and the `BindingArena` |
+| `upload.cpp` | `UploadToImage` |
+
+### Formats
+
+`QueryFormat(format)` is plume's `getFormatSupport` (patch 11: optimal-tiling features) for the format `core::ToPlumeFormat` gives
+(so a PICA name answers for its default storage: `Rgb8` for `R8G8B8A8_UNORM`, `Rgb565` for `R5G6B5`, ...); the mask does not
+change it (it is the device's truth; the chooser reads the mask). `ChooseFormat(format, use)`:
+
+| Asked | Result | Conversion |
+|---|---|---|
+| `Rgb8` | `Rgba8Unorm`, always | `Rgb8ToRgba8` |
+| `Rgb565`, `Rgb5A1`, `Rgba4` | the first order that is usable (a target: attachment and sampled; a texture: sampled), the PICA's bits first: `R5G6B5`, `B5G6R5`; `R5G5B5A1`, `B5G5R5A1`, `A1R5G5B5`; `R4G4B4A4`, `B4G4R4A4`. Else `Rgba8Unorm` | `None` for a 16-bit result (a swapped order is read from `format`: `rhi.h` has no conversion value for "swap the components"); `UnpackToRgba8` for the fallback |
+| `D24S8` | `D24S8` when the `d24s8` bit is on, else `D32S8` | `None` / `DepthStencilTo32` |
+| `Bc1Unorm`, `Bc3Unorm`, `Bc5Unorm`, `Bc7Unorm` | themselves when the `bc7` bit is on and the query says sampled, else `Rgba8Unorm` | `None` / `DecodeBc` ("decode on the CPU") |
+| anything else (`D16Unorm` included) | as asked | `None` |
+
+`ChooseFormatWith` is the same rule over any support table, so the MoltenVK case (only the R-first orders are attachments, 4 G9)
+is tested on a synthetic table here. Limits: `FormatSupport` has no colour-attachment-blend bit (Azahar's rule uses it), so a
+format that is an attachment but not blendable would be chosen (`unverified`; the chooser also does not require blit support, which
+only `Blit` needs); `CreateImage` picks the use itself (depth formats `DepthTarget`, block-compressed `Sampled`, every other colour
+format `ColorTarget`, since the surface cache will use one image as texture and as target).
+
+### Images, views, samplers
+
+`CreateImage`: 2D, `mip_levels` up to the full chain, 1 or 6 layers, `cube`; the format goes through `ChooseFormat` and
+`Image::GetFormat()` says what the device stores. Plume gives every image sampled and both transfer usages; a colour image is a
+render target, a depth image a depth target. **Only `shadow_source` gets storage usage and the mutable-format flag** (`metal.md` 3.2;
+the module records `plume_flags` and `usage` per image, which the test reads). The format list `R8G8B8A8_UNORM` + `R32_UINT` that
+`rhi-spike.md` 9.4 item 4 asks for cannot be expressed through plume (`VkImageFormatListCreateInfo` is not in its API): the flag alone is
+used, which Vulkan allows for same-class formats; a patch would add the list (`unverified`: whether a driver compresses less
+without it). A shadow source is a 32-bit unsigned-normalised colour image. An **attachment has one level and one layer** (plume's
+framebuffer takes the image's whole-image view, which Vulkan wants single-level there); mipped images are textures.
+
+Views are made on first use, by the module with `vkCreateImageView` (plume's own view type cannot make a stencil view): `Sampled`
+is every level and layer (2D, 2D array or cube; for a depth-stencil image its depth aspect), `Depth` and `Stencil` one aspect,
+`ShadowStorage` is `R32_UINT` of level 0. Every image is bound in `GENERAL`.
+
+`CreateSampler`: filters, wrap modes (`MirrorClampToEdge` needs the device's extension, which the core enables where offered),
+LOD range and bias, anisotropy above 1; **never a compare sampler**. A custom border colour (patch 12) is created only when
+`Capabilities::custom_border_color` is true (the core's bit: the query, the mask, and what plume really enabled); otherwise
+`CreateSampler` returns an error whose text says "custom border colour", and the caller emulates the colour in the shader with
+clamp-to-edge. No `CUSTOM` sampler is ever asked of plume on a device without it.
+
+### The layout policy (hidden)
+
+Every image is in `GENERAL` outside a pass; the held layout (`VulkanTexture::textureLayout`, which plume reads while recording
+copies) is always the true one because only this module records barriers, always through `VulkanCommandList::barriers` with all
+stages (plume takes the next barrier's source stages from the previous one's, so a full mask keeps every barrier a full
+dependency). What each call records:
+
+| Call | Barriers (per image) |
+|---|---|
+| `CopyImage`, `Blit` | source `GENERAL` to the transfer-source layout, destination to the transfer-destination layout (one image on both sides: `GENERAL` to `GENERAL`), the command, then both back to `GENERAL` |
+| `ClearImage`, `CopyBufferToImage` | to the transfer-destination layout and back |
+| `CopyImageToBuffer` | to the transfer-source layout and back; a memory barrier before it (the readback memory may be reused) and a host-read barrier after it |
+| `BeginTargetPass` | colour: `GENERAL` (a memory barrier), depth: plume's depth-attachment layout; framebuffers are cached per attachment pair and made with `colorAttachmentsGeneralLayout` (patch 04) |
+| the end of a pass | colour: `GENERAL` to `GENERAL` (what the pass wrote becomes visible), depth: back to `GENERAL` |
+| `FeedbackCopy` | the target to the source layout and the twin to the destination layout, one `vkCmdCopyImage` over every mip level, both back to `GENERAL`; a pass that was open is resumed (same attachments, load) |
+| `PrepareForPresent` | `GENERAL` to `PRESENT_SRC_KHR` |
+
+A first use of an image moves it from `UNDEFINED` (a new image holds `UNKNOWN`; contents are not kept). A pass is kept open when
+the next `BeginTargetPass` has the same attachments and render area (the new clears are done inside it); a copy, clear, blit, upload,
+feedback copy or `PrepareForPresent` ends it, and so does `BeginTargetPass` with other attachments or core's `EndPass`. The module
+cannot see a `Submit`, so **a pass still open when its recorder is submitted** is ended by the submit with no barrier after it: the
+colour image is still in `GENERAL` (patch 04), the depth image still in the attachment layout, and plume's held layout says so; the
+next operation on the image (or `Normalize` by a binding) moves it. That is why a depth target cannot be handed over, and why another
+thread that samples an image whose owner has not settled it gets a breach. A recorder dropped without a submission puts the
+held layout, the stages and the dirty flag of every image it touched back (an `on_submit` hook called with 0). The depth
+attachment's layout during the pass is plume's (`unverified` on a device that is not lavapipe, as the spec said).
+
+### The owner rule as built
+
+Checked with `MH4N_RHI_CHECKS` (the core's switch), through the owner-rule handler. Clauses are those of `rhi-spike.md` 9.4 item 5.
+
+| Clause | Where | Breach |
+|---|---|---|
+| 1. one owning thread, the one that made the image, records on it | `targets::Acquire`, called by every operation, by `BeginTargetPass`, `FeedbackCopy`, `PrepareForPresent` and by the binding setters of the owning thread | `ForeignThread` |
+| 1. another thread samples an image only while it is not an attachment of an open pass, and when its owner has settled it in `GENERAL` | `PrepareUse` in `SetSampledImage` and `SetStorageImage` (the wait on the producing value is not checked: the layer's synchronization validation sees a missing one on one queue, 6.9 C2) | `ForeignThread` |
+| 2. `HandOver(image, thread, wait)` by the owner; an attachment of an open pass and any depth-stencil target cannot be handed over | `HandOver` (images.cpp) | `HandOver` (and the hand-over does not happen); `ForeignThread` when the caller does not own the image (case `owner_rule/a_hand_over_by_a_thread_that_does_not_own_the_image_is_a_breach_and_does_nothing`) |
+| 2. the receiver's first record or sample takes the image over and adds `wait` to its recorder's `required_waits` | `targets::Acquire` | `RequiredWait`, from core's submit path, when the submission does not carry a wait of that stage and at least that value |
+| 3. recorders are submitted in the order they were begun, one open recorder per thread | core (`SubmitRecorder`, `MakeRecorder`) | `SubmissionOrder`, `OneOpenRecorder` |
+
+**The feedback twin follows its target.** `HandOver` of a target that has a twin hands the twin over too, to the same thread with the same `Wait`: the receiver's `FeedbackCopy` takes over the target and the twin (so the twin is not a `ForeignThread` breach), and its recorder carries the hand-over's wait once (it is the same entry for both). A twin made after the hand-over is made by the receiver, which owns it.
+
+**How a hand-over is expressed.** The sender (the owner, after the submission that produced the image returned `v`) calls
+`HandOver(image, receiver_thread_id, Wait{v, stage})` with the stage that will read the image in the receiver's first submission
+(`FragmentShader` for a draw that samples it). The receiver records or samples as usual and submits with a `Wait` of that stage and a value
+at least `v` (`Backend::Submit(Recorder&&, waits)` of N2-28; until then `core::SubmitRecorder`, as the tests do). Nothing else
+changes: the image stays in `GENERAL`. The old owner recording on it afterwards is a `ForeignThread` breach. **Finding for N2-28
+(`needs-decision`, in `core/` or plume): a `Wait` at `Stage::Transfer` is mapped to plume's copy group, whose stage flags include
+`VK_PIPELINE_STAGE_HOST_BIT`, which the layer reports as `VUID-VkSubmitInfo-pWaitDstStageMask-00078` (the host stage cannot be
+waited at). So a hand-over whose first use is a copy or clear cannot be expressed with the right stage today; the tests hand over to
+a draw that samples (`FragmentShader`).**
+
+### The feedback copy
+
+`FeedbackCopy(target)` ends the open pass, copies every mip level and layer of the target into a twin (made once per target and
+kept: same format, size, mips and layers, `shadow_source` inherited, owned by the thread that made it), leaves both in `GENERAL`, and
+begins the pass again (same attachments, load) if one was open: one pass break and one full copy per call (5.6). Sampling a target
+that is an attachment of the open pass is an `Error` of `SetSampledImage`; its twin is the way.
+
+### Per-draw bindings
+
+`BindingArena` (one per recording thread) keeps a free list of binding sets per set shape (`BindingSetDesc`); `Acquire` returns a set
+no submission in flight uses (its last value is at most `CompletedValue()`, or it was acquired for a recorder that was dropped) or makes one;
+the set is attached to the thread's open recorder and stamped with the submission's value by the recorder's `on_submit` hook.
+Plume's set object makes its own layout and pool (plume_vulkan.cpp:1885-1944), so after the first frames none is made. A slot binds
+a texture and a sampler as two descriptors (`SetSampledImage`, `SetSampler`, descriptor layout `GENERAL`); a texel buffer
+(`SetTexelBuffer`, whole buffer, with a `VkBufferView` of the module's, owned by the arena's set); one storage image
+(`SetStorageImage`, a shadow source's `ShadowStorage` view only); uniform and storage buffers at an offset are core's
+(`SetUniformBuffer` through plume's structured view with stride 1, `Binding a buffer at an offset` above). A binding that uses an
+image also records the owner's barrier that brings it to `GENERAL` with its writes visible, on the thread's open recorder (a pass open
+on other images is then broken and restarts with load at the next draw: correct, and a tile round trip on a tile-based GPU,
+unmeasured). The setters act on the calling thread's open recorder: write and bind a set on the thread that draws with it.
+
+`UploadToImage(backend, recorder, image, region, bytes)` fills an image through a new staging buffer in the Upload heap, kept until
+the submission's value has passed; `StagingUploadCount` counts them. Images are never host-writable here, so `direct_upload` (reported
+by the core) is not acted on and the staged path is the only one, with the bit on or masked off.
+
+### A surface from the caller (what the PC needs)
+
+On the RX 6700 XT the Windows loader lists no `VK_EXT_headless_surface`, so the swapchain surface there must come from a real window
+(`VK_KHR_win32_surface`, or SDL3's), never from the backend. The frozen interface already supports a surface from the caller, in this
+order: (1) `InstanceOptions::extensions` names the window system's instance extensions (each is required; one the loader lacks fails
+`CreateInstance` naming it); (2) `NativeInstance(instance)` gives the `VkInstance` to create the `VkSurfaceKHR` on, before any backend
+exists; (3) `BackendOptions::surface = SurfaceFrom(surface)` makes the device enable `VK_KHR_swapchain` and choose its queue family
+among those that can present to the surface (it fails when none can); (4) the caller creates the swapchain on `Handles(*backend).device`
+(`queue_family_index` and `queue` there) with the usage its frames need (`TRANSFER_DST` for `ClearImage` and the copies, `COLOR_ATTACHMENT`
+for passes, `SAMPLED` or `TRANSFER_SRC` for what reads it); (5) every `vkQueuePresentKHR` goes under `QueueLock`, and nothing
+that submits is called while the lock is held. **The backend never creates, resizes or destroys a swapchain or a surface**, and it
+keeps only the surface handle (destroy the surface after the backend).
+
+`WrapExternalImage(backend, vkImage, format, width, height)` takes one image of `vkGetSwapchainImagesKHR`; `format` is the member of
+`Format` the swapchain's `VkFormat` is (`Bgra8Unorm` or `Rgba8Unorm`) and the size is the swapchain extent: both come from the caller's
+swapchain and are not checked against it. The wrapper holds plume's `VulkanTexture(device, VkImage)` with ownership off, so the backend
+**never destroys the `VkImage`**, plus a view for a framebuffer (destroyed with the wrapper). One wrapper per swapchain image, made
+once and kept while the swapchain lives, so that its held layout persists. **The wrapper must be dropped before the caller recreates or
+destroys the swapchain** (and so must every recorder that used it and every view made from it), after the GPU has finished with it
+(`Backend::WaitIdle`): the caller (N2b-06) guarantees that, the backend cannot know. A fresh swapchain gets fresh wrappers
+(`UNKNOWN` layout, first use from `UNDEFINED`).
+
+`PrepareForPresent(image)` is the last command of the frame's recorder: it ends the open pass and moves the wrapper to
+`PRESENT_SRC_KHR` (plume's `RenderTextureLayout::PRESENT`), so the held layout is `PRESENT`. After the next acquire the **first
+operation reads the held `PRESENT` as `UNDEFINED`**: the barrier's old layout is `UNDEFINED`, the contents are not kept (an acquired
+image's contents are undefined), no barrier ever names `PRESENT_SRC_KHR` as its old layout, and the acquire needs no call into the
+backend. Call it before every present, in the recorder whose submission precedes the present. It needs a device made with a surface
+(without `VK_KHR_swapchain` the layer rejects the layout).
+
+**What N2b-06 still has to supply** (the named risk: acquire and present with binary semaphores, which no frozen call can wait for or
+signal): `Backend::Submit` waits only on the backend's timeline (`Wait`), so (a) a frame's recorder cannot wait for the acquire
+semaphore: the test waits on an acquire *fence* on the CPU before it records; (b) `vkQueuePresentKHR` needs something to wait for or the
+layer reports `SYNC-HAZARD-PRESENT-AFTER-WRITE` against the render: the test, under `QueueLock`, submits an empty batch that signals a
+binary semaphore (its first synchronisation scope is everything submitted before it on the queue, the frame's `Submit` included) and
+presents with that semaphore as the wait. This is what the test does and the layer accepts on lavapipe; **it is not a design** (no
+claim for the RX 6700 XT, MoltenVK, a second queue family or a present thread that is not the renderer's), and no frozen header was
+changed for it.
+
+The swapchain frames are one case of their own, `swapchain/frames_over_a_headless_surface_more_than_it_has_images`; it uses `MakeHeadlessSurface`
+unchanged, which fails the test under `MH4N_REQUIRE_VULKAN=1` and skips otherwise on a loader without the headless extension. There is
+no Windows or window-system branch in the test. **On the RX 6700 XT that case cannot run** (its surface needs a real window); the
+other 34 cases of the file need no surface and are the PC's leg of this package (formats and the chooser with `d24s8` masked, which is the PC's
+path, images, passes, layouts, the owner rule, bindings), alongside `external/a_wrapped_image_is_cleared_copied_and_not_destroyed_with_its_wrapper`
+(a `VkImage` the test made, no surface).
+
+### Tests (N2-27)
+
+`native/tests/gpu_backend_targets_test.cpp` (ctest name `gpu_backend_targets_test`; shaders in `native/tests/shaders/gpu_backend_targets/`,
+`gpu_backend_targets_shaders.inc` generated by `tools/native/spirv_inc.py`). Every expected pixel and byte is worked out in a
+comment from the formats. A case skips with a message without a Vulkan device and fails under `MH4N_REQUIRE_VULKAN=1`.
+
+| Case | What it pins |
+|---|---|
+| `formats/query_agrees_with_vkGetPhysicalDeviceFormatProperties_for_every_format` | `QueryFormat` against the test's own `vkGetPhysicalDeviceFormatProperties` (through `vulkan_access.h`'s physical device) for every `Format`, unmasked and under `bc7` |
+| `formats/the_chooser_follows_the_support_table_on_devices_this_machine_is_not` | every rule of `ChooseFormatWith` on synthetic tables (MoltenVK, swapped orders only, none, texture-only, D24S8 off, BC off) |
+| `formats/the_chooser_at_the_device_and_under_the_masks` | `ChooseFormat` on the device; `d24s8` masked takes `D32S8`, `bc7` masked says decode on the CPU |
+| `images/each_colour_format_cleared_and_copied_to_a_buffer`, `.../each_depth_format_cleared_and_copied_as_two_regions` | RGBA8, RGB8 as RGBA8, RGB5A1, RGB565, RGBA4 (the words of the stored order: `0xAD4A` or `0x5555`, `0x9A8B`/`0x2AA7`/`0xCD45`, `0xA5CF`/`0xC5AF`) and D16, D24S8, D24S8 masked to D32S8 (depth `0xFFFFFF`/`0x3F800000`/`0xFFFF` and stencil `0xAB`, then 0 and `0x3C`) |
+| `images/an_upload_goes_through_a_staging_buffer_with_direct_upload_on_or_masked` | the staging count (one per upload) and the same bytes with the bit on and masked off: it pins that no direct path exists yet |
+| `images/storage_usage_only_on_shadow_sources`, `images/copies_blits_and_mip_generation_within_one_image` | the recorded creation flags; copies within one image, nearest and linear blits, mip generation |
+| `passes/...` | render then sample in one recorder and in two (6.9 A1, A2); the pass kept open (counted at `vkCmdBeginRenderPass` through volk) and ended by a copy; the render area; the feedback copy (a draw samples the previous contents: `(255, 102, 0, 255)`), every mip; blended (`(51, 0, 204, 51)`) and depth-tested draws on D24S8 and on the masked D32S8 |
+| `layouts/...` | the exact `(old, new)` layouts of the image barriers (read from `vkCmdPipelineBarrier` through volk) for a clear and a copy, for a pass, for a pass left open at `Submit`, and for a dropped recorder |
+| `shadow/imageStore_into_the_r32_uint_view_with_the_interlock_shader_and_without_it` | three overlapping draws in a pass with no attachments: every texel 3, with the interlock shader and (under the `interlock` bit masked in the case's own backend) the compare-and-swap shader |
+| `samplers/...`, `bindings/...` | the custom border colour returned out of range `(51, 102, 153, 204)` and refused with the bit off; a texel buffer; 1,000 frames with a fresh texture binding each (the `vkAllocateDescriptorSets` count after frame 10 equals the count after frame 1,000, at most 5) and each draw's uniform offset reaching its shader |
+| `owner_rule/...`, `threads/...` | the foreign-thread copy, the two refused hand-overs, a hand-over by a non-owner, the receiver with and without the wait, the feedback twin following its target; two threads each rendering into their own images |
+| `external/...`, `swapchain/...` | a wrapped `VkImage` cleared, copied, not destroyed by its wrapper; six headless-swapchain frames (more than the swapchain has images, so the held `PRESENT` is read as `UNDEFINED` on every reused image) acquired, wrapped, cleared, `PrepareForPresent`ed and presented under `QueueLock` |
+
+The masks to run it under (the cases that build their own masked backend run that leg whatever the environment says):
+`MH4N_RHI_MASK=<name>` for each of `d24s8 interlock index_uint8 custom_border_color triangle_fans logic_op dynamic_rendering
+pipeline_library eds3_blend bc7 timeline present_wait direct_upload`, and `all` (`MH4N_RHI_MASK=d24s8,bc7 ctest ... -R '^gpu_backend_targets_test$'`).
+With `MH4N_RHI_CHECKS` off the owner-rule cases skip themselves with a message.
+
+**Run here** (clang 18, lavapipe/llvmpipe, validation layer 1.3.275): `MH4N_REQUIRE_VULKAN=1 ctest --test-dir build/native -R '^gpu_backend_targets_test$'` passes (35 cases, 8,046 assertions, about a second; the log names the
+llvmpipe device); the whole binary passes under each of the 13 `MH4N_RHI_MASK` names and under `all`; `python3 tools/native/vk_layer_run.py --build
+build/native -R '^gpu_backend_targets_test$'` reports no layer message, the swapchain frames included (the first run of it found
+two defects of ours, a reused readback buffer's write-after-write and `PrepareForPresent` on a device without a swapchain, and
+one of core/plume: the `Stage::Transfer` wait above); the `build/tsan` tree (the commands of "The ThreadSanitizer job", the two
+targets only) ran this test three times and `gpu_backend_core_test` once with `halt_on_error=1` and `tools/native/tsan.supp`: no
+report. Mutants tried (one rule broken at a time, the test seen to fail, the rule restored): the foreign-thread breach removed
+(2 cases fail), the hand-over wait not added to the recorder (1), `CopyImageToBuffer` not returning the image to `GENERAL` (the layout case),
+a pass end that does not move the depth image back (the layout case), the arena never reusing a set (the 1,000-frame case) and the
+feedback copy not copying (2 cases); after review: the preferred order of `Rgba4` and of `Rgb5A1` swapped, a linear blit made nearest, the integer clear branch removed, the arena handing out a set still pending for the recorder, the stencil view made with the depth aspect, `HandOver` by a non-owner not checked, `Acquire` of the twin removed from `FeedbackCopy` (and `HandOver` not handing the twin over), the clear of a kept-open pass removed, and the layer-count test loosened: each fails a case. `native-tsan` on GitHub is *(CI)*, `pending`.
+
+**`unverified` / pending, not claimed:** the RX 6700 XT (no D24S8, a real-window surface, its format query and descriptor
+alignment), MoltenVK and KosmicKrisp (the R-first-only 16-bit formats, the depth layout), a second queue family (a hand-over across
+queues; lavapipe has one), the `native-tsan` job on GitHub *(CI)*, and the blit and attachment cost of `GENERAL` on the target GPUs.
+
+## Sync and readback (N2-28)
+
+What the renderer thread, the compositor and the capture player need from the backend beyond drawing: two modules under
+`native/src/gpu/backend/`, namespace `mh4n::gpu::rhi`. **The interface is documented in `rhi.h`** (the "sync (N2-28)" and "readback
+(N2-28)" groups of `Backend` and `Recorder::MarkFrame`); this section says how it is built, what blocks and when, and what it does
+not do. Both modules keep their state in the slots `core/impl.h` reserves (`Backend::Impl::sync`, `::readback`) and edit nothing of
+`core/`, `targets/`, `rhi.h`, `vulkan_access.h` or `native/third_party/rhi/`.
+
+| File | What |
+|---|---|
+| `sync/submit.cpp` | `Backend::Submit(Recorder&&, span<const Wait>)` and `Backend::Retire`, the retire list and its drain |
+| `sync/pipeline_cache.cpp` | `LoadPipelineCache`, `SavePipelineCache`, the header check. Derived from Azahar's `vk_pipeline_cache.cpp` (GPL-3.0-or-later; provenance header in the file) |
+| `sync/timestamps.cpp` | `Recorder::MarkFrame`, `Backend::FrameGpuTimeNs` |
+| `sync/sync.h` | the module's own header (not the frozen interface): `RetiredCount`, `DrainRetired`, `ReleaseRetired`, `LastFrameTimestamps`, `FramesInFlight`, `CheckPipelineCacheBlob` |
+| `readback/readback.cpp` | `Backend::ReadbackToGuest`; derived from Azahar's `BlitHelper::DepthToBuffer` (`vk_blit_helper.cpp`), `MortonCopy`/`EncodePixel` (`texture_codec.h`) and `Encode*` (`color.h`), all GPL-2.0-or-later (provenance header in the file) |
+| `readback/image.cpp` | `Backend::ReadImage` |
+| `readback/shaders/readback.comp`, `readback_shaders.inc` | the compute pass (three variants, `spirv_inc.txt`), its SPIR-V committed; `python3 tools/native/spirv_inc.py native/src/gpu/backend/readback/shaders native/src/gpu/backend/readback/readback_shaders.inc` regenerates it byte for byte. Derived from Azahar's `vulkan_depth_to_buffer.comp`, `texture_codec.h` and `color.h` (provenance header in the file); the test file `gpu_backend_readback_test.cpp` restates the Morton tables and byte orders of the last two and carries the header too |
+
+### Waits and the fence fallback
+
+`Submit(recorder, waits)` goes through core's one submit path (`core::SubmitRecorder`, under the submit lock). A `Wait` is
+`{value, stage}` on the backend's own timeline. **With the `timeline` bit**, every wait is submitted: one `vkQueueSubmit`, one stage mask
+per wait semaphore (patch 03; the vendored backend maps a `Stage` to its graphics, compute or transfer group, `core::ToPlumeStages`), the
+values being the timeline's (patch 05), and the submission signals the next value. The GPU holds the submission; the submitter is **not**
+blocked. **Without it** (absent, or masked with `MH4N_RHI_MASK=timeline`) core submits no wait, and `Submit` does the wait itself first: if
+the highest value among the waits has not completed, the submitting thread blocks on the CPU in `Backend::Impl::WaitFor` (core's fallback,
+which this module extends and does not duplicate: a fence per submission, the completed value advanced in order, a wait in 2 ms slices under the
+fence mutex), before it takes the submit lock; other threads keep submitting meanwhile. Values complete in order, so the highest covers
+them all, and the values stay comparable with the timeline's. The cost, as the spec says: the submitting thread (a compositor or present thread)
+blocks until the work of that value has finished on the GPU instead of queueing behind it. No device of `rhi-spike.md` section 4 lacks timeline
+semaphores, so the fallback runs only under the mask.
+
+- **A wait for a value no submission has issued** (above `LastSubmittedValue()`) would block the queue for ever, or the CPU: it is left out with an
+  `Error` line of category `RHI` ("a wait for value N was left out"). A requirement it was meant to cover is then a breach, below.
+- **`required_waits` and the owner rule.** `core::SubmitRecorder` checks, with `MH4N_RHI_CHECKS`, that each wait the recorder requires (an image
+  handed over to its thread, `Recorder::Impl::required_waits`) is covered by a wait **of the same stage and a value at least as high** in the list
+  `Submit` passes it: a lower value, or another stage, or no waits, calls the owner-rule handler with `OwnerRule::RequiredWait`. The check does not depend
+  on the `timeline` bit: without it the wait is not submitted but the CPU wait has made it true, and the stage is still compared.
+- **Stage.** Name the stage that reads. A wait at `FragmentShader` and one at `ComputeShader` in one submission reach `vkQueueSubmit` as two masks,
+  each its own (`rhi-spike.md` 6.9 C3: unpatched plume read past its one local). **`Stage::Transfer` is refused by the layer today**
+  (`VUID-VkSubmitInfo-pWaitDstStageMask-00078`): plume's `toStageFlags` adds `VK_PIPELINE_STAGE_HOST_BIT` to the copy group and patch 03 passes it
+  on. `needs-decision`: a numbered plume patch (owner: not N2-28) that filters the host bit from a wait's mask; until then a hand-over whose first
+  use is a copy or clear cannot be expressed with the right stage, and no test here waits at `Transfer`.
+- **Queues.** Lavapipe has one queue, so a wait across queues is `unverified` here: the RX 6700 XT's several families and MoltenVK are the legs for it
+  (`rhi-spike.md` 9.2). On one queue a pipeline barrier already orders earlier submissions, which is why the hand-over tests can pass with a missing
+  wait; they pin the owner-rule check, not the hardware effect.
+- **Finding in `core/` (`needs-decision`, not edited here).** In `core::SubmitRecorder`'s fence branch (`core/submit.cpp`) the new `PendingFence` is pushed
+  to `pending_fences` **before** `executeCommandLists(..., raw)` submits with that fence; another thread's `Completed()` or `WaitFor()` can then call
+  `vkGetFenceStatus`/`vkWaitForFences`/`vkResetFences` on a fence `vkQueueSubmit` is using. The validation layer reports it as
+  `UNASSIGNED-Threading-MultipleThreads-Read` (VkFence) when a multi-thread test runs with `MH4N_RHI_MASK=timeline` (or `all`) under
+  `vk_layer_run.py`: N2-27's `gpu_backend_core_test` gives it every time under that mask (24 messages in the reviewer's run: 12 `Read` in `vkGetFenceStatus` and 12 `Write` in `vkQueueSubmit` on a `VkFence`), so it is not new with this WP; `gpu_backend_sync_test` and `gpu_backend_readback_test` gave it in 3 of 4 runs and `gpu_backend_targets_test` was clean once: it is timing-dependent. The fix is to push after the
+  submit returns (or to hold `fence_mutex` across it). Without the mask, and so in every run the Done-when lists, no message.
+
+### Deferred destruction
+
+`Retire(object, last_use)` keeps `object` (a `shared_ptr<void>`: a buffer, an image, a binding set, anything) until the GPU has passed `last_use`, then
+releases it. core has no hook that runs when a value completes, so the list is ours (`SyncData::retired`) and is **drained at these points**, and only
+there: a `Retire` (its own entry too), the end of a `Submit` with waits, `MarkFrame(FrameMark::Begin)`, `sync::DrainRetired(backend)` and
+`sync::ReleaseRetired(backend)` (`WaitIdle`, then everything). The plain `Submit(Recorder&&)` is core's and does not drain; `WaitIdle` and
+`CompletedValue` do not either. An entry is released on the thread that drains, outside the list's lock. A `last_use` that has passed already (or is 0)
+is released inside the `Retire` call. A `last_use` above `LastSubmittedValue()` stays until that value is issued and has passed.
+**Limit:** a retired buffer, image or binding set holds the backend's state, so a list that still holds one when the last outside reference to the
+`Backend` goes keeps the backend, the device and the instance alive (core's `Backend::~Backend` has no hook to drain). Call
+`sync::ReleaseRetired(*backend)` before dropping the last `shared_ptr<Backend>` if anything may be retired and in flight; a hook in core's destructor would
+make it automatic (`needs-decision`, optional).
+
+### The pipeline cache
+
+`SavePipelineCache()` returns the bytes of the device's `VkPipelineCache` (patch 06 makes one, empty, when the device is made; every pipeline of the vendored
+backend is created through it, and render passes are cached by formats). `LoadPipelineCache(blob)` accepts a blob only when its header is a
+`VkPipelineCacheHeaderVersionOne` for this device, as Azahar checks its disk cache (`PipelineCache::IsCacheValid`): at least 32 bytes; header length
+(offset 0) from 32 to the blob's size; header version (offset 4) 1; vendor id (offset 8) and device id (offset 12) the physical device's; the 16 bytes at offset 16
+equal to its `pipelineCacheUUID`. Anything else (an empty blob, 31 bytes, version 2, a changed vendor, device or any UUID byte, a header length of 16) is **refused**:
+`LoadPipelineCache` returns false, nothing is loaded, **the device keeps the cache it has** (the empty one when it is called at start-up, as it should be, so
+"an empty cache is used"), and one line goes to the mh4n log at **Info**, category `RHI`: `rhi: pipeline cache blob ignored (<reason>); the device keeps its
+current cache`. (`DebugSeverity` has only Warning and Error and `rhi.h` has no logging; this is what core does for its one-time mask line. The default sink
+writes `[Info] RHI: ...` to stderr; the test installs `mh4n::SetLogSink` and checks the level, the category and the count.) A blob whose header matches but
+which the driver refuses is a `Warning` and false. `LoadPipelineCache` replaces the `VkPipelineCache` (plume destroys the old one): **call it before pipelines are
+created or while no other thread creates one**. `SavePipelineCache` and pipeline creation from several threads are safe together by the specification (a `VkPipelineCache` is internally synchronised; `inference`, not exercised together here); `Create*Pipeline` itself may be called from several threads at once (plume's scratch vectors are `thread_local`, `rhi-spike.md` 6.1 G10): the
+test makes pipelines from four threads at once and draws with them. The files on disk and the key list are N2-16's.
+
+### Readback into guest memory
+
+`ReadbackToGuest(image, rect, format, dest)` writes `rect` of a render target into `dest` in the PICA's layout, through one compute pass of ours
+(`readback.comp`: an invocation writes one 32-bit word of the output, finds the pixel each of its bytes belongs to, and reads it with `texelFetch`), into a storage
+buffer in the Readback heap, followed by a CPU wait. It is for the checks and the CPU reads N0-14 found, not for every frame.
+
+**Layout** (the same for colour and depth: the PICA writes its framebuffers with the 8x8 Morton tiles it reads textures with, and Azahar's rasterizer cache
+uses one `MortonCopy` for both, so there is one layout to implement):
+
+- `rect` is the region of the image; `x`, `y`, `width` and `height` are multiples of 8 and `dest` the region's own tiled bytes (`width * height * bytes per pixel`,
+  at least). The tiles go left to right, then the next tile row; 64 pixels per tile in Morton order: the pixel `(x, y)` of a tile (0 to 7) is at index `x0 y0 x1 y1 x2 y2`
+  read from the lowest bit (x in the even bits): `(1,0)` is 1, `(0,1)` 2, `(2,0)` 4, `(0,2)` 8, `(4,0)` 16, `(0,4)` 32, `(7,7)` 63 (Azahar's `MORTON_ROW`/`MORTON_X`).
+- **Row direction:** guest row 0 is the **last** row of the rect in the image: guest row `g` is image row `rect.y + rect.height - 1 - g`. This is Azahar's
+  `MortonCopy`, which reads and writes the linear buffer "bottom up" (and its download copies the image into the buffer top row first). A renderer that draws
+  the PICA's row `y` into image row `height - 1 - y` gets the PICA's own layout; N2-13 and N2-23 must confirm which way they draw (`unverified`: no capture has
+  been compared).
+- **Bytes** (little endian, as Azahar's `Encode*`):
+
+| `PicaFormat` | Bytes per pixel | Memory |
+|---|---|---|
+| `Rgba8` | 4 | A, B, G, R (byte 0 is alpha) |
+| `Rgb8` | 3 | B, G, R |
+| `Rgb5A1` | 2 | word: R bits 11 to 15, G 6 to 10, B 1 to 5, A bit 0 |
+| `Rgb565` | 2 | word: R bits 11 to 15, G 5 to 10, B 0 to 4 |
+| `Rgba4` | 2 | word: R 12 to 15, G 8 to 11, B 4 to 7, A 0 to 3 |
+| `D16` | 2 | the 16-bit depth |
+| `D24` | 3 | the 24-bit depth, low byte first |
+| `D24S8` | 4 | the 24-bit depth in bits 0 to 23, the stencil in bits 24 to 31 (bytes d0, d1, d2, s) |
+
+**What each PICA format can be read from** (anything else is an `Error`, never a conversion): `Rgba8Unorm`/`Bgra8Unorm` images give any colour format (a narrower
+component is cut from the top, Azahar's `Convert8To5` and kin: `v >> (8 - n)`); `R5G6B5`/`B5G6R5` give `Rgb565`, `R5G5B5A1`/`B5G5R5A1`/`A1R5G5B5` give `Rgb5A1`,
+`R4G4B4A4`/`B4G4R4A4` give `Rgba4`, all with the PICA's bits whatever order the device stores (the pass reads logical components, so the swapped orders need no
+special case: the test stores each order and gets the same word); `D16Unorm` gives `D16`; `D24S8` and `D32S8` give `D24` and `D24S8`; `D32Float` gives `D24`.
+
+**D24S8 from `D32S8`, and the rule that converts the depth.** On a device without `D24S8` (the PC) or with the `d24s8` bit masked, the depth image stores a float and the pass converts
+it as Azahar does (`vulkan_depth_to_buffer.comp`: `uint(texture(depth, ...).x * (exp2(24.0) - 1.0))`; `EncodeD24` of `texture_codec.h`: `static_cast<u32>(d32 * 0xFFFFFF)`): scale `2^24 - 1 = 16777215`,
+**truncated**, the stencil read from the stencil view and placed in the top byte. (An earlier draft of this WP rounded to nearest; the spec says "as Azahar does", so it truncates.) For a depth that is an exact
+unorm decode `c / 16777215` the product is the integer `c` in single precision (all 16,777,216 values checked once with a numpy float32 script, not part of the tests), so a `D24S8` image and the `D32S8`
+image that stands in for it give the same bytes for depths 0, `0x800000` (nearest float `0x3F000001`, `0.5 + 2^-24`) and `0xFFFFFF`, with stencils 0 and `0xFF`: that is what the cross-format test
+compares. **It does not hold for every float.** 0.25 is `4194303.75` of 24 bits: the `D32S8` path truncates it to `0x3FFFFF`, while lavapipe's `D24S8` clear stores the nearest value and reads back `0x400000`;
+the test pins each format separately (and the pass-open case too) and does not compare them. `D16` is read as `roundEven(depth * 65535.0)`: Azahar copies D16 raw, so rounding there only recovers the stored integer.
+`unverified`: truncation gives the exact integer back for an exact unorm decode, but a driver whose unorm decode is `c * (1 / 16777215)` could make truncation off by one; whether a real GPU (the RX 6700 XT's
+`D32S8` path, MoltenVK) does is not measured, and the question goes to the maintainer. Also `unverified`: what the PICA itself does with a depth between two 24-bit values (no capture compared).
+
+**Which thread, and what the checks do.** `ReadbackToGuest` and `ReadImage` record on an internal recorder, through the targets module's first-use path
+(`Acquire`, then `Normalize` for the readback; `CopyImageToBuffer` for `ReadImage`): they obey the owner rule as any operation on the image does. **The thread that owns the image
+may call them**; so may the thread an image was handed over to (`HandOver`), and then the call itself carries the hand-over's wait (the value waited on the CPU
+first, and submitted at the stage the hand-over named and at the compute stage), so there is no `RequiredWait` breach. **Another thread** that was not handed the image calls the
+owner-rule handler with `OwnerRule::ForeignThread` (with `MH4N_RHI_CHECKS`; the call then goes on, as the other operations do); without the checks nothing is
+reported. A depth-stencil image cannot be handed over (N2-27), so a depth target is read back by its owner. Both functions see **only what has been submitted**: an image the calling
+thread's open recorder has recorded on (or that is an attachment of an open pass) is an `Error` ("submit it first"), because the layout plume holds for it was changed at record
+time.
+**A pass still open when its recorder is submitted** leaves a depth image in plume's attachment layout and the colour image dirty; the readback's `Normalize` is the barrier that
+moves it to `GENERAL` with its writes visible, and the test reads a depth image right after such a submission (layout `DEPTH_WRITE` before, `GENERAL` after).
+One readback at a time per backend (a mutex around the pass, the buffers and the binding set; each waits for its submission). The output must fit the device's storage-buffer range.
+
+### `ReadImage`
+
+`ReadImage(image, x, y, width, height)` returns the region in the image's own format, row by row without padding: `width * height * bytes per texel`. Colour formats are the texel as
+stored (`Rgba8Unorm`: R, G, B, A; a 16-bit packed format: the little-endian word as Vulkan's packed layout names it; `Rgba16Float`: four halves); `D16Unorm` and `D32Float`
+the depth texels; `D24S8` and `D32S8` the **depth plane** (4 bytes per texel: D24 in the low 24 bits of a `D24S8` texel, the top byte not defined; the float's bits for `D32S8`) **followed by the
+stencil plane** (1 byte per texel), as patch 11's buffer copy lays them out. The block-compressed formats and the vertex formats are an `Error`. The region must lie inside the image;
+mip 0, layer 0. The same thread rules as above.
+
+### Timestamps
+
+`Recorder::MarkFrame(Begin)` resets and writes the first of a frame's two timestamps at the bottom of the pipe (outside a pass: `vkCmdResetQueryPool` is not allowed inside one, so a Begin
+inside a pass is refused with an `Error` line), `MarkFrame(End)` writes the second, in whichever recorder the End is called (a frame may span recorders). A frame owns a query pool
+of two queries (plume's `queryResults` reads a whole pool without waiting and fails when a query of it is unavailable). **`FrameGpuTimeNs()` is valid only after the submission that carried the End mark
+has been passed by the GPU** (`CompletedValue() >= its value`): until then it returns the last frame read, 0 before the first. It reads the frames whose End has passed, in order, and recycles their
+pools, so a program that never calls it does not grow the list (the next Begin reads too). The value is `end - begin` in nanoseconds (plume converts ticks with the device's
+`timestampPeriod`, `Capabilities::timestamp_period`); a queue family without timestamps, or a zero period, gives 0 and one `Warning`. A Begin with no End is abandoned by the next Begin
+(its pool returns when its Begin has run); a dropped recorder gives its mark back; an End with no frame begun is ignored with a `Warning`. One frame at a time per backend. `timestampValidBits` below 64 is not
+unwrapped (`unverified`: no device met here has fewer).
+
+### Tests (N2-28)
+
+`native/tests/gpu_backend_sync_test.cpp` (12 cases; shaders `native/tests/shaders/gpu_backend_sync/`, `gpu_backend_sync_shaders.inc` by `spirv_inc.py`, also used by the readback test) and
+`native/tests/gpu_backend_readback_test.cpp` (13 cases). Every expected pixel and byte is worked out in a comment from the formats. A case skips with a message without a Vulkan device and fails under
+`MH4N_REQUIRE_VULKAN=1`.
+
+| Case | What it pins |
+|---|---|
+| `waits/the_second_submission_waits_on_the_first_at_the_fragment_stage_and_samples_what_it_drew` | the first submission is held by a **gate** (a `vkCmdWaitEvents` on an event the test sets from the host); with timeline semaphores the second `Submit` returns at once while the first is unfinished and the submit info carries one wait, mask with the fragment bit, value = the first's; without (the case runs both legs: the environment's, and a backend with `Cap::Timeline` masked) the submitter is blocked while the gate is closed (300 ms, checked as "has not returned"), nothing is submitted as a wait, and after the gate opens `CompletedValue()` is at least the first's when `Submit` returns; the pixels are the red the first drew in every texel, not the clear colours |
+| `waits/a_submission_with_two_waits_passes_two_stage_masks_each_its_own` | the masks and values read from `vkQueueSubmit` through volk: the first has the fragment bit, the second equals `VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT`, values `{v1, v2}`; none without the bit |
+| `waits/a_wait_for_a_value_nobody_issued_is_left_out_with_a_message` | the `Error` line, and the submission does not hang |
+| `handover/an_image_drawn_on_one_thread_is_sampled_on_another_and_handed_back_by_a_value` | 6.9 D1 and D3 shapes: eight rounds, one thread draws (the pass is open at `Submit`) and hands the image over by the value, the other samples it with a `Wait` of that value, reads the pixels, hands it back; red and green alternate and are what the other thread sees; no breach |
+| `handover/the_receiver_must_wait_for_the_value_that_produced_the_image` | exact wait and a higher one: no breach; a lower value, another stage, no waits: one `RequiredWait` breach each |
+| `retire/an_object_retired_while_in_flight_is_destroyed_only_after_its_value`, `retire/release_retired_waits_for_the_gpu_and_empties_the_list` | a probe object and an image retired while the gated submission is unfinished are alive after `Retire` and `DrainRetired`, and are released (weak pointer expired) by the first drain point after the value passed; a passed value is released inside `Retire`; `ReleaseRetired` blocks until the gate opens |
+| `pipeline_cache/a_saved_blob_is_accepted_by_a_second_backend_and_a_foreign_one_is_refused_with_an_info_line` | the header fields against the test's own `vkGetPhysicalDeviceProperties`; a second backend on the same instance and device accepts the blob; eight corruptions (a UUID byte, the last UUID byte, vendor, device, version, header length, 31 bytes, empty) are each refused with exactly one Info line of category `RHI`; the pure check with hand-written numbers |
+| `pipeline_cache/pipelines_made_from_four_threads_at_once_are_all_usable` | 4 threads x 6 pipelines, started together, each thread draws with one into its image: 24 made, 4 draws right |
+| `timestamps/...` (3 cases) | not read while the gated frame is in flight (`FrameGpuTimeNs() == 0`), positive after, `end > begin`, the next frame's begin not before the last's end; a Begin with no End, a dropped recorder, an End with no Begin; a Begin inside a pass is refused with the `Error` line and takes no pool |
+| `colour/clear_and_readback_of_every_colour_format_into_guest_memory` | RGBA8 `99 33 00 FF`, RGB8 `33 00 FF`, `0xAD4A` (RGB565), `0xAA8B` (RGB5A1), `0xA5C3` (RGBA4), from the PICA names and from an RGBA8 image |
+| `colour/every_stored_component_order_of_the_16_bit_formats_gives_the_pica_word` | each stored order the device can sample (`R5G6B5`, `B5G6R5`, `R5G5B5A1`, `B5G5R5A1`, `A1R5G5B5`, `B4G4R4A4`; `R4G4B4A4` is not sampleable on lavapipe and is skipped with a message) uploaded as its own word, read back as the PICA's |
+| `colour/the_tiles_are_8x8_morton_with_the_last_row_first`, `colour/a_taller_image_orders_tile_rows_from_the_last_image_row_up` | a pattern image: nine literal pixels (indices 0, 1, 2, 3, 4, 8, 16, 32, 63 and the second tile's first) by hand, then the whole buffer against a model written from Azahar's tables for RGBA8, RGB8, RGB565, RGB5A1, RGBA4; a tile-aligned sub-rect; a 8x16 image |
+| `depth/d24s8_and_the_masked_d32s8_give_the_same_bytes_for_every_depth_and_stencil` | depths 0, `0x800000`, `0xFFFFFF` x stencils 0 and `0xFF`, read as `D24S8` and `D24`, on `D24S8` and on `D32S8` (`Cap::D24S8` masked in the case's own backend): the same bytes; then 0.25 pinned per format, not compared: `0x3FFFFF` on `D32S8` (truncated), `0x400000` on lavapipe's `D24S8` |
+| `depth/d16_and_d32_float` | `0`, `0x5555` (1/3), `0xAAAA` (2/3, upper half: pins the scale 65535), `0xFFFF`; `D32Float` as `D24`: 0.25 -> `FF FF 3F` (truncated), 1.0 -> `FF FF FF` |
+| `depth/an_image_left_in_the_attachment_layout_by_a_pass_open_at_submit_is_read_back_right` | a draw at depth 0.25 and stencil clear `0x5A` on `D24S8` (both formats) and `D16Unorm`, the pass open at `Submit`; the held layout is `DEPTH_WRITE` before the readback, the bytes `FF FF 3F 5A` on `D32S8`, `00 00 40 5A` on lavapipe's `D24S8` (`AA AA` for D16, drawn at depth 2/3), `GENERAL` after; the colour image is red |
+| `read_image/...` (2 cases) | the clear colour in `Rgba8Unorm`, `R8Unorm`, `R5G6B5`, `Rgba16Float`, `D16Unorm`, the two planes of `D24S8`/`D32S8`; a sub-region row by row, errors |
+| `errors/...`, `owner_rule/...` | bad rects, destinations and formats; an image the open recorder has recorded on; a foreign thread: one `ForeignThread` breach per call, none for the owner or after a hand-over (both with and without the `timeline` bit), no `RequiredWait` |
+| `timestamps/a_frame_with_a_clear_and_a_readback_has_a_time_and_the_next_frame_follows_it` | three frames; Begin and a clear in one recorder, the readback (its own submission) between, the End in a recorder submitted after it: `FrameGpuTimeNs() > 0`, increasing |
+| `readback/two_threads_reading_back_different_images_at_once_get_their_own_bytes` | a colour image and a depth image read back 25 times each from two threads at once: every result right (TSAN covers the race) |
+
+Lavapipe's queue thread holds the device while it waits for an event, and creating an image view, a framebuffer or a command list then waits for it too: the gated case therefore makes all of them in a first run
+with the gate open (a lavapipe property, `unverified` elsewhere; nothing in the product depends on it).
+
+**Masks to run them under:** `MH4N_RHI_MASK=<name>` for each of `d24s8 interlock index_uint8 custom_border_color triangle_fans logic_op dynamic_rendering pipeline_library eds3_blend bc7 timeline
+present_wait direct_upload`, and `all`, and `d24s8,timeline` (the PC's pair). The cases that need a particular leg build their own masked backend, so those legs run whatever the environment says.
+`MH4N_RHI_CHECKS` off: the cases that need the checks skip themselves with a message.
+
+**Run here** (clang 18, lavapipe/llvmpipe, validation layer 1.3.275): both binaries pass under the environment as it is and under each of the 13 names, `all` and `d24s8,timeline` (log: llvmpipe);
+`python3 tools/native/vk_layer_run.py --build build/native -R '^gpu_backend_(sync|readback)_test$'` reports no layer message (and none under `MH4N_RHI_MASK=d24s8`; under `timeline` and `all` it
+reports the `UNASSIGNED-Threading-MultipleThreads-Read` of core's fence branch described above, the same message `gpu_backend_core_test` gives every time under that mask, timing-dependent in the other binaries). The first layer run found one
+defect of ours: a reused readback buffer's `SYNC-HAZARD-WRITE-AFTER-WRITE` between two readbacks' passes, now ordered by a memory barrier at the start of each (the finding N2-27 made for its own copies).
+The `build/tsan` tree (the commands of "The ThreadSanitizer job" above, with the four targets `gpu_backend_sync_test`, `gpu_backend_readback_test`, `gpu_backend_core_test` and
+`gpu_backend_targets_test`; `halt_on_error=1`, `tools/native/tsan.supp`) ran the first two twice each and once more under `MH4N_RHI_MASK=timeline` (after the review changes too), and the other two twice: no report. `native-tsan` on GitHub is *(CI)*, `pending`.
+**Mutants** (one rule broken at a time in a copy restored from the commit, the test seen to fail, the rule restored; the build checked to have succeeded, because a mutant that does not compile leaves the old binary running):
+- sync: the CPU wait of the fallback removed (`waits/the_second_submission...` fails, in the masked leg and under `MH4N_RHI_MASK=timeline`); `Retire` releasing at once whatever the value (the retire case crashes: the image
+  was destroyed in flight); the drain releasing entries whose value has not passed (the same case crashes); the header check skipped (the pipeline-cache case fails); only the UUID comparison skipped (the same case fails);
+  every wait kept at `Stage::AllGraphics` (the two-waits case and both hand-over cases fail); the timestamps read before the value passed (the timestamps case hangs on a read and is stopped by `timeout`); the End's
+  value not recorded (both timestamps cases fail).
+- readback: x and y bits of the Morton index swapped (the three tile cases fail); guest rows not reversed (the same three); the D24 depth **rounded to nearest** instead of truncated, the first draft's rule (the 0.25 line of the depth case, the pass-open case and `d16_and_d32_float` fail, on the `D32S8` leg), and truncation with a +0.75 bias (the same three); the D24 scale `2^24` instead of `2^24 - 1` (the same three: 0.25 comes out `0x400000`); the stencil in the low byte (the depth and pass-open cases fail); the RGB8 bytes in R, G, B order (the colour and tile cases fail); narrower components
+  cut from the bottom bits instead of the top (the colour cases fail); `Normalize` skipped (the pass-open depth case fails: the held layout is not `GENERAL`); `Acquire` skipped (the owner-rule case fails);
+  the hand-over's waits not carried by the readback (the owner-rule case fails: a `RequiredWait` breach); the open-recorder check removed (the errors case fails); the mutex of `ReadbackToGuest` removed (the two-threads case fails by itself, without ThreadSanitizer); the End mark accepted only in the recorder of its Begin (the timestamps case whose End is in a later recorder fails); `MarkFrame(Begin)` not refused inside a pass (the new Begin-in-pass case fails). The D16 mutant that truncates instead of rounding survives: an equivalent mutant on this device (the stored integer comes back exact from the float decode either way). The case `colour/every_stored_component_order...` also appears in the list
+  of every failing readback run only because its skip message (`R4G4B4A4` is not sampleable on lavapipe) prints the case's name; it is not the cause.
+
+**`unverified` / pending, not claimed:** the RX 6700 XT (no `D24S8`, so the `D32S8` path is the one it runs: the legs above stand in for it on lavapipe; its timestamp period and valid bits), MoltenVK and KosmicKrisp,
+a second queue family (a wait or a hand-over across queues; lavapipe has one), the row direction against a capture (above), the PICA's own depth rounding, the `native-tsan` job on GitHub *(CI)*, and any
+claim about the cost of the CPU wait on a real present thread.
+
 ## Not checked on this machine
 
 `readelf -d` for `libX11` is meaningful on `build/native/bin/rhi_plume_test` (no `NEEDED` entry besides libstdc++, libm, libgcc_s, libc and the loader's), not on `mh4u_native_runner`, which does not link plume yet.
