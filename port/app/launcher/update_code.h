@@ -1,5 +1,5 @@
 // The update's own code, read from a .cia or from the program Azahar installed from one, and
-// which update it makes by that code: the SHA-1 of the decompressed code, the way
+// which update it is by that code: the SHA-1 of the decompressed code, the way
 // tools/build_game.py tells a version (config/versions.json). Some tools that decrypt or rebuild
 // a .cia reset the version label of its title metadata (to v0.0.1 or v1.0.0) and leave the
 // content as it was, so the label alone would turn away a good v1.3.0 update (issue #47).
