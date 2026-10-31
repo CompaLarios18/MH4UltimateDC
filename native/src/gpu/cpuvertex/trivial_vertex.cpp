@@ -1,7 +1,7 @@
-// Derived from Azahar src/video_core/shader/generator/glsl_shader_gen.cpp at
+// Derived from Azahar src/video_core/shader/generator/glsl_shader_gen.cpp and glsl_fs_shader_gen.cpp at
 // 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (labelled GPL-3.0-or-later: glsl_shader_gen.cpp itself says GPLv2+, but the SPIR-V in the
 // included file is compiled from shaders/trivial.vert, which takes the varying locations from glsl_fs_shader_gen.cpp, GPLv3+).
-// Copyright 2023-2026 Citra Emulator Project / Azahar Emulator Project (glsl_shader_gen.cpp)
+// Copyright 2023-2026 Citra Emulator Project / Azahar Emulator Project (glsl_shader_gen.cpp, glsl_fs_shader_gen.cpp)
 #include "gpu/cpuvertex/trivial_vertex.h"
 
 #include "gpu/cpuvertex/trivial_vertex_spv.inc"
