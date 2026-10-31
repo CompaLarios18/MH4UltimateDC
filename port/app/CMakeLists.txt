@@ -80,6 +80,9 @@ endif()
 target_sources(mh4u PRIVATE
     launcher/checks.cpp
     launcher/checks.h
+    # the environment of the programs it starts, without the AppImage's additions (Linux)
+    launcher/environment.cpp
+    launcher/environment.h
     launcher/launcher.cpp
     launcher/launcher.h
     launcher/lobby.cpp

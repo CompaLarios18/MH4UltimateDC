@@ -6,11 +6,14 @@
 
 #include "launcher/process.h"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstring>
 #include <mutex>
 #include <thread>
+
+#include "launcher/environment.h"
 
 #ifdef _WIN32
 #include <windows.h>
@@ -97,6 +100,7 @@ struct Process::Impl {
     std::atomic<bool> running{false};
     std::atomic<bool> stop_requested{false};
     std::atomic<int> exit_code{-1};
+    std::atomic<int> end_signal{0};
     std::thread reader;
 #ifdef _WIN32
     HANDLE process = nullptr;
@@ -268,6 +272,10 @@ std::string SelfPath() {
     }
 }
 
+std::string ChildEnvironmentNote() {
+    return "";  // (no AppImage)
+}
+
 bool StartDetached(const std::vector<std::string>& args, std::string& error) {
     if (args.empty()) {
         error = "nothing to run";
@@ -296,6 +304,91 @@ bool StartDetached(const std::vector<std::string>& args, std::string& error) {
 }
 
 #else  // POSIX
+
+namespace {
+
+/// The AppImage this app runs from: its mount ($APPDIR, also with its links resolved), or none
+/// (no AppImage, or an $APPDIR that isn't this app's: its executable isn't in it). Only Linux
+/// has AppImages.
+const std::vector<std::string>& AppImageMounts() {
+    static const std::vector<std::string> mounts = [] {
+        std::vector<std::string> found;
+#ifndef __APPLE__
+        const char* appdir = std::getenv("APPDIR");
+        std::string dir = appdir ? appdir : "";
+        while (dir.size() > 1 && dir.back() == '/') {
+            dir.pop_back();
+        }
+        if (dir.size() < 2 || dir[0] != '/') {
+            return found;  // none, or "/"
+        }
+        found.push_back(dir);
+        if (char* real = realpath(dir.c_str(), nullptr)) {
+            if (dir != real) {
+                found.emplace_back(real);
+            }
+            std::free(real);
+        }
+        const std::string self = SelfPath();
+        if (std::none_of(found.begin(), found.end(),
+                         [&self](const std::string& mount) { return Environment::Inside(self, mount); })) {
+            found.clear();
+        }
+#endif
+        return found;
+    }();
+    return mounts;
+}
+
+std::vector<std::string> ThisEnvironment() {
+    std::vector<std::string> env;
+    for (char** entry = environ; *entry; ++entry) {
+        env.emplace_back(*entry);
+    }
+    return env;
+}
+
+/// The environment of a child that runs `program`: this one, unless the app runs from an
+/// AppImage and the program isn't in it (Python, through it the compiler; the new app an update
+/// put in place). Then it gets the environment the AppImage was started with: the AppImage's
+/// libraries first in LD_LIBRARY_PATH, and its variables, are for this app alone. The app's own
+/// executable (the code check) keeps this one.
+std::vector<std::string> EnvironmentFor(const std::string& program) {
+    std::vector<std::string> env = ThisEnvironment();
+    const auto& mounts = AppImageMounts();
+    if (program.find('/') != std::string::npos &&
+        std::any_of(mounts.begin(), mounts.end(),
+                    [&program](const std::string& mount) { return Environment::Inside(program, mount); })) {
+        return env;
+    }
+    return Environment::WithoutAppImage(env, mounts);
+}
+
+/// `env`'s entries as posix_spawn takes them (pointers into `env`, ended by a null one).
+std::vector<char*> Pointers(std::vector<std::string>& env) {
+    std::vector<char*> pointers;
+    pointers.reserve(env.size() + 1);
+    for (auto& entry : env) {
+        pointers.push_back(entry.data());
+    }
+    pointers.push_back(nullptr);
+    return pointers;
+}
+
+/// The signals a child starts with their default handling, whatever this process does with them:
+/// a pipe closed under it, the requests to end, and a child's end (ignored here, SIGCHLD would be
+/// ignored in Python too: the system would reap its compilers at once, so that it couldn't wait
+/// for them, and neither could clang for its linker).
+void DefaultSignals(posix_spawnattr_t& attributes) {
+    sigset_t defaults;
+    sigemptyset(&defaults);
+    for (const int sig : {SIGPIPE, SIGTERM, SIGINT, SIGCHLD}) {
+        sigaddset(&defaults, sig);
+    }
+    posix_spawnattr_setsigdefault(&attributes, &defaults);
+}
+
+} // namespace
 
 void Process::Impl::Kill(bool hard) {
     std::scoped_lock lock{mutex};
@@ -355,6 +448,7 @@ void Process::Impl::Read() {
         reaped = true;
     }
     exit_code = !stop_requested && WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+    end_signal = !stop_requested && WIFSIGNALED(status) ? WTERMSIG(status) : 0;
     running = false;
 }
 
@@ -386,20 +480,17 @@ bool Process::Start(const std::vector<std::string>& args, std::string& error, bo
     sigset_t none;
     sigemptyset(&none);
     posix_spawnattr_setsigmask(&attributes, &none);
-    sigset_t defaults;
-    sigemptyset(&defaults);
-    sigaddset(&defaults, SIGPIPE);
-    sigaddset(&defaults, SIGTERM);
-    sigaddset(&defaults, SIGINT);
-    posix_spawnattr_setsigdefault(&attributes, &defaults);
+    DefaultSignals(attributes);
 
     std::vector<char*> argv;
     for (const auto& arg : args) {
         argv.push_back(const_cast<char*>(arg.c_str()));
     }
     argv.push_back(nullptr);
+    std::vector<std::string> env = EnvironmentFor(args[0]);
+    std::vector<char*> envp = Pointers(env);
     pid_t pid = -1;
-    const int result = posix_spawnp(&pid, argv[0], &actions, &attributes, argv.data(), environ);
+    const int result = posix_spawnp(&pid, argv[0], &actions, &attributes, argv.data(), envp.data());
     posix_spawn_file_actions_destroy(&actions);
     posix_spawnattr_destroy(&attributes);
     close(fds[1]);
@@ -446,6 +537,20 @@ std::string SelfPath() {
 #endif
 }
 
+std::string ChildEnvironmentNote() {
+    const auto& mounts = AppImageMounts();
+    if (mounts.empty()) {
+        return "";
+    }
+    const std::vector<std::string> env = ThisEnvironment();
+    std::string names;
+    for (const auto& name : Environment::Changed(env, Environment::WithoutAppImage(env, mounts))) {
+        names += (names.empty() ? "" : ", ") + name;
+    }
+    return "programs outside the AppImage (" + mounts.front() + ") start without what it added to the "
+           "environment: " + (names.empty() ? std::string("nothing") : names);
+}
+
 bool StartDetached(const std::vector<std::string>& args, std::string& error) {
     if (args.empty()) {
         error = "nothing to run";
@@ -457,36 +562,24 @@ bool StartDetached(const std::vector<std::string>& args, std::string& error) {
     posix_spawnattr_t attributes;
     posix_spawnattr_init(&attributes);
     // a process group of its own: it outlives this one
-    posix_spawnattr_setflags(&attributes, POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_SETSIGMASK);
+    posix_spawnattr_setflags(&attributes, POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_SETSIGMASK |
+                                              POSIX_SPAWN_SETSIGDEF);
     posix_spawnattr_setpgroup(&attributes, 0);
     sigset_t none;
     sigemptyset(&none);
     posix_spawnattr_setsigmask(&attributes, &none);
+    DefaultSignals(attributes);
     std::vector<char*> argv;
     for (const auto& arg : args) {
         argv.push_back(const_cast<char*>(arg.c_str()));
     }
     argv.push_back(nullptr);
-    // an AppImage's own variables stay behind: the new one mounts itself elsewhere, and this
-    // one's mount (which they point into) goes when it ends
-    const char* appdir = std::getenv("APPDIR");
-    std::vector<std::string> kept;
-    for (char** e = environ; *e; ++e) {
-        const std::string entry = *e;
-        const auto is = [&entry](const char* name) { return entry.rfind(std::string(name) + "=", 0) == 0; };
-        if (is("APPDIR") || is("APPIMAGE") || is("ARGV0") || is("OWD") ||
-            (appdir && *appdir && is("LD_LIBRARY_PATH") && entry.find(appdir) != std::string::npos)) {
-            continue;
-        }
-        kept.push_back(entry);
-    }
-    std::vector<char*> env;
-    for (auto& entry : kept) {
-        env.push_back(entry.data());
-    }
-    env.push_back(nullptr);
+    // the AppImage's variables stay behind: the new one mounts itself elsewhere, and this one's
+    // mount (which they point into) goes when it ends
+    std::vector<std::string> env = EnvironmentFor(args[0]);
+    std::vector<char*> envp = Pointers(env);
     pid_t pid = -1;
-    const int result = posix_spawnp(&pid, argv[0], &actions, &attributes, argv.data(), env.data());
+    const int result = posix_spawnp(&pid, argv[0], &actions, &attributes, argv.data(), envp.data());
     posix_spawn_file_actions_destroy(&actions);
     posix_spawnattr_destroy(&attributes);
     if (result != 0) {
@@ -518,6 +611,10 @@ bool Process::WasStopped() const {
 
 int Process::ExitCode() const {
     return impl->exit_code;
+}
+
+int Process::Signal() const {
+    return impl->end_signal;
 }
 
 std::string Process::Output() const {

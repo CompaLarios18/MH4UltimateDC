@@ -135,6 +135,39 @@ void DrawPicking(State& s) {
     ImGui::EndPopup();
 }
 
+/// The arguments as one line, quoted where they have spaces (for the log and a report).
+std::string CommandLine(const std::vector<std::string>& args) {
+    std::string line;
+    for (const auto& arg : args) {
+        if (!line.empty()) {
+            line += ' ';
+        }
+        line += arg.find_first_of(" \t") == std::string::npos ? arg : '"' + arg + '"';
+    }
+    return line;
+}
+
+/// A tool that failed, for a bug report: how it ended goes after the summary (the last line it
+/// printed), its last lines go into the log, and the window's Copy button gets the app's version,
+/// the command, how it ended and all it printed.
+void ReportFailure(Job& job, const char* tool, const std::string& command, int exit_code) {
+    const int stopped_by = job.process ? job.process->Signal() : 0;
+    const std::string how = stopped_by > 0 ? fmt::format("{} was stopped by signal {}", tool, stopped_by)
+                                           : fmt::format("{} ended with status {}", tool, exit_code);
+    job.summary = job.summary.empty() ? how : fmt::format("{} ({})", job.summary, how);
+    constexpr std::size_t TAIL = 40;
+    const std::size_t from = job.lines.size() > TAIL ? job.lines.size() - TAIL : 0;
+    LOG_ERROR(Frontend, "launcher: {}: {}; the last {} lines it printed:", how, command, job.lines.size() - from);
+    for (std::size_t i = from; i < job.lines.size(); ++i) {
+        LOG_ERROR(Frontend, "launcher: | {}", job.lines[i]);
+    }
+    job.report = fmt::format("{}\n{}\n{}\n\n", AppVersion(), command, how);
+    for (const auto& line : job.lines) {
+        job.report += line;
+        job.report += '\n';
+    }
+}
+
 void PumpJob(State& s) {
     Job& job = s.job;
     if (!job.Active() || job.finished) {
@@ -184,7 +217,10 @@ void PumpProbe(State& s) {
     s.tools_dir = tools;
     s.python = python;
     LOG_INFO(Frontend, "launcher: tools {}, Python {}", tools.empty() ? "not found" : tools,
-             python.command.empty() ? "not found" : python.version);
+             python.command.empty() ? "not found" : python.version + " (" + CommandLine(python.command) + ")");
+    if (const std::string note = ChildEnvironmentNote(); !note.empty()) {
+        LOG_INFO(Frontend, "launcher: {}", note);
+    }
     if (s.ToolsReady()) {
         RefreshMods(s);
         if (s.config.check_updates) {
@@ -474,6 +510,14 @@ void DrawJob(State& s) {
         }
         if (Ui::AccentButton("Close")) {
             close = true;
+        }
+        if (!job.report.empty()) {
+            // for a bug report: the app's version, the command, how it ended and all it printed
+            ImGui::SameLine();
+            if (ImGui::Button(job.copied ? "Copied##copy_output" : "Copy the output##copy_output")) {
+                ImGui::SetClipboardText(job.report.c_str());
+                job.copied = true;
+            }
         }
         if (ImGui::IsKeyPressed(ImGuiKey_Escape, false) || ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false)) {
             close = true;
@@ -891,16 +935,19 @@ void State::StartBuild() {
         Message("The build didn't start", error);
         return;
     }
-    LOG_INFO(Frontend, "launcher: building the code library from {}", update.content);
+    const std::string command = CommandLine(args);
+    LOG_INFO(Frontend, "launcher: building the code library: {}", command);
     job = Job{};
     job.kind = Job::Kind::Build;
     job.title = "Building the code library";
     job.cancellable = true;
     job.process = std::move(process);
-    job.on_done = [this](int exit_code, const std::string&) {
+    job.on_done = [this, command](int exit_code, const std::string&) {
         if (exit_code == 0) {
             job.summary = "The code library is built from your update and installed. The game runs "
                           "on it from now on.";
+        } else if (!job.process || !job.process->WasStopped()) {
+            ReportFailure(job, "build_game.py", command, exit_code);
         }
         LOG_INFO(Frontend, "launcher: build finished with status {}", exit_code);
         Recheck();

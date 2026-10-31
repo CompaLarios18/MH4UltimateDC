@@ -13,6 +13,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <csignal>
 #include <cstdio>
 #include <cstring>
 #include <memory>
@@ -268,6 +269,13 @@ std::string LoadError(Core::System::ResultStatus status, Core::System& system) {
 }
 
 int Run(const std::vector<std::string>& argv) {
+#ifndef _WIN32
+    // The launcher reads how the programs it starts end (a build's status). SIGCHLD ignored, as
+    // whatever started the app may leave it, would have the system reap them first (every status
+    // reads 0), and the children would inherit it: Python couldn't wait for its compilers, nor
+    // clang for its linker.
+    const bool sigchld_was_ignored = std::signal(SIGCHLD, SIG_DFL) == SIG_IGN;
+#endif
     Common::DetachedTasks detached_tasks;
     const Args args = Parse(argv);
     if (args.help || args.bad) {
@@ -294,6 +302,11 @@ int Run(const std::vector<std::string>& argv) {
 
     LOG_INFO(Frontend, "MH4U PC port app, Azahar {} | {}-{}", Common::g_build_fullname,
              Common::g_scm_branch, Common::g_scm_desc);
+#ifndef _WIN32
+    if (sigchld_was_ignored) {
+        LOG_INFO(Frontend, "SIGCHLD was ignored when the app started: back to its default");
+    }
+#endif
 
     App::Config config = App::Load();
     if (args.fullscreen >= 0) {

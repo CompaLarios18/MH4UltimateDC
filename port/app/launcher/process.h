@@ -1,6 +1,8 @@
 // Child processes for the launcher: the port's Python tools (build_game.py, mods.py) and the
 // app's own code check, with their output read as it comes and a way to stop them together
-// with whatever they started (a build runs compilers).
+// with whatever they started (a build runs compilers). On Linux a program outside the AppImage
+// the app runs from gets the environment the AppImage was started with (launcher/environment.h),
+// and every child starts with the default handling of the signals that matter to it.
 #pragma once
 
 #include <memory>
@@ -32,6 +34,9 @@ public:
     /// After the end: its exit status (-1 when it was stopped or died of a signal).
     int ExitCode() const;
 
+    /// After the end: the signal it died of, 0 if none (and when it was stopped; always on Windows).
+    int Signal() const;
+
     /// The output so far.
     std::string Output() const;
 
@@ -56,5 +61,9 @@ bool StartDetached(const std::vector<std::string>& args, std::string& error);
 
 /// This program's own executable, to run it again in a process of its own.
 std::string SelfPath();
+
+/// When this app runs from an AppImage (Linux): the variables that the programs it starts outside
+/// the AppImage don't get as the AppImage left them, for the log; "" otherwise.
+std::string ChildEnvironmentNote();
 
 } // namespace Launcher
