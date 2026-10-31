@@ -8,9 +8,9 @@
 #include <imgui.h>
 
 #include "common/settings.h"
-#include "common/string_util.h"
 #include "config.h"
 #include "input.h"
+#include "taps.h"
 
 namespace App::Ui {
 
@@ -181,10 +181,8 @@ std::vector<std::string> Keys(const std::string& spec) {
 
 /// The circle pad's keys: "W A S D" as four caps (up, left, down, right), or none.
 std::vector<std::string> StickKeys(const std::string& spec) {
-    std::vector<std::string> parts;
-    for (const std::string& part : Common::SplitString(spec, ',')) {
-        parts.push_back(Common::StripSpaces(part));
-    }
+    // (a direction left empty keeps its place, the last one too: "W,S,A," when a tap has D)
+    const std::vector<std::string> parts = Taps::StickParts(spec);
     if (parts.size() < 4) {
         return {};
     }

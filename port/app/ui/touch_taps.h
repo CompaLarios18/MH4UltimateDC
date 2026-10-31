@@ -22,7 +22,8 @@
 // The taps build the input profile again themselves (Window::RequestInputReload) once a key is set
 // or a point let go, so Changed(), not ControlsChanged(), is what the menu calls for them: while a
 // point is dragged DrawTouchTaps returns true every frame, and a profile built every frame would
-// fill the log.
+// fill the log. Until the menu draws the section, the docs (docs/PLAYING.md's 2b, FAQ.md) and the
+// template's comment (config.cpp) tell only of mh4u-app.ini's lines: name the section there too.
 #pragma once
 
 #include <string>

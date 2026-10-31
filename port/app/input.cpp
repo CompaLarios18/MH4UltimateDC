@@ -244,13 +244,14 @@ bool SameName(const std::string& a, const char* b) {
 }
 
 std::string StickKeysParam(const std::string& spec) {
-    const auto parts = Common::SplitString(spec, ',');
+    // (a direction left empty keeps its place, the last one too: "W,S,A," when a tap has D)
+    const auto parts = Taps::StickParts(spec);
     if (parts.size() < 4) {
         return "";
     }
     int codes[5] = {};
     for (std::size_t i = 0; i < 5 && i < parts.size(); ++i) {
-        codes[i] = KeyCode(Common::StripSpaces(parts[i]));
+        codes[i] = KeyCode(parts[i]);
     }
     if (!codes[0] && !codes[1] && !codes[2] && !codes[3]) {
         return "";

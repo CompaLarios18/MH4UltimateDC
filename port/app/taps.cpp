@@ -65,9 +65,29 @@ bool RemoveFrom(std::string& keys, const std::string& key) {
     return true;
 }
 
+/// `text` without a ; that mh4u-app.ini's reader (inih) would take for the start of a comment, one
+/// after a space or first: the spaces before a ; go, and so does a ; with only spaces before it
+/// ("Potion ; big" -> "Potion; big").
+std::string IniSafe(const std::string& text) {
+    std::string safe;
+    for (const char c : text) {
+        if (c == ';') {
+            // (inih's own test for a space)
+            while (!safe.empty() && std::isspace(static_cast<unsigned char>(safe.back()))) {
+                safe.pop_back();
+            }
+            if (safe.empty()) {
+                continue;
+            }
+        }
+        safe += c;
+    }
+    return safe;
+}
+
 /// Takes `key` out of a stick's keys, its direction left empty: "W,S,A,D" -> "W,S,,D".
 bool RemoveFromStick(std::string& keys, const std::string& key) {
-    std::vector<std::string> parts = Split(keys, ',');
+    std::vector<std::string> parts = StickParts(keys);
     bool removed = false;
     for (std::string& part : parts) {
         if (Same(part, key)) {
@@ -129,9 +149,14 @@ bool Parse(const std::string& line, Tap& tap) {
 }
 
 std::string Format(const Tap& tap) {
-    std::string line = tap.keys.empty() ? "@ " : tap.keys + " @ ";
+    // the ; key right after a |, which Names reads past: "Z | ;" -> "Z |;", ";" -> "|;"
+    std::string keys = Join(Names(tap.keys));
+    if (!keys.empty() && keys.front() == ';') {
+        keys.insert(0, "|");
+    }
+    std::string line = keys.empty() ? "@ " : IniSafe(keys) + " @ ";
     line += std::to_string(std::clamp(tap.x, 0, WIDTH - 1)) + " " + std::to_string(std::clamp(tap.y, 0, HEIGHT - 1));
-    if (const std::string name = Strip(tap.name); !name.empty()) {
+    if (const std::string name = Strip(IniSafe(tap.name)); !name.empty()) {
         line += " " + name;
     }
     return line;
@@ -172,6 +197,13 @@ std::string WithKey(const std::string& keys, int slot, const std::string& key) {
         names.push_back(key);
     }
     return Join(names);
+}
+
+std::vector<std::string> StickParts(const std::string& keys) {
+    if (Strip(keys).empty()) {
+        return {};
+    }
+    return Split(keys, ',');
 }
 
 bool IsOwn(const Others& others, const std::string& key) {

@@ -409,8 +409,9 @@ fast_forward_hold = {}
 # (x 0-319 from its left edge, y 0-239 from its top edge, in its own pixels), say an item
 # shortcut or a panel; a name after the point is what the key guides show. Up to 8, touch_tap_1
 # to touch_tap_8, e.g. touch_tap_1 = Z @ 52 220 Mega potion (keys as for a 3DS button, F | Z for
-# two); the menu's Controls tab sets them. A key on a tap leaves the other inputs it was on (the
-# app's own keys above stay theirs); the mouse touching the screen comes first
+# two; the ; key as |;, since a ; after a space starts a comment). A key on a tap leaves the
+# other inputs it was on (the app's own keys above stay theirs); the mouse touching the screen
+# comes first
 {}
 [Multiplayer]
 # MH4U's local play over the internet, through a room (Azahar's network rooms; docs/SERVER.md).

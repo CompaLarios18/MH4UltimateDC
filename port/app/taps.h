@@ -30,7 +30,9 @@ struct Tap {
 /// A tap from its line, "KEYS @ X Y [NAME]" (X and Y apart by spaces or a comma, each kept to the
 /// screen); false when the line has no point.
 bool Parse(const std::string& line, Tap& tap);
-/// A tap's line: "Z @ 52 220 Mega potion", "@ 160 120" for one without keys.
+/// A tap's line: "Z @ 52 220 Mega potion", "@ 160 120" for one without keys. mh4u-app.ini's reader
+/// (inih) takes a ; that comes first or after a space for the start of a comment, so the line has
+/// none: the ; key goes right after a | ("Z |;", "|;" alone), and a name's ; after no space.
 std::string Format(const Tap& tap);
 
 /// A binding's key names: "F | Mouse Right" -> {"F", "Mouse Right"} (empty ones left out).
@@ -42,6 +44,11 @@ bool Same(const std::string& a, const std::string& b);
 /// `keys` with its `slot`th key (the menu's columns) set to `key`; an empty `key` takes that one
 /// out, and the keys after it move up.
 std::string WithKey(const std::string& keys, int slot, const std::string& key);
+/// A stick's keys, "up,down,left,right[,half way]", as its parts in their places, each stripped and
+/// an empty one kept, the last after a comma too: "W,S,A," (D on a tap) -> {"W", "S", "A", ""};
+/// none for an empty string. The app reads a stick's keys with it (input.cpp, the key guides):
+/// Azahar's SplitString drops that last part, and three parts would leave the stick no keys at all.
+std::vector<std::string> StickParts(const std::string& keys);
 
 /// The app's other settings with keys, for the rule. The bindings (a 3DS button's, the item bar's,
 /// the stylus key: "F | Mouse Right") and the sticks ("W,S,A,D,Left Shift") give a key up to a

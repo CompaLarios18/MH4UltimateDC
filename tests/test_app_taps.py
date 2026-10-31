@@ -1,8 +1,8 @@
 """port/app/taps.cpp: the app's touch taps (mh4u-app.ini's touch_tap_1 to touch_tap_8, "Z @ 52 220
 Mega potion"): keys that touch the touch screen at a point while they are held. How a tap's line is
-read and written, and the rule that keeps a key on one input only: a tap's key leaves the other
-bindings (a stick's direction keeps its place), the app's own keys stay theirs, and a key on two
-taps stays on the first."""
+read and written (so that mh4u-app.ini keeps it), and the rule that keeps a key on one input only: a
+tap's key leaves the other bindings (a stick's direction keeps its place, as the app reads a stick's
+keys), the app's own keys stay theirs, and a key on two taps stays on the first."""
 from __future__ import annotations
 
 import os
@@ -34,6 +34,7 @@ static bool Starts(const std::string& s, const char* prefix) {
 // parse LINE: "keys<TAB>x<TAB>y<TAB>name", or "invalid"
 // format KEYS X Y NAME: the tap's line
 // withkey KEYS SLOT KEY, same A B: what they give
+// stickparts KEYS: a stick's parts as the app reads them, a line each in [ ]
 // scenario ITEM... ACTION: items tap=LINE, bind=NAME=KEYS, stick=NAME=KEYS, own=KEYS; the action
 //   settle, give=TAP,SLOT,KEY, release=KEY or isown=KEY; then "log: ..." lines (settle), "had: 0/1"
 //   (release), "own: 0/1" (isown), and the taps, bindings and sticks after it
@@ -63,6 +64,12 @@ int main(int argc, char** argv) {
     }
     if (mode == "same") {
         std::printf("%d\n", Same(argv[2], argv[3]) ? 1 : 0);
+        return 0;
+    }
+    if (mode == "stickparts") {
+        for (const std::string& part : StickParts(argv[2])) {
+            std::printf("[%s]\n", part.c_str());
+        }
         return 0;
     }
     std::vector<Tap> taps;
@@ -151,6 +158,21 @@ def scenario(driver, *items):
     return run(driver, "scenario", *items)
 
 
+def stick_parts(driver, keys):
+    return [line[1:-1] for line in run(driver, "stickparts", keys)]
+
+
+def ini_reads(value):
+    """What mh4u-app.ini's reader (inih with its default options, as Azahar builds it) gives for the
+    line "touch_tap_1 = VALUE": a ; after a space, counted from right after the =, starts a comment
+    (ini.c's ini_find_chars_or_comment), and the value is stripped."""
+    text = " " + value
+    for i in range(1, len(text)):
+        if text[i] == ";" and text[i - 1].isspace():
+            return text[:i].strip()
+    return text.strip()
+
+
 def test_a_tap_is_keys_a_point_and_a_name(driver):
     assert parse(driver, "Z @ 52 220") == ("Z", 52, 220, "")
     assert parse(driver, "F | Mouse Right @ 10 20 Mega potion") == ("F | Mouse Right", 10, 20, "Mega potion")
@@ -188,6 +210,21 @@ def test_format_writes_what_parse_reads(driver):
         assert run(driver, "format", keys, str(x), str(y), name) == [line]
 
 
+def test_a_semicolon_survives_mh4u_app_ini(driver):
+    # ; is a key (the C-stick's right as they come), but after a space mh4u-app.ini takes it for the
+    # start of a comment: "Z | ; @ 52 220" would come back as "Z |", a tap without its point
+    assert ini_reads("Z | ; @ 52 220") == "Z |"
+    # so the ; key goes right after a |, and a name's ; after no space
+    assert run(driver, "format", "Z | ;", "52", "220", "Mega potion") == ["Z |; @ 52 220 Mega potion"]
+    assert run(driver, "format", "; | Z", "1", "2", "") == ["|; | Z @ 1 2"]
+    assert run(driver, "format", ";", "3", "4", "Potion ; big") == ["|; @ 3 4 Potion; big"]
+    assert run(driver, "format", "Z", "5", "6", " ; first") == ["Z @ 5 6 first"]
+    for keys, name in [("Z | ;", "Mega potion"), ("; | Z", ""), (";", "Potion; big"), ("Z", "first")]:
+        line = run(driver, "format", keys, "1", "2", name)[0]
+        assert ini_reads(line) == line
+        assert parse(driver, ini_reads(line)) == (keys, 1, 2, name)
+
+
 def test_with_key_sets_a_column(driver):
     assert run(driver, "withkey", "F | Mouse Right", "0", "G") == ["G | Mouse Right"]
     assert run(driver, "withkey", "F | Mouse Right", "1", "") == ["F"]
@@ -215,6 +252,27 @@ def test_settle_a_stick_direction_keeps_its_place(driver):
     assert "stick circle_pad: W,S,,D" in out  # (no half-way key left: no fifth part)
     assert "stick c_stick: O,L,K," in out
     assert "log: touch_tap_2 takes Left Shift from circle_pad" in out
+    # as the app reads them (input.cpp, the key guides): four directions, the one taken empty
+    assert stick_parts(driver, "W,S,,D") == ["W", "S", "", "D"]
+    assert stick_parts(driver, "O,L,K,") == ["O", "L", "K", ""]
+
+
+def test_settle_a_tap_on_a_sticks_right_leaves_its_other_directions(driver):
+    # the keys as they come: D on a tap, and W, S and A still move (and ; on one, O, L and K turn)
+    for key, stick, left in [("D", "circle_pad", ["W", "S", "A", ""]), (";", "c_stick", ["O", "L", "K", ""])]:
+        out = scenario(driver, f"tap={key} @ 1 2", "stick=circle_pad=W,S,A,D", "stick=c_stick=O,L,K,;",
+                       "settle")
+        keys = next(line for line in out if line.startswith(f"stick {stick}: ")).split(": ", 1)[1]
+        assert stick_parts(driver, keys) == left
+
+
+def test_a_sticks_keys_as_the_app_reads_them(driver):
+    assert stick_parts(driver, "W,S,A,D,Left Shift") == ["W", "S", "A", "D", "Left Shift"]
+    assert stick_parts(driver, " O , L ,K,; ") == ["O", "L", "K", ";"]
+    # a direction left empty keeps its place, the last one too (Azahar's SplitString drops that one)
+    assert stick_parts(driver, "W,S,A,") == ["W", "S", "A", ""]
+    assert stick_parts(driver, "W,S,A,,") == ["W", "S", "A", "", ""]
+    assert stick_parts(driver, "") == []
 
 
 def test_settle_the_apps_own_keys_leave_the_taps(driver):

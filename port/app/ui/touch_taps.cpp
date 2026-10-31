@@ -107,9 +107,14 @@ bool DrawTouchTaps(Layer& layer) {
 
             ImGui::TableSetColumnIndex(1);
             ImGui::SetNextItemWidth(-FLT_MIN);
-            char name[40] = {};
-            tap.name.copy(name, sizeof(name) - 1);
-            if (ImGui::InputTextWithHint("##name", "what it touches", name, sizeof(name))) {
+            // (a longer name from mh4u-app.ini is cut where a character ends, not inside one)
+            char name[64] = {};
+            std::size_t length = std::min(tap.name.size(), sizeof(name) - 1);
+            while (length > 0 && (static_cast<unsigned char>(tap.name[length]) & 0xC0) == 0x80) {
+                --length;
+            }
+            tap.name.copy(name, length);
+            if (ImGui::InputTextWithHint("##name", "e.g. Potion", name, sizeof(name))) {
                 tap.name = name;
                 changed = true;
             }
