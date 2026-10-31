@@ -5,8 +5,10 @@
 
 #include <array>
 #include <string>
+#include <vector>
 
 #include "common/settings.h"
+#include "taps.h"
 
 namespace App {
 
@@ -83,6 +85,9 @@ struct Config {
     /// are in use: off, top-left, top-right, bottom-left, bottom-right
     std::string key_guides = "bottom-left";
     std::string key_guides_key = "F1";     ///< shows and hides them
+    /// Touch taps (taps.h): while one of a tap's keys is held, the touch screen is touched at its
+    /// point (touch_tap_1 = Z @ 52 220, up to Taps::MAX). None as they come
+    std::vector<Taps::Tap> touch_taps;
 
     // [Multiplayer]
     std::string nickname;             ///< empty: the console's user name
@@ -124,6 +129,16 @@ Config Load();
 
 /// Writes the settings back (the game's path after it was chosen, say), keeping the comments.
 void Save(const Config& config);
+
+/// The settings `config` keeps keys in besides the touch taps, for their one-key-one-input rule
+/// (taps.h): the 3DS buttons' and sticks' keys, the item bar's and the stylus key give a key up
+/// to a tap; Esc and the window's own keys (full screen, ..., fast forward) don't.
+Taps::Others TapOthers(Config& config);
+
+/// The rule for the taps as a settings file has them (taps.h, Settle): they keep their keys, which
+/// leave the other bindings. Load does it, and the menu after Reset to the defaults. Lines for the
+/// log.
+std::vector<std::string> SettleTouchTaps(Config& config);
 
 /// Azahar's settings for these choices (renderer, screens, sound, input profile).
 void Apply(const Config& config);

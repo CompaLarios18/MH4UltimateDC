@@ -24,7 +24,7 @@ constexpr const char* MOUSE_MOVE = "#mouse-move";  ///< the mouse moving: the ca
 struct GuideRow {
     const char* button;              ///< the 3DS button the game's prompts show, "" for none
     std::vector<std::string> keys;   ///< key names as mh4u-app.ini has them (or MOUSE_MOVE)
-    const char* label;
+    std::string label;
 };
 
 /// A short name on a key cap.
@@ -170,8 +170,8 @@ void DrawRow(const GuideRow& row, float h, float keys_width, float button_width)
         DrawButton(dl, ImVec2(x, at.y + h * 0.1f), h * 0.8f, row.button);
     }
     x += button_width + gap * 1.5f;
-    const ImVec2 size = ImGui::CalcTextSize(row.label);
-    dl->AddText(ImVec2(x, at.y + (h - size.y) * 0.5f), IM_COL32(235, 232, 225, 255), row.label);
+    const ImVec2 size = ImGui::CalcTextSize(row.label.c_str());
+    dl->AddText(ImVec2(x, at.y + (h - size.y) * 0.5f), IM_COL32(235, 232, 225, 255), row.label.c_str());
     ImGui::Dummy(ImVec2(x + size.x - at.x, h));
 }
 
@@ -219,13 +219,20 @@ std::vector<GuideRow> Rows(const Config& c) {
         {"ZL", key(NativeButton::ZL), "Target monster"},
         {"ZR", key(NativeButton::ZR), "Kick / skip"},
         {"START", key(NativeButton::Start), "Game menu"},
+    };
+    // the touch taps (taps.h): what each touches, by its name or its point
+    for (const Taps::Tap& tap : c.touch_taps) {
+        rows.push_back({"", Keys(tap.keys),
+                        tap.name.empty() ? "Touch " + std::to_string(tap.x) + ", " + std::to_string(tap.y) : tap.name});
+    }
+    rows.insert(rows.end(), {
         {"", Keys(c.touch_screen_key), "Map / touch screen"},
         {"", Keys(c.stylus_key), "Hold: mouse on the touch screen"},
         {"", Keys(c.pause_key), "Pause"},
         {"", Keys(c.fast_forward_key), c.fast_forward_hold ? "Hold: fast forward" : "Fast forward"},
         {"", {"Escape"}, "Port menu"},
         {"", Keys(c.key_guides_key), "Hide these keys"},
-    };
+    });
     // only rows with a key
     rows.erase(std::remove_if(rows.begin(), rows.end(), [](const GuideRow& r) { return r.keys.empty(); }),
                rows.end());

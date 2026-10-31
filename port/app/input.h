@@ -29,8 +29,9 @@ inline constexpr int MACRO_KEY = 0x1100;
 void Register();
 
 /// Settings::values.current_input_profile from the config's keys, the first controller found
-/// (controller = auto) and any full parameters. Call again when a controller comes or goes,
-/// then reload the input devices.
+/// (controller = auto) and any full parameters, and the touch taps (taps.h) as Azahar's
+/// touch-from-button map. Call again when a controller comes or goes, then reload the input
+/// devices.
 void BuildProfile(const Config& config);
 
 /// The code for a key or mouse name ("W", "Left Shift", "F12", "Mouse Right", "Wheel Up"), 0
@@ -71,9 +72,13 @@ void MouseReset();
 /// The wheel turned while the mouse is the camera: `code` is WHEEL_UP, ... A wheel bound to the
 /// item bar (item_prev / item_next) scrolls it; any other is pressed for a moment like a key.
 void Wheel(const Config& config, int code);
-/// Once a frame: the mouse's push on the C-stick from its speed, and the timed presses (the
-/// item bar's L+Y / L+A, the wheel's).
+/// Once a frame: the mouse's push on the C-stick from its speed, the timed presses (the item
+/// bar's L+Y / L+A, the wheel's), and where the stylus touches.
 void Tick(const Config& config);
+
+/// Where the stylus (the mouse, a finger) last touched the touch screen, in its pixels; false
+/// until it has. The menu's touch taps take a point from it.
+bool LastTouch(int& x, int& y);
 
 } // namespace Input
 } // namespace App
