@@ -1008,7 +1008,11 @@ TEST_CASE("glsl/the_text_the_product_embeds_is_the_text_of_the_file_and_of_the_t
     if (in) {
         std::stringstream contents;
         contents << in.rdbuf();
-        CHECK(contents.str() == std::string(text));
+        // A Windows checkout with core.autocrlf=true has CRLF in the file, and the C++ compilers read a raw string literal's
+        // CRLF as LF, so the embedded text is the file's with LF only (native-windows and app-windows failed on this line).
+        std::string file_text = contents.str();
+        file_text.erase(std::remove(file_text.begin(), file_text.end(), '\r'), file_text.end());
+        CHECK(file_text == std::string(text));
     } else {
         test::SkipCase("output_stage.glsl is not at " + file.string() + " (the tree moved since the test was built)");
     }
