@@ -1,10 +1,10 @@
 # mh4n_gpu_cpuvertex: the CPU shader runner (N2-36). Runs the vertex shader and the geometry shader
 # of the draws Azahar does not accelerate on the CPU, as Azahar's PicaCore::DrawArrays and
 # DrawImmediate do, and returns the output vertices that the primitive assembler (N2-37) turns into
-# triangles. The runner has no backend and no device; the API is the header comment of cpu_vertex.h.
+# triangles. No backend and no device; the API is the header comment of cpu_vertex.h.
 # N2-37 adds the primitive assembler, the quaternion fix-up, the streamed triangle batch and the trivial
 # vertex stage (primitive_assembly.h, triangle_batch.h, trivial_vertex.h); the batch uses rhi::Ring and
-# rhi::VertexLayout, hence the dependency on the backend core.
+# rhi::VertexLayout, hence the dependency on the backend core (the runner itself still has no device).
 mh4n_module(
     SOURCES
         cpu_vertex.cpp

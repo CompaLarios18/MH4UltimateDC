@@ -1,4 +1,6 @@
 #version 450
+// Derived from Azahar src/video_core/shader/generator/glsl_fs_shader_gen.cpp (FragmentModule::DefineInterface) at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-3.0-or-later: the file says "Licensed under GPLv3 or any later version")
+// Copyright 2023-2026 Citra Emulator Project / Azahar Emulator Project (glsl_fs_shader_gen.cpp)
 // Writes one of the seven varyings of the trivial vertex stage (locations 1 to 7, as the translated
 // vertex stage and the fragment generator declare them) to the colour output; SHOW is the expression.
 layout(location = 1) in vec4 primary_color;

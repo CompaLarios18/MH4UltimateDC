@@ -76,16 +76,19 @@
 // The batch's space in the ring: UploadBatch calls Ring::Map and Ring::Commit, so the draw's recorder
 // must be open on the calling thread; the ring then reuses that space once the submission of that
 // recorder has passed (rhi.h, Ring). Do not touch the space again; do not keep the buffer's pointer
-// past the submission. A ring too small for one batch fails with the Ring's message (a batch is
-// 88 bytes per vertex, 264 per triangle: size the ring for the largest draw, at least 16M vertices
-// are not expected). Check the device's `Capabilities::stride_alignment` divides
-// kHardwareVertexStride (88): true for 1, 2, 4 and 8.
+// past the submission. Create the ring with BufferUsage::Vertex. A batch is 88 bytes per vertex, 264
+// per triangle, and the ring must hold every batch of one recorder: when it wraps onto space committed
+// by a recorder that is not yet submitted, Ring::Map fails ("the ring is full of space committed in a
+// recorder that has not been submitted") and so does a batch larger than the ring; UploadBatch then
+// returns that error and writes nothing. So size the ring for the batches of a recorder, or submit
+// before it runs out. CreateGraphicsPipeline rejects the stride 88 when `Capabilities::stride_alignment`
+// does not divide it (true for 1, 2, 4 and 8): N2-08 checks kHardwareVertexStride against it.
 //
 // The fix-up (Azahar's AddTriangle): vertex 0 of a triangle is never flagged; vertex 1 and vertex 2
 // are flagged when the dot product of their quaternion with vertex 0's quaternion is below 0. The dot
 // product is Azahar's `Common::Dot` on `Vec4f`, in float: ((a.x*b.x + a.y*b.y) + a.z*b.z) + a.w*b.w
 // with no fused multiply-add (the x86 and generic path; Azahar's AArch64 path sums the four products
-// pairwise, which can differ in the last bit and so only for a dot product that rounds to 0). A zero
+// pairwise ((p0+p1)+(p2+p3)), and 32-bit ARM NEON as (p2+p0)+(p3+p1); both can differ in the last bit and so only for a dot product that rounds to 0). A zero
 // dot product and a NaN are not flagged. A flagged vertex has its quaternion negated lane by lane in
 // the batch (HardwareVertex's `normquat = -normquat`; a 0 lane becomes -0).
 #pragma once

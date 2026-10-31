@@ -188,6 +188,11 @@ TEST_CASE("assembler/shader topology: the flag is cleared by the triangle it fli
     CHECK(Assemble(a, Stream(6, {0})) == std::vector<Tri>{{1, 0, 2}, {3, 4, 5}});
 }
 
+TEST_CASE("assembler/a duplicate winding position does not hold back the later events") {
+    PrimitiveAssembler a(Topology::Shader);
+    CHECK(Assemble(a, Stream(6, {0, 0, 3})) == std::vector<Tri>{{1, 0, 2}, {4, 3, 5}});
+}
+
 TEST_CASE("assembler/shader topology: a winding event before a later vertex of the triangle applies at its third vertex") {
     // SetWinding before vertex 1 (the second of triangle 0): the flag is only read when the third arrives.
     PrimitiveAssembler a(Topology::Shader);
@@ -207,7 +212,7 @@ TEST_CASE("assembler/list, strip and fan ignore the winding flag, and it stays s
     CHECK(Assemble(fan, Stream(4, {2})) == std::vector<Tri>{{0, 1, 2}, {0, 2, 3}});
 }
 
-TEST_CASE("assembler/the flag of a List assembler survives to a Shader topology only through SetWinding, not Reset") {
+TEST_CASE("assembler/Reset clears the winding flag") {
     PrimitiveAssembler a(Topology::Shader);
     a.SetWinding();
     a.Reset(); // clears the flag
@@ -230,7 +235,7 @@ TEST_CASE("assembler/reset and reconfigure empty the buffer") {
     CHECK(a.GetTopology() == Topology::Fan);
 }
 
-TEST_CASE("assembler/SubmitVertex hands the handler the buffered vertices by value of the submitted ones") {
+TEST_CASE("assembler/SubmitVertex hands the handler the three vertices of a List triangle") {
     PrimitiveAssembler a(Topology::List);
     Collector c;
     a.SubmitVertex(Id(5), c);
@@ -632,6 +637,7 @@ struct Rig {
     std::shared_ptr<Image> target;
     std::vector<std::shared_ptr<Buffer>> readbacks;
     std::vector<std::shared_ptr<Pipeline>> pipelines;
+    std::vector<u64> offsets; // the ring offset of every batch drawn
 
     static BindingSetDesc SetDesc() {
         BindingSetDesc desc;
@@ -669,8 +675,8 @@ struct Rig {
     }
 
     // VertexUniformData: enable_clip1, flip_viewport, 2 words of padding, clip_coef.
-    void SetVertexUniforms(bool enable_clip1, std::array<float, 4> clip_coef) {
-        u32 words[8] = {enable_clip1 ? 1u : 0u, 0, 0, 0, 0, 0, 0, 0};
+    void SetVertexUniforms(bool enable_clip1, std::array<float, 4> clip_coef, bool flip_viewport = false) {
+        u32 words[8] = {enable_clip1 ? 1u : 0u, flip_viewport ? 1u : 0u, 0, 0, 0, 0, 0, 0};
         std::memcpy(words + 4, clip_coef.data(), sizeof(clip_coef));
         std::memcpy(vertex_uniforms->Mapped().data(), words, sizeof(words));
         vertex_uniforms->Flush(0, sizeof(words));
@@ -692,10 +698,11 @@ struct Rig {
     }
 
     // Draws the batch with `pipeline` into the target (cleared to opaque black) and returns the 8x8 RGBA8 pixels.
-    std::vector<u8> Draw(const Pipeline& pipeline, const TriangleBatch& batch) {
+    std::vector<u8> Draw(const Pipeline& pipeline, const TriangleBatch& batch, bool read = true) {
         Recorder rec = backend->BeginRecording();
         Result<StreamedBatch> streamed = UploadBatch(*ring, batch);
         REQUIRE_MESSAGE(streamed.ok(), streamed.error());
+        offsets.push_back(streamed->offset);
         TargetPassDesc pass;
         pass.color = target.get();
         pass.color_load = LoadOp::Clear;
@@ -708,7 +715,7 @@ struct Rig {
         rec.SetVertexBuffers(0, std::span<const VertexBufferBinding>(&binding, 1));
         rec.Draw(streamed->vertex_count);
         backend->Submit(std::move(rec));
-        return ReadBack();
+        return read ? ReadBack() : std::vector<u8>{};
     }
 
     std::vector<u8> ReadBack() {
@@ -940,7 +947,6 @@ TEST_CASE("draw/many draws over a small ring: the space is reused once its submi
     Rig rig;
     if (!rig.Init(1024)) return;
     const std::shared_ptr<Pipeline> pipeline = rig.MakePipeline(false, Spv(spv_show_primary_color));
-    bool wrapped = false;
     for (int i = 0; i < 12; ++i) {
         OutputVertex v[3] = {Corner(0), Corner(1), Corner(2)};
         const float level = 0.2f * static_cast<float>(i % 5 + 1); // 0.2 .. 1.0 -> 51 .. 255
@@ -952,7 +958,48 @@ TEST_CASE("draw/many draws over a small ring: the space is reused once its submi
         const u8 blue = static_cast<u8>(255 - red);
         CHECK_MESSAGE(Px(pixels, 0, 0) == Rgba(red, 0, blue, 255), "draw " << i);
         CHECK_MESSAGE(Px(pixels, 7, 7) == Rgba(0, 0, 0, 255), "draw " << i);
-        wrapped = wrapped || i >= 3;
     }
-    CHECK(wrapped);
+    // Each draw above waited, so the ring was empty at the next one and started at 0 again. Now 12 draws
+    // without a wait: 12 x 272 bytes cannot fit a 1024-byte ring in increasing offsets, so some batch must
+    // start below its predecessor (the ring wrapped, or rewound after its earlier submissions passed).
+    rig.offsets.clear();
+    for (int i = 0; i < 12; ++i) {
+        OutputVertex v[3] = {Corner(0), Corner(1), Corner(2)};
+        for (OutputVertex& x : v) { x.color[0] = 1.0f; x.color[1] = 0.0f; x.color[2] = 0.0f; x.color[3] = 1.0f; }
+        rig.Draw(*pipeline, CornerTriangle(v[0], v[1], v[2]), false);
+    }
+    REQUIRE(rig.offsets.size() == 12);
+    bool restarted = false;
+    for (size_t i = 0; i < rig.offsets.size(); ++i) {
+        CHECK(rig.offsets[i] + 264 <= 1024);
+        restarted = restarted || (i > 0 && rig.offsets[i] < rig.offsets[i - 1]);
+    }
+    CHECK(restarted);
+    CHECK(Px(rig.ReadBack(), 0, 0) == Rgba(255, 0, 0, 255));}
+
+TEST_CASE("draw/flip_viewport mirrors the triangle vertically") {
+    Rig rig;
+    if (!rig.Init()) return;
+    const std::shared_ptr<Pipeline> pipeline = rig.MakePipeline(false, Spv(spv_show_primary_color));
+    rig.SetVertexUniforms(false, {0, 0, 0, 0}, true);
+    // y is negated: the corner triangle sits at the bottom-left, pixel (x, y) is inside iff x + (7 - y) <= 3
+    const std::vector<u8> pixels = rig.Draw(*pipeline, CornerTriangle(Corner(0), Corner(1), Corner(2)));
+    for (u32 y = 0; y < kSize; ++y) {
+        for (u32 x = 0; x < kSize; ++x) {
+            CHECK_MESSAGE(Px(pixels, x, y) == (x + (7 - y) <= 3 ? Rgba(51, 102, 153, 204) : Rgba(0, 0, 0, 255)),
+                          "pixel " << x << "," << y);
+        }
+    }
+    rig.SetVertexUniforms(false, {0, 0, 0, 0});
+}
+
+TEST_CASE("draw/a ring smaller than the batch fails in UploadBatch and writes nothing") {
+    Rig rig;
+    if (!rig.Init(256)) return; // 264 bytes do not fit
+    Recorder rec = rig.backend->BeginRecording();
+    rhi::Result<StreamedBatch> r = UploadBatch(*rig.ring, CornerTriangle(Corner(0), Corner(1), Corner(2)));
+    CHECK_FALSE(r.ok());
+    CHECK_FALSE(r.error().empty());
+    rig.backend->Submit(std::move(rec));
+    rig.backend->WaitIdle();
 }

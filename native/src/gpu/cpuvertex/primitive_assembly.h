@@ -106,7 +106,7 @@ public:
     void SubmitStream(const OutputStream& stream, Handler&& triangle_handler) {
         size_t next_winding = 0;
         for (size_t p = 0; p < stream.vertices.size(); ++p) {
-            if (next_winding < stream.winding_before.size() && stream.winding_before[next_winding] == p) {
+            while (next_winding < stream.winding_before.size() && stream.winding_before[next_winding] == p) {
                 SetWinding();
                 ++next_winding;
             }
