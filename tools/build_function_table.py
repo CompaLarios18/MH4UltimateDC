@@ -9,7 +9,7 @@ category and a hand-set todo or replace (set by hand, they follow the new catego
 
 Columns: address, size, mode, category, name, status, batch, notes
   category  runtime   named as a C runtime, C library or compiler helper function (RUNTIME_NAMES,
-                      RUNTIME_NAME_PREFIXES); the name wins over an svc
+                      RUNTIME_NAME_PREFIXES); the name wins over an svc or a DTI call
             sdk       contains a system call (svc), or is named as a Nintendo SDK function
                       (SDK_NAME_PREFIXES); with --propagate-sdk also a function whose direct
                       calls (ARM BL) all go to sdk or runtime functions, one at least to sdk
