@@ -77,6 +77,8 @@ struct Job {
     bool quit_after = false;         ///< ... and chose to stop it and quit
     /// What Cancel asks, and its two answers (a build's, when empty)
     std::string stop_question, keep_label, stop_label;
+    std::string report;              ///< a failed build's output for a bug report (Copy the output)
+    bool copied = false;             ///< ... copied to the clipboard
     std::function<void(int exit_code, const std::string& output)> on_done;
     bool Active() const {
         return kind != Kind::None;

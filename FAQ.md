@@ -77,3 +77,6 @@ The pack comes straight from its author's Dropbox, which pauses shared links for
 
 **How do I report a bug?**
 Open an issue, say what you did and what happened, and attach `mh4u_log.txt` from Azahar's log folder: `%APPDATA%\Azahar\log` on Windows, the `log` folder inside Azahar's user folder elsewhere. Close the game first: the log is written in a buffer, and it's overwritten the next time the game starts.
+
+**The launcher can't build the code library**
+The line under the build's progress bar says how it ended, and *Copy the output* copies all the build printed, with the app's version: paste it in an issue (the log has its last lines too). Read it first: when a file didn't compile, the compiler quotes the lines of recompiled code it stopped at, and that code is made from the game's, so leave those lines out (of the log too). Meanwhile the package's `build-code-library.sh` runs the same build from a terminal on Linux (`Build code library.command` on a Mac, `Build code library.bat` on Windows).
