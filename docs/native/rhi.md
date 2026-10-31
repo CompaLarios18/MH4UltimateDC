@@ -21,7 +21,8 @@ All under `native/third_party/rhi/` ([`README.md`](../../native/third_party/rhi/
 | `plume/pristine/` | plume at **`0ce184b19270e49236afbb74052a6b267494b86b`**, unmodified, at upstream paths: `plume_vulkan.cpp`, `plume_vulkan.h`, the three shared headers (`plume_render_interface.h`, `_builders.h`, `_types.h`) and `LICENSE` (MIT, "Copyright (c) 2024 renderbag and contributors"). The trim is by file: the D3D12 and Metal sources, `plume_apple.*`, `metal-cpp`, D3D12MA, the examples and plume's `contrib/Vulkan-Headers` are not vendored. |
 | `plume/patches/` | `NN-<name>.diff`, 01 to 12: [the list with one line each](../../native/third_party/rhi/plume/README.md#the-patches). 01 to 07 are the files of `docs/research/rhi-spike-evidence/patches/` byte for byte; 08 to 11 were written in N2-25 and 12 in N2-29. |
 | `plume/patched/` | `pristine/` with every patch applied: what the build compiles. Committed, so a build needs no `git` or `patch`. Includes `mh4n_patch_list.h` (the pinned commit and the patch names). |
-| `volk/`, `vma/` | volk (`be3dbd49bf77052665e96b6c7484af855e7e5f67`) and VulkanMemoryAllocator (`29b35ea4232688c0f42cdff0c10848290760a417`), the commits plume's `contrib/` submodules name. |
+| `volk/` | volk (`be3dbd49bf77052665e96b6c7484af855e7e5f67`), the commit plume's `contrib/volk` names, unmodified. |
+| `vma/pristine/`, `vma/patches/`, `vma/patched/` | VulkanMemoryAllocator at **`29b35ea4232688c0f42cdff0c10848290760a417`**, the commit plume's `contrib/VulkanMemoryAllocator` names, in plume's layout ([`vma/README.md`](../../native/third_party/rhi/vma/README.md)): `vk_mem_alloc.h` and `LICENSE.txt` unmodified in `pristine/`; numbered patches of ours in `patches/`, 01 being upstream's fix `4f68795` cherry-picked ([below](#the-threadsanitizer-job)); `patched/`, what the build includes (`${MH4N_RHI_DIR}/vma/patched`), with no `mh4n_patch_list.h`. |
 
 One volk, one VMA, one copy of the Vulkan headers: `patched/plume_vulkan.cpp` is the only translation unit that defines
 `VOLK_IMPLEMENTATION` and `VMA_IMPLEMENTATION` (a pytest checks it); the headers are `native/third_party/vulkan/`
@@ -29,7 +30,7 @@ One volk, one VMA, one copy of the Vulkan headers: `patched/plume_vulkan.cpp` is
 against v1.3.296 unchanged. No `VK_USE_PLATFORM_*` is defined anywhere.
 
 The build is `native/src/gpu/backend/plume/` (module `mh4n_gpu_backend_plume`): the static library `mh4n_rhi_plume` (the
-patched Vulkan backend with volk and VMA, warnings off, C++17 for plume's files, `PLUME_EXTERNAL_SURFACE_ONLY` defined)
+patched Vulkan backend with volk and the patched VMA, warnings off, C++17 for plume's files, `PLUME_EXTERNAL_SURFACE_ONLY` defined)
 and `vendor_info.cpp`, whose `mh4n::gpu::backend::plume::VendorInfo()` returns the commit and patch names for logs. Inside
 `namespace mh4n::gpu::backend::plume`, `plume::X` names that namespace, so spell plume's own types `::plume::X`. Nothing runs
 at static initialisation and nothing loads Vulkan until an instance is created (`volkInitialize`, in
@@ -38,22 +39,29 @@ at static initialisation and nothing loads Vulkan until an instance is created (
 
 ## The patch queue
 
+There are two queues with the same layout and rules, `native/third_party/rhi/plume/` and `native/third_party/rhi/vma/`:
+
 ```
-python3 tools/native/rhi_patches.py apply    # pristine/ + patches/ -> patched/ (and patched/mh4n_patch_list.h)
+python3 tools/native/rhi_patches.py apply    # pristine/ + patches/ -> patched/ (and plume's patched/mh4n_patch_list.h)
 python3 tools/native/rhi_patches.py check    # the same into a temporary folder, compared byte for byte; exit 1 names the first differing file
 python3 tools/native/rhi_patches.py blobs    # the git blob id of every pristine, volk and VMA file against the README tables
 ```
 
-The applier is ours (Python standard library): a hunk is applied only at the line it names, and only when every context and
-removed line matches exactly; otherwise `apply` stops (exit 2) naming the patch. **Add a patch** as a new numbered file after
-the last one; never edit an earlier patch or `patched/` by hand:
+Each command runs on plume, then on vma, and exits with the worse of the two statuses; `--root native/third_party/rhi/vma`
+(or `.../plume`) runs one. Only plume's `patched/` holds `mh4n_patch_list.h`, which `VendorInfo()` reads, so the names of
+VMA's patches are in `vma/README.md`, not in the binary. The applier is ours (Python standard library): a hunk is applied
+only at the line it names, and only when every context and removed line matches exactly; otherwise `apply` stops (exit 2)
+naming the patch; text before a patch's first file header is ignored (VMA's 01 names its upstream commit there). **Add a
+patch** as a new numbered file after the last one of its queue; never edit an earlier patch or `patched/` by hand:
 
 1. copy `patched/`, edit the copy, write the unified diff on the pristine paths (`a/<file>`, `b/<file>`), for example with
    `git diff` in a scratch repository whose last commit is `patched/`;
-2. save it as `patches/NN-<name>.diff` with the next number and list it in `plume/README.md`;
+2. save it as `patches/NN-<name>.diff` with the next number and list it in the queue's README (`plume/README.md` or
+   `vma/README.md`);
 3. `rhi_patches.py apply`, then `check` and `blobs`; rebuild and run the RHI tests under the layer (below).
 
-Patches 01 to 07 were made one on top of another (01 → 02 → 04, 03 → 05 → 06 → 07): they apply in number order only. A
+An upstream fix of VMA is cherry-picked the same way, as a new numbered patch, not by moving the pinned commit. plume's
+patches 01 to 07 were made one on top of another (01 → 02 → 04, 03 → 05 → 06 → 07): they apply in number order only. A
 Windows or macOS build failure is fixed by a new numbered patch, never by editing `patched/`. `.gitattributes` marks
 `native/third_party/rhi/**` and the evidence's `patches/*.diff` as `-text`, so a Windows checkout with `core.autocrlf=true`
 cannot rewrite files that are compared byte for byte (sha256, blob ids).
@@ -115,8 +123,9 @@ cannot rewrite files that are compared byte for byte (sha256, blob ids).
   `vkQueueSubmit` call through volk's function pointer, as `rhi-spike.md` 6.9 traced them), `descriptors/buffer_offset`, `device/core_features`, and
   the control `control/C5`. On lavapipe (one queue family, one physical device) `device/headless_surface` cannot fail on the present-capable family filter and `device/chosen` cannot tell the index from plume's own choice: those halves are for a PC or a second device (`device/chosen` can be shown on one machine with two copies of lavapipe's `libvulkan_lvp.so`, each with its own ICD manifest, listed as `VK_ICD_FILENAMES=a.json:b.json`). A case skips with a message when there is no Vulkan device and fails instead under
   `MH4N_REQUIRE_VULKAN=1`. Controls are skipped by default; run one with `--test-case=control/C5 --no-skip`.
-- Pure-Python tests: `tests/test_native_rhi_patches.py` (the applier on synthetic diffs; `check` and `blobs` on the tree; the
-  evidence's sha256 for patches 01 to 07; one volk and one VMA translation unit), `tests/test_native_vk_layer_run.py`,
+- Pure-Python tests: `tests/test_native_rhi_patches.py` (the applier on synthetic diffs; `check` and `blobs` on both queues, and
+  without `--root` both run with the worse status kept; the evidence's sha256 for plume's patches 01 to 07; VMA's pinned commit,
+  pristine blob ids and patch 01 in the patched header; the build including `vma/patched`; one volk and one VMA translation unit), `tests/test_native_vk_layer_run.py`,
   `tests/test_native_spirv_inc.py` (skips without `glslangValidator`), `tests/test_native_setup_env.py`.
 
 ## Shaders: `spirv_inc.py`
@@ -183,6 +192,7 @@ the test file with its GLSL in the comment above it (N2-29's allowlist has no sh
 | `patch11/16_bit_colour_formats_where_the_query_says_attachment` | each 16-bit colour format whose `getFormatSupport(...).attachment` is set is created as a target, cleared red / alpha 1, blue / alpha 0 and green / alpha 1, and copied out | the word has each component in the bits Vulkan's `*_PACK16` layout names; lavapipe: `R4G4B4A4` is not an attachment and is skipped, the other six are |
 | `patch12/custom_border_colour_out_of_range`, `patch12/custom_border_colour_refused_without_the_extension` | a green 16x16 target sampled with border addressing over `uv * 3 - 1` (`border.frag`): the pixels out of range return the sampler's colour (0.25, 0.5, 0.75, 0.5) = (64, 128, 191, 128), the middle ones return green; an `OPAQUE_BLACK` sampler is the reference; on a device whose `optionalExtensions` leaves the extension out, the custom sampler has a null handle and an ordinary one works | as described |
 | `vendor/border_colour_patch_is_listed` | the build's patch list names a `NN-custom-border-colour.diff` with NN at least 12 and equal to its place in the list | the number is read, not written in the test |
+| `vma01/unmap_on_one_thread_while_another_allocates` | VMA's patch 01 ([below](#the-threadsanitizer-job)): thread A creates a 256 KiB upload buffer, maps it, writes 4 KiB, unmaps, maps again, reads them, unmaps and destroys it, 100 rounds; thread B creates and destroys 512 KiB upload buffers all the while | every creation and mapping succeeds and the bytes read are the bytes written; A's buffers are all in one block and B's never are (what the case is built on); no ThreadSanitizer report |
 
 **D3, and what a missing mutex shows.** In the harness's form (D3) thread 2 starts recording only after thread 1 has finished, so
 the mutex and the wait each serialise the threads alone: removing the mutex, or the wait, from D3 shows nothing (measured:
@@ -260,6 +270,39 @@ no report allowed (`rhi-spike.md` 9.4 item 16; 6.9 ran D2 and D3 under it with g
   The control D2 under the same options exits 66 with `data race` at `plume_vulkan.cpp:3007` in `VulkanCommandList::barriers`. The
   job itself on GitHub (`ubuntu-24.04`, its own Mesa and loader) has not run: *(CI)*, `pending`. If it reports something in
   lavapipe that this machine did not, the entries of `tsan.supp` are where it is added, naming the library and nothing of plume's.
+
+**The VMA data race, and VMA's patch 01.** The job failed now and then in `gpu_backend_sync_test` with `WARNING: ThreadSanitizer:
+data race`: a read in `VmaDeviceMemoryBlock::GetMappedData()` (`vk_mem_alloc.h:6248`; from `VmaBlockVector::AllocatePage`, `vmaCreateBuffer`,
+`plume::VulkanBuffer::VulkanBuffer`, `Backend::CreateBuffer` at `core/buffers.cpp:183`) against the write `m_pMappedData = VMA_NULL` in
+`VmaDeviceMemoryBlock::Unmap` (`vk_mem_alloc.h:10763`; from `vmaUnmapMemory`, `plume::VulkanBuffer::unmap`, `Buffer::Impl::~Impl`). The race is
+VMA's: `AllocatePage` runs under the block vector's mutex and reads every block's `m_pMappedData` (it puts mappable allocations in mapped blocks
+first) without the block's own mutex, while `vmaMapMemory` and `vmaUnmapMemory` of another allocation in that block write it under the block's
+mutex only. VMA documents its functions as thread-safe for different allocations, so the wrapper does nothing wrong. Upstream fixed exactly this
+for its issue #525 (the same two stacks): commit `4f687952b8c7aa250dfc25f78e269b9834872458`, "Fixed synchronization issue of m_pMappedData"
+(2026-05-22, MIT), first released in VMA 3.4.0 (2026-06-04), adds an atomic `m_IsMapped` per block, kept with the pointer in `Map`, `Unmap`,
+`PostFree` and `Destroy`, which `AllocatePage` reads instead. It is cherry-picked as `vma/patches/01-upstream-4f68795-mapped-data-sync.diff`:
+every hunk, all as upstream wrote them except `Map`'s added line, one level deeper because the pinned `Map` has its `vkMapMemory` branch in an
+`else`. **Not an update of VMA:** the pinned commit is the one plume names and every RHI measurement was made with it, and 3.4.0 would bring
+everything else since 3.2.1 into the renderer's allocator for one fix; the rule of `native/third_party/rhi/` is that an upstream fix is a numbered
+patch and the pin does not move. **Not a suppression:** `tsan.supp` names only the loader and lavapipe, never code we ship; a `race:` entry for
+VMA would hide a real data race (undefined behaviour, even if the value read only steers a heuristic) and every later one in VMA's allocation
+path.
+
+The case that shows it is `rhi_plume_patterns_test`'s `vma01/unmap_on_one_thread_while_another_allocates` (the job's regex runs it; the
+comment above `RunVmaMapWhileAllocating` says how it is built): the block A maps is full but for A's slot, so B's larger buffers come from
+another block and B never takes A's block's mutex while its scans read that block's pointer; three unmapped buffers created and destroyed in
+A's block per round keep VMA's mapping hysteresis from leaving the block mapped (after which an unmap writes nothing); and A waits, mapped, for
+B to finish two buffers. **Measured on the RX 6700 XT** (2026-10-31, without ThreadSanitizer, Forza Horizon 6 running on the same GPU) with a
+throw-away copy of `vma/patched/vk_mem_alloc.h` that counts (built in a scratch tree, not committed): in the case's 100 rounds, 200
+`vkMapMemory` calls and 200 unmaps that wrote `m_pMappedData` (every one of A's), the extra mapping never switched on, and of B's 103,034
+reads of a block's mapped state in `AllocatePage` 44,810 were of A's block while A had it mapped; 3 blocks were made in all. Without the
+three unmapped buffers the same copy counted 4 `vkMapMemory` calls and 3 writing unmaps, after which the extra mapping stayed on. Without the
+buffer that holds B's block, VMA made 172 blocks (counting copy) and the case took 2,969 ms; as committed it took 120 ms (113 ms in the
+counting copy). **This PC cannot
+build with ThreadSanitizer:** it runs Windows, its llvm-mingw 20241217 has no TSan runtime (`lib/clang/19/lib/windows` holds the ASan, UBSan,
+fuzzer, profile and stats runtimes, no `clang_rt.tsan`), and there is no WSL. So that the case makes ThreadSanitizer report the race without
+patch 01, and none with it, is `inference` (from the code: no lock or acquire links B's read to A's later unmap) until the `native-tsan` job
+runs it: *(CI)*, `pending`.
 
 ## Binding a buffer at an offset (read for N2-27)
 
