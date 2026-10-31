@@ -87,15 +87,38 @@ def test_fnstatus_set_and_show(tmp_path, capsys):
     assert "decompiled bytes: 0x8" in capsys.readouterr().out
 
 
-def test_sdk_names_match_exactly_or_by_runtime_prefix():
+def named_case(names):
     code, header, funcs = setup()
-    names = ["__aeabi_memcpy", "memset", "nn::os::Sleep", "freeList", "exitQuest", "_ZN6sStart4moveEv", "svcHandler"]
     extra = [BASE + 0x80 + 4 * i for i in range(len(names))]
     funcs += [{"address": f"0x{a:08x}", "size": "0x4", "mode": "arm"} for a in extra]
-    rows = bft.build(code, header, funcs, dict(zip(extra, names)), CTOR, {})
+    return code, header, funcs, dict(zip(extra, names))
+
+
+def test_names_match_exactly_or_by_prefix():
+    # C runtime / C library / compiler helpers are runtime, Nintendo SDK names are sdk
+    # (docs/AGENT_WORKFLOW.md keeps the two apart); both default to replace
+    names = ["__aeabi_memcpy", "__rt_udiv", "__gnu_unwind", "memset", "strlen", "nn::os::Sleep", "_ZN2nn2os5SleepEv",
+             "freeList", "exitQuest", "_ZN6sStart4moveEv", "svcHandler"]
+    code, header, funcs, symbols = named_case(names)
+    rows = bft.build(code, header, funcs, symbols, CTOR, {})
     got = {r["name"]: (r["category"], r["status"]) for r in rows if r["name"]}
-    assert got["__aeabi_memcpy"] == got["memset"] == got["nn::os::Sleep"] == ("sdk", "replace")
+    for n in ("__aeabi_memcpy", "__rt_udiv", "__gnu_unwind", "memset", "strlen"):
+        assert got[n] == ("runtime", "replace"), n
+    assert got["nn::os::Sleep"] == got["_ZN2nn2os5SleepEv"] == ("sdk", "replace")
     assert got["freeList"] == got["exitQuest"] == got["_ZN6sStart4moveEv"] == got["svcHandler"] == ("unknown", "todo")
+
+
+def test_rebuild_of_runtime_rows_keeps_set_statuses():
+    # a runtime helper someone marked done stays runtime/done with its notes (as __aeabi_lasr in
+    # the table); one the old table had as unknown/todo becomes runtime/replace (as strlen)
+    code, header, funcs, symbols = named_case(["__aeabi_lasr", "strlen"])
+    lasr, strlen = sorted(symbols)
+    existing = {lasr: {"category": "runtime", "status": "done", "batch": "pilot-0", "notes": "difftest ok"},
+                strlen: {"category": "unknown", "status": "todo"}}
+    by = {int(r["address"], 16): r for r in bft.build(code, header, funcs, symbols, CTOR, existing)}
+    assert (by[lasr]["category"], by[lasr]["status"], by[lasr]["batch"], by[lasr]["notes"]) == \
+        ("runtime", "done", "pilot-0", "difftest ok")
+    assert (by[strlen]["category"], by[strlen]["status"]) == ("runtime", "replace")
 
 
 def propagation_case():
@@ -136,3 +159,22 @@ def test_propagation_follows_calls_that_all_go_to_sdk_functions():
     assert by[d]["category"] == "unknown"                                 # one call goes to game code
     assert by[e]["category"] == "dti-init" and by[f]["category"] == "unknown"
     assert by[leaf]["category"] == "unknown"                              # no call: nothing to go on
+
+
+def test_propagation_treats_an_empty_status_as_a_default_one():
+    # build() does not keep an empty status, so propagate() must not keep it either
+    code, header, funcs, (a, b, *_rest) = propagation_case()
+    rows = bft.build(code, header, funcs, {}, CTOR, {b: {"status": ""}}, propagate_sdk=True)
+    by = {int(r["address"], 16): r for r in rows}
+    assert by[b]["category"] == "sdk" and by[b]["status"] == "replace"
+
+
+def test_propagation_needs_an_sdk_callee_and_allows_runtime_ones():
+    # an SDK wrapper may also call C runtime helpers (D calls the svc function A and memcpy), but a
+    # function that only calls runtime helpers is ordinary game code (F calls memcpy only)
+    code, header, funcs, (a, b, c, d, e, f, leaf) = propagation_case()
+    rows = bft.build(code, header, funcs, {leaf: "memcpy", e: "memcpy"}, CTOR, {}, propagate_sdk=True)
+    by = {int(r["address"], 16): r for r in rows}
+    assert by[leaf]["category"] == by[e]["category"] == "runtime"
+    assert by[d]["category"] == "sdk" and by[d]["status"] == "replace"
+    assert by[f]["category"] == "unknown" and by[f]["status"] == "todo"
