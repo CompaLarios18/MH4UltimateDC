@@ -208,8 +208,8 @@ Tables between the `wp-status` markers are generated: edit the specs or use `set
 | N3-18 | Packages with `mh4u-native` | M | native-worker | N2b-10, N2b-27, N2-17 | ci, pc | `todo` |  |
 | N3-19 | The launcher: native setup, saves and the runtime choice | M | native-worker-high | N2b-02, N2b-11, N3-30, N3-16, N3-17, N3-18, N3-22 | ci, pc | `todo` |  |
 | N3-20 | All hooks exercised natively | M | native-worker-high | N2b-21, N2b-22 | dump-check, save, pc | `todo` |  |
-| N3-21 | Observables for the 60/120 audit | M | native-worker | N0-10, N0-27 | dump, save | `ready` |  |
-| N3-22 | The 60/120 fps audit | M | native-worker | N3-21, N2b-18 | dump, save | `todo` |  |
+| N3-21 | Observables for the 60/120 audit | M | native-worker | N0-10, N0-27 | dump, save | `done` | observable_probe.py (validate position/quest_time, scale, segments, finders) and fps-observables.md; the position rule applies before the first attack press (--to), the quest clock over its running stretches (5 s minimum, 1 % per stretch); validated on the reference runner at 60 and 120 fps (valid on all four traces); the orchestrator's decisions of 2026-10-31 under the maintainer's delegation; D70's tolerances stay Open for N3-22; the four ignore lines are proposals for N3-22 to add at run time |
+| N3-22 | The 60/120 fps audit | M | native-worker | N3-21, N2b-18 | dump, save | `ready` |  |
 | N3-23 | Capture trimmer (N2o-01, part 1) | M | native-worker-high | N2-20, N2-04, N0-22, N0-10 | dump-check, save | `todo` |  |
 | N3-24 | The real-3DS capture player (N2o-01, part 2) | M | native-worker-high | N3-23, N2b-16 | ci | `todo` |  |
 | N3-25 | Gas against the console (N2o-01, part 3) | S | native-worker | N3-24, N2b-17, N0-10 | dump, save, 3ds, pc | `todo` |  |
