@@ -684,6 +684,7 @@ TEST_CASE("compose/a_draw_with_no_dirty_fragment_state_reuses_the_allocation_and
     if (!backend) return;
     Rig rig(backend);
     auto state = NewState();
+    state->regs[0xC3] = 0xFF302010u;  // const_color[0] = (16, 32, 48)
     auto target = MakeImage(*backend, 4, 4);
 
     rhi::Recorder rec = backend->BeginRecording();
@@ -703,7 +704,7 @@ TEST_CASE("compose/a_draw_with_no_dirty_fragment_state_reuses_the_allocation_and
         if (draw == 0) first_offset = alloc->offset;
         CHECK(alloc->offset == first_offset);
         FragmentKey key = rig.fragment->key();
-        key.user.raw = kColorIn;
+        key.user.raw = kBlock;
         native::DrawDesc d = rig.Desc(key, target.get());
         d.fragment_uniforms = *alloc;
         rhi::Result<native::DrawResult> result = rig.composer->Draw(rec, d);
@@ -716,21 +717,120 @@ TEST_CASE("compose/a_draw_with_no_dirty_fragment_state_reuses_the_allocation_and
     CHECK(rig.uniforms->reuses() == 2);
     CHECK(rig.composer->counters().sets_acquired == 3);
     CHECK(rig.composer->counters().sets_reused == 6);
+
+    // The other direction: a fourth draw in the same recording after a dirty constant colour with a new value. The block is
+    // written again to another place, set 0 (which holds its offset) is acquired again, sets 1 and 2 (textures, shadow image)
+    // are still the same.
+    state->regs[0xC3] = 0xFF605040u;  // r 0x40, g 0x50, b 0x60
+    state->dirty.Reset();
+    state->dirty.Set(0xC3);
+    rhi::Result<FragmentState::Prepared> prepared = rig.fragment->Prepare(*state, {}, nullptr);
+    REQUIRE(prepared.ok());
+    CHECK(prepared->block_changed);
+    rhi::Result<FragmentUniformRing::Allocation> alloc = rig.uniforms->Write(rig.fragment->block(), prepared->block_changed);
+    REQUIRE(alloc.ok());
+    CHECK_FALSE(alloc->reused);
+    CHECK(alloc->offset != first_offset);
+    FragmentKey key = rig.fragment->key();
+    key.user.raw = kBlock;
+    native::DrawDesc d = rig.Desc(key, target.get());
+    d.fragment_uniforms = *alloc;
+    rhi::Result<native::DrawResult> result = rig.composer->Draw(rec, d);
+    REQUIRE_MESSAGE(result.ok(), result.error());
+    CHECK_FALSE(result->set0_reused);
+    CHECK(result->set1_reused);
+    CHECK(result->set2_reused);
+    CHECK(rig.uniforms->allocations() == 2);
+    CHECK(rig.composer->counters().sets_acquired == 4);
     Run(*backend, std::move(rec));
-    CHECK(AllPixels(*backend, *target, 4, 4, {255, 0, 0, 255}));
+    // the last draw's colour: the new constant, and the key's alpha byte
+    CHECK(AllPixels(*backend, *target, 4, 4, {64, 80, 96, 193}));
 
     // a new recording forgets them: the space committed to an earlier recorder is not offered again
     rhi::Recorder rec2 = backend->BeginRecording();
     rig.composer->BeginRecording(rec2);
     rig.uniforms->BeginRecording();
     state->dirty.Reset();
-    rhi::Result<FragmentState::Prepared> prepared = rig.fragment->Prepare(*state, {}, nullptr);
+    prepared = rig.fragment->Prepare(*state, {}, nullptr);
     REQUIRE(prepared.ok());
     CHECK_FALSE(prepared->block_changed);
+    rhi::Result<FragmentUniformRing::Allocation> again = rig.uniforms->Write(rig.fragment->block(), prepared->block_changed);
+    REQUIRE(again.ok());
+    CHECK_FALSE(again->reused);
+    Run(*backend, std::move(rec2));
+}
+
+TEST_CASE("compose/a_texture_change_between_two_draws_acquires_set_1_only") {
+    auto backend = test::RequireBackend();
+    if (!backend) return;
+    Rig rig(backend);
+    auto state = NewState();
+    auto target = MakeImage(*backend, 4, 4);
+    auto t0 = MakeImage(*backend, 1, 1), t1 = MakeImage(*backend, 1, 1), t1b = MakeImage(*backend, 1, 1), t2 = MakeImage(*backend, 1, 1);
+
+    rhi::Recorder rec = backend->BeginRecording();
+    rig.composer->BeginRecording(rec);
+    rig.uniforms->BeginRecording();
+    rec.ClearImage(*t0, Rgba(0.2f, 0, 0, 1));
+    rec.ClearImage(*t1, Rgba(0.4f, 0, 0, 1));
+    rec.ClearImage(*t1b, Rgba(0.8f, 0, 0, 1));
+    rec.ClearImage(*t2, Rgba(0.6f, 0, 0, 1));
+    rhi::Result<FragmentState::Prepared> prepared = rig.fragment->Prepare(*state, {}, nullptr);
+    REQUIRE(prepared.ok());
     rhi::Result<FragmentUniformRing::Allocation> alloc = rig.uniforms->Write(rig.fragment->block(), prepared->block_changed);
     REQUIRE(alloc.ok());
-    CHECK_FALSE(alloc->reused);
-    Run(*backend, std::move(rec2));
+    FragmentKey key = rig.fragment->key();
+    key.user.raw = kTextures;
+    native::DrawDesc d = rig.Desc(key, target.get());
+    d.fragment_uniforms = *alloc;
+    d.units[0].image = t0.get();
+    d.units[1].image = t1.get();
+    d.units[2].image = t2.get();
+    rig.composer->BeginTargetPass(rec, ClearPass(target.get(), 0, 0, 0, 0));
+    rhi::Result<native::DrawResult> first = rig.composer->Draw(rec, d);
+    REQUIRE_MESSAGE(first.ok(), first.error());
+    CHECK_FALSE(first->set1_reused);
+    // the same uniforms, another texture on unit 1: set 1 is acquired again, sets 0 and 2 are bound again as they were
+    d.units[1].image = t1b.get();
+    rhi::Result<native::DrawResult> second = rig.composer->Draw(rec, d);
+    REQUIRE_MESSAGE(second.ok(), second.error());
+    CHECK(second->set0_reused);
+    CHECK_FALSE(second->set1_reused);
+    CHECK(second->set2_reused);
+    Run(*backend, std::move(rec));
+    // unit 1 is the second draw's: 0.8 * 255 = 204; the others as before (51, 153)
+    CHECK(AllPixels(*backend, *target, 4, 4, {51, 204, 153, 255}));
+}
+
+TEST_CASE("compose/a_full_uniform_ring_inside_one_recording_is_an_error_and_not_a_hang") {
+    // Inside one recording every change of the fragment state takes another block of the ring, and space committed to a
+    // recorder that has not been submitted cannot be waited for: a ring of two allocations fails the third write with
+    // the ring's message (a 1 MiB ring holds about 585 changes).
+    auto backend = test::RequireBackend();
+    if (!backend) return;
+    rhi::Result<std::unique_ptr<FragmentUniformRing>> made = FragmentUniformRing::Create(*backend, 2 * kFragmentBlockAllocation);
+    REQUIRE_MESSAGE(made.ok(), made.error());
+    FragmentUniformRing& ring = **made;
+    FragmentBlock block;
+    std::memset(&block, 0, sizeof(block));
+    rhi::Recorder rec = backend->BeginRecording();
+    ring.BeginRecording();
+    rhi::Result<FragmentUniformRing::Allocation> a = ring.Write(block, true);
+    rhi::Result<FragmentUniformRing::Allocation> b = ring.Write(block, true);
+    REQUIRE_MESSAGE(a.ok(), a.error());
+    REQUIRE_MESSAGE(b.ok(), b.error());
+    CHECK(a->offset == 0);
+    CHECK(b->offset == kFragmentBlockAllocation);
+    rhi::Result<FragmentUniformRing::Allocation> c = ring.Write(block, true);
+    CHECK_FALSE(c.ok());
+    CHECK(c.error().find("not been submitted") != std::string::npos);
+    // an unchanged block still reuses the last allocation; after the recorder ran, the ring has room again
+    CHECK(ring.Write(block, false).ok());
+    Run(*backend, std::move(rec));
+    rec = backend->BeginRecording();
+    ring.BeginRecording();
+    CHECK(ring.Write(block, true).ok());
+    Run(*backend, std::move(rec));
 }
 
 // ---- the default provider -----------------------------------------------------------------------------------------------------

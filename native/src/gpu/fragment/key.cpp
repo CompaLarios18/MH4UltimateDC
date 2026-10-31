@@ -2,8 +2,14 @@
 // FramebufferConfig, FramebufferConfig::ApplyProfile, TextureConfig::TextureConfig,
 // TextureConfig::ApplyProfile, LightConfig::LightConfig, ProcTexConfig::ProcTexConfig, FSConfig::FSConfig)
 // at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-3.0-or-later: the file says "Licensed under GPLv3 or any
-// later version"); the register positions come from src/video_core/pica/regs_*.h (GPL-2.0-or-later).
+// later version"); the register positions and fields are read from src/video_core/pica/regs_internal.h,
+// regs_framebuffer.h, regs_texturing.h, regs_lighting.h and regs_rasterizer.h (each says "Licensed under GPLv2 or any
+// later version").
 // Copyright 2023-2026 Citra Emulator Project / Azahar Emulator Project (pica_fs_config.cpp)
+// Copyright 2017-2025 Citra Emulator Project / Azahar Emulator Project (regs_internal.h, regs_framebuffer.h)
+// Copyright 2017-2024 Citra Emulator Project / Azahar Emulator Project (regs_texturing.h)
+// Copyright 2017 Citra Emulator Project (regs_lighting.h)
+// Copyright 2017-2026 Citra Emulator Project / Azahar Emulator Project (regs_rasterizer.h)
 #include "gpu/fragment/key.h"
 
 #include "gpu/fragment/feature.h"
@@ -258,16 +264,6 @@ void TextureConfig::ApplyProfile(const DeviceProfile& profile) {
 void FragmentKey::ApplyProfile(const DeviceProfile& profile) {
     framebuffer.ApplyProfile(profile);
     texture.ApplyProfile(profile);
-}
-
-u64 HashKey(const FragmentKey& key) {
-    u32 words[kFragmentKeyWords];
-    std::memcpy(words, &key, sizeof(words));
-    u64 h = HashCombine(0x4D48344E46534Bull, kFragmentKeyWords);
-    for (u32 w : words) {
-        h = HashCombine(h, w);
-    }
-    return h;
 }
 
 void Needs::Merge(const Needs& other) {

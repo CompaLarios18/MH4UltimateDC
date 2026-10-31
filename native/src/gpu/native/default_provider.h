@@ -11,6 +11,8 @@
 // compile on the render thread). N2-16 later registers its own provider through `mh4n/registry.h`.
 //
 // One thread at a time: the lookups run on the renderer thread. A mutex makes a second caller wait rather than race.
+// THE BUILD CALLBACK RUNS WHILE THE PROVIDER HOLDS ITS MUTEX: a callback that calls back into the provider (`Lookup`,
+// `ReportMiss`, `Counters`, ... from the generator, for example) deadlocks. Report from outside the callback.
 #pragma once
 
 #include <functional>

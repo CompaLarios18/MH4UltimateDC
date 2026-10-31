@@ -54,7 +54,6 @@ enum class Point : u8 {
     FogGas,
     Output,
 };
-inline constexpr size_t kPointCount = 8;
 
 // How the generator is writing the shader: the specialised mode evaluates the key's fields and emits the chosen
 // branch with literals; the ubershader mode reads them from `cfg` (design 4.4.1).

@@ -23,3 +23,13 @@ mh4n_module(
 # The headers are included as "gpu/native/<name>.h".
 target_include_directories(mh4n_gpu_native PUBLIC "${MH4N_SRC_DIR}")
 target_link_libraries(mh4n_gpu_native PUBLIC mh4n_gpu_pipeline_key)
+
+# The proof that mh4n_gpu_pipeline_key is header-only in practice: a program linked against that target and nothing else
+# calls PipelineKey::Hash() and operator==. A link error here means something pipeline_key.h calls is not inline.
+if (MH4N_TESTS)
+    add_executable(mh4n_pipeline_key_link_check checks/pipeline_key_link_check.cpp)
+    target_link_libraries(mh4n_pipeline_key_link_check PRIVATE mh4n_gpu_pipeline_key mh4n_warnings)
+    set_target_properties(mh4n_pipeline_key_link_check PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+    enable_testing()
+    add_test(NAME gpu_pipeline_key_link_check COMMAND mh4n_pipeline_key_link_check)
+endif()

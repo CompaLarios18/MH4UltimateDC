@@ -1,13 +1,15 @@
 // Derived from Azahar src/video_core/shader/generator/shader_uniforms.h (FSUniformData, LightSrc),
 // src/video_core/rasterizer_accelerated.cpp (SyncDrawUniforms: which registers set which member and
-// when) and src/video_core/rasterizer_cache/framebuffer_base.h (the scissor rectangle) at
-// 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-2.0-or-later: shader_uniforms.h,
-// rasterizer_accelerated.cpp, framebuffer_base.h and pica/dirty_regs.h each say "Licensed under GPLv2
-// or any later version").
+// when), src/video_core/rasterizer_cache/framebuffer_base.h (the scissor rectangle) and
+// src/video_core/shader/generator/glsl_fs_shader_gen.cpp (the uniform block's binding, 2, and the order of its
+// members) at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-3.0-or-later: glsl_fs_shader_gen.cpp says "Licensed under
+// GPLv3 or any later version"; shader_uniforms.h, rasterizer_accelerated.cpp, framebuffer_base.h and pica/dirty_regs.h
+// each say "Licensed under GPLv2 or any later version").
 // Copyright 2023-2025 Citra Emulator Project / Azahar Emulator Project (shader_uniforms.h)
 // Copyright 2023-2026 Citra Emulator Project / Azahar Emulator Project (rasterizer_accelerated.cpp)
 // Copyright 2023-2025 Citra Emulator Project / Azahar Emulator Project (framebuffer_base.h)
 // Copyright 2025-2026 Citra Emulator Project / Azahar Emulator Project (dirty_regs.h)
+// Copyright 2023-2026 Citra Emulator Project / Azahar Emulator Project (glsl_fs_shader_gen.cpp)
 //
 // The fragment uniforms (N2-33; docs/native/gpu-fragment-design.md 5.10).
 //
@@ -160,7 +162,6 @@ static_assert(offsetof(FragmentBlock, gas) == 1616);
 static_assert(sizeof(FragmentBlock) == 1744);
 static_assert(std::is_trivially_copyable_v<FragmentBlock>);
 
-inline constexpr u32 kFragmentUniformsBytes = sizeof(FragmentUniforms);
 inline constexpr u32 kFragmentBlockBytes = sizeof(FragmentBlock);
 // The ring allocation of a block: aligned to 256, the largest alignment Vulkan allows for an offset.
 inline constexpr u32 kFragmentBlockAlignment = 256;

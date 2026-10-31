@@ -1,13 +1,15 @@
 // Derived from Azahar src/video_core/shader/generator/pica_fs_config.h and pica_fs_config.cpp (the constructors
 // of the sub-structures, worked out by hand for each synthetic register set below), shader_uniforms.h
-// (FSUniformData: the offset of every member), profile.h and src/video_core/pica/regs_*.h (the register
-// positions the tests write) at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-3.0-or-later: pica_fs_config.h and
-// pica_fs_config.cpp say "Licensed under GPLv3 or any later version"; the others say "GPLv2 or any later version").
+// (FSUniformData: the offset of every member), profile.h and src/video_core/pica/regs_internal.h,
+// regs_framebuffer.h, regs_texturing.h, regs_lighting.h and regs_rasterizer.h (the register positions the tests
+// write) at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-3.0-or-later: pica_fs_config.h and pica_fs_config.cpp say
+// "Licensed under GPLv3 or any later version"; the others say "GPLv2 or any later version").
 // Copyright 2023-2026 Citra Emulator Project / Azahar Emulator Project (pica_fs_config.h, pica_fs_config.cpp, profile.h)
 // Copyright 2023-2025 Citra Emulator Project / Azahar Emulator Project (shader_uniforms.h)
 // Copyright 2017-2025 Citra Emulator Project / Azahar Emulator Project (regs_internal.h, regs_framebuffer.h)
 // Copyright 2017-2024 Citra Emulator Project / Azahar Emulator Project (regs_texturing.h)
 // Copyright 2017 Citra Emulator Project (regs_lighting.h)
+// Copyright 2017-2026 Citra Emulator Project / Azahar Emulator Project (regs_rasterizer.h)
 //
 // The fragment key, the uniforms, the feature interface and the pipeline key (N2-33), with no device.
 // Every expected value is worked out by hand from Azahar's constructors (the comments show the arithmetic); none is
@@ -283,7 +285,7 @@ TEST_CASE("key/the_texture_part") {
     r[freg::kMainConfig] = 1u << 13;                                          // texture2_use_coord1
     r[freg::kTexture0 + freg::kTextureParams] = (2u << 28) | (2u << 12) | (1u << 8);  // Shadow2D, wrap_s Repeat, wrap_t ClampToBorder
     r[freg::kTexture1 + freg::kTextureParams] = (3u << 12) | (5u << 8);      // MirroredRepeat, ClampToBorder2 (bit 28+ ignored: unit 1)
-    r[freg::kTexture2 + freg::kTextureParams] = (4u << 28);                   // the type field is only read for unit 0
+    r[freg::kTexture2 + freg::kTextureParams] = (5u << 12) | (4u << 28);      // wrap_s ClampToBorder2 (needs all 3 bits); the type field is only read for unit 0
     r[freg::kShadowTexture] = 1;                                              // orthographic
     r[freg::kFogModeAndCombiner] = 5 | (0x5u << 8) | (0x3u << 12) | (1u << 16);  // Fog, rgb mask 0101, a mask 0011, flip
     const FragmentKey key = KeyOfState(*state);
@@ -305,7 +307,8 @@ TEST_CASE("key/the_texture_part") {
     CHECK(key.texture.requested_wrap[0].t == re::WrapMode::ClampToBorder);
     CHECK(key.texture.requested_wrap[1].s == re::WrapMode::MirroredRepeat);
     CHECK(key.texture.requested_wrap[1].t == re::WrapMode::ClampToBorder2);
-    CHECK(key.texture.requested_wrap[2].s == re::WrapMode::ClampToEdge);
+    CHECK(key.texture.requested_wrap[2].s == re::WrapMode::ClampToBorder2);
+    CHECK(key.texture.requested_wrap[2].t == re::WrapMode::ClampToEdge);
     // raw: type 2 | use_coord1 1 << 3 = 8 | combiner 0x35 << 4 = 848 | fog_mode 5 << 12 = 20480 | flip 1 << 15 = 32768 | ortho 1 << 16 = 65536
     CHECK(key.texture.raw == 2u + 8u + 848u + 20480u + 32768u + 65536u);
     // the border enable bits are the profile's, not the key's
@@ -326,7 +329,7 @@ TEST_CASE("key/the_tev_stages_and_the_Dot3_RGBA_masking") {
     // stage 2 has the colour operation Dot3_RGBA (7): its sources, modifiers and ops are masked to the low bits
     r[bases[2] + 0] = 0xFFFFFFFFu;
     r[bases[2] + 1] = 0xFFFFFFFFu;
-    r[bases[2] + 2] = 0x00050007u;
+    r[bases[2] + 2] = 0x000500F7u;  // colour op 7 (Dot3_RGBA); bits 4-7 and the alpha op (16-19) must be cleared
     const FragmentKey key = KeyOfState(*state);
     for (u32 i = 0; i < 6; ++i) {
         if (i == 2) continue;
@@ -339,7 +342,7 @@ TEST_CASE("key/the_tev_stages_and_the_Dot3_RGBA_masking") {
     }
     CHECK(key.texture.tev_stages[2].sources_raw == 0xFFFu);
     CHECK(key.texture.tev_stages[2].modifiers_raw == 0xFFFu);
-    CHECK(key.texture.tev_stages[2].ops_raw == 0x7u);  // 0x00050007 & 0xF
+    CHECK(key.texture.tev_stages[2].ops_raw == 0x7u);  // 0x000500F7 & 0xF
     CHECK(key.texture.tev_stages[2].scales_raw == 0x00010002u);  // not masked
 }
 
@@ -352,9 +355,9 @@ TEST_CASE("key/the_lighting_part") {
     r[freg::kLightingLightEnable] = 3 | (5u << 4);
     r[freg::kLight0 + freg::kLightStride * 3 + freg::kLightConfig] = 1 | 8;   // directional, geometric_factor_1
     r[freg::kLight0 + freg::kLightStride * 5 + freg::kLightConfig] = 2;       // two_sided_diffuse
-    // config1: disable_lut_d1 (bit 17), rr (20), rg (21), rb (22); disable_dist_atten of light 3 (24 + 3);
+    // config1: disable_lut_d1 (bit 17), the dummy bit 18 (real games set it, Azahar ignores it: lut_sp stays enabled), rr (20), rg (21), rb (22); disable_dist_atten of light 3 (24 + 3);
     // disable_spot_atten of light 5 (8 + 5)
-    r[freg::kLightingConfig1] = (1u << 17) | (1u << 20) | (1u << 21) | (1u << 22) | (1u << 27) | (1u << 13);
+    r[freg::kLightingConfig1] = (1u << 17) | (1u << 18) | (1u << 20) | (1u << 21) | (1u << 22) | (1u << 27) | (1u << 13);
     // config0: enable_shadow (0), enable_primary_alpha (2), config 1 (4-7), shadow_primary (16), bump_selector 1 (22-23),
     // shadow_selector 2 (24-25), clamp_highlights (27), bump_mode NormalMap (28-29), disable_bump_renorm (30)
     r[freg::kLightingConfig0] = 1u | (1u << 2) | (1u << 4) | (1u << 16) | (1u << 22) | (2u << 24) | (1u << 27) | (1u << 28) | (1u << 30);
@@ -1040,6 +1043,18 @@ TEST_CASE("pipeline_key/the_hashes_are_stable_constants") {
     CHECK(a.Hash() == 0xC93AC51DD230FE21ull);
     CHECK(native::kPipelineKeyVersion == 0x1F602CC0C61F3C38ull);
     CHECK(kFragmentKeyStructHash == 0x8CE909FC30D36458ull);
+
+    // A word with its top bit set must reach the fold: tev_stages[5].sources_raw is word 32 of the key (8 words of
+    // framebuffer, the texture part's raw word and three border words, then six stages of four words: 12 + 5 * 4).
+    // The constant is the fold computed apart from the code under test (splitmix64's finalizer, seed
+    // HashCombine(0x4D48344E46534B, 70), one HashCombine per word) for the words {193, 0 ..., 0xFFFFFFFF at 32, 0 ...}.
+    FragmentKey high = KeyOfState(*NewState());
+    high.texture.tev_stages[5].sources_raw = 0xFFFFFFFFu;
+    u32 words[kFragmentKeyWords];
+    std::memcpy(words, &high, sizeof(words));
+    CHECK(words[0] == 193);
+    CHECK(words[32] == 0xFFFFFFFFu);
+    CHECK(HashKey(high) == 0x9CE8EA9CD738A4D0ull);
 }
 
 TEST_CASE("pipeline_key/the_vertex_input_layout") {

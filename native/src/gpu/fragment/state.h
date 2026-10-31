@@ -39,7 +39,6 @@ public:
     const FragmentKey& key() const { return block_.cfg; }
     const Needs& needs() const { return needs_; }
     const FragmentBlock& block() const { return block_; }
-    FragmentBlock& mutable_block() { return block_; }
     const DeviceProfile& profile() const { return profile_; }
 
     // Keys extracted and draws prepared, for the tests ("a draw with no dirty fragment state does not extract").
@@ -58,6 +57,13 @@ private:
 
 // The fragment uniform block in a ring of its own (uniform usage), one allocation per change, aligned to 256 (or the
 // device's own alignment when larger).
+//
+// LIMIT: inside ONE recording every change of the fragment state takes a new 1,792-byte block, and space committed to a
+// recorder that has not been submitted cannot be waited for. A 1 MiB ring (the default) therefore holds about 585 changes
+// per recording (1,048,576 / 1,792); the next `Write` that needs a new block fails with the ring's error ("the ring is
+// full of space committed in a recorder that has not been submitted ... submit it first"), it does not wait. A caller
+// that can have more changes than that in one recording submits and begins another (BeginRecording), or creates a
+// bigger ring.
 class FragmentUniformRing {
 public:
     static rhi::Result<std::unique_ptr<FragmentUniformRing>> Create(rhi::Backend& backend, u64 ring_bytes = 1ull << 20);

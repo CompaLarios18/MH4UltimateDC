@@ -120,7 +120,6 @@ struct DrawDesc {
     rhi::Topology topology = rhi::Topology::TriangleList;
     rhi::Format color_format = rhi::Format::Undefined;  // logical PICA formats
     rhi::Format depth_format = rhi::Format::Undefined;
-    std::optional<VertexStageOutputs> vertex_outputs;  // for the fix-up generator; the builder reads it from N2-06's cache
 
     // ---- the pass ----
     rhi::TargetPassDesc target;          // Normal: the attachments and area (the draw continues with load)

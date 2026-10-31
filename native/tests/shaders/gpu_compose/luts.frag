@@ -1,3 +1,7 @@
+// Derived from Azahar src/video_core/shader/generator/glsl_fs_shader_gen.cpp (DefineBindingsVK: the set and binding numbers of the three texel buffers, 3, 4 and 5) at
+// 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-3.0-or-later: the file says "Licensed under GPLv3 or any later version").
+// Copyright 2023-2026 Citra Emulator Project / Azahar Emulator Project (glsl_fs_shader_gen.cpp)
+//
 #version 450
 #extension GL_GOOGLE_include_directive : require
 #include "fs_block.glsl"

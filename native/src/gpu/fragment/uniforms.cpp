@@ -1,13 +1,17 @@
 // Derived from Azahar src/video_core/rasterizer_accelerated.cpp (SyncDrawUniforms, ColorRGBA8),
 // src/video_core/pica/dirty_regs.h (CheckDepth, CheckBlend, CheckTexEnv: which registers set which
 // uniform), src/video_core/pica_types.h (f24::FromRaw) and src/video_core/renderer_vulkan/vk_rasterizer.cpp
-// (the scissor update at 587-596) at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-3.0-or-later:
-// vk_rasterizer.cpp says "Licensed under GPLv3 or any later version"; the others say "GPLv2 or any later
-// version").
+// (the scissor update at 587-596), and the fields of src/video_core/pica/regs_framebuffer.h (the alpha test
+// reference), regs_rasterizer.h (the scissor and depth range words) and regs_texturing.h (the TEV constant colour
+// words), at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-3.0-or-later: vk_rasterizer.cpp says "Licensed under GPLv3
+// or any later version"; the others say "GPLv2 or any later version").
 // Copyright 2023-2026 Citra Emulator Project / Azahar Emulator Project (rasterizer_accelerated.cpp,
 //   vk_rasterizer.cpp)
 // Copyright 2025-2026 Citra Emulator Project / Azahar Emulator Project (dirty_regs.h)
 // Copyright 2015-2026 Citra Emulator Project / Azahar Emulator Project (pica_types.h)
+// Copyright 2017-2025 Citra Emulator Project / Azahar Emulator Project (regs_framebuffer.h)
+// Copyright 2017-2026 Citra Emulator Project / Azahar Emulator Project (regs_rasterizer.h)
+// Copyright 2017-2024 Citra Emulator Project / Azahar Emulator Project (regs_texturing.h)
 #include "gpu/fragment/uniforms.h"
 
 #include <cstring>

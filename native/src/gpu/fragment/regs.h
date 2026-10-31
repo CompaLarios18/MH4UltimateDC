@@ -123,7 +123,6 @@ inline constexpr u32 kLogicOp = 0x102;                // bits 0-3
 inline constexpr u32 kBlendConst = 0x103;             // r 0-7, g 8-15, b 16-23, a 24-31
 inline constexpr u32 kAlphaTest = 0x104;              // enable bit 0, func 4-6, ref 8-15
 inline constexpr u32 kGasFirst = 0x120;               // the 16 gas registers (padding in Azahar's FramebufferRegs)
-inline constexpr u32 kGasCount = 16;
 inline constexpr u32 kFramebufferShadow = 0x130;      // constant bits 0-15, linear bits 16-31 (f16)
 
 // lighting
@@ -147,8 +146,7 @@ inline constexpr u32 kLightingLightEnable = 0x1D9;    // slot n in bits 4n..4n+2
 // The registers whose change can change the fragment key (a conservative cover: the key is read again
 // when any of them is dirty).
 constexpr bool IsFragmentKeyRegister(u32 id) {
-    return id == freg::kScissorMode || id == freg::kDepthmapEnable || (id >= 0x80 && id < 0x140) ||
-           (id >= 0x140 && id < 0x1E0);
+    return id == freg::kScissorMode || id == freg::kDepthmapEnable || (id >= 0x80 && id < 0x1E0);
 }
 
 } // namespace mh4n::gpu::fragment

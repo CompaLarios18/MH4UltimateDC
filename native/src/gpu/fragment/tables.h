@@ -2,10 +2,11 @@
 // SyncAndUploadLUTsLF and SyncAndUploadLUTs at 906-1030: which table goes into which ring, the sizes
 // mapped, the element offsets kept in the uniforms, "invalidate" after a wrap) and
 // src/video_core/pica/pica_core.h (the table entry layouts: ProcTex::ValueEntry, ColorEntry,
-// ColorDifferenceEntry, Lighting::LutEntry, Fog::LutEntry) at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6
-// (GPL-3.0-or-later: vk_rasterizer.cpp says "Licensed under GPLv3 or any later version"; pica_core.h says
-// "GPLv2 or any later version").
-// Copyright 2023-2026 Citra Emulator Project / Azahar Emulator Project (vk_rasterizer.cpp)
+// ColorDifferenceEntry, Lighting::LutEntry, Fog::LutEntry) and src/video_core/shader/generator/glsl_fs_shader_gen.cpp
+// (DefineBindingsVK: the set and binding numbers 3, 4 and 5 of the three texel buffers) at
+// 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-3.0-or-later: vk_rasterizer.cpp and glsl_fs_shader_gen.cpp say
+// "Licensed under GPLv3 or any later version"; pica_core.h says "GPLv2 or any later version").
+// Copyright 2023-2026 Citra Emulator Project / Azahar Emulator Project (vk_rasterizer.cpp, glsl_fs_shader_gen.cpp)
 // Copyright 2023-2026 Citra Emulator Project / Azahar Emulator Project (pica_core.h)
 //
 // The lookup-table rings (N2-33; docs/native/gpu-fragment-design.md 5.10). Core has no table of its own: the

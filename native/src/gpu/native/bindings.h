@@ -1,7 +1,10 @@
-// The one pipeline layout of the fragment pipeline (N2-33; docs/native/gpu-fragment-design.md 5.6 and 5.10).
+// Derived from Azahar src/video_core/shader/generator/glsl_fs_shader_gen.cpp (the fragment uniform block fs_data at
+// binding 2; DefineBindingsVK: the three texel buffers at set 0 bindings 3, 4 and 5, the shadow image at set 2 binding 0) at
+// 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-3.0-or-later: the file says "Licensed under GPLv3 or any later
+// version"). The rest of the layout (the texture and sampler slots, tex_color at set 1 binding 8) is ours.
+// Copyright 2023-2026 Citra Emulator Project / Azahar Emulator Project (glsl_fs_shader_gen.cpp)
 //
-// Written for this package from the design: nothing is copied from Azahar here (Azahar's binding numbers were read
-// for the order, `DefineBindingsVK` in glsl_fs_shader_gen.cpp).
+// The one pipeline layout of the fragment pipeline (N2-33; docs/native/gpu-fragment-design.md 5.6 and 5.10).
 //
 // ONE layout for every module, the superset of 5.6 and 5.10: the specialised shaders and the ubershaders use the
 // same sets, so a switch from one to the other never changes a binding. A shader declares the bindings it uses with

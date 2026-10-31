@@ -1,11 +1,13 @@
 // Derived from Azahar src/video_core/shader/generator/pica_fs_config.h and pica_fs_config.cpp
 // (FSConfig, FramebufferConfig, BlendConfig, TextureConfig, TextureBorder, TevStageConfigRaw,
 // Light, LutConfig, LightConfig, ProcTexConfig, UserConfig and the StructHash scheme) and
-// profile.h (Profile) at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6. pica_fs_config.h and
-// pica_fs_config.cpp say "Licensed under GPLv3 or any later version", profile.h says "Licensed under
-// GPLv2 or any later version": this file is GPL-3.0-or-later.
+// profile.h (Profile), and src/video_core/pica/regs_texturing.h (the bit fields of a TEV stage's words) at
+// 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6. pica_fs_config.h and pica_fs_config.cpp say "Licensed under GPLv3
+// or any later version", profile.h and regs_texturing.h say "Licensed under GPLv2 or any later version": this
+// file is GPL-3.0-or-later.
 // Copyright 2023-2026 Citra Emulator Project / Azahar Emulator Project (pica_fs_config.h,
 //   pica_fs_config.cpp, profile.h)
+// Copyright 2017-2024 Citra Emulator Project / Azahar Emulator Project (regs_texturing.h)
 //
 // The fragment key (N2-33; docs/native/gpu-fragment-design.md 4.3 and 4.8; Azahar's `FSConfig`).
 //
@@ -342,14 +344,6 @@ struct FragmentKey {
         return (stage_index < 4) && ((texture.combiner_buffer_input() >> 4) & (1u << stage_index));
     }
 
-    // Azahar's UsesSpirvIncompatibleConfig, kept for N2-08's reports: ShadowCube, shadow rendering and a
-    // min/max half. Nothing here needs it (there is one generator).
-    bool UsesSpirvIncompatibleConfig() const {
-        return texture.texture0_type() == re::TextureType::ShadowCube || framebuffer.shadow_rendering() != 0 ||
-               framebuffer.requested_rgb_blend.RequiresMinMaxEmulation() ||
-               framebuffer.requested_alpha_blend.RequiresMinMaxEmulation();
-    }
-
     void ApplyProfile(const DeviceProfile& profile);
 
     bool operator==(const FragmentKey& other) const { return std::memcmp(this, &other, sizeof(FragmentKey)) == 0; }
@@ -379,8 +373,17 @@ static_assert(sizeof(FragmentKey) % sizeof(u32) == 0);
 // The version of the whole key: lists store it in their header (N2-16).
 inline constexpr u64 kFragmentKeyStructHash = FragmentKey::StructHash();
 
-// A stable 64-bit hash of the key's words (the same on every run and build).
-u64 HashKey(const FragmentKey& key);
+// A stable 64-bit hash of the key's words (the same on every run and build). Inline: `PipelineKey::Hash()` uses it, and
+// `mh4n_gpu_pipeline_key` is a header-only target that links nothing.
+inline u64 HashKey(const FragmentKey& key) {
+    u32 words[kFragmentKeyWords];
+    std::memcpy(words, &key, sizeof(words));
+    u64 h = HashCombine(0x4D48344E46534Bull, kFragmentKeyWords);
+    for (u32 w : words) {
+        h = HashCombine(h, w);
+    }
+    return h;
+}
 
 // ---- the device profile ----------------------------------------------------------------------------
 
