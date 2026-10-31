@@ -159,8 +159,11 @@ struct Gas {
 // the meaning open or this module does not decode it. GPUREG_GAS_LUT_INDEX and
 // GPUREG_GAS_LUT_DATA are reg::kGasLutIndex and reg::kGasLutData (regs.h).
 namespace gas_reg {
-// GPUREG_GAS_FOG_MODE (shared with GPUREG_TEXENV_UPDATE_BUFFER): fog mode 7 is gas, 5 fog, 1
-// linear fog, 0 disabled (3dbrew, the fog mode values). Other fields: see 3dbrew.
+// 3dbrew has no register of the name "gas fog mode": 0xE0 is GPUREG_TEXENV_UPDATE_BUFFER there.
+// PICA_REG_GAS_FOG_MODE / PICA_REG_TEX_ENV_BUF_INPUT appear only in the page's "official name"
+// column, and the fog mode values (0 disabled, 1 linear fog, 5 fog, 7 gas) are listed under
+// GPUREG_TEXENV_UPDATE_BUFFER, whose register is shared between the gas/fog mode and the texture
+// combiner buffer inputs. The identifier below is ours. Other fields: see 3dbrew.
 inline constexpr u32 kFogMode = 0x0E0;
 // GPUREG_GAS_ATTENUATION: bits 0-15 float1.5.10, gas density attenuation.
 inline constexpr u32 kAttenuation = 0x0E4;

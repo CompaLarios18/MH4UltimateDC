@@ -771,9 +771,10 @@ TEST_CASE("gas look-up table: the index wraps at 16 entries (unverified rule)") 
 TEST_CASE("the other gas registers are plain registers") {
     Rig rig;
     rig.Draw();
-    // GAS_FOG_MODE 0x0E0, GAS_ATTENUATION 0x0E4, GAS_ACCMAX 0x0E5, GAS_LIGHT_XY 0x120, GAS_LIGHT_Z
-    // 0x121, GAS_LIGHT_Z_COLOR 0x122, GAS_ACCMAX_FEEDBACK 0x125, GAS_DELTAZ_DEPTH 0x126.
+    // 0x0E0 (3dbrew: GPUREG_TEXENV_UPDATE_BUFFER, where fog mode 7 is gas), GAS_ATTENUATION 0x0E4,
+    // GAS_ACCMAX 0x0E5, GAS_LIGHT_XY 0x120, GAS_LIGHT_Z 0x121, GAS_LIGHT_Z_COLOR 0x122, GAS_ACCMAX_FEEDBACK 0x125, GAS_DELTAZ_DEPTH 0x126.
     rig.Run(List()
+                .Write(0x0E0, 0x7)
                 .Write(0x0E4, 0x11)
                 .Write(0x0E5, 0x22)
                 .Write(0x120, 0x33)
@@ -781,6 +782,7 @@ TEST_CASE("the other gas registers are plain registers") {
                 .Write(0x122, 0x55)
                 .Write(0x125, 0x66)
                 .Write(0x126, 0x77));
+    CHECK(rig.Reg(0x0E0) == 0x7);
     CHECK(rig.Reg(0x0E4) == 0x11);
     CHECK(rig.Reg(0x0E5) == 0x22);
     CHECK(rig.Reg(0x120) == 0x33);
@@ -791,6 +793,15 @@ TEST_CASE("the other gas registers are plain registers") {
     CHECK_FALSE(rig.cp.state().gas.table_dirty);
     CHECK(rig.cp.state().gas.index == 0);
     CHECK(rig.cp.gas_lut_writes() == 0);
+}
+
+TEST_CASE("a masked write to the gas data port stores the whole word in the table") {
+    // As the fog, lighting and procedural-texture handlers do: the register keeps the masked
+    // word, the handler gets the whole one.
+    Rig rig;
+    rig.Run(List().Write(0x123, 4).Write(0x124, 0x11223344, 0b0011));
+    CHECK(rig.Reg(0x124) == 0x3344);
+    CHECK(rig.cp.state().gas.lut[4] == 0x11223344);
 }
 
 TEST_CASE("a data port's words are reported one per word, the gas port included") {

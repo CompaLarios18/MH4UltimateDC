@@ -74,7 +74,9 @@ inline constexpr u32 kFogLutData = 0x0E8;       // 8 registers
 // ---- gas (3dbrew, GPU/Internal Registers; Azahar defines none of them) --------------------------
 // GPUREG_GAS_LUT_INDEX: bits 0-15, the index GPUREG_GAS_LUT_DATA writes to. GPUREG_GAS_LUT_DATA
 // is listed alone (0x125 is GPUREG_GAS_ACCMAX_FEEDBACK), not as a run of eight aliases like the
-// fog data port; the page's "these registers" is read as the port, and the one id is acted on.
+// fog data port. 3dbrew's GAS_LUT_INDEX sentence spells the target "GPUREG_GAS_LUT_DATAi" (a copy
+// of the fog wording) and the data section says "these registers", while the register table and
+// the heading give one id, 0x124: acting on that one id only is an assumption (unverified).
 inline constexpr u32 kGasLutIndex = 0x123;
 inline constexpr u32 kGasLutData = 0x124;
 
@@ -167,7 +169,8 @@ constexpr bool IsBatchRegister(u32 id) {
 constexpr bool IsSpecialRegister(u32 id) {
     return IsBatchRegister(id) || id == reg::kIrqRequest || id == reg::kTriangleTopology ||
            id == reg::kRestartPrimitive || id == reg::kFixedAttribIndex ||
-           id == reg::kGasLutIndex || id == reg::kGasLutData || id == reg::kTriggerDraw || id == reg::kTriggerDrawIndexed ||
+           id == reg::kGasLutIndex || id == reg::kGasLutData ||
+           id == reg::kTriggerDraw || id == reg::kTriggerDrawIndexed ||
            InRange(id, reg::kCommandBufferTrigger, 2) ||
            id == reg::kGs + reg::kShaderBoolUniforms || id == reg::kVs + reg::kShaderBoolUniforms ||
            InRange(id, reg::kGs + reg::kShaderIntUniforms, 4) ||
