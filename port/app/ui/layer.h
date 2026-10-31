@@ -118,7 +118,7 @@ public:
         return was_busy;
     }
     /// A controller was used last (its buttons, a stick or a trigger pushed well), not the
-    /// keyboard, the mouse or a touchscreen: the menu's key hints follow it.
+    /// keyboard or the mouse (a touchscreen leaves it as it was): the menu's key hints follow it.
     bool PadLast() const {
         return pad_last;
     }
@@ -145,6 +145,9 @@ private:
     /// A touchscreen's finger (SDL_FINGER*), the first one only, as Dear ImGui's mouse.
     void Finger(const SDL_Event& event);
     void LogEcho();
+    /// At the start of a frame, with the lock: the keyboard's events `held` go to Dear ImGui, but
+    /// an echo key's down that a controller's button came with (and its text).
+    void ForwardHeld();
 
     std::string last_fps_corner = "top-left";  ///< where ToggleFpsCounter puts the counter back
     std::string last_guides_corner = "bottom-left";  ///< and ToggleKeyGuides the guides
@@ -165,6 +168,10 @@ private:
     bool draw_ready = false;     ///< the copy has a frame to draw
     u32 controller_buttons = 0;  ///< Back and Start held (bits), for Back+Start
     s64 finger = -1;             ///< the touchscreen's finger that is the mouse in the menu (-1: none)
+    /// The keyboard's events of this pump from an echo key's down on (Enter, Space, Tab, an arrow,
+    /// while the menu is up), until the frame: SDL pumps the keyboard before the controllers, so
+    /// the button an echo comes with can follow it (OnEvent, ForwardHeld)
+    std::vector<SDL_Event> held;
     const char* help_focused = nullptr; ///< this frame's descriptions (Help)
     const char* help_hovered = nullptr;
 

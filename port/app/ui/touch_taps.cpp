@@ -145,7 +145,10 @@ bool DrawTouchTaps(Layer& layer) {
                 int& value = axis == 0 ? tap.x : tap.y;
                 const int last = (axis == 0 ? Taps::WIDTH : Taps::HEIGHT) - 1;
                 int v = std::clamp(value, 0, last);
-                if (ImGui::SliderInt(axis == 0 ? "##x" : "##y", &v, 0, last, "%d", ImGuiSliderFlags_AlwaysClamp)) {
+                // (with a controller in use, no value typed in, as the menu's sliders: A held asks for one)
+                const ImGuiSliderFlags flags =
+                    ImGuiSliderFlags_AlwaysClamp | (layer.PadLast() ? ImGuiSliderFlags_NoInput : ImGuiSliderFlags_None);
+                if (ImGui::SliderInt(axis == 0 ? "##x" : "##y", &v, 0, last, "%d", flags)) {
                     value = v;
                     changed = true;
                     s.reload = true;

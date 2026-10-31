@@ -154,6 +154,8 @@ private:
                      std::vector<std::string> labels, int disabled = -1);
     bool SliderInt(const char* id, int& value, int min, int max, const char* format, int step);
     bool SliderFloat(const char* id, float& value, float min, float max, const char* format, float step);
+    /// Its sliders' flags: with a controller in use, no value typed in (only the steps).
+    ImGuiSliderFlags SliderFlags() const;
 
     // ── Focus and jumps (menu.cpp) ──
     void FocusFirst(bool cursor);
@@ -322,6 +324,9 @@ private:
     // the search
     char search[64] = {};
     ImGuiID search_id = 0;       ///< its field
+    /// The field lets go of its text at the start of the next frame (ClearSearch is called from
+    /// outside the frames too, where Dear ImGui's context isn't the menu's to touch)
+    bool drop_search_field = false;
     std::string query;           ///< what the results are for
     bool searchable = false;     ///< it has a word of two letters or more: the results show
     std::vector<Index::Result> results;

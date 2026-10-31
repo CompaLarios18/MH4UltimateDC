@@ -448,7 +448,8 @@ void Menu::DrawPanelViewRows(const char* key, RowId size_row, RowId where_row, R
     if (BeginRow(size_row)) {
         float percent = view.height * 100.0f;
         bool changed = ImGui::SliderFloat((id + "_size").c_str(), &percent, 0.0f, 100.0f,
-                                          percent < 1.0f ? "the touch screen's scale" : "%.0f%% of the window's height");
+                                          percent < 1.0f ? "the touch screen's scale" : "%.0f%% of the window's height",
+                                          SliderFlags());
         if (ImGui::IsItemActive()) {
             slider_active = true;
         }
@@ -591,8 +592,8 @@ void Menu::DrawButtonList(RowId row, const char* key) {
     if (!BeginRow(row)) {
         return;
     }
-    std::string value = Upper(Game(key));
-    if (value.empty() || IsOff(Lower(value)) || value == "NONE") {
+    std::string value = ButtonsOf(Game(key));
+    if (value.empty()) {
         value = "OFF";
     }
     if (ChooseValue((std::string("##") + key).c_str(), value, {std::begin(BUTTONS), std::end(BUTTONS)},
@@ -617,8 +618,8 @@ void Menu::DrawGameplay() {
     if (BeginSettings("##after_quest")) {
         DrawButtonList(R::GameplaySkip, "skip");
         if (BeginRow(R::GameplaySkipEnd)) {
-            std::string combo = Upper(Game("skip_end"));
-            if (combo.empty() || IsOff(Lower(combo)) || combo == "NONE") {
+            std::string combo = ButtonsOf(Game("skip_end"));
+            if (combo.empty()) {
                 combo = "OFF";
             }
             if (ChooseValue("##skip_end", combo, {std::begin(COMBOS), std::end(COMBOS)}, combo_labels)) {

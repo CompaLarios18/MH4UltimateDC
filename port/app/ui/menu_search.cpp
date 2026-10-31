@@ -41,7 +41,9 @@ void Menu::UpdateSearch() {
 }
 
 void Menu::ClearSearch() {
-    Nav::DropTextField(search_id); // (being typed in, it would put its text back)
+    // the field lets go of its text in the next frame (Draw): this runs as the menu opens and
+    // closes too, outside the frames, without the layer's lock on Dear ImGui's context
+    drop_search_field = true;
     search[0] = '\0';
     query.clear();
     searchable = false;
@@ -54,15 +56,16 @@ void Menu::DrawSearchField(float width) {
     // Ctrl+F from anywhere in the menu activates it, as a click does
     ImGui::SetNextItemShortcut(ImGuiMod_Ctrl | ImGuiKey_F, ImGuiInputFlags_RouteGlobal);
     ImGui::SetNextItemWidth(width);
-    const bool enter = ImGui::InputTextWithHint("##search", layer.PadLast() ? "Search (Y)" : "Search (Ctrl+F)", search,
+    const bool enter = ImGui::InputTextWithHint("##search", layer.PadLast() ? "Search (Y)" : SEARCH_HINT, search,
                                                 sizeof(search),
                                                 ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_EscapeClearsAll);
     const bool activated = ImGui::IsItemActivated();
     const bool active = ImGui::IsItemActive();
     search_id = ImGui::GetItemID();
     ItemHelp(R::HeaderSearch);
-    if (activated && Nav::ActivatedByPad()) {
-        // A on the field with a controller: the keys on the screen, not a keyboard nobody has
+    if (activated && (Nav::ActivatedByPad() || Nav::ActivatedByTouch())) {
+        // A on the field with a controller, or a finger on it (a Steam Deck's): the keys on the
+        // screen, not a keyboard nobody may have (a real one types into them too)
         Nav::LeaveTextField();
         OpenKeys();
         return;
@@ -117,11 +120,13 @@ void Menu::DrawResults(float footer) {
         ImGui::TextUnformatted(heading.c_str());
         ImGui::PopTextWrapPos();
         ImGui::SameLine(start + avail - clear_width);
+        item.result = results.empty(); // with nothing found, the cursor waits on Clear
         if (ImGui::SmallButton(clear)) {
             ClearSearch();
             FocusRemembered(ImGui::GetIO().NavVisible);
         }
         layer.Help("Clears the search: the tab's page comes back.");
+        item = {};
         // one link a result: its label, then where it is (and why it doesn't show or apply now)
         if (!results.empty() && ImGui::BeginTable("##results", 2, ImGuiTableFlags_SizingStretchProp)) {
             // labels are 30 characters at most; where they are, and why, takes more

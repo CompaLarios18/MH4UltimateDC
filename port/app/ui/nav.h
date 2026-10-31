@@ -32,12 +32,15 @@ void DropTextField(ImGuiID id);
 
 /// The item active now was activated by a controller (its A), not the mouse or the keyboard.
 bool ActivatedByPad();
+/// The item active now was activated by a touchscreen's finger.
+bool ActivatedByTouch();
 
 /// How far an analog key is pushed, 0..1 (a stick's direction, a trigger).
 float KeyValue(ImGuiKey key);
 
 /// Ctrl+Tab and Ctrl+Shift+Tab don't switch between Dear ImGui's windows (the menu's tabs take
-/// them), and holding a controller's X doesn't either.
+/// them), and holding a controller's X doesn't either. A tap of X, or of Alt, still toggles the
+/// nav layer: the menu takes those keys (TakeKey) so that it doesn't.
 void DisableWindowing();
 
 /// `key` belongs to `owner` this frame and the next: the navigation (which reads keys that have

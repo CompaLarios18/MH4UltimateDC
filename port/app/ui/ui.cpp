@@ -32,8 +32,9 @@ namespace {
 std::atomic<Layer*> instance{nullptr};
 
 constexpr u32 BACK_HELD = 1, START_HELD = 2;
-/// A key that comes this soon after a controller's button (or before it, for Esc) is the echo
-/// Steam Input's desktop layouts send for that button.
+/// A key that comes this soon after a controller's button, or before it (Esc, and a key the button
+/// follows in the same pump: Layer::ForwardHeld), is the echo Steam Input's desktop layouts send
+/// for that button.
 constexpr u32 ECHO_MS = 150;
 
 /// The keys Steam Input sends for a controller's buttons: Esc (B), Enter (A), Space, Tab and the
@@ -295,6 +296,7 @@ void Layer::SetCapture(bool on) {
         return;
     }
     capturing = on;
+    finger = -1; // a finger down as the menu comes or goes is forgotten (its lift may be the game's)
     Input::SetMuted(on);
     if (on) {
         // what the game had held is let go: the menu has the keys and the mouse now
@@ -407,10 +409,10 @@ bool Layer::OnEvent(const SDL_Event& event) {
         return false;
     }
     // a touchscreen's first finger is the menu's mouse (a Steam Deck's: SDL's touch-to-mouse is
-    // off for the game, window.cpp, and Dear ImGui's SDL backend takes no fingers); the others,
-    // and every finger while a key is awaited, do nothing
+    // off for the game, window.cpp, and Dear ImGui's SDL backend takes no fingers); the others do
+    // nothing, and while a key is awaited a finger only lifts
     if (event.type == SDL_FINGERDOWN || event.type == SDL_FINGERUP || event.type == SDL_FINGERMOTION) {
-        if (!key_capture) {
+        if (!key_capture || event.type == SDL_FINGERUP) {
             Finger(event);
         }
         return true;
@@ -432,7 +434,16 @@ bool Layer::OnEvent(const SDL_Event& event) {
         menu->OnCapturedKey(event.wheel.y > 0 ? Input::WHEEL_UP : Input::WHEEL_DOWN);
         return true;
     }
-    {
+    // an echo key's down, and the keyboard's events after it, wait for the frame (ForwardHeld): the
+    // controller's button it may be the echo of can come right after it, in the same pump (SDL
+    // reads the keyboard before the controllers)
+    const bool key_event = event.type == SDL_KEYDOWN || event.type == SDL_KEYUP || event.type == SDL_TEXTINPUT ||
+                           event.type == SDL_TEXTEDITING;
+    if (menu_open && key_event &&
+        (!held.empty() ||
+         (event.type == SDL_KEYDOWN && event.key.repeat == 0 && EchoKey(event.key.keysym.scancode)))) {
+        held.push_back(event);
+    } else {
         std::scoped_lock lock{mutex};
         MakeCurrent();
         ImGui_ImplSDL2_ProcessEvent(&event);
@@ -484,7 +495,40 @@ void Layer::Finger(const SDL_Event& event) {
     if (event.type == SDL_FINGERUP) {
         finger = -1;
     }
-    pad_last = false;
+    // (pad_last stays: a finger on a Steam Deck says nothing of whether its controller or a
+    // keyboard is in hand, and the hints are those)
+}
+
+void Layer::ForwardHeld() {
+    if (held.empty()) {
+        return;
+    }
+    std::vector<SDL_Event> events;
+    events.swap(held);
+    if (!menu_open) {
+        return; // closed meanwhile: its next opening starts from a clean input state
+    }
+    // an echo key that a controller's button (or a stick pushed) came with, at once or a moment
+    // after: the button does it, once; a dropped Space's text goes with it
+    const auto echo = [this](u32 at) {
+        const auto after = [at](u32 pad) { return pad != 0 && pad >= at && pad - at < ECHO_MS; };
+        return after(pad_button_at) || after(stick_at);
+    };
+    bool drop_text = false;
+    std::scoped_lock lock{mutex};
+    MakeCurrent();
+    for (const SDL_Event& e : events) {
+        if (e.type == SDL_KEYDOWN && e.key.repeat == 0 && EchoKey(e.key.keysym.scancode) && echo(e.key.timestamp)) {
+            drop_text = e.key.keysym.scancode == SDL_SCANCODE_SPACE;
+            continue;
+        }
+        if (e.type == SDL_TEXTINPUT && drop_text && std::string(e.text.text) == " ") {
+            drop_text = false;
+            continue;
+        }
+        ImGui_ImplSDL2_ProcessEvent(&e);
+    }
+    drop_space_text = drop_space_text || drop_text; // (its text in a later pump)
 }
 
 void Layer::LogEcho() {
@@ -536,6 +580,7 @@ void Layer::ToggleKeyGuides() {
 }
 
 void Layer::Frame() {
+    ForwardHeld(); // the keyboard's events of the last pump that waited for its controller's
     if (escape_at != 0) {
         // the Esc held back in OnEvent: an echo if a controller's button came within ECHO_MS of it,
         // before or after; otherwise, once it has waited a moment, one step back

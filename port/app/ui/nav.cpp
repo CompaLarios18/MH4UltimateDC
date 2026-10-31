@@ -79,6 +79,12 @@ bool ActivatedByPad() {
            (g.NavActivateFlags & (ImGuiActivateFlags_FromShortcut | ImGuiActivateFlags_FromTabbing)) == 0;
 }
 
+bool ActivatedByTouch() {
+    // the layer gives a touchscreen's finger as the mouse, its source TouchScreen (ui.cpp, Finger)
+    const ImGuiContext& g = *GImGui;
+    return g.ActiveIdSource == ImGuiInputSource_Mouse && g.IO.MouseSource == ImGuiMouseSource_TouchScreen;
+}
+
 float KeyValue(ImGuiKey key) {
     return ImGui::GetKeyData(key)->AnalogValue;
 }

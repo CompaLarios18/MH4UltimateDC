@@ -85,12 +85,6 @@ const char* NameOf(Settings::GraphicsAPI api) {
     }
 }
 
-/// mh4u.ini's value of a list of 3DS buttons, "" for none.
-std::string ButtonsOf(std::string value) {
-    value = Upper(value);
-    return value.empty() || IsOff(Lower(value)) || value == "NONE" ? "" : value;
-}
-
 } // namespace
 
 Menu::Menu(Layer& layer_) : layer{layer_} {
@@ -351,6 +345,10 @@ std::string Menu::LabelOf(RowId row) const {
 // ── The window ──
 
 void Menu::Draw() {
+    if (drop_search_field) {
+        drop_search_field = false;
+        Nav::DropTextField(search_id); // (being typed in, it would put its text back)
+    }
     if (refresh_in > 0 && --refresh_in == 0) {
         texts_dirty = true;
     }
@@ -370,7 +368,9 @@ void Menu::Draw() {
     ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f), ImGuiCond_Always,
                             ImVec2(0.5f, 0.5f));
     ImGui::SetNextWindowSize(size, ImGuiCond_Always);
-    if (just_opened) {
+    // and focused: on opening, and after a click or a finger on the game around it, which leaves no
+    // window focused (Dear ImGui's click on the void), where the controller and LB/RB do nothing
+    if (just_opened || !ImGui::IsWindowFocused(ImGuiFocusedFlags_AnyWindow)) {
         ImGui::SetNextWindowFocus();
     }
     ImGui::Begin("##menu", nullptr,
@@ -665,8 +665,7 @@ const char* Menu::Hints() const {
         return pad ? "A: go to it   B: clear the search   Y: type   LB/RB: tabs"
                    : "Enter: go to it   Esc: clear the search   Ctrl+Tab: tabs";
     }
-    return pad ? "A: choose   B: back   LB/RB: tabs   LT/RT: sections   Y: search"
-               : "Enter: choose   Esc: back   Ctrl+Tab: tabs   Ctrl+F: search";
+    return pad ? "A: choose   B: back   LB/RB: tabs   LT/RT: sections   Y: search" : PAGE_KEYS;
 }
 
 void Menu::HandleButtons() {
@@ -678,8 +677,12 @@ void Menu::HandleButtons() {
         ClearSearch();
         SelectTab(static_cast<Tab>((static_cast<int>(tab) + TAB_COUNT + by) % TAB_COUNT), true);
     };
-    // the controller's Y is the search's: Dear ImGui would put a focused slider into typing a value
+    // the controller's Y is the search's (Dear ImGui's would ask for a context menu); X and Alt are
+    // nobody's: a tap of either toggles Dear ImGui's nav layer, which takes the cursor out of the page
     Nav::TakeKey(ImGuiKey_GamepadFaceUp, pad_owner);
+    Nav::TakeKey(ImGuiKey_GamepadFaceLeft, pad_owner);
+    Nav::TakeKey(ImGuiKey_LeftAlt, pad_owner);
+    Nav::TakeKey(ImGuiKey_RightAlt, pad_owner);
     if (keys_up) {
         if (idle) {
             HandleSearchKeys(); // LB, RB, Y and Start are the keys' own; LT, RT and the tabs rest
@@ -707,10 +710,10 @@ void Menu::HandleButtons() {
     }
     // Ctrl+Tab and Ctrl+Shift+Tab: the next and the previous tab, from the search field too
     if (!keys_up && !waiting && !popup) {
-        if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_Tab, ImGuiInputFlags_Repeat | ImGuiInputFlags_RouteGlobal)) {
+        if (ImGui::Shortcut(TABS_MOD | ImGuiKey_Tab, ImGuiInputFlags_Repeat | ImGuiInputFlags_RouteGlobal)) {
             step_tab(1);
         }
-        if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_Tab,
+        if (ImGui::Shortcut(TABS_MOD | ImGuiMod_Shift | ImGuiKey_Tab,
                             ImGuiInputFlags_Repeat | ImGuiInputFlags_RouteGlobal)) {
             step_tab(-1);
         }
@@ -1201,8 +1204,14 @@ bool Menu::ChooseValue(const char* id, std::string& value, std::vector<std::stri
     return true;
 }
 
+ImGuiSliderFlags Menu::SliderFlags() const {
+    // a controller's A held on a slider (Dear ImGui's 0.6 s) asks for a value typed in, with no
+    // keyboard at hand: with a controller in use the sliders take the D-pad and LB/RB only
+    return layer.PadLast() ? ImGuiSliderFlags_NoInput : ImGuiSliderFlags_None;
+}
+
 bool Menu::SliderInt(const char* id, int& value, int min, int max, const char* format, int step) {
-    bool changed = ImGui::SliderInt(id, &value, min, max, format);
+    bool changed = ImGui::SliderInt(id, &value, min, max, format, SliderFlags());
     if (ImGui::IsItemActive()) {
         slider_active = true;
     }
@@ -1215,7 +1224,7 @@ bool Menu::SliderInt(const char* id, int& value, int min, int max, const char* f
 }
 
 bool Menu::SliderFloat(const char* id, float& value, float min, float max, const char* format, float step) {
-    bool changed = ImGui::SliderFloat(id, &value, min, max, format);
+    bool changed = ImGui::SliderFloat(id, &value, min, max, format, SliderFlags());
     if (ImGui::IsItemActive()) {
         slider_active = true;
     }
