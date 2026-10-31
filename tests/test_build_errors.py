@@ -19,8 +19,9 @@ from recomp import build as rbuild  # noqa: E402
 class Compiler:
     """subprocess.run as the build calls it: a compile writes its object, a link its library (and
     finds every object it is given), unless `results` says otherwise. `results` maps a source's
-    name, or "link", to how its runs end, one (status, what it says) per run; runs past the list
-    work. `runs` lists what was run, in order."""
+    name, or "link", to how its runs end, one (status, what it says) per run, or (0, "", False)
+    for a status of 0 with nothing written; runs past the list work. `runs` lists what was run,
+    in order."""
 
     def __init__(self, results=None):
         self.results = {key: list(ends) for key, ends in (results or {}).items()}
@@ -32,8 +33,8 @@ class Compiler:
         key = "link" if link else os.path.basename(cmd[cmd.index("-o") - 1])
         self.runs.append(key)
         ends = self.results.get(key)
-        code, said = ends.pop(0) if ends else (0, "")
-        if code == 0:
+        code, said, *writes = ends.pop(0) if ends else (0, "")
+        if code == 0 and (writes or [True])[0]:
             if link:
                 rsp = next(arg[1:] for arg in cmd if arg.startswith("@"))
                 with open(rsp) as f:
@@ -111,6 +112,19 @@ def test_a_failed_link_says_how_the_linker_ended(tmp_path, monkeypatch):
             rbuild.build(out, 1, "O0", [], "lib.so", [])
         message = str(e.value.code)
         assert message.startswith("linking lib.so failed: ") and words in message, message
+
+
+def test_a_status_of_0_with_nothing_written_is_a_failure(tmp_path, monkeypatch):
+    """What a Python that can't wait for its children (SIGCHLD ignored) sees: every status 0."""
+    out = sources(tmp_path, "a.c", "b.c")
+    cc = Compiler({"b.c": [(0, "", False)]})
+    monkeypatch.setattr(rbuild.subprocess, "run", cc)
+    with pytest.raises(SystemExit, match="1 object.* missing after compiling, b-O0-.*status 0 without writing"):
+        rbuild.build(out, 2, "O0", [], "lib.so", [])
+    assert "link" not in cc.runs
+    monkeypatch.setattr(rbuild.subprocess, "run", Compiler({"link": [(0, "", False)]}))
+    with pytest.raises(SystemExit, match="linking lib.so failed: .* status 0 without writing it"):
+        rbuild.build(out, 2, "O0", [], "lib.so", [])
 
 
 def test_how_it_ended():

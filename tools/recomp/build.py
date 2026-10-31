@@ -237,6 +237,12 @@ def build(outdir: str, jobs: int, opt: str, defines: list[str], lib_name: str, e
             print(f"error in {src}: {os.path.basename(cc)} {how_it_ended(code)}" + (f"\n{said[-2000:]}" if said else ""),
                   file=sys.stderr)
         raise SystemExit(1)
+    # (a status of 0 with nothing written: a process that can't wait for its children, as with
+    # SIGCHLD ignored, reads every status as 0)
+    missing = [o for o in objs if not os.path.isfile(o)]
+    if missing:
+        raise SystemExit(f"{len(missing)} object(s) missing after compiling, {os.path.basename(missing[0])} the "
+                         f"first: {os.path.basename(cc)} ended with status 0 without writing them")
     with open(stamp, "w") as fh:
         fh.write(header_hash + "\n")
     lib = os.path.join(outdir, lib_name)
@@ -256,6 +262,9 @@ def build(outdir: str, jobs: int, opt: str, defines: list[str], lib_name: str, e
         said = (r.stderr.strip() or r.stdout.strip())[-4000:]
         raise SystemExit(f"linking {os.path.basename(lib)} failed: {os.path.basename(cc)} {how_it_ended(r.returncode)}"
                          + (f"\n{said}" if said else ""))
+    if not os.path.isfile(lib):
+        raise SystemExit(f"linking {os.path.basename(lib)} failed: {os.path.basename(cc)} ended with status 0 "
+                         "without writing it")
     print(f"linked {lib} ({len(objs)} objects, {len(todo)} recompiled in {time.time() - t0:.0f}s)")
     if android:
         problems = android_library_problems(lib)
