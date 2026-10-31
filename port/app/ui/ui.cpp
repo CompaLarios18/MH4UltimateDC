@@ -448,7 +448,10 @@ void Layer::Frame() {
     const bool guides = !capturing && window.KeyboardMouseActive() && FpsCounterOn(config.key_guides);
     // pause and fast forward, under nothing of the menu's
     const std::string speed = capturing ? std::string() : Speed::Get().Badge(SDL_GetTicks());
-    const bool draw = capturing || keyboard->HasNotice() || !hint.Empty() || fps_counter || guides || !speed.empty();
+    // why the touch-screen key changed nothing (ui/hint.h), for a few seconds
+    const std::string notice = capturing ? std::string() : TouchScreenNotice(SDL_GetTicks());
+    const bool draw = capturing || keyboard->HasNotice() || !hint.Empty() || fps_counter || guides ||
+                      !speed.empty() || !notice.empty();
     if (!draw || !renderer_ready.load(std::memory_order_acquire)) {
         if (visible.load(std::memory_order_relaxed)) {
             std::scoped_lock lock{mutex};
@@ -512,6 +515,9 @@ void Layer::Frame() {
     }
     if (!speed.empty()) {
         DrawSpeedBadge(speed, Speed::Get().Paused());
+    }
+    if (!notice.empty()) {
+        DrawNotice(notice, !speed.empty());
     }
     was_busy = ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopup) || ImGui::IsAnyItemActive();
     ImGui::Render();

@@ -45,6 +45,9 @@ No. The game's code runs natively, and its call stacks live on your PC's own sta
 **Pause and fast forward?**
 In the port's app, playing alone: **P** pauses, **Tab** runs the game at 2x (the speed and the keys are in the menu, Esc). In a room they're off, since the others' games run on with yours.
 
+**In a quest the whole touch screen stays in the corner, and the map settings do nothing**
+The map view shows the map panel of your touch screen's panel layout. Without one (*Customize Panels* in the quest menu), the corner keeps the whole touch screen, so the map's size and place, *Edit HUD layout* and F12 change nothing: put the map panel back. The app says why when F12 has nothing to switch, and the menu (Esc) says so under the map's settings, as it does for the other reasons (the touch screen not over the game in a corner, *In quests, only the map* off, F12 switched to the whole touch screen). Details: *The bottom screen* in [Options](docs/PLAYING.md#3-options).
+
 **Steam Deck?**
 There's a Linux build, not tried on a Deck yet. If you try it, open an issue and tell us how it went.
 

@@ -1,5 +1,6 @@
 #include "ui/hint.h"
 
+#include <algorithm>
 #include <cmath>
 #include <sstream>
 #include <imgui.h>
@@ -144,6 +145,46 @@ void DrawHint(const Hint& hint, bool flash) {
     ImGui::End();
     ImGui::PopStyleVar();
     ImGui::PopStyleColor();
+}
+
+// ── The touch-screen key ──
+
+namespace {
+constexpr std::uint32_t NOTICE_MS = 4000;
+std::string touch_notice;           // why the key's last press changed nothing, "" when it switched
+std::uint32_t touch_notice_at = 0;  // when it was pressed
+} // namespace
+
+void TouchScreenKey(std::uint32_t now_ms) {
+    touch_notice = Port::Hooks::PressQuestMapKey();
+    touch_notice_at = now_ms;
+}
+
+std::string TouchScreenNotice(std::uint32_t now_ms) {
+    return now_ms - touch_notice_at < NOTICE_MS ? touch_notice : std::string();
+}
+
+void DrawNotice(const std::string& text, bool below_badge) {
+    const ImGuiIO& io = ImGui::GetIO();
+    const float em = ImGui::GetFontSize();
+    const float margin = std::round(em * 0.5f);
+    // the badge (ui.cpp) is a line with half a margin above and below it, a margin from the top
+    const float top = below_badge ? margin * 2.5f + em : margin;
+    ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, top), ImGuiCond_Always, ImVec2(0.5f, 0.0f));
+    ImGui::SetNextWindowBgAlpha(0.55f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(margin * 1.2f, margin * 0.5f));
+    constexpr ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoInputs |
+                                       ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoFocusOnAppearing |
+                                       ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_AlwaysAutoResize;
+    if (ImGui::Begin("##notice", nullptr, flags)) {
+        // a long one wraps instead of running off a narrow window
+        ImGui::PushTextWrapPos(std::min(io.DisplaySize.x * 0.8f, em * 32.0f));
+        ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.45f, 1.0f), "%s", text.c_str());
+        ImGui::PopTextWrapPos();
+    }
+    ImGui::End();
+    ImGui::PopStyleVar(2);
 }
 
 } // namespace App::Ui

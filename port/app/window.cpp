@@ -10,13 +10,13 @@
 #include "config.h"
 #include "core/core.h"
 #include "core/perf_stats.h"
-#include "frontend.h"
 #include "icon.h"
 #include "input.h"
 #include "input_common/keyboard.h"
 #include "input_common/main.h"
 #include "speed.h"
 #include "ui/fps_counter.h"
+#include "ui/hint.h"
 #include "ui/ui.h"
 
 namespace App {
@@ -232,7 +232,7 @@ void Window::OnKey(int scancode, bool down, u16 modifiers) {
     }
     if (std::find(touch_keys.begin(), touch_keys.end(), scancode) != touch_keys.end()) {
         if (down) {
-            Port::ToggleQuestMap();
+            Ui::TouchScreenKey(SDL_GetTicks()); // the map or the whole touch screen, or why neither
         }
         return;
     }
@@ -389,7 +389,7 @@ void Window::PollEvents() {
         case SDL_CONTROLLERBUTTONDOWN:
             // the 3DS has no stick clicks: the right one is the port's touch-screen switch
             if (event.cbutton.button == SDL_CONTROLLER_BUTTON_RIGHTSTICK) {
-                Port::ToggleQuestMap();
+                Ui::TouchScreenKey(SDL_GetTicks());
             }
             break;
         case SDL_CONTROLLERDEVICEADDED:

@@ -1,8 +1,10 @@
 // Lines over the game while the in-game menu is closed, once a quest is complete
 // (port/src/hooks.h): which buttons tap the touch screen's Skip and which, held, end the
-// wait; the hold's progress; and, online, who hasn't asked to end it yet.
+// wait; the hold's progress; and, online, who hasn't asked to end it yet. And for a few
+// seconds after the touch-screen key changed nothing, why.
 #pragma once
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -31,6 +33,20 @@ Hint CurrentHint(const Config& config);
 /// Draws the hint at the bottom middle of the screen, in a Dear ImGui frame (the menu's
 /// context): small and translucent, it takes no input. `flash`: its frame pulses.
 void DrawHint(const Hint& hint, bool flash);
+
+/// The touch-screen key (mh4u-app.ini's touch_screen_key) or a controller's right-stick click,
+/// pressed: in a quest it switches the corner between the map and the whole touch screen
+/// (Port::Hooks::PressQuestMapKey). When it can't (a panel layout without the map panel, say),
+/// TouchScreenNotice says why for a few seconds. The window's events, on the emulation thread.
+void TouchScreenKey(std::uint32_t now_ms);
+
+/// Why the touch-screen key changed nothing, while that is news; "" otherwise. `now_ms`: the
+/// same clock as TouchScreenKey's (SDL's ticks).
+std::string TouchScreenNotice(std::uint32_t now_ms);
+
+/// Draws a notice at the top middle of the screen in a Dear ImGui frame, small; it takes no
+/// input. `below_badge`: under the pause and fast-forward badge, which is up as well.
+void DrawNotice(const std::string& text, bool below_badge);
 
 } // namespace Ui
 } // namespace App
