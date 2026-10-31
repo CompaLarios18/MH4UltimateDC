@@ -77,6 +77,7 @@ enum class Unhandled : u8 {
     GeometryNeedsIndex, // variable primitive mode on a draw that has no index buffer
     GeometryOverflow,   // vertices would not fit the input registers or uniforms
     LoaderBuffer,       // a vertex the loader did not provide
+    OutputSemantic,     // an output semantic id of 24 to 30 on an Arrays/Indexed draw (Azahar asserts)
 };
 
 struct RunError {

@@ -95,6 +95,7 @@ const char* UnhandledText(Unhandled kind) {
     case Unhandled::GeometryNeedsIndex: return "a variable-primitive geometry shader without an index buffer";
     case Unhandled::GeometryOverflow: return "more vertices than the geometry shader's inputs hold";
     case Unhandled::LoaderBuffer: return "a vertex the loader did not provide";
+    case Unhandled::OutputSemantic: return "an output semantic id of 24 to 30";
     }
     return "?";
 }
@@ -156,7 +157,9 @@ struct CpuVertexRunner::Impl final : public VertexSink {
             vertex_slots_overflow[BitsOf(output_register_map, 24, 5)] = buffer[attrib].c[3].value;
         }
 
-        // Copy to result
+        // Copy to result. (Semantic ids 24-30 name slots past the end of OutputVertex: their values
+        // are dropped here as in Azahar. Azahar's Arrays/Indexed draws refuse them first, see
+        // ValidSemantics; its immediate draws do not check and drop them too.)
         OutputVertex vertex;
         std::memcpy(&vertex, vertex_slots_overflow.data(), sizeof(OutputVertex));
 
@@ -170,6 +173,20 @@ struct CpuVertexRunner::Impl final : public VertexSink {
 
     void SetWinding() override {
         out.winding_before.push_back(static_cast<u32>(out.vertices.size()));
+    }
+
+    // RasterizerRegs::ValidateSemantics, which LoadVertices calls (DrawImmediate does not): every
+    // semantic of the output attributes in use is below 24 or INVALID (31). Azahar asserts.
+    bool ValidSemantics() const {
+        for (u32 attrib = 0; attrib < output_attributes; ++attrib) {
+            for (u32 comp = 0; comp < 4; ++comp) {
+                const u32 semantic = (output_map[attrib] >> (8 * comp)) & 0x1F;
+                if (!(semantic < 24 || semantic == 31)) {
+                    return false;
+                }
+            }
+        }
+        return true;
     }
 
     // ---- state -----------------------------------------------------------------------------------------------------
@@ -207,7 +224,7 @@ struct CpuVertexRunner::Impl final : public VertexSink {
     void ReadOutputMap(const pica::PicaState& s);
     void CopyVsUniforms(const pica::PicaState& s);
     void SyncGsUniforms(const pica::PicaState& s);
-    bool ConfigurePipeline(const pica::DrawCall& draw, const pica::PicaState& s, RunMode mode);
+    bool ConfigurePipeline(const pica::DrawCall& draw, RunMode mode);
     RunStatus Fail(const pica::PicaState& s, RunError error, int unit);
     RunStatus RunImmediate(const pica::DrawCall& draw, const pica::PicaState& s, RunMode mode);
     RunStatus RunLoadVertices(gpu::Host& host, const pica::DrawCall& draw, const pica::PicaState& s,
@@ -242,6 +259,17 @@ void CpuVertexRunner::Impl::CopyVsUniforms(const pica::PicaState& s) {
 //    the value seen last (a write of another value; this also covers writes the dirty flags of a
 //    draw this runner did not see have lost).
 // Everything the game has not rewritten keeps the pipeline's changes, as in Azahar.
+//
+// Deviations this reconstruction has from Azahar (the dirty bits are per register, not per uniform):
+//  - when any float-data register is dirty, ALL 96 float uniforms are replaced by the game's values,
+//    not only the indexes written: an index the pipeline buffered a vertex in and the game did not
+//    write loses that vertex (a geometry shader that reads such a stale slot is not expected);
+//  - the command processor mirrors a write to the VERTEX unit's bool/int/float registers into the
+//    geometry unit while the geometry unit is not exclusive and use_gs is No (GsMirrorsVs). Azahar's
+//    write to gs_setup then resets b15 even for an unchanged value; here only the vertex unit's
+//    register is dirty, so the mirrored write is seen only when it changes a value;
+//  - a rewrite of the same value in a draw whose flags the runner did not see is lost unless the
+//    caller passes that draw to NoteDraw (cpu_vertex.h).
 void CpuVertexRunner::Impl::SyncGsUniforms(const pica::PicaState& s) {
     const pica::ShaderSetup& g = s.gs;
     const bool first = !gs_synced;
@@ -279,9 +307,7 @@ void CpuVertexRunner::Impl::SyncGsUniforms(const pica::PicaState& s) {
 // first immediate vertex after a write to 0x232, which is what `geometry_reconfigured` says. A
 // runner that has never been configured (a capture that starts inside a batch) takes the state of
 // the INIT record instead.
-bool CpuVertexRunner::Impl::ConfigurePipeline(const pica::DrawCall& draw, const pica::PicaState& s,
-                                              RunMode mode) {
-    (void)s;
+bool CpuVertexRunner::Impl::ConfigurePipeline(const pica::DrawCall& draw, RunMode mode) {
     if (mode != RunMode::Full) {
         return true;
     }
@@ -366,7 +392,7 @@ RunStatus CpuVertexRunner::Impl::RunImmediate(const pica::DrawCall& draw, const 
     }
 
     // Reconfigure geometry pipeline if needed.
-    if (!ConfigurePipeline(draw, s, mode)) {
+    if (!ConfigurePipeline(draw, mode)) {
         return Fail(s, pipeline.error(), 2);
     }
 
@@ -387,6 +413,11 @@ RunStatus CpuVertexRunner::Impl::RunLoadVertices(gpu::Host& host, const pica::Dr
                                                  const pica::PicaState& s, RunMode mode) {
     const bool is_indexed = draw.kind == pica::DrawKind::Indexed;
 
+    // regs.internal.rasterizer.ValidateSemantics() (an ASSERT in Azahar)
+    if (!ValidSemantics()) {
+        return Fail(s, {Unhandled::OutputSemantic, 0, 0}, 2);
+    }
+
     // Read and validate vertex information from the loaders (N2-05).
     vertex::LoadedDraw loaded = loader.Load(host, draw);
     if (loaded.status != vertex::LoadStatus::Ok && loaded.status != vertex::LoadStatus::NoVertices) {
@@ -401,7 +432,7 @@ RunStatus CpuVertexRunner::Impl::RunLoadVertices(gpu::Host& host, const pica::Dr
     }
 
     // Setup geometry pipeline in case we are using a geometry shader.
-    if (!ConfigurePipeline(draw, s, mode)) {
+    if (!ConfigurePipeline(draw, mode)) {
         return Fail(s, pipeline.error(), 2);
     }
     if (mode == RunMode::Full && pipeline.NeedIndexInput() && !is_indexed) {

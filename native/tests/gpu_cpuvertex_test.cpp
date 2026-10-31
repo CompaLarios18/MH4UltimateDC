@@ -2,12 +2,16 @@
 // 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (the file belongs to the submodule externals/nihstro that
 // Azahar pins at f4d8659decbfe5d234f04134b5002b82dc515a44; it is NOT GPL: its licence is the BSD
 // 3-clause licence of externals/nihstro/license.txt, reproduced below because it asks for that),
-// src/video_core/pica/pica_core.cpp, regs_pipeline.h, regs_shader.h, regs_rasterizer.h and
-// shader_unit.cpp (GPL-2.0-or-later; each says "Licensed under GPLv2 or any later version") in the
-// same commit: the instruction encoder below places the fields where shader_bytecode.h puts them,
-// and the register positions and bit fields the tests write are those of PipelineRegs, ShaderRegs
-// and RasterizerRegs.
+// src/video_core/pica/pica_core.cpp, regs_pipeline.h, regs_shader.h, regs_rasterizer.h,
+// shader_unit.cpp, geometry_pipeline.cpp and src/video_core/shader/shader_interpreter.cpp
+// (GPL-2.0-or-later; each says "Licensed under GPLv2 or any later version") in the same commit: the
+// instruction encoder below places the fields where shader_bytecode.h puts them, the register
+// positions and bit fields the tests write are those of PipelineRegs, ShaderRegs and RasterizerRegs,
+// and the expected values encode the quirks of shader_interpreter.cpp (the stacks, aL, the
+// four-scope return) and of geometry_pipeline.cpp (the asserts, b15).
 // Copyright 2014 Tony Wasserka (shader_bytecode.h)
+// Copyright 2014-2026 Citra Emulator Project / Azahar Emulator Project (shader_interpreter.cpp)
+// Copyright 2017-2024 Citra Emulator Project / Azahar Emulator Project (geometry_pipeline.cpp)
 // Copyright 2023-2026 Citra Emulator Project / Azahar Emulator Project (pica_core.cpp, shader_unit.cpp)
 // Copyright 2017-2025 Citra Emulator Project / Azahar Emulator Project (regs_pipeline.h, regs_shader.h)
 // Copyright 2017-2026 Citra Emulator Project / Azahar Emulator Project (regs_rasterizer.h)
@@ -91,6 +95,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -1903,22 +1908,31 @@ struct CaptureStats {
 
 // The run in progress: a capture is replayed with one runner, and the frame spans are cut at the
 // FRAME records (the player asks the Gpu for the frame's counters at each).
+bool g_note_draws_default = true;
+
 struct CheckRun {
     CpuVertexRunner runner;
     CaptureStats stats;
     bool frame_open = false;
     double span_ns = 0;
+    bool note_draws = true; // the contract of cpu_vertex.h; a test turns it off to show it is needed
 
     void Reset() {
         runner.Reset();
         stats = CaptureStats{};
         frame_open = false;
         span_ns = 0;
+        note_draws = g_note_draws_default;
     }
     void OnDraw(gpu::Host& host, const pica::DrawCall& draw) {
         const CpuReason reason = CpuPathReason(draw, /*assembler_empty=*/true);
         stats.tally.Add(draw, reason);
         if (reason == CpuReason::None) {
+            // cpu_vertex.h: a draw that is not run is passed to NoteDraw, so the runner sees the
+            // register writes whose dirty flags the processor clears after it.
+            if (note_draws) {
+                runner.NoteDraw(draw);
+            }
             return;
         }
         const Counters before = runner.counters();
@@ -2014,10 +2028,11 @@ namespace {
 gpu_capture::PlayerResult Replay(const std::string& capture) {
     const Options options = ParseOptions(
         "capture-player", std::vector<std::string>{"--gpu", "cpuvertex-check", "--judge", "none", capture});
-    REQUIRE_MESSAGE(options.ok(), options.error());
+    // (no message with a text: an error could name the capture's path)
+    REQUIRE(options.ok());
     gpu_capture::PlayerConfig config;
     std::string error;
-    REQUIRE_MESSAGE(gpu_capture::ConfigFromOptions(options, config, &error), error);
+    REQUIRE(gpu_capture::ConfigFromOptions(options, config, &error));
     return gpu_capture::RunPlayer(config, options);
 }
 
@@ -2083,7 +2098,9 @@ std::vector<CaptureStats> ReplayAll(const std::vector<std::string>& paths, bool 
         g_run.Reset();
         const gpu_capture::PlayerResult result = Replay(paths[i]);
         g_run.Finish();
-        CHECK_MESSAGE(result.error.empty(), "a capture could not be replayed: " << result.error);
+        // the ordinal and the player's exit status only: the player's text can name the capture's path
+        CHECK_MESSAGE(result.error.empty(), "capture " << (i + 1) << " could not be replayed (player exit status "
+                                                       << result.ExitStatus() << ")");
         all.push_back(g_run.stats);
         total.Merge(g_run.stats);
         if (print) {
@@ -2260,6 +2277,251 @@ TEST_CASE("the tally splits draws by reason and counts geometry-shader draws onc
     CHECK(a.frame_ms.size() == 3);
 }
 
+// ================================================================================================
+// Quirks of the interpreter that Azahar's code has (mirrored on purpose)
+// ================================================================================================
+
+TEST_CASE("MOVA: an address offset above 127 or below -128 is 0; 127 is used as it is") {
+    Machine m;
+    m.Input(3, 127, -129, -200, 0);
+    m.Uniform(9, 7, 7, 7, 7);
+    m.Uniform(10, 9, 9, 9, 9);
+    m.Uniform(66, 5, 5, 5, 5);
+    auto lane = [&m](const char* l) {
+        Desc d;
+        d.mask = Mask("x");
+        d.s1 = l;
+        return m.D(d);
+    };
+    m.p << A(MOVA, 0, V(3), 0, lane("xxxx")) << A(MOV, O(0), C(10), 0, m.Full(), A0X)
+        << A(MOVA, 0, V(3), 0, lane("yyyy")) << A(MOV, O(1), C(10), 0, m.Full(), A0X)
+        << A(MOVA, 0, V(3), 0, lane("zzzz")) << A(MOV, O(2), C(10), 0, m.Full(), A0X) << kEnd;
+    // 127: index (10 + 127) & 0x7F = 9 -> c9 (seven); -129 is below -128: offset 0 -> c10 (nine; used
+    // as it is it would be (10 - 129) & 0x7F = 9); -200 likewise -> c10 (as it is: 66 -> five)
+    CheckLanes(m.Run(), {7, 7, 7, 7, 9, 9, 9, 9, 9, 9, 9, 9, 0, 0, 0, 0});
+}
+
+TEST_CASE("CALL scopes that end together: three pop normally, the fourth does not restore the pc") {
+    // The scopes are one-word functions [10k + 10, 10k + 11) that hold the call of the next one (the
+    // return address of each is the end of the one before), so they all end on the same step.
+    // "Hardware bug: when popping four CALL scopes at once, the last one doesn't update the program
+    // counter" (Azahar's comment): the pc stays at the third return address.
+    for (int scopes : {3, 4}) {
+        CAPTURE(scopes);
+        Machine m;
+        Markers(m);
+        m.p.code.assign(64, kNop);
+        m.p.Full();
+        for (int k = 0; k < scopes; ++k) {
+            m.p.code[static_cast<size_t>(10 * k)] = Flow(CALL, static_cast<u32>(10 * (k + 1)), 1);
+        }
+        m.p.code[static_cast<size_t>(10 * scopes)] = A(ADD, T(0), C(0), R(0), m.Full());
+        m.p.code[1] = A(MOV, O(1), C(0), 0, m.Full());  // where the first call returns to
+        m.p.code[2] = kEnd;
+        m.p.code[11] = A(MOV, O(0), C(0), 0, m.Full()); // where the second one does
+        m.p.code[12] = kEnd;
+        // 3 scopes: three pops update the pc, execution is back at word 1: o1 = c0.
+        // 4 scopes: the fourth pop leaves the pc at the return address of the second, word 11: o0 = c0.
+        const F16 want = scopes == 3 ? F16{0, 0, 0, 0, 1, 2, 3, 4, 0, 0, 0, 0, 0, 0, 0, 0}
+                                     : F16{1, 2, 3, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+        CheckLanes(m.Run(), want);
+    }
+}
+
+TEST_CASE("the call stack holds four scopes: a fifth nested CALL overwrites the oldest (circular buffer)") {
+    for (bool five : {true, false}) {
+        CAPTURE(five);
+        Machine m;
+        Markers(m);
+        m.p.code.assign(64, kNop);
+        m.p.Full();
+        auto add_r0 = [&m] { return A(ADD, T(0), C(0), R(0), m.Full()); };
+        auto add_r1 = [&m] { return A(ADD, T(1), C(0), R(1), m.Full()); };
+        m.p.code[0] = Flow(CALL, 10, 2);
+        m.p.code[1] = A(MOV, O(0), R(0), 0, m.Full());
+        m.p.code[2] = kEnd;
+        m.p.code[10] = Flow(CALL, 20, 2);
+        m.p.code[11] = add_r0();
+        m.p.code[12] = A(MOV, O(2), C(0), 0, m.Full()); // what runs after the first function if its return is lost
+        m.p.code[13] = kEnd;
+        m.p.code[20] = Flow(CALL, 30, 2);
+        m.p.code[21] = add_r0();
+        m.p.code[30] = Flow(CALL, 40, 2);
+        m.p.code[31] = add_r0();
+        if (five) {
+            m.p.code[40] = Flow(CALL, 50, 2);
+            m.p.code[41] = add_r0();
+            m.p.code[50] = add_r1();
+            m.p.code[51] = add_r1();
+        } else {
+            m.p.code[40] = add_r0();
+            m.p.code[41] = add_r0();
+        }
+        // five nested calls: the first one's entry is overwritten, its function ends without a return:
+        //   r0 gets the adds of words 41, 31, 21 and 11 = 4 * c0, then execution runs on into word 12:
+        //   o2 = c0, o0 stays 0.
+        // four: all return; r0 = words 40, 41, 31, 21, 11 = 5 * c0; back at word 1: o0 = r0.
+        const F16 want = five ? F16{0, 0, 0, 0, 0, 0, 0, 0, 1, 2, 3, 4, 0, 0, 0, 0}
+                              : F16{5, 10, 15, 20, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+        CheckLanes(m.Run(), want);
+    }
+}
+
+// ================================================================================================
+// The asserts of Azahar's geometry pipeline and rasterizer registers
+// ================================================================================================
+
+TEST_CASE("an inconsistent geometry pipeline set-up is Unhandled, once per assert of Azahar's Reconfigure") {
+    struct Case {
+        const char* name;
+        u32 mode;
+        std::function<void(CmdList&)> tweak;
+    };
+    constexpr u32 kShaderModeBits = 0x08u << 24;
+    const std::vector<Case> cases = {
+        {"point mode with variable_primitive", 0, [](CmdList& l) { l.Write(kRegUseGs, 2u | (1u << 31)); }},
+        {"point mode with input_to_uniform", 0, [](CmdList& l) { l.Write(kGs + 0x09, kShaderModeBits | (1u << 8)); }},
+        {"variable mode without variable_primitive", 1, [](CmdList& l) { l.Write(kRegUseGs, 2u); }},
+        {"variable mode without input_to_uniform", 1, [](CmdList& l) { l.Write(kGs + 0x09, kShaderModeBits); }},
+        {"fixed mode with variable_primitive", 2, [](CmdList& l) { l.Write(kRegUseGs, 2u | (1u << 31)); }},
+        {"fixed mode without input_to_uniform", 2, [](CmdList& l) { l.Write(kGs + 0x09, kShaderModeBits); }},
+        {"fixed mode with stride_minus_1 + 1 != the vertex shader outputs", 2,
+         [](CmdList& l) { l.Write(0x252, 2u | (2u << 8) | (3u << 12) | (10u << 16)); }},
+        {"unit 3 is not in geometry shader mode", 0, [](CmdList& l) { l.Write(kGs + 0x09, 0xA0u << 24); }},
+        {"the two vertex shader output counts differ", 0, [](CmdList& l) { l.Write(0x251, 3); }},
+        {"use_gs is neither No nor Yes", 0, [](CmdList& l) { l.Write(kRegUseGs, 1u); }},
+        {"point mode whose inputs are not a multiple of the outputs", 0,
+         [](CmdList& l) { l.Write(0x24A, 1).Write(0x251, 1); }}, // 2 outputs, 1 input
+    };
+    Program gs;
+    gs << kEnd;
+    for (const Case& c : cases) {
+        CAPTURE(c.name);
+        GsConfig config;
+        config.mode = c.mode;
+        config.start_index = 10;
+        Sim sim;
+        CmdList l;
+        ConfigureGs(l, config, PassVs(1), gs);
+        c.tweak(l);
+        sim.Memory(0, FloatBytes({{1, 2, 3, 1}, {1, 2, 3, 1}, {1, 2, 3, 1}, {1, 2, 3, 1}, {1, 2, 3, 1}, {1, 2, 3, 1}}));
+        l.Write(0x228, 6).Write(0x22A, 0).Write(0x22E, 0);
+        const size_t draw = sim.Submit(l);
+        CpuVertexRunner runner;
+        const DrawResult r = RunDraw(sim, runner, draw);
+        CHECK(r.status == RunStatus::Unhandled);
+        CHECK(r.vertices.empty());
+        CHECK(runner.counters().unhandled == 1);
+    }
+    // the same set-ups, consistent, run (Point mode: 6 vertices, 1 input; Fixed: 6 = 2 x 3; Variable
+    // needs an index buffer, see its own case)
+    for (u32 mode : {0u, 2u}) {
+        CAPTURE(mode);
+        GsConfig config;
+        config.mode = mode;
+        config.start_index = 10;
+        Sim sim;
+        CmdList l;
+        ConfigureGs(l, config, PassVs(1), gs);
+        sim.Memory(0, FloatBytes({{1, 2, 3, 1}, {1, 2, 3, 1}, {1, 2, 3, 1}, {1, 2, 3, 1}, {1, 2, 3, 1}, {1, 2, 3, 1}}));
+        l.Write(0x228, 6).Write(0x22A, 0).Write(0x22E, 0);
+        const size_t draw = sim.Submit(l);
+        CpuVertexRunner runner;
+        CHECK(RunDraw(sim, runner, draw).status == RunStatus::Ok);
+    }
+}
+
+TEST_CASE("RasterizerRegs::ValidateSemantics: an output semantic of 24 to 30 refuses an Arrays/Indexed draw, "
+          "not an immediate vertex") {
+    {
+        Scene sc;
+        sc.st->regs[kRegOutMap] = 24u | (1u << 8) | (2u << 16) | (3u << 24);
+        sc.Arrays(0, 1);
+        CHECK(sc.Run() == RunStatus::Unhandled);
+        CHECK(sc.runner.counters().unhandled == 1);
+        CHECK(sc.runner.output().vertices.empty());
+        // 31 (invalid: the component is not mapped) and an attribute past vs_output_total pass
+        sc.st->regs[kRegOutMap] = 31u | (1u << 8) | (2u << 16) | (3u << 24);
+        sc.st->regs[kRegOutMap + 5] = 27u;
+        CHECK(sc.Run() == RunStatus::Ok);
+    }
+    {
+        // DrawImmediate does not validate: the value goes to a slot past the end of OutputVertex
+        Machine m;
+        m.st->regs[kRegOutMap] = 24u | (1u << 8) | (2u << 16) | (3u << 24);
+        m.Input(0, 1, 2, 3, 4);
+        m.p << A(MOV, O(0), V(0), 0, m.Full()) << kEnd;
+        CHECK(m.RunRaw() == RunStatus::Ok);
+        CHECK(m.runner.output().vertices.at(0).pos[0] == 1); // the unmapped slot 0 is 1.0 (nothing maps x)
+    }
+}
+
+// ================================================================================================
+// NoteDraw
+// ================================================================================================
+
+namespace {
+
+// The geometry shader emits a triangle only when b15 is clear: the number of vertices out says what
+// b15 was. Frame 1: the game clears the bools, one point (3 vertices out, and b15 is set by the
+// invocation). Frame 2: the game writes the same bools again, then a plain List draw the runner does
+// not run (accelerated), then a geometry shader draw of one point.
+std::string B15Capture(const std::string& name) {
+    Program gs;
+    gs << Flow(JMPU, 10, 0, 15)                                        // 0: skip everything when b15
+       << SetEmit(0, 0, 0) << A(MOV, O(0), V(0), 0, gs.Full()) << kEmit  // 1-3
+       << SetEmit(1, 0, 0) << A(MOV, O(0), V(0), 0, gs.Full()) << kEmit  // 4-6
+       << SetEmit(2, 1, 0) << A(MOV, O(0), V(0), 0, gs.Full()) << kEmit  // 7-9
+       << kEnd;                                                         // 10
+    CmdList l1;
+    ConfigureGs(l1, GsConfig{}, PassVs(1), gs);
+    l1.Write(kGs + 0x00, 0);
+    l1.Write(0x228, 1).Write(0x22A, 0).Write(0x22E, 0);
+    CmdList l2;
+    l2.Write(kGs + 0x00, 0);
+    l2.Write(kRegUseGs, 0).Write(kRegTopology, 0).Write(0x228, 3).Write(0x22E, 0);       // accelerated
+    l2.Write(kRegUseGs, 2).Write(kRegTopology, 3u << 8).Write(0x228, 1).Write(0x22E, 0); // geometry shader
+
+    CaptureFile capture;
+    capture.Init();
+    capture.Mem(kBase, FloatBytes({{1, 2, 3, 1}, {4, 5, 6, 1}, {7, 8, 9, 1}}));
+    capture.Frame(1);
+    capture.Mem(kFcram + 0x1000, l1.Bytes());
+    capture.SubmitCmdList(0x14001000, static_cast<u32>(l1.Bytes().size()));
+    capture.Frame(2);
+    capture.Mem(kFcram + 0x2000, l2.Bytes());
+    capture.SubmitCmdList(0x14002000, static_cast<u32>(l2.Bytes().size()));
+    return capture.Save(name);
+}
+
+} // namespace
+
+TEST_CASE("the harness passes the draws it does not run to NoteDraw: a same-value rewrite of the geometry "
+          "bools across an accelerated draw resets b15") {
+    const std::string path = B15Capture("b15");
+    {
+        const std::vector<CaptureStats> all = ReplayAll({path}, false);
+        REQUIRE(all.size() == 1);
+        const CaptureStats& s = all[0];
+        CHECK(s.tally.draws == 3);
+        CHECK(s.tally.selected == 2);
+        CHECK(s.tally.geometry == 2);
+        CHECK(s.vertices_in == 2);
+        CHECK(s.vertices_out == 6); // both points emit their triangle: b15 was clear for each
+        CHECK(s.unhandled == 0);
+    }
+    {
+        // The contract is needed: without NoteDraw the processor's cleared dirty flag hides the
+        // rewrite (the value is unchanged), b15 stays set from frame 1 and the second point emits nothing.
+        g_note_draws_default = false;
+        const std::vector<CaptureStats> all = ReplayAll({path}, false);
+        g_note_draws_default = true;
+        REQUIRE(all.size() == 1);
+        CHECK(all[0].vertices_out == 3);
+    }
+    fs::remove(path);
+}
+
 TEST_CASE("the replay harness on a synthetic capture: reasons, vertices, frames, no unhandled draw") {
     const std::string path = SyntheticCapture("replay");
     const std::vector<CaptureStats> all = ReplayAll({path}, false);
@@ -2335,7 +2597,6 @@ TEST_CASE("(with the dump) every geometry-shader draw of the captures runs, and 
         CHECK(all[i].unhandled == 0);
         CHECK(all[i].load_failed == 0);
         CHECK(all[i].not_run_to_end == 0);
-        CHECK(all[i].tally.selected > 0);
         if (expect.has_value()) {
             REQUIRE(all[i].tally.gs_draws == (*expect)[i]);
         }

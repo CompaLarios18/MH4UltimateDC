@@ -19,9 +19,11 @@
 //    the variable primitive's main vertex count).
 //  - Cursors are indices, not pointers, into storage the runner owns (the geometry shader's
 //    uniforms), so the pipeline can live between draws.
-//  - Where Azahar asserts (inconsistent configuration, vertices that do not fit the registers or
-//    uniforms, variable primitive mode without an index buffer) the pipeline reports an error
-//    (Unhandled::Geometry*) and the runner drops the draw.
+//  - Where Azahar asserts (Reconfigure's ASSERTs and those of the backends' constructors:
+//    use_gs, the unit 3 shader mode, the two output counts, variable_primitive and input_to_uniform
+//    per mode, the Point input/output divisibility, the FixedPrimitive stride; vertices that do
+//    not fit the registers or uniforms; variable primitive mode without an index buffer) the
+//    pipeline reports an error (Unhandled::Geometry*) and the runner drops the draw.
 //  - Reconfigure over a buffer that still holds a partial input (Azahar: ASSERT(IsEmpty())) throws
 //    the partial input away and says so with `discarded_partial_input()`.
 #pragma once

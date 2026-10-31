@@ -264,13 +264,26 @@ bool GeometryPipeline::Reconfigure(bool adopt_cursors) {
         error_ = {Unhandled::GeometryConfig, 0, 0};
         return false;
     };
+    // The ASSERTs of GeometryPipeline::Reconfigure and of the backends' constructors (the command
+    // processor only logs them). Azahar's use_gs is No or Yes; the raw values 1 and 3 fail the second.
+    const auto& regs = state.regs;
+    const bool variable_primitive = BitsOf(regs[reg::kGeometryStage], 31, 1) != 0;
+    const bool input_to_uniform = BitsOf(regs[reg::kGs + reg::kShaderInputBufferConfig], 8, 8) != 0;
+    if (BitsOf(regs[reg::kGeometryStage], 0, 2) != pica::kUseGsYes ||                       // use_gs == Yes
+        BitsOf(regs[reg::kGs + reg::kShaderInputBufferConfig], 24, 8) != pica::kShaderModeGs ||  // shader_mode == GS
+        BitsOf(regs[reg::kVsOutmapTotalA], 0, 4) != BitsOf(regs[reg::kVsOutmapTotalB], 0, 4)) {  // outmap a == b
+        return bad();
+    }
     if (vs_output_num == 0 || vs_output_num > 16) {
         return bad();
     }
     switch (g.mode) {
     case pica::GeometryMode::Point: {
-        if (g.buffer_size == 0 || g.buffer_size > 16 || g.buffer_size % vs_output_num != 0) {
-            return bad(); // Azahar: ASSERT(gs_input_num % vs_output_num == 0)
+        // ASSERT(variable_primitive == 0), ASSERT(input_to_uniform == 0),
+        // ASSERT(gs_input_num % vs_output_num == 0)
+        if (variable_primitive || input_to_uniform || g.buffer_size == 0 || g.buffer_size > 16 ||
+            g.buffer_size % vs_output_num != 0) {
+            return bad();
         }
         auto point = std::make_unique<GeometryPipeline_Point>(state_, gs_unit_, vs_output_num, g.buffer_size);
         if (adopt_cursors) {
@@ -280,6 +293,10 @@ bool GeometryPipeline::Reconfigure(bool adopt_cursors) {
         break;
     }
     case pica::GeometryMode::VariablePrimitive: {
+        // ASSERT(variable_primitive == 1), ASSERT(input_to_uniform == 1)
+        if (!variable_primitive || !input_to_uniform) {
+            return bad();
+        }
         auto variable = std::make_unique<GeometryPipeline_VariablePrimitive>(state_, gs_, vs_output_num);
         if (adopt_cursors) {
             variable->Adopt(g);
@@ -288,12 +305,16 @@ bool GeometryPipeline::Reconfigure(bool adopt_cursors) {
         break;
     }
     case pica::GeometryMode::FixedPrimitive: {
-        if (g.buffer_offset > g.buffer_size || g.buffer_size > uniforms) {
+        // ASSERT(variable_primitive == 0), ASSERT(input_to_uniform == 1),
+        // ASSERT(vs_output_num == stride_minus_1 + 1)
+        if (variable_primitive || !input_to_uniform ||
+            vs_output_num != BitsOf(regs[reg::kGsConfig], 12, 4) + 1) {
             return bad();
         }
-        // ASSERT(vs_output_num == stride_minus_1 + 1) was checked by the command processor's log;
-        // the buffer is a whole number of vertices (fixed_vertex_num_minus_1 + 1 of them).
-        if ((g.buffer_size - g.buffer_offset) % vs_output_num != 0) {
+        // The buffer has to fit the float uniforms (Azahar writes past them) and holds a whole
+        // number of vertices (fixed_vertex_num_minus_1 + 1 of them).
+        if (g.buffer_offset > g.buffer_size || g.buffer_size > uniforms ||
+            (g.buffer_size - g.buffer_offset) % vs_output_num != 0) {
             return bad();
         }
         auto fixed = std::make_unique<GeometryPipeline_FixedPrimitive>(gs_, vs_output_num, g.buffer_offset,
