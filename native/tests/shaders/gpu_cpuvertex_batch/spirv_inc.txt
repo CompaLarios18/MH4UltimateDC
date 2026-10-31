@@ -1,0 +1,9 @@
+# <array name> <file> [glslang options]
+# python3 tools/native/spirv_inc.py native/tests/shaders/gpu_cpuvertex_batch native/tests/gpu_cpuvertex_batch_shaders.inc
+spv_show_primary_color vary.frag "-DSHOW=primary_color"
+spv_show_texcoord0 vary.frag "-DSHOW=vec4(texcoord0,0.0,1.0)"
+spv_show_texcoord1 vary.frag "-DSHOW=vec4(texcoord1,0.0,1.0)"
+spv_show_texcoord2 vary.frag "-DSHOW=vec4(texcoord2,0.0,1.0)"
+spv_show_texcoord0_w vary.frag "-DSHOW=vec4(texcoord0_w,0.0,0.0,1.0)"
+spv_show_normquat vary.frag "-DSHOW=normquat"
+spv_show_view vary.frag "-DSHOW=vec4(view,1.0)"
