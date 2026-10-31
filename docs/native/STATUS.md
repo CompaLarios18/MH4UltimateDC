@@ -128,7 +128,7 @@ Tables between the `wp-status` markers are generated: edit the specs or use `set
 | N2-13 | Framebuffer operations | M | native-worker-high | N2-07, N2-27 | none | `ready` |  |
 | N2-14 | Textures: decoding, hashes, cache | M | native-worker | N2-02 | dump-check, save, pc | `done` | PR #6; dump-check passed 20261021 on the maintainer PC for the captures that exist (mh4n_capture_player --gpu none --judge none --check tex-hashes on G1 and G2: result PASS, 11 and 31 textures listed in the three frames); G3 and G4 need a save; maintainer check still owed: hd_hash_check.py with the HD pack on G3's capture; ci green (Native CI run 39018443575 on PR #6's head) |
 | N2-33 | Fragment key, uniforms and the composition's slots | L | native-worker-high | N2-05, N2-07, N2-26, N2-27 | none | `ready` |  |
-| N2-35 | Spike S: option 1b against option 1 | M | native-worker-high | N2-06, N2-25 | ci, pc | `ready` |  |
+| N2-35 | Spike S: option 1b against option 1 | M | native-worker-high | N2-06, N2-25 | ci, pc | `done` | spike S on the RX 6700 XT: T1 passes, T2 fails (1b cold creation 99-112 ms median against 13.5-15.8 ms), so D5 is option 1; the independent reviewer re-ran the three runs and approved; D5's row written 2026-10-30 |
 | N2-08 | Fragment generator, ubershader, TEV and alpha test | L | native-worker-high | N2-33, N2-03, N2-06, N2-13, N2-14, N2-28, N2-34, N2-35, N2-37 | none | `todo` |  |
 | N2-23 | Texture sampling and the first captured frames | M | native-worker-high | N2-08 | dump-check | `todo` |  |
 | N2-09 | Fragment lighting | L | native-worker-high | N2-08, N2-23 | none | `todo` |  |
