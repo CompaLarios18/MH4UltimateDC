@@ -7,9 +7,13 @@
 // this script's "decompile failed" comment counts as not done, so failures and timeouts are
 // retried. An error on one function is logged and its thread goes on; if any function is left
 // without a file (and the run was not cancelled), the script ends with an error.
-// Run it on a program that is already analysed and saved:
+// For headless runs (it takes its settings as arguments only), on a program that is already
+// analysed and saved:
 //   analyzeHeadless <proj_dir> <proj_name> -process <program> -noanalysis -readOnly \
-//     -scriptPath <dir> -postScript ExportPseudoCParallel.java <out_dir> [threads]
+//     -scriptPath <dir> -postScript ExportPseudoCParallel.java <out_dir> [threads] [fresh]
+// threads: 1 to the number of processors (default: that number minus 2, at least 1).
+// fresh: delete decomp/*.c before starting. Resuming keeps every file already written, so after
+// a re-analysis pass "fresh" (or delete decomp/), or the export mixes old and new pseudo-C.
 // Keep <out_dir> OUTSIDE any git repo: it is derived from game code.
 //
 //@category MH4UltimateDC
@@ -40,22 +44,52 @@ public class ExportPseudoCParallel extends GhidraScript {
     private static final int DECOMPILE_TIMEOUT_SECONDS = 60;
     // Start of the file written for a function that did not decompile (error or timeout).
     private static final String FAILED_PREFIX = "/* decompile failed: ";
+    private static final String USAGE = "usage: ExportPseudoCParallel.java <out_dir> [threads] [fresh]"
+        + "  (threads: 1 to the number of processors; fresh: delete decomp/*.c first)";
 
     @Override
     protected void run() throws Exception {
         String[] args = getScriptArgs();
-        if (args.length < 1) {
-            throw new IllegalArgumentException("usage: ExportPseudoCParallel.java <out_dir> [threads]");
+        int cpus = Runtime.getRuntime().availableProcessors();
+        if (args.length < 1 || args.length > 3) {
+            throw usage("expected 1 to 3 arguments, got " + args.length);
+        }
+        int threads = Math.max(1, cpus - 2);
+        boolean threadsGiven = false;
+        boolean fresh = false;
+        for (int a = 1; a < args.length; a++) {
+            if (args[a].equals("fresh") && !fresh) {
+                fresh = true;
+                continue;
+            }
+            if (threadsGiven) {
+                throw usage("unexpected argument: " + args[a]);
+            }
+            try {
+                threads = Integer.parseInt(args[a]);
+            } catch (NumberFormatException e) {
+                throw usage("not a thread count or 'fresh': " + args[a]);
+            }
+            if (threads < 1 || threads > cpus) {
+                throw usage("threads must be 1 to " + cpus + ", got " + threads);
+            }
+            threadsGiven = true;
         }
         File dir = new File(args[0], "decomp");
-        dir.mkdirs();
-        int threads = args.length > 1 ? Integer.parseInt(args[1]) : Math.max(1, Runtime.getRuntime().availableProcessors() - 2);
+        if (!dir.isDirectory() && !dir.mkdirs()) {
+            throw new IllegalArgumentException("cannot create " + dir);
+        }
 
-        // Leftovers of a run stopped between writing a .tmp file and renaming it.
-        File[] leftovers = dir.listFiles((d, n) -> n.endsWith(".tmp"));
-        if (leftovers != null) {
-            for (File f : leftovers) {
+        // Leftovers of a run stopped between writing a .tmp file and renaming it, and with
+        // "fresh" every file of an earlier export (resuming would keep pseudo-C of an old analysis).
+        boolean deleteC = fresh;
+        File[] old = dir.listFiles((d, n) -> n.endsWith(".tmp") || (deleteC && n.endsWith(".c")));
+        if (old != null) {
+            for (File f : old) {
                 Files.delete(f.toPath());
+            }
+            if (fresh) {
+                println(String.format("fresh: deleted %d files from %s", old.length, dir));
             }
         }
 
@@ -92,8 +126,8 @@ public class ExportPseudoCParallel extends GhidraScript {
             println(String.format("cancelled after %d of %d; run again to resume", done.get(), targets.size()));
             return;
         }
-        println(String.format("decompiled %d of %d (%d failed: written as failure comments, retried on the next run)",
-            ok.get(), targets.size(), failed.get()));
+        println(String.format("decompiled %d of %d", ok.get(), targets.size()) + (failed.get() == 0 ? ""
+            : String.format(" (%d failed: written as failure comments, retried on the next run)", failed.get())));
         if (done.get() < targets.size()) {
             String msg = String.format("%d of %d functions got no file (%d decompile threads stopped with an error);"
                 + " see the errors above, then run again to resume", targets.size() - done.get(), targets.size(),
@@ -150,6 +184,11 @@ public class ExportPseudoCParallel extends GhidraScript {
         } finally {
             di.dispose();
         }
+    }
+
+    private IllegalArgumentException usage(String why) {
+        printerr(USAGE);
+        return new IllegalArgumentException(why);
     }
 
     private static String fileName(Function f) {
