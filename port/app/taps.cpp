@@ -291,4 +291,14 @@ bool Release(std::vector<Tap>& taps, const std::string& key) {
     return had;
 }
 
+std::string WithoutTapKeys(const std::string& keys, const std::vector<Tap>& taps) {
+    std::vector<std::string> kept;
+    for (const std::string& key : Names(keys)) {
+        if (std::none_of(taps.begin(), taps.end(), [&key](const Tap& tap) { return Has(tap.keys, key); })) {
+            kept.push_back(key);
+        }
+    }
+    return Join(kept);
+}
+
 } // namespace App::Taps

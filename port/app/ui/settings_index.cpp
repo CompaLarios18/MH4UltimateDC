@@ -337,6 +337,10 @@ const Row ROWS[] = {
     {"keys.fixed_menu", "keys.port", F, "This menu", nullptr,
      "Always Esc, or a controller's Guide button or Back and Start together.", "menu options esc escape", "", "",
      false, false, ""},
+    // the button under the groups (Menu::DrawResetKeys)
+    {"keys.reset", "keys.port", A, "Reset keys to the defaults", nullptr,
+     "Every key as it came, after Monster Hunter Rise on PC, and the controller mapped automatically. It asks first.",
+     "reset default defaults restore rebind remap bindings controls", "", "", false, false, ""},
 
     // ── Gameplay ──
     {"gameplay.kick", "gameplay.buttons", S, "Kick", nullptr,
@@ -443,6 +447,7 @@ struct Tables {
     std::array<SectionId, ROW_COUNT> section_of{};
     std::array<RowId, ROW_COUNT> parent_of{};
     std::array<std::vector<std::string>, ROW_COUNT> names; ///< the words search matches, but `extra`
+    std::array<std::vector<std::string>, ROW_COUNT> labels; ///< those of the label as listed
     std::array<std::vector<std::string>, ROW_COUNT> helps;
 };
 
@@ -483,6 +488,7 @@ const Tables& GetTables() {
             std::string names = std::string(row.label) + " " + (row.search_label ? row.search_label : "") + " " +
                                 section.title + " " + TAB_NAMES[static_cast<int>(section.tab)] + " " + row.keywords;
             t.names[i] = Words(Normalize(names));
+            t.labels[i] = Words(Normalize(row.search_label ? row.search_label : row.label));
             t.helps[i] = Words(Normalize(row.help));
         }
         return t;
@@ -506,20 +512,20 @@ bool StartsWith(const std::string& word, const std::string& start) {
     return word.size() >= start.size() && word.compare(0, start.size(), start) == 0;
 }
 
-bool IsNumber(const std::string& word) {
-    return std::all_of(word.begin(), word.end(), [](char c) { return c >= '0' && c <= '9'; });
+bool IsDigit(char c) {
+    return c >= '0' && c <= '9';
 }
 
-/// A word of the query is the start of one of `words` (keys, textures: also without their s). A
-/// number starts a word only where that word's number ends: 60 finds 60 and 60hz, not 600; 16
-/// (of 16:9) not 165.
+/// A word of the query is the start of one of `words` (keys, textures: also without their s). One
+/// that ends in a digit starts a word only where that word's number ends: 60 finds 60 and 60hz,
+/// not 600; 16 (of 16:9) not 165; f1 not f11 or f12.
 bool Matches(const std::string& token, const std::vector<std::string>& words) {
     const bool plural = token.size() >= 4 && token.back() == 's';
     const std::string single = plural ? token.substr(0, token.size() - 1) : token;
-    const bool number = IsNumber(token);
+    const bool number = !token.empty() && IsDigit(token.back());
     for (const std::string& word : words) {
         if (number) {
-            if (StartsWith(word, token) && (word.size() == token.size() || !IsNumber(word.substr(token.size(), 1)))) {
+            if (StartsWith(word, token) && (word.size() == token.size() || !IsDigit(word[token.size()]))) {
                 return true;
             }
         } else if (StartsWith(word, token) || (plural && StartsWith(word, single))) {
@@ -619,7 +625,12 @@ std::vector<Result> Search(const std::string& query, const std::vector<std::stri
             names[i].insert(names[i].end(), more.begin(), more.end());
         }
     }
+    const auto all = [&tokens](const std::vector<std::string>& words) {
+        return std::all_of(tokens.begin(), tokens.end(),
+                           [&words](const std::string& token) { return Matches(token, words); });
+    };
     for (int tier = 1; tier <= 2 && results.empty(); ++tier) {
+        std::vector<Result> others; // matched by words other than the label's: after those named so
         for (int i = 0; i < ROW_COUNT; ++i) {
             if (!*ROWS[i].keywords) {
                 continue; // the search field and Back: nothing to go to
@@ -628,11 +639,11 @@ std::vector<Result> Search(const std::string& query, const std::vector<std::stri
             if (tier == 2) {
                 words.insert(words.end(), tables.helps[i].begin(), tables.helps[i].end());
             }
-            if (std::all_of(tokens.begin(), tokens.end(),
-                            [&words](const std::string& token) { return Matches(token, words); })) {
-                results.push_back({i, tier});
+            if (all(words)) {
+                (all(tables.labels[i]) ? results : others).push_back({i, tier});
             }
         }
+        results.insert(results.end(), others.begin(), others.end());
     }
     return results;
 }

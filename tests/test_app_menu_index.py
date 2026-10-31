@@ -327,6 +327,25 @@ def test_search_in_the_menus_order(driver):
     assert [row for _, row in found] == ["display.fps", "display.fps_counter", "keys.fixed_fps_counter"]
 
 
+@pytest.mark.parametrize("query, first", [
+    # the setting named so first, where Enter goes; the ones a search word finds after it
+    ("controller", "controls.controller_auto"), ("mouse", "controls.mouse_sensitivity"), ("skip", "gameplay.skip"),
+    ("quit", "header.quit"), ("item bar", "keys.item_prev"), ("kick", "gameplay.kick"), ("start", "keys.start"),
+    ("reset", "keys.reset"), ("defaults", "keys.reset"), ("remap", "keys.reset"), ("map", "touch.map_only"),
+])
+def test_search_names_first(driver, query, first):
+    _, found = search(driver, query)
+    assert found[0][1] == first, found
+
+
+def test_search_numbers_end_where_a_words_does(driver):
+    # f1 is the key guides' key, not a start of F11 (full screen) or F12 (the map key)
+    _, found = search(driver, "f1")
+    assert {row for _, row in found} == {"controls.key_guides", "keys.guides"}
+    assert "display.fullscreen" in {row for _, row in search(driver, "f11")[1]}
+    assert "touch.map_key" in {row for _, row in search(driver, "f12")[1]}
+
+
 def test_search_the_keys_bound(driver):
     _, found = search(driver, "space", "keys.b=Space")
     assert found == [(1, "keys.b")]

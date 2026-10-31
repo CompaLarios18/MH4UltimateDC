@@ -359,7 +359,8 @@ void Menu::RefreshKeyTexts() {
         extra.clear();
     }
     // a 3DS button's label: its game action, the port's roles given to it, then the button
-    const std::string kick = Upper(Game("kick")), target = Upper(Game("target")), skip = Upper(Game("skip"));
+    const std::string kick = ButtonsOf(Game("kick")), target = ButtonsOf(Game("target")),
+                      skip = ButtonsOf(Game("skip"));
     for (int i = 0; i < BINDING_COUNT; ++i) {
         const Binding& b = BINDINGS[i];
         std::string roles;
@@ -404,18 +405,13 @@ void Menu::RefreshKeyTexts() {
 // ── Keys ──
 
 void Menu::DrawKeys() {
-    // at the top: the way to Gameplay's buttons, why the last key wasn't taken, R12
+    // at the top: the way to Gameplay's buttons, R12 (why a key wasn't taken shows under its row)
     if (BeginSettings("##keys_links")) {
         LinkRow("Kick, target camera and touch taps", Tab::Gameplay,
                 "Opens Gameplay: the kick and the target camera on buttons, the end of quests, fast forward and "
                 "touch taps.",
                 "keys_gameplay");
         EndSettings();
-    }
-    if (!capture_note.empty() && capture_place != R::Count && Index::TabOf(capture_place) == Tab::Keys) {
-        ImGui::PushTextWrapPos(0.0f);
-        ImGui::TextColored(CAPTURE_COLOUR, "%s", capture_note.c_str());
-        ImGui::PopTextWrapPos();
     }
     if (!verdict.keys_top.Empty()) {
         DrawNote(verdict.keys_top, Index::ROW_COUNT + Index::SECTION_COUNT, false);
@@ -464,6 +460,12 @@ void Menu::DrawKeyRow(RowId row, int index) {
     ImGui::TableSetColumnIndex(0);
     ImGui::AlignTextToFramePadding();
     ImGui::TextWrapped("%s", LabelOf(row).c_str());
+    if (row == capture_place && !capture_note.empty()) {
+        // why the key pressed wasn't taken, under the action it was for (the tab's top is out of view)
+        ImGui::PushTextWrapPos(0.0f);
+        ImGui::TextColored(CAPTURE_COLOUR, "%s", capture_note.c_str());
+        ImGui::PopTextWrapPos();
+    }
     for (int slot = 0; slot < SLOTS; ++slot) {
         ImGui::TableSetColumnIndex(1 + slot);
         if (slot == 1 && IsStick(b)) {
@@ -555,18 +557,20 @@ void Menu::StartCapture(int id, RowId place) {
 
 void Menu::DrawResetKeys() {
     ImGui::Spacing();
+    item = {};
+    item.row = R::KeysReset; // the search's jump to it lands here
     if (ImGui::Button("Reset keys to the defaults")) {
         ImGui::OpenPopup("Reset the keys?");
     }
-    layer.Help("Every key as it came, after Monster Hunter Rise on PC, and the controller mapped automatically. It "
-               "asks first.");
+    ItemHelp(R::KeysReset);
+    item = {};
     ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
     if (ImGui::BeginPopupModal("Reset the keys?", nullptr,
                                ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings)) {
         ImGui::PushTextWrapPos(ImGui::GetFontSize() * 28.0f);
         ImGui::TextUnformatted("Every key goes back to how it came, after Monster Hunter Rise on PC, and the "
-                               "controller is mapped automatically. Touch taps keep their keys; the mouse settings "
-                               "and Fast forward mode stay.");
+                               "controller is mapped automatically. Touch taps keep their keys (the other inputs go "
+                               "without them); the mouse settings and Fast forward mode stay.");
         ImGui::PopTextWrapPos();
         ImGui::Spacing();
         if (ImGui::Button("Reset")) {
@@ -681,8 +685,20 @@ void Menu::ReleaseTapKey(const std::string& key) {
 }
 
 void Menu::SettleTaps() {
-    // the taps keep their keys, which leave the defaults (config.h); what moved, in the log
-    for (const std::string& line : SettleTouchTaps(layer.config)) {
+    // the taps keep their keys: the app's own keys the defaults gave back go without them (else the
+    // taps would lose them to those), and the bindings and sticks give them up (config.h); what
+    // moved, in the log
+    Config& config = layer.config;
+    for (const auto& [name, keys] : {std::pair{"touch_screen_key", &config.touch_screen_key},
+                                     std::pair{"key_guides_key", &config.key_guides_key},
+                                     std::pair{"pause_key", &config.pause_key},
+                                     std::pair{"fast_forward_key", &config.fast_forward_key}}) {
+        if (const std::string kept = Taps::WithoutTapKeys(*keys, config.touch_taps); kept != *keys) {
+            LOG_INFO(Frontend, "menu: {} = {} (the touch taps keep their keys)", name, kept);
+            *keys = kept;
+        }
+    }
+    for (const std::string& line : SettleTouchTaps(config)) {
         LOG_INFO(Frontend, "menu: {}", line);
     }
 }

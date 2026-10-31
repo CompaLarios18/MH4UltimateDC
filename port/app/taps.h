@@ -75,4 +75,8 @@ void Give(std::vector<Tap>& taps, int tap, int slot, const std::string& key, Oth
 /// `key` went to another input (the menu's capture): it leaves the taps. True if one had it.
 bool Release(std::vector<Tap>& taps, const std::string& key);
 
+/// `keys` ("F12 | M") without the ones a tap has: what one of the app's own keys keeps when the
+/// menu's Reset to the defaults gives it back, so that the taps keep theirs.
+std::string WithoutTapKeys(const std::string& keys, const std::vector<Tap>& taps);
+
 } // namespace App::Taps

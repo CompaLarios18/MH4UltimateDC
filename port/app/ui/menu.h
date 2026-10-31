@@ -234,7 +234,7 @@ private:
     bool TapTakesKey(int code);
     /// `key` given to a binding leaves any touch tap that had it.
     void ReleaseTapKey(const std::string& key);
-    /// After Reset keys, the taps' keys that the defaults took go.
+    /// After Reset keys: the touch taps keep their keys, which the defaults go without.
     void SettleTaps();
     /// Gameplay > Touch taps, full width, last on the tab.
     void DrawTouchTaps();
@@ -317,7 +317,7 @@ private:
 
     // keys
     int capture = -1;            ///< the binding * 2 + the key's column waiting for a key
-    RowId capture_place = RowId::Count; ///< the row it started from (Keys: their top)
+    RowId capture_place = RowId::Count; ///< the row it started from, which shows the note
     std::string capture_note;    ///< why the last key wasn't taken
     bool open_reset = false;
 

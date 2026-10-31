@@ -36,8 +36,9 @@ static bool Starts(const std::string& s, const char* prefix) {
 // withkey KEYS SLOT KEY, same A B: what they give
 // stickparts KEYS: a stick's parts as the app reads them, a line each in [ ]
 // scenario ITEM... ACTION: items tap=LINE, bind=NAME=KEYS, stick=NAME=KEYS, own=KEYS; the action
-//   settle, give=TAP,SLOT,KEY, release=KEY or isown=KEY; then "log: ..." lines (settle), "had: 0/1"
-//   (release), "own: 0/1" (isown), and the taps, bindings and sticks after it
+//   settle, give=TAP,SLOT,KEY, release=KEY, isown=KEY or without=KEYS; then "log: ..." lines
+//   (settle), "had: 0/1" (release), "own: 0/1" (isown), "keys: ..." (without), and the taps,
+//   bindings and sticks after it
 int main(int argc, char** argv) {
     const std::string mode = argv[1];
     if (mode == "parse") {
@@ -115,6 +116,8 @@ int main(int argc, char** argv) {
         std::printf("had: %d\n", Release(taps, action.substr(8)) ? 1 : 0);
     } else if (Starts(action, "isown=")) {
         std::printf("own: %d\n", IsOwn(others, action.substr(6)) ? 1 : 0);
+    } else if (Starts(action, "without=")) {
+        std::printf("keys: %s\n", WithoutTapKeys(action.substr(8), taps).c_str());
     }
     for (std::size_t i = 0; i < taps.size(); ++i) {
         std::printf("tap %d: %s\n", static_cast<int>(i + 1), Format(taps[i]).c_str());
@@ -322,3 +325,12 @@ def test_release_takes_a_key_off_the_taps(driver):
 def test_the_apps_own_keys_by_any_of_their_names(driver):
     assert scenario(driver, "own=F12 | M", "isown=m") == ["own: 1"]
     assert scenario(driver, "own=F12 | M", "own=", "isown=Z") == ["own: 0"]
+
+
+def test_reset_gives_the_apps_keys_back_without_the_taps(driver):
+    # the menu's Reset keys: one of the app's own keys as it came goes without a key a tap has (the
+    # taps keep theirs), by any of its names
+    assert scenario(driver, "tap=Z | m @ 1 2", "without=F12 | M") == ["keys: F12", "tap 1: Z | m @ 1 2"]
+    assert scenario(driver, "tap=P @ 1 2", "tap=Q @ 3 4", "without=p")[0] == "keys: "
+    assert scenario(driver, "tap=Z @ 1 2", "without=Tab")[0] == "keys: Tab"
+    assert scenario(driver, "without=F12 | M") == ["keys: F12 | M"]
