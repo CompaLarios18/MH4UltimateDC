@@ -198,6 +198,7 @@ void PicaState::ClearDirty() {
     gs.ClearDirty();
     lighting.lut_dirty = 0;
     fog.lut_dirty = false;
+    gas.table_dirty = false;
     proctex.table_dirty = 0;
 }
 
