@@ -479,7 +479,7 @@ address	size	mode	category	name	status	batch	notes
 0x0010e810	0xa0	arm	unknown		todo		
 0x0010e8b0	0xc8	arm	unknown		todo		
 0x0010e97c	0x2b0	arm	unknown		todo		
-0x0010ec6c	0x28	arm	sdk	__aeabi_lasr	done	pilot-1	src/unsorted/func_0010ec6c.c; difftest 1000/1000; runtime helper __aeabi_lasr
+0x0010ec6c	0x28	arm	runtime	__aeabi_lasr	done	pilot-1	src/unsorted/func_0010ec6c.c; difftest 1000/1000; runtime helper __aeabi_lasr
 0x0010ec94	0xd4	arm	unknown		todo		
 0x0010ed68	0x74	arm	unknown		todo		
 0x0010eddc	0xf4	arm	unknown		todo		
@@ -5267,7 +5267,7 @@ address	size	mode	category	name	status	batch	notes
 0x00300d60	0x118	arm	unknown		todo		
 0x00300e98	0x10	thumb	unknown		todo		
 0x00300eac	0x58	thumb	unknown		todo		
-0x00300f04	0x5c	arm	sdk	strlen	replace		
+0x00300f04	0x5c	arm	runtime	strlen	replace		
 0x00300f64	0x14	thumb	unknown		todo		
 0x00300f78	0x3c	thumb	unknown		todo		
 0x00300fb4	0xc	thumb	unknown		todo		
