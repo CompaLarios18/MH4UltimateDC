@@ -1342,8 +1342,9 @@ void RunVmaMapWhileAllocating(Rig& rig) {
     const auto start = std::chrono::steady_clock::now();
     // Fill a block with kSlot buffers until one does not fit: the ones before it are in the full block P. Freeing that one and
     // the last buffer of P leaves the slot A uses. A buffer of B's size then holds a block of its own for the whole case, the
-    // one B allocates from: VMA frees an empty block when another buffer is freed, and a new block for nearly every one of
-    // B's buffers made the case about 40 times slower on the RX 6700 XT (measured with a counting copy of VMA).
+    // one B allocates from: VMA frees an empty block when another buffer is freed, so without it B's block went with many of
+    // A's frees (172 new blocks in the case), which made the case about 40 times slower on the RX 6700 XT (measured with a
+    // counting copy of VMA).
     std::vector<std::unique_ptr<RenderBuffer>> fillers;
     std::unique_ptr<RenderBuffer> overflow;
     while (fillers.size() < 4096) {
@@ -1437,7 +1438,7 @@ void RunVmaMapWhileAllocating(Rig& rig) {
     b.join();
     const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
     std::printf("rhi_plume_patterns_test: vma01: %zu buffers of %llu bytes filled block P; %d rounds; thread B made %llu buffers; %.0f ms\n",
-                filled, (unsigned long long)kSlot, kVmaRounds, (unsigned long long)madeByB.load(), ms);
+                filled, (unsigned long long)kSlot, kVmaRounds, (unsigned long long)madeByB.load(std::memory_order_relaxed), ms);
     std::fflush(stdout);
     CHECK(failedA == 0);
     CHECK(failedB == 0);
