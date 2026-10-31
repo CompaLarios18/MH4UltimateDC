@@ -803,7 +803,7 @@ def test_dsp_item_fails_a_capture_a_run_did_not_write(tmp_path):
 
 def test_dsp_item_names_the_clock_offset_at_the_start_of_the_window_as_information(tmp_path):
     # the 120 fps run's game clock is ahead by 4 s at the capture's game frame; the audio's measured shift is +17
-    # DSP frames: the offset is printed beside the shift, never as the shift (N3-22: shifts were 20-85 % of it)
+    # DSP frames: the offset is printed beside the shift, never as the shift (N3-22: shifts were 11-85 % of it)
     root = good_pair(tmp_path, clock=(None, lambda f: f / 120 + 4.0))
     item = audit(root)["dsp"]
     text = "\n".join(item.details)

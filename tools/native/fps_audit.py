@@ -19,7 +19,7 @@ The same golden session is played twice by the native runner, headless: at 60 fp
                  ranges of config/native/fs_write_masks.txt zeroed first (tools/compare_ipc_traces.py)
 
 The `dsp` item also prints the game clock offset between the two runs at the capture's first game frame, as
-information beside the measured shift: it is not the shift (the measured shifts of N3-22's runs were 20 to 85 % of it).
+information beside the measured shift: it is not the shift (the measured shifts of N3-22's runs were 11 to 85 % of it).
 Before the six, `runs` checks that both runs finished (exit status 0, the trace reaches the session's last frame): a
 run that hangs must not read as a pass. The numbers above are D70's first guesses; they are options with those
 defaults and are never retuned to make a session pass (N3 rule 7). An item with nothing to compare (a session without a

@@ -79,9 +79,10 @@ An item with nothing to compare is `n/a` (reported, not a failure) unless `--req
    why item 5 cannot hold after the boot, and why the scene changes after the intro movie are 100 to 300 ms earlier at
    120 fps in frames over fps. **The audio does not move by the clock offset.** The measured DSP shift against the clock
    offset at the window's start, in DSP frames: G1 +9 of +85 (11 %, `none`), +17 of +68 (25 %, rt), +57 of +125 (46 %,
-   det); G4 +640 of +833, +646 of +824 (77 %, 78 %); G2 +648 of +823, +671 of +812, +1262 of +1488 (79 %, 83 %, 85 %); G3's
-   hunt window (det) +4552 of +4462 (102 %). So the shift is 11 to 102 % of the clock offset: neither the same game frame
-   (100 %) nor the same moment of the clock (0 %), and 77 to 102 % after the intro movie.
+   det); G4 +640 of +833, +646 of +824 (77 %, 78 %); G2 +648 of +823, +671 of +812, +1262 of +1488 (79 %, 83 %, 85 %). So the shift is 11 to 85 % of the clock offset: neither
+   the same game frame (100 %) nor the same moment of the clock (0 %), and 77 to 85 % after the intro movie. (G3's det
+   window at frame 16000, +4552 of +4462, is left out: there the 120 fps run is still in the village (finding 2), so the
+   two windows hold different scenes.)
 2. **G3 does not reach the Arena at 120 fps on the native runtime, and the reference does.** In the deterministic mode
    (`--deterministic`, the `_native_det` library) the native 60 fps run is the reference's, frame for frame: all 18,001
    state records equal in every observable (N3-21's run r2), the tick offset at most 5,893 ticks (22 us) from frame 1 on,
@@ -256,7 +257,7 @@ orchestrator's to settle; none of the tool's defaults was changed):
    or no buffer in common, with the clock offset at the window 4 to 22 s (finding 1). The shift is measured on the DSP
    frame counters, so it does not depend on where the window starts: a window that starts where the 120 fps run's clock
    equals the 60 fps window's (or a wider window) gives overlap where there is none now (G3 and G4 det, "no buffer in
-   common"), but not a smaller shift, which after the intro movie is 77 to 102 % of the clock offset (finding 1). Proposal:
+   common"), but not a smaller shift, which after the intro movie is 77 to 85 % of the clock offset (finding 1). Proposal:
    **gate G1's boot window** (`dsp:1240:300`) with D51's 48 in real time (+9 and +17), and in the deterministic mode at
    **58** (+57 measured plus one, D50's rule; one sample, so a named exception rather than a new bound); **report every
    window after the intro movie**, with its offset, as an open part of D70 to settle after finding 1 is explained (a
