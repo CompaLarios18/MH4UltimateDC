@@ -685,13 +685,13 @@ private:
                 Opcode opcode = instr.Effective();
                 std::string dot;
                 if (opcode == Opcode::DP3) {
-                    dot = fmt::format("dot(vec3(sanitize_mul({}, {})), vec3(1.0))", src1, src2);
+                    dot = fmt::format("pica_dp3(vec3(sanitize_mul({}, {})))", src1, src2);
                 } else {
                     const std::string src1_ = (opcode == Opcode::DPH || opcode == Opcode::DPHI)
                                                   ? fmt::format("vec4(({}).xyz, 1.0)", src1)
                                                   : std::move(src1);
 
-                    dot = fmt::format("dot(sanitize_mul({}, {}), vec4(1.0))", src1_, src2);
+                    dot = fmt::format("pica_dp4(sanitize_mul({}, {}))", src1_, src2);
                 }
 
                 SetDest(swizzle, dest_reg, dot, 4, 1);
@@ -1052,6 +1052,29 @@ private:
         shader.AddLine("vec4 product = lhs * rhs;");
         shader.AddLine("return mix(product, mix(mix(vec4(0.0), product, pica_isnan(rhs)), product, "
                        "pica_isnan(lhs)), pica_isnan(product));");
+        --shader.scope;
+        shader.AddLine("}}\n");
+
+        // The sum of a dot product in the interpreter's order, ((0 + p.x) + p.y) + p.z (+ p.w), each addition
+        // rounded: a driver's own `dot` may add in another order or fuse the products into the sum (lavapipe
+        // does: the normalization-then-1+z case of gpu_shader_test, where one ulp of this sum is amplified by
+        // the cancellation, differed in 239 of 16,384 values), and `precise` forbids both. The products come
+        // from sanitize_mul already rounded.
+        shader.AddLine("float pica_dp3(vec3 p) {{");
+        ++shader.scope;
+        shader.AddLine("precise float d = 0.0 + p.x;");
+        shader.AddLine("d = d + p.y;");
+        shader.AddLine("d = d + p.z;");
+        shader.AddLine("return d;");
+        --shader.scope;
+        shader.AddLine("}}\n");
+        shader.AddLine("float pica_dp4(vec4 p) {{");
+        ++shader.scope;
+        shader.AddLine("precise float d = 0.0 + p.x;");
+        shader.AddLine("d = d + p.y;");
+        shader.AddLine("d = d + p.z;");
+        shader.AddLine("d = d + p.w;");
+        shader.AddLine("return d;");
         --shader.scope;
         shader.AddLine("}}\n");
 
