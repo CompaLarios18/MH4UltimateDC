@@ -297,7 +297,7 @@ resources that do not defer their own destruction, the limit of a failed `vkQueu
   enabled on the device so its fallback really runs, an unknown name fails creation with the list of valid names, and the result is logged once) and
   `MH4N_VULKAN_DEVICE` (a text matched, as a case-insensitive substring, against `<device name> (<driver name>)`; no match fails with the list of devices).
   Running a test as the PC's paths would: `MH4N_RHI_MASK=d24s8,interlock ctest --test-dir build/native -R '^gpu_backend_core_test$'`. The core's own test passes
-  under each of the 13 bit names and under `all`.
+  under each of the bit names (13 until N2-34, 14 since) and under `all`.
 - **`MH4N_RHI_CHECKS`** is a CMake option of `native/src/gpu/backend/core/CMakeLists.txt`, `ON` by default in every build type and `OFF` only for a shipping
   build; it is exported as the public compile definition `MH4N_RHI_CHECKS=1` or `0` of `mh4n_gpu_backend_core`, so the modules that link it put their owner-rule
   checks under the same switch. With it off the two owner-rule test cases skip themselves with a message.
@@ -783,7 +783,12 @@ The one sanctioned change to the frozen header (D5; additions only, existing agg
   through a geometry stage), `pipelines/duplicate_specialisation_ids_fail_with_a_message`,
   `pipelines/specialisation_list_reaches_the_vendored_description` (no device) and the name table of
   `mask/the_name_of_each_bit_is_a_literal`. `vkprobe_test` follows the 14 bits; `--rhi` still prints `rhi geometry_shader:` once.
-  Not covered: whether a driver folds the constants (a measurement, not a test).
+- **Device ranking.** `capability_bits` (how many bits the device has after the mask, `core/policy.h`) now counts
+  `geometry_shader` too, so between two devices of the same type that tie on every other bit, the one with geometry shaders wins
+  (before, the lowest index did); under the mask the bit counts zero for every device and the ranking is as before.
+  Not covered: whether a driver folds the constants (a measurement, not a test), and that the geometry stage runs (the pass-through
+  stage writes the same words as the route without it, so a stage dropped silently would pass; N2-09's fixed geometry shader needs a
+  test that tells them apart).
 
 ## Not checked on this machine
 
