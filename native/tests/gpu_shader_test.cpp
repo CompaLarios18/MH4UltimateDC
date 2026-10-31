@@ -1686,6 +1686,391 @@ TEST_CASE("a normalization followed by the root of 1 + z (z near -1) agrees with
     CHECK_OUTCOME(o);
 }
 
+// ---- RCP and RSQ in integers: the same algorithm on the CPU, and designed inputs on the device ------------
+//
+// pica_rcp and pica_rsq (glsl_decompiler.cpp) compute the rounded 1.0f / x and 1.0f / sqrtf(x) with exact
+// integer arithmetic (umulExtended, usubBorrow, shifts and comparisons) after float estimates that only
+// have to be roughly right. rcp_mirror is that code on the CPU, line by line: the same constants, the same
+// order of operations, the same loop counts, umulExtended and usubBorrow as the 64-bit operations they are.
+// It checks the mathematics (the proofs in the comment of the translator) without any device, and it takes a
+// Noise that moves the start values and the float estimates the way an imprecise device would, to show that
+// the result does not depend on them. If the GLSL is changed, change this with it.
+namespace rcp_mirror {
+
+struct Noise {
+    int start = 0; // the start value of Q (RCP) or C (RSQ) is moved by this many units
+    int ulps = 0;  // every float division and square root that makes an estimate is moved by this many ulp
+};
+
+float Nudge(float v, int ulps) {
+    for (; ulps > 0; --ulps) v = std::nextafter(v, kInf);
+    for (; ulps < 0; ++ulps) v = std::nextafter(v, -kInf);
+    return v;
+}
+
+void UMulExtended(u32 x, u32 y, u32& msb, u32& lsb) {
+    const u64 p = static_cast<u64>(x) * y;
+    msb = static_cast<u32>(p >> 32);
+    lsb = static_cast<u32>(p);
+}
+
+u32 USubBorrow(u32 x, u32 y, u32& borrow) {
+    borrow = x < y ? 1u : 0u;
+    return x - y;
+}
+
+float Magnitude(u32 dh, u32 dl) { return static_cast<float>(dh) * 4294967296.0f + static_cast<float>(dl); }
+
+u32 ClampU(u32 v, u32 lo, u32 hi) { return std::min(std::max(v, lo), hi); }
+
+u32 Start(float estimate, int moved, u32 lo, u32 hi) {
+    const std::int64_t s = static_cast<std::int64_t>(std::floor(estimate + 0.5f)) + moved;
+    return ClampU(static_cast<u32>(std::clamp<std::int64_t>(s, 0, 0x7FFFFFFF)), lo, hi);
+}
+
+void RcpResidual(u32 q, u32 m, bool& low, u32& dh, u32& dl) {
+    u32 ph, pl;
+    UMulExtended(q, m, ph, pl);
+    low = ph < 0x8000u || (ph == 0x8000u && pl == 0u);
+    if (low) {
+        u32 borrow;
+        dl = USubBorrow(0u, pl, borrow);
+        dh = 0x8000u - ph - borrow;
+    } else {
+        dl = pl;
+        dh = ph - 0x8000u;
+    }
+}
+
+// `repairs` receives the largest number of +-1 steps that one of the exact loops took.
+u32 RcpSignificand(u32 m, const Noise& n, int* repairs) {
+    const float mf = static_cast<float>(m);
+    u32 q = Start(Nudge(140737488355328.0f / mf, n.ulps), n.start, 0x800000u, 0x1000000u);
+    for (int i = 0; i < 2; ++i) {
+        bool low;
+        u32 dh, dl;
+        RcpResidual(q, m, low, dh, dl);
+        const u32 jump = static_cast<u32>(std::floor(Nudge(Magnitude(dh, dl) / mf, n.ulps) + 0.5f));
+        q = ClampU(low ? q + jump : q - std::min(jump, q), 0x800000u, 0x1000000u);
+    }
+    int steps = 0;
+    for (int i = 0; i < 3; ++i) {
+        bool low;
+        u32 dh, dl;
+        RcpResidual(q, m, low, dh, dl);
+        const u32 twice_high = (dh << 1) | (dl >> 31);
+        const u32 twice_low = dl << 1;
+        if (twice_high != 0u || twice_low > m) {
+            q = low ? q + 1u : q - 1u;
+            ++steps;
+        }
+    }
+    if (repairs != nullptr) *repairs = std::max(*repairs, steps);
+    return q;
+}
+
+float RcpNormal(u32 m, int e, const Noise& n, int* repairs) {
+    const u32 bits = (static_cast<u32>(126 - e) << 23) + (RcpSignificand(m, n, repairs) - 0x800000u);
+    return std::bit_cast<float>(bits);
+}
+
+void SqrtResidual(u32 c, u32 nh, u32 nl, bool& pos, u32& dh, u32& dl) {
+    u32 ph, pl;
+    UMulExtended(c, c, ph, pl);
+    pos = nh > ph || (nh == ph && nl >= pl);
+    u32 borrow;
+    if (pos) {
+        dl = USubBorrow(nl, pl, borrow);
+        dh = nh - ph - borrow;
+    } else {
+        dl = USubBorrow(pl, nl, borrow);
+        dh = ph - nh - borrow;
+    }
+}
+
+u32 SqrtSignificand(u32 m, bool odd, const Noise& n, int* repairs) {
+    const u32 nh = odd ? (m >> 8) : (m >> 9);
+    const u32 nl = odd ? (m << 24) : (m << 23);
+    const float nf = static_cast<float>(m) * (odd ? 16777216.0f : 8388608.0f);
+    u32 c = Start(std::floor(Nudge(std::sqrt(nf), n.ulps)), n.start, 0x800000u, 0xFFFFFFu);
+    for (int i = 0; i < 3; ++i) {
+        bool pos;
+        u32 dh, dl;
+        SqrtResidual(c, nh, nl, pos, dh, dl);
+        const u32 jump = static_cast<u32>(std::floor(Nudge(Magnitude(dh, dl) / (2.0f * static_cast<float>(c)), n.ulps) + 0.5f));
+        c = ClampU(pos ? c + jump : c - std::min(jump, c), 0x800000u, 0xFFFFFFu);
+    }
+    int steps = 0;
+    for (int i = 0; i < 3; ++i) {
+        bool pos;
+        u32 dh, dl;
+        SqrtResidual(c, nh, nl, pos, dh, dl);
+        if (pos) {
+            if (dh != 0u || dl > c) {
+                c += 1u;
+                ++steps;
+            }
+        } else if (dh != 0u || dl >= c) {
+            c -= 1u;
+            ++steps;
+        }
+    }
+    if (repairs != nullptr) *repairs = std::max(*repairs, steps);
+    return c;
+}
+
+float PicaRcp(float x, const Noise& n, int* repairs) {
+    const u32 bits = std::bit_cast<u32>(x) & 0x7FFFFFFFu;
+    if (bits >= 0x00800000u && bits < 0x7E800000u) {
+        const float q = RcpNormal((bits & 0x7FFFFFu) | 0x800000u, static_cast<int>(bits >> 23) - 127, n, repairs);
+        return x < 0.0f ? -q : q;
+    }
+    return 1.0f / x;
+}
+
+float PicaRsq(float x, const Noise& n, int* repairs) {
+    const u32 bits = std::bit_cast<u32>(x);
+    if (bits >= 0x00800000u && bits < 0x7F800000u) {
+        const int e = static_cast<int>(bits >> 23) - 127;
+        const u32 root = SqrtSignificand((bits & 0x7FFFFFu) | 0x800000u, (e & 1) != 0, n, repairs);
+        return RcpNormal(root, e >> 1, n, repairs);
+    }
+    return 1.0f / std::sqrt(x);
+}
+
+} // namespace rcp_mirror
+
+namespace {
+
+float FloatFrom(u32 sign, u32 field, u32 fraction) {
+    return std::bit_cast<float>((sign << 31) | (field << 23) | (fraction & 0x7FFFFFu));
+}
+
+bool SameBits(float a, float b) {
+    return std::bit_cast<u32>(a) == std::bit_cast<u32>(b) || (std::isnan(a) && std::isnan(b));
+}
+
+// The significands m (as the fraction m - 2^23) for which the fractional part of 2^47 / m is nearest to one
+// half, nearest first: the reciprocals that are the hardest to round.
+std::vector<u32> NearTieReciprocals(size_t count) {
+    std::vector<std::pair<u32, u32>> keyed;
+    keyed.reserve(1u << 23);
+    for (u32 m = 0x800001u; m < 0x1000000u; ++m) {
+        const u64 twice = 2 * ((1ull << 47) % m);
+        keyed.emplace_back(static_cast<u32>(twice > m ? twice - m : m - twice), m);
+    }
+    std::partial_sort(keyed.begin(), keyed.begin() + static_cast<std::ptrdiff_t>(count), keyed.end());
+    std::vector<u32> out;
+    for (size_t i = 0; i < count; ++i) out.push_back(keyed[i].second - 0x800000u);
+    return out;
+}
+
+// The significands m for which sqrt(m * 2^23) (even exponent) or sqrt(m * 2^24) (odd) is nearest to a half
+// integer, nearest first: the square roots that are the hardest to round.
+std::vector<u32> NearHalfRoots(bool odd, size_t count) {
+    std::vector<std::pair<u64, u32>> keyed;
+    keyed.reserve(1u << 23);
+    for (u32 m = 0x800000u; m < 0x1000000u; ++m) {
+        const u64 n = static_cast<u64>(m) << (odd ? 24 : 23);
+        u64 f = static_cast<u64>(std::sqrt(static_cast<double>(n)));
+        while (f * f > n) --f;
+        while ((f + 1) * (f + 1) <= n) ++f;
+        const u64 r = n - f * f; // 0 .. 2f; the root rounds down while r <= f and up when r > f
+        keyed.emplace_back(r > f ? r - f - 1 : f - r, m);
+    }
+    std::partial_sort(keyed.begin(), keyed.begin() + static_cast<std::ptrdiff_t>(count), keyed.end());
+    std::vector<u32> out;
+    for (size_t i = 0; i < count; ++i) out.push_back(keyed[i].second - 0x800000u);
+    return out;
+}
+
+} // namespace
+
+TEST_CASE("RCP and RSQ in integers (the CPU mirror of the shader's algorithm) equal 1.0f / x and 1.0f / sqrtf(x)") {
+    using namespace rcp_mirror;
+    u64 compared = 0, different = 0;
+    int max_repairs = 0;
+    std::string first;
+    const auto check = [&](float x, const Noise& n) {
+        int repairs = 0;
+        const float rcp = PicaRcp(x, n, &repairs);
+        const float rsq = PicaRsq(x, n, &repairs);
+        max_repairs = std::max(max_repairs, repairs);
+        compared += 2;
+        if (!SameBits(rcp, 1.0f / x)) {
+            ++different;
+            if (first.empty()) first = "rcp of bits " + std::to_string(std::bit_cast<u32>(x));
+        }
+        if (!SameBits(rsq, 1.0f / std::sqrt(x))) {
+            ++different;
+            if (first.empty()) first = "rsq of bits " + std::to_string(std::bit_cast<u32>(x));
+        }
+    };
+    const Noise exact;
+
+    // every exponent, the powers of two and their neighbours, the extreme and the middle significands; the
+    // exponent fields 0 and 255 (zero, denormals, infinity, NaN) take the plain path
+    for (u32 field = 0; field < 256; ++field) {
+        for (const u32 fraction : {0x000000u, 0x000001u, 0x000002u, 0x400000u, 0x3FFFFFu, 0x400001u, 0x7FFFFEu, 0x7FFFFFu,
+                                   0x555555u, 0x2AAAAAu, 0x6A09E6u, 0x35042Fu}) {
+            check(FloatFrom(0, field, fraction), exact);
+            check(FloatFrom(1, field, fraction), exact);
+        }
+    }
+    // the powers of two at every exponent of the range, spelled out: 1 / 2^e is exact, 1 / sqrt(2^e) is exact
+    // for even e and rounded for odd e
+    for (int e = -126; e <= 127; ++e) {
+        check(std::ldexp(1.0f, e), exact);
+    }
+    // 200000 random significands at random exponents (both signs; a negative operand of RSQ is NaN)
+    Rng rng(7001);
+    for (u32 i = 0; i < 200000; ++i) {
+        check(FloatFrom(rng.Next() & 1, 1 + rng.Next() % 254, rng.Next()), exact);
+    }
+    // the two ends of the range of each operation, many significands
+    for (const u32 field : {1u, 2u, 3u, 125u, 126u, 127u, 128u, 251u, 252u, 253u, 254u}) {
+        for (u32 i = 0; i < 20000; ++i) {
+            check(FloatFrom(0, field, rng.Next()), exact);
+        }
+    }
+    CHECK_MESSAGE(different == 0, different << " of " << compared << " results differ from the plain operations; first: " << first);
+    CHECK_MESSAGE(max_repairs <= 1, "the exact loops took " << max_repairs << " steps (three are available)");
+
+    // the same with the start values and the estimates off by what an imprecise device could be: the result
+    // must not change, only the number of repair steps may (the third step of each loop is slack)
+    const Noise noises[] = {{1, 0},  {-1, 0},  {0, 1},     {0, -1},     {3, 2},       {-7, -2},    {100, 3},
+                            {-100, -3}, {4096, 0}, {-4096, 3}, {65536, -3}, {-65536, 2}, {1 << 20, 3}, {-(1 << 20), -3}};
+    max_repairs = 0;
+    for (const Noise& n : noises) {
+        for (u32 i = 0; i < 4000; ++i) {
+            check(FloatFrom(0, 1 + rng.Next() % 254, rng.Next()), n);
+        }
+        check(1.0f, n);
+        check(2.0f, n);
+        check(FloatFrom(0, 127, 0x7FFFFF), n);
+    }
+    CHECK_MESSAGE(different == 0, different << " of " << compared << " results differ from the plain operations; first: " << first);
+    CHECK_MESSAGE(max_repairs <= 2, "the exact loops took " << max_repairs << " steps (three are available)");
+}
+
+// A program that gives the reciprocal and the inverse square root of every lane of v0 (the layout of the
+// case above), run for `values` (four to a vertex, the rest of the last vertex 1.0) and compared bit by bit
+// with the interpreter's.
+namespace {
+
+struct RcpRsqCounts {
+    u64 compared = 0;
+    u64 different = 0;
+    u64 different_rsq = 0;
+    std::string first;
+};
+
+RcpRsqCounts RunRcpRsq(Rig& rig, const std::vector<float>& values) {
+    using namespace asmb;
+    Asm a;
+    const char* lanes[4] = {"xxxx", "yyyy", "zzzz", "wwww"};
+    const char* masks[4] = {"x___", "_y__", "__z_", "___w"};
+    for (u32 l = 0; l < 4; ++l) {
+        a.Op1(kRsq, O(0), V(0), {.mask = masks[l], .s1 = lanes[l]});
+        a.Op1(kRcp, O(1), V(0), {.mask = masks[l], .s1 = lanes[l]});
+    }
+    a.End();
+    const u32 vertices = static_cast<u32>((values.size() + 3) / 4);
+    FloatInputs in = RandomInputs(1, vertices, 61);
+    for (u32 v = 0; v < vertices; ++v) {
+        for (u32 l = 0; l < 4; ++l) {
+            const size_t i = static_cast<size_t>(v) * 4 + l;
+            in.At(v, 0, l) = i < values.size() ? values[i] : 1.0f;
+        }
+    }
+    Draw d = MakeProgram(a, in, 0x3);
+    Outcome o = RunCase(rig, d, vertices);
+    REQUIRE_MESSAGE(o.shader != nullptr, o.error);
+    REQUIRE_MESSAGE(!o.capture.empty(), o.error);
+    const oracle::Memory mem = OracleMemory(d.setup);
+    const oracle::Uniforms uniforms = OracleUniforms(d.setup);
+    RcpRsqCounts counts;
+    for (u32 id = 0; id < vertices; ++id) {
+        oracle::Unit u;
+        FetchInput(d.loaded, id, u.input);
+        oracle::Run(mem, uniforms, u, 0);
+        const float* g = &o.capture[static_cast<size_t>(id) * shader::kCaptureVec4PerVertex * 4];
+        for (u32 r = 0; r < 2; ++r) {
+            for (u32 c = 0; c < 4; ++c) {
+                const float want = u.output[u.output_bank][r].c[c];
+                const float got = g[o.shader->output_map[r] * 4 + c];
+                ++counts.compared;
+                if (!SameBits(want, got)) {
+                    ++counts.different;
+                    counts.different_rsq += r == 0 ? 1 : 0;
+                    if (counts.first.empty()) {
+                        char text[160];
+                        std::snprintf(text, sizeof(text), "%s of %a (lane %u of vertex %u): gpu %a, cpu %a", r == 0 ? "rsq" : "rcp",
+                                      static_cast<double>(in.At(id, 0, c)), c, id, static_cast<double>(got), static_cast<double>(want));
+                        counts.first = text;
+                    }
+                }
+            }
+        }
+    }
+    return counts;
+}
+
+} // namespace
+
+// Inputs designed to hit every correction of the integer algorithm: the powers of two and the values one ulp
+// either side (where the reciprocal or the root changes exponent and the start can be on either side),
+// the extreme significands, the significands whose reciprocal is nearest to a tie, and those whose square
+// root is nearest to a half integer (both parities of the exponent), then those squares whose root is one
+// of the hard reciprocals, and random values to fill.
+TEST_CASE("RCP and RSQ on the device agree bit for bit on the hard cases of rounding") {
+    Rig rig;
+    if (!rig.ok()) return;
+    constexpr size_t kValues = 16384;
+    std::vector<float> values;
+    Rng rng(71);
+    // fields 2 .. 252: the neighbours of a power of two stay normal and the reciprocal is normal
+    for (u32 field = 2; field <= 252; ++field) {
+        const float p = FloatFrom(0, field, 0);
+        values.push_back(p);
+        values.push_back(std::nextafter(p, kInf));
+        values.push_back(std::nextafter(p, 0.f));
+        values.push_back(-p);
+        for (const u32 fraction : {0x000001u, 0x400000u, 0x7FFFFEu, 0x7FFFFFu}) {
+            values.push_back(FloatFrom(field & 1, field, fraction));
+        }
+    }
+    const std::vector<u32> ties = NearTieReciprocals(1200);
+    for (size_t i = 0; i < ties.size(); ++i) {
+        // a random exponent; every third negative (the sign is applied to the result by the translation)
+        const u32 field = 2 + rng.Next() % 251;
+        values.push_back(FloatFrom(i % 3 == 0 ? 1 : 0, field, ties[i]));
+    }
+    for (size_t i = 0; i < ties.size(); ++i) {
+        // x = r * r where r is a hard reciprocal: its rounded root is r or a neighbour of r
+        const float r = FloatFrom(0, 127 - 30 + rng.Next() % 61, ties[i]);
+        const float x = r * r;
+        values.push_back(x);
+        values.push_back(std::nextafter(x, kInf));
+        values.push_back(std::nextafter(x, 0.f));
+    }
+    for (const bool odd : {false, true}) {
+        const std::vector<u32> halves = NearHalfRoots(odd, 700);
+        for (const u32 fraction : halves) {
+            // an exponent of the wanted parity (e = field - 127, so an odd e has an even field)
+            const u32 field = (odd ? 66u : 67u) + (rng.Next() % 61) * 2;
+            values.push_back(FloatFrom(0, field, fraction));
+        }
+    }
+    while (values.size() < kValues) {
+        values.push_back(FloatFrom(rng.Next() & 1, 2 + rng.Next() % 251, rng.Next()));
+    }
+    REQUIRE(values.size() <= kValues);
+    const RcpRsqCounts counts = RunRcpRsq(rig, values);
+    CHECK_MESSAGE(counts.different == 0, counts.different << " of " << counts.compared << " results differ from the interpreter's ("
+                                                          << counts.different_rsq << " of them rsq); first: " << counts.first);
+}
+
 TEST_CASE("DST and LIT (vs_3_0 definitions; Azahar implements neither) are translated and flagged") {
     Rig rig;
     if (!rig.ok()) return;
