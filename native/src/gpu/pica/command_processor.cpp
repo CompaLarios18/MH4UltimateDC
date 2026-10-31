@@ -424,6 +424,21 @@ void CommandProcessor::HandleSpecialReg(u32 id, u32 value, bool& stop_requested)
         DrawArrays(id == reg::kTriggerDrawIndexed);
         return;
 
+    case reg::kGasLutIndex:
+        // The register has been stored (masked); the cursor is its 16 bits, taken modulo 16 when
+        // it is used (Gas::index: unverified).
+        s.gas.index = BitsOf(regs[reg::kGasLutIndex], 0, 16) % Gas::kEntries;
+        return;
+
+    case reg::kGasLutData:
+        // 3dbrew: each write puts the word in the table at the selected index. Not compared with
+        // the old word: a data write sets the flag. The advance is Gas::index's unverified rule.
+        s.gas.lut[s.gas.index] = value;
+        s.gas.index = (s.gas.index + 1) % Gas::kEntries;
+        s.gas.table_dirty = true;
+        ++gas_lut_writes_;
+        return;
+
     case reg::kCommandBufferTrigger:
     case reg::kCommandBufferTrigger + 1: {
         // A jump: the rest of the current list is not executed.
