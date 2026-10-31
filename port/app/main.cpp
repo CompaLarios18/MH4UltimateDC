@@ -11,6 +11,7 @@
 // Settings: mh4u-app.ini (the app) and mh4u.ini (the game's options) in Azahar's user folder.
 // Before the game, the launcher (launcher/) shows the home screen, setup, mods, room, settings.
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdio>
@@ -267,6 +268,49 @@ std::string LoadError(Core::System::ResultStatus status, Core::System& system) {
     }
 }
 
+/// mh4u_log.txt in Azahar's log folder, as the player would type it.
+std::string LogPath() {
+    std::string path = FileUtil::GetUserPath(FileUtil::UserPath::LogDir) + "mh4u_log.txt";
+#ifdef _WIN32
+    std::replace(path.begin(), path.end(), '/', '\\');
+#endif
+    return path;
+}
+
+/// What the player is told when the game stops with an error. The game's own fatal error (what
+/// shows "An error has occurred" on a 3DS) reaches Azahar's err:f, which logs its numbers and
+/// stops with ErrorUnknown and no details; `at_start`: it stopped within seconds of starting.
+std::string StopMessage(Core::System::ResultStatus status, const std::string& details, bool at_start) {
+    const std::string log = LogPath();
+    if (status == Core::System::ResultStatus::ErrorUnknown) {
+        if (at_start) {
+            return fmt::format(
+                "The game stopped with a fatal error of its own as it started. That usually means it "
+                "couldn't read its own files: a game file that isn't decrypted properly, or a damaged "
+                "dump.\n\n"
+                "What to try:\n"
+                "- Dump the game again with GodMode9 on your 3DS, and choose the decrypted .3ds, .cci or "
+                ".cxi in the launcher's Setup.\n"
+                "- Check that the v1.3.0 update is installed (Setup, step 2).\n\n"
+                "The log has the error's numbers (its \"Fatal error\" lines); it's complete once this "
+                "message is closed:\n{}",
+                log);
+        }
+        return fmt::format(
+            "The game stopped with a fatal error of its own. If it happens again at the same place, a "
+            "damaged dump can be the cause: dump the game again with GodMode9 on your 3DS. If that "
+            "doesn't help, please report it with the log, which has the error's numbers; it's complete "
+            "once this message is closed:\n{}",
+            log);
+    }
+    if (details.empty()) {
+        return fmt::format("The game stopped (status {}). The log may say why; it's complete once this "
+                           "message is closed:\n{}",
+                           static_cast<u32>(status), log);
+    }
+    return fmt::format("The game stopped: {}\n\nThe log:\n{}", details, log);
+}
+
 int Run(const std::vector<std::string>& argv) {
     Common::DetachedTasks detached_tasks;
     const Args args = Parse(argv);
@@ -463,6 +507,7 @@ int Run(const std::vector<std::string>& argv) {
 
     auto& speed = App::Speed::Get();
     auto last_paused_frame = std::chrono::steady_clock::now();
+    const auto started = last_paused_frame;
     while (window->IsOpen() && (!secondary || secondary->IsOpen())) {
         // pause and fast forward are for playing alone (a room's others would wait or drop this PC)
         speed.SetInRoom(App::Multiplayer::InRoom(), SDL_GetTicks());
@@ -490,8 +535,11 @@ int Run(const std::vector<std::string>& argv) {
             break;
         }
         if (result != Core::System::ResultStatus::Success) {
-            LOG_ERROR(Frontend, "emulation stopped: {}", system.GetStatusDetails());
-            App::Dialog::Message(TITLE, "The game stopped: " + system.GetStatusDetails(), true);
+            const std::string details = system.GetStatusDetails();
+            LOG_ERROR(Frontend, "emulation stopped (status {}): {}", static_cast<u32>(result), details);
+            // (a fatal error this early comes, most often, from game files it can't read)
+            const bool at_start = std::chrono::steady_clock::now() - started < std::chrono::seconds(30);
+            App::Dialog::Message(TITLE, StopMessage(result, details, at_start), true);
             break;
         }
         App::Multiplayer::Tick();
