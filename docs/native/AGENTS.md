@@ -314,7 +314,7 @@ game-data: none found | <what kind and where, without quoting it>
 ## 12. Maintainer-only tasks
 
 - Merge batch PRs (GitHub: **Create a merge commit**, so the review merges inside the batch stay visible).
-- Settle `Open` decisions (D4 after the spike, D5 after the design).
+- Settle `Open` decisions (the list is in `DECISIONS.md`; D70 and D95 at the time of writing).
 - Run the procedures the WPs leave for:
   - the reference PC: baseline, spike, budgets;
   - the M2: Metal;
