@@ -783,6 +783,15 @@ half of patch11 still ran), and the headless-surface cases only if the Windows l
 (registered with `doctest::skip` there). doctest's own summary counts a run-time skip as passed. The doctest counts on lavapipe are core 49 passed and 1 skipped, plume
 8 and 1, patterns 23 and 4 (seen); the PC's counts are to be measured (the no-driver case is doctest-skipped on Windows, so core runs one case fewer there).
 
+**Measured on the PC (2026-10-25, the merged tree at `198af96`, the RX 6700 XT, `MH4N_REQUIRE_VULKAN=1 MH4N_VULKAN_DEVICE="RX 6700"`, no
+`MH4N_REQUIRE_HEADLESS_SURFACE`):** `gpu_backend_core_test` 48 cases passed, 0 failed, 2 skipped, 1,750 of 1,750 assertions; its `skipped at run time` block names the three
+headless-surface cases (the Windows loader still lacks `VK_EXT_headless_surface`) and `loading/no_driver_gives_an_error_with_a_message_and_the_process_goes_on` is skipped
+by decorator on Windows. `rhi_plume_test` 8 passed, 0 failed, 1 skipped (`device/headless_surface` at run time), 46 of 46 assertions. `rhi_plume_patterns_test` 23 passed,
+0 failed, 4 skipped (the controls), 1,212 of 1,212 assertions; `skipped at run time: 2` names `patch10/dynamic_stencil_state_d24s8` and
+`patch11/depth_stencil_copy_as_two_regions` (no D24S8 attachment on this device). So the five failures of the run before N2-32 are gone and the run is clean: 0 failed in the
+three binaries. `mh4n_vkprobe --rhi` exits 0 and prints `rhi present_wait: false`, `rhi present_wait_available: false` and `rhi interlock: true` for the AMD proprietary driver, as
+the plain probe says (N2-30's PC item).
+
 Run on the maintainer's PC on 2026-10-24, base `6c8f6cd`, no source changed. Build: llvm-mingw 20241217 (`x86_64-w64-mingw32-clang`), Ninja,
 `RelWithDebInfo`, `MH4N_WERROR=ON`, the targets `gpu_backend_core_test`, `rhi_plume_test`, `rhi_plume_patterns_test` and `mh4n_vkprobe_tool`
 (the executable `mh4n_vkprobe`; the target named `mh4n_vkprobe` is its library). All four build and link on Windows without a warning.

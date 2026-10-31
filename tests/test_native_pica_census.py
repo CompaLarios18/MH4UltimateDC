@@ -1,15 +1,16 @@
-# Derived from Azahar src/video_core/pica/regs_internal.h, regs_pipeline.h, regs_rasterizer.h, regs_texturing.h,
+# Derived from Azahar src/video_core/shader/generator/pica_fs_config.cpp (Dot3_RGBA masking, the canonical key inputs),
+# src/video_core/renderer_vulkan/pica_to_vk.h (FrontFace), src/video_core/pica/regs_internal.h, regs_pipeline.h, regs_rasterizer.h, regs_texturing.h,
 # regs_framebuffer.h, regs_lighting.h, regs_shader.h, pica_core.cpp, src/video_core/renderer_vulkan/vk_rasterizer.cpp
 # src/video_core/renderer_opengl/gl_rasterizer.cpp and src/video_core/shader/generator/spv_fs_shader_gen.cpp at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-3.0-or-later:
-# vk_rasterizer.cpp says "Licensed under GPLv3 or any later version"; the other files say "Licensed under GPLv2 or
-# any later version"): the register numbers and bit positions the synthetic register writes use, which register
+# pica_fs_config.cpp and vk_rasterizer.cpp say "Licensed under GPLv3 or any later version"; the other files, pica_to_vk.h
+# included, say "Licensed under GPLv2 or any later version"): the register numbers and bit positions the synthetic register writes use, which register
 # writes trigger a draw, the depth-buffer cases of using_depth_fb the depth tests expect, the logic ops the SPIR-V path emulates, and the textual
 # parser of those headers that checks the tool's tables (the oracle).
 # Copyright 2017-2025 Citra Emulator Project / Azahar Emulator Project (regs_internal.h, regs_pipeline.h, regs_framebuffer.h, regs_shader.h)
 # Copyright 2017-2026 Citra Emulator Project / Azahar Emulator Project (regs_rasterizer.h)
 # Copyright 2017-2024 Citra Emulator Project / Azahar Emulator Project (regs_texturing.h)
 # Copyright 2017 Citra Emulator Project (regs_lighting.h)
-# Copyright 2023-2026 Citra Emulator Project / Azahar Emulator Project (pica_core.cpp, vk_rasterizer.cpp)
+# Copyright 2023-2026 Citra Emulator Project / Azahar Emulator Project (pica_core.cpp, vk_rasterizer.cpp, pica_fs_config.cpp, pica_to_vk.h)
 # Copyright 2023-2026 Citra Emulator Project / Azahar Emulator Project (spv_fs_shader_gen.cpp)
 # Copyright 2022-2026 Citra Emulator Project / Azahar Emulator Project (gl_rasterizer.cpp)
 #
@@ -875,3 +876,415 @@ def test_markdown_extras(tmp_path):
     assert "| label | shadow textures (unit 0) |" in text
     assert "upper bound" in text and "using_depth_fb" in text
     assert "topology Shader (3), apart" in text
+
+
+# ---- N0-40: the pipeline-key groups, the extra fields and the union (--union) -------------------------------
+
+TEX_BASE0 = 0x81
+
+
+def _golden_lists():
+    """A capture that exercises most of what the default output reports: TEV, lighting, fog, proctex, a geometry shader,
+    blending and a logic op, depth and stencil, textures with a border colour, indexed and immediate draws."""
+    return [
+        [W(0x80, 0b101 | (1 << 10)), W(0x83, 0), W(0x82, (64 << 16) | 32), W(0x8E, 12), W(0x99 + 2, (1 << 8) | (5 << 12)),
+         W(0x9A, (8 << 16) | 8), W(0x9E, 3), W(0xE0, 5), W(0xC0, 0x1234), W(0xC2, 1), W(0x25E, 1 << 8),
+         W(0x100, 1 << 8), W(0x101, 0 | (6 << 16) | (7 << 20)), W(0x107, 0xF01 | (5 << 4)), W(0x11C, 1), W(0x11D, 1),
+         W(0x113, 0xF), W(0x115, 3), W(0x116, 3), W(0x117, 0)] + _upload([5, 6, 7]) + [DRAW],
+        [W(0x1C6, 0), W(0x1C2, 1), W(0x1C3, 4 << 4), W(0x1D9, 3 | (5 << 4)), W(0x229, 2), W(0x252, 1)]
+        + _upload([9], base=0x280) + [DRAW, DRAW_INDEXED],
+        [W(0x100, 0), W(0x102, 11), W(0x229, 0), W(0x1C6, 1), W(0x105, 1 | (2 << 4)), DRAW],
+        [W(0x232, 0xF), W(0x242, 0), W(0x233, 1), W(0x234, 2), W(0x235, 3)],
+    ]
+
+
+GOLDEN_SHA256 = {
+    # sha256 of the JSON and the markdown that the tool at 9cdee2a (N0-13, before N0-40) writes for _golden_lists()
+    "json": "dc5a96585418a6e156d7c0b94ca04c401f80b6ac15db44be4a434957d1f7dfd6",
+    "md": "e0409a1e22940c668a996fe56467223692754651a2d5d733bf0bd29d65449a1d",
+}
+
+
+def _sha256(path):
+    import hashlib
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def test_default_output_is_byte_identical_to_the_tool_before_n0_40(tmp_path):
+    p = build(tmp_path / "gpu-0.mgpu", _golden_lists())
+    js, md = tmp_path / "g.json", tmp_path / "g.md"
+    assert pc.run([f"G1={p}"], str(js), str(md), False, out=io.StringIO(), err=io.StringIO()) == 0
+    assert _sha256(js) == GOLDEN_SHA256["json"]
+    assert _sha256(md) == GOLDEN_SHA256["md"]
+    text = md.read_text()
+    assert "N0-40" not in text and "fs_key" not in text and "union" not in json.loads(js.read_text())
+
+
+def ext_one(path, label="T"):
+    c = pc.LabelCensus(label)
+    pc.census_capture(str(path), c)
+    return pc.ext_analyse(c)
+
+
+def efeat(e, name):
+    return {v: n for v, (n, _f) in e.features.get(name, {}).items()}
+
+
+def egroup(e, name):
+    return e.groups.get(name, {})
+
+
+BLEND_ON = W(0x100, 1 << 8)
+
+
+def blend(eq_rgb=0, eq_a=0, src_rgb=1, dst_rgb=0, src_a=1, dst_a=0):
+    """output_merger.alpha_blending (0x101): equations bits 0-2 and 8-10, factors bits 16-19, 20-23, 24-27, 28-31."""
+    return W(0x101, eq_rgb | (eq_a << 8) | (src_rgb << 16) | (dst_rgb << 20) | (src_a << 24) | (dst_a << 28))
+
+
+def test_blend_factors_are_decoded_with_azahars_names(tmp_path):
+    p = build(tmp_path / "a.mgpu", [
+        [BLEND_ON, blend(src_rgb=6, dst_rgb=7, src_a=1, dst_a=0), DRAW],
+        [blend(src_rgb=14, dst_rgb=10, src_a=8, dst_a=13), DRAW],
+        [W(0x100, 0), DRAW],                                         # blending off: no factors
+    ])
+    e = ext_one(p)
+    assert efeat(e, "blend_factors_rgb") == {"Add SourceAlpha/OneMinusSourceAlpha": 1, "Add SourceAlphaSaturate/ConstantColor": 1}
+    assert efeat(e, "blend_factors_a") == {"Add One/Zero": 1, "Add DestAlpha/OneMinusConstantAlpha": 1}
+    assert efeat(e, "blend_factor") == {"SourceAlpha": 1, "OneMinusSourceAlpha": 1, "SourceAlphaSaturate": 1,
+                                        "ConstantColor": 1, "DestAlpha": 1, "OneMinusConstantAlpha": 1,
+                                        "One": 1, "Zero": 1}
+
+
+def test_blend_factor_registers_and_enumerations_match_azahar_names():
+    assert [pc.FIELDS[f"blend_factor_{n}"][:3] for n in ("src_rgb", "dst_rgb", "src_a", "dst_a")] == [
+        (0x101, 16, 4), (0x101, 20, 4), (0x101, 24, 4), (0x101, 28, 4)]
+    assert pc.ENUMS["BlendFactor"][14] == "SourceAlphaSaturate" and len(pc.ENUMS["BlendFactor"]) == 15
+
+
+def test_colour_write_mask_cull_front_face_scissor_and_depth_buffering(tmp_path):
+    p = build(tmp_path / "a.mgpu", [
+        [W(0x113, 0xF), W(0x107, 0xF00), W(0x40, 0), W(0x65, 0), W(0x6D, 0), DRAW],
+        [W(0x107, 0x500), W(0x40, 1), W(0x65, 1), W(0x6D, 1), DRAW],
+        [W(0x113, 0), W(0x40, 2), W(0x65, 3), DRAW],                 # allow_color_write 0: no channel written
+        [W(0x40, 3), DRAW],
+    ])
+    e = ext_one(p)
+    assert efeat(e, "colour_write_mask") == {"RGBA": 1, "RB": 1, "none": 2}
+    assert efeat(e, "cull_mode") == {"KeepAll": 1, "KeepClockWise": 1, "KeepCounterClockWise": 1, "KeepAll2": 1}
+    # PicaToVK::FrontFace: clockwise only for KeepCounterClockWise
+    assert efeat(e, "front_face") == {"CounterClockwise": 3, "Clockwise": 1}
+    assert efeat(e, "scissor_mode") == {"Disabled": 1, "Exclude": 1, "Include": 2}
+    assert efeat(e, "depthmap_enable") == {"WBuffering": 1, "ZBuffering": 3}
+
+
+def test_wrap_modes_per_unit_and_border_kinds(tmp_path):
+    # wrap_t bits 8-10, wrap_s bits 12-14 of the unit's config register (0x83, 0x93, 0x9B)
+    cfg = lambda s, t: W(0x83, (s << 12) | (t << 8))                  # noqa: E731
+    p = build(tmp_path / "a.mgpu", [
+        [W(0x80, 0b011), cfg(1, 2), W(0x93, (5 << 12) | (0 << 8)), DRAW],
+        [W(0x80, 0b001), cfg(5, 5), DRAW],
+    ])
+    e = ext_one(p)
+    assert efeat(e, "wrap_mode_unit") == {"unit0:s=ClampToBorder/t=Repeat": 1, "unit1:s=ClampToBorder2/t=ClampToEdge": 1,
+                                          "unit0:s=ClampToBorder2/t=ClampToBorder2": 1}
+    assert efeat(e, "border_wrap_kind") == {"ClampToBorder": 1, "ClampToBorder2": 2}
+
+
+def test_texture_and_fog_flags(tmp_path):
+    p = build(tmp_path / "a.mgpu", [
+        [W(0xE0, 0), W(0x80, 0), W(0x8B, 0), DRAW],
+        [W(0xE0, 5 | (1 << 16)), W(0x80, 1 << 13), W(0x8B, 1), W(0x83, 2 << 28), DRAW],
+    ])
+    e = ext_one(p)
+    assert efeat(e, "fog_flip") == {"False": 1, "True": 1}
+    assert efeat(e, "texture2_use_coord1") == {"False": 1, "True": 1}
+    assert efeat(e, "shadow_orthographic") == {"False": 1, "True": 1}
+    assert efeat(e, "texture0_type_register") == {"Texture2D": 1, "Shadow2D": 1}      # read even with unit 0 disabled
+
+
+PROCTEX = [W(0x80, 1 << 10 | 2 << 8), W(0xA8, 1 | (2 << 3) | (7 << 6) | (8 << 10) | (1 << 14) | (1 << 15) | (1 << 16) | (2 << 18)),
+           W(0xAC, 5 | (2 << 3) | (9 << 7) | (64 << 11)), W(0xAD, 0x04030201)]
+
+
+def test_proctex_fields_follow_proctexconfig(tmp_path):
+    p = build(tmp_path / "a.mgpu", [PROCTEX + [DRAW], [W(0x80, 0), DRAW]])
+    e = ext_one(p)
+    assert efeat(e, "proctex_coord") == {"2": 1}
+    assert efeat(e, "proctex_u_clamp") == {"ToEdge": 1} and efeat(e, "proctex_v_clamp") == {"SymmetricalRepeat": 1}
+    assert efeat(e, "proctex_color_combiner") == {"Min": 1} and efeat(e, "proctex_alpha_combiner") == {"Max": 1}
+    assert efeat(e, "proctex_separate_alpha") == {"1": 1} and efeat(e, "proctex_noise_enable") == {"1": 1}
+    assert efeat(e, "proctex_u_shift") == {"Odd": 1} and efeat(e, "proctex_v_shift") == {"Even": 1}
+    assert efeat(e, "proctex_lut_filter") == {"LinearMipmapLinear": 1}
+    assert efeat(e, "proctex_lod_min") == {"2": 1} and efeat(e, "proctex_lod_max") == {"9": 1}
+    assert efeat(e, "proctex_lut_width") == {"64": 1} and efeat(e, "proctex_lut_offsets") == {"1/2/3/4": 1}
+    # the configuration group counts only draws that sample the procedural texture
+    assert list(egroup(e, "proctex_config").values()) == [1]
+    assert "level" not in "".join(egroup(e, "proctex_config"))
+
+
+def test_proctex_config_counts_distinct_configurations(tmp_path):
+    p = build(tmp_path / "a.mgpu", [PROCTEX + [DRAW, DRAW], [W(0xAD, 0x08070605), DRAW], [W(0x80, 0), DRAW]])
+    e = ext_one(p)
+    assert sorted(egroup(e, "proctex_config").values()) == [1, 2]
+
+
+LIGHT_ON = [W(0x1C6, 0), W(0x1C2, 1), W(0x1D9, 6 | (2 << 4))]
+
+
+def test_lighting_fields_follow_lightconfig(tmp_path):
+    flags = (1 << 2) | (1 << 3) | (1 << 27) | (2 << 22) | (1 << 0) | (1 << 17)       # alphas, clamp, selector 2, shadow, secondary
+    p = build(tmp_path / "a.mgpu", [
+        LIGHT_ON + [W(0x1C3, (4 << 4) | flags), W(0x1C4, 0), W(0x149 + 0x10 * 6, 0b0101), W(0x149 + 0x10 * 2, 0b1010),
+                    W(0x1D0, 1 << 5), W(0x1D1, 3 | (2 << 8)), W(0x1D2, 7 | (6 << 24)), DRAW],
+    ])
+    e = ext_one(p)
+    assert efeat(e, "light_config0_flag") == {"enable_primary_alpha": 1, "enable_secondary_alpha": 1, "clamp_highlights": 1,
+                                              "enable_shadow": 1}
+    assert efeat(e, "light_bump_selector") == {"texture 2": 1}
+    assert efeat(e, "light_shadow_flag") == {"shadow_secondary": 1}
+    assert efeat(e, "light_flag") == {"directional": 1, "geometric_factor_0": 1, "two_sided_diffuse": 1,
+                                      "geometric_factor_1": 1, "dist_atten_enable": 1, "spot_atten_enable": 1,
+                                      "shadow_enable": 1}
+    inputs = efeat(e, "light_lut_input")
+    assert inputs["d0:LN"] == 1 and inputs["sp:NV"] == 1 and inputs["d1:NH"] == 1       # lut_input d0 bits 0-2, sp bits 8-10
+    assert "sp:signed" not in efeat(e, "light_lut_abs_input")                         # sp: disable_sp (bit 9) clear = abs
+    assert efeat(e, "light_lut_abs_input")["sp:abs"] == 1 and efeat(e, "light_lut_abs_input")["d1:signed"] == 1
+    scales = efeat(e, "light_lut_scale")
+    assert scales["d0:Scale1_2"] == 1 and scales["rr:Scale1_4"] == 1 and scales["d1:Scale1"] == 1
+
+
+def test_lighting_fields_are_absent_when_lighting_is_off(tmp_path):
+    e = ext_one(build(tmp_path / "a.mgpu", [[W(0x1C6, 1), DRAW]]))
+    assert not [f for f in e.features if f.startswith("light_")]
+
+
+def test_lit_draws_against_geometry_shader(tmp_path):
+    p = build(tmp_path / "a.mgpu", [
+        [W(0x1C6, 1), W(0x229, 0), DRAW],
+        [W(0x1C6, 1), W(0x229, 2), DRAW, DRAW],
+        [W(0x1C6, 0), W(0x229, 0), DRAW, DRAW, DRAW],
+        [W(0x229, 2), DRAW],
+    ])
+    e = ext_one(p)
+    assert efeat(e, "lighting_x_geometry_shader") == {
+        "lighting off + geometry shader no": 1, "lighting off + geometry shader yes": 2,
+        "lighting on + geometry shader no": 3, "lighting on + geometry shader yes": 1}
+
+
+def test_fixup_is_lighting_on_with_the_geometry_shader_bit_clear():
+    # design 4.3 and 5.5: the fixed geometry shader serves lit draws shaded by the translated (hardware) vertex shader;
+    # the draws that set use_gs are CPU draws and take no fix-up
+    for light_on, use_gs, expected in ((False, False, False), (False, True, False), (True, False, True), (True, True, False)):
+        assert pc.needs_fixup({"light_on": light_on, "use_gs": use_gs}) is expected
+
+
+def test_pipeline_groups_apply_the_fixup_to_the_lit_draws_without_the_geometry_shader(tmp_path, monkeypatch):
+    seen = {}
+    real = pc.needs_fixup
+
+    def spy(s):
+        r = real(s)
+        seen[(s["light_on"], s["use_gs"])] = r
+        return r
+
+    monkeypatch.setattr(pc, "needs_fixup", spy)
+    ext_one(build(tmp_path / "a.mgpu", [
+        [W(0x1C6, 1), W(0x229, 0), DRAW], [W(0x1C6, 1), W(0x229, 2), DRAW],
+        [W(0x1C6, 0), W(0x229, 0), DRAW], [W(0x1C6, 0), W(0x229, 2), DRAW]]))
+    assert seen == {(False, False): False, (False, True): False, (True, False): True, (True, True): False}
+
+
+def test_fs_key_ignores_what_the_canonical_form_zeroes(tmp_path):
+    # blending on: a stale logic op and the factors of an Add half are not in the fragment key, but the factors are
+    # in the fixed-function state
+    p = build(tmp_path / "a.mgpu", [
+        [BLEND_ON, blend(src_rgb=6, dst_rgb=7), W(0x102, 0), DRAW],
+        [W(0x102, 11), DRAW],                                        # another logic op, ignored while blending
+        [blend(src_rgb=1, dst_rgb=1), DRAW],                         # other factors, Add equation
+    ])
+    e = ext_one(p)
+    assert len(egroup(e, "fs_key")) == 1
+    assert len(egroup(e, "fixed_function")) == 2
+
+
+def test_fs_key_keeps_min_max_factors_and_the_logic_op_without_blending(tmp_path):
+    p = build(tmp_path / "a.mgpu", [
+        [BLEND_ON, blend(eq_rgb=3, src_rgb=1, dst_rgb=1), DRAW],
+        [blend(eq_rgb=3, src_rgb=6, dst_rgb=7), DRAW],               # Min: the factors matter
+        [blend(eq_rgb=4, src_rgb=6, dst_rgb=7), DRAW],               # Max
+    ])
+    e = ext_one(p)
+    assert len(egroup(e, "fs_key")) == 3
+    q = build(tmp_path / "b.mgpu", [[W(0x100, 0), W(0x102, 3), DRAW], [W(0x102, 11), DRAW], [W(0x102, 11), DRAW]])
+    f = ext_one(q)
+    assert sorted(egroup(f, "fs_key").values()) == [1, 2] and sorted(egroup(f, "fixed_function").values()) == [1, 2]
+
+
+def test_fs_key_fields_each_split_the_key(tmp_path):
+    base = [W(0x80, 0b001), W(0x1C6, 1)]                               # unit 0 only, lighting off
+    changes = {
+        "wrap of a disabled unit": [W(0x9B, 5 << 12)],
+        "fog flip": [W(0xE0, 1 << 16)],
+        "texture2_use_coord1": [W(0x80, 0b001 | (1 << 13))],
+        "shadow orthographic": [W(0x8B, 1)],
+        "scissor": [W(0x65, 3)],
+        "depthmap": [W(0x6D, 1)],
+        "alpha test": [W(0x104, 1 | (6 << 4))],
+        "light flag": [W(0x1C6, 0), W(0x1D9, 0), W(0x149, 1)],
+        "proctex": PROCTEX,
+        "tex0 type register": [W(0x83, 1 << 28)],
+        "shadow rendering": [W(0x100, 3)],                           # Shadow fragment operation mode
+    }
+    lists = [base + [DRAW]]
+    for ws in changes.values():
+        lists.append(base + ws + [DRAW])
+        lists.append([W(0x80, 0b001), W(0x9B, 0), W(0xE0, 0), W(0x8B, 0), W(0x65, 0), W(0x6D, 0), W(0x104, 0), W(0x1C6, 1),
+                      W(0x83, 0), W(0x149, 0), W(0x100, 0), DRAW])     # back to the base state
+    e = ext_one(build(tmp_path / "a.mgpu", lists))
+    # the base state and one new key per change: every field of `changes` splits the key
+    assert len(egroup(e, "fs_key")) == 1 + len(changes)
+
+
+def test_lighting_fields_each_split_the_key_only_while_lighting_is_on(tmp_path):
+    changes = {
+        "per-light flag": [W(0x149 + 0x10 * 6, 1)],
+        "LUT input": [W(0x1D1, 1)],
+        "LUT absolute flag": [W(0x1D0, 1 << 1)],
+        "LUT scale": [W(0x1D2, 1)],
+        "config0 flag": [W(0x1C3, 1 << 2)],
+        "bump selector": [W(0x1C3, 2 << 22)],                        # config0.bump_selector, bits 22-23
+        "bump mode": [W(0x1C3, 1 << 28)],                            # config0.bump_mode, bits 28-29
+        "disable bump renorm": [W(0x1C3, 1 << 30)],
+        "enable shadow": [W(0x1C3, 1)],                              # config0.enable_shadow, bit 0
+    }
+    # the shadow fields are read only while enable_shadow is set: changed against a base that has it set
+    shadow_on = 1
+    shadow_changes = {
+        "shadow primary": 1 << 16, "shadow secondary": 1 << 17, "shadow invert": 1 << 18, "shadow alpha": 1 << 19,
+        "shadow selector": 2 << 24,
+    }
+    lit = [W(0x1C6, 0), W(0x1C2, 1), W(0x1D9, 6 | (2 << 4)), W(0x1C3, 0), W(0x149 + 0x10 * 6, 0), W(0x1D0, 0),
+           W(0x1D1, 0), W(0x1D2, 0)]
+    for state, light_reg in (("on", W(0x1C6, 0)), ("off", W(0x1C6, 1))):
+        lists = [lit + [light_reg, DRAW]]
+        for ws in changes.values():
+            lists.append(lit + ws + [light_reg, DRAW])
+        for bits in shadow_changes.values():
+            lists.append(lit + [W(0x1C3, shadow_on | bits), light_reg, DRAW])
+        e = ext_one(build(tmp_path / f"{state}.mgpu", lists))
+        distinct = len(egroup(e, "fs_key"))
+        # one key for the base and one more for each change while lighting is on; none while it is off
+        expected = 1 + len(changes) + len(shadow_changes)
+        assert distinct == (expected if state == "on" else 1), (state, distinct)
+
+
+def test_tev_masking_of_dot3_rgba_merges_keys_but_census_tev_hash_does_not(tmp_path):
+    # Dot3_RGBA (ops bits 0-3 = 7): sources and modifiers above bit 11 and the ops above bit 3 are not in the key
+    p = build(tmp_path / "a.mgpu", [
+        [W(0xC2, 7), W(0xC0, 0x00000123), DRAW],
+        [W(0xC0, 0x00F00123), W(0xC1, 0x0000F000), W(0xC2, 0x70007), DRAW],
+        [W(0xC2, 1), DRAW],                                          # Modulate: nothing masked
+        [W(0xC0, 0x00000123), DRAW],                                 # Modulate with other sources: another key
+    ])
+    c = pc.LabelCensus("T")
+    pc.census_capture(str(p), c)
+    assert len(egroup(pc.ext_analyse(c), "fs_key")) == 3
+    assert pc.analyse(c).unique["tev_config"]["count"] == 4
+
+
+def test_vertex_stage_is_program_layout_and_topology(tmp_path):
+    p = build(tmp_path / "a.mgpu", [
+        _upload([1, 2]) + [DRAW],
+        [W(0x25E, 1 << 8), DRAW],                                    # topology
+        _upload([3, 4]) + [DRAW],                                    # program
+        [W(0x202, 1 << 28), DRAW],                                   # layout (max_attribute_index)
+        [W(0x1C6, 1), DRAW],                                         # no change to the vertex stage
+    ])
+    e = ext_one(p)
+    assert sorted(egroup(e, "vertex_stage").values()) == [1, 1, 1, 2]
+    assert all(v.startswith("vs=") and "topology=" in v for v in egroup(e, "vertex_stage"))
+
+
+def test_fixed_function_holds_depth_stencil_cull_and_mask(tmp_path):
+    depth = 1 | (5 << 4) | (1 << 12)                                 # depth test LessThanOrEqual with write
+    lists = [
+        [W(0x113, 1), DRAW],                                         # allow_color_write: the mask is "none" without it
+        [W(0x107, depth), DRAW],
+        [W(0x105, 1), DRAW],                                         # stencil
+        [W(0x40, 2), DRAW],                                          # cull
+    ]
+    e = ext_one(build(tmp_path / "a.mgpu", lists))
+    assert len(egroup(e, "fixed_function")) == 4
+    # only the colour write mask (bits 8-11 of 0x107, the depth bits kept) changes in the last draw
+    f = ext_one(build(tmp_path / "b.mgpu", lists + [[W(0x107, depth | 0xB00), DRAW]]))
+    values = egroup(f, "fixed_function")
+    assert len(values) == 5
+    assert sum("mask=RGA;" in v for v in values) == 1 and all("mask=none;" in v for v in egroup(e, "fixed_function"))
+
+
+def test_joint_tuple_includes_pass_kind_and_formats(tmp_path):
+    p = build(tmp_path / "a.mgpu", [[DRAW], [W(0x100, 3), DRAW], [W(0x100, 0), W(0x117, 2 << 16), DRAW],
+                                    [W(0x116, 2), DRAW]])
+    e = ext_one(p)
+    # shadow pass (pass kind and fs_key), colour format, depth format: each changes the tuple
+    assert len(egroup(e, "pipeline_tuple")) == 4
+
+
+def test_union_counts_a_shared_configuration_once_and_reports_contributions(tmp_path):
+    shared = [W(0x80, 0b001), W(0x65, 3)]
+    a = build(tmp_path / "gpu-0.mgpu", [shared + [DRAW, DRAW], [W(0xE0, 5), DRAW]])
+    b = build(tmp_path / "gpu-1.mgpu", [shared + [DRAW], [W(0x40, 2), W(0x8B, 1), DRAW]])
+    ea, eb = ext_one(a, "A"), ext_one(b, "B")
+    ug = pc.union_groups([ea, eb])
+    fs = ug["fs_key"]
+    assert (len(egroup(ea, "fs_key")), len(egroup(eb, "fs_key")), fs["union"]) == (2, 2, 3)
+    assert fs["in_every_label"] == 1
+    assert fs["per_label"] == {"A": {"distinct": 2, "only_here": 1, "draws": 3}, "B": {"distinct": 2, "only_here": 1, "draws": 2}}
+    shared_value = [v for v, per in fs["values"].items() if len(per) == 2][0]
+    assert fs["values"][shared_value] == {"A": 2, "B": 1}
+    assert ug["pipeline_tuple"]["union"] == 3
+    assert ug["fixed_function"]["union"] == 2                       # only the second draw of B changes the cull mode
+
+
+def test_union_run_writes_the_extension_and_leaves_the_census_part_unchanged(tmp_path):
+    p = build(tmp_path / "gpu-0.mgpu", _golden_lists())
+    q = build(tmp_path / "gpu-1.mgpu", [[W(0x1C6, 0), W(0x229, 2), DRAW], [W(0x40, 1), DRAW]])
+    plain_js, plain_md = tmp_path / "p.json", tmp_path / "p.md"
+    js, md = tmp_path / "out" / "u.json", tmp_path / "out" / "u.md"
+    assert pc.run([f"G1={p}", f"G2={q}"], str(plain_js), str(plain_md), False, out=io.StringIO(), err=io.StringIO()) == 0
+    out = io.StringIO()
+    assert pc.run([f"G1={p}", f"G2={q}"], str(js), str(md), False, out=out, err=io.StringIO(), union=True) == 0
+    plain, with_union = json.loads(plain_js.read_text()), json.loads(js.read_text())
+    union = with_union.pop("union")
+    assert with_union == plain                                       # the existing JSON is a subset, unchanged
+    assert md.read_text().startswith(plain_md.read_text())
+    text = md.read_text()
+    for needle in ("# Pipeline-key groups and the union across captures (N0-40)", "## Distinct values per group",
+                   "## Lit draws against geometry shader", "| fs_key |", "| pipeline_tuple |", "proctex_config"):
+        assert needle in text, needle
+    assert union["labels"] == ["G1", "G2"]
+    assert union["groups"]["fs_key"]["union"] == len(
+        set(pc.union_groups([ext_one(p, "G1"), ext_one(q, "G2")])["fs_key"]["values"]))
+    assert "G1" in union["features"] and "blend_factors_rgb" in union["features"]["G1"]
+    assert all(c in "0123456789abcdef" for g in ("fs_key", "pipeline_tuple") for t in union["groups"][g]["top"]
+               for c in t["value"])                                   # long keys are printed as hashes
+    assert out.getvalue().count("wrote") == 2
+    # the output is a function of the captures only
+    js2, md2 = tmp_path / "u2.json", tmp_path / "u2.md"
+    assert pc.run([f"G1={p}", f"G2={q}"], str(js2), str(md2), False, out=io.StringIO(), err=io.StringIO(), union=True) == 0
+    assert js2.read_text() == js.read_text() and md2.read_text() == text
+
+
+def test_union_option_on_the_command_line_and_help_warns_about_the_md_default(tmp_path, capsys):
+    p = build(tmp_path / "gpu-0.mgpu", [[DRAW]])
+    rc, out, err = run_cli([f"G1={p}", "--union", "--json", str(tmp_path / "u.json"), "--md", str(tmp_path / "u.md")], capsys)
+    assert rc == 0 and "union" in json.loads((tmp_path / "u.json").read_text())
+    rc, out, err = run_cli([f"G1={p}", "--json", str(tmp_path / "n.json"), "--md", str(tmp_path / "n.md")], capsys)
+    assert rc == 0 and "union" not in json.loads((tmp_path / "n.json").read_text())
+    assert "pipeline-key" not in (tmp_path / "n.md").read_text()
+    with pytest.raises(SystemExit):
+        pc.main(["--help"])
+    text = capsys.readouterr().out
+    assert "--union" in text and "OVERWRITES docs/research/pica-census.md" in text
+    assert "OVERWRITES" in pc.__doc__ or "overwrites the document" in pc.__doc__
