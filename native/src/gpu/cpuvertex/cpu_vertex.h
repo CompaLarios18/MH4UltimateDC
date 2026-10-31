@@ -88,8 +88,9 @@
 //   variable-primitive geometry shader on an Arrays or Immediate draw (it needs an index buffer),
 //   more vertices than fit the geometry shader's input registers or uniforms, and an output
 //   semantic id of 24 to 30 in the output attributes in use on an Arrays/Indexed draw
-//   (RasterizerRegs::ValidateSemantics, which Azahar's LoadVertices calls and DrawImmediate does
-//   not: an immediate vertex drops such a slot's value, as Azahar does).
+//   (RasterizerRegs::ValidateSemantics, which Azahar's LoadVertices calls; RunMode::Full only:
+//   RunMode::VertexOnly stands for the accelerated path, which does not validate, and neither does
+//   DrawImmediate. Both drop such a slot's value, as Azahar does).
 // Counters (cumulative, see `counters()`): kCounterDraws "cpu_path_draws" (draws given to Run),
 // kCounterVertices "cpu_path_vertices" (vertices submitted to the vertex unit, cache hits included),
 // kCounterUnhandled "cpu_path_unhandled", kCounterLoadFailed "cpu_path_load_failed"; the struct

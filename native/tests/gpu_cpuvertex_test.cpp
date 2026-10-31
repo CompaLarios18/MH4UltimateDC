@@ -2376,13 +2376,17 @@ TEST_CASE("an inconsistent geometry pipeline set-up is Unhandled, once per asser
         const char* name;
         u32 mode;
         std::function<void(CmdList&)> tweak;
+        // Variable primitive mode needs an index buffer: an Arrays draw there is Unhandled through
+        // GeometryNeedsIndex whatever the registers say, so its cases use an Indexed draw and only the
+        // check under test can end them Unhandled.
+        bool indexed = false;
     };
     constexpr u32 kShaderModeBits = 0x08u << 24;
     const std::vector<Case> cases = {
         {"point mode with variable_primitive", 0, [](CmdList& l) { l.Write(kRegUseGs, 2u | (1u << 31)); }},
         {"point mode with input_to_uniform", 0, [](CmdList& l) { l.Write(kGs + 0x09, kShaderModeBits | (1u << 8)); }},
-        {"variable mode without variable_primitive", 1, [](CmdList& l) { l.Write(kRegUseGs, 2u); }},
-        {"variable mode without input_to_uniform", 1, [](CmdList& l) { l.Write(kGs + 0x09, kShaderModeBits); }},
+        {"variable mode without variable_primitive", 1, [](CmdList& l) { l.Write(kRegUseGs, 2u); }, true},
+        {"variable mode without input_to_uniform", 1, [](CmdList& l) { l.Write(kGs + 0x09, kShaderModeBits); }, true},
         {"fixed mode with variable_primitive", 2, [](CmdList& l) { l.Write(kRegUseGs, 2u | (1u << 31)); }},
         {"fixed mode without input_to_uniform", 2, [](CmdList& l) { l.Write(kGs + 0x09, kShaderModeBits); }},
         {"fixed mode with stride_minus_1 + 1 != the vertex shader outputs", 2,
@@ -2405,7 +2409,12 @@ TEST_CASE("an inconsistent geometry pipeline set-up is Unhandled, once per asser
         ConfigureGs(l, config, PassVs(1), gs);
         c.tweak(l);
         sim.Memory(0, FloatBytes({{1, 2, 3, 1}, {1, 2, 3, 1}, {1, 2, 3, 1}, {1, 2, 3, 1}, {1, 2, 3, 1}, {1, 2, 3, 1}}));
-        l.Write(0x228, 6).Write(0x22A, 0).Write(0x22E, 0);
+        if (c.indexed) {
+            sim.Memory(0x80000, {3, 0, 1, 2});
+            l.Write(0x227, 0x80000).Write(0x228, 4).Write(0x22F, 0);
+        } else {
+            l.Write(0x228, 6).Write(0x22A, 0).Write(0x22E, 0);
+        }
         const size_t draw = sim.Submit(l);
         CpuVertexRunner runner;
         const DrawResult r = RunDraw(sim, runner, draw);
@@ -2413,9 +2422,9 @@ TEST_CASE("an inconsistent geometry pipeline set-up is Unhandled, once per asser
         CHECK(r.vertices.empty());
         CHECK(runner.counters().unhandled == 1);
     }
-    // the same set-ups, consistent, run (Point mode: 6 vertices, 1 input; Fixed: 6 = 2 x 3; Variable
-    // needs an index buffer, see its own case)
-    for (u32 mode : {0u, 2u}) {
+    // the same set-ups, consistent, run (Point mode: 6 vertices, 1 input; Fixed: 6 = 2 x 3; Variable:
+    // one batch of 3 vertices from an index buffer)
+    for (u32 mode : {0u, 1u, 2u}) {
         CAPTURE(mode);
         GsConfig config;
         config.mode = mode;
@@ -2424,7 +2433,12 @@ TEST_CASE("an inconsistent geometry pipeline set-up is Unhandled, once per asser
         CmdList l;
         ConfigureGs(l, config, PassVs(1), gs);
         sim.Memory(0, FloatBytes({{1, 2, 3, 1}, {1, 2, 3, 1}, {1, 2, 3, 1}, {1, 2, 3, 1}, {1, 2, 3, 1}, {1, 2, 3, 1}}));
-        l.Write(0x228, 6).Write(0x22A, 0).Write(0x22E, 0);
+        if (mode == 1) {
+            sim.Memory(0x80000, {3, 0, 1, 2});
+            l.Write(0x227, 0x80000).Write(0x228, 4).Write(0x22F, 0);
+        } else {
+            l.Write(0x228, 6).Write(0x22A, 0).Write(0x22E, 0);
+        }
         const size_t draw = sim.Submit(l);
         CpuVertexRunner runner;
         CHECK(RunDraw(sim, runner, draw).status == RunStatus::Ok);
@@ -2444,6 +2458,23 @@ TEST_CASE("RasterizerRegs::ValidateSemantics: an output semantic of 24 to 30 ref
         sc.st->regs[kRegOutMap] = 31u | (1u << 8) | (2u << 16) | (3u << 24);
         sc.st->regs[kRegOutMap + 5] = 27u;
         CHECK(sc.Run() == RunStatus::Ok);
+    }
+    {
+        // N2-16's vertex-only mode stands for Azahar's accelerated path, which never calls
+        // ValidateSemantics: the draw runs and the slot's value is dropped, as for an immediate vertex.
+        Scene sc;
+        sc.st->regs[kRegOutMap] = 24u | (1u << 8) | (2u << 16) | (3u << 24);
+        sc.Arrays(0, 2);
+        CHECK(sc.Run(RunMode::Full) == RunStatus::Unhandled);
+        REQUIRE(sc.Run(RunMode::VertexOnly) == RunStatus::Ok);
+        REQUIRE(sc.runner.output().vertices.size() == 2);
+        // attribute 0 is vertex 0's register 0 = attr1 (-300, 400, 0, 1): x -> slot 24 (dropped, so
+        // the position's x stays 1.0), y -> slot 1, z -> slot 2, w -> slot 3
+        const OutputVertex& v = sc.runner.output().vertices[0];
+        CHECK(v.pos[0] == 1);
+        CHECK(v.pos[1] == 400);
+        CHECK(v.pos[2] == 0);
+        CHECK(v.pos[3] == 1);
     }
     {
         // DrawImmediate does not validate: the value goes to a slot past the end of OutputVertex

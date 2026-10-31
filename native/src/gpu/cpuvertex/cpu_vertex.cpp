@@ -159,7 +159,7 @@ struct CpuVertexRunner::Impl final : public VertexSink {
 
         // Copy to result. (Semantic ids 24-30 name slots past the end of OutputVertex: their values
         // are dropped here as in Azahar. Azahar's Arrays/Indexed draws refuse them first, see
-        // ValidSemantics; its immediate draws do not check and drop them too.)
+        // ValidSemantics (RunMode::Full only); its immediate draws do not check and drop them too.)
         OutputVertex vertex;
         std::memcpy(&vertex, vertex_slots_overflow.data(), sizeof(OutputVertex));
 
@@ -413,8 +413,10 @@ RunStatus CpuVertexRunner::Impl::RunLoadVertices(gpu::Host& host, const pica::Dr
                                                  const pica::PicaState& s, RunMode mode) {
     const bool is_indexed = draw.kind == pica::DrawKind::Indexed;
 
-    // regs.internal.rasterizer.ValidateSemantics() (an ASSERT in Azahar)
-    if (!ValidSemantics()) {
+    // regs.internal.rasterizer.ValidateSemantics() (an ASSERT in Azahar), which LoadVertices calls.
+    // Only the Full mode is that function: RunMode::VertexOnly stands for the accelerated path
+    // (N2-16), which never validates, so such a draw is shaded there and the slot's value dropped.
+    if (mode == RunMode::Full && !ValidSemantics()) {
         return Fail(s, {Unhandled::OutputSemantic, 0, 0}, 2);
     }
 
