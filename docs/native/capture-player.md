@@ -338,6 +338,12 @@ Windows artifact built from it; point `P=` at it):
 5. **Send back:** the lines of `build/logs/gas-exit-codes.txt` and, for G4, the ten numbers of step 4 (per directory found). Counts
    only: never paste or commit the logs, because a `--check registers` failure quotes register numbers and values taken from the capture.
 
+**Result, run on the PC on 2026-10-31** (the procedure above, as `build/logs/gas_check.py` on Windows, with the player of this batch): `exit=0` and
+`result: PASS` for `build/golden` G1 (`gpu-1500`), G2 (`gpu-2500`), G3 (`gpu-17400`) and G4 (`gpu-2400`), and for the extras `build/golden-n010` G3 and G4;
+`MISSING` for `build/golden-n010` G1 and G2 and for the four of `build/golden-n035`, as expected. **G4's `pica_gas_lut_writes` per frame:** 0 in the first
+frame (2400) and **16 in each of the other nine** (2401 to 2409): the game rewrites the whole 16-entry table in every frame of the cutscene, so the
+table is not zero for N2-10's draws, and N2-10 can test the gas mode with G4's capture. Counts only; the values of the table were not printed.
+
 ## Limits of the checks
 
 - What a run judges is what its capture contains. A capture without fills, copies or DMA says
