@@ -820,8 +820,8 @@ so the key tests of later packages need no device. Blend state stays pipeline st
 - **Constant-alpha factors.** `core::ToPlume` refuses ConstantAlpha and OneMinusConstantAlpha (the vendored backend maps only the constant-colour pair; "Known limits" above). `PlanPipeline`
   rewrites them where the pair is equivalent: in the alpha half both pairs read the constant's alpha; in the colour half the alpha pair becomes the colour pair when no colour-pair factor is
   there too, and the constants are then `(a, a, a, a)` (`constants_from_alpha`: pass it to `ApplyDynamicState`, or the constants through `EffectiveBlendConstants`). A colour half that
-  has one factor of each pair (for example ConstantColor and OneMinusConstantAlpha) cannot be expressed with one constant colour: it is moved into the shader like a Min/Max half
-  (`rgb_in_shader`, built ONE, ZERO, ADD, `constants_from_alpha` false), and `mh4n_blend_rgb` computes it with the real blend colour, where ConstantAlpha is `blend_color.a` (`rgb_uses_blend_rgb`). The plume
+  has one factor of each pair (for example ConstantColor and OneMinusConstantAlpha) cannot be expressed with one constant colour: it is moved into the shader, as a Min/Max half is
+  (`rgb_in_shader`, built ONE, ZERO, ADD, `constants_from_alpha` false), and `mh4n_blend_rgb` (not `mh4n_minmax_blend`) computes it with the real blend colour, where ConstantAlpha is `blend_color.a` (`rgb_uses_blend_rgb`). The plume
   patch for the constant-alpha pair (the defect recorded in D4's notes) would make both the rewrite and this route unnecessary; until then the mixed half pays the destination copy.
   The only `Error` `PlanPipeline` returns is a logic op with blending on.
 
