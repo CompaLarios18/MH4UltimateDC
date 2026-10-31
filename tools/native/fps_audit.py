@@ -10,15 +10,16 @@ The same golden session is played twice by the native runner, headless: at 60 fp
   3 checkpoints  at each checkpoint of the session the `eq` observables are equal (and the scene is the checkpoint's)
   4 observables  at matched game times (every second, in the hunt only: the chains name whatever sits there in other
                  scenes, N3-21) the hunter's position is within 2 % of the distance travelled in the last second
-                 plus 0.05 units, and the quest's clock within 1 second (a counter that never moves compares
-                 nothing: n/a); the table also has the distance with 4 frames of time slack, as information
+                 plus 0.05 units, and the quest's clock within 1 second (a counter that never moves in either run
+                 compares nothing, n/a, unless its two constants are further apart than that); the table also has
+                 the distance with 4 frames of time slack, as information
   5 dsp          `capfmt.py diff-dsp --align --max-shift 48` of the two DSP captures: the same sounds start with the
                  same buffers (D51)
   6 writes       the `fs:USER` file Writes are equal by D52's rule: per thread, in order, in full, the masked byte
                  ranges of config/native/fs_write_masks.txt zeroed first (tools/compare_ipc_traces.py)
 
-The `dsp` item also prints the game clock offset between the two runs at the capture's first game frame: the audio
-of one game frame is as far apart as the clock is (the early boot of both rates is 4 s apart on the reference as well).
+The `dsp` item also prints the game clock offset between the two runs at the capture's first game frame, as
+information beside the measured shift: it is not the shift (the measured shifts of N3-22's runs were 20 to 85 % of it).
 Before the six, `runs` checks that both runs finished (exit status 0, the trace reaches the session's last frame): a
 run that hangs must not read as a pass. The numbers above are D70's first guesses; they are options with those
 defaults and are never retuned to make a session pass (N3 rule 7). An item with nothing to compare (a session without a
@@ -28,12 +29,15 @@ DSP capture, no readable position) is `n/a`: reported, not a failure, unless `--
       observable_probe.py's `scale` (N3-21).
   fps_audit.py run S --runner EXE --program DIR --code LIB --user-before DIR --io-latency azahar|none --out OUT
                 [--factor 2] [--observable FILE] [--dsp START:FRAMES] [--path DIR] [--timeout SECONDS]
-                [--lock DIR] [--force] [--runner-arg=ARG ...]
+                [--lock DIR] [--force] [--deterministic [--seed N]] [--runner-arg=ARG ...]
       S is a session name of tools/native/golden/ or a session file. Runs the native runner at `--set 0:fps=60`
       with S and at `--set 0:fps=120` with S scaled, each from a fresh copy of USER-BEFORE, with `--state-trace`
       (config/native/observable.txt plus N3-21's four lines, as `ignore`), `--trace-ipc --trace-ipc-full` and
       `--capture-dsp` (the session's DSP captures, their start scaled). Writes OUT/r60/, OUT/r120/ and OUT/meta.json.
       `--lock DIR` is the emulator's lock folder: created before the runs (waiting while it exists), removed after.
+      `--deterministic` (and `--seed N`) asks for the runner's deterministic mode; meta.json records the mode and
+      compare prints it, so a deterministic and a real-time verdict cannot be confused. `--force` deletes OUT first
+      only when it holds nothing but what `run` writes.
   fps_audit.py compare OUT [--require position,quest_time,dsp,writes] [--position-until FRAME] [--hunt-scene V|any]
                  [--fs-write-mask FILE|none] [tolerance options: --time-frames, --position-relative, --position-absolute,
                  --quest-seconds, --quest-units, --max-shift]
@@ -71,7 +75,7 @@ import tracefmt  # noqa: E402
 
 BASE_FPS = 60
 DEFAULT_FACTOR = 2
-DEFAULT_TIMEOUT = 3 * 3600
+DEFAULT_TIMEOUT = 3600           # per run: the slowest run of N3-22 took 455 s (a hang must not cost hours)
 DEFAULT_WRITE_MASKS = ROOT / "config" / "native" / "fs_write_masks.txt"
 DEFAULT_OBSERVABLE = state_diff.DEFAULT_OBSERVABLE
 META = "meta.json"
@@ -260,7 +264,19 @@ def cmd_run(args: argparse.Namespace) -> int:
     base_observable = Path(args.observable).read_text(encoding="utf-8") if args.observable else \
         DEFAULT_OBSERVABLE.read_text(encoding="utf-8")
     captures = dsp_captures(session, [parse_dsp_capture(d) for d in args.dsp])
+    if args.seed is not None and not args.deterministic:
+        raise AuditError("--seed is an option of the deterministic mode: pass --deterministic too")
+    mode = "deterministic" if args.deterministic or "--deterministic" in args.runner_arg else "real-time"
+    mode_args = (["--deterministic"] if args.deterministic else []) + \
+        (["--seed", str(args.seed)] if args.seed is not None else [])
     if args.force and out.exists():
+        # only a folder `run` wrote is deleted: its own files and nothing else (a killed run has no meta.json yet)
+        own = {META, "observable.txt", "compare.txt", "compare.json", source.name, scaled_file.name,
+               *(run_dir(r) for r in rates)}
+        others = sorted(p.name for p in out.iterdir() if p.name not in own)
+        if others:
+            raise AuditError(f"--force deletes only a folder of `fps_audit.py run`: {out} also holds "
+                             f"{', '.join(others[:5])}{' ...' if len(others) > 5 else ''}")
         shutil.rmtree(out)
     if any((out / run_dir(r)).exists() for r in rates):
         raise AuditError(f"{out} already holds runs: choose another --out or pass --force")
@@ -275,7 +291,8 @@ def cmd_run(args: argparse.Namespace) -> int:
         "factor": factor, "io_latency": args.io_latency, "observable": observable.name,
         "frames": session.frames, "init_time": session.init_time,
         "checkpoints": [[f, s] for f, s in session.checkpoints],
-        "runner_args": list(args.runner_arg),
+        "mode": mode, "seed": args.seed,
+        "runner_args": mode_args + list(args.runner_arg),
         "dsp": [c.filename for c in captures], "dsp_starts": {c.filename: c.start for c in captures},
         "runs": {},
     }
@@ -294,7 +311,7 @@ def cmd_run(args: argparse.Namespace) -> int:
                 program=str(Path(args.program).resolve()), code=str(Path(args.code).resolve()), user=str(user),
                 session=this, session_file=str(file), rate=rate, factor_of_rate=k, io_latency=args.io_latency,
                 observable=str(observable), out=rdir, captures=captures,
-                extra=[a.replace("{out}", str(rdir)) for a in args.runner_arg])
+                extra=mode_args + [a.replace("{out}", str(rdir)) for a in args.runner_arg])
             result = run_one(str(Path(args.runner).resolve()), runner_argv, rdir, child_env(session, paths),
                              args.timeout)
             result.update({"rate": rate, "frames": this.frames, "dir": rdir.name})
@@ -583,12 +600,19 @@ def check_observables(pair: Pair, relative: float, absolute: float, quest_second
                                     (QUEST_TIME, quest_rows, "over the quest-clock tolerance")):
         over = [r for r in table if r["over"]]
         if label == QUEST_TIME and table and len(quest_values[0]) == 1 and len(quest_values[1]) == 1:
-            # a counter that never moves is not a running clock: equal constants compare nothing (D34)
-            text = (f"the counter is constant ({_hex(next(iter(quest_values[0])))} and "
-                    f"{_hex(next(iter(quest_values[1])))}) over the {len(table)} seconds compared: not a running clock")
-            state = FAIL if QUEST_TIME in require else NA
-            if state == FAIL:
-                text += " (required)"
+            # a counter that never moves is not a running clock: it compares nothing (D34), unless the two constants
+            # are further apart than the tolerance, which is a difference like any other
+            gap = abs(next(iter(quest_values[0])) - next(iter(quest_values[1])))
+            text = (f"the counter is constant in both runs over the {len(table)} seconds compared, the two constants "
+                    f"{gap} units = {gap / units:.4g} s apart (limit {quest_seconds} s)")
+            if gap / units > quest_seconds:
+                text += ": over the quest-clock tolerance"
+                state = FAIL
+            else:
+                text += ": not a running clock"
+                state = FAIL if QUEST_TIME in require else NA
+                if state == FAIL:
+                    text += " (required)"
         elif table:
             if label == "position":
                 worst = max(table, key=lambda r: r["ratio"])
@@ -660,9 +684,11 @@ def check_dsp(pair: Pair, max_shift: int, require: set[str]) -> Item:
                                                                                            start * k)
                 if x is not None and y is not None:
                     offset = (y.ticks - x.ticks) / TICKS_PER_SECOND
+                    measured = ("no shift was measured" if result.shift is None
+                                else f"the measured shift is {result.shift:+d} DSP frames")
                     rows.append(f"    game clock offset at the window's start (game frame {start}, {start * k}): "
-                                f"{offset:+.3f} s = {offset * TICKS_PER_SECOND / capfmt.DSP_FRAME_TICKS:+.0f} DSP frames "
-                                f"(the audio at the same game frame differs by that much)")
+                                f"{offset:+.3f} s = {offset * TICKS_PER_SECOND / capfmt.DSP_FRAME_TICKS:+.0f} DSP frames, "
+                                f"as information ({measured})")
             shifts.append(result.shift)
             if not result.equal:
                 bad.append(name)
@@ -756,10 +782,28 @@ def compare_pair(pair: Pair, *, time_frames: int = TIME_TOLERANCE_FRAMES, positi
     return items
 
 
+def run_mode(meta: dict) -> str:
+    """`deterministic` or `real-time`: the meta file's `mode`, or, for a meta file written before it had one, whether
+    the runner was given `--deterministic`."""
+    mode = meta.get("mode")
+    if mode in ("deterministic", "real-time"):
+        return mode
+    return "deterministic" if "--deterministic" in meta.get("runner_args", []) else "real-time"
+
+
+def run_seed(meta: dict) -> Optional[str]:
+    if meta.get("seed") is not None:
+        return str(meta["seed"])
+    args = meta.get("runner_args", [])
+    return args[args.index("--seed") + 1] if "--seed" in args[:-1] else None
+
+
 def format_report(pair: Pair, items: list[Item], verbose: bool = True) -> list[str]:
     k = pair.factor
+    seed = run_seed(pair.meta)
     lines = [f"fps_audit: {pair.session}, {BASE_FPS} fps against {BASE_FPS * k} fps (x{k}), "
-             f"--io-latency {pair.meta.get('io_latency', '?')}"]
+             f"--io-latency {pair.meta.get('io_latency', '?')}, {run_mode(pair.meta)} mode"
+             + (f" (--seed {seed})" if seed is not None else "")]
     for it in items:
         lines.append(f"{it.name:<12} {it.status.upper() if it.status == FAIL else it.status:<5} {it.summary}")
         if verbose:
@@ -796,6 +840,7 @@ def cmd_compare(args: argparse.Namespace) -> int:
     (root / "compare.txt").write_text("\n".join(format_report(pair, items, True)) + "\n", encoding="utf-8", newline="\n")
     (root / "compare.json").write_text(json.dumps({
         "session": pair.session, "factor": pair.factor, "io_latency": pair.meta.get("io_latency"),
+        "mode": run_mode(pair.meta), "seed": run_seed(pair.meta),
         "tolerances": {"time_frames": args.time_frames, "position_relative": args.position_relative,
                        "position_absolute": args.position_absolute, "quest_seconds": args.quest_seconds,
                        "quest_units_per_second": args.quest_units, "max_shift": args.max_shift},
@@ -835,11 +880,17 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--observable", help=f"the base observable file (default {DEFAULT_OBSERVABLE.name} of the repository)")
     p.add_argument("--dsp", action="append", default=[], metavar="START:FRAMES",
                    help="a DSP capture besides the session's (START in game frames at 60 fps); repeatable")
+    p.add_argument("--deterministic", action="store_true",
+                   help="the runner's deterministic mode (give it the _native_det library); recorded in meta.json and "
+                        "printed in compare's first line")
+    p.add_argument("--seed", type=int, help="the deterministic mode's seed (needs --deterministic)")
     p.add_argument("--runner-arg", action="append", default=[], metavar="ARG",
-                   help="an extra option for the runner, as it is (`{out}` is the run's folder); for diagnostics, "
-                        "not part of an audit; repeatable")
+                   help="an extra option for the runner, as it is (`{out}` is the run's folder), for what the audit "
+                        "does not name itself (diagnostics such as --capture-hid); repeatable")
     p.add_argument("--path", action="append", default=[], metavar="DIR", help="a folder put first on the runner's PATH")
-    p.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT, help="seconds per run")
+    p.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT,
+                   help=f"seconds per run (default {DEFAULT_TIMEOUT:.0f}: about 8 times the slowest real-time run of "
+                        f"N3-22, G3 at 120 fps on a busy PC)")
     p.add_argument("--lock", metavar="DIR", help="the emulator's lock folder: waited for, created, removed at the end")
     p.add_argument("--lock-poll", type=float, default=30.0, help=argparse.SUPPRESS)
     p.add_argument("--force", action="store_true", help="delete OUT first when it holds runs")

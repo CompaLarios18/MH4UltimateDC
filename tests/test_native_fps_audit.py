@@ -420,6 +420,53 @@ def test_run_reports_a_failing_runner_and_does_not_overwrite(tmp_path, fake, mon
     assert not fake["lock"].exists()
 
 
+def test_force_deletes_only_a_folder_that_run_wrote(tmp_path, fake, capsys):
+    out = tmp_path / "audit"
+    (out / "r60").mkdir(parents=True)                                  # a killed run: no meta.json yet
+    (out / "r60" / "state.txt").write_text("", encoding="utf-8")
+    assert fps_audit.main(run_argv(tmp_path, fake, out, "--force")) == 0
+    assert (out / "meta.json").is_file()
+    other = tmp_path / "work"
+    (other / "r60").mkdir(parents=True)
+    (other / "notes.txt").write_text("mine", encoding="utf-8")         # not a file of `run`
+    capsys.readouterr()
+    assert fps_audit.main(run_argv(tmp_path, fake, other, "--force")) == 2
+    assert "also holds notes.txt" in capsys.readouterr().err
+    assert (other / "notes.txt").read_text(encoding="utf-8") == "mine" and len(calls(fake)) == 2
+
+
+def test_the_deterministic_mode_is_an_option_recorded_and_printed(tmp_path, fake, capsys):
+    out = tmp_path / "audit"
+    assert fps_audit.main(run_argv(tmp_path, fake, out, "--deterministic", "--seed", "3",
+                                   "--runner-arg=--capture-hid")) == 0
+    for call in calls(fake):
+        argv = call["argv"]
+        assert "--deterministic" in argv and argv[argv.index("--seed") + 1] == "3"
+        assert argv.index("--deterministic") < argv.index("--capture-hid")
+    meta = json.loads((out / "meta.json").read_text())
+    assert meta["mode"] == "deterministic" and meta["seed"] == 3
+    first = fps_audit.format_report(fps_audit.read_pair(out), [], False)[0]   # the fake's traces have no hunter
+    assert first.endswith("--io-latency azahar, deterministic mode (--seed 3)")
+    assert fps_audit.main(run_argv(tmp_path, fake, tmp_path / "b", "--seed", "3")) == 2      # a seed needs the mode
+
+
+def test_compare_names_the_mode_of_an_older_meta_file(tmp_path):
+    root = good_pair(tmp_path)
+    pair = fps_audit.read_pair(root)
+    assert fps_audit.format_report(pair, [], False)[0].endswith("--io-latency azahar, real-time mode")
+    meta = json.loads((root / "meta.json").read_text())
+    meta["runner_args"] = ["--deterministic", "--seed", "2"]                  # before `mode` was recorded
+    (root / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
+    pair = fps_audit.read_pair(root)
+    assert fps_audit.format_report(pair, [], False)[0].endswith("deterministic mode (--seed 2)")
+
+
+def test_the_default_timeout_is_an_hour_per_run():
+    args = fps_audit.build_parser().parse_args(["run", "G1", "--runner", "r", "--program", "p", "--code", "c",
+                                                "--user-before", "u", "--io-latency", "azahar", "--out", "o"])
+    assert args.timeout == 3600 and not args.deterministic and args.seed is None
+
+
 def test_run_times_out_a_hanging_runner_and_compare_fails_it(tmp_path, fake, monkeypatch, capsys):
     out = tmp_path / "audit"
     monkeypatch.setenv("FAKE_HANG", "120")
@@ -467,6 +514,7 @@ def test_compare_exit_codes_and_files(tmp_path, capsys):
     assert (root / "compare.txt").is_file()
     data = json.loads((root / "compare.json").read_text())
     assert data["tolerances"]["time_frames"] == 4 and data["tolerances"]["position_relative"] == 0.02
+    assert data["mode"] == "real-time" and data["seed"] is None
     assert [i["name"] for i in data["items"]][:2] == ["runs", "scenes"]
     bad = make_pair(sub(tmp_path, "bad"), scenes_scaled=shifted(40))
     assert fps_audit.main(["compare", str(bad), "--fs-write-mask", "none", "--brief"]) == 1
@@ -660,6 +708,17 @@ def test_a_quest_counter_that_never_moves_compares_nothing(tmp_path):
     assert moving.data["quest_time"]["status"] == "fail"             # one side moves: the difference is judged
 
 
+def test_two_constant_quest_counters_further_apart_than_the_tolerance_fail(tmp_path):
+    near = audit(good_pair(sub(tmp_path, "near"), quest=(lambda f: 700, lambda f: 760)))["observables"]   # 60 units: 1 s
+    assert near.data["quest_time"]["status"] == "n/a" and "60 units = 1 s apart" in near.data["quest_time"]["summary"]
+    far_root = good_pair(sub(tmp_path, "far"), quest=(lambda f: 700, lambda f: 761))
+    far = audit(far_root)["observables"]
+    assert far.status == "fail" and far.data["quest_time"]["status"] == "fail"
+    assert "over the quest-clock tolerance" in far.data["quest_time"]["summary"]
+    assert "0x" not in far.data["quest_time"]["summary"]             # the difference is printed, not the values
+    assert audit(far_root, quest_seconds=1.1)["observables"].data["quest_time"]["status"] == "n/a"
+
+
 def test_a_position_that_is_not_a_position_fails(tmp_path):
     far = lambda f: (1.0e7, 0.0, 0.0)           # noqa: E731
     root = good_pair(tmp_path, pos=(far, far))
@@ -742,11 +801,26 @@ def test_dsp_item_fails_a_capture_a_run_did_not_write(tmp_path):
     assert audit(root2)["dsp"].status == "fail"
 
 
-def test_dsp_item_names_the_clock_offset_at_the_start_of_the_window(tmp_path):
-    # the 120 fps run's game clock is ahead by 4 s at the capture's game frame: that is the audio's offset
+def test_dsp_item_names_the_clock_offset_at_the_start_of_the_window_as_information(tmp_path):
+    # the 120 fps run's game clock is ahead by 4 s at the capture's game frame; the audio's measured shift is +17
+    # DSP frames: the offset is printed beside the shift, never as the shift (N3-22: shifts were 20-85 % of it)
     root = good_pair(tmp_path, clock=(None, lambda f: f / 120 + 4.0))
     item = audit(root)["dsp"]
-    assert "+4.000 s = +818 DSP frames" in "\n".join(item.details)
+    text = "\n".join(item.details)
+    assert "+4.000 s = +818 DSP frames, as information (the measured shift is +17 DSP frames)" in text
+    assert "differs by that much" not in text
+    assert item.status == "pass" and item.data["shifts"] == [17]      # the offset does not enter the rule
+
+
+def test_dsp_item_says_when_no_shift_was_measured(tmp_path):
+    def silent(i, region, block):
+        return capfmt.make_status(enabled=0, sync_count=0, buffer_position=0, current_buffer_id=0, last_buffer_id=0)
+
+    root = good_pair(tmp_path, clock=(None, lambda f: f / 120 + 4.0))
+    dsp_file(root / "r120" / "dsp-20.mdsp", 100 + 17 - 10, 90, 40, tweak=silent)     # nothing to align on
+    item = audit(root)["dsp"]
+    assert item.status == "fail"
+    assert "+818 DSP frames, as information (no shift was measured)" in "\n".join(item.details)
 
 
 # -- item 6: the fs: Writes -----------------------------------------------------------------------------------------
