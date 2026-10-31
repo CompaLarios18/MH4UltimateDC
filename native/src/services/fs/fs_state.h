@@ -151,7 +151,9 @@ void MakeIoPool(FsState& state, Kernel& kernel);
 // (it may be empty; on the scheduler thread, inside this call, in the deterministic mode); `finish` runs
 // once on the scheduler thread, after `work` is done and, with IoLatency::Azahar, not before `delay_ns`
 // of game time have passed since this call. The data `work` leaves for `finish` travels in what both
-// lambdas capture. Scheduler thread.
+// lambdas capture. Scheduler thread. In the deterministic mode with nothing to wait for (`synchronous` and
+// not NeedsDelay) `finish` runs inside this call, before the handler has returned Handled::Deferred, so a
+// handler answers such a request in its own call instead (Handled::Done) and does not call this (N3-33).
 void StartIo(FsState& fs, ServiceContext& context, u64 delay_ns, std::function<void()> work,
              std::function<void()> finish);
 
