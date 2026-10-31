@@ -2,12 +2,19 @@
 # of the draws Azahar does not accelerate on the CPU, as Azahar's PicaCore::DrawArrays and
 # DrawImmediate do, and returns the output vertices that the primitive assembler (N2-37) turns into
 # triangles. No backend and no device; the API is the header comment of cpu_vertex.h.
+# N2-37 adds the primitive assembler, the quaternion fix-up, the streamed triangle batch and the trivial
+# vertex stage (primitive_assembly.h, triangle_batch.h, trivial_vertex.h); the batch uses rhi::Ring and
+# rhi::VertexLayout, hence the dependency on the backend core (the runner itself still has no device).
 mh4n_module(
     SOURCES
         cpu_vertex.cpp
         geometry_pipeline.cpp
+        primitive_assembly.cpp
         shader_interpreter.cpp
+        triangle_batch.cpp
+        trivial_vertex.cpp
     DEPENDS
+        mh4n_gpu_backend_core
         mh4n_gpu_pica
         mh4n_gpu_vertex
 )
