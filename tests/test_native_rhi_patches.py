@@ -1,5 +1,5 @@
-"""tools/native/rhi_patches.py and the vendored plume tree (N2-25): the applier on synthetic diffs, and the real
-tree against the queue, the blob ids and the evidence's checksums."""
+"""tools/native/rhi_patches.py and the vendored plume and VMA trees (N2-25): the applier on synthetic diffs, and the
+real trees against their queues, the blob ids and the evidence's checksums."""
 import hashlib
 import os
 import re
@@ -13,6 +13,7 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 TOOL = ROOT / "tools" / "native" / "rhi_patches.py"
 PLUME = ROOT / "native" / "third_party" / "rhi" / "plume"
+VMA = ROOT / "native" / "third_party" / "rhi" / "vma"
 EVIDENCE = ROOT / "docs" / "research" / "rhi-spike-evidence"
 sys.path.insert(0, str(ROOT / "tools" / "native"))
 
@@ -292,6 +293,96 @@ def test_custom_border_colour_patch_changes_only_what_it_says(tmp_path):
     assert b"VK_BORDER_COLOR_FLOAT_CUSTOM_EXT" not in without["plume_vulkan.cpp"]
     assert b"SAMPLER_CUSTOM_BORDER_COLOR_CREATE_INFO_EXT" not in without["plume_vulkan.cpp"]
     assert b"customBorderColor[4]" not in without["plume_render_interface_types.h"]
+
+
+# ---- the VMA queue --------------------------------------------------------------------------------------------------
+
+UPSTREAM_MAPPED_DATA_FIX = "4f687952b8c7aa250dfc25f78e269b9834872458"
+
+
+def _function(source: str, signature: str) -> str:
+    """One function of vk_mem_alloc.h, from its signature to the brace that closes it at column 0."""
+    start = source.index(signature)
+    return source[start:source.index("\n}\n", start)]
+
+
+def test_vma_check_and_blobs_pass():
+    for command in ("check", "blobs"):
+        r = run_tool(command, VMA)
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "vma" in r.stdout
+
+
+def test_vma_pinned_commit():
+    assert rp.pinned_commit(VMA) == "29b35ea4232688c0f42cdff0c10848290760a417"
+
+
+def test_vma_pristine_files_are_the_header_and_the_licence_as_they_were():
+    tree = rp.read_tree(VMA / "pristine")
+    assert sorted(tree) == ["LICENSE.txt", "vk_mem_alloc.h"]
+    # the blob ids of 29b35ea, which the two files had before they moved into pristine/
+    assert rp.git_blob_id(tree["vk_mem_alloc.h"]) == "6f71d5b4604d8e58aba4f340552ab092be190606"
+    assert rp.git_blob_id(tree["LICENSE.txt"]) == "a080d9bf71fcf40b4714c6fab0130f6a9d973d7f"
+
+
+def test_vma_queue_is_the_upstream_fix_and_patched_holds_only_the_library():
+    names = [p.name for p in rp.list_patches(VMA / "patches")]
+    assert names == ["01-upstream-4f68795-mapped-data-sync.diff"]
+    patch = VMA / "patches" / names[0]
+    note = patch.read_text(encoding="utf-8").split("diff --git", 1)[0]  # the text before the first file header
+    assert UPSTREAM_MAPPED_DATA_FIX in note and "#525" in note and "MIT" in note
+    assert [fp.new_path for fp in rp.parse_patch(patch.read_bytes(), patch.name)] == ["vk_mem_alloc.h"]
+    assert f"`{names[0]}`" in (VMA / "README.md").read_text(encoding="utf-8")
+    assert sorted(rp.read_tree(VMA / "patched")) == ["LICENSE.txt", "vk_mem_alloc.h"]  # no mh4n_patch_list.h here
+    assert names[0] not in (PLUME / "patched" / "mh4n_patch_list.h").read_text(encoding="utf-8")
+
+
+def test_vma_patched_header_reads_the_atomic_flag_in_allocate_page():
+    """Patch 01 (upstream 4f68795, issue #525): AllocatePage, under the block vector's mutex, read each block's
+    m_pMappedData, which vmaMapMemory and vmaUnmapMemory of another allocation in the block write under the block's own
+    mutex only (the data race of the native-tsan job, docs/native/rhi.md); it now reads an atomic flag that follows the
+    pointer wherever the pointer changes."""
+    pristine = (VMA / "pristine" / "vk_mem_alloc.h").read_text(encoding="utf-8")
+    patched = (VMA / "patched" / "vk_mem_alloc.h").read_text(encoding="utf-8")
+    page = "VkResult VmaBlockVector::AllocatePage("
+    assert "pCurrBlock->GetMappedData() != VMA_NULL" in _function(pristine, page)  # the read the patch replaces
+    assert "m_IsMapped" not in pristine
+    assert "pCurrBlock->IsMapped()" in _function(patched, page)
+    assert "GetMappedData() != VMA_NULL" not in _function(patched, page)
+    assert "#define VMA_ATOMIC_BOOL std::atomic<bool>" in patched
+    assert "VMA_ATOMIC_BOOL m_IsMapped;" in patched
+    assert "bool IsMapped() const { return m_IsMapped.load(); }" in patched
+    assert "m_pMappedData(VMA_NULL),\n    m_IsMapped(false){}" in patched
+    mapped = _function(patched, "VkResult VmaDeviceMemoryBlock::Map(")
+    assert mapped.index("vkMapMemory") < mapped.index("m_IsMapped.store(true);")
+    for signature in ("void VmaDeviceMemoryBlock::Unmap(", "void VmaDeviceMemoryBlock::PostFree(",
+                      "void VmaDeviceMemoryBlock::Destroy("):
+        assert re.search(r"m_pMappedData = VMA_NULL;\n\s*m_IsMapped\.store\(false\);", _function(patched, signature)), signature
+
+
+def test_without_root_both_queues_run_and_the_worse_status_wins(tmp_path, monkeypatch, capsys):
+    r = subprocess.run([sys.executable, str(TOOL), "check"], capture_output=True, text=True)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert 0 <= r.stdout.index("plume/patched/ matches") < r.stdout.index("vma/patched/ matches")
+    # a stale queue and a good one: the stale one decides the status, and the good one still runs after it
+    stale = make_root(tmp_path / "a", {"01-first.diff": GOOD_PATCH})
+    good = make_root(tmp_path / "b", {"01-first.diff": GOOD_PATCH})
+    monkeypatch.setattr(rp, "QUEUES", [stale, good])
+    assert rp.main(["apply"]) == 0
+    (stale / "patched" / "f.txt").write_bytes(b"edited by hand\n")
+    capsys.readouterr()
+    assert rp.main(["check"]) == 1
+    out = capsys.readouterr().out
+    assert "f.txt differs" in out and "patched/ matches" in out
+    (stale / "patches" / "01-first.diff").write_bytes(GOOD_PATCH.replace(b" gamma", b" GAMMA"))
+    assert rp.main(["check"]) == 2  # a patch that does not apply is worse than a stale tree
+    assert rp.main(["check", "--root", str(good)]) == 0
+
+
+def test_the_build_compiles_the_patched_vma():
+    cmake = (ROOT / "native" / "src" / "gpu" / "backend" / "plume" / "CMakeLists.txt").read_text(encoding="utf-8")
+    assert '"${MH4N_RHI_DIR}/vma/patched"' in cmake
+    assert "vma/pristine" not in cmake and '"${MH4N_RHI_DIR}/vma"' not in cmake
 
 
 # ---- one volk, one VMA, no window-system header ---------------------------------------------------------------------

@@ -1,18 +1,23 @@
 #!/usr/bin/env python3
-"""The patch queue of the vendored plume (N2-25; docs/native/rhi.md).
+"""The patch queues of the vendored plume and VulkanMemoryAllocator (N2-25; docs/native/rhi.md).
 
-native/third_party/rhi/plume/ holds
-    pristine/   plume's files at the pinned commit, unmodified, at their upstream paths
-    patches/    NN-<name>.diff, unified diffs on the pristine paths, applied in number order
-    patched/    pristine/ with every patch applied (what the build compiles), written by `apply`
+native/third_party/rhi/plume/ and native/third_party/rhi/vma/ each hold
+    pristine/   the library's files at the pinned commit, unmodified, at their upstream paths
+    patches/    NN-<name>.diff, unified diffs on the pristine paths, applied in number order (text before the
+                first file header, such as a note naming an upstream commit, is ignored)
+    patched/    pristine/ with every patch applied (what the build compiles), written by `apply`; plume's also
+                holds mh4n_patch_list.h (the pinned commit and the patch names, which vendor_info.cpp reads)
     README.md   the pinned commit, the git blob id of each pristine file and the patch list
 
 Commands (Python 3 standard library only; the diff applier is ours, so neither `git` nor `patch` is needed):
-    apply   write patched/ (and patched/mh4n_patch_list.h) from pristine/ and patches/
+    apply   write patched/ (and plume's patched/mh4n_patch_list.h) from pristine/ and patches/
     check   apply into a temporary folder and compare byte for byte with patched/; exit 1 naming the
             first file that differs
     blobs   the git blob id of each pristine file (and of the other vendored files listed in
             native/third_party/rhi/README.md) against the tables of the READMEs
+
+Without --root a command runs on plume, then on vma, and exits with the worse status of the two; --root names
+one queue folder.
 
 Exit status: 0 ok, 1 the tree disagrees with the queue or a README, 2 a patch does not apply or bad usage.
 A hunk is applied only at the line it names and only when every context and removed line matches exactly.
@@ -28,8 +33,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_ROOT = REPO_ROOT / "native" / "third_party" / "rhi" / "plume"
+RHI_DIR = REPO_ROOT / "native" / "third_party" / "rhi"
+QUEUES = [RHI_DIR / "plume", RHI_DIR / "vma"]  # the order of a command without --root
 PATCH_LIST_HEADER = "mh4n_patch_list.h"
+PATCH_LIST_QUEUES = ("plume",)  # the queue folders whose patched/ also holds PATCH_LIST_HEADER
 PATCH_NAME = re.compile(r"^(\d\d)-[A-Za-z0-9._+-]+\.diff$")
 HUNK_HEADER = re.compile(rb"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 PINNED_LINE = re.compile(r"^Pinned commit: `([0-9a-f]{40})`", re.MULTILINE)
@@ -249,7 +256,7 @@ def patch_list_header(commit: str, names: list[str]) -> bytes:
 
 
 def build_patched(root: Path) -> dict[str, bytes]:
-    """The patched tree (relative path -> bytes), including mh4n_patch_list.h, from pristine/ and patches/."""
+    """The patched tree (relative path -> bytes) from pristine/ and patches/, with mh4n_patch_list.h for plume."""
     pristine = root / "pristine"
     if not pristine.is_dir():
         raise PatchError(f"{pristine} is missing")
@@ -265,7 +272,9 @@ def build_patched(root: Path) -> dict[str, bytes]:
                 tree.pop(fp.old_path, None)
             if result is not None:
                 tree[target] = result
-    tree[PATCH_LIST_HEADER] = patch_list_header(pinned_commit(root), [p.name for p in patches])
+    commit = pinned_commit(root)  # every queue's README must name it
+    if root.name in PATCH_LIST_QUEUES:
+        tree[PATCH_LIST_HEADER] = patch_list_header(commit, [p.name for p in patches])
     return tree
 
 
@@ -301,15 +310,15 @@ def cmd_check(root: Path) -> int:
     actual = read_tree(patched) if patched.is_dir() else {}
     for rel in sorted(set(expected) | set(actual)):
         if rel not in actual:
-            print(f"rhi_patches: patched/{rel} is missing (run `rhi_patches.py apply`)")
+            print(f"rhi_patches: {root.name}/patched/{rel} is missing (run `rhi_patches.py apply`)")
             return 1
         if rel not in expected:
-            print(f"rhi_patches: patched/{rel} is not produced by the queue (run `rhi_patches.py apply`)")
+            print(f"rhi_patches: {root.name}/patched/{rel} is not produced by the queue (run `rhi_patches.py apply`)")
             return 1
         if expected[rel] != actual[rel]:
-            print(f"rhi_patches: patched/{rel} differs from pristine/ plus the patches (run `rhi_patches.py apply`)")
+            print(f"rhi_patches: {root.name}/patched/{rel} differs from pristine/ plus the patches (run `rhi_patches.py apply`)")
             return 1
-    print(f"rhi_patches: patched/ matches pristine/ plus {len(list_patches(root / 'patches'))} patches ({len(expected)} files)")
+    print(f"rhi_patches: {root.name}/patched/ matches pristine/ plus {len(list_patches(root / 'patches'))} patches ({len(expected)} files)")
     return 0
 
 
@@ -338,34 +347,38 @@ def cmd_blobs(root: Path) -> int:
     if not readme.is_file():
         print(f"rhi_patches: {readme} is missing")
         return 1
-    # plume: every file of pristine/ must be listed, and every row must match its file
+    # the queue: every file of pristine/ must be listed, and every row must match its file
     listed = {m.group(1) for m in BLOB_ROW.finditer(readme.read_text(encoding="utf-8"))}
     problems += _check_table(readme, root / "pristine")
     for rel in read_tree(root / "pristine"):
         if rel not in listed:
             problems.append(f"{readme.name}: pristine/{rel} is not in the blob table")
-    # volk, VMA: the table of the README one level up lists them relative to its folder
+    # volk: the table of the README one level up lists it relative to its folder
     parent_readme = root.parent / "README.md"
     if parent_readme.is_file():
         problems += _check_table(parent_readme, root.parent)
     for problem in problems:
-        print(f"rhi_patches: {problem}")
+        print(f"rhi_patches: {root.name}: {problem}")
     if problems:
         return 1
-    print(f"rhi_patches: blob ids match ({len(listed)} pristine files)")
+    print(f"rhi_patches: {root.name}: blob ids match ({len(listed)} pristine files)")
     return 0
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="The patch queue of the vendored plume (N2-25).")
+    parser = argparse.ArgumentParser(description="The patch queues of the vendored plume and VMA (N2-25).")
     parser.add_argument("command", choices=("apply", "check", "blobs"))
-    parser.add_argument("--root", type=Path, default=DEFAULT_ROOT, help="the plume folder (default: native/third_party/rhi/plume)")
+    parser.add_argument("--root", type=Path, help="one queue folder (default: plume, then vma, under native/third_party/rhi)")
     args = parser.parse_args(argv)
-    try:
-        return {"apply": cmd_apply, "check": cmd_check, "blobs": cmd_blobs}[args.command](args.root)
-    except PatchError as exc:
-        print(f"rhi_patches: {exc}", file=sys.stderr)
-        return 2
+    command = {"apply": cmd_apply, "check": cmd_check, "blobs": cmd_blobs}[args.command]
+    status = 0
+    for root in [args.root] if args.root is not None else QUEUES:
+        try:
+            status = max(status, command(root))
+        except PatchError as exc:
+            print(f"rhi_patches: {exc}", file=sys.stderr)
+            status = 2
+    return status
 
 
 if __name__ == "__main__":

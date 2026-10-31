@@ -1,6 +1,6 @@
 # mh4n_gpu_backend_plume (N2-25): plume's Vulkan backend, patched (native/third_party/rhi/plume/patched), with
-# volk and VulkanMemoryAllocator, as the static library mh4n_rhi_plume. The wrapper above it (N2-26 to N2-28)
-# and the tests link it through this module.
+# volk and VulkanMemoryAllocator (patched too: native/third_party/rhi/vma/patched), as the static library
+# mh4n_rhi_plume. The wrapper above it (N2-26 to N2-28) and the tests link it through this module.
 #
 # plume's own CMakeLists.txt picks its backends by platform, so the Vulkan backend's files are listed here by
 # hand. plume_vulkan.cpp is the one translation unit that defines VOLK_IMPLEMENTATION and VMA_IMPLEMENTATION
@@ -16,7 +16,7 @@ set_target_properties(mh4n_rhi_plume PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQ
 target_include_directories(mh4n_rhi_plume SYSTEM PUBLIC
     "${MH4N_RHI_DIR}/plume/patched"
     "${MH4N_RHI_DIR}/volk"
-    "${MH4N_RHI_DIR}/vma"
+    "${MH4N_RHI_DIR}/vma/patched"
     "${MH4N_ROOT}/third_party/vulkan/include")
 target_compile_definitions(mh4n_rhi_plume PUBLIC PLUME_EXTERNAL_SURFACE_ONLY)
 target_compile_definitions(mh4n_rhi_plume PRIVATE $<$<BOOL:${WIN32}>:NOMINMAX>)
