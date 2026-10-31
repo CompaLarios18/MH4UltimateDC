@@ -256,7 +256,7 @@ were removed. The file keeps its format comments and lists no difference; a file
 **On G4** (the recording of 2026-10-23, the native deterministic runner of the merged tree): 143,290 of 143,294 equal,
 4 differences, exit 1 without the allow file and 0 with the four lines; 0.8 s for the comparison. *(2026-10-31, N3-32:
 with the slice fixed, 143,294 of 143,294 equal and exit 0 with the emptied allow file; the events of a run before the fix
-now exit 1, 4 differences not allowed; `docs/research/det-120fps.md`.)* **What it cannot see**:
+now exit 1, 4 differences not allowed (the orchestrator's `timeline_check.py` run on N0-39's review run of G4; the fix itself: `docs/research/det-120fps.md`).)* **What it cannot see**:
 see `golden.md`, *`check --timeline`*, on the slice caps `--slice-us 4275`, `4273` and `3000`, which leave G4's events
 untouched, and `1000`, which does not.
 

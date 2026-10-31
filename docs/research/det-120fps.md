@@ -128,7 +128,7 @@ becomes `(2,291,554 ticks)`, and both `2 * 1145774` (the expected tick of the ev
 become `2 * kDeterministicSliceTicks`. With that change applied for one build, `nwm_test` passes; it is not committed
 here. Two shared texts still name the old slice and are proposed too: the `core_timing.h` row of
 `native/THIRD_PARTY.md` (*the 1,145,774-cycle slice (N1-25)*, to become 1,145,777) and the `--slice-us` row of
-`docs/native/runner.md`.
+`docs/native/runner.md`. *(2026-10-31, the orchestrator)* All three were applied on this branch before the merge (the `nwm_test` change, the two shared texts, and the emptied G4 allow file), and `nwm_test` passes.
 
 ## The runs after the fix
 
