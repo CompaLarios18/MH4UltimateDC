@@ -3,7 +3,6 @@
 #include "present/compositor.h"
 
 #include <algorithm>
-#include <cmath>
 #include <cstring>
 
 #include "gpu/backend/targets/upload.h"
@@ -453,6 +452,13 @@ ComposeResult Compositor::Compose(rhi::Recorder& recorder, rhi::Image& target, c
     }
 
     if (options.ui != nullptr) {
+        // The viewport and the scissor are the last screen's; the layer gets the whole target. (The pipeline, the
+        // bindings and the vertex buffers are still the compositor's: the layer binds its own.)
+        rhi::Viewport whole;
+        whole.width = static_cast<float>(target_w);
+        whole.height = static_cast<float>(target_h);
+        recorder.SetViewport(whole);
+        recorder.SetScissor(rhi::Rect{0, 0, target_w, target_h});
         options.ui->Record(&recorder, target_w, target_h);
     }
     return result;

@@ -121,8 +121,8 @@ rhi::TimelineValue value = (*compositor)->Submit(std::move(rec), std::move(done)
 | | |
 |---|---|
 | `Create(backend)` | compiles the two shaders (GLSL, N2-06's glslang, `present/shader_compile.h`: a vertex and a fragment stage), makes the pipelines for `Rgba8Unorm` and `Bgra8Unorm` targets, the nearest and the linear sampler, and a 256 KiB vertex ring. A pipeline for another target format is made on first use; a format that cannot be a colour attachment gives `ComposeResult::drawn == false` and leaves the recorder untouched. The app's own UI and blits are not in N2-16's pipeline cache; these pipelines are made here, at start-up |
-| `Compose(recorder, target, frame, layout, options)` | on an open recorder of the calling thread: uploads the CPU-pixel screens (`UploadToImage`, into a small pool of `Rgba8Unorm` textures reused once their submission has passed), then `BeginTargetPass` on the target with a clear to opaque black, one draw per shown screen, and `options.ui->Record(&recorder, target_w, target_h)` last. The target's pass is still open when `Compose` returns, so a `UiLayer`'s raw Vulkan commands (`CommandBuffer(recorder)`, as Dear ImGui's backend records them) are valid inside it |
-| `Submit(recorder, result)` | `Backend::Submit` with `result.waits`, then keeps the frame's images alive (`Backend::Retire`) and marks the upload textures busy until the submission's value |
+| `Compose(recorder, target, frame, layout, options)` | on an open recorder of the calling thread: uploads the CPU-pixel screens (`UploadToImage`, into a small pool of `Rgba8Unorm` textures reused once their submission has passed), then `BeginTargetPass` on the target with a clear to opaque black, one draw per shown screen, and `options.ui->Record(&recorder, target_w, target_h)` last, after resetting the viewport and the scissor to the whole target (the pipeline, bindings and vertex buffers are still the compositor's last: the layer binds its own). The target's pass is still open when `Compose` returns, so a `UiLayer`'s raw Vulkan commands (`CommandBuffer(recorder)`, as Dear ImGui's backend records them) are valid inside it |
+| `Submit(recorder, result)` | required: `Backend::Submit` with `result.waits`, then keeps the frame's images alive (`Backend::Retire`) and marks the upload textures busy until the submission's value. A submission that skips it can see a pooled texture reused, or a frame image freed, while the GPU still reads it; `ComposeResult::waits` is exposed for inspection and tests |
 | `ComposeOptions` | `linear_filter` (the app's `linear_filter`: bilinear, else nearest) and `ui` (the `UiLayer`, or null) |
 
 **What is drawn.** Order: the top screen (`top_shown`, `top` rectangle, `top_opacity`), then, when `bottom_shown`,
@@ -156,17 +156,17 @@ Stage::FragmentShader})`, or settle in `GENERAL`): the compositor's first sample
 check (`MH4N_RHI_CHECKS`) wants the hand-over's wait in the submission, which `Submit` supplies. A `Compositor` and
 its recorders and results belong to one thread; submit each result before the next `Compose`.
 
-**Tests** (`present_test`, 19 cases on lavapipe; the log names the llvmpipe device). The expected pixels are not
+**Tests** (`present_test`, 23 cases on lavapipe; the log names the llvmpipe device). The expected pixels are not
 the compositor's: the rectangles are the layout table's (`screen_layout_expected.inc`, Azahar's own output); the
 sources are a function of the screen and the displayed pixel; the rule is nearest sampling at the destination
 pixel's centre, worked out from the definition (a pixel whose sample point is within 2% of a texel boundary
-accepts either neighbour; a blended one there is not compared). Every pixel of every target is compared. The
+accepts either neighbour; a blended one there is not compared). Every pixel of every target is compared. The four corners and the centre of every shown screen (top, bottom, each view) are also checked on their own, with the exact colour: for the 48 table cases times the four ways of giving the screens that is 1548 strict points and 84 ambiguous ones (sample point on a texel edge, either neighbour accepted; 48 more are hidden, blended or outside and not counted), at least 90% strict is asserted and the numbers are printed; five 1920x1080 and 1280x1024 cases with non-integer ratios have every point strict. The
 cases: all 48 mode and size combinations of N2b-04's table with each screen as CPU pixels or a backend image at
 scale 1 or 3, upright or rotated; a widened top screen (573x240) at 1:1 with exact corners and centre; opacity
 0.25 to 1 within 1/255; a crop; two views, at the bottom screen's opacity; an Overlay with height 0 (rectangles
 outside the target) and the small windows of the table; a missing, an invalid or a region-outside screen;
 nearest against linear; a region with garbage around it under linear filtering; a `UiLayer` that draws with the
-`Recorder` and one that records raw Vulkan commands; a BGRA target; the waits; the upload pool; and a frame
+`Recorder`, one that records raw Vulkan commands, and one that sets no viewport or scissor and lands in the corner farthest from the last screen; a target that cannot be a colour attachment (`drawn == false`); a BGRA target; the waits; the upload pool; and a frame
 produced on another thread, handed over and waited for at the fragment stage with the backend's owner-rule
 handler counting zero breaches (with a control that drops the waits and sees `RequiredWait`, not run under the
 validation layer). Run under the layer with

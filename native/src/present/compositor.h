@@ -9,13 +9,14 @@
 // Compose clears the target to black, draws each shown screen into its rectangle (rotated upright, only the
 // stored region), the bottom screen with the layout's opacity and crop, each further view with its crop, and
 // calls the UiLayer last. The recorder is left with the target's pass open (the UiLayer's raw commands are
-// valid inside it); a caller that presents records PrepareForPresent on a swapchain image after Compose.
+// valid inside it). When the UiLayer is called the viewport and the scissor are the whole target; the pipeline,
+// bindings and vertex buffers are the compositor's last, so the layer binds its own; a caller that presents records PrepareForPresent on a swapchain image after Compose.
 //
 // The owner rule (rhi-spike.md 9.4 item 5, docs/native/rhi.md): the compositor records only on images its
 // thread owns (the target, its own uploaded textures) and only samples the images of the frame. It records no
 // barrier, copy or layout change on them. A frame image is sampled in GENERAL, the backend's one layout, and
 // the submission must wait for the value of the submission that drew it at the fragment-shader stage: Submit
-// does that (ComposeResult::waits is the list, for a caller that submits some other way). A frame image of
+// does that, and it is required: submit through it, not with Backend::Submit (see ComposeResult::waits). A frame image of
 // another thread must have been handed over (rhi::HandOver) or be settled in GENERAL, as the producer's code
 // does.
 //
@@ -23,7 +24,6 @@
 // composes: the present thread of N2b-06). Submit each result before the next Compose.
 #pragma once
 
-#include <array>
 #include <map>
 #include <memory>
 #include <vector>
@@ -49,7 +49,10 @@ public:
     // False when nothing was drawn: the target's format cannot be drawn to (the recorder is untouched).
     bool drawn = false;
     // The waits of the submission: one Wait{value, Stage::FragmentShader} per backend-image screen whose
-    // timeline_value is not 0 (the highest value if several screens share one submission).
+    // timeline_value is not 0 (the highest value if several screens share one submission). Exposed for
+    // inspection and tests: the submission must go through Compositor::Submit, which also marks the upload
+    // textures busy and retires the frame's images; a submission that skips it can see a pooled texture
+    // reused (or a frame image freed) while the GPU still reads it.
     std::vector<gpu::rhi::Wait> waits;
 
 private:

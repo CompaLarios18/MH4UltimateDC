@@ -9,8 +9,8 @@
 // code printed (screen_layout_expected.inc, N2b-04's table); the source pixels are a function of the screen and the
 // displayed pixel, made here (Pix); and the rule that places them is nearest-neighbour sampling worked out from
 // the definition (the destination pixel's centre, mapped through the rectangle and the crop to a displayed pixel).
-// A destination pixel whose centre falls within 1% of a texel boundary is not compared (the sampler may go either
-// way there); every other pixel of the whole target is. An opacity blends as src * a + dst * (1 - a), compared
+// A destination pixel whose centre falls within 2% of a texel boundary accepts either neighbouring texel (the sampler may go either
+// way there; a blended one there is not compared); every other pixel of the whole target is compared exactly. An opacity blends as src * a + dst * (1 - a), compared
 // within 1/255.
 //
 // The backend's owner-rule checks (MH4N_RHI_CHECKS) are on in every build: every case installs a handler that
@@ -204,7 +204,7 @@ struct Ref {
     // would give; the sampler may take either, so the pixel matches the expected colour or any of these.
     std::unordered_map<std::size_t, std::vector<Rgb>> alternatives;
     u32 width = 0, height = 0;
-    u64 covered = 0, compared = 0;
+    u64 covered = 0;
     int tolerance = 0;
 };
 
@@ -358,7 +358,7 @@ constexpr u8 kGarbage[4] = {255, 0, 255, 255};  // magenta
 
 // A ScreenImage of `s`: CPU pixels, or a backend image filled by a submission whose timeline value is the screen's
 // (not waited for here: the compositor's submission waits for it). Call with no recorder open on this thread.
-pr::ScreenImage MakeScreen(rhi::Backend& backend, const Screen& s, rhi::TimelineValue* produced = nullptr) {
+pr::ScreenImage MakeScreen(rhi::Backend& backend, const Screen& s) {
     pr::ScreenImage out;
     out.width = s.w;
     out.height = s.h;
@@ -406,9 +406,6 @@ pr::ScreenImage MakeScreen(rhi::Backend& backend, const Screen& s, rhi::Timeline
     rhi::Result<void> uploaded = rhi::UploadToImage(backend, rec, *image, region, bytes);
     REQUIRE_MESSAGE(uploaded.ok(), uploaded.error());
     const rhi::TimelineValue value = backend.Submit(std::move(rec));
-    if (produced != nullptr) {
-        *produced = value;
-    }
     out.image = image;
     out.region = pr::ImageRegion{kRegionX, kRegionY, stored_w, stored_h};
     out.timeline_value = value;
@@ -425,7 +422,6 @@ void LayerSees(rhi::Backend& backend) {
 
 struct Composed {
     std::vector<u8> pixels;  // RGBA (BGRA for a Bgra8Unorm target), rows packed
-    rhi::TimelineValue value = 0;
     std::vector<rhi::Wait> waits;
 };
 
@@ -437,8 +433,8 @@ Composed ComposeToImage(Env& env, u32 w, u32 h, const pr::DisplayFrame& frame, c
     pr::ComposeResult result = env.compositor->Compose(rec, *target, frame, layout, options);
     REQUIRE(result.drawn);
     out.waits = result.waits;
-    out.value = env.compositor->Submit(std::move(rec), std::move(result));
-    env.backend->WaitIdle(out.value);
+    const rhi::TimelineValue value = env.compositor->Submit(std::move(rec), std::move(result));
+    env.backend->WaitIdle(value);
     rhi::Result<std::vector<u8>> read = env.backend->ReadImage(*target, 0, 0, w, h);
     REQUIRE_MESSAGE(read.ok(), read.error());
     LayerSees(*env.backend);
@@ -548,9 +544,88 @@ pr::DisplayFrame FrameOf(rhi::Backend& backend, const Variant& v, bool with_top 
     return frame;
 }
 
+// The corner and centre pixels of every shown screen at its destination rectangle (the top, the bottom, each view),
+// checked on their own and strictly: the exact colour of the source texel under the pixel's centre, no tolerance.
+// Where the sample point falls within 2% of a texel boundary (exact integer ratios put it on a texel edge) the
+// sampler may take either neighbour, so the pixel must be one of the neighbours' colours; those points are counted
+// as ambiguous. Points that are blended (opacity < 1), hidden under a later layer or outside the target are not
+// counted (`excluded`).
+struct PointStats {
+    u64 strict = 0, ambiguous = 0, excluded = 0;
+    void Add(const PointStats& o) {
+        strict += o.strict;
+        ambiguous += o.ambiguous;
+        excluded += o.excluded;
+    }
+};
+
+PointStats CheckCornersAndCentres(const Geo& g, const Screen* top, const Screen* bottom, const std::vector<u8>& pixels,
+                                  u32 w, u32 h) {
+    struct Layer {
+        const Screen* screen;
+        sl::Rect rect;
+        sl::RectF crop;
+        double opacity;
+    };
+    std::vector<Layer> layers;
+    if (g.top_shown && top != nullptr) {
+        layers.push_back({top, g.top, sl::RectF{0, 0, 1, 1}, std::clamp<double>(g.top_opacity, 0.0, 1.0)});
+    }
+    if (g.bottom_shown && bottom != nullptr) {
+        const double a = std::clamp<double>(g.bottom_opacity, 0.0, 1.0);
+        layers.push_back({bottom, g.bottom, g.bottom_crop, a});
+        for (const sl::View& v : g.views) {
+            layers.push_back({bottom, v.screen, v.crop, a});
+        }
+    }
+    PointStats stats;
+    for (std::size_t i = 0; i < layers.size(); ++i) {
+        const Layer& l = layers[i];
+        if (l.rect.right <= l.rect.left || l.rect.bottom <= l.rect.top) {
+            continue;
+        }
+        const std::array<std::pair<u32, u32>, 5> points = {{{l.rect.left, l.rect.top},
+                                                             {l.rect.right - 1, l.rect.top},
+                                                             {l.rect.left, l.rect.bottom - 1},
+                                                             {l.rect.right - 1, l.rect.bottom - 1},
+                                                             {(l.rect.left + l.rect.right) / 2, (l.rect.top + l.rect.bottom) / 2}}};
+        for (const auto& [x, y] : points) {
+            bool hidden = x >= w || y >= h || l.opacity < 1.0;
+            for (std::size_t j = i + 1; j < layers.size() && !hidden; ++j) {
+                hidden = layers[j].rect.Contains(x, y);
+            }
+            if (hidden) {
+                ++stats.excluded;
+                continue;
+            }
+            const double fx = l.crop.left + ((x + 0.5 - l.rect.left) / l.rect.Width()) * (l.crop.right - l.crop.left);
+            const double fy = l.crop.top + ((y + 0.5 - l.rect.top) / l.rect.Height()) * (l.crop.bottom - l.crop.top);
+            const std::vector<u32> ixs = TexelsAt(fx * l.screen->ScaledW(), l.screen->ScaledW());
+            const std::vector<u32> iys = TexelsAt(fy * l.screen->ScaledH(), l.screen->ScaledH());
+            const auto got = PixelAt(pixels, w, x, y);
+            if (ixs.size() == 1 && iys.size() == 1) {
+                ++stats.strict;
+                CHECK_MESSAGE(got == Opaque(Pix(l.screen->id, ixs[0], iys[0])),
+                              "layer " << i << " point (" << x << "," << y << ") got " << int(got[0]) << "," << int(got[1]) << ","
+                                       << int(got[2]) << "," << int(got[3]));
+            } else {
+                ++stats.ambiguous;
+                bool any = false;
+                for (u32 iy : iys) {
+                    for (u32 ix : ixs) {
+                        any = any || got == Opaque(Pix(l.screen->id, ix, iy));
+                    }
+                }
+                CHECK_MESSAGE(any, "layer " << i << " ambiguous point (" << x << "," << y << ")");
+            }
+        }
+    }
+    return stats;
+}
+
 // Composes one case of N2b-04's table and checks every pixel of the target against the reference built from the
 // ORACLE's rectangles (the compositor gets the layout N2b-04's code computes).
-void RunOracleCase(Env& env, const Case& c, int variant, bool linear = false) {
+PointStats RunOracleCase(Env& env, const Case& c, int variant, bool linear = false) {
     INFO("case " << c.name << " variant " << variant);
     const sl::Inputs in = InputsOf(c);
     const sl::Layout layout = sl::Compute(in);
@@ -572,6 +647,8 @@ void RunOracleCase(Env& env, const Case& c, int variant, bool linear = false) {
         skipped += f == 0;
     }
     CHECK_MESSAGE(skipped * 4 <= static_cast<u64>(layout.width) * layout.height, skipped << " pixels are on a texel boundary");
+    // The corners and the centre of each screen's rectangle, strictly (see CheckCornersAndCentres).
+    return CheckCornersAndCentres(GeoOf(c.expected), &v.top, &v.bottom, done.pixels, layout.width, layout.height);
 }
 
 const Case* FindCase(const char* name) {
@@ -604,6 +681,53 @@ TEST_CASE("compose/every_mode_at_every_size_of_the_layout_table") {
         ++ran;
     }
     CHECK(ran == 48);  // 4 modes x 4 sizes x 3 top widths
+    CHECK(env->breaches.Total() == 0);
+}
+
+TEST_CASE("compose/corners_and_centres_of_every_screen_land_exactly_in_the_tables_rectangles") {
+    std::unique_ptr<Env> env = MakeEnv();
+    if (!env) return;
+    // The 48 mode/size cases of N2b-04's table, each with the four ways of giving the screens: CPU pixels, backend
+    // images at scale 1 and 3, upright and rotated.
+    PointStats total;
+    std::size_t cases = 0;
+    for (const Case& c : kCases) {
+        if (!Contains(c.name, "modes_")) {
+            continue;
+        }
+        for (int variant = 0; variant < 4; ++variant) {
+            total.Add(RunOracleCase(*env, c, variant));
+            ++cases;
+        }
+    }
+    CHECK(cases == 192);
+    const u64 points = total.strict + total.ambiguous;
+    std::printf("corner and centre points: %llu strict, %llu ambiguous (sample point within 2%% of a texel boundary: "
+                "either neighbour accepted), %llu not counted (hidden, blended or outside)\n",
+                static_cast<unsigned long long>(total.strict), static_cast<unsigned long long>(total.ambiguous),
+                static_cast<unsigned long long>(total.excluded));
+    std::fflush(stdout);
+    CHECK(points > 0);
+    CHECK_MESSAGE(total.strict * 10 >= points * 9, total.strict << " strict of " << points << " points");
+    CHECK(env->breaches.Total() == 0);
+}
+
+TEST_CASE("compose/a_non_integer_ratio_layout_has_every_corner_and_centre_strict") {
+    std::unique_ptr<Env> env = MakeEnv();
+    if (!env) return;
+    // 1920x1080 and 1280x1024: the screens are scaled by ratios that are not whole numbers, and each of the four
+    // ways of giving them (a scale-3 rotated backend image among them) has all of its points strict. (Other table
+    // cases have a point or two on a texel edge, e.g. modes_stacked_1280x1024_400: they are in the count above.)
+    for (const char* name : {"modes_overlay_1920x1080_400", "modes_stacked_1920x1080_573", "modes_side_1280x1024_573", "modes_stacked_1280x1024_427", "modes_overlay_1920x1080_573"}) {
+        const Case* c = FindCase(name);
+        REQUIRE(c != nullptr);
+        for (int variant = 0; variant < 4; ++variant) {
+            INFO(name << " variant " << variant);
+            const PointStats stats = RunOracleCase(*env, *c, variant);
+            CHECK(stats.ambiguous == 0);
+            CHECK(stats.strict >= 8);
+        }
+    }
     CHECK(env->breaches.Total() == 0);
 }
 
@@ -1104,6 +1228,88 @@ TEST_CASE("compose/a_ui_layers_draw_lands_over_the_screens") {
             CHECK(drawing.seen_recorder != nullptr);
         }
     }
+    CHECK(env->breaches.Total() == 0);
+}
+
+namespace {
+
+// A UiLayer that sets neither a viewport nor a scissor: it draws a quad in the target's top-left corner (the first
+// tenth in each direction) with the state the compositor leaves.
+class BareLayer : public pr::UiLayer {
+public:
+    explicit BareLayer(rhi::Backend& backend) {
+        std::string error;
+        REQUIRE(pr::CompileGlsl(pr::GlslStage::Vertex, R"(#version 450
+void main() {
+    vec2 p = vec2(gl_VertexIndex & 1, gl_VertexIndex >> 1);
+    gl_Position = vec4(-1.0 + p * 0.2, 0.0, 1.0);
+})", vertex_, error));
+        REQUIRE(pr::CompileGlsl(pr::GlslStage::Fragment, R"(#version 450
+layout(location = 0) out vec4 o;
+void main() { o = vec4(1.0, 1.0, 0.0, 1.0); })", fragment_, error));
+        rhi::GraphicsPipelineDesc desc;
+        desc.vertex.spirv = vertex_;
+        desc.fragment.spirv = fragment_;
+        desc.topology = rhi::Topology::TriangleStrip;
+        desc.color_format = rhi::Format::Rgba8Unorm;
+        desc.name = "test bare ui";
+        rhi::Result<std::shared_ptr<rhi::Pipeline>> made = backend.CreateGraphicsPipeline(desc);
+        REQUIRE_MESSAGE(made.ok(), made.error());
+        pipeline_ = *made;
+    }
+    void Record(void* recorder, u32, u32) override {
+        rhi::Recorder& rec = *static_cast<rhi::Recorder*>(recorder);
+        rec.SetPipeline(*pipeline_);
+        rec.Draw(4);
+    }
+
+private:
+    std::vector<u32> vertex_, fragment_;
+    std::shared_ptr<rhi::Pipeline> pipeline_;
+};
+
+}  // namespace
+
+TEST_CASE("compose/the_ui_layer_gets_the_whole_target_as_viewport_and_scissor_not_the_last_screens") {
+    std::unique_ptr<Env> env = MakeEnv();
+    if (!env) return;
+    const Case* c = FindCase("modes_stacked_800x480_400");
+    REQUIRE(c != nullptr);
+    const sl::Layout layout = sl::Compute(InputsOf(*c));
+    // the last screen drawn is the bottom one, at {240,240,560,480}; the layer draws in the opposite corner
+    REQUIRE(layout.bottom.left > 100);
+    BareLayer layer(*env->backend);
+    pr::ComposeOptions options;
+    options.ui = &layer;
+    const Variant v = VariantOf(1, 400);
+    pr::DisplayFrame frame = FrameOf(*env->backend, v);
+    const Composed done = ComposeToImage(*env, layout.width, layout.height, frame, layout, options);
+    const std::array<u8, 4> yellow = {255, 255, 0, 255};
+    CHECK(PixelAt(done.pixels, layout.width, 2, 2) == yellow);
+    CHECK(PixelAt(done.pixels, layout.width, 79, 47) == yellow);
+    CHECK(PixelAt(done.pixels, layout.width, 81, 47) != yellow);
+    CHECK(PixelAt(done.pixels, layout.width, 79, 49) != yellow);
+    CHECK(env->breaches.Total() == 0);
+}
+
+TEST_CASE("compose/a_target_that_cannot_be_a_colour_attachment_draws_nothing") {
+    std::unique_ptr<Env> env = MakeEnv();
+    if (!env) return;
+    if (env->backend->QueryFormat(rhi::Format::Bc1Unorm).attachment) {
+        mh4n::test::SkipCase("this device can render to BC1");
+        return;
+    }
+    std::shared_ptr<rhi::Image> target = MakeImage(*env->backend, rhi::Format::Bc1Unorm, 64, 64, "block-compressed target");
+    const Case* c = FindCase("modes_stacked_800x480_400");
+    REQUIRE(c != nullptr);
+    const sl::Layout layout = sl::Compute(InputsOf(*c));
+    const Variant v = VariantOf(1, 400);
+    pr::DisplayFrame frame = FrameOf(*env->backend, v);
+    rhi::Recorder rec = env->backend->BeginRecording();
+    pr::ComposeResult result = env->compositor->Compose(rec, *target, frame, layout, {});
+    CHECK_FALSE(result.drawn);
+    CHECK(result.waits.empty());
+    env->backend->WaitIdle();  // the recorder is dropped unsubmitted
     CHECK(env->breaches.Total() == 0);
 }
 
