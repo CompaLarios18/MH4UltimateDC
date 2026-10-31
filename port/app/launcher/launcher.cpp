@@ -919,7 +919,7 @@ void State::ChooseAndInstallUpdate() {
              [this](const std::string& path) {
                  const auto checked = Checks::CheckUpdateCia(path);
                  if (!checked.problem.empty()) {
-                     Message("This isn't the update", checked.problem);
+                     Message(checked.title, checked.problem);
                      return;
                  }
                  LOG_INFO(Frontend, "launcher: installing {}", path);

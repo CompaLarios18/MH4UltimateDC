@@ -68,17 +68,31 @@ enum class Verdict {
     Unchecked,     ///< labelled otherwise, and the code couldn't be read
 };
 
-/// The verdict for a version label and the code read for it (`code` is only looked at when the
-/// label isn't v1.3.0's: the caller reads it only then).
-Verdict Judge(std::uint16_t label, const Code& code, const std::string& target_sha1 = TARGET_CODE_SHA1);
+/// What the setup does with a .cia of MH4U's update: installed when `problem` is empty (`note`,
+/// if any, said once it is in), else not, for that reason under `title`.
+struct CiaCheck {
+    Verdict verdict = Verdict::Target;
+    std::string title;
+    std::string problem;
+    std::string note;
+};
 
-/// What the setup says of a .cia: for Relabeled the note shown once it is installed, for
-/// OtherVersion and Unchecked why it isn't installed (`error`: why the code couldn't be read);
-/// "" for Target.
-std::string CiaText(Verdict verdict, std::uint16_t label, const std::string& error);
+/// A .cia whose title metadata says `label`; `read_code` reads its code, and is called only
+/// when the label isn't v1.3.0's (a v1.3.0 label is taken as it is, as before this check).
+CiaCheck CheckCia(std::uint16_t label, const std::function<Code()>& read_code,
+                  const std::string& target_sha1 = TARGET_CODE_SHA1);
 
-/// The same for the update installed in Azahar's virtual SD card, as the setup's status line
-/// says it; "" for Target.
-std::string InstalledText(Verdict verdict, std::uint16_t label, const std::string& error);
+/// What the setup says of the update installed in Azahar's virtual SD card: `ok` when it is
+/// used as v1.3.0, `note` the setup's line about it ("" for a v1.3.0 label).
+struct InstalledCheck {
+    Verdict verdict = Verdict::Target;
+    bool ok = true;
+    std::string note;
+};
+
+/// The installed update, whose title metadata (Azahar's copy of the .cia's) says `label`;
+/// `read_code` reads the installed program's code, only when the label isn't v1.3.0's.
+InstalledCheck CheckInstalled(std::uint16_t label, const std::function<Code()>& read_code,
+                              const std::string& target_sha1 = TARGET_CODE_SHA1);
 
 } // namespace Launcher::UpdateCode

@@ -120,17 +120,15 @@ Update CheckUpdate() {
         update.content.clear();
         return update;
     }
-    if (update.version == UPDATE_VERSION) {
-        update.state = Update::State::Ok;
-        return update;
+    // a label other than v1.3.0's (Azahar's installer keeps the .cia's, and some decryption tools
+    // reset it on a v1.3.0 update): the installed code says which update it is (read only then)
+    const auto check =
+        UpdateCode::CheckInstalled(update.version, [&update] { return InstalledCode(update.content); });
+    update.state = check.ok ? Update::State::Ok : Update::State::OtherVersion;
+    update.note = check.note;
+    if (!update.note.empty()) {
+        LOG_INFO(Frontend, "launcher: the update: {}", update.note);
     }
-    // another label (Azahar's installer keeps the .cia's, and some decryption tools reset it on a
-    // v1.3.0 update): the installed code says which update it is
-    const auto code = InstalledCode(update.content);
-    const auto verdict = UpdateCode::Judge(update.version, code);
-    update.state = verdict == UpdateCode::Verdict::Relabeled ? Update::State::Ok : Update::State::OtherVersion;
-    update.note = UpdateCode::InstalledText(verdict, update.version, code.error);
-    LOG_INFO(Frontend, "launcher: the update: {}", update.note);
     return update;
 }
 
@@ -139,39 +137,41 @@ std::string VersionText(u16 version) {
 }
 
 UpdateCia CheckUpdateCia(const std::string& path) {
-    UpdateCia result;
+    const auto refused = [](std::string problem) {
+        UpdateCia result;
+        result.title = "This isn't the update";
+        result.problem = std::move(problem);
+        return result;
+    };
     bool compressed = false;
     switch (Service::AM::CheckCIAToInstall(path, compressed, true)) {
     case Service::AM::InstallStatus::Success:
         break;
     case Service::AM::InstallStatus::ErrorEncrypted:
-        result.problem = "This .cia is encrypted. The port needs a decrypted one (GodMode9 can build one "
-                         "from the update installed on your 3DS).";
-        return result;
+        return refused("This .cia is encrypted. The port needs a decrypted one (GodMode9 can build one "
+                       "from the update installed on your 3DS).");
     case Service::AM::InstallStatus::ErrorFileNotFound:
     case Service::AM::InstallStatus::ErrorFailedToOpenFile:
-        result.problem = "The file can't be read.";
-        return result;
+        return refused("The file can't be read.");
     default:
-        result.problem = "This file isn't a CIA the app can read.";
-        return result;
+        return refused("This file isn't a CIA the app can read.");
     }
+    UpdateCia result;
     if (const auto infos = Service::AM::GetCIAInfos(path)) {
         const auto& info = infos->first;
         if (info.tid != MH4U_UPDATE) {
-            result.problem = fmt::format("This .cia is title {:016X}, not Monster Hunter 4 Ultimate's "
-                                         "update ({:016X}).",
-                                         info.tid, MH4U_UPDATE);
-            return result;
+            return refused(fmt::format("This .cia is title {:016X}, not Monster Hunter 4 Ultimate's "
+                                       "update ({:016X}).",
+                                       info.tid, MH4U_UPDATE));
         }
-        if (info.version != UPDATE_VERSION) {
-            // another label: some decryption tools reset it on a v1.3.0 update, so the code says
-            // which update it is
-            const auto code = CiaCode(path, compressed);
-            const auto verdict = UpdateCode::Judge(info.version, code);
-            auto& text = verdict == UpdateCode::Verdict::Relabeled ? result.note : result.problem;
-            text = UpdateCode::CiaText(verdict, info.version, code.error);
-            LOG_INFO(Frontend, "launcher: {}: {}", path, text);
+        // a label other than v1.3.0's: some decryption tools reset it on a v1.3.0 update, so the
+        // code says which update it is (read only then)
+        const auto check = UpdateCode::CheckCia(info.version, [&] { return CiaCode(path, compressed); });
+        result.title = check.title;
+        result.problem = check.problem;
+        result.note = check.note;
+        if (check.verdict != UpdateCode::Verdict::Target) {
+            LOG_INFO(Frontend, "launcher: {}: {}", path, check.problem.empty() ? check.note : check.problem);
         }
     }
     return result;

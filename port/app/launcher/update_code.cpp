@@ -326,55 +326,82 @@ Code ReadCiaCode(const Read& read) {
     return ReadCode(read, cia.content_offset);
 }
 
-Verdict Judge(std::uint16_t label, const Code& code, const std::string& target_sha1) {
-    if (label == TARGET_VERSION) {
-        return Verdict::Target;
-    }
+namespace {
+
+/// The verdict on a label other than v1.3.0's, by the code read for it.
+Verdict ByCode(const Code& code, const std::string& target_sha1) {
     if (!code.ok) {
         return Verdict::Unchecked;
     }
     return code.sha1 == target_sha1 ? Verdict::Relabeled : Verdict::OtherVersion;
 }
 
-std::string CiaText(Verdict verdict, std::uint16_t label, const std::string& error) {
+} // namespace
+
+CiaCheck CheckCia(std::uint16_t label, const std::function<Code()>& read_code,
+                  const std::string& target_sha1) {
+    CiaCheck check;
+    if (label == TARGET_VERSION) {
+        return check;
+    }
+    const Code code = read_code();
+    check.verdict = ByCode(code, target_sha1);
+    // the version as the label says it (some tools reset it: it isn't the update's for certain)
     const std::string found = "v" + VersionText(label);
     const std::string target = "v" + VersionText(TARGET_VERSION);
-    switch (verdict) {
+    switch (check.verdict) {
     case Verdict::Target:
         break;
     case Verdict::Relabeled:
-        return "The .cia's version label says " + found + ", but its code is " + target +
-               "'s (some decryption tools reset the label), so it's used as " + target + ".";
+        check.note = "The .cia's version label says " + found + ", but its code is " + target +
+                     "'s (some decryption tools reset the label), so it's used as " + target + ".";
+        break;
     case Verdict::OtherVersion:
-        return "This is Monster Hunter 4 Ultimate's update " + found + ", and its code isn't " + target +
-               "'s either. The port is made for " + target + ": its code library is recompiled from that "
-               "update's code.";
+        check.title = "This isn't the update";
+        check.problem = "The .cia's version label says " + found + ", and its code isn't " + target +
+                        "'s either: it holds another update, or a changed one. The port is made for " +
+                        target + ": its code library is recompiled from that update's code.";
+        break;
     case Verdict::Unchecked:
-        return "The .cia's version label says " + found + "; the port is made for " + target +
-               ". Some decryption tools reset that label on a " + target +
-               " update, but this file's code couldn't be read to tell (" + error + ").";
+        check.title = "This .cia couldn't be checked";
+        check.problem = "The .cia's version label says " + found + "; the port is made for " + target +
+                        ". Some decryption tools reset that label on a " + target +
+                        " update, but this file's code couldn't be read to tell (" + code.error +
+                        "). Build the .cia again with GodMode9 from the update installed on your 3DS.";
+        break;
     }
-    return "";
+    return check;
 }
 
-std::string InstalledText(Verdict verdict, std::uint16_t label, const std::string& error) {
+InstalledCheck CheckInstalled(std::uint16_t label, const std::function<Code()>& read_code,
+                              const std::string& target_sha1) {
+    InstalledCheck check;
+    if (label == TARGET_VERSION) {
+        return check;
+    }
+    const Code code = read_code();
+    check.verdict = ByCode(code, target_sha1);
+    check.ok = check.verdict == Verdict::Relabeled;
     const std::string found = "v" + VersionText(label);
     const std::string target = "v" + VersionText(TARGET_VERSION);
-    switch (verdict) {
+    switch (check.verdict) {
     case Verdict::Target:
         break;
     case Verdict::Relabeled:
-        return "Installed in Azahar's virtual SD card; its version label says " + found +
-               ", but its code is " + target + "'s (some decryption tools reset the label)";
+        check.note = "Installed in Azahar's virtual SD card; its version label says " + found +
+                     ", but its code is " + target + "'s (some decryption tools reset the label)";
+        break;
     case Verdict::OtherVersion:
-        return found + " is installed, and its code isn't " + target + "'s either; the port is made for " +
-               target;
+        check.note = "The installed update's version label says " + found + ", and its code isn't " +
+                     target + "'s either; the port is made for " + target;
+        break;
     case Verdict::Unchecked:
-        return found + " is installed by its version label; the port is made for " + target +
-               " (some decryption tools reset that label on a " + target +
-               " update, but the installed code couldn't be read to tell: " + error + ")";
+        check.note = "The installed update's version label says " + found + "; the port is made for " +
+                     target + " (some decryption tools reset that label on a " + target +
+                     " update, but the installed code couldn't be read to tell: " + code.error + ")";
+        break;
     }
-    return "";
+    return check;
 }
 
 } // namespace Launcher::UpdateCode

@@ -34,7 +34,7 @@ struct Update {
     u16 version = 0;      ///< its title metadata's version label
     std::string content;  ///< the installed update's program (an NCCH that build_game.py reads)
     /// The setup's line about it when its label isn't v1.3.0's: v1.3.0's code all the same (Ok),
-    /// or which version it is (OtherVersion)
+    /// or other code, or code that couldn't be read (OtherVersion)
     std::string note;
 };
 
@@ -47,8 +47,9 @@ Update CheckUpdate();
 std::string VersionText(u16 version);
 
 /// A .cia for the setup's step 2: installed when `problem` is empty (`note`, if any, said once
-/// it is in), else not, for that reason.
+/// it is in), else not, for that reason under `title`.
 struct UpdateCia {
+    std::string title;
     std::string problem;
     std::string note;
 };

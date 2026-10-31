@@ -26,7 +26,7 @@ The downloads are on the [releases page](https://github.com/CompaLarios18/MH4Ult
 Not yet. Only the USA version with the v1.3.0 update (title `0004000000126300`) is supported.
 
 **The setup says my update is v0.0.1 (or v1.0.0), not v1.3.0**
-Some tools that decrypt or rebuild a `.cia` reset the version label in it and leave the update itself as it was. Releases after 0.1.5 go by the update's code, as the code library's build always did: such a v1.3.0 `.cia` is installed as v1.3.0, and the setup says what it found. If the setup still turns it away and says that its code isn't v1.3.0's either, the `.cia` holds another update.
+Some tools that decrypt or rebuild a `.cia` reset the version label in it and leave the update itself as it was. Releases after 0.1.5 go by the update's code, as the code library's build always did: such a v1.3.0 `.cia` is used as v1.3.0, and the setup says what it found. If the setup still turns it away and says that its code isn't v1.3.0's either, the `.cia` holds another update, or a changed one. With release 0.1.5 or older, build the `.cia` with GodMode9 from the update installed on your 3DS, and install that one.
 
 **Why does the first start take a while?**
 The setup recompiles the game's code from your update and then compiles it for your PC: a couple of minutes to recompile, several more to compile. It happens once, and again only after you add, change or remove a code mod.
