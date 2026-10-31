@@ -167,6 +167,17 @@ Tick offset, reference minus native, at the frames of N3-22's times (game time =
 (A single record's tick moves with the point at which the frame watcher sees the counter change, so the base column is
 noisy frame to frame; its trend is N3-22's.)
 
+No regression at 60 fps: `golden.py check S --candidate-runner <the fixed runner> --candidate-program
+build/native-game --candidate-code build/game-det/recomp/0004000000126300_native_det.dll --candidate-args=--deterministic
+--timeline` on the recordings (the recordings reached through links in a folder of this package's, so that the check's
+own output did not go into `build/golden`):
+
+| Session | options | result | host time |
+|---|---|---|---|
+| G3 | `--profile cross --require state,checkpoints,ipc,svc,hid` | 7 passed, 0 failed, 1 skipped (images), 1 info: `svc`, `ipc` (3,725 fs reads on both sides, largest difference 0, coverage differences 0), `state` (12 scene changes, 10 real, shift 0 frames), `state-margin` (smallest input margin 147 frames on both), `checkpoints`, `hid`, `timeline` (841,395 of 841,395) | 70 min 36 s |
+| G4 | `--profile cross --require state,checkpoints,ipc,svc,hid` | 7 passed, 0 failed, 1 skipped, 1 info: `ipc` 1,277 fs reads on both sides, `state` 8 scene changes (6 real, shift 0), `timeline` 143,294 of 143,294 | 1 min 49 s |
+| G1 | `--require checkpoints,ipc,svc,hid` (the profile is `cross`) | 8 passed, 0 failed, 1 skipped, 1 info: `ipc` 674 fs reads on both sides, `dsp-1240` shift +0, `timeline` 78,578 of 78,578 | 49 s |
+
 ## The deterministic pair at 60 and 120 fps (for D70)
 
 `python tools/native/fps_audit.py run G3 ... --io-latency azahar --out build/fps/G3-det-n332 --deterministic` (the merged
