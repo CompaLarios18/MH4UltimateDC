@@ -25,6 +25,8 @@ add_library(mh4u_backend STATIC
     src/frontend.h
     src/hooks.cpp
     src/hooks.h
+    src/map_view.cpp
+    src/map_view.h
     src/netsync.cpp
     src/netsync.h
 )

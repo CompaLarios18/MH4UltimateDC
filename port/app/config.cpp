@@ -289,8 +289,8 @@ fullscreen = {}
 resolution = {}
 vsync = {}
 # overlay: the game fills the window and the touch screen sits over it in a corner (mh4u.ini's
-#          touch_overlay and touch_screen say where and when; F12 or the right stick's click
-#          switch it)
+#          touch_overlay and quest_overlay say where and when: in quests the map panel of your
+#          panel layout alone; F12 or the right stick's click switch it)
 # single: the game alone; stacked: the two screens as on a 3DS; side: side by side;
 # windows: the touch screen in a window of its own
 screens = {}
