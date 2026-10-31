@@ -58,7 +58,7 @@ The map view shows the map panel of your touch screen's panel layout. Without on
 In the port's app: touch taps. `touch_tap_1 = Z @ 52 220` in `mh4u-app.ini` touches the touch screen at that point (x from its left edge, y from its top, in its 320x240 pixels) while Z is held; up to 8. Details: [Or play with the port's app](docs/PLAYING.md#2b-or-play-with-the-ports-app).
 
 **Steam Deck?**
-There's a Linux build, not tried on a Deck yet. If you try it, open an issue and tell us how it went.
+There's a Linux build (`mh4u.AppImage`), not tried much on a Deck yet. In Game Mode a desktop's file dialog may not show, or fails (a "Service crash"), so the launcher chooses files in its own browser there: the D-pad, A and B, with your SD card under *Drives*. Elsewhere *Browse in the launcher* opens it. If you try the port on a Deck, open an issue and tell us how it went.
 
 **Mac?**
 There's a build for Apple silicon (Vulkan through MoltenVK), not tried on a Mac yet. Reports are welcome in an issue.

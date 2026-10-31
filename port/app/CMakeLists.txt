@@ -86,6 +86,9 @@ endif()
 # an SDL_Renderer and Dear ImGui (its SDL_Renderer backend), so it needs none of Azahar's
 # renderers. It lists a lobby's rooms with httplib and reads the tools' JSON with nlohmann's.
 target_sources(mh4u PRIVATE
+    # the launcher's own file browser, beside the system's file dialogs (pick)
+    launcher/browse.cpp
+    launcher/browse.h
     launcher/checks.cpp
     launcher/checks.h
     # the environment of the programs it starts, without the AppImage's additions (Linux)
@@ -97,6 +100,8 @@ target_sources(mh4u PRIVATE
     launcher/launcher.h
     launcher/lobby.cpp
     launcher/lobby.h
+    launcher/paths.cpp
+    launcher/paths.h
     launcher/pick.cpp
     launcher/pick.h
     launcher/process.cpp

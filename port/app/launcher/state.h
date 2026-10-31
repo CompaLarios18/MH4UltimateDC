@@ -12,6 +12,7 @@
 
 #include "config.h"
 #include "lan.h"
+#include "launcher/browse.h"
 #include "launcher/checks.h"
 #include "launcher/launcher.h"
 #include "launcher/lobby.h"
@@ -236,16 +237,28 @@ struct State {
     std::optional<Dialog> dialog;
     bool dialog_open = false;  ///< the popup for `dialog` is up
 
-    /// The system's file picker while it is up (Linux, macOS: another program, waited for on a
-    /// thread of its own so that the launcher keeps drawing and answering the desktop)
+    /// The system's file picker while it is up (Linux, macOS: another program, followed each
+    /// frame so that the launcher keeps drawing and answering the desktop)
     struct Picking {
-        std::future<Pick::Result> result;
+        std::unique_ptr<Pick::Dialog> dialog;
+        Pick::Request request;
         std::function<void(const std::string&)> then;
-        bool folder = false;
-        std::string title;
         bool was_fullscreen = false;
     };
     std::optional<Picking> picking;
+    /// Dialogs given up on (Cancel, or the launcher's browser instead) until their program has ended
+    std::vector<std::unique_ptr<Pick::Dialog>> pickers_closing;
+    /// The launcher's own file browser while it is open, and what gets its choice
+    struct Browsing {
+        std::unique_ptr<Browse::Browser> browser;
+        std::function<void(const std::string&)> then;
+    };
+    std::optional<Browsing> browsing;
+    /// The system's dialog that didn't work this session ("" while none failed): the pickers
+    /// open in the launcher's own browser from then on (its button tries the dialog again)
+    std::string picker_failed;
+    /// The file or folder chosen last (in either picker): the next one opens in its folder
+    std::string last_pick;
 
     ModLibrary mods;
 
@@ -295,13 +308,17 @@ struct State {
 
     /// Builds the code library from the installed update.
     void StartBuild();
-    /// Asks for the update's .cia and installs it.
-    void ChooseAndInstallUpdate();
-    /// Asks for the game file.
-    void ChooseGame();
-    /// The system's file or folder picker (or a line to type the path into), then `then`.
+    /// Asks for the update's .cia and installs it; `browse`: in the launcher's own browser.
+    void ChooseAndInstallUpdate(bool browse = false);
+    /// Asks for the game file; `browse`: in the launcher's own browser.
+    void ChooseGame(bool browse = false);
+    /// A file or folder from the system's picker or the launcher's own browser (browse.h), then
+    /// `then`: the browser with `browse`, and where the system's dialog can't be used (Steam's
+    /// Game Mode, a controller in hand, none installed) or didn't work. In the browser a `folder`
+    /// can also be a file with one of `extensions`.
     void Pick(bool folder, const std::string& title, const std::string& kind,
-              const std::vector<std::string>& extensions, std::function<void(const std::string&)> then);
+              const std::vector<std::string>& extensions, std::function<void(const std::string&)> then,
+              bool browse = false);
 
     /// Play: deploys the mods, warns about the setup, then hands over to the game.
     void Play(int stage = 0);

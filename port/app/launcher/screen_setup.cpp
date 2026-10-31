@@ -120,6 +120,10 @@ void DrawSetup(State& s) {
     if (game_ok ? ImGui::Button("Choose another game file...") : Ui::AccentButton("Choose the game file...")) {
         s.ChooseGame();
     }
+    ImGui::SameLine();
+    if (ImGui::Button("Browse in the launcher...##game")) {
+        s.ChooseGame(true);
+    }
     Ui::EndCard();
     ImGui::Spacing();
 
@@ -137,6 +141,10 @@ void DrawSetup(State& s) {
     }
     if (update_ok ? ImGui::Button("Install it again...") : Ui::AccentButton("Install the update from a .cia...")) {
         s.ChooseAndInstallUpdate();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Browse in the launcher...##update")) {
+        s.ChooseAndInstallUpdate(true);
     }
     ImGui::EndDisabled();
     Ui::EndCard();
