@@ -12,6 +12,9 @@ Windows .dll; --android builds it for Android's arm64 app (any clang with lld, Z
 no NDK, see runtime/android/README.md). Incremental: an object is reused while its source is older than it and
 recomp.h has the contents it was compiled with (obj/recomp.h.sha1 remembers them, so a
 copy of the tools with new dates, as unpacking a new package makes, recompiles nothing).
+Files that don't compile while all the jobs run are compiled again one at a time (a compiler
+the system stopped for want of memory gets all of it); a compile or a link that fails says how
+the compiler ended, also when it printed nothing.
 """
 from __future__ import annotations
 
@@ -19,6 +22,7 @@ import argparse
 import concurrent.futures as cf
 import hashlib
 import os
+import signal
 import struct
 import subprocess
 import sys
@@ -141,10 +145,42 @@ def android_library_problems(path: str) -> list[str]:
     return problems
 
 
-def compile_one(cc: str, src: str, obj: str, flags: list[str]) -> tuple[str, float, str]:
+def how_it_ended(code: int) -> str:
+    """How a compiler's process ended, for a message: its exit status, or the signal that stopped
+    it (the system stops one with SIGKILL when it runs out of memory)."""
+    if code < 0:
+        try:
+            name = f" ({signal.Signals(-code).name})"
+        except ValueError:
+            name = ""
+        why = ", most likely because the computer ran out of memory" if code == -9 else ""
+        return f"was stopped by signal {-code}{name}{why}"
+    if code > 255:
+        return f"ended with status {code} (0x{code:08X})"
+    return f"ended with status {code}"
+
+
+def compile_one(cc: str, src: str, obj: str, flags: list[str]) -> tuple[str, float, int, str]:
+    """Compiles src into obj: (src, seconds, exit status, what the compiler said if it failed)."""
     t = time.time()
-    r = subprocess.run([cc, *flags, src, "-o", obj], capture_output=True, text=True)
-    return src, time.time() - t, (r.stderr if r.returncode else "")
+    r = subprocess.run([cc, *flags, src, "-o", obj], capture_output=True, text=True, errors="replace")
+    return src, time.time() - t, r.returncode, ((r.stderr or r.stdout) if r.returncode else "")
+
+
+def compile_again(cc: str, failed: list[tuple[str, int, str]], objects: dict[str, str],
+                  flags: list[str]) -> list[tuple[str, int, str]]:
+    """The files that didn't compile while all the jobs ran, compiled again one at a time: a
+    compiler the system stopped for want of memory then has all of it. Once one fails again on
+    its own, the errors are real ones and the rest stay as they were. Returns the errors left."""
+    print(f"  {len(failed)} file(s) didn't compile: again, one at a time", flush=True)
+    errors = []
+    for src, code, err in failed:
+        if not errors:
+            print(f"  compiling {os.path.basename(src)} again", flush=True)
+            _, _, code, err = compile_one(cc, src, objects[src], flags)
+        if code:
+            errors.append((src, code, err))
+    return errors
 
 
 def build(outdir: str, jobs: int, opt: str, defines: list[str], lib_name: str, extra_sources: list[str],
@@ -187,14 +223,19 @@ def build(outdir: str, jobs: int, opt: str, defines: list[str], lib_name: str, e
     with cf.ThreadPoolExecutor(max_workers=jobs) as ex:
         futs = [ex.submit(compile_one, cc, s, o, flags) for s, o in todo]
         for i, fut in enumerate(cf.as_completed(futs), 1):
-            src, dt, err = fut.result()
-            if err:
-                errors.append((src, err))
+            src, dt, code, err = fut.result()
+            # (a compiler stopped by a signal says nothing: its status counts, not its words)
+            if code:
+                errors.append((src, code, err))
             if i % 20 == 0 or i == len(futs):
                 print(f"  compiled {i}/{len(futs)} ({time.time() - t0:.0f}s)", flush=True)
+    if errors and jobs > 1:
+        errors = compile_again(cc, sorted(errors), dict(todo), flags)
     if errors:
-        for src, err in errors[:5]:
-            print(f"error in {src}:\n{err[-2000:]}", file=sys.stderr)
+        for src, code, err in errors[:5]:
+            said = err.strip()
+            print(f"error in {src}: {os.path.basename(cc)} {how_it_ended(code)}" + (f"\n{said[-2000:]}" if said else ""),
+                  file=sys.stderr)
         raise SystemExit(1)
     with open(stamp, "w") as fh:
         fh.write(header_hash + "\n")
@@ -208,9 +249,13 @@ def build(outdir: str, jobs: int, opt: str, defines: list[str], lib_name: str, e
         link = [cc, *android_link_flags(cc, outdir), f"@{rsp}", "-o", lib]
     else:
         link = [cc, "-shared", f"@{rsp}", "-o", lib, *(["-lm"] if "mingw" not in cc else [])]
-    r = subprocess.run(link, capture_output=True, text=True)
+    r = subprocess.run(link, capture_output=True, text=True, errors="replace")
     if r.returncode:
-        raise SystemExit(r.stderr[-4000:])
+        # how the linker ended first, then what it said (if anything: one stopped by a signal says
+        # nothing, and the message would be empty)
+        said = (r.stderr.strip() or r.stdout.strip())[-4000:]
+        raise SystemExit(f"linking {os.path.basename(lib)} failed: {os.path.basename(cc)} {how_it_ended(r.returncode)}"
+                         + (f"\n{said}" if said else ""))
     print(f"linked {lib} ({len(objs)} objects, {len(todo)} recompiled in {time.time() - t0:.0f}s)")
     if android:
         problems = android_library_problems(lib)

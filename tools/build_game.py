@@ -239,6 +239,22 @@ def find_compiler(requested: str | None, toolchain_dir: str, fetch: bool) -> str
                      "download Zig's C compiler")
 
 
+def install_library(lib: str, dest: str) -> None:
+    """Puts the built library at dest in one step: a copy next to it, then renamed over it. A game
+    running on the old one keeps it (a copy over it in place would change it under the game), and
+    a copy that fails half-way leaves the old one as it was."""
+    part = dest + ".part"
+    try:
+        shutil.copy2(lib, part)
+        os.replace(part, dest)
+    except OSError as e:
+        if os.path.exists(part):
+            os.remove(part)
+        raise SystemExit(f"couldn't put the code library at {dest}: {e.strerror or e}. Close the game if it's "
+                         "running (the port's Azahar or app) and make sure that folder can be written to, then "
+                         "build again") from e
+
+
 def check_version(header: exh.ExHeader, code: bytes) -> dict | None:
     with open(os.path.join(ROOT, "config", "versions.json")) as f:
         versions = json.load(f)["versions"]
@@ -339,7 +355,9 @@ def main(argv=None) -> int:
     else:
         cc = find_compiler(args.cc, toolchain_dir, args.fetch_compiler)
     name = f"{program_id:016X}.so" if args.android else library_name(program_id)
-    print(f"compiling with {cc} -{args.opt}{' for Android' if args.android else ''} ({args.jobs} jobs; "
+    # (the compiler's path, for a report: a clang found on the PATH, or Zig's or llvm-mingw's fetched one)
+    shown = cc if os.path.dirname(cc) else (shutil.which(cc) or cc)
+    print(f"compiling with {shown} -{args.opt}{' for Android' if args.android else ''} ({args.jobs} jobs; "
           "-O1 takes a while)")
     lib = rbuild.build(out, args.jobs, args.opt, ["RC_PAGED"], os.path.join("android", name) if args.android else name,
                        [rbuild.DLL_GLUE], cc=cc, extra_flags=["-fvisibility=hidden"], android=args.android)
@@ -350,7 +368,7 @@ def main(argv=None) -> int:
     if args.install:
         dest_dir = os.path.join(args.install, "recomp")
         os.makedirs(dest_dir, exist_ok=True)
-        shutil.copy2(lib, os.path.join(dest_dir, name))
+        install_library(lib, os.path.join(dest_dir, name))
         # what it was built from, for tools/mods.py status (docs/MODS.md)
         mods.write_build_record(os.path.join(dest_dir, name), used, header.text.size, changes_code, program_id,
                                 code_size=size)
