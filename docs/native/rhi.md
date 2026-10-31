@@ -297,7 +297,7 @@ resources that do not defer their own destruction, the limit of a failed `vkQueu
   enabled on the device so its fallback really runs, an unknown name fails creation with the list of valid names, and the result is logged once) and
   `MH4N_VULKAN_DEVICE` (a text matched, as a case-insensitive substring, against `<device name> (<driver name>)`; no match fails with the list of devices).
   Running a test as the PC's paths would: `MH4N_RHI_MASK=d24s8,interlock ctest --test-dir build/native -R '^gpu_backend_core_test$'`. The core's own test passes
-  under each of the 13 bit names and under `all`.
+  under each of the bit names (13 until N2-34, 14 since) and under `all`.
 - **`MH4N_RHI_CHECKS`** is a CMake option of `native/src/gpu/backend/core/CMakeLists.txt`, `ON` by default in every build type and `OFF` only for a shipping
   build; it is exported as the public compile definition `MH4N_RHI_CHECKS=1` or `0` of `mh4n_gpu_backend_core`, so the modules that link it put their owner-rule
   checks under the same switch. With it off the two owner-rule test cases skip themselves with a message.
@@ -708,7 +708,7 @@ unwrapped (`unverified`: no device met here has fewer).
 ### Tests (N2-28)
 
 `native/tests/gpu_backend_sync_test.cpp` (12 cases; shaders `native/tests/shaders/gpu_backend_sync/`, `gpu_backend_sync_shaders.inc` by `spirv_inc.py`, also used by the readback test) and
-`native/tests/gpu_backend_readback_test.cpp` (13 cases). Every expected pixel and byte is worked out in a comment from the formats. A case skips with a message without a Vulkan device and fails under
+`native/tests/gpu_backend_readback_test.cpp` (14 cases). Every expected pixel and byte is worked out in a comment from the formats. A case skips with a message without a Vulkan device and fails under
 `MH4N_REQUIRE_VULKAN=1`.
 
 | Case | What it pins |
@@ -732,6 +732,7 @@ unwrapped (`unverified`: no device met here has fewer).
 | `errors/...`, `owner_rule/...` | bad rects, destinations and formats; an image the open recorder has recorded on; a foreign thread: one `ForeignThread` breach per call, none for the owner or after a hand-over (both with and without the `timeline` bit), no `RequiredWait` |
 | `timestamps/a_frame_with_a_clear_and_a_readback_has_a_time_and_the_next_frame_follows_it` | three frames; Begin and a clear in one recorder, the readback (its own submission) between, the End in a recorder submitted after it: `FrameGpuTimeNs() > 0`, increasing |
 | `readback/two_threads_reading_back_different_images_at_once_get_their_own_bytes` | a colour image and a depth image read back 25 times each from two threads at once: every result right (TSAN covers the race) |
+| `lifetime/a_backend_is_destroyed_with_its_last_handle_after_a_readback_an_upload_and_a_read_image` | four backends, one that did a `ReadbackToGuest`, one an upload (a staging buffer), one a `ReadImage`, one all three: a `weak_ptr` to the backend's private state is alive while the handle is and expired after it is reset (without the release of `CreateBackend`'s handle it stayed alive for the first, second and fourth: seen on the RX 6700 XT) |
 
 Lavapipe's queue thread holds the device while it waits for an event, and creating an image view, a framebuffer or a command list then waits for it too: the gated case therefore makes all of them in a first run
 with the gate open (a lavapipe property, `unverified` elsewhere; nothing in the product depends on it).
@@ -756,7 +757,7 @@ The `build/tsan` tree (the commands of "The ThreadSanitizer job" above, with the
   the hand-over's waits not carried by the readback (the owner-rule case fails: a `RequiredWait` breach); the open-recorder check removed (the errors case fails); the mutex of `ReadbackToGuest` removed (the two-threads case fails by itself, without ThreadSanitizer); the End mark accepted only in the recorder of its Begin (the timestamps case whose End is in a later recorder fails); `MarkFrame(Begin)` not refused inside a pass (the new Begin-in-pass case fails). The D16 mutant that truncates instead of rounding survives: an equivalent mutant on this device (the stored integer comes back exact from the float decode either way). The case `colour/every_stored_component_order...` also appears in the list
   of every failing readback run only because its skip message (`R4G4B4A4` is not sampleable on lavapipe) prints the case's name; it is not the cause.
 
-**`unverified` / pending, not claimed:** the RX 6700 XT (no `D24S8`, so the `D32S8` path is the one it runs: the legs above stand in for it on lavapipe; its timestamp period and valid bits), MoltenVK and KosmicKrisp,
+**`unverified` / pending, not claimed:** the RX 6700 XT for the counts above (both binaries now pass on it alone, see "Lifetime of a backend" below; the `D32S8` path is the one it runs, the byte checks of the depth cases passed there; its timestamp period and valid bits are not looked at), MoltenVK and KosmicKrisp,
 a second queue family (a wait or a hand-over across queues; lavapipe has one), the row direction against a capture (above), the PICA's own depth rounding, the `native-tsan` job on GitHub *(CI)*, and any
 claim about the cost of the CPU wait on a real present thread.
 
@@ -772,6 +773,183 @@ claim about the cost of the CPU wait on a real present thread.
 - **Rings.** The fragment uniform block lives in a ring of its own (`Uniform` usage) at `max(256, uniform_buffer_offset_alignment)`; `Ring::Commit` needs the calling thread's open recorder. Two things about `Ring::Map`: its `wrapped` flag is also true when the ring drained (every span passed) and the head went back to 0, which the tables read as "everything I uploaded may be overwritten"; and space committed to a recorder is free again once that recorder's submission has passed, so an allocation made in an earlier recorder is not offered again to a later one (`FragmentUniformRing::BeginRecording`). The two table rings are `Texel` rings; one session per draw maps the worst case once.
 - **Texel buffers.** `SetTexelBuffer` makes a `VkBufferView` over the whole buffer at every call (three per write of set 0), so a set that did not change is bound again and not rewritten; the offsets of the tables live in the uniforms, in elements of the view's format (`R32G32_SFLOAT` 8 bytes, `R32G32B32A32_SFLOAT` 16 bytes).
 - **Tests.** `gpu_compose_test` (hand-written shaders in `native/tests/shaders/gpu_compose/`, built by `tools/native/spirv_inc.py`) passes on lavapipe unmasked and under `MH4N_RHI_MASK=d24s8,interlock,custom_border_color`, `timeline,direct_upload` and `all`, and `vk_layer_run.py --build build/native -R '^gpu_compose_test$'` reports no layer message. The PC's draws and the hazards the layer cannot see (the order of storage-image stores between draws, a feedback copy on a tile-based GPU) are not checked here.
+## rhi.h additions: the geometry_shader bit and specialisation constants (N2-34)
+
+The one sanctioned change to the frozen header (D5; additions only, existing aggregates compile unchanged).
+
+- **`Cap::GeometryShader`** is the 14th mask bit (`kCapCount` is 14), named `geometry_shader`; `Capabilities::geometry_shader`
+  keeps its name and now moves from the values to the bits. The device passes plume's `geometryShader` core feature only
+  when the physical device has it and the mask leaves it on, so under `MH4N_RHI_MASK=geometry_shader` (or `all`, or
+  `BackendOptions::mask`) the feature is really off and a `GraphicsPipelineDesc` with a geometry stage fails with the existing
+  message ("geometry shaders are not available on this device"). That is the M2's route with no quaternion fix-up on lavapipe.
+- **`SpecConstant { u32 id, value }`** and `GraphicsPipelineDesc::specialization` (last member, empty by default), handed to plume
+  as its `specConstants` pairs. **One list per pipeline, applied to every stage**: plume fills one specialisation info and gives
+  it to the vertex, geometry and fragment stages alike (`plume_vulkan.cpp`, the stages of `VulkanGraphicsPipeline`), so a list per
+  stage needs a plume patch (not written here). This is safe because of the Vulkan rule for specialisation map entries: "If a
+  constantID value is not a specialization constant ID used in the shader, that map entry does not affect the behavior of the
+  pipeline." A duplicate id fails creation with a message ("specialisation constant N is given twice"). Compute pipelines take none.
+- **Tests** (`gpu_backend_core_test`, all on lavapipe, the fragment stage of an attachment-less 8x8 pass writing a storage buffer):
+  `mask/geometry_shader_is_a_bit_the_mask_turns_off` (name, parser, `all`; unmasked a pass-through geometry stage draws the same
+  64 words as the route without it; masked by the environment, by the options and by `all`: the bit and the device feature are
+  off, the geometry pipeline is refused, the plain one draws), `pipelines/specialisation_constants_set_what_the_shader_draws` (no
+  list gives the default, 1 and 2 give two results, 32 bits survive, two ids, order irrelevant, an undeclared id changes nothing, also
+  through a geometry stage), `pipelines/duplicate_specialisation_ids_fail_with_a_message`,
+  `pipelines/specialisation_list_reaches_the_vendored_description` (no device) and the name table of
+  `mask/the_name_of_each_bit_is_a_literal`. `vkprobe_test` follows the 14 bits; `--rhi` still prints `rhi geometry_shader:` once.
+- **Device ranking.** `capability_bits` (how many bits the device has after the mask, `core/policy.h`) now counts
+  `geometry_shader` too, so between two devices of the same type that tie on every other bit, the one with geometry shaders wins
+  (before, the lowest index did); under the mask the bit counts zero for every device and the ranking is as before.
+  Not covered: whether a driver folds the constants (a measurement, not a test), and that the geometry stage runs (the pass-through
+  stage writes the same words as the route without it, so a stage dropped silently would pass; N2-09's fixed geometry shader needs a
+  test that tells them apart).
+
+## Framebuffer operations and the state module (N2-13)
+
+Two modules, both talking `rhi.h` types only: `native/src/gpu/backend/state/` (module `mh4n_gpu_backend_state`, namespace `mh4n::gpu::rhi::state`, depends on `core/`) and
+`native/src/gpu/fbops/` (module `mh4n_gpu_fbops`, namespace `mh4n::gpu::fbops`, depends on `gpu/pica` and the state module). `state/` keeps no per-backend or per-recorder
+state, so it uses none of the slots `core/impl.h` reserves (`Backend::Impl::state`, `Recorder::Impl::state` stay empty), and it edits nothing in `core/`.
+
+| File | What |
+|---|---|
+| `state/dynamic.cpp` | `Recorder::SetBlendConstants`, `SetStencilReference`, `SetStencilMasks` (the vendored command list's setters; patches 07 and 10). The core's pipelines declare all of them dynamic, so a different value never makes another pipeline |
+| `state/state.h`, `plan.cpp` | `state::PlanPipeline(requested, caps)`: the device profile applied to a requested `FixedFunctionState`, and what the shader must do for the rest (below); `LogicOpNeedsDestination`; `EffectiveBlendConstants` |
+| `fbops/fixed_function.h`, `.cpp` | `fbops::MakeFixedFunctionState(const pica::PicaState&)` (the requested form), `MakeDynamicState` (the blend constants as 0..1 floats, the stencil reference, compare mask and write mask), `ApplyDynamicState(recorder, dynamic, constants_from_alpha)` |
+| `fbops/output_stage.glsl`, `output_stage.h` | the GLSL text of the output-stage functions and `fbops::OutputStageGlsl()`, which returns it as a `std::string_view` |
+
+**How `state/` picks the path.** `PlanPipeline` takes the *requested* state (the form `MakeFixedFunctionState` gives) and the device's `Capabilities` after the mask, and returns a
+`PipelinePlan`: `built` (for `GraphicsPipelineDesc::state`), `shader_logic_op`, `rgb_in_shader`, `alpha_in_shader`, `rgb_uses_blend_rgb`, `needs_destination_copy`, `constants_from_alpha`. It is a pure function,
+so the key tests of later packages need no device. Blend state stays pipeline state on every device (X8).
+
+- **Logic ops.** Requested only with blending off and an op other than Copy. With the `logic_op` bit on, `built.logic_op_enabled` carries the op (all 16 in hardware). With it off
+  (MoltenVK; lavapipe under `MH4N_RHI_MASK=logic_op`) `built` has blending and the logic op off and `shader_logic_op` is set: the fragment shader applies the op with `mh4n_logic_op`.
+  Five ops (Clear, Copy, Set, CopyInverted, NoOp) never read the destination; the other eleven do, so `needs_destination_copy` is set and the caller does `Recorder::FeedbackCopy(target)`
+  before the draw and binds the twin (N2-27) for the shader to `texelFetch`. NoOp is not in the shader at all: `built.color_write_mask` is 0 (the colour is discarded, the depth write
+  stays; Azahar's `GetFinalColorWriteMask`), and `shader_logic_op` stays false. A request for both a logic op and blending is an `Error`.
+- **Min/max blending.** A half (colour or alpha) whose equation is Min or Max goes to hardware only when both its factors are One; otherwise `built` blends that half ONE, ZERO, ADD
+  and the shader computes it from the feedback copy (`mh4n_minmax_blend`), whatever the capability bits say (Vulkan's MIN and MAX ignore the factors on every device). One more case
+  goes to the shader, which Azahar does not handle: when the alpha half is the shader's and the colour half's factors read the *source alpha* (SrcAlpha, OneMinusSrcAlpha,
+  SrcAlphaSaturate), the blender would read the alpha the shader replaced, so the colour half is computed in the shader too, with its own equation (`rgb_in_shader`, and
+  `rgb_uses_blend_rgb` because the half is not Min or Max: it is `mh4n_blend_rgb`'s, not `mh4n_minmax_blend`'s). The tests with that hazard fail when the rule is removed (mutants below).
+- **Constant-alpha factors.** `core::ToPlume` refuses ConstantAlpha and OneMinusConstantAlpha (the vendored backend maps only the constant-colour pair; "Known limits" above). `PlanPipeline`
+  rewrites them where the pair is equivalent: in the alpha half both pairs read the constant's alpha; in the colour half the alpha pair becomes the colour pair when no colour-pair factor is
+  there too, and the constants are then `(a, a, a, a)` (`constants_from_alpha`: pass it to `ApplyDynamicState`, or the constants through `EffectiveBlendConstants`). A colour half that
+  has one factor of each pair (for example ConstantColor and OneMinusConstantAlpha) cannot be expressed with one constant colour: it is moved into the shader, as a Min/Max half is
+  (`rgb_in_shader`, built ONE, ZERO, ADD, `constants_from_alpha` false), and `mh4n_blend_rgb` (not `mh4n_minmax_blend`) computes it with the real blend colour, where ConstantAlpha is `blend_color.a` (`rgb_uses_blend_rgb`). The plume
+  patch for the constant-alpha pair (the defect recorded in D4's notes) would make both the rewrite and this route unnecessary; until then the mixed half pays the destination copy.
+  The only `Error` `PlanPipeline` returns is a logic op with blending on.
+
+**`MakeFixedFunctionState`'s requested form.** From the registers (output merger 0x100 to 0x107, framebuffer 0x113 to 0x11E, cull 0x40), as Azahar's `SyncDrawState` and `pica_to_vk.h`
+do: blending on with the two equations and four factors as the registers have them (Min, Max and the constant-alpha factors included); with blending off the equations and factors are the
+defaults and the logic op is on unless it is Copy (so draws that differ only in dead registers share a key); the colour write mask is the four bits, 0 when the framebuffer's colour
+write is off; the depth test is on when the test or the write is, comparing with the register's function or Always when only the write is on, and the write needs the framebuffer's
+depth/stencil write; the stencil test is on only with the register and a D24S8 depth format, the same function and actions for both faces (Increment and Decrement clamp); cull and
+front face as `pica_to_vk.h` (the framebuffer's flip bit CLEAR is Azahar's `flip_viewport`, which swaps the culled face); no depth bias (the PICA has none). A draw in shadow mode
+(`fragment_operation_mode` 3) gets an inert state (no blend, logic op, depth or stencil; the cull state stays): its pass has no attachments. The blend constants and the stencil
+reference, compare mask and write mask are not in it: `MakeDynamicState` makes them and `ApplyDynamicState` calls the three setters (call it once per recorder before the first draw
+that blends with a constant or tests the stencil, as `rhi.h` says, and again when a value changes; the write mask is 0 when the framebuffer's depth/stencil write is off).
+
+**The GLSL functions and how a consumer embeds them.** `fbops::OutputStageGlsl()` is the text of `output_stage.glsl`, exactly: it has no `#version`, declares nothing outside the
+functions, and every name starts with `mh4n_`. The generator (N2-08) pastes it after its `#version 450` line and calls, at the output point, with Azahar's enumerator values as `uint`
+(the register fields as they are; literals in the specialised mode, config fields in the ubershader), where `dst` is the texel of the feedback twin under `gl_FragCoord`:
+- `vec4 mh4n_logic_op(uint op, vec4 src, vec4 dst)`: `op` is `LogicOp`; `dst` is read by eleven ops only; NoOp returns `src` (the plan masks the colour).
+- `vec4 mh4n_minmax_blend(uint eq_rgb, uint src_rgb, uint dst_rgb, uint eq_a, uint src_a, uint dst_a, vec4 src, vec4 dst, vec4 blend_color)`: exactly the Spec's function. Per half, equation
+  Min (3) or Max (4) is computed; ANY other equation (the canonical zeros of a key, equation 0 and factors 0, included) leaves that half of `src` as it is. Pass the requested equation for
+  a half the plan moved (`rgb_in_shader` with a Min or Max colour half, `alpha_in_shader`) and 0 for the others.
+- `vec3 mh4n_blend_rgb(uint eq, uint src_factor, uint dst_factor, vec4 src, vec4 dst, vec4 blend_color)`: the whole colour half (Add, Subtract, ReverseSubtract, Min, Max; clamped to 0..1; any
+  other `eq` gives `src.rgb`), for the colour half the plan sends to the shader without its being Min or Max (`rgb_uses_blend_rgb`: the source-alpha rule and the mixed constant-pair half).
+  ORDER: pass the ORIGINAL `src`, not the result of `mh4n_minmax_blend`, whose alpha is the alpha half already replaced: `color = mh4n_minmax_blend(...); if (plan.rgb_uses_blend_rgb)
+  color.rgb = mh4n_blend_rgb(eq_rgb, src_rgb, dst_rgb, src, dst, bc);`. The test shader `minmax.frag` composes them so.
+All round `src` and `dst` to 8 bits first; the logic ops work on the bytes. `mh4n_blend_factor` and `mh4n_blend_half` are helpers. SourceAlphaSaturate is
+min(source alpha, 1 - destination alpha) for the colour and 1 for the alpha, as the software renderer has it (Azahar's GLSL treats it as One). The depth the fragment writes
+(`z_over_w * depth_scale + depth_offset`, `WriteDepth`) is the generator's, not these functions'.
+
+### What the packages that call this must do
+
+1. **N2-33 (key, `PipelineKey`) and N2-16 (pipeline provider):** call `state::PlanPipeline(requested, caps)` whenever a pipeline is built, and build the pipeline from `plan.built` (never from
+   the requested state: core refuses a hardware logic op without the bit and the constant-alpha factors).
+2. **N2-33 (the fragment key), for N2-08's shader:** design 4.3 zeroes a half's requested blend unless its equation is Min or Max. The two device-independent routes make the shader compute a
+   colour half that is Add, Subtract or ReverseSubtract (`plan.rgb_in_shader` with `plan.rgb_uses_blend_rgb`: the source-alpha rule and the mixed constant-pair half), so for those cases the key
+   (or the `cfg` fields) must keep the colour half's requested equation and factors; and **N2-08** calls `mh4n_blend_rgb` for them (after `mh4n_minmax_blend`, from the original `src`).
+3. **N2-08 and N2-16:** `SetBlendConstants` takes `state::EffectiveBlendConstants(plan, constants)` (`fbops::ApplyDynamicState(recorder, dynamic, plan.constants_from_alpha)` does it), while the
+   shader gets the REQUESTED blend colour as `blend_color`.
+4. **N2-12 (shadows):** `MakeFixedFunctionState` makes the output-merger state inert in shadow mode (faithful to the software renderer; the shadow-write pass has no attachments); anything the
+   shadow pass needs beyond that is N2-12's.
+5. **N2-08 and N2-16 (viewport):** cull mode and front face copy Azahar's `flip_viewport` rule (framebuffer flip bit clear = flipped), so the draw's viewport must be flipped the way Azahar flips it,
+   or the winding is wrong.
+6. **N2-08 and N2-16 (draw):** `plan.needs_destination_copy` means the caller does `Recorder::FeedbackCopy(target)` before the draw and binds the twin for the shader to `texelFetch`; call
+   `fbops::ApplyDynamicState` once per recorder before the first draw that blends with a constant or tests the stencil.
+
+**Why the product and the test SPIR-V share one text.** `output_stage.glsl` is the one source. `embed_glsl.cmake` turns it into a C++ raw string at build time (no generated source is kept
+in the repository); the test shaders `#include` it and `spirv_inc.txt` builds them with `-g -Inative/src/gpu/fbops`, and glslang's `-g` copies the text of every included file into the
+module (`OpSource`). The test `glsl/the_text_the_product_embeds_is_the_text_of_the_file_and_of_the_test_spirv` checks that the embedded text equals the file byte for byte and that the
+committed arrays contain it, so editing the file without running `tools/native/spirv_inc.py native/tests/shaders/gpu_fbops native/tests/gpu_fbops_shaders.inc` (from the repository root) fails
+it; a changed text is not found in the arrays (the check can fail).
+
+**Tests** (`native/tests/gpu_fbops_test.cpp`, ctest name `gpu_fbops_test`, 24 cases; shaders in `native/tests/shaders/gpu_fbops/`, `gpu_fbops_shaders.inc` generated). A draw is described as the
+PICA does (a `Merger`: the output merger's registers), turned into registers, into the requested state, into the plan and the pipeline, drawn into one pixel of a 32 by 32 target through the real
+backend (the scissor picks the pixel), and the expected pixel is computed by the CPU model, which is the software renderer's code (`PixelColor`, `EvaluateBlendEquation`, `LogicOp`,
+`DoDepthStencilTest`, `PerformStencilAction`). Blending is float on the GPU and truncating integer in the software renderer, so a blended channel is checked within 1; everything else
+(logic ops, masks, depth and stencil outcomes, stencil values) is exact, depth within 1 (the software renderer truncates to 24 bits and the device rounds).
+
+| Group | What it pins |
+|---|---|
+| `registers/...`, `plan/...` (no device) | every equation, factor, logic op, compare function, stencil action, colour mask, cull mode and the dynamic state from the registers; the plan on synthetic capabilities for all 16 ops with and without the bit, every min/max factor pair, the constant-alpha rewrite and its refusal, the source-alpha rule |
+| `glsl/...` | the text check above; the contract of the two blend functions (equation 0 and factors 0 give the source back, a Min with Zero factors computes, `mh4n_blend_rgb` for each equation and for the original-source ordering) |
+| `blend/...` | the 25 equation pairs, each with factors that keep Min and Max in hardware and factors that send them to the shader; all 15 factors in each of the four slots (the constant-alpha ones included); the constant colour through `SetBlendConstants` (four constants, one pipeline); the 16 colour write masks with blending and with the emulated Xor; 126 min/max cases (hardware and shader halves, in the plain run and with `logic_op` and `d24s8` masked); the colour half with both constant pairs (72 draws: Add, Subtract, ReverseSubtract, both pairs of each kind in both orders, three constants); the source-alpha rule (SrcAlpha, OneMinusSrcAlpha and SrcAlphaSaturate each alone in the source and in the destination slot, colour half Add and Subtract or ReverseSubtract, alpha half Min or Max, plus four controls whose factors do not read the source alpha and stay in hardware) |
+| `logic_ops/...` | all 16 ops, in hardware and, on a backend built with `logic_op` masked, through the shader (the eleven over the feedback copy, the five without one, NoOp as mask 0); NoOp keeps the colour and still writes the depth |
+| `depth/...` | every compare function at three depths below, at and above the buffer with two different ranges and offsets, with the write on and off; the write without the test (Always); the framebuffer's depth write off; the clamp of a depth above 1 and below 0; on D24S8 and, with `d24s8` masked, on D32S8 |
+| `stencil/...` | every compare function with seven (old value, reference, compare mask, write mask) triples; every action in each of the three outcomes (stencil fails, depth fails, both pass) at old values 0, 0x7F and 0xFF (saturation and wrap); stencil off, the framebuffer's write off and a zero write mask leave the buffer; one pipeline with several references |
+| `controls/...` | the model gives different pixels for a hardware MIN than for the PICA's min, for ConstantAlpha than for ConstantColor, for 16 different logic ops, each by more than the tolerance of 1 where a tolerance applies |
+
+The cases that depend on a capability build their own masked backends, so each path runs whatever `MH4N_RHI_MASK` says; the runs to make are the plain one and `MH4N_RHI_MASK=logic_op`,
+`d24s8` and `logic_op,d24s8` (all four pass; the count is higher with `logic_op` masked because the shader branch of the logic-op case checks more).
+
+**Run here** (clang 18, lavapipe, validation layer 1.3.275): `MH4N_REQUIRE_VULKAN=1 ctest --test-dir build/native -R '^gpu_fbops_test$'` and the same under the three masks pass (24 cases, 11,047
+or 11,069 assertions, about 5 seconds); `python3 tools/native/vk_layer_run.py --build build/native -R '^gpu_fbops_test$'` reports no layer message. Mutants tried (one change at a time, the
+suite seen to fail, the change reverted): min/max never moved to the shader (4 cases fail), the factor table with SrcAlpha and DstAlpha swapped (6), the blend constants not set (4), the
+stencil compare mask not set (3), the source-alpha rule off (2), dropping SrcAlphaSaturate, dropping OneMinusSrcAlpha, checking only the source slot and checking only the destination slot of the colour half (each fails 2 cases, the new source-alpha case and the plan test), the mixed constant-pair half not moved to the shader (3), `mh4n_minmax_blend` computing every half (5), `mh4n_blend_rgb` fed the replaced colour (3), NoOp keeping the colour write mask (3), the constant-alpha rewrite not asking for `(a, a, a, a)` (2), depth write not gated by
+the framebuffer's write (2), depth test not turned on by the write alone (2), the stencil write mask not zeroed by the framebuffer's write (2), DecrementClamp mapped to wrap (2), the GLSL
+text edited and the SPIR-V not regenerated (the text check), the GLSL AndReverse and AndInverted swapped with the SPIR-V regenerated (the logic-op case), and the GLSL Max made Min with the
+SPIR-V regenerated (2).
+
+**Named risks and what is not covered.** Only lavapipe ran: the RX 6700 XT, MoltenVK and KosmicKrisp did not, and `MH4N_RHI_MASK=logic_op` is MoltenVK's path, not MoltenVK. Real GPUs blend in
+fixed point and may differ from lavapipe's float blend by more than the 1 the tests allow (`unverified`). The depth test compares at the device's precision, the software renderer's at 24
+bits truncated: two depths that differ by less than 1/2^24 compare differently on the D32S8 the PC uses; the tests use depths far apart. A depth the shader writes outside 0..1 is stored
+clamped by lavapipe on both D24S8 and D32S8 (the case reads the raw float back); whether the RX 6700 XT clamps a float depth attachment is not known, and if it does not the generator
+must clamp `gl_FragDepth`. The cull mode copies Azahar's `flip_viewport` rule and assumes the draw's viewport is flipped as Azahar flips it (N2-08 and N2-16 decide the viewport). The
+shadow-mode state is inert by this module's choice (N2-12 may want its own). The destination copy is one pass break and one full copy per draw that reads it (`rhi-spike` 5.6); with none in
+the captures its cost is unmeasured. The gas mode, the alpha test, fog and the depth range register decoding (`depth_scale` and `depth_offset` are N2-33's uniforms) are not here. A pipeline whose draws never set the three dynamic states before a draw that needs them is a validation error the tests
+cannot show (they would trip the layer); the setters are called at every draw.
+### Lifetime of a backend, and the readback test on the RX 6700 XT (N2-28 follow-up)
+
+**What happened.** On the RX 6700 XT (AMD proprietary driver 26.10.1) `gpu_backend_readback_test` failed in `read_image/a_cleared_image_...` (every `ReadImage` returned wrong bytes), then
+`vkCreateDevice` failed in the next cases, and the driver took a timeout (WER `LiveKernelEvent` 0x141 in `amdkmdag.sys`). **`ReadImage` was not the cause**, nor the copy, the
+invalidate or the wait: run alone, `read_image/a_cleared...` and `read_image/a_region...` pass on the device with the right bytes (the first bytes of the mapped buffer after the wait were the
+clear colour, `FF 00 33 99`, `33`, `4A AD`, the halves, `55 55`, `00 00 80 3F`), and so does every other case of the file run alone, and the pair `depth/an_image_left...` then
+`read_image/a_cleared...` in one process. The `vkQueueSubmit failed with error code 0xFFFFFFFC` (`VK_ERROR_DEVICE_LOST`) lines of the failing run begin at the **tenth** device of the process, right after the
+first clear had completed, and the wrong bytes are what `ReadImage` returns when its submission is refused (the buffer is zero). So the candidates in the work package (a short `Invalidate`, a wait that does
+not wait, a layout hazard of the internal recorder) are all excluded by the alone runs, and `ReadbackToGuest` has the same readback path and is not different.
+
+**The defect: a reference cycle that kept every device alive.** `Backend::Impl` holds the modules' slots; what a slot keeps for the life of the backend holds `Backend::Impl` through a strong
+reference (every `Buffer`, `BindingSet` and `Pipeline` made by `CreateBuffer`, `MakeBindingSet` and `Create*Pipeline` does: the Impl must outlive them). The readback module keeps its three compute
+pipelines, their binding sets and its output and parameter buffers in `ReadbackData`; the targets module keeps the staging buffer of the last upload in `TargetsData::staging_pending` (it is dropped at the
+next upload, which may never come); the sync module keeps retired objects. So the `Backend::Impl` of any backend that did a `ReadbackToGuest` or an upload was never destroyed: its device, its queue and its
+instance stayed until the process ended, whatever the test or the program did with its `shared_ptr<Backend>`. Lavapipe does not mind (a software device); the test file makes a backend per case, the first seven
+cases made nine, all alive when the tenth was made, and the AMD driver lost the tenth. `gpu_backend_core_test` and `gpu_backend_targets_test` made many more devices and passed because their backends do not leak
+(the targets file leaks at most a few through its three uploads). `unverified`: why the driver loses a device when nine others are alive (a limit of contexts, or memory) is inferred, not measured; what is
+measured is that the leak exists (the new case fails without the release, below) and that with it the whole file passes alone on the device.
+
+**The release.** `CreateBackend` returns a `shared_ptr<Backend>` whose deleter, when the last handle goes, waits for the device (`vkDeviceWaitIdle`) and resets the four slots in the order `Impl`'s destructor
+would (`state`, `readback`, `sync`, `targets`) before the handle itself is deleted. The slot's resources then drop their references, and the `Impl` is destroyed with the handle (the device, the queue, the
+instance) unless an object of the user's (an `Image` kept after the handle) still holds it: that object keeps the device alive and finds the slots empty, and each module makes its slot again on first use (they all
+did already). The handles the modules make for themselves from an `Impl` (`Backend tmp(impl)` in the targets module) are not the returned one and release nothing. **The edit is in `core/device.cpp`**
+(`ReleaseWithLastHandle`, a function of 15 lines above `CreateBackend`, and the one line of `CreateBackend` that returns the handle, which was `std::make_shared<Backend>(std::move(impl))`); no other file of
+`core/`, `targets/` or `readback/` changed. A module added later (`state/`, N2-13 and N2-34) is covered the same way: a slot that holds resources cannot leak the device.
+
+**Measured on the PC (2026-10-31, the RX 6700 XT, `MH4N_REQUIRE_VULKAN=1 MH4N_VULKAN_DEVICE="RX 6700"`, each executable alone, one process, no GPU reset in the Windows event log and the display adapter `OK` after each):**
+`gpu_backend_readback_test` 14 cases passed, 0 failed, 1,150 of 1,150 assertions (it was 7 passed, 6 failed before; the new case, run alone before the release, failed three of its four legs); `gpu_backend_sync_test`
+12 passed, 335 of 335 (its first run on the device); `gpu_backend_core_test` 48 passed, 2 skipped, 1,750 of 1,750; `gpu_backend_targets_test` 35 passed, 7,968 of 7,968. On lavapipe the change only frees the devices earlier;
+that run is `pending (ci)`.
 
 ## Not checked on this machine
 
