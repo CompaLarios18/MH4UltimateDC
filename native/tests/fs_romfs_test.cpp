@@ -388,15 +388,19 @@ private:
 
 // ---- the runtime -------------------------------------------------------------------------------------------------
 
+// `own_clock`: the runtime keeps its own clock (`time` is null), which --deterministic needs (it replaces it with
+// the virtual clock and refuses any other).
 struct Fixture {
     IoAwareTime* time = nullptr;
     std::unique_ptr<Runtime> runtime;
     std::vector<std::string> logged;
-    Fixture() {
-        auto source = std::make_unique<IoAwareTime>();
-        time = source.get();
+    explicit Fixture(bool own_clock = false) {
         RuntimeConfig config;
-        config.time = std::move(source);
+        if (!own_clock) {
+            auto source = std::make_unique<IoAwareTime>();
+            time = source.get();
+            config.time = std::move(source);
+        }
         runtime = std::make_unique<Runtime>(std::move(config));
         SetLogFilter(LogFilter(LogLevel::Info));
         SetLogSink([this](const LogRecord& r) { logged.push_back(std::string(r.message)); });
@@ -571,7 +575,9 @@ struct FsGuest : Guest {
         manager_ptr = manager.get();
         }
         const std::shared_ptr<fs::FsState> state = manager_ptr->Context().State<fs::FsState>("fs:USER");
-        f.time->in_flight = [state] { return state->io_in_flight.load(); };
+        if (f.time != nullptr) {
+            f.time->in_flight = [state] { return state->io_in_flight.load(); };
+        }
         Handle srv = 0;
         REQUIRE(ConnectToPort("srv:", &srv) == kResultSuccess);
         std::array<u32, 2> name{};
@@ -1435,6 +1441,101 @@ TEST_CASE("--io-latency takes azahar or none") {
     CHECK(status == 2);
     CHECK_FALSE(ran);
     CHECK(f.Logged("--io-latency takes azahar or none"));
+}
+
+// ---- the deterministic mode (N1-25) with either latency (N3-33) --------------------------------------------------------
+
+namespace {
+
+// What a client that reads the RomFS and a save file got back: every reply's words, and the bytes its reads wrote.
+struct ClientReplies {
+    int status = -1;
+    std::vector<std::vector<u32>> replies;
+    std::vector<std::vector<u8>> reads;
+};
+
+// Boots with the runtime's own clock (which --deterministic replaces with the virtual one) and a user folder, and
+// runs a client that does what the game does first: Initialize, OpenFileDirectly of the SelfNCCH RomFS, two
+// Reads of it; then FormatSaveData, OpenArchive of the save data, CreateFile, OpenFile, Write and a Read of the
+// save file.
+ClientReplies RunRomFsAndSaveClient(const std::vector<std::string>& options) {
+    Fixture f(/*own_clock=*/true);
+    TempDir dir;
+    GameFolder game;
+    game.Write(dir);
+    const std::filesystem::path user = dir.Path() / "user";
+    std::filesystem::create_directories(user);
+    std::vector<std::string> extra = {"--ms", "100", "--user", Utf8(user)};
+    extra.insert(extra.end(), options.begin(), options.end());
+    ClientReplies out;
+    out.status = BootWith(f, dir, extra, [&] {
+        FsGuest g(f, dir);
+        out.replies.push_back(g.Initialize());
+        const Opened romfs = g.OpenFileDirectly(3, kEmpty, kEmptyPath, SelfNcchPath(0));
+        out.replies.push_back(romfs.reply);
+        for (const auto& [offset, length] : {std::pair<u64, u32>{0, 0x28}, std::pair<u64, u32>{0x40, 0x200}}) {
+            const FsGuest::ReadResult read = g.Read(romfs.file, offset, length);
+            out.replies.push_back({read.result, read.count});
+            out.reads.push_back(read.bytes);
+        }
+
+        constexpr u32 kChar = 3;
+        g.next_path = 0;
+        const u32 empty_at = g.Place(kEmptyPath);
+        out.replies.push_back(g.Request(g.fs,  // FormatSaveData: 8 blocks, 10 directories, 20 files
+                                        {ipc::MakeHeader(0x084C, 9, 2), 4, kEmpty, 1, 8, 10, 20, 4, 5, 1,
+                                         ipc::StaticBufferDesc(1, 0), empty_at},
+                                        2));
+        const std::vector<u32> archive = g.OpenArchive(4, kEmpty, kEmptyPath);
+        out.replies.push_back(archive);
+        const std::vector<u8> name = {'/', 's', '.', 'b', 'i', 'n', 0};
+        const u32 name_size = static_cast<u32>(name.size());
+        g.next_path = 0;
+        u32 at = g.Place(name);
+        out.replies.push_back(g.Request(g.fs,  // CreateFile of 0x100 bytes
+                                        {ipc::MakeHeader(0x0808, 8, 2), 0, archive[2], archive[3], kChar, name_size, 0,
+                                         0x100, 0, ipc::StaticBufferDesc(name_size, 0), at},
+                                        2));
+        g.next_path = 0;
+        at = g.Place(name);
+        const std::vector<u32> opened = g.Request(g.fs,  // OpenFile to read and write
+                                                  {ipc::MakeHeader(0x0802, 7, 2), 0, archive[2], archive[3], kChar,
+                                                   name_size, 3, 0, ipc::StaticBufferDesc(name_size, 0), at},
+                                                  4);
+        out.replies.push_back(opened);
+        g.PutBytes(g.Scratch(0x1000), Pattern(0x100, 0x5A));
+        out.replies.push_back(g.Request(opened[3],  // Write
+                                        {ipc::MakeHeader(0x0803, 4, 2), 0, 0, 0x100, 0,
+                                         ipc::MappedBufferDesc(0x100, ipc::R), g.Scratch(0x1000)},
+                                        5));
+        const FsGuest::ReadResult read = g.Read(opened[3], 0x10, 0x80);
+        out.replies.push_back({read.result, read.count});
+        out.reads.push_back(read.bytes);
+        ExitProcess(*f.runtime);
+    });
+    return out;
+}
+
+}  // namespace
+
+TEST_CASE("--deterministic --io-latency none: the RomFS and save reads end, with the bytes of --io-latency azahar") {
+    // A read that StartIo finished inside the call (nothing to wait for, the work done on the scheduler thread)
+    // must not answer before its handler has returned: the client would wait for a reply that has come and gone.
+    const ClientReplies none = RunRomFsAndSaveClient({"--deterministic", "--io-latency", "none"});
+    const ClientReplies azahar = RunRomFsAndSaveClient({"--deterministic", "--io-latency", "azahar"});
+    CHECK(none.status == 0);
+    CHECK(azahar.status == 0);
+    REQUIRE(azahar.replies.size() == 10);
+    REQUIRE(azahar.reads.size() == 3);
+    CHECK(none.replies.size() == azahar.replies.size());  // a client that never got a reply sent nothing after it
+    CHECK(none.replies == azahar.replies);
+    CHECK(none.reads == azahar.reads);
+    const GameFolder game;
+    CHECK(azahar.replies[1][1] == kResultSuccess);  // the RomFS opened
+    CHECK(azahar.reads[0] == Slice(game.base_romfs, 0, 0x28));
+    CHECK(azahar.reads[1] == Slice(game.base_romfs, 0x40, 0x200));
+    CHECK(azahar.replies[8][1] == kResultSuccess);  // the Write
+    CHECK(azahar.reads[2] == Slice(Pattern(0x100, 0x5A), 0x10, 0x80));
 }
 
 // ---- reads on the I/O thread --------------------------------------------------------------------------------------------

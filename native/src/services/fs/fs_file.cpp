@@ -11,7 +11,8 @@
 // Copyright 2014-2024 Citra Emulator Project / Azahar Emulator Project (file_backend.h)
 //
 // A file session (N1-12): Read runs on an I/O thread (N1-13: on the scheduler thread for a file that a Write can
-// change, see FileBackend::ReadsOnSchedulerThread) and answers by a deferred reply, at the time StartIo says.
+// change, see FileBackend::ReadsOnSchedulerThread) and answers by a deferred reply, at the time StartIo says (N3-33:
+// in the deterministic mode with nothing to wait for, a read is done and answered in its own call).
 // Write runs on the scheduler thread and answers in the request's tick (the IPC reply delay, nothing
 // else): what the game can see must not depend on how long a host thread takes. Azahar answers a Write to a
 // backend that is not cached (every disk file) the same way; on a cached reader (RomFS) it goes through a
@@ -118,7 +119,11 @@ private:
             reply.PushMappedBuffer(buffer);
         };
         const u64 delay_ns = backend_->GetReadDelayNs(length);
-        if (backend_->ReadsOnSchedulerThread()) {
+        // In the deterministic mode a read with nothing to wait for (--io-latency none, or a modelled delay of 0)
+        // is read and answered here too: StartIo would run its `work` and `finish` inside the call, so the reply
+        // would be delivered before this handler returned Handled::Deferred, and the client would wait for it
+        // for ever (N3-33).
+        if (backend_->ReadsOnSchedulerThread() || (state_->synchronous && !NeedsDelay(*state_, delay_ns))) {
             // A file that a Write can change is read now, in the request's tick; only the reply waits.
             work();
             if (!NeedsDelay(*state_, delay_ns)) {
