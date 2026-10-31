@@ -697,7 +697,8 @@ TEST_CASE("gas look-up table uploads") {
     // gas_lut_index (0x123, bits 0-15) and gas_lut_data (0x124), 16 entries (3dbrew,
     // GPUREG_GAS_LUT_INDEX, GPUREG_GAS_LUT_DATA). Synthetic words only.
     Rig rig;
-    CHECK(rig.cp.state().gas.table_dirty); // everything is dirty at the start, like the other tables
+    // Everything is dirty at the start, like the other tables.
+    CHECK(rig.cp.state().gas.table_dirty);
     for (const u32 word : rig.cp.state().gas.lut) {
         CHECK(word == 0); // the INIT record carries no gas table: it starts at zero
     }
@@ -772,7 +773,8 @@ TEST_CASE("the other gas registers are plain registers") {
     Rig rig;
     rig.Draw();
     // 0x0E0 (3dbrew: GPUREG_TEXENV_UPDATE_BUFFER, where fog mode 7 is gas), GAS_ATTENUATION 0x0E4,
-    // GAS_ACCMAX 0x0E5, GAS_LIGHT_XY 0x120, GAS_LIGHT_Z 0x121, GAS_LIGHT_Z_COLOR 0x122, GAS_ACCMAX_FEEDBACK 0x125, GAS_DELTAZ_DEPTH 0x126.
+    // GAS_ACCMAX 0x0E5, GAS_LIGHT_XY 0x120, GAS_LIGHT_Z 0x121, GAS_LIGHT_Z_COLOR 0x122,
+    // GAS_ACCMAX_FEEDBACK 0x125, GAS_DELTAZ_DEPTH 0x126.
     rig.Run(List()
                 .Write(0x0E0, 0x7)
                 .Write(0x0E4, 0x11)
@@ -808,7 +810,11 @@ TEST_CASE("a data port's words are reported one per word, the gas port included"
     Rig rig;
     rig.Run(List().Write(0x123, 2).Multi(0x124, {7, 8, 9}, false).Write(0x124, 10, 0b0011));
     CHECK(rig.cp.TakeRegisterWrites() ==
-          W({{0x123, 0xF, 2}, {0x124, 0xF, 7}, {0x124, 0xF, 8}, {0x124, 0xF, 9}, {0x124, 0x3, 10}}));
+          W({{0x123, 0xF, 2},
+             {0x124, 0xF, 7},
+             {0x124, 0xF, 8},
+             {0x124, 0xF, 9},
+             {0x124, 0x3, 10}}));
     CHECK(rig.cp.gas_lut_writes() == 4);
 }
 
