@@ -45,7 +45,10 @@ def make_ncsd(ncch: bytes) -> bytes:
     return bytes(hdr) + ncch
 
 
-def make_cia(ncch: bytes, encrypted: bool = False) -> bytes:
+def make_cia(ncch: bytes, encrypted: bool = False, title_id: int = PROGRAM_ID,
+             version: int = (1 << 10) | (3 << 4)) -> bytes:
+    """A CIA around `ncch` (content index 0), with a manual stored before it; `version` is the
+    title metadata's version label (v1.3.0 by default)."""
     def pad64(b: bytes) -> bytes:
         return b.ljust((len(b) + 63) & ~63, b"\0")
 
@@ -53,8 +56,8 @@ def make_cia(ncch: bytes, encrypted: bool = False) -> bytes:
     th = 4 + 0x100 + 0x3C                        # RSA-2048 signature
     tmd = bytearray(th + 0xC4 + 0x24 * 64 + 0x30 * 2)
     struct.pack_into(">I", tmd, 0, 0x10004)
-    struct.pack_into(">Q", tmd, th + 0x4C, PROGRAM_ID)
-    struct.pack_into(">H", tmd, th + 0x9C, (1 << 10) | (3 << 4))   # v1.3.0
+    struct.pack_into(">Q", tmd, th + 0x4C, title_id)
+    struct.pack_into(">H", tmd, th + 0x9C, version)
     struct.pack_into(">H", tmd, th + 0x9E, 2)
     chunks = th + 0xC4 + 0x24 * 64
     manual = b"M" * 0x200                        # a content stored *before* index 0

@@ -257,14 +257,31 @@ def install_library(lib: str, dest: str) -> None:
                          "build again") from e
 
 
-def check_version(header: exh.ExHeader, code: bytes) -> dict | None:
-    with open(os.path.join(ROOT, "config", "versions.json")) as f:
+VERSIONS = os.path.join(ROOT, "config", "versions.json")
+
+
+def check_version(header: exh.ExHeader, code: bytes, path: str = VERSIONS) -> dict | None:
+    with open(path) as f:
         versions = json.load(f)["versions"]
     sha1 = hashlib.sha1(code).hexdigest()
     for v in versions:
         if v.get("code_sha1") == sha1:
             return v
     return None
+
+
+def label_note(dump: str, version: dict) -> str | None:
+    """A line for a .cia whose version label isn't the version its code is: some tools that
+    decrypt or rebuild a .cia reset the label of its title metadata (to v0.0.1 or v1.0.0) and
+    leave the content as it was. The code decides, here as in the app's setup
+    (port/app/launcher/update_code.cpp)."""
+    label = extract_ncch.cia_title_version(dump)
+    want = version.get("title_version")
+    if label is None or want is None or label == want:
+        return None
+    return (f"the .cia's version label says v{extract_ncch.version_text(label)}, but its code is "
+            f"v{extract_ncch.version_text(want)}'s (some decryption tools reset the label): it is used "
+            f"as v{extract_ncch.version_text(want)}")
 
 
 def main(argv=None) -> int:
@@ -288,6 +305,7 @@ def main(argv=None) -> int:
                     help="apply the code mods in AZAHAR_USER_DIR/load/mods/<program id>/ (default: the "
                          "--install directory, if any)")
     ap.add_argument("--no-mods", action="store_true", help="build from the unmodified code")
+    ap.add_argument("--versions", default=VERSIONS, help=argparse.SUPPRESS)
     ap.add_argument("--functions", default=os.path.join(ROOT, "config", "functions.tsv"), help=argparse.SUPPRESS)
     ap.add_argument("--extra", default=os.path.join(ROOT, "config", "extra_entries.txt"), help=argparse.SUPPRESS)
     ap.add_argument("--hooks", default=os.path.join(ROOT, "config", "hooks.txt"), help=argparse.SUPPRESS)
@@ -305,9 +323,12 @@ def main(argv=None) -> int:
     header = exh.parse(exheader_bytes)
     with open(os.path.join(dump_dir, "code.bin"), "rb") as f:
         code = codebin2elf.load_code(header, f.read())
-    version = check_version(header, code)
+    version = check_version(header, code, args.versions)
     if version:
         print(f"version: {version['name']}")
+        note = label_note(args.dump, version)
+        if note:
+            print(f"  {note}")
     elif not args.any_version:
         raise SystemExit("this code.bin isn't a version the project knows (config/versions.json); "
                          "the function lists are for USA v1.3.0 (use the v1.3.0 update .cia)")

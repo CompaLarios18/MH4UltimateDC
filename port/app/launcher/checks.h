@@ -9,12 +9,13 @@
 #include <thread>
 
 #include "common/common_types.h"
+#include "launcher/update_code.h"
 
 namespace Launcher::Checks {
 
 constexpr u64 MH4U_USA = 0x0004000000126300;
 constexpr u64 MH4U_UPDATE = 0x0004000E00126300;
-constexpr u16 UPDATE_VERSION = 1072;  ///< v1.3.0 (config/versions.json)
+constexpr u16 UPDATE_VERSION = UpdateCode::TARGET_VERSION;  ///< v1.3.0 (config/versions.json)
 
 struct Game {
     enum class State {
@@ -41,18 +42,32 @@ std::string Describe(const Game& game);
 struct Update {
     enum class State { Missing, OtherVersion, Ok };
     State state = State::Missing;
-    u16 version = 0;
+    u16 version = 0;      ///< its title metadata's version label
     std::string content;  ///< the installed update's program (an NCCH that build_game.py reads)
+    /// The setup's line about it when its label isn't v1.3.0's: v1.3.0's code all the same (Ok),
+    /// or other code, or code that couldn't be read (OtherVersion)
+    std::string note;
 };
 
-/// The update in Azahar's virtual SD card (Service::AM's title paths).
+/// The update in Azahar's virtual SD card (Service::AM's title paths). A version label other
+/// than v1.3.0's is judged by the installed code (launcher/update_code.h): some decryption tools
+/// reset the label, and Azahar's installer keeps the .cia's.
 Update CheckUpdate();
 
 /// "1.3.0" for a title version.
 std::string VersionText(u16 version);
 
-/// Whether a .cia is MH4U's v1.3.0 update, decrypted: empty if so, else why not.
-std::string CheckUpdateCia(const std::string& path);
+/// A .cia for the setup's step 2: installed when `problem` is empty (`note`, if any, said once
+/// it is in), else not, for that reason under `title`.
+struct UpdateCia {
+    std::string title;
+    std::string problem;
+    std::string note;
+};
+
+/// Whether a .cia is MH4U's v1.3.0 update, decrypted; a version label other than v1.3.0's is
+/// judged by the .cia's code (launcher/update_code.h).
+UpdateCia CheckUpdateCia(const std::string& path);
 
 /// Where the port looks for the code library (recomp/<program id>.<dll|so|dylib>).
 std::string LibraryPath();

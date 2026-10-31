@@ -24,11 +24,15 @@ SetupRow UpdateRow(const State& s) {
     using State_ = Checks::Update::State;
     switch (s.update.state) {
     case State_::Ok:
-        return {Ui::Status::Ok, "Update v1.3.0", "Installed in Azahar's virtual SD card"};
+        // (a note when its version label isn't v1.3.0's: its code is)
+        return {Ui::Status::Ok, "Update v1.3.0",
+                s.update.note.empty() ? "Installed in Azahar's virtual SD card" : s.update.note};
     case State_::OtherVersion:
+        // (which version, by its label and its code)
         return {Ui::Status::Error, "Update v1.3.0",
-                fmt::format("v{} is installed; the port is made for v1.3.0",
-                            Checks::VersionText(s.update.version))};
+                s.update.note.empty() ? fmt::format("v{} is installed; the port is made for v1.3.0",
+                                                    Checks::VersionText(s.update.version))
+                                      : s.update.note};
     case State_::Missing:
         break;
     }

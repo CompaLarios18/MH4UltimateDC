@@ -111,6 +111,9 @@ target_sources(mh4u PRIVATE
     launcher/tools.h
     launcher/ui.cpp
     launcher/ui.h
+    # the update by its code when its version label isn't v1.3.0's (no Azahar: tested on its own)
+    launcher/update_code.cpp
+    launcher/update_code.h
     launcher/updater.cpp
     ${MH4U_IMGUI_DIR}/backends/imgui_impl_sdlrenderer2.cpp
 )
