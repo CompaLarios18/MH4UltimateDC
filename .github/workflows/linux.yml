@@ -127,7 +127,9 @@ jobs:
           1. Python 3.10 or newer (most distributions have it; on a Steam Deck too).
           2. Run ./mh4u.AppImage (or double-click it). The first time its launcher opens on
              Setup: choose your game (the decrypted .3ds, .cci or .cxi; the file dialog is zenity
-             or kdialog, or start it with the game as its argument) and your v1.3.0 update .cia;
+             or kdialog, or the launcher's own browser: Browse in the launcher..., and by itself
+             in Steam's Game Mode or with a controller; or start it with the game as its
+             argument) and your v1.3.0 update .cia;
              it installs the update and builds the game's code library on this computer (with
              clang if installed, otherwise it downloads Zig's C compiler, about 80 MB).
              ./build-code-library.sh does the same build from a terminal, if you prefer.

@@ -107,7 +107,7 @@ Browser::Browser(Pick::Request request_, std::string note_, std::string last, bo
     if (!last.empty() && Paths::What(last) == Paths::Kind::Folder) {
         const std::string folder = Paths::Clean(last);
         if (std::none_of(places.begin(), places.end(), [&folder](const Paths::Place& p) { return p.path == folder; })) {
-            places.insert(places.begin(), Paths::Place{"Last folder", folder, false});
+            places.insert(places.begin(), Paths::Place{"Last folder", folder, false, false});
         }
     }
     Open(!request.start.empty() ? request.start : !last.empty() ? last : home);
@@ -349,7 +349,7 @@ void Browser::DrawEntries(bool pad, Outcome& outcome) {
         ImGui::Spacing();
         ImGui::SetCursorPosX(ImGui::GetCursorPosX() + pad_x);
         if (!Files()) {
-            Ui::TextDim("No folders in here. Choose this folder takes this one.");
+            Ui::TextDim("No folders in here. To pick this one, press Choose this folder.");
         } else if (request.extensions.empty()) {
             Ui::TextDim("Nothing in here.");
         } else {

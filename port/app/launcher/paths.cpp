@@ -289,6 +289,14 @@ std::string Parent(const std::string& path) {
     if (!p.has_relative_path()) {
         return "";  // a root
     }
+#ifdef _WIN32
+    // a network share's root, \\server\share: the server above it is no folder to list
+    const std::string server = FromPath(p.root_name());
+    if (server.size() > 2 && IsSeparator(server[0]) && IsSeparator(server[1]) &&
+        FromPath(p.relative_path()).find_first_of("\\/") == std::string::npos) {
+        return "";
+    }
+#endif
     return Clean(FromPath(p.parent_path()));
 }
 
@@ -311,6 +319,15 @@ Kind What(const std::string& path) {
         return Kind::Missing;
     }
     return fs::is_directory(status) ? Kind::Folder : Kind::File;
+}
+
+std::string NearestFolder(const std::string& path) {
+    for (std::string folder = Clean(path); !folder.empty(); folder = Parent(folder)) {
+        if (What(folder) == Kind::Folder) {
+            return folder;
+        }
+    }
+    return "";
 }
 
 Listing List(const std::string& folder, const std::vector<std::string>& extensions, bool files) {
@@ -370,9 +387,12 @@ std::string FromTyped(const std::string& text, const std::string& base, const st
         }
         s = PercentDecoded(s);
 #ifdef _WIN32
-        // file:///C:/Games: the drive comes after the slash
+        // file:///C:/Games: the drive comes after the slash; file://server/share/...: a network
+        // share's (file://C:/Games is still the drive's)
         if (s.size() >= 3 && IsSeparator(s[0]) && std::isalpha(static_cast<unsigned char>(s[1])) && s[2] == ':') {
             s = s.substr(1);
+        } else if (!s.empty() && !IsSeparator(s[0]) && !(s.size() >= 2 && s[1] == ':')) {
+            s = "\\\\" + s;
         }
 #endif
     }
@@ -491,8 +511,10 @@ std::vector<Place> Mounted(const std::string& mounts) {
         if (std::any_of(places.begin(), places.end(), [&label](const Place& p) { return p.label == label; })) {
             label += " (" + name + ")";
         }
+        // (nas:/export, //server/share, user@host:..., systemd-1 for an automount)
+        const bool network = device.rfind("/dev/", 0) != 0;
         if (std::none_of(places.begin(), places.end(), [&point](const Place& p) { return p.path == point; })) {
-            places.push_back({label, point, true});
+            places.push_back({label, point, true, network});
         }
     }
     return places;
@@ -506,7 +528,7 @@ std::vector<Place> Places() {
         }
         const std::string clean = Clean(path);
         if (std::none_of(places.begin(), places.end(), [&clean](const Place& p) { return p.path == clean; })) {
-            places.push_back({label, clean, drive});
+            places.push_back({label, clean, drive, false});
         }
     };
     const std::string home = Home();
@@ -549,8 +571,10 @@ std::vector<Place> Places() {
         }
     }
 #else
+    // (a network share not looked into: with its server away that waits until the network gives
+    // up, and the launcher with it)
     for (const auto& place : Mounted(ReadFile("/proc/mounts"))) {
-        add(place.label, place.path, true, true);
+        add(place.label, place.path, true, !place.network);
     }
 #endif
     add("Root (/)", "/", true, true);

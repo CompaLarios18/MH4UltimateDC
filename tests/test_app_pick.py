@@ -2,7 +2,8 @@
 program of its own and followed without waiting, and what the launcher makes of its end. A path
 chosen; a cancel; a dialog that never showed, said it couldn't, crashed or ended with another
 status (the launcher's own browser takes over then, and the log gets what it said); a dialog
-ended from the launcher; the AppImage's own libraries kept out of its environment; Steam's Game
+ended from the launcher, or still up when the launcher closes, with what it started (killed when
+it doesn't heed SIGTERM); the AppImage's own libraries kept out of its environment; Steam's Game
 Mode. The dialogs are shell scripts of the test's own on an otherwise empty PATH."""
 from __future__ import annotations
 
@@ -35,6 +36,8 @@ using namespace Launcher::Pick;
 // available, gamemode: 1 or 0
 // file|folder START SELECT [CANCEL_MS]: the dialog for a game file (or a folder), ended from here
 // after CANCEL_MS; then its result: available, program, path, error, a line each
+// drop START SELECT MS: the Dialog let go of MS after it started (the launcher closing): "up 1"
+// while it was still up, then "dropped" once it has gone
 int main(int argc, char** argv) {
     const std::string mode = argv[1];
     if (mode == "available") {
@@ -53,6 +56,16 @@ int main(int argc, char** argv) {
     request.start = argv[2];
     request.select = argv[3];
     const int cancel_ms = argc > 4 ? std::atoi(argv[4]) : -1;
+    if (mode == "drop") {
+        {
+            Dialog up;
+            up.Start(request);
+            std::this_thread::sleep_for(std::chrono::milliseconds(cancel_ms));
+            std::printf("up\t%d\n", up.Poll() ? 0 : 1);
+        }
+        std::printf("dropped\n");
+        return 0;
+    }
     Dialog dialog;
     dialog.Start(request);
     const auto start = std::chrono::steady_clock::now();
@@ -107,6 +120,34 @@ def output(driver, path_folder, *args, **env) -> str:
 def run(driver, path_folder, *args, **env) -> dict[str, str]:
     out = output(driver, path_folder, *args, **env)
     return dict(line.split("\t", 1) for line in out.splitlines() if "\t" in line)
+
+
+def lingering(group_file, heeds_term=True) -> str:
+    """A dialog that starts another program and waits (it has to end with the dialog), its process
+    group's number in `group_file`; without `heeds_term`, all of it ignores SIGTERM."""
+    return ("" if heeds_term else "trap '' TERM\n") + f'echo $$ > "{group_file}"\nsleep 30 &\nsleep 30\necho /never'
+
+
+def running(group: int, within: float = 5.0) -> list[int]:
+    """The processes of process group `group` still running, after a moment to go (a zombie counts
+    as gone: init reaps what an ended dialog started when it gets to it)."""
+    deadline = time.monotonic() + within
+    while True:
+        left = []
+        for entry in os.listdir("/proc"):
+            if not entry.isdigit():
+                continue
+            try:
+                # pid (name) state parent group ...
+                with open(f"/proc/{entry}/stat") as info:
+                    state, _parent, pgrp = info.read().rsplit(")", 1)[1].split()[:3]
+            except (OSError, ValueError, IndexError):
+                continue  # (gone meanwhile)
+            if int(pgrp) == group and state not in ("Z", "X"):
+                left.append(int(entry))
+        if not left or time.monotonic() > deadline:
+            return left
+        time.sleep(0.05)
 
 
 def test_a_path_chosen_and_what_zenity_is_asked(driver, tmp_path):
@@ -167,13 +208,37 @@ def test_a_dialog_that_didnt_work_says_why(driver, tmp_path, body, said):
         assert "saying: " in r["error"]
 
 
-def test_a_dialog_ended_from_the_launcher(driver, tmp_path):
-    # (one that never shows, as in Steam's Game Mode: Cancel or the launcher's browser ends it)
-    folder = dialogs(tmp_path, zenity="sleep 30\necho /never")
+@pytest.mark.parametrize("heeds_term", [True, False])
+def test_a_dialog_ended_from_the_launcher(driver, tmp_path, heeds_term):
+    # (one that never shows, as in Steam's Game Mode: Cancel or the launcher's browser ends it and
+    # what it started, with SIGTERM, or SIGKILL 2 s on when that isn't heeded)
+    group = tmp_path / "group"
+    folder = dialogs(tmp_path, zenity=lingering(group, heeds_term))
     started = time.monotonic()
-    r = run(driver, folder, "file", "", "", 200)
+    r = run(driver, folder, "file", "", "", 500)
+    took = time.monotonic() - started
     assert (r["path"], r["error"]) == ("", "")
-    assert time.monotonic() - started < 10
+    if heeds_term:
+        assert took < 10
+    else:
+        assert 2.0 <= took < 15
+    assert running(int(group.read_text())) == []
+
+
+@pytest.mark.parametrize("heeds_term", [True, False])
+def test_a_dialog_up_when_the_launcher_closes(driver, tmp_path, heeds_term):
+    # the Dialog going with the launcher (quitting, or playing) ends it and what it started: SIGTERM,
+    # then SIGKILL a second on
+    group = tmp_path / "group"
+    folder = dialogs(tmp_path, zenity=lingering(group, heeds_term))
+    started = time.monotonic()
+    assert output(driver, folder, "drop", "", "", 500).splitlines() == ["up\t1", "dropped"]
+    took = time.monotonic() - started
+    if heeds_term:
+        assert took < 10
+    else:
+        assert 1.4 <= took < 15
+    assert running(int(group.read_text())) == []
 
 
 def test_the_appimages_own_libraries_stay_out(driver, tmp_path):

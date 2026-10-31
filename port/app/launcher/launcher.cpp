@@ -48,14 +48,32 @@ void SetFullscreen(bool on) {
     }
 }
 
+/// A picker opening where `chosen` (a file or folder chosen before) is: its folder, with it shown
+/// first, or the nearest folder above that is still there when that one isn't (a drive unplugged,
+/// a folder moved: the Mac's dialog may fail on a folder that isn't there).
+void OpenAt(const std::string& chosen, Pick::Request& request) {
+    const std::string folder = Paths::Parent(chosen);
+    request.start = Paths::NearestFolder(folder);
+    request.select = !request.start.empty() && request.start == folder ? Paths::Name(chosen) : std::string();
+}
+
 /// The folder a picker opens in, when the request names none: the last choice's (with it shown
 /// first), else the game's.
 void StartAt(const State& s, Pick::Request& request) {
     const std::string& last = !s.last_pick.empty() ? s.last_pick : s.config.game;
     if (request.start.empty() && !last.empty()) {
-        request.start = Paths::Parent(last);
-        request.select = Paths::Name(last);
+        OpenAt(last, request);
     }
+}
+
+/// The system's dialog as the player reads of it: "Windows' file dialog", "The system's file
+/// dialog (zenity)".
+std::string DialogName(const std::string& program) {
+#ifdef _WIN32
+    return program;
+#else
+    return "The system's file dialog (" + program + ")";
+#endif
 }
 
 /// The launcher's own browser for `request`; `note` says why it opened (empty: it was asked for,
@@ -94,9 +112,8 @@ void Picked(State& s, State::Picking& p) {
         LOG_WARNING(Frontend, "launcher: the system's file dialog ({}) didn't work: {}", result.program, result.error);
         s.picker_failed = result.program;
         OpenBrowser(s, std::move(p.request), std::move(p.then),
-                    fmt::format("The system's file dialog ({}) didn't work, so this is the launcher's own. "
-                                "The log has what the dialog said.",
-                                result.program));
+                    fmt::format("{} didn't work, so this is the launcher's own (mh4u_log.txt has what it said).",
+                                DialogName(result.program)));
     }
 }
 
@@ -154,9 +171,8 @@ void PickPath(State& s, Pick::Request request, std::function<void(const std::str
         why = "Steam's Game Mode";
     } else if (!s.picker_failed.empty()) {
         why = "the system's dialog didn't work before";
-        note = fmt::format("The system's file dialog ({}) didn't work before: System file dialog... tries it "
-                           "again.",
-                           s.picker_failed);
+        note = fmt::format("{} didn't work earlier: press System file dialog... to try it again.",
+                           DialogName(s.picker_failed));
     } else if (s.pad) {
         why = "a controller";
     }
@@ -1064,8 +1080,7 @@ void State::ChooseGame(bool browse) {
     request.extensions = {"3ds", "cci", "cxi", "app"};
     if (!config.game.empty()) {
         // the game chosen before, shown first in its folder
-        request.start = Paths::Parent(config.game);
-        request.select = Paths::Name(config.game);
+        OpenAt(config.game, request);
     }
     PickPath(*this, std::move(request),
              [this](const std::string& path) {

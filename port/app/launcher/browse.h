@@ -3,7 +3,7 @@
 // the folder above, places to start from (home, Desktop, Downloads, the last folder, removable
 // drives such as a Steam Deck's SD card, the drive letters) and a line to type or paste a path
 // into. It stands in for the system's dialog where that can't be used (Steam's Game Mode, a
-// controller in hand) or didn't work, and is a choice next to it everywhere.
+// controller in hand) or didn't work, and is a choice next to it on Setup and Mods.
 #pragma once
 
 #include <string>

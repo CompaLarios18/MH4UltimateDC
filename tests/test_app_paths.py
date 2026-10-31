@@ -1,8 +1,9 @@
 """port/app/launcher/paths.cpp: the paths of the launcher's own file browser. A folder's entries
 in the order it shows them (folders first, then the files that fit, names in a person's order,
-hidden ones left out), a path as typed or pasted, and the places to start from: home, XDG's names
-for Desktop and Downloads, and the removable drives of a mount table (a Steam Deck's SD card).
-Synthetic folders and files only."""
+hidden ones left out), a path as typed or pasted, the nearest folder that is there (where a
+picker opens), Windows' network shares, and the places to start from: home, XDG's names for
+Desktop and Downloads, and the removable drives of a mount table (a Steam Deck's SD card; network
+shares, which aren't looked into). Synthetic folders and files only."""
 from __future__ import annotations
 
 import os
@@ -58,9 +59,9 @@ static void Print(const std::vector<Place>& places) {
 
 // list DIR EXTS FILES: "D name" or "F name size" a line, then folder, left and error (yes or "")
 // has NAME EXTS, less A B: 1 or 0
-// clean, parent, name, what PATH: the answer
+// clean, parent, name, what, nearest PATH: the answer
 // typed TEXT BASE HOME: the path it reads
-// userdir FILE KEY HOME, mounted FILE: from a file's text
+// userdir FILE KEY HOME, mounted FILE: from a file's text (mounted: and 1 for a network share)
 // places: label, path and 1 for a drive, a line each
 int main(int argc, char** argv) {
     const std::string mode = argc > 1 ? argv[1] : "";
@@ -88,12 +89,16 @@ int main(int argc, char** argv) {
     } else if (mode == "what") {
         const Kind k = What(argv[2]);
         std::printf("%s\n", k == Kind::Folder ? "folder" : k == Kind::File ? "file" : "missing");
+    } else if (mode == "nearest") {
+        std::printf("%s\n", NearestFolder(argv[2]).c_str());
     } else if (mode == "typed") {
         std::printf("%s\n", FromTyped(argv[2], argv[3], argv[4]).c_str());
     } else if (mode == "userdir") {
         std::printf("%s\n", UserDir(Read(argv[2]), argv[3], argv[4]).c_str());
     } else if (mode == "mounted") {
-        Print(Mounted(Read(argv[2])));
+        for (const auto& p : Mounted(Read(argv[2]))) {
+            std::printf("%s\t%s\t%d\t%d\n", p.label.c_str(), p.path.c_str(), p.drive ? 1 : 0, p.network ? 1 : 0);
+        }
     } else if (mode == "places") {
         Print(Places());
     }
@@ -188,6 +193,16 @@ def test_what_is_at_a_path(driver, tmp_path):
     assert run(driver, "what", tmp_path / "nothing").strip() == "missing"
 
 
+def test_the_nearest_folder_that_is_there(driver, tmp_path):
+    # where a picker opens: the last pick's folder, or above it once that has gone (moved, unplugged)
+    games = tmp_path / "games"
+    games.mkdir()
+    (games / "mh4u.3ds").write_bytes(b"x")
+    assert run(driver, "nearest", games).strip() == str(games)
+    assert run(driver, "nearest", games / "mh4u.3ds").strip() == str(games)
+    assert run(driver, "nearest", games / "moved" / "away").strip() == str(games)
+
+
 def test_typed_and_pasted_paths(driver, tmp_path):
     home = tmp_path / "home"
     games = home / "My Games"
@@ -230,10 +245,17 @@ def test_removable_drives_of_a_mount_table(driver, tmp_path):
                       "tmpfs /run/user/1000 tmpfs rw 0 0\n"
                       "/dev/sda1 /media/hunter/USB ext4 rw 0 0\n"
                       "/dev/sdb1 /mnt/data ext4 rw 0 0\n"
-                      "/dev/mmcblk1p1 /run/media/mmcblk1p1 exfat rw 0 0\n")
+                      "/dev/mmcblk1p1 /run/media/mmcblk1p1 exfat rw 0 0\n"
+                      # network shares (an automount's point, then what it mounted there), not
+                      # looked into before they are opened: a server that is away answers late
+                      "systemd-1 /mnt/nas autofs rw,relatime,fd=52,pgrp=1,timeout=0,direct 0 0\n"
+                      "nas:/export/games /mnt/nas nfs4 rw,relatime,vers=4.2 0 0\n"
+                      "//server/share /media/share cifs rw,vers=3.1.1 0 0\n"
+                      "deck@host:/games /mnt/ssh fuse.sshfs rw,nosuid,nodev 0 0\n")
     assert lines(driver, "mounted", mounts) == [
-        ["SD card", "/run/media/deck/SD Card", "1"], ["USB", "/media/hunter/USB", "1"],
-        ["data", "/mnt/data", "1"], ["SD card (mmcblk1p1)", "/run/media/mmcblk1p1", "1"]]
+        ["SD card", "/run/media/deck/SD Card", "1", "0"], ["USB", "/media/hunter/USB", "1", "0"],
+        ["data", "/mnt/data", "1", "0"], ["SD card (mmcblk1p1)", "/run/media/mmcblk1p1", "1", "0"],
+        ["nas", "/mnt/nas", "1", "1"], ["share", "/media/share", "1", "1"], ["ssh", "/mnt/ssh", "1", "1"]]
 
 
 @pytest.mark.skipif(not sys.platform.startswith("linux"), reason="XDG's folders: Linux")
@@ -260,3 +282,15 @@ def test_places_on_windows_have_the_drive_letters(driver):
     assert places[0][0] == "Home"
     system = os.environ.get("SystemDrive", "C:").upper()
     assert [system, system + "\\", "1"] in places
+
+
+@pytest.mark.skipif(os.name != "nt", reason="network shares' paths: Windows")
+def test_network_shares_on_windows(driver, tmp_path):
+    # (the paths only: nothing asks a server)
+    # a share's root is as far up as it goes: the server above it is no folder to list
+    assert run(driver, "parent", r"\\server\share\Games").strip() == r"\\server\share"
+    assert run(driver, "parent", r"\\server\share").strip() == ""
+    # a file manager's copy of an address on one, and a drive's written with two slashes
+    assert run(driver, "typed", "file://server/share/My%20Games/x.3ds", tmp_path, tmp_path).strip() == \
+        r"\\server\share\My Games\x.3ds"
+    assert run(driver, "typed", "file://C:/Games/x.3ds", tmp_path, tmp_path).strip() == r"C:\Games\x.3ds"
