@@ -927,7 +927,10 @@ two files can be compared line by line), a `stretch core=… thread=… start=�
 run and an `ended core=… ran=… end=…` line when its stretch stops. Nothing is written, and nothing but a pointer test is
 done, when it is not set. On the G4 recording the native timeline equals the reference's on 143,290 of its 143,294 timer
 events, in tick, core and lateness; the four that differ are the three `nwm` asynchronous events (core 1, 6 ticks early) and
-the wake-up of core 0 that follows the first of them (late by 4 ticks against 2, at the same tick).
+the wake-up of core 0 that follows the first of them (late by 4 ticks against 2, at the same tick). *(2026-10-31, N3-32)*
+The cause of the four was the deterministic slice: 1,145,774 ticks, 3 short of Azahar's `MAX_SLICE_LENGTH`
+(`BASE_CLOCK_RATE_ARM11 / 234`, 1,145,777), and a thread-safe event is due two slices after its core's clock, so 6 ticks
+early. With the slice set to 1,145,777 all 143,294 events are equal (`docs/research/det-120fps.md`).
 
 | Run | Options | Result |
 |---|---|---|
@@ -982,7 +985,11 @@ is 2 ticks later than the reference's, at the same tick); everything else of the
 143,294 events). The lag is below RunLoop's own tolerance between the cores (100 ticks) and below every gated comparison (the
 `svc` trace compares sequence and registers, `state` tolerates 4 frames, `ipc` compares by order); it could matter only if
 another event lay within 6 ticks of one of these, or if a thread on core 1 stored a tick it read in that window, and neither
-happens in G1, G3 or G4. The rules of the scheduler are pinned by `determinism_test` (the catch-up of the core that is behind
+happens in G1, G3 or G4. *(2026-10-31, N3-32: the lag came from the slice, 1,145,774 ticks where Azahar's is 1,145,777,
+and it did matter at 120 fps: in G3 the fourth such event cut a stretch of core 0 short, core 0's clock stayed 6 ticks
+behind and the game did not leave the village. With the slice fixed the lag is gone: G1, G3 and G4 equal the reference's
+timeline in every event, and G3 at 120 fps reaches the Arena; `docs/research/det-120fps.md`.)*
+The rules of the scheduler are pinned by `determinism_test` (the catch-up of the core that is behind
 and its 100-tick tolerance, the later clock in the trace, the order of thread-safe events, the periods of the recurring events,
 the limiter's tick on core 1, the other core's next event limiting a stretch); two mutations of that test's subject survive on
 purpose, `PrepareReschedule` or `NeedReschedule` not raising the system flag: the flag only brings the choice of the next
@@ -1026,11 +1033,19 @@ arguments are `--deterministic` alone: without `--gpu null-display` or `--gpu re
 | `--slice-us 4275`, `4273` or `3000` added | `timeline` still passes (143,290 of 143,294): see below |
 | `--candidate-args="--deterministic --slice-us 1000"` | `timeline` fails: the candidate has 143,296 events, 127,852 of 143,294 equal, 15,514 differences, 2 allowed, 15,512 not allowed, first at event 21,349; the other steps still pass, so only the timeline catches it; 6 passed, 1 failed, 1 skipped; exit 1; 1 min 44 s |
 
+*(2026-10-31, N3-32)* The four allowed differences are gone. They came from the deterministic slice, 3 ticks short of
+Azahar's (1,145,774 for 1,145,777), which put every thread-safe `nwm` event 6 ticks early. With the slice fixed, the same
+check of G4 gives `timeline` 143,294 of 143,294 equal (the four allow lines matched no difference), and the allow file now
+lists none (its comments only). With that file `timeline_check.py` exits 0 on the fixed runner's G4 events and 1 on the
+events of a run before the fix (143,290 of 143,294 equal, 4 not allowed). G1 (78,578 of 78,578) and G3 (841,395 of
+841,395) are equal too (`docs/research/det-120fps.md`).
+
 **What the timeline pins and what it does not.** The events of the reference's timeline sit at fixed ticks (the timers'
 due times) and their lateness is the overrun of the stretch that was running; on G4 the events come so close that a cap on
 the stretches (`--slice-us`) only binds in a few places. `--slice-us 4275` changes nothing in the runner's stretches (the
-scheduler takes the smaller of the cap and `until_event`, which is the constant 1,145,774 ticks for a core with no event
-queued, so a larger value does not take effect), and `4273` and `3000` (stretch caps of 1,145,641 and about 804,000
+scheduler takes the smaller of the cap and `until_event`, which was then the constant 1,145,774 ticks for a core with no
+event queued, so a larger value does not take effect; *2026-10-31, N3-32: the constant is now Azahar's 1,145,777 ticks,
+and 4275 us is still above it*), and `4273` and `3000` (stretch caps of 1,145,641 and about 804,000
 ticks) leave all 143,294 events as they were, in
 tick, core and lateness; only the cap of 1000 µs moves them. So this step catches a wrong event period, a missing or extra
 timer event, a wrong core, an event that fires late (a stretch that overruns) and a cap far from Azahar's; it does not

@@ -1,7 +1,8 @@
 // The validation patterns of docs/research/rhi-spike-evidence/test/main.cpp (this repository's code, GPL-3.0-or-later)
 // ported as tests of the patched plume (N2-29), on its public API, with the result `results-summary.txt` gives for the
 // patched build (label "patched"); plus one case for each patch that no pattern covers (10 dynamic stencil state, 11
-// D24S8 and the 16-bit colour formats, 12 custom border colours) and for patch 09's optional-extension lists.
+// D24S8 and the 16-bit colour formats, 12 custom border colours) and for patch 09's optional-extension lists, and the case
+// `vma01/...` for patch 01 of the vendored VMA (native/third_party/rhi/vma: mapping on one thread, allocating on another).
 //
 // native/tests/rhi_plume_test.cpp (N2-25) holds A1, C3, C5 and the device cases; this file holds the rest: A2, B1 to B5,
 // B8, C1, C2, C4, D1, D3, E and F, and the controls. The shaders are N2-25's `rhi_plume_shaders.inc` (included, never
@@ -22,6 +23,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <cstdio>
@@ -1305,6 +1307,148 @@ void RunCustomBorderRefused(Rig& rig) {
     CHECK(static_cast<VulkanSampler*>(accepted.get())->vk != VK_NULL_HANDLE);
 }
 
+// ---- VMA's patch 01: a buffer mapped and unmapped on one thread while another thread allocates ------------------------------------------------
+
+// The race the native-tsan job reported (docs/native/rhi.md, "The ThreadSanitizer job"): VMA's AllocatePage, under the block
+// vector's mutex, read every block's m_pMappedData without the block's own mutex, and vmaUnmapMemory of another allocation in
+// that block wrote it under the block's mutex only. Patch 01 of native/third_party/rhi/vma (upstream 4f68795) makes the scan
+// read an atomic flag instead. The case is built so that every unmap of thread A writes the pointer and thread B's scans read
+// it with no lock in common since the read, which is what ThreadSanitizer reports without the patch:
+//  - the block P that A uses is filled with unmapped buffers of kSlot bytes but one slot, so A's buffers (kSlot) land in P and
+//    B's (2 * kSlot) never fit there: B allocates from another block, never takes P's mutex, and reads P's pointer at every
+//    allocation (the scan reads the pointer of every block it passes);
+//  - VMA's mapping hysteresis keeps a block mapped once it has seen about seven more map and unmap calls than allocations and
+//    frees, and then an unmap writes nothing: without more, from A's fourth mapping on (the second of round 2). A also creates
+//    and destroys kDrains unmapped buffers in P per round, which keeps the block far from that, so each of A's unmaps writes
+//    the pointer;
+//  - while its buffer is mapped, A waits for B to finish two more buffers, so at least one of B's scans falls between A's map
+//    and A's unmap. The counter is only ever read and written relaxed, so nothing orders B's scan before A's unmap: a release
+//    in B paired with an acquire in A would, and would hide the race.
+constexpr uint64_t kSlot = 256 * 1024;
+constexpr int kVmaRounds = 100;
+constexpr int kDrains = 3;
+constexpr size_t kWritten = 4096;
+
+VkDeviceMemory MemoryOf(const std::unique_ptr<RenderBuffer>& buffer) {
+    return static_cast<const VulkanBuffer*>(buffer.get())->allocationInfo.deviceMemory;
+}
+
+bool Made(const std::unique_ptr<RenderBuffer>& buffer) {
+    return buffer != nullptr && static_cast<const VulkanBuffer*>(buffer.get())->vk != VK_NULL_HANDLE;
+}
+
+void RunVmaMapWhileAllocating(Rig& rig) {
+    RenderDevice& dev = *rig.dev;
+    const auto start = std::chrono::steady_clock::now();
+    // Fill a block with kSlot buffers until one does not fit: the ones before it are in the full block P. Freeing that one and
+    // the last buffer of P leaves the slot A uses. A buffer of B's size then holds a block of its own for the whole case, the
+    // one B allocates from: VMA frees an empty block when another buffer is freed, so without it B's block went with many of
+    // A's frees (172 new blocks in the case), which made the case about 40 times slower on the RX 6700 XT (measured with a
+    // counting copy of VMA).
+    std::vector<std::unique_ptr<RenderBuffer>> fillers;
+    std::unique_ptr<RenderBuffer> overflow;
+    while (fillers.size() < 4096) {
+        auto filler = dev.createBuffer(RenderBufferDesc::UploadBuffer(kSlot));
+        REQUIRE(Made(filler));
+        if (!fillers.empty() && MemoryOf(filler) != MemoryOf(fillers.back())) {
+            overflow = std::move(filler);
+            break;
+        }
+        fillers.push_back(std::move(filler));
+    }
+    REQUIRE(overflow != nullptr);
+    REQUIRE(fillers.size() >= 2);  // the buffers share blocks (no memory of their own)
+    const VkDeviceMemory blockP = MemoryOf(fillers.back());
+    const size_t filled = fillers.size();
+    overflow.reset();
+    fillers.pop_back();
+    auto keeper = dev.createBuffer(RenderBufferDesc::UploadBuffer(2 * kSlot));
+    REQUIRE(Made(keeper));
+    REQUIRE(MemoryOf(keeper) != blockP);
+
+    std::atomic<bool> done{false};
+    std::atomic<uint64_t> madeByB{0};  // relaxed only, see above
+    int failedB = 0;
+    int bInP = 0;
+    std::thread b([&] {
+        while (!done.load(std::memory_order_relaxed)) {
+            auto other = dev.createBuffer(RenderBufferDesc::UploadBuffer(2 * kSlot));
+            if (!Made(other)) {
+                ++failedB;
+            } else if (MemoryOf(other) == blockP) {
+                ++bInP;
+            }
+            other.reset();
+            madeByB.fetch_add(1, std::memory_order_relaxed);
+        }
+    });
+    int timeouts = 0;
+    const auto waitForB = [&] {
+        if (timeouts != 0) {
+            return;  // one timeout fails the case: do not wait 10 s again in each of the remaining rounds
+        }
+        const uint64_t from = madeByB.load(std::memory_order_relaxed);
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+        while (madeByB.load(std::memory_order_relaxed) < from + 2) {
+            if (std::chrono::steady_clock::now() > deadline) {
+                ++timeouts;
+                return;
+            }
+            std::this_thread::yield();
+        }
+    };
+    int failedA = 0;
+    int aOutsideP = 0;
+    int wrongBytes = 0;
+    for (int round = 0; round < kVmaRounds; round++) {
+        auto buffer = dev.createBuffer(RenderBufferDesc::UploadBuffer(kSlot));
+        if (!Made(buffer)) {
+            ++failedA;
+            continue;
+        }
+        aOutsideP += (MemoryOf(buffer) != blockP) ? 1 : 0;
+        auto* bytes = static_cast<uint8_t*>(buffer->map());
+        if (bytes == nullptr) {
+            ++failedA;
+            continue;
+        }
+        for (size_t i = 0; i < kWritten; i++) {
+            bytes[i] = uint8_t(round * 31 + i);
+        }
+        waitForB();
+        buffer->unmap();
+        const auto* again = static_cast<const uint8_t*>(buffer->map());
+        if (again == nullptr) {
+            ++failedA;
+            continue;
+        }
+        for (size_t i = 0; i < kWritten; i++) {
+            wrongBytes += (again[i] != uint8_t(round * 31 + i)) ? 1 : 0;
+        }
+        waitForB();
+        buffer->unmap();
+        buffer.reset();
+        for (int i = 0; i < kDrains; i++) {
+            auto drain = dev.createBuffer(RenderBufferDesc::UploadBuffer(kSlot));
+            failedA += Made(drain) ? 0 : 1;
+            aOutsideP += (Made(drain) && MemoryOf(drain) != blockP) ? 1 : 0;
+        }
+    }
+    done = true;
+    b.join();
+    const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+    std::printf("rhi_plume_patterns_test: vma01: %zu buffers of %llu bytes filled block P; %d rounds; thread B made %llu buffers; %.0f ms\n",
+                filled, (unsigned long long)kSlot, kVmaRounds, (unsigned long long)madeByB.load(std::memory_order_relaxed), ms);
+    std::fflush(stdout);
+    CHECK(failedA == 0);
+    CHECK(failedB == 0);
+    CHECK(wrongBytes == 0);
+    CHECK(timeouts == 0);
+    // what the case is built on: A's buffers in P, B's never
+    CHECK(aOutsideP == 0);
+    CHECK(bInP == 0);
+}
+
 }  // namespace
 
 // ---- cases ----------------------------------------------------------------------------------------------------------------------------------
@@ -1550,6 +1694,15 @@ TEST_CASE("patch12/custom_border_colour_refused_without_the_extension") {
     }
     LogDevice(rig, "patch12/refused");
     RunCustomBorderRefused(rig);
+}
+
+TEST_CASE("vma01/unmap_on_one_thread_while_another_allocates") {
+    Rig rig;
+    if (!DeviceOk(rig.Open(), rig.error, "vma01")) {
+        return;
+    }
+    LogDevice(rig, "vma01");
+    RunVmaMapWhileAllocating(rig);
 }
 
 // ---- controls: skipped unless named (`--test-case=control/B7 --no-skip`) ---------------------------------------------------------------------
