@@ -708,7 +708,7 @@ unwrapped (`unverified`: no device met here has fewer).
 ### Tests (N2-28)
 
 `native/tests/gpu_backend_sync_test.cpp` (12 cases; shaders `native/tests/shaders/gpu_backend_sync/`, `gpu_backend_sync_shaders.inc` by `spirv_inc.py`, also used by the readback test) and
-`native/tests/gpu_backend_readback_test.cpp` (13 cases). Every expected pixel and byte is worked out in a comment from the formats. A case skips with a message without a Vulkan device and fails under
+`native/tests/gpu_backend_readback_test.cpp` (14 cases). Every expected pixel and byte is worked out in a comment from the formats. A case skips with a message without a Vulkan device and fails under
 `MH4N_REQUIRE_VULKAN=1`.
 
 | Case | What it pins |
@@ -732,6 +732,7 @@ unwrapped (`unverified`: no device met here has fewer).
 | `errors/...`, `owner_rule/...` | bad rects, destinations and formats; an image the open recorder has recorded on; a foreign thread: one `ForeignThread` breach per call, none for the owner or after a hand-over (both with and without the `timeline` bit), no `RequiredWait` |
 | `timestamps/a_frame_with_a_clear_and_a_readback_has_a_time_and_the_next_frame_follows_it` | three frames; Begin and a clear in one recorder, the readback (its own submission) between, the End in a recorder submitted after it: `FrameGpuTimeNs() > 0`, increasing |
 | `readback/two_threads_reading_back_different_images_at_once_get_their_own_bytes` | a colour image and a depth image read back 25 times each from two threads at once: every result right (TSAN covers the race) |
+| `lifetime/a_backend_is_destroyed_with_its_last_handle_after_a_readback_an_upload_and_a_read_image` | four backends, one that did a `ReadbackToGuest`, one an upload (a staging buffer), one a `ReadImage`, one all three: a `weak_ptr` to the backend's private state is alive while the handle is and expired after it is reset (without the release of `CreateBackend`'s handle it stayed alive for the first, second and fourth: seen on the RX 6700 XT) |
 
 Lavapipe's queue thread holds the device while it waits for an event, and creating an image view, a framebuffer or a command list then waits for it too: the gated case therefore makes all of them in a first run
 with the gate open (a lavapipe property, `unverified` elsewhere; nothing in the product depends on it).
@@ -756,9 +757,40 @@ The `build/tsan` tree (the commands of "The ThreadSanitizer job" above, with the
   the hand-over's waits not carried by the readback (the owner-rule case fails: a `RequiredWait` breach); the open-recorder check removed (the errors case fails); the mutex of `ReadbackToGuest` removed (the two-threads case fails by itself, without ThreadSanitizer); the End mark accepted only in the recorder of its Begin (the timestamps case whose End is in a later recorder fails); `MarkFrame(Begin)` not refused inside a pass (the new Begin-in-pass case fails). The D16 mutant that truncates instead of rounding survives: an equivalent mutant on this device (the stored integer comes back exact from the float decode either way). The case `colour/every_stored_component_order...` also appears in the list
   of every failing readback run only because its skip message (`R4G4B4A4` is not sampleable on lavapipe) prints the case's name; it is not the cause.
 
-**`unverified` / pending, not claimed:** the RX 6700 XT (no `D24S8`, so the `D32S8` path is the one it runs: the legs above stand in for it on lavapipe; its timestamp period and valid bits), MoltenVK and KosmicKrisp,
+**`unverified` / pending, not claimed:** the RX 6700 XT for the counts above (both binaries now pass on it alone, see "Lifetime of a backend" below; the `D32S8` path is the one it runs, the byte checks of the depth cases passed there; its timestamp period and valid bits are not looked at), MoltenVK and KosmicKrisp,
 a second queue family (a wait or a hand-over across queues; lavapipe has one), the row direction against a capture (above), the PICA's own depth rounding, the `native-tsan` job on GitHub *(CI)*, and any
 claim about the cost of the CPU wait on a real present thread.
+
+### Lifetime of a backend, and the readback test on the RX 6700 XT (N2-28 follow-up)
+
+**What happened.** On the RX 6700 XT (AMD proprietary driver 26.10.1) `gpu_backend_readback_test` failed in `read_image/a_cleared_image_...` (every `ReadImage` returned wrong bytes), then
+`vkCreateDevice` failed in the next cases, and the driver took a timeout (WER `LiveKernelEvent` 0x141 in `amdkmdag.sys`). **`ReadImage` was not the cause**, nor the copy, the
+invalidate or the wait: run alone, `read_image/a_cleared...` and `read_image/a_region...` pass on the device with the right bytes (the first bytes of the mapped buffer after the wait were the
+clear colour, `FF 00 33 99`, `33`, `4A AD`, the halves, `55 55`, `00 00 80 3F`), and so does every other case of the file run alone, and the pair `depth/an_image_left...` then
+`read_image/a_cleared...` in one process. The `vkQueueSubmit failed with error code 0xFFFFFFFC` (`VK_ERROR_DEVICE_LOST`) lines of the failing run begin at the **tenth** device of the process, right after the
+first clear had completed, and the wrong bytes are what `ReadImage` returns when its submission is refused (the buffer is zero). So the candidates in the work package (a short `Invalidate`, a wait that does
+not wait, a layout hazard of the internal recorder) are all excluded by the alone runs, and `ReadbackToGuest` has the same readback path and is not different.
+
+**The defect: a reference cycle that kept every device alive.** `Backend::Impl` holds the modules' slots; what a slot keeps for the life of the backend holds `Backend::Impl` through a strong
+reference (every `Buffer`, `BindingSet` and `Pipeline` made by `CreateBuffer`, `MakeBindingSet` and `Create*Pipeline` does: the Impl must outlive them). The readback module keeps its three compute
+pipelines, their binding sets and its output and parameter buffers in `ReadbackData`; the targets module keeps the staging buffer of the last upload in `TargetsData::staging_pending` (it is dropped at the
+next upload, which may never come); the sync module keeps retired objects. So the `Backend::Impl` of any backend that did a `ReadbackToGuest` or an upload was never destroyed: its device, its queue and its
+instance stayed until the process ended, whatever the test or the program did with its `shared_ptr<Backend>`. Lavapipe does not mind (a software device); the test file makes a backend per case, the first seven
+cases made nine, all alive when the tenth was made, and the AMD driver lost the tenth. `gpu_backend_core_test` and `gpu_backend_targets_test` made many more devices and passed because their backends do not leak
+(the targets file leaks at most a few through its three uploads). `unverified`: why the driver loses a device when nine others are alive (a limit of contexts, or memory) is inferred, not measured; what is
+measured is that the leak exists (the new case fails without the release, below) and that with it the whole file passes alone on the device.
+
+**The release.** `CreateBackend` returns a `shared_ptr<Backend>` whose deleter, when the last handle goes, waits for the device (`vkDeviceWaitIdle`) and resets the four slots in the order `Impl`'s destructor
+would (`state`, `readback`, `sync`, `targets`) before the handle itself is deleted. The slot's resources then drop their references, and the `Impl` is destroyed with the handle (the device, the queue, the
+instance) unless an object of the user's (an `Image` kept after the handle) still holds it: that object keeps the device alive and finds the slots empty, and each module makes its slot again on first use (they all
+did already). The handles the modules make for themselves from an `Impl` (`Backend tmp(impl)` in the targets module) are not the returned one and release nothing. **The edit is in `core/device.cpp`**
+(`ReleaseWithLastHandle`, a function of 15 lines above `CreateBackend`, and the one line of `CreateBackend` that returns the handle, which was `std::make_shared<Backend>(std::move(impl))`); no other file of
+`core/`, `targets/` or `readback/` changed. A module added later (`state/`, N2-13 and N2-34) is covered the same way: a slot that holds resources cannot leak the device.
+
+**Measured on the PC (2026-10-31, the RX 6700 XT, `MH4N_REQUIRE_VULKAN=1 MH4N_VULKAN_DEVICE="RX 6700"`, each executable alone, one process, no GPU reset in the Windows event log and the display adapter `OK` after each):**
+`gpu_backend_readback_test` 14 cases passed, 0 failed, 1,150 of 1,150 assertions (it was 7 passed, 6 failed before; the new case, run alone before the release, failed three of its four legs); `gpu_backend_sync_test`
+12 passed, 335 of 335 (its first run on the device); `gpu_backend_core_test` 48 passed, 2 skipped, 1,750 of 1,750; `gpu_backend_targets_test` 35 passed, 7,968 of 7,968. On lavapipe the change only frees the devices earlier;
+that run is `pending (ci)`.
 
 ## Not checked on this machine
 
