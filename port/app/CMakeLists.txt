@@ -36,6 +36,9 @@ add_executable(mh4u
     # pause and fast forward, playing alone
     speed.cpp
     speed.h
+    # what the player is told when the game doesn't start or stops with an error
+    stop_message.cpp
+    stop_message.h
     # the keyboard-and-mouse mode's arithmetic (the mouse as the camera, the item bar's scroll)
     kbm.cpp
     kbm.h
@@ -88,6 +91,8 @@ target_sources(mh4u PRIVATE
     # the environment of the programs it starts, without the AppImage's additions (Linux)
     launcher/environment.cpp
     launcher/environment.h
+    launcher/game_file.cpp
+    launcher/game_file.h
     launcher/launcher.cpp
     launcher/launcher.h
     launcher/lobby.cpp

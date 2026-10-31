@@ -1,6 +1,7 @@
-// What the launcher's setup checks: the game file (Monster Hunter 4 Ultimate USA, decrypted),
-// the v1.3.0 update in Azahar's virtual SD card (and installing it from the player's .cia),
-// and the code library (installed, and built from the code the game will run).
+// What the launcher's setup checks: the game file (Monster Hunter 4 Ultimate USA, decrypted, its
+// RomFS where its headers say), the v1.3.0 update in Azahar's virtual SD card (and installing it
+// from the player's .cia), and the code library (installed, and built from the code the game will
+// run).
 #pragma once
 
 #include <atomic>
@@ -16,12 +17,22 @@ constexpr u64 MH4U_UPDATE = 0x0004000E00126300;
 constexpr u16 UPDATE_VERSION = 1072;  ///< v1.3.0 (config/versions.json)
 
 struct Game {
-    enum class State { Unset, Missing, NotA3ds, Encrypted, OtherGame, Ok };
+    enum class State {
+        Unset,
+        Missing,
+        NotA3ds,
+        Encrypted,
+        OtherGame,
+        BadRomFs,   ///< decrypted, its flags say, but the RomFS doesn't start as a decrypted one does
+        Truncated,  ///< the file ends before its RomFS does
+        Ok,
+    };
     State state = State::Unset;
     u64 program_id = 0;
 };
 
-/// Reads the game file's NCCH header (Azahar's NCCHContainer): which program, decrypted or not.
+/// Reads the game file's NCCH header (Azahar's NCCHContainer): which program, decrypted or not;
+/// then, for MH4U, the start of its RomFS (launcher/game_file.h).
 Game CheckGame(const std::string& path);
 
 /// A sentence for the player about the game file.

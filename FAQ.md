@@ -31,6 +31,9 @@ The setup recompiles the game's code from your update and then compiles it for y
 **Windows says "Bad Image ... 0xc0e90002"**
 That's Smart App Control blocking unsigned files (Azahar's DLLs, the compiler, the game's code library). Turn it off in *Windows Security → App & browser control → Smart App Control settings*. Since the April 2026 update, it can be turned back on later without reinstalling Windows.
 
+**"The game stopped" right after Play**
+The game itself gave up as it started, which can mean it couldn't read its own files: a mod, a damaged dump, or a game file that isn't decrypted properly. If mods are on, turn them off in the launcher's *Mods* and try again. Otherwise dump the game again with GodMode9 on your 3DS and choose the new `.3ds`, `.cci` or `.cxi` in the launcher's *Setup*, and install the v1.3.0 update again from a `.cia` that GodMode9 made (with `launcher = off` in `mh4u-app.ini`, start the app with `--launcher` to reach them). If it still stops, open an issue with the log (see *How do I report a bug?* below). Details: [Troubleshooting](docs/PLAYING.md#troubleshooting).
+
 **Can I keep my 3DS progress?**
 Yes. Back up the save on your console with Checkpoint, then copy its files into the game's save data folder while the game isn't running. Steps: [Your 3DS save](docs/PLAYING.md#your-3ds-save).
 
