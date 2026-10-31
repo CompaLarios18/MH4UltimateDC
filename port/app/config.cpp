@@ -104,6 +104,9 @@ bool KeyTaken(const Config& c, const std::string& spec) {
                              &c.fullscreen_key, &c.fps_counter_key}) {
         add(*keys);
     }
+    for (const auto& tap : c.touch_taps) {
+        add(tap.keys);
+    }
     const auto codes = Input::KeyCodes(spec);
     return std::any_of(codes.begin(), codes.end(),
                        [&used](int code) { return std::find(used.begin(), used.end(), code) != used.end(); });
@@ -203,6 +206,20 @@ Config Load() {
     c.pause_key = str("Controls", "pause_key", c.pause_key);
     c.fast_forward_key = str("Controls", "fast_forward_key", c.fast_forward_key);
     c.fast_forward_hold = flag("Controls", "fast_forward_hold", c.fast_forward_hold);
+    // the touch taps (taps.h), touch_tap_1 to touch_tap_8
+    for (int i = 1; i <= Taps::MAX; ++i) {
+        const std::string key = fmt::format("touch_tap_{}", i);
+        const std::string value = str("Controls", key.c_str(), "");
+        if (value.empty()) {
+            continue;
+        }
+        Taps::Tap tap;
+        if (!Taps::Parse(value, tap)) {
+            LOG_WARNING(Frontend, "{} = {} has no point (keys @ x y): left out", key, value);
+            continue;
+        }
+        c.touch_taps.push_back(std::move(tap));
+    }
     // keys new to this file don't take one the player already uses (the old layout had ZL on Tab)
     for (const auto& [key, value] : {std::pair{"pause_key", &c.pause_key},
                                      std::pair{"fast_forward_key", &c.fast_forward_key}}) {
@@ -210,6 +227,10 @@ Config Load() {
             LOG_INFO(Frontend, "{} = {} is taken by another binding: no key for it", key, *value);
             value->clear();
         }
+    }
+    // one key, one input: a tap's keys leave the other bindings
+    for (const std::string& line : SettleTouchTaps(c)) {
+        LOG_INFO(Frontend, "{}", line);
     }
 
     c.nickname = str("Multiplayer", "nickname", c.nickname);
@@ -238,6 +259,29 @@ void Save(const Config& config) {
     }
 }
 
+Taps::Others TapOthers(Config& c) {
+    Taps::Others others;
+    for (int i = 0; i < NativeButton::NumButtons; ++i) {
+        others.bindings.emplace_back(NativeButton::mapping[i], &c.keys[i]);
+    }
+    for (const auto& [name, keys] : {std::pair{"item_prev", &c.item_prev}, std::pair{"item_next", &c.item_next},
+                                     std::pair{"stylus_key", &c.stylus_key}}) {
+        others.bindings.emplace_back(name, keys);
+    }
+    for (int i = 0; i < NativeAnalog::NumAnalogs; ++i) {
+        others.sticks.emplace_back(NativeAnalog::mapping[i], &c.stick_keys[i]);
+    }
+    // the menu's Esc and the window's own keys, which the game never gets (window.cpp, OnKey)
+    others.own = {"Escape",         c.fullscreen_key, c.fps_counter_key,  c.touch_screen_key,
+                  c.key_guides_key, c.pause_key,      c.fast_forward_key};
+    return others;
+}
+
+std::vector<std::string> SettleTouchTaps(Config& config) {
+    Taps::Others others = TapOthers(config);
+    return Taps::Settle(config.touch_taps, others);
+}
+
 std::string Template(const Config& c) {
     std::string keys;
     for (int i = 0; i < NativeButton::NumButtons; ++i) {
@@ -256,6 +300,10 @@ std::string Template(const Config& c) {
         if (!c.stick_params[i].empty()) {
             params += fmt::format("param_{} = {}\n", NativeAnalog::mapping[i], c.stick_params[i]);
         }
+    }
+    std::string taps;
+    for (int i = 0; i < static_cast<int>(c.touch_taps.size()) && i < Taps::MAX; ++i) {
+        taps += fmt::format("touch_tap_{} = {}\n", i + 1, Taps::Format(c.touch_taps[i]));
     }
     return fmt::format(R"(# MH4U PC port: the app's settings. The game's own options (frame rate, widescreen, the touch
 # screen's corner, the kick and target camera buttons, the screen filters) are in mh4u.ini next
@@ -357,7 +405,14 @@ fps_counter_key = {}
 pause_key = {}
 fast_forward_key = {}
 fast_forward_hold = {}
-
+# touch taps: while one of a tap's keys is held, the touch screen is touched at the tap's point
+# (x 0-319 from its left edge, y 0-239 from its top edge, in its own pixels), say an item
+# shortcut or a panel; a name after the point is what the key guides show. Up to 8, touch_tap_1
+# to touch_tap_8, e.g. touch_tap_1 = Z @ 52 220 Mega potion (keys as for a 3DS button, F | Z for
+# two; the ; key as |;, since a ; after a space starts a comment). A key on a tap leaves the
+# other inputs it was on (the app's own keys above stay theirs); the mouse touching the screen
+# comes first
+{}
 [Multiplayer]
 # MH4U's local play over the internet, through a room (Azahar's network rooms; docs/SERVER.md).
 # The in-game menu's Multiplayer tab (Esc) joins, hosts and leaves rooms while the game runs and
@@ -399,7 +454,7 @@ catalog_url = {}
                        c.mouse_vertical, OnOff(c.mouse_invert_y), OnOff(c.mouse_invert_x), c.mouse_deadzone, c.item_prev, c.item_next,
                        c.stylus_key, c.key_guides, c.key_guides_key, c.controller_auto ? "auto" : "off", keys,
                        params, c.touch_screen_key, c.fullscreen_key, c.fps_counter_key, c.pause_key,
-                       c.fast_forward_key, OnOff(c.fast_forward_hold), c.nickname, c.join, c.password,
+                       c.fast_forward_key, OnOff(c.fast_forward_hold), taps, c.nickname, c.join, c.password,
                        c.host, c.room_port, c.room_name, c.room_members, c.lobby, c.token,
                        OnOff(c.room_public), OnOff(c.lan_discovery), c.last_room, c.catalog_url);
 }

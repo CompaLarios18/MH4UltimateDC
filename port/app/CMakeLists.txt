@@ -39,6 +39,9 @@ add_executable(mh4u
     # the keyboard-and-mouse mode's arithmetic (the mouse as the camera, the item bar's scroll)
     kbm.cpp
     kbm.h
+    # touch taps: keys that touch the touch screen at a point, and their one-key-one-input rule
+    taps.cpp
+    taps.h
     window.cpp
     window.h
     # the in-game menu (Dear ImGui over the game) and the 3DS software keyboard
@@ -57,6 +60,8 @@ add_executable(mh4u
     ui/multiplayer_tab.h
     ui/options.cpp
     ui/options.h
+    ui/touch_taps.cpp
+    ui/touch_taps.h
     ui/ui.cpp
     ui/ui.h
 )

@@ -1,7 +1,7 @@
 // The key guides: while the game is played with the keyboard and mouse, the keys for what the
 // hunter does drawn small over the game (mh4u-app.ini's [Controls] key_guides, a corner or off),
-// each with the 3DS button the game's own prompts name. key_guides_key (F1) and the menu's
-// Controls tab show and hide them.
+// each with the 3DS button the game's own prompts name, and the touch taps' keys with what they
+// touch. key_guides_key (F1) and the menu's Controls tab show and hide them.
 #pragma once
 
 #include <string>

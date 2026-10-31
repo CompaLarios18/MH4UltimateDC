@@ -48,6 +48,9 @@ In the port's app, playing alone: **P** pauses, **Tab** runs the game at 2x (the
 **In a quest the whole touch screen stays in the corner, and the map settings do nothing**
 The map view shows the map panel of your touch screen's panel layout. Without one (*Customize Panels* in the quest menu), the corner keeps the whole touch screen, so the map's size and place, *Edit HUD layout* and F12 change nothing: put the map panel back. The log says so once a quest, and the app says why when F12 has nothing to switch (this, the touch screen not over the game in a corner, or *In quests, only the map* off). With the map panel there, F12 or the right stick's click may have switched quests to the whole touch screen: press it again. Details: *The bottom screen* in [Options](docs/PLAYING.md#3-options).
 
+**Keys for the touch screen (an item shortcut, the target camera)?**
+In the port's app: touch taps. `touch_tap_1 = Z @ 52 220` in `mh4u-app.ini` touches the touch screen at that point (x from its left edge, y from its top, in its 320x240 pixels) while Z is held; up to 8. Details: [Or play with the port's app](docs/PLAYING.md#2b-or-play-with-the-ports-app).
+
 **Steam Deck?**
 There's a Linux build, not tried on a Deck yet. If you try it, open an issue and tell us how it went.
 
