@@ -13,7 +13,7 @@ namespace {
 constexpr std::array<std::string_view, kCapCount> kCapNames = {
     "d24s8",    "interlock",         "index_uint8",      "custom_border_color", "triangle_fans",
     "logic_op", "dynamic_rendering", "pipeline_library", "eds3_blend",          "bc7",
-    "timeline", "present_wait",      "direct_upload",
+    "timeline", "present_wait",      "direct_upload",    "geometry_shader",
 };
 
 std::string Lower(std::string_view text) {

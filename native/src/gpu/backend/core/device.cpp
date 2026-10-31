@@ -249,6 +249,7 @@ void ApplyMask(Capabilities& caps, CapabilityMask mask) {
     if (mask.Has(Cap::Timeline)) caps.timeline = false;
     if (mask.Has(Cap::PresentWait)) caps.present_wait = false;
     if (mask.Has(Cap::DirectUpload)) caps.direct_upload = false;
+    if (mask.Has(Cap::GeometryShader)) caps.geometry_shader = false;
     caps.masked = mask;
 }
 
@@ -287,6 +288,28 @@ bool Backend::HasSurface() const {
 }
 
 // ---- CreateBackend -------------------------------------------------------------------------------
+
+namespace {
+
+// The last handle CreateBackend returned is going away. What the modules keep for the life of a backend (the readback
+// module's pipelines, binding sets and buffers, the targets module's staging buffers, the sync module's retired objects)
+// holds Backend::Impl through a strong reference (every Buffer, BindingSet and Pipeline does), and Impl holds the slots that
+// hold them: a cycle that would keep the device and the instance alive until the process ends (on the RX 6700 XT, nine
+// such devices alive when the tenth was lost). So the slots are released here, once the GPU is idle, in the order the
+// destructor of Impl would have used; a slot made again later (an object that outlives the handle) is made empty on first use.
+void ReleaseWithLastHandle(Backend* backend) {
+    Backend::Impl& impl = backend->impl();
+    if (impl.device != nullptr && impl.device->vk != VK_NULL_HANDLE) {
+        vkDeviceWaitIdle(impl.device->vk);
+    }
+    impl.state.reset();
+    impl.readback.reset();
+    impl.sync.reset();
+    impl.targets.reset();
+    delete backend;
+}
+
+} // namespace
 
 Result<std::shared_ptr<Backend>> CreateBackend(std::shared_ptr<Instance> instance, const BackendOptions& options) {
     if (instance == nullptr) {
@@ -350,7 +373,7 @@ Result<std::shared_ptr<Backend>> CreateBackend(std::shared_ptr<Instance> instanc
     VkPhysicalDeviceFeatures wanted_features = {};
     wanted_features.fragmentStoresAndAtomics = VK_TRUE;
     wanted_features.vertexPipelineStoresAndAtomics = VK_TRUE;
-    wanted_features.geometryShader = VK_TRUE;
+    wanted_features.geometryShader = mask.Has(Cap::GeometryShader) ? VK_FALSE : VK_TRUE;
     wanted_features.shaderClipDistance = VK_TRUE;
     wanted_features.samplerAnisotropy = VK_TRUE;
     wanted_features.imageCubeArray = VK_TRUE;
@@ -406,7 +429,7 @@ Result<std::shared_ptr<Backend>> CreateBackend(std::shared_ptr<Instance> instanc
     caps.timeline = caps.timeline && enabled.timelineSemaphore;
     caps.logic_op = caps.logic_op && device->enabledCoreFeatures.logicOp;
     caps.bc7 = caps.bc7 && device->enabledCoreFeatures.textureCompressionBC;
-    caps.geometry_shader = device->enabledCoreFeatures.geometryShader != VK_FALSE;
+    caps.geometry_shader = caps.geometry_shader && device->enabledCoreFeatures.geometryShader != VK_FALSE;
     impl->present_wait_available =
         core::PresentWaitAvailable(surface != VK_NULL_HANDLE, caps.present_wait, enabled.presentWait);
     impl->display_timing_available = surface != VK_NULL_HANDLE && enabled.displayTiming;
@@ -460,12 +483,13 @@ Result<std::shared_ptr<Backend>> CreateBackend(std::shared_ptr<Instance> instanc
     MH4N_LOG(Info, "RHI",
              "rhi: caps d24s8={} interlock={} index_uint8={} custom_border_color={} triangle_fans={} logic_op={} "
              "dynamic_rendering={} "
-             "pipeline_library={} eds3_blend={} bc7={} timeline={} present_wait={} direct_upload={}",
+             "pipeline_library={} eds3_blend={} bc7={} timeline={} present_wait={} direct_upload={} geometry_shader={}",
              c.d24s8, c.interlock, c.index_uint8, c.custom_border_color, c.triangle_fans, c.logic_op,
-             c.dynamic_rendering, c.pipeline_library, c.eds3_blend, c.bc7, c.timeline, c.present_wait, c.direct_upload);
+             c.dynamic_rendering, c.pipeline_library, c.eds3_blend, c.bc7, c.timeline, c.present_wait, c.direct_upload,
+             c.geometry_shader);
     MH4N_LOG(Info, "RHI", "rhi: device extensions enabled: {}", core::JoinNames(impl->enabled_extensions));
 
-    return std::make_shared<Backend>(std::move(impl));
+    return std::shared_ptr<Backend>(new Backend(std::move(impl)), ReleaseWithLastHandle);
 }
 
 } // namespace mh4n::gpu::rhi

@@ -746,3 +746,35 @@ TEST_CASE("readback/two_threads_reading_back_different_images_at_once_get_their_
     CHECK(colour_right.load() == kRounds);
     CHECK(depth_right.load() == kRounds);
 }
+
+// ---- lifetime (the finding on the RX 6700 XT) ---------------------------------------------------------------------------------
+
+// What the modules keep for the life of a backend (the readback module's pipelines, binding sets and buffers; the targets
+// module's staging buffers until the next upload) holds the backend's private state through a strong reference, and that state
+// holds the module's data: a cycle, unless the last handle of the backend breaks it. Without that the device of every backend
+// that read an image back stays alive until the process ends. Lavapipe does not mind; the AMD driver on the RX 6700 XT had
+// nine such devices alive when the tenth one was lost (gpu_backend_readback_test reset the GPU, N2-28 follow-up).
+TEST_CASE("lifetime/a_backend_is_destroyed_with_its_last_handle_after_a_readback_an_upload_and_a_read_image") {
+    enum Use { Readback_, Upload_, ReadImage_, All_ };
+    for (const Use use : {Readback_, Upload_, ReadImage_, All_}) {
+        INFO("use " << static_cast<int>(use));
+        std::shared_ptr<Backend> backend = MakeBackend();
+        if (!backend) return;
+        std::weak_ptr<Backend::Impl> weak = backend->impl().shared_from_this();
+        {
+            std::shared_ptr<Image> image = MakeImage(*backend, Format::Rgba8Unorm, 8, 8);
+            if (use == Upload_ || use == All_) Fill(*backend, *image, 8, 8, Repeat({0x10, 0x20, 0x30, 0xFF}, 64));
+            else ClearAndWait(*backend, *image, Color(1.0f, 0.0f, 0.2f, 0.6f));
+            if (use == Readback_ || use == All_) {
+                std::vector<u8> bytes(8 * 8 * 4);
+                REQUIRE(backend->ReadbackToGuest(*image, Rect{0, 0, 8, 8}, PicaFormat::Rgba8, bytes).ok());
+            }
+            if (use == ReadImage_ || use == All_) {
+                REQUIRE(backend->ReadImage(*image, 0, 0, 8, 8).ok());
+            }
+            CHECK_FALSE(weak.expired());  // alive while the handle is
+        }
+        backend.reset();
+        CHECK(weak.expired());  // the device and the instance go with the last handle
+    }
+}

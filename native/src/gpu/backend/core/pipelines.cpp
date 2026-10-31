@@ -200,6 +200,9 @@ Result<std::shared_ptr<Pipeline>> Backend::CreateGraphicsPipeline(const Graphics
     if (!desc.geometry.spirv.empty() && !caps.geometry_shader) {
         return Error{where + "geometry shaders are not available on this device"};
     }
+    if (Result<void> checked = core::CheckSpecialization(desc.specialization); !checked.ok()) {
+        return Error{where + checked.error()};
+    }
     if (desc.vertex_layout.bindings.size() > kMaxVertexBindings ||
         desc.vertex_layout.attributes.size() > kMaxVertexAttributes) {
         return Error{where + fmt::format("{} vertex bindings and {} attributes: the limits are {} and {}",

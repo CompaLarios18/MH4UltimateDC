@@ -1,0 +1,10 @@
+# <array name> <file> [glslang options]
+spv_vert_red fs.vert
+spv_geom_pass passthrough.geom
+spv_frag_color_in color_in.frag
+spv_frag_uber uber.frag
+spv_frag_block block.frag
+spv_frag_luts luts.frag
+spv_frag_dst dst.frag
+spv_frag_shadow_write shadow_write.frag
+spv_frag_textures textures.frag

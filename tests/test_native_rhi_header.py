@@ -120,12 +120,12 @@ def test_rhi_h_declares_every_operation(group):
 def test_the_capability_bits_are_the_ones_of_9_4():
     text = RHI.read_text()
     for bit in ["d24s8", "interlock", "index_uint8", "custom_border_color", "triangle_fans", "logic_op", "dynamic_rendering",
-                "pipeline_library", "eds3_blend", "bc7", "timeline", "present_wait", "direct_upload"]:
+                "pipeline_library", "eds3_blend", "bc7", "timeline", "present_wait", "direct_upload", "geometry_shader"]:
         assert re.search(rf"\bbool {bit} = false;", text), f"Capabilities lacks the bit {bit}"
-    for value in ["geometry_shader", "stride_alignment", "apple", "primitive_restart_always_on", "portability_subset", "driver_id",
+    for value in ["stride_alignment", "apple", "primitive_restart_always_on", "portability_subset", "driver_id",
                   "driver_name", "device_name", "api_version", "timestamp_period", "max_texel_buffer_elements"]:
         assert re.search(rf"\b{value}\b\s*(=|;)", text), f"Capabilities lacks the value {value}"
-    assert "kCapCount = 13" in text
+    assert "kCapCount = 14" in text
 
 
 def test_vulkan_access_h_is_the_vulkan_side():

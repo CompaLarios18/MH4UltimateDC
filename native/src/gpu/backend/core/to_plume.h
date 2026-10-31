@@ -24,6 +24,7 @@ struct PlumeGraphicsDesc {
     ::plume::RenderGraphicsPipelineDesc desc;
     std::vector<::plume::RenderInputSlot> slots;
     std::vector<::plume::RenderInputElement> elements;
+    std::vector<::plume::RenderSpecConstant> spec_constants;
 
     PlumeGraphicsDesc() = default;
     PlumeGraphicsDesc(const PlumeGraphicsDesc&) = delete;
@@ -41,10 +42,14 @@ struct PlumeGraphicsDesc {
 Result<void> ToPlume(const FixedFunctionState& state, bool color_attachment, ::plume::RenderGraphicsPipelineDesc* desc);
 
 // The whole description: ToPlume(state), the topology, the attachment formats and the vertex layout
-// (slots and elements, filled into `out`). The shaders and the pipeline layout are the caller's.
+// (slots and elements, filled into `out`) and the specialisation constants (one list, `specConstants`; an id
+// twice is an error, CheckSpecialization). The shaders and the pipeline layout are the caller's.
 Result<void> ToPlume(const GraphicsPipelineDesc& desc, const ::plume::RenderShader* vertex,
                      const ::plume::RenderShader* fragment, const ::plume::RenderShader* geometry,
                      const ::plume::RenderPipelineLayout* layout, PlumeGraphicsDesc* out);
+
+// The pipeline's specialisation list (N2-34) is valid when no id appears twice. The error names the id.
+Result<void> CheckSpecialization(const std::vector<SpecConstant>& list);
 
 // One of the interface's enumerations into the vendored backend's.
 ::plume::RenderComparisonFunction ToPlume(CompareOp op);
