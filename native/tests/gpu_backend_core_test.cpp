@@ -1136,6 +1136,209 @@ TEST_CASE("mask/triangle_fans_are_refused_when_masked") {
     CHECK(masked->CreateGraphicsPipeline(desc).ok());
 }
 
+// ---- the geometry_shader bit and the specialisation constants (N2-34) ---------------------------------------------
+
+namespace {
+
+BindingSetDesc OnlyStorage() {
+    BindingSetDesc desc;
+    desc.slots = {{0, BindingType::StorageBuffer}};
+    return desc;
+}
+
+// tri.vert + spec_write.frag (+ pass.geom when `with_geometry`): the fragment stage of an 8x8 pass with no
+// attachments writes data[y * 8 + x] = kValue + kExtra * 100 for each of the 64 pixels.
+GraphicsPipelineDesc SpecWriteDesc(bool with_geometry, std::vector<SpecConstant> list = {}) {
+    GraphicsPipelineDesc desc;
+    desc.vertex.spirv = tri_vert;
+    desc.fragment.spirv = spec_write_frag;
+    if (with_geometry) desc.geometry.spirv = pass_geom;
+    desc.sets = {OnlyStorage()};
+    desc.specialization = std::move(list);
+    desc.name = "spec write";
+    return desc;
+}
+
+// Draws the full-screen triangle of `pipeline` into an 8x8 pass and returns the 64 words its fragment stage wrote.
+std::vector<u32> DrawSpecWrite(Backend& backend, const Pipeline& pipeline) {
+    std::shared_ptr<Buffer> storage = Make(backend, 64 * 4, Heap::Device, BufferUsage::Storage | BufferUsage::Transfer, "storage");
+    std::shared_ptr<Buffer> zeros = Make(backend, 64 * 4, Heap::Upload, BufferUsage::Transfer, "zeros");
+    std::memset(zeros->Mapped().data(), 0, 64 * 4);
+    zeros->Flush(0, 64 * 4);
+    Result<std::shared_ptr<BindingSet>> set = backend.CreateBindingSet(OnlyStorage());
+    REQUIRE_MESSAGE(set.ok(), set.error());
+    REQUIRE((*set)->SetStorageBuffer(0, *storage, 0, 64 * 4).ok());
+    Recorder rec = backend.BeginRecording();
+    rec.CopyBuffer(*storage, 0, *zeros, 0, 64 * 4);
+    rec.Barrier(Stage::Transfer, Stage::FragmentShader);
+    rec.BeginPass({8, 8});
+    rec.SetPipeline(pipeline);
+    rec.Bind(**set, 0);
+    rec.Draw(3);
+    rec.EndPass();
+    return ReadWords(backend, *storage, 64, backend.Submit(std::move(rec)));
+}
+
+// True when all 64 words are `expected` (the first one that differs is reported).
+bool AllPixels(const std::vector<u32>& words, u32 expected) {
+    REQUIRE(words.size() == 64);
+    for (u32 i = 0; i < 64; ++i) {
+        if (words[i] != expected) {
+            MESSAGE("pixel " << (i % 8) << "," << (i / 8) << " is " << words[i] << ", expected " << expected);
+            return false;
+        }
+    }
+    return true;
+}
+
+}  // namespace
+
+TEST_CASE("mask/geometry_shader_is_a_bit_the_mask_turns_off") {
+    // the name, the parser, "all" and the text form
+    CHECK(CapName(Cap::GeometryShader) == "geometry_shader");
+    CHECK(static_cast<u32>(Cap::GeometryShader) == kCapCount - 1);
+    CHECK(CapabilityMask::Parse("geometry_shader").value() == CapabilityMask{}.With(Cap::GeometryShader));
+    CHECK(CapabilityMask::Parse("bc7, Geometry_Shader").value().Has(Cap::GeometryShader));
+    CHECK(CapabilityMask::Parse("all").value().Has(Cap::GeometryShader));
+    CHECK(CapabilityMask::All().ToString() == "all");
+    CHECK(CapabilityMask{}.With(Cap::GeometryShader).ToString() == "geometry_shader");
+    Capabilities caps;
+    CHECK_FALSE(caps.Has(Cap::GeometryShader));
+    caps.geometry_shader = true;  // Has reads the field of the same name
+    CHECK(caps.Has(Cap::GeometryShader));
+    CHECK_FALSE(caps.Has(Cap::DirectUpload));
+
+    ScopedEnv no_ambient_mask("MH4N_RHI_MASK", nullptr);
+    std::shared_ptr<Backend> full = test::RequireBackend();
+    if (!full) return;
+    if (!full->Caps().geometry_shader) {
+        MESSAGE("this device has no geometry shaders: the unmasked half of the case does not apply");
+    } else {
+        // unmasked: the feature is on the device and a pass-through geometry stage draws what the other route draws
+        CHECK(full->impl().device->enabledCoreFeatures.geometryShader == VK_TRUE);
+        Result<std::shared_ptr<Pipeline>> with = full->CreateGraphicsPipeline(SpecWriteDesc(true));
+        REQUIRE_MESSAGE(with.ok(), with.error());
+        Result<std::shared_ptr<Pipeline>> without = full->CreateGraphicsPipeline(SpecWriteDesc(false));
+        REQUIRE_MESSAGE(without.ok(), without.error());
+        CHECK(AllPixels(DrawSpecWrite(*full, **with), 7));
+        CHECK(AllPixels(DrawSpecWrite(*full, **without), 7));
+    }
+
+    // masked, by the environment and by the options: the bit and the device feature are off, a pipeline with a
+    // geometry stage is refused with the message, and the route without it still draws
+    const auto check_masked = [&](const std::shared_ptr<Backend>& masked, const char* how) {
+        INFO("masked by " << how);
+        CHECK_FALSE(masked->Caps().geometry_shader);
+        CHECK_FALSE(masked->Caps().Has(Cap::GeometryShader));
+        CHECK(masked->Caps().masked.Has(Cap::GeometryShader));
+        CHECK(masked->impl().device->enabledCoreFeatures.geometryShader == VK_FALSE);
+        CHECK(masked->impl().device->getCapabilities().geometryShader == false);
+        Result<std::shared_ptr<Pipeline>> refused = masked->CreateGraphicsPipeline(SpecWriteDesc(true));
+        REQUIRE_FALSE(refused.ok());
+        CHECK(refused.error().find("geometry shaders are not available on this device") != std::string::npos);
+        CHECK(refused.error().find("spec write") != std::string::npos);  // the pipeline's name
+        Result<std::shared_ptr<Pipeline>> plain = masked->CreateGraphicsPipeline(SpecWriteDesc(false));
+        REQUIRE_MESSAGE(plain.ok(), plain.error());
+        CHECK(AllPixels(DrawSpecWrite(*masked, **plain), 7));
+    };
+    {
+        ScopedEnv env("MH4N_RHI_MASK", "geometry_shader");
+        std::shared_ptr<Backend> masked = test::RequireBackend();
+        if (!masked) return;
+        check_masked(masked, "MH4N_RHI_MASK=geometry_shader");
+        // only that bit is off: a device that has the others still has them
+        for (Cap cap : AllCaps()) {
+            if (cap != Cap::GeometryShader) {
+                CHECK_MESSAGE(masked->Caps().Has(cap) == full->Caps().Has(cap), CapName(cap));
+            }
+        }
+    }
+    {
+        BackendOptions options;
+        options.mask = CapabilityMask{}.With(Cap::GeometryShader);
+        std::shared_ptr<Backend> masked = test::RequireBackend(options);
+        if (!masked) return;
+        check_masked(masked, "BackendOptions::mask");
+    }
+    {
+        ScopedEnv env("MH4N_RHI_MASK", "all");
+        std::shared_ptr<Backend> masked = test::RequireBackend();
+        if (!masked) return;
+        CHECK_FALSE(masked->Caps().geometry_shader);
+        CHECK(masked->impl().device->enabledCoreFeatures.geometryShader == VK_FALSE);
+    }
+}
+
+TEST_CASE("pipelines/specialisation_constants_set_what_the_shader_draws") {
+    ScopedEnv no_ambient_mask("MH4N_RHI_MASK", nullptr);
+    std::shared_ptr<Backend> backend = test::RequireBackend();
+    if (!backend) return;
+    const auto draw = [&](std::vector<SpecConstant> list, bool with_geometry = false) {
+        Result<std::shared_ptr<Pipeline>> pipeline = backend->CreateGraphicsPipeline(SpecWriteDesc(with_geometry, std::move(list)));
+        REQUIRE_MESSAGE(pipeline.ok(), pipeline.error());
+        return DrawSpecWrite(*backend, **pipeline);
+    };
+    // no list: the default the shader declares
+    CHECK(AllPixels(draw({}), 7));
+    // two pipelines given 1 and 2 draw two different results
+    CHECK(AllPixels(draw({{0, 1}}), 1));
+    CHECK(AllPixels(draw({{0, 2}}), 2));
+    // all 32 bits of the value arrive; the order of the list does not matter; two ids in one list
+    CHECK(AllPixels(draw({{0, 0xFFFFFFFFu}}), 0xFFFFFFFFu));
+    CHECK(AllPixels(draw({{0, 5}, {3, 2}}), 205));
+    CHECK(AllPixels(draw({{3, 2}, {0, 5}}), 205));
+    // an id the list leaves out keeps its default (kValue stays 7)
+    CHECK(AllPixels(draw({{3, 1}}), 107));
+    // an id that no module declares changes nothing: the vertex stage declares none of these, and the fragment
+    // stage not id 9 (the Vulkan rule quoted in rhi.h)
+    CHECK(AllPixels(draw({{0, 4}, {9, 123}}), 4));
+    CHECK(AllPixels(draw({{9, 123}}), 7));
+    // the same through a geometry stage, which declares no constant either, when the device has one
+    if (backend->Caps().geometry_shader) {
+        CHECK(AllPixels(draw({{0, 3}, {3, 1}}, true), 103));
+        CHECK(AllPixels(draw({}, true), 7));
+    }
+}
+
+TEST_CASE("pipelines/duplicate_specialisation_ids_fail_with_a_message") {
+    ScopedEnv no_ambient_mask("MH4N_RHI_MASK", nullptr);
+    std::shared_ptr<Backend> backend = test::RequireBackend();
+    if (!backend) return;
+    for (const std::vector<SpecConstant>& list : {std::vector<SpecConstant>{{0, 1}, {0, 2}},
+                                                  std::vector<SpecConstant>{{0, 1}, {3, 1}, {0, 1}},
+                                                  std::vector<SpecConstant>{{9, 1}, {9, 1}}}) {
+        Result<std::shared_ptr<Pipeline>> pipeline = backend->CreateGraphicsPipeline(SpecWriteDesc(false, list));
+        REQUIRE_FALSE(pipeline.ok());
+        CHECK(pipeline.error().find("spec write") != std::string::npos);
+        CHECK(pipeline.error().find("given twice") != std::string::npos);
+        CHECK(pipeline.error().find("constant " + std::to_string(list.back().id)) != std::string::npos);
+    }
+    // the check sits in the translation too, so it holds for anyone who calls it
+    CHECK_FALSE(core::CheckSpecialization({{4, 1}, {4, 1}}).ok());
+    CHECK(core::CheckSpecialization({{4, 1}, {5, 1}}).ok());
+    CHECK(core::CheckSpecialization({}).ok());
+    // the same ids with different values in separate lists are fine, and so is an empty list
+    CHECK(backend->CreateGraphicsPipeline(SpecWriteDesc(false, {{0, 1}, {3, 1}})).ok());
+}
+
+TEST_CASE("pipelines/specialisation_list_reaches_the_vendored_description") {
+    // No device: the list is handed on as the vendored backend's pairs, in order, and an empty list as none.
+    GraphicsPipelineDesc desc = SpecWriteDesc(false, {{7, 0xAABBCCDDu}, {1, 5}});
+    core::PlumeGraphicsDesc out;
+    REQUIRE(core::ToPlume(desc, nullptr, nullptr, nullptr, nullptr, &out).ok());
+    REQUIRE(out.desc.specConstantsCount == 2);
+    CHECK(out.desc.specConstants[0].index == 7);
+    CHECK(out.desc.specConstants[0].value == 0xAABBCCDDu);
+    CHECK(out.desc.specConstants[1].index == 1);
+    CHECK(out.desc.specConstants[1].value == 5);
+    desc.specialization.clear();
+    REQUIRE(core::ToPlume(desc, nullptr, nullptr, nullptr, nullptr, &out).ok());
+    CHECK(out.desc.specConstantsCount == 0);
+    CHECK(out.desc.specConstants == nullptr);
+    desc.specialization = {{2, 1}, {2, 1}};
+    CHECK_FALSE(core::ToPlume(desc, nullptr, nullptr, nullptr, nullptr, &out).ok());
+}
+
 TEST_CASE("mask/the_fence_fallback_runs_without_the_timeline") {
     BackendOptions options;
     options.mask = CapabilityMask{}.With(Cap::Timeline);
@@ -1752,7 +1955,8 @@ TEST_CASE("mask/the_name_of_each_bit_is_a_literal") {
                  {"bc7", Cap::Bc7},
                  {"timeline", Cap::Timeline},
                  {"present_wait", Cap::PresentWait},
-                 {"direct_upload", Cap::DirectUpload}};
+                 {"direct_upload", Cap::DirectUpload},
+                 {"geometry_shader", Cap::GeometryShader}};
     CHECK(sizeof(table) / sizeof(table[0]) == kCapCount);
     for (const auto& row : table) {
         CHECK(CapName(row.cap) == row.name);

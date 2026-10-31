@@ -138,12 +138,13 @@ enum class Cap : u8 {
     Timeline,           // "timeline": timeline semaphores (without them every submission uses a fence)
     PresentWait,        // "present_wait": a presentation id and a wait for it
     DirectUpload,       // "direct_upload": the host can write device memory directly (else uploads are staged)
+    GeometryShader,     // "geometry_shader": geometry shaders (N2-34: the device enables the feature only when this is on)
 };
-inline constexpr u32 kCapCount = 13;
+inline constexpr u32 kCapCount = 14;
 
 // The name of a bit: "d24s8", "interlock", "index_uint8", "custom_border_color", "triangle_fans",
 // "logic_op", "dynamic_rendering", "pipeline_library", "eds3_blend", "bc7", "timeline", "present_wait",
-// "direct_upload".
+// "direct_upload", "geometry_shader".
 std::string_view CapName(Cap cap);
 
 // A set of capability bits to turn OFF. A mask only ever turns bits off, never on.
@@ -184,9 +185,12 @@ struct Capabilities {
     // Reported, but no path acts on it: the Device heap is not mapped and the vendored backend's images are
     // never host-writable, so images are always filled through a staging buffer.
     bool direct_upload = false;
+    // Geometry shaders (a GraphicsPipelineDesc with a geometry stage). A bit since N2-34: the mask can turn
+    // it off, and then the device really does not enable the feature, so the route without a geometry stage
+    // runs on a device that has one (MH4N_RHI_MASK=geometry_shader).
+    bool geometry_shader = false;
 
     // ---- values ----
-    bool geometry_shader = false;
     // Vertex strides must be multiples of it (the portability subset's value; 1 otherwise).
     u32 stride_alignment = 1;
     // MoltenVK's or KosmicKrisp's driver id, or Apple's vendor id. On such devices fans are rewritten as
@@ -228,6 +232,7 @@ struct Capabilities {
         case Cap::Timeline: return timeline;
         case Cap::PresentWait: return present_wait;
         case Cap::DirectUpload: return direct_upload;
+        case Cap::GeometryShader: return geometry_shader;
         }
         return false;
     }
@@ -649,10 +654,17 @@ struct FixedFunctionState {
     float depth_bias_slope = 0.0f;
 };
 
+// One specialisation constant: the value for the `layout(constant_id = id) const` of a shader module. The
+// value is passed as the 32 bits of a uint32 (a bool, an int, a uint or a float written with its bits).
+struct SpecConstant {
+    u32 id = 0;
+    u32 value = 0;
+};
+
 struct GraphicsPipelineDesc {
     ShaderCode vertex;
     ShaderCode fragment;  // empty spirv: no fragment shader (a pass with no attachments)
-    ShaderCode geometry;  // empty spirv: none; needs Capabilities::geometry_shader
+    ShaderCode geometry;  // empty spirv: none; needs Capabilities::geometry_shader (a bit: the mask can turn it off)
     VertexLayout vertex_layout;
     Topology topology = Topology::TriangleList;  // TriangleFan needs Capabilities::triangle_fans
     // The attachment formats the pipeline is used with (Format{} = none). The formats are the ones the
@@ -662,6 +674,16 @@ struct GraphicsPipelineDesc {
     FixedFunctionState state;
     std::vector<BindingSetDesc> sets;  // the shape of each set index the shaders use
     std::string name;
+    // Specialisation constants (N2-34), empty: every constant keeps the default its module declares. ONE list
+    // for the whole pipeline, applied to every stage it has: the vendored backend builds a single
+    // specialisation description and gives it to the vertex, geometry and fragment stages alike, so a value
+    // cannot differ per stage (a list per stage would need a patch to it). A constant id that a stage's
+    // module does not declare does not affect that stage, by the Vulkan specification's rule for specialisation
+    // map entries: "If a constantID value is not a specialization constant ID used in the shader, that map
+    // entry does not affect the behavior of the pipeline." So one list can carry the constants of all the
+    // stages, as long as an id means the same thing in each module that declares it. Creation fails, with a
+    // message, when an id appears twice. Compute pipelines take none.
+    std::vector<SpecConstant> specialization;
 };
 
 struct ComputePipelineDesc {
