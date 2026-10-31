@@ -237,6 +237,51 @@ def test_position_needs_three_names_and_the_columns():
         op.validate_position(records(trace_text()), op.parse_session(SESSION), ("p", "q", "r"), 60)
 
 
+# an attack press (A at f820, after the second walk) makes the hunter move by itself from f823 on: not circle-pad input
+ATTACK_SESSION = SESSION + "f820:A:f6\n"
+ATTACK_FRAME, FIRST_MOVE = 820, 823
+
+
+def swinging(frame):
+    x, y, z = position_at(frame)
+    return (x + (0.5 * min(frame - FIRST_MOVE + 1, 40) if frame >= FIRST_MOVE else 0.0), y, z)
+
+
+def test_position_restricted_to_the_part_before_the_first_attack_press():
+    text = trace_text(swinging)
+    ok, why, _ = check_position(text, ATTACK_SESSION)                  # the whole hunt: the swing is a move without input
+    assert not ok and "without movement input" in why and f"first at frame {FIRST_MOVE}" in why
+    ok, why, details = check_position(text, ATTACK_SESSION, end=FIRST_MOVE - 1)
+    assert ok, why
+    assert any("hunt frames 200 to 822" in d for d in details)
+
+
+def test_position_command_prints_the_restriction_it_used(tmp_path):
+    session, trace = tmp_path / "S.txt", tmp_path / "t.txt"
+    session.write_text(ATTACK_SESSION)
+    trace.write_text(trace_text(swinging))
+    done = run("validate", "--trace", trace, "--session", session, "--rule", "position")
+    assert done.returncode == 1 and done.stdout.startswith("invalid: the position changes inside the stretch")
+    assert "restricted" not in done.stdout                              # nothing was restricted
+    done = run("validate", "--trace", trace, "--session", session, "--rule", "position", "--to", FIRST_MOVE - 1)
+    assert done.returncode == 0 and done.stdout == f"valid (hunt restricted by --to {FIRST_MOVE - 1})\n", done.stdout + done.stderr
+    done = run("validate", "--trace", trace, "--session", session, "--rule", "position", "--from", 210, "--to", 822)
+    assert done.stdout == "valid (hunt restricted by --from 210 --to 822)\n", done.stdout + done.stderr
+    # the restriction is named in a refusal too
+    done = run("validate", "--trace", trace, "--session", session, "--rule", "position", "--to", 880)
+    assert done.returncode == 1 and done.stdout.rstrip().endswith("(hunt restricted by --to 880)"), done.stdout
+
+
+def test_position_scaled_session_restricted_at_twice_the_frame():
+    scaled = op.scale_session(ATTACK_SESSION, 2)
+
+    text = trace_text(swinging, scale=2)                               # the position follows the 60 fps frame, f // scale
+    ok, why, _ = check_position(text, scaled, 120)
+    assert not ok and "without movement input" in why
+    ok, why, _ = check_position(text, scaled, 120, end=2 * FIRST_MOVE - 1)
+    assert ok, why
+
+
 # -- quest_time ----------------------------------------------------------------------------------------------
 
 def counter(rate_per_second: float, offset: int = 1000):
@@ -249,39 +294,95 @@ def check_quest(text: str, fps: int = 60, **kw):
 
 def test_quest_time_valid_for_a_linear_counter_at_both_rates():
     ok, why, details = check_quest(trace_text(quest=counter(30)))
-    assert ok, why
+    assert ok and why == "valid (running stretches 1, pauses 0)", why
     assert any("rate 30" in d for d in details)
     ok, why, details = check_quest(trace_text(quest=counter(30), scale=2), 120)
     assert ok, why
     assert any("rate 30" in d for d in details)
 
 
-def test_quest_time_invalid_when_it_pauses_or_runs_with_the_frame_rate():
-    def pausing(f, scale):
-        return 1000 + 30 * max(0, min(f / (60 * scale), 5) - 0) + 30 * max(0, f / (60 * scale) - 8) if False else \
-            1000 + int(30 * ((f / scale) / 60 - (3 if f / scale > 500 else 0)))
+def countdown(runs):
+    """Counts down 60 per second of game time, but only inside the (start s, end s) ranges of `runs`."""
+    def value(f, scale):
+        t = f / (60.0 * scale)
+        return 100000 - int(60 * sum(max(0.0, min(t, b) - a) for a, b in runs))
+    return value
 
-    ok, why, _ = check_quest(trace_text(quest=pausing))
-    assert not ok and "straight line" in why
-    # a counter that adds one per frame is 60 per second at 60 fps and 120 per second at 120 fps
+
+# game seconds of the synthetic hunt: 200/60 = 3.33 to 900/60 = 15
+PAUSING = countdown([(0.0, 4.0), (7.0, 13.0)])         # runs 3.33..4 (a blip), pauses, runs 7..13, pauses to the end
+
+
+def test_quest_time_a_countdown_with_pauses_is_valid_and_the_pauses_are_reported():
+    for scale, fps in ((1, 60), (2, 120)):
+        ok, why, details = check_quest(trace_text(quest=PAUSING, scale=scale), fps)
+        assert ok and why == "valid (running stretches 1, pauses 2)", (scale, why, details)
+        assert sum(1 for d in details if d.startswith("pause frames")) == 2
+        running = [d for d in details if d.startswith("running frames")]
+        assert len(running) == 1 and "rate -60" in running[0], running      # the rate is printed per stretch
+        assert any("1 running stretch(es) shorter than 5 s ignored" in d for d in details)
+
+
+def test_quest_time_does_not_assert_the_rate_between_frame_rates():
+    # a counter that adds one per frame is 60 per second at 60 fps and 120 per second at 120 fps: both are reported,
+    # and the comparison between them is the audit's
     per_frame = lambda f, scale: 1000 + f   # noqa: E731
     ok60, _, d60 = check_quest(trace_text(quest=per_frame))
     ok120, _, d120 = check_quest(trace_text(quest=per_frame, scale=2), 120)
     assert ok60 and ok120
     assert any("rate 60" in d for d in d60) and any("rate 120" in d for d in d120)
-    ok, why, _ = check_quest(trace_text(quest=per_frame, scale=2), 120, expect_rate=60.0)
-    assert not ok and "not within 1 %" in why
-    ok, why, _ = check_quest(trace_text(quest=counter(30), scale=2), 120, expect_rate=30.0)
+
+
+def test_quest_time_a_stretch_that_curves_by_more_than_one_percent_is_invalid():
+    # 60 per second for 3.5 s and 90 per second for 3.5 s inside one running stretch: 10 % off its straight line
+    def curved(f, scale):
+        t = f / (60.0 * scale)
+        return 100000 - int(60 * max(0.0, min(t, 7.0) - 4.0) + 90 * max(0.0, min(t, 10.5) - 7.0)) if t >= 4.0 else 100000
+
+    for scale, fps in ((1, 60), (2, 120)):
+        ok, why, details = check_quest(trace_text(quest=curved, scale=scale), fps)
+        assert not ok and "leaves the straight line of its running stretch" in why and "the limit is 1 %" in why, (why, details)
+
+
+def test_quest_time_a_curve_inside_a_stretch_shorter_than_the_minimum_is_ignored():
+    # 1.7 s of a curved blip (60 then 120 per second), a pause, then a straight 7 s run
+    def blip_then_line(f, scale):
+        t = f / (60.0 * scale)
+        blip = 60 * max(0.0, min(t, 4.2) - 3.3) + 120 * max(0.0, min(t, 5.0) - 4.2)
+        line = 60 * max(0.0, min(t, 14.0) - 7.0)
+        return 100000 - int(blip + line)
+
+    ok, why, details = check_quest(trace_text(quest=blip_then_line))
+    assert ok, (why, details)
+    assert any("shorter than 5 s ignored" in d for d in details)
+
+
+def test_quest_time_with_no_stretch_of_the_minimum_length_is_invalid():
+    ok, why, _ = check_quest(trace_text(quest=countdown([(0.0, 7.0)])))     # runs 3.33..7: 3.7 s only
+    assert not ok and "no running stretch of 5 s" in why
+    ok, why, _ = check_quest(trace_text(quest=countdown([(0.0, 8.4)])))     # 5.1 s: long enough
     assert ok, why
+    assert op.MIN_RUNNING_SECONDS == 5.0 and op.RATE_TOLERANCE == 0.01 and op.MIN_IDLE_SECONDS == 1.0
+    assert op.MAGNITUDE_LIMIT == 100000.0
+
+
+def test_quest_time_two_pauses_separated_by_a_blip_are_one_pause():
+    stretches = op.quest_stretches(
+        [op.Segment(False, 0, 100, 1.7, 0.0, 0.0), op.Segment(True, 100, 160, 1.0, -60.0, 0.0),
+         op.Segment(False, 160, 400, 4.0, 0.0, 0.0), op.Segment(True, 400, 1000, 10.0, -60.0, 0.0),
+         op.Segment(False, 1000, 1200, 3.3, 0.0, 0.0)], 60)
+    running, pauses, ignored = stretches
+    assert [(p.first, p.last) for p in pauses] == [(0, 400), (1000, 1200)]
+    assert [(s.first, s.last) for s in running] == [(400, 1000)] and len(ignored) == 1
 
 
 def test_quest_time_invalid_when_constant_unreadable_or_too_coarse():
     ok, why, _ = check_quest(trace_text(quest=lambda f, s: 77))
-    assert not ok and "does not move" in why
+    assert not ok and "no running stretch" in why
     ok, why, _ = check_quest(set_value(trace_text(quest=counter(30)), 600, "quest_time", "-"))
     assert not ok and "unreadable" in why
-    ok, why, _ = check_quest(trace_text(quest=counter(0.1)))      # a counter in whole steps of about 12 s: 1 step of noise > 1 %
-    assert not ok
+    ok, why, _ = check_quest(trace_text(quest=counter(0.1)))      # whole steps about every 10 s: it never runs for a second
+    assert not ok and "no running stretch" in why
 
 
 def test_quest_time_float_counter():
@@ -314,12 +415,6 @@ def test_segments_cut_a_pausing_counter_into_running_and_paused_stretches():
         assert segs[1].rate == 0.0
 
 
-def test_quest_time_validate_names_the_stalls_and_rejects_the_pausing_counter():
-    ok, why, details = check_quest(trace_text(quest=pausing_counter))
-    assert not ok and "straight line" in why
-    assert any("stretch(es) in which it does not move" in d for d in details)
-
-
 def test_segments_command(tmp_path):
     session, trace = tmp_path / "S.txt", tmp_path / "t.txt"
     session.write_text(SESSION)
@@ -348,10 +443,12 @@ def test_validate_command_prints_valid_or_why_and_derives_fps_from_the_name(tmp_
     scaled = tmp_path / "S-x2.txt"
     scaled.write_text(op.scale_session(SESSION, 2))
     trace.write_text(trace_text(quest=counter(30), scale=2))
-    done = run("validate", "--trace", trace, "--session", scaled, "--rule", "quest_time", "--expect-rate", 30)
+    done = run("validate", "--trace", trace, "--session", scaled, "--rule", "quest_time")
     assert done.returncode == 0 and "rate 30" in done.stderr, done.stdout + done.stderr
+    done = run("validate", "--trace", trace, "--session", session, "--rule", "quest_time")
+    assert done.returncode == 0 and "rate 15" in done.stderr         # read as 60 fps the counter runs at 15 per second: printed, not judged
     done = run("validate", "--trace", trace, "--session", session, "--rule", "quest_time", "--expect-rate", 30)
-    assert done.returncode == 1                                    # read as 60 fps, the counter runs at 60 per second
+    assert done.returncode == 2                                     # the rate is not asserted by the tool any more
     done = run("validate", "--trace", tmp_path / "missing.txt", "--session", session, "--rule", "position")
     assert done.returncode == 2
     done = run("validate", "--trace", trace, "--session", session, "--rule", "position", "--names", "a,b,c")

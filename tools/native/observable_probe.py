@@ -13,31 +13,37 @@ find those two values in the game's memory and to say whether a candidate is one
       (golden.py wants the file name to equal the header). N3-22 imports `scale_session`.
 
   validate --trace STATE --session S --rule position|quest_time [--names A,B,C] [--fps N] [--from F] [--to F]
-           [--float] [--expect-rate R] [--settle N]
+           [--float] [--settle N]
       Checks a state trace (mh4u_runner --state-trace, recorded with the candidate lines) against the session it
-      was recorded with. Prints `valid` (details on stderr, exit 0) or `invalid: <why>` (exit 1).
+      was recorded with. Prints `valid` or `invalid: <why>` on stdout (details on stderr; exit 0 or 1). When --from
+      or --to restricts the hunt, the stdout line says so: `valid (hunt restricted by --to 15862)`.
       The hunt is the last scene's stretch of the trace from the first record in which every named value is
-      readable (or --from .. --to). Both rules are first guesses (N3 rule 7): 60, 100000 and 1 % are set below
-      and are never retuned to make a candidate pass.
+      readable (or --from .. --to). The numbers below (60 frames, 100000, 1 %) are first guesses (N3 rule 7) and are
+      never retuned to make a candidate pass.
         position    three 4-byte floats (--names, default hunter_x,hunter_y,hunter_z) that are finite with a
                     magnitude under 100000 in every record of the hunt; that stay constant over every stretch of
                     at least 60 frames (one second of game time: 60 x fps/60 frames) without movement input
                     (a CIRCLE event with a non-zero direction, for its hold) in the session script; and that
-                    change (the three values as a vector) over every stretch with the circle pad held. A stretch
-                    that contains a frame marked `# hit: F` in the session's notes (a hit taken) is left out.
-        quest_time  one 4-byte counter (--names, default quest_time; --float: read as an IEEE float) that moves by
-                    the same amount per second of game time (frames over fps) over the hunt: its value stays on
-                    the straight line from the first to the last record of the hunt within 1 % of the whole
-                    change. --expect-rate R (units per second, for example the rate measured at 60 fps) also
-                    requires the measured rate to be within 1 % of R.
+                    change (the three values as a vector) over every stretch with the circle pad held.
+                    The package's rule applies this to the part of the hunt BEFORE THE FIRST ATTACK PRESS: an
+                    attack is not circle-pad input and moves the hunter, so the caller gives the last frame
+                    before it with --to. Without --to the whole hunt is checked. (A stretch that contains a frame
+                    marked `# hit: F` in the session's notes is left out; the package does not use that note.)
+        quest_time  one 4-byte counter (--names, default quest_time; --float: read as an IEEE float) cut, as
+                    `segments` does, into running stretches (it moves in every second of game time) and pauses
+                    (it does not move). A running stretch shorter than 5 s of game time is not a stretch and is
+                    ignored. Valid when there is at least one running stretch and each one stays on its own
+                    straight line within 1 % of its own change. The pauses are reported (their number, their
+                    frames), never an error. The rate of a running stretch is printed, never asserted: whether it
+                    agrees between 60 and 120 fps is the audit's comparison (N3-22).
       --fps defaults to 60 times the K of a session named `...-x<K>`. --settle N (default 0) leaves the first N
-      frames of every stretch without input out of the constancy check; the spec has no such margin, so a run
-      that needs it is a `needs-decision`, not a pass.
+      frames of every stretch without input out of the position constancy check; the spec has no such margin, so a
+      run that needs it must say so in its report.
 
   segments --trace STATE --session S [--name quest_time] [--fps N] [--float] [--from F] [--to F]
       Cuts the hunt into windows of one second of game time and prints where a counter runs (moves in every window)
-      and where it pauses, with the rate and the distance from the straight line of each running stretch. Information
-      only (exit 0): it is how a counter that pauses, which `validate` rejects, is described.
+      and where it pauses, with the rate and the distance from the straight line of each running stretch (every
+      stretch, whatever its length). Information only (exit 0).
 
   find-position DUMPDIR --base ADDR --still F,F;F,F --moving F,F,F [--limit N]
       Reads the memory dumps a run wrote (`--dump f<N>:<ADDR>:<SIZE>`, files mem_f<frame>_<addr>.bin) and lists
@@ -63,6 +69,7 @@ Only addresses, offsets, counts and frames are printed or written: no game text.
 from __future__ import annotations
 
 import argparse
+import bisect
 import math
 import mmap
 import re
@@ -80,6 +87,7 @@ FRAME_BASE_FPS = 60
 MIN_IDLE_SECONDS = 1.0           # 60 frames at 60 fps (first guess)
 MAGNITUDE_LIMIT = 100000.0       # first guess
 RATE_TOLERANCE = 0.01            # 1 % (first guess)
+MIN_RUNNING_SECONDS = 5.0        # a running stretch shorter than this (game time) is not a stretch (orchestrator, 2026-10-31)
 DEFAULT_POSITION = ("hunter_x", "hunter_y", "hunter_z")
 DEFAULT_QUEST_TIME = ("quest_time",)
 DEFAULT_HOLD_MS = 100            # the runner's default hold of a press
@@ -361,9 +369,36 @@ def validate_position(records: list[state_diff.Record], session: Session, names:
     return True, "valid", details
 
 
+def quest_stretches(segments: list["Segment"], fps: int, minimum: float = MIN_RUNNING_SECONDS
+                    ) -> tuple[list["Segment"], list["Segment"], list["Segment"]]:
+    """(running stretches, pauses, ignored) of the cut `quest_segments` makes. A running stretch shorter than
+    `minimum` seconds of game time is ignored: it is a blip, not a stretch. Pauses that only a blip separated are one
+    pause; a running stretch that counts separates them."""
+    running: list[Segment] = []
+    ignored: list[Segment] = []
+    pauses: list[Segment] = []
+    open_pause = False                # the last thing kept is a pause, so the next pause continues it
+    for s in segments:
+        if s.running:
+            if s.seconds >= minimum:
+                running.append(s)
+                open_pause = False
+            else:
+                ignored.append(s)
+        elif open_pause:
+            before = pauses[-1]
+            pauses[-1] = Segment(False, before.first, s.last, (s.last - before.first) / fps, 0.0, 0.0)
+        else:
+            pauses.append(s)
+            open_pause = True
+    return running, pauses, ignored
+
+
 def validate_quest_time(records: list[state_diff.Record], names: tuple[str, ...], fps: int, as_float: bool = False,
-                        start: Optional[int] = None, end: Optional[int] = None,
-                        expect_rate: Optional[float] = None) -> tuple[bool, str, list[str]]:
+                        start: Optional[int] = None, end: Optional[int] = None) -> tuple[bool, str, list[str]]:
+    """The quest_time rule (decided by the orchestrator, 2026-10-31): the counter runs in stretches (it moves in every
+    second of game time), each at least MIN_RUNNING_SECONDS long, each within RATE_TOLERANCE of its own straight line;
+    the pauses are reported. The rate of a stretch is printed and not asserted."""
     if len(names) != 1:
         raise UsageError("the quest_time rule wants one name")
     hunt = hunt_records(records, names, start, end)
@@ -374,37 +409,26 @@ def validate_quest_time(records: list[state_diff.Record], names: tuple[str, ...]
     first, last = hunt[0], hunt[-1]
     if last.frame <= first.frame:
         return False, "the hunt is one record long", []
-
-    def number(r: state_diff.Record) -> float:
-        bits = r.values[name]
-        return f32(bits) if as_float else float(bits)
-
-    if as_float and any(not math.isfinite(number(r)) for r in hunt):
+    if as_float and any(not math.isfinite(f32(r.values[name])) for r in hunt):
         return False, f"{name} is not a finite float", []
     seconds = (last.frame - first.frame) / fps
-    change = number(last) - number(first)
     details = [f"hunt frames {first.frame} to {last.frame}, {len(hunt)} records, {seconds:.3f} s of game time at {fps} fps"]
-    if change == 0:
-        return False, f"{name} does not move over the hunt", details
-    rate = change / seconds
-    details.append(f"rate {rate:.6g} per second")
-    stalls = sum(1 for s in quest_segments(records, name, fps, as_float, start, end) if not s.running)
-    if stalls:
-        details.append(f"{stalls} stretch(es) in which it does not move (see the segments command)")
-    worst, worst_frame = 0.0, first.frame
-    for r in hunt:
-        line = number(first) + change * (r.frame - first.frame) / (last.frame - first.frame)
-        error = abs(number(r) - line) / abs(change)
-        if error > worst:
-            worst, worst_frame = error, r.frame
-    details.append(f"largest distance from the straight line {worst * 100:.4f} % of the change (frame {worst_frame})")
-    if worst > RATE_TOLERANCE:
-        return False, (f"{name} leaves the straight line by {worst * 100:.3f} % of the whole change at frame "
-                       f"{worst_frame}; the limit is {RATE_TOLERANCE * 100:g} %"), details
-    if expect_rate is not None:
-        if expect_rate == 0 or abs(rate - expect_rate) / abs(expect_rate) > RATE_TOLERANCE:
-            return False, f"the rate {rate:.6g} per second is not within {RATE_TOLERANCE * 100:g} % of {expect_rate:g}", details
-    return True, "valid", details
+    running, pauses, ignored = quest_stretches(quest_segments(records, name, fps, as_float, start, end), fps)
+    for s in running:
+        details.append(f"running frames {s.first}..{s.last} ({s.seconds:.1f} s) rate {s.rate:.6g} per second, "
+                       f"largest distance from the straight line {s.deviation * 100:.3f} %")
+    for s in pauses:
+        details.append(f"pause frames {s.first}..{s.last} ({s.seconds:.1f} s)")
+    if ignored:
+        details.append(f"{len(ignored)} running stretch(es) shorter than {MIN_RUNNING_SECONDS:g} s ignored")
+    if not running:
+        return False, (f"{name} has no running stretch of {MIN_RUNNING_SECONDS:g} s or more of game time "
+                       f"(it moves in every second of game time for that long nowhere in the hunt)"), details
+    for s in running:
+        if s.deviation > RATE_TOLERANCE:
+            return False, (f"{name} leaves the straight line of its running stretch {s.first}..{s.last} by "
+                           f"{s.deviation * 100:.3f} % of the stretch's change; the limit is {RATE_TOLERANCE * 100:g} %"), details
+    return True, f"valid (running stretches {len(running)}, pauses {len(pauses)})", details
 
 
 @dataclass(frozen=True)
@@ -437,8 +461,8 @@ def quest_segments(records: list[state_diff.Record], name: str, fps: int, as_flo
     cursor = frames[0]
     while cursor < frames[-1]:
         upper = min(cursor + fps, frames[-1])
-        lo = by_frame[max(f for f in frames if f <= cursor)]
-        hi = by_frame[max(f for f in frames if f <= upper)]
+        lo = by_frame[frames[bisect.bisect_right(frames, cursor) - 1]]
+        hi = by_frame[frames[bisect.bisect_right(frames, upper) - 1]]
         windows.append((lo.frame, hi.frame, number(hi) != number(lo)))
         cursor = upper
     segments: list[Segment] = []
@@ -511,11 +535,27 @@ def cmd_validate(args: argparse.Namespace) -> int:
     if args.rule == "position":
         ok, why, details = validate_position(records, session, names, fps, args.start, args.end, args.settle)
     else:
-        ok, why, details = validate_quest_time(records, names, fps, args.float, args.start, args.end, args.expect_rate)
+        ok, why, details = validate_quest_time(records, names, fps, args.float, args.start, args.end)
     for line in details:
         print(line, file=sys.stderr)
-    print("valid" if ok else f"invalid: {why}")
+    print(verdict_line(ok, why, restriction_text(args.start, args.end)))
     return 0 if ok else 1
+
+
+def restriction_text(start: Optional[int], end: Optional[int]) -> str:
+    """What --from / --to restrict the hunt to, for the verdict line ('' when neither is given)."""
+    parts = ([f"--from {start}"] if start is not None else []) + ([f"--to {end}"] if end is not None else [])
+    return "hunt restricted by " + " ".join(parts) if parts else ""
+
+
+def verdict_line(ok: bool, why: str, restriction: str) -> str:
+    """`valid`, `valid (details)` or `invalid: why`, with the restriction of the hunt named when there is one."""
+    head = why if ok else f"invalid: {why}"
+    if not restriction:
+        return head
+    if ok and head.endswith(")"):
+        return f"{head[:-1]}; {restriction})"
+    return f"{head} ({restriction})"
 
 
 # -- hunting in memory dumps ---------------------------------------------------------------------------------
@@ -760,9 +800,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     p.add_argument("--names", help="comma separated observable names in the trace")
     p.add_argument("--fps", type=int, help="default: 60 times the K of a session named ...-x<K>")
     p.add_argument("--from", dest="start", type=int, help="first frame of the hunt")
-    p.add_argument("--to", dest="end", type=int, help="last frame of the hunt")
+    p.add_argument("--to", dest="end", type=int,
+                   help="last frame of the hunt; for position, the last frame before the first attack press")
     p.add_argument("--float", action="store_true", help="quest_time: the value is an IEEE float")
-    p.add_argument("--expect-rate", type=float, help="quest_time: units per second the rate must match within 1 %%")
     p.add_argument("--settle", type=int, default=0, help="position: frames left out at the start of each stretch")
     p.set_defaults(func=cmd_validate)
 

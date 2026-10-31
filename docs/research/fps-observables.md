@@ -5,10 +5,29 @@ the audit sets"). N3-22 compares G3 at 60 fps with the scaled G3 at 120 fps; bes
 where the hunter is and how much of the quest's time has gone. This note records how they were found on the reference
 runner, the lines, and what the validation rules of the spec say about them.
 
-**Outcome: `needs-decision`.** Both values were found and behave as what they are. Neither passes the rules of the
-spec as written, for a reason of the game and not of the candidate (a pausing countdown; a hunter that swings), see
-*Validation*. The numbers of the rules were not touched (N3 rule 7). Only addresses, offsets, counts, frames and rates
-are written here: no memory contents, no game text, nothing of the save.
+**Outcome: done, with two rules decided by the orchestrator.** Both values were found and behave as what they are.
+Taken literally, the rules of the spec did not fit the game (a countdown that pauses; a hunter that swings when
+attacking), and the first round of this package ended `needs-decision` for that reason. The two rules below were
+decided by the orchestrator under the maintainer's delegation, 2026-10-31; the tool implements them and, on the
+saved traces of the four runs, prints `valid` for both values at 60 and at 120 fps (*Validation*). The three numbers of
+the spec (60 frames, magnitudes under 100000, 1 %) were not touched, and the audit's tolerances stay D70's, still Open
+(N3 rule 7). Only addresses, offsets, counts, frames and rates are written here: no memory contents, no game text,
+nothing of the save.
+
+The rules, as the package applies them:
+
+- **Position.** The stillness-and-walk rule of the spec, unchanged in its numbers, applies to the part of the hunt
+  **before the first attack press**. An attack is not circle-pad input and moves the hunter by itself, so the
+  stretch after it has no stillness to check. The frame that ends the part is given on the command line (`--to`) and
+  the tool prints the restriction it used in its verdict line (`valid (hunt restricted by --to 15862)`). Without
+  `--to` the rule is applied to the whole hunt, and the position, which swings after the first attack, is `invalid`.
+  Neither `G3.txt` nor any golden file is edited, and the session notes (`# hit:`) are not used.
+- **Quest time.** The counter is cut into **running stretches** (it moves in every second of game time) and
+  **pauses** (it does not move at all). A running stretch shorter than **5 s** of game time is a blip and is ignored (a
+  pause that only a blip separated from another is one pause). The rule passes when there is at least one running
+  stretch and every one stays within **1 %** of its own straight line (of its own change). The pauses are reported
+  (their number and frames), never an error. The rate per second of game time of every running stretch is printed and
+  **not asserted**: that it agrees between 60 and 120 fps is N3-22's comparison.
 
 All runs: Old 3DS (`--new-3ds off`), `--cpu recomp`, the library of the golden recordings
 (`build/golden-lib/0004000000126300.dll`, sha e95eae1f), the reference runner of `build/runner-win-n035`, G3's
@@ -98,82 +117,80 @@ runtime did not show on the reference in this one run). Host time: 128 s at 60 f
 
 ## Validation
 
-`observable_probe.py validate --trace STATE --session S --rule position|quest_time` with the rules of the spec,
-unchanged: position, three floats of magnitude under 100000 that stay constant over every stretch of at least 60 frames
-(one second of game time) without circle-pad input in the session script and change while the pad is held; quest time, a
-counter that moves by the same amount per second of game time within 1 % over the hunt.
+`observable_probe.py validate --trace STATE --session S --rule position|quest_time` with the two rules above. The
+inputs are the saved state traces of the earlier runs (no new run was made for this round): G3 at 60 fps with `G3.txt`,
+and G3 at 120 fps with `G3-x2.txt` (what `scale` writes). `--settle` is 0 in every run (the margin is not used).
 
-| Run | Rule | Result |
-|---|---|---|
-| 60 fps, G3 | `position` | `invalid`: the position changes inside the stretch 14950..18000 without circle-pad input, first at frame 15863 |
-| 120 fps, G3-x2 | `position` | `invalid`: inside 29900..36000, first at frame 31543 |
-| 60 fps | `quest_time` | `invalid`: 20.786 % of the whole change away from the straight line, at frame 15862 (rate over the whole hunt -43.65 per second) |
-| 120 fps | `quest_time` | `invalid`: 21.065 % at frame 31542 (-44.19 per second) |
+| Run | Rule | Command line (after the trace and session) | Output line |
+|---|---|---|---|
+| 60 fps, G3 | `position` | `--rule position --to 15862` | `valid (hunt restricted by --to 15862)`: hunt frames 14243 to 15862 (1620 records); 2 stretches without movement input constant, 1 with the circle pad held changes |
+| 120 fps, G3-x2 | `position` | `--rule position --to 31542` | `valid (hunt restricted by --to 31542)`: hunt frames 28406 to 31542 (3137 records); 2 stretches constant, 1 changes |
+| 60 fps | `quest_time` | `--rule quest_time` | `valid (running stretches 2, pauses 2)`: hunt frames 14109 to 18000 (64.85 s of game time) |
+| 120 fps | `quest_time` | `--rule quest_time` | `valid (running stretches 2, pauses 2)`: hunt frames 28209 to 36000 (64.93 s) |
+
+At 60 fps the same `position` run on the copy of the triple at `unit+0xd00` (`--names hunter_x_b,hunter_y_b,hunter_z_b`)
+is `valid` too, with the same counts, and so is the one at 120 fps. Without `--to` both `position` runs are `invalid`,
+as the rule says they must be: at 60 fps, "the position changes inside the stretch 14950..18000 without movement input
+(first at frame 15863)"; at 120 fps, "inside 29900..36000 (first at frame 31543)".
 
 What the numbers say, for both rates:
 
-- **Position.** Everything the rule asks for holds until the hunter first swings. From the hunt's first readable frame the
-  position is constant until the walk (f14350 on), changes during it, is constant again after the hunter stops (at
-  f14933, 17 frames before the hold ends, and stays put for 929 frames, 15.5 s of game time, of talk), and then, 3
-  frames after the `A` press of f15860, it moves by itself for about 40 frames and does so again after later presses.
-  That is the hunter's own
-  attack motion: `A` is not circle-pad input, so the rule's stretch from f14950 to the end is one stretch, and the
-  position is not constant in it. With the rule restricted to the part before the first swing (`--to 15862` at 60 fps and
-  `--to 31542` at 120), both runs print `valid`: 2 stretches without input constant, 1 stretch with the pad held changes
-  (at 60 fps the same on the copy at `unit+0xd00`). That restriction is evidence that the candidate is a position; it is not the
-  rule.
-- **Quest time.** The countdown does not move over the whole hunt, so no straight line fits. It pauses for the first 2 s
-  of the hunt, runs, pauses for 15 s (the explanation of the target camera) and runs to the end. `observable_probe.py
-  segments` splits it into the stretches in which it moves in every second of game time and the stretches in which it
-  does not move at all, with the rate and the largest distance from the straight line of each running stretch:
+- **Position, the part before the first attack press.** From the hunt's first readable frame the position is constant
+  until the walk (f14350 on, 600 frames; f28700 on, 1200 frames at 120), changes during it, and is constant again
+  after the hunter stops (f14933, 17 frames before the hold ends; 929 frames, 15.5 s of game time, of talk follow).
+  The session then presses `A` every 90 frames (180 at 120 fps) from f15050, first to page through a caravan leader's
+  explanation (no hunter motion) and then as swings: 3 frames after the first press that is an attack, `A` at f15860,
+  the position moves by itself for about 40 frames, and it does so again after later presses. That press is found from
+  the trace, not from the session text (the presses are all `A`): at 120 fps it is `A` at f31540, again 3 frames before
+  the first move (f31543). `--to` is the press frame plus 2 (15862, 31542). The attack press falls 90 frames of the
+  60 fps clock (1.5 s) earlier at 120 fps, which is the same shift as the end of the long pause of the countdown
+  (below): the talk ends 1.5 s of game time sooner at 120 fps.
+- **Quest time.** It pauses for the first 2 s of the hunt, runs, pauses for 15 s (the explanation of the target camera)
+  and runs to the end. The tool prints, per running stretch, the frames, length, rate and largest distance from its
+  straight line:
 
   | 60 fps | frames | seconds | rate per second | distance from the line |
   |---|---|---|---|---|
-  | paused | 14109..14229 | 2.0 | | |
+  | pause | 14109..14229 | 2.0 | | |
   | running | 14251..14933 | 11.4 | -60.44 | 0.508 % |
-  | paused | 14949..15849 | 15.0 | | |
+  | pause | 14949..15849 | 15.0 | | |
   | running | 15862..18000 | 35.6 | -60.17 | 0.051 % |
 
   | 120 fps | frames | seconds | rate per second | distance from the line |
   |---|---|---|---|---|
-  | paused | 28209..28329 | 1.0 | | |
+  | pause | 28209..28329 | 1.0 | | |
   | running | 28415..29609 | 9.9 | -62.61 | 0.779 % |
-  | paused | 29649..31449 | 15.0 | | |
+  | pause | 29649..31449 | 15.0 | | |
   | running | 31542..36000 | 37.1 | -60.46 | 0.113 % |
 
-  So when it runs it moves by 60 units per second of game time at both rates (the last, long stretch: -60.17 and
-  -60.46, 0.5 % apart) and every running stretch is within the rule's 1 % of its own line. What differs is where the
-  pauses fall: the countdown first moves 142 frames (2.4 s) after the quest loads at 60 fps and 206 frames (1.7 s) at
-  120 fps; it stops with the walk (f14933, and 29609 at 120 fps) and the long pause lasts 929 frames (15.5 s) at 60 fps
-  and 1933 frames (16.1 s) at 120, ending at game time 264.4 s and 262.9 s. The values at matched game times (every 3 s
-  from the start of the hunt, 22 samples) differ by 64 units at most (1.07 s of game time), and by 28 to 38 units (0.47 to
-  0.63 s) from 265 s on.
+  Both running stretches of each run are well over the 5 s minimum and within 1 % of their own line, so both rates pass;
+  the margin is 0.779 % at worst (the first stretch at 120 fps). No `--settle` was needed. The rates are printed and
+  not judged: the long stretches are -60.17 and -60.46 per second, 0.5 % apart, and the short ones -60.44 and -62.61
+  (the first running stretch at 120 fps starts later and is shorter).
 
-Observations for N3-22 (not results of this package): at matched game times the hunter's position differs between the
-two runs by hundreds of units from the end of the walk on (the 120 fps hunter stops earlier and elsewhere), well
-outside a tolerance of 2 % of the distance travelled in the last second plus 0.05 units; the quest time agrees to
-about a second. Both are game behaviour at 120 fps, to be tabulated by the audit.
+Observations for N3-22 (not results of this package): after the first attack press the hunter's position at matched
+times differs between the two runs by hundreds of units, well outside a tolerance of 2 % of the distance travelled in
+the last second plus 0.05 units (the 120 fps hunter stops earlier and elsewhere), and the quest's pauses fall at
+different game times: the countdown first moves 142 frames (2.4 s) after the quest loads at 60 fps and 206 frames
+(1.7 s) at 120 fps, and the long pause ends at game time 264.4 s at 60 fps and 262.9 s at 120. The countdown's values
+at matched game times (every 3 s from the start of the hunt, 22 samples) differ by 64 units at most (1.07 s of game
+time), and by 28 to 38 units (0.47 to 0.63 s) from 265 s on. Both are game behaviour at 120 fps, to be tabulated by the
+audit.
 
-## What is left to decide (`needs-decision`)
+## What N3-22 decides
 
-The spec says the rules are first guesses and that a candidate that cannot satisfy them ends the package here, with
-N3-22 then gating on scenes and the existing `eq` values only. The candidates exist and are shown to be what they are,
-so the decision is whether to keep them, and under which rule:
+This package validates the two observables; it does not compare the two rates, which is the audit's. It leaves N3-22:
 
-1. **Position.** (a) Keep the rule's numbers and mark the swinging in the session notes: `observable_probe.py` leaves
-   out a stretch that contains a frame named in a `# hit: F` line of the session file (a note G3's file does not
-   have; the file is not in this package, and a swing is not a hit, so the orchestrator or the maintainer must say so);
-   with `# hit: 16000` (`32000` in the scaled file, which `scale` also scales) both runs print `valid`, on the one
-   stretch before the walk that is left (1 stretch constant, 1 walk changes). (b) Gate the position at the checkpoints and at matched times without the
-   stillness rule, only comparing the two runs (the rule exists to show a candidate is a position, which the walk
-   already shows). (c) Drop the position.
-2. **Quest time.** (a) Rule over the stretches in which the countdown runs: each running stretch within 1 % of its own
-   line, at the same rate per second at 60 and 120 fps, and the pauses compared as pauses; the numbers above are the
-   result. (b) Quest time only at matched times (within 1 s of game time, as N3-22's item 4 says), with no rule on the
-   counter. (c) Drop it.
+1. **The position after the first attack press.** The comparison at matched times after it is N3-22's, which tabulates
+   it: the stillness rule stops at the first attack, and the observation above (hundreds of units apart at 120 fps) is
+   input to that table, not a verdict.
+2. **The rate agreement of the quest time.** Whether the rate per second of game time of the running stretches agrees
+   between 60 and 120 fps, and how the pauses compare (matched times within 1 s of game time, as N3-22's item 4 says).
+3. **The lines.** The four lines above are proposals as `ignore` for N3-22 to add to `observable.txt` at run time
+   (`config/**` is the orchestrator's; this package did not edit it, nor `G3.txt`, nor any golden file).
 
-Neither the rules nor `config/**` nor `G3.txt` were changed by this package. The tool keeps two extras for the choice:
-`validate --settle N` (frames left out at the start of each stretch; a margin the spec does not have) and `segments`.
+The tool keeps `validate --settle N` (frames left out at the start of each stretch of the position rule; not used) and
+`segments` (the cut into running stretches and pauses, of every length).
 
 ## Repeating it
 
@@ -183,9 +200,12 @@ python tools/native/observable_probe.py scale tools/native/golden/G3.txt --facto
 mh4u_runner juego.cxi --new-3ds off --cpu recomp --code <library> --install update_v130.cia --user <copy> \
     --frames 18000 --input-file G3.txt --init-time 1767268800.5 --set 0:fps=60 --state-trace s60.txt \
     --observable obs_n321.txt --shots <dir> --shot-every 100000000 --draw-window 100          # 36000, G3-x2.txt, fps=120
-python tools/native/observable_probe.py validate --trace s60.txt --session G3.txt --rule position
+# the validation: --to is the frame before the first attack press moves the hunter (15862 at 60 fps, 31542 at 120)
+python tools/native/observable_probe.py validate --trace s60.txt --session G3.txt --rule position --to 15862
+python tools/native/observable_probe.py validate --trace s120.txt --session G3-x2.txt --rule position --to 31542
 python tools/native/observable_probe.py validate --trace s60.txt --session G3.txt --rule quest_time
-python tools/native/observable_probe.py segments --trace s60.txt --session G3.txt
+python tools/native/observable_probe.py validate --trace s120.txt --session G3-x2.txt --rule quest_time
+python tools/native/observable_probe.py segments --trace s60.txt --session G3.txt   # every stretch, whatever its length
 # the hunt for the lines (dumps from a run with --dump f<N>:08000000:0x4000000 and f<N>:00100000:0x1000000)
 python tools/native/observable_probe.py find-position DUMPS --base 0x08000000 --still 14250,14340;14980,15040 --moving 14420,14500,14600,14700,14800,14900
 python tools/native/observable_probe.py find-counter DUMPS --base 0x08000000 --frames 14130,14250,...
