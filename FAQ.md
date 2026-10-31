@@ -43,16 +43,19 @@ Yes. Back up the save on your console with Checkpoint, then copy its files into 
 ## Playing
 
 **My PC shows 75 % speed**
-That's measured emulation speed, not a setting: your PC isn't keeping up with the frame rate you asked for. Lower the `fps` target or the CPU clock in *Esc → Game* until it reads 100 %.
+That's measured emulation speed, not a setting: your PC isn't keeping up with the frame rate you asked for. Lower the `fps` target or the CPU clock in *Esc → Display* until it reads 100 %.
 
 **Do save states work?**
 No. The game's code runs natively, and its call stacks live on your PC's own stacks, which a save state can't capture. Save in the game. Cheats that change data work; cheats that rewrite code don't.
 
 **Pause and fast forward?**
-In the port's app, playing alone: **P** pauses, **Tab** runs the game at 2x (the speed and the keys are in the menu, Esc). In a room they're off, since the others' games run on with yours.
+In the port's app, playing alone: **P** pauses, **Tab** runs the game at 2x (the speed and the keys: *Esc → Gameplay*, *Speed*). In a room they're off, since the others' games run on with yours.
+
+**Where is a setting in the menu?**
+Type a word in the search at the top of the menu (Ctrl+F, or Y on a controller): fps, map, kick, bloom, volume... *Display* has the frame rate and widescreen, *Graphics* the picture and its effects, *Touch screen* the screens, the touch screen's corner and the quest map, *Controls* the mouse and the controller, *Keys* every key, *Gameplay* the kick and target camera buttons, the end of quests and fast forward, *Online* the rooms.
 
 **In a quest the whole touch screen stays in the corner, and the map settings do nothing**
-The map view shows the map panel of your touch screen's panel layout. Without one (*Customize Panels* in the quest menu), the corner keeps the whole touch screen, so the map's size and place, *Edit HUD layout* and F12 change nothing: put the map panel back. The log says so once a quest, and the app says why when F12 has nothing to switch (this, the touch screen not over the game in a corner, or *In quests, only the map* off). With the map panel there, F12 or the right stick's click may have switched quests to the whole touch screen: press it again. Details: *The bottom screen* in [Options](docs/PLAYING.md#3-options).
+The map view shows the map panel of your touch screen's panel layout. Without one (*Customize Panels* in the quest menu), the corner keeps the whole touch screen, so the map's size and place, *Edit HUD layout* and F12 change nothing: put the map panel back. The log says so once a quest, and the app says why when F12 has nothing to switch (this, the touch screen not over the game in a corner, or *Only the map in quests* off). With the map panel there, F12 or the right stick's click may have switched quests to the whole touch screen: press it again. Details: *The bottom screen* in [Options](docs/PLAYING.md#3-options).
 
 **Keys for the touch screen (an item shortcut, the target camera)?**
 In the port's app: touch taps. `touch_tap_1 = Z @ 52 220` in `mh4u-app.ini` touches the touch screen at that point (x from its left edge, y from its top, in its 320x240 pixels) while Z is held; up to 8. Details: [Or play with the port's app](docs/PLAYING.md#2b-or-play-with-the-ports-app).

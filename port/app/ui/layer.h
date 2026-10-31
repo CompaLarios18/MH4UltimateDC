@@ -101,13 +101,14 @@ public:
     void CloseMenu() {
         close_requested = true;
     }
-    /// The description of the control under the mouse or the controller's cursor, for the
-    /// menu's footer.
+    /// After an item: its description, for the menu's footer while the cursor or the mouse is on
+    /// it. The menu also takes its pending focus here (Menu::AfterItem).
     void Help(const char* text);
-    const char* HelpText() const {
-        return help;
-    }
-    /// Keys go to the menu's key capture (Controls) instead of Dear ImGui until it is over.
+    /// The focused item's description while the cursor shows, else the hovered one's, else the
+    /// focused one's (null: none this frame).
+    const char* HelpText() const;
+    /// Keys go to the menu's key capture (Keys, and the key rows of Touch screen and Gameplay)
+    /// instead of Dear ImGui until it is over.
     void SetKeyCapture(bool on) {
         key_capture = on;
     }
@@ -115,6 +116,11 @@ public:
     /// or a controller's B in this frame is theirs, not the menu's.
     bool WasBusy() const {
         return was_busy;
+    }
+    /// A controller was used last (its buttons, a stick or a trigger pushed well), not the
+    /// keyboard, the mouse or a touchscreen: the menu's key hints follow it.
+    bool PadLast() const {
+        return pad_last;
     }
 
 private:
@@ -133,19 +139,34 @@ private:
     std::atomic<bool> renderer_ready{false};
     bool menu_open = false;
     bool capturing = false;      ///< the game's input cut off
+    /// A controller's button, or a stick pushed past 8000, came within 150 ms before `now`: a key
+    /// Steam Input sends for it (Esc for B, Enter for A, arrows for the D-pad) is its echo.
+    bool PadJustUsed(u32 now) const;
+    /// A touchscreen's finger (SDL_FINGER*), the first one only, as Dear ImGui's mouse.
+    void Finger(const SDL_Event& event);
+    void LogEcho();
+
     std::string last_fps_corner = "top-left";  ///< where ToggleFpsCounter puts the counter back
     std::string last_guides_corner = "bottom-left";  ///< and ToggleKeyGuides the guides
-    u32 escape_at = 0;           ///< SDL ticks of an Esc that opens the menu once it's not an echo
+    /// SDL ticks of an Esc held back for a moment: it opens the menu, or does the menu's back step,
+    /// once it's not an echo of a controller's button
+    u32 escape_at = 0;
+    bool escape_busy = false;    ///< the frame before that Esc had a list, popup or field: theirs
+    bool give_escape = false;    ///< the next frame passes that Esc on to Dear ImGui
     u32 pad_button_at = 0;       ///< SDL ticks of a controller's last button
+    u32 stick_at = 0;            ///< and of a stick or trigger pushed past 8000
+    bool pad_last = false;       ///< PadLast()
+    bool drop_space_text = false; ///< the text of an echo's Space is left out too
     bool echo_logged = false;
     bool fresh_input = false;    ///< the next frame starts from a clean input state
     bool close_requested = false;
-    bool escape_pressed = false; ///< Esc while open: closes the menu unless something takes it
     bool was_busy = false;       ///< last frame: a list or popup open, or an item being edited
     bool key_capture = false;
     bool draw_ready = false;     ///< the copy has a frame to draw
     u32 controller_buttons = 0;  ///< Back and Start held (bits), for Back+Start
-    const char* help = nullptr;
+    s64 finger = -1;             ///< the touchscreen's finger that is the mouse in the menu (-1: none)
+    const char* help_focused = nullptr; ///< this frame's descriptions (Help)
+    const char* help_hovered = nullptr;
 
     DrawCopy copy;
     std::unique_ptr<Menu> menu;

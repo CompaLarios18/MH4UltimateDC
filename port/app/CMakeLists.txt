@@ -59,10 +59,21 @@ add_executable(mh4u
     ui/layer.h
     ui/menu.cpp
     ui/menu.h
+    ui/menu_editor.cpp
+    ui/menu_keys.cpp
+    ui/menu_pages.cpp
+    ui/menu_parts.h
+    ui/menu_rules.cpp
+    ui/menu_rules.h
+    ui/menu_search.cpp
     ui/multiplayer_tab.cpp
     ui/multiplayer_tab.h
+    ui/nav.cpp
+    ui/nav.h
     ui/options.cpp
     ui/options.h
+    ui/settings_index.cpp
+    ui/settings_index.h
     ui/touch_taps.cpp
     ui/touch_taps.h
     ui/ui.cpp

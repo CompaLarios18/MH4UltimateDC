@@ -307,7 +307,8 @@ std::string Template(const Config& c) {
     }
     return fmt::format(R"(# MH4U PC port: the app's settings. The game's own options (frame rate, widescreen, the touch
 # screen's corner, the kick and target camera buttons, the screen filters) are in mh4u.ini next
-# to this file. A line starting with # is ignored; on/off settings also take 1/0.
+# to this file; the game's menu (Esc) changes both. A line starting with # is ignored; on/off
+# settings also take 1/0.
 
 [Game]
 # your decrypted Monster Hunter 4 Ultimate (USA): .3ds, .cci or .cxi. Empty: the app asks.
@@ -415,7 +416,7 @@ fast_forward_hold = {}
 {}
 [Multiplayer]
 # MH4U's local play over the internet, through a room (Azahar's network rooms; docs/SERVER.md).
-# The in-game menu's Multiplayer tab (Esc) joins, hosts and leaves rooms while the game runs and
+# The in-game menu's Online tab (Esc) joins, hosts and leaves rooms while the game runs and
 # keeps these lines up to date. Your name in the room (empty: the console's user name, set in
 # Azahar's System settings)
 nickname = {}

@@ -176,7 +176,7 @@ touch_overlay = top-right 30 85
 # between the two while you play. map 40 = 40% of the window's height (without a size: the
 # touch screen's scale); map 40 at 100 0 also places it: across and down in % of the room the
 # window leaves (0 0 = top left, 100 0 = top right, 50 100 = bottom middle), so it stays in the
-# window at any size. The in-game menu (Esc) > Game > Edit HUD layout places it with the mouse
+# window at any size. The in-game menu (Esc) > Touch screen > Edit HUD layout places it
 quest_overlay = map
 # with the map, the target camera panel (whose monster the camera follows; a tap on it changes
 # the target) in a small view of its own, if your panel layout has it: on = under the map at

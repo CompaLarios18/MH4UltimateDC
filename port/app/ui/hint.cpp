@@ -74,6 +74,28 @@ std::string ButtonsText(const Config& config, const std::string& buttons) {
 
 } // namespace
 
+std::string ButtonInputs(const Config& config, const std::string& buttons) {
+    std::string keys, pads, mixed;
+    std::stringstream in(buttons);
+    std::string button;
+    bool all_keys = true, all_pads = true;
+    while (std::getline(in, button, '+')) {
+        auto [key, pad] = Names(config, button);
+        if (key.empty() && pad.empty()) {
+            return "";
+        }
+        all_keys = all_keys && !key.empty();
+        all_pads = all_pads && !pad.empty();
+        keys += (keys.empty() ? "" : "+") + key;
+        pads += (pads.empty() ? "" : "+") + pad;
+        mixed += (mixed.empty() ? "" : "+") + (key.empty() ? pad : key);
+    }
+    if (all_keys && all_pads) {
+        return keys + " / " + pads;
+    }
+    return all_keys ? keys : all_pads ? pads : mixed;
+}
+
 Hint CurrentHint(const Config& config) {
     Hint hint;
     if (!Port::Hooks::SkipOffered() || Port::Hooks::SkipHint() == 0) {
