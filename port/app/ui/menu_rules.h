@@ -47,6 +47,11 @@ struct Facts {
     bool custom_now = true;           ///< the custom layout (the overlay's)
     bool in_room = false;
     std::string renderer_now = "Vulkan";
+    /// The renderer chosen when the app started (lower case): while it is still the one chosen,
+    /// another running is the one that started in its place
+    std::string renderer_started = "vulkan";
+    /// The game draws the wider picture (Port::Hooks::DrawsWide), which hud_edges moves the HUD of
+    bool wide_now = false;
     float window_aspect = 16.0f / 9.0f; ///< for widescreen = match
 
     // ── The hooks' sentences (#54: Port::Hooks::MapViewNote, TargetViewNote), on Touch screen and

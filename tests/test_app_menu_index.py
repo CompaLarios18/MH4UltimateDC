@@ -108,6 +108,8 @@ int main(int argc, char** argv) {
         else if (key == "custom_now") f.custom_now = On(v);
         else if (key == "in_room") f.in_room = On(v);
         else if (key == "renderer_now") f.renderer_now = v;
+        else if (key == "renderer_started") f.renderer_started = v;
+        else if (key == "wide_now") f.wide_now = On(v);
         else if (key == "window_aspect") f.window_aspect = std::strtof(v.c_str(), nullptr);
         else if (key == "map_view_note") f.map_view_note = v;
         else if (key == "target_view_note") f.target_view_note = v;
@@ -383,8 +385,8 @@ def rules(driver, **facts) -> dict[str, object]:
     return result
 
 
-# the menu as it comes: the overlay chosen and on, 16:9, the template's buttons all bound
-BASE = dict(screens="overlay", overlay_on=1, map_on=1, target_on=1, widescreen="16:9", wide_render=1,
+# the menu as it comes: the overlay chosen and on, 16:9 drawn wide, the template's buttons all bound
+BASE = dict(screens="overlay", overlay_on=1, map_on=1, target_on=1, widescreen="16:9", wide_render=1, wide_now=1,
             fps=60, renderer="vulkan", renderer_now="Vulkan", buttons__0="ZR", buttons__1="ZL",
             buttons__2="ZR", buttons__3="ZL+ZR")
 
@@ -400,10 +402,22 @@ def test_rules_as_it_comes(driver):
 
 def test_r1_screens_not_overlay(driver):
     r = rules(driver, **{**BASE, "screens": "side"})
-    note = ("Only with Screens set to The game, the touch screen in a corner.", "touch.screens")
+    note = ('Only with Screens set to "The game, the touch screen in a corner".', "touch.screens")
     assert r["section"]["touch.corner"] == note and r["section"]["touch.quests"] == note
     assert {"touch.overlay", "touch.corner", "touch.map_only", "touch.hud_editor"} <= r["disabled"]
     assert "hud_editor_off" in r["flags"]
+
+
+def test_r3_windows_chosen_the_corner_runs(driver):
+    # a window of its own applies from the next start: until then the corner's settings still apply
+    r = rules(driver, **{**BASE, "screens": "windows"})
+    note = ("Until the next start: then the touch screen has a window of its own.", "-")
+    assert r["section"] == {"touch.corner": note, "touch.quests": note}
+    assert r["disabled"] == set() and "hud_editor_off" not in r["flags"]
+    # with another layout running (stacked, say), nothing of the corner's runs now or next
+    r = rules(driver, **{**BASE, "screens": "windows", "custom_now": 0})
+    assert {"touch.overlay", "touch.map_only", "touch.hud_editor"} <= r["disabled"]
+    assert r["section"]["touch.corner"][1] == "touch.screens"
 
 
 def test_r2_overlay_off(driver):
@@ -453,22 +467,39 @@ def test_r6_r7_r8_renderer(driver):
     assert r["row"]["display.renderer"][0] == "In use: Vulkan; Software from the next start."
 
 
+def test_r8_a_renderer_that_didnt_start(driver):
+    # Vulkan chosen as the app started, OpenGL running: the next start does the same, so no promise
+    r = rules(driver, **{**BASE, "renderer_now": "OpenGL"})
+    assert r["row"]["display.renderer"] == ("In use: OpenGL (Vulkan didn't start: see mh4u_log.txt).", "-", "amber")
+    # OpenGL chosen since: it runs now and from the next start
+    assert rules(driver, **{**BASE, "renderer": "opengl", "renderer_now": "OpenGL"})["row"]["display.renderer"] == (
+        "In use: OpenGL.", "-", "dim")
+    # Software chosen since: that one from the next start
+    r = rules(driver, **{**BASE, "renderer": "software", "renderer_now": "OpenGL"})
+    assert r["row"]["display.renderer"][0] == "In use: OpenGL; Software from the next start."
+
+
 @pytest.mark.parametrize("widescreen, window, wider", [
     ("off", 1.7778, False), ("16:10", 1.7778, False), ("4:3", 1.7778, False), ("16:9", 1.7778, True),
     ("21:9", 1.7778, True), ("1.6", 1.7778, False), ("match", 16 / 9, True), ("match", 1.6, False),
     ("match", 0.5, False)])
 def test_r9_r10_widescreen(driver, widescreen, window, wider):
-    r = rules(driver, **{**BASE, "widescreen": widescreen, "window_aspect": window})
+    # the game draws the 3DS's picture now: HUD at the screen's edges goes by the choice (the next start)
+    r = rules(driver, **{**BASE, "widescreen": widescreen, "window_aspect": window, "wide_now": 0})
     if wider:
         assert not {"display.wide_render", "display.hud_edges"} & r["disabled"]
+        assert r["row"]["display.hud_edges"][1:] == ("-", "dim")
     else:
         assert {"display.wide_render", "display.hud_edges"} <= r["disabled"]
         assert r["row"]["display.wide_render"][1] == "display.aspect"
-    r = rules(driver, **{**BASE, "widescreen": widescreen, "window_aspect": window, "wide_render": 0})
+    r = rules(driver, **{**BASE, "widescreen": widescreen, "window_aspect": window, "wide_render": 0, "wide_now": 0})
     if wider:
         assert r["disabled"] == {"display.hud_edges"}
         assert r["row"]["display.hud_edges"] == ("Only with Draw the wider picture on.", "display.wide_render",
                                                   "amber")
+    # the game draws the wider picture now: HUD at the screen's edges applies, whatever comes next
+    r = rules(driver, **{**BASE, "widescreen": widescreen, "window_aspect": window, "wide_render": 0})
+    assert "display.hud_edges" not in r["disabled"] and "display.hud_edges" not in r["row"]
 
 
 def test_r11_r12_controls(driver):

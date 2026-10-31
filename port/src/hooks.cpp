@@ -1709,6 +1709,10 @@ int MissingHookPoints() {
     return missing_hook_points;
 }
 
+bool DrawsWide() {
+    return WideRows() != 0;
+}
+
 void ToggleQuestMap() {
     const bool off = !quest_map_off.load();
     quest_map_off = off;

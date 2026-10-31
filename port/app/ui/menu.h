@@ -254,6 +254,7 @@ private:
     std::map<std::string, std::string> game_changes; ///< written when it goes
     std::set<AppSetting> app_changes;
     std::string backend_notice;  ///< Port::BackendNotice(), read on opening
+    std::string renderer_started; ///< the renderer chosen as the app started (R8)
 
     // the rules, this frame
     Rules::Facts facts;

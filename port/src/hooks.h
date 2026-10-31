@@ -98,6 +98,11 @@ void ClearCameraTurn();
 /// with an older config/hooks.txt, so the options behind them don't work until it is rebuilt).
 int MissingHookPoints();
 
+/// Whether the game draws the wider picture itself (wide_render with an aspect ratio wider than
+/// the 3DS's, as the options were when the game started): hud_edges moves its HUD only then.
+/// Call it on the emulation thread.
+bool DrawsWide();
+
 /// The touch_overlay option: "top-right 30 85" (corner, height in % of the window's, opacity
 /// in %), "on" (top right, 30%, 85%) or "off".
 Layout::ScreenOverlay ParseOverlay(std::string value);

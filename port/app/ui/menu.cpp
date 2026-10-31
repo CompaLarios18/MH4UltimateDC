@@ -97,6 +97,8 @@ Menu::Menu(Layer& layer_) : layer{layer_} {
     key_labels.resize(Index::ROW_COUNT);
     search_extra.resize(Index::ROW_COUNT);
     link_helps.resize(Index::ROW_COUNT);
+    // the layer comes up once the window is made (main.cpp): the renderer tried first is this one
+    renderer_started = Lower(layer.config.renderer);
 }
 
 Menu::~Menu() = default;
@@ -574,6 +576,8 @@ void Menu::GatherFacts() {
     const auto api = Settings::values.graphics_api.GetValue();
     f.software_now = api == Settings::GraphicsAPI::Software;
     f.renderer_now = NameOf(api);
+    f.renderer_started = renderer_started;
+    f.wide_now = Port::Hooks::DrawsWide();
     const auto layout = Settings::values.layout_option.GetValue();
     f.windows_now = layout == Settings::LayoutOption::SeparateWindows;
     f.custom_now = layout == Settings::LayoutOption::CustomLayout;

@@ -151,10 +151,13 @@ Verdict Evaluate(const Facts& f) {
     // ── Touch screen: R1, R2, R3 (the layout), R4, R5 (the player's panels, #54), R7 ──
     const bool overlay = IsOverlay(f.screens);
     const bool windows_wait = f.windows_now && overlay; // R3
-    if (!overlay) { // R1
+    // R3 the other way: a window of its own chosen, from the next start; the corner runs until then
+    const bool corner_until_next = f.screens == "windows" && !f.windows_now && f.custom_now;
+    const bool corner = overlay || corner_until_next;
+    if (!corner) { // R1
         disable_section(S::TouchCorner);
         disable_section(S::TouchQuests);
-        const Note note{"Only with Screens set to The game, the touch screen in a corner.", R::TouchScreens};
+        const Note note{"Only with Screens set to \"The game, the touch screen in a corner\".", R::TouchScreens};
         section_note(S::TouchCorner, note);
         section_note(S::TouchQuests, note);
     } else if (!f.overlay_on) { // R2
@@ -166,13 +169,18 @@ Verdict Evaluate(const Facts& f) {
         section_note(S::TouchCorner, note);
         section_note(S::TouchQuests, note);
     }
+    if (corner_until_next) { // R3
+        const Note note{"Until the next start: then the touch screen has a window of its own."};
+        section_note(S::TouchCorner, note);
+        section_note(S::TouchQuests, note);
+    }
     // Edit HUD layout: with the overlay running (R1, R2, R3, and while a change of the screens is
     // still on its way to the renderer)
-    if (!overlay || !f.overlay_on || windows_wait || !f.custom_now) {
+    if (!corner || !f.overlay_on || windows_wait || !f.custom_now) {
         v.hud_editor_off = true;
         disable(R::TouchHudEditor);
     }
-    const bool layout_ok = overlay && f.overlay_on && !windows_wait;
+    const bool layout_ok = corner && f.overlay_on && !windows_wait;
     const bool map_note = layout_ok && f.map_on && !f.map_view_note.empty();
     if (map_note) { // R4: the rows stay enabled, they apply once the view can show
         section_note(S::TouchQuests, Note{f.map_view_note});
@@ -197,22 +205,33 @@ Verdict Evaluate(const Facts& f) {
                  R::DisplayRenderer, true);
         row_note(R::DisplayVsync, "Not with the software renderer.", R::DisplayRenderer, true);
     }
-    { // R8
+    { // R8: the one chosen as the app started, and another running, didn't start (main.cpp tries the
+      // others then); the next start does what this one did
         const std::string chosen = RendererName(f.renderer);
+        const bool fell_back = chosen != f.renderer_now && Lower(f.renderer) == Lower(f.renderer_started);
         row_note(R::DisplayRenderer,
                  chosen == f.renderer_now ? "In use: " + f.renderer_now + "."
-                                          : "In use: " + f.renderer_now + "; " + chosen + " from the next start.",
-                 R::Count, false);
+                 : fell_back ? "In use: " + f.renderer_now + " (" + chosen + " didn't start: see mh4u_log.txt)."
+                             : "In use: " + f.renderer_now + "; " + chosen + " from the next start.",
+                 R::Count, fell_back);
     }
+    // the aspect ratio and Draw the wider picture apply from the next start; HUD at the screen's
+    // edges at once, to the picture the game draws now, and from the next start to the one chosen
     const bool wider = Aspect(f.widescreen, f.window_aspect) > 5.0f / 3.0f + 0.01f;
+    const bool wide_next = wider && f.wide_render;
     if (!wider) { // R9
         disable(R::DisplayWideRender);
-        disable(R::DisplayHudEdges);
         row_note(R::DisplayWideRender, "Only with an aspect ratio wider than 5:3: 16:9, 21:9 or 32:9.",
                  R::DisplayAspect, true);
-    } else if (!f.wide_render) { // R10
+    }
+    if (!f.wide_now && !wide_next) { // R9, R10
         disable(R::DisplayHudEdges);
-        row_note(R::DisplayHudEdges, "Only with Draw the wider picture on.", R::DisplayWideRender, true);
+        if (wider) {
+            row_note(R::DisplayHudEdges, "Only with Draw the wider picture on.", R::DisplayWideRender, true);
+        }
+    } else if (!f.wide_now) {
+        row_note(R::DisplayHudEdges, "Applies from the next start, when the game draws the wider picture.", R::Count,
+                 false);
     }
     if (f.refresh_rate > 0.0f && f.refresh_rate < static_cast<float>(f.fps)) { // R13
         const std::string hz = Number(f.refresh_rate);
