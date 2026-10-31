@@ -1734,11 +1734,10 @@ namespace {
 /// What the map view needs, as the options, the screen layout and the quest's panels say now.
 MapView::State MapViewState() {
     MapView::State state;
-    // the corner shows a part of the touch screen only in the custom layout, with the touch
-    // screen in the corner and in landscape (Layout::CustomFrameLayout)
     const auto& settings = Settings::values;
-    state.custom_layout = settings.layout_option.GetValue() == Settings::LayoutOption::CustomLayout &&
-                          !settings.swap_screen.GetValue() && !settings.upright_screen.GetValue();
+    state.custom_layout = settings.layout_option.GetValue() == Settings::LayoutOption::CustomLayout;
+    state.swapped = settings.swap_screen.GetValue();
+    state.upright = settings.upright_screen.GetValue();
     state.touch_overlay = options.touch_overlay.height > 0;
     state.quest_overlay = options.quest_overlay.on;
     state.panels_hook = panels_hooked;
@@ -1750,16 +1749,18 @@ MapView::State MapViewState() {
 } // namespace
 
 std::string PressQuestMapKey() {
-    // (while the hooks don't run nothing is known of the quest: the switch, as before)
-    const std::string why = frames > 0 ? MapView::KeyNote(MapViewState()) : std::string();
-    if (why.empty()) {
-        ToggleQuestMap();
-        return why;
+    if (frames == 0) {
+        ToggleQuestMap(); // the hooks don't run, so nothing is known of the quest: the switch, as before
+        return {};
     }
-    // nothing to switch: the press asks for the map, which shows once it can
-    quest_map_off = false;
-    LOG_INFO(Frontend, "touch overlay: nothing to switch, the screen says \"{}\"", why);
-    return why;
+    const MapView::KeyPress press = MapView::PressKey(MapViewState());
+    quest_map_off = press.switched;
+    if (press.note.empty()) {
+        LOG_INFO(Frontend, "touch overlay: {} in quests", press.switched ? "the whole touch screen" : "the map");
+    } else {
+        LOG_INFO(Frontend, "touch overlay: nothing to switch, the screen says \"{}\"", press.note);
+    }
+    return press.note;
 }
 
 std::string MapViewNote() {

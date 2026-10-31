@@ -4,9 +4,10 @@
 // overlay or quest_overlay off, with a code library too old for the quest panels' hook point,
 // or with no map panel in the panels; and the touch-screen key can switch quests to the whole
 // touch screen. Then the map's size and place, the HUD layout editor and the key change nothing
-// on the screen, and the app says why: a sentence under the in-game menu's map settings (and the
-// target camera's), and a short line on the screen when the key has nothing to switch. No Azahar
-// here (hooks.cpp gathers the state), so it is tested on its own (tests/test_map_view.py).
+// on the screen. Here are the sentences that say why, for the in-game menu's map settings (and
+// the target camera's), and what a press of the key does: when it has nothing to switch, a
+// short line for the screen. No Azahar here (hooks.cpp gathers the state), so it is tested on
+// its own (tests/test_map_view.py).
 #pragma once
 
 #include <string>
@@ -23,9 +24,12 @@ struct Panels {
 
 /// What the map view needs.
 struct State {
-    /// The custom screen layout, the touch screen in the corner and in landscape (the app's
-    /// screens = overlay): the only layout that shows a part of the touch screen.
+    /// The custom screen layout (the app's screens = overlay), neither swapped (the game in the
+    /// corner) nor upright (in portrait): the only layout that shows a part of the touch screen
+    /// (Layout::CustomFrameLayout).
     bool custom_layout = true;
+    bool swapped = false;       ///< the screens swapped (Azahar's swap_screen)
+    bool upright = false;       ///< the screens turned upright (upright_screen)
     bool touch_overlay = true;  ///< touch_overlay on: the touch screen over the game in a corner
     bool quest_overlay = true;  ///< quest_overlay on: in quests that corner shows the map alone
     bool panels_hook = true;    ///< the code library has the hook point the panels are seen through
@@ -46,8 +50,16 @@ std::string MapNote(const State& state);
 /// only, and only with the target camera panel in the panels; "" when it shows, or when it's off.
 std::string TargetNote(const State& state, bool target_overlay);
 
-/// The touch-screen key, pressed: "" when it can switch quests between the map and the whole
-/// touch screen, else a short line for the screen saying why there is nothing to switch.
-std::string KeyNote(const State& state);
+/// The touch-screen key, pressed.
+struct KeyPress {
+    /// State::switched after it: flipped when the key can switch quests between the map and the
+    /// whole touch screen. When it can't, false: the press asks for the map, which then shows as
+    /// soon as it can (a switch flipped then would change nothing on the screen, and keep quests
+    /// on the whole touch screen once the map could show).
+    bool switched = false;
+    /// "" when it switched, else a short line for the screen saying why there is nothing to switch.
+    std::string note;
+};
+KeyPress PressKey(const State& state);
 
 } // namespace Port::MapView

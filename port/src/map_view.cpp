@@ -2,8 +2,37 @@
 
 namespace Port::MapView {
 
+namespace {
+
+/// Why the touch-screen key has nothing to switch, a short line for the screen; "" when it can.
+/// (The whole touch screen may well be on the screen, map panel and all: what the key can't do
+/// is switch to the map alone.)
+std::string KeyNote(const State& state) {
+    switch (Blocked(state)) {
+    case Block::Layout:
+        return "No map to switch to: the screens aren't the game with the touch screen in a corner (Esc > Display)";
+    case Block::TouchOverlay:
+        return "No map to switch to: the touch screen isn't over the game in a corner (Esc > Game > Touch screen)";
+    case Block::QuestOverlay:
+        return "No map to switch to: \"In quests, only the map\" is off (Esc > Game > Touch screen)";
+    case Block::PanelsHook:
+        return "No map to switch to: the code library is older than this app (build it again)";
+    case Block::NoMapPanel:
+        return state.panels.in_quest
+                   ? "No map to switch to: your touch screen's panels have none (Customize Panels in the quest menu)"
+                   : "No map to switch to: your last quest's touch screen panels had none (Customize Panels in the "
+                     "quest menu)";
+    case Block::Switched:  // the key switches back to the map
+    case Block::None:
+        break;
+    }
+    return "";
+}
+
+} // namespace
+
 Block Blocked(const State& state) {
-    if (!state.custom_layout) {
+    if (!state.custom_layout || state.swapped || state.upright) {
         return Block::Layout;
     }
     if (!state.touch_overlay) {
@@ -28,11 +57,12 @@ std::string MapNote(const State& state) {
         return "The screens aren't set to the game with the touch screen in a corner (Display), so the map view "
                "doesn't show and these settings change nothing.";
     case Block::TouchOverlay:
-        return "The touch screen isn't over the game in a corner (Over the game, in a corner is off): Azahar's own "
-               "custom layout shows the screens, so the map view doesn't show and these settings change nothing.";
+        return "The touch screen isn't over the game in a corner (\"Over the game, in a corner\" is off): Azahar's "
+               "own custom layout shows the screens, so the map view doesn't show and these settings change "
+               "nothing.";
     case Block::QuestOverlay:
-        return "In quests, only the map is off: quests keep the whole touch screen in the corner, so these settings "
-               "change nothing.";
+        return "\"In quests, only the map\" is off: quests keep the whole touch screen in the corner, so these "
+               "settings change nothing.";
     case Block::PanelsHook:
         return "Your code library is older than this app: it has no hook point for the quest's touch panels, so the "
                "map view doesn't show and these settings change nothing until you build it again.";
@@ -72,26 +102,12 @@ std::string TargetNote(const State& state, bool target_overlay) {
     return "";
 }
 
-std::string KeyNote(const State& state) {
-    switch (Blocked(state)) {
-    case Block::Layout:
-        return "No map to show: the screens aren't the game with the touch screen in a corner (Esc > Display)";
-    case Block::TouchOverlay:
-        return "No map to show: the touch screen isn't over the game in a corner (Esc > Game > Touch screen)";
-    case Block::QuestOverlay:
-        return "No map to show: In quests, only the map is off (Esc > Game > Touch screen)";
-    case Block::PanelsHook:
-        return "No map to show: the code library is older than this app (build it again)";
-    case Block::NoMapPanel:
-        return state.panels.in_quest
-                   ? "No map to show: your touch screen's panels have none (Customize Panels in the quest menu)"
-                   : "No map to show: your last quest's touch screen panels had none (Customize Panels in the quest "
-                     "menu)";
-    case Block::Switched:  // the key switches back to the map
-    case Block::None:
-        break;
-    }
-    return "";
+KeyPress PressKey(const State& state) {
+    KeyPress press;
+    press.note = KeyNote(state);
+    // nothing to switch: the switch goes to the map rather than flip unseen
+    press.switched = press.note.empty() && !state.switched;
+    return press;
 }
 
 } // namespace Port::MapView

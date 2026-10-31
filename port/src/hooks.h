@@ -63,7 +63,7 @@ int SkipHint();
 void ToggleQuestMap();
 
 /// The app's touch-screen key (and a controller's right-stick click): ToggleQuestMap, unless
-/// the map view can't show (MapView::KeyNote: the screens, the touch overlay or quest_overlay
+/// the map view can't show (MapView::PressKey: the screens, the touch overlay or quest_overlay
 /// off, a code library too old, a panel layout without the map panel). Then the press asks for
 /// the map, for when it can show, and returns why nothing changes, a short line for the screen;
 /// "" when it switched. Call it on the emulation thread.
