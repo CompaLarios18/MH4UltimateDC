@@ -75,14 +75,9 @@ vec4 mh4n_blend_factor(uint factor, vec4 src, vec4 dst, vec4 blend_color) {
     }
 }
 
-// The blend equation of a half that the pipeline leaves to the shader, with the PICA's factors: per half, min or max
-// (Min 3, Max 4) of source * factor and destination * factor, or their sum (Add 0), difference (Subtract 1) or
-// reversed difference (ReverseSubtract 2), clamped to 0..1; `eq_rgb` and `eq_a` are Azahar's BlendEquation. A half
-// whose equation is another value (use 0xFFFFFFFFu) is returned as the source, for the fixed-function blender.
-// Vulkan's MIN and MAX ignore the factors, so a Min or Max half whose factors are not both One is computed here and the
-// pipeline blends it ONE, ZERO, ADD; the sum and the differences are computed here only for the colour half when the
-// alpha half is, and its factors read the source alpha (the pipeline would see the alpha the shader replaced).
-// `dst` is the destination colour (the feedback copy of the target) and `blend_color` the blend constant as 0..1 floats.
+// The helper of the two blend functions: the equation `eq` (Azahar's BlendEquation: Add 0, Subtract 1,
+// ReverseSubtract 2, Min 3, Max 4; the sum and the differences clamped to 0..1) of the two products. Any other value
+// of `eq` takes the larger (callers pass only 0 to 4).
 float mh4n_blend_half(uint eq, float a, float b) {
     switch (eq) {
     case 0u: return clamp(a + b, 0.0, 1.0);
@@ -93,22 +88,50 @@ float mh4n_blend_half(uint eq, float a, float b) {
     }
 }
 
+// The Min and Max blend equations with the PICA's factors, per half: when `eq_rgb` (or `eq_a`) is Min (3) or Max (4)
+// that half is min or max of source * factor and destination * factor; ANY other equation (0 included, so the
+// canonical zeros of a key give the source back) leaves that half of `src` as it is, for the fixed-function blender.
+// Vulkan's MIN and MAX ignore the factors, so a Min or Max half whose factors are not both One is computed here and the
+// pipeline blends it ONE, ZERO, ADD (state::PipelinePlan::rgb_in_shader and alpha_in_shader; pass the requested
+// equation for a half the plan moved and 0 for the others). `dst` is the destination colour (the feedback copy of the
+// target) and `blend_color` the blend constant as 0..1 floats; `src` and `dst` are rounded to 8 bits first.
 vec4 mh4n_minmax_blend(uint eq_rgb, uint src_rgb, uint dst_rgb, uint eq_a, uint src_a, uint dst_a, vec4 src,
                        vec4 dst, vec4 blend_color) {
     vec4 s = floor(src * 255.0 + 0.5) / 255.0;
     vec4 d = floor(dst * 255.0 + 0.5) / 255.0;
     vec4 result = s;
-    if (eq_rgb <= 4u) {
+    if (eq_rgb == 3u || eq_rgb == 4u) {
         vec3 a = s.rgb * mh4n_blend_factor(src_rgb, s, d, blend_color).rgb;
         vec3 b = d.rgb * mh4n_blend_factor(dst_rgb, s, d, blend_color).rgb;
         result.r = mh4n_blend_half(eq_rgb, a.r, b.r);
         result.g = mh4n_blend_half(eq_rgb, a.g, b.g);
         result.b = mh4n_blend_half(eq_rgb, a.b, b.b);
     }
-    if (eq_a <= 4u) {
+    if (eq_a == 3u || eq_a == 4u) {
         float a = s.a * mh4n_blend_factor(src_a, s, d, blend_color).a;
         float b = d.a * mh4n_blend_factor(dst_a, s, d, blend_color).a;
         result.a = mh4n_blend_half(eq_a, a, b);
     }
     return result;
+}
+
+// The whole colour half in the shader, for the colour half that the plan sends here although it is not a Min or Max
+// half (state::PipelinePlan::rgb_uses_blend_rgb): the equation `eq` (Add 0, Subtract 1, ReverseSubtract 2, and Min 3 and
+// Max 4 too) of source * factor and destination * factor, clamped to 0..1, as a vec3; any other `eq` gives src.rgb.
+// The plan sends a colour half here in two cases: its factors read the source alpha while the alpha half is the
+// shader's (the blender would read the alpha the shader replaced), and it has a factor of each constant pair
+// (ConstantColor and ConstantAlpha, which one constant colour cannot give). ORDER: pass the ORIGINAL source colour as
+// `src`, not the result of mh4n_minmax_blend, whose alpha is the alpha half already replaced:
+//     vec4 color = mh4n_minmax_blend(eq_rgb_if_minmax_else_0, src_rgb, dst_rgb, eq_a_if_moved_else_0, src_a, dst_a,
+//                                    src, dst, blend_color);
+//     color.rgb = mh4n_blend_rgb(eq_rgb, src_rgb, dst_rgb, src, dst, blend_color);   // only when the plan says so
+vec3 mh4n_blend_rgb(uint eq, uint src_factor, uint dst_factor, vec4 src, vec4 dst, vec4 blend_color) {
+    vec4 s = floor(src * 255.0 + 0.5) / 255.0;
+    vec4 d = floor(dst * 255.0 + 0.5) / 255.0;
+    if (eq > 4u) {
+        return s.rgb;
+    }
+    vec3 a = s.rgb * mh4n_blend_factor(src_factor, s, d, blend_color).rgb;
+    vec3 b = d.rgb * mh4n_blend_factor(dst_factor, s, d, blend_color).rgb;
+    return vec3(mh4n_blend_half(eq, a.r, b.r), mh4n_blend_half(eq, a.g, b.g), mh4n_blend_half(eq, a.b, b.b));
 }

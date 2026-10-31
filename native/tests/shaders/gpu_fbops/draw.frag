@@ -1,3 +1,7 @@
+// Derived from Azahar src/video_core/shader/generator/glsl_fs_shader_gen.cpp at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6
+// (GPL-3.0-or-later, as the file says: "Licensed under GPLv3 or any later version"): the depth of a fragment,
+// z_over_w * depth_scale + depth_offset with z_over_w = -gl_FragCoord.z (FragmentModule::WriteDepth). The rest is ours.
+// Copyright 2023-2026 Citra Emulator Project / Azahar Emulator Project (glsl_fs_shader_gen.cpp)
 #version 450
 // One constant colour (R, G, B, A) and the PICA's depth: z_over_w * depth_scale + depth_offset, the line Azahar's
 // fragment generator writes to gl_FragDepth in every draw (WriteDepth), with z_over_w = -gl_FragCoord.z.

@@ -8,6 +8,7 @@
 // Copyright 2023-2026 Citra Emulator Project / Azahar Emulator Project (pica_to_vk.h, vk_rasterizer.cpp)
 // Copyright 2017-2025 Citra Emulator Project / Azahar Emulator Project (regs_framebuffer.h, regs_internal.h)
 // Copyright 2017-2026 Citra Emulator Project / Azahar Emulator Project (regs_rasterizer.h)
+#include "gpu/backend/state/state.h"
 #include "gpu/fbops/fixed_function.h"
 
 namespace mh4n::gpu::fbops {
@@ -150,11 +151,7 @@ DynamicState MakeDynamicState(const pica::PicaState& state) {
 }
 
 void ApplyDynamicState(Recorder& recorder, const DynamicState& dynamic, bool constants_from_alpha) {
-    std::array<float, 4> constants = dynamic.blend_constants;
-    if (constants_from_alpha) {
-        constants = {constants[3], constants[3], constants[3], constants[3]};
-    }
-    recorder.SetBlendConstants(constants);
+    recorder.SetBlendConstants(rhi::state::EffectiveBlendConstants(constants_from_alpha, dynamic.blend_constants));
     recorder.SetStencilReference(dynamic.stencil_reference);
     recorder.SetStencilMasks(dynamic.stencil_compare_mask, dynamic.stencil_write_mask);
 }

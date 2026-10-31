@@ -116,16 +116,21 @@ Result<PipelinePlan> PlanPipeline(const FixedFunctionState& requested, const Cap
         }
     }
 
+    plan.rgb_uses_blend_rgb = plan.rgb_in_shader && !IsMinMax(requested.color_op);
     plan.needs_destination_copy = (plan.shader_logic_op && LogicOpNeedsDestination(requested.logic_op)) ||
                                   plan.rgb_in_shader || plan.alpha_in_shader;
     return plan;
 }
 
-std::array<float, 4> EffectiveBlendConstants(const PipelinePlan& plan, const std::array<float, 4>& requested) {
-    if (!plan.constants_from_alpha) {
+std::array<float, 4> EffectiveBlendConstants(bool constants_from_alpha, const std::array<float, 4>& requested) {
+    if (!constants_from_alpha) {
         return requested;
     }
     return {requested[3], requested[3], requested[3], requested[3]};
+}
+
+std::array<float, 4> EffectiveBlendConstants(const PipelinePlan& plan, const std::array<float, 4>& requested) {
+    return EffectiveBlendConstants(plan.constants_from_alpha, requested);
 }
 
 }  // namespace mh4n::gpu::rhi::state

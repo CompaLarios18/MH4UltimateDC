@@ -439,14 +439,19 @@ struct Harness {
             kind = 1;
             needs_destination = true;
             desc.fragment = Spv(spv_minmax_frag);
-            // a half the pipeline blends itself gets the "not here" equation: the shader leaves it alone
-            spec.push_back({7, plan.rgb_in_shader ? c.m.eq_rgb : 0xFFFFFFFFu});
+            // the generator's composition (minmax.frag): mh4n_minmax_blend with the requested equation for a Min or Max
+            // half the plan moved and 0 for the others, then mh4n_blend_rgb from the original source for the colour half
+            // the plan sends here although it is not Min or Max
+            const bool rgb_minmax = plan.rgb_in_shader && (c.m.eq_rgb == eq::Min || c.m.eq_rgb == eq::Max);
+            spec.push_back({7, rgb_minmax ? c.m.eq_rgb : 0});
             spec.push_back({8, c.m.src_rgb});
             spec.push_back({9, c.m.dst_rgb});
-            spec.push_back({10, plan.alpha_in_shader ? c.m.eq_a : 0xFFFFFFFFu});
+            spec.push_back({10, plan.alpha_in_shader ? c.m.eq_a : 0});
             spec.push_back({11, c.m.src_a});
             spec.push_back({12, c.m.dst_a});
             for (u32 i = 0; i < 4; ++i) spec.push_back({13 + i, FloatBits(float(c.m.constant[i]) / 255.0f)});
+            spec.push_back({17, c.m.eq_rgb});
+            spec.push_back({18, plan.rgb_uses_blend_rgb ? 1u : 0u});
         } else if (plan.shader_logic_op) {
             kind = plan.needs_destination_copy ? 2 : 3;
             needs_destination = plan.needs_destination_copy;
@@ -483,6 +488,38 @@ struct Harness {
 
         SwFragment(c.m, c.src, c.z, c.scale, c.offset, model[c.y * kGrid + c.x]);
     }
+
+    // Draws the generator's blend composition (minmax.frag) with the given constants, blending off, at a pixel; the
+    // destination is the target as it is.
+    void DrawShader(Recorder& rec, const Rgba& src, const std::vector<SpecConstant>& extra, u32 x, u32 y, BindingSet** set) {
+        GraphicsPipelineDesc desc;
+        desc.vertex = Spv(spv_fs_vert);
+        desc.fragment = Spv(spv_minmax_frag);
+        desc.color_format = color->GetFormat();
+        desc.depth_format = with_depth ? depth->GetFormat() : Format::Undefined;
+        desc.sets = {kSampledAndSampler};
+        desc.name = "fbops raw";
+        desc.specialization = {{0, FloatBits(-0.5f)}};
+        for (u32 i = 0; i < 4; ++i) desc.specialization.push_back({1 + i, FloatBits(float(src[i]) / 255.0f)});
+        desc.specialization.insert(desc.specialization.end(), extra.begin(), extra.end());
+        Result<std::shared_ptr<Pipeline>> made = backend->CreateGraphicsPipeline(desc);
+        REQUIRE_MESSAGE(made.ok(), made.error());
+        raw_pipelines.push_back(*made);
+        fbops::ApplyDynamicState(rec, fbops::DynamicState{});
+        rec.SetPipeline(**made);
+        Image& twin = rec.FeedbackCopy(*color);
+        if (*set == nullptr) {
+            Result<BindingSet*> acquired = arena->Acquire(kSampledAndSampler);
+            REQUIRE_MESSAGE(acquired.ok(), acquired.error());
+            REQUIRE((*acquired)->SetSampledImage(0, twin, ImageView::Sampled).ok());
+            REQUIRE((*acquired)->SetSampler(1, *sampler).ok());
+            *set = *acquired;
+        }
+        rec.Bind(**set, 0);
+        rec.SetScissor(Rect{static_cast<s32>(x), static_cast<s32>(y), 1, 1});
+        rec.Draw(3);
+    }
+    std::vector<std::shared_ptr<Pipeline>> raw_pipelines;
 
     struct Result3 {
         std::vector<u8> color, depth, stencil;
@@ -536,7 +573,8 @@ void RunCases(Harness& h, const std::vector<DrawCase>& cases, const Rgba& clear_
         if (check_depth) {
             const u32 have = h.DepthAt(got, index);
             INFO("depth got " << have << " want " << want.depth);
-            CHECK(std::abs(static_cast<int>(have) - static_cast<int>(want.depth)) <= 1);
+            // the model truncates to 24 bits and the device rounds: the model's value or the next
+            CHECK((have == want.depth || have == want.depth + 1));
         }
         if (check_stencil) {
             INFO("stencil got " << int(got.stencil[index]) << " want " << want.stencil);
@@ -812,6 +850,7 @@ TEST_CASE("plan/a_min_or_max_half_goes_to_the_shader_unless_both_factors_are_one
             REQUIRE_MESSAGE(plan.ok(), plan.error());
             const bool shader = !(src == fac::One && dst == fac::One);
             CHECK(plan->rgb_in_shader == shader);
+            CHECK_FALSE(plan->rgb_uses_blend_rgb);  // a Min or Max colour half is mh4n_minmax_blend's
             CHECK_FALSE(plan->alpha_in_shader);  // its factors are both One: the hardware's
             CHECK(plan->needs_destination_copy == shader);
             if (shader) {
@@ -865,11 +904,25 @@ TEST_CASE("plan/a_min_or_max_half_goes_to_the_shader_unless_both_factors_are_one
     CHECK(plan->built.src_color == BlendFactor::One);
     CHECK(plan->built.dst_color == BlendFactor::Zero);
     CHECK(plan->built.color_op == BlendOp::Add);
+    CHECK(plan->rgb_uses_blend_rgb);
+    // each source-alpha factor alone, in the source slot and in the destination slot, moves the colour half
+    for (const u32 factor : {fac::SrcAlpha, fac::OneMinusSrcAlpha, fac::SrcAlphaSat}) {
+        for (const bool source_slot : {true, false}) {
+            m.src_rgb = source_slot ? factor : fac::DstColor;
+            m.dst_rgb = source_slot ? fac::Zero : factor;
+            plan = state::PlanPipeline(Requested(m), CapsWith(true));
+            REQUIRE(plan.ok());
+            INFO("factor " << factor << " in the " << (source_slot ? "source" : "destination") << " slot");
+            CHECK(plan->rgb_in_shader);
+            CHECK(plan->rgb_uses_blend_rgb);
+        }
+    }
     m.src_rgb = fac::DstColor;
     m.dst_rgb = fac::ConstColor;
     plan = state::PlanPipeline(Requested(m), CapsWith(true));
     REQUIRE(plan.ok());
     CHECK_FALSE(plan->rgb_in_shader);
+    CHECK_FALSE(plan->rgb_uses_blend_rgb);
     CHECK(plan->alpha_in_shader);
     CHECK(plan->built.src_color == BlendFactor::DstColor);
 }
@@ -911,6 +964,7 @@ TEST_CASE("plan/constant_alpha_factors_are_rewritten_where_the_vendored_backend_
                 plan = state::PlanPipeline(Requested(m), CapsWith(true));
                 REQUIRE_MESSAGE(plan.ok(), plan.error());
                 CHECK(plan->rgb_in_shader);
+                CHECK(plan->rgb_uses_blend_rgb);
                 CHECK_FALSE(plan->alpha_in_shader);
                 CHECK(plan->needs_destination_copy);
                 CHECK_FALSE(plan->constants_from_alpha);
@@ -1199,6 +1253,15 @@ TEST_CASE("blend/min_and_max_in_hardware_with_one_factors_and_in_the_shader_othe
     }
 }
 
+namespace {
+// Larger than the tolerance of 1 that the blend checks allow, or the control could not tell the two apart.
+int MaxDifference(const Rgba& a, const Rgba& b) {
+    int most = 0;
+    for (u32 i = 0; i < 4; ++i) most = std::max(most, std::abs(a[i] - b[i]));
+    return most;
+}
+}  // namespace
+
 TEST_CASE("controls/the_cases_tell_a_wrong_minmax_or_constant_apart") {
     // Min of source * SrcAlpha and destination * SrcAlpha: the shader's answer. A pipeline that handed the equation to the
     // hardware (Vulkan's MIN ignores the factors) would give min(source, destination) instead; the case must tell them apart.
@@ -1213,11 +1276,11 @@ TEST_CASE("controls/the_cases_tell_a_wrong_minmax_or_constant_apart") {
     DrawCase k = BlendCase(eq::Add, eq::Add, fac::ConstColor, fac::Zero, fac::ConstAlpha, fac::Zero, "");
     DrawCase zero = k;
     zero.m.constant = {0, 0, 0, 0};
-    CHECK(SwPixelColor(k.m, kSource, kDestination) != SwPixelColor(zero.m, kSource, kDestination));
+    CHECK(MaxDifference(SwPixelColor(k.m, kSource, kDestination), SwPixelColor(zero.m, kSource, kDestination)) > 1);
     // and the colour half on ConstantAlpha is not the same as on ConstantColor
     DrawCase a = BlendCase(eq::Add, eq::Add, fac::ConstAlpha, fac::Zero, fac::One, fac::Zero, "");
     DrawCase b = BlendCase(eq::Add, eq::Add, fac::ConstColor, fac::Zero, fac::One, fac::Zero, "");
-    CHECK(SwPixelColor(a.m, kSource, kDestination) != SwPixelColor(b.m, kSource, kDestination));
+    CHECK(MaxDifference(SwPixelColor(a.m, kSource, kDestination), SwPixelColor(b.m, kSource, kDestination)) > 1);
 }
 
 // ================================================================================================================
@@ -1586,4 +1649,120 @@ TEST_CASE("state/dynamic_state_changes_between_draws_of_one_pipeline") {
     CHECK(h.model[0].stencil == 0x20);
     CHECK(h.model[1].stencil == 0);
     CHECK(h.model[2].stencil == 0x20);
+}
+
+// ================================================================================================================
+// The two blend functions of the GLSL, on their contracts
+// ================================================================================================================
+
+namespace {
+
+// The constants of minmax.frag: mh4n_minmax_blend's equations and factors, then mh4n_blend_rgb's equation and whether it runs.
+std::vector<SpecConstant> BlendSpec(u32 eq_rgb, u32 src_rgb, u32 dst_rgb, u32 eq_a, u32 src_a, u32 dst_a, u32 blend_rgb_eq = 0,
+                                    bool use_blend_rgb = false, std::array<u8, 4> blend_color = {0, 0, 0, 0}) {
+    std::vector<SpecConstant> spec = {{7, eq_rgb}, {8, src_rgb}, {9, dst_rgb}, {10, eq_a}, {11, src_a}, {12, dst_a},
+                                      {17, blend_rgb_eq}, {18, use_blend_rgb ? 1u : 0u}};
+    for (u32 i = 0; i < 4; ++i) spec.push_back({13 + i, FloatBits(float(blend_color[i]) / 255.0f)});
+    return spec;
+}
+
+}  // namespace
+
+TEST_CASE("glsl/a_half_that_is_not_min_or_max_returns_the_source_and_blend_rgb_is_the_whole_colour_half") {
+    std::shared_ptr<Backend> backend = MakeBackend();
+    if (!backend) return;
+    Harness h(backend, false);
+    const Rgba src{40, 90, 160, 200}, dst{100, 50, 30, 70};
+    struct Raw {
+        std::vector<SpecConstant> spec;
+        Rgba want;
+        int tolerance;
+        const char* what;
+    };
+    const u32 none = 0xFFFFFFFFu;
+    const std::vector<Raw> raws = {
+        // mh4n_minmax_blend: the canonical zeros of a key (equation 0, factors 0) give the source back, not black
+        {BlendSpec(0, 0, 0, 0, 0, 0), src, 0, "equation 0, factors 0"},
+        {BlendSpec(1, 0, 0, 2, 0, 0), src, 0, "Subtract and ReverseSubtract are not its halves"},
+        {BlendSpec(5, 0, 0, none, 0, 0), src, 0, "equations past the enumeration"},
+        // the control: Min of nothing is black (what a function that computed every half would give for those zeros)
+        {BlendSpec(3, 0, 0, 3, 0, 0), {0, 0, 0, 0}, 0, "Min with Zero factors computes"},
+        {BlendSpec(4, 1, 1, 0, 0, 0), {100, 90, 160, 200}, 1, "Max colour half, alpha half left alone"},
+        // mh4n_blend_rgb: the whole colour half, the alpha from mh4n_minmax_blend (left alone here)
+        {BlendSpec(0, 1, 1, 0, 0, 0, 0, true), {140, 140, 190, 200}, 1, "Add One One"},
+        {BlendSpec(0, 1, 1, 0, 0, 0, 2, true), {60, 0, 0, 200}, 1, "ReverseSubtract One One"},
+        {BlendSpec(0, 1, 1, 0, 0, 0, 3, true), {40, 50, 30, 200}, 1, "Min One One"},
+        {BlendSpec(0, 1, 1, 0, 0, 0, 7, true), src, 0, "another equation gives the source"},
+        {BlendSpec(0, 1, 1, 0, 0, 0, none, true), src, 0, "no equation gives the source"},
+        // the ordering: the alpha half is Min of source alpha * source alpha and the destination (70), and the colour half
+        // (source * SrcAlpha) must still read the ORIGINAL source alpha 200: 40 * 200 / 255 and so on
+        {BlendSpec(0, 6, 0, 3, 6, 1, 0, true), {31, 71, 125, 70}, 1, "the colour half reads the original source alpha"},
+    };
+    std::vector<DrawCase> unused;
+    Recorder rec = h.Begin(dst, 1.0f, 0);
+    BindingSet* set = nullptr;
+    for (u32 i = 0; i < raws.size(); ++i) h.DrawShader(rec, src, raws[i].spec, i, 0, &set);
+    const Harness::Result3 got = h.Finish(std::move(rec));
+    for (u32 i = 0; i < raws.size(); ++i) {
+        for (u32 channel = 0; channel < 4; ++channel) {
+            INFO(raws[i].what << " channel " << channel << " got " << int(got.color[i * 4 + channel]));
+            CHECK(std::abs(int(got.color[i * 4 + channel]) - raws[i].want[channel]) <= raws[i].tolerance);
+        }
+    }
+}
+
+TEST_CASE("blend/source_alpha_factors_in_the_colour_half_follow_an_alpha_half_in_the_shader") {
+    for (const bool masked : {false, true}) {
+        std::shared_ptr<Backend> backend = masked ? MakeBackend({Cap::LogicOp, Cap::D24S8}) : MakeBackend();
+        if (!backend) return;
+        Harness h(backend, false);
+        std::vector<DrawCase> cases;
+        u32 index = 0;
+        // SrcAlpha, OneMinusSrcAlpha and SrcAlphaSaturate each alone in the source slot and in the destination slot (the
+        // other slot Zero or DstColor), colour half Add (and Subtract or ReverseSubtract with the other slot Zero), alpha
+        // half Min or Max with factors that are not both One, so that the alpha the blender would see (70 or 156) is not the
+        // source alpha (200)
+        for (const u32 factor : {fac::SrcAlpha, fac::OneMinusSrcAlpha, fac::SrcAlphaSat}) {
+            for (const bool in_source_slot : {true, false}) {
+                for (const u32 alpha_eq : {eq::Min, eq::Max}) {
+                    struct Variant {
+                        u32 equation, other;
+                    };
+                    const Variant variants[] = {{eq::Add, fac::Zero},
+                                                {eq::Add, fac::DstColor},
+                                                {in_source_slot ? eq::Subtract : eq::ReverseSubtract, fac::Zero}};
+                    for (const Variant& v : variants) {
+                        DrawCase c = BlendCase(v.equation, alpha_eq, in_source_slot ? factor : v.other,
+                                               in_source_slot ? v.other : factor, fac::SrcAlpha, fac::One, "source alpha");
+                        cases.push_back(At(c, index++));
+                    }
+                }
+            }
+        }
+        // the controls: colour factors that do not read the source alpha stay in hardware beside the shader's alpha half
+        const std::pair<u32, u32> unrelated[] = {{fac::DstColor, fac::Zero}, {fac::ConstColor, fac::DstAlpha},
+                                                 {fac::Zero, fac::OneMinusDstColor}, {fac::DstAlpha, fac::OneMinusConstColor}};
+        const u32 first_control = index;
+        for (const auto& [src_factor, dst_factor] : unrelated) {
+            cases.push_back(At(BlendCase(eq::Add, eq::Max, src_factor, dst_factor, fac::SrcAlpha, fac::One, "unrelated"), index++));
+        }
+        REQUIRE(cases.size() == 36 + 4);
+        RunCases(h, cases, kDestination, 1.0f, 0, 1);
+        for (u32 i = 0; i < cases.size(); ++i) {
+            const state::PipelinePlan& plan = h.plans[i];
+            INFO("case " << i);
+            CHECK(plan.alpha_in_shader);
+            CHECK(plan.rgb_in_shader == (i < first_control));
+            CHECK(plan.rgb_uses_blend_rgb == (i < first_control));
+            CHECK(plan.needs_destination_copy);
+        }
+        // the cases are sensitive: the model with the blender's view (the alpha the shader replaced) gives other pixels
+        // for the factors that read the source alpha
+        for (const u32 factor : {fac::SrcAlpha, fac::OneMinusSrcAlpha, fac::SrcAlphaSat}) {
+            DrawCase right = BlendCase(eq::Add, eq::Max, factor, fac::Zero, fac::SrcAlpha, fac::One, "");
+            Rgba replaced = kSource;
+            replaced[3] = SwPixelColor(right.m, kSource, kDestination)[3];
+            CHECK(SwPixelColor(right.m, kSource, kDestination) != SwPixelColor(right.m, replaced, kDestination));
+        }
+    }
 }

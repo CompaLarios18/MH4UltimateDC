@@ -29,13 +29,22 @@ struct PipelinePlan {
     // The pipeline has blending off (no hardware logic op) and the shader applies the requested logic op to its
     // colour (mh4n_logic_op, all 16 ops). NoOp is not in the shader: the colour write mask is 0 (the depth write stays).
     bool shader_logic_op = false;
-    // The pipeline blends this half ONE, ZERO, ADD and the shader computes it (mh4n_minmax_blend): the requested Min or
-    // Max of source * factor and destination * factor for a half whose equation is Min or Max and whose factors are not
-    // both One (Vulkan's MIN and MAX ignore the factors, the PICA's do not); and the colour half whatever its
-    // equation when the alpha half is the shader's and the colour factors read the source alpha, which the shader has
-    // replaced by then.
+    // The pipeline blends this half ONE, ZERO, ADD and the shader computes it. Three cases, none depends on the device:
+    //   - a half whose equation is Min or Max and whose factors are not both One (Vulkan's MIN and MAX ignore the
+    //     factors, the PICA's do not): mh4n_minmax_blend with the requested equation for that half;
+    //   - the colour half, whatever its equation, when the alpha half is the shader's and the colour factors read the
+    //     source alpha (SrcAlpha, OneMinusSrcAlpha, SrcAlphaSaturate): the blender would read the alpha the shader
+    //     replaced;
+    //   - the colour half when it has a factor of each constant pair (ConstantColor and ConstantAlpha): one constant
+    //     colour cannot give both, the shader reads the real blend colour.
+    // The last two (and a Min or Max colour half too, if the caller prefers) are computed by mh4n_blend_rgb, from the
+    // ORIGINAL source colour (rgb_uses_blend_rgb says when it is needed); the alpha half is always mh4n_minmax_blend.
     bool rgb_in_shader = false;
     bool alpha_in_shader = false;
+    // rgb_in_shader and the requested colour equation is not Min or Max (Add, Subtract, ReverseSubtract): the colour
+    // half needs mh4n_blend_rgb, because mh4n_minmax_blend leaves such a half alone. A Min or Max colour half needs
+    // only mh4n_minmax_blend.
+    bool rgb_uses_blend_rgb = false;
     // The shader reads the destination colour: FeedbackCopy the target before the draw and bind the twin.
     bool needs_destination_copy = false;
     // The vendored backend expresses only the constant-colour pair of blend factors, so a ConstantAlpha factor of the
@@ -55,11 +64,14 @@ struct PipelinePlan {
 //     ConstantColor factor is there too (then the constants are (a, a, a, a)); with both pairs in the colour half it
 //     goes to the shader (constants_from_alpha stays false).
 // Errors: a logic op with blending on (they are exclusive). A colour half with a factor of each constant pair
-// (ConstantColor and ConstantAlpha) is computed by the shader like a Min/Max half (rgb_in_shader, with the real blend
+// (ConstantColor and ConstantAlpha) is computed by the shader (rgb_in_shader, mh4n_blend_rgb, with the real blend
 // colour), since one constant colour cannot be both. A plume patch for the constant-alpha pair would make both this
 // route and the rewrite unnecessary; until then the mixed half pays the destination copy. The blend state stays
 // pipeline state on every device.
 Result<PipelinePlan> PlanPipeline(const FixedFunctionState& requested, const Capabilities& caps);
+
+// The same rule as a function of the flag, for code that holds only the flag.
+std::array<float, 4> EffectiveBlendConstants(bool constants_from_alpha, const std::array<float, 4>& requested);
 
 // The constants to give SetBlendConstants for the plan: the requested ones, or (a, a, a, a) when the plan rewrote the
 // ConstantAlpha factors.
