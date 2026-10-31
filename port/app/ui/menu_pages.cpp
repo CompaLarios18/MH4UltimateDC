@@ -25,6 +25,7 @@
 #include "ui/menu_parts.h"
 #include "ui/multiplayer_tab.h"
 #include "ui/nav.h"
+#include "ui/touch_taps.h"
 #include "video_core/gpu.h"
 #include "video_core/renderer_base.h"
 #include "window.h"
@@ -427,9 +428,9 @@ void Menu::DrawTouchScreen() {
         }
         DrawPanelViewRows("target_overlay", R::TouchTargetSize, R::TouchTargetWhere, R::TouchTargetX,
                           R::TouchTargetY);
-        // #59: "Buttons for the kick and target camera, and touch taps"
-        LinkRow("Buttons for the kick and target camera", Tab::Gameplay,
-                "Opens Gameplay: the kick and the target camera on buttons, the end of quests, fast forward.",
+        LinkRow("Buttons for the kick and target camera, and touch taps", Tab::Gameplay,
+                "Opens Gameplay: the kick and the target camera on buttons, the end of quests, fast forward and "
+                "touch taps.",
                 "touch_gameplay");
         EndSettings();
     }
@@ -576,9 +577,9 @@ void Menu::DrawControls() {
         }
         LinkRow("Every key and button", Tab::Keys,
                 "Opens Keys: every key and mouse button of the game, and what the controller does.", "controls_keys");
-        // #59: "Kick, target camera and touch taps"
-        LinkRow("Kick and target camera buttons", Tab::Gameplay,
-                "Opens Gameplay: the kick and the target camera on buttons, the end of quests, fast forward.",
+        LinkRow("Kick, target camera and touch taps", Tab::Gameplay,
+                "Opens Gameplay: the kick and the target camera on buttons, the end of quests, fast forward and "
+                "touch taps.",
                 "controls_gameplay");
         EndSettings();
     }
@@ -681,11 +682,20 @@ void Menu::DrawGameplay() {
 }
 
 void Menu::DrawTouchTaps() {
-    // #59 (wp/main-59-touch-taps, ui/touch_taps.h): last on Gameplay, full width, outside any
-    // settings table; the module draws its own title and calls layer.Help after its items:
-    //   SectionAnchor(SectionId::GameplayTouchTaps);   // LT/RT and the search land here
-    //   if (DrawTouchTaps(layer)) Changed(AppSetting::Controls);
-    //   if (TouchTapCapturing()) capture = -1;          // one wait at a time
+    // last on Gameplay, full width, outside any settings table (ui/touch_taps.h): the module draws
+    // its own title and calls layer.Help after its items, which take the menu's pending focus
+    SectionAnchor(S::GameplayTouchTaps); // LT/RT and the search land here
+    item = {};
+    item.row = R::GameplayTouchTaps; // its items are the row's: a jump to it takes the first
+    // Changed, not ControlsChanged: the taps build the input profile again themselves, once a key
+    // is set or a point let go (while a point is dragged this is true every frame)
+    if (Ui::DrawTouchTaps(layer)) {
+        Changed(AppSetting::Controls);
+    }
+    item = {};
+    if (TouchTapCapturing()) {
+        capture = -1; // one wait at a time
+    }
 }
 
 // ── Audio ──

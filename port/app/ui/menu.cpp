@@ -211,7 +211,7 @@ void Menu::Closed() {
                 file.pause_key = now.pause_key;
                 file.fast_forward_key = now.fast_forward_key;
                 file.fast_forward_hold = now.fast_forward_hold;
-                // #59: file.touch_taps = now.touch_taps;
+                file.touch_taps = now.touch_taps;
                 break;
             }
         }
@@ -1224,25 +1224,24 @@ bool Menu::SliderFloat(const char* id, float& value, float min, float max, const
     return changed;
 }
 
-// ── #54: the map view's notes (Port::Hooks::MapViewNote, TargetViewNote) ──
+// ── The map view's notes (Port::Hooks::MapViewNote, TargetViewNote; port/src/map_view.h) ──
 
 void Menu::GatherViewNotes(Rules::Facts& f) const {
-    // #54 (wp/main-54-map-settings): the hooks say why the quest's map view, or the target
-    // camera's, can't show (the player's panels have no map panel, ...); "" when it can. They read
-    // the running options and the last quest's panels, on the emulation thread, where the menu
-    // draws (window.cpp, Layer::Frame). Menu-level reasons come first (R1-R3, menu_rules.cpp).
-    //   f.map_view_note = Port::Hooks::MapViewNote();
-    //   f.target_view_note = Port::Hooks::TargetViewNote();
-    (void)f;
+    // the hooks say why the quest's map view, or the target camera's, can't show (the player's
+    // panels have no map panel, ...); "" when it can. They read the running options and the last
+    // quest's panels, on the emulation thread, where the menu draws (window.cpp, Layer::Frame).
+    // Menu-level reasons come first (R1-R3, menu_rules.cpp).
+    f.map_view_note = Port::Hooks::MapViewNote();
+    f.target_view_note = Port::Hooks::TargetViewNote();
 }
 
 std::string Menu::EditorViewNote() const {
-    // #54: in the editor's toolbar, under its help line:
-    //   std::string note = Port::Hooks::MapViewNote();
-    //   if (note.empty() && Port::Hooks::ParseTargetOverlay(Game("target_overlay")).on)
-    //       note = Port::Hooks::TargetViewNote();
-    //   return note;
-    return "";
+    // in the editor's toolbar, under its help line: the map's, else the target camera's while on
+    std::string note = Port::Hooks::MapViewNote();
+    if (note.empty() && Port::Hooks::ParseTargetOverlay(Game("target_overlay")).on) {
+        note = Port::Hooks::TargetViewNote();
+    }
+    return note;
 }
 
 } // namespace App::Ui

@@ -219,22 +219,22 @@ private:
     void EditorKeys(float width, float height);
     std::string EditorNumbers() const;
 
-    // ── Where #54 (the map view's notes) and #59 (touch taps) plug in ──
-    /// #54: the hooks' sentences for In quests (R4) and Target camera by the map (R5).
+    // ── The map view's notes (port/src/map_view.h) and the touch taps (ui/touch_taps.h) ──
+    /// The hooks' sentences for In quests (R4) and Target camera by the map (R5).
     void GatherViewNotes(Rules::Facts& facts) const;
-    /// #54: the same in the editor's toolbar.
+    /// The same in the editor's toolbar.
     std::string EditorViewNote() const;
-    /// #59: a touch tap waits for its key.
+    /// A touch tap waits for its key.
     bool TapCapturing() const;
-    /// #59: a touch tap's key or point stops being edited.
+    /// A touch tap's key or point stops being edited.
     void EndTapEdit();
-    /// #59: the key pressed is a touch tap's; true when it took it.
+    /// The key pressed is a touch tap's; true when it took it.
     bool TapTakesKey(int code);
-    /// #59: `key` given to a binding leaves any touch tap that had it.
+    /// `key` given to a binding leaves any touch tap that had it.
     void ReleaseTapKey(const std::string& key);
-    /// #59: after Reset keys, the taps' keys that the defaults took go.
+    /// After Reset keys, the taps' keys that the defaults took go.
     void SettleTaps();
-    /// #59: Gameplay > Touch taps, full width, last on the tab.
+    /// Gameplay > Touch taps, full width, last on the tab.
     void DrawTouchTaps();
 
     // ── The settings files ──

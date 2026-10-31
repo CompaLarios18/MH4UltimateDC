@@ -224,8 +224,8 @@ GAME_KEYS = {"fps", "refresh_rate", "widescreen", "wide_render", "hud_edges", "t
              "target_overlay", "kick", "target", "skip", "skip_end", "skip_end_hold", "skip_hint", "dither",
              "stereo_3d", "antialiasing", "bloom", "depth_of_field", "motion_blur", "radial_blur", "haze",
              "net_sync"}
-# mh4u-app.ini's settings the menu changes: those of before, and custom_textures and launcher
-# (#59 adds [Controls] touch_tap_1 ... touch_tap_8)
+# mh4u-app.ini's settings the menu changes: those of before, custom_textures and launcher, and the
+# touch taps ([Controls] touch_tap_1 ... touch_tap_8)
 APP_SETTINGS = {
     "[Display] fullscreen", "[Display] screens", "[Display] resolution", "[Display] linear_filter",
     "[Display] vsync", "[Display] renderer", "[Display] fps_counter", "[Display] custom_textures",
@@ -234,7 +234,7 @@ APP_SETTINGS = {
     "[Controls] mouse_invert_y", "[Controls] mouse_invert_x", "[Controls] mouse_deadzone", "[Controls] controller",
     "[Controls] fast_forward_hold", "[Controls] item_prev", "[Controls] item_next", "[Controls] stylus_key",
     "[Controls] touch_screen_key", "[Controls] key_guides_key", "[Controls] pause_key", "[Controls] fast_forward_key",
-    "[Controls] circle_pad", "[Controls] c_stick",
+    "[Controls] circle_pad", "[Controls] c_stick", "[Controls] touch_tap_N",
     *(f"[Controls] button_{b}" for b in ("a", "b", "x", "y", "l", "r", "zl", "zr", "start", "select", "up", "down",
                                          "left", "right")),
 }

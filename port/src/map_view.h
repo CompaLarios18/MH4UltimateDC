@@ -4,10 +4,11 @@
 // overlay or quest_overlay off, with a code library too old for the quest panels' hook point,
 // or with no map panel in the panels; and the touch-screen key can switch quests to the whole
 // touch screen. Then the map's size and place, the HUD layout editor and the key change nothing
-// on the screen. Here are the sentences that say why, for the in-game menu's map settings (and
-// the target camera's), and what a press of the key does: when it has nothing to switch, a
-// short line for the screen. No Azahar here (hooks.cpp gathers the state), so it is tested on
-// its own (tests/test_map_view.py).
+// on the screen. Here are the sentences that say why, which the in-game menu shows under its map
+// settings (Touch screen > In quests; the target camera's under its own) and in the HUD layout
+// editor, and what a press of the key does: when it has nothing to switch, a short line for the
+// screen. No Azahar here (hooks.cpp gathers the state), so it is tested on its own
+// (tests/test_map_view.py).
 #pragma once
 
 #include <string>

@@ -11,6 +11,7 @@
 #include <fmt/format.h>
 #include <imgui.h>
 
+#include "common/logging/log.h"
 #include "common/param_package.h"
 #include "common/settings.h"
 #include "common/string_util.h"
@@ -19,6 +20,7 @@
 #include "ui/layer.h"
 #include "ui/menu.h"
 #include "ui/menu_parts.h"
+#include "ui/touch_taps.h"
 
 namespace App::Ui {
 
@@ -404,9 +406,9 @@ void Menu::RefreshKeyTexts() {
 void Menu::DrawKeys() {
     // at the top: the way to Gameplay's buttons, why the last key wasn't taken, R12
     if (BeginSettings("##keys_links")) {
-        // #59: "Kick, target camera and touch taps"
-        LinkRow("Kick and target camera buttons", Tab::Gameplay,
-                "Opens Gameplay: the kick and the target camera on buttons, the end of quests, fast forward.",
+        LinkRow("Kick, target camera and touch taps", Tab::Gameplay,
+                "Opens Gameplay: the kick and the target camera on buttons, the end of quests, fast forward and "
+                "touch taps.",
                 "keys_gameplay");
         EndSettings();
     }
@@ -562,10 +564,9 @@ void Menu::DrawResetKeys() {
     if (ImGui::BeginPopupModal("Reset the keys?", nullptr,
                                ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings)) {
         ImGui::PushTextWrapPos(ImGui::GetFontSize() * 28.0f);
-        // #59: "...mapped automatically. Touch taps keep their keys; the mouse settings and Fast
-        // forward mode stay."
         ImGui::TextUnformatted("Every key goes back to how it came, after Monster Hunter Rise on PC, and the "
-                               "controller is mapped automatically. The mouse settings and Fast forward mode stay.");
+                               "controller is mapped automatically. Touch taps keep their keys; the mouse settings "
+                               "and Fast forward mode stay.");
         ImGui::PopTextWrapPos();
         ImGui::Spacing();
         if (ImGui::Button("Reset")) {
@@ -601,7 +602,7 @@ void Menu::DrawResetKeys() {
 
 void Menu::OnCapturedKey(int code) {
     if (TapTakesKey(code)) {
-        return; // a touch tap's wait (#59)
+        return; // a touch tap's wait (ui/touch_taps.h)
     }
     if (capture < 0 || capture >= BINDING_COUNT * SLOTS) {
         layer.SetKeyCapture(false);
@@ -644,40 +645,46 @@ void Menu::OnCapturedKey(int code) {
             }
         }
         SetKey(config, binding, slot, key);
-        ReleaseTapKey(key); // and a touch tap that had it (#59)
+        ReleaseTapKey(key); // and a touch tap that had it
         ControlsChanged();
     }
     capture = -1;
     layer.SetKeyCapture(false);
 }
 
-// ── #59: touch taps (wp/main-59-touch-taps, ui/touch_taps.h), the key capture's hand-off ──
+// ── Touch taps (ui/touch_taps.h, Gameplay's last section): the key capture's hand-off ──
 
 bool Menu::TapCapturing() const {
-    // #59: return TouchTapCapturing();
-    return false;
+    return TouchTapCapturing();
 }
 
 void Menu::EndTapEdit() {
-    // #59: EndTouchTapEdit(layer);
+    EndTouchTapEdit(layer);
 }
 
 bool Menu::TapTakesKey(int code) {
-    // #59: a touch tap waiting for its key takes the key pressed (Menu::OnCapturedKey, first):
-    //   if (!TouchTapCapturing()) return false;
-    //   if (OnTouchTapKey(layer, code)) Changed(AppSetting::Controls);
-    //   return true;
-    (void)code;
-    return false;
+    // a touch tap waiting for its key takes the key pressed (OnCapturedKey, first)
+    if (!TouchTapCapturing()) {
+        return false;
+    }
+    if (OnTouchTapKey(layer, code)) {
+        // the taps build the input profile again themselves: Changed, not ControlsChanged; the
+        // key may have left a binding, which the texts that name keys show
+        Changed(AppSetting::Controls);
+        texts_dirty = true;
+    }
+    return true;
 }
 
 void Menu::ReleaseTapKey(const std::string& key) {
-    // #59: ReleaseTouchTapKey(layer.config, key);
-    (void)key;
+    ReleaseTouchTapKey(layer.config, key);
 }
 
 void Menu::SettleTaps() {
-    // #59: SettleTouchTaps(layer.config);
+    // the taps keep their keys, which leave the defaults (config.h); what moved, in the log
+    for (const std::string& line : SettleTouchTaps(layer.config)) {
+        LOG_INFO(Frontend, "menu: {}", line);
+    }
 }
 
 } // namespace App::Ui

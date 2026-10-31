@@ -202,7 +202,8 @@ void DrawSettings(State& s) {
     ImGui::Spacing();
     Ui::TextDim("More in the game's menu: the frame rate and widescreen in Display, the effects in Graphics, the "
                 "touch screen's corner and the quest map in Touch screen, every key in Keys, the kick, the end of "
-                "quests and fast forward in Gameplay. Ctrl+F (or Y on a controller) there finds any setting.");
+                "quests, fast forward and touch taps in Gameplay. Ctrl+F (or Y on a controller) there finds any "
+                "setting.");
     ImGui::EndChild();
 }
 

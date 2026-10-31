@@ -43,7 +43,7 @@ const Section SECTIONS[] = {
     {"gameplay.buttons", Tab::Gameplay, "Buttons for touch panels"},
     {"gameplay.after_quest", Tab::Gameplay, "After a quest"},
     {"gameplay.speed", Tab::Gameplay, "Speed"},
-    // #59: {"gameplay.touch_taps", Tab::Gameplay, "Touch taps"} (and SectionId::GameplayTouchTaps)
+    {"gameplay.touch_taps", Tab::Gameplay, "Touch taps"},
     {"audio.sound", Tab::Audio, "Sound"},
     {"online.net_sync", Tab::Online, "Net sync"},
     {"online.rooms", Tab::Online, "Rooms"},
@@ -382,7 +382,12 @@ const Row ROWS[] = {
      "Stops the game where it is, and again goes on; playing alone only. Choose, then press a key: Esc keeps it, "
      "Delete leaves none.",
      "pause key stop p", "", "", false, true, "mh4u-app.ini [Controls] pause_key"},
-    // #59: {"gameplay.touch_taps", "gameplay.touch_taps", Kind::Block, "Touch taps", ...} (6.1 of the spec)
+    // drawn by ui/touch_taps.cpp, full width (touch_tap_1 to touch_tap_8)
+    {"gameplay.touch_taps", "gameplay.touch_taps", Kind::Block, "Touch taps", nullptr,
+     "Keys that touch the touch screen at a point while held: an item shortcut, the target camera or any other "
+     "panel, without the mouse. Up to 8.",
+     "touch taps tap hotkey hotkeys shortcut item shortcut item slot potion crafting press point touch key", "", "",
+     false, false, "mh4u-app.ini [Controls] touch_tap_N"},
 
     // ── Audio ──
     {"audio.volume", "audio.sound", S, "Volume", nullptr, "How loud the game is.",

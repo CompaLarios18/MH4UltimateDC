@@ -65,10 +65,10 @@ def test_every_app_setting_changed_and_saved():
 
 
 def test_closed_copies_the_fields():
-    """What each AppSetting saves: today's fields, and the two new ones."""
+    """What each AppSetting saves: today's fields, the two new ones and the touch taps."""
     text = sources()
     closed = re.search(r"void Menu::Closed\(\) \{(.*?)\n\}", text, re.S).group(1)
-    closed = re.sub(r"//[^\n]*", "", closed)  # (#59's line waits in a comment: touch_taps)
+    closed = re.sub(r"//[^\n]*", "", closed)  # (a line in a comment isn't saved)
     copied = set(re.findall(r"file\.(\w+) = now\.(\w+);", closed))
     assert all(a == b for a, b in copied)
     fields = {a for a, _ in copied}
@@ -78,13 +78,16 @@ def test_closed_copies_the_fields():
         "keys", "stick_keys", "controller_auto", "button_params", "stick_params", "input_mode",
         "mouse_sensitivity", "mouse_vertical", "mouse_invert_y", "mouse_invert_x", "mouse_deadzone", "item_prev",
         "item_next", "stylus_key", "touch_screen_key", "key_guides", "key_guides_key", "pause_key",
-        "fast_forward_key"}
+        "fast_forward_key", "touch_taps"}
 
 
 def test_texts_ascii():
-    """The menu's font has ASCII only (ui.cpp, AddFontDefaultVector): no curly quotes or arrows."""
+    """The menu's font has ASCII only (ui.cpp, AddFontDefaultVector): no curly quotes or arrows. With
+    the touch taps' section and the map view's sentences (port/src/map_view.cpp), which it shows."""
     for path in sorted(glob.glob(os.path.join(UI, "menu*.cpp")) + [os.path.join(UI, "settings_index.cpp"),
-                                                                    os.path.join(UI, "menu_rules.cpp")]):
+                                                                    os.path.join(UI, "touch_taps.cpp"),
+                                                                    os.path.join(ROOT, "port", "src",
+                                                                                 "map_view.cpp")]):
         with open(path, encoding="utf-8") as f:
             for number, line in enumerate(f, 1):
                 for literal in re.findall(r'"((?:[^"\\]|\\.)*)"', line):

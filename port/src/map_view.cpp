@@ -10,11 +10,12 @@ namespace {
 std::string KeyNote(const State& state) {
     switch (Blocked(state)) {
     case Block::Layout:
-        return "No map to switch to: the screens aren't the game with the touch screen in a corner (Esc > Display)";
+        return "No map to switch to: the screens aren't the game with the touch screen in a corner "
+               "(Esc > Touch screen)";
     case Block::TouchOverlay:
-        return "No map to switch to: the touch screen isn't over the game in a corner (Esc > Game > Touch screen)";
+        return "No map to switch to: the touch screen isn't over the game in a corner (Esc > Touch screen)";
     case Block::QuestOverlay:
-        return "No map to switch to: \"In quests, only the map\" is off (Esc > Game > Touch screen)";
+        return "No map to switch to: \"Only the map in quests\" is off (Esc > Touch screen)";
     case Block::PanelsHook:
         return "No map to switch to: the code library is older than this app (build it again)";
     case Block::NoMapPanel:
@@ -54,14 +55,14 @@ Block Blocked(const State& state) {
 std::string MapNote(const State& state) {
     switch (Blocked(state)) {
     case Block::Layout:
-        return "The screens aren't set to the game with the touch screen in a corner (Display), so the map view "
-               "doesn't show and these settings change nothing.";
+        return "The screens aren't set to the game with the touch screen in a corner (Touch screen > Screens), so "
+               "the map view doesn't show and these settings change nothing.";
     case Block::TouchOverlay:
-        return "The touch screen isn't over the game in a corner (\"Over the game, in a corner\" is off): Azahar's "
+        return "The touch screen isn't over the game in a corner (\"Touch screen over the game\" is off): Azahar's "
                "own custom layout shows the screens, so the map view doesn't show and these settings change "
                "nothing.";
     case Block::QuestOverlay:
-        return "\"In quests, only the map\" is off: quests keep the whole touch screen in the corner, so these "
+        return "\"Only the map in quests\" is off: quests keep the whole touch screen in the corner, so these "
                "settings change nothing.";
     case Block::PanelsHook:
         return "Your code library is older than this app: it has no hook point for the quest's touch panels, so the "
@@ -75,9 +76,9 @@ std::string MapNote(const State& state) {
                      "the map view shows the map panel, which is two slots tall, so without it the corner shows the "
                      "whole touch screen and these settings change nothing.";
     case Block::Switched:
-        return "Quests show the whole touch screen for now, so these settings change nothing there: the Map / touch "
-               "screen key (F12 or M as it comes, or a controller's right-stick click) switched to it. Press it "
-               "again for the map.";
+        return "Quests show the whole touch screen for now, so these settings change nothing there: the Map / whole "
+               "touch screen key (F12 or M as it comes, or a controller's right-stick click) switched to it. Press "
+               "it again for the map.";
     case Block::None:
         break;
     }

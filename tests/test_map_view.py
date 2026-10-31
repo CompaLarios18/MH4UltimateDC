@@ -67,9 +67,9 @@ NO_MAP = {"seen": 1, "in_quest": 1, "map": -1, "target": 0}
 # what each setting that keeps the map from showing is, and what the menu's sentence and the
 # key's line say of it
 SETTINGS = {
-    LAYOUT: ({"layout": 0}, "(Display)", "Esc > Display"),
-    TOUCH_OVERLAY: ({"touch": 0}, "Azahar's own custom layout", "Esc > Game > Touch screen"),
-    QUEST_OVERLAY: ({"quest": 0}, '"In quests, only the map" is off', '"In quests, only the map" is off'),
+    LAYOUT: ({"layout": 0}, "(Touch screen > Screens)", "Esc > Touch screen"),
+    TOUCH_OVERLAY: ({"touch": 0}, "Azahar's own custom layout", "Esc > Touch screen"),
+    QUEST_OVERLAY: ({"quest": 0}, '"Only the map in quests" is off', '"Only the map in quests" is off'),
     PANELS_HOOK: ({"hook": 0}, "build it again", "build it again"),
 }
 
@@ -147,7 +147,16 @@ def test_swapped_or_upright_screens_show_the_touch_screen_whole(driver):
     for state in ({"swapped": 1}, {"upright": 1}):
         block, map_note, _, key_note = view(driver, **IN_QUEST, **state)
         assert block == LAYOUT, state
-        assert "(Display)" in map_note and "Esc > Display" in key_note, state
+        assert "(Touch screen > Screens)" in map_note and "Esc > Touch screen" in key_note, state
+
+
+def test_the_menu_places_named_are_the_menus():
+    # the sentences name the in-game menu's tab, its settings and the Keys row as the menu draws them
+    with open(os.path.join(ROOT, "port", "app", "ui", "settings_index.cpp"), encoding="utf-8") as f:
+        index = f.read()
+    for name in ("Touch screen", "Screens", "Touch screen over the game", "Only the map in quests",
+                 "Map / whole touch screen"):
+        assert f'"{name}"' in index, name
 
 
 def test_the_first_reason_is_the_one_told(driver):
@@ -161,7 +170,7 @@ def test_the_first_reason_is_the_one_told(driver):
 def test_switched_to_the_whole_touch_screen(driver):
     block, map_note, target_note, key_note = view(driver, **IN_QUEST, switched=1)
     assert block == SWITCHED
-    assert "Press it again for the map." in map_note
+    assert "the Map / whole touch screen key" in map_note and "Press it again for the map." in map_note
     assert "beside the map's only" in target_note
     # the key switches back: nothing to say on the screen
     assert key_note == ""
