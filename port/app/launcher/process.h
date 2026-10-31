@@ -1,8 +1,9 @@
 // Child processes for the launcher: the port's Python tools (build_game.py, mods.py) and the
 // app's own code check, with their output read as it comes and a way to stop them together
 // with whatever they started (a build runs compilers). On Linux a program outside the AppImage
-// the app runs from gets the environment the AppImage was started with (launcher/environment.h),
-// and every child starts with the default handling of the signals that matter to it.
+// the app runs from gets the environment without what the AppImage added (launcher/environment.h),
+// and every child starts with the default handling of the signals that matter to it. The POSIX
+// side needs nothing of Azahar's, so that a test builds it on its own (tests/test_app_process.py).
 #pragma once
 
 #include <memory>

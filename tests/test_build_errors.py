@@ -61,9 +61,11 @@ def test_a_compiler_the_system_stopped_is_tried_again_alone(tmp_path, monkeypatc
     lib = rbuild.build(out, 3, "O0", [], "lib.so", [])
     assert os.path.isfile(lib)
     assert cc.runs.count("b.c") == 2 and cc.runs.count("a.c") == 1 and cc.runs[-1] == "link"
-    text = capsys.readouterr().out
-    assert "1 file(s) didn't compile: again, one at a time" in text and "compiling b.c again" in text
-    assert "linked " in text
+    lines = capsys.readouterr().out.splitlines()
+    assert "  1 file(s) didn't compile: again, one at a time" in lines
+    # how far that got, for the launcher's progress bar (launcher/tools.cpp, BuildProgress: "compiling again K/N")
+    assert "  compiling again 1/1: b.c" in lines
+    assert any(line.startswith("linked ") for line in lines)
 
 
 def test_stopped_again_on_its_own_the_build_stops_and_says_why(tmp_path, monkeypatch, capsys):
@@ -99,8 +101,10 @@ def test_real_errors_are_tried_again_once(tmp_path, monkeypatch, capsys):
     with pytest.raises(SystemExit):
         rbuild.build(out, 3, "O0", [], "lib.so", [])
     assert cc.runs.count("a.c") == 2 and cc.runs.count("b.c") == 1 and "link" not in cc.runs
-    err = capsys.readouterr().err
-    assert "a.c:1:1: error: one" in err and "b.c:1:1: error: two" in err
+    captured = capsys.readouterr()
+    assert "a.c:1:1: error: one" in captured.err and "b.c:1:1: error: two" in captured.err
+    retried = [line for line in captured.out.splitlines() if line.startswith("  compiling again")]
+    assert retried == ["  compiling again 1/2: a.c"]
 
 
 def test_a_failed_link_says_how_the_linker_ended(tmp_path, monkeypatch):
@@ -119,11 +123,32 @@ def test_a_status_of_0_with_nothing_written_is_a_failure(tmp_path, monkeypatch):
     out = sources(tmp_path, "a.c", "b.c")
     cc = Compiler({"b.c": [(0, "", False)]})
     monkeypatch.setattr(rbuild.subprocess, "run", cc)
-    with pytest.raises(SystemExit, match="1 object.* missing after compiling, b-O0-.*status 0 without writing"):
+    with pytest.raises(SystemExit, match=r"1 object.* missing after compiling, b-O0-.*reported success \(status 0\) "
+                                         "but didn't write them"):
         rbuild.build(out, 2, "O0", [], "lib.so", [])
     assert "link" not in cc.runs
     monkeypatch.setattr(rbuild.subprocess, "run", Compiler({"link": [(0, "", False)]}))
-    with pytest.raises(SystemExit, match="linking lib.so failed: .* status 0 without writing it"):
+    with pytest.raises(SystemExit, match=r"linking lib.so failed: .* reported success \(status 0\) but didn't write it"):
+        rbuild.build(out, 2, "O0", [], "lib.so", [])
+
+
+def test_an_earlier_builds_output_doesnt_stand_in_for_one_not_written(tmp_path, monkeypatch):
+    """In a build after an earlier one, the earlier object and library are still there: each goes
+    before it is made again, so a status of 0 with nothing written is still found out (not the
+    old code linked in, or the old library installed)."""
+    out = sources(tmp_path, "a.c", "b.c")
+    monkeypatch.setattr(rbuild.subprocess, "run", Compiler())
+    rbuild.build(out, 2, "O0", [], "lib.so", [])
+    newer = os.path.getmtime(tmp_path / "src" / "b.c") + 60
+    os.utime(tmp_path / "src" / "b.c", (newer, newer))         # b.c written again: newer than its object
+    cc = Compiler({"b.c": [(0, "", False)]})
+    monkeypatch.setattr(rbuild.subprocess, "run", cc)
+    with pytest.raises(SystemExit, match="1 object.* missing after compiling, b-O0-"):
+        rbuild.build(out, 2, "O0", [], "lib.so", [])
+    assert cc.runs == ["b.c"]
+    monkeypatch.setattr(rbuild.subprocess, "run", Compiler({"link": [(0, "", False)]}))
+    assert os.path.isfile(os.path.join(out, "lib.so"))
+    with pytest.raises(SystemExit, match="linking lib.so failed: .* but didn't write it"):
         rbuild.build(out, 2, "O0", [], "lib.so", [])
 
 
@@ -173,6 +198,26 @@ def test_a_failed_install_leaves_the_old_library(tmp_path, monkeypatch):
         build_game.install_library(str(new), str(dest))
     assert dest.read_bytes() == b"old library"
     assert os.listdir(dest.parent) == [dest.name]
+
+
+def test_a_failed_install_says_why_also_when_its_copy_cant_go(tmp_path, monkeypatch):
+    """Something holds the new copy (an antivirus reading a new DLL on Windows): it can't be
+    renamed, nor removed. The message is still the one that says what to do."""
+    import build_game
+    new = tmp_path / "new.so"
+    new.write_bytes(b"new library")
+    dest = tmp_path / "recomp" / "0004000000126300.so"
+    dest.parent.mkdir()
+    dest.write_bytes(b"old library")
+
+    def held(*args, **kwargs):
+        raise PermissionError(13, "The file is being used by another process")
+    monkeypatch.setattr(build_game.os, "replace", held)
+    monkeypatch.setattr(build_game.os, "remove", held)
+    with pytest.raises(SystemExit, match="couldn't put the code library at .*being used by another process. Close"):
+        build_game.install_library(str(new), str(dest))
+    monkeypatch.undo()
+    assert dest.read_bytes() == b"old library"
 
 
 def synthetic_cxi(tmp_path, program_id=0x0004000000ABCD00):

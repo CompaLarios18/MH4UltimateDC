@@ -248,8 +248,10 @@ def install_library(lib: str, dest: str) -> None:
         shutil.copy2(lib, part)
         os.replace(part, dest)
     except OSError as e:
-        if os.path.exists(part):
+        try:
             os.remove(part)
+        except OSError:
+            pass  # (there's none, or what holds it holds it still: the message says what failed first)
         raise SystemExit(f"couldn't put the code library at {dest}: {e.strerror or e}. Close the game if it's "
                          "running (the port's Azahar or app) and make sure that folder can be written to, then "
                          "build again") from e

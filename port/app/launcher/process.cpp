@@ -350,7 +350,7 @@ std::vector<std::string> ThisEnvironment() {
 
 /// The environment of a child that runs `program`: this one, unless the app runs from an
 /// AppImage and the program isn't in it (Python, through it the compiler; the new app an update
-/// put in place). Then it gets the environment the AppImage was started with: the AppImage's
+/// put in place). Then it gets the environment without what the AppImage added: the AppImage's
 /// libraries first in LD_LIBRARY_PATH, and its variables, are for this app alone. The app's own
 /// executable (the code check) keeps this one.
 std::vector<std::string> EnvironmentFor(const std::string& program) {

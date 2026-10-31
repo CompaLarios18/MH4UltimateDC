@@ -2,9 +2,10 @@
 // app runs from mh4u.AppImage, whose runtime and AppRun add variables of their own (APPDIR,
 // APPIMAGE, ARGV0, OWD) and put folders of its mount in others for the app's sake (the checkrt
 // hook's LD_LIBRARY_PATH and LD_PRELOAD); every child process inherits them. The system's own
-// programs (Python and the tools, the compiler through them) get the environment the AppImage
-// was started with instead, as build-code-library.sh has it. Nothing of Azahar's here, so that a
-// test builds it on its own (tests/test_app_environment.py).
+// programs (Python and the tools, the compiler through them) get the environment without them
+// instead: the one the AppImage was started with, but for a variable the AppImage set over the
+// player's, which goes (what it was can't be told). Nothing of Azahar's here, so that a test
+// builds it on its own (tests/test_app_environment.py).
 #pragma once
 
 #include <string>

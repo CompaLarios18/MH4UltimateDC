@@ -14,7 +14,8 @@ recomp.h has the contents it was compiled with (obj/recomp.h.sha1 remembers them
 copy of the tools with new dates, as unpacking a new package makes, recompiles nothing).
 Files that don't compile while all the jobs run are compiled again one at a time (a compiler
 the system stopped for want of memory gets all of it); a compile or a link that fails says how
-the compiler ended, also when it printed nothing.
+the compiler ended, also when it printed nothing. An earlier build's object or library goes
+before it is made again, so that one the compiler didn't write is missing, not old.
 """
 from __future__ import annotations
 
@@ -160,9 +161,21 @@ def how_it_ended(code: int) -> str:
     return f"ended with status {code}"
 
 
+def remove_old(path: str) -> None:
+    """An earlier build's output, removed before it is made again: when the compiler's status
+    reads 0 but it wrote nothing (a status that can't be read, as with SIGCHLD ignored, reads 0),
+    the output is then missing, not the old one in its place. One that can't be removed is
+    written over as before."""
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
 def compile_one(cc: str, src: str, obj: str, flags: list[str]) -> tuple[str, float, int, str]:
     """Compiles src into obj: (src, seconds, exit status, what the compiler said if it failed)."""
     t = time.time()
+    remove_old(obj)
     r = subprocess.run([cc, *flags, src, "-o", obj], capture_output=True, text=True, errors="replace")
     return src, time.time() - t, r.returncode, ((r.stderr or r.stdout) if r.returncode else "")
 
@@ -174,9 +187,10 @@ def compile_again(cc: str, failed: list[tuple[str, int, str]], objects: dict[str
     its own, the errors are real ones and the rest stay as they were. Returns the errors left."""
     print(f"  {len(failed)} file(s) didn't compile: again, one at a time", flush=True)
     errors = []
-    for src, code, err in failed:
+    for i, (src, code, err) in enumerate(failed, 1):
         if not errors:
-            print(f"  compiling {os.path.basename(src)} again", flush=True)
+            # (launcher/tools.cpp, BuildProgress, shows how far this got)
+            print(f"  compiling again {i}/{len(failed)}: {os.path.basename(src)}", flush=True)
             _, _, code, err = compile_one(cc, src, objects[src], flags)
         if code:
             errors.append((src, code, err))
@@ -238,11 +252,11 @@ def build(outdir: str, jobs: int, opt: str, defines: list[str], lib_name: str, e
                   file=sys.stderr)
         raise SystemExit(1)
     # (a status of 0 with nothing written: a process that can't wait for its children, as with
-    # SIGCHLD ignored, reads every status as 0)
+    # SIGCHLD ignored, reads every status as 0; compile_one removed an earlier build's object)
     missing = [o for o in objs if not os.path.isfile(o)]
     if missing:
         raise SystemExit(f"{len(missing)} object(s) missing after compiling, {os.path.basename(missing[0])} the "
-                         f"first: {os.path.basename(cc)} ended with status 0 without writing them")
+                         f"first: {os.path.basename(cc)} reported success (status 0) but didn't write them")
     with open(stamp, "w") as fh:
         fh.write(header_hash + "\n")
     lib = os.path.join(outdir, lib_name)
@@ -255,6 +269,7 @@ def build(outdir: str, jobs: int, opt: str, defines: list[str], lib_name: str, e
         link = [cc, *android_link_flags(cc, outdir), f"@{rsp}", "-o", lib]
     else:
         link = [cc, "-shared", f"@{rsp}", "-o", lib, *(["-lm"] if "mingw" not in cc else [])]
+    remove_old(lib)
     r = subprocess.run(link, capture_output=True, text=True, errors="replace")
     if r.returncode:
         # how the linker ended first, then what it said (if anything: one stopped by a signal says
@@ -263,8 +278,8 @@ def build(outdir: str, jobs: int, opt: str, defines: list[str], lib_name: str, e
         raise SystemExit(f"linking {os.path.basename(lib)} failed: {os.path.basename(cc)} {how_it_ended(r.returncode)}"
                          + (f"\n{said}" if said else ""))
     if not os.path.isfile(lib):
-        raise SystemExit(f"linking {os.path.basename(lib)} failed: {os.path.basename(cc)} ended with status 0 "
-                         "without writing it")
+        raise SystemExit(f"linking {os.path.basename(lib)} failed: {os.path.basename(cc)} reported success "
+                         "(status 0) but didn't write it")
     print(f"linked {lib} ({len(objs)} objects, {len(todo)} recompiled in {time.time() - t0:.0f}s)")
     if android:
         problems = android_library_problems(lib)
