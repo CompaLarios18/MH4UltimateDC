@@ -160,7 +160,11 @@ its recorders and results belong to one thread; submit each result before the ne
 the compositor's: the rectangles are the layout table's (`screen_layout_expected.inc`, Azahar's own output); the
 sources are a function of the screen and the displayed pixel; the rule is nearest sampling at the destination
 pixel's centre, worked out from the definition (a pixel whose sample point is within 2% of a texel boundary
-accepts either neighbour; a blended one there is not compared). Every pixel of every target is compared. The four corners and the centre of every shown screen (top, bottom, each view) are also checked on their own, with the exact colour: for the 48 table cases times the four ways of giving the screens that is 1548 strict points and 84 ambiguous ones (sample point on a texel edge, either neighbour accepted; 48 more are hidden, blended or outside and not counted), at least 90% strict is asserted and the numbers are printed; five 1920x1080 and 1280x1024 cases with non-integer ratios have every point strict. The
+accepts either neighbour; a blended one there is not compared). Every pixel of every target is compared. The four corners and the centre of every shown screen (top,
+bottom, each view) are also checked on their own, with the exact colour: for the 48 table cases times the four
+ways of giving the screens that is 1548 strict points and 84 ambiguous ones (sample point on a texel edge, either
+neighbour accepted; 48 more are hidden, blended or outside and not counted). At least 90% strict is asserted and
+the numbers are printed. Five 1920x1080 and 1280x1024 cases with non-integer ratios have every point strict. The
 cases: all 48 mode and size combinations of N2b-04's table with each screen as CPU pixels or a backend image at
 scale 1 or 3, upright or rotated; a widened top screen (573x240) at 1:1 with exact corners and centre; opacity
 0.25 to 1 within 1/255; a crop; two views, at the bottom screen's opacity; an Overlay with height 0 (rectangles

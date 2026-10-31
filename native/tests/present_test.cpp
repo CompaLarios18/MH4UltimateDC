@@ -1300,6 +1300,12 @@ TEST_CASE("compose/a_target_that_cannot_be_a_colour_attachment_draws_nothing") {
         return;
     }
     std::shared_ptr<rhi::Image> target = MakeImage(*env->backend, rhi::Format::Bc1Unorm, 64, 64, "block-compressed target");
+    // With the bc7 bit masked off the backend stores the "BC1" image as Rgba8Unorm (ChooseFormat), which is a colour
+    // target: the case then has nothing to assert.
+    if (target->GetFormat() != rhi::Format::Bc1Unorm || env->backend->QueryFormat(target->GetFormat()).attachment) {
+        mh4n::test::SkipCase("the backend stores the BC1 image as a format that can be a colour attachment (bc7 masked off)");
+        return;
+    }
     const Case* c = FindCase("modes_stacked_800x480_400");
     REQUIRE(c != nullptr);
     const sl::Layout layout = sl::Compute(InputsOf(*c));

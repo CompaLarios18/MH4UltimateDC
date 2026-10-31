@@ -10,7 +10,8 @@
 // stored region), the bottom screen with the layout's opacity and crop, each further view with its crop, and
 // calls the UiLayer last. The recorder is left with the target's pass open (the UiLayer's raw commands are
 // valid inside it). When the UiLayer is called the viewport and the scissor are the whole target; the pipeline,
-// bindings and vertex buffers are the compositor's last, so the layer binds its own; a caller that presents records PrepareForPresent on a swapchain image after Compose.
+// bindings and vertex buffers are the compositor's last, so the layer binds its own. A caller that presents
+// records PrepareForPresent on a swapchain image after Compose.
 //
 // The owner rule (rhi-spike.md 9.4 item 5, docs/native/rhi.md): the compositor records only on images its
 // thread owns (the target, its own uploaded textures) and only samples the images of the frame. It records no
@@ -75,6 +76,8 @@ public:
     // Records the composition of `frame` into `target` on `recorder` (open on the calling thread). A screen
     // that is nullopt or not Valid() is left black; a rectangle outside the target is clipped to it (an
     // Overlay layout with a height of 0 has rectangles outside Layout::width/height, screen_layout.h).
+    // `target` must have been created as a render target (a colour format; rhi.h has no query for the usage):
+    // Compose checks only QueryFormat(...).attachment, and a sampled-only image aborts inside the backend.
     ComposeResult Compose(gpu::rhi::Recorder& recorder, gpu::rhi::Image& target, const DisplayFrame& frame,
                           const screen_layout::Layout& layout, const ComposeOptions& options);
 
