@@ -17,7 +17,7 @@ From your own cartridge or eShop purchase, dumped with GodMode9 on your 3DS. Whe
 
 **What do I need?**
 - The game (USA), dumped as a decrypted `.3ds`, `.cci` or `.cxi`, and its v1.3.0 update as a `.cia`. GodMode9 can make both.
-- A PC with Windows 10/11 x64 or Linux x64, or a Mac with Apple silicon (not tried yet).
+- A PC with Windows 10/11 x64 or Linux x64, or a Mac with Apple silicon (not tried yet). To play on Android you still need a PC once, to build the game's code (see *Android?* below).
 - Python 3.10 or newer, which the setup uses to build the game's code.
 
 The downloads are on the [releases page](https://github.com/CompaLarios18/MH4UltimateDC/releases). Details: [What you need](docs/PLAYING.md#what-you-need).
@@ -50,6 +50,9 @@ There's a Linux build, not tried on a Deck yet. If you try it, open an issue and
 
 **Mac?**
 There's a build for Apple silicon (Vulkan through MoltenVK), not tried on a Mac yet. Reports are welcome in an issue.
+
+**Android?**
+Yes, from release 0.1.5: `mh4u-port-android.apk` is Azahar's Android app with the port inside, for arm64 devices with Android 10 or newer. The game's code library is built on a PC from your own v1.3.0 update and copied to the device: [steps](docs/PLAYING.md#7-android-experimental). It's new, so reports are welcome in an issue.
 
 ## Online
 

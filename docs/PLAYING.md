@@ -215,7 +215,7 @@ Mods go where Azahar looks for them (right-click the game → *Open Mods Locatio
 
 ## 7. Android (experimental)
 
-The port also runs inside Azahar's Android app on arm64 phones and handhelds (thanks to james2doyle; [research/android-fiber-jni.md](research/android-fiber-jni.md)). The release's `mh4u-port-android.apk` (or the `mh4u-port-android` download of the [*Android build* workflow](../../../actions/workflows/android.yml)) is that app with the port in it, named **MH4U**: it installs next to Azahar without replacing it. As on a PC, the game's code library is made from your own update on your PC:
+The port also runs inside Azahar's Android app on arm64 phones and handhelds with Android 10 or newer (thanks to james2doyle; [research/android-fiber-jni.md](research/android-fiber-jni.md)). The release's `mh4u-port-android.apk` (from release 0.1.5; or the `mh4u-port-android` download of the [*Android build* workflow](../../../actions/workflows/android.yml)) is that app with the port in it, named **MH4U**: it installs next to Azahar without replacing it. As on a PC, the game's code library is made from your own update on your PC (from a PC package, the same command runs `mh4u-tools/tools/build_game.py` and writes under `mh4u-tools/build/`):
 
 ```bash
 # Linux and macOS: --fetch-compiler downloads Zig's C compiler if there's no clang with lld
@@ -230,7 +230,7 @@ It builds `build/game/recomp/android/0004000000126300.so` with the same compiler
 2. Copy `0004000000126300.so` into that folder's `recomp/` folder (create it), by USB or any file sync; or give `build_game.py` that folder with `--install` if your PC sees it.
 3. In the app, install your v1.3.0 update `.cia` and add your game, as in Azahar.
 
-The app copies the library into its own storage (Android doesn't run code from shared storage) and the log says `running recompiled code from …`; without it the game runs on Azahar's own CPU emulation and says how to build it. The first `mh4u.ini` fills the screen (`widescreen = match`). Not tried yet with the release's APK on a device: reports are welcome in an issue.
+The app copies the library into its own storage (Android doesn't run code from shared storage) and the log says `running recompiled code from …`; without it the game runs on Azahar's own CPU emulation and says how to build it. The first `mh4u.ini` fills the screen (`widescreen = match`); the port's options are in that file (the PC app's launcher and menu aren't in the Android app). The release's APK is signed with a key of its own build: if a later one won't install over it, uninstall it first (the user folder, with your games, saves and the library, stays). New and experimental: reports from devices are welcome in an issue.
 
 ## Troubleshooting
 
