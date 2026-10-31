@@ -462,6 +462,7 @@ Azahar draws no gas at all (its shader generator logs "Unimplemented gas mode", 
   - `python3 tools/native/check_native_deps.py` passes.
 - **Traps:** lavapipe has one queue (6.9): waits across queues are not tested here; the RX 6700 XT's several queue families and MoltenVK are (9.2). A depth read through `D32_SFLOAT` and rounded to 24 bits can land one off: work the expected bytes out by hand, not with the code under test. A change this WP needs in `core/`, `targets/` or inside plume is a `needs-decision`, not an edit. If `vulkan-validationlayers` or `glslang-tools` is missing in the session, install it with apt.
 - **Out of scope:** the pipeline list and its files on disk (N2-16); the surface cache's write-back policy (N2-15).
+- **As built (N2-28), the AMD finding:** on the RX 6700 XT `gpu_backend_readback_test` lost its tenth device (wrong `ReadImage` bytes, then `VK_ERROR_DEVICE_LOST` and a driver timeout) because every backend that did a readback or an upload stayed alive (its slots held buffers and pipelines that hold the backend: a cycle), nine of them at once; `ReadImage` itself is right on the device, and `CreateBackend`'s handle now releases the slots when the last copy goes (`docs/native/rhi.md`, "Lifetime of a backend").
 
 ### N2-30 · `mh4n_vkprobe --rhi` and the PC's present-wait check
 - **Size / agent:** S · native-worker
