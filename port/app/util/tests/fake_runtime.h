@@ -40,6 +40,7 @@ struct FakeRuntime final : IRuntime {
     std::string user_dir;
     GameHeader header;
     InstalledTitle installed;
+    mutable std::uint64_t installed_asked = 0;  ///< the title FindInstalledTitle was last asked for
     CiaResult cia_check = CiaResult::Ok;
     std::optional<CiaInfo> cia_info;
     CiaResult cia_install = CiaResult::Ok;
@@ -310,7 +311,10 @@ struct FakeRuntime final : IRuntime {
         const_cast<FakeRuntime*>(this)->asked.push_back(path);
         return header;
     }
-    InstalledTitle FindInstalledTitle(std::uint64_t) const override { return installed; }
+    InstalledTitle FindInstalledTitle(std::uint64_t title) const override {
+        installed_asked = title;
+        return installed;
+    }
     CiaResult CheckCia(const std::string&, std::optional<CiaInfo>& info) const override {
         info = cia_info;
         return cia_check;

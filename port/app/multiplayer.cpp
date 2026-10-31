@@ -38,8 +38,14 @@ namespace {
 
 using Clock = std::chrono::steady_clock;
 
-constexpr u64 MH4U_USA = 0x0004000000126300;
 constexpr const char* MH4U_NAME = "Monster Hunter 4 Ultimate";
+
+/// The player's MH4U (its program id: a room is set up for one region), from the game file.
+u64 GameId(const IRuntime& runtime, const std::string& game) {
+    const GameHeader header = game.empty() ? GameHeader{} : runtime.ReadGameHeader(game);
+    return header.program_id == Launcher::Lobby::MH4U_EUROPE ? Launcher::Lobby::MH4U_EUROPE
+                                                             : Launcher::Lobby::MH4U_USA;
+}
 
 /// Who this console is in a room, read from its settings on the emulation thread.
 struct Identity {
@@ -313,11 +319,12 @@ bool HostNow(const Identity& me, const HostRequest& request, std::string& error,
         error = "The network library didn't start.";
         return false;
     }
-    std::string lobby, token;
+    std::string lobby, token, game;
     {
         std::scoped_lock lock{s.mutex};
         lobby = s.config->lobby;
         token = s.config->token;
+        game = s.config->game;
     }
     const bool listed = request.listed && !lobby.empty() && !token.empty();
     RoomOpenRequest open;
@@ -327,7 +334,7 @@ bool HostNow(const Identity& me, const HostRequest& request, std::string& error,
     open.slots = std::clamp(request.slots, 2, 254);
     open.host_nickname = me.nickname;
     open.game_name = MH4U_NAME;
-    open.game_id = MH4U_USA;
+    open.game_id = GameId(runtime, game);
     if (listed) {
         open.lobby_url = Launcher::Lobby::NormalizeUrl(lobby);
         open.token = token;

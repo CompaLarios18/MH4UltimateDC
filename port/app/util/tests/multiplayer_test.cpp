@@ -381,6 +381,37 @@ TEST_CASE("hosting opens the room with the app's request, then joins it as a mem
     CHECK(saved.join.empty());
 }
 
+TEST_CASE("a room is set up for the player's region of MH4U") {
+    Room r;
+    r.config.game = "eur.cci";
+    r.env.runtime.header = {GameHeader::State::Ok, 0x0004000000126100ull};
+    r.Start();
+    MP::HostRequest request;
+    request.port = 5000;
+    REQUIRE(MP::Host(request));
+    r.WaitDone();
+    REQUIRE(r.env.runtime.opens.size() == 1);
+    CHECK(r.env.runtime.opens[0].game_id == 0x0004000000126100ull);
+}
+
+TEST_CASE("a lobby's rooms: the player's region first, the other region's among other games") {
+    const std::string body = R"({"rooms": [
+        {"name": "b eu", "address": "1.1.1.1", "port": 1, "preferredGameId": 1125899908047104,
+         "preferredGameName": "Monster Hunter 4 Ultimate"},
+        {"name": "a us", "address": "1.1.1.1", "port": 1, "preferredGameId": 1125899908047616,
+         "preferredGameName": "Monster Hunter 4 Ultimate"}]})";
+    const auto us = Launcher::Lobby::Parse(body);
+    REQUIRE(us.rooms.size() == 2);
+    CHECK(us.rooms[0].name == "a us");
+    CHECK(us.rooms[0].mh4u);
+    CHECK_FALSE(us.rooms[1].mh4u);
+    CHECK(us.rooms[1].game == "Monster Hunter 4 Ultimate (Europe)");
+    const auto eu = Launcher::Lobby::Parse(body, Launcher::Lobby::MH4U_EUROPE);
+    CHECK(eu.rooms[0].name == "b eu");
+    CHECK(eu.rooms[0].mh4u);
+    CHECK(eu.rooms[1].game == "Monster Hunter 4 Ultimate (USA)");
+}
+
 TEST_CASE("a room has at most 254 places") {
     Room r;
     r.Start();

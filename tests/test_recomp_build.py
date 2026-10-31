@@ -228,7 +228,7 @@ def test_default_harness_build_is_unchanged(native_program, tmp_path):
 
 
 class CHost(ctypes.Structure):
-    """RHost of recomp.h (version 5)."""
+    """RHost of recomp.h (version 6)."""
     _fields_ = [("version", ctypes.c_uint32), ("ctx_size", ctypes.c_uint32),
                 ("call", ctypes.c_void_p), ("svc", ctypes.c_void_p), ("trap", ctypes.c_void_p),
                 ("bad_return", ctypes.c_void_p), ("budget", ctypes.c_void_p),
@@ -245,7 +245,8 @@ class CCodeInfo(ctypes.Structure):
     _fields_ = [("table", ctypes.POINTER(CFuncEntry)), ("count", ctypes.c_uint32),
                 ("text_base", ctypes.c_uint32), ("text_size", ctypes.c_uint32), ("text_crc32", ctypes.c_uint32),
                 ("title_id", ctypes.c_uint64),
-                ("hook_addrs", ctypes.c_void_p), ("hook_count", ctypes.c_uint32), ("set_hook", ctypes.c_void_p),
+                ("hook_addrs", ctypes.c_void_p), ("hook_names", ctypes.POINTER(ctypes.c_char_p)),
+                ("hook_count", ctypes.c_uint32), ("set_hook", ctypes.c_void_p),
                 ("tunables", ctypes.c_void_p), ("tunable_addrs", ctypes.c_void_p),
                 ("tunable_names", ctypes.c_void_p), ("tunable_count", ctypes.c_uint32)]
 
@@ -297,7 +298,7 @@ class Host:
             ctypes.cast(ctx, ctypes.POINTER(CRCtx)).contents.budget += self.refill
 
         self._keep = on_budget
-        self.host = CHost(5, ctypes.sizeof(CRCtx), None, None, None, None, ctypes.cast(on_budget, ctypes.c_void_p),
+        self.host = CHost(6, ctypes.sizeof(CRCtx), None, None, None, None, ctypes.cast(on_budget, ctypes.c_void_p),
                           None, None, ctypes.pointer(self.flag) if preempt else None)
         self.info = CCodeInfo()
         init = self.lib.rc_code_init
@@ -374,12 +375,12 @@ def test_charging_builds_call_rc_budget_when_the_budget_runs_out(native_program,
 
 
 def test_host_version_must_match(native_program):
-    """RHost version 5 only: an older host (no preempt_flag field) is refused, not misread."""
+    """RHost version 6 only: an older host (version 5: RCodeInfo without hook_names) is refused, not misread."""
     lib_path, _ = code_library(native_program, "native")
     h = Host(lib_path)
-    h.host.version = 4
-    assert h.start() == 0
     h.host.version = 5
+    assert h.start() == 0
+    h.host.version = 6
     h.host.ctx_size += 8
     assert h.start() == 0
     h.host.ctx_size -= 8

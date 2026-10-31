@@ -21,6 +21,7 @@ extern const RFuncEntry rc_func_table[];
 extern const u32 rc_func_count, rc_text_base, rc_text_size, rc_text_crc32;
 extern const u64 rc_title_id;
 extern const u32 rc_hook_addrs[], rc_hook_count;
+extern const char *const rc_hook_names[];
 extern const u32 rc_tunable_addrs[], rc_tunable_count;
 extern const char *const rc_tunable_names[];
 
@@ -139,6 +140,7 @@ RC_EXPORT int rc_code_init(const RHost *h, RCodeInfo *info) {
     info->text_crc32 = rc_text_crc32;
     info->title_id = rc_title_id;
     info->hook_addrs = rc_hook_addrs;
+    info->hook_names = rc_hook_names;
     info->hook_count = rc_hook_count;
     info->set_hook = set_hook;
     info->tunables = rc_tunables;

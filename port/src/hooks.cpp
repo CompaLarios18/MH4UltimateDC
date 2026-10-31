@@ -773,7 +773,11 @@ constexpr u32 PANEL_MODE = 0xb1;         // u8: which buttons the touch screen h
 constexpr u32 PANEL_ID_TABLES = 0x00df5410;  // u32[4] per mode: the slot of each hit index
 constexpr u32 PANEL_SLOT_IDS = 0xb4;     // u8[]: the id of the panel in each slot (processTouch 0x00295800)
 constexpr u32 PANEL_TOUCH_ALLOWED = 0x0028f2f0;  // the call processTouch makes with the hit in r5
+constexpr u32 PANEL_PROCESS_TOUCH = 0x002951fc;  // PanelManager::processTouch
 constexpr u32 PANEL_TOUCH_ALLOWED_RETURN = 0x002957a4;  // its return address in processTouch
+// That return address in the running version of the game: Install moves it with processTouch,
+// whose code is the same in the other versions (only where it sits differs)
+u32 panel_touch_allowed_return = PANEL_TOUCH_ALLOWED_RETURN;
 // The wait itself (aQuest::playing 0x0065c18c, hooked as QuestPlaying below)
 constexpr u32 AQUEST_WAIT_LEFT = 0x3c;    // s32: units of the wait left (loaded from the holder's
                                           // +0xad60: 20 s × sMain+0x2c)
@@ -816,7 +820,7 @@ int PanelIndex(RCtx* ctx, u32 panel) {
 /// Skip button's index goes there, pressed one frame and released the next, so processTouch
 /// handles it as it would the stylus.
 void PanelTouchAllowed(RCtx* ctx, RFunc original) {
-    const bool from_process_touch = ctx->r[14] == PANEL_TOUCH_ALLOWED_RETURN;
+    const bool from_process_touch = ctx->r[14] == panel_touch_allowed_return;
     original(ctx);
     if (!from_process_touch || skip_tap == 0) {
         return;
@@ -1455,8 +1459,8 @@ void CameraTurnByInput(RCtx* ctx, RFunc original) {
 }
 
 struct Hook {
-    u32 addr;
-    const char* name;
+    u32 addr;          // USA v1.3.0's (config/hooks.txt)
+    const char* name;  // as in config/hooks.txt
     RHookFn fn;
 };
 constexpr Hook HOOKS[] = {
@@ -1492,6 +1496,20 @@ constexpr Hook HOOKS[] = {
     {0x003808ac, "uOutlineFilter::render", FilterRender},
     {0x00385c34, "uTVNoiseFilter::render", FilterRender},
 };
+
+/// Where a hook point is in this library: the libraries name their hook points, so another
+/// version of the game (EUR, whose code sits a little further along) finds them by name;
+/// a library without names is USA v1.3.0's.
+u32 HookAddress(const RCodeInfo& info, const Hook& hook) {
+    if (info.hook_names) {
+        for (u32 i = 0; i < info.hook_count; ++i) {
+            if (info.hook_names[i] && std::string_view(info.hook_names[i]) == hook.name) {
+                return info.hook_addrs[i];
+            }
+        }
+    }
+    return hook.addr;
+}
 
 } // namespace
 
@@ -1654,12 +1672,20 @@ std::vector<std::string> Install(const RCodeInfo& info) {
                                   options.render_set, options.render_clear));
     }
     missing_hook_points = 0;
+    panel_touch_allowed_return = PANEL_TOUCH_ALLOWED_RETURN;
     for (const Hook& hook : HOOKS) {
-        if (!info.set_hook(hook.addr, hook.fn)) {
+        const u32 addr = HookAddress(info, hook);
+        if (!info.set_hook(addr, hook.fn)) {
             log.push_back(fmt::format("no hook point for {} at {:08X} (rebuild the code library)",
-                                      hook.name, hook.addr));
+                                      hook.name, addr));
             ++missing_hook_points;
+        } else if (hook.addr == PANEL_PROCESS_TOUCH) {
+            panel_touch_allowed_return = addr + (PANEL_TOUCH_ALLOWED_RETURN - PANEL_PROCESS_TOUCH);
         }
+    }
+    if (info.title_id != 0 && info.hook_names && info.hook_count > 0 &&
+        HookAddress(info, HOOKS[0]) != HOOKS[0].addr) {
+        log.push_back(fmt::format("hook points found by name: game {:016X}", info.title_id));
     }
     return log;
 }

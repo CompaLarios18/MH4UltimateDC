@@ -479,3 +479,30 @@ def test_short_exheader_message_names_the_option(user, tmp_path, capsys):
 def test_extdata_id_option_usage_error_is_readable(user, capsys):
     code, r = jrun(capsys, "list", "--user", user, "--extdata-id", "zz")
     assert code == 2 and "lambda" not in r["error"]["message"] and "not a number" in r["error"]["message"]
+
+
+def test_the_game_is_named_or_found(tmp_path, capsys):
+    """Europe's save is under its own program id and extdata 0x1261 (its exheader's storage info)."""
+    user = tmp_path / "user"
+    user.mkdir()
+    assert saves.detect_game(str(user)) == (0x0004000000126300, "default")
+    eu = user / "sdmc" / "Nintendo 3DS" / ("0" * 32) / ("0" * 32) / "title" / "00040000" / "00126100"
+    eu.mkdir(parents=True)
+    assert saves.detect_game(str(user)) == (0x0004000000126100, "save")
+    exh = user / "native" / "game" / "exheader.bin"
+    exh.parent.mkdir(parents=True)
+    exh.write_bytes(bytes(0x200) + (0x0004000000126300).to_bytes(8, "little") + bytes(0x200))
+    assert saves.detect_game(str(user)) == (0x0004000000126300, "exheader")
+    exh.unlink()
+
+    src = tmp_path / "eu_save"
+    src.mkdir()
+    (src / "user1").write_bytes(b"x" * 16)
+    code, r = jrun(capsys, "import-save", str(src), "--user", str(user), "--program-id", "0004000000126100")
+    assert code == 0, r
+    assert (eu / "data" / "00000001" / "user1").is_file()
+    code, r = jrun(capsys, "list", "--user", str(user))
+    assert code == 0 and r["program_id"] == "0004000000126100" and r["extdata"]["extdata_id"] == "0000000000001261"
+    code, r = jrun(capsys, "list", "--user", str(user), "--program-id", "0004000000999900")
+    assert code == 2
+    saves.set_game(0x0004000000126300)

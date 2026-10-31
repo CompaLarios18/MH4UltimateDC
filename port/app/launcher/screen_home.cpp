@@ -105,13 +105,13 @@ void DrawHome(State& s) {
         s.ChooseGame();
     }
     ImGui::Spacing();
-    if (SetupLine(UpdateRow(s), s.update.state == Checks::Update::State::Ok ? "Reinstall##update" : "Install##update")) {
+    if (SetupLine(UpdateRow(s), s.update.Installed() ? "Reinstall##update" : "Install##update")) {
         s.ChooseAndInstallUpdate();
     }
     ImGui::Spacing();
     const bool code_ok = s.code.state == Checks::Code::State::Ok;
     if (SetupLine(CodeRow(s), code_ok ? "Build again##code" : "Build##code",
-                  s.update.state == Checks::Update::State::Ok && s.code.state != Checks::Code::State::Checking)) {
+                  s.update.Installed() && s.code.state != Checks::Code::State::Checking)) {
         s.StartBuild();
     }
     Ui::EndCard();
