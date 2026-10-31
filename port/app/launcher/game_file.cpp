@@ -10,6 +10,10 @@ constexpr std::uint64_t MEDIA_UNIT = 0x200;  ///< Azahar's kBlockSize, for NCSD 
 constexpr std::size_t HEADER_SIZE = 0x200;   ///< an NCSD's or an NCCH's header
 constexpr std::uint8_t NO_ROMFS = 0x02;      ///< in the NCCH's flags[7]
 constexpr std::uint8_t NO_CRYPTO = 0x04;
+/// where Azahar takes the RomFS's file system (IVFC level 3, what the game reads) to begin, and the
+/// length its header starts with (Azahar's RomFSHeader, which its LayeredFS asserts)
+constexpr std::uint64_t LEVEL3 = 0x1000;
+constexpr std::uint32_t LEVEL3_HEADER_SIZE = 0x28;
 
 std::uint32_t U32(const std::uint8_t* p) {
     return static_cast<std::uint32_t>(p[0]) | (static_cast<std::uint32_t>(p[1]) << 8) |
@@ -68,7 +72,19 @@ Verdict Check(const ReadAt& read_at, std::uint64_t size) {
     if (!read_at(romfs, magic, sizeof(magic))) {
         return Verdict::Unknown;
     }
-    return Is(magic, "IVFC") ? Verdict::Ok : Verdict::BadRomFs;
+    if (Is(magic, "IVFC")) {
+        return Verdict::Ok;
+    }
+    // the game never reads the IVFC header (Azahar hands it the RomFS from its file system on):
+    // past a damaged first sector, a file system whose header is where it should be still plays.
+    // A RomFS decrypted with the wrong keys is noise there too.
+    if (romfs_size < LEVEL3 + sizeof(magic)) {
+        return Verdict::BadRomFs;
+    }
+    if (!read_at(romfs + LEVEL3, magic, sizeof(magic))) {
+        return Verdict::Unknown;
+    }
+    return U32(magic) == LEVEL3_HEADER_SIZE ? Verdict::Ok : Verdict::BadRomFs;
 }
 
 } // namespace Launcher::GameFile

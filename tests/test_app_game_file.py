@@ -1,10 +1,11 @@
 """port/app/launcher/game_file.cpp: what the launcher reads of the game file before the game starts
 (launcher/checks.cpp, CheckGame), on synthetic dumps (never game data): a .cxi, or a .3ds/.cci with
 the game in partition 0, decrypted or not by its NCCH's flags, and whether its RomFS starts with the
-IVFC header a decrypted one starts with. A file whose flags say decrypted but whose RomFS doesn't
-start that way was decrypted wrongly or is damaged (the game stops with a fatal error of its own as
-it opens its files); one that ends before its RomFS does is incomplete. Only the headers and four
-bytes are read, never the RomFS's hashes."""
+IVFC header a decrypted one starts with or, past a damaged first sector, has its file system's
+header where Azahar takes it to begin. A file whose flags say decrypted but whose RomFS has neither
+was decrypted wrongly or is damaged (the game would most likely stop with a fatal error of its own
+as it opens its files); one that ends before its RomFS does is incomplete. Only the headers and a
+few bytes are read, never the RomFS's hashes."""
 from __future__ import annotations
 
 import io
@@ -32,6 +33,9 @@ MH4U = 0x0004000000126300
 MEDIA_UNIT = 0x200
 # the headers (an NCSD's and its game's NCCH) and the RomFS's first four bytes
 MOST_READ = 2 * 0x200 + 4
+# and when those aren't IVFC, the first four of its file system (level 3, 0x1000 bytes in)
+LEVEL3 = 0x1000
+MOST_READ_BAD = MOST_READ + 4
 
 DRIVER = r"""
 #include <cstdint>
@@ -82,12 +86,14 @@ def check(driver, path, fail_from=None):
     return verdict, int(read)
 
 
-def romfs(level3=b"synthetic level 3".ljust(0x1000, b"\0")) -> bytes:
+def romfs() -> bytes:
     """A RomFS as a decrypted one starts: its IVFC header (magic, version 0x10000, the master hash's
-    size), padded to 0x1000, where Azahar takes level 3 (the file system) to begin."""
+    size), padded to 0x1000, where Azahar takes level 3 (the file system the game reads) to begin;
+    level 3's header starts with its own length, 0x28."""
     header = bytearray(0x1000)
     header[:4] = b"IVFC"
     struct.pack_into("<II", header, 4, 0x10000, 0x20)
+    level3 = struct.pack("<I", 0x28) + b"synthetic level 3".ljust(0x1000 - 4, b"\0")
     return bytes(header) + level3
 
 
@@ -153,24 +159,38 @@ def test_damage_past_the_romfs_start_isnt_looked_for(driver, tmp_path):
     """No hashes are checked: a dump with a few bad blocks in its RomFS still plays."""
     data = ncsd(cxi())
     start = romfs_offset(data)
-    data[start + 0x1000 + 5] ^= 0xFF
+    data[start + LEVEL3 + 5] ^= 0xFF
     data[start + 4] ^= 0xFF                         # even the IVFC header's version
     assert check(driver, write(tmp_path, "game.3ds", data))[0] == "ok"
+
+
+def test_a_damaged_first_sector_still_plays(driver, tmp_path):
+    """The game never reads the IVFC header (Azahar hands it the RomFS from level 3 on): a dump whose
+    RomFS starts damaged but whose file system is whole isn't turned down."""
+    data = ncsd(cxi())
+    start = romfs_offset(data)
+    data[start:start + MEDIA_UNIT] = bytes(MEDIA_UNIT)
+    verdict, read = check(driver, write(tmp_path, "zeros.3ds", data))
+    assert verdict == "ok"
+    assert read <= MOST_READ_BAD
+    # its file system's header damaged too: nothing left the game could read
+    data[start + LEVEL3:start + LEVEL3 + 4] = bytes(4)
+    assert check(driver, write(tmp_path, "zeros.3ds", data))[0] == "bad_romfs"
 
 
 def test_wrongly_decrypted_or_damaged(driver, tmp_path):
     # the flags say decrypted, but the RomFS is what an encrypted one looks like
     game = cxi(garbled())
     for name, data in (("game.cxi", game), ("game.3ds", ncsd(game)), ("game.cci", ncsd(game, cxi(), 0x8000))):
-        assert data[romfs_offset(data):][:4] != b"IVFC", name
+        start = romfs_offset(data)
+        assert data[start:][:4] != b"IVFC", name
+        assert struct.unpack_from("<I", data, start + LEVEL3)[0] != 0x28, name
         verdict, read = check(driver, write(tmp_path, name, data))
         assert verdict == "bad_romfs", name
-        assert read <= MOST_READ, name
-    # a damaged first sector of the RomFS
-    data = ncsd(cxi())
-    start = romfs_offset(data)
-    data[start:start + MEDIA_UNIT] = bytes(MEDIA_UNIT)
-    assert check(driver, write(tmp_path, "zeros.3ds", data))[0] == "bad_romfs"
+        assert read <= MOST_READ_BAD, name
+    # a RomFS too small to hold a file system past its IVFC header, and without one
+    small = cxi(garbled()[:MEDIA_UNIT])
+    assert check(driver, write(tmp_path, "small.cxi", small))[0] == "bad_romfs"
 
 
 def test_encrypted(driver, tmp_path):
@@ -217,5 +237,5 @@ def test_a_read_that_fails_says_nothing(driver, tmp_path):
     data = ncsd(cxi(garbled()))
     path = write(tmp_path, "game.3ds", data)
     assert check(driver, path)[0] == "bad_romfs"
-    for fail_from in (romfs_offset(data), 0x4000, 0):
+    for fail_from in (romfs_offset(data) + LEVEL3, romfs_offset(data), 0x4000, 0):
         assert check(driver, path, fail_from)[0] == "unknown", hex(fail_from)

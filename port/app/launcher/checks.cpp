@@ -32,7 +32,8 @@ Game::State CheckRomFs(const std::string& path) {
     };
     switch (GameFile::Check(read_at, file->GetSize())) {
     case GameFile::Verdict::BadRomFs:
-        LOG_WARNING(Frontend, "launcher: {}: its RomFS doesn't start with an IVFC header", path);
+        LOG_WARNING(Frontend, "launcher: {}: its RomFS has neither an IVFC header nor, 0x1000 bytes in, "
+                              "its file system's", path);
         return Game::State::BadRomFs;
     case GameFile::Verdict::Truncated:
         LOG_WARNING(Frontend, "launcher: {}: the file ends before its RomFS does", path);
@@ -87,9 +88,9 @@ std::string Describe(const Game& game) {
         return "This file isn't a 3DS game the app can read: choose your decrypted .3ds, .cci or "
                ".cxi.";
     case State::Encrypted:
-        return fmt::format("This {} is encrypted, and the port can't play an encrypted game (it has no "
-                           "keys): decrypt it with GodMode9 on your 3DS, or dump your own copy again there "
-                           "as a decrypted .3ds, .cci or .cxi.",
+        return fmt::format("This {} is encrypted, and the port can't play an encrypted game (Azahar opens "
+                           "decrypted ones only): decrypt it with GodMode9 on your 3DS, or dump your own copy "
+                           "again there as a decrypted .3ds, .cci or .cxi.",
                            game.program_id == MH4U_USA ? "copy of Monster Hunter 4 Ultimate"
                                                        : "game file");
     case State::OtherGame:
@@ -99,8 +100,8 @@ std::string Describe(const Game& game) {
     case State::BadRomFs:
         return "This copy of Monster Hunter 4 Ultimate isn't decrypted properly, or it's damaged: its "
                "headers say it's decrypted, but its RomFS (the game's own files) doesn't start the way a "
-               "decrypted one does, and the game would stop as it starts. Dump the game again with "
-               "GodMode9 on your 3DS and choose the new .3ds, .cci or .cxi.";
+               "decrypted one does, and the game would most likely stop as it starts. Dump the game again "
+               "with GodMode9 on your 3DS and choose the new .3ds, .cci or .cxi.";
     case State::Truncated:
         return "This copy of Monster Hunter 4 Ultimate is incomplete: the file ends before its RomFS (the "
                "game's own files) does, as a copy that stopped part-way would. Copy it again, or dump the "

@@ -52,6 +52,7 @@
 #include "multiplayer.h"
 #include "network/network.h"
 #include "speed.h"
+#include "stop_message.h"
 #include "ui/ui.h"
 #include "video_core/gpu.h"
 #include "video_core/rasterizer_interface.h"
@@ -250,6 +251,19 @@ void ApplySpeed(const App::Config& config) {
     }
 }
 
+/// mh4u_log.txt in Azahar's log folder, as the player would type it.
+std::string LogPath() {
+    std::string path = FileUtil::GetUserPath(FileUtil::UserPath::LogDir) + "mh4u_log.txt";
+#ifdef _WIN32
+    std::replace(path.begin(), path.end(), '/', '\\');
+#endif
+    return path;
+}
+
+// the game's own fatal error reaches Azahar's err:f, which logs its numbers and stops the game with
+// ErrorUnknown and no details (stop_message.h)
+static_assert(static_cast<u32>(Core::System::ResultStatus::ErrorUnknown) == App::StopMessage::FATAL_ERROR);
+
 std::string LoadError(Core::System::ResultStatus status, Core::System& system) {
     using Status = Core::System::ResultStatus;
     switch (status) {
@@ -263,52 +277,13 @@ std::string LoadError(Core::System::ResultStatus status, Core::System& system) {
                "(GodMode9 can make one; docs/SETUP.md in the port's repository).";
     case Status::ErrorSystemFiles:
         return "Some 3DS system files are missing (Azahar's System settings can set them up).";
+    case Status::ErrorLoader_ErrorPatches:
+    case Status::ErrorLoader_ErrorPatchesInvalidTitle:
+        return App::StopMessage::CodeModDoesntFit(LogPath());
     default:
-        return fmt::format("The game didn't start: {}", system.GetStatusDetails());
+        // (System::Load sets no details itself)
+        return App::StopMessage::DidntStart(static_cast<u32>(status), system.GetStatusDetails(), LogPath());
     }
-}
-
-/// mh4u_log.txt in Azahar's log folder, as the player would type it.
-std::string LogPath() {
-    std::string path = FileUtil::GetUserPath(FileUtil::UserPath::LogDir) + "mh4u_log.txt";
-#ifdef _WIN32
-    std::replace(path.begin(), path.end(), '/', '\\');
-#endif
-    return path;
-}
-
-/// What the player is told when the game stops with an error. The game's own fatal error (what
-/// shows "An error has occurred" on a 3DS) reaches Azahar's err:f, which logs its numbers and
-/// stops with ErrorUnknown and no details; `at_start`: it stopped within seconds of starting.
-std::string StopMessage(Core::System::ResultStatus status, const std::string& details, bool at_start) {
-    const std::string log = LogPath();
-    if (status == Core::System::ResultStatus::ErrorUnknown) {
-        if (at_start) {
-            return fmt::format(
-                "The game stopped with a fatal error of its own as it started. That usually means it "
-                "couldn't read its own files: a game file that isn't decrypted properly, or a damaged "
-                "dump.\n\n"
-                "What to try:\n"
-                "- Dump the game again with GodMode9 on your 3DS, and choose the decrypted .3ds, .cci or "
-                ".cxi in the launcher's Setup.\n"
-                "- Check that the v1.3.0 update is installed (Setup, step 2).\n\n"
-                "The log has the error's numbers (its \"Fatal error\" lines); it's complete once this "
-                "message is closed:\n{}",
-                log);
-        }
-        return fmt::format(
-            "The game stopped with a fatal error of its own. If it happens again at the same place, a "
-            "damaged dump can be the cause: dump the game again with GodMode9 on your 3DS. If that "
-            "doesn't help, please report it with the log, which has the error's numbers; it's complete "
-            "once this message is closed:\n{}",
-            log);
-    }
-    if (details.empty()) {
-        return fmt::format("The game stopped (status {}). The log may say why; it's complete once this "
-                           "message is closed:\n{}",
-                           static_cast<u32>(status), log);
-    }
-    return fmt::format("The game stopped: {}\n\nThe log:\n{}", details, log);
 }
 
 int Run(const std::vector<std::string>& argv) {
@@ -537,9 +512,10 @@ int Run(const std::vector<std::string>& argv) {
         if (result != Core::System::ResultStatus::Success) {
             const std::string details = system.GetStatusDetails();
             LOG_ERROR(Frontend, "emulation stopped (status {}): {}", static_cast<u32>(result), details);
-            // (a fatal error this early comes, most often, from game files it can't read)
-            const bool at_start = std::chrono::steady_clock::now() - started < std::chrono::seconds(30);
-            App::Dialog::Message(TITLE, StopMessage(result, details, at_start), true);
+            const double seconds =
+                std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+            App::Dialog::Message(
+                TITLE, App::StopMessage::Stopped(static_cast<u32>(result), details, seconds, LogPath()), true);
             break;
         }
         App::Multiplayer::Tick();

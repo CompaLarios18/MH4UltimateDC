@@ -36,6 +36,9 @@ add_executable(mh4u
     # pause and fast forward, playing alone
     speed.cpp
     speed.h
+    # what the player is told when the game doesn't start or stops with an error
+    stop_message.cpp
+    stop_message.h
     # the keyboard-and-mouse mode's arithmetic (the mouse as the camera, the item bar's scroll)
     kbm.cpp
     kbm.h
