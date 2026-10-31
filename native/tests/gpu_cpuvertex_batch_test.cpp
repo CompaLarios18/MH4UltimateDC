@@ -959,23 +959,37 @@ TEST_CASE("draw/many draws over a small ring: the space is reused once its submi
         CHECK_MESSAGE(Px(pixels, 0, 0) == Rgba(red, 0, blue, 255), "draw " << i);
         CHECK_MESSAGE(Px(pixels, 7, 7) == Rgba(0, 0, 0, 255), "draw " << i);
     }
-    // Each draw above waited, so the ring was empty at the next one and started at 0 again. Now 12 draws
-    // without a wait: 12 x 272 bytes cannot fit a 1024-byte ring in increasing offsets, so some batch must
-    // start below its predecessor (the ring wrapped, or rewound after its earlier submissions passed).
-    rig.offsets.clear();
-    for (int i = 0; i < 12; ++i) {
-        OutputVertex v[3] = {Corner(0), Corner(1), Corner(2)};
-        for (OutputVertex& x : v) { x.color[0] = 1.0f; x.color[1] = 0.0f; x.color[2] = 0.0f; x.color[3] = 1.0f; }
-        rig.Draw(*pipeline, CornerTriangle(v[0], v[1], v[2]), false);
+    // The wrap, made certain. A fresh ring of 1024 bytes; one recorder takes three batches (offsets 0, 272 and
+    // 544: nothing is retired while the recorder is open, and each Map aligns the head to 16), the recorder is
+    // submitted without a wait, then a fourth batch is mapped in another recorder. The head is 808, aligned 816,
+    // and 816 + 264 > 1024, so the allocation cannot be at the end and restarts at 0, whatever the GPU's speed:
+    // if the first three spans have retired by then the ring is empty and starts at 0 (RingAllocator::TryMap);
+    // if not, the end is given up, the head goes to 0 and the oldest (stamped, submitted) span is waited for,
+    // which frees 0 too. It never fails: the first recorder is submitted.
+    Rig wrap;
+    if (!wrap.Init(1024)) return;
+    const std::shared_ptr<Pipeline> wrap_pipeline = wrap.MakePipeline(false, Spv(spv_show_primary_color));
+    {
+        Recorder rec = wrap.backend->BeginRecording();
+        for (int i = 0; i < 3; ++i) {
+            rhi::Result<StreamedBatch> r = UploadBatch(*wrap.ring, CornerTriangle(Corner(0), Corner(1), Corner(2)));
+            REQUIRE_MESSAGE(r.ok(), r.error());
+            wrap.offsets.push_back(r->offset);
+        }
+        wrap.backend->Submit(std::move(rec));
     }
-    REQUIRE(rig.offsets.size() == 12);
-    bool restarted = false;
-    for (size_t i = 0; i < rig.offsets.size(); ++i) {
-        CHECK(rig.offsets[i] + 264 <= 1024);
-        restarted = restarted || (i > 0 && rig.offsets[i] < rig.offsets[i - 1]);
-    }
-    CHECK(restarted);
-    CHECK(Px(rig.ReadBack(), 0, 0) == Rgba(255, 0, 0, 255));}
+    OutputVertex v[3] = {Corner(0), Corner(1), Corner(2)};
+    for (OutputVertex& x : v) { x.color[0] = 1.0f; x.color[1] = 0.0f; x.color[2] = 0.0f; x.color[3] = 1.0f; }
+    const std::vector<u8> pixels = wrap.Draw(*wrap_pipeline, CornerTriangle(v[0], v[1], v[2]));
+    REQUIRE(wrap.offsets.size() == 4);
+    CHECK(wrap.offsets[0] == 0);
+    CHECK(wrap.offsets[1] == 272);
+    CHECK(wrap.offsets[2] == 544);
+    CHECK(wrap.offsets[3] == 0);
+    CHECK(wrap.offsets[3] < wrap.offsets[2]);
+    CHECK(Px(pixels, 0, 0) == Rgba(255, 0, 0, 255));
+    CHECK(Px(pixels, 7, 7) == Rgba(0, 0, 0, 255));
+}
 
 TEST_CASE("draw/flip_viewport mirrors the triangle vertically") {
     Rig rig;
