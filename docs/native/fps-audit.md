@@ -11,7 +11,9 @@ findings are not a matter of tolerance (*What the runs found*): the scripted G3 
 native runtime although the reference does (twice, identically; a deterministic native run reproduces the failure, so it
 is not noise), and the game's clock is 4 s ahead of its frame count from the intro movie on at 120 fps, on the reference
 as well, which moves the audio of a game frame by hundreds of DSP frames. D70's numbers are proposed below; D70 and D71
-are the orchestrator's to mark Decided.
+are the orchestrator's to mark Decided. *(2026-10-31, N3-32: the first of the two, finding 2, was native timing and is
+fixed: the deterministic G3 now reaches the Arena at 120 fps as the reference does. Finding 1 stands; D70 stays Open
+until the audit is run again on an idle PC.)*
 
 **The PC during the runs.** The real-time runs of 2026-10-31 (every row marked **rt**, and every `none` row except the
 deterministic ones) were taken while the PC was busy with the orchestrator's builds; the host times of 454 s and 408 s
@@ -108,6 +110,18 @@ An item with nothing to compare is `n/a` (reported, not a failure) unless `--req
    candidate; native timing is the other, and the reference reaching the Arena twice with the same session points at
    native timing first (an inference). Either way it is the orchestrator's to open (a hook if it is the game's own
    behaviour, a native-runtime defect otherwise).
+   *(2026-10-31, N3-32)* **Found and fixed: native timing, not the quest-loading race.** The deterministic mode's slice
+   was 1,145,774 ticks, 3 short of Azahar's `MAX_SLICE_LENGTH` (`BASE_CLOCK_RATE_ARM11 / 234`, 1,145,777), so every
+   thread-safe `nwm::UDS` event came 6 ticks early on core 1; at 120 fps the fourth one, in frame 6,591, cut a stretch of
+   core 0 short and core 0's clock stayed behind from there, which is the drift from frame 6,592 above. With the slice
+   set to 1,145,777 (`docs/research/det-120fps.md`), the native deterministic G3 at 120 fps equals a third reference run
+   at 120 fps (`build/n3-32/ref120`, itself equal to r3) in all 36,001 state records, every value, and reaches the Arena
+   and the hunt at the reference's frames, with seeds 1, 2 and 3 too; the 60 fps run still equals r2 (18,001 records);
+   the scheduler timelines of G1, G3 and G4 equal the recordings' in every event. The deterministic pair
+   (`fps_audit.py run G3 ... --deterministic`, `build/fps/G3-det-n332`) passes `runs`, `scenes` (10 real changes in each
+   run) and `checkpoints` (9 of 9); `times` and `observables` fail with the numbers of the reference's own pair (N3-21),
+   because finding 1 is the reference's behaviour too, and `writes` passes with the proposed masks. Still open: the other
+   rows of this note were not run again, and D70 stays Open until the audit is run again on an idle PC.
 3. **Real time is a coin flip on G3, in both directions, on a loaded PC.** Ten real-time runs (five pairs; the runner is
    paced to real time), all taken while the PC was busy with other builds: the 60 fps run reaches the hunt in 3 and the
    120 fps run in 3, and in four of the five pairs exactly one of the two does not. Two of the four failing runs were
@@ -218,7 +232,8 @@ orchestrator's to settle; none of the tool's defaults was changed):
    at 120 fps in the deterministic mode, reproducibly; in real time G3 failed in four of five pairs on the loaded PC.
    Proposal: keep "the same sequence, never tolerated", and **gate it in both modes for G1, G2 and G4** (it passed in
    every run of the three), and in the deterministic mode for G3; G3's real-time sequence is reported, not gated, until it
-   is measured on an idle PC. G3 at 120 fps stays `needs-decision` until finding 2's cause is found.
+   is measured on an idle PC. G3 at 120 fps stays `needs-decision` until finding 2's cause is found. *(2026-10-31, N3-32:
+   found and fixed, see finding 2; the deterministic G3 pair has the same 10 real scene changes at both rates.)*
 2. **Time of a scene change.** The changes over 4 frames are always the same ones, and systematic (the deterministic mode
    gives the same frames run after run; G3's with three seeds): the first aDemo, the three after the intro movie, G2's
    opening and, on the reference, G3's aQuest. Every other change is 1 to 3 frames. Proposal: **4 frames (66.7 ms) by
@@ -230,7 +245,7 @@ orchestrator's to settle; none of the tool's defaults was changed):
    | the first aDemo (the intro movie's start), every session | 316.7 ms (19 frames, G4 and G3) | 333.3 ms (20 frames) |
    | the three after the intro movie (aDemo, aGameSys, aVillage), every session | 150.0 ms (9 frames, G4 and G3) | 166.7 ms (10 frames) |
    | G2's two changes of the opening | 300.0 ms (18 frames) | 316.7 ms (19 frames) |
-   | G3's aGameSys and aQuest of the quest load | 75.0 ms (4.5 frames, the reference only: the native det run does not reach them) | 91.7 ms (5.5 frames), to be confirmed from the first native deterministic pair that reaches them |
+   | G3's aGameSys and aQuest of the quest load | 75.0 ms (4.5 frames, the reference only: the native det run does not reach them) | 91.7 ms (5.5 frames), to be confirmed from the first native deterministic pair that reaches them *(2026-10-31, N3-32: that pair, `build/fps/G3-det-n332`, measures the reference's values, 75.0 ms the largest)* |
    | every other change | 50.0 ms (3 frames) | 66.7 ms (4 frames, D70's first guess) |
 
    Every real-time run of G1, G2 and G4 (loaded PC) is inside these limits too (largest: 166.7 ms on the first aDemo of
@@ -251,7 +266,10 @@ orchestrator's to settle; none of the tool's defaults was changed):
    covers the scene sequence, the scene times and the checkpoints at 120 fps, but **not the hunter's position or the
    quest's clock**: a 120 fps build that moves the hunter elsewhere or runs the quest clock at another rate would pass.
    So D70 cannot be fully Decided on this note: the scene, time, checkpoint and write parts can, the position and quest
-   clock part stays Open with that trigger.
+   clock part stays Open with that trigger. *(2026-10-31, N3-32: the trigger is met. The deterministic pair
+   `build/fps/G3-det-n332` reaches the hunt at both rates: position 59 of 63 seconds over, largest 3,627.2 units; quest
+   counter 19 of 65 seconds over 1 s, largest 1.067 s, the numbers of the reference's own pair. Settling them is D70's,
+   which stays Open until the audit is run again on an idle PC.)*
 5. **DSP stream.** The window of G1 (before the clock offset arises) gives shifts of +9 and +17 DSP frames in real time
    (loaded PC) and +57 in the deterministic mode; every window after the intro movie gives shifts of 640 to 4,552 DSP frames
    or no buffer in common, with the clock offset at the window 4 to 22 s (finding 1). The shift is measured on the DSP
