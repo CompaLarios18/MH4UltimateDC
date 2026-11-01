@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <string>
 #include <SDL.h>
 #include <imgui.h>
@@ -21,6 +22,7 @@
 #include "ui/keyboard.h"
 #include "ui/layer.h"
 #include "ui/menu.h"
+#include "ui/nav.h"
 #include "window.h"
 
 namespace App::Ui {
@@ -30,6 +32,28 @@ namespace {
 std::atomic<Layer*> instance{nullptr};
 
 constexpr u32 BACK_HELD = 1, START_HELD = 2;
+/// A key that comes this soon after a controller's button, or before it (Esc, and a key the button
+/// follows in the same pump: Layer::ForwardHeld), is the echo Steam Input's desktop layouts send
+/// for that button.
+constexpr u32 ECHO_MS = 150;
+
+/// The keys Steam Input sends for a controller's buttons: Esc (B), Enter (A), Space, Tab and the
+/// arrows (the D-pad).
+bool EchoKey(SDL_Scancode code) {
+    switch (code) {
+    case SDL_SCANCODE_RETURN:
+    case SDL_SCANCODE_KP_ENTER:
+    case SDL_SCANCODE_SPACE:
+    case SDL_SCANCODE_TAB:
+    case SDL_SCANCODE_UP:
+    case SDL_SCANCODE_DOWN:
+    case SDL_SCANCODE_LEFT:
+    case SDL_SCANCODE_RIGHT:
+        return true;
+    default:
+        return false;
+    }
+}
 
 /// Pause and fast forward (speed.h) at the top middle of the screen, small; it takes no input.
 void DrawSpeedBadge(const std::string& text, bool paused) {
@@ -174,6 +198,11 @@ Layer::Layer(Core::System& system_, Window& window_, Config& config_)
     io.IniFilename = nullptr; // nothing of the menu's is kept between runs but the settings
     io.LogFilename = nullptr;
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_NavEnableGamepad;
+    // Esc and B with nothing of Dear ImGui's to close leave the cursor where it is: they are the
+    // menu's back steps (a search cleared, then the menu closed), and a controller needs a cursor
+    io.ConfigNavEscapeClearFocusItem = false;
+    // Ctrl+Tab is the menu's next tab, not Dear ImGui's window switcher
+    Nav::DisableWindowing();
     // the window shows and hides the cursor itself (hidden after a while in full screen)
     io.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
     // a font that scales: drawn at the size the window's height asks for (UpdateScale)
@@ -217,9 +246,29 @@ void Layer::Post(std::function<void()> action) {
 }
 
 void Layer::Help(const char* text) {
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled) || ImGui::IsItemFocused()) {
-        help = text;
+    if (ImGui::IsItemFocused()) {
+        help_focused = text;
     }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+        help_hovered = text;
+    }
+    if (menu_open) {
+        menu->AfterItem(); // the cursor it is waiting to put somewhere, the tab's last row
+    }
+}
+
+const char* Layer::HelpText() const {
+    // the cursor's item while the cursor shows (a controller or the keys moved it), otherwise the
+    // mouse's: the item a player looks at
+    if (ImGui::GetIO().NavVisible && help_focused) {
+        return help_focused;
+    }
+    return help_hovered ? help_hovered : help_focused;
+}
+
+bool Layer::PadJustUsed(u32 now) const {
+    const auto recent = [now](u32 at) { return at != 0 && now - at < ECHO_MS; };
+    return recent(pad_button_at) || recent(stick_at);
 }
 
 void Layer::Open() {
@@ -247,6 +296,7 @@ void Layer::SetCapture(bool on) {
         return;
     }
     capturing = on;
+    finger = -1; // a finger down as the menu comes or goes is forgotten (its lift may be the game's)
     Input::SetMuted(on);
     if (on) {
         // what the game had held is let go: the menu has the keys and the mouse now
@@ -258,27 +308,80 @@ void Layer::SetCapture(bool on) {
 }
 
 bool Layer::OnEvent(const SDL_Event& event) {
+    const u32 now = SDL_GetTicks();
     // the menu's toggle: Esc, a controller's Guide, or its Back and Start together (Guide is
     // often Steam's or the Game Bar's)
     switch (event.type) {
-    case SDL_KEYDOWN:
-        if (event.key.repeat == 0 && event.key.keysym.scancode == SDL_SCANCODE_ESCAPE &&
-            !key_capture) {
-            if (!menu_open) {
-                // a moment later, unless a controller's button came with it: Steam Input's
-                // desktop layouts (a Steam Deck's, say) send Esc for B while the game sees the
-                // controller too, and B would open the menu (Frame decides)
-                escape_at = std::max<u32>(SDL_GetTicks(), 1);
+    case SDL_KEYDOWN: {
+        const SDL_Scancode code = event.key.keysym.scancode;
+        if (event.key.repeat == 0 && code == SDL_SCANCODE_ESCAPE) {
+            // a moment later, unless a controller's button came with it: Steam Input's desktop
+            // layouts (a Steam Deck's, say) send Esc for B while the menu sees the controller too,
+            // and one B would open the menu, or take two of its back steps (Frame decides)
+            if (menu_open && PadJustUsed(now)) {
+                LogEcho();
                 return true;
             }
-            escape_pressed = true; // the frame decides: a list or a text field takes it first
+            escape_at = std::max<u32>(now, 1);
+            escape_busy = menu_open && was_busy;
+            return true;
+        }
+        if (code == SDL_SCANCODE_ESCAPE && capturing) {
+            // its auto-repeat: Esc's press is the layer's (Frame), and Dear ImGui, which didn't see the
+            // key go down, would take a repeat for a press of its own (over the game's keyboard, its
+            // text field let go)
+            return true;
+        }
+        if (event.key.repeat == 0) {
+            echoes_down.erase(code); // pressed again: an echo or not (here, or in ForwardHeld)
+        }
+        if (menu_open && EchoKey(code) && (PadJustUsed(now) || echoes_down.count(code) != 0)) {
+            // Enter for A, the arrows for the D-pad: the button itself does it (once); and while it
+            // is held, the key's auto-repeat goes as its down went (Dear ImGui, which didn't see the
+            // key go down, would take a repeat for a press)
+            if (event.key.repeat == 0) {
+                echoes_down.insert(code);
+            }
+            drop_space_text = code == SDL_SCANCODE_SPACE;
+            return true;
+        }
+        drop_space_text = false;
+        if (menu_open && event.key.repeat == 0) {
+            pad_last = false;
         }
         break;
+    }
+    case SDL_TEXTINPUT:
+        if (drop_space_text && std::string(event.text.text) == " ") {
+            drop_space_text = false; // the text of a dropped Space
+            return true;
+        }
+        pad_last = false;
+        break;
+    case SDL_MOUSEBUTTONDOWN:
+        if (event.button.which != SDL_TOUCH_MOUSEID) {
+            pad_last = false;
+        }
+        break;
+    case SDL_MOUSEWHEEL:
+        pad_last = false;
+        break;
+    case SDL_CONTROLLERAXISMOTION: {
+        const int value = std::abs(static_cast<int>(event.caxis.value));
+        if (value > 8000) {
+            stick_at = std::max<u32>(now, 1);
+        }
+        if (value > 16000) {
+            pad_last = true;
+        }
+        break;
+    }
     case SDL_CONTROLLERBUTTONDOWN:
     case SDL_CONTROLLERBUTTONUP: {
         const bool down = event.type == SDL_CONTROLLERBUTTONDOWN;
         if (down) {
-            pad_button_at = std::max<u32>(SDL_GetTicks(), 1);
+            pad_button_at = std::max<u32>(now, 1);
+            pad_last = true;
         }
         const u8 button = event.cbutton.button;
         if (button == SDL_CONTROLLER_BUTTON_GUIDE) {
@@ -319,8 +422,17 @@ bool Layer::OnEvent(const SDL_Event& event) {
     if (!capturing) {
         return false;
     }
-    // Controls: the next key pressed is the one to bind (Dear ImGui still sees keys let go, the
-    // one that started the capture among them)
+    // a touchscreen's first finger is the menu's mouse (a Steam Deck's: SDL's touch-to-mouse is
+    // off for the game, window.cpp, and Dear ImGui's SDL backend takes no fingers); the others do
+    // nothing, and while a key is awaited a finger only lifts
+    if (event.type == SDL_FINGERDOWN || event.type == SDL_FINGERUP || event.type == SDL_FINGERMOTION) {
+        if (!key_capture || event.type == SDL_FINGERUP) {
+            Finger(event);
+        }
+        return true;
+    }
+    // Keys and the key rows: the next key pressed is the one to bind (Dear ImGui still sees keys
+    // let go, the one that started the capture among them)
     if (key_capture && event.type == SDL_KEYDOWN) {
         if (event.key.repeat == 0) {
             menu->OnCapturedKey(static_cast<int>(event.key.keysym.scancode));
@@ -336,7 +448,16 @@ bool Layer::OnEvent(const SDL_Event& event) {
         menu->OnCapturedKey(event.wheel.y > 0 ? Input::WHEEL_UP : Input::WHEEL_DOWN);
         return true;
     }
-    {
+    // an echo key's down, and the keyboard's events after it, wait for the frame (ForwardHeld): the
+    // controller's button it may be the echo of can come right after it, in the same pump (SDL
+    // reads the keyboard before the controllers)
+    const bool key_event = event.type == SDL_KEYDOWN || event.type == SDL_KEYUP || event.type == SDL_TEXTINPUT ||
+                           event.type == SDL_TEXTEDITING;
+    if (menu_open && key_event &&
+        (!held.empty() ||
+         (event.type == SDL_KEYDOWN && event.key.repeat == 0 && EchoKey(event.key.keysym.scancode)))) {
+        held.push_back(event);
+    } else {
         std::scoped_lock lock{mutex};
         MakeCurrent();
         ImGui_ImplSDL2_ProcessEvent(&event);
@@ -355,15 +476,85 @@ bool Layer::OnEvent(const SDL_Event& event) {
     case SDL_MOUSEBUTTONDOWN:
     case SDL_MOUSEBUTTONUP:
     case SDL_MOUSEWHEEL:
-    case SDL_FINGERDOWN:
-    case SDL_FINGERUP:
-    case SDL_FINGERMOTION:
     case SDL_CONTROLLERBUTTONDOWN:
     case SDL_CONTROLLERBUTTONUP:
     case SDL_CONTROLLERAXISMOTION:
         return true;
     default:
         return false; // the window's too: resizing, focus, controllers coming and going, quitting
+    }
+}
+
+void Layer::Finger(const SDL_Event& event) {
+    const SDL_TouchFingerEvent& touch = event.tfinger;
+    if (event.type == SDL_FINGERDOWN && finger < 0) {
+        finger = static_cast<s64>(touch.fingerId);
+    }
+    if (static_cast<s64>(touch.fingerId) != finger) {
+        return;
+    }
+    // the finger's place is a fraction of the window's size (SDL's touch events are normalized)
+    int w = 0, h = 0;
+    SDL_GetWindowSize(window.GetSDLWindow(), &w, &h);
+    {
+        std::scoped_lock lock{mutex};
+        MakeCurrent();
+        ImGuiIO& io = ImGui::GetIO();
+        io.AddMouseSourceEvent(ImGuiMouseSource_TouchScreen);
+        io.AddMousePosEvent(touch.x * static_cast<float>(w), touch.y * static_cast<float>(h));
+        if (event.type != SDL_FINGERMOTION) {
+            io.AddMouseButtonEvent(ImGuiMouseButton_Left, event.type == SDL_FINGERDOWN);
+        }
+    }
+    if (event.type == SDL_FINGERUP) {
+        finger = -1;
+    }
+    // (pad_last stays: a finger on a Steam Deck says nothing of whether its controller or a
+    // keyboard is in hand, and the hints are those)
+}
+
+void Layer::ForwardHeld() {
+    if (held.empty()) {
+        return;
+    }
+    std::vector<SDL_Event> events;
+    events.swap(held);
+    if (!menu_open) {
+        return; // closed meanwhile: its next opening starts from a clean input state
+    }
+    // an echo key that a controller's button (or a stick pushed) came with, at once or a moment
+    // after: the button does it, once; a dropped Space's text goes with it, and the key's
+    // auto-repeat with its down (echoes_down)
+    const auto echo = [this](u32 at) {
+        const auto after = [at](u32 pad) { return pad != 0 && pad >= at && pad - at < ECHO_MS; };
+        return after(pad_button_at) || after(stick_at);
+    };
+    bool drop_text = false;
+    std::scoped_lock lock{mutex};
+    MakeCurrent();
+    for (const SDL_Event& e : events) {
+        if (e.type == SDL_KEYDOWN && EchoKey(e.key.keysym.scancode) &&
+            (e.key.repeat == 0 ? echo(e.key.timestamp) : echoes_down.count(e.key.keysym.scancode) != 0)) {
+            if (e.key.repeat == 0) {
+                echoes_down.insert(e.key.keysym.scancode);
+            }
+            drop_text = e.key.keysym.scancode == SDL_SCANCODE_SPACE;
+            continue;
+        }
+        if (e.type == SDL_TEXTINPUT && drop_text && std::string(e.text.text) == " ") {
+            drop_text = false;
+            continue;
+        }
+        ImGui_ImplSDL2_ProcessEvent(&e);
+    }
+    drop_space_text = drop_space_text || drop_text; // (its text in a later pump)
+}
+
+void Layer::LogEcho() {
+    if (!echo_logged) {
+        echo_logged = true;
+        LOG_INFO(Frontend, "an Esc that came with a controller's button was left out (Steam Input sends keys for "
+                           "a controller's buttons in its desktop layouts)");
     }
 }
 
@@ -408,30 +599,29 @@ void Layer::ToggleKeyGuides() {
 }
 
 void Layer::Frame() {
+    ForwardHeld(); // the keyboard's events of the last pump that waited for its controller's
     if (escape_at != 0) {
-        constexpr u32 ECHO_MS = 150;
+        // the Esc held back in OnEvent: an echo if a controller's button came within ECHO_MS of it,
+        // before or after; otherwise, once it has waited a moment, one step back
         const u32 now = SDL_GetTicks();
         const bool echo = pad_button_at != 0 && (pad_button_at >= escape_at ? pad_button_at - escape_at
                                                                               : escape_at - pad_button_at) < ECHO_MS;
         if (echo) {
             escape_at = 0;
-            if (!echo_logged) {
-                echo_logged = true;
-                LOG_INFO(Frontend, "an Esc that came with a controller's button didn't open the menu (Steam "
-                                   "Input sends keys for a controller's buttons in its desktop layouts)");
-            }
+            LogEcho();
         } else if (now - escape_at >= 80) {
             escape_at = 0;
-            Open();
-        }
-    }
-    if (escape_pressed) {
-        escape_pressed = false;
-        if (menu_open && !was_busy && !key_capture) {
-            if (menu->EditingLayout()) {
+            pad_last = false;
+            if (!menu_open) {
+                Open();
+            } else if (key_capture) {
+                menu->OnCapturedKey(SDL_SCANCODE_ESCAPE); // the key awaited stays as it was
+            } else if (escape_busy) {
+                give_escape = true; // a list, a question or a text field takes it (Dear ImGui's)
+            } else if (menu->EditingLayout()) {
                 menu->CancelLayoutEdit(); // the layout editor's Esc: back to the menu as it was
-            } else {
-                Close();
+            } else if (!menu->OnBack()) {
+                Close(); // nothing of the menu's to step back from: back to the game
             }
         }
     }
@@ -448,7 +638,10 @@ void Layer::Frame() {
     const bool guides = !capturing && window.KeyboardMouseActive() && FpsCounterOn(config.key_guides);
     // pause and fast forward, under nothing of the menu's
     const std::string speed = capturing ? std::string() : Speed::Get().Badge(SDL_GetTicks());
-    const bool draw = capturing || keyboard->HasNotice() || !hint.Empty() || fps_counter || guides || !speed.empty();
+    // why the touch-screen key changed nothing (ui/hint.h), for a few seconds
+    const std::string notice = capturing ? std::string() : TouchScreenNotice(SDL_GetTicks());
+    const bool draw = capturing || keyboard->HasNotice() || !hint.Empty() || fps_counter || guides ||
+                      !speed.empty() || !notice.empty();
     if (!draw || !renderer_ready.load(std::memory_order_acquire)) {
         if (visible.load(std::memory_order_relaxed)) {
             std::scoped_lock lock{mutex};
@@ -477,6 +670,11 @@ void Layer::Frame() {
         ImGui::EndFrame();
         fresh_input = false;
     }
+    if (give_escape) {
+        give_escape = false;
+        io.AddKeyEvent(ImGuiKey_Escape, true);
+        io.AddKeyEvent(ImGuiKey_Escape, false); // (a frame later: Dear ImGui trickles the queue)
+    }
     ImGui_ImplSDL2_NewFrame();
     // pixels per window unit as the window counts them (the backend asks OpenGL, which a
     // Vulkan or software window doesn't have)
@@ -492,7 +690,7 @@ void Layer::Frame() {
     }
 
     ImGui::NewFrame();
-    help = nullptr;
+    help_focused = help_hovered = nullptr;
     if (menu_open) {
         menu->Draw();
     } else if (keyboard_up) {
@@ -512,6 +710,9 @@ void Layer::Frame() {
     }
     if (!speed.empty()) {
         DrawSpeedBadge(speed, Speed::Get().Paused());
+    }
+    if (!notice.empty()) {
+        DrawNotice(notice, !speed.empty());
     }
     was_busy = ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopup) || ImGui::IsAnyItemActive();
     ImGui::Render();

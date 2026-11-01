@@ -10,13 +10,13 @@
 #include "config.h"
 #include "core/core.h"
 #include "core/perf_stats.h"
-#include "frontend.h"
 #include "icon.h"
 #include "input.h"
 #include "input_common/keyboard.h"
 #include "input_common/main.h"
 #include "speed.h"
 #include "ui/fps_counter.h"
+#include "ui/hint.h"
 #include "ui/ui.h"
 
 namespace App {
@@ -95,6 +95,11 @@ void Window::ReadKeys() {
     key_guides_key = Input::KeyCode(config.key_guides_key);
     pause_keys = Input::KeyCodes(config.pause_key);
     fast_forward_keys = Input::KeyCodes(config.fast_forward_key);
+    tap_keys.clear();
+    for (const auto& tap : config.touch_taps) {
+        const auto codes = Input::KeyCodes(tap.keys);
+        tap_keys.insert(tap_keys.end(), codes.begin(), codes.end());
+    }
 }
 
 bool Window::IsSpeedKey(int scancode) const {
@@ -232,7 +237,7 @@ void Window::OnKey(int scancode, bool down, u16 modifiers) {
     }
     if (std::find(touch_keys.begin(), touch_keys.end(), scancode) != touch_keys.end()) {
         if (down) {
-            Port::ToggleQuestMap();
+            Ui::TouchScreenKey(SDL_GetTicks()); // the map or the whole touch screen, or why neither
         }
         return;
     }
@@ -276,10 +281,12 @@ void Window::PollEvents() {
             }
         } else if (event.type == SDL_KEYDOWN && event.key.repeat == 0 && !EchoOfController()) {
             const auto code = event.key.keysym.scancode;
-            // (the app's own keys don't count: F11 doesn't make a controller player's mouse the camera)
+            // (the app's own keys don't count: F11 doesn't make a controller player's mouse the camera;
+            // nor do the touch taps', which a controller's spare button may send through Steam Input)
             if (code != SDL_SCANCODE_ESCAPE && code != fullscreen_key && code != fps_counter_key &&
                 code != key_guides_key && !IsSpeedKey(code) &&
-                std::find(stylus_keys.begin(), stylus_keys.end(), code) == stylus_keys.end()) {
+                std::find(stylus_keys.begin(), stylus_keys.end(), code) == stylus_keys.end() &&
+                std::find(tap_keys.begin(), tap_keys.end(), code) == tap_keys.end()) {
                 last_used_keyboard = true;
             }
         } else if (event.type == SDL_MOUSEBUTTONDOWN && mouse_camera) {
@@ -389,7 +396,7 @@ void Window::PollEvents() {
         case SDL_CONTROLLERBUTTONDOWN:
             // the 3DS has no stick clicks: the right one is the port's touch-screen switch
             if (event.cbutton.button == SDL_CONTROLLER_BUTTON_RIGHTSTICK) {
-                Port::ToggleQuestMap();
+                Ui::TouchScreenKey(SDL_GetTicks());
             }
             break;
         case SDL_CONTROLLERDEVICEADDED:

@@ -107,6 +107,18 @@ def cia_content0(f: BinaryIO) -> CiaContent0:
     raise DumpError("CIA has no content with index 0")
 
 
+def version_text(version: int) -> str:
+    """A title version as the 3DS writes it: major in bits 10-15, minor in 4-9, micro in 0-3."""
+    return f"{version >> 10}.{(version >> 4) & 0x3F}.{version & 0xF}"
+
+
+def cia_title_version(path: str) -> int | None:
+    """The version label in a CIA's title metadata; None for a .3ds, .cci or .cxi. Some tools
+    that decrypt or rebuild a CIA reset it (to v0.0.1 or v1.0.0) and leave the content as it was."""
+    with open(path, "rb") as f:
+        return cia_content0(f).title_version if detect(f) == "cia" else None
+
+
 # ── NCCH ─────────────────────────────────────────────────────────────────────
 
 @dataclass(frozen=True)
@@ -176,7 +188,7 @@ def extract(path: str, outdir: str, with_romfs: bool = False) -> list[str]:
         elif kind == "cia":
             c = cia_content0(f)
             info.append(f"CIA title id  : {c.title_id:016X}  version {c.title_version} "
-                        f"(v{c.title_version >> 10}.{(c.title_version >> 4) & 0x3F}.{c.title_version & 0xF})")
+                        f"(v{version_text(c.title_version)})")
             if c.encrypted:
                 raise DumpError("CIA content 0 is encrypted (title key). Decrypt the CIA with "
                                 "GodMode9 on your 3DS first.")

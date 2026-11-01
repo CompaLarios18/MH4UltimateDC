@@ -282,6 +282,11 @@ Progress BuildProgress(const std::vector<std::string>& lines) {
         } else if (Fraction(line, "compiled", done, total)) {
             p = {0.25f + 0.72f * done / total,
                  fmt::format("Compiling the code library: {} of {} files", done, total)};
+        } else if (Fraction(line, "compiling again", done, total)) {
+            // (the files that didn't compile while every job ran, one at a time: minutes after a
+            // run short of memory)
+            p = {0.97f, fmt::format("Trying again, one at a time, the files that didn't compile: {} of {}",
+                                    done, total)};
         } else if (StartsWith(line, "linked")) {
             p = {0.98f, "Linking the code library"};
         } else if (StartsWith(line, "installed to")) {

@@ -167,7 +167,7 @@ With the port's Azahar (or official Azahar, which has the same multiplayer code)
 4. To host a listed room in your own Azahar: *Multiplayer → Create Room*, *Room Type* **Public**, port 24872 (forwarded to your PC as above), a password if you like, *Host Room*. Hosting a public room needs the token. In the port's Azahar, *Public* is greyed out while the Web API URL is empty; if you opened *Create Room* before setting it, restart Azahar.
 5. In the game: *Local Play* at the Gathering Hall ([PLAYING.md](PLAYING.md#4-multiplayer)).
 
-**With the port's app**: put the lobby's address and your token in the launcher's *Online* screen (*Your name and lobby*), or `lobby` and `token` in `mh4u-app.ini`. The menu's *Multiplayer* tab (Esc, in the game) and the launcher list the lobby's rooms, each with *Join*, and host listed rooms. When you host, the app asks the lobby for your public address (`GET /ip`) to put in the invite it shows; a lobby older than that, or one on your own network, can't tell it, and the tab says so.
+**With the port's app**: put the lobby's address and your token in the launcher's *Online* screen (*Your name and lobby*), or `lobby` and `token` in `mh4u-app.ini`. The menu's *Online* tab (Esc, in the game) and the launcher list the lobby's rooms, each with *Join*, and host listed rooms. When you host, the app asks the lobby for your public address (`GET /ip`) to put in the invite it shows; a lobby older than that, or one on your own network, can't tell it, and the tab says so.
 
 | Message or symptom | Cause |
 |---|---|

@@ -17,6 +17,7 @@
 #include "launcher/lobby.h"
 #include "multiplayer.h"
 #include "ui/layer.h"
+#include "ui/nav.h"
 
 namespace App::Ui {
 
@@ -31,6 +32,8 @@ const ImVec4 GOOD(0.55f, 0.85f, 0.55f, 1.0f);
 struct TabState {
     bool loaded = false;
     int page = 0;  // 0: join, 1: host
+    int show_page = -1;  // the menu's search asked for a page (ShowMultiplayerPage)
+    int focus_page = -1; // and the cursor on its button
     std::string invite;    // an invite code or an address
     std::string password;  // for an address without one
     std::string nickname;
@@ -643,7 +646,11 @@ void DrawHost(Layer& layer, TabState& tab, const Config& config, bool busy) {
         }
         layer.Help("24872 unless something else uses it. Friends over the internet need it forwarded.");
         FormRow("Players");
-        ImGui::SliderInt("##slots", &tab.slots, 2, 16);
+        // (with a controller in use, no value typed in, as the menu's sliders: A held asks for one;
+        // a value already being typed keeps its field)
+        const bool no_input = layer.PadLast() && !Nav::TypingValue("##slots");
+        ImGui::SliderInt("##slots", &tab.slots, 2, 16, "%d",
+                         no_input ? ImGuiSliderFlags_NoInput : ImGuiSliderFlags_None);
         layer.Help("A Gathering Hall takes 4 hunters; more room members can be in other halls.");
         FormRow("Password");
         InputText("##host_password", tab.host_password, "none: anyone with the address may join",
@@ -676,16 +683,31 @@ void DrawHost(Layer& layer, TabState& tab, const Config& config, bool busy) {
 
 } // namespace
 
-void DrawMultiplayerTab(Layer& layer) {
+void ShowMultiplayerPage(int page) {
+    TabState& tab = Tab();
+    tab.show_page = page;
+    tab.focus_page = page;
+}
+
+void DrawMultiplayerTab(Layer& layer, const std::function<void()>& settings_rows,
+                        const std::function<void()>& before_pages) {
     TabState& tab = Tab();
     const Config& config = layer.config;
     if (!tab.loaded) {
         LoadForms(tab, config);
     }
+    if (tab.show_page >= 0) {
+        tab.page = tab.show_page;
+        tab.show_page = -1;
+    }
     const MP::Status st = MP::GetStatus();
     const bool busy = st.phase == MP::Phase::Busy;
     DrawStatus(st);
     ImGui::Spacing();
+    if (settings_rows) {
+        settings_rows(); // the menu's net sync
+        ImGui::Spacing();
+    }
     if (st.phase == MP::Phase::InRoom) {
         DrawRoom(layer, tab, st);
         ImGui::Spacing();
@@ -699,7 +721,13 @@ void DrawMultiplayerTab(Layer& layer) {
         }
         ImGui::Spacing();
     }
+    if (before_pages) {
+        before_pages();
+    }
     const char* pages[] = {"Join a room", "Host a room"};
+    const char* page_help[] = {"Join another player's room while the game runs: an invite, an address, this "
+                               "network or a lobby.",
+                               "This PC runs a room and plays in it; you get an invite to send your friends."};
     for (int i = 0; i < 2; ++i) {
         if (i > 0) {
             ImGui::SameLine();
@@ -713,6 +741,11 @@ void DrawMultiplayerTab(Layer& layer) {
         }
         if (selected) {
             ImGui::PopStyleColor();
+        }
+        layer.Help(page_help[i]);
+        if (tab.focus_page == i) {
+            tab.focus_page = -1;
+            Nav::FocusItemNow(true);
         }
     }
     ImGui::Spacing();

@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <iterator>
 #include <utility>
 #include <SDL.h>
 #include <fmt/format.h>
@@ -18,6 +19,8 @@
 #include "config.h"
 #include "core/core.h"
 #include "frontend.h"
+#include "launcher/browse.h"
+#include "launcher/paths.h"
 #include "launcher/pick.h"
 #include "launcher/state.h"
 #include "launcher/ui.h"
@@ -45,58 +48,81 @@ void SetFullscreen(bool on) {
     }
 }
 
-/// What the picker gave: the path to `then`, or a line to type the path into where the system
-/// has no picker.
-void Picked(State& s, bool folder, const std::string& title, const Pick::Result& picked,
-            std::function<void(const std::string&)> then) {
-    // keys held when the dialog opened never saw their release
-    ImGui::GetIO().ClearInputKeys();
-    if (!picked.available) {
-        Dialog d;
-        d.title = title;
-        d.text = "This system has no file dialog (zenity or kdialog): type or paste the path.";
-        d.input = true;
-        d.input_hint = folder ? "/path/to/the/folder" : "/path/to/the/file";
-        d.on_input = std::move(then);
-        d.buttons = {{"OK", nullptr, true}, {"Cancel", nullptr, false}};
-        s.Show(std::move(d));
-        return;
-    }
-    if (!picked.path.empty()) {
-        then(picked.path);
+/// A picker opening where `chosen` (a file or folder chosen before) is: its folder, with it shown
+/// first, or the nearest folder above that is still there when that one isn't (a drive unplugged,
+/// a folder moved: the Mac's dialog may fail on a folder that isn't there).
+void OpenAt(const std::string& chosen, Pick::Request& request) {
+    const std::string folder = Paths::Parent(chosen);
+    request.start = Paths::NearestFolder(folder);
+    request.select = !request.start.empty() && request.start == folder ? Paths::Name(chosen) : std::string();
+}
+
+/// The folder a picker opens in, when the request names none: the last choice's (with it shown
+/// first), else the game's.
+void StartAt(const State& s, Pick::Request& request) {
+    const std::string& last = !s.last_pick.empty() ? s.last_pick : s.config.game;
+    if (request.start.empty() && !last.empty()) {
+        OpenAt(last, request);
     }
 }
 
-/// A system file or folder picker. Windows' is a modal dialog that keeps the launcher's window
-/// answering; elsewhere it is another program (zenity, kdialog, osascript), waited for on a
-/// thread while the launcher draws a window saying so, out of full screen (a desktop's dialog
-/// can open behind a full-screen window).
-void PickPath(State& s, bool folder, const std::string& title, const std::string& kind,
-              const std::vector<std::string>& extensions, std::function<void(const std::string&)> then) {
+/// The system's dialog as the player reads of it: "Windows' file dialog", "The system's file
+/// dialog (zenity)".
+std::string DialogName(const std::string& program) {
 #ifdef _WIN32
-    const Pick::Result picked = folder ? Pick::Folder(title) : Pick::File(title, kind, extensions);
-    Picked(s, folder, title, picked, std::move(then));
+    return program;
 #else
-    if (s.picking) {
-        return;
-    }
-    State::Picking p;
-    p.folder = folder;
-    p.title = title;
-    p.then = std::move(then);
-    p.was_fullscreen = g_fullscreen;
-    if (p.was_fullscreen) {
-        SetFullscreen(false);
-    }
-    p.result = std::async(std::launch::async, [folder, title, kind, extensions] {
-        return folder ? Pick::Folder(title) : Pick::File(title, kind, extensions);
-    });
-    s.picking = std::move(p);
+    return "The system's file dialog (" + program + ")";
 #endif
 }
 
+/// The launcher's own browser for `request`; `note` says why it opened (empty: it was asked for,
+/// or it is the way here).
+void OpenBrowser(State& s, Pick::Request request, std::function<void(const std::string&)> then,
+                 std::string note) {
+    const std::string& last = !s.last_pick.empty() ? s.last_pick : s.config.game;
+    State::Browsing b;
+    b.browser = std::make_unique<Browse::Browser>(std::move(request), std::move(note),
+                                                  last.empty() ? std::string() : Paths::Parent(last),
+                                                  Pick::Available());
+    b.then = std::move(then);
+    s.browsing = std::move(b);
+}
+
+/// A file or folder chosen, in either picker: the next one opens where it is.
+void Chose(State& s, const std::string& path, const std::function<void(const std::string&)>& then) {
+    s.last_pick = path;
+    then(path);
+}
+
+/// What the system's dialog gave: the path to `then`; where the system has no dialog, or it
+/// didn't work, the launcher's own browser instead (and what the dialog said in the log).
+void Picked(State& s, State::Picking& p) {
+    // keys held when the dialog opened never saw their release
+    ImGui::GetIO().ClearInputKeys();
+    const Pick::Result& result = p.dialog->Get();
+    if (!result.path.empty()) {
+        s.picker_failed.clear();
+        Chose(s, result.path, p.then);
+    } else if (!result.available) {
+        LOG_INFO(Frontend, "launcher: no file dialog (zenity or kdialog): the launcher's own browser");
+        OpenBrowser(s, std::move(p.request), std::move(p.then),
+                    "This system has no file dialog (zenity or kdialog): choose here, or type or paste the path.");
+    } else if (!result.error.empty()) {
+        LOG_WARNING(Frontend, "launcher: the system's file dialog ({}) didn't work: {}", result.program, result.error);
+        s.picker_failed = result.program;
+        OpenBrowser(s, std::move(p.request), std::move(p.then),
+                    fmt::format("{} didn't work, so this is the launcher's own (mh4u_log.txt has what it said).",
+                                DialogName(result.program)));
+    }
+}
+
 void PumpPick(State& s) {
-    if (!s.picking || s.picking->result.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
+    // dialogs given up on, until their program has ended
+    for (auto it = s.pickers_closing.begin(); it != s.pickers_closing.end();) {
+        it = (*it)->Poll() ? s.pickers_closing.erase(it) : std::next(it);
+    }
+    if (!s.picking || !s.picking->dialog->Poll()) {
         return;
     }
     State::Picking p = std::move(*s.picking);
@@ -104,11 +130,80 @@ void PumpPick(State& s) {
     if (p.was_fullscreen) {
         SetFullscreen(true);
     }
-    Picked(s, p.folder, p.title, p.result.get(), std::move(p.then));
+    Picked(s, p);
 }
 
-/// While the picker is up: a window saying so, which keeps the launcher's own items out of
-/// reach; the frame after, it closes.
+/// The system's dialog. Windows' is modal and keeps the launcher's window answering; elsewhere it
+/// is another program (zenity, kdialog, osascript), followed each frame while the launcher draws
+/// a window saying so, out of full screen (a desktop's dialog can open behind a full-screen one).
+void OpenSystemDialog(State& s, Pick::Request request, std::function<void(const std::string&)> then) {
+    State::Picking p;
+    p.request = std::move(request);
+    p.then = std::move(then);
+    p.dialog = std::make_unique<Pick::Dialog>();
+#ifndef _WIN32
+    p.was_fullscreen = g_fullscreen;
+    if (p.was_fullscreen) {
+        SetFullscreen(false);
+    }
+#endif
+    p.dialog->Start(p.request);  // (Windows': until it closes)
+    s.picking = std::move(p);
+    PumpPick(s);  // one done already: Windows', or one that didn't start
+}
+
+/// A file or folder for `then`, in the system's dialog or the launcher's own browser: the browser
+/// with `browse`, in Steam's Game Mode (a desktop's dialog may not show there), with a
+/// controller in hand, where the system has no dialog, and after its dialog didn't work.
+void PickPath(State& s, Pick::Request request, std::function<void(const std::string&)> then, bool browse) {
+    if (s.picking || s.browsing) {
+        return;
+    }
+    StartAt(s, request);
+    const char* why = nullptr;
+    std::string note;
+    if (browse) {
+        why = "asked for";
+    } else if (!Pick::Available()) {
+        why = "no zenity or kdialog";
+        note = "This system has no file dialog (zenity or kdialog): choose here, or type or paste the path.";
+    } else if (Pick::GameMode()) {
+        why = "Steam's Game Mode";
+    } else if (!s.picker_failed.empty()) {
+        why = "the system's dialog didn't work before";
+        note = fmt::format("{} didn't work earlier: press System file dialog... to try it again.",
+                           DialogName(s.picker_failed));
+    } else if (s.pad) {
+        why = "a controller";
+    }
+    if (why) {
+        LOG_INFO(Frontend, "launcher: choosing in the launcher's own browser ({})", why);
+        OpenBrowser(s, std::move(request), std::move(then), std::move(note));
+        return;
+    }
+    OpenSystemDialog(s, std::move(request), std::move(then));
+}
+
+/// The system's dialog given up on (Cancel, or the launcher's browser instead): its program is
+/// ended and followed until it has; with `browse` the browser opens for the same request.
+void ClosePick(State& s, bool browse) {
+    State::Picking p = std::move(*s.picking);
+    s.picking.reset();
+    LOG_INFO(Frontend, "launcher: the system's file dialog ({}) closed from the launcher{}", p.dialog->Get().program,
+             browse ? ", for its own browser" : "");
+    p.dialog->Cancel();
+    s.pickers_closing.push_back(std::move(p.dialog));
+    if (p.was_fullscreen) {
+        SetFullscreen(true);
+    }
+    if (browse) {
+        OpenBrowser(s, std::move(p.request), std::move(p.then), "");
+    }
+}
+
+/// While the system's dialog is up: a window saying so, which keeps the launcher's own items out
+/// of reach, and gets out of it when the dialog doesn't show or doesn't take the controller (the
+/// launcher's browser instead, or Cancel); the frame after, it closes.
 void DrawPicking(State& s) {
     const bool up = s.picking.has_value();
     if (up && !ImGui::IsPopupOpen("##picking")) {
@@ -123,16 +218,83 @@ void DrawPicking(State& s) {
         return;
     }
     if (up) {
-        Ui::Heading(s.picking->title);
+        Ui::Heading(s.picking->request.title);
         ImGui::Spacing();
         Ui::Spinner();
         ImGui::SameLine();
-        Ui::TextDim(s.picking->folder ? "Choose the folder in the system's window (it may be behind this one)."
-                                      : "Choose the file in the system's window (it may be behind this one).");
+        Ui::TextDim(s.picking->request.folder
+                        ? "Choose the folder in the system's window (it may be behind this one)."
+                        : "Choose the file in the system's window (it may be behind this one).");
+        ImGui::Spacing();
+        const bool browse = Ui::AccentButton("Browse in the launcher instead");
+        if (ImGui::IsWindowAppearing()) {
+            ImGui::SetItemDefaultFocus();
+        }
+        ImGui::SameLine();
+        const bool cancel = ImGui::Button("Cancel") || ImGui::IsKeyPressed(ImGuiKey_Escape, false) ||
+                            ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false);
+        if (browse || cancel) {
+            ImGui::CloseCurrentPopup();
+            ClosePick(s, browse);
+        }
     } else {
         ImGui::CloseCurrentPopup();
     }
     ImGui::EndPopup();
+}
+
+/// The arguments as one line, quoted where they have spaces (for the log and a report).
+std::string CommandLine(const std::vector<std::string>& args) {
+    std::string line;
+    for (const auto& arg : args) {
+        if (!line.empty()) {
+            line += ' ';
+        }
+        line += arg.find_first_of(" \t") == std::string::npos ? arg : '"' + arg + '"';
+    }
+    return line;
+}
+
+/// A tool that failed, for a bug report: how it ended goes after the summary (the last line it
+/// printed), its last lines go into the log, and the window's Copy button gets the app's version,
+/// the command, how it ended and all it printed.
+void ReportFailure(Job& job, const char* tool, const std::string& command, int exit_code) {
+    const int stopped_by = job.process ? job.process->Signal() : 0;
+    const std::string how = stopped_by > 0 ? fmt::format("{} was stopped by signal {}", tool, stopped_by)
+                                           : fmt::format("{} ended with status {}", tool, exit_code);
+    job.summary = job.summary.empty() ? how : fmt::format("{} ({})", job.summary, how);
+    constexpr std::size_t TAIL = 40;
+    const std::size_t from = job.lines.size() > TAIL ? job.lines.size() - TAIL : 0;
+    LOG_ERROR(Frontend, "launcher: {}: {}; the last {} lines it printed:", how, command, job.lines.size() - from);
+    for (std::size_t i = from; i < job.lines.size(); ++i) {
+        LOG_ERROR(Frontend, "launcher: | {}", job.lines[i]);
+    }
+    job.report = fmt::format("{}\n{}\n{}\n\n", AppVersion(), command, how);
+    for (const auto& line : job.lines) {
+        job.report += line;
+        job.report += '\n';
+    }
+}
+
+/// The launcher's own browser while it is open; what it chose goes to `then`.
+void DrawBrowsing(State& s) {
+    const Browse::Outcome outcome = s.browsing->browser->Draw(s.pad);
+    if (outcome == Browse::Outcome::Open) {
+        return;
+    }
+    State::Browsing b = std::move(*s.browsing);
+    s.browsing.reset();
+    switch (outcome) {
+    case Browse::Outcome::Chosen:
+        Chose(s, b.browser->Chosen(), b.then);
+        break;
+    case Browse::Outcome::System:
+        OpenSystemDialog(s, b.browser->Asked(), std::move(b.then));
+        break;
+    case Browse::Outcome::Open:
+    case Browse::Outcome::Cancelled:
+        break;
+    }
 }
 
 void PumpJob(State& s) {
@@ -184,7 +346,10 @@ void PumpProbe(State& s) {
     s.tools_dir = tools;
     s.python = python;
     LOG_INFO(Frontend, "launcher: tools {}, Python {}", tools.empty() ? "not found" : tools,
-             python.command.empty() ? "not found" : python.version);
+             python.command.empty() ? "not found" : python.version + " (" + CommandLine(python.command) + ")");
+    if (const std::string note = ChildEnvironmentNote(); !note.empty()) {
+        LOG_INFO(Frontend, "launcher: {}", note);
+    }
     if (s.ToolsReady()) {
         RefreshMods(s);
         if (s.config.check_updates) {
@@ -475,6 +640,14 @@ void DrawJob(State& s) {
         if (Ui::AccentButton("Close")) {
             close = true;
         }
+        if (!job.report.empty()) {
+            // for a bug report: the app's version, the command, how it ended and all it printed
+            ImGui::SameLine();
+            if (ImGui::Button(job.copied ? "Copied##copy_output" : "Copy the output##copy_output")) {
+                ImGui::SetClipboardText(job.report.c_str());
+                job.copied = true;
+            }
+        }
         if (ImGui::IsKeyPressed(ImGuiKey_Escape, false) || ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false)) {
             close = true;
         }
@@ -699,6 +872,8 @@ void Frame(State& s) {
     Footer(s);
     if (s.picking || ImGui::IsPopupOpen("##picking")) {
         DrawPicking(s);
+    } else if (s.browsing) {
+        DrawBrowsing(s);
     } else if (s.job.Active()) {
         DrawJob(s);
     } else if (s.dialog) {
@@ -713,7 +888,7 @@ void Frame(State& s) {
 /// finishes first.
 void RequestQuit(State& s) {
     if (s.picking) {
-        return;  // the system's picker first
+        ClosePick(s, false);  // the system's dialog goes with the launcher
     }
     if (s.job.Active() && !s.job.finished) {
         if (s.job.cancellable && !s.job.quit_asked) {
@@ -891,16 +1066,19 @@ void State::StartBuild() {
         Message("The build didn't start", error);
         return;
     }
-    LOG_INFO(Frontend, "launcher: building the code library from {}", update.content);
+    const std::string command = CommandLine(args);
+    LOG_INFO(Frontend, "launcher: building the code library: {}", command);
     job = Job{};
     job.kind = Job::Kind::Build;
     job.title = "Building the code library";
     job.cancellable = true;
     job.process = std::move(process);
-    job.on_done = [this](int exit_code, const std::string&) {
+    job.on_done = [this, command](int exit_code, const std::string&) {
         if (exit_code == 0) {
             job.summary = "The code library is built from your update and installed. The game runs "
                           "on it from now on.";
+        } else if (!job.process || !job.process->WasStopped()) {
+            ReportFailure(job, "build_game.py", command, exit_code);
         }
         LOG_INFO(Frontend, "launcher: build finished with status {}", exit_code);
         Recheck();
@@ -911,14 +1089,19 @@ void State::StartBuild() {
     };
 }
 
-void State::ChooseAndInstallUpdate() {
+void State::ChooseAndInstallUpdate(bool browse) {
     if (job.Active()) {
         return;
     }
-    PickPath(*this, false, "Your decrypted MH4U v1.3.0 update (.cia)", "CIA files", {"cia"},
+    Pick::Request request;
+    request.title = "Your decrypted MH4U v1.3.0 update (.cia)";
+    request.kind = "CIA files";
+    request.extensions = {"cia"};
+    PickPath(*this, std::move(request),
              [this](const std::string& path) {
-                 if (const auto problem = Checks::CheckUpdateCia(path); !problem.empty()) {
-                     Message("This isn't the update", problem);
+                 const auto checked = Checks::CheckUpdateCia(path);
+                 if (!checked.problem.empty()) {
+                     Message(checked.title, checked.problem);
                      return;
                  }
                  LOG_INFO(Frontend, "launcher: installing {}", path);
@@ -927,19 +1110,33 @@ void State::ChooseAndInstallUpdate() {
                  job.title = "Installing the v1.3.0 update";
                  job.install = std::make_unique<Checks::Install>();
                  job.install->Start(path);
-                 job.on_done = [this](int exit_code, const std::string&) {
+                 // (a note: the .cia's version label isn't v1.3.0's, its code is)
+                 job.on_done = [this, note = checked.note](int exit_code, const std::string&) {
                      if (exit_code == 0) {
                          job.summary = "The update is in Azahar's virtual SD card.";
+                         if (!note.empty()) {
+                             job.summary += " " + note;
+                         }
                      }
                      Recheck();
                      CheckCode();
                  };
-             });
+             },
+             browse);
 }
 
-void State::ChooseGame() {
-    PickPath(*this, false, "Your decrypted Monster Hunter 4 Ultimate (.3ds, .cci or .cxi)",
-             "Monster Hunter 4 Ultimate", {"3ds", "cci", "cxi", "app"}, [this](const std::string& path) {
+void State::ChooseGame(bool browse) {
+    Pick::Request request;
+    request.title = "Your decrypted Monster Hunter 4 Ultimate (.3ds, .cci or .cxi)";
+    request.kind = "Monster Hunter 4 Ultimate";
+    request.extensions = {"3ds", "cci", "cxi", "app"};
+    request.named = 3; // (.app, the game's content as a CIA keeps it, is taken but not named: a Mac's apps)
+    if (!config.game.empty()) {
+        // the game chosen before, shown first in its folder
+        OpenAt(config.game, request);
+    }
+    PickPath(*this, std::move(request),
+             [this](const std::string& path) {
                  const auto checked = Checks::CheckGame(path);
                  if (checked.state != Checks::Game::State::Ok) {
                      Message("This file won't do", Checks::Describe(checked));
@@ -949,12 +1146,19 @@ void State::ChooseGame() {
                  LOG_INFO(Frontend, "launcher: game {}", path);
                  Recheck();
                  CheckCode();
-             });
+             },
+             browse);
 }
 
 void State::Pick(bool folder, const std::string& title, const std::string& kind,
-                 const std::vector<std::string>& extensions, std::function<void(const std::string&)> then) {
-    PickPath(*this, folder, title, kind, extensions, std::move(then));
+                 const std::vector<std::string>& extensions, std::function<void(const std::string&)> then,
+                 bool browse) {
+    Pick::Request request;
+    request.folder = folder;
+    request.title = title;
+    request.kind = kind;
+    request.extensions = extensions;
+    PickPath(*this, std::move(request), std::move(then), browse);
 }
 
 void State::Play(int stage) {
@@ -1152,7 +1356,8 @@ Result Run(App::Config& config, bool show) {
         // the spinners and the Play button's glow need few, and the launcher shouldn't take the
         // processor from the build (or draw at all while minimised).
         const bool working = (s.job.Active() && !s.job.finished) || s.runner.Busy() || s.probing ||
-                             s.rooms_loading || s.lan_searching || s.play_waiting > 0 || s.picking.has_value();
+                             s.rooms_loading || s.lan_searching || s.play_waiting > 0 || s.picking.has_value() ||
+                             !s.pickers_closing.empty();
         const bool hidden = (SDL_GetWindowFlags(window) & (SDL_WINDOW_MINIMIZED | SDL_WINDOW_HIDDEN)) != 0;
         int wait_ms = 0;
         if (hidden) {

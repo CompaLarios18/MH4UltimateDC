@@ -522,8 +522,8 @@ void InstallFromCatalog(State& s, const CatalogEntry& e, bool force) {
             Dialog d;
             d.title = entry.name + " is installed";
             if (Has(entry.needs, "custom_textures") && !s.config.custom_textures) {
-                d.text = text + " Texture packs show only with custom textures on (Settings). Turn them on now?";
-                d.buttons = {{"Turn them on", [&s] { TurnOnTextures(s); }, true}, {"Not now", nullptr, false}};
+                d.text = text + " Texture packs show only with Texture packs on in Settings. Turn it on now?";
+                d.buttons = {{"Turn it on", [&s] { TurnOnTextures(s); }, true}, {"Not now", nullptr, false}};
             } else {
                 d.text = text;
                 if (Has(entry.needs, "cpu_emulation")) {
@@ -676,9 +676,9 @@ void CatalogDetails(State& s, const CatalogEntry& e, bool busy) {
                        SizeText(e.downloaded) + " so far: installing goes on from there");
     }
     if (textures_off) {
-        Ui::StatusLine(Ui::Status::Warn, "Custom textures are off", "Texture packs show only with them on.");
+        Ui::StatusLine(Ui::Status::Warn, "Texture packs are off", "Packs show only with that setting on (Settings).");
         ImGui::BeginDisabled(busy);
-        if (ImGui::Button("Turn on custom textures")) {
+        if (ImGui::Button("Turn on Texture packs")) {
             TurnOnTextures(s);
         }
         ImGui::EndDisabled();
@@ -726,29 +726,32 @@ void DrawCatalog(State& s, bool busy) {
     Ui::TextDim("Mods and texture packs picked for the port, installed with one click from their authors' own "
                 "downloads. Texture packs go in the game's texture folder; mods join your mods.");
     ImGui::BeginDisabled(busy);
+    const auto install = [&s](const std::string& path) {
+        StartModsJob(
+            s, {"install", "--textures", path}, "Installing a texture pack",
+            [&s](const Json&) {
+                RefreshCatalog(s, false);
+                if (!s.config.custom_textures) {
+                    Dialog d;
+                    d.title = "The texture pack is installed";
+                    d.text = "Texture packs show only with Texture packs on in Settings. Turn it on now?";
+                    d.buttons = {{"Turn it on", [&s] { TurnOnTextures(s); }, true}, {"Not now", nullptr, false}};
+                    s.Show(std::move(d));
+                }
+            },
+            [&s, path] {
+                StartModsJob(s, {"install", "--textures", "--force", path}, "Installing a texture pack",
+                             [&s](const Json&) { RefreshCatalog(s, false); }, nullptr, "");
+            },
+            "");
+    };
     FocusNext(s, !busy);
     if (ImGui::Button("Add a texture pack...")) {
-        s.Pick(false, "A texture pack's archive", "Archives", {"zip", "7z", "tar", "gz", "tgz"},
-               [&s](const std::string& path) {
-                   StartModsJob(
-                       s, {"install", "--textures", path}, "Installing a texture pack",
-                       [&s](const Json&) {
-                           RefreshCatalog(s, false);
-                           if (!s.config.custom_textures) {
-                               Dialog d;
-                               d.title = "The texture pack is installed";
-                               d.text = "Texture packs show only with custom textures on. Turn them on now?";
-                               d.buttons = {{"Turn them on", [&s] { TurnOnTextures(s); }, true},
-                                            {"Not now", nullptr, false}};
-                               s.Show(std::move(d));
-                           }
-                       },
-                       [&s, path] {
-                           StartModsJob(s, {"install", "--textures", "--force", path}, "Installing a texture pack",
-                                        [&s](const Json&) { RefreshCatalog(s, false); }, nullptr, "");
-                       },
-                       "");
-               });
+        s.Pick(false, "A texture pack's archive", "Archives", {"zip", "7z", "tar", "gz", "tgz"}, install);
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Browse in the launcher...##textures")) {
+        s.Pick(false, "A texture pack's archive", "Archives", {"zip", "7z", "tar", "gz", "tgz"}, install, true);
     }
     ImGui::SameLine();
     if (ImGui::Button("Open the texture folder")) {
@@ -1026,6 +1029,12 @@ void DrawMods(State& s) {
     ImGui::SameLine();
     if (ImGui::Button("Add an archive...")) {
         s.Pick(false, "A mod's archive", "Archives (.zip, .7z, .tar)", {"zip", "7z", "tar", "gz", "tgz"}, add);
+    }
+    ImGui::SameLine();
+    // either one, in the launcher's own browser
+    if (ImGui::Button("Browse in the launcher...##mods")) {
+        s.Pick(true, "A mod's folder or archive", "Archives (.zip, .7z, .tar)", {"zip", "7z", "tar", "gz", "tgz"},
+               add, true);
     }
     ImGui::SameLine();
     if (ImGui::Button("Refresh")) {

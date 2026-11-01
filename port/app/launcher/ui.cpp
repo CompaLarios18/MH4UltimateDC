@@ -552,6 +552,13 @@ bool InputText(const char* label, std::string* text, ImGuiInputTextFlags flags, 
     return ImGui::InputText(label, text->data(), text->capacity() + 1, flags, ResizeCallback, text);
 }
 
+bool SliderInt(const char* id, int* value, int min, int max, const char* format, bool pad) {
+    // (the slider's text field has the slider's own ID: imgui_widgets.cpp, SliderScalar; there the
+    // controller's A confirms a value typed with the keyboard)
+    const bool no_input = pad && !ImGui::TempInputIsActive(ImGui::GetID(id));
+    return ImGui::SliderInt(id, value, min, max, format, no_input ? ImGuiSliderFlags_NoInput : ImGuiSliderFlags_None);
+}
+
 void KeyHint(const char* key, const char* action) {
     PushFont(0.8f, true);
     const ImVec2 size = ImGui::CalcTextSize(key);

@@ -25,11 +25,17 @@ The downloads are on the [releases page](https://github.com/CompaLarios18/MH4Ult
 **Does it work with the European or Japanese version?**
 Not yet. Only the USA version with the v1.3.0 update (title `0004000000126300`) is supported.
 
+**The setup says my update is v0.0.1 (or v1.0.0), not v1.3.0**
+Some tools that decrypt or rebuild a `.cia` reset the version label in it and leave the update itself as it was. Releases after 0.1.5 go by the update's code, as the code library's build always did: such a v1.3.0 `.cia` is used as v1.3.0, and the setup says what it found. If the setup still turns it away and says that its code isn't v1.3.0's either, the `.cia` holds another update, or a changed one. With release 0.1.5 or older, build the `.cia` with GodMode9 from the update installed on your 3DS, and install that one.
+
 **Why does the first start take a while?**
 The setup recompiles the game's code from your update and then compiles it for your PC: a couple of minutes to recompile, several more to compile. It happens once, and again only after you add, change or remove a code mod.
 
 **Windows says "Bad Image ... 0xc0e90002"**
 That's Smart App Control blocking unsigned files (Azahar's DLLs, the compiler, the game's code library). Turn it off in *Windows Security → App & browser control → Smart App Control settings*. Since the April 2026 update, it can be turned back on later without reinstalling Windows.
+
+**"The game stopped" right after Play**
+The game itself gave up as it started, which can mean it couldn't read its own files: a mod, a damaged dump, or a game file that isn't decrypted properly. If mods are on, turn them off in the launcher's *Mods* and try again. Otherwise dump the game again with GodMode9 on your 3DS and choose the new `.3ds`, `.cci` or `.cxi` in the launcher's *Setup*, and install the v1.3.0 update again from a `.cia` that GodMode9 made (with `launcher = off` in `mh4u-app.ini`, start the app with `--launcher` to reach them). If it still stops, open an issue with the log (see *How do I report a bug?* below). Details: [Troubleshooting](docs/PLAYING.md#troubleshooting).
 
 **Can I keep my 3DS progress?**
 Yes. Back up the save on your console with Checkpoint, then copy its files into the game's save data folder while the game isn't running. Steps: [Your 3DS save](docs/PLAYING.md#your-3ds-save).
@@ -37,16 +43,25 @@ Yes. Back up the save on your console with Checkpoint, then copy its files into 
 ## Playing
 
 **My PC shows 75 % speed**
-That's measured emulation speed, not a setting: your PC isn't keeping up with the frame rate you asked for. Lower the `fps` target or the CPU clock in *Esc → Game* until it reads 100 %.
+That's measured emulation speed, not a setting: your PC isn't keeping up with the frame rate you asked for. Lower the `fps` target or the CPU clock in *Esc → Display* until it reads 100 %.
 
 **Do save states work?**
 No. The game's code runs natively, and its call stacks live on your PC's own stacks, which a save state can't capture. Save in the game. Cheats that change data work; cheats that rewrite code don't.
 
 **Pause and fast forward?**
-In the port's app, playing alone: **P** pauses, **Tab** runs the game at 2x (the speed and the keys are in the menu, Esc). In a room they're off, since the others' games run on with yours.
+In the port's app, playing alone: **P** pauses, **Tab** runs the game at 2x (the speed and the keys: *Esc → Gameplay*, *Speed*). In a room they're off, since the others' games run on with yours.
+
+**Where is a setting in the menu?**
+Type a word in the search at the top of the menu (Ctrl+F, Cmd+F on a Mac, or Y on a controller): fps, map, kick, bloom, volume... *Display* has the frame rate and widescreen, *Graphics* the picture and its effects, *Touch screen* the screens, the touch screen's corner and the quest map, *Controls* the mouse and the controller, *Keys* every key, *Gameplay* the kick and target camera buttons, the end of quests, fast forward and touch taps, *Online* the rooms.
+
+**In a quest the whole touch screen stays in the corner, and the map settings do nothing**
+The map view shows the map panel of your touch screen's panel layout. Without one (*Customize Panels* in the quest menu), the corner keeps the whole touch screen, so the map's size and place, *Edit HUD layout* and F12 change nothing: put the map panel back. The menu says why under the map's settings (*Esc → Touch screen*, *In quests*) and in *Edit HUD layout*, as it does when the touch screen isn't over the game in a corner or *Only the map in quests* is off; the log says so once a quest, and F12 says why when it has nothing to switch. With the map panel there, F12 or the right stick's click may have switched quests to the whole touch screen (the menu says that too): press it again. Details: *The bottom screen* in [Options](docs/PLAYING.md#3-options).
+
+**Keys for the touch screen (an item shortcut, the target camera)?**
+In the port's app: touch taps. *Esc → Gameplay → Touch taps* gives a key a point on the touch screen, touched while the key is held (up to 8). In `mh4u-app.ini`, `touch_tap_1 = Z @ 52 220` is Z at that point (x from its left edge, y from its top, in its 320x240 pixels). Details: [Or play with the port's app](docs/PLAYING.md#2b-or-play-with-the-ports-app).
 
 **Steam Deck?**
-There's a Linux build, not tried on a Deck yet. If you try it, open an issue and tell us how it went.
+There's a Linux build (`mh4u.AppImage`), not tried much on a Deck yet. In Game Mode a desktop's file dialog may not show, or fails (a "Service crash"), so the launcher chooses files in its own browser there: the D-pad, A and B, with your SD card under *Drives*. Elsewhere *Browse in the launcher* opens it. If you try the port on a Deck, open an issue and tell us how it went.
 
 **Mac?**
 There's a build for Apple silicon (Vulkan through MoltenVK), not tried on a Mac yet. Reports are welcome in an issue.
@@ -71,3 +86,6 @@ The pack comes straight from its author's Dropbox, which pauses shared links for
 
 **How do I report a bug?**
 Open an issue, say what you did and what happened, and attach `mh4u_log.txt` from Azahar's log folder: `%APPDATA%\Azahar\log` on Windows, the `log` folder inside Azahar's user folder elsewhere. Close the game first: the log is written in a buffer, and it's overwritten the next time the game starts.
+
+**The launcher can't build the code library**
+The line under the build's progress bar says how it ended, and *Copy the output* copies all the build printed, with the app's version: paste it in an issue (the log has its last lines too). Read it first: when a file didn't compile, the compiler quotes the lines of recompiled code it stopped at, and that code is made from the game's, so leave those lines out (of the log too). Meanwhile the package's `build-code-library.sh` runs the same build from a terminal on Linux (`Build code library.command` on a Mac, `Build code library.bat` on Windows).

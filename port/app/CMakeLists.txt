@@ -36,9 +36,15 @@ add_executable(mh4u
     # pause and fast forward, playing alone
     speed.cpp
     speed.h
+    # what the player is told when the game doesn't start or stops with an error
+    stop_message.cpp
+    stop_message.h
     # the keyboard-and-mouse mode's arithmetic (the mouse as the camera, the item bar's scroll)
     kbm.cpp
     kbm.h
+    # touch taps: keys that touch the touch screen at a point, and their one-key-one-input rule
+    taps.cpp
+    taps.h
     window.cpp
     window.h
     # the in-game menu (Dear ImGui over the game) and the 3DS software keyboard
@@ -53,10 +59,23 @@ add_executable(mh4u
     ui/layer.h
     ui/menu.cpp
     ui/menu.h
+    ui/menu_editor.cpp
+    ui/menu_keys.cpp
+    ui/menu_pages.cpp
+    ui/menu_parts.h
+    ui/menu_rules.cpp
+    ui/menu_rules.h
+    ui/menu_search.cpp
     ui/multiplayer_tab.cpp
     ui/multiplayer_tab.h
+    ui/nav.cpp
+    ui/nav.h
     ui/options.cpp
     ui/options.h
+    ui/settings_index.cpp
+    ui/settings_index.h
+    ui/touch_taps.cpp
+    ui/touch_taps.h
     ui/ui.cpp
     ui/ui.h
 )
@@ -78,12 +97,22 @@ endif()
 # an SDL_Renderer and Dear ImGui (its SDL_Renderer backend), so it needs none of Azahar's
 # renderers. It lists a lobby's rooms with httplib and reads the tools' JSON with nlohmann's.
 target_sources(mh4u PRIVATE
+    # the launcher's own file browser, beside the system's file dialogs (pick)
+    launcher/browse.cpp
+    launcher/browse.h
     launcher/checks.cpp
     launcher/checks.h
+    # the environment of the programs it starts, without the AppImage's additions (Linux)
+    launcher/environment.cpp
+    launcher/environment.h
+    launcher/game_file.cpp
+    launcher/game_file.h
     launcher/launcher.cpp
     launcher/launcher.h
     launcher/lobby.cpp
     launcher/lobby.h
+    launcher/paths.cpp
+    launcher/paths.h
     launcher/pick.cpp
     launcher/pick.h
     launcher/process.cpp
@@ -98,6 +127,9 @@ target_sources(mh4u PRIVATE
     launcher/tools.h
     launcher/ui.cpp
     launcher/ui.h
+    # the update by its code when its version label isn't v1.3.0's (no Azahar: tested on its own)
+    launcher/update_code.cpp
+    launcher/update_code.h
     launcher/updater.cpp
     ${MH4U_IMGUI_DIR}/backends/imgui_impl_sdlrenderer2.cpp
 )

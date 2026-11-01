@@ -1,7 +1,9 @@
 #include "launcher/checks.h"
 
+#include <memory>
 #include <fmt/format.h>
 
+#include "common/file_derived.h"
 #include "common/file_util.h"
 #include "common/logging/log.h"
 #include "core/file_sys/ncch_container.h"
@@ -9,8 +11,80 @@
 #include "core/hle/service/am/am.h"
 #include "core/hle/service/fs/archive.h"
 #include "core/loader/loader.h"
+#include "launcher/game_file.h"
 
 namespace Launcher::Checks {
+
+namespace {
+
+/// The rest of MH4U's file, once its NCCH header is read: whether its RomFS starts as a decrypted
+/// one does (launcher/game_file.h), read the way Azahar reads the file (a compressed .zcci too).
+/// It says nothing (Ok) when it can't read the file, nor when GAME.romfs is next to it (Azahar
+/// plays that RomFS instead).
+Game::State CheckRomFs(const std::string& path) {
+    if (FileUtil::Exists(path + ".romfs")) {
+        return Game::State::Ok;
+    }
+    const auto file = FileSys::NCCHContainer::AutoOpenNCCHNCSD(path);
+    if (!file || !file->IsOpen()) {
+        return Game::State::Ok;
+    }
+    const auto read_at = [&file](u64 offset, void* out, std::size_t size) {
+        return file->ReadAtBytes(static_cast<u8*>(out), size, static_cast<std::size_t>(offset)) == size;
+    };
+    switch (GameFile::Check(read_at, file->GetSize())) {
+    case GameFile::Verdict::BadRomFs:
+        LOG_WARNING(Frontend, "launcher: {}: its RomFS has neither an IVFC header nor, 0x1000 bytes in, "
+                              "its file system's", path);
+        return Game::State::BadRomFs;
+    case GameFile::Verdict::Truncated:
+        LOG_WARNING(Frontend, "launcher: {}: the file ends before its RomFS does", path);
+        return Game::State::Truncated;
+    case GameFile::Verdict::Encrypted:
+        return Game::State::Encrypted;
+    case GameFile::Verdict::Ok:
+    case GameFile::Verdict::Unknown:
+        break;
+    }
+    return Game::State::Ok;
+}
+
+/// UpdateCode's reads, from one of Azahar's files.
+UpdateCode::Read Reader(FileUtil::IOFileBase& file) {
+    return [&file](u64 offset, void* out, std::size_t size) {
+        return file.ReadAtBytes(static_cast<u8*>(out), size, static_cast<std::size_t>(offset)) == size;
+    };
+}
+
+UpdateCode::Code Unreadable() {
+    UpdateCode::Code code;
+    code.error = "it can't be opened";
+    return code;
+}
+
+/// The code in a .cia, the file read as Azahar's installer reads it (also compressed).
+UpdateCode::Code CiaCode(const std::string& path, bool compressed) {
+    std::unique_ptr<FileUtil::IOFileBase> file = std::make_unique<FileUtil::IOFile>(path, "rb");
+    if (compressed) {
+        file = std::make_unique<FileUtil::Z3DSReadIOFile>(std::move(file));
+    }
+    if (!file->IsOpen()) {
+        return Unreadable();
+    }
+    return UpdateCode::ReadCiaCode(Reader(*file));
+}
+
+/// The installed update's own code: its program as Azahar's loader opens it, but not a code.bin
+/// from Azahar's mods folder (which NCCHContainer::LoadSectionExeFS would read instead).
+UpdateCode::Code InstalledCode(const std::string& path) {
+    const auto file = FileSys::NCCHContainer::AutoOpenNCCHNCSD(path);
+    if (!file || !file->IsOpen()) {
+        return Unreadable();
+    }
+    return UpdateCode::ReadCode(Reader(*file), 0);
+}
+
+} // namespace
 
 Game CheckGame(const std::string& path) {
     Game game;
@@ -26,7 +100,7 @@ Game CheckGame(const std::string& path) {
     switch (status) {
     case Loader::ResultStatus::Success:
         game.program_id = ncch.ncch_header.program_id;
-        game.state = game.program_id == MH4U_USA ? Game::State::Ok : Game::State::OtherGame;
+        game.state = game.program_id == MH4U_USA ? CheckRomFs(path) : Game::State::OtherGame;
         break;
     case Loader::ResultStatus::ErrorEncrypted:
         // the header itself is readable: it says which game it is
@@ -51,14 +125,24 @@ std::string Describe(const Game& game) {
         return "This file isn't a 3DS game the app can read: choose your decrypted .3ds, .cci or "
                ".cxi.";
     case State::Encrypted:
-        return fmt::format("This {} is encrypted. The port needs a decrypted dump of your own copy "
-                           "(GodMode9 on your 3DS can make one).",
+        return fmt::format("This {} is encrypted, and the port can't play an encrypted game (Azahar opens "
+                           "decrypted ones only): decrypt it with GodMode9 on your 3DS, or dump your own copy "
+                           "again there as a decrypted .3ds, .cci or .cxi.",
                            game.program_id == MH4U_USA ? "copy of Monster Hunter 4 Ultimate"
                                                        : "game file");
     case State::OtherGame:
         return fmt::format("This is another 3DS game (program id {:016X}), not Monster Hunter 4 "
                            "Ultimate for the USA ({:016X}), the version the port is made for.",
                            game.program_id, MH4U_USA);
+    case State::BadRomFs:
+        return "This copy of Monster Hunter 4 Ultimate isn't decrypted properly, or it's damaged: its "
+               "headers say it's decrypted, but its RomFS (the game's own files) doesn't start the way a "
+               "decrypted one does, and the game would most likely stop as it starts. Dump the game again "
+               "with GodMode9 on your 3DS and choose the new .3ds, .cci or .cxi.";
+    case State::Truncated:
+        return "This copy of Monster Hunter 4 Ultimate is incomplete: the file ends before its RomFS (the "
+               "game's own files) does, as a copy that stopped part-way would. Copy it again, or dump the "
+               "game again with GodMode9 on your 3DS.";
     case State::Ok:
         return "Monster Hunter 4 Ultimate (USA), decrypted.";
     }
@@ -79,43 +163,61 @@ Update CheckUpdate() {
         update.content.clear();
         return update;
     }
-    update.state = update.version == UPDATE_VERSION ? Update::State::Ok : Update::State::OtherVersion;
+    // a label other than v1.3.0's (Azahar's installer keeps the .cia's, and some decryption tools
+    // reset it on a v1.3.0 update): the installed code says which update it is (read only then)
+    const auto check =
+        UpdateCode::CheckInstalled(update.version, [&update] { return InstalledCode(update.content); });
+    update.state = check.ok ? Update::State::Ok : Update::State::OtherVersion;
+    update.note = check.note;
+    if (!update.note.empty()) {
+        LOG_INFO(Frontend, "launcher: the update: {}", update.note);
+    }
     return update;
 }
 
 std::string VersionText(u16 version) {
-    // the 3DS's title versions: major in bits 10-15, minor in 4-9, micro in 0-3
-    return fmt::format("{}.{}.{}", version >> 10, (version >> 4) & 0x3F, version & 0xF);
+    return UpdateCode::VersionText(version);
 }
 
-std::string CheckUpdateCia(const std::string& path) {
+UpdateCia CheckUpdateCia(const std::string& path) {
+    const auto refused = [](std::string problem) {
+        UpdateCia result;
+        result.title = "This isn't the update";
+        result.problem = std::move(problem);
+        return result;
+    };
     bool compressed = false;
     switch (Service::AM::CheckCIAToInstall(path, compressed, true)) {
     case Service::AM::InstallStatus::Success:
         break;
     case Service::AM::InstallStatus::ErrorEncrypted:
-        return "This .cia is encrypted. The port needs a decrypted one (GodMode9 can build one from "
-               "the update installed on your 3DS).";
+        return refused("This .cia is encrypted. The port needs a decrypted one (GodMode9 can build one "
+                       "from the update installed on your 3DS).");
     case Service::AM::InstallStatus::ErrorFileNotFound:
     case Service::AM::InstallStatus::ErrorFailedToOpenFile:
-        return "The file can't be read.";
+        return refused("The file can't be read.");
     default:
-        return "This file isn't a CIA the app can read.";
+        return refused("This file isn't a CIA the app can read.");
     }
+    UpdateCia result;
     if (const auto infos = Service::AM::GetCIAInfos(path)) {
         const auto& info = infos->first;
         if (info.tid != MH4U_UPDATE) {
-            return fmt::format("This .cia is title {:016X}, not Monster Hunter 4 Ultimate's update "
-                               "({:016X}).",
-                               info.tid, MH4U_UPDATE);
+            return refused(fmt::format("This .cia is title {:016X}, not Monster Hunter 4 Ultimate's "
+                                       "update ({:016X}).",
+                                       info.tid, MH4U_UPDATE));
         }
-        if (info.version != UPDATE_VERSION) {
-            return fmt::format("This is Monster Hunter 4 Ultimate's update v{}; the port is made for "
-                               "v{}.",
-                               VersionText(info.version), VersionText(UPDATE_VERSION));
+        // a label other than v1.3.0's: some decryption tools reset it on a v1.3.0 update, so the
+        // code says which update it is (read only then)
+        const auto check = UpdateCode::CheckCia(info.version, [&] { return CiaCode(path, compressed); });
+        result.title = check.title;
+        result.problem = check.problem;
+        result.note = check.note;
+        if (check.verdict != UpdateCode::Verdict::Target) {
+            LOG_INFO(Frontend, "launcher: {}: {}", path, check.problem.empty() ? check.note : check.problem);
         }
     }
-    return "";
+    return result;
 }
 
 std::string LibraryPath() {

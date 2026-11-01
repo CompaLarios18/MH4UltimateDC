@@ -11,8 +11,10 @@
 // Settings: mh4u-app.ini (the app) and mh4u.ini (the game's options) in Azahar's user folder.
 // Before the game, the launcher (launcher/) shows the home screen, setup, mods, room, settings.
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <csignal>
 #include <cstdio>
 #include <cstring>
 #include <memory>
@@ -51,6 +53,7 @@
 #include "multiplayer.h"
 #include "network/network.h"
 #include "speed.h"
+#include "stop_message.h"
 #include "ui/ui.h"
 #include "video_core/gpu.h"
 #include "video_core/rasterizer_interface.h"
@@ -83,7 +86,7 @@ constexpr const char* USAGE =
     "with --join-after that many seconds after it started (as the menu's Join does).\n"
     "--new-console-id: give this console a new ID first (a room lets in one player per console\n"
     "ID, and copies of one Azahar user folder have the same one).\n"
-    "Rooms can also be joined, hosted and left in the game: Esc > Multiplayer.\n";
+    "Rooms can also be joined, hosted and left in the game: Esc > Online.\n";
 
 struct Args {
     std::string game, renderer, join, nickname, password, user, log;
@@ -148,10 +151,12 @@ Args Parse(const std::vector<std::string>& argv) {
 }
 
 App::Window::Api ApiFor(const std::string& name) {
-    if (name == "opengl") {
+    // in any case, as the menu reads it (renderer = OpenGL written by hand, --renderer OpenGL)
+    const std::string lower = Common::ToLower(name);
+    if (lower == "opengl") {
         return App::Window::Api::OpenGL;
     }
-    if (name == "software") {
+    if (lower == "software") {
         return App::Window::Api::Software;
     }
     return App::Window::Api::Vulkan;
@@ -249,6 +254,19 @@ void ApplySpeed(const App::Config& config) {
     }
 }
 
+/// mh4u_log.txt in Azahar's log folder, as the player would type it.
+std::string LogPath() {
+    std::string path = FileUtil::GetUserPath(FileUtil::UserPath::LogDir) + "mh4u_log.txt";
+#ifdef _WIN32
+    std::replace(path.begin(), path.end(), '/', '\\');
+#endif
+    return path;
+}
+
+// the game's own fatal error reaches Azahar's err:f, which logs its numbers and stops the game with
+// ErrorUnknown and no details (stop_message.h)
+static_assert(static_cast<u32>(Core::System::ResultStatus::ErrorUnknown) == App::StopMessage::FATAL_ERROR);
+
 std::string LoadError(Core::System::ResultStatus status, Core::System& system) {
     using Status = Core::System::ResultStatus;
     switch (status) {
@@ -262,12 +280,23 @@ std::string LoadError(Core::System::ResultStatus status, Core::System& system) {
                "(GodMode9 can make one; docs/SETUP.md in the port's repository).";
     case Status::ErrorSystemFiles:
         return "Some 3DS system files are missing (Azahar's System settings can set them up).";
+    case Status::ErrorLoader_ErrorPatches:
+    case Status::ErrorLoader_ErrorPatchesInvalidTitle:
+        return App::StopMessage::CodeModDoesntFit(LogPath());
     default:
-        return fmt::format("The game didn't start: {}", system.GetStatusDetails());
+        // (System::Load sets no details itself)
+        return App::StopMessage::DidntStart(static_cast<u32>(status), system.GetStatusDetails(), LogPath());
     }
 }
 
 int Run(const std::vector<std::string>& argv) {
+#ifndef _WIN32
+    // The launcher reads how the programs it starts end (a build's status). SIGCHLD ignored, as
+    // whatever started the app may leave it, would have the system reap them first (every status
+    // reads 0), and the children would inherit it: Python couldn't wait for its compilers, nor
+    // clang for its linker.
+    const bool sigchld_was_ignored = std::signal(SIGCHLD, SIG_DFL) == SIG_IGN;
+#endif
     Common::DetachedTasks detached_tasks;
     const Args args = Parse(argv);
     if (args.help || args.bad) {
@@ -294,6 +323,11 @@ int Run(const std::vector<std::string>& argv) {
 
     LOG_INFO(Frontend, "MH4U PC port app, Azahar {} | {}-{}", Common::g_build_fullname,
              Common::g_scm_branch, Common::g_scm_desc);
+#ifndef _WIN32
+    if (sigchld_was_ignored) {
+        LOG_INFO(Frontend, "SIGCHLD was ignored when the app started: back to its default");
+    }
+#endif
 
     App::Config config = App::Load();
     if (args.fullscreen >= 0) {
@@ -401,7 +435,7 @@ int Run(const std::vector<std::string>& argv) {
         config.join.clear();
     }
     if (std::string error; !App::Multiplayer::StartAtBoot(error)) {
-        App::Dialog::Message(TITLE, error + " The game starts without the room (Esc > Multiplayer joins "
+        App::Dialog::Message(TITLE, error + " The game starts without the room (Esc > Online joins "
                              "one while it runs).", true);
     }
 
@@ -463,6 +497,7 @@ int Run(const std::vector<std::string>& argv) {
 
     auto& speed = App::Speed::Get();
     auto last_paused_frame = std::chrono::steady_clock::now();
+    const auto started = last_paused_frame;
     while (window->IsOpen() && (!secondary || secondary->IsOpen())) {
         // pause and fast forward are for playing alone (a room's others would wait or drop this PC)
         speed.SetInRoom(App::Multiplayer::InRoom(), SDL_GetTicks());
@@ -490,8 +525,12 @@ int Run(const std::vector<std::string>& argv) {
             break;
         }
         if (result != Core::System::ResultStatus::Success) {
-            LOG_ERROR(Frontend, "emulation stopped: {}", system.GetStatusDetails());
-            App::Dialog::Message(TITLE, "The game stopped: " + system.GetStatusDetails(), true);
+            const std::string details = system.GetStatusDetails();
+            LOG_ERROR(Frontend, "emulation stopped (status {}): {}", static_cast<u32>(result), details);
+            const double seconds =
+                std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+            App::Dialog::Message(
+                TITLE, App::StopMessage::Stopped(static_cast<u32>(result), details, seconds, LogPath()), true);
             break;
         }
         App::Multiplayer::Tick();

@@ -161,6 +161,12 @@ Kbm::ItemScroll item_scroll(MACRO_KEY + NativeButton::L, MACRO_KEY + NativeButto
                             MACRO_KEY + NativeButton::A);
 Kbm::Pulses pulses;
 
+// ── The stylus's last touch, for the menu's touch taps (the emulation thread's) ──
+
+/// The window's touches (the mouse, a finger) as the console's touch screen reads them.
+std::unique_ptr<::Input::TouchDevice> stylus;
+int last_touch_x = -1, last_touch_y = -1;
+
 void Apply(const Kbm::KeyEvents& events) {
     for (const auto& [code, pressed] : events) {
         if (pressed) {
@@ -238,13 +244,14 @@ bool SameName(const std::string& a, const char* b) {
 }
 
 std::string StickKeysParam(const std::string& spec) {
-    const auto parts = Common::SplitString(spec, ',');
+    // (a direction left empty keeps its place, the last one too: "W,S,A," when a tap has D)
+    const auto parts = Taps::StickParts(spec);
     if (parts.size() < 4) {
         return "";
     }
     int codes[5] = {};
     for (std::size_t i = 0; i < 5 && i < parts.size(); ++i) {
-        codes[i] = KeyCode(Common::StripSpaces(parts[i]));
+        codes[i] = KeyCode(parts[i]);
     }
     if (!codes[0] && !codes[1] && !codes[2] && !codes[3]) {
         return "";
@@ -380,6 +387,22 @@ void BuildProfile(const Config& config) {
     // the mouse is the stylus (the window sends it as touches); no motion sensor
     profile.touch_device = "engine:emu_window";
     profile.motion_device = "engine:motion_emu,update_period:100,sensitivity:0.01,tilt_clamp:90.0";
+    // the touch taps (taps.h): Azahar's touch-from-button map, which the touch screen reads while
+    // the stylus isn't touching it; their keys go through mh4u_any too, so the menu mutes them
+    std::vector<std::string> taps;
+    for (const Taps::Tap& tap : config.touch_taps) {
+        const std::string keys = Join(KeyParams(tap.keys));
+        if (keys.empty()) {
+            continue;
+        }
+        Common::ParamPackage param{keys};
+        param.Set("x", std::clamp(tap.x, 0, Taps::WIDTH - 1));
+        param.Set("y", std::clamp(tap.y, 0, Taps::HEIGHT - 1));
+        taps.push_back(param.Serialize());
+    }
+    profile.use_touch_from_button = !taps.empty();
+    profile.touch_from_button_map_index = 0;
+    Settings::values.touch_from_button_maps = {Settings::TouchFromButtonMap{"mh4u-app.ini", std::move(taps)}};
 }
 
 std::string ControllerDescription() {
@@ -463,6 +486,23 @@ void Tick(const Config& config) {
     mouse_stick_y.store(y, std::memory_order_relaxed);
     Apply(pulses.Tick());
     Apply(item_scroll.Tick());
+    // where the stylus touches, in the touch screen's pixels as the console counts them
+    if (!stylus) {
+        stylus = ::Input::CreateDevice<::Input::TouchDevice>("engine:emu_window");
+    }
+    if (const auto [touch_x, touch_y, pressed] = stylus->GetStatus(); pressed) {
+        last_touch_x = std::clamp(static_cast<int>(touch_x * Taps::WIDTH), 0, Taps::WIDTH - 1);
+        last_touch_y = std::clamp(static_cast<int>(touch_y * Taps::HEIGHT), 0, Taps::HEIGHT - 1);
+    }
+}
+
+bool LastTouch(int& x, int& y) {
+    if (last_touch_x < 0) {
+        return false;
+    }
+    x = last_touch_x;
+    y = last_touch_y;
+    return true;
 }
 
 } // namespace App::Input

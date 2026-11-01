@@ -1,6 +1,6 @@
 // The app's network room (Azahar's multiplayer, which carries MH4U's local play): join, host and
 // leave, before the game starts (main.cpp, from mh4u-app.ini or --join/--host) or while it runs
-// (the in-game menu's Multiplayer tab, ui/multiplayer_tab.cpp). Rooms can change while the game
+// (the in-game menu's Online tab, ui/multiplayer_tab.cpp). Rooms can change while the game
 // runs because Azahar's local-wireless service (nwm::UDS) asks the room member for its state on
 // every packet; what it took at the start is the console's MAC address, so the app joins with
 // that address as its preferred one (and gives the console the room's when the room assigns
