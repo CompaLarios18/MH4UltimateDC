@@ -2,8 +2,9 @@
 # (docs/native/gpu-fragment-design.md 4.1, 4.3, 4.5, 4.7, 5.1, 5.5, 5.6, 5.10): the pipeline key and the provider interface
 # (`pipeline_key.h`, a header-only INTERFACE target of its own), the default provider (a synchronous build on a miss, the
 # forced-ubershader switch), the one pipeline layout, the vertex-input key from N2-05's description, and the
-# `DrawComposer` with its slots (pass kind, fix-up stage, destination copy, bindings). N2-08 adds the generator, the
-# ubershader, `--gpu native` and the stubs on top.
+# `DrawComposer` with its slots (pass kind, fix-up stage, destination copy, bindings). N2-08 adds the pipeline builder
+# (the generator's SPIR-V into pipelines) and `--gpu native` (native_gpu.cpp: the renderer assembled) on top; the generator,
+# the ubershader and the stubs are in fragment/.
 
 # pipeline_key.h depends only on the fragment key's header and rhi.h; N2-16's pipeline/ links this target.
 add_library(mh4n_gpu_pipeline_key INTERFACE)
@@ -14,11 +15,22 @@ mh4n_module(
     SOURCES
         compose.cpp
         default_provider.cpp
+        native_gpu.cpp
+        pipeline_builder.cpp
         vertex_input.cpp
     DEPENDS
-        mh4n_gpu_fragment
-        mh4n_gpu_vertex
+        mh4n_gpu_backend_readback
+        mh4n_gpu_backend_state
+        mh4n_gpu_backend_sync
         mh4n_gpu_backend_targets
+        mh4n_gpu_cpuvertex
+        mh4n_gpu_fbops
+        mh4n_gpu_fragment
+        mh4n_gpu_gx
+        mh4n_gpu_pica
+        mh4n_gpu_shader
+        mh4n_gpu_texture
+        mh4n_gpu_vertex
 )
 # The headers are included as "gpu/native/<name>.h".
 target_include_directories(mh4n_gpu_native PUBLIC "${MH4N_SRC_DIR}")
