@@ -16,26 +16,26 @@ From your own cartridge or eShop purchase, dumped with GodMode9 on your 3DS. Whe
 ## Setting up
 
 **What do I need?**
-- The game (USA), dumped as a decrypted `.3ds`, `.cci` or `.cxi`, and its v1.3.0 update as a `.cia`. GodMode9 can make both.
+- The game (USA, or Europe from the release after 0.1.6), dumped as a decrypted `.3ds`, `.cci` or `.cxi`, and its update as a `.cia`: v1.3.0 for the USA, v1.1.0 for Europe. GodMode9 can make both.
 - A PC with Windows 10/11 x64 or Linux x64, or a Mac with Apple silicon (not tried yet). To play on Android you still need a PC once, to build the game's code (see *Android?* below).
 - Python 3.10 or newer, which the setup uses to build the game's code.
 
 The downloads are on the [releases page](https://github.com/CompaLarios18/MH4UltimateDC/releases). Details: [What you need](docs/PLAYING.md#what-you-need).
 
 **Does it work with the European or Japanese version?**
-Not yet. Only the USA version with the v1.3.0 update (title `0004000000126300`) is supported.
+The European one does from the release after 0.1.6 (0.1.6 and older refuse it), with its v1.1.0 update (title `0004000000126100`). Only the contributor who added it has tried it, on Linux, from the title screen to town; not yet on Windows, macOS or Android, in a quest above 60 fps or in a room. Code mods made for the USA update don't work with it. The Japanese version doesn't work yet. Details: [What you need](docs/PLAYING.md#what-you-need).
 
 **The setup says my update is v0.0.1 (or v1.0.0), not v1.3.0**
-Some tools that decrypt or rebuild a `.cia` reset the version label in it and leave the update itself as it was. Releases after 0.1.5 go by the update's code, as the code library's build always did: such a v1.3.0 `.cia` is used as v1.3.0, and the setup says what it found. If the setup still turns it away and says that its code isn't v1.3.0's either, the `.cia` holds another update, or a changed one. With release 0.1.5 or older, build the `.cia` with GodMode9 from the update installed on your 3DS, and install that one.
+Some tools that decrypt or rebuild a `.cia` reset the version label in it and leave the update itself as it was. Releases after 0.1.5 go by the update's code, as the code library's build always did: such a v1.3.0 `.cia` is used as v1.3.0 (and Europe's v1.1.0 one as v1.1.0), and the setup says what it found. If the setup still turns it away and says that its code isn't v1.3.0's either, the `.cia` holds another update, or a changed one. With release 0.1.5 or older, build the `.cia` with GodMode9 from the update installed on your 3DS, and install that one.
 
 **Why does the first start take a while?**
-The setup recompiles the game's code from your update and then compiles it for your PC: a couple of minutes to recompile, several more to compile. It happens once, and again only after you add, change or remove a code mod.
+The setup recompiles the game's code from your update and then compiles it for your PC: a couple of minutes to recompile, several more to compile. It happens once, and again only after you add, change or remove a code mod, or after an update of the port that needs it (the release after 0.1.6 does: the launcher says so).
 
 **Windows says "Bad Image ... 0xc0e90002"**
 That's Smart App Control blocking unsigned files (Azahar's DLLs, the compiler, the game's code library). Turn it off in *Windows Security → App & browser control → Smart App Control settings*. Since the April 2026 update, it can be turned back on later without reinstalling Windows.
 
 **"The game stopped" right after Play**
-The game itself gave up as it started, which can mean it couldn't read its own files: a mod, a damaged dump, or a game file that isn't decrypted properly. If mods are on, turn them off in the launcher's *Mods* and try again. Otherwise dump the game again with GodMode9 on your 3DS and choose the new `.3ds`, `.cci` or `.cxi` in the launcher's *Setup*, and install the v1.3.0 update again from a `.cia` that GodMode9 made (with `launcher = off` in `mh4u-app.ini`, start the app with `--launcher` to reach them). If it still stops, open an issue with the log (see *How do I report a bug?* below). Details: [Troubleshooting](docs/PLAYING.md#troubleshooting).
+The game itself gave up as it started, which can mean it couldn't read its own files: a mod, a damaged dump, or a game file that isn't decrypted properly. If mods are on, turn them off in the launcher's *Mods* and try again. Otherwise dump the game again with GodMode9 on your 3DS and choose the new `.3ds`, `.cci` or `.cxi` in the launcher's *Setup*, and install the update (v1.3.0; Europe: v1.1.0) again from a `.cia` that GodMode9 made (with `launcher = off` in `mh4u-app.ini`, start the app with `--launcher` to reach them). If it still stops, open an issue with the log (see *How do I report a bug?* below). Details: [Troubleshooting](docs/PLAYING.md#troubleshooting).
 
 **Can I keep my 3DS progress?**
 Yes. Back up the save on your console with Checkpoint, then copy its files into the game's save data folder while the game isn't running. Steps: [Your 3DS save](docs/PLAYING.md#your-3ds-save).
@@ -67,12 +67,12 @@ There's a Linux build (`mh4u.AppImage`), not tried much on a Deck yet. In Game M
 There's a build for Apple silicon (Vulkan through MoltenVK), not tried on a Mac yet. Reports are welcome in an issue.
 
 **Android?**
-Yes, from release 0.1.5: `mh4u-port-android.apk` is Azahar's Android app with the port inside, for arm64 devices with Android 10 or newer. The game's code library is built on a PC from your own v1.3.0 update and copied to the device: [steps](docs/PLAYING.md#7-android-experimental). It's new, so reports are welcome in an issue.
+Yes, from release 0.1.5: `mh4u-port-android.apk` is Azahar's Android app with the port inside, for arm64 devices with Android 10 or newer. The game's code library is built on a PC from your own update, with the PC tools of the APK's release, and copied to the device: [steps](docs/PLAYING.md#7-android-experimental). The European version hasn't been tried on Android yet. It's new, so reports are welcome in an issue.
 
 ## Online
 
 **Can I play with people on regular Azahar?**
-Yes. Rooms are compatible with official Azahar (2125 or later), and players don't need the same frame rate. Everyone needs the v1.3.0 update. Join a Gathering Hall one at a time: official Azahar gives two consoles that join in the same instant the same id, and the game drops one of them.
+Yes. Rooms are compatible with official Azahar (2125 or later), and players don't need the same frame rate. Everyone needs the v1.3.0 update. The European version (with its v1.1.0 update) hasn't been tried in a room yet, and whether European and USA players can play in one room isn't known yet: the launcher lists the other region's rooms apart, under *Rooms for other games*. Join a Gathering Hall one at a time: official Azahar gives two consoles that join in the same instant the same id, and the game drops one of them.
 
 **Do I need to open ports?**
 Only to host for friends over the internet. Either forward UDP port 24872 on your router to your PC, or put everyone in one virtual network (Tailscale, ZeroTier, Radmin VPN), which needs no forwarding. Joining needs nothing, and neither does playing on one network (the same Wi-Fi): the others find the host's room under *On this network*. UPnP is planned. Details: [Multiplayer](docs/PLAYING.md#4-multiplayer).
