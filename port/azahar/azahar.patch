@@ -1711,10 +1711,10 @@ index 1d66da3..0a0f608 100644
      eapol_logoff.max_nodes = max_nodes;
  
 diff --git a/src/core/memory.cpp b/src/core/memory.cpp
-index c1dbbd0..153f60a 100644
+index c1dbbd0..4d8a787 100644
 --- a/src/core/memory.cpp
 +++ b/src/core/memory.cpp
-@@ -98,6 +98,12 @@ private:
+@@ -98,6 +98,18 @@ private:
      }
  };
  
@@ -1724,10 +1724,16 @@ index c1dbbd0..153f60a 100644
 +    unmapped_observer = observer;
 +}
 +
++static CachedAccessObserver cached_access_observer = nullptr;
++
++void SetCachedAccessObserver(CachedAccessObserver observer) {
++    cached_access_observer = observer;
++}
++
  class MemorySystem::Impl {
  public:
      // Visual Studio would try to allocate these on compile time
-@@ -170,6 +176,16 @@ public:
+@@ -170,6 +182,23 @@ public:
          return system.GetRunningCore().GetPC();
      }
  
@@ -1741,10 +1747,17 @@ index c1dbbd0..153f60a 100644
 +        }
 +    }
 +
++    /// mh4u_runner (--check-coherence): an access takes the rasterizer-cached path.
++    void NoteCached(VAddr vaddr, std::size_t size, CachedAccess kind) const {
++        if (cached_access_observer) [[unlikely]] {
++            cached_access_observer(vaddr, static_cast<u32>(size), kind, GetLR());
++        }
++    }
++
      template <bool UNSAFE>
      void ReadBlockImpl(const Kernel::Process& process, const VAddr src_addr, void* dest_buffer,
                         const std::size_t size) {
-@@ -191,6 +207,7 @@ public:
+@@ -191,6 +220,7 @@ public:
                      "unmapped ReadBlock @ 0x{:08X} (start address = 0x{:08X}, size = {}) at PC "
                      "0x{:08X}",
                      current_vaddr, src_addr, size, GetPC());
@@ -1752,7 +1765,15 @@ index c1dbbd0..153f60a 100644
                  std::memset(dest_buffer, 0, copy_amount);
                  break;
              }
-@@ -250,6 +267,7 @@ public:
+@@ -212,6 +242,7 @@ public:
+             }
+             case PageType::RasterizerCachedMemory:
+             case PageType::RasterizerCachedMemoryWatchpoint: {
++                NoteCached(current_vaddr, copy_amount, CachedAccess::BlockRead);
+                 if constexpr (!UNSAFE) {
+                     RasterizerFlushVirtualRegion(current_vaddr, static_cast<u32>(copy_amount),
+                                                  FlushMode::Flush);
+@@ -250,6 +281,7 @@ public:
                      "unmapped WriteBlock @ 0x{:08X} (start address = 0x{:08X}, size = {}) at PC "
                      "0x{:08X}",
                      current_vaddr, dest_addr, size, GetPC());
@@ -1760,7 +1781,15 @@ index c1dbbd0..153f60a 100644
                  break;
              }
              case PageType::Memory: {
-@@ -577,6 +595,7 @@ void MemorySystem::UnmappedAccess(const VAddr vaddr, const T value, bool read) {
+@@ -270,6 +302,7 @@ public:
+             }
+             case PageType::RasterizerCachedMemory:
+             case PageType::RasterizerCachedMemoryWatchpoint: {
++                NoteCached(current_vaddr, copy_amount, CachedAccess::BlockWrite);
+                 if constexpr (!UNSAFE) {
+                     RasterizerFlushVirtualRegion(current_vaddr, static_cast<u32>(copy_amount),
+                                                  FlushMode::Invalidate);
+@@ -577,6 +610,7 @@ void MemorySystem::UnmappedAccess(const VAddr vaddr, const T value, bool read) {
      }
  #endif
      LOG_ERROR(HW_Memory, "{}", message);
@@ -1768,7 +1797,68 @@ index c1dbbd0..153f60a 100644
      if (Settings::values.enable_exception_handler) {
          Core::LogException(impl->system, read ? Core::ExceptionType::UnmappedRead
                                                : Core::ExceptionType::UnmappedWrite);
-@@ -892,11 +911,11 @@ std::string MemorySystem::ReadCString(VAddr vaddr, std::size_t max_length) {
+@@ -651,6 +685,7 @@ T MemorySystem::Read(const std::shared_ptr<PageTable>& page_table, const VAddr v
+         return value;
+     }
+     [[likely]] case PageType::RasterizerCachedMemory: {
++        impl->NoteCached(vaddr, read_size, CachedAccess::Read);
+         RasterizerFlushVirtualRegion(vaddr, read_size, FlushMode::Flush);
+ 
+         ReadType value;
+@@ -658,6 +693,7 @@ T MemorySystem::Read(const std::shared_ptr<PageTable>& page_table, const VAddr v
+         return value;
+     }
+     case PageType::RasterizerCachedMemoryWatchpoint: {
++        impl->NoteCached(vaddr, read_size, CachedAccess::Read);
+         RasterizerFlushVirtualRegion(vaddr, read_size, FlushMode::Flush);
+ 
+         ReadType value;
+@@ -739,11 +775,13 @@ void MemorySystem::Write(const std::shared_ptr<PageTable>& page_table, const VAd
+         break;
+     }
+     [[likely]] case PageType::RasterizerCachedMemory: {
++        impl->NoteCached(vaddr, sizeof(T), CachedAccess::Write);
+         RasterizerFlushVirtualRegion(vaddr, sizeof(T), FlushMode::Invalidate);
+         std::memcpy(GetPointerForRasterizerCache(vaddr), &data, sizeof(T));
+         break;
+     }
+     case PageType::RasterizerCachedMemoryWatchpoint: {
++        impl->NoteCached(vaddr, sizeof(T), CachedAccess::Write);
+         RasterizerFlushVirtualRegion(vaddr, sizeof(T), FlushMode::Invalidate);
+         std::memcpy(GetPointerForRasterizerCache(vaddr), &data, sizeof(T));
+ 
+@@ -797,12 +835,14 @@ bool MemorySystem::WriteExclusive(const VAddr vaddr, const T data, const T expec
+         return ret;
+     }
+     [[likely]] case PageType::RasterizerCachedMemory: {
++        impl->NoteCached(vaddr, sizeof(T), CachedAccess::WriteExclusive);
+         RasterizerFlushVirtualRegion(vaddr, sizeof(T), FlushMode::Invalidate);
+         const auto volatile_pointer =
+             reinterpret_cast<volatile T*>(GetPointerForRasterizerCache(vaddr).GetPtr());
+         return Common::AtomicCompareAndSwap(volatile_pointer, data, expected);
+     }
+     case PageType::RasterizerCachedMemoryWatchpoint: {
++        impl->NoteCached(vaddr, sizeof(T), CachedAccess::WriteExclusive);
+         RasterizerFlushVirtualRegion(vaddr, sizeof(T), FlushMode::Invalidate);
+         const auto volatile_pointer =
+             reinterpret_cast<volatile T*>(GetPointerForRasterizerCache(vaddr).GetPtr());
+@@ -850,6 +890,7 @@ u8* MemorySystem::GetPointer(const VAddr vaddr) {
+             PageType::RasterizerCachedMemory ||
+         impl->current_page_table->attributes[vaddr >> CITRA_PAGE_BITS] ==
+             PageType::RasterizerCachedMemoryWatchpoint) {
++        impl->NoteCached(vaddr, 0, CachedAccess::Pointer);
+         return GetPointerForRasterizerCache(vaddr);
+     }
+ 
+@@ -867,6 +908,7 @@ const u8* MemorySystem::GetPointer(const VAddr vaddr) const {
+             PageType::RasterizerCachedMemory ||
+         impl->current_page_table->attributes[vaddr >> CITRA_PAGE_BITS] ==
+             PageType::RasterizerCachedMemoryWatchpoint) {
++        impl->NoteCached(vaddr, 0, CachedAccess::Pointer);
+         return GetPointerForRasterizerCache(vaddr);
+     }
+ 
+@@ -892,11 +934,11 @@ std::string MemorySystem::ReadCString(VAddr vaddr, std::size_t max_length) {
  }
  
  MemorySystem::PhysMemRegionInfo MemorySystem::GetPhysMemRegionInfo(PAddr address) {
@@ -1785,7 +1875,7 @@ index c1dbbd0..153f60a 100644
      constexpr std::array memory_areas = {
          std::make_pair(VRAM_PADDR, VRAM_SIZE),
          std::make_pair(DSP_RAM_PADDR, DSP_RAM_SIZE),
-@@ -913,28 +932,27 @@ MemorySystem::PhysMemRegionInfo MemorySystem::GetPhysMemRegionInfo(PAddr address
+@@ -913,28 +955,27 @@ MemorySystem::PhysMemRegionInfo MemorySystem::GetPhysMemRegionInfo(PAddr address
      if (area == memory_areas.end()) [[unlikely]] {
          LOG_ERROR(HW_Memory, "Unknown GetPhysMemRegionInfo @ {:#08X} at PC {:#08X}", address,
                    impl->GetPC());
@@ -1820,11 +1910,27 @@ index c1dbbd0..153f60a 100644
  }
  
  u8* MemorySystem::GetPhysicalPointer(PAddr address) {
+@@ -1190,6 +1231,7 @@ void MemorySystem::ZeroBlock(const Kernel::Process& process, const VAddr dest_ad
+         }
+         case PageType::RasterizerCachedMemory:
+         case PageType::RasterizerCachedMemoryWatchpoint: {
++            impl->NoteCached(current_vaddr, copy_amount, CachedAccess::ZeroBlock);
+             RasterizerFlushVirtualRegion(current_vaddr, static_cast<u32>(copy_amount),
+                                          FlushMode::Invalidate);
+             std::memset(GetPointerForRasterizerCache(current_vaddr), 0, copy_amount);
+@@ -1249,6 +1291,7 @@ void MemorySystem::CopyBlock(const Kernel::Process& dest_process,
+         }
+         case PageType::RasterizerCachedMemory:
+         case PageType::RasterizerCachedMemoryWatchpoint: {
++            impl->NoteCached(current_vaddr, copy_amount, CachedAccess::CopySource);
+             RasterizerFlushVirtualRegion(current_vaddr, static_cast<u32>(copy_amount),
+                                          FlushMode::Flush);
+             WriteBlock(dest_process, dest_addr, GetPointerForRasterizerCache(current_vaddr),
 diff --git a/src/core/memory.h b/src/core/memory.h
-index d490734..c6a8596 100644
+index d490734..9f88ef6 100644
 --- a/src/core/memory.h
 +++ b/src/core/memory.h
-@@ -36,6 +36,12 @@ constexpr u32 CITRA_PAGE_MASK = CITRA_PAGE_SIZE - 1;
+@@ -36,6 +36,34 @@ constexpr u32 CITRA_PAGE_MASK = CITRA_PAGE_SIZE - 1;
  constexpr int CITRA_PAGE_BITS = 12;
  constexpr std::size_t PAGE_TABLE_NUM_ENTRIES = 1 << (32 - CITRA_PAGE_BITS);
  
@@ -1833,6 +1939,28 @@ index d490734..c6a8596 100644
 +/// the running CPU's LR. The runner counts them (--count-unmapped).
 +using UnmappedObserver = void (*)(VAddr vaddr, u32 size, bool read, u32 lr);
 +void SetUnmappedObserver(UnmappedObserver observer);
++
++/// How an access reached the rasterizer-cached path of memory.cpp (a page marked with
++/// RasterizerMarkRegionCached). Read, Write and WriteExclusive are single loads and stores (the
++/// CPU's slow path); the Block kinds are ReadBlock and WriteBlock, ZeroBlock and the source side
++/// of CopyBlock (kernel and HLE code, GPU::Execute's DMA); Pointer is GetPointer, which hands out
++/// a raw pointer, so the size is 0 and nothing says how it is used afterwards.
++enum class CachedAccess : u32 {
++    Read = 0,
++    Write = 1,
++    WriteExclusive = 2,
++    BlockRead = 3,
++    BlockWrite = 4,
++    ZeroBlock = 5,
++    CopySource = 6,
++    Pointer = 7,
++};
++
++/// Optional observer of every such access, called before the access is made: the virtual
++/// address, the size in bytes (a page's share of a block access), how it came, and the running
++/// CPU's LR. The runner's --check-coherence logs them and unmarks the page.
++using CachedAccessObserver = void (*)(VAddr vaddr, u32 size, CachedAccess kind, u32 lr);
++void SetCachedAccessObserver(CachedAccessObserver observer);
 +
  enum class PageType : u8 {
      /// Page is unmapped and should cause an access error.

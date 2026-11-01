@@ -6,6 +6,7 @@
 // a network room (Azahar's multiplayer) so that two runners can play locally together.
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cctype>
 #include <cmath>
 #include <chrono>
@@ -179,6 +180,15 @@ const char* const USAGE = R"(usage: mh4u_runner <file> [options]
                     (the software renderer at 1x). Drawing stays on for the whole run, whatever
                     --draw-window says. The files hold game data: keep them in build/
                     (tools/native/gcap.py)
+  --check-coherence FILE  write to FILE (a text log, tools/native/coherence.py reports on it) every
+                    time the game reads or writes memory the GPU changed since: after each GX
+                    command and register write, the pages the GPU changed (the diff of
+                    --capture-gpu) are marked rasterizer-cached, and the first virtual access to
+                    one is logged with its physical address, size, kind, the guest LR and the
+                    frame, and the page unmarked. Software renderer; drawing stays on; two passes
+                    over all of FCRAM and VRAM per GPU command, so it is slow. Not together with
+                    --capture-gpu or --perf-log. The log holds addresses of the game: keep it in
+                    build/
   --capture-hid FILE  record the HID shared memory (and ir:USER's, once a game sets it up) on every
                     game frame to FILE (an MHID capture; tools/native/capfmt.py)
   --perf-log FILE   write one CSV row per frame (a vertical blank to the next) to FILE: the
@@ -1950,6 +1960,26 @@ struct GpuInitBlock {
     std::vector<u8> data;
 };
 
+/// A page of a region: the region's index and the page's offset in it.
+struct GpuPageRef {
+    u32 region, offset;
+};
+
+/// The pages of every region that differ from its shadow, in ascending order, with the shadow
+/// brought up to date. The capture's diff, which --check-coherence (N0-14) uses as it is.
+inline void GcapChangedPages(std::vector<GpuMemoryRegion>& regions, std::vector<GpuPageRef>& pages) {
+    pages.clear();
+    for (u32 r = 0; r < regions.size(); ++r) {
+        GpuMemoryRegion& region = regions[r];
+        for (u32 offset = 0; offset < region.size; offset += kGcapPage) {
+            if (std::memcmp(region.live + offset, region.shadow.data() + offset, kGcapPage) != 0) {
+                std::memcpy(region.shadow.data() + offset, region.live + offset, kGcapPage);
+                pages.push_back({r, offset});
+            }
+        }
+    }
+}
+
 class GpuRecorder {
 public:
     GpuRecorder(GpuCaptureHost& host, u32 frames) : host_(host), frames_wanted_(frames) {}
@@ -2139,9 +2169,7 @@ private:
         u32 id;
         u64 delay_ns;
     };
-    struct PageRef {
-        u32 region, offset;
-    };
+    using PageRef = GpuPageRef;
 
     static void PutWord(std::vector<u8>& out, u32 value) { // the format is little-endian, like this host
         const u8* bytes = reinterpret_cast<const u8*>(&value);
@@ -2196,23 +2224,9 @@ private:
         return true;
     }
 
-    /// The pages of every region that differ from the shadow, which is brought up to date.
-    void ChangedPages(std::vector<PageRef>& pages) {
-        pages.clear();
-        for (u32 r = 0; r < regions_.size(); ++r) {
-            GpuMemoryRegion& region = regions_[r];
-            for (u32 offset = 0; offset < region.size; offset += kGcapPage) {
-                if (std::memcmp(region.live + offset, region.shadow.data() + offset, kGcapPage) != 0) {
-                    std::memcpy(region.shadow.data() + offset, region.live + offset, kGcapPage);
-                    pages.push_back({r, offset});
-                }
-            }
-        }
-    }
-
     /// A CPU_PAGES or GPU_PAGES record with the pages that changed since the last one; none, no record.
     void WritePages(u32 type) {
-        ChangedPages(pages_);
+        GcapChangedPages(regions_, pages_);
         if (pages_.empty()) {
             return;
         }
@@ -2577,6 +2591,649 @@ void EndGpuCapture(Core::System& system) {
     c.requested = false;
 }
 
+// ── --check-coherence FILE (N0-14) ──────────────────────────────────────────────────
+// Principle 2 of the native port says the game's memory is one flat block the GPU reads and writes
+// in place, with no copy and no cache flush. This asks whether the game ever depends on a copy:
+// (a) is in tools/native/coherence.py (from a capture); this is (b), does the CPU ever read what
+// the GPU wrote. After every GX command and register write, the pages the GPU changed (the diff
+// of --capture-gpu) are marked rasterizer-cached with RasterizerMarkRegionCached; the first
+// virtual access to such a page takes the rasterizer-cached path of memory.cpp, where the
+// observer of azahar.patch (Memory::SetCachedAccessObserver) hands it to the checker, which logs
+// it (physical address, size, kind, the guest LR, the frame) and unmarks that page. Accesses made
+// from inside the GPU hooks (GX RequestDma copies through the application's mapping) are logged as
+// the GPU's own. The format of the log is documented in docs/research/flat-memory-check.md.
+// This section also reads memory.h, memory.cpp and gpu.cpp (named in the header of the GPU
+// capture section above): the windows PhysicalToVirtualAddressForRasterizer and
+// GPU::VirtualToPhysicalAddress know, and RasterizerMarkRegionCached's rules.
+
+// BEGIN coherence-core
+// The checking logic with no Azahar type in it: tests/test_native_coherence.py compiles this
+// region together with gpu-capture-core (it uses GpuMemoryRegion and GcapChangedPages) and
+// drives it with a scripted game and a fake marker that enforces the UNREACHABLE rules of
+// RasterizerMarkRegionCached (marking a page that is marked, unmarking one that is not).
+constexpr u32 kCohPage = 4096;
+// The windows of memory.h that the rasterizer can mark (Memory::LINEAR_HEAP_VADDR and the rest).
+constexpr u32 kCohVramVaddr = 0x1F000000, kCohVramSize = 0x00600000;
+constexpr u32 kCohLinearVaddr = 0x14000000, kCohLinearSize = 0x08000000;
+constexpr u32 kCohNewLinearVaddr = 0x30000000, kCohNewLinearSize = 0x10000000;
+constexpr u32 kCohFcramPaddr = 0x20000000, kCohVramPaddr = 0x18000000;
+constexpr u32 kCohEventMmio = 6, kCohEventOther = 7, kCohEventKinds = 8; // events 0 to 5 are the GX command ids
+constexpr u32 kCohAccessKinds = 8;                                     // Memory::CachedAccess
+
+inline const char* CohEventName(u32 ev) {
+    static const char* const names[kCohEventKinds] = {"RequestDma",      "SubmitCmdList", "MemoryFill", "DisplayTransfer",
+                                                      "TextureCopy",     "CacheFlush",    "Mmio",       "Other"};
+    return names[ev < kCohEventKinds ? ev : kCohEventOther];
+}
+
+inline const char* CohAccessName(u32 kind) {
+    static const char* const names[kCohAccessKinds] = {"Read",      "Write",     "WriteExclusive", "BlockRead",
+                                                       "BlockWrite", "ZeroBlock", "CopySource",     "Pointer"};
+    return kind < kCohAccessKinds ? names[kind] : "Unknown";
+}
+
+/// The physical address of a virtual one in a window the rasterizer can mark; false elsewhere.
+inline bool CohVirtualToPhysical(u32 vaddr, u32& paddr) {
+    if (vaddr >= kCohVramVaddr && vaddr < kCohVramVaddr + kCohVramSize) {
+        paddr = vaddr - kCohVramVaddr + kCohVramPaddr;
+    } else if (vaddr >= kCohLinearVaddr && vaddr < kCohLinearVaddr + kCohLinearSize) {
+        paddr = vaddr - kCohLinearVaddr + kCohFcramPaddr;
+    } else if (vaddr >= kCohNewLinearVaddr && vaddr < kCohNewLinearVaddr + kCohNewLinearSize) {
+        paddr = vaddr - kCohNewLinearVaddr + kCohFcramPaddr;
+    } else {
+        return false;
+    }
+    return true;
+}
+
+/// A run of pages the game process maps somewhere the rasterizer cannot watch: where, and what.
+struct CohAlias {
+    u32 vaddr, paddr, pages;
+    bool operator==(const CohAlias& o) const {
+        return vaddr == o.vaddr && paddr == o.paddr && pages == o.pages;
+    }
+};
+
+/// What the checker needs of its surroundings: the runner answers from Azahar, the test from a script.
+struct CoherenceHost {
+    virtual ~CoherenceHost() = default;
+    virtual u32 Frame() = 0;                                     // the game's frame counter now (not through the cached path)
+    virtual u64 Ticks() = 0;                                     // ARM11 ticks since the run started
+    virtual void Mark(u32 paddr, u32 pages, bool cached) = 0;    // RasterizerMarkRegionCached over PAGES pages
+    virtual bool Watched(u32 paddr) = 0;                         // after marking: does the game process now take the cached path for it
+    virtual bool GuestRunning() = 0;                             // is a guest thread running (so that LR means something)
+};
+
+class CoherenceChecker {
+public:
+    explicit CoherenceChecker(CoherenceHost& host) : host_(host) {}
+    ~CoherenceChecker() {
+        Close();
+    }
+
+    bool Open(const std::string& path, const std::string& header) {
+        file_ = std::fopen(path.c_str(), "w");
+        if (!file_) {
+            return false;
+        }
+        std::setvbuf(file_, nullptr, _IOFBF, 1 << 20);
+        std::fprintf(file_, "# %s\n", header.c_str());
+        return true;
+    }
+
+    void Close() {
+        if (file_) {
+            std::fclose(file_);
+            file_ = nullptr;
+        }
+    }
+
+    /// Between two GPU events: the shadow of every region becomes what is in memory now.
+    void Start(std::vector<GpuMemoryRegion> regions) {
+        regions_ = std::move(regions);
+        u32 pages = 0;
+        first_page_.clear();
+        for (GpuMemoryRegion& region : regions_) {
+            region.shadow.assign(region.live, region.live + region.size);
+            first_page_.push_back(pages);
+            pages += region.size / kCohPage;
+        }
+        info_.assign(pages, MarkInfo{});
+        alias_.assign(pages, false);
+        started_ = true;
+    }
+
+    bool Started() const {
+        return started_ && !finished_;
+    }
+
+    // ── the GPU's events ──
+
+    /// GPU::Execute is about to carry out GX. What the CPU changed so far is taken into the shadow,
+    /// so that the diff at the end holds only what the command changed.
+    void ExecuteBegin(const u32 (&gx)[8]) {
+        const u32 id = gx[0] & 0xFF;
+        Begin(id < kCohEventMmio ? id : kCohEventOther);
+    }
+    void ExecuteEnd() {
+        End();
+    }
+    /// GPU::WriteReg: a register write can start a command list, a fill or a transfer as well.
+    void WriteRegBegin(u32, u32) {
+        Begin(kCohEventMmio);
+    }
+    void WriteRegEnd() {
+        End();
+    }
+
+    // ── the game process's address space ──
+
+    /// The runs of pages the game process maps outside the windows the rasterizer watches (found by
+    /// the runner scanning its page table). A change is logged as ALIAS lines.
+    void SetAliases(const std::vector<CohAlias>& aliases) {
+        if (!started_ || finished_) {
+            return;
+        }
+        alias_.assign(alias_.size(), false);
+        for (const CohAlias& a : aliases) {
+            for (u32 i = 0; i < a.pages; ++i) {
+                const u32 index = PageIndex(a.paddr + i * kCohPage);
+                if (index != kNone) {
+                    alias_[index] = true;
+                }
+            }
+        }
+        if (aliases != aliases_) {
+            aliases_ = aliases;
+            const u32 frame = host_.Frame();
+            std::fprintf(file_, "ALIAS f=%u runs=%zu\n", frame, aliases.size());
+            for (const CohAlias& a : aliases) {
+                std::fprintf(file_, "ALIAS f=%u vaddr=0x%08x paddr=0x%08x pages=%u\n", frame, a.vaddr, a.paddr, a.pages);
+            }
+        }
+    }
+
+    // ── the accesses ──
+
+    /// An access took the rasterizer-cached path (KIND: Memory::CachedAccess). A marked page is
+    /// logged and unmarked, anything else is only counted.
+    void Access(u32 vaddr, u32 size, u32 kind, u32 lr) {
+        if (!Started()) {
+            return;
+        }
+        u32 paddr = 0;
+        if (!CohVirtualToPhysical(vaddr, paddr)) {
+            ++no_window_;
+            return;
+        }
+        const u32 page = paddr & ~(kCohPage - 1);
+        const u32 index = PageIndex(page);
+        if (index == kNone || !info_[index].marked) {
+            ++foreign_;
+            return;
+        }
+        MarkInfo& mark = info_[index];
+        const bool gpu_side = depth_ > 0;
+        if (gpu_side && mark.gpu_seen) { // the GPU's own accesses are logged once per mark and never end it
+            return;
+        }
+        const bool guest = host_.GuestRunning();
+        char lr_text[16] = "-";
+        if (guest) {
+            std::snprintf(lr_text, sizeof(lr_text), "0x%08x", lr);
+        }
+        const u32 frame = host_.Frame();
+        const u64 ticks = host_.Ticks();
+        std::fprintf(file_,
+                     "ACCESS n=%u f=%u t=%llu side=%s kind=%s paddr=0x%08x vaddr=0x%08x size=%u guest=%u lr=%s "
+                     "in=%s mark=%u mark_ev=%s mark_f=%u mark_t=%llu watched=%u aliased=%u\n",
+                     ++access_seq_, frame, static_cast<unsigned long long>(ticks), gpu_side ? "gpu" : "cpu",
+                     CohAccessName(kind), paddr, vaddr, size, guest ? 1u : 0u, lr_text,
+                     gpu_side ? CohEventName(current_event_) : "-", mark.seq, CohEventName(mark.event), mark.frame,
+                     static_cast<unsigned long long>(mark.ticks), mark.watched ? 1u : 0u, mark.aliased ? 1u : 0u);
+        ++(gpu_side ? gpu_accesses_ : cpu_accesses_);
+        if (gpu_side) { // a GX DMA reading or writing the page: logged, the page stays marked for the CPU
+            mark.gpu_seen = true;
+            return;
+        }
+        mark.marked = false;
+        --marked_now_;
+        host_.Mark(page, 1, false);
+    }
+
+    /// Accesses the runner did not pass on: made outside the emulation loop, or by another host thread.
+    void SetIgnored(u64 outside_run, u64 other_thread) {
+        outside_run_ = outside_run;
+        other_thread_ = other_thread;
+    }
+
+    /// The end: pages still marked are unmarked, the totals and the ranges the checker could not watch are written.
+    void Finish() {
+        if (!started_ || finished_) {
+            return;
+        }
+        finished_ = true;
+        const u32 pending = marked_now_;
+        u32 run_start = 0, run_len = 0;
+        for (u32 r = 0; r < regions_.size(); ++r) {
+            for (u32 i = 0; i < regions_[r].size / kCohPage; ++i) {
+                const u32 paddr = regions_[r].paddr + i * kCohPage;
+                if (!info_[first_page_[r] + i].marked) {
+                    continue;
+                }
+                info_[first_page_[r] + i].marked = false;
+                if (run_len && paddr == run_start + run_len * kCohPage) {
+                    ++run_len;
+                } else {
+                    if (run_len) {
+                        host_.Mark(run_start, run_len, false);
+                    }
+                    run_start = paddr;
+                    run_len = 1;
+                }
+            }
+        }
+        if (run_len) {
+            host_.Mark(run_start, run_len, false);
+        }
+        marked_now_ = 0;
+        EventStats total;
+        for (const EventStats& e : stats_) {
+            total.events += e.events;
+            total.gpu_pages += e.gpu_pages;
+            total.marked += e.marked;
+            total.rewritten += e.rewritten;
+            total.unwatched += e.unwatched;
+            total.aliased += e.aliased;
+        }
+        for (u32 ev = 0; ev < kCohEventKinds; ++ev) {
+            const EventStats& e = stats_[ev];
+            if (e.events) {
+                std::fprintf(file_, "EVENT ev=%s n=%llu gpu_pages=%llu marked=%llu rewritten=%llu unwatched=%llu aliased=%llu\n",
+                             CohEventName(ev), U(e.events), U(e.gpu_pages), U(e.marked), U(e.rewritten), U(e.unwatched),
+                             U(e.aliased));
+            }
+        }
+        WriteRanges("nowindow", nowindow_);
+        WriteRanges("aliased", aliased_);
+        std::fprintf(file_, "PENDING pages=%u\n", pending);
+        std::fprintf(file_,
+                     "SUMMARY first_frame=%u last_frame=%u events=%llu gpu_pages=%llu marked=%llu rewritten=%llu "
+                     "unwatched=%llu aliased=%llu accesses=%llu cpu=%llu gpu=%llu pending=%u cpu_pages_changed=%llu "
+                     "foreign=%llu no_window=%llu outside_run=%llu other_thread=%llu\n",
+                     first_frame_, last_frame_, U(total.events), U(total.gpu_pages), U(total.marked), U(total.rewritten),
+                     U(total.unwatched), U(total.aliased), U(cpu_accesses_ + gpu_accesses_), U(cpu_accesses_),
+                     U(gpu_accesses_), pending, U(cpu_pages_changed_), U(foreign_), U(no_window_), U(outside_run_),
+                     U(other_thread_));
+        std::fflush(file_);
+    }
+
+    u64 Accesses() const {
+        return cpu_accesses_ + gpu_accesses_;
+    }
+
+private:
+    static constexpr u32 kNone = 0xFFFFFFFF;
+    struct MarkInfo {
+        u32 seq = 0, event = 0, frame = 0;
+        u64 ticks = 0;
+        bool marked = false, watched = false, aliased = false, gpu_seen = false;
+    };
+    struct EventStats {
+        u64 events = 0, gpu_pages = 0, marked = 0, rewritten = 0, unwatched = 0, aliased = 0;
+    };
+
+    static unsigned long long U(u64 value) {
+        return static_cast<unsigned long long>(value);
+    }
+
+    /// The index of a physical page in info_, or kNone for an address outside every region.
+    u32 PageIndex(u32 paddr) const {
+        for (u32 r = 0; r < regions_.size(); ++r) {
+            const GpuMemoryRegion& region = regions_[r];
+            if (paddr >= region.paddr && paddr - region.paddr < region.size) {
+                return first_page_[r] + (paddr - region.paddr) / kCohPage;
+            }
+        }
+        return kNone;
+    }
+
+    void Begin(u32 event) {
+        if (!Started()) {
+            return;
+        }
+        if (depth_++ > 0) { // a command inside a command: the outer one owns the diff
+            return;
+        }
+        GcapChangedPages(regions_, pages_); // the CPU's changes are not the GPU's
+        cpu_pages_changed_ += pages_.size();
+        current_event_ = event;
+    }
+
+    void End() {
+        if (depth_ == 0 || --depth_ > 0) {
+            return;
+        }
+        const u32 frame = host_.Frame();
+        const u64 ticks = host_.Ticks();
+        if (!seen_event_) {
+            seen_event_ = true;
+            first_frame_ = frame;
+        }
+        last_frame_ = frame;
+        ++seq_;
+        EventStats& stats = stats_[current_event_];
+        ++stats.events;
+        GcapChangedPages(regions_, pages_); // what the command changed
+        stats.gpu_pages += pages_.size();
+        new_pages_.clear();
+        u32 run_start = 0, run_len = 0;
+        for (const GpuPageRef& ref : pages_) {
+            const u32 paddr = regions_[ref.region].paddr + ref.offset;
+            const u32 index = first_page_[ref.region] + ref.offset / kCohPage;
+            MarkInfo& mark = info_[index];
+            mark.seq = seq_;
+            mark.event = current_event_;
+            mark.frame = frame;
+            mark.ticks = ticks;
+            mark.gpu_seen = false; // a new writer: its first access by the GPU is news again
+            if (mark.marked) { // marking again would hit UNREACHABLE: the mark stays, the latest writer is kept
+                ++stats.rewritten;
+                continue;
+            }
+            mark.marked = true;
+            ++marked_now_;
+            ++stats.marked;
+            new_pages_.push_back(index);
+            if (run_len && paddr == run_start + run_len * kCohPage) {
+                ++run_len;
+            } else {
+                if (run_len) {
+                    host_.Mark(run_start, run_len, true);
+                }
+                run_start = paddr;
+                run_len = 1;
+            }
+        }
+        if (run_len) {
+            host_.Mark(run_start, run_len, true);
+        }
+        for (const u32 index : new_pages_) {
+            MarkInfo& mark = info_[index];
+            const u32 paddr = PagePaddr(index);
+            mark.watched = host_.Watched(paddr);
+            mark.aliased = alias_[index];
+            if (!mark.watched) {
+                ++stats.unwatched;
+                ++nowindow_[paddr];
+            }
+            if (mark.aliased) {
+                ++stats.aliased;
+                ++aliased_[paddr];
+            }
+        }
+    }
+
+    u32 PagePaddr(u32 index) const {
+        u32 r = 0;
+        while (r + 1 < first_page_.size() && index >= first_page_[r + 1]) {
+            ++r;
+        }
+        return regions_[r].paddr + (index - first_page_[r]) * kCohPage;
+    }
+
+    /// Consecutive pages with the same kind of problem as one line each: where, how many pages, how many marks.
+    void WriteRanges(const char* kind, const std::map<u32, u32>& pages) {
+        u32 start = 0, count = 0, marks = 0;
+        for (const auto& [paddr, n] : pages) {
+            if (count && paddr == start + count * kCohPage) {
+                ++count;
+                marks += n;
+                continue;
+            }
+            if (count) {
+                std::fprintf(file_, "UNWATCHED kind=%s paddr=0x%08x pages=%u marks=%u\n", kind, start, count, marks);
+            }
+            start = paddr;
+            count = 1;
+            marks = n;
+        }
+        if (count) {
+            std::fprintf(file_, "UNWATCHED kind=%s paddr=0x%08x pages=%u marks=%u\n", kind, start, count, marks);
+        }
+    }
+
+    CoherenceHost& host_;
+    std::FILE* file_ = nullptr;
+    std::vector<GpuMemoryRegion> regions_;
+    std::vector<u32> first_page_;
+    std::vector<MarkInfo> info_;
+    std::vector<bool> alias_;
+    std::vector<CohAlias> aliases_;
+    std::vector<GpuPageRef> pages_;
+    std::vector<u32> new_pages_;
+    std::map<u32, u32> nowindow_, aliased_;
+    std::array<EventStats, kCohEventKinds> stats_{};
+    u64 cpu_accesses_ = 0, gpu_accesses_ = 0, cpu_pages_changed_ = 0, foreign_ = 0, no_window_ = 0,
+        outside_run_ = 0, other_thread_ = 0;
+    u32 seq_ = 0, access_seq_ = 0, marked_now_ = 0, depth_ = 0, current_event_ = 0;
+    u32 first_frame_ = 0, last_frame_ = 0;
+    bool started_ = false, finished_ = false, seen_event_ = false;
+};
+// END coherence-core
+
+/// The runner's side of the checker: the frame counter (read from the page's host pointer, never
+/// through memory.Read*, which would come back into the cached path), the clock, the marker and
+/// what the game process's page table says.
+class RunnerCoherenceHost : public CoherenceHost {
+public:
+    explicit RunnerCoherenceHost(Core::System& system) : system_(system) {}
+
+    u32 Frame() override {
+        if (const auto process = system_.Kernel().GetCurrentProcess()) {
+            const u8* page = process->vm_manager.page_table->GetPointerArray()[kFrameCounterAddress >> Memory::CITRA_PAGE_BITS];
+            if (page) {
+                std::memcpy(&last_frame_, page + (kFrameCounterAddress & Memory::CITRA_PAGE_MASK), 4);
+            }
+        }
+        return last_frame_;
+    }
+    u64 Ticks() override {
+        return static_cast<u64>(system_.CoreTiming().GetGlobalTicks() - g_start_ticks);
+    }
+    void Mark(u32 paddr, u32 pages, bool cached) override {
+        system_.Memory().RasterizerMarkRegionCached(paddr, pages * Memory::CITRA_PAGE_SIZE, cached);
+    }
+    bool Watched(u32 paddr) override {
+        const auto process = system_.Kernel().GetCurrentProcess();
+        if (!process) {
+            return false;
+        }
+        const auto& attributes = process->vm_manager.page_table->attributes;
+        for (const VAddr vaddr : system_.Memory().PhysicalToVirtualAddressForRasterizer(paddr)) {
+            const Memory::PageType type = attributes[vaddr >> Memory::CITRA_PAGE_BITS];
+            if (type == Memory::PageType::RasterizerCachedMemory ||
+                type == Memory::PageType::RasterizerCachedMemoryWatchpoint) {
+                return true;
+            }
+        }
+        return false;
+    }
+    bool GuestRunning() override {
+        return system_.Kernel().GetCurrentThreadManager().GetCurrentThread() != nullptr;
+    }
+
+private:
+    Core::System& system_;
+    u32 last_frame_ = 0;
+};
+
+constexpr u32 kCoherenceScanFrames = 600; // the page table is scanned for aliases this often (game frames)
+
+struct CoherenceCheck {
+    bool requested = false;
+    bool new_3ds = false;
+    std::string path;
+    std::unique_ptr<RunnerCoherenceHost> host;
+    std::unique_ptr<CoherenceChecker> checker;
+    std::thread::id thread;
+    std::atomic<bool> in_run{false};
+    std::atomic<u64> outside_run{0}, other_thread{0};
+    u32 next_scan_frame = 0;
+} g_coherence;
+
+/// Every access that takes the rasterizer-cached path (azahar.patch, memory.cpp). Accesses of the
+/// runner's own (the frame counter, the dumps, the state trace: between two slices of emulation)
+/// and of other host threads are counted and not logged.
+void CoherenceAccess(VAddr vaddr, u32 size, Memory::CachedAccess kind, u32 lr) {
+    auto& c = g_coherence;
+    if (!c.checker) {
+        return;
+    }
+    if (std::this_thread::get_id() != c.thread) {
+        ++c.other_thread;
+    } else if (!c.in_run) {
+        ++c.outside_run;
+    } else {
+        c.checker->Access(vaddr, size, static_cast<u32>(kind), lr);
+    }
+}
+
+/// The runs of pages the game process maps to FCRAM or VRAM outside the windows the rasterizer
+/// watches (shared memory blocks, the application heap): marking those pages in the windows does
+/// not stop an access through them.
+std::vector<CohAlias> ScanCoherenceAliases(Core::System& system, bool new_3ds) {
+    std::vector<CohAlias> aliases;
+    const auto process = system.Kernel().GetCurrentProcess();
+    if (!process) {
+        return aliases;
+    }
+    auto& memory = system.Memory();
+    auto& table = *process->vm_manager.page_table;
+    const auto& pointers = table.GetPointerArray();
+    struct Backing {
+        const u8* base;
+        u32 size, paddr;
+    };
+    const Backing backings[2] = {
+        {memory.GetFCRAMPointer(0), new_3ds ? Memory::FCRAM_N3DS_SIZE : Memory::FCRAM_SIZE, Memory::FCRAM_PADDR},
+        {memory.GetPhysicalPointer(Memory::VRAM_PADDR), Memory::VRAM_SIZE, Memory::VRAM_PADDR}};
+    for (std::size_t i = 0; i < Memory::PAGE_TABLE_NUM_ENTRIES; ++i) {
+        const u8* pointer = pointers[i];
+        if (!pointer || table.attributes[i] != Memory::PageType::Memory) {
+            continue;
+        }
+        const u32 vaddr = static_cast<u32>(i << Memory::CITRA_PAGE_BITS);
+        u32 ignored = 0;
+        if (CohVirtualToPhysical(vaddr, ignored)) {
+            continue; // a window the rasterizer watches
+        }
+        for (const Backing& backing : backings) {
+            if (!backing.base || pointer < backing.base || pointer >= backing.base + backing.size) {
+                continue;
+            }
+            const u32 offset = static_cast<u32>(pointer - backing.base);
+            if (offset & Memory::CITRA_PAGE_MASK) {
+                break;
+            }
+            const u32 paddr = backing.paddr + offset;
+            if (!aliases.empty() && aliases.back().vaddr + aliases.back().pages * kCohPage == vaddr &&
+                aliases.back().paddr + aliases.back().pages * kCohPage == paddr) {
+                ++aliases.back().pages;
+            } else {
+                aliases.push_back({vaddr, paddr, 1});
+            }
+            break;
+        }
+    }
+    return aliases;
+}
+
+/// Opens the log, takes the shadow (all of FCRAM and VRAM as they are now: no GPU command has run
+/// yet) and installs the observers.
+bool BeginCoherenceCheck(Core::System& system, const std::string& path, const std::string& cpu, bool new_3ds) {
+    auto& c = g_coherence;
+    c.path = path;
+    c.new_3ds = new_3ds;
+    u64 program_id = 0;
+    if (system.GetAppLoader().ReadProgramId(program_id) != Loader::ResultStatus::Success) {
+        program_id = 0;
+    }
+    const std::time_t now = std::time(nullptr);
+    char date[16] = "0000-00-00";
+    if (const std::tm* utc = std::gmtime(&now)) {
+        std::strftime(date, sizeof(date), "%Y-%m-%d", utc);
+    }
+    FileUtil::CreateFullPath(path);
+    c.host = std::make_unique<RunnerCoherenceHost>(system);
+    c.checker = std::make_unique<CoherenceChecker>(*c.host);
+    if (!c.checker->Open(path, fmt::format("coherence v1 {} game=0x{:016x} cpu={} new3ds={}", date, program_id, cpu,
+                                           new_3ds ? "on" : "off"))) {
+        std::fprintf(stderr, "cannot write %s\n", path.c_str());
+        c.checker.reset();
+        return false;
+    }
+    auto& memory = system.Memory();
+    std::vector<GpuMemoryRegion> regions(2);
+    regions[0].paddr = Memory::FCRAM_PADDR;
+    regions[0].size = new_3ds ? Memory::FCRAM_N3DS_SIZE : Memory::FCRAM_SIZE;
+    regions[0].live = memory.GetFCRAMPointer(0);
+    regions[1].paddr = Memory::VRAM_PADDR;
+    regions[1].size = Memory::VRAM_SIZE;
+    regions[1].live = memory.GetPhysicalPointer(Memory::VRAM_PADDR);
+    if (!regions[0].live || !regions[1].live) {
+        std::fprintf(stderr, "check-coherence: could not take the snapshot\n");
+        c.checker.reset();
+        return false;
+    }
+    c.checker->Start(std::move(regions));
+    c.checker->SetAliases(ScanCoherenceAliases(system, new_3ds));
+    c.thread = std::this_thread::get_id();
+
+    auto& hooks = Pica::g_capture_hooks;
+    auto* checker = c.checker.get();
+    hooks.execute_begin = [checker](const Service::GSP::Command& command) {
+        static_assert(sizeof(Service::GSP::Command) == 32);
+        u32 words[8];
+        std::memcpy(words, static_cast<const void*>(&command), sizeof(words));
+        checker->ExecuteBegin(words);
+    };
+    hooks.execute_end = [checker]() { checker->ExecuteEnd(); };
+    hooks.write_reg_begin = [checker](u32 vaddr, u32 value) { checker->WriteRegBegin(vaddr, value); };
+    hooks.write_reg_end = [checker]() { checker->WriteRegEnd(); };
+    Memory::SetCachedAccessObserver(CoherenceAccess);
+    c.requested = true;
+    return true;
+}
+
+/// After each slice of emulation: scan the page table for aliases now and then.
+void WriteCoherenceCheck(Core::System& system) {
+    auto& c = g_coherence;
+    if (!c.requested || g_frame < c.next_scan_frame) {
+        return;
+    }
+    c.next_scan_frame = g_frame + kCoherenceScanFrames;
+    c.checker->SetAliases(ScanCoherenceAliases(system, c.new_3ds));
+}
+
+void EndCoherenceCheck(Core::System& system) {
+    auto& c = g_coherence;
+    if (!c.requested) {
+        return;
+    }
+    Memory::SetCachedAccessObserver(nullptr);
+    Pica::g_capture_hooks = {};
+    c.checker->SetAliases(ScanCoherenceAliases(system, c.new_3ds));
+    c.checker->SetIgnored(c.outside_run, c.other_thread);
+    c.checker->Finish();
+    c.checker->Close();
+    std::printf("check-coherence: %llu accesses to pages the GPU changed, written to %s\n",
+                static_cast<unsigned long long>(c.checker->Accesses()), c.path.c_str());
+    c.checker.reset();
+    c.host.reset();
+    c.requested = false;
+}
+
 // ── --perf-log (N0-15) ──────────────────────────────────────────────────────────────
 // One CSV row per frame: the timers are in perf.h; the scopes around the recompiled code and the
 // system calls are in arm_recomp.cpp, the GPU's through the capture hooks (azahar.patch).
@@ -2904,7 +3561,7 @@ int main(int argc, char** argv) {
     std::string capture_dsp_file, capture_hid_file, capture_gpu_file;
     u32 capture_dsp_start = 0, capture_dsp_frames = 0;
     u32 capture_gpu_start = 0, capture_gpu_frames = 0;
-    std::string state_trace, unmapped_report, perf_log, observable_file = "config/native/observable.txt";
+    std::string state_trace, unmapped_report, perf_log, coherence_file, observable_file = "config/native/observable.txt";
     std::vector<std::string> install;
     double speed = 0.0;
     double draw_window = -1.0; // < 0: draw every frame
@@ -3002,6 +3659,8 @@ int main(int argc, char** argv) {
             observable_file = argv[++i];
         } else if (arg == "--perf-log" && i + 1 < argc) {
             perf_log = argv[++i];
+        } else if (arg == "--check-coherence" && i + 1 < argc) {
+            coherence_file = argv[++i];
         } else if (arg == "--count-unmapped" && i + 1 < argc) {
             unmapped_report = argv[++i];
         } else if (arg == "--new-3ds" && i + 1 < argc) {
@@ -3105,6 +3764,10 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "--perf-log and --capture-gpu both use the GPU hooks: run them one at a time\n");
         return 1;
     }
+    if (!coherence_file.empty() && (!capture_gpu_file.empty() || !perf_log.empty())) {
+        std::fprintf(stderr, "--check-coherence, --capture-gpu and --perf-log all use the GPU hooks: run them one at a time\n");
+        return 1;
+    }
     const bool install_only = path.empty() && !install.empty();
     if ((path.empty() && !install_only) || (cpu != "recomp" && cpu != "jit" && cpu != "interp") ||
         (room_host && !room_join.empty())) {
@@ -3187,7 +3850,7 @@ int main(int argc, char** argv) {
     Settings::values.output_type.SetValue(AudioCore::SinkType::Null);
     Settings::values.input_type.SetValue(AudioCore::InputType::Null);
     Settings::values.is_new_3ds.SetValue(new_3ds); // before system.Load: it picks the cores and memory
-    if (!capture_gpu_file.empty()) {
+    if (!capture_gpu_file.empty() || !coherence_file.empty()) {
         // a capture needs every command list and display transfer to run (Azahar's default, kept explicitly)
         Settings::values.disable_right_eye_render.SetValue(false);
     }
@@ -3286,6 +3949,10 @@ int main(int argc, char** argv) {
         system.Shutdown();
         return 1;
     }
+    if (!coherence_file.empty() && !BeginCoherenceCheck(system, coherence_file, cpu, new_3ds)) {
+        system.Shutdown();
+        return 1;
+    }
     if (!perf_log.empty() && !BeginPerfLog(system, perf_log, cpu, new_3ds)) {
         system.Shutdown();
         return 1;
@@ -3304,7 +3971,7 @@ int main(int argc, char** argv) {
     Schedule::ShotSchedule shots(g_plan);
     int rc = 0;
     while (true) {
-        if (draw_window >= 0.0 && capture_gpu_file.empty()) { // a capture needs every frame drawn
+        if (draw_window >= 0.0 && capture_gpu_file.empty() && coherence_file.empty()) { // a capture needs every frame drawn
             SwRenderer::SetDrawingEnabled(!shots_dir.empty() && shots.DrawingNeeded(EmulatedMs(), draw_window));
         }
         LockstepWait(EmulatedMs());
@@ -3322,7 +3989,9 @@ int main(int argc, char** argv) {
         }
         const auto step_start = std::chrono::steady_clock::now();
         const double step_emulated = EmulatedMs();
+        g_coherence.in_run = true;
         const auto result = system.RunLoop();
+        g_coherence.in_run = false;
         if (stall_ms > 0.0) {
             const double host =
                 std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - step_start).count();
@@ -3337,6 +4006,7 @@ int main(int argc, char** argv) {
         WriteStateTrace(system);
         WriteHidCapture(system);
         WriteGpuCapture(system);
+        WriteCoherenceCheck(system);
         DoReplaces(system);
         WriteCallCounts(shots_dir);
         std::string shot_stem;
@@ -3395,6 +4065,7 @@ int main(int argc, char** argv) {
     EndDspCapture(system);
     EndHidCapture(system);
     EndGpuCapture(system);
+    EndCoherenceCheck(system);
     EndPerfLog();
     if (!unmapped_report.empty()) {
         WriteUnmappedReport(system, unmapped_report, cpu, new_3ds);
