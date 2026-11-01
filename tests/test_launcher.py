@@ -8,8 +8,9 @@ With MH4U_APP set to a built mh4u, they also run its code check, mh4u --check-co
 the launcher runs in a process of its own to learn what the game's start would say about the
 code library.
 
-One test reads the launcher's source: what mods.py returns for the game chosen before is left out
-once another game is chosen."""
+Two tests read the launcher's source: what mods.py and the code check return for the game chosen
+before is left out once another game is chosen, and with no game chosen the Mods screen goes by
+the region mods.py takes."""
 import json
 import os
 import re
@@ -217,9 +218,12 @@ def test_a_mods_result_for_the_game_chosen_before_is_left_out():
     game chosen when it was queued (screen_mods.cpp, ModsGame). One that comes back after another
     game was chosen is left out, as State::ChooseGame reads the new game's mods again: a list for
     the game before would set the library and its deploy_state, and Play, finding it up to date,
-    would start the new game without putting its mods in place. A deploy for the game before
-    doesn't go on to play, and Play's later stages go on only with the game it was pressed for.
-    Read from the source: the tests don't run the launcher."""
+    would start the new game without putting its mods in place. ChooseGame reads them again also
+    when a job ended while the picker was open (Play's deploy can run under it): such a job keeps
+    its kind until its window, which waits for the picker, is closed. A deploy for the game before
+    doesn't go on to play, the code check of the game before is left out as well, and Play's later
+    stages go on only with the game it was pressed for. Read from the source: the tests don't run
+    the launcher."""
     mods_cpp = launcher_source("screen_mods.cpp")
     queued = [call_at(mods_cpp, m.start()) for m in re.finditer(r"\bs\.runner\.Queue\(", mods_cpp)]
     assert len(queued) >= 5                         # list, conflicts, status, catalog, a change
@@ -243,10 +247,43 @@ def test_a_mods_result_for_the_game_chosen_before_is_left_out():
         "s.mods.loaded = false;", "s.mods.error.clear();", "RefreshMods(s);", "return;"]
     launcher_cpp = launcher_source("launcher.cpp")
     choose = function_at(launcher_cpp, "void State::ChooseGame(")
+    assert re.search(r"if \(ToolsReady\(\) && \(!job\.Active\(\) \|\| job\.finished\)\) \{\s*mods\.loaded = false;",
+                     choose)
     assert choose.index("mods.loaded = false;") < choose.index("RefreshMods(*this);")
+    # the code check: ChooseGame checks the new game before its mods are read (which Play waits
+    # for), and a check's result counts only for the game it checked
+    assert choose.index("CheckCode();") < choose.index("RefreshMods(*this);")
+    check = function_at(launcher_cpp, "void State::CheckCode(")
+    assert re.search(r"const std::string checked = config\.game;\s*runner\.Queue\(\{[^}]*\"--check-code\", checked\}",
+                     check)
+    assert re.search(r"\[this, checked\]\(int exit_code, const std::string& output\) \{\s*"
+                     r"if \(config\.game != checked\) \{(\s*//[^\n]*)*\n\s*return;\s*\}\s*"
+                     r"code = Checks::CodeFromCheck\(", check)
     play = function_at(launcher_cpp, "void State::Play(int stage)")
     assert re.search(r"play_game = config\.game;\s*stage = 1;\s*\} else if \(config\.game != play_game\) \{"
                      r"(\s*//[^\n]*)*\s*return;\s*\}", play)
+
+
+def test_with_no_game_chosen_the_mods_screen_goes_by_the_region_mods_py_takes(tmp_path):
+    """With no game chosen the launcher passes no --program-id, and mods.py goes by the region whose
+    update is installed, USA's when both or neither are (detect_game), as the setup's update check
+    does (s.update.region; nullptr while neither is installed). The empty library names that
+    region's title folder, the only one add takes then. While neither update is installed, the
+    catalog says that a texture pack goes in the USA game's folder, which the European game,
+    chosen later, doesn't read. Read from the source."""
+    import mods
+    assert mods.detect_game(str(tmp_path)) == MH4U                  # neither update installed: USA
+    mods_cpp = launcher_source("screen_mods.cpp")
+    empty = mods_cpp[mods_cpp.index("if (s.mods.loaded && s.mods.mods.empty()) {"):]
+    empty = empty[:empty.index("Ui::EndCard();")]
+    assert "const Checks::Region& game = s.update.region ? *s.update.region : Checks::REGIONS[0];" in empty
+    assert 'const std::string titles = fmt::format("{:016X}/", game.program_id);' in empty
+    assert '"layout (romfs/, exefs/), a title folder (" + titles + ", luma/titles/...)' in empty
+    catalog = function_at(mods_cpp, "void DrawCatalog(")
+    note = re.search(r"\n    if \(!s\.update\.region\) \{\n(.*?)\n    \}\n", catalog, re.S)
+    assert note and note.start() < catalog.index('"Add a texture pack..."')
+    assert re.search(r'Ui::StatusLine\(Ui::Status::Warn, "No game chosen yet",\s*"A texture pack goes in the USA '
+                     r"game's texture folder", note.group(1))
 
 
 def fake_exefs(code: bytes) -> bytes:

@@ -762,6 +762,13 @@ void DrawCatalog(State& s, bool busy) {
     const float scale = Ui::Scale();
     Ui::TextDim("Mods and texture packs picked for the port, installed with one click from their authors' own "
                 "downloads. Texture packs go in the game's texture folder; mods join your mods.");
+    if (!s.update.region) {
+        // no game chosen and no update installed: mods.py goes by the USA game, and a pack installed
+        // now stays in its texture folder, which the European game doesn't read
+        Ui::StatusLine(Ui::Status::Warn, "No game chosen yet",
+                       "A texture pack goes in the USA game's texture folder. For the European game, choose it in "
+                       "Setup first.");
+    }
     ImGui::BeginDisabled(busy);
     const auto install = [&s](const std::string& path) {
         StartModsJob(
@@ -1138,11 +1145,10 @@ void DrawMods(State& s) {
     ImGui::Spacing();
 
     if (s.mods.loaded && s.mods.mods.empty()) {
-        // the chosen game's title folder (both regions' while no game is chosen)
-        const Checks::Region* game = Checks::FindRegion(s.game.program_id);
-        const std::string titles = game ? fmt::format("{:016X}/", game->program_id)
-                                        : fmt::format("{:016X}/ or {:016X}/", Checks::REGIONS[0].program_id,
-                                                      Checks::REGIONS[1].program_id);
+        // the title folder of the game mods.py goes by: the chosen one, else the region whose update
+        // is installed, USA's when both or neither are (Checks::CheckUpdate)
+        const Checks::Region& game = s.update.region ? *s.update.region : Checks::REGIONS[0];
+        const std::string titles = fmt::format("{:016X}/", game.program_id);
         Ui::BeginCard("##empty", ImVec2(0, 0));
         Ui::TextColored(Ui::Color::Text, "No mods yet.");
         Ui::TextDim("Pick one from the Catalog, or add a mod's folder or its archive (.zip, .7z): Azahar's "

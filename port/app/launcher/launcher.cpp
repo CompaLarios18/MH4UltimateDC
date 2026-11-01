@@ -1004,8 +1004,13 @@ void State::CheckCode() {
         return;
     }
     code.state = Checks::Code::State::Checking;
-    runner.Queue({SelfPath(), "--user", Tools::UserDir(), "--check-code", config.game},
-                 "Checking the code library", [this](int exit_code, const std::string& output) {
+    const std::string checked = config.game;
+    runner.Queue({SelfPath(), "--user", Tools::UserDir(), "--check-code", checked},
+                 "Checking the code library", [this, checked](int exit_code, const std::string& output) {
+                     if (config.game != checked) {
+                         // the game chosen before: ChooseGame has checked the new one since
+                         return;
+                     }
                      code = Checks::CodeFromCheck(exit_code, output);
                      LOG_INFO(Frontend, "launcher: code library check {}: {}", exit_code,
                               code.notice.empty() ? "fine" : code.notice);
@@ -1156,8 +1161,10 @@ void State::ChooseGame(bool browse) {
                  CheckCode();
                  // the mods go by the game's region (its mods folder, its texture packs): read
                  // again, and Play waits for them as at the start (what mods.py still returns for
-                 // the game before is left out: ModsGame, screen_mods.cpp)
-                 if (ToolsReady() && !job.Active()) {
+                 // the game before is left out: ModsGame, screen_mods.cpp). Not while a job runs (a
+                 // deploy reads them again when it ends); one that ended while the picker was open,
+                 // its window not shown yet, is done
+                 if (ToolsReady() && (!job.Active() || job.finished)) {
                      mods.loaded = false;
                      mods.error.clear();
                      RefreshMods(*this);
