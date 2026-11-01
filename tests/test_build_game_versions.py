@@ -58,6 +58,9 @@ def test_a_hook_without_an_address_stops_the_build(tmp_path):
         build_game.translate_tables({"shifts": shifts}, {}, {BASE + 0x150: "h"}, {})
     with pytest.raises(SystemExit, match=r"for hook 0x00100150, tunable 0x00100160 \(.*\): put each on an address "):
         build_game.translate_tables({"shifts": shifts}, {}, {BASE + 0x150: "h"}, {BASE + 0x160: (400, "t")})
+    # a tunable alone stops it too
+    with pytest.raises(SystemExit, match=r"^no address in this version for tunable 0x00100160 \(.*\): put it on "):
+        build_game.translate_tables({"shifts": shifts}, {}, {}, {BASE + 0x160: (400, "t")})
 
 
 def test_check_version_reads_the_given_file(tmp_path):
