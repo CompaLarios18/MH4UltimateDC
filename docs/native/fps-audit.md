@@ -235,28 +235,28 @@ this base refuses (not tried here); a short G1 pair checked that it accepts both
 libraries and timeouts, one pair at a time under the emulator lock, the masks copy
 `build/fps/fs_write_masks_n322.txt`, into new folders `build/fps/<S>-det-idle`, `<S>-det-none-idle`, `<S>-rt-idle[-rN]`
 and `<S>-rt-none-idle` (the deterministic runs before the real-time ones; nothing else of the port ran during the
-real-time ones, with one exception: *The PC's load*). Per-run timeout 900 s (det) and 1,800 s (rt): no run timed out,
-every run exited 0.
+real-time ones; other programs: *The PC's load*). Per-run timeout 900 s (det) and 1,800 s (rt): no run timed out, every
+run exited 0.
 
 **The PC's load.** The total CPU over 20 s before each real-time pair: G1 21.3 %; G3 pairs 1 to 5: 21.1, 22.2, 21.5,
 20.8, 24.4 %; G2 19.7, G4 19.9 %; `none`: G1 20.3, G2 19.5, G4 18.8 %. That is the maintainer's desktop (the animated
 wallpaper, Chrome, Steam, the graphics driver's panel) with no build, test or other run, and about 20 % rather than the
 about 11 % (1.3 of the 12 logical processors, *The PC during the runs* above) of the reference run earlier that day.
-Sampled every 10 s from the end of G3's pair 5 to the last pair: 25.3 % on average with no runner (18 samples, taken
-right after each run while `compare` processed it, so they include compare's work: 40.8 % and 37 % at two of them),
-34.8 % with the runner (94 samples, at most 45.1 %). Against those five pairs' pre-run loads (19.6 % on average) the
-runner adds about 15 %, about 1.8 of the 12 logical processors. **Two interruptions.** An unrelated installer of the
-maintainer's ran during the 120 fps run of G3's pair 4. Its times are not in the logs: they were read by hand during the
-session (the installer's processes started at about 18:41 local time and took every processor from about 18:44, that
-is from about 112 s of that run, the long talk in the village, and on every processor for its last 20 s, game time
-about 289 to 300 s), and the load was not sampled during pair 4 (the samples are taken before each pair). What the logs
-show is the next sample, at 18:45:10, 20 s after pair 4 ended: 100 %; and the run took 309.4 s against 306.5 s for the
-other four 120 fps runs. Pair 5 was held while the load was 100 % and then while a game and an antivirus scan ran (18
-minutes in all), and started at 24.4 % once the game had closed. So every real-time run below is idle except pair 4's
-120 fps run, which is marked.
+Sampled every 10 s from the end of G3's pair 5 to the last pair: 25.3 % on average with no runner (18 samples, in the
+20 s gaps between pairs and after the last one; the first after each run includes the run's end and `compare`, up to
+40.8 %), 34.8 % with the runner (94 samples, at most 45.1 %). Against those five pairs' pre-run loads (19.6 % on
+average) the runner adds about 15 %, about 1.8 of the 12 logical processors. **Two interruptions.** An unrelated
+installer of the maintainer's ran during the 120 fps run of G3's pair 4. Its times are not in the logs: they were read
+by hand during the session. Its processes started at about 18:41 local time, about 112 s into that run (the long talk
+in the village; the run lasted from 18:39:19 to 18:44:28 by its files' times), and took every processor from about
+18:44, the run's last ~30 s. The load was not sampled during pair 4 (the samples are taken before each pair). What the
+logs show is the next sample, at 18:45:10, 20 s after pair 4 and its `compare` ended: 100 %; and the run took 309.4 s
+against 306.5 s for the other four 120 fps runs. Pair 5 was held while the load was 100 % and then while a game and an
+antivirus scan ran (18 minutes in all), and started at 24.4 % once the game had closed. So every real-time run below is
+idle except pair 4's 120 fps run, which is marked.
 
-Host seconds of the real-time runs are now steady: G3 303.1 to 303.4 at 60 fps and 306.5 at 120 fps (pair 4's 309.4), G2
-152.7 to 153.3 and 156.5 to 157.1, G4 52.3 to 52.4 and 56.2 to 56.4, G1 30.7 to 30.8 and 34.8 to 34.9.
+Host seconds of the real-time runs are now steady: G3 303.1 to 303.4 at 60 fps and 306.5 at 120 fps (pair 4's 309.4),
+G2 152.7 to 153.3 and 156.5 to 157.1, G4 52.3 to 52.4 and 56.2 to 56.4, G1 30.7 to 30.8 and 34.8 to 34.9.
 
 Items by session, `--io-latency azahar`. Counts are of the 60 fps run and the 120 fps run.
 
@@ -301,13 +301,13 @@ movie; the three 60 fps runs that reach the hunt have its four changes at the sa
 | G4 | rt | 52.3 + 56.2 | pass (6) | **FAIL** 166.7 ms (4 of 6) | pass (4) | n/a | **FAIL** +633 | pass (2; 1 masked, equal without) |
 
 The deterministic G1 and G4 with `none` now run to the end (N3-33). The deterministic G4 with `none` fails the times by
-2.65 s: its 60 fps run ends the intro movie at frame 903 (15.05 s, where every `azahar` 60 fps run ends it: 902 in G3's
-pair 4; 1802, 15.02 s, at 120 fps) and its 120 fps run at frame 1502 (12.52 s), where the real-time `none` runs end it
-at both rates (frames 753 and 1502).
+2.65 s: its 60 fps run ends the intro movie at frame 903 (15.05 s, where every G3 and G4 `azahar` 60 fps run ends it:
+902 in G3's pair 4; 1802, 15.02 s, at 120 fps) and its 120 fps run at frame 1502 (12.52 s), where G4's real-time `none`
+run ends it (frames 753 and 1502). G2 ends it later, at frame 1652 or 1653 (3302 or 3303 at 120 fps), in every G2 row.
 
 Scene changes, game time of the 120 fps run minus the 60 fps run in ms (frame / fps), the game clock offset beside it.
-G3 in real time has no pair with both runs in the hunt; its rows pair the 60 fps run of one pair with pair 4's 120 fps run
-(folders `build/fps/mix-idle-60rN-120r4`, made as the `mix-*` folders of the loaded runs).
+G3 in real time has no pair with both runs in the hunt; its rows pair the 60 fps run of one pair with pair 4's 120 fps
+run (folders `build/fps/mix-idle-60rN-120r4`, made as the `mix-*` folders of the loaded runs).
 
 | Session | mode | differences in ms, in order | game clock offsets, s |
 |---|---|---|---|
@@ -327,10 +327,10 @@ G3 in real time has no pair with both runs in the hunt; its rows pair the 60 fps
 | G4 | rt, `none` | -16.7, -166.7, -33.3, -91.7, -108.3, -116.7 | -0.04, -0.17, +3.98, +3.89, +3.88, +3.87 |
 
 The deterministic rows equal those of the loaded runs to the 0.1 ms (G3's now has all ten changes, the reference's).
-Against the per-change limits proposed below (item 2 of the proposal: 333.3 ms for the first aDemo, 166.7 ms for the three after
-the intro movie, 316.7 ms for G2's opening, 91.7 ms for G3's aGameSys and aQuest, 66.7 ms for every other change), every
-`azahar` row, deterministic and real time, is inside; so are the real-time `none` rows; the deterministic G4 with `none`
-is not (2,533.3 to 2,650.0 ms).
+Against the per-change limits proposed below (item 2 of the proposal: 333.3 ms for the first aDemo, 166.7 ms for the
+three after the intro movie, 316.7 ms for G2's opening, 91.7 ms for G3's aGameSys and aQuest, 66.7 ms for every other
+change), every `azahar` row, deterministic and real time, is inside; so are the real-time `none` rows; the deterministic
+G4 with `none` is not (2,533.3 to 2,650.0 ms).
 
 DSP shift against the game clock offset at the window's start, in DSP frames: G1 (the boot window) +15 of +106 (rt), +13
 of +98 (rt `none`), +57 of +125 and +57 of +124 (det, both latencies); G2 at frame 6000 +683 of +814 (84 %, rt), +638 of
@@ -373,10 +373,11 @@ loaded PC.
 1. The deterministic rows are unchanged to the 0.1 ms, the frame and the DSP frame (G1, G2, G4), and G3's is now the
    reference's: 10 scene changes at both rates, 9 of 9 checkpoints, the hunt reached, seeds 0 and 1 equal (N3-32).
 2. `--deterministic --io-latency none` no longer hangs (N3-33): G1 and G4 finish in 2.5 + 4.6 s and 4.2 + 8.7 s. Its G4
-   pair fails the times by 2.65 s, because the 60 fps run ends the intro movie where `azahar` 60 fps runs do (frame 903;
-   902 in G3's pair 4; 1802 at 120 fps) and the 120 fps run where real-time `none` does (frame 1502).
-3. Real-time host times are steady (G3 303.1 to 303.4 + 306.5, against 303 to 408 + 307 to 455 loaded), and the real-time
-   `azahar` scene times are a little closer: largest G1 91.7, G2 125.0, G4 133.3 ms against 91.7, 133.3, 158.3 ms
+   pair fails the times by 2.65 s, because the 60 fps run ends the intro movie where G3's and G4's `azahar` 60 fps runs
+   do (frame 903; 902 in G3's pair 4; 1802 at 120 fps) and the 120 fps run where G4's real-time `none` run does (frame
+   1502).
+3. Real-time host times are steady (G3 303.1 to 303.4 + 306.5, against 303 to 408 + 307 to 455 loaded), and the
+   real-time `azahar` scene times are a little closer: largest G1 91.7, G2 125.0, G4 133.3 ms against 91.7, 133.3, 158.3 ms
    loaded (`none`: 116.7, 150.0, 166.7 against 100.0, 166.7, 166.7). Every `azahar` row, both modes, and every
    real-time `none` row is inside the per-change limits of the proposal.
 4. G3 in real time is not more repeatable on the idle PC: 4 of 10 runs reach the hunt (3 of 5 at 60 fps, 1 of 5 at
