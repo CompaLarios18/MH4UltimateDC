@@ -152,6 +152,9 @@ TEST_CASE("Snapshot adds the threads, the system calls and the services; the row
     before.guest_ns[7] = 4'000;
     before.svc[0x23].ns = 500;
     before.services["fs:USER"].ns = 200;
+    before.thread_svc_ns[1] = 300;        // the main thread's part of svc: 300 of 500
+    before.thread_svc_ns[7] = 200;
+    before.thread_service_ns[7] = 200;    // the main thread made no service request yet
     before.idle_ns = 10'000;
     before.thread_switches = 5;
     before.preemptions = 1;
@@ -163,8 +166,12 @@ TEST_CASE("Snapshot adds the threads, the system calls and the services; the row
     after.guest_ns[9] = 5'000;            // a thread that did not exist before
     after.svc[0x23].ns += 600'000;
     after.svc[0x0A].ns += 40'220;
+    after.thread_svc_ns[1] += 402'118;    // of the 640,220 ns above
+    after.thread_svc_ns[7] += 238'102;
     after.services["fs:USER"].ns += 90'000;
     after.services["srv:"].ns += 5'300;   // a service seen for the first time
+    after.thread_service_ns[1] = 61'250;  // the main thread's first service request
+    after.thread_service_ns[7] += 34'050;
     after.idle_ns += 4'210'000;
     after.thread_switches += 31;
     after.preemptions += 2;
@@ -172,24 +179,40 @@ TEST_CASE("Snapshot adds the threads, the system calls and the services; the row
 
     CHECK(a.main_ns == 1'000);
     CHECK(a.guest_ns == 5'000);
+    CHECK(a.main_svc_ns == 300);
+    CHECK(a.main_service_ns == 0);
     CHECK(b.main_ns == 2'211'004);
-    // 8,333.511 us in all; main 2,210.004; all threads 2,210.004 + 680.109 + 5.000 = 2,895.113
-    CHECK(perf::FormatRow(12, a, b) == "12,8333.511,2210.004,2895.113,640.220,95.300,4210.000,31,2");
-    // the main thread is told apart by its id; 0 means none
-    CHECK(perf::Snapshot(after, 0, 0).main_ns == 0);
+    CHECK(b.main_svc_ns == 402'418);
+    CHECK(b.main_service_ns == 61'250);
+    // 8,333.511 us in all; main 2,210.004; all threads 2,210.004 + 680.109 + 5.000 = 2,895.113; of the system
+    // calls' 640.220 the main thread's 402.118, of the services' 95.300 its 61.250
+    CHECK(perf::FormatRow(12, a, b) == "12,8333.511,2210.004,2895.113,640.220,95.300,4210.000,31,2,402.118,61.250");
+    // the main thread is told apart by its id; 0 means none, and an id with no entry gives 0
+    const perf::Totals none = perf::Snapshot(after, 0, 0);
+    CHECK(none.main_ns == 0);
+    CHECK(none.main_svc_ns == 0);
+    CHECK(none.main_service_ns == 0);
+    const perf::Totals unknown = perf::Snapshot(after, 42, 0);
+    CHECK(unknown.main_ns == 0);
+    CHECK(unknown.main_svc_ns == 0);
+    CHECK(unknown.main_service_ns == 0);
     CHECK(perf::Snapshot(after, 9, 0).main_ns == 5'000);
+    CHECK(perf::Snapshot(after, 9, 0).main_svc_ns == 0);  // a guest entry but no system call entry
+    CHECK(perf::Snapshot(after, 7, 0).main_service_ns == 34'250);
     // a counter that went back (it cannot) gives 0, not a huge number
-    CHECK(perf::FormatRow(1, b, a) == "1,0.000,0.000,0.000,0.000,0.000,0.000,0,0");
+    CHECK(perf::FormatRow(1, b, a) == "1,0.000,0.000,0.000,0.000,0.000,0.000,0,0,0.000,0.000");
 }
 
 TEST_CASE("the header names the title, the host clock and the mode; a deterministic log says virtual") {
     const std::string host = perf::HeaderLine(0x0004000000126300ull, false);
-    CHECK(host.rfind("# perf v1 ", 0) == 0);
+    CHECK(host.rfind("# perf v2 ", 0) == 0);
     CHECK(host.find(" game=0x0004000000126300 cpu=native new3ds=off clock=host mode=realtime") != std::string::npos);
     const std::string det = perf::HeaderLine(0, true);
+    CHECK(det.rfind("# perf v2 ", 0) == 0);
     CHECK(det.find(" clock=virtual mode=deterministic") != std::string::npos);
+    // v1's columns in their places, then the main thread's part of svc_us and service_us
     CHECK(std::string(perf::ColumnLine()) ==
-          "frame,present_us,main_us,guest_us,svc_us,service_us,idle_us,switches,preempts");
+          "frame,present_us,main_us,guest_us,svc_us,service_us,idle_us,switches,preempts,main_svc_us,main_service_us");
 }
 
 TEST_CASE("--perf-log writes a row per game frame with the time of each category") {
@@ -229,19 +252,20 @@ TEST_CASE("--perf-log writes a row per game frame with the time of each category
 
     const std::vector<std::string> lines = Lines(csv);
     REQUIRE(lines.size() == 6);  // header, columns, three rows, footer
-    CHECK(lines[0].rfind("# perf v1 ", 0) == 0);
+    CHECK(lines[0].rfind("# perf v2 ", 0) == 0);
     CHECK(lines[0].find("clock=host mode=realtime") != std::string::npos);
     CHECK(lines[1] == perf::ColumnLine());
-    // frame, present, main, guest, svc, service, idle, switches, preempts
+    // frame, present, main, guest, svc, service, idle, switches, preempts, main_svc, main_service
     // the first row is from the start of the log
     const std::vector<std::string> first = Split(lines[2]);
-    REQUIRE(first.size() == 9);
+    REQUIRE(first.size() == 11);
     CHECK(Head(lines[2]) ==
           std::vector<std::string>{"1", "2000.000", "2000.000", "2000.000", "0.000", "0.000", "0.000"});
+    // the only thread is the main thread: its parts are the whole of svc_us and service_us
     CHECK(Split(lines[3]) == std::vector<std::string>{"2", "4200.000", "3000.000", "3000.000", "700.000", "500.000",
-                                                      "0.000", "0", "0"});
+                                                      "0.000", "0", "0", "700.000", "500.000"});
     const std::vector<std::string> third = Split(lines[4]);
-    REQUIRE(third.size() == 9);
+    REQUIRE(third.size() == 11);
     CHECK(third[0] == "3");
     // idle_us and present_us: the thread slept 1 ms and nothing else could run. The sleep goes through the game
     // clock's ticks (3.7 ns each), so the deadline is reached to within a few ns, not exactly.
@@ -252,6 +276,8 @@ TEST_CASE("--perf-log writes a row per game frame with the time of each category
     CHECK(third[3] == "0.000");   // guest_us
     CHECK(third[4] == "0.000");   // svc_us
     CHECK(third[5] == "0.000");   // service_us
+    CHECK(third[9] == "0.000");   // main_svc_us: nor to the thread blocked in it
+    CHECK(third[10] == "0.000");  // main_service_us
     CHECK(third[1] == third[6]);  // present_us == idle_us: the same move of the manual clock
     CHECK(std::stoi(third[7]) >= 1);  // it was switched away and back
     CHECK(lines[5] == "# frames=3 dropped=0");
@@ -295,7 +321,7 @@ TEST_CASE("a frame seen at a preemption check or a posted task is a row of its o
     REQUIRE(lines.size() == 7);  // header, columns, four rows, footer
     for (std::size_t i = 2; i < 6; ++i) {
         const std::vector<std::string> row = Split(lines[i]);
-        REQUIRE(row.size() == 9);
+        REQUIRE(row.size() == 11);
         const double present = std::stod(row[1]), main = std::stod(row[2]), guest = std::stod(row[3]);
         CHECK(main <= guest);
         CHECK(guest <= present);
@@ -335,10 +361,62 @@ TEST_CASE("main_us is the main thread's time even when another thread's system c
     const std::vector<std::string> lines = Lines(csv);
     REQUIRE(lines.size() == 5);  // header, columns, the starting value, frame 1, footer
     const std::vector<std::string> row = Split(lines[3]);
-    REQUIRE(row.size() == 9);
+    REQUIRE(row.size() == 11);
     CHECK(row[0] == "1");
     CHECK(row[2] == "250.000");  // main_us: the main thread's own guest time
     CHECK(row[3] == "930.000");  // guest_us: 250 + 680 of the other thread
+}
+
+TEST_CASE("main_svc_us and main_service_us hold the main thread's calls and services only (N1-32)") {
+    Fixture f;
+    TempDir dir;
+    const std::string csv = dir.File("perf.csv");
+    const int status = BootWith(f, dir, {"--perf-log", csv}, [&] {
+        Runtime& rt = f.runtime;
+        GuestMemory& memory = rt.Memory();
+        CHECK(IsSuccess(memory.Map(kFramePage, kPageSize, MemPerm::ReadWrite, MemState::Private)));
+        GuestScheduler& scheduler = rt.Scheduler();
+        Kernel& kernel = rt.GetKernel();
+        auto other = kernel.NewThread("other", 0x30, 0, kernel.CurrentProcess());
+        scheduler.AttachFunction(other, [&] {
+            f.time->Advance(50 * kUs);   // guest
+            scheduler.BeginSvc(0x31);
+            f.time->Advance(300 * kUs);  // the other thread's system call
+            scheduler.BeginService("srv:");
+            f.time->Advance(400 * kUs);  // the other thread's service
+            scheduler.EndService();
+            scheduler.EndSvc();
+            memory.Write<u32>(kFrameCounterAddress, 1);
+            CallSvc(rt, 0x23, {0});  // the frame is seen here, on "other"
+        });
+        CallSvc(rt, 0x23, {0});  // the first poll gives the counter's starting value as a frame (row 0)
+        f.time->Advance(250 * kUs);   // guest
+        scheduler.BeginSvc(0x30);
+        f.time->Advance(300 * kUs);   // the main thread's system call
+        scheduler.BeginService("fs:USER");
+        f.time->Advance(200 * kUs);   // the main thread's service
+        scheduler.EndService();
+        f.time->Advance(100 * kUs);   // its system call again
+        scheduler.EndSvc();
+        scheduler.Start(other);
+        CallSvc(rt, 0x0A, {static_cast<u32>(kMs), 0});  // the main thread sleeps; "other" runs
+        ExitProcess(rt);
+    });
+    CHECK(status == 0);
+
+    const std::vector<std::string> lines = Lines(csv);
+    REQUIRE(lines.size() == 5);  // header, columns, the starting value, frame 1, footer
+    CHECK(lines[0].rfind("# perf v2 ", 0) == 0);
+    CHECK(lines[1] == perf::ColumnLine());
+    const std::vector<std::string> row = Split(lines[3]);
+    REQUIRE(row.size() == 11);
+    CHECK(row[0] == "1");
+    CHECK(row[2] == "250.000");   // main_us
+    CHECK(row[3] == "300.000");   // guest_us: 250 + 50
+    CHECK(row[4] == "700.000");   // svc_us: the main thread's 400 and the other's 300
+    CHECK(row[5] == "600.000");   // service_us: 200 and 400
+    CHECK(row[9] == "400.000");   // main_svc_us: the main thread's only
+    CHECK(row[10] == "200.000");  // main_service_us: the main thread's only
 }
 
 TEST_CASE("with --deterministic the log's header says clock=virtual (perf_report counts no such log)") {
@@ -352,7 +430,7 @@ TEST_CASE("with --deterministic the log's header says clock=virtual (perf_report
     CHECK(runtime.Boot(options) == 0);
     const std::vector<std::string> lines = Lines(csv);
     REQUIRE(lines.size() >= 2);
-    CHECK(lines[0].rfind("# perf v1 ", 0) == 0);
+    CHECK(lines[0].rfind("# perf v2 ", 0) == 0);
     CHECK(lines[0].find(" clock=virtual mode=deterministic") != std::string::npos);
     CHECK(lines[1] == perf::ColumnLine());
 }

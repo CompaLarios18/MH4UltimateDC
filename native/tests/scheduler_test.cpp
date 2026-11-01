@@ -841,6 +841,88 @@ TEST_CASE("counters: guest time per thread, SVCs by number, services by name, id
     CHECK(counters.idle_ns <= 7000010);
 }
 
+TEST_CASE("counters: system call and service time per thread, the blocked thread's own only (N1-32)") {
+    Sim sim;
+    auto never = sim.kernel->NewEvent(ResetType::OneShot);
+    // `a` (priority 20) runs first, sleeps inside a system call and exits before the end; `b` (30) runs
+    // while `a` sleeps, makes the same system call number and the same service as `a`, and ends blocked
+    // for ever inside a system call. Every number below is a move of the manual clock in one thread's body.
+    auto a = sim.Spawn(20, 0, [&] {
+        sim.Advance(1 * kMs);   // guest
+        sim.sched->BeginSvc(0x0A);
+        sim.Advance(2 * kMs);   // a's call, before the block
+        sim.sched->Sleep(10 * kMs);  // blocked: b runs, and its time is b's
+        sim.Advance(3 * kMs);   // a's call, after the wake-up
+        sim.sched->EndSvc();
+        sim.Advance(1 * kMs);   // guest
+        sim.sched->BeginSvc(0x32);
+        sim.Advance(1 * kMs);   // a's call
+        sim.sched->BeginService("srv:");
+        sim.Advance(2 * kMs);   // a's service, inside its call
+        sim.sched->EndService();
+        sim.Advance(1 * kMs);   // a's call
+        sim.sched->EndSvc();
+        sim.Log("a exits");
+    });
+    auto b = sim.Spawn(30, 0, [&] {
+        sim.Advance(1 * kMs);   // guest
+        sim.sched->BeginSvc(0x32);
+        sim.Advance(4 * kMs);   // b's call
+        sim.sched->BeginService("srv:");
+        sim.Advance(6 * kMs);   // b's service, inside its call (a's wake-up falls due here)
+        sim.sched->EndService();
+        sim.Advance(6 * kMs);   // b's call; its EndSvc switches to a
+        sim.sched->EndSvc();
+        sim.Log("b after a");
+        sim.sched->BeginSvc(0x24);
+        sim.Advance(1 * kMs);   // b's call, then it waits for ever inside it
+        sim.sched->Block(sim.Self(), {never}, false, -1);
+    });
+    const u32 ida = a->thread_id, idb = b->thread_id;
+    CHECK(sim.sched->Run({}, true) == RunStatus::Idle);
+    CHECK(sim.log == std::vector<std::string>{"a exits", "b after a"});
+    CHECK(a->status == ThreadStatus::Dead);
+    CHECK(b->status != ThreadStatus::Dead);
+
+    const SchedulerCounters& counters = sim.sched->Counters();
+    // the exited thread keeps its entries
+    REQUIRE(counters.thread_svc_ns.count(ida) == 1);
+    REQUIRE(counters.thread_service_ns.count(ida) == 1);
+    REQUIRE(counters.thread_svc_ns.count(idb) == 1);
+    REQUIRE(counters.thread_service_ns.count(idb) == 1);
+    CHECK(counters.thread_svc_ns.size() == 2);
+    CHECK(counters.thread_service_ns.size() == 2);
+    // each thread's own lengths: a 2 + 3 + 1 + 1 ms of calls (nothing of b's while a slept), 2 ms of service
+    CHECK(counters.thread_svc_ns.at(ida) == 7 * kMs);
+    CHECK(counters.thread_service_ns.at(ida) == 2 * kMs);
+    // b 4 + 6 + 1 ms of calls (the wait at the end is charged to nobody), 6 ms of service
+    CHECK(counters.thread_svc_ns.at(idb) == 11 * kMs);
+    CHECK(counters.thread_service_ns.at(idb) == 6 * kMs);
+    CHECK(counters.guest_ns.at(ida) == 2 * kMs);
+    CHECK(counters.guest_ns.at(idb) == 1 * kMs);
+    // the totals by number and by name are what they were, and the per-thread maps sum to them exactly
+    CHECK(counters.svc[0x0A].ns == 5 * kMs);
+    CHECK(counters.svc[0x32].ns == 12 * kMs);  // a's 2 and b's 10
+    CHECK(counters.svc[0x24].ns == 1 * kMs);
+    CHECK(counters.services.at("srv:").ns == 8 * kMs);
+    CHECK(counters.services.at("srv:").calls == 2);
+    u64 by_number = 0, by_name = 0, svc_by_thread = 0, service_by_thread = 0;
+    for (const SchedulerCounters::Named& named : counters.svc) {
+        by_number += named.ns;
+    }
+    for (const auto& [name, named] : counters.services) {
+        by_name += named.ns;
+    }
+    for (const auto& [id, ns] : counters.thread_svc_ns) {
+        svc_by_thread += ns;
+    }
+    for (const auto& [id, ns] : counters.thread_service_ns) {
+        service_by_thread += ns;
+    }
+    CHECK(svc_by_thread == by_number);
+    CHECK(service_by_thread == by_name);
+}
+
 TEST_CASE("safe-point hooks run at every SVC and preemption check, and can stop the run") {
     Sim sim;
     int hooks = 0, in_svc = -1;

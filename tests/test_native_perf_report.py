@@ -414,3 +414,121 @@ def test_native_command_line(tmp_path, capsys):
     # the budget option moves the verdict
     assert perf_report.main([*args, "--thread-budget-ms", "1.9"]) == 0
     assert "budget of 1.900 ms" in capsys.readouterr().out
+
+
+# -- the native runner's log, v2 (N1-32): the main thread's own calls and services ------------------------------
+
+NATIVE_HEADER_V2 = ("# perf v2 2026-01-01 game=0x0000000000000000 cpu=native new3ds=off clock={clock} mode={mode}\n"
+                    "frame,present_us,main_us,guest_us,svc_us,service_us,idle_us,switches,preempts,"
+                    "main_svc_us,main_service_us\n")
+
+
+def native_csv_v2(rows, clock="host", first_frame=1, header=NATIVE_HEADER_V2):
+    """rows of (present, main, guest, svc, service, idle, main_svc, main_service) in microseconds."""
+    mode = "realtime" if clock == "host" else "deterministic"
+    body = "".join(f"{first_frame + i},{p:.3f},{m:.3f},{g:.3f},{s:.3f},{v:.3f},{d:.3f},3,1,{ms:.3f},{mv:.3f}\n"
+                   for i, (p, m, g, s, v, d, ms, mv) in enumerate(rows))
+    return header.format(clock=clock, mode=mode) + body + f"# frames={len(rows)} dropped=0\n"
+
+
+def test_v2_game_us_holds_the_main_threads_own_calls_and_services():
+    # main 40..4000 us; of the 300 us of calls and 100 us of services, the main thread's are 100 and 20
+    rows = [(8333.0, i * 40.0, i * 40.0 + 500.0, 300.0, 100.0, 5000.0, 100.0, 20.0) for i in range(1, 101)]
+    csv = native_csv_v2(rows)
+    columns, parsed, meta = perf_report.parse(csv)
+    assert perf_report.native_version(columns, meta) == 2
+    data = perf_report.columns_of(columns, parsed)
+    assert data["game_us"][0] == 40.0 + 100.0 + 20.0
+    assert data["game_all_us"][0] == 40.0 + 300.0 + 100.0
+    assert data["busy_us"][0] == 40.0 + 500.0 + 300.0 + 100.0
+    text = perf_report.report(csv)
+    assert "| main_svc (ms) | 0.100 | 0.100 | 0.100 | 0.100 |" in text
+    assert "| main_service (ms) | 0.020 | 0.020 | 0.020 | 0.020 |" in text
+    assert "| game (ms) | 2.120 | 3.920 | 4.080 | 4.120 |" in text
+    assert "| game_all (ms) | 2.400 | 4.200 | 4.360 | 4.400 |" in text  # N1-23's upper bound, a row of the table
+    # the verdict: game_us 4.080 and main_us 3.960 around the 4 ms; then game_all_us, then busy_us
+    lines = text.splitlines()
+    verdict = ("Game thread, p99 against its budget of 4.000 ms: game_us (upper bound, its own calls and services) "
+               "4.080 ms, main_us (lower bound) 3.960 ms: UNDECIDED")
+    assert verdict in lines
+    at = lines.index(verdict)
+    assert lines[at + 1] == ("With every thread's calls and services (game_all_us, N1-23's upper bound), "
+                             "p99: 4.360 ms")
+    assert lines[at + 2] == "Every guest thread together (busy_us, every guest thread's counted work), p99: 4.860 ms"
+
+
+def test_v2_verdicts():
+    within = [(8333.0, 1000.0, 1500.0, 300.0, 100.0, 0.0, 200.0, 50.0)] * 20
+    assert "(upper bound, its own calls and services) 1.250 ms, main_us (lower bound) 1.000 ms: WITHIN" in \
+        perf_report.report(native_csv_v2(within))
+    over = [(8333.0, 4500.0, 5000.0, 300.0, 100.0, 0.0, 200.0, 50.0)] * 20
+    assert "main_us (lower bound) 4.500 ms: OVER" in perf_report.report(native_csv_v2(over))
+    undecided = [(8333.0, 3900.0, 3900.0, 300.0, 100.0, 0.0, 200.0, 50.0)] * 20
+    assert "4.150 ms, main_us (lower bound) 3.900 ms: UNDECIDED" in perf_report.report(native_csv_v2(undecided))
+    # exactly on the budget is within
+    on = [(8333.0, 3000.0, 3000.0, 1500.0, 1500.0, 0.0, 800.0, 200.0)] * 5
+    assert "4.000 ms, main_us (lower bound) 3.000 ms: WITHIN" in perf_report.report(native_csv_v2(on))
+
+
+def test_v2_within_where_n1_23s_upper_bound_would_be_undecided():
+    # main p99 3.564 ms; every thread's calls and services (800 us) would put the upper bound at 4.364 ms, over the
+    # budget (UNDECIDED as N1-23 read it); the main thread's own (300 us) put it at 3.864 ms: WITHIN
+    rows = [(8333.0, i * 36.0, i * 36.0, 600.0, 200.0, 0.0, 250.0, 50.0) for i in range(1, 101)]
+    text = perf_report.report(native_csv_v2(rows))
+    assert ("game_us (upper bound, its own calls and services) 3.864 ms, main_us (lower bound) 3.564 ms: WITHIN"
+            in text)
+    assert "With every thread's calls and services (game_all_us, N1-23's upper bound), p99: 4.364 ms" in text
+    assert "UNDECIDED" not in text
+    # the same frames as a v1 log (without the two columns) are UNDECIDED, as N1-23 reported them
+    v1 = perf_report.report(native_csv([r[:6] for r in rows]))
+    assert "game_us (upper bound) 4.364 ms, main_us (lower bound) 3.564 ms: UNDECIDED" in v1
+    assert "game_all" not in v1 and "With every thread's" not in v1
+
+
+def test_v2_counts_like_v1_with_the_hunt_and_the_clock():
+    rows = [(8333.0, 100.0, 100.0, 0.0, 0.0, 0.0, 0.0, 0.0)] * 10 + \
+           [(8333.0, 3000.0, 3000.0, 400.0, 100.0, 0.0, 300.0, 50.0)] * 20
+    csv = native_csv_v2(rows, first_frame=5001)
+    frames = perf_report.hunt_frames(state_trace([DEMO] * 15 + [HUNT] * 20, first_frame=4996))
+    text = perf_report.report(csv, frames=frames, min_frames=5)
+    assert "Hunt: 20 rows" in text and "game_us (upper bound, its own calls and services) 3.350 ms" in text
+    with pytest.raises(perf_report.NotCounted, match="virtual time"):
+        perf_report.report(native_csv_v2(rows, clock="virtual"))
+
+
+V1_COLUMNS = "frame,present_us,main_us,guest_us,svc_us,service_us,idle_us,switches,preempts"
+
+
+@pytest.mark.parametrize("header,fragment", [
+    # one of the two new columns without the other
+    ("# perf v2 2026-01-01 cpu=native clock=host mode=realtime\n" + V1_COLUMNS + ",main_svc_us\n",
+     "main_svc_us without main_service_us"),
+    ("# perf v2 2026-01-01 cpu=native clock=host mode=realtime\n" + V1_COLUMNS + ",main_service_us\n",
+     "main_service_us without main_svc_us"),
+    # a v1 line over v2 columns, and a v2 line over v1 columns
+    ("# perf v1 2026-01-01 cpu=native clock=host mode=realtime\n" + V1_COLUMNS + ",main_svc_us,main_service_us\n",
+     "says v1, but the columns are those of a v2"),
+    ("# perf v2 2026-01-01 cpu=native clock=host mode=realtime\n" + V1_COLUMNS + "\n",
+     "says v2, but the columns are those of a v1"),
+])
+def test_v2_refusals(tmp_path, capsys, header, fragment):
+    columns = header.splitlines()[1].split(",")
+    row = ",".join(["1"] + ["100.000"] * (len(columns) - 1))
+    csv = header + row + "\n"
+    with pytest.raises(perf_report.FormatError, match=fragment):
+        perf_report.report(csv)
+    path = tmp_path / "bad.csv"
+    path.write_text(csv)
+    assert perf_report.main([str(path)]) == 2
+    assert fragment.split(",")[0] in capsys.readouterr().err
+
+
+def test_a_v2_line_over_the_reference_runners_columns_is_refused():
+    with pytest.raises(perf_report.FormatError, match="says v2"):
+        perf_report.report(HEADER.replace("perf v1", "perf v2") + "0,8000,1,1,1\n")
+    # and a v1 reference log reads as before
+    columns, _, meta = perf_report.parse(make_csv([(8000.0, 1, 1, 1)]))
+    assert perf_report.native_version(columns, meta) is None
+    # and so does N1-23's native log: v1
+    columns, _, meta = perf_report.parse(native_csv([(8333.0, 1.0, 1.0, 0.0, 0.0, 0.0)]))
+    assert perf_report.native_version(columns, meta) == 1

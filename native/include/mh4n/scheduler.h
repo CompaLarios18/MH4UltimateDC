@@ -101,12 +101,21 @@ std::unique_ptr<PreemptionSource> MakeTimerThreadPreemption(TimeSource& source);
 // Cumulative since the scheduler was made. Times are host nanoseconds of the TimeSource (not game
 // time: a paused clock does not stop them). The runner samples them once per game frame; read them on
 // the scheduler's thread (a safe-point hook is the place).
+//
+// System call and service time is counted twice over, with the same nanoseconds: by number and by name
+// (`svc`, `services`) and by the thread that made the call (`thread_svc_ns`, `thread_service_ns`, N1-32).
+// Over the threads, `thread_svc_ns` sums exactly to the sum of `svc[n].ns`, and `thread_service_ns` to
+// the sum of the services' `ns`. A thread blocked inside a system call is charged nothing while it
+// waits. The maps keyed by thread id only grow: a thread that has exited keeps its entries (ids are
+// never reused). Only the performance log (`--perf-log`) and the tests read the per-thread maps.
 struct SchedulerCounters {
     struct Named {
         u64 ns = 0;
         u64 calls = 0;
     };
     std::map<u32, u64> guest_ns;                 // thread id -> time in its guest code
+    std::map<u32, u64> thread_svc_ns;            // thread id -> time inside its system calls (not its services)
+    std::map<u32, u64> thread_service_ns;        // thread id -> time inside the service handlers it called
     std::array<Named, 256> svc{};                // by SVC number: time inside, number of calls
     std::map<std::string, Named, std::less<>> services;  // by service name (N1-10 adds the names)
     u64 idle_ns = 0;                             // every core idle, waiting for work or a deadline

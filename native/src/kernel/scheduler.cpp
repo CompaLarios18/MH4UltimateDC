@@ -79,7 +79,11 @@ struct GuestScheduler::SchedThread {
     int queue_core = 0;
     Category cat;
     std::vector<Category> saved_categories;  // under BeginService
+    // This thread's entries in the counters' maps, found on its first charge of each kind (std::map
+    // nodes do not move, and no entry is ever erased): after that a charge is one addition.
     u64* guest_ns = nullptr;
+    u64* svc_ns = nullptr;      // SchedulerCounters::thread_svc_ns
+    u64* service_ns = nullptr;  // SchedulerCounters::thread_service_ns
 };
 
 // ---- construction ------------------------------------------------------------------------------------
@@ -841,6 +845,10 @@ void GuestScheduler::UpdateArm() {
 
 // ---- counters ----------------------------------------------------------------------------------------
 
+// Closes the time of `acct_`, the thread being counted, and starts counting `to`. The time goes to
+// acct_'s category, and system call and service time also to acct_ itself (N1-32). Never the current
+// thread: at a switch, Dispatch has already made the next thread current, and a thread blocked inside
+// a system call keeps its Svc category until it runs again.
 void GuestScheduler::AccountTo(SchedThread* to) {
     const s64 now = time_.NowNs();
     if (acct_ != nullptr && now > acct_start_ns_) {
@@ -854,9 +862,17 @@ void GuestScheduler::AccountTo(SchedThread* to) {
             break;
         case SchedThread::Category::Kind::Svc:
             counters_.svc[acct_->cat.svc & 0xFF].ns += elapsed;
+            if (acct_->svc_ns == nullptr) {
+                acct_->svc_ns = &counters_.thread_svc_ns[acct_->thread_id];
+            }
+            *acct_->svc_ns += elapsed;
             break;
         case SchedThread::Category::Kind::Service:
             acct_->cat.service->ns += elapsed;
+            if (acct_->service_ns == nullptr) {
+                acct_->service_ns = &counters_.thread_service_ns[acct_->thread_id];
+            }
+            *acct_->service_ns += elapsed;
             break;
         }
     }
