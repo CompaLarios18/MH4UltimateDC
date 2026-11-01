@@ -8,16 +8,24 @@
 //   # frames=<n> dropped=0
 //
 // `frame` is the game's frame counter (the `f=` of --state-trace, so the two files line up). Times are
-// microseconds of the scheduler's TimeSource (host time in real time), each one counted once:
+// microseconds of the scheduler's TimeSource (host time in real time), no microsecond counted twice:
 //
 //   present_us  from the previous row (the first row: from the start of the log, so it includes the
 //               boot) to this one
-//   main_us     guest code of the game's main thread
-//   guest_us    guest code of every thread (main_us included)
+//   main_us     the game's main thread in guest code, with the timer events, posted work and safe-point
+//               hooks (frame subscribers, this log included) run at its preemption checks
+//   guest_us    the same for every thread (main_us included)
 //   svc_us      inside system calls, every thread, without the services' time
 //   service_us  inside the services' handlers, every thread
 //   idle_us     every virtual core idle, waiting for work or a deadline
 //   switches    fiber switches in the frame; preempts: threads displaced while they could still run
+//
+// The scheduler's host loop between guest runs (Reap, ProcessPending, RunHooks, Dispatch) is in no
+// column: present_us - idle_us is at least the sum of guest_us, svc_us and service_us.
+//
+// A frame seen at a preemption check is written at the first system call after it (the counters are
+// flushed there), so a row ends at the first system call after the frame change; frames seen with no
+// system call between them give the first the time and the others empty rows.
 //
 // The scheduler counts system calls and services by number and name, not by thread, so the game
 // thread's time in them cannot be told from the other threads': tools/native/perf_report.py's

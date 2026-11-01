@@ -7,7 +7,6 @@
 TEST_CASE("perf_test needs recomp.h (the repository around native/)" * doctest::skip()) {}
 #else
 
-#include <array>
 #include <atomic>
 #include <chrono>
 #include <filesystem>
@@ -100,6 +99,13 @@ std::vector<std::string> Split(const std::string& line) {
     return out;
 }
 
+// the first 7 fields of a row: frame and the six times
+std::vector<std::string> Head(const std::string& line) {
+    std::vector<std::string> fields = Split(line);
+    fields.resize(7);
+    return fields;
+}
+
 struct Fixture {
     ManualTimeSource* time = nullptr;
     Runtime runtime;
@@ -113,9 +119,6 @@ struct Fixture {
     Fixture() : runtime(Config(&time)) { SetLogFilter(LogFilter(LogLevel::Info)); }
 };
 
-struct Regs {
-    std::array<u32, 16> r{};
-};
 void CallSvc(Runtime& rt, u32 number, std::initializer_list<u32> in) {
     RCtx ctx{};
     int i = 0;
@@ -230,9 +233,11 @@ TEST_CASE("--perf-log writes a row per game frame with the time of each category
     CHECK(lines[0].find("clock=host mode=realtime") != std::string::npos);
     CHECK(lines[1] == perf::ColumnLine());
     // frame, present, main, guest, svc, service, idle, switches, preempts
-    CHECK(Split(lines[2])[0] == "1");
-    CHECK(Split(lines[2])[2] == "2000.000");  // main_us
-    CHECK(Split(lines[2])[3] == "2000.000");  // guest_us
+    // the first row is from the start of the log
+    const std::vector<std::string> first = Split(lines[2]);
+    REQUIRE(first.size() == 9);
+    CHECK(Head(lines[2]) ==
+          std::vector<std::string>{"1", "2000.000", "2000.000", "2000.000", "0.000", "0.000", "0.000"});
     CHECK(Split(lines[3]) == std::vector<std::string>{"2", "4200.000", "3000.000", "3000.000", "700.000", "500.000",
                                                       "0.000", "0", "0"});
     const std::vector<std::string> third = Split(lines[4]);
@@ -243,8 +248,113 @@ TEST_CASE("--perf-log writes a row per game frame with the time of each category
     CHECK(std::stod(third[6]) == doctest::Approx(1000.0).epsilon(0.0001));
     CHECK(std::stod(third[1]) == doctest::Approx(1000.0).epsilon(0.0001));
     CHECK(third[2] == "0.000");
+    // only idle time went by: the time blocked inside svcSleepThread belongs to no system call and no thread
+    CHECK(third[3] == "0.000");   // guest_us
+    CHECK(third[4] == "0.000");   // svc_us
+    CHECK(third[5] == "0.000");   // service_us
+    CHECK(third[1] == third[6]);  // present_us == idle_us: the same move of the manual clock
     CHECK(std::stoi(third[7]) >= 1);  // it was switched away and back
     CHECK(lines[5] == "# frames=3 dropped=0");
+}
+
+TEST_CASE("a frame seen at a preemption check or a posted task is a row of its own time, not the next one's") {
+    Fixture f;
+    TempDir dir;
+    const std::string csv = dir.File("perf.csv");
+    const int status = BootWith(f, dir, {"--perf-log", csv}, [&] {
+        Runtime& rt = f.runtime;
+        GuestMemory& memory = rt.Memory();
+        CHECK(IsSuccess(memory.Map(kFramePage, kPageSize, MemPerm::ReadWrite, MemState::Private)));
+        GuestScheduler& scheduler = rt.Scheduler();
+
+        f.time->Advance(2 * kMs);  // frame 1: seen at a system call
+        memory.Write<u32>(kFrameCounterAddress, 1);
+        CallSvc(rt, 0x23, {0});
+
+        f.time->Advance(3 * kMs);  // frame 2: seen at a preemption check; the row is written at the next call
+        memory.Write<u32>(kFrameCounterAddress, 2);
+        scheduler.RaiseFlag();
+        scheduler.PreemptPoint();
+        CallSvc(rt, 0x23, {0});
+
+        f.time->Advance(1 * kMs);  // frame 3: seen in a posted task (the input sources poll the frame there)
+        memory.Write<u32>(kFrameCounterAddress, 3);
+        scheduler.Post([&] { rt.PollFrame(); });
+        scheduler.RaiseFlag();
+        scheduler.PreemptPoint();
+        CallSvc(rt, 0x23, {0});
+
+        f.time->Advance(1 * kMs);  // frame 4: seen at a system call
+        memory.Write<u32>(kFrameCounterAddress, 4);
+        CallSvc(rt, 0x23, {0});
+        ExitProcess(rt);
+    });
+    CHECK(status == 0);
+
+    const std::vector<std::string> lines = Lines(csv);
+    REQUIRE(lines.size() == 7);  // header, columns, four rows, footer
+    for (std::size_t i = 2; i < 6; ++i) {
+        const std::vector<std::string> row = Split(lines[i]);
+        REQUIRE(row.size() == 9);
+        const double present = std::stod(row[1]), main = std::stod(row[2]), guest = std::stod(row[3]);
+        CHECK(main <= guest);
+        CHECK(guest <= present);
+    }
+    CHECK(Head(lines[3]) ==
+          std::vector<std::string>{"2", "3000.000", "3000.000", "3000.000", "0.000", "0.000", "0.000"});
+    CHECK(Head(lines[4]) ==
+          std::vector<std::string>{"3", "1000.000", "1000.000", "1000.000", "0.000", "0.000", "0.000"});
+    CHECK(Head(lines[5]) ==
+          std::vector<std::string>{"4", "1000.000", "1000.000", "1000.000", "0.000", "0.000", "0.000"});
+    CHECK(lines[6] == "# frames=4 dropped=0");
+}
+
+TEST_CASE("main_us is the main thread's time even when another thread's system call sees the frame") {
+    Fixture f;
+    TempDir dir;
+    const std::string csv = dir.File("perf.csv");
+    const int status = BootWith(f, dir, {"--perf-log", csv}, [&] {
+        Runtime& rt = f.runtime;
+        GuestMemory& memory = rt.Memory();
+        CHECK(IsSuccess(memory.Map(kFramePage, kPageSize, MemPerm::ReadWrite, MemState::Private)));
+        Kernel& kernel = rt.GetKernel();
+        auto other = kernel.NewThread("other", 0x30, 0, kernel.CurrentProcess());
+        rt.Scheduler().AttachFunction(other, [&] {
+            f.time->Advance(680 * kUs);
+            memory.Write<u32>(kFrameCounterAddress, 1);
+            CallSvc(rt, 0x23, {0});  // the frame is seen here, on "other"
+        });
+        CallSvc(rt, 0x23, {0});  // the first poll gives the counter's starting value as a frame (row 0)
+        f.time->Advance(250 * kUs);
+        rt.Scheduler().Start(other);
+        CallSvc(rt, 0x0A, {static_cast<u32>(kMs), 0});  // the main thread sleeps; "other" runs
+        ExitProcess(rt);
+    });
+    CHECK(status == 0);
+
+    const std::vector<std::string> lines = Lines(csv);
+    REQUIRE(lines.size() == 5);  // header, columns, the starting value, frame 1, footer
+    const std::vector<std::string> row = Split(lines[3]);
+    REQUIRE(row.size() == 9);
+    CHECK(row[0] == "1");
+    CHECK(row[2] == "250.000");  // main_us: the main thread's own guest time
+    CHECK(row[3] == "930.000");  // guest_us: 250 + 680 of the other thread
+}
+
+TEST_CASE("with --deterministic the log's header says clock=virtual (perf_report counts no such log)") {
+    TempDir dir;
+    Runtime runtime;  // its own clock: --deterministic replaces it with the virtual one
+    const std::string csv = dir.File("perf.csv");
+    runtime.SetMainThreadEntry([&](GuestThread&) { ExitProcess(runtime); });
+    const Options options =
+        ParseOptions("runner", {dir.WriteElf(), "--perf-log", csv, "--deterministic", "--ms", "500"});
+    REQUIRE_MESSAGE(options.ok(), options.error());
+    CHECK(runtime.Boot(options) == 0);
+    const std::vector<std::string> lines = Lines(csv);
+    REQUIRE(lines.size() >= 2);
+    CHECK(lines[0].rfind("# perf v1 ", 0) == 0);
+    CHECK(lines[0].find(" clock=virtual mode=deterministic") != std::string::npos);
+    CHECK(lines[1] == perf::ColumnLine());
 }
 
 TEST_CASE("without --perf-log the step does nothing: no file, and the run is the same") {

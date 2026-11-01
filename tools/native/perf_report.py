@@ -27,12 +27,13 @@ The native runner's log (mh4u_native_runner --perf-log, N1-23) has other columns
     # perf v1 <ISO date> game=0x<title id> cpu=native new3ds=off clock=<host|virtual> mode=<realtime|deterministic>
     frame,present_us,main_us,guest_us,svc_us,service_us,idle_us,switches,preempts
 
-`main_us` is the game's main thread in guest code, `guest_us` every thread, `svc_us` and `service_us` the system
-calls and the services of every thread (the scheduler does not count them by thread), `idle_us` every core waiting,
-`switches` and `preempts` counts per frame. `frame` is the game's frame counter, the `f=` of a --state-trace. For
-such a log the report adds
+`main_us` is the game's main thread in guest code (with the scheduler work run at its preemption checks), `guest_us`
+every thread, `svc_us` and `service_us` the system calls and the services of every thread (the scheduler does not
+count them by thread), `idle_us` every core waiting, `switches` and `preempts` counts per frame. `frame` is the
+game's frame counter, the `f=` of a --state-trace. For such a log the report adds
 
-  busy_us  = guest_us + svc_us + service_us    what the one host thread that runs every guest thread works
+  busy_us  = guest_us + svc_us + service_us    every guest thread's counted work on the one host thread (the
+                                               scheduler's host loop is in no column)
   game_us  = main_us + svc_us + service_us     the game thread's time, an UPPER bound: it holds the other
                                                threads' system calls and services too
 
@@ -43,7 +44,9 @@ it. UNDECIDED: the budget lies between the two.
 --state-trace FILE (the runner's --state-trace of the same run) keeps only the frames the hunt's scene
 (--hunt-scene, default aQuest, 0x00e655c8) is shown in. A run whose hunt has fewer than --min-frames rows left after
 --skip does not count (NOT COUNTED, exit status 1), and neither does a log made with --deterministic
-(clock=virtual): that clock is virtual time, not the CPU's.
+(clock=virtual): that clock is virtual time, not the CPU's. --state-trace takes the native runner's log only: the
+reference runner's `frame` is a vertical-blank index, not the game's frame counter, so such a log is refused (exit
+status 2).
 
 usage: perf_report.py CSV [--budget-ms MS | --fps FPS] [--column NAME] [--skip N]
                           [--state-trace FILE [--hunt-scene VALUE] [--min-frames N]] [--thread-budget-ms MS]
@@ -168,7 +171,7 @@ def thread_verdict(data: dict[str, list[float]], thread_budget_ms: float) -> lis
     return [
         f"Game thread, p99 against its budget of {thread_budget_ms:.3f} ms: "
         f"{GAME} (upper bound) {upper:.3f} ms, {MAIN} (lower bound) {lower:.3f} ms: {state}",
-        f"Every guest thread together ({BUSY}, the one host thread's work), p99: {busy:.3f} ms",
+        f"Every guest thread together ({BUSY}, every guest thread's counted work), p99: {busy:.3f} ms",
     ]
 
 
@@ -187,6 +190,11 @@ def report(text: str, budget_ms: float = 1000.0 / DEFAULT_FPS, column: str = PRE
     columns, rows, meta = parse(text)
     if any(" clock=virtual" in line for line in meta):
         raise NotCounted("the log is in virtual time (--deterministic), not the host's: it measures no CPU")
+    if MAIN in columns and not any(" clock=host" in line for line in meta):
+        raise NotCounted("the log does not say clock=host: its clock is unknown, so it is no CPU measurement")
+    if frames is not None and MAIN not in columns:
+        raise FormatError("--state-trace needs the native runner's log (its frame column is the game's frame "
+                          "counter; the reference runner's is a vertical-blank index)")
     in_hunt = len(rows)
     if frames is not None:
         wanted = frames

@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <ctime>
 #include <memory>
+#include <vector>
 
 #include <fmt/format.h>
 
@@ -49,20 +50,27 @@ public:
         before_ = Take();
     }
 
-    // The frame watcher's call, on the scheduler thread.
+    // The frame watcher's call, on the scheduler thread. The frame may be seen at a preemption check, where
+    // the running thread's time since its last flush is not in the scheduler's counters yet; so the row is
+    // not written here but at the next system call's `before` hook (OnSvc), which runs after BeginSvc has
+    // flushed them.
     void OnFrame(u32 frame, u64 /*tick*/) {
         if (file_ == nullptr) {
             return;
         }
-        const Totals now = Take();
-        const std::string row = FormatRow(frame, before_, now);
-        std::fprintf(file_, "%s\n", row.c_str());
-        before_ = now;
-        ++frames_;
+        pending_.push_back(frame);
+    }
+
+    // A system call is starting and the counters are current.
+    void OnSvc() {
+        if (!pending_.empty()) {
+            WritePending();
+        }
     }
 
     void Finish() {
         if (file_ != nullptr) {
+            WritePending();
             std::fprintf(file_, "# frames=%llu dropped=0\n", static_cast<unsigned long long>(frames_));
             std::fclose(file_);
             file_ = nullptr;
@@ -70,6 +78,22 @@ public:
     }
 
 private:
+    // One snapshot for the frames seen since the last row; if several were seen (the game made no system
+    // call between them), the first gets the time and the others an empty row.
+    void WritePending() {
+        if (pending_.empty() || file_ == nullptr) {
+            return;
+        }
+        const Totals now = Take();
+        for (const u32 frame : pending_) {
+            const std::string row = FormatRow(frame, before_, now);
+            std::fprintf(file_, "%s\n", row.c_str());
+            before_ = now;
+            ++frames_;
+        }
+        pending_.clear();
+    }
+
     Totals Take() {
         const std::shared_ptr<Thread> main = rt_.MainThread();
         return Snapshot(rt_.Scheduler().Counters(), main ? main->thread_id : 0,
@@ -79,6 +103,7 @@ private:
     Runtime& rt_;
     std::FILE* file_;
     Totals before_;
+    std::vector<u32> pending_;
     u64 frames_ = 0;
 };
 
@@ -96,6 +121,9 @@ void StartPerfLog(Runtime& rt) {
     log->Start();
     PerfLog* const raw = log.get();  // rt.Own keeps it alive as long as the callback
     rt.OnFrame([raw](u32 frame, u64 tick) { raw->OnFrame(frame, tick); });
+    SvcHooks hooks;
+    hooks.before = [raw](const SvcCall&) { raw->OnSvc(); };
+    rt.AddSvcHooks(std::move(hooks));
     rt.OnFinish([log] { log->Finish(); });
     rt.Own(log);
 }

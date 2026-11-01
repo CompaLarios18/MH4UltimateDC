@@ -2,6 +2,7 @@
 standalone with a fake clock. No game data: every number here is made up."""
 from __future__ import annotations
 
+import random
 import re
 import shutil
 import subprocess
@@ -270,7 +271,7 @@ def state_trace(scenes, first_frame=1):
 
 
 HUNT = 0x00E655C8
-VILLAGE = 0x00E64D5C
+DEMO = 0x00E64D5C  # aDemo, the intro movies: a scene that is not the hunt
 
 
 def test_native_columns_get_busy_and_game_thread_time():
@@ -288,12 +289,19 @@ def test_native_columns_get_busy_and_game_thread_time():
 
 
 def test_the_verdict_names_both_bounds():
-    # game_us = main + 400; the p99 of main is 3.960 ms: upper 4.360 against 4 ms, lower 3.960 below it
-    rows = [(8333.0, i * 40.0, i * 40.0, 300.0, 100.0, 0.0) for i in range(1, 101)]
+    # game_us = main + 400; the p99 of main is 3.960 ms: upper 4.360 against 4 ms, lower 3.960 below it;
+    # the other threads add 500 us of guest code, so busy_us = main + 900 (p99 4.860) is not game_us
+    rows = [(8333.0, i * 40.0, i * 40.0 + 500.0, 300.0, 100.0, 0.0) for i in range(1, 101)]
     text = perf_report.report(native_csv(rows))
     assert ("Game thread, p99 against its budget of 4.000 ms: game_us (upper bound) 4.360 ms, "
             "main_us (lower bound) 3.960 ms: UNDECIDED") in text
-    assert "Every guest thread together (busy_us, the one host thread's work), p99: 4.360 ms" in text
+    assert "Every guest thread together (busy_us, every guest thread's counted work), p99: 4.860 ms" in text
+    # the rows of a real log are in frame order, not sorted: the verdict sorts before it takes the p99
+    shuffled = list(rows)
+    random.Random(1).shuffle(shuffled)
+    text = perf_report.report(native_csv(shuffled))
+    assert "game_us (upper bound) 4.360 ms, main_us (lower bound) 3.960 ms: UNDECIDED" in text
+    assert "Every guest thread together (busy_us, every guest thread's counted work), p99: 4.860 ms" in text
     # within: the upper bound is under the budget
     low = [(8333.0, 1000.0, 1500.0, 300.0, 100.0, 0.0)] * 20
     assert ": WITHIN" in perf_report.report(native_csv(low))
@@ -305,24 +313,26 @@ def test_the_verdict_names_both_bounds():
     assert ": WITHIN" in perf_report.report(native_csv(on), thread_budget_ms=4.0)
     assert ": OVER" not in perf_report.report(native_csv(on), thread_budget_ms=4.0)
     assert "budget of 3.000 ms" in perf_report.report(native_csv(on), thread_budget_ms=3.0)
+    # the main thread exactly on the budget is not over it: the lower bound may still fit
+    edge = [(8333.0, 4000.0, 4000.0, 300.0, 100.0, 0.0)] * 5
+    assert "main_us (lower bound) 4.000 ms: UNDECIDED" in perf_report.report(native_csv(edge))
     # a reference runner's log has no game-thread verdict (its columns are N0-15's)
     assert "Game thread" not in perf_report.report(make_csv([(8000.0, 1.0, 1.0, 1.0)] * 3))
 
 
 def test_hunt_frames_read_the_scene_of_a_state_trace():
-    trace = state_trace([VILLAGE, VILLAGE, HUNT, HUNT, VILLAGE], first_frame=10)
+    trace = state_trace([DEMO, DEMO, HUNT, HUNT, DEMO], first_frame=10)
     assert perf_report.hunt_frames(trace) == {12, 13}
-    assert perf_report.hunt_frames(trace, VILLAGE) == {10, 11, 14}
+    assert perf_report.hunt_frames(trace, DEMO) == {10, 11, 14}
     assert perf_report.hunt_frames("# statetrace v1\nnot a record\n") == set()
     # a name that only contains `scene` does not count
     assert perf_report.hunt_frames("f=1 t=0 old_scene=0x00e655c8\n") == set()
 
 
 def test_only_the_hunt_counts_and_skip_applies_to_it():
-    n = 30
     rows = [(8333.0, 100.0, 100.0, 0.0, 0.0, 0.0)] * 10 + [(8333.0, 3000.0, 3000.0, 0.0, 0.0, 0.0)] * 20
-    csv = native_csv(rows)  # frames 1..30; the hunt is frames 11..30
-    trace = state_trace([VILLAGE] * 10 + [HUNT] * 20)
+    csv = native_csv(rows, first_frame=5001)  # frames 5001..5030; the hunt is frames 5011..5030
+    trace = state_trace([DEMO] * 15 + [HUNT] * 20, first_frame=4996)  # the trace starts before the log
     frames = perf_report.hunt_frames(trace)
     text = perf_report.report(csv, frames=frames, min_frames=5)
     assert "Frames: 20" in text and "Hunt: 20 rows" in text
@@ -335,16 +345,32 @@ def test_only_the_hunt_counts_and_skip_applies_to_it():
     # the default asks for 20 s at 120 fps
     with pytest.raises(perf_report.NotCounted, match="fewer than 2400"):
         perf_report.report(csv, frames=frames)
-    assert n == 30
+    # a frame the poll missed: the row is not there, the hunt has one row fewer
+    gap = "".join(line + "\n" for line in csv.splitlines() if not line.startswith("5020,"))
+    assert "Hunt: 19 rows" in perf_report.report(gap, frames=frames, min_frames=5)
+
+
+def test_a_state_trace_needs_the_native_log():
+    # the reference runner's frame column is a vertical-blank index, not the f= of a state trace
+    with pytest.raises(perf_report.FormatError, match="native"):
+        perf_report.report(make_csv([(8000.0, 1, 1, 1)] * 30), frames={1, 2}, min_frames=1)
+
+
+def test_a_native_log_without_its_clock_does_not_count():
+    csv = native_csv([(8333.0, 100.0, 100.0, 0.0, 0.0, 0.0)] * 5)
+    csv = "".join(line + "\n" for line in csv.splitlines() if not line.startswith("# perf"))
+    with pytest.raises(perf_report.NotCounted, match="clock"):
+        perf_report.report(csv)
 
 
 def test_a_run_that_never_reached_the_hunt_does_not_count():
     csv = native_csv([(8333.0, 100.0, 100.0, 0.0, 0.0, 0.0)] * 20)
-    frames = perf_report.hunt_frames(state_trace([VILLAGE] * 20))
+    frames = perf_report.hunt_frames(state_trace([DEMO] * 20))
     with pytest.raises(perf_report.NotCounted, match="never shows the hunt"):
         perf_report.report(csv, frames=frames, min_frames=1)
-    # without a state trace every row counts: the report does not know the scene
+    # without a state trace every row counts: the report does not know the scene, and prints no Hunt line
     assert "Frames: 20" in perf_report.report(csv)
+    assert "Hunt:" not in perf_report.report(csv)
 
 
 def test_a_log_in_virtual_time_does_not_count():
@@ -358,7 +384,7 @@ def test_native_command_line(tmp_path, capsys):
     csv = tmp_path / "run.csv"
     csv.write_text(native_csv(rows))
     trace = tmp_path / "state.txt"
-    trace.write_text(state_trace([VILLAGE] * 6 + [HUNT] * 14))
+    trace.write_text(state_trace([DEMO] * 6 + [HUNT] * 14))
     args = [str(csv), "--state-trace", str(trace), "--skip", "4", "--min-frames", "10"]
     assert perf_report.main(args) == 0
     out = capsys.readouterr().out
@@ -368,8 +394,12 @@ def test_native_command_line(tmp_path, capsys):
     assert perf_report.main([*args[:-1], "11"]) == 1
     out = capsys.readouterr().out
     assert out.startswith("NOT COUNTED: ") and "| column |" not in out
-    # the scene can be named; a village-only trace never shows the hunt
+    # the scene can be named (in hex or decimal); naming the demo leaves 2 rows after --skip 4: fewer than 10
     assert perf_report.main([*args, "--hunt-scene", "0x00e64d5c"]) == 1
+    assert "fewer than 10" in capsys.readouterr().out
+    assert perf_report.main([*args, "--hunt-scene", "15095240"]) == 0  # 0x00e655c8, the hunt, in decimal
+    capsys.readouterr()
+    assert perf_report.main([*args, "--thread-budget-ms", "inf"]) == 2
     capsys.readouterr()
     assert perf_report.main([*args, "--hunt-scene", "banana"]) == 2
     assert perf_report.main([*args[:-1], "0"]) == 2

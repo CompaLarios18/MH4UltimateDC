@@ -137,38 +137,53 @@ The baseline decides whether those proposed budgets stand; do not tune anything 
 For the maintainer (on the reference PC, Windows 11, PowerShell). This is N1's exit question: at 120 fps on
 the Ryzen 5 5600X, does the game thread of the native runtime, without Azahar, fit its 4 ms
 ([`ROADMAP.md`](ROADMAP.md) section 7)? If it does not, one host thread per core (N6) moves forward to N3. The
-orchestrator writes the answer in `docs/research/perf-native-n1.md`; you run the game three times and give it
-the CSVs. Everything above this line is the Azahar-based app's procedure; the CSV of the native runner is a
-different one, described here.
+orchestrator writes the answer in `docs/research/perf-native-n1.md`; you run G3 until three runs count (at most ten
+attempts) and give it the CSVs. Everything above this line is the Azahar-based app's procedure; the CSV of the
+native runner is a different one, described here.
 
 ## What the native log holds
 
 `mh4u_native_runner ... --perf-log FILE` writes one row per game frame (a change of the game's frame counter,
-the `f=` of `--state-trace`; the first row also holds the boot). It is the scheduler's own counters (N1-06), read
+the `f=` of `--state-trace`; the first row also holds the boot). It holds the scheduler's own counters (N1-06), read
 once per frame; times are microseconds of the host's clock:
 
 | Column | Meaning |
 |---|---|
 | `frame` | the game's frame counter, the key to the state trace |
 | `present_us` | time since the previous row |
-| `main_us` | the game's main thread in guest code |
-| `guest_us` | every guest thread in guest code (`main_us` included) |
+| `main_us` | the game's main thread in guest code, with the scheduler work run at its preemption checks (see below) |
+| `guest_us` | every guest thread in guest code, with the same work (`main_us` included) |
 | `svc_us` | in system calls, every thread |
 | `service_us` | in the services' handlers (fs, gsp, ...), every thread |
 | `idle_us` | both virtual cores idle: waiting for the frame limiter, a timer or a reply |
 | `switches`, `preempts` | fiber switches, and threads displaced while they could still run |
 
-Each microsecond is counted once. All guest threads run on **one** host thread today, so the work of that
-thread is `busy_us` = `guest_us` + `svc_us` + `service_us` (what `perf_report.py` adds), and
-`present_us` minus `idle_us` is the same figure seen from the other side. The scheduler counts system calls and
-services by number and by name, not by thread, so the game thread's own share of them is not known: `perf_report.py`
-gives `game_us` = `main_us` + `svc_us` + `service_us`, which is an **upper** bound of the game thread's time (it
-holds the other threads' calls and services), and `main_us` alone, the lower bound.
+No microsecond is counted twice, but not every one is counted. All guest threads run on **one** host thread today.
+`busy_us` = `guest_us` + `svc_us` + `service_us` (what `perf_report.py` adds) is the counted work of every guest
+thread on it. `present_us` minus `idle_us` is `busy_us` plus the scheduler's own host loop between two guest runs
+(reaping, posted work and timer events, the safe-point hooks, picking the next thread). No column holds that loop,
+so the difference is at least `busy_us`.
+
+The scheduler does not count its own host work separately. The timer events (the DSP's, HID's and GSP's), posted
+replies (fs, GPU interrupts) and safe-point hooks are charged to whatever was being counted when they ran: the
+running thread's guest time at a preemption check (its `guest_us`, and `main_us` for the main thread), `svc_us` at
+the start or end of a system call, and nothing (neither busy nor idle) in the host loop between threads. The frame
+subscribers (this log's row and `--state-trace`'s line) are among those hooks. A row is written at the first system
+call after the frame change, once the counters are current.
+
+The scheduler counts system calls and services by number and by name, not by thread, so the game thread's own share
+of them is not known: `perf_report.py` gives `game_us` = `main_us` + `svc_us` + `service_us`, which is an **upper**
+bound of the game thread's time (it holds the other threads' calls and services), and `main_us` alone, a lower bound
+up to the scheduler work done at the main thread's preemption checks, which it also holds (probably tens of
+microseconds per frame). An OVER verdict whose `main_us` p99 is barely above 4 ms is not conclusive: say so to the
+orchestrator.
 
 ## Which mode: real time, not `--deterministic`
 
-Real time, with the `--native` code library (the one `Build code library` makes for the native runner; not the
-`_native_det` one). Why:
+Real time, with the `--native` code library (built with `python tools\build_game.py --dump <your v1.3.0 update .cia>
+--native --no-mods --out <folder>`, as *Runs on an idle PC* of `fps-audit.md` did; `Build code library.bat` builds
+Azahar's library, which the native runner refuses; not the `_native_det` one). A library built before
+`RC_HOST_VERSION` 6 (2026-10-28), such as `build\n3-17-user`, is refused too. Why real time:
 
 - The deterministic mode (N1-25) takes the host out of the clock: its `TimeSource` is virtual, game ticks that
   move with the cycles the library charges, so every counter in it is the cycle model's time, not the CPU's. The
@@ -187,11 +202,17 @@ half the distance and its talks outrun the text (N1-26, D94), so it cannot run a
 
 1. **`G3-ms.txt`**, the same session keyed in game milliseconds from a 60-fps run's own timeline (N1-26: made from
    the state trace of the final G3 deterministic run at 60 fps, 19 lines; `docs/native/golden.md`, results of N1-26,
-   *120 fps*). On this PC: `build\n1-26\G3-ms.txt`. It reached the quest in 2 of 5 real-time runs at 120 fps
-   (D94). Run it with `--ms 304100`, the game time N1-26 ran it to.
-2. If that file is gone, `python tools\native\fps_audit.py scale tools\native\golden\G3.txt --factor 2 -o G3-x2.txt`
-   (every frame key doubled, milliseconds unchanged; N3-21/N3-22 used it). It reached the hunt in 1 of 5 real-time
-   runs at 120 fps (D70, idle PC); run it with `--frames 36000`.
+   *120 fps*). On this PC: `build\n1-26\G3-ms.txt`. It reached the hunt in 2 of 5 real-time runs at 120 fps at
+   N1-26's base (2026-10-24, D94). That rate has not been measured since. At native `4a6eaf4` the frame-keyed G3 at
+   60 fps reached the hunt in 3 of 5 idle real-time runs against N1-26's 10 of 10 (`fps-audit.md`, *Runs on an idle
+   PC*), so G3-ms's rate may be lower now. Run it with `--ms 304100`, the game time N1-26 ran it to.
+2. If that file is gone, make the frame-keyed one under `build\` (from the repository root):
+   `New-Item -ItemType Directory -Force build\n1-23 | Out-Null; python tools\native\fps_audit.py scale tools\native\golden\G3.txt --factor 2 -o build\n1-23\G3-x2.txt`
+   (every frame key doubled, milliseconds unchanged; N3-21/N3-22 used it). On the idle re-run at native `4a6eaf4`
+   (`fps-audit.md`, *Runs on an idle PC*) it reached the hunt in 1 of 5 real-time runs at 120 fps. That one run
+   was partly under an installer's load and would not count under the idle rule below. Of the four fully idle
+   runs, none reached the hunt. To use it, in the run block below set `$script = "build\n1-23\G3-x2.txt"` and give
+   `--frames 36000` in place of `--ms 304100`.
 
 Both are scripts that wait for nothing, so a run that falls out of step stays in the village from then on. **A
 run counts only if its state trace shows the hunt's scene, and `perf_report.py` checks it** (next section): the
@@ -201,70 +222,119 @@ CSV of a run that stayed in the village is discarded, not averaged in.
 Report every attempt, counting or not (`attempts: N, counted: 3, discarded: N-3`, with the file names): the
 discarded ones are information (their rate is the script's, not the runtime's). **If ten attempts give fewer than
 three counting runs, stop and ask for a script that waits on the game's own state** (a press when the scene
-or the dialog the game shows says so, N1-26 and D94 (4)). Do not play the hunt by hand, do not lower
-`--min-frames`, do not use `--deterministic` to get there: none of them is this measurement.
+or the dialog the game shows says so, N1-26 and D94 (4)). A candidate to decide on, not to use before the
+orchestrator decides it: G3.txt at 60 fps switched to 120 fps after the quest loads, with `--set fN:fps=120`. Do
+not play the hunt by hand, do not lower `--min-frames`, do not use `--deterministic` to get there: none of them is
+this measurement.
+
+An attempt is a run of the script that ended with exit status 0. A run that ends otherwise is **not** an attempt of
+the script (see the run block); a run that breaks the idle rule is held, not an attempt: note it and run again in
+a new folder.
 
 ## One run
 
 On an **idle PC**, as D70 asks for a real-time run: no build, test, antivirus scan or other heavy program during
 the run and the total CPU load before it at most 25 % (`fps-audit.md`, *Repeating it*); close the browser.
-A busy host adds its own time to every column. Take the emulator lock (`build\locks\emulator`) as the audit does.
+A busy host adds its own time to every column. Hold the emulator lock (`build\locks\emulator`, the folder
+`fps_audit.py --lock` uses) for the whole attempt: the block below creates it (waiting while an agent's run holds
+it), measures the load with it held, and removes it at the end, even if the run fails.
 The default `--gpu null` is right: this measures the CPU side of the game thread; the translation to Vulkan and the
-GPU are N2b's budget. From the repository root (paths as in `fps-audit.md`, *Repeating it*; the runner is
-`build\native\bin\mh4u_native_runner.exe`, or the one in the CI artifact `mh4n-runner-windows`):
+GPU are N2-19's budgets (N2a). From the root of the checkout whose `build\` holds the game folder, the save and the
+library (paths as in `fps-audit.md`, *Repeating it*; the runner is `build\native\bin\mh4u_native_runner.exe`, or the
+one in the CI artifact `mh4n-runner-windows`):
 
 ```
 $runner = "build\native\bin\mh4u_native_runner.exe"
 $prog   = "build\native-game"
-$lib    = "build\n3-17-user\recomp\0004000000126300_native.dll"      # the --native library
+$lib    = "build\n3-22b\lib-rt\recomp\0004000000126300_native.dll"   # the --native library of fps-audit.md's *Runs on an idle PC* (RC_HOST_VERSION 6)
 $script = "build\n1-26\G3-ms.txt"
 $out    = "build\n1-23\run01"                                         # one folder per attempt: run01, run02, ...
-$env:PATH = "<llvm-mingw bin>;" + $env:PATH      # without it the runner waits on a hidden missing-DLL dialog
+$lock   = "build\locks\emulator"
+$env:PATH = "build\game\toolchain\llvm-mingw-20241217-ucrt-x86_64\bin;" + $env:PATH   # the toolchain build_game.py fetched; without it the runner waits on a hidden missing-DLL dialog (not needed with the CI artifact, whose DLLs are beside the exe)
 $env:TZ = "UTC0"
+if (Test-Path $out) { throw "$out exists: every attempt, a held one too, takes a new runNN" }
 New-Item -ItemType Directory -Force $out | Out-Null
-Copy-Item -Recurse build\golden\G3\user-before $out\user         # a fresh copy of the save every time
-& $runner $prog --code $lib --user $out\user --ms 304100 --input-file $script `
-    --init-time 1767268800.5 --set 0:fps=120 --io-latency azahar `
-    --state-trace $out\state.txt --observable config\native\observable.txt `
-    --perf-log $out\perf.csv *> $out\runner.log
+while ($true) {                                  # wait while another run holds the lock
+    try { New-Item -ItemType Directory $lock -ErrorAction Stop | Out-Null; break }
+    catch [System.IO.IOException] { Start-Sleep 30 }
+}
+try {
+    $load = (1..20 | ForEach-Object {
+        (Get-CimInstance Win32_PerfFormattedData_PerfOS_Processor -Filter "Name='_Total'").PercentProcessorTime
+        Start-Sleep 1 } | Measure-Object -Average).Average
+    "CPU load over the 20 s before the run: $load %" | Tee-Object $out\load.txt
+    if ($load -gt 25) { throw "load $load % is over 25 %: wait for it to drop and start this attempt again (new folder)" }
+    Copy-Item -Recurse build\golden\G3\user-before $out\user         # a fresh copy of the save
+    & $runner $prog --code $lib --user $out\user --ms 304100 --input-file $script `
+        --init-time 1767268800.5 --set 0:fps=120 --io-latency azahar `
+        --state-trace $out\state.txt --observable config\native\observable.txt `
+        --perf-log $out\perf.csv *> $out\runner.log
+    "runner exit $LASTEXITCODE"
+} finally {
+    Remove-Item $lock
+}
 ```
 
 `--init-time 1767268800.5` is G3's own (`# init-time:` in the session). The CSV is `$out\perf.csv`; the state trace
 `$out\state.txt` holds the game's state, so it stays under `build\` and is never committed or sent anywhere (the CSV
-holds timings only). The run must end with exit status 0.
+holds timings only). A run held by the load check leaves its folder behind: use a new `runNN` for the next one.
+
+The runner must have `--perf-log` (N1-23) and be built as the native-windows job builds it (RelWithDebInfo, the
+default of `native/CMakeLists.txt`). Before the first attempt, and before you check the idle load (a build is a
+heavy program), `& $runner --help | Select-String perf-log` must print the option. If it prints nothing, the
+`build\native` is older than the merge, and the run would exit 2 with `unknown option --perf-log` in `runner.log`.
+Then rebuild it with `cmake --build build\native --target mh4u_native_runner` (llvm-mingw, cmake and ninja on PATH),
+or use the `mh4n-runner-windows` artifact of a push to `native` made after the merge.
+
+The block prints `runner exit N`:
+
+- 0: read the run (next section).
+- 2 (loading failed): a setup error (a path, the library). A library the runner refuses (Azahar's, a deterministic
+  one, or one built for another `RC_HOST_VERSION`) ends the run at boot with this status and `runner.log` gives the
+  reason: rebuild it with `--native` at this tree. It is not an attempt: fix it and run again in a new folder.
+- 3 (a runtime error) or 4 (the recompiled code stopped): stop and give the orchestrator this attempt with its
+  `runner.log`. It is a fault of the runtime, not a miss of the script.
 
 ## Reading a run
 
 ```
-python tools\native\perf_report.py $out\perf.csv --state-trace $out\state.txt --skip 600 --fps 120 > $out\report.md
+python tools\native\perf_report.py $out\perf.csv --state-trace $out\state.txt --skip 600 --fps 120 > $out\report.md; "perf_report exit $LASTEXITCODE"
 ```
 
 - `--state-trace` keeps the rows of the frames the trace shows the hunt's scene (aQuest, `0x00e655c8`; `--hunt-scene`
-  names another) and prints `Hunt: N rows ...`. `--skip 600` leaves out the first 5 s of the hunt (the stage still
-  loading and settling). The run **counts** if the report prints and the exit status is 0. `NOT COUNTED: ...` with
-  exit status 1 means the hunt was never reached, fewer than `--min-frames` (default 2400, 20 s at 120 fps) rows
-  were left, or the log is in virtual time: discard it, note the reason.
+  names another) and prints `Hunt: N rows ...`. It takes the native runner's log only. `--skip 600` leaves out the
+  first 5 s of the hunt (the stage still loading and settling). The run **counts** if `perf_report`'s exit status is
+  0 and `report.md` holds the table. With exit status 1, `report.md` holds one line, `NOT COUNTED: ...`, with the
+  reason: the hunt was never reached, fewer than `--min-frames` (default 2400, 20 s at 120 fps) rows were left, or
+  the log is in virtual time or does not say `clock=host`; discard it, note the reason. With exit status 2 (a message
+  on the terminal, `report.md` empty) it is a usage or file problem, not a verdict: fix it and read the run again.
 - Under the table the report gives the verdict:
   `Game thread, p99 against its budget of 4.000 ms: game_us (upper bound) X ms, main_us (lower bound) Y ms: V`.
   **WITHIN**: even the upper bound's p99 is within 4 ms. **OVER**: even the main thread alone is over it.
   **UNDECIDED**: 4 ms lies between the two bounds; then the calls and services of the other threads decide, and the
   scheduler needs to count them by thread (proposed to the orchestrator; say so, do not pick a side).
-- The next line, `Every guest thread together (busy_us ...)`, is the p99 of all the threads' work on the one host
-  thread: it is not the game-thread figure, but it is what a single host thread would have to do in a frame
-  (8.333 ms at 120 fps), and it shows how much the other threads add.
+- The next line, `Every guest thread together (busy_us ...)`, is the p99 of every guest thread's counted work on the
+  one host thread (the scheduler's host loop is in no column): it is not the game-thread figure, but it is about
+  what a single host thread would have to do in a frame (8.333 ms at 120 fps), and it shows how much the other
+  threads add.
 - The table's `present_us` should cluster at 8.333 ms (the frame limiter) and `idle_us` is the headroom.
 
 **The verdict over the three runs** is the worst of them: the largest p99 of `game_us` (and of `main_us`) of the
-three counting runs. Give the orchestrator, per run: the folder name, the `Hunt:` and `Frames:` lines, the p99 of
-`game_us`, `main_us` and `busy_us`, the stutters line, and the verdict line; and for all the attempts the count
-above. Send `report.md` and the CSVs of the counting runs; keep the rest.
+three counting runs. Give the orchestrator, once for the session: the output of `& $runner --version` (with the CI
+run's URL if you use the artifact `mh4n-runner-windows`) and the `$lib` path with its date
+(`(Get-Item $lib).LastWriteTime`). Per run: the folder name, the CPU load before it (`load.txt`; D70: at most 25 %),
+the `Hunt:` and `Frames:` lines, the p99 of `game_us`, `main_us` and `busy_us`, the `Frames over 50 ms` line, and the
+verdict line. For all the attempts: the count above. Send `report.md` and the CSVs of the counting runs; keep the
+rest.
 
 ## Overhead of the log
 
-Without `--perf-log` the boot step returns on its first line: nothing is subscribed to `Runtime::OnFrame`, no file
-or object is made, and the scheduler, the SVC layer and the code library are not touched (the counters are N1-06's,
-kept always and not changed here). `perf_test` boots a program without the option and checks that no file appears
-and the frame subscribers see the same frames. With the option, the cost is one call per game frame (120 a second)
-that reads the counters (a sum over the 256 system call slots, the services and the threads: a few hundred additions)
-and one buffered line of about 70 bytes; the file is written in 64 KB blocks, so a write to disk happens every few
-seconds. Nothing is added to a preemption point, a system call or a fiber switch.
+Without `--perf-log` the boot step returns on its first line: nothing is subscribed to `Runtime::OnFrame` or to the
+system call hooks, no file or object is made, and the scheduler, the SVC layer and the code library are not touched
+(the counters are N1-06's, kept always and not changed here). `perf_test` boots a program without the option and
+checks that no file appears and the frame subscribers see the same frames. With the option, the cost is one call per
+game frame (120 a second) that reads the counters (a sum over the 256 system call slots, the services and the
+threads: a few hundred additions) and one buffered line of about 70 bytes (the file is written in 64 KB blocks, so a
+write to disk happens every few seconds), plus one test of an empty list at each system call. Nothing else is added to
+a preemption check, a system call or a fiber switch: the row is written from a system call's `before` hook, at the
+first system call after the frame change.
