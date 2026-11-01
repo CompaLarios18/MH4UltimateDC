@@ -19,7 +19,10 @@ namespace Launcher {
 namespace {
 
 /// The game for mods.py's --program-id: the chosen game when it is a version the port runs, else
-/// 0 (mods.py then goes by the update installed; another game's id would make it stop).
+/// 0 (mods.py then goes by the update installed; another game's id would make it stop). The
+/// library a command returns (and a deploy's state) is that game's: once another game is chosen,
+/// it is left out (the new game's own read follows: State::ChooseGame), so that Play doesn't go
+/// by the mods folder of the game chosen before.
 u64 ModsGame(const State& s) {
     return Checks::FindRegion(s.game.program_id) ? s.game.program_id : 0;
 }
@@ -163,16 +166,20 @@ void ApplyStatus(ModLibrary& lib, const Json& j) {
     }
 }
 
-/// The library as mods.py returns it after a command; errors to a dialog.
-void HandleOverview(State& s, int exit_code, const std::string& output, bool quiet = false) {
+/// The library as mods.py returns it after a command for `game`; errors to a dialog. For another
+/// game than the one chosen now, only the dialog (ModsGame).
+void HandleOverview(State& s, u64 game, int exit_code, const std::string& output, bool quiet = false) {
     const Json j = Parse(output);
+    const bool current = game == ModsGame(s);
     if (exit_code == 0 && j.is_object() && Bool(j, "ok")) {
-        ApplyOverview(s.mods, j);
+        if (current) {
+            ApplyOverview(s.mods, j);
+        }
         return;
     }
     const std::string error = ErrorText(j, output);
     LOG_WARNING(Frontend, "launcher: mods.py: {}", error);
-    if (!s.mods.loaded) {
+    if (!s.mods.loaded && current) {
         s.mods.error = error.empty() ? "mods.py didn't say why." : error;
     }
     if (!quiet) {
@@ -182,17 +189,18 @@ void HandleOverview(State& s, int exit_code, const std::string& output, bool qui
 
 /// Conflicts and the code library's state, after the library changed.
 void QueueDetails(State& s) {
-    s.runner.Queue(Tools::ModsCommand(s.python, s.tools_dir, {"conflicts"}, ModsGame(s)), "Reading the mod library",
-                   [&s](int exit_code, const std::string& output) {
+    const u64 game = ModsGame(s);
+    s.runner.Queue(Tools::ModsCommand(s.python, s.tools_dir, {"conflicts"}, game), "Reading the mod library",
+                   [&s, game](int exit_code, const std::string& output) {
                        const Json j = Parse(output);
-                       if (exit_code == 0 && j.is_object()) {
+                       if (exit_code == 0 && j.is_object() && game == ModsGame(s)) {
                            ApplyConflicts(s.mods, j);
                        }
                    });
-    s.runner.Queue(Tools::ModsCommand(s.python, s.tools_dir, {"status"}, ModsGame(s)), "Reading the mod library",
-                   [&s](int exit_code, const std::string& output) {
+    s.runner.Queue(Tools::ModsCommand(s.python, s.tools_dir, {"status"}, game), "Reading the mod library",
+                   [&s, game](int exit_code, const std::string& output) {
                        const Json j = Parse(output);
-                       if (exit_code == 0 && j.is_object()) {
+                       if (exit_code == 0 && j.is_object() && game == ModsGame(s)) {
                            ApplyStatus(s.mods, j);
                        }
                    });
@@ -202,9 +210,10 @@ void QueueDetails(State& s) {
 
 /// A command that changes the library (add, remove, enable, disable, order).
 void Change(State& s, std::vector<std::string> args, std::string what) {
-    s.runner.Queue(Tools::ModsCommand(s.python, s.tools_dir, args, ModsGame(s)), std::move(what),
-                   [&s](int exit_code, const std::string& output) {
-                       HandleOverview(s, exit_code, output);
+    const u64 game = ModsGame(s);
+    s.runner.Queue(Tools::ModsCommand(s.python, s.tools_dir, args, game), std::move(what),
+                   [&s, game](int exit_code, const std::string& output) {
+                       HandleOverview(s, game, exit_code, output);
                    });
     QueueDetails(s);
 }
@@ -897,8 +906,12 @@ void RefreshCatalog(State& s, bool fetch) {
             args.push_back("--refresh");
         }
     }
-    s.runner.Queue(Tools::ModsCommand(s.python, s.tools_dir, args, ModsGame(s)), "Reading the mod catalog",
-                   [&s](int exit_code, const std::string& output) {
+    const u64 game = ModsGame(s);
+    s.runner.Queue(Tools::ModsCommand(s.python, s.tools_dir, args, game), "Reading the mod catalog",
+                   [&s, game](int exit_code, const std::string& output) {
+                       if (game != ModsGame(s)) {
+                           return;
+                       }
                        const Json j = Parse(output);
                        if (exit_code == 0 && j.is_object() && Bool(j, "ok")) {
                            ApplyCatalog(s.mods.catalog, j);
@@ -912,9 +925,10 @@ void RefreshMods(State& s) {
     if (!s.ToolsReady()) {
         return;
     }
-    s.runner.Queue(Tools::ModsCommand(s.python, s.tools_dir, {"list"}, ModsGame(s)), "Reading the mod library",
-                   [&s](int exit_code, const std::string& output) {
-                       HandleOverview(s, exit_code, output, true);
+    const u64 game = ModsGame(s);
+    s.runner.Queue(Tools::ModsCommand(s.python, s.tools_dir, {"list"}, game), "Reading the mod library",
+                   [&s, game](int exit_code, const std::string& output) {
+                       HandleOverview(s, game, exit_code, output, true);
                    });
     QueueDetails(s);
     if (!s.mods.catalog.fetched) {
@@ -930,9 +944,10 @@ void DeployMods(State& s, bool force, std::function<void(bool without_code)> the
     if (force) {
         args.push_back("--force");
     }
+    const u64 game = ModsGame(s);
     auto process = std::make_unique<Process>();
     std::string error;
-    if (!process->Start(Tools::ModsCommand(s.python, s.tools_dir, args, ModsGame(s)), error)) {
+    if (!process->Start(Tools::ModsCommand(s.python, s.tools_dir, args, game), error)) {
         s.Message("The mods weren't put in place", error);
         return;
     }
@@ -941,7 +956,16 @@ void DeployMods(State& s, bool force, std::function<void(bool without_code)> the
     s.job.title = "Putting the mods in place";
     s.job.close_when_done = true;
     s.job.process = std::move(process);
-    s.job.on_done = [&s, then](int exit_code, const std::string& output) {
+    s.job.on_done = [&s, then, game](int exit_code, const std::string& output) {
+        if (game != ModsGame(s)) {
+            // another game was chosen meanwhile (in a picker open from before): this deploy was
+            // the game before's, so it is left out and Play doesn't go on. The new game's mods
+            // are read, and Play, pressed again, waits for them.
+            s.mods.loaded = false;
+            s.mods.error.clear();
+            RefreshMods(s);
+            return;
+        }
         const Json j = Parse(output);
         const auto go_on = [then](const char* label, bool without_code) -> Dialog::Button {
             return {label, [then, without_code] { then(without_code); }, false};

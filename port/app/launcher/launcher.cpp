@@ -1155,7 +1155,8 @@ void State::ChooseGame(bool browse) {
                  Recheck();
                  CheckCode();
                  // the mods go by the game's region (its mods folder, its texture packs): read
-                 // again, and Play waits for them as at the start
+                 // again, and Play waits for them as at the start (what mods.py still returns for
+                 // the game before is left out: ModsGame, screen_mods.cpp)
                  if (ToolsReady() && !job.Active()) {
                      mods.loaded = false;
                      mods.error.clear();
@@ -1187,7 +1188,12 @@ void State::Play(int stage) {
             Message("The game first", Checks::Describe(game));
             return;
         }
+        play_game = config.game;
         stage = 1;
+    } else if (config.game != play_game) {
+        // another game was chosen while Play waited, deployed or asked: what it found and put in
+        // place was for the game before, so it stops here (pressed again, it starts over)
+        return;
     }
     if (stage == 1) {
         // the tools and the mod library first, when Play comes right at the start

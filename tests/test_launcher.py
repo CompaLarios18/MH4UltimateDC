@@ -6,7 +6,10 @@ parts of those outputs the launcher reads, run the way it runs them (python -u T
 
 With MH4U_APP set to a built mh4u, they also run its code check, mh4u --check-code GAME, which
 the launcher runs in a process of its own to learn what the game's start would say about the
-code library."""
+code library.
+
+One test reads the launcher's source: what mods.py returns for the game chosen before is left out
+once another game is chosen."""
 import json
 import os
 import re
@@ -183,6 +186,67 @@ def test_catalog_json_and_progress_lines_the_launcher_reads(tmp_path):
     assert r.returncode == 1
     err = json.loads("\n".join(line for line in r.stdout.splitlines() if not line.startswith("@")))["error"]
     assert err["code"] == "manual_extract" and err["download"] and err["target"] and err["page_url"]
+
+
+LAUNCHER = os.path.join(ROOT, "port", "app", "launcher")
+
+
+def launcher_source(name):
+    with open(os.path.join(LAUNCHER, name), encoding="utf-8") as f:
+        return f.read()
+
+
+def call_at(text, start):
+    """The call that starts at text[start] (a name, then its arguments), to its closing parenthesis."""
+    depth, end = 0, text.index("(", start)
+    while True:
+        depth += {"(": 1, ")": -1}.get(text[end], 0)
+        end += 1
+        if depth == 0:
+            return text[start:end]
+
+
+def function_at(text, signature):
+    """A function, from its signature to the brace that closes it (at the start of a line)."""
+    start = text.index(signature)
+    return text[start:text.index("\n}\n", start) + 2]
+
+
+def test_a_mods_result_for_the_game_chosen_before_is_left_out():
+    """The launcher's Runner runs mods.py one command at a time, each with the --program-id of the
+    game chosen when it was queued (screen_mods.cpp, ModsGame). One that comes back after another
+    game was chosen is left out, as State::ChooseGame reads the new game's mods again: a list for
+    the game before would set the library and its deploy_state, and Play, finding it up to date,
+    would start the new game without putting its mods in place. A deploy for the game before
+    doesn't go on to play, and Play's later stages go on only with the game it was pressed for.
+    Read from the source: the tests don't run the launcher."""
+    mods_cpp = launcher_source("screen_mods.cpp")
+    queued = [call_at(mods_cpp, m.start()) for m in re.finditer(r"\bs\.runner\.Queue\(", mods_cpp)]
+    assert len(queued) >= 5                         # list, conflicts, status, catalog, a change
+    for call in queued:
+        assert re.search(r"Tools::ModsCommand\([^;]*, game\)", call), call    # the game when queued
+        assert "[&s, game]" in call, call
+        assert re.search(r"\bgame [=!]= ModsGame\(s\)|HandleOverview\(s, game, ", call), call
+    # (the library and its error, only for the game chosen now)
+    handle = function_at(mods_cpp, "void HandleOverview(")
+    assert "const bool current = game == ModsGame(s);" in handle
+    assert re.search(r"if \(current\) \{\s*ApplyOverview\(", handle)
+    assert re.search(r"if \(!s\.mods\.loaded && current\) \{\s*s\.mods\.error = ", handle)
+    # a deploy for the game before: left out before its status is applied or Play goes on; the new
+    # game's mods are read, and Play waits for them
+    deploy = function_at(mods_cpp, "void DeployMods(")
+    assert re.search(r"ModsCommand\([^;]*, game\)", deploy) and "s.job.on_done = [&s, then, game]" in deploy
+    done = deploy[deploy.index("s.job.on_done"):]
+    left_out = re.search(r"\n        if \(game != ModsGame\(s\)\) \{\n(.*?)\n        \}\n", done, re.S)
+    assert left_out and left_out.start() < done.index("ApplyStatus(")
+    assert [line.strip() for line in left_out.group(1).splitlines() if not line.strip().startswith("//")] == [
+        "s.mods.loaded = false;", "s.mods.error.clear();", "RefreshMods(s);", "return;"]
+    launcher_cpp = launcher_source("launcher.cpp")
+    choose = function_at(launcher_cpp, "void State::ChooseGame(")
+    assert choose.index("mods.loaded = false;") < choose.index("RefreshMods(*this);")
+    play = function_at(launcher_cpp, "void State::Play(int stage)")
+    assert re.search(r"play_game = config\.game;\s*stage = 1;\s*\} else if \(config\.game != play_game\) \{"
+                     r"(\s*//[^\n]*)*\s*return;\s*\}", play)
 
 
 def fake_exefs(code: bytes) -> bytes:

@@ -191,6 +191,8 @@ struct State {
     /// Play was pressed while something it needs was still being read or checked (the mod
     /// library, the code library): the stage of Play to go on with once it is there
     int play_waiting = 0;
+    /// The game file Play was pressed for: its later stages go on only while it is the one chosen
+    std::string play_game;
 
     // the launcher's own keys and buttons, seen as SDL events (Dear ImGui's navigation would
     // take some of them first), applied between frames
