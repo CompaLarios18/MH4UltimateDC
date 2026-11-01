@@ -129,7 +129,7 @@ Default action bits from `0x00fb8260`: D-pad up → `0x2000`, down → `0x1000`,
 - **`sLayout::screenToLayout` `0x00af3cfc`** (`out, sLayout*, x, y, screen`): layout point = (*cx* − x, 120 − y), with *cx* = 160 for screen 1 (bottom) and 200 otherwise. Every touch consumer passes screen 1.
 - **`0x00d03938`** (`entry, point`): an entry is {object*, part*}; the point minus the object's position and offset is tested against the part's rectangle at `[[part+8]+0x20…+0x2c]` (min x, min y, max x, max y).
 - Panels group their buttons in **touch groups**: N entries of 8 bytes, then a count, the id of the pressed entry, a state byte and flags. Nine routines of the same shape handle them, eight of them identical in size (`0x00d8e444`, `0x00d8e9d0`, `0x00d8ef5c`, `0x00d8f4e8`, `0x00d8f9d0`, `0x00d8ff5c`, `0x00d904e8`, `0x00d90aec`, `0x00d91078`; arguments `group, idTable, count`). They return the index of the entry in the id table plus event flags: `0x8000` no entry, `0x4000` pressed on an entry, `0x0800` released on the entry it was pressed on, `0x0200` activated (what `isTapped` tests; set on release or on press depending on the group's mode byte), `0x1000`/`0x2000` held or dragged, `0x0400` no change (medium: read in `0x00d8ff5c` and `0x002951fc`, not traced at run time).
-- The id tables are 32-bit **name hashes** (for example `0x00defc00+0x21c`, `0x00df00b4`, `0x00ef3164`). None matched the ~19,600 strings in the code image or a dictionary of `uiNNN_<word>` names: the pane names live in the layout files only, and reading them there names these three as the `ui050` screen edges and corners, the four `ui007_b_camera_button` tabs, and the `ui002` top bar's parts (see [The layout files](#the-layout-files-and-the-saved-arrangement-november-2026)).
+- The id tables are 32-bit **name hashes** (for example `0x00defc00+0x21c`, `0x00df00b4`, `0x00ef3164`). None matched the ~19,600 strings in the code image or a dictionary of `uiNNN_<word>` names: the pane names live in the layout files only, and reading them there names these three as the `ui050` screen edges and corners, the four `ui007_b_camera_button` tabs, and the parts of the `ui002` bar at the bottom of the touch screen (see [The layout files](#the-layout-files-and-the-saved-arrangement-november-2026)).
 
 ### 2.4 The panel manager
 
@@ -301,7 +301,7 @@ Read in the English layouts of a EUR copy (the contributor's own cartridge; the 
 
 | Table | Boundaries | Read by (literal pools) |
 |---|---|---|
-| `0x00ef3164` | the `ui002` top bar's parts, in its two- and three-part forms | `0x002951fc` processTouch, `0x00293310` |
+| `0x00ef3164` | the `ui002` bottom bar's parts, in its two- and three-part forms | `0x002951fc` processTouch, `0x00293310` |
 | `0x00df552c` | `ui006_boundary_000`…`004` | `0x0028e9ec`, `0x0029331c`, `0x0029f6ac` |
 | `0x00df6304` | `ui002`'s customise, my-set and search buttons, then `ui006`'s cross pad | `0x00297048` |
 | `0x00df64a4`, `0x00df64c0` | `ui015` yes/no buttons; `ui060` player and equipment buttons | processTouch and others |
@@ -313,7 +313,18 @@ Read in the English layouts of a EUR copy (the contributor's own cartridge; the 
 | `0x00df00b4` | `ui007_b_camera_button00`…`03` (the big panel's tabs) | `0x00ba15a0` |
 | `0x00defe1c`, `0x00def82c` | `ui050` screen edges, corners and side buttons | `0x00ba3e30`…`0x00ba3e44`, `0x00b9e7c8` |
 
-- **The top bar (`ui002`) holds the panel manager's fixed buttons.** Its roots for two, three and four parts have one boundary per part, all 30 pixels high at the top of the touch screen: two parts at screen x 4–249 and 255–316; three at 3–66, 71–249 and 255–317; four at 2–65, 70–157, 162–250 and 255–316. processTouch's mode 0 hit-tests the two- and three-part forms (table `0x00ef3164`), so the fixed buttons 7 (kick), 9 (menu), 8 and 0xb (skip) are parts of this bar; the stylus tap on *Skip* in the maintainer's log (hit index 1, id 0xb) is the wide middle part of the three-part bar. (high for the areas, medium for which id is which part: not checked on screen)
+- **The bar at the bottom of the touch screen (`ui002`) holds the panel manager's fixed buttons.** Its roots for two, three and four parts have one boundary per part, 30 pixels high: two parts at screen x 4–249 and 255–316; three at 3–66, 71–249 and 255–317; four at 2–65, 70–157, 162–250 and 255–316. The layout file puts them at the top; at run time they sit at the bottom (`ui002` has an upper and a lower bar, the lower one 204 pixels down), where every tap below landed (y 213–236). processTouch hit-tests the two- and three-part forms (table `0x00ef3164`). (high)
+- **Which id is which part (run time, November 2026).** A diagnostic build logged, for each tap, the touch position, the manager's mode (`+0xb1`) and its slot ids (`+0xb4`…), on a 100% save in town and on a quest. With the mode tables of `0x00df5410` (hit index → slot: mode 0 `[5, 2, 7, 7]`, mode 1 `[0, 1, 2, 7]`):
+
+  | Mode | Bar | Part (screen x) | Slot | Id seen | Taps |
+  |---|---|---|---|---|---|
+  | 1 | three parts | left (3–66) | 0 | **3** | town |
+  | 1 | | middle (71–249) | 1 | **6** | town: tapped, handled at `0x00a4854c` |
+  | 1 | | right (255–317) | 2 | **4** | town |
+  | 0 | two parts | wide left (4–249) | 5 | **4** | town; on a quest it takes the HUD to its states 7 and 8 |
+  | 0 | | right (255–316) | 2 | **9** or **8** in town (the byte changed between taps; both handled by `0x005ed1f0`/`0x005ed1fc`), **7** on a quest (the kick, handled at `0x00b9e0b4`) | town, quest |
+
+  So the right-hand button of the two-part bar is the one whose id the game swaps: 7 (kick) on a quest, 8 and 9 in town, and 0xb for the *Skip* of the maintainer's log (hit index 1 there too). Slot 2 is the only one that changed; slots 0, 1, 3, 4, 6 held 1 and slot 5 held 4 in mode 0. (high for the mapping, medium for what 3, 4, 6, 8 and 9 do: what each tap opened wasn't noted)
 - **`ui006`** is a set of menu controls: three buttons (boundaries 000, 001 and 004), page arrows (002, 003), a cross pad and help panes; the panel manager binds touch groups 2… of `+0x1790` to its boundaries, one per group (`0x0028e9ec`, `0x0029f6ac`).
 
 ### The quest panels' layouts
@@ -333,7 +344,7 @@ Two saves of the same game, the second after replacing the camera pad with two s
 
 ## Open questions
 
-1. Which panel ids are which (7, 8, 9, 0xb, 6 and the rest), and what action bit `0x0001` does: stage 0 logging, one tap per panel (the first attempt found the logging points don't see the taps; see the runtime check above). The fixed ids are parts of the `ui002` top bar ([above](#hit-areas-of-the-panel-manager-and-the-quest-hud)): which part is which id, in which game modes, is still to see on screen.
+1. Which panel ids are which (7, 8, 9, 0xb, 6 and the rest), and what action bit `0x0001` does: stage 0 logging, one tap per panel (the first attempt found the logging points don't see the taps; see the runtime check above). Mostly answered for the fixed buttons ([above](#hit-areas-of-the-panel-manager-and-the-quest-hud)): the parts of the bottom bar and the ids they carry in town and on a quest; still open: what 3, 4, 6, 8 and 9 open, and the other ids below `0x14`.
 2. ~~The pane names behind the hash ids~~: answered in [The layout files](#the-layout-files-and-the-saved-arrangement-november-2026).
 3. ~~Where the panel arrangement is saved~~: answered in [The saved arrangement](#the-saved-arrangement); still open there: entries 1–5, the table at `obj + 0xec90`, and the other two changes between the saves.
 4. Whether the software keyboard, the cutscene subtitles or any other screen uses `rGUI` (`DrawLower`).
