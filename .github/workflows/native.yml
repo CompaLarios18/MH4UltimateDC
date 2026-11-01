@@ -112,8 +112,9 @@ jobs:
   # tree, build/tsan, configured with -fsanitize=thread in the C, C++ and linker flags (clang 18 needs the runtime of
   # libclang-rt-18-dev), builds only the test binaries the regex below names (names that do not exist yet match
   # nothing) and runs them with MH4N_REQUIRE_VULKAN=1 on lavapipe. halt_on_error=1: the first report fails the job.
-  # tools/native/tsan.supp names only the Vulkan loader and lavapipe's driver library, never a frame of plume or of
-  # ours. The control D2 of rhi_plume_patterns_test (a race on purpose) is skipped by default and is not run here.
+  # tools/native/tsan.supp names only the Vulkan loader, lavapipe's driver library and the LLVM it loads, never a frame
+  # of plume or of ours. The control D2 of rhi_plume_patterns_test (a race on purpose) is skipped by default and is not
+  # run here.
   # The compiler is named clang-18 (the runner images carry several clangs) so that it and libclang-rt-18-dev, which holds
   # its ThreadSanitizer runtime, are the same major version.
   native-tsan:
