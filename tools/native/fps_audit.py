@@ -23,18 +23,20 @@ made them the tool's defaults):
                  ranges of config/native/fs_write_masks.txt zeroed first (tools/compare_ipc_traces.py)
 
 Before the six, `runs` checks that both runs finished (exit status 0, the trace reaches the session's last frame): a
-run that hangs must not read as a pass. An item with nothing to compare (a session without a DSP capture, no readable
+run that hangs fails `runs`, which decides the exit status wherever `runs` is gated (every `azahar` pair); with `none`
+it is reported like every item. An item with nothing to compare (a session without a DSP capture, no readable
 position) is `n/a`, not a failure, unless `--require` names it (D34).
 
 Gated and reported (D70, D71), by the session, the mode and the latency of the folder's meta.json: a **gated** item
 that fails fails the audit (exit 1); a **reported** one is printed with its numbers and named on the verdict line.
-With `--io-latency none` every item is reported. With `azahar`, in real time G1, G2 and G4 gate runs, scenes, times,
-checkpoints, dsp and writes and report observables, and G3 gates runs and writes and reports the rest; in the
-deterministic mode every item is gated. In both modes dsp gates only G1's boot window (`dsp:1240:300` of G1.txt):
-every other window is reported, with the game clock's offset at its start, which is not the shift (the shifts after
-the intro movie were 77 to 100 % of it, N3-22's finding 1). A session the tool does not name (G6, G8) takes G1's
-rules. These numbers are D70's: the options override them for a look at other values, and are never retuned to make
-a session pass (N3 rule 7).
+With `--io-latency none` every item is reported. A meta.json without `io_latency` is taken as `azahar`; with any other
+value (N3-22's hand-made analysis folders carry a note there: not a pair of `run`) every item is reported; the first
+two lines say so. With `azahar`, in real time G1, G2 and G4 gate runs, scenes, times, checkpoints, dsp and writes and
+report observables, and G3 gates runs and writes and reports the rest; in the deterministic mode every item is gated.
+In both modes dsp gates only G1's boot window (`dsp:1240:300` of G1.txt): every other window is reported, with the
+game clock's offset at its start, which is not the shift (the shifts after the intro movie were 77 to 100 % of it,
+N3-22's finding 1). A session the tool does not name (G6, G8) takes G1's rules. These numbers are D70's: the options
+override them for a look at other values, and are never retuned to make a session pass (N3 rule 7).
 
   fps_audit.py scale SESSION --factor 2 -o OUT
       observable_probe.py's `scale` (N3-21).
@@ -112,7 +114,6 @@ QUEST_UNITS_PER_SECOND = 60      # the quest countdown's rate (N3-21, docs/resea
 HUNT_SCENE = 0x00e655c8          # aQuest: the scene the two observables are valid in (N3-21: "in the hunt only")
 MAX_SHIFT_REAL_TIME = capfmt.DEFAULT_MAX_SHIFT     # (5) D51's 48 DSP frames
 MAX_SHIFT_DETERMINISTIC = 58     # (5) the +57 measured in the deterministic mode plus one (D50's rule)
-MAX_SHIFT = MAX_SHIFT_REAL_TIME
 # (5) the DSP windows that gate, by session (their start, game frames at 60 fps): G1's boot window, before the clock
 # offset of the intro movie arises. Every other window is reported.
 BOOT_WINDOWS: dict[str, tuple[int, ...]] = {"G1": (1240,)}
@@ -440,7 +441,8 @@ class Settings:
     session: str                        # the session's base name (`G3` for `G3-x2`)
     rules_of: str                       # whose rules: the session's, or G1's for a session the tool does not name
     mode: str                           # deterministic | real-time
-    io_latency: str
+    io_latency: str                     # azahar | none, or a value `run` never writes (every item reported)
+    io_latency_note: str                # how the value was read, when it is not plainly azahar or none
     gated: frozenset[str]               # the gated items (dsp only with a boot window to gate)
     boot_windows: tuple[int, ...]       # the DSP windows that gate (starts, game frames at 60 fps)
     time_frames: Optional[float]        # --time-frames: one limit for every change instead of D70's table
@@ -455,12 +457,6 @@ class Settings:
     hunt_scene: Optional[int]
     masks_file: Optional[str]
 
-    def time_limit(self, index: int) -> float:
-        """The limit of scene change #index, in frames at 60 fps."""
-        if self.time_frames is not None:
-            return self.time_frames
-        return self.time_table.get(index, TIME_TOLERANCE_FRAMES)
-
     @property
     def reported(self) -> list[str]:
         return [n for n in ITEMS if n not in self.gated]
@@ -474,10 +470,10 @@ def settings_for(pair: Pair, *, time_frames: Optional[float] = None, position_re
     """D70's rules and bounds for the pair; an option that is not None overrides D70's value."""
     session = base_name(pair.session)
     mode = run_mode(pair.meta)
-    latency = str(pair.meta.get("io_latency") or "azahar")
+    latency, note = io_latency_of(pair.meta)
     rules_of = session if session in GATED_REAL_TIME else RULES_FALLBACK
-    if latency == "none":
-        gated: frozenset[str] = frozenset()                 # D71: `none` is reported
+    if latency != "azahar":
+        gated: frozenset[str] = frozenset()                 # D71: `none` is reported, as is a value `run` never writes
     elif mode == "deterministic":
         gated = GATED_DETERMINISTIC[rules_of]
     else:
@@ -487,7 +483,7 @@ def settings_for(pair: Pair, *, time_frames: Optional[float] = None, position_re
         gated = gated - {"dsp"}                             # only G1's boot window gates
     defaults = SESSION_DEFAULTS.get(session, {})
     return Settings(
-        session=session, rules_of=rules_of, mode=mode, io_latency=latency, gated=gated,
+        session=session, rules_of=rules_of, mode=mode, io_latency=latency, io_latency_note=note, gated=gated,
         boot_windows=boot if "dsp" in gated else (),
         time_frames=time_frames, time_table=dict(SCENE_TIME_FRAMES.get(session, {})),
         position_relative=POSITION_RELATIVE if position_relative is None else position_relative,
@@ -509,7 +505,8 @@ def describe_rules(s: Settings) -> str:
     who = s.session if s.rules_of == s.session else f"{s.session} (not named: {s.rules_of}'s rules)"
     head = f"rules: D70, {who}, {s.mode} mode, --io-latency {s.io_latency}"
     if not s.gated:
-        return head + ": every item reported (D71: only `azahar` is gated)"
+        why = "`none` is reported" if s.io_latency == "none" else "a value but azahar or none gates nothing"
+        return head + f": every item reported (D71: {why}; `azahar` is the gated latency)"
 
     def name(n: str) -> str:
         if n != "dsp":
@@ -993,6 +990,18 @@ def run_mode(meta: dict) -> str:
     return "deterministic" if "--deterministic" in meta.get("runner_args", []) else "real-time"
 
 
+def io_latency_of(meta: dict) -> tuple[str, str]:
+    """(the latency, a note for the report) from the meta file's `io_latency`. A meta file without one is taken as
+    `azahar`, the gated latency (D71). A value but `azahar` and `none` is not one `run` writes (N3-22's hand-made
+    analysis folders carry a note there, and `compare` reads them): D70 gates nothing for it."""
+    value = meta.get("io_latency")
+    if value is None:
+        return "azahar", "not in meta.json: taken as azahar"
+    if value in ("azahar", "none"):
+        return value, ""
+    return str(value), "neither azahar nor none: not a pair of `fps_audit.py run`, every item reported"
+
+
 def run_seed(meta: dict) -> Optional[str]:
     if meta.get("seed") is not None:
         return str(meta["seed"])
@@ -1005,8 +1014,9 @@ def format_report(pair: Pair, items: list[Item], verbose: bool = True,
     s = settings or settings_for(pair)
     k = pair.factor
     seed = run_seed(pair.meta)
+    latency = s.io_latency + (f" ({s.io_latency_note})" if s.io_latency_note else "")
     lines = [f"fps_audit: {pair.session}, {BASE_FPS} fps against {BASE_FPS * k} fps (x{k}), "
-             f"--io-latency {pair.meta.get('io_latency', '?')}, {run_mode(pair.meta)} mode"
+             f"--io-latency {latency}, {s.mode} mode"
              + (f" (--seed {seed})" if seed is not None else ""),
              describe_rules(s), describe_bounds(s)]
     for it in items:
@@ -1041,10 +1051,19 @@ def cmd_compare(args: argparse.Namespace) -> int:
         hunt_scene = None if args.hunt_scene.lower() == "any" else int(args.hunt_scene, 0)
     except ValueError:
         raise AuditError(f"--hunt-scene {args.hunt_scene!r}: want a scene value (0x...) or `any`") from None
-    for name in ("time_frames", "position_relative", "position_absolute", "quest_seconds", "max_shift"):
+    # every bound is a finite number of 0 or more (nan would turn every comparison false and drop the bound); the
+    # position's limit and the quest counter's rate are divisors, so they are above 0
+    for name in ("time_frames", "position_relative", "position_absolute", "quest_seconds", "quest_units", "max_shift"):
         value = getattr(args, name)
-        if value is not None and value < 0:
-            raise AuditError(f"--{name.replace('_', '-')} {value}: want a value of 0 or more")
+        if value is None:
+            continue
+        option = f"--{name.replace('_', '-')} {value}"
+        if not math.isfinite(value) or value < 0:
+            raise AuditError(f"{option}: want a finite value of 0 or more")
+        if value == 0 and name in ("position_absolute", "quest_units"):
+            raise AuditError(f"{option}: want a value above 0 (" + (
+                "the position's limit, which each second's distance is divided by" if name == "position_absolute"
+                else "the quest counter's units per second") + ")")
     masks = args.fs_write_mask
     if masks is None:
         masks = str(DEFAULT_WRITE_MASKS)
@@ -1062,8 +1081,8 @@ def cmd_compare(args: argparse.Namespace) -> int:
                                       newline="\n")
     passed, failed, reported = verdict(items)
     (root / "compare.json").write_text(json.dumps({
-        "session": pair.session, "factor": pair.factor, "io_latency": pair.meta.get("io_latency"),
-        "mode": run_mode(pair.meta), "seed": run_seed(pair.meta),
+        "session": pair.session, "factor": pair.factor, "io_latency": s.io_latency,
+        "io_latency_note": s.io_latency_note or None, "mode": s.mode, "seed": run_seed(pair.meta),
         "rules": {"rules_of": s.rules_of, "gated": [n for n in ITEMS if n in s.gated], "reported": s.reported,
                   "boot_windows": list(s.boot_windows)},
         "tolerances": {"time_frames": s.time_frames, "time_default_frames": TIME_TOLERANCE_FRAMES,
@@ -1130,7 +1149,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--require", metavar="ITEMS",
                    help=f"items that must have something to compare (a n/a becomes a failure): "
                         f"{', '.join(REQUIRABLE)}; replaces the session's default (G3: position,quest_time,dsp; the "
-                        f"others none); '' for none")
+                        f"others none); `--require=` for none (an empty \"\" argument is dropped by Windows "
+                        f"PowerShell 5.1)")
     p.add_argument("--position-until", type=int, metavar="FRAME",
                    help="also report the position up to this frame at 60 fps (the part before the first attack); "
                         "default: G3 15862, the others none")
@@ -1143,15 +1163,16 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--position-relative", type=float,
                    help=f"the position's limit, part of the last second's travel (D70: {POSITION_RELATIVE:g})")
     p.add_argument("--position-absolute", type=float,
-                   help=f"the position's limit, units (D70: {POSITION_ABSOLUTE:g})")
+                   help=f"the position's limit, units, above 0 (D70: {POSITION_ABSOLUTE:g})")
     p.add_argument("--quest-seconds", type=float, help=f"the quest clock's limit, seconds (D70: {QUEST_SECONDS:g})")
     p.add_argument("--quest-units", type=float, default=QUEST_UNITS_PER_SECOND,
-                   help="units of the quest counter per second of game time (N3-21: 60)")
+                   help="units of the quest counter per second of game time, above 0 (N3-21: 60)")
     p.add_argument("--max-shift", type=int,
                    help=f"DSP frames the 120 fps capture may be shifted by (D70: {MAX_SHIFT_REAL_TIME} in real time, "
                         f"{MAX_SHIFT_DETERMINISTIC} in the deterministic mode)")
     p.add_argument("--fs-write-mask", metavar="FILE|none", help="default: config/native/fs_write_masks.txt")
-    p.add_argument("--brief", action="store_true", help="only the item lines on the terminal")
+    p.add_argument("--brief", action="store_true",
+                   help="leave out the detail lines on the terminal (compare.txt always has them)")
     return ap
 
 

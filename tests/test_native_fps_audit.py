@@ -762,6 +762,12 @@ def test_two_constant_quest_counters_further_apart_than_the_tolerance_fail(tmp_p
     assert "over the quest-clock tolerance" in far.data["quest_time"]["summary"]
     assert "0x" not in far.data["quest_time"]["summary"]             # the difference is printed, not the values
     assert audit(far_root, quest_seconds=1.2)["observables"].data["quest_time"]["status"] == "n/a"
+    # the bound is inclusive: exactly at the limit (60 units = 1 s against 1 s) is within it, one unit more is over
+    exact = audit(good_pair(sub(tmp_path, "exact"), quest=(lambda f: 700, lambda f: 760)), quest_seconds=1.0)
+    assert exact["observables"].data["quest_time"]["status"] == "n/a"
+    assert "60 units = 1 s apart (limit 1.0 s)" in exact["observables"].data["quest_time"]["summary"]
+    past = audit(good_pair(sub(tmp_path, "past"), quest=(lambda f: 700, lambda f: 761)), quest_seconds=1.0)
+    assert past["observables"].data["quest_time"]["status"] == "fail"
 
 
 def test_a_position_that_is_not_a_position_fails(tmp_path):
@@ -1144,3 +1150,179 @@ def test_the_rules_line_names_the_session_mode_and_latency(tmp_path):
     g1 = rules(session="G1", mode="deterministic")
     assert "dsp (the window at frame 1240" in g1
     assert "every item reported" in rules(session="G2", io_latency="none")
+
+
+# D70's tables as the spec gives them, written out here so that a change to the tool's own tables fails a test
+
+# (2): each change's limit in frames at 60 fps, for a chain of 10 changes (#0 to #9); G6 is not named: 4 everywhere
+D70_LIMITS = {
+    "G1": [4, 20, 4, 4, 4, 4, 4, 4, 4, 4],
+    "G2": [4, 20, 4, 10, 10, 10, 19, 19, 4, 4],
+    "G3": [4, 20, 4, 10, 10, 10, 4, 4, 5.5, 5.5],
+    "G4": [4, 20, 4, 10, 10, 10, 4, 4, 4, 4],
+    "G6": [4, 4, 4, 4, 4, 4, 4, 4, 4, 4],
+}
+
+# the items an `azahar` pair gates, besides dsp (which gates G1's boot window only); G6 takes G1's rules
+_RT = {"runs", "scenes", "times", "checkpoints", "writes"}
+_DET = {"runs", "scenes", "times", "checkpoints", "observables", "writes"}
+D70_GATED = {
+    "real-time": {"G1": _RT, "G2": _RT, "G4": _RT, "G6": _RT, "G3": {"runs", "writes"}},
+    "deterministic": {"G1": _DET, "G2": _DET, "G3": _DET, "G4": _DET, "G6": _DET},
+}
+
+# a good pair's arguments that make exactly one item fail
+FAILING = {
+    "runs": dict(exit_codes=(0, 1)),
+    "scenes": dict(scenes_scaled=[(10, 0x1000), (240, 0x3000), (400, HUNT)],      # another scene at change #0
+                   checkpoints=((60, 0x1000), (300, HUNT))),
+    "times": dict(scenes_scaled=shifted(40)),                                      # change #0 20 frames late
+    "checkpoints": dict(quest_id=(lambda f: 7, lambda f: 7 if f < 200 else 9)),
+    "observables": dict(pos=(walk(60), walk(120, 4000.0))),                        # beyond 3,700 units
+    "writes": dict(writes=([(0, BLOB)], [(0, with_byte(3, 9))])),
+}
+
+
+@pytest.mark.parametrize("session", sorted(D70_LIMITS))
+def test_every_sessions_scene_time_limits_are_d70s_table(tmp_path, session):
+    root = make_pair(tmp_path, scenes=chain(10), scenes_scaled=chain_scaled(10), checkpoints=(), session=session,
+                     mode="deterministic")
+    item = audit(root)["times"]
+    assert item.status == "pass"
+    assert [c["limit_frames"] for c in item.data["changes"]] == D70_LIMITS[session]
+
+
+@pytest.mark.parametrize("name", sorted(FAILING))
+@pytest.mark.parametrize("mode", ["real-time", "deterministic"])
+@pytest.mark.parametrize("session", ["G1", "G2", "G3", "G4", "G6"])
+def test_an_item_that_fails_decides_the_exit_status_where_d70_gates_it(tmp_path, capsys, session, mode, name):
+    root = good_pair(tmp_path, session=session, mode=mode, **FAILING[name])
+    gated = name in D70_GATED[mode][session]
+    assert compare_main(root) == (1 if gated else 0)
+    out = capsys.readouterr().out
+    data = compare_json(root)
+    assert [i["name"] for i in data["items"] if i["status"] == "fail"] == [name]       # this item and no other
+    assert next(i for i in data["items"] if i["name"] == name)["gated"] is gated
+    line = item_lines(out)[name]
+    assert "FAIL" in line and ("gated" if gated else "reported") in line
+    verdict = out.splitlines()[-1]
+    if gated:
+        assert data["failed"] == [name] and verdict.startswith(f"verdict: FAIL ({name})")
+    else:
+        assert data["failed"] == [] and data["reported_failures"] == [name]
+        assert verdict.startswith(f"verdict: pass (reported: {name})")
+
+
+@pytest.mark.parametrize("mode", ["real-time", "deterministic"])
+@pytest.mark.parametrize("session", ["G1", "G2", "G3", "G4", "G6"])
+def test_the_gated_items_of_each_session_and_mode(tmp_path, session, mode):
+    root = good_pair(tmp_path, session=session, mode=mode, dsp_start=1240)
+    assert compare_main(root) == 0
+    data = compare_json(root)
+    want = D70_GATED[mode][session] | ({"dsp"} if session == "G1" else set())        # G1's boot window
+    assert {i["name"]: i["gated"] for i in data["items"]} == {n: n in want for n in fps_audit.ITEMS}
+    assert set(data["rules"]["gated"]) == want and set(data["rules"]["reported"]) == set(fps_audit.ITEMS) - want
+    assert data["rules"]["boot_windows"] == ([1240] if session == "G1" else [])
+
+
+def test_g1s_dsp_stays_gated_without_its_boot_window(tmp_path, capsys):
+    over = ((100, 100, 40), (100 + 49 - 10, 90, 40))              # +49: over the real-time bound
+    root = good_pair(tmp_path, session="G1", mode="real-time", dsp_start=200, dsp=over)   # no window at 1240
+    assert compare_main(root) == 0
+    out = capsys.readouterr().out
+    line = item_lines(out)["dsp"]
+    assert "n/a" in line and "gated" in line and "no gated window (the window at frame 1240)" in line
+    assert out.splitlines()[-1].startswith("verdict: pass (reported: dsp (dsp-200.mdsp))")
+    dsp = next(i for i in compare_json(root)["items"] if i["name"] == "dsp")
+    assert dsp["gated"] and dsp["status"] == "n/a"
+    assert compare_main(root, "--require", "dsp") == 1                # required: a gated failure
+    out = capsys.readouterr().out
+    line = item_lines(out)["dsp"]
+    assert "FAIL" in line and "gated" in line and "no gated window" in line and "(required)" in line
+    assert out.splitlines()[-1].startswith("verdict: FAIL (dsp; reported: dsp (dsp-200.mdsp))")
+    # no DSP capture at all
+    bare = make_pair(sub(tmp_path, "bare"), session="G1", mode="real-time")
+    assert compare_main(bare) == 0
+    dsp = next(i for i in compare_json(bare)["items"] if i["name"] == "dsp")
+    assert dsp["gated"] and dsp["status"] == "n/a"
+    assert compare_main(bare, "--require", "dsp") == 1
+    dsp = next(i for i in compare_json(bare)["items"] if i["name"] == "dsp")
+    assert dsp["gated"] and dsp["status"] == "fail" and "(required)" in dsp["summary"]
+    assert compare_json(bare)["failed"] == ["dsp"]
+
+
+def test_compares_options_override_d70s_bounds(tmp_path):
+    def run(rate, shift=0.0):
+        return lambda f: (f / rate * 100.0 + shift, 1.0, 2.0)          # 100 units a second
+
+    # position 3,700.5 units apart, quest counter 66 units = 1.1 s apart: both over D70's bounds
+    root = good_pair(tmp_path, session="G3", mode="deterministic", pos=(run(60), run(120, 3700.5)),
+                     quest=(countdown(60), countdown(120, 66)))
+
+    def observables():
+        return next(i for i in compare_json(root)["items"] if i["name"] == "observables")["data"]
+
+    assert compare_main(root) == 1
+    assert observables()["position"]["status"] == "fail" and observables()["quest_time"]["status"] == "fail"
+    assert compare_main(root, "--position-absolute", "3701", "--quest-seconds", "1.2") == 0
+    tol = compare_json(root)["tolerances"]
+    assert tol["position_absolute"] == 3701 and tol["quest_seconds"] == 1.2 and tol["position_relative"] == 0
+    assert compare_main(root, "--position-absolute", "3701") == 1      # the quest clock is still over
+    assert compare_main(root, "--quest-seconds", "1.2") == 1           # the position is still over
+    # the relative part: 0.01 of the 100 units travelled in the last second plus 3,700
+    assert compare_main(root, "--position-relative", "0.01", "--quest-seconds", "1.2") == 0
+    tol = compare_json(root)["tolerances"]
+    assert tol["position_relative"] == 0.01 and tol["position_absolute"] == 3700
+    assert observables()["position"]["rows"][0]["limit"] == pytest.approx(3701, abs=0.01)
+    # --position-until replaces G3's 15862
+    assert compare_main(root, "--position-until", "290", "--position-absolute", "3701", "--quest-seconds", "1.2") == 0
+    assert compare_json(root)["position_until"] == 290 and observables()["position_until"]["frame"] == 290
+
+
+@pytest.mark.parametrize("option,value", [
+    ("--time-frames", "-1"), ("--time-frames", "nan"), ("--time-frames", "inf"),
+    ("--position-absolute", "0"), ("--position-absolute", "nan"), ("--position-absolute", "-3700"),
+    ("--position-relative", "-0.5"), ("--position-relative", "inf"),
+    ("--quest-seconds", "nan"), ("--quest-seconds", "-1"), ("--quest-units", "0"), ("--quest-units", "nan"),
+    ("--max-shift", "-1"),
+])
+def test_compare_refuses_a_bound_that_is_not_a_finite_value_of_0_or_more(tmp_path, capsys, option, value):
+    root = good_pair(tmp_path, session="G3", mode="deterministic")
+    assert compare_main(root, f"{option}={value}") == 2
+    assert f"fps_audit: {option} " in capsys.readouterr().err
+    assert not (root / "compare.json").exists()
+
+
+def test_a_meta_file_without_io_latency_is_taken_as_azahar_and_any_other_value_is_reported(tmp_path, capsys):
+    root = good_pair(tmp_path, session="G2", mode="real-time", writes=([(0, BLOB)], [(0, with_byte(3, 9))]))
+    meta = json.loads((root / "meta.json").read_text(encoding="utf-8"))
+    del meta["io_latency"]
+    (root / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
+    assert compare_main(root) == 1                                     # gated as azahar: the Writes differ
+    out = capsys.readouterr().out.splitlines()
+    assert out[0].endswith("--io-latency azahar (not in meta.json: taken as azahar), real-time mode")
+    assert "--io-latency azahar: gated runs, scenes" in out[1]
+    data = compare_json(root)
+    assert data["io_latency"] == "azahar" and data["io_latency_note"] == "not in meta.json: taken as azahar"
+    assert data["failed"] == ["writes"]
+    # a value `run` never writes (N3-22's hand-made analysis folders carry a note there): every item reported
+    for value in ("60 fps run of A (as 60) against 120 fps run of B (as 120)", "reference", "", "Azahar"):
+        meta["io_latency"] = value
+        (root / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
+        assert compare_main(root) == 0
+        out = capsys.readouterr().out.splitlines()
+        assert f"--io-latency {value} (neither azahar nor none: not a pair of `fps_audit.py run`" in out[0]
+        assert out[1].endswith(f"--io-latency {value}: every item reported (D71: a value but azahar or none gates "
+                               f"nothing; `azahar` is the gated latency)")
+        assert out[-1].startswith("verdict: pass (reported: writes); 0 gated, 7 reported")
+        data = compare_json(root)
+        assert data["io_latency"] == value and data["io_latency_note"].startswith("neither azahar nor none")
+        assert not any(i["gated"] for i in data["items"]) and data["rules"]["gated"] == []
+    meta["io_latency"] = "none"
+    (root / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
+    assert compare_main(root) == 0
+    assert compare_json(root)["io_latency"] == "none" and compare_json(root)["io_latency_note"] is None
+    meta["io_latency"] = "azahar"
+    (root / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
+    assert compare_main(root) == 1
+    assert compare_json(root)["io_latency"] == "azahar" and compare_json(root)["io_latency_note"] is None
