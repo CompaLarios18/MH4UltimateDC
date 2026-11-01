@@ -232,12 +232,12 @@ void Menu::DrawLayoutEditor() {
         ImGui::PopStyleColor();
     }
     // the keys of the controller or the keyboard, whichever was used last (EditorKeys), in lines
-    // that keep each key next to what it does
-    const char* keys =
-        layer.PadLast()
-            ? "LB/RB: map or target camera   D-pad: move\nLT/RT: size   Y: show/hide\nX: reset   A: done   B: cancel"
-            : "Tab: map or target camera   arrows: move\n-/+: size   Space: show/hide\n"
-              "Backspace: reset   Enter: done   Esc: cancel";
+    // that keep each key next to what it does: as many lines for both, and none longer than 41
+    // characters, which fit the toolbar's 26 em at every font size
+    const char* keys = layer.PadLast() ? "LB/RB: map or target camera   D-pad: move\nLT/RT: size   Y: show/hide\n"
+                                         "X: reset\nA: done   B: cancel"
+                                       : "Tab: map or target camera   arrows: move\n-/+: size   Space: show/hide\n"
+                                         "Backspace: reset\nEnter: done   Esc: cancel";
     ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
     ImGui::TextWrapped("%s", keys);
     ImGui::PopStyleColor();

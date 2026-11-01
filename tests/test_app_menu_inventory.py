@@ -81,6 +81,21 @@ def test_closed_copies_the_fields():
         "fast_forward_key", "touch_taps"}
 
 
+def test_layout_editor_key_lines():
+    """Edit HUD layout's keys, the controller's and the keyboard's: as many lines (the toolbar's buttons
+    don't move when the other is used), each 41 characters at most, which fit its 26 em at every font
+    size (a longer one broke a key from what it does)."""
+    with open(os.path.join(UI, "menu_editor.cpp"), encoding="utf-8") as f:
+        text = f.read()
+    literals = r'((?:"(?:[^"\\]|\\.)*"\s*)+)'
+    pad, keyboard = re.search(r"const char\* keys = layer\.PadLast\(\)\s*\?\s*" + literals + r":\s*" + literals + ";",
+                              text).groups()
+    lines = [("".join(re.findall(r'"((?:[^"\\]|\\.)*)"', group))).split("\\n") for group in (pad, keyboard)]
+    assert len(lines[0]) == len(lines[1])
+    for line in lines[0] + lines[1]:
+        assert 0 < len(line) <= 41, line
+
+
 def test_texts_ascii():
     """The menu's font has ASCII only (ui.cpp, AddFontDefaultVector): no curly quotes or arrows. With
     the touch taps' section and the map view's sentences (port/src/map_view.cpp), which it shows."""
