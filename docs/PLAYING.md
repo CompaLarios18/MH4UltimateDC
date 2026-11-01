@@ -6,9 +6,10 @@ How to run Monster Hunter 4 Ultimate on a PC with this project: the game's own c
 
 ## What you need
 
-- Your cartridge or digital copy of MH4U (USA) and a 3DS with [GodMode9](https://github.com/d0k3/GodMode9), to dump:
+- Your cartridge or digital copy of MH4U (USA or Europe) and a 3DS with [GodMode9](https://github.com/d0k3/GodMode9), to dump:
   - the **game** as a decrypted `.3ds` (or `.cci`/`.cxi`);
   - the **v1.3.0 update** as a `.cia` (GodMode9 can build one from the installed title). The port's code is made from this update. Some tools that decrypt or rebuild a `.cia` reset its version label (to v0.0.1 or v1.0.0) and leave the update itself as it was: the launcher's setup and `build_game.py` tell the update by its code, so such a v1.3.0 `.cia` is used as v1.3.0, and they say so.
+  - **Europe:** the European game's update is **v1.1.0** (title `0004000E00126100`). Everything below works the same with it in place of v1.3.0; its code library is `recomp/0004000000126100.*` and its mods folder `load/mods/0004000000126100/`.
 - A PC: Windows 10/11 x64, Linux x64, or a Mac with Apple silicon (the macOS app is not tried yet). On Windows 11, **Smart App Control** must be off: it blocks the unsigned programs and libraries involved (Azahar's DLLs, the compiler, the code library) with "Bad Image ... 0xc0e90002". *Windows Security → App & browser control → Smart App Control settings → Off*; since the April 2026 update (KB5083769) it can be turned back on later without reinstalling Windows.
 - [Python](https://www.python.org/downloads/) 3.10 or newer (nothing else to install with it).
 - This repository (`git clone`, or *Code → Download ZIP* on GitHub).
@@ -239,10 +240,10 @@ The app copies the library into its own storage (Android doesn't run code from s
 | Symptom | Cause |
 |---|---|
 | At start: *The MH4U PC port's code library isn't installed* (in the log: `no recompiled code for 0004000000126300`) | the library isn't in `<Azahar user folder>/recomp/`, or has another name: step 1. Until then the game runs on Azahar's own CPU emulation, without the port's options |
-| At start: *... couldn't be used* (in the log: `... was built against a different runtime`) | the library was made with an older version of this repository: build it again |
+| At start: *... couldn't be used* (in the log: `... was built for another version of the port`) | the library was made with an older version of this repository: build it again |
 | At start: *The game's code isn't the code the MH4U PC port's library was built from* | the v1.3.0 update isn't installed in Azahar (*File → Install CIA...*), or a code mod was added, changed or removed since the library was built (build it again). The game runs on Azahar's own CPU emulation meanwhile |
 | At start: *... is older than this Azahar: N of the port's hook points are missing* (in the log: `no hook point for ...`) | the library was built before this Azahar's version: build it again so all of the port's options work |
-| `this code.bin isn't a version the project knows` | the dump isn't the USA v1.3.0 update |
+| `this code.bin isn't a version the project knows` | the dump isn't the USA v1.3.0 or the European v1.1.0 update |
 | In the launcher's *Setup*: *This copy of Monster Hunter 4 Ultimate isn't decrypted properly, or it's damaged* (or *... is incomplete*, *... is encrypted*) | from the file's headers: its NCCH says it's decrypted, but its RomFS (the game's own files) has neither the `IVFC` header a decrypted one starts with nor, 0x1000 bytes in, the header of the file system the game reads (decrypted with the wrong keys, or damaged), so the game would most likely stop as it starts; or the file ends before its RomFS does (a copy that stopped part-way); or it's still encrypted (decrypt it with GodMode9 on your 3DS: Azahar opens decrypted games only). Otherwise dump the game again with GodMode9 and choose the new `.3ds`, `.cci` or `.cxi`. Only the headers and a few bytes of the RomFS are read, no hashes |
 | Setup, choosing the update's `.cia`, or on its line *Update v1.3.0*: *... version label says vX, and its code isn't v1.3.0's either* | the `.cia`, or the update installed from one, holds another update, or a changed one: install the USA v1.3.0 update (GodMode9 builds its `.cia` from the update installed on your 3DS) |
 | Setup, choosing the update's `.cia`, or on its line *Update v1.3.0*: *... version label says vX ... couldn't be read to tell* | its version label isn't v1.3.0's (some decryption tools reset it on a v1.3.0 update) and its code couldn't be read to tell which update it is: build the `.cia` again with GodMode9 from the update installed on your 3DS, and install that one |
