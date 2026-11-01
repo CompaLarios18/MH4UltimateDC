@@ -4,12 +4,17 @@
 usage: recompile.py [--exheader ...] [--code ...] [--functions config/functions.tsv]
                     [--extra build/export/missing2.txt] -o build/recomp
 Writes <out>/src/funcs.h, <out>/src/fNNN.c, <out>/src/table.c and <out>/report.txt.
+The tables in config/ hold USA v1.3.0's addresses. The code of a version whose functions are
+elsewhere (one with shifts in config/versions.json: EUR v1.1.0) is refused: tools/build_game.py
+moves the addresses first.
 """
 from __future__ import annotations
 
 import argparse
 import bisect
 import collections
+import hashlib
+import json
 import os
 import re
 import struct
@@ -354,6 +359,17 @@ def recompile(img: Image, entries: dict[int, str], out: str, log=print,
     return {"report": report, "funcs": funcs, "files": files, "problems": problems}
 
 
+VERSIONS = os.path.join(ROOT, "config", "versions.json")
+
+
+def shifted_version(code_sha1: str, path: str = VERSIONS) -> dict | None:
+    """The known version with this code (config/versions.json) if its functions aren't at the
+    addresses in config/'s tables: one with shifts, which tools/build_game.py applies to the tables."""
+    with open(path) as f:
+        versions = json.load(f)["versions"]
+    return next((v for v in versions if v.get("shifts") and v.get("code_sha1") == code_sha1), None)
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--exheader", default=os.path.join(ROOT, "baserom", "update_v130", "exheader.bin"))
@@ -367,11 +383,18 @@ def main(argv=None) -> int:
                     help="instructions whose immediate the host can change at run time")
     ap.add_argument("--no-data-pointers", action="store_true", help="don't scan .rodata/.data for code pointers")
     ap.add_argument("-o", "--out", default=os.path.join(ROOT, "build", "recomp"))
+    ap.add_argument("--versions", default=VERSIONS, help=argparse.SUPPRESS)
     args = ap.parse_args(argv)
     with open(args.exheader, "rb") as f:
         header = exh.parse(f.read())
     with open(args.code, "rb") as f:
         code = codebin2elf.load_code(header, f.read())
+    version = shifted_version(hashlib.sha1(code).hexdigest(), args.versions)
+    if version:
+        raise SystemExit(f"this code is {version['name']}: its functions aren't at the addresses in "
+                         "config/'s tables (USA v1.3.0's), so the port's hooks (frame rate, widescreen and "
+                         "the rest) would land in the wrong code. Use tools/build_game.py --dump <its update "
+                         f".cia>, which moves the addresses first ({version['shifts']})")
     img = Image(code, header.text.address, code_size(header, code))
     segs = None if args.no_data_pointers else [(header.ro.address, header.ro.size), (header.data.address, header.data.size)]
     title_id = struct.unpack_from("<Q", open(args.exheader, "rb").read(), 0x200)[0]   # ARM11 local caps: program id
