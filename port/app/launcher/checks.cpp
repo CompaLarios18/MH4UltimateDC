@@ -84,6 +84,26 @@ UpdateCode::Code InstalledCode(const std::string& path) {
     return UpdateCode::ReadCode(Reader(*file), 0);
 }
 
+/// A region's update in Azahar's virtual SD card (Service::AM's title paths): its program, ""
+/// when it isn't installed, and its title metadata's version label in `version`.
+std::string UpdateProgram(const Region& region, u16& version) {
+    const auto media = Service::FS::MediaType::SDMC;
+    FileSys::TitleMetadata tmd;
+    if (tmd.Load(Service::AM::GetTitleMetadataPath(media, region.update_id)) !=
+        Loader::ResultStatus::Success) {
+        return "";
+    }
+    version = tmd.GetTitleVersion();
+    const std::string content = Service::AM::GetTitleContentPath(media, region.update_id, 0);
+    return !content.empty() && FileUtil::Exists(content) ? content : "";
+}
+
+/// Whether a region's update is installed (its program is there).
+bool UpdateInstalled(const Region& region) {
+    u16 version = 0;
+    return !UpdateProgram(region, version).empty();
+}
+
 } // namespace
 
 const Region* FindRegion(u64 program_id) {
@@ -176,18 +196,31 @@ std::string Describe(const Game& game) {
 }
 
 Update CheckUpdate(u64 program_id) {
-    const Region& region = RegionOf(program_id);
     Update update;
-    const auto media = Service::FS::MediaType::SDMC;
-    FileSys::TitleMetadata tmd;
-    if (tmd.Load(Service::AM::GetTitleMetadataPath(media, region.update_id)) !=
-        Loader::ResultStatus::Success) {
-        return update;
+    update.region = FindRegion(program_id);
+    if (!update.region) {
+        // no game yet: the update of the region that has one installed (USA's first)
+        for (const Region& region : REGIONS) {
+            if (UpdateInstalled(region)) {
+                update.region = &region;
+                break;
+            }
+        }
+        if (!update.region) {
+            return update;
+        }
     }
-    update.version = tmd.GetTitleVersion();
-    update.content = Service::AM::GetTitleContentPath(media, region.update_id, 0);
-    if (update.content.empty() || !FileUtil::Exists(update.content)) {
-        update.content.clear();
+    const Region& region = *update.region;
+    update.content = UpdateProgram(region, update.version);
+    if (update.content.empty()) {
+        // another region's instead, which this game doesn't run
+        for (const Region& other : REGIONS) {
+            if (&other != &region && UpdateInstalled(other)) {
+                update.note =
+                    fmt::format("Not installed: the one installed is the update for {}", other.name);
+                LOG_INFO(Frontend, "launcher: the update: {}", update.note);
+            }
+        }
         return update;
     }
     // a label other than the update's (Azahar's installer keeps the .cia's, and some decryption
@@ -207,12 +240,16 @@ std::string VersionText(u16 version) {
     return UpdateCode::VersionText(version);
 }
 
-std::string UpdateName(u64 program_id) {
-    return "v" + VersionText(RegionOf(program_id).update_version);
+std::string UpdateName(const Region* region) {
+    if (!region) {
+        return fmt::format("v{} ({}) or v{} ({})", VersionText(REGIONS[0].update_version),
+                           REGIONS[0].name, VersionText(REGIONS[1].update_version), REGIONS[1].name);
+    }
+    return "v" + VersionText(region->update_version);
 }
 
 UpdateCia CheckUpdateCia(const std::string& path, u64 program_id) {
-    const Region& region = RegionOf(program_id);
+    const Region* game = FindRegion(program_id);
     const auto refused = [](std::string problem) {
         UpdateCia result;
         result.title = "This isn't the update";
@@ -233,24 +270,41 @@ UpdateCia CheckUpdateCia(const std::string& path, u64 program_id) {
         return refused("This file isn't a CIA the app can read.");
     }
     UpdateCia result;
+    result.region = game;
     if (const auto infos = Service::AM::GetCIAInfos(path)) {
         const auto& info = infos->first;
-        if (info.tid != region.update_id) {
+        const Region* region = game;
+        if (!region) {
+            // no game yet: either region's update, checked as that region's game's would be
+            for (const Region& other : REGIONS) {
+                if (info.tid == other.update_id) {
+                    region = &other;
+                }
+            }
+            if (!region) {
+                return refused(fmt::format("This .cia is title {:016X}, not Monster Hunter 4 Ultimate's "
+                                           "update for the USA ({:016X}) or Europe ({:016X}).",
+                                           info.tid, REGIONS[0].update_id, REGIONS[1].update_id));
+            }
+        }
+        if (info.tid != region->update_id) {
             for (const Region& other : REGIONS) {
                 if (info.tid == other.update_id) {
                     return refused(fmt::format("This .cia is the update for {}, but your game is the {} "
                                                "one: choose the update of the same region.",
-                                               other.name, region.name));
+                                               other.name, region->name));
                 }
             }
             return refused(fmt::format("This .cia is title {:016X}, not Monster Hunter 4 Ultimate's "
                                        "update ({:016X}).",
-                                       info.tid, region.update_id));
+                                       info.tid, region->update_id));
         }
+        result.region = region;
         // a label other than the update's: some decryption tools reset it on a good update, so
         // the code says which update it is (read only then)
         const auto check = UpdateCode::CheckCia(
-            info.version, [&] { return CiaCode(path, compressed); }, region.code_sha1, region.update_version);
+            info.version, [&] { return CiaCode(path, compressed); }, region->code_sha1,
+            region->update_version);
         result.title = check.title;
         result.problem = check.problem;
         result.note = check.note;
