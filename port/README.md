@@ -287,6 +287,28 @@ as a markdown table, with the frames over the budget. The app does the same with
 under `[Debug]` in `mh4u-app.ini`. The numbers say nothing of the game, so the CSV can be shared.
 The maintainer's steps for the baseline are in `docs/native/perf-procedure.md`.
 
+`--check-coherence FILE` (N0-14) asks whether the CPU ever reads what the GPU wrote, for the flat-memory principle of the
+native port (method, log format, commands and results: `docs/research/flat-memory-check.md`; the report is
+`tools/native/coherence.py runlog FILE`, and `coherence.py capture` does the other half, from an `MGPU` capture). It
+keeps a shadow copy of FCRAM and VRAM like `--capture-gpu` and, around every `GPU::Execute` and `GPU::WriteReg`, takes the
+CPU's changes into it, runs the command, and diffs again (the capture's `GcapChangedPages`): the pages the GPU changed are
+marked rasterizer-cached with `RasterizerMarkRegionCached(paddr, size, true)` (only pages the runner has not marked, and
+unmarked only if it marked them: Azahar hits `UNREACHABLE()` otherwise). The first virtual access to such a page then takes
+the rasterizer-cached case of `memory.cpp`, where the new observer of `azahar.patch` (`Memory::SetCachedAccessObserver`; a
+null-pointer test unless the option is on) tells the runner which case it was: a CPU load or store through the slow path
+(`Read`, `Write`, `WriteExclusive`), a kernel or HLE block copy (`BlockRead`, `BlockWrite`, `ZeroBlock`, the source of
+`CopySource`) or a raw pointer from `GetPointer` (`Pointer`: size 0, and what the caller does with it is not seen). The
+runner appends an `ACCESS` line (physical address, size, kind, the guest LR, whether a guest thread was running, the frame,
+and which GPU event wrote the page and when); a CPU-side access unmarks that page. Accesses made while the runner is inside a GPU hook
+(GX RequestDma copies through the application's mapping) are tagged `side=gpu`, logged once per mark, and leave the page marked; accesses outside the emulation loop and
+from other host threads are only counted. Pages the process cannot be watched on (no linear-heap or VRAM window of the
+process maps them, or the process also maps them elsewhere, found by scanning its page table every 600 game frames) are
+reported as `UNWATCHED` ranges: that is coverage, not an error. It needs the software renderer (the runner's only one),
+forces drawing on and keeps `disable_right_eye_render` off like `--capture-gpu`, and refuses to run together with
+`--capture-gpu` or `--perf-log` (all three use `Pica::g_capture_hooks`). It costs two passes over all of FCRAM and VRAM
+(about 134 MB on an Old 3DS) per GPU command, so it runs far slower than real time. The log holds addresses
+of the game: it stays under `build/`.
+
 Everything under `build/` contains game code: it never goes into the repository.
 
 ## Determinism
