@@ -708,13 +708,14 @@ void Menu::HandleButtons() {
     if (idle && pressed(ImGuiKey_GamepadFaceRight) && !OnBack()) {
         layer.CloseMenu();
     }
-    // Ctrl+Tab and Ctrl+Shift+Tab: the next and the previous tab, from the search field too
+    // Ctrl+Tab and Ctrl+Shift+Tab: the next and the previous tab, from the search field too (a Mac's
+    // Control+Tab could be text there: Nav::Shortcut)
     if (!keys_up && !waiting && !popup) {
-        if (ImGui::Shortcut(TABS_MOD | ImGuiKey_Tab, ImGuiInputFlags_Repeat | ImGuiInputFlags_RouteGlobal)) {
+        if (Nav::Shortcut(TABS_MOD | ImGuiKey_Tab, ImGuiInputFlags_Repeat | ImGuiInputFlags_RouteGlobal)) {
             step_tab(1);
         }
-        if (ImGui::Shortcut(TABS_MOD | ImGuiMod_Shift | ImGuiKey_Tab,
-                            ImGuiInputFlags_Repeat | ImGuiInputFlags_RouteGlobal)) {
+        if (Nav::Shortcut(TABS_MOD | ImGuiMod_Shift | ImGuiKey_Tab,
+                          ImGuiInputFlags_Repeat | ImGuiInputFlags_RouteGlobal)) {
             step_tab(-1);
         }
     }
@@ -1204,14 +1205,15 @@ bool Menu::ChooseValue(const char* id, std::string& value, std::vector<std::stri
     return true;
 }
 
-ImGuiSliderFlags Menu::SliderFlags() const {
+ImGuiSliderFlags Menu::SliderFlags(const char* id) const {
     // a controller's A held on a slider (Dear ImGui's 0.6 s) asks for a value typed in, with no
-    // keyboard at hand: with a controller in use the sliders take the D-pad and LB/RB only
-    return layer.PadLast() ? ImGuiSliderFlags_NoInput : ImGuiSliderFlags_None;
+    // keyboard at hand: with a controller in use the sliders take the D-pad and LB/RB only. A value
+    // already being typed (Enter on it) keeps its field, where the controller's A confirms it
+    return layer.PadLast() && !Nav::TypingValue(id) ? ImGuiSliderFlags_NoInput : ImGuiSliderFlags_None;
 }
 
 bool Menu::SliderInt(const char* id, int& value, int min, int max, const char* format, int step) {
-    bool changed = ImGui::SliderInt(id, &value, min, max, format, SliderFlags());
+    bool changed = ImGui::SliderInt(id, &value, min, max, format, SliderFlags(id));
     if (ImGui::IsItemActive()) {
         slider_active = true;
     }
@@ -1224,7 +1226,7 @@ bool Menu::SliderInt(const char* id, int& value, int min, int max, const char* f
 }
 
 bool Menu::SliderFloat(const char* id, float& value, float min, float max, const char* format, float step) {
-    bool changed = ImGui::SliderFloat(id, &value, min, max, format, SliderFlags());
+    bool changed = ImGui::SliderFloat(id, &value, min, max, format, SliderFlags(id));
     if (ImGui::IsItemActive()) {
         slider_active = true;
     }

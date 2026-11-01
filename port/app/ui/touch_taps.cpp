@@ -15,6 +15,7 @@
 #include "input.h"
 #include "taps.h"
 #include "ui/layer.h"
+#include "ui/nav.h"
 #include "window.h"
 
 namespace App::Ui {
@@ -146,10 +147,13 @@ bool DrawTouchTaps(Layer& layer) {
                 int& value = axis == 0 ? tap.x : tap.y;
                 const int last = (axis == 0 ? Taps::WIDTH : Taps::HEIGHT) - 1;
                 int v = std::clamp(value, 0, last);
-                // (with a controller in use, no value typed in, as the menu's sliders: A held asks for one)
+                // (with a controller in use, no value typed in, as the menu's sliders: A held asks for one;
+                // a value already being typed keeps its field)
+                const char* id = axis == 0 ? "##x" : "##y";
+                const bool no_input = layer.PadLast() && !Nav::TypingValue(id);
                 const ImGuiSliderFlags flags =
-                    ImGuiSliderFlags_AlwaysClamp | (layer.PadLast() ? ImGuiSliderFlags_NoInput : ImGuiSliderFlags_None);
-                if (ImGui::SliderInt(axis == 0 ? "##x" : "##y", &v, 0, last, "%d", flags)) {
+                    ImGuiSliderFlags_AlwaysClamp | (no_input ? ImGuiSliderFlags_NoInput : ImGuiSliderFlags_None);
+                if (ImGui::SliderInt(id, &v, 0, last, "%d", flags)) {
                     value = v;
                     changed = true;
                     s.reload = true;

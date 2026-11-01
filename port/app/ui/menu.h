@@ -154,8 +154,9 @@ private:
                      std::vector<std::string> labels, int disabled = -1);
     bool SliderInt(const char* id, int& value, int min, int max, const char* format, int step);
     bool SliderFloat(const char* id, float& value, float min, float max, const char* format, float step);
-    /// Its sliders' flags: with a controller in use, no value typed in (only the steps).
-    ImGuiSliderFlags SliderFlags() const;
+    /// The flags of its slider `id`: with a controller in use, no value typed in (only the steps),
+    /// but the one being typed already.
+    ImGuiSliderFlags SliderFlags(const char* id) const;
 
     // ── Focus and jumps (menu.cpp) ──
     void FocusFirst(bool cursor);

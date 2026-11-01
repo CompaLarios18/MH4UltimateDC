@@ -326,8 +326,16 @@ bool Layer::OnEvent(const SDL_Event& event) {
             escape_busy = menu_open && was_busy;
             return true;
         }
-        if (menu_open && EchoKey(code) && PadJustUsed(now)) {
-            // Enter for A, the arrows for the D-pad: the button itself does it (once)
+        if (event.key.repeat == 0) {
+            echoes_down.erase(code); // pressed again: an echo or not (here, or in ForwardHeld)
+        }
+        if (menu_open && EchoKey(code) && (PadJustUsed(now) || echoes_down.count(code) != 0)) {
+            // Enter for A, the arrows for the D-pad: the button itself does it (once); and while it
+            // is held, the key's auto-repeat goes as its down went (Dear ImGui, which didn't see the
+            // key go down, would take a repeat for a press)
+            if (event.key.repeat == 0) {
+                echoes_down.insert(code);
+            }
             drop_space_text = code == SDL_SCANCODE_SPACE;
             return true;
         }
@@ -509,7 +517,8 @@ void Layer::ForwardHeld() {
         return; // closed meanwhile: its next opening starts from a clean input state
     }
     // an echo key that a controller's button (or a stick pushed) came with, at once or a moment
-    // after: the button does it, once; a dropped Space's text goes with it
+    // after: the button does it, once; a dropped Space's text goes with it, and the key's
+    // auto-repeat with its down (echoes_down)
     const auto echo = [this](u32 at) {
         const auto after = [at](u32 pad) { return pad != 0 && pad >= at && pad - at < ECHO_MS; };
         return after(pad_button_at) || after(stick_at);
@@ -518,7 +527,11 @@ void Layer::ForwardHeld() {
     std::scoped_lock lock{mutex};
     MakeCurrent();
     for (const SDL_Event& e : events) {
-        if (e.type == SDL_KEYDOWN && e.key.repeat == 0 && EchoKey(e.key.keysym.scancode) && echo(e.key.timestamp)) {
+        if (e.type == SDL_KEYDOWN && EchoKey(e.key.keysym.scancode) &&
+            (e.key.repeat == 0 ? echo(e.key.timestamp) : echoes_down.count(e.key.keysym.scancode) != 0)) {
+            if (e.key.repeat == 0) {
+                echoes_down.insert(e.key.keysym.scancode);
+            }
             drop_text = e.key.keysym.scancode == SDL_SCANCODE_SPACE;
             continue;
         }

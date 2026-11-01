@@ -447,9 +447,10 @@ void Menu::DrawPanelViewRows(const char* key, RowId size_row, RowId where_row, R
 
     if (BeginRow(size_row)) {
         float percent = view.height * 100.0f;
-        bool changed = ImGui::SliderFloat((id + "_size").c_str(), &percent, 0.0f, 100.0f,
+        const std::string size_id = id + "_size";
+        bool changed = ImGui::SliderFloat(size_id.c_str(), &percent, 0.0f, 100.0f,
                                           percent < 1.0f ? "the touch screen's scale" : "%.0f%% of the window's height",
-                                          SliderFlags());
+                                          SliderFlags(size_id.c_str()));
         if (ImGui::IsItemActive()) {
             slider_active = true;
         }

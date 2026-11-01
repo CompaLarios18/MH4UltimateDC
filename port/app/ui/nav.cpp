@@ -85,6 +85,18 @@ bool ActivatedByTouch() {
     return g.ActiveIdSource == ImGuiInputSource_Mouse && g.IO.MouseSource == ImGuiMouseSource_TouchScreen;
 }
 
+bool TypingValue(const char* id) {
+    // imgui_widgets.cpp, SliderScalar: its text field (TempInputScalar) has the slider's own ID
+    return ImGui::TempInputIsActive(ImGui::GetID(id));
+}
+
+bool Shortcut(ImGuiKeyChord chord, ImGuiInputFlags flags) {
+    // imgui.cpp, SetShortcutRouting: the active item's own shortcut isn't culled as a possible
+    // character (IsKeyChordPotentiallyCharInput), and takes the route (score 300); with none
+    // active, the owner 0 is the window's, as ImGui::Shortcut's own
+    return ImGui::Shortcut(chord, flags, ImGui::GetActiveID());
+}
+
 float KeyValue(ImGuiKey key) {
     return ImGui::GetKeyData(key)->AnalogValue;
 }

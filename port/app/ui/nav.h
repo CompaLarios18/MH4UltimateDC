@@ -35,6 +35,15 @@ bool ActivatedByPad();
 /// The item active now was activated by a touchscreen's finger.
 bool ActivatedByTouch();
 
+/// The slider `id` (about to be drawn) has its value being typed in (Enter on it): its text field
+/// is open.
+bool TypingValue(const char* id);
+
+/// ImGui::Shortcut, but an item being used (a text field typed in, say) doesn't hold it back: Dear
+/// ImGui drops a shortcut that could type a character (one without Ctrl: Tab with a Mac's Control,
+/// which it reads as Super) while another item is active, but not that item's own.
+bool Shortcut(ImGuiKeyChord chord, ImGuiInputFlags flags);
+
 /// How far an analog key is pushed, 0..1 (a stick's direction, a trigger).
 float KeyValue(ImGuiKey key);
 

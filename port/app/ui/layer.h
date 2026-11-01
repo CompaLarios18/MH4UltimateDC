@@ -12,6 +12,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <string>
 #include <vector>
 #include <imgui.h>
@@ -146,7 +147,7 @@ private:
     void Finger(const SDL_Event& event);
     void LogEcho();
     /// At the start of a frame, with the lock: the keyboard's events `held` go to Dear ImGui, but
-    /// an echo key's down that a controller's button came with (and its text).
+    /// an echo key's down that a controller's button came with (and its text, and its repeats).
     void ForwardHeld();
 
     std::string last_fps_corner = "top-left";  ///< where ToggleFpsCounter puts the counter back
@@ -172,6 +173,9 @@ private:
     /// while the menu is up), until the frame: SDL pumps the keyboard before the controllers, so
     /// the button an echo comes with can follow it (OnEvent, ForwardHeld)
     std::vector<SDL_Event> held;
+    /// The echo keys whose down was left out (scancodes), until they are pressed again: their
+    /// auto-repeat is left out too
+    std::set<int> echoes_down;
     const char* help_focused = nullptr; ///< this frame's descriptions (Help)
     const char* help_hovered = nullptr;
 
