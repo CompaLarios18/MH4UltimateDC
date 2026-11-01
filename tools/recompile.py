@@ -4,9 +4,10 @@
 usage: recompile.py [--exheader ...] [--code ...] [--functions config/functions.tsv]
                     [--extra build/export/missing2.txt] -o build/recomp
 Writes <out>/src/funcs.h, <out>/src/fNNN.c, <out>/src/table.c and <out>/report.txt.
-The tables in config/ hold USA v1.3.0's addresses. The code of a version whose functions are
-elsewhere (one with shifts in config/versions.json: EUR v1.1.0) is refused: tools/build_game.py
-moves the addresses first.
+The tables in config/ hold USA v1.3.0's addresses. The code of a version with shifts in
+config/versions.json (EUR v1.1.0), whose functions are elsewhere, is refused: tools/build_game.py
+moves the addresses first. Other code (USA v1.3.0's, the base games', unknown code) is
+recompiled with the tables as they are.
 """
 from __future__ import annotations
 
@@ -363,8 +364,8 @@ VERSIONS = os.path.join(ROOT, "config", "versions.json")
 
 
 def shifted_version(code_sha1: str, path: str = VERSIONS) -> dict | None:
-    """The known version with this code (config/versions.json) if its functions aren't at the
-    addresses in config/'s tables: one with shifts, which tools/build_game.py applies to the tables."""
+    """The known version with this code (config/versions.json) if it has shifts, which
+    tools/build_game.py applies to the tables; None for other code, the base games' too."""
     with open(path) as f:
         versions = json.load(f)["versions"]
     return next((v for v in versions if v.get("shifts") and v.get("code_sha1") == code_sha1), None)
