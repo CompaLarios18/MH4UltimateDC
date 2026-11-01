@@ -1,5 +1,15 @@
-// Not derived from Azahar: the rules are the specification's (VK_KHR_surface, VK_KHR_swapchain); the preference for the
-// present mode, the extent clamp and the image count were read in Azahar's vk_swapchain.cpp and written again here.
+// Derived from Azahar src/video_core/renderer_vulkan/vk_swapchain.cpp at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6
+// (GPL-2.0-or-later: the file says "Licensed under GPLv2 or any later version").
+// Copyright 2023-2026 Citra Emulator Project / Azahar Emulator Project
+//
+// What follows Azahar's `Swapchain::FindPresentFormat` and `Swapchain::SetSurfaceProperties`, rule for rule and in the
+// same order: ChooseExtent (the surface's current extent, or the requested size clamped to the limits when it is
+// 0xFFFFFFFF), ChooseImageCount (minImageCount + 1, at most maxImageCount when there is one), ChooseTransform (identity,
+// else the current transform), ChooseCompositeAlpha (opaque, else inherit first) and the single-UNDEFINED-format case
+// of ChooseSurfaceFormat (RGBA8 in the sRGB non-linear space). Written again, not copied. What is this port's own: the
+// present mode choice (ChoosePresentMode prefers MAILBOX to IMMEDIATE, Azahar the other way round, and has no frame
+// limit input), the colour space preference of ChooseSurfaceFormat, a request of 0 staying 0, and everything below
+// ChooseCompositeAlpha (the displayed-time choice and its label).
 #include "swapchain/policy.h"
 
 #include <algorithm>

@@ -1,7 +1,9 @@
-// The Vulkan side of the swapchain (N2b-06). Not derived from Azahar: the protocol is the specification's; what was
-// read in Azahar's vk_swapchain.cpp (the list of formats and modes, the extent and image count rules, recreation on
-// out-of-date) is in policy.cpp, written again, and Azahar's acquire/present semaphores are not used (see the
-// presentation.md note: the backend submits with timeline waits only).
+// The Vulkan side of the swapchain (N2b-06). Written for this port from the Vulkan specification (the acquire, submit and
+// present protocol of wsi.adoc and synchronization.adoc). Azahar's vk_swapchain.cpp and vk_present_window.cpp were read
+// before it was written; no code is copied and the structure differs (Azahar acquires and presents with a pair of
+// semaphores per image; here the acquire uses a fence and the present waits on a semaphore signalled by an empty
+// submission, see presentation.md). The rules that follow Azahar for the swapchain's parameters are in policy.cpp,
+// which has the D6 header and a row in native/THIRD_PARTY.md.
 #include "swapchain/vk_swapchain.h"
 
 #include <algorithm>
@@ -255,6 +257,27 @@ bool VkSwapchain::WaitAcquired(u64 timeout_ns) {
     if (!fence_pending_) {
         return true;
     }
+    if (observe_under_queue_lock_) {
+        // vkGetFenceStatus under QueueLock instead of a blocking wait: the call that sees the signal runs with no
+        // vkQueueSubmit of another thread half-way through the validation layer's bookkeeping (presentation.md, "Under
+        // the validation layer with a second submitting thread"). A real driver does not care; the poll costs latency.
+        const auto end = std::chrono::steady_clock::now() + std::chrono::nanoseconds(timeout_ns);
+        for (;;) {
+            VkResult status;
+            {
+                rhi::QueueLock lock(*backend_);
+                status = vkGetFenceStatus(handles_.device, acquire_fence_);
+            }
+            if (status == VK_SUCCESS) {
+                fence_pending_ = false;
+                return true;
+            }
+            if (std::chrono::steady_clock::now() >= end) {
+                return false;
+            }
+            std::this_thread::sleep_for(std::chrono::microseconds(200));
+        }
+    }
     const VkResult result = vkWaitForFences(handles_.device, 1, &acquire_fence_, VK_TRUE, timeout_ns);
     if (result == VK_SUCCESS) {
         fence_pending_ = false;
@@ -308,6 +331,9 @@ PresentStatus VkSwapchain::SubmitAndPresent(const PresentParams& params) {
         if (result != VK_SUCCESS) {
             MH4N_LOG(Error, kLog, "vkQueueSubmit (the present's signal) failed with {}", static_cast<int>(result));
             return PresentStatus::Failed;
+        }
+        if (params.queue_locked != nullptr && *params.queue_locked) {
+            (*params.queue_locked)();
         }
         result = vkQueuePresentKHR(handles_.queue, &present);
     }

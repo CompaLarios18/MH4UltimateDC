@@ -5,6 +5,8 @@
 // docs/native/presentation.md (N2b-06).
 #pragma once
 
+#include <functional>
+
 #include <memory>
 #include <string>
 #include <utility>
@@ -54,6 +56,11 @@ public:
     AcquireResult Acquire(u64 timeout_ns, s32 forced);
     // After an Acquired result: waits at most `timeout_ns` for the fence. True: the image may be used.
     bool WaitAcquired(u64 timeout_ns);
+    // True: WaitAcquired polls vkGetFenceStatus under QueueLock instead of blocking in vkWaitForFences (Options::
+    // acquire_wait_under_queue_lock). Off by default.
+    void SetObserveUnderQueueLock(bool on) {
+        observe_under_queue_lock_ = on;
+    }
 
     struct PresentParams {
         u32 index = 0;
@@ -61,6 +68,8 @@ public:
         bool use_present_id = false;
         bool use_display_timing = false;
         s32 forced = 0;         // TestHooks::present_result
+        // TestHooks::queue_locked: called with QueueLock held, after the signalling submission and before vkQueuePresentKHR.
+        const std::function<void()>* queue_locked = nullptr;
     };
     // Under QueueLock: an empty submission that signals this image's binary semaphore (its first synchronisation scope
     // covers every submission earlier on the queue, the composition's included), then vkQueuePresentKHR waiting on it.
@@ -105,6 +114,7 @@ private:
     std::vector<VkImage> vk_images_;
     std::vector<VkSemaphore> render_done_;  // per image index; reused when that index is acquired again
     VkFence acquire_fence_ = VK_NULL_HANDLE;
+    bool observe_under_queue_lock_ = false;
     bool fence_pending_ = false;            // an acquire's fence signal has not been seen yet
     bool destroyed_ = false;
 };

@@ -28,6 +28,7 @@ TEST_CASE("swapchain_test needs the port's platform.h (the repository around nat
 #include <chrono>
 #include <condition_variable>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -776,7 +777,10 @@ TEST_CASE("presenter/minimised_presents_nothing_and_counts_the_frames_as_dropped
     REQUIRE(WaitFor([&] { return presenter->GetStats().dropped >= 6; }));
     CHECK(presenter->GetStats().presented == 2);
     presenter->Resize(160, 120);
-    PublishAndWait(*presenter, MakeFrame(7), 4);  // the redraw at the restored size, then frame 7
+    // the redraw at the restored size; frame 7 is published after it, because a frame published at once could be taken
+    // for the redraw's slot (the mailbox is taken first, and the redraw is then not made), which is legal
+    REQUIRE(WaitFor([&] { return presenter->GetStats().presented >= 3; }));
+    PublishAndWait(*presenter, MakeFrame(7), 4);
     presenter->Stop();
     CHECK(rig->breaches.Total() == 0);
 }
@@ -801,8 +805,10 @@ TEST_CASE("presenter/stop_returns_with_a_frame_pending_and_with_the_thread_block
         presenter->Stop();                 // the hook ends its wait when Stop is requested
         CHECK(Clock::now() - begin < std::chrono::seconds(10));
         CHECK(presenter->StopRequested());
+        CHECK(presenter->GetStats().dropped == 1);  // frame 1, left in the mailbox, counts as dropped
         presenter->Publish(MakeFrame(2));  // after Stop: dropped, never shown
-        CHECK(presenter->GetStats().dropped >= 1);
+        CHECK(presenter->GetStats().dropped == 2);
+        CHECK(presenter->GetStats().published == 3);
         CHECK(seen.Sequences() == std::vector<u64>{0});
         presenter->Stop();  // idempotent
     }
@@ -828,18 +834,28 @@ TEST_CASE("presenter/stop_returns_with_a_frame_pending_and_with_the_thread_block
         sc::TestHooks hooks;
         hooks.pretend_present_wait = true;  // the wait is the hook's: this device may have no present wait (lavapipe has none)
         std::atomic<int> waits{0};
+        std::atomic<int> waits_after_stop{0};
+        std::atomic<sc::Presenter*> watched{nullptr};
         hooks.present_wait_result = [&] {
             ++waits;
+            sc::Presenter* p = watched.load();
+            if (p != nullptr && p->StopRequested()) {
+                ++waits_after_stop;
+            }
             return static_cast<s32>(VK_TIMEOUT);  // never shown
         };
         std::unique_ptr<sc::Presenter> presenter = MakePresenter(*rig, layout, std::move(hooks));
+        watched = presenter.get();
         CHECK(presenter->GetStats().display_time == "present_wait");
         presenter->Publish(MakeFrame(0));
         REQUIRE(WaitFor([&] { return waits.load() >= 3; }));
         const auto begin = Clock::now();
         presenter->Stop();  // the wait is cut into slices that look at Stop; it gives up on the frame's time at once
         CHECK(Clock::now() - begin < std::chrono::seconds(10));
-        CHECK(Clock::now() - begin < std::chrono::milliseconds(200) + std::chrono::milliseconds(250));
+        // Not a wall-clock bound (a loaded machine stretches any): the loop looks at Stop before each slice, so at most
+        // the one slice that had begun when the flag was set asks the hook after it. A wait that ignored Stop would ask
+        // it until its 250 ms limit, hundreds of times.
+        CHECK(waits_after_stop.load() <= 1);
     }
     SUBCASE("idle: nothing published") {
         std::unique_ptr<Rig> rig = MakeRig();
@@ -1549,7 +1565,10 @@ TEST_CASE("presenter/concurrent_publishers_and_state_changes_lose_no_frame_unacc
         while (!go) std::this_thread::yield();
         bool flip = false;
         u32 round = 0;
-        while (!done) {
+        // Until the publishers are done and a change of size or mode has been acted on (the first flip changes nothing:
+        // it is the state the swapchain was made for), so the check on swapchain_creations does not depend on timing.
+        const auto give_up = Clock::now() + std::chrono::seconds(30);
+        while (!done || (presenter->GetStats().swapchain_creations < 2 && Clock::now() < give_up)) {
             flip = !flip;
             presenter->SetVsync(flip);
             presenter->Resize(flip ? 160 : 192, flip ? 120 : 128);
@@ -1578,9 +1597,271 @@ TEST_CASE("presenter/concurrent_publishers_and_state_changes_lose_no_frame_unacc
     const u64 shown = stats.presented - stats.redraws;
     const u64 unaccounted = stats.published - shown - stats.dropped;
     CHECK(shown + stats.dropped <= stats.published);
-    CHECK(unaccounted <= 1);
+    CHECK(unaccounted == 0);  // the frame Stop discards from the mailbox is counted as dropped
     CHECK(stats.swapchain_creations >= 2);
     CHECK(rig->breaches.Total() == 0);
+}
+
+// Ends the process when a case that could deadlock does not finish: a deadlocked thread cannot be cleaned up, and a test
+// that hangs says nothing.
+struct Watchdog {
+    std::mutex mutex;
+    std::condition_variable cv;
+    bool finished = false;
+    std::thread thread;
+    Watchdog(const char* what, int seconds) {
+        thread = std::thread([this, what, seconds] {
+            std::unique_lock lock(mutex);
+            if (!cv.wait_for(lock, std::chrono::seconds(seconds), [&] { return finished; })) {
+                std::fprintf(stderr, "swapchain_test: watchdog: \"%s\" did not finish within %d s (a deadlock)\n", what, seconds);
+                std::fflush(stderr);
+                std::_Exit(3);
+            }
+        });
+    }
+    ~Watchdog() {
+        {
+            std::lock_guard lock(mutex);
+            finished = true;
+        }
+        cv.notify_all();
+        thread.join();
+    }
+};
+
+// A layer that calls into the presenter from inside Record, on the present thread.
+struct ReentrantLayer final : pr::UiLayer {
+    enum class Action { Stop, ClearLayer };
+    Action action = Action::Stop;
+    bool wait_for_other_thread = false;  // Stop: wait until another thread is in Stop (then give it time to take its locks)
+    std::atomic<sc::Presenter*> presenter{nullptr};
+    std::atomic<bool> other_thread_in_stop{false};
+    std::atomic<int> entered{0};
+    std::atomic<int> returned{0};  // calls into the presenter that came back
+    void Record(void*, u32, u32) override {
+        if (entered++ != 0) {
+            return;  // only the first composition calls
+        }
+        if (wait_for_other_thread) {
+            const auto deadline = Clock::now() + std::chrono::seconds(20);
+            while (!other_thread_in_stop && Clock::now() < deadline) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(150));  // it is in Stop now, waiting for this thread
+        }
+        if (action == Action::Stop) {
+            presenter.load()->Stop();
+        } else {
+            presenter.load()->SetUiLayer(nullptr);
+        }
+        ++returned;
+    }
+};
+
+TEST_CASE("presenter/stop_and_set_ui_layer_called_on_the_present_thread_do_not_wait_for_it") {
+    Watchdog watchdog("stop_and_set_ui_layer_called_on_the_present_thread", 120);
+    SUBCASE("Stop from the layer alone only requests the stop") {
+        std::unique_ptr<Rig> rig = MakeRig();
+        if (!rig) return;
+        LayoutControl layout;
+        std::unique_ptr<sc::Presenter> presenter = MakePresenter(*rig, layout);
+        ReentrantLayer layer;
+        layer.presenter = presenter.get();
+        presenter->SetUiLayer(&layer);
+        presenter->Publish(MakeFrame(0));
+        REQUIRE(WaitFor([&] { return layer.returned.load() >= 1; }));
+        CHECK(presenter->StopRequested());
+        presenter->Stop();  // the join: from this thread
+        CHECK(presenter->GetStats().composed == 1);
+        presenter->Publish(MakeFrame(1));
+        CHECK(presenter->GetStats().dropped == 1);
+        CHECK(rig->breaches.Total() == 0);
+    }
+    SUBCASE("Stop from the layer while another thread is inside Stop, joining") {
+        std::unique_ptr<Rig> rig = MakeRig();
+        if (!rig) return;
+        LayoutControl layout;
+        std::unique_ptr<sc::Presenter> presenter = MakePresenter(*rig, layout);
+        ReentrantLayer layer;
+        layer.wait_for_other_thread = true;
+        layer.presenter = presenter.get();
+        presenter->SetUiLayer(&layer);
+        presenter->Publish(MakeFrame(0));
+        REQUIRE(WaitFor([&] { return layer.entered.load() >= 1; }));
+        std::thread stopper([&] {
+            layer.other_thread_in_stop = true;
+            presenter->Stop();
+        });
+        REQUIRE(WaitFor([&] { return layer.returned.load() >= 1; }, 20'000));
+        stopper.join();
+        CHECK(presenter->StopRequested());
+        CHECK(rig->breaches.Total() == 0);
+    }
+    SUBCASE("SetUiLayer(nullptr) from the layer does not wait for its own composition") {
+        std::unique_ptr<Rig> rig = MakeRig();
+        if (!rig) return;
+        LayoutControl layout;
+        std::unique_ptr<sc::Presenter> presenter = MakePresenter(*rig, layout);
+        ReentrantLayer layer;
+        layer.action = ReentrantLayer::Action::ClearLayer;
+        layer.presenter = presenter.get();
+        presenter->SetUiLayer(&layer);
+        PublishAndWait(*presenter, MakeFrame(0), 1);
+        CHECK(layer.returned.load() == 1);
+        PublishAndWait(*presenter, MakeFrame(1), 2);
+        CHECK(layer.entered.load() == 1);  // it removed itself: not called again
+        presenter->Stop();
+        CHECK(rig->breaches.Total() == 0);
+    }
+}
+
+TEST_CASE("presenter/rows_dropped_before_add_up_to_the_dropped_frames_when_taken_frames_are_discarded") {
+    std::unique_ptr<Rig> rig = MakeRig();
+    if (!rig) return;
+    TempDir dir("dropsum");
+    LayoutControl layout;
+    Seen seen;
+    Gate gate;
+    int calls = 0;
+    seen.extra = [&] {
+        if (calls++ == 0) gate.Hold();
+    };
+    std::unique_ptr<sc::Presenter> presenter = MakePresenter(*rig, layout, seen.Hooks());
+    gate.presenter = presenter.get();
+    const std::filesystem::path log_path = dir.path / "present.csv";
+    REQUIRE(presenter->SetPresentLog(log_path.string()).ok());
+
+    // Frame 0 is held inside its composition; while it is, the window is minimised and frames 1..3 arrive: 1 and 2 are
+    // replaced in the mailbox, 3 is taken afterwards and discarded because of the minimised window.
+    presenter->Publish(MakeFrame(0));
+    REQUIRE(gate.WaitEntered());
+    presenter->SetMinimised(true);
+    presenter->Publish(MakeFrame(1));
+    presenter->Publish(MakeFrame(2));
+    presenter->Publish(MakeFrame(3));
+    gate.Open();
+    REQUIRE(WaitFor([&] { return presenter->GetStats().dropped >= 3; }));
+    CHECK(presenter->GetStats().dropped == 3);
+
+    // leaving minimised draws frame 3 again: the row carries the three drops
+    presenter->SetMinimised(false);
+    REQUIRE(WaitFor([&] { return presenter->GetStats().presented >= 2; }));
+
+    // a zero-extent window: published frames are taken and discarded, or replaced, as the timing goes; the window then
+    // gets its size back (a frame taken after that is shown, so how many are dropped is not fixed)
+    presenter->Resize(0, 120);
+    for (u64 i = 4; i <= 9; ++i) {
+        presenter->Publish(MakeFrame(i));
+    }
+    presenter->Resize(160, 120);
+    REQUIRE(WaitFor([&] {
+        const sc::Stats stats = presenter->GetStats();
+        return stats.presented >= 3 && stats.presented - stats.redraws + stats.dropped == 10;  // frames 0..9 all accounted for
+    }));
+    presenter->Stop();
+
+    const sc::Stats stats = presenter->GetStats();
+    CHECK(stats.dropped >= 3);
+    const ParsedLog log = ReadLog(log_path);
+    u64 sum = 0;
+    for (const LogRow& row : log.rows) {
+        sum += row.dropped;
+    }
+    CHECK(log.rows.size() == stats.presented);
+    CHECK(sum == stats.dropped);
+    REQUIRE(log.rows.size() >= 3);
+    CHECK(log.rows[0].dropped == 0);
+    CHECK(log.rows[1].dropped == 3);  // the redraw after leaving minimised
+    CHECK(rig->breaches.Total() == 0);
+}
+
+TEST_CASE("presenter/the_queue_lock_is_held_from_the_signalling_submission_to_the_end_of_the_present") {
+    std::unique_ptr<Rig> rig = MakeRig();
+    if (!rig) return;
+    LayoutControl layout;
+
+    // A thread that wants the queue lock (as the renderer's Backend::Submit does) from the moment the hook starts.
+    std::atomic<bool> go{false};
+    std::atomic<bool> attempting{false};
+    std::atomic<bool> got{false};
+    std::atomic<bool> blocked_while_hook_ran{false};
+    std::atomic<int> hook_calls{0};
+    std::thread contender([&] {
+        while (!go) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        attempting = true;
+        rhi::QueueLock lock(*rig->backend);
+        got = true;
+    });
+    sc::TestHooks hooks;
+    hooks.queue_locked = [&] {
+        if (hook_calls++ != 0) {
+            return;
+        }
+        go = true;
+        const auto deadline = Clock::now() + std::chrono::seconds(20);
+        while (!attempting && Clock::now() < deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));  // time enough for it to take a free lock
+        blocked_while_hook_ran = !got.load();
+    };
+    std::unique_ptr<sc::Presenter> presenter = MakePresenter(*rig, layout, std::move(hooks));
+    PublishAndWait(*presenter, MakeFrame(0), 1);
+    CHECK(hook_calls.load() >= 1);
+    CHECK(blocked_while_hook_ran.load());             // held across the submission and the present
+    CHECK(WaitFor([&] { return got.load(); }));       // and released afterwards
+    contender.join();
+    presenter->Stop();
+    CHECK(rig->breaches.Total() == 0);
+}
+
+// Frames presented one by one while a second thread submits small recorders to the same queue as fast as it can.
+void PresentWhileAnotherThreadSubmits(const sc::Options& options, u64 frames) {
+    std::unique_ptr<Rig> rig = MakeRig();
+    if (!rig) return;
+    LayoutControl layout;
+    std::unique_ptr<sc::Presenter> presenter = MakePresenter(*rig, layout, {}, options);
+
+    // The renderer's side of the shared queue: small recorders submitted as fast as the lock lets it.
+    std::atomic<bool> stop{false};
+    std::atomic<u64> submits{0};
+    std::thread renderer([&] {
+        while (!stop) {
+            rhi::Recorder recorder = rig->backend->BeginRecording();
+            rig->backend->Submit(std::move(recorder));
+            ++submits;
+        }
+    });
+    for (u64 i = 0; i < frames; ++i) {
+        PublishAndWait(*presenter, MakeFrame(i), i + 1);
+    }
+    stop = true;
+    renderer.join();
+    presenter->Stop();
+
+    const sc::Stats stats = presenter->GetStats();
+    CHECK(stats.presented == frames);
+    CHECK(stats.composed == frames);
+    CHECK(submits.load() > 0);
+    rig->backend->WaitIdle();
+    CHECK(rig->breaches.Total() == 0);
+}
+
+TEST_CASE("presenter/another_thread_submitting_to_the_backend_while_frames_are_presented") {
+    // Under the validation layer (vk_layer_run.py sets VK_INSTANCE_LAYERS) the acquire's fence is observed under the queue
+    // lock: with a second thread submitting, the layer 1.3.275 races its own record of the fence wait against that
+    // thread's vkQueueSubmit and reports a hazard that is not there (presentation.md). The case runs under the layer all
+    // the same, and without the layer takes the production wait.
+    sc::Options options;
+    const char* layers = std::getenv("VK_INSTANCE_LAYERS");
+    options.acquire_wait_under_queue_lock = layers != nullptr && std::string(layers).find("validation") != std::string::npos;
+    PresentWhileAnotherThreadSubmits(options, 120);
+}
+
+TEST_CASE("presenter/the_acquire_fence_observed_under_the_queue_lock_presents_the_same_frames") {
+    sc::Options options;
+    options.acquire_wait_under_queue_lock = true;
+    PresentWhileAnotherThreadSubmits(options, 60);
 }
 
 TEST_CASE("presenter/create_refuses_what_cannot_work") {

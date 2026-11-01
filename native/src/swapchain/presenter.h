@@ -19,7 +19,8 @@
 // idle wait) is under rhi::QueueLock, never around Backend::Submit. With MH4N_RHI_CHECKS on, an own recording,
 // submission or present on another thread calls the owner-rule handler (OwnerRule::WrongThread). The public calls
 // below are thread-safe and only hand state over; none waits for the GPU or the display, except Stop, SetUiLayer(nullptr)
-// (it waits for a composition in progress to finish) and the destructor.
+// (it waits for a composition in progress to finish; both only request, and do not wait, when called on the present
+// thread) and the destructor.
 //
 // The surface of a Window target is the caller's: made on the backend's instance, given to BackendOptions, and
 // destroyed by the caller after the presenter.
@@ -71,6 +72,11 @@ struct Options {
     // The DisplayTimeSource registration used when neither present_wait nor display_timing measures the display
     // (display_time.h); "platform" is the name N2b-23 registers. Empty: never.
     std::string display_time_source = "platform";
+    // The wait for the acquire's fence polls vkGetFenceStatus under rhi::QueueLock (every 200 us) instead of blocking in
+    // vkWaitForFences. Only for running under the Khronos validation layer (1.3.275) with another thread submitting to
+    // the queue: the layer's record of the fence wait races with that thread's vkQueueSubmit and then reports
+    // SYNC-HAZARD-WRITE-AFTER-PRESENT for a correct protocol (presentation.md). A real driver needs it not.
+    bool acquire_wait_under_queue_lock = false;
 };
 
 struct Stats {
@@ -105,6 +111,10 @@ struct TestHooks {
     // Before each vkWaitForPresentKHR slice: 0 asks the driver; any other value replaces its result (VK_TIMEOUT: the
     // frame is never shown).
     std::function<s32()> present_wait_result;
+    // Inside the present, with rhi::QueueLock held: after the empty submission that signals the image's semaphore and
+    // before vkQueuePresentKHR. A test checks here that no other thread can take the queue lock while it runs. It must
+    // not submit through the backend, nor take QueueLock (the thread holds it).
+    std::function<void()> queue_locked;
     // The frame's recording, submission and present run as `run(work)`: the default calls work(). A test passes a
     // runner that runs it on another thread, to see the owner-rule check.
     std::function<void(const std::function<void()>& work)> frame_runner;
@@ -138,7 +148,9 @@ public:
     void Publish(const present::DisplayFrame& frame) override;
 
     // The layer the compositor calls after the screens (N2b-11). The layer must stay alive until SetUiLayer(nullptr)
-    // returns: that call waits for a composition in progress, after which the layer is not called again.
+    // returns: that call waits for a composition in progress, after which the layer is not called again. Called by the
+    // layer itself on the present thread, inside Record, it waits for nothing (that composition is the caller): the
+    // change applies from the next composition, and this call of the layer runs to its end.
     void SetUiLayer(present::UiLayer* layer);
     // Compose the last frame again (the UI changed while the game shows nothing new). Nothing before a first frame.
     void RequestRedraw();
@@ -161,8 +173,10 @@ public:
     // its DisplayFrame), and at Stop the last composed one as last.ppm. `dir` is created. An error for a window.
     gpu::rhi::Result<void> DumpTo(const std::string& dir, u32 every_n);
 
-    // The thread finishes the frame it has and exits; a frame waiting in the mailbox is dropped. Returns when the thread
-    // has gone and the device resources are destroyed. Idempotent. Later Publish calls are counted as dropped.
+    // The thread finishes the frame it has and exits; a frame waiting in the mailbox is dropped (and counted in
+    // Stats::dropped). Returns when the thread has gone and the device resources are destroyed. Idempotent. Later Publish
+    // calls are counted as dropped. Called on the present thread (from a UiLayer or a test hook) it only requests the
+    // stop and returns at once: the thread cannot wait for itself; the Stop (or destructor) of another thread joins.
     void Stop();
     bool StopRequested() const;
 

@@ -1,3 +1,10 @@
+// Derived from Azahar src/video_core/renderer_vulkan/vk_swapchain.cpp at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6
+// (GPL-2.0-or-later: the file says "Licensed under GPLv2 or any later version").
+// Copyright 2023-2026 Citra Emulator Project / Azahar Emulator Project
+//
+// This header documents the rules policy.cpp has from Azahar (see its first lines for which, and for what is
+// this port's own).
+//
 // The decisions of the swapchain and the present thread that need no device (N2b-06, docs/native/presentation.md):
 // present mode, surface format, extent and image count from what the surface offers; where the displayed time comes
 // from; the one-slot mailbox. Pure functions and a plain class, so tests drive them with synthetic data.
@@ -74,11 +81,17 @@ public:
         u64 published_us = 0;
     };
 
-    // True when a frame that was not taken was replaced (it will never be shown: the caller counts it as dropped).
-    bool Put(present::DisplayFrame frame, u64 published_us) {
-        const bool replaced = entry_.has_value();
+    // Stores the frame and returns the one it replaced (nullopt: the slot was empty). A replaced frame will never be
+    // shown: the caller counts it as dropped, and lets it die outside its lock (it may be the last reference to a
+    // backend image).
+    std::optional<Entry> Exchange(present::DisplayFrame frame, u64 published_us) {
+        std::optional<Entry> old = std::move(entry_);
         entry_ = Entry{std::move(frame), published_us};
-        return replaced;
+        return old;
+    }
+    // True when a frame that was not taken was replaced.
+    bool Put(present::DisplayFrame frame, u64 published_us) {
+        return Exchange(std::move(frame), published_us).has_value();
     }
     bool Has() const {
         return entry_.has_value();

@@ -1,7 +1,9 @@
-// The present thread (N2b-06). Not derived from Azahar: the structure (a mailbox, one thread that owns the
-// swapchain, recreation on out-of-date and suboptimal) follows the specification and rhi-spike.md 9.4; Azahar's
-// vk_present_window.cpp and vk_swapchain.cpp were read for how it recovers from an out-of-date swapchain (recreate, then
-// acquire again) and written again.
+// The present thread (N2b-06). Written for this port from the Vulkan specification and rhi-spike.md 9.4: a mailbox, one
+// thread that owns the swapchain, recreation on out-of-date and suboptimal. Azahar's vk_present_window.cpp and
+// vk_swapchain.cpp were read before it was written; what it takes from them is the shape of the retry (when an acquire
+// says out-of-date, recreate the swapchain and acquire again: Azahar's `while (!AcquireNextImage())` loop), here
+// PresentToWindow's loop of kAttempts. No code is copied. The rules that follow Azahar's swapchain parameters are in
+// policy.cpp, which has the D6 header and a row in native/THIRD_PARTY.md.
 #include "swapchain/presenter.h"
 
 #include <atomic>
@@ -93,6 +95,7 @@ struct Presenter::Impl {
     // composition in progress.
     std::mutex compose_mutex;
     present::UiLayer* ui = nullptr;
+    bool composing = false;  // the present thread is inside Compose, holding compose_mutex (read and written by it alone)
 
     // The present log.
     std::mutex log_mutex;
@@ -172,6 +175,30 @@ struct Presenter::Impl {
         std::lock_guard lock(m);
         stats.dropped += n;
         dropped_since_row += n;
+    }
+
+    // A taken frame produced no row: the drops WaitForWork moved out of dropped_since_row for it belong to the next row
+    // (they are already in stats.dropped).
+    void GiveBackDropped(u64 n) {
+        if (n > 0) {
+            std::lock_guard lock(m);
+            dropped_since_row += n;
+        }
+    }
+
+    // Sets the stop flag and drops the frame waiting in the mailbox (counted in stats.dropped). Any thread, the present
+    // thread included; never waits for the thread.
+    void RequestStop() {
+        std::optional<FrameMailbox::Entry> leftover;  // dies outside the lock
+        {
+            std::lock_guard lock(m);
+            stop.store(true);
+            leftover = mailbox.Take();
+            if (leftover.has_value()) {
+                ++stats.dropped;
+            }
+        }
+        cv.notify_all();
     }
 
     // ---- the thread -------------------------------------------------------------------------------------------------
@@ -260,6 +287,7 @@ struct Presenter::Impl {
         }
         create_error_logged = false;
         sc = std::move(made.swapchain);
+        sc->SetObserveUnderQueueLock(options.acquire_wait_under_queue_lock);
         needs_recreate = false;
         made_for_w = width;
         made_for_h = height;
@@ -339,6 +367,7 @@ struct Presenter::Impl {
             if (!work.redraw) {
                 CountDropped(1);
             }
+            GiveBackDropped(work.dropped_before);
             return;
         }
         PendingRow done;
@@ -347,6 +376,7 @@ struct Presenter::Impl {
             if (!work.redraw) {
                 CountDropped(1);
             }
+            GiveBackDropped(work.dropped_before);
             return;
         }
         {
@@ -377,6 +407,11 @@ struct Presenter::Impl {
         present::ComposeResult result;
         {
             std::lock_guard lock(compose_mutex);
+            struct Composing {
+                bool& flag;
+                explicit Composing(bool& f) : flag(f) { flag = true; }
+                ~Composing() { flag = false; }
+            } composing_scope(composing);
             if (ui != nullptr) {
                 request.options.ui = ui;
             }
@@ -522,6 +557,7 @@ struct Presenter::Impl {
                 params.use_display_timing =
                     choice.kind == DisplayTimeKind::DisplayTiming && hooks.past_presentation_times == nullptr;
                 params.forced = hooks.present_result ? hooks.present_result() : 0;
+                params.queue_locked = &hooks.queue_locked;
                 status = sc->SubmitAndPresent(params);
             };
             hooks.frame_runner ? hooks.frame_runner(run) : run();
@@ -534,6 +570,7 @@ struct Presenter::Impl {
                 continue;  // the frame was not shown: recreate and compose it again
             }
             if (status == detail::PresentStatus::Failed) {
+                needs_recreate = true;  // the acquired image was not presented and is never released: start again
                 return false;
             }
             if (status == detail::PresentStatus::Suboptimal) {
@@ -701,6 +738,7 @@ Presenter::~Presenter() {
 void Presenter::Publish(const present::DisplayFrame& frame) {
     present::DisplayFrame copy = frame;  // the shared_ptrs: cheap, and outside the lock
     const u64 now = NowUs();
+    std::optional<FrameMailbox::Entry> replaced;  // dies outside the lock: it may hold the last reference to an image
     {
         std::lock_guard lock(impl_->m);
         ++impl_->stats.published;
@@ -708,7 +746,8 @@ void Presenter::Publish(const present::DisplayFrame& frame) {
             ++impl_->stats.dropped;
             return;
         }
-        if (impl_->mailbox.Put(std::move(copy), now)) {
+        replaced = impl_->mailbox.Exchange(std::move(copy), now);
+        if (replaced.has_value()) {
             ++impl_->stats.dropped;
             ++impl_->dropped_since_row;
         }
@@ -717,6 +756,12 @@ void Presenter::Publish(const present::DisplayFrame& frame) {
 }
 
 void Presenter::SetUiLayer(present::UiLayer* layer) {
+    if (std::this_thread::get_id() == impl_->thread_id && impl_->composing) {
+        // Called by the layer itself, inside Compose: this thread holds compose_mutex already and is the composition in
+        // progress, which cannot be waited for. The layer in this composition is still called to its end.
+        impl_->ui = layer;
+        return;
+    }
     std::lock_guard lock(impl_->compose_mutex);
     impl_->ui = layer;
 }
@@ -811,13 +856,16 @@ rhi::Result<void> Presenter::DumpTo(const std::string& dir, u32 every_n) {
 }
 
 void Presenter::Stop() {
-    std::lock_guard join(impl_->join_mutex);
-    {
-        std::lock_guard lock(impl_->m);
-        impl_->stop.store(true);
+    if (std::this_thread::get_id() == impl_->thread_id) {
+        // Called on the present thread (a UiLayer, a hook): it cannot join itself, and a thread that is in Stop holding
+        // join_mutex is waiting for this one, so this takes no lock besides the state's. Only the request is made; the
+        // next Stop (or the destructor) on another thread joins.
+        impl_->RequestStop();
+        return;
     }
-    impl_->cv.notify_all();
-    if (impl_->thread.joinable() && impl_->thread.get_id() != std::this_thread::get_id()) {
+    std::lock_guard join(impl_->join_mutex);
+    impl_->RequestStop();
+    if (impl_->thread.joinable()) {
         impl_->thread.join();
     }
 }
