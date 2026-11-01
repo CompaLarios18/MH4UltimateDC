@@ -362,7 +362,7 @@ need the option on** (or a layer without the race; later versions of the layer w
 
 ### Tests
 
-`swapchain_test` (32 cases; 7 need no device): the pure choices on synthetic lists; the mailbox and the log's text; and, on a
+`swapchain_test` (46 cases; 7 need no device; 13 presenter cases run twice, as `presenter/<name>` on a headless-surface swapchain and as `presenter_offscreen/<name>` on an offscreen target of a backend made with no surface, which needs no `VK_EXT_headless_surface`, so a machine whose loader lacks it (the maintainer's Windows loader, N2-31) still runs 15 of the 39 device cases, and `MH4N_SWAPCHAIN_TEST_NO_HEADLESS=1` makes the window ones skip to show what such a machine runs): the pure choices on synthetic lists; the mailbox and the log's text; and, on a
 `VK_EXT_headless_surface` swapchain, frames in order; three frames published while a hook holds the thread inside a
 composition show only the newest and count two dropped; `Publish` returns while the thread is held; resize and the next
 frame's size; minimised; `Stop` with a frame pending, with the thread held in a composition, in an acquire that never
