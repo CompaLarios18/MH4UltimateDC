@@ -22,7 +22,7 @@ and are qualified as such below. The deterministic runs (**det**) do not depend 
 charged). The second reference run of G3 at 120 fps and the timed G1 det-none pair were made later with no build, test
 or other run on the PC (the maintainer's desktop programs were open: an animated wallpaper used about 1.3 of the 12
 logical processors).
-*(2026-11-01)* Every row was run again on an idle PC at native `4a6eaf4`: *Runs on an idle PC* below.
+*(2026-10-31, later)* Every row was run again on an idle PC at native `4a6eaf4`: *Runs on an idle PC* below.
 
 ## Using it
 
@@ -222,7 +222,7 @@ which is what the tool compares anyway); the third row is one `none` pair; the r
 | `none` pair 2 | 7 of 10 | 1,016.7 ms | 61 / 64 | 5,603 units | 65 / 65 | 16.95 s |
 | reference, N3-21 (G3) | 5 of 10 | 316.7 ms | 59 / 63 | 3,627 units | 19 / 65 | 1.07 s |
 
-## Runs on an idle PC (2026-11-01, native 4a6eaf4)
+## Runs on an idle PC (2026-10-31, native 4a6eaf4)
 
 Every row of *Tables* again, with nothing else of the port running on the PC, at native `4a6eaf4` (N3-32's slice fix,
 N3-33's `--deterministic --io-latency none` fix, and PR #64's `RC_HOST_VERSION` 6). The runner was built from that tree
@@ -231,22 +231,29 @@ as the native-windows job builds it (`-DCMAKE_BUILD_TYPE=RelWithDebInfo -DMH4N_W
 baserom/update_v130.cia --native --no-mods` (`build/n3-22b/lib-rt`, 7 min) and the same with `--deterministic`
 (`build/n3-22b/lib-det`, 7 min): the libraries of *Repeating it* were built for `RC_HOST_VERSION` 5, which a runner of
 this base refuses (not tried here); a short G1 pair checked that it accepts both new ones. Then
-`fps_audit.py run` and `compare` exactly as *Repeating it* says, one pair at a time under the emulator lock, the masks
-copy `build/fps/fs_write_masks_n322.txt`, into new folders `build/fps/<S>-det-idle`, `<S>-det-none-idle`,
-`<S>-rt-idle[-rN]` and `<S>-rt-none-idle` (the deterministic runs before the real-time ones; nothing else ran during the
-real-time ones). Per-run timeout 900 s (det) and 1,800 s (rt): no run timed out, every run exited 0.
+`fps_audit.py run` and `compare` as *Repeating it* says, but with `--deterministic` for the det rows and with the new
+libraries and timeouts, one pair at a time under the emulator lock, the masks copy
+`build/fps/fs_write_masks_n322.txt`, into new folders `build/fps/<S>-det-idle`, `<S>-det-none-idle`, `<S>-rt-idle[-rN]`
+and `<S>-rt-none-idle` (the deterministic runs before the real-time ones; nothing else of the port ran during the
+real-time ones, with one exception: *The PC's load*). Per-run timeout 900 s (det) and 1,800 s (rt): no run timed out,
+every run exited 0.
 
 **The PC's load.** The total CPU over 20 s before each real-time pair: G1 21.3 %; G3 pairs 1 to 5: 21.1, 22.2, 21.5,
 20.8, 24.4 %; G2 19.7, G4 19.9 %; `none`: G1 20.3, G2 19.5, G4 18.8 %. That is the maintainer's desktop (the animated
 wallpaper, Chrome, Steam, the graphics driver's panel) with no build, test or other run, and about 20 % rather than the
-10 to 15 % of the reference run of 2026-10-31. Sampled every 10 s from the end of G3's pair 5 to the last pair: 25.3 %
-on average with no runner (18 samples), 34.8 % with the runner (94 samples, at most 45.1 %); the runner itself takes
-about 1.2 of the 12 logical processors. **Two interruptions.** At 18:41 (local time) an unrelated installer of the
-maintainer's started and at 18:44 took every processor; it fell in the 120 fps run of G3's pair 4, from about 112 s of
-that run (the long talk in the village) and on every processor for its last 20 s (game time about 289 to 300 s); the run
-took 309.4 s against 306.5 s for the other four 120 fps runs. Pair 5 was held while the load was 100 % and then while a
-game and an antivirus scan ran (18 minutes in all), and started at 24.4 % once the game had closed. So every real-time
-run below is idle except pair 4's 120 fps run, which is marked.
+about 11 % (1.3 of the 12 logical processors, *The PC during the runs* above) of the reference run earlier that day.
+Sampled every 10 s from the end of G3's pair 5 to the last pair: 25.3 % on average with no runner (18 samples, taken
+right after each run while `compare` processed it, so they include compare's work: 40.8 % and 37 % at two of them),
+34.8 % with the runner (94 samples, at most 45.1 %). Against those five pairs' pre-run loads (19.6 % on average) the
+runner adds about 15 %, about 1.8 of the 12 logical processors. **Two interruptions.** An unrelated installer of the
+maintainer's ran during the 120 fps run of G3's pair 4. Its times are not in the logs: they were read by hand during the
+session (the installer's processes started at about 18:41 local time and took every processor from about 18:44, that
+is from about 112 s of that run, the long talk in the village, and on every processor for its last 20 s, game time
+about 289 to 300 s), and the load was not sampled during pair 4 (the samples are taken before each pair). What the logs
+show is the next sample, at 18:45:10, 20 s after pair 4 ended: 100 %; and the run took 309.4 s against 306.5 s for the
+other four 120 fps runs. Pair 5 was held while the load was 100 % and then while a game and an antivirus scan ran (18
+minutes in all), and started at 24.4 % once the game had closed. So every real-time run below is idle except pair 4's
+120 fps run, which is marked.
 
 Host seconds of the real-time runs are now steady: G3 303.1 to 303.4 at 60 fps and 306.5 at 120 fps (pair 4's 309.4), G2
 152.7 to 153.3 and 156.5 to 157.1, G4 52.3 to 52.4 and 56.2 to 56.4, G1 30.7 to 30.8 and 34.8 to 34.9.
@@ -262,7 +269,7 @@ Items by session, `--io-latency azahar`. Counts are of the 60 fps run and the 12
 | G4 | det | 4.5 + 8.5 | pass (6) | **FAIL** 316.7 ms (4 of 6) | pass (4) | n/a | **FAIL** no buffer in common | pass (2, 1 masked) |
 | G4 | rt | 52.4 + 56.4 | pass (6) | **FAIL** 133.3 ms (4 of 6) | pass (4) | n/a | **FAIL** +651 | pass (2, 1 masked) |
 | G3 | det, seed 0 and `--seed 1` | 25.9 + 48.5, 25.3 + 48.5 | pass (10) | **FAIL** 316.7 ms (5 of 10) | pass (9) | position **FAIL** (59 of 63 s), quest **FAIL** (19 of 65 s) | **FAIL** +3765 | pass (2, 1 masked) |
-| G3 | rt, 5 pairs | 303.1 to 303.4 + 306.5 to 309.4 | **FAIL** in 4 (one run of the pair stays in the village); pass in 1 (both stay, 6 changes) | n/a in the 4; **FAIL** 133.3 ms (4 of 6) in the fifth | **FAIL** (4 of 9) in all five | **FAIL** in all five (`--require`: no second in the hunt in both runs) | **FAIL** in all five | pass (2, 1 masked) in all five |
+| G3 | rt, 5 pairs | 303.1 to 303.4 + 306.5 to 309.4 | **FAIL** in 4 (one run of the pair stays in the village); pass in 1 (both stay, 6 changes) | n/a in the 4; **FAIL** 133.3 ms (4 of 6) in pair 3 | **FAIL** (4 of 9) in all five | **FAIL** in all five (`--require`: no second in the hunt in both runs) | **FAIL** in all five | pass (2, 1 masked) in all five |
 
 The two deterministic G3 pairs have equal state traces, byte for byte (seed 0 against seed 1, at each rate), and their
 ten scene changes are N3-21's reference frames. G2's position failure is the same one second of the opening jump
@@ -275,7 +282,7 @@ ten scene changes are N3-21's reference frames. G2's position failure is the sam
 | 1 | hunt | village (6 changes) |
 | 2 | hunt | village |
 | 3 | village | village |
-| 4 | village | hunt (the installer running from 112 s of the run on, on every processor for its last 20 s) |
+| 4 | village | hunt (partly under the installer's load, by unlogged times: *The PC's load*) |
 | 5 | hunt | village |
 
 So 3 of 5 at 60 fps and 1 of 5 at 120 fps; of the four fully idle 120 fps runs, none reached the hunt. Every run that
@@ -294,12 +301,13 @@ movie; the three 60 fps runs that reach the hunt have its four changes at the sa
 | G4 | rt | 52.3 + 56.2 | pass (6) | **FAIL** 166.7 ms (4 of 6) | pass (4) | n/a | **FAIL** +633 | pass (2; 1 masked, equal without) |
 
 The deterministic G1 and G4 with `none` now run to the end (N3-33). The deterministic G4 with `none` fails the times by
-2.65 s: its 60 fps run ends the intro movie at frame 903 (15.05 s, where every `azahar` run of G4 and G3 ends it) and its
-120 fps run at frame 1502 (12.52 s), where the real-time `none` runs end it at both rates (frames 753 and 1502).
+2.65 s: its 60 fps run ends the intro movie at frame 903 (15.05 s, where every `azahar` 60 fps run ends it: 902 in G3's
+pair 4; 1802, 15.02 s, at 120 fps) and its 120 fps run at frame 1502 (12.52 s), where the real-time `none` runs end it
+at both rates (frames 753 and 1502).
 
 Scene changes, game time of the 120 fps run minus the 60 fps run in ms (frame / fps), the game clock offset beside it.
 G3 in real time has no pair with both runs in the hunt; its rows pair the 60 fps run of one pair with pair 4's 120 fps run
-(folders `build/fps/mix-idle-60rN-120r4`, made as the `mix-*` folders of 2026-10-31).
+(folders `build/fps/mix-idle-60rN-120r4`, made as the `mix-*` folders of the loaded runs).
 
 | Session | mode | differences in ms, in order | game clock offsets, s |
 |---|---|---|---|
@@ -318,8 +326,8 @@ G3 in real time has no pair with both runs in the hunt; its rows pair the 60 fps
 | G2 | rt, `none` | -16.7, -116.7, -25.0, -33.3, -50.0, -58.3, -133.3, -150.0 | -0.02, -0.10, +4.06, +3.91, +3.89, +3.89, +3.82, +3.81 |
 | G4 | rt, `none` | -16.7, -166.7, -33.3, -91.7, -108.3, -116.7 | -0.04, -0.17, +3.98, +3.89, +3.88, +3.87 |
 
-The deterministic rows equal those of 2026-10-31 to the 0.1 ms (G3's now has all ten changes, the reference's). Against
-the per-change limits proposed below (item 2 of the proposal: 333.3 ms for the first aDemo, 166.7 ms for the three after
+The deterministic rows equal those of the loaded runs to the 0.1 ms (G3's now has all ten changes, the reference's).
+Against the per-change limits proposed below (item 2 of the proposal: 333.3 ms for the first aDemo, 166.7 ms for the three after
 the intro movie, 316.7 ms for G2's opening, 91.7 ms for G3's aGameSys and aQuest, 66.7 ms for every other change), every
 `azahar` row, deterministic and real time, is inside; so are the real-time `none` rows; the deterministic G4 with `none`
 is not (2,533.3 to 2,650.0 ms).
@@ -365,18 +373,19 @@ loaded PC.
 1. The deterministic rows are unchanged to the 0.1 ms, the frame and the DSP frame (G1, G2, G4), and G3's is now the
    reference's: 10 scene changes at both rates, 9 of 9 checkpoints, the hunt reached, seeds 0 and 1 equal (N3-32).
 2. `--deterministic --io-latency none` no longer hangs (N3-33): G1 and G4 finish in 2.5 + 4.6 s and 4.2 + 8.7 s. Its G4
-   pair fails the times by 2.65 s, because the 60 fps run ends the intro movie where `azahar` does (frame 903) and the
-   120 fps run where real-time `none` does (frame 1502).
+   pair fails the times by 2.65 s, because the 60 fps run ends the intro movie where `azahar` 60 fps runs do (frame 903;
+   902 in G3's pair 4; 1802 at 120 fps) and the 120 fps run where real-time `none` does (frame 1502).
 3. Real-time host times are steady (G3 303.1 to 303.4 + 306.5, against 303 to 408 + 307 to 455 loaded), and the real-time
    `azahar` scene times are a little closer: largest G1 91.7, G2 125.0, G4 133.3 ms against 91.7, 133.3, 158.3 ms
    loaded (`none`: 116.7, 150.0, 166.7 against 100.0, 166.7, 166.7). Every `azahar` row, both modes, and every
    real-time `none` row is inside the per-change limits of the proposal.
 4. G3 in real time is not more repeatable on the idle PC: 4 of 10 runs reach the hunt (3 of 5 at 60 fps, 1 of 5 at
-   120 fps, that one partly under load), against 6 of 10 on the loaded PC (3 and 3, `azahar` and `none` pairs), and no
-   pair of five has both runs in the hunt. N1-26's 10 of 10 at 60 fps on an idle PC was not reproduced at this base.
+   120 fps, that one partly under load), against 6 of 10 on the loaded PC (3 and 3, `azahar` and `none` pairs; `azahar`
+   alone: 3 of 6, 2 of 3 at 60 fps and 1 of 3 at 120 fps), and no pair of five has both runs in the hunt. N1-26's 10 of
+   10 at 60 fps on an idle PC was not reproduced at this base.
 5. The same-rate spread is as large on the idle PC: two 60 fps runs up to 2,603 units apart in the hunt (2,460 loaded),
    and up to 15.55 s on the quest counter (0.20 s loaded, 15.8 s between two loaded 120 fps runs). The position and
-   quest clock in real time depend on the run, not on the host's load.
+   quest clock in real time depend on the run, not mainly on the host's extra load.
 6. The DSP windows after the intro movie give the same 77 to 85 % of the clock offset in G2 and G4; G3's window at frame
    16000, measurable now in the deterministic mode, gives 100 % (+3765 of +3767), as does real-time pair 3's (both runs
    in the village there).
