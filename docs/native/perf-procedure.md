@@ -144,8 +144,10 @@ native runner is a different one, described here.
 ## What the native log holds
 
 `mh4u_native_runner ... --perf-log FILE` writes one row per game frame (a change of the game's frame counter,
-the `f=` of `--state-trace`; the first row also holds the boot). It holds the scheduler's own counters (N1-06), read
-once per frame; times are microseconds of the host's clock:
+the `f=` of `--state-trace`; the first row also holds the boot). It holds the scheduler's own counters (N1-06, and
+N1-32's per-thread system call and service time), read once per frame; times are microseconds of the host's clock.
+The file starts with `# perf v2` (N1-32); a runner from before N1-32 writes `# perf v1` and the first nine columns
+only:
 
 | Column | Meaning |
 |---|---|
@@ -157,13 +159,16 @@ once per frame; times are microseconds of the host's clock:
 | `service_us` | in the services' handlers (fs, gsp, ...), every thread |
 | `idle_us` | both virtual cores idle: waiting for the frame limiter, a timer or a reply |
 | `switches`, `preempts` | fiber switches, and threads displaced while they could still run |
+| `main_svc_us` | the main thread's own part of `svc_us`: its system calls, without its services (v2) |
+| `main_service_us` | the main thread's own part of `service_us`: the service handlers it called (v2) |
 
-No microsecond is counted twice, but not every one is counted. All guest threads run on **one** host thread today.
-`busy_us` = `guest_us` + `svc_us` + `service_us` (what `perf_report.py` adds) is the counted work of every guest
-thread on it. `present_us` minus `idle_us` is `busy_us` plus the scheduler's own host loop between two guest runs
-(reaping, posted work and timer events, the safe-point hooks, picking the next thread). No column holds that loop,
-so the difference is at least `busy_us` (over the log; a single row can fall short by the few microseconds of the
-hooks run as the system call that began it starts, which the previous row's `present_us` holds).
+No microsecond is in more than one of `guest_us`, `svc_us`, `service_us` and `idle_us` (`main_us`, `main_svc_us` and
+`main_service_us` are parts of the first three), but not every one is counted. All guest threads run on **one** host
+thread today. `busy_us` = `guest_us` + `svc_us` + `service_us` (what `perf_report.py` adds) is the counted work of
+every guest thread on it. `present_us` minus `idle_us` is `busy_us` plus the scheduler's own host loop between two guest
+runs (reaping, posted work and timer events, the safe-point hooks, picking the next thread). No column holds that loop,
+so the difference is at least `busy_us` (over the log; a single row can fall short by the few microseconds of the hooks
+run as the system call that began it starts, which the previous row's `present_us` holds).
 
 The scheduler does not count its own host work separately. The timer events (the DSP's, HID's and GSP's), posted
 replies (fs, GPU interrupts) and safe-point hooks are charged to whatever was being counted when they ran: the
@@ -172,12 +177,23 @@ the start or end of a system call, and nothing (neither busy nor idle) in the ho
 subscribers (this log's row and `--state-trace`'s line) are among those hooks. A row is written at the first system
 call after the frame change, once the counters are current.
 
-The scheduler counts system calls and services by number and by name, not by thread, so the game thread's own share
-of them is not known: `perf_report.py` gives `game_us` = `main_us` + `svc_us` + `service_us`, which is an **upper**
-bound of the game thread's time (it holds the other threads' calls and services), and `main_us` alone, a lower bound
-up to the scheduler work done at the main thread's preemption checks, which it also holds (probably tens of
-microseconds per frame). An OVER verdict whose `main_us` p99 is barely above 4 ms is not conclusive: say so to the
-orchestrator.
+The scheduler counts system calls and services by number and by name, and (since N1-32) by the thread that made the
+call: a call's time goes to that thread even when another thread is running by the time it is closed, and the time a
+thread spends blocked inside a call is nobody's (it is other threads' work or idle). So `perf_report.py` gives two
+bounds of the game thread's time:
+
+- `game_us` = `main_us` + `main_svc_us` + `main_service_us`, the **upper** bound: the game thread's own guest code,
+  calls and services, and no other thread's. It still holds the scheduler's host work run at the main thread's
+  preemption checks (timer events, posted work, the safe-point hooks: probably tens of microseconds per frame) and at
+  the start and end of its system calls (the same, and picking the next thread; no estimate), because the scheduler
+  does not count that work apart (D99).
+- `main_us` alone, the **lower** bound, up to the scheduler work done at the main thread's preemption checks, which
+  it also holds.
+
+It also gives `game_all_us` = `main_us` + `svc_us` + `service_us`, N1-23's upper bound (every thread's calls and
+services), as a row of the table and a line under the verdict, for comparison; the verdict does not use it. A v1 log
+(from a runner before N1-32) still gets N1-23's report: `game_us` is then `main_us` + `svc_us` + `service_us`. An OVER
+verdict whose `main_us` p99 is barely above 4 ms is not conclusive: say so to the orchestrator.
 
 ## Which mode: real time, not `--deterministic`
 
@@ -276,6 +292,9 @@ try {
 }
 ```
 
+N1-32's re-run uses `build\n1-32\runNN` (`$out = "build\n1-32\run01"`, ...), with its own attempt count: N1-23's
+`build\n1-23\run01` to `run05` are v1 attempts and are not counted with it.
+
 `--init-time 1767268800.5` is G3's own (`# init-time:` in the session). The CSV is `$out\perf.csv`; the state trace
 `$out\state.txt` holds the game's state, so it stays under `build\` and is never committed or sent anywhere (the CSV
 holds timings only). A run held by the load check leaves its folder behind: use a new `runNN` for the next one.
@@ -286,6 +305,11 @@ heavy program), `& $runner --help | Select-String perf-log` must print the optio
 `build\native` is older than the merge, and the run would exit 2 with `unknown option --perf-log` in `runner.log`.
 Then rebuild it with `cmake --build build\native --target mh4u_native_runner` (llvm-mingw, cmake and ninja on PATH),
 or use the `mh4n-runner-windows` artifact of a push to `native` made after the merge.
+
+A runner from before N1-32 has `--perf-log` too, but writes `# perf v1` (no per-thread columns). So after the first
+attempt, check the first line of its CSV: `Get-Content $out\perf.csv -TotalCount 1` must start with `# perf v2`. If it
+does not, that run is not an attempt (neither counting nor discarded): rebuild the runner as above (or take a newer
+artifact) and run again in a new folder. Every counted `perf.csv` starts with `# perf v2`.
 
 The block prints `runner exit N`:
 
@@ -310,32 +334,43 @@ python tools\native\perf_report.py $out\perf.csv --state-trace $out\state.txt --
   the log is in virtual time or does not say `clock=host`; discard it, note the reason. With exit status 2 (a message
   on the terminal, `report.md` empty) it is a usage or file problem, not a verdict: fix it and read the run again.
 - Under the table the report gives the verdict:
-  `Game thread, p99 against its budget of 4.000 ms: game_us (upper bound) X ms, main_us (lower bound) Y ms: V`.
+  `Game thread, p99 against its budget of 4.000 ms: game_us (upper bound, its own calls and services) X ms, main_us (lower bound) Y ms: V`.
   **WITHIN**: even the upper bound's p99 is within 4 ms. **OVER**: even the main thread alone is over it.
-  **UNDECIDED**: 4 ms lies between the two bounds; then the calls and services of the other threads decide, and the
-  scheduler needs to count them by thread (proposed to the orchestrator; say so, do not pick a side).
-- The next line, `Every guest thread together (busy_us ...)`, is the p99 of every guest thread's counted work on the
+  **UNDECIDED**: 4 ms lies between the two bounds. The other threads' calls and services are no longer in `game_us`,
+  so what decides then is how much of `game_us` is the scheduler's host work run at the main thread's preemption
+  checks and system calls: say so and give the margin (`game_us` p99 minus 4 ms), do not pick a side. Counting that
+  host work apart is the next step (D99). It is the maintainer's decision: the orchestrator opens it, with the margin,
+  and does not settle it.
+- The next line, `With every thread's calls and services (game_all_us, N1-23's upper bound), p99: W ms`, is N1-23's
+  upper bound, for comparison with N1-23's runs; it takes no part in the verdict.
+- The line after it, `Every guest thread together (busy_us ...)`, is the p99 of every guest thread's counted work on the
   one host thread (the scheduler's host loop is in no column): it is not the game-thread figure, but it is about
   what a single host thread would have to do in a frame (8.333 ms at 120 fps), and it shows how much the other
   threads add.
 - The table's `present_us` should cluster at 8.333 ms (the frame limiter) and `idle_us` is the headroom.
 
 **The verdict over the three runs** is the worst of them: the largest p99 of `game_us` (and of `main_us`) of the
-three counting runs. Give the orchestrator, once for the session: the output of `& $runner --version` (with the CI
-run's URL if you use the artifact `mh4n-runner-windows`) and the `$lib` path with its date
-(`(Get-Item $lib).LastWriteTime`). Per run: the folder name, the CPU load before it (`load.txt`; D70: at most 25 %),
-the `Hunt:` and `Frames:` lines, the p99 of `game_us`, `main_us` and `busy_us`, the `Frames over 50 ms` line, and the
-verdict line. For all the attempts: the count above. Send `report.md` and the CSVs of the counting runs; keep the
-rest.
+three counting runs. If that verdict is UNDECIDED, the margin is the largest `game_us` p99 of the three minus 4 ms.
+Give the orchestrator, once for the session: the output of `& $runner --version` (with the CI run's URL if you use
+the artifact `mh4n-runner-windows`) and the `$lib` path with its date (`(Get-Item $lib).LastWriteTime`). Per run: the
+folder name, the first line of `perf.csv` up to and including the date (`# perf v2 YYYY-MM-DD`), the CPU load before it
+(`load.txt`; D70: at most 25 %), the `Hunt:` and `Frames:` lines, the p99 of `game_us`, `main_us`, `game_all_us` and
+`busy_us`, the `Frames over 50 ms` line, and the verdict line. For all the attempts: the count above. Send `report.md`
+and the CSVs of the counting runs; keep the rest.
 
 ## Overhead of the log
 
 Without `--perf-log` the boot step returns on its first line: nothing is subscribed to `Runtime::OnFrame` or to the
-system call hooks, no file or object is made, and the scheduler, the SVC layer and the code library are not touched
-(the counters are N1-06's, kept always and not changed here). `perf_test` boots a program without the option and
-checks that no file appears and the frame subscribers see the same frames. With the option, the cost is one call per
-game frame (120 a second) that reads the counters (a sum over the 256 system call slots, the services and the
-threads: a few hundred additions) and one buffered line of about 70 bytes (the file is written in 64 KB blocks, so a
-write to disk happens every few seconds), plus one test of an empty list at each system call. Nothing else is added to
-a preemption check, a system call or a fiber switch: the row is written from a system call's `before` hook, at the
-first system call after the frame change.
+system call hooks, no file or object is made, and the SVC layer and the code library are not touched. The counters
+are the scheduler's, kept always, with or without the option. Since N1-32 the scheduler charges each closed stretch of
+system call or service time to the thread that made the call as well: one more addition, through a pointer the
+thread's scheduler data caches on its first charge of that kind, wherever a stretch of system call or service time is
+closed (the end of a system call, the start and end of a service request, and a thread switch inside either). Only a
+thread's first system call and first service request allocate (one map entry each); entries are never erased.
+`perf_test` boots a program without the option and checks that no file appears and the frame subscribers see the same
+frames. With the option, the cost is one call per game frame (120 a second) that reads the counters (a sum over the 256
+system call slots, the services and the threads, and three look-ups of the main thread: a few hundred additions) and one
+buffered line of about 85 bytes (the file is written in 64 KB blocks, so a write to disk happens every few seconds),
+plus one test of an empty list at each system call. Nothing else of the log's is added to a preemption check, a system
+call or a fiber switch: the row is written from a system call's `before` hook, at the first system call after the frame
+change.

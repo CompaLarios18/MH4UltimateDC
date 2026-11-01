@@ -3,6 +3,7 @@
 
 #include <cstdio>
 #include <ctime>
+#include <map>
 #include <memory>
 #include <vector>
 
@@ -27,13 +28,22 @@ double Us(u64 ns) {
     return static_cast<double>(ns) / 1000.0;
 }
 
+// The main thread's entry of a per-thread map; 0 for no main thread (id 0) or no entry yet.
+u64 MainEntry(const std::map<u32, u64>& by_thread, u32 main_thread_id) {
+    if (main_thread_id == 0) {
+        return 0;
+    }
+    const auto it = by_thread.find(main_thread_id);
+    return it != by_thread.end() ? it->second : 0;
+}
+
 class PerfLog {
 public:
     PerfLog(Runtime& rt, const std::string& path)
         : rt_(rt), file_(std::fopen(path.c_str(), "w")) {
         if (file_ != nullptr) {
-            // A row is about 70 bytes: a big buffer keeps the file out of the frame (one write per
-            // ~1,000 rows at 120 fps is one every few seconds).
+            // A row is about 85 bytes: a big buffer keeps the file out of the frame (one write per
+            // ~770 rows at 120 fps is one every few seconds).
             std::setvbuf(file_, nullptr, _IOFBF, 1 << 16);
         }
     }
@@ -131,8 +141,9 @@ void StartPerfLog(Runtime& rt) {
 }  // namespace
 
 MH4N_OPTION("runner", "--perf-log", "FILE",
-            "write a CSV row per game frame: the time of the game's main thread and of all threads in guest "
-            "code, in system calls, in services and idle, and the thread switches and preemptions "
+            "write a CSV row per game frame (# perf v2): time in guest code of the game's main thread and of "
+            "all threads, every thread's time in system calls and in services, idle time, thread switches and "
+            "preemptions, and the main thread's own time in system calls and in services "
             "(tools/native/perf_report.py; docs/native/perf-procedure.md)");
 
 MH4N_REGISTER(BootStep, "perf.log", BootStep{Phase::Tracing, StartPerfLog});
@@ -142,10 +153,10 @@ Totals Snapshot(const SchedulerCounters& counters, u32 main_thread_id, u64 now_n
     t.now_ns = now_ns;
     for (const auto& [id, ns] : counters.guest_ns) {
         t.guest_ns += ns;
-        if (id == main_thread_id) {
-            t.main_ns = ns;
-        }
     }
+    t.main_ns = MainEntry(counters.guest_ns, main_thread_id);
+    t.main_svc_ns = MainEntry(counters.thread_svc_ns, main_thread_id);
+    t.main_service_ns = MainEntry(counters.thread_service_ns, main_thread_id);
     for (const SchedulerCounters::Named& named : counters.svc) {
         t.svc_ns += named.ns;
     }
@@ -159,7 +170,8 @@ Totals Snapshot(const SchedulerCounters& counters, u32 main_thread_id, u64 now_n
 }
 
 const char* ColumnLine() {
-    return "frame,present_us,main_us,guest_us,svc_us,service_us,idle_us,switches,preempts";
+    return "frame,present_us,main_us,guest_us,svc_us,service_us,idle_us,switches,preempts,main_svc_us,"
+           "main_service_us";
 }
 
 std::string HeaderLine(u64 program_id, bool virtual_clock) {
@@ -168,16 +180,18 @@ std::string HeaderLine(u64 program_id, bool virtual_clock) {
     if (const std::tm* utc = std::gmtime(&now)) {
         std::strftime(date, sizeof(date), "%Y-%m-%d", utc);
     }
-    return fmt::format("# perf v1 {} game=0x{:016x} cpu=native new3ds=off clock={} mode={}", date, program_id,
+    return fmt::format("# perf v2 {} game=0x{:016x} cpu=native new3ds=off clock={} mode={}", date, program_id,
                        virtual_clock ? "virtual" : "host", virtual_clock ? "deterministic" : "realtime");
 }
 
 std::string FormatRow(u32 frame, const Totals& before, const Totals& now) {
-    return fmt::format("{},{:.3f},{:.3f},{:.3f},{:.3f},{:.3f},{:.3f},{},{}", frame,
+    return fmt::format("{},{:.3f},{:.3f},{:.3f},{:.3f},{:.3f},{:.3f},{},{},{:.3f},{:.3f}", frame,
                        Us(Minus(now.now_ns, before.now_ns)), Us(Minus(now.main_ns, before.main_ns)),
                        Us(Minus(now.guest_ns, before.guest_ns)), Us(Minus(now.svc_ns, before.svc_ns)),
                        Us(Minus(now.service_ns, before.service_ns)), Us(Minus(now.idle_ns, before.idle_ns)),
-                       Minus(now.switches, before.switches), Minus(now.preemptions, before.preemptions));
+                       Minus(now.switches, before.switches), Minus(now.preemptions, before.preemptions),
+                       Us(Minus(now.main_svc_ns, before.main_svc_ns)),
+                       Us(Minus(now.main_service_ns, before.main_service_ns)));
 }
 
 }  // namespace mh4n::perf

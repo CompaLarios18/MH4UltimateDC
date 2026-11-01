@@ -22,24 +22,36 @@ For every column: p50, p95, p99 and max (nearest-rank percentiles), then the fra
 frame budget (--budget-ms, or --fps: 1000 / fps) in the --column (default present_us) and the
 frames over 50 ms (a stutter). The output is a markdown table.
 
-The native runner's log (mh4u_native_runner --perf-log, N1-23) has other columns:
+The native runner's log (mh4u_native_runner --perf-log) has other columns. Version 2 (N1-32):
 
-    # perf v1 <ISO date> game=0x<title id> cpu=native new3ds=off clock=<host|virtual> mode=<realtime|deterministic>
-    frame,present_us,main_us,guest_us,svc_us,service_us,idle_us,switches,preempts
+    # perf v2 <ISO date> game=0x<title id> cpu=native new3ds=off clock=<host|virtual> mode=<realtime|deterministic>
+    frame,present_us,main_us,guest_us,svc_us,service_us,idle_us,switches,preempts,main_svc_us,main_service_us
 
 `main_us` is the game's main thread in guest code (with the scheduler work run at its preemption checks), `guest_us`
-every thread, `svc_us` and `service_us` the system calls and the services of every thread (the scheduler does not
-count them by thread), `idle_us` every core waiting, `switches` and `preempts` counts per frame. `frame` is the
-game's frame counter, the `f=` of a --state-trace. For such a log the report adds
+every thread, `svc_us` and `service_us` the system calls and the services of every thread, `idle_us` every core
+waiting, `switches` and `preempts` counts per frame, `main_svc_us` and `main_service_us` the main thread's own part of
+`svc_us` and `service_us`. `frame` is the game's frame counter, the `f=` of a --state-trace. Version 1 (N1-23) has the
+first nine columns only (the scheduler did not count system calls and services by thread then). A native log is v2
+when its columns hold `main_svc_us` and `main_service_us`, v1 when they hold `main_us` and neither; a log with one of
+the two only, with both but without `main_us`, whose `# perf v<N>` line says another version than its columns, or
+with a `# perf v2` line over the reference runner's columns, is refused (exit status 2).
 
-  busy_us  = guest_us + svc_us + service_us    every guest thread's counted work on the one host thread (the
-                                               scheduler's host loop is in no column)
-  game_us  = main_us + svc_us + service_us     the game thread's time, an UPPER bound: it holds the other
-                                               threads' system calls and services too
+For a native log the report adds
+
+  busy_us     = guest_us + svc_us + service_us             every guest thread's counted work on the one host thread
+                                                           (the scheduler's host loop is in no column)
+  game_us     = main_us + main_svc_us + main_service_us    (v2) the game thread's time, an UPPER bound: it holds the
+                                                           scheduler's host work run at the main thread's preemption
+                                                           checks and system calls
+  game_all_us = main_us + svc_us + service_us              (v2) N1-23's upper bound, every thread's calls and services,
+                                                           for comparison
+  game_us     = main_us + svc_us + service_us              (v1) the game thread's time, an UPPER bound: it holds the
+                                                           other threads' system calls and services too
 
 and a verdict line: the p99 of `game_us` against --thread-budget-ms (4 ms, ROADMAP section 7), and the p99 of
 `main_us` alone, the lower bound. WITHIN: the upper bound is within the budget. OVER: even the lower bound is over
-it. UNDECIDED: the budget lies between the two.
+it. UNDECIDED: the budget lies between the two. A v2 log adds a line with the p99 of `game_all_us` (it takes no part
+in the verdict); then, for both versions, the line of `busy_us`.
 
 --state-trace FILE (the runner's --state-trace of the same run) keeps only the frames the hunt's scene
 (--hunt-scene, default aQuest, 0x00e655c8) is shown in. A run whose hunt has fewer than --min-frames rows left after
@@ -68,11 +80,14 @@ STUTTER_MS = 50.0
 DEFAULT_FPS = 120.0
 PERCENTILES = (50, 95, 99)
 
-# The native runner's log (N1-23).
+# The native runner's log (N1-23; v2 since N1-32).
 MAIN = "main_us"
 NATIVE_PARTS = ("guest_us", "svc_us", "service_us")
+MAIN_SVC = "main_svc_us"          # v2: the main thread's own part of svc_us
+MAIN_SERVICE = "main_service_us"  # v2: the main thread's own part of service_us
 BUSY = "busy_us"
 GAME = "game_us"
+GAME_ALL = "game_all_us"          # v2: N1-23's upper bound, with every thread's calls and services
 THREAD_BUDGET_MS = 4.0       # ROADMAP section 7: the game thread at 120 fps
 HUNT_SCENE = 0x00E655C8      # aQuest, the scene of the hunt (the HUNT_SCENE of fps_audit.py)
 MIN_HUNT_FRAMES = 2400       # 20 s at 120 fps, after --skip
@@ -87,6 +102,31 @@ class NotCounted(Exception):
 
 
 _STATE_FRAME = re.compile(r"^f=(\d+)\s")
+_PERF_VERSION = re.compile(r"^#\s*perf\s+v(\d+)\b")
+
+
+def native_version(columns: Sequence[str], meta: Sequence[str]) -> Optional[int]:
+    """2 for a native log with the main thread's calls and services (N1-32), 1 for N1-23's, None for a log that is
+    not the native runner's. FormatError for one of the two v2 columns without the other, for both without main_us,
+    and for a `# perf v<N>` line whose version is not the columns' (a v2 line over another runner's columns too)."""
+    has_svc, has_service = MAIN_SVC in columns, MAIN_SERVICE in columns
+    if has_svc != has_service:
+        present, missing = (MAIN_SVC, MAIN_SERVICE) if has_svc else (MAIN_SERVICE, MAIN_SVC)
+        raise FormatError(f"the column {present} without {missing}: a v2 log has both")
+    if has_svc and MAIN not in columns:
+        raise FormatError(f"the columns {MAIN_SVC} and {MAIN_SERVICE} without {MAIN}")
+    version = 2 if has_svc else (1 if MAIN in columns else None)
+    for line in meta:
+        match = _PERF_VERSION.match(line)
+        if not match:
+            continue
+        said = int(match.group(1))
+        if version is None:
+            if said == 2:
+                raise FormatError(f"the line {line!r} says v2, but the columns are not the native runner's v2")
+        elif said != version:
+            raise FormatError(f"the line {line!r} says v{said}, but the columns are those of a v{version} native log")
+    return version
 
 
 def hunt_frames(state_trace: str, scene: int = HUNT_SCENE) -> set[int]:
@@ -132,6 +172,7 @@ def parse(text: str) -> tuple[list[str], list[list[float]], list[str]]:
         raise FormatError("no header line (frame,present_us,...)")
     if PRESENT not in columns:
         raise FormatError(f"no {PRESENT} column")
+    native_version(columns, meta)
     return columns, rows, meta
 
 
@@ -144,14 +185,20 @@ def percentile(sorted_values: Sequence[float], p: float) -> float:
 
 
 def columns_of(columns: list[str], rows: list[list[float]]) -> dict[str, list[float]]:
-    """name -> values, without `frame`, with `other_us` derived when the parts are there."""
+    """name -> values, without `frame`, with `other_us` derived when the parts are there, and for a native log
+    `busy_us`, `game_us` and (v2) `game_all_us`."""
     data = {name: [r[i] for r in rows] for i, name in enumerate(columns) if name != "frame"}
     if OTHER not in data and all(p in data for p in PARTS):
         data[OTHER] = [max(0.0, pr - sum(data[p][i] for p in PARTS)) for i, pr in enumerate(data[PRESENT])]
     if MAIN in data and all(p in data for p in NATIVE_PARTS):
         n = len(data[PRESENT])
+        all_calls = [data[MAIN][i] + data["svc_us"][i] + data["service_us"][i] for i in range(n)]
         data[BUSY] = [sum(data[p][i] for p in NATIVE_PARTS) for i in range(n)]
-        data[GAME] = [data[MAIN][i] + data["svc_us"][i] + data["service_us"][i] for i in range(n)]
+        if MAIN_SVC in data and MAIN_SERVICE in data:  # v2: the main thread's own calls and services
+            data[GAME] = [data[MAIN][i] + data[MAIN_SVC][i] + data[MAIN_SERVICE][i] for i in range(n)]
+            data[GAME_ALL] = all_calls
+        else:  # v1: every thread's
+            data[GAME] = all_calls
     return data
 
 
@@ -168,10 +215,20 @@ def thread_verdict(data: dict[str, list[float]], thread_budget_ms: float) -> lis
         state = "OVER"
     else:
         state = "UNDECIDED"
+    busy_line = f"Every guest thread together ({BUSY}, every guest thread's counted work), p99: {busy:.3f} ms"
+    if GAME_ALL not in data:  # v1, as N1-23 wrote it
+        return [
+            f"Game thread, p99 against its budget of {thread_budget_ms:.3f} ms: "
+            f"{GAME} (upper bound) {upper:.3f} ms, {MAIN} (lower bound) {lower:.3f} ms: {state}",
+            busy_line,
+        ]
+    every = percentile(sorted(data[GAME_ALL]), 99) / 1000.0
     return [
         f"Game thread, p99 against its budget of {thread_budget_ms:.3f} ms: "
-        f"{GAME} (upper bound) {upper:.3f} ms, {MAIN} (lower bound) {lower:.3f} ms: {state}",
-        f"Every guest thread together ({BUSY}, every guest thread's counted work), p99: {busy:.3f} ms",
+        f"{GAME} (upper bound, its own calls and services) {upper:.3f} ms, {MAIN} (lower bound) {lower:.3f} ms: "
+        f"{state}",
+        f"With every thread's calls and services ({GAME_ALL}, N1-23's upper bound), p99: {every:.3f} ms",
+        busy_line,
     ]
 
 
