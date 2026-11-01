@@ -1,6 +1,6 @@
 {
  "format": 1,
- "updated": "2026-10-31",
+ "updated": "2026-11-01",
  "about": "Mods and texture packs recommended for the MH4U PC port, installed by tools/mods.py install-from-catalog (the launcher's Mods screen, Catalog). Only metadata and the authors' own download links: nothing here is the game or its files. docs/MODS.md says how to suggest a mod and what each field means.",
  "mods": [
   {
@@ -14,7 +14,7 @@
    "description": "The whole game remastered in HD: environments, armor, weapons, monsters, NPCs and the interface (building on MH4HDUI).",
    "details": "HD v3.0 (about 11 GB) and its latest update roll-up (3.01-3.03), installed together as the author describes: the base pack, its UI folder removed, then the roll-up over it. Credits: Tywald, Aki, Grand Tickler and tbsp (earlier versions), xl3lackout (MH4HDUI), Monkbreh and PixelCover (MHGU HD textures), Kestis, Sisnax.",
    "region": "USA",
-   "region_note": "The pack's USA build (title 0004000000126300), made with the v1.1 update that the port runs. Play in English: some menus in other languages aren't covered yet.",
+   "region_note": "The pack's USA build (title 0004000000126300), made with the USA game's v1.1 update. Azahar finds textures by their content, so the European game uses it too. Play in English: some menus in other languages aren't covered yet.",
    "license": "No licence stated; shared freely by its author, who asks players to pass it on. Downloaded from the author's own links.",
    "page_url": "https://mholdschool.com/viewtopic.php?t=1429",
    "needs": ["custom_textures"],
@@ -73,7 +73,7 @@
    "description": "Every item combination succeeds: no more failed combinations, and no combo books needed for the odds.",
    "details": "The first patch of anco's project to bring later games' quality-of-life changes to MH4U. A code patch (code.ips) that changes only the game's data, not its code.",
    "region": "USA",
-   "region_note": "For MH4U USA (0004000000126300) with its v1.1 update. It changes only data, so the port's code library doesn't need building again.",
+   "region_note": "The USA game (0004000000126300) and its v1.1 update, not the European game: its patch is at the USA game's addresses. It changes only data, so the port's code library doesn't need building again.",
    "license": "LGPL-3.0",
    "page_url": "https://codeberg.org/anco/mh4u_qol",
    "needs": [],
@@ -100,7 +100,7 @@
    "description": "A Guard Point on the Charge Blade's Fast Morph Slash, also the directional one, keeping its animation, movement and follow-ups; red-shield phial bursts work.",
    "details": "Tested by its author on Azahar (USA v1.1 runtime validation). A code patch that changes the game's code and adds new code after it (a \"code cave\").",
    "region": "USA",
-   "region_note": "Its USA v1.1 build (0004000000126300), the update the port runs.",
+   "region_note": "The USA game (0004000000126300) and its update (the mod's USA v1.1 build), not the European game: its code patch is at the USA code's addresses.",
    "license": "CC BY-NC-SA 4.0. Downloading and installing it is allowed; ask the author before sharing it elsewhere.",
    "page_url": "https://gamebanana.com/mods/703777",
    "conflicts": [],
@@ -125,7 +125,7 @@
    "description": "Weapon Honing: Life heals like MHW's Health Regen augment: 7.5% of the damage of each eligible hit, with a short green glow. Includes both Charge Blade Guard Point mods (Fast Morph and Charged Double Slash).",
    "details": "Replaces Life's 18-second cooldown and 30% chance with a heal on every eligible hit (0.2-second shared cooldown, at least 1 HP). Tested by its author on Azahar and on a 3DS.",
    "region": "USA",
-   "region_note": "Its USA v1.1 build (0004000000126300), the update the port runs.",
+   "region_note": "The USA game (0004000000126300) and its update (the mod's USA v1.1 build), not the European game: its code patch is at the USA code's addresses.",
    "license": "CC BY-NC-SA 4.0. Downloading and installing it is allowed; ask the author before sharing it elsewhere.",
    "page_url": "https://gamebanana.com/mods/711049",
    "conflicts": [],

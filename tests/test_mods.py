@@ -742,6 +742,83 @@ def test_a_mod_for_the_other_region_is_refused(tmp_path):
     assert not mod.errors
 
 
+EUR = "0004000000126100"
+
+
+def eur_deployed(user):
+    top = user / "load" / "mods" / EUR
+    return {p.relative_to(top).as_posix(): p.read_bytes() for p in sorted(top.rglob("*"))
+            if p.is_file() and p.name != mods.DEPLOYED}
+
+
+def test_a_mod_made_for_the_other_regions_game_is_left_out(user, tmp_path):
+    """The library is one for both games. A mod whose mod.json names the other region's game (a
+    catalog mod keeps its entry's region) stays on, but isn't put in this game's mods folder, and
+    its files conflict with nothing there."""
+    run(user, "add", str(make(tmp_path / "Usa code", {"mod.json": '{"region": "USA"}', "romfs/data/x.arc": "usa",
+                                                      "exefs/code.ips": ips((0x10, b"A"))})))
+    run(user, "add", str(make(tmp_path / "Plain", {"romfs/data/x.arc": "plain"})))
+    assert len(run(user, "conflicts")["conflicts"]) == 1
+    out = run(user, "deploy")
+    assert deployed(user) == {"exefs/code.ips": ips((0x10, b"A")), "romfs/data/x.arc": b"plain"}
+    assert out["warnings"] == []                                  # nothing new for the USA game
+    eu = ("--program-id", EUR)
+    out = run(user, *eu, "list")
+    usa, plain = out["mods"]
+    assert usa["enabled"] and usa["region"] == "USA" and usa["fits"] is False and plain["fits"] is True
+    assert usa["warnings"] == ["made for MH4U USA (its mod.json says so): its code patch is at that code's addresses, "
+                               "so it is left out of MH4U Europe's mods folder"]
+    assert run(user, *eu, "conflicts")["conflicts"] == []
+    assert len(run(user, *eu, "conflicts", "--all")["conflicts"]) == 1
+    out = run(user, *eu, "deploy")
+    assert out["added"] == ["romfs/data/x.arc"] and eur_deployed(user) == {"romfs/data/x.arc": b"plain"}
+    assert out["warnings"] == ["Usa code: " + usa["warnings"][0]]
+    assert not run(user, *eu, "deploy")["changed"] and run(user, *eu, "status")["deploy"]["state"] == "up_to_date"
+    run(user, *eu, "disable", "Usa code")
+    out = run(user, *eu, "enable", "Usa code")
+    assert out["messages"] == ["Usa code is on; made for MH4U USA, it goes in Azahar's mods folder only for that game"]
+    # it is on for the USA game: a second code mod stays off, and the reason says so
+    out = run(user, *eu, "add", str(make(tmp_path / "Eu code", {f"{EUR}/code.ips": ips((0x10, b"E"))})))
+    assert "and so does Usa code, which is on (for MH4U USA, whose code it is made for)" in out["messages"][1]
+    # the USA game's folder is as it was
+    assert not run(user, "deploy")["changed"] and deployed(user)["exefs/code.ips"] == ips((0x10, b"A"))
+    # a region that names neither game counts for nothing
+    write(user / "mh4u-mods" / "Usa code" / "mod.json", '{"region": "Japan"}')
+    assert run(user, *eu, "list")["mods"][0]["fits"] is True
+
+
+def test_a_code_patch_without_a_title_folder_warns_for_europe(user, tmp_path, capsys):
+    """Nothing in such a mod says which game's code its patch is made for, and most are made for
+    USA's: for the European game it is used, with a warning; for the USA game nothing changes."""
+    out = run(user, "add", str(make(tmp_path / "Bare", {"exefs/code.ips": ips((0x10, b"A")), "romfs/data/x.arc": "x"})))
+    assert out["mods"][0]["warnings"] == [] and out["warnings"] == []
+    assert run(user, "deploy")["warnings"] == [] and run(user, "status")["warnings"] == []
+    eu = ("--program-id", EUR)
+    warning = run(user, *eu, "list")["mods"][0]["warnings"]
+    assert warning == ["exefs/code.ips: if this code patch was made for MH4U USA's code, as most are, it breaks MH4U "
+                       "Europe, whose code is at other addresses (nothing in the mod says which game it is for; a .bps "
+                       "made for other code is refused by its checksum when the code library is built, an .ips isn't "
+                       "checked)"]
+    out = run(user, *eu, "deploy")
+    assert out["added"] == ["exefs/code.ips", "romfs/data/x.arc"]           # used, not refused
+    assert out["warnings"] == ["Bare: " + warning[0]]
+    assert run(user, *eu, "status")["warnings"] == ["Bare: " + warning[0]]
+    # added for the European game: the warning comes with it (here, a patch at the top of the mod),
+    # and the text output shows it once, under the mod
+    out = run(user, *eu, "add", str(make(tmp_path / "Top", {"code.bps": "B"})), "--disabled")
+    assert [w.split(": if this")[0] for w in out["warnings"]] == ["Top: code.bps"]
+    run(user, "remove", "Top")
+    assert mods.main(["--user-dir", str(user), *eu, "add", str(tmp_path / "Top"), "--disabled"]) == 0
+    assert capsys.readouterr().out.count("code.bps: if this code patch was made for MH4U USA's code") == 1
+    # made for Europe's code (its title folder, or its mod.json): no warning
+    for name, files in (("Eu title", {f"{EUR}/exefs/code.ips": ips((0x10, b"E"))}),
+                        ("Eu json", {"mod.json": '{"region": "europe"}', "code.ips": ips((0x10, b"E"))})):
+        out = run(user, *eu, "add", str(make(tmp_path / name, files)), "--disabled")
+        mod = next(m for m in out["mods"] if m["id"] == name)
+        assert mod["warnings"] == [] and mod["fits"] is True, name
+    assert next(m for m in run(user, "list")["mods"] if m["id"] == "Eu json")["fits"] is False
+
+
 def test_the_code_segment_is_the_games_own():
     """text_size and code_segment_end read the entry of the game's update (program and update
     id), not the entry the tables are made for: Europe's v1.1.0 code is 0x50 bytes longer."""

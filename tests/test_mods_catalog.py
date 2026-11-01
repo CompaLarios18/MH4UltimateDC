@@ -162,7 +162,7 @@ def test_bundled_catalog_is_valid():
     assert "custom_textures" in recommended[0]["needs"]
     for e in cat["mods"]:
         assert e["page_url"].startswith("https://") and e["author"] and e["description"] and e["license"]
-        assert e["region"], e["id"]
+        assert e["region"] in {name for _, name in mods.REGIONS.values()}, e["id"]   # as fits compares it
         for c in e["conflicts"]:
             assert c in ids
         for d in e["downloads"]:
@@ -336,13 +336,147 @@ def test_texture_pack_for_another_game(user, tmp_path):
 
 def test_texture_pack_for_the_other_region(user, tmp_path):
     """MH4U's textures are the same assets in both regions (Azahar matches them by content), so a
-    pack made for Europe goes into the USA game's folder, and the reverse."""
+    pack made for Europe goes into the USA game's folder, and the reverse, with a note."""
     eu = make_zip(tmp_path / "eu.zip", {"0004000000126100/a.png": "a"})
-    run(user, "install", "--textures", str(eu))
+    out = run(user, "install", "--textures", str(eu))
     assert tree(textures(user)) == ["a.png"]
+    assert out["messages"][1] == ("a texture pack made for MH4U Europe (0004000000126100/), used for MH4U USA: Azahar "
+                                  "finds textures by their content, and the two games' are the same but for some with "
+                                  "text")
     us = make_zip(tmp_path / "us.zip", {"0004000000126300/b.png": "b"})
-    run(user, "--program-id", "0004000000126100", "install", "--textures", str(us), "--name", "us")
+    out = run(user, "--program-id", "0004000000126100", "install", "--textures", str(us), "--name", "us")
     assert tree(user / "load" / "textures" / "0004000000126100") == ["b.png"]
+    assert out["messages"][1].startswith("a texture pack made for MH4U USA (0004000000126300/), used for MH4U Europe")
+    # a pack for the game's own region says nothing more
+    out = run(user, "install", "--textures", str(make_zip(tmp_path / "own.zip", {TID + "/c.png": "c"})))
+    assert len(out["messages"]) == 1
+
+
+EUR = "0004000000126100"
+
+
+def eur_textures(user):
+    return user / "load" / "textures" / EUR
+
+
+def test_a_catalog_mod_is_for_the_game_of_its_region(user, tmp_path):
+    """A catalog mod's code patch is at the addresses of the code its entry names: it is refused
+    for the other region's game (--force installs it anyway), and once installed for its own,
+    it keeps that region and is left out of the other game's mods folder."""
+    code = write(tmp_path / "srv" / "code.ips", ips_patch(0x100, b"\1\2"))
+    cat = catalog(tmp_path / "cat.json", [entry("usa-mod", "mod", [
+        {"url": url(code), "sha256": hashlib.sha256(code.read_bytes()).hexdigest(), "archive": "file",
+         "as": "exefs/code.ips"}], region="usa")])                      # (any capitals: USA)
+    eu = ("--program-id", EUR)
+    listed = run(user, *eu, "catalog", "--catalog", cat)["entries"][0]
+    assert listed["region"] == "USA" and listed["fits"] is False
+    assert run(user, "catalog", "--catalog", cat)["entries"][0]["fits"] is True
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        assert mods.main(["--user-dir", str(user), *eu, "catalog", "--catalog", cat]) == 0
+    assert "made for MH4U USA's code, not for MH4U Europe" in buf.getvalue()
+    err = run(user, *eu, "install-from-catalog", "usa-mod", "--catalog", cat, code=1)["error"]
+    assert err["code"] == "other_region" and err["region"] == "USA" and err["game"] == "Europe"
+    assert err["message"] == ("Usa Mod is made for MH4U USA's code, and the game is MH4U Europe (0004000000126100), "
+                              "whose code is at other addresses: its code patch would break it (--force installs it "
+                              "anyway)")
+    assert run(user, "list")["mods"] == [] and not (user / "mh4u-mods" / ".downloads").exists()
+    # for the USA game: installed, with its region
+    out = run(user, "install-from-catalog", "usa-mod", "--catalog", cat)
+    assert json.loads((user / "mh4u-mods" / out["mod"] / "mod.json").read_text())["region"] == "USA"
+    run(user, "deploy")
+    assert (user / "load" / "mods" / TID / "exefs" / "code.ips").is_file()
+    mod = run(user, *eu, "list")["mods"][0]
+    assert mod["enabled"] and mod["fits"] is False and "left out of MH4U Europe's mods folder" in mod["warnings"][0]
+    out = run(user, *eu, "deploy")
+    assert out["added"] == [] and any("left out" in w for w in out["warnings"])
+    assert not (user / "load" / "mods" / EUR / "exefs").exists()
+    # --force for the European game: no region, so it is put in place there too (with the warning
+    # every code patch without a title folder gets there)
+    out = run(user, *eu, "install-from-catalog", "usa-mod", "--catalog", cat, "--force")
+    assert any("installed anyway (--force)" in m for m in out["messages"])
+    assert "region" not in json.loads((user / "mh4u-mods" / out["mod"] / "mod.json").read_text())
+    mod = next(m for m in out["mods"] if m["id"] == out["mod"])
+    assert mod["fits"] is True and "if this code patch was made for MH4U USA's code" in mod["warnings"][0]
+    assert run(user, *eu, "deploy")["added"] == ["exefs/code.ips"]
+
+
+def test_a_catalog_texture_pack_for_the_european_game(user, tmp_path):
+    """A texture pack is for either region's game: the USA build goes into the European game's
+    texture folder, and the install says so."""
+    pack = make_zip(tmp_path / "srv" / "pack.zip", {TID + "/pack.json": "{}", TID + "/UI/a.png": "a"})
+    cat = catalog(tmp_path / "cat.json", [entry("pack", "textures", [{"url": url(pack)}], region="USA",
+                                                needs=["custom_textures"])])
+    eu = ("--program-id", EUR)
+    assert run(user, *eu, "catalog", "--catalog", cat)["entries"][0]["fits"] is True
+    out = run(user, *eu, "install-from-catalog", "pack", "--catalog", cat)
+    assert tree(eur_textures(user)) == ["UI/a.png", "pack.json"] and not textures(user).exists()
+    assert out["textures_folder"] == str(eur_textures(user))
+    assert out["messages"][1].startswith(f"a texture pack made for MH4U USA ({TID}/), used for MH4U Europe")
+
+
+def test_each_game_has_a_texture_record_of_its_own(user, tmp_path):
+    """A pack installed for one game is in that game's folder and record only: the other game's
+    catalog doesn't count it as installed, and its remove doesn't touch it."""
+    pack = make_zip(tmp_path / "srv" / "pack.zip", {"pack.json": "{}", "UI/a.png": "a"})
+    cat = catalog(tmp_path / "cat.json", [entry("pack", "textures", [{"url": url(pack)}], region="USA")])
+    lib = user / "mh4u-mods"
+    run(user, "install-from-catalog", "pack", "--catalog", cat)                 # for the USA game
+    usa_record = (lib / "textures.json").read_bytes()
+    eu = ("--program-id", EUR)
+    out = run(user, *eu, "catalog", "--catalog", cat)
+    assert out["entries"][0]["installed"] is None and out["textures"] == []
+    assert out["textures_folder"] == str(eur_textures(user))
+    assert run(user, *eu, "remove", "pack", code=1)["error"]["code"] == "not_found"
+    assert tree(textures(user)) == ["UI/a.png", "pack.json"] and (lib / "textures.json").read_bytes() == usa_record
+    assert not (lib / f"textures-{EUR}.json").exists()
+    # installed for the European game too: in a record of its own
+    run(user, *eu, "install-from-catalog", "pack", "--catalog", cat)
+    assert tree(eur_textures(user)) == ["UI/a.png", "pack.json"]
+    assert json.loads((lib / f"textures-{EUR}.json").read_text())["packs"]["pack"]["files"] == ["UI/a.png",
+                                                                                                "pack.json"]
+    assert (lib / "textures.json").read_bytes() == usa_record
+    # removed there, it stays for the USA game
+    run(user, *eu, "remove", "pack")
+    assert tree(eur_textures(user)) == [] and tree(textures(user)) == ["UI/a.png", "pack.json"]
+    assert run(user, "catalog", "--catalog", cat)["entries"][0]["installed"]["as"] == "textures"
+    assert run(user, *eu, "catalog", "--catalog", cat)["entries"][0]["installed"] is None
+    run(user, "remove", "pack")
+    assert tree(textures(user)) == []
+
+
+def test_a_european_pack_in_the_usa_record_moves_to_its_own(user, tmp_path):
+    """For a while the European game's texture packs were recorded in textures.json with USA's.
+    The first time the European game's record is read, a pack there whose files are all in
+    Europe's folder and none in USA's moves to it; any other stays where it is, and no file is
+    touched."""
+    lib = user / "mh4u-mods"
+    for rel in ("UI/a.png", "pack.json", "both.png"):
+        write(eur_textures(user) / rel, "eu")
+    for rel in ("usa.png", "both.png"):
+        write(textures(user) / rel, "usa")
+    write(lib / "textures.json", json.dumps({"format": 1, "packs": {
+        "eu-pack": {"name": "EU pack", "catalog": "pack", "files": ["UI/a.png", "pack.json"]},
+        "usa-pack": {"name": "USA pack", "files": ["usa.png"]},
+        "both": {"name": "Both", "files": ["both.png"]},
+        "empty": {"name": "Empty", "files": []},
+        "outside": {"name": "Outside", "files": ["../usa.png"]}}}))
+    out = run(user, "--program-id", EUR, "catalog", "--catalog-url", "")
+    assert [t["id"] for t in out["textures"]] == ["eu-pack"]
+    assert sorted(json.loads((lib / f"textures-{EUR}.json").read_text())["packs"]) == ["eu-pack"]
+    assert sorted(json.loads((lib / "textures.json").read_text())["packs"]) == ["both", "empty", "outside", "usa-pack"]
+    assert tree(eur_textures(user)) == ["UI/a.png", "both.png", "pack.json"]
+    assert tree(textures(user)) == ["both.png", "usa.png"]
+    # once the European game has a record, nothing moves again
+    write(eur_textures(user) / "usa.png", "eu")
+    os.remove(textures(user) / "usa.png")
+    run(user, "--program-id", EUR, "catalog", "--catalog-url", "")
+    assert "usa-pack" in json.loads((lib / "textures.json").read_text())["packs"]
+    # and the USA game's own reads move nothing
+    os.remove(lib / f"textures-{EUR}.json")
+    assert [t["id"] for t in run(user, "catalog", "--catalog-url", "")["textures"]] == ["both", "empty", "outside",
+                                                                                        "usa-pack"]
+    assert not (lib / f"textures-{EUR}.json").exists()
 
 
 def test_texture_pack_names_one_file_on_windows(user, tmp_path):
