@@ -151,14 +151,31 @@ bool ARM_Recomp::LoadCode(const std::string& path, std::string& error) {
         error = fmt::format("{} is not a recompiled code library", path);
         return false;
     }
+    // A library built by the native branch's tools for its own runtime (RC_NATIVE: flat memory, a
+    // preemption flag instead of cycle charging) can't run on Azahar's page table. Those tools'
+    // libraries export rc_build_mode (0 for RC_PAGED); main's export none and are all RC_PAGED.
+    if (const auto* mode = library->GetSymbol<const u32*>("rc_build_mode"); mode && *mode != 0) {
+        error = fmt::format("{} was built for the native runtime (rc_build_mode {}: {}); "
+                            "build the library for Azahar without --native",
+                            path, *mode, *mode == 2 ? "RC_NATIVE_DETERMINISTIC" : "RC_NATIVE");
+        return false;
+    }
+    // preempt_flag is only read by RC_NATIVE builds, which are refused above.
     static const RHost host{RC_HOST_VERSION, sizeof(RCtx), rc_call, rc_svc, rc_trap,
-                            rc_bad_return, rc_budget, rc_slow_read, rc_slow_write};
+                            rc_bad_return, rc_budget, rc_slow_read, rc_slow_write,
+                            /*preempt_flag=*/nullptr};
     RCodeInfo info{};
     if (!init(&host, &info)) {
-        // (a library built before this version of the port: RC_HOST_VERSION, recomp.h)
-        error = fmt::format("{} was built for another version of the port; build the code library "
-                            "again",
+        // (a library built by another version of the port's tools: RC_HOST_VERSION, recomp.h)
+#if defined(__ANDROID__)
+        error = fmt::format("{} was built by another version of the port's tools: build it again with the "
+                            "tools of the PC package of the same release as this APK",
                             path);
+#else
+        error = fmt::format("{} was built by another version of the port's tools: build it again with this "
+                            "version's tools",
+                            path);
+#endif
         return false;
     }
     g_call_counts = library->GetSymbol<RCallCounts>("rc_call_counts");
