@@ -11,6 +11,7 @@ builds its own."""
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 
@@ -62,5 +63,14 @@ def test_the_host_refuses_rc_native_first_and_passes_no_preempt_flag():
         text = f.read()
     load = text[text.index("bool ARM_Recomp::LoadCode("):]
     load = load[:load.index("\n}\n")]
-    assert load.index('GetSymbol<const u32*>("rc_build_mode")') < load.index("init(&host, &info)")
+    # the if-block of the rc_build_mode lookup, as the native branch has it: a mode other than
+    # RC_PAGED's 0 sets the error and returns false, before rc_code_init is called
+    refusal = re.search(r'\n( *)if \(const auto\* mode = library->GetSymbol<const u32\*>\("rc_build_mode"\); '
+                        r'(.*?)\) \{\n(.*?)\n\1\}\n', load, re.S)
+    assert refusal, "LoadCode has no if-block around the rc_build_mode lookup"
+    condition, body = refusal.group(2), [line.strip() for line in refusal.group(3).splitlines()]
+    assert condition == "mode && *mode != 0"
+    assert any(line.startswith("error = ") for line in body)
+    assert "return false;" in body
+    assert refusal.end() < load.index("init(&host, &info)")
     assert "/*preempt_flag=*/nullptr}" in load
