@@ -1,9 +1,10 @@
 #!/bin/sh
-# Builds the game's code library from YOUR Monster Hunter 4 Ultimate USA v1.3.0 update (.cia)
-# and installs it where this Azahar looks for it (Linux: ~/.local/share/azahar-emu/recomp,
-# macOS: ~/Library/Application Support/Azahar/recomp). On a computer without clang the first run
-# downloads Zig's C compiler (about 80 MB). Everything it makes from the game stays on this
-# computer. Part of the MH4U PC port's Linux and macOS packages (see README-mh4u.txt).
+# Builds the game's code library from YOUR Monster Hunter 4 Ultimate update (.cia: the USA
+# game's v1.3.0 or the European game's v1.1.0) and installs it where this Azahar looks for it
+# (Linux: ~/.local/share/azahar-emu/recomp, macOS: ~/Library/Application Support/Azahar/recomp).
+# On a computer without clang the first run downloads Zig's C compiler (about 80 MB).
+# Everything it makes from the game stays on this computer. Part of the MH4U PC port's Linux and
+# macOS packages (see README-mh4u.txt).
 #
 # usage: ./build-code-library.sh [path/to/update.cia]   (without a path: a file dialog, if any)
 set -u
@@ -37,7 +38,7 @@ done
 
 cia=${1:-}
 if [ -z "$cia" ]; then
-    title="Your decrypted MH4U USA v1.3.0 update (.cia)"
+    title="Your decrypted MH4U update (.cia): USA v1.3.0 or Europe v1.1.0"
     if [ "$(uname)" = Darwin ]; then
         cia=$(osascript -e "POSIX path of (choose file with prompt \"$title\")" 2>/dev/null) ||
             fail "No file chosen."
@@ -84,7 +85,7 @@ fi
 
 echo
 echo "Done. In the port's Azahar:"
-echo "  1. File > Install CIA... > your v1.3.0 update (.cia)"
+echo "  1. File > Install CIA... > your update (.cia)"
 echo "  2. File > Load File... > your decrypted game (.3ds / .cci / .cxi)"
 echo "  3. View > Screen Layout > Custom Layout: the game fills the window, the touch screen in a corner"
 echo "  Azahar says so at the start if the game runs without the port's code library."
