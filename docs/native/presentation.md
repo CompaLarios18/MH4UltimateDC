@@ -63,14 +63,15 @@ take the two to be the same bytes.
 
 ## Producers and consumers
 
-None of the stages after `Publish` exists yet; the picture is the plan N2b-05, N2b-06 and N2b-23 build to.
+The compositor (N2b-05) and the present thread with its mailbox (N2b-06) exist; pacing (N2b-23) and the stages
+that publish (N2b-07, N2b-13) and read (N2b-10, N2b-11) come from other packages. The picture:
 
 ```
 GPU (VBlank)                                         window
   |  DisplayFrame                                      ^
   v                                                    |
 ScreenSink::Publish ---> present thread's mailbox ---> compositor + UiLayer::Record ---> swapchain
-  (any thread, returns at once)  (will keep only the newest)           (will wait on timeline_value)
+  (any thread, returns at once)  (keeps only the newest)         (waits on timeline_value)
 ```
 
 - **`ScreenSink::Publish(const DisplayFrame&)`**: thread-safe and returns at once. It keeps the
@@ -178,6 +179,209 @@ validation layer). Run under the layer with
 the test calls `vkDeviceWaitIdle`, because the layer 1.3.275 does not count a host wait on a timeline semaphore
 as ordering (a readback buffer's memory reused as the next upload's staging buffer shows as a hazard otherwise).
 
+## The swapchain and the present thread (N2b-06)
+
+`native/src/swapchain/` (module `mh4n_swapchain`, headers `swapchain/presenter.h`, `swapchain/display_time.h`, namespace
+`mh4n::swapchain`), tested by `native/tests/swapchain_test.cpp`. It goes through `rhi.h` and `vulkan_access.h` only (the
+handles, `QueueLock`, `WrapExternalImage`) and the compositor of N2b-05; it includes nothing else from
+`native/src/gpu/backend/`.
+
+```cpp
+auto presenter = swapchain::Presenter::Create(backend, swapchain::Target::Window(surface, w, h), layout_source, options);
+display->AddScreenSink(presenter->get());                 // it is a present::ScreenSink
+(*presenter)->SetUiLayer(&layer);  (*presenter)->Resize(w, h);  (*presenter)->SetVsync(false);  (*presenter)->Stop();
+```
+
+| Call | Does |
+|---|---|
+| `Create(backend, target, layout_source, options, hooks)` | starts the present thread and waits until it has made the compositor and, for a window, the first swapchain: an error (no surface on the backend, a surface with neither B8G8R8A8_UNORM nor R8G8B8A8_UNORM, shaders that do not compile) is the result. `Target::Window(surface, w, h)`: a `VkSurfaceKHR` the caller made on the backend's instance and passed in `BackendOptions::surface`, destroyed by the caller after the presenter; `Target::Offscreen(w, h)`: an `Rgba8Unorm` image of the presenter's own |
+| `Publish(frame)` (`ScreenSink`) | any thread, returns at once: the frame goes into the one-slot mailbox, replacing an older one nobody took (that one is counted dropped), and the thread is woken. The copy of the `DisplayFrame` (shared pointers) is made outside the lock |
+| `LayoutSource` | `std::function<LayoutRequest()>`, called on the present thread once per composed frame: the `screen_layout::Inputs` (`window_w/h` are overwritten with the target's size) and the `present::ComposeOptions` (`ui` is overwritten by the layer given to `SetUiLayer`) |
+| `SetUiLayer(layer)` / `RequestRedraw()` | the layer the compositor calls last (N2b-11); `SetUiLayer(nullptr)` waits for a composition in progress, after which the layer is not called again. Called by the layer itself, inside its `Record` on the present thread, it waits for nothing (that composition is the caller): the change applies from the next composition and this call of `Record` runs to its end. A redraw composes the last frame again with the layout source's current answer; before a first frame it does nothing. **The last frame is kept as the `DisplayFrame` was published, so a producer must not overwrite a backend image that a published frame still refers to** (N2b-13) |
+| `CurrentLayout()` | a copy of the `screen_layout::Layout` of the frame composed last, all zero before the first (the shell maps clicks with `TouchTracker` on it, N2b-10) |
+| `SetVsync(bool)` | takes effect with the next present (a redraw is made for it): the swapchain is recreated |
+| `Resize(w, h)` / `SetMinimised(bool)` | the size the swapchain asks for when the surface does not dictate its own (below); a zero in either dimension, or minimised, presents nothing: published frames are taken and counted as dropped (D60), a redraw is not done; leaving minimised, or any resize, draws the last frame again |
+| `SetRefreshHz`, `SetPresentLog(path)` | the display's rate for the log's header (call it first), and the log (below) |
+| `DumpTo(dir, n)` | offscreen only: every n-th composed image as `presented_<sequence>.ppm` (the `DisplayFrame::sequence`), and the last one as `last.ppm` at `Stop` |
+| `Stop()` | see "Shutdown" (called on the present thread, from a `UiLayer` or a hook, it only requests the stop); `GetStats()` returns counters (published, presented, composed, dropped, redraws, swapchain creations, out-of-date, suboptimal, acquire timeouts, the extent, the present mode, the display-time label) |
+
+### Threads
+
+The present thread is the one thread that records, submits and presents. It owns the swapchain, its images (wrapped with
+`WrapExternalImage` on that thread, which makes it their owner), the offscreen target and the `Compositor`. Every
+swapchain call is on it, because `vk.xml` marks the swapchain `externsync` in `vkAcquireNextImageKHR`,
+`vkQueuePresentKHR`, `vkWaitForPresentKHR`, `vkGetPastPresentationTimingGOOGLE` and `vkDestroySwapchainKHR` (and the
+surface and `oldSwapchain` in `vkCreateSwapchainKHR`); the queue is `externsync` in `vkQueueSubmit`, `vkQueuePresentKHR` and
+`vkQueueWaitIdle`, so each of those is under `rhi::QueueLock`, and nothing that calls `Backend::Submit` runs while the lock is
+held. With `MH4N_RHI_CHECKS` an own recording, submission or present that runs on another thread calls the owner-rule
+handler with `OwnerRule::WrongThread` (`swapchain_test` forces one onto another thread with a hook and counts the three
+reports). Everything the public calls do is to hand state over under one mutex; none of them waits for the GPU or the
+display. The mutex is never held across a Vulkan call or a hook, and the composition's `compose_mutex` (for `SetUiLayer`)
+is taken only around `Compose`.
+
+### Acquire and present: how they are synchronised
+
+`Backend::Submit` takes timeline waits only (`rhi::Wait`), so a frame's submission can neither wait for a binary
+acquire semaphore nor signal a binary semaphore for the present. Two things follow, both on the present thread:
+
+1. **Acquire with a fence, no semaphore.** `vkAcquireNextImageKHR(…, VK_NULL_HANDLE, fence)` in slices of 20 ms
+   (`VK_TIMEOUT` and `VK_NOT_READY` leave the fence and the image untouched: "If vkAcquireNextImageKHR does not
+   successfully acquire an image, semaphore and fence are unaffected", `wsi.adoc`), then `vkWaitForFences` in slices
+   before the frame is recorded. The specification allows either: "The presentation engine may not have finished reading
+   from the image at the time it is acquired, so the application must use semaphore and/or fence to ensure that the image
+   layout and contents are not modified until the presentation engine reads have completed", and "An application must wait
+   until either the semaphore or fence is signaled before accessing the image's data". The host wait happens before the
+   submission is made, so it orders everything that follows (the host operation happens-before the `vkQueueSubmit`). The
+   fence must be unsignaled with no signal pending: it is reset before each acquire and waited for after it. The acquire
+   never blocks the renderer: it blocks only the present thread, and in slices that look at `Stop`.
+2. **An empty submission signals the present's semaphore.** After the compositor's `Submit` returns (the backend's
+   `Submit` has called `vkQueueSubmit` by then: `core/submit.cpp` → plume's `executeCommandListsEx`), the presenter,
+   under `QueueLock`, submits an empty batch that signals a binary semaphore and presents with that semaphore as the wait.
+   The specification asks for this: "The processing of the presentation happens in issue order with other queue
+   operations, but semaphores must be used to ensure that prior rendering and other commands in the specified queue
+   complete before the presentation begins", and the image's automatic visibility operation "happens-after the semaphore
+   wait operation" (`vkQueuePresentKHR`, `wsi.adoc`). The semaphore signal's first synchronisation scope is defined by the
+   command that makes it (`synchronization.adoc`, "Semaphore Signaling"); for `vkQueueSubmit` that scope includes every
+   command submitted earlier on the queue (the sentence is in the command's own page, which the two chapters I had do not
+   contain; N2-27's `swapchain/frames_over_a_headless_surface…` makes the same submission and the layer accepts it).
+   `PrepareForPresent(image)` is the last command of the frame's recorder, so the image is in `PRESENT_SRC_KHR` by the time
+   the signal runs. A submission by the renderer thread between the two is harmless: the signal covers a superset.
+   There is one semaphore per swapchain image, reused when that image is acquired again (the acquire returning the
+   image means the presentation engine is done with the wait: `VK_EXT_swapchain_maintenance1`'s present fence is not used).
+
+The price: the `QueueLock` is held across the empty submission and `vkQueuePresentKHR` (the specification requires it: the queue is
+externally synchronised in both, and "may block, but must return in finite time"); a driver whose present blocks in FIFO
+holds up the renderer's `Backend::Submit` for that long. `swapchain_test` checks the lock from the inside
+(`TestHooks::queue_locked` runs between the two calls; another thread asking for `QueueLock` stays blocked for as long as the hook
+runs and gets it afterwards). The other
+choice, `Backend::WaitIdle(value)` on the host before a present with no wait semaphore, would keep the lock free but stall
+the present thread for the whole GPU time of the frame and still breaks the "semaphores must be used" sentence.
+`vkQueueWaitIdle` (teardown, recreation, and after a `--present-dump` readback) is under the lock too.
+
+### Out of date, suboptimal, recreation
+
+- `VK_ERROR_OUT_OF_DATE_KHR` (or `VK_ERROR_SURFACE_LOST_KHR`) from an acquire: nothing was acquired; the swapchain is
+  recreated on the present thread and the acquire is repeated. From a present: the frame was not shown ("presentation
+  fails"), so it is recreated and the same frame is composed again. At most four attempts a frame; then the frame is
+  dropped and the next one tries again.
+- A present that fails in any other way (`vkQueueSubmit` or `vkQueuePresentKHR` returns an error) drops the frame and marks the swapchain for recreation: the acquired image is never released, so the next frame starts from a new swapchain.
+- `VK_SUBOPTIMAL_KHR` from an acquire or a present: the image is good ("can still be used for presentation"), the frame is
+  shown, and the swapchain is recreated before the next one.
+- Recreation = device idle (`Backend::WaitIdle`, then `vkQueueWaitIdle` under the lock, then the acquire fence if its signal
+  is pending, bounded to 2 s), the wrapped images dropped (the backend's rule: before the swapchain goes), the semaphores, the
+  fence and the swapchain destroyed, a new swapchain made with `oldSwapchain` null. Resize and a change of vsync recreate it
+  the same way.
+- **The extent** (`policy.h` `ChooseExtent`): a surface whose `currentExtent` is the special value `0xFFFFFFFF` (a
+  headless surface, or a window system that lets the swapchain choose) takes the size `Resize` set, clamped to
+  `minImageExtent`..`maxImageExtent`; any other surface dictates `currentExtent`. A zero (minimised) presents nothing.
+- Headless surfaces never answer out-of-date or suboptimal, so `TestHooks::acquire_result` / `present_result` inject them:
+  the case that tests each of the four paths, and a surface that stays out of date, is `swapchain_test`'s
+  `out_of_date_and_suboptimal…`.
+
+### Present modes
+
+`ChoosePresentMode` (pure, `policy.h`): vsync on → `FIFO`; off → `MAILBOX` if the surface offers it, else `IMMEDIATE`, else
+`FIFO` (Apple's surfaces offer no MAILBOX, `rhi-spike.md` X9). The image count is `minImageCount + 1` (at most
+`maxImageCount`), the format the first of B8G8R8A8_UNORM / R8G8B8A8_UNORM in the sRGB non-linear colour space (the
+compositor has pipelines for exactly those two; the game's pixels are not converted), `COLOR_ATTACHMENT` usage plus
+`TRANSFER_SRC` / `TRANSFER_DST` where the surface allows them, identity transform, opaque composite alpha. The extent, image count, transform, composite alpha and the single-UNDEFINED-format rule follow Azahar's `Swapchain::SetSurfaceProperties` and `FindPresentFormat` (`policy.cpp` has the D6 header and a row in `native/THIRD_PARTY.md`); the present mode choice is this port's own (Azahar prefers IMMEDIATE to MAILBOX and has a frame-limit input).
+
+### The present log
+
+`SetPresentLog(path)` writes, as `present_log.h` formats them:
+
+```
+# present v1 2026-11-01T12:00:00Z refresh_hz=239.76 display_time=present_wait
+sequence,game_frame,published_us,composed_us,presented_us,displayed_us,dropped_before
+```
+
+then one row per presented frame, in order (a redraw is a row too, repeating the sequence, with `published_us` the time of the
+request). Times are microseconds of `std::chrono::steady_clock` (its own epoch), so they line up with the process's other logs.
+`composed_us` is when the composition was submitted; `presented_us` when `vkQueuePresentKHR` returned (offscreen: when the GPU
+finished the frame); `dropped_before` the frames published since the previous row that were never shown (a frame that is taken and then discarded, minimised or with a zero extent, hands its own count on to the next row, so the rows' sum is `Stats::dropped` up to what was dropped after the last row). `refresh_hz` is
+`SetRefreshHz`'s, else `VK_GOOGLE_display_timing`'s refresh cycle, else `unknown`. At start the presenter logs
+`present wait: on|off` (from `PresentWaitAvailable()`) and `display time: <source>`.
+
+**Where `displayed_us` comes from** (D57: only displayed times count), `ChooseDisplayTime`, the first that applies:
+
+| Source | When | How |
+|---|---|---|
+| `present_wait` | `PresentWaitMeasuresDisplay()` (not merely `PresentWaitAvailable()`: MoltenVK releases the wait at command-buffer completion) | every present carries a `VkPresentIdKHR` (1, 2, 3 …); right after the present the thread calls `vkWaitForPresentKHR` for that id in 5 ms slices (it may not run elsewhere: the swapchain is externally synchronised) until it returns, at most 250 ms and never past `Stop`; `displayed_us` is the time it returned. The thread waits for each frame to be shown before it composes the next, so there is one frame in flight (FIFO shows the next frame one refresh later at the earliest): N2b-23, which reads these rows to pace the game, must know that the present wait is part of the loop's period and not an observer beside it |
+| `display_timing` | `DisplayTimingAvailable()` | `VkPresentTimesInfoGOOGLE` with the id; `vkGetPastPresentationTimingGOOGLE` is polled every 4 ms and after each present, a row waits (rows stay in order) up to 500 ms for its answer; the actual present time is taken to be in the steady clock's time base, and an answer more than a second from the present call is not believed (warning once, field empty). Untested on a real device: lavapipe lists neither extension |
+| a registered `DisplayTimeSource` | a registration named `Options::display_time_source` (default `platform`) | `DisplayedUs(present_id, present_host_us)` on the present thread after each present, in order; nullopt → empty |
+| `none` | otherwise, and always for an offscreen target | the field is empty: the time a frame is shown is not measurable |
+
+The label after `display_time=` is `present_wait`, `display_timing`, the source's `Name()` or `none`. **N2b-23 registers its
+Windows source** (D57's ETW or DWM) in a module of its own: `MH4N_REGISTER(swapchain::DisplayTimeSourceFactory, "platform",
+{[] { return std::make_unique<MySource>(); }})` (`display_time.h`); the source is made once, when the presenter starts, and
+called only on the present thread.
+
+### Shutdown
+
+`Stop()` sets the stop flag and joins; the frame waiting in the mailbox is dropped at that moment and counted in `Stats::dropped`. Called on the present thread (a `UiLayer`'s `Record`, a test hook), `Stop` only sets the flag and drops the mailbox frame, taking no lock a joining thread may hold, because the thread cannot wait for itself and another thread inside `Stop` is waiting for it; the `Stop` or the destructor of another thread joins. Every wait on the present thread is cut into slices of at most 20 ms that look at it:
+the acquire, the fence, the present wait, the idle waits of a recreation. A composition in progress finishes (it cannot be
+abandoned half recorded); a frame waiting in the mailbox, and one whose acquire or wait was abandoned, are dropped. Then, on
+the present thread, the device is made idle (`Backend::WaitIdle`, `vkQueueWaitIdle` under the lock) and the images, the
+semaphores, the fence, the swapchain, the offscreen target and the compositor are destroyed; `last.ppm` and the log's last
+rows are written first. `Publish` after `Stop` counts the frame as dropped. A test hook that blocks the thread inside a
+composition must end its wait when `StopRequested()`: the hook is the test's, not the presenter's.
+
+### Under the validation layer with a second submitting thread
+
+`vk_layer_run.py` runs `swapchain_test` under the Khronos layer 1.3.275 with synchronization validation. The case
+`another_thread_submitting_to_the_backend_while_frames_are_presented` (one thread calls `Backend::Submit` on empty recorders
+in a loop while 120 frames are presented) got `SYNC-HAZARD-WRITE-AFTER-PRESENT` from `vkQueueSubmit`, on the layout-transition
+barrier of a composition into a re-acquired swapchain image, "after the previous present of that image" (3 runs of 3 at full
+rate). It is **the layer's bookkeeping, not a gap in the protocol**:
+
+- The protocol is the specification's: the acquire's fence is waited for on the host before the frame is recorded and
+  submitted, and the host wait happens-before the `vkQueueSubmit`.
+- In the layer (`layers/sync/sync_validation.cpp`, tag v1.3.275) a presented image stays in the swapchain's "presented" list
+  with its present access until an acquire takes it out; an acquire with a fence stores that image state in
+  `waitable_fences_` (`RecordAcquireNextImageState` → `UpdateFenceWaitInfo`), and the access is released only when a
+  successful `vkWaitForFences` or `vkGetFenceStatus` is recorded (`WaitForFence` → `ApplyAcquireWait`), which applies the
+  release to the queue's **current last batch** (`ForAllQueueBatchContexts`). A `vkQueueSubmit` is recorded in two steps on
+  its own thread: `ValidateQueueSubmit` builds the new batch from a copy of the queue's last batch, and `RecordQueueSubmit`
+  makes it the queue's last batch (`UpdateLastBatch`). The layer holds no lock across the two, and neither step takes the
+  application's `QueueLock`. When the present thread's fence wait is recorded between the other thread's two steps, the
+  release goes to the old last batch, the new batch is a copy made before it, and so the image keeps its present access: the
+  present thread's next submission, which inherits that batch, reports the hazard.
+- Diagnostic (reverted): the fence's wait replaced by a poll of `vkGetFenceStatus` under `QueueLock`, so that the call that
+  sees the signal cannot run between the other thread's two steps (`Backend::Submit` holds `QueueLock` across `vkQueueSubmit`):
+  the same case, 4 runs of 4 clean (120 frames each). The same poll **without** the lock: 3 runs of 3 report the hazard. So it
+  is the exclusion with the other thread's `vkQueueSubmit`, not the poll, that removes it.
+- Clean already when the other thread submits strictly between the present thread's frames (no overlap), and in every
+  other `swapchain_test` and `present_test` case (one submitting thread at a time).
+
+`Options::acquire_wait_under_queue_lock` (default **off**) does that poll in production code, for runs under the layer:
+`vkGetFenceStatus` under `QueueLock` every 200 us instead of a blocking `vkWaitForFences`. A real driver needs it not, and the
+poll adds up to 200 us to the wait; the stress case turns it on exactly when `VK_INSTANCE_LAYERS` names the validation layer
+(`vk_layer_run.py` sets it), and a second case (`the_acquire_fence_observed_under_the_queue_lock_…`) runs it always, so the polling
+path is exercised without the layer too. **N2b-09's tests with the renderer and the present thread on one queue under the layer
+need the option on** (or a layer without the race; later versions of the layer were not checked).
+
+### Tests
+
+`swapchain_test` (46 cases; 7 need no device; 13 presenter cases run twice, as `presenter/<name>` on a headless-surface swapchain and as `presenter_offscreen/<name>` on an offscreen target of a backend made with no surface, which needs no `VK_EXT_headless_surface`, so a machine whose loader lacks it (the maintainer's Windows loader, N2-31) still runs 15 of the 39 device cases, and `MH4N_SWAPCHAIN_TEST_NO_HEADLESS=1` makes the window ones skip to show what such a machine runs): the pure choices on synthetic lists; the mailbox and the log's text; and, on a
+`VK_EXT_headless_surface` swapchain, frames in order; three frames published while a hook holds the thread inside a
+composition show only the newest and count two dropped; `Publish` returns while the thread is held; resize and the next
+frame's size; minimised; `Stop` with a frame pending, with the thread held in a composition, in an acquire that never
+completes and in a present wait; the log's rows against the frames shown and against a `DisplayTimeSource` registered by
+the test; vsync off against the modes the surface really offers; `CurrentLayout` against `screen_layout::Compute`;
+out-of-date and suboptimal from the acquire and from the present; offscreen dumps with the pixels of the screens' rectangles;
+the owner-rule check forced onto another thread; the UI layer's thread; concurrent publishers while another thread
+toggles vsync, size and redraws (the ThreadSanitizer job runs it); `Stop` and `SetUiLayer(nullptr)` called by the layer on the present thread, alone and while another thread is inside `Stop` joining (each under a watchdog that ends the process); the rows' `dropped_before` adding up to `Stats::dropped` when taken frames are discarded; the queue lock held between the signalling submission and the end of the present (`TestHooks::queue_locked`); and a second thread submitting small recorders to the backend while 120 frames are presented. On lavapipe (Mesa 25.2.8) the headless surface has
+`currentExtent` 0xFFFFFFFF, limits 1x1 to 16384x16384, 4 images at least and no maximum, the formats R8G8B8A8_UNORM and
+B8G8R8A8_UNORM, and the modes MAILBOX and FIFO (no IMMEDIATE); it has no `VK_KHR_present_wait`, so `PresentWaitMeasuresDisplay()`
+is false there: the wait's loop is tested with `TestHooks::pretend_present_wait` (the hook supplies the wait's result) and the
+case on the device's own wait skips with a message, as does anything that needs `VK_GOOGLE_display_timing` (the hook
+`past_presentation_times` stands in for it).
+Under the validation layer (`python3 tools/native/vk_layer_run.py --build build/native -R '^swapchain_test$'`) there is
+no message. The `--present-dump` readback is followed by a `vkQueueWaitIdle`, because the layer 1.3.275 does not count the
+backend's host wait on a timeline semaphore as ordering (the same limitation `present_test` works around with
+`vkDeviceWaitIdle`); without it the layer reports `SYNC-HAZARD-READ-AFTER-WRITE` between the readback of one dump and the
+staging upload of the next frame.
+
 ## Parts the other packages add
 
-N2b-06 (the swapchain and the present thread) and N2b-23 (frame pacing) add their sections here.
+N2b-23 (frame pacing) adds its section here.
