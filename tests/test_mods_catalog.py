@@ -360,9 +360,11 @@ def eur_textures(user):
 
 
 def test_a_catalog_mod_is_for_the_game_of_its_region(user, tmp_path):
-    """A catalog mod's code patch is at the addresses of the code its entry names: it is refused
+    """A catalog mod's code patch is made for the code of the region its entry names: it is refused
     for the other region's game (--force installs it anyway), and once installed for its own,
-    it keeps that region and is left out of the other game's mods folder."""
+    it keeps that region and is left out of the other game's mods folder. The refusal says what is
+    known: a patch that changes that code breaks the other game, and one that changes only data
+    (laid out the same in both) hasn't been tried with it."""
     code = write(tmp_path / "srv" / "code.ips", ips_patch(0x100, b"\1\2"))
     cat = catalog(tmp_path / "cat.json", [entry("usa-mod", "mod", [
         {"url": url(code), "sha256": hashlib.sha256(code.read_bytes()).hexdigest(), "archive": "file",
@@ -377,9 +379,9 @@ def test_a_catalog_mod_is_for_the_game_of_its_region(user, tmp_path):
     assert "made for MH4U USA's code, not for MH4U Europe" in buf.getvalue()
     err = run(user, *eu, "install-from-catalog", "usa-mod", "--catalog", cat, code=1)["error"]
     assert err["code"] == "other_region" and err["region"] == "USA" and err["game"] == "Europe"
-    assert err["message"] == ("Usa Mod is made for MH4U USA's code, and the game is MH4U Europe (0004000000126100), "
-                              "whose code is at other addresses: its code patch would break it (--force installs it "
-                              "anyway)")
+    assert err["message"] == ("Usa Mod is made for MH4U USA's code, and the game is MH4U Europe (0004000000126100): a "
+                              "patch that changes that code breaks this game, and one that changes only data hasn't "
+                              "been tried with it (--force installs it anyway)")
     assert run(user, "list")["mods"] == [] and not (user / "mh4u-mods" / ".downloads").exists()
     # for the USA game: installed, with its region
     out = run(user, "install-from-catalog", "usa-mod", "--catalog", cat)

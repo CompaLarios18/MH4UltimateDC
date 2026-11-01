@@ -87,7 +87,7 @@ The launcher also has *Mods* (several at once, in an order, conflicts shown), *O
 
 - **The port's own app**: a launcher (setup, mods, online rooms, settings), then the game in a window of its own, full screen, with the keyboard and mouse (Rise-style, the mouse on the camera, key guides on screen) or a controller mapped on its own (like MH3U on a Wii U); updates from the launcher; Vulkan, OpenGL or software rendering; a menu over the game (Esc) for options and controls; the 3DS keyboard (names, chat) drawn by the app; a frame-rate counter (F3, off by default).
 - **Rooms while you play**: join, host or leave a room from the menu's *Online* tab without restarting the game; the host copies an invite (`mh4u://…`), friends paste it and join; a lobby's rooms are listed there too.
-- **Mod catalog**: the launcher's *Mods → Catalog* installs the HD texture pack and four other community mods with one click (from their authors' own downloads).
+- **Mod catalog**: the launcher's *Mods → Catalog* installs the HD texture pack and four other community mods with one click (from their authors' own downloads; the three code mods only for the USA game).
 - **Servers of our own**: a lobby server that brings back public room lists (in the app's *Online* screen and Azahar's *Browse Public Game Lobby*), and scripts or Docker for dedicated rooms (`mh4u-server`, `SERVER.md`).
 - **Frame rate**: 60, 120 or your monitor's rate (`fps = 120`); the game keeps its normal speed.
 - **Widescreen drawn at full width**: 16:9, 21:9 and 32:9, with the hunting HUD at the screen's edges; 16:10 and 4:3 without distortion.
@@ -106,7 +106,7 @@ In the app: Esc → *Online* → *Host a room*, *Copy* the invite and send it; y
 - Save states don't work with the recompiled code: save in the game.
 - Cheats that rewrite code don't apply (ones that change data do).
 - The macOS build hasn't been tried on a Mac yet.
-- The European version (with its v1.1.0 update) has been tried only by the contributor who added it, on Linux, from the title screen to town: not yet on Windows, macOS or Android, in a quest above 60 fps or in a room, and whether European and USA players can play in one room isn't known yet. Code mods made for the USA update don't work with it.
+- The European version (with its v1.1.0 update) has been tried only by the contributor who added it, on Linux, from the title screen to town: not yet on Windows, macOS or Android, in a quest above 60 fps or in a room, and whether European and USA players can play in one room isn't known yet. A code mod that changes the USA update's code breaks it, and one that changes only data hasn't been tried with it.
 - Android: the port runs inside Azahar's Android app, with its touch controls and settings; the PC app's launcher and menu aren't there, so the port's options are in `mh4u.ini`.
 - Azahar doesn't draw the 3DS GPU's "gas" mode (a few smoke effects).
 

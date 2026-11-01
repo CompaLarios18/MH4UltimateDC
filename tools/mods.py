@@ -31,10 +31,10 @@ Texture packs go into Azahar's custom texture folder for the game (load/textures
 id>/), and the files each one put there are remembered (for each game), so remove takes them
 out again. Archives: .zip, .7z (tools/sevenzip.py) and .tar.
 
-The game is MH4U USA or Europe: the one whose update is installed (USA's when both are), or
---program-id. The library is one for both; a mod made for the other region's code (its title
-folder, or its mod.json's region, which a catalog mod keeps from its entry) isn't put in this
-game's folder.
+The game is MH4U USA or Europe: the one whose update is installed (USA's when both or neither
+are), or --program-id. The library is one for both; a mod made for the other region's code
+(its title folder, or its mod.json's region, which a catalog mod keeps from its entry) isn't
+put in this game's folder.
 
 --json on any command prints one JSON object instead, for the port's launcher. Code mods
 (code.bin, code.ips, code.bps) change the code the port recompiled: only one can be on at a
@@ -2575,8 +2575,9 @@ def cmd_install_catalog(ctx: Context, args) -> dict:
     progress = ctx.progress
     if not fits(entry) and not args.force:
         raise Error("other_region", f"{entry['name']} is made for MH4U {entry['region']}'s code, and the game is MH4U "
-                                    f"{region_name()} ({PROGRAM_ID:016X}), whose code is at other addresses: its code "
-                                    "patch would break it (--force installs it anyway)",
+                                    f"{region_name()} ({PROGRAM_ID:016X}): a patch that changes that code breaks this "
+                                    "game, and one that changes only data hasn't been tried with it (--force installs "
+                                    "it anyway)",
                     region=entry["region"], game=region_name(), page_url=entry["page_url"])
     if not entry["downloads"]:
         raise Error("page_only", f"{entry['name']} is installed from its page: {entry['page_url']}",
@@ -2846,7 +2847,7 @@ def build_parser(json_errors: bool) -> argparse.ArgumentParser:
         p.add_argument("--code-library", default=default, help=argparse.SUPPRESS)
         p.add_argument("--program-id", default=default,
                        help="the game: 0004000000126300 (USA) or 0004000000126100 (Europe); default: the one "
-                            "whose update is installed (USA's when both are)")
+                            "whose update is installed (USA's when both or neither are)")
 
     ap = Parser(prog="mods.py", description=__doc__.splitlines()[0])
     common(ap, None)

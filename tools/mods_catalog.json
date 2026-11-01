@@ -73,7 +73,7 @@
    "description": "Every item combination succeeds: no more failed combinations, and no combo books needed for the odds.",
    "details": "The first patch of anco's project to bring later games' quality-of-life changes to MH4U. A code patch (code.ips) that changes only the game's data, not its code.",
    "region": "USA",
-   "region_note": "The USA game (0004000000126300) and its v1.1 update, not the European game: its patch is at the USA game's addresses. It changes only data, so the port's code library doesn't need building again.",
+   "region_note": "The USA game (0004000000126300) and its v1.1 update. It hasn't been tried with the European game, so it is installed only for the USA one. It changes only data, so the port's code library doesn't need building again.",
    "license": "LGPL-3.0",
    "page_url": "https://codeberg.org/anco/mh4u_qol",
    "needs": [],
