@@ -317,13 +317,41 @@ struct BreachCapture {
 struct Rig {
     BreachCapture breaches;
     std::shared_ptr<rhi::Instance> instance;
-    std::unique_ptr<test::HeadlessSurface> surface;  // declared before the backend, destroyed after it
+    std::unique_ptr<test::HeadlessSurface> surface;  // declared before the backend, destroyed after it; none: offscreen
     std::shared_ptr<rhi::Backend> backend;
 };
 
-// A backend on a headless surface; nullptr after a skip (no device, or no headless surface).
-std::unique_ptr<Rig> MakeRig() {
+// What a presenter case draws to. The cases that do not depend on a swapchain run on both (PRESENTER_CASE): a window
+// needs VK_EXT_headless_surface, which the Windows loader of the maintainer's PC does not list (N2-31); an offscreen
+// target needs nothing but a device, so the real GPU there still runs them.
+enum class Kind { Window, Offscreen };
+
+// MH4N_SWAPCHAIN_TEST_NO_HEADLESS=1 (read here only): the window rig skips as if the loader lacked VK_EXT_headless_surface,
+// to see what such a machine runs.
+bool AskedForNoHeadless() {
+    const char* value = std::getenv("MH4N_SWAPCHAIN_TEST_NO_HEADLESS");
+    return value != nullptr && std::string(value) == "1";
+}
+
+// A backend on a headless surface (Kind::Window), or on no surface at all (Kind::Offscreen); nullptr after a skip (no
+// device, or for a window no headless surface).
+std::unique_ptr<Rig> MakeRig(Kind kind = Kind::Window) {
     auto rig = std::make_unique<Rig>();
+    if (kind == Kind::Offscreen) {
+        rig->instance = test::RequireInstance();
+        if (!rig->instance) {
+            return nullptr;
+        }
+        rig->backend = test::RequireBackend({}, rig->instance);
+        if (!rig->backend) {
+            return nullptr;
+        }
+        return rig;
+    }
+    if (AskedForNoHeadless()) {
+        test::SkipOrFailHeadless("MH4N_SWAPCHAIN_TEST_NO_HEADLESS=1: asked to run as if the loader lacked VK_EXT_headless_surface");
+        return nullptr;
+    }
     rhi::InstanceOptions options;
     options.headless_surface = true;
     rig->instance = test::RequireInstance(options);
@@ -482,11 +510,24 @@ struct Seen {
 
 std::unique_ptr<sc::Presenter> MakePresenter(Rig& rig, LayoutControl& layout, sc::TestHooks hooks = {},
                                              sc::Options options = {}, u32 width = 160, u32 height = 120) {
-    rhi::Result<std::unique_ptr<sc::Presenter>> presenter = sc::Presenter::Create(
-        rig.backend, sc::Target::Window(rig.surface->Handle(), width, height), layout.Source(), options, std::move(hooks));
+    const sc::Target target = rig.surface ? sc::Target::Window(rig.surface->Handle(), width, height)
+                                          : sc::Target::Offscreen(width, height);
+    rhi::Result<std::unique_ptr<sc::Presenter>> presenter =
+        sc::Presenter::Create(rig.backend, target, layout.Source(), options, std::move(hooks));
     REQUIRE_MESSAGE(presenter.ok(), presenter.error());
     return std::move(*presenter);
 }
+
+// A presenter case that runs twice: "presenter/<name>" on a window and "presenter_offscreen/<name>" on an offscreen target.
+// The body gets the Kind and makes its rig with MakeRig(kind).
+#define SWAPCHAIN_TEST_CAT2(a, b) a##b
+#define SWAPCHAIN_TEST_CAT(a, b) SWAPCHAIN_TEST_CAT2(a, b)
+#define SWAPCHAIN_TEST_PRESENTER_CASE(NAME, FN) \
+    void FN(Kind kind); \
+    TEST_CASE("presenter/" NAME) { FN(Kind::Window); } \
+    TEST_CASE("presenter_offscreen/" NAME) { FN(Kind::Offscreen); } \
+    void FN(Kind kind)
+#define PRESENTER_CASE(NAME) SWAPCHAIN_TEST_PRESENTER_CASE(NAME, SWAPCHAIN_TEST_CAT(presenter_case_, __LINE__))
 
 // Publishes `frame` and waits until `count` presents have been made in all.
 void PublishAndWait(sc::Presenter& presenter, const pr::DisplayFrame& frame, u64 count) {
@@ -576,8 +617,8 @@ bool ReadPpm(const std::filesystem::path& path, Ppm* out) {
 
 // ---- the device cases ------------------------------------------------------------------------------------------------
 
-TEST_CASE("presenter/presents_frames_in_order") {
-    std::unique_ptr<Rig> rig = MakeRig();
+PRESENTER_CASE("presents_frames_in_order") {
+    std::unique_ptr<Rig> rig = MakeRig(kind);
     if (!rig) return;
     LayoutControl layout;
     Seen seen;
@@ -596,7 +637,7 @@ TEST_CASE("presenter/presents_frames_in_order") {
     CHECK(stats.presented == kFrames);
     CHECK(stats.composed == kFrames);
     CHECK(stats.dropped == 0);
-    CHECK(stats.swapchain_creations == 1);
+    CHECK(stats.swapchain_creations == (kind == Kind::Window ? 1u : 0u));  // an offscreen target has no swapchain
     CHECK(stats.extent_width == 160);
     CHECK(stats.extent_height == 120);
     std::vector<u64> expected(kFrames);
@@ -617,8 +658,8 @@ TEST_CASE("presenter/presents_frames_in_order") {
     CHECK(rig->breaches.Total() == 0);
 }
 
-TEST_CASE("presenter/three_frames_published_faster_than_presented_show_only_the_newest") {
-    std::unique_ptr<Rig> rig = MakeRig();
+PRESENTER_CASE("three_frames_published_faster_than_presented_show_only_the_newest") {
+    std::unique_ptr<Rig> rig = MakeRig(kind);
     if (!rig) return;
     LayoutControl layout;
     Seen seen;
@@ -657,8 +698,8 @@ TEST_CASE("presenter/three_frames_published_faster_than_presented_show_only_the_
     CHECK(rig->breaches.Total() == 0);
 }
 
-TEST_CASE("presenter/publish_returns_while_the_present_thread_is_inside_a_composition") {
-    std::unique_ptr<Rig> rig = MakeRig();
+PRESENTER_CASE("publish_returns_while_the_present_thread_is_inside_a_composition") {
+    std::unique_ptr<Rig> rig = MakeRig(kind);
     if (!rig) return;
     LayoutControl layout;
     Seen seen;
@@ -743,8 +784,8 @@ TEST_CASE("presenter/a_resize_recreates_the_swapchain_and_the_next_frame_has_the
     CHECK(rig->breaches.Total() == 0);
 }
 
-TEST_CASE("presenter/minimised_presents_nothing_and_counts_the_frames_as_dropped") {
-    std::unique_ptr<Rig> rig = MakeRig();
+PRESENTER_CASE("minimised_presents_nothing_and_counts_the_frames_as_dropped") {
+    std::unique_ptr<Rig> rig = MakeRig(kind);
     if (!rig) return;
     LayoutControl layout;
     Seen seen;
@@ -785,9 +826,9 @@ TEST_CASE("presenter/minimised_presents_nothing_and_counts_the_frames_as_dropped
     CHECK(rig->breaches.Total() == 0);
 }
 
-TEST_CASE("presenter/stop_returns_with_a_frame_pending_and_with_the_thread_blocked") {
+PRESENTER_CASE("stop_returns_with_a_frame_pending_and_with_the_thread_blocked") {
     SUBCASE("a frame sits in the mailbox while the thread is inside a composition") {
-        std::unique_ptr<Rig> rig = MakeRig();
+        std::unique_ptr<Rig> rig = MakeRig(kind);
         if (!rig) return;
         LayoutControl layout;
         Seen seen;
@@ -813,7 +854,8 @@ TEST_CASE("presenter/stop_returns_with_a_frame_pending_and_with_the_thread_block
         presenter->Stop();  // idempotent
     }
     SUBCASE("the thread is waiting in an acquire that never completes") {
-        std::unique_ptr<Rig> rig = MakeRig();
+        if (kind == Kind::Offscreen) return;  // no acquire
+        std::unique_ptr<Rig> rig = MakeRig(kind);
         if (!rig) return;
         LayoutControl layout;
         sc::TestHooks hooks;
@@ -828,7 +870,8 @@ TEST_CASE("presenter/stop_returns_with_a_frame_pending_and_with_the_thread_block
         CHECK(presenter->GetStats().dropped >= 1);  // the frame it was trying to show
     }
     SUBCASE("the thread is waiting for a frame to be shown") {
-        std::unique_ptr<Rig> rig = MakeRig();
+        if (kind == Kind::Offscreen) return;  // an offscreen target has no display to wait for
+        std::unique_ptr<Rig> rig = MakeRig(kind);
         if (!rig) return;
         LayoutControl layout;
         sc::TestHooks hooks;
@@ -858,7 +901,7 @@ TEST_CASE("presenter/stop_returns_with_a_frame_pending_and_with_the_thread_block
         CHECK(waits_after_stop.load() <= 1);
     }
     SUBCASE("idle: nothing published") {
-        std::unique_ptr<Rig> rig = MakeRig();
+        std::unique_ptr<Rig> rig = MakeRig(kind);
         if (!rig) return;
         LayoutControl layout;
         std::unique_ptr<sc::Presenter> presenter = MakePresenter(*rig, layout);
@@ -868,8 +911,8 @@ TEST_CASE("presenter/stop_returns_with_a_frame_pending_and_with_the_thread_block
     }
 }
 
-TEST_CASE("presenter/the_present_log_rows_match_the_frames_shown") {
-    std::unique_ptr<Rig> rig = MakeRig();
+PRESENTER_CASE("the_present_log_rows_match_the_frames_shown") {
+    std::unique_ptr<Rig> rig = MakeRig(kind);
     if (!rig) return;
     LayoutControl layout;
     Seen seen;
@@ -993,8 +1036,8 @@ TEST_CASE("presenter/the_headless_surface_lets_the_swapchain_choose_its_extent")
     CHECK(rig->breaches.Total() == 0);
 }
 
-TEST_CASE("presenter/current_layout_is_the_layout_of_the_frame_composed_last") {
-    std::unique_ptr<Rig> rig = MakeRig();
+PRESENTER_CASE("current_layout_is_the_layout_of_the_frame_composed_last") {
+    std::unique_ptr<Rig> rig = MakeRig(kind);
     if (!rig) return;
     LayoutControl layout;
     std::unique_ptr<sc::Presenter> presenter = MakePresenter(*rig, layout, {}, {}, 480, 480);
@@ -1138,7 +1181,7 @@ TEST_CASE("presenter/out_of_date_and_suboptimal_recreate_the_swapchain_on_the_pr
 }
 
 TEST_CASE("presenter/an_offscreen_target_dumps_every_nth_image_and_the_last_at_stop") {
-    std::unique_ptr<Rig> rig = MakeRig();
+    std::unique_ptr<Rig> rig = MakeRig(Kind::Offscreen);  // no surface: needs no VK_EXT_headless_surface
     if (!rig) return;
     LayoutControl layout;
     layout.Set(sl::Mode::Stacked);
@@ -1199,7 +1242,14 @@ TEST_CASE("presenter/an_offscreen_target_dumps_every_nth_image_and_the_last_at_s
     for (const LogRow& row : log.rows) {
         CHECK_FALSE(row.displayed.has_value());
     }
-    // a window cannot be dumped
+    CHECK(rig->breaches.Total() == 0);
+}
+
+TEST_CASE("presenter/a_window_cannot_be_dumped") {
+    std::unique_ptr<Rig> rig = MakeRig();
+    if (!rig) return;
+    LayoutControl layout;
+    TempDir dir("nodump");
     std::unique_ptr<sc::Presenter> window = MakePresenter(*rig, layout);
     CHECK_FALSE(window->DumpTo((dir.path / "x").string(), 1).ok());
     window->Stop();
@@ -1207,7 +1257,7 @@ TEST_CASE("presenter/an_offscreen_target_dumps_every_nth_image_and_the_last_at_s
 }
 
 TEST_CASE("presenter/an_offscreen_target_follows_a_resize") {
-    std::unique_ptr<Rig> rig = MakeRig();
+    std::unique_ptr<Rig> rig = MakeRig(Kind::Offscreen);
     if (!rig) return;
     LayoutControl layout;
     TempDir dir("offresize");
@@ -1229,8 +1279,8 @@ TEST_CASE("presenter/an_offscreen_target_follows_a_resize") {
     CHECK(rig->breaches.Total() == 0);
 }
 
-TEST_CASE("presenter/the_owner_rule_is_checked_on_the_present_thread") {
-    std::unique_ptr<Rig> rig = MakeRig();
+PRESENTER_CASE("the_owner_rule_is_checked_on_the_present_thread") {
+    std::unique_ptr<Rig> rig = MakeRig(kind);
     if (!rig) return;
     LayoutControl layout;
     // The normal path: all of the presenter's own recording, submission and present on the present thread breach nothing.
@@ -1258,7 +1308,8 @@ TEST_CASE("presenter/the_owner_rule_is_checked_on_the_present_thread") {
     std::unique_ptr<sc::Presenter> presenter = MakePresenter(*rig, layout, std::move(hooks));
     PublishAndWait(*presenter, MakeFrame(0), 1);
     presenter->Stop();
-    CHECK(rig->breaches.Count(rhi::OwnerRule::WrongThread) >= 3);  // the recording, the submission and the present
+    // the recording, the submission and, for a window, the present (an offscreen target makes none)
+    CHECK(rig->breaches.Count(rhi::OwnerRule::WrongThread) >= (kind == Kind::Window ? 3 : 2));
     {
         std::lock_guard lock(rig->breaches.mutex);
         bool saw_record = false, saw_submit = false, saw_present = false;
@@ -1266,11 +1317,15 @@ TEST_CASE("presenter/the_owner_rule_is_checked_on_the_present_thread") {
             if (breach.rule != rhi::OwnerRule::WrongThread) continue;
             saw_record = saw_record || breach.message.find("recording") != std::string::npos;
             saw_submit = saw_submit || breach.message.find("submission") != std::string::npos;
-            saw_present = saw_present || breach.message.find("present") != std::string::npos;
+            saw_present = saw_present || breach.message.find("a present ran") != std::string::npos;
         }
         CHECK(saw_record);
         CHECK(saw_submit);
-        CHECK(saw_present);
+        if (kind == Kind::Window) {
+            CHECK(saw_present);
+        } else {
+            CHECK_FALSE(saw_present);
+        }
     }
 }
 
@@ -1291,8 +1346,8 @@ struct CountingLayer final : pr::UiLayer {
     }
 };
 
-TEST_CASE("presenter/the_ui_layer_is_called_by_the_present_thread_and_a_redraw_shows_a_change_of_ui") {
-    std::unique_ptr<Rig> rig = MakeRig();
+PRESENTER_CASE("the_ui_layer_is_called_by_the_present_thread_and_a_redraw_shows_a_change_of_ui") {
+    std::unique_ptr<Rig> rig = MakeRig(kind);
     if (!rig) return;
     LayoutControl layout;
     std::unique_ptr<sc::Presenter> presenter = MakePresenter(*rig, layout);
@@ -1539,8 +1594,8 @@ TEST_CASE("presenter/display_timing_times_are_matched_to_their_frames_in_order")
     CHECK(rig->breaches.Total() == 0);
 }
 
-TEST_CASE("presenter/concurrent_publishers_and_state_changes_lose_no_frame_unaccounted") {
-    std::unique_ptr<Rig> rig = MakeRig();
+PRESENTER_CASE("concurrent_publishers_and_state_changes_lose_no_frame_unaccounted") {
+    std::unique_ptr<Rig> rig = MakeRig(kind);
     if (!rig) return;
     LayoutControl layout;
     std::unique_ptr<sc::Presenter> presenter = MakePresenter(*rig, layout);
@@ -1568,7 +1623,8 @@ TEST_CASE("presenter/concurrent_publishers_and_state_changes_lose_no_frame_unacc
         // Until the publishers are done and a change of size or mode has been acted on (the first flip changes nothing:
         // it is the state the swapchain was made for), so the check on swapchain_creations does not depend on timing.
         const auto give_up = Clock::now() + std::chrono::seconds(30);
-        while (!done || (presenter->GetStats().swapchain_creations < 2 && Clock::now() < give_up)) {
+        // (An offscreen target has no swapchain to recreate: it ends with the publishers.)
+        while (!done || (kind == Kind::Window && presenter->GetStats().swapchain_creations < 2 && Clock::now() < give_up)) {
             flip = !flip;
             presenter->SetVsync(flip);
             presenter->Resize(flip ? 160 : 192, flip ? 120 : 128);
@@ -1598,7 +1654,11 @@ TEST_CASE("presenter/concurrent_publishers_and_state_changes_lose_no_frame_unacc
     const u64 unaccounted = stats.published - shown - stats.dropped;
     CHECK(shown + stats.dropped <= stats.published);
     CHECK(unaccounted == 0);  // the frame Stop discards from the mailbox is counted as dropped
-    CHECK(stats.swapchain_creations >= 2);
+    if (kind == Kind::Window) {
+        CHECK(stats.swapchain_creations >= 2);
+    } else {
+        CHECK(stats.swapchain_creations == 0);
+    }
     CHECK(rig->breaches.Total() == 0);
 }
 
@@ -1658,10 +1718,10 @@ struct ReentrantLayer final : pr::UiLayer {
     }
 };
 
-TEST_CASE("presenter/stop_and_set_ui_layer_called_on_the_present_thread_do_not_wait_for_it") {
+PRESENTER_CASE("stop_and_set_ui_layer_called_on_the_present_thread_do_not_wait_for_it") {
     Watchdog watchdog("stop_and_set_ui_layer_called_on_the_present_thread", 120);
     SUBCASE("Stop from the layer alone only requests the stop") {
-        std::unique_ptr<Rig> rig = MakeRig();
+        std::unique_ptr<Rig> rig = MakeRig(kind);
         if (!rig) return;
         LayoutControl layout;
         std::unique_ptr<sc::Presenter> presenter = MakePresenter(*rig, layout);
@@ -1678,7 +1738,7 @@ TEST_CASE("presenter/stop_and_set_ui_layer_called_on_the_present_thread_do_not_w
         CHECK(rig->breaches.Total() == 0);
     }
     SUBCASE("Stop from the layer while another thread is inside Stop, joining") {
-        std::unique_ptr<Rig> rig = MakeRig();
+        std::unique_ptr<Rig> rig = MakeRig(kind);
         if (!rig) return;
         LayoutControl layout;
         std::unique_ptr<sc::Presenter> presenter = MakePresenter(*rig, layout);
@@ -1698,7 +1758,7 @@ TEST_CASE("presenter/stop_and_set_ui_layer_called_on_the_present_thread_do_not_w
         CHECK(rig->breaches.Total() == 0);
     }
     SUBCASE("SetUiLayer(nullptr) from the layer does not wait for its own composition") {
-        std::unique_ptr<Rig> rig = MakeRig();
+        std::unique_ptr<Rig> rig = MakeRig(kind);
         if (!rig) return;
         LayoutControl layout;
         std::unique_ptr<sc::Presenter> presenter = MakePresenter(*rig, layout);
@@ -1715,8 +1775,8 @@ TEST_CASE("presenter/stop_and_set_ui_layer_called_on_the_present_thread_do_not_w
     }
 }
 
-TEST_CASE("presenter/rows_dropped_before_add_up_to_the_dropped_frames_when_taken_frames_are_discarded") {
-    std::unique_ptr<Rig> rig = MakeRig();
+PRESENTER_CASE("rows_dropped_before_add_up_to_the_dropped_frames_when_taken_frames_are_discarded") {
+    std::unique_ptr<Rig> rig = MakeRig(kind);
     if (!rig) return;
     TempDir dir("dropsum");
     LayoutControl layout;
@@ -1816,8 +1876,8 @@ TEST_CASE("presenter/the_queue_lock_is_held_from_the_signalling_submission_to_th
 }
 
 // Frames presented one by one while a second thread submits small recorders to the same queue as fast as it can.
-void PresentWhileAnotherThreadSubmits(const sc::Options& options, u64 frames) {
-    std::unique_ptr<Rig> rig = MakeRig();
+void PresentWhileAnotherThreadSubmits(Kind kind, const sc::Options& options, u64 frames) {
+    std::unique_ptr<Rig> rig = MakeRig(kind);
     if (!rig) return;
     LayoutControl layout;
     std::unique_ptr<sc::Presenter> presenter = MakePresenter(*rig, layout, {}, options);
@@ -1828,7 +1888,13 @@ void PresentWhileAnotherThreadSubmits(const sc::Options& options, u64 frames) {
     std::thread renderer([&] {
         while (!stop) {
             rhi::Recorder recorder = rig->backend->BeginRecording();
-            rig->backend->Submit(std::move(recorder));
+            const rhi::TimelineValue value = rig->backend->Submit(std::move(recorder));
+            if (kind == Kind::Offscreen) {
+                // An offscreen frame is done when the GPU has passed its submission (the presenter waits for it), so a
+                // flood of submissions ahead of it is a backlog the frame waits behind; a renderer waits for its frames
+                // too. (The window case floods on purpose: the presenter does not wait for the GPU there.)
+                rig->backend->WaitIdle(value);
+            }
             ++submits;
         }
     });
@@ -1847,7 +1913,7 @@ void PresentWhileAnotherThreadSubmits(const sc::Options& options, u64 frames) {
     CHECK(rig->breaches.Total() == 0);
 }
 
-TEST_CASE("presenter/another_thread_submitting_to_the_backend_while_frames_are_presented") {
+void PresentWhileAnotherThreadSubmitsDefault(Kind kind) {
     // Under the validation layer (vk_layer_run.py sets VK_INSTANCE_LAYERS) the acquire's fence is observed under the queue
     // lock: with a second thread submitting, the layer 1.3.275 races its own record of the fence wait against that
     // thread's vkQueueSubmit and reports a hazard that is not there (presentation.md). The case runs under the layer all
@@ -1855,13 +1921,19 @@ TEST_CASE("presenter/another_thread_submitting_to_the_backend_while_frames_are_p
     sc::Options options;
     const char* layers = std::getenv("VK_INSTANCE_LAYERS");
     options.acquire_wait_under_queue_lock = layers != nullptr && std::string(layers).find("validation") != std::string::npos;
-    PresentWhileAnotherThreadSubmits(options, 120);
+    PresentWhileAnotherThreadSubmits(kind, options, 120);
+}
+TEST_CASE("presenter/another_thread_submitting_to_the_backend_while_frames_are_presented") {
+    PresentWhileAnotherThreadSubmitsDefault(Kind::Window);
+}
+TEST_CASE("presenter_offscreen/another_thread_submitting_to_the_backend_while_frames_are_presented") {
+    PresentWhileAnotherThreadSubmitsDefault(Kind::Offscreen);  // the compositions share the queue with the other thread
 }
 
 TEST_CASE("presenter/the_acquire_fence_observed_under_the_queue_lock_presents_the_same_frames") {
     sc::Options options;
     options.acquire_wait_under_queue_lock = true;
-    PresentWhileAnotherThreadSubmits(options, 60);
+    PresentWhileAnotherThreadSubmits(Kind::Window, options, 60);
 }
 
 TEST_CASE("presenter/create_refuses_what_cannot_work") {
