@@ -66,6 +66,11 @@ jobs:
             -DMH4U_PORT_DIR="${GITHUB_WORKSPACE}/mh4u/port"
           ninja
           strip -s bin/Release/*
+          # appimagetool (since its build of 2026-10-31) makes an AppImage only with a PNG (or XPM)
+          # .DirIcon, made from the icon in the AppDir's top level named by the .desktop file's
+          # Icon=; the bundle target gives linuxdeploy Azahar's SVG only, so Azahar's PNG is put there
+          mkdir -p AppDir-azahar
+          cp ../dist/azahar.png AppDir-azahar/org.azahar_emu.Azahar.png
           ninja bundle
           ccache -s
       - name: The app's AppImage (mh4u.AppImage)
@@ -90,6 +95,8 @@ jobs:
           linuxdeploy=externals/linuxdeploy/squashfs-root/AppRun
           "$linuxdeploy" --plugin checkrt --executable bin/Release/mh4u \
             --desktop-file mh4u.desktop --icon-file mh4u.svg --appdir AppDir-mh4u
+          # the PNG appimagetool makes .DirIcon from, as for Azahar's AppImage (Build)
+          cp ../../mh4u/port/app/icon/mh4u.png AppDir-mh4u/mh4u.png
           OUTPUT=bundle/mh4u.AppImage "$linuxdeploy" --output appimage --appdir AppDir-mh4u
           ls -l bundle
           # it starts from the AppImage (--help needs no display)
