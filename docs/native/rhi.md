@@ -250,11 +250,12 @@ no report allowed (`rhi-spike.md` 9.4 item 16; 6.9 ran D2 and D3 under it with g
 - **Suppressions** (`tools/native/tsan.supp`): `race:` and `mutex:` entries on the file names of the Vulkan loader
   (`libvulkan.so`) and lavapipe's driver library (`libvulkan_lvp.so`), and, as a `race:` entry only, the LLVM it loads
   (`libLLVM`, below), for a driver build whose uninstrumented locking ThreadSanitizer cannot see. **They are needed when the
-  machine is busy**: lavapipe's worker threads, whose synchronisation
-  ThreadSanitizer cannot see, then give allocator and mutex reports (a data race whose first frame is `free`, `malloc` or
-  `pthread_mutex_destroy` called from `libvulkan_lvp.so`). On a quiet machine (loader 1.3.275, Mesa 25.2.8) the two test binaries
-  happened to pass with an empty file, which is timing-dependent. Reproduced: with an empty file the patterns test failed (exit 66) in 6 of 8 runs on a loaded machine
-  and in 6 of 6 with four busy-loop processes; with the committed file it passed 8 of 8 and 6 of 6. They are not the `called_from_lib:` entries the spec of N2-29 had: `called_from_lib:` entries made
+  machine is busy**: lavapipe's worker threads, whose synchronisation ThreadSanitizer cannot see, then give allocator and
+  mutex reports (a data race whose first frame is `free`, `malloc` or `pthread_mutex_destroy` called from
+  `libvulkan_lvp.so`). On a quiet machine (loader 1.3.275, Mesa 25.2.8) the two test binaries happened to pass with an empty
+  file, which is timing-dependent. Reproduced: with an empty file the patterns test failed (exit 66) in 6 of 8 runs on a
+  loaded machine and in 6 of 6 with four busy-loop processes; with the committed file it passed 8 of 8 and 6 of 6. They are
+  not the `called_from_lib:` entries the spec of N2-29 had: `called_from_lib:` entries made
   ThreadSanitizer worse: with the driver entry it stopped the process with "library ... is unloaded" in one run (the loader
   `dlclose`s the driver whenever an instance is destroyed), and across runs and entries it also reported a data race with both
   accesses inside `libLLVM.so`, a lock-order inversion, and "unlock of an unlocked mutex" (with the loader entry, in
@@ -297,10 +298,9 @@ for its issue #525 (the same two stacks): commit `4f687952b8c7aa250dfc25f78e269b
 every hunk, all as upstream wrote them except `Map`'s added line, one level deeper because the pinned `Map` has its `vkMapMemory` branch in an
 `else`. **Not an update of VMA:** the pinned commit is the one plume names and every RHI measurement was made with it, and 3.4.0 would bring
 everything else since 3.2.1 into the renderer's allocator for one fix; the rule of `native/third_party/rhi/` is that an upstream fix is a numbered
-patch and the pin does not move. **Not a suppression:** `tsan.supp` names only the loader and lavapipe (its driver and its
-LLVM), never code we ship; a `race:` entry for VMA would hide a real data race (undefined behaviour, even if the value read
-only steers a heuristic) and every later one in VMA's allocation
-path.
+patch and the pin does not move. **Not a suppression:** `tsan.supp` names only the loader and lavapipe (its driver and its LLVM), never code
+we ship; a `race:` entry for VMA would hide a real data race (undefined behaviour, even if the value read only steers a heuristic) and every
+later one in VMA's allocation path.
 
 The case that shows it is `rhi_plume_patterns_test`'s `vma01/unmap_on_one_thread_while_another_allocates` (the job's regex runs it; the
 comment above `RunVmaMapWhileAllocating` says how it is built): the block A maps is full but for A's slot, so B's larger buffers come from
