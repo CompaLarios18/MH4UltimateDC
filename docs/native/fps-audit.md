@@ -377,9 +377,9 @@ loaded PC.
    do (frame 903; 902 in G3's pair 4; 1802 at 120 fps) and the 120 fps run where G4's real-time `none` run does (frame
    1502).
 3. Real-time host times are steady (G3 303.1 to 303.4 + 306.5, against 303 to 408 + 307 to 455 loaded), and the
-   real-time `azahar` scene times are a little closer: largest G1 91.7, G2 125.0, G4 133.3 ms against 91.7, 133.3, 158.3 ms
-   loaded (`none`: 116.7, 150.0, 166.7 against 100.0, 166.7, 166.7). Every `azahar` row, both modes, and every
-   real-time `none` row is inside the per-change limits of the proposal.
+   real-time `azahar` scene times are a little closer: largest G1 91.7, G2 125.0, G4 133.3 ms against 91.7, 133.3,
+   158.3 ms loaded (`none`: 116.7, 150.0, 166.7 against 100.0, 166.7, 166.7). Every `azahar` row, both modes, and
+   every real-time `none` row is inside the per-change limits of the proposal.
 4. G3 in real time is not more repeatable on the idle PC: 4 of 10 runs reach the hunt (3 of 5 at 60 fps, 1 of 5 at
    120 fps, that one partly under load), against 6 of 10 on the loaded PC (3 and 3, `azahar` and `none` pairs; `azahar`
    alone: 3 of 6, 2 of 3 at 60 fps and 1 of 3 at 120 fps), and no pair of five has both runs in the hunt. N1-26's 10 of
