@@ -350,6 +350,7 @@ TEST_CASE("CheckUpdate: nothing installed, no content file, another version, the
     env.runtime.installed.version = 1040;
     u = CheckUpdate();
     CHECK(u.state == Update::State::OtherVersion);
+    CHECK(u.Installed());  // another version number doesn't stop the setup (Update::Installed)
     CHECK(u.version == 1040);
     CHECK(u.content == env.dir.str("content.app"));
 }
@@ -376,10 +377,10 @@ TEST_CASE("CheckUpdateCia says why a file is not the update, and nothing when it
     CHECK(CheckUpdateCia("a.cia").empty());
     env.runtime.cia_info = CiaInfo{0x0004000000999900ull, UPDATE_VERSION};
     CHECK(CheckUpdateCia("a.cia").find("0004000000999900") != std::string::npos);
-    env.runtime.cia_info = CiaInfo{MH4U_UPDATE, 1040};
-    const std::string wrong_version = CheckUpdateCia("a.cia");
-    CHECK(wrong_version.find("v1.1.0") != std::string::npos);
-    CHECK(wrong_version.find("v1.3.0") != std::string::npos);
+    // the update's title, another version number: accepted, as a .cia decrypted on a PC often says
+    // v1.0.0 (1024) whatever it holds; building the library checks the code itself
+    env.runtime.cia_info = CiaInfo{MH4U_UPDATE, 1024};
+    CHECK(CheckUpdateCia("a.cia").empty());
     env.runtime.cia_info = CiaInfo{MH4U_UPDATE, UPDATE_VERSION};
     CHECK(CheckUpdateCia("a.cia").empty());
 }
@@ -411,6 +412,34 @@ TEST_CASE("Install reports the runtime's result and progress on its own thread")
         }
         CHECK(env.Logged("installing u.cia"));
     }
+}
+
+TEST_CASE("Europe: its game, its v1.1.0 update and its own code library") {
+    Env env;
+    constexpr u64 EUR = 0x0004000000126100ull, EUR_UPDATE = 0x0004000E00126100ull;
+    Util::WriteStringToFile(false, env.dir.str("g.cxi"), "x");
+    env.runtime.header = {GameHeader::State::Ok, EUR};
+    const Game game = CheckGame(env.dir.str("g.cxi"));
+    CHECK(game.state == Game::State::Ok);
+    CHECK(Describe(game).find("(Europe)") != std::string::npos);
+    CHECK(UpdateName(EUR) == "v1.1.0");
+    CHECK(UpdateName(0) == "v1.3.0");  // no game yet: USA's
+
+    Util::WriteStringToFile(false, env.dir.str("content.app"), "x");
+    env.runtime.installed = {true, 1040, env.dir.str("content.app")};
+    CHECK(CheckUpdate(EUR).state == Update::State::Ok);
+    CHECK(env.runtime.installed_asked == EUR_UPDATE);
+    CHECK(CheckUpdate(MH4U_USA).state == Update::State::OtherVersion);  // 1.1.0 isn't USA's version
+    CHECK(env.runtime.installed_asked == MH4U_UPDATE);
+
+    env.runtime.cia_check = CiaResult::Ok;
+    env.runtime.cia_info = CiaInfo{EUR_UPDATE, 1040};
+    CHECK(CheckUpdateCia("a.cia", EUR).empty());
+    CHECK(CheckUpdateCia("a.cia", MH4U_USA).find("the update for Europe") != std::string::npos);
+    env.runtime.cia_info = CiaInfo{MH4U_UPDATE, UPDATE_VERSION};
+    CHECK(CheckUpdateCia("a.cia", EUR).find("the update for USA") != std::string::npos);
+
+    CHECK(LibraryPath(EUR).rfind(env.dir.str() + "recomp/0004000000126100.", 0) == 0);
 }
 
 TEST_CASE("the code library is looked for in the runtime's user folder") {

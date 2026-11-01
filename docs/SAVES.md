@@ -8,6 +8,11 @@ The extdata holds your guild cards, Palico and downloaded quests, so move it tog
 
 **Close the game (and the emulator) first.** An import into a save that a running game has open is not safe.
 
+**European copies** work the same way: their save is under program 0004000000126100 and their extdata is
+`00001261` (USA: `00001263`). `saves.py` finds which game the user folder is for (the native setup's
+`exheader.bin`, else the one region with a save there); add `--program-id 0004000000126100` when it can't tell.
+A save moves only between copies of the same region.
+
 ## From your 3DS to the PC
 
 1. On the 3DS, open **Checkpoint** (cartridge or digital copy of Monster Hunter 4 Ultimate). Back up the **save**,

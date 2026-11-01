@@ -22,17 +22,20 @@ SetupRow GameRow(const State& s) {
 
 SetupRow UpdateRow(const State& s) {
     using State_ = Checks::Update::State;
+    const std::string name = Checks::UpdateName(s.game.program_id);
     switch (s.update.state) {
     case State_::Ok:
-        return {Ui::Status::Ok, "Update v1.3.0", "Installed in Azahar's virtual SD card"};
+        return {Ui::Status::Ok, "Update " + name, "Installed in Azahar's virtual SD card"};
     case State_::OtherVersion:
-        return {Ui::Status::Error, "Update v1.3.0",
-                fmt::format("v{} is installed; the port is made for v1.3.0",
-                            Checks::VersionText(s.update.version))};
+        // a decrypted .cia often says v1.0.0: the code library's check says whether it's the right code
+        return {s.code.state == Checks::Code::State::Ok ? Ui::Status::Ok : Ui::Status::Warn, "Update " + name,
+                fmt::format("Installed. Its title says v{} (a .cia decrypted on a PC often does); the "
+                            "code library's check below says whether its code is {}'s",
+                            Checks::VersionText(s.update.version), name)};
     case State_::Missing:
         break;
     }
-    return {Ui::Status::Error, "Update v1.3.0", "Not installed"};
+    return {Ui::Status::Error, "Update " + name, "Not installed"};
 }
 
 SetupRow CodeRow(const State& s) {
@@ -83,10 +86,9 @@ void StepTitle(int number, const char* title, bool done) {
 
 void DrawSetup(State& s) {
     using Game = Checks::Game::State;
-    using Update = Checks::Update::State;
     using Code = Checks::Code::State;
     const bool game_ok = s.game.state == Game::Ok;
-    const bool update_ok = s.update.state == Update::Ok;
+    const bool update_ok = s.update.Installed();
     const bool code_ok = s.code.state == Code::Ok || (s.library_exists && s.code.state == Code::Checking);
     const int current = !game_ok ? 1 : !update_ok ? 2 : !s.library_exists || !code_ok ? 3 : 0;
     if (current != s.setup_step) {
@@ -97,16 +99,19 @@ void DrawSetup(State& s) {
 
     ImGui::BeginChild("##setup_scroll", ImVec2(0, 0), ImGuiChildFlags_NavFlattened);
     Ui::Heading(s.wizard ? "Welcome: three steps, once" : "Setup");
-    Ui::TextDim("The port plays your own copy of Monster Hunter 4 Ultimate (USA) with the game's code "
-                "recompiled for this computer. It needs your decrypted game, its v1.3.0 update and the "
-                "code library, built here from your update. Nothing of the game leaves this computer.");
+    Ui::TextDim("The port plays your own copy of Monster Hunter 4 Ultimate (USA or Europe) with the "
+                "game's code recompiled for this computer. It needs your decrypted game, its update "
+                "(USA v1.3.0, Europe v1.1.0) and the code library, built here from your update. "
+                "Nothing of the game leaves this computer.");
     ImGui::Spacing();
 
     // 1. the game
     Ui::BeginCard("##step1", ImVec2(0, 0), current == 1);
     StepTitle(1, "Your game", game_ok);
     const auto game = GameRow(s);
-    Ui::StatusLine(game.status, game_ok ? "Monster Hunter 4 Ultimate (USA)" : "No game yet",
+    const std::string game_name =
+        fmt::format("Monster Hunter 4 Ultimate ({})", Checks::RegionOf(s.game.program_id).name);
+    Ui::StatusLine(game.status, game_ok ? game_name : std::string("No game yet"),
                    game_ok ? s.config.game : game.detail);
     Ui::TextDim("A decrypted dump of your cartridge or digital copy: .3ds, .cci or .cxi (GodMode9 makes "
                 "one on your 3DS).");
@@ -121,7 +126,7 @@ void DrawSetup(State& s) {
 
     // 2. the update
     Ui::BeginCard("##step2", ImVec2(0, 0), current == 2);
-    StepTitle(2, "The v1.3.0 update", update_ok);
+    StepTitle(2, ("The " + Checks::UpdateName(s.game.program_id) + " update").c_str(), update_ok);
     const auto update = UpdateRow(s);
     Ui::StatusLine(update.status, update.label, update.detail);
     Ui::TextDim("The port runs the update's code. Install it from your decrypted update (.cia; GodMode9 "

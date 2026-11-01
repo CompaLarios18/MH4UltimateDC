@@ -79,13 +79,13 @@ namespace {
 constexpr const char* kNotAvailable = "Rooms are not available in this build.";
 }
 
-List Fetch(const std::string&) {
+List Fetch(const std::string&, u64) {
     List list;
     list.error = kNotAvailable;
     return list;
 }
 
-List Parse(const std::string&) {
+List Parse(const std::string&, u64) {
     List list;
     list.error = kNotAvailable;
     return list;

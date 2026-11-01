@@ -1,5 +1,6 @@
 """tools/native/prepare_game.py with synthetic inputs only: a CIA from test_extract_ncch.make_cia
 and NCCHs from tools/make_cxi.py. Nothing here comes from the game."""
+import hashlib
 import json
 import os
 import struct
@@ -123,6 +124,45 @@ def test_other_update_version_is_refused(tmp_path, versions):
         pg.prepare(base, str(tmp_path / "old.cia"), str(tmp_path / "game"), versions)
     assert pg.main(["--base", base, "--update", str(tmp_path / "old.cia"),
                     "-o", str(tmp_path / "game"), "--versions", versions]) == 1
+
+
+def relabel(update, path, version):
+    """The update .cia with another title version in its TMD (as a .cia rebuilt on a PC says)."""
+    data = bytearray(open(update, "rb").read())
+    pad = lambda n: (n + 63) & ~63  # noqa: E731
+    struct.pack_into(">H", data, pad(0x2020) + pad(0xA00) + pad(0x350) + 4 + 0x100 + 0x3C + 0x9C, version)
+    path.write_bytes(bytes(data))
+    return str(path)
+
+
+def test_a_version_number_that_lies_is_judged_by_the_code(tmp_path):
+    base, update, code = write_inputs(tmp_path, compressed=False)
+    relabelled = relabel(update, tmp_path / "v100.cia", 1024)      # v1.0.0, as a decrypted .cia says
+    entry = {"name": "Synthetic v1.3.0 (test)", "target": True, "program_id": f"{PID:016X}",
+             "update_title_id": f"{tx.PROGRAM_ID:016X}", "title_version": 1072}
+    right = tmp_path / "right.json"
+    right.write_text(json.dumps({"versions": [dict(entry, code_sha1=hashlib.sha1(code).hexdigest())]}))
+    pg.prepare(base, relabelled, str(tmp_path / "game"), str(right))
+    assert open(tmp_path / "game" / "code.bin", "rb").read() == code
+    wrong = tmp_path / "wrong.json"
+    wrong.write_text(json.dumps({"versions": [dict(entry, code_sha1="0" * 40)]}))
+    with pytest.raises(pg.PrepareError, match="v1.0.0"):
+        pg.prepare(base, relabelled, str(tmp_path / "game2"), str(wrong))
+
+
+def test_the_version_is_the_one_whose_update_it_is(tmp_path):
+    """Europe's v1.1.0 (an entry with shifts) is chosen by its update's title, not the target."""
+    base, update, _ = write_inputs(tmp_path)
+    versions = tmp_path / "versions.json"
+    versions.write_text(json.dumps({"versions": [
+        {"name": "Synthetic USA v1.3.0 (test)", "target": True, "program_id": "0004000000AAAA00",
+         "update_title_id": "0004000E00AAAA00", "title_version": 1072},
+        {"name": "Synthetic EUR v1.1.0 (test)", "shifts": "config/shifts/x.txt", "program_id": f"{PID:016X}",
+         "update_title_id": f"{tx.PROGRAM_ID:016X}", "title_version": 1072},
+        {"name": "a base game", "program_id": f"{PID:016X}", "title_version": 0}]}))
+    pg.prepare(base, update, str(tmp_path / "game"), str(versions))
+    with pytest.raises(pg.PrepareError, match="expected 0004000E00AAAA00 or"):
+        pg.prepare(base, base, str(tmp_path / "game2"), str(versions))
 
 
 def test_update_must_be_a_cia_or_its_installed_content(tmp_path, versions):

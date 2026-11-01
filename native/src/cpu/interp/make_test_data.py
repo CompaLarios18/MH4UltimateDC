@@ -156,7 +156,7 @@ def make_vectors(out: str, per_form: int, seed: int) -> int:
     c.append("const RFuncEntry rc_func_table[] = {")
     c += [f"  {{0x{a:08x}u, {m}, rf_{i}}}," for a, m, i in table]
     c += ["};", f"const u32 rc_func_count = {len(table)};", "const u32 rc_hook_addrs[] = {0};",
-          "const u32 rc_hook_count = 0;", "RHookFn rc_hooks[1];", "u32 rc_tunables[1];",
+          "const char *const rc_hook_names[] = {0};", "const u32 rc_hook_count = 0;", "RHookFn rc_hooks[1];", "u32 rc_tunables[1];",
           "const u32 rc_tunable_addrs[] = {0};", "const char *const rc_tunable_names[] = {0};",
           "const u32 rc_tunable_count = 0;"]
     work = os.path.join(out, "vectors-work")

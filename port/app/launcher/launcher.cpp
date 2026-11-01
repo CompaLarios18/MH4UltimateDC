@@ -799,8 +799,8 @@ void State::Message(const std::string& title, const std::string& text) {
 
 void State::Recheck() {
     game = Checks::CheckGame(config.game);
-    update = Checks::CheckUpdate();
-    library_exists = App::Util::Exists(Checks::LibraryPath());
+    update = Checks::CheckUpdate(game.program_id);
+    library_exists = App::Util::Exists(Checks::LibraryPath(game.program_id));
     if (!library_exists) {
         code = {Checks::Code::State::Missing, ""};
     } else if (code.state == Checks::Code::State::Missing) {
@@ -837,18 +837,18 @@ void State::ProbeTools() {
 }
 
 bool State::SetupComplete() const {
-    return game.state == Checks::Game::State::Ok && update.state == Checks::Update::State::Ok &&
-           library_exists;
+    return game.state == Checks::Game::State::Ok && update.Installed() && library_exists;
 }
 
 void State::StartBuild() {
     if (job.Active()) {
         return;
     }
-    if (update.state != Checks::Update::State::Ok) {
+    if (!update.Installed()) {
         Message("The update first",
-                "The code library is built from the v1.3.0 update installed in Azahar's virtual SD "
-                "card: install the update first (Setup, step 2).");
+                fmt::format("The code library is built from the {} update installed in Azahar's "
+                            "virtual SD card: install the update first (Setup, step 2).",
+                            Checks::UpdateName(game.program_id)));
         return;
     }
     if (probing) {
@@ -906,16 +906,16 @@ void State::ChooseAndInstallUpdate() {
     if (job.Active()) {
         return;
     }
-    PickPath(*this, false, "Your decrypted MH4U v1.3.0 update (.cia)", "CIA files", {"cia"},
-             [this](const std::string& path) {
-                 if (const auto problem = Checks::CheckUpdateCia(path); !problem.empty()) {
+    PickPath(*this, false, fmt::format("Your decrypted MH4U {} update (.cia)", Checks::UpdateName(game.program_id)),
+             "CIA files", {"cia"}, [this](const std::string& path) {
+                 if (const auto problem = Checks::CheckUpdateCia(path, game.program_id); !problem.empty()) {
                      Message("This isn't the update", problem);
                      return;
                  }
                  APP_LOG_INFO("launcher: installing {}", path);
                  job = Job{};
                  job.kind = Job::Kind::Install;
-                 job.title = "Installing the v1.3.0 update";
+                 job.title = fmt::format("Installing the {} update", Checks::UpdateName(game.program_id));
                  job.install = std::make_unique<Checks::Install>();
                  job.install->Start(path);
                  job.on_done = [this](int exit_code, const std::string&) {
@@ -984,8 +984,9 @@ void State::Play(int stage) {
             " The game then runs on Azahar's own CPU emulation, without the port's options (frame rate, "
             "widescreen, the touch screen overlay, net sync).";
         std::string problem;
-        if (update.state != Checks::Update::State::Ok) {
-            problem = std::string("The v1.3.0 update isn't installed in Azahar's virtual SD card.") + WITHOUT;
+        if (!update.Installed()) {
+            problem = fmt::format("The {} update isn't installed in Azahar's virtual SD card.",
+                                  Checks::UpdateName(game.program_id)) + WITHOUT;
         } else if (!library_exists) {
             problem = std::string("The code library isn't built yet.") + WITHOUT;
         } else if (code.state == Checks::Code::State::NotUsed) {

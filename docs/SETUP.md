@@ -28,6 +28,16 @@ python3 tools/extract_ncch.py "<game>.trim.3ds" -o baserom/base --romfs
 Each output folder gets `exheader.bin`, `code.bin` (still compressed, which is fine), `exefs.bin` and `info.txt`.
 
 > **Which code to use:** a 3DS update replaces the whole ExeFS, so the update title's `code.bin` is the full executable of the patched game. The project targets **USA v1.3.0** (see `config/versions.json`). Update RomFS files are applied on top of the base RomFS.
+>
+> **EUR:** the European **v1.1.0** update (title `0004000E00126100`) is the same program as USA v1.3.0 with its functions a few bytes further along: `.rodata`, `.data` and `.bss` are laid out the same. `config/` keeps USA addresses only; `config/shifts/eur_v110.txt` says where each part of USA's `.text` sits in EUR's, and `tools/build_game.py` applies it, so a EUR player needs only the EUR dump. The 45 functions EUR changed have no shift; the recompiler finds them through their callers. When `config/hooks.txt` or `config/tunables.txt` gains an address outside the shifts, `tests/test_build_game_versions.py` fails: rebuild the shifts with both updates' code at hand:
+>
+> ```bash
+> python3 tools/version_map.py build --name "EUR v1.1.0" -o config/shifts/eur_v110.txt \
+>     --src-exheader baserom/usa_update_v130/exheader.bin --src-code baserom/usa_update_v130/code.bin \
+>     --dst-exheader baserom/eur_update_v110/exheader.bin --dst-code baserom/eur_update_v110/code.bin
+> ```
+>
+> Addresses in docs, comments and `config/` stay USA v1.3.0's; `python3 tools/version_map.py translate config/shifts/eur_v110.txt 0x...` gives the EUR one.
 
 `baserom/` is git-ignored. **Never commit it.**
 

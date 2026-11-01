@@ -1,6 +1,6 @@
 # Mods
 
-Azahar loads a game's mods from one folder, `load/mods/0004000000126300/` in its user folder (right-click the game → *Open Mods Location*; the v1.3.0 update uses the base game's folder). Many mods at once means merging them by hand into that one folder, and two mods that replace the same file silently overwrite each other there.
+Azahar loads a game's mods from one folder, `load/mods/0004000000126300/` in its user folder (right-click the game → *Open Mods Location*; the v1.3.0 update uses the base game's folder). For the European game (with its v1.1.0 update) the folder is `load/mods/0004000000126100/`: `mods.py` uses the region whose update is installed, or the one the launcher passes (`--program-id`). A mod packaged for the other region's title folder is refused, as its code patch would be at the other code's addresses; texture packs for either region are accepted, since Azahar matches textures by their content. Many mods at once means merging them by hand into that one folder, and two mods that replace the same file silently overwrite each other there.
 
 `tools/mods.py` does that merging. It keeps a **mod library**, one folder per mod, in an order in which later mods win, shows which files two mods both change, and puts the enabled mods' files into Azahar's folder for you. It never touches files it didn't put there unless you tell it to. It uses only Python's standard library, like the other tools, and works the same on Windows, Linux and macOS.
 

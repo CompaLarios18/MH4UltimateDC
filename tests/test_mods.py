@@ -756,3 +756,35 @@ def test_romfs_ext_folders_without_the_ports_fix(tmp_path, monkeypatch):
     mod = mods.scan(str(root), "m")
     assert [f.dest for f in mod.files] == ["romfs_ext/top.arc.stub"]
     assert "romfs_ext/data/deep.arc.ips: does nothing" in "\n".join(mod.warnings)
+
+
+# ── the game's region ────────────────────────────────────────────────────────
+
+def test_the_game_is_the_installed_updates_or_the_one_named(tmp_path):
+    user = tmp_path / "azahar"
+    sd = user / "sdmc" / "Nintendo 3DS" / ("0" * 32) / ("0" * 32) / "title" / "0004000e"
+    assert mods.detect_game(str(user)) == 0x0004000000126300            # nothing installed: USA
+    (sd / "00126100" / "content").mkdir(parents=True)
+    assert mods.detect_game(str(user)) == 0x0004000000126100            # Europe's update alone
+    (sd / "00126300" / "content").mkdir(parents=True)
+    assert mods.detect_game(str(user)) == 0x0004000000126300            # both: USA
+
+    make(tmp_path / "m", {"romfs/data/x.arc": "1"})
+    run(user, "--program-id", "0004000000126100", "add", str(tmp_path / "m"))
+    run(user, "--program-id", "0004000000126100", "deploy")
+    assert (user / "load" / "mods" / "0004000000126100" / "romfs" / "data" / "x.arc").is_file()
+    assert not folder(user).exists()
+    assert run(user, "--program-id", "0004000000999900", "list", code=2)["error"]["code"] == "usage"
+    mods.set_game(0x0004000000126300)
+
+
+def test_a_mod_for_the_other_region_is_refused(tmp_path):
+    """Its code patch would be at the other region's addresses: only the game's own folders count."""
+    mods.set_game(0x0004000000126100)
+    try:
+        mod = mods.scan(str(make(tmp_path / "us", {"0004000E00126300/code.ips": ips((0x10, b"A"))})), "us")
+        assert mod.errors and "the port plays MH4U Europe (0004000000126100)" in mod.errors[0]
+        mod = mods.scan(str(make(tmp_path / "eu", {"0004000000126100/romfs/data/x.arc": "1"})), "eu")
+        assert not mod.errors
+    finally:
+        mods.set_game(0x0004000000126300)
