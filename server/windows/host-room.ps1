@@ -56,6 +56,9 @@ if (-not (Test-Path -LiteralPath $ini)) {
         "max_members = 16",
         "# empty: no password",
         "password =",
+        "# the players' game, usa or europe: players of the other region find the room with other",
+        "# games' rooms in the port's app (whether the two regions play together isn't known yet)",
+        "game = usa",
         "# To list the room in a lobby (Multiplayer > Browse Public Rooms): the lobby's address",
         "# (http://...:24872) and the room's name and token there. In an open lobby the first",
         "# use claims the name; use your own Azahar username to be the room's moderator.",
@@ -68,7 +71,8 @@ if (-not (Test-Path -LiteralPath $ini)) {
 }
 
 $settings = @{ name = "MH4U Gathering Hall"; description = ""; port = "24872"; max_members = "16";
-               password = ""; lobby_url = ""; username = ""; token = ""; ban_list = "room-ban-list.txt" }
+               password = ""; game = "usa"; lobby_url = ""; username = ""; token = "";
+               ban_list = "room-ban-list.txt" }
 function Set-Setting([string]$text) {
     $eq = $text.IndexOf("=")
     if ($eq -lt 1) { return $false }
@@ -96,6 +100,10 @@ if (-not [int]::TryParse($settings.port, [ref]$port) -or $port -lt 1 -or $port -
 if (-not [int]::TryParse($settings.max_members, [ref]$members) -or $members -lt 2 -or $members -gt 254) {
     Write-Host "max_members must be a number from 2 to 254, not '$($settings.max_members)'"; Finish 1
 }
+# the program id the room is set up for: the players' Monster Hunter 4 Ultimate
+$appId = @{ usa = "0004000000126300"; europe = "0004000000126100" }[$settings.game]
+if (-not $appId) { Write-Host "game must be usa or europe, not '$($settings.game)'"; Finish 1 }
+$region = if ($settings.game -eq "europe") { "European" } else { "USA" }
 $banList = $settings.ban_list
 if (-not [System.IO.Path]::IsPathRooted($banList)) { $banList = Join-Path $folder $banList }
 if (-not (Test-Path -LiteralPath $banList)) {
@@ -103,7 +111,7 @@ if (-not (Test-Path -LiteralPath $banList)) {
 }
 
 $roomArgs = @("--room-name", $settings.name, "--port", "$port", "--max_members", "$members",
-              "--preferred-app", "Monster Hunter 4 Ultimate", "--preferred-app-id", "0004000000126300",
+              "--preferred-app", "Monster Hunter 4 Ultimate", "--preferred-app-id", $appId,
               "--ban-list-file", $banList)
 if ($settings.description) { $roomArgs += @("--room-description", $settings.description) }
 if ($settings.password) { $roomArgs += @("--password", $settings.password) }
@@ -113,7 +121,7 @@ if ($public) {
                    "--token", $settings.token)
 }
 
-Write-Host "Room '$($settings.name)': UDP port $port, up to $members players, $(if ($settings.password) { 'with a password' } else { 'no password' })."
+Write-Host "Room '$($settings.name)' for the $region game: UDP port $port, up to $members players, $(if ($settings.password) { 'with a password' } else { 'no password' })."
 if ($public) {
     Write-Host "Listed in the lobby at $($settings.lobby_url) as $($settings.username): players find it in"
     Write-Host "Multiplayer > Browse Public Rooms (with that lobby as their Network Web API URL)."
