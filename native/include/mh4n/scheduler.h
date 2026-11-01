@@ -102,7 +102,7 @@ std::unique_ptr<PreemptionSource> MakeTimerThreadPreemption(TimeSource& source);
 // time: a paused clock does not stop them). The runner samples them once per game frame; read them on
 // the scheduler's thread (a safe-point hook is the place).
 //
-// System call and service time is counted twice over, with the same nanoseconds: by number and by name
+// System call and service time is kept in two breakdowns, with the same nanoseconds: by number and by name
 // (`svc`, `services`) and by the thread that made the call (`thread_svc_ns`, `thread_service_ns`, N1-32).
 // Over the threads, `thread_svc_ns` sums exactly to the sum of `svc[n].ns`, and `thread_service_ns` to
 // the sum of the services' `ns`. A thread blocked inside a system call is charged nothing while it

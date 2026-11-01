@@ -28,13 +28,22 @@ double Us(u64 ns) {
     return static_cast<double>(ns) / 1000.0;
 }
 
+// The main thread's entry of a per-thread map; 0 for no main thread (id 0) or no entry yet.
+u64 MainEntry(const std::map<u32, u64>& by_thread, u32 main_thread_id) {
+    if (main_thread_id == 0) {
+        return 0;
+    }
+    const auto it = by_thread.find(main_thread_id);
+    return it != by_thread.end() ? it->second : 0;
+}
+
 class PerfLog {
 public:
     PerfLog(Runtime& rt, const std::string& path)
         : rt_(rt), file_(std::fopen(path.c_str(), "w")) {
         if (file_ != nullptr) {
             // A row is about 85 bytes: a big buffer keeps the file out of the frame (one write per
-            // ~1,000 rows at 120 fps is one every few seconds).
+            // ~770 rows at 120 fps is one every few seconds).
             std::setvbuf(file_, nullptr, _IOFBF, 1 << 16);
         }
     }
@@ -132,35 +141,20 @@ void StartPerfLog(Runtime& rt) {
 }  // namespace
 
 MH4N_OPTION("runner", "--perf-log", "FILE",
-            "write a CSV row per game frame (# perf v2): the time of the game's main thread and of all threads "
-            "in guest code, in system calls and in services, idle time, the thread switches and preemptions, "
-            "and the main thread's own part of the system call and service time "
+            "write a CSV row per game frame (# perf v2): time in guest code of the game's main thread and of "
+            "all threads, every thread's time in system calls and in services, idle time, thread switches and "
+            "preemptions, and the main thread's own time in system calls and in services "
             "(tools/native/perf_report.py; docs/native/perf-procedure.md)");
 
 MH4N_REGISTER(BootStep, "perf.log", BootStep{Phase::Tracing, StartPerfLog});
-
-namespace {
-
-// The main thread's entry of a per-thread map; 0 for no main thread (id 0) or no entry yet.
-u64 MainEntry(const std::map<u32, u64>& by_thread, u32 main_thread_id) {
-    if (main_thread_id == 0) {
-        return 0;
-    }
-    const auto it = by_thread.find(main_thread_id);
-    return it != by_thread.end() ? it->second : 0;
-}
-
-}  // namespace
 
 Totals Snapshot(const SchedulerCounters& counters, u32 main_thread_id, u64 now_ns) {
     Totals t;
     t.now_ns = now_ns;
     for (const auto& [id, ns] : counters.guest_ns) {
         t.guest_ns += ns;
-        if (id == main_thread_id) {
-            t.main_ns = ns;
-        }
     }
+    t.main_ns = MainEntry(counters.guest_ns, main_thread_id);
     t.main_svc_ns = MainEntry(counters.thread_svc_ns, main_thread_id);
     t.main_service_ns = MainEntry(counters.thread_service_ns, main_thread_id);
     for (const SchedulerCounters::Named& named : counters.svc) {

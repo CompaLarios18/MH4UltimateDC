@@ -33,7 +33,8 @@ waiting, `switches` and `preempts` counts per frame, `main_svc_us` and `main_ser
 `svc_us` and `service_us`. `frame` is the game's frame counter, the `f=` of a --state-trace. Version 1 (N1-23) has the
 first nine columns only (the scheduler did not count system calls and services by thread then). A native log is v2
 when its columns hold `main_svc_us` and `main_service_us`, v1 when they hold `main_us` and neither; a log with one of
-the two only, or whose `# perf v<N>` line says another version than its columns, is refused (exit status 2).
+the two only, with both but without `main_us`, whose `# perf v<N>` line says another version than its columns, or
+with a `# perf v2` line over the reference runner's columns, is refused (exit status 2).
 
 For a native log the report adds
 

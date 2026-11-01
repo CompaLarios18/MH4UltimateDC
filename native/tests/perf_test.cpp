@@ -192,6 +192,16 @@ TEST_CASE("Snapshot adds the threads, the system calls and the services; the row
     CHECK(none.main_ns == 0);
     CHECK(none.main_svc_ns == 0);
     CHECK(none.main_service_ns == 0);
+    // id 0 is no thread even where a map has an entry 0 (thread ids start at 1)
+    SchedulerCounters zero = after;
+    zero.guest_ns[0] = 7;
+    zero.thread_svc_ns[0] = 7;
+    zero.thread_service_ns[0] = 7;
+    const perf::Totals zero_id = perf::Snapshot(zero, 0, 0);
+    CHECK(zero_id.main_ns == 0);
+    CHECK(zero_id.main_svc_ns == 0);
+    CHECK(zero_id.main_service_ns == 0);
+    CHECK(zero_id.guest_ns == b.guest_ns + 7);  // the entry is still a thread's time in the sum
     const perf::Totals unknown = perf::Snapshot(after, 42, 0);
     CHECK(unknown.main_ns == 0);
     CHECK(unknown.main_svc_ns == 0);

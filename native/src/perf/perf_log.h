@@ -11,7 +11,9 @@
 // v1 (N1-23) had the first nine columns only; v2 keeps them in their places and adds the last two.
 //
 // `frame` is the game's frame counter (the `f=` of --state-trace, so the two files line up). Times are
-// microseconds of the scheduler's TimeSource (host time in real time), no microsecond counted twice:
+// microseconds of the scheduler's TimeSource (host time in real time). No microsecond is in more than one
+// of guest_us, svc_us, service_us and idle_us (main_us, main_svc_us and main_service_us are parts of the
+// first three):
 //
 //   present_us  from the previous row (the first row: from the start of the log, so it includes the
 //               boot) to this one

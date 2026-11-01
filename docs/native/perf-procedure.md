@@ -162,9 +162,10 @@ only:
 | `main_svc_us` | the main thread's own part of `svc_us`: its system calls, without its services (v2) |
 | `main_service_us` | the main thread's own part of `service_us`: the service handlers it called (v2) |
 
-No microsecond is counted twice, but not every one is counted. All guest threads run on **one** host thread today.
-`busy_us` = `guest_us` + `svc_us` + `service_us` (what `perf_report.py` adds) is the counted work of every guest
-thread on it. `present_us` minus `idle_us` is `busy_us` plus the scheduler's own host loop between two guest runs
+No microsecond is in more than one of `guest_us`, `svc_us`, `service_us` and `idle_us` (`main_us`, `main_svc_us` and
+`main_service_us` are parts of the first three), but not every one is counted. All guest threads run on **one** host
+thread today. `busy_us` = `guest_us` + `svc_us` + `service_us` (what `perf_report.py` adds) is the counted work of
+every guest thread on it. `present_us` minus `idle_us` is `busy_us` plus the scheduler's own host loop between two guest runs
 (reaping, posted work and timer events, the safe-point hooks, picking the next thread). No column holds that loop,
 so the difference is at least `busy_us` (over the log; a single row can fall short by the few microseconds of the
 hooks run as the system call that began it starts, which the previous row's `present_us` holds).
@@ -291,6 +292,9 @@ try {
 }
 ```
 
+N1-32's re-run uses `build\n1-32\runNN` (`$out = "build\n1-32\run01"`, ...), with its own attempt count: N1-23's
+`build\n1-23\run01` to `run05` are v1 attempts and are not counted with it.
+
 `--init-time 1767268800.5` is G3's own (`# init-time:` in the session). The CSV is `$out\perf.csv`; the state trace
 `$out\state.txt` holds the game's state, so it stays under `build\` and is never committed or sent anywhere (the CSV
 holds timings only). A run held by the load check leaves its folder behind: use a new `runNN` for the next one.
@@ -335,7 +339,8 @@ python tools\native\perf_report.py $out\perf.csv --state-trace $out\state.txt --
   **UNDECIDED**: 4 ms lies between the two bounds. The other threads' calls and services are no longer in `game_us`,
   so what decides then is how much of `game_us` is the scheduler's host work run at the main thread's preemption
   checks and system calls: say so and give the margin (`game_us` p99 minus 4 ms), do not pick a side. Counting that
-  host work apart is the next step (D99), the orchestrator's decision.
+  host work apart is the next step (D99). It is the maintainer's decision: the orchestrator opens it, with the margin,
+  and does not settle it.
 - The next line, `With every thread's calls and services (game_all_us, N1-23's upper bound), p99: W ms`, is N1-23's
   upper bound, for comparison with N1-23's runs; it takes no part in the verdict.
 - The line after it, `Every guest thread together (busy_us ...)`, is the p99 of every guest thread's counted work on the
@@ -345,10 +350,10 @@ python tools\native\perf_report.py $out\perf.csv --state-trace $out\state.txt --
 - The table's `present_us` should cluster at 8.333 ms (the frame limiter) and `idle_us` is the headroom.
 
 **The verdict over the three runs** is the worst of them: the largest p99 of `game_us` (and of `main_us`) of the
-three counting runs. Give the orchestrator, once for the session: the output of `& $runner --version` (with the CI
-run's URL if you use the artifact `mh4n-runner-windows`) and the `$lib` path with its date
-(`(Get-Item $lib).LastWriteTime`). Per run: the folder name, the first line of `perf.csv` up to the date (it must
-start `# perf v2`), the CPU load before it (`load.txt`; D70: at most 25 %), the `Hunt:` and `Frames:` lines, the p99
+three counting runs. If that verdict is UNDECIDED, the margin is the largest `game_us` p99 of the three minus 4 ms.
+Give the orchestrator, once for the session: the output of `& $runner --version` (with the CI run's URL if you use
+the artifact `mh4n-runner-windows`) and the `$lib` path with its date (`(Get-Item $lib).LastWriteTime`). Per run: the
+folder name, the first line of `perf.csv` up to and including the date (`# perf v2 YYYY-MM-DD`), the CPU load before it (`load.txt`; D70: at most 25 %), the `Hunt:` and `Frames:` lines, the p99
 of `game_us`, `main_us`, `game_all_us` and `busy_us`, the `Frames over 50 ms` line, and the verdict line. For all the
 attempts: the count above. Send `report.md` and the CSVs of the counting runs; keep the rest.
 
@@ -359,11 +364,11 @@ system call hooks, no file or object is made, and the SVC layer and the code lib
 are the scheduler's, kept always, with or without the option. Since N1-32 the scheduler charges each closed stretch of
 system call or service time to the thread that made the call as well: one more addition, through a pointer the
 thread's scheduler data caches on its first charge of that kind, wherever a stretch of system call or service time is
-closed (the start and end of a system call or a service request, and a thread switch inside one). Only a thread's
+closed (the end of a system call, the start and end of a service request, and a thread switch inside either). Only a thread's
 first system call and first service request allocate (one map entry each); entries are never erased. `perf_test` boots
 a program without the option and checks that no file appears and the frame subscribers see the same frames. With the
 option, the cost is one call per game frame (120 a second) that reads the counters (a sum over the 256 system call
 slots, the services and the threads, and two look-ups of the main thread: a few hundred additions) and one buffered
 line of about 85 bytes (the file is written in 64 KB blocks, so a write to disk happens every few seconds), plus one
-test of an empty list at each system call. Nothing else is added to a preemption check, a system call or a fiber
+test of an empty list at each system call. Nothing else of the log's is added to a preemption check, a system call or a fiber
 switch: the row is written from a system call's `before` hook, at the first system call after the frame change.

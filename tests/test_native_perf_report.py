@@ -423,12 +423,12 @@ NATIVE_HEADER_V2 = ("# perf v2 2026-01-01 game=0x0000000000000000 cpu=native new
                     "main_svc_us,main_service_us\n")
 
 
-def native_csv_v2(rows, clock="host", first_frame=1, header=NATIVE_HEADER_V2):
+def native_csv_v2(rows, clock="host", first_frame=1):
     """rows of (present, main, guest, svc, service, idle, main_svc, main_service) in microseconds."""
     mode = "realtime" if clock == "host" else "deterministic"
     body = "".join(f"{first_frame + i},{p:.3f},{m:.3f},{g:.3f},{s:.3f},{v:.3f},{d:.3f},3,1,{ms:.3f},{mv:.3f}\n"
                    for i, (p, m, g, s, v, d, ms, mv) in enumerate(rows))
-    return header.format(clock=clock, mode=mode) + body + f"# frames={len(rows)} dropped=0\n"
+    return NATIVE_HEADER_V2.format(clock=clock, mode=mode) + body + f"# frames={len(rows)} dropped=0\n"
 
 
 def test_v2_game_us_holds_the_main_threads_own_calls_and_services():
@@ -479,6 +479,13 @@ def test_v2_within_where_n1_23s_upper_bound_would_be_undecided():
             in text)
     assert "With every thread's calls and services (game_all_us, N1-23's upper bound), p99: 4.364 ms" in text
     assert "UNDECIDED" not in text
+    # the rows of a real log are in frame order, not sorted: the game_all_us line sorts before it takes the p99 too
+    shuffled = list(rows)
+    random.Random(1).shuffle(shuffled)
+    text = perf_report.report(native_csv_v2(shuffled))
+    assert ("game_us (upper bound, its own calls and services) 3.864 ms, main_us (lower bound) 3.564 ms: WITHIN"
+            in text)
+    assert "With every thread's calls and services (game_all_us, N1-23's upper bound), p99: 4.364 ms" in text
     # the same frames as a v1 log (without the two columns) are UNDECIDED, as N1-23 reported them
     v1 = perf_report.report(native_csv([r[:6] for r in rows]))
     assert "game_us (upper bound) 4.364 ms, main_us (lower bound) 3.564 ms: UNDECIDED" in v1
@@ -510,11 +517,14 @@ V1_COLUMNS = "frame,present_us,main_us,guest_us,svc_us,service_us,idle_us,switch
      "says v1, but the columns are those of a v2"),
     ("# perf v2 2026-01-01 cpu=native clock=host mode=realtime\n" + V1_COLUMNS + "\n",
      "says v2, but the columns are those of a v1"),
+    # the two new columns without main_us: not the native runner's log
+    ("# perf v2 2026-01-01 cpu=native clock=host mode=realtime\nframe,present_us,main_svc_us,main_service_us\n",
+     "main_svc_us and main_service_us without main_us"),
 ])
 def test_v2_refusals(tmp_path, capsys, header, fragment):
     columns = header.splitlines()[1].split(",")
     row = ",".join(["1"] + ["100.000"] * (len(columns) - 1))
-    csv = header + row + "\n"
+    csv = header + row + "\n# frames=1 dropped=0\n"  # the footer is the last line, as the runner writes it
     with pytest.raises(perf_report.FormatError, match=fragment):
         perf_report.report(csv)
     path = tmp_path / "bad.csv"
@@ -525,7 +535,7 @@ def test_v2_refusals(tmp_path, capsys, header, fragment):
 
 def test_a_v2_line_over_the_reference_runners_columns_is_refused():
     with pytest.raises(perf_report.FormatError, match="says v2"):
-        perf_report.report(HEADER.replace("perf v1", "perf v2") + "0,8000,1,1,1\n")
+        perf_report.report(HEADER.replace("perf v1", "perf v2") + "0,8000,1,1,1\n# frames=1 dropped=0\n")
     # and a v1 reference log reads as before
     columns, _, meta = perf_report.parse(make_csv([(8000.0, 1, 1, 1)]))
     assert perf_report.native_version(columns, meta) is None
