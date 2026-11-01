@@ -1150,7 +1150,8 @@ void DrawMods(State& s) {
             }
             ImGui::TableNextColumn();
             bool on = mod.enabled;
-            ImGui::BeginDisabled(busy || !mod.errors.empty());
+            // (a mod that can't be used isn't turned on, but one that is on can be turned off)
+            ImGui::BeginDisabled(busy || (!mod.errors.empty() && !mod.enabled));
             if (Ui::Toggle("##on", &on)) {
                 Change(s, {on ? "enable" : "disable", mod.id}, (on ? "Turning on " : "Turning off ") + mod.name);
             }
