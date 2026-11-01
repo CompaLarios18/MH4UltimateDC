@@ -121,7 +121,7 @@ in all three runs, about 630 rows after the skip.
 The proposal: make the scheduler (N1-06's counters, `native/src/kernel/scheduler.cpp`) charge system call and
 service time to the thread that made the call. `--perf-log` (`native/src/perf/perf_log.cpp`, which today sums them
 over every thread) would then write the main thread's own share, and `perf_report.py` would build `game_us` and its
-verdict from it. Then run the procedure again (three counting runs). No work package holds this yet.
+verdict from it. Then run the procedure again (three counting runs). N1-32 holds it (D99, option 1, decided 2026-11-01).
 
 `game_us` would then hold the game thread's own calls and services, and no other thread's. It would still hold the
 scheduler's host work run at the game thread's preemption checks and at the start and end of its system calls:
