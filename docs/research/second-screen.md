@@ -14,7 +14,7 @@ Confidence: **high** = read directly in the code, several independent confirmati
 - **Touch path:** HID shared memory → `sPad` (touch ring buffer, touch bit `0x01000000`) → `sMhPad::update` (`0x00694c98`) builds a touch block at `sMhPad+0x3e0` → panel code converts it to layout coordinates (`0x00af3cfc`), hit-tests layout rectangles (`0x00d03938`) inside small "touch groups", and turns hits into panel ids and events. (high)
 - **Panels act through three channels**, which are also the hook points for key bindings: (1) gameplay action bits written into `sMhPad`'s action block or OR-ed into its injection word `sMhPad+0x3f0` (the virtual camera pad sets the D-pad bits; one action bit, `0x0001`, has no button at all and is injected when panel 7 is tapped); (2) menu action bits OR-ed into `sMhPad+0x3f4`; (3) direct calls into game code (item scrolling `0x00b31fa4`, player camera functions, map scrolling). A central query, `PanelManager::isTapped(id)` (`0x00288f4c`), is polled by about 40 call sites. (high for the mechanisms, medium for which panel is which)
 - **Overlay is feasible inside the engine:** moving a bottom layout to view 0 makes the top pass draw it at native resolution, centred on the top screen, and a mouse click at top-screen (X, Y) then maps to touch (X − 40, Y). A frontend composite of the bottom framebuffer is cheaper and needs no hooks. Retargeting viewport 7 to the top display also works but crops instead of scaling unless the layout projection is hooked. (high for the mechanism, untested)
-- **Not found statically:** the saved panel arrangement, and the names behind the panel hash ids. Both need either a run-time trace or the RomFS layout files (see [Open questions](#open-questions)).
+- **The names behind the hash ids and the saved arrangement** (November 2026, from the layout files and two saves): every pane hash is `~crc32` of a name stored in the `rLayout` file, which labels the code's id tables; the hit areas are boundary objects of the layouts; the arrangement is six entries of six u16 panel types in the save, entry 0 copied into the quest's slot block at quest start. See [The layout files and the saved arrangement](#the-layout-files-and-the-saved-arrangement-november-2026).
 
 ## 1. What draws the bottom screen
 
@@ -129,7 +129,7 @@ Default action bits from `0x00fb8260`: D-pad up → `0x2000`, down → `0x1000`,
 - **`sLayout::screenToLayout` `0x00af3cfc`** (`out, sLayout*, x, y, screen`): layout point = (*cx* − x, 120 − y), with *cx* = 160 for screen 1 (bottom) and 200 otherwise. Every touch consumer passes screen 1.
 - **`0x00d03938`** (`entry, point`): an entry is {object*, part*}; the point minus the object's position and offset is tested against the part's rectangle at `[[part+8]+0x20…+0x2c]` (min x, min y, max x, max y).
 - Panels group their buttons in **touch groups**: N entries of 8 bytes, then a count, the id of the pressed entry, a state byte and flags. Nine routines of the same shape handle them, eight of them identical in size (`0x00d8e444`, `0x00d8e9d0`, `0x00d8ef5c`, `0x00d8f4e8`, `0x00d8f9d0`, `0x00d8ff5c`, `0x00d904e8`, `0x00d90aec`, `0x00d91078`; arguments `group, idTable, count`). They return the index of the entry in the id table plus event flags: `0x8000` no entry, `0x4000` pressed on an entry, `0x0800` released on the entry it was pressed on, `0x0200` activated (what `isTapped` tests; set on release or on press depending on the group's mode byte), `0x1000`/`0x2000` held or dragged, `0x0400` no change (medium: read in `0x00d8ff5c` and `0x002951fc`, not traced at run time).
-- The id tables are 32-bit **name hashes** (for example `0x00defc00+0x21c`, `0x00df00b4`, `0x00ef3164`). None matched the ~19,600 strings in the code image or a dictionary of `uiNNN_<word>` names, so the pane names live in the layout files only.
+- The id tables are 32-bit **name hashes** (for example `0x00defc00+0x21c`, `0x00df00b4`, `0x00ef3164`). None matched the ~19,600 strings in the code image or a dictionary of `uiNNN_<word>` names: the pane names live in the layout files only, and reading them there names these three as the `ui050` screen edges and corners, the four `ui007_b_camera_button` tabs, and the parts of the `ui002` bar at the bottom of the touch screen (see [The layout files](#the-layout-files-and-the-saved-arrangement-november-2026)).
 
 ### 2.4 The panel manager
 
@@ -174,7 +174,7 @@ The remaining panels (kick vs. special vs. skip, target camera selection, map zo
 
 - **Positions and sizes are layout data.** Each panel button is a layout object; its position is `obj+0x28`/`+0x2c` (+ offset `+0x34`/`+0x38`) in pixels from the screen centre, and its hit rectangle is in the part data. They come from the `rLayout` files; panel code changes them at run time in a few places (`0x002a0984`, `0x002a0b8c`, `0x00292900`, `0x002a3c14`).
 - **Panel ids** are small integers handled by the panel manager; the buttons inside a panel are identified by name hashes (§2.3).
-- **The saved arrangement was not found.** Leads: the slot table at `0x0109cdc8+0x1f8` (3 entries of {u8 id, u8}) with `0x0029e5bc`/`0x0029f4e4`; the panel-customisation screens are among the many external callers of the panel manager. The community found no description of the on-disk format either ([community-enhancements.md §3.4](community-enhancements.md#34-not-found)). Cheapest way to find it: diff two saves that differ only in panel layout, or watch writes to `0x0109cdc8+0x1f8` when a quest starts.
+- **The saved arrangement** was found by diffing two saves that differ only in panel layout (November 2026): six entries of six u16 panel types in the save object, written by the customisation screens and read at quest start. See [The saved arrangement](#the-saved-arrangement). The community had no description of it ([community-enhancements.md §3.4](community-enhancements.md#34-not-found)).
 
 ## 4. Overlay feasibility
 
@@ -280,11 +280,74 @@ The maintainer saw it in the game: once a quest's requirements are met, a short 
 
 **What the port does** (option `skip`, default ZR): while the status is 3 or 7, for at most 25 s and until `sGameControl+0x2f89` is set, the skip is offered (`Port::Hooks::SkipOffered`, logged as `skip: quest complete ... offered` and `skip: no longer offered ...`). A press of the button then makes a tap on the panel manager's button 7 the way the game sees one: right after `processTouch` (`0x002951fc`) the last touch becomes id 7 (`+0xce`) with the flags `0x0a00` (released on the button pressed, activated), so `isTapped(7)` and any code reading the touch directly see the tap, once. While the skip is offered every tap the panel manager sees is logged (`skip: touch on panel N`), so a mouse tap on *Skip* names its id if it isn't 7; `skip_panel = N` then retargets the button. The app shows *Press C / RT to skip* at the bottom of the screen meanwhile (`skip_hint`).
 
+## The layout files and the saved arrangement (November 2026)
+
+Read in the English layouts of a EUR copy (the contributor's own cartridge; the USA files weren't checked, though EUR v1.1.0's code and data are USA v1.3.0's apart from `.text`'s shift) and in two of its saves, with the USA v1.3.0 code. Pane names are quoted only where they say what a part is; the files themselves aren't copied.
+
+**For EUR v1.1.0:** every data address below is the same (the hash tables, `0x00fcf7ec`, the slot block, the save offset `0xebdc`); functions move by a few bytes, and `tools/version_map.py translate config/shifts/eur_v110.txt <address>` gives their EUR address (once EUR support is on `main`). The panel manager's functions (`0x00287000`…`0x002a5900`) don't move; the save's writer and reader and the quest-start copies do: `0x00c1d27c` → `0x00c1d2cc`, `0x00c1cc4c` → `0x00c1cc9c`, `0x00b7f4b0` → `0x00b7f500`, `0x00b892a0` → `0x00b892f0`.
+
+### Where the layouts are
+
+- The `lyt\…` paths of §1.3 are entries of the game's MT archives (`ARC\0`, version `0x13`, a u16 count, then 0x50-byte entries: a 64-byte path, the resource type, the compressed size, the size with flags in its top 3 bits, the offset; zlib data). `rLayout` is resource type `0x15302ef4`; an entry of type `0x708e0028` sits beside each one (its animations, most likely).
+- The quest's touch-screen layouts (`ui601`…`ui604`, `ui610`, `ui250`) are in `<language>/data/core_quest.arc`, the common ones (`ui002`, `ui006`, `ui007`, `ui050`…) in `<language>/data/core_common.arc`.
+
+### The `rLayout` object tree (high)
+
+- After a `lyt\0` header and the texture paths, the file is a list of **object records** in depth-first order: u32 type, u32 depth (0 for a root), u32 **name hash**, u32 offset of the name, u32 size of the record with its subtree, then the type's data. The names are NUL-terminated strings at the end of the file, and **each hash is `~crc32(name)`**, as §1.3 read in the code (checked on every object of the quest layouts).
+- Types: 0 picture and 1 group (data starting with the position, f32 x and y), 2 root (one per panel or part of a layout), 3 text, **4 boundary**: a hit area, f32 x, y, w, h and a scale. x, y is its top-left corner in layout units with the origin at the centre and x growing to the left, so on the bottom screen it covers screen x = 160 − x to 160 − x + w and screen y = 120 − y to 120 − y + h, relative to its root's position (the panel code moves the roots to their slot).
+- Hashing every name of the English and common layouts (448 files, about 36,600 names) and looking for those values in the code image finds **13,943 aligned words** (485 in `.text` literal pools, 7,248 in `.rodata`, 6,210 in `.data`), in about 4,900 tables, which gives most of the HUD and menu code the pane it works on. The 760 boundaries tie the touch groups of §2.3 to their areas.
+
+### Hit areas of the panel manager and the quest HUD
+
+| Table | Boundaries | Read by (literal pools) |
+|---|---|---|
+| `0x00ef3164` | the `ui002` bottom bar's parts, in its two- and three-part forms | `0x002951fc` processTouch, `0x00293310` |
+| `0x00df552c` | `ui006_boundary_000`…`004` | `0x0028e9ec`, `0x0029331c`, `0x0029f6ac` |
+| `0x00df6304` | `ui002`'s customise, my-set and search buttons, then `ui006`'s cross pad | `0x00297048` |
+| `0x00df64a4`, `0x00df64c0` | `ui015` yes/no buttons; `ui060` player and equipment buttons | processTouch and others |
+| `0x00df6714`, `0x00df676c`, `0x00df67bc` | `ui004` buttons, player list, my-set buttons | `0x00299928`, `0x0028d170`, `0x0028e290` |
+| `0x00def95c`, `0x00def96c` | `ui610_boundary_000`, `_011` | quest HUD `0x00b85d70`, `0x00b947ec`, `0x00b97ed0`, `0x00b9db38`, `0x00b9e9f0` |
+| `0x00ed2430` | the target camera's two halves (`ui601`, two monsters) | `0x00b8d5b8`, `0x00b947f4`, `0x00ba4b54` |
+| `0x00df0030` | `ui604`'s end buttons and slide area, `ui603`'s four areas | `0x00ba33bc` |
+| `0x00df0084`, `0x00def86c`, `0x00def88c` | `ui007` windows, shortcut buttons, decide/return | `0x00ba4bc0`, `0x00ba4ee4`, `0x00ba5d88` |
+| `0x00df00b4` | `ui007_b_camera_button00`…`03` (the big panel's tabs) | `0x00ba15a0` |
+| `0x00defe1c`, `0x00def82c` | `ui050` screen edges, corners and side buttons | `0x00ba3e30`…`0x00ba3e44`, `0x00b9e7c8` |
+
+- **The bar at the bottom of the touch screen (`ui002`) holds the panel manager's fixed buttons.** Its roots for two, three and four parts have one boundary per part, 30 pixels high: two parts at screen x 4–249 and 255–316; three at 3–66, 71–249 and 255–317; four at 2–65, 70–157, 162–250 and 255–316. The layout file puts them at the top; at run time they sit at the bottom (`ui002` has an upper and a lower bar, the lower one 204 pixels down), where every tap below landed (y 213–236). processTouch hit-tests the two- and three-part forms (table `0x00ef3164`). (high)
+- **Which id is which part (run time, November 2026).** A diagnostic build logged, for each tap, the touch position, the manager's mode (`+0xb1`) and its slot ids (`+0xb4`…), on a 100% save in town and on a quest. With the mode tables of `0x00df5410` (hit index → slot: mode 0 `[5, 2, 7, 7]`, mode 1 `[0, 1, 2, 7]`):
+
+  | Mode | Bar | Part (screen x) | Slot | Id seen | Taps |
+  |---|---|---|---|---|---|
+  | 1 | three parts | left (3–66) | 0 | **3** | town |
+  | 1 | | middle (71–249) | 1 | **6** | town: tapped, handled at `0x00a4854c` |
+  | 1 | | right (255–317) | 2 | **4** | town |
+  | 0 | two parts | wide left (4–249) | 5 | **4** | town; on a quest it takes the HUD to its states 7 and 8 |
+  | 0 | | right (255–316) | 2 | **9** or **8** in town (the byte changed between taps; both handled by `0x005ed1f0`/`0x005ed1fc`), **7** on a quest (the kick, handled at `0x00b9e0b4`) | town, quest |
+
+  So the right-hand button of the two-part bar is the one whose id the game swaps: 7 (kick) on a quest, 8 and 9 in town, and 0xb for the *Skip* of the maintainer's log (hit index 1 there too). Slot 2 is the only one that changed; slots 0, 1, 3, 4, 6 held 1 and slot 5 held 4 in mode 0. (high)
+- **What they are (seen on screen in town, November 2026).** The two-part bar is *Hunter Search* (wide left, **4**) and *Menu* (right, **9**), which becomes *Close* (**8**) while the touch screen's menu is open (*Customize Panels*, *Panel Schemes*, *Hunter Search Position*). *Hunter Search* opens the *Player Select* screen, whose bar has three parts: *Help* (left, **3**: the Hunter Search help pages), *Hunter Search* (middle, **6**: closes the screen again) and *OFF* (right, **4**: turns Hunter Search on; not tapped). On a quest the bar is *Hunter Search* (4, the same *Player Select* screen as in town, while the HUD is in its states 7 and 8) and the kick's icon (7), which becomes the *Skip* (0xb) at the end. (high)
+- **`ui006`** is a set of menu controls: three buttons (boundaries 000, 001 and 004), page arrows (002, 003), a cross pad and help panes; the panel manager binds touch groups 2… of `+0x1790` to its boundaries, one per group (`0x0028e9ec`, `0x0029f6ac`).
+
+### The quest panels' layouts
+
+- **`ui610` holds the slot geometry.** One root per shape: six one-slot roots whose boundaries are 156×64 at screen (2, 36), (2, 104), (2, 172), (162, 36), (162, 104) and (162, 172), the two columns of three of [the slots section](#the-quests-touch-panels-slots-and-shapes-october-2026) with a 2-pixel margin; four tall ones (160×136: slots 0–1, 1–2, 3–4, 4–5), three wide ones (320×68, one row each) and one for the whole area (320×208). The HUD reads its first one-slot and first wide boundaries.
+- `ui601` is the target camera (one 160×68 area, or two halves for two monsters), `ui602` the item shortcuts (four 76×64 buttons in a row), `ui603` two stacked 156×28 rows or two 76×64 squares, `ui604` a small form in two halves and a large form with two 30-pixel end buttons around a 256-pixel slide area (the item bar's swipe, most likely), `ui250` the area map's icons and signs.
+
+### The saved arrangement
+
+Two saves of the same game, the second after replacing the camera pad with two small panels in *Customize Panels*, unwrapped with `tools/native/save_probe.py` (branch `native`; see [g2-save-bytes.md](g2-save-bytes.md) for the layers): apart from the checksum, the play time and the clock words of that note, they differ in three bytes of one table (and in a byte at plaintext `0x120e4` and a 1,032-byte run at `0x139f8`, not explained).
+
+- **In the save:** six entries of 16 bytes at plaintext offset **`0xebdc`** of the user slot: a u16 panel type per slot (the types of [the slots section](#the-quests-touch-panels-slots-and-shapes-october-2026)), a u8 that is 1 in a used entry, padding. A slot covered by the panel above it holds 0. Entry 0 went from `6, 0, 13, 1, 0, 15` (the map in slots 0–1, the target camera, the camera pad in 3–4, type 15) to `6, 0, 13, 9, 10, 15`. Entries 1–5 were empty in this save (the *Panel Schemes*, most likely: not checked). (high)
+- **In RAM:** the save object is behind the pointer at **`0x00fcf7ec`**, and the slot's plaintext from offset 8 is that object from `+0x5c`, so the table is at `[0x00fcf7ec] + 0xec30`. (high)
+- **Writer:** `0x00c1d27c(obj, obj + 0x5c, index, src)` stores six u16 and a byte at `obj + 0x5c + 0xebd4 + 16·index` (index below 6); its callers are the customisation screens of the panel manager, `0x00287de0` and `0x00287f6c`. (high for the store, medium for the callers' role)
+- **Reader:** `0x00c1cc4c(obj, index)` returns `obj + 0xec30 + 16·index`. At quest start `0x00b7f4b0` and `0x00b892a0` copy entry 0's 12 bytes into the slot block (`[0x001287a4()] + 0x7a`), set `+0xb0` = 1 and `+0xb1` = 0, and `0x00b892a0` also copies `obj + 0xec90`… into `+0x88`… (another table, not identified). (high)
+- So a single-screen HUD can follow the player's own arrangement: read entry 0 (or the slot block once the quest has started) and place the panels the player chose.
+
 ## Open questions
 
-1. Which panel ids are which (7, 8, 9, 0xb, 6 and the rest), and what action bit `0x0001` does: stage 0 logging, one tap per panel (the first attempt found the logging points don't see the taps; see the runtime check above).
-2. The pane names behind the hash ids: `rLayout` parsing of the maintainer's RomFS.
-3. Where the panel arrangement is saved and how it is applied at quest start (§3).
+1. Which panel ids are which (7, 8, 9, 0xb, 6 and the rest), and what action bit `0x0001` does: stage 0 logging, one tap per panel (the first attempt found the logging points don't see the taps; see the runtime check above). Answered for the fixed buttons ([above](#hit-areas-of-the-panel-manager-and-the-quest-hud)): 3 Help, 4 Hunter Search (and its OFF/ON switch), 6 back from Hunter Search, 7 kick, 8 Close, 9 Menu, 0xb Skip; still open: the other ids below `0x14`, on screens not visited (the Gathering Hall, chat, the arena…). Two leads: 1 fills every unused slot in the dumps above (most likely "no button"), and an earlier run without positions saw **0xa** once, on the right-hand part of a three-part bar, on a screen that wasn't identified.
+2. ~~The pane names behind the hash ids~~: answered in [The layout files](#the-layout-files-and-the-saved-arrangement-november-2026).
+3. ~~Where the panel arrangement is saved~~: answered in [The saved arrangement](#the-saved-arrangement); still open there: entries 1–5, the table at `obj + 0xec90`, and the other two changes between the saves.
 4. Whether the software keyboard, the cutscene subtitles or any other screen uses `rGUI` (`DrawLower`).
 5. How the map's mask passes (`*_sprite_mask_write`) behave when drawn in the top pass, and whether viewport 7 clears its region.
 
@@ -293,4 +356,5 @@ The maintainer saw it in the game: once a quest's requirements are met, a short 
 - Class vtables were located without RTTI: every MT class has a two-instruction `getDTI` virtual that loads its DTI address, found by searching literal pools for the DTI addresses of `config/mt_classes.tsv` (988 of 992 classes). The data word pointing to that function is slot 5 of the class vtable; slot 4 is `createProperty`, whose property names and field offsets document the class. Unused virtuals are zero in the vtables (the linker removed them).
 - Singletons were tied to classes through the constructors that store the class vtable and then store `this` into a global.
 - `screenToLayout`, the hit test, the view filter and the per-display viewport loop were each read in full; the panel meanings in §2.5 come from reading their callers and are marked medium or low accordingly.
+- The layout part (November 2026) read the RomFS of the contributor's own EUR cartridge in place: the RomFS level 3 file tree, the MT archives, the `rLayout` records; then the hash of every name was looked up in the USA v1.3.0 code image, and each table of hashes was tied to the literal pools that point into it. The saved arrangement came from diffing two unwrapped saves and reading the functions that touch that offset.
 - The analysis scripts are one-off and live outside the repository.
