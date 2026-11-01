@@ -48,8 +48,16 @@ def test_tables_move_to_the_other_version(tmp_path, capsys):
 
 
 def test_a_hook_without_an_address_stops_the_build(tmp_path):
-    with pytest.raises(SystemExit, match="hook 0x00100150"):
-        build_game.translate_tables({"shifts": shifts_file(tmp_path)}, {}, {BASE + 0x150: "h"}, {})
+    """It says to put the hook or tunable on an address the shifts cover: rebuilt from the same
+    dumps and config/functions.tsv, the shifts would be the same."""
+    shifts = shifts_file(tmp_path)
+    with pytest.raises(SystemExit, match=rf"^no address in this version for hook 0x00100150 \({re.escape(shifts)}\): "
+                                         rf"put it on an address the shifts cover \(check one with "
+                                         rf"tools/version_map\.py translate {re.escape(shifts)} <address>; "
+                                         rf"docs/SETUP\.md says more\)$"):
+        build_game.translate_tables({"shifts": shifts}, {}, {BASE + 0x150: "h"}, {})
+    with pytest.raises(SystemExit, match=r"for hook 0x00100150, tunable 0x00100160 \(.*\): put each on an address "):
+        build_game.translate_tables({"shifts": shifts}, {}, {BASE + 0x150: "h"}, {BASE + 0x160: (400, "t")})
 
 
 def test_check_version_reads_the_given_file(tmp_path):

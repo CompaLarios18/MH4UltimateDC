@@ -304,10 +304,11 @@ def translate_tables(version: dict, entries: dict, hooks: dict, tunables: dict) 
     print(f"addresses from {version['shifts']}: {len(entries)} entry points "
           f"({len(dropped)} in code this version changed, left to the analysis)")
     if missing_hooks or missing_tunables:
-        raise SystemExit("no address in this version for "
-                         + ", ".join([f"hook 0x{a:08x}" for a in missing_hooks]
-                                     + [f"tunable 0x{a:08x}" for a in missing_tunables])
-                         + f" ({version['shifts']}; rebuild it with tools/version_map.py)")
+        missing = [f"hook 0x{a:08x}" for a in missing_hooks] + [f"tunable 0x{a:08x}" for a in missing_tunables]
+        raise SystemExit(f"no address in this version for {', '.join(missing)} ({version['shifts']}): put "
+                         f"{'it' if len(missing) == 1 else 'each'} on an address the shifts cover (check one "
+                         f"with tools/version_map.py translate {version['shifts']} <address>; docs/SETUP.md "
+                         "says more)")
     return entries, hooks, tunables
 
 
