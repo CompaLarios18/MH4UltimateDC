@@ -2,15 +2,18 @@
 # Derived from Azahar src/video_core/gpu.cpp, src/core/memory.h, src/core/hle/service/gsp/gsp_command.h,
 # src/video_core/pica/regs_external.h, regs_internal.h, regs_texturing.h, regs_pipeline.h and pica_core.cpp,
 # src/video_core/rasterizer_accelerated.cpp, src/video_core/renderer_opengl/gl_rasterizer.cpp and
-# src/video_core/rasterizer_cache/pixel_format.h, utils.cpp, surface_params.cpp and rasterizer_cache.h at
-# 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-2.0-or-later: every one of those files says "Licensed under GPLv2 or
-# any later version"): the fixed virtual-to-physical mapping of GPU::VirtualToPhysicalAddress and the constants of
-# the windows it uses (memory.h), the arguments of the GX commands (gsp_command.h), the pixel formats and the input
-# size fields of a display transfer (regs_external.h), the command buffer registers a SubmitCmdList sets (gpu.cpp),
-# the positions and fields of the PICA registers a draw or a command buffer jump reads (regs_internal.h,
-# regs_texturing.h, regs_pipeline.h) and what those triggers do (pica_core.cpp), the vertex span of a draw
-# (rasterizer_accelerated.cpp), the texture units a draw binds (gl_rasterizer.cpp, rasterizer_cache.h), and the bits
-# per pixel and the mip levels of a texture (pixel_format.h, utils.cpp, surface_params.cpp).
+# src/video_core/rasterizer_cache/pixel_format.h, pixel_format.cpp, utils.cpp, surface_params.cpp and
+# rasterizer_cache.h at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-2.0-or-later: every one of those files says
+# "Licensed under GPLv2 or any later version"): the fixed virtual-to-physical mapping of GPU::VirtualToPhysicalAddress
+# and the constants of the windows it uses (memory.h), the arguments of the GX commands (gsp_command.h), the pixel
+# formats, their bytes per pixel, the input size fields and the position of the input pixel format in the flags of a
+# display transfer (regs_external.h), the command buffer registers a SubmitCmdList sets (gpu.cpp), the positions and
+# fields of the PICA registers a draw or a command buffer jump reads (regs_internal.h, regs_texturing.h,
+# regs_pipeline.h) and how a masked write lands and what those triggers do (pica_core.cpp), the vertex span of a draw
+# (rasterizer_accelerated.cpp) and the bytes each attribute loader reads for it (gl_rasterizer.cpp), the texture
+# units a draw binds and the size of a cube face (gl_rasterizer.cpp, rasterizer_cache.h), and the bits per pixel of
+# each known texture format, and a texture's mip levels and size (pixel_format.h, pixel_format.cpp, utils.cpp,
+# surface_params.cpp).
 # Copyright 2023-2026 Citra Emulator Project / Azahar Emulator Project (gpu.cpp, regs_external.h, pica_core.cpp,
 #   rasterizer_accelerated.cpp, pixel_format.h)
 # Copyright 2015-2026 Citra Emulator Project / Azahar Emulator Project (rasterizer_cache.h)
@@ -19,7 +22,7 @@
 # Copyright 2017-2025 Citra Emulator Project / Azahar Emulator Project (regs_internal.h, regs_pipeline.h)
 # Copyright 2017-2024 Citra Emulator Project / Azahar Emulator Project (regs_texturing.h)
 # Copyright 2022-2026 Citra Emulator Project / Azahar Emulator Project (gl_rasterizer.cpp)
-# Copyright 2023 Citra Emulator Project (utils.cpp)
+# Copyright 2023 Citra Emulator Project (pixel_format.cpp, utils.cpp)
 # Copyright 2022 Citra Emulator Project (surface_params.cpp)
 """Flat-memory coherence report (N0-14): does the game depend on cache coherence between CPU and GPU?
 
@@ -107,7 +110,9 @@ REG_DRAW, REG_DRAW_INDEXED = 0x22E, 0x22F    # writing either one draws (pica_co
 # pipeline.command_buffer: size[2] (bits 0-19, bytes / 8), addr[2] (bits 0-27, physical address / 8) and
 # trigger[2]: writing trigger[n] jumps to the command buffer of channel n (pica_core.cpp).
 REG_CMDBUF_SIZE, REG_CMDBUF_ADDR, REG_CMDBUF_JUMP = 0x238, 0x23A, 0x23C
-# rasterizer_cache/pixel_format.h (FORMAT_MAP): bits per pixel of texture formats 0 (RGBA8) to 13 (ETC1A4).
+# rasterizer_cache/pixel_format.h (FORMAT_MAP): bits per pixel of texture formats 0 (RGBA8) to 13 (ETC1A4);
+# pixel_format.cpp (PixelFormatFromTextureFormat) maps each of them to the pixel format of the same number, and
+# formats 14 and 15 to Invalid.
 TEX_BITS = (32, 24, 16, 16, 16, 16, 16, 8, 8, 8, 4, 4, 4, 8)
 
 # What each GX command's own words say it reads (named_input), as a kind of read.
@@ -457,8 +462,8 @@ def mip_levels(width: int, height: int, max_level: int) -> int:
 
 
 def texture_size(width: int, height: int, fmt: int, max_level: int) -> int:
-    """The bytes of a texture with its mip chain (surface_params.cpp CalculateSurfaceSize); a format that
-    pixel_format.h does not list counts as 32 bits per pixel (an upper bound)."""
+    """The bytes of a texture with its mip chain (surface_params.cpp CalculateSurfaceSize); a texture format
+    that pixel_format.cpp maps to Invalid (14 and 15) counts as 32 bits per pixel (an upper bound)."""
     bits = TEX_BITS[fmt] if fmt < len(TEX_BITS) else 32
     return sum((width >> lv) * (height >> lv) * bits // 8 for lv in range(mip_levels(width, height, max_level)))
 
@@ -466,7 +471,8 @@ def texture_size(width: int, height: int, fmt: int, max_level: int) -> int:
 def cube_face_size(width: int, fmt: int, max_level: int) -> int:
     """The bytes of one face of a TextureCube: gl_rasterizer.cpp BindTextureCube loads max_level + 1 levels of
     width x width, with no MipLevels limit (rasterizer_cache.h GetTextureCube), and surface_params.cpp
-    CalculateSurfaceSize sums them; a format that pixel_format.h does not list counts as 32 bits per pixel."""
+    CalculateSurfaceSize sums them; a texture format that pixel_format.cpp maps to Invalid counts as 32 bits
+    per pixel."""
     bits = TEX_BITS[fmt] if fmt < len(TEX_BITS) else 32
     return sum((width >> lv) * (width >> lv) * bits // 8 for lv in range(max_level + 1))
 
@@ -565,8 +571,9 @@ class _Pica:
     def _draw(self, regs: list[int], indexed: bool, out: list[tuple[str, int, int]]) -> None:
         """rasterizer_accelerated.cpp AnalyzeVertexArray: an indexed draw reads its index array, whose smallest and
         largest index are vmin and vmax; any other draw has vmin = vertex_offset, vmax = vmin + num_vertices - 1.
-        Each loader with components reads (vmax - vmin + 1) x byte_count bytes from base + data_offset +
-        vmin x byte_count.  A draw of no vertices reads nothing."""
+        gl_rasterizer.cpp SetupVertexArray: each loader whose component_count and byte_count are not 0 reads
+        (vmax - vmin + 1) x byte_count bytes from base + data_offset + vmin x byte_count.  A draw of no vertices
+        reads nothing."""
         self.counts["draws_indexed" if indexed else "draws"] += 1
         count = regs[REG_NUM_VERTICES]
         if count == 0:

@@ -1,22 +1,34 @@
-# Derived from Azahar src/core/memory.h, src/core/hle/service/gsp/gsp_command.h, src/video_core/gpu.cpp,
-# src/video_core/pica/regs_external.h, regs_texturing.h, regs_pipeline.h and pica_core.cpp,
-# src/video_core/renderer_opengl/gl_rasterizer.cpp and src/video_core/rasterizer_cache/rasterizer_cache.h at
-# 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-2.0-or-later; each says "Licensed under GPLv2 or any later
-# version"): the synthetic captures and the scripted game use the addresses of the windows of memory.h (the linear
-# heap, the new linear heap, VRAM and the physical bases of FCRAM and VRAM), the argument layouts of the GX commands
-# of gsp_command.h (RequestDma, SubmitCmdList, MemoryFill, DisplayTransfer, TextureCopy, CacheFlush), the position of
-# the input pixel format in the flags of a display transfer (regs_external.h), and the fields of the texture
-# registers (regs_texturing.h) and of the vertex attribute, index and command buffer registers (regs_pipeline.h) that
-# the synthetic register writes set; the expected values follow gpu.cpp (an address outside the windows is passed
-# through), pica_core.cpp (a command buffer trigger jumps whatever its byte mask) and gl_rasterizer.cpp and
-# rasterizer_cache.h (the size of a cube face).
-# Copyright 2014-2026 Citra Emulator Project / Azahar Emulator Project (memory.h)
+# Derived from Azahar src/core/memory.h and memory.cpp, src/core/hle/service/gsp/gsp_command.h,
+# src/video_core/gpu.cpp, src/video_core/pica/regs_external.h, regs_internal.h, regs_texturing.h, regs_pipeline.h and
+# pica_core.cpp, src/video_core/rasterizer_accelerated.cpp, src/video_core/renderer_opengl/gl_rasterizer.cpp and
+# src/video_core/rasterizer_cache/rasterizer_cache.h, pixel_format.h, pixel_format.cpp, utils.cpp and
+# surface_params.cpp at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-2.0-or-later; each says "Licensed under GPLv2
+# or any later version"): the synthetic captures and the scripted game use the addresses of the windows of memory.h
+# (the linear heap, the new linear heap, VRAM and the physical bases of FCRAM and VRAM) and of its application heap
+# and process image (not windows), the argument layouts of the GX commands of gsp_command.h (RequestDma,
+# SubmitCmdList, MemoryFill, DisplayTransfer, TextureCopy, CacheFlush), the input size fields, the position of the
+# input pixel format in the flags and the bytes per pixel of a display transfer (regs_external.h), and the positions
+# and fields of the texture registers (regs_internal.h, regs_texturing.h) and the fields of the vertex attribute,
+# index and command buffer registers (regs_pipeline.h) that the synthetic register writes set; the expected values
+# follow gpu.cpp (a SubmitCmdList sets channel 0 of the command buffer and ignores do_flush, a DMA reads its source
+# through the game's page table, and an address outside the windows is passed through), pica_core.cpp (how a masked
+# write lands, and that a command buffer trigger jumps whatever its byte mask), rasterizer_accelerated.cpp and
+# gl_rasterizer.cpp (the vertices a draw spans and the bytes each attribute loader reads for them), gl_rasterizer.cpp
+# and rasterizer_cache.h (the texture units a draw binds and the size of a cube face), and pixel_format.h,
+# pixel_format.cpp, utils.cpp and surface_params.cpp (the bits per pixel of each known texture format, and a
+# texture's mip levels and size); the fake marker follows memory.cpp (RasterizerMarkRegionCached: marking a marked
+# page or unmarking an unmarked one is UNREACHABLE()), and the patch test expects a hook at every rasterizer-cached
+# case of memory.cpp.
+# Copyright 2014-2026 Citra Emulator Project / Azahar Emulator Project (memory.h, memory.cpp)
 # Copyright 2023-2024 Citra Emulator Project / Azahar Emulator Project (gsp_command.h)
-# Copyright 2023-2026 Citra Emulator Project / Azahar Emulator Project (gpu.cpp, regs_external.h, pica_core.cpp)
+# Copyright 2023-2026 Citra Emulator Project / Azahar Emulator Project (gpu.cpp, regs_external.h, pica_core.cpp,
+#   rasterizer_accelerated.cpp, pixel_format.h)
 # Copyright 2017-2024 Citra Emulator Project / Azahar Emulator Project (regs_texturing.h)
-# Copyright 2017-2025 Citra Emulator Project / Azahar Emulator Project (regs_pipeline.h)
+# Copyright 2017-2025 Citra Emulator Project / Azahar Emulator Project (regs_internal.h, regs_pipeline.h)
 # Copyright 2022-2026 Citra Emulator Project / Azahar Emulator Project (gl_rasterizer.cpp)
 # Copyright 2015-2026 Citra Emulator Project / Azahar Emulator Project (rasterizer_cache.h)
+# Copyright 2023 Citra Emulator Project (pixel_format.cpp, utils.cpp)
+# Copyright 2022 Citra Emulator Project (surface_params.cpp)
 """tools/native/coherence.py and the coherence check of port/src/runner.cpp (N0-14), without Azahar or the game.
 
 (a) The report from a capture is tested with synthetic captures made with gcap.Writer; (b) the report from the
@@ -121,11 +133,11 @@ def basic_capture(w: gcap.Writer) -> None:
     # a flush of a heap address that maps nowhere, a store, then a register write, a swap and a fill
     w.flush(3, 0x08000000, 0x1000)
     cpu_change(w, {FCRAM + 6 * PAGE: page(0x16, {1: 1}), VRAM: page(0x80, {2: 2})})
-    w.mmio(0x1EF00018, 1)
+    w.mmio(0, 0)
     w.gpu_pages([(FCRAM + 8 * PAGE, page(0x78))])
     cpu_change(w, {FCRAM + 7 * PAGE: page(0x17, {3: 3})})
-    w.swap(0, [0, VRAM_V, 0, 720, 0, 0, 0])
-    w.fill(0x01FF0000)                                              # nothing changed before it
+    w.swap(0, [0] * 7)
+    w.fill(0)                                                       # nothing changed before it
     # event: the CPU changes the page the GPU wrote (page 8): the change is measured against the GPU's data
     w.flush(4, LINEAR + 8 * PAGE, 16)
     cpu_change(w, {FCRAM + 8 * PAGE: page(0x78, {0: 1, 1: 1})})
@@ -474,7 +486,7 @@ def test_textures_are_read_from_the_register_replay(tmp_path):
     assert coh.texture_size(16, 16, 7, 1) == 320 and coh.texture_size(8, 8, 0, 0) == 256
     assert coh.texture_size(8, 8, 1, 0) == 192 and coh.texture_size(1024, 8, 13, 0) == 8192   # RGB8; ETC1A4
     assert coh.mip_levels(8, 8, 3) == 1 and coh.mip_levels(64, 32, 15) == 3 and coh.mip_levels(64, 64, 0) == 1
-    assert coh.texture_size(8, 8, 12, 0) == 32 and coh.texture_size(8, 8, 15, 0) == 256   # ETC1; unknown: 32 bits
+    assert coh.texture_size(8, 8, 12, 0) == 32 and coh.texture_size(8, 8, 15, 0) == 256   # ETC1; Invalid: 32 bits
 
 
 def test_vertex_spans_come_from_the_index_data_or_from_offset_and_count(tmp_path):
@@ -1013,11 +1025,11 @@ int main(int, char** argv) {
         c.ExecuteEnd();
         // a register write between events: the CPU changed page 7 before it, the GPU nothing
         fcram[7 * 4096] = 1;
-        c.WriteRegBegin(0x1EF00018, 1);
+        c.WriteRegBegin(0, 1);
         c.WriteRegEnd();
         // a command inside a command is not a second event
         c.ExecuteBegin(dma);
-        c.WriteRegBegin(0x1EF00018, 2);
+        c.WriteRegBegin(0, 2);
         fcram[6 * 4096] = 0x66;
         c.WriteRegEnd();
         c.Access(kLinear + 13 * 4096, 4, BlockRead, 1);              // still inside the DMA: the GPU's
