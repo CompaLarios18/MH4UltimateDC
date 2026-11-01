@@ -1,12 +1,22 @@
-# Derived from Azahar src/core/memory.h, src/core/hle/service/gsp/gsp_command.h and src/video_core/pica/regs_external.h
-# at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-2.0-or-later; each says "Licensed under GPLv2 or any later version"):
-# the synthetic captures and the scripted game use the addresses of the windows of memory.h (the linear heap, the new
-# linear heap, VRAM and the physical bases of FCRAM and VRAM), the argument layouts of the GX commands of gsp_command.h
-# (RequestDma, SubmitCmdList, MemoryFill, DisplayTransfer, TextureCopy, CacheFlush) and the position of the input pixel
-# format in the flags of a display transfer (regs_external.h).
+# Derived from Azahar src/core/memory.h, src/core/hle/service/gsp/gsp_command.h, src/video_core/gpu.cpp,
+# src/video_core/pica/regs_external.h, regs_texturing.h, regs_pipeline.h and pica_core.cpp,
+# src/video_core/renderer_opengl/gl_rasterizer.cpp and src/video_core/rasterizer_cache/rasterizer_cache.h at
+# 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-2.0-or-later; each says "Licensed under GPLv2 or any later
+# version"): the synthetic captures and the scripted game use the addresses of the windows of memory.h (the linear
+# heap, the new linear heap, VRAM and the physical bases of FCRAM and VRAM), the argument layouts of the GX commands
+# of gsp_command.h (RequestDma, SubmitCmdList, MemoryFill, DisplayTransfer, TextureCopy, CacheFlush), the position of
+# the input pixel format in the flags of a display transfer (regs_external.h), and the fields of the texture
+# registers (regs_texturing.h) and of the vertex attribute, index and command buffer registers (regs_pipeline.h) that
+# the synthetic register writes set; the expected values follow gpu.cpp (an address outside the windows is passed
+# through), pica_core.cpp (a command buffer trigger jumps whatever its byte mask) and gl_rasterizer.cpp and
+# rasterizer_cache.h (the size of a cube face).
 # Copyright 2014-2026 Citra Emulator Project / Azahar Emulator Project (memory.h)
 # Copyright 2023-2024 Citra Emulator Project / Azahar Emulator Project (gsp_command.h)
-# Copyright 2023-2026 Citra Emulator Project / Azahar Emulator Project (regs_external.h)
+# Copyright 2023-2026 Citra Emulator Project / Azahar Emulator Project (gpu.cpp, regs_external.h, pica_core.cpp)
+# Copyright 2017-2024 Citra Emulator Project / Azahar Emulator Project (regs_texturing.h)
+# Copyright 2017-2025 Citra Emulator Project / Azahar Emulator Project (regs_pipeline.h)
+# Copyright 2022-2026 Citra Emulator Project / Azahar Emulator Project (gl_rasterizer.cpp)
+# Copyright 2015-2026 Citra Emulator Project / Azahar Emulator Project (rasterizer_cache.h)
 """tools/native/coherence.py and the coherence check of port/src/runner.cpp (N0-14), without Azahar or the game.
 
 (a) The report from a capture is tested with synthetic captures made with gcap.Writer; (b) the report from the
@@ -51,10 +61,11 @@ def page(fill: int, patch: dict[int, int] | None = None) -> bytes:
     return bytes(data)
 
 
-def make_capture(path: str, build) -> None:
-    """A capture with 16 pages of FCRAM (page i filled with 0x10+i) and 4 of VRAM, then whatever BUILD writes."""
+def make_capture(path: str, build, init_blocks=None) -> None:
+    """A capture with 16 pages of FCRAM (page i filled with 0x10+i) and 4 of VRAM, then whatever BUILD writes.
+    INIT_BLOCKS replace the zero-filled blocks of the INIT record."""
     with gcap.Writer(path) as w:
-        w.init()
+        w.init(init_blocks)
         w.mem(FCRAM, b"".join(page(0x10 + i) for i in range(16)))
         w.mem(VRAM, b"".join(page(0x80 + i) for i in range(4)))
         build(w)
@@ -268,6 +279,564 @@ def test_a_truncated_capture_is_an_error_not_a_report(tmp_path, capsys):
     assert coh.main(["capture", path]) == 1
     assert "truncated" in capsys.readouterr().err
     assert coh.main(["capture", str(tmp_path / "missing.mgpu")]) == 1
+
+
+# ── (a) the read-based answer ─────────────────────────────────────────────────────────
+
+def report_of(tmp_path, build, alias_runs=None, init_blocks=None, top=10):
+    path = str(tmp_path / "reads.mgpu")
+    make_capture(path, build, init_blocks)
+    assert gcap.check_file(path) == []
+    return coh.analyse_capture(gcap.read(path), top, alias_runs)
+
+
+def classes(rc, kind, part="bytes"):
+    """(certain, same interval, not covered) of one kind of read."""
+    return tuple(rc["reads"][kind][part][c] for c in coh.CLASSES)
+
+
+def dma(src, size):
+    return [0, src, LINEAR + 15 * PAGE, size, 0, 0, 0, 0]
+
+
+def cache_flush(w, vaddr, size):
+    """A CacheFlush GX command with one region, and its FLUSH record, as the recorder writes them."""
+    w.gx([5, vaddr, size, 0, 0, 0, 0, 0])
+    w.flush(4, vaddr, size)
+
+
+def test_a_cache_flush_in_a_later_interval_covers_the_list_with_certain_order(tmp_path):
+    def build(w):
+        w.fill(0)                                                       # event 0: nothing changed before it
+        cpu_change(w, {FCRAM + 2 * PAGE: page(0x12, {0x10: 1, 0x11: 2})})   # interval 1: the game writes its list
+        w.swap(0, [0] * 7)                                              # event 1
+        cpu_change(w, {FCRAM + 3 * PAGE: page(0x13, {0x20: 3})})        # interval 2: more of it, in the flush's interval
+        cache_flush(w, LINEAR + 2 * PAGE, 2 * PAGE)                     # event 2 flushes pages 2 and 3
+        w.submit_cmdlist(LINEAR + 2 * PAGE, 2 * PAGE)                   # event 3 reads them
+        w.pica_reg([])
+    rep = report_of(tmp_path, build)
+    rc = rep["read_coverage"]
+    assert classes(rc, "cmdlist") == (2, 1, 0)                          # page 2 certain, page 3 same interval
+    assert classes(rc, "cmdlist", "pairs") == (1, 1, 0) and classes(rc, "cmdlist", "pages") == (1, 1, 0)
+    assert classes(rc, "total") == (2, 1, 0) and rc["reads"]["total"]["uncovered"]["pages"] == 0
+    assert rc["counts"]["cache_flush"] == 1 and rc["counts"]["cache_flush_equals_next_buffer"] == 1
+    # the same-interval rule calls the change before SWAP uncovered: no flush in its own interval
+    swap = rep["rows"]["SWAP"]
+    assert swap["changed_bytes"] == 2 and swap["covered_bytes"]["any"] == 0 and swap["pages_none_any"] == 1
+
+
+def test_a_flush_in_the_same_interval_as_the_change_covers_it_in_the_same_interval_only(tmp_path):
+    def build(w):
+        w.fill(0)
+        w.flush(1, LINEAR + 3 * PAGE, PAGE)                             # interval 1: a FlushDataCache ...
+        cpu_change(w, {FCRAM + 3 * PAGE: page(0x13, {5: 0, 6: 0})})     # ... and the change: their order is unknown
+        w.gx(dma(LINEAR + 3 * PAGE, 0x10))                              # event 1: a DMA reads 16 bytes of page 3
+    rep = report_of(tmp_path, build)
+    rc = rep["read_coverage"]
+    assert classes(rc, "dma_source") == (0, 2, 0) and classes(rc, "dma_source", "pairs") == (0, 1, 0)
+    assert classes(rc, "total", "pages") == (0, 1, 0)
+    assert rep["rows"]["REQUEST_DMA"]["covered_bytes"]["any"] == 2      # the rows agree: same interval
+    # the upper bound by region counts a flush of the change's own interval
+    assert rc["regions"]["FCRAM"]["flushed_by_end"] == 2 and rc["changes"]["flushed_by_end"] == 2
+
+
+def test_a_flush_in_an_earlier_interval_does_not_cover_a_later_change(tmp_path):
+    def build(w):
+        w.fill(0)
+        w.flush(1, LINEAR + 6 * PAGE, PAGE)                             # interval 1: a flush, nothing changed yet
+        w.swap(0, [0] * 7)                                              # event 1
+        cpu_change(w, {FCRAM + 6 * PAGE: page(0x16, {1: 1})})           # interval 2: the change
+        w.gx(dma(LINEAR + 6 * PAGE, 0x10))                              # event 2 reads it
+    rc = report_of(tmp_path, build)["read_coverage"]
+    assert classes(rc, "dma_source") == (0, 0, 1)
+    assert rc["regions"]["FCRAM"]["flushed_by_end"] == 0 and rc["changes"]["flushed_by_end"] == 0
+
+
+def test_pairs_take_the_worst_class_of_their_bytes_and_certain_order_wins(tmp_path):
+    def build(w):
+        w.fill(0)
+        w.flush(1, LINEAR + 2 * PAGE, 1)                                # interval 1: byte 0 of page 2, order unknown
+        cpu_change(w, {FCRAM + 2 * PAGE: page(0x12, {0: 1}),            # flushed here and again later: certain
+                       FCRAM + 3 * PAGE: page(0x13, {0: 1, 1: 1}),      # byte 0 flushed later, byte 1 never
+                       FCRAM + 4 * PAGE: page(0x14, {0: 1})})           # page 4 byte 0 ...
+        w.swap(0, [0] * 7)                                              # event 1
+        w.flush(1, LINEAR + 2 * PAGE, 1)                                # interval 2
+        w.flush(1, LINEAR + 3 * PAGE, 1)
+        cpu_change(w, {FCRAM + 4 * PAGE: page(0x14, {0: 1, 1: 1})})     # ... and byte 1, a change of interval 2
+        w.gx(dma(LINEAR + 2 * PAGE, 3 * PAGE))                          # event 2 reads pages 2 to 4
+    rc = report_of(tmp_path, build)["read_coverage"]
+    assert classes(rc, "dma_source") == (2, 0, 3)
+    # page 3 is one pair in its worst class; page 4 is two pairs, one per interval
+    assert classes(rc, "dma_source", "pairs") == (1, 0, 3)
+    assert classes(rc, "dma_source", "pages") == (1, 0, 2)
+
+
+def test_invalidate_and_store_flushes_cover_reads_too(tmp_path):
+    def build(w):
+        w.fill(0)
+        cpu_change(w, {FCRAM + 2 * PAGE: page(0x12, {0: 1}), FCRAM + 3 * PAGE: page(0x13, {0: 1})})
+        w.swap(0, [0] * 7)
+        w.flush(2, LINEAR + 2 * PAGE, PAGE)                             # InvalidateDataCache
+        w.flush(3, LINEAR + 3 * PAGE, PAGE)                             # StoreDataCache
+        w.gx(dma(LINEAR + 2 * PAGE, 2 * PAGE))
+    rc = report_of(tmp_path, build)["read_coverage"]
+    assert classes(rc, "dma_source") == (2, 0, 0)
+
+
+def test_a_read_with_no_flush_before_it_is_not_covered_and_listed(tmp_path):
+    def build(w):
+        w.fill(0)
+        w.flush(1, 0x08000000, 16 * PAGE)                               # with no alias map a heap address covers nothing
+        cpu_change(w, {FCRAM + i * PAGE: page(0x10 + i, {0: 0xEE}) for i in (4, 5, 7)})
+        w.gx([4, LINEAR + 4 * PAGE, LINEAR + 12 * PAGE, 4 * PAGE, 0, 0, 0, 0])   # a texture copy of pages 4 to 7
+    rc = report_of(tmp_path, build)["read_coverage"]
+    assert classes(rc, "transfer_input") == (0, 0, 3) and classes(rc, "transfer_input", "pages") == (0, 0, 3)
+    for kind in ("transfer_input", "total"):
+        info = rc["reads"][kind]["uncovered"]
+        assert (info["pages"], info["ranges"]) == (3, 2)
+        assert info["largest"] == [{"paddr": FCRAM + 4 * PAGE, "pages": 2}, {"paddr": FCRAM + 7 * PAGE, "pages": 1}]
+    assert rc["reads"]["cmdlist"]["uncovered"] == {"pages": 0, "ranges": 0, "largest": []}
+    top = report_of(tmp_path, build, top=1)["read_coverage"]["reads"]["total"]["uncovered"]   # --top 1
+    assert (top["ranges"], top["largest"]) == (2, [{"paddr": FCRAM + 4 * PAGE, "pages": 2}])
+
+
+def test_a_flush_after_the_read_does_not_cover_that_read(tmp_path):
+    def build(w):
+        w.fill(0)
+        cpu_change(w, {FCRAM + 6 * PAGE: page(0x16, {1: 1})})
+        w.gx(dma(LINEAR + 6 * PAGE, 0x10))                              # event 1 reads the change
+        w.flush(1, LINEAR + 6 * PAGE, PAGE)                             # interval 2: too late for event 1
+        w.gx(dma(LINEAR + 6 * PAGE, 0x10))                              # event 2 reads the unchanged byte again
+    rc = report_of(tmp_path, build)["read_coverage"]
+    assert classes(rc, "dma_source") == (0, 0, 1) and classes(rc, "dma_source", "pairs") == (0, 0, 1)
+    region = rc["regions"]["FCRAM"]
+    assert region["read_by_gpu"] == 1
+    assert region["flushed_by_end"] == 1           # the upper bound by region counts the late flush; the read does not
+
+
+def test_a_second_read_is_not_a_new_pair_and_a_change_after_a_read_is(tmp_path):
+    def build(w):
+        w.fill(0)
+        cpu_change(w, {FCRAM + 6 * PAGE: page(0x16, {0: 1})})           # interval 1
+        w.gx(dma(LINEAR + 6 * PAGE, 0x10))                              # event 1: a pair, not covered
+        w.gx(dma(LINEAR + 6 * PAGE, 0x10))                              # event 2: the same unchanged byte: no pair
+        cpu_change(w, {FCRAM + 6 * PAGE: page(0x16, {0: 2})})           # interval 3: changed again
+        w.swap(0, [0] * 7)                                              # event 3
+        w.flush(1, LINEAR + 6 * PAGE, PAGE)                             # interval 4
+        w.gx(dma(LINEAR + 6 * PAGE, 0x10))                              # event 4: a new pair, certain
+    rc = report_of(tmp_path, build)["read_coverage"]
+    assert classes(rc, "dma_source") == (1, 0, 1) and classes(rc, "dma_source", "pairs") == (1, 0, 1)
+    assert classes(rc, "dma_source", "pages") == (0, 0, 1)             # a page takes the worst class of its reads
+    assert rc["changes"]["changed_bytes"] == 2 and rc["changes"]["read_by_gpu"] == 2
+
+
+CUBE_FACES = FCRAM + 0x01000000     # faces 1 to 5 of the cube: bit 21 of their address / 8 is set, not face 0's
+ETC = FCRAM + 0x01100000
+
+
+def texture_writes():
+    """Draw 1: unit 0 a cube map, RGBA8, 16 wide and 8 high (a face is width x width) with max_level 2, face 0 at
+    page 8 and faces 1 to 5 at CUBE_FACES + pages 9 to 13; unit 1 a 16x16 I8 texture with 2 levels at page 14, its
+    type set to cube (only unit 0 has faces); unit 2 configured at page 15 but disabled.  Draw 2: the same, but unit 1
+    is an ETC1A4 texture of 1024x8 at ETC.  Each draws 3 vertices with no attribute loader."""
+    regs = {coh.REG_TEX_CONFIG: 0b011,
+            0x82: (16 << 16) | 8, 0x83: 1 << 28, 0x84: 2 << 16, 0x85: (FCRAM + 8 * PAGE) >> 3, 0x8E: 0,
+            0x92: (16 << 16) | 16, 0x93: 1 << 28, 0x94: 1 << 16, 0x95: (FCRAM + 14 * PAGE) >> 3, 0x96: 7,
+            0x9A: (8 << 16) | 8, 0x9D: (FCRAM + 15 * PAGE) >> 3, 0x9E: 0,
+            coh.REG_NUM_VERTICES: 3}
+    for face in range(5):
+        regs[coh.REG_CUBE_ADDR + face] = ((CUBE_FACES + (9 + face) * PAGE) >> 3) & 0x3FFFFF
+    etc = {0x92: (1024 << 16) | 8, 0x93: 0, 0x95: ETC >> 3, 0x96: 13}
+    return ([(reg, 0xF, value) for reg, value in regs.items()] + [(coh.REG_DRAW, 0xF, 1)]
+            + [(reg, 0xF, value) for reg, value in etc.items()] + [(coh.REG_DRAW, 0xF, 1)])
+
+
+def test_textures_are_read_from_the_register_replay(tmp_path):
+    def build(w):
+        w.fill(0)
+        changes = {CUBE_FACES + p * PAGE: page(0, {0x10: 0xEE}) for p in range(9, 14)}   # a byte of faces 1 to 5
+        changes[FCRAM + 8 * PAGE] = page(0x18, {0x10: 0xEE, 1343: 0xEE, 1344: 0xEE})   # face 0 is 1344 bytes
+        changes[FCRAM + 14 * PAGE] = page(0x1E, {319: 0xEE, 320: 0xEE})     # level 1 ends at 16x16 + 8x8 = 320 bytes
+        changes[FCRAM + 15 * PAGE] = page(0x1F, {0: 0xEE})                  # the disabled unit
+        changes[ETC + PAGE] = page(0, {PAGE - 1: 0xEE})                     # the last of the 8192 bytes at ETC ...
+        changes[ETC + 2 * PAGE] = page(0, {0: 0xEE})                        # ... and the first byte past them
+        cpu_change(w, changes)
+        w.submit_cmdlist(LINEAR, 0x10)
+        w.pica_reg(texture_writes())
+    rc = report_of(tmp_path, build)["read_coverage"]
+    assert classes(rc, "texture") == (0, 0, 9) and classes(rc, "texture", "pages") == (0, 0, 8)
+    assert rc["reads"]["texture"]["uncovered"]["largest"] == [
+        {"paddr": CUBE_FACES + 9 * PAGE, "pages": 5}, {"paddr": FCRAM + 8 * PAGE, "pages": 1},
+        {"paddr": FCRAM + 14 * PAGE, "pages": 1}, {"paddr": ETC + PAGE, "pages": 1}]
+    assert rc["counts"]["draws"] == 2 and rc["counts"]["texture_reads"] == 14    # six faces and unit 1, twice
+    assert rc["changes"]["not_read_never_in_read_range"] == 4
+    assert coh.cube_face_size(16, 0, 2) == (16 * 16 + 8 * 8 + 4 * 4) * 4 and coh.texture_size(16, 16, 0, 2) == 1280
+    assert coh.texture_size(16, 16, 7, 1) == 320 and coh.texture_size(8, 8, 0, 0) == 256
+    assert coh.texture_size(8, 8, 1, 0) == 192 and coh.texture_size(1024, 8, 13, 0) == 8192   # RGB8; ETC1A4
+    assert coh.mip_levels(8, 8, 3) == 1 and coh.mip_levels(64, 32, 15) == 3 and coh.mip_levels(64, 64, 0) == 1
+    assert coh.texture_size(8, 8, 12, 0) == 32 and coh.texture_size(8, 8, 15, 0) == 256   # ETC1; unknown: 32 bits
+
+
+def test_vertex_spans_come_from_the_index_data_or_from_offset_and_count(tmp_path):
+    base = FCRAM + 2 * PAGE
+    regs = [(coh.REG_ATTR_BASE, 0xF, (base >> 4) << 1),
+            (coh.REG_LOADER, 0xF, 0), (coh.REG_LOADER + 2, 0xF, (1 << 28) | (8 << 16)),   # loader 0: 8 bytes a vertex
+            (coh.REG_LOADER + 3, 0xF, 0x800), (coh.REG_LOADER + 5, 0xF, 4 << 16),         # loader 1: no components
+            (coh.REG_VERTEX_OFFSET, 0xF, 2), (coh.REG_NUM_VERTICES, 0xF, 3),
+            (coh.REG_DRAW, 0xF, 1),                                        # vertices 2 to 4: bytes 16 to 39
+            (coh.REG_INDEX, 0xF, (1 << 31) | PAGE),                        # 16-bit indices at base + 0x1000 (page 3)
+            (coh.REG_DRAW_INDEXED, 0xF, 1)]                                # indices 9, 6, 7: bytes 48 to 79
+
+    def build(w):
+        w.fill(0)
+        outside = {**{b: 0xEE for b in range(8)}, 40: 0xEE, 80: 0xEE}    # all of vertex 0; vertices 5 and 10
+        inside = {b: 0xEE for b in (16, 39, 48, 79)}
+        cpu_change(w, {base: page(0x12, {**outside, **inside, 0x808: 0xEE}),   # 0x808: loader 1's vertex 2
+                       base + PAGE: page(0x13, dict(enumerate(struct.pack("<3H", 9, 6, 7))))})
+        w.submit_cmdlist(LINEAR, 0x10)
+        w.pica_reg(regs)
+    rc = report_of(tmp_path, build)["read_coverage"]
+    assert classes(rc, "vertex") == (0, 0, 4)                           # bytes 16, 39, 48 and 79
+    assert classes(rc, "index") == (0, 0, 6)                            # the three indices
+    assert classes(rc, "total") == (0, 0, 10) and classes(rc, "total", "pairs") == (0, 0, 2)
+    assert (rc["counts"]["draws"], rc["counts"]["draws_indexed"]) == (1, 1)
+    # vertex 0, vertices 5 and 10, and byte 0x808, which loader 1 would read if it had components
+    assert rc["changes"]["not_read_never_in_read_range"] == 8 + 2 + 1
+
+
+def test_an_indexed_draw_with_8_bit_indices(tmp_path):
+    base = FCRAM + 4 * PAGE
+    regs = [(coh.REG_ATTR_BASE, 0xF, (base >> 4) << 1),
+            (coh.REG_LOADER + 2, 0xF, (1 << 28) | (8 << 16)), (coh.REG_NUM_VERTICES, 0xF, 3),
+            (coh.REG_INDEX, 0xF, PAGE),                                    # bit 31 clear: 8-bit indices at page 5
+            (coh.REG_DRAW_INDEXED, 0xF, 1)]                                # indices 3, 1, 2: bytes 8 to 31
+
+    def build(w):
+        w.fill(0)
+        cpu_change(w, {base: page(0x14, {7: 0xEE, 8: 0xEE, 31: 0xEE, 32: 0xEE}),
+                       base + PAGE: page(0x15, {0: 3, 1: 1, 2: 2, 3: 0xEE})})     # byte 3: past the 3 indices
+        w.submit_cmdlist(LINEAR, 0x10)
+        w.pica_reg(regs)
+    rc = report_of(tmp_path, build)["read_coverage"]
+    assert classes(rc, "index") == (0, 0, 3) and classes(rc, "vertex") == (0, 0, 2)
+    assert rc["changes"]["not_read_never_in_read_range"] == 3          # vertex bytes 7 and 32, index byte 3
+
+
+def test_a_command_buffer_jump_reads_the_chained_buffer(tmp_path):
+    def build(w):
+        w.fill(0)
+        cpu_change(w, {FCRAM + 5 * PAGE: page(0x15, {0x3F: 1, 0x40: 1}), FCRAM + 6 * PAGE: page(0x16, {0x1F: 1}),
+                       FCRAM + 8 * PAGE: page(0x18, {0x1F: 1, 0x20: 1})})
+        w.submit_cmdlist(LINEAR + 4 * PAGE, 0x20)                       # event 1 jumps to 0x40 bytes of page 5
+        w.pica_reg([(coh.REG_CMDBUF_SIZE, 0xF, 0x40 >> 3), (coh.REG_CMDBUF_ADDR, 0xF, (FCRAM + 5 * PAGE) >> 3),
+                    (coh.REG_CMDBUF_JUMP, 0xF, 1)])
+        w.submit_cmdlist(LINEAR + 6 * PAGE, 0x20)                       # event 2: channel 0 is its own buffer now
+        w.pica_reg([(coh.REG_CMDBUF_JUMP, 0xF, 1)])
+        w.submit_cmdlist(LINEAR + 7 * PAGE, 0x20)                       # event 3 jumps through channel 1 to page 8
+        w.pica_reg([(coh.REG_CMDBUF_SIZE + 1, 0xF, 0x20 >> 3),
+                    (coh.REG_CMDBUF_ADDR + 1, 0xF, (FCRAM + 8 * PAGE) >> 3),
+                    (coh.REG_CMDBUF_JUMP + 1, 0, 0)])                   # a trigger jumps whatever its byte mask
+    rc = report_of(tmp_path, build)["read_coverage"]
+    assert classes(rc, "chained_list") == (0, 0, 3)                     # byte 0x3F of page 5, 0x1F of pages 6 and 8
+    assert classes(rc, "cmdlist") == (0, 0, 1)                          # page 6 byte 0x1F, as the list itself
+    assert classes(rc, "total") == (0, 0, 3)                            # read by both at once: counted once
+    assert rc["counts"]["chained_list_jumps"] == 3
+    assert rc["changes"]["not_read_never_in_read_range"] == 2          # page 5 byte 0x40, page 8 byte 0x20
+
+
+def test_the_register_replay_starts_from_the_init_block_and_honours_byte_masks(tmp_path):
+    init = {coh.REG_TEX_CONFIG: 1, 0x82: (8 << 16) | 8, 0x85: (FCRAM + 3 * PAGE) >> 3,   # unit 0: 8x8 RGBA8, page 3
+            coh.REG_NUM_VERTICES: 3}
+
+    def build(w):
+        w.fill(0)
+        cpu_change(w, {FCRAM + 3 * PAGE: page(0x13, {0: 1}), FCRAM + 4 * PAGE: page(0x14, {0: 1})})
+        w.submit_cmdlist(LINEAR, 0x10)
+        w.pica_reg([(coh.REG_TEX_CONFIG, 0x4, 0),                       # byte 2 only: unit 0 stays enabled
+                    (0x85, 0x3, ((FCRAM + 4 * PAGE) >> 3) & 0xFFFF),    # bytes 0 and 1 only: the address is page 4
+                    (coh.REG_DRAW, 0xF, 1)])
+    rc = report_of(tmp_path, build, init_blocks={gcap.K_PICA_REGS: gcap.pica_regs_block(init)})["read_coverage"]
+    assert classes(rc, "texture") == (0, 0, 1)
+    assert rc["reads"]["texture"]["uncovered"]["largest"] == [{"paddr": FCRAM + 4 * PAGE, "pages": 1}]
+    assert rc["changes"]["not_read_never_in_read_range"] == 1          # page 3: the address before the write
+
+
+def test_named_reads_outside_the_windows_are_counted_and_mapped_as_azahar_does(tmp_path):
+    heap = 0x08000000                                                   # not a window of the GPU
+
+    def build(w):
+        w.fill(0)
+        cpu_change(w, {FCRAM + 3 * PAGE: page(0x13, {0: 1}), FCRAM + 10 * PAGE: page(0x1A, {0xFF0: 1}),
+                       FCRAM + 11 * PAGE: page(0x1B, {0: 1}), FCRAM + 12 * PAGE: page(0x1C, {0: 1})})
+        w.gx(dma(heap + PAGE - 0x10, 0x20))                             # event 1: across heap pages 0 and 1, in the run
+        w.gx(dma(heap + 2 * PAGE - 0x10, 0x20))                         # event 2: half of it past the run, which ends
+                                                                        # just before FCRAM page 12
+        w.submit_cmdlist(FCRAM + 3 * PAGE, 0x10)                        # event 3: a physical address, passed through
+        w.pica_reg([])
+        w.gx([4, heap, LINEAR + 12 * PAGE, 0x20, 0, 0, 0, 0])           # event 4: passed through to no memory
+    runs = [(FCRAM + 10 * PAGE, 2, heap)]                               # heap pages 0 and 1 are FCRAM pages 10 and 11
+    rc = report_of(tmp_path, build, runs)["read_coverage"]
+    o = rc["named_outside_windows"]
+    assert o["dma_source"] == {"reads": 2, "bytes": 0x40, "bytes_modelled": 0x30}
+    assert o["cmdlist"] == {"reads": 1, "bytes": 0x10, "bytes_modelled": 0x10}
+    assert o["transfer_input"] == {"reads": 1, "bytes": 0x20, "bytes_modelled": 0}
+    assert classes(rc, "dma_source") == (0, 0, 2) and classes(rc, "cmdlist") == (0, 0, 1)
+    assert rc["changes"]["not_read_never_in_read_range"] == 1          # FCRAM page 12
+    twice = report_of(tmp_path, build, runs + [(FCRAM + 10 * PAGE, 1, heap)])["read_coverage"]   # overlapping runs
+    assert twice["named_outside_windows"]["dma_source"]["bytes_modelled"] == 0x30
+    assert coh.passed_through_range(VRAM + coh.VRAM_SIZE - 0x10, 0x20) == (VRAM + coh.VRAM_SIZE - 0x10,
+                                                                           VRAM + coh.VRAM_SIZE)   # clipped to VRAM
+    assert coh.passed_through_range(heap, 0x10) is None
+    plain = report_of(tmp_path, build)["read_coverage"]                 # no alias map: the DMA is not modelled
+    assert plain["named_outside_windows"]["dma_source"]["bytes_modelled"] == 0
+    assert classes(plain, "dma_source") == (0, 0, 0) and plain["changes"]["not_read_never_in_read_range"] == 3
+    md = str(tmp_path / "o.md")
+    assert coh.main(["capture", str(tmp_path / "reads.mgpu"), "--md", md]) == 0
+    assert "dma_source 2 (0 of 64 bytes modelled)" in open(md).read()
+
+
+def test_a_flush_by_an_address_of_an_alias_run_covers_the_memory_behind_it(tmp_path):
+    heap = 0x08000000
+    runs = [(FCRAM + 10 * PAGE, 2, heap), (FCRAM + 13 * PAGE, 1, heap + 3 * PAGE)]   # heap pages 0, 1 and 3
+
+    def build(w):
+        w.fill(0)
+        cpu_change(w, {FCRAM + p * PAGE: page(0x10 + p, {0: 1}) for p in (9, 10, 11, 12, 13)})   # interval 1
+        w.swap(0, [0] * 7)                                              # event 1
+        w.flush(1, heap - PAGE, 2 * PAGE)                               # interval 2: from the page below the run: page 10
+        w.flush(1, LINEAR + 14 * PAGE, PAGE)                            # a flush by a window: not counted
+        cache_flush(w, heap + PAGE, 3 * PAGE)                           # event 2: pages 11 and 13, through two runs
+                                                                        # and the gap between them
+        w.gx(dma(heap, 4 * PAGE))                                       # event 3 reads pages 10, 11 and 13
+        w.gx(dma(LINEAR + 9 * PAGE, 0x10))                              # event 4: page 9, below the run: not flushed
+        w.gx(dma(LINEAR + 12 * PAGE, 0x10))                             # event 5: page 12, which no run holds
+    rep = report_of(tmp_path, build, runs)
+    rc = rep["read_coverage"]
+    assert classes(rc, "dma_source") == (3, 0, 2)
+    assert (rc["counts"]["flushes_through_alias_runs"], rc["counts"]["flushes_with_two_mappings"]) == (2, 0)  # once each
+    regions = rc["regions"]
+    assert (regions["FCRAM alias 0x08000000"]["flushed_by_end"], regions["FCRAM alias 0x08003000"]["flushed_by_end"],
+            regions["FCRAM linear"]["flushed_by_end"]) == (2, 1, 0)
+    # the rows map a flush through the windows only
+    assert rep["flushes"]["FlushDataCache"]["maps_nowhere"] == 1 and rep["flushes"]["CacheFlushRegion"]["maps_nowhere"] == 1
+    log = tmp_path / "alias.log"
+    log.write_text("# coherence v1 2026-11-01 game=0x0004000000126300 cpu=recomp new3ds=off\n"
+                   "ALIAS f=0 vaddr=0x08000000 paddr=0x2000a000 pages=2\n"
+                   "ALIAS f=0 vaddr=0x08003000 paddr=0x2000d000 pages=1\n")
+    md = str(tmp_path / "a.md")
+    assert coh.main(["capture", str(tmp_path / "reads.mgpu"), "--alias-log", str(log), "--md", md]) == 0
+    text = open(md).read()
+    assert "2 flushes covered memory this way" in text and "0 flushes named such an address" in text
+    plain = report_of(tmp_path, build)["read_coverage"]                 # no alias map: neither flush nor DMA mapped
+    assert classes(plain, "dma_source") == (0, 0, 2) and plain["counts"]["flushes_through_alias_runs"] == 0
+
+
+def test_alias_flushes_keep_the_order_rules_and_an_address_no_window_or_run_holds_covers_nothing(tmp_path):
+    heap = 0x08000000
+
+    def build(w):
+        w.fill(0)                                                       # event 0
+        w.flush(1, heap, PAGE)                                          # interval 1: page 10 through the run, and a
+        w.flush(1, FCRAM + 13 * PAGE, PAGE)                             # physical address, neither a window nor a run
+        cpu_change(w, {FCRAM + 10 * PAGE: page(0x1A, {0: 1}), FCRAM + 13 * PAGE: page(0x1D, {0: 1})})
+        cache_flush(w, heap + PAGE, PAGE)                               # event 1: page 11, at the command's position
+        cpu_change(w, {FCRAM + 10 * PAGE: page(0x1A, {0: 1, 1: 1}),    # interval 2: after both flushes
+                       FCRAM + 11 * PAGE: page(0x1B, {0: 1})})
+        w.gx(dma(heap, 2 * PAGE))                                       # event 2 reads pages 10 and 11
+        w.gx(dma(LINEAR + 13 * PAGE, 0x10))                             # event 3 reads page 13
+    rc = report_of(tmp_path, build, [(FCRAM + 10 * PAGE, 2, heap)])["read_coverage"]
+    assert classes(rc, "dma_source") == (0, 1, 3)                       # page 10 byte 0: in the same interval only
+    assert rc["counts"]["flushes_through_alias_runs"] == 2
+    # neither flush covers a change of a later interval, and the physical address covers nothing
+    assert rc["regions"]["FCRAM alias 0x08000000"]["flushed_by_end"] == 1
+    assert rc["regions"]["FCRAM linear"]["flushed_by_end"] == 0
+
+
+def test_a_flush_covers_no_address_two_alias_runs_map_to_different_memory(tmp_path):
+    heap = 0x08000000
+
+    def build(w):
+        w.fill(0)
+        cpu_change(w, {FCRAM + p * PAGE: page(0x10 + p, {0: 1}) for p in (5, 10, 11)})   # interval 1
+        w.swap(0, [0] * 7)                                              # event 1
+        w.flush(1, heap, 2 * PAGE)                                      # interval 2: two places, then one
+        w.flush(1, heap, PAGE)                                          # two places only: covers nothing
+        w.gx(dma(heap, 0x10))                                           # event 2: a DMA source reads from both places
+        w.gx(dma(LINEAR + 11 * PAGE, 0x10))                             # event 3 reads page 11 by the window
+    # heap page 0 is FCRAM page 10 in one ALIAS set and page 5 in another; heap page 1 is page 11 in both
+    rc = report_of(tmp_path, build, [(FCRAM + 10 * PAGE, 2, heap), (FCRAM + 5 * PAGE, 1, heap)])["read_coverage"]
+    assert classes(rc, "dma_source") == (1, 0, 2)                       # pages 10 and 5 read, only page 11 flushed
+    assert (rc["counts"]["flushes_through_alias_runs"], rc["counts"]["flushes_with_two_mappings"]) == (1, 2)
+    once = report_of(tmp_path, build, [(FCRAM + 10 * PAGE, 2, heap), (FCRAM + 10 * PAGE, 1, heap)])["read_coverage"]
+    assert classes(once, "dma_source") == (2, 0, 0) and once["counts"]["flushes_with_two_mappings"] == 0   # one place
+    assert coh._one_place([(0, 8), (4, 12)], [(100, 108), (204, 212)]) == ([(100, 104), (208, 212)], True)
+
+
+def test_a_shadow_cube_reads_six_faces_and_address_0_or_no_vertices_read_nothing(tmp_path):
+    regs = {coh.REG_TEX_CONFIG: 0b011,                                  # unit 0 a shadow cube; unit 1 at address 0
+            0x82: (8 << 16) | 8, 0x83: coh.TEX_SHADOW_CUBE << 28, 0x85: (FCRAM + 8 * PAGE) >> 3,
+            0x92: (8 << 16) | 8, 0x95: 0,
+            coh.REG_NUM_VERTICES: 3}
+    for face in range(5):
+        regs[coh.REG_CUBE_ADDR + face] = ((CUBE_FACES + (9 + face) * PAGE) >> 3) & 0x3FFFFF
+    empty = [(coh.REG_ATTR_BASE, 0xF, (FCRAM >> 4) << 1), (coh.REG_INDEX, 0xF, (1 << 31) | 20 * PAGE),
+             (coh.REG_NUM_VERTICES, 0xF, 0), (coh.REG_DRAW_INDEXED, 0xF, 1)]   # an indexed draw of no vertices
+
+    def build(w):
+        w.fill(0)
+        changes = {CUBE_FACES + p * PAGE: page(0, {0: 0xEE}) for p in range(9, 14)}
+        changes[FCRAM + 8 * PAGE] = page(0x18, {0: 0xEE})
+        changes[FCRAM + 20 * PAGE] = page(0, {0: 0xEE})                  # the index data of the empty draw
+        cpu_change(w, changes)
+        w.submit_cmdlist(LINEAR, 0x10)
+        w.pica_reg([(reg, 0xF, value) for reg, value in regs.items()] + [(coh.REG_DRAW, 0xF, 1)] + empty)
+    rc = report_of(tmp_path, build)["read_coverage"]
+    assert classes(rc, "texture") == (0, 0, 6) and rc["counts"]["texture_reads"] == 6
+    assert classes(rc, "index") == (0, 0, 0) and classes(rc, "vertex") == (0, 0, 0)
+    assert (rc["counts"]["draws"], rc["counts"]["draws_indexed"]) == (1, 1)
+    assert rc["changes"]["not_read_never_in_read_range"] == 1          # the index data
+
+
+ALIAS_LOG = """\
+# coherence v1 2026-11-01 game=0x0004000000126300 cpu=recomp new3ds=off
+ALIAS f=0 runs=1
+ALIAS f=0 vaddr=0x08000000 paddr=0x2000a000 pages=1
+ALIAS f=600 runs=2
+ALIAS f=600 vaddr=0x08000000 paddr=0x2000a000 pages=2
+ALIAS f=600 vaddr=0x0ffc0000 paddr=0x2000c000 pages=1
+"""
+
+
+def test_an_alias_log_splits_fcram_into_regions(tmp_path):
+    def build(w):
+        cpu_change(w, {FCRAM + PAGE: page(0x11, {0: 1}), FCRAM + 10 * PAGE: page(0x1A, {0: 1, 1: 1}),
+                       FCRAM + 11 * PAGE: page(0x1B, {0: 1}), FCRAM + 12 * PAGE: page(0x1C, {0: 1}),
+                       VRAM: page(0x80, {0: 1})})
+        w.fill(0)
+    runs = coh.load_alias_runs(ALIAS_LOG.splitlines(True))
+    # the union of the two sets: the run at 0x08000000 grew from 1 page to 2 and is kept once
+    assert runs == [(0x2000A000, 2, 0x08000000), (0x2000C000, 1, 0x0FFC0000)]
+    rc = report_of(tmp_path, build, runs)["read_coverage"]
+    assert rc["alias_map"] == {"given": True, "runs": 2}
+    regions = rc["regions"]
+    assert list(regions) == ["VRAM", "FCRAM linear", "FCRAM alias 0x08000000", "FCRAM alias 0x0ffc0000"]
+    assert (regions["FCRAM alias 0x08000000"]["changed_bytes"], regions["FCRAM alias 0x08000000"]["pages"]) == (3, 2)
+    assert regions["FCRAM alias 0x0ffc0000"]["changed_bytes"] == 1 and regions["FCRAM linear"]["changed_bytes"] == 1
+    assert rc["changes"]["changed_bytes"] == 6 and rc["changes"]["pages"] == 5
+    plain = report_of(tmp_path, build)["read_coverage"]                 # no alias map: FCRAM is one region
+    assert plain["alias_map"] == {"given": False, "runs": 0}
+    assert list(plain["regions"]) == ["VRAM", "FCRAM"] and plain["regions"]["FCRAM"]["changed_bytes"] == 5
+    path = str(tmp_path / "t.md")
+    assert coh.main(["capture", str(tmp_path / "reads.mgpu"), "--md", path]) == 0
+    assert "No alias map was given" in open(path).read()
+    shared = [(FCRAM + 12 * PAGE, 1, 0x08000000), (FCRAM + 12 * PAGE, 1, 0x0FF00000)]   # one page in two runs
+    assert list(report_of(tmp_path, build, shared)["read_coverage"]["regions"]) == [
+        "VRAM", "FCRAM linear", "FCRAM alias 0x08000000"]                # the first run names it
+    empty = coh.load_alias_runs(ALIAS_LOG.splitlines(True)[:1])         # a log with no ALIAS run: no alias map
+    assert empty == [] and report_of(tmp_path, build, empty)["read_coverage"]["alias_map"] == {"given": False,
+                                                                                               "runs": 0}
+
+
+def test_changes_no_read_took_are_split_and_every_changed_byte_is_accounted_for(tmp_path):
+    def build(w):
+        w.fill(0)
+        cpu_change(w, {FCRAM + 4 * PAGE: page(0x14, {0: 1}), FCRAM + 9 * PAGE: page(0x19, {0: 1, 1: 1}),
+                       FCRAM + 10 * PAGE: page(0x1A, {0: 1}), FCRAM + 11 * PAGE: page(0x1B, {0: 1})})   # interval 1
+        w.gx(dma(LINEAR + 4 * PAGE, 0x10))                              # event 1 reads page 4
+        w.flush(1, LINEAR + 9 * PAGE, 1)                                # interval 2: byte 0 of page 9
+        cpu_change(w, {FCRAM + 4 * PAGE: page(0x14, {0: 2}),            # after its read: for a read after the capture
+                       FCRAM + 10 * PAGE: page(0x1A, {0: 2})})          # replaces the change no read took
+        w.submit_cmdlist(LINEAR, 0x10)                                  # event 2: the GPU writes page 11 byte 0
+        w.pica_reg([])
+        w.gpu_pages([(FCRAM + 11 * PAGE, page(0x1B, {0: 0x55}))])
+    rc = report_of(tmp_path, build)["read_coverage"]
+    assert list(rc["regions"]) == ["VRAM", "FCRAM"] and rc["regions"]["VRAM"]["changed_bytes"] == 0   # listed anyway
+    t = rc["changes"]
+    assert t["changed_bytes"] == 7 and t["page_changes"] == 6
+    assert (t["read_by_gpu"], t["replaced"], t["overwritten_by_gpu"]) == (1, 1, 1)
+    assert (t["not_read_in_read_range"], t["not_read_in_read_range_flushed"]) == (1, 0)        # (i): page 4
+    assert (t["not_read_never_in_read_range"], t["not_read_never_in_read_range_flushed"]) == (3, 1)   # (ii)
+    assert t["changed_bytes"] == sum(t[k] for k in ("read_by_gpu", "replaced", "overwritten_by_gpu",
+                                                    "not_read_in_read_range", "not_read_never_in_read_range"))
+    assert t["flushed_by_end"] == 1
+
+
+def test_do_flush_is_counted_not_credited_and_cache_flushes_are_matched_with_the_next_list(tmp_path):
+    def build(w):
+        w.fill(0)
+        cpu_change(w, {FCRAM + 2 * PAGE: page(0x12, {0: 1})})
+        w.submit_cmdlist(LINEAR + 2 * PAGE, 0x20, do_flush=1)          # event 1: do_flush is not a flush
+        w.pica_reg([])
+        cache_flush(w, LINEAR + 3 * PAGE, 0x40)                         # exactly the next list's buffer
+        w.submit_cmdlist(LINEAR + 3 * PAGE, 0x40)
+        w.pica_reg([])
+        cache_flush(w, LINEAR + 4 * PAGE, 0x40)                         # not the next list's buffer
+        w.submit_cmdlist(LINEAR + 5 * PAGE, 0x40)
+        w.pica_reg([])
+        cache_flush(w, LINEAR + 6 * PAGE, 0x20)                         # its start, but not its size
+        w.submit_cmdlist(LINEAR + 6 * PAGE, 0x40)
+        w.pica_reg([])
+        w.submit_cmdlist(LINEAR + 4 * PAGE, 0x40)                       # an earlier flush's buffer, but not the next list
+        w.pica_reg([])
+        cache_flush(w, LINEAR + 8 * PAGE, 0x40)                         # another buffer, the next list's, another one:
+        cache_flush(w, LINEAR + 7 * PAGE, 0x40)                         # every CacheFlush since the last list is matched
+        cache_flush(w, LINEAR + 11 * PAGE, 0x40)
+        w.submit_cmdlist(LINEAR + 7 * PAGE, 0x40)
+        w.pica_reg([])
+        cache_flush(w, LINEAR + 9 * PAGE, 0x40)
+        w.swap(0, [0] * 7)                                              # an event in between changes nothing
+        w.submit_cmdlist(LINEAR + 9 * PAGE, 0x40)
+        w.pica_reg([])
+        w.gx([5, LINEAR + 10 * PAGE, 0x40, LINEAR + 12 * PAGE, 0x40, 0, 0, 0])   # the buffer and one more region:
+        w.flush(4, LINEAR + 10 * PAGE, 0x40)                            # not exactly the buffer
+        w.flush(4, LINEAR + 12 * PAGE, 0x40)
+        w.submit_cmdlist(LINEAR + 10 * PAGE, 0x40)
+        w.pica_reg([])
+    rc = report_of(tmp_path, build)["read_coverage"]
+    c = rc["counts"]
+    assert (c["submit_cmdlist"], c["submit_cmdlist_do_flush"]) == (8, 1)
+    assert (c["cache_flush"], c["cache_flush_equals_next_buffer"]) == (8, 3)
+    assert classes(rc, "cmdlist") == (0, 0, 1)
+
+
+def test_the_changes_of_the_first_interval_count_like_the_others_and_are_shown_apart(tmp_path):
+    def build(w):
+        w.flush(1, LINEAR + PAGE, PAGE)                                 # interval 0, before the first event
+        cpu_change(w, {FCRAM + PAGE: page(0x11, {0: 1, 1: 1}), FCRAM + 2 * PAGE: page(0x12, {0: 1})})
+        w.gx(dma(LINEAR + PAGE, 2 * PAGE))                              # event 0 reads pages 1 and 2
+    rep = report_of(tmp_path, build)
+    rc = rep["read_coverage"]
+    assert classes(rc, "dma_source") == (0, 2, 1)
+    assert rc["reads"]["dma_source"]["not_covered_first_interval_bytes"] == 1
+    assert rc["reads"]["total"]["not_covered_first_interval_bytes"] == 1
+    assert rep["rows"][coh.FIRST_ROW]["changed_bytes"] == 3
+
+
+def test_the_read_based_report_on_the_command_line(basic_report, tmp_path, capsys):
+    _, path = basic_report
+    log = tmp_path / "alias.log"
+    log.write_text("# coherence v1 2026-11-01 game=0x0004000000126300 cpu=recomp new3ds=off\n"
+                   "ALIAS f=0 vaddr=0x08000000 paddr=0x20006000 pages=1\n")
+    out_json, out_md = str(tmp_path / "r.json"), str(tmp_path / "r.md")
+    assert coh.main(["capture", path, "--alias-log", str(log), "--json", out_json, "--md", out_md, "--top", "3"]) == 0
+    data = json.load(open(out_json))[path]
+    assert data["events"] == 8 and "rows" in data and "not_fully_covered" in data        # the old keys are kept
+    rc = data["read_coverage"]
+    assert rc["alias_map"] == {"given": True, "runs": 1}
+    # the lists of events 1 and 8 were flushed in their own interval; the display transfer reads 4 changed bytes
+    assert rc["reads"]["cmdlist"]["bytes"] == {"certain": 0, "same_interval": 5, "not_covered": 0}
+    assert rc["reads"]["transfer_input"]["bytes"] == {"certain": 0, "same_interval": 0, "not_covered": 4}
+    assert rc["regions"]["FCRAM alias 0x08000000"]["changed_bytes"] == 1                  # page 6
+    text = open(out_md).read()
+    assert "### Same-interval rule" in text and "### Read-based coverage" in text
+    assert "| transfer_input | 0 / 0 / 4 |" in text and "FCRAM alias 0x08000000" in text
+    assert "pages with read bytes not covered (total): 1 pages in 1 ranges" in text
+    assert "outside the GPU's windows: cmdlist 0 (0 of 0 bytes modelled)" in text and "Not modelled:" in text
+    assert "| changes still pending at the end" in text and "| VRAM |" in text
+    bad = tmp_path / "bad.log"
+    bad.write_text("# perf v1\n")
+    assert coh.main(["capture", path, "--alias-log", str(bad)]) == 1
+    assert "not a coherence log" in capsys.readouterr().err
 
 
 # ── (b) the runner's log ──────────────────────────────────────────────────────────────
