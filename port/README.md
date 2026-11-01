@@ -300,7 +300,7 @@ null-pointer test unless the option is on) tells the runner which case it was: a
 `CopySource`) or a raw pointer from `GetPointer` (`Pointer`: size 0, and what the caller does with it is not seen). The
 runner appends an `ACCESS` line (physical address, size, kind, the guest LR, whether a guest thread was running, the frame,
 and which GPU event wrote the page and when) and unmarks that page. Accesses made while the runner is inside a GPU hook
-(GX RequestDma copies through the application's mapping) are tagged `side=gpu`; accesses outside the emulation loop and
+(GX RequestDma copies through the application's mapping) are tagged `side=gpu`, logged once per mark, and leave the page marked; accesses outside the emulation loop and
 from other host threads are only counted. Pages the process cannot be watched on (no linear-heap or VRAM window of the
 process maps them, or the process also maps them elsewhere, found by scanning its page table every 600 game frames) are
 reported as `UNWATCHED` ranges: that is coverage, not an error. It needs the software renderer (the runner's only one),

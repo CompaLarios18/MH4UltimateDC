@@ -2774,6 +2774,9 @@ public:
         }
         MarkInfo& mark = info_[index];
         const bool gpu_side = depth_ > 0;
+        if (gpu_side && mark.gpu_seen) { // the GPU's own accesses are logged once per mark and never end it
+            return;
+        }
         const bool guest = host_.GuestRunning();
         char lr_text[16] = "-";
         if (guest) {
@@ -2789,6 +2792,10 @@ public:
                      gpu_side ? CohEventName(current_event_) : "-", mark.seq, CohEventName(mark.event), mark.frame,
                      static_cast<unsigned long long>(mark.ticks), mark.watched ? 1u : 0u, mark.aliased ? 1u : 0u);
         ++(gpu_side ? gpu_accesses_ : cpu_accesses_);
+        if (gpu_side) { // a GX DMA reading or writing the page: logged, the page stays marked for the CPU
+            mark.gpu_seen = true;
+            return;
+        }
         mark.marked = false;
         --marked_now_;
         host_.Mark(page, 1, false);
@@ -2861,9 +2868,6 @@ public:
         std::fflush(file_);
     }
 
-    u32 MarkedNow() const {
-        return marked_now_;
-    }
     u64 Accesses() const {
         return cpu_accesses_ + gpu_accesses_;
     }
@@ -2873,7 +2877,7 @@ private:
     struct MarkInfo {
         u32 seq = 0, event = 0, frame = 0;
         u64 ticks = 0;
-        bool marked = false, watched = false, aliased = false;
+        bool marked = false, watched = false, aliased = false, gpu_seen = false;
     };
     struct EventStats {
         u64 events = 0, gpu_pages = 0, marked = 0, rewritten = 0, unwatched = 0, aliased = 0;
@@ -2932,6 +2936,7 @@ private:
             mark.event = current_event_;
             mark.frame = frame;
             mark.ticks = ticks;
+            mark.gpu_seen = false; // a new writer: its first access by the GPU is news again
             if (mark.marked) { // marking again would hit UNREACHABLE: the mark stays, the latest writer is kept
                 ++stats.rewritten;
                 continue;

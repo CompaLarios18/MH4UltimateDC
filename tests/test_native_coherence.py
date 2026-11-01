@@ -1,3 +1,12 @@
+# Derived from Azahar src/core/memory.h, src/core/hle/service/gsp/gsp_command.h and src/video_core/pica/regs_external.h
+# at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-2.0-or-later; each says "Licensed under GPLv2 or any later version"):
+# the synthetic captures and the scripted game use the addresses of the windows of memory.h (the linear heap, the new
+# linear heap, VRAM and the physical bases of FCRAM and VRAM), the argument layouts of the GX commands of gsp_command.h
+# (RequestDma, SubmitCmdList, MemoryFill, DisplayTransfer, TextureCopy, CacheFlush) and the position of the input pixel
+# format in the flags of a display transfer (regs_external.h).
+# Copyright 2014-2026 Citra Emulator Project / Azahar Emulator Project (memory.h)
+# Copyright 2023-2024 Citra Emulator Project / Azahar Emulator Project (gsp_command.h)
+# Copyright 2023-2026 Citra Emulator Project / Azahar Emulator Project (regs_external.h)
 """tools/native/coherence.py and the coherence check of port/src/runner.cpp (N0-14), without Azahar or the game.
 
 (a) The report from a capture is tested with synthetic captures made with gcap.Writer; (b) the report from the
@@ -192,20 +201,40 @@ def test_uncovered_ranges_are_grouped(tmp_path):
     assert coh.group_pages([FCRAM, FCRAM + PAGE, FCRAM + 3 * PAGE]) == [(FCRAM, 2), (FCRAM + 3 * PAGE, 1)]
 
 
-def test_a_flush_after_the_event_does_not_cover_it_but_the_next_one(tmp_path):
+def test_a_flush_after_an_event_does_not_cover_that_event_but_covers_the_next_one(tmp_path):
     def build(w):
         w.submit_cmdlist(LINEAR, 4)                                  # the first event, nothing changed
         w.pica_reg([])
         cpu_change(w, {FCRAM + PAGE: page(0x11, {0: 1})})
-        w.gx([2, LINEAR, 0, LINEAR + PAGE, 0, 0, 0, 0])              # event 2: uncovered
-        w.flush(1, LINEAR + PAGE, PAGE)                              # after it: too late for event 2
-        cpu_change(w, {FCRAM + 2 * PAGE: page(0x12, {0: 1})})
-        w.gx([2, LINEAR, 0, LINEAR + PAGE, 0, 0, 0, 0])              # event 3: the same flush is before it, too wide?
+        w.gx([2, LINEAR, 0, LINEAR + PAGE, 0, 0, 0, 0])              # event 2: page 1 changed, no flush yet
+        w.flush(1, LINEAR + PAGE, PAGE)                              # too late for event 2
+        cpu_change(w, {FCRAM + PAGE: page(0x11, {0: 2})})
+        w.gx([2, LINEAR, 0, LINEAR + PAGE, 0, 0, 0, 0])              # event 3: the same page again, now flushed before it
     path = str(tmp_path / "late.mgpu")
     make_capture(path, build)
     row = coh.analyse_capture(gcap.read(path))["rows"]["MEMORY_FILL"]
     assert row["events"] == 2 and row["pages"] == 2
-    assert row["covered_bytes"]["any"] == 0 and row["pages_none_any"] == 2   # the flush is of page 1, not 2
+    assert (row["pages_none_any"], row["pages_full_any"]) == (1, 1)
+    assert row["covered_bytes"]["any"] == 1 and row["changed_bytes"] == 2
+
+
+def test_a_flush_covers_only_the_changes_since_the_previous_diff_point(tmp_path):
+    def build(w):
+        w.submit_cmdlist(LINEAR, 4)                                  # the first event: its interval is the special one
+        w.pica_reg([])
+        w.flush(1, LINEAR + PAGE, PAGE)                              # flush page 1 ...
+        cpu_change(w, {FCRAM + PAGE: page(0x11, {0: 1})})
+        w.gx([2, LINEAR, 0, LINEAR + PAGE, 0, 0, 0, 0])              # ... event 2: the CPU changed it: covered
+        cpu_change(w, {FCRAM + PAGE: page(0x11, {0: 2})})
+        w.gx([2, LINEAR, 0, LINEAR + PAGE, 0, 0, 0, 0])              # event 3: changed again, no new flush: uncovered
+        cpu_change(w, {FCRAM + PAGE: page(0x11, {0: 3})})
+        w.gx([2, LINEAR, 0, LINEAR + PAGE, 0, 0, 0, 0])              # event 4: and again
+    path = str(tmp_path / "interval.mgpu")
+    make_capture(path, build)
+    row = coh.analyse_capture(gcap.read(path))["rows"]["MEMORY_FILL"]
+    assert row["events"] == 3 and row["pages"] == 3
+    assert (row["pages_full_any"], row["pages_none_any"]) == (1, 2)
+    assert row["covered_bytes"]["any"] == 1 and row["changed_bytes"] == 3
 
 
 def test_unchanged_pages_and_an_empty_interval_are_not_counted_as_changes(tmp_path):
@@ -423,7 +452,10 @@ int main(int, char** argv) {
         fcram[6 * 4096] = 0x66;
         c.WriteRegEnd();
         c.Access(kLinear + 13 * 4096, 4, BlockRead, 1);              // still inside the DMA: the GPU's
+        c.Access(kLinear + 13 * 4096, 4, BlockRead, 1);              // the same mark again: not logged again
         c.ExecuteEnd();
+        // the GPU's reads did not end the marks: the CPU's read of page 13 is still seen
+        c.Access(kLinear + 13 * 4096 + 4, 4, Read, 0x7777);
         // unwatched pages: 10 has no window, 11 is aliased
         c.ExecuteBegin(submit);
         fcram[10 * 4096] = 1;
@@ -529,7 +561,9 @@ def test_accesses_inside_a_gpu_command_are_the_gpus_own(driver, tmp_path):
     assert gpu[0]["mark_ev"] == "SubmitCmdList"
     assert gpu[1]["mark_ev"] == "DisplayTransfer"                # the latest writer of a page that was written twice
     cpu_loads = [a for a in accesses(out) if a["side"] == "cpu" and a["kind"] in coh.LOAD_KINDS]
-    assert len(cpu_loads) == 2                                    # page 4 and the late read of page 10
+    assert [a["paddr"] for a in cpu_loads] == ["0x20004008", "0x2000d004", "0x2000a000"]
+    # the GPU's reads left their pages marked: the CPU's later read of page 13 is the one that ended its mark
+    assert cpu_loads[1]["mark_ev"] == "DisplayTransfer"
 
 
 def test_a_mark_is_kept_when_the_gpu_writes_the_page_again(driver, tmp_path):
@@ -551,7 +585,8 @@ def test_pages_the_process_cannot_reach_through_a_window_are_reported_not_hidden
     late = [a for a in accesses(out) if a["paddr"] == "0x2000a000"]
     assert len(late) == 1 and late[0]["watched"] == "0"           # an access through another table is still logged
     assert rep["aliases"] == [{"f": 100, "vaddr": 0x08000000, "paddr": 0x2000B000, "pages": 1}]
-    assert rep["summary"]["pending"] == 5 and rep["complete"]    # pages 3, 4, 6, 11, 12 were never touched
+    # pages 3, 4, 6, 11, 12 were never touched by the CPU, and VRAM page 0 was only read by the GPU
+    assert rep["summary"]["pending"] == 6 and rep["complete"]
 
 
 def test_events_before_start_and_an_idle_run_leave_the_marker_alone(driver, tmp_path):
@@ -566,7 +601,7 @@ def test_the_log_of_the_checker_is_a_valid_report_input(driver, tmp_path):
     out, _ = run(driver, "basic", tmp_path)
     md = tmp_path / "m.md"
     assert coh.main(["runlog", out, "--md", str(md)]) == 0
-    assert "CPU loads 2" in md.read_text()
+    assert "CPU loads 3" in md.read_text()
     header = open(out).readline()
     assert re.fullmatch(r"# coherence v1 \d{4}-\d\d-\d\d game=0x[0-9a-f]{16} cpu=\w+ new3ds=(on|off)\n", header)
 

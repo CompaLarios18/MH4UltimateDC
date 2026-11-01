@@ -93,8 +93,11 @@ test unless the option is on, from **every** such case, and tells which one it w
 | `CopySource` | `CopyBlock` (the source side; its destination goes through `WriteBlock`) | a copy inside guest memory, including GX `RequestDma` |
 | `Pointer` | both `GetPointer` overloads | a raw host pointer is handed out: the size is 0, and what the caller does with it (how many bytes, which direction) is not seen |
 
-The checker logs the access (below) and **unmarks exactly the page that was accessed**, after logging it (a block access
-calls the hook once per page). So each mark gives at most one line: the first access since the GPU wrote the page.
+The checker logs a **CPU-side** access (below) and **unmarks exactly the page that was accessed**, after logging it (a
+block access calls the hook once per page). So each mark gives at most one CPU line: the first CPU access since the GPU
+wrote the page. A **GPU-side** access (see next paragraph) is logged, once per mark, and **leaves the page marked**, so a
+GX DMA that reads or writes a GPU-written page does not hide a later CPU read of it from the check. A page the GPU writes
+again while it is still marked keeps its mark and gets the new writer (`rewritten`), and its GPU-side access is logged again.
 
 **CPU or GPU.** Not every access through that path is the CPU's. GX `RequestDma` is executed in `GPU::Execute` with
 `memory.CopyBlock` through the application's page table. An access made while the runner is inside a GPU hook (`Execute`,
@@ -121,13 +124,24 @@ Partial coverage is a finding to report, not a failure of the run.
 ### The guest LR, and its limit
 
 The line carries the running core's LR (`ctx->r[14]` on the recompiler), `guest=1` when a guest thread is running and
-`lr=-` when none is. Recompiled functions keep their registers in C locals and write them back only around calls, system
-calls, returns and yields (`tools/recomp/emit.py`, `_with_locals`), so at a slow-path load or store `ctx->r[14]` is the LR as
-of the last write-back. Inside a leaf function (the usual case for `memcpy`-like code) it is the return address of the
-call; inside a function that has called something it may be stale (the value from before an inner call). For a block
-copy or a pointer taken by a service, the LR is that of the thread at its system call (the stub's return address, the
-game's call site of the service function). Read the LR as "the neighbourhood of the caller"; where a site matters, look at the
-function table around it and at the log of the other sessions. The recompiler is not changed for this.
+`lr=-` when none is. Recompiled functions keep their registers in C locals and write them back to `ctx` only at calls,
+system calls, traps and returns (`tools/recomp/emit.py`, `_with_locals`: `RC_FLUSH` before each, `RC_RELOAD` after a call);
+a function that never writes R14 never writes it back either. At a slow-path load or store `ctx->r[14]` is therefore the
+value of the last write-back, which means:
+
+- in a **leaf function**, or in any function **before its first call**, it is the return address left by the caller: the LR
+  names the caller's call site (the usual case for `memcpy`-like code);
+- **after the function has made a call** (a `bl` writes its return address to R14 and flushes it), it is the address just
+  after that `bl`, a place **inside the same function**, not its caller; the same after a system call that followed a
+  write to R14;
+- it is **stale** when the function wrote R14 itself since the last write-back (`pop {..., lr}`, `mov lr, ...`,
+  `ldr lr, ...`): `ctx` still holds the older value.
+
+So no caller chain is recovered, and the LR names the caller only in the first two cases. To identify a site, take the
+function that **contains** the LR (the function table of the recompiled code), not the LR itself: for a leaf it is the
+caller of the function that accessed the memory, for the other cases it is the function that did. For a block copy or a
+pointer taken by a service, the LR is the thread's at its system call (the stub's return address: the game's call site of
+the service function). The recompiler is not changed for this.
 
 ### What the check does not see
 
@@ -140,8 +154,13 @@ function table around it and at the log of the other sessions. The recompiler is
 - **A raw pointer** (`Pointer`) unmarks one page and says nothing about the access made through it.
 - **Aliases and windows** (above), and pages marked in another process's page table than the game's.
 - **Reads that the hook does not reach**: none are known; every `RasterizerCachedMemory` case of `memory.cpp` has the hook
-  (the tests check the patch for that). If a kind of access turned out to bypass the path, the check could not support the
-  conclusion, and the work package would stop with `needs-decision`.
+  (the tests check the patch for that). A kind of access that bypassed the path would make the check unable to support a
+  conclusion for it.
+- **An access that straddles a page boundary.** `Read<T>`, `Write<T>` and `WriteExclusive<T>` look up the page of the first
+  byte only, so the hook and the unmark concern that page; the next page's bytes are read or written through the
+  contiguous host mapping without being looked at. The recompiler's slow path (`ARM_Recomp::SlowRead`/`SlowWrite`)
+  splits such an access into byte accesses, so each page is hooked there; other CPU backends are not checked for this.
+  The block cases are per page.
 
 ### Options
 
