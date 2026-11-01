@@ -245,3 +245,142 @@ def test_perf_is_wired_into_the_build_and_the_options():
     assert '"--perf-log"' in runner and "--perf-log FILE" in runner
     assert "Perf::Scope" in (ROOT / "port" / "src" / "arm_recomp.cpp").read_text()
     assert "perf_log" in (ROOT / "port" / "app" / "config.cpp").read_text()
+
+
+# -- the native runner's log (N1-23) -----------------------------------------------------------------------------
+
+NATIVE_HEADER = ("# perf v1 2026-01-01 game=0x0000000000000000 cpu=native new3ds=off clock={clock} mode={mode}\n"
+                 "frame,present_us,main_us,guest_us,svc_us,service_us,idle_us,switches,preempts\n")
+
+
+def native_csv(rows, clock="host", first_frame=1):
+    """rows of (present, main, guest, svc, service, idle) in microseconds; frames count from first_frame."""
+    mode = "realtime" if clock == "host" else "deterministic"
+    body = "".join(f"{first_frame + i},{p:.3f},{m:.3f},{g:.3f},{s:.3f},{v:.3f},{d:.3f},3,1\n"
+                   for i, (p, m, g, s, v, d) in enumerate(rows))
+    return NATIVE_HEADER.format(clock=clock, mode=mode) + body + f"# frames={len(rows)} dropped=0\n"
+
+
+def state_trace(scenes, first_frame=1):
+    """A --state-trace with one record per frame; `scenes` are scene values."""
+    lines = ["# statetrace v1 2026-01-01 game=0x0000000000000000 cpu=native new3ds=off\n"]
+    for i, scene in enumerate(scenes):
+        lines.append(f"f={first_frame + i} t={i * 1000} frame_counter=0x{first_frame + i:08x} scene=0x{scene:08x}\n")
+    return "".join(lines)
+
+
+HUNT = 0x00E655C8
+VILLAGE = 0x00E64D5C
+
+
+def test_native_columns_get_busy_and_game_thread_time():
+    # 100 frames: main 1..100 ms / 25, svc and service fixed, other threads' guest time on top
+    rows = [(8333.0, i * 40.0, i * 40.0 + 500.0, 300.0, 100.0, 5000.0) for i in range(1, 101)]
+    columns, parsed, _ = perf_report.parse(native_csv(rows))
+    data = perf_report.columns_of(columns, parsed)
+    assert data["busy_us"][0] == 40.0 + 500.0 + 300.0 + 100.0
+    assert data["game_us"][0] == 40.0 + 300.0 + 100.0
+    assert "other_us" not in data  # no gpu_us in this log: nothing to derive it from
+    text = perf_report.report(native_csv(rows))
+    assert "| game (ms) | 2.400 | 4.200 | 4.360 | 4.400 |" in text  # main + 400 us of calls and services
+    assert "| main (ms) | 2.000 | 3.800 | 3.960 | 4.000 |" in text
+    assert "| switches | 3.000 | 3.000 | 3.000 | 3.000 |" in text
+
+
+def test_the_verdict_names_both_bounds():
+    # game_us = main + 400; the p99 of main is 3.960 ms: upper 4.360 against 4 ms, lower 3.960 below it
+    rows = [(8333.0, i * 40.0, i * 40.0, 300.0, 100.0, 0.0) for i in range(1, 101)]
+    text = perf_report.report(native_csv(rows))
+    assert ("Game thread, p99 against its budget of 4.000 ms: game_us (upper bound) 4.360 ms, "
+            "main_us (lower bound) 3.960 ms: UNDECIDED") in text
+    assert "Every guest thread together (busy_us, the one host thread's work), p99: 4.360 ms" in text
+    # within: the upper bound is under the budget
+    low = [(8333.0, 1000.0, 1500.0, 300.0, 100.0, 0.0)] * 20
+    assert ": WITHIN" in perf_report.report(native_csv(low))
+    # over: even the main thread alone is over
+    high = [(8333.0, 4500.0, 5000.0, 300.0, 100.0, 0.0)] * 20
+    assert ": OVER" in perf_report.report(native_csv(high))
+    # the budget is an option; exactly on it is within
+    on = [(8333.0, 1000.0, 1000.0, 1500.0, 1500.0, 0.0)] * 5
+    assert ": WITHIN" in perf_report.report(native_csv(on), thread_budget_ms=4.0)
+    assert ": OVER" not in perf_report.report(native_csv(on), thread_budget_ms=4.0)
+    assert "budget of 3.000 ms" in perf_report.report(native_csv(on), thread_budget_ms=3.0)
+    # a reference runner's log has no game-thread verdict (its columns are N0-15's)
+    assert "Game thread" not in perf_report.report(make_csv([(8000.0, 1.0, 1.0, 1.0)] * 3))
+
+
+def test_hunt_frames_read_the_scene_of_a_state_trace():
+    trace = state_trace([VILLAGE, VILLAGE, HUNT, HUNT, VILLAGE], first_frame=10)
+    assert perf_report.hunt_frames(trace) == {12, 13}
+    assert perf_report.hunt_frames(trace, VILLAGE) == {10, 11, 14}
+    assert perf_report.hunt_frames("# statetrace v1\nnot a record\n") == set()
+    # a name that only contains `scene` does not count
+    assert perf_report.hunt_frames("f=1 t=0 old_scene=0x00e655c8\n") == set()
+
+
+def test_only_the_hunt_counts_and_skip_applies_to_it():
+    n = 30
+    rows = [(8333.0, 100.0, 100.0, 0.0, 0.0, 0.0)] * 10 + [(8333.0, 3000.0, 3000.0, 0.0, 0.0, 0.0)] * 20
+    csv = native_csv(rows)  # frames 1..30; the hunt is frames 11..30
+    trace = state_trace([VILLAGE] * 10 + [HUNT] * 20)
+    frames = perf_report.hunt_frames(trace)
+    text = perf_report.report(csv, frames=frames, min_frames=5)
+    assert "Frames: 20" in text and "Hunt: 20 rows" in text
+    assert "| main (ms) | 3.000 | 3.000 | 3.000 | 3.000 |" in text
+    text = perf_report.report(csv, skip=5, frames=frames, min_frames=5)
+    assert "Frames: 15 (the first 5 skipped)" in text
+    # not enough of it left after the skip
+    with pytest.raises(perf_report.NotCounted, match="20 rows, 15 after skipping 5: fewer than 16"):
+        perf_report.report(csv, skip=5, frames=frames, min_frames=16)
+    # the default asks for 20 s at 120 fps
+    with pytest.raises(perf_report.NotCounted, match="fewer than 2400"):
+        perf_report.report(csv, frames=frames)
+    assert n == 30
+
+
+def test_a_run_that_never_reached_the_hunt_does_not_count():
+    csv = native_csv([(8333.0, 100.0, 100.0, 0.0, 0.0, 0.0)] * 20)
+    frames = perf_report.hunt_frames(state_trace([VILLAGE] * 20))
+    with pytest.raises(perf_report.NotCounted, match="never shows the hunt"):
+        perf_report.report(csv, frames=frames, min_frames=1)
+    # without a state trace every row counts: the report does not know the scene
+    assert "Frames: 20" in perf_report.report(csv)
+
+
+def test_a_log_in_virtual_time_does_not_count():
+    csv = native_csv([(8333.0, 100.0, 100.0, 0.0, 0.0, 0.0)] * 5, clock="virtual")
+    with pytest.raises(perf_report.NotCounted, match="virtual time"):
+        perf_report.report(csv)
+
+
+def test_native_command_line(tmp_path, capsys):
+    rows = [(8333.0, 100.0, 100.0, 0.0, 0.0, 0.0)] * 6 + [(8333.0, 1500.0, 2000.0, 400.0, 100.0, 4000.0)] * 14
+    csv = tmp_path / "run.csv"
+    csv.write_text(native_csv(rows))
+    trace = tmp_path / "state.txt"
+    trace.write_text(state_trace([VILLAGE] * 6 + [HUNT] * 14))
+    args = [str(csv), "--state-trace", str(trace), "--skip", "4", "--min-frames", "10"]
+    assert perf_report.main(args) == 0
+    out = capsys.readouterr().out
+    assert "Frames: 10 (the first 4 skipped)" in out
+    assert "game_us (upper bound) 2.000 ms, main_us (lower bound) 1.500 ms: WITHIN" in out
+    # too few rows left: the exit status is 1 and the table is not printed
+    assert perf_report.main([*args[:-1], "11"]) == 1
+    out = capsys.readouterr().out
+    assert out.startswith("NOT COUNTED: ") and "| column |" not in out
+    # the scene can be named; a village-only trace never shows the hunt
+    assert perf_report.main([*args, "--hunt-scene", "0x00e64d5c"]) == 1
+    capsys.readouterr()
+    assert perf_report.main([*args, "--hunt-scene", "banana"]) == 2
+    assert perf_report.main([*args[:-1], "0"]) == 2
+    assert perf_report.main([*args, "--thread-budget-ms", "0"]) == 2
+    assert perf_report.main([str(csv), "--state-trace", str(tmp_path / "missing.txt")]) == 2
+    capsys.readouterr()
+    # a virtual-time log: exit 1 as well
+    virtual = tmp_path / "det.csv"
+    virtual.write_text(native_csv(rows, clock="virtual"))
+    assert perf_report.main([str(virtual)]) == 1
+    assert "virtual time" in capsys.readouterr().out
+    # the budget option moves the verdict
+    assert perf_report.main([*args, "--thread-budget-ms", "1.9"]) == 0
+    assert "budget of 1.900 ms" in capsys.readouterr().out
