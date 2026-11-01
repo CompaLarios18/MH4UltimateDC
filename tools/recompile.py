@@ -11,6 +11,7 @@ import argparse
 import bisect
 import collections
 import os
+import re
 import struct
 import sys
 import time
@@ -43,6 +44,19 @@ def load_entries(functions_tsv: str, extra: list[str]) -> dict[int, str]:
                     mode = "thumb" if (a & 1 or (len(parts) > 1 and parts[1] == "thumb")) else "arm"
                     entries.setdefault(a & ~1, mode)
     return entries
+
+
+# What a hook point's or tunable's name may be: it goes into table.c as a C string, and the host
+# matches it as it is (Hooks::FindHookPoint), so nothing that would need escaping
+NAME = re.compile(r"[A-Za-z0-9_:~]+")
+
+
+def check_names(hooks: dict[int, str], tunables: dict[int, tuple[int, str]]) -> None:
+    """Refuses a hook or tunable name outside NAME (an empty one too) before anything is written."""
+    bad = [f"hook 0x{a:08x} {n!r}" for a, n in sorted(hooks.items()) if not NAME.fullmatch(n)]
+    bad += [f"tunable 0x{a:08x} {t[1]!r}" for a, t in sorted(tunables.items()) if not NAME.fullmatch(t[1])]
+    if bad:
+        raise SystemExit("names may hold only letters, digits, '_', ':' and '~': " + ", ".join(bad))
 
 
 def load_hooks(path: str | None) -> dict[int, str]:
@@ -242,6 +256,7 @@ def recompile(img: Image, entries: dict[int, str], out: str, log=print,
     original value) the host can change at run time (rc_tunables in recomp.h)."""
     t0 = time.time()
     hooks = hooks or {}
+    check_names(hooks, tunables or {})
     an = Analyzer(img)
     inits = {a: m for a, m in init_array_entries(img).items() if a not in entries}
     if inits:
