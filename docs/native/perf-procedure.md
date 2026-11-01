@@ -162,7 +162,8 @@ No microsecond is counted twice, but not every one is counted. All guest threads
 `busy_us` = `guest_us` + `svc_us` + `service_us` (what `perf_report.py` adds) is the counted work of every guest
 thread on it. `present_us` minus `idle_us` is `busy_us` plus the scheduler's own host loop between two guest runs
 (reaping, posted work and timer events, the safe-point hooks, picking the next thread). No column holds that loop,
-so the difference is at least `busy_us`.
+so the difference is at least `busy_us` (over the log; per row, up to the few microseconds of the hooks run as the
+system call that ends the row starts).
 
 The scheduler does not count its own host work separately. The timer events (the DSP's, HID's and GSP's), posted
 replies (fs, GPU interrupts) and safe-point hooks are charged to whatever was being counted when they ran: the
@@ -250,15 +251,15 @@ $lib    = "build\n3-22b\lib-rt\recomp\0004000000126300_native.dll"   # the --nat
 $script = "build\n1-26\G3-ms.txt"
 $out    = "build\n1-23\run01"                                         # one folder per attempt: run01, run02, ...
 $lock   = "build\locks\emulator"
-$env:PATH = "build\game\toolchain\llvm-mingw-20241217-ucrt-x86_64\bin;" + $env:PATH   # the toolchain build_game.py fetched; without it the runner waits on a hidden missing-DLL dialog (not needed with the CI artifact, whose DLLs are beside the exe)
+$env:PATH = (Resolve-Path build\game\toolchain\llvm-mingw-20241217-ucrt-x86_64\bin).Path + ";" + $env:PATH   # the toolchain build_game.py fetched; without it the runner waits on a hidden missing-DLL dialog (not needed with the CI artifact, whose DLLs are beside the exe)
 $env:TZ = "UTC0"
-if (Test-Path $out) { throw "$out exists: every attempt, a held one too, takes a new runNN" }
-New-Item -ItemType Directory -Force $out | Out-Null
 while ($true) {                                  # wait while another run holds the lock
     try { New-Item -ItemType Directory $lock -ErrorAction Stop | Out-Null; break }
     catch [System.IO.IOException] { Start-Sleep 30 }
 }
 try {
+    if (Test-Path $out) { throw "$out exists: every attempt, a held one too, takes a new runNN" }
+    New-Item -ItemType Directory $out | Out-Null
     $load = (1..20 | ForEach-Object {
         (Get-CimInstance Win32_PerfFormattedData_PerfOS_Processor -Filter "Name='_Total'").PercentProcessorTime
         Start-Sleep 1 } | Measure-Object -Average).Average
@@ -292,8 +293,8 @@ The block prints `runner exit N`:
 - 2 (loading failed): a setup error (a path, the library). A library the runner refuses (Azahar's, a deterministic
   one, or one built for another `RC_HOST_VERSION`) ends the run at boot with this status and `runner.log` gives the
   reason: rebuild it with `--native` at this tree. It is not an attempt: fix it and run again in a new folder.
-- 3 (a runtime error) or 4 (the recompiled code stopped): stop and give the orchestrator this attempt with its
-  `runner.log`. It is a fault of the runtime, not a miss of the script.
+- 3 (a runtime error) or 4 (the recompiled code stopped): stop and give the orchestrator this run's folder and
+  `runner.log` (it is not an attempt of the script). It is a fault of the runtime, not a miss of the script.
 
 ## Reading a run
 
