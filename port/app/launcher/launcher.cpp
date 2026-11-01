@@ -1124,6 +1124,10 @@ void State::ChooseAndInstallUpdate(bool browse) {
                      }
                      Recheck();
                      CheckCode();
+                     // (with no game yet, the mods go by the update installed)
+                     if (ToolsReady() && !Checks::FindRegion(game.program_id)) {
+                         RefreshMods(*this);
+                     }
                  };
              },
              browse);
@@ -1150,6 +1154,13 @@ void State::ChooseGame(bool browse) {
                  LOG_INFO(Frontend, "launcher: game {}", path);
                  Recheck();
                  CheckCode();
+                 // the mods go by the game's region (its mods folder, its texture packs): read
+                 // again, and Play waits for them as at the start
+                 if (ToolsReady() && !job.Active()) {
+                     mods.loaded = false;
+                     mods.error.clear();
+                     RefreshMods(*this);
+                 }
              },
              browse);
 }
