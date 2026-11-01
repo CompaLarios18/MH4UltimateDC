@@ -8,24 +8,38 @@
 # They fire when the machine is busy: lavapipe's worker threads, which ThreadSanitizer cannot see synchronising, then
 # produce allocator and mutex reports (a data race whose first frame is free, malloc or pthread_mutex_destroy called
 # from libvulkan_lvp.so). On a quiet machine (loader 1.3.275, Mesa 25.2.8) the tests happen to pass with an empty file, but
-# that is timing; on a loaded one an empty file failed most runs, and with this file they passed. They name only those
-# two libraries. Never
-# add a frame of plume (native/third_party/rhi/plume/patched) or of our code here: a report that has one is a race in
-# the code under test (the control D2 of native/tests/rhi_plume_patterns_test.cpp makes one on purpose and is not run by
-# the job), and the fix is the code.
+# that is timing; on a loaded one an empty file failed most runs, and with this file they passed.
 #
-# What they cost: a report with a frame in the loader or in lavapipe's driver is hidden, so the job does not catch an
-# unlocked Vulkan call that races inside the driver (a queue used from two threads without its lock, say). The guards
-# for that are the validation layer's synchronization validation, the owner-rule checks and MH4N_RHI_CHECKS.
+# lavapipe runs LLVM (libLLVM.so.<version>, or libLLVM-<version>.so.1 in older packages; also uninstrumented) on its
+# own threads (llvmpipe-N). Native CI run 41252057160 (native at 48f9d2c, 2026-10-31) failed present_test after 312 s
+# with a data race whose two access stacks hold only libLLVM.so.20.1 frames under the interceptors (bcmp from
+# llvm::detail::IEEEFloat::bitwiseIsEqual against operator new from llvm::allocate_buffer, threads llvmpipe-1 and
+# llvmpipe-2). The driver's entry did not hide it: lavapipe's frames are only in the stacks that created the two
+# threads, and a race report's thread-creation stacks are not matched against suppressions (compiler-rt 18,
+# tsan_rtl_report.cpp: AddThread leaves them not suppressable). The same job passed present_test on PRs #63 and #68 and
+# on native at 97eb0dd (run 41255452035), with the same file. So LLVM gets a race: entry too.
+#
+# They name only those three libraries: the loader, the software driver and the LLVM it loads (our binaries do not link
+# LLVM). Never add a frame of plume (native/third_party/rhi/plume/patched) or of our code here: a report that has one is
+# a race in the code under test (the control D2 of native/tests/rhi_plume_patterns_test.cpp makes one on purpose and is
+# not run by the job), and the fix is the code.
+#
+# What they cost: a report with a frame in the loader, in lavapipe's driver or in its LLVM is hidden, so the job does not
+# catch an unlocked Vulkan call that races inside the driver (a queue used from two threads without its lock, say). The
+# guards for that are the validation layer's synchronization validation, the owner-rule checks and MH4N_RHI_CHECKS.
 #
 # They are `race:` and `mutex:` entries, not `called_from_lib:`: a called_from_lib entry for either library made
 # ThreadSanitizer worse here (in one run it stopped the process with "library ... is unloaded" because the loader dlcloses
 # the driver; in others it reported a data race inside libLLVM.so, a lock-order inversion, or "unlock of an unlocked
-# mutex", in code that is clean without the entry).
+# mutex", in code that is clean without the entry; a data race inside libLLVM.so later came without such an entry too,
+# in run 41252057160 above).
 
 # the Vulkan loader and lavapipe's driver library, as a frame of a report
 race:libvulkan.so
 race:libvulkan_lvp.so
+
+# the LLVM lavapipe loads, as a frame of a report (a substring: it matches the versioned file names above)
+race:libLLVM
 
 # the loader's own mutexes
 mutex:libvulkan.so

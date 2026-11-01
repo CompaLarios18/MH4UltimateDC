@@ -248,8 +248,9 @@ no report allowed (`rhi-spike.md` 9.4 item 16; 6.9 ran D2 and D3 under it with g
   binaries, `rhi_plume_patterns_test`'s D1, D3 and D3b among them; the control D2 is skipped by default and must not be run there
   (it races on purpose and would fail the job).
 - **Suppressions** (`tools/native/tsan.supp`): `race:` and `mutex:` entries on the file names of the Vulkan loader
-  (`libvulkan.so`) and lavapipe's driver library (`libvulkan_lvp.so`), for a driver build whose uninstrumented locking
-  ThreadSanitizer cannot see. **They are needed when the machine is busy**: lavapipe's worker threads, whose synchronisation
+  (`libvulkan.so`) and lavapipe's driver library (`libvulkan_lvp.so`), and, as a `race:` entry only, the LLVM it loads
+  (`libLLVM`, below), for a driver build whose uninstrumented locking ThreadSanitizer cannot see. **They are needed when the
+  machine is busy**: lavapipe's worker threads, whose synchronisation
   ThreadSanitizer cannot see, then give allocator and mutex reports (a data race whose first frame is `free`, `malloc` or
   `pthread_mutex_destroy` called from `libvulkan_lvp.so`). On a quiet machine (loader 1.3.275, Mesa 25.2.8) the two test binaries
   happened to pass with an empty file, which is timing-dependent. Reproduced: with an empty file the patterns test failed (exit 66) in 6 of 8 runs on a loaded machine
@@ -257,18 +258,30 @@ no report allowed (`rhi-spike.md` 9.4 item 16; 6.9 ran D2 and D3 under it with g
   ThreadSanitizer worse: with the driver entry it stopped the process with "library ... is unloaded" in one run (the loader
   `dlclose`s the driver whenever an instance is destroyed), and across runs and entries it also reported a data race with both
   accesses inside `libLLVM.so`, a lock-order inversion, and "unlock of an unlocked mutex" (with the loader entry, in
-  `vkDestroyDevice`), in code that is clean without the entry. **What they cost:** a report with a frame in the loader or in
-  lavapipe's driver is hidden, so the job does not catch an unlocked Vulkan call that races inside the driver (a queue used from
-  two threads without its lock, say); the guards for that are the validation layer's synchronization validation, the owner-rule
-  checks and `MH4N_RHI_CHECKS`. Never a frame of plume or of ours: a report in plume's code outside D2 stops the work package with
-  `needs-decision` naming it. That the entries do not hide plume's own races is shown by the control:
+  `vkDestroyDevice`), in code that is clean without the entry (a data race inside `libLLVM.so` later came without such an
+  entry too, below). **LLVM** (`race:libLLVM`, 2026-10-31): lavapipe runs LLVM (`libLLVM.so.<version>`, or
+  `libLLVM-<version>.so.1` in older packages, uninstrumented too; the entry is the substring both names share) on its own
+  threads (`llvmpipe-N`), and the job on `native` at `48f9d2c` (run 41252057160, 2026-10-31) failed `present_test` after 312 s
+  with a data race whose two access stacks hold only `libLLVM.so.20.1` frames under the interceptors: a read in `bcmp` from
+  `llvm::detail::IEEEFloat::bitwiseIsEqual` on `llvmpipe-1` against `operator new` from `llvm::allocate_buffer` on
+  `llvmpipe-2`, in a heap block `llvmpipe-2` allocated. The driver's entry did not hide it: `libvulkan_lvp.so` is only in the
+  stacks that created the two threads, and ThreadSanitizer does not match a race report's thread-creation stacks against
+  suppressions (compiler-rt 18, `tsan_rtl_report.cpp`: `AddThread` leaves them not suppressable). The failing case drives
+  lavapipe from one thread of ours. The same job passed `present_test` on PRs #63 and #68 and on `native` at `97eb0dd` (run
+  41255452035), with the same file, so it is a timing-dependent report of the same kind as the driver's, and LLVM gets a
+  `race:` entry; our binaries do not link or load LLVM. **What they cost:** a report with a frame in the loader, in
+  lavapipe's driver or in its LLVM is hidden, so the job does not catch an unlocked Vulkan call that races inside the driver
+  (a queue used from two threads without its lock, say); the guards for that are the validation layer's synchronization
+  validation, the owner-rule checks and `MH4N_RHI_CHECKS`. Never a frame of plume or of ours: a report in plume's code
+  outside D2 stops the work package with `needs-decision` naming it. That the entries do not hide plume's own races is shown
+  by the control:
   `build/tsan/bin/rhi_plume_patterns_test --test-case=control/D2 --no-skip` with the same options reports `data race` in
   `plume::VulkanCommandList::barriers` (`plume_vulkan.cpp`, the layout store, as in `rhi-spike.md` 6.9).
 - **Seen on this machine** (the cloud container: clang 18.1.3, `libclang-rt-18-dev` 1:18.1.3-1ubuntu1, loader 1.3.275, lavapipe from
   Mesa 25.2.8, four cores): the `build/tsan` tree built; `ctest -R "$RE"` matched two tests, `rhi_plume_patterns_test` (23 cases, 3.4 s)
   and `rhi_plume_test`, and both passed with `halt_on_error=1` and the suppressions file, five runs of the first in a row, no report.
   The control D2 under the same options exits 66 with `data race` at `plume_vulkan.cpp:3007` in `VulkanCommandList::barriers`. The
-  job itself on GitHub (`ubuntu-24.04`, its own Mesa and loader) has not run: *(CI)*, `pending`. If it reports something in
+  job itself on GitHub (`ubuntu-24.04`, its own Mesa and loader) has run on every PR since #45. If it reports something in
   lavapipe that this machine did not, the entries of `tsan.supp` are where it is added, naming the library and nothing of plume's.
 
 **The VMA data race, and VMA's patch 01.** The job failed now and then in `gpu_backend_sync_test` with `WARNING: ThreadSanitizer:
@@ -284,8 +297,9 @@ for its issue #525 (the same two stacks): commit `4f687952b8c7aa250dfc25f78e269b
 every hunk, all as upstream wrote them except `Map`'s added line, one level deeper because the pinned `Map` has its `vkMapMemory` branch in an
 `else`. **Not an update of VMA:** the pinned commit is the one plume names and every RHI measurement was made with it, and 3.4.0 would bring
 everything else since 3.2.1 into the renderer's allocator for one fix; the rule of `native/third_party/rhi/` is that an upstream fix is a numbered
-patch and the pin does not move. **Not a suppression:** `tsan.supp` names only the loader and lavapipe, never code we ship; a `race:` entry for
-VMA would hide a real data race (undefined behaviour, even if the value read only steers a heuristic) and every later one in VMA's allocation
+patch and the pin does not move. **Not a suppression:** `tsan.supp` names only the loader and lavapipe (its driver and its
+LLVM), never code we ship; a `race:` entry for VMA would hide a real data race (undefined behaviour, even if the value read
+only steers a heuristic) and every later one in VMA's allocation
 path.
 
 The case that shows it is `rhi_plume_patterns_test`'s `vma01/unmap_on_one_thread_while_another_allocates` (the job's regex runs it; the
@@ -301,8 +315,9 @@ which the extra mapping stayed on. Without the buffer that holds B's block, VMA 
 against 113 ms as committed (120 ms in the plain build). **This PC cannot
 build with ThreadSanitizer:** it runs Windows, its llvm-mingw 20241217 has no TSan runtime (`lib/clang/19/lib/windows` holds the ASan, UBSan,
 fuzzer, profile and stats runtimes, no `clang_rt.tsan`), and there is no WSL. So that the case makes ThreadSanitizer report the race without
-patch 01, and none with it, is `inference` (from the code: no lock or acquire links B's read to A's later unmap) until the `native-tsan` job
-runs it: *(CI)*, `pending`.
+patch 01 is `inference` (from the code: no lock or acquire links B's read to A's later unmap). With patch 01 the `native-tsan` job ran it
+clean: on PR #69 (run 41244731981, 2026-10-31) and on `native` after the merge (run 41252057160, where `rhi_plume_patterns_test` and
+`gpu_backend_sync_test` passed and only `present_test` failed, on the LLVM report above).
 
 ## Binding a buffer at an offset (read for N2-27)
 
@@ -586,7 +601,7 @@ targets only) ran this test three times and `gpu_backend_core_test` once with `h
 report. Mutants tried (one rule broken at a time, the test seen to fail, the rule restored): the foreign-thread breach removed
 (2 cases fail), the hand-over wait not added to the recorder (1), `CopyImageToBuffer` not returning the image to `GENERAL` (the layout case),
 a pass end that does not move the depth image back (the layout case), the arena never reusing a set (the 1,000-frame case) and the
-feedback copy not copying (2 cases); after review: the preferred order of `Rgba4` and of `Rgb5A1` swapped, a linear blit made nearest, the integer clear branch removed, the arena handing out a set still pending for the recorder, the stencil view made with the depth aspect, `HandOver` by a non-owner not checked, `Acquire` of the twin removed from `FeedbackCopy` (and `HandOver` not handing the twin over), the clear of a kept-open pass removed, and the layer-count test loosened: each fails a case. `native-tsan` on GitHub is *(CI)*, `pending`.
+feedback copy not copying (2 cases); after review: the preferred order of `Rgba4` and of `Rgb5A1` swapped, a linear blit made nearest, the integer clear branch removed, the arena handing out a set still pending for the recorder, the stencil view made with the depth aspect, `HandOver` by a non-owner not checked, `Acquire` of the twin removed from `FeedbackCopy` (and `HandOver` not handing the twin over), the clear of a kept-open pass removed, and the layer-count test loosened: each fails a case. `native-tsan` on GitHub was *(CI)*, `pending` then; *(2026-10-31)* it has passed on every PR into `native` from #45 to #69.
 
 **`unverified` / pending, not claimed:** the RX 6700 XT (no D24S8, a real-window surface, its format query and descriptor
 alignment), MoltenVK and KosmicKrisp (the R-first-only 16-bit formats, the depth layout), a second queue family (a hand-over across
@@ -789,7 +804,7 @@ present_wait direct_upload`, and `all`, and `d24s8,timeline` (the PC's pair). Th
 reports the `UNASSIGNED-Threading-MultipleThreads-Read` of core's fence branch described above, the same message `gpu_backend_core_test` gives every time under that mask, timing-dependent in the other binaries). The first layer run found one
 defect of ours: a reused readback buffer's `SYNC-HAZARD-WRITE-AFTER-WRITE` between two readbacks' passes, now ordered by a memory barrier at the start of each (the finding N2-27 made for its own copies).
 The `build/tsan` tree (the commands of "The ThreadSanitizer job" above, with the four targets `gpu_backend_sync_test`, `gpu_backend_readback_test`, `gpu_backend_core_test` and
-`gpu_backend_targets_test`; `halt_on_error=1`, `tools/native/tsan.supp`) ran the first two twice each and once more under `MH4N_RHI_MASK=timeline` (after the review changes too), and the other two twice: no report. `native-tsan` on GitHub is *(CI)*, `pending`.
+`gpu_backend_targets_test`; `halt_on_error=1`, `tools/native/tsan.supp`) ran the first two twice each and once more under `MH4N_RHI_MASK=timeline` (after the review changes too), and the other two twice: no report. `native-tsan` on GitHub was *(CI)*, `pending` then; *(2026-10-31)* it has passed on every PR into `native` from #45 to #69.
 **Mutants** (one rule broken at a time in a copy restored from the commit, the test seen to fail, the rule restored; the build checked to have succeeded, because a mutant that does not compile leaves the old binary running):
 - sync: the CPU wait of the fallback removed (`waits/the_second_submission...` fails, in the masked leg and under `MH4N_RHI_MASK=timeline`); `Retire` releasing at once whatever the value (the retire case crashes: the image
   was destroyed in flight); the drain releasing entries whose value has not passed (the same case crashes); the header check skipped (the pipeline-cache case fails); only the UUID comparison skipped (the same case fails);
