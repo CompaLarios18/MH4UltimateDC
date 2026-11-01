@@ -391,14 +391,63 @@ def test_a_catalog_mod_is_for_the_game_of_its_region(user, tmp_path):
     out = run(user, *eu, "deploy")
     assert out["added"] == [] and any("left out" in w for w in out["warnings"])
     assert not (user / "load" / "mods" / EUR / "exefs").exists()
-    # --force for the European game: no region, so it is put in place there too (with the warning
-    # every code patch without a title folder gets there)
+    # --force for the European game: its region is "any", so it is put in place for both games
+    # (with the warning every code patch without a title folder gets for the European one)
+    run(user, "remove", "usa-mod")
+    run(user, "deploy")
     out = run(user, *eu, "install-from-catalog", "usa-mod", "--catalog", cat, "--force")
     assert any("installed anyway (--force)" in m for m in out["messages"])
-    assert "region" not in json.loads((user / "mh4u-mods" / out["mod"] / "mod.json").read_text())
+    assert json.loads((user / "mh4u-mods" / out["mod"] / "mod.json").read_text())["region"] == "any"
     mod = next(m for m in out["mods"] if m["id"] == out["mod"])
     assert mod["fits"] is True and "if this code patch was made for MH4U USA's code" in mod["warnings"][0]
+    assert out["warnings"] == []                    # (in the mod's own warnings, not again in the result's)
     assert run(user, *eu, "deploy")["added"] == ["exefs/code.ips"]
+    assert run(user, "deploy")["added"] == ["exefs/code.ips"]
+    # an entry without a region is for both games too
+    cat = catalog(tmp_path / "cat.json", [entry("any-mod", "mod", [
+        {"url": url(code), "sha256": hashlib.sha256(code.read_bytes()).hexdigest(), "archive": "file",
+         "as": "exefs/code.ips"}])])
+    out = run(user, "install-from-catalog", "any-mod", "--catalog", cat)
+    assert json.loads((user / "mh4u-mods" / out["mod"] / "mod.json").read_text())["region"] == "any"
+
+
+def test_a_catalog_mod_installed_without_a_region_is_the_usa_games(user, tmp_path):
+    """A catalog mod installed before mod.json kept the entry's region (0.1.6 and older) has none,
+    and every mod in the catalog was made for the USA game then: it counts as that game's, and is
+    left out of the European game's mods folder. Installed again with --force for the European
+    game, it says "any", and goes in both games' folders."""
+    lib = user / "mh4u-mods"
+    old = lib / "100% crafting success"                     # as 0.1.6's install-from-catalog left it
+    write(old / "mod.json", json.dumps({"name": "100% crafting success", "version": "0.0.2", "author": "anco",
+                                        "description": "Every item combination succeeds.",
+                                        "url": "https://codeberg.org/anco/mh4u_qol", "catalog": "anco-crafting-100"}))
+    write(old / "exefs" / "code.ips", ips_patch(0x100, b"\1"))
+    write(lib / "library.json", json.dumps({"format": 1, "mods": [{"id": "100% crafting success", "enabled": True}]}))
+    eu = ("--program-id", EUR)
+    mod = run(user, *eu, "list")["mods"][0]
+    assert mod["enabled"] and mod["region"] == "" and mod["fits"] is False and mod["errors"] == []
+    assert mod["warnings"] == ["made for MH4U USA (installed from the catalog by an older version of the mod manager, "
+                               "when all the catalog's mods were made for that game): its code patch is at that code's "
+                               "addresses, so it is left out of MH4U Europe's mods folder"]
+    out = run(user, *eu, "deploy")
+    assert out["added"] == [] and out["warnings"] == ["100% crafting success: " + mod["warnings"][0]]
+    assert not (user / "load" / "mods" / EUR / "exefs").exists()
+    # for the USA game, as before
+    mod = run(user, "list")["mods"][0]
+    assert mod["fits"] is True and mod["warnings"] == []
+    assert run(user, "deploy")["added"] == ["exefs/code.ips"]
+    # installed again with --force for the European game: for both
+    code = write(tmp_path / "srv" / "code.ips", ips_patch(0x100, b"\1\2"))
+    cat = catalog(tmp_path / "cat.json", [entry("anco-crafting-100", "mod", [
+        {"url": url(code), "sha256": hashlib.sha256(code.read_bytes()).hexdigest(), "archive": "file",
+         "as": "exefs/code.ips"}], name="100% crafting success", region="USA")])
+    out = run(user, *eu, "install-from-catalog", "anco-crafting-100", "--catalog", cat, "--force")
+    assert out["mod"] == "100% crafting success"                    # in place of the old one
+    assert json.loads((old / "mod.json").read_text())["region"] == "any"
+    assert run(user, *eu, "deploy")["added"] == ["exefs/code.ips"]
+    assert run(user, "deploy")["updated"] == ["exefs/code.ips"]
+    for game in (EUR, TID):
+        assert (user / "load" / "mods" / game / "exefs" / "code.ips").read_bytes() == code.read_bytes(), game
 
 
 def test_a_catalog_texture_pack_for_the_european_game(user, tmp_path):
@@ -447,9 +496,9 @@ def test_each_game_has_a_texture_record_of_its_own(user, tmp_path):
 
 def test_a_european_pack_in_the_usa_record_moves_to_its_own(user, tmp_path):
     """For a while the European game's texture packs were recorded in textures.json with USA's.
-    The first time the European game's record is read, a pack there whose files are all in
-    Europe's folder and none in USA's moves to it; any other stays where it is, and no file is
-    touched."""
+    The first time either game's record is read while the European game has none, a pack there
+    whose files are all in Europe's folder and none in USA's moves to it; any other stays where
+    it is, and no file is touched."""
     lib = user / "mh4u-mods"
     for rel in ("UI/a.png", "pack.json", "both.png"):
         write(eur_textures(user) / rel, "eu")
@@ -472,11 +521,20 @@ def test_a_european_pack_in_the_usa_record_moves_to_its_own(user, tmp_path):
     os.remove(textures(user) / "usa.png")
     run(user, "--program-id", EUR, "catalog", "--catalog-url", "")
     assert "usa-pack" in json.loads((lib / "textures.json").read_text())["packs"]
-    # and the USA game's own reads move nothing
+    # a USA read first moves it too (a pack installed for the USA game has its files in USA's
+    # folder): the USA game doesn't count it as installed, and its remove doesn't forget the files
     os.remove(lib / f"textures-{EUR}.json")
-    assert [t["id"] for t in run(user, "catalog", "--catalog-url", "")["textures"]] == ["both", "empty", "outside",
-                                                                                        "usa-pack"]
-    assert not (lib / f"textures-{EUR}.json").exists()
+    write(lib / "textures.json", json.dumps({"format": 1, "packs": {
+        "eu-pack": {"name": "EU pack", "catalog": "pack", "files": ["UI/a.png", "pack.json"]},
+        "both": {"name": "Both", "files": ["both.png"]}}}))
+    assert [t["id"] for t in run(user, "catalog", "--catalog-url", "")["textures"]] == ["both"]
+    assert sorted(json.loads((lib / f"textures-{EUR}.json").read_text())["packs"]) == ["eu-pack"]
+    assert run(user, "remove", "eu-pack", code=1)["error"]["code"] == "not_found"
+    assert tree(eur_textures(user)) == ["UI/a.png", "both.png", "pack.json", "usa.png"]
+    assert [t["id"] for t in run(user, "--program-id", EUR, "catalog", "--catalog-url", "")["textures"]] == ["eu-pack"]
+    run(user, "--program-id", EUR, "remove", "eu-pack")
+    assert tree(eur_textures(user)) == ["both.png", "usa.png"] and tree(textures(user)) == ["both.png"]
+    assert sorted(json.loads((lib / "textures.json").read_text())["packs"]) == ["both"]
 
 
 def test_texture_pack_names_one_file_on_windows(user, tmp_path):
