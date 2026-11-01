@@ -162,8 +162,8 @@ No microsecond is counted twice, but not every one is counted. All guest threads
 `busy_us` = `guest_us` + `svc_us` + `service_us` (what `perf_report.py` adds) is the counted work of every guest
 thread on it. `present_us` minus `idle_us` is `busy_us` plus the scheduler's own host loop between two guest runs
 (reaping, posted work and timer events, the safe-point hooks, picking the next thread). No column holds that loop,
-so the difference is at least `busy_us` (over the log; per row, up to the few microseconds of the hooks run as the
-system call that ends the row starts).
+so the difference is at least `busy_us` (over the log; a single row can fall short by the few microseconds of the
+hooks run as the system call that began it starts, which the previous row's `present_us` holds).
 
 The scheduler does not count its own host work separately. The timer events (the DSP's, HID's and GSP's), posted
 replies (fs, GPU interrupts) and safe-point hooks are charged to whatever was being counted when they ran: the

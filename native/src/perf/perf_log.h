@@ -22,7 +22,8 @@
 //
 // The scheduler's host loop between guest runs (Reap, ProcessPending, RunHooks, Dispatch) is in no
 // column: present_us - idle_us is at least the sum of guest_us, svc_us and service_us (over the log;
-// per row, up to the few microseconds of the hooks run as the system call that ends the row starts).
+// a single row can fall short by the few microseconds of the hooks run as the system call that began
+// it starts, which the previous row's present_us holds).
 //
 // A frame seen at a preemption check is written at the first system call after it (the counters are
 // flushed there), so a row ends at the first system call after the frame change; frames seen with no
