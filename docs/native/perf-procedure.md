@@ -165,10 +165,10 @@ only:
 No microsecond is in more than one of `guest_us`, `svc_us`, `service_us` and `idle_us` (`main_us`, `main_svc_us` and
 `main_service_us` are parts of the first three), but not every one is counted. All guest threads run on **one** host
 thread today. `busy_us` = `guest_us` + `svc_us` + `service_us` (what `perf_report.py` adds) is the counted work of
-every guest thread on it. `present_us` minus `idle_us` is `busy_us` plus the scheduler's own host loop between two guest runs
-(reaping, posted work and timer events, the safe-point hooks, picking the next thread). No column holds that loop,
-so the difference is at least `busy_us` (over the log; a single row can fall short by the few microseconds of the
-hooks run as the system call that began it starts, which the previous row's `present_us` holds).
+every guest thread on it. `present_us` minus `idle_us` is `busy_us` plus the scheduler's own host loop between two guest
+runs (reaping, posted work and timer events, the safe-point hooks, picking the next thread). No column holds that loop,
+so the difference is at least `busy_us` (over the log; a single row can fall short by the few microseconds of the hooks
+run as the system call that began it starts, which the previous row's `present_us` holds).
 
 The scheduler does not count its own host work separately. The timer events (the DSP's, HID's and GSP's), posted
 replies (fs, GPU interrupts) and safe-point hooks are charged to whatever was being counted when they ran: the
@@ -353,9 +353,10 @@ python tools\native\perf_report.py $out\perf.csv --state-trace $out\state.txt --
 three counting runs. If that verdict is UNDECIDED, the margin is the largest `game_us` p99 of the three minus 4 ms.
 Give the orchestrator, once for the session: the output of `& $runner --version` (with the CI run's URL if you use
 the artifact `mh4n-runner-windows`) and the `$lib` path with its date (`(Get-Item $lib).LastWriteTime`). Per run: the
-folder name, the first line of `perf.csv` up to and including the date (`# perf v2 YYYY-MM-DD`), the CPU load before it (`load.txt`; D70: at most 25 %), the `Hunt:` and `Frames:` lines, the p99
-of `game_us`, `main_us`, `game_all_us` and `busy_us`, the `Frames over 50 ms` line, and the verdict line. For all the
-attempts: the count above. Send `report.md` and the CSVs of the counting runs; keep the rest.
+folder name, the first line of `perf.csv` up to and including the date (`# perf v2 YYYY-MM-DD`), the CPU load before it
+(`load.txt`; D70: at most 25 %), the `Hunt:` and `Frames:` lines, the p99 of `game_us`, `main_us`, `game_all_us` and
+`busy_us`, the `Frames over 50 ms` line, and the verdict line. For all the attempts: the count above. Send `report.md`
+and the CSVs of the counting runs; keep the rest.
 
 ## Overhead of the log
 
@@ -364,11 +365,12 @@ system call hooks, no file or object is made, and the SVC layer and the code lib
 are the scheduler's, kept always, with or without the option. Since N1-32 the scheduler charges each closed stretch of
 system call or service time to the thread that made the call as well: one more addition, through a pointer the
 thread's scheduler data caches on its first charge of that kind, wherever a stretch of system call or service time is
-closed (the end of a system call, the start and end of a service request, and a thread switch inside either). Only a thread's
-first system call and first service request allocate (one map entry each); entries are never erased. `perf_test` boots
-a program without the option and checks that no file appears and the frame subscribers see the same frames. With the
-option, the cost is one call per game frame (120 a second) that reads the counters (a sum over the 256 system call
-slots, the services and the threads, and two look-ups of the main thread: a few hundred additions) and one buffered
-line of about 85 bytes (the file is written in 64 KB blocks, so a write to disk happens every few seconds), plus one
-test of an empty list at each system call. Nothing else of the log's is added to a preemption check, a system call or a fiber
-switch: the row is written from a system call's `before` hook, at the first system call after the frame change.
+closed (the end of a system call, the start and end of a service request, and a thread switch inside either). Only a
+thread's first system call and first service request allocate (one map entry each); entries are never erased.
+`perf_test` boots a program without the option and checks that no file appears and the frame subscribers see the same
+frames. With the option, the cost is one call per game frame (120 a second) that reads the counters (a sum over the 256
+system call slots, the services and the threads, and three look-ups of the main thread: a few hundred additions) and one
+buffered line of about 85 bytes (the file is written in 64 KB blocks, so a write to disk happens every few seconds),
+plus one test of an empty list at each system call. Nothing else of the log's is added to a preemption check, a system
+call or a fiber switch: the row is written from a system call's `before` hook, at the first system call after the frame
+change.

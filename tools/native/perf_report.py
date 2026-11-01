@@ -107,8 +107,8 @@ _PERF_VERSION = re.compile(r"^#\s*perf\s+v(\d+)\b")
 
 def native_version(columns: Sequence[str], meta: Sequence[str]) -> Optional[int]:
     """2 for a native log with the main thread's calls and services (N1-32), 1 for N1-23's, None for a log that is
-    not the native runner's. FormatError for one of the two v2 columns without the other, and for a `# perf v<N>`
-    line whose version is not the columns' (a v2 line over another runner's columns too)."""
+    not the native runner's. FormatError for one of the two v2 columns without the other, for both without main_us,
+    and for a `# perf v<N>` line whose version is not the columns' (a v2 line over another runner's columns too)."""
     has_svc, has_service = MAIN_SVC in columns, MAIN_SERVICE in columns
     if has_svc != has_service:
         present, missing = (MAIN_SVC, MAIN_SERVICE) if has_svc else (MAIN_SERVICE, MAIN_SVC)
