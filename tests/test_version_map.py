@@ -76,6 +76,20 @@ def test_shifts_translate_inside_functions_and_leave_other_segments():
     assert shifts.translate(f[0]) == f[0]
 
 
+def test_shifts_stay_inside_source_text():
+    """A listed function past .text (a few of config/functions.tsv are in .rodata) gets no
+    interval, and one that runs past .text's end is cut there."""
+    src, funcs, f, t = build()
+    dst, _, g, u = build(insert=2)
+    src = vm.Image(src.base, src.code, t + 0x18)                    # .text ends inside the last function
+    dst = vm.Image(dst.base, dst.code, u + 0x18)
+    funcs = funcs + [vm.Function(src.base + 0x1F0, 1, False)]     # in the source's data
+    shifts, _ = vm.build_shifts(src, dst, funcs)
+    assert shifts.intervals and all(src.base <= s < e <= src.text_end for s, e, _ in shifts.intervals)
+    assert shifts.intervals[-1][1] == src.text_end
+    assert shifts.translate(src.base + 0x1F0) == src.base + 0x1F0   # outside .text: same address
+
+
 def test_a_call_to_the_wrong_place_drops_its_function():
     src, funcs, f, _ = build()
     dst, _, g, _ = build(insert=2, bad_call=True)

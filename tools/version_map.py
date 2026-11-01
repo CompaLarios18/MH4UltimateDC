@@ -321,7 +321,9 @@ def match_functions(src: Image, dst: Image, funcs: list[Function]) -> tuple[dict
 
 def build_shifts(src: Image, dst: Image, funcs: list[Function]) -> tuple[Shifts, dict]:
     mapped, report = match_functions(src, dst, funcs)
-    funcs = sorted(funcs, key=lambda f: f.addr)
+    # only source .text: a listed "function" outside it (a few in .rodata) would shift data that
+    # doesn't move, and the last one's end would run past .text
+    funcs = sorted((f for f in funcs if src.in_text(f.addr)), key=lambda f: f.addr)
     intervals: list[tuple[int, int, int]] = []
     cur: list[int] | None = None   # [start, end, shift]
     for f in funcs:
@@ -331,12 +333,13 @@ def build_shifts(src: Image, dst: Image, funcs: list[Function]) -> tuple[Shifts,
                 cur = None
             continue
         d = mapped[f.addr] - f.addr
+        end = min(f.addr + f.size, src.text_end)
         if cur and cur[2] == d and _gap_same(src, dst, cur[1], f.addr, d):
-            cur[1] = max(cur[1], f.addr + f.size)
+            cur[1] = max(cur[1], end)
             continue
         if cur:
             intervals.append(tuple(cur))
-        cur = [f.addr, f.addr + f.size, d]
+        cur = [f.addr, end, d]
     if cur:
         intervals.append(tuple(cur))
     report["intervals"] = len(intervals)
