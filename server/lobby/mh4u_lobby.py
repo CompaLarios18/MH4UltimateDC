@@ -1157,7 +1157,7 @@ def main(argv=None) -> int:
                              "request comes from a loopback or private address (a reverse proxy)")
     parser.add_argument("--games", default="", metavar="IDS",
                         help="list only rooms for these games: program ids in hex, comma-separated "
-                             "(MH4U USA: 0004000000126300)")
+                             "(MH4U USA: 0004000000126300, Europe: 0004000000126100)")
     parser.add_argument("--public-address", default="", metavar="HOST",
                         help="the address to list for rooms that announce themselves from a "
                              "loopback or private address, i.e. rooms on this machine or network "

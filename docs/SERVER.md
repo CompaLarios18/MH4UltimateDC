@@ -47,7 +47,7 @@ On Windows, `server\windows\Run lobby.bat` runs it with Python 3.10 or newer fro
 | `--mode invite` | only names you add (`add-user`) or that a new player claims with a one-time `invite` token |
 | `--data DIR` | the lobby's state (default `$MH4U_LOBBY_DATA`, or `lobby-data` in the current folder) |
 | `--host ADDR`, `--port N` | where it listens (all addresses, TCP 24872) |
-| `--games IDS` | list only rooms for these games, program ids in hex, comma-separated (MH4U USA: `0004000000126300`) |
+| `--games IDS` | list only rooms for these games, program ids in hex, comma-separated (MH4U USA: `0004000000126300`, Europe: `0004000000126100`; both: `0004000000126300,0004000000126100`) |
 | `--room-ttl S` | a room that hasn't reported for S seconds (60) leaves the list; Azahar reports every 15 s |
 | `--public-address HOST` | rooms that announce themselves from a loopback or private address, i.e. rooms on the lobby's machine or network, are listed at HOST (a VPS that runs rooms next to the lobby). Not for a LAN party, where the private addresses are the right ones |
 | `--trust-proxy` | behind a reverse proxy: the client's address is the last `X-Forwarded-For` entry (over all such headers), for requests that come from a loopback or private address; it must be a global address |
