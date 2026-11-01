@@ -324,7 +324,8 @@ Read in the English layouts of a EUR copy (the contributor's own cartridge; the 
   | 0 | two parts | wide left (4–249) | 5 | **4** | town; on a quest it takes the HUD to its states 7 and 8 |
   | 0 | | right (255–316) | 2 | **9** or **8** in town (the byte changed between taps; both handled by `0x005ed1f0`/`0x005ed1fc`), **7** on a quest (the kick, handled at `0x00b9e0b4`) | town, quest |
 
-  So the right-hand button of the two-part bar is the one whose id the game swaps: 7 (kick) on a quest, 8 and 9 in town, and 0xb for the *Skip* of the maintainer's log (hit index 1 there too). Slot 2 is the only one that changed; slots 0, 1, 3, 4, 6 held 1 and slot 5 held 4 in mode 0. (high for the mapping, medium for what 3, 4, 6, 8 and 9 do: what each tap opened wasn't noted)
+  So the right-hand button of the two-part bar is the one whose id the game swaps: 7 (kick) on a quest, 8 and 9 in town, and 0xb for the *Skip* of the maintainer's log (hit index 1 there too). Slot 2 is the only one that changed; slots 0, 1, 3, 4, 6 held 1 and slot 5 held 4 in mode 0. (high)
+- **What they are (seen on screen in town, November 2026).** The two-part bar is *Hunter Search* (wide left, **4**) and *Menu* (right, **9**), which becomes *Close* (**8**) while the touch screen's menu is open (*Customize Panels*, *Panel Schemes*, *Hunter Search Position*). *Hunter Search* opens the *Player Select* screen, whose bar has three parts: *Help* (left, **3**: the Hunter Search help pages), *Hunter Search* (middle, **6**: closes the screen again) and *OFF* (right, **4**: turns Hunter Search on; not tapped). On a quest the bar is *Hunter Search* (4, the same *Player Select* screen as in town, while the HUD is in its states 7 and 8) and the kick's icon (7), which becomes the *Skip* (0xb) at the end. (high)
 - **`ui006`** is a set of menu controls: three buttons (boundaries 000, 001 and 004), page arrows (002, 003), a cross pad and help panes; the panel manager binds touch groups 2… of `+0x1790` to its boundaries, one per group (`0x0028e9ec`, `0x0029f6ac`).
 
 ### The quest panels' layouts
@@ -344,7 +345,7 @@ Two saves of the same game, the second after replacing the camera pad with two s
 
 ## Open questions
 
-1. Which panel ids are which (7, 8, 9, 0xb, 6 and the rest), and what action bit `0x0001` does: stage 0 logging, one tap per panel (the first attempt found the logging points don't see the taps; see the runtime check above). Mostly answered for the fixed buttons ([above](#hit-areas-of-the-panel-manager-and-the-quest-hud)): the parts of the bottom bar and the ids they carry in town and on a quest; still open: what 3, 4, 6, 8 and 9 open, and the other ids below `0x14`.
+1. Which panel ids are which (7, 8, 9, 0xb, 6 and the rest), and what action bit `0x0001` does: stage 0 logging, one tap per panel (the first attempt found the logging points don't see the taps; see the runtime check above). Answered for the fixed buttons ([above](#hit-areas-of-the-panel-manager-and-the-quest-hud)): 3 Help, 4 Hunter Search (and its OFF/ON switch), 6 back from Hunter Search, 7 kick, 8 Close, 9 Menu, 0xb Skip; still open: the other ids below `0x14`, if any.
 2. ~~The pane names behind the hash ids~~: answered in [The layout files](#the-layout-files-and-the-saved-arrangement-november-2026).
 3. ~~Where the panel arrangement is saved~~: answered in [The saved arrangement](#the-saved-arrangement); still open there: entries 1–5, the table at `obj + 0xec90`, and the other two changes between the saves.
 4. Whether the software keyboard, the cutscene subtitles or any other screen uses `rGUI` (`DrawLower`).
