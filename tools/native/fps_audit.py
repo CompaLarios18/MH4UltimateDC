@@ -3,27 +3,38 @@
 
 The same golden session is played twice by the native runner, headless: at 60 fps with the session as it is, and at
 120 fps with the session scaled by 2 (every frame key, hold and checkpoint frame doubled, milliseconds unchanged;
-`observable_probe.py scale`, N3-21). The two runs must give the same game, within the tolerances of D70:
+`observable_probe.py scale`, N3-21). The two runs must give the same game, by D70's rules (Decided 2026-10-31; N3-34
+made them the tool's defaults):
 
-  1 scenes       the sequence of real scene changes is equal (values and order)
-  2 times        each scene change falls at the same game time (frame / fps) within 4 frames at 60 fps (66.7 ms)
+  1 scenes       the sequence of real scene changes is equal (values and order); a different scene is never tolerated
+  2 times        each scene change falls at the same game time (frame / fps) within its own limit, in frames at 60
+                 fps: 4 (66.7 ms), except the changes D70 names (SCENE_TIME_FRAMES: the first aDemo 20, the three
+                 into the village 10, G2's opening 19, G3's aGameSys and aQuest of the quest load 5.5)
   3 checkpoints  at each checkpoint of the session the `eq` observables are equal (and the scene is the checkpoint's)
   4 observables  at matched game times (every second, in the hunt only: the chains name whatever sits there in other
-                 scenes, N3-21) the hunter's position is within 2 % of the distance travelled in the last second
-                 plus 0.05 units, and the quest's clock within 1 second (a counter that never moves in either run
-                 compares nothing, n/a, unless its two constants are further apart than that); the table also has
-                 the distance with 4 frames of time slack, as information
-  5 dsp          `capfmt.py diff-dsp --align --max-shift 48` of the two DSP captures: the same sounds start with the
-                 same buffers (D51)
+                 scenes, N3-21) the hunter's positions at most 3,700 units apart and the quest's clock at most 1.09 s
+                 apart: the reference's own 60/120 pair with a margin (a counter that never moves in either run
+                 compares nothing, n/a, unless its two constants are further apart than that). The rule also has a
+                 part relative to the distance travelled in the last second (`--position-relative`), 0 by D70; the
+                 table also has the distance with 4 frames of time slack, as information
+  5 dsp          `capfmt.py diff-dsp --align` of each pair of DSP captures: the same sounds start with the same
+                 buffers (D51), after a shift of at most 48 DSP frames in real time and 58 in the deterministic mode
   6 writes       the `fs:USER` file Writes are equal by D52's rule: per thread, in order, in full, the masked byte
                  ranges of config/native/fs_write_masks.txt zeroed first (tools/compare_ipc_traces.py)
 
-The `dsp` item also prints the game clock offset between the two runs at the capture's first game frame, as
-information beside the measured shift: it is not the shift (the measured shifts of N3-22's runs were 11 to 85 % of it).
 Before the six, `runs` checks that both runs finished (exit status 0, the trace reaches the session's last frame): a
-run that hangs must not read as a pass. The numbers above are D70's first guesses; they are options with those
-defaults and are never retuned to make a session pass (N3 rule 7). An item with nothing to compare (a session without a
-DSP capture, no readable position) is `n/a`: reported, not a failure, unless `--require` names it (D34).
+run that hangs must not read as a pass. An item with nothing to compare (a session without a DSP capture, no readable
+position) is `n/a`, not a failure, unless `--require` names it (D34).
+
+Gated and reported (D70, D71), by the session, the mode and the latency of the folder's meta.json: a **gated** item
+that fails fails the audit (exit 1); a **reported** one is printed with its numbers and named on the verdict line.
+With `--io-latency none` every item is reported. With `azahar`, in real time G1, G2 and G4 gate runs, scenes, times,
+checkpoints, dsp and writes and report observables, and G3 gates runs and writes and reports the rest; in the
+deterministic mode every item is gated. In both modes dsp gates only G1's boot window (`dsp:1240:300` of G1.txt):
+every other window is reported, with the game clock's offset at its start, which is not the shift (the shifts after
+the intro movie were 77 to 100 % of it, N3-22's finding 1). A session the tool does not name (G6, G8) takes G1's
+rules. These numbers are D70's: the options override them for a look at other values, and are never retuned to make
+a session pass (N3 rule 7).
 
   fps_audit.py scale SESSION --factor 2 -o OUT
       observable_probe.py's `scale` (N3-21).
@@ -39,10 +50,12 @@ DSP capture, no readable position) is `n/a`: reported, not a failure, unless `--
       compare prints it, so a deterministic and a real-time verdict cannot be confused. `--force` deletes OUT first
       only when it holds nothing but what `run` writes.
   fps_audit.py compare OUT [--require position,quest_time,dsp,writes] [--position-until FRAME] [--hunt-scene V|any]
-                 [--fs-write-mask FILE|none] [tolerance options: --time-frames, --position-relative, --position-absolute,
-                 --quest-seconds, --quest-units, --max-shift]
-      The six items, one line each, then a verdict; writes OUT/compare.txt and OUT/compare.json (every number of
-      the tables). Exit 0 when no item fails, 1 when one does, 2 for a usage problem or an unreadable run.
+                 [--fs-write-mask FILE|none] [options that override D70: --time-frames, --position-relative,
+                 --position-absolute, --quest-seconds, --quest-units, --max-shift]
+      The six items, one line each with `gated` or `reported`, then a verdict; writes OUT/compare.txt and
+      OUT/compare.json (every number of the tables). Exit 0 when every gated item passes, 1 when one fails, 2 for a
+      usage problem or an unreadable run. G3's `--require position,quest_time,dsp --position-until 15862` are its
+      defaults; `--time-frames N` replaces D70's table with one limit for every change.
 
 Traces and captures are game data: they live under build/ and only counts, frames, times and CRCs are printed.
 """
@@ -80,14 +93,43 @@ DEFAULT_WRITE_MASKS = ROOT / "config" / "native" / "fs_write_masks.txt"
 DEFAULT_OBSERVABLE = state_diff.DEFAULT_OBSERVABLE
 META = "meta.json"
 
-# D70's first guesses (docs/native/DECISIONS.md): options with these defaults, never retuned to make a run pass.
-TIME_TOLERANCE_FRAMES = 4        # a scene change: frames at 60 fps (66.7 ms)
-POSITION_RELATIVE = 0.02         # of the distance travelled in the last second
-POSITION_ABSOLUTE = 0.05         # units
-QUEST_SECONDS = 1.0
+# D70 (Decided 2026-10-31, docs/native/DECISIONS.md): the audit's numbers and which items gate. They are the
+# orchestrator's: `compare`'s options override them, and they are never retuned here to make a run pass (N3 rule 7).
+TIME_TOLERANCE_FRAMES = 4        # (2) a scene change: frames at 60 fps (66.7 ms), unless SCENE_TIME_FRAMES names it
+# (2) the named changes, by session and change number (from 0, as compare.txt numbers them), in frames at 60 fps:
+# the largest deterministic value plus one frame (D50's rule). Every other change, and every change of a session
+# not named here, is TIME_TOLERANCE_FRAMES.
+SCENE_TIME_FRAMES: dict[str, dict[int, float]] = {
+    "G1": {1: 20},                                            # #1 the first aDemo (the intro movie's start)
+    "G2": {1: 20, 3: 10, 4: 10, 5: 10, 6: 19, 7: 19},         # #3-#5 the three into the village; #6-#7 the opening
+    "G3": {1: 20, 3: 10, 4: 10, 5: 10, 8: 5.5, 9: 5.5},       # #8-#9 aGameSys and aQuest of the quest load
+    "G4": {1: 20, 3: 10, 4: 10, 5: 10},
+}
+POSITION_RELATIVE = 0.0          # (4) of the distance travelled in the last second: no relative part
+POSITION_ABSOLUTE = 3700.0       # (4) units: the reference's own 60/120 pair, 3,627.2, plus 2 %
+QUEST_SECONDS = 1.09             # (4) the reference pair's 1.07 s plus one frame
 QUEST_UNITS_PER_SECOND = 60      # the quest countdown's rate (N3-21, docs/research/fps-observables.md)
 HUNT_SCENE = 0x00e655c8          # aQuest: the scene the two observables are valid in (N3-21: "in the hunt only")
-MAX_SHIFT = capfmt.DEFAULT_MAX_SHIFT
+MAX_SHIFT_REAL_TIME = capfmt.DEFAULT_MAX_SHIFT     # (5) D51's 48 DSP frames
+MAX_SHIFT_DETERMINISTIC = 58     # (5) the +57 measured in the deterministic mode plus one (D50's rule)
+MAX_SHIFT = MAX_SHIFT_REAL_TIME
+# (5) the DSP windows that gate, by session (their start, game frames at 60 fps): G1's boot window, before the clock
+# offset of the intro movie arises. Every other window is reported.
+BOOT_WINDOWS: dict[str, tuple[int, ...]] = {"G1": (1240,)}
+
+ITEMS = ("runs", "scenes", "times", "checkpoints", "observables", "dsp", "writes")
+_REAL_TIME = frozenset({"runs", "scenes", "times", "checkpoints", "dsp", "writes"})
+# the items an `azahar` pair gates, by mode and session; `none` gates nothing (D71)
+GATED_REAL_TIME: dict[str, frozenset[str]] = {
+    "G1": _REAL_TIME, "G2": _REAL_TIME, "G4": _REAL_TIME,
+    "G3": frozenset({"runs", "writes"}),      # G3's real-time replay does not repeat even at one rate (D70)
+}
+GATED_DETERMINISTIC: dict[str, frozenset[str]] = {s: frozenset(ITEMS) for s in ("G1", "G2", "G3", "G4")}
+RULES_FALLBACK = "G1"            # a session the tool does not name (G6, G8) takes G1's rules
+# `compare`'s defaults by session: the --require and --position-until of fps-audit.md's *Repeating it*
+SESSION_DEFAULTS: dict[str, dict] = {
+    "G3": {"require": ("position", "quest_time", "dsp"), "position_until": 15862},   # N3-21's walk to the first attack
+}
 
 # N3-21's lines for config/native/observable.txt, proposed as `ignore`: added at run time, to a copy of the file.
 N321_LINES = (
@@ -385,6 +427,113 @@ class Item:
     summary: str
     details: list[str] = field(default_factory=list)
     data: dict = field(default_factory=dict)
+    gated: bool = True                  # D70: a gated item decides the exit status, a reported one is printed
+    reported_fail: list[str] = field(default_factory=list)   # reported parts of a gated item that fail (DSP windows)
+
+
+# -- D70's rules for a pair ---------------------------------------------------------------------------------------
+
+@dataclass
+class Settings:
+    """What `compare` applies to one pair: D70's rules for its session, mode and latency, and the bounds (D70's, or
+    the options that override them)."""
+    session: str                        # the session's base name (`G3` for `G3-x2`)
+    rules_of: str                       # whose rules: the session's, or G1's for a session the tool does not name
+    mode: str                           # deterministic | real-time
+    io_latency: str
+    gated: frozenset[str]               # the gated items (dsp only with a boot window to gate)
+    boot_windows: tuple[int, ...]       # the DSP windows that gate (starts, game frames at 60 fps)
+    time_frames: Optional[float]        # --time-frames: one limit for every change instead of D70's table
+    time_table: dict[int, float]        # D70's named changes of this session
+    position_relative: float
+    position_absolute: float
+    quest_seconds: float
+    quest_units: float
+    max_shift: int
+    require: tuple[str, ...]
+    position_until: Optional[int]
+    hunt_scene: Optional[int]
+    masks_file: Optional[str]
+
+    def time_limit(self, index: int) -> float:
+        """The limit of scene change #index, in frames at 60 fps."""
+        if self.time_frames is not None:
+            return self.time_frames
+        return self.time_table.get(index, TIME_TOLERANCE_FRAMES)
+
+    @property
+    def reported(self) -> list[str]:
+        return [n for n in ITEMS if n not in self.gated]
+
+
+def settings_for(pair: Pair, *, time_frames: Optional[float] = None, position_relative: Optional[float] = None,
+                 position_absolute: Optional[float] = None, quest_seconds: Optional[float] = None,
+                 quest_units: float = QUEST_UNITS_PER_SECOND, max_shift: Optional[int] = None,
+                 masks_file: Optional[str] = None, require: Optional[Sequence[str]] = None,
+                 position_until: Optional[int] = None, hunt_scene: Optional[int] = HUNT_SCENE) -> Settings:
+    """D70's rules and bounds for the pair; an option that is not None overrides D70's value."""
+    session = base_name(pair.session)
+    mode = run_mode(pair.meta)
+    latency = str(pair.meta.get("io_latency") or "azahar")
+    rules_of = session if session in GATED_REAL_TIME else RULES_FALLBACK
+    if latency == "none":
+        gated: frozenset[str] = frozenset()                 # D71: `none` is reported
+    elif mode == "deterministic":
+        gated = GATED_DETERMINISTIC[rules_of]
+    else:
+        gated = GATED_REAL_TIME[rules_of]
+    boot = BOOT_WINDOWS.get(session, ())
+    if "dsp" in gated and not boot:
+        gated = gated - {"dsp"}                             # only G1's boot window gates
+    defaults = SESSION_DEFAULTS.get(session, {})
+    return Settings(
+        session=session, rules_of=rules_of, mode=mode, io_latency=latency, gated=gated,
+        boot_windows=boot if "dsp" in gated else (),
+        time_frames=time_frames, time_table=dict(SCENE_TIME_FRAMES.get(session, {})),
+        position_relative=POSITION_RELATIVE if position_relative is None else position_relative,
+        position_absolute=POSITION_ABSOLUTE if position_absolute is None else position_absolute,
+        quest_seconds=QUEST_SECONDS if quest_seconds is None else quest_seconds,
+        quest_units=quest_units,
+        max_shift=max_shift if max_shift is not None else
+        (MAX_SHIFT_DETERMINISTIC if mode == "deterministic" else MAX_SHIFT_REAL_TIME),
+        require=tuple(defaults.get("require", ()) if require is None else require),
+        position_until=defaults.get("position_until") if position_until is None else position_until,
+        hunt_scene=hunt_scene, masks_file=masks_file)
+
+
+def _frames(value: float) -> str:
+    return f"{value:g}"
+
+
+def describe_rules(s: Settings) -> str:
+    who = s.session if s.rules_of == s.session else f"{s.session} (not named: {s.rules_of}'s rules)"
+    head = f"rules: D70, {who}, {s.mode} mode, --io-latency {s.io_latency}"
+    if not s.gated:
+        return head + ": every item reported (D71: only `azahar` is gated)"
+
+    def name(n: str) -> str:
+        if n != "dsp":
+            return n
+        if n in s.gated:
+            return (f"dsp (the window at frame{'s' if len(s.boot_windows) > 1 else ''} "
+                    f"{', '.join(map(str, s.boot_windows))}; any other window reported)")
+        return "dsp (only G1's boot window gates)"
+
+    return (head + ": gated " + ", ".join(name(n) for n in ITEMS if n in s.gated)
+            + ("; reported " + ", ".join(name(n) for n in s.reported) if s.reported else ""))
+
+
+def describe_bounds(s: Settings) -> str:
+    if s.time_frames is not None:
+        times = f"--time-frames {_frames(s.time_frames)} for every change"
+    else:
+        named = ", ".join(f"#{i} {_frames(v)}" for i, v in sorted(s.time_table.items()))
+        times = f"{TIME_TOLERANCE_FRAMES} frames" + (f", named changes {named}" if named else "")
+    return (f"bounds: scene times {times}; position {_frames(s.position_absolute)} units"
+            + (f" + {_frames(s.position_relative)} x the last second's travel" if s.position_relative else "")
+            + f"; quest clock {_frames(s.quest_seconds)} s; DSP shift {s.max_shift}; "
+            f"require {','.join(s.require) or '-'}; position until "
+            f"{s.position_until if s.position_until is not None else '-'}")
 
 
 def check_runs(pair: Pair) -> Item:
@@ -436,34 +585,53 @@ def check_scenes(pair: Pair) -> Item:
     return Item("scenes", PASS, f"{len(a)} real scene changes, the same scenes in the same order", rows, data)
 
 
-def check_times(pair: Pair, scenes: Item, tolerance_frames: int) -> Item:
+def check_times(pair: Pair, scenes: Item, time_frames: Optional[float] = None,
+                time_table: Optional[dict[int, float]] = None) -> Item:
+    """Each scene change against its own limit (D70 (2)): `time_table` {change number: frames at 60 fps}, every other
+    change TIME_TOLERANCE_FRAMES; `time_frames` replaces both with one limit for every change."""
     if scenes.status != PASS:
         return Item("times", NA, "the scene sequences differ (item scenes): no change to match", [], {})
+    table = time_table or {}
+
+    def limit_of(index: int) -> float:
+        return time_frames if time_frames is not None else table.get(index, TIME_TOLERANCE_FRAMES)
+
     k = pair.factor
     a = scene_list(pair.states[BASE_FPS])
     b = scene_list(pair.states[BASE_FPS * k])
-    rows, worst, bad = [], 0, []
+    rows, bad = [], []
     deltas = []
     for i, (x, y) in enumerate(zip(a, b)):
         diff = abs(x.frame * k - y.frame)               # frames at the scaled rate
         ms = diff * 1000 / (BASE_FPS * k)
         clock = (y.ticks - x.ticks) / TICKS_PER_SECOND  # the game clock (the trace's t=) at the two records
+        limit = limit_of(i)
+        limit_ms = limit * 1000 / BASE_FPS
+        over = diff > limit * k
         deltas.append({"index": i, "frame": x.frame, "frame_scaled": y.frame, "ms": round(ms, 2),
-                       "frames_at_60": round(diff / k, 2), "clock_offset_s": round(clock, 3)})
-        mark = "" if diff <= tolerance_frames * k else "  OVER"
+                       "frames_at_60": round(diff / k, 2), "clock_offset_s": round(clock, 3),
+                       "limit_frames": limit, "limit_ms": round(limit_ms, 2), "over": over})
         rows.append(f"#{i} to {_hex(x.values[state_diff.SCENE])}: frame {x.frame} ({x.frame * 1000 / BASE_FPS:.1f} ms) | "
                     f"frame {y.frame} ({y.frame * 1000 / (BASE_FPS * k):.1f} ms): {ms:.1f} ms, "
-                    f"{diff / k:.2f} frames at {BASE_FPS} fps{mark}; game clock {clock:+.3f} s")
-        worst = max(worst, diff)
-        if diff > tolerance_frames * k:
+                    f"{diff / k:.2f} frames at {BASE_FPS} fps, limit {_frames(limit)} frames ({limit_ms:.1f} ms)"
+                    f"{'  OVER' if over else ''}; game clock {clock:+.3f} s")
+        if over:
             bad.append(i)
-    limit_ms = tolerance_frames * 1000 / BASE_FPS
-    data = {"changes": deltas, "worst_ms": round(worst * 1000 / (BASE_FPS * k), 2),
-            "limit_ms": round(limit_ms, 2), "limit_frames": tolerance_frames}
-    summary = (f"largest difference {worst * 1000 / (BASE_FPS * k):.1f} ms ({worst / k:.2f} frames at {BASE_FPS} fps) over "
-               f"{len(deltas)} changes, limit {tolerance_frames} frames ({limit_ms:.1f} ms)")
+    data = {"changes": deltas, "limit_frames": time_frames, "default_frames": TIME_TOLERANCE_FRAMES,
+            "table": {str(i): v for i, v in sorted(table.items())} if time_frames is None else {}}
+    if not deltas:
+        return Item("times", NA, "no scene change to match", rows, data)
+    worst = max(deltas, key=lambda d: d["frames_at_60"])
+    share = max(deltas, key=lambda d: d["frames_at_60"] / d["limit_frames"] if d["limit_frames"] else math.inf)
+    data["worst_ms"] = worst["ms"]
+    rule = (f"--time-frames {_frames(time_frames)} for every change" if time_frames is not None
+            else f"each change against its own limit (D70: {TIME_TOLERANCE_FRAMES} frames unless named)")
+    summary = (f"largest difference {worst['ms']:.1f} ms ({worst['frames_at_60']:.2f} frames at {BASE_FPS} fps, "
+               f"change #{worst['index']}, limit {_frames(worst['limit_frames'])} frames) over {len(deltas)} changes; "
+               f"largest against its limit #{share['index']}, {share['ms']:.1f} of {share['limit_ms']:.1f} ms; "
+               f"{rule}")
     if bad:
-        return Item("times", FAIL, f"{len(bad)} of {len(deltas)} scene changes are over the limit (changes "
+        return Item("times", FAIL, f"{len(bad)} of {len(deltas)} scene changes are over their limit (changes "
                     f"{', '.join('#' + str(i) for i in bad)}): " + summary, rows, data)
     return Item("times", PASS, summary, rows, data)
 
@@ -654,49 +822,69 @@ def check_observables(pair: Pair, relative: float, absolute: float, quest_second
     return Item("observables", overall, summary, rows, parts)
 
 
-def check_dsp(pair: Pair, max_shift: int, require: set[str]) -> Item:
+def check_dsp(pair: Pair, max_shift: int, require: set[str], gated_starts: Sequence[int] = ()) -> Item:
+    """Each DSP capture pair by D51's rule. `gated_starts` are the windows that gate (D70 (5): G1's boot window):
+    when there are any, the item is gated, its status is theirs, and every other window is reported (`reported_fail`
+    names those that differ); with none, the item is reported and judged on every window."""
     names = pair.meta.get("dsp", [])
+    starts = pair.meta.get("dsp_starts", {})
+    gate = set(gated_starts)
+    gated = bool(gate)
     if not names:
         return Item("dsp", FAIL if "dsp" in require else NA,
                     "the session has no DSP capture (add one with `run --dsp START:FRAMES`)"
-                    + (" (required)" if "dsp" in require else ""), [], {})
+                    + (" (required)" if "dsp" in require else ""), [], {"captures": [], "shifts": [],
+                                                                         "max_shift": max_shift, "windows": []},
+                    gated=gated)
     k = pair.factor
-    rows, bad, shifts = [], [], []
+    rows, shifts, windows = [], [], []
     for name in names:
+        start = starts.get(name)
+        window = {"name": name, "start": start, "gated": start in gate, "status": FAIL, "shift": None}
+        windows.append(window)
+        label = f"{name} ({'gated' if window['gated'] else 'reported'})"
         a, b = pair.path(BASE_FPS, name), pair.path(BASE_FPS * k, name)
-        for path in (a, b):
-            if not path.is_file():
-                bad.append(name)
-                rows.append(f"{name}: {path.parent.name}/{path.name} was not written")
-                break
-        else:
-            try:
-                result = capfmt.diff_dsp_aligned(str(a), str(b), max_shift)
-            except capfmt.CapError as error:
-                bad.append(name)
-                rows.append(f"{name}: {error}")
-                continue
-            rows.append(f"{name}: {'equal after alignment' if result.equal else 'DIFFERENT'}: {result.summary}")
-            rows.extend("    " + p for p in result.problems)
-            start = pair.meta.get("dsp_starts", {}).get(name)
-            if start is not None:
-                x, y = first_at_or_after(pair.states[BASE_FPS], start), first_at_or_after(pair.states[BASE_FPS * k],
-                                                                                           start * k)
-                if x is not None and y is not None:
-                    offset = (y.ticks - x.ticks) / TICKS_PER_SECOND
-                    measured = ("no shift was measured" if result.shift is None
-                                else f"the measured shift is {result.shift:+d} DSP frames")
-                    rows.append(f"    game clock offset at the window's start (game frame {start}, {start * k}): "
-                                f"{offset:+.3f} s = {offset * TICKS_PER_SECOND / capfmt.DSP_FRAME_TICKS:+.0f} DSP frames, "
-                                f"as information ({measured})")
-            shifts.append(result.shift)
-            if not result.equal:
-                bad.append(name)
-    data = {"captures": names, "shifts": shifts, "max_shift": max_shift}
+        missing = next((p for p in (a, b) if not p.is_file()), None)
+        if missing is not None:
+            rows.append(f"{label}: {missing.parent.name}/{missing.name} was not written")
+            continue
+        try:
+            result = capfmt.diff_dsp_aligned(str(a), str(b), max_shift)
+        except capfmt.CapError as error:
+            rows.append(f"{label}: {error}")
+            continue
+        window["status"], window["shift"] = (PASS if result.equal else FAIL), result.shift
+        rows.append(f"{label}: {'equal after alignment' if result.equal else 'DIFFERENT'}: {result.summary}")
+        rows.extend("    " + p for p in result.problems)
+        if start is not None:
+            x, y = first_at_or_after(pair.states[BASE_FPS], start), first_at_or_after(pair.states[BASE_FPS * k],
+                                                                                       start * k)
+            if x is not None and y is not None:
+                offset = (y.ticks - x.ticks) / TICKS_PER_SECOND
+                dsp_frames = offset * TICKS_PER_SECOND / capfmt.DSP_FRAME_TICKS
+                window["clock_offset_s"], window["clock_offset_dsp_frames"] = round(offset, 3), round(dsp_frames)
+                measured = ("no shift was measured" if result.shift is None
+                            else f"the measured shift is {result.shift:+d} DSP frames")
+                rows.append(f"    game clock offset at the window's start (game frame {start}, {start * k}): "
+                            f"{offset:+.3f} s = {dsp_frames:+.0f} DSP frames, as information ({measured})")
+        shifts.append(result.shift)
+    data = {"captures": names, "shifts": shifts, "max_shift": max_shift, "windows": windows}
+    judged = [w for w in windows if w["gated"]] if gated else windows
+    others = [w for w in windows if not w["gated"]] if gated else []
+    reported_fail = [w["name"] for w in others if w["status"] == FAIL]
+    tail = (f"; {len(others)} other window(s) reported, {len(reported_fail)} differ" if others else "")
+    if gated and not judged:
+        return Item("dsp", FAIL if "dsp" in require else NA,
+                    f"no gated window (the window at frame {', '.join(map(str, sorted(gate)))}) in the runs"
+                    + (" (required)" if "dsp" in require else "") + tail, rows, data, gated, reported_fail)
+    what = "gated DSP capture(s)" if gated else "DSP captures"
+    bad = [w["name"] for w in judged if w["status"] == FAIL]
     if bad:
-        return Item("dsp", FAIL, f"{len(bad)} of {len(names)} DSP captures differ", rows, data)
-    return Item("dsp", PASS, f"{len(names)} DSP captures equal after alignment, shift(s) "
-                f"{', '.join(f'{s:+d}' for s in shifts if s is not None)} DSP frames (at most {max_shift})", rows, data)
+        return Item("dsp", FAIL, f"{len(bad)} of {len(judged)} {what} differ (shift at most {max_shift})" + tail,
+                    rows, data, gated, reported_fail)
+    measured = ", ".join("%+d" % w["shift"] for w in judged if w["shift"] is not None)
+    return Item("dsp", PASS, f"{len(judged)} {what} equal after alignment, shift(s) {measured} DSP frames "
+                f"(at most {max_shift})" + tail, rows, data, gated, reported_fail)
 
 
 def fs_writes(by_thread: dict[str, list]) -> dict[str, list[tuple]]:
@@ -764,22 +952,36 @@ def check_writes(pair: Pair, masks_file: Optional[str], require: set[str]) -> It
 
 # -- compare ------------------------------------------------------------------------------------------------------
 
-def compare_pair(pair: Pair, *, time_frames: int = TIME_TOLERANCE_FRAMES, position_relative: float = POSITION_RELATIVE,
-                 position_absolute: float = POSITION_ABSOLUTE, quest_seconds: float = QUEST_SECONDS,
-                 quest_units: float = QUEST_UNITS_PER_SECOND, max_shift: int = MAX_SHIFT,
-                 masks_file: Optional[str] = None, require: Sequence[str] = (),
-                 position_until: Optional[int] = None, hunt_scene: Optional[int] = HUNT_SCENE) -> list[Item]:
+def compare_pair(pair: Pair, **overrides) -> list[Item]:
+    """The items of a pair under D70's rules; `overrides` are settings_for's options (None: D70's value)."""
+    return compare_settings(pair, settings_for(pair, **overrides))
+
+
+def compare_settings(pair: Pair, s: Settings) -> list[Item]:
     load_states(pair)
-    need = set(require)
+    need = set(s.require)
     runs = check_runs(pair)
     if not pair.states[BASE_FPS] or not pair.states[BASE_FPS * pair.factor]:
-        return [runs]
-    scenes = check_scenes(pair)
-    items = [runs, scenes, check_times(pair, scenes, time_frames), check_checkpoints(pair),
-             check_observables(pair, position_relative, position_absolute, quest_seconds, quest_units, need,
-                               position_until, hunt_scene, time_frames),
-             check_dsp(pair, max_shift, need), check_writes(pair, masks_file, need)]
+        items = [runs]
+    else:
+        scenes = check_scenes(pair)
+        slack = int(round(s.time_frames)) if s.time_frames is not None else TIME_TOLERANCE_FRAMES
+        items = [runs, scenes, check_times(pair, scenes, s.time_frames, s.time_table), check_checkpoints(pair),
+                 check_observables(pair, s.position_relative, s.position_absolute, s.quest_seconds, s.quest_units,
+                                   need, s.position_until, s.hunt_scene, slack),
+                 check_dsp(pair, s.max_shift, need, s.boot_windows), check_writes(pair, s.masks_file, need)]
+    for item in items:
+        if item.name != "dsp":                  # check_dsp decides from its windows
+            item.gated = item.name in s.gated
     return items
+
+
+def verdict(items: list[Item]) -> tuple[bool, list[str], list[str]]:
+    """(pass, the gated items that fail, the reported items and parts that fail)."""
+    failed = [it.name for it in items if it.gated and it.status == FAIL]
+    reported = [it.name for it in items if not it.gated and it.status == FAIL]
+    reported += [f"{it.name} ({part})" for it in items if it.gated for part in it.reported_fail]
+    return not failed, failed, reported
 
 
 def run_mode(meta: dict) -> str:
@@ -798,55 +1000,83 @@ def run_seed(meta: dict) -> Optional[str]:
     return args[args.index("--seed") + 1] if "--seed" in args[:-1] else None
 
 
-def format_report(pair: Pair, items: list[Item], verbose: bool = True) -> list[str]:
+def format_report(pair: Pair, items: list[Item], verbose: bool = True,
+                  settings: Optional[Settings] = None) -> list[str]:
+    s = settings or settings_for(pair)
     k = pair.factor
     seed = run_seed(pair.meta)
     lines = [f"fps_audit: {pair.session}, {BASE_FPS} fps against {BASE_FPS * k} fps (x{k}), "
              f"--io-latency {pair.meta.get('io_latency', '?')}, {run_mode(pair.meta)} mode"
-             + (f" (--seed {seed})" if seed is not None else "")]
+             + (f" (--seed {seed})" if seed is not None else ""),
+             describe_rules(s), describe_bounds(s)]
     for it in items:
-        lines.append(f"{it.name:<12} {it.status.upper() if it.status == FAIL else it.status:<5} {it.summary}")
+        lines.append(f"{it.name:<12} {it.status.upper() if it.status == FAIL else it.status:<5} "
+                     f"{'gated' if it.gated else 'reported':<8} {it.summary}")
         if verbose:
             lines.extend("    " + d for d in it.details)
-    failed = [it.name for it in items if it.status == FAIL]
+    passed, failed, reported = verdict(items)
+    inner = "; ".join(part for part in (", ".join(failed), "reported: " + ", ".join(reported) if reported else "")
+                      if part)
+    gated = sum(1 for it in items if it.gated)
     na = [it.name for it in items if it.status == NA]
-    lines.append("verdict: " + ("FAIL (" + ", ".join(failed) + ")" if failed else "PASS")
-                 + (f"; not applicable: {', '.join(na)}" if na else ""))
+    tail = [f"{gated} gated, {len(items) - gated} reported"]
+    if na:
+        tail.append(f"not applicable: {', '.join(na)}")
+    if s.time_frames is not None:
+        tail.append(f"times against --time-frames {_frames(s.time_frames)} for every change, not D70's table")
+    lines.append("verdict: " + ("pass" if passed else "FAIL") + (f" ({inner})" if inner else "") + "; "
+                 + "; ".join(tail))
     return lines
 
 
 def cmd_compare(args: argparse.Namespace) -> int:
     pair = read_pair(Path(args.dir))
-    require = [r for r in (x.strip() for x in args.require.split(",")) if r]
-    for r in require:
-        if r not in REQUIRABLE:
-            raise AuditError(f"--require {r!r}: want one of {', '.join(REQUIRABLE)}")
+    require = None
+    if args.require is not None:
+        require = [r for r in (x.strip() for x in args.require.split(",")) if r]
+        for r in require:
+            if r not in REQUIRABLE:
+                raise AuditError(f"--require {r!r}: want one of {', '.join(REQUIRABLE)}")
     try:
         hunt_scene = None if args.hunt_scene.lower() == "any" else int(args.hunt_scene, 0)
     except ValueError:
         raise AuditError(f"--hunt-scene {args.hunt_scene!r}: want a scene value (0x...) or `any`") from None
+    for name in ("time_frames", "position_relative", "position_absolute", "quest_seconds", "max_shift"):
+        value = getattr(args, name)
+        if value is not None and value < 0:
+            raise AuditError(f"--{name.replace('_', '-')} {value}: want a value of 0 or more")
     masks = args.fs_write_mask
     if masks is None:
         masks = str(DEFAULT_WRITE_MASKS)
     elif masks.lower() == "none":
         masks = None
-    items = compare_pair(pair, time_frames=args.time_frames, position_relative=args.position_relative,
-                         position_absolute=args.position_absolute, quest_seconds=args.quest_seconds,
-                         quest_units=args.quest_units, max_shift=args.max_shift, masks_file=masks, require=require,
-                         position_until=args.position_until, hunt_scene=hunt_scene)
-    lines = format_report(pair, items, verbose=not args.brief)
+    s = settings_for(pair, time_frames=args.time_frames, position_relative=args.position_relative,
+                     position_absolute=args.position_absolute, quest_seconds=args.quest_seconds,
+                     quest_units=args.quest_units, max_shift=args.max_shift, masks_file=masks, require=require,
+                     position_until=args.position_until, hunt_scene=hunt_scene)
+    items = compare_settings(pair, s)
+    lines = format_report(pair, items, verbose=not args.brief, settings=s)
     print("\n".join(lines))
     root = Path(args.dir)
-    (root / "compare.txt").write_text("\n".join(format_report(pair, items, True)) + "\n", encoding="utf-8", newline="\n")
+    (root / "compare.txt").write_text("\n".join(format_report(pair, items, True, s)) + "\n", encoding="utf-8",
+                                      newline="\n")
+    passed, failed, reported = verdict(items)
     (root / "compare.json").write_text(json.dumps({
         "session": pair.session, "factor": pair.factor, "io_latency": pair.meta.get("io_latency"),
         "mode": run_mode(pair.meta), "seed": run_seed(pair.meta),
-        "tolerances": {"time_frames": args.time_frames, "position_relative": args.position_relative,
-                       "position_absolute": args.position_absolute, "quest_seconds": args.quest_seconds,
-                       "quest_units_per_second": args.quest_units, "max_shift": args.max_shift},
-        "items": [{"name": i.name, "status": i.status, "summary": i.summary, "data": i.data} for i in items],
+        "rules": {"rules_of": s.rules_of, "gated": [n for n in ITEMS if n in s.gated], "reported": s.reported,
+                  "boot_windows": list(s.boot_windows)},
+        "tolerances": {"time_frames": s.time_frames, "time_default_frames": TIME_TOLERANCE_FRAMES,
+                       "time_table": {str(i): v for i, v in sorted(s.time_table.items())},
+                       "position_relative": s.position_relative, "position_absolute": s.position_absolute,
+                       "quest_seconds": s.quest_seconds, "quest_units_per_second": s.quest_units,
+                       "max_shift": s.max_shift},
+        "require": list(s.require), "position_until": s.position_until,
+        "verdict": "pass" if passed else "fail", "failed": failed, "reported_failures": reported,
+        "items": [{"name": i.name, "status": i.status, "gated": i.gated, "summary": i.summary, "data": i.data}
+                  for i in items],
     }, indent=1) + "\n", encoding="utf-8", newline="\n")
-    return 1 if any(i.status == FAIL for i in items) else 0
+    return 0 if passed else 1
 
 
 # -- scale and the command line -----------------------------------------------------------------------------------
@@ -895,22 +1125,31 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--lock-poll", type=float, default=30.0, help=argparse.SUPPRESS)
     p.add_argument("--force", action="store_true", help="delete OUT first when it holds runs")
 
-    p = sub.add_parser("compare", help="the six items for two runs made by `run`")
+    p = sub.add_parser("compare", help="the six items for two runs made by `run`, by D70's rules")
     p.add_argument("dir")
-    p.add_argument("--require", default="", metavar="ITEMS",
-                   help=f"items that must have something to compare (a n/a becomes a failure): {', '.join(REQUIRABLE)}")
+    p.add_argument("--require", metavar="ITEMS",
+                   help=f"items that must have something to compare (a n/a becomes a failure): "
+                        f"{', '.join(REQUIRABLE)}; replaces the session's default (G3: position,quest_time,dsp; the "
+                        f"others none); '' for none")
     p.add_argument("--position-until", type=int, metavar="FRAME",
-                   help="also report the position up to this frame at 60 fps (the part before the first attack)")
+                   help="also report the position up to this frame at 60 fps (the part before the first attack); "
+                        "default: G3 15862, the others none")
     p.add_argument("--hunt-scene", default=hex(HUNT_SCENE), metavar="VALUE|any",
                    help="the scene the position and the quest clock are compared in (default aQuest, the hunt: the "
                         "chains are valid there only, N3-21); `any` compares them in every scene")
-    p.add_argument("--time-frames", type=int, default=TIME_TOLERANCE_FRAMES, help="D70's first guess: 4")
-    p.add_argument("--position-relative", type=float, default=POSITION_RELATIVE, help="D70's first guess: 0.02")
-    p.add_argument("--position-absolute", type=float, default=POSITION_ABSOLUTE, help="D70's first guess: 0.05")
-    p.add_argument("--quest-seconds", type=float, default=QUEST_SECONDS, help="D70's first guess: 1")
+    p.add_argument("--time-frames", type=float, metavar="N",
+                   help=f"one limit for every scene change, frames at 60 fps, instead of D70's table "
+                        f"({TIME_TOLERANCE_FRAMES} frames unless named: SCENE_TIME_FRAMES)")
+    p.add_argument("--position-relative", type=float,
+                   help=f"the position's limit, part of the last second's travel (D70: {POSITION_RELATIVE:g})")
+    p.add_argument("--position-absolute", type=float,
+                   help=f"the position's limit, units (D70: {POSITION_ABSOLUTE:g})")
+    p.add_argument("--quest-seconds", type=float, help=f"the quest clock's limit, seconds (D70: {QUEST_SECONDS:g})")
     p.add_argument("--quest-units", type=float, default=QUEST_UNITS_PER_SECOND,
                    help="units of the quest counter per second of game time (N3-21: 60)")
-    p.add_argument("--max-shift", type=int, default=MAX_SHIFT, help="DSP frames the 120 fps capture may be shifted by")
+    p.add_argument("--max-shift", type=int,
+                   help=f"DSP frames the 120 fps capture may be shifted by (D70: {MAX_SHIFT_REAL_TIME} in real time, "
+                        f"{MAX_SHIFT_DETERMINISTIC} in the deterministic mode)")
     p.add_argument("--fs-write-mask", metavar="FILE|none", help="default: config/native/fs_write_masks.txt")
     p.add_argument("--brief", action="store_true", help="only the item lines on the terminal")
     return ap
