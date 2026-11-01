@@ -1,6 +1,6 @@
 # Static recompiler
 
-`tools/recompile.py` turns all ARM and Thumb code in the game's `code.bin` into C that runs natively on PC. The C is generated on the user's machine from their own dump. It's derived from game code, so it is **never committed** (`build/` is git-ignored).
+`tools/recompile.py` turns all ARM and Thumb code in the game's `code.bin` into C that runs natively on PC. The C is generated on the user's machine from their own dump. It's derived from game code, so it is **never committed** (`build/` is git-ignored). It takes the USA v1.3.0 update's code, whose addresses the tables in `config/` hold; `tools/build_game.py` builds EUR v1.1.0's library from the same tables through `config/shifts/` ([SETUP.md](SETUP.md#2-extract-the-exheader-and-exefs)).
 
 ```
 python3 tools/recompile.py --extra build/export/missing2.txt -o build/recomp     # ~80 s
@@ -44,9 +44,17 @@ The host provides:
 
 Functions listed in `config/hooks.txt` are hook points: the generated `f_<addr>` checks `rc_hooks[i]` and, if a hook is installed, calls it with the guest context and the original body (`fb_<addr>`). A hook can run the original, change registers or memory before or after it, or skip it (results in `r0`-`r3`, then `rc_hook_return`). Direct calls, indirect calls and the function table all go through the check, so a hook sees every call. The host installs hooks through `RCodeInfo.set_hook` when it loads a code library (`port/src/hooks.cpp`); the test harness has `rh_set_hook`. Other functions are generated exactly as before, so hook points cost nothing elsewhere.
 
+The port finds hook points by name, not by USA address. `recompile.py` writes their names from `config/hooks.txt` into `table.c` as `rc_hook_names`, in the order of `rc_hook_addrs`, and the library passes both in `RCodeInfo` (`hook_names`, `hook_addrs`). `FindHookPoint` (`port/src/hook_address.h`, tested by `tests/test_hook_address.py`) returns the address the library has for a name, so one build of the port hooks USA v1.3.0's library and EUR v1.1.0's, whose functions sit a little further along; a function the hooks only call (`QuestHolder::releaseQuestList`) is listed as a hook point so that its address comes from the library too. A name the library doesn't have is reported as a missing hook point (`no hook point for ...` in the log, and the notice that N of the port's hook points are missing), never looked for at USA's address. When the hook points aren't at USA's addresses, the log says `hook points found by name: game 0004000000126100` (the library's program id).
+
 ### Tunables
 
 Instructions listed in `config/tunables.txt` (address, original immediate, name) read their immediate operand from `rc_tunables[i]` instead of a constant; the array starts with the original values and the host reaches it through `RCodeInfo.tunables` (with the addresses and names). It is for numbers baked into the code that the port wants to change at run time, like the top screen's 400 rows for widescreen. A tunable whose instruction doesn't contain that immediate exactly once is reported as a problem.
+
+### Host version
+
+`rc_code_init` (`tools/recomp/runtime/rc_dll.c`) takes the host's table only when `RHost.version` is the library's `RC_HOST_VERSION` and `RHost.ctx_size` is its `sizeof(RCtx)`; otherwise the port says `... was built for another version of the port`. The number stands for the layout of `RHost` and `RCodeInfo`, so a library and a host of different versions refuse each other instead of misreading a field.
+
+The decision (from PR #64's review; on `main` with PR #75): `main` went from 4 to 6 when `RCodeInfo` gained `hook_names`. 5 was skipped so that each number means one layout on both branches: the `native` branch uses 5 for `RHost.preempt_flag`, and its 6 adds the same `hook_names`. `main` and `native` share `RCodeInfo`, and `main`'s `RHost` ends with `native`'s `preempt_flag` too, which `main`'s `RC_PAGED` code never reads; `main`'s loader refuses a library built for the native runtime (`RC_NATIVE`) by its `rc_build_mode`. For players a bump means building the code library again once after updating (the launcher's *Setup* does it); on Android, the APK and a library built with the PC package of the same release go together.
 
 ## Performance
 
