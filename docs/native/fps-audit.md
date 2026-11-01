@@ -13,7 +13,10 @@ is not noise), and the game's clock is 4 s ahead of its frame count from the int
 as well, which moves the audio of a game frame by hundreds of DSP frames. D70's numbers are proposed below; D70 and D71
 are the orchestrator's to mark Decided. *(2026-10-31, N3-32: the first of the two, finding 2, was native timing and is
 fixed: the deterministic G3 now reaches the Arena at 120 fps as the reference does. Finding 1 stands; D70 stays Open
-until the audit is run again on an idle PC.)*
+until the audit is run again on an idle PC.)* *(2026-10-31, later: run again, *Runs on an idle PC*. D70 is **Decided**
+on it: the proposal below, with G3's real-time sequence and observables reported, and the position and quest clock
+gated in the deterministic mode at the reference pair's own values (`DECISIONS.md`, D70). D71 stands. The tool's
+defaults are still D70's first guesses until N3-34.)*
 
 **The PC during the runs.** The real-time runs of 2026-10-31 (every row marked **rt**, and every `none` row except the
 deterministic ones) were taken while the PC was busy with the orchestrator's builds; the host times of 454 s and 408 s
