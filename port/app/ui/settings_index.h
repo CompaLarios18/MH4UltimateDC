@@ -214,9 +214,10 @@ struct Result {
 
 /// The rows that match `query`: tier 1, every word of the query the start of a word of the row's
 /// names (its label, section, tab, search words and `extra` for it: the keys and buttons bound to a
-/// key row); when none, tier 2, the same with its help too. Those whose label (as listed) has every
-/// word come first, so that Enter goes to the setting named so; each part in the menu's order.
-/// `extra` has a string per row or is empty. Rows without search words aren't listed.
+/// key row); when none, tier 2, the same with its help too. Those whose label (as listed) names the
+/// query come first, so that Enter goes to the setting named so: the label that is the query's
+/// words, then those with each word whole, then each the start of one of theirs; each part in the
+/// menu's order. `extra` has a string per row or is empty. Rows without search words aren't listed.
 std::vector<Result> Search(const std::string& query, const std::vector<std::string>& extra);
 
 } // namespace App::Ui::Index

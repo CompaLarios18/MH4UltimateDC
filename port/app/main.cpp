@@ -151,10 +151,12 @@ Args Parse(const std::vector<std::string>& argv) {
 }
 
 App::Window::Api ApiFor(const std::string& name) {
-    if (name == "opengl") {
+    // in any case, as the menu reads it (renderer = OpenGL written by hand, --renderer OpenGL)
+    const std::string lower = Common::ToLower(name);
+    if (lower == "opengl") {
         return App::Window::Api::OpenGL;
     }
-    if (name == "software") {
+    if (lower == "software") {
         return App::Window::Api::Software;
     }
     return App::Window::Api::Vulkan;

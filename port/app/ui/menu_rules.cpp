@@ -169,7 +169,7 @@ Verdict Evaluate(const Facts& f) {
         section_note(S::TouchCorner, note);
         section_note(S::TouchQuests, note);
     }
-    if (corner_until_next) { // R3
+    if (corner_until_next && Lower(f.renderer) != "software") { // R3 (with the software renderer, R7 says why not)
         const Note note{"Until the next start: then the touch screen has a window of its own."};
         section_note(S::TouchCorner, note);
         section_note(S::TouchQuests, note);

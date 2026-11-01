@@ -536,6 +536,22 @@ bool Matches(const std::string& token, const std::vector<std::string>& words) {
     return false;
 }
 
+/// How closely a row's label as listed (its words) names the query's words: 0 they are its words,
+/// 1 it has each of them whole, 2 each the start of one of its words (Matches), 3 not every one.
+int Naming(const std::vector<std::string>& tokens, const std::vector<std::string>& label) {
+    if (label == tokens) {
+        return 0;
+    }
+    const auto whole = [&label](const std::string& token) {
+        return std::find(label.begin(), label.end(), token) != label.end();
+    };
+    if (std::all_of(tokens.begin(), tokens.end(), whole)) {
+        return 1;
+    }
+    const auto starts = [&label](const std::string& token) { return Matches(token, label); };
+    return std::all_of(tokens.begin(), tokens.end(), starts) ? 2 : 3;
+}
+
 } // namespace
 
 const char* TabName(Tab tab) {
@@ -626,12 +642,9 @@ std::vector<Result> Search(const std::string& query, const std::vector<std::stri
             names[i].insert(names[i].end(), more.begin(), more.end());
         }
     }
-    const auto all = [&tokens](const std::vector<std::string>& words) {
-        return std::all_of(tokens.begin(), tokens.end(),
-                           [&words](const std::string& token) { return Matches(token, words); });
-    };
     for (int tier = 1; tier <= 2 && results.empty(); ++tier) {
-        std::vector<Result> others; // matched by words other than the label's: after those named so
+        // by how closely their labels name the query (Naming): the setting named so first
+        std::array<std::vector<Result>, 4> named;
         for (int i = 0; i < ROW_COUNT; ++i) {
             if (!*ROWS[i].keywords) {
                 continue; // the search field and Back: nothing to go to
@@ -640,11 +653,14 @@ std::vector<Result> Search(const std::string& query, const std::vector<std::stri
             if (tier == 2) {
                 words.insert(words.end(), tables.helps[i].begin(), tables.helps[i].end());
             }
-            if (all(words)) {
-                (all(tables.labels[i]) ? results : others).push_back({i, tier});
+            if (std::all_of(tokens.begin(), tokens.end(),
+                            [&words](const std::string& token) { return Matches(token, words); })) {
+                named[Naming(tokens, tables.labels[i])].push_back({i, tier});
             }
         }
-        results.insert(results.end(), others.begin(), others.end());
+        for (const std::vector<Result>& group : named) {
+            results.insert(results.end(), group.begin(), group.end());
+        }
     }
     return results;
 }

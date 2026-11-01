@@ -332,10 +332,24 @@ def test_search_in_the_menus_order(driver):
     ("controller", "controls.controller_auto"), ("mouse", "controls.mouse_sensitivity"), ("skip", "gameplay.skip"),
     ("quit", "header.quit"), ("item bar", "keys.item_prev"), ("kick", "gameplay.kick"), ("start", "keys.start"),
     ("reset", "keys.reset"), ("defaults", "keys.reset"), ("remap", "keys.reset"), ("map", "touch.map_only"),
+    # a label that is the query's words before those that only have them (Screen refresh rate, Target
+    # camera by the map), and words found whole before a start of one (d of down)
+    ("screens", "touch.screens"), ("target camera", "gameplay.target"), ("d-pad down", "keys.dpad_down"),
+    ("d-pad", "keys.dpad_up"), ("hold for", "gameplay.skip_end_hold"),
 ])
 def test_search_names_first(driver, query, first):
     _, found = search(driver, query)
     assert found[0][1] == first, found
+
+
+def test_search_a_label_finds_its_row_first(driver, rows):
+    # every row's label as listed, typed in, goes to that row (or to one listed the same before it:
+    # Full screen in Display, then in Keys)
+    listed = {r["id"]: r["listed"].lower() for r in rows}
+    for r in rows:
+        if r["keywords"]:
+            _, found = search(driver, r["listed"])
+            assert listed[found[0][1]] == r["listed"].lower(), (r["id"], found[:3])
 
 
 def test_search_numbers_end_where_a_words_does(driver):
@@ -437,6 +451,11 @@ def test_r3_windows_chosen_the_corner_runs(driver):
     r = rules(driver, **{**BASE, "screens": "windows", "custom_now": 0})
     assert {"touch.overlay", "touch.map_only", "touch.hud_editor"} <= r["disabled"]
     assert r["section"]["touch.corner"][1] == "touch.screens"
+    # the software renderer chosen too: no window of its own then (R7 says so), so no promise of one
+    r = rules(driver, **{**BASE, "screens": "windows", "renderer": "software"})
+    assert r["section"] == {"touch.screens": (
+        "The software renderer has no second window, so the touch screen won't show.", "display.renderer")}
+    assert r["disabled"] == set() and "hud_editor_off" not in r["flags"]
 
 
 def test_r2_overlay_off(driver):
