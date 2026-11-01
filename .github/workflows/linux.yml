@@ -130,13 +130,13 @@ jobs:
           https://github.com/azahar-emu/azahar plus mh4u/port/azahar/azahar.patch.
 
           No game code is included. To play, with your own decrypted Monster Hunter 4 Ultimate
-          (USA) and its v1.3.0 update (.cia):
+          and its update (.cia: v1.3.0 for the USA game, v1.1.0 for the European game):
           1. Python 3.10 or newer (most distributions have it; on a Steam Deck too).
           2. Run ./mh4u.AppImage (or double-click it). The first time its launcher opens on
              Setup: choose your game (the decrypted .3ds, .cci or .cxi; the file dialog is zenity
              or kdialog, or the launcher's own browser: Browse in the launcher..., and by itself
              in Steam's Game Mode or with a controller; or start it with the game as its
-             argument) and your v1.3.0 update .cia;
+             argument) and its update .cia;
              it installs the update and builds the game's code library on this computer (with
              clang if installed, otherwise it downloads Zig's C compiler, about 80 MB).
              ./build-code-library.sh does the same build from a terminal, if you prefer.

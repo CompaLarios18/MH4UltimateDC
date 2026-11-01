@@ -56,6 +56,9 @@ port = 24872
 max_members = 16
 # empty: no password
 password =
+# the players' game, usa or europe: players of the other region find the room with other
+# games' rooms in the port's app (whether the two regions play together isn't known yet)
+game = usa
 # To list the room in a lobby (Multiplayer > Browse Public Rooms): the lobby's address
 # (http://...:24872) and the room's name and token there. In an open lobby the first
 # use claims the name; use your own Azahar username to be the room's moderator.
@@ -69,7 +72,7 @@ INI
 fi
 chmod 600 "$ini"  # (one made by an older version of this script was readable by all)
 
-name="MH4U Gathering Hall" description="" port=24872 max_members=16 password=""
+name="MH4U Gathering Hall" description="" port=24872 max_members=16 password="" game=usa
 lobby_url="" username="" token="" ban_list="room-ban-list.txt"
 trim() {
     printf '%s' "$1" | tr -d '\r' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//'
@@ -83,6 +86,7 @@ setting() {  # setting "key = value"
         port) port=$value ;;
         max_members) max_members=$value ;;
         password) password=$value ;;
+        game) game=$value ;;
         lobby_url) lobby_url=$value ;;
         username) username=$value ;;
         token) token=$value ;;
@@ -110,11 +114,17 @@ case "$port" in '' | *[!0-9]*) port=0 ;; esac
 case "$max_members" in '' | *[!0-9]*) max_members=0 ;; esac
 [ "$max_members" -ge 2 ] && [ "$max_members" -le 254 ] ||
     fail "max_members must be a number from 2 to 254"
+# the program id the room is set up for: the players' Monster Hunter 4 Ultimate
+case "$(printf '%s' "$game" | tr '[:upper:]' '[:lower:]')" in
+    usa) app_id=0004000000126300 region=USA ;;
+    europe) app_id=0004000000126100 region=European ;;
+    *) fail "game must be usa or europe" ;;
+esac
 case "$ban_list" in /*) ;; *) ban_list="$folder/$ban_list" ;; esac
 [ -f "$ban_list" ] || printf 'CitraRoom-BanList-1\n' >"$ban_list"  # an empty one
 
 set -- --room-name "$name" --port "$port" --max_members "$max_members" \
-    --preferred-app "Monster Hunter 4 Ultimate" --preferred-app-id 0004000000126300 \
+    --preferred-app "Monster Hunter 4 Ultimate" --preferred-app-id "$app_id" \
     --ban-list-file "$ban_list"
 if [ -n "$description" ]; then
     set -- "$@" --room-description "$description"
@@ -123,7 +133,7 @@ if [ -n "$password" ]; then
     set -- "$@" --password "$password"
 fi
 
-echo "Room '$name': UDP port $port, up to $max_members players, $([ -n "$password" ] && echo "with a password" || echo "no password")."
+echo "Room '$name' for the $region game: UDP port $port, up to $max_members players, $([ -n "$password" ] && echo "with a password" || echo "no password")."
 if [ -n "$lobby_url" ] && [ -n "$username" ] && [ -n "$token" ]; then
     set -- "$@" --web-api-url "$lobby_url" --username "$username" --token "$token"
     echo "Listed in the lobby at $lobby_url as $username: players find it in"

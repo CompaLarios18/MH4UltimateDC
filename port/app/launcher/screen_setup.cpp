@@ -22,8 +22,8 @@ SetupRow GameRow(const State& s) {
 
 SetupRow UpdateRow(const State& s) {
     using State_ = Checks::Update::State;
-    // v1.3.0, or Europe's v1.1.0
-    const std::string name = Checks::UpdateName(s.game.program_id);
+    // v1.3.0, or Europe's v1.1.0 (with no game yet, the installed update's, else both)
+    const std::string name = Checks::UpdateName(s.update.region);
     switch (s.update.state) {
     case State_::Ok:
         // (a note when its version label isn't the update's: its code is)
@@ -38,7 +38,8 @@ SetupRow UpdateRow(const State& s) {
     case State_::Missing:
         break;
     }
-    return {Ui::Status::Error, "Update " + name, "Not installed"};
+    // (a note when the update installed is another region's)
+    return {Ui::Status::Error, "Update " + name, s.update.note.empty() ? "Not installed" : s.update.note};
 }
 
 SetupRow CodeRow(const State& s) {
@@ -134,7 +135,7 @@ void DrawSetup(State& s) {
 
     // 2. the update
     Ui::BeginCard("##step2", ImVec2(0, 0), current == 2);
-    StepTitle(2, ("The " + Checks::UpdateName(s.game.program_id) + " update").c_str(), update_ok);
+    StepTitle(2, ("The " + Checks::UpdateName(s.update.region) + " update").c_str(), update_ok);
     const auto update = UpdateRow(s);
     Ui::StatusLine(update.status, update.label, update.detail);
     Ui::TextDim("The port runs the update's code. Install it from your decrypted update (.cia; GodMode9 "

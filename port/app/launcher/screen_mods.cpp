@@ -19,7 +19,10 @@ namespace Launcher {
 namespace {
 
 /// The game for mods.py's --program-id: the chosen game when it is a version the port runs, else
-/// 0 (mods.py then goes by the update installed; another game's id would make it stop).
+/// 0 (mods.py then goes by the update installed; another game's id would make it stop). The
+/// library a command returns (and a deploy's state) is that game's: once another game is chosen,
+/// it is left out (the new game's own read follows: State::ChooseGame), so that Play doesn't go
+/// by the mods folder of the game chosen before.
 u64 ModsGame(const State& s) {
     return Checks::FindRegion(s.game.program_id) ? s.game.program_id : 0;
 }
@@ -163,16 +166,20 @@ void ApplyStatus(ModLibrary& lib, const Json& j) {
     }
 }
 
-/// The library as mods.py returns it after a command; errors to a dialog.
-void HandleOverview(State& s, int exit_code, const std::string& output, bool quiet = false) {
+/// The library as mods.py returns it after a command for `game`; errors to a dialog. For another
+/// game than the one chosen now, only the dialog (ModsGame).
+void HandleOverview(State& s, u64 game, int exit_code, const std::string& output, bool quiet = false) {
     const Json j = Parse(output);
+    const bool current = game == ModsGame(s);
     if (exit_code == 0 && j.is_object() && Bool(j, "ok")) {
-        ApplyOverview(s.mods, j);
+        if (current) {
+            ApplyOverview(s.mods, j);
+        }
         return;
     }
     const std::string error = ErrorText(j, output);
     LOG_WARNING(Frontend, "launcher: mods.py: {}", error);
-    if (!s.mods.loaded) {
+    if (!s.mods.loaded && current) {
         s.mods.error = error.empty() ? "mods.py didn't say why." : error;
     }
     if (!quiet) {
@@ -182,17 +189,18 @@ void HandleOverview(State& s, int exit_code, const std::string& output, bool qui
 
 /// Conflicts and the code library's state, after the library changed.
 void QueueDetails(State& s) {
-    s.runner.Queue(Tools::ModsCommand(s.python, s.tools_dir, {"conflicts"}, ModsGame(s)), "Reading the mod library",
-                   [&s](int exit_code, const std::string& output) {
+    const u64 game = ModsGame(s);
+    s.runner.Queue(Tools::ModsCommand(s.python, s.tools_dir, {"conflicts"}, game), "Reading the mod library",
+                   [&s, game](int exit_code, const std::string& output) {
                        const Json j = Parse(output);
-                       if (exit_code == 0 && j.is_object()) {
+                       if (exit_code == 0 && j.is_object() && game == ModsGame(s)) {
                            ApplyConflicts(s.mods, j);
                        }
                    });
-    s.runner.Queue(Tools::ModsCommand(s.python, s.tools_dir, {"status"}, ModsGame(s)), "Reading the mod library",
-                   [&s](int exit_code, const std::string& output) {
+    s.runner.Queue(Tools::ModsCommand(s.python, s.tools_dir, {"status"}, game), "Reading the mod library",
+                   [&s, game](int exit_code, const std::string& output) {
                        const Json j = Parse(output);
-                       if (exit_code == 0 && j.is_object()) {
+                       if (exit_code == 0 && j.is_object() && game == ModsGame(s)) {
                            ApplyStatus(s.mods, j);
                        }
                    });
@@ -202,9 +210,10 @@ void QueueDetails(State& s) {
 
 /// A command that changes the library (add, remove, enable, disable, order).
 void Change(State& s, std::vector<std::string> args, std::string what) {
-    s.runner.Queue(Tools::ModsCommand(s.python, s.tools_dir, args, ModsGame(s)), std::move(what),
-                   [&s](int exit_code, const std::string& output) {
-                       HandleOverview(s, exit_code, output);
+    const u64 game = ModsGame(s);
+    s.runner.Queue(Tools::ModsCommand(s.python, s.tools_dir, args, game), std::move(what),
+                   [&s, game](int exit_code, const std::string& output) {
+                       HandleOverview(s, game, exit_code, output);
                    });
     QueueDetails(s);
 }
@@ -600,6 +609,11 @@ const CatalogEntry* SelectedEntry(const State& s) {
     return nullptr;
 }
 
+/// "European" for Europe, the catalog's name for the others ("USA").
+std::string RegionWord(const std::string& region) {
+    return region == "Europe" ? "European" : region;
+}
+
 std::string EntryLine(const CatalogEntry& e) {
     std::string line = e.category.empty() ? (e.kind == "textures" ? "Texture pack" : "Mod") : e.category;
     if (e.size >= 0) {
@@ -641,13 +655,27 @@ void CatalogDetails(State& s, const CatalogEntry& e, bool busy) {
 
     // what can be done, first
     const bool textures_off = Has(e.needs, "custom_textures") && !s.config.custom_textures;
+    // a mod patches the code of the region its entry names (as mods.py spells it): not for the other
+    // region's game, whose code is at other addresses (texture packs are for both); with no game
+    // chosen, mods.py refuses it by the update installed
+    const Checks::Region* game = Checks::FindRegion(s.game.program_id);
+    const bool other_region = e.kind == "mod" && game && !e.region.empty() && e.region != game->name;
+    const std::string not_yours =
+        other_region ? fmt::format("Made for the {} game's code: not for your {} game.", RegionWord(e.region),
+                                   RegionWord(game->name))
+                     : std::string();
     ImGui::BeginDisabled(busy);
     if (e.direct) {
         const char* label = e.update ? "Update" : e.installed ? "Install again" : e.downloaded > 0 ? "Go on installing"
                                                                                                     : "Install";
+        ImGui::BeginDisabled(other_region);
         if (Ui::AccentButton(label)) {
             AskInstall(s, e);
         }
+        if (other_region && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+            ImGui::SetTooltip("%s", not_yours.c_str());
+        }
+        ImGui::EndDisabled();
         ImGui::SameLine();
     }
     if (e.direct ? ImGui::Button("Open its page") : Ui::AccentButton("Open its page")) {
@@ -666,6 +694,9 @@ void CatalogDetails(State& s, const CatalogEntry& e, bool busy) {
         }
     }
     ImGui::EndDisabled();
+    if (other_region) {
+        Ui::StatusLine(Ui::Status::Warn, "Not for your game", not_yours);
+    }
     if (!e.direct) {
         Ui::TextDim("Installed from its page (its site asks you to sign in or to choose a file).");
     }
@@ -731,6 +762,13 @@ void DrawCatalog(State& s, bool busy) {
     const float scale = Ui::Scale();
     Ui::TextDim("Mods and texture packs picked for the port, installed with one click from their authors' own "
                 "downloads. Texture packs go in the game's texture folder; mods join your mods.");
+    if (!s.update.region) {
+        // no game chosen and no update installed: mods.py goes by the USA game, and a pack installed
+        // now stays in its texture folder, which the European game doesn't read
+        Ui::StatusLine(Ui::Status::Warn, "No game chosen yet",
+                       "A texture pack goes in the USA game's texture folder. For the European game, choose it in "
+                       "Setup first.");
+    }
     ImGui::BeginDisabled(busy);
     const auto install = [&s](const std::string& path) {
         StartModsJob(
@@ -875,8 +913,12 @@ void RefreshCatalog(State& s, bool fetch) {
             args.push_back("--refresh");
         }
     }
-    s.runner.Queue(Tools::ModsCommand(s.python, s.tools_dir, args, ModsGame(s)), "Reading the mod catalog",
-                   [&s](int exit_code, const std::string& output) {
+    const u64 game = ModsGame(s);
+    s.runner.Queue(Tools::ModsCommand(s.python, s.tools_dir, args, game), "Reading the mod catalog",
+                   [&s, game](int exit_code, const std::string& output) {
+                       if (game != ModsGame(s)) {
+                           return;
+                       }
                        const Json j = Parse(output);
                        if (exit_code == 0 && j.is_object() && Bool(j, "ok")) {
                            ApplyCatalog(s.mods.catalog, j);
@@ -890,9 +932,10 @@ void RefreshMods(State& s) {
     if (!s.ToolsReady()) {
         return;
     }
-    s.runner.Queue(Tools::ModsCommand(s.python, s.tools_dir, {"list"}, ModsGame(s)), "Reading the mod library",
-                   [&s](int exit_code, const std::string& output) {
-                       HandleOverview(s, exit_code, output, true);
+    const u64 game = ModsGame(s);
+    s.runner.Queue(Tools::ModsCommand(s.python, s.tools_dir, {"list"}, game), "Reading the mod library",
+                   [&s, game](int exit_code, const std::string& output) {
+                       HandleOverview(s, game, exit_code, output, true);
                    });
     QueueDetails(s);
     if (!s.mods.catalog.fetched) {
@@ -908,9 +951,10 @@ void DeployMods(State& s, bool force, std::function<void(bool without_code)> the
     if (force) {
         args.push_back("--force");
     }
+    const u64 game = ModsGame(s);
     auto process = std::make_unique<Process>();
     std::string error;
-    if (!process->Start(Tools::ModsCommand(s.python, s.tools_dir, args, ModsGame(s)), error)) {
+    if (!process->Start(Tools::ModsCommand(s.python, s.tools_dir, args, game), error)) {
         s.Message("The mods weren't put in place", error);
         return;
     }
@@ -919,7 +963,16 @@ void DeployMods(State& s, bool force, std::function<void(bool without_code)> the
     s.job.title = "Putting the mods in place";
     s.job.close_when_done = true;
     s.job.process = std::move(process);
-    s.job.on_done = [&s, then](int exit_code, const std::string& output) {
+    s.job.on_done = [&s, then, game](int exit_code, const std::string& output) {
+        if (game != ModsGame(s)) {
+            // another game was chosen meanwhile (in a picker open from before): this deploy was
+            // the game before's, so it is left out and Play doesn't go on. The new game's mods
+            // are read, and Play, pressed again, waits for them.
+            s.mods.loaded = false;
+            s.mods.error.clear();
+            RefreshMods(s);
+            return;
+        }
         const Json j = Parse(output);
         const auto go_on = [then](const char* label, bool without_code) -> Dialog::Button {
             return {label, [then, without_code] { then(without_code); }, false};
@@ -1092,10 +1145,14 @@ void DrawMods(State& s) {
     ImGui::Spacing();
 
     if (s.mods.loaded && s.mods.mods.empty()) {
+        // the title folder of the game mods.py goes by: the chosen one, else the region whose update
+        // is installed, USA's when both or neither are (Checks::CheckUpdate)
+        const Checks::Region& game = s.update.region ? *s.update.region : Checks::REGIONS[0];
+        const std::string titles = fmt::format("{:016X}/", game.program_id);
         Ui::BeginCard("##empty", ImVec2(0, 0));
         Ui::TextColored(Ui::Color::Text, "No mods yet.");
         Ui::TextDim("Pick one from the Catalog, or add a mod's folder or its archive (.zip, .7z): Azahar's "
-                    "layout (romfs/, exefs/), a title folder (0004000000126300/, luma/titles/...), or the game's "
+                    "layout (romfs/, exefs/), a title folder (" + titles + ", luma/titles/...), or the game's "
                     "own folders (data/...). Later mods win where two change the same file.");
         Ui::EndCard();
         ImGui::EndChild();
@@ -1123,7 +1180,8 @@ void DrawMods(State& s) {
             }
             ImGui::TableNextColumn();
             bool on = mod.enabled;
-            ImGui::BeginDisabled(busy || !mod.errors.empty());
+            // (a mod that can't be used isn't turned on, but one that is on can be turned off)
+            ImGui::BeginDisabled(busy || (!mod.errors.empty() && !mod.enabled));
             if (Ui::Toggle("##on", &on)) {
                 Change(s, {on ? "enable" : "disable", mod.id}, (on ? "Turning on " : "Turning off ") + mod.name);
             }

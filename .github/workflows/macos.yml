@@ -200,11 +200,11 @@ jobs:
           Settings > Privacy & Security > Open Anyway).
 
           No game code is included. To play, with your own decrypted Monster Hunter 4 Ultimate
-          (USA) and its v1.3.0 update (.cia):
+          and its update (.cia: v1.3.0 for the USA game, v1.1.0 for the European game):
           1. The Xcode command-line tools (xcode-select --install in Terminal) and Python 3.10 or
              newer (python.org or Homebrew).
           2. Open MH4U. The first time its launcher opens on Setup: choose your game (the
-             decrypted .3ds, .cci or .cxi) and your v1.3.0 update .cia; it installs the update and
+             decrypted .3ds, .cci or .cxi) and its update .cia; it installs the update and
              builds the game's code library on this Mac (several minutes). "Build code
              library.command" does the same build in Terminal, if you prefer.
           3. Play: PLAY on the launcher (Return, or A on a controller). In the game, Esc (or the

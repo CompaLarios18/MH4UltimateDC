@@ -9,6 +9,8 @@
 #   ROOM_PORT         its UDP port (24872): publish the same number on the host
 #   ROOM_PASSWORD     a password, if any
 #   ROOM_MAX_MEMBERS  at most this many players (16; 2 to 254)
+#   ROOM_GAME         the players' game, usa (the default) or europe: in the port's app, players
+#                     of the other region find the room with other games' rooms
 #   LOBBY_URL         a lobby to announce itself to (http://host:24872), with
 #   LOBBY_USERNAME    the room's name there and
 #   LOBBY_TOKEN       its token there; without all three the room is unlisted (Direct Connect)
@@ -17,12 +19,18 @@ set -u
 umask 077  # the ban list names players and their addresses
 stop=""
 trap 'stop=1' TERM INT  # a stop before the room has its console: passed on below
+# the program id the room is set up for: the players' Monster Hunter 4 Ultimate
+case "$(printf '%s' "${ROOM_GAME:-usa}" | tr '[:upper:]' '[:lower:]')" in
+    usa) app_id=0004000000126300 region=USA ;;
+    europe) app_id=0004000000126100 region=European ;;
+    *) echo "ROOM_GAME must be usa or europe, not '$ROOM_GAME'"; exit 1 ;;
+esac
 ban_list="$PWD/ban-list.txt"
 [ -f "$ban_list" ] || printf 'CitraRoom-BanList-1\n' >"$ban_list"  # an empty one
 
 set -- --room-name "${ROOM_NAME:-MH4U Gathering Hall}" --port "${ROOM_PORT:-24872}" \
     --max_members "${ROOM_MAX_MEMBERS:-16}" \
-    --preferred-app "Monster Hunter 4 Ultimate" --preferred-app-id 0004000000126300 \
+    --preferred-app "Monster Hunter 4 Ultimate" --preferred-app-id "$app_id" \
     --ban-list-file "$ban_list" "$@"
 if [ -n "${ROOM_DESCRIPTION:-}" ]; then
     set -- "$@" --room-description "$ROOM_DESCRIPTION"
@@ -46,7 +54,7 @@ exec 3>"$console"
 rm -f "$console"
 trap 'echo q >&3' TERM INT
 [ -z "$stop" ] || echo q >&3
-echo "Room started (pid $room): docker stop closes it"
+echo "Room started for the $region game (pid $room): docker stop closes it"
 wait "$room"
 status=$?
 # A trapped signal ends the wait early (128 + the signal) while the room is still closing, or

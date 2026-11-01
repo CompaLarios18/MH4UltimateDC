@@ -91,6 +91,13 @@ typedef struct RHost {
     void (*budget)(RCtx *ctx);
     u32 (*slow_read)(RCtx *ctx, u32 a, u32 size);
     void (*slow_write)(RCtx *ctx, u32 a, u32 v, u32 size);
+    /* RC_NATIVE builds (the native branch's runtime): address of the preemption flag, which the
+     * generated code reads at every yield point; the host sets it from any thread to make the
+     * running guest code call rc_budget, and clears it in there. NULL (and always for RC_PAGED
+     * builds) = no preemption requests. Main's code libraries are RC_PAGED and never read it;
+     * it is here so that a library from the native branch's tools, whose rc_code_init copies
+     * the whole struct, doesn't read past the end of the host's. */
+    volatile u32 *preempt_flag;
 } RHost;
 
 /* Hooks: native code that wraps or replaces a recompiled function. A hook gets the guest

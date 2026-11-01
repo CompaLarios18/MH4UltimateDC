@@ -1,7 +1,8 @@
-# Builds the game's code library from YOUR Monster Hunter 4 Ultimate USA v1.3.0 update (.cia)
-# and installs it where this Azahar looks for it (%APPDATA%\Azahar\recomp), then installs the
-# update in Azahar as well. The first time it downloads the C compiler (llvm-mingw, about
-# 180 MB). Everything it makes from the game stays on this PC. Close Azahar before running it.
+# Builds the game's code library from YOUR Monster Hunter 4 Ultimate update (.cia: the USA
+# game's v1.3.0 or the European game's v1.1.0) and installs it where this Azahar looks for it
+# (%APPDATA%\Azahar\recomp), then installs the update in Azahar as well. The first time it
+# downloads the C compiler (llvm-mingw, about 180 MB). Everything it makes from the game stays
+# on this PC. Close Azahar before running it.
 # Part of the MH4U PC port's Windows package (see README-mh4u.txt).
 #
 # Double-click "Build code library.bat", or:
@@ -37,7 +38,7 @@ if (-not $python) {
 if (-not $Cia) {
     Add-Type -AssemblyName System.Windows.Forms
     $dialog = New-Object System.Windows.Forms.OpenFileDialog
-    $dialog.Title = "Your decrypted MH4U USA v1.3.0 update (.cia)"
+    $dialog.Title = "Your decrypted MH4U update (.cia): USA v1.3.0 or Europe v1.1.0"
     $dialog.Filter = "CIA files (*.cia)|*.cia|All files (*.*)|*.*"
     if ($dialog.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) { Write-Host "No file chosen."; Finish 1 }
     $Cia = $dialog.FileName
@@ -99,7 +100,7 @@ if (-not (Test-Path $qtini)) {
 
 Write-Host ""
 Write-Host "Done. In azahar.exe (next to this script):"
-if (-not $updateInstalled) { Write-Host "  - File > Install CIA... > your v1.3.0 update (.cia)" }
+if (-not $updateInstalled) { Write-Host "  - File > Install CIA... > your update (.cia)" }
 Write-Host "  - File > Load File... > your decrypted game (.3ds / .cci / .cxi)"
 Write-Host "  - Tools > MH4U Port Options... for the frame rate, widescreen and the rest"
 Write-Host "  Azahar says so at the start if the game runs without the port's code library."

@@ -37,17 +37,20 @@ const char* UpdateName(u64 program_id) {
     return program_id == MH4U_EUROPE ? "v1.1.0" : "v1.3.0";
 }
 
+// How to build the library: with this version's tools (one from another version's tools can be
+// refused: ARM_Recomp::LoadCode).
 #if defined(__ANDROID__)
 constexpr const char* BUILD_HINT =
     "Build it on your PC from your own copy of the update (USA v1.3.0, Europe v1.1.0) with "
-    "tools/build_game.py --android, then copy it into Azahar's user folder on the device as "
-    "recomp/<the game's program id>.so: 0004000000126300.so for the USA, 0004000000126100.so for "
-    "Europe (docs/PLAYING.md in the port's repository).";
+    "tools/build_game.py --android from the PC package of the same release as this APK, then copy "
+    "it into Azahar's user folder on the device as recomp/<the game's program id>.so: "
+    "0004000000126300.so for the USA, 0004000000126100.so for Europe (docs/PLAYING.md in the "
+    "port's repository).";
 #else
 constexpr const char* BUILD_HINT =
-    "Build it from your own copy of the update (USA v1.3.0, Europe v1.1.0) with \"Build code "
-    "library\" next to azahar.exe on Windows, or tools/build_game.py (docs/PLAYING.md in the "
-    "port's repository).";
+    "Build it from your own copy of the update (USA v1.3.0, Europe v1.1.0) with this version's "
+    "tools: the launcher's Setup, \"Build code library\" next to azahar.exe on Windows, or "
+    "tools/build_game.py (docs/PLAYING.md in the port's repository).";
 #endif
 
 #if defined(__ANDROID__)
@@ -315,10 +318,9 @@ std::string PrepareBackendFor(Core::System& system, const std::string& rom_path)
         }
 #endif
         if (IsMh4u(program_id)) {
+            // (the error says what to do about a library of another version: build it again)
             notice = fmt::format("The MH4U PC port's code library couldn't be used ({}), so the game "
-                                 "runs on Azahar's own CPU emulation, without the port's options. A "
-                                 "library made for an older version of this Azahar has to be built "
-                                 "again.\n\n{}",
+                                 "runs on Azahar's own CPU emulation, without the port's options.\n\n{}",
                                  error, BUILD_HINT);
         }
         return fmt::format("{}; using the emulated CPU", error);
