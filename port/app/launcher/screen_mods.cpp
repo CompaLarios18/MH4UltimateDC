@@ -600,6 +600,11 @@ const CatalogEntry* SelectedEntry(const State& s) {
     return nullptr;
 }
 
+/// "European" for Europe, the catalog's name for the others ("USA").
+std::string RegionWord(const std::string& region) {
+    return region == "Europe" ? "European" : region;
+}
+
 std::string EntryLine(const CatalogEntry& e) {
     std::string line = e.category.empty() ? (e.kind == "textures" ? "Texture pack" : "Mod") : e.category;
     if (e.size >= 0) {
@@ -641,13 +646,27 @@ void CatalogDetails(State& s, const CatalogEntry& e, bool busy) {
 
     // what can be done, first
     const bool textures_off = Has(e.needs, "custom_textures") && !s.config.custom_textures;
+    // a mod patches the code of the region its entry names (as mods.py spells it): not for the other
+    // region's game, whose code is at other addresses (texture packs are for both); with no game
+    // chosen, mods.py refuses it by the update installed
+    const Checks::Region* game = Checks::FindRegion(s.game.program_id);
+    const bool other_region = e.kind == "mod" && game && !e.region.empty() && e.region != game->name;
+    const std::string not_yours =
+        other_region ? fmt::format("Made for the {} game's code: not for your {} game.", RegionWord(e.region),
+                                   RegionWord(game->name))
+                     : std::string();
     ImGui::BeginDisabled(busy);
     if (e.direct) {
         const char* label = e.update ? "Update" : e.installed ? "Install again" : e.downloaded > 0 ? "Go on installing"
                                                                                                     : "Install";
+        ImGui::BeginDisabled(other_region);
         if (Ui::AccentButton(label)) {
             AskInstall(s, e);
         }
+        if (other_region && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+            ImGui::SetTooltip("%s", not_yours.c_str());
+        }
+        ImGui::EndDisabled();
         ImGui::SameLine();
     }
     if (e.direct ? ImGui::Button("Open its page") : Ui::AccentButton("Open its page")) {
@@ -666,6 +685,9 @@ void CatalogDetails(State& s, const CatalogEntry& e, bool busy) {
         }
     }
     ImGui::EndDisabled();
+    if (other_region) {
+        Ui::StatusLine(Ui::Status::Warn, "Not for your game", not_yours);
+    }
     if (!e.direct) {
         Ui::TextDim("Installed from its page (its site asks you to sign in or to choose a file).");
     }
@@ -1092,10 +1114,15 @@ void DrawMods(State& s) {
     ImGui::Spacing();
 
     if (s.mods.loaded && s.mods.mods.empty()) {
+        // the chosen game's title folder (both regions' while no game is chosen)
+        const Checks::Region* game = Checks::FindRegion(s.game.program_id);
+        const std::string titles = game ? fmt::format("{:016X}/", game->program_id)
+                                        : fmt::format("{:016X}/ or {:016X}/", Checks::REGIONS[0].program_id,
+                                                      Checks::REGIONS[1].program_id);
         Ui::BeginCard("##empty", ImVec2(0, 0));
         Ui::TextColored(Ui::Color::Text, "No mods yet.");
         Ui::TextDim("Pick one from the Catalog, or add a mod's folder or its archive (.zip, .7z): Azahar's "
-                    "layout (romfs/, exefs/), a title folder (0004000000126300/, luma/titles/...), or the game's "
+                    "layout (romfs/, exefs/), a title folder (" + titles + ", luma/titles/...), or the game's "
                     "own folders (data/...). Later mods win where two change the same file.");
         Ui::EndCard();
         ImGui::EndChild();
