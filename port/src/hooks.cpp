@@ -34,6 +34,7 @@
 extern "C" {
 #include "recomp.h"
 }
+#include "hook_address.h"
 
 namespace Port::Hooks {
 
@@ -761,7 +762,11 @@ constexpr u32 PANEL_MODE = 0xb1;         // u8: which buttons the touch screen h
 constexpr u32 PANEL_ID_TABLES = 0x00df5410;  // u32[4] per mode: the slot of each hit index
 constexpr u32 PANEL_SLOT_IDS = 0xb4;     // u8[]: the id of the panel in each slot (processTouch 0x00295800)
 constexpr u32 PANEL_TOUCH_ALLOWED = 0x0028f2f0;  // the call processTouch makes with the hit in r5
+constexpr u32 PANEL_PROCESS_TOUCH = 0x002951fc;  // PanelManager::processTouch
 constexpr u32 PANEL_TOUCH_ALLOWED_RETURN = 0x002957a4;  // its return address in processTouch
+// That return address in the running version of the game: Install moves it with processTouch,
+// whose code is the same in the other versions (only where it sits differs)
+u32 panel_touch_allowed_return = PANEL_TOUCH_ALLOWED_RETURN;
 // The wait itself (aQuest::playing 0x0065c18c, hooked as QuestPlaying below)
 constexpr u32 AQUEST_WAIT_LEFT = 0x3c;    // s32: units of the wait left (loaded from the holder's
                                           // +0xad60: 20 s × sMain+0x2c)
@@ -804,7 +809,7 @@ int PanelIndex(RCtx* ctx, u32 panel) {
 /// Skip button's index goes there, pressed one frame and released the next, so processTouch
 /// handles it as it would the stylus.
 void PanelTouchAllowed(RCtx* ctx, RFunc original) {
-    const bool from_process_touch = ctx->r[14] == PANEL_TOUCH_ALLOWED_RETURN;
+    const bool from_process_touch = ctx->r[14] == panel_touch_allowed_return;
     original(ctx);
     if (!from_process_touch || skip_tap == 0) {
         return;
@@ -982,9 +987,12 @@ constexpr u32 QUEST_LIST = 0xe608;            // holder: the resources found for
 constexpr u32 QUEST_LIST_COUNT = 0xe610;
 constexpr u32 RESOURCE_BUFFER = 0x64;         // resource: its file contents
 constexpr u32 QUEST_FLOW_PARAMS = 0x00edbe90; // [this]+0x9788: what 0x00b7c010 starts
-constexpr u32 QUEST_LIST_RELEASE = 0x006bc838;
-constexpr u32 QUEST_START = 0x00b7c010;
 constexpr u32 QUEST_HOLD_MAX_FRAMES = 600;
+// Where the two functions are in the running version of the game (Install finds them by name, as
+// the hook points: they sit elsewhere in EUR's code); 0 when the library doesn't have the release,
+// and then startQuest is left alone
+u32 quest_list_release = 0;
+u32 quest_start = 0;
 
 /// The quest id 0x00b7c010 is about to set up (its three branches), or 0.
 u32 NextQuestId(RCtx* ctx) {
@@ -1045,7 +1053,7 @@ void CallGame(RCtx* ctx, u32 function, u32 arg) {
     const u32 expect_next = ctx->expect_next;
     ctx->expect_next = 0;
     ctx->r[0] = arg;
-    ctx->r[14] = QUEST_START;
+    ctx->r[14] = quest_start;
     rc_call(ctx, function);
     std::copy(std::begin(regs), std::end(regs), ctx->r);
     ctx->fn = flags[0];
@@ -1062,12 +1070,13 @@ bool quest_no_map_logged = false;  // this quest: its touch panels' lack of a ma
 void StartQuest(RCtx* ctx, RFunc original) {
     const u32 holder = rd32(ctx, QUEST_HOLDER);
     const u32 id = NextQuestId(ctx);
-    if (holder && id && quest_start_held < QUEST_HOLD_MAX_FRAMES && QuestLeftOut(ctx, holder, id)) {
+    if (holder && id && quest_list_release && quest_start_held < QUEST_HOLD_MAX_FRAMES &&
+        QuestLeftOut(ctx, holder, id)) {
         if (quest_start_held++ == 0) {
             LOG_INFO(Frontend, "quest {}: its file wasn't ready for the quest list; building the list again",
                      id);
         }
-        CallGame(ctx, QUEST_LIST_RELEASE, holder);
+        CallGame(ctx, quest_list_release, holder);
         rc_hook_return(ctx);
         return;
     }
@@ -1469,8 +1478,8 @@ void CameraTurnByInput(RCtx* ctx, RFunc original) {
 }
 
 struct Hook {
-    u32 addr;
-    const char* name;
+    u32 addr;          // USA v1.3.0's (config/hooks.txt)
+    const char* name;  // as in config/hooks.txt
     RHookFn fn;
 };
 constexpr Hook HOOKS[] = {
@@ -1506,6 +1515,14 @@ constexpr Hook HOOKS[] = {
     {0x003808ac, "uOutlineFilter::render", FilterRender},
     {0x00385c34, "uTVNoiseFilter::render", FilterRender},
 };
+// A hook point the hooks call rather than wrap (config/hooks.txt names it, so that its address
+// in each version comes from the library)
+constexpr Hook QUEST_LIST_RELEASE = {0x006bc838, "QuestHolder::releaseQuestList", nullptr};
+
+/// Where a hook point is in this library, or 0 if it isn't one (hook_address.h).
+u32 HookAddress(const RCodeInfo& info, const Hook& hook) {
+    return FindHookPoint(info, hook.name, hook.addr);
+}
 
 } // namespace
 
@@ -1534,6 +1551,7 @@ std::vector<std::string> Install(const RCodeInfo& info) {
     frames = 0;
     owner_regions.clear();
     quest_start_held = 0;
+    quest_list_release = quest_start = 0;
     target_held = 0;
     skip_offered = false;
     skip_held = skip_tap_direct = skip_tap_seen = skip_complete = false;
@@ -1672,16 +1690,38 @@ std::vector<std::string> Install(const RCodeInfo& info) {
                                   options.render_set, options.render_clear));
     }
     missing_hook_points = 0;
+    panel_touch_allowed_return = PANEL_TOUCH_ALLOWED_RETURN;
     for (const Hook& hook : HOOKS) {
-        const bool set = info.set_hook(hook.addr, hook.fn) != 0;
+        const u32 addr = HookAddress(info, hook);
+        const bool set = addr != 0 && info.set_hook(addr, hook.fn) != 0;
         if (hook.fn == QuestPanels) {
             panels_hooked = set; // the map view sees the quest's panels through it
         }
-        if (!set) {
-            log.push_back(fmt::format("no hook point for {} at {:08X} (rebuild the code library)",
-                                      hook.name, hook.addr));
+        if (addr == 0) {
+            log.push_back(fmt::format("no hook point for {} in the code library (rebuild it)",
+                                      hook.name));
             ++missing_hook_points;
+        } else if (!set) {
+            log.push_back(fmt::format("no hook point for {} at {:08X} (rebuild the code library)",
+                                      hook.name, addr));
+            ++missing_hook_points;
+        } else if (hook.addr == PANEL_PROCESS_TOUCH) {
+            panel_touch_allowed_return = addr + (PANEL_TOUCH_ALLOWED_RETURN - PANEL_PROCESS_TOUCH);
+        } else if (hook.fn == StartQuest) {
+            quest_start = addr;
         }
+    }
+    quest_list_release = quest_start ? HookAddress(info, QUEST_LIST_RELEASE) : 0;
+    if (quest_start && !quest_list_release) {
+        log.push_back(fmt::format("no hook point for {} in the code library (rebuild it): the quest "
+                                  "list isn't rebuilt when a quest's file is late",
+                                  QUEST_LIST_RELEASE.name));
+        ++missing_hook_points;
+    }
+    if (const u32 first = HookAddress(info, HOOKS[0]);
+        info.title_id != 0 && info.hook_names && info.hook_count > 0 && first != 0 &&
+        first != HOOKS[0].addr) {
+        log.push_back(fmt::format("hook points found by name: game {:016X}", info.title_id));
     }
     return log;
 }

@@ -16,6 +16,14 @@ import mods  # noqa: E402
 FOLDER = ("load", "mods", "0004000000126300")
 
 
+@pytest.fixture(autouse=True)
+def usa_game(monkeypatch):
+    """Each test starts on the USA game: main (--program-id, or the update installed) and
+    set_game change these module globals, which monkeypatch puts back after the test."""
+    monkeypatch.setattr(mods, "PROGRAM_ID", 0x0004000000126300)
+    monkeypatch.setattr(mods, "UPDATE_ID", 0x0004000E00126300)
+
+
 def write(path, data=b"x"):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(data if isinstance(data, bytes) else data.encode())
@@ -704,3 +712,55 @@ def test_romfs_ext_folders_without_the_ports_fix(tmp_path, monkeypatch):
     mod = mods.scan(str(root), "m")
     assert [f.dest for f in mod.files] == ["romfs_ext/top.arc.stub"]
     assert "romfs_ext/data/deep.arc.ips: does nothing" in "\n".join(mod.warnings)
+
+
+# ── the game's region ────────────────────────────────────────────────────────
+
+def test_the_game_is_the_installed_updates_or_the_one_named(tmp_path):
+    user = tmp_path / "azahar"
+    sd = user / "sdmc" / "Nintendo 3DS" / ("0" * 32) / ("0" * 32) / "title" / "0004000e"
+    assert mods.detect_game(str(user)) == 0x0004000000126300            # nothing installed: USA
+    (sd / "00126100" / "content").mkdir(parents=True)
+    assert mods.detect_game(str(user)) == 0x0004000000126100            # Europe's update alone
+    (sd / "00126300" / "content").mkdir(parents=True)
+    assert mods.detect_game(str(user)) == 0x0004000000126300            # both: USA
+
+    make(tmp_path / "m", {"romfs/data/x.arc": "1"})
+    run(user, "--program-id", "0004000000126100", "add", str(tmp_path / "m"))
+    run(user, "--program-id", "0004000000126100", "deploy")
+    assert (user / "load" / "mods" / "0004000000126100" / "romfs" / "data" / "x.arc").is_file()
+    assert not folder(user).exists()
+    assert run(user, "--program-id", "0004000000999900", "list", code=2)["error"]["code"] == "usage"
+
+
+def test_a_mod_for_the_other_region_is_refused(tmp_path):
+    """Its code patch would be at the other region's addresses: only the game's own folders count."""
+    mods.set_game(0x0004000000126100)
+    mod = mods.scan(str(make(tmp_path / "us", {"0004000E00126300/code.ips": ips((0x10, b"A"))})), "us")
+    assert mod.errors and "the port plays MH4U Europe (0004000000126100)" in mod.errors[0]
+    mod = mods.scan(str(make(tmp_path / "eu", {"0004000000126100/romfs/data/x.arc": "1"})), "eu")
+    assert not mod.errors
+
+
+def test_the_code_segment_is_the_games_own():
+    """text_size and code_segment_end read the entry of the game's update (program and update
+    id), not the entry the tables are made for: Europe's v1.1.0 code is 0x50 bytes longer."""
+    assert mods.text_size() == 0x00CEC734                               # USA v1.3.0
+    assert mods.code_segment_end(0x00CEC734) == 0x00CED000
+    mods.set_game(0x0004000000126100)
+    assert mods.text_size() == 0x00CEC784                               # EUR v1.1.0
+    assert mods.code_segment_end(0x00CEC784) == 0x00CED000
+    assert mods.code_segment_end(0x00CEC734) is None
+    assert mods.game_version()["name"].startswith("EUR v1.1.0")
+
+
+def test_the_version_entry_is_found_by_program_and_update(tmp_path):
+    """Not by "target": a base game's entry (same program, no update) is not the one used."""
+    versions = write(tmp_path / "versions.json", json.dumps({"versions": [
+        {"name": "base", "program_id": "0004000000126100", "segments": {"text": ["0x00100000", "0x10"]}},
+        {"name": "usa", "target": True, "program_id": "0004000000126300", "update_title_id": "0004000E00126300"},
+        {"name": "eur", "program_id": "0004000000126100", "update_title_id": "0004000E00126100"},
+    ]}).encode())
+    assert mods.game_version(str(versions))["name"] == "usa"
+    mods.set_game(0x0004000000126100)
+    assert mods.game_version(str(versions))["name"] == "eur"

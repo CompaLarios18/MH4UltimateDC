@@ -16,6 +16,50 @@
         "data": ["0x00EC0000", "0x001C1B84"],
         "bss": ["0x01081B84", "0x0009B5A4"]
       }
+    },
+    {
+      "name": "EUR v1.1.0 (update title 0004000E00126100, CTR-U-BFGP)",
+      "program_id": "0004000000126100",
+      "update_title_id": "0004000E00126100",
+      "title_version": 1040,
+      "exheader_sci_sha1": "4b616a9ab78781213c1bffa1840d623f7d5cfe7d",
+      "code_sha1": "0a927cb1a59d90c8c806fed091b3755cd518b3f8",
+      "code_size": "0xF82000",
+      "segments": {
+        "text": ["0x00100000", "0x00CEC784"],
+        "rodata": ["0x00DED000", "0x000D2D90"],
+        "data": ["0x00EC0000", "0x001C1B84"],
+        "bss": ["0x01081B84", "0x0009B5A4"]
+      },
+      "shifts": "config/shifts/eur_v110.txt"
+    },
+    {
+      "name": "USA v0.1.0 (base game 0004000000126300, CTR-P-BFGE; not playable: install the v1.3.0 update)",
+      "program_id": "0004000000126300",
+      "title_version": 16,
+      "exheader_sci_sha1": "58a5f5e1f9ff58a4339d0ea74fa9e8838f7720ba",
+      "code_sha1": "6fac6b17f64e453a1c70b5727787fd1618119917",
+      "code_size": "0xF82000",
+      "segments": {
+        "text": ["0x00100000", "0x00CEC0C4"],
+        "rodata": ["0x00DED000", "0x000D2D60"],
+        "data": ["0x00EC0000", "0x001C1B7C"],
+        "bss": ["0x01081B7C", "0x0009B5AC"]
+      }
+    },
+    {
+      "name": "EUR v1.0.0 (base game 0004000000126100, CTR-P-BFGP; not playable: install the v1.1.0 update)",
+      "program_id": "0004000000126100",
+      "title_version": 0,
+      "exheader_sci_sha1": "ac9ab031eddf01007f4502fa5bda92caba8fa5c7",
+      "code_sha1": "af19fba3a7e5150b55edfd2e2675dc24bfcabc06",
+      "code_size": "0xF82000",
+      "segments": {
+        "text": ["0x00100000", "0x00CEC0EC"],
+        "rodata": ["0x00DED000", "0x000D2D60"],
+        "data": ["0x00EC0000", "0x001C1B7C"],
+        "bss": ["0x01081B7C", "0x0009B5AC"]
+      }
     }
   ]
 }

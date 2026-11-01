@@ -339,16 +339,17 @@ Verdict ByCode(const Code& code, const std::string& target_sha1) {
 } // namespace
 
 CiaCheck CheckCia(std::uint16_t label, const std::function<Code()>& read_code,
-                  const std::string& target_sha1) {
+                  const std::string& target_sha1,
+                  std::uint16_t target_version) {
     CiaCheck check;
-    if (label == TARGET_VERSION) {
+    if (label == target_version) {
         return check;
     }
     const Code code = read_code();
     check.verdict = ByCode(code, target_sha1);
     // the version as the label says it (some tools reset it: it isn't the update's for certain)
     const std::string found = "v" + VersionText(label);
-    const std::string target = "v" + VersionText(TARGET_VERSION);
+    const std::string target = "v" + VersionText(target_version);
     switch (check.verdict) {
     case Verdict::Target:
         break;
@@ -374,16 +375,17 @@ CiaCheck CheckCia(std::uint16_t label, const std::function<Code()>& read_code,
 }
 
 InstalledCheck CheckInstalled(std::uint16_t label, const std::function<Code()>& read_code,
-                              const std::string& target_sha1) {
+                              const std::string& target_sha1,
+                              std::uint16_t target_version) {
     InstalledCheck check;
-    if (label == TARGET_VERSION) {
+    if (label == target_version) {
         return check;
     }
     const Code code = read_code();
     check.verdict = ByCode(code, target_sha1);
     check.ok = check.verdict == Verdict::Relabeled;
     const std::string found = "v" + VersionText(label);
-    const std::string target = "v" + VersionText(TARGET_VERSION);
+    const std::string target = "v" + VersionText(target_version);
     switch (check.verdict) {
     case Verdict::Target:
         break;

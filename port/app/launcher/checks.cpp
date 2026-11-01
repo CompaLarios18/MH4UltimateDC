@@ -86,6 +86,20 @@ UpdateCode::Code InstalledCode(const std::string& path) {
 
 } // namespace
 
+const Region* FindRegion(u64 program_id) {
+    for (const Region& region : REGIONS) {
+        if (region.program_id == program_id) {
+            return &region;
+        }
+    }
+    return nullptr;
+}
+
+const Region& RegionOf(u64 program_id) {
+    const Region* region = FindRegion(program_id);
+    return region ? *region : REGIONS[0];
+}
+
 Game CheckGame(const std::string& path) {
     Game game;
     if (path.empty()) {
@@ -100,7 +114,7 @@ Game CheckGame(const std::string& path) {
     switch (status) {
     case Loader::ResultStatus::Success:
         game.program_id = ncch.ncch_header.program_id;
-        game.state = game.program_id == MH4U_USA ? CheckRomFs(path) : Game::State::OtherGame;
+        game.state = FindRegion(game.program_id) ? CheckRomFs(path) : Game::State::OtherGame;
         break;
     case Loader::ResultStatus::ErrorEncrypted:
         // the header itself is readable: it says which game it is
@@ -112,6 +126,17 @@ Game CheckGame(const std::string& path) {
         break;
     }
     return game;
+}
+
+u64 ProgramId(const std::string& path) {
+    if (path.empty() || !FileUtil::Exists(path) || FileUtil::IsDirectory(path)) {
+        return 0;
+    }
+    FileSys::NCCHContainer ncch(path);
+    const auto status = ncch.LoadHeader();
+    return status == Loader::ResultStatus::Success || status == Loader::ResultStatus::ErrorEncrypted
+               ? ncch.ncch_header.program_id
+               : 0;
 }
 
 std::string Describe(const Game& game) {
@@ -128,12 +153,13 @@ std::string Describe(const Game& game) {
         return fmt::format("This {} is encrypted, and the port can't play an encrypted game (Azahar opens "
                            "decrypted ones only): decrypt it with GodMode9 on your 3DS, or dump your own copy "
                            "again there as a decrypted .3ds, .cci or .cxi.",
-                           game.program_id == MH4U_USA ? "copy of Monster Hunter 4 Ultimate"
+                           FindRegion(game.program_id) ? "copy of Monster Hunter 4 Ultimate"
                                                        : "game file");
     case State::OtherGame:
         return fmt::format("This is another 3DS game (program id {:016X}), not Monster Hunter 4 "
-                           "Ultimate for the USA ({:016X}), the version the port is made for.",
-                           game.program_id, MH4U_USA);
+                           "Ultimate for the USA ({:016X}) or Europe ({:016X}), the versions the "
+                           "port is made for.",
+                           game.program_id, REGIONS[0].program_id, REGIONS[1].program_id);
     case State::BadRomFs:
         return "This copy of Monster Hunter 4 Ultimate isn't decrypted properly, or it's damaged: its "
                "headers say it's decrypted, but its RomFS (the game's own files) doesn't start the way a "
@@ -144,29 +170,31 @@ std::string Describe(const Game& game) {
                "game's own files) does, as a copy that stopped part-way would. Copy it again, or dump the "
                "game again with GodMode9 on your 3DS.";
     case State::Ok:
-        return "Monster Hunter 4 Ultimate (USA), decrypted.";
+        return fmt::format("Monster Hunter 4 Ultimate ({}), decrypted.", RegionOf(game.program_id).name);
     }
     return "";
 }
 
-Update CheckUpdate() {
+Update CheckUpdate(u64 program_id) {
+    const Region& region = RegionOf(program_id);
     Update update;
     const auto media = Service::FS::MediaType::SDMC;
     FileSys::TitleMetadata tmd;
-    if (tmd.Load(Service::AM::GetTitleMetadataPath(media, MH4U_UPDATE)) !=
+    if (tmd.Load(Service::AM::GetTitleMetadataPath(media, region.update_id)) !=
         Loader::ResultStatus::Success) {
         return update;
     }
     update.version = tmd.GetTitleVersion();
-    update.content = Service::AM::GetTitleContentPath(media, MH4U_UPDATE, 0);
+    update.content = Service::AM::GetTitleContentPath(media, region.update_id, 0);
     if (update.content.empty() || !FileUtil::Exists(update.content)) {
         update.content.clear();
         return update;
     }
-    // a label other than v1.3.0's (Azahar's installer keeps the .cia's, and some decryption tools
-    // reset it on a v1.3.0 update): the installed code says which update it is (read only then)
-    const auto check =
-        UpdateCode::CheckInstalled(update.version, [&update] { return InstalledCode(update.content); });
+    // a label other than the update's (Azahar's installer keeps the .cia's, and some decryption
+    // tools reset it on a good update): the installed code says which update it is (read only then)
+    const auto check = UpdateCode::CheckInstalled(
+        update.version, [&update] { return InstalledCode(update.content); }, region.code_sha1,
+        region.update_version);
     update.state = check.ok ? Update::State::Ok : Update::State::OtherVersion;
     update.note = check.note;
     if (!update.note.empty()) {
@@ -179,7 +207,12 @@ std::string VersionText(u16 version) {
     return UpdateCode::VersionText(version);
 }
 
-UpdateCia CheckUpdateCia(const std::string& path) {
+std::string UpdateName(u64 program_id) {
+    return "v" + VersionText(RegionOf(program_id).update_version);
+}
+
+UpdateCia CheckUpdateCia(const std::string& path, u64 program_id) {
+    const Region& region = RegionOf(program_id);
     const auto refused = [](std::string problem) {
         UpdateCia result;
         result.title = "This isn't the update";
@@ -202,14 +235,22 @@ UpdateCia CheckUpdateCia(const std::string& path) {
     UpdateCia result;
     if (const auto infos = Service::AM::GetCIAInfos(path)) {
         const auto& info = infos->first;
-        if (info.tid != MH4U_UPDATE) {
+        if (info.tid != region.update_id) {
+            for (const Region& other : REGIONS) {
+                if (info.tid == other.update_id) {
+                    return refused(fmt::format("This .cia is the update for {}, but your game is the {} "
+                                               "one: choose the update of the same region.",
+                                               other.name, region.name));
+                }
+            }
             return refused(fmt::format("This .cia is title {:016X}, not Monster Hunter 4 Ultimate's "
                                        "update ({:016X}).",
-                                       info.tid, MH4U_UPDATE));
+                                       info.tid, region.update_id));
         }
-        // a label other than v1.3.0's: some decryption tools reset it on a v1.3.0 update, so the
-        // code says which update it is (read only then)
-        const auto check = UpdateCode::CheckCia(info.version, [&] { return CiaCode(path, compressed); });
+        // a label other than the update's: some decryption tools reset it on a good update, so
+        // the code says which update it is (read only then)
+        const auto check = UpdateCode::CheckCia(
+            info.version, [&] { return CiaCode(path, compressed); }, region.code_sha1, region.update_version);
         result.title = check.title;
         result.problem = check.problem;
         result.note = check.note;
@@ -220,7 +261,7 @@ UpdateCia CheckUpdateCia(const std::string& path) {
     return result;
 }
 
-std::string LibraryPath() {
+std::string LibraryPath(u64 program_id) {
 #if defined(_WIN32)
     constexpr const char* ext = "dll";
 #elif defined(__APPLE__)
@@ -229,7 +270,7 @@ std::string LibraryPath() {
     constexpr const char* ext = "so";
 #endif
     return fmt::format("{}recomp/{:016X}.{}", FileUtil::GetUserPath(FileUtil::UserPath::UserDir),
-                       MH4U_USA, ext);
+                       RegionOf(program_id).program_id, ext);
 }
 
 Code CodeFromCheck(int exit_code, const std::string& output) {

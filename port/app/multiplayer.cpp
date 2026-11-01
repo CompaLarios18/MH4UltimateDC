@@ -36,6 +36,7 @@
 #include "core/hle/service/cfg/cfg.h"
 #include "invite.h"
 #include "lan.h"
+#include "launcher/checks.h"
 #include "launcher/lobby.h"
 #include "network/network.h"
 #include "network/room.h"
@@ -55,8 +56,12 @@ using Clock = std::chrono::steady_clock;
 using Network::MacAddress;
 using Network::RoomMember;
 
-constexpr u64 MH4U_USA = 0x0004000000126300;
 constexpr const char* MH4U_NAME = "Monster Hunter 4 Ultimate";
+
+/// The player's MH4U (its program id: a room is set up for one region), from the game file.
+u64 GameId(const std::string& game) {
+    return Launcher::Lobby::RoomGame(game.empty() ? 0 : Launcher::Checks::ProgramId(game));
+}
 
 /// Who this console is in a room, read from its settings on the emulation thread.
 struct Identity {
@@ -374,11 +379,12 @@ bool HostNow(const Identity& me, const HostRequest& request, std::string& error,
         error = "The network library didn't start.";
         return false;
     }
-    std::string lobby, token;
+    std::string lobby, token, game;
     {
         std::scoped_lock lock{s.mutex};
         lobby = s.config->lobby;
         token = s.config->token;
+        game = s.config->game;
     }
     const bool listed = request.listed && !lobby.empty() && !token.empty();
     std::unique_ptr<Network::VerifyUser::Backend> verify =
@@ -393,7 +399,7 @@ bool HostNow(const Identity& me, const HostRequest& request, std::string& error,
     const std::string name = request.name.empty() ? "MH4U" : request.name;
     if (!room->Create(name, "", "", static_cast<u16>(request.port), request.password,
                       static_cast<u32>(std::clamp(request.slots, 2, 254)), me.nickname, MH4U_NAME,
-                      MH4U_USA, std::move(verify))) {
+                      GameId(game), std::move(verify))) {
         error = fmt::format("Couldn't open a room on UDP port {}.", request.port);
         hint = "Another program (another room, or a second copy of the app) uses that port: close it "
                "or choose another port.";

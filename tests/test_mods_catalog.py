@@ -22,6 +22,15 @@ sys.path.insert(0, HERE)
 import mods  # noqa: E402
 from sevenzip_writer import make_7z  # noqa: E402
 
+
+@pytest.fixture(autouse=True)
+def usa_game(monkeypatch):
+    """Each test starts on the USA game: main (--program-id, or the update installed) and
+    set_game change these module globals, which monkeypatch puts back after the test."""
+    monkeypatch.setattr(mods, "PROGRAM_ID", 0x0004000000126300)
+    monkeypatch.setattr(mods, "UPDATE_ID", 0x0004000E00126300)
+
+
 TID = "0004000000126300"
 
 
@@ -318,11 +327,22 @@ def test_texture_pack_files_of_another_pack_or_the_players(user, tmp_path):
     run(user, "install", "--textures", str(three), "--replace")
 
 
-def test_texture_pack_for_another_region(user, tmp_path):
-    eu = make_zip(tmp_path / "eu.zip", {"0004000000126100/a.png": "a"})
-    err = run(user, "install", "--textures", str(eu), code=1)
+def test_texture_pack_for_another_game(user, tmp_path):
+    other = make_zip(tmp_path / "other.zip", {"0004000000999900/a.png": "a"})
+    err = run(user, "install", "--textures", str(other), code=1)
     assert err["error"]["code"] == "other_title"
     assert not textures(user).exists() or tree(textures(user)) == []
+
+
+def test_texture_pack_for_the_other_region(user, tmp_path):
+    """MH4U's textures are the same assets in both regions (Azahar matches them by content), so a
+    pack made for Europe goes into the USA game's folder, and the reverse."""
+    eu = make_zip(tmp_path / "eu.zip", {"0004000000126100/a.png": "a"})
+    run(user, "install", "--textures", str(eu))
+    assert tree(textures(user)) == ["a.png"]
+    us = make_zip(tmp_path / "us.zip", {"0004000000126300/b.png": "b"})
+    run(user, "--program-id", "0004000000126100", "install", "--textures", str(us), "--name", "us")
+    assert tree(user / "load" / "textures" / "0004000000126100") == ["b.png"]
 
 
 def test_texture_pack_names_one_file_on_windows(user, tmp_path):

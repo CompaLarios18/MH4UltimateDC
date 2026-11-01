@@ -155,7 +155,10 @@ bool ARM_Recomp::LoadCode(const std::string& path, std::string& error) {
                             rc_bad_return, rc_budget, rc_slow_read, rc_slow_write};
     RCodeInfo info{};
     if (!init(&host, &info)) {
-        error = fmt::format("{} was built against a different runtime (recomp.h)", path);
+        // (a library built before this version of the port: RC_HOST_VERSION, recomp.h)
+        error = fmt::format("{} was built for another version of the port; build the code library "
+                            "again",
+                            path);
         return false;
     }
     g_call_counts = library->GetSymbol<RCallCounts>("rc_call_counts");

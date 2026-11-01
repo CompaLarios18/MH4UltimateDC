@@ -18,6 +18,12 @@ namespace Launcher {
 
 namespace {
 
+/// The game for mods.py's --program-id: the chosen game when it is a version the port runs, else
+/// 0 (mods.py then goes by the update installed; another game's id would make it stop).
+u64 ModsGame(const State& s) {
+    return Checks::FindRegion(s.game.program_id) ? s.game.program_id : 0;
+}
+
 using Json = nlohmann::json;
 
 constexpr const char* REBUILD_TEXT =
@@ -176,14 +182,14 @@ void HandleOverview(State& s, int exit_code, const std::string& output, bool qui
 
 /// Conflicts and the code library's state, after the library changed.
 void QueueDetails(State& s) {
-    s.runner.Queue(Tools::ModsCommand(s.python, s.tools_dir, {"conflicts"}), "Reading the mod library",
+    s.runner.Queue(Tools::ModsCommand(s.python, s.tools_dir, {"conflicts"}, ModsGame(s)), "Reading the mod library",
                    [&s](int exit_code, const std::string& output) {
                        const Json j = Parse(output);
                        if (exit_code == 0 && j.is_object()) {
                            ApplyConflicts(s.mods, j);
                        }
                    });
-    s.runner.Queue(Tools::ModsCommand(s.python, s.tools_dir, {"status"}), "Reading the mod library",
+    s.runner.Queue(Tools::ModsCommand(s.python, s.tools_dir, {"status"}, ModsGame(s)), "Reading the mod library",
                    [&s](int exit_code, const std::string& output) {
                        const Json j = Parse(output);
                        if (exit_code == 0 && j.is_object()) {
@@ -196,7 +202,7 @@ void QueueDetails(State& s) {
 
 /// A command that changes the library (add, remove, enable, disable, order).
 void Change(State& s, std::vector<std::string> args, std::string what) {
-    s.runner.Queue(Tools::ModsCommand(s.python, s.tools_dir, args), std::move(what),
+    s.runner.Queue(Tools::ModsCommand(s.python, s.tools_dir, args, ModsGame(s)), std::move(what),
                    [&s](int exit_code, const std::string& output) {
                        HandleOverview(s, exit_code, output);
                    });
@@ -441,7 +447,7 @@ void StartModsJob(State& s, std::vector<std::string> args, std::string title, st
     }
     auto process = std::make_unique<Process>();
     std::string error;
-    if (!process->Start(Tools::ModsCommand(s.python, s.tools_dir, args), error, true)) {
+    if (!process->Start(Tools::ModsCommand(s.python, s.tools_dir, args, ModsGame(s)), error, true)) {
         s.Message(title, error);
         return;
     }
@@ -755,8 +761,10 @@ void DrawCatalog(State& s, bool busy) {
     }
     ImGui::SameLine();
     if (ImGui::Button("Open the texture folder")) {
-        OpenFolder(s, c.textures_folder.empty() ? Tools::UserDir() + "/load/textures/0004000000126300"
-                                                : c.textures_folder);
+        OpenFolder(s, c.textures_folder.empty()
+                          ? fmt::format("{}/load/textures/{:016X}", Tools::UserDir(),
+                                        Checks::RegionOf(s.game.program_id).program_id)
+                          : c.textures_folder);
     }
     ImGui::SameLine();
     if (ImGui::Button("Check for a newer catalog")) {
@@ -867,7 +875,7 @@ void RefreshCatalog(State& s, bool fetch) {
             args.push_back("--refresh");
         }
     }
-    s.runner.Queue(Tools::ModsCommand(s.python, s.tools_dir, args), "Reading the mod catalog",
+    s.runner.Queue(Tools::ModsCommand(s.python, s.tools_dir, args, ModsGame(s)), "Reading the mod catalog",
                    [&s](int exit_code, const std::string& output) {
                        const Json j = Parse(output);
                        if (exit_code == 0 && j.is_object() && Bool(j, "ok")) {
@@ -882,7 +890,7 @@ void RefreshMods(State& s) {
     if (!s.ToolsReady()) {
         return;
     }
-    s.runner.Queue(Tools::ModsCommand(s.python, s.tools_dir, {"list"}), "Reading the mod library",
+    s.runner.Queue(Tools::ModsCommand(s.python, s.tools_dir, {"list"}, ModsGame(s)), "Reading the mod library",
                    [&s](int exit_code, const std::string& output) {
                        HandleOverview(s, exit_code, output, true);
                    });
@@ -902,7 +910,7 @@ void DeployMods(State& s, bool force, std::function<void(bool without_code)> the
     }
     auto process = std::make_unique<Process>();
     std::string error;
-    if (!process->Start(Tools::ModsCommand(s.python, s.tools_dir, args), error)) {
+    if (!process->Start(Tools::ModsCommand(s.python, s.tools_dir, args, ModsGame(s)), error)) {
         s.Message("The mods weren't put in place", error);
         return;
     }

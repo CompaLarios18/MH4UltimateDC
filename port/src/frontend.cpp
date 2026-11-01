@@ -24,17 +24,30 @@ namespace Port {
 namespace {
 
 constexpr u64 MH4U_USA = 0x0004000000126300;
+constexpr u64 MH4U_EUROPE = 0x0004000000126100;
 std::string notice;
+
+/// MH4U for the USA or Europe: the games the port's code library is built for (the notices below)
+bool IsMh4u(u64 program_id) {
+    return program_id == MH4U_USA || program_id == MH4U_EUROPE;
+}
+
+/// The update whose code the library is built from
+const char* UpdateName(u64 program_id) {
+    return program_id == MH4U_EUROPE ? "v1.1.0" : "v1.3.0";
+}
 
 #if defined(__ANDROID__)
 constexpr const char* BUILD_HINT =
-    "Build it on your PC from your own copy of the v1.3.0 update with tools/build_game.py "
-    "--android, then copy it into Azahar's user folder on the device as recomp/0004000000126300.so "
-    "(docs/PLAYING.md in the port's repository).";
+    "Build it on your PC from your own copy of the update (USA v1.3.0, Europe v1.1.0) with "
+    "tools/build_game.py --android, then copy it into Azahar's user folder on the device as "
+    "recomp/<the game's program id>.so: 0004000000126300.so for the USA, 0004000000126100.so for "
+    "Europe (docs/PLAYING.md in the port's repository).";
 #else
 constexpr const char* BUILD_HINT =
-    "Build it from your own copy of the v1.3.0 update with \"Build code library\" next to "
-    "azahar.exe on Windows, or tools/build_game.py (docs/PLAYING.md in the port's repository).";
+    "Build it from your own copy of the update (USA v1.3.0, Europe v1.1.0) with \"Build code "
+    "library\" next to azahar.exe on Windows, or tools/build_game.py (docs/PLAYING.md in the "
+    "port's repository).";
 #endif
 
 #if defined(__ANDROID__)
@@ -278,7 +291,7 @@ std::string PrepareBackendFor(Core::System& system, const std::string& rom_path)
         library = fmt::format("{}recomp/{:016X}.{}", FileUtil::GetUserPath(FileUtil::UserPath::UserDir),
                               program_id, ext);
         if (!FileUtil::Exists(library)) {
-            if (program_id == MH4U_USA) {
+            if (IsMh4u(program_id)) {
                 notice = fmt::format("The MH4U PC port's code library isn't installed ({}), so the game "
                                      "runs on Azahar's own CPU emulation, without the port's options "
                                      "(frame rate, widescreen, touch screen overlay, net sync).\n\n{}",
@@ -294,14 +307,14 @@ std::string PrepareBackendFor(Core::System& system, const std::string& rom_path)
     std::string error;
     if (!ARM_Recomp::LoadCode(library, error)) {
 #if defined(__ANDROID__)
-        if (program_id == MH4U_USA && library == "libmh4u_code.so") {
+        if (IsMh4u(program_id) && library == "libmh4u_code.so") {
             notice = fmt::format("The MH4U port's code library isn't on this device, so the game runs on "
                                  "Azahar's own CPU emulation, without the port's options.\n\n{}",
                                  BUILD_HINT);
             return fmt::format("no recompiled code for {:016X} ({}), using the emulated CPU", program_id, error);
         }
 #endif
-        if (program_id == MH4U_USA) {
+        if (IsMh4u(program_id)) {
             notice = fmt::format("The MH4U PC port's code library couldn't be used ({}), so the game "
                                  "runs on Azahar's own CPU emulation, without the port's options. A "
                                  "library made for an older version of this Azahar has to be built "
@@ -320,17 +333,17 @@ std::string PrepareBackendFor(Core::System& system, const std::string& rom_path)
     // Azahar's own CPU emulation plays it at full speed instead.
     if (const auto code = program_id != 0 ? CodeToBeLoaded(rom_path, program_id) : std::vector<u8>{};
         !code.empty() && !ARM_Recomp::IsRecompiledCode(code)) {
-        if (program_id == MH4U_USA) {
+        if (IsMh4u(program_id)) {
             notice = fmt::format(
                 "The game's code isn't the code the MH4U PC port's library was built from, so the "
                 "game runs on Azahar's own CPU emulation, without the port's options. Either the "
-                "v1.3.0 update isn't installed in Azahar (File > Install CIA... with your update), or "
+                "{} update isn't installed in Azahar (File > Install CIA... with your update), or "
                 "a code mod was added, changed or removed since the library was built.\n\n{}",
-                BUILD_HINT);
+                UpdateName(program_id), BUILD_HINT);
         }
         return "the program's code isn't the code that was recompiled; using the emulated CPU";
     }
-    if (const int missing = Hooks::MissingHookPoints(); missing > 0 && program_id == MH4U_USA) {
+    if (const int missing = Hooks::MissingHookPoints(); missing > 0 && IsMh4u(program_id)) {
         notice = fmt::format("The MH4U PC port's code library is older than this Azahar: {} of the "
                              "port's hook points are missing, so some of its options won't work "
                              "until the library is built again.\n\n{}",

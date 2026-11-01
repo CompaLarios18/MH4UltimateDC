@@ -23,6 +23,7 @@ add_library(mh4u_backend STATIC
     src/fiber.h
     src/frontend.cpp
     src/frontend.h
+    src/hook_address.h
     src/hooks.cpp
     src/hooks.h
     src/map_view.cpp

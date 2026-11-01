@@ -75,6 +75,9 @@ def test_hook_points(tmp_path):
     table = (out / "src" / "table.c").read_text()
     assert "rc_hook_count = 2;" in table
     add1, thumb_sub = names["add1"] & ~1, names["thumb_sub"] & ~1
+    # the names come in the order of the addresses, for a host that finds them by name (another version)
+    first, second = sorted([(add1, "add1"), (thumb_sub, "thumb_sub")])
+    assert f'rc_hook_names[] = {{"{first[1]}", "{second[1]}"}};' in table
     assert f"static void fb_{add1:08x}(RCtx *ctx)" in "".join(p.read_text() for p in (out / "src").glob("f*.c"))
 
     size = (len(code) + 0x10000 + 0xFFF) & ~0xFFF
@@ -186,3 +189,19 @@ def test_stopped_tail_call_leaves_no_state(tmp_path):
     assert run("call_jump", 0x00ABC000, 4).status == ST_NOFUNC     # stops inside jump_to's tail call
     r = run("add1", 5)
     assert r.status == ST_RETURN and r.state.r[0] == 6, r
+
+
+@pytest.mark.parametrize("name", ['a"b', "a\\b", "a b", "a\nb", "", "a/*b"])
+def test_names_that_c_would_need_escaped_are_refused(tmp_path, name):
+    """Hook and tunable names go into table.c as C strings: anything but [A-Za-z0-9_:~]+ is refused
+    before a file is written (config/hooks.txt names are like "QuestFlow::startQuest")."""
+    import recompile
+    from recomp.analysis import Image
+
+    img = Image(bytes(0x100), 0x00100000, 0x100)
+    for hooks, tunables in (({0x00100000: name}, None), (None, {0x00100004: (1, name)})):
+        with pytest.raises(SystemExit, match="names may hold only"):
+            recompile.recompile(img, {0x00100000: "arm"}, str(tmp_path / "out"), log=lambda *a: None,
+                                hooks=hooks, tunables=tunables)
+        assert not (tmp_path / "out").exists()
+    recompile.check_names({1: "QuestFlow::startQuest", 2: "Foo::~Foo", 3: "sMhMain_frame2"}, {4: (0, "fps_cap")})

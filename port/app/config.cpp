@@ -311,8 +311,8 @@ std::string Template(const Config& c) {
 # settings also take 1/0.
 
 [Game]
-# your decrypted Monster Hunter 4 Ultimate (USA): .3ds, .cci or .cxi. Empty: the app asks.
-# The v1.3.0 update must be installed (Build code library does that) for the port's code.
+# your decrypted Monster Hunter 4 Ultimate (USA or Europe): .3ds, .cci or .cxi. Empty: the app asks.
+# Its update (USA v1.3.0, Europe v1.1.0) must be installed (Build code library does that) for the port's code.
 game = {}
 # the launcher before the game: Play, the setup, mods, the room, settings. off: straight into
 # the game (the launcher still shows while the game, the update or the code library is missing)
@@ -345,7 +345,7 @@ vsync = {}
 screens = {}
 # smooth the picture when it is scaled up
 linear_filter = {}
-# texture packs from load/textures/0004000000126300/ in this folder
+# texture packs from load/textures/<the game's program id>/ in this folder
 custom_textures = {}
 # a post-processing shader from the shaders folder (empty: none)
 shader = {}
