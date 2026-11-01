@@ -1,7 +1,8 @@
-"""tools/native/fps_audit.py: the 60/120 fps audit (N3-22), on synthetic sessions, traces and captures only.
+"""tools/native/fps_audit.py: the 60/120 fps audit (N3-22, N3-34), on synthetic sessions, traces and captures only.
 
 Each of the six comparison items is checked both ways (a pair of runs that passes it, a pair that fails it); `run` is
-checked with a fake runner that writes the files the native runner writes.
+checked with a fake runner that writes the files the native runner writes. D70's rules (N3-34) are checked by session,
+mode and latency: each scene change against its own limit, the gated and the reported items, the bounds both ways.
 """
 import json
 import os
@@ -162,8 +163,10 @@ ALIGNED = ((100, 100, 40), (100 + 17 - 10, 90, 40))        # the candidate's cou
 def make_pair(tmp_path, *, scenes=SCENES, scenes_scaled=None, pos=(None, None), quest=(None, None),
               quest_id=(None, None), clock=(None, None), frames=300, frames_scaled=None,
               checkpoints=((60, 0x1000), (150, 0x2000), (300, HUNT)), exit_codes=(0, 0), writes=([], []), dsp=None,
-              session="G9"):
-    """Writes OUT/ with meta.json, observable.txt, r60/ and r120/ as `run` leaves them."""
+              dsp_start=20, dsp_windows=None, session="G9", mode=None, io_latency="azahar"):
+    """Writes OUT/ with meta.json, observable.txt, r60/ and r120/ as `run` leaves them. `dsp` is one capture pair at
+    game frame `dsp_start`; `dsp_windows` {start: pair} adds more. `mode` None writes a meta file from before the
+    mode was recorded (real time)."""
     root = tmp_path / "out"
     (root / "r60").mkdir(parents=True)
     (root / "r120").mkdir()
@@ -177,19 +180,23 @@ def make_pair(tmp_path, *, scenes=SCENES, scenes_scaled=None, pos=(None, None), 
         state_trace(120, n120, s120, pos[1], quest[1], quest_id[1], clock[1]), encoding="utf-8")
     ipc_trace(root / "r60" / "ipc.txt", writes=writes[0])
     ipc_trace(root / "r120" / "ipc.txt", writes=writes[1])
-    names = []
+    windows = dict(dsp_windows or {})
     if dsp:
-        names = ["dsp-20.mdsp"]
-        dsp_file(root / "r60" / "dsp-20.mdsp", *dsp[0])
-        dsp_file(root / "r120" / "dsp-20.mdsp", *dsp[1])
+        windows[dsp_start] = dsp
+    for start, (first, second) in windows.items():
+        dsp_file(root / "r60" / f"dsp-{start}.mdsp", *first)
+        dsp_file(root / "r120" / f"dsp-{start}.mdsp", *second)
+    names = [f"dsp-{start}.mdsp" for start in windows]
     meta = {
-        "version": 1, "session": session, "factor": 2, "io_latency": "azahar", "observable": "observable.txt",
+        "version": 1, "session": session, "factor": 2, "io_latency": io_latency, "observable": "observable.txt",
         "frames": frames, "checkpoints": [list(c) for c in checkpoints], "dsp": names,
-        "dsp_starts": {n: 20 for n in names},
+        "dsp_starts": {f"dsp-{start}.mdsp": start for start in windows},
         "runs": {"60": {"exit": exit_codes[0], "seconds": 1.0, "timed_out": False, "rate": 60, "frames": frames,
                         "dir": "r60"},
                  "120": {"exit": exit_codes[1], "seconds": 1.0, "timed_out": False, "rate": 120, "frames": frames * 2,
                          "dir": "r120"}}}
+    if mode is not None:
+        meta["mode"] = mode
     (root / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
     return root
 
@@ -211,6 +218,36 @@ def audit(root, **kwargs):
     pair = fps_audit.read_pair(root)
     kwargs.setdefault("masks_file", None)
     return {i.name: i for i in fps_audit.compare_pair(pair, **kwargs)}
+
+
+# D70's first guesses for the position and the quest clock: D70 (Decided) set no relative part, 3,700 units and 1.09 s,
+# but the options still give the rule's other parts, which these tests check
+FIRST_GUESSES = {"position_relative": 0.02, "position_absolute": 0.05, "quest_seconds": 1.0}
+
+
+def chain(n, start=30, step=25):
+    """n real scene changes at 60 fps, change #i to 0x2000 + i at frame start + step * i (0x1000 follows the
+    unreadable scene, so it is not a change)."""
+    return [(5, 0x1000)] + [(start + step * i, 0x2000 + i) for i in range(n)]
+
+
+def chain_scaled(n, moved=None, by=0, start=30, step=25):
+    """The same changes at 120 fps, change #moved `by` frames (at 120 fps) later."""
+    return [(10, 0x1000)] + [(2 * (start + step * i) + (by if i == moved else 0), 0x2000 + i) for i in range(n)]
+
+
+def compare_main(root, *extra):
+    """`compare` on a folder with the synthetic Writes (the repository's mask file has lines for G2, G3 and G4)."""
+    return fps_audit.main(["compare", str(root), "--fs-write-mask", "none", *extra])
+
+
+def compare_json(root):
+    return json.loads((root / "compare.json").read_text(encoding="utf-8"))
+
+
+def item_lines(text):
+    return {line.split()[0]: line for line in text.splitlines()
+            if line.split() and line.split()[0] in fps_audit.ITEMS}
 
 
 # -- scale ----------------------------------------------------------------------------------------------------------
@@ -510,11 +547,14 @@ def test_compare_exit_codes_and_files(tmp_path, capsys):
     assert fps_audit.main(["compare", str(root), "--fs-write-mask", "none"]) == 0
     out = capsys.readouterr().out
     assert out.splitlines()[0].startswith("fps_audit: G9, 60 fps against 120 fps (x2), --io-latency azahar")
-    assert "verdict: PASS" in out
+    assert out.splitlines()[-1].startswith("verdict: pass;")
     assert (root / "compare.txt").is_file()
     data = json.loads((root / "compare.json").read_text())
-    assert data["tolerances"]["time_frames"] == 4 and data["tolerances"]["position_relative"] == 0.02
-    assert data["mode"] == "real-time" and data["seed"] is None
+    tol = data["tolerances"]
+    assert tol["time_frames"] is None and tol["time_default_frames"] == 4            # D70's table, no override
+    assert tol["position_relative"] == 0 and tol["position_absolute"] == 3700 and tol["quest_seconds"] == 1.09
+    assert tol["max_shift"] == 48
+    assert data["mode"] == "real-time" and data["seed"] is None and data["verdict"] == "pass"
     assert [i["name"] for i in data["items"]][:2] == ["runs", "scenes"]
     bad = make_pair(sub(tmp_path, "bad"), scenes_scaled=shifted(40))
     assert fps_audit.main(["compare", str(bad), "--fs-write-mask", "none", "--brief"]) == 1
@@ -633,9 +673,9 @@ def test_checkpoints_fail_when_a_run_never_reaches_one(tmp_path):
 
 def test_position_within_the_tolerance_passes_and_beyond_fails(tmp_path):
     # 3 units per second travelled: the limit is 0.02 * 3 + 0.05 = 0.11
-    ok = audit(good_pair(sub(tmp_path, "a"), pos=(walk(60), walk(120, 0.10))))["observables"]
+    ok = audit(good_pair(sub(tmp_path, "a"), pos=(walk(60), walk(120, 0.10))), **FIRST_GUESSES)["observables"]
     assert ok.data["position"]["status"] == "pass" and ok.status == "pass"
-    bad = audit(good_pair(sub(tmp_path, "b"), pos=(walk(60), walk(120, 0.12))))["observables"]
+    bad = audit(good_pair(sub(tmp_path, "b"), pos=(walk(60), walk(120, 0.12))), **FIRST_GUESSES)["observables"]
     assert bad.status == "fail" and bad.data["position"]["status"] == "fail"
     assert "first over at" in bad.data["position"]["summary"]
     assert bad.data["quest_time"]["status"] == "pass"                      # the other value is judged on its own
@@ -650,7 +690,7 @@ def test_position_limit_follows_the_distance_travelled(tmp_path):
         return lambda f: (f / rate * 100.0 + offset, 1.0, 2.0)
 
     def status(name, pos):
-        return audit(good_pair(sub(tmp_path, name), pos=pos))["observables"].data["position"]["status"]
+        return audit(good_pair(sub(tmp_path, name), pos=pos), **FIRST_GUESSES)["observables"].data["position"]["status"]
 
     assert status("a", (stand(), stand(0.06))) == "fail"
     assert status("b", (stand(), stand(0.04))) == "pass"
@@ -660,20 +700,23 @@ def test_position_limit_follows_the_distance_travelled(tmp_path):
 
 def test_position_options_are_the_tolerances(tmp_path):
     root = good_pair(tmp_path, pos=(walk(60), walk(120, 0.2)))
-    assert audit(root)["observables"].data["position"]["status"] == "fail"
-    assert audit(root, position_absolute=0.2)["observables"].data["position"]["status"] == "pass"
-    assert audit(root, position_relative=0.06)["observables"].data["position"]["status"] == "pass"     # 0.18 + 0.05
+    assert audit(root, **FIRST_GUESSES)["observables"].data["position"]["status"] == "fail"
+    wider = audit(root, position_relative=0.02, position_absolute=0.2)["observables"]
+    assert wider.data["position"]["status"] == "pass"
+    relative = audit(root, position_relative=0.06, position_absolute=0.05)["observables"]           # 0.18 + 0.05
+    assert relative.data["position"]["status"] == "pass"
 
 
 def test_quest_time_within_one_second_passes_and_beyond_fails(tmp_path):
-    ok = audit(good_pair(sub(tmp_path, "a"), quest=(countdown(60), countdown(120, 60))))["observables"]   # 60 units = 1 s
+    ok = audit(good_pair(sub(tmp_path, "a"), quest=(countdown(60), countdown(120, 60))),
+               quest_seconds=1.0)["observables"]                                     # 60 units = 1 s
     assert ok.data["quest_time"]["status"] == "pass"
     root = good_pair(sub(tmp_path, "b"), quest=(countdown(60), countdown(120, -61)))
-    bad = audit(root)["observables"]
+    bad = audit(root, quest_seconds=1.0)["observables"]
     assert bad.status == "fail" and bad.data["quest_time"]["status"] == "fail"
     assert "limit 1.0 s" in bad.data["quest_time"]["summary"] and bad.data["position"]["status"] == "pass"
     assert audit(root, quest_seconds=1.1)["observables"].status == "pass"
-    assert audit(root, quest_units=120)["observables"].status == "pass"             # 61 units are half a second
+    assert audit(root, quest_seconds=1.0, quest_units=120)["observables"].status == "pass"   # 61 units: half a second
 
 
 def test_the_observables_are_compared_in_the_hunt_only(tmp_path):
@@ -682,8 +725,8 @@ def test_the_observables_are_compared_in_the_hunt_only(tmp_path):
         return (f / 120 * 3.0 + (500.0 if f < 400 else 0.0), 1.0, 2.0)
 
     root = good_pair(tmp_path, pos=(walk(60), before_the_hunt))
-    assert audit(root)["observables"].data["position"]["status"] == "pass"
-    assert audit(root, hunt_scene=None)["observables"].data["position"]["status"] == "fail"
+    assert audit(root, **FIRST_GUESSES)["observables"].data["position"]["status"] == "pass"
+    assert audit(root, hunt_scene=None, **FIRST_GUESSES)["observables"].data["position"]["status"] == "fail"
     assert audit(root)["observables"].data["position"]["rows"][0]["second"] == 4     # frame 240 is the first in the hunt
 
 
@@ -709,14 +752,22 @@ def test_a_quest_counter_that_never_moves_compares_nothing(tmp_path):
 
 
 def test_two_constant_quest_counters_further_apart_than_the_tolerance_fail(tmp_path):
-    near = audit(good_pair(sub(tmp_path, "near"), quest=(lambda f: 700, lambda f: 760)))["observables"]   # 60 units: 1 s
-    assert near.data["quest_time"]["status"] == "n/a" and "60 units = 1 s apart" in near.data["quest_time"]["summary"]
-    far_root = good_pair(sub(tmp_path, "far"), quest=(lambda f: 700, lambda f: 761))
+    # D70's 1.09 s: 65 units (1.083 s) are within it, 66 (1.1 s) beyond
+    near = audit(good_pair(sub(tmp_path, "near"), quest=(lambda f: 700, lambda f: 765)))["observables"]
+    assert near.data["quest_time"]["status"] == "n/a"
+    assert "65 units = 1.083 s apart (limit 1.09 s)" in near.data["quest_time"]["summary"]
+    far_root = good_pair(sub(tmp_path, "far"), quest=(lambda f: 700, lambda f: 766))
     far = audit(far_root)["observables"]
     assert far.status == "fail" and far.data["quest_time"]["status"] == "fail"
     assert "over the quest-clock tolerance" in far.data["quest_time"]["summary"]
     assert "0x" not in far.data["quest_time"]["summary"]             # the difference is printed, not the values
-    assert audit(far_root, quest_seconds=1.1)["observables"].data["quest_time"]["status"] == "n/a"
+    assert audit(far_root, quest_seconds=1.2)["observables"].data["quest_time"]["status"] == "n/a"
+    # the bound is inclusive: exactly at the limit (60 units = 1 s against 1 s) is within it, one unit more is over
+    exact = audit(good_pair(sub(tmp_path, "exact"), quest=(lambda f: 700, lambda f: 760)), quest_seconds=1.0)
+    assert exact["observables"].data["quest_time"]["status"] == "n/a"
+    assert "60 units = 1 s apart (limit 1.0 s)" in exact["observables"].data["quest_time"]["summary"]
+    past = audit(good_pair(sub(tmp_path, "past"), quest=(lambda f: 700, lambda f: 761)), quest_seconds=1.0)
+    assert past["observables"].data["quest_time"]["status"] == "fail"
 
 
 def test_a_position_that_is_not_a_position_fails(tmp_path):
@@ -730,7 +781,7 @@ def test_position_until_reports_the_part_before_the_first_attack(tmp_path):
         return (f / 120 * 3.0 + (400.0 if f / 120 > 5.0 else 0.0), 1.0, 2.0)
 
     root = good_pair(tmp_path, pos=(walk(60), diverge), frames=600)
-    item = audit(root, position_until=290)["observables"]
+    item = audit(root, position_until=290, **FIRST_GUESSES)["observables"]
     assert item.data["position"]["status"] == "fail"
     early = item.data["position_until"]
     assert early["frame"] == 290 and early["over"] == 0 and early["seconds"] == 1
@@ -743,7 +794,7 @@ def test_a_jump_that_comes_a_few_frames_early_is_one_sample_off_and_the_slack_co
         return lambda f: (500.0 if f > edge else 0.0, 1.0, 2.0)
 
     root = good_pair(tmp_path, pos=(jump(60, 0), jump(120, 2)), frames=600)
-    item = audit(root)["observables"]
+    item = audit(root, **FIRST_GUESSES)["observables"]
     row = [r for r in item.data["position"]["rows"] if r["second"] == 6][0]
     assert item.data["position"]["status"] == "fail" and row["over"]       # the rule is the pointwise one
     assert row["distance"] == pytest.approx(500.0) and row["slack_distance"] == 0.0
@@ -753,7 +804,7 @@ def test_a_jump_that_comes_a_few_frames_early_is_one_sample_off_and_the_slack_co
 
 def test_the_spread_is_in_the_rows(tmp_path):
     root = good_pair(tmp_path, pos=(walk(60), walk(120, 0.05)), quest=(countdown(60), countdown(120, 30)))
-    item = audit(root)["observables"]
+    item = audit(root, **FIRST_GUESSES)["observables"]
     row = item.data["position"]["rows"][0]
     assert row["distance"] == pytest.approx(0.05, abs=1e-3) and row["limit"] == pytest.approx(0.11, abs=1e-3)
     assert item.data["quest_time"]["rows"][0]["seconds"] == pytest.approx(0.5)
@@ -899,3 +950,379 @@ def test_the_report_names_the_failing_and_not_applicable_items(tmp_path):
     assert lines[-1].startswith("verdict: FAIL (times)") and "not applicable" in lines[-1]
     assert not any(line.startswith("    ") for line in lines)
     assert any(line.startswith("times") and "FAIL" in line for line in lines)
+
+
+# -- D70's rules (N3-34) --------------------------------------------------------------------------------------------
+
+@pytest.mark.parametrize("session,change,by,limit,status", [
+    ("G2", 0, 8, 4, "pass"), ("G2", 0, 9, 4, "fail"),            # every other change: 4 frames
+    ("G2", 1, 40, 20, "pass"), ("G2", 1, 41, 20, "fail"),        # the first aDemo: 20 frames
+    ("G1", 1, 40, 20, "pass"), ("G4", 1, 41, 20, "fail"),
+    ("G3", 3, 20, 10, "pass"), ("G4", 5, 21, 10, "fail"),        # the three changes into the village: 10 frames
+    ("G2", 4, 20, 10, "pass"), ("G3", 5, 21, 10, "fail"),
+    ("G2", 7, 38, 19, "pass"), ("G2", 6, 39, 19, "fail"),        # G2's opening: 19 frames
+    ("G3", 6, 9, 4, "fail"), ("G4", 7, 9, 4, "fail"),            # not G3's nor G4's
+    ("G3", 8, 11, 5.5, "pass"), ("G3", 9, 12, 5.5, "fail"),      # G3's aGameSys and aQuest of the quest load: 5.5
+    ("G2", 8, 11, 4, "fail"),
+    ("G6", 1, 9, 4, "fail"), ("G6", 3, 8, 4, "pass"),            # a session the table does not name: 4 frames
+])
+def test_each_scene_change_has_its_own_limit(tmp_path, session, change, by, limit, status):
+    root = make_pair(tmp_path, scenes=chain(10), scenes_scaled=chain_scaled(10, change, by), checkpoints=(),
+                     session=session, mode="deterministic")
+    item = audit(root)["times"]
+    assert item.status == status, item.summary
+    row = item.data["changes"][change]
+    assert row["limit_frames"] == limit and row["limit_ms"] == pytest.approx(limit * 1000 / 60, abs=0.01)
+    assert row["over"] == (status == "fail")
+    assert all(r["limit_frames"] == 4 for r in item.data["changes"] if r["index"] in (0, 2))
+
+
+def test_compare_txt_prints_each_changes_limit_and_compare_json_has_it(tmp_path):
+    root = make_pair(tmp_path, scenes=chain(10), scenes_scaled=chain_scaled(10, 1, 40), checkpoints=(),
+                     session="G3", mode="deterministic")
+    assert compare_main(root, "--require", "") == 0               # G3's own --require would fail the n/a observables
+    text = (root / "compare.txt").read_text(encoding="utf-8")
+    assert "333.3 ms, 20.00 frames at 60 fps, limit 20 frames (333.3 ms)" in text
+    assert "limit 5.5 frames (91.7 ms)" in text and "limit 4 frames (66.7 ms)" in text
+    data = compare_json(root)
+    times = next(i for i in data["items"] if i["name"] == "times")
+    assert [c["limit_frames"] for c in times["data"]["changes"]] == [4, 20, 4, 10, 10, 10, 4, 4, 5.5, 5.5]
+    assert all(k in times["data"]["changes"][0] for k in ("index", "frame", "frame_scaled", "ms", "frames_at_60",
+                                                         "clock_offset_s", "limit_ms", "over"))
+    assert data["tolerances"]["time_table"] == {"1": 20, "3": 10, "4": 10, "5": 10, "8": 5.5, "9": 5.5}
+    assert {i["name"]: i["gated"] for i in data["items"]} == {
+        "runs": True, "scenes": True, "times": True, "checkpoints": True, "observables": True, "dsp": False,
+        "writes": True}
+
+
+def test_time_frames_replaces_the_table_and_the_verdict_says_so(tmp_path, capsys):
+    root = make_pair(tmp_path, scenes=chain(10), scenes_scaled=chain_scaled(10, 1, 40), checkpoints=(),
+                     session="G2", mode="deterministic")
+    assert compare_main(root) == 0                                 # 20 frames: within the first aDemo's limit
+    assert "--time-frames" not in capsys.readouterr().out.splitlines()[-1]
+    assert compare_main(root, "--time-frames", "4") == 1
+    verdict = capsys.readouterr().out.splitlines()[-1]
+    assert verdict.startswith("verdict: FAIL (times)") and "--time-frames 4 for every change" in verdict
+    data = compare_json(root)
+    assert data["tolerances"]["time_frames"] == 4
+    times = next(i for i in data["items"] if i["name"] == "times")
+    assert all(c["limit_frames"] == 4 for c in times["data"]["changes"])
+    assert compare_main(root, "--time-frames", "20") == 0
+    assert audit(root, time_frames=19.5)["times"].status == "fail"
+
+
+def test_g3_in_real_time_reports_a_different_sequence_where_g1_and_an_unnamed_session_fail(tmp_path, capsys):
+    swapped = [(10, 0x1000), (240, HUNT), (400, 0x2000)]
+    g3 = good_pair(sub(tmp_path, "g3"), scenes_scaled=swapped, session="G3", mode="real-time")
+    assert compare_main(g3) == 0
+    out = capsys.readouterr().out
+    lines = item_lines(out)
+    assert "FAIL" in lines["scenes"] and "reported" in lines["scenes"] and "gated" not in lines["scenes"]
+    assert "gated" in lines["runs"] and "gated" in lines["writes"]
+    verdict = out.splitlines()[-1]
+    assert verdict.startswith("verdict: pass (reported: scenes") and "2 gated, 5 reported" in verdict
+    assert {i["name"]: i["gated"] for i in compare_json(g3)["items"]} == {
+        "runs": True, "scenes": False, "times": False, "checkpoints": False, "observables": False, "dsp": False,
+        "writes": True}
+    for name in ("G1", "G6"):                                     # G6 takes G1's rules
+        root = good_pair(sub(tmp_path, name), scenes_scaled=swapped, session=name, mode="real-time")
+        assert compare_main(root) == 1
+        out = capsys.readouterr().out
+        assert out.splitlines()[-1].startswith("verdict: FAIL (scenes") and "gated" in item_lines(out)["scenes"]
+    # the deterministic mode gates G3's sequence
+    det = good_pair(sub(tmp_path, "g3det"), scenes_scaled=swapped, session="G3", mode="deterministic")
+    assert compare_main(det) == 1
+
+
+def test_real_time_gates_g1_g2_and_g4_but_reports_their_observables(tmp_path, capsys):
+    for name in ("G1", "G2", "G4"):
+        root = good_pair(sub(tmp_path, name), session=name, mode="real-time",
+                         pos=(walk(60), walk(120, 4000.0)))        # far beyond 3,700 units
+        assert compare_main(root) == 0
+        out = capsys.readouterr().out
+        assert "reported" in item_lines(out)["observables"] and "FAIL" in item_lines(out)["observables"]
+        assert out.splitlines()[-1].startswith("verdict: pass (reported: observables")
+        det = good_pair(sub(tmp_path, name + "det"), session=name, mode="deterministic",
+                        pos=(walk(60), walk(120, 4000.0)))
+        assert compare_main(det) == 1                              # gated in the deterministic mode
+        capsys.readouterr()
+
+
+def test_a_none_folder_reports_every_item_and_exits_0(tmp_path, capsys):
+    root = good_pair(tmp_path, session="G4", mode="deterministic", io_latency="none", scenes_scaled=shifted(40),
+                     dsp=((100, 100, 40), (100 + 70 - 10, 90, 40)), exit_codes=(0, 1),
+                     writes=([(0, BLOB)], [(0, with_byte(3, 9))]))
+    assert compare_main(root) == 0
+    out = capsys.readouterr().out
+    lines = item_lines(out)
+    assert set(lines) == set(fps_audit.ITEMS)
+    assert all("reported" in line and "gated" not in line for line in lines.values())
+    verdict = out.splitlines()[-1]
+    assert verdict.startswith("verdict: pass (reported: runs, times, dsp, writes)") and "0 gated, 7 reported" in verdict
+    assert "every item reported" in out.splitlines()[1]
+    data = compare_json(root)
+    assert not any(i["gated"] for i in data["items"]) and data["verdict"] == "pass"
+    assert data["reported_failures"] == ["runs", "times", "dsp", "writes"]
+
+
+@pytest.mark.parametrize("mode,shift,status", [
+    ("deterministic", 57, "pass"), ("deterministic", 58, "pass"), ("deterministic", 59, "fail"),
+    ("real-time", 48, "pass"), ("real-time", 49, "fail"),
+])
+def test_the_dsp_bound_of_g1s_boot_window_follows_the_mode(tmp_path, mode, shift, status):
+    root = good_pair(tmp_path, session="G1", mode=mode, dsp_start=1240,
+                     dsp=((100, 100, 40), (100 + shift - 10, 90, 40)))
+    item = audit(root)["dsp"]
+    assert item.gated and item.status == status and item.data["shifts"] == [shift]
+    assert item.data["max_shift"] == (58 if mode == "deterministic" else 48)
+    assert compare_main(root) == (0 if status == "pass" else 1)
+    assert compare_json(root)["tolerances"]["max_shift"] == (58 if mode == "deterministic" else 48)
+    assert compare_main(root, "--max-shift", str(shift)) == 0          # the option overrides the bound
+
+
+def test_any_other_dsp_window_is_reported_with_the_clock_offset_at_its_start(tmp_path, capsys):
+    over = ((100, 100, 40), (100 + 49 - 10, 90, 40))
+    # G1: the boot window gates and passes, a window at frame 200 is reported, over the bound, with its offset
+    root = good_pair(tmp_path, session="G1", mode="real-time", dsp_start=1240, dsp=ALIGNED, dsp_windows={200: over},
+                     clock=(None, lambda f: f / 120 + 4.0))
+    item = audit(root)["dsp"]
+    assert item.gated and item.status == "pass" and item.reported_fail == ["dsp-200.mdsp"]
+    text = "\n".join(item.details)
+    assert "dsp-1240.mdsp (gated)" in text and "dsp-200.mdsp (reported)" in text
+    assert "+4.000 s = +818 DSP frames, as information (the measured shift is +49 DSP frames)" in text
+    assert compare_main(root) == 0
+    assert capsys.readouterr().out.splitlines()[-1].startswith("verdict: pass (reported: dsp (dsp-200.mdsp))")
+    # G2's and G3's windows never gate, in either mode
+    for name in ("G2", "G3"):
+        other = good_pair(sub(tmp_path, name), session=name, mode="deterministic", dsp_start=6000,
+                          dsp=((100, 100, 40), (100 + 70 - 10, 90, 40)))
+        item = audit(other, require=[])["dsp"]
+        assert not item.gated and item.status == "fail"
+        assert compare_main(other) == 0
+        assert "dsp" in capsys.readouterr().out.splitlines()[-1]
+
+
+@pytest.mark.parametrize("offset,status", [(3699.5, "pass"), (3700.5, "fail")])
+def test_the_position_bound_is_3700_units_with_no_relative_part(tmp_path, offset, status):
+    def run(rate, shift=0.0):
+        return lambda f: (f / rate * 100.0 + shift, 1.0, 2.0)          # 100 units a second: no extra allowance
+
+    root = good_pair(tmp_path, session="G3", mode="deterministic", pos=(run(60), run(120, offset)))
+    item = audit(root)["observables"]
+    assert item.gated and item.data["position"]["status"] == status
+    assert item.data["position"]["rows"][0]["limit"] == 3700
+    assert compare_main(root) == (0 if status == "pass" else 1)
+
+
+@pytest.mark.parametrize("units,status", [(65, "pass"), (66, "fail")])
+def test_the_quest_clock_bound_is_1_09_seconds(tmp_path, units, status):
+    root = good_pair(tmp_path, session="G3", mode="deterministic", quest=(countdown(60), countdown(120, units)))
+    item = audit(root)["observables"]
+    assert item.gated and item.data["quest_time"]["status"] == status
+    assert "limit 1.09 s" in item.data["quest_time"]["summary"]
+    assert compare_main(root) == (0 if status == "pass" else 1)
+
+
+def test_g3s_require_and_position_until_are_its_defaults(tmp_path):
+    root = make_pair(tmp_path, session="G3", mode="deterministic")      # no hunter, no DSP capture
+    items = audit(root)
+    assert items["observables"].status == "fail" and "(required)" in items["observables"].data["position"]["summary"]
+    assert items["dsp"].status == "fail" and not items["dsp"].gated
+    assert audit(root, require=[])["observables"].status == "n/a"
+    assert compare_main(root) == 1 and compare_main(root, "--require", "") == 0
+    assert compare_json(root)["require"] == [] and compare_json(root)["position_until"] == 15862
+    walked = audit(good_pair(sub(tmp_path, "walk"), session="G3", mode="deterministic"))["observables"]
+    assert walked.data["position_until"]["frame"] == 15862
+    other = audit(good_pair(sub(tmp_path, "g2"), session="G2", mode="deterministic"))["observables"]
+    assert "position_until" not in other.data                          # only G3 has one
+    assert audit(make_pair(sub(tmp_path, "g1"), session="G1", mode="deterministic"))["observables"].status == "n/a"
+
+
+def test_the_rules_line_names_the_session_mode_and_latency(tmp_path):
+    def rules(**kwargs):
+        root = good_pair(sub(tmp_path, str(len(list(tmp_path.iterdir())))), **kwargs)
+        return fps_audit.format_report(fps_audit.read_pair(root), [], False)[1]
+
+    g3 = rules(session="G3", mode="real-time")
+    assert "G3, real-time mode, --io-latency azahar" in g3 and "gated runs, writes;" in g3
+    g6 = rules(session="G6", mode="deterministic")
+    assert "G6 (not named: G1's rules)" in g6 and "reported dsp" in g6
+    g1 = rules(session="G1", mode="deterministic")
+    assert "dsp (the window at frame 1240" in g1
+    assert "every item reported" in rules(session="G2", io_latency="none")
+
+
+# D70's tables as the spec gives them, written out here so that a change to the tool's own tables fails a test
+
+# (2): each change's limit in frames at 60 fps, for a chain of 10 changes (#0 to #9); G6 is not named: 4 everywhere
+D70_LIMITS = {
+    "G1": [4, 20, 4, 4, 4, 4, 4, 4, 4, 4],
+    "G2": [4, 20, 4, 10, 10, 10, 19, 19, 4, 4],
+    "G3": [4, 20, 4, 10, 10, 10, 4, 4, 5.5, 5.5],
+    "G4": [4, 20, 4, 10, 10, 10, 4, 4, 4, 4],
+    "G6": [4, 4, 4, 4, 4, 4, 4, 4, 4, 4],
+}
+
+# the items an `azahar` pair gates, besides dsp (which gates G1's boot window only); G6 takes G1's rules
+_RT = {"runs", "scenes", "times", "checkpoints", "writes"}
+_DET = {"runs", "scenes", "times", "checkpoints", "observables", "writes"}
+D70_GATED = {
+    "real-time": {"G1": _RT, "G2": _RT, "G4": _RT, "G6": _RT, "G3": {"runs", "writes"}},
+    "deterministic": {"G1": _DET, "G2": _DET, "G3": _DET, "G4": _DET, "G6": _DET},
+}
+
+# a good pair's arguments that make exactly one item fail
+FAILING = {
+    "runs": dict(exit_codes=(0, 1)),
+    "scenes": dict(scenes_scaled=[(10, 0x1000), (240, 0x3000), (400, HUNT)],      # another scene at change #0
+                   checkpoints=((60, 0x1000), (300, HUNT))),
+    "times": dict(scenes_scaled=shifted(40)),                                      # change #0 20 frames late
+    "checkpoints": dict(quest_id=(lambda f: 7, lambda f: 7 if f < 200 else 9)),
+    "observables": dict(pos=(walk(60), walk(120, 4000.0))),                        # beyond 3,700 units
+    "writes": dict(writes=([(0, BLOB)], [(0, with_byte(3, 9))])),
+}
+
+
+@pytest.mark.parametrize("session", sorted(D70_LIMITS))
+def test_every_sessions_scene_time_limits_are_d70s_table(tmp_path, session):
+    root = make_pair(tmp_path, scenes=chain(10), scenes_scaled=chain_scaled(10), checkpoints=(), session=session,
+                     mode="deterministic")
+    item = audit(root)["times"]
+    assert item.status == "pass"
+    assert [c["limit_frames"] for c in item.data["changes"]] == D70_LIMITS[session]
+
+
+@pytest.mark.parametrize("name", sorted(FAILING))
+@pytest.mark.parametrize("mode", ["real-time", "deterministic"])
+@pytest.mark.parametrize("session", ["G1", "G2", "G3", "G4", "G6"])
+def test_an_item_that_fails_decides_the_exit_status_where_d70_gates_it(tmp_path, capsys, session, mode, name):
+    root = good_pair(tmp_path, session=session, mode=mode, **FAILING[name])
+    gated = name in D70_GATED[mode][session]
+    assert compare_main(root) == (1 if gated else 0)
+    out = capsys.readouterr().out
+    data = compare_json(root)
+    assert [i["name"] for i in data["items"] if i["status"] == "fail"] == [name]       # this item and no other
+    assert next(i for i in data["items"] if i["name"] == name)["gated"] is gated
+    line = item_lines(out)[name]
+    assert "FAIL" in line and ("gated" if gated else "reported") in line
+    verdict = out.splitlines()[-1]
+    if gated:
+        assert data["failed"] == [name] and verdict.startswith(f"verdict: FAIL ({name})")
+    else:
+        assert data["failed"] == [] and data["reported_failures"] == [name]
+        assert verdict.startswith(f"verdict: pass (reported: {name})")
+
+
+@pytest.mark.parametrize("mode", ["real-time", "deterministic"])
+@pytest.mark.parametrize("session", ["G1", "G2", "G3", "G4", "G6"])
+def test_the_gated_items_of_each_session_and_mode(tmp_path, session, mode):
+    root = good_pair(tmp_path, session=session, mode=mode, dsp_start=1240)
+    assert compare_main(root) == 0
+    data = compare_json(root)
+    want = D70_GATED[mode][session] | ({"dsp"} if session == "G1" else set())        # G1's boot window
+    assert {i["name"]: i["gated"] for i in data["items"]} == {n: n in want for n in fps_audit.ITEMS}
+    assert set(data["rules"]["gated"]) == want and set(data["rules"]["reported"]) == set(fps_audit.ITEMS) - want
+    assert data["rules"]["boot_windows"] == ([1240] if session == "G1" else [])
+
+
+def test_g1s_dsp_stays_gated_without_its_boot_window(tmp_path, capsys):
+    over = ((100, 100, 40), (100 + 49 - 10, 90, 40))              # +49: over the real-time bound
+    root = good_pair(tmp_path, session="G1", mode="real-time", dsp_start=200, dsp=over)   # no window at 1240
+    assert compare_main(root) == 0
+    out = capsys.readouterr().out
+    line = item_lines(out)["dsp"]
+    assert "n/a" in line and "gated" in line and "no gated window (the window at frame 1240)" in line
+    assert out.splitlines()[-1].startswith("verdict: pass (reported: dsp (dsp-200.mdsp))")
+    dsp = next(i for i in compare_json(root)["items"] if i["name"] == "dsp")
+    assert dsp["gated"] and dsp["status"] == "n/a"
+    assert compare_main(root, "--require", "dsp") == 1                # required: a gated failure
+    out = capsys.readouterr().out
+    line = item_lines(out)["dsp"]
+    assert "FAIL" in line and "gated" in line and "no gated window" in line and "(required)" in line
+    assert out.splitlines()[-1].startswith("verdict: FAIL (dsp; reported: dsp (dsp-200.mdsp))")
+    # no DSP capture at all
+    bare = make_pair(sub(tmp_path, "bare"), session="G1", mode="real-time")
+    assert compare_main(bare) == 0
+    dsp = next(i for i in compare_json(bare)["items"] if i["name"] == "dsp")
+    assert dsp["gated"] and dsp["status"] == "n/a"
+    assert compare_main(bare, "--require", "dsp") == 1
+    dsp = next(i for i in compare_json(bare)["items"] if i["name"] == "dsp")
+    assert dsp["gated"] and dsp["status"] == "fail" and "(required)" in dsp["summary"]
+    assert compare_json(bare)["failed"] == ["dsp"]
+
+
+def test_compares_options_override_d70s_bounds(tmp_path):
+    def run(rate, shift=0.0):
+        return lambda f: (f / rate * 100.0 + shift, 1.0, 2.0)          # 100 units a second
+
+    # position 3,700.5 units apart, quest counter 66 units = 1.1 s apart: both over D70's bounds
+    root = good_pair(tmp_path, session="G3", mode="deterministic", pos=(run(60), run(120, 3700.5)),
+                     quest=(countdown(60), countdown(120, 66)))
+
+    def observables():
+        return next(i for i in compare_json(root)["items"] if i["name"] == "observables")["data"]
+
+    assert compare_main(root) == 1
+    assert observables()["position"]["status"] == "fail" and observables()["quest_time"]["status"] == "fail"
+    assert compare_main(root, "--position-absolute", "3701", "--quest-seconds", "1.2") == 0
+    tol = compare_json(root)["tolerances"]
+    assert tol["position_absolute"] == 3701 and tol["quest_seconds"] == 1.2 and tol["position_relative"] == 0
+    assert compare_main(root, "--position-absolute", "3701") == 1      # the quest clock is still over
+    assert compare_main(root, "--quest-seconds", "1.2") == 1           # the position is still over
+    # the relative part: 0.01 of the 100 units travelled in the last second plus 3,700
+    assert compare_main(root, "--position-relative", "0.01", "--quest-seconds", "1.2") == 0
+    tol = compare_json(root)["tolerances"]
+    assert tol["position_relative"] == 0.01 and tol["position_absolute"] == 3700
+    assert observables()["position"]["rows"][0]["limit"] == pytest.approx(3701, abs=0.01)
+    # --position-until replaces G3's 15862
+    assert compare_main(root, "--position-until", "290", "--position-absolute", "3701", "--quest-seconds", "1.2") == 0
+    assert compare_json(root)["position_until"] == 290 and observables()["position_until"]["frame"] == 290
+
+
+@pytest.mark.parametrize("option,value", [
+    ("--time-frames", "-1"), ("--time-frames", "nan"), ("--time-frames", "inf"),
+    ("--position-absolute", "0"), ("--position-absolute", "nan"), ("--position-absolute", "-3700"),
+    ("--position-relative", "-0.5"), ("--position-relative", "inf"),
+    ("--quest-seconds", "nan"), ("--quest-seconds", "-1"), ("--quest-units", "0"), ("--quest-units", "nan"),
+    ("--max-shift", "-1"),
+])
+def test_compare_refuses_a_bound_that_is_not_a_finite_value_of_0_or_more(tmp_path, capsys, option, value):
+    root = good_pair(tmp_path, session="G3", mode="deterministic")
+    assert compare_main(root, f"{option}={value}") == 2
+    assert f"fps_audit: {option} " in capsys.readouterr().err
+    assert not (root / "compare.json").exists()
+
+
+def test_a_meta_file_without_io_latency_is_taken_as_azahar_and_any_other_value_is_reported(tmp_path, capsys):
+    root = good_pair(tmp_path, session="G2", mode="real-time", writes=([(0, BLOB)], [(0, with_byte(3, 9))]))
+    meta = json.loads((root / "meta.json").read_text(encoding="utf-8"))
+    del meta["io_latency"]
+    (root / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
+    assert compare_main(root) == 1                                     # gated as azahar: the Writes differ
+    out = capsys.readouterr().out.splitlines()
+    assert out[0].endswith("--io-latency azahar (not in meta.json: taken as azahar), real-time mode")
+    assert "--io-latency azahar: gated runs, scenes" in out[1]
+    data = compare_json(root)
+    assert data["io_latency"] == "azahar" and data["io_latency_note"] == "not in meta.json: taken as azahar"
+    assert data["failed"] == ["writes"]
+    # a value `run` never writes (N3-22's hand-made analysis folders carry a note there): every item reported
+    for value in ("60 fps run of A (as 60) against 120 fps run of B (as 120)", "reference", "", "Azahar"):
+        meta["io_latency"] = value
+        (root / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
+        assert compare_main(root) == 0
+        out = capsys.readouterr().out.splitlines()
+        assert f"--io-latency {value} (neither azahar nor none: not a pair of `fps_audit.py run`" in out[0]
+        assert out[1].endswith(f"--io-latency {value}: every item reported (D71: a value but azahar or none gates "
+                               f"nothing; `azahar` is the gated latency)")
+        assert out[-1].startswith("verdict: pass (reported: writes); 0 gated, 7 reported")
+        data = compare_json(root)
+        assert data["io_latency"] == value and data["io_latency_note"].startswith("neither azahar nor none")
+        assert not any(i["gated"] for i in data["items"]) and data["rules"]["gated"] == []
+    meta["io_latency"] = "none"
+    (root / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
+    assert compare_main(root) == 0
+    assert compare_json(root)["io_latency"] == "none" and compare_json(root)["io_latency_note"] is None
+    meta["io_latency"] = "azahar"
+    (root / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
+    assert compare_main(root) == 1
+    assert compare_json(root)["io_latency"] == "azahar" and compare_json(root)["io_latency_note"] is None

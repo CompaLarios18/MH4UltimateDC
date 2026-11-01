@@ -13,7 +13,12 @@ is not noise), and the game's clock is 4 s ahead of its frame count from the int
 as well, which moves the audio of a game frame by hundreds of DSP frames. D70's numbers are proposed below; D70 and D71
 are the orchestrator's to mark Decided. *(2026-10-31, N3-32: the first of the two, finding 2, was native timing and is
 fixed: the deterministic G3 now reaches the Arena at 120 fps as the reference does. Finding 1 stands; D70 stays Open
-until the audit is run again on an idle PC.)*
+until the audit is run again on an idle PC.)* *(2026-10-31, later: run again, *Runs on an idle PC*. D70 is **Decided**
+on it: the proposal below, with G3's real-time sequence and observables reported, and the position and quest clock
+gated in the deterministic mode at the reference pair's own values (`DECISIONS.md`, D70). D71 stands.)*
+*(2026-10-31, N3-34: `compare` applies D70. Its defaults are D70's numbers, the items D70 gates decide the exit status
+and the others are reported (*Using it*); with no option every `azahar` folder of *Runs on an idle PC* passes, in both
+modes. The outcome above is that of the first runs, judged with D70's first guesses and every item gated.)*
 
 **The PC during the runs.** The real-time runs of 2026-10-31 (every row marked **rt**, and every `none` row except the
 deterministic ones) were taken while the PC was busy with the orchestrator's builds; the host times of 454 s and 408 s
@@ -22,6 +27,7 @@ and are qualified as such below. The deterministic runs (**det**) do not depend 
 charged). The second reference run of G3 at 120 fps and the timed G1 det-none pair were made later with no build, test
 or other run on the PC (the maintainer's desktop programs were open: an animated wallpaper used about 1.3 of the 12
 logical processors).
+*(2026-10-31, later)* Every row was run again on an idle PC at native `4a6eaf4`: *Runs on an idle PC* below.
 
 ## Using it
 
@@ -31,8 +37,9 @@ python tools/native/fps_audit.py run S --runner build/native/bin/mh4u_native_run
     --code <library> --user-before build/golden/S/user-before --io-latency azahar --out build/fps/S \
     --path <llvm-mingw bin> --lock build/locks/emulator [--deterministic [--seed N]] [--dsp START:FRAMES] \
     [--timeout SECONDS] [--runner-arg=ARG ...]
-python tools/native/fps_audit.py compare build/fps/S [--require position,quest_time,dsp,writes] [--position-until 15862] \
-    [--fs-write-mask FILE]
+python tools/native/fps_audit.py compare build/fps/S [--require ITEMS] [--position-until FRAME] \
+    [--hunt-scene VALUE|any] [--fs-write-mask FILE|none] [--time-frames N] [--position-relative R] \
+    [--position-absolute UNITS] [--quest-seconds S] [--quest-units U] [--max-shift N] [--brief]
 ```
 
 `run` plays S at `--set 0:fps=60` with the session and at `--set 0:fps=120` with the session scaled by 2 (every frame key,
@@ -47,25 +54,70 @@ their own); `--runner-arg=ARG` passes another option to the runner as it is (`{o
 per run, one hour by default (the slowest run of this note took 455 s). The emulator lock folder is waited for, created
 and removed. Everything lands in `OUT/r60/`, `OUT/r120/` and `OUT/meta.json`; `--force` deletes OUT first only when it
 holds nothing but what `run` writes. `compare` reads that folder and writes `OUT/compare.txt` and `OUT/compare.json`
-(every number of the tables below); exit 0 when no item fails, 1 when one does, 2 for a usage problem or an unreadable
-run.
+(every number of the tables below) into it.
 
 The runner needs the llvm-mingw `bin` folder on `PATH` (`--path`), or it waits on a hidden missing-DLL dialog.
+
+**`compare` gives D70's verdict with no option** (N3-34): exit 0 when every **gated** item passes, 1 when one fails, 2
+for a usage problem or an unreadable run. The second line of `compare.txt` names the rules applied, the third the
+bounds; each item line says `gated` or `reported`; a reported item is printed with its numbers and, when it fails, named
+on the verdict line (`verdict: pass (reported: dsp); 6 gated, 1 reported`). The verdict line counts the gated items
+only. Which items gate follows from `meta.json`'s session, `mode` and `io_latency`:
+
+| The pair | gated | reported |
+|---|---|---|
+| `--io-latency none`, either mode | nothing | every item (D71) |
+| `azahar`, real time, G1, G2 and G4 | runs, scenes, times, checkpoints, dsp, writes | observables |
+| `azahar`, real time, G3 | runs, writes | scenes, times, checkpoints, observables, dsp |
+| `azahar`, deterministic, G1 to G4 | every item | none |
+
+In both modes `dsp` gates only G1's boot window (`dsp:1240:300` of `G1.txt`); every other window (G2's 6000, G3's 16000,
+G4's 2000) is reported, with the game clock's offset at its start. A session the tool does not name (G6, G8) takes G1's
+rules (its DSP windows are reported) and the 4-frame limit for every scene change; N3-26 names its sessions if they need
+other rules. A `meta.json` without `io_latency` is taken as `azahar`. Any value but `azahar` and `none` is not one `run`
+writes (N3-22's hand-made `mix-*` and `same60-*` folders carry a note there): every item of such a folder is reported,
+and the first two lines of `compare.txt` say why.
+
+The defaults are D70's numbers; each option overrides one of them, for a look at other values (a verdict with an
+override is not D70's verdict, and none of these numbers is retuned to make a session pass):
+
+| What | Default (D70) | Option |
+|---|---|---|
+| a scene change's time, frames at 60 fps | 4 (66.7 ms), except, by session and change number (from 0, as `compare.txt` numbers them): #1 of G1 to G4 (the first aDemo) 20 (333.3 ms); #3 to #5 of G2, G3 and G4 (the three into the village) 10 (166.7 ms); G2's #6 and #7 (the opening) 19 (316.7 ms); G3's #8 and #9 (aGameSys and aQuest of the quest load) 5.5 (91.7 ms). `compare.txt` prints each change's limit beside its difference | `--time-frames N`: one limit for every change, and the verdict line says so |
+| the hunter's position, each second in the hunt | at most 3,700 units, no part relative to the last second's travel | `--position-absolute`, `--position-relative` |
+| the quest clock, each second in the hunt | at most 1.09 s (60 counter units a second) | `--quest-seconds` (`--quest-units`) |
+| the DSP shift (D51) | 48 DSP frames in real time, 58 in the deterministic mode | `--max-shift` |
+| items that must have something to compare (an `n/a` fails) | G3: position, quest_time, dsp; the others none | `--require` replaces it (`--require=` for none: Windows PowerShell 5.1 drops an empty `""` argument) |
+| the position up to a frame (the walk before the first attack, reported in the observables' rows) | G3: 15862; the others none | `--position-until` |
+| the scene the position and the quest clock are compared in | aQuest, the hunt | `--hunt-scene` |
+| the `fs:` write masks | `config/native/fs_write_masks.txt` | `--fs-write-mask FILE` or `none` |
+
+Each bound given as an option is a finite number of 0 or more, `--position-absolute` and `--quest-units` above 0 (they
+are divisors); any other value is a usage problem (exit 2).
+
+`compare.json` has `"gated"` for each item, each scene change's `limit_frames`, `limit_ms` and `over`, the rules
+(`rules`), the bounds used (`tolerances`), `io_latency` (with `io_latency_note` when it was not plainly `azahar` or
+`none`), `require`, `position_until`, `verdict` and `reported_failures`. `--brief` leaves out the detail lines on the
+terminal; `compare.txt` always has them.
 
 ## The items
 
 Before the six, `runs` checks that both runs finished: exit status 0 and a state trace that reaches the session's last
-frame. A run that hangs must not read as a pass. The tolerances are D70's first guesses, options with those defaults
-(`--time-frames`, `--position-relative`, `--position-absolute`, `--quest-seconds`, `--max-shift`); nothing was retuned.
-An item with nothing to compare is `n/a` (reported, not a failure) unless `--require` names it (D34).
+frame. A run that hangs fails `runs`, which decides the exit status wherever `runs` is gated (every `azahar` pair). The
+bounds are D70's (*Using it*), options with those defaults (`--time-frames`, `--position-relative`,
+`--position-absolute`, `--quest-seconds`, `--max-shift`); nothing was retuned. An item with nothing to compare is `n/a`,
+not a failure, whether it is gated or reported, unless `--require` names it (D34; G3 requires position, quest_time and
+dsp by default). *(2026-10-31, N3-34: until N3-34 the defaults were D70's first guesses, 4 frames for every scene
+change, 2 % of the last second's travel plus 0.05 units, 1 s and `--max-shift 48` in both modes, with every item gated;
+the tables of this note were made with them, and *Repeating it* gives the options that bring them back.)*
 
 | # | Item | Rule |
 |---|---|---|
 | 1 | `scenes` | the sequence of real scene changes (`state_diff.real_scene_changes`) is the same in values and order; no change in either run is a failure |
-| 2 | `times` | each change's game time, frame / fps, within 4 frames at 60 fps (66.7 ms); the table also has the game clock (the trace's `t=`) at the two records |
+| 2 | `times` | each change's game time, frame / fps, within its own limit in frames at 60 fps (D70 (2)): 4 (66.7 ms) unless the change is named (*Using it*: the first aDemo 20, the three into the village 10, G2's opening 19, G3's aGameSys and aQuest of the quest load 5.5); `--time-frames N` gives every change one limit. `compare.txt` prints each change's limit beside its difference, and the table also has the game clock (the trace's `t=`) at the two records |
 | 3 | `checkpoints` | at each checkpoint of the session (frame F at 60 fps, 2F at 120) the `eq` observables of the observable file are equal, and the scene is the checkpoint's |
-| 4 | `observables` | every second of game time, in the hunt only (the scene aQuest: the chains name whatever sits there elsewhere, N3-21; `--hunt-scene any` lifts it): the position within 2 % of the path length of the 60 fps hunter in the last second plus 0.05 units; the quest counter within 1 s (60 units a second, N3-21). A counter that is constant in both runs compares nothing (`n/a`) unless its two constants are more than 1 s apart, which fails. The rows also have the distance with 4 frames of time slack, as information |
-| 5 | `dsp` | `capfmt.diff_dsp_aligned` with `--max-shift 48` on each capture pair (D51). The detail line also gives the game clock offset between the runs at the window's first frame, in DSP frames, as information beside the measured shift: the two are not the same (finding 1) |
+| 4 | `observables` | every second of game time, in the hunt only (the scene aQuest: the chains name whatever sits there elsewhere, N3-21; `--hunt-scene any` lifts it): the hunter's positions at most 3,700 units apart (`--position-absolute`; `--position-relative` adds a part of the 60 fps hunter's path length in the last second, 0 by D70); the quest counter within 1.09 s (60 units a second, N3-21). A counter that is constant in both runs compares nothing (`n/a`) unless its two constants are more than 1.09 s apart, which fails. The rows also have the distance with 4 frames of time slack (or `--time-frames`), as information |
+| 5 | `dsp` | `capfmt.diff_dsp_aligned` on each capture pair (D51), the 120 fps capture shifted by at most 48 DSP frames in real time and 58 in the deterministic mode (`--max-shift`). Only G1's boot window (`dsp:1240:300`) gates; every other window is reported. The detail line also gives the game clock offset between the runs at the window's first frame, in DSP frames, as information beside the measured shift: the two are not the same (finding 1) |
 | 6 | `writes` | the `fs:USER` file Writes, per thread, in order and in full (offset, size, result, CRC-32 of the data), the lines of `fs_write_masks.txt` of the session (the base name: `G3` for `G3-x2`) zeroed first (`compare_ipc_traces.load`); a mask line that matches no Write is a failure |
 
 ## What the runs found
@@ -157,7 +209,7 @@ Host seconds are for the 60 and the 120 fps run. Mode: **det** is `--determinist
 the real-time `--native` library. **Every rt row of this note was measured while the PC was busy with other builds**
 (*The PC during the runs*): its times, shifts and spreads include host load; the det rows do not depend on it.
 
-Items by session, `--io-latency azahar` (what D70 gates). Counts are of the 60 fps run and the 120 fps run.
+Items by session, `--io-latency azahar` (the latency D70 gates). Counts are of the 60 fps run and the 120 fps run.
 
 | Session | Mode | host s | scenes | times (limit 66.7 ms) | checkpoints | observables | dsp (limit 48) | writes |
 |---|---|---|---|---|---|---|---|---|
@@ -221,12 +273,184 @@ which is what the tool compares anyway); the third row is one `none` pair; the r
 | `none` pair 2 | 7 of 10 | 1,016.7 ms | 61 / 64 | 5,603 units | 65 / 65 | 16.95 s |
 | reference, N3-21 (G3) | 5 of 10 | 316.7 ms | 59 / 63 | 3,627 units | 19 / 65 | 1.07 s |
 
+## Runs on an idle PC (2026-10-31, native 4a6eaf4)
+
+Every row of *Tables* again, with nothing else of the port running on the PC, at native `4a6eaf4` (N3-32's slice fix,
+N3-33's `--deterministic --io-latency none` fix, and PR #64's `RC_HOST_VERSION` 6). The runner was built from that tree
+as the native-windows job builds it (`-DCMAKE_BUILD_TYPE=RelWithDebInfo -DMH4N_WERROR=ON`, llvm-mingw clang, the
+`mh4u_native_runner` target, `build/n3-22b/b`), and both code libraries again with `tools/build_game.py --dump
+baserom/update_v130.cia --native --no-mods` (`build/n3-22b/lib-rt`, 7 min) and the same with `--deterministic`
+(`build/n3-22b/lib-det`, 7 min): the libraries of *Repeating it* were built for `RC_HOST_VERSION` 5, which a runner of
+this base refuses (not tried here); a short G1 pair checked that it accepts both new ones. Then
+`fps_audit.py run` and `compare` as *Repeating it* says, but with `--deterministic` for the det rows and with the new
+libraries and timeouts, one pair at a time under the emulator lock, the masks copy
+`build/fps/fs_write_masks_n322.txt`, into new folders `build/fps/<S>-det-idle`, `<S>-det-none-idle`, `<S>-rt-idle[-rN]`
+and `<S>-rt-none-idle` (the deterministic runs before the real-time ones; nothing else of the port ran during the
+real-time ones; other programs: *The PC's load*). Per-run timeout 900 s (det) and 1,800 s (rt): no run timed out, every
+run exited 0.
+
+**The PC's load.** The total CPU over 20 s before each real-time pair: G1 21.3 %; G3 pairs 1 to 5: 21.1, 22.2, 21.5,
+20.8, 24.4 %; G2 19.7, G4 19.9 %; `none`: G1 20.3, G2 19.5, G4 18.8 %. That is the maintainer's desktop (the animated
+wallpaper, Chrome, Steam, the graphics driver's panel) with no build, test or other run, and about 20 % rather than the
+about 11 % (1.3 of the 12 logical processors, *The PC during the runs* above) of the reference run earlier that day.
+Sampled every 10 s from the end of G3's pair 5 to the last pair: 25.3 % on average with no runner (18 samples, in the
+20 s gaps between pairs and after the last one; the first after each run includes the run's end and `compare`, up to
+40.8 %), 34.8 % with the runner (94 samples, at most 45.1 %). Against those five pairs' pre-run loads (19.6 % on
+average) the runner adds about 15 %, about 1.8 of the 12 logical processors. **Two interruptions.** An unrelated
+installer of the maintainer's ran during the 120 fps run of G3's pair 4. Its times are not in the logs: they were read
+by hand during the session. Its processes started at about 18:41 local time, about 112 s into that run (the long talk
+in the village; the run lasted from 18:39:19 to 18:44:28 by its files' times), and took every processor from about
+18:44, the run's last ~30 s. The load was not sampled during pair 4 (the samples are taken before each pair). What the
+logs show is the next sample, at 18:45:10, 20 s after pair 4 and its `compare` ended: 100 %; and the run took 309.4 s
+against 306.5 s for the other four 120 fps runs. Pair 5 was held while the load was 100 % and then while a game and an
+antivirus scan ran (18 minutes in all), and started at 24.4 % once the game had closed. So every real-time run below is
+idle except pair 4's 120 fps run, which is marked.
+
+Host seconds of the real-time runs are now steady: G3 303.1 to 303.4 at 60 fps and 306.5 at 120 fps (pair 4's 309.4),
+G2 152.7 to 153.3 and 156.5 to 157.1, G4 52.3 to 52.4 and 56.2 to 56.4, G1 30.7 to 30.8 and 34.8 to 34.9.
+
+Items by session, `--io-latency azahar`. Counts are of the 60 fps run and the 120 fps run.
+
+| Session | Mode | host s | scenes | times (limit 66.7 ms) | checkpoints | observables | dsp (limit 48) | writes |
+|---|---|---|---|---|---|---|---|---|
+| G1 | det | 2.5 + 4.6 | pass (2 changes) | **FAIL** 275.0 ms | pass (2) | n/a | **FAIL** +57 | pass (11) |
+| G1 | rt | 30.8 + 34.9 | pass (2) | **FAIL** 91.7 ms | pass (2) | n/a | pass +15 | pass (11) |
+| G2 | det | 10.2 + 21.7 | pass (8) | **FAIL** 300.0 ms (3 of 8 over) | pass (7) | position **FAIL** (1 jump), quest n/a | **FAIL** +1262 | pass (13, 1 masked) |
+| G2 | rt | 153.3 + 157.1 | pass (8) | **FAIL** 125.0 ms (3 of 8) | pass (7) | position **FAIL** (the jump), quest n/a | **FAIL** +683 | pass (13, 1 masked) |
+| G4 | det | 4.5 + 8.5 | pass (6) | **FAIL** 316.7 ms (4 of 6) | pass (4) | n/a | **FAIL** no buffer in common | pass (2, 1 masked) |
+| G4 | rt | 52.4 + 56.4 | pass (6) | **FAIL** 133.3 ms (4 of 6) | pass (4) | n/a | **FAIL** +651 | pass (2, 1 masked) |
+| G3 | det, seed 0 and `--seed 1` | 25.9 + 48.5, 25.3 + 48.5 | pass (10) | **FAIL** 316.7 ms (5 of 10) | pass (9) | position **FAIL** (59 of 63 s), quest **FAIL** (19 of 65 s) | **FAIL** +3765 | pass (2, 1 masked) |
+| G3 | rt, 5 pairs | 303.1 to 303.4 + 306.5 to 309.4 | **FAIL** in 4 (one run of the pair stays in the village); pass in 1 (both stay, 6 changes) | n/a in the 4; **FAIL** 133.3 ms (4 of 6) in pair 3 | **FAIL** (4 of 9) in all five | **FAIL** in all five (`--require`: no second in the hunt in both runs) | **FAIL** in all five | pass (2, 1 masked) in all five |
+
+The two deterministic G3 pairs have equal state traces, byte for byte (seed 0 against seed 1, at each rate), and their
+ten scene changes are N3-21's reference frames. G2's position failure is the same one second of the opening jump
+(673.6 units) in every G2 row.
+
+**G3 in real time on the idle PC: 4 runs of 10 reach the hunt** (10 real scene changes), and no pair has both:
+
+| Pair | 60 fps run | 120 fps run |
+|---|---|---|
+| 1 | hunt | village (6 changes) |
+| 2 | hunt | village |
+| 3 | village | village |
+| 4 | village | hunt (partly under the installer's load, by unlogged times: *The PC's load*) |
+| 5 | hunt | village |
+
+So 3 of 5 at 60 fps and 1 of 5 at 120 fps; of the four fully idle 120 fps runs, none reached the hunt. Every run that
+stays in the village has the same six changes; the five 120 fps runs have them at the same frames (2, 38, 1802, 3154,
+3156, 3157), and the five 60 fps runs at frames 2, 27 or 28, 902 or 903, and 1579 to 1586 for the three after the intro
+movie; the three 60 fps runs that reach the hunt have its four changes at the same frames (13463, 13465, 14107, 14109).
+
+`--io-latency none` (reported, D71):
+
+| Session | Mode | host s | scenes | times | checkpoints | observables | dsp | writes |
+|---|---|---|---|---|---|---|---|---|
+| G1 | det | 2.5 + 4.6 | pass (2) | **FAIL** 266.7 ms | pass (2) | n/a | **FAIL** +57 | pass (11) |
+| G4 | det | 4.2 + 8.7 | pass (6) | **FAIL** 2,650.0 ms (5 of 6) | pass (4) | n/a | **FAIL** no buffer in common | pass (2, 1 masked) |
+| G1 | rt | 30.7 + 34.8 | pass (2) | **FAIL** 116.7 ms | pass (2) | n/a | pass +13 | pass (11) |
+| G2 | rt | 152.7 + 156.5 | pass (8) | **FAIL** 150.0 ms (3 of 8) | pass (7) | position **FAIL** (the jump), quest n/a | **FAIL** +638 | pass (13, 1 masked) |
+| G4 | rt | 52.3 + 56.2 | pass (6) | **FAIL** 166.7 ms (4 of 6) | pass (4) | n/a | **FAIL** +633 | pass (2; 1 masked, equal without) |
+
+The deterministic G1 and G4 with `none` now run to the end (N3-33). The deterministic G4 with `none` fails the times by
+2.65 s: its 60 fps run ends the intro movie at frame 903 (15.05 s, where every G3 and G4 `azahar` 60 fps run ends it:
+902 in G3's pair 4; 1802, 15.02 s, at 120 fps) and its 120 fps run at frame 1502 (12.52 s), where G4's real-time `none`
+run ends it (frames 753 and 1502). G2 ends it later, at frame 1652 or 1653 (3302 or 3303 at 120 fps), in every G2 row.
+
+Scene changes, game time of the 120 fps run minus the 60 fps run in ms (frame / fps), the game clock offset beside it.
+G3 in real time has no pair with both runs in the hunt; its rows pair the 60 fps run of one pair with pair 4's 120 fps
+run (folders `build/fps/mix-idle-60rN-120r4`, made as the `mix-*` folders of the loaded runs).
+
+| Session | mode | differences in ms, in order | game clock offsets, s |
+|---|---|---|---|
+| G1 | det | -16.7, -275.0 | -0.03, -0.11 |
+| G1 | rt | -16.7, -91.7 | -0.01, -0.09 |
+| G2 | det | -16.7, -275.0, -16.7, -41.7, -58.3, -66.7, -283.3, -300.0 | -0.03, -0.11, +4.26, +6.82, +6.81, +6.79, +6.75, +6.73 |
+| G2 | rt | -16.7, -91.7, -33.3, -33.3, -50.0, -58.3, -108.3, -125.0 | -0.02, -0.09, +4.13, +4.04, +4.03, +4.02, +3.99, +3.97 |
+| G4 | det | -16.7, -316.7, -33.3, -125.0, -141.7, -150.0 | -0.03, -0.14, +4.21, +4.14, +4.13, +4.11 |
+| G4 | rt | -16.7, -133.3, -33.3, -100.0, -116.7, -125.0 | -0.02, -0.13, +3.99, +3.89, +3.88, +3.87 |
+| G3 | det | -16.7, -316.7, -33.3, -125.0, -141.7, -150.0, -33.3, -50.0, -58.3, -75.0 | -0.03, -0.14, +4.21, +4.14, +4.13, +4.11, +17.37, +17.34, +17.69, +17.67 |
+| G3 | rt, 60 fps of pair 1 or 2 with 120 fps of pair 4 | -16.7, -133.3, -33.3, -100.0, -116.7, -125.0, -50.0, -66.7, -66.7, -83.3 | -0.02, -0.12, +4.03, +3.94, +3.93, +3.92, +3.60, +3.58, +3.57, +3.55 |
+| G3 | rt, 60 fps of pair 5 with 120 fps of pair 4 | -16.7, -150.0, -33.3, -33.3, -50.0, -58.3, -50.0, -66.7, -66.7, -83.3 | -0.03, -0.15, +4.03, +3.95, +3.93, +3.92, +3.53, +3.51, +3.50, +3.48 |
+| G1 | det, `none` | -16.7, -266.7 | -0.02, -0.10 |
+| G4 | det, `none` | -16.7, -308.3, -2,533.3, -2,625.0, -2,641.7, -2,650.0 | -0.02, -0.14, +1.69, +1.65, +1.63, +1.62 |
+| G1 | rt, `none` | -16.7, -116.7 | -0.01, -0.10 |
+| G2 | rt, `none` | -16.7, -116.7, -25.0, -33.3, -50.0, -58.3, -133.3, -150.0 | -0.02, -0.10, +4.06, +3.91, +3.89, +3.89, +3.82, +3.81 |
+| G4 | rt, `none` | -16.7, -166.7, -33.3, -91.7, -108.3, -116.7 | -0.04, -0.17, +3.98, +3.89, +3.88, +3.87 |
+
+The deterministic rows equal those of the loaded runs to the 0.1 ms (G3's now has all ten changes, the reference's).
+Against the per-change limits proposed below (item 2 of the proposal: 333.3 ms for the first aDemo, 166.7 ms for the
+three after the intro movie, 316.7 ms for G2's opening, 91.7 ms for G3's aGameSys and aQuest, 66.7 ms for every other
+change), every `azahar` row, deterministic and real time, is inside; so are the real-time `none` rows; the deterministic
+G4 with `none` is not (2,533.3 to 2,650.0 ms).
+
+DSP shift against the game clock offset at the window's start, in DSP frames: G1 (the boot window) +15 of +106 (rt), +13
+of +98 (rt `none`), +57 of +125 and +57 of +124 (det, both latencies); G2 at frame 6000 +683 of +814 (84 %, rt), +638 of
++810 (79 %, rt `none`), +1262 of +1488 (85 %, det); G4 at frame 2000 +651 of +822 (79 %, rt), +633 of +821 (77 %, rt
+`none`), no buffer in common in the det runs (+1006 and +1008 of clock offset); **G3 at frame 16000 (the hunt) +3765 of
++3767 (100 %, det)**, and in real-time pair 3, where both runs are still in the village there, +708 of +708 (100 %); the
+other four real-time G3 pairs have no buffer in common or other buffer changes (one run in the hunt, the other not).
+
+Hunt observables of G3 (the hunt = the scene aQuest; per second of game time, D70's first guesses as the limits;
+`compare --position-until 15862` gives the walk before the first attack press, in the hunt too):
+
+| Pair | scene changes over 66.7 ms | largest time difference | position, seconds over / of | largest distance (median) | walk to frame 15862, largest | quest counter, seconds over 1 s / of | largest quest difference (median) |
+|---|---|---|---|---|---|---|---|
+| det, seed 0 (and `--seed 1`, equal) | 5 of 10 | 316.7 ms | 59 / 63 | 3,627.2 units (949.4) | 840.0 units | 19 / 65 | 1.07 s (0.62 s) |
+| rt, 60 fps of pair 1 with 120 fps of pair 4 | 5 of 10 | 133.3 ms | 55 / 64 | 2,277.7 units (958.8) | 958.8 units | 53 / 65 | 10.53 s (1.52 s) |
+| rt, 60 fps of pair 2 with 120 fps of pair 4 | 5 of 10 | 133.3 ms | 55 / 64 | 1,660.7 units (66.4) | 76.6 units | 42 / 65 | 14.05 s (8.70 s) |
+| rt, 60 fps of pair 5 with 120 fps of pair 4 | 2 of 10 | 150.0 ms | 55 / 64 | 2,615.7 units (862.2) | 862.2 units | 53 / 65 | 10.35 s (1.35 s) |
+| reference, N3-21 (G3), for comparison | 5 of 10 | 316.7 ms | 59 / 63 | 3,627 units | | 19 / 65 | 1.07 s |
+
+The deterministic pair is the reference's pair, value for value (N3-32 found the same). Pair 4's 120 fps run is the one
+partly under load (*The PC's load*).
+
+**The same-rate spread on the idle PC.** Two 60 fps runs of G3 that reach the hunt, compared as a pair (folders
+`build/fps/same60-idle-rA-rB`: the second run's frame numbers doubled so that `compare` reads it as the 120 fps side;
+values and clock untouched):
+
+| 60 fps runs | scenes | largest time difference | position, seconds over / of | largest distance (median) | walk to frame 15862, largest | quest counter, seconds over 1 s / of | largest quest difference (median) |
+|---|---|---|---|---|---|---|---|
+| pair 1 with pair 2 | pass (10) | 0.0 ms | 53 / 64 | 2,603.2 units (893.0) | 893.0 units | 52 / 65 | 15.55 s (15.53 s) |
+| pair 1 with pair 5 | pass (10) | 66.7 ms | 53 / 64 | 1,042.1 units (101.1) | 101.1 units | 0 / 65 | 0.18 s (0.17 s) |
+| pair 2 with pair 5 | pass (10) | 66.7 ms | 53 / 64 | 2,598.3 units (796.4) | 796.4 units | 52 / 65 | 15.38 s (15.37 s) |
+
+The 120 fps spread in the hunt cannot be measured: one 120 fps run reached it. Before the hunt the five 120 fps runs
+have their six scene changes at the same frames (above). The quest counter of two 60 fps runs is either within 0.18 s or
+15.4 to 15.6 s apart (pair 2's run against the other two): the talk that pauses it starts at another time, as on the
+loaded PC.
+
+**What changed from the loaded runs.**
+
+1. The deterministic rows are unchanged to the 0.1 ms, the frame and the DSP frame (G1, G2, G4), and G3's is now the
+   reference's: 10 scene changes at both rates, 9 of 9 checkpoints, the hunt reached, seeds 0 and 1 equal (N3-32).
+2. `--deterministic --io-latency none` no longer hangs (N3-33): G1 and G4 finish in 2.5 + 4.6 s and 4.2 + 8.7 s. Its G4
+   pair fails the times by 2.65 s, because the 60 fps run ends the intro movie where G3's and G4's `azahar` 60 fps runs
+   do (frame 903; 902 in G3's pair 4; 1802 at 120 fps) and the 120 fps run where G4's real-time `none` run does (frame
+   1502).
+3. Real-time host times are steady (G3 303.1 to 303.4 + 306.5, against 303 to 408 + 307 to 455 loaded), and the
+   real-time `azahar` scene times are a little closer: largest G1 91.7, G2 125.0, G4 133.3 ms against 91.7, 133.3,
+   158.3 ms loaded (`none`: 116.7, 150.0, 166.7 against 100.0, 166.7, 166.7). Every `azahar` row, both modes, and
+   every real-time `none` row is inside the per-change limits of the proposal.
+4. G3 in real time is not more repeatable on the idle PC: 4 of 10 runs reach the hunt (3 of 5 at 60 fps, 1 of 5 at
+   120 fps, that one partly under load), against 6 of 10 on the loaded PC (3 and 3, `azahar` and `none` pairs; `azahar`
+   alone: 3 of 6, 2 of 3 at 60 fps and 1 of 3 at 120 fps), and no pair of five has both runs in the hunt. N1-26's 10 of
+   10 at 60 fps on an idle PC was not reproduced at this base.
+5. The same-rate spread is as large on the idle PC: two 60 fps runs up to 2,603 units apart in the hunt (2,460 loaded),
+   and up to 15.55 s on the quest counter (0.20 s loaded, 15.8 s between two loaded 120 fps runs). The position and
+   quest clock in real time depend on the run, not mainly on the host's extra load.
+6. The DSP windows after the intro movie give the same 77 to 85 % of the clock offset in G2 and G4; G3's window at frame
+   16000, measurable now in the deterministic mode, gives 100 % (+3765 of +3767), as does real-time pair 3's (both runs
+   in the village there).
+7. The writes are unchanged: with the proposed G3 and G4 masks every pair passes; G4 with `none` is equal without them.
+
 ## The spread D70's numbers come from, and the proposal
 
 D70 (Open) says: same scene sequence; each change within 4 frames at 60 fps; equal `eq` values at the checkpoints; the
 position within 2 % of the last second's travel plus 0.05 units; the quest clock within 1 s; the DSP stream by D51's rule;
-`fs:` Writes by D52's rule. What the table above measured, item by item, with the proposal for each (the numbers are the
-orchestrator's to settle; none of the tool's defaults was changed):
+`fs:` Writes by D52's rule. *(2026-10-31, N3-34: D70 is Decided, on *Runs on an idle PC*, and `compare` applies it by
+default, with the position and quest clock gated in the deterministic mode at 3,700 units and 1.09 s (*Using it*); the
+numbers of this paragraph are its first guesses.)* What the table above measured, item by item, with the proposal for
+each (the numbers are the orchestrator's to settle; none of the tool's defaults was changed):
 
 1. **Scene sequence.** Equal in G1, G2 and G4 in all runs, real time and deterministic, `azahar` and `none`. Different in G3
    at 120 fps in the deterministic mode, reproducibly; in real time G3 failed in four of five pairs on the loaded PC.
@@ -252,7 +476,8 @@ orchestrator's to settle; none of the tool's defaults was changed):
    G4 and on G2's opening, 133.3 ms after the intro movie, 33.3 ms elsewhere). A blanket 20 frames is not proposed: it would loosen the other changes,
    now at 1 to 3 frames, five times. The exceptions sit where the clock offset of finding 1 arises (the movie, the loads),
    so they may become one rule once finding 1's mechanism is measured rather than inferred; the tool would need a
-   per-change tolerance for them (today it has one number, `--time-frames`).
+   per-change tolerance for them (today it has one number, `--time-frames`). *(2026-10-31, N3-34: it has one now,
+   `SCENE_TIME_FRAMES`, with these limits; `--time-frames N` replaces it with one number for every change.)*
 3. **Checkpoints.** The `eq` observables are equal at every checkpoint of every run in which the scene sequence is equal.
    Proposal: unchanged.
 4. **Position and quest clock.** The spec's numbers cannot be met, and not because of the rate: on the loaded PC two runs
@@ -269,7 +494,10 @@ orchestrator's to settle; none of the tool's defaults was changed):
    clock part stays Open with that trigger. *(2026-10-31, N3-32: the trigger is met. The deterministic pair
    `build/fps/G3-det-n332` reaches the hunt at both rates: position 59 of 63 seconds over, largest 3,627.2 units; quest
    counter 19 of 65 seconds over 1 s, largest 1.067 s, the numbers of the reference's own pair. Settling them is D70's,
-   which stays Open until the audit is run again on an idle PC.)*
+   which stays Open until the audit is run again on an idle PC.)* *(2026-10-31, N3-34: D70 is Decided on that run, and
+   `compare` gates the position and the quest clock in the deterministic mode, at most 3,700 units and 1.09 s, and
+   reports them in real time: a deterministic pair whose 120 fps hunter is more than 3,700 units from the 60 fps one,
+   or whose quest clocks are more than 1.09 s apart, fails.)*
 5. **DSP stream.** The window of G1 (before the clock offset arises) gives shifts of +9 and +17 DSP frames in real time
    (loaded PC) and +57 in the deterministic mode; every window after the intro movie gives shifts of 640 to 4,552 DSP frames
    or no buffer in common, with the clock offset at the window 4 to 22 s (finding 1). The shift is measured on the DSP
@@ -296,7 +524,12 @@ orchestrator's to settle; none of the tool's defaults was changed):
 D71 (already marked Decided, 2026-10-21) says `none` can be offered only if the audit shows it passes every gated item,
 otherwise `azahar` for every player. **Neither `none` nor `azahar` passes the audit** (times and dsp fail in real time with
 both, and G3 fails with both), so the audit does not tell the two apart: **there is no evidence for `none`, and option (a),
-`azahar` for every player, stands.** The real-time differences between the two (100.0, 166.7 and 166.7 ms against 91.7,
+`azahar` for every player, stands.** *(2026-10-31, N3-34: that was under D70's first guesses with every item gated.
+Under D70 as `compare` applies it now, every `azahar` folder of *Runs on an idle PC* passes; of the `none` folders,
+which it reports in full, only the deterministic G4 fails an item D70 gates for `azahar` (times, by 2.65 s), and the
+others fail nothing but the DSP windows after the intro movie (G2 and G4; G1 fails nothing), which are reported with
+`azahar` too. G3 with `none` was not run. D71's note in `DECISIONS.md` draws the same line, and (a) stands.)*
+The real-time differences between the two (100.0, 166.7 and 166.7 ms against 91.7,
 133.3 and 158.3 ms on the scene times; G3's pair with 1,016.7 ms) were measured on the loaded PC and are within the
 run-to-run noise of that PC (finding 3, finding 4), so they are not evidence either way. `none` passes `writes` without
 the masks where `azahar` needs them, which is the clock readings falling in the same second and not a stability gain. The
@@ -313,10 +546,27 @@ library `build/n3-17-user/recomp/0004000000126300_native.dll`. Deterministic: th
 `build/game-det/recomp/0004000000126300_native_det.dll` with `--deterministic` (the runs of 2026-10-31 passed it as
 `--runner-arg=--deterministic`, and the seed as `--runner-arg=--seed --runner-arg=N`; `compare` reads both as the
 deterministic mode). DSP windows added to the sessions that have none: G2 `--dsp 6000:300`, G3 `--dsp 16000:300` (the hunt)
-or `6000:300` (the village), G4 `--dsp 2000:300`. For G3, `compare --require position,quest_time,dsp --position-until 15862`
-(15862 is N3-21's last frame before the first attack press moves the hunter). The timed G1 det-none pair:
-`run G1 ... --io-latency none --deterministic --timeout 300 --out build/fps/G1-det-none-t300`. Do not run other work on the
-PC during real-time runs: the guest clock follows the host's (the real-time rows of this note did not meet that).
+or `6000:300` (the village), G4 `--dsp 2000:300`. For G3 the runs of 2026-10-31 gave `compare --require
+position,quest_time,dsp --position-until 15862` (15862 is N3-21's last frame before the first attack press moves the
+hunter); since N3-34 those are G3's defaults, and `compare DIR` with no option gives D70's verdict for every session
+(*Using it*). The tables of this note were made before N3-34, with D70's first guesses: `compare DIR --time-frames 4
+--position-relative 0.02 --position-absolute 0.05 --quest-seconds 1 --max-shift 48` gives their item statuses again
+(N3-34 checked it on copies of the 18 idle run folders: equal to N3-22's `compare.json` in all 18), while which items
+gate, and so the exit status, still follow D70. The timed G1 det-none pair: `run G1 ... --io-latency none
+--deterministic --timeout 300 --out build/fps/G1-det-none-t300`.
+
+**A real-time pair counts only on an idle PC (D70):** the PC's total CPU load before the pair at most **25 %**, measured
+as *Runs on an idle PC* did (the total over the 20 s before the pair), with no build, test or other run of the port and
+no other heavy program (an installer, a game, an antivirus scan) during the pair; the guest clock follows the host's. A
+pair over 25 % before it, or interrupted during it, does not count: wait for the load to drop and run it again (as
+pair 5 of *Runs on an idle PC* was held), and say in the notes which pair was affected (as pair 4's 120 fps run is
+marked). The real-time rows of *Tables* did not meet this rule. The deterministic mode does not depend on the host.
+
+`compare` writes `compare.txt` and `compare.json` into the folder it reads. To judge recorded runs again without
+touching their record, copy each run folder first (`robocopy build\fps\<tag> build\<wp>\<tag> /E`) and run `compare` on
+the copy, as N3-34 did with N3-22's 18 idle run folders in `build/n3-34/` (every `azahar` and every `none` folder
+exits 0). It left out the six hand-made `mix-idle-*` and `same60-idle-*` folders: they pair runs of different pairs,
+hold state traces only (no IPC trace, no DSP capture) and are not pairs of `run`; `compare` reports every item of them.
 
 The record-by-record numbers of finding 2 (records equal, first difference per observable, tick offsets) are not an item
 of the tool: they compare a native state trace with a reference one at the same frame, every value and the `t=` ticks
