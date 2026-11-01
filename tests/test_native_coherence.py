@@ -467,6 +467,21 @@ int main(int, char** argv) {
         c.Finish();
         std::printf("host_marked_left %zu mark_pages %u accesses %llu\n", host.marked.size(), host.mark_pages,
                     static_cast<unsigned long long>(c.Accesses()));
+    } else if (scenario == "regpu") {
+        c.ExecuteBegin(submit);                                      // the GPU writes page 3: marked
+        fcram[3 * 4096] = 1;
+        c.ExecuteEnd();
+        c.ExecuteBegin(dma);                                         // a DMA reads it (logged), and writes it again
+        c.Access(kLinear + 3 * 4096, 4, CopySource, 0x10);
+        c.Access(kLinear + 3 * 4096, 4, CopySource, 0x10);           // the same mark: not logged again
+        fcram[3 * 4096] = 2;
+        c.ExecuteEnd();                                              // rewritten: a new writer
+        c.ExecuteBegin(dma);
+        c.Access(kLinear + 3 * 4096, 4, CopySource, 0x20);           // logged again
+        c.ExecuteEnd();
+        c.Finish();
+        std::printf("host_marked_left %zu mark_pages %u accesses %llu\n", host.marked.size(), host.mark_pages,
+                    static_cast<unsigned long long>(c.Accesses()));
     } else if (scenario == "idle") {
         c.Finish();
         std::printf("host_marked_left %zu mark_pages %u accesses 0\n", host.marked.size(), host.mark_pages);
@@ -587,6 +602,16 @@ def test_pages_the_process_cannot_reach_through_a_window_are_reported_not_hidden
     assert rep["aliases"] == [{"f": 100, "vaddr": 0x08000000, "paddr": 0x2000B000, "pages": 1}]
     # pages 3, 4, 6, 11, 12 were never touched by the CPU, and VRAM page 0 was only read by the GPU
     assert rep["summary"]["pending"] == 6 and rep["complete"]
+
+
+def test_the_gpu_side_access_of_a_page_the_gpu_wrote_again_is_logged_again(driver, tmp_path):
+    out, info = run(driver, "regpu", tmp_path)
+    gpu = [a for a in accesses(out) if a["side"] == "gpu"]
+    assert [(a["paddr"], a["lr"], a["mark"]) for a in gpu] == [("0x20003000", "0x00000010", "1"),
+                                                              ("0x20003000", "0x00000020", "2")]
+    assert info["accesses"] == 2 and info["host_marked_left"] == 0
+    ev = coh.analyse_log(open(out))["events"]
+    assert ev["RequestDma"]["rewritten"] == 1 and ev["SubmitCmdList"]["marked"] == 1
 
 
 def test_events_before_start_and_an_idle_run_leave_the_marker_alone(driver, tmp_path):
