@@ -87,6 +87,10 @@ void Spinner();
 bool InputText(const char* label, std::string* text, ImGuiInputTextFlags flags = 0,
                const char* hint = nullptr);
 
+/// Dear ImGui's SliderInt, with no value typed in while a controller is in use (`pad`): its A held
+/// would ask for one, with no keyboard at hand. A value already being typed keeps its field.
+bool SliderInt(const char* id, int* value, int min, int max, const char* format, bool pad);
+
 /// Keyboard or controller hints: a key cap with a label after it.
 void KeyHint(const char* key, const char* action);
 

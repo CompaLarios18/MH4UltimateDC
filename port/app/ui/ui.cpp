@@ -326,6 +326,12 @@ bool Layer::OnEvent(const SDL_Event& event) {
             escape_busy = menu_open && was_busy;
             return true;
         }
+        if (code == SDL_SCANCODE_ESCAPE && capturing) {
+            // its auto-repeat: Esc's press is the layer's (Frame), and Dear ImGui, which didn't see the
+            // key go down, would take a repeat for a press of its own (over the game's keyboard, its
+            // text field let go)
+            return true;
+        }
         if (event.key.repeat == 0) {
             echoes_down.erase(code); // pressed again: an echo or not (here, or in ForwardHeld)
         }

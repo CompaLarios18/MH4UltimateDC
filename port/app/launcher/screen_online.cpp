@@ -340,7 +340,7 @@ void DrawHost(State& s) {
         ImGui::TextUnformatted("Players");
         ImGui::TableNextColumn();
         ImGui::SetNextItemWidth(260.0f * scale);
-        ImGui::SliderInt("##members", &f.members, 2, 16);
+        Ui::SliderInt("##members", &f.members, 2, 16, "%d", s.pad);
         ImGui::TableNextRow();
         ImGui::TableNextColumn();
         ImGui::AlignTextToFramePadding();

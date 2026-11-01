@@ -646,7 +646,11 @@ void DrawHost(Layer& layer, TabState& tab, const Config& config, bool busy) {
         }
         layer.Help("24872 unless something else uses it. Friends over the internet need it forwarded.");
         FormRow("Players");
-        ImGui::SliderInt("##slots", &tab.slots, 2, 16);
+        // (with a controller in use, no value typed in, as the menu's sliders: A held asks for one;
+        // a value already being typed keeps its field)
+        const bool no_input = layer.PadLast() && !Nav::TypingValue("##slots");
+        ImGui::SliderInt("##slots", &tab.slots, 2, 16, "%d",
+                         no_input ? ImGuiSliderFlags_NoInput : ImGuiSliderFlags_None);
         layer.Help("A Gathering Hall takes 4 hunters; more room members can be in other halls.");
         FormRow("Password");
         InputText("##host_password", tab.host_password, "none: anyone with the address may join",

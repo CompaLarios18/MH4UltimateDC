@@ -180,7 +180,7 @@ void DrawSettings(State& s) {
     Label("Volume");
     int volume = c.volume;
     ImGui::SetNextItemWidth(std::min(ImGui::GetContentRegionAvail().x, 420.0f * scale));
-    ImGui::SliderInt("##volume", &volume, 0, 100, "%d%%");
+    Ui::SliderInt("##volume", &volume, 0, 100, "%d%%", s.pad);
     if (volume != c.volume) {
         s.config.volume = volume;  // while it moves; saved when let go
     }

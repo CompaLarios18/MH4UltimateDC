@@ -96,6 +96,42 @@ def test_layout_editor_key_lines():
         assert 0 < len(line) <= 41, line
 
 
+def test_sliders_take_no_typed_value_from_a_controller():
+    """Every slider of the app (the menu's tabs, the touch taps, Online, the launcher's screens) takes
+    no value typed in while a controller is in use: a controller's A held 0.6 s would ask for one,
+    with no keyboard at hand. The one being typed already keeps its field: Menu::SliderFlags(id), or
+    the slider's own id checked with Nav::TypingValue or ImGui::TempInputIsActive just before it. The
+    launcher's screens go through Launcher::Ui::SliderInt, with the controller's state (s.pad)."""
+    for path in sorted(glob.glob(os.path.join(ROOT, "port", "app", "launcher", "*.cpp"))):
+        with open(path, encoding="utf-8") as f:
+            text = f.read()
+        for call in re.findall(r"\bUi::SliderInt\(([^;]*)\);", text):
+            assert call.rsplit(",", 1)[1].strip() == "s.pad", f"{os.path.basename(path)}: {call}"
+    found = 0
+    for path in sorted(glob.glob(os.path.join(UI, "*.cpp")) +
+                       glob.glob(os.path.join(ROOT, "port", "app", "launcher", "*.cpp"))):
+        with open(path, encoding="utf-8") as f:
+            text = f.read()
+        last_end = 0
+        for match in re.finditer(r"ImGui::Slider\w*\(", text):
+            depth, end = 1, match.end()
+            while depth:
+                depth += {"(": 1, ")": -1}.get(text[end], 0)
+                end += 1
+            call = text[match.start():end]
+            slider_id = call[len(match.group()):].split(",")[0].strip()
+            # what comes before it, back to the slider before (whose own check doesn't count)
+            before = text[max(last_end, match.start() - 600):match.start()]
+            own = (f"Nav::TypingValue({slider_id})" in before or
+                   f"ImGui::TempInputIsActive(ImGui::GetID({slider_id}))" in before)
+            where = f"{os.path.basename(path)}:{text.count(chr(10), 0, match.start()) + 1}"
+            assert f"SliderFlags({slider_id})" in call or (own and "NoInput" in before + call), where
+            last_end = end
+            found += 1
+    # the menu's two helpers, the quest views' size, the taps' point, Online's players, the launcher's helper
+    assert found >= 6
+
+
 def test_texts_ascii():
     """The menu's font has ASCII only (ui.cpp, AddFontDefaultVector): no curly quotes or arrows. With
     the touch taps' section and the map view's sentences (port/src/map_view.cpp), which it shows."""
