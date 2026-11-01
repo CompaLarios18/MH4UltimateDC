@@ -834,8 +834,9 @@ def test_a_mod_in_the_other_regions_title_folder_is_left_out(user, tmp_path):
     """A mod in the USA game's title folder, added while that game was played, is in the library
     when the European game is: it is read and left out of that game's mods folder with a warning
     (not refused, which would block that game's deploy while it is on, and keep the launcher from
-    turning it off), and it is still the code mod that is on. add still refuses it there. The
-    same the other way round; another game's title folder stays an error."""
+    turning it off), and it is still the code mod that is on. add still refuses it there, from its
+    folder in the library too. The same the other way round; another game's title folder stays an
+    error."""
     usa = make(tmp_path / "Usa title", {"0004000000126300/exefs/code.ips": ips((0x10, b"A")),
                                         "0004000000126300/romfs/data/x.arc": "usa"})
     run(user, "add", str(usa))
@@ -851,6 +852,12 @@ def test_a_mod_in_the_other_regions_title_folder_is_left_out(user, tmp_path):
     assert out["added"] == [] and out["warnings"] == ["Usa title: " + mod["warnings"][0]]
     err = run(user, *eu, "add", str(usa), "--name", "Again", code=1)["error"]
     assert err["code"] == "layout" and "the port plays MH4U Europe (0004000000126100)" in err["message"]
+    # and from its folder in the library (where add turns a mod on): refused the same way, and left as it was
+    err = run(user, *eu, "add", str(user / "mh4u-mods" / "Usa title"), code=1)["error"]
+    assert err["code"] == "layout" and err["message"] == (
+        "Usa title: made for another game or region (title 0004000000126300); the port plays MH4U Europe "
+        "(0004000000126100)")
+    assert names(run(user, *eu, "list")) == [("Usa title", True)]
     # one code mod at a time: it is on (for the USA game), so a second one stays off
     out = run(user, *eu, "add", str(make(tmp_path / "Eu bare", {"exefs/code.ips": ips((0x10, b"E"))})))
     assert names(out) == [("Usa title", True), ("Eu bare", False)]
@@ -874,6 +881,9 @@ def test_a_mod_in_the_other_regions_title_folder_is_left_out(user, tmp_path):
     assert mod["errors"] == [] and mod["fits"] is False and mod["warnings"] == [
         f"made for MH4U Europe (its files are in that game's title folder, {EUR}/), so it is left out of MH4U USA's "
         "mods folder"]
+    err = run(user, "add", str(user / "mh4u-mods" / "Eu title"), code=1)["error"]
+    assert err["code"] == "layout" and "(title 0004000000126100); the port plays MH4U USA" in err["message"]
+    assert not next(m for m in run(user, "list")["mods"] if m["id"] == "Eu title")["enabled"]
     # another game's title folder: an error for both games
     make(user / "mh4u-mods" / "Other game", {"0004000000999900/romfs/data/z.arc": "z"})
     for game in ((), eu):

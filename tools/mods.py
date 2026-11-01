@@ -1440,8 +1440,10 @@ def cmd_add(ctx: Context, args) -> dict:
     messages: list[str] = []
     if os.path.isdir(source) and _same_path(os.path.dirname(source), lib.path):
         mod = find(mods, os.path.basename(source))      # a folder already in the library
-        if mod.errors:
-            raise Error("layout", f"{mod.id}: {'; '.join(mod.errors)}", errors=mod.errors)
+        # (one in the other region's title folder is read, to be left out; add refuses it all the same)
+        errors = scan(mod.path, mod.id, adding=True).errors if mod.title_game is not None else mod.errors
+        if errors:
+            raise Error("layout", f"{mod.id}: {'; '.join(errors)}", errors=errors)
         if not mod.enabled:
             _turn_on(mods, mod, messages)
         lib.save(mods)
