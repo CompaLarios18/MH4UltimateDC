@@ -15,6 +15,15 @@ body:
       placeholder: "Windows package v0.1.2 / built from main at <commit>"
     validations:
       required: true
+  - type: dropdown
+    id: game
+    attributes:
+      label: Game
+      options:
+        - "USA, v1.3.0 update"
+        - "Europe, v1.1.0 update"
+    validations:
+      required: true
   - type: input
     id: system
     attributes:
@@ -46,7 +55,7 @@ body:
     attributes:
       label: Checks
       options:
-        - label: I play from my own dump (USA version with the v1.3.0 update).
+        - label: I play from my own dump (the USA game with its v1.3.0 update, or the European game with its v1.1.0 update).
           required: true
         - label: I removed my user name and any room invite from what I posted.
           required: true

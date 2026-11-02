@@ -18,7 +18,7 @@ Only dump games you own.
 Use the bundled extractor. It reads decrypted `.3ds`/`.cci`, `.cia` and `.cxi` files, and refuses encrypted ones (it never handles keys):
 
 ```bash
-# The update CIA carries the complete code of the final version: this is what we decompile.
+# The update CIA (USA v1.3.0) carries the complete code of the final version: this is what we decompile.
 python3 tools/extract_ncch.py "<update>.cia" -o baserom/update_v130
 
 # The base cartridge is only needed for assets (RomFS), later.
@@ -27,13 +27,18 @@ python3 tools/extract_ncch.py "<game>.trim.3ds" -o baserom/base --romfs
 
 Each output folder gets `exheader.bin`, `code.bin` (still compressed, which is fine), `exefs.bin` and `info.txt`.
 
-> **Which code to use:** a 3DS update replaces the whole ExeFS, so the update title's `code.bin` is the full executable of the patched game. The project targets **USA v1.3.0** (see `config/versions.json`). Update RomFS files are applied on top of the base RomFS.
+> **Which code to use:** a 3DS update replaces the whole ExeFS, so the update title's `code.bin` is the full executable of the patched game. The project targets **USA v1.3.0** (see `config/versions.json`): `tools/recompile.py` and the research tools take its code, since their tables in `config/` hold its addresses. Update RomFS files are applied on top of the base RomFS.
 >
-> **EUR:** the European **v1.1.0** update (title `0004000E00126100`) is the same program as USA v1.3.0 with its functions a few bytes further along: `.rodata`, `.data` and `.bss` are laid out the same. `config/` keeps USA addresses only; `config/shifts/eur_v110.txt` says where each part of USA's `.text` sits in EUR's, and `tools/build_game.py` applies it, so a EUR player needs only the EUR dump. The 45 functions EUR changed have no shift; the recompiler finds them through their callers. When `config/hooks.txt` or `config/tunables.txt` gains an address outside the shifts, `tests/test_build_game_versions.py` fails: rebuild the shifts with both updates' code at hand:
+> **EUR:** the European **v1.1.0** update (title `0004000E00126100`) is the same program as USA v1.3.0 with its functions a few bytes further along: `.rodata`, `.data` and `.bss` are laid out the same. `config/` keeps USA addresses only; `config/shifts/eur_v110.txt` says where each part of USA's `.text` sits in EUR's, and `tools/build_game.py` applies it, so a EUR player needs only the EUR dump. Europe's code library is built with `build_game.py`, not with `recompile.py`.
+>
+> Code EUR changed has no address in the shifts, so `build_game.py` leaves out the entry points in it (it prints how many): 45 today, 43 from `config/functions.tsv` and two from `config/extra_entries.txt`. The recompiler finds those functions again only through direct calls and the code addresses it finds in the data and literal pools ([RECOMPILER.md](RECOMPILER.md#pipeline)). The two from `extra_entries.txt`, `0x00103a9c` and `0x00119ec8`, are listed only because a function pointer reaches them at run time: on Europe they run in the interpreter when that happens (the log says `interpreting ...`).
+>
+> A hook or tunable needs a EUR address too: `build_game.py` stops Europe's build when one has none, and `tests/test_build_game_versions.py` fails in CI first. `python3 tools/version_map.py translate config/shifts/eur_v110.txt 0x...` says whether an address maps (`unmapped` when it doesn't), without a dump. An address inside one of the functions EUR changed can't be mapped at all: put the hook on a point the shifts cover. Only someone with their own dumps of both updates can rebuild the shifts, and never from a dump that isn't from their own copy. A rebuild from the same dumps and the same `config/functions.tsv` writes the same file, so it helps only once `functions.tsv` lists the hook's function. With the USA update extracted as above:
 >
 > ```bash
+> python3 tools/extract_ncch.py "<EUR update>.cia" -o baserom/eur_update_v110
 > python3 tools/version_map.py build --name "EUR v1.1.0" -o config/shifts/eur_v110.txt \
->     --src-exheader baserom/usa_update_v130/exheader.bin --src-code baserom/usa_update_v130/code.bin \
+>     --src-exheader baserom/update_v130/exheader.bin --src-code baserom/update_v130/code.bin \
 >     --dst-exheader baserom/eur_update_v110/exheader.bin --dst-code baserom/eur_update_v110/code.bin
 > ```
 >

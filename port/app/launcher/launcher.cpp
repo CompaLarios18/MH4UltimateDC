@@ -984,7 +984,9 @@ void State::Message(const std::string& title, const std::string& text) {
 void State::Recheck() {
     game = Checks::CheckGame(config.game);
     update = Checks::CheckUpdate(game.program_id);
-    library_exists = FileUtil::Exists(Checks::LibraryPath(game.program_id));
+    // (no game yet: the library of the installed update's region, which a build from it makes)
+    library_exists =
+        FileUtil::Exists(Checks::LibraryPath(update.region ? update.region->program_id : game.program_id));
     if (!library_exists) {
         code = {Checks::Code::State::Missing, ""};
     } else if (code.state == Checks::Code::State::Missing) {
@@ -1002,8 +1004,13 @@ void State::CheckCode() {
         return;
     }
     code.state = Checks::Code::State::Checking;
-    runner.Queue({SelfPath(), "--user", Tools::UserDir(), "--check-code", config.game},
-                 "Checking the code library", [this](int exit_code, const std::string& output) {
+    const std::string checked = config.game;
+    runner.Queue({SelfPath(), "--user", Tools::UserDir(), "--check-code", checked},
+                 "Checking the code library", [this, checked](int exit_code, const std::string& output) {
+                     if (config.game != checked) {
+                         // the game chosen before: ChooseGame has checked the new one since
+                         return;
+                     }
                      code = Checks::CodeFromCheck(exit_code, output);
                      LOG_INFO(Frontend, "launcher: code library check {}: {}", exit_code,
                               code.notice.empty() ? "fine" : code.notice);
@@ -1033,7 +1040,7 @@ void State::StartBuild() {
         Message("The update first",
                 fmt::format("The code library is built from the {} update installed in Azahar's "
                             "virtual SD card: install the update first (Setup, step 2).",
-                            Checks::UpdateName(game.program_id)));
+                            Checks::UpdateName(update.region)));
         return;
     }
     if (probing) {
@@ -1095,11 +1102,12 @@ void State::ChooseAndInstallUpdate(bool browse) {
         return;
     }
     Pick::Request request;
-    request.title = fmt::format("Your decrypted MH4U {} update (.cia)", Checks::UpdateName(game.program_id));
+    request.title = fmt::format("Your decrypted MH4U {} update (.cia)", Checks::UpdateName(update.region));
     request.kind = "CIA files";
     request.extensions = {"cia"};
     PickPath(*this, std::move(request),
              [this](const std::string& path) {
+                 // (with no game yet, either region's update)
                  const auto checked = Checks::CheckUpdateCia(path, game.program_id);
                  if (!checked.problem.empty()) {
                      Message(checked.title, checked.problem);
@@ -1108,7 +1116,7 @@ void State::ChooseAndInstallUpdate(bool browse) {
                  LOG_INFO(Frontend, "launcher: installing {}", path);
                  job = Job{};
                  job.kind = Job::Kind::Install;
-                 job.title = fmt::format("Installing the {} update", Checks::UpdateName(game.program_id));
+                 job.title = fmt::format("Installing the {} update", Checks::UpdateName(checked.region));
                  job.install = std::make_unique<Checks::Install>();
                  job.install->Start(path);
                  // (a note: the .cia's version label isn't the update's, its code is)
@@ -1121,6 +1129,10 @@ void State::ChooseAndInstallUpdate(bool browse) {
                      }
                      Recheck();
                      CheckCode();
+                     // (with no game yet, the mods go by the update installed)
+                     if (ToolsReady() && !Checks::FindRegion(game.program_id)) {
+                         RefreshMods(*this);
+                     }
                  };
              },
              browse);
@@ -1147,6 +1159,16 @@ void State::ChooseGame(bool browse) {
                  LOG_INFO(Frontend, "launcher: game {}", path);
                  Recheck();
                  CheckCode();
+                 // the mods go by the game's region (its mods folder, its texture packs): read
+                 // again, and Play waits for them as at the start (what mods.py still returns for
+                 // the game before is left out: ModsGame, screen_mods.cpp). Not while a job runs (a
+                 // deploy reads them again when it ends); one that ended while the picker was open,
+                 // its window not shown yet, is done
+                 if (ToolsReady() && (!job.Active() || job.finished)) {
+                     mods.loaded = false;
+                     mods.error.clear();
+                     RefreshMods(*this);
+                 }
              },
              browse);
 }
@@ -1173,7 +1195,12 @@ void State::Play(int stage) {
             Message("The game first", Checks::Describe(game));
             return;
         }
+        play_game = config.game;
         stage = 1;
+    } else if (config.game != play_game) {
+        // another game was chosen while Play waited, deployed or asked: what it found and put in
+        // place was for the game before, so it stops here (pressed again, it starts over)
+        return;
     }
     if (stage == 1) {
         // the tools and the mod library first, when Play comes right at the start
@@ -1200,7 +1227,7 @@ void State::Play(int stage) {
         std::string problem;
         if (update.state != Checks::Update::State::Ok) {
             problem = fmt::format("The {} update isn't installed in Azahar's virtual SD card.",
-                                  Checks::UpdateName(game.program_id)) + WITHOUT;
+                                  Checks::UpdateName(update.region)) + WITHOUT;
         } else if (!library_exists) {
             problem = std::string("The code library isn't built yet.") + WITHOUT;
         } else if (code.state == Checks::Code::State::NotUsed) {

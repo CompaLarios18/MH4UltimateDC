@@ -19,6 +19,7 @@
 #   LOBBY_PORT=24872   the lobby's TCP port on this server
 #   ROOM_NAME=MH4U Gathering Hall, ROOM_DESCRIPTION, ROOM_PASSWORD, ROOM_MAX_MEMBERS=16
 #   ROOM_PORT=24872    the room's UDP port, the same inside and outside its container
+#   ROOM_GAME=usa      the players' game, usa or europe (docs/SERVER.md)
 #   LOBBY_USERNAME, LOBBY_TOKEN   the room's own name and token in the lobby; without them the
 #                      room is unlisted (players use Direct Connect). No default name: see
 #                      "Moderators" in docs/SERVER.md before you choose one
@@ -64,6 +65,7 @@ services:
       ROOM_PORT: ${ROOM_PORT:-24872}
       ROOM_PASSWORD: ${ROOM_PASSWORD:-}
       ROOM_MAX_MEMBERS: ${ROOM_MAX_MEMBERS:-16}
+      ROOM_GAME: ${ROOM_GAME:-usa}
       LOBBY_URL: ${LOBBY_URL:-http://lobby:24872}
       LOBBY_USERNAME: ${LOBBY_USERNAME:-}
       LOBBY_TOKEN: ${LOBBY_TOKEN:-}

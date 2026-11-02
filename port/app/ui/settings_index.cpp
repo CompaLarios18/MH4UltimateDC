@@ -135,8 +135,8 @@ const Row ROWS[] = {
      "stereoscopic stereo 3d double doubled image ghosting soft blurry picture game", "", "", false, false,
      "mh4u.ini stereo_3d"},
     {"graphics.custom_textures", "graphics.quality", S, "Texture packs", nullptr,
-     "Texture packs from load/textures/<the game's program id>/ in Azahar's user folder, such as the HD pack the "
-     "launcher's Mods screen installs.",
+     "Texture packs from Azahar's user folder: load/textures/0004000000126300/ for the USA game, "
+     "load/textures/0004000000126100/ for Europe's.",
      "texture packs textures custom textures hd pack mods high resolution replacement", "", "", true, false,
      "mh4u-app.ini [Display] custom_textures"},
     {"graphics.bloom", "graphics.effects", S, "Bloom", nullptr,

@@ -34,7 +34,8 @@ fi
 exit "${STUB_CODE:-0}"
 """
 MH4U_ARGS = ["--preferred-app", "Monster Hunter 4 Ultimate",
-             "--preferred-app-id", "0004000000126300"]
+             "--preferred-app-id", "0004000000126300"]  # the default game, USA's
+EUROPE = "0004000000126100"
 
 
 def stub_room(folder):
@@ -80,6 +81,7 @@ def test_host_room_defaults(tmp_path):
                               "--ban-list-file", str(server / "room-ban-list.txt")]
     assert (server / "room-ban-list.txt").read_text() == "CitraRoom-BanList-1\n"
     assert (server / "host-room.ini").exists() and "Made" in r.stdout
+    assert "\ngame = usa\n" in (server / "host-room.ini").read_text() and "for the USA game" in r.stdout
     assert "Unlisted" in r.stdout and "Direct Connect" in r.stdout
 
 
@@ -90,19 +92,22 @@ def test_host_room_settings_and_overrides(tmp_path):
     server.mkdir()
     (server / "host-room.ini").write_bytes(
         b"# mine\r\nport = 24900\r\npassword = pw\r\ndescription =  Low rank, any weapon \r\n"
-        b"ban_list = /elsewhere/bans.txt\r\nwhat = ever")
+        b"game = Europe\r\nban_list = /elsewhere/bans.txt\r\nwhat = ever")
     r = host_room(tmp_path, "name=Luis C's Hall", "lobby_url=http://lobby.example.org:24872",
                   "username=Room One", "token=abc=def", "ban_list=bans.txt")
     assert r.returncode == 0, r.stdout + r.stderr
     got = options(recorded(stub))
     assert got == {"--room-name": "Luis C's Hall", "--port": "24900", "--max_members": "16",
-                   "--preferred-app": "Monster Hunter 4 Ultimate",
-                   "--preferred-app-id": "0004000000126300",
+                   "--preferred-app": "Monster Hunter 4 Ultimate", "--preferred-app-id": EUROPE,
                    "--ban-list-file": str(server / "bans.txt"),
                    "--room-description": "Low rank, any weapon", "--password": "pw",
                    "--web-api-url": "http://lobby.example.org:24872", "--username": "Room One",
                    "--token": "abc=def"}
     assert "Unknown setting: what" in r.stdout and "Listed in the lobby" in r.stdout
+    assert "for the European game" in r.stdout
+    # an argument overrides the file's game too
+    assert host_room(tmp_path, "game=usa", "ban_list=bans.txt").returncode == 0
+    assert options(recorded(stub))["--preferred-app-id"] == MH4U_ARGS[-1]
 
 
 @posix
@@ -117,9 +122,10 @@ def test_host_room_lobby_needs_name_and_token(tmp_path):
 def test_host_room_refuses_bad_settings(tmp_path):
     stub_room(tmp_path / "bin")
     for bad in ["port=0", "port=abc", "port=70000", "max_members=1", "max_members=300",
-                "name=", "not-a-setting"]:
+                "name=", "game=eur", "game=", "not-a-setting"]:
         r = host_room(tmp_path, bad)
         assert r.returncode == 1, bad
+    assert "game must be usa or europe" in host_room(tmp_path, "game=japan").stdout
 
 
 @posix
@@ -199,19 +205,20 @@ def run_entrypoint(tmp_path, **env):
 def test_room_entrypoint_stops_the_room_with_q(tmp_path):
     proc, stub, data, lines = run_entrypoint(
         tmp_path, ROOM_NAME="Night Hunts", ROOM_PORT="24900", ROOM_PASSWORD="pw",
-        ROOM_MAX_MEMBERS="4", LOBBY_URL="http://lobby:24872", LOBBY_USERNAME="Room Host",
-        LOBBY_TOKEN="secret")
+        ROOM_MAX_MEMBERS="4", ROOM_GAME="europe", LOBBY_URL="http://lobby:24872",
+        LOBBY_USERNAME="Room Host", LOBBY_TOKEN="secret")
     proc.send_signal(signal.SIGTERM)  # docker stop
     assert proc.wait(10) == 3  # the room's own exit code
     assert (stub.parent / "azahar-room.input").read_text() == "q\n"
     assert options(recorded(stub)) == {
         "--room-name": "Night Hunts", "--port": "24900", "--max_members": "4",
-        "--preferred-app": "Monster Hunter 4 Ultimate", "--preferred-app-id": "0004000000126300",
+        "--preferred-app": "Monster Hunter 4 Ultimate", "--preferred-app-id": EUROPE,
         "--ban-list-file": str(data / "ban-list.txt"), "--password": "pw",
         "--web-api-url": "http://lobby:24872", "--username": "Room Host", "--token": "secret"}
     assert (data / "ban-list.txt").read_text() == "CitraRoom-BanList-1\n"
     assert stat.S_IMODE((data / "ban-list.txt").stat().st_mode) == 0o600
     assert any("Announcing the room to http://lobby:24872" in line for line in lines)
+    assert any("for the European game" in line for line in lines)
 
 
 @posix
@@ -221,7 +228,19 @@ def test_room_entrypoint_unlisted(tmp_path):
     assert proc.wait(10) == 3
     got = options(recorded(stub))
     assert got["--room-name"] == "MH4U Gathering Hall" and got["--port"] == "24872"
+    assert got["--preferred-app-id"] == MH4U_ARGS[-1]
     assert "--web-api-url" not in got and any("unlisted" in line for line in lines)
+
+
+@posix
+def test_room_entrypoint_refuses_another_game(tmp_path):
+    stub = stub_room(tmp_path / "bin")
+    data = tmp_path / "data"
+    data.mkdir()
+    r = subprocess.run(["sh", ENTRYPOINT], cwd=data, capture_output=True, text=True, timeout=30,
+                       env=environment(tmp_path, ROOM_GAME="eur"), stdin=subprocess.DEVNULL)
+    assert r.returncode == 1 and "ROOM_GAME must be usa or europe, not 'eur'" in r.stdout
+    assert not (stub.parent / "azahar-room.args").exists() and not (data / "ban-list.txt").exists()
 
 
 def read(*path):
@@ -239,14 +258,18 @@ def test_docker_files():
     assert "127.0.0.1:24872/health" in read("server", "docker", "Dockerfile.lobby")
     compose = read("server", "docker", "compose.yaml")
     assert compose.count("logging: *logging") == 2 and 'max-size: "10m"' in compose
+    env = read("server", "docker", "example.env")
     # no default name for the room in the lobby (docs/SERVER.md, Moderators)
-    assert "\nLOBBY_USERNAME=\n" in read("server", "docker", "example.env")
+    assert "\nLOBBY_USERNAME=\n" in env
+    # the players' game reaches the room, USA's unless set
+    assert "ROOM_GAME: ${ROOM_GAME:-usa}" in compose and "\nROOM_GAME=usa\n" in env
 
 
 def test_windows_scripts_use_the_same_settings():
     ps1 = read("server", "windows", "host-room.ps1")
     for text in ['"--max_members"', '"--preferred-app", "Monster Hunter 4 Ultimate"',
-                 '"--preferred-app-id", "0004000000126300"', '"--ban-list-file"',
+                 '"--preferred-app-id", $appId', 'usa = "0004000000126300"; europe = "0004000000126100"',
+                 'game = "usa"', '"game = usa"', "game must be usa or europe", '"--ban-list-file"',
                  '"--web-api-url"', "port = 24872", "max_members = 16", "CitraRoom-BanList-1",
                  "azahar-room.exe", "MH4U Server",
                  # arguments quoted by the C runtime's rules, not by Windows PowerShell 5.1
@@ -255,21 +278,6 @@ def test_windows_scripts_use_the_same_settings():
     assert "& $room @roomArgs" not in ps1
     assert "host-room.ps1" in read("server", "windows", "Host room.bat")
     bat = read("server", "windows", "Run lobby.bat")
-    assert r"..\lobby\mh4u_lobby.py" in bat and r"MH4U Server\lobby" in bat
-
-
-def test_windows_scripts_use_the_same_settings():
-    with open(os.path.join(SERVER, "windows", "host-room.ps1"), encoding="utf-8") as f:
-        ps1 = f.read()
-    for text in ['"--max_members"', '"--preferred-app", "Monster Hunter 4 Ultimate"',
-                 '"--preferred-app-id", "0004000000126300"', '"--ban-list-file"',
-                 '"--web-api-url"', "port = 24872", "max_members = 16", "CitraRoom-BanList-1",
-                 "azahar-room.exe", "MH4U Server"]:
-        assert text in ps1, text
-    with open(os.path.join(SERVER, "windows", "Host room.bat"), encoding="utf-8") as f:
-        assert "host-room.ps1" in f.read()
-    with open(os.path.join(SERVER, "windows", "Run lobby.bat"), encoding="utf-8") as f:
-        bat = f.read()
     assert r"..\lobby\mh4u_lobby.py" in bat and r"MH4U Server\lobby" in bat
 
 

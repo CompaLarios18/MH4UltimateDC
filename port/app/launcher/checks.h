@@ -36,7 +36,8 @@ constexpr Region REGIONS[] = {
 /// The region of a game's program id, or nullptr for another game.
 const Region* FindRegion(u64 program_id);
 
-/// The region the checks use for a game: its own, or USA's when there is no game yet.
+/// A game's region, or USA's when there is no game yet (the update's checks go by the update
+/// then: CheckUpdate, CheckUpdateCia).
 const Region& RegionOf(u64 program_id);
 
 struct Game {
@@ -71,21 +72,27 @@ struct Update {
     u16 version = 0;      ///< its title metadata's version label
     std::string content;  ///< the installed update's program (an NCCH that build_game.py reads)
     /// The setup's line about it when its label isn't the update's: its code all the same (Ok),
-    /// or other code, or code that couldn't be read (OtherVersion)
+    /// or other code, or code that couldn't be read (OtherVersion); and while it is missing, that
+    /// the update installed is another region's
     std::string note;
+    /// Whose update: the game's region's, or with no game yet the region whose update is
+    /// installed (nullptr: none is)
+    const Region* region = nullptr;
 };
 
 /// The game's update in Azahar's virtual SD card (Service::AM's title paths). A version label
 /// other than the region's (v1.3.0, v1.1.0) is judged by the installed code
 /// (launcher/update_code.h): some decryption tools reset the label, and Azahar's installer keeps
-/// the .cia's.
+/// the .cia's. With no game yet (another program id), the update of the region that has one
+/// installed, USA's first.
 Update CheckUpdate(u64 program_id = MH4U_USA);
 
 /// "1.3.0" for a title version.
 std::string VersionText(u16 version);
 
-/// "v1.3.0": the update the port runs for that game (USA's when there is no game yet).
-std::string UpdateName(u64 program_id);
+/// "v1.3.0": the update the port runs for a region's game; for no region (no game yet, no update
+/// installed) both, "v1.3.0 (USA) or v1.1.0 (Europe)".
+std::string UpdateName(const Region* region);
 
 /// A .cia for the setup's step 2: installed when `problem` is empty (`note`, if any, said once
 /// it is in), else not, for that reason under `title`.
@@ -93,10 +100,13 @@ struct UpdateCia {
     std::string title;
     std::string problem;
     std::string note;
+    const Region* region = nullptr;  ///< whose update it is (nullptr: not known)
 };
 
 /// Whether a .cia is the game's update (USA v1.3.0, Europe v1.1.0), decrypted; a version label
-/// other than that update's is judged by the .cia's code (launcher/update_code.h).
+/// other than that update's is judged by the .cia's code (launcher/update_code.h). With no game
+/// yet (another program id), either region's update will do, checked as that region's game's
+/// would be.
 UpdateCia CheckUpdateCia(const std::string& path, u64 program_id = MH4U_USA);
 
 /// Where the port looks for the game's code library (recomp/<program id>.<dll|so|dylib>).

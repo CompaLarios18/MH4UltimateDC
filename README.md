@@ -6,7 +6,7 @@ A work-in-progress decompilation of **Monster Hunter 4 Ultimate** (Nintendo 3DS)
 
 ## Status
 
-🟩 **Playable; Phase 5 — the port's own app.** Target version is **USA v1.3.0**.
+🟩 **Playable; Phase 5 — the port's own app.** Target version is **USA v1.3.0**; from the release after 0.1.6 the European game runs too, with its v1.1.0 update, tried much less ([`docs/PLAYING.md`](docs/PLAYING.md#what-you-need)).
 
 - A **static recompiler** translates the whole game (~40,000 functions, 3.2 M ARM/Thumb instructions) into C, generated on your machine from your own dump and verified against an ARM11 model ([`docs/RECOMPILER.md`](docs/RECOMPILER.md)).
 - That code runs as the CPU of **Azahar's 3DS core** (kernel, services, GPU, audio, network rooms), inside Azahar's normal interface, on Windows, Linux and macOS, and in Azahar's Android app on arm64 devices ([`docs/PORT_ARCHITECTURE.md`](docs/PORT_ARCHITECTURE.md), [`port/`](port/)). The village, quests and hunts are played on Windows at 60 and 120 fps, with sound.
@@ -46,10 +46,12 @@ python3 tools/codebin2elf.py --exheader baserom/exheader.bin --code baserom/code
 python3 -m pytest
 
 # 5. Recompile the game into C (build/recomp/, never committed) and build it
+#    (recompile.py takes the USA v1.3.0 update's code, whose addresses config/ holds;
+#    for Europe's v1.1.0 update, use tools/build_game.py below)
 python3 tools/recompile.py --exheader baserom/exheader.bin --code baserom/code.bin -o build/recomp
 (cd tools && python3 -m recomp.build ../build/recomp --harness --opt O0 -D RC_CHECK_RETURNS)
 
-# Or, to play: the update .cia straight to an installed code library (see docs/PLAYING.md)
+# Or, to play: the update .cia (USA v1.3.0 or Europe's v1.1.0) straight to an installed code library (see docs/PLAYING.md)
 python3 tools/build_game.py --dump "MH4U v1.3.0 update.cia" --install --fetch-compiler
 ```
 

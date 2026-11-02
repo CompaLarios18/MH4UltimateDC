@@ -345,7 +345,8 @@ vsync = {}
 screens = {}
 # smooth the picture when it is scaled up
 linear_filter = {}
-# texture packs from load/textures/<the game's program id>/ in this folder
+# texture packs from this folder's load/textures/0004000000126300/ for the USA game,
+# load/textures/0004000000126100/ for Europe's
 custom_textures = {}
 # a post-processing shader from the shaders folder (empty: none)
 shader = {}

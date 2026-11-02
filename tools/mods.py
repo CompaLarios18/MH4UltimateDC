@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """A mod manager for the port: a library of mods, in an order, put into Azahar's mods folder.
 
-Azahar loads a game's mods from one folder, <Azahar user dir>/load/mods/0004000000126300/ (the
-v1.3.0 update uses the base game's folder; src/core/file_sys/ncch_container.cpp):
+Azahar loads a game's mods from one folder, <Azahar user dir>/load/mods/<program id>/
+(0004000000126300 for MH4U USA, 0004000000126100 for Europe; an update uses the base game's
+folder; src/core/file_sys/ncch_container.cpp):
 romfs/ replaces or adds RomFS files and romfs_ext/ deletes (<file>.stub) or patches
 (<file>.ips, <file>.bps) them (layered_fs.cpp); exefs/<name> or <name> replaces an ExeFS file
 (code.bin, icon.bin, banner.bnr, logo.bcma.lz); the first of exefs/code.ips, exefs/code.bps,
@@ -27,8 +28,13 @@ removes its own files, and it won't replace files it didn't put there unless tol
     python3 tools/mods.py install URL|ARCHIVE [--textures]   # a mod or texture pack from elsewhere
 
 Texture packs go into Azahar's custom texture folder for the game (load/textures/<program
-id>/), and the files each one put there are remembered, so remove takes them out again.
-Archives: .zip, .7z (tools/sevenzip.py) and .tar.
+id>/), and the files each one put there are remembered (for each game), so remove takes them
+out again. Archives: .zip, .7z (tools/sevenzip.py) and .tar.
+
+The game is MH4U USA or Europe: the one whose update is installed (USA's when both or neither
+are), or --program-id. The library is one for both; a mod made for the other region's code
+(its title folder, or its mod.json's region, which a catalog mod keeps from its entry) isn't
+put in this game's folder.
 
 --json on any command prints one JSON object instead, for the port's launcher. Code mods
 (code.bin, code.ips, code.bps) change the code the port recompiled: only one can be on at a
@@ -68,6 +74,7 @@ import sevenzip  # noqa: E402
 REGIONS = {0x0004000000126300: (0x0004000E00126300, "USA"),      # update v1.3.0
            0x0004000000126100: (0x0004000E00126100, "Europe")}   # update v1.1.0
 MH4U_TITLES = set(REGIONS) | {update for update, _ in REGIONS.values()}
+MH4U_USA = 0x0004000000126300   # the game most mods' code patches are made for
 # The game this run is for (set_game; main chooses it): names Azahar's mods and texture folders
 PROGRAM_ID = 0x0004000000126300
 UPDATE_ID = 0x0004000E00126300
@@ -105,7 +112,7 @@ ZIP_MAX_FILE = 4 << 30
 ZIP_MAX_TOTAL = 8 << 30
 
 KINDS = ("romfs", "romfs_ext", "code", "exefs", "exheader")  # what a mod can contain
-TEXT_FIELDS = ("name", "version", "author", "description", "url", "catalog")
+TEXT_FIELDS = ("name", "version", "author", "description", "url", "catalog", "region")
 
 _TITLE = re.compile(r"[0-9A-Fa-f]{16}")
 _WINDOWS_RESERVED = {"con", "prn", "aux", "nul"} | {f"{p}{i}" for p in ("com", "lpt") for i in range(1, 10)}
@@ -161,9 +168,21 @@ def region_name(program_id: int | None = None) -> str:
     return REGIONS[PROGRAM_ID if program_id is None else program_id][1]
 
 
+def region_named(name: str) -> int | None:
+    """The game of a region's name as the catalog and mod.json give it ("USA", "Europe", in any
+    capitals), or None for another name or none."""
+    return next((p for p, (_, n) in REGIONS.items() if n.casefold() == name.strip().casefold()), None)
+
+
+def game_of(title: int) -> int:
+    """MH4U's program id for one of its title ids (its own, or its update's)."""
+    return next(p for p, (update, _) in REGIONS.items() if title in (p, update))
+
+
 def _other_region(titles) -> list[int]:
-    """Of these title ids, MH4U's of the other region (a USA mod or texture pack for a European
-    game): most of its files are the same, so it is used, with a note."""
+    """Of these title ids, MH4U's of the other region. Only texture packs use them: one made for
+    the other region's game is used for this one (Azahar matches textures by their content, and
+    the two games' are the same but for some with text), and its install says so."""
     return [t for t in titles if t in MH4U_TITLES and t not in (PROGRAM_ID, UPDATE_ID)]
 
 
@@ -303,6 +322,9 @@ class Mod:
     warnings: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)   # it can't be enabled while there are any
     ignored: list[str] = field(default_factory=list)  # what Azahar wouldn't read
+    other_region: str = ""        # made for the other region's game: left out of this one's mods folder
+    region_notes: list[str] = field(default_factory=list)   # the warnings about the game's region
+    title_game: int | None = None  # the other region's game, when only its title folder holds the files
 
     @property
     def name(self) -> str:
@@ -366,10 +388,13 @@ def _files_under(top: str, label: str, warnings: list[str]) -> list[tuple[str, s
     return sorted(out)
 
 
-def detect(base: str) -> tuple[str, str, list[str], list[str]]:
+def detect(base: str, game: int | None = None) -> tuple[str, str, list[str], list[str]]:
     """How a mod folder is laid out: ("azahar" | "title" | "romfs", the folder with that layout,
     the folders passed on the way there, notes). A folder that holds only one folder (and
-    perhaps a readme) is looked through, as zips often wrap their contents in one."""
+    perhaps a readme) is looked through, as zips often wrap their contents in one. Only the
+    game's own title folders count (this run's game, or game)."""
+    game = PROGRAM_ID if game is None else game
+    own = (game, REGIONS[game][0])
     level, chain, notes = base, [], []
     for _ in range(8):
         chain.append(level)
@@ -386,8 +411,8 @@ def detect(base: str) -> tuple[str, str, list[str], list[str]]:
                 titles += [(int(d, 16), os.path.join(tdir, d)) for d in _listing(tdir)[0] if _TITLE.fullmatch(d)]
         if titles:
             # only this region's folders: a code patch made for the other region's code would break it
-            mine = sorted((tid != PROGRAM_ID, path) for tid, path in titles if tid in (PROGRAM_ID, UPDATE_ID))
-            others = sorted({f"{tid:016X}" for tid, _ in titles if tid not in (PROGRAM_ID, UPDATE_ID)})
+            mine = sorted((tid != game, path) for tid, path in titles if tid in own)
+            others = sorted({f"{tid:016X}" for tid, _ in titles if tid not in own})
             if not mine:
                 raise Error("other_title", f"made for another game or region (title {', '.join(others)}); "
                                            f"the port plays MH4U {region_name()} ({PROGRAM_ID:016X})")
@@ -403,7 +428,7 @@ def detect(base: str) -> tuple[str, str, list[str], list[str]]:
     dirs, files = _listing(base)
     found = ", ".join([d + "/" for d in dirs] + files)
     raise Error("layout", "can't tell where this mod's files go. Accepted: Azahar's mod folder layout (romfs/, "
-                          "romfs_ext/, exefs/, code.ips, ...), a 0004000000126300 or luma/titles/0004000000126300 "
+                          f"romfs_ext/, exefs/, code.ips, ...), a {PROGRAM_ID:016X} or luma/titles/{PROGRAM_ID:016X} "
                           f"folder holding one, or the game's own folders ({', '.join(f + '/' for f in ROMFS_TOP[:2])}"
                           f"...). Found: {found or 'nothing'}")
 
@@ -485,8 +510,11 @@ def _collect_romfs(mod: Mod, root: str) -> None:
 
 
 def read_manifest(path: str) -> tuple[dict, list[str]]:
-    """mod.json: name, version, author, description, url (text), contains (a list of KINDS),
-    root (the folder inside the mod that holds its files). Anything else is ignored."""
+    """mod.json: name, version, author, description, url (text), catalog (the catalog id of a
+    mod installed from the catalog), region (USA or Europe: the game whose code the mod is made
+    for; "any", as a forced install from the catalog writes, or any other text, for both),
+    contains (a list of KINDS), root (the folder inside the mod that holds its files). Anything
+    else is ignored."""
     try:
         with open(path, encoding="utf-8-sig") as f:
             data = json.load(f)
@@ -522,8 +550,50 @@ def read_manifest(path: str) -> tuple[dict, list[str]]:
     return out, warnings
 
 
-def scan(path: str, mid: str) -> Mod:
-    """Everything about one mod folder: its manifest, its layout, the files Azahar would use."""
+def scan(path: str, mid: str, adding: bool = False) -> Mod:
+    """Everything about one mod folder: its manifest, its layout, the files Azahar would use, and
+    what the game's region means for it. adding (add's check): a mod in the other region's title
+    folder is refused, as one for another game is, instead of read and left out."""
+    mod = _read_mod(path, mid, adding)
+    _region_notes(mod)
+    return mod
+
+
+def _region_notes(mod: Mod) -> None:
+    """A mod made for the other region's game is left out of this game's mods folder, with a
+    warning: one in that game's title folder (added while that game was played), one whose
+    mod.json names that region (a catalog mod keeps its entry's), and a catalog mod whose mod.json
+    has no region (installed by an older mods.py, which didn't keep it: all the catalog's mods
+    were USA's then). For Europe's game, a code patch in Azahar's layout, with no title folder or
+    region to say which game's code it is made for, gets a warning: most are made for USA's."""
+    region = mod.manifest.get("region")
+    made_for, why = None, ""
+    if mod.title_game is not None:
+        made_for, why = mod.title_game, f"its files are in that game's title folder, {_rel(mod.root, mod.path)}/"
+    elif region is not None:
+        made_for, why = region_named(region), f"its {MANIFEST} says so"
+    elif mod.manifest.get("catalog"):
+        made_for, why = MH4U_USA, ("installed from the catalog by an older version of the mod manager, when all "
+                                   "the catalog's mods were made for that game")
+    if made_for not in (None, PROGRAM_ID):
+        mod.other_region = region_name(made_for)
+        code = ": its code patch is at that code's addresses" if mod.code_files else ""
+        note = (f"made for MH4U {mod.other_region} ({why}){code}, so it is left out of MH4U {region_name()}'s mods "
+                "folder")
+    else:
+        patch = next((f for f in mod.code_files if f.dest.lower().endswith((".ips", ".bps"))), None)
+        if made_for is not None or PROGRAM_ID == MH4U_USA or mod.layout != "azahar" or patch is None:
+            return
+        note = (f"{_rel(patch.src, mod.root)}: if this code patch was made for MH4U {region_name(MH4U_USA)}'s code, "
+                f"as most are, it breaks MH4U {region_name()}, whose code is at other addresses (nothing in the mod "
+                "says which game it is for; a .bps made for other code is refused by its checksum when the code "
+                "library is built, an .ips isn't checked)")
+    mod.region_notes.append(note)
+    mod.warnings.append(note)
+
+
+def _read_mod(path: str, mid: str, adding: bool = False) -> Mod:
+    """A mod folder's manifest, its layout and the files Azahar would use."""
     mod = Mod(mid, path)
     base = path
     if os.path.isfile(os.path.join(path, MANIFEST)):
@@ -541,8 +611,21 @@ def scan(path: str, mid: str) -> Mod:
     try:
         mod.layout, mod.root, chain, notes = detect(base)
     except Error as e:
-        mod.errors.append(e.message)
-        return mod
+        if e.code != "other_title" or adding:
+            mod.errors.append(e.message)
+            return mod
+        # only the other region's title folder (a mod added while that game was played): read, so
+        # that it can be turned off, and left out of this game's mods folder (_region_notes)
+        for game in (p for p in REGIONS if p != PROGRAM_ID):
+            try:
+                mod.layout, mod.root, chain, notes = detect(base, game)
+            except Error:
+                continue
+            mod.title_game = game
+            break
+        else:
+            mod.errors.append(e.message)            # another game's
+            return mod
     mod.warnings += notes
     if not os.path.isfile(os.path.join(path, MANIFEST)):     # a zip's wrapper folder may hold it
         for level in chain[1:] + [mod.root]:
@@ -860,9 +943,11 @@ def check_code_rule(mods: list[Mod], mod: Mod) -> None:
     others = [m for m in mods if m.enabled and m is not mod and m.code_files]
     if others:
         other = others[0]
+        # (one made for the other region's game is on for that game: the library is one for both)
+        where = f" (for MH4U {other.other_region}, whose code it is made for)" if other.other_region else ""
         raise Error("code_mod_conflict",
                     f"{mod.id} changes the game's code ({', '.join(f.dest for f in mod.code_files)}), and so does "
-                    f"{other.id}, which is on. Azahar applies only one code patch, so two code mods can't be on "
+                    f"{other.id}, which is on{where}. Azahar applies only one code patch, so two code mods can't be on "
                     f"together: turn {other.id} off first (mods.py disable \"{other.id}\")", mods=[m.id for m in others])
 
 
@@ -1034,7 +1119,8 @@ class Analysis:
 
 
 def analyze(lib: Library, folder: str, mods: list[Mod], undeploy: bool = False) -> Analysis:
-    enabled = [] if undeploy else [m for m in mods if m.enabled]
+    # (a mod made for the other region's game stays on, for that game, but isn't deployed for this one)
+    enabled = [] if undeploy else [m for m in mods if m.enabled and not m.other_region]
     problems = [f"{m.id} can't be used: {'; '.join(m.errors)}" for m in enabled if m.errors]
     code = [m.id for m in enabled if m.code_files]
     if len(code) > 1:
@@ -1179,7 +1265,7 @@ def apply(an: Analysis, lib: Library, mods: list[Mod], force: bool = False, copy
     finally:
         path = os.path.join(folder, DEPLOYED)
         if records:
-            enabled = [m for m in mods if m.enabled]
+            enabled = [m for m in mods if m.enabled and not m.other_region]
             data = {"format": FORMAT, "tool": "tools/mods.py", "library": lib.path,
                     "mods": [{"id": m.id, "version": m.manifest.get("version", "")} for m in enabled],
                     "files": dict(sorted(records.items()))}
@@ -1213,12 +1299,20 @@ def mod_info(mod: Mod, position: int, conflicts: list[dict], size: int | None) -
                 "adds_code": adds_code(srcs, size)}
     return {"id": mod.id, "name": mod.name, "version": mod.manifest.get("version", ""),
             "author": mod.manifest.get("author", ""), "description": mod.manifest.get("description", ""),
-            "url": mod.manifest.get("url", ""), "catalog": mod.manifest.get("catalog", ""), "position": position,
+            "url": mod.manifest.get("url", ""), "catalog": mod.manifest.get("catalog", ""),
+            "region": mod.manifest.get("region", ""), "fits": not mod.other_region, "position": position,
             "enabled": mod.enabled, "new": mod.new,
             "layout": mod.layout, "contains": mod.contains, "files": len(mod.files), "code": code,
             "wins": sum(1 for c in conflicts if c["winner"] == mod.id),
             "loses": sum(1 for c in conflicts if mod.id in c["mods"] and c["winner"] != mod.id),
             "path": mod.path, "warnings": mod.warnings, "errors": mod.errors, "ignored": mod.ignored}
+
+
+def region_warnings(mods: list[Mod]) -> list[str]:
+    """What the game's region means for these mods (left out, or a code patch that may be made
+    for the other region's code), each with its mod's name: for the warnings of deploy and
+    status, which don't list the mods (the library's commands have them in each mod's warnings)."""
+    return [f"{m.id}: {note}" for m in mods for note in m.region_notes]
 
 
 def overview(ctx: Context, mods: list[Mod], warnings: list[str]) -> dict:
@@ -1318,6 +1412,13 @@ def _delete(path: str) -> None:
         _rmtree(path)
 
 
+def _on_message(mod: Mod) -> str:
+    if mod.other_region:
+        return (f"{mod.id} is on; made for MH4U {mod.other_region}, it goes in Azahar's mods folder only for that "
+                "game")
+    return f"{mod.id} is on; deploy puts it in Azahar's mods folder"
+
+
 def _turn_on(mods: list[Mod], mod: Mod, messages: list[str]) -> None:
     """Turn a mod on, unless another code mod is on: then it stays off, and says why."""
     try:
@@ -1327,7 +1428,7 @@ def _turn_on(mods: list[Mod], mod: Mod, messages: list[str]) -> None:
         messages.append(f"{mod.id} stays off: {e.message}")
         return
     mod.enabled = True
-    messages.append(f"{mod.id} is on; deploy puts it in Azahar's mods folder")
+    messages.append(_on_message(mod))
 
 
 def cmd_add(ctx: Context, args) -> dict:
@@ -1339,8 +1440,10 @@ def cmd_add(ctx: Context, args) -> dict:
     messages: list[str] = []
     if os.path.isdir(source) and _same_path(os.path.dirname(source), lib.path):
         mod = find(mods, os.path.basename(source))      # a folder already in the library
-        if mod.errors:
-            raise Error("layout", f"{mod.id}: {'; '.join(mod.errors)}", errors=mod.errors)
+        # (one in the other region's title folder is read, to be left out; add refuses it all the same)
+        errors = scan(mod.path, mod.id, adding=True).errors if mod.title_game is not None else mod.errors
+        if errors:
+            raise Error("layout", f"{mod.id}: {'; '.join(errors)}", errors=errors)
         if not mod.enabled:
             _turn_on(mods, mod, messages)
         lib.save(mods)
@@ -1381,7 +1484,7 @@ def _add_unpacked(ctx: Context, mods: list[Mod], warnings: list[str], tmp: str, 
     lib = ctx.library
     messages: list[str] = []
     try:
-        probe = scan(tmp, "new")
+        probe = scan(tmp, "new", adding=True)
         if probe.errors:
             raise Error("layout", f"{label}: {'; '.join(probe.errors)}", errors=probe.errors)
         mid = mod_id(args.name or probe.manifest.get("name") or stem)
@@ -1416,6 +1519,7 @@ def _add_unpacked(ctx: Context, mods: list[Mod], warnings: list[str], tmp: str, 
     if turn_on:
         _turn_on(mods, mod, messages)
     lib.save(mods)
+    # (what the game's region means for it is in the mod's own warnings, not repeated in the result's)
     return dict(overview(ctx, mods, warnings), mod=mod.id, messages=messages)
 
 
@@ -1429,8 +1533,7 @@ def cmd_remove(ctx: Context, args) -> dict:
             raise
         mod = next((m for m in mods if m.manifest.get("catalog", "").casefold() == args.name.casefold()), None)
         if mod is None:
-            pid = find_pack(read_textures(ctx), args.name) if os.path.isfile(
-                os.path.join(ctx.library.path, TEXTURES_RECORD)) else None
+            pid = find_pack(read_textures(ctx), args.name)   # (this game's: each has a record of its own)
             if pid is None:
                 raise Error("not_found", f"no mod or texture pack {args.name!r} installed", name=args.name)
             done = remove_textures(ctx, pid)
@@ -1451,7 +1554,7 @@ def cmd_enable(ctx: Context, args) -> dict:
     check_code_rule(mods, mod)
     mod.enabled = True
     ctx.library.save(mods)
-    return dict(overview(ctx, mods, warnings), messages=[f"{mod.id} is on; deploy puts it in Azahar's mods folder"])
+    return dict(overview(ctx, mods, warnings), messages=[_on_message(mod)])
 
 
 def cmd_disable(ctx: Context, args) -> dict:
@@ -1484,7 +1587,7 @@ def cmd_order(ctx: Context, args) -> dict:
 
 def cmd_conflicts(ctx: Context, args) -> dict:
     mods, warnings = ctx.library.mods()
-    chosen = [m for m in mods if (m.enabled or args.all) and not m.errors]
+    chosen = [m for m in mods if ((m.enabled and not m.other_region) or args.all) and not m.errors]
     _, conflicts, notes = make_plan(chosen)
     return {"library": ctx.library.path, "all": bool(args.all), "conflicts": conflicts,
             "warnings": warnings + notes}
@@ -1494,8 +1597,9 @@ def cmd_deploy(ctx: Context, args) -> dict:
     mods, warnings = ctx.library.mods()
     undeploy = getattr(args, "undeploy", False)
     an = analyze(ctx.library, ctx.folder, mods, undeploy=undeploy)
+    notes = [] if undeploy else region_warnings([m for m in mods if m.enabled])
     result = {"library": ctx.library.path, "mods_folder": ctx.folder, "dry_run": bool(args.dry_run),
-              "deploy": an.summary(), "warnings": warnings + an.warnings}
+              "deploy": an.summary(), "warnings": warnings + an.warnings + notes}
     if args.dry_run:
         return result
     if not undeploy and not os.path.isdir(ctx.user_dir):
@@ -1514,7 +1618,7 @@ def cmd_status(ctx: Context, args) -> dict:
     an = analyze(ctx.library, ctx.folder, mods)
     return {"library": ctx.library.path, "mods_folder": ctx.folder, "deploy": an.summary(),
             "conflict_count": len(an.conflicts), "code_library": code_library_state(ctx.user_dir, ctx.code_library),
-            "warnings": warnings + an.warnings}
+            "warnings": warnings + an.warnings + region_warnings([m for m in mods if m.enabled])}
 
 
 # ── progress, for the launcher ──────────────────────────────────────────────
@@ -1963,16 +2067,65 @@ def download(url: str, folder: str, name: str, size: int | None = None, sha256: 
 
 # ── texture packs: load/textures/<program id>/ ───────────────────────────────
 
-TEXTURES_RECORD = "textures.json"   # in the library: the texture packs installed, and their files
+# In the library: the texture packs installed for a game, and their files. Each game has a texture
+# folder and a record of its own: textures.json is USA's (as it was before Europe's game could be
+# played), textures-<program id>.json Europe's.
+TEXTURES_RECORD = "textures.json"
 
 
-def textures_folder(user_dir: str) -> str:
+def textures_folder(user_dir: str, program_id: int | None = None) -> str:
     """Where Azahar loads custom textures for the game from (its whole tree, pack.json at its top)."""
-    return os.path.join(user_dir, "load", "textures", f"{PROGRAM_ID:016X}")
+    program_id = PROGRAM_ID if program_id is None else program_id
+    return os.path.join(user_dir, "load", "textures", f"{program_id:016X}")
+
+
+def textures_record(ctx: Context, program_id: int | None = None) -> str:
+    """The library's record of the texture packs installed for a game (by default this run's)."""
+    program_id = PROGRAM_ID if program_id is None else program_id
+    name = TEXTURES_RECORD if program_id == MH4U_USA else f"textures-{program_id:016X}.json"
+    return os.path.join(ctx.library.path, name)
+
+
+def _move_from_usa_record(ctx: Context) -> None:
+    """Before each game had a record of its own, a texture pack installed for Europe's game was
+    recorded in textures.json, with USA's. While Europe's game has no record yet, a pack there
+    whose files are all in that game's texture folder and none in USA's moves to that game's
+    record, whichever game reads first (a pack installed for USA's game, in USA's folder, never
+    matches). Any other stays where it is, and no file is touched."""
+    usa, there = textures_record(ctx, MH4U_USA), textures_folder(ctx.user_dir, MH4U_USA)
+    for game in REGIONS:
+        here = textures_folder(ctx.user_dir, game)
+        if game == MH4U_USA or os.path.isfile(textures_record(ctx, game)) or not os.path.isdir(here):
+            continue
+        try:
+            with open(usa, encoding="utf-8") as f:
+                data = json.load(f)
+            packs = data["packs"]
+            if not isinstance(packs, dict):
+                return
+        except (OSError, ValueError, KeyError, TypeError):
+            return                      # (USA's game says so when it reads it)
+        moved = {}
+        for pid, pack in packs.items():
+            files = pack.get("files") if isinstance(pack, dict) else None
+            if not files or not isinstance(files, list) or not all(isinstance(f, str) for f in files):
+                continue
+            try:
+                rels = ["/".join(relative_parts(f)) for f in files]
+            except Error:
+                continue
+            if all(os.path.isfile(_abs(here, rel)) and not os.path.lexists(_abs(there, rel)) for rel in rels):
+                moved[pid] = pack
+        if moved:
+            _write_json(textures_record(ctx, game), {"format": FORMAT, "packs": moved})
+            data["packs"] = {pid: pack for pid, pack in packs.items() if pid not in moved}
+            _write_json(usa, data)
 
 
 def read_textures(ctx: Context) -> dict:
-    path = os.path.join(ctx.library.path, TEXTURES_RECORD)
+    """The record of the texture packs installed for this game."""
+    _move_from_usa_record(ctx)
+    path = textures_record(ctx)
     if not os.path.isfile(path):
         return {"format": FORMAT, "packs": {}}
     try:
@@ -1990,13 +2143,14 @@ def read_textures(ctx: Context) -> dict:
 
 def write_textures(ctx: Context, record: dict) -> None:
     os.makedirs(ctx.library.path, exist_ok=True)
-    _write_json(os.path.join(ctx.library.path, TEXTURES_RECORD), record)
+    _write_json(textures_record(ctx), record)
 
 
-def _texture_root(staging: str) -> str:
+def _texture_root(staging: str, notes: list[str]) -> str:
     """The folder of an unpacked texture pack whose contents go into the game's texture folder:
     through a title id folder (load/textures/<id>/, or just <id>/), or one folder that wraps a
-    pack.json; anything else stays as it is (Azahar reads the texture folder's whole tree)."""
+    pack.json; anything else stays as it is (Azahar reads the texture folder's whole tree). A
+    pack for the other region's game is used, and `notes` gets a line that says so."""
     level = staging
     for _ in range(8):
         dirs, files = _listing(level)
@@ -2008,8 +2162,13 @@ def _texture_root(staging: str) -> str:
             mine = [d for d in titles if int(d, 16) in (PROGRAM_ID, UPDATE_ID)]
             if not mine:   # the other region's MH4U: the same textures, but for text in a language folder
                 mine = [d for d in titles if _other_region([int(d, 16)])]
+                if mine:
+                    made_for = region_name(game_of(int(mine[0], 16)))
+                    notes.append(f"a texture pack made for MH4U {made_for} ({mine[0]}/), used for MH4U "
+                                 f"{region_name()}: Azahar finds textures by their content, and the two games' are "
+                                 "the same but for some with text")
             if not mine:
-                raise Error("other_title", f"a texture pack for another game or region (title {', '.join(titles)}); "
+                raise Error("other_title", f"a texture pack for another game (title {', '.join(titles)}); "
                                            f"the port plays MH4U {region_name()} ({PROGRAM_ID:016X})")
             level = os.path.join(level, mine[0])
             continue
@@ -2223,10 +2382,13 @@ def validate_catalog(data, remote: bool, pinned: bool | None = None) -> tuple[di
             def strings(key):
                 v = e.get(key) or []
                 return [x for x in v if isinstance(x, str)][:20] if isinstance(v, list) else []
+            region = _text(e, "region", 40)
+            if region_named(region) is not None:      # spelled as the port names it (fits, the launcher)
+                region = region_name(region_named(region))
             entry = {"id": cid, "kind": kind, "name": name, "author": _text(e, "author", 200),
                      "version": _text(e, "version", 40), "description": _text(e, "description"),
                      "details": _text(e, "details", 4000), "category": _text(e, "category", 60),
-                     "region": _text(e, "region", 40), "region_note": _text(e, "region_note", 400),
+                     "region": region, "region_note": _text(e, "region_note", 400),
                      "license": _text(e, "license", 400), "page_url": page, "recommended": e.get("recommended") is True,
                      "needs": strings("needs"), "conflicts": strings("conflicts"), "downloads": steps,
                      "note": _text(e, "note", 1000)}
@@ -2309,9 +2471,16 @@ def catalog_entry(cat: dict, cid: str) -> dict:
     raise Error("not_found", f"no mod {cid!r} in the catalog", name=cid)
 
 
+def fits(entry: dict) -> bool:
+    """Whether a catalog entry is for this run's game: a texture pack is for either region's
+    (Azahar matches textures by their content), a mod only for the region whose code it is made
+    for (its region; one without a region is for both)."""
+    return entry["kind"] != "mod" or not entry["region"] or entry["region"] == region_name()
+
+
 def _installed(ctx: Context, mods: list[Mod], record: dict, entry: dict) -> dict | None:
-    """How a catalog entry is installed: a texture pack, or a mod in the library (by the catalog
-    id its mod.json keeps)."""
+    """How a catalog entry is installed: a texture pack (this game's), or a mod in the library (by
+    the catalog id its mod.json keeps)."""
     if entry["kind"] == "textures":
         pid = next((p for p, v in record["packs"].items() if v.get("catalog") == entry["id"]), None)
         if pid is None:
@@ -2341,7 +2510,7 @@ def cmd_catalog(ctx: Context, args) -> dict:
         out = {k: v for k, v in e.items() if k != "downloads"}
         out.update(direct=bool(e["downloads"]), archives=sorted({s["archive"] for s in e["downloads"]}),
                    downloads=[{"url": s["url"], "file": s["file"], "size": s.get("size")} for s in e["downloads"]],
-                   installed=installed, downloaded=partial,
+                   installed=installed, downloaded=partial, fits=fits(e),
                    update=bool(installed and e["version"] and installed["version"] and
                                installed["version"] != e["version"]))
         entries.append(out)
@@ -2404,6 +2573,12 @@ def cmd_install_catalog(ctx: Context, args) -> dict:
     cat, info = load_catalog(ctx, args.catalog, args.catalog_url, False)
     entry = catalog_entry(cat, args.id)
     progress = ctx.progress
+    if not fits(entry) and not args.force:
+        raise Error("other_region", f"{entry['name']} is made for MH4U {entry['region']}'s code, and the game is MH4U "
+                                    f"{region_name()} ({PROGRAM_ID:016X}): a patch that changes that code breaks this "
+                                    "game, and one that changes only data hasn't been tried with it (--force installs "
+                                    "it anyway)",
+                    region=entry["region"], game=region_name(), page_url=entry["page_url"])
     if not entry["downloads"]:
         raise Error("page_only", f"{entry['name']} is installed from its page: {entry['page_url']}",
                     page_url=entry["page_url"])
@@ -2456,17 +2631,25 @@ def cmd_install_catalog(ctx: Context, args) -> dict:
         if textures:
             pid = next((p for p, v in record["packs"].items() if v.get("catalog") == entry["id"]), None) or \
                 mod_id(entry["id"])
-            done = install_textures(ctx, pid, _texture_root(staging), meta, force=args.force)
+            pack_notes: list[str] = []
+            done = install_textures(ctx, pid, _texture_root(staging, pack_notes), meta, force=args.force)
             result = dict(done, messages=[f"{entry['name']} installed in {done['textures_folder']}"
                                           + ("; turn on custom textures (the launcher's Settings, or custom_textures = "
                                              "on in mh4u-app.ini) to see it" if "custom_textures" in entry["needs"]
-                                             else "")])
+                                             else "")] + pack_notes)
         else:
-            _mod_json(staging, meta)
+            # the region its code is made for: deploy leaves it out for the other region's game. "any"
+            # (for both games) for an entry without a region, or one installed for the other
+            # region's game anyway (--force): a catalog mod.json without a region counts as USA's
+            region = entry["region"] if fits(entry) and entry["region"] else "any"
+            _mod_json(staging, dict(meta, region=region))
             existing = next((m for m in mods if m.manifest.get("catalog") == entry["id"]), None)
             ns = argparse.Namespace(name=existing.id if existing else entry["name"], replace=existing is not None,
                                     disabled=False)
             result = _add_unpacked(ctx, mods, warnings, staging, entry["id"], entry["name"], ns, notes)
+            if not fits(entry):
+                result["messages"].append(f"{entry['name']} is made for MH4U {entry['region']}'s code; installed "
+                                          f"anyway (--force), it goes in MH4U {region_name()}'s mods folder too")
     finally:
         if os.path.isdir(staging):
             _rmtree(staging)
@@ -2514,9 +2697,11 @@ def cmd_install(ctx: Context, args) -> dict:
             if pid in record["packs"] and not args.replace:
                 raise Error("exists", f"a texture pack {pid!r} is installed already: install with --replace to update "
                                       "it, or with --name to keep both", pack=pid)
-            result = install_textures(ctx, pid, _texture_root(staging), {"name": name}, force=args.force)
+            pack_notes: list[str] = []
+            result = install_textures(ctx, pid, _texture_root(staging, pack_notes), {"name": name}, force=args.force)
             result["warnings"] = notes
-            result["messages"] = [f"{name} installed in {result['textures_folder']}; turn on custom textures to see it"]
+            result["messages"] = [f"{name} installed in {result['textures_folder']}; turn on custom textures to see "
+                                  "it"] + pack_notes
         finally:
             if os.path.isdir(staging):
                 _rmtree(staging)
@@ -2561,6 +2746,8 @@ def print_text(command: str, r: dict) -> None:
             state = "installed" if e["installed"] else "not installed"
             if e["update"]:
                 state = f"installed ({e['installed']['version']}; {e['version']} in the catalog)"
+            if not e["fits"]:
+                state += f"; made for MH4U {e['region']}'s code, not for MH4U {region_name()}"
             badge = " [recommended]" if e["recommended"] else ""
             print(f"  {e['id']}: {e['name']}{' ' + e['version'] if e['version'] else ''}{badge}, by "
                   f"{e['author'] or '?'}; {e['category'] or e['kind']}, {_mb(e['size']) if e['size'] else 'size ?'}"
@@ -2586,6 +2773,11 @@ def print_text(command: str, r: dict) -> None:
                   "wins (mods.py conflicts)")
         for p in r.get("problems", []):
             print(f"problem: {p}")
+    elif r.get("mod") and "mods" in r:      # a mod installed: its own warnings (the library isn't listed)
+        for m in r["mods"]:
+            for w in m["warnings"] if m["id"] == r["mod"] else []:
+                if w not in r.get("warnings", []):
+                    print(f"warning: {m['id']}: {w}")
     if command == "conflicts":
         for c in r["conflicts"]:
             print(f"{c['path']}: {', '.join(c['mods'])}; {c['winner']} wins")
@@ -2655,7 +2847,7 @@ def build_parser(json_errors: bool) -> argparse.ArgumentParser:
         p.add_argument("--code-library", default=default, help=argparse.SUPPRESS)
         p.add_argument("--program-id", default=default,
                        help="the game: 0004000000126300 (USA) or 0004000000126100 (Europe); default: the one "
-                            "whose update is installed")
+                            "whose update is installed (USA's when both or neither are)")
 
     ap = Parser(prog="mods.py", description=__doc__.splitlines()[0])
     common(ap, None)
@@ -2706,7 +2898,8 @@ def build_parser(json_errors: bool) -> argparse.ArgumentParser:
     common(p, s)
     p = sub.add_parser("install-from-catalog", help="download and install a mod or texture pack of the catalog")
     p.add_argument("id", help="its id in the catalog (mods.py catalog lists them)")
-    p.add_argument("--force", action="store_true", help="also when it conflicts with something installed, or files "
+    p.add_argument("--force", action="store_true", help="also when it conflicts with something installed, when it "
+                                                        "is a mod made for the other region's game, or when files "
                                                         "of its are there already: replace them")
     p.add_argument("--keep-download", action="store_true", help="keep the downloaded archive (in the library's "
                                                                 ".downloads folder)")
@@ -2715,7 +2908,8 @@ def build_parser(json_errors: bool) -> argparse.ArgumentParser:
     p = sub.add_parser("install", help="a mod or texture pack from a URL, an archive (.zip, .7z, .tar) or a folder")
     p.add_argument("source", help="an http(s) URL, an archive or a folder")
     p.add_argument("--textures", action="store_true", help="a texture pack: into Azahar's custom texture folder for "
-                                                           "the game (load/textures/0004000000126300/)")
+                                                           "the game (load/textures/<program id>/: 0004000000126300 "
+                                                           "for USA, 0004000000126100 for Europe)")
     p.add_argument("--name", help="its name (default: mod.json's name, or the archive's or folder's)")
     p.add_argument("--file", help="the downloaded file's name (default: from the URL)")
     p.add_argument("--sha256", help="refuse it unless its SHA-256 is this")
