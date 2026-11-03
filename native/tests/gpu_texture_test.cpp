@@ -1003,6 +1003,12 @@ public:
         }
         Rec(gpu_capture::kPicaReg, p);
     }
+    void Mmio(u32 address, u32 value) {
+        Bytes p;
+        Put32(p, address);
+        Put32(p, value);
+        Rec(gpu_capture::kMmio, p);
+    }
     void Frame(u32 number) {
         frame = number; // the FRAME record's header carries its own number
         Bytes p;
@@ -1093,6 +1099,59 @@ TEST_CASE("--check tex-hashes lists the textures the draws of a capture use, in 
                   static_cast<unsigned long long>(rgb565.old_hash),
                   static_cast<unsigned long long>(ia8.old_hash));
     CHECK(ReadFile(output) == expected);
+}
+
+TEST_CASE("--check tex-hashes: an MMIO write at word 0x400 + n reaches internal register n") {
+    // The command list sets unit 0's texture but not register 0x80 (the units that are on), and
+    // draws. An MMIO write before it turns unit 0 on through register 0x80: at word 0x400 + 0x80 it
+    // does, so the texture is listed; at word 0x432 + 0x80 (register 0xB2) it does not.
+    const HashCase& rgb565 = kHashCases[1];
+    const std::vector<std::array<u32, 2>> writes = {
+        {0x82, (8u << 16) | 16u},                  // unit 0: 8 wide, 16 high
+        {0x83, 0},                                 //         type 2D
+        {0x85, (kFcram + 0x2000) / 8},             //         address
+        {0x8E, 3},                                 //         RGB565
+        {0x22E, 0},                                // draw
+    };
+    const Bytes list = ListBytes(writes);
+    Bytes memory(0x4000, 0);
+    std::copy(list.begin(), list.end(), memory.begin() + 0x1000);
+    const Bytes tex0 = CitySlice(rgb565.offset, 256);
+    std::copy(tex0.begin(), tex0.end(), memory.begin() + 0x2000);
+
+    const auto run = [&](u32 mmio_word) {
+        TempDir dir;
+        Writer w;
+        w.Init();
+        w.Mem(kFcram, memory);
+        w.Mmio(0x1EF00000 + 4 * mmio_word, 0b001); // unit 0 on
+        w.SubmitList(kFcram + 0x1000, static_cast<u32>(list.size()), writes);
+        w.Frame(1);
+        const fs::path capture = dir / "mmio.mgpu";
+        REQUIRE(w.Save(capture));
+        const fs::path output = dir / "hashes.txt";
+        std::ostringstream out, err;
+        const int status = gpu_capture::RunCapturePlayer(
+            {capture.string(), "--gpu", "replay", "--judge", "none", "--check", "tex-hashes",
+             "--tex-hashes-out", output.string()},
+            out, err);
+        INFO(out.str());
+        INFO(err.str());
+        REQUIRE(status == 0);
+        return ReadFile(output);
+    };
+
+    char listed[256];
+    std::snprintf(listed, sizeof(listed),
+                  "# mh4n tex-hashes 1\n"
+                  "# use_new_hash=1\n"
+                  "%016llX 8x16 3\n"
+                  "# use_new_hash=0\n"
+                  "%016llX 8x16 3\n",
+                  static_cast<unsigned long long>(rgb565.new_hash),
+                  static_cast<unsigned long long>(rgb565.old_hash));
+    CHECK(run(0x400 + 0x80) == listed);
+    CHECK(run(0x432 + 0x80) == "# mh4n tex-hashes 1\n# use_new_hash=1\n# use_new_hash=0\n");
 }
 
 TEST_CASE("--check tex-hashes: the text format, and the default output file") {

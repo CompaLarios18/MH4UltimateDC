@@ -25,7 +25,7 @@ ordering rules of `mgpu-format.md` section 2).
 
 | Record | The player |
 |---|---|
-| `INIT` | calls `GpuDebug::LoadInitState` (the Gpu's blocks, section 4 of the format) before the first command; loads its own copies of the display registers (`GPU_REGS`, `LCD_REGS`) and of the PICA register file (`PICA_REGS`) |
+| `INIT` | calls `GpuDebug::LoadInitState` (the Gpu's blocks, section 4 of the format) before the first command; loads its own copies of the display registers (`GPU_REGS`, `LCD_REGS`) and of the PICA internal registers, by register number: register i is `GPU_REGS` word 0x400 + i for i below 0x32 and `PICA_REGS` word i − 0x32 from there on (`native/src/gpu/pica/init_regs.h`, the rule of `mgpu-format.md` section 4; `--gpu pica-only` and `--gpu native` load their registers through the same function) |
 | `MEM`, `CPU_PAGES` | write into the Gpu's physical memory (FCRAM, VRAM, DSP RAM) and into the capture's reference copy |
 | `GX`, `MMIO`, `SWAP`, `FILL` | call `Execute`, `WriteReg`, `SetBufferSwap`, `SetColorFill`; the display copies follow them as `GPU::WriteReg`, `SetBufferSwap` and `SetColorFill` do |
 | `PICA_REG`, `GPU_PAGES`, `IRQ` after one of those | the reference of that event: what the command should have written, decoded and signalled |
@@ -33,6 +33,10 @@ ordering rules of `mgpu-format.md` section 2).
 | `IRQ` PDC0, PDC1 | `VBlank(0)`, `VBlank(1)` |
 | other `IRQ` | compared, in order and by id only, with what the Gpu signalled through `Host::SignalInterrupt` (the delays are ignored: D25) |
 | `FRAME` | the frame's row: the displayed screens against `<n>_top.ppm` and `<n>_bottom.ppm`, the Gpu's counters and times, the checks' columns |
+
+A report row holds the counters since the previous `FRAME` record: a capture's first row comes
+before every command, a row's commands are those of the frame before its label, and the last
+frame's commands are in no row.
 
 An event and the `PICA_REG`, `GPU_PAGES`, `IRQ` and `FLUSH` records that follow it form a group.
 The player reads the whole group first, so the `replay` Gpu can find the reference of the event it

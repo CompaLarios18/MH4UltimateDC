@@ -19,7 +19,10 @@
 
 #include <algorithm>
 #include <cstring>
+#include <span>
 #include <utility>
+
+#include "gpu/pica/init_regs.h"
 
 #include "mh4n/log.h"
 
@@ -130,9 +133,20 @@ void CommandProcessor::LoadInitState(const gpu::InitState& init) {
 
     PicaState& s = *state_;
 
-    if (auto b = block(gpu::InitBlock::PicaRegs, kNumRegs * 4, "PICA_REGS"); !b.empty()) {
-        for (u32 i = 0; i < kNumRegs; ++i) {
-            s.regs[i] = Load32(b.data() + 4 * i);
+    // The internal registers: registers 0 to 0x31 are the tail of the GPU_REGS block and the rest
+    // are PICA_REGS (init_regs.h). Without a usable GPU_REGS block (missing or of the wrong size,
+    // the latter also logged by `block`), registers 0 to 0x31 keep the reset values the PicaState
+    // constructor gave them.
+    {
+        const auto gpu_regs = block(gpu::InitBlock::GpuRegs, kGpuRegsBlockWords * 4, "GPU_REGS");
+        const auto pica_regs = block(gpu::InitBlock::PicaRegs, kNumRegs * 4, "PICA_REGS");
+        const InternalRegsLoaded loaded =
+            LoadInternalRegisters(gpu_regs, pica_regs, std::span<u32, kNumRegs>(s.regs));
+        if (!loaded.from_gpu_regs) {
+            MH4N_LOG(Warning, kLog,
+                     "INIT has no usable GPU_REGS block: internal registers 0 to {:#x} keep their "
+                     "reset values",
+                     kInternalRegsInGpuBlock - 1);
         }
     }
     if (auto b = block(gpu::InitBlock::VsSetup, kShaderSetupSize, "VS_SETUP"); !b.empty()) {

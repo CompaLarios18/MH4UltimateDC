@@ -16,10 +16,12 @@
 #include <filesystem>
 #include <ostream>
 #include <set>
+#include <span>
 #include <sstream>
 
 #include <fmt/format.h>
 
+#include "gpu/pica/init_regs.h"
 #include "gpu_capture/capture_host.h"
 #include "gpu_capture/check.h"
 #include "gpu_capture/diagnostics.h"
@@ -59,7 +61,10 @@ constexpr u32 kRegTriggerDrawIndexed = 0x22F;
 constexpr u32 kGpuRegFillTrigger[2] = {7, 11};
 constexpr u32 kGpuRegTransferFlags = 0x304;
 constexpr u32 kGpuRegTransferTrigger = 0x306;
-constexpr u32 kGpuRegCmdListTrigger[2] = {0x432 + 0x23C, 0x432 + 0x23D};
+// The command-buffer triggers are internal registers 0x23C and 0x23D, which are words 0x400 + n of
+// the array (gpu/pica/regs.h: kExternalRegs).
+constexpr u32 kGpuRegCmdListTrigger[2] = {gpu::pica::kExternalRegs + 0x23C,
+                                          gpu::pica::kExternalRegs + 0x23D};
 
 enum class Kind { None, Dma, CmdList, Fill, Transfer, Copy, CacheFlush };
 
@@ -394,12 +399,12 @@ void Player::HandleInit(size_t index, const Record& record) {
     }
     display_.Load(state.Block(gpu::InitBlock::GpuRegs).data(),
                   state.Block(gpu::InitBlock::LcdRegs).data());
-    const auto regs = state.Block(gpu::InitBlock::PicaRegs);
-    for (u32 i = 0; i < kNumPicaRegs; ++i) {
-        const u8* p = regs.data() + 4 * i;
-        pica_[i] = static_cast<u32>(p[0]) | (static_cast<u32>(p[1]) << 8) |
-                   (static_cast<u32>(p[2]) << 16) | (static_cast<u32>(p[3]) << 24);
-    }
+    // The player's copy of the internal registers is indexed by register number, as the PICA_REG
+    // records write it: register i is not PICA_REGS word i (the rule is in gpu/pica/init_regs.h).
+    static_assert(kNumPicaRegs == gpu::pica::kNumRegs);
+    gpu::pica::LoadInternalRegisters(state.Block(gpu::InitBlock::GpuRegs),
+                                     state.Block(gpu::InitBlock::PicaRegs),
+                                     std::span<u32, gpu::pica::kNumRegs>(pica_));
     have_init_ = true;
     if (debug_ != nullptr) {
         ScopedTimer timer(cpu_ns_);

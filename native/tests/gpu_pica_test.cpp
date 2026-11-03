@@ -20,6 +20,7 @@
 // check. Nothing is computed by calling the code under test.
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <array>
 #include <bit>
 #include <cmath>
@@ -1215,11 +1216,11 @@ struct InitBlocks {
 
 TEST_CASE("LoadInitState fills the register file, the shader setups, the tables and the attributes") {
     InitBlocks init;
-    // PICA_REGS: word n is register n.
-    Set32(init[InitBlock::PicaRegs], 4 * 0x120, 0xCAFE);
-    Set32(init[InitBlock::PicaRegs], 4 * 0x2CB, 7);            // vs program offset
-    Set32(init[InitBlock::PicaRegs], 4 * 0x2C0, 0x80000003);   // vs uniforms: float32 mode, index 3
-    Set32(init[InitBlock::PicaRegs], 4 * 0x034, 0);
+    // PICA_REGS: word n is register n + 0x32 (the rule of init_regs.h).
+    Set32(init[InitBlock::PicaRegs], 4 * (0x120 - 0x32), 0xCAFE);
+    Set32(init[InitBlock::PicaRegs], 4 * (0x2CB - 0x32), 7);            // vs program offset
+    Set32(init[InitBlock::PicaRegs], 4 * (0x2C0 - 0x32), 0x80000003);   // vs uniforms: float32 mode, index 3
+    Set32(init[InitBlock::PicaRegs], 4 * (0x034 - 0x32), 0);
     // VS_SETUP.
     Bytes& vs = init[InitBlock::VsSetup];
     Set32(vs, 0, 9);  // entry_point
@@ -1360,7 +1361,7 @@ TEST_CASE("LoadInitState leaves the gas table at zero: the INIT record carries n
 TEST_CASE("LoadInitState ignores a block of the wrong size") {
     InitBlocks init;
     init[InitBlock::FogLut].assign(100, 0xFF);
-    Set32(init[InitBlock::PicaRegs], 4 * 0x120, 5);
+    Set32(init[InitBlock::PicaRegs], 4 * (0x120 - 0x32), 5);
     Rig rig;
     rig.cp.LoadInitState(init.State());
     CHECK(rig.cp.state().fog.lut[0] == 0);
@@ -1374,6 +1375,97 @@ TEST_CASE("an INIT without blocks keeps the defaults") {
     CHECK(rig.Reg(0x120) == 0);
     CHECK(rig.Reg(0x034) == 1);
     CHECK(rig.Reg(0x289) == 0xA0000001);
+}
+
+// The rule of init_regs.h: internal register i is GPU_REGS word 0x400 + i for i below 0x32 and
+// PICA_REGS word i - 0x32 from there on. Each word of the two blocks holds a marker that names its
+// word of Azahar's reg_array (the tag says which block it came from), so a register that reads
+// from the wrong word shows the wrong marker.
+TEST_CASE("LoadInitState: internal register i is GPU_REGS word 0x400 + i below 0x32 and PICA_REGS word i - 0x32 above") {
+    InitBlocks init;
+    for (u32 word = 0; word < 0x432; ++word) {
+        Set32(init[InitBlock::GpuRegs], 4 * word, 0xA0000000u + word);
+    }
+    for (u32 word = 0; word < 0x300; ++word) {
+        Set32(init[InitBlock::PicaRegs], 4 * word, 0xB0000000u + 0x432 + word);
+    }
+    Rig rig;
+    rig.cp.LoadInitState(init.State());
+    u32 wrong = 0;
+    u32 first_wrong = ~0u;
+    for (u32 i = 0; i < kNumRegs; ++i) {
+        // The word of reg_array that register i is (Regs::internal starts at word 0x400).
+        const u32 want = (i < 0x32 ? 0xA0000000u : 0xB0000000u) + 0x400 + i;
+        if (rig.Reg(i) != want) {
+            ++wrong;
+            first_wrong = std::min(first_wrong, i);
+        }
+    }
+    CHECK_MESSAGE(wrong == 0, wrong << " registers read the wrong word, the first is register " << first_wrong);
+    // The boundary and the ends, by name.
+    CHECK(rig.Reg(0x000) == 0xA0000000u + 0x400);
+    CHECK(rig.Reg(0x031) == 0xA0000000u + 0x431);
+    CHECK(rig.Reg(0x032) == 0xB0000000u + 0x432);
+    CHECK(rig.Reg(0x2FF) == 0xB0000000u + 0x432 + 0x2CD);
+    // The external words (below 0x400) of GPU_REGS and the last 0x32 words of PICA_REGS are no register's.
+    for (u32 i = 0; i < kNumRegs; ++i) {
+        CHECK((rig.Reg(i) & 0x0FFFFFFFu) >= 0x400);
+        CHECK((rig.Reg(i) & 0x0FFFFFFFu) < 0x700);
+    }
+}
+
+TEST_CASE("a finalize that matches the compare value in GPU_REGS signals P3D once and stops, with autostop in PICA_REGS") {
+    // Register 0x020 (the compare value) is GPU_REGS word 0x400 + 0x20; the autostop register 0x034
+    // is PICA_REGS word 0x34 - 0x32 = 2, which is the word the rule crosses the boundary at. The
+    // old reading took register 0x034 from PICA_REGS word 0x34 (zero here: autostop off) and the
+    // compare value from PICA_REGS word 0x20 (zero too): it would signal nothing at the first
+    // finalize, and nothing would stop the list.
+    InitBlocks init;
+    Set32(init[InitBlock::GpuRegs], 4 * (0x400 + 0x20), 0x11223344);
+    Set32(init[InitBlock::PicaRegs], 4 * (0x34 - 0x32), 1);
+    REQUIRE(init[InitBlock::PicaRegs][4 * 0x34] == 0);
+    Rig rig;
+    rig.cp.LoadInitState(init.State());
+    CHECK(rig.Reg(0x020) == 0x11223344);
+    CHECK(rig.Reg(0x034) == 1);
+
+    rig.Run(List().Write(0x120, 1).Write(0x010, 0x11223344).Write(0x121, 2));
+    CHECK(rig.Reg(0x120) == 1);
+    CHECK(rig.Reg(0x121) == 0); // stopped by autostop
+    const auto irqs = rig.host.TakeSignalled();
+    REQUIRE(irqs.size() == 1);
+    CHECK(irqs[0].id == Interrupt::P3D);
+
+    // A value that matches no byte of the compare value: nothing is signalled and the list goes on.
+    rig.Run(List().Write(0x010, 0x55667788).Write(0x121, 2));
+    CHECK(rig.Reg(0x121) == 2);
+    CHECK(rig.host.TakeSignalled().empty());
+}
+
+TEST_CASE("an INIT without a usable GPU_REGS block keeps the reset values of registers 0 to 0x31") {
+    const auto check = [](InitBlocks& init) {
+        Set32(init[InitBlock::PicaRegs], 4 * 0, 0x1234);     // register 0x32
+        Set32(init[InitBlock::PicaRegs], 4 * 2, 0x5678);     // register 0x34 (autostop)
+        Rig rig;
+        rig.cp.LoadInitState(init.State());
+        // PicaState's reset values for the interrupt registers (pica_core.cpp InitializeRegs).
+        CHECK(rig.Reg(0x020) == 0x12345678);
+        CHECK(rig.Reg(0x030) == 0xFFFFFFF0);
+        CHECK(rig.Reg(0x010) == 0);
+        // The registers from 0x32 on still come from PICA_REGS.
+        CHECK(rig.Reg(0x032) == 0x1234);
+        CHECK(rig.Reg(0x034) == 0x5678);
+    };
+    {
+        InitBlocks init;
+        init[InitBlock::GpuRegs].clear(); // absent
+        check(init);
+    }
+    {
+        InitBlocks init;
+        init[InitBlock::GpuRegs].assign(0x400 * 4, 0xFF); // not the 0x432 words of the format: ignored
+        check(init);
+    }
 }
 
 // ================================================================================================
@@ -1414,9 +1506,9 @@ TEST_CASE("pica-only decodes the command lists of GX commands and reports the re
     CHECK(*writes == W({{0x120, 0xF, 5}, {0x121, 0x3, 6}, {0x122, 0xF, 7}, {0x123, 0xF, 8}, {0x124, 0xF, 9}}));
     CHECK(debug->TakeRegisterWrites()->empty()); // taken
 
-    // The internal registers are at 0x1EF00000 + 4 * (0x432 + n).
-    CHECK(gpu->ReadReg(0x1EF00000 + 4 * (0x432 + 0x120)) == 5);
-    CHECK(gpu->ReadReg(0x1EF00000 + 4 * (0x432 + 0x23C)) == 0); // the trigger was cleared
+    // The internal registers are at 0x1EF00000 + 4 * (0x400 + n).
+    CHECK(gpu->ReadReg(0x1EF00000 + 4 * (0x400 + 0x120)) == 5);
+    CHECK(gpu->ReadReg(0x1EF00000 + 4 * (0x400 + 0x23C)) == 0); // the trigger was cleared
 
     // Other GX commands are not its business.
     GxCommand fill{};
@@ -1425,9 +1517,9 @@ TEST_CASE("pica-only decodes the command lists of GX commands and reports the re
     CHECK(debug->TakeRegisterWrites()->empty());
 
     // The same list through the MMIO trigger: channel 0's registers, then the trigger.
-    gpu->WriteReg(0x1EF00000 + 4 * (0x432 + 0x23A), (kFcram + 0x1000) >> 3);
-    gpu->WriteReg(0x1EF00000 + 4 * (0x432 + 0x238), static_cast<u32>(words.size() * 4) >> 3);
-    gpu->WriteReg(0x1EF00000 + 4 * (0x432 + 0x23C), 1);
+    gpu->WriteReg(0x1EF00000 + 4 * (0x400 + 0x23A), (kFcram + 0x1000) >> 3);
+    gpu->WriteReg(0x1EF00000 + 4 * (0x400 + 0x238), static_cast<u32>(words.size() * 4) >> 3);
+    gpu->WriteReg(0x1EF00000 + 4 * (0x400 + 0x23C), 1);
     CHECK(debug->TakeRegisterWrites()->size() == 5);
 
     // The counters of the frame: one draw is none here; the command lists were two.
@@ -1479,13 +1571,42 @@ TEST_CASE("pica-only starts from the INIT state") {
     auto* debug = dynamic_cast<GpuDebug*>(gpu.get());
     REQUIRE(debug != nullptr);
     InitBlocks init;
-    Set32(init[InitBlock::PicaRegs], 4 * 0x120, 0xCAFE);
+    Set32(init[InitBlock::PicaRegs], 4 * (0x120 - 0x32), 0xCAFE);
     Set32(init[InitBlock::GpuRegs], 4 * 0x10, 0x1111);
+    Set32(init[InitBlock::GpuRegs], 4 * 0x3FF, 0x3333); // the last external word
+    Set32(init[InitBlock::GpuRegs], 4 * (0x400 + 0x20), 0x4444); // internal register 0x20
     Set32(init[InitBlock::LcdRegs], 4 * 0x4, 0x2222);
     debug->LoadInitState(init.State());
-    CHECK(gpu->ReadReg(0x1EF00000 + 4 * (0x432 + 0x120)) == 0xCAFE);
+    CHECK(gpu->ReadReg(0x1EF00000 + 4 * (0x400 + 0x120)) == 0xCAFE);
     CHECK(gpu->ReadReg(0x1EF00000 + 4 * 0x10) == 0x1111);
+    CHECK(gpu->ReadReg(0x1EF00000 + 4 * 0x3FF) == 0x3333); // read back through MMIO, not shadowed by a register
+    CHECK(gpu->ReadReg(0x1EF00000 + 4 * (0x400 + 0x20)) == 0x4444);
     CHECK(gpu->ReadReg(0x1ED02000 + 4 * 0x4) == 0x2222);
+}
+
+TEST_CASE("pica-only: MMIO word 0x400 + n is internal register n, and word 0x400 - 1 is an external one") {
+    CaptureHost host;
+    auto gpu = MakePicaOnly(host);
+    // The first and the last internal register, and the register that the old offset (0x432) named.
+    gpu->WriteReg(0x1EF00000 + 4 * (0x400 + 0x000), 0xA0);
+    gpu->WriteReg(0x1EF00000 + 4 * (0x400 + 0x2FF), 0xA1);
+    gpu->WriteReg(0x1EF00000 + 4 * (0x400 + 0x120), 0xA2);
+    gpu->WriteReg(0x1EF00000 + 4 * (0x400 - 1), 0xA3);
+    gpu->WriteReg(0x1EF00000 + 4 * (0x400 + 0x300), 0xA4); // past the file: ignored
+    CHECK(gpu->ReadReg(0x1EF00000 + 4 * (0x400 + 0x000)) == 0xA0);
+    CHECK(gpu->ReadReg(0x1EF00000 + 4 * (0x400 + 0x2FF)) == 0xA1);
+    CHECK(gpu->ReadReg(0x1EF00000 + 4 * (0x400 + 0x120)) == 0xA2);
+    CHECK(gpu->ReadReg(0x1EF00000 + 4 * (0x432 + 0x120)) == 0); // register 0x152, not 0x120
+    CHECK(gpu->ReadReg(0x1EF00000 + 4 * (0x400 - 1)) == 0xA3);
+    CHECK(gpu->ReadReg(0x1EF00000 + 4 * (0x400 + 0x300)) == 0);
+    // An INIT starts the register file again.
+    InitBlocks init;
+    auto* debug = dynamic_cast<GpuDebug*>(gpu.get());
+    REQUIRE(debug != nullptr);
+    Set32(init[InitBlock::GpuRegs], 4 * 0x7, 0x7777);
+    debug->LoadInitState(init.State());
+    CHECK(gpu->ReadReg(0x1EF00000 + 4 * 0x7) == 0x7777);
+    CHECK(gpu->ReadReg(0x1EF00000 + 4 * (0x400 + 0x120)) == 0); // reloaded: back to the INIT value
 }
 
 // ----- end to end through the capture player ------------------------------------------------------
@@ -1520,16 +1641,32 @@ struct CaptureFile {
         Put32(out, static_cast<u32>(payload.size()));
         out.insert(out.end(), payload.begin(), payload.end());
     }
-    void Init() {
+    // An INIT record of zeroed blocks, except that internal register 0x020 (the interrupt compare
+    // value) is `compare` and internal register 0x034 (irq autostop) is `autostop`, put where the
+    // rule of init_regs.h has them: GPU_REGS word 0x400 + 0x20 and PICA_REGS word 0x34 - 0x32.
+    void Init(u32 compare = 0, u32 autostop = 0) {
         Bytes payload;
         Put32(payload, 11);
         for (u32 kind = 1; kind <= 11; ++kind) {
             const u32 size = gpu_capture::InitBlockSize(kind);
             Put32(payload, kind);
             Put32(payload, size);
-            payload.resize(payload.size() + size, 0);
+            const size_t data = payload.size();
+            payload.resize(data + size, 0);
+            if (kind == 1) {
+                std::memcpy(payload.data() + data + 4 * (0x400 + 0x20), &compare, 4);
+            } else if (kind == 3) {
+                std::memcpy(payload.data() + data + 4 * (0x34 - 0x32), &autostop, 4);
+            }
         }
         Record(gpu_capture::kInit, payload);
+    }
+    void Irq(u32 id) {
+        Bytes payload;
+        Put32(payload, id);
+        Put32(payload, 0);
+        Put32(payload, 0);
+        Record(gpu_capture::kIrq, payload);
     }
     void Mem(u32 addr, const Bytes& data) {
         Bytes payload;
@@ -1613,7 +1750,45 @@ std::string CaptureWithGasList(const std::string& name, std::vector<RegisterWrit
     return capture.Save(name);
 }
 
+// A capture of one command list that ends in a finalize write (register 0x010 = 0x11223344) and a
+// write after it, with the P3D interrupt the capture saw: the interrupt and the stop come from
+// registers 0x020 and 0x034 of the INIT record.
+std::string CaptureWithFinalize(const std::string& name, u32 compare, u32 autostop) {
+    List list;
+    list.Write(0x120, 1).Write(0x010, 0x11223344).Write(0x121, 2);
+    const std::vector<u32> words = list.Words();
+    Bytes list_bytes(words.size() * 4);
+    std::memcpy(list_bytes.data(), words.data(), list_bytes.size());
+
+    CaptureFile capture;
+    capture.Init(compare, autostop);
+    capture.Mem(kFcram + 0x1000, list_bytes);
+    capture.SubmitCmdList(0x14001000, static_cast<u32>(list_bytes.size()));
+    capture.PicaReg({{0x120, 0xF, 1}, {0x010, 0xF, 0x11223344}}); // the list stopped at the finalize
+    capture.Irq(static_cast<u32>(Interrupt::P3D));
+    capture.Frame(1);
+    return capture.Save(name);
+}
+
 } // namespace
+
+TEST_CASE("pica-only signals the capture's P3D from the compare and autostop registers of the INIT record") {
+    // Compare value in GPU_REGS (register 0x020), autostop in PICA_REGS (register 0x034): the
+    // player's judge finds the P3D the capture has, and the register check finds the list stopped.
+    const std::string good = CaptureWithFinalize("finalize-good", 0x11223344, 1);
+    auto result = RunPlayerOn(good, {"--gpu", "pica-only", "--isolated", "--judge", "cmdlist",
+                                     "--check", "registers"});
+    CHECK_MESSAGE(result.ExitStatus() == 0, gpu_capture::FormatReport(result));
+    std::filesystem::remove(good);
+
+    // A compare value no byte of the finalize value matches: the Gpu signals nothing, which the
+    // capture's interrupt record reports ("the capture signals P3D here; the Gpu signalled nothing").
+    const std::string bad = CaptureWithFinalize("finalize-bad", 0x55667788, 1);
+    result = RunPlayerOn(bad, {"--gpu", "pica-only", "--isolated", "--judge", "cmdlist"});
+    CHECK(result.ExitStatus() == 1);
+    CHECK(gpu_capture::FormatReport(result).find("the capture signals P3D here") != std::string::npos);
+    std::filesystem::remove(bad);
+}
 
 TEST_CASE("the capture player checks the register writes of pica-only") {
     // The list above writes 0x120 = 5, 0x121 = 6 (bytes 0-1), then the consecutive form 0x122,
