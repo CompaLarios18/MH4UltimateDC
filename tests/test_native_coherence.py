@@ -567,10 +567,30 @@ def test_the_register_replay_starts_from_the_init_block_and_honours_byte_masks(t
         w.pica_reg([(coh.REG_TEX_CONFIG, 0x4, 0),                       # byte 2 only: unit 0 stays enabled
                     (0x85, 0x3, ((FCRAM + 4 * PAGE) >> 3) & 0xFFFF),    # bytes 0 and 1 only: the address is page 4
                     (coh.REG_DRAW, 0xF, 1)])
-    rc = report_of(tmp_path, build, init_blocks={gcap.K_PICA_REGS: gcap.pica_regs_block(init)})["read_coverage"]
+    rc = report_of(tmp_path, build, init_blocks=gcap.internal_regs_blocks(init))["read_coverage"]
     assert classes(rc, "texture") == (0, 0, 1)
     assert rc["reads"]["texture"]["uncovered"]["largest"] == [{"paddr": FCRAM + 4 * PAGE, "pages": 1}]
     assert rc["changes"]["not_read_never_in_read_range"] == 1          # page 3: the address before the write
+
+
+def test_the_init_registers_are_read_by_the_rule_of_n2_40(tmp_path):
+    # a hand-built INIT: internal register i is PICA_REGS[i - 0x32] here (all above 0x31); the old reading, word i,
+    # would find the unit-0 registers 0x32 words too far on
+    pica = [0] * gcap.NUM_PICA_REGS
+    for reg, value in {coh.REG_TEX_CONFIG: 1, 0x82: (8 << 16) | 8, 0x85: (FCRAM + 3 * PAGE) >> 3,
+                       coh.REG_NUM_VERTICES: 3}.items():
+        pica[reg - 0x32] = value
+    blocks = {gcap.K_GPU_REGS: bytes([0xFF]) * gcap.INIT_BLOCK_SIZES[gcap.K_GPU_REGS],   # internal registers 0..0x31
+              gcap.K_PICA_REGS: struct.pack(f"<{gcap.NUM_PICA_REGS}I", *pica)}
+
+    def build(w):
+        w.fill(0)
+        cpu_change(w, {FCRAM + 3 * PAGE: page(0x13, {0: 1})})
+        w.submit_cmdlist(LINEAR, 0x10)
+        w.pica_reg([(coh.REG_DRAW, 0xF, 1)])
+    rc = report_of(tmp_path, build, init_blocks=blocks)["read_coverage"]
+    assert classes(rc, "texture") == (0, 0, 1)
+    assert rc["changes"]["not_read_never_in_read_range"] == 0
 
 
 def test_named_reads_outside_the_windows_are_counted_and_mapped_as_azahar_does(tmp_path):

@@ -533,11 +533,9 @@ class _Pica:
         self.counts: Counter = Counter()
 
     def init(self, payload: bytes) -> None:
-        for kind, data in gcap.parse_init(payload):
-            if kind == gcap.K_PICA_REGS:
-                if len(data) != gcap.NUM_PICA_REGS * 4:
-                    raise gcap.GcapError("INIT: PICA_REGS block has the wrong size")
-                self.regs = list(struct.unpack(f"<{gcap.NUM_PICA_REGS}I", data))
+        blocks = dict(gcap.parse_init(payload))
+        if gcap.K_PICA_REGS in blocks:
+            self.regs = gcap.internal_regs(blocks)   # the rule of N2-40: GPU_REGS[0x400 + i] for i < 0x32, else PICA_REGS[i - 0x32]
 
     def _registers(self) -> list[int]:
         if self.regs is None:

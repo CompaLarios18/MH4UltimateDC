@@ -65,6 +65,13 @@ static std::vector<GpuInitBlock> InitBlocks() {
         GpuInitBlock b;
         b.kind = i + 1;
         b.data.assign(kGcapInitSizes[i], static_cast<u8>(i));
+        if (b.kind == 1) {
+            // GPU_REGS holds internal registers 0..0x31 at words 0x400..0x431: a fill of its own, not the block's
+            for (u32 w = 0x400; w < 0x432; ++w) {
+                const u32 v = 0x6D6D6D6Du;
+                std::memcpy(&b.data[w * 4], &v, 4);
+            }
+        }
         blocks.push_back(std::move(b));
     }
     return blocks;
@@ -294,7 +301,10 @@ def test_memory_and_registers_replay_from_the_capture(driver, tmp_path):
     regs = gcap.registers_at(recs, len(recs))
     assert regs[0x010] == 0x11111111
     assert regs[0x0E0] & 0xFF == 5
-    assert regs[0x020] == 0x02020202                                 # the dropped write is not replayed
+    # the dropped write is not replayed: internal register 0x020 is GPU_REGS word 0x420, filled by InitBlocks;
+    # the register 0x032 is PICA_REGS word 0 (kind 3, filled with the byte 2), and 0x2FF is its word 0x2CD
+    assert regs[0x020] == 0x6D6D6D6D
+    assert regs[0x031] == 0x6D6D6D6D and regs[0x032] == 0x02020202 and regs[0x2FF] == 0x02020202
 
 
 def test_headers_carry_the_frame_and_increasing_ticks(driver, tmp_path):

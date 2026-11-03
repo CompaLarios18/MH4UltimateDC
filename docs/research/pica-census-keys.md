@@ -2,7 +2,9 @@
 
 Written from the output of `tools/native/pica_census.py --union` (N0-40), made on the seven census captures: G1, G2, G3, G4 (the golden scenes) and G9a, G9b, G9c (the census scenes). The sections below the horizontal rule are the tool's own markdown, copied unchanged except for the omission of its `vertex_stage` list (the vertex layouts are in the tool's output); nothing in this file is typed by hand but this introduction. It holds counts, register values, Azahar's enumerator names and hashes only: no memory contents, shader instructions or texture bytes. Program and key hashes are 6-byte BLAKE2b digests of register or shader words.
 
-The command (the design's section 7, `docs/native/gpu-fragment-design.md`; it writes to `build/`, never over `docs/research/pica-census.md`, which this package neither regenerates nor edits):
+*Written again (N0-41, 2026-11-03).* `gcap.py` now reads the INIT record's internal registers by N2-40's rule (internal register i is `GPU_REGS[0x400 + i]` for i below 0x32 and `PICA_REGS[i - 0x32]` otherwise; before, every register was taken from `PICA_REGS[i]`, so each started 0x32 registers out of place, and registers a capture never writes started from the wrong value). The tables below are the tool's output on the same seven captures with the new reading. What changed: the `fs_key`, `fs_key.lighting`, `fs_key.texture`, `pipeline_tuple` and `pipeline_tuple+fixup` rows of *Distinct values per group*, the two `shadow_orthographic` rows and the `directional` row of the `light_flag` table, and the figures of *Reading the tables* that quote those rows (the old figures are in the history of this file). Nothing else changed: no other table, and no figure of `pica-census.md`.
+
+The command (the design's section 7, `docs/native/gpu-fragment-design.md`; it writes to `build/`, never over `docs/research/pica-census.md`, which N0-40 neither regenerated nor edited; N0-41 wrote that document again with the command without `--union` and `--json build/pica-census.json --md docs/research/pica-census.md`, and it came out byte-identical):
 
 ```
 python3 tools/native/pica_census.py \
@@ -12,7 +14,7 @@ python3 tools/native/pica_census.py \
     --union --json build/pica-census-union.json --md build/pica-census-union.md
 ```
 
-Without `--union` the tool's JSON and markdown on these seven captures are byte-identical to those of the tool at the base commit of N0-40 (checked by file hash).
+Without `--union` the tool's JSON and markdown on these seven captures are byte-identical to those of the tool at the base commit of N0-40, and still are with the new reading of the INIT registers (checked by file hash: the JSON against `build/pica-census.json` of that earlier run, the markdown against `pica-census.md`).
 
 ## What the numbers are
 
@@ -25,7 +27,7 @@ Without `--union` the tool's JSON and markdown on these seven captures are byte-
 
 ## Reading the tables
 
-- Across the seven captures: 108 distinct `fs_key`, 21 `fixed_function`, 26 `vertex_stage`, 146 `pipeline_tuple` (146 with the fixup stage too: the fixup stage adds no tuple). Per capture (G1, G2, G3, G4, G9a, G9b, G9c): `fs_key` 6, 21, 47, 39, 51, 6, 6; `fixed_function` 5, 6, 13, 15, 11, 5, 5; `vertex_stage` 4, 9, 16, 21, 18, 4, 5; `pipeline_tuple` 7, 24, 62, 48, 66, 7, 7. Only 3 `fs_key` values and 3 `pipeline_tuple` values are in every label.
+- Across the seven captures: 102 distinct `fs_key`, 21 `fixed_function`, 26 `vertex_stage`, 131 `pipeline_tuple` (131 with the fixup stage too: the fixup stage adds no tuple). Per capture (G1, G2, G3, G4, G9a, G9b, G9c): `fs_key` 6, 21, 36, 35, 39, 6, 6; `fixed_function` 5, 6, 13, 15, 11, 5, 5; `vertex_stage` 4, 9, 16, 21, 18, 4, 5; `pipeline_tuple` 7, 24, 45, 43, 50, 7, 7. No `fs_key` value and no `pipeline_tuple` value is in every label.
 - Lit draws: 2,787 in G2, G3, G4 and G9a together, of which 1,129 set the geometry-shader bit (234, 440, 375, 80) and 1,658 do not (63, 850, 370, 375); the 1,658 are the draws the GPU fix-up applies to. G1, G9b and G9c have none.
 - Procedural texture: one `ProcTexConfig` in all seven captures (the `proctex_config` row), so the design's "one" holds on these captures.
 - Blend: every draw of the seven captures blends with the Add equation for both halves (no Min or Max), so no blend factor is in `fs_key`; the factors that appear are in the tables below (6 distinct colour-half pairs, 5 alpha-half pairs, 7 distinct pairs over both halves, 11 distinct blend states). Cull mode is KeepAll or KeepCounterClockWise only; scissor mode Include and depth-buffering mode ZBuffering in every draw; `fog_flip` clear in every draw; a ClampToBorder wrap occurs on unit 0 in G3 and G9a, ClampToBorder2 nowhere; the colour write mask is RGBA except 10 draws of G4 that write alpha only.
@@ -39,13 +41,13 @@ Cells are "distinct values (of them only in this capture's label)"; the draws ar
 | group | G1 | G2 | G3 | G4 | G9a | G9b | G9c | union | in every label |
 |---|---|---|---|---|---|---|---|---|---|
 | fixed_function | 5 (0) | 6 (0) | 13 (3) | 15 (4) | 11 (1) | 5 (1) | 5 (1) | 21 | 4 |
-| fs_key | 6 (0) | 21 (9) | 47 (15) | 39 (25) | 51 (17) | 6 (0) | 6 (0) | 108 | 3 |
+| fs_key | 6 (0) | 21 (15) | 36 (12) | 35 (23) | 39 (14) | 6 (0) | 6 (6) | 102 | 0 |
 | fs_key.framebuffer | 1 (0) | 2 (0) | 3 (0) | 3 (0) | 3 (0) | 1 (0) | 1 (0) | 3 | 1 |
-| fs_key.lighting | 1 (0) | 3 (2) | 7 (1) | 9 (4) | 8 (1) | 1 (0) | 1 (0) | 15 | 1 |
+| fs_key.lighting | 1 (0) | 3 (2) | 6 (1) | 6 (2) | 7 (1) | 1 (0) | 1 (0) | 12 | 1 |
 | fs_key.proctex | 2 (0) | 2 (0) | 2 (0) | 2 (0) | 2 (0) | 2 (0) | 2 (0) | 2 | 2 |
-| fs_key.texture | 6 (0) | 19 (7) | 40 (9) | 29 (14) | 47 (14) | 6 (0) | 6 (0) | 85 | 3 |
-| pipeline_tuple | 7 (0) | 24 (11) | 62 (25) | 48 (33) | 66 (27) | 7 (1) | 7 (1) | 146 | 3 |
-| pipeline_tuple+fixup | 7 (0) | 24 (11) | 62 (25) | 48 (33) | 66 (27) | 7 (1) | 7 (1) | 146 | 3 |
+| fs_key.texture | 6 (0) | 19 (13) | 29 (6) | 29 (16) | 35 (11) | 6 (0) | 6 (6) | 83 | 0 |
+| pipeline_tuple | 7 (0) | 24 (17) | 45 (19) | 43 (29) | 50 (23) | 7 (1) | 7 (7) | 131 | 0 |
+| pipeline_tuple+fixup | 7 (0) | 24 (17) | 45 (19) | 43 (29) | 50 (23) | 7 (1) | 7 (7) | 131 | 0 |
 | proctex_config | 1 (0) | 1 (0) | 1 (0) | 1 (0) | 1 (0) | 1 (0) | 1 (0) | 1 | 1 |
 | vertex_stage | 4 (0) | 9 (0) | 16 (2) | 21 (5) | 18 (1) | 4 (0) | 5 (0) | 26 | 4 |
 
@@ -168,8 +170,8 @@ Cells are "draws (frames)".
 
 | shadow_orthographic | G1 | G2 | G3 | G4 | G9a | G9b | G9c |
 |---|---|---|---|---|---|---|---|
-| False | 155 (3 fr) | 794 (3 fr) | 221 (1 fr) | 1390 (10 fr) | 467 (1 fr) | 1025 (3 fr) | 1059 (3 fr) |
-| True | 0 | 0 | 3429 (10 fr) | 0 | 1105 (3 fr) | 0 | 0 |
+| True | 0 | 0 | 3650 (10 fr) | 1390 (10 fr) | 1572 (3 fr) | 1025 (3 fr) | 1059 (3 fr) |
+| False | 155 (3 fr) | 794 (3 fr) | 0 | 0 | 0 | 0 | 0 |
 
 | combiner_buffer_input | G1 | G2 | G3 | G4 | G9a | G9b | G9c |
 |---|---|---|---|---|---|---|---|
@@ -275,7 +277,7 @@ Cells are "draws (frames)".
 
 | light_flag | G1 | G2 | G3 | G4 | G9a | G9b | G9c |
 |---|---|---|---|---|---|---|---|
-| directional | 0 | 297 (3 fr) | 1285 (10 fr) | 724 (10 fr) | 447 (3 fr) | 0 | 0 |
+| directional | 0 | 297 (3 fr) | 1290 (10 fr) | 745 (10 fr) | 455 (3 fr) | 0 | 0 |
 | shadow_enable | 0 | 297 (3 fr) | 320 (10 fr) | 435 (10 fr) | 156 (3 fr) | 0 | 0 |
 | dist_atten_enable | 0 | 0 | 0 | 435 (10 fr) | 0 | 0 | 0 |
 
