@@ -400,6 +400,7 @@ struct Scene {
     bool coord1 = false;               // texture 2 on texcoord1
     bool proctex = false;
     bool border = false;               // the scene uses a border mode: also drawn with the capability masked off
+    bool exact = false;                // a coordinate exactly on a texel edge on purpose: not held 0.01 away from the boundary
 };
 
 // The registers of a scene (the state a game would have written).
@@ -774,7 +775,7 @@ void CheckScene(Rigs& rigs, const Scene& sc) {
         }
         CHECK_MESSAGE(worst <= tol, std::string(sc.name) << (rig->uber ? " [ubershader" : " [specialised") << (rig->CustomBorder() ? ", custom border" : ", emulated border")
                                             << "]: " << where << " (tolerance " << tol << ")");
-        CHECK_MESSAGE(sw::g_margin > 0.01, std::string(sc.name) << ": a pixel of the scene is within " << sw::g_margin << " of a decision boundary");
+        CHECK_MESSAGE((sc.exact || sw::g_margin > 0.01), std::string(sc.name) << ": a pixel of the scene is within " << sw::g_margin << " of a decision boundary");
         // The same scene in the two modes, on one backend, gives the same pixels (one step on another device).
         if (!rig->uber) {
             specialised_pixels = pixels;
@@ -1038,6 +1039,52 @@ TEST_CASE("sampling/the_border_colour_has_two_paths_and_the_masked_run_takes_the
         }
         CHECK(compared >= 20);
         CHECK(border_pixels >= 4);
+    }
+}
+
+TEST_CASE("sampling/a_coordinate_of_exactly_1_is_the_border_and_exactly_0_is_texel_0") {
+    Rigs rigs(&ProbeRegistry());
+    if (!rigs) return;
+    // The border test is `< 0 || >= 1`: the software renderer's `s >= width` at exactly 1.0 (the texel index is the width) and
+    // `s < 0` false at exactly 0.0. The coordinate is a constant attribute over the target, so no interpolation can move it
+    // (the scene fails if lavapipe's interpolation of a constant is not exact: the model says border or texel 0, nothing between).
+    // Nearest filters; ClampToBorder (both the sampler's colour and the shader's emulation, on the second backend) and
+    // ClampToBorder2 (always the shader).
+    static std::string names[16];
+    int n = 0;
+    for (u32 mode : {1u, 5u}) {
+        for (int axis = 0; axis < 2; ++axis) {
+            for (double value : {1.0, 0.0}) {
+                std::string& name = names[n++];
+                name = "mode " + std::to_string(mode) + " on " + (axis == 0 ? "s" : "t") + " at exactly " + (value == 1.0 ? "1.0" : "0.0");
+                Scene sc = Plain2D(name.c_str(), Single(PatternLevel(4, 4, 2)));
+                UnitScene& u = sc.unit[0];
+                u.border = {230, 120, 60, 200};
+                (axis == 0 ? u.wrap_s : u.wrap_t) = mode;
+                sc.tc[0] = axis == 0 ? Coord{value, 0, 0, 0, 0, 1} : Coord{0, 1, 0, value, 0, 0};
+                sc.border = true;
+                sc.exact = true;
+                CheckScene(rigs, sc);
+                // not vacuous: at 1.0 the model says border, at 0.0 a texel
+                const sw::Colord at = Expect(sc, 3, 3, true);
+                const bool is_border = at[0] == 230 && at[1] == 120 && at[2] == 60 && at[3] == 200;
+                CHECK_MESSAGE(is_border == (value == 1.0), name);
+            }
+        }
+    }
+}
+
+TEST_CASE("sampling/a_unit_0_type_the_pica_does_not_define_is_sampled_as_Texture2D") {
+    Rigs rigs(&ProbeRegistry());
+    if (!rigs) return;
+    for (u32 type : {6u, 7u}) {
+        static std::string names[2];
+        names[type - 6] = "unit 0 type " + std::to_string(type);
+        Scene sc = Plain2D(names[type - 6].c_str(), Single(PatternLevel(8, 8, 4)));
+        sc.unit[0].type = type;
+        sc.tc[0] = Coord{0, 1, 0, 0, 0, 1};
+        sc.w = Coord{3, 0, 0, 0, 0, 0};  // a w that a Projection2D lookup would divide by: the unprojected coordinate is used
+        CheckScene(rigs, sc);
     }
 }
 
@@ -1412,6 +1459,8 @@ private:
 struct TextureRegs {
     u32 wrap_s = 0, wrap_t = 0, mag = 0, min = 0;
     u32 border = 0;
+    u32 type = 0;
+    u32 lod = 0;  // the LOD word (max_level in bits 16-19)
 };
 void DrawRegisters(CmdList& l, const TextureRegs& t) {
     l.Write(kRegColorAddress, kColorBuffer >> 3);
@@ -1443,8 +1492,8 @@ void DrawRegisters(CmdList& l, const TextureRegs& t) {
     l.Write(kRegMain, 1);
     l.Write(0x81, t.border);
     l.Write(0x82, kSize | (kSize << 16));
-    l.Write(0x83, (t.mag << 1) | (t.min << 2) | (t.wrap_t << 8) | (t.wrap_s << 12));
-    l.Write(0x84, 0);
+    l.Write(0x83, (t.mag << 1) | (t.min << 2) | (t.wrap_t << 8) | (t.wrap_s << 12) | (t.type << 28));
+    l.Write(0x84, t.lod);
     l.Write(0x85, kTextureBase >> 3);
     l.Write(0x8E, 0);
 }
@@ -1604,6 +1653,37 @@ TEST_CASE("native/a_draw_binds_the_texture_its_registers_name_from_guest_memory"
     const sw::Color want3 = changed[7 * 8 + 6];
     CHECK_MESSAGE(Uniform(sim.ColorBuffer(), {want3[0], want3[1], want3[2], want3[3]}, &why), why);
     CHECK(sim.Counter("texture_uploads") == 2);
+
+    // mip levels: a level-0 texture counted nothing; a draw whose unit has max_level 1 is counted (the level is not uploaded: the
+    // picture is level 0), and it is a plain counter, not a stub
+    CHECK(sim.Counter("texture_levels_missing") == 0);
+    TextureRegs with_levels;
+    with_levels.lod = 1u << 16;
+    CmdList levels;
+    DrawRegisters(levels, with_levels);
+    levels.Write(0x22E, 0);
+    sim.Submit(levels);
+    CHECK(sim.Counter("texture_levels_missing") == 1);
+    CHECK(sim.Counter("stubbed:sampling") == 0);
+}
+
+TEST_CASE("native/a_unit_0_type_the_pica_does_not_define_binds_its_texture_as_Texture2D") {
+    if (!test::RequireBackend()) return;
+    Sim sim;
+    const std::vector<sw::Color> texels = Pattern8();
+    sim.WriteTexture(texels);
+    sim.Write(kVertexBase, Triangle());
+    TextureRegs regs;
+    regs.type = 6;
+    CmdList l;
+    DrawRegisters(l, regs);
+    VertexProgram(l, {3.5f / 8, 5.5f / 8});
+    sim.Submit(l);
+    const sw::Color want = texels[2 * 8 + 3];
+    std::string why;
+    CHECK_MESSAGE(Uniform(sim.ColorBuffer(), {want[0], want[1], want[2], want[3]}, &why), why);
+    CHECK(sim.Counter("texture_binds") == 1);
+    CHECK(sim.Counter("texture_unavailable") == 0);
 }
 
 TEST_CASE("native/a_wrap_mode_and_a_unit_that_is_off_show_what_the_software_renderer_shows") {

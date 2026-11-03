@@ -29,9 +29,9 @@
 #include "gpu/cpuvertex/triangle_batch.h"
 #include "gpu/fbops/fixed_function.h"
 #include "gpu/fragment/feature.h"
+#include "gpu/fragment/generator.h"
 #include "gpu/fragment/profile.h"
 #include "gpu/fragment/sampling/sampling.h"
-#include "gpu/fragment/generator.h"
 #include "gpu/fragment/state.h"
 #include "gpu/fragment/tables.h"
 #include "gpu/gx/engine.h"
@@ -356,6 +356,7 @@ public:
         add("texture_uploads", frame_.texture_uploads);
         add("texture_unavailable", frame_.texture_unavailable);
         add("sampler_creates", frame_.sampler_creates);
+        add("texture_levels_missing", frame_.texture_levels_missing);
         for (const char* name : {"sampling", "lighting", "fog", "proctex", "shadow", "gas"}) {
             const auto it = frame_.stubbed.find(std::string_view(name));
             add(std::string("stubbed:") + name, it == frame_.stubbed.end() ? 0 : it->second);
@@ -391,7 +392,7 @@ private:
         u64 translate_failures = 0, restart_widened = 0;
         u64 sync_builds = 0, forced_uber = 0;
         u64 stubbed_fixup = 0, dst_copies = 0, fallback_draws = 0, stubbed_blend_plan = 0;
-        u64 texture_binds = 0, texture_uploads = 0, texture_unavailable = 0, sampler_creates = 0;
+        u64 texture_binds = 0, texture_uploads = 0, texture_unavailable = 0, sampler_creates = 0, texture_levels_missing = 0;
         std::map<std::string, u64, std::less<>> stubbed;
     };
 
@@ -822,6 +823,21 @@ private:
                 faces.push_back(&ref);
             }
         }
+        // A unit 0 type the PICA does not define (6, 7) is sampled as Texture2D (sampling.cpp), but TexturesOfDraw leaves it out:
+        // describe the 2D texture from the registers the same way.
+        texture::TextureRef undefined_type;
+        if (faces.empty() && unit == 0 && (type == static_cast<Type>(6) || type == static_cast<Type>(7))) {
+            const u32 size_word = regs[config[0] + 1];
+            undefined_type.unit = 0;
+            undefined_type.width = pica::BitsOf(size_word, 16, 11);
+            undefined_type.height = pica::BitsOf(size_word, 0, 11);
+            undefined_type.paddr = pica::BitsOf(regs[config[0] + 4], 0, 28) * 8;
+            const u32 format_value = pica::BitsOf(regs[texture::kTexture0Format], 0, 4);
+            undefined_type.format = static_cast<texture::Format>(format_value);
+            if (texture::IsValidFormat(format_value) && texture::IsValidSize(undefined_type.width, undefined_type.height)) {
+                faces.push_back(&undefined_type);
+            }
+        }
         if (faces.empty() || (cube && faces.size() != 6)) {
             ++frame_.texture_unavailable;
             return null_texture(false);
@@ -840,6 +856,10 @@ private:
         frame_.sampler_creates += samplers_->creates() - seen_sampler_creates_;
         seen_sampler_creates_ = samplers_->creates();
         ++frame_.texture_binds;
+        // Azahar gives a texture lod.max_level + 1 levels from guest memory; this binds level 0 only.
+        if (pica::BitsOf(regs[config[unit] + 3], 16, 4) > 0) {
+            levels_missing_in_draw_ = true;
+        }
         binding.image = image;
         binding.view = rhi::ImageView::Sampled;
         binding.sampler = sampler->get();
@@ -853,6 +873,7 @@ private:
         }
         EnsureRecording();
         binding_textures_ = true;
+        levels_missing_in_draw_ = false;
         const std::vector<texture::TextureRef> refs = texture::TexturesOfDraw(state.regs.data());
         for (u32 unit = 0; unit < 3; ++unit) {
             if (used[unit]) {
@@ -860,6 +881,9 @@ private:
             }
         }
         binding_textures_ = false;
+        if (levels_missing_in_draw_) {
+            ++frame_.texture_levels_missing;
+        }
     }
 
     // ---- a draw ----
@@ -1206,6 +1230,7 @@ private:
     std::shared_ptr<rhi::Image> null_2d_, null_black_2d_, null_cube_;  // transparent black, opaque black, transparent black cube
     bool null_cleared_ = false;
     bool binding_textures_ = false;
+    bool levels_missing_in_draw_ = false;
     u64 seen_sampler_creates_ = 0;
 
     // the recording

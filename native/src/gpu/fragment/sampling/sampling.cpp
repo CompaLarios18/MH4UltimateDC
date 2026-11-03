@@ -22,13 +22,20 @@
 //   sampleTexUnit3        the procedural slot: ProcTex() where the key enables the procedural texture, else vec4(0.0)
 //
 // What differs from Azahar's text, on purpose, to give the software renderer's pixels (the oracle of this phase):
-//   - the border test is `< 0 || >= 1` (the software renderer's `s < 0 || s >= width` on the truncated texel index), not
-//     Azahar's `< 0 || > 1`; it reads the PROJECTED coordinate for Projection2D (the software renderer divides first) and is not
+//   - the border test is `< 0 || >= 1` on the UNTRUNCATED coordinate, not Azahar's `< 0 || > 1`. It is the software renderer's
+//     `s < 0 || s >= width` (on the texel index it truncates toward zero) only for a coordinate that is a whole number of
+//     texels or beyond: at exactly 1.0 (`s == width`) it is the border, at exactly 0.0 it is texel 0. For a coordinate in
+//     (-1/width, 0) the software renderer truncates to texel 0 and this shader, like the samplers of Azahar's accelerated
+//     renderers (which floor), flags the border (mode 1) or wraps to the last texel (Repeat, Mirror, and the negative side of
+//     modes 4 and 5). It reads the PROJECTED coordinate for Projection2D (the software renderer divides first) and is not
 //     applied to the cube types (their face coordinates are always inside);
 //   - the wrap modes 4 (ClampToEdge2) and 5 (ClampToBorder2) are the software renderer's: a negative coordinate repeats, a
 //     positive one clamps (4) or gives the border colour (5). Azahar's samplers cannot tell them from ClampToEdge and
-//     ClampToBorder (a TODO in pica_to_vk.h); a sampler cannot say it either, so they are shader code here (and not applied to
-//     Projection2D and the cube types);
+//     ClampToBorder (a TODO in pica_to_vk.h); a sampler cannot say it either, so they are shader code here. The negative-side
+//     repeat of 4 and 5 is applied to Texture2D (units 0 to 2) only, not to Projection2D or the cube types; mode 5's
+//     positive-side border test is applied to every type but the cubes, Projection2D included;
+//   - a unit 0 type the PICA does not define (6 and 7) is sampled as Texture2D with the unprojected coordinate, as
+//     sw_rasterizer.cpp's TextureColor does after its UNIMPLEMENTED() and as Azahar's DefineTexUnitSampler falls back;
 //   - the border colour uniform of a unit that is off is transparent black and that of an enabled unit with address 0 opaque black
 //     (TextureColor returns those before its border test; Azahar's uniform is the register's colour whatever the unit);
 //   - the level of detail is computed before any early return (derivatives stay in uniform control flow), and the lookup is
@@ -142,9 +149,12 @@ void EmitUnit(Emitter& e, u32 unit) {
                 {kShadow2D, [&] { e.Raw("result = shadowTexture(texcoord0, texcoord0_w);\n"); }},
                 {kShadowCube, [&] { e.Raw("result = shadowTextureCube(texcoord0, texcoord0_w);\n"); }},
             },
-            // a type the PICA does not define: the software renderer skips the unit (transparent black)
-            [&] {});
+            // a type the PICA does not define (6, 7): the software renderer logs and samples it as a 2D texture with the unprojected
+            // coordinate (only Disabled skips the unit), and so does Azahar's generator (`texture(tex0, texcoord0)`)
+            [&] { EmitLod2D(e, 0, "result"); });
         // The cube types' face coordinates are inside by construction: no border.
+        // N2-12: for Shadow2D this border emulation (capability off) tests the UNPROJECTED coordinate, as Azahar's does, where the
+        // software renderer tests the projected one; with the capability on there is no test. Left as it is: the lookups are yours.
         e.If(e.And(e.Ne(type, kTextureCube), e.Ne(type, kShadowCube)), [&] { EmitBorderTests(e, 0); });
         e.Raw("return result;\n}\n");
         return;
@@ -201,6 +211,8 @@ public:
         }
     }
 
+    // The TEV sources only: BindTextures also binds the units that lighting reads (bump and shadow selectors); nothing uses
+    // `texture_units` yet.
     Needs NeedsOf(const FragmentKey& key, const DeviceProfile&) const override {
         Needs needs;
         for (u32 unit = 0; unit < 3; ++unit) {
