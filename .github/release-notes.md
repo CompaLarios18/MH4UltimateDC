@@ -1,6 +1,17 @@
 **Monster Hunter 4 Ultimate on PC**, and now on Android, through Azahar's 3DS core with the game's own code recompiled for your CPU, plus PC options: higher frame rates, widescreen up to 32:9, the touch screen over the game, and multiplayer over the internet.
 
-🇲🇽 *Port de MH4U para PC, y ahora también para Android: 60/120 fps, pantalla ancha, la pantalla táctil encima del juego y multijugador por internet. Necesitas tu propia copia del juego y su actualización: la v1.3.0 si es de EE. UU., la v1.1.0 si es europea.*
+🇲🇽 *Port de MH4U para PC, y ahora también para Android: 60/120 fps, pantalla ancha, la pantalla táctil encima del juego y multijugador por internet. Necesitas tu propia copia del juego y su actualización: la v1.3.0 si es de EE. UU., la v1.1.0 si es europea (el juego europeo llega con esta versión y casi no se ha probado). En PC hay que volver a compilar la biblioteca de código, solo una vez (el launcher lo pide); en Android, el APK y la biblioteca tienen que ser de la misma versión.*
+
+## What's new in 0.1.7
+
+- **The European game** (thanks to Cheeenxiii): the port now takes Monster Hunter 4 Ultimate for Europe (`0004000000126100`) with its **v1.1.0 update** (`0004000E00126100`), as it takes the USA game with v1.3.0. Setup takes either game with its own update, the European game's code library (`recomp/0004000000126100.*`) is built from its update, and its mods and texture packs go in folders of its own (`load/mods/0004000000126100/`, `load/textures/0004000000126100/`). It has been tried only by its contributor, on Linux, on builds from before this release (from the title screen to town): not yet on Windows, macOS or Android, in a quest above 60 fps or in a room, and whether European and USA players can play in one room isn't known yet. Reports are welcome in an issue.
+- **Build the code library again, once** (the launcher asks; *Build* on Home, or *Build the code library* in Setup, does it; with `launcher = off`, or in `azahar.exe`, a message says so as the game starts): the port now finds its hook points in the library by name, so a library built by 0.1.6's tools or older is refused (*... was built by another version of the port's tools*), and until it is built again the game runs on Azahar's own CPU emulation, without the port's options.
+- **Android**: the APK and the library go together. For the European game, install this release's APK and build the library with this release's PC package. With the USA game, the APK and library you have can stay as they are (nothing changes on Android for it), but a library built by this release's tools needs this release's APK: an older APK refuses a library built by these tools, and this APK refuses one built by older ones. This APK won't install over an earlier release's (each build is signed with a key of its own): uninstall MH4U first; your games, saves and code library are in the user folder you chose, which stays.
+- **Setup takes either region's update before a game is chosen** (after that, only the game's own), and the update's line names the other region's when that's the one installed (*Not installed: the one installed is the update for Europe*).
+- **Mods and the two regions**: the catalog's three code mods are made for the USA game's code, so with the European game their *Install* is off (*Not for your game*), and one already in your library is left out of the European game's mods folder. Texture packs install for both games: Azahar finds textures by their content, so a pack made for the USA game should do for the European one, apart from some textures with text (the HD pack's note says to play in English); that hasn't been tried yet. Each game keeps its own list of the packs installed.
+- **On the Mods screen, a mod that is on but can't be used can now be turned off** (before, it could only be removed).
+- **Rooms by region**: a room the app hosts is for the host's game, and the app lists a lobby's rooms for your game first, then the other region's, named with their region (in the launcher, under *Rooms for other games*); invites and rooms on this network don't say which region a room is for. A dedicated room (`mh4u-server`) has a `game` setting (`usa` or `europe`; `ROOM_GAME` with Docker). A lobby run with `--games 0004000000126300` needs `0004000000126100` too to list European players' rooms.
+- The bug report form asks which game you play.
 
 ## What's new in 0.1.6
 
@@ -61,7 +72,7 @@ These packages contain **no game code or data**. You need your own decrypted cop
 
 | System | File | Status |
 |---|---|---|
-| Windows 10/11 (x64) | `mh4u-port-windows.zip` | played for hours, hunts included, at 120 fps in earlier versions; 0.1.6's app not tried with the game yet |
+| Windows 10/11 (x64) | `mh4u-port-windows.zip` | the USA game played for hours, hunts included, at 120 fps in earlier versions; 0.1.7 not tried with the game yet (the app or Azahar) |
 | Linux (x86-64, Steam Deck too) | `mh4u-port-linux.tar.gz` | two AppImages, the app and Azahar; Azahar tried on Ubuntu 24.04 in an earlier version |
 | macOS (Apple silicon) | `mh4u-port-macos.zip` | two apps, MH4U and Azahar; builds, not tried on a Mac yet |
 | Android 10+ (arm64) | `mh4u-port-android.apk` | Azahar's Android app with the port, named MH4U; new and experimental |
@@ -71,7 +82,7 @@ Each PC package has the port's own app (`mh4u.exe`, `mh4u.AppImage`, `MH4U.app`)
 ## How to play (Windows)
 
 1. Install [Python](https://www.python.org/downloads/) 3.10 or newer (tick *Add python.exe to PATH*).
-2. Unzip and double-click `mh4u.exe`. The first time its launcher opens on *Setup*: choose your game and its update `.cia` (v1.3.0 for the USA game, v1.1.0 for the European one); it installs the update and builds the game's code library (the first time it downloads the C compiler, about 180 MB). (`Build code library.bat` still does the same from a console.)
+2. Unzip and double-click `mh4u.exe`. The first time its launcher opens on *Setup*: choose your game and its update `.cia` (v1.3.0 for the USA game, v1.1.0 for the European one), which it installs, then *Build the code library* (the first time it downloads the C compiler, about 180 MB). (`Build code library.bat` still does the same from a console.)
 3. *PLAY*. The game opens full screen (F11: a window); **Esc** (or a controller's Guide, or Back+Start) opens the menu over the game.
 
 The launcher also has *Mods* (several at once, in an order, conflicts shown), *Online* (a lobby's rooms, joining, hosting) and *Settings*. The in-game menu changes the game's options (frame rate, widescreen, the touch screen, filters…), the display, sound and controls, mostly at once, and saves them in `mh4u.ini` and `mh4u-app.ini` (in `%APPDATA%\Azahar`). `azahar.exe` plays the game too (*File → Load File…*), installs other CIAs and has Azahar's own settings. If Windows 11's Smart App Control blocks `mh4u.exe` or `azahar.exe` (unsigned), it has to be turned off. Linux and macOS: the steps are in `README-mh4u.txt` in each package.
@@ -102,11 +113,12 @@ In the app: Esc → *Online* → *Host a room*, *Copy* the invite and send it; y
 
 ## Known limits
 
-- The app is new: it can't install other CIAs or change Azahar's own settings (Azahar, in the same package, does). Earlier versions of it were tried on Windows and in the cloud (Vulkan and OpenGL), less than Azahar; 0.1.6 hasn't been tried with the game yet.
+- The app is new: it can't install other CIAs or change Azahar's own settings (Azahar, in the same package, does). Earlier versions of it were tried on Windows and in the cloud (Vulkan and OpenGL), less than Azahar.
+- 0.1.7 hasn't been tried with the game yet, in any package: the port now finds its hook points by name, in a code library of a new kind.
 - Save states don't work with the recompiled code: save in the game.
 - Cheats that rewrite code don't apply (ones that change data do).
 - The macOS build hasn't been tried on a Mac yet.
-- The European version (with its v1.1.0 update) has been tried only by the contributor who added it, on Linux, from the title screen to town: not yet on Windows, macOS or Android, in a quest above 60 fps or in a room, and whether European and USA players can play in one room isn't known yet. A code mod that changes the USA update's code breaks it, and one that changes only data hasn't been tried with it.
+- The European version (with its v1.1.0 update) has been tried only by the contributor who added it, on Linux, on builds from before this release: from the title screen to town, and on this release's code, before its last fixes, only to the game's start, with every hook point found. Not yet on Windows, macOS or Android, in a quest above 60 fps or in a room, and whether European and USA players can play in one room isn't known yet. A code mod that changes the USA update's code breaks it, and one that changes only data hasn't been tried with it.
 - Android: the port runs inside Azahar's Android app, with its touch controls and settings; the PC app's launcher and menu aren't there, so the port's options are in `mh4u.ini`.
 - Azahar doesn't draw the 3DS GPU's "gas" mode (a few smoke effects).
 
