@@ -316,9 +316,10 @@ struct Inputs {
     V4 primary{};
     V4 primary_fragment{};     // lighting is off (or a stub): zero
     V4 secondary_fragment{};
-    std::array<V4, 4> texture{{{255, 255, 255, 255}, {255, 255, 255, 255}, {255, 255, 255, 255}, {255, 255, 255, 255}}};
-    // N2-08's texture units are stubs that give opaque white: that is what the generator's output must equal, not the
-    // software renderer's zero for a unit nobody enabled.
+    std::array<V4, 4> texture{{{255, 255, 255, 255}, {255, 255, 255, 255}, {255, 255, 255, 255}, {0, 0, 0, 0}}};
+    // These draws bind no texture, so units 0 to 2 show the composer's opaque-white dummy (not the software renderer's zero for a
+    // unit nobody enabled); unit 3 is the procedural slot with the procedural texture off, which is vec4(0.0) since N2-23
+    // (before it, the sampling stub gave white).
     std::array<V4, 6> constant{};
     V4 combiner_buffer_color{};
     u32 buffer_input = 0;  // update_mask_rgb | update_mask_a << 4 (the key's combiner_buffer_input)
@@ -822,8 +823,9 @@ TEST_CASE("tev/every_source_of_a_stage_the_stubbed_ones_included") {
     auto backend = test::RequireBackend();
     if (!backend) return;
     Rig spec_rig(backend, false), uber_rig(backend, true);
-    // PrimaryFragmentColor and SecondaryFragmentColor are zero (lighting is off or a stub); the four texture units give
-    // opaque white (the stubs); PreviousBuffer is the combiner buffer after stage 0.
+    // PrimaryFragmentColor and SecondaryFragmentColor are zero (lighting is off or a stub); the three texture units give
+    // opaque white (no texture is bound: the composer's dummy), the procedural slot zero (the procedural texture is off);
+    // PreviousBuffer is the combiner buffer after stage 0.
     for (u32 source : {kPrimaryColor, kPrimaryFragmentColor, kSecondaryFragmentColor, kTexture0, kTexture1, kTexture2, kTexture3,
                        kPreviousBuffer, kConstant, kPrevious}) {
         for (u32 slot = 0; slot < 3; ++slot) {
@@ -1021,7 +1023,10 @@ TEST_CASE("alpha_test/Never_discards_every_fragment_before_anything_else_runs") 
     CHECK_MESSAGE(AllNear(uber_rig.Render({spec}), {10, 20, 30, 40}, 0, &why), why);
 }
 
-TEST_CASE("stubs/the_gas_stub_writes_azahars_transparent_black_and_returns") {
+// N2-10 implemented fog and gas: a gas draw is no longer Azahar's transparent black. With the gas region of the block left at zero
+// (this rig writes none) the shading pass finds the density of the cleared target (blue 30, alpha 40) at or above ACCMAX 0, so t = 1,
+// and the all-zero table gives black; the alpha is the TEV's. docs/research/gas.md and gpu_fog_test have the gas cases.
+TEST_CASE("gas/an_unconfigured_gas_draw_is_black_with_the_tev_alpha") {
     auto backend = test::RequireBackend();
     if (!backend) return;
     Rig spec_rig(backend, false), uber_rig(backend, true);
@@ -1033,8 +1038,8 @@ TEST_CASE("stubs/the_gas_stub_writes_azahars_transparent_black_and_returns") {
     spec.key.texture.tev_stages[0] = s.Raw();
     spec.tri = FullTriangle({100, 100, 100, 255});
     std::string why;
-    CHECK_MESSAGE(AllNear(spec_rig.Render({spec}), {0, 0, 0, 0}, 0, &why), why);
-    CHECK_MESSAGE(AllNear(uber_rig.Render({spec}), {0, 0, 0, 0}, 0, &why), why);
+    CHECK_MESSAGE(AllNear(spec_rig.Render({spec}), {0, 0, 0, 255}, 0, &why), why);
+    CHECK_MESSAGE(AllNear(uber_rig.Render({spec}), {0, 0, 0, 255}, 0, &why), why);
 }
 
 TEST_CASE("stubs/a_draw_that_needs_a_stubbed_feature_is_reported_by_name") {
@@ -1048,23 +1053,23 @@ TEST_CASE("stubs/a_draw_that_needs_a_stubbed_feature_is_reported_by_name") {
     };
     // a pass-through key needs nothing
     CHECK(stubbed(key).empty());
-    // a stage that reads texture unit 1
+    // a stage that reads texture unit 1: sampling is real since N2-23, nothing is reported
     Stage s;
     s.color_src[0] = kTexture1;
     key.texture.tev_stages[2] = s.Raw();
-    CHECK(stubbed(key) == std::vector<std::string>{"sampling"});
+    CHECK(stubbed(key).empty());
     // the same source in a pass-through stage is not read
     key.texture.tev_stages[2] = Stage{}.Raw();
     CHECK(stubbed(key).empty());
-    // lighting, fog (and gas), shadow rendering, the procedural texture
+    // lighting, shadow rendering, the procedural texture (fog and gas are implemented by N2-10: neither is reported)
     FragmentKey lit = DefaultKey();
     lit.lighting.set_enable(1);
     CHECK(stubbed(lit) == std::vector<std::string>{"lighting"});
     FragmentKey fog = DefaultKey();
     fog.texture.set_fog_mode(re::FogMode::Fog);
-    CHECK(stubbed(fog) == std::vector<std::string>{"fog"});
+    CHECK(stubbed(fog).empty());
     fog.texture.set_fog_mode(re::FogMode::Gas);
-    CHECK(stubbed(fog) == std::vector<std::string>{"gas"});
+    CHECK(stubbed(fog).empty());
     FragmentKey shadow = DefaultKey();
     shadow.framebuffer.set_shadow_rendering(1);
     CHECK(stubbed(shadow) == std::vector<std::string>{"shadow"});
@@ -1932,7 +1937,7 @@ TEST_CASE("native/a_draw_that_needs_a_stubbed_feature_is_counted") {
     l.Write(0x228, 3).Write(0x22A, 0).Write(0x22E, 0);
     sim.Submit(l);
     CHECK(sim.Counter("stubbed:lighting") == 1);
-    CHECK(sim.Counter("stubbed:fog") == 1);
+    CHECK(sim.Counter("stubbed:fog") == 0);  // N2-10 implemented fog
     CHECK(sim.Counter("stubbed:sampling") == 0);
     CHECK(sim.Counter("native_draws") == 1);
 }

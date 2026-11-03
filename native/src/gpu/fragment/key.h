@@ -320,7 +320,7 @@ struct UserConfig {
 static_assert(std::has_unique_object_representations_v<UserConfig>);
 
 // The reserved gas word, owned by `fog/` (N2-10): its feature fills it in its `Key` hook and nobody else
-// reads or writes it. Zero while the feature is a stub.
+// reads or writes it. Bit 0 the density pass, bit 1 the light-factor LUT input (fog/fog_layout.h).
 struct GasConfig {
     u32 raw{};
 };
