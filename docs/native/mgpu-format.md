@@ -151,9 +151,9 @@ Layouts follow how Azahar holds the state at the pinned commit (`5f3306d13cab40b
 
 | Kind | Name | Size | Contents |
 |---|---|---|---|
-| 1 | `GPU_REGS` | 4296 | words 0..0x431 of `PicaCore::Regs::reg_array` (the GPU's external registers: hardware id, memory fill, framebuffer and display-transfer configuration), 0x432 words |
+| 1 | `GPU_REGS` | 4296 | words 0..0x431 of `PicaCore::Regs::reg_array`, 0x432 words: words 0..0x3FF are the GPU's external registers (hardware id, memory fill, framebuffer and display-transfer configuration); words 0x400..0x431 are **internal registers 0 to 0x31** (`Regs::internal` starts at word 0x400, `pica_core.h`), see `PICA_REGS` |
 | 2 | `LCD_REGS` | 4096 | `PicaCore::regs_lcd` (`RegsLcd`), 0x400 words: colour fill and backlight of both screens |
-| 3 | `PICA_REGS` | 3072 | the PICA internal registers, `Regs::internal` = words 0x432..0x731 of `reg_array`, 0x300 words (the file the `PICA_REG` records write; fog mode is register 0x0E0 bits 0-2: 0 none, 5 fog, 7 gas) |
+| 3 | `PICA_REGS` | 3072 | words 0x432..0x731 of `reg_array`, 0x300 words. These are **not** the internal registers from 0: `Regs::internal` starts at word 0x400, so `PICA_REGS` word k is internal register k + 0x32 (for k below 0x2CE; its last 0x32 words lie past `internal` and are not registers). **The rule:** internal register i (the file the `PICA_REG` records write; fog mode is register 0x0E0 bits 0-2: 0 none, 5 fog, 7 gas) is `GPU_REGS` word 0x400 + i for i below 0x32 and `PICA_REGS` word i − 0x32 for i from 0x32 to 0x2FF. The MMIO address of internal register i is 0x1EF00000 + 4 × (0x400 + i). Readers do it through `native/src/gpu/pica/init_regs.h` (N2-40); the format itself is unchanged |
 | 4 | `VS_SETUP` | 34368 | `PicaCore::vs_setup`, shader setup (below) |
 | 5 | `GS_SETUP` | 34368 | `PicaCore::gs_setup`, same layout |
 | 6 | `DEFAULT_ATTRS` | 256 | `input_default_attributes`: 16 x `Vec4<f24>` as 4 x `f32` |

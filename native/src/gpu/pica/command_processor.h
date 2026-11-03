@@ -33,9 +33,11 @@ public:
     CommandProcessor& operator=(const CommandProcessor&) = delete;
 
     // The state at the start of a capture, from the INIT record's blocks (mgpu-format.md
-    // section 4): the internal registers, both shader setups, the default attributes, the three
+    // section 4): the internal registers (registers 0 to 0x31 from the tail of GPU_REGS, the
+    // rest from PICA_REGS: init_regs.h), both shader setups, the default attributes, the three
     // look-up tables, the immediate-mode state and the geometry pipeline. A block of the wrong
-    // size is logged and skipped. Everything is dirty afterwards.
+    // size is logged and skipped; with no GPU_REGS block registers 0 to 0x31 keep their reset
+    // values (logged once). Everything is dirty afterwards.
     void LoadInitState(const gpu::InitState& init);
 
     // PicaCore::ProcessCmdList: runs the command list of `size` bytes at physical address
@@ -51,7 +53,7 @@ public:
     void SubmitGxCmdList(u32 paddr, u32 size);
 
     // GPU::WriteReg to an internal register (the MMIO address minus kGpuMmioBase, in words,
-    // minus kExternalRegs): the value is stored as it is, without the side effects a command-list
+    // minus kExternalRegs = 0x400, where Azahar's `internal` starts): the value is stored as it is, without the side effects a command-list
     // write has, and a write to a command-buffer trigger submits that channel. (Azahar does not
     // mark the register dirty; here it is.)
     void WriteHardwareRegister(u32 id, u32 value);
