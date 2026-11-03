@@ -63,7 +63,7 @@ specialised shader and the ubershader), and both read the colour buffer as it wa
 | step | label | content |
 |---|---|---|
 | S1 | `inference` | the density is the colour buffer's, read as in D2 (the shading draw reads the buffer the density pass wrote) |
-| S2 | `inference` | `t = density / ACCMAX` clamped to [0, 1] (`ACCMAX` is read back "to compute `GPUREG_GAS_ACCMAX`"); densities compare as unsigned 16-bit integers (`3dbrew`), so: density of +-0 gives `t = 0`; density bits at or above `ACCMAX`'s (negative, infinite and NaN included) give `t = 1`; an `ACCMAX` that is negative or NaN gives `t = 0` (`unverified`) |
+| S2 | `inference` / `unverified` | `t = density / ACCMAX` clamped to [0, 1] (`inference`: `ACCMAX` is read back "to compute `GPUREG_GAS_ACCMAX`"). `3dbrew`'s "compared as unsigned 16-bit integers, so negative values, infinities and NaN are greater than any positive value" is said only of the tracked maximum (`GPUREG_GAS_ACCMAX_FEEDBACK`); applying it to a shading-pass density against `ACCMAX` is `unverified`, and under it a density with bits at or above `ACCMAX`'s (negative, infinite and NaN included) gives `t = 1`. Also `unverified`: a density of +0 or -0 (0x0000, 0x8000) gives `t = 0` (so -0 is **not** `t = 1` by the unsigned compare: the zero test comes first); an `ACCMAX` that is negative or NaN gives `t = 0` |
 | S3 | `3dbrew` | the colour LUT input is the gas density (bit 8 of 0x122 clear) or the light factor (set) |
 | S4 | `unverified` | the light factor has no source in the descriptions (no per-fragment direction): with the light-factor input `t = 1` (a placeholder) |
 | S5 | `inference` / `unverified` | the table: entries 8-15 are the colours of eight segments, entries 0-7 the signed differences to the next colour (`inference`: the fog table is value plus difference; the signedness is `3dbrew`); the 1/255 scale of a difference and the extension of the last segment to `t = 1` are `unverified`. `position = 8t`, `segment = min(floor(position), 7)`, `colour = (value[segment] + difference[segment] * (position - segment)) / 255`, clamped to [0, 1] |
@@ -120,9 +120,11 @@ table (words as the data port receives them: bytes red, green, blue from bit 0):
 | 0 | difference of segment 0 | (0, 0, 0) |
 | 3 | difference of segment 3 | (20, -10, 0) = (0x14, 0xF6, 0x00) |
 | 7 | difference of segment 7 | (10, -10, 100) = (0x0A, 0xF6, 0x64) |
+| 5 | difference of segment 5 | (-30, 0, -40) = (0xE2, 0x00, 0xD8) |
 | 8 | colour of segment 0 | (1, 2, 3) |
 | 10 | colour of segment 2 | (40, 50, 60) |
 | 11 | colour of segment 3 | (100, 200, 50) |
+| 13 | colour of segment 5 | (200, 100, 90) |
 | 15 | colour of segment 7 | (250, 5, 0) |
 | others | | 0 |
 
@@ -132,13 +134,15 @@ table (words as the data port receives them: bytes red, green, blue from bit 0):
 | H2 | 0x0000 = 0 | 0 (density is +-0) | 0, 0, 0 | (1, 2, 3) | (1, 2, 3, 77) |
 | H3 | 0x4800 = 8 | 1 (bits 0x4800 >= 0x4400) | 8, min(8, 7) = 7, 1 | (250 + 10, 5 - 10, 0 + 100) = (260, -5, 100), clamped (255, 0, 100) | (255, 0, 100, 77) |
 | H4 | 0x4400 = ACCMAX | 1 (equal) | as H3 | (255, 0, 100) | (255, 0, 100, 77) |
-| H5 | 0xBC00 = -1.0 | 1 (unsigned compare: 0xBC00 >= 0x4400) | as H3 | (255, 0, 100) | (255, 0, 100, 77) |
+| H5 | 0xBC00 = -1.0 | 1 (unsigned compare, `unverified`: 0xBC00 >= 0x4400) | as H3 | (255, 0, 100) | (255, 0, 100, 77) |
 | H6 | 0x3F00, light-factor input | 1 (S4 placeholder) | as H3 | (255, 0, 100) | (255, 0, 100, 77) |
 | H7 | 0x3C00 = 1.0 | 1 / 4 = 0.25 | 2.0, 2, 0 | (40, 50, 60) + 0 * difference of segment 2 (zero) | (40, 50, 60, 77) |
 | H8 | 0x3C00, ACCMAX 0 | 1 (0x3C00 >= 0) | as H3 | (255, 0, 100) | (255, 0, 100, 77) |
 | H9 | 0x3C00, ACCMAX 0x7E00 (NaN) | 0 (S2: ACCMAX NaN) | as H2 | (1, 2, 3) | (1, 2, 3, 77) |
 | H10 | 0x7C00 = +infinity | 1 (0x7C00 >= 0x4400) | as H3 | (255, 0, 100) | (255, 0, 100, 77) |
 | H11 | 0x1000 = 2^-11 | 2^-11 / 4 = 2^-13 | 2^-10, 0, 2^-10 | (1, 2, 3) + 2^-10 * (0, 0, 0) | (1, 2, 3, 77) |
+| H12 | 0x8000 = -0 | 0 (S2: the +-0 test comes before the compare, `unverified`; the unsigned compare alone would give 1) | as H2 | (1, 2, 3) | (1, 2, 3, 77) |
+| H13 | 0x4180 = 2.75 | 2.75 / 4 = 0.6875 | 5.5, 5, 0.5 | (200 + 0.5 * -30, 100 + 0.5 * 0, 90 + 0.5 * -40) = (185, 100, 70) | (185, 100, 70, 77) |
 
 **End to end.** G1a, G1b and G1c as three draws of one recording followed by the shading draw H1's state: the shading draw reads the
 sum 1.75 that the three left (each draw's feedback copy is taken after the one before it), so the output is (110, 195, 50, 77).
@@ -168,9 +172,16 @@ Each one is a choice above marked `unverified`, or something the model leaves ou
 8. **The fixed-function blend.** The pipeline's blend and logic op come from `fbops::MakeFixedFunctionState` (N2-13), which knows
    nothing of gas. The density pass computes the new density in the shader; if the game's registers have blending on for that draw,
    the pipeline would blend the shader's result with the buffer again. The synthetic draw has blending off. Whether MH4U's gas draws
-   blend (the census line `Gas;blend:Add/Add;...` names equations, not the enable bit) is not known; a "gas draws replace" rule in
-   `MakeFixedFunctionState` would be a change in N2-13's module.
-9. **Both modes set:** the density pass wins (`unverified`).
+   blend (the census line `Gas;blend:Add/Add;...` names equations, not the enable bit: the same `blend:Add/Add` is on the `Default`
+   and `Shadow` lines, so it is most likely the equation registers' value and says nothing about the enable) is not known; a "gas
+   draws replace" rule in `MakeFixedFunctionState` would be a change in N2-13's module.
+9. **Both modes set:** the density pass wins (`unverified`). What the census (`docs/research/pica-census.md` section 5, G4) shows:
+   10 draws with fog mode Gas and 10 with fragment operation mode Gas, in the same 10 frames, and the configuration line
+   `Gas;blend:Add/Add;...` (operation mode Gas) is 10 draws. The census counts a draw once if either mode is Gas and reports 20
+   draws for G4, so the two sets of 10 are different draws: 10 density draws (operation mode Gas) and 10 shading draws (fog mode
+   Gas, operation mode Default), a density pass followed by a shading pass as the model has it, and no draw with both modes. If a
+   later census counts them differently and they are the same 10 draws, this rule is the one that matters most for the console
+   check, since the shading pass would never run for them.
 10. **Negative or NaN densities** in the shading pass follow the unsigned compare (S2); an `ACCMAX` that is negative or NaN gives `t = 0`.
 
 ## 7. How it will be checked

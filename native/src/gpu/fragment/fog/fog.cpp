@@ -4,7 +4,7 @@
 // (Fog::LutEntry: the entry's bit fields and the division by 2047), src/video_core/rasterizer_accelerated.cpp and
 // src/video_core/pica/dirty_regs.h (SyncDrawUniforms and CheckFogColor: the fog colour uniform and the register that dirties
 // it), src/video_core/renderer_software/sw_rasterizer.cpp (WriteFog and how the depth it takes is computed and clamped) and
-// src/video_core/pica/regs_texturing.h (the fog mode, flip, colour and table-offset registers) at
+// src/video_core/pica/regs_texturing.h (the fog mode, flip and colour registers) at
 // 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-3.0-or-later: glsl_fs_shader_gen.cpp and vk_rasterizer.cpp say "Licensed under
 // GPLv3 or any later version"; pica_core.h, rasterizer_accelerated.cpp, dirty_regs.h, sw_rasterizer.cpp and regs_texturing.h
 // each say "Licensed under GPLv2 or any later version").
@@ -45,9 +45,12 @@
 //   Shading pass, fog mode Gas (key texture.fog_mode, 7)       [3dbrew: fog mode 7 is Gas]
 //     S1 [inference]  the density is the destination's, as in D2 and D4 (the same `dst_copy` copy).
 //     S2 [inference]  t = density / GPUREG_GAS_ACCMAX, clamped to [0, 1] (3dbrew: the maximum written "can be read back to compute
-//                     GPUREG_GAS_ACCMAX"); densities compare as unsigned 16-bit integers [3dbrew], so a density at or above ACCMAX
-//                     (a negative, infinite or NaN one included) is t = 1; a density of +-0 is t = 0; an ACCMAX that is negative or
-//                     NaN gives t = 0 [unverified].
+//                     GPUREG_GAS_ACCMAX"). What 3dbrew says about an unsigned 16-bit compare is only about the TRACKED MAXIMUM
+//                     (GPUREG_GAS_ACCMAX_FEEDBACK: "compared as unsigned 16-bit integers, so negative values, infinities and NaN
+//                     are greater than any positive value"); applying it to a shading-pass density against ACCMAX is [unverified]:
+//                     under it a density at or above ACCMAX (a negative, infinite or NaN one included) is t = 1. Also [unverified]:
+//                     a density of +0 or -0 (0x0000, 0x8000) is t = 0 (not t = 1 for -0 by the unsigned compare); an ACCMAX that is
+//                     negative or NaN gives t = 0.
 //     S3 [3dbrew]     the colour LUT input is the gas density (GPUREG_GAS_LIGHT_Z_COLOR bit 8 = 0) or the light factor (1).
 //     S4 [unverified] the light factor has no source in the registers' descriptions (planar and view shading intensities and
 //                     attenuations, with no per-fragment direction): with the light-factor input t = 1.
@@ -144,6 +147,8 @@ public:
     }
 
     // Azahar's WriteFog; `depth` is the local of main that WriteDepth made. The depth is clamped as sw_rasterizer.cpp clamps it.
+    // The software renderer truncates the fogged colour to a u8 and this shader (the GLSL's mix) leaves a float that the colour
+    // write rounds, so the two differ by at most one step of 8 bits: why gpu_fog_test compares fog pixels with a tolerance of 1.
     static void WriteFog(Emitter& e) {
         e.Raw("{\n"
               "float fog_depth = clamp(depth, 0.0, 1.0);\n"

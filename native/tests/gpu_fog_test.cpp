@@ -5,12 +5,13 @@
 // src/video_core/pica/regs_rasterizer.h, src/video_core/pica/regs_lighting.h and src/video_core/pica/regs_internal.h (the
 // positions of the output-merger, depth-range and lighting-disable registers the base state writes),
 // src/video_core/rasterizer_accelerated.cpp and src/video_core/pica/dirty_regs.h (the fog colour uniform, bytes over 255, and the
-// register that dirties it) and src/video_core/renderer_vulkan/vk_rasterizer.cpp (SyncAndUploadLUTsLF: the fog table's
+// register that dirties it), src/video_core/pica_types.h (the float24 layout that F24() below encodes: 1 sign, 7 exponent and 16
+// mantissa bits, bias 63) and src/video_core/renderer_vulkan/vk_rasterizer.cpp (SyncAndUploadLUTsLF: the fog table's
 // {value, difference} pairs in lut_lf) at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-3.0-or-later: vk_rasterizer.cpp says
 // "Licensed under GPLv3 or any later version"; every other file named here says "Licensed under GPLv2 or any later version").
 // The rig below (Tri, Vertex, Rig, the register helpers) is adapted from N2-08's TEV test in this directory (GPL-3.0-or-later, see
 // its header for what it takes from Azahar and for the BSD-3-Clause notice of the instruction encoder, which this file does not use).
-// Copyright 2015-2026 Citra Emulator Project / Azahar Emulator Project (sw_rasterizer.cpp)
+// Copyright 2015-2026 Citra Emulator Project / Azahar Emulator Project (sw_rasterizer.cpp, pica_types.h)
 // Copyright 2023-2026 Citra Emulator Project / Azahar Emulator Project (pica_core.h, rasterizer_accelerated.cpp, vk_rasterizer.cpp)
 // Copyright 2017-2024 Citra Emulator Project / Azahar Emulator Project (regs_texturing.h)
 // Copyright 2017-2025 Citra Emulator Project / Azahar Emulator Project (regs_framebuffer.h, regs_internal.h)
@@ -331,7 +332,8 @@ u32 FogEntry(int value, int difference) {
 }
 
 // The table of the cases: value[i] = (53 i) mod 2048, the difference the step to the next value (the last entry 100), so the factor
-// is continuous in the depth, rises and falls, and leaves [0, 1] for the clamp to act.
+// is continuous in the depth and rises and falls. Every segment runs between two values in [0, 2047] / 2047, so the factor stays
+// inside [0, 1]: this table never exercises the clamp of the factor (FogClampTable does).
 std::array<u32, 128> FogTable(int stride) {
     std::array<u32, 128> table{};
     for (int i = 0; i < 128; ++i) {
@@ -339,6 +341,17 @@ std::array<u32, 128> FogTable(int stride) {
         const int next = (stride * (i + 1)) % 2048;
         table[i] = FogEntry(value, i == 127 ? 100 : next - value);
     }
+    return table;
+}
+
+// FogTable(53) with three segments whose value + difference * fraction leaves [0, 1] (WriteFog clamps the factor):
+// entry 40 runs from 1900 up by 900 (the factor passes 1 at a fraction of 0.17), entry 80 from 100 down by 700 (it passes 0 at a
+// fraction of 0.14), entry 110 from 2000 up by 1500 (above 1 from the start of the second half).
+std::array<u32, 128> FogClampTable() {
+    std::array<u32, 128> table = FogTable(53);
+    table[40] = FogEntry(1900, 900);
+    table[80] = FogEntry(100, -700);
+    table[110] = FogEntry(2000, 1500);
     return table;
 }
 
@@ -614,6 +627,45 @@ TEST_CASE("fog/depth_fog_with_its_table_matches_the_software_renderers_formulas_
     }
 }
 
+TEST_CASE("fog/the_fog_factor_is_clamped_to_zero_and_one") {
+    auto backend = test::RequireBackend();
+    if (!backend) return;
+    Rig spec_rig(backend, false), uber_rig(backend, true);
+    const std::array<u32, 128> table = FogClampTable();
+    const std::array<int, 3> fog_color = {200, 40, 90};
+    const std::array<int, 4> pixel = {20, 120, 220, 77};
+
+    // depth = (index) / 128; the flipped cases use the index (1 - depth) * 128
+    const std::vector<FogCase> cases = {
+        {"entry 40 fraction 0.9: factor 1.32 -> 1 (the pixel)", -40.9f / 128.0f, 1.0f, false, false},
+        {"entry 40 fraction 0.9, flipped", -(1.0f - 40.9f / 128.0f), 1.0f, true, false},
+        {"entry 80 fraction 0.9: factor -0.26 -> 0 (the fog colour)", -80.9f / 128.0f, 1.0f, false, false},
+        {"entry 80 fraction 0.9, flipped", -(1.0f - 80.9f / 128.0f), 1.0f, true, false},
+        {"entry 80 fraction 0.5: factor -0.07 -> 0", -80.5f / 128.0f, 1.0f, false, false},
+        {"entry 110 fraction 0.75: factor 1.55 -> 1", -110.75f / 128.0f, 1.0f, false, false},
+        {"entry 40 fraction 0.05: inside [0, 1], not clamped", -40.05f / 128.0f, 1.0f, false, false},
+    };
+    for (const FogCase& c : cases) {
+        INFO(c.name);
+        const float depth = SwDepth(c.z, c.w, -1.0f, 0.0f, c.w_buffering);
+        const std::array<int, 4> want = SwFog(pixel, table, fog_color, c.flip, depth);
+        const DrawSpec spec = FogDraw(c, table, fog_color, pixel);
+        std::string why;
+        const std::vector<u8> a = spec_rig.Render({spec});
+        const std::vector<u8> b = uber_rig.Render({spec});
+        CHECK_MESSAGE(AllNear(a, want, 1, &why), why);
+        CHECK_MESSAGE(AllNear(b, want, 1, &why), why);
+        CHECK(SameWithin(a, b));
+    }
+    // the clamped ends are exactly the pixel and the fog colour (the case proves something only if the factor really left [0, 1])
+    {
+        const std::array<int, 4> over = SwFog(pixel, table, fog_color, false, SwDepth(-40.9f / 128.0f, 1.0f, -1.0f, 0.0f, false));
+        const std::array<int, 4> under = SwFog(pixel, table, fog_color, false, SwDepth(-80.9f / 128.0f, 1.0f, -1.0f, 0.0f, false));
+        CHECK(over == pixel);
+        CHECK(under == std::array<int, 4>{fog_color[0], fog_color[1], fog_color[2], 77});
+    }
+}
+
 TEST_CASE("fog/fog_mode_none_leaves_the_pixel_and_the_table_is_uploaded_again_when_it_changes") {
     auto backend = test::RequireBackend();
     if (!backend) return;
@@ -688,10 +740,12 @@ u32 Rgb(int r, int g, int b) { return (static_cast<u32>(r) & 255) | ((static_cas
 std::array<u32, 16> GasTable() {
     std::array<u32, 16> t{};
     t[3] = Rgb(20, -10, 0);       // difference of segment 3
+    t[5] = Rgb(-30, 0, -40);      // difference of segment 5: red and blue negative
     t[7] = Rgb(10, -10, 100);     // difference of segment 7
     t[8 + 0] = Rgb(1, 2, 3);      // value of segment 0
     t[8 + 2] = Rgb(40, 50, 60);   // value of segment 2
     t[8 + 3] = Rgb(100, 200, 50); // value of segment 3
+    t[8 + 5] = Rgb(200, 100, 90); // value of segment 5
     t[8 + 7] = Rgb(250, 5, 0);    // value of segment 7
     return t;
 }
@@ -773,7 +827,7 @@ TEST_CASE("gas/the_shading_pass_reads_the_density_normalises_it_by_accmax_and_lo
         bool light_factor;
         std::array<int, 4> want;
     };
-    // gas.md, H1 to H9 (the table is GasTable(); ACCMAX 4.0 = 0x4400 unless stated; the output alpha is the TEV's, 77)
+    // gas.md, H1 to H13 (the table is GasTable(); ACCMAX 4.0 = 0x4400 unless stated; the output alpha is the TEV's, 77)
     const std::vector<Case> cases = {
         {"H1 density 1.75: t = 0.4375, position 3.5, segment 3, fraction 0.5", {1, 1, 0x3F, 0x00}, kAccMax4, false, {110, 195, 50, kShadingAlpha}},
         {"H2 density 0: t = 0, segment 0", {5, 5, 0x00, 0x00}, kAccMax4, false, {1, 2, 3, kShadingAlpha}},
@@ -786,6 +840,8 @@ TEST_CASE("gas/the_shading_pass_reads_the_density_normalises_it_by_accmax_and_lo
         {"H9 ACCMAX NaN (0x7E00): t = 0", {1, 1, 0x3C, 0x00}, 0x7E00, false, {1, 2, 3, kShadingAlpha}},
         {"H10 density +infinity (0x7C00) at or above ACCMAX: t = 1", {1, 1, 0x7C, 0x00}, kAccMax4, false, {255, 0, 100, kShadingAlpha}},
         {"H11 density 0.001 (0x1000 = 2^-11): t = 2^-13, position 2^-10: segment 0 plus 2^-10 of a zero difference", {1, 1, 0x10, 0x00}, kAccMax4, false, {1, 2, 3, kShadingAlpha}},
+        {"H12 density -0 (0x8000): t = 0, not 1 (unverified choice, gas.md S2)", {1, 1, 0x80, 0x00}, kAccMax4, false, {1, 2, 3, kShadingAlpha}},
+        {"H13 density 2.75 (0x4180): t = 0.6875, position 5.5, segment 5 with negative red and blue differences", {1, 1, 0x41, 0x80}, kAccMax4, false, {185, 100, 70, kShadingAlpha}},
     };
     for (const Case& c : cases) {
         INFO(c.name);
