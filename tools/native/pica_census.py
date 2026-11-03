@@ -458,7 +458,7 @@ class Replayer:
         for kind in (gcap.K_PICA_REGS, gcap.K_VS_SETUP, gcap.K_GS_SETUP, gcap.K_IMMEDIATE):
             if kind not in blocks:
                 raise gcap.GcapError(f"INIT: no {gcap.INIT_BLOCK_NAMES[kind]} block")
-        self.regs: list[int] = list(struct.unpack(f"<{gcap.NUM_PICA_REGS}I", blocks[gcap.K_PICA_REGS]))
+        self.regs: list[int] = gcap.internal_regs(blocks)   # the rule of N2-40: see gcap.internal_regs
         self.units = {"vs": ShaderUnit(blocks[gcap.K_VS_SETUP], 512),   # pica_core.cpp: "Invalid VS program offset" at >= 512
                        "gs": ShaderUnit(blocks[gcap.K_GS_SETUP])}
         # ImmediateModeState: input_vertex 256 bytes, current_attribute, reset_geometry_pipeline, queue{buffer[4], index}

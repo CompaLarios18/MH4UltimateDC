@@ -27,7 +27,7 @@ import struct
 import sys
 from collections import Counter
 from dataclasses import dataclass
-from typing import BinaryIO, Iterable, Iterator, Sequence
+from typing import BinaryIO, Iterable, Iterator, Mapping, Sequence
 
 MAGIC = b"MGPU"
 VERSION = 1
@@ -70,7 +70,13 @@ INIT_BLOCK_NAMES = {
     K_LIGHTING_LUT: "LIGHTING_LUT", K_FOG_LUT: "FOG_LUT", K_PROCTEX: "PROCTEX",
     K_IMMEDIATE: "IMMEDIATE", K_GEOMETRY_PIPELINE: "GEOMETRY_PIPELINE",
 }
-NUM_PICA_REGS = 0x300
+NUM_PICA_REGS = 0x300           # words of the PICA_REGS block
+NUM_GPU_REGS = 0x432            # words of the GPU_REGS block
+NUM_INTERNAL_REGS = 0x300       # PICA internal registers (the index of a PICA_REG entry)
+# In Azahar's PicaCore::Regs the internal registers start at word 0x400 of reg_array, so the recorder's blocks
+# (GPU_REGS = words 0..0x431, PICA_REGS = words 0x432..0x731) split them: see internal_regs.
+GPU_REGS_INTERNAL_BASE = 0x400  # word of GPU_REGS holding internal register 0
+NUM_INTERNAL_IN_GPU_REGS = NUM_GPU_REGS - GPU_REGS_INTERNAL_BASE  # 0x32: internal registers 0..0x31 live in GPU_REGS
 
 # GX command ids (Service::GSP::CommandId) and FLUSH kinds.
 GX_NAMES = {0: "REQUEST_DMA", 1: "SUBMIT_CMDLIST", 2: "MEMORY_FILL", 3: "DISPLAY_TRANSFER",
@@ -217,7 +223,7 @@ def parse_pica_reg(payload: bytes) -> list[tuple[int, int, int]]:
             raise GcapError(f"PICA_REG: entry {i} has a nonzero pad byte")
         if mask > 0xF:
             raise GcapError(f"PICA_REG: entry {i} has byte mask 0x{mask:02x}")
-        if reg >= NUM_PICA_REGS:
+        if reg >= NUM_INTERNAL_REGS:
             raise GcapError(f"PICA_REG: entry {i} register 0x{reg:03x} out of range")
         out.append((reg, mask, value))
     return out
@@ -366,20 +372,39 @@ def mask_expand(mask: int) -> int:
     return sum(0xFF << (8 * n) for n in range(4) if mask & (1 << n))
 
 
+def internal_regs(blocks: Mapping[int, bytes]) -> list[int]:
+    """The 0x300 PICA internal registers an INIT record holds (`blocks` = {kind: bytes}, as dict(parse_init(...))).
+
+    The rule (N2-40): internal register i is GPU_REGS[0x400 + i] for i below 0x32 and PICA_REGS[i - 0x32]
+    otherwise (Azahar's `Regs::internal` starts at word 0x400 of reg_array; the recorder splits reg_array at word
+    0x432).  The last 0x32 words of PICA_REGS lie past Azahar's structure and are not read.  Without a GPU_REGS
+    block, registers 0 to 0x31 are zero (the Python tools have no reset state); the PICA_REGS block is needed.
+    """
+    pica = blocks.get(K_PICA_REGS)
+    if pica is None:
+        raise GcapError("INIT: no PICA_REGS block")
+    if len(pica) != NUM_PICA_REGS * 4:
+        raise GcapError("INIT: PICA_REGS block has the wrong size")
+    gpu = blocks.get(K_GPU_REGS)
+    if gpu is not None and len(gpu) != NUM_GPU_REGS * 4:
+        raise GcapError("INIT: GPU_REGS block has the wrong size")
+    low = (list(struct.unpack_from(f"<{NUM_INTERNAL_IN_GPU_REGS}I", gpu, GPU_REGS_INTERNAL_BASE * 4))
+           if gpu is not None else [0] * NUM_INTERNAL_IN_GPU_REGS)
+    return low + list(struct.unpack_from(f"<{NUM_INTERNAL_REGS - NUM_INTERNAL_IN_GPU_REGS}I", pica, 0))
+
+
 def registers_at(records: Sequence[Record], index: int) -> list[int]:
     """The PICA internal register file before record `index`.
 
-    Starts from the INIT record's PICA_REGS block and replays the PICA_REG
-    writes before `index`, honouring byte masks.
+    Starts from the INIT record's internal registers (`internal_regs`) and
+    replays the PICA_REG writes before `index`, honouring byte masks.
     """
     regs: list[int] | None = None
     for rec in records[:index]:
         if rec.type == INIT:
-            for kind, data in parse_init(rec.payload):
-                if kind == K_PICA_REGS:
-                    if len(data) != NUM_PICA_REGS * 4:
-                        raise GcapError("INIT: PICA_REGS block has the wrong size")
-                    regs = list(struct.unpack(f"<{NUM_PICA_REGS}I", data))
+            blocks = dict(parse_init(rec.payload))
+            if K_PICA_REGS in blocks:
+                regs = internal_regs(blocks)
         elif rec.type == PICA_REG:
             if regs is None:
                 raise GcapError("PICA_REG before an INIT with a PICA_REGS block")
@@ -548,12 +573,22 @@ def build_pages(pages: Sequence[tuple[int, bytes]]) -> bytes:
     return out
 
 
-def pica_regs_block(values: dict[int, int] | None = None) -> bytes:
-    """A PICA_REGS INIT block, zero except for `values` {register: word}."""
-    regs = [0] * NUM_PICA_REGS
+def internal_regs_blocks(values: dict[int, int] | None = None) -> dict[int, bytes]:
+    """The GPU_REGS and PICA_REGS INIT blocks of `values` {internal register: word}, as the recorder lays them out.
+
+    Each register is placed by `internal_regs`'s rule; every other word is zero.  For `Writer.init`.
+    """
+    gpu = [0] * NUM_GPU_REGS
+    pica = [0] * NUM_PICA_REGS
     for r, v in (values or {}).items():
-        regs[r] = v
-    return struct.pack(f"<{NUM_PICA_REGS}I", *regs)
+        if not 0 <= r < NUM_INTERNAL_REGS:
+            raise ValueError(f"internal register 0x{r:x} out of range")
+        if r < NUM_INTERNAL_IN_GPU_REGS:
+            gpu[GPU_REGS_INTERNAL_BASE + r] = v
+        else:
+            pica[r - NUM_INTERNAL_IN_GPU_REGS] = v
+    return {K_GPU_REGS: struct.pack(f"<{NUM_GPU_REGS}I", *gpu),
+            K_PICA_REGS: struct.pack(f"<{NUM_PICA_REGS}I", *pica)}
 
 
 def to_bytes(records: Iterable[Record], version: int = VERSION) -> bytes:
