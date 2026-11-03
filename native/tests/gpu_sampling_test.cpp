@@ -1,8 +1,8 @@
 // Derived from Azahar src/video_core/renderer_software/sw_rasterizer.cpp (RasterizerSoftware::TextureColor: the texel index
 // from the coordinate, the border test, the t flip, the projection and the cube conversion's caller), sw_texturing.cpp
-// (GetWrappedTexCoord: the eight wrap modes), sw_clipper.cpp (ConvertCubeCoord), sw_framebuffer.cpp (Framebuffer::DrawPixel: the buffer row a window row is stored in),
-// src/video_core/pica/regs_texturing.h (the
-// register fields, the texture types and the wrap-mode enumerators), src/video_core/rasterizer_accelerated.cpp (the
+// (GetWrappedTexCoord: the eight wrap modes), sw_clipper.cpp (ConvertCubeCoord), sw_framebuffer.cpp (Framebuffer::DrawPixel:
+// the buffer row a window row is stored in), src/video_core/pica/regs_texturing.h (the register fields, the texture types and
+// the wrap-mode enumerators), src/video_core/rasterizer_accelerated.cpp (the
 // tex_lod_bias and tex_border_color uniforms), src/video_core/rasterizer_cache/sampler_params.h and rasterizer_cache.h (what a
 // sampler is made of), src/video_core/renderer_vulkan/vk_texture_runtime.cpp (Sampler::Sampler) and pica_to_vk.h (the wrap and
 // filter tables), and src/video_core/shader/generator/glsl_fs_shader_gen.cpp (getLod, the texture lookups of
@@ -1803,7 +1803,7 @@ TEST_CASE("native/a_colour_target_loaded_from_guest_memory_is_written_back_in_it
         CAPTURE(std::string(names[format]));
         Sim sim;
         const u32 bytes = kReloadWidth * kReloadHeight * ReloadBytesPerPixel(format);
-        // a pattern whose rows all differ (a linear congruential sequence: no two rows or pixels repeat)
+        // a linear congruential pattern: in every format no two rows are equal and no pixel equals the one in its mirrored row
         std::vector<u8> pattern(bytes);
         u32 seed = 0x2468ACE1u + format;
         for (u8& b : pattern) {
