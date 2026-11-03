@@ -1,5 +1,6 @@
 // Derived from Azahar src/video_core/rasterizer_cache/framebuffer_base.h (FramebufferHelper), src/video_core/renderer_vulkan/
-// vk_rasterizer.cpp (Draw), src/video_core/pica/regs_framebuffer.h, regs_rasterizer.h and src/video_core/gpu.cpp at
+// vk_rasterizer.cpp (Draw; SyncTextureUnits: which texture each unit binds, the null surfaces for a unit that is off),
+// src/video_core/pica/regs_framebuffer.h, regs_rasterizer.h, regs_texturing.h and src/video_core/gpu.cpp at
 // 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-3.0-or-later: vk_rasterizer.cpp says "Licensed under GPLv3 or any later
 // version"; the others say "Licensed under GPLv2 or any later version"): the viewport, scissor and draw rectangle of a draw
 // (mirrored when the framebuffer is flipped), the surfaces a draw uses, the register positions of the framebuffer block.
@@ -8,14 +9,17 @@
 // Copyright 2023-2025 Citra Emulator Project / Azahar Emulator Project (framebuffer_base.h)
 // Copyright 2017-2025 Citra Emulator Project / Azahar Emulator Project (regs_framebuffer.h)
 // Copyright 2017-2026 Citra Emulator Project / Azahar Emulator Project (regs_rasterizer.h)
+// Copyright 2017-2024 Citra Emulator Project / Azahar Emulator Project (regs_texturing.h)
 //
 // `--gpu native` (N2-08). See native_gpu.h for the order of a draw and what the render targets are.
 #include "gpu/native/native_gpu.h"
 
 #include <algorithm>
 #include <cstring>
+#include <array>
 #include <map>
 #include <optional>
+#include <tuple>
 
 #include <fmt/format.h>
 
@@ -25,7 +29,9 @@
 #include "gpu/cpuvertex/triangle_batch.h"
 #include "gpu/fbops/fixed_function.h"
 #include "gpu/fragment/feature.h"
+#include "gpu/fragment/generator.h"
 #include "gpu/fragment/profile.h"
+#include "gpu/fragment/sampling/sampling.h"
 #include "gpu/fragment/state.h"
 #include "gpu/fragment/tables.h"
 #include "gpu/gx/engine.h"
@@ -35,7 +41,9 @@
 #include "gpu/native/vertex_input.h"
 #include "gpu/pica/command_processor.h"
 #include "gpu/shader/vertex_shader.h"
+#include "gpu/texture/cache.h"
 #include "gpu/texture/decode.h"
+#include "gpu/texture/texture_regs.h"
 #include "gpu/vertex/vertex_loader.h"
 #include "mh4n/log.h"
 #include "mh4n/registry.h"
@@ -64,6 +72,9 @@ constexpr u32 kRegFramebufferSize = 0x11E;
 constexpr u64 kVertexRingBytes = 16ull << 20;
 constexpr u64 kVsUniformRingBytes = 2ull << 20;
 constexpr u64 kStagingRingBytes = 8ull << 20;
+// The decoded textures kept as images (a texture is level 0 only until N2-15); past this the ones the current recording does not
+// use are released.
+constexpr u64 kTextureBudgetBytes = 768ull << 20;
 constexpr u32 kMaxDrawsPerRecording = 256;
 constexpr u32 kVsUniformAllocation = 2048;  // PicaUniformData (1,616) padded to 1,792, then VertexUniformData (32)
 
@@ -180,6 +191,21 @@ struct Target {
     bool Overlaps(u32 begin, u32 end) const { return paddr < end && begin < paddr + bytes; }
 };
 
+// ---- the textures (N2-23) ------------------------------------------------------------------------------------------------
+
+// A texture image is keyed by what the cache is keyed by: a 2D texture by one cache key, a cube by its six faces.
+struct TexImageKey {
+    bool cube = false;
+    std::array<texture::CacheKey, 6> faces{};
+    friend bool operator<(const TexImageKey& a, const TexImageKey& b) { return std::tie(a.cube, a.faces) < std::tie(b.cube, b.faces); }
+};
+struct TexImage {
+    std::shared_ptr<rhi::Image> image;
+    std::array<u32, 6> generation{};  // of the cache's decoded face the image holds
+    u64 bytes = 0;
+    u64 stamp = 0;  // the recording that last bound it
+};
+
 // ---- the GPU --------------------------------------------------------------------------------------------------------
 
 class Impl final : public NativeGpu, public pica::Backend {
@@ -210,6 +236,9 @@ public:
         WriteBackAll();
         gx_.Execute(command);
         MarkAllStale();
+        if (texture_cache_) {
+            texture_cache_->OnGpuWrite(0, 0xFFFFFFFFu);  // a fill, transfer or copy may have written any texture's memory
+        }
     }
 
     void WriteReg(u32 addr, u32 value) override {
@@ -247,9 +276,11 @@ public:
         }
         if (const std::optional<u32> paddr = host_.VirtualToPhysical(vaddr)) {
             WriteBackOverlapping(*paddr, size, /*stale=*/true);
+            texture_cache_->OnFlush(*paddr, size);
         } else {
             WriteBackAll();
             MarkAllStale();
+            texture_cache_->OnFlush(0, 0xFFFFFFFFu);
         }
     }
 
@@ -260,8 +291,10 @@ public:
         }
         if (const std::optional<u32> paddr = host_.VirtualToPhysical(vaddr)) {
             WriteBackOverlapping(*paddr, size, /*stale=*/false);
+            texture_cache_->OnInvalidate(*paddr, size);
         } else {
             WriteBackAll();
+            texture_cache_->OnInvalidate(0, 0xFFFFFFFFu);
         }
     }
 
@@ -319,6 +352,11 @@ public:
         add("dst_copies", frame_.dst_copies);
         add("fallback_draws", frame_.fallback_draws);
         add("stubbed:blend_plan", frame_.stubbed_blend_plan);
+        add("texture_binds", frame_.texture_binds);
+        add("texture_uploads", frame_.texture_uploads);
+        add("texture_unavailable", frame_.texture_unavailable);
+        add("sampler_creates", frame_.sampler_creates);
+        add("texture_levels_missing", frame_.texture_levels_missing);
         for (const char* name : {"sampling", "lighting", "fog", "proctex", "shadow", "gas"}) {
             const auto it = frame_.stubbed.find(std::string_view(name));
             add(std::string("stubbed:") + name, it == frame_.stubbed.end() ? 0 : it->second);
@@ -354,6 +392,7 @@ private:
         u64 translate_failures = 0, restart_widened = 0;
         u64 sync_builds = 0, forced_uber = 0;
         u64 stubbed_fixup = 0, dst_copies = 0, fallback_draws = 0, stubbed_blend_plan = 0;
+        u64 texture_binds = 0, texture_uploads = 0, texture_unavailable = 0, sampler_creates = 0, texture_levels_missing = 0;
         std::map<std::string, u64, std::less<>> stubbed;
     };
 
@@ -410,6 +449,8 @@ private:
         vs_ring_ = std::move(*vs_ring);
         staging_ring_ = std::move(*staging);
         fragment_state_ = std::make_unique<fragment::FragmentState>(profile_, *registry_);
+        texture_cache_ = std::make_unique<texture::TextureCache>(host_);
+        samplers_ = std::make_unique<fragment::sampling::SamplerCache>(backend_);
 
         vertex::VertexCaps vertex_caps;
         vertex_caps.triangle_fans = caps.triangle_fans;
@@ -435,6 +476,8 @@ private:
         }
         composer_->BeginRecording(*rec_);
         uniform_ring_->BeginRecording();
+        ++recording_serial_;
+        TrimTextures();
         draws_in_recording_ = 0;
         vertex_bytes_in_recording_ = 0;
         dynamic_applied_ = false;
@@ -445,7 +488,7 @@ private:
             return;
         }
         composer_->EndPass(*rec_);
-        backend_->Submit(std::move(*rec_));
+        last_submit_ = backend_->Submit(std::move(*rec_));
         rec_.reset();
     }
 
@@ -556,6 +599,7 @@ private:
         if (!r.ok()) {
             MH4N_LOG(Error, kLog, "write-back of a render target: {}", r.error());
         }
+        texture_cache_->OnGpuWrite(t.paddr, t.bytes);  // a texture drawn into is out of date in the cache
     }
 
     void WriteBackAll() {
@@ -600,6 +644,246 @@ private:
             LoadTarget(*t);
         }
         return t;
+    }
+
+    // ---- textures (N2-23) ----
+    // Which texture units the draw reads: a TEV stage that is not a pass-through, or lighting's bump map or shadow map.
+    std::array<bool, 3> UnitsRead(const fragment::FragmentKey& key) const {
+        std::array<bool, 3> used{fragment::TevUsesSource(key, 3), fragment::TevUsesSource(key, 4), fragment::TevUsesSource(key, 5)};
+        if (key.lighting.enable() != 0) {
+            if (key.lighting.bump_mode() != fragment::regenum::LightingBumpMode::None && key.lighting.bump_selector() < 3) {
+                used[key.lighting.bump_selector()] = true;
+            }
+            if (key.lighting.enable_shadow() != 0 && key.lighting.shadow_selector() < 3) {
+                used[key.lighting.shadow_selector()] = true;
+            }
+        }
+        return used;
+    }
+
+    // The 1x1 images a unit holds when it has nothing to show (Azahar binds a null surface to a unit that is off; the software
+    // renderer gives transparent black for it and opaque black for an enabled unit with address 0).
+    void EnsureNullTextures() {
+        if (null_2d_ == nullptr) {
+            rhi::ImageDesc desc;
+            desc.format = rhi::Format::Rgba8Unorm;
+            desc.width = desc.height = 1;
+            desc.name = "null texture";
+            auto a = backend_->CreateImage(desc);
+            desc.name = "null opaque-black texture";
+            auto b = backend_->CreateImage(desc);
+            desc.name = "null cube texture";
+            desc.cube = true;
+            desc.layers = 6;
+            auto c = backend_->CreateImage(desc);
+            if (!a.ok() || !b.ok() || !c.ok()) {
+                MH4N_LOG(Error, kLog, "null textures: {} {} {}", a.error(), b.error(), c.error());
+                return;
+            }
+            null_2d_ = *a;
+            null_black_2d_ = *b;
+            null_cube_ = *c;
+            null_cleared_ = false;
+        }
+        if (!null_cleared_) {
+            EnsureRecording();
+            composer_->EndPass(*rec_);
+            rhi::ClearValue clear;
+            rec_->ClearImage(*null_2d_, clear);
+            rec_->ClearImage(*null_cube_, clear, 0, 0);
+            for (u32 layer = 1; layer < 6; ++layer) {
+                rec_->ClearImage(*null_cube_, clear, 0, layer);
+            }
+            clear.color = {0.0f, 0.0f, 0.0f, 1.0f};
+            rec_->ClearImage(*null_black_2d_, clear);
+            null_cleared_ = true;
+        }
+    }
+
+    // Releases the images the current recording does not use when the budget is exceeded (called when a recording begins, with
+    // everything earlier submitted: the GPU may still be reading them, so the backend keeps them until it has passed that).
+    void TrimTextures() {
+        if (binding_textures_ || texture_bytes_ <= kTextureBudgetBytes) {  // not while a draw is still collecting its images
+            return;
+        }
+        for (auto it = texture_images_.begin(); it != texture_images_.end();) {
+            if (it->second.stamp != recording_serial_) {
+                texture_bytes_ -= it->second.bytes;
+                backend_->Retire(it->second.image, last_submit_);
+                it = texture_images_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+
+    // Uploads one decoded face into `image` (submitting the recording once when the staging ring is full). False on failure.
+    bool UploadFace(rhi::Image& image, u32 layer, u32 width, u32 height, const std::vector<u8>& rgba) {
+        EnsureRecording();
+        composer_->EndPass(*rec_);
+        rhi::Result<void> r = fragment::sampling::UploadRgba8(*rec_, *staging_ring_, image, 0, layer, width, height, rgba);
+        if (!r.ok()) {
+            FlushRecording();
+            EnsureRecording();
+            r = fragment::sampling::UploadRgba8(*rec_, *staging_ring_, image, 0, layer, width, height, rgba);
+        }
+        if (!r.ok()) {
+            MH4N_LOG(Error, kLog, "texture upload {}x{}: {}", width, height, r.error());
+            return false;
+        }
+        ++frame_.texture_uploads;
+        return true;
+    }
+
+    // The image of a texture (one 2D face or the six of a cube), decoded by the cache and uploaded when new or changed.
+    // Null when the memory cannot be read or decoded.
+    rhi::Image* TextureImage(const std::vector<const texture::TextureRef*>& faces) {
+        TexImageKey key;
+        key.cube = faces.size() == 6;
+        const texture::TextureRef& first = *faces[0];
+        for (size_t i = 0; i < faces.size(); ++i) {
+            const texture::TextureRef& f = *faces[i];
+            if (f.width != first.width || f.height != first.height || f.format != first.format) {
+                return nullptr;  // a cube whose faces differ
+            }
+            key.faces[i] = texture::CacheKey{f.paddr, f.format, f.width, f.height};
+            // A render target that holds this memory is written back first (until the surface cache, N2-15, samples it directly).
+            WriteBackOverlapping(f.paddr, static_cast<u32>(texture::EncodedBytes(f.format, f.width, f.height)), /*stale=*/false);
+        }
+        std::array<const texture::CachedTexture*, 6> decoded{};
+        for (size_t i = 0; i < faces.size(); ++i) {
+            decoded[i] = texture_cache_->Get(key.faces[i]);
+            if (decoded[i] == nullptr) {
+                return nullptr;
+            }
+        }
+        auto it = texture_images_.find(key);
+        if (it == texture_images_.end()) {
+            rhi::ImageDesc desc;
+            desc.format = rhi::Format::Rgba8Unorm;
+            desc.width = first.width;
+            desc.height = first.height;
+            desc.cube = key.cube;
+            desc.layers = key.cube ? 6 : 1;
+            desc.name = key.cube ? "pica cube texture" : "pica texture";
+            rhi::Result<std::shared_ptr<rhi::Image>> image = backend_->CreateImage(desc);
+            if (!image.ok()) {
+                MH4N_LOG(Error, kLog, "texture {}x{}: {}", first.width, first.height, image.error());
+                return nullptr;
+            }
+            TexImage entry;
+            entry.image = *image;
+            entry.bytes = static_cast<u64>(first.width) * first.height * 4 * faces.size();
+            texture_bytes_ += entry.bytes;
+            it = texture_images_.emplace(key, std::move(entry)).first;
+        }
+        TexImage& entry = it->second;
+        entry.stamp = recording_serial_;
+        for (size_t i = 0; i < faces.size(); ++i) {
+            if (entry.generation[i] == decoded[i]->generation) {
+                continue;
+            }
+            if (!UploadFace(*entry.image, static_cast<u32>(i), first.width, first.height, decoded[i]->rgba8)) {
+                return nullptr;
+            }
+            entry.generation[i] = decoded[i]->generation;
+            // Uploading may have submitted the recording: the entry stays valid (the map is not touched), but the stamp of this
+            // recording is the new one.
+            entry.stamp = recording_serial_;
+        }
+        return entry.image.get();
+    }
+
+    // The binding of one unit (design 4.8: a texture and a sampler per unit; vk_rasterizer.cpp's SyncTextureUnits).
+    TextureBinding BindUnit(const pica::PicaState& state, u32 unit, const std::vector<texture::TextureRef>& refs) {
+        using texture::Type;
+        const auto& regs = state.regs;
+        const u32 config[3] = {texture::kTexture0, texture::kTexture1, texture::kTexture2};
+        const u32 params = regs[config[unit] + 2];
+        const Type type = unit == 0 ? static_cast<Type>(pica::BitsOf(params, 28, 3)) : Type::Texture2D;
+        const bool cube = type == Type::TextureCube || type == Type::ShadowCube;
+        TextureBinding binding;
+        if (type == Type::Shadow2D || type == Type::ShadowCube || type == Type::Disabled) {
+            return binding;  // the shadow lookups are N2-12's (the dummies); a Disabled unit 0 never reads its texture
+        }
+        EnsureNullTextures();
+        auto null_texture = [&](bool opaque) {
+            binding.image = cube ? null_cube_.get() : (opaque ? null_black_2d_.get() : null_2d_.get());
+            return binding;
+        };
+        if (((regs[texture::kMainConfig] >> unit) & 1) == 0) {
+            return null_texture(false);  // the unit is off: the software renderer's transparent black
+        }
+        if (pica::BitsOf(regs[config[unit] + 4], 0, 28) == 0) {
+            return null_texture(true);  // an enabled unit with address 0: opaque black
+        }
+        std::vector<const texture::TextureRef*> faces;
+        for (const texture::TextureRef& ref : refs) {
+            if (ref.unit == unit) {
+                faces.push_back(&ref);
+            }
+        }
+        // A unit 0 type the PICA does not define (6, 7) is sampled as Texture2D (sampling.cpp), but TexturesOfDraw leaves it out:
+        // describe the 2D texture from the registers the same way.
+        texture::TextureRef undefined_type;
+        if (faces.empty() && unit == 0 && (type == static_cast<Type>(6) || type == static_cast<Type>(7))) {
+            const u32 size_word = regs[config[0] + 1];
+            undefined_type.unit = 0;
+            undefined_type.width = pica::BitsOf(size_word, 16, 11);
+            undefined_type.height = pica::BitsOf(size_word, 0, 11);
+            undefined_type.paddr = pica::BitsOf(regs[config[0] + 4], 0, 28) * 8;
+            const u32 format_value = pica::BitsOf(regs[texture::kTexture0Format], 0, 4);
+            undefined_type.format = static_cast<texture::Format>(format_value);
+            if (texture::IsValidFormat(format_value) && texture::IsValidSize(undefined_type.width, undefined_type.height)) {
+                faces.push_back(&undefined_type);
+            }
+        }
+        if (faces.empty() || (cube && faces.size() != 6)) {
+            ++frame_.texture_unavailable;
+            return null_texture(false);
+        }
+        rhi::Image* image = TextureImage(faces);
+        if (image == nullptr) {
+            ++frame_.texture_unavailable;
+            return null_texture(false);
+        }
+        rhi::Result<std::shared_ptr<rhi::Sampler>> sampler = samplers_->Get(fragment::sampling::SamplerParamsOf(state, unit));
+        if (!sampler.ok()) {
+            MH4N_LOG(Error, kLog, "sampler: {}", sampler.error());
+            ++frame_.texture_unavailable;
+            return null_texture(false);
+        }
+        frame_.sampler_creates += samplers_->creates() - seen_sampler_creates_;
+        seen_sampler_creates_ = samplers_->creates();
+        ++frame_.texture_binds;
+        // Azahar gives a texture lod.max_level + 1 levels from guest memory; this binds level 0 only.
+        if (pica::BitsOf(regs[config[unit] + 3], 16, 4) > 0) {
+            levels_missing_in_draw_ = true;
+        }
+        binding.image = image;
+        binding.view = rhi::ImageView::Sampled;
+        binding.sampler = sampler->get();
+        return binding;
+    }
+
+    void BindTextures(const pica::PicaState& state, const fragment::FragmentKey& key, DrawDesc& desc) {
+        const std::array<bool, 3> used = UnitsRead(key);
+        if (!used[0] && !used[1] && !used[2]) {
+            return;
+        }
+        EnsureRecording();
+        binding_textures_ = true;
+        levels_missing_in_draw_ = false;
+        const std::vector<texture::TextureRef> refs = texture::TexturesOfDraw(state.regs.data());
+        for (u32 unit = 0; unit < 3; ++unit) {
+            if (used[unit]) {
+                desc.units[unit] = BindUnit(state, unit, refs);
+            }
+        }
+        binding_textures_ = false;
+        if (levels_missing_in_draw_) {
+            ++frame_.texture_levels_missing;
+        }
     }
 
     // ---- a draw ----
@@ -654,8 +938,11 @@ private:
             return drop("no surface");
         }
 
-        // ---- the vertices ----
+        // ---- the textures the draw reads (before any vertex data is committed: binding one can submit the recording) ----
         DrawDesc desc;
+        BindTextures(state, key, desc);
+
+        // ---- the vertices ----
         bool use_cpu = cpuvertex::NeedsCpuPath(draw, assembler_.IsEmpty());
         vertex::LoadedDraw loaded;
         shader::VertexShaderConfig vs_config;
@@ -932,6 +1219,19 @@ private:
     cpuvertex::PrimitiveAssembler assembler_;
     cpuvertex::TriangleBatch batch_;
     std::vector<std::unique_ptr<Target>> targets_;
+
+    // textures (N2-23): the decoded texture cache of N2-14, the images made from it, the sampler objects
+    std::unique_ptr<texture::TextureCache> texture_cache_;
+    std::unique_ptr<fragment::sampling::SamplerCache> samplers_;
+    std::map<TexImageKey, TexImage> texture_images_;
+    u64 texture_bytes_ = 0;
+    u64 recording_serial_ = 0;
+    rhi::TimelineValue last_submit_ = 0;
+    std::shared_ptr<rhi::Image> null_2d_, null_black_2d_, null_cube_;  // transparent black, opaque black, transparent black cube
+    bool null_cleared_ = false;
+    bool binding_textures_ = false;
+    bool levels_missing_in_draw_ = false;
+    u64 seen_sampler_creates_ = 0;
 
     // the recording
     std::optional<rhi::Recorder> rec_;
