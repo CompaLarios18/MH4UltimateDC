@@ -535,7 +535,7 @@ class _Pica:
     def init(self, payload: bytes) -> None:
         blocks = dict(gcap.parse_init(payload))
         if gcap.K_PICA_REGS in blocks:
-            self.regs = gcap.internal_regs(blocks)   # the rule of N2-40: GPU_REGS[0x400 + i] for i < 0x32, else PICA_REGS[i - 0x32]
+            self.regs = gcap.internal_regs(blocks)   # the rule of N2-40: see gcap.internal_regs
 
     def _registers(self) -> list[int]:
         if self.regs is None:

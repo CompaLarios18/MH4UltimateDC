@@ -76,7 +76,7 @@ NUM_INTERNAL_REGS = 0x300       # PICA internal registers (the index of a PICA_R
 # In Azahar's PicaCore::Regs the internal registers start at word 0x400 of reg_array, so the recorder's blocks
 # (GPU_REGS = words 0..0x431, PICA_REGS = words 0x432..0x731) split them: see internal_regs.
 GPU_REGS_INTERNAL_BASE = 0x400  # word of GPU_REGS holding internal register 0
-NUM_INTERNAL_IN_GPU_REGS = 0x32  # NUM_GPU_REGS - GPU_REGS_INTERNAL_BASE: internal registers 0..0x31 live in GPU_REGS
+NUM_INTERNAL_IN_GPU_REGS = NUM_GPU_REGS - GPU_REGS_INTERNAL_BASE  # 0x32: internal registers 0..0x31 live in GPU_REGS
 
 # GX command ids (Service::GSP::CommandId) and FLUSH kinds.
 GX_NAMES = {0: "REQUEST_DMA", 1: "SUBMIT_CMDLIST", 2: "MEMORY_FILL", 3: "DISPLAY_TRANSFER",
