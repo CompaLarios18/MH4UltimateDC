@@ -20,8 +20,9 @@
 //     1328      280   cfg              the `FragmentKey` itself (70 words), written with every fragment-uniform
 //                                      write, in both modes (the ubershader reads it; the specialised shader does not)
 //     1608        8   (padding)        so the gas region starts on a 16-byte boundary
-//     1616       64   gas.regs[16]     the 16 raw gas register words (0x120-0x12F), owned by `fog/`
-//     1680       64   gas.table[16]    the 16-entry gas table, raw words, owned by `fog/` (no data source yet: N2-38)
+//     1616       64   gas.regs[16]     the raw gas register words, owned by `fog/`: [0..6] = GPUREG 0x120-0x126,
+//                                      [7] = 0x0E0, [8] = 0x0E4, [9] = 0x0E5, [10..15] = 0 (fog/fog_layout.h)
+//     1680       64   gas.table[16]    the 16-entry gas table, raw words (PicaState::gas.lut, N2-38), owned by `fog/`
 //     1744                             sizeof(FragmentBlock); the ring allocation is 1792 (a multiple of 256)
 //
 // A std140 declaration for the generator: `layout(std140, set = 0, binding = 2) uniform FSBlock { ...the
@@ -144,8 +145,8 @@ static_assert(std::is_trivially_copyable_v<FragmentUniforms>);
 
 // The reserved gas region, owned by `fog/` (N2-10): the raw words only; the feature decodes them.
 struct GasUniforms {
-    u32 regs[16];   // GPUREG 0x120-0x12F, as the registers hold them
-    u32 table[16];  // the 16-entry gas table (no data source in PicaState yet: N2-38)
+    u32 regs[16];   // the raw gas register words, as the registers hold them; layout in fog/fog_layout.h
+    u32 table[16];  // the 16-entry gas table: PicaState::gas.lut (N2-38)
 };
 static_assert(sizeof(GasUniforms) == 128);
 
