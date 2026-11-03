@@ -18,7 +18,6 @@
 #include <vector>
 
 #include "gpu/native/native_gpu.h"
-#include "gpu/pica/init_regs.h"
 #include "gpu/pica/regs.h"
 #include "gpu_capture/capture_host.h"
 #include "mh4n/gpu.h"
@@ -108,6 +107,8 @@ TEST_CASE("native: LoadInitState puts internal register i at GPU_REGS word 0x400
     }
     rig.gpu->LoadInitState(init.State());
 
+    // (Read back through MMIO: this case alone would also pass if the INIT mapping and the MMIO
+    // mapping were both off by the same 0x32 words; the MMIO cases below pin the MMIO mapping.)
     // Each marker names the word of reg_array it came from, which is 0x400 + the register number.
     u32 wrong = 0;
     for (u32 i = 0; i < pica::kNumRegs; ++i) {

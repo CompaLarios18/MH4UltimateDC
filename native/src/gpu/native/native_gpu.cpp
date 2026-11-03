@@ -308,7 +308,7 @@ public:
         // pica::kExternalRegs words are external registers: the words from there on are internal registers 0 to 0x31,
         // which the command processor loaded above (and MMIO from word 0x400 on goes to the processor, not to the engine).
         const auto gpu_regs = init.Block(InitBlock::GpuRegs);
-        if (gpu_regs.size() == gx::kGpuRegCount * 4 || gpu_regs.size() == pica::kGpuRegsBlockWords * 4) {
+        if (gpu_regs.size() == pica::kGpuRegsBlockWords * 4) {
             for (size_t i = 0; i < std::min<size_t>(gpu_regs.size() / 4, pica::kExternalRegs); ++i) {
                 u32 word;
                 std::memcpy(&word, gpu_regs.data() + 4 * i, 4);
