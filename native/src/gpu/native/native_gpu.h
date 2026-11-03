@@ -38,7 +38,12 @@
 // write the image, and `WriteBackColorBuffers`, every GX command and every flush or invalidate that touches a target's
 // range write it back first (N2-28's ReadbackToGuest). Depth is NOT loaded from guest memory: a new depth target starts at 1.0.
 //
-// WHAT IS NOT HERE: textures (the four units give white: N2-23), lighting, fog, procedural textures and shadows (the stubs,
+// TEXTURES (N2-23): a draw binds the textures its TEV stages and lighting read (BindTextures: N2-14's cache and decoder, one image per
+// texture or cube, level 0 only, uploaded flipped as sampling.h says; a unit that is off, has address 0 or cannot be decoded gets a
+// 1x1 null image; the sampler objects are cached by value), made on the thread that calls Execute; the counters are `texture_binds`,
+// `texture_uploads`, `texture_unavailable` and `sampler_creates`. A render target a texture overlaps is written back first.
+//
+// WHAT IS NOT HERE: lighting, fog, procedural textures and shadows (the stubs,
 // each counted `stubbed:<feature>`); a shadow-write draw is counted and not drawn; resolution scaling (N2-15).
 #pragma once
 
