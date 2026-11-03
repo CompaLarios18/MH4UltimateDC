@@ -179,7 +179,7 @@ Each one is a choice above marked `unverified`, or something the model leaves ou
    10 draws with fog mode Gas and 10 with fragment operation mode Gas, in the same 10 frames, and the configuration line
    `Gas;blend:Add/Add;...` (operation mode Gas) is 10 draws. The census counts a draw once if either mode is Gas and reports 20
    draws for G4, so the two sets of 10 are different draws: 10 density draws (operation mode Gas) and 10 shading draws (fog mode
-   Gas, operation mode Default), a density pass followed by a shading pass as the model has it, and no draw with both modes. If a
+   Gas, operation mode not Gas: the census shows only that, so `Default` would be an inference), a density pass followed by a shading pass as the model has it, and no draw with both modes. If a
    later census counts them differently and they are the same 10 draws, this rule is the one that matters most for the console
    check, since the shading pass would never run for them.
 10. **Negative or NaN densities** in the shading pass follow the unsigned compare (S2); an `ACCMAX` that is negative or NaN gives `t = 0`.

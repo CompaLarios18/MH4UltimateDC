@@ -1,7 +1,7 @@
 // Derived from Azahar src/video_core/renderer_software/sw_rasterizer.cpp (RasterizerSoftware::WriteFog and the computation of
 // the depth it takes: the depth scale and offset, the W-buffer factor, the clamp), src/video_core/pica/pica_core.h
 // (Fog::LutEntry: the entry's bit fields and the division by 2047), src/video_core/pica/regs_texturing.h (the fog mode, flip,
-// colour and table-offset registers, and the TEV stage words), src/video_core/pica/regs_framebuffer.h,
+// and colour registers, and the TEV stage words), src/video_core/pica/regs_framebuffer.h,
 // src/video_core/pica/regs_rasterizer.h, src/video_core/pica/regs_lighting.h and src/video_core/pica/regs_internal.h (the
 // positions of the output-merger, depth-range and lighting-disable registers the base state writes),
 // src/video_core/rasterizer_accelerated.cpp and src/video_core/pica/dirty_regs.h (the fog colour uniform, bytes over 255, and the
@@ -345,8 +345,8 @@ std::array<u32, 128> FogTable(int stride) {
 }
 
 // FogTable(53) with three segments whose value + difference * fraction leaves [0, 1] (WriteFog clamps the factor):
-// entry 40 runs from 1900 up by 900 (the factor passes 1 at a fraction of 0.17), entry 80 from 100 down by 700 (it passes 0 at a
-// fraction of 0.14), entry 110 from 2000 up by 1500 (above 1 from the start of the second half).
+// entry 40 runs from 1900 up by 900 (the factor passes 1 at a fraction of 0.16), entry 80 from 100 down by 700 (it passes 0 at a
+// fraction of 0.14), entry 110 from 2000 up by 1500 (above 1 from a fraction of 0.03).
 std::array<u32, 128> FogClampTable() {
     std::array<u32, 128> table = FogTable(53);
     table[40] = FogEntry(1900, 900);
@@ -641,8 +641,8 @@ TEST_CASE("fog/the_fog_factor_is_clamped_to_zero_and_one") {
         {"entry 40 fraction 0.9, flipped", -(1.0f - 40.9f / 128.0f), 1.0f, true, false},
         {"entry 80 fraction 0.9: factor -0.26 -> 0 (the fog colour)", -80.9f / 128.0f, 1.0f, false, false},
         {"entry 80 fraction 0.9, flipped", -(1.0f - 80.9f / 128.0f), 1.0f, true, false},
-        {"entry 80 fraction 0.5: factor -0.07 -> 0", -80.5f / 128.0f, 1.0f, false, false},
-        {"entry 110 fraction 0.75: factor 1.55 -> 1", -110.75f / 128.0f, 1.0f, false, false},
+        {"entry 80 fraction 0.5: factor -0.12 -> 0", -80.5f / 128.0f, 1.0f, false, false},
+        {"entry 110 fraction 0.75: factor 1.53 -> 1", -110.75f / 128.0f, 1.0f, false, false},
         {"entry 40 fraction 0.05: inside [0, 1], not clamped", -40.05f / 128.0f, 1.0f, false, false},
     };
     for (const FogCase& c : cases) {
