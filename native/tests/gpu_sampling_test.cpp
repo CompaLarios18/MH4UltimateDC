@@ -1751,18 +1751,19 @@ TEST_CASE("native/the_gpu_made_on_one_thread_makes_its_images_and_samplers_on_th
 
 namespace {
 
-constexpr u32 kReloadSize = 16;  // the target is 16x16: two tile rows and two tile columns
+constexpr u32 kReloadWidth = 16;   // the target is 16x24: two tile columns and three tile rows, so it is not square
+constexpr u32 kReloadHeight = 24;  // and a mix-up of its width and its height changes the result
 
 u32 ReloadBytesPerPixel(u32 format) { return format == 0 ? 4 : (format == 1 ? 3 : 2); }
 
-// The registers of one draw into a kReloadSize square colour buffer of `format` at kColorBuffer: bit 24 of the size register set,
+// The registers of one draw into a kReloadWidth x kReloadHeight colour buffer of `format` at kColorBuffer: bit 24 of the size register set,
 // a viewport over the whole target, no depth, no blending, stage 0 replacing with the primary colour, the texture units off.
 void ReloadRegisters(CmdList& l, u32 format) {
     l.Write(kRegColorAddress, kColorBuffer >> 3);
     l.Write(kRegColorFormat, format << 16);
     l.Write(kRegDepthFormat, 0);
     l.Write(0x11C, 0);
-    l.Write(kRegFbSize, kReloadSize | ((kReloadSize - 1) << 12) | (1u << 24));
+    l.Write(kRegFbSize, kReloadWidth | ((kReloadHeight - 1) << 12) | (1u << 24));
     l.Write(0x113, 0xF);
     l.Write(0x115, 0);
     l.Write(0x100, 0);
@@ -1770,8 +1771,8 @@ void ReloadRegisters(CmdList& l, u32 format) {
     l.Write(0x107, 0xF00);
     l.Write(0x104, 0);
     l.Write(0x1C6, 1);
-    l.Write(0x41, F24(kReloadSize / 2.0f));
-    l.Write(0x43, F24(kReloadSize / 2.0f));
+    l.Write(0x41, F24(kReloadWidth / 2.0f));
+    l.Write(0x43, F24(kReloadHeight / 2.0f));
     l.Write(0x68, 0);
     l.Write(0x4D, F24(-1.0f));
     l.Write(0x4E, 0);
@@ -1790,18 +1791,18 @@ void ReloadRegisters(CmdList& l, u32 format) {
 
 TEST_CASE("native/a_colour_target_loaded_from_guest_memory_is_written_back_in_its_own_rows_for_every_colour_format") {
     if (!test::RequireBackend()) return;
-    constexpr u32 h = kReloadSize;
+    constexpr u32 h = kReloadHeight;
     // The window rectangle the draw covers: columns [x0, x1), rows [y0, y1) of the window (y up from the bottom, as the viewport's
     // corner and the vertices' clip coordinates say). The software renderer's DrawPixel puts window row y into row
     // framebuffer.height - y of the buffer, with the register holding h - 1 as the height: so row h - 1 - y of the decoded picture,
     // which keeps the memory's order (row 0 is the first row of tiles). Rows [y0, y1) = [2, 7) land in decoded rows [h - 7, h - 2)
-    // = [9, 14).
+    // = [17, 22); a flip about the width would give [9, 14) instead.
     constexpr u32 x0 = 3, x1 = 11, y0 = 2, y1 = 7;
     const char* names[5] = {"RGBA8", "RGB8", "RGB5A1", "RGB565", "RGBA4"};
     for (u32 format = 0; format < 5; ++format) {
         CAPTURE(std::string(names[format]));
         Sim sim;
-        const u32 bytes = kReloadSize * kReloadSize * ReloadBytesPerPixel(format);
+        const u32 bytes = kReloadWidth * kReloadHeight * ReloadBytesPerPixel(format);
         // a pattern whose rows all differ (a linear congruential sequence: no two rows or pixels repeat)
         std::vector<u8> pattern(bytes);
         u32 seed = 0x2468ACE1u + format;
@@ -1811,13 +1812,14 @@ TEST_CASE("native/a_colour_target_loaded_from_guest_memory_is_written_back_in_it
         }
         sim.Write(kColorBuffer, pattern);
         std::vector<u8> before;
-        REQUIRE(texture::DecodeToRgba8(pattern.data(), bytes, kReloadSize, kReloadSize, static_cast<texture::Format>(format), before));
+        REQUIRE(texture::DecodeToRgba8(pattern.data(), bytes, kReloadWidth, kReloadHeight, static_cast<texture::Format>(format), before));
 
-        // two triangles over the rectangle, in red: clip x = 2 x / 16 - 1, clip y = 2 y / 16 - 1
-        auto cx = [](u32 x) { return 2.0f * static_cast<float>(x) / kReloadSize - 1.0f; };
+        // two triangles over the rectangle, in red: clip x = 2 x / 16 - 1, clip y = 2 y / 24 - 1
+        auto cx = [](u32 x) { return 2.0f * static_cast<float>(x) / kReloadWidth - 1.0f; };
+        auto cy = [](u32 y) { return 2.0f * static_cast<float>(y) / kReloadHeight - 1.0f; };
         const std::array<float, 4> red = {1, 0, 0, 1};
-        const std::array<float, 4> a = {cx(x0), cx(y0), -0.5f, 1}, b = {cx(x1), cx(y0), -0.5f, 1};
-        const std::array<float, 4> c = {cx(x1), cx(y1), -0.5f, 1}, d = {cx(x0), cx(y1), -0.5f, 1};
+        const std::array<float, 4> a = {cx(x0), cy(y0), -0.5f, 1}, b = {cx(x1), cy(y0), -0.5f, 1};
+        const std::array<float, 4> c = {cx(x1), cy(y1), -0.5f, 1}, d = {cx(x0), cy(y1), -0.5f, 1};
         sim.Write(kVertexBase, FloatBytes({a, red, b, red, c, red, a, red, c, red, d, red}));
         CmdList l;
         ReloadRegisters(l, format);
@@ -1830,12 +1832,12 @@ TEST_CASE("native/a_colour_target_loaded_from_guest_memory_is_written_back_in_it
         const u8* memory = sim.host.PhysicalPointer(kColorBuffer, bytes);
         REQUIRE(memory != nullptr);
         std::vector<u8> after;
-        REQUIRE(texture::DecodeToRgba8(memory, bytes, kReloadSize, kReloadSize, static_cast<texture::Format>(format), after));
+        REQUIRE(texture::DecodeToRgba8(memory, bytes, kReloadWidth, kReloadHeight, static_cast<texture::Format>(format), after));
         u32 wrong = 0;
         std::string first;
         for (u32 row = 0; row < h; ++row) {
-            for (u32 col = 0; col < kReloadSize; ++col) {
-                const size_t i = (static_cast<size_t>(row) * kReloadSize + col) * 4;
+            for (u32 col = 0; col < kReloadWidth; ++col) {
+                const size_t i = (static_cast<size_t>(row) * kReloadWidth + col) * 4;
                 const bool covered = col >= x0 && col < x1 && row >= h - y1 && row < h - y0;
                 const std::array<int, 4> got = {after[i], after[i + 1], after[i + 2], after[i + 3]};
                 const std::array<int, 4> want = covered ? std::array<int, 4>{255, 0, 0, 255}
