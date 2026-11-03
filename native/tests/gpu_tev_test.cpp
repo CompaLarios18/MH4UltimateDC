@@ -1023,7 +1023,10 @@ TEST_CASE("alpha_test/Never_discards_every_fragment_before_anything_else_runs") 
     CHECK_MESSAGE(AllNear(uber_rig.Render({spec}), {10, 20, 30, 40}, 0, &why), why);
 }
 
-TEST_CASE("stubs/the_gas_stub_writes_azahars_transparent_black_and_returns") {
+// N2-10 implemented fog and gas: a gas draw is no longer Azahar's transparent black. With the gas region of the block left at zero
+// (this rig writes none) the shading pass finds the density of the cleared target (blue 30, alpha 40) at or above ACCMAX 0, so t = 1,
+// and the all-zero table gives black; the alpha is the TEV's. docs/research/gas.md and gpu_fog_test have the gas cases.
+TEST_CASE("gas/an_unconfigured_gas_draw_is_black_with_the_tev_alpha") {
     auto backend = test::RequireBackend();
     if (!backend) return;
     Rig spec_rig(backend, false), uber_rig(backend, true);
@@ -1035,8 +1038,8 @@ TEST_CASE("stubs/the_gas_stub_writes_azahars_transparent_black_and_returns") {
     spec.key.texture.tev_stages[0] = s.Raw();
     spec.tri = FullTriangle({100, 100, 100, 255});
     std::string why;
-    CHECK_MESSAGE(AllNear(spec_rig.Render({spec}), {0, 0, 0, 0}, 0, &why), why);
-    CHECK_MESSAGE(AllNear(uber_rig.Render({spec}), {0, 0, 0, 0}, 0, &why), why);
+    CHECK_MESSAGE(AllNear(spec_rig.Render({spec}), {0, 0, 0, 255}, 0, &why), why);
+    CHECK_MESSAGE(AllNear(uber_rig.Render({spec}), {0, 0, 0, 255}, 0, &why), why);
 }
 
 TEST_CASE("stubs/a_draw_that_needs_a_stubbed_feature_is_reported_by_name") {
@@ -1058,15 +1061,15 @@ TEST_CASE("stubs/a_draw_that_needs_a_stubbed_feature_is_reported_by_name") {
     // the same source in a pass-through stage is not read
     key.texture.tev_stages[2] = Stage{}.Raw();
     CHECK(stubbed(key).empty());
-    // lighting, fog (and gas), shadow rendering, the procedural texture
+    // lighting, shadow rendering, the procedural texture (fog and gas are implemented by N2-10: neither is reported)
     FragmentKey lit = DefaultKey();
     lit.lighting.set_enable(1);
     CHECK(stubbed(lit) == std::vector<std::string>{"lighting"});
     FragmentKey fog = DefaultKey();
     fog.texture.set_fog_mode(re::FogMode::Fog);
-    CHECK(stubbed(fog) == std::vector<std::string>{"fog"});
+    CHECK(stubbed(fog).empty());
     fog.texture.set_fog_mode(re::FogMode::Gas);
-    CHECK(stubbed(fog) == std::vector<std::string>{"gas"});
+    CHECK(stubbed(fog).empty());
     FragmentKey shadow = DefaultKey();
     shadow.framebuffer.set_shadow_rendering(1);
     CHECK(stubbed(shadow) == std::vector<std::string>{"shadow"});
@@ -1934,7 +1937,7 @@ TEST_CASE("native/a_draw_that_needs_a_stubbed_feature_is_counted") {
     l.Write(0x228, 3).Write(0x22A, 0).Write(0x22E, 0);
     sim.Submit(l);
     CHECK(sim.Counter("stubbed:lighting") == 1);
-    CHECK(sim.Counter("stubbed:fog") == 1);
+    CHECK(sim.Counter("stubbed:fog") == 0);  // N2-10 implemented fog
     CHECK(sim.Counter("stubbed:sampling") == 0);
     CHECK(sim.Counter("native_draws") == 1);
 }
