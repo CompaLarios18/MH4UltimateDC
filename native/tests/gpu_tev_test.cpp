@@ -316,9 +316,10 @@ struct Inputs {
     V4 primary{};
     V4 primary_fragment{};     // lighting is off (or a stub): zero
     V4 secondary_fragment{};
-    std::array<V4, 4> texture{{{255, 255, 255, 255}, {255, 255, 255, 255}, {255, 255, 255, 255}, {255, 255, 255, 255}}};
-    // N2-08's texture units are stubs that give opaque white: that is what the generator's output must equal, not the
-    // software renderer's zero for a unit nobody enabled.
+    std::array<V4, 4> texture{{{255, 255, 255, 255}, {255, 255, 255, 255}, {255, 255, 255, 255}, {0, 0, 0, 0}}};
+    // These draws bind no texture, so units 0 to 2 show the composer's opaque-white dummy (not the software renderer's zero for a
+    // unit nobody enabled); unit 3 is the procedural slot with the procedural texture off, which is vec4(0.0) since N2-23
+    // (before it, the sampling stub gave white).
     std::array<V4, 6> constant{};
     V4 combiner_buffer_color{};
     u32 buffer_input = 0;  // update_mask_rgb | update_mask_a << 4 (the key's combiner_buffer_input)
@@ -822,8 +823,9 @@ TEST_CASE("tev/every_source_of_a_stage_the_stubbed_ones_included") {
     auto backend = test::RequireBackend();
     if (!backend) return;
     Rig spec_rig(backend, false), uber_rig(backend, true);
-    // PrimaryFragmentColor and SecondaryFragmentColor are zero (lighting is off or a stub); the four texture units give
-    // opaque white (the stubs); PreviousBuffer is the combiner buffer after stage 0.
+    // PrimaryFragmentColor and SecondaryFragmentColor are zero (lighting is off or a stub); the three texture units give
+    // opaque white (no texture is bound: the composer's dummy), the procedural slot zero (the procedural texture is off);
+    // PreviousBuffer is the combiner buffer after stage 0.
     for (u32 source : {kPrimaryColor, kPrimaryFragmentColor, kSecondaryFragmentColor, kTexture0, kTexture1, kTexture2, kTexture3,
                        kPreviousBuffer, kConstant, kPrevious}) {
         for (u32 slot = 0; slot < 3; ++slot) {
@@ -1051,11 +1053,11 @@ TEST_CASE("stubs/a_draw_that_needs_a_stubbed_feature_is_reported_by_name") {
     };
     // a pass-through key needs nothing
     CHECK(stubbed(key).empty());
-    // a stage that reads texture unit 1
+    // a stage that reads texture unit 1: sampling is real since N2-23, nothing is reported
     Stage s;
     s.color_src[0] = kTexture1;
     key.texture.tev_stages[2] = s.Raw();
-    CHECK(stubbed(key) == std::vector<std::string>{"sampling"});
+    CHECK(stubbed(key).empty());
     // the same source in a pass-through stage is not read
     key.texture.tev_stages[2] = Stage{}.Raw();
     CHECK(stubbed(key).empty());
