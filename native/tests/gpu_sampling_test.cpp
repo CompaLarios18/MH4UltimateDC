@@ -1,6 +1,7 @@
 // Derived from Azahar src/video_core/renderer_software/sw_rasterizer.cpp (RasterizerSoftware::TextureColor: the texel index
 // from the coordinate, the border test, the t flip, the projection and the cube conversion's caller), sw_texturing.cpp
-// (GetWrappedTexCoord: the eight wrap modes), sw_clipper.cpp (ConvertCubeCoord), src/video_core/pica/regs_texturing.h (the
+// (GetWrappedTexCoord: the eight wrap modes), sw_clipper.cpp (ConvertCubeCoord), sw_framebuffer.cpp (Framebuffer::DrawPixel: the buffer row a window row is stored in),
+// src/video_core/pica/regs_texturing.h (the
 // register fields, the texture types and the wrap-mode enumerators), src/video_core/rasterizer_accelerated.cpp (the
 // tex_lod_bias and tex_border_color uniforms), src/video_core/rasterizer_cache/sampler_params.h and rasterizer_cache.h (what a
 // sampler is made of), src/video_core/renderer_vulkan/vk_texture_runtime.cpp (Sampler::Sampler) and pica_to_vk.h (the wrap and
@@ -22,7 +23,7 @@
 // licence of externals/nihstro/license.txt, reproduced below because it asks for that); the file as a whole is GPL-3.0-or-later.
 // Copyright 2014 Tony Wasserka (shader_bytecode.h)
 // Copyright 2015-2026 Citra Emulator Project / Azahar Emulator Project (sw_rasterizer.cpp, rasterizer_cache.h)
-// Copyright 2017 Citra Emulator Project (sw_texturing.cpp)
+// Copyright 2017 Citra Emulator Project (sw_texturing.cpp, sw_framebuffer.cpp)
 // Copyright 2014-2024 Citra Emulator Project / Azahar Emulator Project (sw_clipper.cpp)
 // Copyright 2017-2024 Citra Emulator Project / Azahar Emulator Project (regs_texturing.h)
 // Copyright 2023 Citra Emulator Project (sampler_params.h)
