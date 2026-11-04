@@ -519,25 +519,37 @@ TEST_CASE("tables/the_first_table_step_of_each_recording_uploads_every_table") {
     rhi::Result<FragmentState::TableStep> drain = rig.fragment->UploadPendingTables(*state, **rings);
     REQUIRE_MESSAGE(drain.ok(), drain.error());
     REQUIRE(rig.log.needs.size() == 1);
-    Run(*backend, std::move(rec));
     state->ClearDirty();
 
-    // a new recording with nothing dirty: its first step opens both rings and asks for every table
+    // BeginRecording alone asks for every table: in the same recorder (its spans are not stamped yet and the rings have
+    // room, so nothing wraps and `need` is exactly what the pending tables hold)
+    rig.fragment->BeginRecording();
+    rhi::Result<FragmentState::TableStep> forced = rig.fragment->UploadPendingTables(*state, **rings);
+    REQUIRE_MESSAGE(forced.ok(), forced.error());
+    CHECK(forced->opened);
+    CHECK_FALSE(forced->summary.lf_wrapped);
+    CHECK_FALSE(forced->summary.general_wrapped);
+    REQUIRE(rig.log.needs.size() == 2);
+    CHECK(rig.log.needs[1] == AllTables());
+    Run(*backend, std::move(rec));
+
+    // a new recording with nothing dirty: its first step opens both rings and asks for every table (the rings drained when
+    // the recording above completed, so the wrap widens `need` to every table too)
     rec = backend->BeginRecording();
     rig.fragment->BeginRecording();
     rhi::Result<FragmentState::TableStep> first = rig.fragment->UploadPendingTables(*state, **rings);
     REQUIRE_MESSAGE(first.ok(), first.error());
     CHECK(first->opened);
     CHECK(first->block_changed);
-    REQUIRE(rig.log.needs.size() == 2);
-    CHECK(rig.log.needs[1] == AllTables());  // the General ring too, though no procedural table was dirty
+    REQUIRE(rig.log.needs.size() == 3);
+    CHECK(rig.log.needs[2] == AllTables());  // the General ring too, though no procedural table was dirty
 
     // a second step in the same recording opens nothing
     rhi::Result<FragmentState::TableStep> again = rig.fragment->UploadPendingTables(*state, **rings);
     REQUIRE_MESSAGE(again.ok(), again.error());
     CHECK_FALSE(again->opened);
     CHECK_FALSE(again->block_changed);
-    CHECK(rig.log.needs.size() == 2);
+    CHECK(rig.log.needs.size() == 3);
     Run(*backend, std::move(rec));
 }
 

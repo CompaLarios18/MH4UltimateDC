@@ -22,7 +22,7 @@
 // (`lighting_lut_offset`, `fog_lut_offset`, `proctex_*_offset`), so an upload never rebuilds a binding: the
 // views cover the whole ring buffer (the vendored backend cannot bind a texel buffer at an offset).
 //
-// One upload per ring per draw: `UploadTables` maps the ring's worst case once (Azahar's `max_size`), the
+// One session per ring per upload: `UploadTables` maps the ring's worst case once (Azahar's `max_size`), the
 // features take slices of it, and the session is committed with the bytes used. A wrap of the ring (the
 // new allocation restarts at the beginning) makes the tables of that ring all dirty again, as Azahar's
 // "invalidate" does: that repairs only the offsets of the draw that maps.
@@ -135,7 +135,8 @@ rhi::Result<UploadSummary> UploadTables(const pica::PicaState& state, TableRings
                                         UniformDirty& dirty, const TableDirty& need, const FeatureRegistry& features);
 // The same with `need` taken from `state`'s dirty flags (`lighting.lut_dirty`, `fog.lut_dirty`, `proctex.table_dirty`),
 // which this does not clear (the command processor does after Draw). These alone do not follow THE RULE above: a
-// caller that keeps offsets across recordings uses `FragmentState`.
+// caller that keeps offsets across recordings uses `FragmentState` and calls its `BeginRecording` at each new recorder
+// (next to `FragmentUniformRing::BeginRecording`).
 rhi::Result<UploadSummary> UploadTables(const pica::PicaState& state, TableRings& rings, FragmentBlock& block,
                                         UniformDirty& dirty);
 rhi::Result<UploadSummary> UploadTables(const pica::PicaState& state, TableRings& rings, FragmentBlock& block,
