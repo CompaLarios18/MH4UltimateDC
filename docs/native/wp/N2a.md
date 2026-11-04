@@ -1003,6 +1003,19 @@ Azahar draws no gas at all (its shader generator logs "Unimplemented gas mode", 
   - counting table bytes in `EnsureRoom`;
   - judging fog on the captures (N2-20);
   - the surface cache (N2-15).
+- **As built (N2-42), for N2-09, N2-11 and N2-20** *(2026-11-04, the orchestrator)* (THE RULE at the top of `fragment/tables.h` and the comment at the top of `fragment/state.h` are its documentation):
+  - **The API.** `FragmentState::BeginRecording()`; `FragmentState::UploadPendingTables(state, rings)`, which returns `TableStep{block_changed, opened, summary}`; and `UploadTables(state, rings, block, dirty, need, features)`, which the flag-driven overloads call with `need` taken from the flags. `Prepare` with rings runs `UploadPendingTables` itself; with null rings it only adds the state's table flags to the pending tables.
+  - **`NativeGpu`.** `Prepare` gets null rings, so its drop "the fragment state could not be prepared" no longer has a table cause. The table step is a lambda in `DrawImpl` that runs after `EnsureDrawRecording`. It calls `committed()` only when a session opened, and counts `fragment_table_uploads` once per draw. A failed table step goes to the full-ring retry, and a second failure drops the draw as "the fragment tables do not fit the ring". `block_unwritten_` is cleared after either `Write` succeeds.
+  - **Tests.** In `gpu_tev_test`: `native/a_table_written_after_the_ring_drained_does_not_overwrite_the_one_an_earlier_draw_of_the_recording_reads` (b), `native/a_draw_after_an_overlapping_targets_write_back_reads_the_fog_table_it_was_given` (a), `native/a_uniform_change_on_a_dropped_draw_reaches_the_next_draw` (c) and `native/a_table_change_on_a_dropped_draw_reaches_the_next_draw` (c'). All four fail at 8a31e5d on their pixels. In `gpu_compose_test`: `tables/a_flag_seen_with_null_rings_is_carried_exactly`, `tables/the_first_table_step_of_each_recording_uploads_every_table` and `tables/a_failed_table_step_keeps_its_tables_pending`.
+  - **Mutants** (not committed):
+    - The table step moved before `EnsureRoom` fails (a), with `draws_split_by_submit` 1.
+    - The table step placed before `BindTextures` fails `gpu_shadow_test`'s list-T case (`native_draws_dropped` 1, the map's texels).
+    - A `BeginRecording` that marks only the fog table fails the compose case.
+    - Untested: that `block_unwritten_` is cleared. A build that never clears it takes a new 1,792-byte block on every draw and passes every case. By reading, both `Write`s clear it.
+  - **On the captures** (G1–G4, `--gpu native --skip-gas-frames`, `--chained` and `--isolated`, before and after):
+    - Every command list's PSNR and worst block are unchanged, and so are `native_draws`, `native_draws_dropped`, `draws_split_by_submit` and every other counter.
+    - `fragment_table_uploads` per frame is 4 on G1, 18 on G2, 27 to 28 on G3 and 30 on G4. Each upload is about 1 KB today (fog only).
+    - Neither hazard showed on these captures; the cases are the evidence for it.
 
 ### N2-20 · Fragment integration on the captures
 - **Size / agent:** M · native-worker-high
