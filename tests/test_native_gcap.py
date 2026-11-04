@@ -21,7 +21,7 @@ def page(fill: int) -> bytes:
 def valid_capture(path):
     """INIT, MEM, a command list with its PICA_REG, a display transfer, IRQs, 3 frames."""
     with gcap.Writer(str(path)) as w:
-        w.init({gcap.K_PICA_REGS: gcap.pica_regs_block({0x40: 0x11111111})})
+        w.init(gcap.internal_regs_blocks({0x40: 0x11111111}))
         w.mem(0x20000000, bytes(2 * PAGE))
         w.cpu_pages([(0x20000000, page(1))])
         w.submit_cmdlist(0x20001000, 0x100)
@@ -200,7 +200,7 @@ def test_memory_reconstruction(tmp_path):
 def test_register_replay_with_masks(tmp_path):
     p = tmp_path / "regs.mgpu"
     with gcap.Writer(str(p)) as w:
-        w.init({gcap.K_PICA_REGS: gcap.pica_regs_block({0x10: 0xAABBCCDD})})   # 0
+        w.init(gcap.internal_regs_blocks({0x10: 0xAABBCCDD}))                   # 0
         w.submit_cmdlist(0x20000000, 16)                                          # 1
         w.pica_reg([(0x10, 0xF, 0x01020304), (0x11, 0x2, 0xFFFFFFFF)])           # 2
         w.submit_cmdlist(0x20000000, 16)                                          # 3
@@ -217,6 +217,75 @@ def test_register_replay_with_masks(tmp_path):
     assert r[0x10] == 0x01990399 and r[0x11] == 0x0000FF00 and r[0x2FF] == 0x77000000
     with pytest.raises(gcap.GcapError):
         gcap.registers_at(recs, 0)
+
+
+def marker_blocks():
+    """A hand-built INIT: GPU_REGS word w holds 0x10000000 + w, PICA_REGS word k holds 0x20000000 + k."""
+    gpu = struct.pack(f"<{gcap.NUM_GPU_REGS}I", *(0x10000000 + w for w in range(gcap.NUM_GPU_REGS)))
+    pica = struct.pack(f"<{gcap.NUM_PICA_REGS}I", *(0x20000000 + k for k in range(gcap.NUM_PICA_REGS)))
+    return {gcap.K_GPU_REGS: gpu, gcap.K_PICA_REGS: pica}
+
+
+def test_the_rule_reads_every_internal_register_from_its_block():
+    # internal register i is GPU_REGS[0x400 + i] below 0x32 and PICA_REGS[i - 0x32] from there on
+    regs = gcap.internal_regs(marker_blocks())
+    assert len(regs) == 0x300 == gcap.NUM_INTERNAL_REGS
+    for i in range(0x32):
+        assert regs[i] == 0x10000000 + 0x400 + i, hex(i)
+    for i in range(0x32, 0x300):
+        assert regs[i] == 0x20000000 + i - 0x32, hex(i)
+    # the last 0x32 words of PICA_REGS lie past the internal registers: nothing reads them
+    assert 0x20000000 + 0x300 - 0x32 not in regs and 0x20000000 + 0x2FF not in regs
+
+
+def test_the_rule_through_a_whole_init_record_and_the_register_replay(tmp_path):
+    p = tmp_path / "markers.mgpu"
+    blocks = marker_blocks()
+    with gcap.Writer(str(p)) as w:
+        w.init(blocks)
+        w.submit_cmdlist(0x20000000, 16)
+        w.pica_reg([(0x20, 0xF, 0xCAFE0001), (0x32, 0x1, 0xFF), (0x31, 0x2, 0xAA00), (0x2FF, 0xF, 7)])
+    recs = gcap.read_all(str(p))
+    assert gcap.check_records(recs) == []
+    before = gcap.registers_at(recs, 2)
+    assert before == gcap.internal_regs(dict(gcap.parse_init(recs[0].payload)))
+    assert before[0x0] == 0x10000400 and before[0x20] == 0x10000420 and before[0x31] == 0x10000431
+    assert before[0x32] == 0x20000000 and before[0x33] == 0x20000001 and before[0x2FF] == 0x200002CD
+    after = gcap.registers_at(recs, 3)
+    assert after[0x20] == 0xCAFE0001
+    assert after[0x31] == 0x1000AA31                                  # byte 1 only
+    assert after[0x32] == 0x200000FF and after[0x2FF] == 7
+    assert [i for i in range(0x300) if after[i] != before[i]] == [0x20, 0x31, 0x32, 0x2FF]
+
+
+def test_without_a_gpu_regs_block_registers_0_to_0x31_are_zero():
+    marker = gcap.internal_regs_blocks({0x10: 5, 0x31: 6, 0x32: 7, 0x100: 8})
+    regs = gcap.internal_regs({gcap.K_PICA_REGS: marker[gcap.K_PICA_REGS]})
+    assert regs[0x10] == 0 and regs[0x31] == 0 and regs[0x32] == 7 and regs[0x100] == 8
+    assert gcap.internal_regs(marker)[0x10] == 5
+    with pytest.raises(gcap.GcapError):
+        gcap.internal_regs({gcap.K_GPU_REGS: marker[gcap.K_GPU_REGS]})
+    with pytest.raises(gcap.GcapError):
+        gcap.internal_regs({gcap.K_PICA_REGS: bytes(4 * 0x2FF)})
+    with pytest.raises(gcap.GcapError):
+        gcap.internal_regs({gcap.K_PICA_REGS: marker[gcap.K_PICA_REGS], gcap.K_GPU_REGS: bytes(8)})
+
+
+def test_internal_regs_blocks_is_the_inverse_of_the_rule():
+    values = {0: 1, 0x1F: 2, 0x31: 3, 0x32: 4, 0x33: 5, 0x2CD: 6, 0x2CE: 7, 0x2FF: 8}
+    blocks = gcap.internal_regs_blocks(values)
+    assert sorted(blocks) == [gcap.K_GPU_REGS, gcap.K_PICA_REGS]
+    assert len(blocks[gcap.K_GPU_REGS]) == gcap.INIT_BLOCK_SIZES[gcap.K_GPU_REGS]
+    assert len(blocks[gcap.K_PICA_REGS]) == gcap.INIT_BLOCK_SIZES[gcap.K_PICA_REGS]
+    regs = gcap.internal_regs(blocks)
+    assert {i: v for i, v in enumerate(regs) if v} == values
+    gpu = struct.unpack(f"<{gcap.NUM_GPU_REGS}I", blocks[gcap.K_GPU_REGS])
+    pica = struct.unpack(f"<{gcap.NUM_PICA_REGS}I", blocks[gcap.K_PICA_REGS])
+    assert [w for w in range(gcap.NUM_GPU_REGS) if gpu[w]] == [0x400, 0x41F, 0x431]
+    assert [k for k in range(gcap.NUM_PICA_REGS) if pica[k]] == [0, 1, 0x2CD - 0x32, 0x2CE - 0x32, 0x2FF - 0x32]
+    with pytest.raises(ValueError):
+        gcap.internal_regs_blocks({0x300: 1})
+    assert gcap.internal_regs(gcap.internal_regs_blocks()) == [0] * 0x300
 
 
 def test_mask_expand():

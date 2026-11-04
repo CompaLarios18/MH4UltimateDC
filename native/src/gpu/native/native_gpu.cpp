@@ -304,10 +304,12 @@ public:
     void LoadInitState(const InitState& init) override {
         processor_.LoadInitState(init);
         // The GPU register block (the external registers) belongs to the GX engine; the three trigger words are written
-        // with their trigger bits cleared so that loading a state starts no fill or transfer.
+        // with their trigger bits cleared so that loading a state starts no fill or transfer. Only its first
+        // pica::kExternalRegs words are external registers: the words from there on are internal registers 0 to 0x31,
+        // which the command processor loaded above (and MMIO from word 0x400 on goes to the processor, not to the engine).
         const auto gpu_regs = init.Block(InitBlock::GpuRegs);
-        if (gpu_regs.size() == gx::kGpuRegCount * 4 || gpu_regs.size() == pica::kExternalRegs * 4) {
-            for (size_t i = 0; i < gpu_regs.size() / 4; ++i) {
+        if (gpu_regs.size() == pica::kGpuRegsBlockWords * 4) {
+            for (size_t i = 0; i < std::min<size_t>(gpu_regs.size() / 4, pica::kExternalRegs); ++i) {
                 u32 word;
                 std::memcpy(&word, gpu_regs.data() + 4 * i, 4);
                 if (i == gx::kRegFillControl0 || i == gx::kRegFillControl1 || i == gx::kRegTransferTrigger) {
@@ -571,7 +573,15 @@ private:
             MH4N_LOG(Error, kLog, "staging for a render target: {}", alloc.error());
             return;
         }
-        std::memcpy(alloc->data.data(), rgba.data(), rgba.size());
+        // The decoder keeps the memory's order (guest row g is row g of `rgba`); the write-back reads guest row g from image row
+        // height - 1 - g (readback.comp: Azahar's DrawPixel puts window row y into row height - y of the buffer, the size register
+        // holding height - 1). The load puts the rows where the write-back reads them, so a target no draw touches comes back
+        // unchanged.
+        const size_t row_bytes = static_cast<size_t>(t.width) * 4;
+        for (u32 g = 0; g < t.height; ++g) {
+            std::memcpy(alloc->data.data() + static_cast<size_t>(t.height - 1 - g) * row_bytes,
+                        rgba.data() + static_cast<size_t>(g) * row_bytes, row_bytes);
+        }
         staging_ring_->GetBuffer()->Flush(alloc->offset, rgba.size());
         if (!staging_ring_->Commit(rgba.size()).ok()) {
             return;

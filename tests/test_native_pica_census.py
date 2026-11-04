@@ -41,7 +41,7 @@ def W(reg, value, mask=0xF):
 def build(path, lists, init=None, frames=None):
     """INIT with PICA registers `init`, then one command list (GX + PICA_REG) per entry of `lists`."""
     with gcap.Writer(str(path)) as w:
-        w.init({gcap.K_PICA_REGS: gcap.pica_regs_block(init or {})})
+        w.init(gcap.internal_regs_blocks(init))
         for i, writes in enumerate(lists):
             w.frame_marker((frames[i] if frames else 100 + i))
             w.submit_cmdlist(0x20000000, 0x100)
@@ -107,10 +107,37 @@ def test_immediate_state_starts_from_the_init_record(tmp_path):
     imm = bytearray(gcap.INIT_BLOCK_SIZES[gcap.K_IMMEDIATE])
     struct.pack_into("<I", imm, 256 + 8 + 16, 2)
     with gcap.Writer(str(path)) as w:
-        w.init({gcap.K_PICA_REGS: gcap.pica_regs_block({0x232: 0xF}), gcap.K_IMMEDIATE: bytes(imm)})
+        w.init({**gcap.internal_regs_blocks({0x232: 0xF}), gcap.K_IMMEDIATE: bytes(imm)})
         w.submit_cmdlist(0x20000000, 0x100)
         w.pica_reg([W(0x235, 9)])
     assert analyse_one(path).summary["draws"]["immediate"] == 1
+
+
+def test_the_init_registers_are_read_by_the_rule_of_n2_40(tmp_path):
+    # hand-built INIT: internal register i is GPU_REGS[0x400 + i] below 0x32, PICA_REGS[i - 0x32] from there on.
+    # Immediate mode (internal register 0x232) is PICA_REGS word 0x200; word 0x232 is internal register 0x264, a decoy.
+    pica = [0] * gcap.NUM_PICA_REGS
+    pica[0x232 - 0x32] = 0xF
+    pica[0x232] = 0                                   # the old reading's register 0x232
+    gpu = [0xF] * gcap.NUM_GPU_REGS                   # GPU_REGS holds internal registers 0..0x31 only (words 0x400..)
+    imm = bytearray(gcap.INIT_BLOCK_SIZES[gcap.K_IMMEDIATE])
+    struct.pack_into("<I", imm, 256 + 8 + 16, 2)
+    blocks = {gcap.K_GPU_REGS: struct.pack(f"<{gcap.NUM_GPU_REGS}I", *gpu),
+              gcap.K_PICA_REGS: struct.pack(f"<{gcap.NUM_PICA_REGS}I", *pica), gcap.K_IMMEDIATE: bytes(imm)}
+    path = tmp_path / "a.mgpu"
+    with gcap.Writer(str(path)) as w:
+        w.init(blocks)
+        w.submit_cmdlist(0x20000000, 0x100)
+        w.pica_reg([W(0x235, 9)])
+    assert analyse_one(path).summary["draws"]["immediate"] == 1
+    # the same capture with the word at the old place: register 0x232 stays 0, no immediate draw
+    pica[0x232 - 0x32], pica[0x232] = 0, 0xF
+    blocks[gcap.K_PICA_REGS] = struct.pack(f"<{gcap.NUM_PICA_REGS}I", *pica)
+    with gcap.Writer(str(path)) as w:
+        w.init(blocks)
+        w.submit_cmdlist(0x20000000, 0x100)
+        w.pica_reg([W(0x235, 9)])
+    assert analyse_one(path).summary["draws"]["immediate"] == 0
 
 
 # ---- topology, indices, attributes ------------------------------------------------------------------------
@@ -579,8 +606,8 @@ def test_help_shows_the_g1_g4_command(capsys):
 # ---- the tables --------------------------------------------------------------------------------------------
 
 def test_tables_are_consistent():
-    assert all(0 <= r.index < gcap.NUM_PICA_REGS for r in pc.REGS.values())
-    assert all(0 <= f.reg < gcap.NUM_PICA_REGS and 0 < f.bits <= 32 and f.pos + f.bits <= 32 for f in pc.FIELDS.values())
+    assert all(0 <= r.index < gcap.NUM_INTERNAL_REGS for r in pc.REGS.values())
+    assert all(0 <= f.reg < gcap.NUM_INTERNAL_REGS and 0 < f.bits <= 32 and f.pos + f.bits <= 32 for f in pc.FIELDS.values())
     # the register trigger numbers the tests above write literally
     assert (pc.REGS["trigger_draw"].index, pc.REGS["trigger_draw_indexed"].index) == (0x22E, 0x22F)
     assert pc.fld([0] * 0x300, "fog_mode") == 0

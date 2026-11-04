@@ -1,7 +1,8 @@
 // Derived from Azahar src/video_core/renderer_software/sw_rasterizer.cpp (RasterizerSoftware::TextureColor: the texel index
 // from the coordinate, the border test, the t flip, the projection and the cube conversion's caller), sw_texturing.cpp
-// (GetWrappedTexCoord: the eight wrap modes), sw_clipper.cpp (ConvertCubeCoord), src/video_core/pica/regs_texturing.h (the
-// register fields, the texture types and the wrap-mode enumerators), src/video_core/rasterizer_accelerated.cpp (the
+// (GetWrappedTexCoord: the eight wrap modes), sw_clipper.cpp (ConvertCubeCoord), sw_framebuffer.cpp (Framebuffer::DrawPixel:
+// the buffer row a window row is stored in), src/video_core/pica/regs_texturing.h (the register fields, the texture types and
+// the wrap-mode enumerators), src/video_core/rasterizer_accelerated.cpp (the
 // tex_lod_bias and tex_border_color uniforms), src/video_core/rasterizer_cache/sampler_params.h and rasterizer_cache.h (what a
 // sampler is made of), src/video_core/renderer_vulkan/vk_texture_runtime.cpp (Sampler::Sampler) and pica_to_vk.h (the wrap and
 // filter tables), and src/video_core/shader/generator/glsl_fs_shader_gen.cpp (getLod, the texture lookups of
@@ -22,7 +23,7 @@
 // licence of externals/nihstro/license.txt, reproduced below because it asks for that); the file as a whole is GPL-3.0-or-later.
 // Copyright 2014 Tony Wasserka (shader_bytecode.h)
 // Copyright 2015-2026 Citra Emulator Project / Azahar Emulator Project (sw_rasterizer.cpp, rasterizer_cache.h)
-// Copyright 2017 Citra Emulator Project (sw_texturing.cpp)
+// Copyright 2017 Citra Emulator Project (sw_texturing.cpp, sw_framebuffer.cpp)
 // Copyright 2014-2024 Citra Emulator Project / Azahar Emulator Project (sw_clipper.cpp)
 // Copyright 2017-2024 Citra Emulator Project / Azahar Emulator Project (regs_texturing.h)
 // Copyright 2023 Citra Emulator Project (sampler_params.h)
@@ -1499,7 +1500,7 @@ void DrawRegisters(CmdList& l, const TextureRegs& t) {
 }
 
 // The vertex program: o0 = v0 (position), o1 = v1 (colour), o2 = c0 (the texture coordinate, a constant).
-void VertexProgram(CmdList& l, std::array<float, 2> texcoord) {
+void VertexProgram(CmdList& l, std::array<float, 2> texcoord, u32 vertex_count = 3) {
     using namespace pi;
     const std::vector<u32> code = {Ins(MOV, O(0), V(0), 0), Ins(MOV, O(1), V(1), 0), Ins(MOV, O(2), C(0), 0), kEnd};
     l.Program(kVs, code, {IdentityDescriptor()});
@@ -1525,7 +1526,7 @@ void VertexProgram(CmdList& l, std::array<float, 2> texcoord) {
     l.Write(0x205, (32u << 16) | (2u << 28));
     l.Write(kRegUseGs, 0);
     l.Write(kRegTopology, 0);
-    l.Write(0x228, 3).Write(0x22A, 0).Write(0x22E, 0);
+    l.Write(0x228, vertex_count).Write(0x22A, 0).Write(0x22E, 0);
 }
 
 std::vector<u8> FloatBytes(const std::vector<std::array<float, 4>>& vectors) {
@@ -1744,4 +1745,108 @@ TEST_CASE("native/the_gpu_made_on_one_thread_makes_its_images_and_samplers_on_th
     REQUIRE(texture::DecodeToRgba8(memory, kSize * kSize * 4, kSize, kSize, texture::Format::RGBA8, rgba));
     CHECK_MESSAGE(Uniform(rgba, {want[0], want[1], want[2], want[3]}, &why), why);
     CHECK(sim->Counter("texture_binds") == 1);
+}
+
+// ---- N2-41: a colour target loaded from guest memory is written back in the rows it was loaded from ----------------------------
+
+namespace {
+
+constexpr u32 kReloadWidth = 16;   // the target is 16x24: two tile columns and three tile rows, so it is not square
+constexpr u32 kReloadHeight = 24;  // and a mix-up of its width and its height changes the result
+
+u32 ReloadBytesPerPixel(u32 format) { return format == 0 ? 4 : (format == 1 ? 3 : 2); }
+
+// The registers of one draw into a kReloadWidth x kReloadHeight colour buffer of `format` at kColorBuffer: bit 24 of the size register set,
+// a viewport over the whole target, no depth, no blending, stage 0 replacing with the primary colour, the texture units off.
+void ReloadRegisters(CmdList& l, u32 format) {
+    l.Write(kRegColorAddress, kColorBuffer >> 3);
+    l.Write(kRegColorFormat, format << 16);
+    l.Write(kRegDepthFormat, 0);
+    l.Write(0x11C, 0);
+    l.Write(kRegFbSize, kReloadWidth | ((kReloadHeight - 1) << 12) | (1u << 24));
+    l.Write(0x113, 0xF);
+    l.Write(0x115, 0);
+    l.Write(0x100, 0);
+    l.Write(0x102, 3);
+    l.Write(0x107, 0xF00);
+    l.Write(0x104, 0);
+    l.Write(0x1C6, 1);
+    l.Write(0x41, F24(kReloadWidth / 2.0f));
+    l.Write(0x43, F24(kReloadHeight / 2.0f));
+    l.Write(0x68, 0);
+    l.Write(0x4D, F24(-1.0f));
+    l.Write(0x4E, 0);
+    l.Write(0x6D, 1);
+    l.Write(0x65, 0);
+    l.Write(0x40, 0);
+    for (u32 base : {0xC0u, 0xC8u, 0xD0u, 0xD8u, 0xF0u, 0xF8u}) {
+        l.Write(base + 0, base == 0xC0 ? StageSources(0) : kPassSources);  // source 0: the primary colour
+        l.Write(base + 1, 0);
+        l.Write(base + 2, 0);
+    }
+    l.Write(kRegMain, 0);
+}
+
+}  // namespace
+
+TEST_CASE("native/a_colour_target_loaded_from_guest_memory_is_written_back_in_its_own_rows_for_every_colour_format") {
+    if (!test::RequireBackend()) return;
+    constexpr u32 h = kReloadHeight;
+    // The window rectangle the draw covers: columns [x0, x1), rows [y0, y1) of the window (y up from the bottom, as the viewport's
+    // corner and the vertices' clip coordinates say). The software renderer's DrawPixel puts window row y into row
+    // framebuffer.height - y of the buffer, with the register holding h - 1 as the height: so row h - 1 - y of the decoded picture,
+    // which keeps the memory's order (row 0 is the first row of tiles). Rows [y0, y1) = [2, 7) land in decoded rows [h - 7, h - 2)
+    // = [17, 22); a flip about the width would give [9, 14) instead.
+    constexpr u32 x0 = 3, x1 = 11, y0 = 2, y1 = 7;
+    const char* names[5] = {"RGBA8", "RGB8", "RGB5A1", "RGB565", "RGBA4"};
+    for (u32 format = 0; format < 5; ++format) {
+        CAPTURE(std::string(names[format]));
+        Sim sim;
+        const u32 bytes = kReloadWidth * kReloadHeight * ReloadBytesPerPixel(format);
+        // a linear congruential pattern: in every format no two rows are equal and no pixel equals the one in its mirrored row
+        std::vector<u8> pattern(bytes);
+        u32 seed = 0x2468ACE1u + format;
+        for (u8& b : pattern) {
+            seed = seed * 1664525u + 1013904223u;
+            b = static_cast<u8>(seed >> 24);
+        }
+        sim.Write(kColorBuffer, pattern);
+        std::vector<u8> before;
+        REQUIRE(texture::DecodeToRgba8(pattern.data(), bytes, kReloadWidth, kReloadHeight, static_cast<texture::Format>(format), before));
+
+        // two triangles over the rectangle, in red: clip x = 2 x / 16 - 1, clip y = 2 y / 24 - 1
+        auto cx = [](u32 x) { return 2.0f * static_cast<float>(x) / kReloadWidth - 1.0f; };
+        auto cy = [](u32 y) { return 2.0f * static_cast<float>(y) / kReloadHeight - 1.0f; };
+        const std::array<float, 4> red = {1, 0, 0, 1};
+        const std::array<float, 4> a = {cx(x0), cy(y0), -0.5f, 1}, b = {cx(x1), cy(y0), -0.5f, 1};
+        const std::array<float, 4> c = {cx(x1), cy(y1), -0.5f, 1}, d = {cx(x0), cy(y1), -0.5f, 1};
+        sim.Write(kVertexBase, FloatBytes({a, red, b, red, c, red, a, red, c, red, d, red}));
+        CmdList l;
+        ReloadRegisters(l, format);
+        VertexProgram(l, {0, 0}, 6);
+        sim.Submit(l);
+        sim.gpu->WriteBackColorBuffers();
+
+        CHECK(sim.Counter("native_draws") == 1);
+        CHECK(sim.Counter("native_draws_dropped") == 0);
+        const u8* memory = sim.host.PhysicalPointer(kColorBuffer, bytes);
+        REQUIRE(memory != nullptr);
+        std::vector<u8> after;
+        REQUIRE(texture::DecodeToRgba8(memory, bytes, kReloadWidth, kReloadHeight, static_cast<texture::Format>(format), after));
+        u32 wrong = 0;
+        std::string first;
+        for (u32 row = 0; row < h; ++row) {
+            for (u32 col = 0; col < kReloadWidth; ++col) {
+                const size_t i = (static_cast<size_t>(row) * kReloadWidth + col) * 4;
+                const bool covered = col >= x0 && col < x1 && row >= h - y1 && row < h - y0;
+                const std::array<int, 4> got = {after[i], after[i + 1], after[i + 2], after[i + 3]};
+                const std::array<int, 4> want = covered ? std::array<int, 4>{255, 0, 0, 255}
+                                                        : std::array<int, 4>{before[i], before[i + 1], before[i + 2], before[i + 3]};
+                if (got != want && wrong++ == 0) {
+                    first = "decoded row " + std::to_string(row) + " column " + std::to_string(col) + (covered ? " (covered)" : " (untouched)");
+                }
+            }
+        }
+        CHECK_MESSAGE(wrong == 0, wrong << " pixels differ, the first at " << first);
+    }
 }

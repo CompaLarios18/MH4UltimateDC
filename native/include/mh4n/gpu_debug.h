@@ -27,9 +27,12 @@ namespace mh4n::gpu {
 // The kinds of the INIT record's blocks (docs/native/mgpu-format.md section 4, which has each
 // block's layout; all little-endian, fixed size, no padding).
 enum class InitBlock : u32 {
-    GpuRegs = 1,          // words 0..0x431 of the GPU's register array (4296 bytes)
+    GpuRegs = 1,          // words 0..0x431 of the GPU's register array (4296 bytes); words
+                          // 0x400..0x431 are internal registers 0..0x31
     LcdRegs = 2,          // 0x400 words
-    PicaRegs = 3,         // the internal registers, 0x300 words
+    PicaRegs = 3,         // words 0x432..0x731 of the register array, 0x300 words: internal
+                          // registers 0x32..0x2FF, then the 0x32 words after `internal`
+                          // (the rule is in mgpu-format.md section 4)
     VsSetup = 4,          // shader setup: program, swizzles, uniforms (34368 bytes)
     GsSetup = 5,          // the same layout
     DefaultAttrs = 6,     // 16 x Vec4<f32>

@@ -26,10 +26,18 @@ namespace mh4n::gpu::pica {
 // RegsInternal::NUM_REGS. Register ids in a command header above this are ignored.
 inline constexpr u32 kNumRegs = 0x300;
 
-// In Azahar's PicaCore::Regs the internal registers follow 0x432 words of external ones, so the
-// MMIO address of internal register n is 0x1EF00000 + 4 * (kExternalRegs + n).
-inline constexpr u32 kExternalRegs = 0x432;
+// In Azahar's PicaCore::Regs (pica_core.h) the internal registers (`internal`) start at word 0x400
+// of reg_array, after the external ones (the structure sizes regs_external.h asserts), so the MMIO
+// address of internal register n is 0x1EF00000 + 4 * (kExternalRegs + n) (gpu.cpp's WriteReg and
+// GPU_REG_INDEX). The number of external words, and the base of the internal ones.
+inline constexpr u32 kExternalRegs = 0x400;
 inline constexpr u32 kGpuMmioBase = 0x1EF00000;
+
+// The length, in words, of the INIT record's GPU_REGS block: words 0..0x431 of reg_array (the
+// recorder writes them, the format keeps the length). Words 0..0x3FF are the external registers;
+// words 0x400..0x431 are internal registers 0..0x31 (init_regs.h has the rule that puts the
+// internal registers together).
+inline constexpr u32 kGpuRegsBlockWords = 0x432;
 
 constexpr u32 BitsOf(u32 word, u32 first, u32 count) {
     return (word >> first) & ((count >= 32) ? 0xFFFFFFFFu : ((1u << count) - 1u));

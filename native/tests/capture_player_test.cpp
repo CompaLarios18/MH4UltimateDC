@@ -1276,6 +1276,46 @@ TEST_CASE("gas frames are reported and, with --skip-gas-frames, not judged") {
     CHECK(FormatReport(r).find("gas-skipped") != std::string::npos);
 }
 
+TEST_CASE("the player's copy of the internal registers follows the rule: fog mode comes from PICA_REGS word 0x0E0 - 0x32") {
+    // Register 0x0E0 (the fog mode) is in the PICA_REGS block at word 0x0E0 - 0x32 = 0xAE. A draw
+    // whose command list does not write the fog mode is a gas draw when the INIT record's registers
+    // say so; PICA_REGS word 0xE0 (register 0x112) says nothing about gas.
+    TempDir dir;
+    const auto build = [&](u32 pica_word) {
+        Built built;
+        built.path = dir.File("rule.mgpu").string();
+        const World world = MakeWorld();
+        Bytes pica(InitBlockSize(3), 0);
+        SetWord(pica, pica_word, 7);
+        W w;
+        w.Init({{1, ScreenRegs()}, {3, pica}});
+        Bytes vram(0xB0000, 0);
+        std::copy(world.top.begin(), world.top.end(), vram.begin());
+        std::copy(world.bottom.begin(), world.bottom.end(), vram.begin() + 0x60000);
+        w.Mem(kTopFb, vram);
+        w.Mem(0x20000000, Bytes(0x200000, 0));
+        AddDraw(w, built.at); // no fog mode among its writes
+        w.FrameMarker(1);
+        REQUIRE(w.Save(built.path));
+        WriteReferenceFrames(dir, built.path, 1, world);
+        return built;
+    };
+    {
+        const Built built = build(0xE0 - 0x32);
+        const PlayerResult r = Run(built.path, {"--gpu", "replay"});
+        INFO(Describe(r));
+        REQUIRE(r.frames.size() == 1);
+        CHECK(r.frames[0].gas);
+    }
+    {
+        const Built built = build(0xE0);
+        const PlayerResult r = Run(built.path, {"--gpu", "replay"});
+        INFO(Describe(r));
+        REQUIRE(r.frames.size() == 1);
+        CHECK_FALSE(r.frames[0].gas);
+    }
+}
+
 TEST_CASE("the INIT state reaches the Gpu before the first command, and every call is forwarded") {
     TempDir dir;
     Built built;
@@ -1454,6 +1494,42 @@ TEST_CASE("an MMIO write that starts work is judged as the command it starts") {
     REQUIRE_FALSE(r.failures.empty());
     CHECK(r.failures.front().record == fill);
     CHECK(r.skipped.at("copy") == 1);
+}
+
+TEST_CASE("an MMIO write to a command-buffer trigger, at word 0x400 + 0x23C or 0x400 + 0x23D, is a command list") {
+    // The triggers are internal registers 0x23C and 0x23D, and internal register n is word
+    // 0x400 + n of the GPU's register array (not 0x432 + n: that is register n + 0x32).
+    constexpr u32 kBase = 0x1EF00000;
+    TempDir dir;
+    Built built;
+    built.path = dir.File("trigger.mgpu").string();
+    W w;
+    w.Init();
+    w.Mem(0x20000000, Bytes(0x10000, 0));
+    w.Mmio(kBase + 4 * (0x400 + 0x23C), 0);               // the trigger written with 0 starts nothing
+    w.Mmio(kBase + 4 * (0x400 + 0x23C), 1);
+    w.GpuPages({{0x20000000, Bytes(kPageSize, 0x5A)}});
+    w.Mmio(kBase + 4 * (0x400 + 0x23D), 1);
+    w.GpuPages({{0x20001000, Bytes(kPageSize, 0x6B)}});
+    w.Mmio(kBase + 4 * (0x432 + 0x23C), 1);                // register 0x26E: an ordinary write
+    w.Mmio(kBase + 4 * (0x400 + 0x23C - 1), 1);            // register 0x23B: an ordinary write
+    REQUIRE(w.Save(built.path));
+
+    // Exactly the two writes of the triggers with a non-zero value are command lists: the write of
+    // 0, the one at word 0x432 + 0x23C and the one at word 0x400 + 0x23B start nothing.
+    PlayerResult r = Run(built.path, {"--gpu", "replay"});
+    INFO(Describe(r));
+    CHECK(r.failures.empty());
+    CHECK(r.judged.at("cmdlist") == 2);
+    CHECK(r.judged.size() == 1);
+    CHECK(r.skipped.empty());
+
+    // Not in --judge: still sent to the Gpu, and counted as skipped.
+    r = Run(built.path, {"--gpu", "replay", "--judge", "fill"});
+    INFO(Describe(r));
+    CHECK(r.failures.empty());
+    CHECK(r.skipped.at("cmdlist") == 2);
+    CHECK(r.skipped.size() == 1);
 }
 
 TEST_CASE("--check registers compares the decoded writes with PICA_REG") {

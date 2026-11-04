@@ -99,9 +99,11 @@ public:
     // ---- GpuDebug ----------------------------------------------------------------------------
     void LoadInitState(const gpu::InitState& init) override {
         processor_.LoadInitState(init);
+        // The block holds kGpuRegsBlockWords words; only the first kExternalRegs are external
+        // registers, the other 0x32 are internal registers 0 to 0x31, which LoadInitState loaded.
         const auto gpu_regs = init.Block(gpu::InitBlock::GpuRegs);
-        if (gpu_regs.size() == kExternalRegs * 4) {
-            std::memcpy(external_.data(), gpu_regs.data(), gpu_regs.size());
+        if (gpu_regs.size() == kGpuRegsBlockWords * 4) {
+            std::memcpy(external_.data(), gpu_regs.data(), kExternalRegs * 4);
         }
         const auto lcd_regs = init.Block(gpu::InitBlock::LcdRegs);
         if (lcd_regs.size() == kLcdRegs * 4) {
