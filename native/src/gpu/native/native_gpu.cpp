@@ -1155,8 +1155,16 @@ private:
         BindTextures(state, key, desc);
         EnsureDrawRecording(desc, bound_in);
 
-        // ---- the fragment uniforms: the draw's first commit to the rings checked below (the table rings were committed by
-        // Prepare; the retry submits before it, and keeps the draw's images) ----
+        // The recording open at the draw's first commit to the vertex, vertex-uniform or fragment-uniform ring, wherever in
+        // the order below that commit falls: every successful commit to those rings calls committed(), and the check before the
+        // draw compares it with the recording the draw is recorded in. The fragment table rings are not checked.
+        std::optional<u64> draw_recording;
+        auto committed = [&] {
+            if (!draw_recording) draw_recording = recording_serial_;
+        };
+
+        // ---- the fragment uniforms (the table rings were committed by Prepare; the retry submits before the Write that
+        // commits, and keeps the draw's images) ----
         rhi::Result<fragment::FragmentUniformRing::Allocation> block = uniform_ring_->Write(fragment_state_->block(), prepared->block_changed);
         if (!block.ok()) {
             const u64 before = recording_serial_;
@@ -1167,9 +1175,9 @@ private:
                 return drop("the fragment uniforms do not fit the ring");
             }
         }
-        // From here on nothing may submit the recording: the draw's vertex, vertex-uniform and fragment-uniform ring data
-        // belongs to this one (checked before the draw). The fragment table rings are not checked.
-        const u64 draw_recording = recording_serial_;
+        // A failed Write commits nothing; a reused block points into the current recording (BeginRecording clears the last one).
+        committed();
+        // From here on nothing may submit the recording.
 
         // ---- the vertices, committed ----
         std::vector<rhi::VertexBufferBinding> vertex_buffers;
@@ -1185,6 +1193,7 @@ private:
             if (!streamed.ok() || streamed->vertex_count == 0) {
                 return drop("the triangle batch could not be uploaded");
             }
+            committed();
             vertex_bytes_in_recording_ += vertex_bytes;
             vertex_buffers.push_back(rhi::VertexBufferBinding{vertex_ring_->GetBuffer().get(), streamed->offset});
             count = streamed->vertex_count;
@@ -1203,6 +1212,7 @@ private:
                 if (!vertex_ring_->Commit(std::max<u64>(b.data.size(), 16)).ok()) {
                     return drop("a vertex buffer could not be committed");
                 }
+                committed();
                 vertex_buffers.push_back(rhi::VertexBufferBinding{vertex_ring_->GetBuffer().get(), alloc->offset});
             }
             if (loaded.index_type != vertex::IndexType::None) {
@@ -1215,6 +1225,7 @@ private:
                 if (!vertex_ring_->Commit(std::max<u64>(loaded.index_data.size(), 16)).ok()) {
                     return drop("an index buffer could not be committed");
                 }
+                committed();
                 index_buffer = vertex_ring_->GetBuffer().get();
                 index_offset = alloc->offset;
                 index_type = loaded.index_type == vertex::IndexType::U8    ? rhi::IndexType::U8
@@ -1245,6 +1256,22 @@ private:
             if (!vs_ring_->Commit(kVsUniformAllocation).ok()) {
                 return drop("the vertex uniforms could not be committed");
             }
+            committed();
+        }
+
+        // The invariant of the order above, for the vertex, vertex-uniform and fragment-uniform rings (not the fragment table
+        // rings, which Prepare committed earlier and which are unchecked): the recording open at the draw's first commit to them,
+        // wherever that commit fell, is the one the draw is recorded in. A draw that would read space handed out again is
+        // dropped, not drawn with what another draw wrote there. Checked before the first use of rec_ below; nothing between
+        // here and the composer's draw can submit the recording.
+        if (!rec_ || !draw_recording || recording_serial_ != *draw_recording) {
+            ++frame_.draws_split_by_submit;
+            if (!warned_split_) {
+                warned_split_ = true;
+                MH4N_LOG(Warning, kLog, "a draw's recording was submitted between its ring commits and the draw: dropped (counted "
+                                        "draws_split_by_submit; warned once)");
+            }
+            return drop("the recording was submitted between the draw's ring commits and the draw");
         }
 
         // ---- the dynamic state ----
@@ -1289,23 +1316,11 @@ private:
         desc.viewport = geometry.viewport;
         desc.scissor = geometry.scissor;
 
-        // The invariant of the order above, for the vertex, vertex-uniform and fragment-uniform rings (not the fragment table
-        // rings, which Prepare committed earlier and which are unchecked): the recording the draw's data in them was committed to
-        // is the one it is recorded in. A draw that would read space handed out again is dropped, not drawn with what another
-        // draw wrote there.
-        if (!rec_ || recording_serial_ != draw_recording) {
-            ++frame_.draws_split_by_submit;
-            if (!warned_split_) {
-                warned_split_ = true;
-                MH4N_LOG(Warning, kLog, "a draw's recording was submitted between its ring commits and the draw: dropped (counted "
-                                        "draws_split_by_submit; warned once)");
-            }
-            return drop("the recording was submitted between the draw's ring commits and the draw");
-        }
         rhi::Result<DrawResult> result = composer_->Draw(*rec_, desc);
         CountComposer();
         if (!result.ok()) {
-            // the composer's failure paths record no draw (a pass it began loads with LoadOp::Load): the targets stay clean
+            // the composer's failure paths record no draw (a pass it began loads with LoadOp::Load): this draw does not mark
+            // its targets written
             MH4N_LOG(Error, kLog, "draw: {}", result.error());
             ++frame_.dropped;
             return result;

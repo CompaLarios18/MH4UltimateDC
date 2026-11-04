@@ -1975,9 +1975,9 @@ TEST_CASE("native/the_colour_buffer_is_loaded_again_after_the_cpu_wrote_its_memo
 
 // A draw whose target selection writes back another target (here an RGB565 target over the RGBA8 one a draw just wrote, at the
 // same address) submits the recording and waits for it: the draw's vertices must be committed after that, to the recording that
-// draws it. Committed before (as at 69f46a9), the ring restarted at 0 once the submitted recording had completed, and the next
-// draw's vertices (30 coincident ones, no area, covering the ring past the first draw's) overwrote them before the draw's own
-// recording was submitted: the green triangle was drawn from them, i.e. not at all.
+// draws it. Committed before (when DrawImpl committed them before choosing the targets), the ring restarted at 0 once the
+// submitted recording had completed, and the next draw's vertices (30 coincident ones, no area, covering the ring past the first
+// draw's) overwrote them before the draw's own recording was submitted: the green triangle was drawn from them, i.e. not at all.
 TEST_CASE("native/a_draw_after_an_overlapping_targets_write_back_draws_its_own_vertices") {
     if (!test::RequireBackend()) return;
     Sim sim;

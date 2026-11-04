@@ -67,7 +67,9 @@
 // cannot be decoded reads word 0 (a 1x1 shadow source, or the null cube). Guest memory stays the truth: a map is written back and
 // uploaded again for each frame that looks it up (N2-15 may bind the target itself). Counters: `shadow_write_draws`,
 // `shadow_lookups` (draws whose unit 0 bound a decoded shadow map) and `shadow_unavailable` (shadow-mode draws dropped because the
-// shadow target could not be made, also in `native_draws_dropped`).
+// shadow target could not be made, also in `native_draws_dropped`). The first shadow draw after the map's colour draw writes that
+// colour target back, which submits the recording: `draws_split_by_submit` (step 5 of PER-DRAW ORDER) counts a draw whose ring data
+// such a submission would have handed out again.
 //
 // WHAT IS NOT HERE: the features still behind a stub (each counted `stubbed:<feature>`); resolution scaling (N2-15).
 #pragma once
