@@ -8,11 +8,45 @@
 
 namespace mh4n::gpu::fragment {
 
+namespace {
+
+// Every table of both rings.
+TableDirty AllTables() {
+    TableDirty all;
+    all.lighting = pica::Lighting::kAllDirty;
+    all.fog = true;
+    all.proctex = pica::ProcTex::kAllDirty;
+    return all;
+}
+
+}  // namespace
+
 FragmentState::FragmentState(const DeviceProfile& profile) : FragmentState(profile, FeatureRegistry::Global()) {}
 
 FragmentState::FragmentState(const DeviceProfile& profile, const FeatureRegistry& features)
-    : profile_(profile), features_(features) {
+    : profile_(profile), features_(features), pending_(AllTables()) {
     std::memset(&block_, 0, sizeof(block_));
+}
+
+void FragmentState::BeginRecording() {
+    pending_ = AllTables();
+}
+
+rhi::Result<FragmentState::TableStep> FragmentState::UploadPendingTables(const pica::PicaState& state, TableRings& rings) {
+    TableStep step;
+    if (pending_ == TableDirty{}) {
+        return step;
+    }
+    UniformDirty dirty;
+    rhi::Result<UploadSummary> uploaded = UploadTables(state, rings, block_, dirty, pending_, features_);
+    if (!uploaded.ok()) {
+        return rhi::Error{uploaded.error()};  // the pending tables stay pending
+    }
+    pending_ = TableDirty{};
+    step.block_changed = dirty.changed;
+    step.opened = uploaded->uploaded;
+    step.summary = *uploaded;
+    return step;
 }
 
 rhi::Result<FragmentState::Prepared> FragmentState::Prepare(const pica::PicaState& state, const UniformContext& context,
@@ -45,12 +79,21 @@ rhi::Result<FragmentState::Prepared> FragmentState::Prepare(const pica::PicaStat
 
     FillUniforms(state, block_, dirty, context, features_);
 
+    // The table flags are cleared after this draw whatever happens to it: they are kept in the pending tables until an
+    // upload commits them.
+    pending_.lighting |= state.lighting.lut_dirty;
+    pending_.fog = pending_.fog || state.fog.lut_dirty;
+    pending_.proctex = static_cast<u8>(pending_.proctex | state.proctex.table_dirty);
+
     if (rings != nullptr) {
-        rhi::Result<UploadSummary> uploaded = UploadTables(state, *rings, block_, dirty, features_);
-        if (!uploaded.ok()) {
-            return rhi::Error{uploaded.error()};
+        rhi::Result<TableStep> step = UploadPendingTables(state, *rings);
+        if (!step.ok()) {
+            return rhi::Error{step.error()};
         }
-        out.tables_uploaded = uploaded->uploaded;
+        out.tables_uploaded = step->opened;
+        if (step->block_changed) {
+            dirty.Mark();
+        }
     }
 
     out.block_changed = dirty.changed || first_;

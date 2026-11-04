@@ -4,9 +4,16 @@
 //
 // `FragmentState` is what the thread that owns the command processor calls at every `Backend::Draw`:
 // it re-extracts the key only when a dirty register of the fragment blocks is set (`IsFragmentKeyRegister`),
-// fills the uniforms only for the dirty bits, and uploads the tables the dirty flags name. A draw whose fragment
-// state did not change leaves `block_changed` false, and `FragmentUniformRing::Write` then reuses the previous
-// ring allocation (and the composition the binding set) within the same recording.
+// fills the uniforms only for the dirty bits, and collects the tables the dirty flags name into its pending tables,
+// which a table step uploads. A draw whose fragment state did not change leaves `block_changed` false, and
+// `FragmentUniformRing::Write` then reuses the previous ring allocation (and the composition the binding set) within
+// the same recording.
+//
+// THE TABLES (N2-42; tables.h, THE RULE): a table's offset is valid only in the recording that committed it. The
+// pending tables start at "all", gain every table flag `Prepare` sees (the command processor clears the flags after
+// each draw, drawn or dropped, so they are kept only here), go back to "all" at `BeginRecording`, and are cleared only
+// by an upload that committed them. `--gpu native` calls `Prepare` without rings and `UploadPendingTables` after every
+// step of the draw that can submit the recording.
 //
 // Final names: `FragmentState`, `FragmentUniformRing`.
 #pragma once
@@ -31,10 +38,27 @@ public:
         bool tables_uploaded = false;
     };
 
-    // One call per draw, on the thread that owns `state`. `rings` may be null (no table is uploaded; for tests of the
-    // key and the uniforms alone); with rings the calling thread's recorder must be open. The first call writes
-    // everything.
+    // One call per draw, on the thread that owns `state`. The state's table flags are added to the pending tables. With
+    // `rings` null nothing is uploaded (`--gpu native`, which uploads in its table step, and tests of the key and the
+    // uniforms alone); with rings the calling thread's recorder must be open and the pending tables are uploaded as
+    // `UploadPendingTables` does (its change is in `block_changed`; a failed upload leaves them pending). The first call
+    // writes everything (and, with rings, uploads every table).
     rhi::Result<Prepared> Prepare(const pica::PicaState& state, const UniformContext& context, TableRings* rings);
+
+    // Starts a recording: every table is pending again. Call it whenever the caller begins a recorder (next to
+    // `FragmentUniformRing::BeginRecording`); without it a caller that keeps this state across recordings keeps offsets
+    // into space an earlier recording committed.
+    void BeginRecording();
+
+    struct TableStep {
+        bool block_changed = false;  // an offset in the block was written (the upload's `UniformDirty::changed`)
+        bool opened = false;         // a session was opened and committed (something was pending)
+        UploadSummary summary;
+    };
+    // Uploads the pending tables (`need` = the pending tables, widened by a wrap), reading their contents from `state`
+    // now; opens no session when nothing is pending. The pending tables are cleared only when both rings' sessions were
+    // committed; on an error they stay pending. On the thread that owns `state`, with its recorder open.
+    rhi::Result<TableStep> UploadPendingTables(const pica::PicaState& state, TableRings& rings);
 
     const FragmentKey& key() const { return block_.cfg; }
     const Needs& needs() const { return needs_; }
@@ -50,6 +74,7 @@ private:
     const FeatureRegistry& features_;
     FragmentBlock block_{};
     Needs needs_{};
+    TableDirty pending_{};  // "all" from the constructor
     bool first_ = true;
     u64 key_extractions_ = 0;
     u64 draws_ = 0;

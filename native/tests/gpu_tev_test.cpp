@@ -1,8 +1,9 @@
 // Derived from Azahar src/video_core/renderer_software/sw_rasterizer.cpp (RasterizerSoftware::WriteTevConfig,
 // DoAlphaTest, PixelColor, WriteFog), sw_texturing.cpp (GetColorModifier, GetAlphaModifier, ColorCombine, AlphaCombine),
 // sw_framebuffer.cpp (EvaluateBlendEquation, LogicOp), src/video_core/pica/regs_texturing.h (TevStageConfig::
-// GetColorMultiplier) and externals/nihstro/include/nihstro/shader_bytecode.h at
-// 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (the first four are GPL-2.0-or-later: each says "Licensed under GPLv2 or any
+// GetColorMultiplier; the fog LUT registers fog_lut_offset and fog_lut_data), src/video_core/pica/pica_core.h
+// (Pica::PicaCore::Fog::LutEntry) and externals/nihstro/include/nihstro/shader_bytecode.h at
+// 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (the first five are GPL-2.0-or-later: each says "Licensed under GPLv2 or any
 // later version"; shader_bytecode.h belongs to the submodule externals/nihstro that Azahar pins at
 // f4d8659decbfe5d234f04134b5002b82dc515a44 and is NOT GPL: its licence is the BSD 3-clause licence of
 // externals/nihstro/license.txt, reproduced below because it asks for that: the instruction encoder below places the
@@ -13,6 +14,7 @@
 // Copyright 2017 Citra Emulator Project (sw_texturing.cpp, sw_framebuffer.cpp)
 // Copyright 2017-2024 Citra Emulator Project / Azahar Emulator Project (regs_texturing.h)
 // Copyright 2023-2026 Citra Emulator Project / Azahar Emulator Project (glsl_fs_shader_gen.cpp)
+// Copyright 2023-2026 Citra Emulator Project / Azahar Emulator Project (pica_core.h)
 // Copyright 2014 Tony Wasserka (shader_bytecode.h)
 //
 //   Copyright 2014 Tony Wasserka
@@ -2009,6 +2011,179 @@ TEST_CASE("native/a_draw_after_an_overlapping_targets_write_back_draws_its_own_v
     CHECK(sim.Counter("draws_split_by_submit") == 0);
     CHECK(sim.Counter("native_draws_dropped") == 0);
     CHECK(sim.Counter("native_draws") == 3);
+}
+
+// ---- the fog table's lifetime (N2-42): every table offset a draw reads was committed in the recording that draws it ----------
+
+namespace {
+
+// The vertices of the table cases, at kVertexBase (position, colour): a full-screen red triangle at 0, a full-screen green one at
+// 3, a green rectangle over the left half of the target (two triangles, x from -1 to 0) at 6, and a triangle with no area at 12.
+constexpr u32 kRedFull = 0, kGreenFull = 3, kGreenLeft = 6, kNoArea = 12;
+std::vector<u8> TableCaseVertices() {
+    const std::array<float, 4> red = Bytes4(255, 0, 0, 255), green = Bytes4(0, 255, 0, 255);
+    return FloatBytes({{-1, -1, -0.5f, 1}, red,   {3, -1, -0.5f, 1}, red,   {-1, 3, -0.5f, 1}, red,
+                       {-1, -1, -0.5f, 1}, green, {3, -1, -0.5f, 1}, green, {-1, 3, -0.5f, 1}, green,
+                       {-1, -1, -0.5f, 1}, green, {0, -1, -0.5f, 1}, green, {-1, 1, -0.5f, 1}, green,
+                       {0, -1, -0.5f, 1},  green, {0, 1, -0.5f, 1},  green, {-1, 1, -0.5f, 1}, green,
+                       {-1, -1, -0.5f, 1}, red,   {-1, -1, -0.5f, 1}, red,   {-1, -1, -0.5f, 1}, red});
+}
+
+// DrawArrays of `count` vertices from vertex `first`.
+void DrawVertices(CmdList& l, u32 first, u32 count) {
+    l.Write(0x228, count).Write(0x22A, first).Write(0x22E, 0);
+}
+
+// Fog::LutEntry (pica_core.h): the value in bits 13-23 and the difference in bits 0-12, both over 2047. Every entry of a table is
+// the same word, so the factor does not depend on the depth: 1 keeps the vertex colour, 0 gives the fog colour.
+constexpr u32 kFogFactor1 = 0x7FFu << 13, kFogFactor0 = 0, kFogFactorHalf = 1024u << 13;
+constexpr u32 kFogBlue = 0xFF0000, kFogGreen = 0x00FF00;  // 0xE1: red bits 0-7, green 8-15, blue 16-23
+
+// The fog table (regs_texturing.h's fog_lut_offset 0xE6 and fog_lut_data 0xE8): the offset 0, then the 128 entries.
+void FogTable(CmdList& l, u32 entry) {
+    l.Write(0xE6, 0);
+    for (u32 i = 0; i < 128; ++i) l.Write(0xE8, entry);
+}
+
+// The registers of a table case: the framebuffer and the vertex program of the cases above, fog mode Fog with `fog_colour`.
+void TableCaseRegisters(CmdList& l, u32 fog_colour) {
+    FramebufferRegisters(l);
+    VertexProgram(l, 2);
+    l.Write(kRegUseGs, 0);
+    l.Write(kRegTopology, 0);  // List
+    l.Write(0xE0, 5);          // fog mode Fog
+    l.Write(0xE1, fog_colour);
+}
+
+// True when the columns left of the middle are `left` and the others `right`, byte-exact.
+bool Halves(const std::vector<u8>& pixels, std::array<int, 4> left, std::array<int, 4> right, std::string* why) {
+    for (u32 y = 0; y < kSize; ++y) {
+        for (u32 x = 0; x < kSize; ++x) {
+            const std::array<int, 4> p = Pixel(pixels, x, y);
+            const std::array<int, 4>& want = x < kSize / 2 ? left : right;
+            if (p != want) {
+                *why = "pixel (" + std::to_string(x) + "," + std::to_string(y) + ") is " + std::to_string(p[0]) + "," +
+                       std::to_string(p[1]) + "," + std::to_string(p[2]) + "," + std::to_string(p[3]) + ", expected " +
+                       std::to_string(want[0]) + "," + std::to_string(want[1]) + "," + std::to_string(want[2]) + "," +
+                       std::to_string(want[3]);
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+constexpr std::array<int, 4> kBlue = {0, 0, 255, 255}, kGreen = {0, 255, 0, 255};
+
+}  // namespace
+
+// (b) An offset kept across recordings. B, the first draw of list 2, writes no table: before N2-42 it kept the offset list 1 wrote,
+// and C's new table, mapped at 0 once list 1's recording had completed and the ring had drained, overwrote the bytes B reads
+// before list 2's recording was submitted (the whole target blue). Each recording's first table step uploads every table.
+TEST_CASE("native/a_table_written_after_the_ring_drained_does_not_overwrite_the_one_an_earlier_draw_of_the_recording_reads") {
+    if (!test::RequireBackend()) return;
+    Sim sim;
+    sim.Write(kVertexBase, TableCaseVertices());
+    CmdList first;
+    TableCaseRegisters(first, kFogBlue);
+    FogTable(first, kFogFactor1);       // T1
+    DrawVertices(first, kRedFull, 3);   // A
+    sim.Submit(first);
+    sim.gpu->WriteBackColorBuffers();   // the readback of A's target submits and waits: list 1's recording has completed
+
+    CmdList second;
+    DrawVertices(second, kGreenFull, 3);  // B, no table write
+    FogTable(second, kFogFactor0);        // T2
+    DrawVertices(second, kGreenLeft, 6);  // C
+    sim.Submit(second);
+    std::string why;
+    CHECK_MESSAGE(Halves(sim.ColorBuffer(), kBlue, kGreen, &why), why);
+    CHECK(sim.Counter("draws_split_by_submit") == 0);
+    CHECK(sim.Counter("native_draws") == 3);
+    CHECK(sim.Counter("native_draws_dropped") == 0);
+    CHECK(sim.Counter("fragment_table_uploads") == 3);  // A, B (list 2's first table step), C
+}
+
+// (a) Uploaded before a submission, drawn after it. B's target selection writes back the RGBA8 target over the same bytes, which
+// submits the recording and waits: before N2-42 B's table had been committed to that recording, and C (restarting the drained
+// ring at 0) and D (at B's bytes again) overwrote it before B's own recording was submitted (the whole target blue). The table
+// step runs after every step that can submit.
+TEST_CASE("native/a_draw_after_an_overlapping_targets_write_back_reads_the_fog_table_it_was_given") {
+    if (!test::RequireBackend()) return;
+    Sim sim;
+    sim.Write(kVertexBase, TableCaseVertices());
+    CmdList l;
+    TableCaseRegisters(l, kFogBlue);
+    FogTable(l, kFogFactorHalf);          // T0
+    DrawVertices(l, kRedFull, 3);         // A, into the RGBA8 target
+    l.Write(kRegColorFormat, 3u << 16);   // RGB565: another target over the same bytes
+    FogTable(l, kFogFactor1);             // T1
+    DrawVertices(l, kGreenFull, 3);       // B, after the RGBA8 target's write-back
+    FogTable(l, kFogFactorHalf);          // T2
+    DrawVertices(l, kNoArea, 3);          // C, no area
+    FogTable(l, kFogFactor0);             // T3
+    DrawVertices(l, kGreenLeft, 6);       // D
+    sim.Submit(l);
+    sim.gpu->WriteBackColorBuffers();
+    const u8* memory = sim.host.PhysicalPointer(kColorBuffer, kSize * kSize * 2);
+    REQUIRE(memory != nullptr);
+    std::vector<u8> rgba;
+    REQUIRE(texture::DecodeToRgba8(memory, kSize * kSize * 2, kSize, kSize, texture::Format::RGB565, rgba));
+    std::string why;
+    CHECK_MESSAGE(Halves(rgba, kBlue, kGreen, &why), why);
+    CHECK(sim.Counter("draws_split_by_submit") == 0);
+    CHECK(sim.Counter("native_draws") == 4);
+    CHECK(sim.Counter("native_draws_dropped") == 0);
+    CHECK(sim.Counter("fragment_table_uploads") == 4);  // A, B in its new recording, C, D
+}
+
+// (c) A block change lost on a drop. D1 changes the fog colour and is dropped ("no surface": colour address 0, no depth buffer);
+// the processor clears the dirty flags after it. D2 changes nothing (the colour address is a key register, but the key stays
+// equal and no uniform reads it): before N2-42 its Write returned D0's allocation, with D0's fog colour (blue).
+TEST_CASE("native/a_uniform_change_on_a_dropped_draw_reaches_the_next_draw") {
+    if (!test::RequireBackend()) return;
+    Sim sim;
+    sim.Write(kVertexBase, TableCaseVertices());
+    CmdList l;
+    TableCaseRegisters(l, kFogBlue);
+    FogTable(l, kFogFactor0);              // the power-on table (all zeros): writing it sets no flag
+    DrawVertices(l, kGreenFull, 3);        // D0: blue
+    l.Write(0xE1, kFogGreen);
+    l.Write(kRegColorAddress, 0);
+    DrawVertices(l, kGreenFull, 3);        // D1: dropped
+    l.Write(kRegColorAddress, kColorBuffer >> 3);
+    DrawVertices(l, kGreenFull, 3);        // D2: the fog colour green
+    sim.Submit(l);
+    std::string why;
+    CHECK_MESSAGE(UniformColour(sim.ColorBuffer(), kGreen, &why), why);
+    CHECK(sim.Counter("draws_split_by_submit") == 0);
+    CHECK(sim.Counter("native_draws") == 3);
+    CHECK(sim.Counter("native_draws_dropped") == 1);
+    CHECK(sim.Counter("fragment_table_uploads") == 1);  // D0; D2 has nothing pending
+}
+
+// (c') A table change on a dropped draw. D1 writes a factor-0 table and is dropped: before N2-42 its Prepare moved the fog offset in
+// FragmentState only, and D2's Write reused D0's allocation, which reads the factor-1 table (green). The change stays pending.
+TEST_CASE("native/a_table_change_on_a_dropped_draw_reaches_the_next_draw") {
+    if (!test::RequireBackend()) return;
+    Sim sim;
+    sim.Write(kVertexBase, TableCaseVertices());
+    CmdList l;
+    TableCaseRegisters(l, kFogBlue);
+    FogTable(l, kFogFactor1);
+    DrawVertices(l, kGreenFull, 3);        // D0: green
+    FogTable(l, kFogFactor0);
+    l.Write(kRegColorAddress, 0);
+    DrawVertices(l, kGreenFull, 3);        // D1: dropped
+    l.Write(kRegColorAddress, kColorBuffer >> 3);
+    DrawVertices(l, kGreenFull, 3);        // D2: the factor-0 table, blue
+    sim.Submit(l);
+    std::string why;
+    CHECK_MESSAGE(UniformColour(sim.ColorBuffer(), kBlue, &why), why);
+    CHECK(sim.Counter("draws_split_by_submit") == 0);
+    CHECK(sim.Counter("native_draws") == 3);
+    CHECK(sim.Counter("native_draws_dropped") == 1);
+    CHECK(sim.Counter("fragment_table_uploads") == 2);  // D0, D2
 }
 
 TEST_CASE("native/the_gpu_made_on_one_thread_creates_its_images_on_the_thread_that_executes") {

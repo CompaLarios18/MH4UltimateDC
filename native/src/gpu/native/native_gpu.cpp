@@ -372,6 +372,7 @@ public:
         add("shadow_lookups", frame_.shadow_lookups);
         add("shadow_unavailable", frame_.shadow_unavailable);
         add("draws_split_by_submit", frame_.draws_split_by_submit);
+        add("fragment_table_uploads", frame_.fragment_table_uploads);
         for (const char* name : {"sampling", "lighting", "fog", "proctex", "shadow", "gas"}) {
             const auto it = frame_.stubbed.find(std::string_view(name));
             add(std::string("stubbed:") + name, it == frame_.stubbed.end() ? 0 : it->second);
@@ -411,10 +412,12 @@ private:
         // N2-12: draws recorded in the shadow-write pass; draws whose unit 0 is Shadow2D or ShadowCube and that bound a decoded
         // map; shadow-mode draws dropped because the shadow target could not be made (also counted in `dropped`)
         u64 shadow_write_draws = 0, shadow_lookups = 0, shadow_unavailable = 0;
-        // draws dropped because the recording was submitted between their first commit to the vertex, vertex-uniform or
-        // fragment-uniform ring and the draw (also in `dropped`; DrawImpl's order makes it 0). The fragment table rings, which
-        // Prepare commits earlier, are not checked.
+        // draws dropped because the recording was submitted between their first commit to the vertex, vertex-uniform,
+        // fragment-uniform or fragment table rings and the draw (also in `dropped`; DrawImpl's order makes it 0)
         u64 draws_split_by_submit = 0;
+        // N2-42: draws whose table step opened a session at least once (a draw counts once, the uniform retry included): the
+        // tables a dropped draw left pending, the ones the state changed, and every table at each recording's first table step
+        u64 fragment_table_uploads = 0;
         std::map<std::string, u64, std::less<>> stubbed;
     };
 
@@ -498,6 +501,9 @@ private:
         }
         composer_->BeginRecording(*rec_);
         uniform_ring_->BeginRecording();
+        if (fragment_state_) {
+            fragment_state_->BeginRecording();  // N2-42: the recording's first table step uploads every table
+        }
         ++recording_serial_;
         TrimTextures();
         draws_in_recording_ = 0;
@@ -1027,12 +1033,15 @@ private:
             return rhi::Error{why};
         };
 
-        // The fragment state first, for every draw: the dirty flags the processor clears after this draw are read here.
-        rhi::Result<fragment::FragmentState::Prepared> prepared = fragment_state_->Prepare(state, geometry.context, tables_.get());
+        // The fragment state first, for every draw: the dirty flags the processor clears after this draw are read here. No rings:
+        // the table flags are kept pending in the fragment state and uploaded by the table step below, after every step that
+        // can submit the recording; a block change is kept in block_unwritten_ until a Write has committed it.
+        rhi::Result<fragment::FragmentState::Prepared> prepared = fragment_state_->Prepare(state, geometry.context, nullptr);
         if (!prepared.ok()) {
             MH4N_LOG(Error, kLog, "fragment state: {}", prepared.error());
             return drop("the fragment state could not be prepared");
         }
+        block_unwritten_ = block_unwritten_ || prepared->block_changed;
         const fragment::FragmentKey key = fragment_state_->key();
         const fragment::Needs needs = fragment_state_->needs();
         CountStubs(key);
@@ -1107,15 +1116,45 @@ private:
             }
         }
 
-        // ---- everything that can submit the recording, before the draw's first commit to the vertex ring, the vertex-stage
-        // uniform ring and the fragment-uniform ring ----
+        // ---- everything that can submit the recording, before the draw's first commit to the fragment table rings, the vertex
+        // ring, the vertex-stage uniform ring and the fragment-uniform ring ----
         // Ring::Commit attaches the space to the recording open at that moment (rhi.h); once that recording has completed the ring
         // hands the space out again, so a commit made before a submission that the draw is recorded after can be overwritten by
         // the next draw's data before the draw's own recording is submitted. EnsureRoom first (it only makes room), then the
         // targets (a write-back of an overlapping target submits the recording and waits; a load begins the next one, which runs
         // TrimTextures), then the textures (their write-backs and uploads can submit too, but TrimTextures does not run while
-        // they are bound; see EnsureDrawRecording), then the fragment uniforms with their full-ring retry. Not covered: the
-        // fragment table rings, which Prepare committed above, before all of these (a known hazard, see native_gpu.h step 5).
+        // they are bound; see EnsureDrawRecording), then the fragment tables and the fragment uniforms with their full-ring retry.
+
+        // The recording open at the draw's first commit to the fragment table, vertex, vertex-uniform or fragment-uniform rings,
+        // wherever in the order below that commit falls: every successful commit to those rings calls committed(), and the check
+        // before the draw compares it with the recording the draw is recorded in.
+        std::optional<u64> draw_recording;
+        auto committed = [&] {
+            if (!draw_recording) draw_recording = recording_serial_;
+        };
+        // The table step (N2-42): uploads the tables the fragment state holds pending (every table at the recording's first
+        // table step), reading them from the state as it is now. A step that opened a session committed it to the open
+        // recording: noted here, and nowhere else. Its block change joins block_unwritten_. False when the upload failed (the
+        // tables stay pending).
+        bool table_step_counted = false;
+        std::string table_error;
+        auto table_step = [&]() -> bool {
+            rhi::Result<fragment::FragmentState::TableStep> step = fragment_state_->UploadPendingTables(state, *tables_);
+            if (!step.ok()) {
+                table_error = step.error();
+                return false;
+            }
+            if (step->opened) {
+                committed();
+                if (!table_step_counted) {
+                    table_step_counted = true;
+                    ++frame_.fragment_table_uploads;
+                }
+            }
+            block_unwritten_ = block_unwritten_ || step->block_changed;
+            return true;
+        };
+
         EnsureRoom(vertex_bytes);
 
         // ---- the targets (gpu_dirty is set only once the draw has been recorded) ----
@@ -1155,26 +1194,29 @@ private:
         BindTextures(state, key, desc);
         EnsureDrawRecording(desc, bound_in);
 
-        // The recording open at the draw's first commit to the vertex, vertex-uniform or fragment-uniform ring, wherever in
-        // the order below that commit falls: every successful commit to those rings calls committed(), and the check before the
-        // draw compares it with the recording the draw is recorded in. The fragment table rings are not checked.
-        std::optional<u64> draw_recording;
-        auto committed = [&] {
-            if (!draw_recording) draw_recording = recording_serial_;
-        };
-
-        // ---- the fragment uniforms (the table rings were committed by Prepare; the retry submits before the Write that
-        // commits, and keeps the draw's images) ----
-        rhi::Result<fragment::FragmentUniformRing::Allocation> block = uniform_ring_->Write(fragment_state_->block(), prepared->block_changed);
+        // ---- the fragment tables, then the fragment uniforms. A failed table step, or a failed Write after a table step that
+        // succeeded, takes the full-ring retry: the note is reset before the flush (only the table step can have made it by
+        // then), the new recording's BeginRecording makes its table step upload every table, so no offset points into the
+        // submitted recording, and the Write after it takes the whole block. The retry keeps the draw's images. ----
+        const bool tables_ok = table_step();
+        rhi::Result<fragment::FragmentUniformRing::Allocation> block =
+            tables_ok ? uniform_ring_->Write(fragment_state_->block(), block_unwritten_)
+                      : rhi::Result<fragment::FragmentUniformRing::Allocation>(rhi::Error{table_error});
         if (!block.ok()) {
             const u64 before = recording_serial_;
+            draw_recording.reset();
             FlushRecording();
             EnsureDrawRecording(desc, before);
+            if (!table_step()) {
+                MH4N_LOG(Error, kLog, "fragment tables: {}", table_error);
+                return drop("the fragment tables do not fit the ring");
+            }
             block = uniform_ring_->Write(fragment_state_->block(), true);
             if (!block.ok()) {
                 return drop("the fragment uniforms do not fit the ring");
             }
         }
+        block_unwritten_ = false;
         // A failed Write commits nothing; a reused block points into the current recording (BeginRecording clears the last one).
         committed();
         // From here on nothing may submit the recording.
@@ -1259,11 +1301,10 @@ private:
             committed();
         }
 
-        // The invariant of the order above, for the vertex, vertex-uniform and fragment-uniform rings (not the fragment table
-        // rings, which Prepare committed earlier and which are unchecked): the recording open at the draw's first commit to them,
-        // wherever that commit fell, is the one the draw is recorded in. A draw that would read space handed out again is
-        // dropped, not drawn with what another draw wrote there. Checked before the first use of rec_ below; nothing between
-        // here and the composer's draw can submit the recording.
+        // The invariant of the order above, for the fragment table, vertex, vertex-uniform and fragment-uniform rings: the
+        // recording open at the draw's first commit to them, wherever that commit fell, is the one the draw is recorded in. A
+        // draw that would read space handed out again is dropped, not drawn with what another draw wrote there. Checked before
+        // the first use of rec_ below; nothing between here and the composer's draw can submit the recording.
         if (!rec_ || !draw_recording || recording_serial_ != *draw_recording) {
             ++frame_.draws_split_by_submit;
             if (!warned_split_) {
@@ -1416,6 +1457,9 @@ private:
     bool null_cleared_ = false;
     bool binding_textures_ = false;
     bool warned_split_ = false;  // draws_split_by_submit's warning, once
+    // N2-42: a change of the fragment block (a draw's Prepare or its table step) not yet committed by a Write; cleared only after
+    // a successful Write, so a change made on a dropped draw reaches the next draw's Write
+    bool block_unwritten_ = false;
     bool levels_missing_in_draw_ = false;
     u64 seen_sampler_creates_ = 0;
 

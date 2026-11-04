@@ -92,8 +92,11 @@ public:
     // `UniformDirty` when it writes.
     virtual void FillUniforms(const pica::PicaState&, FragmentBlock&, UniformDirty&) const {}
 
-    // Uploads the feature's tables when `PicaState`'s `lighting.lut_dirty`, `fog.lut_dirty` or
-    // `proctex.table_dirty` says so (the request is `upload.need`), and writes the offsets into the uniforms.
+    // Uploads exactly the feature's tables that `upload.need` asks for, whatever `PicaState`'s dirty flags say (`need` can
+    // be "all" for reasons other than the flags: the first table step of a recording, a wrap, a change kept pending from
+    // a dropped draw), reading their contents from `upload.state`, and writes each offset from its slice into the
+    // uniforms. Keeps no "already uploaded" state of its own: an offset is valid only in the recording that committed it
+    // (tables.h, THE RULE).
     virtual void UploadTables(TableUpload&) const {}
 
     // The feature's part of the draw's needs, ORed into core's.
