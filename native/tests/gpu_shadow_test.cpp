@@ -2043,3 +2043,59 @@ TEST_CASE("native/a_cpu_path_shadow_draw_after_the_colour_targets_write_back_dra
     CHECK(sim.Counter("native_draws_dropped") == 0);
     CHECK(sim.Counter("native_draws") == 3);
 }
+
+// A draw dropped after the target selection marks no target written. The selection loads the depth target as depth 1.0, stencil 0
+// (it is never read from guest memory), and the write-back writes every target marked written, the depth one included: a mark
+// set at the selection, before the empty-rectangle drop, put 0x00FFFFFF words over the game's depth buffer. Here a depth-tested
+// draw (D24S8) whose viewport corner is at x = 8, the buffer's width, gets past every drop before the targets, selects the colour
+// and the depth target, and is dropped for its empty rectangle; the write-back leaves both buffers as they were.
+TEST_CASE("native/a_draw_dropped_after_the_target_selection_leaves_the_depth_buffer_untouched") {
+    if (!test::RequireBackend()) return;
+    Sim sim;
+    constexpr u32 kDepthBuffer = mh4n::gpu_capture::kVramPaddr + 0x13000;  // 8x8 D24S8: overlaps no other buffer
+    std::vector<u8> depth(kSize * kSize * 4);
+    for (u32 i = 0; i < kSize * kSize; ++i) {
+        const u32 word = 0x5A000000u | (0x123456u + i);  // never 0x00FFFFFF, a nonzero stencil byte
+        std::memcpy(depth.data() + 4 * i, &word, 4);
+    }
+    const std::vector<u8> color(kSize * kSize * 4, 0x5A);
+    sim.Write(kDepthBuffer, depth);
+    sim.Write(kColorBuffer, color);
+
+    std::vector<std::array<float, 4>> v;
+    RectVertices(v, 0, 0, kSize, kSize, 0.5f, {1.0f, 0.0f, 0.0f, 1.0f});
+    sim.Vertices(v);
+    CmdList l;
+    Registers(l, kColorBuffer, kSourcePrimary);
+    l.Write(0x11C, kDepthBuffer >> 3);
+    l.Write(0x116, 3);                                                     // D24S8
+    l.Write(kRegDepthColorMask, 0xF00u | 1u | (1u << 4) | (1u << 12));  // depth test Always, depth write
+    l.Write(0x115, 3);                                                     // depth and stencil writes allowed
+    l.Write(0x68, kSize);                                                  // the viewport corner at x = 8: an empty rectangle
+    VertexProgram(l, false);
+    DrawArrays(l, 0, 6);
+    sim.Submit(l);
+    sim.gpu->WriteBackColorBuffers();
+
+    const u8* depth_after = sim.host.PhysicalPointer(kDepthBuffer, static_cast<u32>(depth.size()));
+    REQUIRE(depth_after != nullptr);
+    u32 depth_changed = 0;
+    for (size_t i = 0; i < depth.size(); ++i) {
+        if (depth_after[i] != depth[i]) ++depth_changed;
+    }
+    u32 first_word;
+    std::memcpy(&first_word, depth_after, 4);
+    CHECK_MESSAGE(depth_changed == 0, depth_changed << " bytes of the depth buffer changed (word 0 is "
+                                                    << fmt::format("{:#010x}", first_word) << ")");
+    const u8* color_after = sim.host.PhysicalPointer(kColorBuffer, static_cast<u32>(color.size()));
+    REQUIRE(color_after != nullptr);
+    u32 color_changed = 0;
+    for (size_t i = 0; i < color.size(); ++i) {
+        if (color_after[i] != color[i]) ++color_changed;
+    }
+    CHECK_MESSAGE(color_changed == 0, color_changed << " bytes of the colour buffer changed");
+
+    CHECK(sim.Counter("native_draws") == 1);
+    CHECK(sim.Counter("native_draws_dropped") == 1);  // the empty rectangle
+    CHECK(sim.Counter("draws_split_by_submit") == 0);
+}
