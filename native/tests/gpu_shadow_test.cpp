@@ -1768,11 +1768,12 @@ TEST_CASE("native/a_shadow_map_drawn_by_shadow_mode_lists_is_written_back_and_lo
         sim.Submit(l);
     }
     // list 4: NativeGpu's fallback binding of a Shadow2D unit, into a fourth colour buffer. The left half with unit 0 off (0x080 =
-    // 0), ClampToBorder on s with a border colour that is neither black nor white and s running from -0.5 (two columns on the
-    // border); the right half with unit 0 on and address 0, coordinates inside. Both read word 0 (the 1x1 shadow image) and the
-    // off unit's border is transparent black: (0, 0, 0, 0) everywhere, where the composer's white dummy (word 0xFFFFFFFF) gives
-    // 255 and null_2d_ (no ShadowStorage view) drops the draw. The address-0 unit gives (0, 0, 0, 1) in the software renderer:
-    // the spec's listed difference.
+    // 0), ClampToBorder on s with a border colour that is neither black nor white and u running from -0.5; the right half with
+    // unit 0 on and address 0, coordinates inside. Both read word 0 (the 1x1 shadow image): the lookup takes its index from the
+    // bound image's size, so s = int(u * 1) = 0 for every u in (-0.5, 0.5) and no pixel reaches the border path (the composer's
+    // 'unit 0 off' scene covers the off unit's transparent-black border). (0, 0, 0, 0) everywhere, where the composer's white
+    // dummy (word 0xFFFFFFFF) gives 255 and null_2d_ (no ShadowStorage view) drops the draw. The address-0 unit gives
+    // (0, 0, 0, 1) in the software renderer: the spec's listed difference.
     {
         const Coord z{DepthFor(k)};
         const std::array<Coord, 3> border = {Coord{-0.5, 2, 0}, kCentreV, z}, inside = {kCentreU, kCentreV, z};

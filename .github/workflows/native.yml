@@ -81,6 +81,13 @@ jobs:
       # layer sees them. Fails on any layer message. Names that do not exist yet match nothing.
       - name: RHI tests under the validation layer
         run: python3 tools/native/vk_layer_run.py --build build/native -R '^(rhi_.*|gpu_backend_.*|gpu_queue_test|present_test|swapchain_test)$'
+      # N2-12's gpu_shadow_test under the layer too (generated shaders in a pass with no attachments, storage writes):
+      # as it is, and with the interlock capability masked (the compare-and-swap path; only the layer reports an
+      # interlock module on a device without the feature). Not in the regex above, which the ThreadSanitizer job shares.
+      - name: Shadow test under the validation layer
+        run: |
+          python3 tools/native/vk_layer_run.py --build build/native -R '^gpu_shadow_test$'
+          MH4N_RHI_MASK=interlock python3 tools/native/vk_layer_run.py --build build/native -R '^gpu_shadow_test$'
       # our own 3DS programs (port/tests): the native runner's output must equal Azahar's, which is
       # committed as port/tests/expected. Needs clang, ld.lld, llvm-objcopy and llvm-readelf
       # (installed above) to build the programs and their code libraries; no game data.
