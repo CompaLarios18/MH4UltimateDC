@@ -10,7 +10,9 @@
 // Copyright 2023-2026 Citra Emulator Project / Azahar Emulator Project (pica_core.h)
 //
 // The lookup-table rings (N2-33; docs/native/gpu-fragment-design.md 5.10). Core has no table of its own: the
-// features fill the rings through `FeatureModule::UploadTables` when `PicaState` says a table changed.
+// features fill the rings through `FeatureModule::UploadTables` with the tables an upload asks for (`TableUpload::need`):
+// the tables `FragmentState` holds pending (changed since they were last uploaded, as `PicaState`'s flags said, or not
+// uploaded yet in the open recording, N2-42), widened by a wrap.
 //
 // Two texel-buffer rings, three views, as Azahar:
 //   ring `Lf`       lut_lf   (binding 3)  R32G32_SFLOAT       the lighting tables (24 x 256 entries) and the fog table (128)
@@ -23,7 +25,15 @@
 // One upload per ring per draw: `UploadTables` maps the ring's worst case once (Azahar's `max_size`), the
 // features take slices of it, and the session is committed with the bytes used. A wrap of the ring (the
 // new allocation restarts at the beginning) makes the tables of that ring all dirty again, as Azahar's
-// "invalidate" does.
+// "invalidate" does: that repairs only the offsets of the draw that maps.
+//
+// THE RULE (N2-42): a table's offset is valid only in the recording that committed it. A ring's space is attached to
+// the recording open at the commit and handed out again once that recording has completed, and the ring restarts at 0
+// as soon as every span in it has passed, so an offset kept from an earlier recording (or committed before a submission
+// that the draw is recorded after) can point at bytes a later upload of the open recording overwrites. So every table
+// offset a draw reads must have been committed in the recording that records the draw: `NativeGpu` uploads every table
+// of both rings at the first table step of each recording (`FragmentState::BeginRecording`), runs a draw's table step
+// after every step that can submit the recording, and keeps a table change made on a dropped draw pending.
 //
 // Final names (the design called them proposals): `TableRings`, `TableRing`, `TableDirty`, `TableUpload`,
 // `TableSlice`, `UploadTables`.
@@ -71,9 +81,10 @@ public:
     // The buffer behind a ring (for the binding set: lut_lf is Lf, lut_rg and lut_rgba are General).
     const rhi::Buffer& Buffer(TableRing ring) const;
 
-    // Opens an upload session: maps `max_bytes` (a multiple of 16) in the ring. Returns true when the ring wrapped,
-    // so every table in it must be uploaded again. One session per ring at a time; needs the calling thread's open
-    // recorder (Ring::Commit does).
+    // Opens an upload session: maps `max_bytes` (a multiple of 16) in the ring. Returns true when the ring wrapped (the
+    // allocation starts below the previous head, or the ring drained and restarted at 0), so every table in it is
+    // uploaded again in this session; the offsets of earlier sessions are not repaired by that (see THE RULE above).
+    // One session per ring at a time; needs the calling thread's open recorder (Ring::Commit does).
     rhi::Result<bool> Begin(TableRing ring, u64 max_bytes);
     // The next `bytes` of the session (a multiple of 16), and nothing when the session's room is used up.
     rhi::Result<TableSlice> Take(TableRing ring, u64 bytes);
@@ -89,7 +100,8 @@ private:
     std::unique_ptr<Impl> impl_;
 };
 
-// Which tables to upload: the bits of `PicaState`'s dirty flags, widened to "all" after a wrap of the ring.
+// Which tables to upload: the request (`FragmentState`'s pending tables, or `PicaState`'s dirty flags), widened to "all"
+// for a ring whose session wrapped.
 struct TableDirty {
     u32 lighting = 0;  // bit n: lighting table n
     bool fog = false;
@@ -113,12 +125,19 @@ struct UploadSummary {
     bool general_wrapped = false;
 };
 
-// One upload per ring that has something dirty, as described above, calling each registered feature's
-// `UploadTables` between `Begin` and `End`. Does not clear the dirty flags of `state` (the command processor
-// does after Draw). On the thread that owns the state, with its recorder open.
+// One upload per ring that has a table requested by `need`, as described above, calling each registered feature's
+// `UploadTables` between `Begin` and `End` with `need` widened by a wrap. Opens no session when `need` asks for nothing.
+// The table contents are read from `state` now. On the thread that owns the state, with its recorder open. An error
+// leaves the offsets of the tables it did not commit unusable: the caller asks for them again (`FragmentState` keeps
+// them pending).
+class FeatureRegistry;
+rhi::Result<UploadSummary> UploadTables(const pica::PicaState& state, TableRings& rings, FragmentBlock& block,
+                                        UniformDirty& dirty, const TableDirty& need, const FeatureRegistry& features);
+// The same with `need` taken from `state`'s dirty flags (`lighting.lut_dirty`, `fog.lut_dirty`, `proctex.table_dirty`),
+// which this does not clear (the command processor does after Draw). These alone do not follow THE RULE above: a
+// caller that keeps offsets across recordings uses `FragmentState`.
 rhi::Result<UploadSummary> UploadTables(const pica::PicaState& state, TableRings& rings, FragmentBlock& block,
                                         UniformDirty& dirty);
-class FeatureRegistry;
 rhi::Result<UploadSummary> UploadTables(const pica::PicaState& state, TableRings& rings, FragmentBlock& block,
                                         UniformDirty& dirty, const FeatureRegistry& features);
 

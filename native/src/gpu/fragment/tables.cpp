@@ -103,11 +103,17 @@ rhi::Result<UploadSummary> UploadTables(const pica::PicaState& state, TableRings
 
 rhi::Result<UploadSummary> UploadTables(const pica::PicaState& state, TableRings& rings, FragmentBlock& block,
                                         UniformDirty& dirty, const FeatureRegistry& features) {
-    UploadSummary summary;
     TableDirty need;
     need.lighting = state.lighting.lut_dirty;
     need.fog = state.fog.lut_dirty;
     need.proctex = state.proctex.table_dirty;
+    return UploadTables(state, rings, block, dirty, need, features);
+}
+
+rhi::Result<UploadSummary> UploadTables(const pica::PicaState& state, TableRings& rings, FragmentBlock& block,
+                                        UniformDirty& dirty, const TableDirty& requested, const FeatureRegistry& features) {
+    UploadSummary summary;
+    TableDirty need = requested;
 
     const bool lf = need.lighting != 0 || need.fog;
     const bool general = need.proctex != 0;

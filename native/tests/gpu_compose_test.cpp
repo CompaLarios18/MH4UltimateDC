@@ -442,6 +442,146 @@ TEST_CASE("tables/a_wrapped_ring_makes_every_table_of_it_dirty_again") {
     Run(*backend, std::move(rec));
 }
 
+// ---- the pending tables of FragmentState (N2-42: an offset is valid only in the recording that committed it) ---------------
+
+namespace {
+
+TableDirty AllTables() {
+    return TableDirty{pica::Lighting::kAllDirty, true, pica::ProcTex::kAllDirty};
+}
+
+// The three test features in a registry of their own, and a FragmentState on it.
+struct TableRig {
+    TableLog log;
+    LightingTables lighting{&log};
+    FogTable fog;
+    ProcTexTables proctex;
+    FeatureRegistry features;
+    std::unique_ptr<FragmentState> fragment;
+
+    explicit TableRig(rhi::Backend& backend) {
+        REQUIRE(features.Add(lighting));
+        REQUIRE(features.Add(fog));
+        REQUIRE(features.Add(proctex));
+        fragment = std::make_unique<FragmentState>(ProfileOf(backend.Caps()), features);
+    }
+};
+
+}  // namespace
+
+TEST_CASE("tables/a_flag_seen_with_null_rings_is_carried_exactly") {
+    auto backend = test::RequireBackend();
+    if (!backend) return;
+    TableRig rig(*backend);
+    rhi::Result<std::unique_ptr<TableRings>> rings = TableRings::Create(*backend);
+    REQUIRE_MESSAGE(rings.ok(), rings.error());
+    auto state = NewState();
+
+    rhi::Recorder rec = backend->BeginRecording();
+    // a new FragmentState holds every table pending: the first step drains them
+    rhi::Result<FragmentState::TableStep> first = rig.fragment->UploadPendingTables(*state, **rings);
+    REQUIRE_MESSAGE(first.ok(), first.error());
+    CHECK(first->opened);
+    REQUIRE(rig.log.needs.size() == 1);
+    CHECK(rig.log.needs[0] == AllTables());
+
+    // a draw that sees exactly lighting table 3 dirty, prepared without rings (as --gpu native does), then the flags cleared as the
+    // command processor clears them after the draw
+    state->ClearDirty();
+    state->lighting.lut_dirty = 1u << 3;
+    rhi::Result<FragmentState::Prepared> prepared = rig.fragment->Prepare(*state, {}, nullptr);
+    REQUIRE_MESSAGE(prepared.ok(), prepared.error());
+    CHECK_FALSE(prepared->tables_uploaded);
+    CHECK(rig.log.needs.size() == 1);
+    state->ClearDirty();
+
+    // the next step, in the same recorder (no BeginRecording), asks for that table and nothing else: no wrap (the first span is
+    // unstamped and the ring has room)
+    rhi::Result<FragmentState::TableStep> second = rig.fragment->UploadPendingTables(*state, **rings);
+    REQUIRE_MESSAGE(second.ok(), second.error());
+    CHECK(second->opened);
+    CHECK(second->block_changed);
+    CHECK_FALSE(second->summary.lf_wrapped);
+    REQUIRE(rig.log.needs.size() == 2);
+    CHECK(rig.log.needs[1] == TableDirty{1u << 3, false, 0});
+    Run(*backend, std::move(rec));
+}
+
+TEST_CASE("tables/the_first_table_step_of_each_recording_uploads_every_table") {
+    auto backend = test::RequireBackend();
+    if (!backend) return;
+    TableRig rig(*backend);
+    rhi::Result<std::unique_ptr<TableRings>> rings = TableRings::Create(*backend);
+    REQUIRE_MESSAGE(rings.ok(), rings.error());
+    auto state = NewState();
+
+    rhi::Recorder rec = backend->BeginRecording();
+    rhi::Result<FragmentState::TableStep> drain = rig.fragment->UploadPendingTables(*state, **rings);
+    REQUIRE_MESSAGE(drain.ok(), drain.error());
+    REQUIRE(rig.log.needs.size() == 1);
+    Run(*backend, std::move(rec));
+    state->ClearDirty();
+
+    // a new recording with nothing dirty: its first step opens both rings and asks for every table
+    rec = backend->BeginRecording();
+    rig.fragment->BeginRecording();
+    rhi::Result<FragmentState::TableStep> first = rig.fragment->UploadPendingTables(*state, **rings);
+    REQUIRE_MESSAGE(first.ok(), first.error());
+    CHECK(first->opened);
+    CHECK(first->block_changed);
+    REQUIRE(rig.log.needs.size() == 2);
+    CHECK(rig.log.needs[1] == AllTables());  // the General ring too, though no procedural table was dirty
+
+    // a second step in the same recording opens nothing
+    rhi::Result<FragmentState::TableStep> again = rig.fragment->UploadPendingTables(*state, **rings);
+    REQUIRE_MESSAGE(again.ok(), again.error());
+    CHECK_FALSE(again->opened);
+    CHECK_FALSE(again->block_changed);
+    CHECK(rig.log.needs.size() == 2);
+    Run(*backend, std::move(rec));
+}
+
+TEST_CASE("tables/a_failed_table_step_keeps_its_tables_pending") {
+    auto backend = test::RequireBackend();
+    if (!backend) return;
+    TableRig rig(*backend);
+    // rings of exactly one worst-case upload each (TableRings::Create accepts equal sizes)
+    TableRingsDesc ring_desc;
+    ring_desc.lf_bytes = kLfRingMaxUpload;
+    ring_desc.general_bytes = kGeneralRingMaxUpload;
+    rhi::Result<std::unique_ptr<TableRings>> rings = TableRings::Create(*backend, ring_desc);
+    REQUIRE_MESSAGE(rings.ok(), rings.error());
+    auto state = NewState();
+
+    // the first step fills both rings in one recorder (the lighting tables and the fog table take 50,176 bytes, the procedural
+    // tables 11,264)
+    rhi::Recorder rec = backend->BeginRecording();
+    rhi::Result<FragmentState::TableStep> fill = rig.fragment->UploadPendingTables(*state, **rings);
+    REQUIRE_MESSAGE(fill.ok(), fill.error());
+    REQUIRE(rig.log.needs.size() == 1);
+
+    // one lighting table changes on a draw prepared without rings; the next step in the same recorder cannot map
+    state->ClearDirty();
+    state->lighting.lut_dirty = 1u << 3;
+    REQUIRE(rig.fragment->Prepare(*state, {}, nullptr).ok());
+    state->ClearDirty();
+    rhi::Result<FragmentState::TableStep> full = rig.fragment->UploadPendingTables(*state, **rings);
+    REQUIRE_FALSE(full.ok());
+    CHECK_MESSAGE(full.error().find("not been submitted") != std::string::npos, full.error());
+    CHECK(rig.log.needs.size() == 1);
+
+    // submitted and waited for, then a new recorder with no FragmentState::BeginRecording: the table is still pending, so the
+    // next step opens Lf again. Its need is widened to all of Lf (the failed map set the ring's wrap), so only the bit is asserted.
+    Run(*backend, std::move(rec));
+    rec = backend->BeginRecording();
+    rhi::Result<FragmentState::TableStep> retried = rig.fragment->UploadPendingTables(*state, **rings);
+    REQUIRE_MESSAGE(retried.ok(), retried.error());
+    CHECK(retried->opened);
+    REQUIRE(rig.log.needs.size() == 2);
+    CHECK((rig.log.needs[1].lighting & (1u << 3)) != 0);
+    Run(*backend, std::move(rec));
+}
+
 // ---- the shadow-write pass and the pass switches ------------------------------------------------------------------------
 
 TEST_CASE("compose/a_shadow_write_pass_stores_into_the_r32_uint_view_and_passes_switch_both_ways") {
