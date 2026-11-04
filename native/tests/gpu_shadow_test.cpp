@@ -12,8 +12,8 @@
 // vertex program setup) and regs_lighting.h (the lighting disable word), at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6
 // (GPL-3.0-or-later: glsl_fs_shader_gen.cpp says "Licensed under GPLv3 or any later version"; every other file named here says
 // "Licensed under GPLv2 or any later version").
-// The rig and the `--gpu native` helpers are adapted from N2-08's and N2-23's tests in this directory (gpu_fog_test.cpp,
-// gpu_sampling_test.cpp; GPL-3.0-or-later). The vertex-program words of the `--gpu native` case place their fields where
+// The rig and the `--gpu native` helpers are adapted from N2-10's and N2-23's tests in this directory (gpu_fog_test,
+// gpu_sampling_test; GPL-3.0-or-later). The vertex-program words of the `--gpu native` case place their fields where
 // externals/nihstro/include/nihstro/shader_bytecode.h does (the submodule Azahar pins at
 // f4d8659decbfe5d234f04134b5002b82dc515a44; it is NOT GPL: its licence is the BSD 3-clause licence of
 // externals/nihstro/license.txt, reproduced below because it asks for that); the file as a whole is GPL-3.0-or-later.
@@ -70,11 +70,11 @@
 // emulation), each in the specialised shader and in the ubershader: all four must give the port's values exactly.
 #include <doctest/doctest.h>
 
+#include <fmt/format.h>
+
 #include <algorithm>
 #include <array>
-#include <atomic>
 #include <cmath>
-#include <cstdio>
 #include <cstring>
 #include <memory>
 #include <mutex>
@@ -742,6 +742,11 @@ void CheckLookup(Rigs& rigs, const LookupScene& sc) {
         }
     }
     CHECK_MESSAGE(sw::g_margin >= 0.01, sc.name << ": a pixel of the scene is within " << sw::g_margin << " of a decision boundary");
+    if (sc.type == 4) {
+        // every cube scene mixes lit and unlit texels: one that is all lit or all unlit would not tell the faces apart
+        const size_t lit = static_cast<size_t>(std::count_if(want.begin(), want.end(), [](int i) { return i != 0; }));
+        CHECK_MESSAGE((0 < lit && lit < want.size()), sc.name << ": the scene is all lit or all unlit");
+    }
     for (auto& rig : rigs.all) {
         std::shared_ptr<rhi::Image> image;
         Step step;
@@ -809,6 +814,18 @@ bool HasExecutionMode(const std::vector<u32>& spirv, u32 mode) {
         const u32 count = spirv[i] >> 16, opcode = spirv[i] & 0xFFFF;
         if (count == 0) break;
         if (opcode == 16 && i + 2 < spirv.size() && spirv[i + 2] == mode) return true;
+        i += count;
+    }
+    return false;
+}
+
+constexpr u32 kOpAtomicCompareExchange = 230;
+
+bool HasInstruction(const std::vector<u32>& spirv, u32 op) {
+    for (size_t i = 5; i < spirv.size();) {
+        const u32 count = spirv[i] >> 16, opcode = spirv[i] & 0xFFFF;
+        if (count == 0) break;
+        if (opcode == op) return true;
         i += count;
     }
     return false;
@@ -1143,8 +1160,8 @@ TEST_CASE("shadow/Shadow2D_is_TextureColors_one_texel_compared_with_the_wrap_mod
         sc.lk.shadow_word = 0;
         sc.uvw = {Coord{0, z, 0}, Coord{0, 0, z}, Coord{z}};
         scenes.push_back(sc);
-        // the same with a bias of 2: z_int = k - 2, everything lit
-        sc.name = "the perspective divide with a bias of 2";
+        // the same with 0x8B = 4 (bias field 2): z_int = k - 4, everything lit
+        sc.name = "the perspective divide with 0x8B = 4 (bias field 2)";
         sc.lk.shadow_word = 4;
         scenes.push_back(sc);
         // bit 0 set is the orthographic bit, not part of the bias: 0x8B = 5 is a bias of 4 (z_int = k - 4)
@@ -1222,9 +1239,11 @@ TEST_CASE("shadow/Shadow2D_is_TextureColors_one_texel_compared_with_the_wrap_mod
 TEST_CASE("shadow/ShadowCube_is_ConvertCubeCoords_face_and_texel_compared_like_Shadow2D") {
     Rigs rigs;
     if (!rigs) return;
-    const u32 k = 3000000;
-    // the major coordinate's magnitude is at least 1 in every scene: z_int = 16777215 - bias; the bias puts it at k
-    const u32 shadow_word = (16777215u - k) << 1;
+    const u32 k = 3000001;
+    // the major coordinate's magnitude is at least 1 in every scene, so min(z, 1) * 16777215 = 16777215; 0x8B holds bias << 1 in
+    // bits 1-23 (bit 0, the orthographic bit, is clear and not read by the cube), and z_int = 16777215 - (0x8B & 0xFFFFFE) = k
+    const u32 shadow_word = 16777215u - k;
+    REQUIRE((shadow_word & 0x00FFFFFEu) == shadow_word);
     std::array<sw::Map, 6> faces;
     for (u32 f = 0; f < 6; ++f) {
         faces[f] = LookupMap(kSize, kSize, [&](u32 s, u32 t) { return k - 1 + (s + t + f) % 3; });
@@ -1295,6 +1314,8 @@ TEST_CASE("shadow/the_device_as_it_is_takes_the_interlock_and_the_masked_backend
     REQUIRE(lean_spec.ok());
     CHECK_FALSE(HasCapability(lean_uber.spirv, kCapFragmentShaderPixelInterlock));
     CHECK_FALSE(HasCapability(lean_spec.spirv, kCapFragmentShaderPixelInterlock));
+    CHECK(HasInstruction(lean_uber.spirv, kOpAtomicCompareExchange));
+    CHECK(HasInstruction(lean_spec.spirv, kOpAtomicCompareExchange));
 
     const rhi::Capabilities& full = rigs.full->Caps();
     if (full.masked.Has(rhi::Cap::Interlock)) {

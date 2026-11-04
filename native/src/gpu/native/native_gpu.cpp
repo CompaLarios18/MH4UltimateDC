@@ -1023,12 +1023,6 @@ private:
         // ---- the textures the draw reads (before any vertex data is committed: binding one can submit the recording) ----
         DrawDesc desc;
         BindTextures(state, key, desc);
-        // N2-12: a shadow lookup is a Shadow2D or ShadowCube unit 0 bound to a decoded map (not the 1x1 word-0 image, not the null
-        // cube)
-        const auto unit0_type = static_cast<texture::Type>(pica::BitsOf(regs[texture::kTexture0 + 2], 28, 3));
-        const rhi::Image* unit0_image = desc.units[0].image;
-        const bool shadow_lookup = (unit0_type == texture::Type::Shadow2D || unit0_type == texture::Type::ShadowCube) &&
-                                   unit0_image != nullptr && unit0_image != null_shadow_.get() && unit0_image != null_cube_.get();
 
         // ---- the vertices ----
         bool use_cpu = cpuvertex::NeedsCpuPath(draw, assembler_.IsEmpty());
@@ -1257,6 +1251,12 @@ private:
         }
         ++draws_in_recording_;
         if (shadow_mode) ++frame_.shadow_write_draws;
+        // N2-12: a shadow lookup is a Shadow2D or ShadowCube unit 0 bound to a decoded map (not the 1x1 word-0 image, not the null
+        // cube)
+        const auto unit0_type = static_cast<texture::Type>(pica::BitsOf(regs[texture::kTexture0 + 2], 28, 3));
+        const rhi::Image* unit0_image = desc.units[0].image;
+        const bool shadow_lookup = (unit0_type == texture::Type::Shadow2D || unit0_type == texture::Type::ShadowCube) &&
+                                   unit0_image != nullptr && unit0_image != null_shadow_.get() && unit0_image != null_cube_.get();
         if (shadow_lookup) ++frame_.shadow_lookups;
         return result;
     }
