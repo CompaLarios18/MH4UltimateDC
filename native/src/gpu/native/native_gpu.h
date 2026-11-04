@@ -27,15 +27,20 @@
 //   3. the primitive assembler applies the draw's register side effects, then `NeedsCpuPath(draw, assembler.IsEmpty())`;
 //   4. accelerated: N2-05's loader, N2-06's translation (a program that does not translate takes the CPU path, counted
 //      `translate_failures`); CPU path: the runner, the assembler, the batch (all on the CPU: nothing is in a ring yet);
-//   5. everything that can submit the recording, BEFORE the draw's first commit to a ring it reads: room in the vertex ring,
-//      the render targets for the colour and depth buffers or the shadow target (`TargetRegistry` below: a write-back
-//      submits), the textures (after the targets: a target's load begins a recording, whose TrimTextures must not release
-//      an image the draw has bound), the fragment uniforms with their full-ring retry; then the vertices, indices or CPU
-//      batch and the vertex-stage uniforms, the fixed-function state and the dynamic state. A ring's space is attached to
-//      the recording open when it is committed and is handed out again once that recording has completed, so a draw
-//      recorded after a submission that followed its commits would read another draw's bytes. The invariant is checked:
-//      a draw whose recording changed after its first ring commit is dropped and counted `draws_split_by_submit` (also in
-//      `native_draws_dropped`; the order makes it 0). A target is marked written only once its draw is going to be recorded;
+//   5. everything that can submit the recording, BEFORE the draw's first commit to the vertex ring (vertices, indices, CPU
+//      batch), the vertex-stage uniform ring and the fragment-uniform ring: room in the vertex ring, the render targets for
+//      the colour and depth buffers or the shadow target (`TargetRegistry` below: a write-back submits), the textures (after
+//      the targets: a target's load begins a recording, whose TrimTextures must not release an image the draw has bound),
+//      the fragment uniforms with their full-ring retry; then the vertices, indices or CPU batch and the vertex-stage
+//      uniforms, the fixed-function state and the dynamic state. A ring's space is attached to the recording open when it
+//      is committed and is handed out again once that recording has completed, so a draw recorded after a submission that
+//      followed its commits would read another draw's bytes. The invariant is checked for those three rings: a draw whose
+//      recording changed after its first commit to them is dropped and counted `draws_split_by_submit` (also in
+//      `native_draws_dropped`; the order makes it 0). Exception, a known hazard left for a later package: the fragment
+//      table rings (LUT/proctex). `FragmentState::Prepare` commits them in step 2, before the steps above that can submit
+//      (EnsureRoom, the targets, the textures, the uniform retry); a table's offset is also kept in the fragment block
+//      across recordings while the ring restarts at 0 when it is empty. `draws_split_by_submit` does not check them. A
+//      target is marked written only once its draw has been recorded;
 //   6. `DrawComposer::Draw` (N2-33) with the `PipelineKey` made from all of it; the default provider builds the pipeline
 //      on a miss, with `PipelineBuilder::Build`.
 //

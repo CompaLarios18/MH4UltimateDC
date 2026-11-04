@@ -411,8 +411,9 @@ private:
         // N2-12: draws recorded in the shadow-write pass; draws whose unit 0 is Shadow2D or ShadowCube and that bound a decoded
         // map; shadow-mode draws dropped because the shadow target could not be made (also counted in `dropped`)
         u64 shadow_write_draws = 0, shadow_lookups = 0, shadow_unavailable = 0;
-        // draws dropped because the recording was submitted between their first ring commit and the draw (also in `dropped`;
-        // DrawImpl's order makes it 0)
+        // draws dropped because the recording was submitted between their first commit to the vertex, vertex-uniform or
+        // fragment-uniform ring and the draw (also in `dropped`; DrawImpl's order makes it 0). The fragment table rings, which
+        // Prepare commits earlier, are not checked.
         u64 draws_split_by_submit = 0;
         std::map<std::string, u64, std::less<>> stubbed;
     };
@@ -973,10 +974,12 @@ private:
         }
     }
 
-    // Opens the recording a draw is recorded in once its textures are bound (BindTextures, or a submission after it): without
-    // TrimTextures, which would release the draw's images (stamped with the recording they were bound in). When that recording
-    // is not `bound_in` (BindTextures or the caller submitted), the draw's images get its stamp, so a later TrimTextures keeps
-    // them until this recording has been submitted.
+    // Opens the recording a draw is recorded in once its textures are bound (BindTextures, or a submission after it). What
+    // protects the draw's images is the binding_textures_ guard: EnsureRecording does not run TrimTextures under it, and
+    // TrimTextures, which runs right after the serial moves, would otherwise release them (over budget, whatever their stamp).
+    // When that recording is not `bound_in` (BindTextures or the caller submitted), the draw's images are restamped with it,
+    // so no image the draw binds keeps a last-use serial older than the recording that draws it; today that only keeps the
+    // stamps honest.
     void EnsureDrawRecording(const DrawDesc& desc, u64 bound_in) {
         binding_textures_ = true;
         EnsureRecording();
@@ -1104,16 +1107,18 @@ private:
             }
         }
 
-        // ---- everything that can submit the recording, before the draw's first ring commit ----
+        // ---- everything that can submit the recording, before the draw's first commit to the vertex ring, the vertex-stage
+        // uniform ring and the fragment-uniform ring ----
         // Ring::Commit attaches the space to the recording open at that moment (rhi.h); once that recording has completed the ring
         // hands the space out again, so a commit made before a submission that the draw is recorded after can be overwritten by
         // the next draw's data before the draw's own recording is submitted. EnsureRoom first (it only makes room), then the
         // targets (a write-back of an overlapping target submits the recording and waits; a load begins the next one, which runs
         // TrimTextures), then the textures (their write-backs and uploads can submit too, but TrimTextures does not run while
-        // they are bound; see EnsureDrawRecording), then the fragment uniforms with their full-ring retry.
+        // they are bound; see EnsureDrawRecording), then the fragment uniforms with their full-ring retry. Not covered: the
+        // fragment table rings, which Prepare committed above, before all of these (a known hazard, see native_gpu.h step 5).
         EnsureRoom(vertex_bytes);
 
-        // ---- the targets (gpu_dirty is set only once the draw is going to be recorded) ----
+        // ---- the targets (gpu_dirty is set only once the draw has been recorded) ----
         Target* color = nullptr;
         Target* depth = nullptr;
         Target* shadow = nullptr;
@@ -1150,7 +1155,8 @@ private:
         BindTextures(state, key, desc);
         EnsureDrawRecording(desc, bound_in);
 
-        // ---- the fragment uniforms: the draw's first ring commit (the retry submits before it, and keeps the draw's images) ----
+        // ---- the fragment uniforms: the draw's first commit to the rings checked below (the table rings were committed by
+        // Prepare; the retry submits before it, and keeps the draw's images) ----
         rhi::Result<fragment::FragmentUniformRing::Allocation> block = uniform_ring_->Write(fragment_state_->block(), prepared->block_changed);
         if (!block.ok()) {
             const u64 before = recording_serial_;
@@ -1161,7 +1167,8 @@ private:
                 return drop("the fragment uniforms do not fit the ring");
             }
         }
-        // From here on nothing may submit the recording: the draw's ring data belongs to this one (checked before the draw).
+        // From here on nothing may submit the recording: the draw's vertex, vertex-uniform and fragment-uniform ring data
+        // belongs to this one (checked before the draw). The fragment table rings are not checked.
         const u64 draw_recording = recording_serial_;
 
         // ---- the vertices, committed ----
@@ -1282,8 +1289,10 @@ private:
         desc.viewport = geometry.viewport;
         desc.scissor = geometry.scissor;
 
-        // The invariant of the order above: the recording the draw's ring data was committed to is the one it is recorded in. A
-        // draw that would read space handed out again is dropped, not drawn with what another draw wrote there.
+        // The invariant of the order above, for the vertex, vertex-uniform and fragment-uniform rings (not the fragment table
+        // rings, which Prepare committed earlier and which are unchecked): the recording the draw's data in them was committed to
+        // is the one it is recorded in. A draw that would read space handed out again is dropped, not drawn with what another
+        // draw wrote there.
         if (!rec_ || recording_serial_ != draw_recording) {
             ++frame_.draws_split_by_submit;
             if (!warned_split_) {
@@ -1293,16 +1302,17 @@ private:
             }
             return drop("the recording was submitted between the draw's ring commits and the draw");
         }
-        if (shadow != nullptr) shadow->gpu_dirty = true;
-        if (color != nullptr) color->gpu_dirty = true;
-        if (depth != nullptr) depth->gpu_dirty = true;
         rhi::Result<DrawResult> result = composer_->Draw(*rec_, desc);
         CountComposer();
         if (!result.ok()) {
+            // the composer's failure paths record no draw (a pass it began loads with LoadOp::Load): the targets stay clean
             MH4N_LOG(Error, kLog, "draw: {}", result.error());
             ++frame_.dropped;
             return result;
         }
+        if (shadow != nullptr) shadow->gpu_dirty = true;
+        if (color != nullptr) color->gpu_dirty = true;
+        if (depth != nullptr) depth->gpu_dirty = true;
         ++draws_in_recording_;
         if (shadow_mode) ++frame_.shadow_write_draws;
         // N2-12: a shadow lookup is a Shadow2D or ShadowCube unit 0 bound to a decoded map (not the 1x1 word-0 image, not the null
