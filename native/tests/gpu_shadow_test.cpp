@@ -734,14 +734,11 @@ void CheckLookup(Rigs& rigs, const LookupScene& sc) {
     INFO(sc.name);
     sw::g_margin = 1e9;
     std::vector<int> want(kSize * kSize);
-    int lit = 0;
     for (u32 py = 0; py < kSize; ++py) {
         for (u32 px = 0; px < kSize; ++px) {
             const double x = (px + 0.5) / kSize, y = (py + 0.5) / kSize;
             const double u = sc.uvw[0].At(x, y), v = sc.uvw[1].At(x, y), w = sc.uvw[2].At(x, y);
-            const int i = sc.type == 2 ? sw::Shadow2D(sc.map, sc.lk, u, v, w) : sw::ShadowCube(sc.faces, sc.lk, u, v, w);
-            want[py * kSize + px] = i;
-            lit += i != 0 ? 1 : 0;
+            want[py * kSize + px] = sc.type == 2 ? sw::Shadow2D(sc.map, sc.lk, u, v, w) : sw::ShadowCube(sc.faces, sc.lk, u, v, w);
         }
     }
     CHECK_MESSAGE(sw::g_margin >= 0.01, sc.name << ": a pixel of the scene is within " << sw::g_margin << " of a decision boundary");
@@ -775,7 +772,6 @@ void CheckLookup(Rigs& rigs, const LookupScene& sc) {
         }
         CHECK_MESSAGE(wrong == 0, sc.name << " [" << rig->Name() << "]: " << wrong << " pixels differ, the first: " << first);
     }
-    (void)lit;
 }
 
 // texel centres: pixel (px, py) reads texel (px, py) of an 8x8 map
@@ -1411,7 +1407,7 @@ struct TraceCommands {
 TEST_CASE("shadow/two_maps_written_and_looked_up_in_one_recording_give_the_stored_values_and_the_barriers_are_recorded") {
     Rigs rigs;
     if (!rigs) return;
-    const u32 d1 = 3000000, d2 = 2500000, k = 2750000;
+    const u32 d1 = 3000000, d2 = 2500000, k = 2750000, d3 = 2200000;
     const float z = DepthFor(k);
     for (auto& rig : rigs.all) {
         INFO(rig->Name());
@@ -1419,8 +1415,10 @@ TEST_CASE("shadow/two_maps_written_and_looked_up_in_one_recording_give_the_store
         const sw::Map start{kSize, kSize, std::vector<u32>(kSize * kSize, Word(0xF00000u, 90))};
         std::shared_ptr<rhi::Image> a = rig->Upload(start), b = rig->Upload(start);
         // map a: depth d1 over the left half; map b: depth d2 over the right half; then a looked up on the left half of the colour
-        // target and b on the right half, with z_int = k: a's d1 is lit, b's d2 is not, the untouched 0xF00000 is
-        std::vector<Step> steps(4);
+        // target and b on the right half, with z_int = k: a's d1 is lit, b's d2 is not, the untouched 0xF00000 is; then map a
+        // written again, depth d3 (below d1 and 0xF00000) over the top half (image rows 0-3), with no EndPass step after it: Run's
+        // final EndPass closes that pass
+        std::vector<Step> steps(5);
         steps[0].state = WriteState(0x3C00, 0);
         steps[0].vertices = Rect(0, 0, 4, 8, kSize, kSize, DepthFor(d1), Green(0));
         steps[0].shadow_target = a.get();
@@ -1436,6 +1434,9 @@ TEST_CASE("shadow/two_maps_written_and_looked_up_in_one_recording_give_the_store
         steps[3].state = LookupState(2, lk);
         steps[3].vertices = Rect(4, 0, 8, 8, kSize, kSize, 0.5f, {1, 1, 1, 1}, uvw);
         steps[3].unit0 = native::TextureBinding{b.get(), rhi::ImageView::ShadowStorage, nullptr};
+        steps[4].state = WriteState(0x3C00, 0);
+        steps[4].vertices = Rect(0, 0, 8, 4, kSize, kSize, DepthFor(d3), Green(0));
+        steps[4].shadow_target = a.get();
         std::string letters;
         std::vector<u8> pixels;
         {
@@ -1443,9 +1444,12 @@ TEST_CASE("shadow/two_maps_written_and_looked_up_in_one_recording_give_the_store
             pixels = rig->Run(steps);
             letters = trace.Letters();
         }
-        // (1) before each map's pass; (2) after each, before the next draw; the second lookup continues the target pass
-        CHECK_MESSAGE(letters == "FRDFCFRDFCRDD", "the recorded sequence is " << letters);
-        // the stored values: the left half (map a, d1 >= k) lit with 90, the right half (map b at d2 < k) unlit; and the maps
+        // (1) before each map's pass; (2) after each, before the next draw; the second lookup continues the target pass; the
+        // "F" before the last "R" is (1) for the write to a after a's lookup (write after read), and the last "FC" is (2) recorded
+        // by EndPass (the path FlushRecording takes before each submission and before the write-back)
+        CHECK_MESSAGE(letters == "FRDFCFRDFCRDDFRDFC", "the recorded sequence is " << letters);
+        // the stored values: the left half (map a, d1 >= k) lit with 90, the right half (map b at d2 < k) unlit (the lookups come
+        // before the last write); and the maps
         for (u32 py = 0; py < kSize; ++py) {
             for (u32 px = 0; px < kSize; ++px) {
                 const int value = px < 4 ? 90 : 0;
@@ -1455,7 +1459,9 @@ TEST_CASE("shadow/two_maps_written_and_looked_up_in_one_recording_give_the_store
         }
         const std::vector<u32> got_a = rig->ReadMap(*a, kSize, kSize), got_b = rig->ReadMap(*b, kSize, kSize);
         for (u32 i = 0; i < kSize * kSize; ++i) {
-            CHECK(got_a[i] == ((i % kSize) < 4 ? Word(d1, 90) : Word(0xF00000u, 90)));
+            // image rows 0-3 are decoded rows 7-4: d3 there, below both depths it covers
+            const u32 before_a = (i % kSize) < 4 ? Word(d1, 90) : Word(0xF00000u, 90);
+            CHECK(got_a[i] == (i / kSize >= 4 ? Word(d3, 90) : before_a));
             CHECK(got_b[i] == ((i % kSize) >= 4 ? Word(d2, 90) : Word(0xF00000u, 90)));
         }
     }
@@ -1469,6 +1475,8 @@ constexpr u32 kFcram = mh4n::gpu_capture::kFcramPaddr;
 constexpr u32 kVertexBase = kFcram + 0x100000;
 constexpr u32 kMapAddress = kFcram + 0x200000;
 constexpr u32 kColorBuffer = mh4n::gpu_capture::kVramPaddr + 0x10000;
+constexpr u32 kColorBuffer2 = mh4n::gpu_capture::kVramPaddr + 0x11000;  // 8x8 RGBA8 each: none overlaps another or the map
+constexpr u32 kColorBuffer3 = mh4n::gpu_capture::kVramPaddr + 0x12000;
 constexpr u32 kListAddress = kFcram + 0x1000;
 constexpr u32 kVs = 0x2B0;
 constexpr u32 kRegOutTotal = 0x4F, kRegOutMap = 0x50;
@@ -1668,6 +1676,7 @@ TEST_CASE("native/a_shadow_map_drawn_by_shadow_mode_lists_is_written_back_and_lo
         sim.Vertices(v);
         CmdList l;
         Registers(l, kMapAddress, kSourcePrimary);
+        l.Write(0x117, 3u << 16);  // RGB565: 0x117 is ignored in shadow mode, DrawShadowMapPixel writes 4 bytes a texel
         l.Write(kRegOutputMerger, kShadowMode);
         l.Write(kRegFramebufferShadow, 0x4000);  // c = 2, l = 0
         VertexProgram(l, false);
@@ -1682,15 +1691,41 @@ TEST_CASE("native/a_shadow_map_drawn_by_shadow_mode_lists_is_written_back_and_lo
         sim.Vertices(v);
         CmdList l;
         Registers(l, kMapAddress, kSourcePrimary);
+        l.Write(0x117, 3u << 16);  // the same 2-byte format as list 1 (one shadow target), ignored as there
         l.Write(kRegOutputMerger, kShadowMode);
         l.Write(kRegFramebufferShadow, 0x4000);
         VertexProgram(l, false);
         DrawArrays(l, 0, 6);
         sim.Submit(l);
     }
+    // The colour buffers of the lists below hold 0x5A bytes first, so a draw that is dropped or leaves a pixel shows.
+    sim.Write(kColorBuffer2, std::vector<u8>(256, 0x5A));
+    sim.Write(kColorBuffer3, std::vector<u8>(256, 0x5A));
+    const u32 k = 2750000;
+    // list T: the map's memory read as a Texture2D (unit 0 on, nearest, ClampToEdge) into a third colour buffer, before list 3's
+    // Shadow2D lookup of the same memory in the same frame: TexImageKey's shadow flag gives the two their own images (a Texture2D
+    // image has no ShadowStorage view, which the Shadow2D lookup needs)
+    {
+        const std::array<Coord, 3> uvw = {kCentreU, kCentreV, Coord{}};
+        std::vector<std::array<float, 4>> v;
+        RectVertices(v, 0, 0, kSize, kSize, 0.5f, {}, &uvw);
+        sim.Vertices(v);
+        CmdList l;
+        Registers(l, kColorBuffer3, kSourceTexture0);
+        l.Write(kRegOutputMerger, 0);
+        l.Write(kRegMain, 1);
+        l.Write(0x81, 0);
+        l.Write(0x82, kSize | (kSize << 16));
+        l.Write(0x83, 0);  // Texture2D, nearest, ClampToEdge
+        l.Write(0x84, 0);
+        l.Write(0x85, kMapAddress >> 3);
+        l.Write(kRegTex0Format, 0);  // RGBA8
+        VertexProgram(l, true);
+        DrawArrays(l, 0, 6);
+        sim.Submit(l);
+    }
     // list 3: a normal draw into a colour target elsewhere whose TEV output is texture 0, unit 0 a Shadow2D at the map's address:
     // pixel (px, py) reads texel (px, py), orthographic, z_int = 2 750 000
-    const u32 k = 2750000;
     {
         const std::array<Coord, 3> uvw = {kCentreU, kCentreV, Coord{DepthFor(k)}};
         std::vector<std::array<float, 4>> v;
@@ -1709,6 +1744,37 @@ TEST_CASE("native/a_shadow_map_drawn_by_shadow_mode_lists_is_written_back_and_lo
         l.Write(kRegShadowTexture, 1);  // orthographic, bias 0
         VertexProgram(l, true);
         DrawArrays(l, 0, 6);
+        sim.Submit(l);
+    }
+    // list 4: NativeGpu's fallback binding of a Shadow2D unit, into a fourth colour buffer. The left half with unit 0 off (0x080 =
+    // 0), ClampToBorder on s with a border colour that is neither black nor white and s running from -0.5 (two columns on the
+    // border); the right half with unit 0 on and address 0, coordinates inside. Both read word 0 (the 1x1 shadow image) and the
+    // off unit's border is transparent black: (0, 0, 0, 0) everywhere, where the composer's white dummy (word 0xFFFFFFFF) gives
+    // 255 and null_2d_ (no ShadowStorage view) drops the draw. The address-0 unit gives (0, 0, 0, 1) in the software renderer:
+    // the spec's listed difference.
+    {
+        const Coord z{DepthFor(k)};
+        const std::array<Coord, 3> border = {Coord{-0.5, 2, 0}, kCentreV, z}, inside = {kCentreU, kCentreV, z};
+        std::vector<std::array<float, 4>> v;
+        RectVertices(v, 0, 0, 4, kSize, 0.5f, {}, &border);
+        RectVertices(v, 4, 0, kSize, kSize, 0.5f, {}, &inside);
+        sim.Vertices(v);
+        CmdList l;
+        Registers(l, kColorBuffer2, kSourceTexture0);
+        l.Write(kRegOutputMerger, 0);
+        l.Write(kRegMain, 0);
+        l.Write(0x81, 0x80402010u);
+        l.Write(0x82, kSize | (kSize << 16));
+        l.Write(0x83, (2u << 28) | (1u << 12));  // Shadow2D, ClampToBorder on s
+        l.Write(0x84, 0);
+        l.Write(0x85, kMapAddress >> 3);
+        l.Write(kRegTex0Format, 0);
+        l.Write(kRegShadowTexture, 1);
+        VertexProgram(l, true);
+        DrawArrays(l, 0, 6);
+        l.Write(kRegMain, 1);
+        l.Write(0x85, 0);
+        DrawArrays(l, 6, 6);
         sim.Submit(l);
     }
     sim.gpu->WriteBackColorBuffers();
@@ -1739,7 +1805,7 @@ TEST_CASE("native/a_shadow_map_drawn_by_shadow_mode_lists_is_written_back_and_lo
     {
         const u8* memory = sim.host.PhysicalPointer(kMapAddress, 256);
         REQUIRE(memory != nullptr);
-        const u32 depth = 9000000u + 54000u;  // 0x8A12B0
+        const u32 depth = 9000000u + 54000u;  // 0x8A2730
         CHECK(memory[240] == ((depth >> 16) & 0xFF));
         CHECK(memory[241] == ((depth >> 8) & 0xFF));
         CHECK(memory[242] == (depth & 0xFF));
@@ -1765,10 +1831,35 @@ TEST_CASE("native/a_shadow_map_drawn_by_shadow_mode_lists_is_written_back_and_lo
     CHECK(lit >= 10);
     CHECK(lit <= 54);
 
+    // List T: the map's decoded RGBA8 bytes as they stood after list 2 (no compare), in the same layout as list 3's target.
+    {
+        const u8* memory = sim.host.PhysicalPointer(kColorBuffer3, 256);
+        REQUIRE(memory != nullptr);
+        std::vector<u8> texture_rgba;
+        REQUIRE(texture::DecodeToRgba8(memory, 256, 8, 8, texture::Format::RGBA8, texture_rgba));
+        u32 texture_wrong = 0;
+        for (u32 i = 0; i < 64; ++i) {
+            for (u32 ch = 0; ch < 4; ++ch) {
+                if (texture_rgba[i * 4 + ch] != ((want[i] >> (8 * ch)) & 0xFF)) ++texture_wrong;
+            }
+        }
+        CHECK_MESSAGE(texture_wrong == 0, texture_wrong << " channels of the Texture2D read differ from the map's bytes");
+    }
+    // List 4: (0, 0, 0, 0) at all 64 pixels.
+    {
+        const u8* memory = sim.host.PhysicalPointer(kColorBuffer2, 256);
+        REQUIRE(memory != nullptr);
+        std::vector<u8> fallback_rgba;
+        REQUIRE(texture::DecodeToRgba8(memory, 256, 8, 8, texture::Format::RGBA8, fallback_rgba));
+        u32 not_zero = 0;
+        for (u8 byte : fallback_rgba) not_zero += byte != 0 ? 1 : 0;
+        CHECK_MESSAGE(not_zero == 0, not_zero << " channels of the off and address-0 units are not 0");
+    }
+
     CHECK(sim.Counter("shadow_write_draws") == 3);
-    CHECK(sim.Counter("shadow_lookups") == 1);
+    CHECK(sim.Counter("shadow_lookups") == 1);  // list 3's; the Texture2D read, the off unit and address 0 are not lookups
     CHECK(sim.Counter("shadow_unavailable") == 0);
     CHECK(sim.Counter("stubbed:shadow") == 0);
     CHECK(sim.Counter("native_draws_dropped") == 0);
-    CHECK(sim.Counter("native_draws") == 4);
+    CHECK(sim.Counter("native_draws") == 7);
 }
