@@ -355,7 +355,8 @@ private:
                "layout (location = 5) in float texcoord0_w;\n"
                "layout (location = 6) in vec4 normquat;\n"
                "layout (location = 7) in vec3 view;\n");
-        e_.Raw("layout (location = 0) out vec4 color;\n\n");
+        // The colour output in the Normal pass only: the ShadowWrite pass has no colour attachment and writes no colour.
+        if (e_.pass() == ShaderPass::Normal) e_.Raw("layout (location = 0) out vec4 color;\n\n");
     }
 
     // DefineBindingsVK, with the separate textures and samplers of the one pipeline layout.
@@ -363,7 +364,7 @@ private:
         e_.Raw(kFsUniformBlock);
         e_.Raw(kBindings);
         if (e_.pass() == ShaderPass::ShadowWrite) {
-            e_.Raw("layout(set = 2, binding = 0, r32ui) uniform uimage2D shadow_buffer;\n\n");
+            e_.Raw("layout(set = 2, binding = 0, r32ui) uniform coherent uimage2D shadow_buffer;\n\n");
         }
     }
 

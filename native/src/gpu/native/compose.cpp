@@ -34,6 +34,21 @@ struct Set2Sig {
     bool operator==(const Set2Sig&) const = default;
 };
 
+// The dependencies of the shadow write's storage writes (N2-12). The targets module orders attachment writes only, and binding a
+// shadow source that is already in GENERAL records no barrier, so the composer records global memory barriers around every pass
+// with no attachments, always outside a pass (the image stays in GENERAL).
+// (1) Before the pass begins: the stores and lookups of an earlier pass (this recording or an earlier submission) on the same map
+//     come first (write after write, write after read).
+void BeforeShadowPass(rhi::Recorder& rec) {
+    rec.Barrier(rhi::Stage::FragmentShader, rhi::Stage::FragmentShader);
+}
+// (2) Right after the pass ends: a later lookup of the map in a target pass, and the write-back's compute pass (which must not
+//     lean on the readback's own barrier for its output buffer), see the stores.
+void AfterShadowPass(rhi::Recorder& rec) {
+    rec.Barrier(rhi::Stage::FragmentShader, rhi::Stage::FragmentShader);
+    rec.Barrier(rhi::Stage::FragmentShader, rhi::Stage::ComputeShader);
+}
+
 }  // namespace
 
 FixupGeneratorRegistry& FixupGeneratorRegistry::Global() {
@@ -70,6 +85,7 @@ struct DrawComposer::Impl {
     rhi::Image* open_depth = nullptr;
     rhi::Rect open_area{};
     u32 open_w = 0, open_h = 0;
+    const rhi::Image* open_shadow = nullptr;  // the shadow source the open pass with no attachments writes
 
     std::optional<Set0Sig> sig0;
     std::optional<Set1Sig> sig1;
@@ -82,6 +98,7 @@ struct DrawComposer::Impl {
     void Forget() {
         open = Open::None;
         open_color = open_depth = nullptr;
+        open_shadow = nullptr;
         sig0.reset();
         sig1.reset();
         sig2.reset();
@@ -148,7 +165,9 @@ void DrawComposer::BeginTargetPass(rhi::Recorder& rec, const rhi::TargetPassDesc
     Impl& im = *impl_;
     if (im.open == Impl::Open::NoAttach) {
         rec.EndPass();
+        AfterShadowPass(rec);
         im.open = Impl::Open::None;
+        im.open_shadow = nullptr;
     }
     const rhi::Rect area = pass.area;
     const bool continues = im.open == Impl::Open::Target && im.open_color == pass.color && im.open_depth == pass.depth &&
@@ -169,7 +188,11 @@ void DrawComposer::EndPass(rhi::Recorder& rec) {
     Impl& im = *impl_;
     if (im.open != Impl::Open::None) {
         rec.EndPass();
+        if (im.open == Impl::Open::NoAttach) {
+            AfterShadowPass(rec);
+        }
         im.open = Impl::Open::None;
+        im.open_shadow = nullptr;
     }
 }
 
@@ -230,7 +253,8 @@ rhi::Result<DrawResult> DrawComposer::Draw(rhi::Recorder& rec, const DrawDesc& d
         ++frame_.fallback_draws;
     }
 
-    // The pass, for the normal kind (the shadow kind begins after its set is written: a barrier must not land inside it).
+    // The pass, for the normal kind. The shadow kind settles the pass before its sets are written (a set write may record a
+    // layout barrier, which must not land inside the pass a later draw continues) and begins its own after them.
     rhi::Image* twin = nullptr;
     if (!shadow_pass) {
         rhi::TargetPassDesc pass = d.target;
@@ -249,6 +273,13 @@ rhi::Result<DrawResult> DrawComposer::Draw(rhi::Recorder& rec, const DrawDesc& d
     } else if (im.open == Impl::Open::Target) {
         rec.EndPass();
         im.open = Impl::Open::None;
+    } else if (im.open == Impl::Open::NoAttach &&
+               (im.open_shadow != d.shadow_target || im.open_w != d.shadow_target->Width() || im.open_h != d.shadow_target->Height())) {
+        // another shadow source, or another size: the open pass ends here, with (2)
+        rec.EndPass();
+        AfterShadowPass(rec);
+        im.open = Impl::Open::None;
+        im.open_shadow = nullptr;
     }
 
     // Set 0: uniforms and tables.
@@ -353,18 +384,17 @@ rhi::Result<DrawResult> DrawComposer::Draw(rhi::Recorder& rec, const DrawDesc& d
         ++counters_.sets_acquired;
     }
 
-    // The shadow-write pass: no attachments, the size of the shadow source.
+    // The shadow-write pass: no attachments, the size of the shadow source; (1) before it begins. The pass that is still open
+    // here writes the same shadow source (settled above).
     if (shadow_pass) {
         const u32 w = d.shadow_target->Width(), h = d.shadow_target->Height();
-        if (im.open == Impl::Open::NoAttach && (im.open_w != w || im.open_h != h)) {
-            rec.EndPass();
-            im.open = Impl::Open::None;
-        }
         if (im.open != Impl::Open::NoAttach) {
+            BeforeShadowPass(rec);
             rec.BeginPass(rhi::PassDesc{w, h});
             im.open = Impl::Open::NoAttach;
             im.open_w = w;
             im.open_h = h;
+            im.open_shadow = d.shadow_target;
             im.open_color = im.open_depth = nullptr;
             ++counters_.pass_begins;
             ++frame_.pass_begins;

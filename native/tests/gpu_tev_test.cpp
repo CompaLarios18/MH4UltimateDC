@@ -196,7 +196,7 @@ TEST_CASE("generator/the_layout_constants_agree_with_the_composition") {
     CHECK(uber.find("layout (set = 0, binding = 2, std140) uniform fs_data") != std::string::npos);
     CHECK(native::binding::kFragmentBlock == 2);
     const std::string shadow = GenerateUberGlsl(ShaderPass::ShadowWrite, kFullProfile);
-    CHECK(shadow.find("layout(set = 2, binding = 0, r32ui) uniform uimage2D shadow_buffer;") != std::string::npos);
+    CHECK(shadow.find("layout(set = 2, binding = 0, r32ui) uniform coherent uimage2D shadow_buffer;") != std::string::npos);
     CHECK(native::set::kShadow == 2);
     CHECK(native::binding::kShadowOut == 0);
     CHECK(uber.find("shadow_buffer") == std::string::npos);  // the normal pass declares no storage image
@@ -1072,7 +1072,7 @@ TEST_CASE("stubs/a_draw_that_needs_a_stubbed_feature_is_reported_by_name") {
     CHECK(stubbed(fog).empty());
     FragmentKey shadow = DefaultKey();
     shadow.framebuffer.set_shadow_rendering(1);
-    CHECK(stubbed(shadow) == std::vector<std::string>{"shadow"});
+    CHECK(stubbed(shadow).empty());
     FragmentKey proc = DefaultKey();
     proc.proctex.set_enable(1);
     Stage p;

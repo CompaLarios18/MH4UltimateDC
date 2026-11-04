@@ -46,8 +46,18 @@
 // guest memory. `texture_levels_missing` counts the draws that bind a unit whose max_level register is above 0 (a plain counter,
 // not `stubbed:*`): a minified draw of such a texture samples level 0 and is not the game's picture.
 //
-// WHAT IS NOT HERE: lighting, fog, procedural textures and shadows (the stubs,
-// each counted `stubbed:<feature>`); a shadow-write draw is counted and not drawn; resolution scaling (N2-15).
+// SHADOWS (N2-12): a draw in fragment operation mode Shadow draws in the composer's shadow-write pass (no attachments, no depth
+// target) into a SHADOW TARGET: an RGBA8 image made with `shadow_source`, at the colour buffer's address with the size of 0x11E,
+// always 4 bytes a texel; it is keyed apart from a colour target over the same range (the overlap rule carries the contents
+// through guest memory), loaded and written back as a colour target in PICA format RGBA8. A unit 0 of type Shadow2D binds its
+// texture, decoded from guest memory (any target over it written back first), uploaded into a `shadow_source` image and read
+// through its R32_UINT view; a ShadowCube binds the plain RGBA8 cube of its six faces; a shadow unit that is off, has address 0 or
+// cannot be decoded reads word 0 (a 1x1 shadow source, or the null cube). Guest memory stays the truth: a map is written back and
+// uploaded again for each frame that looks it up (N2-15 may bind the target itself). Counters: `shadow_write_draws`,
+// `shadow_lookups` (draws whose unit 0 bound a decoded shadow map) and `shadow_unavailable` (shadow-mode draws dropped because the
+// shadow target could not be made, also in `native_draws_dropped`).
+//
+// WHAT IS NOT HERE: the features still behind a stub (each counted `stubbed:<feature>`); resolution scaling (N2-15).
 #pragma once
 
 #include <memory>
