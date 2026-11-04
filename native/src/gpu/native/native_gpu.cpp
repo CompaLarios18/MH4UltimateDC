@@ -371,6 +371,7 @@ public:
         add("shadow_write_draws", frame_.shadow_write_draws);
         add("shadow_lookups", frame_.shadow_lookups);
         add("shadow_unavailable", frame_.shadow_unavailable);
+        add("draws_split_by_submit", frame_.draws_split_by_submit);
         for (const char* name : {"sampling", "lighting", "fog", "proctex", "shadow", "gas"}) {
             const auto it = frame_.stubbed.find(std::string_view(name));
             add(std::string("stubbed:") + name, it == frame_.stubbed.end() ? 0 : it->second);
@@ -410,6 +411,9 @@ private:
         // N2-12: draws recorded in the shadow-write pass; draws whose unit 0 is Shadow2D or ShadowCube and that bound a decoded
         // map; shadow-mode draws dropped because the shadow target could not be made (also counted in `dropped`)
         u64 shadow_write_draws = 0, shadow_lookups = 0, shadow_unavailable = 0;
+        // draws dropped because the recording was submitted between their first ring commit and the draw (also in `dropped`;
+        // DrawImpl's order makes it 0)
+        u64 draws_split_by_submit = 0;
         std::map<std::string, u64, std::less<>> stubbed;
     };
 
@@ -969,6 +973,26 @@ private:
         }
     }
 
+    // Opens the recording a draw is recorded in once its textures are bound (BindTextures, or a submission after it): without
+    // TrimTextures, which would release the draw's images (stamped with the recording they were bound in). When that recording
+    // is not `bound_in` (BindTextures or the caller submitted), the draw's images get its stamp, so a later TrimTextures keeps
+    // them until this recording has been submitted.
+    void EnsureDrawRecording(const DrawDesc& desc, u64 bound_in) {
+        binding_textures_ = true;
+        EnsureRecording();
+        binding_textures_ = false;
+        if (recording_serial_ == bound_in) {
+            return;
+        }
+        for (auto& [image_key, entry] : texture_images_) {
+            for (const TextureBinding& unit : desc.units) {
+                if (unit.image != nullptr && unit.image == entry.image.get()) {
+                    entry.stamp = recording_serial_;
+                }
+            }
+        }
+    }
+
     // ---- a draw ----
     rhi::Result<DrawResult> DrawImpl(const pica::DrawCall& draw) {
         const pica::PicaState& state = *draw.state;
@@ -1020,11 +1044,8 @@ private:
             return drop("no surface");
         }
 
-        // ---- the textures the draw reads (before any vertex data is committed: binding one can submit the recording) ----
+        // ---- the vertices, on the CPU side (the loader, the translation, the CPU path's runner and batch: no ring yet) ----
         DrawDesc desc;
-        BindTextures(state, key, desc);
-
-        // ---- the vertices ----
         bool use_cpu = cpuvertex::NeedsCpuPath(draw, assembler_.IsEmpty());
         vertex::LoadedDraw loaded;
         shader::VertexShaderConfig vs_config;
@@ -1052,14 +1073,7 @@ private:
         }
 
         const rhi::Capabilities& caps = backend_->Caps();
-        std::vector<rhi::VertexBufferBinding> vertex_buffers;
-        u32 count = 0;
-        s32 base_vertex = 0;
-        const rhi::Buffer* index_buffer = nullptr;
-        u64 index_offset = 0;
-        rhi::IndexType index_type = rhi::IndexType::U16;
-        rhi::Topology topology = rhi::Topology::TriangleList;
-
+        u64 vertex_bytes = 0;  // what the draw commits to the vertex ring, for EnsureRoom
         if (use_cpu) {
             const cpuvertex::RunStatus status = runner_.Run(host_, draw, cpuvertex::RunMode::Full);
             runner_saw = true;
@@ -1077,12 +1091,94 @@ private:
             if (batch_.Empty()) {
                 return drop("the CPU path made no triangle");
             }
-            EnsureRoom(batch_.VertexCount() * cpuvertex::kHardwareVertexStride);
+            vertex_bytes = batch_.VertexCount() * cpuvertex::kHardwareVertexStride;
+        } else {
+            runner_.NoteDraw(draw);
+            runner_saw = true;
+            vertex_bytes = loaded.index_data.size();
+            for (const vertex::VertexBuffer& b : loaded.buffers) {
+                vertex_bytes += b.data.size() + 16;
+            }
+            if (loaded.count == 0) {
+                return drop("nothing to draw");
+            }
+        }
+
+        // ---- everything that can submit the recording, before the draw's first ring commit ----
+        // Ring::Commit attaches the space to the recording open at that moment (rhi.h); once that recording has completed the ring
+        // hands the space out again, so a commit made before a submission that the draw is recorded after can be overwritten by
+        // the next draw's data before the draw's own recording is submitted. EnsureRoom first (it only makes room), then the
+        // targets (a write-back of an overlapping target submits the recording and waits; a load begins the next one, which runs
+        // TrimTextures), then the textures (their write-backs and uploads can submit too, but TrimTextures does not run while
+        // they are bound; see EnsureDrawRecording), then the fragment uniforms with their full-ring retry.
+        EnsureRoom(vertex_bytes);
+
+        // ---- the targets (gpu_dirty is set only once the draw is going to be recorded) ----
+        Target* color = nullptr;
+        Target* depth = nullptr;
+        Target* shadow = nullptr;
+        if (shadow_mode) {
+            // DrawShadowMapPixel: the colour buffer's address, the size of 0x11E, 4 bytes a texel whatever 0x117 says. Window row y
+            // is image row y (the same MakeGeometry as a colour draw), which the write-back puts at guest row h - 1 - y.
+            shadow = UseTarget(false, color_address, static_cast<u32>(ColorFormat::RGBA8), width, height, /*shadow=*/true);
+            if (shadow == nullptr) {
+                ++frame_.shadow_unavailable;
+                return drop("the shadow target could not be made");
+            }
+        } else {
+            color = color_address != 0 ? UseTarget(false, color_address, color_format, width, height) : nullptr;
+            depth = depth_address != 0 && wants_depth ? UseTarget(true, depth_address, depth_format, width, height) : nullptr;
+            if (color == nullptr && depth == nullptr) {
+                return drop("no render target");
+            }
+        }
+        if (depth == nullptr) {
+            ff.depth_test = ff.depth_write = ff.stencil_test = false;
+        }
+        if (color == nullptr) {
+            ff.blend_enabled = false;
+            ff.logic_op_enabled = false;
+        }
+        if (geometry.empty) {
+            return drop("empty draw rectangle");
+        }
+
+        // ---- the textures the draw reads (after the targets: a target's load begins a recording, and TrimTextures would release
+        // an image bound before it) ----
+        EnsureRecording();
+        const u64 bound_in = recording_serial_;
+        BindTextures(state, key, desc);
+        EnsureDrawRecording(desc, bound_in);
+
+        // ---- the fragment uniforms: the draw's first ring commit (the retry submits before it, and keeps the draw's images) ----
+        rhi::Result<fragment::FragmentUniformRing::Allocation> block = uniform_ring_->Write(fragment_state_->block(), prepared->block_changed);
+        if (!block.ok()) {
+            const u64 before = recording_serial_;
+            FlushRecording();
+            EnsureDrawRecording(desc, before);
+            block = uniform_ring_->Write(fragment_state_->block(), true);
+            if (!block.ok()) {
+                return drop("the fragment uniforms do not fit the ring");
+            }
+        }
+        // From here on nothing may submit the recording: the draw's ring data belongs to this one (checked before the draw).
+        const u64 draw_recording = recording_serial_;
+
+        // ---- the vertices, committed ----
+        std::vector<rhi::VertexBufferBinding> vertex_buffers;
+        u32 count = 0;
+        s32 base_vertex = 0;
+        const rhi::Buffer* index_buffer = nullptr;
+        u64 index_offset = 0;
+        rhi::IndexType index_type = rhi::IndexType::U16;
+        rhi::Topology topology = rhi::Topology::TriangleList;
+
+        if (use_cpu) {
             rhi::Result<cpuvertex::StreamedBatch> streamed = cpuvertex::UploadBatch(*vertex_ring_, batch_);
             if (!streamed.ok() || streamed->vertex_count == 0) {
                 return drop("the triangle batch could not be uploaded");
             }
-            vertex_bytes_in_recording_ += batch_.VertexCount() * cpuvertex::kHardwareVertexStride;
+            vertex_bytes_in_recording_ += vertex_bytes;
             vertex_buffers.push_back(rhi::VertexBufferBinding{vertex_ring_->GetBuffer().get(), streamed->offset});
             count = streamed->vertex_count;
             desc.vertex.kind = VertexStageKind::Trivial;
@@ -1090,13 +1186,6 @@ private:
             const rhi::VertexLayout layout = cpuvertex::MakeBatchVertexLayout();
             desc.vertex.input = InputKeyOf(layout);
         } else {
-            runner_.NoteDraw(draw);
-            runner_saw = true;
-            u64 bytes = loaded.index_data.size();
-            for (const vertex::VertexBuffer& b : loaded.buffers) {
-                bytes += b.data.size() + 16;
-            }
-            EnsureRoom(bytes);
             for (const vertex::VertexBuffer& b : loaded.buffers) {
                 rhi::Result<rhi::RingAllocation> alloc = vertex_ring_->Map(std::max<u64>(b.data.size(), 16), 16);
                 if (!alloc.ok()) {
@@ -1125,61 +1214,13 @@ private:
                              : loaded.index_type == vertex::IndexType::U32 ? rhi::IndexType::U32
                                                                            : rhi::IndexType::U16;
             }
-            vertex_bytes_in_recording_ += bytes;
+            vertex_bytes_in_recording_ += vertex_bytes;
             count = loaded.count;
             base_vertex = loaded.base_vertex;
             topology = ToRhiTopology(loaded.topology);
             desc.vertex.kind = VertexStageKind::Translated;
             desc.vertex.program = vs_config.Hash();
             desc.vertex.input = MakeVertexInput(loaded);
-            if (count == 0) {
-                return drop("nothing to draw");
-            }
-        }
-
-        // ---- the targets ----
-        Target* color = nullptr;
-        Target* depth = nullptr;
-        Target* shadow = nullptr;
-        if (shadow_mode) {
-            // DrawShadowMapPixel: the colour buffer's address, the size of 0x11E, 4 bytes a texel whatever 0x117 says. Window row y
-            // is image row y (the same MakeGeometry as a colour draw), which the write-back puts at guest row h - 1 - y.
-            shadow = UseTarget(false, color_address, static_cast<u32>(ColorFormat::RGBA8), width, height, /*shadow=*/true);
-            if (shadow == nullptr) {
-                ++frame_.shadow_unavailable;
-                return drop("the shadow target could not be made");
-            }
-            shadow->gpu_dirty = true;
-        } else {
-            color = color_address != 0 ? UseTarget(false, color_address, color_format, width, height) : nullptr;
-            depth = depth_address != 0 && wants_depth ? UseTarget(true, depth_address, depth_format, width, height) : nullptr;
-            if (color == nullptr && depth == nullptr) {
-                return drop("no render target");
-            }
-        }
-        if (color != nullptr) color->gpu_dirty = true;
-        if (depth != nullptr) depth->gpu_dirty = true;
-        if (depth == nullptr) {
-            ff.depth_test = ff.depth_write = ff.stencil_test = false;
-        }
-        if (color == nullptr) {
-            ff.blend_enabled = false;
-            ff.logic_op_enabled = false;
-        }
-
-        if (geometry.empty) {
-            return drop("empty draw rectangle");
-        }
-        EnsureRecording();
-
-        rhi::Result<fragment::FragmentUniformRing::Allocation> block = uniform_ring_->Write(fragment_state_->block(), prepared->block_changed);
-        if (!block.ok()) {
-            FlushRecording();
-            EnsureRecording();
-            block = uniform_ring_->Write(fragment_state_->block(), true);
-            if (!block.ok()) {
-                return drop("the fragment uniforms do not fit the ring");
-            }
         }
 
         // The vertex-stage uniforms: PicaUniformData then VertexUniformData, one ring allocation.
@@ -1241,7 +1282,20 @@ private:
         desc.viewport = geometry.viewport;
         desc.scissor = geometry.scissor;
 
-        EnsureRecording();
+        // The invariant of the order above: the recording the draw's ring data was committed to is the one it is recorded in. A
+        // draw that would read space handed out again is dropped, not drawn with what another draw wrote there.
+        if (!rec_ || recording_serial_ != draw_recording) {
+            ++frame_.draws_split_by_submit;
+            if (!warned_split_) {
+                warned_split_ = true;
+                MH4N_LOG(Warning, kLog, "a draw's recording was submitted between its ring commits and the draw: dropped (counted "
+                                        "draws_split_by_submit; warned once)");
+            }
+            return drop("the recording was submitted between the draw's ring commits and the draw");
+        }
+        if (shadow != nullptr) shadow->gpu_dirty = true;
+        if (color != nullptr) color->gpu_dirty = true;
+        if (depth != nullptr) depth->gpu_dirty = true;
         rhi::Result<DrawResult> result = composer_->Draw(*rec_, desc);
         CountComposer();
         if (!result.ok()) {
@@ -1336,6 +1390,7 @@ private:
     std::shared_ptr<rhi::Image> null_shadow_;  // N2-12: a 1x1 shadow source holding word 0
     bool null_cleared_ = false;
     bool binding_textures_ = false;
+    bool warned_split_ = false;  // draws_split_by_submit's warning, once
     bool levels_missing_in_draw_ = false;
     u64 seen_sampler_creates_ = 0;
 

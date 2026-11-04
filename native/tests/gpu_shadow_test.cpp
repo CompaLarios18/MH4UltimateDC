@@ -1884,3 +1884,81 @@ TEST_CASE("native/a_shadow_map_drawn_by_shadow_mode_lists_is_written_back_and_lo
     CHECK(sim.Counter("native_draws_dropped") == 0);
     CHECK(sim.Counter("native_draws") == 7);
 }
+
+// The game clears a map with a colour draw and then draws it in shadow mode: the first shadow draw's target (keyed apart from the
+// colour target at the same address) writes the colour target back, which submits the recording and waits for it. A draw's ring
+// data must be committed after that, to the recording that draws it: committed before (as at 69f46a9), the space belonged to the
+// submitted recording, the ring restarted at 0 once it had completed, and the next draw's vertices overwrote it before the
+// draw's own recording was submitted. Here the second shadow draw's vertices (its rectangle, then 54 coincident vertices) cover
+// the ring from 0 past where the first one's were: drawn from them, the first rectangle is lost.
+TEST_CASE("native/a_shadow_draw_after_the_colour_targets_write_back_draws_its_own_vertices") {
+    if (!test::RequireBackend()) return;
+    Sim sim;
+    std::vector<u32> pattern(64);
+    for (u32 i = 0; i < 64; ++i) pattern[i] = Word(9000000u + 1000u * i, 60 + i);
+    sim.WriteWords(kMapAddress, pattern);
+
+    struct Rectangle {
+        u32 x0, y0, x1, y1, d;
+    };
+    const Rectangle clear{0, 0, kSize, 6, 0};  // the colour draw: opaque red, the word (0xFF0000 << 8) | 255
+    const Rectangle a{0, 0, 4, 3, 3000000}, b{4, 3, 8, 8, 2500000};  // disjoint, at different depths
+    std::vector<std::array<float, 4>> v;
+    RectVertices(v, clear.x0, clear.y0, clear.x1, clear.y1, 0.5f, {1.0f, 0.0f, 0.0f, 1.0f});  // vertices 0-5
+    RectVertices(v, a.x0, a.y0, a.x1, a.y1, DepthFor(a.d), Green(0));                         // 6-11
+    RectVertices(v, b.x0, b.y0, b.x1, b.y1, DepthFor(b.d), Green(0));                         // 12-17
+    for (u32 i = 0; i < 54; ++i) {                                                            // 18-71: no area
+        v.push_back({-1.0f, -1.0f, -DepthFor(b.d), 1.0f});
+        v.push_back(Green(0));
+    }
+    sim.Vertices(v);
+    CmdList l;
+    Registers(l, kMapAddress, kSourcePrimary);
+    l.Write(kRegOutputMerger, 0);
+    VertexProgram(l, false);
+    DrawArrays(l, 0, 6);
+    l.Write(kRegOutputMerger, kShadowMode);
+    l.Write(kRegFramebufferShadow, 0x4000);  // c = 2, l = 0
+    DrawArrays(l, 6, 6);
+    DrawArrays(l, 12, 60);
+    sim.Submit(l);
+    sim.gpu->WriteBackColorBuffers();
+
+    // A fragment at window (x, y) writes decoded row 7 - y (the colour draw's pixel too).
+    std::vector<u32> want = pattern;
+    for (u32 y = clear.y0; y < clear.y1; ++y) {
+        for (u32 x = clear.x0; x < clear.x1; ++x) want[(7 - y) * 8 + x] = 0xFF0000FFu;
+    }
+    const std::vector<u32> cleared = want;
+    for (const Rectangle& r : {a, b}) {
+        for (u32 y = r.y0; y < r.y1; ++y) {
+            for (u32 x = r.x0; x < r.x1; ++x) {
+                u32& word = want[(7 - y) * 8 + x];
+                word = sw::Write(word, r.d, 0, 0x4000, 0x0000);
+            }
+        }
+    }
+    const std::vector<u32> map = sim.ReadWords(kMapAddress);
+    u32 wrong_a = 0, wrong_b = 0, wrong_rest = 0;
+    for (u32 y = 0; y < kSize; ++y) {
+        for (u32 x = 0; x < kSize; ++x) {
+            const u32 i = (7 - y) * 8 + x;
+            const bool in_a = x >= a.x0 && x < a.x1 && y >= a.y0 && y < a.y1;
+            const bool in_b = x >= b.x0 && x < b.x1 && y >= b.y0 && y < b.y1;
+            if (in_a || in_b) CHECK(want[i] != cleared[i]);  // every texel of both rectangles is written
+            if (map[i] == want[i]) continue;
+            (in_a ? wrong_a : in_b ? wrong_b : wrong_rest) += 1;
+            MESSAGE("window (" << x << "," << y << "): " << fmt::format("{:#010x}, want {:#010x}", map[i], want[i]));
+        }
+    }
+    CHECK_MESSAGE(wrong_a == 0, wrong_a << " texels of the first shadow draw's rectangle differ");
+    CHECK_MESSAGE(wrong_b == 0, wrong_b << " texels of the second shadow draw's rectangle differ");
+    CHECK_MESSAGE(wrong_rest == 0, wrong_rest << " texels no shadow draw covers changed");
+    // the first rectangle's texel at window (1, 1), decoded row 6, column 1, by hand: the red word with the depth d_a
+    CHECK(map[6 * 8 + 1] == Word(3000000u, 255));
+
+    CHECK(sim.Counter("draws_split_by_submit") == 0);
+    CHECK(sim.Counter("shadow_write_draws") == 2);
+    CHECK(sim.Counter("native_draws_dropped") == 0);
+    CHECK(sim.Counter("native_draws") == 3);
+}

@@ -1973,6 +1973,44 @@ TEST_CASE("native/the_colour_buffer_is_loaded_again_after_the_cpu_wrote_its_memo
     CHECK_MESSAGE(UniformColour(sim.ColorBuffer(), {200, 100, 50, 255}, &why), why);
 }
 
+// A draw whose target selection writes back another target (here an RGB565 target over the RGBA8 one a draw just wrote, at the
+// same address) submits the recording and waits for it: the draw's vertices must be committed after that, to the recording that
+// draws it. Committed before (as at 69f46a9), the ring restarted at 0 once the submitted recording had completed, and the next
+// draw's vertices (30 coincident ones, no area, covering the ring past the first draw's) overwrote them before the draw's own
+// recording was submitted: the green triangle was drawn from them, i.e. not at all.
+TEST_CASE("native/a_draw_after_an_overlapping_targets_write_back_draws_its_own_vertices") {
+    if (!test::RequireBackend()) return;
+    Sim sim;
+    std::vector<std::array<float, 4>> vectors = {
+        {-1, -1, -0.5f, 1}, Bytes4(255, 0, 0, 255), {3, -1, -0.5f, 1}, Bytes4(255, 0, 0, 255), {-1, 3, -0.5f, 1}, Bytes4(255, 0, 0, 255),
+        {-1, -1, -0.5f, 1}, Bytes4(0, 255, 0, 255), {3, -1, -0.5f, 1}, Bytes4(0, 255, 0, 255), {-1, 3, -0.5f, 1}, Bytes4(0, 255, 0, 255)};
+    for (int i = 0; i < 30; ++i) {
+        vectors.push_back({-1, -1, -0.5f, 1});
+        vectors.push_back(Bytes4(0, 0, 255, 255));
+    }
+    sim.Write(kVertexBase, FloatBytes(vectors));
+    CmdList l;
+    FramebufferRegisters(l);
+    VertexProgram(l, 2);
+    l.Write(kRegUseGs, 0);
+    l.Write(kRegTopology, 0);
+    l.Write(0x228, 3).Write(0x22A, 0).Write(0x22E, 0);   // red into the RGBA8 target
+    l.Write(kRegColorFormat, 3u << 16);                    // RGB565: another target over the same bytes
+    l.Write(0x228, 3).Write(0x22A, 3).Write(0x22E, 0);   // green, after the RGBA8 target's write-back
+    l.Write(0x228, 30).Write(0x22A, 6).Write(0x22E, 0);  // no area
+    sim.Submit(l);
+    sim.gpu->WriteBackColorBuffers();
+    const u8* memory = sim.host.PhysicalPointer(kColorBuffer, kSize * kSize * 2);
+    REQUIRE(memory != nullptr);
+    std::vector<u8> rgba;
+    REQUIRE(texture::DecodeToRgba8(memory, kSize * kSize * 2, kSize, kSize, texture::Format::RGB565, rgba));
+    std::string why;
+    CHECK_MESSAGE(UniformColour(rgba, {0, 255, 0, 255}, &why), why);
+    CHECK(sim.Counter("draws_split_by_submit") == 0);
+    CHECK(sim.Counter("native_draws_dropped") == 0);
+    CHECK(sim.Counter("native_draws") == 3);
+}
+
 TEST_CASE("native/the_gpu_made_on_one_thread_creates_its_images_on_the_thread_that_executes") {
     // Under the capture player's --queue the GPU is constructed on the player's thread and Execute runs on the renderer thread.
     if (!test::RequireBackend()) return;
