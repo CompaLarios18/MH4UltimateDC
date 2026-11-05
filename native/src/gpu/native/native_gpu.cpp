@@ -1,17 +1,21 @@
 // Derived from Azahar src/video_core/rasterizer_cache/framebuffer_base.h (FramebufferHelper), src/video_core/renderer_vulkan/
 // vk_rasterizer.cpp (Draw; SyncTextureUnits: which texture each unit binds, the null surfaces for a unit that is off),
-// src/video_core/pica/regs_framebuffer.h, regs_rasterizer.h, regs_texturing.h and src/video_core/gpu.cpp at
-// 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-3.0-or-later: vk_rasterizer.cpp says "Licensed under GPLv3 or any later
-// version"; the others say "Licensed under GPLv2 or any later version"): the viewport, scissor and draw rectangle of a draw
-// (mirrored when the framebuffer is flipped), the surfaces a draw uses, the register positions of the framebuffer block.
-// The rest (the targets, the write-back, the recorder and ring management, the counters) is ours.
+// src/video_core/pica/regs_framebuffer.h, regs_rasterizer.h, regs_texturing.h, src/video_core/gpu.cpp and
+// src/video_core/renderer_software/sw_framebuffer.cpp (Framebuffer::DrawShadowMapPixel: a shadow map is at the colour buffer's
+// address, 4 bytes a texel whatever the colour format) at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-3.0-or-later:
+// vk_rasterizer.cpp says "Licensed under GPLv3 or any later version"; the others say "Licensed under GPLv2 or any later
+// version"): the viewport, scissor and draw rectangle of a draw (mirrored when the framebuffer is flipped), the surfaces a draw
+// uses (no depth surface in shadow mode), the register positions of the framebuffer block. The rest (the targets, the shadow
+// targets, the write-back, the recorder and ring management, the counters) is ours.
 // Copyright 2023-2026 Citra Emulator Project / Azahar Emulator Project (vk_rasterizer.cpp, gpu.cpp)
 // Copyright 2023-2025 Citra Emulator Project / Azahar Emulator Project (framebuffer_base.h)
 // Copyright 2017-2025 Citra Emulator Project / Azahar Emulator Project (regs_framebuffer.h)
 // Copyright 2017-2026 Citra Emulator Project / Azahar Emulator Project (regs_rasterizer.h)
 // Copyright 2017-2024 Citra Emulator Project / Azahar Emulator Project (regs_texturing.h)
+// Copyright 2017 Citra Emulator Project (sw_framebuffer.cpp)
 //
-// `--gpu native` (N2-08). See native_gpu.h for the order of a draw and what the render targets are.
+// `--gpu native` (N2-08; the shadow targets, the shadow-write draw and unit 0's shadow binding N2-12's). See native_gpu.h for the
+// order of a draw and what the render targets are.
 #include "gpu/native/native_gpu.h"
 
 #include <algorithm>
@@ -181,6 +185,7 @@ DrawGeometry MakeGeometry(const pica::PicaState& state, u32 width, u32 height, b
 struct Target {
     std::shared_ptr<rhi::Image> image;
     bool depth = false;
+    bool shadow = false;  // a shadow map (N2-12): RGBA8 made with shadow_source, written in the shadow-write pass
     u32 paddr = 0;
     u32 format = 0;  // the PICA's colour or depth format
     u32 width = 0, height = 0;
@@ -193,11 +198,15 @@ struct Target {
 
 // ---- the textures (N2-23) ------------------------------------------------------------------------------------------------
 
-// A texture image is keyed by what the cache is keyed by: a 2D texture by one cache key, a cube by its six faces.
+// A texture image is keyed by what the cache is keyed by: a 2D texture by one cache key, a cube by its six faces. A Shadow2D
+// texture (N2-12) is another image of the same memory, made with shadow_source (its R32_UINT view is what the lookup reads).
 struct TexImageKey {
     bool cube = false;
+    bool shadow = false;
     std::array<texture::CacheKey, 6> faces{};
-    friend bool operator<(const TexImageKey& a, const TexImageKey& b) { return std::tie(a.cube, a.faces) < std::tie(b.cube, b.faces); }
+    friend bool operator<(const TexImageKey& a, const TexImageKey& b) {
+        return std::tie(a.cube, a.shadow, a.faces) < std::tie(b.cube, b.shadow, b.faces);
+    }
 };
 struct TexImage {
     std::shared_ptr<rhi::Image> image;
@@ -359,6 +368,11 @@ public:
         add("texture_unavailable", frame_.texture_unavailable);
         add("sampler_creates", frame_.sampler_creates);
         add("texture_levels_missing", frame_.texture_levels_missing);
+        add("shadow_write_draws", frame_.shadow_write_draws);
+        add("shadow_lookups", frame_.shadow_lookups);
+        add("shadow_unavailable", frame_.shadow_unavailable);
+        add("draws_split_by_submit", frame_.draws_split_by_submit);
+        add("fragment_table_uploads", frame_.fragment_table_uploads);
         for (const char* name : {"sampling", "lighting", "fog", "proctex", "shadow", "gas"}) {
             const auto it = frame_.stubbed.find(std::string_view(name));
             add(std::string("stubbed:") + name, it == frame_.stubbed.end() ? 0 : it->second);
@@ -395,6 +409,15 @@ private:
         u64 sync_builds = 0, forced_uber = 0;
         u64 stubbed_fixup = 0, dst_copies = 0, fallback_draws = 0, stubbed_blend_plan = 0;
         u64 texture_binds = 0, texture_uploads = 0, texture_unavailable = 0, sampler_creates = 0, texture_levels_missing = 0;
+        // N2-12: draws recorded in the shadow-write pass; draws whose unit 0 is Shadow2D or ShadowCube and that bound a decoded
+        // map; shadow-mode draws dropped because the shadow target could not be made (also counted in `dropped`)
+        u64 shadow_write_draws = 0, shadow_lookups = 0, shadow_unavailable = 0;
+        // draws dropped because the recording was submitted between their first commit to the vertex, vertex-uniform,
+        // fragment-uniform or fragment table rings and the draw (also in `dropped`; DrawImpl's order makes it 0)
+        u64 draws_split_by_submit = 0;
+        // N2-42: draws whose table step opened a session at least once (a draw counts once, the uniform retry included): the
+        // tables a dropped draw left pending, the ones the state changed, and every table at each recording's first table step
+        u64 fragment_table_uploads = 0;
         std::map<std::string, u64, std::less<>> stubbed;
     };
 
@@ -478,6 +501,9 @@ private:
         }
         composer_->BeginRecording(*rec_);
         uniform_ring_->BeginRecording();
+        if (fragment_state_) {
+            fragment_state_->BeginRecording();  // N2-42: the recording's first table step uploads every table
+        }
         ++recording_serial_;
         TrimTextures();
         draws_in_recording_ = 0;
@@ -504,24 +530,29 @@ private:
     }
 
     // ---- targets ----
-    Target* FindTarget(bool depth, u32 paddr, u32 format, u32 width, u32 height) {
+    // A shadow target (N2-12) is keyed apart from a colour target of the same range: a colour target has no storage view and a
+    // shadow source is not an attachment (rhi.h), so the two are two images, and UseTarget's overlap rule carries the contents
+    // between them through guest memory. Its format is always RGBA8 (PICA format 0).
+    Target* FindTarget(bool depth, u32 paddr, u32 format, u32 width, u32 height, bool shadow = false) {
         for (auto& t : targets_) {
-            if (t->depth == depth && t->paddr == paddr && t->format == format && t->width == width && t->height == height) {
+            if (t->depth == depth && t->shadow == shadow && t->paddr == paddr && t->format == format && t->width == width &&
+                t->height == height) {
                 return t.get();
             }
         }
         return nullptr;
     }
 
-    Target* GetTarget(bool depth, u32 paddr, u32 format, u32 width, u32 height) {
-        if (Target* found = FindTarget(depth, paddr, format, width, height)) {
+    Target* GetTarget(bool depth, u32 paddr, u32 format, u32 width, u32 height, bool shadow = false) {
+        if (Target* found = FindTarget(depth, paddr, format, width, height, shadow)) {
             return found;
         }
         rhi::ImageDesc desc;
         desc.format = depth ? DepthImageFormat(format) : rhi::Format::Rgba8Unorm;
         desc.width = width;
         desc.height = height;
-        desc.name = depth ? "pica depth buffer" : "pica colour buffer";
+        desc.shadow_source = shadow;
+        desc.name = depth ? "pica depth buffer" : (shadow ? "pica shadow map" : "pica colour buffer");
         rhi::Result<std::shared_ptr<rhi::Image>> image = backend_->CreateImage(desc);
         if (!image.ok()) {
             MH4N_LOG(Error, kLog, "render target {}x{}: {}", width, height, image.error());
@@ -530,6 +561,7 @@ private:
         auto target = std::make_unique<Target>();
         target->image = *image;
         target->depth = depth;
+        target->shadow = shadow;
         target->paddr = paddr;
         target->format = format;
         target->width = width;
@@ -639,8 +671,8 @@ private:
     }
 
     // The target a draw uses: written back and stale-marked where another target overlaps, loaded when stale.
-    Target* UseTarget(bool depth, u32 paddr, u32 format, u32 width, u32 height) {
-        Target* t = GetTarget(depth, paddr, format, width, height);
+    Target* UseTarget(bool depth, u32 paddr, u32 format, u32 width, u32 height, bool shadow = false) {
+        Target* t = GetTarget(depth, paddr, format, width, height, shadow);
         if (t == nullptr) {
             return nullptr;
         }
@@ -686,13 +718,20 @@ private:
             desc.cube = true;
             desc.layers = 6;
             auto c = backend_->CreateImage(desc);
-            if (!a.ok() || !b.ok() || !c.ok()) {
-                MH4N_LOG(Error, kLog, "null textures: {} {} {}", a.error(), b.error(), c.error());
+            // N2-12: a Shadow2D unit with nothing to show reads word 0 through the R32_UINT view (null_2d_ has no such view)
+            desc.name = "null shadow texture";
+            desc.cube = false;
+            desc.layers = 1;
+            desc.shadow_source = true;
+            auto s = backend_->CreateImage(desc);
+            if (!a.ok() || !b.ok() || !c.ok() || !s.ok()) {
+                MH4N_LOG(Error, kLog, "null textures: {} {} {} {}", a.error(), b.error(), c.error(), s.error());
                 return;
             }
             null_2d_ = *a;
             null_black_2d_ = *b;
             null_cube_ = *c;
+            null_shadow_ = *s;
             null_cleared_ = false;
         }
         if (!null_cleared_) {
@@ -700,6 +739,7 @@ private:
             composer_->EndPass(*rec_);
             rhi::ClearValue clear;
             rec_->ClearImage(*null_2d_, clear);
+            rec_->ClearImage(*null_shadow_, clear);
             rec_->ClearImage(*null_cube_, clear, 0, 0);
             for (u32 layer = 1; layer < 6; ++layer) {
                 rec_->ClearImage(*null_cube_, clear, 0, layer);
@@ -746,10 +786,12 @@ private:
     }
 
     // The image of a texture (one 2D face or the six of a cube), decoded by the cache and uploaded when new or changed.
-    // Null when the memory cannot be read or decoded.
-    rhi::Image* TextureImage(const std::vector<const texture::TextureRef*>& faces) {
+    // Null when the memory cannot be read or decoded. `shadow`: a Shadow2D texture, an image made with shadow_source (the RGBA8 of
+    // the texture's format, read through R32_UINT, is the software renderer's z_ref and density for any format).
+    rhi::Image* TextureImage(const std::vector<const texture::TextureRef*>& faces, bool shadow = false) {
         TexImageKey key;
         key.cube = faces.size() == 6;
+        key.shadow = shadow;
         const texture::TextureRef& first = *faces[0];
         for (size_t i = 0; i < faces.size(); ++i) {
             const texture::TextureRef& f = *faces[i];
@@ -775,7 +817,8 @@ private:
             desc.height = first.height;
             desc.cube = key.cube;
             desc.layers = key.cube ? 6 : 1;
-            desc.name = key.cube ? "pica cube texture" : "pica texture";
+            desc.shadow_source = key.shadow;
+            desc.name = key.cube ? "pica cube texture" : (key.shadow ? "pica shadow texture" : "pica texture");
             rhi::Result<std::shared_ptr<rhi::Image>> image = backend_->CreateImage(desc);
             if (!image.ok()) {
                 MH4N_LOG(Error, kLog, "texture {}x{}: {}", first.width, first.height, image.error());
@@ -811,14 +854,19 @@ private:
         const u32 config[3] = {texture::kTexture0, texture::kTexture1, texture::kTexture2};
         const u32 params = regs[config[unit] + 2];
         const Type type = unit == 0 ? static_cast<Type>(pica::BitsOf(params, 28, 3)) : Type::Texture2D;
-        const bool cube = type == Type::TextureCube || type == Type::ShadowCube;
+        const bool shadow_2d = type == Type::Shadow2D;
+        const bool shadow_cube = type == Type::ShadowCube;
+        const bool cube = type == Type::TextureCube || shadow_cube;
         TextureBinding binding;
-        if (type == Type::Shadow2D || type == Type::ShadowCube || type == Type::Disabled) {
-            return binding;  // the shadow lookups are N2-12's (the dummies); a Disabled unit 0 never reads its texture
+        if (type == Type::Disabled) {
+            return binding;  // a Disabled unit 0 never reads its texture
         }
         EnsureNullTextures();
+        // A shadow unit with nothing to show reads word 0 (depth 0, intensity 0: transparent black whatever the compare), never the
+        // composer's white dummy (lit): Shadow2D from a 1x1 shadow source, ShadowCube from the null cube.
         auto null_texture = [&](bool opaque) {
-            binding.image = cube ? null_cube_.get() : (opaque ? null_black_2d_.get() : null_2d_.get());
+            binding.image = shadow_2d ? null_shadow_.get() : (cube ? null_cube_.get() : (opaque ? null_black_2d_.get() : null_2d_.get()));
+            binding.view = shadow_2d ? rhi::ImageView::ShadowStorage : rhi::ImageView::Sampled;
             return binding;
         };
         if (((regs[texture::kMainConfig] >> unit) & 1) == 0) {
@@ -848,14 +896,50 @@ private:
                 faces.push_back(&undefined_type);
             }
         }
+        // The shadow types (N2-12): TexturesOfDraw leaves them out; describe them from the registers, a Shadow2D as one face, a
+        // ShadowCube as the six faces TexturesOfDraw gives a TextureCube (face 0 at the unit's address, faces 1 to 5 with the low
+        // 22 bits from 0x086 to 0x08A).
+        std::array<texture::TextureRef, 6> shadow_faces{};
+        if (faces.empty() && unit == 0 && (shadow_2d || shadow_cube)) {
+            const u32 size_word = regs[config[0] + 1];
+            const u32 address = pica::BitsOf(regs[config[0] + 4], 0, 28);
+            const u32 format_value = pica::BitsOf(regs[texture::kTexture0Format], 0, 4);
+            const u32 width = pica::BitsOf(size_word, 16, 11), height = pica::BitsOf(size_word, 0, 11);
+            if (texture::IsValidFormat(format_value) && texture::IsValidSize(width, height)) {
+                for (u32 face = 0; face < (shadow_cube ? 6u : 1u); ++face) {
+                    texture::TextureRef& ref = shadow_faces[face];
+                    ref.unit = 0;
+                    ref.face = face;
+                    ref.cube = shadow_cube;
+                    ref.width = width;
+                    ref.height = height;
+                    ref.format = static_cast<texture::Format>(format_value);
+                    u32 face_address = address;
+                    if (face != 0) {
+                        face_address = (address & ~0x3FFFFFu) | pica::BitsOf(regs[texture::kCubeAddress + face - 1], 0, 22);
+                    }
+                    ref.paddr = face_address * 8;
+                    faces.push_back(&ref);
+                }
+            }
+        }
         if (faces.empty() || (cube && faces.size() != 6)) {
             ++frame_.texture_unavailable;
             return null_texture(false);
         }
-        rhi::Image* image = TextureImage(faces);
+        rhi::Image* image = TextureImage(faces, shadow_2d);
         if (image == nullptr) {
             ++frame_.texture_unavailable;
             return null_texture(false);
+        }
+        if (shadow_2d || shadow_cube) {
+            // Shadow2D: the image's R32_UINT view (the composer forces it), no sampler (a texel fetch); ShadowCube: the plain RGBA8
+            // cube a TextureCube of the same faces uses, its sampled view with the composer's nearest sampler. Level 0 only, as the
+            // software renderer reads.
+            ++frame_.texture_binds;
+            binding.image = image;
+            binding.view = shadow_2d ? rhi::ImageView::ShadowStorage : rhi::ImageView::Sampled;
+            return binding;
         }
         rhi::Result<std::shared_ptr<rhi::Sampler>> sampler = samplers_->Get(fragment::sampling::SamplerParamsOf(state, unit));
         if (!sampler.ok()) {
@@ -896,6 +980,28 @@ private:
         }
     }
 
+    // Opens the recording a draw is recorded in once its textures are bound (BindTextures, or a submission after it). What
+    // protects the draw's images is the binding_textures_ guard: EnsureRecording does not run TrimTextures under it, and
+    // TrimTextures, which runs right after the serial moves, would otherwise release them (over budget, whatever their stamp).
+    // When that recording is not `bound_in` (BindTextures or the caller submitted), the draw's images are restamped with it,
+    // so no image the draw binds keeps a last-use serial older than the recording that draws it; today that only keeps the
+    // stamps honest.
+    void EnsureDrawRecording(const DrawDesc& desc, u64 bound_in) {
+        binding_textures_ = true;
+        EnsureRecording();
+        binding_textures_ = false;
+        if (recording_serial_ == bound_in) {
+            return;
+        }
+        for (auto& [image_key, entry] : texture_images_) {
+            for (const TextureBinding& unit : desc.units) {
+                if (unit.image != nullptr && unit.image == entry.image.get()) {
+                    entry.stamp = recording_serial_;
+                }
+            }
+        }
+    }
+
     // ---- a draw ----
     rhi::Result<DrawResult> DrawImpl(const pica::DrawCall& draw) {
         const pica::PicaState& state = *draw.state;
@@ -927,32 +1033,31 @@ private:
             return rhi::Error{why};
         };
 
-        // The fragment state first, for every draw: the dirty flags the processor clears after this draw are read here.
-        rhi::Result<fragment::FragmentState::Prepared> prepared = fragment_state_->Prepare(state, geometry.context, tables_.get());
+        // The fragment state first, for every draw: the dirty flags the processor clears after this draw are read here. No rings:
+        // the table flags are kept pending in the fragment state and uploaded by the table step below, after every step that
+        // can submit the recording; a block change is kept in block_unwritten_ until a Write has committed it.
+        rhi::Result<fragment::FragmentState::Prepared> prepared = fragment_state_->Prepare(state, geometry.context, nullptr);
         if (!prepared.ok()) {
             MH4N_LOG(Error, kLog, "fragment state: {}", prepared.error());
             return drop("the fragment state could not be prepared");
         }
+        block_unwritten_ = block_unwritten_ || prepared->block_changed;
         const fragment::FragmentKey key = fragment_state_->key();
         const fragment::Needs needs = fragment_state_->needs();
         CountStubs(key);
 
-        if (needs.shadow_write_pass) {
-            // The shadow-write pass is N2-12's: the stub stores nothing, so there is nothing to draw (counted stubbed:shadow).
-            return drop("a shadow-write draw (N2-12)");
-        }
-
+        // A draw in fragment operation mode Shadow (N2-12) draws in the shadow-write pass into the shadow target at the colour
+        // buffer's address; it has no depth target (MakeFixedFunctionState makes its output state inert; Azahar's Vulkan renderer
+        // uses no depth buffer in shadow mode either).
+        const bool shadow_mode = needs.shadow_write_pass;
         rhi::FixedFunctionState ff = fbops::MakeFixedFunctionState(state);
-        const bool wants_depth = ff.depth_test || ff.depth_write || ff.stencil_test;
+        const bool wants_depth = !shadow_mode && (ff.depth_test || ff.depth_write || ff.stencil_test);
         if (width == 0 || height == 0 || (color_address == 0 && !(depth_address != 0 && wants_depth))) {
             return drop("no surface");
         }
 
-        // ---- the textures the draw reads (before any vertex data is committed: binding one can submit the recording) ----
+        // ---- the vertices, on the CPU side (the loader, the translation, the CPU path's runner and batch: no ring yet) ----
         DrawDesc desc;
-        BindTextures(state, key, desc);
-
-        // ---- the vertices ----
         bool use_cpu = cpuvertex::NeedsCpuPath(draw, assembler_.IsEmpty());
         vertex::LoadedDraw loaded;
         shader::VertexShaderConfig vs_config;
@@ -980,14 +1085,7 @@ private:
         }
 
         const rhi::Capabilities& caps = backend_->Caps();
-        std::vector<rhi::VertexBufferBinding> vertex_buffers;
-        u32 count = 0;
-        s32 base_vertex = 0;
-        const rhi::Buffer* index_buffer = nullptr;
-        u64 index_offset = 0;
-        rhi::IndexType index_type = rhi::IndexType::U16;
-        rhi::Topology topology = rhi::Topology::TriangleList;
-
+        u64 vertex_bytes = 0;  // what the draw commits to the vertex ring, for EnsureRoom
         if (use_cpu) {
             const cpuvertex::RunStatus status = runner_.Run(host_, draw, cpuvertex::RunMode::Full);
             runner_saw = true;
@@ -1005,12 +1103,140 @@ private:
             if (batch_.Empty()) {
                 return drop("the CPU path made no triangle");
             }
-            EnsureRoom(batch_.VertexCount() * cpuvertex::kHardwareVertexStride);
+            vertex_bytes = batch_.VertexCount() * cpuvertex::kHardwareVertexStride;
+        } else {
+            runner_.NoteDraw(draw);
+            runner_saw = true;
+            vertex_bytes = loaded.index_data.size();
+            for (const vertex::VertexBuffer& b : loaded.buffers) {
+                vertex_bytes += b.data.size() + 16;
+            }
+            if (loaded.count == 0) {
+                return drop("nothing to draw");
+            }
+        }
+
+        // ---- everything that can submit the recording, before the draw's first commit to the fragment table rings, the vertex
+        // ring, the vertex-stage uniform ring and the fragment-uniform ring ----
+        // Ring::Commit attaches the space to the recording open at that moment (rhi.h); once that recording has completed the ring
+        // hands the space out again, so a commit made before a submission that the draw is recorded after can be overwritten by
+        // the next draw's data before the draw's own recording is submitted. EnsureRoom first (it only makes room), then the
+        // targets (a write-back of an overlapping target submits the recording and waits; a load begins the next one, which runs
+        // TrimTextures), then the textures (their write-backs and uploads can submit too, but TrimTextures does not run while
+        // they are bound; see EnsureDrawRecording), then the fragment tables and the fragment uniforms with their full-ring retry.
+
+        // The recording open at the draw's first commit to the fragment table, vertex, vertex-uniform or fragment-uniform rings,
+        // wherever in the order below that commit falls: every successful commit to those rings calls committed(), and the check
+        // before the draw compares it with the recording the draw is recorded in.
+        std::optional<u64> draw_recording;
+        auto committed = [&] {
+            if (!draw_recording) draw_recording = recording_serial_;
+        };
+        // The table step (N2-42): uploads the tables the fragment state holds pending (every table at the recording's first
+        // table step), reading them from the state as it is now. A step that opened a session committed it to the open
+        // recording: noted here, and nowhere else. Its block change joins block_unwritten_. False when the upload failed (the
+        // tables stay pending).
+        bool table_step_counted = false;
+        std::string table_error;
+        auto table_step = [&]() -> bool {
+            rhi::Result<fragment::FragmentState::TableStep> step = fragment_state_->UploadPendingTables(state, *tables_);
+            if (!step.ok()) {
+                table_error = step.error();
+                return false;
+            }
+            if (step->opened) {
+                committed();
+                if (!table_step_counted) {
+                    table_step_counted = true;
+                    ++frame_.fragment_table_uploads;
+                }
+            }
+            block_unwritten_ = block_unwritten_ || step->block_changed;
+            return true;
+        };
+
+        EnsureRoom(vertex_bytes);
+
+        // ---- the targets (gpu_dirty is set only once the draw has been recorded) ----
+        Target* color = nullptr;
+        Target* depth = nullptr;
+        Target* shadow = nullptr;
+        if (shadow_mode) {
+            // DrawShadowMapPixel: the colour buffer's address, the size of 0x11E, 4 bytes a texel whatever 0x117 says. Window row y
+            // is image row y (the same MakeGeometry as a colour draw), which the write-back puts at guest row h - 1 - y.
+            shadow = UseTarget(false, color_address, static_cast<u32>(ColorFormat::RGBA8), width, height, /*shadow=*/true);
+            if (shadow == nullptr) {
+                ++frame_.shadow_unavailable;
+                return drop("the shadow target could not be made");
+            }
+        } else {
+            color = color_address != 0 ? UseTarget(false, color_address, color_format, width, height) : nullptr;
+            depth = depth_address != 0 && wants_depth ? UseTarget(true, depth_address, depth_format, width, height) : nullptr;
+            if (color == nullptr && depth == nullptr) {
+                return drop("no render target");
+            }
+        }
+        if (depth == nullptr) {
+            ff.depth_test = ff.depth_write = ff.stencil_test = false;
+        }
+        if (color == nullptr) {
+            ff.blend_enabled = false;
+            ff.logic_op_enabled = false;
+        }
+        if (geometry.empty) {
+            return drop("empty draw rectangle");
+        }
+
+        // ---- the textures the draw reads (after the targets: a target's load begins a recording, and TrimTextures would release
+        // an image bound before it) ----
+        EnsureRecording();
+        const u64 bound_in = recording_serial_;
+        BindTextures(state, key, desc);
+        EnsureDrawRecording(desc, bound_in);
+
+        // ---- the fragment tables, then the fragment uniforms. A failed table step, or a failed Write after a table step that
+        // succeeded, takes the full-ring retry: the note is reset before the flush (only the table step can have made it by
+        // then), the new recording's BeginRecording makes its table step upload every table, so no offset points into the
+        // submitted recording, and the Write after it takes the whole block. The retry keeps the draw's images. ----
+        const bool tables_ok = table_step();
+        rhi::Result<fragment::FragmentUniformRing::Allocation> block =
+            tables_ok ? uniform_ring_->Write(fragment_state_->block(), block_unwritten_)
+                      : rhi::Result<fragment::FragmentUniformRing::Allocation>(rhi::Error{table_error});
+        if (!block.ok()) {
+            const u64 before = recording_serial_;
+            draw_recording.reset();
+            FlushRecording();
+            EnsureDrawRecording(desc, before);
+            if (!table_step()) {
+                MH4N_LOG(Error, kLog, "fragment tables: {}", table_error);
+                return drop("the fragment tables do not fit the ring");
+            }
+            block = uniform_ring_->Write(fragment_state_->block(), true);
+            if (!block.ok()) {
+                return drop("the fragment uniforms do not fit the ring");
+            }
+        }
+        block_unwritten_ = false;
+        // A failed Write commits nothing; a reused block points into the current recording (BeginRecording clears the last one).
+        committed();
+        // From here on nothing may submit the recording.
+
+        // ---- the vertices, committed ----
+        std::vector<rhi::VertexBufferBinding> vertex_buffers;
+        u32 count = 0;
+        s32 base_vertex = 0;
+        const rhi::Buffer* index_buffer = nullptr;
+        u64 index_offset = 0;
+        rhi::IndexType index_type = rhi::IndexType::U16;
+        rhi::Topology topology = rhi::Topology::TriangleList;
+
+        if (use_cpu) {
             rhi::Result<cpuvertex::StreamedBatch> streamed = cpuvertex::UploadBatch(*vertex_ring_, batch_);
             if (!streamed.ok() || streamed->vertex_count == 0) {
                 return drop("the triangle batch could not be uploaded");
             }
-            vertex_bytes_in_recording_ += batch_.VertexCount() * cpuvertex::kHardwareVertexStride;
+            committed();
+            vertex_bytes_in_recording_ += vertex_bytes;
             vertex_buffers.push_back(rhi::VertexBufferBinding{vertex_ring_->GetBuffer().get(), streamed->offset});
             count = streamed->vertex_count;
             desc.vertex.kind = VertexStageKind::Trivial;
@@ -1018,13 +1244,6 @@ private:
             const rhi::VertexLayout layout = cpuvertex::MakeBatchVertexLayout();
             desc.vertex.input = InputKeyOf(layout);
         } else {
-            runner_.NoteDraw(draw);
-            runner_saw = true;
-            u64 bytes = loaded.index_data.size();
-            for (const vertex::VertexBuffer& b : loaded.buffers) {
-                bytes += b.data.size() + 16;
-            }
-            EnsureRoom(bytes);
             for (const vertex::VertexBuffer& b : loaded.buffers) {
                 rhi::Result<rhi::RingAllocation> alloc = vertex_ring_->Map(std::max<u64>(b.data.size(), 16), 16);
                 if (!alloc.ok()) {
@@ -1035,6 +1254,7 @@ private:
                 if (!vertex_ring_->Commit(std::max<u64>(b.data.size(), 16)).ok()) {
                     return drop("a vertex buffer could not be committed");
                 }
+                committed();
                 vertex_buffers.push_back(rhi::VertexBufferBinding{vertex_ring_->GetBuffer().get(), alloc->offset});
             }
             if (loaded.index_type != vertex::IndexType::None) {
@@ -1047,53 +1267,20 @@ private:
                 if (!vertex_ring_->Commit(std::max<u64>(loaded.index_data.size(), 16)).ok()) {
                     return drop("an index buffer could not be committed");
                 }
+                committed();
                 index_buffer = vertex_ring_->GetBuffer().get();
                 index_offset = alloc->offset;
                 index_type = loaded.index_type == vertex::IndexType::U8    ? rhi::IndexType::U8
                              : loaded.index_type == vertex::IndexType::U32 ? rhi::IndexType::U32
                                                                            : rhi::IndexType::U16;
             }
-            vertex_bytes_in_recording_ += bytes;
+            vertex_bytes_in_recording_ += vertex_bytes;
             count = loaded.count;
             base_vertex = loaded.base_vertex;
             topology = ToRhiTopology(loaded.topology);
             desc.vertex.kind = VertexStageKind::Translated;
             desc.vertex.program = vs_config.Hash();
             desc.vertex.input = MakeVertexInput(loaded);
-            if (count == 0) {
-                return drop("nothing to draw");
-            }
-        }
-
-        // ---- the targets ----
-        Target* color = color_address != 0 ? UseTarget(false, color_address, color_format, width, height) : nullptr;
-        Target* depth = depth_address != 0 && wants_depth ? UseTarget(true, depth_address, depth_format, width, height) : nullptr;
-        if (color == nullptr && depth == nullptr) {
-            return drop("no render target");
-        }
-        if (color != nullptr) color->gpu_dirty = true;
-        if (depth != nullptr) depth->gpu_dirty = true;
-        if (depth == nullptr) {
-            ff.depth_test = ff.depth_write = ff.stencil_test = false;
-        }
-        if (color == nullptr) {
-            ff.blend_enabled = false;
-            ff.logic_op_enabled = false;
-        }
-
-        if (geometry.empty) {
-            return drop("empty draw rectangle");
-        }
-        EnsureRecording();
-
-        rhi::Result<fragment::FragmentUniformRing::Allocation> block = uniform_ring_->Write(fragment_state_->block(), prepared->block_changed);
-        if (!block.ok()) {
-            FlushRecording();
-            EnsureRecording();
-            block = uniform_ring_->Write(fragment_state_->block(), true);
-            if (!block.ok()) {
-                return drop("the fragment uniforms do not fit the ring");
-            }
         }
 
         // The vertex-stage uniforms: PicaUniformData then VertexUniformData, one ring allocation.
@@ -1111,6 +1298,21 @@ private:
             if (!vs_ring_->Commit(kVsUniformAllocation).ok()) {
                 return drop("the vertex uniforms could not be committed");
             }
+            committed();
+        }
+
+        // The invariant of the order above, for the fragment table, vertex, vertex-uniform and fragment-uniform rings: the
+        // recording open at the draw's first commit to them, wherever that commit fell, is the one the draw is recorded in. A
+        // draw that would read space handed out again is dropped, not drawn with what another draw wrote there. Checked before
+        // the first use of rec_ below; nothing between here and the composer's draw can submit the recording.
+        if (!rec_ || !draw_recording || recording_serial_ != *draw_recording) {
+            ++frame_.draws_split_by_submit;
+            if (!warned_split_) {
+                warned_split_ = true;
+                MH4N_LOG(Warning, kLog, "a draw's recording was submitted between its ring commits and the draw: dropped (counted "
+                                        "draws_split_by_submit; warned once)");
+            }
+            return drop("the recording was submitted between the draw's ring commits and the draw");
         }
 
         // ---- the dynamic state ----
@@ -1141,6 +1343,7 @@ private:
         desc.target.color = color != nullptr ? color->image.get() : nullptr;
         desc.target.depth = depth != nullptr ? depth->image.get() : nullptr;
         desc.target.area = rhi::Rect{0, 0, width, height};
+        desc.shadow_target = shadow != nullptr ? shadow->image.get() : nullptr;  // the composer picks the pass and the key
         desc.vs_pica_uniforms = UniformRange{vs_ring_->GetBuffer().get(), vs_alloc->offset, sizeof(shader::PicaUniformData)};
         desc.vs_uniforms = UniformRange{vs_ring_->GetBuffer().get(), vs_alloc->offset + 1792, sizeof(shader::VertexUniformData)};
         desc.fragment_uniforms = *block;
@@ -1154,15 +1357,27 @@ private:
         desc.viewport = geometry.viewport;
         desc.scissor = geometry.scissor;
 
-        EnsureRecording();
         rhi::Result<DrawResult> result = composer_->Draw(*rec_, desc);
         CountComposer();
         if (!result.ok()) {
+            // the composer's failure paths record no draw (a pass it began loads with LoadOp::Load): this draw does not mark
+            // its targets written
             MH4N_LOG(Error, kLog, "draw: {}", result.error());
             ++frame_.dropped;
             return result;
         }
+        if (shadow != nullptr) shadow->gpu_dirty = true;
+        if (color != nullptr) color->gpu_dirty = true;
+        if (depth != nullptr) depth->gpu_dirty = true;
         ++draws_in_recording_;
+        if (shadow_mode) ++frame_.shadow_write_draws;
+        // N2-12: a shadow lookup is a Shadow2D or ShadowCube unit 0 bound to a decoded map (not the 1x1 word-0 image, not the null
+        // cube)
+        const auto unit0_type = static_cast<texture::Type>(pica::BitsOf(regs[texture::kTexture0 + 2], 28, 3));
+        const rhi::Image* unit0_image = desc.units[0].image;
+        const bool shadow_lookup = (unit0_type == texture::Type::Shadow2D || unit0_type == texture::Type::ShadowCube) &&
+                                   unit0_image != nullptr && unit0_image != null_shadow_.get() && unit0_image != null_cube_.get();
+        if (shadow_lookup) ++frame_.shadow_lookups;
         return result;
     }
 
@@ -1238,8 +1453,13 @@ private:
     u64 recording_serial_ = 0;
     rhi::TimelineValue last_submit_ = 0;
     std::shared_ptr<rhi::Image> null_2d_, null_black_2d_, null_cube_;  // transparent black, opaque black, transparent black cube
+    std::shared_ptr<rhi::Image> null_shadow_;  // N2-12: a 1x1 shadow source holding word 0
     bool null_cleared_ = false;
     bool binding_textures_ = false;
+    bool warned_split_ = false;  // draws_split_by_submit's warning, once
+    // N2-42: a change of the fragment block (a draw's Prepare or its table step) not yet committed by a Write; cleared only after
+    // a successful Write, so a change made on a dropped draw reaches the next draw's Write
+    bool block_unwritten_ = false;
     bool levels_missing_in_draw_ = false;
     u64 seen_sampler_creates_ = 0;
 

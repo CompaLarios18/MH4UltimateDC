@@ -1,8 +1,9 @@
 // Derived from Azahar src/video_core/renderer_software/sw_rasterizer.cpp (RasterizerSoftware::WriteTevConfig,
 // DoAlphaTest, PixelColor, WriteFog), sw_texturing.cpp (GetColorModifier, GetAlphaModifier, ColorCombine, AlphaCombine),
 // sw_framebuffer.cpp (EvaluateBlendEquation, LogicOp), src/video_core/pica/regs_texturing.h (TevStageConfig::
-// GetColorMultiplier) and externals/nihstro/include/nihstro/shader_bytecode.h at
-// 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (the first four are GPL-2.0-or-later: each says "Licensed under GPLv2 or any
+// GetColorMultiplier; the fog LUT registers fog_lut_offset and fog_lut_data), src/video_core/pica/pica_core.h
+// (Pica::PicaCore::Fog::LutEntry) and externals/nihstro/include/nihstro/shader_bytecode.h at
+// 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (the first five are GPL-2.0-or-later: each says "Licensed under GPLv2 or any
 // later version"; shader_bytecode.h belongs to the submodule externals/nihstro that Azahar pins at
 // f4d8659decbfe5d234f04134b5002b82dc515a44 and is NOT GPL: its licence is the BSD 3-clause licence of
 // externals/nihstro/license.txt, reproduced below because it asks for that: the instruction encoder below places the
@@ -13,6 +14,7 @@
 // Copyright 2017 Citra Emulator Project (sw_texturing.cpp, sw_framebuffer.cpp)
 // Copyright 2017-2024 Citra Emulator Project / Azahar Emulator Project (regs_texturing.h)
 // Copyright 2023-2026 Citra Emulator Project / Azahar Emulator Project (glsl_fs_shader_gen.cpp)
+// Copyright 2023-2026 Citra Emulator Project / Azahar Emulator Project (pica_core.h)
 // Copyright 2014 Tony Wasserka (shader_bytecode.h)
 //
 //   Copyright 2014 Tony Wasserka
@@ -57,16 +59,21 @@
 //   - Dot3_RGB and Dot3_RGBA: three steps (the software renderer divides by 256 per channel; its own comment says
 //     "Worst case scenario seems to yield a +/-3 error");
 //   - with a scale of 2 or 4, the stage's tolerance times the scale.
+// The SPIR-V walker of the generator cases is adapted from gpu_shadow_test.cpp's and the unit-colour upload of the rig from
+// gpu_sampling_test.cpp's, both in this directory (N2-43).
 #include <doctest/doctest.h>
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <functional>
+#include <map>
 #include <memory>
+#include <set>
 #include <string>
 #include <thread>
 #include <vector>
@@ -78,6 +85,7 @@
 #include "gpu/fragment/generator.h"
 #include "gpu/fragment/key.h"
 #include "gpu/fragment/profile.h"
+#include "gpu/fragment/sampling/sampling.h"
 #include "gpu/fragment/state.h"
 #include "gpu/fragment/tables.h"
 #include "gpu/fragment/uniforms.h"
@@ -196,7 +204,7 @@ TEST_CASE("generator/the_layout_constants_agree_with_the_composition") {
     CHECK(uber.find("layout (set = 0, binding = 2, std140) uniform fs_data") != std::string::npos);
     CHECK(native::binding::kFragmentBlock == 2);
     const std::string shadow = GenerateUberGlsl(ShaderPass::ShadowWrite, kFullProfile);
-    CHECK(shadow.find("layout(set = 2, binding = 0, r32ui) uniform uimage2D shadow_buffer;") != std::string::npos);
+    CHECK(shadow.find("layout(set = 2, binding = 0, r32ui) uniform coherent uimage2D shadow_buffer;") != std::string::npos);
     CHECK(native::set::kShadow == 2);
     CHECK(native::binding::kShadowOut == 0);
     CHECK(uber.find("shadow_buffer") == std::string::npos);  // the normal pass declares no storage image
@@ -222,6 +230,188 @@ TEST_CASE("generator/every_helper_compiles_in_both_modes_and_both_passes") {
             Generated spec = GenerateSpecialised(DefaultKey(), profile, pass);
             INFO(spec.error);
             CHECK(spec.ok());
+        }
+    }
+}
+
+// ---- the SPIR-V call graph (the walk of gpu_shadow_test.cpp's helpers; the opcodes of glslang's spirv.hpp11) ---------------------
+
+namespace {
+
+constexpr u32 kOpName = 5, kOpEntryPoint = 15, kOpFunction = 54, kOpFunctionEnd = 56, kOpFunctionCall = 57;
+
+// OpImageTexelPointer, OpSampledImage .. OpImageQuerySamples, OpImageSparseSampleImplicitLod .. OpImageSparseTexelsResident and
+// OpImageSparseRead (317 to 319 are OpNoLine and the atomic flag operations, not image instructions).
+bool IsImageInstruction(u32 opcode) {
+    return opcode == 60 || (opcode >= 86 && opcode <= 107) || (opcode >= 305 && opcode <= 316) || opcode == 320;
+}
+
+struct CallGraph {
+    u32 entry = 0;                                       // OpEntryPoint's function (0: none)
+    std::map<u32, std::string> names;                    // OpName's target -> the name, cut at the first '('
+    std::vector<u32> functions;                          // every OpFunction's result id, in order
+    std::map<u32, std::map<u32, u64>> calls;             // function -> callee -> call sites
+    std::set<u32> has_image;                             // functions whose own body holds an image instruction
+    bool malformed = false;                              // a zero word count, an instruction past the end, a call outside a function
+
+    // The functions named `name` (an OpName whose target is an OpFunction's result id; variables and parameters do not count).
+    std::vector<u32> Named(const std::string& name) const {
+        std::vector<u32> out;
+        for (u32 id : functions) {
+            const auto it = names.find(id);
+            if (it != names.end() && it->second == name) out.push_back(id);
+        }
+        return out;
+    }
+};
+
+CallGraph ReadCallGraph(const std::vector<u32>& spirv) {
+    CallGraph g;
+    u32 current = 0;  // the function being read (0: none)
+    for (size_t i = 5; i < spirv.size();) {
+        const u32 count = spirv[i] >> 16, opcode = spirv[i] & 0xFFFF;
+        if (count == 0 || i + count > spirv.size()) {
+            g.malformed = true;
+            break;
+        }
+        if (opcode == kOpEntryPoint && count > 2) {
+            g.entry = spirv[i + 2];
+        } else if (opcode == kOpName && count > 2) {
+            std::string name;
+            for (size_t w = i + 2; w < i + count; ++w) {
+                bool end = false;
+                for (u32 b = 0; b < 4; ++b) {  // little-endian bytes, NUL-terminated
+                    const char ch = static_cast<char>((spirv[w] >> (8 * b)) & 0xFF);
+                    if (ch == '\0') {
+                        end = true;
+                        break;
+                    }
+                    name += ch;
+                }
+                if (end) break;
+            }
+            g.names[spirv[i + 1]] = name.substr(0, name.find('('));
+        } else if (opcode == kOpFunction && count > 2) {
+            current = spirv[i + 2];
+            g.functions.push_back(current);
+        } else if (opcode == kOpFunctionEnd) {
+            current = 0;
+        } else if (opcode == kOpFunctionCall && count > 3) {
+            if (current == 0) g.malformed = true;
+            ++g.calls[current][spirv[i + 3]];
+        } else if (IsImageInstruction(opcode) && current != 0) {
+            g.has_image.insert(current);
+        }
+        i += count;
+    }
+    return g;
+}
+
+// The sum over the call paths from `from` to `to` of the product of the call-site counts along each path. GLSL has no recursion:
+// a cycle sets `cycle`.
+u64 WeightedCalls(const CallGraph& g, u32 from, u32 to, bool& cycle, std::set<u32>& on_path) {
+    if (from == to) return 1;
+    if (!on_path.insert(from).second) {
+        cycle = true;
+        return 0;
+    }
+    u64 total = 0;
+    const auto it = g.calls.find(from);
+    if (it != g.calls.end()) {
+        for (const auto& [callee, sites] : it->second) total += sites * WeightedCalls(g, callee, to, cycle, on_path);
+    }
+    on_path.erase(from);
+    return total;
+}
+
+// `from`, or a function it reaches, holds an image instruction.
+bool ReachesImage(const CallGraph& g, u32 from, bool& cycle, std::set<u32>& on_path) {
+    if (g.has_image.count(from) != 0) return true;
+    if (!on_path.insert(from).second) {
+        cycle = true;
+        return false;
+    }
+    bool reaches = false;
+    const auto it = g.calls.find(from);
+    if (it != g.calls.end()) {
+        for (const auto& entry : it->second) reaches = reaches || ReachesImage(g, entry.first, cycle, on_path);
+    }
+    on_path.erase(from);
+    return reaches;
+}
+
+// `glsl` holds `token` as a whole name (not followed by a character that continues an identifier).
+bool HasToken(const std::string& glsl, const std::string& token) {
+    for (size_t at = glsl.find(token); at != std::string::npos; at = glsl.find(token, at + 1)) {
+        const size_t next = at + token.size();
+        const bool continues = next < glsl.size() && (std::isalnum(static_cast<unsigned char>(glsl[next])) || glsl[next] == '_');
+        if (!continues) return true;
+    }
+    return false;
+}
+
+}  // namespace
+
+TEST_CASE("generator/the_ubershader_samples_each_texture_unit_once_and_tev_source_samples_nothing") {
+    // How many times each texture function is reached from main, counting every call path with its call sites (the drivers inline
+    // every call site (`inference`), so this is how many copies of it they compile). Each is 1: main samples each unit once
+    // (sampleTexUnit0 .. 3), unit 0 calls the shadow lookups once each, unit 3 calls ProcTex once. A call site that a feature
+    // adds at the top level of main (N2-09's bump and shadow terms) raises by one the count of the function it calls and of every
+    // function of this table that one reaches (shadowTexture and shadowTextureCube through sampleTexUnit0); a count that grows
+    // with operands, stages or lights is the regression this case catches.
+    const std::pair<const char*, u64> kReached[] = {
+        {"sampleTexUnit0", 1}, {"sampleTexUnit1", 1}, {"sampleTexUnit2", 1}, {"sampleTexUnit3", 1},
+        {"shadowTexture", 1},  {"shadowTextureCube", 1}, {"ProcTex", 1},
+    };
+    const std::pair<const DeviceProfile*, const char*> profiles[] = {{&kFullProfile, "kFullProfile"}, {&kLeanProfile, "kLeanProfile"}};
+    const std::pair<ShaderPass, const char*> passes[] = {{ShaderPass::Normal, "Normal"}, {ShaderPass::ShadowWrite, "ShadowWrite"}};
+    for (const auto& [profile, profile_name] : profiles) {
+        for (const auto& [pass, pass_name] : passes) {
+            const std::string where = std::string("the ") + pass_name + " pass, " + profile_name;
+            const Generated uber = GenerateUber(pass, *profile);
+            REQUIRE_MESSAGE(uber.ok(), where << ": " << uber.error);
+            const CallGraph g = ReadCallGraph(uber.spirv);
+            CHECK_MESSAGE(!g.malformed, where << ": the SPIR-V walk found a malformed instruction");
+            CHECK_MESSAGE(g.entry != 0, where << ": no OpEntryPoint");
+            if (g.entry == 0) continue;
+            bool cycle = false;
+            std::set<u32> on_path;
+            for (const auto& [name, expected] : kReached) {
+                const std::vector<u32> ids = g.Named(name);
+                CHECK_MESSAGE(ids.size() == 1, std::string(name) << " in " << where << ": " << ids.size() << " functions of that name, expected 1");
+                if (ids.size() != 1) continue;
+                const u64 found = WeightedCalls(g, g.entry, ids[0], cycle, on_path);
+                CHECK_MESSAGE(found == expected, std::string(name) << " in " << where << ": reached " << found << " times from main, expected " << expected);
+            }
+            const std::vector<u32> tev = g.Named("tev_source");
+            CHECK_MESSAGE(tev.size() == 1, "tev_source in " << where << ": " << tev.size() << " functions of that name, expected 1");
+            if (tev.size() == 1) {
+                CHECK_MESSAGE(!ReachesImage(g, tev[0], cycle, on_path),
+                              "tev_source in " << where << ": reaches an image instruction (it must return the sampled globals)");
+            }
+            CHECK_MESSAGE(!cycle, where << ": the call graph has a cycle");
+        }
+    }
+
+    // The specialised shaders are Azahar's text: a texture source is `sampleTexUnitN()` inside the operand, and none of the
+    // ubershader's globals appears. The key reads the four units (the procedural texture on, so that sampleTexUnit3 calls ProcTex).
+    FragmentKey key = DefaultKey();
+    key.proctex.set_enable(1);
+    Stage s0;
+    s0.color_src[0] = kTexture0; s0.color_src[1] = kTexture1; s0.color_src[2] = kTexture2; s0.color_op = kLerp;
+    s0.alpha_src[0] = kTexture3; s0.alpha_src[1] = kTexture0; s0.alpha_src[2] = kTexture1; s0.alpha_op = kLerp;
+    key.texture.tev_stages[0] = s0.Raw();
+    for (u32 unit = 0; unit < 4; ++unit) REQUIRE(TevUsesSource(key, kTexture0 + unit));
+    for (const auto& [profile, profile_name] : profiles) {
+        for (const auto& [pass, pass_name] : passes) {
+            const std::string where = std::string("the specialised shader, the ") + pass_name + " pass, " + profile_name;
+            const std::string glsl = GenerateSpecialisedGlsl(key, *profile, pass);
+            for (u32 unit = 0; unit < 4; ++unit) {
+                const std::string token = "mh4n_tex" + std::to_string(unit);
+                CHECK_MESSAGE(!HasToken(glsl, token), where << " names " << token);
+            }
+            CHECK_MESSAGE(glsl.find("color_results_1 = sampleTexUnit0().rgb;") != std::string::npos,
+                          where << ": no operand reads sampleTexUnit0() in place");
         }
     }
 }
@@ -478,6 +668,9 @@ struct Rig {
     std::shared_ptr<rhi::Image> color, depth;
     std::vector<native::PipelineKey> built;
     native::DrawResult last;
+    // Texture units 0 to 2 (null until BindUnitColours: the draws then show the composer's white dummy).
+    std::unique_ptr<rhi::Ring> unit_staging;
+    std::array<std::shared_ptr<rhi::Image>, 3> unit_images;
 
     // `mask` turns capability bits off (the paths of the M2 run on any device); `force_uber` is --force-ubershader.
     const FeatureRegistry* registry;
@@ -519,6 +712,33 @@ struct Rig {
         auto image = backend->CreateImage(desc);
         REQUIRE_MESSAGE(image.ok(), image.error());
         return *image;
+    }
+
+    // Gives texture units 0 to 2 one texel each (bytes, r g b a), bound from then on with every draw of Render (the composer's
+    // nearest sampler). The first call creates the staging ring and the three 1x1 images; each call uploads in one recording.
+    void BindUnitColours(const std::array<std::array<int, 4>, 3>& colours) {
+        if (!unit_staging) {
+            auto ring = backend->CreateRing(64 << 10, rhi::BufferUsage::Transfer, "tev unit colours");
+            REQUIRE_MESSAGE(ring.ok(), ring.error());
+            unit_staging = std::move(*ring);
+            for (u32 u = 0; u < 3; ++u) {
+                rhi::ImageDesc desc;
+                desc.format = rhi::Format::Rgba8Unorm;
+                desc.width = desc.height = 1;
+                desc.name = "tev unit colour";
+                auto image = backend->CreateImage(desc);
+                REQUIRE_MESSAGE(image.ok(), image.error());
+                unit_images[u] = *image;
+            }
+        }
+        rhi::Recorder rec = backend->BeginRecording();
+        for (u32 u = 0; u < 3; ++u) {
+            const std::array<u8, 4> texel = {static_cast<u8>(colours[u][0]), static_cast<u8>(colours[u][1]),
+                                             static_cast<u8>(colours[u][2]), static_cast<u8>(colours[u][3])};
+            auto r = sampling::UploadRgba8(rec, *unit_staging, *unit_images[u], 0, 0, 1, 1, texel);
+            REQUIRE_MESSAGE(r.ok(), r.error());
+        }
+        backend->WaitIdle(backend->Submit(std::move(rec)));
     }
 
     // Clears the target to `clear` (bytes) and the depth to 1.0, runs the draws in one recorder, returns the colour pixels.
@@ -578,6 +798,9 @@ struct Rig {
             d.count = streamed->vertex_count;
             d.viewport = rhi::Viewport{0, 0, static_cast<float>(kSize), static_cast<float>(kSize), 0.0f, 1.0f};
             d.scissor = rhi::Rect{0, 0, kSize, kSize};
+            if (unit_images[0]) {
+                for (u32 u = 0; u < 3; ++u) d.units[u] = native::TextureBinding{unit_images[u].get(), rhi::ImageView::Sampled, nullptr};
+            }
             auto result = composer->Draw(rec, d);
             REQUIRE_MESSAGE(result.ok(), result.error());
             last = *result;
@@ -971,6 +1194,173 @@ TEST_CASE("tev/the_combiner_buffer_is_updated_by_the_stages_the_masks_name_and_r
     }
 }
 
+namespace {
+
+// The ubershader's texture units (N2-43): units 0 to 2 each a texel of its own (every channel at most 127, so twice the value
+// does not clamp; any two units at least 16 apart in every channel), unit 3 the procedural slot with the procedural texture off
+// (zero). The alpha channels (112, 72, 32, 0) are at least 32 apart.
+const std::array<std::array<int, 4>, 3> kUnitColours = {{{96, 24, 60, 112}, {24, 112, 40, 72}, {64, 48, 120, 32}}};
+const std::array<int, 4> kUnitPrimary = {140, 150, 160, 180};
+constexpr int kUnitTolerance = 1;  // Replace and Add are exact, and so is a MultiplyThenAdd with a zero product
+
+// One draw of the ubershader's unit case: one stage that is not a pass-through reads `color_unit` through a colour operand and
+// `alpha_unit` through the alpha operand of the same slot.
+struct UnitDraw {
+    std::array<Stage, 6> stages{};
+    u32 stage = 0;
+    bool forced = false;  // stage 0's forced shape: both forced operands read the third source
+    u32 color_unit = 0, alpha_unit = 0;
+    std::string label;
+};
+
+// The 28 draws. For each stage s and colour unit A, with k = s % 3 the operand slot, the alpha unit B = (A + 1 + k) % 4 (never A;
+// over the three slots every unit meets each of the others): stage s alone is active, its colour sources are all
+// PrimaryFragmentColor (zero: lighting is off) except slot k, which is unit A, its alpha sources the same with unit B, and both
+// operations are Replace (k = 0), Add (k = 1) or MultiplyThenAdd (k = 2; a zero product, so the result is the third operand).
+// Then stage 0's forced shape for each A, with B = (A + 2) % 4: sources {Previous, Previous, unit} on both sides, with Add.
+// Pairs and not one side per draw (56 draws): the same mutants show, with half the draws.
+std::vector<UnitDraw> UnitDraws() {
+    std::vector<UnitDraw> out;
+    const u32 ops[3] = {kReplace, kAdd, kMultiplyThenAdd};
+    for (u32 s = 0; s < 6; ++s) {
+        const u32 k = s % 3;
+        for (u32 a = 0; a < 4; ++a) {
+            const u32 b = (a + 1 + k) % 4;
+            UnitDraw d;
+            Stage st;
+            for (u32 i = 0; i < 3; ++i) {
+                st.color_src[i] = kPrimaryFragmentColor;
+                st.alpha_src[i] = kPrimaryFragmentColor;
+            }
+            st.color_src[k] = kTexture0 + a;
+            st.alpha_src[k] = kTexture0 + b;
+            st.color_op = ops[k];
+            st.alpha_op = ops[k];
+            d.stages[s] = st;
+            d.stage = s;
+            d.color_unit = a;
+            d.alpha_unit = b;
+            d.label = "stage " + std::to_string(s) + " slot " + std::to_string(k) + ": colour unit " + std::to_string(a) +
+                      ", alpha unit " + std::to_string(b);
+            out.push_back(d);
+        }
+    }
+    for (u32 a = 0; a < 4; ++a) {
+        const u32 b = (a + 2) % 4;
+        UnitDraw d;
+        Stage st;
+        st.color_src[0] = kPrevious; st.color_src[1] = kPrevious; st.color_src[2] = kTexture0 + a;
+        st.alpha_src[0] = kPrevious; st.alpha_src[1] = kPrevious; st.alpha_src[2] = kTexture0 + b;
+        st.color_op = kAdd;
+        st.alpha_op = kAdd;
+        d.stages[0] = st;
+        d.stage = 0;
+        d.forced = true;
+        d.color_unit = a;
+        d.alpha_unit = b;
+        d.label = "stage 0 forced: colour unit " + std::to_string(a) + ", alpha unit " + std::to_string(b);
+        out.push_back(d);
+    }
+    return out;
+}
+
+// The software renderer's pixel for a draw, with `texture` for the four units (the alpha test is Always).
+std::array<int, 4> UnitPixel(const UnitDraw& d, const std::array<sw::V4, 4>& texture) {
+    sw::Inputs in;
+    in.primary = {kUnitPrimary[0], kUnitPrimary[1], kUnitPrimary[2], kUnitPrimary[3]};
+    in.texture = texture;
+    const sw::V4 out = sw::Tev(d.stages, in);
+    return {out[0], out[1], out[2], out[3]};
+}
+
+std::array<sw::V4, 4> UnitTextures() {
+    std::array<sw::V4, 4> t{};
+    for (u32 u = 0; u < 3; ++u) t[u] = {kUnitColours[u][0], kUnitColours[u][1], kUnitColours[u][2], kUnitColours[u][3]};
+    t[3] = {0, 0, 0, 0};
+    return t;
+}
+
+int MaxDifference(const std::array<int, 4>& a, const std::array<int, 4>& b) {
+    int most = 0;
+    for (int c = 0; c < 4; ++c) most = std::max(most, std::abs(a[c] - b[c]));
+    return most;
+}
+
+}  // namespace
+
+TEST_CASE("tev/the_unit_colours_of_the_ubershader_case_tell_every_unit_apart") {
+    const std::vector<UnitDraw> draws = UnitDraws();
+    REQUIRE(draws.size() == 28);
+    std::map<std::array<u32, 3>, int> triples;  // (unit, stage, side 0 colour / 1 alpha) -> draws, the forced shape left out
+    std::array<int, 4> forced_color{}, forced_alpha{};
+    const std::array<sw::V4, 4> textures = UnitTextures();
+    for (const UnitDraw& d : draws) {
+        INFO(d.label);
+        CHECK(d.color_unit != d.alpha_unit);
+        if (d.forced) {
+            ++forced_color[d.color_unit];
+            ++forced_alpha[d.alpha_unit];
+        } else {
+            ++triples[{d.color_unit, d.stage, 0}];
+            ++triples[{d.alpha_unit, d.stage, 1}];
+        }
+        // The key the pixel case draws: the one active stage is the draw's, and it reads exactly the draw's two units.
+        TevCase c;
+        c.stages = d.stages;
+        const FragmentKey key = KeyOfCase(c);
+        for (u32 s = 0; s < 6; ++s) CHECK(TevStageIsPassThrough(key.texture.tev_stages[s]) == (s != d.stage));
+        for (u32 u = 0; u < 4; ++u) CHECK(TevUsesSource(key, kTexture0 + u) == (u == d.color_unit || u == d.alpha_unit));
+        // Each read unit shows: with its colour replaced by zero (units 0 to 2) or by another unit's, the pixel moves by more than
+        // the tolerance.
+        const std::array<int, 4> want = UnitPixel(d, textures);
+        for (u32 read : {d.color_unit, d.alpha_unit}) {
+            if (read < 3) {
+                std::array<sw::V4, 4> changed = textures;
+                changed[read] = {0, 0, 0, 0};
+                CHECK_MESSAGE(MaxDifference(UnitPixel(d, changed), want) > kUnitTolerance, "unit " << read << " replaced by zero");
+            }
+            for (u32 other = 0; other < 4; ++other) {
+                if (other == read) continue;
+                std::array<sw::V4, 4> changed = textures;
+                changed[read] = textures[other];
+                CHECK_MESSAGE(MaxDifference(UnitPixel(d, changed), want) > kUnitTolerance,
+                              "unit " << read << " replaced by unit " << other);
+            }
+        }
+    }
+    CHECK(triples.size() == 48);  // 4 units x 6 stages x 2 sides
+    for (const auto& [triple, n] : triples) {
+        CHECK_MESSAGE(n == 1, "unit " << triple[0] << " stage " << triple[1] << " side " << triple[2] << ": " << n << " draws");
+    }
+    for (u32 u = 0; u < 4; ++u) {
+        CHECK_MESSAGE(forced_color[u] == 1, "the forced shape reads unit " << u << " on the colour side " << forced_color[u] << " times");
+        CHECK_MESSAGE(forced_alpha[u] == 1, "the forced shape reads unit " << u << " on the alpha side " << forced_alpha[u] << " times");
+    }
+}
+
+TEST_CASE("tev/the_ubershader_reads_every_texture_unit_at_every_stage_through_colour_and_alpha_operands") {
+    // Each draw reads one unit through a colour operand and another through the alpha operand of the same slot, at one stage, so a
+    // unit the ubershader does not sample where it is read gives zero on one side, and a unit sampled into another's global gives
+    // that unit's colour (the unit colours tell every unit apart: the case above). One fixed-function state: one pipeline.
+    auto backend = test::RequireBackend();
+    if (!backend) return;
+    Rig rig(backend, true);
+    rig.BindUnitColours(kUnitColours);
+    const std::array<sw::V4, 4> textures = UnitTextures();
+    for (const UnitDraw& d : UnitDraws()) {
+        TevCase c;
+        c.stages = d.stages;
+        DrawSpec spec;
+        spec.key = KeyOfCase(c);
+        spec.tri = FullTriangle(kUnitPrimary);
+        const std::vector<u8> pixels = rig.Render({spec});
+        std::string why;
+        CHECK_MESSAGE(AllNear(pixels, UnitPixel(d, textures), kUnitTolerance, &why), d.label << ": " << why);
+        CHECK_MESSAGE(rig.last.fallback, d.label);
+    }
+    CHECK(rig.built.size() == 1);
+}
+
 TEST_CASE("alpha_test/every_function_against_the_software_renderers_comparison") {
     auto backend = test::RequireBackend();
     if (!backend) return;
@@ -1072,13 +1462,13 @@ TEST_CASE("stubs/a_draw_that_needs_a_stubbed_feature_is_reported_by_name") {
     CHECK(stubbed(fog).empty());
     FragmentKey shadow = DefaultKey();
     shadow.framebuffer.set_shadow_rendering(1);
-    CHECK(stubbed(shadow) == std::vector<std::string>{"shadow"});
+    CHECK(stubbed(shadow).empty());
     FragmentKey proc = DefaultKey();
     proc.proctex.set_enable(1);
     Stage p;
     p.color_src[0] = kTexture3;
     proc.texture.tev_stages[0] = p.Raw();
-    CHECK(stubbed(proc) == std::vector<std::string>{"proctex"});  // unit 3 is the procedural slot, not a texture unit
+    CHECK(stubbed(proc).empty());  // unit 3 is the procedural slot, not a texture unit; proctex/ is real since N2-11
 }
 
 // A TEV key with two active stages, and the generator's output for it in both modes and both passes: non-empty GLSL that glslang
@@ -1971,6 +2361,217 @@ TEST_CASE("native/the_colour_buffer_is_loaded_again_after_the_cpu_wrote_its_memo
     third.Write(0x228, 3).Write(0x22A, 0).Write(0x22E, 0);
     sim.Submit(third);
     CHECK_MESSAGE(UniformColour(sim.ColorBuffer(), {200, 100, 50, 255}, &why), why);
+}
+
+// A draw whose target selection writes back another target (here an RGB565 target over the RGBA8 one a draw just wrote, at the
+// same address) submits the recording and waits for it: the draw's vertices must be committed after that, to the recording that
+// draws it. Committed before (when DrawImpl committed them before choosing the targets), the ring restarted at 0 once the
+// submitted recording had completed, and the next draw's vertices (30 coincident ones, no area, covering the ring past the first
+// draw's) overwrote them before the draw's own recording was submitted: the green triangle was drawn from them, i.e. not at all.
+TEST_CASE("native/a_draw_after_an_overlapping_targets_write_back_draws_its_own_vertices") {
+    if (!test::RequireBackend()) return;
+    Sim sim;
+    std::vector<std::array<float, 4>> vectors = {
+        {-1, -1, -0.5f, 1}, Bytes4(255, 0, 0, 255), {3, -1, -0.5f, 1}, Bytes4(255, 0, 0, 255), {-1, 3, -0.5f, 1}, Bytes4(255, 0, 0, 255),
+        {-1, -1, -0.5f, 1}, Bytes4(0, 255, 0, 255), {3, -1, -0.5f, 1}, Bytes4(0, 255, 0, 255), {-1, 3, -0.5f, 1}, Bytes4(0, 255, 0, 255)};
+    for (int i = 0; i < 30; ++i) {
+        vectors.push_back({-1, -1, -0.5f, 1});
+        vectors.push_back(Bytes4(0, 0, 255, 255));
+    }
+    sim.Write(kVertexBase, FloatBytes(vectors));
+    CmdList l;
+    FramebufferRegisters(l);
+    VertexProgram(l, 2);
+    l.Write(kRegUseGs, 0);
+    l.Write(kRegTopology, 0);
+    l.Write(0x228, 3).Write(0x22A, 0).Write(0x22E, 0);   // red into the RGBA8 target
+    l.Write(kRegColorFormat, 3u << 16);                    // RGB565: another target over the same bytes
+    l.Write(0x228, 3).Write(0x22A, 3).Write(0x22E, 0);   // green, after the RGBA8 target's write-back
+    l.Write(0x228, 30).Write(0x22A, 6).Write(0x22E, 0);  // no area
+    sim.Submit(l);
+    sim.gpu->WriteBackColorBuffers();
+    const u8* memory = sim.host.PhysicalPointer(kColorBuffer, kSize * kSize * 2);
+    REQUIRE(memory != nullptr);
+    std::vector<u8> rgba;
+    REQUIRE(texture::DecodeToRgba8(memory, kSize * kSize * 2, kSize, kSize, texture::Format::RGB565, rgba));
+    std::string why;
+    CHECK_MESSAGE(UniformColour(rgba, {0, 255, 0, 255}, &why), why);
+    CHECK(sim.Counter("draws_split_by_submit") == 0);
+    CHECK(sim.Counter("native_draws_dropped") == 0);
+    CHECK(sim.Counter("native_draws") == 3);
+}
+
+// ---- the fog table's lifetime (N2-42): every table offset a draw reads was committed in the recording that draws it ----------
+
+namespace {
+
+// The vertices of the table cases, at kVertexBase (position, colour): a full-screen red triangle at 0, a full-screen green one at
+// 3, a green rectangle over the left half of the target (two triangles, x from -1 to 0) at 6, and a triangle with no area at 12.
+constexpr u32 kRedFull = 0, kGreenFull = 3, kGreenLeft = 6, kNoArea = 12;
+std::vector<u8> TableCaseVertices() {
+    const std::array<float, 4> red = Bytes4(255, 0, 0, 255), green = Bytes4(0, 255, 0, 255);
+    return FloatBytes({{-1, -1, -0.5f, 1}, red,   {3, -1, -0.5f, 1}, red,   {-1, 3, -0.5f, 1}, red,
+                       {-1, -1, -0.5f, 1}, green, {3, -1, -0.5f, 1}, green, {-1, 3, -0.5f, 1}, green,
+                       {-1, -1, -0.5f, 1}, green, {0, -1, -0.5f, 1}, green, {-1, 1, -0.5f, 1}, green,
+                       {0, -1, -0.5f, 1},  green, {0, 1, -0.5f, 1},  green, {-1, 1, -0.5f, 1}, green,
+                       {-1, -1, -0.5f, 1}, red,   {-1, -1, -0.5f, 1}, red,   {-1, -1, -0.5f, 1}, red});
+}
+
+// DrawArrays of `count` vertices from vertex `first`.
+void DrawVertices(CmdList& l, u32 first, u32 count) {
+    l.Write(0x228, count).Write(0x22A, first).Write(0x22E, 0);
+}
+
+// Fog::LutEntry (pica_core.h): the value in bits 13-23 and the difference in bits 0-12, both over 2047. Every entry of a table is
+// the same word, so the factor does not depend on the depth: 1 keeps the vertex colour, 0 gives the fog colour.
+constexpr u32 kFogFactor1 = 0x7FFu << 13, kFogFactor0 = 0, kFogFactorHalf = 1024u << 13;
+constexpr u32 kFogBlue = 0xFF0000, kFogGreen = 0x00FF00;  // 0xE1: red bits 0-7, green 8-15, blue 16-23
+
+// The fog table (regs_texturing.h's fog_lut_offset 0xE6 and fog_lut_data 0xE8): the offset 0, then the 128 entries.
+void FogTable(CmdList& l, u32 entry) {
+    l.Write(0xE6, 0);
+    for (u32 i = 0; i < 128; ++i) l.Write(0xE8, entry);
+}
+
+// The registers of a table case: the framebuffer and the vertex program of the cases above, fog mode Fog with `fog_colour`.
+void TableCaseRegisters(CmdList& l, u32 fog_colour) {
+    FramebufferRegisters(l);
+    VertexProgram(l, 2);
+    l.Write(kRegUseGs, 0);
+    l.Write(kRegTopology, 0);  // List
+    l.Write(0xE0, 5);          // fog mode Fog
+    l.Write(0xE1, fog_colour);
+}
+
+// True when the columns left of the middle are `left` and the others `right`, byte-exact.
+bool Halves(const std::vector<u8>& pixels, std::array<int, 4> left, std::array<int, 4> right, std::string* why) {
+    for (u32 y = 0; y < kSize; ++y) {
+        for (u32 x = 0; x < kSize; ++x) {
+            const std::array<int, 4> p = Pixel(pixels, x, y);
+            const std::array<int, 4>& want = x < kSize / 2 ? left : right;
+            if (p != want) {
+                *why = "pixel (" + std::to_string(x) + "," + std::to_string(y) + ") is " + std::to_string(p[0]) + "," +
+                       std::to_string(p[1]) + "," + std::to_string(p[2]) + "," + std::to_string(p[3]) + ", expected " +
+                       std::to_string(want[0]) + "," + std::to_string(want[1]) + "," + std::to_string(want[2]) + "," +
+                       std::to_string(want[3]);
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+constexpr std::array<int, 4> kBlue = {0, 0, 255, 255}, kGreen = {0, 255, 0, 255};
+
+}  // namespace
+
+// (b) An offset kept across recordings. B, the first draw of list 2, writes no table: before N2-42 it kept the offset list 1 wrote,
+// and C's new table, mapped at 0 once list 1's recording had completed and the ring had drained, overwrote the bytes B reads
+// before list 2's recording was submitted (the whole target blue). Each recording's first table step uploads every table.
+TEST_CASE("native/a_table_written_after_the_ring_drained_does_not_overwrite_the_one_an_earlier_draw_of_the_recording_reads") {
+    if (!test::RequireBackend()) return;
+    Sim sim;
+    sim.Write(kVertexBase, TableCaseVertices());
+    CmdList first;
+    TableCaseRegisters(first, kFogBlue);
+    FogTable(first, kFogFactor1);       // T1
+    DrawVertices(first, kRedFull, 3);   // A
+    sim.Submit(first);
+    sim.gpu->WriteBackColorBuffers();   // the readback of A's target submits and waits: list 1's recording has completed
+
+    CmdList second;
+    DrawVertices(second, kGreenFull, 3);  // B, no table write
+    FogTable(second, kFogFactor0);        // T2
+    DrawVertices(second, kGreenLeft, 6);  // C
+    sim.Submit(second);
+    std::string why;
+    CHECK_MESSAGE(Halves(sim.ColorBuffer(), kBlue, kGreen, &why), why);
+    CHECK(sim.Counter("draws_split_by_submit") == 0);
+    CHECK(sim.Counter("native_draws") == 3);
+    CHECK(sim.Counter("native_draws_dropped") == 0);
+    CHECK(sim.Counter("fragment_table_uploads") == 3);  // A, B (list 2's first table step), C
+}
+
+// (a) Uploaded before a submission, drawn after it. B's target selection writes back the RGBA8 target over the same bytes, which
+// submits the recording and waits: before N2-42 B's table had been committed to that recording, and C (restarting the drained
+// ring at 0) and D (at B's bytes again) overwrote it before B's own recording was submitted (the whole target blue). The table
+// step runs after every step that can submit.
+TEST_CASE("native/a_draw_after_an_overlapping_targets_write_back_reads_the_fog_table_it_was_given") {
+    if (!test::RequireBackend()) return;
+    Sim sim;
+    sim.Write(kVertexBase, TableCaseVertices());
+    CmdList l;
+    TableCaseRegisters(l, kFogBlue);
+    FogTable(l, kFogFactorHalf);          // T0
+    DrawVertices(l, kRedFull, 3);         // A, into the RGBA8 target
+    l.Write(kRegColorFormat, 3u << 16);   // RGB565: another target over the same bytes
+    FogTable(l, kFogFactor1);             // T1
+    DrawVertices(l, kGreenFull, 3);       // B, after the RGBA8 target's write-back
+    FogTable(l, kFogFactorHalf);          // T2
+    DrawVertices(l, kNoArea, 3);          // C, no area
+    FogTable(l, kFogFactor0);             // T3
+    DrawVertices(l, kGreenLeft, 6);       // D
+    sim.Submit(l);
+    sim.gpu->WriteBackColorBuffers();
+    const u8* memory = sim.host.PhysicalPointer(kColorBuffer, kSize * kSize * 2);
+    REQUIRE(memory != nullptr);
+    std::vector<u8> rgba;
+    REQUIRE(texture::DecodeToRgba8(memory, kSize * kSize * 2, kSize, kSize, texture::Format::RGB565, rgba));
+    std::string why;
+    CHECK_MESSAGE(Halves(rgba, kBlue, kGreen, &why), why);
+    CHECK(sim.Counter("draws_split_by_submit") == 0);
+    CHECK(sim.Counter("native_draws") == 4);
+    CHECK(sim.Counter("native_draws_dropped") == 0);
+    CHECK(sim.Counter("fragment_table_uploads") == 4);  // A, B in its new recording, C, D
+}
+
+// (c) A block change lost on a drop. D1 changes the fog colour and is dropped ("no surface": colour address 0, no depth buffer);
+// the processor clears the dirty flags after it. D2 changes nothing (the colour address is a key register, but the key stays
+// equal and no uniform reads it): before N2-42 its Write returned D0's allocation, with D0's fog colour (blue).
+TEST_CASE("native/a_uniform_change_on_a_dropped_draw_reaches_the_next_draw") {
+    if (!test::RequireBackend()) return;
+    Sim sim;
+    sim.Write(kVertexBase, TableCaseVertices());
+    CmdList l;
+    TableCaseRegisters(l, kFogBlue);
+    FogTable(l, kFogFactor0);              // the power-on table (all zeros): writing it sets no flag
+    DrawVertices(l, kGreenFull, 3);        // D0: blue
+    l.Write(0xE1, kFogGreen);
+    l.Write(kRegColorAddress, 0);
+    DrawVertices(l, kGreenFull, 3);        // D1: dropped
+    l.Write(kRegColorAddress, kColorBuffer >> 3);
+    DrawVertices(l, kGreenFull, 3);        // D2: the fog colour green
+    sim.Submit(l);
+    std::string why;
+    CHECK_MESSAGE(UniformColour(sim.ColorBuffer(), kGreen, &why), why);
+    CHECK(sim.Counter("draws_split_by_submit") == 0);
+    CHECK(sim.Counter("native_draws") == 3);
+    CHECK(sim.Counter("native_draws_dropped") == 1);
+    CHECK(sim.Counter("fragment_table_uploads") == 1);  // D0; D2 has nothing pending
+}
+
+// (c') A table change on a dropped draw. D1 writes a factor-0 table and is dropped: before N2-42 its Prepare moved the fog offset in
+// FragmentState only, and D2's Write reused D0's allocation, which reads the factor-1 table (green). The change stays pending.
+TEST_CASE("native/a_table_change_on_a_dropped_draw_reaches_the_next_draw") {
+    if (!test::RequireBackend()) return;
+    Sim sim;
+    sim.Write(kVertexBase, TableCaseVertices());
+    CmdList l;
+    TableCaseRegisters(l, kFogBlue);
+    FogTable(l, kFogFactor1);
+    DrawVertices(l, kGreenFull, 3);        // D0: green
+    FogTable(l, kFogFactor0);
+    l.Write(kRegColorAddress, 0);
+    DrawVertices(l, kGreenFull, 3);        // D1: dropped
+    l.Write(kRegColorAddress, kColorBuffer >> 3);
+    DrawVertices(l, kGreenFull, 3);        // D2: the factor-0 table, blue
+    sim.Submit(l);
+    std::string why;
+    CHECK_MESSAGE(UniformColour(sim.ColorBuffer(), kBlue, &why), why);
+    CHECK(sim.Counter("draws_split_by_submit") == 0);
+    CHECK(sim.Counter("native_draws") == 3);
+    CHECK(sim.Counter("native_draws_dropped") == 1);
+    CHECK(sim.Counter("fragment_table_uploads") == 2);  // D0, D2
 }
 
 TEST_CASE("native/the_gpu_made_on_one_thread_creates_its_images_on_the_thread_that_executes") {

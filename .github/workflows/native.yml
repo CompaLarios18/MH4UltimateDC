@@ -62,6 +62,11 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y clang lld llvm cmake ninja-build \
             libvulkan-dev mesa-vulkan-drivers vulkan-validationlayers glslang-tools spirv-tools
+      # the runner the test times below come from (N0-42); never fails
+      - name: Runner CPU and Mesa
+        run: |
+          lscpu | grep -E '^(Model name|CPU\(s\)):' || true
+          dpkg-query -W -f='mesa-vulkan-drivers ${Version}\n' mesa-vulkan-drivers || true
       # building the ARM test programs uses tools/difftest.py
       - run: pip install -r requirements.txt
       - name: Configure
@@ -75,12 +80,35 @@ jobs:
           MH4N_REQUIRE_TEST_DATA: "1"   # a test that needs the built ARM programs fails instead of skipping
           MH4N_REQUIRE_VULKAN: "1"      # a test that needs a Vulkan device (lavapipe here) fails instead of skipping
           MH4N_REQUIRE_HEADLESS_SURFACE: "1"  # a test that needs VK_EXT_headless_surface fails instead of skipping (the lavapipe stack has it)
+          MH4N_TEST_DURATIONS: "1"      # each doctest case prints its start and its time, unbuffered (N0-42)
         run: ctest --test-dir build/native --output-on-failure
+      # every test's per-case times from ctest's LastTest.log (--output-on-failure prints only the failed tests'
+      # output); right after the Test step, because each ctest run writes that file again
+      - name: Per-case test times
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        run: python3 tools/native/ctest_case_times.py build/native/Testing/Temporary/LastTest.log
       # The RHI tests (N2-25; N2-26 to N2-29, N2-22, N2b-05 and N2b-06 as they arrive) again under the Khronos
       # validation layer with synchronization validation: lavapipe accepts every invalid call, so only the
-      # layer sees them. Fails on any layer message. Names that do not exist yet match nothing.
+      # layer sees them. Fails on any layer message. Names that do not exist yet match nothing. The table line prints
+      # the per-case times of a clean run (vk_layer_run.py prints ctest's output only when the run fails).
       - name: RHI tests under the validation layer
-        run: python3 tools/native/vk_layer_run.py --build build/native -R '^(rhi_.*|gpu_backend_.*|gpu_queue_test|present_test|swapchain_test)$'
+        env:
+          MH4N_TEST_DURATIONS: "1"
+        run: |
+          python3 tools/native/vk_layer_run.py --build build/native -R '^(rhi_.*|gpu_backend_.*|gpu_queue_test|present_test|swapchain_test)$'
+          python3 tools/native/ctest_case_times.py build/native/Testing/Temporary/LastTest.log || true
+      # N2-12's gpu_shadow_test under the layer too (generated shaders in a pass with no attachments, storage writes):
+      # as it is, and with the interlock capability masked (the compare-and-swap path; only the layer reports an
+      # interlock module on a device without the feature). Not in the regex above, which the ThreadSanitizer job shares.
+      - name: Shadow test under the validation layer
+        env:
+          MH4N_TEST_DURATIONS: "1"
+        run: |
+          python3 tools/native/vk_layer_run.py --build build/native -R '^gpu_shadow_test$'
+          python3 tools/native/ctest_case_times.py build/native/Testing/Temporary/LastTest.log || true
+          MH4N_RHI_MASK=interlock python3 tools/native/vk_layer_run.py --build build/native -R '^gpu_shadow_test$'
+          python3 tools/native/ctest_case_times.py build/native/Testing/Temporary/LastTest.log || true
       # our own 3DS programs (port/tests): the native runner's output must equal Azahar's, which is
       # committed as port/tests/expected. Needs clang, ld.lld, llvm-objcopy and llvm-readelf
       # (installed above) to build the programs and their code libraries; no game data.

@@ -22,13 +22,28 @@
 // PER-DRAW ORDER (what N2-23, N2-09 to N2-12, N2-16 and N2-20 can rely on), in `Draw`:
 //   1. the renderer is created on first use, on the thread that calls Execute (never in the constructor: under the capture
 //      player's `--queue` the GPU is made on another thread);
-//   2. `FragmentState::Prepare` (key, uniforms, tables) runs for EVERY draw, also for one that is dropped, so the dirty
-//      flags the command processor clears after the draw are not lost;
-//   3. the primitive assembler applies the draw's register side effects, then `NeedsCpuPath(draw, assembler.IsEmpty())`;
+//   2. the primitive assembler applies the draw's register side effects and `EnsureRoom(0)` opens a recording; then
+//      `FragmentState::Prepare` (the key and the uniforms; no table is uploaded here) runs for EVERY draw, also for one that
+//      is dropped, so the dirty flags the command processor clears after the draw are not lost: the table flags are kept
+//      pending in the fragment state until a table step commits them, and a change of the fragment block is kept (as
+//      `block_unwritten_`) until a uniform Write commits it;
+//   3. `NeedsCpuPath(draw, assembler.IsEmpty())`;
 //   4. accelerated: N2-05's loader, N2-06's translation (a program that does not translate takes the CPU path, counted
-//      `translate_failures`); CPU path: the runner, the assembler, the batch;
-//   5. the render targets for the colour and depth buffers (`TargetRegistry` below), the fixed-function state and the
-//      dynamic state, the vertex-stage and fragment uniforms;
+//      `translate_failures`); CPU path: the runner, the assembler, the batch (all on the CPU: nothing is in a ring yet);
+//   5. everything that can submit the recording, BEFORE the draw's first commit to the fragment table rings (LUT/proctex),
+//      the vertex ring (vertices, indices, CPU batch), the vertex-stage uniform ring and the fragment-uniform ring: room in
+//      the vertex ring, the render targets for the colour and depth buffers or the shadow target (`TargetRegistry` below: a
+//      write-back submits), the textures (after the targets: a target's load begins a recording, whose TrimTextures must not
+//      release an image the draw has bound); then the table step (`FragmentState::UploadPendingTables`: the pending tables,
+//      and every table at the first table step of each recording, since a table's offset is valid only in the recording
+//      that committed it, tables.h) and the fragment uniforms, with their full-ring retry (which submits, begins the next
+//      recording and runs the table step again with every table pending before the Write); then the vertices, indices or
+//      CPU batch and the vertex-stage uniforms, the fixed-function state and the dynamic state. A ring's space is attached
+//      to the recording open when it is committed and is handed out again once that recording has completed, so a draw
+//      recorded after a submission that followed its commits would read another draw's bytes. The invariant is checked for
+//      those five rings: a draw whose recording changed after its first commit to them is dropped and counted
+//      `draws_split_by_submit` (also in `native_draws_dropped`; the order makes it 0). `fragment_table_uploads` counts the
+//      draws whose table step opened a session. A target is marked written only once its draw has been recorded;
 //   6. `DrawComposer::Draw` (N2-33) with the `PipelineKey` made from all of it; the default provider builds the pipeline
 //      on a miss, with `PipelineBuilder::Build`.
 //
@@ -46,8 +61,21 @@
 // guest memory. `texture_levels_missing` counts the draws that bind a unit whose max_level register is above 0 (a plain counter,
 // not `stubbed:*`): a minified draw of such a texture samples level 0 and is not the game's picture.
 //
-// WHAT IS NOT HERE: lighting, fog, procedural textures and shadows (the stubs,
-// each counted `stubbed:<feature>`); a shadow-write draw is counted and not drawn; resolution scaling (N2-15).
+// SHADOWS (N2-12): a draw in fragment operation mode Shadow draws in the composer's shadow-write pass (no attachments, no depth
+// target) into a SHADOW TARGET: an RGBA8 image made with `shadow_source`, at the colour buffer's address with the size of 0x11E,
+// always 4 bytes a texel; it is keyed apart from a colour target over the same range (the overlap rule carries the contents
+// through guest memory), loaded and written back as a colour target in PICA format RGBA8. A unit 0 of type Shadow2D binds its
+// texture, decoded from guest memory (any target over it written back first), uploaded into a `shadow_source` image and read
+// through its R32_UINT view; a ShadowCube binds the plain RGBA8 cube of its six faces; a shadow unit that is off, has address 0 or
+// cannot be decoded reads word 0 (a 1x1 shadow source, or the null cube). Guest memory stays the truth: a map is written back and
+// uploaded again for each frame that looks it up (N2-15 may bind the target itself). Counters: `shadow_write_draws`,
+// `shadow_lookups` (draws whose unit 0 bound a decoded shadow map) and `shadow_unavailable` (shadow-mode draws dropped because the
+// shadow target could not be made, also in `native_draws_dropped`). The first shadow draw after the map's colour draw writes that
+// colour target back, which submits the recording: the draw's ring data, its fragment tables included, is committed after that, in
+// the new recording (whose first table step uploads every table), and `draws_split_by_submit` (step 5 of PER-DRAW ORDER) counts a
+// draw whose ring data such a submission would have handed out again.
+//
+// WHAT IS NOT HERE: the features still behind a stub (each counted `stubbed:<feature>`); resolution scaling (N2-15).
 #pragma once
 
 #include <memory>

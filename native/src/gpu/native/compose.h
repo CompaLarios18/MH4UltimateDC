@@ -182,16 +182,23 @@ public:
     void BeginRecording(rhi::Recorder& rec);
 
     // Begins (or continues) a target pass with the caller's load operations: how a pass is cleared. A draw's `target`
-    // continues it with load.
+    // continues it with load. An open pass with no attachments is ended first, with the barriers that follow one (below).
     void BeginTargetPass(rhi::Recorder& rec, const rhi::TargetPassDesc& pass);
     // Ends the pass the composer holds open (before a copy or a blit the caller records itself, which would end it
-    // anyway; call this so the composer does not think it is still open).
+    // anyway; call this so the composer does not think it is still open, and before submitting a recording that drew in the
+    // shadow-write pass). After a pass with no attachments it records two memory barriers (N2-12): fragment to fragment (a
+    // later lookup of the shadow source in a target pass) and fragment to compute (the write-back's readback pass).
     void EndPass(rhi::Recorder& rec);
 
     // The key the draw would use (pass kind and fix-up stage decided), without recording anything. The tests and
     // N2-16 use it.
     PipelineKey KeyOf(const DrawDesc& draw) const;
 
+    // Records one draw. A normal draw continues or begins its target pass. A shadow-write draw settles the pass before its sets
+    // are written (an open target pass ends; an open pass with no attachments ends, with the barriers EndPass records, when the
+    // shadow source or the size changes), then, when no pass is open, records a fragment-to-fragment memory barrier (the stores
+    // and lookups of an earlier pass on the same map come first) and begins the pass with no attachments; draws on the same
+    // shadow source continue that pass (and are ordered by the interlock where the capability is on).
     rhi::Result<DrawResult> Draw(rhi::Recorder& rec, const DrawDesc& draw);
 
     const ComposerCounters& counters() const { return counters_; }

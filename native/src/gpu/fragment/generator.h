@@ -20,7 +20,8 @@
 //   Prologue      the primary colour's rounding; discard everything when the alpha test is Never; the features' Prologue
 //   ScissorDepth  `WriteScissor`, `WriteDepth`; the features' ScissorDepth
 //   Lighting      the features (primary_fragment_color, secondary_fragment_color)
-//   Tev           the combiner variables, the features' Tev, then the six stages
+//   Tev           the combiner variables, the features' Tev, (ubershader only) each texture unit an active stage reads sampled
+//                 once into mh4n_tex0 .. 3, then the six stages
 //   AlphaTest     the alpha test; the features' AlphaTest
 //   FogGas        the features (the fog stub: transparent black and an early return for the Gas mode)
 //   Output        Normal pass: the depth write, byte rounding, `mh4n_minmax_blend`, `mh4n_logic_op` where the profile says
@@ -31,6 +32,8 @@
 // `texture_buffer_lut_lf` / `_rg` / `_rgba`, the members of `fs_data`, `cfg` (the key as `uvec4 cfg[18]`), `tex_color`,
 // `shadow_buffer` (ShadowWrite pass), and in the ShadowWrite pass with the `interlock` bit `beginInvocationInterlock()` and
 // `endInvocationInterlock()`.
+// `mh4n_tex0` to `3` and `mh4n_tev_active_*` are core's, in the ubershader only: a unit's global holds its sample only when an
+// active TEV stage reads it, and only after the features' Tev point, right before the six stages; features do not read them.
 #pragma once
 
 #include <string>
