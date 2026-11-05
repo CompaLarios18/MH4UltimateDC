@@ -4,7 +4,7 @@
 // (each case's time when it ends; `--duration=false` on the command line still wins) and prints `case start: <name>`
 // when a case starts, so that the case running when ctest kills the binary at its TIMEOUT is named in the captured
 // output. tools/native/ctest_case_times.py reads those lines back from ctest's LastTest.log. Without the variable the
-// output is unchanged.
+// output is unchanged, except `--list-reporters`, which also lists the listener (it is always registered).
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>

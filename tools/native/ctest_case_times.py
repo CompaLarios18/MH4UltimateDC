@@ -10,7 +10,8 @@ writes that file again.
 
 Prints `<seconds>  <test>  <case>` for every finished case of at least --min seconds (default 1.0), longest first;
 then `<test>: killed in <case>` for each test whose last started case has no time (ctest killed it at its TIMEOUT, or
-it crashed); a warning for each block ctest cut; and a note when no per-case line was found at all. Exit 0 after
+it died where doctest's crash handler could not report it; on Linux doctest reports a crash itself and prints the
+case's time); a warning for each block ctest cut; and a note when no per-case line was found at all. Exit 0 after
 printing; 2 for a missing file or a bad option.
 """
 from __future__ import annotations
@@ -25,8 +26,12 @@ BLOCK_START = re.compile(r"^\d+/\d+ Testing: (.+)$")
 CASE_END = re.compile(r"^(\d+\.\d{6}) s: (.+)$")
 CASE_START = re.compile(r"^case start: (.+)$")
 TEST_TIME = re.compile(r"^Test time =\s+([0-9.]+) sec")
-# ctest's message when a test's output exceeded its size limit (the wording is from CTest's sources, not seen in a log)
-CUT_OFF = "The rest of the test output was removed"
+# ctest's message when it cut a test's output at its size limit. CTest 4.4.4's ctest.exe holds "[This part of the test
+# output was removed since it exceeds the threshold of N bytes.]"; before 3.24 the message was "The rest of the test
+# output was removed since it exceeds the threshold of N bytes."; this substring matches both. CTest 4.4.4 does not
+# cut LastTest.log at all (passed outputs of up to 69 KB were kept whole at the default 1024-byte limit), so the check
+# is a guard for other CTest versions.
+CUT_OFF = "test output was removed since it exceeds the threshold"
 
 
 @dataclass

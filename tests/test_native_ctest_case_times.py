@@ -5,6 +5,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 TOOL = ROOT / "tools" / "native" / "ctest_case_times.py"
@@ -101,11 +103,14 @@ def test_killed_test_names_the_case_that_was_running(capsys, tmp_path):
     assert out == ["2.000000  gpu_shadow_test  shadow/first", "gpu_shadow_test: killed in shadow/stuck"]
 
 
-def test_block_with_ctest_cut_off_message_warns(capsys, tmp_path):
+@pytest.mark.parametrize("message", [
+    "[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]",  # CTest 3.24 and later
+    "The rest of the test output was removed since it exceeds the threshold of 1024 bytes.",  # before 3.24
+])
+def test_block_with_ctest_cut_off_message_warns(capsys, tmp_path, message):
     cut = block(
         1, 1, "gpu_shader_test",
-        [*case("shader/a", "1.500000"), "case start: shader/b",
-         "...", "The rest of the test output was removed since it exceeds the threshold of 1024 bytes."],
+        [*case("shader/a", "1.500000"), "case start: shader/b", "...", message],
         "  42.00",
     )
     code, out = run(capsys, tmp_path, log(cut))
@@ -117,6 +122,20 @@ def test_block_with_ctest_cut_off_message_warns(capsys, tmp_path):
     # warning names it instead
     assert "shader/b" in warnings[0]
     assert not any("killed" in line for line in out)
+
+
+def test_default_minimum_includes_a_case_of_exactly_one_second(capsys, tmp_path):
+    edge = block(1, 1, "common_test", [*case("edge/one", "1.000000"), *case("edge/under", "0.999999")], "   2.00")
+    code, out = run(capsys, tmp_path, log(edge))
+    assert code == 0
+    assert out == ["1.000000  common_test  edge/one"]
+
+
+def test_killed_test_names_the_last_of_several_unfinished_cases(capsys, tmp_path):
+    stuck = block(1, 1, "gpu_tev_test", ["case start: tev/no_output", "case start: tev/stuck"], "300.04", passed=False)
+    code, out = run(capsys, tmp_path, log(stuck))
+    assert code == 0
+    assert out == ["gpu_tev_test: killed in tev/stuck"]
 
 
 def test_log_without_per_case_lines_says_the_variable_was_not_set(capsys, tmp_path):
@@ -136,7 +155,10 @@ def test_crlf_log_gives_case_names_without_carriage_returns(capsys, tmp_path):
     out = raw.split("\n")
     assert "12.250000  gpu_tev_test  tev/two" in out
     assert "gpu_shadow_test: killed in shadow/stuck" in out
-    tests = cct.parse_log((tmp_path / "LastTest.log").read_text(encoding="utf-8", newline=None))
+    # the raw CRLF text (no universal newlines): parse_log's own splitlines() must drop the \r
+    text = path.read_bytes().decode("utf-8")
+    assert "\r\n" in text
+    tests = cct.parse_log(text)
     assert [t.name for t in tests] == ["gpu_tev_test", "gpu_shadow_test"]
     assert all(not c.endswith("\r") for t in tests for c, _ in t.finished)
     assert tests[0].seconds == 15.80 and tests[1].seconds == 300.05  # the padded `Test time =   <s> sec`
