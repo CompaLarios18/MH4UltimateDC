@@ -22,8 +22,8 @@
 //    is not copied (it is not valid on a float vector): mh4n_logic_op does the operation on the 8-bit values;
 //  - the destination colour (`destFactor` in Azahar) is read only by the draws that need it (a conditional fetch in the
 //    ubershader), and the separate texture and sampler objects replace the combined samplers (design 5.6);
-//  - an operand that the key holds as a field is emitted by one table for both modes (the tables below), so the text of the
-//    specialised shader is Azahar's and the ubershader's `switch` has the same cases;
+//  - an operand that the key holds as a field is emitted by one table for both modes (the tables below), except the texture
+//    sources (next item), so the text of the specialised shader is Azahar's and the ubershader's `switch` has the same cases;
 //  - the texture sources are the one operand whose text differs between the modes: the specialised shader calls
 //    `sampleTexUnitN()` inside the operand, as Azahar's text does; the ubershader's `tev_source` returns `mh4n_texN`, sampled
 //    once in `main` before the stages for the units some active stage reads (N2-43).
@@ -541,8 +541,8 @@ private:
 
     // The ubershader's samples (N2-43): each texture unit that an active stage reads, sampled once into `mh4n_texN` (which
     // `tev_source` returns), at the top level of main, right before the stages. The conditions read only `cfg`, so they are
-    // uniform within a draw and the lookups' derivatives stay defined; the drivers inline every call site of a function, and the
-    // lookups inside `tev_source` were compiled once per operand (36 times).
+    // uniform within a draw and the lookups' derivatives stay defined; the drivers inline every call site of a function
+    // (`inference`), and the lookups inside `tev_source` were compiled once per operand (36 times).
     void WriteUberSamples() {
         for (u32 index = 0; index < 6; ++index) {
             e_.Raw(fmt::format("bool mh4n_tev_active_{} = {};\n", index, e_.Not(PassThrough(index)).glsl));
