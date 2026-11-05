@@ -1468,7 +1468,7 @@ TEST_CASE("stubs/a_draw_that_needs_a_stubbed_feature_is_reported_by_name") {
     Stage p;
     p.color_src[0] = kTexture3;
     proc.texture.tev_stages[0] = p.Raw();
-    CHECK(stubbed(proc) == std::vector<std::string>{"proctex"});  // unit 3 is the procedural slot, not a texture unit
+    CHECK(stubbed(proc).empty());  // unit 3 is the procedural slot, not a texture unit; proctex/ is real since N2-11
 }
 
 // A TEV key with two active stages, and the generator's output for it in both modes and both passes: non-empty GLSL that glslang
