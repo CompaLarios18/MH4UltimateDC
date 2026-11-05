@@ -3,8 +3,9 @@
 // MH4N_TEST_DURATIONS=1 (the Linux CI jobs, N0-42) makes stdout unbuffered, turns on doctest's `duration` option
 // (each case's time when it ends; `--duration=false` on the command line still wins) and prints `case start: <name>`
 // when a case starts, so that the case running when ctest kills the binary at its TIMEOUT is named in the captured
-// output. tools/native/ctest_case_times.py reads those lines back from ctest's LastTest.log. Without the variable the
-// output is unchanged, except `--list-reporters`, which also lists the listener (it is always registered).
+// output. tools/native/ctest_case_times.py reads those lines back from ctest's LastTest.log. The start lines are for
+// the console reporter: with `-r=xml` or `-r=junit` they land inside that reporter's output. Without the variable the
+// output is unchanged, `--list-reporters` included (main registers the listener only with it).
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -22,18 +23,18 @@ bool DurationsOn() {
 }
 
 // Prints `case start: <name>` through doctest's own stream (ContextOptions::cout: its order with doctest's lines, and
-// --out), only while MH4N_TEST_DURATIONS=1. doctest prints a case's preamble and time only when the case ends.
+// --out). main registers it only while MH4N_TEST_DURATIONS=1. doctest prints a case's preamble and time only when the
+// case ends.
 struct CaseStartListener : public doctest::IReporter {
     std::ostream* out;
-    bool on;
 
-    explicit CaseStartListener(const doctest::ContextOptions& options) : out(options.cout), on(DurationsOn()) {}
+    explicit CaseStartListener(const doctest::ContextOptions& options) : out(options.cout) {}
 
     void report_query(const doctest::QueryData&) override {}
     void test_run_start() override {}
     void test_run_end(const doctest::TestRunStats&) override {}
     void test_case_start(const doctest::TestCaseData& data) override {
-        if (on && out != nullptr) {
+        if (out != nullptr) {
             *out << "case start: " << data.m_name << '\n';
         }
     }
@@ -48,8 +49,6 @@ struct CaseStartListener : public doctest::IReporter {
 };
 
 }  // namespace
-
-DOCTEST_REGISTER_LISTENER("mh4n_case_start", 1, CaseStartListener);
 
 int main(int argc, char** argv) {
     const bool durations = DurationsOn();
@@ -69,6 +68,7 @@ int main(int argc, char** argv) {
     if (!durations) {
         return doctest::Context(argc, argv).run();
     }
+    doctest::registerReporter<CaseStartListener>("mh4n_case_start", 1, false);  // false: a listener, not a reporter
     doctest::Context context;
     context.setOption("duration", true);
     context.applyCommandLine(argc, argv);

@@ -104,8 +104,8 @@ def test_killed_test_names_the_case_that_was_running(capsys, tmp_path):
 
 
 @pytest.mark.parametrize("message", [
-    "[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]",  # CTest 3.24 and later
-    "The rest of the test output was removed since it exceeds the threshold of 1024 bytes.",  # before 3.24
+    "[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]",  # CTest 4.4.4's binary
+    "The rest of the test output was removed since it exceeds the threshold of 1024 bytes.",  # older CTest (unverified)
 ])
 def test_block_with_ctest_cut_off_message_warns(capsys, tmp_path, message):
     cut = block(
@@ -144,6 +144,22 @@ def test_log_without_per_case_lines_says_the_variable_was_not_set(capsys, tmp_pa
     code, out = run(capsys, tmp_path, log(plain))
     assert code == 0
     assert len(out) == 1 and "MH4N_TEST_DURATIONS=1" in out[0] and "not set" in out[0]
+
+
+def test_no_note_when_another_test_has_per_case_lines(capsys, tmp_path):
+    # every real log has a binary with its own main, which prints no per-case line
+    own_main = block(2, 2, "app_report_test", ["[doctest] Status: SUCCESS!"], "   0.05")
+    code, out = run(capsys, tmp_path, log(PASSED, own_main))
+    assert code == 0
+    assert out == ["12.250000  gpu_tev_test  tev/two", "3.000000  gpu_tev_test  tev/three"]
+
+
+def test_lines_that_only_look_like_case_lines_are_not_counted(capsys, tmp_path):
+    noisy = block(1, 1, "common_test",
+                  [*case("real/one", "2.000000"), "1.5 s: x", "note 3.000000 s: y", "log: case start: z"], "   2.50")
+    code, out = run(capsys, tmp_path, log(noisy), "--min", "0")
+    assert code == 0
+    assert out == ["2.000000  common_test  real/one"]
 
 
 def test_crlf_log_gives_case_names_without_carriage_returns(capsys, tmp_path):

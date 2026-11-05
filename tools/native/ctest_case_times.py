@@ -27,10 +27,10 @@ CASE_END = re.compile(r"^(\d+\.\d{6}) s: (.+)$")
 CASE_START = re.compile(r"^case start: (.+)$")
 TEST_TIME = re.compile(r"^Test time =\s+([0-9.]+) sec")
 # ctest's message when it cut a test's output at its size limit. CTest 4.4.4's ctest.exe holds "[This part of the test
-# output was removed since it exceeds the threshold of N bytes.]"; before 3.24 the message was "The rest of the test
-# output was removed since it exceeds the threshold of N bytes."; this substring matches both. CTest 4.4.4 does not
-# cut LastTest.log at all (passed outputs of up to 69 KB were kept whole at the default 1024-byte limit), so the check
-# is a guard for other CTest versions.
+# output was removed since it exceeds the threshold of N bytes.]"; older CTest printed "The rest of the test output
+# was removed since it exceeds the threshold of N bytes." (`unverified`: no older binary was read); this substring
+# matches both. CTest 4.4.4 does not cut LastTest.log at all (passed outputs of up to 69 KB were kept whole at the
+# default 1024-byte limit), so the check is a guard for other CTest versions.
 CUT_OFF = "test output was removed since it exceeds the threshold"
 
 
