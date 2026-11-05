@@ -4,9 +4,12 @@
 // ColorDifferenceEntry: the entry layouts and the divisions by 4095 and 255), src/video_core/pica_types.h (Float::FromRaw: how a
 // half is read), src/video_core/rasterizer_accelerated.cpp and src/video_core/pica/dirty_regs.h (the noise, phase, amplitude and bias
 // uniforms and the six registers that dirty them), src/video_core/renderer_vulkan/vk_rasterizer.cpp (SyncAndUploadLUTs: the
-// five tables, their order and sizes) and src/common/vector_math.h (BilinearInterp) at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6
+// five tables, their order and sizes), src/common/vector_math.h (BilinearInterp) and, for the rig's base state, the register positions
+// of src/video_core/pica/regs_rasterizer.h (depth range, near plane, depth map enable), regs_framebuffer.h (the logic op, colour and
+// depth masks, the colour and depth write permissions), regs_lighting.h (the lighting disable) and regs_internal.h (where those
+// register blocks sit), and pica_types.h's float24 layout (F24 below) at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6
 // (GPL-3.0-or-later: vk_rasterizer.cpp says "Licensed under GPLv3 or any later version"; sw_proctex.cpp, regs_texturing.h,
-// pica_core.h, pica_types.h, rasterizer_accelerated.cpp, dirty_regs.h and vector_math.h each say "Licensed under GPLv2 or any later
+// pica_core.h, pica_types.h, rasterizer_accelerated.cpp, dirty_regs.h, vector_math.h, regs_framebuffer.h, regs_rasterizer.h, regs_lighting.h and regs_internal.h each say "Licensed under GPLv2 or any later
 // version"); the shader generator's text (glsl_fs_shader_gen.cpp, "Licensed under GPLv3 or any later version") is the oracle of the
 // mipmap levels, which the software renderer lacks. The rig below (Tri, Vertex, Rig, the register helpers) is adapted from N2-10's
 // fog test in this directory (GPL-3.0-or-later; its header names what it takes from Azahar).
@@ -17,6 +20,9 @@
 //   glsl_fs_shader_gen.cpp)
 // Copyright 2025-2026 Citra Emulator Project / Azahar Emulator Project (dirty_regs.h)
 // Copyright 2015-2025 Citra Emulator Project / Azahar Emulator Project (vector_math.h)
+// Copyright 2017-2025 Citra Emulator Project / Azahar Emulator Project (regs_framebuffer.h, regs_internal.h)
+// Copyright 2017-2026 Citra Emulator Project / Azahar Emulator Project (regs_rasterizer.h)
+// Copyright 2017 Citra Emulator Project (regs_lighting.h)
 //
 // The procedural texture (N2-11), on whatever Vulkan device the machine has (MH4N_VULKAN_DEVICE; a case that needs one skips with a
 // message without it and fails under MH4N_REQUIRE_VULKAN=1).
@@ -1096,27 +1102,77 @@ TEST_CASE("proctex/the_uniforms_follow_the_registers_and_are_written_only_when_o
     CHECK_FALSE(clean.changed);
     CHECK(block.uniforms.proctex_noise_f.x == doctest::Approx(2.0f));
 
-    // each of the six registers (0xA8 to 0xAD) dirties them; one outside does not
-    for (u32 id = kRegProcTex; id <= kRegLutOffset; ++id) {
+    // each of the registers 0xA8 to 0xAC dirties them: before each, the state gets a value that only that register feeds, and only
+    // that register is marked dirty
+    struct One { u32 id; u32 value; };
+    FragmentBlock fresh;
+    std::memset(&fresh, 0, sizeof(fresh));
+    UniformDirty first;
+    first.all = true;
+    FillUniforms(*state, fresh, first, {});
+    for (const One& one : {One{kRegProcTex, 0x0A0 << 20 | (state->regs[kRegProcTex] & 0xFFFFF)},   // bias_low = 0xA0
+                           One{kRegNoiseU, 0x0100 | (state->regs[kRegNoiseU] & 0xFFFF0000)},      // amplitude 256
+                           One{kRegNoiseV, 0x0200 | (state->regs[kRegNoiseV] & 0xFFFF0000)},      // amplitude 512
+                           One{kRegNoiseFrequency, kHalfQuarter | (kHalfEighth << 16)},
+                           One{kRegLut, state->regs[kRegLut] ^ (0x11u << 19)}}) {             // bias_high changed
+        state->ClearDirty();
+        const FragmentUniforms before = fresh.uniforms;
+        state->regs[one.id] = one.value;
+        state->dirty.Set(one.id);
+        UniformDirty dirty_one;
+        FillUniforms(*state, fresh, dirty_one, {});
+        CHECK_MESSAGE(dirty_one.changed, "register " << one.id << " did not dirty the uniforms");
+        CHECK_MESSAGE(std::memcmp(&before, &fresh.uniforms, sizeof(before)) != 0, "register " << one.id << " changed no uniform");
+    }
+    CHECK(fresh.uniforms.proctex_noise_f.x == doctest::Approx(0.25f));
+    CHECK(fresh.uniforms.proctex_noise_f.y == doctest::Approx(0.125f));
+    CHECK(fresh.uniforms.proctex_noise_a.x == doctest::Approx(256.0f / 4095.0f));
+    CHECK(fresh.uniforms.proctex_noise_a.y == doctest::Approx(512.0f / 4095.0f));
+    {
+        // the uniforms the five registers fed, each checked on its own
+        Proc q = p;
+        q.bias_raw = 0;
+        auto s2 = BaseState();
+        Apply(*s2, q);
+        FragmentBlock b2;
+        std::memset(&b2, 0, sizeof(b2));
+        UniformDirty a2;
+        a2.all = true;
+        FillUniforms(*s2, b2, a2, {});
+        CHECK(b2.uniforms.proctex_bias == 0.0f);
+        s2->ClearDirty();
+        s2->regs[kRegProcTex] |= 0x3Cu << 20;  // bias_low only
+        s2->dirty.Set(kRegProcTex);
+        UniformDirty d2;
+        FillUniforms(*s2, b2, d2, {});
+        CHECK(d2.changed);
+        CHECK(b2.uniforms.proctex_bias == doctest::Approx(HalfToFloat(0x003C)));
+        s2->ClearDirty();
+        s2->regs[kRegLut] |= 0x3Cu << 19;  // bias_high only
+        s2->dirty.Set(kRegLut);
+        UniformDirty d3;
+        FillUniforms(*s2, b2, d3, {});
+        CHECK(d3.changed);
+        CHECK(b2.uniforms.proctex_bias == doctest::Approx(HalfToFloat(0x3C3C)));
+        // 0xAD (the LUT offsets) feeds no uniform: with only it dirty the check runs and nothing changes (CheckProctex includes it)
+        s2->ClearDirty();
+        s2->regs[kRegLutOffset] = 0x04030201;
+        s2->dirty.Set(kRegLutOffset);
+        const FragmentUniforms before = b2.uniforms;
+        UniformDirty d4;
+        FillUniforms(*s2, b2, d4, {});
+        CHECK_FALSE(d4.changed);
+        CHECK(std::memcmp(&before, &b2.uniforms, sizeof(before)) == 0);
+    }
+    for (u32 id : {kRegProcTex - 1, kRegLutOffset + 1}) {  // 0xA7 and 0xAE are outside the six
         state->ClearDirty();
         state->dirty.Set(id);
-        UniformDirty one;
-        FillUniforms(*state, block, one, {});
-        // the first one that runs sees the new frequency and writes it; the later ones write the same value and mark nothing
-        if (id == kRegProcTex) {
-            CHECK(one.changed);
-            CHECK(block.uniforms.proctex_noise_f.x == doctest::Approx(1.0f));
-        } else {
-            CHECK_FALSE(one.changed);
-        }
+        state->regs[kRegNoiseFrequency] = kHalfTwo | (kHalfTwo << 16);
+        UniformDirty outside;
+        FillUniforms(*state, block, outside, {});
+        CHECK_FALSE(outside.changed);
     }
-    state->ClearDirty();
-    state->dirty.Set(kRegLutOffset + 1);
-    state->regs[kRegNoiseFrequency] = kHalfTwo | (kHalfTwo << 16);
-    UniformDirty outside;
-    FillUniforms(*state, block, outside, {});
-    CHECK_FALSE(outside.changed);
-    CHECK(block.uniforms.proctex_noise_f.x == doctest::Approx(1.0f));
+    CHECK(block.uniforms.proctex_noise_f.x == doctest::Approx(2.0f));
 }
 
 TEST_CASE("proctex/the_ubershader_calls_each_heavy_helper_as_often_as_azahars_text_does_for_one_configuration") {

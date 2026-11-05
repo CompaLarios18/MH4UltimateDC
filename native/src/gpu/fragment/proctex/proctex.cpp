@@ -15,6 +15,7 @@
 // Copyright 2025-2026 Citra Emulator Project / Azahar Emulator Project (dirty_regs.h)
 // Copyright 2017-2024 Citra Emulator Project / Azahar Emulator Project (regs_texturing.h)
 // Copyright 2015-2026 Citra Emulator Project / Azahar Emulator Project (pica_types.h)
+// Copyright 2017 Citra Emulator Project (sw_proctex.cpp)
 //
 // The `proctex/` feature (N2-11): the procedural texture unit (noise, the colour-map and alpha-map lookups, the shift and clamp
 // modes, the colour table and its LOD levels), reached through `sampleTexUnit3()` of sampling/ (the procedural slot, Texture3).
@@ -314,9 +315,6 @@ void EmitProcTex(Emitter& e) {
             e.Raw("return vec4(final_color.xyz, final_alpha);\n");
         },
         [&] { e.Raw("return final_color;\n"); });
-    if (!e.specialised()) {
-        e.Raw("return final_color;\n");
-    }
     e.Raw("}\n");
 }
 
