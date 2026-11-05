@@ -21,7 +21,7 @@
 // The procedural texture (N2-11), on whatever Vulkan device the machine has (MH4N_VULKAN_DEVICE; a case that needs one skips with a
 // message without it and fails under MH4N_REQUIRE_VULKAN=1).
 //
-// WHERE THE EXPECTED PIXELS COME FROM. `SwProcTex` below is a CPU port of the SOFTWARE renderer's ProcTex (float arithmetic, u8
+// WHERE THE EXPECTED PIXELS COME FROM. `ProcTexModel` below (with its helpers) is a CPU port of the SOFTWARE renderer's ProcTex (float arithmetic, u8
 // colours truncated, the colour table looked up with the offset added before the interpolation). Each draw feeds the texture
 // coordinates the rasterizer interpolates (a triangle over the whole 8x8 target, so an affine map of the pixel centre) through it, then
 // through the TEV layout of the draw. Choices, where the software renderer and Azahar's GLSL (the shader's text, which the game was
@@ -41,9 +41,9 @@
 // differs by an ulp could flip one at a discontinuity). Every draw is rendered in the specialised mode and
 // in the ubershader, each of them must match the oracle, and they must equal each other (the whole image).
 //
-// The ubershader runs the procedural texture once per fragment (N2-43); `generator/..` cases below read Texture3 at a TEV stage other
-// than 0 and through alpha operands as well, so that a sample that the ubershader lost would show. A CPU case counts the call sites
-// of the heavy helpers in the ubershader's text.
+// The ubershader runs the procedural texture once per fragment (N2-43): the draws below read Texture3 at a TEV stage other than 0 and
+// through alpha operands as well (`Tev`), so that a sample that the ubershader lost would show. A CPU case counts the call sites of the
+// heavy helpers in the ubershader's text; another checks that the ubershader rig really ran the fallback.
 #include <doctest/doctest.h>
 
 #include <algorithm>
