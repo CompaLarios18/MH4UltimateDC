@@ -274,7 +274,7 @@ Risk under option 1, stated plainly: the emitter is the one new idea in this des
 | Feature | In the ubershader | How the state is read | Cost driver |
 |---|---|---|---|
 | TEV (six stages) | all six, every source, modifier, operation and scale | `cfg.tev[i]` raw words; per-stage `switch` | the dynamic switches; a stage whose configuration is the identity could be skipped by a per-stage "active" bit computed at key time (`inference`) |
-| Sampling | three units and the procedural slot; 2D, cube, projection, shadow; wrap modes; border emulation; LOD | `cfg.texture`, `tex_lod_bias`, `tex_border_color` | a texture fetch per active unit plus wrap arithmetic |
+| Sampling | three units and the procedural slot; 2D, cube, projection, shadow; wrap modes; border emulation; LOD | `cfg.texture`, `tex_lod_bias`, `tex_border_color` | one sample per unit a TEV stage reads, once per fragment |
 | Lighting | up to 8 lights, the LUTs D0, D1, SP, FR, RR, RG, RB and DA, bump, clamping, the shadow term | `cfg.lighting`, `light_src[8]`, `lighting_lut_offset`, the `lut_lf` texel buffer | a dynamic loop over `src_num` lights, two texel fetches per LUT |
 | Fog | the fog LUT; the gas hook | `cfg.texture.fog_mode`, `fog_lut_offset`, `fog_color` | one texel fetch |
 | Procedural textures | noise, clamps, shifts, the colour and alpha maps and LUTs | `cfg.proctex`, `proctex_*` offsets, `lut_rg` and `lut_rgba` buffers | the heaviest single block; on in 30.58 to 98.30 percent of the draws (`census`) |
@@ -282,6 +282,8 @@ Risk under option 1, stated plainly: the emitter is the one new idea in this des
 | Output | alpha test, depth write, byte rounding, min/max emulation, logic-op emulation | `cfg.framebuffer` | a branch each; the destination copy is a draw-time decision, not a shader one |
 
 All branches are on draw-uniform values (the block is the same for every fragment of a draw), so no divergence is introduced (`inference`: on the RX 6700 XT and the M2 uniform branches are scalar or cheap; not measured). The block is the `FragmentKey` struct itself, appended to the fragment uniforms in the same ring allocation ([5.10](#510-uniforms)) and written with every fragment-uniform write (the 280 bytes are always written, rather than decided per draw), so a draw makes one uniform write and one binding update.
+
+*(2026-11-05, N2-43)* In the ubershader each texture unit is sampled once, before the stages, into a global that `tev_source` returns (`mh4n_tex0` to `3`, for the units some active stage reads), because the drivers inline each call site (`inference`) and the per-operand form compiled every lookup 36 times (three colour and three alpha operands in each of the six stages). A feature's own calls to `sampleTexUnitN()` or `ProcTex()` follow the same rule: once, at the top level of `main`.
 
 #### 4.4.3 Cost per pixel at 3440×1440
 
