@@ -6,11 +6,12 @@
 // stage, output-merger, depth-range and vertex-output registers the base state writes), src/video_core/pica/pica_core.h
 // (Lighting::LutEntry: the bit fields of a table entry), src/video_core/pica_types.h (the 16-bit, 20-bit and 24-bit float layouts
 // the helpers below encode), src/video_core/rasterizer_accelerated.cpp (the light uniforms: a colour over 255, the spot vector over
-// 2047), src/common/quaternion.h (QuaternionRotate and the quaternion's Normalized), src/common/vector_math.h (the Vec3 operations the
+// 2047) and src/video_core/renderer_vulkan/vk_rasterizer.cpp (the lighting tables' {value, difference} pairs in lut_lf: 256 per table,
+// offsets in two-float units, value over 4095 and difference over 2047), src/common/quaternion.h (QuaternionRotate and the quaternion's Normalized), src/common/vector_math.h (the Vec3 operations the
 // oracle restates), src/video_core/shader/generator/glsl_fs_shader_gen.cpp and glsl_shader_gen.cpp (the text of the sample calls and
 // of the fixed geometry shader that some cases look for) and externals/nihstro/include/nihstro/shader_bytecode.h at
 // 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (the first group is GPL-2.0-or-later: each says "Licensed under GPLv2 or any later
-// version", except glsl_fs_shader_gen.cpp, "Licensed under GPLv3 or any later version"; shader_bytecode.h belongs to the submodule
+// version", except glsl_fs_shader_gen.cpp and vk_rasterizer.cpp, "Licensed under GPLv3 or any later version"; shader_bytecode.h belongs to the submodule
 // externals/nihstro that Azahar pins at f4d8659decbfe5d234f04134b5002b82dc515a44 and is NOT GPL: its licence is the BSD 3-clause
 // licence of externals/nihstro/license.txt, reproduced below because it asks for that: the instruction encoder below places the
 // fields where shader_bytecode.h puts them). So this file is GPL-3.0-or-later.
@@ -18,14 +19,13 @@
 // Copyright 2014-2024 Citra Emulator Project / Azahar Emulator Project (sw_clipper.cpp)
 // Copyright 2015-2026 Citra Emulator Project / Azahar Emulator Project (sw_rasterizer.cpp, pica_types.h)
 // Copyright 2016 Citra Emulator Project (quaternion.h)
-// Copyright 2015-2025 Citra Emulator Project / Azahar Emulator Project (vector_math.h; it carries the same "Copyright 2014 Tony
-//   Wasserka" BSD-3-Clause notice as shader_bytecode.h, reproduced below)
+// Copyright 2015-2025 Citra Emulator Project / Azahar Emulator Project (vector_math.h)
 // Copyright 2017-2024 Citra Emulator Project / Azahar Emulator Project (regs_texturing.h)
 // Copyright 2017-2025 Citra Emulator Project / Azahar Emulator Project (regs_framebuffer.h, regs_internal.h)
 // Copyright 2017-2026 Citra Emulator Project / Azahar Emulator Project (regs_rasterizer.h)
 // Copyright 2023-2026 Citra Emulator Project / Azahar Emulator Project (pica_core.h, rasterizer_accelerated.cpp,
-//   glsl_fs_shader_gen.cpp, glsl_shader_gen.cpp)
-// Copyright 2014 Tony Wasserka (shader_bytecode.h)
+//   glsl_fs_shader_gen.cpp, glsl_shader_gen.cpp, vk_rasterizer.cpp)
+// Copyright 2014 Tony Wasserka (shader_bytecode.h, vector_math.h)
 //
 //   Copyright 2014 Tony Wasserka
 //   All rights reserved.
@@ -684,6 +684,7 @@ enum class Path { Batch, Translated };
 struct DrawSpec {
     std::shared_ptr<pica::PicaState> state;
     Tri tri;
+    bool flip_viewport = false;  // VertexUniformData::flip_viewport (the translated path)
 };
 
 struct Rig {
@@ -816,7 +817,7 @@ struct Rig {
                 REQUIRE_MESSAGE(translated.ok(), translated.error);
                 builder->AddVertexStage(config.Hash(), translated.shader);
                 const shader::PicaUniformData pica_data = shader::MakePicaUniformData(spec.state->vs);
-                const shader::VertexUniformData vs_data = shader::MakeVertexUniformData(*spec.state, false);
+                const shader::VertexUniformData vs_data = shader::MakeVertexUniformData(*spec.state, spec.flip_viewport);
                 std::memcpy(vs->data.data(), &pica_data, sizeof(pica_data));
                 std::memcpy(vs->data.data() + 1792, &vs_data, sizeof(vs_data));
                 d.vertex.kind = native::VertexStageKind::Translated;
@@ -984,7 +985,7 @@ LitCase Full(u32 config) {
     c.d0 = Lut(kInNH, true, 0);
     c.d1 = Lut(kInVH, true, 1);
     c.sp = Lut(kInSP, true, 0);
-    c.fr = Lut(kInNV, false, 0);
+    c.fr = Lut(kInLN, false, 0);  // light-dependent: Fresnel on the last light only differs from Fresnel on the first
     c.rr = Lut(kInLN, true, 0);
     c.rg = Lut(kInCP, true, 7);
     c.rb = Lut(kInNH, false, 6);
@@ -1040,6 +1041,17 @@ std::vector<LitCase> FormulaCases() {
         }
         c.dist_enabled = 0xFF;
         c.spot_enabled = 0x55;
+        out.push_back(c);
+    }
+    {
+        // |half|^2 is about 0.01 and dot_product is 1: dot_product / |half|^2 is about 100 before the min(..., 1.0), so both
+        // specular terms are the plain colours; without the min they would saturate.
+        LitCase c = Basic();
+        c.label = "a geometric factor above 1 before the min (a view nearly opposite the light)";
+        c.quat = {0, 0, 0, 1};
+        c.view = {0.1f, 0.0f, -1.0f};
+        c.lights[0] = Directional({0.0f, 0.0f, 1.0f}, Color10(200, 150, 100), Color10(10, 20, 30), Color10(100, 60, 30), Color10(40, 80, 120));
+        c.lights[0].geo0 = c.lights[0].geo1 = true;
         out.push_back(c);
     }
     {
@@ -1515,6 +1527,33 @@ TEST_CASE("lighting/the_tables_are_uploaded_by_need_whatever_the_dirty_flags_say
     CHECK(second == first + 256);  // 256 entries of two floats, in elements of the R32G32 view
     CHECK(block.uniforms.fog_lut_offset == 0);
 
+    // The bytes of table 3 and table 16 as the ring holds them (vk_rasterizer.cpp's SyncAndUploadLUTsLF: a {value, difference}
+    // pair of floats per entry, value over 4095, difference over 2047, negative when bit 23 is set), read back exactly.
+    {
+        const rhi::Buffer& buffer = (*rings)->Buffer(TableRing::Lf);
+        std::vector<u8> bytes(buffer.Size());
+        if (!buffer.Mapped().empty()) {
+            buffer.Invalidate(0, buffer.Size());
+            std::memcpy(bytes.data(), buffer.Mapped().data(), bytes.size());
+        } else {
+            auto read = backend->ReadBuffer(buffer, 0, bytes);
+            REQUIRE_MESSAGE(read.ok(), read.error());
+        }
+        for (u32 table : {3u, 16u}) {
+            const u64 base = static_cast<u64>(offset(block, table)) * 8;
+            bool exact = true;
+            for (u32 i = 0; i < 256; ++i) {
+                const u32 raw = state->lighting.luts[table][i];
+                const float diff = static_cast<float>((raw >> 12) & 0x7FF) / 2047.0f;
+                const float want[2] = {static_cast<float>(raw & 0xFFF) / 4095.0f, ((raw >> 23) & 1) != 0 ? -diff : diff};
+                float got[2];
+                std::memcpy(got, bytes.data() + base + i * 8, 8);
+                exact = exact && std::memcmp(got, want, 8) == 0;
+            }
+            CHECK_MESSAGE(exact, "table " << table << ": the uploaded pairs differ from value / 4095 and difference / 2047");
+        }
+    }
+
     // The same request again (no flag, no state of its own): written again, and the offset can only have moved forward.
     dirty = {};
     summary = upload(need, block, dirty);
@@ -1545,12 +1584,22 @@ TEST_CASE("lighting/lit_draws_match_the_software_renderers_formulas_in_both_mode
     auto backend = test::RequireBackend();
     if (!backend) return;
     Rig spec_rig(backend, false), uber_rig(backend, true);
+    // The same translated-path draws on a device with geometry shaders masked off: no fix-up stage, the same pixels (none of these
+    // draws needs the flip).
+    rhi::BackendOptions masked_options;
+    masked_options.mask = rhi::CapabilityMask{}.With(rhi::Cap::GeometryShader);
+    auto masked = test::RequireBackend(masked_options);
+    if (!masked) return;
+    REQUIRE_FALSE(masked->Caps().geometry_shader);
+    Rig masked_spec(masked, false), masked_uber(masked, true);
     const std::vector<LitCase> cases = FormulaCases();
     u32 index = 0;
     for (const LitCase& c : cases) {
         INFO(c.label);
         spec_rig.BindUnitColours(c.units);
         uber_rig.BindUnitColours(c.units);
+        masked_spec.BindUnitColours(c.units);
+        masked_uber.BindUnitColours(c.units);
         for (Path path : {Path::Batch, Path::Translated}) {
             // The translated path through the geometry stage on the full device; spec on the batch path and uber on both keeps the
             // number of pipelines down.
@@ -1569,6 +1618,14 @@ TEST_CASE("lighting/lit_draws_match_the_software_renderers_formulas_in_both_mode
                 CHECK_MESSAGE(AllNear(uber, want, kTolerance, &why), c.label << " (uber, source " << source << ", path " << static_cast<int>(path) << "): " << why);
                 CHECK_MESSAGE(AllNear(spec, want, kTolerance, &why), c.label << " (specialised, source " << source << ", path " << static_cast<int>(path) << "): " << why);
                 CHECK_MESSAGE(SameWithin(spec, uber, 1), c.label << ": the specialised shader and the ubershader differ");
+                if (path == Path::Translated) {
+                    for (Rig* rig : {&masked_spec, &masked_uber}) {
+                        const std::vector<u8> pixels = rig->Render({draw}, path);
+                        CHECK_MESSAGE(AllNear(pixels, want, kTolerance, &why), c.label << " (no geometry stage, source " << source << "): " << why);
+                        CHECK_MESSAGE(SameWithin(pixels, uber, 1), c.label << ": the draws with and without the geometry stage differ");
+                        CHECK_FALSE(rig->last.fixup);
+                    }
+                }
                 CHECK_MESSAGE(uber_rig.last.fallback, c.label);
                 CHECK_MESSAGE(!spec_rig.last.fallback, c.label);
                 if (path == Path::Translated && c.lit && backend->Caps().geometry_shader) {
@@ -1690,10 +1747,12 @@ TEST_CASE("lighting/the_quaternion_fixup_is_the_fixed_geometry_shader_and_withou
 
     const LitCase c = FlipCase();
     // Vertex 0 the identity; vertex 1 the opposite of a 20 degree rotation about x (the same rotation with the sign of the whole
-    // quaternion flipped); vertex 2 the identity. The flip makes the interpolation a smooth turn; without it the quaternion passes
-    // through nearly zero in the middle and the normal turns over.
+    // quaternion flipped); vertex 2 the opposite of a 10 degree rotation about y (so that both `EmitVtx(vtx1, ...)` and
+    // `EmitVtx(vtx2, ...)` flip). The flip makes the interpolation a smooth turn; without it the quaternion passes through nearly
+    // zero and the normal turns over.
     const float s = std::sin(0.17453292519943295f / 2.0f), k = std::cos(0.17453292519943295f / 2.0f);
-    const std::array<std::array<float, 4>, 3> quats = {{{0, 0, 0, 1}, {-s, 0, 0, -k}, {0, 0, 0, 1}}};
+    const float s2 = std::sin(0.08726646259971647f / 2.0f), k2 = std::cos(0.08726646259971647f / 2.0f);
+    const std::array<std::array<float, 4>, 3> quats = {{{0, 0, 0, 1}, {-s, 0, 0, -k}, {0, -s2, 0, -k2}}};
     DrawSpec draw;
     {
         std::shared_ptr<pica::PicaState> state = BaseState(1);
@@ -1761,4 +1820,105 @@ TEST_CASE("lighting/the_quaternion_fixup_is_the_fixed_geometry_shader_and_withou
     const std::vector<u8> calm_full = full_uber.Render({calm}, Path::Translated);
     const std::vector<u8> calm_masked = masked_uber.Render({calm}, Path::Translated);
     CHECK(SameWithin(calm_full, calm_masked, 1));
+}
+
+// ---- the viewport flip and the clip plane of the vertex stage, kept by the geometry stage -----------------------------------
+
+namespace {
+
+std::vector<u8> MirroredRows(const std::vector<u8>& pixels) {
+    std::vector<u8> out(pixels.size());
+    for (u32 y = 0; y < kSize; ++y) {
+        std::memcpy(out.data() + (kSize - 1 - y) * kSize * 4, pixels.data() + y * kSize * 4, kSize * 4);
+    }
+    return out;
+}
+
+}  // namespace
+
+TEST_CASE("lighting/the_geometry_stage_keeps_the_viewport_flip_and_the_clip_plane_of_the_vertex_stage") {
+    auto full = test::RequireBackend();
+    if (!full) return;
+    rhi::BackendOptions masked_options;
+    masked_options.mask = rhi::CapabilityMask{}.With(rhi::Cap::GeometryShader);
+    auto masked = test::RequireBackend(masked_options);
+    if (!masked) return;
+    REQUIRE_FALSE(masked->Caps().geometry_shader);
+
+    // A positional light and a different view vector at each vertex, so that the image varies over the target and a flip shows.
+    LitCase c = Basic();
+    c.label = "viewport flip and clip plane";
+    c.lights[0].directional = false;
+    auto make = [&](bool flip, bool clip) {
+        DrawSpec draw;
+        std::shared_ptr<pica::PicaState> state = BaseState(1);
+        SetVertexProgram(*state);
+        ApplyCase(c, *state);
+        if (clip) {
+            // clip plane 1: dot(clip_coef, position) >= 0 is kept; (1, 0, 0, 0) keeps x >= 0, the right half of the target
+            state->regs[shader::reg::kClipEnable] = 1;
+            state->regs[shader::reg::kClipCoef + 0] = F24(1.0f);
+        }
+        draw.state = state;
+        draw.tri = FullTriangle({c.quat, c.quat, c.quat}, c.view);
+        const std::array<std::array<float, 3>, 3> views = {{{0.3f, -0.2f, 0.9f}, {-0.5f, 0.4f, 0.8f}, {0.1f, 0.7f, 0.6f}}};
+        for (u32 i = 0; i < 3; ++i) {
+            for (u32 k = 0; k < 3; ++k) draw.tri.v[i].view[k] = views[i][k];
+        }
+        draw.flip_viewport = flip;
+        return draw;
+    };
+
+    Rig full_spec(full, false), full_uber(full, true), masked_spec(masked, false), masked_uber(masked, true);
+    for (Rig* rig : {&full_spec, &full_uber, &masked_spec, &masked_uber}) rig->BindUnitColours(c.units);
+    const bool fixup_available = full->Caps().geometry_shader;
+
+    auto render = [&](Rig& rig, const DrawSpec& draw) {
+        std::vector<u8> pixels = rig.Render({draw}, Path::Translated);
+        if (&rig == &full_spec || &rig == &full_uber) {
+            CHECK(rig.last.fixup == fixup_available);
+        } else {
+            CHECK_FALSE(rig.last.fixup);
+        }
+        return pixels;
+    };
+
+    // The viewport flip: the vertex stage negates y (flip_viewport); the draw is the vertical mirror of the unflipped one, with and
+    // without the geometry stage.
+    const DrawSpec plain = make(false, false), flipped = make(true, false);
+    const std::vector<u8> reference = render(masked_uber, plain);
+    const std::vector<u8> reference_flipped = render(masked_uber, flipped);
+    CHECK_MESSAGE(MaxDifference(reference, reference_flipped) > 8, "the fixture: the flip changes the image");
+    CHECK(SameWithin(MirroredRows(reference), reference_flipped, 1));
+    for (Rig* rig : {&full_spec, &full_uber, &masked_spec}) {
+        CHECK(SameWithin(render(*rig, plain), reference, 1));
+        const std::vector<u8> pixels = render(*rig, flipped);
+        CHECK_MESSAGE(SameWithin(pixels, reference_flipped, 1), "the flipped draw differs with" << (rig->last.fixup ? "" : "out") << " the geometry stage");
+        CHECK(SameWithin(pixels, MirroredRows(reference), 1));
+    }
+
+    // The clip plane: x >= 0 is kept. The left half of the target stays clear, the right half is lit; with and without the stage.
+    const DrawSpec clipped = make(false, true);
+    for (Rig* rig : {&full_spec, &full_uber, &masked_spec, &masked_uber}) {
+        const std::vector<u8> pixels = render(*rig, clipped);
+        bool cut = true;
+        for (u32 y = 0; y < kSize; ++y) {
+            for (u32 x = 0; x < kSize; ++x) {
+                const std::array<int, 4> p = Pixel(pixels, x, y);
+                const bool clear = p[0] == 0 && p[1] == 0 && p[2] == 0 && p[3] == 0;
+                cut = cut && (x < kSize / 2 ? clear : (!clear && p[3] == 255));
+            }
+        }
+        CHECK_MESSAGE(cut, "the clip plane (1, 0, 0, 0) should keep exactly the right half" << (rig->last.fixup ? " (with the geometry stage)" : ""));
+        // the lit half is the unclipped draw's right half
+        const std::vector<u8> whole = render(*rig, plain);
+        bool same_right = true;
+        for (u32 y = 0; y < kSize; ++y) {
+            for (u32 x = kSize / 2; x < kSize; ++x) {
+                const std::array<int, 4> a = Pixel(pixels, x, y), b = Pixel(whole, x, y);
+                for (int k = 0; k < 4; ++k) same_right = same_right && std::abs(a[k] - b[k]) <= 1;
+            }
+        }
+        CHECK(same_right);
+    }
 }

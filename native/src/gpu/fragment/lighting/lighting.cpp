@@ -49,6 +49,11 @@
 //  - `user.use_custom_normal` (the HD pack's normal texture, `tex_normal`) is not implemented: the user word is the HD pack's (N2-17).
 //  - The quaternion route is Azahar's non-barycentric one (`normquat` as the interpolated varying); the barycentric route
 //    (`use_fragment_shader_barycentric`) is not offered by the vendored backend (design 5.5).
+//  - THE FIXED GEOMETRY SHADER follows N2-06's vertex stage where Azahar's differs: the colour is `abs` then saturated with
+//    `mix(1.0, c, c < 1.0)` (a NaN gives 1), not `min(abs(c), 1)`; both clip distances are always written (Azahar's `use_clip_planes`
+//    flag is not in `VertexStageOutputs`; NativeGpu always asks for clip planes) as `out_clip` in the vertex stage's form;
+//    `enable_clip1` and `flip_viewport` are `uint` in `vs_data` (N2-06's block), not `bool`; an output map of no attribute declares
+//    `attributes[1]` (Azahar's `vec4 attributes[0]` is not valid GLSL) and a `semantic_map` shorter than 24 entries reads 1.0 past its end.
 //  - UNIFORMS. `light_src[i].spot_direction` is the register's spot vector over 2047, not negated (rasterizer_accelerated.cpp at the
 //    pinned commit; uniforms.h's comment says "negated", which is the older text; sw_lighting.cpp's `Dot(light_vector, spot_dir)` agrees
 //    with the unnegated vector).
