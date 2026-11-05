@@ -50,6 +50,11 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y clang lld llvm cmake ninja-build pkg-config \
             libvulkan-dev mesa-vulkan-drivers glslang-tools spirv-tools
+      # the runner the test times below come from (N0-42); never fails
+      - name: Runner CPU and Mesa
+        run: |
+          lscpu | grep -E '^(Model name|CPU\(s\)):' || true
+          dpkg-query -W -f='mesa-vulkan-drivers ${Version}\n' mesa-vulkan-drivers || true
       # building the ARM test programs uses tools/difftest.py
       - run: pip install -r requirements.txt
       - name: SDL3 cache restore
@@ -104,7 +109,14 @@ jobs:
         env:
           MH4N_REQUIRE_VULKAN: "1"      # a test that needs a Vulkan device fails instead of skipping
           MH4N_REQUIRE_TEST_DATA: "1"   # a test that needs the built ARM programs fails instead of skipping
+          MH4N_TEST_DURATIONS: "1"      # each doctest case prints its start and its time, unbuffered (N0-42)
         run: ctest --test-dir build/native-app --no-tests=error --output-on-failure
+      # every test's per-case times from ctest's LastTest.log (--output-on-failure prints only the failed tests'
+      # output; app_report_test has its own main and prints none)
+      - name: Per-case test times
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        run: python3 tools/native/ctest_case_times.py build/native-app/Testing/Temporary/LastTest.log
       # the device the tests above ran on must be lavapipe
       - name: Vulkan device is lavapipe
         run: |
