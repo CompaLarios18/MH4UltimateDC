@@ -23,7 +23,10 @@
 //  - the destination colour (`destFactor` in Azahar) is read only by the draws that need it (a conditional fetch in the
 //    ubershader), and the separate texture and sampler objects replace the combined samplers (design 5.6);
 //  - an operand that the key holds as a field is emitted by one table for both modes (the tables below), so the text of the
-//    specialised shader is Azahar's and the ubershader's `switch` has the same cases.
+//    specialised shader is Azahar's and the ubershader's `switch` has the same cases;
+//  - the texture sources are the one operand whose text differs between the modes: the specialised shader calls
+//    `sampleTexUnitN()` inside the operand, as Azahar's text does; the ubershader's `tev_source` returns `mh4n_texN`, sampled
+//    once in `main` before the stages for the units some active stage reads (N2-43).
 #include "gpu/fragment/generator.h"
 
 #include <array>
@@ -58,6 +61,22 @@ constexpr Entry kSources[] = {
     {0xF, "combiner_output"},           // Previous
 };
 constexpr const char* kSourceDefault = "vec4(0.0)";
+
+// The ubershader's `tev_source` (N2-43): kSources with the texture sources reading the globals `mh4n_tex0` .. `3`, which `main`
+// samples once before the stages, so that no texture lookup sits behind the 36 operand calls. Every other entry and the default
+// are kSources'; the two tables change together.
+constexpr Entry kUberSources[] = {
+    {0x0, "rounded_primary_color"},     // PrimaryColor
+    {0x1, "primary_fragment_color"},    // PrimaryFragmentColor
+    {0x2, "secondary_fragment_color"},  // SecondaryFragmentColor
+    {0x3, "mh4n_tex0"},                 // Texture0
+    {0x4, "mh4n_tex1"},                 // Texture1
+    {0x5, "mh4n_tex2"},                 // Texture2
+    {0x6, "mh4n_tex3"},                 // Texture3
+    {0xD, "combiner_buffer"},           // PreviousBuffer
+    {0xE, "const_color[{1}]"},          // Constant
+    {0xF, "combiner_output"},           // Previous
+};
 
 // AppendColorModifier (TevStageConfig::ColorModifier). The default is "vec3(0.0)".
 constexpr Entry kColorModifiers[] = {
@@ -368,10 +387,17 @@ private:
         }
     }
 
-    // The ubershader's helpers: the same tables as the specialised mode, as functions over the operand's field.
+    // The ubershader's helpers: the same tables as the specialised mode, except the texture sources (kUberSources), as functions
+    // over the operand's field. The globals that `tev_source` returns for the texture sources come first (a function sees
+    // globals, not main's locals).
     void DefineUberPrelude() {
         std::string& out = e_.text();
-        DefineSwitchFunction(out, "vec4 tev_source(uint source, uint tev_index)", "source", kSources, kSourceDefault, "", "tev_index");
+        out += "vec4 mh4n_tex0 = vec4(0.0);\n"
+               "vec4 mh4n_tex1 = vec4(0.0);\n"
+               "vec4 mh4n_tex2 = vec4(0.0);\n"
+               "vec4 mh4n_tex3 = vec4(0.0);\n";
+        DefineSwitchFunction(out, "vec4 tev_source(uint source, uint tev_index)", "source", kUberSources, kSourceDefault, "",
+                             "tev_index");
         DefineSwitchFunction(out, "vec3 tev_color_modifier(uint modifier, vec4 s)", "modifier", kColorModifiers, kColorModifierDefault,
                              "s", "0");
         DefineSwitchFunction(out, "float tev_alpha_modifier(uint modifier, vec4 s)", "modifier", kAlphaModifiers, kAlphaModifierDefault,
@@ -422,6 +448,10 @@ private:
                "float alpha_results_3 = 0.0;\n");
         Features(Point::Tev);
 
+        if (!e_.specialised()) {
+            WriteUberSamples();
+        }
+
         // Write shader source to emulate PICA TEV stages.
         for (u32 index = 0; index < 6; ++index) {
             WriteTevStage(index);
@@ -469,9 +499,62 @@ private:
 
     std::string SourceText(const Value& source, u32 index) const {
         if (source.known) {
-            return Subst(kSources, kSourceDefault, source.literal, "", index);
+            // (never known in the ubershader today, but there too a texture source names the global, not the lookup)
+            if (e_.specialised()) {
+                return Subst(kSources, kSourceDefault, source.literal, "", index);
+            }
+            return Subst(kUberSources, kSourceDefault, source.literal, "", index);
         }
         return fmt::format("tev_source({}, {}u)", source.glsl, index);
+    }
+
+    // IsPassThroughTevStage on stage `index`'s fields.
+    Cond PassThrough(u32 index) const {
+        const size_t word = kw::kTexTevStages + index * kw::kTevStageWords;
+        const Value color_op = e_.Field(word + 2, 0, 4);
+        const Value alpha_op = e_.Field(word + 2, 16, 4);
+        const Value color_scale = e_.Field(word + 3, 0, 2);
+        const Value alpha_scale = e_.Field(word + 3, 16, 2);
+        Cond pass_through = e_.Eq(color_op, kOpReplace);
+        pass_through = e_.And(pass_through, e_.Eq(alpha_op, kOpReplace));
+        pass_through = e_.And(pass_through, e_.Eq(e_.Field(word + 0, 0, 4), kSourcePrevious));
+        pass_through = e_.And(pass_through, e_.Eq(e_.Field(word + 0, 16, 4), kSourcePrevious));
+        pass_through = e_.And(pass_through, e_.Eq(e_.Field(word + 1, 0, 4), 0));   // SourceColor
+        pass_through = e_.And(pass_through, e_.Eq(e_.Field(word + 1, 12, 3), 0));  // SourceAlpha
+        pass_through = e_.And(pass_through, e_.Or(e_.Eq(color_scale, 0), e_.Eq(color_scale, 3)));
+        pass_through = e_.And(pass_through, e_.Or(e_.Eq(alpha_scale, 0), e_.Eq(alpha_scale, 3)));
+        return pass_through;
+    }
+
+    // Stage `index` names `source` in one of its colour sources, or in one of its alpha sources when its colour operation is
+    // not Dot3_RGBA: one stage's part of TevUsesSource, on the raw fields (stage 0's forced source is its third, checked anyway).
+    Cond ReadsSource(u32 index, u32 source) const {
+        const size_t word = kw::kTexTevStages + index * kw::kTevStageWords;
+        Cond color = e_.Eq(e_.Field(word + 0, 0, 4), source);
+        color = e_.Or(color, e_.Eq(e_.Field(word + 0, 4, 4), source));
+        color = e_.Or(color, e_.Eq(e_.Field(word + 0, 8, 4), source));
+        Cond alpha = e_.Eq(e_.Field(word + 0, 16, 4), source);
+        alpha = e_.Or(alpha, e_.Eq(e_.Field(word + 0, 20, 4), source));
+        alpha = e_.Or(alpha, e_.Eq(e_.Field(word + 0, 24, 4), source));
+        return e_.Or(color, e_.And(e_.Ne(e_.Field(word + 2, 0, 4), kOpDot3Rgba), alpha));
+    }
+
+    // The ubershader's samples (N2-43): each texture unit that an active stage reads, sampled once into `mh4n_texN` (which
+    // `tev_source` returns), at the top level of main, right before the stages. The conditions read only `cfg`, so they are
+    // uniform within a draw and the lookups' derivatives stay defined; the drivers inline every call site of a function, and the
+    // lookups inside `tev_source` were compiled once per operand (36 times).
+    void WriteUberSamples() {
+        for (u32 index = 0; index < 6; ++index) {
+            e_.Raw(fmt::format("bool mh4n_tev_active_{} = {};\n", index, e_.Not(PassThrough(index)).glsl));
+        }
+        for (u32 unit = 0; unit < 4; ++unit) {
+            Cond reads = Emitter::False();
+            for (u32 index = 0; index < 6; ++index) {
+                const Cond active{false, false, fmt::format("mh4n_tev_active_{}", index)};
+                reads = e_.Or(reads, e_.And(active, ReadsSource(index, 3 + unit)));
+            }
+            e_.If(reads, [&] { e_.Raw(fmt::format("mh4n_tex{0} = sampleTexUnit{0}();\n", unit)); });
+        }
     }
 
     std::string ColorModifierText(const Value& modifier, const std::string& source) const {
@@ -528,14 +611,7 @@ private:
         const Value alpha_scale = e_.Field(word + 3, 16, 2);
 
         // IsPassThroughTevStage.
-        Cond pass_through = e_.Eq(color_op, kOpReplace);
-        pass_through = e_.And(pass_through, e_.Eq(alpha_op, kOpReplace));
-        pass_through = e_.And(pass_through, e_.Eq(e_.Field(word + 0, 0, 4), kSourcePrevious));
-        pass_through = e_.And(pass_through, e_.Eq(e_.Field(word + 0, 16, 4), kSourcePrevious));
-        pass_through = e_.And(pass_through, e_.Eq(e_.Field(word + 1, 0, 4), 0));   // SourceColor
-        pass_through = e_.And(pass_through, e_.Eq(e_.Field(word + 1, 12, 3), 0));  // SourceAlpha
-        pass_through = e_.And(pass_through, e_.Or(e_.Eq(color_scale, 0), e_.Eq(color_scale, 3)));
-        pass_through = e_.And(pass_through, e_.Or(e_.Eq(alpha_scale, 0), e_.Eq(alpha_scale, 3)));
+        const Cond pass_through = PassThrough(index);
 
         e_.If(e_.Not(pass_through), [&] {
             // The three colour operands: source, modifier.

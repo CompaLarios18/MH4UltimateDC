@@ -59,16 +59,21 @@
 //   - Dot3_RGB and Dot3_RGBA: three steps (the software renderer divides by 256 per channel; its own comment says
 //     "Worst case scenario seems to yield a +/-3 error");
 //   - with a scale of 2 or 4, the stage's tolerance times the scale.
+// The SPIR-V walker of the generator cases is adapted from gpu_shadow_test.cpp's and the unit-colour upload of the rig from
+// gpu_sampling_test.cpp's, both in this directory (N2-43).
 #include <doctest/doctest.h>
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <functional>
+#include <map>
 #include <memory>
+#include <set>
 #include <string>
 #include <thread>
 #include <vector>
@@ -80,6 +85,7 @@
 #include "gpu/fragment/generator.h"
 #include "gpu/fragment/key.h"
 #include "gpu/fragment/profile.h"
+#include "gpu/fragment/sampling/sampling.h"
 #include "gpu/fragment/state.h"
 #include "gpu/fragment/tables.h"
 #include "gpu/fragment/uniforms.h"
@@ -224,6 +230,188 @@ TEST_CASE("generator/every_helper_compiles_in_both_modes_and_both_passes") {
             Generated spec = GenerateSpecialised(DefaultKey(), profile, pass);
             INFO(spec.error);
             CHECK(spec.ok());
+        }
+    }
+}
+
+// ---- the SPIR-V call graph (the walk of gpu_shadow_test.cpp's helpers; the opcodes of glslang's spirv.hpp11) ---------------------
+
+namespace {
+
+constexpr u32 kOpName = 5, kOpEntryPoint = 15, kOpFunction = 54, kOpFunctionEnd = 56, kOpFunctionCall = 57;
+
+// OpImageTexelPointer, OpSampledImage .. OpImageQuerySamples, OpImageSparseSampleImplicitLod .. OpImageSparseTexelsResident and
+// OpImageSparseRead (317 to 319 are OpNoLine and the atomic flag operations, not image instructions).
+bool IsImageInstruction(u32 opcode) {
+    return opcode == 60 || (opcode >= 86 && opcode <= 107) || (opcode >= 305 && opcode <= 316) || opcode == 320;
+}
+
+struct CallGraph {
+    u32 entry = 0;                                       // OpEntryPoint's function (0: none)
+    std::map<u32, std::string> names;                    // OpName's target -> the name, cut at the first '('
+    std::vector<u32> functions;                          // every OpFunction's result id, in order
+    std::map<u32, std::map<u32, u64>> calls;             // function -> callee -> call sites
+    std::set<u32> has_image;                             // functions whose own body holds an image instruction
+    bool malformed = false;                              // a zero word count, an instruction past the end, a call outside a function
+
+    // The functions named `name` (an OpName whose target is an OpFunction's result id; variables and parameters do not count).
+    std::vector<u32> Named(const std::string& name) const {
+        std::vector<u32> out;
+        for (u32 id : functions) {
+            const auto it = names.find(id);
+            if (it != names.end() && it->second == name) out.push_back(id);
+        }
+        return out;
+    }
+};
+
+CallGraph ReadCallGraph(const std::vector<u32>& spirv) {
+    CallGraph g;
+    u32 current = 0;  // the function being read (0: none)
+    for (size_t i = 5; i < spirv.size();) {
+        const u32 count = spirv[i] >> 16, opcode = spirv[i] & 0xFFFF;
+        if (count == 0 || i + count > spirv.size()) {
+            g.malformed = true;
+            break;
+        }
+        if (opcode == kOpEntryPoint && count > 2) {
+            g.entry = spirv[i + 2];
+        } else if (opcode == kOpName && count > 2) {
+            std::string name;
+            for (size_t w = i + 2; w < i + count; ++w) {
+                bool end = false;
+                for (u32 b = 0; b < 4; ++b) {  // little-endian bytes, NUL-terminated
+                    const char ch = static_cast<char>((spirv[w] >> (8 * b)) & 0xFF);
+                    if (ch == '\0') {
+                        end = true;
+                        break;
+                    }
+                    name += ch;
+                }
+                if (end) break;
+            }
+            g.names[spirv[i + 1]] = name.substr(0, name.find('('));
+        } else if (opcode == kOpFunction && count > 2) {
+            current = spirv[i + 2];
+            g.functions.push_back(current);
+        } else if (opcode == kOpFunctionEnd) {
+            current = 0;
+        } else if (opcode == kOpFunctionCall && count > 3) {
+            if (current == 0) g.malformed = true;
+            ++g.calls[current][spirv[i + 3]];
+        } else if (IsImageInstruction(opcode) && current != 0) {
+            g.has_image.insert(current);
+        }
+        i += count;
+    }
+    return g;
+}
+
+// The sum over the call paths from `from` to `to` of the product of the call-site counts along each path. GLSL has no recursion:
+// a cycle sets `cycle`.
+u64 WeightedCalls(const CallGraph& g, u32 from, u32 to, bool& cycle, std::set<u32>& on_path) {
+    if (from == to) return 1;
+    if (!on_path.insert(from).second) {
+        cycle = true;
+        return 0;
+    }
+    u64 total = 0;
+    const auto it = g.calls.find(from);
+    if (it != g.calls.end()) {
+        for (const auto& [callee, sites] : it->second) total += sites * WeightedCalls(g, callee, to, cycle, on_path);
+    }
+    on_path.erase(from);
+    return total;
+}
+
+// `from`, or a function it reaches, holds an image instruction.
+bool ReachesImage(const CallGraph& g, u32 from, bool& cycle, std::set<u32>& on_path) {
+    if (g.has_image.count(from) != 0) return true;
+    if (!on_path.insert(from).second) {
+        cycle = true;
+        return false;
+    }
+    bool reaches = false;
+    const auto it = g.calls.find(from);
+    if (it != g.calls.end()) {
+        for (const auto& entry : it->second) reaches = reaches || ReachesImage(g, entry.first, cycle, on_path);
+    }
+    on_path.erase(from);
+    return reaches;
+}
+
+// `glsl` holds `token` as a whole name (not followed by a character that continues an identifier).
+bool HasToken(const std::string& glsl, const std::string& token) {
+    for (size_t at = glsl.find(token); at != std::string::npos; at = glsl.find(token, at + 1)) {
+        const size_t next = at + token.size();
+        const bool continues = next < glsl.size() && (std::isalnum(static_cast<unsigned char>(glsl[next])) || glsl[next] == '_');
+        if (!continues) return true;
+    }
+    return false;
+}
+
+}  // namespace
+
+TEST_CASE("generator/the_ubershader_samples_each_texture_unit_once_and_tev_source_samples_nothing") {
+    // How many times each texture function is reached from main, counting every call path with its call sites (the drivers inline
+    // every call site, so this is how many copies of it they compile). Each is 1: main samples each unit once (sampleTexUnit0 ..
+    // 3), unit 0 calls the shadow lookups once each, unit 3 calls ProcTex once. A call site that a feature adds at the top level of
+    // main (N2-09's bump and shadow terms) raises by one the count of the function it calls and of every function of this table
+    // that one reaches (shadowTexture and shadowTextureCube through sampleTexUnit0); a count that grows with operands, stages or
+    // lights is the regression this case catches.
+    const std::pair<const char*, u64> kReached[] = {
+        {"sampleTexUnit0", 1}, {"sampleTexUnit1", 1}, {"sampleTexUnit2", 1}, {"sampleTexUnit3", 1},
+        {"shadowTexture", 1},  {"shadowTextureCube", 1}, {"ProcTex", 1},
+    };
+    const std::pair<const DeviceProfile*, const char*> profiles[] = {{&kFullProfile, "kFullProfile"}, {&kLeanProfile, "kLeanProfile"}};
+    const std::pair<ShaderPass, const char*> passes[] = {{ShaderPass::Normal, "Normal"}, {ShaderPass::ShadowWrite, "ShadowWrite"}};
+    for (const auto& [profile, profile_name] : profiles) {
+        for (const auto& [pass, pass_name] : passes) {
+            const std::string where = std::string("the ") + pass_name + " pass, " + profile_name;
+            const Generated uber = GenerateUber(pass, *profile);
+            REQUIRE_MESSAGE(uber.ok(), where << ": " << uber.error);
+            const CallGraph g = ReadCallGraph(uber.spirv);
+            CHECK_MESSAGE(!g.malformed, where << ": the SPIR-V walk found a malformed instruction");
+            CHECK_MESSAGE(g.entry != 0, where << ": no OpEntryPoint");
+            if (g.entry == 0) continue;
+            bool cycle = false;
+            std::set<u32> on_path;
+            for (const auto& [name, expected] : kReached) {
+                const std::vector<u32> ids = g.Named(name);
+                CHECK_MESSAGE(ids.size() == 1, std::string(name) << " in " << where << ": " << ids.size() << " functions of that name, expected 1");
+                if (ids.size() != 1) continue;
+                const u64 found = WeightedCalls(g, g.entry, ids[0], cycle, on_path);
+                CHECK_MESSAGE(found == expected, std::string(name) << " in " << where << ": reached " << found << " times from main, expected " << expected);
+            }
+            const std::vector<u32> tev = g.Named("tev_source");
+            CHECK_MESSAGE(tev.size() == 1, "tev_source in " << where << ": " << tev.size() << " functions of that name, expected 1");
+            if (tev.size() == 1) {
+                CHECK_MESSAGE(!ReachesImage(g, tev[0], cycle, on_path),
+                              "tev_source in " << where << ": reaches an image instruction (it must return the sampled globals)");
+            }
+            CHECK_MESSAGE(!cycle, where << ": the call graph has a cycle");
+        }
+    }
+
+    // The specialised shaders are Azahar's text: a texture source is `sampleTexUnitN()` inside the operand, and none of the
+    // ubershader's globals appears. The key reads the four units (the procedural texture on, so that sampleTexUnit3 calls ProcTex).
+    FragmentKey key = DefaultKey();
+    key.proctex.set_enable(1);
+    Stage s0;
+    s0.color_src[0] = kTexture0; s0.color_src[1] = kTexture1; s0.color_src[2] = kTexture2; s0.color_op = kLerp;
+    s0.alpha_src[0] = kTexture3; s0.alpha_src[1] = kTexture0; s0.alpha_src[2] = kTexture1; s0.alpha_op = kLerp;
+    key.texture.tev_stages[0] = s0.Raw();
+    for (u32 unit = 0; unit < 4; ++unit) REQUIRE(TevUsesSource(key, kTexture0 + unit));
+    for (const auto& [profile, profile_name] : profiles) {
+        for (const auto& [pass, pass_name] : passes) {
+            const std::string where = std::string("the specialised shader, the ") + pass_name + " pass, " + profile_name;
+            const std::string glsl = GenerateSpecialisedGlsl(key, *profile, pass);
+            for (u32 unit = 0; unit < 4; ++unit) {
+                const std::string token = "mh4n_tex" + std::to_string(unit);
+                CHECK_MESSAGE(!HasToken(glsl, token), where << " names " << token);
+            }
+            CHECK_MESSAGE(glsl.find("color_results_1 = sampleTexUnit0().rgb;") != std::string::npos,
+                          where << ": no operand reads sampleTexUnit0() in place");
         }
     }
 }
@@ -480,6 +668,9 @@ struct Rig {
     std::shared_ptr<rhi::Image> color, depth;
     std::vector<native::PipelineKey> built;
     native::DrawResult last;
+    // Texture units 0 to 2 (null until BindUnitColours: the draws then show the composer's white dummy).
+    std::unique_ptr<rhi::Ring> unit_staging;
+    std::array<std::shared_ptr<rhi::Image>, 3> unit_images;
 
     // `mask` turns capability bits off (the paths of the M2 run on any device); `force_uber` is --force-ubershader.
     const FeatureRegistry* registry;
@@ -521,6 +712,33 @@ struct Rig {
         auto image = backend->CreateImage(desc);
         REQUIRE_MESSAGE(image.ok(), image.error());
         return *image;
+    }
+
+    // Gives texture units 0 to 2 one texel each (bytes, r g b a), bound from then on with every draw of Render (the composer's
+    // nearest sampler). The first call creates the staging ring and the three 1x1 images; each call uploads in one recording.
+    void BindUnitColours(const std::array<std::array<int, 4>, 3>& colours) {
+        if (!unit_staging) {
+            auto ring = backend->CreateRing(64 << 10, rhi::BufferUsage::Transfer, "tev unit colours");
+            REQUIRE_MESSAGE(ring.ok(), ring.error());
+            unit_staging = std::move(*ring);
+            for (u32 u = 0; u < 3; ++u) {
+                rhi::ImageDesc desc;
+                desc.format = rhi::Format::Rgba8Unorm;
+                desc.width = desc.height = 1;
+                desc.name = "tev unit colour";
+                auto image = backend->CreateImage(desc);
+                REQUIRE_MESSAGE(image.ok(), image.error());
+                unit_images[u] = *image;
+            }
+        }
+        rhi::Recorder rec = backend->BeginRecording();
+        for (u32 u = 0; u < 3; ++u) {
+            const std::array<u8, 4> texel = {static_cast<u8>(colours[u][0]), static_cast<u8>(colours[u][1]),
+                                             static_cast<u8>(colours[u][2]), static_cast<u8>(colours[u][3])};
+            auto r = sampling::UploadRgba8(rec, *unit_staging, *unit_images[u], 0, 0, 1, 1, texel);
+            REQUIRE_MESSAGE(r.ok(), r.error());
+        }
+        backend->WaitIdle(backend->Submit(std::move(rec)));
     }
 
     // Clears the target to `clear` (bytes) and the depth to 1.0, runs the draws in one recorder, returns the colour pixels.
@@ -580,6 +798,9 @@ struct Rig {
             d.count = streamed->vertex_count;
             d.viewport = rhi::Viewport{0, 0, static_cast<float>(kSize), static_cast<float>(kSize), 0.0f, 1.0f};
             d.scissor = rhi::Rect{0, 0, kSize, kSize};
+            if (unit_images[0]) {
+                for (u32 u = 0; u < 3; ++u) d.units[u] = native::TextureBinding{unit_images[u].get(), rhi::ImageView::Sampled, nullptr};
+            }
             auto result = composer->Draw(rec, d);
             REQUIRE_MESSAGE(result.ok(), result.error());
             last = *result;
@@ -971,6 +1192,173 @@ TEST_CASE("tev/the_combiner_buffer_is_updated_by_the_stages_the_masks_name_and_r
             CheckTev(spec_rig, uber_rig, c);
         }
     }
+}
+
+namespace {
+
+// The ubershader's texture units (N2-43): units 0 to 2 each a texel of its own (every channel at most 127, so twice the value
+// does not clamp; any two units at least 16 apart in every channel), unit 3 the procedural slot with the procedural texture off
+// (zero). The alpha channels (112, 72, 32, 0) are at least 32 apart.
+const std::array<std::array<int, 4>, 3> kUnitColours = {{{96, 24, 60, 112}, {24, 112, 40, 72}, {64, 48, 120, 32}}};
+const std::array<int, 4> kUnitPrimary = {140, 150, 160, 180};
+constexpr int kUnitTolerance = 1;  // Replace and Add are exact, and so is a MultiplyThenAdd with a zero product
+
+// One draw of the ubershader's unit case: one stage that is not a pass-through reads `color_unit` through a colour operand and
+// `alpha_unit` through the alpha operand of the same slot.
+struct UnitDraw {
+    std::array<Stage, 6> stages{};
+    u32 stage = 0;
+    bool forced = false;  // stage 0's forced shape: both forced operands read the third source
+    u32 color_unit = 0, alpha_unit = 0;
+    std::string label;
+};
+
+// The 28 draws. For each stage s and colour unit A, with k = s % 3 the operand slot, the alpha unit B = (A + 1 + k) % 4 (never A;
+// over the three slots every unit meets each of the others): stage s alone is active, its colour sources are all
+// PrimaryFragmentColor (zero: lighting is off) except slot k, which is unit A, its alpha sources the same with unit B, and both
+// operations are Replace (k = 0), Add (k = 1) or MultiplyThenAdd (k = 2; a zero product, so the result is the third operand).
+// Then stage 0's forced shape for each A, with B = (A + 2) % 4: sources {Previous, Previous, unit} on both sides, with Add.
+// Pairs and not one side per draw (56 draws): the same mutants show, with half the draws.
+std::vector<UnitDraw> UnitDraws() {
+    std::vector<UnitDraw> out;
+    const u32 ops[3] = {kReplace, kAdd, kMultiplyThenAdd};
+    for (u32 s = 0; s < 6; ++s) {
+        const u32 k = s % 3;
+        for (u32 a = 0; a < 4; ++a) {
+            const u32 b = (a + 1 + k) % 4;
+            UnitDraw d;
+            Stage st;
+            for (u32 i = 0; i < 3; ++i) {
+                st.color_src[i] = kPrimaryFragmentColor;
+                st.alpha_src[i] = kPrimaryFragmentColor;
+            }
+            st.color_src[k] = kTexture0 + a;
+            st.alpha_src[k] = kTexture0 + b;
+            st.color_op = ops[k];
+            st.alpha_op = ops[k];
+            d.stages[s] = st;
+            d.stage = s;
+            d.color_unit = a;
+            d.alpha_unit = b;
+            d.label = "stage " + std::to_string(s) + " slot " + std::to_string(k) + ": colour unit " + std::to_string(a) +
+                      ", alpha unit " + std::to_string(b);
+            out.push_back(d);
+        }
+    }
+    for (u32 a = 0; a < 4; ++a) {
+        const u32 b = (a + 2) % 4;
+        UnitDraw d;
+        Stage st;
+        st.color_src[0] = kPrevious; st.color_src[1] = kPrevious; st.color_src[2] = kTexture0 + a;
+        st.alpha_src[0] = kPrevious; st.alpha_src[1] = kPrevious; st.alpha_src[2] = kTexture0 + b;
+        st.color_op = kAdd;
+        st.alpha_op = kAdd;
+        d.stages[0] = st;
+        d.stage = 0;
+        d.forced = true;
+        d.color_unit = a;
+        d.alpha_unit = b;
+        d.label = "stage 0 forced: colour unit " + std::to_string(a) + ", alpha unit " + std::to_string(b);
+        out.push_back(d);
+    }
+    return out;
+}
+
+// The software renderer's pixel for a draw, with `texture` for the four units (the alpha test is Always).
+std::array<int, 4> UnitPixel(const UnitDraw& d, const std::array<sw::V4, 4>& texture) {
+    sw::Inputs in;
+    in.primary = {kUnitPrimary[0], kUnitPrimary[1], kUnitPrimary[2], kUnitPrimary[3]};
+    in.texture = texture;
+    const sw::V4 out = sw::Tev(d.stages, in);
+    return {out[0], out[1], out[2], out[3]};
+}
+
+std::array<sw::V4, 4> UnitTextures() {
+    std::array<sw::V4, 4> t{};
+    for (u32 u = 0; u < 3; ++u) t[u] = {kUnitColours[u][0], kUnitColours[u][1], kUnitColours[u][2], kUnitColours[u][3]};
+    t[3] = {0, 0, 0, 0};
+    return t;
+}
+
+int MaxDifference(const std::array<int, 4>& a, const std::array<int, 4>& b) {
+    int most = 0;
+    for (int c = 0; c < 4; ++c) most = std::max(most, std::abs(a[c] - b[c]));
+    return most;
+}
+
+}  // namespace
+
+TEST_CASE("tev/the_unit_colours_of_the_ubershader_case_tell_every_unit_apart") {
+    const std::vector<UnitDraw> draws = UnitDraws();
+    REQUIRE(draws.size() == 28);
+    std::map<std::array<u32, 3>, int> triples;  // (unit, stage, side 0 colour / 1 alpha) -> draws, the forced shape left out
+    std::array<int, 4> forced_color{}, forced_alpha{};
+    const std::array<sw::V4, 4> textures = UnitTextures();
+    for (const UnitDraw& d : draws) {
+        INFO(d.label);
+        CHECK(d.color_unit != d.alpha_unit);
+        if (d.forced) {
+            ++forced_color[d.color_unit];
+            ++forced_alpha[d.alpha_unit];
+        } else {
+            ++triples[{d.color_unit, d.stage, 0}];
+            ++triples[{d.alpha_unit, d.stage, 1}];
+        }
+        // The key the pixel case draws: the one active stage is the draw's, and it reads exactly the draw's two units.
+        TevCase c;
+        c.stages = d.stages;
+        const FragmentKey key = KeyOfCase(c);
+        for (u32 s = 0; s < 6; ++s) CHECK(TevStageIsPassThrough(key.texture.tev_stages[s]) == (s != d.stage));
+        for (u32 u = 0; u < 4; ++u) CHECK(TevUsesSource(key, kTexture0 + u) == (u == d.color_unit || u == d.alpha_unit));
+        // Each read unit shows: with its colour replaced by zero (units 0 to 2) or by another unit's, the pixel moves by more than
+        // the tolerance.
+        const std::array<int, 4> want = UnitPixel(d, textures);
+        for (u32 read : {d.color_unit, d.alpha_unit}) {
+            if (read < 3) {
+                std::array<sw::V4, 4> changed = textures;
+                changed[read] = {0, 0, 0, 0};
+                CHECK_MESSAGE(MaxDifference(UnitPixel(d, changed), want) > kUnitTolerance, "unit " << read << " replaced by zero");
+            }
+            for (u32 other = 0; other < 4; ++other) {
+                if (other == read) continue;
+                std::array<sw::V4, 4> changed = textures;
+                changed[read] = textures[other];
+                CHECK_MESSAGE(MaxDifference(UnitPixel(d, changed), want) > kUnitTolerance,
+                              "unit " << read << " replaced by unit " << other);
+            }
+        }
+    }
+    CHECK(triples.size() == 48);  // 4 units x 6 stages x 2 sides
+    for (const auto& [triple, n] : triples) {
+        CHECK_MESSAGE(n == 1, "unit " << triple[0] << " stage " << triple[1] << " side " << triple[2] << ": " << n << " draws");
+    }
+    for (u32 u = 0; u < 4; ++u) {
+        CHECK_MESSAGE(forced_color[u] == 1, "the forced shape reads unit " << u << " on the colour side " << forced_color[u] << " times");
+        CHECK_MESSAGE(forced_alpha[u] == 1, "the forced shape reads unit " << u << " on the alpha side " << forced_alpha[u] << " times");
+    }
+}
+
+TEST_CASE("tev/the_ubershader_reads_every_texture_unit_at_every_stage_through_colour_and_alpha_operands") {
+    // Each draw reads one unit through a colour operand and another through the alpha operand of the same slot, at one stage, so a
+    // unit the ubershader does not sample where it is read gives zero on one side, and a unit sampled into another's global gives
+    // that unit's colour (the unit colours tell every unit apart: the case above). One fixed-function state: one pipeline.
+    auto backend = test::RequireBackend();
+    if (!backend) return;
+    Rig rig(backend, true);
+    rig.BindUnitColours(kUnitColours);
+    const std::array<sw::V4, 4> textures = UnitTextures();
+    for (const UnitDraw& d : UnitDraws()) {
+        TevCase c;
+        c.stages = d.stages;
+        DrawSpec spec;
+        spec.key = KeyOfCase(c);
+        spec.tri = FullTriangle(kUnitPrimary);
+        const std::vector<u8> pixels = rig.Render({spec});
+        std::string why;
+        CHECK_MESSAGE(AllNear(pixels, UnitPixel(d, textures), kUnitTolerance, &why), d.label << ": " << why);
+        CHECK_MESSAGE(rig.last.fallback, d.label);
+    }
+    CHECK(rig.built.size() == 1);
 }
 
 TEST_CASE("alpha_test/every_function_against_the_software_renderers_comparison") {
