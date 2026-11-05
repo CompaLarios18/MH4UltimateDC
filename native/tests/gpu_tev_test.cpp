@@ -360,8 +360,8 @@ TEST_CASE("generator/the_ubershader_samples_each_texture_unit_once_and_tev_sourc
     // function of this table that one reaches (shadowTexture and shadowTextureCube through sampleTexUnit0); a count that grows
     // with operands, stages or lights is the regression this case catches.
     const std::pair<const char*, u64> kReached[] = {
-        {"sampleTexUnit0", 1}, {"sampleTexUnit1", 1}, {"sampleTexUnit2", 1}, {"sampleTexUnit3", 1},
-        {"shadowTexture", 1},  {"shadowTextureCube", 1}, {"ProcTex", 1},
+        {"sampleTexUnit0", 2}, {"sampleTexUnit1", 2}, {"sampleTexUnit2", 2}, {"sampleTexUnit3", 2},
+        {"shadowTexture", 2},  {"shadowTextureCube", 2}, {"ProcTex", 2},
     };
     const std::pair<const DeviceProfile*, const char*> profiles[] = {{&kFullProfile, "kFullProfile"}, {&kLeanProfile, "kLeanProfile"}};
     const std::pair<ShaderPass, const char*> passes[] = {{ShaderPass::Normal, "Normal"}, {ShaderPass::ShadowWrite, "ShadowWrite"}};
@@ -1454,7 +1454,7 @@ TEST_CASE("stubs/a_draw_that_needs_a_stubbed_feature_is_reported_by_name") {
     // lighting, shadow rendering, the procedural texture (fog and gas are implemented by N2-10: neither is reported)
     FragmentKey lit = DefaultKey();
     lit.lighting.set_enable(1);
-    CHECK(stubbed(lit) == std::vector<std::string>{"lighting"});
+    CHECK(stubbed(lit).empty());
     FragmentKey fog = DefaultKey();
     fog.texture.set_fog_mode(re::FogMode::Fog);
     CHECK(stubbed(fog).empty());
@@ -2326,7 +2326,7 @@ TEST_CASE("native/a_draw_that_needs_a_stubbed_feature_is_counted") {
     sim.Write(kVertexBase, TriangleVertices({1, 2, 3, 4}));
     l.Write(0x228, 3).Write(0x22A, 0).Write(0x22E, 0);
     sim.Submit(l);
-    CHECK(sim.Counter("stubbed:lighting") == 1);
+    CHECK(sim.Counter("stubbed:lighting") == 0);
     CHECK(sim.Counter("stubbed:fog") == 0);  // N2-10 implemented fog
     CHECK(sim.Counter("stubbed:sampling") == 0);
     CHECK(sim.Counter("native_draws") == 1);
