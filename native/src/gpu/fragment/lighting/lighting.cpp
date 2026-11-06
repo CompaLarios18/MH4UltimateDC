@@ -55,8 +55,8 @@
 //    `enable_clip1` and `flip_viewport` are `uint` in `vs_data` (N2-06's block), not `bool`; an output map of no attribute declares
 //    `attributes[1]` (Azahar's `vec4 attributes[0]` is not valid GLSL) and a `semantic_map` shorter than 24 entries reads 1.0 past its end.
 //  - UNIFORMS. `light_src[i].spot_direction` is the register's spot vector over 2047, not negated (rasterizer_accelerated.cpp at the
-//    pinned commit; uniforms.h's comment says "negated", which is the older text; sw_lighting.cpp's `Dot(light_vector, spot_dir)` agrees
-//    with the unnegated vector).
+//    pinned commit; Azahar's shader_uniforms.h comment says "negated", which is the older text, and uniforms.h quotes it;
+//    sw_lighting.cpp's `Dot(light_vector, spot_dir)` agrees with the unnegated vector).
 //
 // THE FIXED GEOMETRY SHADER (design 5.5; Azahar's GenerateFixedGeometryShader): see lighting.h. Registered with N2-33's slot
 // (`native::FixupGeneratorRegistry`) at start-up. NOTE FOR N1'S DEPENDENCY RULE: this is the one place `fragment/` includes
