@@ -354,11 +354,12 @@ bool HasToken(const std::string& glsl, const std::string& token) {
 
 TEST_CASE("generator/the_ubershader_samples_each_texture_unit_once_and_tev_source_samples_nothing") {
     // How many times each texture function is reached from main, counting every call path with its call sites (the drivers inline
-    // every call site (`inference`), so this is how many copies of it they compile). Each is 1: main samples each unit once
-    // (sampleTexUnit0 .. 3), unit 0 calls the shadow lookups once each, unit 3 calls ProcTex once. A call site that a feature
-    // adds at the top level of main (N2-09's bump and shadow terms) raises by one the count of the function it calls and of every
-    // function of this table that one reaches (shadowTexture and shadowTextureCube through sampleTexUnit0); a count that grows
-    // with operands, stages or lights is the regression this case catches.
+    // every call site (`inference`), so this is how many copies of it they compile). Each is 2: main samples each unit once for
+    // TEV (sampleTexUnit0 .. 3, N2-43) and once more for the bump and shadow terms (N2-09's lighting block, before the bump branch
+    // and the light loop); unit 0 calls the shadow lookups once each and unit 3 calls ProcTex once, so those follow the counts of
+    // units 0 and 3. A further call site at the top level of main raises by one the count of the function it calls and of every
+    // function of this table that one reaches; a count that grows with operands, stages or lights is the regression this case
+    // catches.
     const std::pair<const char*, u64> kReached[] = {
         {"sampleTexUnit0", 2}, {"sampleTexUnit1", 2}, {"sampleTexUnit2", 2}, {"sampleTexUnit3", 2},
         {"shadowTexture", 2},  {"shadowTextureCube", 2}, {"ProcTex", 2},
@@ -1451,7 +1452,8 @@ TEST_CASE("stubs/a_draw_that_needs_a_stubbed_feature_is_reported_by_name") {
     // the same source in a pass-through stage is not read
     key.texture.tev_stages[2] = Stage{}.Raw();
     CHECK(stubbed(key).empty());
-    // lighting, shadow rendering, the procedural texture (fog and gas are implemented by N2-10: neither is reported)
+    // lighting (N2-09), fog and gas (N2-10), the procedural texture (N2-11) and shadow rendering (N2-12) are implemented: none is
+    // reported
     FragmentKey lit = DefaultKey();
     lit.lighting.set_enable(1);
     CHECK(stubbed(lit).empty());

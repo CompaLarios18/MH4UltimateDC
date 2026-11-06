@@ -66,7 +66,8 @@ struct LightSrc {
     alignas(16) Vec3f diffuse;
     alignas(16) Vec3f ambient;
     alignas(16) Vec3f position;
-    alignas(16) Vec3f spot_direction;  // negated
+    alignas(16) Vec3f spot_direction;  // the register's spot vector over 2047, as is (rasterizer_accelerated.cpp); Azahar's
+                                       // comment says "negated"
     float dist_atten_bias;
     float dist_atten_scale;
 };
